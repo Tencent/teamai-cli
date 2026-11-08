@@ -80,7 +80,7 @@ describe('dashboard session sharing (offline)', () => {
       runMode: { mode: 'attended', source: 'default' },
       archive: 'teamai-reports',
       publish: { attended: { policy: 'ask' }, unattended: { policy: 'auto' } },
-      unreadTools: ['copilot'],
+      unreadTools: [],
       captured: { attended: { active: 0, finished: 1 }, unattended: { waitingForDrain: 1 } },
       next: [{ mode: 'unattended', command: 'TEAMAI_MODE=unattended teamai score --drain' }],
     });

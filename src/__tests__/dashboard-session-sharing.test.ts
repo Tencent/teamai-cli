@@ -222,11 +222,11 @@ describe('the session sharing read model', () => {
     expect(await readSessionSharing({ ...config, repo: { ...config.repo, kind: 'http' } }, { env: {}, platform: 'linux', now: NOW })).toMatchObject({ pendingLabels: 1, next: [] });
   });
 
-  it('names the enabled tools whose sessions are never captured, and the scorers that judge sessions', async () => {
+  it('names no unread tools when every enabled tool has a session reader, and the scorers that judge sessions', async () => {
     const config = await team({ 'scorers/style.md': SCORER.replace('sessions: true\n', '') });
 
     expect(await readSessionSharing({ ...config, enabledAgents: ['claude', 'pi', 'copilot'] }, { env: {}, platform: 'linux', now: NOW })).toMatchObject({
-      unreadTools: ['copilot'],
+      unreadTools: [],
       scoring: { state: 'ok', scorers: ['quality'] },
     });
   });

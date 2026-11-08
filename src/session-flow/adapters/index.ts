@@ -17,6 +17,7 @@ import { AgyAdapter, agyStoreRoots } from './agy.js';
 import { PiAdapter } from './pi.js';
 import { MuseAdapter } from './muse.js';
 import { HermesAdapter } from './hermes.js';
+import { CopilotAdapter } from './copilot.js';
 import type { SessionPlatform } from './platform-facts.js';
 import { sessionStoreDir } from '../../locate.js';
 
@@ -47,6 +48,7 @@ export const ADAPTER_REGISTRY: AdapterRegistry = {
   omp: (toolRoots) => new PiAdapter('omp', sessionStoreDir('omp', toolRoots)),
   muse: (toolRoots) => new MuseAdapter(sessionStoreDir('muse', toolRoots)),
   hermes: (toolRoots) => new HermesAdapter(sessionStoreDir('hermes', toolRoots)),
+  copilot: (toolRoots) => new CopilotAdapter(sessionStoreDir('copilot', toolRoots)),
   // TeamAI variants (different path prefixes, identical format)
   'claude-internal': (toolRoots) => new ClaudeCodeAdapter('claude-internal', sessionStoreDir('claude-internal', toolRoots)),
   tclaude: (toolRoots) => new ClaudeCodeAdapter('tclaude', sessionStoreDir('tclaude', toolRoots)),
@@ -108,3 +110,5 @@ export { PiAdapter } from './pi.js';
 export { MuseAdapter } from './muse.js';
 
 export { HermesAdapter } from './hermes.js';
+
+export { CopilotAdapter } from './copilot.js';

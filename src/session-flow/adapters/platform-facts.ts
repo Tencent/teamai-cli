@@ -255,6 +255,19 @@ export const SESSION_PLATFORM_FACTS = {
     idFormat: 'hermes',
     readOnly: true,
   },
+  copilot: {
+    // Copilot CLI stores one append-only events.jsonl under <Copilot home>/session-state/<id>/.
+    store: { in: 'tool-home', home: 'copilot', dir: 'session-state' },
+    resume: (id) => `copilot --resume ${id}`,
+    thinking: false, images: false,
+    nativeTools: new Set([
+      'powershell', 'bash', 'view', 'edit', 'grep', 'glob', 'web_fetch', 'task',
+    ]),
+    legacyIdWithoutWorkspace: false,
+    sqliteRegistrationOnWindows: false,
+    idFormat: 'uuid',
+    readOnly: true,
+  },
 } satisfies Record<string, SessionPlatformFacts>;
 
 /** A platform teamai has a session adapter for. */
