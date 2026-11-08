@@ -170,7 +170,8 @@ class Harness {
     this.root = path.join(this.tmp, 'proj');
   }
 
-  async setUp(options: { inheritUserScope?: boolean } = {}): Promise<void> {
+  /** `recall: false` leaves recall at the team's default, off; every other test turns it on for the team. */
+  async setUp(options: { inheritUserScope?: boolean; recall?: false } = {}): Promise<void> {
     process.env.HOME = path.join(this.tmp, 'home');
     fs.mkdirSync(process.env.HOME, { recursive: true });
     // Copilot runs the built-ins it has installed.
@@ -195,7 +196,8 @@ class Harness {
     const docsDir = path.join(this.teamRepo, 'docs');
     fs.mkdirSync(learnings, { recursive: true });
     fs.mkdirSync(path.join(docsDir, 'learnings'), { recursive: true });
-    fs.writeFileSync(path.join(this.teamRepo, 'teamai.yaml'), 'team: team-a\nrepo: https://example.test/acme/team-a.git\n');
+    fs.writeFileSync(path.join(this.teamRepo, 'teamai.yaml'), 'team: team-a\nrepo: https://example.test/acme/team-a.git\n'
+      + (options.recall === false ? '' : 'sharing:\n  recall:\n    enabled: true\n'));
     fs.writeFileSync(path.join(learnings, 'redis-timeout.md'), doc('Redis timeout fix', ['redis', 'timeout'], 'Raise the pool size SNIPPETMARK.'));
     fs.writeFileSync(path.join(learnings, 'setup.md'), doc('Setup guide', ['setup'], 'Run the installer.'));
     // A doc that shares the `learnings/setup.md` suffix with the learning above.
@@ -313,7 +315,8 @@ class Harness {
   }
 
   private async teamRepoAt(root: string, paths: typeof path.posix): Promise<void> {
-    await saveLocalConfigForScope({ ...this.project, repo: { ...this.project.repo, localPath: root } });
+    // No teamai.yaml lives at `root`, so the member's own switch keeps recall on for the hooks.
+    await saveLocalConfigForScope({ ...this.project, repo: { ...this.project.repo, localPath: root }, recallEnabled: true });
     const indexPath = getProjectSearchIndexPath(this.project);
     const index = JSON.parse(fs.readFileSync(indexPath, 'utf-8')) as { entries: Array<{ path?: string }> };
     for (const entry of index.entries) {
@@ -2169,6 +2172,34 @@ describe('recall attribution acceptance (#884)', () => {
     await h.read(files[0]);
     expect(output).not.toContain('run=');
     expect(await readRecallLog(h.project)).toEqual([]);
+  });
+
+  // Recall is off by default, so a team that never turned it on records no attribution and no votes (#1788).
+  it('records no recall evidence, no vote and no push while recall is off for the scope', async () => {
+    await h.setUp({ recall: false });
+    const { updateReports } = await import('../utils/reports-branch.js');
+    const { files } = await h.recall('redis timeout');
+    const recorded = h.logLines();
+    vi.mocked(updateReports).mockClear();
+
+    await h.read(files[0]);
+    expect(await h.stop()).toBe('');
+
+    expect(h.logLines()).toEqual(recorded);
+    expect(await h.upvotes(h.project)).toEqual({});
+    expect(updateReports).not.toHaveBeenCalled();
+  });
+
+  // `teamai recall disable` writes the member's `recallEnabled: false`; nothing is installed or removed, so the very next event reads it.
+  it('stops crediting at the next event once the member turns recall off', async () => {
+    await h.setUp();
+    const { files } = await h.recall('redis timeout');
+    await h.read(files[0]);
+    await saveLocalConfigForScope({ ...h.project, recallEnabled: false });
+
+    await h.stop();
+
+    expect(await h.upvotes(h.project)).toEqual({});
   });
 
   it('the recall log never holds the query, prompt, tool output or file content', async () => {

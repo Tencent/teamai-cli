@@ -590,6 +590,26 @@ const skillUseHandler: HookHandler = {
 };
 
 /**
+ * Whether recall is on for the hook's scope: `TEAMAI_RECALL_DISABLED=1`, then
+ * the member's `recallEnabled`, then the team's `sharing.recall.enabled`, off
+ * by default. Read at every event, so `teamai recall disable` and `enable`
+ * take effect at the next one: nothing is installed or removed (#1788). An
+ * unreadable `teamai.yaml` leaves the team's half at its default.
+ */
+async function isRecallOn(config: LocalConfig): Promise<boolean> {
+  const { isRecallEnabled } = await import('./types.js');
+  const { loadTeamConfig } = await import('./config.js');
+
+  try {
+    return isRecallEnabled(config, await loadTeamConfig(config.repo.localPath) ?? {});
+  } catch (error) {
+    log.debug(`teamai.yaml cannot be read, so the recall hooks take the team's recall setting as off: ${error instanceof Error ? error.message : String(error)}`);
+
+    return isRecallEnabled(config, {});
+  }
+}
+
+/**
  * PostToolUse: record a recall claim or a read of team knowledge in the recall
  * log, for the reducer votes-sync runs at Stop, SubagentStop and SessionEnd (#884). One
  * write per call, whatever number of run ids, docs read or files a search
@@ -599,7 +619,7 @@ const skillUseHandler: HookHandler = {
 const recallAttributionHandler: HookHandler = {
   name: 'recall-attribution',
   async execute(stdin, tool, config) {
-    if (process.env.TEAMAI_RECALL_DISABLED === '1' || !config) return null;
+    if (!config || !await isRecallOn(config)) return null;
     const { recordToolCall } = await import('./recall-adoption.js');
     await recordToolCall(stdin, tool, config);
 
@@ -757,7 +777,7 @@ const packagePendingHintHandler: HookHandler = {
 const votesSyncHandler: HookHandler = {
   name: 'votes-sync',
   async execute(stdin, tool, localConfig) {
-    if (process.env.TEAMAI_RECALL_DISABLED === '1' || !localConfig) return null;
+    if (!localConfig || !await isRecallOn(localConfig)) return null;
 
     try {
       const { creditAdoptedDocs } = await import('./recall-adoption.js');
@@ -856,7 +876,7 @@ const votesSyncHandler: HookHandler = {
 const votesPushHandler: HookHandler = {
   name: 'votes-push',
   async execute(_stdin, _tool, localConfig) {
-    if (process.env.TEAMAI_RECALL_DISABLED === '1' || !localConfig) return null;
+    if (!localConfig || !await isRecallOn(localConfig)) return null;
 
     try {
       const { getVotesDir, usesBranchWorktree } = await import('./types.js');
