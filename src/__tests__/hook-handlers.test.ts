@@ -246,6 +246,35 @@ describe('hook-handlers registry', () => {
     expect(events).toContain('session-end');
   });
 
+  it('records an automatic update skipped by its policy or install layout as skipped', async () => {
+    mockDoUpdate.mockResolvedValueOnce('skipped');
+    const handlers = buildHandlerRegistry().filter((r) => r.handler.name === 'update');
+    const dispatcher = createDispatcher({ handlers, localConfig: null });
+    const result = await dispatcher.dispatch('stop', '*', {}, 'claude', 'background');
+    expect(mockDoUpdate).toHaveBeenLastCalledWith(null, { automatic: true });
+    expect(result).toEqual({ output: null, errors: [] });
+    expect(log.debug).toHaveBeenCalledWith(expect.stringMatching(/update=\d+ms\(skipped\)/));
+  });
+
+  it('records an automatic update failure as failed rather than ok', async () => {
+    mockDoUpdate.mockResolvedValueOnce('failed');
+    const handlers = buildHandlerRegistry().filter((r) => r.handler.name === 'update');
+    const dispatcher = createDispatcher({ handlers, localConfig: null });
+    const result = await dispatcher.dispatch('stop', '*', {}, 'claude', 'background');
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].handlerName).toBe('update');
+    expect(log.debug).toHaveBeenCalledWith(expect.stringMatching(/update=\d+ms\(failed\)/));
+  });
+
+  it('records an automatic update that could not reach the registry as failed', async () => {
+    mockDoUpdate.mockResolvedValueOnce('unreachable');
+    const handlers = buildHandlerRegistry().filter((r) => r.handler.name === 'update');
+    const dispatcher = createDispatcher({ handlers, localConfig: null });
+    const result = await dispatcher.dispatch('stop', '*', {}, 'claude', 'background');
+    expect(result.errors).toHaveLength(1);
+    expect(log.debug).toHaveBeenCalledWith(expect.stringMatching(/update=\d+ms\(failed\)/));
+  });
+
   it('post-tool-use runs every non-output handler detached, leaving the inline pass empty (#1216)', () => {
     // dashboard-report and recall-attribution always return null — pure side
     // effects, the exact criterion `background` documents — and the same
@@ -760,7 +789,7 @@ describe('hook-handlers registry', () => {
 
     const result = await handler.execute({ session_id: 's', cwd: '/x' }, 'cursor', null);
     expect(result).not.toBeNull();
-    const parsed = JSON.parse(result!);
+    const parsed = JSON.parse(String(result));
     expect(parsed.followup_message).toContain('[teamai] hello');
     // Cursor hides the payload, so the model is asked to pass it on.
     expect(parsed.followup_message).toContain('verbatim');
@@ -775,7 +804,7 @@ describe('hook-handlers registry', () => {
     mockContributeCheckForSession.mockResolvedValueOnce({ hint: '[teamai] hello' });
 
     const result = await handler.execute({ session_id: 's', cwd: '/x' }, 'claude', null);
-    const parsed = JSON.parse(result!);
+    const parsed = JSON.parse(String(result));
     expect(parsed.hookSpecificOutput.additionalContext).toBe('[teamai] hello');
   });
 
@@ -1018,7 +1047,7 @@ describe('hook-handlers registry', () => {
 
     const result = await handler.execute({ session_id: 's3', cwd: '/x' }, tool, scope);
     expect(result).not.toBeNull();
-    const parsed = JSON.parse(result!);
+    const parsed = JSON.parse(String(result));
     expect(parsed.hookSpecificOutput.hookEventName).toBe('UserPromptSubmit');
     expect(parsed.hookSpecificOutput.additionalContext).toBe('[teamai] stashed');
   });
@@ -1055,7 +1084,7 @@ describe('hook-handlers registry', () => {
 
     const output = await handler.execute({ session_id: 's6', cwd: '/x' }, 'claude', null);
 
-    expect(JSON.parse(output!).hookSpecificOutput.additionalContext)
+    expect(JSON.parse(String(output)).hookSpecificOutput.additionalContext)
       .toBe('Run `teamai packages`');
   });
 

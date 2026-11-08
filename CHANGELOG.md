@@ -82,6 +82,7 @@ All notable changes to this project will be documented in this file. See [standa
 
 ### 🐛 Bug Fixes
 
+- `teamai update` exits 1 when the install fails, the running install is still the old version, or the hook refresh after an update fails. It printed the failure and exited 0 before, so a script read a broken update as success. An unreachable registry with nothing newer still exits 0.
 - Pending-review queue writes share a lock, so accepting or rejecting an item does not drop a section another import just queued, and two removals do not race over one temp file. A failed atomic replacement keeps the queue and removes its temp file; a busy lock reports an error for retry.
 - An import or `codebase --deep-enrich` that stopped, and that `teamai workflow resume` can continue, keeps other imports out of its teamwiki until its run ends, not only while one of its steps runs; the refusal names the run and how to resume or cancel it. The import lock moves from beside the teamwiki to `~/.teamai/locks`, so an `--output` teamwiki in a checkout stays clean; an older teamai on the same machine does not see a lock this one holds (for [#1589](https://github.com/Tencent/teamai-cli/issues/1589)).
 - `teamai review --branch` in single-repo mode checks the team files under `.teamai/` on the branch. It listed them relative to `.teamai/` but read them from the repository root, so it skipped every file and reported a clean branch (for [#1767](https://github.com/Tencent/teamai-cli/issues/1767)).

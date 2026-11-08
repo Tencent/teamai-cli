@@ -263,7 +263,8 @@ steps:
 
     const done = await runLocalDriver(config, runId, workspace, {
       adapter: fakeTool(async (input) => {
-        context = await teamRules?.execute({ hook_event_name: 'SessionStart', source: 'startup', cwd: input.cwd }, 'codex', await resolveConfigForDir(input.cwd));
+        const reply = await teamRules?.execute({ hook_event_name: 'SessionStart', source: 'startup', cwd: input.cwd }, 'codex', await resolveConfigForDir(input.cwd));
+        context = typeof reply === 'string' ? reply : null;
       }),
     });
 

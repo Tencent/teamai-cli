@@ -196,7 +196,7 @@ describe('todowrite hint follows teamai.yaml language (#1014)', () => {
       'claude',
       local,
     );
-    return JSON.parse(raw!).hookSpecificOutput.additionalContext as string;
+    return JSON.parse(String(raw)).hookSpecificOutput.additionalContext as string;
   }
 
   it('emits an English-only hint when language is en', async () => {

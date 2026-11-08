@@ -901,6 +901,25 @@ describe('update', () => {
     },
   );
 
+  it('exits 0 for a manual update when the registry is unreachable and the last check found nothing newer', async () => {
+    mockedLoadState.mockResolvedValue({
+      ...defaultState,
+      lastUpdateCheck: new Date().toISOString(),
+      availableUpdate: getCurrentVersion(),
+    });
+    mockedExecSync.mockRejectedValue(new Error('E500'));
+    const before = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await update({});
+
+      expect(mockedLog.warn).toHaveBeenCalledWith(expect.stringContaining('the last check found no newer version'));
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.exitCode = before;
+    }
+  });
+
   it.each([{ check: true }, {}])(
     'says the update status is unknown without a recent check (%j)', async (options) => {
       mockedExecSync.mockRejectedValue(new Error('E500'));
@@ -1047,7 +1066,7 @@ describe('hook refresh after update', () => {
     );
   });
 
-  it('should silently skip hook refresh when spawn fails', async () => {
+  it('reports a hook refresh failure after the package was updated', async () => {
     mockedExecSync
       .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' }) // npm view
       .mockResolvedValueOnce({ stdout: '', stderr: '' })          // npm install
@@ -1055,7 +1074,7 @@ describe('hook refresh after update', () => {
         throw new Error('command not found');
       });
 
-    await doUpdate(null);
+    await expect(doUpdate(null)).resolves.toBe('failed');
 
     expect(mockedLog.success).toHaveBeenCalledWith(
       expect.stringContaining('Updated teamai to v99.0.0'),
@@ -1340,7 +1359,7 @@ describe('self-update install-target safety', () => {
     fileURLToPathMock.mockReturnValue(FLAT_ENTRY);
     mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
 
-    await doUpdate(null);
+    await expect(doUpdate(null)).resolves.toBe('skipped');
 
     // A non-global npm install reconciles <prefix> as a project and prunes
     // undeclared siblings (including a co-located npm); -g lands in
@@ -1354,6 +1373,19 @@ describe('self-update install-target safety', () => {
       expect.arrayContaining(['install']),
       expect.anything(),
     );
+  });
+
+  it('records an unsupported automatic update as skipped without repeating a warning', async () => {
+    restorePlatform = stubPlatform('linux');
+    fileURLToPathMock.mockReturnValue(FLAT_ENTRY);
+    mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
+
+    await expect(doUpdate(null, { automatic: true })).resolves.toBe('skipped');
+
+    expect(mockedLog.warn).not.toHaveBeenCalled();
+    expect(mockedLog.persist).not.toHaveBeenCalled();
+    expect(mockedLog.debug).toHaveBeenCalledWith(expect.stringContaining('Self-update is not supported'));
+    expectNoInstall();
   });
 
   it('refuses to run npm against a Volta package image', async () => {
@@ -1414,7 +1446,7 @@ describe('self-update install-target safety', () => {
     }
   });
 
-  it('warns when the post-update verification finds the running install stale', async () => {
+  it('reports failure when the post-update verification finds the running install stale', async () => {
     restorePlatform = stubPlatform('win32');
     fileURLToPathMock.mockReturnValue(FLAT_ENTRY);
     mockedEntry.mockReturnValue(FLAT_ENTRY);
@@ -1424,9 +1456,10 @@ describe('self-update install-target safety', () => {
     }) as unknown as typeof fs.readFileSync);
     mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
 
-    await doUpdate(null);
+    await expect(doUpdate(null)).resolves.toBe('failed');
 
-    expect(mockedExecSync).toHaveBeenCalledTimes(3); // view + install + hook refresh
+    expect(mockedExecSync).toHaveBeenCalledTimes(2); // view + install; do not refresh with the stale CLI
+    expect(mockedLog.success).not.toHaveBeenCalled();
     expect(mockedExecSync).toHaveBeenCalledWith(
       expect.any(String),
       expect.arrayContaining(['install', '-g', expect.stringContaining('--prefix=')]),

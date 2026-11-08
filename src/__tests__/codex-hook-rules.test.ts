@@ -20,7 +20,7 @@ describe('Codex gets the project\'s rules and instruction blocks from its sessio
     const event = stdin.hook_event_name === 'SubagentStart' ? 'subagent-start' : 'session-start';
     const output = await registration(event)!.handler.execute(stdin, tool, localConfig);
     if (output === null) return null;
-    const parsed = JSON.parse(output) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
+    const parsed = JSON.parse(String(output)) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
     // Codex rejects a hookEventName that is not the event it ran.
     expect(parsed.hookSpecificOutput.hookEventName).toBe(stdin.hook_event_name);
     return parsed.hookSpecificOutput.additionalContext;

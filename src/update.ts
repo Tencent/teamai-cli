@@ -1078,27 +1078,42 @@ function registryUnreachableMessage(result: CheckResult): string | null {
 }
 
 /**
- * What a self-update attempt did. `failed` means the install itself failed:
+ * What a self-update attempt did. `failed` means the requested update did not complete:
  * the difference matters to `teamai update`, which must not report success,
  * and to the hook path, which discards the exit status anyway.
+ *
+ * `unreachable` is the registry being down while the last check found nothing
+ * newer, so nothing was requested and nothing failed: `teamai update` exits 0 as
+ * it always has, while the hook path records it as `failed`.
  */
-export type UpdateOutcome = 'ok' | 'failed';
+export type UpdateOutcome = 'ok' | 'skipped' | 'failed' | 'unreachable';
+
+/** Automatic hooks keep a diagnostic record; an explicit update also shows the remedy. */
+function reportUnsupportedUpdate(message: string, automatic: boolean): void {
+  if (automatic) log.debug(message);
+  else {
+    log.warn(message);
+    log.persist(message);
+  }
+}
 
 /**
  * Perform the actual update (check + install based on policy). The CLI is
  * shared by the whole machine, so one scope decides: the user scope when there
  * is one, else `runningScope`, the scope the update runs in.
  */
-export async function doUpdate(runningScope: LocalConfig | null, options?: { force?: boolean }): Promise<UpdateOutcome> {
+export async function doUpdate(runningScope: LocalConfig | null, options?: { force?: boolean; automatic?: boolean }): Promise<UpdateOutcome> {
   const result = await checkForUpdate(options);
   const unreachable = registryUnreachableMessage(result);
 
   if (unreachable) log.warn(unreachable);
 
   if (!result.available) {
-    if (!unreachable) log.info(`Already up to date (v${result.current})`);
+    if (unreachable) return 'unreachable';
 
-    return 'ok';
+    log.info(`Already up to date (v${result.current})`);
+
+    return 'skipped';
   }
 
   // Load configs for update policy. Team config is the default; local
@@ -1119,7 +1134,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
 
     log.debug(`Auto-update skipped: ${reason}`);
 
-    return 'ok';
+    return 'skipped';
   }
 
   // Refuse unsupported install layouts before prompting, so nobody confirms
@@ -1141,10 +1156,9 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
       'and rebuild it; to switch to the published package, run ' +
       `"npm install -g ${pkgName} --registry=${registry}".`;
 
-    log.warn(message);
-    log.persist(message);
+    reportUnsupportedUpdate(message, options?.automatic === true);
 
-    return 'ok';
+    return 'skipped';
   }
 
   const entry = fileURLToPath(import.meta.url);
@@ -1162,10 +1176,9 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
       'so an interrupted update leaves the `teamai` command missing. ' +
       `Upgrade with "volta install ${pkgName}@latest".`;
 
-    log.warn(message);
-    log.persist(message);
+    reportUnsupportedUpdate(message, options?.automatic === true);
 
-    return 'ok';
+    return 'skipped';
   }
 
   if (!target.global) {
@@ -1178,17 +1191,16 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
       `Self-update is not supported for the vendored install at ${target.prefix} ` +
       '(npm would relocate or prune the runtime tree) — update manually.';
 
-    log.warn(message);
-    log.persist(message);
+    reportUnsupportedUpdate(message, options?.automatic === true);
 
-    return 'ok';
+    return 'skipped';
   }
 
   if (policy === 'prompt') {
     if (!isInteractive()) {
       log.info(`Update available: v${result.current} → v${result.latest}. Run "teamai update" to upgrade.`);
 
-      return 'ok';
+      return 'skipped';
     }
 
     const confirmed = await askConfirmation(
@@ -1198,7 +1210,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
     if (!confirmed) {
       log.info('Update skipped');
 
-      return 'ok';
+      return 'skipped';
     }
   }
 
@@ -1208,7 +1220,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
   if (!locked) {
     log.warn('Another update is in progress, skipping');
 
-    return 'ok';
+    return 'skipped';
   }
 
   try {
@@ -1223,7 +1235,6 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
       ],
       { timeout: INSTALL_TIMEOUT, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
     );
-    log.success(`Updated teamai to v${result.latest}`);
 
     // A zero exit does not prove the copy landed where the CLI runs from: npm
     // writes the new version aside and renames it in at the end, so a detached
@@ -1241,6 +1252,8 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
 
       log.warn(message);
       log.persist(message);
+
+      return 'failed';
     }
 
     const updatedEntry = resolveTeamaiEntryScript();
@@ -1260,9 +1273,13 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
 
           log.warn(message);
           log.persist(message);
+
+          return 'failed';
         }
       } catch { /* verification is best-effort */ }
     }
+
+    log.success(`Updated teamai to v${result.latest}`);
 
     // Refresh hooks using new version's code (spawn new process so updated code is loaded).
     // PATH-less subprocesses (bundled runtimes) may not have `teamai` on PATH:
@@ -1280,6 +1297,8 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
       log.success('Refreshed hooks with new version');
     } catch (e) {
       log.error(`Hook refresh after update skipped: ${e instanceof Error ? e.message : String(e)}`);
+
+      return 'failed';
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : '';
