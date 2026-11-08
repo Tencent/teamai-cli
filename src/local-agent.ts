@@ -513,7 +513,7 @@ export function resolveRoute(config: Pick<LocalAgentConfig, 'routes'>, name: Rou
 /**
  * Resolve the per-tool install directory that seeds the local_agent_id hash.
  *
- * This must match the historical status-report口径 — `~/.<tool>` — so that a
+ * This must match the historical status-report convention — `~/.<tool>` — so that a
  * machine upgrading from the status-report era keeps the same id instead of
  * drifting. It is derived from the same toolPaths map buildReportPayload uses:
  * `~/<dirname(skills)>` (e.g. `.codebuddy/skills` → `~/.codebuddy`). Unknown
@@ -1650,7 +1650,7 @@ async function promptForProjectBinding(
   // hook): no answer is possible, so list the projects before giving up —
   // hiding them made the caller believe the account had none.
   if (!isInteractive()) {
-    log.info('可用项目:');
+    log.info('Available projects:');
     projects.forEach((project, index) => {
       const desc = project.description ? ` - ${project.description}` : '';
       log.info(`  ${index + 1}. ${project.name}${desc} [id=${project.id}]`);
@@ -1660,19 +1660,19 @@ async function promptForProjectBinding(
   }
 
   log.debug(`local-agent: workspace not bound: ${workspacePath}`);
-  const answer = await askViaTty('是否绑定到一个项目？[y/N] ');
+  const answer = await askViaTty('Bind to a project? [y/N] ');
 
   if (!answer || answer.toLowerCase() !== 'y') return null;
 
   if (projects.length === 1) return projects[0];
 
-  log.info('可用项目:');
+  log.info('Available projects:');
   projects.forEach((project, index) => {
     const desc = project.description ? ` - ${project.description}` : '';
     log.info(`  ${index + 1}. ${project.name}${desc} [id=${project.id}]`);
   });
 
-  const selection = await askViaTty(`选择项目编号（1-${projects.length}，0 跳过）: `);
+  const selection = await askViaTty(`Select a project number (1-${projects.length}, 0 to skip): `);
 
   if (selection === null || selection === '0') return null;
   const index = selection ? Number.parseInt(selection, 10) : 0;
@@ -1811,7 +1811,7 @@ export async function bindWorkspaceToProject(
   // Record on the projectAnchor (shared across the repo's worktrees) and the
   // current workspaceRoot; workspacePath is already the resolved checkout root.
   await persistWorkspaceBinding(config, workspacePath, workspacePath, project.id, project.name);
-  log.success(`已将工作区绑定到项目：${project.name} [id=${project.id}]`);
+  log.success(`Workspace bound to project: ${project.name} [id=${project.id}]`);
 
   return binding;
 }
@@ -1891,10 +1891,10 @@ async function ensureWorkspaceBinding(
   const projectList = projects.map((p) => `${p.name} (id=${p.id})`).join(', ');
 
   const context = [
-    '[teamai] 当前工作区尚未绑定项目，无法接收项目下发的 skills/rules/claudemd 资源。',
-    `可用项目: ${projectList}`,
-    `请提示用户运行: teamai bind-project`,
-    `或指定项目: teamai bind-project --project-id <id>`,
+    '[teamai] This workspace is not bound to a project and cannot receive project skills/rules/claudemd resources.',
+    `Available projects: ${projectList}`,
+    `Ask the user to run: teamai bind-project`,
+    `Or specify a project: teamai bind-project --project-id <id>`,
   ].join('\n');
 
   const hookOutput = JSON.stringify({
@@ -1964,22 +1964,22 @@ async function emitBindingHint(
   if (projects.length === 0) return;
 
   const skipNum = projects.length + 1;
-  const choices = projects.map((p, i) => `${i + 1}. 绑定到「${p.name}」项目`);
-  const actions = projects.map((p, i) => `- 用户回复 ${i + 1} → 执行 \`teamai bind-project --project-id ${p.id}\`，完成后回复"绑定完成，请开新会话生效"`);
+  const choices = projects.map((p, i) => `${i + 1}. Bind to the "${p.name}" project`);
+  const actions = projects.map((p, i) => `- User replies ${i + 1} → run \`teamai bind-project --project-id ${p.id}\`, then reply "Bound. Start a new session for it to take effect."`);
 
   const context = [
-    '[ClawPro项目 绑定提示] 你必须原样展示下面的选项列表，不得修改编号或内容。等用户回复数字后执行对应命令。',
+    '[ClawPro project binding] Show the list below to the user exactly as written; do not change the numbers or the text. Wait for the user to reply with a number, then run the matching command.',
     '',
     '---',
-    '当前工作区未绑定ClawPro项目。绑定后可同步团队 skills/rules。请回复数字选择：',
+    "This workspace is not bound to a ClawPro project. Binding it syncs the team's skills and rules. Reply with a number:",
     '',
     ...choices,
-    `${skipNum}. 不绑定，以后也不再提示`,
+    `${skipNum}. Do not bind, and do not ask again`,
     '---',
     '',
-    '执行规则（不要展示给用户）：',
+    'Rules (do not show to the user):',
     ...actions,
-    `- 用户回复 ${skipNum} → 执行 \`teamai bind-project --skip\`，完成后回复"已跳过，以后不再提示"`,
+    `- User replies ${skipNum} → run \`teamai bind-project --skip\`, then reply "Skipped. You will not be asked again."`,
   ].join('\n');
 
   const hookOutput = JSON.stringify({
@@ -2536,7 +2536,7 @@ export async function buildReportPayload(
     last_status: context.status ?? 'running',
     // Instance-level skills/rules are a phase-1 legacy concept. They are
     // deliberately omitted (not sent as []): the server treats present arrays
-    // as a full-sync snapshot ("消失即删"), so an empty array would wipe any
+    // as a full-sync snapshot ("delete when absent"), so an empty array would wipe any
     // instance-level resources. Omitting the field leaves them untouched.
     user_level: userLevel,
   };
@@ -6471,6 +6471,6 @@ export async function bindCurrentProject(options?: { projectId?: number; skip?: 
   const binding = await bindWorkspaceToProject(workspacePath, options?.projectId);
 
   if (!binding) {
-    log.info('未绑定项目。');
+    log.info('No project bound.');
   }
 }
