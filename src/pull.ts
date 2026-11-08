@@ -1046,7 +1046,10 @@ function warnStubNotDeployed(scopeLabel: string, cause: unknown): void {
  * commit, which is what the birth time falls back to on Linux without statx.
  */
 export async function checkoutKey(projectRoot: string): Promise<string> {
-  const id = managedMcpWorkspaceId(projectRoot);
+  // One directory has one record, so it needs one key however its path is spelled: a hook that launches teamai with
+  // the same HOME spelled with a trailing separator or a `.` segment must read the record the last pull wrote, or it
+  // writes a second record and the delivery record under the first is lost (#1743).
+  const id = managedMcpWorkspaceId(path.resolve(projectRoot));
 
   try {
     const dotGit = await stat(path.join(projectRoot, '.git'));
