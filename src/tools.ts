@@ -1390,26 +1390,36 @@ export const TOOLS = {
     },
   },
   // CodeBuddy engine 2.168.0; the WorkBuddy launcher's binding of ~/.workbuddy is not certified.
+  // WorkBuddy and WorkBuddy AI keep separate data roots — `.workbuddy/` and
+  // `.workbuddy-ai/` — as two products rather than two generations of one, and
+  // either can outlive the other. The one whose `last-launch.json` is newer is
+  // the live one, and every user-scope path below hangs off it (#1273).
   workbuddy: {
     home: { dir: '.workbuddy' },
     installedBy: 'own-root',
     skillLoad: { calls: [{ name: 'Skill', evidence: 'source' }, { name: 'skill', evidence: 'assumed' }] },
     skills: UNKNOWN_READS,
+    // The engine resolves user rules as `<configDir>/rules` (`loadProjectRules`
+    // passes no explicit dir, so it falls to the app's config dir) and only
+    // reaches for `.codebuddy/rules` in a project.
     rules: {
-      user: { channel: 'dir', format: 'codebuddy', reads: [{ base: 'home', path: '.workbuddy/rules', evidence: 'assumed' }] },
+      user: { channel: 'dir', format: 'codebuddy', reads: [{ base: 'home', path: '.workbuddy/rules', evidence: 'source' }] },
       project: { channel: 'dir', format: 'codebuddy', reads: 'unknown' },
     },
     blocks: {
       user: {
         channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'always-apply' },
-        reads: [{ base: 'home', path: '.workbuddy/rules', evidence: 'assumed' }],
+        reads: [{ base: 'home', path: '.workbuddy/rules', evidence: 'source' }],
       },
       // CodeBuddy's engine reads the project's .codebuddy/rules, so WorkBuddy shares CodeBuddy's copy there.
       project: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', dir: '.codebuddy/rules', owned: true, header: 'always-apply' }, reads: 'unknown' },
       retired: { user: ['AGENTS.md'], project: ['AGENTS.md'] },
     },
     agents: {
-      user: { reads: [{ base: 'home', path: '.workbuddy/agents', evidence: 'assumed' }] },
+      user: { reads: [{ base: 'home', path: '.workbuddy/agents', evidence: 'source' }] },
+      // The engine's project agents live under `<cwd>/.codebuddy/agents`, but
+      // that loader has no call site in the build, so `.workbuddy/agents` stays
+      // as reported rather than as guessed-at (#1273).
       project: { reads: [{ base: 'project', path: '.workbuddy/agents', when: 'cwdOnly', evidence: 'assumed' }] },
     },
     mcp: {
