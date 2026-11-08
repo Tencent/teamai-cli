@@ -301,7 +301,8 @@ export async function runCodexDispatcher(event: string): Promise<number> {
   const { projects } = await readIndex();
 
   if (Object.keys(projects).length === 0) return 0;
-  const { readStdin, parseStdin } = await import('./hook-dispatch-cli.js');
+  const { parseStdin } = await import('./hook-dispatch-cli.js');
+  const { readStdin } = await import('./hook-fast-path.js');
   const raw = await readStdin();
   const payload = parseStdin(raw, event);
   const payloadCwd = stdinString(payload, 'cwd');

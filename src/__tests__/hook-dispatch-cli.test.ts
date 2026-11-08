@@ -22,7 +22,8 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawn: mockSpawn,
 }));
 
-const { parseStdin, readStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, hookDispatchCli, claudeHookRunsInAnotherHost } =
+const { readStdin, runHookFastPath } = await import('../hook-fast-path.js');
+const { parseStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, hookDispatchCli, claudeHookRunsInAnotherHost } =
   await import('../hook-dispatch-cli.js');
 const { claudeHookOtherHostSkip } = await import('../claude-hook-host.js');
 const { reconcileHooks } = await import('../hooks.js');
@@ -70,6 +71,19 @@ describe('hookDispatchCli', () => {
       expect(resolveScope).not.toHaveBeenCalled();
       expect(readFile).not.toHaveBeenCalledWith('/missing-judge-payload', expect.anything());
     } finally { resolveScope.mockRestore(); readFile.mockRestore(); vi.unstubAllEnvs(); }
+  });
+
+  // The fast path read stdin before it found the payload had no session id, so the pipe is drained (#1788).
+  it('dispatches the payload the fast path read before it fell through to the full dispatch', async () => {
+    const stdin = new PassThrough();
+    stdin.end(JSON.stringify({ tool_name: 'Read', cwd: os.tmpdir() }));
+    const fastPath = await runHookFastPath(['hook-dispatch', 'post-tool-use', '--tool', 'claude'], { env: {}, platform: 'darwin', stdin: () => stdin, entry: 'unused' });
+    mockDispatcher.dispatch.mockClear();
+
+    await hookDispatchCli('post-tool-use', 'claude', '*');
+
+    expect(fastPath).toBe('full');
+    expect(mockDispatcher.dispatch).toHaveBeenCalledWith('post-tool-use', '*', expect.objectContaining({ tool_name: 'Read' }), 'claude', 'foreground');
   });
 
   it('records why a Git hook cannot sync an unreadable project config, without dispatching', async () => {
@@ -334,7 +348,8 @@ describe('hookDispatchCli', () => {
 
     try {
       await hookDispatchCli('session-start', 'codex', '*', { stdinFile });
-      expect(JSON.parse(detachedPayload).teamai_launch).toEqual('TEAMAI_LAUNCHED_BY' in env ? env : undefined);
+      // null: this process carries no launch, so the child must not read one from its own environment either.
+      expect(JSON.parse(detachedPayload).teamai_launch).toEqual('TEAMAI_LAUNCHED_BY' in env ? env : null);
     } finally {
       for (const key of Object.keys(env)) {
         if (saved[key] === undefined) delete process.env[key];
@@ -364,6 +379,26 @@ describe('hookDispatchCli', () => {
     try {
       await hookDispatchCli('stop', 'claude', '*', { stdinFile });
       expect(JSON.parse(detachedPayload).teamai_run).toEqual(forwarded);
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(stdinFile, { force: true });
+    }
+  });
+
+  // The fast path forwards the host's payload as it came (#1788); the POSIX child inherits the session's environment.
+  it('reads the run and the launch from its own environment in a background pass whose payload forwards neither', async () => {
+    const stdinFile = path.join(os.tmpdir(), `fast-hook-${process.pid}-${Date.now()}.json`);
+    fs.writeFileSync(stdinFile, JSON.stringify({ hook_event_name: 'PostToolUse', session_id: 's', cwd: process.cwd(), tool_name: 'Read' }));
+    const launch = { TEAMAI_LAUNCHED_BY: 'workflow', TEAMAI_LAUNCHED_TOOL: 'claude', TEAMAI_LAUNCHED_CHECKOUT: 'checkout-1' };
+    for (const [key, value] of Object.entries({ CI: 'true', ...launch })) vi.stubEnv(key, value);
+    mockDispatcher.dispatch.mockClear();
+
+    try {
+      await hookDispatchCli('post-tool-use', 'claude', '*', { stdinFile, bgOnly: true });
+      expect(mockDispatcher.dispatch).toHaveBeenCalledWith('post-tool-use', '*', expect.objectContaining({
+        teamai_run: { runMode: 'unattended', launchedBy: 'workflow' },
+        teamai_launch: launch,
+      }), 'claude', 'background');
     } finally {
       vi.unstubAllEnvs();
       fs.rmSync(stdinFile, { force: true });

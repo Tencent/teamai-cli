@@ -1471,7 +1471,7 @@ program
           code = await runCodexDispatcher(event);
         } else if (bridged.isBridgedTeamHookTool(tool)) {
           const { runBridgedTeamHooks } = bridged;
-          const { readStdin } = await import('./hook-dispatch-cli.js');
+          const { readStdin } = await import('./hook-fast-path.js');
           const reply = await runBridgedTeamHooks(tool, event, await readStdin());
 
           if (reply.stderr) process.stderr.write(reply.stderr);

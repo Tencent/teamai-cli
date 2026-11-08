@@ -18,7 +18,6 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Readable } from 'node:stream';
 
 import { resolveCliEntry } from './builtin-hooks.js';
 import { captureTail } from './utils/exec.js';
@@ -31,69 +30,11 @@ import { clearGitHookRepositoryEnv, GIT_HOOK_TOOL } from './git-hook.js';
 import { deriveDispatchSessionId } from './utils/session-id.js';
 import { claudeHookRunsInAnotherHost } from './claude-hook-host.js';
 import { claimCopilotHookEvent } from './copilot-hook-claim.js';
-import { launchedBy, SESSION_RUN_PAYLOAD_KEY, sessionRun } from './launch-context.js';
+import { launchedBy, LAUNCH_PAYLOAD_KEY, launchEnv, readLaunch, SESSION_RUN_PAYLOAD_KEY, sessionRun } from './launch-context.js';
+import { readStdin, takeHandedOffHookStdin } from './hook-fast-path.js';
 import { isSelfMode } from './types.js';
 
 export { claudeHookRunsInAnotherHost };
-
-/**
- * Max time to wait for STDIN EOF before proceeding with whatever was received.
- *
- * `for await (process.stdin)` only ends when the host closes the pipe (EOF). If
- * the host (e.g. CodeBuddy) writes the hook payload but never closes STDIN — or
- * opens the pipe without sending EOF — the read would hang until the host aborts
- * the hook with "Hook timed out after 10000ms" (error 3003), all *before* any
- * handler timeout can engage. Racing a short deadline lets us continue with the
- * payload we already buffered (a healthy host EOFs within milliseconds, so this
- * never triggers in normal use).
- */
-const STDIN_READ_TIMEOUT_MS = 1_000;
-
-/**
- * Read STDIN fully, but never block longer than STDIN_READ_TIMEOUT_MS waiting
- * for EOF. Returns empty string if STDIN is a TTY. On timeout, returns whatever
- * chunks were already received (typically the full payload minus a missing EOF).
- */
-export async function readStdin(
-  stream: Readable & { readonly isTTY?: boolean } = process.stdin,
-  timeoutMs = STDIN_READ_TIMEOUT_MS,
-): Promise<string> {
-  if (stream.isTTY) return '';
-  const chunks: Buffer[] = [];
-
-  const readAll = (async () => {
-    for await (const chunk of stream) {
-      chunks.push(chunk);
-    }
-  })();
-
-  // The timeout path destroys the stream below. Attach a handler now so a late
-  // iterator rejection cannot become an unhandled rejection after the race.
-  void readAll.catch(() => {});
-  let timer: NodeJS.Timeout | undefined;
-  let timedOut = false;
-
-  const deadline = new Promise<void>((resolve) => {
-    timer = setTimeout(() => {
-      timedOut = true;
-      resolve();
-    }, timeoutMs);
-    // Don't let this timer itself keep the event loop alive.
-    timer.unref();
-  });
-
-  try {
-    await Promise.race([readAll, deadline]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-
-  // A pending async iterator keeps the pipe handle alive even after the hook
-  // has continued. Closing it releases the process when the host never sends EOF.
-  if (timedOut && !stream.destroyed) stream.destroy();
-
-  return Buffer.concat(chunks).toString('utf-8');
-}
 
 /**
  * Start the detached child that re-runs this same dispatch for background-only
@@ -426,6 +367,13 @@ export function parseStdin(raw: string, event: string): HookStdin {
   return stdin;
 }
 
+/** The workflow launch this process's environment carries, as the payload forwards it, or null for none. */
+function launchPayload(): ReturnType<typeof launchEnv> | null {
+  const launch = readLaunch(process.env);
+
+  return launch ? launchEnv(launch) : null;
+}
+
 /** Run one dispatch pass and log any handler errors (never to STDOUT). */
 async function runDispatch(
   dispatcher: Dispatcher,
@@ -487,7 +435,7 @@ export async function hookDispatchCli(
     // payload. The detached child gets them back through the STDIN file.
     const raw = stdinFile ? readStdinFile(stdinFile)
       : fromGit ? JSON.stringify({ cwd: process.cwd(), git_args: options.hookArgs ?? [] })
-        : await readStdin();
+        : takeHandedOffHookStdin() ?? await readStdin();
 
     const parsed = parseStdin(raw, event);
     // Antigravity CLI speaks its own hook payload; the detached child gets it already translated.
@@ -587,6 +535,12 @@ export async function hookDispatchCli(
     // Detached child: run the fire-and-forget handlers, then exit. No output is
     // wired back to the host (the parent already returned).
     if (bgOnly) {
+      // The fast path forwards the payload as the host sent it (#1788), and
+      // a POSIX child inherits the session's environment, so the child reads
+      // the run and the launch from there. The full dispatch always sets both.
+      if (!(SESSION_RUN_PAYLOAD_KEY in stdin)) stdin[SESSION_RUN_PAYLOAD_KEY] = sessionRun(process.env);
+
+      if (!(LAUNCH_PAYLOAD_KEY in stdin)) stdin[LAUNCH_PAYLOAD_KEY] = launchPayload();
       await runDispatch(dispatcher, event, matcher, stdin, tool, 'background');
 
       return;
@@ -623,12 +577,8 @@ export async function hookDispatchCli(
       }
 
       // The background pass reads a workflow launch from the payload, never from its own environment, which a child
-      // started through WMI does not inherit. Only this process's environment can set it (#1176).
-      const { LAUNCH_PAYLOAD_KEY, launchEnv, readLaunch } = await import('./launch-context.js');
-      const launch = readLaunch(process.env);
-
-      if (launch) stdin[LAUNCH_PAYLOAD_KEY] = launchEnv(launch);
-      else delete stdin[LAUNCH_PAYLOAD_KEY];
+      // started through WMI does not inherit. Only this process's environment can set it (#1176); null says it has none.
+      stdin[LAUNCH_PAYLOAD_KEY] = launchPayload();
       settling = spawnBackground(event, tool, matcher, JSON.stringify(stdin), cwd);
     }
 

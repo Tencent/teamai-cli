@@ -20,6 +20,7 @@ export const WINDOWS_TESTS = [
   'src/__tests__/hermes-config.test.ts',
   'src/__tests__/hermes-hooks.test.ts',
   'src/__tests__/home-normalize.test.ts',
+  'src/__tests__/hook-fast-path.test.ts',
   'src/__tests__/hooks-golden.test.ts',
   'src/__tests__/hooks-shell-check.test.ts',
   'src/__tests__/hooks-skill-retire.test.ts',
