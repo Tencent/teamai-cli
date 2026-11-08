@@ -472,7 +472,7 @@ describe 为调用它的会话填好每个输入，并说明原因，没有提�
 | 输入 | 提议 | 不提议的情况 |
 | --- | --- | --- |
 | `session`、`source` | 本会话及其工具 | 没有 agent 会话：所有输入都没有值 |
-| `start` | 本会话第一次启动时记录的提交 | 会话启动时有已跟踪文件被修改，或 teamai 没有记录启动（恢复会话不算） |
+| `start` | session-start hook 在本会话第一次启动时记录的提交，与会话的 capture 一起保存，所以 dashboard 压缩日志后恢复的会话仍能拿到它 | 会话启动时有已跟踪文件被修改，或 teamai 没有记录启动（恢复会话不算） |
 | `solution` | `HEAD` | `HEAD` 仍是 `start`、有已跟踪文件被修改，或没有 `start` |
 | `suite` | `repo` 是本 checkout `origin` 的那唯一一个套件：`benchmarks/fix-auth`，在 namespace 中则如 `benchmarks/web/fix-auth` | 没有套件或有多个套件匹配 `origin` |
 

@@ -14,6 +14,7 @@ import type { CheckoutRecord } from '../pull.js';
 import { DeliveredSkillInfoSchema, deliveredTeamSkills, type DeliveredSkillInfo } from '../skill-use.js';
 import { getDataHome, type DeliverySelection, type LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
+import { getHeadState, type HeadState } from '../utils/git.js';
 import { log } from '../utils/logger.js';
 import { AgentSession } from './agent-session.js';
 import { OptionalString } from './fs.js';
@@ -55,6 +56,24 @@ const StartPayloadSchema = z.object({
   model: OptionalString,
   transcript_path: OptionalString,
 });
+
+/** A checkout's commit and whether tracked files were modified, as a capture's `agent.project` holds it. */
+const CommitStateSchema = AgentObservationSchema.shape.project.unwrap();
+
+export type CommitState = z.infer<typeof CommitStateSchema>;
+
+/** How a session ended, as its last Stop found the checkout. */
+const SessionEndSchema = z.object({
+  sessionId: z.string().min(1),
+  source: z.string().min(1),
+  end: CommitStateSchema,
+  at: z.string().datetime(),
+});
+
+export type SessionEnd = z.infer<typeof SessionEndSchema>;
+
+/** The Stop payload fields an end record reads. */
+const StopPayloadSchema = z.object({ session_id: z.string().regex(SEGMENT), cwd: z.string().min(1) });
 
 /** The background pass's payload: its session and the capture the start wrote, both safe as path segments. */
 const ToolVersionPayloadSchema = z.object({
@@ -127,6 +146,69 @@ async function atStart(config: LocalConfig, tool: string, payload: HookStdin, en
   } catch (e) {
     log.debug(`session capture: could not capture ${platform} session ${sessionId}: ${e instanceof Error ? e.message : String(e)}`);
 
+    return undefined;
+  }
+}
+
+/** The file in a session's capture directory holding its end record. Captures end in `.json`; it does not. */
+const END_FILE = 'end';
+
+/** How long a Stop waits for `git status` before it leaves the end record as it was. */
+const END_GIT_TIMEOUT_MS = 2_000;
+
+/** The commit `cwd` has checked out and whether tracked files are modified, or null when git fails, finds none, or passes the cap. */
+async function headWithin(cwd: string, ms: number): Promise<HeadState | null> {
+  const abort = AbortSignal.timeout(ms);
+  // A git killed at the cap is still waited for while a child of it holds the pipe, so the cap ends the wait itself.
+  const capped = new Promise<null>((resolve) => abort.addEventListener('abort', () => resolve(null), { once: true }));
+
+  return Promise.race([getHeadState(cwd, abort).catch(() => null), capped]);
+}
+
+/**
+ * At each Stop of a captured session: how its checkout ends, beside its captures, so the last Stop wins and a sweep
+ * removes it with them. A session with no capture gets none, and a Stop whose git fails or times out leaves the record
+ * as it was. Written to a file of its own, then renamed, so a reader never sees half of it.
+ */
+async function atStop(config: LocalConfig, tool: string, payload: HookStdin): Promise<void> {
+  const platform = AgentSession.platformForTool(tool);
+  const fields = StopPayloadSchema.safeParse(payload);
+
+  if (!platform || !fields.success) return;
+  const { session_id: sessionId, cwd } = fields.data;
+  const dir = sessionDir(config, platform, sessionId);
+
+  if (!(await fs.stat(dir).catch(() => undefined))) return;
+  const head = await headWithin(cwd, END_GIT_TIMEOUT_MS);
+
+  if (!head) {
+    log.debug(`session capture: ${cwd} gave no git state at this Stop, so ${platform} session ${sessionId} keeps its end record`);
+
+    return;
+  }
+
+  const record: SessionEnd = { sessionId, source: platform, end: { commit: head.head, dirty: head.dirty }, at: new Date().toISOString() };
+  const file = path.join(dir, END_FILE);
+  const written = `${file}.${randomUUID()}.tmp`;
+
+  try {
+    await fs.writeFile(written, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+    await fs.rename(written, file);
+  } catch (e) {
+    await fs.rm(written, { force: true });
+    log.debug(`session capture: could not record how ${platform} session ${sessionId} ended: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** The end record of one session, or undefined when it has none or it does not parse. */
+async function endOf(config: LocalConfig, platform: string, sessionId: string): Promise<SessionEnd | undefined> {
+  const text = await fs.readFile(path.join(sessionDir(config, platform, sessionId), END_FILE), 'utf8').catch(() => undefined);
+
+  if (text === undefined) return undefined;
+
+  try {
+    return SessionEndSchema.safeParse(JSON.parse(text)).data;
+  } catch {
     return undefined;
   }
 }
@@ -309,6 +391,8 @@ export interface CapturedSession {
   captures: readonly [SessionCapture, ...SessionCapture[]];
   /** Whether a drain reached it (#1385): an unattended session is finished from then on. */
   drained: boolean;
+  /** How it ended, as its last Stop recorded; absent before its first Stop, and for sessions that ended before teamai recorded it. */
+  end?: SessionEnd;
 }
 
 /** The file in a session's capture directory that says a drain reached it. Captures end in `.json`; it does not. */
@@ -325,7 +409,11 @@ async function list(config: LocalConfig): Promise<CapturedSession[]> {
 
       if (!first) continue;
       const drained = await fs.stat(path.join(sessionDir(config, platform, sessionId), DRAINED_FILE)).then(() => true, () => false);
-      sessions.push({ platform, sessionId, captures: [first, ...rest], drained });
+      const captured: CapturedSession = { platform, sessionId, captures: [first, ...rest], drained };
+      const end = await endOf(config, platform, sessionId);
+
+      if (end) captured.end = end;
+      sessions.push(captured);
     }
   }
 
@@ -405,4 +493,4 @@ function runModeOf(captures: readonly SessionCapture[]): RunMode | undefined {
   return agreedRunMode(captures.map((capture) => capture.runMode));
 }
 
-export const SessionCaptures = { atStart, addToolVersion, checkoutDelivery, markTeamChanged, read, list, markDrained, platformsOf, agentOf, agentOfSession, reportedModelOf, runModeOf, sweep } as const;
+export const SessionCaptures = { atStart, atStop, addToolVersion, checkoutDelivery, markTeamChanged, read, list, markDrained, platformsOf, agentOf, agentOfSession, reportedModelOf, runModeOf, sweep } as const;

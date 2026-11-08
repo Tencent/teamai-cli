@@ -472,7 +472,7 @@ describe fills every input for the calling session, and says why, also when it p
 | Input | Proposed | Not proposed when |
 | --- | --- | --- |
 | `session`, `source` | this session and its tool | no agent session: no input gets a value |
-| `start` | the commit this session's first start recorded | the session started with tracked files modified, or teamai recorded no start (a resume does not count) |
+| `start` | the commit the session-start hook recorded at this session's first start, kept with the session's captures, so a session resumed after the dashboard compacted its log still gets it | the session started with tracked files modified, or teamai recorded no start (a resume does not count) |
 | `solution` | `HEAD` | `HEAD` is still `start`, tracked files are modified, or there is no `start` |
 | `suite` | the one suite whose `repo` is this checkout's `origin`: `benchmarks/fix-auth`, or `benchmarks/web/fix-auth` in a namespace | no suite, or several, match `origin` |
 
