@@ -396,7 +396,7 @@ describe('teamai score --drain', () => {
     for (const text of texts) expect(text).not.toContain(dsn);
   });
 
-  it('archives the step sessions of the runs it drives in this mode once, scrubbed, and lists once a pass whose tool it reads no sessions from', async () => {
+  it('archives the step sessions of the runs it drives in this mode once, scrubbed, and reports a readable session that is missing locally', async () => {
     const { origin, config } = await team({ 'workflows/review.yaml': WORKFLOW.replace('    scorers: [quality]\n', '') });
     claudeSession(STEP_SESSION, `Reviewed it. The deploy token is ${TOKEN}.`);
     const archivedRun = await settledRun(config, 'unattended', { tool: 'claude', session: STEP_SESSION });
@@ -409,7 +409,7 @@ describe('teamai score --drain', () => {
     expect(drained.code, drained.lines.join('\n')).toBe(0);
     expect(drained.lines).toEqual(expect.arrayContaining([
       `✔ Archived 1 step session of ${archivedRun} to teamai-reports (scrubbed)`,
-      `ℹ Skipped 1 step session of ${skippedRun}: teamai reads no sessions from copilot (review, pass 1)`,
+      `ℹ Skipped 1 step session of ${skippedRun}: copilot could not read this session here (not found), so it stays unarchived (review, pass 1)`,
     ]));
     const [archived, ...more] = onReports(origin, 'sessions').filter((file) => file.endsWith('.jsonl'));
     expect(more).toEqual([]);
