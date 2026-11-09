@@ -184,7 +184,7 @@ export async function readMcpFolder(full: string, folderPath: string, name: stri
 
       const identity = await DeliveredFolders.identify(full, read.files);
 
-      if (!identity.ok) return { kind: 'invalid', reason: `${folderPath} cannot be delivered: ${identity.reason}. Fix what git reports, then run teamai pull again.` };
+      if (!identity.ok) return { kind: 'invalid', reason: `${folderPath} cannot be delivered: ${identity.reason}` };
 
       return { kind: 'read', definition: { kind: 'folder', server: { ...fields, name }, files: identity.files, version: identity.version }, unknownKeys: read.unknownKeys };
     }

@@ -6,7 +6,7 @@ import path from 'node:path';
 /**
  * The version pull names a delivered hook or MCP folder with (#1787), worked out from the team repo's folder at
  * `dir` as the guide states it: the first 8 hex digits of the SHA-256 of the folder's files as canonical JSON, each
- * file's git blob id, mode and `/`-separated path, in path order, hidden entries left out. A file git tracks and the
+ * file's git blob id, mode and `/`-separated path in NFC, in path order, hidden entries left out. A file git tracks and the
  * checkout has not changed counts as the index holds it; any other file as it is on disk; a file git ignores not at all.
  */
 export function folderVersion(dir: string): string {
@@ -47,7 +47,7 @@ function walk(dir: string): Array<{ path: string; full: string; executable: bool
       const rel = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
 
       if (entry.isDirectory()) visit(full, rel);
-      else files.push({ path: rel, full, executable: process.platform !== 'win32' && (fs.statSync(full).mode & 0o111) !== 0 });
+      else files.push({ path: rel.normalize('NFC'), full, executable: process.platform !== 'win32' && (fs.statSync(full).mode & 0o111) !== 0 });
     }
   };
 

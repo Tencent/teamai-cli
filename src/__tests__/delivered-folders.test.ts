@@ -152,6 +152,66 @@ describe('DeliveredFolders.identify', () => {
     expect([edited, await versionAt(author)]).toEqual([expect.not.stringMatching(committed), expect.not.stringMatching(edited)]);
   });
 
+  it('counts a file git is told to assume unchanged as it is on disk', async () => {
+    const repo = teamRepo();
+    const author = path.join(repo, 'hooks', 'lint');
+    git(repo, 'update-index', '--assume-unchanged', 'hooks/lint/HOOK.yaml');
+    const unchanged = await versionAt(author);
+    fs.appendFileSync(path.join(author, 'HOOK.yaml'), 'timeout: 5\n');
+
+    expect(await versionAt(author)).not.toBe(unchanged);
+  });
+
+  it('delivers a file whose name is NFD on disk and NFC in git', async () => {
+    const repo = teamRepo();
+    fs.writeFileSync(path.join(repo, 'hooks', 'lint', 'café.sh'), 'echo cafe\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-qm', 'cafe');
+    const dir = path.join(repo, 'hooks', 'lint');
+    const identified = await DeliveredFolders.identify(dir, await filesAt(dir));
+
+    expect(identified.ok && identified.files.map((one) => one.path.normalize('NFC'))).toEqual(['HOOK.yaml', 'café.sh', 'lint.bat', 'lint.sh']);
+  });
+
+  it('refuses a folder holding a git submodule, whose files git does not list', async () => {
+    const vendored = tempDir();
+    git(vendored, 'init', '-q');
+    fs.writeFileSync(path.join(vendored, 'main.js'), 'console.log(1)\n');
+    git(vendored, 'add', '.');
+    git(vendored, 'commit', '-qm', 'server');
+    const repo = teamRepo();
+    git(repo, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', vendored, 'hooks/lint/server');
+    git(repo, 'commit', '-qm', 'vendor the server');
+    const dir = path.join(repo, 'hooks', 'lint');
+    const identified = await DeliveredFolders.identify(dir, await filesAt(dir));
+
+    expect(identified.ok ? null : identified.reason).toContain('server/ is a git submodule');
+  });
+
+  it('refuses a folder holding a git submodule even where it is not checked out', async () => {
+    const vendored = tempDir();
+    git(vendored, 'init', '-q');
+    fs.writeFileSync(path.join(vendored, 'main.js'), 'console.log(1)\n');
+    git(vendored, 'add', '.');
+    git(vendored, 'commit', '-qm', 'server');
+    const repo = teamRepo();
+    git(repo, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', vendored, 'hooks/lint/server');
+    git(repo, 'commit', '-qm', 'vendor the server');
+    const member = clone(repo);
+    const identified = await DeliveredFolders.identify(member, await filesAt(member));
+
+    expect([fs.readdirSync(path.join(member, 'server')), identified.ok ? null : identified.reason]).toEqual([[], expect.stringContaining('server/ is a git submodule')]);
+  });
+
+  it('refuses a folder holding a git repository of its own', async () => {
+    const dir = path.join(teamRepo(), 'hooks', 'lint');
+    git(path.join(dir), 'init', '-q', 'server');
+    fs.writeFileSync(path.join(dir, 'server', 'main.js'), 'console.log(1)\n');
+    const identified = await DeliveredFolders.identify(dir, await filesAt(dir));
+
+    expect(identified.ok ? null : identified.reason).toContain('server/ is a git repository of its own');
+  });
+
   it('versions the bytes and the executable bit of a folder outside git', async () => {
     const dir = tempDir();
     const files = [file('HOOK.yaml', 'event: Stop\n'), file('lint.sh', 'echo lint\n', true)];

@@ -90,50 +90,83 @@ export type FolderIdentity =
  * excluded, keeps running the files it was written with, whatever the team changes: the marker, a script, or a team
  * value the configuration holds resolved.
  *
- * Every checkout of a commit gives the same version, so a configuration the team commits stays as it is. A file git
- * tracks counts as git stores it, its committed mode and its blob, whatever `core.autocrlf`, `core.fileMode` or its
- * encoding made of it there. A file the author has not committed yet, new or edited, counts as it is on disk. A file git
- * ignores, such as `__pycache__/`, is neither versioned nor delivered. Outside git, every file counts as it is on disk.
+ * Every checkout of a commit gives the same version, so a configuration the team commits stays as it is. A file git's
+ * index holds and the checkout has not changed counts by the mode and blob the index holds, the commit's unless the
+ * author staged an edit, whatever `core.autocrlf`, `core.fileMode` or its encoding made of it there; its path counts in
+ * NFC. A new file, an edited one, or one git is told not to check, counts as it is on disk. A file git ignores, such as
+ * `__pycache__/`, is neither versioned nor delivered. A file git neither lists nor ignores, such as one in a submodule,
+ * refuses the folder rather than dropping out of it, and so does a submodule or a repository of its own, checked out or not. Outside git, every file counts as it is on disk.
  */
 async function identify(dir: string, files: readonly FolderFile[]): Promise<FolderIdentity> {
-  const onDisk = (file: FolderFile): FileId => ({ path: file.path, mode: file.executable ? '100755' : '100644', blob: blobId(file.bytes) });
+  const onDisk = (file: FolderFile): FileId => ({ path: file.path.normalize('NFC'), mode: file.executable ? '100755' : '100644', blob: blobId(file.bytes) });
 
   if (await gitFindsNoRepository(dir)) return identified(files, files.map(onDisk));
-  let listed: string;
+  const listed = await gitLsFiles(dir, ['-v', '-t', '-s', '-o', '-m', '--exclude-standard']);
 
-  try {
-    listed = await createGit(dir).raw(['ls-files', '-z', '-t', '-s', '-o', '-m', '--exclude-standard', '--', '.']);
-  } catch (cause) {
-    return { ok: false, reason: `git could not list the files of ${dir} (${cause instanceof Error ? cause.message.trim() : String(cause)})` };
-  }
-
+  if (!listed.ok) return listed;
   const committed = new Map<string, FileId>();
-  const uncommitted = new Set<string>();
+  const onDiskOnly = new Set<string>();
+  const ownRepos: Array<{ readonly prefix: string; readonly kind: 'submodule' | 'repository' }> = [];
 
-  // `H <mode> <blob> <stage>\t<path>` for a file in the index (`S` when it is skip-worktree), `C ...` again when it is
-  // edited, `M ...` when it is unmerged, `? <path>` when it is new.
-  for (const record of listed.split('\0')) {
+  // `H <mode> <blob> <stage>\t<path>` for a file the index holds and the checkout has not changed. `C` (edited), `M`
+  // (unmerged), `h` (assume-unchanged) and `S` (skip-worktree) are files git does not vouch for on disk; `? <path>` is
+  // a new file, or `? <dir>/` a repository of its own; mode 160000 is a submodule.
+  for (const record of listed.paths) {
     const tag = record.slice(0, 1);
     const rest = record.slice(2);
-
-    if (tag === '?') {
-      uncommitted.add(rest);
-      continue;
-    }
-
     const tab = rest.indexOf('\t');
-    const filePath = rest.slice(tab + 1);
-    const [mode = '', blob = ''] = rest.slice(0, tab).split(' ');
+    const filePath = (tab === -1 ? rest : rest.slice(tab + 1)).normalize('NFC');
+    const [mode = '', blob = ''] = tab === -1 ? [] : rest.slice(0, tab).split(' ');
 
-    if (tab === -1) continue;
-
-    if (tag === 'C' || tag === 'M') uncommitted.add(filePath);
-    else if (tag === 'H' || tag === 'S') committed.set(filePath, { path: filePath, mode, blob });
+    if (tag === '?' && filePath.endsWith('/')) ownRepos.push({ prefix: filePath, kind: 'repository' });
+    else if (mode === '160000') ownRepos.push({ prefix: `${filePath}/`, kind: 'submodule' });
+    else if (tag === 'H') committed.set(filePath, { path: filePath, mode, blob });
+    else onDiskOnly.add(filePath);
   }
 
-  const kept = files.filter((file) => uncommitted.has(file.path) || committed.has(file.path));
+  const isListed = (file: FolderFile): boolean => committed.has(file.path.normalize('NFC')) || onDiskOnly.has(file.path.normalize('NFC'));
+  const unlisted = files.filter((file) => !isListed(file));
+  let stray: readonly FolderFile[] = [];
 
-  return identified(kept, kept.map((file) => (uncommitted.has(file.path) ? undefined : committed.get(file.path)) ?? onDisk(file)));
+  if (unlisted.length > 0) {
+    const ignored = await gitLsFiles(dir, ['-o', '-i', '--exclude-standard']);
+
+    if (!ignored.ok) return ignored;
+    stray = unlisted.filter((file) => !ignored.paths.has(file.path.normalize('NFC')));
+  }
+
+  // A submodule refuses its folder whether it is checked out or not: its files are never the team repo's.
+  if (ownRepos.length > 0 || stray.length > 0) return { ok: false, reason: refusal(stray, ownRepos) };
+
+  const kept = files.filter(isListed);
+
+  return identified(kept, kept.map((file) => {
+    const key = file.path.normalize('NFC');
+    const fileId = onDiskOnly.has(key) ? undefined : committed.get(key);
+
+    return fileId ?? onDisk(file);
+  }));
+}
+
+/** What `git ls-files -z <options> -- .` lists at `dir`, or why git could not tell. */
+async function gitLsFiles(dir: string, options: readonly string[]): Promise<{ readonly ok: true; readonly paths: ReadonlySet<string> } | { readonly ok: false; readonly reason: string }> {
+  try {
+    const listed = await createGit(dir).raw(['ls-files', '-z', ...options, '--', '.']);
+
+    return { ok: true, paths: new Set(listed.split('\0').filter((record) => record !== '').map((record) => record.normalize('NFC'))) };
+  } catch (cause) {
+    return { ok: false, reason: `git could not list the files of ${dir} (${cause instanceof Error ? cause.message.trim() : String(cause)}). Fix what git reports, then run teamai pull again.` };
+  }
+}
+
+/** Why a folder that holds the repositories of its own `ownRepos`, or the files `stray` git neither lists nor ignores, is refused. */
+function refusal(stray: readonly FolderFile[], ownRepos: ReadonlyArray<{ readonly prefix: string; readonly kind: 'submodule' | 'repository' }>): string {
+  const causes = [
+    ...ownRepos.map(({ prefix, kind }) => (kind === 'submodule' ? `${prefix} is a git submodule` : `${prefix} is a git repository of its own`)),
+    ...stray.flatMap((file) => (ownRepos.some(({ prefix }) => file.path.normalize('NFC').startsWith(prefix)) ? [] : [`git lists ${file.path} as neither tracked, new nor ignored`])),
+  ];
+
+  return `${causes.join('; ')}. teamai delivers only the team repo's own files: commit those files to the team repo itself, then run teamai pull again.`;
 }
 
 /** One file as its folder's version counts it. */
@@ -144,7 +177,9 @@ interface FileId {
 }
 
 function identified(files: readonly FolderFile[], fileIds: readonly FileId[]): FolderIdentity {
-  return { ok: true, files, version: createHash('sha256').update(canonicalJson(fileIds)).digest('hex').slice(0, 8) };
+  const inPathOrder = [...fileIds].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+
+  return { ok: true, files, version: createHash('sha256').update(canonicalJson(inPathOrder)).digest('hex').slice(0, 8) };
 }
 
 /** The id git gives a blob of `bytes`, as `git hash-object --no-filters` does in a SHA-1 repository. */
