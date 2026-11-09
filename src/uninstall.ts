@@ -60,6 +60,7 @@ import { agentStemFromFilename } from './resources/agent-format.js';
 import { resolveDocsDestination } from './resources/docs.js';
 import { DeliveredFolders } from './resources/delivered-folders.js';
 import { RuleFolders } from './resources/rule-folders.js';
+import { RESOURCE_LAYOUTS, Resources } from './resources/resolver.js';
 import { listTeamAgentDirs, ownsAgentCopy, updateJoycodeAgentIndex } from './resources/agents.js';
 import { RulesHandler, inlineRulesLabelOf, inlineRulesLocationOf, isLegacyLayoutCopy, ownsRuleCopy } from './resources/rules.js';
 import { deliveredHashes, projectCheckouts, syncDeliveredGitExclude } from './pull.js';
@@ -159,6 +160,10 @@ interface RemovalPlan {
   keptSkillDirs: string[];
   /** The line naming each rule or agent file at a team resource's name that is not teamai's: never removed (#993). */
   keptFiles: string[];
+  /** The rule files among them, which may still name a delivered rule folder's files (`keptRuleFolders`). */
+  keptRuleCopies: string[];
+  /** The delivered rule folders a rule copy uninstall keeps names, which stay with it (#1787). */
+  keptRuleFolders: string[];
   /** The rules globs teamai owns in OpenCode's opencode.json `instructions`, per file (#946). */
   opencodeOwnedGlobs: OpencodeRuleGlobEntries[];
   /** Built-in agent .md files deployed by the CLI (e.g. teamai-recall). */
@@ -390,20 +395,13 @@ async function collectTeamSkillNames(repoPath: string): Promise<Set<string>> {
 }
 
 /**
- * Collect team repo rule names (relative paths without .md extension).
+ * The team repo's rule names, as pull names them: `fe/style` for `rules/fe/style.md` and for a rule folder
+ * `rules/fe/style/RULE.md`, whose other files are not rules (#1787).
  */
 async function collectTeamRuleNames(repoPath: string): Promise<Set<string>> {
-  const teamRulesDir = path.join(repoPath, 'rules');
+  const { items, duplicates } = await Resources.walk(RESOURCE_LAYOUTS.rules, repoPath);
 
-  if (!await pathExists(teamRulesDir)) return new Set();
-
-  const files = await listFilesRecursive(teamRulesDir);
-
-  return new Set(
-    files
-      .filter((f) => f.endsWith('.md'))
-      .map((f) => f.replace(/\.md$/, '')),
-  );
+  return new Set([...items, ...duplicates].map(({ name }) => name));
 }
 
 /**
@@ -1374,6 +1372,8 @@ async function buildRemovalPlan(
   // is teamai's, and any other is named. A `.md` in the rules directory of a
   // tool that reads only `.mdc` goes only as a copy an older layout wrote, and
   // is kept silently: the tool never reads it.
+  const keptRuleCopies: string[] = [];
+
   for (const [tool, res] of perTool) {
     const rulesDirs = rulesDirsByTool.get(tool) ?? [];
     const owned: string[] = [];
@@ -1393,7 +1393,10 @@ async function buildRemovalPlan(
       const agents = await agentsCopy('rule', localAgentRuleNames, name, tool, file);
 
       if (agents ? agents.teamais.length > 0 : await ownsRuleCopy(file, tool, `rules/${name}.md`, repoPath, previous)) owned.push(file);
-      else res.keptFiles.push(describeMembersDirLeft(file, `rules/${name}.md`, 'uninstall'));
+      else {
+        res.keptFiles.push(describeMembersDirLeft(file, `rules/${name}.md`, 'uninstall'));
+        keptRuleCopies.push(file);
+      }
     }
 
     res.ruleFiles.splice(0, res.ruleFiles.length, ...owned);
@@ -1576,6 +1579,8 @@ async function buildRemovalPlan(
     keptFlatCopies: flatCopies.edited.filter(({ tool }) => toolsToMerge.includes(tool)).map(({ file }) => file),
     keptSkillDirs: [],
     keptFiles: [],
+    keptRuleCopies,
+    keptRuleFolders: [],
     opencodeOwnedGlobs: [],
     agentFiles: [],
     joycodeAgentIndexes: [],
@@ -2183,6 +2188,27 @@ async function keepTrackedCopies(plan: RemovalPlan): Promise<void> {
 
   for (const file of plan.agentFiles) if (await untracked(file)) agentFiles.push(file);
   Object.assign(plan, { skillDirs, ruleFiles, agentFiles });
+}
+
+/**
+ * The delivered rule folders of `localConfig`'s scope whose path, absolute or from the project root, a rule copy
+ * uninstall leaves names: the member's own copies, edited ones, and those git tracks. They stay, so the copy still
+ * names files that exist, as pull keeps them (#1787).
+ */
+async function ruleFoldersNamedByKeptCopies(plan: RemovalPlan, localConfig: LocalConfig): Promise<string[]> {
+  const copies = [...plan.keptRuleCopies, ...plan.keptFlatCopies, ...plan.keptRuleFiles.flatMap(({ files }) => files), ...plan.keptTracked, ...plan.keptUnjudged];
+
+  if (copies.length === 0) return [];
+  const texts = (await Promise.all(copies.map(readFileSafe))).filter((text) => text !== null);
+  const { projectRoot } = localConfig;
+
+  return (await RuleFolders.deliveredNames(localConfig))
+    .map((name) => RuleFolders.pathOf(localConfig, name))
+    .filter((dir) => {
+      const named = [dir, ...projectRoot === undefined ? [] : [path.relative(projectRoot, dir)]].map((at) => at.split(path.sep).join('/'));
+
+      return texts.some((text) => named.some((at) => text.includes(at)));
+    });
 }
 
 // ─── Git exclude blocks (#915) ─────────────────────────
@@ -2804,8 +2830,11 @@ async function executeRemoval(
   // The folders the worktree's team hooks, rules and MCP servers read, now that nothing names them (#1787).
   for (const dir of plan.deliveredFolderDirs) {
     try {
-      await remove(dir);
-      log.success(`Removed the team folders delivered in ${dir}`);
+      const kept = plan.keptRuleFolders.filter((folder) => folder.startsWith(dir + path.sep));
+
+      if (kept.length > 0) await removeAllBut(dir, kept);
+      else await remove(dir);
+      log.success(`Removed the team folders delivered in ${dir}${kept.length > 0 ? ` but ${kept.join(', ')}` : ''}`);
     } catch (e) {
       log.warn(`Failed to remove ${dir}: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -3080,7 +3109,11 @@ async function executeRemoval(
       const sharedManifest = plan.preserveSharedManifest && await pathExists(plan.preserveSharedManifest)
         ? await readFileSafe(plan.preserveSharedManifest) : null;
 
-      const kept = [...docsInside ? [plan.docsDir!] : [], ...plan.keptForProjects.paths];
+      const kept = [
+        ...docsInside ? [plan.docsDir!] : [],
+        ...plan.keptForProjects.paths,
+        ...plan.keptRuleFolders.filter((folder) => folder.startsWith(plan.teamaiHome + path.sep)),
+      ];
 
       if (kept.length > 0) await removeAllBut(plan.teamaiHome, kept);
       else await remove(plan.teamaiHome);
@@ -3216,6 +3249,7 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
 
     // Uninstall never removes these, so they are named whatever happens next.
     await keepTrackedCopies(plan);
+    plan.keptRuleFolders = await ruleFoldersNamedByKeptCopies(plan, localConfig);
 
     for (const { files, entry } of plan.keptRuleFiles) log.warn(keptLegacyCopiesWarning(files, entry));
 
@@ -3226,6 +3260,10 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
     }
 
     for (const line of [...plan.keptSkillDirs, ...plan.keptFiles]) log.warn(line);
+
+    if (plan.keptRuleFolders.length > 0) {
+      log.warn(`Kept ${plan.keptRuleFolders.join(', ')}: a rule copy kept above names its files. Delete it with the copy.`);
+    }
 
     const exclusionOnly = isPlanEmpty(plan) && agentKey && localConfig.scope === 'project'
       && ((isToolId(agentKey) && TOOLS[agentKey].projectFromHome) || plan.sharedRetentionOnly);

@@ -1251,6 +1251,93 @@ describe('uninstall', () => {
     expect([...await Promise.all(copies.map((dir) => fse.pathExists(dir))), await fse.readFile(excludeFile, 'utf8')]).toEqual([false, false, '# my own\nscratch/\n']);
   });
 
+  it('keeps the rule folder an edited copy it keeps names, and removes the other delivered folders (#1787)', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    const projectRoot = path.join(tmpDir, 'business-repo');
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    await fse.ensureDir(projectRoot);
+    execFileSync('git', ['init', '-q'], { cwd: projectRoot });
+    await fse.outputFile(path.join(repoPath, 'rules', 'fe', 'api-style', 'RULE.md'), 'Read ${TEAMAI_RULE_DIR}/checklist.md.\n');
+    await fse.outputFile(path.join(repoPath, 'rules', 'fe', 'api-style', 'checklist.md'), '- name every endpoint\n');
+    const delivered = path.join(projectRoot, '.teamai', 'delivered');
+    const folder = path.join(delivered, 'rules', 'fe', 'api-style');
+    await fse.outputFile(path.join(folder, 'RULE.md'), 'Read ${TEAMAI_RULE_DIR}/checklist.md.\n');
+    await fse.outputFile(path.join(folder, 'checklist.md'), '- name every endpoint\n');
+    await fse.outputFile(path.join(delivered, 'mcp', 'jira', 'MCP.yaml'), 'transport: stdio\ncommand: node\n');
+    const flat = path.join(projectRoot, '.omp', 'rules', 'fe.api-style.md');
+    await fse.outputFile(flat, '---\nalwaysApply: true\n---\n\nRead .teamai/delivered/rules/fe/api-style/checklist.md.\n');
+
+    const dataHome = path.join(homeDir, '.teamai', 'projects', 'business-repo-0123456789abcdef');
+    const localConfig = makeLocalConfig(homeDir, repoPath, { scope: 'project', projectRoot, dataHome, enabledAgents: ['omp'] });
+    const record: Record<string, string> = {};
+    const { recordDelivered } = await import('../resources/delivered-copies.js');
+    await recordDelivered(record, flat);
+    await saveStateForScope({
+      ...await loadStateForScope(localConfig),
+      lastPullByWorkspace: { [await checkoutKey(projectRoot)]: { rev: 'r1', targets: [], delivered: record } },
+    }, localConfig);
+    await fse.writeFile(flat, '---\nalwaysApply: true\n---\n\nRead .teamai/delivered/rules/fe/api-style/checklist.md first.\n');
+    const defaults = TeamaiConfigSchema.parse({ team: 't', repo: 'owner/repo' }).toolPaths;
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: makeTeamConfig({ toolPaths: { omp: defaults.omp } }) });
+
+    await uninstall({ force: true });
+
+    expect([
+      await fse.readFile(flat, 'utf8').then((text) => text.endsWith('checklist.md first.\n')),
+      await fse.readFile(path.join(folder, 'checklist.md'), 'utf8'),
+      await fse.pathExists(path.join(delivered, 'mcp')),
+      vi.mocked(log.warn).mock.calls.some(([message]) => String(message).includes(folder)),
+    ]).toEqual([true, '- name every endpoint\n', false, true]);
+  });
+
+  it('removes teamai\'s copy of a rule folder, and leaves a member\'s rule of a name inside the folder (#1787)', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'RULE.md'), 'Read ${TEAMAI_RULE_DIR}/checklist.md.\n');
+    await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'checklist.md'), '- name every endpoint\n');
+    const copy = path.join(homeDir, '.claude', 'rules', 'api-style.md');
+    await fse.outputFile(copy, 'Read ~/.teamai/rules/api-style/checklist.md.\n');
+    const own = path.join(homeDir, '.claude', 'rules', 'api-style', 'checklist.md');
+    await fse.outputFile(own, '- name every endpoint\n');
+    const localConfig = makeLocalConfig(homeDir, repoPath);
+    const record: Record<string, string> = {};
+    const { recordDelivered } = await import('../resources/delivered-copies.js');
+    await recordDelivered(record, copy);
+    await saveStateForScope({
+      ...await loadStateForScope(localConfig),
+      lastPullByWorkspace: { [await checkoutKey(homeDir)]: { rev: 'r1', targets: [], delivered: record } },
+    }, localConfig);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: makeTeamConfig() });
+
+    await uninstall({ force: true });
+
+    expect([await fse.pathExists(copy), await fse.pathExists(own)]).toEqual([false, true]);
+  });
+
+  it('keeps, in the data home it removes, the rule folder a rule copy it keeps names (#1787)', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'RULE.md'), 'Read ${TEAMAI_RULE_DIR}/checklist.md.\n');
+    const folder = path.join(homeDir, '.teamai', 'rules', 'api-style');
+    await fse.outputFile(path.join(folder, 'RULE.md'), 'Read ${TEAMAI_RULE_DIR}/checklist.md.\n');
+    await fse.outputFile(path.join(folder, 'checklist.md'), '- name every endpoint\n');
+    await fse.outputFile(path.join(homeDir, '.teamai', 'rules', 'testing', 'RULE.md'), 'Test first.\n');
+    const copy = path.join(homeDir, '.claude', 'rules', 'api-style.md');
+    await fse.outputFile(copy, `Read ${folder.split(path.sep).join('/')}/checklist.md first.\n`);
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig: makeTeamConfig() });
+
+    await uninstall({ force: true });
+
+    expect([
+      await fse.pathExists(copy),
+      await fse.readFile(path.join(folder, 'checklist.md'), 'utf8'),
+      await fse.pathExists(path.join(homeDir, '.teamai', 'rules', 'testing')),
+    ]).toEqual([true, '- name every endpoint\n', false]);
+  });
+
   it('previews the delivered folders of a single-repo worktree by what they are, whatever their type (#1787)', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     const projectRoot = path.join(tmpDir, 'business-repo');
