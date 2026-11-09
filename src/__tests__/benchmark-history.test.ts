@@ -653,6 +653,38 @@ describe('BenchmarkHistory judging', () => {
     // The arms vary the tool, and claude judges: the run's table says so too.
     expect(judging?.selfJudged).toEqual([{ tool: 'claude', arm: 'claude' }]);
   });
+
+  it('says why no judge was calibrated: how many tasks have a check and success criteria, and how many of their trials failed the check', () => {
+    const judging = BenchmarkHistory.of({ runs, query: { windowDays: 90 }, now: NOW }).selected?.judging;
+
+    // login-copy has both; codex failed its check in each run.
+    expect(judging?.calibration).toEqual({ judges: [], mixedTasks: 1, failedChecks: 2 });
+  });
+
+  it("pools each correctness judge's calibration over the runs, with the false pass rate's 95% interval", () => {
+    const HIGH = { ...HAIKU, model: 'claude-opus-5-5', effort: 'high' };
+    const calibrated = (input: BenchmarkRunInput, calibrations: Array<{ passed: boolean; decider: typeof HAIKU }>): BenchmarkRunInput => {
+      let index = 0;
+
+      return { ...input, benchmark: { ...input.benchmark, trials: input.benchmark.trials.map((trial) => {
+        const calibration = trial.task === 'login-copy' && trial.result === 'failed' ? undefined : calibrations[index++];
+
+        return calibration ? { ...trial, calibration: { label: calibration.passed ? 'correct' : 'incorrect', ...calibration } } : trial;
+      }) } };
+    };
+    const calibratedRuns = [
+      calibrated(judgedRun('r1', '2026-10-10T09:00:00Z', () => ({ scorer: 'review-quality', outcome: labelled(true) })), [{ passed: true, decider: HAIKU }, { passed: false, decider: HAIKU }]),
+      calibrated(judgedRun('r2', '2026-10-20T09:00:00Z', () => ({ scorer: 'review-quality', outcome: labelled(true) })), [{ passed: false, decider: HAIKU }, { passed: false, decider: HIGH }]),
+    ];
+
+    const { judges } = BenchmarkHistory.of({ runs: calibratedRuns, query: { windowDays: 90 }, now: NOW }).selected?.judging.calibration ?? { judges: [] };
+
+    // Wilson: 1 of 3 is 6% to 79%; 0 of 1 is 0% to 79%.
+    expect(judges).toEqual([
+      { judge: { tool: 'claude', model: 'claude-haiku-5-5' }, judged: 3, passing: 1, interval: { low: expect.closeTo(0.061, 3), high: expect.closeTo(0.792, 3) } },
+      { judge: { tool: 'claude', model: 'claude-opus-5-5', effort: 'high' }, judged: 1, passing: 0, interval: { low: 0, high: expect.closeTo(0.793, 3) } },
+    ]);
+  });
 });
 
 describe('benchmark regression', () => {

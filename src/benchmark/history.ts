@@ -11,13 +11,13 @@
  */
 import { definedFields } from '../utils/defined-fields.js';
 import { compareTrials, formatExcluded, splitPairs, type ExcludedPairs } from './pairing.js';
-import { CORRECTNESS_SCORERS, isCorrectnessScorer, runSourceHash, type PlannedJudge } from './plan.js';
+import { CORRECTNESS_SCORERS, correctnessScorerName, isCorrectnessScorer, runSourceHash, type PlannedJudge } from './plan.js';
 import type { Baseline, BenchmarkRecord, BenchmarkRunRecord } from './result.js';
 import type { TeamChoice } from './suite.js';
 import type { ArmTeam } from './terms.js';
 import {
-  benchmarkTable, deviationsOf, dominanceOf, observedTrials, pairedDifference, selfJudgedOf, usageOf, wilson,
-  type ArmAgainst, type ArmResults, type ArmStanding, type ArmUsage, type BenchmarkTable, type Dominance, type ObservedTrial, type PairedInterval, type PassRate,
+  benchmarkTable, calibrationOf, deviationsOf, dominanceOf, observedTrials, pairedDifference, selfJudgedOf, usageOf, wilson,
+  type ArmAgainst, type ArmResults, type ArmStanding, type ArmUsage, type BenchmarkTable, type Dominance, type JudgeCalibration, type ObservedTrial, type PairedInterval, type PassRate,
 } from './table.js';
 import type { TrialVerdict } from './verdicts.js';
 
@@ -185,6 +185,18 @@ export interface ScorerJudging {
   unscored: number;
 }
 
+/**
+ * Each correctness judge's calibration over the runs of the current version, as the run's table counts one run's
+ * (`JudgeCalibration`). To say why there is none: the newest whole run's tasks with both a check and success criteria,
+ * the only ones a judge is calibrated on, and how many of their trials failed the check in those runs. The record does
+ * not keep the suite's calibration rate.
+ */
+export interface SuiteCalibration {
+  judges: JudgeCalibration[];
+  mixedTasks: number;
+  failedChecks: number;
+}
+
 /** A tool, model, effort, workflow and role, whatever the team: one line of the team changes chart. */
 export interface TeamConfig {
   key: string;
@@ -227,10 +239,11 @@ export interface SuiteView {
    */
   against?: { reference: string; isDefaultsArm: boolean; arms: PooledAgainst[] };
   /**
-   * Who judged the runs of the current version: each scorer, the correctness scorers first, and each judge tool that is
-   * also an arm's tool, as the run's table warns of it. Empty on runs whose records keep no verdicts.
+   * Who judged the runs of the current version: each scorer, the correctness scorers first, each judge tool that is
+   * also an arm's tool, as the run's table warns of it, and each correctness judge's calibration. Empty on runs whose
+   * records keep no verdicts.
    */
-  judging: { scorers: ScorerJudging[]; selfJudged: BenchmarkTable['selfJudged'] };
+  judging: { scorers: ScorerJudging[]; selfJudged: BenchmarkTable['selfJudged']; calibration: SuiteCalibration };
   /** The team revisions of the current version, for configurations that ran on two or more. */
   teamChanges: { configs: TeamConfig[]; revisions: TeamRevisionView[] };
 }
@@ -580,7 +593,7 @@ function againstOf({ current, newest }: SuiteRuns, arms: readonly ArmSeries[]): 
   };
 }
 
-function judgingOf(current: readonly BenchmarkRunInput[]): SuiteView['judging'] {
+function judgingOf({ current, newest }: SuiteRuns): SuiteView['judging'] {
   const scorers = new Map<string, Omit<ScorerJudging, 'planned' | 'byJudge'> & { planned: Map<string, PlannedJudge>; byJudge: Map<string, ScorerJudging['byJudge'][number]> }>();
 
   const entry = (name: string) => {
@@ -620,7 +633,24 @@ function judgingOf(current: readonly BenchmarkRunInput[]): SuiteView['judging'] 
     scorers: [...scorers.values()].sort((left, right) => Number(right.scorer === CORRECTNESS_SCORERS) - Number(left.scorer === CORRECTNESS_SCORERS))
       .map(({ planned, byJudge, ...counts }) => ({ ...counts, planned: [...planned.values()], byJudge: [...byJudge.values()] })),
     selfJudged: [...selfJudged.values()],
+    calibration: {
+      judges: calibrationOf(current.flatMap(({ benchmark }) => benchmark.trials)),
+      mixedTasks: newest.benchmark.tasks.filter((task) => isMixedTaskIn(newest.benchmark, task.id)).length,
+      failedChecks: current.flatMap(({ benchmark }) => benchmark.trials.filter((trial) => isMixedTaskIn(benchmark, trial.task) && trial.verdicts?.some(({ scorer, outcome, decider }) => (
+        scorer === correctnessScorerName(trial.task) && decider?.by === 'check' && outcome.kind === 'labelled' && !outcome.passed
+      )))).length,
+    },
   };
+}
+
+/**
+ * `isMixedTask` as a record tells it, which keeps no task's judge: a baseline to try, so a check, and a judge pinned to
+ * the task's correctness scorer, which only a task with success criteria has.
+ */
+function isMixedTaskIn(record: BenchmarkRecord, task: string): boolean {
+  const recorded = record.tasks.find(({ id }) => id === task);
+
+  return recorded !== undefined && recorded.baseline !== 'not_needed' && record.judges?.[correctnessScorerName(task)] !== undefined;
 }
 
 function teamChangesOf({ current }: SuiteRuns): SuiteView['teamChanges'] {
@@ -813,7 +843,7 @@ export const BenchmarkHistory = {
         latest: definedFields<SuiteView['latest']>({ run: newest.run, source: newest.source, table: benchmarkTable(newest), against: againstOf(alone, armsOf(alone)) }),
         comparisons: comparisonsOf(suiteRuns),
         against: againstOf(suiteRuns, arms),
-        judging: judgingOf(suiteRuns.current),
+        judging: judgingOf(suiteRuns),
         teamChanges: teamChangesOf(suiteRuns),
       }),
     };

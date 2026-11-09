@@ -400,6 +400,21 @@ function revisionDetail(points,q){
   :'<p class="muted">'+(prev?label('This machine\\'s team clone lacks one of the two revisions, so it cannot list what changed.'):label('The first team revision in the window.'))+'</p>';
  return '<section class="panel bench-panel"><div class="panelhead"><h2><span data-verbatim>'+short(q.r.revision)+'</span>'+(commit?' · <span data-verbatim>'+e(commit.subject)+'</span>':'')+(prev?' <span class="label">'+label('against')+' <span data-verbatim>'+short(prev.r.revision)+'</span></span>':'')+'</h2>'+(sep?'<span class="tag '+(sep==='down'?'down':'up')+'">'+label(sep==='down'?'told apart: lower':'told apart: higher')+'</span>':'')+'</div><h3 class="caption">'+label('Team files changed')+'</h3>'+changes+'<div class="table-scroll card-table"><table class="session-table bench-cards"><thead><tr>'+heads.map(h=>'<th'+(h===heads[0]||h==='CHANGE'?'':' data-verbatim')+'>'+(h===heads[0]||h==='CHANGE'?label(h):e(h))+'</th>').join('')+'</tr></thead><tbody>'+rows+'</tbody></table></div></section>';
 }
+const passesFailingWork=j=>j.interval.low>0, isCalibrationAlert=sel=>!!sel.judging&&sel.judging.calibration.judges.some(passesFailingWork);
+// How often each correctness judge passed work whose check failed: a judge whose interval clears 0 heads the Arms view.
+function calibrationPanel(sel){
+ const c=sel.judging&&sel.judging.calibration;
+ if(!c||!c.judges.length&&!c.mixedTasks)return '';
+ const flagged=c.judges.filter(passesFailingWork), share=n=>Math.round(n*100)+'%';
+ const heads=['JUDGE','JUDGED WITH A FAILED CHECK','LABELLED PASSING','FALSE PASS RATE','95% INTERVAL'];
+ const body=c.judges.length?'<div class="table-scroll card-table"><table class="session-table bench-cards"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+  +c.judges.map(j=>cardRow(passesFailingWork(j)?'amber':'',heads.map(t),['<span data-verbatim>'+e(judgeName(j.judge))+'</span>',number(j.judged),number(j.passing),share(j.passing/j.judged),share(j.interval.low)+' '+label('to')+' '+share(j.interval.high)])).join('')+'</tbody></table></div>'
+  :c.failedChecks?'<p class="scorer-hint">'+label('No judge labelled the trials whose check failed')+' ('+number(c.failedChecks)+'), '+label('so these runs do not say how far the correctness judge can be trusted. To measure it, set or raise the calibration rate in suite.yaml:')+'<code class="command" data-verbatim>calibration: { rate: 10 }</code></p>'
+  :'<p class="scorer-hint">'+label('No trial of a task with both a check and success criteria failed its check, so no judge had failing work to label.')+'</p>';
+ return '<section class="panel sessions bench-panel calibration'+(flagged.length?' alert':'')+'"><div class="panelhead"><h2>'+label('Judge calibration')+' · <span data-verbatim>teamai:correctness</span></h2><span class="label">'+label('How often each correctness judge labelled passing the work whose check failed, over the runs of the current suite version.')+'</span></div>'
+  +flagged.map(j=>'<p class="scorer-hint amber"><b data-verbatim>'+e(judgeName(j.judge))+'</b> '+label('passes failing work beyond chance: the pass rates it decided may be too high. Pin another model in scorers/teamai-correctness.md.')+'</p>').join('')
+  +body+'</section>';
+}
 function benchmarksPage(){
  if(page==='benchmarks'&&!benchData&&!benchLoading&&!benchError)loadBenchmarks();
  if(benchError&&!benchData)return errorPanel(benchError,'benchmarks');
@@ -412,7 +427,7 @@ function benchmarksPage(){
   +'<div class="statusline"><span>'+label('Window')+': '+e(when(w.from))+' – '+e(when(w.to))+'</span><span>'+label('Runs by when they started.')+'</span></div>'
   +controls+suitesPanel(benchData)
   +(sel?'<h2 class="section-label"><span data-verbatim>'+e(sel.suite)+'</span> <span class="tag" title="'+e(sel.versions[0].sourceHash)+'">'+label('suite version')+' <span data-verbatim>'+short(sel.versions[0].sourceHash)+'</span></span>'+(sel.versions.length>1?' <span class="tag">'+number(sel.versions.length)+' '+label('versions in the window')+'</span>':'')+'</h2>'
-   +benchTabs(sel)+(benchView==='compare'?comparePanel(sel):benchView==='team'?teamPanel(sel):benchKpis(sel)+'<div class="bench-grid">'+armBars(sel)+scatterPanel(sel)+'</div>'+judgesPanel(sel)+historyChart(sel)+heatmapPanel(sel)+taskRunsPanel(sel)+latestPanel(sel)+runsPanel(sel)):'');
+   +benchTabs(sel)+(benchView==='compare'?comparePanel(sel):benchView==='team'?teamPanel(sel):benchKpis(sel)+(isCalibrationAlert(sel)?calibrationPanel(sel):'')+'<div class="bench-grid">'+armBars(sel)+scatterPanel(sel)+'</div>'+judgesPanel(sel)+(isCalibrationAlert(sel)?'':calibrationPanel(sel))+historyChart(sel)+heatmapPanel(sel)+taskRunsPanel(sel)+latestPanel(sel)+runsPanel(sel)):'');
 }
 async function loadBenchmarks(){
  const generation=workspaceGeneration, request=++benchRequest, current=()=>generation===workspaceGeneration&&request===benchRequest; benchLoading=true;

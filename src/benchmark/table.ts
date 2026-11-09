@@ -400,7 +400,7 @@ function scorerResultsOf({ arms, trials, scorers }: BenchmarkRecord): ArmScorerR
 }
 
 /** The judges of `trials`' calibrations, by tool, model and effort, each over the trials it calibrated. */
-function calibrationOf(trials: readonly RecordedTrial[]): JudgeCalibration[] {
+export function calibrationOf(trials: readonly RecordedTrial[]): JudgeCalibration[] {
   const byJudge = new Map<string, { judge: JudgeCalibration['judge']; passed: boolean[] }>();
 
   for (const { calibration } of trials) {

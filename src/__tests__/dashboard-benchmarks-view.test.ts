@@ -525,6 +525,61 @@ describe('the Benchmarks page says who judged what', () => {
   });
 });
 
+describe('the Benchmarks page calibrates the correctness judge', () => {
+  const HAIKU = { by: 'judge' as const, rubric: 'rc', tool: 'claude', model: 'claude-haiku-5-5', batched: false };
+  const OPUS = { ...HAIKU, model: 'claude-opus-5-5', effort: 'high' };
+  const base = judgedRun({
+    claude: { tool: 'claude', results: ['failed', 'failed', 'failed', 'failed'], scores: [0, 0, 0, 0], cost: 0.5 },
+    codex: { tool: 'codex', results: ['failed', 'failed', 'failed', 'failed'], scores: [0, 0, 0, 0], cost: 1 },
+  });
+  /** login with success criteria too, whose correctness the run pins to claude `fast`, each trial's check failed, and `calibrated` what its judge then labelled. */
+  const mixed = (calibrated: (trial: { arm: string; repetition: number }) => { passed: boolean; decider: typeof HAIKU } | undefined): BenchmarkRunInput[] => [{ ...base, benchmark: { ...base.benchmark,
+    judges: { 'teamai:correctness:login': { tool: 'claude', model: 'fast' } },
+    trials: base.benchmark.trials.map((trial) => {
+      const calibration = calibrated(trial);
+      return calibration ? { ...trial, calibration: { label: calibration.passed ? 'correct' : 'incorrect', ...calibration } } : trial;
+    }) } }];
+
+  it('heads the Arms view with the calibration when a judge passes failing work beyond chance, with each judge\'s false pass rate and interval', async () => {
+    // claude-haiku-5-5 labelled 2 of claude's 4 failing trials passing; claude-opus-5-5 none of codex's.
+    const html = await renderPage(mixed(({ arm, repetition }) => (arm === 'claude' ? { passed: repetition <= 2, decider: HAIKU } : { passed: false, decider: OPUS })));
+    const panel = html.split('<section class="panel sessions bench-panel calibration alert">')[1]?.split('</section>')[0] ?? '';
+
+    const at = html.indexOf('calibration alert');
+    expect(at).toBeGreaterThan(-1);
+    expect(at).toBeLessThan(html.indexOf('<div class="arm-bars">'));
+    // Wilson: 2 of 4 is 15% to 85%; 0 of 4 is 0% to 49%.
+    expect(text(panel)).toContain('claude claude-haiku-5-5 4 2 50% 15% to 85%');
+    expect(text(panel)).toContain('claude claude-opus-5-5 high 4 0 0% 0% to 49%');
+  });
+
+  it('says plainly when no judge was calibrated on failed checks, and how to turn calibration on', async () => {
+    const html = await renderPage(mixed(() => undefined));
+    const panel = html.split('<section class="panel sessions bench-panel calibration">')[1]?.split('</section>')[0] ?? '';
+
+    expect(html).not.toContain('calibration alert');
+    expect(html.indexOf('bench-panel calibration')).toBeGreaterThan(html.indexOf('bench-panel judges'));
+    expect(text(panel)).toContain('No judge labelled the trials whose check failed (8), so these runs do not say how far the correctness judge can be trusted.');
+    expect(panel).toContain('<code class="command" data-verbatim>calibration: { rate: 10 }</code>');
+  });
+
+  it('reads the standing, the judges and the calibration in zh-CN', async () => {
+    const zh = text(await renderPage(mixed(({ arm }) => (arm === 'claude' ? { passed: true, decider: HAIKU } : undefined)), { language: 'zh-CN' }));
+
+    expect(zh).toContain('对照 claude (默认 arm)');
+    expect(zh).toContain('固定的评审 判定来源 偏差 未验证 未评分');
+    expect(zh).toContain('评审校准 · teamai:correctness');
+    expect(zh).toContain('评审者 检查失败后评审数 标为通过 误判通过率 95% 区间');
+    expect(zh).toContain('claude claude-haiku-5-5 放过失败工作的频率超出了偶然范围');
+  });
+
+  it('shows no calibration on a suite with no task a judge could be calibrated on', async () => {
+    const html = await renderPage([base]);
+
+    expect(html).not.toContain('bench-panel calibration');
+  });
+});
+
 describe('the Benchmarks page counts one of a thing in the singular', () => {
   const runs = [roleRun({ 'claude-frontend': 'passed', 'claude-review': 'passed' }, { 'claude-frontend': 1200, 'claude-review': 1000 })];
 
