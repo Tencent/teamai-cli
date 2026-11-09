@@ -43,7 +43,6 @@ function root(localConfig: LocalConfig): string {
   return isSelfMode(localConfig) ? path.join(localConfig.repo.localPath, DELIVERED_DIR) : getDataHome(localConfig);
 }
 
-/** The absolute path `ref` is delivered at in `localConfig`'s scope. The same for every version of the folder. */
 /**
  * The worktree's `.teamai/delivered/`: a single-repo scope's delivered folders, or the copies of a remote team's folders
  * for a tool that cannot read the data home. Null outside a project, which has no worktree.
@@ -51,9 +50,15 @@ function root(localConfig: LocalConfig): string {
 function worktreeRoot(localConfig: LocalConfig): string | null {
   if (isSelfMode(localConfig)) return root(localConfig);
 
-  return localConfig.scope === 'project' && localConfig.projectRoot ? path.join(localConfig.projectRoot, '.teamai', DELIVERED_DIR) : null;
+  return localConfig.scope === 'project' && localConfig.projectRoot ? checkoutRoot(localConfig.projectRoot) : null;
 }
 
+/** The `.teamai/delivered/` of the project's worktree checked out at `checkout`, which may be another worktree than the scope's. */
+function checkoutRoot(checkout: string): string {
+  return path.join(checkout, '.teamai', DELIVERED_DIR);
+}
+
+/** The absolute path `ref` is delivered at in `localConfig`'s scope. The same for every version of the folder. */
 function pathOf(localConfig: LocalConfig, ref: DeliveredFolderRef): string {
   return path.join(root(localConfig), ref.type, ...(ref.namespace === null ? [] : [ref.namespace]), ref.name);
 }
@@ -252,4 +257,4 @@ async function sync(input: {
   }
 }
 
-export const DeliveredFolders = { root, worktreeRoot, pathOf, sync, deliver, prune, placeholder, mentions, render } as const;
+export const DeliveredFolders = { root, worktreeRoot, checkoutRoot, pathOf, sync, deliver, prune, placeholder, mentions, render } as const;

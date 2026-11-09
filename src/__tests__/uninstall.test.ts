@@ -1224,6 +1224,33 @@ describe('uninstall', () => {
     expect([await fse.pathExists(copies), await fse.readFile(excludeFile, 'utf8')]).toEqual([false, '# my own\nscratch/\n']);
   });
 
+  it('removes the .teamai/delivered/ of every worktree of the project, which the exclude block it removes kept out of git (#1787)', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    const projectRoot = path.join(tmpDir, 'business-repo');
+    const linked = path.join(tmpDir, 'business-repo-review');
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    await fse.ensureDir(projectRoot);
+    const git = (...args: string[]): void => { execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.test', ...args], { cwd: projectRoot }); };
+    git('init', '-q');
+    git('commit', '-q', '--allow-empty', '-m', 'init');
+    git('worktree', 'add', '-q', linked);
+    const excludeFile = path.join(projectRoot, '.git', 'info', 'exclude');
+    await fse.writeFile(excludeFile, '# my own\nscratch/\n');
+    const copies = [projectRoot, linked].map((root) => path.join(root, '.teamai', 'delivered'));
+    for (const dir of copies) await fse.outputFile(path.join(dir, 'rules', 'api-style', 'checklist.md'), '- name every endpoint\n');
+
+    const dataHome = path.join(homeDir, '.teamai', 'projects', 'business-repo-0123456789abcdef');
+    const localConfig = makeLocalConfig(homeDir, repoPath, { scope: 'project', projectRoot, dataHome });
+    const { excludeDeliveredFolders } = await import('../git-exclude-delivered.js');
+    for (const dir of copies) await excludeDeliveredFolders(localConfig, dir);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: makeTeamConfig({ toolPaths: {} }) });
+
+    await uninstall({ force: true });
+
+    expect([...await Promise.all(copies.map((dir) => fse.pathExists(dir))), await fse.readFile(excludeFile, 'utf8')]).toEqual([false, false, '# my own\nscratch/\n']);
+  });
+
   it('previews the delivered folders of a single-repo worktree by what they are, whatever their type (#1787)', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     const projectRoot = path.join(tmpDir, 'business-repo');
@@ -1246,7 +1273,7 @@ describe('uninstall', () => {
       logSpy.mockRestore();
     }
 
-    expect(printed).toContain(`   Team folders delivered in this worktree: ${path.join(repoPath, 'delivered')}`);
+    expect(printed).toContain(`   Team folders delivered in a worktree: ${path.join(repoPath, 'delivered')}`);
   });
 
   it('targeted WorkBuddy uninstall keeps the .codebuddy rule CodeBuddy still reads (#945)', async () => {

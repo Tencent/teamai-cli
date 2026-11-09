@@ -1842,6 +1842,21 @@ async function buildRemovalPlan(
 
       plan.gitExcludes = await findMcpGitExcludes(dirs);
       await planGitExcludeBlocks(plan, localConfig);
+
+      // The exclude block that kept each worktree's .teamai/delivered/ out of git is shared, so every worktree's goes with it.
+      if (!agentFilter) {
+        const planned = new Set(await Promise.all(plan.deliveredFolderDirs.map((dir) => realpath(dir).catch(() => dir))));
+
+        for (const checkout of plan.checkouts) {
+          const dir = DeliveredFolders.checkoutRoot(checkout);
+          const real = await realpath(dir).catch(() => null);
+
+          if (real === null || planned.has(real)) continue;
+          planned.add(real);
+          plan.deliveredFolderDirs.push(dir);
+        }
+      }
+
       const { removeDocsSearchWhitelist } = await import('./resources/docs.js');
 
       for (const checkout of plan.checkouts) {
@@ -1998,7 +2013,7 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
     for (const file of plan.bridgedTeamHookFiles) console.log(`     ${file}`);
   }
 
-  for (const dir of plan.deliveredFolderDirs) console.log(`   Team folders delivered in this worktree: ${dir}`);
+  for (const dir of plan.deliveredFolderDirs) console.log(`   Team folders delivered in a worktree: ${dir}`);
 
   if (plan.piHookFiles.length > 0) {
     console.log(`   Pi Hooks (${plan.piHookFiles.length} files):`);
