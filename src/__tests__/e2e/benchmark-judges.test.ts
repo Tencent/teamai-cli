@@ -199,6 +199,21 @@ successCriteria: answer.js exports 42.
     ]);
   }, 120_000);
 
+  it("records a trial's judging cost as unknown when a judge launch ran and stated none, though its label is not kept", async () => {
+    const fixture = await benchmarkFixture({
+      tool: 'fixes', sandbox: true, judge: 'states-nothing', tools: ['claude'], suite: suite({ arms: [{ name: 'claude' }] }),
+      tasks: { 'login-copy': `${CRITERIA_TASK}check: { run: node test.js && exit 127, protect: [test.js] }\n` },
+    });
+    fixtures.push(fixture);
+
+    const done = await runLocally(fixture);
+
+    const record = z.object({ trials: z.array(z.object({ result: z.string(), scoringCost: z.unknown().optional() })) }).parse(fixture.benchmarkRecord(done.run));
+    expect(done.outcome).toBe('succeeded');
+    expect(fixture.judgeLaunches()).toHaveLength(1);
+    expect(record.trials.map(({ result, scoringCost }) => ({ result, scoringCost }))).toEqual([{ result: 'error', scoringCost: { complete: false } }]);
+  }, 120_000);
+
   it("counts what a calibration judge cost in its trial's judging cost when its label is refused, and records no calibration", async () => {
     const fixture = await benchmarkFixture({
       tool: 'fixes', sandbox: true, judge: 'another-label', tools: ['claude'], suite: `${suite({ arms: [{ name: 'claude' }] })}calibration: { rate: 100 }\n`,
@@ -282,14 +297,14 @@ successCriteria: answer.js exports 42.
     expect(done.outputs.table.verdicts).toEqual([expect.objectContaining({ scorer: CORRECTNESS, outcome })]);
   }, 120_000);
 
-  it('labels a trial whose judge stated no usage, and records no scoring cost for it', async () => {
+  it('labels a trial whose judge stated no usage, and records its scoring cost as unknown', async () => {
     const fixture = await judgedFixture({ judge: 'states-nothing' });
 
     const done = await runLocally(fixture);
 
     expect(done.outputs.table.verdicts).toEqual([expect.objectContaining({ scorer: CORRECTNESS, outcome: { kind: 'labelled', label: 'correct', score: 1, passed: true } })]);
     expect(done.outputs.table.verdicts[0]).not.toHaveProperty('scoringCost');
-    expect(RecordSchema.parse(fixture.benchmarkRecord(done.run)).trials).toEqual([expect.not.objectContaining({ scoringCost: expect.anything() })]);
+    expect(RecordSchema.parse(fixture.benchmarkRecord(done.run)).trials).toEqual([expect.objectContaining({ scoringCost: { complete: false } })]);
   }, 120_000);
 
   it('stops a judge still running at the suite timeout, and ends the run timed out with the trial unscored', async () => {

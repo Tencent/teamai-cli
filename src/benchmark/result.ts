@@ -23,7 +23,7 @@ import { baselineStepOf, BenchmarkEstimateSchema, checkStepOf, correctnessScorer
 import type { RunPlan } from './run-plan.js';
 import { ArmTeamSchema, SkillChangesSchema, TrialLimitsSchema } from './terms.js';
 import { leavesOut, skillDefinitionOf } from './team-without.js';
-import { TrialCalibrationSchema, TrialVerdictSchema, TrialVerdicts, type EntryCalibration, type EntryVerdict, type TrialVerdict } from './verdicts.js';
+import { TrialCalibrationSchema, TrialScoringCostSchema, TrialVerdictSchema, TrialVerdicts, type EntryCalibration, type EntryVerdict, type TrialVerdict } from './verdicts.js';
 
 export const TRIAL_RESULTS = ['passed', 'failed', 'error', 'unscored', 'not_run'] as const;
 
@@ -128,8 +128,8 @@ export const BenchmarkRecordSchema = z.object({
      * it does, `unknown` when no pass reported its loads. Absent when no task covers a skill.
      */
     routing: z.record(z.string().min(1), z.enum(['fit', 'idle', 'extra', 'missed', 'unknown'])).optional(),
-    /** What the judges of the trial's labels stated they cost; `complete: false` when a scorer of the trial has no label that states one. */
-    scoringCost: z.object({ amount: z.number().nonnegative(), unit: z.string().min(1), complete: z.boolean() }).optional(),
+    /** What every judge launch of the trial stated it cost (`TrialScoringCostSchema`); absent when no judge launched. */
+    scoringCost: TrialScoringCostSchema.optional(),
   })),
 });
 

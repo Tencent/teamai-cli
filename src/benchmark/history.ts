@@ -764,11 +764,11 @@ function runRow(input: BenchmarkRunInput): RunRow {
 
 function spendOf(input: BenchmarkRunInput): RunRow['spend'] {
   const estimated = input.benchmark.estimate?.total;
-  // A judge that ran and stated no cost leaves the total unknown rather than lower.
+  // A judge that ran and stated no cost, or not all of it, leaves the total unknown rather than lower.
   const stated = (cost: Trial['scoringCost']) => (cost?.complete ? cost : undefined);
 
-  const judging = input.benchmark.trials.flatMap(({ scoringCost, verdicts, calibration }) => [
-    ...(scoringCost || verdicts?.some(({ decider }) => decider?.by === 'judge') ? [stated(scoringCost)] : []),
+  const judging = input.benchmark.trials.flatMap(({ scoringCost, calibration }) => [
+    ...(scoringCost ? [stated(scoringCost)] : []),
     ...(calibration ? [stated(calibration.scoringCost)] : []),
   ]);
 

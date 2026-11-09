@@ -774,13 +774,10 @@ describe('BenchmarkHistory spend against the estimate', () => {
   it('leaves what the run spent incomplete, never below the estimate, when a judge or a calibration that ran stated no cost', () => {
     const plain = spending('cheap', 17, { claude: 0.125, codex: 0.125 });
     const decider = { by: 'judge' as const, rubric: 'rc', tool: 'claude', model: 'claude-haiku-5-5', batched: false };
-    const unstated = (trial: BenchmarkRunInput['benchmark']['trials'][number]) => {
-      const { scoringCost: _stated, ...rest } = trial;
-
-      return trial.arm === 'claude'
-        ? { ...rest, verdicts: [{ scorer: 'quality', outcome: { kind: 'labelled' as const, label: 'good', score: 1, passed: true }, decider }] }
-        : { ...trial, calibration: { label: 'incorrect', passed: false, decider } };
-    };
+    // claude's judge launched and stated nothing, as its record says; codex's calibration stated nothing either.
+    const unstated = (trial: BenchmarkRunInput['benchmark']['trials'][number]) => (trial.arm === 'claude'
+      ? { ...trial, scoringCost: { complete: false as const }, verdicts: [{ scorer: 'quality', outcome: { kind: 'labelled' as const, label: 'good', score: 1, passed: true }, decider }] }
+      : { ...trial, calibration: { label: 'incorrect', passed: false, decider } });
     const judged = { ...plain, benchmark: { ...plain.benchmark, trials: plain.benchmark.trials.map(unstated) } };
     const [row] = BenchmarkHistory.of({ runs: [judged], query: { windowDays: 90 }, now: NOW }).selected?.runs ?? [];
 

@@ -66,7 +66,13 @@ export const EntryVerdictSchema = TrialVerdictSchema.extend({
   pass: z.number().int().positive(),
 }).strict();
 
-type ScoringCost = z.infer<typeof ScoringCostSchema>;
+/**
+ * What judging a trial cost, from every judge launch of it: the cost the launches stated, `complete: false` when one
+ * stated none or another unit; `{ complete: false }` alone when launches ran and none stated a cost.
+ */
+export const TrialScoringCostSchema = z.union([ScoringCostSchema, z.object({ complete: z.literal(false) }).strict()]);
+
+type TrialScoringCost = z.infer<typeof TrialScoringCostSchema>;
 
 export type EntryVerdict = z.infer<typeof EntryVerdictSchema>;
 
@@ -298,11 +304,13 @@ function judgeLaunches(run: RunState): JudgeLaunch[] {
   });
 }
 
-/** What `launches` cost in the unit the first that stated a cost used: incomplete when another stated none or another unit; undefined when none stated one. */
-function costOfLaunches(launches: readonly JudgeLaunch[]): ScoringCost | undefined {
+/** What `launches` cost in the unit the first that stated a cost used: incomplete when another stated none or another unit; undefined when none ran. */
+function costOfLaunches(launches: readonly JudgeLaunch[]): TrialScoringCost | undefined {
   const [first] = launches.flatMap(({ cost }) => cost ?? []);
 
-  if (!first) return undefined;
+  if (launches.length === 0) return undefined;
+
+  if (!first) return { complete: false };
   const inUnit = launches.flatMap(({ cost }) => (cost?.unit === first.unit ? [cost] : []));
 
   return { amount: inUnit.reduce((sum, cost) => sum + cost.amount, 0), unit: first.unit, complete: inUnit.length === launches.length };
@@ -347,9 +355,9 @@ export const TrialVerdicts = {
    * What judging each trial pass of `run` cost, from every judge launch of it rather than from the labels kept: those that
    * stored its labels, and those that only tried one unless its calibration carries that cost. A batched launch counts
    * once for every scorer it judged; a launch whose label was refused, or left out because the check could not run, counts
-   * too. Undefined when no launch stated a cost.
+   * too. Undefined when no launch ran.
    */
-  judgingCosts(run: RunState): (trial: { step: string; pass: number; isCalibrated: boolean }) => ScoringCost | undefined {
+  judgingCosts(run: RunState): (trial: { step: string; pass: number; isCalibrated: boolean }) => TrialScoringCost | undefined {
     const launches = judgeLaunches(run);
 
     return ({ step, pass, isCalibrated }) => {
