@@ -116,9 +116,10 @@ export async function nativeSession(from: LocalConfig, demand: SessionDemand): P
  * for it: on teamai-reports, else in the archive a git-kind team kept on its default branch before. Where resume takes
  * the first member who pushed that name, this fails unless `author` picks one of those who pushed it to the first archive
  * that holds the name. Its subject is its origin, so its labels pair with those of the same session scored where it ran.
+ * `identities` are the repository identities the archive is read for, by default this directory's.
  * It is redacted as `AgentSession.find` redacts a session.
  */
-export async function pushedSession(config: LocalConfig, { name, author }: TeamSession): Promise<NamedSession | Failure> {
+export async function pushedSession(config: LocalConfig, { name, author }: TeamSession, identities: ReadonlyArray<string | null> = [getRepoIdentity(process.cwd())]): Promise<NamedSession | Failure> {
   let archives: Awaited<ReturnType<typeof sessionArchives>>;
 
   try {
@@ -128,12 +129,11 @@ export async function pushedSession(config: LocalConfig, { name, author }: TeamS
   }
 
   if (!archives) return failure('unsupported_repo', 'This team keeps no session archive here, so it has no pushed session to score. Score a session on this machine with --session <id>.');
-  const repoIdentity = getRepoIdentity(process.cwd());
   const kept = [{ root: archives.root, where: 'teamai-reports' }, ...(archives.legacy ? [{ root: archives.legacy, where: 'the default branch' }] : [])];
 
   for (const { root, where } of kept) {
     const archive = new SyncManager(root);
-    const named = archive.listSessions(repoIdentity).filter((entry) => entry.sessionName === name);
+    const named = identities.flatMap((identity) => archive.listSessions(identity).filter((entry) => entry.sessionName === name).map((entry) => ({ ...entry, identity })));
 
     if (named.length === 0) continue;
     const held = author === undefined ? named : named.filter((entry) => entry.author === author);
@@ -151,7 +151,7 @@ export async function pushedSession(config: LocalConfig, { name, author }: TeamS
     let meta: SessionSyncMeta;
 
     try {
-      ({ session, meta } = archive.loadSession(repoIdentity, name, entry.author));
+      ({ session, meta } = archive.loadSession(entry.identity, name, entry.author));
     } catch (e) {
       return failure('session_not_found', `The pushed session ${name} could not be read: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -165,5 +165,5 @@ export async function pushedSession(config: LocalConfig, { name, author }: TeamS
     return pushed;
   }
 
-  return failure('session_not_found', `No session ${name} is pushed for ${repoIdentity ?? 'this directory'}. Run teamai session list to see the pushed sessions, after teamai session pull for the newest.`);
+  return failure('session_not_found', `No session ${name} is pushed for ${identities[0] ?? 'this directory'}. Run teamai session list to see the pushed sessions, after teamai session pull for the newest.`);
 }

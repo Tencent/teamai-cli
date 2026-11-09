@@ -282,8 +282,12 @@ async function syncSuites(config: LocalConfig, options: SyncScorerOptions, resul
     if (parsed.ok) {
       for (const warning of parsed.warnings) log.warn(`[benchmarks] ${formatDiagnostic(warning)}`);
 
-      for (const scorer of parsed.suite.scorers.filter((listed) => !result.scorers.cached.includes(listed))) {
-        const unknown: UnknownScorer = { kind: 'suite', file: source.suite.relativePath, suite: parsed.suite.name, scorer };
+      const listed: UnknownScorer[] = [
+        ...parsed.suite.scorers.map((scorer): UnknownScorer => ({ kind: 'suite', file: source.suite.relativePath, suite: parsed.suite.name, scorer })),
+        ...parsed.suite.tasks.flatMap((task) => (task.scorers ?? []).map((scorer): UnknownScorer => ({ kind: 'task', file: task.relativePath, suite: parsed.suite.name, task: task.id, scorer }))),
+      ];
+
+      for (const unknown of listed.filter(({ scorer }) => !result.scorers.cached.includes(scorer))) {
         result.unknownScorers.push(unknown);
         log.warn(`[benchmarks] ${formatUnknownScorer(unknown)}`);
       }

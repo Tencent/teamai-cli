@@ -32,8 +32,9 @@ import { findRunConfig } from './workflow/run-location.js';
 import { resolveRunMode } from './launch-context.js';
 import { memberTools } from './tool-launch/member-tools.js';
 import { agentEvidence, isAttemptRunner, nestedCall, nestedStart, nestedWorkflowError, type Nested } from './workflow/attempt-marker.js';
-import { planBenchmark, planStep, tryBenchmarkTask } from './benchmark/start.js';
+import { outdatedBenchmarkPlan, planBenchmark, planStep, tryBenchmarkTask } from './benchmark/start.js';
 import { reportBenchmark } from './benchmark/report.js';
+import { formatEstimate } from './benchmark/estimate.js';
 import { runCheckStep } from './benchmark/trial.js';
 import type { RunState, WorkflowEnvelope, WorkflowFailure } from './workflow/types.js';
 
@@ -1268,6 +1269,15 @@ export async function workflowResume(runId: string | undefined, options: ResumeO
   }
 
   const { tools } = parsedTools;
+  const local = await readRun(loaded.config, runId);
+  const outdated = local === 'missing' || local === 'corrupt' ? undefined : outdatedBenchmarkPlan(local);
+
+  if (outdated) {
+    writeEnvelope({ error: outdated }, secrets);
+
+    return;
+  }
+
   const caller = invokeCaller(options.confirmed);
   const refused = await sessionDrivesRun(loaded.config, run.data) ? undefined : await resumeRefusal(loaded.config, run.data, caller, { published: true });
 
@@ -1560,8 +1570,8 @@ function table(rows: string[][]): string {
 
 /**
  * `teamai benchmark check --baseline|--trial`, the command of a benchmark run's baseline and trial check steps: prints
- * `{"result":"passed"|"failed"|"could_not_run"}`, the step's output, and exits 0 once the check ran, whatever it said.
- * Exits 1, naming why on stderr, when the check could not be set up. A stop signal stops the check first.
+ * `{"result","cause","label"}`, the step's output, and exits 0 once it decided, whatever the check said. Exits 1, naming
+ * why on stderr, when it could not check at all. A stop signal stops the check first.
  */
 export async function benchmarkCheck(options: { baseline?: boolean; trial?: boolean }): Promise<void> {
   setStderrOnly(true);
@@ -1588,7 +1598,7 @@ export async function benchmarkCheck(options: { baseline?: boolean; trial?: bool
       return;
     }
 
-    process.stdout.write(`${JSON.stringify({ result: checked.result })}\n`);
+    process.stdout.write(`${JSON.stringify(checked.output)}\n`);
   } finally {
     for (const signal of CHECK_STOP_SIGNALS) process.off(signal, onSignal);
   }
@@ -1741,6 +1751,16 @@ export async function benchmarkRun(suite: string, options: { driver?: string; sa
 
   // A team workflow without one of these inputs runs as its command does without the flag: the team's aliases, the whole suite, no comparison.
   const inputs = Object.fromEntries(optionalInputs.flatMap(({ input, value }) => (workflow.definition.inputs?.[input] === undefined ? [] : [[input, value]])));
+
+  const { plan } = preflight.planned;
+
+  if (plan.estimate) {
+    const [counts, ...estimated] = formatEstimate(plan.estimate, { suite: plan.suite.name, arms: plan.arms.length, tasks: plan.tasks.length, repetitions: plan.repetitions });
+
+    if (counts !== undefined) log.info(counts);
+
+    if (estimated.length > 0) log.info(estimated.join('\n  '));
+  }
 
   const { driver, byDefault } = await shortcutDriver(config, options.driver);
   const start: StartOptions = { driver, inputs: JSON.stringify({ suite, ...inputs }), timeout: `${preflight.timeoutMs}ms` };

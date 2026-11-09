@@ -75,22 +75,26 @@ const ENTRIES = [
     // engine.ts stages, before it saves a run, the evidence a step that settled there left in its clone.
     // index.ts moves the home of a command a step started in its clone to that clone's own install.
     // check-run.ts clones and sets up the commit a check runs on, for a benchmark and a scorer alike.
-    entries: { 'place.ts': ['src/index.ts', 'src/workflow/engine.ts', 'src/workflow/protocol.ts', 'src/workflow/drivers/local/local-driver.ts', `${BENCHMARK}trial.ts`, `${BENCHMARK}start.ts`, 'src/scorers/check-run.ts'], 'setup.ts': ['src/scorers/check-run.ts'] },
+    entries: { 'place.ts': ['src/index.ts', 'src/workflow/engine.ts', 'src/workflow/protocol.ts', 'src/workflow/drivers/local/local-driver.ts', `${BENCHMARK}trial.ts`, `${BENCHMARK}start.ts`, 'src/scorers/check-run.ts', 'src/session-flow/task-candidates.ts'], 'setup.ts': ['src/scorers/check-run.ts'] },
     testEntries: ['place.ts', 'team-without.ts', 'role-copy.ts', 'data.ts'],
   },
   // workflow-published-runs.ts judges an offered run by the tool the local driver would launch for its prompt steps.
   { folder: LOCAL, entries: { 'local-driver.ts': ['src/workflow-commands.ts', 'src/workflow-published-runs.ts', 'src/workflow-drive.ts'], 'local-tool-adapter.ts': [] }, testEntries: ['local-driver.ts', 'local-tool-adapter.ts'] },
   { folder: DISCOVERY, entries: { 'workflow-skills.ts': 'any', 'generated-marker.ts': 'any' }, testEntries: ['workflow-skills.ts', 'generated-marker.ts', 'render.ts'] },
   // A suite's checks, start and report change state, so only the commands reach them. Pull, push and their checks sync suites with the team's other definitions.
+  // A benchmark run's judge calls are planned and confined to the judge tool its plan pins for every arm.
   {
     folder: BENCHMARK,
     entries: {
       'plan.ts': 'any', 'terms.ts': 'any', 'suite.ts': 'any', 'table.ts': 'any', 'result.ts': 'any', 'history.ts': 'any', 'suite-cache.ts': 'any',
+      'run-plan.ts': ['src/scorers/score-plan.ts', 'src/scorers/evidence-dir.ts', 'src/scorers/score-subjects.ts'],
+      'calibration.ts': ['src/scorers/score-subjects.ts'],
       'trial.ts': ['src/workflow-commands.ts'],
       'start.ts': ['src/workflow-commands.ts'],
       'report.ts': ['src/workflow-commands.ts'],
+      'estimate.ts': ['src/workflow-commands.ts'],
     },
-    testEntries: ['plan.ts', 'terms.ts', 'suite.ts', 'table.ts', 'result.ts', 'trial.ts', 'start.ts', 'history.ts', 'run-plan.ts', 'conformance.ts', 'suite-cache.ts', 'arm-workflow.ts', 'team-without.ts', 'verdicts.ts'],
+    testEntries: ['plan.ts', 'terms.ts', 'suite.ts', 'table.ts', 'result.ts', 'trial.ts', 'start.ts', 'history.ts', 'run-plan.ts', 'conformance.ts', 'suite-cache.ts', 'arm-workflow.ts', 'team-without.ts', 'verdicts.ts', 'pairing.ts', 'calibration.ts', 'estimate.ts'],
   },
 ];
 

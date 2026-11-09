@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
-import { checkVerdict } from '../scorers/check.js';
+import { checkLabel, checkVerdict } from '../scorers/check.js';
 import { restoreProtected, writeAdded } from '../scorers/check-run.js';
 import type { CommandExit } from '../workflow/shell-command.js';
 
@@ -33,6 +33,21 @@ describe('checkVerdict', () => {
     ['a spawn failure', { kind: 'spawn_failed', message: 'spawn EACCES' }, 'linux', { verdict: 'could_not_run', cause: 'spawn_failed', detail: 'spawn EACCES' }],
   ])('classifies %s', (_, exit, platform, verdict) => {
     expect(checkVerdict(exit, platform)).toEqual(verdict);
+  });
+});
+
+describe('checkLabel', () => {
+  type Labels = readonly [{ value: string; score: number }, ...Array<{ value: string; score: number }>];
+  const correctness: Labels = [{ value: 'correct', score: 1 }, { value: 'incorrect', score: 0 }];
+  const graded: Labels = [{ value: 'partial', score: 0.5 }, { value: 'good', score: 1 }, { value: 'great', score: 1 }, { value: 'bad', score: 0 }, { value: 'worse', score: 0 }];
+
+  it.each([
+    ['a passing check on correctness', 'passed', correctness, 'correct'],
+    ['a failing check on correctness', 'failed', correctness, 'incorrect'],
+    ['a passing check, the first of the highest-scoring labels', 'passed', graded, 'good'],
+    ['a failing check, the first of the lowest-scoring labels, never a partial one', 'failed', graded, 'bad'],
+  ] as const)('labels %s', (_, result, labels, expected) => {
+    expect(checkLabel(result, labels).value).toBe(expected);
   });
 });
 

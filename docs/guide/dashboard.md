@@ -228,7 +228,12 @@ The Benchmarks page shows every ended [benchmark](benchmarks.md) run of the sele
 | Should the team switch its auth fixes to claude? | **Leading arm** | `claude 67% · 95% 57%–75% · not separated from codex`. Codex has 56% (47%–65%). The intervals overlap, so these 7 runs do not tell the two apart. Add repetitions or tasks before you switch. |
 | Did the auth skill we merged on October 7 help? | **Pass rate per run** | A dotted line, `Team assets changed · 62432de`, marks the first run with the skill. Compare each arm's points on either side. The **Runs** table marks that run's team revision `changed`. |
 | Which model is worth paying for on `migrate-db`? | **Pass rate against cost**, on **Cost** | sonnet passes 73% for 0.31 USD a trial, opus 78% for 0.89 USD, and their intervals overlap. The dashed line joins the arms nothing beats on both pass rate and cost: haiku, sonnet, opus. |
+| Is sonnet worth what it saves on `migrate-db`? | **Pass rate by arm**, under sonnet | `Cost per passed trial 0.4247 USD · Against opus (first arm): neither, lower pass rate, 63% cheaper per passed trial · −5 pp · 95% −16 pp to +6 pp · not separated`. Neither arm is better on both pass rate and cost, and these runs do not tell their pass rates apart. An arm that costs less per passed trial at a pass rate at least as high `dominates`. **Last run** reads the newest run the same way. |
+| Can we trust the cheaper correctness judge? | **Judge calibration** | `claude claude-haiku-4-5 10 3 30% 11% to 60%`: it labelled 3 of 10 trials whose check failed as passing. Its interval is above 0, so the panel moves above the arms. `claude claude-opus-5-5 high` passed none of its 10 (0% to 28%). When no judge was calibrated, the panel says so and names the setting to add to `suite.yaml`: `calibration: { rate: 10 }`. |
+| Did each run judge with the judge it pinned? | **Judges** | A row per scorer: the judge the runs pinned, how many labels a check decided and each judge gave, and `1` under **Deviations** for a label from another judge. `Judge claude is also the tool of arm claude` warns that an arm's tool judges its work. |
 | Which task needs fixing, in the code or in the suite? | **Tasks by arm** | `refresh-race` has 7/7 under **Unstable runs**: in every run, some arm both passed and failed it, so one trial says little. `session-fixation` is 0% to 19% on every arm: read its check before blaming the tools. |
+| Which arm does the security reviewer fail? | **Scorers by arm** | `security-review` is 67% 2/3 on claude, and the cell's title gives `95% 21% to 94%`. |
+| Did the last run cost what was estimated? | **Runs**, **Cost** | `62.1 USD Estimated 41–58 USD above the estimate`. |
 | Why did the September 23 run drop to 27%? | **Tasks per run** and **Runs** | `login-copy` is a hatched cell in that run's column, and **Runs** shows `1 not measured` under its pass rate: the task's check passed without changes in that run, so its [baseline](benchmarks.md#baselines) was invalid, and its trials count as planned but not passed. **Tasks by arm** marks it `not measured in 1/7`. Open the run from **Runs** to read its trials. |
 
 **Last run** shows the newest run's trials by result for each arm, with its usage, deviations and the tasks it did not measure. **Open the run** opens its details on the Workflow Runs page.
@@ -243,18 +248,21 @@ The panels above are the **Arms** tab. Two more tabs answer what changed between
 | Did the auth-tokens skill help claude on `fix-auth`? | **Team changes**, on `claude · claude-opus-5-5` | 67%, 62%, 70% over three team revisions, in commit order, none told apart from the one before it. Click `67ee2ce · Add the auth-tokens skill and a security reviewer`: it changed three files, and `session-fixation` went from 1/12 to 3/12. |
 | Did a tool update move the numbers? | **Arms**, **Pass rate per run** | A dashed `Tool updated · claude 2.4.0` line marks the first run on the new version. |
 
-**Compare** lists each two arms of the suite's current version that differ only in their team assets, tool, model, workflow or role, and pairs their trials by run, task and repetition. **Team changes** follows one tool, model and workflow across the team revisions it ran on with the pulled assets or a ref, and names each revision from this machine's team clone, with the files outside `benchmarks/` it changed since the one before it.
+**Compare** lists each two arms of the suite's current version that differ only in their team assets, tool, model, workflow or role, and pairs their trials by run, task and repetition. A pair counts only when the same thing decided both, as [Fail on a regression](benchmarks.md#fail-on-a-regression) counts it: under **Pass rate**, `1 paired trial · 1 excluded: their judge changed (claude claude-sonnet-5-5 → claude claude-opus-5-5)` says the judge reported another model for one pair, which is left out of the difference. Two arms whose every pair was left out get no difference: **Arms with no comparable pair** names them, with `2 excluded: their judge changed (…)`. The asset effect tables say the same under their rows. **Team changes** follows one tool, model and workflow across the team revisions it ran on with the pulled assets or a ref, and names each revision from this machine's team clone, with the files outside `benchmarks/` it changed since the one before it.
 
 How the numbers are counted:
 
 - A pass rate is passed trials over planned trials, as the run's own table prints it.
-- The pooled numbers, the task tables and the leader count only the runs of the suite's current version: the suite files of its newest run of all its tasks and arms, so a `--task` or `--arm` run does not replace it. **Pass rate per run** also draws the older runs, after a dashed `Suite changed` line.
+- The pooled numbers, the task tables and the leader count only the runs of the suite's current version: the suite files and record version of its newest run of all its tasks and arms, which **Runs** tags `current`, so a `--task` or `--arm` run does not replace it. **Pass rate per run** also draws the older runs, after a dashed `Suite changed` line.
 - An arm is its name, tool, model, effort, team assets, workflow and role. Each arm with a role shows it under its name, such as `review role`. When one of them changed, the older runs are a separate line, marked `earlier configuration`.
 - Each arm with a role also shows the role's pass rate in production: the Scorers labels whose role is the same, in the Scorers page's window and measurement, with their 95% interval and whether the role ran as a workflow step's own (`step`), the member's (`member`) or `both`, as By Role says. Beside `review` at 2/2 it reads `In production: 100% 1/1 · 95% 21%–100% · not separated · step · review-quality · 30 days Scorers ↗`. `not separated`, and a rate not in bold, mean that interval overlaps the arm's: these labels do not tell production apart from the benchmark. **Scorers ↗** opens Scorers grouped by Role on `review`. A role with no labels says `no labels for this role`.
 - **Pass rate by arm** also counts the arm's deviations and trials not verified over those runs, as each run's table counts them. A deviation is a trial whose prompt ran on another tool, model, team revision or role than its arm's.
 - The interval is a 95% Wilson score interval. Two arms whose intervals overlap are not told apart by these runs.
 - A difference in **Compare** is over paired trials, with a 95% interval for paired proportions (Newcombe). One whose interval crosses zero is `not separated`.
 - Usage is the median over the trials whose tool reported it. Cost is per trial.
+- Cost per passed trial is an arm's cost over its passed trials. Each arm is read against the defaults arm of the newest run of all tasks and arms, else its first arm, with the paired difference as **Compare** counts it. The mean correctness score counts only the runs whose correctness rubric has more than two labels.
+- **Cost** in **Runs** is what a run's agents and judges stated, beside the estimate made from an earlier run, when the suite had one. `above the estimate` and `below the estimate` show only for a complete estimate, and `below` only when every part stated its cost.
+- A record from before teamai kept judges and verdicts shows nothing in **Judges**, **Judge calibration** or **Scorers by arm**.
 - A run on this machine that was also published shows once, from this machine.
 
 The page shows what a run record publishes. It never shows a prompt, a diff, or a transcript.
@@ -393,6 +401,7 @@ teamai session pull
 teamai session list                                        # --all: every project
 teamai session list --finished --all                       # sessions to share learnings from; --within 3d
 teamai session show <id> --source hermes                   # one of them, redacted
+teamai session show <id> --team-session <name> --author <member>   # a session a teammate pushed, redacted
 teamai session search <query>
 teamai session resume <name> --platform claude-code
 ```
@@ -422,6 +431,14 @@ The readiness probe fires before the cache warms up; raise initialDelaySeconds t
 ```
 
 With `--json`, `list --finished --all` prints `{"list":[{"session","source","ended","prompt"}]}` and `show` prints `{"session","source","transcript"}`. A session `show` cannot find exits 1 with `{"error":{"code":"session_not_found","message":…}}`. The default workflow [`teamai-share-learnings-from-sessions`](workflow.md#teamai-share-learnings-from-sessions) offers these sessions one by one.
+
+`show --team-session <name> --author <member>` prints a session a teammate pushed instead, by the name `session list` prints and who pushed it, read from `teamai-reports` for this directory's repository and redacted the same way; `--author` is needed only when two members pushed that name. Run `session pull` first for the newest:
+
+```console
+$ teamai session show 7c1e2b9a --team-session claude-code_refresh-tokens-past-expiry_20261105 --author ana
+```
+
+The positional id must be the pushed session's own, as `session list --all --suite <dir>` prints it; another id exits 1 with `session_not_found`. `--suite` lists, of this machine's finished sessions (`--finished --all --suite`) or of the team's pushed ones (`--all --suite`), those a benchmark suite could [take a task from](benchmarks.md#build-a-suite-from-past-sessions).
 
 ### What a scrubbed session keeps
 

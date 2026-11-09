@@ -31,7 +31,7 @@ import {
   toolRootsLookup,
   writeCopyOnce,
 } from './agent-session.js';
-import { SyncManager, getGitAuthor, defaultSyncMeta, withSessionPublicationLock, type IndexEntry } from './sync.js';
+import { SyncManager, getGitAuthor, getRepoIdentity, repoIdentitiesOf, defaultSyncMeta, withSessionPublicationLock, type IndexEntry } from './sync.js';
 import { SessionSearchEngine, type LoadedSession } from './search.js';
 import { isSafeSessionFileId } from './ids.js';
 import { isInteractive } from '../utils/prompt.js';
@@ -41,7 +41,9 @@ import { pushSession } from './archive.js';
 import { SessionCaptures } from './captures.js';
 import { SessionPublish } from './session-publish.js';
 import { SessionWork } from './session-work.js';
-import { FinishedSessions, type FinishedSession, type ShareableSession } from './finished-sessions.js';
+import { FinishedSessions, type FinishedSession, type ShareableSession, type ShareOptions } from './finished-sessions.js';
+import { TaskCandidates, type LeftOut, type TaskFields } from './task-candidates.js';
+import { definedFields } from '../utils/defined-fields.js';
 import { autoDetectInit } from '../config.js';
 import type { LocalConfig } from '../types.js';
 import { registerMigrationCommand } from './session-migrate-cmd.js';
@@ -152,20 +154,23 @@ async function listPushSource(platform: string, cwd: string, all: boolean) {
  * `teamai session list --finished`: prints the finished sessions to archive and judge, or with `--all` every finished
  * session to share learnings from, or why it lists none.
  */
-async function listFinished(opts: { author?: string; all?: boolean; repoRoot?: string; cwd?: string; idle?: string; within?: string; publish?: string; scorers?: string; json?: boolean }): Promise<void> {
-  const { all, within, ...options } = opts;
+async function listFinished(opts: { author?: string; all?: boolean; repoRoot?: string; cwd?: string; idle?: string; within?: string; publish?: string; scorers?: string; suite?: string; sizes?: string; json?: boolean }): Promise<void> {
+  const { all, within, suite, sizes, ...options } = opts;
 
   if (opts.author !== undefined || opts.repoRoot !== undefined) return refuseCommand({ code: 'invalid_arguments', message: '--finished lists the sessions of this machine, so it takes no --author or --repo-root.' }, opts.json);
 
   if (!all && within !== undefined) return refuseCommand({ code: 'invalid_arguments', message: '--within sets how far back --finished --all looks, so it takes --all. Add --all to list the sessions to share learnings from.' }, opts.json);
+
+  if (!all && (suite !== undefined || sizes !== undefined)) return refuseCommand({ code: 'invalid_arguments', message: '--suite and --sizes list the sessions a suite could take a task from, so they take --all. Add --all.' }, opts.json);
   const ctx = { env: process.env, current: await currentConfig(opts.cwd), now: new Date().toISOString() };
 
   if (all) {
-    const answer = await FinishedSessions.shareable(within === undefined ? options : { ...options, within }, ctx);
+    const answer = await FinishedSessions.shareable(definedFields<ShareOptions>({ ...options, within, suite, sizes }), ctx);
 
     if (!answer.ok) return refuseCommand(answer, opts.json);
 
-    if (opts.json) process.stdout.write(`${JSON.stringify({ list: answer.list })}\n`);
+    if ('leftOut' in answer) printCandidates(answer, opts.json);
+    else if (opts.json) process.stdout.write(`${JSON.stringify({ list: answer.list })}\n`);
     else printShareable(answer.list);
 
     return;
@@ -193,6 +198,55 @@ function printShareable(list: readonly ShareableSession[]): void {
   for (const one of list) console.log(`  ${one.session}  ${one.source}  ${one.ended}  ${one.prompt || '-'}`);
 }
 
+/**
+ * Prints each session a suite could take a task from on a line of its own: its id, source, commits, change and size,
+ * then how many were left out and why; with `json`, `{"list","leftOut"}`.
+ */
+function printCandidates({ list, leftOut }: { list: ReadonlyArray<TaskFields & { session: string; source: string }>; leftOut: readonly LeftOut[] }, json: boolean | undefined): void {
+  if (json) {
+    process.stdout.write(`${JSON.stringify({ list, leftOut })}\n`);
+
+    return;
+  }
+
+  if (list.length === 0) console.log('No sessions this suite could take a task from.');
+
+  for (const one of list) console.log(`  ${safeText(one.session)}  ${safeText(one.source)}  ${one.start.slice(0, 7)}..${one.solution.slice(0, 7)}  ${one.files} file${one.files === 1 ? '' : 's'}, ${one.lines} line${one.lines === 1 ? '' : 's'}${one.size ? `  ${one.size}` : ''}`);
+  const line = TaskCandidates.leftOutLine(leftOut);
+
+  if (line) console.log(line);
+}
+
+/**
+ * `teamai session list [--all] --suite <dir> [--sizes <spec>]`: the sessions the team pushed for the suite's repository
+ * that the suite could take a task from, as `--finished --all --suite` weighs this machine's, each with the name and
+ * author `session show --team-session` takes.
+ */
+async function listPushedCandidates(opts: { repoRoot?: string; cwd?: string; author?: string; suite?: string; sizes?: string; json?: boolean }, dryRun: boolean): Promise<void> {
+  if (opts.suite === undefined) return refuseCommand({ code: 'invalid_arguments', message: '--sizes sizes the sessions a suite could take a task from, so it takes --suite. Add --suite <dir>.' }, opts.json);
+  const sizes = opts.sizes === undefined ? undefined : TaskCandidates.parseSizes(opts.sizes);
+
+  if (sizes?.ok === false) return refuseCommand(sizes, opts.json);
+  const config = await currentConfig(opts.cwd);
+
+  if (!config) return refuseCommand({ code: 'not_initialized', message: 'teamai is not set up in this directory, so it has no benchmark suites. Run teamai init.' }, opts.json);
+  const found = await TaskCandidates.suiteIn(config, opts.suite);
+
+  if (!found.ok) return refuseCommand(found, opts.json);
+  const identities = repoIdentitiesOf(found.suite.repo, opts.cwd);
+  const entries = archivedSessions(await resolveRepoRoot(opts.repoRoot, { dryRun, read: true }), () => identities, opts.author);
+
+  const weighed = await TaskCandidates.weigh(config, { suite: found.suite, sizes: sizes?.sizes }, entries.map(({ entry }) => ({
+    item: entry, session: entry.sessionId ?? '', source: entry.platform, commits: entry.sessionId === undefined ? undefined : entry.commits,
+  })));
+
+  const list = weighed.list.map(({ item, fields }) => ({
+    session: item.sessionId ?? '', source: item.platform, ended: item.updatedAt, title: item.title, teamSession: item.sessionName, author: item.author, ...fields,
+  }));
+
+  printCandidates({ list, leftOut: weighed.leftOut }, opts.json);
+}
+
 /** Prints each finished session on a line of its own: its id, source, whether to publish it and its scorers. */
 function printFinished(list: readonly FinishedSession[]): void {
   if (list.length === 0) console.log('No finished sessions to archive or judge here.');
@@ -201,24 +255,58 @@ function printFinished(list: readonly FinishedSession[]): void {
 }
 
 /**
- * `teamai session show`: a session of this machine, the caller's own or not, as a judge of it reads it, with the
- * subagents it started and every secret this scope knows redacted.
+ * `teamai session show`: a session of this machine, the caller's own or not, or one a teammate pushed, as a judge of it
+ * reads it, with the subagents it started and every secret this scope knows redacted.
  */
-async function showSession(sessionId: string, opts: { source: string; cwd?: string; json?: boolean }): Promise<void> {
-  const unread = noAdapter(opts.source, 'read');
+async function showSession(sessionId: string, opts: { source?: string; teamSession?: string; author?: string; suite?: string; cwd?: string; json?: boolean }): Promise<void> {
+  if (opts.teamSession === undefined && opts.author !== undefined) return refuseCommand({ code: 'invalid_arguments', message: '--author picks who pushed --team-session <name>. Pass it with --team-session.' }, opts.json);
+
+  if (opts.teamSession === undefined && opts.suite !== undefined) return refuseCommand({ code: 'invalid_arguments', message: '--suite reads --team-session <name> as pushed for the suite\'s repository. Pass it with --team-session.' }, opts.json);
+
+  if (opts.teamSession !== undefined && opts.source !== undefined) return refuseCommand({ code: 'invalid_arguments', message: '--team-session names a pushed session, and --source one on this machine. Pass one of them.' }, opts.json);
+
+  const target = opts.teamSession !== undefined
+    ? { kind: 'pushed' as const, teamSession: opts.teamSession }
+    : opts.source !== undefined ? { kind: 'local' as const, source: opts.source } : undefined;
+
+  if (target === undefined) return refuseCommand({ code: 'invalid_arguments', message: 'Pass --source <platform> for a session of this machine, or --team-session <name> for one a teammate pushed.' }, opts.json);
+  const unread = target.kind === 'local' ? noAdapter(target.source, 'read') : undefined;
 
   if (unread) return refuseCommand(unread, opts.json);
   const config = await currentConfig(opts.cwd);
 
   if (!config) return refuseCommand({ code: 'not_initialized', message: 'teamai is not set up in this directory, so it has no team secrets to redact the session with. Run teamai init.' }, opts.json);
-  const read = await SessionWork.read(config, { platform: opts.source, sessionId });
 
-  if (!read.ok) {
-    return refuseCommand({ code: 'session_not_found', message: `No ${opts.source} session ${safeText(sessionId)} on this machine has anything to show. Run teamai session list --finished --all for the sessions it can show.` }, opts.json);
+  if (target.kind === 'pushed') {
+    const found = opts.suite === undefined ? undefined : await TaskCandidates.suiteIn(config, opts.suite);
+
+    if (found?.ok === false) return refuseCommand(found, opts.json);
+    const identities = found ? repoIdentitiesOf(found.suite.repo, opts.cwd) : [getRepoIdentity(opts.cwd ?? process.cwd())];
+    const pushed = await SessionWork.readPushed(config, definedFields({ name: target.teamSession, author: opts.author }), identities);
+
+    if (!pushed.ok) return refuseCommand(pushed, opts.json);
+
+    if (pushed.sessionId !== sessionId) {
+      return refuseCommand({ code: 'session_not_found', message: `--team-session ${safeText(target.teamSession)} is ${pushed.platform} session ${safeText(pushed.sessionId)}, not ${safeText(sessionId)}. Pass the id session list prints for it.` }, opts.json);
+    }
+
+    return printTranscript({ session: sessionId, source: pushed.platform, transcript: pushed.judged.body }, opts.json);
   }
 
-  if (opts.json) process.stdout.write(`${JSON.stringify({ session: sessionId, source: opts.source, transcript: read.judged.body })}\n`);
-  else process.stdout.write(`${read.judged.body}\n`);
+  const { source } = target;
+  const read = await SessionWork.read(config, { platform: source, sessionId });
+
+  if (!read.ok) {
+    return refuseCommand({ code: 'session_not_found', message: `No ${source} session ${safeText(sessionId)} on this machine has anything to show. Run teamai session list --finished --all for the sessions it can show.` }, opts.json);
+  }
+
+  printTranscript({ session: sessionId, source, transcript: read.judged.body }, opts.json);
+}
+
+/** Prints a transcript `session show` read, or with `json` `{"session","source","transcript"}`. */
+function printTranscript(shown: { session: string; source: string; transcript: string }, json: boolean | undefined): void {
+  if (json) process.stdout.write(`${JSON.stringify(shown)}\n`);
+  else process.stdout.write(`${shown.transcript}\n`);
 }
 
 /** The config of the scope of `cwd`, or of this directory; undefined where teamai is not set up. */
@@ -455,7 +543,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
               sessionId: m.sessionId,
               repoIdentity: deriveArchiveIdentity(session, source),
               title: session.title,
-              agent: await SessionCaptures.agentOfSession(source, session, reports),
+              ...await SessionCaptures.archivedFacts(source, session, reports),
             },
             session.createdAt,
           );
@@ -680,7 +768,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
   // ── session list ───────────────────────────────────────────
   sessionCmd
     .command('list')
-    .description('List team sessions for the current project. With --finished, list instead the finished sessions of this machine that teamai-finished-sessions archives and judges, in the data home of this directory (inside a workflow step, of its run): each with its source, whether to publish it and the scorers to judge it with, and demand named when --scorers named them. A session teamai launched, such as a workflow step\'s, is never listed, nor a scorer whose mark is open or closed. With --finished --all, list every finished session of this machine to share learnings from, whatever the session policies and archive say, last active within --within, leaving out those a learning was contributed from, each with when it was last active and its first prompt, redacted; any run may list them, one an agent started too.')
+    .description('List team sessions for the current project. With --finished, list instead the finished sessions of this machine that teamai-finished-sessions archives and judges, in the data home of this directory (inside a workflow step, of its run): each with its source, whether to publish it and the scorers to judge it with, and demand named when --scorers named them. A session teamai launched, such as a workflow step\'s, is never listed, nor a scorer whose mark is open or closed. With --finished --all, list every finished session of this machine to share learnings from, whatever the session policies and archive say, last active within --within, leaving out those a learning was contributed from, each with when it was last active and its first prompt, redacted; any run may list them, one an agent started too. With --suite, list instead the sessions a benchmark suite could take a task from, which teamai-sessions-to-tasks picks from.')
     .option('--repo-root <path>', 'Team repo clone that holds the session archive (default: the teamai install for this directory, else your user install)')
     .option('--cwd <path>', 'Working directory (defaults to current directory)')
     .option('--author <name>', 'Filter by author')
@@ -690,10 +778,18 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--within <duration>', 'With --finished --all: how recently a session was last active to be listed, such as 3d (default 7d)')
     .option('--publish <policy>', 'With --finished: policy (sessions.publish for the session\'s run mode decides, the default), always or never. Inside a workflow step, only a run a person started may pass always or never.')
     .option('--scorers <json>', 'With --finished: a JSON array of scorers to judge every finished session with, unsampled; [] (the default) takes the scorers scoring.sessions: auto names. Inside a workflow step, only a run a person started may name scorers.')
-    .option('--json', 'With --finished: print {"list":[{"session","source","publish","scorers","demand"}]}; with --all, {"list":[{"session","source","ended","prompt"}]}')
+    .option('--suite <dir>', 'With --finished --all, or for the team\'s pushed sessions of the suite\'s repository: list instead the sessions the benchmark suite in <dir>, such as benchmarks/fix-auth, could take a task from, each with its start and solution commits and the files and lines between them: only sessions with a recorded end, a start and an end with no tracked file modified, two different commits the suite\'s repo holds (fetched by SHA into the benchmark commit cache), and no task of the suite from the same session or solution commit; a learning contributed from one does not leave it out. Prints how many it left out and why')
+    .option('--sizes <spec>', 'With --suite: the largest S, M and L changes as lines,files, such as "S=40,3 M=200,10 L=800,30"; adds size, the smallest whose limits both fit the change, else XL')
+    .option('--json', 'With --finished: print {"list":[{"session","source","publish","scorers","demand"}]}; with --all, {"list":[{"session","source","ended","prompt"}]}; with --suite, {"list":[{...,"start","solution","files","lines","size"}],"leftOut":[{"reason","sessions"}]}, a pushed session\'s entry naming its teamSession and author')
     .action(async (opts) => {
       if (opts.finished) {
         await listFinished(opts);
+
+        return;
+      }
+
+      if (opts.suite !== undefined || opts.sizes !== undefined) {
+        await listPushedCandidates(opts, isDryRun());
 
         return;
       }
@@ -756,12 +852,15 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
   // ── session show ───────────────────────────────────────────
   sessionCmd
     .command('show')
-    .description('Print a session of this machine, your own or another, such as one session list --finished --all lists: its transcript and its subagents\', with the secrets this directory\'s teamai knows redacted, as a judge of it reads it. Exits 1 with session_not_found when no session of --source by that id has anything to show.')
-    .argument('<sessionId>', 'Session id, as session list --finished --all prints it')
-    .requiredOption('--source <platform>', 'Platform the session belongs to, such as claude-code, codex or hermes')
+    .description('Print a session of this machine, your own or another, such as one session list --finished --all lists, or with --team-session one a teammate pushed: its transcript and its subagents\', with the secrets this directory\'s teamai knows redacted, as a judge of it reads it. Exits 1 with session_not_found when no such session has anything to show.')
+    .argument('<sessionId>', 'Session id, as session list --finished --all prints it, or as session list --suite prints a pushed one')
+    .option('--source <platform>', 'Platform a session of this machine belongs to, such as claude-code, codex or hermes. Not with --team-session')
+    .option('--team-session <name>', 'Show a session a member pushed with session push instead, by the name session list prints for this directory\'s repository, as teamai score --team-session reads it. Run session pull first for the newest. Not with --source')
+    .option('--author <name>', 'With --team-session: who pushed it, when two members pushed a session with that name')
+    .option('--suite <dir>', 'With --team-session: read it as pushed for the repository of the benchmark suite in <dir>, as session list --suite lists it, instead of for this directory\'s')
     .option('--cwd <path>', 'Working directory (defaults to current directory)')
     .option('--json', 'Print {"session","source","transcript"}, or {"error":{"code","message"}}')
-    .action(async (sessionId: string, opts: { source: string; cwd?: string; json?: boolean }) => {
+    .action(async (sessionId: string, opts: { source?: string; teamSession?: string; author?: string; suite?: string; cwd?: string; json?: boolean }) => {
       await showSession(sessionId, opts);
     });
 

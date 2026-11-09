@@ -228,7 +228,12 @@ test-quality    80% · 5 labels      1 can become a task · 0 covered           
 | 团队的 auth 修复要不要改用 claude？ | **领先的 arm** | `claude 67% · 95% 57%–75% · 未能区分于 codex`。codex 是 56%（47%–65%）。两个区间重叠，所以这 7 次运行区分不了两者。改用之前先增加重复次数或任务。 |
 | 我们 10 月 7 日合入的 auth 技能有用吗？ | **每次运行的通过率** | 一条点线 `团队资产已改动 · 62432de` 标出第一次带这个技能的运行。比较每个 arm 在线两侧的点。**运行** 表把这次运行的团队修订标为 `已改动`。 |
 | `migrate-db` 上哪个模型值得花钱？ | **通过率与成本**，选 **成本** | sonnet 以每个 trial 0.31 USD 通过 73%，opus 以 0.89 USD 通过 78%，两者区间重叠。虚线连接通过率和成本都无人胜过的 arm：haiku、sonnet、opus。 |
+| `migrate-db` 上 sonnet 省下的钱值得吗？ | **各 arm 的通过率**，sonnet 下方 | `每个通过 trial 的成本 0.4247 USD · 对照 opus (第一个 arm): 互不占优, 通过率更低, 63% 每个通过 trial 更便宜 · −5 pp · 95% −16 pp 至 +6 pp · 无法区分`。两个 arm 都没有在通过率和成本上同时胜出，这些运行也区分不了它们的通过率。每个通过 trial 的成本更低、通过率至少一样高的 arm 标为 `占优`。**最近一次运行** 用同样的方式解读最新一次运行。 |
+| 更便宜的正确性评审可信吗？ | **评审校准** | `claude claude-haiku-4-5 10 3 30% 11% 至 60%`：在 10 个检查失败的 trial 中，它把 3 个标为通过。它的区间高于 0，所以这个面板移到 arm 上方。`claude claude-opus-5-5 high` 的 10 个一个也没放过（0% 至 28%）。没有评审做过校准时，面板会直接说明，并给出要加到 `suite.yaml` 的设置：`calibration: { rate: 10 }`。 |
+| 每次运行用的是它固定的评审吗？ | **评审** | 每个评分器一行：运行固定的评审、检查判定了多少标签、每个评审给了多少标签，另一个评审给出的标签在 **偏差** 下计为 `1`。`评审模型 claude 同时也是以下 arm 的工具： claude` 提醒某个 arm 的工具在评审它自己的工作。 |
 | 哪个任务需要修，是代码还是套件？ | **任务 × arm** | `refresh-race` 的 **不稳定的运行** 是 7/7：每次运行中都有 arm 对它既通过又失败，所以单个 trial 说明不了什么。`session-fixation` 在每个 arm 上都是 0% 到 19%：先读它的检查，再怪工具。 |
+| 安全评审让哪个 arm 失败？ | **评分器 × arm** | `security-review` 在 claude 上是 67% 2/3，单元格的提示显示 `95% 21% 至 94%`。 |
+| 最近一次运行的花费和估算一致吗？ | **运行**，**费用** | `62.1 USD 估算 41–58 USD 高于估算`。 |
 | 9 月 23 日那次运行为什么降到 27%？ | **每次运行的任务** 和 **运行** | `login-copy` 在那次运行一列中是斜线格，**运行** 在它的通过率下显示 `1 未测量`：那次这个任务的检查不改代码就通过了，所以它的[基线](benchmarks.md#基线)无效，它的 trial 计为计划但未通过。**任务 × arm** 把它标为 `未测量 1/7`。从 **运行** 打开这次运行，查看它的 trial。 |
 
 **最近一次运行** 显示最新一次运行中每个 arm 按结果统计的 trial，以及用量、偏差和它没有测量的任务。**打开这次运行** 会在工作流运行页面打开它的详情。
@@ -243,18 +248,21 @@ test-quality    80% · 5 labels      1 can become a task · 0 covered           
 | auth-tokens skill 对 `fix-auth` 上的 claude 有帮助吗？ | **团队变更**，选 `claude · claude-opus-5-5` | 按提交顺序的三个团队版本上是 67%、62%、70%，没有一个与前一个可区分。点击 `67ee2ce · Add the auth-tokens skill and a security reviewer`：它改了三个文件，`session-fixation` 从 1/12 到 3/12。 |
 | 工具更新影响数字了吗？ | **Arm**，**每次运行的通过率** | 一条虚线 `工具已更新 · claude 2.4.0` 标出新版本上的第一次运行。 |
 
-**对比** 列出套件当前版本中只在团队资产、工具、模型、工作流或角色上不同的每两个 arm，并按运行、任务和重复次数配对它们的 trial。**团队变更** 跟踪同一工具、模型和工作流在它用 pull 到的资产或某个 ref 运行过的各团队版本上的表现，用本机的团队仓库克隆为每个版本命名，并列出它相对前一个版本改动的 `benchmarks/` 之外的文件。
+**对比** 列出套件当前版本中只在团队资产、工具、模型、工作流或角色上不同的每两个 arm，并按运行、任务和重复次数配对它们的 trial。只有两边由同一方判定时，一对才计入，与[回归时失败](benchmarks.md#回归时失败)的计法相同：**通过率** 下的 `1 配对 trial · 1 已排除: 评判器已改变 (claude claude-sonnet-5-5 → claude claude-opus-5-5)` 表示评判器对其中一对报告了另一个模型，这一对不计入差异。每一对都被排除的两个 arm 没有差异：**没有可比较配对的 arm** 列出它们，并写明 `2 已排除: 评判器已改变 (…)`。资产效果表在它们的行下面也会这样说明。**团队变更** 跟踪同一工具、模型和工作流在它用 pull 到的资产或某个 ref 运行过的各团队版本上的表现，用本机的团队仓库克隆为每个版本命名，并列出它相对前一个版本改动的 `benchmarks/` 之外的文件。
 
 数字的计算方式：
 
 - 通过率是通过的 trial 数除以计划的 trial 数，与运行自己的表一致。
-- 合并统计的数字、任务表和领先者只统计套件当前版本的运行：即最新一次运行了全部任务和 arm 的运行的套件文件，所以 `--task` 或 `--arm` 的运行不会取代它。**每次运行的通过率** 也会画出更早的运行，位于一条 `套件已改动` 虚线之后。
+- 合并统计的数字、任务表和领先者只统计套件当前版本的运行：即最新一次运行了全部任务和 arm 的运行的套件文件和记录版本，**运行** 把这些运行标为 `当前`，所以 `--task` 或 `--arm` 的运行不会取代它。**每次运行的通过率** 也会画出更早的运行，位于一条 `套件已改动` 虚线之后。
 - 一个 arm 由它的名称、工具、模型、effort、团队资产、工作流和角色确定。带角色的 arm 在名字下方显示角色，例如 `review 角色`。其中一项改变时，更早的运行是另一条线，标为 `较早的配置`。
 - 带角色的 arm 还会显示该角色在生产中的通过率：角色相同的评分器标签，按评分器页面当前的时间窗口和度量统计，附带 95% 区间，并像按角色分组一样标明该角色是作为工作流步骤自己的角色（`步骤`）、成员的角色（`成员`）还是`两者`运行。`review` 为 2/2 时，旁边显示 `生产中: 100% 1/1 · 95% 21%–100% · 无法区分 · 步骤 · review-quality · 30 天 评分器 ↗`。显示`无法区分`、通过率不加粗时，表示该区间与 arm 的区间重叠：这些标签无法区分生产与基准测试。点击 **评分器 ↗** 会打开按角色分组、选中 `review` 的评分器页面。没有标签的角色显示 `该角色没有标签`。
 - **各 arm 的通过率** 还会按每次运行自己的表的算法，统计这些运行中该 arm 的偏差和未验证的 trial。偏差是指 prompt 运行时用的工具、模型、团队修订或角色与它的 arm 不同的 trial。
 - 区间是 95% Wilson score 区间。两个 arm 的区间重叠时，这些运行区分不了它们。
 - **对比** 中的差异基于配对 trial，区间是配对比例的 95% 区间（Newcombe）。区间跨过零时标为 `无法区分`。
 - 用量是工具报告了用量的 trial 的中位数。成本按每个 trial 计。
+- 每个通过 trial 的成本是 arm 的成本除以它通过的 trial 数。每个 arm 都对照最新一次运行了全部任务和 arm 的运行中的默认 arm，没有时对照它的第一个 arm，配对差异与 **对比** 的计法相同。正确性平均分只统计正确性评分标准有两个以上标签的运行。
+- **运行** 中的 **费用** 是一次运行的 agent 和评审声明的花费，旁边是根据更早一次运行做出的估算（套件有更早的运行时）。只有估算完整时才显示 `高于估算` 和 `低于估算`，并且只有每一部分都声明了花费时才显示 `低于估算`。
+- teamai 开始记录评审和判定之前的运行记录，在 **评审**、**评审校准** 和 **评分器 × arm** 中不显示任何内容。
 - 本机上的运行若也已发布，只显示一次，取本机的副本。
 
 页面只显示运行记录发布的内容，从不显示 prompt、diff 或对话记录。
@@ -393,6 +401,7 @@ teamai session pull
 teamai session list                                        # --all：全部项目
 teamai session list --finished --all                       # 可分享经验的会话；--within 3d
 teamai session show <id> --source hermes                   # 其中一个，已脱敏
+teamai session show <id> --team-session <name> --author <member>   # 队友推送的会话，已脱敏
 teamai session search <query>
 teamai session resume <name> --platform claude-code
 ```
@@ -422,6 +431,14 @@ The readiness probe fires before the cache warms up; raise initialDelaySeconds t
 ```
 
 加 `--json` 时，`list --finished --all` 输出 `{"list":[{"session","source","ended","prompt"}]}`，`show` 输出 `{"session","source","transcript"}`。`show` 找不到的会话以 1 退出，输出 `{"error":{"code":"session_not_found","message":…}}`。默认工作流 [`teamai-share-learnings-from-sessions`](workflow.md#teamai-share-learnings-from-sessions) 逐个询问是否分享这些会话。
+
+`show --team-session <name> --author <member>` 改为打印队友推送的会话：按 `session list` 打印的名称和推送者，从 `teamai-reports` 中读取本目录仓库的会话，脱敏方式相同；只有两位成员推送了同名会话时才需要 `--author`。先运行 `session pull` 拿到最新的：
+
+```console
+$ teamai session show 7c1e2b9a --team-session claude-code_refresh-tokens-past-expiry_20261105 --author ana
+```
+
+位置参数必须是推送会话自己的 id，即 `session list --all --suite <dir>` 打印的那个；其他 id 以 1 退出，错误码为 `session_not_found`。`--suite` 从本机已结束的会话（`--finished --all --suite`）或团队推送的会话（`--all --suite`）中，列出 benchmark 套件可以[从中取任务](benchmarks.md#从过去的会话构建套件)的会话。
 
 ### 脱敏后的会话保留什么
 

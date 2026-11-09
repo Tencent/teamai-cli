@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { AgentObservation } from '../agent-observation.js';
 import { benchmarkRecord, BenchmarkRunRecordSchema, type BenchmarkRecord, type TrialResult } from '../benchmark/result.js';
 import { planOfRun } from '../benchmark/run-plan.js';
+import { TrialVerdicts, type TrialVerdict } from '../benchmark/verdicts.js';
 import { benchmarkTable, formatBenchmarkTable } from '../benchmark/table.js';
 import { leaseNext, reportAttempt } from '../workflow/engine.js';
 import type { DriverCan } from '../workflow/requirements.js';
@@ -14,11 +15,11 @@ import { readRun } from '../workflow/store.js';
 import type { LocalConfig } from '../types.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
 import type { StepState } from '../workflow/step-state.js';
-import { benchmarkRunConfig, fixTask, PRODUCT_URL, RUN_START, RUN_TEAM, settleBaselines, startBenchmarkRun } from './helpers/benchmark-fixture.js';
+import { benchmarkRunConfig, fixTask, PRODUCT_URL, RUN_START, RUN_TEAM, settleBaselines, startBenchmarkRun, trialCheckOutput } from './helpers/benchmark-fixture.js';
 
 const driver: DriverIdentity = { kind: 'external', machine: 'ci', workspace: '/work' };
 const can: DriverCan = { workspace: ['read-only', 'new', 'continue', 'clone'], isolation: 'sandbox', env: true, tools: ['claude'], end_turn: true };
-const LeaseSchema = z.object({ data: z.object({ lease: z.object({ attempt: z.string(), revision: z.number(), workspace: z.object({ branch: z.string() }) }) }) });
+const LeaseSchema = z.object({ data: z.object({ lease: z.object({ step: z.string(), attempt: z.string(), revision: z.number(), workspace: z.object({ branch: z.string() }) }) }) });
 const dirs: string[] = [];
 
 afterEach(() => {
@@ -43,7 +44,7 @@ async function endRecord(config: LocalConfig, runId: string): Promise<{ benchmar
   if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
   const planned = planOfRun(run);
   if ('failure' in planned) throw new Error(planned.failure.message);
-  return { benchmark: benchmarkRecord(run, planned.found, []) };
+  return { benchmark: benchmarkRecord(run, planned.found, await TrialVerdicts.of(config, run, planned.found)) };
 }
 
 /** The end record of a run of ten repetitions whose first trial passed its check before the run was cancelled. */
@@ -56,7 +57,7 @@ async function onePassedOfTen() {
     changes: { branch: prompt.workspace.branch, base: RUN_START, from: RUN_START, to: 'c'.repeat(40), commits: [] },
   });
   const check = LeaseSchema.parse(await leaseNext(config, runId, driver, { can, prepare: true })).data.lease;
-  await reportAttempt(config, runId, { attempt: check.attempt, revision: check.revision, outcome: 'success', exitCode: 0, outputs: { result: 'passed' }, driver });
+  await reportAttempt(config, runId, { attempt: check.attempt, revision: check.revision, outcome: 'success', exitCode: 0, outputs: await trialCheckOutput(config, runId, { checkStep: check.step, result: 'passed' }), driver });
   await cancelRun(config, runId, {});
   return endRecord(config, runId);
 }
@@ -107,18 +108,20 @@ describe('benchmark results table', () => {
 });
 
 const OBSERVED: AgentObservation = { v: 1, tool: { name: 'claude' }, team: { revision: RUN_TEAM, localChanges: false }, teamai: '0.0.0', driver: 'external' };
-type TrialSpec = Pick<BenchmarkRecord['trials'][number], 'limit' | 'unenforced' | 'durationMs' | 'tokens' | 'cost' | 'used'> & {
+type TrialSpec = Pick<BenchmarkRecord['trials'][number], 'limit' | 'unenforced' | 'durationMs' | 'tokens' | 'cost' | 'used' | 'verdicts' | 'calibration'> & {
   task?: string;
   arm?: string;
   result?: TrialResult;
+  /** Its position in the record by default, so no two trials pair. */
+  repetition?: number;
   /** What the trial's prompt step ran as; null for a prompt that never launched its tool. */
   agent?: Partial<Pick<AgentObservation, 'tool' | 'model' | 'team'>> | null;
 };
 
-/** A benchmark record of valid tasks, `fix` unless a trial names another, whose trials ran as `trials` say, one repetition each. */
+/** A benchmark record of valid tasks, `fix` unless a trial names another, whose trials ran as `trials` say, one repetition each unless they name one. */
 function recordOf(arms: BenchmarkRecord['arms'], trials: TrialSpec[]): { benchmark: BenchmarkRecord } {
-  const planned = trials.map(({ task = 'fix', arm = arms[0]?.name ?? 'claude', result = 'passed', agent, ...usage }, index) => ({
-    task, arm, repetition: index + 1, order: index + 1, step: `trials.r${index + 1}.${task}.${arm}.prompt`, result, ...usage,
+  const planned = trials.map(({ task = 'fix', arm = arms[0]?.name ?? 'claude', result = 'passed', agent, repetition, ...usage }, index) => ({
+    task, arm, repetition: repetition ?? index + 1, order: index + 1, step: `trials.r${index + 1}.${task}.${arm}.prompt`, result, ...usage,
     ...(agent === null ? {} : { agent: { ...OBSERVED, ...agent } }),
   }));
   const tasks = [...new Set(['fix', ...planned.map(({ task }) => task)])];
@@ -172,6 +175,196 @@ describe('benchmark deviations', () => {
     ]));
 
     expect(table.results).toMatchObject([{ arm: 'gpt', planned: 4, deviations: 1, notVerified: 0 }, { arm: 'opus', planned: 1, stoppedByLimit: 0, deviations: 0, notVerified: 0 }]);
+  });
+});
+
+describe('benchmark judges', () => {
+  const ARM = (name: string, tool: string) => ({ name, tool, source: 'team', team: { kind: 'pulled', revision: RUN_TEAM } }) as const;
+  /** A trial that ran as its arm, with a judge's label of each of `asPlanned`. */
+  const judged = (...asPlanned: Array<NonNullable<TrialVerdict['asPlanned']>>): TrialSpec => ({
+    agent: { model: { reported: 'claude-opus-4-1' } },
+    verdicts: asPlanned.map((comparison) => ({ scorer: 'quality', outcome: { kind: 'labelled', label: 'good', score: 1, passed: true }, decider: { by: 'judge', rubric: 'r', tool: 'claude', batched: false }, asPlanned: comparison })),
+  });
+
+  it("counts a trial whose judge ran as another tool or model than the plan pins as a deviation, and one whose judge's tool reported no model as not verified", () => {
+    const table = benchmarkTable(recordOf([CLAUDE_ARM], [judged('match'), judged('deviation'), judged('not_verified'), judged('not_verified', 'deviation')]));
+
+    expect(table.results).toMatchObject([{ planned: 4, deviations: 2, notVerified: 1 }]);
+  });
+
+  it("says once per judge tool that it is also an arm's tool, when the arms vary the tool, and nothing when they do not", () => {
+    const record = recordOf([ARM('claude', 'claude'), ARM('codex', 'codex'), ARM('claude-fast', 'claude')], [{}]);
+    const judges = { quality: { tool: 'claude', model: 'judge' }, 'teamai:correctness:fix': { tool: 'claude', model: '' }, strict: { tool: 'opencode', model: '' } };
+    const oneTool = recordOf([ARM('claude', 'claude'), ARM('claude-fast', 'claude')], [{}]);
+
+    expect(formatBenchmarkTable(benchmarkTable({ benchmark: { ...record.benchmark, judges } })).split('\n\n').slice(-2)).toEqual([
+      "Judge claude is also arm claude's tool; set tool in the scorer to judge with another.",
+      'These results hold for these tasks, this run and this machine.',
+    ]);
+    expect(formatBenchmarkTable(benchmarkTable({ benchmark: { ...oneTool.benchmark, judges } }))).not.toContain('Judge claude');
+  });
+});
+
+describe('benchmark pass rate per scorer', () => {
+  const ARM = { name: 'claude', tool: 'claude', source: 'team', team: { kind: 'pulled', revision: RUN_TEAM } } as const;
+  const SCORERS = ['review-quality', 'test-coverage', 'security-review', 'teamai:correctness:fix'].map((name) => ({ name, rubric: { sourceHash: name } }));
+  const CORRECT: TrialVerdict = { scorer: 'teamai:correctness:fix', outcome: { kind: 'labelled', label: 'correct', score: 1, passed: true }, decider: { by: 'check', task: 'h' } };
+  /** A verdict of `scorer`: passed or failed by a judge that batched as `batched` says, or unscored. */
+  const verdict = (scorer: string, outcome: 'passed' | 'failed' | 'unscored', batched = true): TrialVerdict => (outcome === 'unscored'
+    ? { scorer, outcome: { kind: 'unscored', because: 'run_ended' } }
+    : { scorer, outcome: { kind: 'labelled', label: outcome === 'passed' ? 'good' : 'bad', score: outcome === 'passed' ? 1 : 0, passed: outcome === 'passed' }, decider: { by: 'judge', rubric: scorer, tool: 'claude', model: 'claude-opus-5-5', batched } });
+  const withScorers = (record: { benchmark: BenchmarkRecord }) => ({ benchmark: { ...record.benchmark, scorers: SCORERS } });
+
+  it("gives each arm a row per suite scorer, its pass rate over the labelled verdicts only, with the arm table's 95% interval, and no row for correctness", () => {
+    const quality: Array<'passed' | 'failed'> = ['passed', 'passed', 'passed', 'passed', 'passed', 'failed', 'failed', 'failed', 'failed'];
+    const coverage: Array<'passed' | 'failed' | 'unscored'> = ['passed', 'passed', 'passed', 'failed', 'failed', 'failed', 'failed', 'failed', 'unscored'];
+    const record = withScorers(recordOf([ARM], quality.map((outcome, index) => ({
+      verdicts: [CORRECT, verdict('review-quality', outcome), verdict('test-coverage', coverage[index] ?? 'unscored')],
+    }))));
+
+    const table = benchmarkTable(record);
+
+    expect(table.scorers).toMatchObject([
+      { arm: 'claude', scorer: 'review-quality', passed: 5, labelled: 9, unscored: 0, batched: 'yes' },
+      { arm: 'claude', scorer: 'test-coverage', passed: 3, labelled: 8, unscored: 1, batched: 'yes' },
+    ]);
+    expect(formatBenchmarkTable(table)).toContain([
+      '| Arm | Scorer | Passed | Labelled | Unscored | Pass rate | 95% interval | Batched |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- |',
+      '| claude | review-quality | 5 | 9 | 0 | 56% (5/9) | 27% to 81% | yes |',
+      '| claude | test-coverage | 3 | 8 | 1 | 38% (3/8) | 14% to 69% | yes |',
+    ].join('\n'));
+  });
+
+  it("counts a task's scorer over the trials that ran it, leaves out a trial that did not run, and says when a scorer's labels were judged both in a batch and alone", () => {
+    const record = withScorers(recordOf([ARM], [
+      ...(['passed', 'passed', 'failed'] as const).map((outcome) => ({ task: 'session-fixation', verdicts: [verdict('review-quality', 'passed', false), verdict('security-review', outcome)] })),
+      ...Array.from({ length: 6 }, (_, index) => ({ verdicts: [CORRECT, verdict('review-quality', index < 2 ? 'passed' : 'failed', index % 2 === 0)] })),
+      { result: 'not_run' as const, agent: null, verdicts: [verdict('review-quality', 'unscored'), verdict('security-review', 'unscored')] },
+    ]));
+
+    const text = formatBenchmarkTable(benchmarkTable(record));
+
+    expect(text).toContain('| claude | review-quality | 5 | 9 | 0 | 56% (5/9) | 27% to 81% | mixed |');
+    expect(text).toContain('| claude | security-review | 2 | 3 | 0 | 67% (2/3) | 21% to 94% | yes |');
+  });
+
+  it('says no for a scorer judged alone, and gives one no judge labelled no pass rate, interval or batch', () => {
+    const record = withScorers(recordOf([ARM], [{ verdicts: [CORRECT, verdict('review-quality', 'failed', false), verdict('test-coverage', 'unscored')] }]));
+
+    const text = formatBenchmarkTable(benchmarkTable(record));
+
+    expect(text).toContain('| claude | review-quality | 0 | 1 | 0 | 0% (0/1) | 0% to 79% | no |');
+    expect(text).toContain('| claude | test-coverage | 0 | 0 | 1 | - | - | - |');
+  });
+
+  it('prints no scorer table when no suite or task scorer judged a trial', () => {
+    const table = benchmarkTable(recordOf([ARM], [{ verdicts: [CORRECT] }]));
+
+    expect(table.scorers).toEqual([]);
+    expect(formatBenchmarkTable(table)).not.toContain('| Arm | Scorer |');
+  });
+});
+
+describe('benchmark judge calibration', () => {
+  const ARM = { name: 'claude', tool: 'claude', source: 'team', team: { kind: 'pulled', revision: RUN_TEAM } } as const;
+  const FAILED: TrialVerdict = { scorer: 'teamai:correctness:fix', outcome: { kind: 'labelled', label: 'incorrect', score: 0, passed: false }, decider: { by: 'check', task: 'h' } };
+  const OPUS = { by: 'judge', rubric: 'r', tool: 'claude', model: 'claude-opus-5-5', effort: 'high', batched: false } as const;
+  const HAIKU = { by: 'judge', rubric: 'r', tool: 'claude', model: 'claude-haiku-4-5', batched: false } as const;
+  /** A trial its check failed, whose correctness judge `decider` labelled it passing or not. */
+  const calibrated = (decider: typeof OPUS | typeof HAIKU, passed: boolean) => ({ result: 'failed' as const, verdicts: [FAILED], calibration: { label: passed ? 'correct' : 'incorrect', passed, decider } });
+  const times = <T>(count: number, make: (index: number) => T): T[] => Array.from({ length: count }, (_, index) => make(index));
+
+  it("gives a row per judge of the trials whose check failed it labelled too: how many it labelled passing, the false pass rate and its Wilson interval", () => {
+    const record = recordOf([ARM], [...times(10, () => calibrated(OPUS, false)), ...times(10, (index) => calibrated(HAIKU, index < 3)), { result: 'passed', verdicts: [{ ...FAILED, outcome: { kind: 'labelled', label: 'correct', score: 1, passed: true } }] }]);
+
+    const table = benchmarkTable(record);
+
+    expect(table.calibration).toEqual([
+      { judge: { tool: 'claude', model: 'claude-opus-5-5', effort: 'high' }, judged: 10, passing: 0, interval: { low: 0, high: expect.closeTo(0.278, 3) } },
+      { judge: { tool: 'claude', model: 'claude-haiku-4-5' }, judged: 10, passing: 3, interval: { low: expect.closeTo(0.108, 3), high: expect.closeTo(0.603, 3) } },
+    ]);
+    expect(formatBenchmarkTable(table)).toContain([
+      'Judge calibration · teamai:correctness',
+      '',
+      '| Judge | Judged with a failed check | Labelled passing | False pass rate | 95% interval |',
+      '| --- | --- | --- | --- | --- |',
+      '| claude claude-opus-5-5 high | 10 | 0 | 0% | 0% to 28% |',
+      '| claude claude-haiku-4-5 | 10 | 3 | 30% | 11% to 60% |',
+    ].join('\n'));
+    // A calibration label never decides its trial: each stays failed, as its check said.
+    expect(table.results).toMatchObject([{ counts: { passed: 1, failed: 20 } }]);
+  });
+
+  it('prints no calibration table when no judge labelled a trial whose check failed', () => {
+    const table = benchmarkTable(recordOf([ARM], [{ result: 'failed', verdicts: [FAILED] }]));
+
+    expect(table.calibration).toEqual([]);
+    expect(formatBenchmarkTable(table)).not.toContain('Judge calibration');
+  });
+});
+
+describe('benchmark mean correctness score', () => {
+  const ARMS = [
+    { name: 'claude', tool: 'claude', source: 'team', team: { kind: 'pulled', revision: RUN_TEAM } },
+    { name: 'codex', tool: 'codex', source: 'team', team: { kind: 'pulled', revision: RUN_TEAM } },
+  ] as const;
+  const LABELS = { correct: 1, partial: 0.5, incorrect: 0 } as const;
+  const correctness = (labels: ReadonlyArray<keyof typeof LABELS>) => [{
+    name: 'teamai:correctness:fix', rubric: { sourceHash: 'r' }, labels: labels.map((value) => ({ value, score: LABELS[value] })), passingScore: 1,
+  }];
+  /** A trial of `arm` whose correctness verdict is `label`, written by its check or given by a judge, or unscored. */
+  const trial = (arm: string, label: keyof typeof LABELS | 'unscored', by: 'check' | 'judge' = 'judge') => {
+    if (label === 'unscored') return { arm, result: 'unscored' as const, verdicts: [{ scorer: 'teamai:correctness:fix', outcome: { kind: 'unscored', because: 'run_ended' } } satisfies TrialVerdict] };
+    const passed = label === 'correct';
+    return {
+      arm, result: passed ? 'passed' as const : 'failed' as const,
+      verdicts: [{
+        scorer: 'teamai:correctness:fix', outcome: { kind: 'labelled', label, score: LABELS[label], passed },
+        decider: by === 'check' ? { by: 'check', task: 'h' } : { by: 'judge', rubric: 'r', tool: 'claude', model: 'claude-opus-5-5', batched: false },
+      } satisfies TrialVerdict],
+    };
+  };
+  const times = (count: number, make: () => ReturnType<typeof trial>) => Array.from({ length: count }, make);
+  const graded = (trials: Array<ReturnType<typeof trial>>, labels: ReadonlyArray<keyof typeof LABELS> = ['correct', 'partial', 'incorrect']) => {
+    const record = recordOf([...ARMS], trials);
+    return { benchmark: { ...record.benchmark, scorers: correctness(labels) } };
+  };
+
+  it('gives each arm the mean score of its labelled correctness verdicts, those its check wrote included, when a correctness rubric has more than two labels', () => {
+    const record = graded([
+      ...times(2, () => trial('claude', 'correct', 'check')), ...times(2, () => trial('claude', 'correct')), ...times(4, () => trial('claude', 'partial')), trial('claude', 'incorrect', 'check'),
+      ...times(4, () => trial('codex', 'correct')), trial('codex', 'partial'), ...times(4, () => trial('codex', 'incorrect', 'check')),
+    ]);
+
+    const table = benchmarkTable(record);
+    const text = formatBenchmarkTable(table);
+
+    expect(table.results.map(({ arm, correctnessScore }) => ({ arm, correctnessScore }))).toEqual([
+      { arm: 'claude', correctnessScore: { labelled: 9, mean: 6 / 9 } },
+      { arm: 'codex', correctnessScore: { labelled: 9, mean: 4.5 / 9 } },
+    ]);
+    expect(text).toContain('| Pass rate | Mean correctness score |\n');
+    expect(text).toMatch(/\| claude \|.*\| 44% \(4\/9\) \| 0\.67 \|\n/);
+    expect(text).toMatch(/\| codex \|.*\| 44% \(4\/9\) \| 0\.50 \|\n/);
+  });
+
+  it('leaves an unscored correctness verdict out of the mean, and gives an arm with no labelled one no mean', () => {
+    const record = graded([trial('claude', 'partial'), trial('claude', 'unscored'), trial('codex', 'unscored')]);
+
+    const table = benchmarkTable(record);
+
+    expect(table.results.map(({ correctnessScore }) => correctnessScore)).toEqual([{ labelled: 1, mean: 0.5 }, { labelled: 0 }]);
+    expect(formatBenchmarkTable(table)).toMatch(/\| codex \|.*\| 0% \(0\/1\) \| - \|\n/);
+  });
+
+  it('shows no mean when every correctness rubric has two labels', () => {
+    const record = graded([trial('claude', 'correct'), trial('codex', 'incorrect')], ['correct', 'incorrect']);
+
+    const table = benchmarkTable(record);
+
+    expect(table.results.map(({ correctnessScore }) => correctnessScore)).toEqual([undefined, undefined]);
+    expect(formatBenchmarkTable(table)).not.toContain('Mean correctness score');
   });
 });
 
@@ -324,7 +517,7 @@ describe('benchmark usage', () => {
     ]));
 
     expect(table.usage).toMatchObject([{ arm: 'opus', tokens: { value: 8, used: 2, components: ['input', 'output'] }, durationMs: { value: 2000, used: 3 } }]);
-    expect(formatBenchmarkTable(table)).toContain('| Arm | Median tokens (input + output) | Median duration | Cost |\n| --- | --- | --- | --- |\n| opus | 8 (2) | 2.0 s (3) |');
+    expect(formatBenchmarkTable(table)).toContain('| Arm | Median tokens (input + output) | Median duration | Cost | Cost per passed trial |\n| --- | --- | --- | --- | --- |\n| opus | 8 (2) | 2.0 s (3) |');
   });
 
   it('leaves out of the medians and the cost total a trial whose passes did not all state them, as a trial that stated none', () => {
@@ -379,6 +572,111 @@ describe('benchmark usage', () => {
     expect(record.benchmark.trials[0]).toMatchObject({ result: 'error', tokens: { input: 4, output: 2 }, durationMs: 1500, cost: { amount: 0.25, unit: 'USD' } });
     expect(record.benchmark.trials[1]).not.toHaveProperty('durationMs');
     expect(record.benchmark.trials[1]).not.toHaveProperty('cost');
+  });
+});
+
+describe('benchmark cost per passed trial', () => {
+  const arm = (name: string) => ({ ...CLAUDE_ARM, name });
+  const usd = (amount: number) => ({ cost: { amount, unit: 'USD', complete: true } });
+  /** One arm's trials of `fix`, repetition 1 on, each costing `amount`. */
+  const trialsOf = (name: string, results: TrialResult[], amount?: number): TrialSpec[] => results.map((result, index) => ({ arm: name, result, repetition: index + 1, ...(amount === undefined ? {} : usd(amount)) }));
+
+  it("gives each arm its cost total over its passed trials, '—' with no passed trial or no cost, and marks an incomplete total", () => {
+    const table = benchmarkTable(recordOf([arm('known'), arm('none-passed'), arm('no-cost'), arm('partial')], [
+      { arm: 'known', ...usd(0.1) }, { arm: 'known', ...usd(0.2) }, { arm: 'known', result: 'failed', ...usd(0.3) },
+      { arm: 'none-passed', result: 'failed', ...usd(0.5) },
+      { arm: 'no-cost' },
+      { arm: 'partial', ...usd(0.4) }, { arm: 'partial' },
+    ]));
+
+    expect(table.usage.map(({ arm: name, costPerPassedTrial }) => ({ name, costPerPassedTrial }))).toEqual([
+      { name: 'known', costPerPassedTrial: { kind: 'known', amount: expect.closeTo(0.3), unit: 'USD' } },
+      { name: 'none-passed' },
+      { name: 'no-cost' },
+      { name: 'partial', costPerPassedTrial: { kind: 'incomplete', amount: 0.2, unit: 'USD' } },
+    ]);
+    const text = formatBenchmarkTable(table);
+    expect(text).toContain('| Arm | Median tokens (input + output) | Median duration | Cost | Cost per passed trial | Against known (first arm) |\n');
+    expect(text).toContain('| known | unknown (0) | unknown (0) | 0.6 USD (3) | 0.3 USD |  |');
+    expect(text).toContain('| none-passed | unknown (0) | unknown (0) | 0.5 USD (1) | — |');
+    expect(text).toContain('| no-cost | unknown (0) | unknown (0) | unknown (0) | — |');
+    expect(text).toContain('| partial | unknown (0) | unknown (0) | 0.4 USD (1), incomplete: 1 unknown | 0.2 USD, incomplete |');
+  });
+
+  it('marks an arm cheaper per passed trial at the same pass rate as dominating the defaults arm, and one dearer at a lower rate as dominated, beside the paired difference', () => {
+    const record = recordOf([arm('claude'), arm('cheap'), arm('dear')], [
+      ...trialsOf('claude', ['passed', 'passed', 'failed'], 0.3),
+      ...trialsOf('cheap', ['passed', 'passed', 'failed'], 0.1),
+      ...trialsOf('dear', ['passed', 'failed', 'failed'], 0.5),
+    ]);
+
+    const table = benchmarkTable({ benchmark: { ...record.benchmark, defaultsArm: 'claude' } });
+
+    expect(table.against).toMatchObject({
+      reference: 'claude', isDefaultsArm: true,
+      arms: [{ arm: 'cheap', dominance: { kind: 'dominates', passRate: 'same' }, difference: { value: 0 } }, { arm: 'dear', dominance: { kind: 'dominated', passRate: 'lower' } }],
+    });
+    const text = formatBenchmarkTable(table);
+    expect(text).toContain('| Cost per passed trial | Against claude (defaults arm) |\n');
+    expect(text).toContain('| 0.9 USD (3) | 0.45 USD |  |');
+    expect(text).toContain('| 0.15 USD | dominates: same pass rate, 67% cheaper per passed trial; 0 pp (-47 to +47, not separated) |');
+    expect(text).toContain('| 1.5 USD | dominated: lower pass rate, 233% more expensive per passed trial; -33 pp (-72 to +32, not separated) |');
+  });
+
+  it('marks no dominance on an incomplete or unknown cost, and shows a difference whose interval leaves zero without "not separated"', () => {
+    const table = benchmarkTable(recordOf([arm('claude'), arm('partial'), arm('silent')], [
+      ...trialsOf('claude', ['passed', 'failed', 'failed', 'failed'], 1),
+      ...trialsOf('partial', ['passed', 'passed', 'passed'], 0.1), { arm: 'partial', repetition: 4 },
+      ...trialsOf('silent', ['passed', 'passed', 'passed', 'passed']),
+    ]));
+
+    expect(table.against?.arms.map(({ dominance }) => dominance)).toEqual([undefined, undefined]);
+    const text = formatBenchmarkTable(table);
+    expect(text).toContain('| 0.075 USD, incomplete | +75 pp (+9 to +95) |');
+    expect(text).toContain('| — | +75 pp (+9 to +95) |');
+  });
+
+  it('pairs only the trials the regression gate would, and names the pairs it left out', () => {
+    const judged = (rubric: string): Pick<TrialSpec, 'verdicts'> => ({
+      verdicts: [{ scorer: 'teamai:correctness:fix', outcome: { kind: 'labelled', label: 'correct', score: 1, passed: true }, decider: { by: 'judge', rubric, tool: 'claude', model: 'claude-opus-5-5', batched: false } }],
+    });
+    const table = benchmarkTable(recordOf([arm('claude'), arm('other')], [
+      { arm: 'claude', repetition: 1, ...judged('a') }, { arm: 'claude', repetition: 2, ...judged('a') },
+      { arm: 'other', repetition: 1, ...judged('a') }, { arm: 'other', repetition: 2, ...judged('b') },
+    ]));
+
+    expect(table.against?.arms).toMatchObject([{ arm: 'other', difference: { value: 0 }, excluded: [{ pairs: 1, because: { kind: 'judge_changed' } }] }]);
+    expect(formatBenchmarkTable(table)).toMatch(/\| other \|.*; 1 excluded: their judge changed \(/);
+  });
+
+  it('records the arm that changes no defaults key as the one the others are read against', async () => {
+    const { config, runId } = await startTen();
+    await cancelRun(config, runId, {});
+
+    expect((await endRecord(config, runId)).benchmark.defaultsArm).toBe('claude');
+  });
+
+  it('puts the estimate start made beside what each arm cost, and leaves the column out with no earlier run to estimate from', () => {
+    const record = recordOf([arm('claude'), arm('codex')], [{ arm: 'claude', ...usd(15.4) }, { arm: 'codex' }]);
+    const range = { unit: 'USD', low: 13.1, median: 15, high: 16.8 };
+    const estimate = {
+      trials: 2, judgeCalls: 0, judgedTrials: 0, calibrationCalls: 0, basis: { run: 'r1c0d9e2f' },
+      arms: [{ arm: 'claude', trials: 1, perTrial: range, total: range }, { arm: 'codex', trials: 1, unknown: 'no_cost_stated' as const }],
+    };
+
+    const text = formatBenchmarkTable(benchmarkTable({ benchmark: { ...record.benchmark, estimate } }));
+
+    expect(text).toContain('| Cost | Estimated | Cost per passed trial |');
+    expect(text).toContain('| 15.4 USD (1) | 13.1–16.8 USD | 15.4 USD |');
+    expect(text).toContain('| unknown (0) | unknown | — |');
+    expect(formatBenchmarkTable(benchmarkTable({ benchmark: { ...record.benchmark, estimate: { trials: 2, judgeCalls: 0, judgedTrials: 0, calibrationCalls: 0 } } }))).not.toContain('Estimated');
+  });
+
+  it('shows no Against column for a single arm', () => {
+    const text = formatBenchmarkTable(benchmarkTable(recordOf([CLAUDE_ARM], [{ ...usd(0.2) }])));
+
+    expect(text).toContain('| Cost | Cost per passed trial |\n');
+    expect(text).not.toContain('Against');
   });
 });
 
@@ -451,10 +749,10 @@ describe('benchmark task by arm matrix', () => {
       '| opus | claude | claude-opus-4-1 (team) | 5 | 3 | 2 | 0 | 0 | 0 | 0 | 0 | 5 | 60% (3/5) |',
       '| sonnet | claude | claude-sonnet-4-5 (team) | 3 | 2 | 0 | 0 | 0 | 1 | 0 | 0 | 2 | 67% (2/3) |',
       '',
-      '| Arm | Median tokens (input + output) | Median duration | Cost |',
-      '| --- | --- | --- | --- |',
-      '| opus | unknown (0) | unknown (0) | unknown (0) |',
-      '| sonnet | unknown (0) | unknown (0) | unknown (0) |',
+      '| Arm | Median tokens (input + output) | Median duration | Cost | Cost per passed trial | Against opus (first arm) |',
+      '| --- | --- | --- | --- | --- | --- |',
+      '| opus | unknown (0) | unknown (0) | unknown (0) | — |  |',
+      '| sonnet | unknown (0) | unknown (0) | unknown (0) | — | - |',
       '',
       '| Task | opus | sonnet |',
       '| --- | --- | --- |',

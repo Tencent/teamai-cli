@@ -30,7 +30,7 @@ Judge whether the change does what the step asked. Read the diff and the session
 | `passingScore` | A label passes when its score is at or above this. |
 | `samplingRate`, `model`, `isolation` | Optional. Percent of passes judged, 0 to 100, default 25. The judge's model: a team [model alias](sharing.md#model-aliases), resolved per judge tool, or a model name, which goes unchanged to the first judge tool; default the tool's. `verified` or `best-effort`. |
 | `sessions` | Optional. `true`: the scorer also judges [finished sessions](#finished-sessions). |
-| `tool` | Optional. The judge tool to prefer, such as `codex`. When the driver that leases the judge offers it, it judges; else the tool the judged work ran in, else the driver's first tool. A name teamai does not know is warned about, not refused. |
+| `tool` | Optional. The judge tool to prefer, such as `codex`. When the driver that leases the judge offers it, it judges; else the tool the judged work ran in, else the driver's first tool. A name teamai does not know is warned about, not refused. In a [benchmark run](benchmarks.md#one-judge-for-every-arm) it is required: that tool, else the suite's `defaults.tool`, judges every arm, and no other tool does. |
 | `stages` | Optional. Which [stages](#score-what-a-run-delivered) may decide the scorer before its judge: some of `check`, `ci` and `protected`. Default all three. |
 
 The text after the frontmatter is the judge's prompt. `teamai pull` caches valid scorers, which `teamai status` lists, and warns about the rest. `teamai review --branch` fails on a malformed scorer, on a model alias the branch's `models/aliases.yaml` maps for no tool, on any file in `scorers/` other than `<name>.md`, `<namespace>/<name>.md`, `scoring.yaml` and `README.md`, on a `scoring.yaml` with a key or value it does not know, and on a credential or internal address in any file there, as it does for rules.
@@ -69,6 +69,8 @@ Each label records what judged:
 ```
 
 `requested` is the model the judge was launched with, or the one a driver's report of the judge step names in `confined.model`. `reported` is the one the tool reports. `alias` stays when the tool default judges. An alias effort adds `"effort":{"requested":"low"}`.
+
+A cheaper judge can pass work it should not. Before you give a benchmark's correctness judge a cheaper `model`, [calibrate it against the check](benchmarks.md#calibrate-a-judge).
 
 ## Score a step
 
@@ -770,6 +772,7 @@ teamai ships the rubric of each question it generates per item as a default scor
 |---|---|---|
 | `scorers/teamai-routing.md` | one [routing question](#skill-routing) per team skill a session was delivered | `skill.name` |
 | `scorers/teamai-adoption.md` | one [adoption question](#recall-adoption) per recalled doc a session never opened | `doc.id`, `doc.path`, `doc.file` |
+| `scorers/teamai-correctness.md` | one [correctness question](benchmarks.md#the-correctness-rubric) per benchmark task, whose label decides each trial | `task.prompt`, `task.successCriteria` |
 
 A default is a scorer file whose text reads its variables as `{{ … }}`, filled in for each item. This one judges whether a skill was worth its context:
 
@@ -878,7 +881,7 @@ A judge no driver here can take keeps `teamai-score` open until a timeout ends i
 ⚠ [workflows] workflows/score-this.yaml: step "score" runs teamai-score with no timeout, so a judge no driver here can take holds it open until the run ends. Give it a timeout, such as timeout: 30m, and continue_on_failure: true.
 ```
 
-In a coding session, the skill driver gives up such a judge step at once, when nothing else of the run is left and `continue_on_failure` lets it.
+In a coding session, the skill driver gives up such a judge step at once, when nothing else of the run is left and `continue_on_failure` lets it. It cancels the step that sets `continue_on_failure` with `confined_unoffered` when no driver offers the tool `confined.json` asks for, and with `cancelled` when an offered tool resolves no model for it.
 
 A judging run is never judged. Pull refuses `scorers:` on a step that runs `teamai-score` or `teamai-finished-sessions`, with `judging_scored`, and the file does not run:
 

@@ -30,7 +30,7 @@ Judge whether the change does what the step asked. Read the diff and the session
 | `passingScore` | 标签分数不低于它即为通过。 |
 | `samplingRate`、`model`、`isolation` | 可选。被评判的步骤执行比例，0 到 100，默认 25。评审者的模型：团队[模型别名](sharing.md#模型别名)，按评审工具分别解析；或模型名，原样交给第一个评审工具。默认用工具自己的模型。`verified` 或 `best-effort`。 |
 | `sessions` | 可选。`true`：评分器也评判[已结束的会话](#已结束的会话)。 |
-| `tool` | 可选。优先使用的评审工具，例如 `codex`。租用评审步骤的驱动提供它时由它评审；否则用被评判工作所用的工具，再否则用驱动的第一个工具。teamai 不认识的名称只给出警告，不会被拒绝。 |
+| `tool` | 可选。优先使用的评审工具，例如 `codex`。租用评审步骤的驱动提供它时由它评审；否则用被评判工作所用的工具，再否则用驱动的第一个工具。teamai 不认识的名称只给出警告，不会被拒绝。在 [benchmark 运行](benchmarks.md#对所有-arm-用同一个评判)中它是必需的：由该工具（没有时用套件的 `defaults.tool`）评判所有 arm，不会换用其他工具。 |
 | `stages` | 可选。哪些[阶段](#为交付的工作评分)可以在评审者之前为该评分器做出判定：`check`、`ci`、`protected` 中的若干个。默认三个都用。 |
 
 frontmatter 之后的文本是评审者的提示词。`teamai pull` 缓存有效的评分器（`teamai status` 会列出它们），并对其余文件给出警告。`teamai review --branch` 遇到格式错误的评分器、分支的 `models/aliases.yaml` 没有为任何工具映射的模型别名、`scorers/` 里除 `<name>.md`、`<namespace>/<name>.md`、`scoring.yaml` 和 `README.md` 以外的文件、含有它不认识的键或值的 `scoring.yaml`，或其中任何文件含有凭据或内网地址时会失败，与规则的检查相同。
@@ -69,6 +69,8 @@ aliases:
 ```
 
 `requested` 是评审者启动时使用的模型；对 driver 自己的评审者，是它报告评审步骤时在 `confined.model` 中给出的模型。`reported` 是工具报告的模型。工具默认模型评审时 `alias` 仍会保留。别名设置了 effort 时还会有 `"effort":{"requested":"low"}`。
+
+更便宜的评审者可能让不该通过的工作通过。给 benchmark 的正确性评审者换更便宜的 `model` 之前，先[用 check 校准它](benchmarks.md#校准评判)。
 
 ## 为步骤评分
 
@@ -770,6 +772,7 @@ teamai 为它按条目生成的每类问题附带一份评分标准，作为默�
 |---|---|---|
 | `scorers/teamai-routing.md` | 会话得到的每个团队技能一个[路由问题](#技能路由) | `skill.name` |
 | `scorers/teamai-adoption.md` | 会话从未打开的每篇已召回文档一个[采纳问题](#recall-采纳) | `doc.id`、`doc.path`、`doc.file` |
+| `scorers/teamai-correctness.md` | 每个 benchmark 任务一个[正确性问题](benchmarks.md#正确性评分标准)，它的标签决定每个 trial | `task.prompt`、`task.successCriteria` |
 
 默认评分器是一个评分器文件，文本用 `{{ … }}` 读取变量，按每个条目填入。下面这个评判技能是否值得占用上下文：
 
@@ -878,7 +881,7 @@ steps:
 ⚠ [workflows] workflows/score-this.yaml: step "score" runs teamai-score with no timeout, so a judge no driver here can take holds it open until the run ends. Give it a timeout, such as timeout: 30m, and continue_on_failure: true.
 ```
 
-在编程会话中，运行里没有别的步骤可做、且 `continue_on_failure` 允许时，skill 驱动会立即放弃这样的评审步骤。
+在编程会话中，运行里没有别的步骤可做、且 `continue_on_failure` 允许时，skill 驱动会立即放弃这样的评审步骤。没有驱动提供 `confined.json` 要求的工具时，它以 `confined_unoffered` 取消设置了 `continue_on_failure` 的那个步骤；提供的工具解析不出它的模型时，以 `cancelled` 取消。
 
 评审运行本身从不被评审。步骤运行 `teamai-score` 或 `teamai-finished-sessions` 并列出 `scorers:` 时，pull 以 `judging_scored` 拒绝它，该文件不会运行：
 

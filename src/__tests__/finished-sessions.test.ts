@@ -15,6 +15,9 @@ import type { RunMode } from '../launch-context.js';
 import { saveLocalConfig } from '../config.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
 import { FinishedSessions, type ListOptions, type ShareOptions } from '../session-flow/finished-sessions.js';
+import { SessionCaptures } from '../session-flow/captures.js';
+import { syncTeamDefinitions } from '../benchmark/suite-cache.js';
+import { SyncManager, defaultSyncMeta, getRepoIdentity } from '../session-flow/sync.js';
 import { markContributed } from '../contribute-check.js';
 import { SessionPublish } from '../session-flow/session-publish.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
@@ -91,7 +94,7 @@ async function team(files: Record<string, string> = {}, member: Partial<LocalCon
 }
 
 /** A Claude session `sessionId`, captured in the user scope's data home in `runMode`, with nothing happening in it for `idleFor`. */
-function capturedSession(sessionId: string, runMode: RunMode, { idleFor = 7 * HOUR } = {}): void {
+function capturedSession(sessionId: string, runMode: RunMode, { idleFor = 7 * HOUR, startedAt }: { idleFor?: number; startedAt?: { commit: string; dirty: boolean } } = {}): void {
   const cwd = path.join(root, 'app');
   const project = path.join(mocks.home, '.claude', 'projects', encodeCwdClaude(cwd));
   fs.mkdirSync(project, { recursive: true });
@@ -106,7 +109,7 @@ function capturedSession(sessionId: string, runMode: RunMode, { idleFor = 7 * HO
   fs.mkdirSync(captures, { recursive: true });
   const captureId = `0b6f2a52-5d7e-4c7e-9a43-${sessionId.slice(-12)}`;
   fs.writeFileSync(path.join(captures, `${captureId}.json`), JSON.stringify({ captureId, platform: 'claude-code', sessionId,
-    capturedAt: idleSince.toISOString(), runMode, agent: { v: 1, tool: { name: 'claude' }, teamai: '1.0.0', driver: 'session' }, sessionFile: file }));
+    capturedAt: idleSince.toISOString(), runMode, agent: { v: 1, tool: { name: 'claude' }, ...(startedAt ? { project: startedAt } : {}), teamai: '1.0.0', driver: 'session' }, sessionFile: file }));
 }
 
 function data(envelope: WorkflowEnvelope): Record<string, unknown> {
@@ -309,6 +312,174 @@ describe('session list --finished --all', () => {
   });
 });
 
+
+const APP_URL = 'https://github.com/acme/app.git';
+
+/**
+ * The business repo sessions work in, `<root>/app`, cloned from a bare origin git reaches as APP_URL; its first
+ * commit, and commits that change `lines` lines in `files` files when `commit` is called.
+ */
+function appRepo(): { start: string; commit: (change: { files: number; lines: number }) => string; pushed: () => void } {
+  const app = path.join(root, 'app');
+  fs.mkdirSync(app, { recursive: true });
+  git(app, 'init', '-q', '-b', 'main');
+  fs.writeFileSync(path.join(app, 'README.md'), 'app\n');
+  git(app, 'add', '-A');
+  git(app, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'start');
+  const origin = path.join(root, 'app.git');
+  git(root, 'init', '-q', '--bare', origin);
+  git(app, 'remote', 'add', 'origin', origin);
+  git(app, 'push', '-q', 'origin', 'main');
+  vi.stubEnv('GIT_CONFIG_COUNT', '1');
+  vi.stubEnv('GIT_CONFIG_KEY_0', `url.${origin}.insteadOf`);
+  vi.stubEnv('GIT_CONFIG_VALUE_0', APP_URL);
+  let made = 0;
+  return {
+    start: git(app, 'rev-parse', 'HEAD'),
+    commit: ({ files, lines }) => {
+      made += 1;
+      for (let file = 0; file < files; file++) {
+        const count = Math.floor(lines / files) + (file === 0 ? lines % files : 0);
+        fs.writeFileSync(path.join(app, `change-${made}-${file}.txt`), Array.from({ length: count }, (_, line) => `line ${line}\n`).join(''));
+      }
+      git(app, 'add', '-A');
+      git(app, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', `change ${made}`);
+      return git(app, 'rev-parse', 'HEAD');
+    },
+    pushed: () => git(app, 'push', '-q', 'origin', 'HEAD:refs/heads/main', '--force'),
+  };
+}
+
+const SUITE = `schemaVersion: v1alpha1
+name: fix-auth
+repo: ${APP_URL}
+defaults: { tool: claude }
+arms: [{ name: main }]
+repetitions: 1
+timeout: 1h
+`;
+
+const SUITE_TASK = (extra = '') => `schemaVersion: v1alpha1
+title: Fix it
+prompt: Make the test pass.
+startingCommit: ${'a'.repeat(40)}
+check: { run: node test.js, protect: [test.js] }
+${extra}`;
+
+/** A team whose suite benchmarks/fix-auth holds `tasks`, by file name, received by this member. */
+async function suiteTeam(tasks: Record<string, string> = { 'other.yaml': SUITE_TASK() }): Promise<LocalConfig> {
+  const config = await team({ 'benchmarks/fix-auth/suite.yaml': SUITE, ...Object.fromEntries(Object.entries(tasks).map(([file, text]) => [`benchmarks/fix-auth/tasks/${file}`, text])) });
+  await syncTeamDefinitions(config);
+  return config;
+}
+
+/** A finished session of the app that started at `start` and whose last Stop found the app at HEAD. */
+async function endedSession(config: LocalConfig, sessionId: string, start: { commit: string; dirty: boolean }): Promise<void> {
+  capturedSession(sessionId, 'attended', { startedAt: start });
+  await SessionCaptures.atStop(config, 'claude', { session_id: sessionId, cwd: path.join(root, 'app') });
+}
+
+describe('session list --finished --all --suite', () => {
+  it('adds the start, the solution, and how many files and lines changed, and counts a session with no recorded end', async () => {
+    const config = await suiteTeam();
+    const app = appRepo();
+    const solution = app.commit({ files: 2, lines: 30 });
+    app.pushed();
+    await endedSession(config, IDLE, { commit: app.start, dirty: false });
+    capturedSession(ACTIVE, 'attended', { startedAt: { commit: app.start, dirty: false }, idleFor: 8 * HOUR });
+
+    expect(await shareable(config, { suite: 'benchmarks/fix-auth' })).toEqual({
+      ok: true,
+      list: [{ session: IDLE, source: 'claude-code', ended: expect.any(String), prompt: 'Add retries to the client', start: app.start, solution, files: 2, lines: 30 }],
+      leftOut: [{ reason: 'no recorded end', sessions: 1 }],
+    });
+  });
+
+  it('sizes each change as the smallest of S, M and L whose lines and files limits both fit it, else XL', async () => {
+    const config = await suiteTeam();
+    const app = appRepo();
+    const sessions = [
+      { id: '7c1e0000-0000-4000-8000-0000000000a1', change: { files: 3, lines: 40 } },
+      { id: '7c1e0000-0000-4000-8000-0000000000a2', change: { files: 4, lines: 12 } },
+      { id: '7c1e0000-0000-4000-8000-0000000000a3', change: { files: 1, lines: 801 } },
+    ];
+    for (const { id, change } of sessions) {
+      const start = git(path.join(root, 'app'), 'rev-parse', 'HEAD');
+      app.commit(change);
+      await endedSession(config, id, { commit: start, dirty: false });
+    }
+    app.pushed();
+
+    const answer = await shareable(config, { suite: 'benchmarks/fix-auth', sizes: 'S=40,3 M=200,10 L=800,30' });
+
+    expect(answer.ok && answer.list.map((one) => ('size' in one ? [one.session, one.lines, one.files, one.size] : []))).toEqual([
+      [sessions[0]?.id, 40, 3, 'S'],
+      [sessions[1]?.id, 12, 4, 'M'],
+      [sessions[2]?.id, 801, 1, 'XL'],
+    ]);
+  });
+
+  it('leaves out a session that started or ended with tracked files modified, made no commit, or whose commits the suite repo lacks', async () => {
+    const config = await suiteTeam();
+    const app = appRepo();
+    app.commit({ files: 1, lines: 2 });
+    app.pushed();
+    await endedSession(config, '7c1e0000-0000-4000-8000-0000000000b1', { commit: app.start, dirty: true });
+    await endedSession(config, '7c1e0000-0000-4000-8000-0000000000b2', { commit: git(path.join(root, 'app'), 'rev-parse', 'HEAD'), dirty: false });
+    fs.writeFileSync(path.join(root, 'app', 'README.md'), 'changed\n');
+    await endedSession(config, '7c1e0000-0000-4000-8000-0000000000b3', { commit: app.start, dirty: false });
+    git(path.join(root, 'app'), 'checkout', '-q', '--', 'README.md');
+    app.commit({ files: 1, lines: 2 });
+    await endedSession(config, '7c1e0000-0000-4000-8000-0000000000b4', { commit: app.start, dirty: false });
+
+    expect(await shareable(config, { suite: 'benchmarks/fix-auth' })).toEqual({
+      ok: true,
+      list: [],
+      leftOut: [
+        { reason: 'started with tracked files modified', sessions: 1 },
+        { reason: 'ended with tracked files modified', sessions: 1 },
+        { reason: 'ended on the commit it started at', sessions: 1 },
+        { reason: 'commits not in the suite repo', sessions: 1 },
+      ],
+    });
+  });
+
+  it('leaves out a session a task of the suite already comes from, by session or solution commit, and keeps one a learning came from', async () => {
+    const app = appRepo();
+    const fromSession = '7c1e0000-0000-4000-8000-0000000000c1';
+    const fromSolution = '7c1e0000-0000-4000-8000-0000000000c2';
+    const taken = app.commit({ files: 1, lines: 2 });
+    const solution = app.commit({ files: 1, lines: 2 });
+    app.pushed();
+    const config = await suiteTeam({
+      'by-session.yaml': SUITE_TASK(`source: { platform: claude-code, sessionId: ${fromSession} }\n`),
+      'by-solution.yaml': SUITE_TASK(`solutionCommit: ${taken}\n`),
+    });
+    git(path.join(root, 'app'), 'checkout', '-q', taken);
+    await endedSession(config, fromSolution, { commit: app.start, dirty: false });
+    git(path.join(root, 'app'), 'checkout', '-q', solution);
+    for (const id of [fromSession, IDLE]) await endedSession(config, id, { commit: taken, dirty: false });
+    await markContributed(IDLE);
+
+    expect(await shareable(config, { suite: 'benchmarks/fix-auth' })).toMatchObject({
+      ok: true,
+      list: [{ session: IDLE, start: taken, solution }],
+      leftOut: [{ reason: 'a task of the suite already comes from it', sessions: 2 }],
+    });
+  });
+
+  it('refuses a directory that holds no suite, --sizes it cannot read, and --sizes without --suite', async () => {
+    const config = await suiteTeam();
+    const sizes = (text: string) => `--sizes "${text}" is not S, M and L, each as <name>=<lines>,<files>, such as "S=40,3 M=200,10 L=800,30".`;
+
+    expect(await shareable(config, { suite: 'benchmarks/other' })).toEqual({ ok: false, code: 'suite_not_found', message: 'No benchmark suite this checkout received is in benchmarks/other. Give a suite\'s directory, such as benchmarks/fix-auth, or run teamai pull for the team\'s newest suites.' });
+    expect(await shareable(config, { suite: 'benchmarks/fix-auth', sizes: 'S=40,3 M=200,10' })).toEqual({ ok: false, code: 'invalid_arguments', message: sizes('S=40,3 M=200,10') });
+    expect(await shareable(config, { suite: 'benchmarks/fix-auth', sizes: 'S=40 M=200,10 L=800,30' })).toEqual({ ok: false, code: 'invalid_arguments', message: sizes('S=40 M=200,10 L=800,30') });
+    expect(await shareable(config, { suite: 'benchmarks/fix-auth', sizes: 'S=1,1 S=2,2 L=3,3' })).toEqual({ ok: false, code: 'invalid_arguments', message: sizes('S=1,1 S=2,2 L=3,3') });
+    expect(await shareable(config, { sizes: 'S=40,3 M=200,10 L=800,30' })).toEqual({ ok: false, code: 'invalid_arguments', message: '--sizes sizes the sessions a suite could take a task from, so it takes --suite. Add --suite <dir>.' });
+  });
+});
+
 /** Runs `teamai session list --finished ...args` from `<root>/app`, and what it printed and its exit code. */
 async function listCommand(...args: string[]): Promise<{ code: number; out: string[]; err: string[] }> {
   const out: string[] = [];
@@ -339,6 +510,85 @@ async function listCommand(...args: string[]): Promise<{ code: number; out: stri
   }
 }
 
+/** Runs `teamai session ...args` from `<root>/app`, and what it printed and its exit code. */
+async function sessionCommand(...args: string[]): Promise<{ code: number; out: string[]; err: string[] }> {
+  const out: string[] = [];
+  const err: string[] = [];
+  vi.spyOn(console, 'log').mockImplementation((...said: unknown[]) => {
+    out.push(said.map(String).join(' '));
+  });
+  vi.spyOn(console, 'error').mockImplementation((...said: unknown[]) => {
+    err.push(said.map(String).join(' '));
+  });
+  vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+    out.push(String(chunk).trimEnd());
+    return true;
+  });
+  const program = new Command();
+  registerSessionFlowCommands(program.command('session'));
+  process.exitCode = 0;
+  try {
+    await program.parseAsync(['node', 'teamai', 'session', ...args]);
+    return { code: Number(process.exitCode ?? 0), out, err };
+  } finally {
+    process.exitCode = 0;
+    vi.mocked(process.stdout.write).mockRestore();
+    vi.mocked(console.error).mockRestore();
+    vi.mocked(console.log).mockRestore();
+  }
+}
+
+/** Archives, at `archive`, a session `sessionId` that `author` pushed from the app, with `commits` when given. */
+async function pushedSession(archive: string, { sessionId, author, commits, repoIdentity = 'github.com/acme/app' }: { sessionId: string; author: string; commits?: { start?: { commit: string; dirty: boolean }; end?: { commit: string; dirty: boolean } }; repoIdentity?: string }): Promise<string> {
+  const session = {
+    sessionId, title: 'Refresh tokens past expiry', cwd: path.join(root, 'app'), platform: 'claude-code', createdAt: '2026-11-05T17:00:00.000Z', updatedAt: '2026-11-05T17:40:00.000Z', metadata: {},
+    messages: [{ role: 'user' as const, timestamp: '2026-11-05T17:00:00.000Z', content: [{ type: 'text' as const, text: 'Refresh tokens past expiry, the secret is s3cr3t-token-value' }] }],
+  };
+  const meta = defaultSyncMeta({ platform: 'claude-code', author, cwd: session.cwd, sessionId, repoIdentity, title: session.title, ...(commits ? { commits } : {}) }, session.createdAt);
+  const written = await new SyncManager(archive).saveSession(session, meta);
+  if (written.status !== 'written') throw new Error(`the session was not archived: ${written.status}`);
+  return path.basename(written.value, '.jsonl');
+}
+
+describe('session list --all --suite, over the sessions the team pushed', () => {
+  it('lists each pushed session of the suite\'s repository with its archive name, author, commits, change and size, and counts one archived without commits', async () => {
+    await suiteTeam();
+    const app = appRepo();
+    const solution = app.commit({ files: 2, lines: 30 });
+    app.pushed();
+    const archive = path.join(root, 'archive');
+    const name = await pushedSession(archive, { sessionId: '7c1e2b9a', author: 'ana', commits: { start: { commit: app.start, dirty: false }, end: { commit: solution, dirty: false } } });
+    await pushedSession(archive, { sessionId: '5d3f9e01', author: 'ana' });
+    fs.mkdirSync(path.join(root, 'app'), { recursive: true });
+
+    const printed = await sessionCommand('list', '--all', '--suite', 'benchmarks/fix-auth', '--sizes', 'S=40,3 M=200,10 L=800,30', '--repo-root', archive, '--cwd', path.join(root, 'app'), '--json');
+
+    expect(printed.code, printed.err.join('\n')).toBe(0);
+    expect(JSON.parse(printed.out.join(''))).toEqual({
+      list: [{ session: '7c1e2b9a', source: 'claude-code', ended: expect.any(String), title: 'Refresh tokens past expiry', teamSession: name, author: 'ana', start: app.start, solution, files: 2, lines: 30, size: 'S' }],
+      leftOut: [{ reason: 'archived without recorded commits', sessions: 1 }],
+    });
+  });
+
+  // A member whose url.insteadOf sends the suite's repo to a mirror archives a session under the mirror's identity.
+  it('lists a session pushed from a checkout that reaches the suite\'s repository through url.insteadOf', async () => {
+    await suiteTeam();
+    const app = appRepo();
+    const solution = app.commit({ files: 2, lines: 30 });
+    app.pushed();
+    const member = path.join(root, 'member');
+    git(root, 'clone', '-q', APP_URL, member);
+    const repoIdentity = getRepoIdentity(member) ?? '';
+    const archive = path.join(root, 'archive');
+    await pushedSession(archive, { sessionId: '7c1e2b9a', author: 'ana', repoIdentity, commits: { start: { commit: app.start, dirty: false }, end: { commit: solution, dirty: false } } });
+
+    const printed = await sessionCommand('list', '--all', '--suite', 'benchmarks/fix-auth', '--repo-root', archive, '--cwd', path.join(root, 'app'), '--json');
+
+    expect(repoIdentity).not.toBe('github.com/acme/app');
+    expect(JSON.parse(printed.out.join('')).list).toEqual([expect.objectContaining({ session: '7c1e2b9a', author: 'ana', start: app.start, solution })]);
+  });
+});
+
 describe('teamai session list --finished', () => {
   it('prints each finished session of this directory\'s scope, as a line or as {"list":[...]} with --json', async () => {
     await team({}, { scoring: { sessions: true } });
@@ -348,6 +598,44 @@ describe('teamai session list --finished', () => {
     expect(await listCommand('--json')).toEqual({
       code: 0, out: [JSON.stringify({ list: [{ session: IDLE, source: 'claude-code', publish: false, scorers: ['quality'], demand: 'auto' }] })], err: [],
     });
+  });
+
+  it('prints with --all --suite the sessions the suite could take a task from, and how many it left out and why', async () => {
+    const config = await suiteTeam();
+    const app = appRepo();
+    const solution = app.commit({ files: 2, lines: 30 });
+    app.pushed();
+    await endedSession(config, IDLE, { commit: app.start, dirty: false });
+    capturedSession(ACTIVE, 'attended', { startedAt: { commit: app.start, dirty: false }, idleFor: 8 * HOUR });
+
+    expect(await listCommand('--all', '--suite', 'benchmarks/fix-auth', '--sizes', 'S=40,3 M=200,10 L=800,30')).toEqual({
+      code: 0,
+      out: [`  ${IDLE}  claude-code  ${app.start.slice(0, 7)}..${solution.slice(0, 7)}  2 files, 30 lines  S`, 'Left out 1 session: no recorded end (1).'],
+      err: [],
+    });
+    const json = await listCommand('--all', '--suite', 'benchmarks/fix-auth', '--json');
+    expect(JSON.parse(json.out.join(''))).toEqual({
+      list: [{ session: IDLE, source: 'claude-code', ended: expect.any(String), prompt: 'Add retries to the client', start: app.start, solution, files: 2, lines: 30 }],
+      leftOut: [{ reason: 'no recorded end', sessions: 1 }],
+    });
+  });
+
+  it('counts a one-line change in one file in the singular', async () => {
+    const config = await suiteTeam();
+    const app = appRepo();
+    const solution = app.commit({ files: 1, lines: 1 });
+    app.pushed();
+    await endedSession(config, IDLE, { commit: app.start, dirty: false });
+
+    expect(await listCommand('--all', '--suite', 'benchmarks/fix-auth')).toEqual({
+      code: 0, out: [`  ${IDLE}  claude-code  ${app.start.slice(0, 7)}..${solution.slice(0, 7)}  1 file, 1 line`], err: [],
+    });
+  });
+
+  it('refuses --suite without --all', async () => {
+    await suiteTeam();
+
+    expect(await listCommand('--suite', 'benchmarks/fix-auth')).toEqual({ code: 1, out: [], err: ['Error: --suite and --sizes list the sessions a suite could take a task from, so they take --all. Add --all.'] });
   });
 
   it('says when it finds no finished session', async () => {

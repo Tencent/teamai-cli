@@ -9,9 +9,9 @@ import path from 'node:path';
 import { isRecordableLabel, isRecordableName, observeCheckout } from '../agent-observation.js';
 import { loadLocalConfigForScope } from '../config.js';
 import { isModelAlias, loadModelAliases, loadTeamModelAliases, noModelCause, noModelReason, resolveModelValue, type ModelAliases, type ModelResolution, type NoModel } from '../models/aliases.js';
-import { pinScorers } from '../scorers/cache.js';
+import { defaultScorerRubric, pinScorers } from '../scorers/cache.js';
 import { RunScorers } from '../scorers/run-scorers.js';
-import type { PinnedScorer } from '../scorers/pin.js';
+import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
 import { resolveTeamRef, TeamRefError } from '../team-ref.js';
 import { roleDeclaration, type RoleDeclaration } from '../roles.js';
 import { isAgentToolId } from '../tools.js';
@@ -23,21 +23,25 @@ import { error } from '../workflow/engine.js';
 import { runDeadline } from '../workflow/limits.js';
 import { findAttemptRun } from '../workflow/run-location.js';
 import { judgeUnavailable } from '../scorers/judges-here.js';
-import type { WorkflowEnvelope, WorkflowFailure } from '../workflow/types.js';
+import { chooseJudgeModel } from '../scorers/judge-model.js';
+import type { RunState, WorkflowEnvelope, WorkflowFailure } from '../workflow/types.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import { git } from '../workflow/worktree.js';
-import { addedOf, compileBundle, freezePlan, type BenchmarkPlan, type CompiledBundle, type PlannedArm } from './plan.js';
-import { defaultsArmOf, parseSuite, type Arm, type Suite, type Task, type TaskJudge } from './suite.js';
+import { addedOf, compileBundle, freezePlan, trialScorersOf, type BenchmarkEstimate, type BenchmarkPlan, type CompiledBundle, type PinnedRubric, type PlannedArm } from './plan.js';
+import { isMixedTask } from './calibration.js';
+import { estimateOf, judgeCallsOf } from './estimate.js';
+import { log } from '../utils/logger.js';
+import { defaultsArmOf, parseSuite, type Arm, type Suite, type Task, type TaskCheck, TaskJudge } from './suite.js';
 import { coveredDelivery, coveredSkillName, teamFilesAt } from './team-without.js';
 import { pinArmWorkflow, type PinnedArmWorkflow } from './arm-workflow.js';
 import type { TeamSelection } from '../workflow/clone.js';
 import type { ArmTeam, SkillChanges } from './terms.js';
 import type { Added } from '../scorers/check.js';
 import { runCheckAt, type CheckRun } from '../scorers/check-run.js';
-import { commitCacheOf } from '../workflow/place/place.js';
+import { commitCacheOf, firstUnreachable } from '../workflow/place/place.js';
 import { leavesOut, withoutRefusal } from './team-without.js';
 import { commitCheckFiles, trialBlocker, type CommittedSuite } from './trial.js';
-import { trialsUnattended } from './run-plan.js';
+import { planOfRun, trialsUnattended } from './run-plan.js';
 
 /** What planning reads besides the suite. */
 interface BenchmarkStart {
@@ -80,10 +84,40 @@ export async function planBenchmark(config: LocalConfig, name: string, options: 
   const frozen = await freezeSuite(config, name, options);
 
   if (!frozen.ok) return { refused: frozen.refused };
-  const { suite, plan, committed, armWorkflows } = frozen;
-  const { definition, workflows, scorers } = compileBundle(plan, committed, { armWorkflows, unattended: options.unattended });
+  const { suite, committed, pinned, armWorkflows, correctnessRubric } = frozen;
+  const plan = { ...frozen.plan, estimate: await estimateFor(config, { plan: frozen.plan, committed, pinned }) };
+  const { definition, workflows, scorers } = compileBundle(plan, committed, { armWorkflows, unattended: options.unattended, correctnessRubric });
 
   return { planned: { definition: { definition, workflows }, plan }, generated: scorers, timeoutMs: suite.timeoutMs };
+}
+
+/**
+ * What `plan` will cost, from the earlier runs of its suite on this machine and on teamai-reports as this checkout last
+ * read it. Its judge calls are counted batched, as teamai's benchmark workflow judges a trial. The earlier runs never
+ * refuse a plan: when they cannot be read, a warning says why, and the estimate has no basis.
+ */
+async function estimateFor(config: LocalConfig, { plan, committed, pinned }: { plan: BenchmarkPlan; committed: CommittedSuite; pinned: Record<string, PinnedScorer> }): Promise<BenchmarkEstimate> {
+  const definitions = Object.fromEntries(Object.entries(pinned).flatMap(([name, pin]) => {
+    const definition = pinnedDefinition(name, pin);
+
+    return definition ? [[name, { model: definition.model, tool: definition.tool }]] : [];
+  }));
+
+  const calls = judgeCallsOf({
+    trials: plan.trials,
+    tasks: committed.suite.tasks.map((task) => ({ id: task.id, scorers: trialScorersOf(committed.suite, task), isMixed: plan.tasks.some((one) => one.id === task.id && isMixedTask(one)) })),
+    judges: plan.judges, definitions, calibrationRate: plan.calibration?.rate ?? 0, batch: true,
+  });
+
+  const { benchmarkRuns } = await import('../dashboard/benchmarks.js');
+
+  const earlier = await benchmarkRuns(config, { refresh: false }).catch((cause: unknown) => {
+    log.warn(`Could not read the earlier runs of ${plan.suite.name} to estimate its cost, so the run starts without an estimate: ${cause instanceof Error ? cause.message : String(cause)}`);
+
+    return [];
+  });
+
+  return estimateOf({ plan, calls, earlier });
 }
 
 /**
@@ -120,11 +154,12 @@ function durationText(ms: number): string {
   return unit ? `${ms / unit[1]}${unit[0]}` : `${ms}ms`;
 }
 
-type Frozen = { ok: true; suite: Suite; plan: BenchmarkPlan; committed: CommittedSuite; pinned: Record<string, PinnedScorer>; armWorkflows: Map<string, PinnedArmWorkflow> } | Refused;
+type Frozen = { ok: true; suite: Suite; plan: BenchmarkPlan; committed: CommittedSuite; pinned: Record<string, PinnedScorer>; armWorkflows: Map<string, PinnedArmWorkflow>; correctnessRubric: string } | Refused;
 
 /**
  * Suite `name` as the plan freezes it, at the team revision this checkout last pulled: its arms' team assets and models,
- * its team scorers pinned, its check files committed into the commit cache, and every task commit fetched into it.
+ * its team scorers pinned, the correctness rubric of every arm (the team's scorers/teamai-correctness.md that pull kept,
+ * else teamai's), its check files committed into the commit cache, and every task commit fetched into it.
  * Refused when any of them cannot be, or when the suite needs a judge this machine cannot run.
  */
 async function freezeSuite(config: LocalConfig, name: string, options: BenchmarkStart): Promise<Frozen> {
@@ -197,11 +232,30 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
     arms[index] = { ...arm, workflow: { name: workflow, sourceHash: pinnedWorkflow.pinned.sourceHash } };
   }
 
-  const pinned = await pinScorers(config, found.scorers);
+  const listedByTasks = found.tasks.flatMap((task) => (task.scorers ?? []).map((scorer) => ({ task, scorer })));
+  const pinned = await pinScorers(config, [...new Set([...found.scorers, ...listedByTasks.map(({ scorer }) => scorer)])]);
   const unpinned = found.scorers.find((scorer) => !Object.hasOwn(pinned, scorer));
 
   if (unpinned !== undefined) {
     return refuse(error('scorer_not_found', `Suite "${found.name}" lists scorer "${unpinned}", which has no valid scorers/${unpinned}.md for this member. Add the scorer, or remove it from ${found.relativePath}, push it, run teamai pull, and start again.`));
+  }
+
+  const unpinnedOfTask = listedByTasks.find(({ scorer }) => !Object.hasOwn(pinned, scorer));
+
+  if (unpinnedOfTask !== undefined) {
+    const { task, scorer } = unpinnedOfTask;
+
+    return refuse(error('scorer_not_found', `Task "${task.id}" of suite "${found.name}" lists scorer "${scorer}", which has no valid scorers/${scorer}.md for this member. Add the scorer, or remove it from ${task.relativePath}, push it, run teamai pull, and start again.`));
+  }
+
+  const rubrics: Record<string, PinnedRubric> = {};
+
+  for (const [scorer, pin] of Object.entries(pinned)) {
+    const definition = pinnedDefinition(scorer, pin);
+    const [firstLabel, ...otherLabels] = definition?.labels ?? [];
+
+    if (!definition || !firstLabel) return refuse(error('scorer_invalid', `Scorer "${scorer}" of suite "${found.name}" is written in a form this teamai cannot read. Update teamai, and start again.`));
+    rubrics[scorer] = { pin, definition: definedFields<PinnedRubric['definition']>({ labels: [firstLabel, ...otherLabels], passingScore: definition.passingScore, tool: definition.tool, model: definition.model }) };
   }
 
   const committed = await commitCheckFiles(commitCacheOf(config, found.repo), found);
@@ -216,17 +270,30 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
   const covered = await coveredTaskRefusal(config, { tasks: found.tasks, pulled: revision, arms, member: selectionOf(config) });
 
   if ('refusal' in covered) return refuse(covered.refusal);
-  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: revision, selection: selectionOf(config), arms, scorers: pinned, coveredSkills: covered.skills, coveredWithheldFrom: covered.withheldFrom, skillChanges: skillChanges.changes, isSubset });
-  const { scorers: generated } = compileBundle(plan, committed.suite, { armWorkflows, unattended: options.unattended });
-  const criteria = found.tasks.find((task) => task.judge.kind === 'criteria');
-  const needs = found.scorers.length > 0 ? `its scorers ${found.scorers.join(', ')}` : criteria ? `task "${criteria.id}" has successCriteria` : undefined;
-  const unjudged = needs === undefined ? undefined : await judgeUnavailable(config, { ...pinned, ...generated });
+  const { content: correctnessRubric } = await defaultScorerRubric(config, 'teamai-correctness');
+  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: revision, selection: selectionOf(config), arms, scorers: rubrics, correctnessRubric, coveredSkills: covered.skills, coveredWithheldFrom: covered.withheldFrom, skillChanges: skillChanges.changes, isSubset });
+  const unjudgeable = unjudgeableScorer(found.name, plan.judges, await loadAliases());
+
+  if (unjudgeable !== undefined) return refuse(unjudgeable);
+  const { scorers: generated } = compileBundle(plan, committed.suite, { armWorkflows, unattended: options.unattended, correctnessRubric });
+  const criteria = found.tasks.find((task) => task.judge.kind !== 'check');
+  const listing = listedByTasks[0];
+  const needs = found.scorers.length > 0 ? `its scorers ${found.scorers.join(', ')}` : listing ? `task "${listing.task.id}" lists scorers ${(listing.task.scorers ?? []).join(', ')}` : criteria ? `task "${criteria.id}" has successCriteria` : undefined;
+
+  // A correctness scorer a check decides has a pin and no judge.
+  const judged = Object.entries({ ...pinned, ...generated }).flatMap(([scorer, pin]) => {
+    const judge = plan.judges[scorer];
+
+    return judge ? [[scorer, { pin, tool: judge.tool }] as const] : [];
+  });
+
+  const unjudged = needs === undefined ? undefined : await judgeUnavailable(config, Object.fromEntries(judged));
 
   if (unjudged !== undefined) {
     return refuse(error('scoring_unavailable', `This suite needs a judge (${needs}), and this machine cannot judge: ${unjudged} Fix it, or start the benchmark where a judge tool is installed.`));
   }
 
-  return { ok: true, suite: found, plan, committed: committed.suite, pinned, armWorkflows };
+  return { ok: true, suite: found, plan, committed: committed.suite, pinned, armWorkflows, correctnessRubric };
 }
 
 /** The items of `all` that `names` names, in `all`'s order, or the first name none of them has; `[]` names all of them. */
@@ -452,6 +519,27 @@ async function resolveArm({ name, tool, model, role, recall }: Arm, team: ArmTea
 }
 
 /**
+ * Why no judge can run a scorer as the plan pins it, or undefined: its tool or model is not a plain name, which the
+ * record publishes, or its model alias has no model for its tool at the run's team revision.
+ */
+function unjudgeableScorer(suite: string, judges: BenchmarkPlan['judges'], aliases: ModelAliases): Refusal | undefined {
+  for (const [scorer, { tool, model }] of Object.entries(judges)) {
+    const field = !isRecordableLabel(tool) ? 'tool' : model !== '' && !isRecordableName(model) ? 'model' : undefined;
+
+    if (field !== undefined) {
+      return error('judge_unpublishable', `Suite "${suite}" judges scorer "${scorer}" with a ${field} that is not a plain name, such as a URL or a local path, and a benchmark record publishes it. Fix the scorer or the suite's defaults.tool, push it, run teamai pull, and start again.`);
+    }
+
+    if (model === '') continue;
+    const chosen = chooseJudgeModel(aliases, { name: scorer, model }, [tool]);
+
+    if (!chosen.ok) return error('judge_model_unavailable', `Suite "${suite}" judges scorer "${scorer}" on ${tool} for every arm: the scorer's tool, else the suite's defaults.tool. ${chosen.message}`);
+  }
+
+  return undefined;
+}
+
+/**
  * Why the record cannot publish `arm` as planned, or undefined when it can: its tool, model and effort meet the name
  * rules an observed agent meets (agent-observation.ts), so no URL, credential or local path reaches a record. Says
  * nothing of the value, which may be a secret.
@@ -545,28 +633,10 @@ async function unreachableTask(config: LocalConfig, suite: Suite, checkout: stri
 
   for (const task of suite.tasks) {
     // A check's added files come from the task's solution commit, so its trials need that commit too.
-    const commit = await firstUnreachable(checkout, cache, suite.repo, [task.startingCommit, ...(task.judge.kind === 'check' && task.judge.add ? [task.judge.add.commit] : [])]);
+    const added = TaskJudge.checkOf(task.judge)?.add;
+    const commit = await firstUnreachable({ checkout, cache, repo: suite.repo, commits: [task.startingCommit, ...(added ? [added.commit] : [])] });
 
     if (commit !== undefined) return { task, commit };
-  }
-
-  return undefined;
-}
-
-/**
- * The first of `commits` neither `checkout` nor the bare repo `cache` has, after a fetch by SHA from `repo` into the
- * cache, with the member's own credentials.
- */
-async function firstUnreachable(checkout: string, cache: string, repo: string, commits: readonly string[]): Promise<string | undefined> {
-  const has = async (dir: string, commit: string): Promise<boolean> => (await git(dir, ['cat-file', '-e', `${commit}^{commit}`])).code === 0;
-
-  for (const commit of commits) {
-    if (await has(checkout, commit) || await has(cache, commit)) continue;
-    await fs.mkdir(cache, { recursive: true });
-    const made = await git(cache, ['init', '-q', '--bare']);
-    const fetched = made.code === 0 && (await git(cache, ['fetch', '-q', '--no-tags', repo, `${commit}:refs/benchmark/${commit}`])).code === 0;
-
-    if (!fetched || !await has(cache, commit)) return commit;
   }
 
   return undefined;
@@ -580,6 +650,16 @@ function selectionOf(config: LocalConfig): TeamSelection {
     subscribedTags: config.subscribedTags,
     excludedSkills: config.excludedSkills ?? [],
   });
+}
+
+/**
+ * Why `teamai workflow resume` refuses `run`: a benchmark run whose plan a teamai before an upgrade froze in another
+ * schemaVersion, which this one cannot measure. Undefined for any other run, which resume handles as it does every run.
+ */
+export function outdatedBenchmarkPlan(run: RunState): WorkflowFailure | undefined {
+  const planned = planOfRun(run);
+
+  return 'failure' in planned && planned.failure.code === 'benchmark_plan_outdated' ? planned.failure : undefined;
 }
 
 /**
@@ -607,14 +687,15 @@ export async function tryBenchmarkTask(file: string, options: { checkout: string
   if (!parsed.ok) return error('benchmark_invalid', parsed.diagnostics.map(formatDiagnostic).join('\n'));
   const { suite } = parsed;
   const [task] = suite.tasks;
-  const { judge, startingCommit } = task;
+  const { startingCommit } = task;
+  const check = TaskJudge.checkOf(task.judge);
 
-  if (judge.kind === 'criteria') return tried(task.id, `Task "${task.id}" is judged by successCriteria, so there is no check to try. Its files are valid.`);
+  if (check === undefined) return tried(task.id, `Task "${task.id}" is judged by successCriteria, so there is no check to try. Its files are valid.`);
   const { solutionCommit } = task;
   const cache = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-try-commits-'));
 
   try {
-    const unreachable = await firstUnreachable(options.checkout, cache, suite.repo, [startingCommit, ...(solutionCommit ? [solutionCommit] : [])]);
+    const unreachable = await firstUnreachable({ checkout: options.checkout, cache, repo: suite.repo, commits: [startingCommit, ...(solutionCommit ? [solutionCommit] : [])] });
 
     if (unreachable !== undefined) {
       const named = unreachable === startingCommit ? `starts from ${short(unreachable)}` : `names the solutionCommit ${short(unreachable)}`;
@@ -628,7 +709,7 @@ export async function tryBenchmarkTask(file: string, options: { checkout: string
       return error('check_files_unwritable', `Task "${committed.task}" writes files from the suite directory before its check, and they could not be written as a commit into a temporary cache: ${committed.failed} Fix that, and try again.`);
     }
 
-    return await tryCheck(suite, task, judge, addedOf(judge, committed.suite.files.get(task.id)), [options.checkout, cache], options);
+    return await tryCheck(suite, task, check, addedOf(check, committed.suite.files.get(task.id)), [options.checkout, cache], options);
   } finally {
     await fs.rm(cache, { recursive: true, force: true, maxRetries: 3 });
   }
@@ -638,7 +719,7 @@ export async function tryBenchmarkTask(file: string, options: { checkout: string
  * --try once the task's commits are reachable from `sources`: its check at the starting commit, then at the solution, each
  * with the files `add` writes.
  */
-async function tryCheck(suite: Suite, task: Suite['tasks'][number], judge: Extract<TaskJudge, { kind: 'check' }>, add: readonly Added[], sources: readonly string[], options: { checkout: string; signal?: AbortSignal; progress: (line: string) => void }): Promise<WorkflowEnvelope> {
+async function tryCheck(suite: Suite, task: Suite['tasks'][number], judge: TaskCheck, add: readonly Added[], sources: readonly string[], options: { checkout: string; signal?: AbortSignal; progress: (line: string) => void }): Promise<WorkflowEnvelope> {
   const { startingCommit } = task;
   const expiresAt = new Date(Date.now() + suite.timeoutMs).toISOString();
 

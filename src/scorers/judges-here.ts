@@ -32,10 +32,11 @@ export async function verifiedScorers(config: LocalConfig, names: readonly strin
 }
 
 /**
- * Why this machine cannot judge with `scorers`, or undefined: scoring is off in this scope, the team's scoring settings
- * cannot be read, no judge tool is on PATH, or none here runs a scorer's model at the isolation it needs.
+ * Why this machine cannot judge `scorers`, each on the tool it is pinned to, or undefined: scoring is off in this scope,
+ * the team's scoring settings cannot be read, no judge tool is on PATH, or a scorer's tool is not here, does not reach
+ * the isolation the scorer needs, or runs none of its model.
  */
-export async function judgeUnavailable(config: LocalConfig, scorers: Record<string, PinnedScorer>): Promise<string | undefined> {
+export async function judgeUnavailable(config: LocalConfig, scorers: Record<string, { pin: PinnedScorer; tool: string }>): Promise<string | undefined> {
   const unavailable = scoringUnavailable(config);
 
   if (unavailable) return unavailable;
@@ -47,16 +48,20 @@ export async function judgeUnavailable(config: LocalConfig, scorers: Record<stri
   if (offers.length === 0) return 'No judge tool is on PATH: install Claude Code, Codex, OpenCode or CodeBuddy.';
   const aliases = await loadModelAliases(config);
 
-  for (const [name, pin] of Object.entries(scorers)) {
+  for (const [name, { pin, tool }] of Object.entries(scorers)) {
     const definition = pinnedDefinition(name, pin);
 
     if (!definition) return `This teamai cannot read scorer ${name}. Update teamai.`;
-    const required = requiredFor(scoring.isolation, name, pin, definition);
-    const tools = offers.flatMap((offer) => (offer.level === required.level ? offer.tools : []));
 
-    // Every judge tool here runs best-effort, so only a verified scorer finds none.
-    if (tools.length === 0) return `Scorer "${name}" needs a verified judge, which ${required.setBy.join(' and ')} asks for, and no judge tool here runs verified.`;
-    const chosen = chooseJudgeModel(aliases, definition, tools);
+    if (!offers.some((offer) => offer.tools.some((offered) => offered === tool))) return `Scorer "${name}" is judged by ${tool}, which is not on PATH here.`;
+    const required = requiredFor(scoring.isolation, name, pin, definition);
+
+    // Every judge tool here runs best-effort, so only a verified scorer finds its tool short of its level.
+    if (!offers.some((offer) => offer.level === required.level && offer.tools.some((offered) => offered === tool))) {
+      return `Scorer "${name}" needs a verified judge, which ${required.setBy.join(' and ')} asks for, and ${tool}, its judge tool, does not run verified here.`;
+    }
+
+    const chosen = chooseJudgeModel(aliases, definition, [tool]);
 
     if (!chosen.ok) return chosen.message;
   }

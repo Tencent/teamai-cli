@@ -6,7 +6,6 @@
 import path from 'node:path';
 import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
-import { canonicalJson } from '../utils/canonical-json.js';
 import { readFileSafe, writeJsonAtomic } from '../utils/fs.js';
 import { SessionWork } from '../session-flow/session-work.js';
 import { judgeablePasses } from '../workflow/judge-work.js';
@@ -16,9 +15,10 @@ import { readRun } from '../workflow/store.js';
 import type { RunPass } from '../workflow/loop.js';
 import { wasLeased } from '../workflow/step-state.js';
 import type { RunState, StepScorers, WorkflowStep } from '../workflow/types.js';
-import { batchesScorers } from './batch.js';
+import { batchesScorers, judgeCallKey } from './batch.js';
 import { STAGES, type ScorerDefinition, type Stage } from './definition.js';
 import type { RunSubject } from './label.js';
+import { LabelStore } from './label-store.js';
 import { Marks, type Demand, type Launch, type MarkFacts, type MarkKey } from './marks.js';
 import { pinnedDefinition, PinnedScorerSchema, type PinnedScorer } from './pin.js';
 import { RunScorers } from './run-scorers.js';
@@ -30,6 +30,8 @@ import { GeneratedQuestions, type QuestionSwitches } from './generated-questions
 import { Subject } from './subject.js';
 import { TryScorer } from './try-scorer.js';
 import { ScoreItem } from './judging-workflows.js';
+import { isCorrectnessScorer } from '../benchmark/plan.js';
+import { plannedJudgesOf } from '../benchmark/run-plan.js';
 
 /** One judge launch: the scorers it labels, joined by `,`, and the stages its steps run. */
 export interface PlanGroup {
@@ -70,8 +72,10 @@ interface Judged {
   batch: boolean | undefined;
   /** The stages each scorer takes on this subject: none unless it delivered. */
   stagesOf: (candidate: Candidate) => Stage[];
-  /** Whether a scorer is judged in a launch of its own: its check runs for it alone. */
+  /** Whether a scorer is judged in a launch of its own: its check runs for it alone, or its label decides a benchmark trial. */
   alone: (candidate: Candidate) => boolean;
+  /** The one judge tool the run pins a scorer to, as a benchmark plan does; undefined when any tool may judge it. */
+  required: (candidate: Candidate) => string | undefined;
   key: (candidate: Candidate) => MarkKey;
 }
 
@@ -206,6 +210,13 @@ export async function judgeablePass(config: LocalConfig, subject: RunSubject): P
   return { ok: true, config: found.config, run: found.run, pass: judgeable.pass, step: judgeable.definition };
 }
 
+/** The scorers a stage, not a judge, labelled on `subject`'s pass, among the labels on this machine. */
+async function stageDecided(config: LocalConfig, subject: RunSubject): Promise<Set<string>> {
+  const labels = await LabelStore.local(config);
+
+  return new Set(labels.flatMap((label) => (label.source === 'workflow' && label.judge.kind === 'stage' && label.subject.runId === subject.runId && label.subject.step === subject.step && label.subject.pass === subject.pass ? [label.scorer] : [])));
+}
+
 async function runJudged(request: PlanRequest, subject: RunSubject, teamBatch: boolean | undefined): Promise<Judged | Refusal> {
   const found = await judgeablePass(request.attempt.config, subject);
 
@@ -215,18 +226,23 @@ async function runJudged(request: PlanRequest, subject: RunSubject, teamBatch: b
   const read = await RunScorers.of(found.config, run);
 
   if (!read.ok) return refused('scorer_not_found', `${read.reason} Nothing was planned.`);
-  const candidates = pinned(request.scorers.length > 0 ? request.scorers : own.names, read.pins, `a scorer of run ${run.id} at the team revision it started from`);
+  // A stage, such as a benchmark trial's failed check, decided these already, so their judge would change nothing.
+  const decided = request.scorers.length > 0 ? new Set<string>() : await stageDecided(found.config, subject);
+  const names = request.scorers.length > 0 ? request.scorers : own.names.filter((name) => !decided.has(name));
+  const candidates = pinned(names, read.pins, `a scorer of run ${run.id} at the team revision it started from`);
 
   if (!Array.isArray(candidates)) return candidates;
   const delivered = isDelivered(run, subject);
   const all = own.sampling === 'all';
+  const judges = plannedJudgesOf(run, subject.step);
 
   return {
     candidates,
     sampled: (candidate) => all || isSampled(candidate.name, subject, candidate.definition.samplingRate),
     batch: batchesScorers({ step: own.batch, workflow: workflowBatch(run, subject.step), team: teamBatch }),
     stagesOf: (candidate) => (delivered ? scorerStages(request.attempt, candidate.definition) : []),
-    alone: (candidate) => delivered && candidate.definition.check !== undefined,
+    alone: (candidate) => (delivered && candidate.definition.check !== undefined) || isCorrectnessScorer(candidate.name),
+    required: (candidate) => judges[candidate.name]?.tool,
     key: (candidate) => ({ scorer: candidate.name, subject: { kind: 'run', subject } }),
   };
 }
@@ -270,6 +286,7 @@ async function sessionJudged(request: PlanRequest, subject: Exclude<Subject, { k
     batch: batchesScorers({ team: scoring.batch }),
     stagesOf: () => [],
     alone: () => false,
+    required: () => undefined,
     key: (candidate) => ({ scorer: candidate.name, subject, sourceHash: candidate.pin.sourceHash }),
   };
 }
@@ -291,26 +308,12 @@ function handGroup(request: PlanRequest, judged: Judged): { ok: true; groups: Pl
   return { ok: true, groups: [{ subject: Subject.format(request.subject), hand: request.label, scorers: only.name, model: '', ci: false, protected: false }] };
 }
 
-/**
- * What `candidate` shares with the scorers one judge call takes with it: the model it asks for, the judge tool it
- * prefers, and its stages. The judge tool is chosen when the judge step is leased, from what the driver offers.
- */
-function batchKey(candidate: Candidate, judged: Judged): string {
-  return canonicalJson({ model: candidate.definition.model ?? null, tool: candidate.definition.tool ?? null, stages: judged.stagesOf(candidate) });
-}
-
-/**
- * The group `candidate` joins: its own; under `batch`, that of the scorers sharing its model, tool and stages; and for a
- * generated question, that of the session's other questions of its family sharing its judge, which only `batch` lets
- * team scorers join.
- */
+/** The judge call `candidate` joins, by `judgeCallKey`. */
 function groupKey(candidate: Candidate, judged: Judged, batch: boolean): string {
-  const family = GeneratedQuestions.familyOf(candidate.name);
-
-  if (!(batch || family) || judged.alone(candidate)) return `${candidate.name}\n`;
-  const shared = batchKey(candidate, judged);
-
-  return family && !batch ? `${family.prefix}\n${shared}` : shared;
+  return judgeCallKey({
+    name: candidate.name, model: candidate.definition.model, tool: candidate.definition.tool, require: judged.required(candidate),
+    stages: judged.stagesOf(candidate), isAlone: judged.alone(candidate), family: GeneratedQuestions.familyOf(candidate.name)?.prefix,
+  }, batch);
 }
 
 /**

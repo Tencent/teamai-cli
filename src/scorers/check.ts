@@ -8,19 +8,51 @@ import { z } from 'zod';
 import { CommitSchema } from '../workflow/clone.js';
 import type { CommandExit } from '../workflow/shell-command.js';
 
+/**
+ * Why a check could not run: it could not start, was killed, or ran out of time; for a benchmark trial's check also
+ * `prepare_failed`, when restoring `protect` or writing `check.add` failed before it ran.
+ */
+export const CHECK_CAUSES = ['not_found', 'not_executable', 'signal', 'timeout', 'spawn_failed', 'prepare_failed'] as const;
+
+export type CheckCause = (typeof CHECK_CAUSES)[number];
+
 /** What a check says about the repo it ran in. */
 export type CheckVerdict =
   | { verdict: 'passed' }
   /** It ran to the end and failed: the check's own answer. */
   | { verdict: 'failed'; exitCode: number }
   /** It says nothing about the repo: it could not start, was killed, or ran out of time. */
-  | { verdict: 'could_not_run'; cause: 'not_found' | 'not_executable' | 'spawn_failed' | 'signal' | 'timeout'; detail?: string };
+  | { verdict: 'could_not_run'; cause: Exclude<CheckCause, 'prepare_failed'>; detail?: string };
 
 /** The `result` a check step outputs: the verdict, without its detail. */
 export const CHECK_RESULTS = ['passed', 'failed', 'could_not_run'] as const satisfies ReadonlyArray<CheckVerdict['verdict']>;
-export const CheckOutputSchema = z.object({ result: z.enum(CHECK_RESULTS) });
+
+/**
+ * What `teamai benchmark check` outputs: the result; `cause`, why it could not run; and `label`, the version of the
+ * correctness label a trial's check stored, as `teamai score write` answers it. A field with no value is '', since the
+ * step's output declares strings.
+ */
+export const CheckOutputSchema = z.discriminatedUnion('result', [
+  z.object({ result: z.literal('passed'), cause: z.literal(''), label: z.string() }),
+  z.object({ result: z.literal('failed'), cause: z.literal(''), label: z.string() }),
+  z.object({ result: z.literal('could_not_run'), cause: z.enum(CHECK_CAUSES), label: z.literal('') }),
+]);
+
+export type CheckOutput = z.infer<typeof CheckOutputSchema>;
 
 export type CheckResult = (typeof CHECK_RESULTS)[number];
+
+/**
+ * The label a check that ran writes, from a rubric's labels, which the scorer parser keeps one passing and one failing:
+ * a pass gets the highest-scoring label, a failure the lowest-scoring, the first listed on a tie. A failed check is not
+ * partial work, so it never gets a label between them; a delivered pull request keeps its own rule (`failingLabel`).
+ */
+export function checkLabel<TLabel extends { score: number }>(result: 'passed' | 'failed', labels: readonly [TLabel, ...TLabel[]]): TLabel {
+  const [first, ...rest] = labels;
+  const isBetter = (label: TLabel, kept: TLabel): boolean => (result === 'passed' ? label.score > kept.score : label.score < kept.score);
+
+  return rest.reduce((kept, label) => (isBetter(label, kept) ? label : kept), first);
+}
 
 /** Whether `value` is a relative path written segment by segment, so joined to a directory it stays inside it. */
 export function isRelativePath(value: string): boolean {

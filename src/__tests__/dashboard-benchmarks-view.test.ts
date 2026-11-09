@@ -23,7 +23,7 @@ function roleRun(results: Record<string, TrialResult>, tokens: Record<string, nu
     return { name, tool, role, source: 'team' as const, team: { kind: 'pulled' as const, revision: TEAM } };
   });
   return {
-    run: 'r1', source: 'reported', username: 'lead', startedAt: '2026-10-20T09:00:00Z', outcome: 'succeeded',
+    run: 'r1', source: 'reported', username: 'lead', startedAt: '2026-10-20T09:00:00Z', outcome: 'succeeded', schemaVersion: 2,
     benchmark: {
       suite: { name: 'review-roles', sourceHash: 'v1' }, repetitions: 1, baselineTeamRevision: TEAM, scorers: [],
       tasks: [{ id: 'flag-unsafe-sql', startingCommit: 'a'.repeat(40), sourceHash: 't1', baseline: 'valid' }],
@@ -131,7 +131,7 @@ describe('the Benchmarks page of a suite with covered assets (#1605)', () => {
     const trial = (task: string, arm: string, order: number, result: TrialResult, used?: Record<string, 'loaded' | 'unknown'>, routing?: Record<string, 'fit' | 'idle' | 'extra' | 'missed' | 'unknown'>) => ({ task, arm, repetition: 1, order, step: `trials.r1.${task}.${arm}.prompt`, result, ...(used ? { used } : {}), ...(routing ? { routing } : {}) });
 
     return {
-      run: 'r1', source: 'reported', username: 'lead', startedAt: '2026-10-20T09:00:00Z', outcome: 'succeeded',
+      run: 'r1', source: 'reported', username: 'lead', startedAt: '2026-10-20T09:00:00Z', outcome: 'succeeded', schemaVersion: 2,
       benchmark: {
         suite: { name: 'fix-auth', sourceHash: 'v1' }, repetitions: 1, baselineTeamRevision: TEAM, scorers: [{ name: 'teamai:routing:auth-tokens', rubric: { sourceHash: 'r1' } }],
         tasks: [
@@ -180,6 +180,58 @@ describe('the Benchmarks page of a suite with covered assets (#1605)', () => {
     expect(text(html)).toContain('skills/dev/auth-tokens · pulled · claude');
     expect(text(html)).toContain('expired-token yes - 3/3 2/3 fit, 1 missed');
     expect(html).toContain('teamai:routing:dev:auth-tokens');
+  });
+
+  it('says on Compare and under the asset effect how many pairs another judge left out, and why, in en and zh-CN', async () => {
+    const OPUS = { by: 'judge' as const, rubric: 'r', tool: 'claude', model: 'claude-opus-5-5', batched: true };
+    const run = coveredRun();
+    run.benchmark.trials = run.benchmark.trials.map((trial) => ({
+      ...trial,
+      verdicts: [{ scorer: `teamai:correctness:${trial.task}`, outcome: { kind: 'labelled' as const, label: trial.result, score: trial.result === 'passed' ? 1 : 0, passed: trial.result === 'passed' },
+        decider: trial.arm === 'no-tokens' && trial.task === 'login-copy' ? { ...OPUS, model: 'claude-sonnet-5-5' } : OPUS }],
+    }));
+
+    const en = text(await renderPage([run], { view: 'compare' }));
+    const zh = text(await renderPage([run], { view: 'compare', language: 'zh-CN' }));
+
+    expect(en).toContain('1 paired trial · 1 excluded: their judge changed (claude claude-sonnet-5-5 → claude claude-opus-5-5)');
+    expect(en.match(/1 excluded: their judge changed \(claude claude-sonnet-5-5 → claude claude-opus-5-5\)/g)).toHaveLength(2);
+    expect(zh).toContain('1 已排除: 评判器已改变 (claude claude-sonnet-5-5 → claude claude-opus-5-5)');
+  });
+
+  it('names on Compare two arms whose every pair another judge left out, and why, with no difference for them, in en and zh-CN', async () => {
+    const OPUS = { by: 'judge' as const, rubric: 'r', tool: 'claude', model: 'claude-opus-5-5', batched: true };
+    const run = coveredRun();
+    run.benchmark.trials = run.benchmark.trials.map((trial) => ({
+      ...trial,
+      verdicts: [{ scorer: `teamai:correctness:${trial.task}`, outcome: { kind: 'labelled' as const, label: trial.result, score: trial.result === 'passed' ? 1 : 0, passed: trial.result === 'passed' },
+        decider: trial.arm === 'no-tokens' ? { ...OPUS, model: 'claude-sonnet-5-5' } : OPUS }],
+    }));
+
+    const en = text(await renderPage([run], { view: 'compare' }));
+    const zh = text(await renderPage([run], { view: 'compare', language: 'zh-CN' }));
+
+    expect(en).not.toContain('No two arms of this suite differ in one thing only');
+    expect(en).toContain('Arms with no comparable pair');
+    expect(en).toContain('without skills/auth-tokens → pulled team · claude 2 excluded: their judge changed (claude claude-sonnet-5-5 → claude claude-opus-5-5)');
+    expect(zh).toContain('没有可比较配对的 arm');
+    expect(zh).toContain('2 已排除: 评判器已改变 (claude claude-sonnet-5-5 → claude claude-opus-5-5)');
+  });
+
+  it('names what changed in a judge whose tool and model stayed, its batching and rubric, as the CLI does', async () => {
+    const OPUS = { by: 'judge' as const, rubric: 'aaaaaaa111', tool: 'claude', model: 'claude-opus-5-5', batched: true };
+    const run = coveredRun();
+    run.benchmark.trials = run.benchmark.trials.map((trial) => ({
+      ...trial,
+      verdicts: [{ scorer: `teamai:correctness:${trial.task}`, outcome: { kind: 'labelled' as const, label: trial.result, score: trial.result === 'passed' ? 1 : 0, passed: trial.result === 'passed' },
+        decider: trial.arm === 'no-tokens' ? { ...OPUS, rubric: 'bbbbbbb222', batched: false } : OPUS }],
+    }));
+
+    const en = text(await renderPage([run], { view: 'compare' }));
+    const zh = text(await renderPage([run], { view: 'compare', language: 'zh-CN' }));
+
+    expect(en).toContain('2 excluded: their judge changed (claude claude-opus-5-5 alone rubric bbbbbbb → claude claude-opus-5-5 batched rubric aaaaaaa)');
+    expect(zh).toContain('2 已排除: 评判器已改变 (claude claude-opus-5-5 单独 评分标准 bbbbbbb → claude claude-opus-5-5 批量 评分标准 aaaaaaa)');
   });
 
   it('keeps every asset label in zh-CN too', async () => {
@@ -424,6 +476,258 @@ describe('the Benchmarks page at every width', () => {
     expect(text(html)).toContain('not separated');
     expect(text(cost).trim()).toBe('−5%');
     expect(cost).not.toMatch(/class="(up|down)"/);
+  });
+});
+
+/** One login task, four repetitions, on claude, the defaults arm, and two others: each arm's results, scores and cost per trial. */
+function judgedRun(arms: Record<string, { tool: string; results: TrialResult[]; scores: number[]; cost?: number }>): BenchmarkRunInput {
+  const names = Object.keys(arms);
+  return {
+    run: 'r1', source: 'reported', username: 'lead', startedAt: '2026-10-20T09:00:00Z', outcome: 'succeeded', schemaVersion: 2,
+    benchmark: {
+      suite: { name: 'fix-auth', sourceHash: 'v1' }, repetitions: 4, baselineTeamRevision: TEAM, defaultsArm: 'claude',
+      scorers: [{ name: 'teamai:correctness:login', rubric: { sourceHash: 'r1' }, labels: [{ value: 'correct', score: 1 }, { value: 'partial', score: 0.5 }, { value: 'incorrect', score: 0 }], passingScore: 1 }],
+      tasks: [{ id: 'login', startingCommit: 'a'.repeat(40), sourceHash: 't1', baseline: 'valid' }],
+      arms: names.map((name) => ({ name, tool: arms[name]?.tool ?? '', source: 'team' as const, team: { kind: 'pulled' as const, revision: TEAM } })),
+      trials: names.flatMap((name, index) => (arms[name]?.results ?? []).map((result, repetition) => {
+        const cost = arms[name]?.cost;
+        const score = arms[name]?.scores[repetition] ?? 0;
+        return {
+          task: 'login', arm: name, repetition: repetition + 1, order: index * 4 + repetition + 1, step: `trials.r${repetition + 1}.login.${name}.prompt`, result,
+          verdicts: [{ scorer: 'teamai:correctness:login', outcome: { kind: 'labelled' as const, label: score === 1 ? 'correct' : score > 0 ? 'partial' : 'incorrect', score, passed: result === 'passed' }, decider: { by: 'check' as const, task: 't1' } }],
+          agent: { v: 1 as const, tool: { name: arms[name]?.tool ?? '' }, team: { revision: TEAM, localChanges: false }, teamai: '1.0.0', driver: 'local' as const },
+          ...(cost === undefined ? {} : { cost: { amount: cost, unit: 'USD', complete: true } }),
+        };
+      })),
+    },
+  };
+}
+
+describe('the Benchmarks page reads each arm against the defaults arm', () => {
+  // claude passes 3 of 4 at 0.50 USD a trial; cheap 3 of 4 at 0.10; codex 1 of 4 at 1.00.
+  const runs = [judgedRun({
+    claude: { tool: 'claude', results: ['passed', 'passed', 'passed', 'failed'], scores: [1, 1, 1, 0.5], cost: 0.5 },
+    cheap: { tool: 'claude', results: ['passed', 'passed', 'passed', 'failed'], scores: [1, 1, 1, 0], cost: 0.1 },
+    codex: { tool: 'codex', results: ['passed', 'failed', 'failed', 'failed'], scores: [1, 0.5, 0, 0], cost: 1 },
+  })];
+  const bar = (html: string, arm: string) => text((html.split('<div class="arm-bars">')[1] ?? '').split('<div class="arm-bar').find((one) => one.includes(`<span data-verbatim>${arm}</span>`)) ?? '').trim();
+
+  it('puts its cost per passed trial, its mean correctness score and its standing under each arm\'s pass rate', async () => {
+    const html = await renderPage(runs);
+
+    expect(bar(html, 'claude')).toContain('Cost per passed trial 0.6667 USD · Mean correctness score 0.88 · The arm the others are read against (defaults arm)');
+    // Newcombe intervals over the 4 pairs: cheap 0 pp (-43 to +43), codex -50 pp (-79 to +14).
+    expect(bar(html, 'cheap')).toContain('Cost per passed trial 0.1333 USD · Mean correctness score 0.75 · Against claude (defaults arm): dominates, same pass rate, 80% cheaper per passed trial · 0 pp · 95% −43 pp to +43 pp · not separated');
+    expect(bar(html, 'codex')).toContain('Cost per passed trial 4 USD · Mean correctness score 0.38 · Against claude (defaults arm): dominated, lower pass rate, 500% more expensive per passed trial · −50 pp · 95% −79 pp to +14 pp · not separated');
+  });
+
+  it('reads the last run on its own the same way, under each arm of it', async () => {
+    const html = await renderPage(runs);
+    const latest = (arm: string) => text((html.split('<div class="latest">')[1] ?? '').split('<div class="latest-arm">').find((one) => one.includes(`<span data-verbatim>${arm}</span>`)) ?? '').trim();
+
+    expect(latest('cheap')).toContain('Cost per passed trial 0.1333 USD · Mean correctness score 0.75 · Against claude (defaults arm): dominates, same pass rate, 80% cheaper per passed trial · 0 pp · 95% −43 pp to +43 pp · not separated');
+    expect(latest('claude')).toContain('The arm the others are read against (defaults arm)');
+  });
+});
+
+describe('the Benchmarks page says who judged what', () => {
+  const SONNET = { by: 'judge' as const, rubric: 'rq', tool: 'claude', model: 'claude-sonnet-5-5', batched: true };
+  const base = judgedRun({
+    claude: { tool: 'claude', results: ['passed', 'passed', 'passed', 'failed'], scores: [1, 1, 1, 0], cost: 0.5 },
+    codex: { tool: 'codex', results: ['passed', 'failed', 'failed', 'failed'], scores: [1, 0, 0, 0], cost: 1 },
+  });
+  // The check decides login; review-quality is pinned to claude `judge`, and codex judged codex's first trial; nothing labelled its last.
+  const runs = [{ ...base, benchmark: { ...base.benchmark,
+    judges: { 'review-quality': { tool: 'claude', model: 'judge' } },
+    trials: base.benchmark.trials.map((trial) => ({ ...trial, verdicts: [...trial.verdicts ?? [],
+      trial.arm === 'codex' && trial.repetition === 4 ? { scorer: 'review-quality', outcome: { kind: 'unscored' as const, because: 'run_ended' as const } }
+        : { scorer: 'review-quality', outcome: { kind: 'labelled' as const, label: 'good', score: 1, passed: true }, ...(trial.arm === 'codex' && trial.repetition === 1 ? { decider: { ...SONNET, tool: 'codex', model: 'gpt-6-sol' }, asPlanned: 'deviation' as const } : { decider: SONNET, asPlanned: 'match' as const }) }] })) } }];
+  const panel = (html: string) => text(html.split('<section class="panel sessions bench-panel judges">')[1]?.split('</section>')[0] ?? '');
+
+  it('lists each scorer with the judge the run pinned, who decided its labels, and its deviations, and warns of a judge that is also an arm\'s tool', async () => {
+    const judges = panel(await renderPage(runs));
+
+    expect(judges).toContain('Judge claude is also the tool of arm claude · Set tool in the scorer to judge with another.');
+    expect(judges).toContain('teamai:correctness — check (8) 0 0 0');
+    expect(judges).toContain('review-quality claude · judge claude claude-sonnet-5-5 (6) · codex gpt-6-sol (1) 1 0 1');
+  });
+
+  it('shows no judges panel for runs whose records keep no verdicts', async () => {
+    const [run] = runs;
+    const older: BenchmarkRunInput[] = run ? [{ ...run, schemaVersion: 1, benchmark: { ...run.benchmark, judges: undefined, trials: run.benchmark.trials.map(({ verdicts: _verdicts, ...trial }) => trial) } }] : [];
+
+    expect(await renderPage(older)).not.toContain('judges">');
+  });
+});
+
+describe('the Benchmarks page shows each scorer by arm', () => {
+  const SONNET = { by: 'judge' as const, rubric: 'rq', tool: 'claude', model: 'claude-sonnet-5-5', batched: true };
+  const base = judgedRun({
+    claude: { tool: 'claude', results: ['passed', 'passed', 'passed', 'passed'], scores: [1, 1, 1, 1] },
+    codex: { tool: 'codex', results: ['passed', 'passed', 'passed', 'passed'], scores: [1, 1, 1, 1] },
+  });
+  // review-quality passed claude's first three trials and codex's first; nothing labelled codex's last.
+  const passes: Record<string, Array<boolean | undefined>> = { claude: [true, true, true, false], codex: [true, false, false, undefined] };
+  const runs = [{ ...base, benchmark: { ...base.benchmark,
+    scorers: [...base.benchmark.scorers, { name: 'review-quality', rubric: { sourceHash: 'rq' }, labels: [{ value: 'good', score: 1 }, { value: 'poor', score: 0 }], passingScore: 1 }],
+    trials: base.benchmark.trials.map((trial) => {
+      const passed = passes[trial.arm]?.[trial.repetition - 1];
+
+      return { ...trial, verdicts: [...trial.verdicts ?? [], passed === undefined ? { scorer: 'review-quality', outcome: { kind: 'unscored' as const, because: 'run_ended' as const } }
+        : { scorer: 'review-quality', outcome: { kind: 'labelled' as const, label: passed ? 'good' : 'poor', score: passed ? 1 : 0, passed }, decider: SONNET, asPlanned: 'match' as const }] };
+    }) } }];
+
+  it("colours each suite and task scorer's pass rate per arm, with its 95% interval and what went unscored in the title", async () => {
+    const html = await renderPage(runs);
+    const panel = html.split('<h2>Scorers by arm')[1]?.split('</section>')[0] ?? '';
+
+    expect(html.indexOf('<h2>Scorers by arm')).toBeGreaterThan(html.indexOf('<h2>Tasks by arm'));
+    expect(text(panel)).toContain('review-quality 75% 3/4 33% 1/3');
+    // Wilson: 3 of 4 is 30% to 95%; 1 of 3 is 6% to 79%.
+    expect(panel).toContain('title="95% 30% to 95%"');
+    expect(panel).toContain('title="95% 6% to 79% · 1 unscored"');
+  });
+
+  it('names the panel and the unscored labels in zh-CN', async () => {
+    const html = await renderPage(runs, { language: 'zh-CN' });
+
+    expect(html).toContain('<h2>评分器 × arm');
+    expect(html).toContain('title="95% 6% 至 79% · 1 未评分"');
+  });
+
+  it('shows no scorers by arm for runs whose records keep no verdicts', async () => {
+    const [run] = runs;
+    const older: BenchmarkRunInput[] = run ? [{ ...run, schemaVersion: 1, benchmark: { ...run.benchmark, trials: run.benchmark.trials.map(({ verdicts: _verdicts, ...trial }) => trial) } }] : [];
+
+    expect(await renderPage(older)).not.toContain('Scorers by arm');
+  });
+});
+
+describe('the Benchmarks page of a suite whose files stayed while its record version changed', () => {
+  const base = judgedRun({ claude: { tool: 'claude', results: ['passed', 'failed'], scores: [1, 0] } });
+  const older: BenchmarkRunInput = { ...base, run: 'r0', startedAt: '2026-10-19T09:00:00Z', schemaVersion: 1, benchmark: { ...base.benchmark, trials: base.benchmark.trials.map(({ verdicts: _verdicts, ...trial }) => trial) } };
+
+  it('marks only the run of the current record version current, and gives the older one no column of the tasks per run', async () => {
+    const html = await renderPage([older, base]);
+    const row = (run: string) => text(html.split(`data-run="${run}" data-run-source="reported">`).at(-1)?.split('</tr>')[0] ?? '');
+
+    expect(row(base.run)).toContain('current');
+    expect(row('r0')).not.toContain('current');
+    expect(html).not.toContain('Tasks per run');
+  });
+});
+
+describe('the Benchmarks page puts each run\'s cost beside its estimate', () => {
+  const base = judgedRun({
+    claude: { tool: 'claude', results: ['passed', 'passed', 'passed', 'passed'], scores: [1, 1, 1, 1], cost: 0.5 },
+    codex: { tool: 'codex', results: ['passed', 'passed', 'passed', 'failed'], scores: [1, 1, 1, 0], cost: 1 },
+  });
+  const estimate = { trials: 8, judgeCalls: 0, judgedTrials: 0, calibrationCalls: 0, basis: { run: 'r1' }, total: { unit: 'USD', low: 3.25, median: 4, high: 4.75, complete: true } };
+  const cell = (html: string, run: string) => text(html.split(`data-run="${run}" data-run-source="reported">`).at(-1)?.split('</tr>')[0]?.split('data-label="COST">')[1]?.split('</td>')[0] ?? '').trim();
+
+  it('flags a run that cost more than its estimate\'s range, and shows a run with no earlier run to estimate from at what it cost', async () => {
+    // The agents stated 4 × 0.5 + 4 × 1 = 6 USD.
+    const html = await renderPage([base, { ...base, run: 'r2', startedAt: '2026-10-21T09:00:00Z', benchmark: { ...base.benchmark, estimate } }]);
+
+    expect(cell(html, 'r2')).toBe('6 USD Estimated 3.25–4.75 USD above the estimate');
+    expect(cell(html, 'r1')).toBe('6 USD');
+  });
+
+  it('says it in zh-CN', async () => {
+    const html = await renderPage([{ ...base, benchmark: { ...base.benchmark, estimate } }], { language: 'zh-CN' });
+
+    expect(text(html)).toContain('6 USD 估算 3.25–4.75 USD 高于估算');
+  });
+
+  it('shows no cost column when no run has an estimate or a stated cost', async () => {
+    const unpriced = { ...base, benchmark: { ...base.benchmark, trials: base.benchmark.trials.map(({ cost: _cost, ...trial }) => trial) } };
+
+    expect(await renderPage([unpriced])).not.toContain('data-label="COST"');
+  });
+});
+
+describe('the Benchmarks page calibrates the correctness judge', () => {
+  const HAIKU = { by: 'judge' as const, rubric: 'rc', tool: 'claude', model: 'claude-haiku-5-5', batched: false };
+  const OPUS = { ...HAIKU, model: 'claude-opus-5-5', effort: 'high' };
+  const base = judgedRun({
+    claude: { tool: 'claude', results: ['failed', 'failed', 'failed', 'failed'], scores: [0, 0, 0, 0], cost: 0.5 },
+    codex: { tool: 'codex', results: ['failed', 'failed', 'failed', 'failed'], scores: [0, 0, 0, 0], cost: 1 },
+  });
+  /**
+   * login with success criteria too, whose correctness the run pins to claude `fast`, each trial's check failed, and
+   * `calibrated` what its judge then labelled, in a suite that calibrates at `rate`.
+   */
+  const mixed = (calibrated: (trial: { arm: string; repetition: number }) => { passed: boolean; decider: typeof HAIKU } | undefined, rate = 100): BenchmarkRunInput[] => [{ ...base, benchmark: { ...base.benchmark,
+    calibration: { rate },
+    tasks: base.benchmark.tasks.map((task) => ({ ...task, judge: 'both' as const })),
+    judges: { 'teamai:correctness:login': { tool: 'claude', model: 'fast' } },
+    trials: base.benchmark.trials.map((trial) => {
+      const calibration = calibrated(trial);
+      return calibration ? { ...trial, calibration: { label: calibration.passed ? 'correct' : 'incorrect', ...calibration } } : trial;
+    }) } }];
+
+  it('heads the Arms view with the calibration when a judge passes failing work beyond chance, with each judge\'s false pass rate and interval', async () => {
+    // claude-haiku-5-5 labelled 2 of claude's 4 failing trials passing; claude-opus-5-5 none of codex's.
+    const html = await renderPage(mixed(({ arm, repetition }) => (arm === 'claude' ? { passed: repetition <= 2, decider: HAIKU } : { passed: false, decider: OPUS })));
+    const panel = html.split('<section class="panel sessions bench-panel calibration alert">')[1]?.split('</section>')[0] ?? '';
+
+    const at = html.indexOf('calibration alert');
+    expect(at).toBeGreaterThan(-1);
+    expect(at).toBeLessThan(html.indexOf('<div class="arm-bars">'));
+    // Wilson: 2 of 4 is 15% to 85%; 0 of 4 is 0% to 49%.
+    expect(text(panel)).toContain('claude claude-haiku-5-5 4 2 50% 15% to 85%');
+    expect(text(panel)).toContain('claude claude-opus-5-5 high 4 0 0% 0% to 49%');
+  });
+
+  it('says plainly when the suite calibrates no judge, and how to turn calibration on', async () => {
+    const html = await renderPage(mixed(() => undefined, 0));
+    const panel = html.split('<section class="panel sessions bench-panel calibration">')[1]?.split('</section>')[0] ?? '';
+
+    expect(text(panel)).toContain('This suite calibrates no judge, so these runs do not say how far the correctness judge can be trusted. To measure it, set a calibration rate in suite.yaml:');
+    expect(panel).toContain('<code class="command" data-verbatim>calibration: { rate: 10 }</code>');
+  });
+
+  it('says plainly when a calibrating suite labelled none of the trials whose check failed', async () => {
+    const html = await renderPage(mixed(() => undefined, 10));
+    const panel = html.split('<section class="panel sessions bench-panel calibration">')[1]?.split('</section>')[0] ?? '';
+
+    expect(html).not.toContain('calibration alert');
+    expect(html.indexOf('bench-panel calibration')).toBeGreaterThan(html.indexOf('bench-panel judges'));
+    expect(text(panel)).toContain('No judge labelled the trials whose check failed (8), so these runs do not say how far the correctness judge can be trusted.');
+    expect(panel).toContain('<code class="command" data-verbatim>calibration: { rate: 10 }</code>');
+  });
+
+  it('reads the standing, the judges and the calibration in zh-CN', async () => {
+    const zh = text(await renderPage(mixed(({ arm }) => (arm === 'claude' ? { passed: true, decider: HAIKU } : undefined)), { language: 'zh-CN' }));
+
+    expect(zh).toContain('对照 claude (默认 arm)');
+    expect(zh).toContain('固定的评审 判定来源 偏差 未验证 未评分');
+    expect(zh).toContain('评审校准 · teamai:correctness');
+    expect(zh).toContain('评审者 检查失败后评审数 标为通过 误判通过率 95% 区间');
+    expect(zh).toContain('claude claude-haiku-5-5 放过失败工作的频率超出了偶然范围');
+  });
+
+  it('heads every cell of the judges and calibration tables, which a narrow screen lays out as cards under those heads', async () => {
+    const html = await renderPage(mixed(({ arm }) => (arm === 'claude' ? { passed: true, decider: HAIKU } : undefined)));
+    const rowsOf = (section: string) => {
+      const table = html.split(`<section class="panel sessions bench-panel ${section}`)[1]?.split('</section>')[0] ?? '';
+      const heads = [...table.matchAll(/<th>([^<]+)<\/th>/g)].map(([, head]) => head);
+
+      return { heads, rows: [...table.matchAll(/<tr class="[^"]*">(.*?)<\/tr>/g)].map(([, row]) => [...(row ?? '').matchAll(/<td data-label="([^"]+)">/g)].map(([, head]) => head)) };
+    };
+
+    for (const section of ['judges', 'calibration']) {
+      const { heads, rows } = rowsOf(section);
+
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) expect(row).toEqual(heads);
+    }
+  });
+
+  it('shows no calibration on a suite with no task a judge could be calibrated on', async () => {
+    const html = await renderPage([base]);
+
+    expect(html).not.toContain('bench-panel calibration');
   });
 });
 

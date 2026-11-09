@@ -1648,6 +1648,26 @@ describe('reviewBranchDir — benchmarks', () => {
       message: 'benchmarks/fix/suite.yaml: suite "fix" lists scorer "nope", which has no valid scorers/nope.md; the benchmark does not start without it',
     }]);
   });
+
+  it('fails a task that lists a scorer the branch does not have', async () => {
+    await writeScorer(repoDir, 'quality.md', VALID_SCORER);
+    await fse.outputFile(path.join(repoDir, 'benchmarks', 'fix', 'suite.yaml'), [
+      'schemaVersion: v1alpha1', 'name: fix', 'repo: https://github.com/acme/app.git', 'defaults: { tool: claude }', 'arms: [{ name: claude }]', 'timeout: 1h', '',
+    ].join('\n'));
+    await fse.outputFile(path.join(repoDir, 'benchmarks', 'fix', 'tasks', 'fix.yaml'), [
+      'schemaVersion: v1alpha1', 'title: Fix it', 'prompt: Make the test pass.', `startingCommit: ${'a'.repeat(40)}`, 'check: { run: node test.js, protect: [test.js] }', 'scorers: [quality, nope]', '',
+    ].join('\n'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.ok).toBe(false);
+    expect(review.findings).toEqual([{
+      level: 'fail',
+      check: 'workflows',
+      path: 'benchmarks/fix/tasks/fix.yaml',
+      message: 'benchmarks/fix/tasks/fix.yaml: task "fix" of suite "fix" lists scorer "nope", which has no valid scorers/nope.md; the benchmark does not start without it',
+    }]);
+  });
 });
 
 describe('materializeRef — branch materialization from git', () => {

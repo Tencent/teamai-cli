@@ -3,9 +3,10 @@
  * with why, also when it proposes no value: the calling session and its tool, the commit it started at, the
  * solution at HEAD, and the one benchmark suite whose repo is this checkout's origin.
  *
- *   start   earliest dashboard session_start of the session → its gitAtStart, when clean
+ *   start   earliest capture the session-start hook wrote of the session → its project commit, when clean
  *   solution  HEAD of the caller's checkout, when clean and not start
  *   suite   the one cached suite whose repo matches origin → its directory
+ *   team_session, author   empty: the calling session is this machine's, not one a teammate pushed
  *
  * A task of that suite that already names this session as its source, or this commit as its solutionCommit, is named in that input's why, so a person
  * does not propose the same task twice.
@@ -14,12 +15,13 @@ import path from 'node:path';
 import { listCachedSuites } from './benchmark/suite-cache.js';
 import type { Suite, Task } from './benchmark/suite.js';
 import { AgentSession } from './session-flow/agent-session.js';
+import type { SessionCapture } from './session-flow/captures.js';
 import type { LocalConfig } from './types.js';
 import { getConfiguredRemoteUrl, getHeadState, getRemoteUrl, remotesMatch, type HeadState } from './utils/git.js';
 import type { OutputSchema } from './workflow/types.js';
 
 /** The inputs teamai proposes values for, by name: a team override that declares one as a string gets it filled. */
-const CONTRACT = ['session', 'source', 'suite', 'start', 'solution'] as const;
+const CONTRACT = ['session', 'source', 'suite', 'start', 'solution', 'team_session', 'author'] as const;
 
 type ContractInput = typeof CONTRACT[number];
 
@@ -35,24 +37,19 @@ interface Proposal {
 
 const NO_SESSION_WHY = 'No agent session found: give the session and its tool.';
 
-/** What the dashboard recorded of one session start: when, and the checkout's state then, when it was in git. */
-interface SessionStart {
-  timestamp: string;
-  gitAtStart?: HeadState;
-}
-
 /**
- * The commit session's earliest start recorded, when tracked files were not modified then. Resume and compaction also
- * write a start, so only the earliest one is the commit the task starts from.
+ * The commit the session's earliest capture recorded, when tracked files were not modified then. A resume also writes a
+ * capture, so only the earliest one is the commit the task starts from.
  */
-function startProposal(starts: readonly SessionStart[]): Proposal {
-  const [earliest] = [...starts].sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+function startProposal(captures: readonly SessionCapture[]): Proposal {
+  const [earliest] = captures;
+  const project = earliest?.agent.project;
 
-  if (earliest?.gitAtStart === undefined) return { why: 'No value: teamai did not record the commit this session started at. Give the commit the task starts from.' };
+  if (project === undefined) return { why: 'No value: teamai did not record the commit this session started at. Give the commit the task starts from.' };
 
-  if (earliest.gitAtStart.dirty) return { why: 'No value: tracked files were modified when this session started, so no commit holds the starting state. Give the commit the task starts from.' };
+  if (project.dirty) return { why: 'No value: tracked files were modified when this session started, so no commit holds the starting state. Give the commit the task starts from.' };
 
-  return { value: earliest.gitAtStart.head, why: 'The commit this session started at.' };
+  return { value: project.commit, why: 'The commit this session started at.' };
 }
 
 /** HEAD of the caller's checkout, when it holds the solution: it differs from `start`, and no tracked file is modified. */
@@ -114,14 +111,15 @@ async function headOf(cwd: string): Promise<HeadState | null> {
 
 /** Every proposal for the calling session `session` of `tool`, in the checkout `cwd`. */
 async function offer(config: LocalConfig, { session, tool, cwd }: { session: string; tool: string; cwd: string }): Promise<Record<ContractInput, Proposal>> {
-  // The skill driver imports this module for describe, so it loads the dashboard reader only here.
-  const { readEvents } = await import('./dashboard-collector.js');
-  const [events, head, written, rewritten, suites] = await Promise.all([readEvents(), headOf(cwd), getConfiguredRemoteUrl(cwd), getRemoteUrl(cwd), listCachedSuites(config)]);
+  // The skill driver imports this module for describe, so it loads the capture reader only here.
+  const { SessionCaptures } = await import('./session-flow/captures.js');
+  const platform = AgentSession.platformForTool(tool);
+  const starts = platform === undefined ? [] : SessionCaptures.read(config, platform, session);
+  const [captures, head, written, rewritten, suites] = await Promise.all([starts, headOf(cwd), getConfiguredRemoteUrl(cwd), getRemoteUrl(cwd), listCachedSuites(config)]);
   const origin = [...new Set([written, rewritten].flatMap((url) => (url === null ? [] : [url])))];
-  const start = startProposal(events.filter((event) => event.type === 'session_start' && event.sessionId === session));
+  const start = startProposal(captures);
   const solution = solutionProposal(start.value, head);
   const { proposal: suite, suite: proposed } = suiteProposal(origin, suites);
-  const platform = AgentSession.platformForTool(tool);
 
   return {
     session: namingTasks({ value: session, why: 'This session: the one that made the change.' }, proposed, (task) => task.source !== undefined && 'sessionId' in task.source && task.source.sessionId === session),
@@ -129,8 +127,13 @@ async function offer(config: LocalConfig, { session, tool, cwd }: { session: str
     suite,
     start,
     solution: namingTasks(solution, proposed, (task) => solution.value !== undefined && task.solutionCommit === solution.value),
+    team_session: OWN_SESSION,
+    author: OWN_SESSION,
   };
 }
+
+/** What describe proposes for the pushed session's name and author: none, since the calling session is this machine's. */
+const OWN_SESSION: Proposal = { value: '', why: 'This session ran on this machine, so it names no pushed session.' };
 
 /** What describe proposes, by input, when no agent session calls: no value, and why. */
 const NO_SESSION: Record<ContractInput, Proposal> = {
@@ -139,6 +142,8 @@ const NO_SESSION: Record<ContractInput, Proposal> = {
   suite: { why: 'No value: no agent session found. Give the suite\'s directory, such as benchmarks/frontend.' },
   start: { why: 'No value: no agent session found. Give the commit the task starts from.' },
   solution: { why: 'No value: no agent session found. Give the commit that completes the task.' },
+  team_session: { why: 'No value: no agent session found. Leave it empty for a session of this machine, or give the name teamai session list prints for a pushed one.' },
+  author: { why: 'No value: no agent session found. Leave it empty for a session of this machine, or give who pushed the session.' },
 };
 
 /**

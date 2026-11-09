@@ -13,16 +13,20 @@ import { isSelfMode, type LocalConfig } from '../types.js';
 import { sameEnvName } from '../resources/env-key.js';
 import { log } from '../utils/logger.js';
 import { leaseDeadline } from '../workflow/limits.js';
-import { checkVerdict, type Added, type CheckResult } from '../scorers/check.js';
+import { checkLabel, checkVerdict, type Added, type CheckOutput } from '../scorers/check.js';
 import { restoreProtected, writeAdded, type CheckRun } from '../scorers/check-run.js';
+import { labelVersion, type RunSubject, type ScoreLabel } from '../scorers/label.js';
+import { LabelStore } from '../scorers/label-store.js';
+import { keepsLabelsLocal } from '../scorers/score-labels.js';
+import { judgedFacts } from '../scorers/scoring-evidence.js';
 import { commitCacheOf } from '../workflow/place/place.js';
 import { findAttemptRun } from '../workflow/run-location.js';
 import { SANDBOX_WITHHELD_ENV } from '../workflow/requirements.js';
 import { runShellCommand } from '../workflow/shell-command.js';
-import type { WorkflowFailure } from '../workflow/types.js';
+import type { RunState, WorkflowFailure } from '../workflow/types.js';
 import { untrustedGit } from '../workflow/worktree.js';
-import { BENCHMARK_PLAN_SCHEMA_VERSION, baselineStepOf, checkStepOf, type BenchmarkPlan, type PlannedArm } from './plan.js';
-import type { CheckFile, Suite } from './suite.js';
+import { BENCHMARK_PLAN_SCHEMA_VERSION, baselineStepOf, checkStepOf, correctnessScorerName, type BenchmarkPlan, type PlannedArm, type PlannedCheck, type PlannedTrial } from './plan.js';
+import { TaskJudge, type CheckFile, type Suite } from './suite.js';
 import { planOfRun } from './run-plan.js';
 
 const CommittedSuiteSchema = z.object({ suite: z.custom<Suite>(), files: z.custom<ReadonlyMap<string, Added>>() }).brand<'CommittedSuite'>();
@@ -38,9 +42,11 @@ export async function commitCheckFiles(cache: string, suite: Suite): Promise<{ o
   const files = new Map<string, Added>();
 
   for (const task of suite.tasks) {
-    if (task.judge.kind !== 'check' || !task.judge.files) continue;
-    const [first, ...rest] = task.judge.files;
-    const committed = await commitFiles(cache, task.judge.files);
+    const written = TaskJudge.checkOf(task.judge)?.files;
+
+    if (!written) continue;
+    const [first, ...rest] = written;
+    const committed = await commitFiles(cache, written);
 
     if ('failed' in committed) return { ok: false, task: task.id, failed: committed.failed };
     files.set(task.id, { kind: 'suite', commit: committed.commit, paths: [first.path, ...rest.map((file) => file.path)] });
@@ -131,9 +137,12 @@ export type CheckStepMode = 'baseline' | 'trial';
  * step's place prepared and set up. It reads what it checks from the run's plan, by the step's id: a trial's check first
  * puts the protected paths back as the starting commit has them; both then write the files check.add names, from the
  * run's checkout or the commit cache. Git and the check run with `env` without the names a strict sandbox withholds, which this
- * process may have set itself, until `signal` or the lease's deadline stops them, and the verdict is classified here, once. Answers its result, or why the check did not run, with one progress line either way.
+ * process may have set itself, until `signal` or the lease's deadline stops them, and the verdict is classified here, once.
+ * A trial's check that ran writes the trial's correctness label, decided by the check, through the store `teamai score
+ * write` writes to, but not one that passed a task with success criteria, whose judge then decides. Answers its output, `could_not_run` with `prepare_failed` when putting back the protected paths or
+ * writing check.add failed, or why the step could not check at all, with one progress line either way.
  */
-export async function runCheckStep({ mode, env: given, cwd, signal }: { mode: CheckStepMode; env: NodeJS.ProcessEnv; cwd: string; signal?: AbortSignal }): Promise<{ result: CheckResult } | { failure: WorkflowFailure }> {
+export async function runCheckStep({ mode, env: given, cwd, signal }: { mode: CheckStepMode; env: NodeJS.ProcessEnv; cwd: string; signal?: AbortSignal }): Promise<{ output: CheckOutput } | { failure: WorkflowFailure }> {
   const found = await findAttemptRun(given);
 
   if ('error' in found) {
@@ -168,17 +177,66 @@ export async function runCheckStep({ mode, env: given, cwd, signal }: { mode: Ch
   if (at) progress(at, ran);
   else baselineProgress(task.id, ran);
 
-  return ran.kind === 'check' ? { result: ran.verdict.verdict } : { failure: ran.failure };
+  if (ran.kind === 'error') return { output: { result: 'could_not_run', cause: 'prepare_failed', label: '' } };
+  const { verdict } = ran;
+
+  switch (verdict.verdict) {
+    case 'could_not_run':
+      return { output: { result: 'could_not_run', cause: verdict.cause, label: '' } };
+    case 'passed':
+    case 'failed': {
+      // A check that passes a task with success criteria leaves its trial to the judge, so it writes no label.
+      if (!at || (verdict.verdict === 'passed' && task.judge.kind === 'both')) return { output: { result: verdict.verdict, cause: '', label: '' } };
+      const stored = await storeCheckLabel({ config, run, plan, subject: { runId: run.id, step: `${prefix}${at.step}`, pass: workPass(run, `${prefix}${at.step}`) }, task: task.id, result: verdict.verdict });
+
+      return 'failure' in stored ? stored : { output: { result: verdict.verdict, cause: '', label: stored.version } };
+    }
+
+    default: {
+      const unhandled: never = verdict;
+
+      return unhandled;
+    }
+  }
+}
+
+/** The pass of work step `step` its check follows: the one the step is on. */
+function workPass(run: RunState, step: string): number {
+  return run.steps.find(({ id }) => id === step)?.pass ?? 1;
+}
+
+/**
+ * Stores the correctness label of `task` on the trial's work pass that its check decided: `checkLabel` of the scorer's
+ * labels as the plan pinned them, judge kind `stage`, decided by `check`, kept on this machine as every label of an
+ * isolated run is. Answers the label's version, as `teamai score write` answers it, or why it was not stored.
+ */
+async function storeCheckLabel({ config, run, plan, subject, task, result }: { config: LocalConfig; run: RunState; plan: BenchmarkPlan; subject: RunSubject; task: string; result: 'passed' | 'failed' }): Promise<{ version: string } | { failure: WorkflowFailure }> {
+  const name = correctnessScorerName(task);
+  const scorer = plan.scorers.find((pinned) => pinned.name === name);
+
+  if (!scorer) return { failure: { code: 'run_unreadable', message: `The plan of run ${run.id} pins no ${name}, so the check of task "${task}" has no label to write. Start the benchmark again.` } };
+  const chosen = checkLabel(result, scorer.labels);
+
+  const label: ScoreLabel = {
+    ...judgedFacts(run, subject), source: 'workflow', scorer: name, rubric: { sourceHash: scorer.rubric.sourceHash }, label: chosen.value, score: chosen.score,
+    passed: chosen.score >= scorer.passingScore, judge: { kind: 'stage' }, decidedBy: 'check', subject, scoredAt: new Date().toISOString(),
+  };
+
+  const written = await LabelStore.append(config, [{ label }], { outbox: !keepsLabelsLocal(run, subject.step) });
+
+  if (written.status === 'busy') return { failure: { code: 'busy', message: `Another teamai process holds the label store, so the label the check of task "${task}" decided was not written. Run the step again.` } };
+
+  return { version: labelVersion(label) };
 }
 
 /** The check task `step` checks in `mode`, its check, and for a trial's check, the trial as its lines name it. */
-function checkedBy(plan: BenchmarkPlan, mode: CheckStepMode, step: string): { task: BenchmarkPlan['tasks'][number]; judge: Extract<BenchmarkPlan['tasks'][number]['judge'], { kind: 'check' }>; at?: TrialAt } | undefined {
+function checkedBy(plan: BenchmarkPlan, mode: CheckStepMode, step: string): { task: BenchmarkPlan['tasks'][number]; judge: PlannedCheck; at?: TrialAt & Pick<PlannedTrial, 'step'> } | undefined {
   const trial = mode === 'trial' ? plan.trials.find((planned) => checkStepOf(planned) === step) : undefined;
   const task = plan.tasks.find((planned) => (mode === 'trial' ? planned.id === trial?.task : baselineStepOf(planned.id) === step));
 
-  if (task?.judge.kind !== 'check') return undefined;
+  if (task === undefined || task.judge.kind === 'criteria') return undefined;
 
-  return { task, judge: task.judge, at: trial ? { ...trial, total: plan.trials.length } : undefined };
+  return { task, judge: task.judge.check, at: trial ? { ...trial, total: plan.trials.length } : undefined };
 }
 
 /** A trial, as its progress lines name it: its place in the plan's trial list of `total`. */
@@ -214,7 +272,7 @@ function progress({ order, total, task, arm }: TrialAt, event: CheckRun): void {
       }
 
     case 'error':
-      log.info(`Trial ${order}/${total} ${task} ${arm}: error (${event.failure.code}: ${event.failure.message})`);
+      log.info(`Trial ${order}/${total} ${task} ${arm}: check could not run (prepare_failed: ${event.failure.message})`);
 
       return;
     default: {

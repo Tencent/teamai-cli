@@ -50,7 +50,8 @@ setup:
 | `timeout` | Required: the whole run's. |
 | `trial` | Optional limits of every trial's prompt. See [Trial limits](#trial-limits). |
 | `setup` | Optional, a [workflow's `setup`](workflow-advanced.md#requirements-and-limits). Runs in every fresh clone before the tool or the check. |
-| `scorers` | Optional [scorers](scorers.md) that judge every trial. A name with no valid `scorers/<name>.md` fails `teamai review --branch`, `teamai pull` warns, and start refuses the suite. |
+| `scorers` | Optional [scorers](scorers.md) that judge every trial; a task may [list more](#scorers-per-task). A name with no valid `scorers/<name>.md` fails `teamai review --branch`, `teamai pull` warns, and start refuses the suite. |
+| `calibration` | Optional `{ rate }`, 0 to 100, 0 by default: the percent of trials whose check failed that the correctness judge labels too, to measure it. See [Calibrate a judge](#calibrate-a-judge). |
 
 ### Arms on other team assets
 
@@ -243,7 +244,7 @@ matrix:
 
 A matrix varies `tool`, `model`, `team`, `workflow` or `role`, at least one of them with two values or more, and makes 2 to 12 arms. A key it leaves out comes from `defaults`. Each arm's name joins its values for the keys that vary: a ref is used as it is, with a character other than a letter, digit, `-` or `_` written `-`, and `without: [skills/auth-tokens]` is `without-skills-auth-tokens`. A suite has `arms` or `matrix`, not both.
 
-A task starts from a full commit of `repo` and is decided by exactly one of `check` and `successCriteria`:
+A task starts from a full commit of `repo` and is decided by `check`, `successCriteria`, or both:
 
 ```yaml
 # benchmarks/fix-auth/tasks/expired-token.yaml
@@ -266,7 +267,17 @@ schemaVersion: v1alpha1
 title: Clearer login error
 prompt: Make the login error say which field is wrong.
 startingCommit: 3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a
+check:
+  run: npx vitest run test/auth/login.test.ts
+  protect: ['test/**', 'package.json', 'package-lock.json']
 successCriteria: The error names the wrong field and still reveals nothing about which accounts exist.
+```
+
+`login-copy` has both: its check decides what the test can, and a judge the rest, only once the check passes:
+
+```text
+check fails  → the check step writes the failing label, decidedBy check → teamai-score skips the scorer: no judge
+check passes → the check step writes no label → the judge decides on successCriteria, decidedBy judge
 ```
 
 | Key | Value |
@@ -275,11 +286,40 @@ successCriteria: The error names the wrong field and still reveals nothing about
 | `solutionCommit` | Optional: the full commit with the task's reference solution. [`benchmark try`](#try-a-task) checks the check passes there, and `check.add` reads its files from it. |
 | `check` | `run`, a command that exits 0 once the task is done, and `protect`, the paths the agent must not supply. |
 | `check.add` | Optional: files written before the check that the agent never has: a file as `solutionCommit` has it, such as the solution's test, or `{ from, to }`, a file or directory of the suite directory. A directory adds every file under it except its dot entries, such as `.DS_Store`; name a dotfile in `from` to add it. See [Tests the solution brought](#tests-the-solution-brought) and [Tests in the suite directory](#tests-in-the-suite-directory). |
-| `successCriteria` | Instead of `check`: a judge decides from these. |
+| `successCriteria` | What a judge decides from: on its own, or after `check` passes. |
 | `covers` | Optional: the team repo paths the task's work is expected to need, as [`without`](#leave-team-assets-out) takes them. The [asset effect](#asset-effect) tables split an arm that runs without one of them by the tasks that cover it. |
 | `source` | Optional: where the task came from: a session's `platform` and `sessionId`, or a workflow pass's `runId`, `step` and `pass`. Nothing runs from it; [`digest --json`](self-improvement.md#what-teamai-reads) marks the failure it names as covered. |
+| `scorers` | Optional: [scorers](scorers.md) that judge this task's trials besides the suite's. See [Scorers per task](#scorers-per-task). |
 
-`teamai pull` and `teamai review --branch` check every file and report each problem with its file and line. A suite in `benchmarks/<namespace>/<suite>/` goes only to members of that role or project, as [Roles and projects](distribution.md#roles-and-projects) describes.
+`teamai pull` and `teamai review --branch` check every file and report each problem with its file and line, such as a task with neither `check` nor `successCriteria`. A suite in `benchmarks/<namespace>/<suite>/` goes only to members of that role or project, as [Roles and projects](distribution.md#roles-and-projects) describes.
+
+### Scorers per task
+
+A task's `scorers` judge its trials together with the suite's, each once, so a scorer that applies to a few tasks costs no judge call on the others:
+
+```yaml
+# benchmarks/fix-auth/suite.yaml, in part
+scorers: [review-quality]
+```
+
+```yaml
+# benchmarks/fix-auth/tasks/session-fixation.yaml
+schemaVersion: v1alpha1
+title: Rotate the session id at login
+prompt: Sessions keep their id across login. Fix it.
+startingCommit: 3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a
+check:
+  run: npx vitest run test/auth/session.test.ts
+  protect: ['test/**', 'package.json', 'package-lock.json']
+scorers: [security-review]
+```
+
+| Task | Scorers that judge its trials |
+| --- | --- |
+| session-fixation | review-quality, security-review |
+| expired-token | review-quality |
+
+A task's scorer names are checked as the suite's are: one with no valid `scorers/<name>.md` fails `teamai review --branch`, `teamai pull` warns, and start refuses the suite. A name with `:`, such as `teamai:correctness:<task>`, is refused, since no scorer file has one. The list is part of the task file, so changing it changes the task's `sourceHash`, and [the regression gate](#fail-on-a-regression) does not pair its trials across the change. Start [pins each one's judge](#one-judge-for-every-arm) as it pins the suite's, and needs a judge tool once any task lists one.
 
 ### What `protect` covers
 
@@ -353,7 +393,7 @@ check:
 
 ### Baselines
 
-Before a task's first trial, teamai runs setup, writes the task's `check.add` files and runs the check once, on a fresh clone of the starting commit:
+Before the first trial of a task with a `check`, with `successCriteria` or without, teamai runs setup, writes the task's `check.add` files and runs the check once, on a fresh clone of the starting commit. A task with only `successCriteria` has no baseline.
 
 | The check at the starting commit | The task |
 | --- | --- |
@@ -452,7 +492,7 @@ check:
 source: { platform: claude-code, sessionId: 7c1e2b9a }
 ```
 
-The session drafts it because it already knows what you asked and how it was done; no transcript is read back. `check.add` keeps the solution's test out of the trial's clone (see [Tests the solution brought](#tests-the-solution-brought)), and the prompt names the function that test calls, so the task can be solved without seeing it.
+The session drafts it because it already knows what you asked and how it was done; no transcript is read back. A draft from another session, as when you [build a suite from past sessions](#build-a-suite-from-past-sessions), reads that session's transcript first with `teamai session show`. `check.add` keeps the solution's test out of the trial's clone (see [Tests the solution brought](#tests-the-solution-brought)), and the prompt names the function that test calls, so the task can be solved without seeing it.
 
 Other sessions draft other tasks:
 
@@ -460,6 +500,7 @@ Other sessions draft other tasks:
 | --- | --- |
 | Fixed a bug and added `test/auth/refresh-race.test.ts` | `check` with `add: [test/auth/refresh-race.test.ts]`, as above |
 | Fixed a bug and added a case to `test/auth/refresh.test.ts` | `check` with `add: [test/auth/refresh.test.ts]`: the file as the solution has it, case included |
+| Reworded the login error, which `test/auth/login.test.ts` checks, and must still reveal nothing about accounts | `check` and `successCriteria`, as `login-copy` above: the test decides when it fails, and a judge decides the rest once it passes |
 | Fixed a layout bug no test covers | `successCriteria: "The checkout button stays visible at 320 px wide."`, judged by a model |
 | Added `POST /sessions/revoke-all` with `test/auth/revoke-all.test.ts` | `check` with `add: [test/auth/revoke-all.test.ts]`; the prompt names the endpoint and what it returns, as the test calls it |
 | Moved token storage behind `TokenStore`, behavior unchanged | `successCriteria: "Every read and write of tokens goes through TokenStore; the auth tests still pass."`: the tests pass before the change too, so a `check` could not tell it from no change |
@@ -472,7 +513,7 @@ describe fills every input for the calling session, and says why, also when it p
 | Input | Proposed | Not proposed when |
 | --- | --- | --- |
 | `session`, `source` | this session and its tool | no agent session: no input gets a value |
-| `start` | the commit this session's first start recorded | the session started with tracked files modified, or teamai recorded no start (a resume does not count) |
+| `start` | the commit the session-start hook recorded at this session's first start, kept with the session's captures, so a session resumed after the dashboard compacted its log still gets it | the session started with tracked files modified, or teamai recorded no start (a resume does not count) |
 | `solution` | `HEAD` | `HEAD` is still `start`, tracked files are modified, or there is no `start` |
 | `suite` | the one suite whose `repo` is this checkout's `origin`: `benchmarks/fix-auth`, or `benchmarks/web/fix-auth` in a namespace | no suite, or several, match `origin` |
 
@@ -503,6 +544,76 @@ refresh-race   drafted again, by you or a teammate: the same branch, and pull re
 refresh-race   after pull request 77 merged, the same bytes: nothing pushed, no pull request
 ../escape      not a task file name: the check step fails before any approval or clone
 ```
+
+### Build a suite from past sessions
+
+A week of sessions, yours and your teammates', holds many finished fixes and features. Ask your agent to turn them into tasks ("build benchmarks/fix-auth from this week's sessions"), and it starts `teamai-sessions-to-tasks`:
+
+```console
+$ teamai workflow start teamai-sessions-to-tasks --inputs '{"suite":"benchmarks/fix-auth","count":12}'
+```
+
+```text
+step         does
+local        teamai session list --finished --all --within 30d --suite benchmarks/fix-auth --sizes "$SIZES" --json
+             → each finished session with start, solution, files, lines and size; only those whose commits are reachable
+               in the suite's repo and that no task of the suite already comes from (by session or solution commit)
+pushed       teamai session list --all --suite benchmarks/fix-auth --sizes "$SIZES" --json
+             → the same, of the sessions the team pushed for the suite's repo, each with its teamSession and author
+pick         an answer step: the AI picks representative candidates per size, up to count
+draft        for_each pick, max_parallel 1: workflow teamai-session-to-task with session, source, suite, start, solution
+             (and team_session, author for a pushed one); you accept, edit or skip each draft, and each accepted task is a pull request
+```
+
+`start` is the commit the session started at, and `solution` the one its last Stop found checked out: teamai records both beside the session's captures. The list says how many sessions it left out, and why:
+
+```json
+{"list":[{"session":"7c1e2b9a","source":"claude-code","ended":"2026-11-05T17:40:00Z","prompt":"Refresh tokens past…",
+          "start":"3f2c9a7…","solution":"9a1d4e7…","files":2,"lines":31,"size":"S"}],
+ "leftOut":[{"reason":"no recorded end","sessions":4},{"reason":"ended with tracked files modified","sessions":1}]}
+```
+
+| Left out as | Why |
+| --- | --- |
+| `no recorded end` | The session ended before teamai recorded how sessions end, so its solution is unknown |
+| `no recorded start` | Its start recorded no commit, as outside git |
+| `started with tracked files modified`, `ended with tracked files modified` | No commit holds that state |
+| `ended on the commit it started at` | Nothing was committed |
+| `a task of the suite already comes from it` | A task names this session as its `source`, or its solution as `solutionCommit` |
+| `commits not in the suite repo` | The suite's `repo` lacks a commit even after a fetch by SHA: push the branch, and ask again |
+
+A learning contributed from a session does not leave it out here. The workflow lists sessions last active within 30 days (`--within 30d`), since Claude Code keeps a transcript that long by default; change it in your team's copy of the workflow.
+
+A size is the smallest of S, M and L whose limits both fit the change, else XL. The limits are the workflow's, a team changes them in its copy of the file; the command only applies them:
+
+```yaml
+# workflows/teamai-sessions-to-tasks.yaml (excerpt): what a team may change
+inputs: { suite: string, count: number, sizes: string }
+defaults:
+  # The largest S, M and L solution diffs, as lines,files; anything larger is XL.
+  inputs: { sizes: "S=40,3 M=200,10 L=800,30" }
+```
+
+```text
+lines  files  size
+31     2      S
+12     4      M    4 files is more than S allows
+801    1      XL   more lines than L allows
+```
+
+Each draft is the [same conversation](#turn-a-session-into-a-task) as for the session you are in; the agent reads the past session with `teamai session show <id> --source <platform>` first, or a teammate's with `teamai session show <id> --team-session <name> --author <member> --suite benchmarks/<suite>`.
+
+A pushed session's archive keeps the commits its start and its last Stop recorded on the machine that pushed it, so a teammate's work can be a task too:
+
+```console
+$ teamai session list --all --suite benchmarks/fix-auth --json
+{"list":[{"session":"7c1e2b9a","source":"claude-code","ended":"2026-11-05T17:40:00Z","title":"Refresh tokens past expiry",
+          "teamSession":"claude-code_refresh-tokens-past-expiry_20261105","author":"ana",
+          "start":"3f2c9a7…","solution":"9a1d4e7…","files":2,"lines":31}],
+ "leftOut":[{"reason":"archived without recorded commits","sessions":6}]}
+```
+
+A session pushed before teamai recorded commits is left out as `archived without recorded commits`. Run `teamai session pull` first for the team's newest sessions.
 
 ### Check tasks in the team repo's CI
 
@@ -593,10 +704,21 @@ A matrix entry whose suite the pull request does not touch tries nothing and pas
 
 ```console
 $ teamai benchmark run fix-auth --sandbox
+ℹ Suite fix-auth: 54 trials (3 arms × 6 tasks × 3 repetitions), 36 judge calls, 4 calibration judge calls.
+ℹ Estimated 49.4–68.7 USD, incomplete (agents 41.4–56.7, judges 8–12), from run r1c0d9e2f4a7b3c51.
+  claude 0.82 · codex unknown (no cost stated) · strong 1.95 USD per trial
 ℹ Run r38302f8e6a18c377 started. If it stops before it ends, continue it with: teamai workflow resume r38302f8e6a18c377
 ```
 
 `benchmark run` plans the suite first, so a suite that cannot run leaves no run. It then starts the workflow `teamai-benchmark` with the suite's `timeout`, on the driver `--driver` names, else the one [`workflows.driver`](reference.md#member-settings) names, else the local driver, which drives it here.
+
+Before the run starts, it prints what the run will cost, from the newest earlier run of the suite that succeeded, on this machine or on `teamai-reports` as your checkout last read it. An arm's cost is its trials times the median cost of one of its trials there, matched by name, tool, model, effort, team, workflow and role, with the quartiles as the range. The judging is the judged trials and calibration calls times the median cost there of judging one trial or calibrating one. Judge calls count as teamai's benchmark workflow batches them; a task with both a check and success criteria counts its correctness call and its [calibration](#calibrate-a-judge) calls as many as they can be. An arm whose tool stated no cost, or that did not run then, is `unknown`, and the total says `incomplete`. With no such run, it prints `No earlier run of fix-auth to estimate from.` The estimate never stops a run or changes the exit code: to spend less, run fewer `--task` or `--arm`. The plan keeps it, the JSON envelope carries it at the end in `data.done.outputs.table.estimate`, and the usage table shows it beside what the run spent, in part:
+
+```text
+| Arm | Cost | Estimated |
+| --- | --- | --- |
+| claude | 15.4 USD (18) | 12.6–17.1 USD |
+```
 
 Each trial prompt runs with [`permissions: unattended`](workflow-advanced.md#unattended-prompts), because the shipped workflow runs the trials in a strict sandbox: the tool edits files and runs commands without asking, whatever this machine's settings for it say.
 
@@ -632,9 +754,9 @@ The local driver runs each trial as fresh clone, team assets, setup, the arm's t
 | Lanes | One trial at a time, unless the suite sets [`parallel`](#parallel-lanes). |
 | Timeout | The suite's `timeout` is the whole run's. Setup, the tool and the check all stop at it: the trial they ran for counts as `error`, and the trials still open settle `not_run`. Keep it below your CI job's limit, or the job is killed before it prints the table. |
 | A hung trial | Without [`trial.timeout`](#trial-limits), a tool that never returns runs until the suite's timeout, and every trial after it settles `not_run`. |
-| Judges | A task with `successCriteria`, and the suite's scorers, are judged by the run's own `score` step, after the trials and before `report`. Start refuses a suite that needs a judge on a machine with no judge tool that runs its scorers' model at the isolation they ask for. |
+| Judges | A task with `successCriteria`, and the suite's scorers, are judged by the run's own `score` step, after the trials and before `report`, each scorer by [one judge for every arm](#one-judge-for-every-arm). Start refuses a suite that needs a judge on a machine where a scorer's judge tool is not installed, or does not run its model at the isolation it asks for. |
 | Control commands | A trial's steps exist only once the run's `plan` step reported. Until then, `teamai workflow cancel <run> <step>` on a trial step answers `step_not_found`. A benchmark run is [isolated](workflow-advanced.md#isolated-runs): `workflow retry`, `publish` and `--claim` refuse it, `publish` and `--claim` with `isolated_run`, and retry names `teamai benchmark run <suite>`. |
-| Stopped | `teamai workflow resume <run>` continues it, with the `--sandbox` the run started with. |
+| Stopped | `teamai workflow resume <run>` continues it, with the `--sandbox` the run started with. A run that a teamai before an upgrade started, whose plan has another version, cannot go on: `workflow resume` refuses it, naming `teamai benchmark run <suite>`. |
 
 A start that cannot run refuses with a message that says what to do, and makes no run. When your user-scope teamai install also reaches the team, or the team is served over HTTP, the run cannot pin the team a trial gets, and refuses with `team_ref_blocked`, saying what to change.
 
@@ -644,7 +766,7 @@ A start that cannot run refuses with a message that says what to do, and makes n
 $ teamai benchmark run fix-auth --sandbox --task expired-token --arm claude --arm strong
 ```
 
-The run has the baseline of `expired-token` and the trials of `claude` and `strong` on it, and its record and table list only them. `--fail-on-regression` then compares it only with a run of the same tasks and arms. The dashboard never takes such a run as the suite's current version while the suite has a run of all its tasks and arms. A name the suite does not have is refused before any run starts:
+The run has the baseline of `expired-token` and the trials of `claude` and `strong` on it, and its record and table list only them. `--fail-on-regression` then compares it only with a run of the same arms. The dashboard never takes such a run as the suite's current version while the suite has a run of all its tasks and arms. A name the suite does not have is refused before any run starts:
 
 ```console
 $ teamai benchmark run fix-auth --sandbox --task expierd-token
@@ -681,6 +803,8 @@ steps:
     requires: { isolation: sandbox, strict: true }
   # Judges every trial with the scorers as of the run's start, a criteria task's teamai:correctness:<task> included. Reading
   # trials keeps a failed trial from stopping the others being judged. Without these two steps nothing judges a trial.
+  # batch: the suite's scorers that share a judge tool, model and stages share one judge call per trial; a correctness
+  # scorer is always judged alone. Set it false in a workflow of this name to judge each scorer apart.
   - id: subjects
     needs: [trials]
     if: steps.trials.outcome != 'skipped'
@@ -691,7 +815,23 @@ steps:
     needs: [subjects]
     for_each: steps.subjects.outputs.list
     workflow: teamai-score
-    with: { subject: "{{ item }}", scorers: [], label: "", batch: false, demand: named }
+    with: { subject: "{{ item }}", scorers: [], label: "", batch: true, demand: named }
+    timeout: 2h
+    continue_on_failure: true
+  # Calibrates each correctness judge against the check: the suite's calibration.rate of the trials of a task with a check
+  # and success criteria whose check failed, labelled by that judge too. store: false keeps the label out of the trial's
+  # verdicts: it decides nothing, and the results show it as Judge calibration. Drop these two steps to calibrate nothing.
+  - id: calibration-subjects
+    needs: [score]
+    if: steps.score.outcome != 'skipped'
+    command: teamai score subjects --calibration --run "$RUN" --step trials
+    env: { RUN: "{{ run.id }}" }
+    output: { list: [{ subject: string, scorer: string }] }
+  - id: calibrate
+    needs: [calibration-subjects]
+    for_each: steps.calibration-subjects.outputs.list
+    workflow: teamai-score
+    with: { subject: "{{ item.subject }}", scorers: ["{{ item.scorer }}"], label: "", store: false, batch: false, demand: named }
     timeout: 2h
     continue_on_failure: true
 finally:
@@ -709,9 +849,11 @@ outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 | Command | Runs as | Does |
 | --- | --- | --- |
 | `teamai benchmark plan <suite>` | The `plan` step | Freezes the team revision you pulled, fetches every commit a trial reads, and prints the trials as a workflow, with one clone per baseline and trial. |
-| `teamai benchmark check --baseline\|--trial` | A step in each clone | Writes `check.add`, puts `protect` back for a trial, runs the task's check, and prints its result. |
+| `teamai benchmark check --baseline\|--trial` | A step in each clone | Writes `check.add`, puts `protect` back for a trial, runs the task's check, and prints `{ result, cause, label }`. A trial's check also stores the trial's correctness label, as [Who decides a trial](#who-decides-a-trial) says. |
 | `teamai score subjects --run <run> --step trials` | The `subjects` step | Lists the trials' scored passes that settled on this machine. |
 | [`teamai-score`](scorers.md#the-teamai-score-workflow) | The `score` step, once per subject | Judges the trial with the scorers as of the run's start. |
+| `teamai score subjects --calibration --run <run> --step trials` | The `calibration-subjects` step | Lists the trials to [calibrate a judge](#calibrate-a-judge) on, each with its correctness scorer. |
+| [`teamai-score`](scorers.md#the-teamai-score-workflow) with `store: false` | The `calibrate` step, once per trial listed | Labels the trial with its correctness scorer, and stores nothing. |
 | `teamai benchmark report` | The `report` `finally` step | Classifies the trials, writes the record, and prints the results. With `COMPARE=true`, also compares the record, as [Fail on a regression](#fail-on-a-regression) says. |
 
 `trials` runs what `plan` printed: see [Run a workflow a step printed](workflow-advanced.md#run-a-workflow-a-step-printed). `report` runs after the trials whatever happened to them, as [finally steps](workflow-advanced.md#finally-steps) do. `benchmark run --member-aliases` passes `aliases` as `member`, else as `team`. `--task` and `--arm` pass `tasks` and `arms`, else `[]`, which plans every task and arm. `--fail-on-regression` passes `fail_on_regression` as `true`, else `false`. `report` reads each trial's labels from the `score` step's results in the run file, since a `finally` step cannot read `steps`.
@@ -724,7 +866,7 @@ To change it, push your own `workflows/teamai-benchmark.yaml`, or `workflows/<na
 
 Yours must take input `suite`, input `aliases` to run with `--member-aliases`, inputs `tasks` and `arms` to run with `--task` and `--arm`, and input `fail_on_regression` to run with `--fail-on-regression`; `benchmark run` refuses it otherwise, naming the input. Keep `plan`'s step id and `report` as a `finally` step. Dropping `strict: true` lets trials run without the credentials being kept from them, and with each tool's own permission settings rather than unattended: a tool that may not edit fails its trials, and the report opens with a line that says so. When two namespaces you receive both have a `teamai-benchmark.yaml`, `benchmark run` refuses with `workflow_namespace_conflict`, naming both files, and never falls back to teamai's.
 
-You may change `score`'s `timeout`, or drop `subjects` and `score` to run without judging. Every trial a judge would decide then ends `unscored`:
+You may change `score`'s `timeout`, drop `calibration-subjects` and `calibrate` to [calibrate](#calibrate-a-judge) no judge, or drop those two with `subjects` and `score` to run without judging. Every trial a judge would decide then ends `unscored`:
 
 ```yaml fragment
 # workflows/teamai-benchmark.yaml: the trials, never judged
@@ -734,14 +876,14 @@ steps:
     needs: [plan]
     workflow: { from: plan }
     requires: { isolation: sandbox, strict: true }
-  # no subjects or score step
+  # no subjects, score, calibration-subjects or calibrate step
 finally:
   # report and regression, as teamai's
 ```
 
 ## Results
 
-When the run ends, `benchmark run` prints the results on stderr. The JSON envelope on stdout carries the same text in `data.done.outputs.text`, and the numbers in `data.done.outputs.table`, whose `verdicts` give each judged trial's verdict per scorer: `labelled` with its label, or `unscored` with `because`, the judge's failure code, or `run_ended` when no label came. For this suite with a third task, `old-bug`, whose check already passes:
+When the run ends, `benchmark run` prints the results on stderr. The JSON envelope on stdout carries the same text in `data.done.outputs.text`, and the numbers in `data.done.outputs.table`, whose `verdicts` give each trial's verdict per scorer, its correctness scorer first: `labelled` with its label and score, or `unscored` with `because`, the judge's failure code, `check_could_not_run`, `judge_tool_unavailable` when no driver of the run offered the judge tool, or `run_ended` when no label came. For this suite with a third task, `old-bug`, whose check already passes:
 
 ```text
 | Arm | Tool | Model (source) | Planned | Passed | Failed | Error | Unscored | Not run | Stopped by a limit | Deviations | Not verified | Pass rate |
@@ -750,11 +892,11 @@ When the run ends, `benchmark run` prints the results on stderr. The JSON envelo
 | codex | codex | tool default (team) | 9 | 3 | 3 | 0 | 0 | 3 | 0 | 0 | 0 | 33% (3/9) |
 | strong | claude | claude-opus-5-5 high (team) | 9 | 6 | 0 | 0 | 0 | 3 | 0 | 0 | 0 | 67% (6/9) |
 
-| Arm | Median tokens (input + output) | Median duration | Cost |
-| --- | --- | --- | --- |
-| claude | 41200 (6) | 84.0 s (6) | 1.82 USD (6) |
-| codex | 38900 (6) | 97.5 s (6) | unknown (0) |
-| strong | 52300 (6) | 121.0 s (6) | 4.1 USD (6) |
+| Arm | Median tokens (input + output) | Median duration | Cost | Cost per passed trial | Against claude (defaults arm) |
+| --- | --- | --- | --- | --- | --- |
+| claude | 41200 (6) | 84.0 s (6) | 1.82 USD (6) | 0.455 USD |  |
+| codex | 38900 (6) | 97.5 s (6) | unknown (0) | — | -11 pp (-36 to +16, not separated) |
+| strong | 52300 (6) | 121.0 s (6) | 4.1 USD (6) | 0.6833 USD | +22 pp (-11 to +48, not separated) |
 
 | Task | claude | codex | strong |
 | --- | --- | --- | --- |
@@ -771,9 +913,11 @@ These results hold for these tasks, this run and this machine.
 
 | Table | Shows |
 | --- | --- |
-| Arms | Each arm's trials by result, and how many a [trial limit](#trial-limits) stopped. A deviation is a trial whose prompt ran on another tool, team revision, model or role than its arm's, or without a trial limit its driver could not enforce. A trial is not verified when its record lacks one of those. When an arm runs on other team assets than the pulled revision, a Team column shows each arm's, such as `pulled 3f9c2ab`, `next 81d0e4c`, `3f9c2ab without skills/auth-tokens` or `none`. When an arm [runs as a role](#arms-that-run-as-a-role), a Role column shows each arm's role, or `member's roles`. |
-| Usage | Each arm's medians and cost total, with how many trials each used. Tokens and cost appear only as the tool stated them, so a tool that states none shows `unknown (0)`. A trial whose passes did not all state its tokens (input and output), cost or duration counts as one that stated none of it, and makes a cost total `incomplete`. |
+| Arms | Each arm's trials by result, and how many a [trial limit](#trial-limits) stopped. A deviation is a trial whose prompt ran on another tool, team revision, model or role than its arm's, or without a trial limit its driver could not enforce, or that a judge other than the [plan's](#one-judge-for-every-arm) labelled. A trial is not verified when its record lacks one of those, or its judge's model. When an arm runs on other team assets than the pulled revision, a Team column shows each arm's, such as `pulled 3f9c2ab`, `next 81d0e4c`, `3f9c2ab without skills/auth-tokens` or `none`. When an arm [runs as a role](#arms-that-run-as-a-role), a Role column shows each arm's role, or `member's roles`. When a correctness rubric has more than two labels, a Mean correctness score column follows the pass rate, under [The correctness rubric](#the-correctness-rubric). |
+| Usage | Each arm's medians and cost total, with how many trials each used. Tokens and cost appear only as the tool stated them, so a tool that states none shows `unknown (0)`. A trial whose passes did not all state its tokens (input and output), cost or duration counts as one that stated none of it, and makes a cost total `incomplete`. Cost per passed trial is the cost total over the arm's passed trials, as on the dashboard: `—` with no passed trial or no total in one unit, and marked `incomplete` when the total is. Against reads each arm against the defaults arm, under [Cost per passed trial](#cost-per-passed-trial). Estimated, beside Cost, is what start [estimated](#run-a-suite) each arm would cost, when an earlier run gave it an estimate. |
 | Tasks | Each task's pass rate on each arm. |
+| Scorers | Only when the suite or a task lists scorers: each arm's pass rate per scorer, under [Pass rate per scorer](#pass-rate-per-scorer). |
+| Judge calibration | Only when the suite sets a [calibration rate](#calibrate-a-judge): how often the correctness judge passed work whose check failed. |
 | Baselines | The tasks that did not run, and why. |
 | Skills | Only when an arm changes team skills: each skill it adds, removes or changes, and how many of the arm's trials loaded it, beside the arm that changes nothing. |
 | Asset effects | Only when a task covers a team repo path: a table per covered asset, under [Asset effect](#asset-effect). |
@@ -785,6 +929,207 @@ These results hold for these tasks, this run and this machine.
 ```
 
 A load is counted only where teamai could see it: `unknown` is a trial whose tool reports no skill loads, never a trial that did not load the skill.
+
+### Cost per passed trial
+
+The usage table reads each arm against the defaults arm, the arm that changes no `defaults` key, or against the first arm when every arm changes one. With an arm `cheap` that passes the same eight trials of nine as `claude` for less, in part:
+
+```text
+| Arm | Cost | Cost per passed trial | Against claude (defaults arm) |
+| --- | --- | --- | --- |
+| claude | 7.2 USD (9) | 0.9 USD |  |
+| cheap | 3.2 USD (9) | 0.4 USD | dominates: same pass rate, 56% cheaper per passed trial; 0 pp (-30 to +30, not separated) |
+| codex | unknown (0) | — | -22 pp (-54 to +14, not separated) |
+```
+
+An arm dominates the defaults arm when it costs less per passed trial and its pass rate is at least as high, and is dominated when the defaults arm does that to it. A cost that is `incomplete`, unknown or in another unit marks neither. The paired difference of the pass rates and its 95% interval always show, over the pairs [the regression gate](#fail-on-a-regression) would compare, with `not separated` when the interval crosses zero, and the pairs left out after it, such as `2 excluded: their judge changed (…)`. Dominance reads the point pass rates and proves no equivalence: here nine trials cannot rule out a drop of up to 30 points. Neither mark changes the exit code or the regression gate.
+
+### Who decides a trial
+
+Only a trial's `teamai:correctness:<task>` label decides `passed`, `failed` or `unscored`. `error` and `not_run` come from the state of the trial's work. For a task with a `check`, the check step writes that label itself, in the trial's clone, right after the prompt, and no judge runs. With `successCriteria` too, a passing check writes no label, and the judge decides on the work as the prompt left it, without the `protect` paths the check restored or its `check.add` files. The label is stored on this machine with the run's other labels and, like every label of an isolated run, is never published:
+
+```json
+{"source":"workflow","scorer":"teamai:correctness:expired-token","rubric":{"sourceHash":"…"},
+ "label":"correct","score":1,"passed":true,"judge":{"kind":"stage"},"decidedBy":"check",
+ "subject":{"runId":"r38302f8e6a18c377","step":"trials.r1.expired-token.claude.prompt","pass":1},
+ "scoredAt":"2026-11-08T10:12:03Z"}
+```
+
+| The check | Label | Trial result |
+| --- | --- | --- |
+| exits 0 | the highest-scoring label at or above `passingScore` | `passed` |
+| exits 0, on a task with `successCriteria` | none: the judge labels the trial | the judge's |
+| exits non-zero | the lowest-scoring label | `failed` |
+| cannot run | none | `error`, `failure: { cause }` |
+
+`cause` is one of `not_found`, `not_executable`, `signal`, `timeout`, `spawn_failed`, `prepare_failed` (restoring `protect` or writing `check.add` failed).
+
+Each recorded trial carries its verdicts:
+
+```json
+"verdicts": [
+  { "scorer": "teamai:correctness:expired-token", "outcome": { "kind": "labelled", "label": "correct", "score": 1, "passed": true },
+    "decider": { "by": "check", "task": "<task sourceHash>" } },
+  { "scorer": "review-quality", "outcome": { "kind": "labelled", "label": "good", "score": 1, "passed": true },
+    "decider": { "by": "judge", "rubric": "<rubric sourceHash>", "tool": "claude", "model": "claude-opus-5-5", "effort": "high", "batched": true },
+    "asPlanned": "match" }
+]
+```
+
+`decider.batched` is the label's `judge.batched`. `decider.model` is the model the judge's tool reported, else the one it was launched with; the alias is not part of it. `asPlanned` compares a judge's label with the judge the plan pins for its scorer.
+
+### The correctness rubric
+
+Each `teamai:correctness:<task>` is teamai's [default scorer](scorers.md#default-scorers) `scorers/teamai-correctness.md`, filled in with the task's `prompt` and `successCriteria` (empty for a task with only a `check`):
+
+```markdown
+---
+labels:
+  - { value: correct, score: 1, description: The change meets every success criterion. }
+  - { value: incorrect, score: 0, description: The change misses at least one success criterion. }
+passingScore: 1
+samplingRate: 100
+---
+Judge whether the change made from the starting commit, commits included, meets the success criteria.
+Read the task to understand the intent, then the diff. Do not read the transcript. Decide only on the success criteria.
+
+## Task
+
+{{ task.prompt }}
+
+## Success criteria
+
+{{ task.successCriteria }}
+```
+
+A team replaces it with a file of the same name, for example to judge with its cheap model alias and a partial label:
+
+```markdown
+---
+labels:
+  - { value: correct, score: 1, description: Meets every criterion. }
+  - { value: partial, score: 0.5, description: Meets the main criterion only. }
+  - { value: incorrect, score: 0, description: Misses the main criterion. }
+passingScore: 1
+samplingRate: 100
+model: fast
+---
+…the team's wording, reading {{ task.prompt }} and {{ task.successCriteria }}…
+```
+
+Start reads the file from the team revision this checkout pulled, and judges every arm with it, whatever the arm's `team`. Its `model` and `tool` pin the judge as [any scorer's](#one-judge-for-every-arm) do: here claude, alias `fast`, for every arm. Its labels need one that passes and one that fails, and a check picks among them by the table above: a passing check writes `correct`, a failing one `incorrect`. A new rubric is a new rubric hash, so [the regression gate](#fail-on-a-regression) does not pair a trial judged before it with one judged after.
+
+With more than two labels, the arms table gains a Mean correctness score column: the mean score of each arm's labelled correctness verdicts, those a check wrote included. With the rubric above, in part:
+
+```text
+| Arm | Pass rate | Mean correctness score |
+| --- | --- | --- |
+| claude | 44% (4/9) | 0.67 |
+| codex | 44% (4/9) | 0.50 |
+```
+
+Both arms pass four trials of nine, but more of claude's others are `partial`. An arm with no labelled correctness verdict shows `-`. The regression gate still reads only the pass rate.
+
+### One judge for every arm
+
+A scorer judges every arm's trials with one tool and one model, so its pass rates compare the arms and not their judges. Start pins, per scorer, its `tool`, else the suite's `defaults.tool`, and its `model` as written, an alias staying an alias (`""`: the tool's default model). The plan freezes them as `judges`, and the record keeps them. With
+
+```yaml
+# models/aliases.yaml
+aliases:
+  judge:
+    claude: { model: opus, effort: high }
+    codex: { model: gpt-6-sol, effort: high }
+```
+
+```yaml
+# benchmarks/fix-auth/suite.yaml, in part
+defaults:
+  tool: claude
+arms:
+  - name: claude
+  - name: codex
+    tool: codex
+scorers: [review-quality]          # scorers/review-quality.md sets model: judge and no tool
+```
+
+| Trial · scorer | Judged by |
+| --- | --- |
+| login-copy · claude · review-quality | claude, opus, high |
+| login-copy · codex · review-quality | claude, opus, high |
+| login-copy · claude · correctness | claude, its default model |
+| login-copy · codex · correctness | claude, its default model |
+
+Start refuses the suite (`judge_model_unavailable`) when the alias has no model for that tool at the run's team revision. Each judge call runs on that tool only, and a scorer's labels say what it ran:
+
+| When | Then |
+| --- | --- |
+| The driver does not offer the tool | The judge step is held with `wait.held[].missing: ['confined']`; no other tool judges it. |
+| No driver of the run offers it, and the skill driver gives the judge up | The verdict is `unscored` with `judge_tool_unavailable`, and the results name the tool. |
+| The label names another tool than the plan, or another `model.alias` (or `model.requested` when the plan's model is not an alias) | The trial counts under Deviations; `asPlanned` is `deviation`. |
+| The label has no `model.reported` | The trial counts under Not verified; `asPlanned` is `not_verified`. |
+| Two machines resolved the alias to different models | No deviation. |
+| The arms vary `tool`, and the judge tool is one of theirs | The results say `Judge claude is also arm claude's tool; set tool in the scorer to judge with another.` |
+
+The suite's scorers that share a tool, model and stages share one judge call per trial. A correctness scorer is always judged alone, so the label that decides a trial never shares an answer.
+
+### Pass rate per scorer
+
+When the suite or a task lists scorers, the results add one row per arm and per scorer, from the trials' verdicts. A correctness scorer has no row: its labels are the arm's pass rate. For
+
+```yaml
+# benchmarks/fix-auth/suite.yaml, in part
+scorers: [review-quality, test-coverage]
+```
+
+```text
+| Arm | Scorer | Passed | Labelled | Unscored | Pass rate | 95% interval | Batched |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| claude | review-quality | 5 | 9 | 0 | 56% (5/9) | 27% to 81% | yes |
+| claude | test-coverage | 3 | 8 | 1 | 38% (3/8) | 14% to 69% | yes |
+```
+
+The pass rate and its 95% interval, the Wilson interval of the arms table, count labelled verdicts only. A verdict with no label counts under Unscored, and a trial that did not run counts in neither. Batched says whether the judge labelled them in a [batch](scorers.md#batching): `yes`, `no`, or `mixed` when some were and some were not, since a batched label is not the same instrument as the same scorer judged alone on real sessions. These scorers never change a trial's result, and [the regression gate](#fail-on-a-regression) does not read them.
+
+A [task's scorer](#scorers-per-task) counts only the trials it judged. With `session-fixation` run three times:
+
+```text
+| Arm | Scorer | Passed | Labelled | Unscored | Pass rate | 95% interval | Batched |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| claude | review-quality | 5 | 9 | 0 | 56% (5/9) | 27% to 81% | yes |
+| claude | security-review | 2 | 3 | 0 | 67% (2/3) | 21% to 94% | yes |
+```
+
+`security-review` judges only the three trials of `session-fixation`, so it spends no judge call on the other tasks, and they do not dilute its pass rate.
+
+### Calibrate a judge
+
+Every pass rate a judge decides rests on the judge being right. A task with both a `check` and `successCriteria` shows when it is not: its check, which its baseline validated, says the work is not done, so a judge that labels that work `correct` is wrong. Set a rate to have the correctness judge label some of those trials too:
+
+```yaml
+# benchmarks/fix-auth/suite.yaml, in part
+calibration: { rate: 20 }     # percent of mixed-task trials whose check failed that a judge also labels; default 0
+```
+
+A trial is sampled when a hash of the run id and its step falls under the rate, so a resumed run samples the same trials. The `calibrate` step of [the benchmark workflow](#the-benchmark-workflow) has its `teamai:correctness:<task>` scorer label it with `store: false`, by [the plan's judge](#one-judge-for-every-arm): no label is stored, the trial stays `failed` as its check decided, and the label pairs with no other trial and never reaches [the regression gate](#fail-on-a-regression). The record keeps it on the trial:
+
+```json
+"calibration": { "label": "correct", "passed": true,
+  "decider": { "by": "judge", "rubric": "<rubric sourceHash>", "tool": "claude", "model": "claude-haiku-4-5", "batched": false } }
+```
+
+The results add a row per judge, by the tool, model and effort it reported. A run judges every trial with [one judge](#one-judge-for-every-arm), so to weigh a cheaper one, run the suite again with its alias as the `model` of your [`scorers/teamai-correctness.md`](#the-correctness-rubric). The rows of two such runs:
+
+```text
+Judge calibration · teamai:correctness
+
+| Judge | Judged with a failed check | Labelled passing | False pass rate | 95% interval |
+| --- | --- | --- | --- | --- |
+| claude claude-opus-5-5 high | 10 | 0 | 0% | 0% to 28% |
+| claude claude-haiku-4-5 | 10 | 3 | 30% | 11% to 60% |
+```
+
+Read it as: the cheap judge passes about a third of the work whose tests fail; it is not a safe `model` for this suite's correctness, whatever it saves. A passing label on a trial whose check passed counts neither way, since success criteria may ask more than the tests.
 
 ### Asset effect
 
@@ -826,11 +1171,13 @@ Read it as:
 
 `loaded with` uses the [routing](scorers.md#skill-routing) values a finished session's scorer reads, from the task instead of a judge: `fit` loaded and the task covers it, `missed` not loaded and it does, `extra` loaded and it does not, `idle` not loaded and it does not, and `unknown` when the tool reports no skill loads — an `unknown` trial still counts in the pass rates, in neither "when loaded" nor "when not loaded". Only skills have the column: teamai observes skill loads and nothing else, so a rule, a `claudemd/` file, a doc or a namespace directory reads `not observed`. On the dashboard's [Benchmarks page](dashboard.md#benchmarks), the Compare tab shows the tables under the pair, or on their own when no two arms compare, and a skill links to its `teamai:routing:...` counts on real sessions.
 
+A pair of trials counts only when the same thing decided both, by the rules [Fail on a regression](#fail-on-a-regression) lists, so a table of a run whose judge reported another model for some trials says what it left out: `2 comparable pairs; 1 excluded: their judge changed (claude claude-opus-5-5 → claude claude-sonnet-5-5)`.
+
 `not separated` is an answer, not a failure: the 95% interval of the paired difference crosses zero, so these trials cannot tell the difference from chance. A single rule usually moves a few tasks — add tasks that cover it, or repetitions, until the interval leaves zero. An arm that leaves out more than one path gets no per-asset table: its difference belongs to the set, which Compare already shows. `plan` refuses a covered path no arm receives, each arm read at its team revision, with its role and without the paths it leaves out, and two covered skill paths of the same skill name, since a trial's loads are bare names.
 
 The results are not the run's status: a run whose trials all failed still succeeds. The run fails when it times out or is cancelled.
 
-`report` writes the run's benchmark record into the run's directory on this machine. With [usage reporting](reporting.md) on, it also publishes it to `benchmarks/runs/<run>.json` on the team repo's `teamai-reports` branch, so the job's token also needs push access to the team repo. A publication that fails waits in the queue and is retried on the next `teamai pull`; until then the text ends with `record: pending`. [Run records](workflow.md#run-records) lists the record's fields and gives the `jq` command that computes each arm's pass rate from the record alone. With it off, the results are still in the envelope. The dashboard's [Benchmarks page](dashboard.md#benchmarks) draws the published runs and this machine's over time.
+`report` writes the run's benchmark record into the run's directory on this machine. With [usage reporting](reporting.md) on, it also publishes it to `benchmarks/runs/<run>.json` on the team repo's `teamai-reports` branch, so the job's token also needs push access to the team repo. A publication that fails waits in the queue and is retried on the next `teamai pull`; until then the text ends with `record: pending`. [Run records](workflow.md#run-records) lists the record's fields and gives the `jq` command that computes each arm's pass rate from the record alone. A record has a `schemaVersion`. One an earlier teamai wrote still shows on the dashboard, but the dashboard pools, and `--fail-on-regression` compares, only runs whose records have the same version. With it off, the results are still in the envelope. The dashboard's [Benchmarks page](dashboard.md#benchmarks) draws the published runs and this machine's over time.
 
 ## Fail on a regression
 
@@ -843,13 +1190,31 @@ $ jq -c .data.done.finally done.json
 [{"id":"regression","outcome":"failed"}]
 ```
 
-`--fail-on-regression` compares this run with the newest earlier run of the suite that succeeded and is published on `teamai-reports` with the same tasks and arms. An arm is the same when its name, tool, model, effort, workflow and team treatment are, whatever revision it pulled. Trials pair by task and repetition, as the dashboard's Compare pairs them, and an arm dropped when its pass rate dropped by more than chance. Records still waiting on this machine are not compared.
+`--fail-on-regression` compares this run with the newest earlier run of the suite that succeeded and is published on `teamai-reports` with the same arms, in a record of the same version. An arm is the same when its name, tool, model, effort, workflow and team treatment are, whatever revision it pulled. Trials pair by task and repetition, and a pair counts only when the same thing decided both, as the dashboard's Compare pairs them. The first row that matches decides:
+
+| # | Pair | Compared |
+| --- | --- | --- |
+| 1 | The task's file changed between the runs | No |
+| 2 | Both decided by a judge, and its rubric, tool, model, effort or batching differs | No |
+| 3 | Anything else: both by the check, one by the check and one by a judge (a task with a check and `successCriteria` whose check flipped: a change in the agent), the same judge, or a side `error`, `not_run` or `unscored`, which counts as not passed | Yes |
+
+An arm dropped when its pass rate over its compared pairs dropped by more than chance; an arm with no compared pair cannot drop. The text says how many pairs each arm compared and how many it excluded, and why. When a judge's model changed between two runs, no pair compares:
+
+```text
+run rA (Mon)   judge claude, alias judge → claude-opus-5-5     8/9 passed
+   (a member's models/aliases.yaml maps judge to another model on the judging machine)
+run rB (Tue)   judge claude, alias judge → claude-sonnet-5-5   4/9 passed
+Arm claude: 0 comparable pairs against run rA; 9 excluded: their judge changed (claude claude-opus-5-5 → claude claude-sonnet-5-5).
+No arm has a comparable pair against run rA, so --fail-on-regression has nothing to compare with.
+```
+
+Records still waiting on this machine are not compared.
 
 | `report` output `regression` | When | The `regression` step |
 | --- | --- | --- |
 | `dropped` | An arm dropped. The text names each one, as above. | Runs `exit 1` and fails: `benchmark run` exits 1. |
 | `held` | No arm dropped. The text names the run it compared with. | Skipped. |
-| `no_comparable` | No such run. The text says so. | Skipped. |
+| `no_comparable` | No such run, or no arm of it has a compared pair. The text names the run it tried, if any, and why each pair was excluded. | Skipped. |
 | `off` | `fail_on_regression` is `false`: nothing was compared. | Skipped. |
 
 The gate is a step of the run, so the run's driver ends it there whoever started it. teamai's `teamai-benchmark` is `invoke: deny`, so start it with `--driver local`: a `--driver skill` start answers `invoke_denied`, unless your team's copy sets `invoke: allow`. `workflow start teamai-benchmark` with `"fail_on_regression":true` runs the same gate. Its exit code follows the run's outcome, which a `finally` step does not change, so read `done.finally`.
@@ -940,4 +1305,4 @@ teamai workflow report <run> --json '{..., "tool":"claude", "durationMs":84000, 
 | `report` | For a prompt: `tool`, `durationMs` measured around the tool launch, and `cost` only when the tool stated one. |
 | Limits | Hold the tool to `lease.limits`. When one stopped it, report `outcome: "success"` with `limit`: `timeout`, `budget` or `max_turns`, and list in `unenforced` a `budget` or `max_turns` you could not hold it to. |
 | Timeout | `benchmark run` passes the suite's `timeout` as `--timeout`; a direct `workflow start teamai-benchmark` must pass it too, or `plan` fails. |
-| Judges | A trial's judge is a step of a `teamai-score` run, leased like any other and [confined to a directory](workflow-advanced.md#confined-steps-in-your-own-driver): offer `can.confined`, or it waits with `wait.held[].missing` naming `confined`. |
+| Judges | A trial's judge is a step of a `teamai-score` run, leased like any other and [confined to a directory](workflow-advanced.md#confined-steps-in-your-own-driver) on the [one tool the plan pins](#one-judge-for-every-arm): offer it in `can.confined`, or the step waits with `wait.held[].missing` naming `confined`. Run one of `lease.confined.tools` and report it as `tool`. |

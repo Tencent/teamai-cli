@@ -136,10 +136,11 @@ export interface WorkflowClient {
   /**
    * Gives up held steps the calling driver can never take: cancels, for each, the nearest step above it that sets
    * `continue_on_failure`, so the run goes on without it. Only a step confined to a directory is given up, since its
-   * driver's confined offers stay as they were for the run. `not_cancellable`, and nothing cancelled, when one is not
-   * confined or has no such step above it.
+   * driver's confined offers stay as they were for the run. A step held for `confined`, which no offer gives, cancels
+   * with `confined_unoffered`; one held only for its `model`, with `cancelled`. `not_cancellable`, and nothing
+   * cancelled, when one is not confined or has no such step above it.
    */
-  giveUp(runId: string, steps: readonly string[]): Promise<WorkflowEnvelope>;
+  giveUp(runId: string, held: ReadonlyArray<{ step: string; missing: readonly string[] }>): Promise<WorkflowEnvelope>;
   /**
    * Readies run `runId` for a driver of this machine as `workflow resume` does, under the caller's run `lock`, and brings
    * the branches of a run taken over to the commits it recorded. `claim` says which runs it takes from teamai-reports,
@@ -563,6 +564,17 @@ function heldPlaceRefusal(input: { dir: string; behind: AttemptId; run: RunId; a
  */
 export type NextPrepare = true | { attempt: AttemptId; adopt?: string };
 
+/**
+ * Why `giveUp` cancelled the step above `held`: no driver of the run can take it, which is confined to a directory.
+ * `confined_unoffered` when no offer gives it what `confined` asks, which a benchmark reads as a judge tool no driver
+ * offered.
+ */
+function giveUpFailure(held: { step: string; missing: readonly string[] }): WorkflowFailure {
+  const message = `Cancelled: no driver of this run can take step "${held.step}", which is confined to a directory, and continue_on_failure lets the run go on without it`;
+
+  return held.missing.includes('confined') ? { code: 'confined_unoffered', message } : { code: 'cancelled', message };
+}
+
 /** The client whose calls run in this process, against `config`, masking with `env`. */
 export function inProcessClient({ config, env }: { config: LocalConfig; env: WorkflowEnv }): WorkflowClient {
   return {
@@ -690,14 +702,15 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
     },
     retry: (runId, step) => retryStep(config, runId, env.secrets, step),
     cancel: (runId, step) => cancelRun(config, runId, env.secrets, step),
-    giveUp: async (runId, steps) => {
+    giveUp: async (runId, held) => {
       const run = await readRun(config, runId);
 
       if (run === 'missing' || run === 'corrupt') return { error: { code: 'run_unreadable', message: `Run ${runId} cannot be read, so no held step was given up` } };
       const definitionOf = stepDefinitions(run);
-      const above = new Map<string, string>();
+      const above = new Map<string, (typeof held)[number]>();
 
-      for (const step of steps) {
+      for (const one of held) {
+        const { step } = one;
         const definition = definitionOf(step);
         // The nearest one first: a longer path that holds the step sits deeper.
         const surviving = run.steps.map((state) => state.id).filter((id) => isUnder(id)(step)).sort((left, right) => right.length - left.length).find((id) => definitionOf(id)?.continueOnFailure);
@@ -706,13 +719,14 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
           return { error: { code: 'not_cancellable', message: `Step "${step}" of run ${runId} is not a confined step under one that sets continue_on_failure, so the run waits for a driver that can take it` } };
         }
 
-        above.set(surviving, step);
+        // A step held for its tool names why a group's judge went unscored, whatever else under it waits.
+        if (!above.get(surviving)?.missing.includes('confined')) above.set(surviving, one);
       }
 
       const cancelled: string[] = [];
 
-      for (const [surviving, step] of above) {
-        const answer = await cancelRun(config, runId, env.secrets, surviving, `Cancelled: no driver of this run can take step "${step}", which is confined to a directory, and continue_on_failure lets the run go on without it`);
+      for (const [surviving, one] of above) {
+        const answer = await cancelRun(config, runId, env.secrets, surviving, giveUpFailure(one));
 
         if ('error' in answer) return answer;
         cancelled.push(surviving);

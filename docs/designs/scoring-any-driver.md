@@ -137,7 +137,12 @@ tool: codex          # new, optional: preferred judge tool
 2. the tool the scored pass ran in;
 3. the driver's offers, in its order.
 
-`tool` is a preference: a driver that does not offer it judges with another tool it offers.
+`tool` is a preference: a driver that does not offer it judges with another tool it offers. A benchmark run is the
+exception: every arm's trials of a scorer must be judged by one tool, so `benchmark start` pins, per scorer, its `tool`,
+else the suite's `defaults.tool`, with its `model` string, in the plan's `judges`. `teamai score evidence` writes that
+tool as `require` in `confined.json`, which keeps the lease to that tool alone, and the step is held with `missing:
+['confined']` where no offer has it. Scorers batch by `require` too, so a required and a preferred scorer never share a
+call.
 
 ### Share offer
 

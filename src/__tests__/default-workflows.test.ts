@@ -61,14 +61,14 @@ describe('default workflows', () => {
     const shipped = await loadCachedWorkflow(config, 'teamai-share-session');
     expect(shipped).toMatchObject({ source: 'default', relativePath: 'workflows/teamai-share-session.yaml', definition: { name: 'teamai-share-session', invoke: 'ask' } });
     expect(shipped?.teamRevision).toBeUndefined();
-    expect(await sources(config)).toEqual([['build', 'team'], ['teamai-benchmark', 'default'], ['teamai-ci-extract-mr', 'default'], ['teamai-codebase-deep-enrich', 'default'], ['teamai-codebase-enrich', 'default'], ['teamai-draft-learning-updates', 'default'], ['teamai-finished-sessions', 'default'], ['teamai-import-from-iwiki', 'default'], ['teamai-import-from-mr', 'default'], ['teamai-import-from-repo', 'default'], ['teamai-import-learnings', 'default'], ['teamai-import-rules', 'default'], ['teamai-new-scorer', 'default'], ['teamai-promote-learning', 'default'], ['teamai-score', 'default'], ['teamai-self-improvement', 'default'], ['teamai-session-to-task', 'default'], ['teamai-share-learnings', 'default'], ['teamai-share-learnings-from-sessions', 'default'], ['teamai-share-session', 'default'], ['teamai-try-scorer', 'default']]);
+    expect(await sources(config)).toEqual([['build', 'team'], ['teamai-benchmark', 'default'], ['teamai-ci-extract-mr', 'default'], ['teamai-codebase-deep-enrich', 'default'], ['teamai-codebase-enrich', 'default'], ['teamai-draft-learning-updates', 'default'], ['teamai-finished-sessions', 'default'], ['teamai-import-from-iwiki', 'default'], ['teamai-import-from-mr', 'default'], ['teamai-import-from-repo', 'default'], ['teamai-import-learnings', 'default'], ['teamai-import-rules', 'default'], ['teamai-new-scorer', 'default'], ['teamai-promote-learning', 'default'], ['teamai-score', 'default'], ['teamai-self-improvement', 'default'], ['teamai-session-to-task', 'default'], ['teamai-sessions-to-tasks', 'default'], ['teamai-share-learnings', 'default'], ['teamai-share-learnings-from-sessions', 'default'], ['teamai-share-session', 'default'], ['teamai-try-scorer', 'default']]);
     expect(await loadCachedWorkflow(config, 'session-close')).toBeNull();
 
     writeWorkflow(config, 'teamai-share-session', workflow('teamai-share-session'));
     await syncScorersThenWorkflows(config);
 
     expect(await loadCachedWorkflow(config, 'teamai-share-session')).toMatchObject({ source: 'team', definition: { steps: [{ command: 'node compile.js' }] } });
-    expect(await sources(config)).toEqual([['build', 'team'], ['teamai-benchmark', 'default'], ['teamai-ci-extract-mr', 'default'], ['teamai-codebase-deep-enrich', 'default'], ['teamai-codebase-enrich', 'default'], ['teamai-draft-learning-updates', 'default'], ['teamai-finished-sessions', 'default'], ['teamai-import-from-iwiki', 'default'], ['teamai-import-from-mr', 'default'], ['teamai-import-from-repo', 'default'], ['teamai-import-learnings', 'default'], ['teamai-import-rules', 'default'], ['teamai-new-scorer', 'default'], ['teamai-promote-learning', 'default'], ['teamai-score', 'default'], ['teamai-self-improvement', 'default'], ['teamai-session-to-task', 'default'], ['teamai-share-learnings', 'default'], ['teamai-share-learnings-from-sessions', 'default'], ['teamai-share-session', 'team'], ['teamai-try-scorer', 'default']]);
+    expect(await sources(config)).toEqual([['build', 'team'], ['teamai-benchmark', 'default'], ['teamai-ci-extract-mr', 'default'], ['teamai-codebase-deep-enrich', 'default'], ['teamai-codebase-enrich', 'default'], ['teamai-draft-learning-updates', 'default'], ['teamai-finished-sessions', 'default'], ['teamai-import-from-iwiki', 'default'], ['teamai-import-from-mr', 'default'], ['teamai-import-from-repo', 'default'], ['teamai-import-learnings', 'default'], ['teamai-import-rules', 'default'], ['teamai-new-scorer', 'default'], ['teamai-promote-learning', 'default'], ['teamai-score', 'default'], ['teamai-self-improvement', 'default'], ['teamai-session-to-task', 'default'], ['teamai-sessions-to-tasks', 'default'], ['teamai-share-learnings', 'default'], ['teamai-share-learnings-from-sessions', 'default'], ['teamai-share-session', 'team'], ['teamai-try-scorer', 'default']]);
   });
 
   it('resolve teamai-session-to-task to the teamai default, interactive and asked before it starts, until the team adds a file of that name', async () => {
@@ -116,6 +116,26 @@ describe('default workflows', () => {
     expect(fromSessions.definition).toMatchObject({ invoke: 'ask', steps: [{ id: 'sessions', command: 'teamai session list --finished --all --within "$WITHIN" --json', env: { WITHIN: '{{ inputs.within }}' } }, { id: 'pick' }, { id: 'share' }] });
     const tree = await loadWorkflowTree(config, fromSessions);
     expect('failed' in tree ? tree.failed : Object.keys(tree.workflows)).toEqual(['teamai-share-learnings', 'teamai-share-session', 'teamai-score']);
+  });
+
+  it('list the sessions a suite could take a task from, let the AI pick within sizes, then run teamai-session-to-task on each pick one at a time', async () => {
+    const config = testConfig();
+    await syncScorersThenWorkflows(config);
+
+    const toTasks = await loadCachedWorkflow(config, 'teamai-sessions-to-tasks');
+    if (!toTasks) throw new Error('teamai-sessions-to-tasks is not runnable');
+    expect(toTasks.definition).toMatchObject({
+      invoke: 'ask',
+      defaults: { inputs: { sizes: 'S=40,3 M=200,10 L=800,30' } },
+      steps: [
+        { id: 'local', command: 'teamai session list --finished --all --within 30d --suite "$SUITE" --sizes "$SIZES" --json' },
+        { id: 'pushed', command: 'teamai session list --all --suite "$SUITE" --sizes "$SIZES" --json' },
+        { id: 'pick', answer: expect.any(String) },
+        { id: 'draft', forEach: { items: 'steps.pick.outputs.picks', maxParallel: 1 }, workflow: 'teamai-session-to-task' },
+      ],
+    });
+    const tree = await loadWorkflowTree(config, toTasks);
+    expect('failed' in tree ? tree.failed : Object.keys(tree.workflows)).toEqual(['teamai-session-to-task']);
   });
 
   it('keep the whole description of each one an agent may start in the skill teamai pull generates for it', async () => {

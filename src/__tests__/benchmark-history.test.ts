@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { BenchmarkHistory, regressionOf, runComparisons, type BenchmarkRunInput } from '../benchmark/history.js';
+import { BenchmarkHistory, formatRegression, regressionOf, runComparisons, type BenchmarkRunInput } from '../benchmark/history.js';
 import { pairedDifference } from '../benchmark/table.js';
 import { runSourceHash } from '../benchmark/plan.js';
 import type { Baseline, TrialResult } from '../benchmark/result.js';
+import type { TrialVerdict } from '../benchmark/verdicts.js';
 import type { ArmTeam } from '../benchmark/terms.js';
 
 const NOW = new Date('2026-10-28T12:00:00Z');
+
+type Decider = NonNullable<TrialVerdict['decider']>;
 
 /** `team`: the pulled revision of the run when absent. */
 type Arm = { name: string; tool: string; model?: string; alias?: string; team?: ArmTeam; workflow?: { name: string; sourceHash: string }; role?: string };
@@ -18,12 +21,18 @@ const CODEX: Arm = { name: 'codex', tool: 'codex' };
  * first. A trial of an arm in `usage` ran its prompt, on the arm's tool or on the one `ranOn` names, unless its task is
  * in `unstarted`, and reported the tool version `versions` names for its tool.
  */
-function run({ id, suite = 'fix-auth', version = 'v1', taskEdit = '', startedAt, username = 'alice', source = 'reported', arms = [CLAUDE, CODEX], trials, invalid = [], notRun = [], usage = {}, ranOn = {}, unstarted = [], versions = {}, subset = false }: {
+function run({ id, suite = 'fix-auth', version = 'v1', taskEdit = '', editedTasks = [], deciders = {}, startedAt, username = 'alice', source = 'reported', arms = [CLAUDE, CODEX], defaultsArm, trials, invalid = [], notRun = [], usage = {}, ranOn = {}, unstarted = [], versions = {}, subset = false, recordVersion = 2 }: {
   id: string;
+  /** The arm that changes no `defaults` key. */
+  defaultsArm?: string;
   suite?: string;
   version?: string;
   /** Appended to each task file's hash: an edit to the task files that leaves suite.yaml as it was. */
   taskEdit?: string;
+  /** Tasks whose file alone changed: their hash gets `-edited`. */
+  editedTasks?: string[];
+  /** By arm, who decided each of its trials' correctness labels, or by arm and task; a trial not listed has no verdicts. */
+  deciders?: Record<string, Decider | { byTask: Record<string, Decider> }>;
   startedAt: string;
   username?: string;
   source?: 'local' | 'reported';
@@ -37,15 +46,17 @@ function run({ id, suite = 'fix-auth', version = 'v1', taskEdit = '', startedAt,
   versions?: Record<string, string>;
   /** The run ran only the tasks and arms `--task` and `--arm` chose. */
   subset?: boolean;
+  /** The schemaVersion of the run's record. */
+  recordVersion?: 1 | 2;
 }): BenchmarkRunInput {
   const tasks = [...Object.keys(trials), ...invalid, ...notRun];
   const baseline = (task: string): Baseline => (invalid.includes(task) ? 'invalid' : notRun.includes(task) ? 'not_run' : 'valid');
   let order = 0;
   return {
-    run: id, source, username, startedAt, outcome: 'succeeded',
+    run: id, source, username, startedAt, outcome: 'succeeded', schemaVersion: recordVersion,
     benchmark: {
-      suite: { name: suite, sourceHash: version }, repetitions: 1, baselineTeamRevision: `team-${id}`, scorers: [], ...(subset ? { subset: true as const } : {}),
-      tasks: tasks.map((task) => ({ id: task, startingCommit: 'a'.repeat(40), sourceHash: `task-${task}${taskEdit}`, baseline: baseline(task) })),
+      suite: { name: suite, sourceHash: version }, repetitions: 1, baselineTeamRevision: `team-${id}`, scorers: [], ...(subset ? { subset: true as const } : {}), ...(defaultsArm ? { defaultsArm } : {}),
+      tasks: tasks.map((task) => ({ id: task, startingCommit: 'a'.repeat(40), sourceHash: `task-${task}${taskEdit}${editedTasks.includes(task) ? '-edited' : ''}`, baseline: baseline(task) })),
       arms: arms.map(({ team, ...arm }) => ({ ...arm, source: 'team', team: team ?? { kind: 'pulled' as const, revision: `team-${id}` } })),
       trials: Object.entries(trials).flatMap(([task, byArm]) => Object.entries(byArm).flatMap(([arm, results]) => results.map((result, repetition) => {
         const step = `trials.r${repetition + 1}.${task}.${arm}.prompt`;
@@ -53,11 +64,14 @@ function run({ id, suite = 'fix-auth', version = 'v1', taskEdit = '', startedAt,
         const own = arms.find(({ name }) => name === arm);
         const tool = ranOn[arm] ?? own?.tool;
         const toolVersion = tool === undefined ? undefined : versions[tool];
+        const listed = deciders[arm];
+        const decider = listed !== undefined && 'byTask' in listed ? listed.byTask[task] : listed;
+        const verdicts = decider === undefined ? undefined : [{ scorer: `teamai:correctness:${task}`, outcome: result === 'passed' || result === 'failed' ? { kind: 'labelled' as const, label: result, score: result === 'passed' ? 1 : 0, passed: result === 'passed' } : { kind: 'unscored' as const, because: 'run_ended' as const }, decider }];
         const agent = spent && own && tool !== undefined
           ? { v: 1 as const, tool: { name: tool, ...(toolVersion ? { version: toolVersion } : {}) }, ...(own.model ? { model: { reported: own.model } } : {}), team: { revision: `team-${id}`, localChanges: false }, teamai: '0.0.0', driver: 'local' }
           : undefined;
         return {
-          task, arm, repetition: repetition + 1, order: order++, step, result, ...(agent ? { agent } : {}),
+          task, arm, repetition: repetition + 1, order: order++, step, result, ...(verdicts ? { verdicts } : {}), ...(agent ? { agent } : {}),
           ...(spent ? { tokens: { input: spent.tokens, output: 0, complete: true }, durationMs: spent.durationMs, ...(spent.cost === undefined ? {} : { cost: { amount: spent.cost, unit: 'USD', complete: true } }) } : {}),
         };
       }))),
@@ -128,6 +142,7 @@ describe('BenchmarkHistory', () => {
       tokens: { value: 2000, used: 6, components: ['input', 'output'] },
       durationMs: { value: 90_000, used: 6 },
       cost: { kind: 'known', amount: 6, unit: 'USD', used: 6 },
+      costPerPassedTrial: { kind: 'known', amount: 1.2, unit: 'USD' },
     });
   });
 
@@ -194,14 +209,14 @@ describe('BenchmarkHistory', () => {
     expect(selected?.runs.map(({ run: id, unmeasuredTasks }) => `${id} ${unmeasuredTasks}`)).toEqual(['r2 0', 'r1 2']);
   });
 
-  it('lists every run of the suite newest first, with who ran it, its version and team revision, and each arm in it, and the table of the newest', () => {
+  it('lists every run of the suite newest first, with who ran it, its version, whether it is current, its team revision, each arm in it and what it cost, and the table of the newest', () => {
     const view = BenchmarkHistory.of({ runs: history, query: { windowDays: 90 }, now: NOW });
     const [claude, codex, sonnet] = view.selected?.arms ?? [];
 
     expect(view.selected?.runs).toEqual([
-      { run: 'r3', source: 'local', startedAt: '2026-10-20T09:00:00Z', username: 'alice', sourceHash: versionOf(history[2]), teamRevision: 'team-r3', passed: 4, planned: 6, unmeasuredTasks: 0, toolVersions: {}, arms: [{ key: claude?.key, passed: 2, planned: 3 }, { key: codex?.key, passed: 2, planned: 3 }] },
-      { run: 'r2', source: 'reported', startedAt: '2026-10-10T09:00:00Z', username: 'bob', sourceHash: versionOf(history[1]), teamRevision: 'team-r2', passed: 4, planned: 6, unmeasuredTasks: 0, toolVersions: {}, arms: [{ key: claude?.key, passed: 3, planned: 3 }, { key: codex?.key, passed: 1, planned: 3 }] },
-      { run: 'r1', source: 'reported', startedAt: '2026-10-01T09:00:00Z', username: 'alice', sourceHash: versionOf(history[0]), teamRevision: 'team-r1', passed: 0, planned: 2, unmeasuredTasks: 0, toolVersions: {}, arms: [{ key: sonnet?.key, passed: 0, planned: 1 }, { key: codex?.key, passed: 0, planned: 1 }] },
+      { run: 'r3', source: 'local', startedAt: '2026-10-20T09:00:00Z', username: 'alice', sourceHash: versionOf(history[2]), isCurrent: true, teamRevision: 'team-r3', passed: 4, planned: 6, unmeasuredTasks: 0, toolVersions: {}, arms: [{ key: claude?.key, passed: 2, planned: 3 }, { key: codex?.key, passed: 2, planned: 3 }], spend: { spent: { kind: 'known', amount: expect.closeTo(5.4), unit: 'USD', used: 6 } } },
+      { run: 'r2', source: 'reported', startedAt: '2026-10-10T09:00:00Z', username: 'bob', sourceHash: versionOf(history[1]), isCurrent: true, teamRevision: 'team-r2', passed: 4, planned: 6, unmeasuredTasks: 0, toolVersions: {}, arms: [{ key: claude?.key, passed: 3, planned: 3 }, { key: codex?.key, passed: 1, planned: 3 }], spend: { spent: { kind: 'known', amount: expect.closeTo(1.8), unit: 'USD', used: 6 } } },
+      { run: 'r1', source: 'reported', startedAt: '2026-10-01T09:00:00Z', username: 'alice', sourceHash: versionOf(history[0]), isCurrent: false, teamRevision: 'team-r1', passed: 0, planned: 2, unmeasuredTasks: 0, toolVersions: {}, arms: [{ key: sonnet?.key, passed: 0, planned: 1 }, { key: codex?.key, passed: 0, planned: 1 }], spend: { spent: { kind: 'unknown' } } },
     ]);
     expect(view.selected?.latest.run).toBe('r3');
     expect(view.selected?.latest.table.matrix).toEqual([
@@ -271,6 +286,18 @@ describe('BenchmarkHistory comparisons', () => {
     expect(selected?.runs.map(({ run: id }) => id)).toEqual(['r2', 'r1']);
   });
 
+  it("pools only the runs whose record has the current version's schemaVersion, and keeps an older record's run as a point", () => {
+    const older = run({ id: 'r1', startedAt: '2026-10-10T09:00:00Z', arms: [CLAUDE], trials: { login: { claude: ['passed', 'passed'] } }, recordVersion: 1 });
+    const newer = run({ id: 'r2', startedAt: '2026-10-20T09:00:00Z', arms: [CLAUDE], trials: { login: { claude: ['failed', 'passed'] } } });
+
+    const { selected } = BenchmarkHistory.of({ runs: [older, newer], query: { windowDays: 90 }, now: NOW });
+
+    expect(selected?.arms.map(({ arm, pooled, points }) => ({ arm, pooled: pooled && { passed: pooled.passed, planned: pooled.planned, runs: pooled.runs }, points: points.map(({ run: id }) => id) }))).toEqual([
+      { arm: 'claude', pooled: { passed: 1, planned: 2, runs: 1 }, points: ['r1', 'r2'] },
+    ]);
+    expect(selected?.runs.map(({ run: id }) => id)).toEqual(['r2', 'r1']);
+  });
+
   it('takes the newest run as the current version while every run of the suite ran only some of it', () => {
     const chosen = run({ id: 'r1', startedAt: '2026-10-21T09:00:00Z', subset: true, arms: matrix.slice(0, 2), trials: { login: { 'claude-pulled': ['passed'], 'claude-none': ['failed'] } } });
 
@@ -294,6 +321,33 @@ describe('BenchmarkHistory comparisons', () => {
       expect(comparisons).toHaveLength(1);
       expect(comparisons[0]).toMatchObject({ dimension: 'team', pairs: 6, rates: { from: { passed: 5, planned: 6 }, to: { passed: 6, planned: 6 } } });
     }
+  });
+
+  describe('pairs two arms of one run by who decided their trials', () => {
+    // Both sides of a pair in one run read the same record's task, so a changed task (row 1) cannot split them.
+    const a: Arm = { name: 'a', tool: 'claude' }, b: Arm = { name: 'b', tool: 'claude', team: { kind: 'none' } };
+    const OPUS = { by: 'judge', rubric: 'rubric-a', tool: 'claude', model: 'claude-opus-5-5', batched: true } as const;
+    const SONNET = { ...OPUS, model: 'claude-sonnet-5-5' } as const;
+    const trials = { one: { a: ['passed', 'passed', 'passed'], b: ['passed', 'failed', 'passed'] }, two: { a: ['passed', 'passed', 'passed'], b: ['passed', 'passed', 'passed'] } } satisfies Record<string, Record<string, TrialResult[]>>;
+
+    // A team pair runs from the arm without team assets, b, to the pulled one, a.
+    it('leaves out and lists the pairs another model judged (row 2)', () => {
+      const input = run({ id: 'r1', startedAt: '2026-10-20T09:00:00Z', arms: [a, b], trials, deciders: { a: OPUS, b: { byTask: { one: SONNET, two: OPUS } } } });
+
+      for (const comparisons of [runComparisons(input), BenchmarkHistory.of({ runs: [input], query: { windowDays: 90 }, now: NOW }).selected?.comparisons ?? []]) {
+        expect(comparisons).toHaveLength(1);
+        expect(comparisons[0]).toMatchObject({ pairs: 3, rates: { from: { passed: 3, planned: 3 }, to: { passed: 3, planned: 3 } }, excluded: [{ pairs: 3, because: { kind: 'judge_changed', from: SONNET, to: OPUS } }] });
+      }
+    });
+
+    it('compares the pairs a check decided on one arm and the judge on the other (row 3)', () => {
+      const input = run({ id: 'r1', startedAt: '2026-10-20T09:00:00Z', arms: [a, b], trials, deciders: { a: { by: 'check', task: 'task-one' }, b: OPUS } });
+
+      const [comparison] = runComparisons(input);
+
+      expect(comparison).toMatchObject({ pairs: 6, rates: { from: { passed: 5, planned: 6 }, to: { passed: 6, planned: 6 } } });
+      expect(comparison).not.toHaveProperty('excluded');
+    });
   });
 
   it("keeps an arm whose workflow changed apart from its earlier runs, under the workflow it runs now", () => {
@@ -483,26 +537,274 @@ describe('BenchmarkHistory comparisons', () => {
   });
 });
 
+describe('BenchmarkHistory arms against the defaults arm', () => {
+  const CHEAP: Arm = { name: 'cheap', tool: 'claude', model: 'claude-haiku-5-5' };
+  const usage = { claude: { tokens: 100, durationMs: 1000, cost: 0.5 }, cheap: { tokens: 100, durationMs: 1000, cost: 0.1 }, codex: { tokens: 100, durationMs: 1000 } };
+
+  // Over both runs, claude and cheap pass 3 of 4 trials each, cheap for a fifth of claude's cost; codex passes 1 of 4 and states no cost.
+  const runs = [
+    run({ id: 'r1', startedAt: '2026-10-10T09:00:00Z', arms: [CLAUDE, CHEAP, CODEX], defaultsArm: 'claude', usage, trials: { login: { claude: ['passed', 'failed'], cheap: ['passed', 'passed'], codex: ['failed', 'failed'] } } }),
+    run({ id: 'r2', startedAt: '2026-10-20T09:00:00Z', arms: [CLAUDE, CHEAP, CODEX], defaultsArm: 'claude', usage, trials: { login: { claude: ['passed', 'passed'], cheap: ['passed', 'failed'], codex: ['passed', 'failed'] } } }),
+  ];
+
+  it('reads each current arm against the defaults arm over the runs of the current version, with the paired difference and dominance by cost per passed trial', () => {
+    const selected = BenchmarkHistory.of({ runs, query: { windowDays: 90 }, now: NOW }).selected;
+    const [claude, cheap, codex] = selected?.arms ?? [];
+
+    // Newcombe intervals: cheap 0 pp (-55 to +55) from 2 pairs both passed and one each way; codex -50 pp (-79 to +14).
+    expect(selected?.against).toEqual({
+      reference: claude?.key, isDefaultsArm: true,
+      arms: [
+        { arm: 'cheap', key: cheap?.key, difference: { value: 0, low: expect.closeTo(-0.55, 2), high: expect.closeTo(0.55, 2) }, dominance: { kind: 'dominates', passRate: 'same', costRatio: expect.closeTo(0.2, 6) } },
+        { arm: 'codex', key: codex?.key, difference: { value: -0.5, low: expect.closeTo(-0.79, 2), high: expect.closeTo(0.14, 2) } },
+      ],
+    });
+  });
+
+  it('reads the newest run on its own too, as its table reads it, for the last run', () => {
+    const latest = BenchmarkHistory.of({ runs, query: { windowDays: 90 }, now: NOW }).selected?.latest;
+
+    // In r2 alone cheap passes 1 of 2 for 0.20 USD, claude 2 of 2 for 1.00 USD: cheaper per passed trial, but lower.
+    expect(latest?.against?.arms[0]).toEqual({
+      arm: 'cheap', key: expect.any(String), difference: { value: -0.5, low: expect.closeTo(-0.91, 2), high: expect.closeTo(0.27, 2) }, dominance: { kind: 'neither', passRate: 'lower', costRatio: expect.closeTo(0.4, 6) },
+    });
+  });
+
+  it('reads the arms against the first arm in a suite without a defaults arm, and marks neither an arm that costs less per passed trial but passes less', () => {
+    const cheaper = [run({ id: 'r1', startedAt: '2026-10-20T09:00:00Z', arms: [CLAUDE, CHEAP], usage, trials: { login: { claude: ['passed', 'passed', 'failed'], cheap: ['passed', 'failed', 'failed'] } } })];
+    const selected = BenchmarkHistory.of({ runs: cheaper, query: { windowDays: 90 }, now: NOW }).selected;
+    const [claude, cheap] = selected?.arms ?? [];
+
+    // claude: 1.50 USD over 2 passed trials, 0.75 each; cheap: 0.30 USD over 1, 0.30.
+    expect(selected?.against).toMatchObject({ reference: claude?.key, isDefaultsArm: false, arms: [{ key: cheap?.key, dominance: { kind: 'neither', passRate: 'lower', costRatio: expect.closeTo(0.4, 6) } }] });
+  });
+
+  /** `input` judged by a correctness rubric of `labels`, each arm's correctness verdicts scored `scores` in trial order. */
+  const scored = (input: BenchmarkRunInput, labels: Array<{ value: string; score: number }>, scores: Record<string, number[]>): BenchmarkRunInput => {
+    const seen = new Map<string, number>();
+
+    return { ...input, benchmark: { ...input.benchmark,
+      scorers: [{ name: 'teamai:correctness:login', rubric: { sourceHash: 'rubric' }, labels, passingScore: 1 }],
+      trials: input.benchmark.trials.map((trial) => {
+        const index = seen.get(trial.arm) ?? 0;
+        seen.set(trial.arm, index + 1);
+
+        return { ...trial, verdicts: trial.verdicts?.map((verdict) => (verdict.outcome.kind === 'labelled' ? { ...verdict, outcome: { ...verdict.outcome, score: scores[trial.arm]?.[index] ?? 0 } } : verdict)) };
+      }) } };
+  };
+
+  it("pools each arm's mean correctness score over the runs whose correctness rubric has more than two labels, as each run's table shows it", () => {
+    const CHECK: Decider = { by: 'check', task: 'task-login' };
+    const graded = [{ value: 'correct', score: 1 }, { value: 'partial', score: 0.5 }, { value: 'incorrect', score: 0 }];
+    const passFail = [{ value: 'correct', score: 1 }, { value: 'incorrect', score: 0 }];
+    const deciders = { claude: CHECK, codex: CHECK };
+    const scoredRuns = [
+      scored(run({ id: 'r1', startedAt: '2026-10-10T09:00:00Z', deciders, trials: { login: { claude: ['passed', 'failed'], codex: ['failed', 'failed'] } } }), graded, { claude: [1, 0.5], codex: [0.5, 0] }),
+      scored(run({ id: 'r2', startedAt: '2026-10-15T09:00:00Z', deciders, trials: { login: { claude: ['passed', 'failed'], codex: ['passed', 'failed'] } } }), graded, { claude: [1, 0], codex: [1, 0.5] }),
+      // A run judged with a pass or fail rubric: its scores are a pass rate again, so no mean reads them.
+      scored(run({ id: 'r3', startedAt: '2026-10-20T09:00:00Z', deciders, trials: { login: { claude: ['failed'], codex: ['passed'] } } }), passFail, { claude: [0], codex: [1] }),
+    ];
+
+    const arms = BenchmarkHistory.of({ runs: scoredRuns, query: { windowDays: 90 }, now: NOW }).selected?.arms ?? [];
+
+    expect(arms.map(({ pooled }) => pooled?.correctnessScore)).toEqual([{ labelled: 4, mean: 0.625 }, { labelled: 4, mean: 0.5 }]);
+  });
+});
+
+describe('BenchmarkHistory judging', () => {
+  const SONNET = { by: 'judge' as const, rubric: 'rq', tool: 'claude', model: 'claude-sonnet-5-5', batched: false };
+  const HAIKU = { by: 'judge' as const, rubric: 'rc', tool: 'claude', model: 'claude-haiku-5-5', batched: false };
+  const labelled = (passed: boolean) => ({ kind: 'labelled' as const, label: passed ? 'good' : 'poor', score: passed ? 1 : 0, passed });
+
+  /**
+   * A run of a check-only task, expired-token, and a task with a check and success criteria, login-copy, whose
+   * correctness the plan pins to claude `fast` and review-quality to claude `judge`. Each trial's verdicts: its
+   * correctness label, by the check or, on login-copy's passing check, by claude-haiku-5-5; then `review`'s.
+   */
+  const judgedRun = (id: string, startedAt: string, review: (trial: { task: string; arm: string }) => TrialVerdict) => {
+    const input = run({ id, startedAt, trials: { 'expired-token': { claude: ['passed'], codex: ['failed'] }, 'login-copy': { claude: ['passed'], codex: ['failed'] } } });
+
+    return { ...input, benchmark: { ...input.benchmark,
+      calibration: { rate: 0 },
+      tasks: input.benchmark.tasks.map((task) => ({ ...task, judge: task.id === 'login-copy' ? 'both' as const : 'check' as const })),
+      judges: { 'teamai:correctness:login-copy': { tool: 'claude', model: 'fast' }, 'review-quality': { tool: 'claude', model: 'judge' } },
+      trials: input.benchmark.trials.map((trial) => ({ ...trial, verdicts: [
+        { scorer: `teamai:correctness:${trial.task}`, outcome: labelled(trial.result === 'passed'), ...(trial.task === 'login-copy' && trial.result === 'passed' ? { decider: HAIKU, asPlanned: 'match' as const } : { decider: { by: 'check' as const, task: `task-${trial.task}` } }) },
+        review(trial),
+      ] })) } };
+  };
+
+  const runs = [
+    judgedRun('r1', '2026-10-10T09:00:00Z', () => ({ scorer: 'review-quality', outcome: labelled(true), decider: SONNET, asPlanned: 'match' })),
+    // In r2 codex judged codex's login-copy trial, and nothing labelled its expired-token trial.
+    judgedRun('r2', '2026-10-20T09:00:00Z', ({ task, arm }) => (arm !== 'codex' ? { scorer: 'review-quality', outcome: labelled(true), decider: SONNET, asPlanned: 'match' }
+      : task === 'login-copy' ? { scorer: 'review-quality', outcome: labelled(false), decider: { ...SONNET, tool: 'codex', model: 'gpt-6-sol' }, asPlanned: 'deviation' }
+        : { scorer: 'review-quality', outcome: { kind: 'unscored', because: 'run_ended' } })),
+  ];
+
+  it('says, per scorer over the runs of the current version, the judge the runs pinned, who decided its labels, and how many deviated', () => {
+    const judging = BenchmarkHistory.of({ runs, query: { windowDays: 90 }, now: NOW }).selected?.judging;
+
+    expect(judging?.scorers).toEqual([
+      { scorer: 'teamai:correctness', planned: [{ tool: 'claude', model: 'fast' }], byCheck: 6, byJudge: [{ judge: { tool: 'claude', model: 'claude-haiku-5-5' }, labels: 2 }], deviations: 0, notVerified: 0, unscored: 0 },
+      {
+        scorer: 'review-quality', planned: [{ tool: 'claude', model: 'judge' }], byCheck: 0,
+        byJudge: [{ judge: { tool: 'claude', model: 'claude-sonnet-5-5' }, labels: 6 }, { judge: { tool: 'codex', model: 'gpt-6-sol' }, labels: 1 }], deviations: 1, notVerified: 0, unscored: 1,
+      },
+    ]);
+    // The arms vary the tool, and claude judges: the run's table says so too.
+    expect(judging?.selfJudged).toEqual([{ tool: 'claude', arm: 'claude' }]);
+  });
+
+  it('says why no judge was calibrated: the suite\'s calibration rate, how many tasks have a check and success criteria, and how many of their trials failed the check', () => {
+    const judging = BenchmarkHistory.of({ runs, query: { windowDays: 90 }, now: NOW }).selected?.judging;
+
+    // login-copy has both, as its record says; codex failed its check in each run, and the suite calibrates nothing.
+    expect(judging?.calibration).toEqual({ judges: [], rate: 0, mixedTasks: 1, failedChecks: 2 });
+  });
+
+  it("pools each correctness judge's calibration over the runs, with the false pass rate's 95% interval", () => {
+    const HIGH = { ...HAIKU, model: 'claude-opus-5-5', effort: 'high' };
+    const calibrated = (input: BenchmarkRunInput, calibrations: Array<{ passed: boolean; decider: typeof HAIKU }>): BenchmarkRunInput => {
+      let index = 0;
+
+      return { ...input, benchmark: { ...input.benchmark, trials: input.benchmark.trials.map((trial) => {
+        const calibration = trial.task === 'login-copy' && trial.result === 'failed' ? undefined : calibrations[index++];
+
+        return calibration ? { ...trial, calibration: { label: calibration.passed ? 'correct' : 'incorrect', ...calibration } } : trial;
+      }) } };
+    };
+    const calibratedRuns = [
+      calibrated(judgedRun('r1', '2026-10-10T09:00:00Z', () => ({ scorer: 'review-quality', outcome: labelled(true) })), [{ passed: true, decider: HAIKU }, { passed: false, decider: HAIKU }]),
+      calibrated(judgedRun('r2', '2026-10-20T09:00:00Z', () => ({ scorer: 'review-quality', outcome: labelled(true) })), [{ passed: false, decider: HAIKU }, { passed: false, decider: HIGH }]),
+    ];
+
+    const { judges } = BenchmarkHistory.of({ runs: calibratedRuns, query: { windowDays: 90 }, now: NOW }).selected?.judging.calibration ?? { judges: [] };
+
+    // Wilson: 1 of 3 is 6% to 79%; 0 of 1 is 0% to 79%.
+    expect(judges).toEqual([
+      { judge: { tool: 'claude', model: 'claude-haiku-5-5' }, judged: 3, passing: 1, interval: { low: expect.closeTo(0.061, 3), high: expect.closeTo(0.792, 3) } },
+      { judge: { tool: 'claude', model: 'claude-opus-5-5', effort: 'high' }, judged: 1, passing: 0, interval: { low: 0, high: expect.closeTo(0.793, 3) } },
+    ]);
+  });
+});
+
+describe('BenchmarkHistory scorers by arm', () => {
+  const SONNET = { by: 'judge' as const, rubric: 'rq', tool: 'claude', model: 'claude-sonnet-5-5', batched: true };
+  const REVIEW = { name: 'review-quality', rubric: { sourceHash: 'rq' }, labels: [{ value: 'good', score: 1 }, { value: 'poor', score: 0 }], passingScore: 1 };
+  const verdict = (passed: boolean | undefined): TrialVerdict => (passed === undefined
+    ? { scorer: 'review-quality', outcome: { kind: 'unscored', because: 'run_ended' } }
+    : { scorer: 'review-quality', outcome: { kind: 'labelled', label: passed ? 'good' : 'poor', score: passed ? 1 : 0, passed }, decider: SONNET, asPlanned: 'match' });
+
+  /** A run of task fix whose review-quality scorer labelled each arm's trials passing as `labels` says in trial order; undefined leaves one unscored. */
+  const reviewed = (id: string, startedAt: string, labels: Record<string, Array<boolean | undefined>>): BenchmarkRunInput => {
+    const input = run({ id, startedAt, trials: { fix: { claude: ['passed', 'passed'], codex: ['failed', 'failed'] } } });
+    const seen = new Map<string, number>();
+
+    return { ...input, benchmark: { ...input.benchmark, scorers: [REVIEW], trials: input.benchmark.trials.map((trial) => {
+      const index = seen.get(trial.arm) ?? 0;
+      seen.set(trial.arm, index + 1);
+
+      return { ...trial, verdicts: [verdict(labels[trial.arm]?.[index])] };
+    }) } };
+  };
+
+  it("pools each suite and task scorer's labels per arm over the runs of the current version, with the 95% interval", () => {
+    const reviewedRuns = [
+      reviewed('r1', '2026-10-10T09:00:00Z', { claude: [true, true], codex: [false, true] }),
+      reviewed('r2', '2026-10-20T09:00:00Z', { claude: [true, false], codex: [false, undefined] }),
+    ];
+    const selected = BenchmarkHistory.of({ runs: reviewedRuns, query: { windowDays: 90 }, now: NOW }).selected;
+    const [claude, codex] = selected?.arms ?? [];
+
+    // Wilson: claude's 3 of 4 is 30% to 95%; codex's 1 of 3 is 6% to 79%, beside the one nothing labelled.
+    expect(selected?.scorers).toEqual([{ scorer: 'review-quality', arms: [
+      { key: claude?.key, passed: 3, labelled: 4, unscored: 0, interval: { low: expect.closeTo(0.301, 3), high: expect.closeTo(0.954, 3) } },
+      { key: codex?.key, passed: 1, labelled: 3, unscored: 1, interval: { low: expect.closeTo(0.061, 3), high: expect.closeTo(0.792, 3) } },
+    ] }]);
+  });
+});
+
+describe('BenchmarkHistory spend against the estimate', () => {
+  const RANGE = { unit: 'USD', low: 1, median: 1.5, high: 2, complete: true };
+  /** A run of task fix whose agents stated `costs` and whose judge cost 0.25 USD a trial, and what start estimated it from r0; null when it had no earlier run to estimate from. */
+  const spending = (id: string, day: number, costs: { claude: number; codex?: number }, total: typeof RANGE | null = RANGE): BenchmarkRunInput => {
+    const input = run({ id, startedAt: `2026-10-${day}T09:00:00Z`, trials: { fix: { claude: ['passed'], codex: ['failed'] } }, usage: { claude: { tokens: 1, durationMs: 1, cost: costs.claude }, codex: { tokens: 1, durationMs: 1, cost: costs.codex } } });
+
+    return { ...input, benchmark: { ...input.benchmark,
+      ...(total ? { estimate: { trials: 2, judgeCalls: 2, judgedTrials: 2, calibrationCalls: 0, basis: { run: 'r0' }, total } } : {}),
+      trials: input.benchmark.trials.map((trial) => ({ ...trial, scoringCost: { amount: 0.25, unit: 'USD', complete: true } })) } };
+  };
+
+  it("puts what each run's agents and judges cost beside the estimate, when start made one, flagged outside its range only when the estimate is complete and the cost could be too low", () => {
+    const spendingRuns = [
+      spending('within', 10, { claude: 0.5, codex: 0.5 }),
+      spending('above', 11, { claude: 1, codex: 1 }),
+      spending('below', 12, { claude: 0.125, codex: 0.125 }),
+      // codex stated no cost: what it spent is at least 0.75 USD, which may be within the range.
+      spending('unstated', 13, { claude: 0.25 }),
+      spending('partial', 14, { claude: 1, codex: 1 }, { ...RANGE, complete: false }),
+      spending('unestimated', 15, { claude: 1, codex: 1 }, null),
+    ];
+    const rows = BenchmarkHistory.of({ runs: spendingRuns, query: { windowDays: 90 }, now: NOW }).selected?.runs ?? [];
+
+    expect(rows.map(({ run: id, spend }) => [id, spend?.spent, spend?.outside])).toEqual([
+      ['unestimated', { kind: 'known', amount: 2.5, unit: 'USD', used: 4 }, undefined],
+      ['partial', { kind: 'known', amount: 2.5, unit: 'USD', used: 4 }, undefined],
+      ['unstated', { kind: 'incomplete', amount: 0.75, unit: 'USD', used: 3, unknown: 1 }, undefined],
+      ['below', { kind: 'known', amount: 0.75, unit: 'USD', used: 4 }, 'below'],
+      ['above', { kind: 'known', amount: 2.5, unit: 'USD', used: 4 }, 'above'],
+      ['within', { kind: 'known', amount: 1.5, unit: 'USD', used: 4 }, undefined],
+    ]);
+    expect(rows.find(({ run: id }) => id === 'within')?.spend?.estimated).toEqual(RANGE);
+    expect(rows.find(({ run: id }) => id === 'unestimated')?.spend?.estimated).toBeUndefined();
+  });
+
+  it('counts what calibrating a judge cost in what the run spent, as the estimate counts its calls', () => {
+    const plain = spending('calibrated', 16, { claude: 0.5, codex: 0.5 });
+    const decider = { by: 'judge' as const, rubric: 'rc', tool: 'claude', model: 'claude-haiku-5-5', batched: false };
+    const calibrated = { ...plain, benchmark: { ...plain.benchmark, trials: plain.benchmark.trials.map((trial) => (trial.arm === 'codex'
+      ? { ...trial, calibration: { label: 'incorrect', passed: false, decider, scoringCost: { amount: 0.5, unit: 'USD', complete: true } } } : trial)) } };
+    const [row] = BenchmarkHistory.of({ runs: [calibrated], query: { windowDays: 90 }, now: NOW }).selected?.runs ?? [];
+
+    // The agents' 1 USD, the two trials' judging 0.5 USD, and the calibration 0.5 USD.
+    expect(row?.spend.spent).toEqual({ kind: 'known', amount: 2, unit: 'USD', used: 5 });
+  });
+
+  it('leaves what the run spent incomplete, never below the estimate, when a judge or a calibration that ran stated no cost', () => {
+    const plain = spending('cheap', 17, { claude: 0.125, codex: 0.125 });
+    const decider = { by: 'judge' as const, rubric: 'rc', tool: 'claude', model: 'claude-haiku-5-5', batched: false };
+    // claude's judge launched and stated nothing, as its record says; codex's calibration stated nothing either.
+    const unstated = (trial: BenchmarkRunInput['benchmark']['trials'][number]) => (trial.arm === 'claude'
+      ? { ...trial, scoringCost: { complete: false as const }, verdicts: [{ scorer: 'quality', outcome: { kind: 'labelled' as const, label: 'good', score: 1, passed: true }, decider }] }
+      : { ...trial, calibration: { label: 'incorrect', passed: false, decider } });
+    const judged = { ...plain, benchmark: { ...plain.benchmark, trials: plain.benchmark.trials.map(unstated) } };
+    const [row] = BenchmarkHistory.of({ runs: [judged], query: { windowDays: 90 }, now: NOW }).selected?.runs ?? [];
+
+    // The agents' 0.25 USD and codex's judging 0.25 USD are known; claude's judge and codex's calibration stated nothing.
+    expect(row?.spend).toEqual({ estimated: RANGE, spent: { kind: 'incomplete', amount: 0.5, unit: 'USD', used: 3, unknown: 2 } });
+  });
+});
+
 describe('benchmark regression', () => {
   const ONE = [CLAUDE];
   const passes = (results: TrialResult[]) => ({ fix: { claude: results } });
   const at = (day: number): string => `2026-10-${String(day).padStart(2, '0')}T09:00:00Z`;
   const current = run({ id: 'now', startedAt: at(20), arms: ONE, trials: passes(['failed', 'failed', 'failed']) });
 
-  it('compares with the newest earlier succeeded run of the same suite, tasks and arms, whatever revision its team resolved to', () => {
+  it('compares with the newest earlier succeeded run of the same suite and arms, whatever revision its team resolved to', () => {
     const regression = regressionOf(current, [
       run({ id: 'older', startedAt: at(10), arms: ONE, trials: passes(['passed', 'failed', 'failed']) }),
       run({ id: 'newest', startedAt: at(12), arms: ONE, trials: passes(['passed', 'passed', 'passed']) }),
       { ...run({ id: 'failed-run', startedAt: at(14), arms: ONE, trials: passes(['passed', 'passed', 'passed']) }), outcome: 'failed' },
       run({ id: 'other-model', startedAt: at(15), arms: [{ ...CLAUDE, model: 'claude-sonnet-5-5' }], trials: passes(['passed', 'passed', 'passed']) }),
-      run({ id: 'other-task', startedAt: at(16), taskEdit: '-edited', arms: ONE, trials: passes(['passed', 'passed', 'passed']) }),
       run({ id: 'other-suite', suite: 'other', startedAt: at(17), arms: ONE, trials: passes(['passed', 'passed', 'passed']) }),
       run({ id: 'later', startedAt: at(25), arms: ONE, trials: passes(['passed', 'passed', 'passed']) }),
     ]);
 
     expect(regression).toEqual({
-      kind: 'dropped', against: 'newest',
-      arms: [{ arm: 'claude', pairs: 3, rates: { from: { passed: 3, planned: 3 }, to: { passed: 0, planned: 3 } }, difference: { value: -1, low: -1, high: expect.closeTo(-0.206, 3) } }],
+      kind: 'dropped', against: 'newest', arms: [{ arm: 'claude', pairs: 3, excluded: [] }],
+      drops: [{ arm: 'claude', pairs: 3, rates: { from: { passed: 3, planned: 3 }, to: { passed: 0, planned: 3 } }, difference: { value: -1, low: -1, high: expect.closeTo(-0.206, 3) } }],
     });
   });
 
@@ -512,13 +814,63 @@ describe('benchmark regression', () => {
     const before = run({ id: 'before', startedAt: at(12), arms: ONE, trials: passes(['failed', ...Array<TrialResult>(7).fill('passed'), 'passed', 'passed', 'failed', 'failed', 'failed']) });
 
     expect(regressionOf(now, [before])).toEqual({
-      kind: 'dropped', against: 'before',
-      arms: [{ arm: 'claude', pairs: 13, rates: { from: { passed: 9, planned: 13 }, to: { passed: 3, planned: 13 } }, difference: pairedDifference({ both: 2, toOnly: 1, fromOnly: 7, neither: 3 }) }],
+      kind: 'dropped', against: 'before', arms: [{ arm: 'claude', pairs: 13, excluded: [] }],
+      drops: [{ arm: 'claude', pairs: 13, rates: { from: { passed: 9, planned: 13 }, to: { passed: 3, planned: 13 } }, difference: pairedDifference({ both: 2, toOnly: 1, fromOnly: 7, neither: 3 }) }],
     });
   });
 
+  const OPUS = { by: 'judge', rubric: 'rubric-a', tool: 'claude', model: 'claude-opus-5-5', batched: true } as const;
+  const SONNET = { ...OPUS, model: 'claude-sonnet-5-5' } as const;
+  const CHECKED = { by: 'check', task: 'task-fix' } as const;
+
+  it('excludes the pairs of a task whose file changed, and compares the others (row 1)', () => {
+    const both = (results: TrialResult[]) => ({ fix: { claude: results }, login: { claude: results } });
+    const now = run({ id: 'now', startedAt: at(20), arms: ONE, trials: both(['failed', 'failed', 'failed']) });
+    const before = run({ id: 'before', startedAt: at(12), editedTasks: ['login'], arms: ONE, trials: both(['passed', 'passed', 'passed']) });
+
+    expect(regressionOf(now, [before])).toMatchObject({ kind: 'dropped', against: 'before', arms: [{ arm: 'claude', pairs: 3, excluded: [{ pairs: 3, because: { kind: 'task_changed' } }] }] });
+    expect(regressionOf(current, [run({ id: 'other-task', startedAt: at(16), taskEdit: '-edited', arms: ONE, trials: passes(['passed', 'passed', 'passed']) })])).toEqual({
+      kind: 'no_comparable', tried: { run: 'other-task', arms: [{ arm: 'claude', pairs: 0, excluded: [{ pairs: 3, because: { kind: 'task_changed' } }] }] },
+    });
+  });
+
+  it('finds nothing comparable, naming the run it tried and why, when another model judged every pair (row 2)', () => {
+    const nine = (passed: number): TrialResult[] => Array.from({ length: 9 }, (_, index) => (index < passed ? 'passed' : 'failed'));
+    const before = run({ id: 'rA', startedAt: at(12), arms: ONE, trials: passes(nine(8)), deciders: { claude: OPUS } });
+    const now = run({ id: 'rB', startedAt: at(13), arms: ONE, trials: passes(nine(4)), deciders: { claude: SONNET } });
+
+    const regression = regressionOf(now, [before]);
+
+    expect(regression).toEqual({ kind: 'no_comparable', tried: { run: 'rA', arms: [{ arm: 'claude', pairs: 0, excluded: [{ pairs: 9, because: { kind: 'judge_changed', from: OPUS, to: SONNET } }] }] } });
+    expect(formatRegression(regression, 'fix-auth')).toEqual([
+      'Arm claude: 0 comparable pairs against run rA; 9 excluded: their judge changed (claude claude-opus-5-5 → claude claude-sonnet-5-5).',
+      'No arm has a comparable pair against run rA, so --fail-on-regression has nothing to compare with.',
+    ]);
+  });
+
+  it.each([
+    ['by the check before and by the judge now, as a mixed task whose check flipped', CHECKED, OPUS, ['failed', 'failed', 'failed']],
+    ['by the same judge', OPUS, OPUS, ['failed', 'failed', 'failed']],
+    ['by the judge before and by nothing now, as an unscored trial counts as not passed', OPUS, undefined, ['unscored', 'unscored', 'unscored']],
+  ] as const)('compares the pairs decided %s (row 3)', (_pair, from, to, results) => {
+    const before = run({ id: 'before', startedAt: at(12), arms: ONE, trials: passes(['passed', 'passed', 'passed']), deciders: { claude: from } });
+    const now = run({ id: 'now', startedAt: at(20), arms: ONE, trials: passes([...results]), deciders: to === undefined ? {} : { claude: to } });
+
+    const regression = regressionOf(now, [before]);
+
+    expect(regression).toMatchObject({ kind: 'dropped', against: 'before', arms: [{ arm: 'claude', pairs: 3, excluded: [] }], drops: [{ arm: 'claude', pairs: 3 }] });
+    expect(formatRegression(regression, 'fix-auth')).toEqual([
+      'Arm claude: 3 comparable pairs against run before.',
+      expect.stringMatching(/^Arm "claude" passed 0\/3 paired trials, against 3\/3 in run before: a drop of 100 points/),
+    ]);
+  });
+
   it('holds when the paired drop is within chance', () => {
-    expect(regressionOf(current, [run({ id: 'before', startedAt: at(12), arms: ONE, trials: passes(['passed', 'failed', 'failed']) })])).toEqual({ kind: 'held', against: 'before' });
+    expect(regressionOf(current, [run({ id: 'before', startedAt: at(12), arms: ONE, trials: passes(['passed', 'failed', 'failed']) })])).toEqual({ kind: 'held', against: 'before', arms: [{ arm: 'claude', pairs: 3, excluded: [] }] });
+  });
+
+  it('finds nothing to compare with in a run whose record has another schemaVersion', () => {
+    expect(regressionOf(current, [run({ id: 'before', startedAt: at(12), arms: ONE, trials: passes(['passed', 'passed', 'passed']), recordVersion: 1 })])).toEqual({ kind: 'no_comparable' });
   });
 
   it('finds nothing to compare with when an arm ran another workflow or team choice before', () => {

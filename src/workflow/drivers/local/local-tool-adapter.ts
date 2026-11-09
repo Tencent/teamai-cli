@@ -300,6 +300,8 @@ export function createLocalToolAdapter(
 
           if (input.launch) Object.assign(env, launchEnv(input.launch));
           env.TEAMAI_WORKFLOW_RESULT = input.resultPath;
+          // A shell sets PWD to the directory it starts in; OpenCode works in PWD, not in its cwd.
+          env.PWD = input.cwd;
           child = spawnTool(executable, args, {
             cwd: input.cwd,
             env,

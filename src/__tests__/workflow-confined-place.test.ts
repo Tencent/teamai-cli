@@ -73,6 +73,14 @@ describe('confinedCandidates', () => {
     expect(confinedCandidates(offers, { level: 'best-effort', prefer: ['opencode', 'claude'] })).toEqual(['opencode', 'claude', 'codex']);
     expect(confinedCandidates(offers, { level: 'best-effort', prefer: ['acme-judge', 'codex'] })).toEqual(['codex', 'claude', 'opencode']);
   });
+
+  it('keeps only the required tool, and none when no offer that reaches the level has it', () => {
+    const offers: Parameters<typeof confinedCandidates>[0] = [{ level: 'verified', access: 'read', tools: ['codex'] }, { level: 'best-effort', access: 'full', tools: ['claude', 'codex'] }];
+
+    expect(confinedCandidates(offers, { level: 'best-effort', require: 'claude' })).toEqual(['claude']);
+    expect(confinedCandidates(offers, { level: 'verified', require: 'claude' })).toEqual([]);
+    expect(confinedCandidates(offers, { level: 'best-effort', require: 'opencode' })).toEqual([]);
+  });
 });
 
 describe('decideConfined', () => {
@@ -97,6 +105,15 @@ describe('decideConfined', () => {
 
     expect(await decide(['claude'], { defaultModel: 'confined-judge' })).toMatchObject({ kind: 'hold', held: { missing: ['model'], reason: expect.stringContaining('gets model alias "confined-judge" from defaults') } });
     expect(await decide(['pi'], { model: 'confined-judge' })).toEqual({ kind: 'hold', held: { step: 'judge', missing: ['model'], reason: 'step "judge" needs a model one of its confined tools resolves, and none of pi does' } });
+  });
+
+  it('holds a step whose required tool no offer has, though another tool is offered, and refuses require beside prefer', async () => {
+    await dirWith(path.join(root, 'scratch'), 'evidence', { 'confined.json': '{"level":"best-effort","require":"claude"}' });
+    await dirWith(path.join(root, 'scratch'), 'both', { 'confined.json': '{"level":"best-effort","require":"claude","prefer":"codex"}' });
+    const decide = (dir: string) => decideConfined({ step: 'judge', dir, runDir: path.join(root, 'scratch'), offers: [{ level: 'best-effort', access: 'read', tools: ['codex'] }], config });
+
+    expect(await decide('evidence')).toEqual({ kind: 'hold', held: { step: 'judge', missing: ['confined'], reason: 'step "judge" runs confined at best-effort on claude only, which no offer in this driver\'s can.confined has at that level' } });
+    expect(await decide('both')).toMatchObject({ kind: 'fail', failure: { code: 'confined_invalid', message: expect.stringContaining('require: prefer and require exclude each other') } });
   });
 
   it('grants a step with its candidates and its reply schema', async () => {
