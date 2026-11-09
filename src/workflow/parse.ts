@@ -27,7 +27,8 @@ import { ClonePlaceSchema } from './clone.js';
 import { mergeRequirements, ON_LIMIT, REQUIREMENT_KEYS, RequirementsSchema, SANDBOX_WITHHELD_ENV, SetupSchema, type InEffect, type OnLimit, type Requirements, type Setup } from './requirements.js';
 import { sameEnvName } from '../resources/env-key.js';
 import { Writes } from './writes.js';
-import { WORKFLOW_MARKER, type WorkflowFolderFile } from './folder.js';
+import type { WorkflowFolderFile } from './folder.js';
+import { markerFolderOf, RESOURCE_LAYOUTS } from '../resources/resolver.js';
 
 /**
  * The first release that reads `invoke` and `alias`. An older CLI refuses either as an unknown key and drops the
@@ -93,13 +94,14 @@ const EXPRESSION_SITES: Record<Exclude<StepExpression['what'], 'if'>, { code: Wo
 };
 
 /**
- * The name of the folder whose marker `file` is, as `workflows/release/WORKFLOW.yaml` is `release`'s, or undefined for a
- * workflow file of its own. `workflows/WORKFLOW.yaml` is a file: a folder sits inside the type's directory.
+ * The name of the folder whose marker `file` is, as `workflows/release/WORKFLOW.yaml` and
+ * `workflows/payments/release/WORKFLOW.yaml` are `release`'s, or undefined for a workflow file of its own: a folder sits
+ * where the scan meets one (`markerFolderOf`).
  */
 export function workflowFolderName(file: string): string | undefined {
-  const segments = file.split('/');
+  const { workflows } = RESOURCE_LAYOUTS;
 
-  return segments.length >= 3 && segments.at(-1) === WORKFLOW_MARKER ? segments.at(-2) : undefined;
+  return file.startsWith(`${workflows.dir}/`) ? markerFolderOf(workflows, file.slice(workflows.dir.length + 1))?.split('/').at(-1) : undefined;
 }
 
 export function formatDiagnostic(diagnostic: WorkflowDiagnostic): string {

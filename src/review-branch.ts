@@ -49,7 +49,7 @@ import { readEntryFileText } from './namespaced-entries.js';
 import { LayeredEntries, type LayeredEntryType } from './resources/layered-entries.js';
 import { getHandler } from './resources/index.js';
 import { listRepoFilesRecursive } from './resources/repo-resource.js';
-import { RESOURCE_LAYOUTS, Resources } from './resources/resolver.js';
+import { markerFolderOf, RESOURCE_LAYOUTS, Resources } from './resources/resolver.js';
 import { isNamespaceDir, resolveResourceNamespaces } from './resource-namespaces.js';
 import { loadRoleAssignmentsIfPresent } from './role-assignments.js';
 import { listRoleIds, loadRolesManifestIfPresent, type RolesManifest } from './roles.js';
@@ -62,7 +62,6 @@ import { isSilent, log, setSilent } from './utils/logger.js';
 import { redact } from './utils/redact.js';
 import { syncTeamDefinitions } from './benchmark/suite-cache.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './workflow/cache.js';
-import { WORKFLOW_MARKER } from './workflow/folder.js';
 import { formatDiagnostic, INVOKE_ALIAS_SINCE, parseWorkflow, STEP_ROLE_SINCE } from './workflow/parse.js';
 import { stepModelUnavailableText } from './workflow/step-model.js';
 import { stepWorkflow, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from './workflow/types.js';
@@ -141,9 +140,8 @@ function parseRelativePath(
   const rootSegs = rootSegmentsFor(type);
 
   // A workflow folder is named as a workflow file in its place would be: workflows/a/release/ as workflows/a/release.yaml.
-  const all = type === 'workflows' && isWorkflowFolderMarker(relativePath.slice(`${type}/`.length))
-    ? relativePath.slice(0, -`/${WORKFLOW_MARKER}`.length).split('/')
-    : relativePath.split('/');
+  const folder = type === 'workflows' ? markerFolderOf(RESOURCE_LAYOUTS.workflows, relativePath.slice(`${type}/`.length)) : undefined;
+  const all = (folder === undefined ? relativePath : `${type}/${folder}`).split('/');
 
   const rest = all.slice(rootSegs);
 
@@ -293,12 +291,12 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
 
     const files = await listRepoFilesRecursive(root);
     // Every other file of a workflow folder is its support file, never a workflow of its own.
-    const folders = type === 'workflows' ? files.flatMap((file) => (isWorkflowFolderMarker(file) ? [file.slice(0, -WORKFLOW_MARKER.length)] : [])) : [];
+    const folders = type === 'workflows' ? files.flatMap((file) => markerFolderOf(RESOURCE_LAYOUTS.workflows, file) ?? []).map((folder) => `${folder}/`) : [];
 
     for (const file of files) {
       if (isInSkippedFolder(`${rootRel}/${file}`, skipped)) continue;
 
-      if (type === 'workflows' && (!file.endsWith('.yaml') || (!isWorkflowFolderMarker(file) && folders.some((folder) => file.startsWith(folder))))) continue;
+      if (type === 'workflows' && (!file.endsWith('.yaml') || (markerFolderOf(RESOURCE_LAYOUTS.workflows, file) === undefined && folders.some((folder) => file.startsWith(folder))))) continue;
 
       if (type === 'scorers' && path.posix.basename(file) === SCORING_FILE) continue;
 
@@ -377,13 +375,6 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
 
     return { type, name, namespace, relativePath: item.relativePath, absolutePath: item.sourcePath, folder };
   });
-}
-
-/** Whether `file`, a path under `workflows/`, is the marker of a folder the workflow scan reads: at the root or in a namespace. */
-function isWorkflowFolderMarker(file: string): boolean {
-  const segments = file.split('/');
-
-  return segments.at(-1) === WORKFLOW_MARKER && (segments.length === 2 || segments.length === 3);
 }
 
 /** The hook folders on the branch, at the root and in each namespace, as pull's resolver finds them (#1787). */

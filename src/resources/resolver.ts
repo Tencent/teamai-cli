@@ -118,6 +118,29 @@ export const RESOURCE_LAYOUTS = {
   rules: { dir: 'rules', marker: FOLDER_MARKERS.rules.marker, fileName: (file: string) => (file.endsWith('.md') ? file.slice(0, -'.md'.length) : null) },
 } as const satisfies Readonly<Record<string, ResourceLayout<unknown>>>;
 
+/**
+ * Where a folder holding `file`, a `/`-separated path under the type's directory, can sit, as the scan meets folders: at
+ * the root, then one namespace deep. `payments/release/prompt.md` can be in `payments` or `payments/release`.
+ */
+export function folderPlacesOf(file: string): string[] {
+  const segments = file.split('/');
+
+  return [1, 2].flatMap((depth) => (segments.length > depth ? [segments.slice(0, depth).join('/')] : []));
+}
+
+/**
+ * The folder whose marker `file` is, from its `/`-separated path under the type's directory: `release/WORKFLOW.yaml`
+ * is `release`'s, `payments/release/WORKFLOW.yaml` is `payments/release`'s. Undefined for a file that is no marker, or
+ * a marker deeper than the scan meets folders.
+ */
+export function markerFolderOf(layout: ResourceLayout<unknown>, file: string): string | undefined {
+  const dir = path.posix.dirname(file);
+  const name = path.posix.basename(file);
+  const isMarker = name === layout.marker || (layout.markerAliases ?? []).includes(name);
+
+  return isMarker && folderPlacesOf(file).includes(dir) ? dir : undefined;
+}
+
 /** The names in `dir`, or none when it is missing, a symlink, or cannot be listed. */
 async function fileNames(dir: string): Promise<string[]> {
   try {
