@@ -290,6 +290,55 @@ describe('Resources.layer', () => {
   });
 });
 
+/** A type of this test only whose names are paths, as rules' are: every `.md` at any depth, or a folder holding `NOTE.md`. */
+const notes: PlainLayout = { dir: 'notes', marker: 'NOTE.md', fileName: (file) => (file.endsWith('.md') ? file.slice(0, -'.md'.length) : null) };
+
+describe('Resources.walk', () => {
+  it('names each file and folder by its path at any depth, and reads a folder\'s files as its own, not as items', async () => {
+    const root = fixture({
+      'notes/style.md': 'root file',
+      'notes/fe/api.md': 'namespace file',
+      'notes/fe/deep/naming.md': 'deeper file',
+      'notes/review/NOTE.md': 'root folder',
+      'notes/review/checklist.md': 'support',
+      'notes/fe/forms/NOTE.md': 'namespace folder',
+      'notes/fe/forms/examples/good.md': 'support',
+      'notes/notes.txt': 'not an item',
+    });
+
+    const { items } = await Resources.walk(notes, root);
+
+    expect(items.map(({ name, source }) => [name, source.kind, source.path])).toEqual([
+      ['fe/api', 'file', 'notes/fe/api.md'],
+      ['fe/deep/naming', 'file', 'notes/fe/deep/naming.md'],
+      ['fe/forms', 'folder', 'notes/fe/forms/'],
+      ['review', 'folder', 'notes/review/'],
+      ['style', 'file', 'notes/style.md'],
+    ]);
+  });
+
+  it('gives a file and a folder of one name as a duplicate, and neither as an item', async () => {
+    const root = fixture({ 'notes/fe/style.md': 'file', 'notes/fe/style/NOTE.md': 'folder', 'notes/other.md': 'other' });
+
+    const walked = await Resources.walk(notes, root);
+
+    expect([walked.items.map(({ name }) => name), walked.duplicates.map(({ name, first, second }) => [name, first.source.path, second.source.path])]).toEqual([
+      ['other'],
+      [['fe/style', 'notes/fe/style.md', 'notes/fe/style/']],
+    ]);
+  });
+
+  it('notes a folder that holds files its type reads, but not the marker\'s language variants, which are its own text', async () => {
+    const root = fixture({ 'notes/payments/NOTE.md': 'marker', 'notes/payments/NOTE.zh.md': 'variant', 'notes/payments/refunds.md': 'was a note' });
+
+    expect((await Resources.walk(notes, root)).diagnostics).toEqual([{
+      kind: 'note',
+      path: 'notes/payments/',
+      message: 'notes/payments/ holds NOTE.md, so it is one folder, and refunds.md in it is one of its files, no longer read on its own.',
+    }]);
+  });
+});
+
 describe('Resources.list over a tree without namespaces', () => {
   it('never asks for the active namespaces, so a root-only team tree reads no manifest', async () => {
     let asked = 0;

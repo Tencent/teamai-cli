@@ -40,35 +40,35 @@ Generated: do not edit by hand. Regenerate with `node scripts/check-docs.mjs --w
 
 ## Project scope
 
-Paths are relative to the project root. `cwd only`: the tool reads it only from a session started at the root. Hooks are the ones self mode writes; `user hooks` means it keeps the user-scope ones.
+Paths are relative to the project root. `cwd only`: the tool reads it only from a session started at the root. Hooks are the ones self mode writes; `user hooks` means it keeps the user-scope ones. Rule folder files: how the tool reads the files a rule folder names in the data home, outside the project: `none` with no prompt, `grant` once teamai adds that directory to the setting named, `copy` from a copy teamai makes in the worktree.
 
-| Tool | Skills | Rules | Instruction blocks | Agents | Hooks | MCP |
-| --- | --- | --- | --- | --- | --- | --- |
-| Claude Code | written; reads ? | `.claude/rules` v | `.claude/rules` v | `.claude/agents` v | `.claude/settings.json` v<br>`.claude/settings.local.json` v | `.mcp.json` v |
-| Codex CLI | written; reads ? | session hook v | session hook v | `.codex/agents` v | `.codex/hooks.json` v | `.codex/config.toml` v |
-| Codex CLI Internal | written; reads ? | session hook t | session hook t | written; reads ? | written; reads ? | ? |
-| Claude Code Internal | written; reads ? | written; reads ? | written; reads ? | written; reads ? | written; reads ? | ? |
-| TClaude | written; reads ? | written; reads ? | written; reads ? | written; reads ? | written; reads ? | `.mcp.json` t |
-| TCodex | written; reads ? | session hook t | session hook t | written; reads ? | written; reads ? | ? |
-| Cursor | written; reads ? | `.cursor/rules` v | `.cursor/rules` v | `.cursor/agents` v | `.cursor/hooks.json` s | `.cursor/mcp.json` s |
-| Copilot | `.github/skills` v | `.github/instructions` v | `.github/copilot-instructions.md` v<br>`.github/instructions` v | `.github/agents` s | `.github/hooks/teamai.json` s | `.github/mcp.json` v |
-| JoyCode | written; reads ? | `.joycode/rules` v | — | `.joycode/agents` s<br>indexed by `agent.json` | `.joycode/hooks.json` s | — |
-| Qoder | written; reads ? | `.qoder/rules` v | `.qoder/rules` s | `.qoder/agents` s | `.qoder/settings.json` s cwd only<br>`.qoder/settings.local.json` s cwd only | `.qoder/settings.json` s |
-| Qoder CN | written; reads ? | `.qoder/rules` v | `.qoder/rules` t | `.qoder/agents` t | `.qoder/settings.json` s cwd only<br>`.qoder/settings.local.json` t cwd only | `.qoder/settings.json` t |
-| Kiro | written; reads ? | `.kiro/steering` d | `.kiro/steering` d | `.kiro/agents` d | user hooks | `.kiro/settings/mcp.json` d |
-| Trae | written; reads ? | `.trae/rules` t | `.trae/rules` d | `.trae/agents` s cwd only | ? | `.trae/mcp.json` d |
-| Trae CN | written; reads ? | `.trae/rules` t | `.trae/rules` d | `.trae/agents` s cwd only | ? | `.trae/mcp.json` d |
-| ZCode | written; reads ? | session hook s | session hook s | `.zcode/agents` s cwd only | user hooks | `.zcode/config.json` s |
-| Oh My Pi | written; reads ? | `.omp/rules` v cwd only | extension v | `.omp/agents` v | user hooks | `.omp/mcp.json` v cwd only |
-| Pi Coding Agent | `.pi/skills` v cwd only | extension v | extension v | — | user hooks | `.pi/mcp.json` v cwd only |
-| CodeBuddy | written; reads ? | `.codebuddy/rules` s cwd only | `.codebuddy/rules` s cwd only | `.codebuddy/agents` s cwd only | `.codebuddy/settings.json` s cwd only<br>`.codebuddy/settings.local.json` v cwd only | first of `.mcp.json`, `mcp.json` s cwd only |
-| OpenClaw | written; reads ? | — | — | — | user hooks | — |
-| Hermes | `~/.hermes/skills` s | — | plugin s | — | user hooks | — |
-| DeepSeek Harness | written; reads ? | session hook s | session hook s | — | user hooks | — |
-| WorkBuddy | written; reads ? | written; reads ? | written; reads ? | `.workbuddy/agents` t cwd only | written; reads ? | first of `.mcp.json`, `mcp.json` s cwd only |
-| OpenCode | `.opencode/skills` v<br>`.claude/skills` v | `.opencode/rules` v | `.opencode/teamai-context.md` v | `.opencode/agents` v | user hooks | `opencode.json` v<br>`.opencode/teamai-mcp.json` v |
-| Muse Code | `.agents/skills` v | session hook v | session hook v | written; reads ? | `.muse/hooks.json` v | `.mcp.json` s |
-| Antigravity | `.agents/skills` v | `.agents/rules` v | `.agents/rules` v | `.agents/agents` v | user hooks | `.agents/plugins/teamai/mcp_config.json` v |
+| Tool | Skills | Rules | Rule folder files | Instruction blocks | Agents | Hooks | MCP |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Claude Code | written; reads ? | `.claude/rules` v | grant `permissions.additionalDirectories` v | `.claude/rules` v | `.claude/agents` v | `.claude/settings.json` v<br>`.claude/settings.local.json` v | `.mcp.json` v |
+| Codex CLI | written; reads ? | session hook v | copy | session hook v | `.codex/agents` v | `.codex/hooks.json` v | `.codex/config.toml` v |
+| Codex CLI Internal | written; reads ? | session hook t | copy | session hook t | written; reads ? | written; reads ? | ? |
+| Claude Code Internal | written; reads ? | written; reads ? | copy | written; reads ? | written; reads ? | written; reads ? | ? |
+| TClaude | written; reads ? | written; reads ? | copy | written; reads ? | written; reads ? | written; reads ? | `.mcp.json` t |
+| TCodex | written; reads ? | session hook t | copy | session hook t | written; reads ? | written; reads ? | ? |
+| Cursor | written; reads ? | `.cursor/rules` v | copy | `.cursor/rules` v | `.cursor/agents` v | `.cursor/hooks.json` s | `.cursor/mcp.json` s |
+| Copilot | `.github/skills` v | `.github/instructions` v | copy | `.github/copilot-instructions.md` v<br>`.github/instructions` v | `.github/agents` s | `.github/hooks/teamai.json` s | `.github/mcp.json` v |
+| JoyCode | written; reads ? | `.joycode/rules` v | copy | — | `.joycode/agents` s<br>indexed by `agent.json` | `.joycode/hooks.json` s | — |
+| Qoder | written; reads ? | `.qoder/rules` v | copy | `.qoder/rules` s | `.qoder/agents` s | `.qoder/settings.json` s cwd only<br>`.qoder/settings.local.json` s cwd only | `.qoder/settings.json` s |
+| Qoder CN | written; reads ? | `.qoder/rules` v | copy | `.qoder/rules` t | `.qoder/agents` t | `.qoder/settings.json` s cwd only<br>`.qoder/settings.local.json` t cwd only | `.qoder/settings.json` t |
+| Kiro | written; reads ? | `.kiro/steering` d | copy | `.kiro/steering` d | `.kiro/agents` d | user hooks | `.kiro/settings/mcp.json` d |
+| Trae | written; reads ? | `.trae/rules` t | copy | `.trae/rules` d | `.trae/agents` s cwd only | ? | `.trae/mcp.json` d |
+| Trae CN | written; reads ? | `.trae/rules` t | copy | `.trae/rules` d | `.trae/agents` s cwd only | ? | `.trae/mcp.json` d |
+| ZCode | written; reads ? | session hook s | copy | session hook s | `.zcode/agents` s cwd only | user hooks | `.zcode/config.json` s |
+| Oh My Pi | written; reads ? | `.omp/rules` v cwd only | copy | extension v | `.omp/agents` v | user hooks | `.omp/mcp.json` v cwd only |
+| Pi Coding Agent | `.pi/skills` v cwd only | extension v | copy | extension v | — | user hooks | `.pi/mcp.json` v cwd only |
+| CodeBuddy | written; reads ? | `.codebuddy/rules` s cwd only | copy | `.codebuddy/rules` s cwd only | `.codebuddy/agents` s cwd only | `.codebuddy/settings.json` s cwd only<br>`.codebuddy/settings.local.json` v cwd only | first of `.mcp.json`, `mcp.json` s cwd only |
+| OpenClaw | written; reads ? | — | copy | — | — | user hooks | — |
+| Hermes | `~/.hermes/skills` s | — | copy | plugin s | — | user hooks | — |
+| DeepSeek Harness | written; reads ? | session hook s | copy | session hook s | — | user hooks | — |
+| WorkBuddy | written; reads ? | written; reads ? | copy | written; reads ? | `.workbuddy/agents` t cwd only | written; reads ? | first of `.mcp.json`, `mcp.json` s cwd only |
+| OpenCode | `.opencode/skills` v<br>`.claude/skills` v | `.opencode/rules` v | copy | `.opencode/teamai-context.md` v | `.opencode/agents` v | user hooks | `opencode.json` v<br>`.opencode/teamai-mcp.json` v |
+| Muse Code | `.agents/skills` v | session hook v | copy | session hook v | written; reads ? | `.muse/hooks.json` v | `.mcp.json` s |
+| Antigravity | `.agents/skills` v | `.agents/rules` v | copy | `.agents/rules` v | `.agents/agents` v | user hooks | `.agents/plugins/teamai/mcp_config.json` v |
 
 ## Run time and teamai's own AI
 

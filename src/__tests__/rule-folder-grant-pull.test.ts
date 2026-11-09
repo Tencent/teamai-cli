@@ -1,0 +1,118 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import path from 'node:path';
+import os from 'node:os';
+import fse from 'fs-extra';
+
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
+  requireInit: vi.fn(),
+  loadState: vi.fn().mockResolvedValue({ lastPull: null, lastPullRev: null }),
+  saveState: vi.fn(),
+  loadStateForScope: vi.fn(async () => ({})),
+  saveStateForScope: vi.fn(),
+  loadLocalConfigForScope: vi.fn(),
+  loadTeamConfig: vi.fn(),
+  detectProjectConfig: vi.fn().mockResolvedValue(null),
+  autoDetectInit: vi.fn(),
+}));
+
+vi.mock('../utils/git.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/git.js')>()),
+  pullRepo: vi.fn().mockResolvedValue('already up to date'),
+  getHeadRev: vi.fn().mockResolvedValue('abc1234'),
+  createGit: vi.fn(),
+}));
+
+// pull() takes a real ~/.teamai/.sync-lock; parallel workers would race on it.
+vi.mock('../update.js', () => ({
+  acquireLock: vi.fn().mockResolvedValue(true),
+  releaseLock: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../utils/logger.js', () => ({
+  log: {
+    persist: vi.fn(),
+    info: vi.fn(),
+    success: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    dim: vi.fn(),
+  },
+  spinner: vi.fn(() => ({
+    start: vi.fn().mockReturnThis(),
+    succeed: vi.fn().mockReturnThis(),
+    fail: vi.fn().mockReturnThis(),
+    warn: vi.fn().mockReturnThis(),
+    info: vi.fn().mockReturnThis(),
+    stop: vi.fn().mockReturnThis(),
+  })),
+}));
+
+import { pull } from '../pull.js';
+import { loadLocalConfigForScope, loadStateForScope, loadTeamConfig, saveStateForScope } from '../config.js';
+import { TeamaiConfigSchema, type LocalConfig, type State } from '../types.js';
+
+/** A rule folder whose rule names its support file (#1787). */
+const RULE = 'Before adding an endpoint, read ${TEAMAI_RULE_DIR}/checklist.md.\n';
+
+describe('the Claude Code grant of the rule folders a pull delivers (#1787)', () => {
+  let tmpDir: string;
+  let homeDir: string;
+  let repoPath: string;
+  let saved: State;
+
+  const settingsFile = () => path.join(homeDir, '.claude', 'settings.json');
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-rule-grant-pull-'));
+    homeDir = path.join(tmpDir, 'home');
+    repoPath = path.join(tmpDir, 'team-repo');
+    await fse.outputJson(path.join(homeDir, '.claude', 'settings.json'), { permissions: { additionalDirectories: ['/member/dir'] } });
+    await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'RULE.md'), RULE);
+    await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'checklist.md'), '- Plural names.\n');
+    vi.stubEnv('HOME', homeDir);
+    saved = {} as State;
+    vi.mocked(saveStateForScope).mockImplementation(async (state) => {
+      saved = structuredClone(state);
+    });
+    vi.mocked(loadStateForScope).mockImplementation(async () => structuredClone(saved) as never);
+    vi.mocked(loadTeamConfig).mockResolvedValue(
+      TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/x/team.git' }),
+    );
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue({
+      repo: { localPath: repoPath, remote: 'https://example.invalid/x/team.git' },
+      username: 'u',
+      updatePolicy: 'auto',
+      additionalRoles: [],
+      scope: 'user',
+      enabledAgents: ['claude'],
+    } as LocalConfig);
+  });
+
+  afterEach(async () => {
+    vi.mocked(saveStateForScope).mockReset();
+    vi.mocked(loadStateForScope).mockImplementation(async () => ({}) as never);
+    vi.unstubAllEnvs();
+    await fse.remove(tmpDir);
+  });
+
+  it('adds the data home once, after the member\'s entries, and keeps it on the next pull', async () => {
+    await pull({});
+    await pull({ force: true });
+
+    expect(await fse.readJson(settingsFile())).toMatchObject({
+      permissions: { additionalDirectories: ['/member/dir', path.join(homeDir, '.teamai', 'rules')] },
+    });
+  });
+
+  it('takes it back once the team has no rule folder left', async () => {
+    await pull({});
+    await fse.remove(path.join(repoPath, 'rules', 'api-style'));
+    await fse.outputFile(path.join(repoPath, 'rules', 'style.md'), 'Use named exports.\n');
+
+    await pull({ force: true });
+
+    expect(await fse.readJson(settingsFile())).toMatchObject({ permissions: { additionalDirectories: ['/member/dir'] } });
+  });
+});

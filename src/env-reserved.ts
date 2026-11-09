@@ -1,10 +1,10 @@
 import { isEnvShMarker } from './env-sh-exports.js';
 
 /**
- * The paths teamai gives a workflow folder's steps, a hook folder's command, and an MCP server folder's command, args
+ * The paths teamai gives a workflow folder's steps, a hook folder's command, a rule folder's text, and an MCP server folder's command, args
  * and env (#1787): a team value would point them at another folder.
  */
-const FOLDER_DIR_NAMES = ['TEAMAI_WORKFLOW_DIR', 'TEAMAI_HOOK_DIR', 'TEAMAI_MCP_DIR'] as const;
+const FOLDER_DIR_NAMES = ['TEAMAI_WORKFLOW_DIR', 'TEAMAI_HOOK_DIR', 'TEAMAI_RULE_DIR', 'TEAMAI_MCP_DIR'] as const;
 
 /**
  * Shell startup, hook, and loader names team env must not replace: every name
@@ -42,8 +42,8 @@ export function reservedTeamEnvWarning(keys: Iterable<string>): string | null {
   const sentences = [
     shell.length === 1 ? `${shell.join(', ')} is reserved for TeamAI shell routing; those team env values are ignored.` : null,
     shell.length > 1 ? `${shell.join(', ')} are reserved for TeamAI shell routing; those team env values are ignored.` : null,
-    folder.length === 1 ? `${folder.join(', ')} is reserved for the folder path teamai gives a workflow step, hook or MCP server; those team env values are ignored.` : null,
-    folder.length > 1 ? `${folder.join(', ')} are reserved for the folder path teamai gives a workflow step, hook or MCP server; those team env values are ignored.` : null,
+    folder.length === 1 ? `${folder.join(', ')} is reserved for the folder path teamai gives a workflow step, hook, rule or MCP server; those team env values are ignored.` : null,
+    folder.length > 1 ? `${folder.join(', ')} are reserved for the folder path teamai gives a workflow step, hook, rule or MCP server; those team env values are ignored.` : null,
   ].filter((sentence) => sentence !== null);
 
   return sentences.length === 0 ? null : sentences.join(' ');

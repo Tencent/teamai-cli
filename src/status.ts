@@ -8,8 +8,9 @@ import { getDefaultBranch, getHeadRev, getRepoStatus } from './utils/git.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import { log } from './utils/logger.js';
 import { findSkippedFolders, isInSkippedFolder, skippedFolderMessage } from './folder-markers.js';
+import { readTeamRules } from './resources/rules.js';
 import { getAllHandlers, getHandler } from './resources/index.js';
-import { listDirs, listFilesRecursive, pathExists, readFileSafe } from './utils/fs.js';
+import { listDirs, pathExists, readFileSafe } from './utils/fs.js';
 import { SkillsHandler } from './resources/skills.js';
 import { DocsHandler } from './resources/docs.js';
 import { detectInstalledAgents, type ResolvedAgent } from './known-agents.js';
@@ -122,10 +123,8 @@ export async function status(options: GlobalOptions): Promise<void> {
 
   const skippedFolders = await findSkippedFolders(repoPath);
 
-  const rulesFiles = (await listFilesRecursive(path.join(repoPath, 'rules')))
-    .filter(f => f.endsWith('.md') && !isInSkippedFolder(`rules/${f}`, skippedFolders));
-
-  counts.rules = rulesFiles.length;
+  // A rule folder is one rule, whatever files it holds (#1787).
+  counts.rules = (await readTeamRules(repoPath)).rules.length;
 
   counts.docs = await new DocsHandler().countDocFiles(path.join(repoPath, 'docs'));
 

@@ -135,7 +135,11 @@ async function deployRecallArtifacts(teamConfig: TeamaiConfig, localConfig: Loca
   await deployBuiltinSkills(teamConfig, localConfig);
 
   const { compileDirectRecallRulesBlock, compileRecallRulesBlock } = await import('./pull.js');
-  await writeRecallBlock(teamConfig, localConfig, { recall: compileRecallRulesBlock(teamConfig.language), directRecall: compileDirectRecallRulesBlock() });
+  const repoPath = localConfig.repo.localPath;
+  await writeRecallBlock(teamConfig, localConfig, {
+    recall: await compileRecallRulesBlock(teamConfig.language, repoPath),
+    directRecall: await compileDirectRecallRulesBlock(teamConfig.language, repoPath),
+  });
 }
 
 export async function recallDisable(opts: GlobalOptions): Promise<void> {

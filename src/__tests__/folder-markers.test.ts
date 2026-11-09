@@ -37,8 +37,8 @@ describe('findSkippedFolders', () => {
 
     const skipped = await findSkippedFolders(repo);
 
-    // Hook, MCP server and suite folders are read (#1787), so only the other types are skipped.
-    expect(skipped.map((folder) => folder.path).sort()).toEqual(Object.keys(markers).flatMap((dir) => ['hooks', 'mcp', 'benchmarks'].includes(dir) ? [] : [
+    // Hook, rule, MCP server and suite folders are read (#1787), so only the other types are skipped.
+    expect(skipped.map((folder) => folder.path).sort()).toEqual(Object.keys(markers).flatMap((dir) => ['hooks', 'rules', 'mcp', 'benchmarks'].includes(dir) ? [] : [
       `${dir}/at-root/`,
       `${dir}/team/in-namespace/`,
     ]).sort());

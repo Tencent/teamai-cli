@@ -92,6 +92,46 @@ of the relation starts with the other end too.
 relation outside that table; a relation that points at an asset not on the
 branch is a warning, not a failure.
 
+### Rules as folders: a deterministic skill
+
+A directory under `rules/` that holds `RULE.md` is a rule folder. `RULE.md` is the rule. The other files are support files the rule sends the agent to:
+
+```text
+rules/api-style/
+├─ RULE.md
+├─ RULE.zh.md
+├─ checklist.md
+└─ examples/good-endpoint.ts
+```
+
+```markdown
+<!-- rules/api-style/RULE.md -->
+---
+paths: ["src/api/**"]
+---
+Follow the team API style. Before adding an endpoint, read
+${TEAMAI_RULE_DIR}/checklist.md and ${TEAMAI_RULE_DIR}/examples/good-endpoint.ts.
+```
+
+| | Skill | Rule folder |
+|---|---|---|
+| Loaded by | The model, or `/skill` / `$skill` | teamai: always, or by `paths:` |
+| Manual invocation | Yes | No; the rule can point at a skill and make sure it is used |
+| Support files | Yes | Yes, read only when needed |
+| Context cost | The description until used | The body in every session; on tools without native rules, injected whole at SessionStart |
+
+Keep the body short and put the detail in the folder.
+
+- The name is the path, as for a rule file: `rules/api-style/` is `api-style`, and `rules/fe/api-style/` is `fe/api-style`. Each tool gets `api-style.md` in its rules directory.
+- `RULE.zh.md` or `RULE.en.md` holds the body for that `language`. The frontmatter of `RULE.md` applies to every language; pull warns about frontmatter in a variant and ignores it.
+- Pull copies the folder to the data home (`~/.teamai/rules/api-style/`, `~/.teamai/projects/<slug>/rules/api-style/` in a workspace with a team repo, or `.teamai/delivered/rules/api-style/` in each worktree in single-repo) and puts a path in place of `${TEAMAI_RULE_DIR}` for each tool, with forward slashes. A tool that can read the data home gets that path. For Claude Code, pull adds the directory to `permissions.additionalDirectories` in `~/.claude/settings.json`, after your own entries, and uninstall takes it out. Any other tool gets `.teamai/delivered/rules/api-style`, a copy in the worktree that git ignores. The "Rule folder files" column of [Tool support](tool-support.md#project-scope) says which tool gets which.
+- A user-scope rule has no worktree, so it always names the data home. Pull warns once for each tool that may ask before it reads there.
+- Edit a rule folder in the team repo. Push proposes nothing from its delivered copies.
+
+Before you commit a rule folder, have every member upgrade. An older teamai reads each file in `rules/api-style/` as its own always-on rule (`api-style/RULE`, `api-style/RULE.zh`, `api-style/checklist`), or skips the folder.
+
+teamai's recall rule is the folder [`rules/teamai-recall/`](https://github.com/Tencent/teamai-cli/tree/main/rules/teamai-recall). A team replaces it with its own `rules/teamai-recall/` at the root of the team repo. The folder's README lists the files and the lines each must keep. Pull refuses a replacement that drops one, names the file, and keeps teamai's.
+
 ## Agents
 
 `agents/<name>.yaml`. `name` matches the filename. Commit it, or run `teamai push` after editing the copy in a tool.
@@ -705,7 +745,7 @@ These file names are reserved for resources kept as a folder, the way a skill is
 | `scorers/` | `SCORER.md` |
 | `agents/` | `AGENT.md` |
 
-A directory under that type's directory, at any depth, that holds its marker is a folder. This release reads hook folders ([Hooks](#hooks)) and benchmark suite folders ([Benchmarks](benchmarks.md)), and none of the other folder types yet. It skips each such folder whole, and pulls the rest of the team repo as usual:
+A directory under that type's directory, at any depth, that holds its marker is a folder. This release reads workflow, hook, rule, MCP server and benchmark suite folders, and not scorer or agent folders yet. It skips each such folder whole, and pulls the rest of the team repo as usual:
 
 ```text
 rules/

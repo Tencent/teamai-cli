@@ -2024,9 +2024,9 @@ describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
   });
 
   it('warns once per skipped folder and reviews none of its files', async () => {
-    // Bad names inside the folders: a review that read them would report them.
-    await fse.outputFile(path.join(repoDir, 'rules', 'api-style', 'RULE.md'), '# API style\n');
-    await fse.outputFile(path.join(repoDir, 'rules', 'api-style', 'Bad Name.md'), '# Bad\n');
+    // A bad name inside the agent folder: a review that read it would report it.
+    await fse.outputFile(path.join(repoDir, 'agents', 'reviewer', 'AGENT.md'), '# Reviewer\n');
+    await fse.outputFile(path.join(repoDir, 'agents', 'reviewer', 'Bad Name.md'), '# Bad\n');
 
     const review = await reviewBranchDir(BRANCH, repoDir);
 
@@ -2034,8 +2034,8 @@ describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
       {
         level: 'warn',
         check: 'structure',
-        path: 'rules/api-style/',
-        message: 'rules/api-style/ is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
+        path: 'agents/reviewer/',
+        message: 'agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
       },
     ]);
   });
@@ -2078,6 +2078,63 @@ describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
 
     expect(review.findings.map((finding) => finding.message)).toEqual([
       'scorers/style/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
+    ]);
+  });
+});
+
+describe('reviewBranchDir: rule folders (#1787)', () => {
+  let repoDir: string;
+  const KNOWLEDGE_FE = 'version: 1\nroles:\n  - id: dev\n    description: dev\n    resources:\n      knowledge: [fe]\n      skills: []\n      agents: []\n';
+
+  beforeEach(async () => {
+    repoDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-review-rule-folders-'));
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), KNOWLEDGE_FE);
+    await fse.outputFile(path.join(repoDir, 'rules', 'api-style', 'RULE.md'), 'Follow the API style. Read ${TEAMAI_RULE_DIR}/checklist.md.\n');
+    await fse.outputFile(path.join(repoDir, 'rules', 'fe', 'review', 'RULE.md'), 'Review it.\n');
+  });
+
+  afterEach(async () => {
+    await fse.remove(repoDir);
+  });
+
+  it('reads a root folder as a root rule, and names a variant whose frontmatter pull ignores', async () => {
+    await fse.outputFile(path.join(repoDir, 'rules', 'api-style', 'checklist.md'), '- Plural names.\n');
+    await fse.outputFile(path.join(repoDir, 'rules', 'api-style', 'RULE.zh.md'), '---\npaths: ["x/**"]\n---\n遵循。\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings).toEqual([
+      {
+        level: 'warn',
+        check: 'structure',
+        path: 'rules/api-style/',
+        message: 'rules/api-style/ holds RULE.md, so it is one folder, and checklist.md in it is one of its files, no longer read on its own.',
+      },
+      {
+        level: 'warn',
+        check: 'format',
+        path: 'rules/api-style/RULE.zh.md',
+        message: 'The frontmatter of rules/api-style/RULE.zh.md is ignored: every language of a rule folder takes the frontmatter of its RULE.md. '
+          + 'Move those fields to rules/api-style/RULE.md in the team repo.',
+      },
+      {
+        level: 'info',
+        check: 'structure',
+        path: 'rules/api-style/RULE.md',
+        message: 'rules/api-style/RULE.md sits at the shared root, so it is delivered to every member.',
+      },
+    ]);
+  });
+
+  it('fails a rule folder pull does not deliver, and a credential in a support file', async () => {
+    await fse.outputFile(path.join(repoDir, 'rules', 'api-style.md'), 'Use named exports.\n');
+    await fse.outputFile(path.join(repoDir, 'rules', 'fe', 'review', 'call.sh'), 'curl -H "Authorization: sk-abcdefghijklmnopqrstuvwx0123456789" api\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings.map(({ level, check, path: at }) => ({ level, check, path: at }))).toEqual([
+      { level: 'fail', check: 'structure', path: 'rules/api-style/' },
+      { level: 'fail', check: 'leaks', path: 'rules/fe/review/call.sh' },
     ]);
   });
 });

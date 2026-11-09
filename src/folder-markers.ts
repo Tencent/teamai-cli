@@ -53,7 +53,7 @@ export const FOLDER_MARKERS: Readonly<Record<MarkedType, FolderMarker>> = {
   rules: {
     kind: 'Rule folder',
     marker: 'RULE.md',
-    supported: false,
+    supported: true,
     skipped: 'is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
   },
   mcp: {
