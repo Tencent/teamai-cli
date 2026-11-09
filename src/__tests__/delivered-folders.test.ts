@@ -1,0 +1,162 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { contentHash, openLedger } from '../resources/delivered-copies.js';
+import { DeliveredFolders } from '../resources/delivered-folders.js';
+import type { FolderFile } from '../resources/folder-files.js';
+import type { LocalConfig } from '../types.js';
+
+const dirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+function tempDir(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-delivered-folders-'));
+  dirs.push(dir);
+
+  return dir;
+}
+
+const file = (filePath: string, content: string, executable = false): FolderFile => ({ path: filePath, executable, bytes: Buffer.from(content) });
+
+/** Every file under `dir` with its content, `/`-separated, hidden entries included. */
+function tree(dir: string): Record<string, string> {
+  const found: Record<string, string> = {};
+
+  const visit = (relative: string): void => {
+    for (const entry of fs.readdirSync(path.join(dir, relative), { withFileTypes: true })) {
+      const child = relative === '' ? entry.name : `${relative}/${entry.name}`;
+
+      if (entry.isDirectory()) visit(child);
+      else found[child] = fs.readFileSync(path.join(dir, child), 'utf8');
+    }
+  };
+
+  visit('');
+
+  return found;
+}
+
+describe('DeliveredFolders.pathOf', () => {
+  const base = { username: 't', additionalRoles: [] };
+  const home = path.join(os.tmpdir(), 'home');
+  const user: LocalConfig = { ...base, scope: 'user', dataHome: path.join(home, '.teamai'), repo: { localPath: path.join(home, '.teamai', 'repo'), remote: 'acme/team' } };
+
+  const workspace: LocalConfig = {
+    ...base, scope: 'project', projectRoot: path.join(home, 'shop'), dataHome: path.join(home, '.teamai', 'projects', 'shop-1a2b'),
+    repo: { localPath: path.join(home, '.teamai', 'projects', 'shop-1a2b', 'repo'), remote: 'acme/team' },
+  };
+
+  const singleRepo: LocalConfig = {
+    ...base, scope: 'project', projectRoot: path.join(home, 'shop-wt'), dataHome: path.join(home, '.teamai', 'projects', 'shop-1a2b'),
+    repo: { localPath: path.join(home, 'shop-wt', '.teamai'), remote: 'acme/shop', kind: 'self', businessRepoRoot: path.join(home, 'shop-wt') },
+  };
+
+  it.each([
+    ['the user scope', user, null, path.join(home, '.teamai', 'hooks', 'lint')],
+    ['the user scope, in a namespace', user, 'payments', path.join(home, '.teamai', 'hooks', 'payments', 'lint')],
+    ['a workspace with a remote team, shared by its worktrees', workspace, null, path.join(home, '.teamai', 'projects', 'shop-1a2b', 'hooks', 'lint')],
+    ['a single-repo worktree, in its own checkout', singleRepo, 'payments', path.join(home, 'shop-wt', '.teamai', 'delivered', 'hooks', 'payments', 'lint')],
+  ] as const)('puts a folder of %s in the data home of the scope that owns it', (_case, localConfig, namespace, expected) => {
+    expect(DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace, name: 'lint' })).toBe(expected);
+  });
+});
+
+describe('DeliveredFolders.deliver', () => {
+  it('writes every file of the folder at its path and records each in the ledger', async () => {
+    const dest = path.join(tempDir(), 'hooks', 'block-secrets');
+    const ledger = openLedger({});
+
+    await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'event: Stop\n'), file('lib/scan.sh', 'echo scan\n', true)], ledger });
+
+    expect(tree(path.dirname(dest))).toEqual({ 'block-secrets/HOOK.yaml': 'event: Stop\n', 'block-secrets/lib/scan.sh': 'echo scan\n' });
+    expect(ledger.hashes).toEqual({
+      [path.join(dest, 'HOOK.yaml')]: contentHash('event: Stop\n'),
+      [path.join(dest, 'lib', 'scan.sh')]: contentHash('echo scan\n'),
+    });
+  });
+
+  it('replaces the previous version whole, at the same path, and leaves nothing beside it', async () => {
+    const dest = path.join(tempDir(), 'hooks', 'block-secrets');
+    const ledger = openLedger({});
+    await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v1\n'), file('old.sh', 'old\n')], ledger });
+
+    await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v2\n'), file('new.sh', 'new\n')], ledger });
+
+    expect([tree(path.dirname(dest)), Object.keys(ledger.hashes).sort()]).toEqual([
+      { 'block-secrets/HOOK.yaml': 'v2\n', 'block-secrets/new.sh': 'new\n' },
+      [path.join(dest, 'HOOK.yaml'), path.join(dest, 'new.sh')],
+    ]);
+  });
+
+  it('leaves a folder that already holds the version in place, and records it', async () => {
+    const dest = path.join(tempDir(), 'hooks', 'block-secrets');
+    const files = [file('HOOK.yaml', 'v1\n'), file('scan.sh', 'echo scan\n', true)];
+    await DeliveredFolders.deliver({ dest, files, ledger: undefined });
+    const before = fs.statSync(dest).ino;
+    const ledger = openLedger({});
+
+    await DeliveredFolders.deliver({ dest, files, ledger });
+
+    expect([fs.statSync(dest).ino, Object.keys(ledger.hashes).length]).toEqual([before, 2]);
+  });
+
+  it('removes what an interrupted delivery left beside the folder', async () => {
+    const dest = path.join(tempDir(), 'hooks', 'block-secrets');
+    fs.mkdirSync(path.join(path.dirname(dest), '.block-secrets.new-0badc0de'), { recursive: true });
+    fs.writeFileSync(path.join(path.dirname(dest), '.block-secrets.new-0badc0de', 'HOOK.yaml'), 'half written\n');
+    fs.mkdirSync(path.join(path.dirname(dest), '.block-secrets.old-0badc0de'), { recursive: true });
+
+    await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v1\n')], ledger: undefined });
+
+    expect(tree(path.dirname(dest))).toEqual({ 'block-secrets/HOOK.yaml': 'v1\n' });
+  });
+});
+
+describe('DeliveredFolders.prune', () => {
+  it('removes each folder of the type the scope no longer delivers, and takes it off the ledger', async () => {
+    const dataHome = tempDir();
+    const localConfig: LocalConfig = { username: 't', additionalRoles: [], scope: 'user', dataHome, repo: { localPath: path.join(dataHome, 'repo'), remote: 'acme/team' } };
+    const ledger = openLedger({});
+    const at = (namespace: string | null, name: string): string => DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace, name });
+
+    for (const dest of [at(null, 'lint'), at(null, 'format'), at('payments', 'audit'), at('billing', 'audit')]) {
+      await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'x\n')], ledger });
+    }
+
+    const removed = await DeliveredFolders.prune({ localConfig, type: 'hooks', keep: [at(null, 'lint'), at('payments', 'audit')], ledger });
+
+    expect([removed.sort(), tree(path.join(dataHome, 'hooks')), Object.keys(ledger.hashes).sort()]).toEqual([
+      [path.join(dataHome, 'hooks', 'billing'), at(null, 'format')].sort(),
+      { 'lint/HOOK.yaml': 'x\n', 'payments/audit/HOOK.yaml': 'x\n' },
+      [path.join(at(null, 'lint'), 'HOOK.yaml'), path.join(at('payments', 'audit'), 'HOOK.yaml')].sort(),
+    ]);
+  });
+});
+
+describe('DeliveredFolders.render', () => {
+  const dest = path.join(os.tmpdir(), 'home', '.teamai', 'hooks', 'lint');
+  const forward = dest.split(path.sep).join('/');
+
+  it('puts the folder\'s path, with forward slashes, in place of each ${TEAMAI_<TYPE>_DIR}, and nothing else', () => {
+    expect(DeliveredFolders.render('bash "${TEAMAI_HOOK_DIR}/scan.sh" ${TEAMAI_HOOK_DIR}/x $TEAMAI_HOOK_DIR ${TEAMAI_RULE_DIR}', { type: 'hooks', dest }))
+      .toBe(`bash "${forward}/scan.sh" ${forward}/x $TEAMAI_HOOK_DIR \${TEAMAI_RULE_DIR}`);
+  });
+
+  it('renders in one pass: a path that holds the variable is not read again', () => {
+    const odd = path.join(os.tmpdir(), '${TEAMAI_HOOK_DIR}');
+
+    expect(DeliveredFolders.render('cat ${TEAMAI_HOOK_DIR}/a', { type: 'hooks', dest: odd })).toBe(`cat ${odd.split(path.sep).join('/')}/a`);
+  });
+
+  it('renders the path from a tool\'s project directory variable when one is given', () => {
+    const project = path.join(os.tmpdir(), 'shop-wt');
+
+    expect(DeliveredFolders.render('bash "${TEAMAI_HOOK_DIR}/scan.sh"', {
+      type: 'hooks', dest: path.join(project, '.teamai', 'delivered', 'hooks', 'lint'), project: { root: project, variable: '$CLAUDE_PROJECT_DIR' },
+    })).toBe('bash "$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/lint/scan.sh"');
+  });
+});
