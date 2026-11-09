@@ -9,8 +9,9 @@ import { log } from '../utils/logger.js';
 import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.js';
 import {
   entryFilePath, missingTopLevelKeyReason, readEntryFileText, reportEntryResolution, resolveEntriesFor, unknownEntryKeys,
-  type EntryReader, type EntryResolution,
+  type EntryPlaceReader, type EntryResolution,
 } from '../namespaced-entries.js';
+import { RESOURCE_LAYOUTS, Resources, type EntryListRead, type ResourceLayout } from './resolver.js';
 
 // ─── Schema for hooks/hooks.yaml ────────────────────────────
 //
@@ -67,15 +68,8 @@ type HooksFileRead =
   | { ok: true; yaml: HooksYaml; declaresBuiltin: boolean; unknownKeys: ReadonlyMap<TeamHook, readonly string[]> }
   | { ok: false; reason: string };
 
-/** Read one hooks file; null when it does not exist. */
-async function readHooksFile(absolutePath: string, relativePath: string): Promise<HooksFileRead | null> {
-  const file = await readEntryFileText(absolutePath, relativePath);
-
-  if (!file.ok) return file;
-  const content = file.text;
-
-  if (content === null) return null;
-
+/** Parse one hooks file's text; `relativePath` names it in the reason. */
+function parseHooksFile(content: string, relativePath: string): HooksFileRead {
   try {
     const raw: JsonValue = parseYaml(content);
     const topLevelProblem = missingTopLevelKeyReason(raw, HooksYamlSchema);
@@ -90,6 +84,42 @@ async function readHooksFile(absolutePath: string, relativePath: string): Promis
   }
 }
 
+/** Read one hooks file; null when it does not exist. */
+async function readHooksFile(absolutePath: string, relativePath: string): Promise<HooksFileRead | null> {
+  const file = await readEntryFileText(absolutePath, relativePath);
+
+  if (!file.ok) return file;
+
+  return file.text === null ? null : parseHooksFile(file.text, relativePath);
+}
+
+/** One entry of a hooks file, with the keys it was written with that the schema does not know. */
+interface HooksFileEntry {
+  readonly hook: TeamHook;
+  readonly unknownKeys: readonly string[];
+}
+
+/** A hooks file's entries for the resolver. The `builtin:` overrides are team-wide and read from the root file alone. */
+function hooksFileEntries(content: string, relativePath: string): EntryListRead<HooksFileEntry> {
+  const read = parseHooksFile(content, relativePath);
+
+  if (!read.ok) return { kind: 'invalid', message: read.reason };
+
+  return {
+    kind: 'entries',
+    entries: read.yaml.hooks.map((hook) => ({ name: hook.id, entry: { hook, unknownKeys: read.unknownKeys.get(hook) ?? [] } })),
+    notes: read.declaresBuiltin && relativePath !== entryFilePath('hooks', null)
+      ? [`${relativePath}: \`builtin:\` is ignored outside hooks/hooks.yaml; built-in hook overrides apply to the whole team. Move it there.`]
+      : [],
+  };
+}
+
+/** Where team hooks live in a team tree: the entries of `hooks.yaml`, at the root and in each namespace. */
+const TEAM_HOOKS: ResourceLayout<HooksFileEntry> = {
+  ...RESOURCE_LAYOUTS.hooks,
+  entryList: { file: 'hooks.yaml', entries: hooksFileEntries },
+};
+
 /** The hooks one hooks file's text declares, or null when it does not parse: for reading a past revision. */
 export function parseTeamHooks(content: string): TeamHook[] | null {
   try {
@@ -103,22 +133,25 @@ export function parseTeamHooks(content: string): TeamHook[] | null {
   }
 }
 
-/**
- * How `hooks/hooks.yaml` and `hooks/<ns>/hooks.yaml` are read for delivery.
- * The `builtin:` overrides are team-wide and read from the root file alone.
- */
-export const hooksEntryReader: EntryReader<TeamHook> = {
+/** How team hooks are read for delivery: each place of the team tree through the resolver. */
+export const hooksEntryReader: EntryPlaceReader<TeamHook> = {
   type: 'hooks',
-  async read(absolutePath, relativePath) {
-    const read = await readHooksFile(absolutePath, relativePath);
+  async readPlace(repoPath, dir) {
+    const { items, diagnostics } = await Resources.layer(TEAM_HOOKS, { root: repoPath, namespace: dir });
+    const invalid = diagnostics.find((diagnostic) => diagnostic.kind === 'invalid');
 
-    if (read === null || !read.ok) return read;
+    if (invalid) return { ok: false, source: invalid.path, reason: invalid.message };
+    const unknownKeys = new Map<TeamHook, readonly string[]>();
 
-    const notes = read.declaresBuiltin && relativePath !== entryFilePath('hooks', null)
-      ? [`${relativePath}: \`builtin:\` is ignored outside hooks/hooks.yaml; built-in hook overrides apply to the whole team. Move it there.`]
-      : [];
+    const entries = items.flatMap(({ source }) => {
+      if (source.kind !== 'entry') return [];
 
-    return { ok: true, entries: read.yaml.hooks, notes, unknownKeys: read.unknownKeys };
+      if (source.entry.unknownKeys.length > 0) unknownKeys.set(source.entry.hook, source.entry.unknownKeys);
+
+      return [{ entry: source.entry.hook, source: source.path }];
+    });
+
+    return { ok: true, entries, notes: diagnostics.map(({ message }) => message), unknownKeys };
   },
   nameOf: (hook) => hook.id,
   scopeOf: (hook) => hook,

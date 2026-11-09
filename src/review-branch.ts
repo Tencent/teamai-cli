@@ -42,7 +42,7 @@ import type { AssetKind } from './asset-relations.js';
 import matter from 'gray-matter';
 import { isModelAlias, loadTeamModelAliases, noModelCause, resolveAgentModel, resolveModelValue, TEAM_ALIASES_FILE, type ModelAliases } from './models/aliases.js';
 import { parseAgentYaml, type AgentSpec, type ToolName } from './resources/agent-format.js';
-import { hooksEntryReader } from './resources/hooks.js';
+import { parseTeamHooks } from './resources/hooks.js';
 import { getHandler } from './resources/index.js';
 import { listRepoFilesRecursive } from './resources/repo-resource.js';
 import { isNamespaceDir, resolveResourceNamespaces } from './resource-namespaces.js';
@@ -269,10 +269,10 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
         });
 
         if (path.posix.basename(file) === 'hooks.yaml') {
-          const read = await hooksEntryReader.read(absolutePath, relativePath);
+          const hooks = parseTeamHooks(await fse.readFile(absolutePath, 'utf8').catch(() => ''));
 
-          if (read !== null && read.ok && read.entries.length > 0) {
-            for (const hook of read.entries) {
+          if (hooks !== null && hooks.length > 0) {
+            for (const hook of hooks) {
               items.push(fileEntry(hook.id));
             }
 

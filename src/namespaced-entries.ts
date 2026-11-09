@@ -221,12 +221,20 @@ export async function readEntryFileText(
   }
 }
 
-export interface EntryReader<E> {
+/** One place of a type, the root or a namespace, read: each entry with the file or folder that defines it, or why it cannot be used. */
+export type EntryPlaceRead<E> =
+  | {
+    readonly ok: true;
+    readonly entries: ReadonlyArray<{ readonly entry: E; readonly source: string }>;
+    readonly notes?: readonly string[];
+    readonly unknownKeys?: ReadonlyMap<E, readonly string[]>;
+  }
+  | { readonly ok: false; readonly source: string; readonly reason: string };
+
+interface EntryReaderBase<E> {
   readonly type: EntryType;
   /** Defaults to `entryLayout(type)`. */
   readonly layout?: EntryLayout;
-  /** null when the file does not exist. */
-  read(absolutePath: string, relativePath: string): Promise<EntryFileRead<E> | null>;
   nameOf(entry: E): string;
   scopeOf(entry: E): EntryScopeKeys;
   /**
@@ -235,6 +243,41 @@ export interface EntryReader<E> {
    * the first and names the difference, instead of holding the name back (#913).
    */
   delivered?(entry: E): JsonValue;
+}
+
+/**
+ * How one type's entries are read: one file per place (`read`, null when the
+ * file does not exist), or a whole place at a time (`readPlace`), for a type
+ * whose entries also live in files and folders of their own (hooks, #1787).
+ */
+export type EntryReader<E> = EntryFileReader<E> | EntryPlaceReader<E>;
+
+/** A reader of one file per place. */
+export type EntryFileReader<E> = EntryReaderBase<E> & {
+  read(absolutePath: string, relativePath: string): Promise<EntryFileRead<E> | null>;
+  readonly readPlace?: undefined;
+};
+
+/** A reader of a whole place at a time. */
+export type EntryPlaceReader<E> = EntryReaderBase<E> & {
+  readPlace(repoPath: string, dir: string | null): Promise<EntryPlaceRead<E>>;
+  readonly read?: undefined;
+};
+
+/** Read one place of `reader`'s type: the root (`dir` null) or the namespace directory `dir`. Null when it holds nothing. */
+async function readEntryPlace<E>(reader: EntryReader<E>, repoPath: string, layout: EntryLayout, dir: string | null): Promise<EntryPlaceRead<E> | null> {
+  if (reader.readPlace) return reader.readPlace(repoPath, dir);
+
+  // A folder this release cannot read is not a namespace (#1791).
+  if (dir !== null && await holdsFolderMarker(path.join(repoPath, layout.dir), dir)) return null;
+  const source = entryFilePath(layout, dir);
+  const read = await reader.read(entryFileAbsolutePath(repoPath, layout, dir), source);
+
+  if (read === null) return null;
+
+  if (!read.ok) return { ok: false, source, reason: read.reason };
+
+  return { ok: true, entries: read.entries.map((entry) => ({ entry, source })), notes: read.notes, unknownKeys: read.unknownKeys };
 }
 
 export interface ResolvedEntry<E> {
@@ -353,18 +396,15 @@ export async function resolveEntries<E>(
 
   for (const namespace of places) {
     const dir = namespace === null ? null : namespaceDir(dirs, namespace);
-
-    if (dir !== null && await holdsFolderMarker(path.join(repoPath, layout.dir), dir)) continue;
-    const source = entryFilePath(layout, dir);
-    const read = await reader.read(entryFileAbsolutePath(repoPath, layout, dir), source);
+    const read = await readEntryPlace(reader, repoPath, layout, dir);
 
     if (read === null) continue;
 
-    if (!read.ok) return { kind: 'failed', failure: { kind: 'broken-file', type, source, reason: read.reason, layout }, notices };
+    if (!read.ok) return { kind: 'failed', failure: { kind: 'broken-file', type, source: read.source, reason: read.reason, layout }, notices };
 
     for (const note of read.notes ?? []) notices.push({ kind: 'file-note', message: note });
 
-    for (const entry of read.entries) {
+    for (const { entry, source } of read.entries) {
       const name = reader.nameOf(entry);
       const scope = reader.scopeOf(entry);
       const unknownKeys = read.unknownKeys?.get(entry) ?? [];

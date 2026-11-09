@@ -8,7 +8,7 @@ import { log } from '../utils/logger.js';
 import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.js';
 import {
   entryFileAbsolutePath, entryFilePath, listEntryFiles, missingTopLevelKeyReason, readEntryFileText, unknownEntryKeys,
-  type EntryReader,
+  type EntryFileReader,
 } from '../namespaced-entries.js';
 
 // ─── Schema for mcp/mcp.yaml ────────────────────────────────
@@ -92,7 +92,7 @@ export function parseTeamMcpServers(content: string): TeamMcpServer[] | null {
 }
 
 /** How `mcp/mcp.yaml` and `mcp/<ns>/mcp.yaml` are read for delivery. */
-export const mcpEntryReader: EntryReader<TeamMcpServer> = {
+export const mcpEntryReader: EntryFileReader<TeamMcpServer> = {
   type: 'mcp',
   async read(absolutePath, relativePath) {
     const file = await readEntryFileText(absolutePath, relativePath);

@@ -95,9 +95,13 @@ export interface ResourceTree<TShipped> {
   readonly teamai?: TeamaiLayer<TShipped>;
 }
 
-/** Every resource type that resolves through `Resources`. */
+/**
+ * Every resource type that resolves through `Resources`. A type whose entry-list file needs its own parser adds
+ * `entryList` to its row where that parser lives (`hooks.yaml`: `src/resources/hooks.ts`).
+ */
 export const RESOURCE_LAYOUTS = {
   workflows: { dir: 'workflows', marker: 'WORKFLOW.yaml', fileName: (file: string) => (file.endsWith('.yaml') ? file.slice(0, -'.yaml'.length) : null) },
+  hooks: { dir: 'hooks', marker: 'HOOK.yaml', fileName: () => null, nameRule: { pattern: /^[a-z0-9-]+$/, description: 'a hook id uses only lower-case letters, digits and hyphens' } },
 } as const satisfies Readonly<Record<string, ResourceLayout<unknown>>>;
 
 /** The names in `dir`, or none when it is missing, a symlink, or cannot be listed. */
