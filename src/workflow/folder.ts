@@ -166,4 +166,4 @@ function shipped(found: FolderFilesRead): WorkflowFolderRead {
   return fromFiles(found, new Map());
 }
 
-export const WorkflowFolder = { read, shipped, hash, dir, pin, prune } as const;
+export const WorkflowFolder = { MAX_BYTES, read, shipped, hash, dir, pin, prune } as const;

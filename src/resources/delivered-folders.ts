@@ -232,4 +232,4 @@ async function sync(input: {
   }
 }
 
-export const DeliveredFolders = { root, pathOf, sync, deliver, prune, mentions, render } as const;
+export const DeliveredFolders = { root, pathOf, sync, deliver, prune, placeholder, mentions, render } as const;

@@ -152,13 +152,13 @@ function mcpFileEntries(content: string, relativePath: string): EntryListRead<Mc
 }
 
 /** Where team MCP servers live in a team tree: the servers of `mcp.yaml` and the server folders, at the root and in each namespace. */
-const TEAM_MCP: ResourceLayout<McpFileEntry> = {
+export const TEAM_MCP: ResourceLayout<McpFileEntry> = {
   ...RESOURCE_LAYOUTS.mcp,
   entryList: { file: 'mcp.yaml', entries: mcpFileEntries },
 };
 
 /** Read the server folder at `full` (`folderPath` from the team root, ending in `/`), named `name`. */
-async function readMcpFolder(full: string, folderPath: string, name: string): Promise<PlaceFolderRead<TeamMcpDefinition>> {
+export async function readMcpFolder(full: string, folderPath: string, name: string): Promise<PlaceFolderRead<TeamMcpDefinition>> {
   const read = await readMarkerFolder({ full, path: folderPath }, RESOURCE_LAYOUTS.mcp.marker, FolderMcpFields);
   const markerPath = `${folderPath}${RESOURCE_LAYOUTS.mcp.marker}`;
 

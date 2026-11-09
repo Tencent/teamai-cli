@@ -149,6 +149,13 @@ interface TextVariants {
   zh?: string;
 }
 
+/** The variant of a text a hint reads for `language`: `<text>.<language>.md` when the folder has it, else `<text>.md`. */
+function pick(variants: TextVariants, language: HintLanguage): { language: NonNullable<HintLanguage> | null; content: string } {
+  const variant = language ? variants[language] : undefined;
+
+  return variant !== undefined && language ? { language, content: variant } : { language: null, content: variants.base };
+}
+
 /**
  * `base` with the keys of `own` over it (#1787, common rule 5): a key `own` leaves out keeps `base`'s value, and a
  * mapping in both is merged one level down, so `weights: { reject: 30 }` keeps the other weights. A list is replaced.
@@ -176,10 +183,10 @@ function paramProblems(name: DefaultHookName, issue: z.core.$ZodIssue): string[]
   return [`HOOK.yaml: ${at(issue.path)} ${issue.message}`];
 }
 
-/** A folder read as default hook `TName`: the hook, and the `with:` it was written with, or why its files do not make one. */
+/** A folder read as default hook `TName`: the hook, its texts, and the `with:` it was written with, or why its files do not make one. */
 type FolderRead<TName extends DefaultHookName> =
-  | { readonly ok: true; readonly hook: DefaultHook<TName>; readonly with: JsonObject }
-  | { readonly ok: false; readonly problems: string[] };
+  | { readonly ok: true; readonly hook: DefaultHook<TName>; readonly with: JsonObject; readonly texts: ReadonlyMap<string, TextVariants> }
+  | { readonly ok: false; readonly problems: string[]; readonly with: JsonObject };
 
 /** Default hook `name` from the files of its folder, its `with:` over `base` (teamai's, for a team's replacement), or why they do not make one. */
 function readFolder<TName extends DefaultHookName>(name: TName, files: readonly FolderFile[], base: JsonObject): FolderRead<TName> {
@@ -243,7 +250,9 @@ function readFolder<TName extends DefaultHookName>(name: TName, files: readonly 
     texts.set(text, variants);
   }
 
-  if (!params.success || refusals.length > 0) return { ok: false, problems: refusals };
+  const own = isJsonObject(raw.with) ? raw.with : {};
+
+  if (!params.success || refusals.length > 0) return { ok: false, problems: refusals, with: own };
 
   const hook: DefaultHook<TName> = {
     params: params.data,
@@ -252,17 +261,17 @@ function readFolder<TName extends DefaultHookName>(name: TName, files: readonly 
 
       // readFolder read every text the contract names, or returned its problems above.
       if (!variants) throw new Error(`teamai's default hook ${name} has no text ${text}`);
-      const variant = language ? variants[language] : undefined;
+      const picked = pick(variants, language);
 
-      return { language: variant !== undefined && language ? language : null, render: (values) => substitute(variant ?? variants.base, values) };
+      return { language: picked.language, render: (values) => substitute(picked.content, values) };
     },
   };
 
-  return { ok: true, hook, with: isJsonObject(raw.with) ? raw.with : {} };
+  return { ok: true, hook, with: own, texts };
 }
 
 /** The folder teamai ships for `name`. It is part of teamai's package, so one that cannot be read is a teamai bug, and throws. */
-async function shipped<TName extends DefaultHookName>(name: TName): Promise<{ hook: DefaultHook<TName>; with: JsonObject }> {
+async function shipped<TName extends DefaultHookName>(name: TName): Promise<{ hook: DefaultHook<TName>; with: JsonObject; texts: ReadonlyMap<string, TextVariants> }> {
   const dir = path.join(packageRoot(), 'hooks', name);
   const read = await FolderFiles.read(dir);
 
@@ -303,4 +312,47 @@ async function problems(name: DefaultHookName, files: readonly FolderFile[]): Pr
   return folder.ok ? [] : folder.problems;
 }
 
-export const DefaultHooks = { NAMES, isName, load, problems } as const;
+/** How a team's folder differs from teamai's: each `with:` parameter, and each text by the file a hint reads. Names and values, never a text. */
+export interface DefaultHookComparison {
+  /** `weights.reject` for a parameter of a mapping. `team` is null where the team's folder leaves a parameter out. */
+  readonly params: ReadonlyArray<{ readonly key: string; readonly teamai: JsonValue | null; readonly team: JsonValue | null }>;
+  /** `file`: the variant the hint in force reads for the language. `replaced`: what it reads differs from what teamai's folder gives. */
+  readonly texts: ReadonlyArray<{ readonly text: string; readonly file: string; readonly replaced: boolean }>;
+}
+
+/** `team`, the files of a team's folder replacing default hook `name` (null for none), against teamai's, for `language`. */
+async function compare(name: DefaultHookName, team: readonly FolderFile[] | null, language: HintLanguage): Promise<DefaultHookComparison> {
+  const teamai = await shipped(name);
+  const own = team === null ? null : readFolder(name, team, teamai.with);
+  const ownWith = own?.with ?? {};
+  // The hint reads the team's texts only when its folder is valid; otherwise teamai's.
+  const inForce = own?.ok ? own.texts : teamai.texts;
+  const keys = (...objects: JsonObject[]): string[] => [...new Set(objects.flatMap((object) => Object.keys(object)))];
+
+  const params = keys(teamai.with, ownWith).flatMap((key) => {
+    const base = teamai.with[key];
+    const set = ownWith[key];
+
+    if (isJsonObject(base) && (set === undefined || isJsonObject(set))) {
+      return keys(base, set ?? {}).map((inner) => ({ key: `${key}.${inner}`, teamai: base[inner] ?? null, team: set?.[inner] ?? null }));
+    }
+
+    return [{ key, teamai: base ?? null, team: set ?? null }];
+  });
+
+  const read = (texts: ReadonlyMap<string, TextVariants>, text: string) => {
+    const variants = texts.get(text);
+
+    return variants ? pick(variants, language) : null;
+  };
+
+  const texts = Object.keys(TEXTS[name]).map((text) => {
+    const picked = read(inForce, text);
+
+    return { text, file: picked?.language ? `${text}.${picked.language}.md` : `${text}.md`, replaced: picked?.content !== read(teamai.texts, text)?.content };
+  });
+
+  return { params, texts };
+}
+
+export const DefaultHooks = { NAMES, isName, load, problems, compare } as const;
