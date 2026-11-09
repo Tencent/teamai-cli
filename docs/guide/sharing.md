@@ -284,9 +284,9 @@ Pull copies the folder and puts its path, with forward slashes, in place of `${T
 | Workspace with a team repo | `~/.teamai/projects/<slug>/hooks/block-secrets/` |
 | Single-repo | `.teamai/delivered/hooks/block-secrets/` in each worktree, which git ignores |
 
-In single-repo, Claude Code's command reads `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets/scan.sh"`, so `.claude/settings.json` is the same in every worktree. Other tools get the worktree's absolute path. `HOOK.yaml` takes the keys of a `hooks.yaml` entry except `id`, `roles` and `projects`. A hook for one namespace goes in `hooks/<ns>/<id>/`.
+In single-repo, Claude Code's command reads `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets/scan.sh"`, so `.claude/settings.json` is the same in every worktree. Other tools get the worktree's absolute path. Once a worktree is removed, the next pull of another worktree, or `teamai doctor --fix`, removes the entries it left in HOME. `HOOK.yaml` takes the keys of a `hooks.yaml` entry except `id`, `roles` and `projects`. A hook for one namespace goes in `hooks/<ns>/<id>/`.
 
-Short hooks can stay in `hooks/hooks.yaml`, as a list of the same keys with an `id`. `${TEAMAI_HOOK_DIR}` works only in a folder: in `hooks.yaml` it stops team hooks for the run, as an id that is both a `hooks.yaml` entry and a folder does. `builtin` belongs only in the root file. Use it to turn a built-in hook off, or to change its timeout.
+Short hooks can stay in `hooks/hooks.yaml`, as a list of the same keys with an `id`. `${TEAMAI_HOOK_DIR}` works only in a folder: in `hooks.yaml` it stops team hooks for the run, as an id that is both a `hooks.yaml` entry and a folder does. `teamai review --branch` fails a branch with either, or with a `HOOK.yaml` that does not parse. `builtin` belongs only in the root file. Use it to turn a built-in hook off, or to change its timeout.
 
 ```yaml
 hooks:

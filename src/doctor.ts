@@ -40,7 +40,7 @@ import { samePlace } from './resources/places.js';
 import { describeInvalidToolHomes, envToolHome, ompProfile, realHost, reloadToolHomes, toolHomesPath } from './tool-home.js';
 import { hookFormatOf, hookSyntaxOf, isToolId } from './tools.js';
 import { isCodexTool } from './utils/tool-names.js';
-import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder, keptTeamHookEntries, readCodexHookTrustForScope, readHookFile } from './hooks.js';
+import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder, keptTeamHookEntries, readCodexHookTrustForScope, readHookFile, releaseRemovedCheckoutHooks } from './hooks.js';
 import { codexBuildSkewMessage } from './codex-trust.js';
 import {
   buildDeliveryChecks,
@@ -1213,6 +1213,14 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     }
 
     await sweepRunLeftovers(ctx);
+
+    if (ctx.teamConfig) {
+      try {
+        await releaseRemovedCheckoutHooks(ctx.teamConfig, localConfig);
+      } catch (e) {
+        log.warn(`Could not remove the team hooks a removed checkout left in HOME: ${e instanceof Error ? e.message : String(e)}. Run teamai doctor --fix again.`);
+      }
+    }
   }
 
   // Doctor only: it spawns `codex app-server`, which the post-pull pass skips.

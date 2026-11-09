@@ -49,6 +49,7 @@ import { historicalContents } from './utils/team-history.js';
 import { getUserHome } from './utils/home.js';
 import { LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP, claudeHookOtherHostSkip, claudeHookUsesPowerShell, copilotRunsEntries } from './claude-hook-host.js';
 import { gitCommonDir, listWorktrees, resolveAnchors } from './utils/git.js';
+import { staleWorkspaces } from './utils/partition.js';
 import {
   codexBuildSkewMessage, codexBuildsIdentity, keepCodexHookTrust, readCodexHookTrust, removeOwnedCodexProjectTrust, trustCodexHooks,
   type CodexHookTrustReport, type CodexTrust,
@@ -1840,6 +1841,45 @@ async function staleCheckoutGateRoots(
   }
 
   return [...roots];
+}
+
+/**
+ * A removed checkout's root as its gate was rendered while it existed (canonicalProjectRoot): its nearest existing
+ * ancestor's realpath, then the rest of the path.
+ */
+async function canonicalRemovedRoot(root: string): Promise<string> {
+  const parent = path.dirname(root);
+
+  return realpath(root).catch(async () => parent === root ? root : path.join(await canonicalRemovedRoot(parent), path.basename(root)));
+}
+
+/**
+ * Take back the team hooks a removed checkout of this repository wrote in HOME behind its `$PWD` gate: a project
+ * install of ZCode or a bridged tool. A single-repo worktree's entries there run the hook folders it delivered in its
+ * own `.teamai/delivered/` (#1787). They are recorded in the checkout's `workspaces/<id>/managed-hooks.json`, which
+ * pull prunes with the rest of that directory, so pull calls this first.
+ */
+export async function releaseRemovedCheckoutHooks(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+  if (localConfig.scope !== 'project' || !localConfig.projectRoot) return;
+  const toolPaths = hookToolPathsForConfig(teamConfig, localConfig);
+
+  for (const { root } of await staleWorkspaces(getDataHome(localConfig), localConfig.projectRoot)) {
+    if (root === null) continue;
+    const manifestPath = getManagedHooksPath({ ...localConfig, projectRoot: root });
+    const gateRoot = await canonicalRemovedRoot(root);
+
+    for (const tool of Object.keys(await readManifest(manifestPath))) {
+      const settings = toolPaths[tool]?.settings;
+
+      const file = isBridgedTeamHookTool(tool) ? bridgedTeamHookFile(tool)
+        : channelsOf(tool).hooks.self === 'user' && hookSettingsFormatOf(tool) !== null && settings !== undefined
+          ? hookSettingsFile(tool, getUserHome(), settings) : null;
+
+      if (file !== null && await pathExists(file)) {
+        await reconcileHooks(file, tool, [], { manifestPath, removeAll: true, teamOnly: true, teamHookProjectRoot: gateRoot });
+      }
+    }
+  }
 }
 
 /**
@@ -4994,6 +5034,14 @@ export async function reconcileTeamHooksForConfig(
         + 'Team hooks were not applied this run, so your installed team hooks are unchanged. Run teamai pull again.');
       builtinsOnly = 'with-overrides';
       teamDefs = [];
+    }
+  }
+
+  if (!opts.removeAll) {
+    try {
+      await releaseRemovedCheckoutHooks(teamConfig, localConfig);
+    } catch (e) {
+      log.warn(`Could not remove the team hooks a removed checkout left in HOME: ${e instanceof Error ? e.message : String(e)}. The next teamai pull tries again.`);
     }
   }
 

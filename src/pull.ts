@@ -3222,13 +3222,16 @@ async function pullForScope(
   }
 
   // Every checkout of the repo keeps `workspaces/<id>/` in the shared data home
-  // (search index, managed MCP, resource cache), and a removed worktree's stays
+  // (search index, managed MCP, hook records, resource cache), and a removed worktree's stays
   // behind. A full sync records its own root there and drops the directories of
-  // checkouts that are gone; the fast path probes none (#808, #993).
+  // checkouts that are gone, after taking back the hooks they recorded in HOME
+  // (#1787); the fast path probes none (#808, #993).
   if (localConfig.scope === 'project' && localConfig.projectRoot && !options.dryRun) {
     try {
       const { pruneWorkspaceDirs, writeWorkspaceRoot } = await import('./utils/partition.js');
+      const { releaseRemovedCheckoutHooks } = await import('./hooks.js');
       await writeWorkspaceRoot(getDataHome(localConfig), localConfig.projectRoot);
+      await releaseRemovedCheckoutHooks(freshConfig, localConfig);
       const removed = await pruneWorkspaceDirs(getDataHome(localConfig), localConfig.projectRoot);
 
       if (removed.length > 0) log.debug(`[${scopeLabel}] removed ${removed.length} directory(ies) of removed worktrees`);

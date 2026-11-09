@@ -275,9 +275,9 @@ pull 会复制这个目录，并把 `${TEAMAI_HOOK_DIR}` 换成它的路径（�
 | 有团队仓库的工作区 | `~/.teamai/projects/<slug>/hooks/block-secrets/` |
 | single-repo | 每个 worktree 的 `.teamai/delivered/hooks/block-secrets/`，git 会忽略它 |
 
-single-repo 下，Claude Code 的命令写成 `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets/scan.sh"`，所以每个 worktree 的 `.claude/settings.json` 都一样。其他工具拿到的是 worktree 的绝对路径。`HOOK.yaml` 的键和 `hooks.yaml` 的条目相同，只是没有 `id`、`roles` 和 `projects`。只给一个 namespace 的 hook 放在 `hooks/<ns>/<id>/`。
+single-repo 下，Claude Code 的命令写成 `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets/scan.sh"`，所以每个 worktree 的 `.claude/settings.json` 都一样。其他工具拿到的是 worktree 的绝对路径。删除一个 worktree 后，下次在另一个 worktree 里 pull，或运行 `teamai doctor --fix`，会删掉它留在 HOME 里的条目。`HOOK.yaml` 的键和 `hooks.yaml` 的条目相同，只是没有 `id`、`roles` 和 `projects`。只给一个 namespace 的 hook 放在 `hooks/<ns>/<id>/`。
 
-简短的 hook 仍可写在 `hooks/hooks.yaml`，是带 `id` 的同样键的列表。`${TEAMAI_HOOK_DIR}` 只能用在目录里：写在 `hooks.yaml` 里，这次运行的团队 hook 会全部停下；同一个 id 既是 `hooks.yaml` 条目又是目录时也一样。`builtin` 只放在根文件里，用来关掉某条内置 hook，或改它的超时。
+简短的 hook 仍可写在 `hooks/hooks.yaml`，是带 `id` 的同样键的列表。`${TEAMAI_HOOK_DIR}` 只能用在目录里：写在 `hooks.yaml` 里，这次运行的团队 hook 会全部停下；同一个 id 既是 `hooks.yaml` 条目又是目录时也一样。分支上有这两种情况之一，或有解析不了的 `HOOK.yaml` 时，`teamai review --branch` 判定失败。`builtin` 只放在根文件里，用来关掉某条内置 hook，或改它的超时。
 
 ```yaml
 hooks:
