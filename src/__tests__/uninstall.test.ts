@@ -1339,7 +1339,9 @@ describe('uninstall', () => {
     const encoded = Buffer.from(`bash "${folder.split(path.sep).join('/')}/lint.sh"`, 'utf8').toString('base64url');
     const command = `teamai hook-dispatch session-start --tool codebuddy --team-hooks --team-hook-id lint --team-hook-gate ${encodeCodebuddyProjectGate(projectRoot)} --team-hook-command ${encoded}`;
     const settings = path.join(projectRoot, '.codebuddy', 'settings.json');
-    await fse.outputJson(settings, { hooks: { SessionStart: [{ description: '[teamai:hook:lint] Lint', hooks: [{ type: 'command', command }] }] } });
+    // CodeBuddy's settings are JSONC: a comment the member wrote stays in them.
+    const written = { hooks: { SessionStart: [{ description: '[teamai:hook:lint] Lint', hooks: [{ type: 'command', command }] }] } };
+    await fse.outputFile(settings, `// The member's note.\n${JSON.stringify(written, null, 2)}\n`);
     await fse.chmod(settings, 0o444);
     await fse.chmod(path.dirname(settings), 0o555);
     const localConfig = makeLocalConfig(homeDir, repoPath, {
@@ -1357,9 +1359,9 @@ describe('uninstall', () => {
     }
 
     expect([
-      (await fse.readJson(settings)).hooks.SessionStart[0].hooks[0].command,
+      (await fse.readFile(settings, 'utf8')).includes(command),
       await fse.readFile(path.join(folder, 'lint.sh'), 'utf8'),
-    ]).toEqual([command, 'echo lint\n']);
+    ]).toEqual([true, 'echo lint\n']);
   });
 
   it('keeps the MCP server folder whose entry it cannot remove, and names it (#1787)', async () => {

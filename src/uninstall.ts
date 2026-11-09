@@ -11,7 +11,7 @@ import {
 } from './hooks.js';
 import { codexTeamHookIndexPath } from './codex-team-hooks.js';
 import { codebuddyTeamHookPayload } from './codebuddy-team-hooks.js';
-import { mapStrings, parseJson } from './utils/json.js';
+import { mapStrings, parseJsonAs } from './utils/json.js';
 import { bridgedTeamHookDir, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
 import {
   removeOpenClawHooks,
@@ -2193,12 +2193,12 @@ interface TextLeft {
 /** A text left, with the checkout its file is in: null when it is in none of the project's. */
 type CheckoutText = TextLeft & { readonly checkout: string | null };
 
-/** `text`, and the commands the CodeBuddy Windows project gates of a JSON `text` carry base64-encoded. */
+/** `text`, and the commands the CodeBuddy Windows project gates of a JSON or JSONC `text` carry base64-encoded (its settings are JSONC). */
 function withGatedCommands(text: string): string {
   let json: JsonValue;
 
   try {
-    json = parseJson(text);
+    json = parseJsonAs(text, 'jsonc');
   } catch {
     return text;
   }
