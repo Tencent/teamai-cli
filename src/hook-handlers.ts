@@ -103,7 +103,9 @@ async function hookRecallEnabled(localConfig: LocalConfig | null): Promise<boole
     import('./config.js'),
     import('./types.js'),
   ]);
+
   const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+
   return isRecallEnabled(localConfig, teamConfig ?? {});
 }
 
