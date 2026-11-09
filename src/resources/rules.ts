@@ -924,7 +924,9 @@ export class RulesHandler extends ResourceHandler {
     // 1. Distribute rule files to each tool's rules/ directory, after the
     // folders their text names (#1787).
     const receiving = (await rulesReceivingTools(teamConfig, localConfig)).filter((tool) => !isAgentExcluded(localConfig, tool));
-    await RuleFolders.sync({ localConfig, rules, tools: receiving, ledger });
+    const pruneRuleFolders = await RuleFolders.sync({ localConfig, rules, tools: receiving, ledger });
+    // The rules whose copy the sweep below keeps because the member edited it: their folders stay with them.
+    const keptCopies = new Set<string>();
 
     // The rules this member receives, when the caller resolved them.
     const received = filteredRules?.map((rule) => rule.name);
@@ -1078,6 +1080,8 @@ export class RulesHandler extends ResourceHandler {
           const removal = await judgeRemoval(ledger?.previous, fullPath, ruleOrigin(tool, localConfig.repo.localPath, teamFile), ledger?.otherRecords);
 
           if (removal === 'edited') {
+            keptCopies.add(ruleName);
+
             if (!tombstones.has(ruleName)) {
               log.warn(`Kept ${fullPath}: teamai no longer delivers ${ruleName} here, but you changed this copy. Delete it when you no longer need it.`);
             }
@@ -1102,6 +1106,8 @@ export class RulesHandler extends ResourceHandler {
       // Clean up empty subdirectories
       await this.removeEmptyDirs(destDir);
     }
+
+    await pruneRuleFolders([...keptCopies]);
 
     // 2. Remove legacy rules section from CLAUDE.md (no longer injected)
     const install = installOf(teamConfig, localConfig);

@@ -83,6 +83,23 @@ describe('rule folders (#1787)', () => {
     expect(vi.mocked(log.warn).mock.calls.map(([message]) => String(message)).filter((message) => message.includes('so it is one folder'))).toEqual([]);
   });
 
+  it('keeps the folder of a rule the team removed while the member keeps an edited copy, and removes it with the copy', async () => {
+    const first = openLedger({});
+    await new RulesHandler().pullAllRules(teamConfig, localConfig, undefined, [], first);
+    const copy = home('.claude', 'rules', 'api-style.md');
+    await fse.appendFile(copy, 'My own note.\n');
+    await fse.remove(path.join(repoPath, 'rules', 'api-style'));
+    await fse.outputFile(path.join(repoPath, 'rules', 'testing.md'), '# Testing\n');
+
+    const second = openLedger(first.hashes);
+    await new RulesHandler().pullAllRules(teamConfig, localConfig, undefined, [], second);
+    const keptFolder = await fse.readFile(home('.teamai', 'rules', 'api-style', 'checklist.md'), 'utf8');
+    await fse.remove(copy);
+    await new RulesHandler().pullAllRules(teamConfig, localConfig, undefined, [], openLedger(second.hashes));
+
+    expect([keptFolder, await fse.pathExists(home('.teamai', 'rules', 'api-style'))]).toEqual([CHECKLIST, false]);
+  });
+
   it('takes the body of the language variant under the frontmatter of RULE.md', async () => {
     await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'RULE.zh.md'), '遵循团队 API 风格。\n');
     teamConfig = { ...teamConfig, language: 'zh' };
