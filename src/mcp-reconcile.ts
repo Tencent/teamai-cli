@@ -2914,9 +2914,17 @@ async function reconcileTargets(
     return { changes, wrote };
   }
 
+  const desiredContext = await buildDesiredMcpContext(teamConfig, localConfig, options);
+  // A failed declaration is not "no secrets": read as none, every server whose
+  // secret the member left in their shell would be removed. Keep what is
+  // installed rather than guess which variables are secrets. `removeAll`
+  // (mcp remove, uninstall) still removes everything.
+  const secretsUnread = !removeAll && desiredContext.secrets.kind === 'failed';
+
   // The folders team servers run from, before any configuration names them (#1787). A workspace that holds a server
-  // back keeps what it installed, so its folder stays too. A folder that cannot be written keeps every installed server.
-  if (!removeAll && !options.dryRun) {
+  // back keeps what it installed, so its folder stays too. A folder that cannot be written keeps every installed server,
+  // and so do secrets that cannot be read (below).
+  if (!removeAll && !options.dryRun && !secretsUnread) {
     try {
       await deliverMcpFolders(localConfig, teamEntries, { prune: held.size === 0 });
     } catch (e) {
@@ -2957,12 +2965,6 @@ async function reconcileTargets(
   const unrecorded = new Set(localConfig.scope === 'project' && !options.dryRun
     ? targets.filter((t) => !t.projectKey && manifest[managedMcpManifestKey(t.tool, true)] === undefined).map((t) => t.tool) : []);
 
-  const desiredContext = await buildDesiredMcpContext(teamConfig, localConfig, options);
-
-  // A failed declaration is not "no secrets": read as none, every server whose
-  // secret the member left in their shell would be removed. Keep what is
-  // installed rather than guess which variables are secrets. `removeAll`
-  // (mcp remove, uninstall) still removes everything.
   if (!removeAll && desiredContext.secrets.kind === 'failed') {
     reportEntryResolution(desiredContext.secrets);
 
