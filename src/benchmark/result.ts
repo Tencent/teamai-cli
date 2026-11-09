@@ -19,7 +19,7 @@ import type { RunState } from '../workflow/types.js';
 import { definedFields } from '../utils/defined-fields.js';
 import { CHECK_CAUSES, CheckOutputSchema, type CheckOutput } from '../scorers/check.js';
 import { compareAgent } from './agent-match.js';
-import { baselineStepOf, checkStepOf, correctnessScorerName, type BenchmarkPlan, type PlannedArm, type PlannedTask, type PlannedTrial } from './plan.js';
+import { baselineStepOf, checkStepOf, correctnessScorerName, PlannedJudgeSchema, type BenchmarkPlan, type PlannedArm, type PlannedTask, type PlannedTrial } from './plan.js';
 import type { RunPlan } from './run-plan.js';
 import { ArmTeamSchema, SkillChangesSchema, TrialLimitsSchema } from './terms.js';
 import { leavesOut, skillDefinitionOf } from './team-without.js';
@@ -62,6 +62,8 @@ export const BenchmarkRecordSchema = z.object({
     name: z.string(), rubric: z.object({ sourceHash: z.string() }),
     labels: z.array(z.object({ value: z.string(), score: z.number() })).optional(), passingScore: z.number().optional(),
   })),
+  /** By scorer, the judge the run pinned for every arm, as the plan froze it; absent on a record of schemaVersion 1. */
+  judges: z.record(z.string(), PlannedJudgeSchema).optional(),
   tasks: z.array(z.object({
     id: z.string(), startingCommit: z.string(), sourceHash: z.string(), baseline: z.enum(BASELINES),
     /** The team repo paths the task covers, each listed once, sorted; absent when it covers none. */
@@ -175,6 +177,7 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdic
     baselineTeamRevision: plan.baselineTeamRevision,
     subset: plan.subset,
     scorers: plan.scorers,
+    judges: plan.judges,
     tasks: plan.tasks.map((task) => ({ id: task.id, startingCommit: task.startingCommit, sourceHash: task.sourceHash, baseline: baselineOf(stateOf(baselineStepOf(task.id)), task), covers: task.covers ? [...task.covers] : undefined, coversSkills: task.coversSkills ? [...task.coversSkills] : undefined, coversWithheldFrom: task.coversWithheldFrom?.map((arms) => [...arms]) })),
     arms: plan.arms,
     skillChanges: plan.skillChanges,
@@ -206,7 +209,7 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdic
         : projectionOf(settledPass(work), { arm, watched, routingSkills: coveredSkills.filter((name) => !absent.has(name)), covers, unenforced: [] });
 
       const recorded: BenchmarkRecord['trials'][number] = {
-        ...trial, step: `${prefix}${trial.step}`, result, verdicts: judged.map(({ scorer, outcome, decider }) => definedFields<TrialVerdict>({ scorer, outcome, decider })), ...entry,
+        ...trial, step: `${prefix}${trial.step}`, result, verdicts: judged.map(({ scorer, outcome, decider, asPlanned }) => definedFields<TrialVerdict>({ scorer, outcome, decider, asPlanned })), ...entry,
       };
 
       if (result === 'error' && check?.result === 'could_not_run') recorded.failure = { cause: check.cause };

@@ -100,11 +100,22 @@ const PlannedScorerSchema = z.object({
 
 export type PlannedScorer = z.infer<typeof PlannedScorerSchema>;
 
-/** A scorer the run pins, as start read it: its pin, and its rubric's labels, never none, and passing score. */
+/**
+ * A scorer the run pins, as start read it: its pin, and its rubric's labels, never none, passing score, and the judge
+ * tool and model it names, if any.
+ */
 export interface PinnedRubric {
   pin: PinnedScorer;
-  definition: { labels: readonly [ScorerLabel, ...ScorerLabel[]]; passingScore: number };
+  definition: { labels: readonly [ScorerLabel, ...ScorerLabel[]]; passingScore: number; tool?: string; model?: string };
 }
+
+/**
+ * The judge of a scorer for every arm of the run: the scorer's `tool`, else the suite's `defaults.tool`, and its `model`
+ * as the scorer writes it, an alias staying an alias, `""` for the tool's own default.
+ */
+export const PlannedJudgeSchema = z.object({ tool: z.string().min(1), model: z.string() }).strict();
+
+export type PlannedJudge = z.infer<typeof PlannedJudgeSchema>;
 
 /** The plan's `schemaVersion`. A plan of another version makes the run unreadable here, so no step reads it. */
 export const BENCHMARK_PLAN_SCHEMA_VERSION = 2;
@@ -133,6 +144,8 @@ export const BenchmarkPlanSchema = z.object({
   skillChanges: z.array(SkillChangesSchema).optional(),
   /** Every scorer that judges or decides a trial: the suite's, and each task's correctness scorer, which decides its trials. */
   scorers: z.array(PlannedScorerSchema),
+  /** By scorer name, the judge of each scorer a judge labels: the suite's, and the correctness scorer of each task with successCriteria. */
+  judges: z.record(z.string(), PlannedJudgeSchema),
   trials: z.array(PlannedTrialSchema),
 }).strict();
 
@@ -220,6 +233,7 @@ export function freezePlan(input: {
     arms: input.arms,
     skillChanges: input.skillChanges && input.skillChanges.length > 0 ? input.skillChanges : undefined,
     scorers: Object.entries({ ...input.scorers, ...correctnessScorers(suite) }).map(([name, rubric]) => plannedScorer(name, rubric)),
+    judges: plannedJudges(suite, input.scorers),
     trials: trialsOf(suite.tasks, input.arms, suite.repetitions, suite.parallel),
   });
 }
@@ -228,6 +242,13 @@ function plannedScorer(name: string, { pin, definition: { labels: [first, ...res
   const planned = ({ value, score }: ScorerLabel) => ({ value, score });
 
   return { name, rubric: { sourceHash: pin.sourceHash }, labels: [planned(first), ...rest.map(planned)], passingScore };
+}
+
+/** The judge of each scorer a judge labels: the suite's, and the correctness scorer of each task a check does not decide. */
+function plannedJudges(suite: Suite, scorers: Record<string, PinnedRubric>): Record<string, PlannedJudge> {
+  const criteria = suite.tasks.flatMap((task) => (task.judge.kind === 'criteria' ? [[correctnessScorerName(task.id), correctnessPin(task, task.judge.successCriteria)] as const] : []));
+
+  return Object.fromEntries([...Object.entries(scorers), ...criteria].map(([name, { definition: { tool, model } }]) => [name, { tool: tool ?? suite.defaults.tool, model: model ?? '' }]));
 }
 
 function plannedJudge(judge: TaskJudge, checkFiles: Added | undefined): PlannedTask['judge'] {
@@ -471,7 +492,14 @@ function cloneTeamOf(team: ArmTeam, selection: TeamSelection, recall: boolean | 
  * and one per task keeps one pin per name.
  */
 export function correctnessScorerName(task: string): string {
-  return `teamai:correctness:${task}`;
+  return `${CORRECTNESS_PREFIX}${task}`;
+}
+
+const CORRECTNESS_PREFIX = 'teamai:correctness:';
+
+/** Whether `scorer` is a task's correctness scorer, whose label decides a trial. */
+export function isCorrectnessScorer(scorer: string): boolean {
+  return scorer.startsWith(CORRECTNESS_PREFIX);
 }
 
 /**

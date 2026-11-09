@@ -11,14 +11,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { benchmarkFixture, envelope, PRODUCT_URL, said, type BenchmarkFixture, type FakeJudge } from '../helpers/benchmark-fixture.js';
 
-/** A suite of the one task, whose arms each run claude, the first on its default model, the others on the model named. */
-const suite = ({ arms, scorers = [] }: { arms: Array<{ name: string; model?: string }>; scorers?: string[] }) => `schemaVersion: v1alpha1
+/** A suite of the one task, whose arms each run claude, or the tool named, the first on its default model, the others on the model named. */
+const suite = ({ arms, scorers = [] }: { arms: Array<{ name: string; model?: string; tool?: string }>; scorers?: string[] }) => `schemaVersion: v1alpha1
 name: fix
 repo: ${PRODUCT_URL}
 defaults:
   tool: claude
 arms:
-${arms.map(({ name, model }) => `  - name: ${name}\n${model ? `    model: ${model}\n` : ''}`).join('')}${scorers.length > 0 ? `scorers: [${scorers.join(', ')}]\n` : ''}repetitions: 1
+${arms.map(({ name, model, tool }) => `  - name: ${name}\n${model ? `    model: ${model}\n` : ''}${tool ? `    tool: ${tool}\n` : ''}`).join('')}${scorers.length > 0 ? `scorers: [${scorers.join(', ')}]\n` : ''}repetitions: 1
 timeout: 10m
 `;
 const CRITERIA_TASK = `schemaVersion: v1alpha1
@@ -59,7 +59,7 @@ afterEach(() => {
   for (const fixture of fixtures.splice(0)) fixture.remove();
 });
 
-async function judgedFixture(options: { judge?: FakeJudge; arms?: Array<{ name: string; model?: string }>; scorers?: string[]; tools?: Array<'claude' | 'codex'>; timeout?: string; team?: Record<string, string> } = {}): Promise<BenchmarkFixture> {
+async function judgedFixture(options: { judge?: FakeJudge; arms?: Array<{ name: string; model?: string; tool?: string }>; scorers?: string[]; tools?: Array<'claude' | 'codex'>; timeout?: string; team?: Record<string, string> } = {}): Promise<BenchmarkFixture> {
   const fixture = await benchmarkFixture({
     tool: 'fixes', sandbox: true, judge: options.judge, tools: options.tools ?? ['claude'],
     suite: suite({ arms: options.arms ?? [{ name: 'claude' }], scorers: options.scorers }).replace('timeout: 10m', `timeout: ${options.timeout ?? '10m'}`), tasks: { fix: CRITERIA_TASK },
@@ -106,6 +106,24 @@ describe('benchmark judges on the local driver', () => {
     // Each trial is judged by a step of the benchmark run, never by a teamai-score run of its own, and its labels stay here.
     expect(fixture.runIds()).toEqual([done.run]);
     expect(outbox(fixture)).toEqual([]);
+  }, 120_000);
+
+  it("judges every arm's trials with the suite's defaults.tool, though an arm runs codex, and says that judge is also an arm's tool", async () => {
+    const fixture = await judgedFixture({ arms: [{ name: 'claude' }, { name: 'codex', tool: 'codex' }], tools: ['claude', 'codex'] });
+
+    const done = await runLocally(fixture);
+
+    // Only the fake claude answers as a judge: a codex judge of the codex arm's trial would leave it unscored.
+    expect(fixture.judgeLaunches().map(({ labels }) => labels.join(' '))).toEqual(['correct incorrect', 'correct incorrect']);
+    expect(done.outcome).toBe('succeeded');
+    expect(done.outputs.text).toContain('| claude | claude | tool default (team) | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 100% (1/1) |');
+    expect(done.outputs.text).toContain('| codex | codex | tool default (team) | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 100% (1/1) |');
+    expect(done.outputs.text).toContain("Judge claude is also arm claude's tool; set tool in the scorer to judge with another.");
+    const record = z.object({ judges: z.unknown(), trials: z.array(z.object({ arm: z.string(), verdicts: z.unknown() })) }).parse(fixture.benchmarkRecord(done.run));
+    expect(record.judges).toEqual({ [CORRECTNESS]: { tool: 'claude', model: '' } });
+    expect(record.trials.map(({ arm, verdicts }) => ({ arm, verdicts }))).toEqual(['claude', 'codex'].map((arm) => ({ arm, verdicts: [expect.objectContaining({
+      scorer: CORRECTNESS, decider: expect.objectContaining({ by: 'judge', tool: 'claude', model: 'fake-judge' }), asPlanned: 'match',
+    })] })));
   }, 120_000);
 
   it.each([
@@ -173,7 +191,7 @@ describe('benchmark judges on the local driver', () => {
     expect(started.code).toBe(1);
     expect(envelope(started).error).toEqual({
       code: 'scoring_unavailable',
-      message: 'This suite needs a judge (task "fix" has successCriteria), and this machine cannot judge: Scorer "teamai:correctness:fix" needs a verified judge, which scorers/scoring.yaml isolation asks for, and no judge tool here runs verified. Fix it, or start the benchmark where a judge tool is installed.',
+      message: 'This suite needs a judge (task "fix" has successCriteria), and this machine cannot judge: Scorer "teamai:correctness:fix" needs a verified judge, which scorers/scoring.yaml isolation asks for, and claude, its judge tool, does not run verified here. Fix it, or start the benchmark where a judge tool is installed.',
     });
     expect(fixture.runIds()).toEqual([]);
   }, 120_000);
@@ -258,7 +276,8 @@ describe('benchmark judges of an external driver', () => {
     expect(leased.indexOf('report')).toBeGreaterThan(judge);
     expect(judged).toEqual([expect.stringContaining('+module.exports = 42;')]);
     expect(fixture.trialRootEntries()).toEqual([]);
-    expect(done.outputs?.text).toContain('| claude | claude | tool default (team) | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 100% (1/1) |');
+    // The driver's judge reported no model, so the label cannot show it ran the judge the plan pins.
+    expect(done.outputs?.text).toContain('| claude | claude | tool default (team) | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 100% (1/1) |');
     expect(fixture.runIds()).toEqual([runId]);
   }, 120_000);
 });

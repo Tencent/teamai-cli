@@ -21,6 +21,7 @@ import { requiredIsolation, scorerIsolationSource } from './isolation.js';
 import { RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema, type RunSubject } from './label.js';
 import { pinnedDefinition, PinnedScorerSchema, type PinnedScorer } from './pin.js';
 import { RunScorers } from './run-scorers.js';
+import { plannedJudgesOf } from '../benchmark/run-plan.js';
 import type { ScoreAttempt } from './score-attempt.js';
 import { judgeablePass, plannedSessionPins, type Refusal } from './score-plan.js';
 import { buildEvidence, isDelivered, missingEvidence } from './scoring-evidence.js';
@@ -158,10 +159,10 @@ async function passEvidence(attempt: ScoreAttempt, run: RunState, subject: RunSu
 }
 
 /**
- * The records a judge reads beside the evidence: the isolation its scorers need, the tools to prefer, the one its scorers
- * name before `worked`, the one the judged work ran in, and the answer schema.
+ * The records a judge reads beside the evidence: the isolation its scorers need, the tool the run requires, else the
+ * tools to prefer, the one its scorers name before `worked`, the one the judged work ran in, and the answer schema.
  */
-async function judgeRecords(attempt: ScoreAttempt, group: GroupRecord, rubrics: Rubrics, worked: string | undefined): Promise<EvidenceOutput | Refusal> {
+async function judgeRecords(attempt: ScoreAttempt, group: GroupRecord, rubrics: Rubrics, { worked, required }: { worked: string | undefined; required?: string }): Promise<EvidenceOutput | Refusal> {
   const scoring = await scopeScoring(attempt.config);
 
   if (!scoring.ok) return refused('scoring_settings_invalid', scoring.reason);
@@ -170,7 +171,8 @@ async function judgeRecords(attempt: ScoreAttempt, group: GroupRecord, rubrics: 
 
   const [first, ...more] = [...new Set([rubrics[0].tool, worked].flatMap((tool) => tool ?? []))];
 
-  if (first !== undefined) confined.prefer = more.length > 0 ? [first, ...more] : first;
+  if (required !== undefined) confined.require = required;
+  else if (first !== undefined) confined.prefer = more.length > 0 ? [first, ...more] : first;
   await writeRecords(attempt.dir, group, { confined, reply: replySchema(rubrics), answer: answerSchema(rubrics) });
 
   return { dir: attempt.dir, rubric: rubricPrompt(rubrics), schema: path.join(attempt.dir, ANSWER_SCHEMA), delivers: group.delivers };
@@ -193,7 +195,10 @@ async function runEvidence(attempt: ScoreAttempt, subject: RunSubject, names: re
 
   const written = await passEvidence(attempt, ran.run, subject, pinned.rubrics);
 
-  return written.ok ? judgeRecords(attempt, group, pinned.rubrics, ran.pass.tool) : written;
+  // One judge tool for every arm: the group's scorers share the tool their benchmark plan requires, as they batch by it.
+  const required = plannedJudgesOf(ran.run, subject.step)[group.scorers[0].name]?.tool;
+
+  return written.ok ? judgeRecords(attempt, group, pinned.rubrics, { worked: ran.pass.tool, required }) : written;
 }
 
 async function sessionEvidence(attempt: ScoreAttempt, subject: Exclude<Subject, { kind: 'run' }>, names: readonly string[], hand: boolean): Promise<EvidenceOutput | Refusal> {
@@ -221,7 +226,7 @@ async function sessionEvidence(attempt: ScoreAttempt, subject: Exclude<Subject, 
 
   await writeSessionEvidence(attempt.dir, judged, pinned.rubrics, Object.assign({}, ...pinned.scorers.map(({ pin }) => pin.evidence ?? {})));
 
-  return judgeRecords(attempt, group, pinned.rubrics, AgentSession.toolForPlatform(judged.subject.platform));
+  return judgeRecords(attempt, group, pinned.rubrics, { worked: AgentSession.toolForPlatform(judged.subject.platform) });
 }
 
 export const EvidenceDir = {
@@ -242,7 +247,7 @@ export const EvidenceDir = {
     return group ? { ok: true, group } : refused('evidence_unreadable', `${dir} holds no group record that teamai score evidence wrote. Pass the dir its step printed.`);
   },
 
-  /** The isolation the group's judge needed and the tool it preferred, which a judge-group's evidence holds. */
+  /** The isolation the group's judge needed and the tool it required or preferred, which a judge-group's evidence holds. */
   async confined(dir: string): Promise<ConfinedFile | undefined> {
     return readRecord(path.join(dir, CONFINED_FILE), ConfinedFileSchema);
   },

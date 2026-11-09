@@ -23,6 +23,7 @@ import { error } from '../workflow/engine.js';
 import { runDeadline } from '../workflow/limits.js';
 import { findAttemptRun } from '../workflow/run-location.js';
 import { judgeUnavailable } from '../scorers/judges-here.js';
+import { chooseJudgeModel } from '../scorers/judge-model.js';
 import type { RunState, WorkflowEnvelope, WorkflowFailure } from '../workflow/types.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import { git } from '../workflow/worktree.js';
@@ -211,7 +212,7 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
     const [firstLabel, ...otherLabels] = definition?.labels ?? [];
 
     if (!definition || !firstLabel) return refuse(error('scorer_invalid', `Scorer "${scorer}" of suite "${found.name}" is written in a form this teamai cannot read. Update teamai, and start again.`));
-    rubrics[scorer] = { pin, definition: { labels: [firstLabel, ...otherLabels], passingScore: definition.passingScore } };
+    rubrics[scorer] = { pin, definition: definedFields<PinnedRubric['definition']>({ labels: [firstLabel, ...otherLabels], passingScore: definition.passingScore, tool: definition.tool, model: definition.model }) };
   }
 
   const committed = await commitCheckFiles(commitCacheOf(config, found.repo), found);
@@ -227,10 +228,21 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
 
   if ('refusal' in covered) return refuse(covered.refusal);
   const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: revision, selection: selectionOf(config), arms, scorers: rubrics, coveredSkills: covered.skills, coveredWithheldFrom: covered.withheldFrom, skillChanges: skillChanges.changes, isSubset });
+  const unjudgeable = unjudgeableScorer(found.name, plan.judges, await loadAliases());
+
+  if (unjudgeable !== undefined) return refuse(unjudgeable);
   const { scorers: generated } = compileBundle(plan, committed.suite, { armWorkflows, unattended: options.unattended });
   const criteria = found.tasks.find((task) => task.judge.kind === 'criteria');
   const needs = found.scorers.length > 0 ? `its scorers ${found.scorers.join(', ')}` : criteria ? `task "${criteria.id}" has successCriteria` : undefined;
-  const unjudged = needs === undefined ? undefined : await judgeUnavailable(config, { ...pinned, ...generated });
+
+  // A correctness scorer a check decides has a pin and no judge.
+  const judged = Object.entries({ ...pinned, ...generated }).flatMap(([scorer, pin]) => {
+    const judge = plan.judges[scorer];
+
+    return judge ? [[scorer, { pin, tool: judge.tool }] as const] : [];
+  });
+
+  const unjudged = needs === undefined ? undefined : await judgeUnavailable(config, Object.fromEntries(judged));
 
   if (unjudged !== undefined) {
     return refuse(error('scoring_unavailable', `This suite needs a judge (${needs}), and this machine cannot judge: ${unjudged} Fix it, or start the benchmark where a judge tool is installed.`));
@@ -459,6 +471,27 @@ async function resolveArm({ name, tool, model, role, recall }: Arm, team: ArmTea
   const source = resolution.step === 'local' || resolution.step === 'switched' ? 'member' : 'team';
 
   return { ok: true, arm: definedFields<PlannedArm>({ name, tool, model: resolution.model, alias: alias ? model : undefined, effort: resolution.effort, source, team, ...roleField, ...recallField }) };
+}
+
+/**
+ * Why no judge can run a scorer as the plan pins it, or undefined: its tool or model is not a plain name, which the
+ * record publishes, or its model alias has no model for its tool at the run's team revision.
+ */
+function unjudgeableScorer(suite: string, judges: BenchmarkPlan['judges'], aliases: ModelAliases): Refusal | undefined {
+  for (const [scorer, { tool, model }] of Object.entries(judges)) {
+    const field = !isRecordableLabel(tool) ? 'tool' : model !== '' && !isRecordableName(model) ? 'model' : undefined;
+
+    if (field !== undefined) {
+      return error('judge_unpublishable', `Suite "${suite}" judges scorer "${scorer}" with a ${field} that is not a plain name, such as a URL or a local path, and a benchmark record publishes it. Fix the scorer or the suite's defaults.tool, push it, run teamai pull, and start again.`);
+    }
+
+    if (model === '') continue;
+    const chosen = chooseJudgeModel(aliases, { name: scorer, model }, [tool]);
+
+    if (!chosen.ok) return error('judge_model_unavailable', `Suite "${suite}" judges scorer "${scorer}" on ${tool} for every arm: the scorer's tool, else the suite's defaults.tool. ${chosen.message}`);
+  }
+
+  return undefined;
 }
 
 /**

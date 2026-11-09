@@ -5,8 +5,11 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
+import * as cliPaths from '../utils/cli-path.js';
 import { trialsOf } from '../benchmark/plan.js';
 import { planBenchmark } from '../benchmark/start.js';
+import { ScoreVerbs } from '../score-verbs.js';
+import { attemptEnv } from '../workflow/attempt-marker.js';
 import { benchmarkRecord, type BenchmarkRecord } from '../benchmark/result.js';
 import { planOfRun } from '../benchmark/run-plan.js';
 import { TrialVerdicts } from '../benchmark/verdicts.js';
@@ -17,7 +20,10 @@ import { stepDefinitions } from '../workflow/scope.js';
 import type { DriverCan } from '../workflow/requirements.js';
 import { ClonePlaceSchema } from '../workflow/clone.js';
 import { cancelRun } from '../workflow/run-controls.js';
-import { readRun } from '../workflow/store.js';
+import { readRun, runScratchDir } from '../workflow/store.js';
+import { inProcessClient } from '../workflow/protocol.js';
+import { resolveWorkflowEnv } from '../env-resolution.js';
+import { benchmarkTable, formatBenchmarkTable } from '../benchmark/table.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
 import { benchmarkRunConfig, PLANNED_BENCHMARK, RUN_START, RUN_TEAM, settleBaselines, startBenchmarkRun, trialCheckOutput } from './helpers/benchmark-fixture.js';
 
@@ -485,6 +491,7 @@ const CRITERIA_SUITE: BenchmarkSuiteFiles = {
 };
 const CORRECTNESS = 'teamai:correctness:t01';
 const PROMPT = 'trials.r1.t01.a01.prompt';
+const RUN_NOW = '2026-11-08T10:00:00.000Z';
 
 /** A criteria run whose one trial prompt has succeeded. */
 async function judgedTrial(): Promise<{ config: LocalConfig; runId: string }> {
@@ -549,12 +556,82 @@ const SCORED_BENCHMARK = `${PLANNED_BENCHMARK}  - id: subjects
     needs: [subjects]
     for_each: steps.subjects.outputs.list
     workflow: teamai-score
-    with: { subject: "{{ item }}", scorers: [], label: "", batch: false, demand: named }
+    with: { subject: "{{ item }}", scorers: [], label: "", batch: true, demand: named }
     continue_on_failure: true
 `;
 
+/** The judge of a stored label, as a confined run of `tool` records it. */
+type LabelJudge = { tool: string; model?: { alias?: string; requested?: string; reported?: string }; effort?: { requested?: string }; batched?: true };
+
+/**
+ * The verdicts recorded for the one trial of the criteria suite, once its score step labelled its correctness `correct`
+ * with a judge of `judge`, its plan pinning `judges` over those it froze.
+ */
+async function judgedVerdicts(judge: LabelJudge, judges: Record<string, { tool: string; model: string }> = {}): Promise<BenchmarkRecord['trials'][number]['verdicts']> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-plan-'));
+  dirs.push(root);
+  const config = benchmarkRunConfig(root);
+  const started = await startBenchmarkRun(config, CRITERIA_SUITE, {
+    body: SCORED_BENCHMARK,
+    outputsOf: (bundle, plan) => ({ definition: { ...bundle, workflows: {} }, plan: { ...plan, judges: { ...plan.judges, ...judges } } }),
+  });
+  if ('error' in started) throw new Error(started.error.message);
+  const runId = String(started.data.run);
+  const subject = `run:${runId}:${PROMPT}:1`;
+  const written = await LabelStore.append(config, [{ label: {
+    scorer: CORRECTNESS, rubric: { sourceHash: 'rubric-1' }, label: 'correct', score: 1, passed: true, scoredAt: '2026-11-08T10:12:03.000Z', source: 'workflow',
+    subject: { runId, step: PROMPT, pass: 1 }, judge: { kind: 'model', isolation: 'verified', access: 'read', ...judge },
+  }, reasoning: 'The test passes.' }], { outbox: false });
+  if (written.status === 'busy') throw new Error('the label store is busy');
+  const outputs: Record<string, unknown> = {
+    subjects: { list: [subject] },
+    plan: { groups: [{ subject, hand: '', scorers: CORRECTNESS, model: '', ci: false, protected: false }] },
+    evidence: { dir: root, rubric: 'Judge it.', schema: path.join(root, 'answer.schema.json'), delivers: false },
+    judge: { answer: { label: 'correct', reasoning: 'The test passes.' } },
+    label: { labels: [{ scorer: CORRECTNESS, label: 'correct', code: '' }] },
+    write: { written: 1, labels: written.kept.map(({ version }) => version) },
+  };
+  const judging: DriverCan = { ...can, confined: [{ level: 'verified', access: 'read', tools: ['claude'] }], workspace: [...can.workspace ?? [], 'team'] };
+  for (;;) {
+    const answer = await leaseNext(config, runId, driver, { can: judging, prepare: true });
+    const lease = LeaseSchema.safeParse(answer);
+    if (!lease.success) break;
+    const { step, attempt, revision } = lease.data.data.lease;
+    await reportAttempt(config, runId, { attempt, revision, outcome: 'success', driver, tool: 'claude', outputs: outputs[step.split('.').at(-1) ?? step] ?? {} });
+  }
+
+  const run = await readRun(config, runId);
+  if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
+  return (await judgedRecordOf(config, run)).trials[0]?.verdicts;
+}
+
 describe('benchmark run verdicts', () => {
   it("record a judged label with the judge that decided it: its rubric, tool, the model and effort its tool reported or was launched with, and whether it batched", async () => {
+    const verdicts = await judgedVerdicts(
+      { tool: 'claude', model: { requested: 'claude-opus-5-5', reported: 'claude-opus-5-5-20261101', alias: 'opus' }, effort: { requested: 'high' }, batched: true },
+      { [CORRECTNESS]: { tool: 'claude', model: 'opus' } },
+    );
+
+    expect(verdicts).toEqual([{
+      scorer: CORRECTNESS, outcome: { kind: 'labelled', label: 'correct', score: 1, passed: true },
+      decider: { by: 'judge', rubric: 'rubric-1', tool: 'claude', model: 'claude-opus-5-5-20261101', effort: 'high', batched: true },
+      asPlanned: 'match',
+    }]);
+  });
+
+  it.each([
+    ['another tool than the plan pins', { tool: 'codex', model: { reported: 'gpt-6-sol' } }, { tool: 'claude', model: '' }, 'deviation'],
+    ['the alias the plan pins, whatever model it resolved to', { tool: 'claude', model: { alias: 'judge', requested: 'claude-sonnet-5-5', reported: 'claude-sonnet-5-5' } }, { tool: 'claude', model: 'judge' }, 'match'],
+    ['another alias than the plan pins', { tool: 'claude', model: { alias: 'strong', requested: 'opus', reported: 'claude-opus-5-5' } }, { tool: 'claude', model: 'judge' }, 'deviation'],
+    ['the model name the plan pins, which is no alias', { tool: 'claude', model: { requested: 'opus', reported: 'claude-opus-5-5' } }, { tool: 'claude', model: 'opus' }, 'match'],
+    ['another model than the tool default the plan pins', { tool: 'claude', model: { requested: 'opus', reported: 'claude-opus-5-5' } }, { tool: 'claude', model: '' }, 'deviation'],
+    ['no model its tool reported', { tool: 'claude', model: { alias: 'judge', requested: 'opus' } }, { tool: 'claude', model: 'judge' }, 'not_verified'],
+    ['another tool, and no model its tool reported', { tool: 'codex' }, { tool: 'claude', model: '' }, 'deviation'],
+  ] as const)('compare a label judged with %s with the plan', async (_, judge, planned, asPlanned) => {
+    expect(await judgedVerdicts(judge, { [CORRECTNESS]: planned })).toEqual([expect.objectContaining({ scorer: CORRECTNESS, asPlanned })]);
+  });
+
+  it("leave a trial unscored, judge_tool_unavailable, when no driver offers the judge tool its plan requires and the skill driver gives that judge up, and the results name the tool", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-plan-'));
     dirs.push(root);
     const config = benchmarkRunConfig(root);
@@ -562,38 +639,38 @@ describe('benchmark run verdicts', () => {
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     const subject = `run:${runId}:${PROMPT}:1`;
-    const written = await LabelStore.append(config, [{ label: {
-      scorer: CORRECTNESS, rubric: { sourceHash: 'rubric-1' }, label: 'correct', score: 1, passed: true, scoredAt: '2026-11-08T10:12:03.000Z', source: 'workflow',
-      subject: { runId, step: PROMPT, pass: 1 },
-      judge: { kind: 'model', tool: 'claude', model: { requested: 'claude-opus-5-5', reported: 'claude-opus-5-5-20261101', alias: 'opus' }, effort: { requested: 'high' }, isolation: 'verified', access: 'read', batched: true },
-    }, reasoning: 'The test passes.' }], { outbox: false });
-    if (written.status === 'busy') throw new Error('the label store is busy');
+    const evidence = path.join(runScratchDir(config, runId), 'evidence');
+    fs.mkdirSync(evidence, { recursive: true });
+    // As teamai score evidence writes it for a scorer the plan pins to claude.
+    fs.writeFileSync(path.join(evidence, 'confined.json'), '{"level":"best-effort","require":"claude"}');
     const outputs: Record<string, unknown> = {
       subjects: { list: [subject] },
       plan: { groups: [{ subject, hand: '', scorers: CORRECTNESS, model: '', ci: false, protected: false }] },
-      evidence: { dir: root, rubric: 'Judge it.', schema: path.join(root, 'answer.schema.json'), delivers: false },
-      judge: { answer: { label: 'correct', reasoning: 'The test passes.' } },
-      label: { labels: [{ scorer: CORRECTNESS, label: 'correct', code: '' }] },
-      write: { written: 1, labels: written.kept.map(({ version }) => version) },
+      evidence: { dir: evidence, rubric: 'Judge it.', schema: path.join(evidence, 'answer.schema.json'), delivers: false },
     };
-    const judging: DriverCan = { ...can, confined: [{ level: 'verified', access: 'read', tools: ['claude'] }], workspace: [...can.workspace ?? [], 'team'] };
+    const codexOnly: DriverCan = { ...can, confined: [{ level: 'best-effort', access: 'read', tools: ['codex'] }], workspace: [...can.workspace ?? [], 'team'] };
+    let waited: unknown;
     for (;;) {
-      const answer = await leaseNext(config, runId, driver, { can: judging, prepare: true });
+      const answer = await leaseNext(config, runId, driver, { can: codexOnly, prepare: true });
       const lease = LeaseSchema.safeParse(answer);
-      if (!lease.success) break;
+      if (!lease.success) {
+        waited = answer;
+        break;
+      }
       const { step, attempt, revision } = lease.data.data.lease;
       await reportAttempt(config, runId, { attempt, revision, outcome: 'success', driver, tool: 'claude', outputs: outputs[step.split('.').at(-1) ?? step] ?? {} });
     }
+    const held = HeldSchema.parse(waited).data.wait.held.flatMap((entry) => z.object({ step: z.string() }).parse(entry).step);
+    await inProcessClient({ config, env: await resolveWorkflowEnv(config) }).giveUp(runId, held);
+
+    const done = await leaseNext(config, runId, driver, { can: codexOnly, prepare: true });
 
     const run = await readRun(config, runId);
     if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
-    expect((await judgedRecordOf(config, run)).trials).toEqual([expect.objectContaining({
-      result: 'passed',
-      verdicts: [{
-        scorer: CORRECTNESS, outcome: { kind: 'labelled', label: 'correct', score: 1, passed: true },
-        decider: { by: 'judge', rubric: 'rubric-1', tool: 'claude', model: 'claude-opus-5-5-20261101', effort: 'high', batched: true },
-      }],
-    })]);
+    const record = await judgedRecordOf(config, run);
+    expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(record.trials).toEqual([expect.objectContaining({ result: 'unscored', verdicts: [{ scorer: CORRECTNESS, outcome: { kind: 'unscored', because: 'judge_tool_unavailable' } }] })]);
+    expect(formatBenchmarkTable(benchmarkTable({ benchmark: record }))).toContain('No driver of the run offered judge claude, so 1 trial went unscored; drive the run where claude is installed, or set tool in the scorer.');
   });
 
   it('leave a trial unscored when its score step labelled it and the write failed, though an earlier write stored that label', async () => {
@@ -635,6 +712,43 @@ describe('benchmark run verdicts', () => {
   });
 });
 
+describe('benchmark judge calls', () => {
+  /** The groups `teamai score plan` gives the one trial of a criteria suite judged by `scorers` too, its plan pinning `judges`. */
+  async function plannedGroups(judges: Record<string, { tool: string; model: string }>): Promise<unknown> {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-plan-'));
+    dirs.push(root);
+    const config = benchmarkRunConfig(root);
+    for (const scorer of ['quality', 'tidy']) {
+      fs.mkdirSync(path.join(config.repo.localPath, 'scorers'), { recursive: true });
+      fs.writeFileSync(path.join(config.repo.localPath, 'scorers', `${scorer}.md`), '---\nlabels:\n  - { value: good, score: 1, description: Good }\n  - { value: bad, score: 0, description: Bad }\npassingScore: 1\nsamplingRate: 100\n---\nJudge the change.\n');
+    }
+    const suite = { ...CRITERIA_SUITE, suite: `${CRITERIA_SUITE.suite}scorers: [quality, tidy]\n` };
+    const started = await startBenchmarkRun(config, suite, {
+      body: SCORED_BENCHMARK,
+      outputsOf: (bundle, plan) => ({ definition: { ...bundle, workflows: {} }, plan: { ...plan, judges: { ...plan.judges, ...judges } } }),
+    });
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    const subject = `run:${runId}:${PROMPT}:1`;
+    const judging: DriverCan = { ...can, confined: [{ level: 'verified', access: 'read', tools: ['claude'] }], workspace: [...can.workspace ?? [], 'team'] };
+    for (;;) {
+      const { step, attempt, revision } = LeaseSchema.parse(await leaseNext(config, runId, driver, { can: judging, prepare: true })).data.lease;
+      if (step.endsWith('.plan')) return ScoreVerbs.plan({ subject, scorers: '[]', batch: 'true', demand: 'named' }, { env: attemptEnv(config, runId, attempt, 'unattended'), current: config, now: RUN_NOW });
+      await reportAttempt(config, runId, { attempt, revision, outcome: 'success', driver, tool: 'claude', outputs: step === 'subjects' ? { list: [subject] } : {} });
+    }
+  }
+
+  it("judges a trial's correctness scorer in a call of its own, and batches the suite's scorers that share a judge", async () => {
+    const judges = { quality: { tool: 'claude', model: '' }, tidy: { tool: 'claude', model: '' } };
+
+    expect(await plannedGroups(judges)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality,tidy' }, { scorers: CORRECTNESS }] } });
+  });
+
+  it('keeps a scorer whose judge tool the plan requires apart from one any judge tool may label', async () => {
+    expect(await plannedGroups({ quality: { tool: 'claude', model: '' } })).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality' }, { scorers: 'tidy' }, { scorers: CORRECTNESS }] } });
+  });
+});
+
 describe('benchmark plan on a machine that cannot pin the team a trial gets', () => {
   it('refuses a team served over HTTP in benchmark words, before it reads the suite', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-http-'));
@@ -654,7 +768,7 @@ const ROLES = 'version: 1\nroles:\n  - id: frontend\n    resources: { knowledge:
 
 /**
  * A member who pulled a git team at its main, which the team remote has: suite `fix` of `arms` with task `fix`, which
- * starts from the project checkout's commit, over `team`, and each branch of `branches` on the remote, main with its
+ * starts from the project checkout's commit, over `team`, where `{{startingCommit}}` is that commit, and each branch of `branches` on the remote, main with its
  * files. `delivered` are files pull wrote into the checkout, as its record hashes them.
  */
 async function pulledMember({ arms, team = {}, branches = {}, delivered = {}, config: overrides = {} }: {
@@ -683,7 +797,7 @@ async function pulledMember({ arms, team = {}, branches = {}, delivered = {}, co
     'teamai.yaml': 'team: acme\nrepo: https://github.com/acme/team.git\nprovider: git\n',
     'benchmarks/fix/suite.yaml': startSuite(arms),
     'benchmarks/fix/tasks/fix.yaml': `schemaVersion: v1alpha1\ntitle: Fix it\nprompt: Fix.\nstartingCommit: ${startingCommit}\ncheck: { run: node test.js, protect: [test.js] }\n`,
-    ...team,
+    ...Object.fromEntries(Object.entries(team).map(([file, text]) => [file, text.replaceAll('{{startingCommit}}', startingCommit)])),
   });
   git(repo, 'update-ref', 'refs/remotes/origin/main', pulled);
   for (const [branch, files] of Object.entries(branches)) {
@@ -729,6 +843,14 @@ describe('benchmark plan refusals at start', () => {
       refused: 'an arm whose model alias names no model for its tool', arms: '  model: strong\narms:\n  - name: strong\n  - name: codex\n    tool: codex\n', code: 'arm_model_missing',
       team: { 'models/aliases.yaml': 'aliases:\n  strong:\n    claude: claude-strong-1\n' },
       message: 'Arm "codex" uses model alias "strong", which has no model for codex in models/aliases.yaml. Add one and start again.',
+    },
+    {
+      refused: 'a scorer whose model alias has no model for the tool it judges every arm on', arms: 'arms:\n  - name: claude\n  - name: codex\n    tool: codex\nscorers: [quality]\n', code: 'judge_model_unavailable',
+      team: {
+        'models/aliases.yaml': 'aliases:\n  judge:\n    codex: gpt-6-sol\n',
+        'scorers/quality.md': '---\nlabels:\n  - { value: tidy, score: 1, description: Small }\n  - { value: messy, score: 0, description: Not }\npassingScore: 1\nsamplingRate: 100\nmodel: judge\n---\nJudge how tidy the change is.\n',
+      },
+      message: 'Suite "fix" judges scorer "quality" on claude for every arm: the scorer\'s tool, else the suite\'s defaults.tool. Scorer "quality" asks for model alias "judge", which has no model for claude in models/aliases.yaml. Add one, or remove model from the scorer.',
     },
     {
       refused: 'an arm whose model is a local path, which a record would publish', arms: '  model: /home/member/models/private.gguf\narms:\n  - name: strong\n', code: 'arm_unpublishable',
@@ -838,5 +960,44 @@ describe('benchmark plan refusals at start', () => {
       { name: 'fast', model: 'claude-fast-1', source: 'team' },
       { name: 'codex', model: 'gpt-strong-1', source: 'team' },
     ]);
+  });
+});
+
+/** A scorer file of `frontmatter` over two labels. */
+const SCORER = (frontmatter = ''): string => `---\nlabels:\n  - { value: good, score: 1, description: Good }\n  - { value: bad, score: 0, description: Bad }\npassingScore: 1\nsamplingRate: 100\n${frontmatter}---\nJudge the change.\n`;
+
+/** Claude and Codex on PATH, as judge tools that run best-effort. */
+function judgeTools(): void {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-judges-'));
+  dirs.push(bin);
+  for (const [tool, version] of [['claude', '1.0.0 (Claude Code)'], ['codex', 'codex-cli 0.1.0']]) {
+    fs.writeFileSync(path.join(bin, tool), `#!${process.execPath}\nconsole.log(${JSON.stringify(version)});\n`, { mode: 0o755 });
+  }
+  const resolved = vi.spyOn(cliPaths, 'resolveCliPath').mockImplementation((cmd) => (fs.existsSync(path.join(bin, cmd)) ? path.join(bin, cmd) : null));
+  onTestFinished(() => resolved.mockRestore());
+}
+
+describe('benchmark plan judges at start', () => {
+  const COPY_TASK = "schemaVersion: v1alpha1\ntitle: Copy\nprompt: Fix the login copy.\nstartingCommit: '{{startingCommit}}'\nsuccessCriteria: The login page says Sign in.\n";
+
+  it("pins each judged scorer to its tool, else the suite's defaults.tool, and its model string, for every arm", async () => {
+    judgeTools();
+    const member = await pulledMember({
+      arms: 'arms:\n  - name: claude\n  - name: codex\n    tool: codex\nscorers: [quality, strict]\n',
+      team: {
+        'benchmarks/fix/tasks/copy.yaml': COPY_TASK,
+        'models/aliases.yaml': 'aliases:\n  judge:\n    claude: { model: opus, effort: high }\n    codex: { model: gpt-6-sol, effort: high }\n',
+        'scorers/quality.md': SCORER('model: judge\n'),
+        'scorers/strict.md': SCORER('tool: codex\n'),
+      },
+    });
+
+    const planned = await member.plan();
+
+    expect('planned' in planned && planned.planned.plan.judges).toEqual({
+      quality: { tool: 'claude', model: 'judge' },
+      strict: { tool: 'codex', model: '' },
+      'teamai:correctness:copy': { tool: 'claude', model: '' },
+    });
   });
 });

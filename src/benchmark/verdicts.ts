@@ -12,15 +12,21 @@ import { LabelStore } from '../scorers/label-store.js';
 import { isStageDecider, labelVersion, type ScoreLabel } from '../scorers/label.js';
 import { LABEL_CODES } from '../scorers/score-labels.js';
 import type { LocalConfig } from '../types.js';
+import { isUnder } from '../workflow/loop.js';
+import { confinedGiveUpMessage } from '../workflow/protocol.js';
 import { stepDefinitions } from '../workflow/scope.js';
 import type { StepState } from '../workflow/step-state.js';
 import { stepWorkflow, type RunState, type WorkflowStep } from '../workflow/types.js';
-import { checkStepOf, correctnessScorerName, type PlannedTask } from './plan.js';
+import { COMPARISONS, compareJudge } from './agent-match.js';
+import { checkStepOf, correctnessScorerName, type PlannedJudge, type PlannedTask } from './plan.js';
 import type { RunPlan } from './run-plan.js';
 import { SCORE_WORKFLOW } from '../scorers/judging-workflows.js';
 
 /** No label and no code: no check or `teamai-score` step labelled the scorer before the run's steps ended. */
 const RUN_ENDED = 'run_ended';
+
+/** No label: no driver of the run offered the judge tool the plan requires, so the skill driver gave the judge step up. */
+const JUDGE_TOOL_UNAVAILABLE = 'judge_tool_unavailable';
 
 /**
  * Who decided a label: a task's check, named by the task's hash, or a judge, by its rubric's hash, the tool it ran in,
@@ -41,9 +47,11 @@ export const TrialVerdictSchema = z.object({
   scorer: z.string().min(1),
   outcome: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('labelled'), label: z.string().min(1), score: z.number(), passed: z.boolean() }).strict(),
-    z.object({ kind: z.literal('unscored'), because: z.enum([...LABEL_CODES, RUN_ENDED]) }).strict(),
+    z.object({ kind: z.literal('unscored'), because: z.enum([...LABEL_CODES, RUN_ENDED, JUDGE_TOOL_UNAVAILABLE]) }).strict(),
   ]),
   decider: VerdictDeciderSchema.optional(),
+  /** How a judge's label compares with the judge the plan pins its scorer to (`compareJudge`); absent for a check's label. */
+  asPlanned: z.enum(COMPARISONS).optional(),
 }).strict();
 
 export type TrialVerdict = z.infer<typeof TrialVerdictSchema>;
@@ -57,7 +65,7 @@ export const EntryVerdictSchema = TrialVerdictSchema.extend({
 
 export type EntryVerdict = z.infer<typeof EntryVerdictSchema>;
 
-type Judged = Pick<EntryVerdict, 'outcome' | 'decider' | 'scoringCost'>;
+type Judged = Pick<EntryVerdict, 'outcome' | 'decider' | 'scoringCost' | 'asPlanned'>;
 
 /** What `teamai score label` printed of one scorer: its label, or the code of why it has none; the other is ''. */
 const LabelEntrySchema = z.object({ scorer: z.string(), label: z.string(), code: z.union([z.enum(LABEL_CODES), z.literal('')]) });
@@ -115,6 +123,32 @@ function scoredEntries(run: RunState): Map<string, Scored> {
   return bySubject;
 }
 
+/** The group a `teamai-score` instance judges, as `teamai score plan` printed it: its subject and its scorers, joined by `,`. */
+const GroupItemSchema = z.object({ subject: z.string(), scorers: z.string() });
+
+/**
+ * By subject, the scorers whose `teamai-score` group the skill driver cancelled because no driver of the run could take
+ * a step of it confined to a directory: its judge, held for a tool no driver offered.
+ */
+function givenUpJudges(run: RunState): Map<string, Set<string>> {
+  const givenUp = new Map<string, Set<string>>();
+
+  for (const state of run.steps) {
+    const group = GroupItemSchema.safeParse(state.item);
+
+    if (state.status !== 'cancelled' || !group.success) continue;
+    const { message } = state.failure;
+
+    if (!run.steps.some(({ id }) => isUnder(state.id)(id) && message === confinedGiveUpMessage(id))) continue;
+    const scorers = givenUp.get(group.data.subject) ?? new Set<string>();
+
+    for (const scorer of group.data.scorers.split(',')) scorers.add(scorer);
+    givenUp.set(group.data.subject, scorers);
+  }
+
+  return givenUp;
+}
+
 function labelledOf(stored: ScoreLabel, decider: TrialVerdict['decider']): Judged {
   return definedFields<Judged>({ outcome: { kind: 'labelled', label: stored.label, score: stored.score, passed: stored.passed }, decider });
 }
@@ -130,15 +164,17 @@ function judgeOf(stored: ScoreLabel): TrialVerdict['decider'] {
   });
 }
 
-function verdictOf(entry: ScoredEntry | undefined, stored: ScoreLabel | undefined): Judged {
+function verdictOf(entry: ScoredEntry | undefined, stored: ScoreLabel | undefined, { planned, isGivenUp }: { planned: PlannedJudge | undefined; isGivenUp: boolean }): Judged {
   if (entry?.code) return { outcome: { kind: 'unscored', because: entry.code } };
 
   // A label the write never recorded is no label.
-  if (!entry || !stored) return { outcome: { kind: 'unscored', because: RUN_ENDED } };
+  if (!entry || !stored) return { outcome: { kind: 'unscored', because: isGivenUp ? JUDGE_TOOL_UNAVAILABLE : RUN_ENDED } };
   const cost = stored.judge.kind === 'model' ? stored.judge.usage?.cost : undefined;
   const verdict = labelledOf(stored, judgeOf(stored));
 
   if (cost) verdict.scoringCost = { ...cost, complete: true };
+
+  if (planned && verdict.decider?.by === 'judge' && stored.judge.kind === 'model') verdict.asPlanned = compareJudge(planned, stored.judge);
 
   return verdict;
 }
@@ -180,13 +216,15 @@ export const TrialVerdicts = {
   async of(config: LocalConfig, run: RunState, { plan, prefix }: RunPlan): Promise<EntryVerdict[]> {
     const definitionOf = stepDefinitions(run);
     const scored = scoredEntries(run);
+    const givenUp = givenUpJudges(run);
     const labels = await LabelStore.local(config);
     const stateOf = (id: string): StepState | undefined => run.steps.find((state) => state.id === id);
 
     return plan.trials.flatMap((trial) => {
       const step = `${prefix}${trial.step}`;
       const pass = stateOf(step)?.pass ?? 1;
-      const subject = scored.get(`run:${run.id}:${step}:${pass}`);
+      const item = `run:${run.id}:${step}:${pass}`;
+      const subject = scored.get(item);
       const task = plan.tasks.find(({ id }) => id === trial.task);
       const correctness = correctnessScorerName(trial.task);
       const checked = task?.judge.kind === 'check' ? [{ scorer: correctness, step, pass, ...checkedOf(stateOf(`${prefix}${checkStepOf(trial)}`), labels, task) }] : [];
@@ -195,7 +233,7 @@ export const TrialVerdicts = {
         const entry = subject?.entries.get(scorer);
         const stored = labels.find((label) => label.scorer === scorer && subject?.written.has(labelVersion(label)) === true);
 
-        return { scorer, step, pass, ...verdictOf(entry, stored) };
+        return { scorer, step, pass, ...verdictOf(entry, stored, { planned: plan.judges[scorer], isGivenUp: givenUp.get(item)?.has(scorer) === true }) };
       });
 
       return [...checked, ...judged.filter(({ scorer }) => scorer === correctness), ...judged.filter(({ scorer }) => scorer !== correctness)];

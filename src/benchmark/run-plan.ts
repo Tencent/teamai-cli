@@ -76,3 +76,13 @@ export function planOfRun(run: RunState, under?: string): { found: RunPlan } | {
 
   return { found: { plan: plan.data, prefix: `${only.step}.`, producer: only.producer } };
 }
+
+/**
+ * By scorer, the judge the benchmark plan around step `step` of `run` pins for every arm; none when no plan this teamai
+ * reads is there: a run of another workflow, or one a teamai before an upgrade started, whose judges were never pinned.
+ */
+export function plannedJudgesOf(run: RunState, step: string): BenchmarkPlan['judges'] {
+  const planned = planOfRun(run, step);
+
+  return 'found' in planned ? planned.found.plan.judges : {};
+}

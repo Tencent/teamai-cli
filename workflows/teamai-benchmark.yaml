@@ -14,6 +14,8 @@ steps:
     requires: { isolation: sandbox, strict: true }
   # Judges every trial with the scorers it pinned, a criteria task's teamai:correctness:<task> included. Reading
   # trials keeps a failed trial from stopping the others being judged. Without these two steps nothing judges a trial.
+  # batch: the suite's scorers that share a judge tool, model and stages share one judge call per trial; a correctness
+  # scorer is always judged alone. Set it false in a workflow of this name to judge each scorer apart.
   - id: subjects
     needs: [trials]
     if: steps.trials.outcome != 'skipped'
@@ -24,7 +26,7 @@ steps:
     needs: [subjects]
     for_each: steps.subjects.outputs.list
     workflow: teamai-score
-    with: { subject: "{{ item }}", scorers: [], label: "", batch: false, demand: named }
+    with: { subject: "{{ item }}", scorers: [], label: "", batch: true, demand: named }
     timeout: 2h
     continue_on_failure: true
 finally:

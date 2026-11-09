@@ -702,7 +702,7 @@ $ teamai benchmark run fix-auth --sandbox
 | 通道 | 一次一个 trial，除非套件设置了 [`parallel`](#并行通道)。 |
 | 超时 | 套件的 `timeout` 是整个运行的超时。setup、工具和 check 到时都会停止：它们所属的 trial 记为 `error`，仍未完成的 trial 结算为 `not_run`。让它低于 CI 任务的时限，否则任务会在打印表格之前被杀掉。 |
 | 卡住的 trial | 没有 [`trial.timeout`](#trial-限制) 时，一个永不返回的工具会一直运行到套件超时，它之后的每个 trial 结算为 `not_run`。 |
-| 评判 | 带 `successCriteria` 的任务和套件的评分器由运行自己的 `score` 步骤评判，它在 trial 之后、`report` 之前运行。机器上没有能以评分器要求的隔离级别运行其模型的评判工具时，需要评判的套件在启动时被拒绝。 |
+| 评判 | 带 `successCriteria` 的任务和套件的评分器由运行自己的 `score` 步骤评判，它在 trial 之后、`report` 之前运行，每个评分器[对所有 arm 用同一个评判](#对所有-arm-用同一个评判)。机器上没有安装某个评分器的评判工具，或该工具不能以评分器要求的隔离级别运行它的模型时，需要评判的套件在启动时被拒绝。 |
 | 控制命令 | trial 的步骤要等运行的 `plan` 步骤报告后才存在。在此之前，对 trial 步骤执行 `teamai workflow cancel <run> <step>` 会返回 `step_not_found`。benchmark 运行是[隔离的](workflow-advanced.md#隔离运行)：`workflow retry`、`publish` 和 `--claim` 拒绝它，`publish` 和 `--claim` 返回 `isolated_run`，retry 会给出 `teamai benchmark run <suite>`。 |
 | 停下 | 用 `teamai workflow resume <run>` 继续，沿用启动时的 `--sandbox`。升级前的 teamai 启动的运行，如果计划的版本不同，就不能继续：`workflow resume` 会拒绝它，并指出 `teamai benchmark run <suite>`。 |
 
@@ -751,6 +751,8 @@ steps:
     requires: { isolation: sandbox, strict: true }
   # Judges every trial with the scorers as of the run's start, a criteria task's teamai:correctness:<task> included. Reading
   # trials keeps a failed trial from stopping the others being judged. Without these two steps nothing judges a trial.
+  # batch: the suite's scorers that share a judge tool, model and stages share one judge call per trial; a correctness
+  # scorer is always judged alone. Set it false in a workflow of this name to judge each scorer apart.
   - id: subjects
     needs: [trials]
     if: steps.trials.outcome != 'skipped'
@@ -761,7 +763,7 @@ steps:
     needs: [subjects]
     for_each: steps.subjects.outputs.list
     workflow: teamai-score
-    with: { subject: "{{ item }}", scorers: [], label: "", batch: false, demand: named }
+    with: { subject: "{{ item }}", scorers: [], label: "", batch: true, demand: named }
     timeout: 2h
     continue_on_failure: true
 finally:
@@ -811,7 +813,7 @@ finally:
 
 ## 结果
 
-运行结束时，`benchmark run` 把结果打印到 stderr。stdout 上的 JSON 返回在 `data.done.outputs.text` 中带同样的文本，在 `data.done.outputs.table` 中带数字，其中 `verdicts` 给出每个 trial 在每个评分器下的结论，正确性评分器排在最前：`labelled` 带它的标签和分数，或 `unscored` 带 `because`，即评判的失败码、`check_could_not_run`，没有标签时为 `run_ended`。对这个套件，再加一个 check 本来就通过的第三个任务 `old-bug`：
+运行结束时，`benchmark run` 把结果打印到 stderr。stdout 上的 JSON 返回在 `data.done.outputs.text` 中带同样的文本，在 `data.done.outputs.table` 中带数字，其中 `verdicts` 给出每个 trial 在每个评分器下的结论，正确性评分器排在最前：`labelled` 带它的标签和分数，或 `unscored` 带 `because`，即评判的失败码、`check_could_not_run`，运行中没有驱动提供评判工具时为 `judge_tool_unavailable`，没有标签时为 `run_ended`。对这个套件，再加一个 check 本来就通过的第三个任务 `old-bug`：
 
 ```text
 | Arm | Tool | Model (source) | Planned | Passed | Failed | Error | Unscored | Not run | Stopped by a limit | Deviations | Not verified | Pass rate |
@@ -841,7 +843,7 @@ These results hold for these tasks, this run and this machine.
 
 | 表格 | 内容 |
 | --- | --- |
-| Arm | 按结果统计每个 arm 的 trial，以及被 [trial 限制](#trial-限制)停止的数量。偏差是 prompt 运行时的工具、团队修订、模型或角色与其 arm 不同的 trial，或者其 driver 无法执行某个 trial 限制的 trial。记录缺少其中某个值的 trial 为未验证。有 arm 使用 pull 到的修订以外的团队资产时，Team 列显示每个 arm 的团队资产，例如 `pulled 3f9c2ab`、`next 81d0e4c`、`3f9c2ab without skills/auth-tokens` 或 `none`。有 arm [以角色运行](#以角色运行的-arm)时，Role 列显示每个 arm 的角色，或 `member's roles`。 |
+| Arm | 按结果统计每个 arm 的 trial，以及被 [trial 限制](#trial-限制)停止的数量。偏差是 prompt 运行时的工具、团队修订、模型或角色与其 arm 不同的 trial，其 driver 无法执行某个 trial 限制的 trial，或者由[计划](#对所有-arm-用同一个评判)以外的评判打标签的 trial。记录缺少其中某个值，或缺少其评判的模型的 trial 为未验证。有 arm 使用 pull 到的修订以外的团队资产时，Team 列显示每个 arm 的团队资产，例如 `pulled 3f9c2ab`、`next 81d0e4c`、`3f9c2ab without skills/auth-tokens` 或 `none`。有 arm [以角色运行](#以角色运行的-arm)时，Role 列显示每个 arm 的角色，或 `member's roles`。 |
 | 用量 | 每个 arm 的中位数和成本合计，并注明各自用了多少个 trial。token 和成本只按工具自己声明的显示，所以不声明的工具显示 `unknown (0)`。如果一个 trial 的各次 pass 没有全部声明 token（输入和输出）、成本或时长，它在这一项上按没有声明处理，并让成本合计显示 `incomplete`。 |
 | 任务 | 每个任务在每个 arm 上的通过率。 |
 | 基线 | 没有运行的任务及原因。 |
@@ -882,11 +884,55 @@ These results hold for these tasks, this run and this machine.
   { "scorer": "teamai:correctness:expired-token", "outcome": { "kind": "labelled", "label": "correct", "score": 1, "passed": true },
     "decider": { "by": "check", "task": "<task sourceHash>" } },
   { "scorer": "review-quality", "outcome": { "kind": "labelled", "label": "good", "score": 1, "passed": true },
-    "decider": { "by": "judge", "rubric": "<rubric sourceHash>", "tool": "claude", "model": "claude-opus-5-5", "effort": "high", "batched": true } }
+    "decider": { "by": "judge", "rubric": "<rubric sourceHash>", "tool": "claude", "model": "claude-opus-5-5", "effort": "high", "batched": true },
+    "asPlanned": "match" }
 ]
 ```
 
-`decider.batched` 是标签的 `judge.batched`。`decider.model` 是评判工具报告的模型，没有报告时是启动它时用的模型；别名不属于它。
+`decider.batched` 是标签的 `judge.batched`。`decider.model` 是评判工具报告的模型，没有报告时是启动它时用的模型；别名不属于它。`asPlanned` 把评判给出的标签与计划为该评分器固定的评判相比较。
+
+### 对所有 arm 用同一个评判
+
+一个评分器用同一个工具和同一个模型评判所有 arm 的 trial，因此它的通过率比较的是 arm，而不是各自的评判。启动时按评分器固定：评分器的 `tool`，没有时用套件的 `defaults.tool`；以及评分器原样写的 `model`，别名仍是别名（`""` 表示工具的默认模型）。计划把它们冻结为 `judges`，记录也保留它们。例如：
+
+```yaml
+# models/aliases.yaml
+aliases:
+  judge:
+    claude: { model: opus, effort: high }
+    codex: { model: gpt-6-sol, effort: high }
+```
+
+```yaml
+# benchmarks/fix-auth/suite.yaml 的一部分
+defaults:
+  tool: claude
+arms:
+  - name: claude
+  - name: codex
+    tool: codex
+scorers: [review-quality]          # scorers/review-quality.md 设置了 model: judge，没有设置 tool
+```
+
+| Trial · 评分器 | 评判 |
+| --- | --- |
+| login-copy · claude · review-quality | claude, opus, high |
+| login-copy · codex · review-quality | claude, opus, high |
+| login-copy · claude · correctness | claude，它的默认模型 |
+| login-copy · codex · correctness | claude，它的默认模型 |
+
+别名在运行的团队修订中没有该工具的模型时，启动以 `judge_model_unavailable` 拒绝该套件。每次评判调用都只在这个工具上运行，评分器的标签记下实际运行的是什么：
+
+| 情况 | 结果 |
+| --- | --- |
+| 驱动不提供该工具 | 评判步骤被扣住，`wait.held[].missing: ['confined']`；不会由其他工具评判。 |
+| 运行中没有驱动提供它，skill 驱动放弃了这个评判 | 结论为 `unscored`，`because` 为 `judge_tool_unavailable`，结果中会写出该工具。 |
+| 标签写的工具与计划不同，或 `model.alias` 不同（计划的模型不是别名时比较 `model.requested`） | 该 trial 计入 Deviations；`asPlanned` 为 `deviation`。 |
+| 标签没有 `model.reported` | 该 trial 计入 Not verified；`asPlanned` 为 `not_verified`。 |
+| 两台机器把别名解析成了不同的模型 | 不算偏差。 |
+| 各 arm 的 `tool` 不同，且评判工具是其中之一 | 结果中写出 `Judge claude is also arm claude's tool; set tool in the scorer to judge with another.` |
+
+套件中工具、模型和阶段都相同的评分器，每个 trial 共用一次评判调用。正确性评分器总是单独评判，所以决定 trial 的标签从不与别的评分器共用一个回答。
 
 ### 资产效果
 
@@ -1042,4 +1088,4 @@ teamai workflow report <run> --json '{..., "tool":"claude", "durationMs":84000, 
 | `report` | 对 prompt：`tool`、只围绕工具启动测得的 `durationMs`，以及仅在工具给出时才带的 `cost`。 |
 | 限制 | 让工具遵守 `lease.limits`。某个限制停止了工具时，报告 `outcome: "success"` 并带 `limit`：`timeout`、`budget` 或 `max_turns`；无法让工具遵守的 `budget` 或 `max_turns` 列在 `unenforced` 中。 |
 | 超时 | `benchmark run` 把套件的 `timeout` 作为 `--timeout` 传入；直接执行 `workflow start teamai-benchmark` 时也必须传入它，否则 `plan` 会失败。 |
-| 评判 | trial 的评判是某个 `teamai-score` 运行中的一个步骤，像其他步骤一样被租出，并[限制在一个目录中](workflow-advanced.md#在自己的驱动里运行受限步骤)：提供 `can.confined`，否则它会等待，`wait.held[].missing` 指出 `confined`。 |
+| 评判 | trial 的评判是某个 `teamai-score` 运行中的一个步骤，像其他步骤一样被租出，并在[计划固定的那个工具](#对所有-arm-用同一个评判)上[限制在一个目录中](workflow-advanced.md#在自己的驱动里运行受限步骤)：在 `can.confined` 中提供它，否则该步骤会等待，`wait.held[].missing` 指出 `confined`。运行 `lease.confined.tools` 中的一个，并把它作为 `tool` 报告。 |

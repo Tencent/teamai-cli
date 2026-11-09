@@ -563,6 +563,14 @@ function heldPlaceRefusal(input: { dir: string; behind: AttemptId; run: RunId; a
  */
 export type NextPrepare = true | { attempt: AttemptId; adopt?: string };
 
+/**
+ * Why `giveUp` cancelled the step above `held`: no driver of the run can take `held`, which is confined to a directory.
+ * A benchmark reads it back to tell a judge no driver offered from one that ran.
+ */
+export function confinedGiveUpMessage(held: string): string {
+  return `Cancelled: no driver of this run can take step "${held}", which is confined to a directory, and continue_on_failure lets the run go on without it`;
+}
+
 /** The client whose calls run in this process, against `config`, masking with `env`. */
 export function inProcessClient({ config, env }: { config: LocalConfig; env: WorkflowEnv }): WorkflowClient {
   return {
@@ -712,7 +720,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       const cancelled: string[] = [];
 
       for (const [surviving, step] of above) {
-        const answer = await cancelRun(config, runId, env.secrets, surviving, `Cancelled: no driver of this run can take step "${step}", which is confined to a directory, and continue_on_failure lets the run go on without it`);
+        const answer = await cancelRun(config, runId, env.secrets, surviving, confinedGiveUpMessage(step));
 
         if ('error' in answer) return answer;
         cancelled.push(surviving);

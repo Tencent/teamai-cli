@@ -702,7 +702,7 @@ The local driver runs each trial as fresh clone, team assets, setup, the arm's t
 | Lanes | One trial at a time, unless the suite sets [`parallel`](#parallel-lanes). |
 | Timeout | The suite's `timeout` is the whole run's. Setup, the tool and the check all stop at it: the trial they ran for counts as `error`, and the trials still open settle `not_run`. Keep it below your CI job's limit, or the job is killed before it prints the table. |
 | A hung trial | Without [`trial.timeout`](#trial-limits), a tool that never returns runs until the suite's timeout, and every trial after it settles `not_run`. |
-| Judges | A task with `successCriteria`, and the suite's scorers, are judged by the run's own `score` step, after the trials and before `report`. Start refuses a suite that needs a judge on a machine with no judge tool that runs its scorers' model at the isolation they ask for. |
+| Judges | A task with `successCriteria`, and the suite's scorers, are judged by the run's own `score` step, after the trials and before `report`, each scorer by [one judge for every arm](#one-judge-for-every-arm). Start refuses a suite that needs a judge on a machine where a scorer's judge tool is not installed, or does not run its model at the isolation it asks for. |
 | Control commands | A trial's steps exist only once the run's `plan` step reported. Until then, `teamai workflow cancel <run> <step>` on a trial step answers `step_not_found`. A benchmark run is [isolated](workflow-advanced.md#isolated-runs): `workflow retry`, `publish` and `--claim` refuse it, `publish` and `--claim` with `isolated_run`, and retry names `teamai benchmark run <suite>`. |
 | Stopped | `teamai workflow resume <run>` continues it, with the `--sandbox` the run started with. A run that a teamai before an upgrade started, whose plan has another version, cannot go on: `workflow resume` refuses it, naming `teamai benchmark run <suite>`. |
 
@@ -751,6 +751,8 @@ steps:
     requires: { isolation: sandbox, strict: true }
   # Judges every trial with the scorers as of the run's start, a criteria task's teamai:correctness:<task> included. Reading
   # trials keeps a failed trial from stopping the others being judged. Without these two steps nothing judges a trial.
+  # batch: the suite's scorers that share a judge tool, model and stages share one judge call per trial; a correctness
+  # scorer is always judged alone. Set it false in a workflow of this name to judge each scorer apart.
   - id: subjects
     needs: [trials]
     if: steps.trials.outcome != 'skipped'
@@ -761,7 +763,7 @@ steps:
     needs: [subjects]
     for_each: steps.subjects.outputs.list
     workflow: teamai-score
-    with: { subject: "{{ item }}", scorers: [], label: "", batch: false, demand: named }
+    with: { subject: "{{ item }}", scorers: [], label: "", batch: true, demand: named }
     timeout: 2h
     continue_on_failure: true
 finally:
@@ -811,7 +813,7 @@ finally:
 
 ## Results
 
-When the run ends, `benchmark run` prints the results on stderr. The JSON envelope on stdout carries the same text in `data.done.outputs.text`, and the numbers in `data.done.outputs.table`, whose `verdicts` give each trial's verdict per scorer, its correctness scorer first: `labelled` with its label and score, or `unscored` with `because`, the judge's failure code, `check_could_not_run`, or `run_ended` when no label came. For this suite with a third task, `old-bug`, whose check already passes:
+When the run ends, `benchmark run` prints the results on stderr. The JSON envelope on stdout carries the same text in `data.done.outputs.text`, and the numbers in `data.done.outputs.table`, whose `verdicts` give each trial's verdict per scorer, its correctness scorer first: `labelled` with its label and score, or `unscored` with `because`, the judge's failure code, `check_could_not_run`, `judge_tool_unavailable` when no driver of the run offered the judge tool, or `run_ended` when no label came. For this suite with a third task, `old-bug`, whose check already passes:
 
 ```text
 | Arm | Tool | Model (source) | Planned | Passed | Failed | Error | Unscored | Not run | Stopped by a limit | Deviations | Not verified | Pass rate |
@@ -841,7 +843,7 @@ These results hold for these tasks, this run and this machine.
 
 | Table | Shows |
 | --- | --- |
-| Arms | Each arm's trials by result, and how many a [trial limit](#trial-limits) stopped. A deviation is a trial whose prompt ran on another tool, team revision, model or role than its arm's, or without a trial limit its driver could not enforce. A trial is not verified when its record lacks one of those. When an arm runs on other team assets than the pulled revision, a Team column shows each arm's, such as `pulled 3f9c2ab`, `next 81d0e4c`, `3f9c2ab without skills/auth-tokens` or `none`. When an arm [runs as a role](#arms-that-run-as-a-role), a Role column shows each arm's role, or `member's roles`. |
+| Arms | Each arm's trials by result, and how many a [trial limit](#trial-limits) stopped. A deviation is a trial whose prompt ran on another tool, team revision, model or role than its arm's, or without a trial limit its driver could not enforce, or that a judge other than the [plan's](#one-judge-for-every-arm) labelled. A trial is not verified when its record lacks one of those, or its judge's model. When an arm runs on other team assets than the pulled revision, a Team column shows each arm's, such as `pulled 3f9c2ab`, `next 81d0e4c`, `3f9c2ab without skills/auth-tokens` or `none`. When an arm [runs as a role](#arms-that-run-as-a-role), a Role column shows each arm's role, or `member's roles`. |
 | Usage | Each arm's medians and cost total, with how many trials each used. Tokens and cost appear only as the tool stated them, so a tool that states none shows `unknown (0)`. A trial whose passes did not all state its tokens (input and output), cost or duration counts as one that stated none of it, and makes a cost total `incomplete`. |
 | Tasks | Each task's pass rate on each arm. |
 | Baselines | The tasks that did not run, and why. |
@@ -882,11 +884,55 @@ Each recorded trial carries its verdicts:
   { "scorer": "teamai:correctness:expired-token", "outcome": { "kind": "labelled", "label": "correct", "score": 1, "passed": true },
     "decider": { "by": "check", "task": "<task sourceHash>" } },
   { "scorer": "review-quality", "outcome": { "kind": "labelled", "label": "good", "score": 1, "passed": true },
-    "decider": { "by": "judge", "rubric": "<rubric sourceHash>", "tool": "claude", "model": "claude-opus-5-5", "effort": "high", "batched": true } }
+    "decider": { "by": "judge", "rubric": "<rubric sourceHash>", "tool": "claude", "model": "claude-opus-5-5", "effort": "high", "batched": true },
+    "asPlanned": "match" }
 ]
 ```
 
-`decider.batched` is the label's `judge.batched`. `decider.model` is the model the judge's tool reported, else the one it was launched with; the alias is not part of it.
+`decider.batched` is the label's `judge.batched`. `decider.model` is the model the judge's tool reported, else the one it was launched with; the alias is not part of it. `asPlanned` compares a judge's label with the judge the plan pins for its scorer.
+
+### One judge for every arm
+
+A scorer judges every arm's trials with one tool and one model, so its pass rates compare the arms and not their judges. Start pins, per scorer, its `tool`, else the suite's `defaults.tool`, and its `model` as written, an alias staying an alias (`""`: the tool's default model). The plan freezes them as `judges`, and the record keeps them. With
+
+```yaml
+# models/aliases.yaml
+aliases:
+  judge:
+    claude: { model: opus, effort: high }
+    codex: { model: gpt-6-sol, effort: high }
+```
+
+```yaml
+# benchmarks/fix-auth/suite.yaml, in part
+defaults:
+  tool: claude
+arms:
+  - name: claude
+  - name: codex
+    tool: codex
+scorers: [review-quality]          # scorers/review-quality.md sets model: judge and no tool
+```
+
+| Trial · scorer | Judged by |
+| --- | --- |
+| login-copy · claude · review-quality | claude, opus, high |
+| login-copy · codex · review-quality | claude, opus, high |
+| login-copy · claude · correctness | claude, its default model |
+| login-copy · codex · correctness | claude, its default model |
+
+Start refuses the suite (`judge_model_unavailable`) when the alias has no model for that tool at the run's team revision. Each judge call runs on that tool only, and a scorer's labels say what it ran:
+
+| When | Then |
+| --- | --- |
+| The driver does not offer the tool | The judge step is held with `wait.held[].missing: ['confined']`; no other tool judges it. |
+| No driver of the run offers it, and the skill driver gives the judge up | The verdict is `unscored` with `judge_tool_unavailable`, and the results name the tool. |
+| The label names another tool than the plan, or another `model.alias` (or `model.requested` when the plan's model is not an alias) | The trial counts under Deviations; `asPlanned` is `deviation`. |
+| The label has no `model.reported` | The trial counts under Not verified; `asPlanned` is `not_verified`. |
+| Two machines resolved the alias to different models | No deviation. |
+| The arms vary `tool`, and the judge tool is one of theirs | The results say `Judge claude is also arm claude's tool; set tool in the scorer to judge with another.` |
+
+The suite's scorers that share a tool, model and stages share one judge call per trial. A correctness scorer is always judged alone, so the label that decides a trial never shares an answer.
 
 ### Asset effect
 
@@ -1042,4 +1088,4 @@ teamai workflow report <run> --json '{..., "tool":"claude", "durationMs":84000, 
 | `report` | For a prompt: `tool`, `durationMs` measured around the tool launch, and `cost` only when the tool stated one. |
 | Limits | Hold the tool to `lease.limits`. When one stopped it, report `outcome: "success"` with `limit`: `timeout`, `budget` or `max_turns`, and list in `unenforced` a `budget` or `max_turns` you could not hold it to. |
 | Timeout | `benchmark run` passes the suite's `timeout` as `--timeout`; a direct `workflow start teamai-benchmark` must pass it too, or `plan` fails. |
-| Judges | A trial's judge is a step of a `teamai-score` run, leased like any other and [confined to a directory](workflow-advanced.md#confined-steps-in-your-own-driver): offer `can.confined`, or it waits with `wait.held[].missing` naming `confined`. |
+| Judges | A trial's judge is a step of a `teamai-score` run, leased like any other and [confined to a directory](workflow-advanced.md#confined-steps-in-your-own-driver) on the [one tool the plan pins](#one-judge-for-every-arm): offer it in `can.confined`, or the step waits with `wait.held[].missing` naming `confined`. Run one of `lease.confined.tools` and report it as `tool`. |

@@ -30,6 +30,8 @@ import { GeneratedQuestions, type QuestionSwitches } from './generated-questions
 import { Subject } from './subject.js';
 import { TryScorer } from './try-scorer.js';
 import { ScoreItem } from './judging-workflows.js';
+import { isCorrectnessScorer } from '../benchmark/plan.js';
+import { plannedJudgesOf } from '../benchmark/run-plan.js';
 
 /** One judge launch: the scorers it labels, joined by `,`, and the stages its steps run. */
 export interface PlanGroup {
@@ -70,8 +72,10 @@ interface Judged {
   batch: boolean | undefined;
   /** The stages each scorer takes on this subject: none unless it delivered. */
   stagesOf: (candidate: Candidate) => Stage[];
-  /** Whether a scorer is judged in a launch of its own: its check runs for it alone. */
+  /** Whether a scorer is judged in a launch of its own: its check runs for it alone, or its label decides a benchmark trial. */
   alone: (candidate: Candidate) => boolean;
+  /** The one judge tool the run pins a scorer to, as a benchmark plan does; undefined when any tool may judge it. */
+  required: (candidate: Candidate) => string | undefined;
   key: (candidate: Candidate) => MarkKey;
 }
 
@@ -220,13 +224,15 @@ async function runJudged(request: PlanRequest, subject: RunSubject, teamBatch: b
   if (!Array.isArray(candidates)) return candidates;
   const delivered = isDelivered(run, subject);
   const all = own.sampling === 'all';
+  const judges = plannedJudgesOf(run, subject.step);
 
   return {
     candidates,
     sampled: (candidate) => all || isSampled(candidate.name, subject, candidate.definition.samplingRate),
     batch: batchesScorers({ step: own.batch, workflow: workflowBatch(run, subject.step), team: teamBatch }),
     stagesOf: (candidate) => (delivered ? scorerStages(request.attempt, candidate.definition) : []),
-    alone: (candidate) => delivered && candidate.definition.check !== undefined,
+    alone: (candidate) => (delivered && candidate.definition.check !== undefined) || isCorrectnessScorer(candidate.name),
+    required: (candidate) => judges[candidate.name]?.tool,
     key: (candidate) => ({ scorer: candidate.name, subject: { kind: 'run', subject } }),
   };
 }
@@ -270,6 +276,7 @@ async function sessionJudged(request: PlanRequest, subject: Exclude<Subject, { k
     batch: batchesScorers({ team: scoring.batch }),
     stagesOf: () => [],
     alone: () => false,
+    required: () => undefined,
     key: (candidate) => ({ scorer: candidate.name, subject, sourceHash: candidate.pin.sourceHash }),
   };
 }
@@ -293,10 +300,11 @@ function handGroup(request: PlanRequest, judged: Judged): { ok: true; groups: Pl
 
 /**
  * What `candidate` shares with the scorers one judge call takes with it: the model it asks for, the judge tool it
- * prefers, and its stages. The judge tool is chosen when the judge step is leased, from what the driver offers.
+ * prefers, the one the run requires, and its stages. The judge tool is chosen when the judge step is leased, from what
+ * the driver offers, so a required and a preferred scorer never share a call.
  */
 function batchKey(candidate: Candidate, judged: Judged): string {
-  return canonicalJson({ model: candidate.definition.model ?? null, tool: candidate.definition.tool ?? null, stages: judged.stagesOf(candidate) });
+  return canonicalJson({ model: candidate.definition.model ?? null, tool: candidate.definition.tool ?? null, require: judged.required(candidate) ?? null, stages: judged.stagesOf(candidate) });
 }
 
 /**

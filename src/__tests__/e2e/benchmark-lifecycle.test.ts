@@ -128,7 +128,9 @@ describe('a benchmark run once it has started', () => {
   }, 120_000);
 
   it("keeps the baseline team revision and each scorer's rubric hash on the record when every trial is not_run", async () => {
-    const fixture = await fixtureOf({ tool: 'fixes', sandbox: true, tools: ['codex'], suite: `${FIX_SUITE}scorers: [quality]\n`, team: { 'scorers/quality.md': QUALITY } });
+    // Only codex is here, so the scorer names it: a benchmark judges with the scorer's tool, else defaults.tool, claude.
+    const quality = QUALITY.replace('passingScore: 1\n', 'passingScore: 1\ntool: codex\n');
+    const fixture = await fixtureOf({ tool: 'fixes', sandbox: true, tools: ['codex'], suite: `${FIX_SUITE}scorers: [quality]\n`, team: { 'scorers/quality.md': quality } });
     const teamHead = execFileSync('git', ['--git-dir', fixture.teamOrigin, 'rev-parse', 'main'], { encoding: 'utf8' }).trim();
 
     const ran = await fixture.teamai(['benchmark', 'run', 'fix']);
@@ -138,7 +140,7 @@ describe('a benchmark run once it has started', () => {
     expect(ran.code, said(ran)).toBe(0);
     expect(record.baselineTeamRevision).toBe(teamHead);
     expect(record.scorers).toEqual([
-      { name: 'quality', rubric: { sourceHash: createHash('sha256').update(QUALITY).digest('hex') }, labels: [{ value: 'tidy', score: 1 }, { value: 'messy', score: 0 }], passingScore: 1 },
+      { name: 'quality', rubric: { sourceHash: createHash('sha256').update(quality).digest('hex') }, labels: [{ value: 'tidy', score: 1 }, { value: 'messy', score: 0 }], passingScore: 1 },
       { name: 'teamai:correctness:fix', rubric: { sourceHash: expect.any(String) }, labels: [{ value: 'correct', score: 1 }, { value: 'incorrect', score: 0 }], passingScore: 1 },
     ]);
     expect(record.tasks).toEqual([expect.objectContaining({ id: 'fix', baseline: 'valid' })]);

@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { AgentObservation } from '../agent-observation.js';
 import { benchmarkRecord, BenchmarkRunRecordSchema, type BenchmarkRecord, type TrialResult } from '../benchmark/result.js';
 import { planOfRun } from '../benchmark/run-plan.js';
-import { TrialVerdicts } from '../benchmark/verdicts.js';
+import { TrialVerdicts, type TrialVerdict } from '../benchmark/verdicts.js';
 import { benchmarkTable, formatBenchmarkTable } from '../benchmark/table.js';
 import { leaseNext, reportAttempt } from '../workflow/engine.js';
 import type { DriverCan } from '../workflow/requirements.js';
@@ -108,7 +108,7 @@ describe('benchmark results table', () => {
 });
 
 const OBSERVED: AgentObservation = { v: 1, tool: { name: 'claude' }, team: { revision: RUN_TEAM, localChanges: false }, teamai: '0.0.0', driver: 'external' };
-type TrialSpec = Pick<BenchmarkRecord['trials'][number], 'limit' | 'unenforced' | 'durationMs' | 'tokens' | 'cost' | 'used'> & {
+type TrialSpec = Pick<BenchmarkRecord['trials'][number], 'limit' | 'unenforced' | 'durationMs' | 'tokens' | 'cost' | 'used' | 'verdicts'> & {
   task?: string;
   arm?: string;
   result?: TrialResult;
@@ -173,6 +173,33 @@ describe('benchmark deviations', () => {
     ]));
 
     expect(table.results).toMatchObject([{ arm: 'gpt', planned: 4, deviations: 1, notVerified: 0 }, { arm: 'opus', planned: 1, stoppedByLimit: 0, deviations: 0, notVerified: 0 }]);
+  });
+});
+
+describe('benchmark judges', () => {
+  const ARM = (name: string, tool: string) => ({ name, tool, source: 'team', team: { kind: 'pulled', revision: RUN_TEAM } }) as const;
+  /** A trial that ran as its arm, with a judge's label of each of `asPlanned`. */
+  const judged = (...asPlanned: Array<NonNullable<TrialVerdict['asPlanned']>>): TrialSpec => ({
+    agent: { model: { reported: 'claude-opus-4-1' } },
+    verdicts: asPlanned.map((comparison) => ({ scorer: 'quality', outcome: { kind: 'labelled', label: 'good', score: 1, passed: true }, decider: { by: 'judge', rubric: 'r', tool: 'claude', batched: false }, asPlanned: comparison })),
+  });
+
+  it("counts a trial whose judge ran as another tool or model than the plan pins as a deviation, and one whose judge's tool reported no model as not verified", () => {
+    const table = benchmarkTable(recordOf([CLAUDE_ARM], [judged('match'), judged('deviation'), judged('not_verified'), judged('not_verified', 'deviation')]));
+
+    expect(table.results).toMatchObject([{ planned: 4, deviations: 2, notVerified: 1 }]);
+  });
+
+  it("says once per judge tool that it is also an arm's tool, when the arms vary the tool, and nothing when they do not", () => {
+    const record = recordOf([ARM('claude', 'claude'), ARM('codex', 'codex'), ARM('claude-fast', 'claude')], [{}]);
+    const judges = { quality: { tool: 'claude', model: 'judge' }, 'teamai:correctness:fix': { tool: 'claude', model: '' }, strict: { tool: 'opencode', model: '' } };
+    const oneTool = recordOf([ARM('claude', 'claude'), ARM('claude-fast', 'claude')], [{}]);
+
+    expect(formatBenchmarkTable(benchmarkTable({ benchmark: { ...record.benchmark, judges } })).split('\n\n').slice(-2)).toEqual([
+      "Judge claude is also arm claude's tool; set tool in the scorer to judge with another.",
+      'These results hold for these tasks, this run and this machine.',
+    ]);
+    expect(formatBenchmarkTable(benchmarkTable({ benchmark: { ...oneTool.benchmark, judges } }))).not.toContain('Judge claude');
   });
 });
 

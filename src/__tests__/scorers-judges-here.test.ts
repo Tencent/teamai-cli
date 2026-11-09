@@ -18,6 +18,9 @@ Judge the work.
 
 const pin = (content: string): PinnedScorer => ({ sourceHash: 'h1', content });
 
+/** A scorer as a run judges it: its pin, on `tool`. */
+const judged = (content: string, tool = 'claude') => ({ pin: pin(content), tool });
+
 let root = '';
 beforeEach(() => {
   root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-judges-here-')));
@@ -56,7 +59,13 @@ describe('judgeUnavailable', () => {
   it('says nothing when a judge tool here runs every scorer', async () => {
     claude();
 
-    expect(await judgeUnavailable(member(), { quality: pin(scorer()), strict: pin(scorer('isolation: verified\n')) })).toBeUndefined();
+    expect(await judgeUnavailable(member(), { quality: judged(scorer()), strict: judged(scorer('isolation: verified\n')) })).toBeUndefined();
+  });
+
+  it('says a scorer\'s judge tool is not here, though another judge tool is', async () => {
+    claude();
+
+    expect(await judgeUnavailable(member(), { quality: judged(scorer(), 'codex') })).toBe('Scorer "quality" is judged by codex, which is not on PATH here.');
   });
 
   it('says scoring is off for a project whose teamai data is still inside the repository', async () => {
@@ -64,37 +73,37 @@ describe('judgeUnavailable', () => {
     const project = path.join(root, 'app');
     const config: LocalConfig = { ...member(), scope: 'project', projectRoot: project, dataHome: path.join(project, '.teamai') };
 
-    expect(await judgeUnavailable(config, { quality: pin(scorer()) })).toMatch(/^Scoring is off for this project: its teamai data is still in .+\.teamai, inside the repository/u);
+    expect(await judgeUnavailable(config, { quality: judged(scorer()) })).toMatch(/^Scoring is off for this project: its teamai data is still in .+\.teamai, inside the repository/u);
   });
 
   it('says why the team\'s scoring settings cannot be read', async () => {
     claude();
 
-    expect(await judgeUnavailable(member({ 'scorers/scoring.yaml': 'isolation: [unclosed\n' }), { quality: pin(scorer()) })).toContain('scorers/scoring.yaml');
+    expect(await judgeUnavailable(member({ 'scorers/scoring.yaml': 'isolation: [unclosed\n' }), { quality: judged(scorer()) })).toContain('scorers/scoring.yaml');
   });
 
   it('says no judge tool is on PATH', async () => {
-    expect(await judgeUnavailable(member(), { quality: pin(scorer()) })).toBe('No judge tool is on PATH: install Claude Code, Codex, OpenCode or CodeBuddy.');
+    expect(await judgeUnavailable(member(), { quality: judged(scorer()) })).toBe('No judge tool is on PATH: install Claude Code, Codex, OpenCode or CodeBuddy.');
   });
 
   it('says this teamai cannot read a scorer it was given', async () => {
     claude();
 
-    expect(await judgeUnavailable(member(), { quality: pin('not a scorer') })).toBe('This teamai cannot read scorer quality. Update teamai.');
+    expect(await judgeUnavailable(member(), { quality: judged('not a scorer') })).toBe('This teamai cannot read scorer quality. Update teamai.');
   });
 
-  it('names what asks for a verified judge when every judge tool here runs best-effort', async () => {
+  it('names what asks for a verified judge when the scorer\'s judge tool runs only best-effort here', async () => {
     claude('1.0.0 (Claude Code)');
 
-    expect(await judgeUnavailable(member(), { quality: pin(scorer()), strict: pin(scorer('isolation: verified\n')) }))
-      .toMatch(/^Scorer "strict" needs a verified judge, which .*strict.* asks for, and no judge tool here runs verified\.$/u);
+    expect(await judgeUnavailable(member(), { quality: judged(scorer()), strict: judged(scorer('isolation: verified\n')) }))
+      .toMatch(/^Scorer "strict" needs a verified judge, which .*strict.* asks for, and claude, its judge tool, does not run verified here\.$/u);
   });
 
   it('says no judge tool here runs the model alias a scorer names', async () => {
     claude();
     const config = member({ 'models/aliases.yaml': 'aliases:\n  strong:\n    codex: gpt-6\n' });
 
-    expect(await judgeUnavailable(config, { quality: pin(scorer('model: strong\n')) }))
+    expect(await judgeUnavailable(config, { quality: judged(scorer('model: strong\n')) }))
       .toBe('Scorer "quality" asks for model alias "strong", which has no model for claude in models/aliases.yaml. Add one, or remove model from the scorer.');
   });
 });

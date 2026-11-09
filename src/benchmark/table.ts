@@ -22,10 +22,10 @@ export interface ArmResults extends Pick<RecordedArm, 'tool' | 'model' | 'effort
   stoppedByLimit: number;
   /**
    * Trials whose prompt ran as something other than the arm: another tool, team revision, role or concrete model, or without a
-   * limit of the suite's `trial` its driver could not enforce. In `planned`.
+   * limit of the suite's `trial` its driver could not enforce; or a label of which a judge other than the plan's gave. In `planned`.
    */
   deviations: number;
-  /** Trials whose prompt ran, but whose record lacks a value the comparison needs, such as the model the tool reported. */
+  /** Trials whose prompt ran, but whose record lacks a value the comparison needs, such as the model the tool or a judge's tool reported. */
   notVerified: number;
   /** Absent with no planned trials. */
   passRate?: PassRate;
@@ -77,6 +77,10 @@ export interface BenchmarkTable {
   assets: AssetEffect[];
   /** Whether a team scorer of the run judges skill routing, #1469's `teamai:routing:`. */
   routing: boolean;
+  /** Each judge tool the record pins that is also an arm's tool, with the first such arm, when the arms vary the tool. */
+  selfJudged: Array<{ tool: string; arm: string }>;
+  /** Each judge tool the plan required that no driver of the run offered, with how many trials it left unscored. */
+  unavailableJudges: Array<{ tool: string; trials: number }>;
 }
 
 /** Of the trials whose work ran: how many were seen to load a skill, how many were seen and did not, and how many went unseen. */
@@ -103,6 +107,8 @@ export interface BenchmarkCells {
   skills?: TextTable;
   /** Absent when no task covers a team repo path. One table's text per covered asset. */
   assets?: string[];
+  /** Lines above the caption that qualify the tables, such as a judge that is also an arm's tool; absent when none does. */
+  notes?: string[];
   caption: string;
 }
 
@@ -141,9 +147,17 @@ export function usageOf(trials: readonly ObservedTrial[]): Omit<ArmUsage, 'arm'>
   };
 }
 
-/** How many of `arm`'s `trials` ran as something other than the arm, and how many could not be compared with it. */
+/**
+ * How many of `arm`'s `trials` ran as something other than the arm, or were labelled by another judge than the plan's,
+ * and how many could not be compared with them. A deviation outweighs a value that could not be compared.
+ */
 export function deviationsOf(arm: RecordedArm, trials: readonly ObservedTrial[]): Pick<ArmResults, 'deviations' | 'notVerified'> {
-  const compared = trials.flatMap(({ trial, ranAs }) => (ranAs ? [trial.unenforced ? 'deviation' as const : compareAgent(arm, ranAs)] : []));
+  const compared = trials.flatMap(({ trial, ranAs }) => {
+    if (!ranAs) return [];
+    const comparisons = new Set([trial.unenforced ? 'deviation' as const : compareAgent(arm, ranAs), ...(trial.verdicts ?? []).flatMap(({ asPlanned }) => asPlanned ?? [])]);
+
+    return [comparisons.has('deviation') ? 'deviation' as const : comparisons.has('not_verified') ? 'not_verified' as const : 'match' as const];
+  });
 
   return {
     deviations: compared.filter((comparison) => comparison === 'deviation').length,
@@ -180,7 +194,33 @@ export function benchmarkTable(record: BenchmarkTableInput): BenchmarkTable {
       arm, skill: name, change, here: skillLoadsOf(trials, arm, name), defaults: defaults ? skillLoadsOf(trials, defaults, name) : undefined,
     }))),
     assets: assetEffects(record), routing: record.benchmark.scorers.some(({ name }) => name.startsWith(ROUTING_PREFIX)),
+    selfJudged: selfJudgedOf(record.benchmark),
+    unavailableJudges: unavailableJudgesOf(record.benchmark),
   };
+}
+
+/** Each judge tool `record` pins that no driver of its run offered, with how many trials it left unscored for that. */
+function unavailableJudgesOf({ trials, judges = {} }: BenchmarkRecord): BenchmarkTable['unavailableJudges'] {
+  const unscored = new Map<string, number>();
+
+  for (const { verdicts = [] } of trials) {
+    const tools = new Set(verdicts.flatMap(({ scorer, outcome }) => (outcome.kind === 'unscored' && outcome.because === 'judge_tool_unavailable' ? judges[scorer]?.tool ?? [] : [])));
+
+    for (const tool of tools) unscored.set(tool, (unscored.get(tool) ?? 0) + 1);
+  }
+
+  return [...unscored].map(([tool, count]) => ({ tool, trials: count }));
+}
+
+/** Each judge tool `record` pins that is also an arm's tool, with the first such arm, when its arms vary the tool. */
+function selfJudgedOf({ arms, judges = {} }: BenchmarkRecord): BenchmarkTable['selfJudged'] {
+  if (new Set(arms.map(({ tool }) => tool)).size < 2) return [];
+
+  return [...new Set(Object.values(judges).map(({ tool }) => tool))].flatMap((tool) => {
+    const arm = arms.find((one) => one.tool === tool);
+
+    return arm ? [{ tool, arm: arm.name }] : [];
+  });
 }
 
 /** How `arm`'s trials whose work ran loaded `skill`: a trial with no `used` went unseen. */
@@ -224,8 +264,19 @@ export function benchmarkCells(table: BenchmarkTable): BenchmarkCells {
       rows: table.skills.map(({ arm, skill, change, here, defaults }) => [arm, skill, change, formatSkillLoads(here), defaults ? formatSkillLoads(defaults) : '-']),
     } : undefined,
     assets: table.assets.length > 0 ? table.assets.map(formatAssetEffect) : undefined,
+    notes: notesOf(table),
     caption: BENCHMARK_CAPTION,
   });
+}
+
+/** The lines under the tables that qualify them: a judge that is also an arm's tool, and one no driver offered. */
+function notesOf({ selfJudged, unavailableJudges }: BenchmarkTable): string[] | undefined {
+  const notes = [
+    ...selfJudged.map(({ tool, arm }) => `Judge ${tool} is also arm ${arm}'s tool; set tool in the scorer to judge with another.`),
+    ...unavailableJudges.map(({ tool, trials }) => `No driver of the run offered judge ${tool}, so ${trials === 1 ? '1 trial' : `${trials} trials`} went unscored; drive the run where ${tool} is installed, or set tool in the scorer.`),
+  ];
+
+  return notes.length > 0 ? notes : undefined;
 }
 
 /**
@@ -282,11 +333,11 @@ function formatBound(bound: number): string {
 
 /** benchmarkCells as Markdown pipe tables, so the same text reads in a terminal and renders in a CI job summary. */
 export function formatBenchmarkTable(table: BenchmarkTable): string {
-  const { results, usage, matrix, invalid, skills, assets, caption } = benchmarkCells(table);
+  const { results, usage, matrix, invalid, skills, assets, notes, caption } = benchmarkCells(table);
   const line = (cells: readonly string[]): string => `| ${cells.join(' | ')} |`;
   const markdown = ({ header, rows }: TextTable): string => [line(header), line(header.map(() => '---')), ...rows.map(line)].join('\n');
 
-  return [...[results, usage, matrix, ...(invalid ? [invalid] : []), ...(skills ? [skills] : [])].map(markdown), ...(assets ?? []), caption].join('\n\n');
+  return [...[results, usage, matrix, ...(invalid ? [invalid] : []), ...(skills ? [skills] : [])].map(markdown), ...(assets ?? []), ...(notes ?? []), caption].join('\n\n');
 }
 
 /** `1/2` loaded of the trials seen, `1/2, 1 unknown` with some unseen, `unknown (3)` with none seen. */
