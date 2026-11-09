@@ -1,8 +1,7 @@
 import path from 'node:path';
-import { realpathSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { ensureDir, writeFile, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
+import { packageRoot } from './package-info.js';
 import { renderRuleForTool, ruleFileExtensionForTool } from './resources/rule-format.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
 import { installOf, locate, ownOf, writable, type Install } from './locate.js';
@@ -196,20 +195,6 @@ export function isDeployedRecallRule(content: string): boolean {
 /** teamai's recall rule, which a team replaces with a folder of this name at the root of `rules/` (#1787). */
 export const RECALL_RULE_NAME = 'teamai-recall';
 
-/** The package root, holding `rules/`. This file sits one level below it, in src/ and in the bundle in dist/ alike. */
-function packageRoot(): string {
-    const modulePath = fileURLToPath(import.meta.url);
-    let moduleDir: string;
-
-    try {
-        moduleDir = path.dirname(realpathSync(modulePath));
-    } catch {
-        moduleDir = path.dirname(modulePath);
-    }
-
-    return path.join(moduleDir, '..');
-}
-
 /** teamai's rules, the bottom layer of the rules resolver: its package's `rules/teamai-recall/` (#1787). */
 const TEAMAI_RULES: TeamaiLayer<ShippedFile> = { root: packageRoot(), read: (file) => file };
 
@@ -275,8 +260,12 @@ async function recallFolderProblem(dir: string, shown: string): Promise<string |
 /** The recall texts of the folder at `dir` for `language`, each language falling back to the folder's own base file; null when one cannot be read. */
 async function readRecallTexts(folder: RecallFolder, language: TeamaiConfig['language']): Promise<RecallTexts | null> {
     const read = async (stem: string): Promise<string | null> => RuleFolders.readTextFile(path.join(folder.dir, await RuleFolders.languageFile(folder.dir, stem, language)));
-    const rule = await RuleFolders.text({ name: RECALL_RULE_NAME, type: 'rules', sourcePath: path.join(folder.dir, 'RULE.md'), relativePath: `${folder.path}RULE.md`, folder: true }, language);
-    const [block, directBlock] = [await read('block'), await read('block-direct')];
+
+    const [rule, block, directBlock] = await Promise.all([
+        RuleFolders.text({ name: RECALL_RULE_NAME, type: 'rules', sourcePath: path.join(folder.dir, 'RULE.md'), relativePath: `${folder.path}RULE.md`, folder: true }, language),
+        read('block'),
+        read('block-direct'),
+    ]);
 
     return rule === null || block === null || directBlock === null ? null : { rule, block, directBlock, replaced: folder.team };
 }

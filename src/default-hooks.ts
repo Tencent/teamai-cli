@@ -1,7 +1,6 @@
-import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { packageRoot } from './package-info.js';
 import { DeliveredFolders } from './resources/delivered-folders.js';
 import { FolderFiles, type FolderFile } from './resources/folder-files.js';
 import { isJsonObject, type JsonObject, type JsonValue, type LocalConfig, type TeamaiConfig } from './types.js';
@@ -114,31 +113,12 @@ function isName(name: string): name is DefaultHookName {
   return NAMES.some((known) => known === name);
 }
 
-/** The package root, holding `hooks/`. This file sits one level below it, in src/ and in the bundle in dist/ alike. */
-function packageRoot(): string {
-  const modulePath = fileURLToPath(import.meta.url);
-  let moduleDir: string;
-
-  try {
-    moduleDir = path.dirname(fs.realpathSync(modulePath));
-  } catch {
-    moduleDir = path.dirname(modulePath);
-  }
-
-  return path.join(moduleDir, '..');
-}
-
 /** `{{ name }}`: a variable a text reads. */
 const VARIABLE = /\{\{([^{}]*)\}\}/g;
 
 /** `content` with each `{{ name }}` replaced by its value, in one pass: a value is never read again for variables. */
 function substitute(content: string, values: Readonly<Record<string, string>>): string {
   return content.replace(VARIABLE, (read, inner: string) => values[inner.trim()] ?? read);
-}
-
-/** A text file as teamai renders it: CRLF read as LF, and one trailing newline removed, so separators are code's. */
-function textOf(file: FolderFile): string {
-  return file.bytes.toString('utf8').replace(/\r\n/g, '\n').replace(/\n$/, '');
 }
 
 /** A text's files: its base file, and the variants the folder has. */
@@ -182,9 +162,14 @@ function paramProblems(name: DefaultHookName, issue: z.core.$ZodIssue): string[]
   return [`HOOK.yaml: ${at(issue.path)} ${issue.message}`];
 }
 
+/** Whether `texts` holds every text default hook `name` renders. */
+function holdsEveryText<TName extends DefaultHookName>(name: TName, texts: Partial<Record<string, TextVariants>>): texts is Record<DefaultHookTextName<TName>, TextVariants> {
+  return Object.keys(TEXTS[name]).every((text) => texts[text] !== undefined);
+}
+
 /** A folder read as default hook `TName`: the hook, its texts, and the `with:` it was written with, or why its files do not make one. */
 type FolderRead<TName extends DefaultHookName> =
-  | { readonly ok: true; readonly hook: DefaultHook<TName>; readonly with: JsonObject; readonly texts: ReadonlyMap<string, TextVariants> }
+  | { readonly ok: true; readonly hook: DefaultHook<TName>; readonly with: JsonObject; readonly texts: Readonly<Partial<Record<string, TextVariants>>> }
   | { readonly ok: false; readonly problems: string[]; readonly with: JsonObject };
 
 /** Default hook `name` from the files of its folder, its `with:` over `base` (teamai's, for a team's replacement), or why they do not make one. */
@@ -195,7 +180,7 @@ function readFolder<TName extends DefaultHookName>(name: TName, files: readonly 
   let raw: JsonObject = {};
 
   try {
-    const parsed = parseYaml(marker ? textOf(marker) : '');
+    const parsed = parseYaml(marker ? FolderFiles.text(marker.bytes.toString('utf8')) : '');
 
     if (isJsonObject(parsed)) raw = parsed;
     else refusals.push('HOOK.yaml must be a mapping of description and with');
@@ -213,7 +198,7 @@ function readFolder<TName extends DefaultHookName>(name: TName, files: readonly 
 
   if (!params.success) refusals.push(...params.error.issues.flatMap((issue) => paramProblems(name, issue)));
 
-  const texts = new Map<string, TextVariants>();
+  const texts: Partial<Record<string, TextVariants>> = {};
 
   for (const [text, offered] of Object.entries<readonly string[]>(TEXTS[name])) {
     // A text with a variable it does not offer, or anything in braces that is not a variable, would print as written.
@@ -221,7 +206,7 @@ function readFolder<TName extends DefaultHookName>(name: TName, files: readonly 
       const found = byPath.get(file);
 
       if (!found) return undefined;
-      const content = textOf(found);
+      const content = FolderFiles.text(found.bytes.toString('utf8'));
 
       for (const [source, inner = ''] of content.matchAll(VARIABLE)) {
         if (offered.includes(inner.trim())) continue;
@@ -246,21 +231,17 @@ function readFolder<TName extends DefaultHookName>(name: TName, files: readonly 
     if (en !== undefined) variants.en = en;
 
     if (zh !== undefined) variants.zh = zh;
-    texts.set(text, variants);
+    texts[text] = variants;
   }
 
   const own = isJsonObject(raw.with) ? raw.with : {};
 
-  if (!params.success || refusals.length > 0) return { ok: false, problems: refusals, with: own };
+  if (!params.success || refusals.length > 0 || !holdsEveryText(name, texts)) return { ok: false, problems: refusals, with: own };
 
   const hook: DefaultHook<TName> = {
     params: params.data,
     text(text, language) {
-      const variants = texts.get(text);
-
-      // readFolder read every text the contract names, or returned its problems above.
-      if (!variants) throw new Error(`teamai's default hook ${name} has no text ${text}`);
-      const picked = pick(variants, language);
+      const picked = pick(texts[text], language);
 
       return { language: picked.language, render: (values) => substitute(picked.content, values) };
     },
@@ -270,7 +251,7 @@ function readFolder<TName extends DefaultHookName>(name: TName, files: readonly 
 }
 
 /** The folder teamai ships for `name`. It is part of teamai's package, so one that cannot be read is a teamai bug, and throws. */
-async function shipped<TName extends DefaultHookName>(name: TName): Promise<{ hook: DefaultHook<TName>; with: JsonObject; texts: ReadonlyMap<string, TextVariants> }> {
+async function shipped<TName extends DefaultHookName>(name: TName): Promise<{ hook: DefaultHook<TName>; with: JsonObject; texts: Readonly<Partial<Record<string, TextVariants>>> }> {
   const dir = path.join(packageRoot(), 'hooks', name);
   const read = await FolderFiles.read(dir);
 
@@ -339,8 +320,8 @@ async function compare(name: DefaultHookName, team: readonly FolderFile[] | null
     return [{ key, teamai: base ?? null, team: set ?? null }];
   });
 
-  const read = (texts: ReadonlyMap<string, TextVariants>, text: string) => {
-    const variants = texts.get(text);
+  const read = (texts: Readonly<Partial<Record<string, TextVariants>>>, text: string) => {
+    const variants = texts[text];
 
     return variants ? pick(variants, language) : null;
   };

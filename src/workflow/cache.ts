@@ -379,7 +379,15 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
       continue;
     }
 
-    toCheck.push({ stem, source: resolution.item.source });
+    const { source } = resolution.item;
+
+    // A teamai- name only replaces a default (#1787, common rule 5). A single file keeps its older meaning.
+    if (source.kind === 'folder' && stem.startsWith(DefaultWorkflows.PREFIX) && !shipped.has(stem)) {
+      log.warn(`[workflows] ${source.path} is skipped: a teamai- name only replaces a teamai default, and teamai has no workflow named ${stem}. Rename the folder.`);
+      continue;
+    }
+
+    toCheck.push({ stem, source });
   }
 
   for (const { stem, source } of toCheck) {
@@ -607,7 +615,7 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
     const retypedBy = workflowsRunBy(entry.definition).flatMap((run) => {
       const child = runnable(run.workflow);
 
-      return child ? retypedInputs(shipped, entry.definition, run, child) : [];
+      return child ? retypedInputs({ defaults: shipped, parent: entry.definition, run, child }) : [];
     });
 
     for (const reason of [...(parsed.ok ? [] : parsed.diagnostics.map(({ message }) => message)), ...retypedBy]) {
@@ -776,7 +784,13 @@ function sameType(left: OutputSchema, right: OutputSchema): boolean {
  * for teamai's own definition of that workflow, so a value of the default's type would fail `child` at the step,
  * after the steps before it ran. Team workflows are matched by input name only.
  */
-function retypedInputs(defaults: ReadonlyMap<string, CachedWorkflow>, parent: WorkflowDefinition, { step, workflow, with: passed }: WorkflowRun, child: WorkflowDefinition): string[] {
+function retypedInputs({ defaults, parent, run, child }: {
+  readonly defaults: ReadonlyMap<string, CachedWorkflow>;
+  readonly parent: WorkflowDefinition;
+  readonly run: WorkflowRun;
+  readonly child: WorkflowDefinition;
+}): string[] {
+  const { step, workflow, with: passed } = run;
   const shipped = defaults.get(workflow)?.definition;
 
   if (defaults.get(parent.name)?.definition !== parent || !shipped || shipped === child) return [];
@@ -803,7 +817,7 @@ export async function loadWorkflowTree(
   const shipped = await shippedWorkflows();
 
   const retyped = (parent: WorkflowDefinition, run: WorkflowRun, child: WorkflowDefinition): TreeFailure | undefined => {
-    const [reason] = retypedInputs(shipped, parent, run, child);
+    const [reason] = retypedInputs({ defaults: shipped, parent, run, child });
 
     return reason === undefined ? undefined : { code: 'invalid_inputs', message: `Workflow "${parent.name}" ${reason}. Make the two agree, then pull again.` };
   };

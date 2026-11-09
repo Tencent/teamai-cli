@@ -283,6 +283,7 @@ steps:
 - Every other file of the folder, in subdirectories too, belongs to the workflow; names starting with `.` are skipped. Another `*.yaml` in it is not a workflow, and pull says so once per folder: `workflows/release/ is a workflow folder; checks.yaml in it is not a workflow`.
 - `prompt_file` and [`answer_file`](workflow-advanced.md#ask-the-members-ai-tool-for-an-answer) name a file of the folder, from its root, in a subdirectory too. `..` or an absolute path makes the workflow invalid. Outside a folder, both are looked up under `prompts/`.
 - A file and a folder of one name in one place, such as `workflows/release.yaml` beside `workflows/release/`, leave the workflow nothing to run until one is removed.
+- A `teamai-` folder name only replaces a [default](#default-workflows) of that name. Pull skips any other with a warning: `workflows/teamai-release/ is skipped: a teamai- name only replaces a teamai default, and teamai has no workflow named teamai-release. Rename the folder.`
 - A folder holds UTF-8 text only, 1 MB in all, and no symlink. [Workflow folders in a run](workflow-advanced.md#workflow-folders-in-a-run) covers these limits and how a run keeps its copy.
 - `README.md` is for people. teamai never gives it to an agent, and the skill pull generates for the workflow leaves it out.
 - `teamai status` counts a folder as one workflow. In single-repo, the folder lives under `.teamai/workflows/`, and `teamai push` sends every file of it.

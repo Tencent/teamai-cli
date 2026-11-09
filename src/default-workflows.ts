@@ -1,9 +1,7 @@
 import { createHash } from 'node:crypto';
-import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { getCurrentVersion } from './package-info.js';
+import { getCurrentVersion, packageRoot } from './package-info.js';
 import { RESOURCE_LAYOUTS, Resources, type ShippedFile, type TeamaiLayer } from './resources/resolver.js';
 import { SCORE_WORKFLOW } from './scorers/judging-workflows.js';
 import { ScoreOverride, type ScoreOverrideCode } from './scorers/score-override.js';
@@ -26,20 +24,6 @@ import type { CachedWorkflow, ResolvedWorkflow, WorkflowDefinition, WorkflowDiag
 //  handoff refuses a default run whose shipped file differs on
 //  the other machine.
 //
-
-/** The package root, holding `workflows/`. This file sits one level below it, in src/ and in the bundle in dist/ alike. */
-function packageRoot(): string {
-  const modulePath = fileURLToPath(import.meta.url);
-  let moduleDir: string;
-
-  try {
-    moduleDir = path.dirname(fs.realpathSync(modulePath));
-  } catch {
-    moduleDir = path.dirname(modulePath);
-  }
-
-  return path.join(moduleDir, '..');
-}
 
 /** Every default's name starts with this, so its generated skill, named after it, is one prune and uninstall look at. */
 const PREFIX = 'teamai-';
