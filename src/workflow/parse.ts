@@ -62,7 +62,7 @@ const CONFINED_STEP_KEYS = new Set(['id', 'needs', 'if', 'prompt', 'prompt_file'
  * What an answer step may carry: one prompt the member's AI tool answers, read-only and with no session, in the checkout
  * or with `workspace: new` in a worktree of its own, so no key that names a tool, an agent, a model, a role or a person.
  */
-const ANSWER_STEP_KEYS = new Set(['id', 'needs', 'if', 'answer', 'output', 'end', 'loop', 'break', 'for_each', 'timeout', 'continue_on_failure', 'workspace']);
+const ANSWER_STEP_KEYS = new Set(['id', 'needs', 'if', 'answer', 'answer_file', 'output', 'end', 'loop', 'break', 'for_each', 'timeout', 'continue_on_failure', 'workspace']);
 
 /** What a `finally` step may carry: it runs a command, read-only, in no workspace of its own. */
 const FINALLY_STEP_KEYS = new Set(['id', 'needs', 'if', 'command', 'env', 'output', 'timeout']);
@@ -551,6 +551,10 @@ function parseBody(
       const promptFile = scalarString(promptFilePair?.value);
       const answerPair = item.items.find((pair) => scalarString(pair.key) === 'answer');
       const answer = scalarString(answerPair?.value);
+      const answerFilePair = item.items.find((pair) => scalarString(pair.key) === 'answer_file');
+      const answerFile = scalarString(answerFilePair?.value);
+      // A step that answers its prompt with text: from `answer`, or from the file `answer_file` names.
+      const answerStep = answerPair ?? answerFilePair;
       const workflowPair = item.items.find((pair) => scalarString(pair.key) === 'workflow');
       const workflow = scalarString(workflowPair?.value)?.trim();
       const forEachPair = item.items.find((pair) => scalarString(pair.key) === 'for_each');
@@ -643,8 +647,8 @@ function parseBody(
         diagnostics.push(locate(file, lineCounter, promptPair.value ?? promptPair.key ?? item, `${field}.prompt`, 'prompt must be a non-empty string'));
       }
 
-      if (answerPair) {
-        if (answer === undefined || answer.trim() === '') {
+      if (answerStep) {
+        if (answerPair && (answer === undefined || answer.trim() === '')) {
           diagnostics.push(locate(file, lineCounter, answerPair.value ?? answerPair.key ?? item, `${field}.answer`, 'answer must be a non-empty string'));
         }
 
@@ -659,16 +663,23 @@ function parseBody(
         const outputValue = item.items.find((pair) => scalarString(pair.key) === 'output')?.value;
 
         if (!isMap(outputValue)) {
-          diagnostics.push(locate(file, lineCounter, outputValue ?? answerPair.key ?? item, `${field}.output`, `${stepLabel} answer needs output: { text: string } to take the reply as text, or the fields of the JSON object the reply holds`));
+          diagnostics.push(locate(file, lineCounter, outputValue ?? answerStep.key ?? item, `${field}.output`, `${stepLabel} answer needs output: { text: string } to take the reply as text, or the fields of the JSON object the reply holds`));
         }
       }
 
-      if (promptFilePair) {
-        if (!isPromptFilePath(promptFile)) {
-          diagnostics.push(locate(file, lineCounter, promptFilePair.value ?? promptFilePair.key ?? item, `${field}.prompt_file`, 'prompt_file must be a relative path under prompts/'));
-        } else if (isYamlNode(promptFilePair.value)) {
-          const promptFileLocate = locate(file, lineCounter, promptFilePair.value, `${field}.prompt_file`, '');
-          promptFileLocations[field] = { line: promptFileLocate.line, column: promptFileLocate.column };
+      // Inside a workflow folder, a file is one of the folder's own; outside, one under prompts/.
+      const inFolder = workflowFolderName(file) !== undefined;
+
+      for (const [key, pair, value] of [['prompt_file', promptFilePair, promptFile], ['answer_file', answerFilePair, answerFile]] as const) {
+        if (!pair) continue;
+
+        if (inFolder && !isFolderFilePath(value)) {
+          diagnostics.push(locate(file, lineCounter, pair.value ?? pair.key ?? item, `${field}.${key}`, `${key} must be a relative path inside the workflow folder, without ..`));
+        } else if (!inFolder && !isPromptFilePath(value)) {
+          diagnostics.push(locate(file, lineCounter, pair.value ?? pair.key ?? item, `${field}.${key}`, `${key} must be a relative path under prompts/`));
+        } else if (isYamlNode(pair.value)) {
+          const located = locate(file, lineCounter, pair.value, `${field}.${key}`, '');
+          promptFileLocations[field] = { line: located.line, column: located.column };
         }
       }
 
@@ -815,7 +826,7 @@ function parseBody(
 
       const confined = workspace instanceof Object && 'confined' in workspace;
 
-      if (answerPair && workspace !== undefined && workspace !== 'new' && !confined) {
+      if (answerStep && workspace !== undefined && workspace !== 'new' && !confined) {
         diagnostics.push({
           ...locate(file, lineCounter, workspacePair?.value ?? item, `${field}.workspace`, `${stepLabel} answer takes workspace only as new: a worktree of its own, which it reads and leaves as it found it`),
           code: 'bad_workspace',
@@ -1081,6 +1092,8 @@ function parseBody(
         if (promptFile) step.promptFile = promptFile;
 
         if (answer) step.answer = answer;
+
+        if (answerFile) step.answerFile = answerFile;
 
         if (inline) step.workflow = inline.workflow;
 
@@ -2270,7 +2283,7 @@ function withReadProblems(label: string, what: string, template: Template, decla
 }
 
 /**
- * Diagnostics for the templates in the text a step's `prompt_file` resolved to, placed at its `prompt_file` field.
+ * Diagnostics for the templates in the text a step's `prompt_file` or `answer_file` resolved to, placed at that field.
  * `trail` is the step's index in each workflow on the way to it: `[2, 0]` is the first step of the inline workflow of step 2.
  */
 export function promptFileDiagnostics(
@@ -2296,20 +2309,21 @@ export function promptFileDiagnostics(
   const step = levels[levels.length - 1]?.[trail[trail.length - 1] ?? -1];
 
   if (!step) return [];
-  const field = `${stepField(trail)}.prompt_file`;
+  const key = step.answerFile !== undefined ? 'answer_file' : 'prompt_file';
+  const field = `${stepField(trail)}.${key}`;
   const bindsItem = step.forEach !== undefined || runners.some((runner) => runner.forEach !== undefined);
   const parsed = parseTemplate(text, bindsItem);
 
   if (!parsed.ok) {
     return parsed.errors.map((problem): WorkflowDiagnostic => ({
-      file, ...at, field, message: `step "${step.id}" prompt_file template ${problem.source}: ${problem.message}`, code: 'bad_template',
+      file, ...at, field, message: `step "${step.id}" ${key} template ${problem.source}: ${problem.message}`, code: 'bad_template',
     }));
   }
 
-  const diagnostics: WorkflowDiagnostic[] = withReadProblems(`step "${step.id}"`, 'prompt_file', parsed.template, step.with)
+  const diagnostics: WorkflowDiagnostic[] = withReadProblems(`step "${step.id}"`, key, parsed.template, step.with)
     .map((message): WorkflowDiagnostic => ({ file, ...at, field, message, code: 'bad_template' }));
 
-  const promptSite: ReadSite = expressionSite(step.id, field, at, 'prompt_file', templateExpressions(parsed.template));
+  const promptSite: ReadSite = expressionSite(step.id, field, at, key, templateExpressions(parsed.template));
 
   if (step.forEach) promptSite.item = true;
   promptSite.code = 'bad_template';
@@ -2336,6 +2350,14 @@ export function stepField(trail: number[]): string {
 
 function pathIsAbsolute(value: string): boolean {
   return value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
+}
+
+/** A path of a file inside a workflow folder: relative, `/`-separated or not, without `..`. */
+function isFolderFilePath(value: string | undefined): value is string {
+  if (!value || value.trim() === '' || pathIsAbsolute(value)) return false;
+  const segments = value.split(/[\\/]/).filter((segment) => segment !== '' && segment !== '.');
+
+  return segments.length >= 1 && !segments.includes('..');
 }
 
 function isPromptFilePath(value: string | undefined): value is string {

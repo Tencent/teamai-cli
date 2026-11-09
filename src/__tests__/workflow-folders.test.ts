@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
-import { loadCachedWorkflow } from '../workflow/cache.js';
+import { loadCachedWorkflow, namespaceConflictOf } from '../workflow/cache.js';
 
 const dirs: string[] = [];
 
@@ -154,5 +154,72 @@ describe('workflow folders', () => {
     const [left, right] = await Promise.all([loadCachedWorkflow(lf.config, 'release'), loadCachedWorkflow(crlf.config, 'release')]);
     expect(right?.files?.find((file) => file.path === 'plan.sh')).toEqual({ path: 'plan.sh', executable: true, content: 'echo one\necho two\n' });
     expect(right?.sourceHash).toBe(left?.sourceHash);
+  });
+
+  it('gives a file and a folder of one name in one place no runnable version, as a duplicate', async () => {
+    const team = teamScope();
+    team.put('workflows/release.yaml', RELEASE);
+    team.put('workflows/release/WORKFLOW.yaml', RELEASE);
+    team.commit();
+
+    const result = await syncScorersThenWorkflows(team.config);
+
+    expect(result.invalid).toMatchObject([{
+      file: 'workflows/release.yaml',
+      message: 'Workflow "release" is defined twice in one place, as workflows/release.yaml and as workflows/release/; a workflow defined twice has no runnable version',
+    }]);
+    expect(await loadCachedWorkflow(team.config, 'release')).toBeNull();
+    expect(await namespaceConflictOf(team.config, 'release')).toBe(
+      'Workflow "release" is defined twice in one place, as workflows/release.yaml and as workflows/release/; a workflow defined twice has no runnable version. '
+      + 'Remove one of them, push, run teamai pull, and start again.',
+    );
+  });
+
+  it('reads prompt_file and answer_file inside a folder from the folder root, subdirectories included, as written', async () => {
+    const team = teamScope();
+    team.put('workflows/release/WORKFLOW.yaml', `${RELEASE}  - id: summary
+    needs: [plan]
+    prompt_file: summary.md
+  - id: notes
+    needs: [summary]
+    answer_file: texts/notes.md
+    output: { text: string }
+`);
+    team.put('workflows/release/summary.md', 'Summarise release {{ steps.plan.outputs.version }}.');
+    team.put('workflows/release/texts/notes.md', 'Write the notes.\n\n');
+    team.commit();
+
+    const result = await syncScorersThenWorkflows(team.config);
+
+    expect(result.invalid).toEqual([]);
+    const steps = (await loadCachedWorkflow(team.config, 'release'))?.definition.steps;
+    expect(steps?.[1]?.prompt).toBe('Summarise release {{ steps.plan.outputs.version }}.');
+    expect(steps?.[2]?.answer).toBe('Write the notes.\n\n');
+  });
+
+  it.each([
+    ['../shared/summary.md', 'prompt_file must be a relative path inside the workflow folder, without ..'],
+    ['/etc/summary.md', 'prompt_file must be a relative path inside the workflow folder, without ..'],
+  ])('refuses prompt_file %s in a folder', async (promptFile, message) => {
+    const team = teamScope();
+    team.put('workflows/release/WORKFLOW.yaml', `${RELEASE}  - id: summary\n    needs: [plan]\n    prompt_file: ${promptFile}\n`);
+    team.commit();
+
+    const result = await syncScorersThenWorkflows(team.config);
+
+    expect(result.invalid).toMatchObject([{ field: 'steps[1].prompt_file', message }]);
+  });
+
+  it('looks answer_file up under prompts/ in the active namespaces outside a folder', async () => {
+    const team = teamScope();
+    team.put('workflows/notes.yaml', 'schemaVersion: v1alpha1\nname: notes\ndescription: Notes.\nsteps:\n  - id: notes\n    answer_file: prompts/notes.md\n    output: { text: string }\n');
+    team.put('prompts/notes.md', 'Root notes.');
+    team.put('prompts/ops/notes.md', 'Ops notes.');
+    team.commit();
+
+    const result = await syncScorersThenWorkflows(team.config);
+
+    expect(result.invalid).toEqual([]);
+    expect((await loadCachedWorkflow(team.config, 'notes'))?.definition.steps[0]?.answer).toBe('Ops notes.');
   });
 });

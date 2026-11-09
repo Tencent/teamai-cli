@@ -113,7 +113,7 @@ steps:
     tool: claude
     session: continue
 `)).toEqual([
-      'workflows/ask.yaml:5: field "steps[0]": a step has exactly one action: command, prompt, prompt_file, answer, or workflow',
+      'workflows/ask.yaml:5: field "steps[0]": a step has exactly one action: command, prompt, prompt_file, answer, answer_file, or workflow',
       'workflows/ask.yaml:11: field "steps[1].output": step "bare" answer needs output: { text: string } to take the reply as text, or the fields of the JSON object the reply holds',
       'workflows/ask.yaml:17: field "steps[2].tool": step "placed" answer takes no tool: the member\'s AI tool answers its prompt with text, in the checkout read-only',
       'workflows/ask.yaml:18: field "steps[2].session": step "placed" answer takes no session: the member\'s AI tool answers its prompt with text, in the checkout read-only',

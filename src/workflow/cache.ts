@@ -117,31 +117,38 @@ async function readCache(config: LocalConfig, name: string): Promise<CachedWorkf
 }
 
 /**
- * The cache entry of a name that two namespaces the member receives both define: the sync's diagnostic, kept in place
- * of a definition, so teamai's default of that name does not stand in for the team's.
+ * The cache entry of a name that two namespaces the member receives both define, or that one place defines twice, as a
+ * file and as a folder (`duplicate`; an entry without a reason is one written before folders): the sync's diagnostic,
+ * kept in place of a definition, so teamai's default of that name does not stand in for the team's.
  */
-const NamespaceConflictSchema = z.object({ conflict: z.string() });
+const NamespaceConflictSchema = z.object({ conflict: z.string(), reason: z.literal('duplicate').optional() });
 
-async function readConflict(config: LocalConfig, name: string): Promise<string | undefined> {
+type NamespaceConflict = z.infer<typeof NamespaceConflictSchema>;
+
+async function readConflict(config: LocalConfig, name: string): Promise<NamespaceConflict | undefined> {
   const raw = await readFileSafe(cachePath(config, name));
 
   if (raw === null) return undefined;
 
   try {
-    return NamespaceConflictSchema.safeParse(JSON.parse(raw)).data?.conflict;
+    return NamespaceConflictSchema.safeParse(JSON.parse(raw)).data;
   } catch {
     return undefined;
   }
 }
 
 /**
- * Why `name` has no runnable version when the last sync found it in two namespaces the member receives, for a refusal
- * with code `workflow_namespace_conflict`.
+ * Why `name` has no runnable version when the last sync found it in two namespaces the member receives, or twice in one
+ * place, for a refusal with code `workflow_namespace_conflict`.
  */
 export async function namespaceConflictOf(config: LocalConfig, name: string): Promise<string | undefined> {
   const conflict = await readConflict(config, name);
 
-  return conflict === undefined ? undefined : `${conflict}. Keep it in one namespace, push it, run teamai pull, and start again.`;
+  if (conflict === undefined) return undefined;
+
+  return conflict.reason === 'duplicate'
+    ? `${conflict.conflict}. Remove one of them, push, run teamai pull, and start again.`
+    : `${conflict.conflict}. Keep it in one namespace, push it, run teamai pull, and start again.`;
 }
 
 /**
@@ -341,12 +348,15 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
   }
 
   const toCheck: Array<{ stem: string; source: ResourceSource<unknown> }> = [];
+  const duplicates = new Set<string>();
 
   for (const resolution of found) {
     const stem = resolution.name;
 
     if (resolution.kind === 'conflict') {
       const [first, second] = [resolution.first.source.path, resolution.second.source.path];
+
+      if (resolution.reason === 'duplicate') duplicates.add(stem);
 
       checked.push({
         stem,
@@ -357,7 +367,9 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
           column: 1,
           field: '(root)',
           code: 'workflow_namespace_conflict',
-          message: `Workflow "${stem}" is defined in multiple active namespaces (${first} and ${second}); conflicting workflows have no runnable version`,
+          message: resolution.reason === 'duplicate'
+            ? `Workflow "${stem}" is defined twice in one place, as ${first} and as ${second}; a workflow defined twice has no runnable version`
+            : `Workflow "${stem}" is defined in multiple active namespaces (${first} and ${second}); conflicting workflows have no runnable version`,
         }],
       });
       continue;
@@ -412,7 +424,7 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
       continue;
     }
 
-    const resolved = await resolvePromptFiles(config, parsed.definition, parsed.promptFileLocations, relativePath, effectiveActivePrompts);
+    const resolved = await resolvePromptFiles(config, parsed.definition, parsed.promptFileLocations, relativePath, effectiveActivePrompts, folder ? { path: source.path, files: folder.files } : undefined);
 
     if (!resolved.ok) {
       checked.push({ stem, relativePath, diagnostics: resolved.diagnostics });
@@ -489,7 +501,9 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
       if (conflict) {
         conflicted.add(stem);
 
-        if (!options.dryRun) await writeJsonAtomic(cachePath(config, stem), { conflict: conflict.message });
+        const entry: NamespaceConflict = duplicates.has(stem) ? { conflict: conflict.message, reason: 'duplicate' } : { conflict: conflict.message };
+
+        if (!options.dryRun) await writeJsonAtomic(cachePath(config, stem), entry);
       }
 
       log.warn(shipped.has(stem) && !conflict
@@ -1008,9 +1022,11 @@ function checkReferences(
 
       if (child?.kind === 'inline') promptFiles(child.workflow.steps, [...trail, index]);
 
-      if (step.promptFile === undefined || step.prompt === undefined) return;
+      const text = step.promptFile !== undefined ? step.prompt : step.answerFile !== undefined ? step.answer : undefined;
+
+      if (text === undefined) return;
       const at = version.promptFileLocations[stepField([...trail, index])] ?? { line: 1, column: 1 };
-      diagnostics.push(...promptFileDiagnostics(version.relativePath, version.definition, [...trail, index], step.prompt, at, files));
+      diagnostics.push(...promptFileDiagnostics(version.relativePath, version.definition, [...trail, index], text, at, files));
     });
 
     promptFiles(version.definition.steps, []);
@@ -1073,13 +1089,18 @@ function checkReferences(
   return (stem) => ({ definition: own(stem), revision: revisionProblems.get(stem) ?? [], kept: keptProblems.get(stem) ?? [] });
 }
 
-/** Resolves every `prompt_file`, including those inside inline workflows. */
+/**
+ * Resolves every `prompt_file` and `answer_file`, including those inside inline workflows, into the step's `prompt` or
+ * `answer`: in a workflow folder, the folder's own file of that path; else a file under `prompts/`, looked up in the
+ * active namespaces first. `sources` are the files under `prompts/` it read, which a folder's sourceHash already covers.
+ */
 async function resolvePromptFiles(
   config: LocalConfig,
   definition: WorkflowDefinition,
   locations: Record<string, { line: number; column: number }>,
   workflowFile: string,
-  activePromptsNamespaces: readonly string[] | null = null,
+  activePromptsNamespaces: readonly string[] | null,
+  folder: { path: string; files: readonly WorkflowFolderFile[] } | undefined,
 ): Promise<
   | { ok: true; definition: WorkflowDefinition; sources: Array<{ path: string; content: string }> }
   | { ok: false; diagnostics: WorkflowDiagnostic[] }
@@ -1087,6 +1108,60 @@ async function resolvePromptFiles(
   const root = path.resolve(config.repo.localPath);
   const diagnostics: WorkflowDiagnostic[] = [];
   const sources: Array<{ path: string; content: string }> = [];
+
+  /** The text of `written`, under prompts/ as `step` gives it, or the diagnostic that says why it has none. */
+  const promptsText = async (key: 'prompt_file' | 'answer_file', written: string, at: Omit<WorkflowDiagnostic, 'message'>): Promise<{ path: string; content: string } | WorkflowDiagnostic> => {
+    let promptPath = written;
+    const promptRelative = promptPath.replace(/^[\\/]/, '');
+
+    if (promptRelative.startsWith('prompts/') && activePromptsNamespaces && activePromptsNamespaces.length > 0) {
+      const leaf = promptRelative.slice('prompts/'.length);
+      // Namespace lookup works for any leaf depth — a nested path like
+      // prompts/topic/note.md resolves to prompts/<ns>/topic/note.md
+      // just as a flat prompts/note.md resolves to prompts/<ns>/note.md.
+      //
+      // A leaf whose first segment is already an active namespace is explicit
+      // and resolved as written: prepending another namespace would look up
+      // prompts/<other>/ops/note.md and load that file instead.
+      const lead = leaf.split('/')[0];
+      const alreadyNamespaced = lead !== undefined && activePromptsNamespaces.includes(lead);
+
+      const found = alreadyNamespaced ? [] : (await Promise.all(
+        activePromptsNamespaces.map(async (ns) => {
+          const candidate = path.join(root, 'prompts', ns, ...leaf.split('/'));
+
+          return (await pathExists(candidate)) ? `prompts/${ns}/${leaf}` : null;
+        }),
+      )).filter((p): p is string => p !== null);
+
+      if (found.length === 1) {
+        promptPath = found[0];
+      } else if (found.length > 1) {
+        return {
+          ...at,
+          code: 'prompt_namespace_conflict',
+          message: `${key} "${written}" is ambiguous between active namespaces (${found.join(', ')}); fix the conflict or specify the prompt path explicitly`,
+        };
+      }
+    }
+
+    const target = path.resolve(root, promptPath);
+
+    try {
+      assertWithinRoot(path.join(root, 'prompts'), target);
+      const stat = await fs.lstat(target);
+
+      if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('not a regular file');
+      assertSafePath(target, [root]);
+      const prompt = await readFileSafe(target);
+
+      if (prompt === null) throw new Error('unreadable');
+
+      return { path: promptPath, content: prompt };
+    } catch {
+      return { ...at, message: `${key} "${written}" must be a readable, non-symlink file under prompts/` };
+    }
+  };
 
   const resolveSteps = async (given: WorkflowStep[], trail: number[]): Promise<WorkflowStep[]> => {
     const steps = [...given];
@@ -1100,74 +1175,38 @@ async function resolvePromptFiles(
         continue;
       }
 
-      if (!step.promptFile) continue;
+      const written = step.promptFile ?? step.answerFile;
 
-      let promptPath = step.promptFile;
+      if (written === undefined) continue;
+      const key = step.promptFile !== undefined ? 'prompt_file' : 'answer_file';
       const location = locations[field] ?? { line: 1, column: 1 };
+      const at = { file: workflowFile, line: location.line, column: location.column, field: `${field}.${key}` };
+      let text: string;
 
-      const promptRelative = promptPath.replace(/^[\\/]/, '');
+      if (folder) {
+        const inside = written.split(/[\\/]/).filter((segment) => segment !== '' && segment !== '.').join('/');
+        const found = folder.files.find((file) => file.path === inside);
 
-      if (promptRelative.startsWith('prompts/') && activePromptsNamespaces && activePromptsNamespaces.length > 0) {
-        const leaf = promptRelative.slice('prompts/'.length);
-        // Namespace lookup works for any leaf depth — a nested path like
-        // prompts/topic/note.md resolves to prompts/<ns>/topic/note.md
-        // just as a flat prompts/note.md resolves to prompts/<ns>/note.md.
-        //
-        // A leaf whose first segment is already an active namespace is explicit
-        // and resolved as written: prepending another namespace would look up
-        // prompts/<other>/ops/note.md and load that file instead.
-        const lead = leaf.split('/')[0];
-        const alreadyNamespaced = lead !== undefined && activePromptsNamespaces.includes(lead);
-
-        const found = alreadyNamespaced ? [] : (await Promise.all(
-          activePromptsNamespaces.map(async (ns) => {
-            const candidate = path.join(root, 'prompts', ns, ...leaf.split('/'));
-
-            return (await pathExists(candidate)) ? `prompts/${ns}/${leaf}` : null;
-          }),
-        )).filter((p): p is string => p !== null);
-
-        if (found.length === 1) {
-          promptPath = found[0];
-        } else if (found.length > 1) {
-          diagnostics.push({
-            file: workflowFile,
-            line: location.line,
-            column: location.column,
-            field: `${field}.prompt_file`,
-            code: 'prompt_namespace_conflict',
-            message: `prompt_file "${step.promptFile}" is ambiguous between active namespaces (${found.join(', ')}); fix the conflict or specify the prompt path explicitly`,
-          });
+        if (!found) {
+          diagnostics.push({ ...at, message: `${key} "${written}" is not a file of the workflow folder ${folder.path}` });
           continue;
         }
+
+        text = found.content;
+      } else {
+        const read = await promptsText(key, written, at);
+
+        if ('message' in read) {
+          diagnostics.push(read);
+          continue;
+        }
+
+        sources.push(read);
+        text = read.content;
       }
 
-      const target = path.resolve(root, promptPath);
-      let prompt: string | null = null;
-
-      try {
-        assertWithinRoot(path.join(root, 'prompts'), target);
-        const stat = await fs.lstat(target);
-
-        if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('not a regular file');
-        assertSafePath(target, [root]);
-        prompt = await readFileSafe(target);
-
-        if (prompt === null) throw new Error('unreadable');
-      } catch {
-        diagnostics.push({
-          file: workflowFile,
-          line: location.line,
-          column: location.column,
-          field: `${field}.prompt_file`,
-          message: `prompt_file "${step.promptFile}" must be a readable, non-symlink file under prompts/`,
-        });
-        continue;
-      }
-
-      diagnostics.push(...promptFileDiagnostics(workflowFile, definition, [...trail, index], prompt, location));
-      sources.push({ path: promptPath, content: prompt });
-      steps[index] = { ...step, prompt };
+      diagnostics.push(...promptFileDiagnostics(workflowFile, definition, [...trail, index], text, location));
+      steps[index] = key === 'prompt_file' ? { ...step, prompt: text } : { ...step, answer: text };
     }
 
     return steps;
