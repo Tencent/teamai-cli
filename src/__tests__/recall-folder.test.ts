@@ -135,6 +135,17 @@ describe('a team replacement of rules/teamai-recall/ (#1787)', () => {
     );
   });
 
+  it('refuses a replacement that names ${TEAMAI_RULE_DIR}, which no recall file is rendered with', async () => {
+    write('block.md', '## Recall (our team)\n\nRead `${TEAMAI_RULE_DIR}/examples.md` first.\n');
+    write('examples.md', '- search before you plan\n');
+
+    expect(await blocks()).toMatchObject({ recall: golden('block.md'), directRecall: golden('block-direct.md') });
+    expect(vi.mocked(log.warn).mock.calls.map(([message]) => String(message))).toContain(
+      'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: rules/teamai-recall/block.md names ${TEAMAI_RULE_DIR}, '
+      + 'but a recall file is delivered as its text, and no other file of the folder is. Put what it points at in the file. Fix the folder in the team repo.',
+    );
+  });
+
   it('falls back to the replacement\'s own base file for a language it lacks, and takes a direct block in that language', async () => {
     write('block-direct.en.md', '## Recall\n\nRun `teamai recall`. Quote any `Nothing was searched:` line.\n');
 

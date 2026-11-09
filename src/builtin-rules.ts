@@ -10,6 +10,7 @@ import crypto from 'node:crypto';
 import type { DeliveryRecorder } from './git-exclude-delivered.js';
 import { recordDelivered, type DeliveryLedger } from './resources/delivered-copies.js';
 import { isLanguageVariant, RESOURCE_LAYOUTS, Resources, type ShippedFile, type TeamaiLayer } from './resources/resolver.js';
+import { DeliveredFolders } from './resources/delivered-folders.js';
 import { FolderFiles } from './resources/folder-files.js';
 import { RuleFolders } from './resources/rule-folders.js';
 import { warnOnce } from './utils/warn-once.js';
@@ -259,6 +260,12 @@ async function recallFolderProblem(dir: string, shown: string): Promise<string |
             const content = await RuleFolders.readTextFile(path.join(dir, name));
 
             if (content === null) return `${shown}${name} cannot be read`;
+
+            if (DeliveredFolders.mentions(content, 'rules')) {
+                return `${shown}${name} names \${TEAMAI_RULE_DIR}, but a recall file is delivered as its text, and no other file of the folder is. `
+                    + 'Put what it points at in the file';
+            }
+
             const missing = lines.find((line) => !content.includes(line));
 
             if (missing !== undefined) return `${shown}${name} does not contain "${missing}"`;

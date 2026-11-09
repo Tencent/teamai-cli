@@ -19,5 +19,6 @@ Copy this directory to `rules/teamai-recall/` at the root of the team repo and e
 - `RULE.md`, `block.md` and `block-direct.md` are required.
 - A missing language file falls back to the team's base file, never to teamai's.
 - Every `RULE*.md` must contain `Nothing was searched:` and `Recall skips the older index`, and every `block-direct*.md` must contain `Nothing was searched:`. Recall prints those lines, and the rule tells the agent what to do with them.
+- Pull delivers only the files above, as text, so no file names `${TEAMAI_RULE_DIR}`. Put an example or a checklist in the file itself.
 
 Pull refuses a replacement that breaks this, names the file, and keeps teamai's folder in force. Push never publishes the rule.
