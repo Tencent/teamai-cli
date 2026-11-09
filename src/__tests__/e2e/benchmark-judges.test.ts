@@ -123,6 +123,21 @@ describe('benchmark judges on the local driver', () => {
     expect(record.trials[0]?.scoringCost).toEqual({ amount: 0.2, unit: 'USD', complete: true });
   }, 120_000);
 
+  it("leaves a trial's judging cost incomplete when one of two batched launches of the same judge stated no cost", async () => {
+    const other = QUALITY.replace('samplingRate: 0', 'samplingRate: 0\nmodel: other-model');
+    const fixture = await judgedFixture({ judge: 'states-one-batch', scorers: ['quality', 'tidiness', 'polish', 'clarity'], team: { 'scorers/tidiness.md': QUALITY, 'scorers/polish.md': other, 'scorers/clarity.md': other } });
+
+    const done = await runLocally(fixture);
+
+    const record = z.object({ trials: z.array(z.object({ scoringCost: z.unknown(), verdicts: z.array(z.object({ decider: z.object({ model: z.string().optional() }).passthrough().optional() })) })) }).parse(fixture.benchmarkRecord(done.run));
+    expect(done.outcome).toBe('succeeded');
+    // The correctness scorer alone, then quality and tidiness, then polish and clarity, which ask for another model;
+    // the judge reports the same model for each, and only one of the two batches states its cost.
+    expect(fixture.judgeLaunches()).toHaveLength(3);
+    expect(new Set(record.trials[0]?.verdicts.map(({ decider }) => decider?.model))).toEqual(new Set(['fake-judge']));
+    expect(record.trials[0]?.scoringCost).toEqual({ amount: 0.2, unit: 'USD', complete: false });
+  }, 120_000);
+
   it("decides a task with a check and success criteria by its failing check with no judge, and by its judge once its check passes, on the work as the prompt left it", async () => {
     const mixed = (name: string, run: string) => `schemaVersion: v1alpha1
 title: ${name}

@@ -82,8 +82,8 @@ export type FakeTool = 'fixes' | 'does-nothing' | 'fails-first' | 'skips-the-che
 export type FirstLaunch = 'pulls-a-team-change' | 'kills-its-driver';
 
 /** What the fake `claude` judge answers: the first label of its scorer, `incorrect` where its scorer has one, a label its scorer lacks, or exit 1. */
-/** `states-nothing`: answers the first label, and states no usage or cost. */
-export type FakeJudge = 'first-label' | 'incorrect' | 'another-label' | 'fails' | 'hangs' | 'states-nothing';
+/** `states-nothing`: answers the first label, and states no usage or cost. `states-one-batch`: as `first-label`, but only the first batched launch states its cost. */
+export type FakeJudge = 'first-label' | 'incorrect' | 'another-label' | 'fails' | 'hangs' | 'states-nothing' | 'states-one-batch';
 
 /** One launch of the fake judge: the labels its answer schema allows, its evidence's diff.patch, and the trial roots left. */
 const JudgeLaunchSchema = z.object({ labels: z.array(z.string()), diff: z.string().nullable(), trialRoots: z.array(z.string()) });
@@ -591,6 +591,14 @@ if (process.argv.includes('--json-schema')) {
   const members = answerSchema.properties.label === undefined ? Object.entries(answerSchema.properties) : undefined;
   const labels = members ? members.flatMap(([, member]) => member.properties.label.enum) : answerSchema.properties.label.enum;
   const diff = fs.existsSync('diff.patch') ? fs.readFileSync('diff.patch', 'utf8') : null;
+  const claimFirstBatch = () => {
+    try {
+      fs.closeSync(fs.openSync(${JSON.stringify(`${log}.batch-stated`)}, 'wx'));
+      return true;
+    } catch {
+      return false;
+    }
+  };
   fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ labels, diff, trialRoots: fs.existsSync(${JSON.stringify(trialRoots)}) ? fs.readdirSync(${JSON.stringify(trialRoots)}) : [] }) + '\\n');
   process.stdin.resume();
   process.stdin.on('end', () => {
@@ -601,7 +609,8 @@ if (process.argv.includes('--json-schema')) {
     const answer = members
       ? Object.fromEntries(members.map(([name, member]) => [name, { label: pick(member.properties.label.enum), reasoning: 'The fake judge decided.' }]))
       : { label: pick(labels), reasoning: 'The fake judge decided.' };
-    const usage = ${JSON.stringify(judge)} === 'states-nothing' ? {} : { total_cost_usd: 0.1 };
+    const statesNothing = ${JSON.stringify(judge)} === 'states-nothing' || (${JSON.stringify(judge)} === 'states-one-batch' && members !== undefined && !claimFirstBatch());
+    const usage = statesNothing ? {} : { total_cost_usd: 0.1 };
     console.log(JSON.stringify({ type: 'result', structured_output: wrapped ? { answer } : answer, ...usage }));
   });
   return;
