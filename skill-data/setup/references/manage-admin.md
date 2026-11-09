@@ -282,7 +282,7 @@ teamai env add <KEY> <VALUE> --project <id>   # or --role <ns>: in that namespac
 teamai env remove <KEY>      # remove (same --role / --project)
 teamai env add <KEY> --secret -d "<what it is for>" --url <where to get one>   # declare a secret in env/secrets.yaml, no value (same --role / --project)
 teamai env remove <KEY> --secret   # remove a declared secret (plain `env remove` does too when env.yaml does not set <KEY>)
-teamai remove mcp <name>     # root mcp/mcp.yaml if it has the name, else the one namespace file; --role / --project pick a namespace
+teamai remove mcp <name>     # root mcp/mcp.yaml or mcp/<name>/ if it has the name, else the one namespace; --role / --project pick a namespace
 ```
 
 Env variables, team hooks and MCP servers are scoped like skills: the root file
@@ -295,8 +295,8 @@ beside the script, its command naming it as `"${TEAMAI_HOOK_DIR}/scan.sh"`; an i
 both in `hooks.yaml` and as a folder stops team hooks like a repeated name. An MCP
 server the team writes is a folder too, `mcp/[<ns>/]<name>/MCP.yaml` beside its files,
 stdio only, its args naming them as `"${TEAMAI_MCP_DIR}/server.py"`; a name both in
-`mcp.yaml` and as a folder stops team MCP the same way, and `teamai remove mcp` does
-not remove a folder: delete it in the team repo.
+`mcp.yaml` and as a folder stops team MCP the same way. `teamai remove mcp <name>`
+removes a server folder as it removes an `mcp.yaml` server.
 Hooks and MCP servers have no add command, and `teamai push`
 does not pick up `hooks/` or `mcp/`: edit the file in the team repo, then commit
 and push it with git. `teamai doctor` lists each override.

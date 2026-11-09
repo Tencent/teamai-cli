@@ -1,10 +1,11 @@
 import path from 'node:path';
+import fse from 'fs-extra';
 import { z } from 'zod';
 import YAML from 'yaml';
 import { parseYaml } from '../utils/yaml.js';
 import { ResourceHandler } from './base.js';
 import { isJsonObject, type JsonValue, type LocalConfig, type McpServerDef, type ResourceItem, type TeamaiConfig } from '../types.js';
-import { readFileSafe, writeFile } from '../utils/fs.js';
+import { listDirs, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.js';
 import {
@@ -351,6 +352,20 @@ export class McpHandler extends ResourceHandler {
       }
     }
 
+    // A server folder is listed whether or not its MCP.yaml parses, so a broken one can still be removed.
+    const places = [null, ...await listDirs(path.join(repoPath, 'mcp'))];
+    const layers = await Promise.all(places.map((namespace) => Resources.layer(RESOURCE_LAYOUTS.mcp, { root: repoPath, namespace })));
+
+    for (const { items: layerItems } of layers) {
+      for (const layerItem of layerItems) {
+        if (layerItem.source.kind !== 'folder') continue;
+        const item: ResourceItem = { name: layerItem.name, type: 'mcp', sourcePath: layerItem.source.full, relativePath: layerItem.source.path.replace(/\/$/, '') };
+
+        if (layerItem.layer === 'namespace') item.namespace = layerItem.namespace;
+        items.push(item);
+      }
+    }
+
     return items;
   }
 
@@ -373,6 +388,15 @@ export class McpHandler extends ResourceHandler {
     const slash = name.indexOf('/');
     const namespace = slash === -1 ? null : name.slice(0, slash);
     const serverName = slash === -1 ? name : name.slice(slash + 1);
+    const removed = [...await removeServerFolder(localConfig.repo.localPath, namespace, serverName), ...await this.removeServerEntry(localConfig, namespace, serverName)];
+
+    if (removed.length > 0) await this.addTombstone(serverName, localConfig);
+
+    return removed;
+  }
+
+  /** Remove the server `serverName` from the MCP file of `namespace`; the file's path when it defined it. */
+  private async removeServerEntry(localConfig: LocalConfig, namespace: string | null, serverName: string): Promise<string[]> {
     const yamlPath = entryFileAbsolutePath(localConfig.repo.localPath, 'mcp', namespace);
     const content = await readFileSafe(yamlPath);
     const read = parseMcpContent(content);
@@ -395,8 +419,19 @@ export class McpHandler extends ResourceHandler {
 
     for (const index of removed.toReversed()) doc.deleteIn(['servers', index]);
     await writeFile(yamlPath, doc.toString());
-    await this.addTombstone(serverName, localConfig);
 
     return [yamlPath];
   }
+}
+
+/** Remove the server folder `serverName` of `namespace` from the team repo, found as pull finds it; its path when there was one. */
+async function removeServerFolder(repoPath: string, namespace: string | null, serverName: string): Promise<string[]> {
+  const { items } = await Resources.layer(RESOURCE_LAYOUTS.mcp, { root: repoPath, namespace });
+  const folder = items.find((item) => item.name === serverName && item.source.kind === 'folder');
+
+  if (folder === undefined) return [];
+  // oxlint-disable-next-line teamai/remove-delivered -- the team repo's source, which pull never records
+  await fse.remove(folder.source.full);
+
+  return [folder.source.full];
 }
