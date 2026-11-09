@@ -4,17 +4,17 @@ import { z } from 'zod';
 import YAML from 'yaml';
 import { parseYaml } from '../utils/yaml.js';
 import { ResourceHandler } from './base.js';
-import { isJsonObject, type JsonValue, type LocalConfig, type McpServerDef, type ResourceItem, type TeamaiConfig } from '../types.js';
+import type { JsonValue, LocalConfig, McpServerDef, ResourceItem, TeamaiConfig } from '../types.js';
 import { listDirs, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.js';
 import {
-  entryFileAbsolutePath, entryFilePath, listEntryFiles, missingTopLevelKeyReason, readEntryFileText, unknownEntryKeys,
-  readFolderPlace, type EntryFileRead, type EntryPlaceReader, type PlaceFolderRead, type ResolvedEntry,
+  entryFileAbsolutePath, entryFilePath, listEntryFiles, missingTopLevelKeyReason, readEntryFileText, readFolderPlace, readMarkerFolder,
+  unknownEntryKeys, type EntryFileRead, type EntryPlaceReader, type PlaceFolderRead, type ResolvedEntry,
 } from '../namespaced-entries.js';
 import { RESOURCE_LAYOUTS, Resources, type EntryListRead, type ResourceLayout } from './resolver.js';
 import { DeliveredFolders } from './delivered-folders.js';
-import { FolderFiles, type FolderFile } from './folder-files.js';
+import type { FolderFile } from './folder-files.js';
 
 // ─── Schema for mcp/mcp.yaml ────────────────────────────────
 //
@@ -160,48 +160,38 @@ const TEAM_MCP: ResourceLayout<McpFileEntry> = {
   entryList: { file: 'mcp.yaml', entries: mcpFileEntries },
 };
 
-/** A folder's `MCP.yaml` (at `markerPath`) as the server named `name`, or why it cannot be used. */
-function parseMcpMarker(content: string, markerPath: string, name: string): { ok: true; server: TeamMcpServer; unknownKeys: readonly string[] } | { ok: false; reason: string } {
-  try {
-    const raw: JsonValue = parseYaml(content);
-    const parsed = FolderMcpFields.safeParse(raw);
-
-    if (!parsed.success) {
-      return { ok: false, reason: `${markerPath} does not parse: ${parsed.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ')}` };
-    }
-
-    if (parsed.data.transport !== 'stdio') {
-      return {
-        ok: false,
-        reason: `${markerPath}: transport ${parsed.data.transport} is refused in a folder, which holds the files of a server teamai starts (stdio). `
-          + 'A URL server carries no files: declare it in mcp.yaml.',
-      };
-    }
-
-    if (!parsed.data.command) return { ok: false, reason: `${markerPath} does not parse: stdio transport requires \`command\`` };
-    const known = Object.keys(FolderMcpFields.shape);
-    const unknownKeys = isJsonObject(raw) ? Object.keys(raw).filter((key) => !known.includes(key)) : [];
-
-    return { ok: true, server: { ...parsed.data, name }, unknownKeys };
-  } catch (e) {
-    return { ok: false, reason: `${markerPath} does not parse: ${e instanceof Error ? e.message : String(e)}` };
-  }
-}
-
 /** Read the server folder at `full` (`folderPath` from the team root, ending in `/`), named `name`. */
 async function readMcpFolder(full: string, folderPath: string, name: string): Promise<PlaceFolderRead<TeamMcpDefinition>> {
-  const read = await FolderFiles.read(full);
+  const read = await readMarkerFolder({ full, path: folderPath }, MCP_MARKER, FolderMcpFields);
+  const markerPath = `${folderPath}${MCP_MARKER}`;
 
-  if (read.kind === 'invalid') {
-    return { kind: 'invalid', reason: `${folderPath} is not an MCP server folder teamai can deliver: ${read.problems.map(FolderFiles.describe).join(', ')}` };
+  switch (read.kind) {
+    case 'undeliverable':
+      return { kind: 'invalid', reason: `${folderPath} is not an MCP server folder teamai can deliver: ${read.problems.join(', ')}` };
+    case 'invalid':
+      return read;
+    case 'read': {
+      const { fields } = read;
+
+      if (fields.transport !== 'stdio') {
+        return {
+          kind: 'invalid',
+          reason: `${markerPath}: transport ${fields.transport} is refused in a folder, which holds the files of a server teamai starts (stdio). `
+            + 'A URL server carries no files: declare it in mcp.yaml.',
+        };
+      }
+
+      if (!fields.command) return { kind: 'invalid', reason: `${markerPath} does not parse: stdio transport requires \`command\`` };
+
+      return { kind: 'read', definition: { kind: 'folder', server: { ...fields, name }, files: read.files }, unknownKeys: read.unknownKeys };
+    }
+
+    default: {
+      const unhandled: never = read;
+
+      return unhandled;
+    }
   }
-
-  const marker = read.files.find((file) => file.path === MCP_MARKER);
-  const parsed = parseMcpMarker(marker?.bytes.toString('utf8') ?? '', `${folderPath}${MCP_MARKER}`, name);
-
-  if (!parsed.ok) return { kind: 'invalid', reason: parsed.reason };
-
-  return { kind: 'read', definition: { kind: 'folder', server: parsed.server, files: read.files }, unknownKeys: parsed.unknownKeys };
 }
 
 /** How team MCP servers are read for delivery: each place of the team tree through the resolver, `mcp.yaml` servers and folders. */

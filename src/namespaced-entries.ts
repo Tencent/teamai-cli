@@ -27,6 +27,7 @@ import { z } from 'zod';
 import { FOLDER_MARKERS, holdsMarker } from './folder-markers.js';
 import { describeOverride, repeatedNames, resolveNamespacedItems, type NamespaceCandidate } from './namespace-resolver.js';
 import { resolveResourceNamespaces } from './resource-namespaces.js';
+import { FolderFiles, type FolderFile } from './resources/folder-files.js';
 import { Resources, type ResourceLayout } from './resources/resolver.js';
 import { activeRoleIds, findRole, loadRolesManifestIfPresent } from './roles.js';
 import { findProject, loadProjectsManifest, unknownProjectMessage } from './projects.js';
@@ -35,6 +36,7 @@ import { isJsonObject, type JsonValue, type LocalConfig } from './types.js';
 import { listDirs, pathExists, readFileIfExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { warnOnce } from './utils/warn-once.js';
+import { parseYaml } from './utils/yaml.js';
 import { deliveredMembers, unionMemberItems } from './workspace-children.js';
 
 export type EntryType = 'env' | 'hooks' | 'mcp' | 'models';
@@ -267,6 +269,48 @@ export type EntryPlaceReader<E> = EntryReaderBase<E> & {
   readPlace(repoPath: string, dir: string | null): Promise<EntryPlaceRead<E>>;
   readonly read?: undefined;
 };
+
+/** A folder marker's YAML (at `markerPath`) read by the type's `schema`, with the keys it has that `schema` does not know, or why it does not parse. */
+export function parseMarker<TSchema extends z.ZodObject>(
+  content: string,
+  markerPath: string,
+  schema: TSchema,
+): { readonly ok: true; readonly fields: z.output<TSchema>; readonly unknownKeys: readonly string[] } | { readonly ok: false; readonly reason: string } {
+  try {
+    const raw: JsonValue = parseYaml(content);
+    const parsed = schema.safeParse(raw);
+
+    if (!parsed.success) {
+      return { ok: false, reason: `${markerPath} does not parse: ${parsed.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ')}` };
+    }
+
+    const known = Object.keys(schema.shape);
+
+    return { ok: true, fields: parsed.data, unknownKeys: isJsonObject(raw) ? Object.keys(raw).filter((key) => !known.includes(key)) : [] };
+  } catch (e) {
+    return { ok: false, reason: `${markerPath} does not parse: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
+/** A folder of a type delivered whole (hooks, MCP; #1787): its marker's fields and every file, the files that keep it from being delivered, or why its marker does not parse. */
+export type MarkerFolderRead<T> =
+  | { readonly kind: 'read'; readonly fields: T; readonly unknownKeys: readonly string[]; readonly files: readonly FolderFile[] }
+  | { readonly kind: 'undeliverable'; readonly problems: readonly string[] }
+  | { readonly kind: 'invalid'; readonly reason: string };
+
+/** Read the folder at `folder.full` (`folder.path` from the team root, ending in `/`), whose `marker` the type's `schema` reads. */
+export async function readMarkerFolder<TSchema extends z.ZodObject>(
+  folder: { readonly full: string; readonly path: string },
+  marker: string,
+  schema: TSchema,
+): Promise<MarkerFolderRead<z.output<TSchema>>> {
+  const read = await FolderFiles.read(folder.full);
+
+  if (read.kind === 'invalid') return { kind: 'undeliverable', problems: read.problems.map(FolderFiles.describe) };
+  const parsed = parseMarker(read.files.find((file) => file.path === marker)?.bytes.toString('utf8') ?? '', `${folder.path}${marker}`, schema);
+
+  return parsed.ok ? { kind: 'read', fields: parsed.fields, unknownKeys: parsed.unknownKeys, files: read.files } : { kind: 'invalid', reason: parsed.reason };
+}
 
 /** What a type makes of one folder of a place: its definition and the keys it has that the schema does not know, a skip with what to tell the team, or why the place cannot be used. */
 export type PlaceFolderRead<E> =

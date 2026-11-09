@@ -3,14 +3,14 @@ import { z } from 'zod';
 import { parseYaml } from '../utils/yaml.js';
 import { ResourceHandler } from './base.js';
 import type { HookDef, JsonValue, LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
-import { TEAMAI_CUSTOM_HOOK_PREFIX, areTeamHooksDisabled, getHooksSharing, isJsonObject, isSelfMode } from '../types.js';
+import { TEAMAI_CUSTOM_HOOK_PREFIX, areTeamHooksDisabled, getHooksSharing, isSelfMode } from '../types.js';
 import { pathExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { warnOnce } from '../utils/warn-once.js';
 import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.js';
 import {
-  entryFilePath, missingTopLevelKeyReason, readEntryFileText, reportEntryResolution, resolveEntriesFor, unknownEntryKeys,
-  readFolderPlace, type EntryPlaceReader, type EntryResolution, type PlaceFolderRead, type ResolvedEntry,
+  entryFilePath, missingTopLevelKeyReason, parseMarker, readEntryFileText, readFolderPlace, readMarkerFolder, reportEntryResolution,
+  resolveEntriesFor, unknownEntryKeys, type EntryPlaceReader, type EntryResolution, type PlaceFolderRead, type ResolvedEntry,
 } from '../namespaced-entries.js';
 import { RESOURCE_LAYOUTS, Resources, type EntryListRead, type ResourceLayout } from './resolver.js';
 import { DeliveredFolders, type FolderDelivery } from './delivered-folders.js';
@@ -161,39 +161,23 @@ export function parseTeamHooks(content: string): TeamHook[] | null {
   }
 }
 
-/** A folder's `HOOK.yaml` (at `markerPath`) as the hook named `id`, or why it does not parse. */
-function parseHookMarker(content: string, markerPath: string, id: string): { ok: true; hook: TeamHook; unknownKeys: readonly string[] } | { ok: false; reason: string } {
-  try {
-    const raw: JsonValue = parseYaml(content);
-    const parsed = FolderHookSchema.safeParse(raw);
-
-    if (!parsed.success) {
-      return { ok: false, reason: `${markerPath} does not parse: ${parsed.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ')}` };
-    }
-
-    const known = Object.keys(FolderHookSchema.shape);
-    const unknownKeys = isJsonObject(raw) ? Object.keys(raw).filter((key) => !known.includes(key)) : [];
-
-    return { ok: true, hook: { ...parsed.data, id }, unknownKeys };
-  } catch (e) {
-    return { ok: false, reason: `${markerPath} does not parse: ${e instanceof Error ? e.message : String(e)}` };
-  }
-}
-
 /** Read the hook folder at `full` (`folderPath` from the team root, ending in `/`), named `id`. */
 async function readHookFolder(full: string, folderPath: string, id: string): Promise<PlaceFolderRead<TeamHookDefinition>> {
-  const read = await FolderFiles.read(full);
+  const read = await readMarkerFolder({ full, path: folderPath }, HOOK_MARKER, FolderHookSchema);
 
-  if (read.kind === 'invalid') {
-    return { kind: 'invalid', reason: `${folderPath} is not a hook folder teamai can deliver: ${read.problems.map(FolderFiles.describe).join(', ')}` };
+  switch (read.kind) {
+    case 'undeliverable':
+      return { kind: 'invalid', reason: `${folderPath} is not a hook folder teamai can deliver: ${read.problems.join(', ')}` };
+    case 'invalid':
+      return read;
+    case 'read':
+      return { kind: 'read', definition: { kind: 'folder', hook: { ...read.fields, id }, files: read.files }, unknownKeys: read.unknownKeys };
+    default: {
+      const unhandled: never = read;
+
+      return unhandled;
+    }
   }
-
-  const marker = read.files.find((file) => file.path === HOOK_MARKER);
-  const parsed = parseHookMarker(marker?.bytes.toString('utf8') ?? '', `${folderPath}${HOOK_MARKER}`, id);
-
-  if (!parsed.ok) return { kind: 'invalid', reason: parsed.reason };
-
-  return { kind: 'read', definition: { kind: 'folder', hook: parsed.hook, files: read.files }, unknownKeys: parsed.unknownKeys };
 }
 
 /** How team hooks are read for delivery: each place of the team tree through the resolver, `hooks.yaml` entries and folders. */
@@ -379,9 +363,9 @@ export function historicalFolderHookDef(localConfig: LocalConfig, relativePath: 
   if (type !== TEAM_HOOKS.dir || marker !== HOOK_MARKER || id === undefined || (rest.length !== 2 && rest.length !== 3)) return null;
 
   if (!RESOURCE_LAYOUTS.hooks.nameRule.pattern.test(id)) return null;
-  const parsed = parseHookMarker(content, relativePath, id);
+  const parsed = parseMarker(content, relativePath, FolderHookSchema);
 
-  return parsed.ok ? folderHookDef(localConfig, parsed.hook, namespace) : null;
+  return parsed.ok ? folderHookDef(localConfig, { ...parsed.fields, id }, namespace) : null;
 }
 
 /**
