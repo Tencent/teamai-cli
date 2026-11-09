@@ -95,6 +95,7 @@ import {
   type McpFileObservation,
 } from './mcp-resolved-files.js';
 import { hasWorkspaceChildren } from './workspace-children.js';
+import { DeliveredFolders, type PlacedFolders } from './resources/delivered-folders.js';
 import { isJsonObject, type JsonObject } from './types.js';
 
 // ─── Reconcile engine ────────────────────────────────────────
@@ -2963,10 +2964,10 @@ async function reconcileTargets(
 
   // The folders team servers run from, before any configuration names them (#1787). A server whose installed
   // configuration some tool keeps, such as one held back or one whose secret is not set here, keeps its folder as it
-  // is: that configuration may name a file the new version dropped. A folder that cannot be written keeps every
-  // installed server, and so do secrets that cannot be read (below).
-  // The folders no configuration names go only once this run's writes are in place (`settled`).
-  let pruneFolders = async (): Promise<void> => {};
+  // is. A folder that cannot be written keeps every installed server, and so do secrets that cannot be read (below).
+  // Each folder replaced keeps its previous version aside until every configuration is written (`settled`), and gets it
+  // back with the configurations when a write fails; the folders no configuration names go only then.
+  let settleFolders = async (): Promise<void> => {};
 
   if (!removeAll && !options.dryRun && !secretsUnread) {
     const kept = new Set([...held, ...[...desiredOf.values()].flatMap((desired) => [...desired.kept])]);
@@ -2974,9 +2975,10 @@ async function reconcileTargets(
     const excluded = targets.filter((target) => mcpTargetExcluded(localConfig, target));
     const records = excluded.length === 0 ? {} : (await loadMcpManifest(localConfig, true)).manifest;
     const installed = new Set([...kept, ...excluded.flatMap((target) => (records[mcpManifestKey(target)] ?? []).map(({ name }) => name))]);
+    let placed: PlacedFolders;
 
     try {
-      await deliverMcpFolders(localConfig, teamEntries, kept);
+      placed = await deliverMcpFolders(localConfig, teamEntries, kept);
     } catch (e) {
       log.warn(`Team MCP server folders could not be delivered: ${e instanceof Error ? e.message : String(e)}. `
         + 'mcp was not applied this run, so your installed team MCP servers are unchanged. Run teamai pull again.');
@@ -2984,21 +2986,23 @@ async function reconcileTargets(
       return { changes, wrote, unresolved: true };
     }
 
-    if (held.size === 0) {
-      pruneFolders = async () => {
-        try {
-          await pruneMcpFolders(localConfig, teamEntries, installed);
-        } catch (e) {
-          log.warn(`Team MCP server folders no server uses any more could not be removed: ${e instanceof Error ? e.message : String(e)}. `
-            + 'Your MCP servers are applied; the next teamai pull removes those folders.');
-        }
-      };
-    }
+    // Undone with the configurations (`reconcileMcpForConfig`), under a key no configuration file has.
+    restoreConfigs.set(path.join(DeliveredFolders.root(localConfig, 'mcp'), 'mcp'), placed.rollback);
+    settleFolders = async () => {
+      await placed.commit();
+
+      if (held.size === 0) await pruneMcpFolders(localConfig, teamEntries, installed);
+    };
   }
 
-  // What the run applied, after the folders no configuration names any more are removed.
+  // What the run applied, once the folders it replaced lose their previous versions and those no configuration names go.
   const settled = async (result: McpReconcileResult): Promise<McpReconcileResult> => {
-    await pruneFolders();
+    try {
+      await settleFolders();
+    } catch (e) {
+      log.warn(`Team MCP servers are applied, but the record of their folders, or the folders no server uses any more, could not be updated: ${e instanceof Error ? e.message : String(e)}. `
+        + 'Run teamai pull again.');
+    }
 
     return result;
   };

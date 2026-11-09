@@ -13,7 +13,7 @@ import {
 } from '../namespaced-entries.js';
 import { parseMarker, readMarkerFolder, type LayeredEntryType, type PlaceFolderRead } from './layered-entries.js';
 import { RESOURCE_LAYOUTS, Resources, type EntryListRead, type ResourceLayout } from './resolver.js';
-import { DeliveredFolders, type FolderDelivery } from './delivered-folders.js';
+import { DeliveredFolders, type FolderDelivery, type PlacedFolders } from './delivered-folders.js';
 import type { FolderFile } from './folder-files.js';
 
 // ─── Schema for mcp/mcp.yaml ────────────────────────────────
@@ -263,22 +263,30 @@ function mcpFolders(localConfig: LocalConfig, entries: ReadonlyArray<ResolvedEnt
 }
 
 /**
- * Deliver the folders of the resolved servers `entries`, recorded in the scope's delivery record (#1787, common rule
- * 9), before any configuration names them. The folder of each server in `kept`, whose installed configuration this run
- * leaves as it is, stays as it is too: that configuration may name a file the new version no longer has. Throws when a
- * folder cannot be written; the caller then keeps the installed servers, whose folders are left as they were.
+ * Put the folders of the resolved servers `entries` in place (#1787, common rule 9), before any configuration names
+ * them. Each version replaced stays aside until the caller commits, once the configurations are written, which also
+ * records the folders in the scope's delivery record; or rolls back, when a write fails, so the configurations it
+ * restores start the files they started before. The folder of each server in `kept`, whose installed configuration
+ * this run leaves as it is, stays as it is too. Throws when a folder cannot be written; the caller then keeps the
+ * installed servers, whose folders are left as they were.
  */
 export async function deliverMcpFolders(
   localConfig: LocalConfig,
   entries: ReadonlyArray<ResolvedEntry<TeamMcpDefinition>>,
   kept: ReadonlySet<string>,
-): Promise<void> {
+): Promise<PlacedFolders> {
   const { editDeliveryRecord } = await import('../pull.js');
   const record = await editDeliveryRecord(localConfig);
   const folders = mcpFolders(localConfig, entries.filter((resolved) => !kept.has(resolved.entry.server.name)));
+  const placed = await DeliveredFolders.place({ localConfig, type: 'mcp', folders, ledger: record.ledger });
 
-  await DeliveredFolders.sync({ localConfig, type: 'mcp', folders, ledger: record.ledger, prune: false });
-  await record.save();
+  return {
+    commit: async () => {
+      await placed.commit();
+      await record.save();
+    },
+    rollback: placed.rollback,
+  };
 }
 
 /**

@@ -165,14 +165,22 @@ async function moveAside(dest: string, old: string): Promise<boolean> {
   }
 }
 
+/** Folders moved into place, each with the version it replaced set aside until `commit` or `rollback`. */
+export interface PlacedFolders {
+  /** Remove the versions set aside, and record each folder's files in the ledger in place of what it recorded there. */
+  readonly commit: () => Promise<void>;
+  /** Put back the version each folder replaced, and remove a folder that had none. */
+  readonly rollback: () => Promise<void>;
+}
+
 /**
- * Deliver each folder's `files`, in path order, at its `dest`, all or none, keeping the files an earlier version had
- * where the folder says so (`earlierFiles`): every new version is written to a hidden sibling first, then each is renamed into place. A failure puts back every installed version already replaced, so
- * the folders still match the hooks and servers installed from them. A folder that already holds its version is left
- * in place, so a hook running from it is not disturbed. Each file is recorded in `ledger`, in place of what it
- * recorded under its `dest`.
+ * Move each folder's `files`, in path order, into place at its `dest`, all or none, keeping the files an earlier
+ * version had where the folder says so (`earlierFiles`): every new version is written to a hidden sibling first, then
+ * each is renamed into place. A failure puts back every installed version already replaced, so the folders still
+ * match the hooks and servers installed from them. A folder that already holds its version is left in place, so a hook
+ * running from it is not disturbed.
  */
-async function deliverAll(folders: readonly FolderDelivery[], ledger: DeliveryLedger | undefined): Promise<void> {
+async function placeAll(folders: readonly FolderDelivery[], ledger: DeliveryLedger | undefined): Promise<PlacedFolders> {
   const staged: Array<{ readonly dest: string; readonly fresh: string; readonly old: string }> = [];
 
   const discardStaged = async (): Promise<void> => {
@@ -201,6 +209,14 @@ async function deliverAll(folders: readonly FolderDelivery[], ledger: DeliveryLe
 
   const placed: Array<{ readonly dest: string; readonly old: string; readonly replaced: boolean }> = [];
 
+  const putBack = async (): Promise<void> => {
+    for (const { dest, old, replaced } of placed.splice(0).toReversed()) {
+      await fs.rm(dest, { recursive: true, force: true });
+
+      if (replaced) await fs.rename(old, dest);
+    }
+  };
+
   try {
     for (const { dest, fresh, old } of staged) {
       const replaced = await moveAside(dest, old);
@@ -220,34 +236,38 @@ async function deliverAll(folders: readonly FolderDelivery[], ledger: DeliveryLe
       placed.push({ dest, old, replaced });
     }
   } catch (error) {
-    for (const { dest, old, replaced } of placed.toReversed()) {
-      await fs.rm(dest, { recursive: true, force: true });
-
-      if (replaced) await fs.rename(old, dest);
-    }
-
+    await putBack();
     await discardStaged();
     throw error;
   }
 
-  // Every new version is in place: a previous one left behind is a leftover the next delivery removes, not a failure.
-  for (const { dest, old, replaced } of placed) {
-    if (!replaced) continue;
+  const commit = async (): Promise<void> => {
+    // Every new version is in place: a previous one left behind is a leftover the next delivery removes, not a failure.
+    for (const { dest, old, replaced } of placed.splice(0)) {
+      if (!replaced) continue;
 
-    try {
-      await fs.rm(old, { recursive: true, force: true });
-    } catch (error) {
-      log.warn(`Could not remove ${old}, the previous version of ${dest} (${error instanceof Error ? error.message : String(error)}). The new version is in place; the next pull removes it.`);
+      try {
+        await fs.rm(old, { recursive: true, force: true });
+      } catch (error) {
+        log.warn(`Could not remove ${old}, the previous version of ${dest} (${error instanceof Error ? error.message : String(error)}). The new version is in place; the next pull removes it.`);
+      }
     }
-  }
 
-  if (!ledger) return;
+    if (!ledger) return;
 
-  for (const { dest, files } of delivered) {
-    forgetDelivered(ledger.hashes, dest);
+    for (const { dest, files } of delivered) {
+      forgetDelivered(ledger.hashes, dest);
 
-    for (const file of files) ledger.hashes[path.join(dest, ...file.path.split('/'))] = contentHash(file.bytes);
-  }
+      for (const file of files) ledger.hashes[path.join(dest, ...file.path.split('/'))] = contentHash(file.bytes);
+    }
+  };
+
+  return { commit, rollback: putBack };
+}
+
+/** `placeAll`, committed at once: each file is recorded in `ledger`, in place of what it recorded under its `dest`. */
+async function deliverAll(folders: readonly FolderDelivery[], ledger: DeliveryLedger | undefined): Promise<void> {
+  await (await placeAll(folders, ledger)).commit();
 }
 
 /** Deliver one folder, as `deliverAll` does. */
@@ -371,11 +391,34 @@ async function sync(input: {
   readonly prune: boolean;
 }): Promise<void> {
   const { localConfig, type, folders, ledger } = input;
-  const at = root(localConfig, type);
 
   await deliverAll(folders, ledger);
 
   if (input.prune) await prune({ localConfig, type, keep: folders.map(({ dest }) => dest), ledger });
+
+  await excludeWorktreeFolders(localConfig, type);
+}
+
+/**
+ * `sync` without prune, held open: each folder replaced keeps its previous version aside until the caller commits,
+ * once every configuration that names the folders is written, or rolls back when one of those writes fails.
+ */
+async function place(input: {
+  readonly localConfig: LocalConfig;
+  readonly type: DeliveredFolderType;
+  readonly folders: readonly FolderDelivery[];
+  readonly ledger: DeliveryLedger | undefined;
+}): Promise<PlacedFolders> {
+  const placed = await placeAll(input.folders, input.ledger);
+
+  await excludeWorktreeFolders(input.localConfig, input.type);
+
+  return placed;
+}
+
+/** Keep a worktree's `.teamai/delivered/` out of git by its own block in `.git/info/exclude`, once it holds `type`'s folders. */
+async function excludeWorktreeFolders(localConfig: LocalConfig, type: DeliveredFolderType): Promise<void> {
+  const at = root(localConfig, type);
 
   if (at === worktreeRoot(localConfig) && await pathExists(at)) {
     const { excludeDeliveredFolders } = await import('../git-exclude-delivered.js');
@@ -383,4 +426,4 @@ async function sync(input: {
   }
 }
 
-export const DeliveredFolders = { root, worktreeRoot, checkoutRoot, pathOf, sync, deliver, prune, placeholder, mentions, render } as const;
+export const DeliveredFolders = { root, worktreeRoot, checkoutRoot, pathOf, sync, place, deliver, prune, placeholder, mentions, render } as const;

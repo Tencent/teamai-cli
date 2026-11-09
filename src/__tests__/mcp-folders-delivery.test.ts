@@ -230,6 +230,19 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
       .toEqual(['failed', installed, true]);
   });
 
+  it('keeps starting the version it installed when the team changes a file it runs and its configuration cannot be rewritten', async () => {
+    await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER, 'mcp/jira-lite/server.mjs': 'console.log("v1")\n' });
+    await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
+
+    await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER.replace('"]', '", "--v2"]'), 'mcp/jira-lite/server.mjs': 'console.log("v2")\n' });
+    await fse.chmod(path.join(sandbox, 'app'), 0o555);
+    const outcome = await reconcileMcpForConfig(teamConfig(), workspace('team', 'app')).then(() => 'applied', () => 'failed')
+      .finally(() => fse.chmod(path.join(sandbox, 'app'), 0o755));
+    const server = await claudeServer('app', 'jira-lite') as { command: string; args: string[] };
+
+    expect([outcome, execFileSync(server.command, server.args, { encoding: 'utf8' }).trim()]).toEqual(['failed', 'v1']);
+  });
+
   it('writes nothing on a dry run', async () => {
     await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER, 'mcp/jira-lite/server.mjs': 'console.log("jira")\n' });
 
