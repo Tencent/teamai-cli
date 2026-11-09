@@ -525,6 +525,49 @@ describe('the Benchmarks page says who judged what', () => {
   });
 });
 
+describe('the Benchmarks page shows each scorer by arm', () => {
+  const SONNET = { by: 'judge' as const, rubric: 'rq', tool: 'claude', model: 'claude-sonnet-5-5', batched: true };
+  const base = judgedRun({
+    claude: { tool: 'claude', results: ['passed', 'passed', 'passed', 'passed'], scores: [1, 1, 1, 1] },
+    codex: { tool: 'codex', results: ['passed', 'passed', 'passed', 'passed'], scores: [1, 1, 1, 1] },
+  });
+  // review-quality passed claude's first three trials and codex's first; nothing labelled codex's last.
+  const passes: Record<string, Array<boolean | undefined>> = { claude: [true, true, true, false], codex: [true, false, false, undefined] };
+  const runs = [{ ...base, benchmark: { ...base.benchmark,
+    scorers: [...base.benchmark.scorers, { name: 'review-quality', rubric: { sourceHash: 'rq' }, labels: [{ value: 'good', score: 1 }, { value: 'poor', score: 0 }], passingScore: 1 }],
+    trials: base.benchmark.trials.map((trial) => {
+      const passed = passes[trial.arm]?.[trial.repetition - 1];
+
+      return { ...trial, verdicts: [...trial.verdicts ?? [], passed === undefined ? { scorer: 'review-quality', outcome: { kind: 'unscored' as const, because: 'run_ended' as const } }
+        : { scorer: 'review-quality', outcome: { kind: 'labelled' as const, label: passed ? 'good' : 'poor', score: passed ? 1 : 0, passed }, decider: SONNET, asPlanned: 'match' as const }] };
+    }) } }];
+
+  it("colours each suite and task scorer's pass rate per arm, with its 95% interval and what went unscored in the title", async () => {
+    const html = await renderPage(runs);
+    const panel = html.split('<h2>Scorers by arm')[1]?.split('</section>')[0] ?? '';
+
+    expect(html.indexOf('<h2>Scorers by arm')).toBeGreaterThan(html.indexOf('<h2>Tasks by arm'));
+    expect(text(panel)).toContain('review-quality 75% 3/4 33% 1/3');
+    // Wilson: 3 of 4 is 30% to 95%; 1 of 3 is 6% to 79%.
+    expect(panel).toContain('title="95% 30% to 95%"');
+    expect(panel).toContain('title="95% 6% to 79% · 1 unscored"');
+  });
+
+  it('names the panel and the unscored labels in zh-CN', async () => {
+    const html = await renderPage(runs, { language: 'zh-CN' });
+
+    expect(html).toContain('<h2>评分器 × arm');
+    expect(html).toContain('title="95% 6% 至 79% · 1 未评分"');
+  });
+
+  it('shows no scorers by arm for runs whose records keep no verdicts', async () => {
+    const [run] = runs;
+    const older: BenchmarkRunInput[] = run ? [{ ...run, schemaVersion: 1, benchmark: { ...run.benchmark, trials: run.benchmark.trials.map(({ verdicts: _verdicts, ...trial }) => trial) } }] : [];
+
+    expect(await renderPage(older)).not.toContain('Scorers by arm');
+  });
+});
+
 describe('the Benchmarks page calibrates the correctness judge', () => {
   const HAIKU = { by: 'judge' as const, rubric: 'rc', tool: 'claude', model: 'claude-haiku-5-5', batched: false };
   const OPUS = { ...HAIKU, model: 'claude-opus-5-5', effort: 'high' };

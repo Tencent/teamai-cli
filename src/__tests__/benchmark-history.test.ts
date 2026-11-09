@@ -687,6 +687,42 @@ describe('BenchmarkHistory judging', () => {
   });
 });
 
+describe('BenchmarkHistory scorers by arm', () => {
+  const SONNET = { by: 'judge' as const, rubric: 'rq', tool: 'claude', model: 'claude-sonnet-5-5', batched: true };
+  const REVIEW = { name: 'review-quality', rubric: { sourceHash: 'rq' }, labels: [{ value: 'good', score: 1 }, { value: 'poor', score: 0 }], passingScore: 1 };
+  const verdict = (passed: boolean | undefined): TrialVerdict => (passed === undefined
+    ? { scorer: 'review-quality', outcome: { kind: 'unscored', because: 'run_ended' } }
+    : { scorer: 'review-quality', outcome: { kind: 'labelled', label: passed ? 'good' : 'poor', score: passed ? 1 : 0, passed }, decider: SONNET, asPlanned: 'match' });
+
+  /** A run of task fix whose review-quality scorer labelled each arm's trials passing as `labels` says in trial order; undefined leaves one unscored. */
+  const reviewed = (id: string, startedAt: string, labels: Record<string, Array<boolean | undefined>>): BenchmarkRunInput => {
+    const input = run({ id, startedAt, trials: { fix: { claude: ['passed', 'passed'], codex: ['failed', 'failed'] } } });
+    const seen = new Map<string, number>();
+
+    return { ...input, benchmark: { ...input.benchmark, scorers: [REVIEW], trials: input.benchmark.trials.map((trial) => {
+      const index = seen.get(trial.arm) ?? 0;
+      seen.set(trial.arm, index + 1);
+
+      return { ...trial, verdicts: [verdict(labels[trial.arm]?.[index])] };
+    }) } };
+  };
+
+  it("pools each suite and task scorer's labels per arm over the runs of the current version, with the 95% interval", () => {
+    const reviewedRuns = [
+      reviewed('r1', '2026-10-10T09:00:00Z', { claude: [true, true], codex: [false, true] }),
+      reviewed('r2', '2026-10-20T09:00:00Z', { claude: [true, false], codex: [false, undefined] }),
+    ];
+    const selected = BenchmarkHistory.of({ runs: reviewedRuns, query: { windowDays: 90 }, now: NOW }).selected;
+    const [claude, codex] = selected?.arms ?? [];
+
+    // Wilson: claude's 3 of 4 is 30% to 95%; codex's 1 of 3 is 6% to 79%, beside the one nothing labelled.
+    expect(selected?.scorers).toEqual([{ scorer: 'review-quality', arms: [
+      { key: claude?.key, passed: 3, labelled: 4, unscored: 0, interval: { low: expect.closeTo(0.301, 3), high: expect.closeTo(0.954, 3) } },
+      { key: codex?.key, passed: 1, labelled: 3, unscored: 1, interval: { low: expect.closeTo(0.061, 3), high: expect.closeTo(0.792, 3) } },
+    ] }]);
+  });
+});
+
 describe('benchmark regression', () => {
   const ONE = [CLAUDE];
   const passes = (results: TrialResult[]) => ({ fix: { claude: results } });

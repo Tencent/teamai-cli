@@ -226,6 +226,16 @@ function heatmapPanel(sel){
    +arms.map(a=>{const cell=task.arms.find(c=>c.key===a.key), rate=passOf(cell); return '<td class="heat" style="'+heat(rate)+'">'+rateCell(cell)+'</td>';}).join('')+'<td class="'+(task.disagreedRuns*2>=runs?'amber':'muted')+'">'+number(task.disagreedRuns)+'/'+number(runs)+'</td></tr>').join('')
   +'</tbody></table></div></section>';
 }
+// Each suite and task scorer's labels per arm, as Tasks by arm shows each task's checks: nothing on records without verdicts.
+function scorersPanel(sel){
+ if(!sel.scorers||!sel.scorers.length)return '';
+ const arms=sel.arms.filter(a=>a.isCurrent);
+ return '<section class="panel sessions bench-panel"><div class="panelhead"><h2>'+label('Scorers by arm')+' <span class="count">'+number(sel.scorers.length)+'</span></h2><span class="label">'+label('Pooled over the runs of the current suite version: the labels each scorer gave the trials of each arm, the correctness scorers aside. Hover a cell for its 95% interval.')+'</span></div><div class="table-scroll"><table class="session-table heatmap"><thead><tr><th>'+label('SCORER')+'</th>'+arms.map(a=>'<th><div class="arm-label">'+armName(a,sel.arms.indexOf(a))+'</div></th>').join('')+'</tr></thead><tbody>'
+  +sel.scorers.map(s=>'<tr><td><span data-verbatim>'+e(s.scorer)+'</span></td>'+arms.map(a=>{const cell=s.arms.find(c=>c.key===a.key), rate=cell&&{passed:cell.passed,planned:cell.labelled};
+   const title=cell?[cell.interval?'95% '+pct(cell.interval.low)+' '+t('to')+' '+pct(cell.interval.high):'',cell.unscored?number(cell.unscored)+' '+t('unscored'):''].filter(Boolean).join(' · '):'';
+   return '<td class="heat" style="'+heat(passOf(rate))+'"'+(title?' title="'+e(title)+'"':'')+'>'+rateCell(rate)+'</td>';}).join('')+'</tr>').join('')
+  +'</tbody></table></div></section>';
+}
 function taskRunsPanel(sel){
  const runs=sel.runs.filter(r=>r.sourceHash===sel.versions[0].sourceHash).reverse();
  if(runs.length<2)return '';
@@ -427,7 +437,7 @@ function benchmarksPage(){
   +'<div class="statusline"><span>'+label('Window')+': '+e(when(w.from))+' – '+e(when(w.to))+'</span><span>'+label('Runs by when they started.')+'</span></div>'
   +controls+suitesPanel(benchData)
   +(sel?'<h2 class="section-label"><span data-verbatim>'+e(sel.suite)+'</span> <span class="tag" title="'+e(sel.versions[0].sourceHash)+'">'+label('suite version')+' <span data-verbatim>'+short(sel.versions[0].sourceHash)+'</span></span>'+(sel.versions.length>1?' <span class="tag">'+number(sel.versions.length)+' '+label('versions in the window')+'</span>':'')+'</h2>'
-   +benchTabs(sel)+(benchView==='compare'?comparePanel(sel):benchView==='team'?teamPanel(sel):benchKpis(sel)+(isCalibrationAlert(sel)?calibrationPanel(sel):'')+'<div class="bench-grid">'+armBars(sel)+scatterPanel(sel)+'</div>'+judgesPanel(sel)+(isCalibrationAlert(sel)?'':calibrationPanel(sel))+historyChart(sel)+heatmapPanel(sel)+taskRunsPanel(sel)+latestPanel(sel)+runsPanel(sel)):'');
+   +benchTabs(sel)+(benchView==='compare'?comparePanel(sel):benchView==='team'?teamPanel(sel):benchKpis(sel)+(isCalibrationAlert(sel)?calibrationPanel(sel):'')+'<div class="bench-grid">'+armBars(sel)+scatterPanel(sel)+'</div>'+judgesPanel(sel)+(isCalibrationAlert(sel)?'':calibrationPanel(sel))+historyChart(sel)+heatmapPanel(sel)+scorersPanel(sel)+taskRunsPanel(sel)+latestPanel(sel)+runsPanel(sel)):'');
 }
 async function loadBenchmarks(){
  const generation=workspaceGeneration, request=++benchRequest, current=()=>generation===workspaceGeneration&&request===benchRequest; benchLoading=true;

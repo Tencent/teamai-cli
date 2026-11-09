@@ -17,7 +17,7 @@ import type { TeamChoice } from './suite.js';
 import type { ArmTeam } from './terms.js';
 import {
   benchmarkTable, calibrationOf, deviationsOf, dominanceOf, observedTrials, pairedDifference, selfJudgedOf, usageOf, wilson,
-  type ArmAgainst, type ArmResults, type ArmStanding, type ArmUsage, type BenchmarkTable, type Dominance, type JudgeCalibration, type ObservedTrial, type PairedInterval, type PassRate,
+  type ArmAgainst, type ArmResults, type ArmScorerResults, type ArmStanding, type ArmUsage, type BenchmarkTable, type Dominance, type JudgeCalibration, type ObservedTrial, type PairedInterval, type PassRate,
 } from './table.js';
 import type { TrialVerdict } from './verdicts.js';
 
@@ -112,6 +112,13 @@ export interface SuiteVersion {
   sourceHash: string;
   runs: number;
   lastRunAt: string;
+}
+
+/** One suite or task scorer of the current version: each current configuration's labels, as the run's table counts one run's. */
+export interface ScorerView {
+  scorer: string;
+  /** In `arms` order; a configuration the scorer labelled none of has none. */
+  arms: Array<{ key: string } & Pick<ArmScorerResults, 'passed' | 'labelled' | 'unscored' | 'interval'>>;
 }
 
 /** One task of the current version, over its runs. */
@@ -227,6 +234,8 @@ export interface SuiteView {
   arms: ArmSeries[];
   /** The tasks of the newest run that ran the whole suite, in its order. */
   tasks: TaskView[];
+  /** The suite and task scorers of the current version, the correctness scorers aside; empty on records without verdicts. */
+  scorers: ScorerView[];
   /** Newest first. */
   runs: RunRow[];
   /** The newest run's own table, as it printed it, and its arms against its reference arm, read as `against` reads the runs. */
@@ -653,6 +662,28 @@ function isMixedTaskIn(record: BenchmarkRecord, task: string): boolean {
   return recorded !== undefined && recorded.baseline !== 'not_needed' && record.judges?.[correctnessScorerName(task)] !== undefined;
 }
 
+function scorersOf({ current, newest }: SuiteRuns): ScorerView[] {
+  const rows = current.flatMap((input) => benchmarkTable(input).scorers.flatMap((row) => {
+    const arm = input.benchmark.arms.find(({ name }) => name === row.arm);
+
+    return arm ? [{ ...row, key: armKey(arm) }] : [];
+  }));
+
+  return [...new Set(rows.map(({ scorer }) => scorer))].map((scorer) => ({
+    scorer,
+    arms: newest.benchmark.arms.flatMap((arm) => {
+      const key = armKey(arm);
+      const pooled = rows.filter((row) => row.scorer === scorer && row.key === key);
+
+      if (pooled.length === 0) return [];
+      const total = (count: 'passed' | 'labelled' | 'unscored') => pooled.reduce((sum, row) => sum + row[count], 0);
+      const passed = total('passed'), labelled = total('labelled');
+
+      return [definedFields<ScorerView['arms'][number]>({ key, passed, labelled, unscored: total('unscored'), interval: labelled > 0 ? wilson({ passed, planned: labelled }) : undefined })];
+    }),
+  }));
+}
+
 function teamChangesOf({ current }: SuiteRuns): SuiteView['teamChanges'] {
   const configs = new Map<string, TeamConfig>();
   const revisions = new Map<string, { firstRunAt: string; byConfig: Map<string, { runs: Set<string>; trials: Trial[] }> }>();
@@ -839,6 +870,7 @@ export const BenchmarkHistory = {
         versions: versionsOf(versioned),
         arms,
         tasks: tasksOf(suiteRuns),
+        scorers: scorersOf(suiteRuns),
         runs: own.map(runRow).toReversed(),
         latest: definedFields<SuiteView['latest']>({ run: newest.run, source: newest.source, table: benchmarkTable(newest), against: againstOf(alone, armsOf(alone)) }),
         comparisons: comparisonsOf(suiteRuns),
