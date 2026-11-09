@@ -40,16 +40,11 @@ async function isDelivered(localConfig: LocalConfig, name: string): Promise<bool
   return pathExists(DeliveredFolders.pathOf(localConfig, refOf({ name })));
 }
 
-/** A text file teamai renders, as common rule 12 reads it: CRLF turned into LF, one trailing newline removed. */
-function readText(raw: string): string {
-  return raw.replaceAll('\r\n', '\n').replace(/\n$/, '');
-}
-
 /** A text file of a rule folder, read as common rule 12 says; null when it cannot be read. */
 async function readTextFile(file: string): Promise<string | null> {
   const raw = await fs.readFile(file, 'utf8').catch(() => null);
 
-  return raw === null ? null : readText(raw);
+  return raw === null ? null : FolderFiles.text(raw);
 }
 
 /**
@@ -71,7 +66,7 @@ function variantFrontmatterMessage(rule: RuleFolder, variantName: string): strin
 /** A note for each language variant among `files` (`RULE.<lang>.md`, common rule 12) of `rule` that carries frontmatter, which pull ignores. */
 function variantNotes(rule: RuleFolder, files: readonly FolderFile[]): ResourceDiagnostic[] {
   return files.flatMap((file): ResourceDiagnostic[] => {
-    if (!/^RULE\.[a-z]+\.md$/.test(file.path) || splitRuleFrontmatter(readText(file.bytes.toString('utf8'))).block === '') return [];
+    if (!/^RULE\.[a-z]+\.md$/.test(file.path) || splitRuleFrontmatter(FolderFiles.text(file.bytes.toString('utf8'))).block === '') return [];
 
     return [{ kind: 'note', path: path.posix.join(path.posix.dirname(rule.relativePath), file.path), message: variantFrontmatterMessage(rule, file.path) }];
   });

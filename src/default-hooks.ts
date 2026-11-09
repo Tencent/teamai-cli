@@ -121,11 +121,6 @@ function substitute(content: string, values: Readonly<Record<string, string>>): 
   return content.replace(VARIABLE, (read, inner: string) => values[inner.trim()] ?? read);
 }
 
-/** A text file as teamai renders it: CRLF read as LF, and one trailing newline removed, so separators are code's. */
-function textOf(file: FolderFile): string {
-  return file.bytes.toString('utf8').replace(/\r\n/g, '\n').replace(/\n$/, '');
-}
-
 /** A text's files: its base file, and the variants the folder has. */
 interface TextVariants {
   base: string;
@@ -173,7 +168,7 @@ function readFolder<TName extends DefaultHookName>(name: TName, files: readonly 
   let raw: JsonObject = {};
 
   try {
-    const parsed = parseYaml(marker ? textOf(marker) : '');
+    const parsed = parseYaml(marker ? FolderFiles.text(marker.bytes.toString('utf8')) : '');
 
     if (isJsonObject(parsed)) raw = parsed;
     else refusals.push('HOOK.yaml must be a mapping of description and with');
@@ -199,7 +194,7 @@ function readFolder<TName extends DefaultHookName>(name: TName, files: readonly 
       const found = byPath.get(file);
 
       if (!found) return undefined;
-      const content = textOf(found);
+      const content = FolderFiles.text(found.bytes.toString('utf8'));
 
       for (const [source, inner = ''] of content.matchAll(VARIABLE)) {
         if (offered.includes(inner.trim())) continue;

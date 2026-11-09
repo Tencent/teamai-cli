@@ -73,4 +73,9 @@ function describe({ path: file, problem }: FolderFileProblem): string {
   }
 }
 
-export const FolderFiles = { read, describe } as const;
+/** A text file teamai renders from a folder, as common rule 12 reads it: CRLF read as LF, and one trailing newline removed, so separators are code's. */
+function text(raw: string): string {
+  return raw.replaceAll('\r\n', '\n').replace(/\n$/, '');
+}
+
+export const FolderFiles = { read, describe, text } as const;
