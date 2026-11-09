@@ -128,43 +128,47 @@ function copyPathOf(copyRoot: string, ref: DeliveredFolderRef): string {
 }
 
 /**
+ * `files`, the new version of a folder, with each file of the version installed at `dest` that it no longer has: a
+ * copy the member edited keeps naming those, while the other tools read the new ones.
+ */
+async function withInstalledFiles(dest: string, files: readonly FolderFile[]): Promise<readonly FolderFile[]> {
+  const installed = await pathExists(dest) ? await FolderFiles.read(dest) : null;
+
+  if (installed?.kind !== 'files') return files;
+  const paths = new Set(files.map((file) => file.path));
+
+  return [...files, ...installed.files.filter((file) => !paths.has(file.path))].sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/**
  * Deliver the folder of each rule folder in `rules` to `localConfig`'s scope, recorded in `ledger`. In a remote team's
  * project where one of `tools` (the tools receiving rules) cannot read the data home, the folders are copied into the
- * worktree too; in user scope, each such tool is named once. Throws when a folder cannot be written; the caller keeps
- * what it installed. Returns the removal of the scope's other folders, which the caller runs once its stale sweep
- * knows the rules it kept an edited copy of: their folders stay, so the kept text still names files that exist.
+ * worktree too, in the same delivery, so a copy that cannot be written leaves the data home as it was; in user scope,
+ * each such tool is named once. The folder of each rule in `editedCopies`, whose copy the member edited and pull
+ * keeps, also keeps the files the new version dropped. Throws when a folder cannot be written; the caller keeps what
+ * it installed. Returns the removal of the scope's other folders, which the caller runs once its stale sweep is done,
+ * with the rules a tool still holds a copy of: their folders stay, so the text still names files that exist.
  */
 async function sync(input: {
   readonly localConfig: LocalConfig;
   readonly rules: readonly ResourceItem[];
   readonly tools: readonly string[];
   readonly ledger: DeliveryLedger | undefined;
-}): Promise<(keptCopies: readonly string[]) => Promise<void>> {
+  readonly editedCopies: ReadonlySet<string>;
+}): Promise<(heldByCopies: readonly string[]) => Promise<void>> {
   const { localConfig, ledger } = input;
   const folders: { readonly ref: DeliveredFolderRef; readonly name: string; readonly files: readonly FolderFile[] }[] = [];
 
   for (const rule of input.rules.filter(isFolder)) {
     const read = await FolderFiles.read(path.dirname(rule.sourcePath));
+    const dest = DeliveredFolders.pathOf(localConfig, refOf(rule));
 
-    if (read.kind === 'files') folders.push({ ref: refOf(rule), name: rule.name, files: read.files });
+    if (read.kind === 'files') folders.push({ ref: refOf(rule), name: rule.name, files: input.editedCopies.has(rule.name) ? await withInstalledFiles(dest, read.files) : read.files });
   }
 
   const delivered = folders.map(({ ref, files }) => ({ dest: DeliveredFolders.pathOf(localConfig, ref), files }));
-  // Unlike hooks and MCP, no rule is held back with its copy kept, so only a copy the member edited keeps a folder. A
-  // workspace unions its members' rules by path (`resolveWorkspaceRules`), so no other copy is left to read one.
-  await DeliveredFolders.sync({ localConfig, type: 'rules', folders: delivered, ledger, prune: false });
   const copying = input.tools.filter((tool) => !readsDataHome(tool));
   const copyRoot = DeliveredFolders.worktreeRoot(localConfig);
-
-  const roots: Array<{ readonly root: string; readonly dests: readonly string[]; readonly at: (name: string) => string }> = [
-    { root: DeliveredFolders.root(localConfig), dests: delivered.map(({ dest }) => dest), at: (name) => pathOf(localConfig, name) },
-  ];
-
-  const prune = async (keptCopies: readonly string[]): Promise<void> => {
-    for (const { root, dests, at } of roots) {
-      await DeliveredFolders.prune({ localConfig, type: 'rules', keep: [...dests, ...keptCopies.map(at)], ledger, root });
-    }
-  };
 
   if (copyRoot === null) {
     for (const tool of folders.length === 0 ? [] : copying) {
@@ -172,16 +176,46 @@ async function sync(input: {
         + `${path.sep}rules (${folders.map(({ name }) => name).join(', ')}): teamai grants it no access there, and a user-scope `
         + 'rule has no project to copy them into. Allow the directory in its settings, or share these rules from a project.');
     }
-
-    return prune;
   }
 
-  if (isSelfMode(localConfig)) return prune;
-  const copies = copying.length === 0 ? [] : folders.map(({ ref, files }) => ({ dest: copyPathOf(copyRoot, ref), files }));
-  await DeliveredFolders.sync({ localConfig, type: 'rules', folders: copies, ledger, prune: false, root: copyRoot });
-  roots.push({ root: copyRoot, dests: copies.map(({ dest }) => dest), at: (name) => copyPathOf(copyRoot, refOf({ name })) });
+  // Self mode delivers into the worktree already, so it has no copy to make.
+  const copies = copyRoot === null || isSelfMode(localConfig) || copying.length === 0
+    ? []
+    : folders.map(({ ref, files }) => ({ dest: copyPathOf(copyRoot, ref), files }));
 
-  return prune;
+  await DeliveredFolders.sync({ localConfig, type: 'rules', folders: [...delivered, ...copies], ledger, prune: false, root: copies.length === 0 ? undefined : copyRoot ?? undefined });
+
+  const roots: Array<{ readonly root: string; readonly dests: readonly string[]; readonly at: (name: string) => string }> = [
+    { root: DeliveredFolders.root(localConfig), dests: delivered.map(({ dest }) => dest), at: (name) => pathOf(localConfig, name) },
+    // With no tool left to copy for, the copies go.
+    ...copyRoot === null || isSelfMode(localConfig) ? [] : [{ root: copyRoot, dests: copies.map(({ dest }) => dest), at: (name: string) => copyPathOf(copyRoot, refOf({ name })) }],
+  ];
+
+  return async (heldByCopies) => {
+    for (const { root, dests, at } of roots) {
+      await DeliveredFolders.prune({ localConfig, type: 'rules', keep: [...dests, ...heldByCopies.map(at)], ledger, root });
+    }
+  };
+}
+
+/** The rule folders delivered in `localConfig`'s scope, by name (`api-style`, `fe/api-style`): each directory holding a `RULE.md`. */
+async function deliveredNames(localConfig: LocalConfig): Promise<string[]> {
+  const rulesRoot = path.join(DeliveredFolders.root(localConfig), 'rules');
+  const names: string[] = [];
+
+  const walk = async (dir: string, prefix: string): Promise<void> => {
+    for (const entry of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      const name = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+
+      if (await pathExists(path.join(dir, entry.name, RESOURCE_MARKER))) names.push(name);
+      else await walk(path.join(dir, entry.name), name);
+    }
+  };
+
+  await walk(rulesRoot, '');
+
+  return names;
 }
 
 /** A JSON object in a tool's settings file, as far as teamai reads it. */
@@ -234,4 +268,4 @@ async function grant(input: {
   return owned;
 }
 
-export const RuleFolders = { isFolder, pathOf, isDelivered, languageFile, readTextFile, text, variantNotes, render, sync, grant } as const;
+export const RuleFolders = { isFolder, pathOf, isDelivered, deliveredNames, languageFile, readTextFile, text, variantNotes, render, sync, grant } as const;

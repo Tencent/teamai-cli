@@ -23,7 +23,7 @@ import { gitUntracked } from '../git-exclude.js';
 import { historicalVersions } from '../utils/team-history.js';
 import {
   adoptRecord, contentHash, describeMembersDirLeft, describeMembersLink, forgetDelivered, removeDelivered, holdsNonRegular, isLink, isTeamaiCopy, keepsEditedCopy, recordDelivered, recordedUnchanged,
-  judgeRemoval, keepsTrackedCopy, reportKept,
+  judgeCopy, judgeRemoval, keepsTrackedCopy, reportKept,
   type DeliveredHashes, type DeliveryLedger,
 } from './delivered-copies.js';
 import {
@@ -924,12 +924,19 @@ export class RulesHandler extends ResourceHandler {
     // 1. Distribute rule files to each tool's rules/ directory, after the
     // folders their text names (#1787).
     const receiving = (await rulesReceivingTools(teamConfig, localConfig)).filter((tool) => !isAgentExcluded(localConfig, tool));
-    const pruneRuleFolders = await RuleFolders.sync({ localConfig, rules, tools: receiving, ledger });
-    // The rules whose copy the sweep below keeps because the member edited it: their folders stay with them.
-    const keptCopies = new Set<string>();
-
     // The rules this member receives, when the caller resolved them.
     const received = filteredRules?.map((rule) => rule.name);
+    // The rule folders a tool keeps an edited copy of, which `pullItem` below leaves: their folders keep the files that
+    // copy names.
+    const editedCopies = new Set<string>();
+
+    for (const rule of ledger ? rules.filter(RuleFolders.isFolder) : []) {
+      for (const target of await this.deliveryTargets(teamConfig, localConfig, rule, received)) {
+        if ((await judgeCopy(ledger?.previous, rule, target)).kind !== 'write') editedCopies.add(rule.name);
+      }
+    }
+
+    const pruneRuleFolders = await RuleFolders.sync({ localConfig, rules, tools: receiving, ledger, editedCopies });
 
     for (const rule of rules) {
       await this.pullItem(rule, teamConfig, localConfig, ledger, received);
@@ -1080,8 +1087,6 @@ export class RulesHandler extends ResourceHandler {
           const removal = await judgeRemoval(ledger?.previous, fullPath, ruleOrigin(tool, localConfig.repo.localPath, teamFile), ledger?.otherRecords);
 
           if (removal === 'edited') {
-            keptCopies.add(ruleName);
-
             if (!tombstones.has(ruleName)) {
               log.warn(`Kept ${fullPath}: teamai no longer delivers ${ruleName} here, but you changed this copy. Delete it when you no longer need it.`);
             }
@@ -1107,7 +1112,24 @@ export class RulesHandler extends ResourceHandler {
       await this.removeEmptyDirs(destDir);
     }
 
-    await pruneRuleFolders([...keptCopies]);
+    // A folder stays while a tool still holds a copy of its rule: one the member edited, or one in a directory they
+    // share with teamai. The copy of a namespaced rule is flat for some tools (OMP's `fe.api-style.md`).
+    const heldByCopies: string[] = [];
+    const locations = await rulesLocations(teamConfig, localConfig);
+
+    for (const name of await RuleFolders.deliveredNames(localConfig)) {
+      for (const { tool, location } of locations) {
+        const destDir = rulesDirOf(location);
+        const stem = ruleStemsForTool(tool, new Set([name])).get(name);
+
+        if (destDir !== null && stem !== undefined && await pathExists(path.join(destDir, `${stem}${ruleFileExtensionForTool(tool)}`))) {
+          heldByCopies.push(name);
+          break;
+        }
+      }
+    }
+
+    await pruneRuleFolders(heldByCopies);
 
     // 2. Remove legacy rules section from CLAUDE.md (no longer injected)
     const install = installOf(teamConfig, localConfig);

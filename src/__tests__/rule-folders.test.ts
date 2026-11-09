@@ -100,6 +100,58 @@ describe('rule folders (#1787)', () => {
     expect([keptFolder, await fse.pathExists(home('.teamai', 'rules', 'api-style'))]).toEqual([CHECKLIST, false]);
   });
 
+  it('keeps the files an edited copy names when the team renames one, beside the new version the other tools read', async () => {
+    await fse.ensureDir(home('.omp'));
+    localConfig = { ...localConfig, enabledAgents: ['claude', 'omp'] };
+    const first = openLedger({});
+    await new RulesHandler().pullAllRules(teamConfig, localConfig, undefined, [], first);
+    const copy = home('.claude', 'rules', 'api-style.md');
+    await fse.appendFile(copy, 'My own note.\n');
+    const edited = await fse.readFile(copy, 'utf8');
+    await fse.move(path.join(repoPath, 'rules', 'api-style', 'checklist.md'), path.join(repoPath, 'rules', 'api-style', 'steps.md'));
+    await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'RULE.md'), RULE.replace('checklist.md', 'steps.md'));
+
+    await new RulesHandler().pullAllRules(teamConfig, localConfig, undefined, [], openLedger(first.hashes));
+
+    expect([
+      await fse.readFile(copy, 'utf8') === edited,
+      await fse.readFile(home('.omp', 'agent', 'rules', 'api-style.md'), 'utf8').then((text) => text.includes('/steps.md')),
+      (await fse.readdir(home('.teamai', 'rules', 'api-style'))).sort(),
+    ]).toEqual([true, true, ['RULE.md', 'checklist.md', 'examples', 'steps.md']]);
+  });
+
+  it('keeps the folder of a removed namespaced rule while the member keeps an edited flat copy of it', async () => {
+    await fse.move(path.join(repoPath, 'rules', 'api-style'), path.join(repoPath, 'rules', 'fe', 'api-style'));
+    await fse.ensureDir(home('.omp'));
+    localConfig = { ...localConfig, enabledAgents: ['omp'] };
+    const first = openLedger({});
+    await new RulesHandler().pullAllRules(teamConfig, localConfig, undefined, [], first);
+    await fse.appendFile(home('.omp', 'agent', 'rules', 'fe.api-style.md'), 'My own note.\n');
+    await fse.remove(path.join(repoPath, 'rules', 'fe'));
+    await fse.outputFile(path.join(repoPath, 'rules', 'testing.md'), '# Testing\n');
+
+    await new RulesHandler().pullAllRules(teamConfig, localConfig, undefined, [], openLedger(first.hashes));
+
+    expect(await fse.readFile(home('.teamai', 'rules', 'fe', 'api-style', 'checklist.md'), 'utf8')).toBe(CHECKLIST);
+  });
+
+  it('leaves the data-home folder as it was when the worktree copy of a new version cannot be written', async () => {
+    const projectRoot = path.join(tmpDir, 'project');
+    const dataHome = home('.teamai', 'projects', 'project');
+    await fse.ensureDir(path.join(projectRoot, '.claude'));
+    await fse.ensureDir(path.join(projectRoot, '.codebuddy'));
+    localConfig = { ...localConfig, scope: 'project', projectRoot, dataHome, enabledAgents: ['claude', 'codebuddy'] };
+    await new RulesHandler().pullAllRules(teamConfig, localConfig);
+    await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'checklist.md'), `${CHECKLIST}- Version it.\n`);
+    const copies = path.join(projectRoot, '.teamai', 'delivered', 'rules');
+    await fse.chmod(copies, 0o555);
+
+    const pulled = await new RulesHandler().pullAllRules(teamConfig, localConfig).then(() => 'pulled', () => 'failed');
+    await fse.chmod(copies, 0o755);
+
+    expect([pulled, await fse.readFile(path.join(dataHome, 'rules', 'api-style', 'checklist.md'), 'utf8')]).toEqual(['failed', CHECKLIST]);
+  });
+
   it('takes the body of the language variant under the frontmatter of RULE.md', async () => {
     await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'RULE.zh.md'), '遵循团队 API 风格。\n');
     teamConfig = { ...teamConfig, language: 'zh' };
