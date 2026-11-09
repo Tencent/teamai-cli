@@ -9,7 +9,7 @@ import { FolderFiles } from './folder-files.js';
 import { getUserHome } from '../utils/home.js';
 import { debugOnce, warnOnce } from '../utils/warn-once.js';
 import { TEAMAI_RULES_START, TEAMAI_RULES_END, TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, resolveBaseDir, resolveToolRootDir, isAgentExcluded, SELF_KNOWLEDGE_SCAN_KEY, installScopeName } from '../types.js';
-import { EXCLUDED_RULE_NAMES, isDeployedRecallRule, TEAMAI_CONTEXT_RULE_NAME } from '../builtin-rules.js';
+import { EXCLUDED_RULE_NAMES, isDeployedRecallRule, RECALL_RULE_NAME, TEAMAI_CONTEXT_RULE_NAME } from '../builtin-rules.js';
 import { rulePaths, teamRuleBody, teamRuleData } from './team-rule.js';
 import { joycodeQuotedGlobsWarning } from './joycode-rule.js';
 import type { OpencodeRulesTarget } from './opencode-config.js';
@@ -1408,7 +1408,8 @@ export class RulesHandler extends ResourceHandler {
         const recall = path.join(dir, `teamai-recall${ext}`);
         const recallContent = await isLink(recall) ? null : await readFileSafe(recall);
 
-        if (recallContent !== null) (isDeployedRecallRule(recallContent) ? owned : edited).push(recall);
+        // A team replacement's copy is known by its record (#1787).
+        if (recallContent !== null) (isDeployedRecallRule(recallContent) || await onRecord(recall) ? owned : edited).push(recall);
       }
 
       out.push({ entry, dir, copiedFrom, owned: [...new Set(owned)], edited: [...new Set(edited)].filter((file) => !owned.includes(file)) });
@@ -1600,9 +1601,6 @@ export class RulesHandler extends ResourceHandler {
     }
   }
 }
-
-/** teamai's recall rule, which a team replaces with a folder of this name at the root of `rules/` (#1787). */
-const RECALL_RULE_NAME = 'teamai-recall';
 
 /**
  * The team's rules in `repoPath`, files and folders, each named by its path under `rules/` (#1787), and what the read

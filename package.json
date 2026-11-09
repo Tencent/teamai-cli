@@ -14,6 +14,7 @@
     "!**/*.pyc",
     "agents",
     "workflows",
+    "rules",
     "scorers",
     "README.md",
     "CHANGELOG.md",

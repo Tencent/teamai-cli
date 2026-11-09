@@ -9,12 +9,16 @@ import { z } from 'zod';
 import type { DeliveryLedger } from './delivered-copies.js';
 import { DELIVERED_DIR, DeliveredFolders, type DeliveredFolderRef } from './delivered-folders.js';
 import { FolderFiles, type FolderFile } from './folder-files.js';
+import { RESOURCE_LAYOUTS } from './resolver.js';
 import { splitRuleFrontmatter } from './team-rule.js';
 import { ruleFolderReachOf } from '../tools.js';
 import { isSelfMode, type LocalConfig, type ResourceItem, type TeamaiConfig } from '../types.js';
 import { pathExists, readJsonObject, writeJson } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { warnOnce } from '../utils/warn-once.js';
+
+/** The marker and base text of a rule folder. */
+const RESOURCE_MARKER = RESOURCE_LAYOUTS.rules.marker;
 
 /** A rule folder, as the team repo holds it: `item.sourcePath` is its `RULE.md`. */
 type RuleFolder = ResourceItem & { readonly folder: true };
@@ -49,19 +53,28 @@ async function readTextFile(file: string): Promise<string | null> {
 }
 
 /**
+ * The file of `dir` that holds the text `stem` in `language` (common rule 12): `<stem>.<language>.md` when `language`
+ * is set and the folder holds that exact name, else `<stem>.md`.
+ */
+async function languageFile(dir: string, stem: string, language: TeamaiConfig['language']): Promise<string> {
+  const variant = language === undefined ? null : `${stem}.${language}.md`;
+
+  return variant !== null && (await fs.readdir(dir).catch((): string[] => [])).includes(variant) ? variant : `${stem}.md`;
+}
+
+/**
  * The rule text of `rule` for `language`, before `${TEAMAI_RULE_DIR}` is rendered, ending in one newline: `RULE.md`,
- * or with `language` set and `RULE.<language>.md` in the folder (an exact name, common rule 1), that file's body under
- * the frontmatter of `RULE.md`. Null when a file it needs cannot be read.
+ * or its language variant's body under the frontmatter of `RULE.md` (`languageFile`). Null when a file it needs
+ * cannot be read.
  */
 async function text(rule: RuleFolder, language: TeamaiConfig['language']): Promise<string | null> {
   const base = await readTextFile(rule.sourcePath);
 
   if (base === null) return null;
   const dir = path.dirname(rule.sourcePath);
-  const variantName = language === undefined ? null : `RULE.${language}.md`;
-  const names = variantName === null ? [] : await fs.readdir(dir).catch(() => []);
+  const variantName = await languageFile(dir, 'RULE', language);
 
-  if (variantName === null || !names.includes(variantName)) return `${base}\n`;
+  if (variantName === RESOURCE_MARKER) return `${base}\n`;
   const variant = await readTextFile(path.join(dir, variantName));
 
   if (variant === null) return null;
@@ -201,4 +214,4 @@ async function grant(input: {
   return owned;
 }
 
-export const RuleFolders = { isFolder, isDelivered, text, render, sync, grant } as const;
+export const RuleFolders = { isFolder, isDelivered, languageFile, readTextFile, text, render, sync, grant } as const;

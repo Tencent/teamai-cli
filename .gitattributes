@@ -15,3 +15,7 @@ src/__tests__/fixtures/hooks-skill-retire/*.json text eol=lf
 # The recall rule and blocks as teamai delivered them before rules/teamai-recall/
 # (#1787); src/__tests__/recall-golden.test.ts compares them byte for byte.
 src/__tests__/fixtures/recall-golden/* text eol=lf
+
+# teamai's own rule folders are rendered text: CRLF would change what pull
+# writes on Windows (#1787, common rule 12).
+rules/** text eol=lf
