@@ -273,6 +273,19 @@ describe('default hooks on the Resources page', () => {
     ]);
   });
 
+  it('counts a text as changed only where what the hint reads for the team\'s language differs from teamai\'s', async () => {
+    await fse.copy(shippedFolder('teamai-friction-reminder'), path.join(repo, 'hooks', 'teamai-friction-reminder'));
+    await write({ 'hooks/teamai-friction-reminder/problem.md': 'Ours, in English only.\n' });
+    const chinese = TeamaiConfigSchema.parse({ ...teamConfig, language: 'zh' });
+
+    const [inChinese, inBase] = await Promise.all([defaultHook('teamai-friction-reminder', chinese), defaultHook('teamai-friction-reminder')]);
+
+    expect([inChinese.texts.find(({ text }) => text === 'problem'), inBase.texts.find(({ text }) => text === 'problem')]).toEqual([
+      { text: 'problem', file: 'problem.zh.md', replaced: false },
+      { text: 'problem', file: 'problem.md', replaced: true },
+    ]);
+  });
+
   it('names the variant of each text the hint reads for the team\'s language, from the folder in force', async () => {
     await fse.copy(shippedFolder('teamai-friction-reminder'), path.join(repo, 'hooks', 'teamai-friction-reminder'));
     await fse.remove(path.join(repo, 'hooks', 'teamai-friction-reminder', 'task.zh.md'));

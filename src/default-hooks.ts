@@ -270,7 +270,7 @@ function readFolder<TName extends DefaultHookName>(name: TName, files: readonly 
 }
 
 /** The folder teamai ships for `name`. It is part of teamai's package, so one that cannot be read is a teamai bug, and throws. */
-async function shipped<TName extends DefaultHookName>(name: TName): Promise<{ hook: DefaultHook<TName>; with: JsonObject; texts: ReadonlyMap<string, TextVariants>; files: readonly FolderFile[] }> {
+async function shipped<TName extends DefaultHookName>(name: TName): Promise<{ hook: DefaultHook<TName>; with: JsonObject; texts: ReadonlyMap<string, TextVariants> }> {
   const dir = path.join(packageRoot(), 'hooks', name);
   const read = await FolderFiles.read(dir);
 
@@ -279,7 +279,7 @@ async function shipped<TName extends DefaultHookName>(name: TName): Promise<{ ho
 
   if (!folder.ok) throw new Error(`teamai's default hook folder ${dir} is broken: ${folder.problems.join('; ')}`);
 
-  return { ...folder, files: read.files };
+  return folder;
 }
 
 /**
@@ -315,7 +315,7 @@ async function problems(name: DefaultHookName, files: readonly FolderFile[]): Pr
 export interface DefaultHookComparison {
   /** `weights.reject` for a parameter of a mapping. `team` is null where the team's folder leaves a parameter out. */
   readonly params: ReadonlyArray<{ readonly key: string; readonly teamai: JsonValue | null; readonly team: JsonValue | null }>;
-  /** `file`: the variant the hint in force reads for the language. `replaced`: the team's folder has other content for one of the text's files. */
+  /** `file`: the variant the hint in force reads for the language. `replaced`: what it reads differs from what teamai's folder gives. */
   readonly texts: ReadonlyArray<{ readonly text: string; readonly file: string; readonly replaced: boolean }>;
 }
 
@@ -339,19 +339,16 @@ async function compare(name: DefaultHookName, team: readonly FolderFile[] | null
     return [{ key, teamai: base ?? null, team: set ?? null }];
   });
 
-  const contentOf = (files: readonly FolderFile[]): Map<string, string> => new Map(files.map((file) => [file.path, textOf(file)]));
-  const theirs = contentOf(teamai.files);
-  const ours = team === null ? null : contentOf(team);
+  const read = (texts: ReadonlyMap<string, TextVariants>, text: string) => {
+    const variants = texts.get(text);
+
+    return variants ? pick(variants, language) : null;
+  };
 
   const texts = Object.keys(TEXTS[name]).map((text) => {
-    const variants = inForce.get(text);
-    const picked = variants ? pick(variants, language).language : null;
+    const picked = read(inForce, text);
 
-    return {
-      text,
-      file: picked ? `${text}.${picked}.md` : `${text}.md`,
-      replaced: ours !== null && [`${text}.md`, `${text}.en.md`, `${text}.zh.md`].some((file) => ours.get(file) !== theirs.get(file)),
-    };
+    return { text, file: picked?.language ? `${text}.${picked.language}.md` : `${text}.md`, replaced: picked?.content !== read(teamai.texts, text)?.content };
   });
 
   return { params, texts };
