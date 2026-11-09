@@ -85,7 +85,7 @@ Test at one layer: the lowest one that fails on `main`. Do not repeat the case i
 
 Proof for a bug fix is a failing test first: the fewest that fail on `main` for that reason, in an existing case of the module's test file where one fits. Then the fix.
 
-The Code Review Rules below carry these testing rules for the review bot. Change both together.
+The Code Review Rules below carry these testing rules for the review bot, and its prompt restates them. Change all three together.
 
 Iterate with `npm run test:e2e -- <test-file>`; run the full suite only when changing the E2E runner, shared fixtures, or test isolation ([CONTRIBUTING.md](.github/CONTRIBUTING.md#testing-guidelines)).
 
