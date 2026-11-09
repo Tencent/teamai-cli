@@ -2141,6 +2141,20 @@ describe('reviewBranchDir: rule folders (#1787)', () => {
     ]);
   });
 
+  it('names the files of a folder only where the branch adds its RULE.md to the base, as pull says it once', async () => {
+    await fse.outputFile(path.join(repoDir, 'rules', 'api-style', 'checklist.md'), '- Plural names.\n');
+    await fse.outputFile(path.join(repoDir, 'rules', 'fe', 'review', 'notes.md'), 'Read it twice.\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir, { ruleFolders: new Set(['rules/api-style/']) });
+
+    expect(review.findings.filter(({ level, check }) => level === 'warn' && check === 'structure')).toEqual([{
+      level: 'warn',
+      check: 'structure',
+      path: 'rules/fe/review/',
+      message: 'rules/fe/review/ holds RULE.md, so it is one folder, and notes.md in it is one of its files, no longer read on its own.',
+    }]);
+  });
+
   it('fails a rule folder pull does not deliver, and a credential in a support file', async () => {
     await fse.outputFile(path.join(repoDir, 'rules', 'api-style.md'), 'Use named exports.\n');
     await fse.outputFile(path.join(repoDir, 'rules', 'fe', 'review', 'call.sh'), 'curl -H "Authorization: sk-abcdefghijklmnopqrstuvwx0123456789" api\n');

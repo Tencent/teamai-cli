@@ -57,7 +57,7 @@ import { AGENT_TOOLS } from './tools.js';
 import { LocalConfigSchema, type GlobalOptions, type LocalConfig, type ResourceItem, type TeamaiConfig } from './types.js';
 import { splitFrontmatter, type FrontmatterValue } from './utils/frontmatter.js';
 import { isIgnored, listDirs, listFilesRecursive, pathExists, readFileIfExists, writeFile, ensureDir } from './utils/fs.js';
-import { getFileContentAtRev, getHeadCommit, listTreeAtRev } from './utils/git.js';
+import { getFileContentAtRev, getHeadCommit, getMergeBase, listTreeAtRev } from './utils/git.js';
 import { isSilent, log, setSilent } from './utils/logger.js';
 import { redact } from './utils/redact.js';
 import { syncTeamDefinitions } from './benchmark/suite-cache.js';
@@ -237,14 +237,22 @@ async function skippedFolderFindings(repoDir: string): Promise<Finding[]> {
   }));
 }
 
+/** What a branch is compared with: the rule folders, as `rules/api-style/`, at the commit it forks from the checkout's HEAD. */
+export interface ReviewBase {
+  readonly ruleFolders: ReadonlySet<string>;
+}
+
 /**
  * What pull's rules reader says about the branch's rules (#1787): a rule it does not deliver fails, and a note (a
- * directory that became a rule folder, a language variant's frontmatter) warns.
+ * language variant's frontmatter, a directory that became a rule folder) warns. A folder whose `.md` files are now its
+ * own is named only where the branch adds its RULE.md to `base`, as pull names it only when it removes a copy it
+ * delivered; with no base, every such folder is.
  */
-async function ruleFindings(repoDir: string): Promise<Finding[]> {
+async function ruleFindings(repoDir: string, base: ReviewBase | null): Promise<Finding[]> {
   const { problems, folderNotes } = await readTeamRules(repoDir);
+  const added = folderNotes.filter((note) => base === null || !base.ruleFolders.has(note.path));
 
-  return [...folderNotes, ...problems].map(({ kind, path: at, message }): Finding => ({
+  return [...added, ...problems].map(({ kind, path: at, message }): Finding => ({
     level: kind === 'invalid' ? 'fail' : 'warn',
     check: kind === 'invalid' || at.endsWith('/') ? 'structure' : 'format',
     path: at,
@@ -1721,8 +1729,8 @@ async function modelFindings(resources: ReviewResource[], readText: (p: string) 
 
 // ─── Engine ──────────────────────────────────────────────────────────────────
 
-/** Every check, in the order the reporter listed them. */
-export async function reviewBranchDir(branch: string, repoDir: string): Promise<BranchReview> {
+/** Every check, in the order the reporter listed them; `base` is what the branch is compared with, when known. */
+export async function reviewBranchDir(branch: string, repoDir: string, base: ReviewBase | null = null): Promise<BranchReview> {
   const [roles, projects] = await Promise.all([
     loadRolesManifestIfPresent(repoDir),
     loadProjectsManifest(repoDir),
@@ -1739,7 +1747,7 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
 
   const findings: Finding[] = [
     ...await skippedFolderFindings(repoDir),
-    ...await ruleFindings(repoDir),
+    ...await ruleFindings(repoDir, base),
     ...await structureFindings(resources, index),
     ...await namingFindings(resources, readText),
     ...await duplicateFindings(resources, index),
@@ -1784,6 +1792,16 @@ export async function resolveBranchRef(repoPath: string, branch: string): Promis
   if (await getHeadCommit(repoPath, `origin/${branch}`)) return `origin/${branch}`;
 
   return null;
+}
+
+/** The rule folders at the commit `ref` forks from the checkout's HEAD, or null when the two share no commit. */
+async function reviewBase(repoPath: string, ref: string): Promise<ReviewBase | null> {
+  const fork = await getMergeBase(repoPath, 'HEAD', ref);
+
+  if (fork === null) return null;
+  const files = await listTreeAtRev(repoPath, fork, RESOURCE_LAYOUTS.rules.dir);
+
+  return { ruleFolders: new Set(files.flatMap(({ path: file }) => (path.posix.basename(file) === RESOURCE_LAYOUTS.rules.marker ? [`${path.posix.dirname(file)}/`] : []))) };
 }
 
 /**
@@ -1878,7 +1896,7 @@ export async function reviewBranchCmd(options: ReviewBranchOptions): Promise<voi
 
   try {
     await materializeRef(repoPath, ref, destDir);
-    review = await reviewBranchDir(options.branch, destDir);
+    review = await reviewBranchDir(options.branch, destDir, await reviewBase(repoPath, ref));
   } finally {
     await fse.remove(destDir).catch(() => undefined);
   }
