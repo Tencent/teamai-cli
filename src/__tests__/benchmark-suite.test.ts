@@ -183,6 +183,7 @@ describe('parseSuite', () => {
     ['a task with neither check nor successCriteria', taskText({ check: '' }), 'check', 'a task has check, successCriteria, or both; add at least one'],
     ['a task with an empty protect', taskText({ check: '{ run: node test.js, protect: [] }' }), 'check.protect', 'check.protect lists every path the check reads and the agent must not supply'],
     ['a short startingCommit', taskText({ startingCommit: 'abc1234' }), 'startingCommit', 'must be a full 40-character commit'],
+    ['a scorer name with ":", which no scorer file has', taskText({ scorers: '[review-quality, "teamai:correctness:fix"]' }), 'scorers.1', 'names no scorer file, since a scorer file name has no ":"; list the name of a file in scorers/, without .md'],
     ['a short solutionCommit', taskText({ solutionCommit: '9a1d4e7' }), 'solutionCommit', 'must be a full 40-character commit'],
     ['a commit in source, which only says where the task came from', taskText({ source: `{ platform: claude-code, sessionId: s1, fix: ${'b'.repeat(40)} }` }), 'source', 'Unrecognized key: "fix"'],
     ['a source that mixes a session and a workflow pass', taskText({ source: '{ platform: claude-code, sessionId: s1, runId: r0123456789abcdef, step: review, pass: 1 }' }), 'source', SOURCE_HELP],
@@ -219,6 +220,15 @@ describe('parseSuite', () => {
       { id: 'check', judge: { check } },
       { id: 'criteria', judge: { successCriteria: criteria } },
     ]);
+  });
+
+  it('keeps the scorers a task lists, each once, as part of its file and so of its hash', () => {
+    const parsed = parse(suiteText({ scorers: '[review-quality]' }), { listed: taskText({ scorers: '[security-review, security-review]' }), plain: taskText() });
+    const [listed, plain] = parsed.ok ? parsed.suite.tasks : [];
+
+    expect(parsed).toMatchObject({ ok: true, diagnostics: [] });
+    expect([listed?.scorers, plain?.scorers]).toEqual([['security-review'], undefined]);
+    expect(listed?.sourceHash).not.toBe(plain?.sourceHash);
   });
 
   it('keeps the workflow pass a regression task came from as its source', () => {
@@ -412,6 +422,15 @@ describe('suite sync', () => {
     const unknown = (scorer: string) => `benchmarks/fix/suite.yaml: suite "fix" lists scorer "${scorer}", which has no valid scorers/${scorer}.md; the benchmark does not start without it`;
     expect(devSync.unknownScorers.map(formatUnknownScorer)).toEqual([unknown('missing')]);
     expect(opsSync.unknownScorers.map(formatUnknownScorer)).toEqual([unknown('quality'), unknown('missing')]);
+  });
+
+  it('names each scorer a task lists that this member receives no valid scorer of, at the task file', async () => {
+    const quality = '---\nlabels:\n  - { value: good, score: 1, description: Good. }\n  - { value: bad, score: 0, description: Bad. }\npassingScore: 1\n---\nJudge it.\n';
+    const config = team({ 'scorers/quality.md': quality, 'benchmarks/fix/suite.yaml': suiteText(), 'benchmarks/fix/tasks/fix.yaml': taskText({ scorers: '[quality, missing]' }) });
+
+    const result = await syncTeamDefinitions(config);
+
+    expect(result.unknownScorers.map(formatUnknownScorer)).toEqual(['benchmarks/fix/tasks/fix.yaml: task "fix" of suite "fix" lists scorer "missing", which has no valid scorers/missing.md; the benchmark does not start without it']);
   });
 
   it('caches neither suite of one name in two active namespaces', async () => {

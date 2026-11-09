@@ -175,6 +175,16 @@ describe('the workflow a benchmark plan prints', () => {
     }
   });
 
+  it("judges a task's trials with the union of the suite's scorers and the task's, each once, and the other tasks' with the suite's", async () => {
+    const files = suiteOf({ tasks: 2 });
+    const listed = { ...files, suite: `${files.suite}scorers: [review-quality]\n`, tasks: { ...files.tasks, t01: `${files.tasks.t01 ?? ''}scorers: [security-review, review-quality]\n` } };
+
+    const { run } = await plannedRun(listed);
+
+    expect(stepDefinitions(run)('trials.r1.t01.a01.prompt')?.scorers).toEqual({ names: ['review-quality', 'security-review'], sampling: 'all', start: 'workflow' });
+    expect(stepDefinitions(run)('trials.r1.t02.a01.prompt')?.scorers).toEqual({ names: ['review-quality'], sampling: 'all', start: 'workflow' });
+  });
+
   it('opens a role-less arm\'s clone with no role', async () => {
     const { run } = await plannedRun(suiteOf({ arms: 2 }));
 

@@ -50,7 +50,7 @@ setup:
 | `timeout` | 必填：整个运行的超时。 |
 | `trial` | 可选：每个 trial 的 prompt 的限制。见 [trial 限制](#trial-限制)。 |
 | `setup` | 可选，即[工作流的 `setup`](workflow-advanced.md#要求和限制)。在每个全新克隆中、工具或 check 之前运行。 |
-| `scorers` | 可选，评判每个 trial 的[评分器](scorers.md)。没有有效 `scorers/<name>.md` 的名字会让 `teamai review --branch` 失败，`teamai pull` 会警告，start 会拒绝该套件。 |
+| `scorers` | 可选，评判每个 trial 的[评分器](scorers.md)；任务可以[再列出更多](#每个任务的评分器)。没有有效 `scorers/<name>.md` 的名字会让 `teamai review --branch` 失败，`teamai pull` 会警告，start 会拒绝该套件。 |
 
 ### 使用其他团队资产的 arm
 
@@ -288,8 +288,37 @@ check passes → the check step writes no label → the judge decides on success
 | `successCriteria` | 评判器据以判定的标准：单独使用，或在 `check` 通过之后。 |
 | `covers` | 可选：该任务的工作预期需要的团队仓库路径，写法与 [`without`](#去掉团队资产) 相同。[资产效果](#资产效果) 表按覆盖它的任务拆分一个去掉了该路径的 arm。 |
 | `source` | 可选：任务的来源：会话的 `platform` 和 `sessionId`，或工作流 pass 的 `runId`、`step` 和 `pass`。不会从它运行任何东西；[`digest --json`](self-improvement.md#teamai-读取什么) 会把它指向的失败标为已覆盖。 |
+| `scorers` | 可选：除套件的评分器外，还评判这个任务 trial 的[评分器](scorers.md)。见[每个任务的评分器](#每个任务的评分器)。 |
 
 `teamai pull` 和 `teamai review --branch` 检查每个文件，并带文件和行号报告每个问题，例如既没有 `check` 也没有 `successCriteria` 的任务。`benchmarks/<namespace>/<suite>/` 下的套件只发给该角色或项目的成员，见[角色和项目](distribution.md#角色和项目)。
+
+### 每个任务的评分器
+
+任务的 `scorers` 和套件的评分器一起评判它的 trial，每个评分器只评判一次，所以只适用于少数任务的评分器不会在其他任务上花评判调用：
+
+```yaml
+# benchmarks/fix-auth/suite.yaml 的一部分
+scorers: [review-quality]
+```
+
+```yaml
+# benchmarks/fix-auth/tasks/session-fixation.yaml
+schemaVersion: v1alpha1
+title: Rotate the session id at login
+prompt: Sessions keep their id across login. Fix it.
+startingCommit: 3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a
+check:
+  run: npx vitest run test/auth/session.test.ts
+  protect: ['test/**', 'package.json', 'package-lock.json']
+scorers: [security-review]
+```
+
+| 任务 | 评判其 trial 的评分器 |
+| --- | --- |
+| session-fixation | review-quality, security-review |
+| expired-token | review-quality |
+
+任务的评分器名字和套件的一样检查：没有有效 `scorers/<name>.md` 的名字会让 `teamai review --branch` 失败，`teamai pull` 会警告，start 会拒绝该套件。带 `:` 的名字（例如 `teamai:correctness:<task>`）会被拒绝，因为没有评分器文件叫这个名字。这个列表是任务文件的一部分，所以改动它会改变任务的 `sourceHash`，[回归门禁](#回归时失败)不会跨这次改动配对它的 trial。start 像固定套件评分器的评判那样[固定每个评分器的评判](#对所有-arm-用同一个评判)，只要有任务列出评分器，就需要评判工具。
 
 ### `protect` 要覆盖什么
 

@@ -1096,6 +1096,44 @@ describe('benchmark plan judges at start', () => {
   });
 });
 
+describe('benchmark plan scorers a task lists', () => {
+  const LISTING = "schemaVersion: v1alpha1\ntitle: Rotate\nprompt: Rotate the session id at login.\nstartingCommit: '{{startingCommit}}'\ncheck: { run: node test.js, protect: [test.js] }\nscorers: [security]\n";
+
+  it("pins a scorer a task lists as the suite's are, its judge the same for every arm", async () => {
+    judgeTools();
+    const member = await pulledMember({
+      arms: 'arms:\n  - name: claude\n  - name: codex\n    tool: codex\nscorers: [quality]\n',
+      team: { 'benchmarks/fix/tasks/rotate.yaml': LISTING, 'scorers/quality.md': SCORER(), 'scorers/security.md': SCORER('tool: codex\n') },
+    });
+
+    const planned = await member.plan();
+
+    expect('planned' in planned && planned.planned.plan.judges).toEqual({ quality: { tool: 'claude', model: '' }, security: { tool: 'codex', model: '' } });
+    expect('planned' in planned && planned.planned.plan.scorers.map(({ name }) => name)).toEqual(['quality', 'security', 'teamai:correctness:fix', 'teamai:correctness:rotate']);
+  });
+
+  it('refuses a task that lists a scorer this member has no valid file of, naming the task file', async () => {
+    judgeTools();
+    const member = await pulledMember({ arms: 'arms:\n  - name: claude\n', team: { 'benchmarks/fix/tasks/rotate.yaml': LISTING } });
+
+    const planned = await member.plan();
+
+    expect(planned).toEqual({ refused: { error: {
+      code: 'scorer_not_found',
+      message: 'Task "rotate" of suite "fix" lists scorer "security", which has no valid scorers/security.md for this member. Add the scorer, or remove it from benchmarks/fix/tasks/rotate.yaml, push it, run teamai pull, and start again.',
+    } } });
+  });
+
+  it('refuses a check-only suite whose task lists a scorer on a machine with no judge tool', async () => {
+    vi.spyOn(cliPaths, 'resolveCliPath').mockReturnValue(null);
+    const member = await pulledMember({ arms: 'arms:\n  - name: claude\n', team: { 'benchmarks/fix/tasks/rotate.yaml': LISTING, 'scorers/security.md': SCORER() } });
+
+    const planned = await member.plan();
+
+    expect(planned).toMatchObject({ refused: { error: { code: 'scoring_unavailable', message: expect.stringMatching(/^This suite needs a judge \(task "rotate" lists scorers security\), and this machine cannot judge: /) } } });
+  });
+});
+
 describe('benchmark plan correctness rubric', () => {
   const COPY_TASK = "schemaVersion: v1alpha1\ntitle: Copy\nprompt: Fix the login copy.\nstartingCommit: '{{startingCommit}}'\nsuccessCriteria: The login page says Sign in.\n";
   const TEAM_RUBRIC = `---

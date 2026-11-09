@@ -50,7 +50,7 @@ setup:
 | `timeout` | Required: the whole run's. |
 | `trial` | Optional limits of every trial's prompt. See [Trial limits](#trial-limits). |
 | `setup` | Optional, a [workflow's `setup`](workflow-advanced.md#requirements-and-limits). Runs in every fresh clone before the tool or the check. |
-| `scorers` | Optional [scorers](scorers.md) that judge every trial. A name with no valid `scorers/<name>.md` fails `teamai review --branch`, `teamai pull` warns, and start refuses the suite. |
+| `scorers` | Optional [scorers](scorers.md) that judge every trial; a task may [list more](#scorers-per-task). A name with no valid `scorers/<name>.md` fails `teamai review --branch`, `teamai pull` warns, and start refuses the suite. |
 
 ### Arms on other team assets
 
@@ -288,8 +288,37 @@ check passes → the check step writes no label → the judge decides on success
 | `successCriteria` | What a judge decides from: on its own, or after `check` passes. |
 | `covers` | Optional: the team repo paths the task's work is expected to need, as [`without`](#leave-team-assets-out) takes them. The [asset effect](#asset-effect) tables split an arm that runs without one of them by the tasks that cover it. |
 | `source` | Optional: where the task came from: a session's `platform` and `sessionId`, or a workflow pass's `runId`, `step` and `pass`. Nothing runs from it; [`digest --json`](self-improvement.md#what-teamai-reads) marks the failure it names as covered. |
+| `scorers` | Optional: [scorers](scorers.md) that judge this task's trials besides the suite's. See [Scorers per task](#scorers-per-task). |
 
 `teamai pull` and `teamai review --branch` check every file and report each problem with its file and line, such as a task with neither `check` nor `successCriteria`. A suite in `benchmarks/<namespace>/<suite>/` goes only to members of that role or project, as [Roles and projects](distribution.md#roles-and-projects) describes.
+
+### Scorers per task
+
+A task's `scorers` judge its trials together with the suite's, each once, so a scorer that applies to a few tasks costs no judge call on the others:
+
+```yaml
+# benchmarks/fix-auth/suite.yaml, in part
+scorers: [review-quality]
+```
+
+```yaml
+# benchmarks/fix-auth/tasks/session-fixation.yaml
+schemaVersion: v1alpha1
+title: Rotate the session id at login
+prompt: Sessions keep their id across login. Fix it.
+startingCommit: 3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a
+check:
+  run: npx vitest run test/auth/session.test.ts
+  protect: ['test/**', 'package.json', 'package-lock.json']
+scorers: [security-review]
+```
+
+| Task | Scorers that judge its trials |
+| --- | --- |
+| session-fixation | review-quality, security-review |
+| expired-token | review-quality |
+
+A task's scorer names are checked as the suite's are: one with no valid `scorers/<name>.md` fails `teamai review --branch`, `teamai pull` warns, and start refuses the suite. A name with `:`, such as `teamai:correctness:<task>`, is refused, since no scorer file has one. The list is part of the task file, so changing it changes the task's `sourceHash`, and [the regression gate](#fail-on-a-regression) does not pair its trials across the change. Start [pins each one's judge](#one-judge-for-every-arm) as it pins the suite's, and needs a judge tool once any task lists one.
 
 ### What `protect` covers
 

@@ -199,11 +199,20 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
     arms[index] = { ...arm, workflow: { name: workflow, sourceHash: pinnedWorkflow.pinned.sourceHash } };
   }
 
-  const pinned = await pinScorers(config, found.scorers);
+  const listedByTasks = found.tasks.flatMap((task) => (task.scorers ?? []).map((scorer) => ({ task, scorer })));
+  const pinned = await pinScorers(config, [...new Set([...found.scorers, ...listedByTasks.map(({ scorer }) => scorer)])]);
   const unpinned = found.scorers.find((scorer) => !Object.hasOwn(pinned, scorer));
 
   if (unpinned !== undefined) {
     return refuse(error('scorer_not_found', `Suite "${found.name}" lists scorer "${unpinned}", which has no valid scorers/${unpinned}.md for this member. Add the scorer, or remove it from ${found.relativePath}, push it, run teamai pull, and start again.`));
+  }
+
+  const unpinnedOfTask = listedByTasks.find(({ scorer }) => !Object.hasOwn(pinned, scorer));
+
+  if (unpinnedOfTask !== undefined) {
+    const { task, scorer } = unpinnedOfTask;
+
+    return refuse(error('scorer_not_found', `Task "${task.id}" of suite "${found.name}" lists scorer "${scorer}", which has no valid scorers/${scorer}.md for this member. Add the scorer, or remove it from ${task.relativePath}, push it, run teamai pull, and start again.`));
   }
 
   const rubrics: Record<string, PinnedRubric> = {};
@@ -235,7 +244,8 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
   if (unjudgeable !== undefined) return refuse(unjudgeable);
   const { scorers: generated } = compileBundle(plan, committed.suite, { armWorkflows, unattended: options.unattended, correctnessRubric });
   const criteria = found.tasks.find((task) => task.judge.successCriteria !== undefined);
-  const needs = found.scorers.length > 0 ? `its scorers ${found.scorers.join(', ')}` : criteria ? `task "${criteria.id}" has successCriteria` : undefined;
+  const listing = listedByTasks[0];
+  const needs = found.scorers.length > 0 ? `its scorers ${found.scorers.join(', ')}` : listing ? `task "${listing.task.id}" lists scorers ${(listing.task.scorers ?? []).join(', ')}` : criteria ? `task "${criteria.id}" has successCriteria` : undefined;
 
   // A correctness scorer a check decides has a pin and no judge.
   const judged = Object.entries({ ...pinned, ...generated }).flatMap(([scorer, pin]) => {

@@ -146,9 +146,9 @@ export const BenchmarkPlanSchema = z.object({
   arms: z.array(PlannedArmSchema).nonempty(),
   /** Each arm whose team assets differ from the baseline's in skills, with those skills. */
   skillChanges: z.array(SkillChangesSchema).optional(),
-  /** Every scorer that judges or decides a trial: the suite's, and each task's correctness scorer, which decides its trials. */
+  /** Every scorer that judges or decides a trial: the suite's, those tasks list, and each task's correctness scorer, which decides its trials. */
   scorers: z.array(PlannedScorerSchema),
-  /** By scorer name, the judge of each scorer a judge labels: the suite's, and the correctness scorer of each task with successCriteria. */
+  /** By scorer name, the judge of each scorer a judge labels: the suite's, those tasks list, and the correctness scorer of each task with successCriteria. */
   judges: z.record(z.string(), PlannedJudgeSchema),
   trials: z.array(PlannedTrialSchema),
 }).strict();
@@ -208,7 +208,7 @@ export function freezePlan(input: {
   baselineTeamRevision: string;
   selection: TeamSelection;
   arms: [PlannedArm, ...PlannedArm[]];
-  /** The team scorers the suite lists, as start pinned them. */
+  /** The team scorers the suite and its tasks list, as start pinned them. */
   scorers: Record<string, PinnedRubric>;
   /** The rubric each task's correctness scorer fills in: the team's scorers/teamai-correctness.md pull kept, else teamai's. */
   correctnessRubric: string;
@@ -336,7 +336,7 @@ export function compileBundle(
   const tried = baselines.length > 0;
 
   const workOf = (arm: PlannedArm, task: Task): FileStep => {
-    const names = [...suite.scorers, ...(task.judge.successCriteria !== undefined ? [correctnessScorerName(task.id)] : [])];
+    const names = [...new Set([...suite.scorers, ...(task.scorers ?? [])]), ...(task.judge.successCriteria !== undefined ? [correctnessScorerName(task.id)] : [])];
     const pinned = armWorkflows.get(arm.name);
     const timeoutMs = plan.limits?.timeoutMs;
     const tokens = plan.limits?.tokens;

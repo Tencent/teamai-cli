@@ -381,6 +381,8 @@ function taskFileSchema(files: ReadonlyMap<string, SuiteFile>) {
     covers: CoversSchema.optional(),
     /** Where the task came from: the session or the workflow pass it was made from. Provenance only; nothing runs from it. */
     source: TaskSourceSchema.optional(),
+    /** Scorers that judge this task's trials besides the suite's, by the name of their file in scorers/. */
+    scorers: z.array(z.string().min(1).refine((name) => !name.includes(':'), 'names no scorer file, since a scorer file name has no ":"; list the name of a file in scorers/, without .md')).optional(),
   }).strict().transform(({ check, successCriteria, ...task }, ctx) => {
     if (successCriteria !== undefined && !check) return { ...task, judge: { successCriteria } satisfies TaskJudge };
 
@@ -518,6 +520,8 @@ export interface Task {
   covers?: [string, ...string[]];
   /** The session or workflow pass the task was made from, as provenance. */
   source?: TaskSource;
+  /** The scorers that judge its trials besides the suite's, each listed once; absent: only the suite's. */
+  scorers?: [string, ...string[]];
   /** sha256 of the file bytes. */
   sourceHash: string;
 }
@@ -615,10 +619,11 @@ export function parseSuite(input: { suite: SourceFile; tasks: readonly SourceFil
       continue;
     }
 
-    const { title, prompt, startingCommit, solutionCommit, judge, covers, source: origin } = task.value;
+    const { title, prompt, startingCommit, solutionCommit, judge, covers, source: origin, scorers = [] } = task.value;
+    const [firstScorer, ...otherScorers] = [...new Set(scorers)];
     tasks.push(definedFields<Task>({
       id, relativePath: source.relativePath, title, prompt, startingCommit, solutionCommit: solutionCommit || undefined, judge,
-      covers, source: origin, sourceHash: taskHash(source.content, judge),
+      covers, source: origin, scorers: firstScorer === undefined ? undefined : [firstScorer, ...otherScorers], sourceHash: taskHash(source.content, judge),
     }));
   }
 
