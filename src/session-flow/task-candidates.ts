@@ -4,12 +4,11 @@
  * on, both clean and different, both in the suite's repo, and no task of the suite already coming from it; how big its
  * change is, and, with sizes, the size that fits it. Every session left out is counted under why.
  */
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import { listCachedSuites } from '../benchmark/suite-cache.js';
 import type { Suite } from '../benchmark/suite.js';
 import type { LocalConfig } from '../types.js';
-import { commitCacheOf } from '../workflow/place/place.js';
+import { commitCacheOf, firstUnreachable } from '../workflow/place/place.js';
 import { git } from '../workflow/worktree.js';
 import type { SessionCommits } from './sync.js';
 
@@ -99,29 +98,6 @@ export interface Weighed<T> {
   commits: SessionCommits | undefined;
 }
 
-/** Whether `commit` is a commit of the bare repo `dir`. */
-async function holds(dir: string, commit: string): Promise<boolean> {
-  return (await git(dir, ['cat-file', '-e', `${commit}^{commit}`])).code === 0;
-}
-
-/**
- * Whether the suite's repo holds both `commits`: in the commit cache benchmark start fetches into, else after a fetch
- * of them by SHA from `repo` into it, as start does, with the member's own credentials.
- */
-async function reachable(cache: string, repo: string, commits: readonly string[]): Promise<boolean> {
-  const missing: string[] = [];
-
-  for (const commit of commits) if (!(await holds(cache, commit))) missing.push(commit);
-
-  if (missing.length === 0) return true;
-  await fs.mkdir(cache, { recursive: true });
-
-  if ((await git(cache, ['init', '-q', '--bare'])).code !== 0) return false;
-  const fetched = await git(cache, ['fetch', '-q', '--no-tags', repo, ...missing.map((commit) => `${commit}:refs/benchmark/${commit}`)]);
-
-  return fetched.code === 0 && (await Promise.all(missing.map((commit) => holds(cache, commit)))).every(Boolean);
-}
-
 /** The files and changed lines from `start` to `solution` in `dir`; a binary file counts as a file of no lines. */
 async function changeOf(dir: string, start: string, solution: string): Promise<{ files: number; lines: number } | undefined> {
   const diff = await git(dir, ['diff', '--numstat', '--no-renames', start, solution]);
@@ -183,7 +159,9 @@ async function weigh<T>(config: LocalConfig, { suite, sizes }: { suite: Suite; s
       continue;
     }
 
-    const change = await reachable(cache, suite.repo, [pair.start, pair.solution]) ? await changeOf(cache, pair.start, pair.solution) : undefined;
+    // The solution first: its fetch brings the start it descends from, so most sessions cost one fetch.
+    const unreachable = await firstUnreachable({ cache, repo: suite.repo, commits: [pair.solution, pair.start] });
+    const change = unreachable === undefined ? await changeOf(cache, pair.start, pair.solution) : undefined;
 
     if (!change) {
       leave(LEFT_OUT.unreachable);

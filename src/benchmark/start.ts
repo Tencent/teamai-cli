@@ -35,7 +35,7 @@ import type { TeamSelection } from '../workflow/clone.js';
 import type { ArmTeam, SkillChanges } from './terms.js';
 import type { Added } from '../scorers/check.js';
 import { runCheckAt, type CheckRun } from '../scorers/check-run.js';
-import { commitCacheOf } from '../workflow/place/place.js';
+import { commitCacheOf, firstUnreachable } from '../workflow/place/place.js';
 import { leavesOut, withoutRefusal } from './team-without.js';
 import { commitCheckFiles, trialBlocker, type CommittedSuite } from './trial.js';
 import { planOfRun, trialsUnattended } from './run-plan.js';
@@ -588,28 +588,9 @@ async function unreachableTask(config: LocalConfig, suite: Suite, checkout: stri
 
   for (const task of suite.tasks) {
     // A check's added files come from the task's solution commit, so its trials need that commit too.
-    const commit = await firstUnreachable(checkout, cache, suite.repo, [task.startingCommit, ...(task.judge.kind === 'check' && task.judge.add ? [task.judge.add.commit] : [])]);
+    const commit = await firstUnreachable({ checkout, cache, repo: suite.repo, commits: [task.startingCommit, ...(task.judge.kind === 'check' && task.judge.add ? [task.judge.add.commit] : [])] });
 
     if (commit !== undefined) return { task, commit };
-  }
-
-  return undefined;
-}
-
-/**
- * The first of `commits` neither `checkout` nor the bare repo `cache` has, after a fetch by SHA from `repo` into the
- * cache, with the member's own credentials.
- */
-async function firstUnreachable(checkout: string, cache: string, repo: string, commits: readonly string[]): Promise<string | undefined> {
-  const has = async (dir: string, commit: string): Promise<boolean> => (await git(dir, ['cat-file', '-e', `${commit}^{commit}`])).code === 0;
-
-  for (const commit of commits) {
-    if (await has(checkout, commit) || await has(cache, commit)) continue;
-    await fs.mkdir(cache, { recursive: true });
-    const made = await git(cache, ['init', '-q', '--bare']);
-    const fetched = made.code === 0 && (await git(cache, ['fetch', '-q', '--no-tags', repo, `${commit}:refs/benchmark/${commit}`])).code === 0;
-
-    if (!fetched || !await has(cache, commit)) return commit;
   }
 
   return undefined;
@@ -667,7 +648,7 @@ export async function tryBenchmarkTask(file: string, options: { checkout: string
   const cache = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-try-commits-'));
 
   try {
-    const unreachable = await firstUnreachable(options.checkout, cache, suite.repo, [startingCommit, ...(solutionCommit ? [solutionCommit] : [])]);
+    const unreachable = await firstUnreachable({ checkout: options.checkout, cache, repo: suite.repo, commits: [startingCommit, ...(solutionCommit ? [solutionCommit] : [])] });
 
     if (unreachable !== undefined) {
       const named = unreachable === startingCommit ? `starts from ${short(unreachable)}` : `names the solutionCommit ${short(unreachable)}`;

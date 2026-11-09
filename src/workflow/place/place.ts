@@ -43,7 +43,7 @@ export async function placeRoot({ cwd, checkout }: { cwd: string; checkout: stri
   return here !== null && here !== there ? cwd : checkout;
 }
 
-export { attemptCloneHome, cloneDelivery, cloneHead, commitCacheOf, freshClone, preparedClone, scratchCloneRoot, stageSettledEvidence, sweepClones } from './clone.js';
+export { attemptCloneHome, cloneDelivery, cloneHead, commitCacheOf, firstUnreachable, freshClone, preparedClone, scratchCloneRoot, stageSettledEvidence, sweepClones } from './clone.js';
 
 export { cloneRoleProblem, roleNotDeliveredFailure, worktreeRoleProblem } from './role-copy.js';
 
