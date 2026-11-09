@@ -1137,4 +1137,13 @@ export const dashboardMessages = {
   "View resource layers": "查看资源分层",
   "Could not load resource layers.": "无法加载资源分层。",
   "Loading resource layers…": "正在加载资源分层…",
+  "Rule folders": "规则目录",
+  "Not subscribed": "未订阅",
+  "Off": "已关闭",
+  "Recall is off for this member.": "此成员的召回已关闭。",
+  "Rule text from": "规则正文取自",
+  "Where each tool reads": "各工具读取的位置",
+  "Reads the data home: teamai adds it to permissions.additionalDirectories": "读取数据目录：teamai 把它加入 permissions.additionalDirectories",
+  "Reads the copy pull puts in the project": "读取 pull 放在项目里的副本",
+  "Reads the data home": "读取数据目录",
 } satisfies Record<string, string>;

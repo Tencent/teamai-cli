@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { handoffView } from '../dashboard/handoff-view.js';
 import { layeredResourcesView } from '../dashboard/layered-resources-view.js';
 import { dashboardMessages } from '../dashboard/locales.js';
-import type { LayeredResources } from '../dashboard/layered-resources.js';
+import type { LayeredResourceList, LayeredResources } from '../dashboard/layered-resources.js';
 
 const messages: Record<string, string> = dashboardMessages;
 
@@ -56,6 +56,8 @@ const DATA: Served = {
             limit: 1024 * 1024,
             delivered: { path: '/home/m/.teamai/workflows/folders/ab12cd', present: false, by: 'run' },
             runs: null,
+            variant: null,
+            reads: null,
           },
         },
         { name: 'deploy', layer: { kind: 'root' }, form: 'file', path: 'workflows/deploy.yaml', replaces: null, state: { kind: 'conflict', reason: 'duplicate', message: DEPLOY_TWICE }, folder: null },
@@ -82,6 +84,8 @@ const DATA: Served = {
           limit: null,
           delivered: { path: '/home/m/.teamai/hooks/block-secrets', present: true, by: 'pull' },
           runs: { command: 'bash "/home/m/.teamai/hooks/block-secrets/scan.sh"', args: [], env: [] },
+          variant: null,
+          reads: null,
         },
       }],
       problems: [],
@@ -122,6 +126,53 @@ const DATA: Served = {
     },
     { name: 'teamai-env-hint', state: { kind: 'teamai' }, params: [], texts: [{ text: 'exec', file: 'exec.md', replaced: false }], delivered: null },
   ],
+};
+
+const RECALL_REFUSED = 'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: rules/teamai-recall/RULE.md does not contain "Nothing was searched:". Fix the folder in the team repo.';
+
+/** A rule folder in force, the team's recall folder pull refuses, and teamai's recall rule that stays in force. */
+const RULES: LayeredResourceList = {
+  type: 'rules',
+  marker: 'RULE.md',
+  resources: [
+    {
+      name: 'api-style',
+      layer: { kind: 'root' },
+      form: 'folder',
+      path: 'rules/api-style/',
+      replaces: null,
+      state: { kind: 'in-force' },
+      folder: {
+        files: [{ path: 'RULE.md', bytes: 71, executable: false }, { path: 'RULE.zh.md', bytes: 42, executable: false }, { path: 'checklist.md', bytes: 15, executable: false }],
+        bytes: 128,
+        limit: null,
+        delivered: { path: '/home/m/.teamai/rules/api-style', present: true, by: 'pull' },
+        runs: null,
+        variant: 'RULE.zh.md',
+        reads: [{ tool: 'claude', reach: 'grant', path: '/home/m/.teamai/rules/api-style' }, { tool: 'codex', reach: 'copy', path: '.teamai/delivered/rules/api-style' }],
+      },
+    },
+    {
+      name: 'teamai-recall',
+      layer: { kind: 'root' },
+      form: 'folder',
+      path: 'rules/teamai-recall/',
+      replaces: null,
+      state: { kind: 'refused', message: RECALL_REFUSED },
+      folder: { files: [{ path: 'RULE.md', bytes: 33, executable: false }], bytes: 33, limit: null, delivered: null, runs: null, variant: 'RULE.md', reads: null },
+    },
+    {
+      name: 'teamai-recall',
+      layer: { kind: 'teamai' },
+      form: 'folder',
+      path: 'rules/teamai-recall/',
+      replaces: null,
+      state: { kind: 'in-force' },
+      folder: { files: [{ path: 'RULE.md', bytes: 1200, executable: false }], bytes: 1200, limit: null, delivered: null, runs: null, variant: 'RULE.md', reads: null },
+    },
+  ],
+  problems: [],
+  notes: [],
 };
 
 /** A team definition of no type in particular, for states the fixture does not cover. */
@@ -186,7 +237,7 @@ describe('the resource layers on the Resources page (#1787)', () => {
     const opened = layeredResourcesPanel(DATA, new Set(['workflows:teamai']));
 
     expect([closed.includes('1 teamai default in force'), closed.includes('teamai-import-rules'), opened.includes('teamai-import-rules')]).toEqual([true, false, true]);
-    expect(row(closed, 'workflows', 'workflows/teamai-import-from-repo.yaml', 'teamai-import-from-repo')).toContain(`teamai default File Held this pull ${escaped(IMPORT_BLOCKED)}`);
+    expect(row(closed, 'workflows', 'teamai:workflows/teamai-import-from-repo.yaml', 'teamai-import-from-repo')).toContain(`teamai default File Held this pull ${escaped(IMPORT_BLOCKED)}`);
   });
 
   it('shows a folder\'s files, size against the limit, where it lands and what it runs once its row is open', () => {
@@ -201,6 +252,29 @@ describe('the resource layers on the Resources page (#1787)', () => {
     expect(opened).toContain('Each run keeps this version at /home/m/.teamai/workflows/folders/ab12cd Not kept yet: the next run keeps it');
     expect(opened).toContain('Pull delivers it to /home/m/.teamai/hooks/block-secrets Delivered');
     expect(opened).toContain(`Runs ${escaped('bash "/home/m/.teamai/hooks/block-secrets/scan.sh"')}`);
+  });
+
+  it('shows the text a rule folder is read from and where each tool reads it, and the team\'s recall folder pull refuses', () => {
+    const { layeredResourcesPanel } = views();
+    const key = 'rules:rules/api-style/#api-style';
+    const closed = layeredResourcesPanel({ ...DATA, types: [RULES] }, new Set());
+    const opened = layeredResourcesPanel({ ...DATA, types: [RULES] }, new Set([key])).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+
+    expect(row(closed, 'rules', 'rules/teamai-recall/', 'teamai-recall')).toContain(`Team root Folder Refused ${escaped(RECALL_REFUSED)} Fix it in the team repo, and push.`);
+    expect([closed.includes('Rule folders'), closed.includes('1 teamai default in force'), closed.includes('RULE.zh.md')]).toEqual([true, true, false]);
+    expect(opened).toContain('Rule text from RULE.zh.md Pull delivers it to /home/m/.teamai/rules/api-style Delivered');
+    expect(opened).toContain('Where each tool reads ${TEAMAI_RULE_DIR} claude /home/m/.teamai/rules/api-style Reads the data home: teamai adds it to permissions.additionalDirectories '
+      + 'codex .teamai/delivered/rules/api-style Reads the copy pull puts in the project');
+  });
+
+  it('opens teamai\'s definition and the team\'s of the same path apart, and says how to turn recall on', () => {
+    const { layeredResourcesPanel } = views();
+    const off = { ...RULES, resources: RULES.resources.slice(1).map((resource) => ({ ...resource, state: { kind: 'off' as const } })) };
+    const html = layeredResourcesPanel({ ...DATA, types: [off] }, new Set(['rules:teamai:rules/teamai-recall/#teamai-recall']));
+
+    expect(html.match(/data-detail="/g)).toHaveLength(1);
+    expect(html).toContain('data-detail="rules:teamai:rules/teamai-recall/#teamai-recall"');
+    expect(row(html, 'rules', 'rules/teamai-recall/', 'teamai-recall')).toContain('Team root Folder Off Recall is off for this member. teamai recall enable');
   });
 
   it('lists what pull cannot read as a definition, with its message', () => {
@@ -252,17 +326,25 @@ describe('the resource layers in Chinese (#1787)', () => {
           { ...DEPLOY, name: 'two', state: { kind: 'conflict' as const, reason: 'two-namespaces' as const, message: 'x' } },
           { ...DEPLOY, name: 'replaced', state: { kind: 'replaced' as const, by: 'workflows/payments/replaced.yaml' } },
           { ...DEPLOY, name: 'refused', state: { kind: 'refused' as const, message: 'x' } },
-          { ...DEPLOY, name: 'delivered', form: 'folder' as const, folder: { files: [], bytes: 0, limit: null, delivered: { path: '/x', present: false, by: 'pull' as const }, runs: { command: 'uv', args: ['a b'], env: ['TOKEN'] } } },
-          { ...DEPLOY, name: 'kept', form: 'folder' as const, folder: { files: [], bytes: 0, limit: null, delivered: { path: '/x', present: true, by: 'run' as const }, runs: null } },
+          { ...DEPLOY, name: 'delivered', form: 'folder' as const, folder: { files: [], bytes: 0, limit: null, delivered: { path: '/x', present: false, by: 'pull' as const }, runs: { command: 'uv', args: ['a b'], env: ['TOKEN'] }, variant: null, reads: null } },
+          { ...DEPLOY, name: 'kept', form: 'folder' as const, folder: { files: [], bytes: 0, limit: null, delivered: { path: '/x', present: true, by: 'run' as const }, runs: null, variant: null, reads: null } },
           { ...DEPLOY, name: 'teamai-a', layer: { kind: 'teamai' as const }, state: { kind: 'in-force' as const } },
           { ...DEPLOY, name: 'teamai-b', layer: { kind: 'teamai' as const }, state: { kind: 'in-force' as const } },
         ],
         problems: [],
         notes: ['a note'],
-      }, { type: 'mcp', marker: 'MCP.yaml', resources: [], problems: [], notes: [] }],
+      }, { type: 'mcp', marker: 'MCP.yaml', resources: [], problems: [], notes: [] }, {
+        ...RULES,
+        resources: [
+          ...RULES.resources,
+          { ...DEPLOY, name: 'tagged', state: { kind: 'unsubscribed' as const } },
+          { ...DEPLOY, name: 'recall-off', state: { kind: 'off' as const } },
+          { ...RULES.resources[0], name: 'none', folder: { ...RULES.resources[0].folder, files: [], bytes: 0, limit: null, delivered: null, runs: null, variant: null, reads: [{ tool: 'cursor', reach: 'none' as const, path: '/x' }] } },
+        ],
+      }],
       defaultHooks: [...DATA.defaultHooks, { ...DATA.defaultHooks[0], name: 'teamai-todowrite-hint', delivered: { path: '/x', present: false } }],
     };
-    const keysOf = (served: Served): string[] => served.types.flatMap((list) => [`${list.type}:teamai`, ...list.resources.map((resource) => `${list.type}:${resource.path}#${resource.name}`)]).concat(served.defaultHooks.map((hook) => `default-hooks:${hook.name}`));
+    const keysOf = (served: Served): string[] => served.types.flatMap((list) => [`${list.type}:teamai`, ...list.resources.map((resource) => `${list.type}:${resource.layer.kind === 'teamai' ? 'teamai:' : ''}${resource.path}#${resource.name}`)]).concat(served.defaultHooks.map((hook) => `default-hooks:${hook.name}`));
     rendered.layeredResourcesPanel(every, new Set());
     rendered.layeredResourcesPanel(every, new Set(keysOf(every)));
     rendered.layeredResourcesPanel({ ...every, language: null }, new Set(keysOf(every)));

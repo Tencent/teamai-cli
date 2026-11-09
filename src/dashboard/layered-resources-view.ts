@@ -24,11 +24,12 @@ function layeredResourcesNotice(data) {
  return '<div class="error-panel skipped-notice layered-notice" role="status"><p><strong><span class="amber" aria-hidden="true">⚠</span> '+number(total)+' '+label(total===1?'resource problem':'resource problems')+'</strong> · '+parts.join(' · ')+'. '+label('Pull keeps what is installed, the last valid version, or teamai\\'s default in their place.')+'</p>'
   +link('resources','View resource layers')+'</div>';
 }
-const layeredTypeNames={workflows:'Workflows',hooks:'Hooks',mcp:'MCP servers',benchmarks:'Benchmark suites'};
-const layeredStateNames={'in-force':'In force',replaced:'Replaced',inactive:'Not active here',invalid:'Invalid',refused:'Refused',blocked:'Held this pull'};
+const layeredTypeNames={workflows:'Workflows',hooks:'Hooks',mcp:'MCP servers',benchmarks:'Benchmark suites',rules:'Rule folders'};
+const layeredStateNames={'in-force':'In force',replaced:'Replaced',inactive:'Not active here',unsubscribed:'Not subscribed',off:'Off',invalid:'Invalid',refused:'Refused',blocked:'Held this pull'};
 const layeredConflicts={duplicate:['Defined twice','Keep one of them in the team repo, and push.'],'two-namespaces':['In two active namespaces','Rename or remove it in one namespace, and push.']};
 const layeredFallbacks={kept:'The last valid version still runs',default:'teamai\\'s default runs instead',installed:'Your installed copy stays',none:'Nothing runs in its place'};
-const layeredFixes={invalid:'Fix it in the team repo, and push.',refused:'Fix it in the team repo, and push.',blocked:'Another definition holds this one back. Fix that one, and pull again.',inactive:'It applies to members whose roles or projects use its namespace.'};
+const layeredFixes={invalid:'Fix it in the team repo, and push.',refused:'Fix it in the team repo, and push.',blocked:'Another definition holds this one back. Fix that one, and pull again.',inactive:'It applies to members whose roles or projects use its namespace.',unsubscribed:'Omitted by tag subscriptions'};
+const layeredReach={grant:'Reads the data home: teamai adds it to permissions.additionalDirectories',copy:'Reads the copy pull puts in the project',none:'Reads the data home'};
 function layeredLadder(layer) { return '<span class="ladder" data-layer="'+e(layer.kind)+'" aria-hidden="true"><i></i><i></i><i></i></span>'; }
 function layeredLayer(layer) { return layeredLadder(layer)+(layer.kind==='namespace'?label('Namespace')+' <code data-verbatim>'+e(layer.namespace)+'</code>':label(layer.kind==='root'?'Team root':'teamai default')); }
 function layeredForm(r) { return r.form==='entry'?label('Entry in')+' '+e(r.path):label(r.form==='folder'?'Folder':'File'); }
@@ -40,7 +41,8 @@ function layeredState(s) {
  if(s.kind==='replaced')return badge+'<small>'+label('by')+' <code data-verbatim>'+e(s.by)+'</code></small>';
  if(s.kind==='invalid')return badge+'<small class="fallback">'+label(layeredFallbacks[s.fallback])+'</small>'+layeredSays(s.message)+'<small class="fix">'+label(layeredFixes.invalid)+'</small>';
  if(s.kind==='refused'||s.kind==='blocked')return badge+layeredSays(s.message)+'<small class="fix">'+label(layeredFixes[s.kind])+'</small>';
- if(s.kind==='inactive')return badge+'<small>'+label(layeredFixes.inactive)+'</small>';
+ if(s.kind==='inactive'||s.kind==='unsubscribed')return badge+'<small>'+label(layeredFixes[s.kind])+'</small>';
+ if(s.kind==='off')return badge+'<small>'+label('Recall is off for this member.')+'</small>'+command('teamai recall enable');
  return badge;
 }
 function layeredToggle(key, open, text) { return '<button class="link layered-toggle" data-layered-toggle="'+e(key)+'" aria-expanded="'+(open?'true':'false')+'">'+label(open?'Hide':text)+'</button>'; }
@@ -51,10 +53,13 @@ function layeredFolder(f) {
  const delivered=d?'<p class="folder-at">'+label(d.by==='run'?'Each run keeps this version at':'Pull delivers it to')+' <code data-verbatim>'+e(d.path)+'</code> '+(d.present?'<span class="tag good">'+label(d.by==='run'?'Kept':'Delivered')+'</span>':'<span class="tag amber">'+label(d.by==='run'?'Not kept yet: the next run keeps it':'Not delivered yet: run teamai pull')+'</span>')+'</p>':'';
  const quote=a=>/[\\s"']/.test(a)?JSON.stringify(a):a;
  const runs=f.runs?'<p class="folder-runs">'+label('Runs')+'</p><code class="command" data-verbatim>'+e([f.runs.command].concat(f.runs.args.map(quote)).join(' '))+'</code>'+(f.runs.env.length?'<p class="folder-env">'+label('Env')+' '+f.runs.env.map(n=>'<code data-verbatim>'+e(n)+'</code>').join(' ')+' <small>'+label('Values are not shown')+'</small></p>':''):'';
- return files+total+delivered+runs;
+ const variant=f.variant?'<p class="folder-variant">'+label('Rule text from')+' <code data-verbatim>'+e(f.variant)+'</code></p>':'';
+ const reads=f.reads&&f.reads.length?'<p class="folder-runs">'+label('Where each tool reads')+' <code data-verbatim>\${TEAMAI_RULE_DIR}</code></p><ul class="folder-reads">'+f.reads.map(x=>'<li><b data-verbatim>'+e(x.tool)+'</b><code data-verbatim>'+e(x.path)+'</code><small>'+label(layeredReach[x.reach])+'</small></li>').join('')+'</ul>':'';
+ return files+total+variant+delivered+reads+runs;
 }
 function layeredRow(list, r, open) {
- const key=list.type+':'+r.path+'#'+r.name,shown=open.has(key);
+ // teamai's definition can share its path with the team's that replaces it, as rules/teamai-recall/ does.
+ const key=list.type+':'+(r.layer.kind==='teamai'?'teamai:':'')+r.path+'#'+r.name,shown=open.has(key);
  const replaces=r.replaces?layeredLayer(r.replaces.layer)+'<small><code data-verbatim>'+e(r.replaces.path)+'</code></small>':'<span class="muted">—</span>';
  return '<tr data-row="'+e(key)+'" class="'+(r.state.kind==='conflict'||r.state.kind==='invalid'||r.state.kind==='refused'?'problem-row':'')+'"><td data-verbatim><b>'+e(r.name)+'</b><small><code>'+e(r.path)+'</code></small></td>'
   +'<td data-label="'+label('LAYER')+'">'+layeredLayer(r.layer)+'</td><td data-label="'+label('FORM')+'">'+layeredForm(r)+'</td><td data-label="'+label('STATE')+'">'+layeredState(r.state)+'</td>'

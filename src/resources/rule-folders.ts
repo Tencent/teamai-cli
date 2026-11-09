@@ -35,9 +35,14 @@ function refOf({ name }: { readonly name: string }): DeliveredFolderRef {
   return { type: 'rules', namespace: namespace === '.' ? null : namespace, name: path.posix.basename(name) };
 }
 
+/** Where pull delivers the rule folder named `name` in `localConfig`'s scope. */
+function pathOf(localConfig: LocalConfig, name: string): string {
+  return DeliveredFolders.pathOf(localConfig, refOf({ name }));
+}
+
 /** Whether `localConfig`'s scope holds a delivered rule folder named `name`. */
 async function isDelivered(localConfig: LocalConfig, name: string): Promise<boolean> {
-  return pathExists(DeliveredFolders.pathOf(localConfig, refOf({ name })));
+  return pathExists(pathOf(localConfig, name));
 }
 
 /** A text file teamai renders, as common rule 12 reads it: CRLF turned into LF, one trailing newline removed. */
@@ -228,4 +233,4 @@ async function grant(input: {
   return owned;
 }
 
-export const RuleFolders = { isFolder, isDelivered, languageFile, readTextFile, text, variantNotes, render, sync, grant } as const;
+export const RuleFolders = { isFolder, pathOf, isDelivered, languageFile, readTextFile, text, variantNotes, render, sync, grant } as const;

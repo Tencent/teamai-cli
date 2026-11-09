@@ -352,3 +352,118 @@ describe('benchmark suites on the Resources page', () => {
     expect(broken?.state).toEqual({ kind: 'invalid', message: expect.stringMatching(/^benchmarks\/broken\/SUITE\.yaml:\d+: field "repetitions": /), fallback: 'none' });
   });
 });
+
+describe('rule folders on the Resources page', () => {
+  /** A member of `checkout` in a project at the sandbox, whose Claude Code and Codex receive rules: both are installed there. */
+  const projectMember = (): LocalConfig => ({ ...member(), scope: 'project', projectRoot: path.join(sandbox, 'checkout'), enabledAgents: ['claude', 'codex'] });
+  const zhTeam = TeamaiConfigSchema.parse({ team: 'acme', repo: 'https://example.test/acme/team.git', language: 'zh' });
+
+  beforeEach(async () => {
+    vi.stubEnv('HOME', path.join(sandbox, 'home'));
+    await fse.ensureDir(path.join(sandbox, 'home', '.codex'));
+    await fse.ensureDir(path.join(sandbox, 'checkout', '.claude'));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('lists a folder with its files, the variant pull reads for the team\'s language, and where each tool reads it', async () => {
+    await write({
+      'rules/api-style/RULE.md': '---\ndescription: API style\n---\nFollow ${TEAMAI_RULE_DIR}/checklist.md.\n',
+      'rules/api-style/RULE.zh.md': '遵循 ${TEAMAI_RULE_DIR}/checklist.md。\n',
+      'rules/api-style/checklist.md': '- Name things.\n',
+      'rules/plain.md': 'A rule file.\n',
+    });
+
+    const list = (await collectLayeredResources(projectMember(), zhTeam)).types.find((found) => found.type === 'rules');
+    const delivered = path.join(dataHome, 'rules', 'api-style');
+
+    expect(list?.resources.filter((resource) => resource.layer.kind !== 'teamai')).toEqual([{
+      name: 'api-style',
+      layer: { kind: 'root' },
+      form: 'folder',
+      path: 'rules/api-style/',
+      replaces: null,
+      state: { kind: 'in-force' },
+      folder: {
+        files: [
+          { path: 'RULE.md', bytes: 71, executable: false },
+          { path: 'RULE.zh.md', bytes: 42, executable: false },
+          { path: 'checklist.md', bytes: 15, executable: false },
+        ],
+        bytes: 128,
+        limit: null,
+        delivered: { path: delivered, present: false, by: 'pull' },
+        runs: null,
+        variant: 'RULE.zh.md',
+        reads: [
+          { tool: 'claude', reach: 'grant', path: delivered.split(path.sep).join('/') },
+          { tool: 'codex', reach: 'copy', path: '.teamai/delivered/rules/api-style' },
+        ],
+      },
+    }]);
+  });
+
+  it('names the root rule a namespace folder replaces, file or folder, and a folder in a namespace this member does not activate', async () => {
+    await write({
+      'manifest/projects.yaml': PROJECTS.replace('benchmarks: [payments] }', 'benchmarks: [payments], knowledge: [payments] }').replace('benchmarks: [billing] }', 'benchmarks: [billing], knowledge: [billing] }'),
+      'rules/api-style/RULE.md': 'Root.\n',
+      'rules/payments/api-style/RULE.md': 'Payments.\n',
+      'rules/billing/api-style/RULE.md': 'Billing.\n',
+      'rules/testing.md': 'Test it.\n',
+      'rules/payments/testing/RULE.md': 'Test payments.\n',
+    });
+
+    const list = (await collectLayeredResources(projectMember(), teamConfig)).types.find((found) => found.type === 'rules');
+
+    const team = list?.resources.filter((resource) => resource.layer.kind !== 'teamai') ?? [];
+
+    expect(team.map((resource) => [resource.path, layerName(resource.layer), resource.state, resource.replaces]).sort()).toEqual([
+      ['rules/api-style/', 'root', { kind: 'replaced', by: 'rules/payments/api-style/' }, null],
+      ['rules/billing/api-style/', 'billing', { kind: 'inactive' }, null],
+      ['rules/payments/api-style/', 'payments', { kind: 'in-force' }, { layer: { kind: 'root' }, form: 'folder', path: 'rules/api-style/' }],
+      ['rules/payments/testing/', 'payments', { kind: 'in-force' }, { layer: { kind: 'root' }, form: 'file', path: 'rules/testing.md' }],
+    ]);
+  });
+
+  it('tells a folder the member\'s tag subscriptions leave out from one outside its namespaces', async () => {
+    await write({
+      'tags.yaml': 'skills: {}\nrules:\n  api-style: [frontend]\n',
+      'rules/api-style/RULE.md': 'Style.\n',
+    });
+
+    const list = (await collectLayeredResources({ ...projectMember(), subscribedTags: ['backend'] }, teamConfig)).types.find((found) => found.type === 'rules');
+
+    const team = list?.resources.filter((resource) => resource.layer.kind !== 'teamai') ?? [];
+
+    expect(team.map((resource) => [resource.path, resource.state, resource.folder?.reads ?? null])).toEqual([['rules/api-style/', { kind: 'unsubscribed' }, null]]);
+  });
+
+  it('keeps teamai\'s recall rule in force beside the team\'s folder pull refuses, with what pull prints', async () => {
+    await write({ 'rules/teamai-recall/RULE.md': 'Search the knowledge base first.\n' });
+    const enTeam = TeamaiConfigSchema.parse({ team: 'acme', repo: 'https://example.test/acme/team.git', language: 'en' });
+
+    const list = (await collectLayeredResources({ ...projectMember(), recallEnabled: true }, enTeam)).types.find((found) => found.type === 'rules');
+    const recall = list?.resources.filter((resource) => resource.name === 'teamai-recall') ?? [];
+
+    expect(recall.map((resource) => [resource.layer.kind, resource.path, resource.state, resource.folder?.variant, resource.folder?.files.map((file) => file.path).sort()])).toEqual([
+      ['root', 'rules/teamai-recall/', {
+        kind: 'refused',
+        message: 'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: rules/teamai-recall/RULE.md does not contain "Nothing was searched:". Fix the folder in the team repo.',
+      }, 'RULE.md', ['RULE.md']],
+      ['teamai', 'rules/teamai-recall/', { kind: 'in-force' }, 'RULE.en.md', ['README.md', 'RULE.en.md', 'RULE.md', 'block-direct.md', 'block.en.md', 'block.md']],
+    ]);
+    expect(list?.problems).toEqual([]);
+  });
+
+  it('names the team\'s recall folder in force over teamai\'s, and both off while recall is off', async () => {
+    await fse.copy(path.join(import.meta.dirname, '..', '..', 'rules', 'teamai-recall'), path.join(repo, 'rules', 'teamai-recall'));
+    const states = async (recallEnabled: boolean): Promise<unknown[]> => (await collectLayeredResources({ ...projectMember(), recallEnabled }, teamConfig)).types
+      .find((found) => found.type === 'rules')?.resources.filter((resource) => resource.name === 'teamai-recall')
+      .map((resource) => [resource.layer.kind, resource.state, resource.replaces?.layer.kind ?? null]) ?? [];
+
+    expect(await states(true)).toEqual([['root', { kind: 'in-force' }, 'teamai'], ['teamai', { kind: 'replaced', by: 'rules/teamai-recall/' }, null]]);
+    expect(await states(false)).toEqual([['root', { kind: 'off' }, null], ['teamai', { kind: 'off' }, null]]);
+  });
+});

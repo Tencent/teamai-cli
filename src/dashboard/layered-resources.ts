@@ -1,11 +1,12 @@
 /**
- * Which definition of each workflow, hook, MCP server and benchmark suite applies in a workspace, and how the team
+ * Which definition of each workflow, hook, MCP server, benchmark suite and rule folder applies in a workspace, and how the team
  * changed each of teamai's default hooks, for the dashboard's Resources page (#1787). Every type is read by the
  * readers pull uses: the resolver's survey lists every definition, and the type's own validator and resolution say
  * which applies and why another does not, in the words pull prints. Names, paths, sizes and rendered commands only:
  * never a file's content, a prompt, or an environment value.
  */
 import path from 'node:path';
+import { RECALL_RULE_NAME, resolveRecall, type RecallFolder } from '../builtin-rules.js';
 import { loadCachedSuite, suiteDirectories, syncTeamDefinitions, type SyncTeamResult } from '../benchmark/suite-cache.js';
 import { DefaultHooks, type DefaultHookComparison } from '../default-hooks.js';
 import { DefaultWorkflows } from '../default-workflows.js';
@@ -16,16 +17,21 @@ import { FolderFiles } from '../resources/folder-files.js';
 import { TEAM_HOOKS, hooksEntryReader, readDefaultHookReplacements, readHookFolder, type TeamHookDefinition } from '../resources/hooks.js';
 import { TEAM_MCP, mcpEntryReader, readMcpFolder, type TeamMcpDefinition } from '../resources/mcp.js';
 import { RESOURCE_LAYOUTS, Resources, type LayeredItem, type ListedResolution, type ResourceLayout } from '../resources/resolver.js';
-import { getKnowledgeDir, type LocalConfig, type TeamaiConfig } from '../types.js';
+import { RuleFolders } from '../resources/rule-folders.js';
+import { buildRolePullContext, resolveDesiredRules } from '../resources/desired.js';
+import { readTeamRules, rulesReceivingTools } from '../resources/rules.js';
+import { ruleFolderReachOf, type RuleFolderReach } from '../tools.js';
+import { getKnowledgeDir, isAgentExcluded, isRecallEnabled, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { pathExists } from '../utils/fs.js';
 import { isSilent, setSilent } from '../utils/logger.js';
 import { dropsKeptVersion } from '../workflow/cache.js';
 import { WORKFLOW_MARKER, WorkflowFolder } from '../workflow/folder.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import type { WorkflowDiagnostic } from '../workflow/types.js';
+import { collectRulesInventory } from './resources.js';
 
-/** The types whose definitions the page lists by layer. Rule folders join them in the same shape. */
-export type LayeredResourceType = 'workflows' | 'hooks' | 'mcp' | 'benchmarks';
+/** The types whose definitions the page lists by layer. Of rules, only folders: the Rules list shows rule files. */
+export type LayeredResourceType = 'workflows' | 'hooks' | 'mcp' | 'benchmarks' | 'rules';
 
 /** Where a definition comes from, bottom up: teamai's package, the team repo's root, or a namespace in it. */
 export type ResourceLayer =
@@ -50,6 +56,10 @@ export type ResourceState =
   | { readonly kind: 'in-force' }
   | { readonly kind: 'replaced'; readonly by: string }
   | { readonly kind: 'inactive' }
+  /** The member's tag subscriptions leave it out (`tags.yaml`), though its namespace is active: rules only. */
+  | { readonly kind: 'unsubscribed' }
+  /** teamai delivers none of its feature here: its recall rule, and the team's folder replacing it, while recall is off. */
+  | { readonly kind: 'off' }
   | { readonly kind: 'conflict'; readonly reason: 'duplicate' | 'two-namespaces'; readonly message: string }
   /** `fallback`: what applies instead, the last valid version, teamai's default, what is installed, or nothing. */
   | { readonly kind: 'invalid'; readonly message: string; readonly fallback: 'kept' | 'default' | 'installed' | 'none' }
@@ -66,6 +76,10 @@ export interface ResourceFolder {
   readonly delivered: { readonly path: string; readonly present: boolean; readonly by: 'pull' | 'run' } | null;
   /** What a tool runs from it, with its folder's path filled in: a hook's command, an MCP server's command and args. Env by name only. */
   readonly runs: { readonly command: string; readonly args: readonly string[]; readonly env: readonly string[] } | null;
+  /** The file pull reads a rule folder's text from for the team's `language`: `RULE.md`, or a variant such as `RULE.zh.md`. */
+  readonly variant: string | null;
+  /** Where each tool that receives rules reads a delivered rule folder's files: the path pull writes for `${TEAMAI_RULE_DIR}`. */
+  readonly reads: ReadonlyArray<{ readonly tool: string; readonly reach: RuleFolderReach['reach']; readonly path: string }> | null;
 }
 
 /** One definition of a name, and what pull does with it. */
@@ -210,6 +224,8 @@ async function workflowFolder(config: LocalConfig, full: string): Promise<Resour
     limit: WorkflowFolder.MAX_BYTES,
     delivered: pinned === undefined ? null : { path: pinned, present: await pathExists(pinned), by: 'run' },
     runs: null,
+    variant: null,
+    reads: null,
   };
 }
 
@@ -354,7 +370,7 @@ async function entryList<TEntry, TDefinition>(config: LocalConfig, spec: EntryTy
       replaces: replaced ? placeOf(replaced) : null,
       state,
       folder: item.source.kind === 'folder'
-        ? { ...await folderFiles(item.source.full), limit: null, delivered: delivered === null ? null : { path: delivered, present: await pathExists(delivered), by: 'pull' }, runs }
+        ? { ...await folderFiles(item.source.full), limit: null, delivered: delivered === null ? null : { path: delivered, present: await pathExists(delivered), by: 'pull' }, runs, variant: null, reads: null }
         : null,
     });
   }
@@ -429,7 +445,7 @@ async function suiteList(config: LocalConfig, sync: SyncTeamResult): Promise<Lay
       ...place,
       replaces: shared ? shared.place : null,
       state: standIn === undefined ? state : standInState?.kind === 'conflict' ? { kind: 'blocked', message: standInState.message } : { kind: 'replaced', by: standIn.place.path },
-      folder: { ...await folderFiles(path.join(root, dir)), limit: null, delivered: null, runs: null },
+      folder: { ...await folderFiles(path.join(root, dir)), limit: null, delivered: null, runs: null, variant: null, reads: null },
     });
   }
 
@@ -439,6 +455,102 @@ async function suiteList(config: LocalConfig, sync: SyncTeamResult): Promise<Lay
     resources,
     problems: diagnostics.filter((diagnostic) => !seen.has(diagnostic)).map((diagnostic) => ({ path: diagnostic.file, message: formatDiagnostic(diagnostic) })),
     notes: [],
+  };
+}
+
+/** The place of the team's rule at `relativePath`, from the repo's root: a folder's by its directory. */
+function rulePlaceOf(relativePath: string): ResourcePlace {
+  const isFolder = path.posix.basename(relativePath) === RESOURCE_LAYOUTS.rules.marker;
+  const at = isFolder ? path.posix.dirname(relativePath) : relativePath;
+  // `rules/<namespace>/<name>`: the segments between the type's directory and the rule's own name.
+  const namespace = at.split('/').slice(1, -1).join('/');
+
+  return { layer: namespace === '' ? { kind: 'root' } : { kind: 'namespace', namespace }, form: isFolder ? 'folder' : 'file', path: isFolder ? `${at}/` : at };
+}
+
+/**
+ * teamai's recall rule and the team's `rules/teamai-recall/` folder that replaces it, as pull reads them. Pull puts the
+ * recall texts into each tool's rules, so neither folder is delivered.
+ */
+async function recallResources(config: LocalConfig, teamConfig: TeamaiConfig): Promise<LayeredResource[]> {
+  const recall = await resolveRecall(teamConfig.language, config.repo.localPath);
+  const isOff = !isRecallEnabled(config, teamConfig);
+  const teamai: ResourcePlace = { layer: { kind: 'teamai' }, form: 'folder', path: recall.teamai.path };
+
+  const folderOf = async ({ dir }: RecallFolder): Promise<ResourceFolder> => ({
+    ...await folderFiles(dir), limit: null, delivered: null, runs: null, variant: await RuleFolders.languageFile(dir, 'RULE', teamConfig.language), reads: null,
+  });
+
+  const teamaiState: ResourceState = isOff ? { kind: 'off' } : recall.team?.kind === 'replaces' ? { kind: 'replaced', by: recall.team.folder.path } : { kind: 'in-force' };
+  const own: LayeredResource = { name: RECALL_RULE_NAME, ...teamai, replaces: null, state: teamaiState, folder: await folderOf(recall.teamai) };
+
+  if (recall.team === null) return [own];
+  const { team } = recall;
+  const state: ResourceState = isOff ? { kind: 'off' } : team.kind === 'replaces' ? { kind: 'in-force' } : { kind: 'refused', message: team.message };
+
+  return [{
+    name: RECALL_RULE_NAME,
+    layer: { kind: 'root' },
+    form: 'folder',
+    path: team.folder.path,
+    replaces: state.kind === 'in-force' ? teamai : null,
+    state,
+    folder: await folderOf(team.folder),
+  }, own];
+}
+
+/**
+ * Rule folders, as pull reads the team's rules and resolves which this member receives. Each tool that receives rules
+ * reads a delivered folder where pull renders `${TEAMAI_RULE_DIR}` for it.
+ */
+async function ruleList(config: LocalConfig, teamConfig: TeamaiConfig): Promise<LayeredResourceList> {
+  const { rules, problems } = await readTeamRules(config.repo.localPath);
+  const roleContext = await buildRolePullContext(config);
+  // Which rules pull delivers and why it leaves the others out, as the Rules list says; which replaces which.
+  const inventory = new Map((await collectRulesInventory(teamConfig, config, roleContext)).map((rule) => [rule.path, rule]));
+  const { overrides } = await resolveDesiredRules(teamConfig, config, roleContext);
+  const tools = (await rulesReceivingTools(teamConfig, config)).filter((tool) => !isAgentExcluded(config, tool));
+  const resources: LayeredResource[] = [];
+
+  for (const rule of rules.filter(RuleFolders.isFolder)) {
+    const replacing = overrides.find((override) => override.replaces === rule.relativePath);
+    const replaced = overrides.find((override) => override.source === rule.relativePath);
+    const reason = inventory.get(rule.relativePath)?.undeliveredReason;
+
+    const state: ResourceState = inventory.get(rule.relativePath)?.delivered
+      ? { kind: 'in-force' }
+      : replacing ? { kind: 'replaced', by: rulePlaceOf(replacing.source).path } : reason === 'tags' ? { kind: 'unsubscribed' } : { kind: 'inactive' };
+
+    const delivered = state.kind === 'in-force' ? RuleFolders.pathOf(config, rule.name) : null;
+
+    const reads = delivered === null ? null : tools.map((tool) => ({
+      tool,
+      reach: ruleFolderReachOf(tool).reach,
+      path: RuleFolders.render(DeliveredFolders.placeholder('rules'), { localConfig: config, rule, tool }),
+    }));
+
+    resources.push({
+      name: path.posix.basename(rule.name),
+      ...rulePlaceOf(rule.relativePath),
+      replaces: state.kind === 'in-force' && replaced ? rulePlaceOf(replaced.replaces) : null,
+      state,
+      folder: {
+        ...await folderFiles(path.dirname(rule.sourcePath)),
+        limit: null,
+        delivered: delivered === null ? null : { path: delivered, present: await pathExists(delivered), by: 'pull' },
+        runs: null,
+        variant: await RuleFolders.languageFile(path.dirname(rule.sourcePath), 'RULE', teamConfig.language),
+        reads,
+      },
+    });
+  }
+
+  return {
+    type: 'rules',
+    marker: RESOURCE_LAYOUTS.rules.marker ?? '',
+    resources: [...resources, ...await recallResources(config, teamConfig)],
+    problems: problems.flatMap(({ kind, path: at, message }) => (kind === 'invalid' ? [{ path: at, message }] : [])),
+    notes: problems.flatMap(({ kind, message }) => (kind === 'note' ? [message] : [])),
   };
 }
 
@@ -471,7 +583,8 @@ export async function collectLayeredResources(config: LocalConfig, teamConfig: T
   try {
     const sync = await syncTeamDefinitions(config, { dryRun: true });
 
-    return { language: teamConfig.language ?? null, types: [await workflowList(config, sync), await entryList(config, HOOKS), await entryList(config, MCP), await suiteList(config, sync)], defaultHooks: await defaultHookList(config, teamConfig.language) };
+    return { language: teamConfig.language ?? null, types: [await workflowList(config, sync), await entryList(config, HOOKS), await entryList(config, MCP), await suiteList(config, sync), await ruleList(config, teamConfig)],
+      defaultHooks: await defaultHookList(config, teamConfig.language) };
   } finally {
     setSilent(wasSilent);
   }
