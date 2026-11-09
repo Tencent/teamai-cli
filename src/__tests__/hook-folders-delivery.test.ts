@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 vi.mock('../utils/git.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../utils/git.js')>(),
@@ -220,5 +220,115 @@ describe('a team hook folder in two worktrees of a single-repo, with a tool that
     await pull(main);
 
     expect(await zcodeFolderCommands()).toEqual([expect.stringContaining(`bash "${forward(main)}/.teamai/delivered/hooks/lint/lint.sh"`)]);
+  });
+});
+
+describe('a hook folder of one id in two workspaces bound to different teams, with a tool that keeps team hooks in HOME', () => {
+  const LINT = 'description: Lint\nevent: Stop\ncommand: bash "${TEAMAI_HOOK_DIR}/lint.sh"\n';
+  const zcodeTeam = { toolPaths: { zcode: { settings: '.zcode/cli/config.json' } } } as unknown as TeamaiConfig;
+
+  /** A project bound to the team `team`, whose `hooks/lint/lint.sh` prints `echo`. */
+  const workspace = async (team: string, echo: string): Promise<LocalConfig> => {
+    const projectRoot = await fse.realpath(home).then((real) => path.join(real, team));
+    const dataHome = path.join(home, '.teamai', 'projects', team);
+    const teamRepo = path.join(dataHome, 'repo');
+    execFileSync('git', ['init', '-q', projectRoot]);
+    await fse.outputFile(path.join(teamRepo, 'hooks', 'lint', 'HOOK.yaml'), LINT);
+    await fse.outputFile(path.join(teamRepo, 'hooks', 'lint', 'lint.sh'), `echo ${echo}\n`);
+
+    return { repo: { localPath: teamRepo, remote: `acme/${team}` }, username: 'tester', additionalRoles: [], scope: 'project', projectRoot, dataHome, enabledAgents: ['zcode'] };
+  };
+
+  /** What ZCode's `lint` entries in HOME print when a session in `cwd` stops: each runs where its gate matches. */
+  const stopAt = async (cwd: string): Promise<string> => {
+    const config: { hooks?: { events?: Record<string, Array<{ hooks: Array<{ args?: string[] }> }>> } } = await fse.readJson(path.join(home, '.zcode', 'cli', 'config.json'));
+    const commands = (config.hooks?.events?.Stop ?? []).flatMap((entry) => entry.hooks.flatMap((hook) => hook.args?.slice(1) ?? []));
+
+    // teamai's own Stop hook is left out: it would start the teamai on PATH.
+    return commands.filter((command) => command.includes('/hooks/lint/lint.sh'))
+      .map((command) => spawnSync('bash', ['-c', command], { cwd, encoding: 'utf8' }).stdout).join('');
+  };
+
+  it('runs, in each workspace, the script of its own team', async () => {
+    await fse.ensureDir(path.join(home, '.zcode', 'cli'));
+    const one = await workspace('one', 'lint from team one');
+    const two = await workspace('two', 'lint from team two');
+
+    await reconcileTeamHooksForConfig(zcodeTeam, one);
+    await reconcileTeamHooksForConfig(zcodeTeam, two);
+
+    expect([await stopAt(one.projectRoot ?? ''), await stopAt(two.projectRoot ?? '')]).toEqual(['lint from team one\n', 'lint from team two\n']);
+  });
+});
+
+describe('a hook folder of one id in the user scope and in a workspace that inherits the user scope', () => {
+  const LINT = 'description: Lint\nevent: Stop\ncommand: bash "${TEAMAI_HOOK_DIR}/lint.sh"\n';
+
+  /** What Claude Code's `lint` entries print when a session in `cwd` stops: the user file's, then the project's. */
+  const stopAt = async (cwd: string): Promise<string> => {
+    const files = [path.join(home, '.claude', 'settings.json'), path.join(cwd, '.claude', 'settings.json'), path.join(cwd, '.claude', 'settings.local.json')];
+    const commands: string[] = [];
+
+    for (const file of files) {
+      const settings: { hooks?: Record<string, Array<{ hooks: Array<{ command: string }> }>> } = await fse.readJson(file).catch(() => ({}));
+      commands.push(...(settings.hooks?.Stop ?? []).flatMap((entry) => entry.hooks.map((hook) => hook.command)));
+    }
+
+    // teamai's own Stop hook is left out: it would start the teamai on PATH.
+    return commands.filter((command) => command.includes('/hooks/lint/lint.sh'))
+      .map((command) => spawnSync('bash', ['-c', command], { cwd, encoding: 'utf8' }).stdout).join('');
+  };
+
+  it('runs the user scope\'s script from the user data home, and the workspace\'s from its own', async () => {
+    await write({ 'hooks/lint/HOOK.yaml': LINT, 'hooks/lint/lint.sh': 'echo lint from the user scope\n' });
+    // The user scope's entries come from a user-scope pull; a workspace pull delivers its own hooks only.
+    await reconcileTeamHooksForConfig(teamConfig, member());
+
+    const project = path.join(home, 'shop');
+    const dataHome = path.join(home, '.teamai', 'projects', 'shop');
+    const projectRepo = path.join(dataHome, 'repo');
+    execFileSync('git', ['init', '-q', project]);
+    await fse.ensureDir(path.join(project, '.claude'));
+    await fse.outputFile(path.join(projectRepo, 'hooks', 'lint', 'HOOK.yaml'), LINT);
+    await fse.outputFile(path.join(projectRepo, 'hooks', 'lint', 'lint.sh'), 'echo lint from the workspace\n');
+    const workspace: LocalConfig = {
+      repo: { localPath: projectRepo, remote: 'acme/shop' }, username: 'tester', additionalRoles: [],
+      scope: 'project', projectRoot: project, dataHome, inheritUserScope: true, enabledAgents: ['claude'],
+    };
+
+    await reconcileTeamHooksForConfig(teamConfig, workspace, { auto: true, filterAgents: workspace.enabledAgents });
+
+    expect(await stopAt(project)).toBe('lint from the user scope\nlint from the workspace\n');
+  });
+});
+
+describe('an entry teamai wrote for an earlier version of a hook folder', () => {
+  it('is recognised from the team repo\'s history and replaced, with no record of it left', async () => {
+    const git = (...args: string[]): void => {
+      execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { stdio: 'ignore' });
+    };
+    const codexTeam = { toolPaths: { codex: { settings: '.codex/hooks.json' } } } as unknown as TeamaiConfig;
+    const lintCommands = async (): Promise<string[]> => {
+      const file: { hooks?: Record<string, Array<{ hooks: Array<{ command: string }> }>> } = await fse.readJson(path.join(home, '.codex', 'hooks.json'));
+
+      return (file.hooks?.Stop ?? []).flatMap((entry) => entry.hooks.map((hook) => hook.command)).filter((command) => command.includes('/hooks/lint/'));
+    };
+
+    await fse.ensureDir(path.join(home, '.codex'));
+    await fse.ensureDir(repo);
+    git('init', '-q');
+    await write({ 'hooks/lint/HOOK.yaml': 'description: Lint\nevent: Stop\ncommand: bash "${TEAMAI_HOOK_DIR}/v1.sh"\n', 'hooks/lint/v1.sh': 'echo v1\n' });
+    git('add', '-A');
+    git('commit', '-q', '-m', 'v1');
+    await reconcileTeamHooksForConfig(codexTeam, member());
+    // The record of what teamai wrote is lost, as after a manual cleanup of ~/.teamai.
+    await fse.remove(path.join(home, '.teamai', 'managed-hooks.json'));
+
+    await write({ 'hooks/lint/HOOK.yaml': 'description: Lint\nevent: Stop\ncommand: bash "${TEAMAI_HOOK_DIR}/v2.sh"\n', 'hooks/lint/v2.sh': 'echo v2\n' });
+    git('add', '-A');
+    git('commit', '-q', '-m', 'v2');
+    await reconcileTeamHooksForConfig(codexTeam, member());
+
+    expect(await lintCommands()).toEqual([`bash "${forward(path.join(home, '.teamai', 'hooks', 'lint'))}/v2.sh"`]);
   });
 });
