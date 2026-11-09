@@ -14,7 +14,7 @@ vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), persist: vi.fn(), dim: vi.fn() },
 }));
 
-import { reconcileTeamHooksForConfig, teamHookHistory } from '../hooks.js';
+import { reconcileTeamHooksForConfig, releaseRemovedCheckoutHooks, teamHookHistory } from '../hooks.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { writeWorkspaceRoot } from '../utils/partition.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
@@ -185,9 +185,10 @@ describe('a team hook folder in two worktrees of a single-repo, with a tool that
     execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { stdio: 'ignore' });
   };
 
-  /** A pull of `root`: it records the checkout in the data home, then reconciles the team hooks. */
+  /** A pull of `root`: it records the checkout in the data home, takes back the hooks of removed checkouts, then reconciles the team hooks. */
   const pull = async (root: string): Promise<void> => {
     await writeWorkspaceRoot(dataHome, root);
+    await releaseRemovedCheckoutHooks(zcodeTeam, checkout(root));
     await reconcileTeamHooksForConfig(zcodeTeam, checkout(root));
   };
 
