@@ -22,6 +22,8 @@ teamai dashboard --port 8080
 - **摩擦信号**：团队的纠正、中断和拒绝工具调用次数，以及占会话的比例。
 - **知识维护**：归档、需更新、可晋升的候选，各附对应命令。页面本身不执行任何操作。
 
+一个技能在一轮对话里只计一次。Claude Code、Codex、Cursor、CodeBuddy 和 Muse 的每个 hook 都带轮次 id。其他工具由输入提示的 hook 开启新一轮，在 macOS 和 Linux 上这一步在后台做，agent 这时已经拿到了提示。如果这一轮的第一个工具调用就用了某个技能，它可能记到上一轮里；上一轮已经记过这个技能时，这次不再计数。
+
 ## 会话共享（Session sharing）
 
 总览页的**会话共享**面板针对当前工作区，说明在每种[运行模式](workflow.md#有人值守与无人值守的运行)下会话是否发布到 `teamai-reports`、是否评分，以及原因：
@@ -417,6 +419,8 @@ teamai session save --push --force
 ## Session 同步与迁移
 
 `teamai session` 在工具之间迁移完整会话，或归档到团队仓库。`session save` 仍是脱敏摘要。
+
+Pi 和 Oh My Pi 会话支持通过工作区的真实路径或指向它的符号链接查找，也支持 Windows 目录联接。
 
 平台：`claude-code`、`codex`、`qoder`、`qoder-cn`、`codebuddy`、`codebuddy-ide`、`cursor`、`workbuddy`、`opencode`（通过 2.0 及以上版本的 `opencode` CLI；作为目标时，目标工作区必须已存在）、`pi`、`omp`（只读的 Pi 系 v3 JSONL）、`copilot`（只读：`~/.copilot` 下 Copilot CLI 的 `session-state` 事件日志，只能作为来源，因为 Copilot 只从它自己的日志恢复会话）和 `agy`（Antigravity CLI 和 Antigravity 2.0，分别从 `~/.gemini/antigravity-cli` 和 `~/.gemini/antigravity` 读取对话；Antigravity IDE 不记录对话的工作区，所以不列出它的会话；只能作为来源，因为 agy 只从 teamai 无法写入的存储恢复对话；读取需要 `sqlite3` CLI）。`teamai session platforms` 查看本机已安装的。 CodeBuddy CLI 和 WorkBuddy 的项目目录名超过 255 个 UTF-8 字节时，使用工具原生的 180 字节前缀和 hash，长工作区路径也能列出、读取和迁移会话。在 Windows 上，`cursor` 和 `workbuddy` 不能作为 migrate 或 resume 的目标：它们要等 `sqlite3` CLI 登记后才会列出会话，所以 TeamAI 直接拒绝，而不是写一份它们永远不显示的副本。
 

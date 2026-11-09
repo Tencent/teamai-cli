@@ -716,11 +716,15 @@ export async function judgeRemoval(
   previous: DeliveredHashes | undefined, dest: string, origin?: CopyOrigin, otherRecords: DeliveredHashes = {},
 ): Promise<'remove' | 'edited' | 'notTeamais'> {
   const recorded = previous === undefined ? [] : recordedUnder(previous, dest);
+  const entry = await fse.lstat(dest).catch(() => null);
 
   // A link the member put there is theirs: teamai never writes one.
-  if (await isLink(dest)) return recorded.length > 0 || recordedUnder(otherRecords, dest).length > 0 ? 'edited' : 'notTeamais';
+  if (entry?.isSymbolicLink()) return recorded.length > 0 || recordedUnder(otherRecords, dest).length > 0 ? 'edited' : 'notTeamais';
 
   if (recorded.length > 0) {
+    // A file replacing a delivered directory makes all recorded children look absent.
+    if (entry && !entry.isDirectory() && recorded.some((file) => file !== dest)) return 'edited';
+
     // A link the member put inside a recorded skill changes it: removing the directory would take the link.
     if (await holdsNonRegular(dest)) return 'edited';
     const files = await withDisk(previous ?? {}, recorded.map((file) => [file, null]));

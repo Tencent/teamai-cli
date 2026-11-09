@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { waitForDetachedChildrenSync } from '../helpers/detached-processes.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const CLI = path.join(ROOT, 'dist/index.js');
@@ -57,6 +58,8 @@ function dispatch(
   env = { ...env, ...event.env };
   try {
     cli(command![1].split(' '), launchDir, JSON.stringify({ ...timestamp, cwd: dir, session_id: sessionId, hook_event_name: 'UserPromptSubmit', prompt: 'implement the feature' }));
+    // The prompt is recorded by the detached pass (#1788).
+    waitForDetachedChildrenSync();
   } finally {
     env = saved;
   }
@@ -277,6 +280,7 @@ describe('Copilot built-in hooks in project scope', () => {
     env.COPILOT_PROJECT_DIR = dir;
     const payload = JSON.stringify({ cwd: dir, session_id: 'copilot-session', hook_event_name: 'UserPromptSubmit', prompt: 'implement the feature' });
     cli(['hook-dispatch', 'prompt-submit', '--tool', 'claude'], dir, payload);
+    waitForDetachedChildrenSync();
     expect(fs.existsSync(path.join(home, '.teamai/dashboard/events.jsonl'))).toBe(false);
     dispatch(hooks(path.join(copilotHome, 'hooks/teamai.json')).hooks.UserPromptSubmit[0], dir, dir, 'copilot-session');
     const events = fs.readFileSync(path.join(home, '.teamai/dashboard/events.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
@@ -356,6 +360,7 @@ describe('Copilot built-in hooks in project scope', () => {
     env.COPILOT_PROJECT_DIR = dir;
     const payload = JSON.stringify({ cwd: dir, session_id: 'self-claude', hook_event_name: 'UserPromptSubmit', prompt: 'implement the feature' });
     cli(['hook-dispatch', 'prompt-submit', '--tool', 'claude'], dir, payload);
+    waitForDetachedChildrenSync();
     dispatch(hooks(path.join(copilotHome, 'hooks/teamai.json')).hooks.UserPromptSubmit[0], a, dir, 'self-claude');
     const events = fs.readFileSync(path.join(home, '.teamai/dashboard/events.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
     expect(events.map(event => event.tool)).toEqual(['claude']);
@@ -467,6 +472,7 @@ describe('Copilot built-in hooks in project scope', () => {
     expect(shell.stdout).toBe('');
     const payload = JSON.stringify({ cwd: dir, session_id: 'custom-global', hook_event_name: 'UserPromptSubmit', prompt: 'implement the feature' });
     cli(['hook-dispatch', 'prompt-submit', '--tool', 'claude'], dir, payload);
+    waitForDetachedChildrenSync();
     dispatch(hooks(path.join(copilotHome, 'hooks/teamai-custom.json')).hooks.UserPromptSubmit[0], dir, dir, 'custom-global');
     const events = fs.readFileSync(path.join(home, '.teamai/dashboard/events.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
     expect(events.map(event => event.tool)).toEqual(['copilot']);
@@ -489,6 +495,7 @@ describe('Copilot built-in hooks in project scope', () => {
     env.COPILOT_PROJECT_DIR = dir;
     const payload = JSON.stringify({ cwd: dir, session_id: state, hook_event_name: 'UserPromptSubmit', prompt: 'implement the feature' });
     cli(['hook-dispatch', 'prompt-submit', '--tool', 'claude'], dir, payload);
+    waitForDetachedChildrenSync();
     const events = fs.readFileSync(path.join(home, '.teamai/dashboard/events.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
     expect(events.map(event => event.tool)).toEqual(['claude']);
     const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude/settings.local.json'), 'utf8'));

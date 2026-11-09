@@ -39,7 +39,7 @@ import {
   resolveGitExclude,
   resolveToolRootDir,
 } from './types.js';
-import { builtinHookDefs, applyBuiltinOverride, getCodebuddyTeamHookDispatchCommand, getRawDispatchCommand, skipToolsWithoutShell } from './builtin-hooks.js';
+import { builtinHookDefs, applyBuiltinOverride, getCodebuddyTeamHookDispatchCommand, getRawDispatchCommand, retiredBuiltinHookDefs, skipToolsWithoutShell } from './builtin-hooks.js';
 import { encodeCodebuddyProjectGate, isCodebuddyTeamGateForProject, parseCodebuddyTeamGate, regateCodebuddyTeamHookCommand } from './codebuddy-team-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { DeliveredFolders } from './resources/delivered-folders.js';
@@ -2173,12 +2173,12 @@ function isBuiltinClaudeEntry(entry: Pick<HookFileEntry, 'description' | 'hooks'
   return TEAMAI_COMMAND_MARKERS.some((marker) => cmd.includes(marker));
 }
 
-/** Match standard built-ins exactly when cleaning a project team-only file. */
+/** Match standard built-ins exactly, current or retired, when cleaning a project team-only file. */
 function isExactBuiltinEntry(event: string, tool: string, entry: HookFileEntry): boolean {
   if (entry.hooks?.length !== 1 || entry.hooks[0].type !== 'command') return false;
   const command = entry.hooks[0].command;
 
-  return builtinHookDefs(tool).some((def) => {
+  return [...builtinHookDefs(tool), ...retiredBuiltinHookDefs(tool)].some((def) => {
     if (def.event !== event || (entry.matcher ?? '*') !== (def.matcher ?? '*')) return false;
     const dispatch = /\bhook-dispatch ([a-z-]+)/.exec(def.command)?.[1];
 

@@ -22,11 +22,14 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawn: mockSpawn,
 }));
 
-const { parseStdin, readStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, hookDispatchCli, claudeHookRunsInAnotherHost } =
+const { runHookFastPath } = await import('../hook-fast-path.js');
+const { readStdin } = await import('../utils/hook-stdin.js');
+const { parseStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, hookDispatchCli, claudeHookRunsInAnotherHost } =
   await import('../hook-dispatch-cli.js');
 const { claudeHookOtherHostSkip } = await import('../claude-hook-host.js');
 const { reconcileHooks } = await import('../hooks.js');
-const { log, setSilent, _resetState, _setLogFilePath } = await import('../utils/logger.js');
+const { log, setSilent } = await import('../utils/logger.js');
+const { _resetState, _setLogFilePath } = await import('../utils/debug-log.js');
 const { commitFile, initRepo, recordDelivery } = await import('./helpers/delivered-checkout.js');
 
 describe('readStdin', () => {
@@ -71,6 +74,19 @@ describe('hookDispatchCli', () => {
     } finally { resolveScope.mockRestore(); readFile.mockRestore(); vi.unstubAllEnvs(); }
   });
 
+  // The fast path read stdin before it found the payload had no session id, so the pipe is drained (#1788).
+  it('dispatches the payload the fast path read before it fell through to the full dispatch', async () => {
+    const stdin = new PassThrough();
+    stdin.end(JSON.stringify({ tool_name: 'Read', cwd: os.tmpdir() }));
+    const fastPath = await runHookFastPath(['hook-dispatch', 'post-tool-use', '--tool', 'claude'], { env: {}, platform: 'darwin', stdin: () => stdin, entry: 'unused' });
+    mockDispatcher.dispatch.mockClear();
+
+    await hookDispatchCli('post-tool-use', 'claude', '*');
+
+    expect(fastPath).toBe('full');
+    expect(mockDispatcher.dispatch).toHaveBeenCalledWith('post-tool-use', '*', expect.objectContaining({ tool_name: 'Read' }), 'claude', 'foreground');
+  });
+
   it('records why a Git hook cannot sync an unreadable project config, without dispatching', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'git-hook-broken-config-'));
     const previousCwd = process.cwd();
@@ -89,6 +105,42 @@ describe('hookDispatchCli', () => {
       fs.rmSync(root, { recursive: true, force: true });
       persist.mockRestore();
     }
+  });
+
+  // Outside any scope, the only handler a tool call or prompt has left is the HTTP local agent's (#1788).
+  describe('a background pass outside any teamai scope', () => {
+    let root: string;
+    let previousCwd: string;
+    let stdinFile: string;
+
+    beforeEach(() => {
+      root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hook-no-scope-')));
+      previousCwd = process.cwd();
+      stdinFile = path.join(root, 'payload.json');
+      fs.mkdirSync(path.join(root, 'home'));
+      fs.mkdirSync(path.join(root, 'elsewhere'));
+      vi.stubEnv('HOME', path.join(root, 'home'));
+      for (const name of ['TEAMAI_HTTP_ENDPOINT', 'TEAMAI_ENDPOINT', 'TEAMAI_API_BASE_URL']) vi.stubEnv(name, '');
+      mockDispatcher.dispatch.mockClear();
+    });
+
+    afterEach(() => {
+      process.chdir(previousCwd);
+      vi.unstubAllEnvs();
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    const dispatchInBackground = async (event: string) => {
+      fs.writeFileSync(stdinFile, JSON.stringify({ session_id: 's', cwd: path.join(root, 'elsewhere'), tool_name: 'Read' }));
+      await hookDispatchCli(event, 'claude', '*', { stdinFile, bgOnly: true });
+    };
+
+    it.each(['post-tool-use', 'prompt-submit'])('runs no handler for %s on a machine that does not sync over HTTP', async (event) => {
+      await dispatchInBackground(event);
+
+      expect(mockDispatcher.dispatch).not.toHaveBeenCalled();
+      expect(log.debug).toHaveBeenCalledWith(`[hook-dispatch] ${event}/claude no scope`);
+    });
   });
 
   it('records an unexpected dispatch failure in debug.log while a silent hook prints nothing', async () => {
@@ -333,7 +385,8 @@ describe('hookDispatchCli', () => {
 
     try {
       await hookDispatchCli('session-start', 'codex', '*', { stdinFile });
-      expect(JSON.parse(detachedPayload).teamai_launch).toEqual('TEAMAI_LAUNCHED_BY' in env ? env : undefined);
+      // null: this process carries no launch, so the child must not read one from its own environment either.
+      expect(JSON.parse(detachedPayload).teamai_launch).toEqual('TEAMAI_LAUNCHED_BY' in env ? env : null);
     } finally {
       for (const key of Object.keys(env)) {
         if (saved[key] === undefined) delete process.env[key];
@@ -363,6 +416,27 @@ describe('hookDispatchCli', () => {
     try {
       await hookDispatchCli('stop', 'claude', '*', { stdinFile });
       expect(JSON.parse(detachedPayload).teamai_run).toEqual(forwarded);
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(stdinFile, { force: true });
+    }
+  });
+
+  // The fast path forwards the host's payload as it came (#1788); the POSIX child inherits the session's environment.
+  it('reads the run and the launch from its own environment in a background pass whose payload forwards neither', async () => {
+    const stdinFile = path.join(os.tmpdir(), `fast-hook-${process.pid}-${Date.now()}.json`);
+    fs.writeFileSync(stdinFile, JSON.stringify({ hook_event_name: 'PostToolUse', session_id: 's', cwd: process.cwd(), tool_name: 'Read' }));
+    const launch = { TEAMAI_LAUNCHED_BY: 'workflow', TEAMAI_LAUNCHED_TOOL: 'claude', TEAMAI_LAUNCHED_CHECKOUT: 'checkout-1' };
+    // An HTTP enrolment keeps the pass running where its cwd has no teamai scope; the dispatcher here contacts nothing.
+    for (const [key, value] of Object.entries({ CI: 'true', TEAMAI_HTTP_ENDPOINT: 'http://127.0.0.1:9', ...launch })) vi.stubEnv(key, value);
+    mockDispatcher.dispatch.mockClear();
+
+    try {
+      await hookDispatchCli('post-tool-use', 'claude', '*', { stdinFile, bgOnly: true });
+      expect(mockDispatcher.dispatch).toHaveBeenCalledWith('post-tool-use', '*', expect.objectContaining({
+        teamai_run: { runMode: 'unattended', launchedBy: 'workflow' },
+        teamai_launch: launch,
+      }), 'claude', 'background');
     } finally {
       vi.unstubAllEnvs();
       fs.rmSync(stdinFile, { force: true });

@@ -102,10 +102,11 @@ afterEach(() => {
 
 const teamaiHome = () => path.join(tmp, 'home', '.teamai');
 
+/** Votes are recall's: each team here turns recall on (#1788). */
 function userScope(): LocalConfig {
   const teamRepo = path.join(teamaiHome(), 'team-repo');
   fs.mkdirSync(teamRepo, { recursive: true });
-  fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), 'team: user-team\nrepo: https://example.test/acme/user-team.git\n');
+  fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), 'team: user-team\nrepo: https://example.test/acme/user-team.git\nsharing:\n  recall:\n    enabled: true\n');
   const config: LocalConfig = {
     repo: { localPath: teamRepo, remote: 'https://example.test/acme/user-team.git' },
     username: 'tester', scope: 'user', additionalRoles: [],
@@ -122,7 +123,7 @@ async function projectA(): Promise<{ root: string; dataHome: string; config: Loc
   const dataHome = await resolveProjectDataHome(root);
   const teamRepo = path.join(dataHome, 'team-repo');
   fs.mkdirSync(teamRepo, { recursive: true });
-  fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), 'team: team-a\nrepo: https://example.test/acme/team-a.git\n');
+  fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), 'team: team-a\nrepo: https://example.test/acme/team-a.git\nsharing:\n  recall:\n    enabled: true\n');
   const config: LocalConfig = {
     repo: { localPath: teamRepo, remote: 'https://example.test/acme/team-a.git' },
     username: 'tester', scope: 'project', projectRoot: root, additionalRoles: [], dataHome,

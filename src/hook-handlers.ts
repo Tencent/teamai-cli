@@ -74,9 +74,9 @@ export interface HandlerRegistration {
 const FOREGROUND_HOOK_TIMEOUT_MS = 4_500;
 
 /**
- * TodoWrite runs on a PostToolUse matcher whose host cap is only 3s
- * (builtin-hooks.ts), so it needs a tighter budget than the shared foreground
- * cap. It is a local dedup-cache check that completes in microseconds anyway.
+ * The TodoWrite hint keeps the budget its own 3s entry gave it until #1788,
+ * tighter than the shared foreground cap: it is a local dedup-cache check that
+ * completes in microseconds anyway.
  */
 const TODOWRITE_HINT_TIMEOUT_MS = 2_500;
 
@@ -590,6 +590,26 @@ const skillUseHandler: HookHandler = {
 };
 
 /**
+ * Whether recall is on for the hook's scope: `TEAMAI_RECALL_DISABLED=1`, then
+ * the member's `recallEnabled`, then the team's `sharing.recall.enabled`, off
+ * by default. Read at every event, so `teamai recall disable` and `enable`
+ * take effect at the next one: nothing is installed or removed (#1788). An
+ * unreadable `teamai.yaml` leaves the team's half at its default.
+ */
+async function isRecallOn(config: LocalConfig): Promise<boolean> {
+  const { isRecallEnabled } = await import('./types.js');
+  const { loadTeamConfig } = await import('./config.js');
+
+  try {
+    return isRecallEnabled(config, await loadTeamConfig(config.repo.localPath) ?? {});
+  } catch (error) {
+    log.debug(`teamai.yaml cannot be read, so the recall hooks take the team's recall setting as off: ${error instanceof Error ? error.message : String(error)}`);
+
+    return isRecallEnabled(config, {});
+  }
+}
+
+/**
  * PostToolUse: record a recall claim or a read of team knowledge in the recall
  * log, for the reducer votes-sync runs at Stop, SubagentStop and SessionEnd (#884). One
  * write per call, whatever number of run ids, docs read or files a search
@@ -599,7 +619,7 @@ const skillUseHandler: HookHandler = {
 const recallAttributionHandler: HookHandler = {
   name: 'recall-attribution',
   async execute(stdin, tool, config) {
-    if (process.env.TEAMAI_RECALL_DISABLED === '1' || !config) return null;
+    if (!config || !await isRecallOn(config)) return null;
     const { recordToolCall } = await import('./recall-adoption.js');
     await recordToolCall(stdin, tool, config);
 
@@ -757,7 +777,7 @@ const packagePendingHintHandler: HookHandler = {
 const votesSyncHandler: HookHandler = {
   name: 'votes-sync',
   async execute(stdin, tool, localConfig) {
-    if (process.env.TEAMAI_RECALL_DISABLED === '1' || !localConfig) return null;
+    if (!localConfig || !await isRecallOn(localConfig)) return null;
 
     try {
       const { creditAdoptedDocs } = await import('./recall-adoption.js');
@@ -856,7 +876,7 @@ const votesSyncHandler: HookHandler = {
 const votesPushHandler: HookHandler = {
   name: 'votes-push',
   async execute(_stdin, _tool, localConfig) {
-    if (process.env.TEAMAI_RECALL_DISABLED === '1' || !localConfig) return null;
+    if (!localConfig || !await isRecallOn(localConfig)) return null;
 
     try {
       const { getVotesDir, usesBranchWorktree } = await import('./types.js');
@@ -921,14 +941,16 @@ async function teamAgentLanguage(config: LocalConfig | null): Promise<'en' | 'zh
   return loadTeamAgentLanguage(config);
 }
 
+/**
+ * Runs in the PostToolUse `*` pass (#1788). It asks for the tool name first,
+ * so the other calls of that pass read no file here.
+ */
 const todowriteHintHandler: HookHandler = {
   name: 'todowrite-hint',
-  async execute(stdin, _tool, config) {
-    if (process.env.TEAMAI_RECALL_DISABLED === '1') return null;
+  async execute(stdin, tool, config) {
+    if (normalizeToolName(stdinString(stdin, 'tool_name') ?? '') !== 'TodoWrite') return null;
 
-    const toolName = normalizeToolName(stdinString(stdin, 'tool_name') ?? '');
-
-    if (toolName !== 'TodoWrite') return null;
+    if (!config || !await isRecallOn(config) || !await todoWriteHintInstalled(tool, config)) return null;
 
     const { shouldSkipTodoWriteHint, buildHintMessage } = await import('./todowrite-hint.js');
 
@@ -943,6 +965,29 @@ const todowriteHintHandler: HookHandler = {
     });
   },
 };
+
+/**
+ * Whether the hint would still have its retired TodoWrite entry: only the
+ * tools that had it, and not where the team disables that key or the wildcard
+ * one that now carries it. A hooks file that cannot be read keeps it off, as
+ * skill-use.ts treats its own retired key.
+ */
+async function todoWriteHintInstalled(tool: string, config: LocalConfig): Promise<boolean> {
+  const { POST_TOOL_USE_WILDCARD_KEY, RETIRED_TODOWRITE_HOOK_KEY, takesAllBuiltins } = await import('./builtin-hooks.js');
+
+  if (!takesAllBuiltins(tool)) return false;
+  const { readBuiltinDisabledListing } = await import('./resources/hooks.js');
+
+  for (const key of [RETIRED_TODOWRITE_HOOK_KEY, POST_TOOL_USE_WILDCARD_KEY]) {
+    const listing = await readBuiltinDisabledListing(config, key);
+
+    if (listing === 'unreadable') log.debug('hooks/hooks.yaml cannot be read, so the TodoWrite hint is not given');
+
+    if (listing !== 'not-listed') return false;
+  }
+
+  return true;
+}
 
 const mrHintHandler: HookHandler = {
   name: 'mr-hint',
@@ -1318,7 +1363,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // host-visible cost is bundle load + spawn.
     { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
     { event: 'post-tool-use', matcher: '*', handler: recallAttributionHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
-    { event: 'post-tool-use', matcher: 'TodoWrite', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS, requiresConfig: true },
+    { event: 'post-tool-use', matcher: '*', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS, requiresConfig: true },
     { event: 'post-tool-use', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
     { event: 'post-tool-use', matcher: '*', handler: skillUseHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
     // A worktree an agent tool entered without any git hook (Claude Code's EnterWorktree, Codex CLI) gets the
@@ -1328,8 +1373,10 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // ─── UserPromptSubmit ─────────────────────────────
     { event: 'prompt-submit', matcher: '*', handler: pendingHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     { event: 'prompt-submit', matcher: '*', handler: packagePendingHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
-    { event: 'prompt-submit', matcher: '*', handler: skillMentionHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
-    { event: 'prompt-submit', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
+    // A prompt's records go to the detached child on POSIX, where the fast path then leaves a prompt that waits on no
+    // hint to it (#1788). Windows keeps them inline: a child there is a WMI spawn.
+    { event: 'prompt-submit', matcher: '*', handler: skillMentionHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true, background: process.platform !== 'win32' },
+    { event: 'prompt-submit', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true, background: process.platform !== 'win32' },
     { event: 'prompt-submit', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
 
     // ─── Git (`--tool git`, see git-hook.ts) ──────────

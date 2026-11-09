@@ -13,7 +13,8 @@ import { envLoaderPath } from '../resources/env-loader.js';
 import { envShMarker } from '../env-sh-exports.js';
 import { getMachineSecretsPath, getTeamSecretsPath, writeSecretStore, type SecretStore } from '../secret-store.js';
 import { resolveAnchors } from '../utils/git.js';
-import { _resetState, _setLogFilePath, setStderrOnly } from '../utils/logger.js';
+import { setStderrOnly } from '../utils/logger.js';
+import { _resetState, _setLogFilePath } from '../utils/debug-log.js';
 import { projectDataHome } from '../utils/partition.js';
 import { getDataHome, type LocalConfig, type TeamaiConfig } from '../types.js';
 

@@ -114,13 +114,13 @@ describe('hooks — merged dispatch format', () => {
       expect(stop[0].hooks[0].command).toContain('hook-dispatch stop');
     });
 
-    it('PostToolUse has entries for each distinct matcher', async () => {
+    it('PostToolUse has exactly one entry with wildcard matcher, which also gives the TodoWrite hint (#1788)', async () => {
       await injectHooks('/test/settings.json', 'claude');
 
       const result = mockFiles['/test/settings.json'] as { hooks: Record<string, ClaudeHookMatcher[]> };
       const postToolUse = result.hooks.PostToolUse;
-      const matchers = postToolUse.map((m: ClaudeHookMatcher) => m.matcher).sort();
-      expect(matchers).toEqual(['*', 'TodoWrite']);
+      expect(postToolUse.map((m: ClaudeHookMatcher) => m.matcher)).toEqual(['*']);
+      expect(postToolUse[0].hooks[0].command).toContain('hook-dispatch post-tool-use --tool claude');
     });
 
     it('UserPromptSubmit has exactly one entry with wildcard matcher', async () => {
@@ -139,14 +139,6 @@ describe('hooks — merged dispatch format', () => {
       const result = mockFiles['/test/settings.json'] as { hooks: Record<string, ClaudeHookMatcher[]> };
       const cmd = result.hooks.SessionStart[0].hooks[0].command;
       expect(cmd).toContain('--tool claude-internal');
-    });
-
-    it('includes --matcher parameter for non-wildcard PostToolUse entries', async () => {
-      await injectHooks('/test/settings.json', 'claude');
-
-      const result = mockFiles['/test/settings.json'] as { hooks: Record<string, ClaudeHookMatcher[]> };
-      const todoEntry = result.hooks.PostToolUse.find((m: ClaudeHookMatcher) => m.matcher === 'TodoWrite');
-      expect(todoEntry!.hooks[0].command).toContain('--matcher TodoWrite');
     });
 
     it('does not include --matcher for wildcard entries', async () => {

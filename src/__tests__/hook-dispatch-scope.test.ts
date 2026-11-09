@@ -138,7 +138,7 @@ describe('hook runs and the scope they belong to (#748)', () => {
 
   it('handlers follow the scope the dispatcher resolved, not the directory the hook process runs in (#752)', async () => {
     userScope();
-    fs.writeFileSync(path.join(teamaiHome(), 'team-repo', 'teamai.yaml'), 'team: user-team\nrepo: https://example.test/acme/user-team.git\n');
+    fs.writeFileSync(path.join(teamaiHome(), 'team-repo', 'teamai.yaml'), 'team: user-team\nrepo: https://example.test/acme/user-team.git\nsharing:\n  recall:\n    enabled: true\n');
     const root = gitRepo('project-a');
     const dataHome = await resolveProjectDataHome(root);
     const teamRepoA = path.join(dataHome, 'team-repo');

@@ -201,7 +201,8 @@ import type { JsonValue, LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 
 /** The scope hook-dispatch resolved for the hook's cwd, handed to every handler. */
-const scope: LocalConfig = { repo: { localPath: '/tmp', remote: '' }, username: 'test', scope: 'user', additionalRoles: [] };
+// Recall on through the member's switch: `/tmp` holds no teamai.yaml to turn it on for the team, and the recall handlers do nothing while it is off.
+const scope: LocalConfig = { repo: { localPath: '/tmp', remote: '' }, username: 'test', scope: 'user', additionalRoles: [], recallEnabled: true };
 
 // ── Tests ────────────────────────────────────────────────
 
@@ -290,9 +291,26 @@ describe('hook-handlers registry', () => {
       expect(reg, name).toBeDefined();
       expect(reg!.background, `${name} must run detached`).toBe(true);
     }
-    // What remains inline for a plain tool call: nothing.
+    // What remains inline: the TodoWrite hint alone, which answers nothing but a
+    // TodoWrite call (#1788). The fast path hands every other call to the child.
     const inline = handlers.filter((r) => !r.background);
-    expect(inline).toEqual([]);
+    expect(inline.map((r) => r.handler.name)).toEqual(['todowrite-hint']);
+  });
+
+  // What a prompt's foreground runs is what hook-fast-path.ts `promptAnswersInForeground` predicts
+  // the output of: a package hint, a contribute hint, the HTTP local agent's notices (#1788).
+  it.each([
+    ['darwin', ['pending-hint', 'package-pending-hint', 'local-agent-sync']],
+    ['linux', ['pending-hint', 'package-pending-hint', 'local-agent-sync']],
+    // No detached child is added on Windows, where one is a WMI spawn.
+    ['win32', ['pending-hint', 'package-pending-hint', 'skill-mention', 'dashboard-report', 'local-agent-sync']],
+  ])('prompt-submit on %s answers in the foreground with only %j', (platform, foreground) => {
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue(platform as NodeJS.Platform);
+    const handlers = buildHandlerRegistry().filter((r) => r.event === 'prompt-submit');
+    platformSpy.mockRestore();
+
+    expect(handlers.filter((r) => !r.background).map((r) => r.handler.name)).toEqual(foreground);
+    expect(handlers.map((r) => r.handler.name)).toEqual(['pending-hint', 'package-pending-hint', 'skill-mention', 'dashboard-report', 'local-agent-sync']);
   });
 
   it('session-end records the final dashboard snapshot, dispatches the webhook and pushes votes in the background, and credits votes in the foreground', () => {
@@ -1209,12 +1227,13 @@ describe('hook-handlers registry', () => {
     }
   });
 
-  it('TodoWrite hint stays under its 3s PostToolUse host cap', () => {
+  it('TodoWrite hint keeps the budget of the 3s entry it had before it joined the wildcard pass (#1788)', () => {
     const registry = buildHandlerRegistry();
     const todo = registry.find(
-      (r) => r.event === 'post-tool-use' && r.matcher === 'TodoWrite',
+      (r) => r.event === 'post-tool-use' && r.handler.name === 'todowrite-hint',
     );
-    expect(todo!.timeoutMs).toBeLessThan(3_000);
+    expect(todo?.matcher).toBe('*');
+    expect(todo?.timeoutMs).toBeLessThan(3_000);
   });
 
   it('marks contribute-check, mr-hint, votes-sync and votes-push as gitOnly', () => {
@@ -1247,6 +1266,14 @@ describe('hook-handlers registry', () => {
     expect(filterHandlersForConfig(registry, { repo: {} } as never).length).toBe(full);
   });
 
+  // The background pass of a tool call or a prompt outside any scope exits before running handlers unless the machine
+  // syncs over HTTP (#1788), which is only behaviour-preserving while the local agent is all that is left to run there.
+  it.each(['post-tool-use', 'prompt-submit'])('leaves %s no background handler but the HTTP local agent\'s where teamai is not set up', (event) => {
+    const background = filterHandlersForConfig(buildHandlerRegistry(), null).filter((reg) => reg.event === event && reg.background === true);
+
+    expect(background.map((reg) => reg.handler.name).filter((name) => name !== 'local-agent-sync')).toEqual([]);
+  });
+
   it('filterHandlersForConfig drops the share nudge where teamai is not set up (#748)', () => {
     const names = filterHandlersForConfig(buildHandlerRegistry(), null).map((r) => r.handler.name);
     expect(names).not.toContain('contribute-check');
@@ -1266,11 +1293,11 @@ describe('hook-handlers registry', () => {
 
   it('TodoWrite gets no recall nudge where teamai is not set up (#748)', async () => {
     const registry = buildHandlerRegistry();
-    expect(registry.some((r) => r.matcher === 'TodoWrite' && r.handler.name === 'todowrite-hint')).toBe(true);
+    expect(registry.some((r) => r.matcher === '*' && r.handler.name === 'todowrite-hint')).toBe(true);
     const dispatcher = createDispatcher({ handlers: filterHandlersForConfig(registry, null), localConfig: null });
 
     const result = await dispatcher.dispatch(
-      'post-tool-use', 'TodoWrite', { session_id: 'td-748', tool_name: 'TodoWrite' }, 'claude', 'foreground',
+      'post-tool-use', '*', { session_id: 'td-748', tool_name: 'TodoWrite' }, 'claude', 'foreground',
     );
     expect(result.output).toBeNull();
   });

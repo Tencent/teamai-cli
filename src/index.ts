@@ -1471,7 +1471,7 @@ program
           code = await runCodexDispatcher(event);
         } else if (bridged.isBridgedTeamHookTool(tool)) {
           const { runBridgedTeamHooks } = bridged;
-          const { readStdin } = await import('./hook-dispatch-cli.js');
+          const { readStdin } = await import('./utils/hook-stdin.js');
           const reply = await runBridgedTeamHooks(tool, event, await readStdin());
 
           if (reply.stderr) process.stderr.write(reply.stderr);
@@ -1510,6 +1510,8 @@ program
     // the 4.5s foreground handler budget, so it never truncates legitimate work.
     // The detached `--bg-only` child is unref'd and not awaited by the host, so
     // it is exempt and keeps its full budget to finish real syncs/downloads.
+    // A hook the fast path fell through from read its STDIN before this timer
+    // started, bounded by the same 1s EOF deadline (utils/hook-stdin.ts).
     const HOOK_HARD_EXIT_MS = 7_000;
     // Git (`--tool git`) has no hook timeout to stay under, and a cut here
     // would stop the inline delivery mid-write; its handler bounds itself.
@@ -2250,7 +2252,13 @@ const maintenanceCmd = recallCmd
   .command('maintenance')
   .description('Automatic maintenance of team knowledge base')
   .option('--prune', 'Remove low-confidence learnings')
-  .option('--threshold <n>', 'Confidence threshold for pruning (default 0.15)', parseFloat)
+  .option('--threshold <n>', 'Confidence threshold for pruning (default 0.15)', (value) => {
+    const threshold = value.trim() === '' ? NaN : Number(value);
+
+    if (!Number.isFinite(threshold)) throw new Error('--threshold must be a finite number');
+
+    return threshold;
+  })
   .option('--archive', 'Move to archive/ instead of deleting')
   .option('--confidence-writeback', 'Update frontmatter confidence scores')
   .option('--update-quality', 'Find stale docs/rules/skills and write a .draft.md update beside each: starts the default workflow teamai-draft-learning-updates on the driver workflows.driver names, else local, prints what it drafted, and exits 1 when an entry could not be drafted. --dry-run only lists the entries')

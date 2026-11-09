@@ -55,6 +55,8 @@ describe('a team replacement of a default hook', () => {
       scope: 'user',
       additionalRoles: [],
       dataHome: path.join(sandbox, 'Zoë Müller 张伟', '.teamai'),
+      // The TodoWrite hint speaks only while recall is on.
+      recallEnabled: true,
     };
     const dir = path.join(repo, 'hooks', 'teamai-todowrite-hint');
     await fse.copy(path.join(__dirname, '..', '..', 'hooks', 'teamai-todowrite-hint'), dir);

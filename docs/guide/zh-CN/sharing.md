@@ -277,9 +277,20 @@ shell 获得其启动目录的团队环境变量，因此同时打开的多个�
 | 事件 | 做什么 |
 |------|--------|
 | `SessionStart` | 拉取团队资源，并记下会话开始 |
-| `PostToolUse` | 记录 skill 使用 |
+| `PostToolUse` | 记录 skill 使用。recall 开着时，`TodoWrite` 调用之后提醒 agent 用 `teamai-recall` |
 | `UserPromptSubmit` | 记录输入 |
 | `Stop` | 检查 CLI 更新，并记下会话结束 |
+
+在 macOS 和 Linux 上，工具调用和输入提示只在可能有东西要输出时才等 teamai：`TodoWrite` 调用（要完整运行才知道该不该提醒；recall 关着时不提醒，什么也不输出），或者有提示留给它、或在通过 HTTP 同步的机器上的输入提示。其他时候 hook 启动一个后台进程就返回，由这个进程记下事件。`~/.teamai/debug.log` 里能看到走的是哪条路：
+
+```text
+2026-11-09T09:14:02.118Z [DEBUG] [hook-dispatch] post-tool-use/claude fast path
+2026-11-09T09:14:02.161Z [DEBUG] [hook-dispatch] post-tool-use/claude background: 16ms total, 5 handlers, slowest dashboard-report=15ms | dashboard-report=15ms(ok) local-agent-sync=13ms(ok) recall-attribution=12ms(ok) skill-use=9ms(ok) new-checkout=8ms(ok)
+2026-11-09T09:14:09.530Z [DEBUG] [hook-dispatch] prompt-submit/claude fast path
+2026-11-09T09:14:09.571Z [DEBUG] [hook-dispatch] prompt-submit/claude background: 13ms total, 2 handlers, slowest dashboard-report=13ms | dashboard-report=13ms(ok) skill-mention=12ms(ok)
+```
+
+在任何 teamai 作用域之外的目录里，后台进程停在 `[hook-dispatch] post-tool-use/claude no scope`。
 
 ```bash
 teamai hooks list
@@ -335,7 +346,14 @@ hooks:
     command: bash ~/.teamai/team-scripts/scan-secret.sh
     timeout: 15
     tools: [claude, cursor]
+
+builtin:
+  disabled: [Hook dispatch post-tool-use TodoWrite]   # 不要 TodoWrite 提醒
+  overrides:
+    Hook dispatch stop: { timeout: 30 }
 ```
+
+每次工具调用只跑一条 `PostToolUse` 条目 `Hook dispatch post-tool-use wildcard`，`TodoWrite` 提醒也在里面跑。把 `Hook dispatch post-tool-use TodoWrite` 写进 `disabled` 仍然会关掉提醒。给这个 key 设超时不起作用，`teamai doctor` 会提示。
 
 只给一个项目时写到 `hooks/<ns>/hooks.yaml`。
 

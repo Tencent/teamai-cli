@@ -36,9 +36,24 @@ require('node:module').syncBuiltinESMExports();
  * tracks them.
  */
 export function waitForDetachedChildren(): Promise<void> {
+  return waitForExitIn(trackedChildren());
+}
+
+/** waitForDetachedChildren, for a test that runs the CLI with spawnSync and reads what its detached pass wrote. */
+export function waitForDetachedChildrenSync(): void {
+  const children = trackedChildren();
+  const deadline = Date.now() + 60_000;
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  while (runningIn(children).length > 0) {
+    if (Date.now() >= deadline) throw new Error(`Detached fixture processes did not exit: ${runningIn(children).join(', ')}`);
+    Atomics.wait(pause, 0, 0, 25);
+  }
+}
+
+function trackedChildren(): string {
   const root = process.env.TEAMAI_TEST_DETACHED_ROOT;
   if (!root) throw new Error('No detached-process tracker: add src/__tests__/helpers/teardown-writers.ts to setupFiles.');
-  return waitForExitIn(path.join(root, 'detached-children'));
+  return path.join(root, 'detached-children');
 }
 
 /** The tracked pids still running; each exited one is forgotten. */

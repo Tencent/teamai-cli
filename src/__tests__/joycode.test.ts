@@ -35,7 +35,7 @@ describe('JoyCode support', () => {
   it('installs the built-in hooks into .joycode/hooks.json with timeouts', () => {
     expect(channelsOf('joycode').hooks.user).toMatchObject({ channel: 'settings', format: 'claude' });
     const defs = builtinHookDefs('joycode');
-    expect(defs.map((d) => d.event)).toEqual(['SessionStart', 'Stop', 'PostToolUse', 'PostToolUse', 'UserPromptSubmit']);
+    expect(defs.map((d) => d.event)).toEqual(['SessionStart', 'Stop', 'PostToolUse', 'UserPromptSubmit']);
     expect(defs.every((d) => typeof d.timeout === 'number')).toBe(true);
     expect(defs[0].command).toContain('hook-dispatch session-start --tool joycode');
   });

@@ -104,64 +104,21 @@ describe('hooks.ts — TodoWrite hint registration', () => {
     await fse.remove(tmpHome);
   });
 
-  it('injects TodoWrite hint into Claude settings.json with matcher=TodoWrite', async () => {
+  // The hint runs in the wildcard pass since #1788, so no tool gets an entry of its own for it.
+  it.each([
+    ['claude', '.claude/settings.json', 'PostToolUse'],
+    ['codebuddy', '.codebuddy/settings.json', 'PostToolUse'],
+    ['cursor', '.cursor/hooks.json', 'postToolUse'],
+  ])('injects one PostToolUse entry into %s, and none for TodoWrite', async (tool, file, event) => {
     const { injectHooks } = await import('../hooks.js');
-    const settingsPath = path.join(tmpHome, '.claude', 'settings.json');
-    await injectHooks(settingsPath, 'claude');
+    const settingsPath = path.join(tmpHome, file);
+    await injectHooks(settingsPath, tool);
 
-    const settings = await fse.readJson(settingsPath);
-    const postToolUse = settings.hooks?.PostToolUse ?? [];
-    const hint = postToolUse.find((h: { matcher?: string }) => h.matcher === 'TodoWrite');
-    expect(hint).toBeDefined();
-    expect(hint.matcher).toBe('TodoWrite');
-    expect(hint.hooks?.[0]?.command).toContain('teamai hook-dispatch post-tool-use');
-    expect(hint.hooks?.[0]?.command).toContain('--matcher TodoWrite');
-    expect(hint.hooks?.[0]?.command).toContain('--tool claude');
-  });
-
-  it('injects TodoWrite hint into CodeBuddy settings.json (PascalCase, same shape as Claude)', async () => {
-    const { injectHooks } = await import('../hooks.js');
-    const settingsPath = path.join(tmpHome, '.codebuddy', 'settings.json');
-    await injectHooks(settingsPath, 'codebuddy');
-
-    const settings = await fse.readJson(settingsPath);
-    const postToolUse = settings.hooks?.PostToolUse ?? [];
-    const hint = postToolUse.find((h: { matcher?: string }) => h.matcher === 'TodoWrite');
-    expect(hint).toBeDefined();
-    expect(hint.matcher).toBe('TodoWrite');
-    expect(hint.hooks?.[0]?.command).toContain('teamai hook-dispatch post-tool-use');
-    expect(hint.hooks?.[0]?.command).toContain('--matcher TodoWrite');
-    expect(hint.hooks?.[0]?.command).toContain('--tool codebuddy');
-  });
-
-  it('injects TodoWrite hint into Cursor hooks.json (camelCase event keys)', async () => {
-    const { injectHooks } = await import('../hooks.js');
-    const hooksPath = path.join(tmpHome, '.cursor', 'hooks.json');
-    await injectHooks(hooksPath, 'cursor');
-
-    const hooksJson = await fse.readJson(hooksPath);
-    const postToolUse = hooksJson.hooks?.postToolUse ?? [];
-    const hint = postToolUse.find(
-      (h: { command: string; matcher?: string }) =>
-        h.command.includes('teamai hook-dispatch post-tool-use') && h.matcher === 'TodoWrite',
-    );
-    expect(hint).toBeDefined();
-    expect(hint.command).toContain('--matcher TodoWrite');
-    expect(hint.command).toContain('--tool cursor');
-  });
-
-  it('does NOT duplicate TodoWrite hint when injected twice', async () => {
-    const { injectHooks } = await import('../hooks.js');
-    const settingsPath = path.join(tmpHome, '.claude', 'settings.json');
-    await injectHooks(settingsPath, 'claude');
-    await injectHooks(settingsPath, 'claude');
-
-    const settings = await fse.readJson(settingsPath);
-    const postToolUse = settings.hooks?.PostToolUse ?? [];
-    const hits = postToolUse.filter(
-      (h: { matcher?: string }) => h.matcher === 'TodoWrite',
-    );
-    expect(hits.length).toBe(1);
+    const entries: { matcher?: string; command?: string; hooks?: { command: string }[] }[] = (await fse.readJson(settingsPath)).hooks?.[event] ?? [];
+    const commands = entries.map((entry) => entry.command ?? entry.hooks?.[0]?.command ?? '');
+    expect(commands).toEqual([expect.stringContaining(`teamai hook-dispatch post-tool-use --tool ${tool}`)]);
+    expect(commands[0]).not.toContain('--matcher');
+    expect(entries.map((entry) => entry.matcher)).not.toContain('TodoWrite');
   });
 });
 
@@ -183,7 +140,8 @@ describe('todowrite hint follows teamai.yaml language (#1014)', () => {
   });
 
   async function hint(language?: 'en' | 'zh'): Promise<string> {
-    const lines = ['team: t', 'repo: https://example.invalid/t.git'];
+    // The hint names teamai-recall, which only a team with recall on has.
+    const lines = ['team: t', 'repo: https://example.invalid/t.git', 'sharing:', '  recall:', '    enabled: true'];
     if (language) lines.push(`language: ${language}`);
     await fse.writeFile(path.join(repo, 'teamai.yaml'), `${lines.join('\n')}\n`);
     const { buildHandlerRegistry } = await import('../hook-handlers.js');
@@ -215,5 +173,75 @@ describe('todowrite hint follows teamai.yaml language (#1014)', () => {
     expect(zh).toBe(omitted);
     expect(omitted).toMatch(/任务/);
     expect(omitted).toMatch(/Task plan detected/);
+  });
+});
+
+describe('the TodoWrite hint comes from the PostToolUse * pass (#1788)', () => {
+  let tmpHome: string;
+  let repo: string;
+
+  beforeEach(async () => {
+    tmpHome = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-todowrite-wildcard-'));
+    repo = path.join(tmpHome, 'team');
+    await fse.ensureDir(repo);
+    await fse.writeFile(path.join(repo, 'teamai.yaml'), `${TEAM_YAML}sharing:\n  recall:\n    enabled: true\n`);
+    vi.stubEnv('HOME', tmpHome);
+    vi.stubEnv('TEAMAI_RECALL_DISABLED', '');
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(tmpHome);
+  });
+
+  const TEAM_YAML = 'team: t\nrepo: https://example.invalid/t.git\nlanguage: en\n';
+  let call = 0;
+
+  /** What the foreground of the one PostToolUse entry the tool now has replies to a `tool_name` call. */
+  async function wildcardReply(tool: string, toolName = 'TodoWrite'): Promise<string | null> {
+    const { buildHandlerRegistry, filterHandlersForConfig } = await import('../hook-handlers.js');
+    const { createDispatcher } = await import('../hook-dispatch.js');
+    const { LocalConfigSchema } = await import('../types.js');
+    const local = LocalConfigSchema.parse({ repo: { localPath: repo, remote: 'https://example.invalid/t.git' }, username: 'a', scope: 'user' });
+    const dispatcher = createDispatcher({ handlers: filterHandlersForConfig(buildHandlerRegistry(), local), localConfig: local });
+    const result = await dispatcher.dispatch('post-tool-use', '*', { tool_name: toolName, session_id: `wildcard-${tool}-${call++}` }, tool, 'foreground');
+
+    return result.output;
+  }
+
+  const disable = (...keys: string[]) => fse.outputFile(path.join(repo, 'hooks', 'hooks.yaml'), `builtin:\n  disabled:\n${keys.map((key) => `    - ${key}\n`).join('')}`);
+
+  it.each(['claude', 'codebuddy', 'cursor', 'codex', 'dsh'])('nudges %s, which had the TodoWrite entry, from its wildcard pass', async (tool) => {
+    expect(await wildcardReply(tool)).toContain('[teamai:todowrite-hint]');
+  });
+
+  it('says nothing for a tool call other than TodoWrite', async () => {
+    expect(await wildcardReply('claude', 'Read')).toBeNull();
+  });
+
+  it.each(['opencode', 'pi', 'omp', 'agy'])('gives %s, whose adapter never installed the TodoWrite entry, no hint', async (tool) => {
+    expect(await wildcardReply(tool)).toBeNull();
+  });
+
+  it.each([
+    ['the retired TodoWrite key', 'Hook dispatch post-tool-use TodoWrite'],
+    ['the wildcard key', 'Hook dispatch post-tool-use wildcard'],
+  ])('stays off where the team lists %s under builtin.disabled', async (_case, key) => {
+    await disable(key);
+
+    expect(await wildcardReply('claude')).toBeNull();
+  });
+
+  // With recall off, pull removes the teamai-recall agent and rule the hint would send the agent to.
+  it('gives no hint while recall is off, its default', async () => {
+    await fse.writeFile(path.join(repo, 'teamai.yaml'), TEAM_YAML);
+
+    expect(await wildcardReply('claude')).toBeNull();
+  });
+
+  it('stays on where the team disables another built-in', async () => {
+    await disable('Hook dispatch stop');
+
+    expect(await wildcardReply('claude')).toContain('[teamai:todowrite-hint]');
   });
 });

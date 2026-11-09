@@ -22,6 +22,8 @@ The Improvement Center reads what members publish to `teamai-reports` with `team
 - **Friction signals**: the team's corrections, interrupts and rejected tool calls, as a share of sessions.
 - **Knowledge maintenance**: the archive, refresh and promote candidates, with the command for each. The page runs nothing.
 
+A skill counts once per prompt turn. Claude Code, Codex, Cursor, CodeBuddy and Muse send a turn id with each hook. On other hosts the prompt's hook starts the turn, and on macOS and Linux it does that in the background, after the agent already has the prompt. A skill used in the turn's very first tool call can then land in the turn before it, and is not counted again if that turn already had it.
+
 ## Session sharing
 
 The Overview's **Session sharing** panel says, for the selected workspace, whether its sessions are published to `teamai-reports` and scored in each [run mode](workflow.md#attended-and-unattended-runs), and why:
@@ -417,6 +419,8 @@ The local copy goes to `~/.teamai/session-logs/<year-month>.md`. `--push` sends 
 ## Session Sync & Migration
 
 `teamai session` moves a full transcript between tools, or archives it in the team repo. `session save` remains the scrubbed summary.
+
+Pi and Oh My Pi sessions can be found from either a workspace's real path or a symbolic link to it, including Windows directory junctions.
 
 Platforms: `claude-code`, `codex`, `qoder`, `qoder-cn`, `codebuddy`, `codebuddy-ide`, `cursor`, `workbuddy`, `opencode` (through the `opencode` CLI, version 2 or later; an OpenCode target workspace must exist), `pi`, `omp` (read-only Pi-family v3 JSONL), `copilot` (read-only: Copilot CLI's `session-state` event logs under `~/.copilot`, a source only, since Copilot resumes only its own log), and `agy` (the Antigravity CLI and Antigravity 2.0, whose conversations it reads from `~/.gemini/antigravity-cli` and `~/.gemini/antigravity`; Antigravity IDE keeps no workspace for a conversation, so its sessions are not listed; a source only, since agy resumes a conversation only from a store teamai cannot write; reading it needs the `sqlite3` CLI). `teamai session platforms` lists what is installed here. CodeBuddy CLI and WorkBuddy project directory names longer than 255 UTF-8 bytes use the native 180-byte prefix and hash, so listing, reading and migration work for long workspace paths as well. On Windows, `cursor` and `workbuddy` cannot be a migrate or resume target: they list a session only once the `sqlite3` CLI registers it, so TeamAI refuses instead of writing a copy they never show.
 

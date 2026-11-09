@@ -26,14 +26,6 @@
         "powershell": "teamai hook-dispatch post-tool-use --tool copilot 2>$null; exit 0",
         "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool copilot 2>/dev/null\" || true",
         "timeoutSec": 10
-      },
-      {
-        "type": "command",
-        "bash": "bash -lc \"teamai hook-dispatch post-tool-use --tool copilot --matcher TodoWrite 2>/dev/null\" || true",
-        "powershell": "teamai hook-dispatch post-tool-use --tool copilot --matcher TodoWrite 2>$null; exit 0",
-        "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool copilot --matcher TodoWrite 2>/dev/null\" || true",
-        "matcher": "TodoWrite",
-        "timeoutSec": 3
       }
     ],
     "UserPromptSubmit": [

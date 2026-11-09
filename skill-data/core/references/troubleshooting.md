@@ -416,6 +416,11 @@ each session.
 
 ## "A recalled doc got no upvote"
 
+First run `teamai recall status`: while recall is off for the scope, the hooks
+record no adoption and cast no vote. Recall is off until the team sets
+`sharing.recall.enabled: true`, and a member's `recallEnabled` or
+`TEAMAI_RECALL_DISABLED=1` overrides it.
+
 A recalled doc is upvoted once per session when the session that ran the recall
 opens it within 24 hours: a file read, a reader command (`cat`, `sed -n`, …), or
 a search whose output shows its lines. Listing the doc does not count, and
