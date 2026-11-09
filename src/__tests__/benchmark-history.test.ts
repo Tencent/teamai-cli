@@ -770,6 +770,23 @@ describe('BenchmarkHistory spend against the estimate', () => {
     // The agents' 1 USD, the two trials' judging 0.5 USD, and the calibration 0.5 USD.
     expect(row?.spend.spent).toEqual({ kind: 'known', amount: 2, unit: 'USD', used: 5 });
   });
+
+  it('leaves what the run spent incomplete, never below the estimate, when a judge or a calibration that ran stated no cost', () => {
+    const plain = spending('cheap', 17, { claude: 0.125, codex: 0.125 });
+    const decider = { by: 'judge' as const, rubric: 'rc', tool: 'claude', model: 'claude-haiku-5-5', batched: false };
+    const unstated = (trial: BenchmarkRunInput['benchmark']['trials'][number]) => {
+      const { scoringCost: _stated, ...rest } = trial;
+
+      return trial.arm === 'claude'
+        ? { ...rest, verdicts: [{ scorer: 'quality', outcome: { kind: 'labelled' as const, label: 'good', score: 1, passed: true }, decider }] }
+        : { ...trial, calibration: { label: 'incorrect', passed: false, decider } };
+    };
+    const judged = { ...plain, benchmark: { ...plain.benchmark, trials: plain.benchmark.trials.map(unstated) } };
+    const [row] = BenchmarkHistory.of({ runs: [judged], query: { windowDays: 90 }, now: NOW }).selected?.runs ?? [];
+
+    // The agents' 0.25 USD and codex's judging 0.25 USD are known; claude's judge and codex's calibration stated nothing.
+    expect(row?.spend).toEqual({ estimated: RANGE, spent: { kind: 'incomplete', amount: 0.5, unit: 'USD', used: 3, unknown: 2 } });
+  });
 });
 
 describe('benchmark regression', () => {

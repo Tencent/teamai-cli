@@ -764,7 +764,14 @@ function runRow(input: BenchmarkRunInput): RunRow {
 
 function spendOf(input: BenchmarkRunInput): RunRow['spend'] {
   const estimated = input.benchmark.estimate?.total;
-  const judging = input.benchmark.trials.flatMap(({ scoringCost, calibration }) => [scoringCost, calibration?.scoringCost].flatMap((cost) => (cost ? [cost.complete ? cost : undefined] : [])));
+  // A judge that ran and stated no cost leaves the total unknown rather than lower.
+  const stated = (cost: Trial['scoringCost']) => (cost?.complete ? cost : undefined);
+
+  const judging = input.benchmark.trials.flatMap(({ scoringCost, verdicts, calibration }) => [
+    ...(scoringCost || verdicts?.some(({ decider }) => decider?.by === 'judge') ? [stated(scoringCost)] : []),
+    ...(calibration ? [stated(calibration.scoringCost)] : []),
+  ]);
+
   const spent = costTotal([...agentCostsOf(observedTrials(input)), ...judging]);
 
   return definedFields<RunRow['spend']>({ estimated, spent, outside: estimated === undefined ? undefined : outsideOf(estimated, spent) });
