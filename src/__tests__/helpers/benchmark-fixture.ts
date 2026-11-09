@@ -27,6 +27,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { z } from 'zod';
+import { defaultScorerRubric } from '../../scorers/cache.js';
 import { syncScorersThenWorkflows } from '../../scorers/team-sync.js';
 import type { LocalConfig } from '../../types.js';
 import { checkStepOf, compileBundle, correctnessScorerName, freezePlan, type BenchmarkPlan } from '../../benchmark/plan.js';
@@ -621,9 +622,9 @@ export function benchmarkRunConfig(root: string): LocalConfig {
 /**
  * The plan of the suite in `files`, frozen in process as startBenchmark freezes it, at team commit RUN_TEAM and with
  * RUN_START for `{{startingCommit}}`, without the install startBenchmark reads the suite and the team revision from. An
- * arm's model is planned as written: no aliases resolve it.
+ * arm's model is planned as written: no aliases resolve it. `correctnessRubric` is the one the plan filled in.
  */
-export async function frozenBenchmark(config: LocalConfig, files: BenchmarkSuiteFiles): Promise<{ plan: BenchmarkPlan; committed: CommittedSuite } | WorkflowEnvelope> {
+export async function frozenBenchmark(config: LocalConfig, files: BenchmarkSuiteFiles): Promise<{ plan: BenchmarkPlan; committed: CommittedSuite; correctnessRubric: string } | WorkflowEnvelope> {
   const parsed = parseSuite({
     suite: { relativePath: `benchmarks/${files.name}/suite.yaml`, content: files.suite },
     tasks: Object.entries(files.tasks).map(([name, content]) => ({
@@ -637,8 +638,9 @@ export async function frozenBenchmark(config: LocalConfig, files: BenchmarkSuite
   const [first, ...rest] = suite.arms.map((arm) => ({ name: arm.name, tool: arm.tool, ...(arm.model ? { model: arm.model } : {}), source: 'team' as const, team: resolved(arm.team), ...(arm.role ? { role: arm.role } : {}), ...(arm.recall === undefined ? {} : { recall: arm.recall }) }));
   const committed = await commitCheckFiles(commitCacheOf(config, suite.repo), suite);
   if (!committed.ok) return error('check_files_unwritable', committed.failed);
-  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: RUN_TEAM, selection: { additionalRoles: [], projects: [], excludedSkills: [] }, arms: [first, ...rest], scorers: {}, coveredSkills: {} });
-  return { plan, committed: committed.suite };
+  const { content: correctnessRubric } = await defaultScorerRubric(config, 'teamai-correctness');
+  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: RUN_TEAM, selection: { additionalRoles: [], projects: [], excludedSkills: [] }, arms: [first, ...rest], scorers: {}, correctnessRubric, coveredSkills: {} });
+  return { plan, committed: committed.suite, correctnessRubric };
 }
 
 /** The shipped benchmark workflow's plan and trials steps, without its report, which no process here can run. */
@@ -669,7 +671,7 @@ export async function startBenchmarkRun(config: LocalConfig, files: BenchmarkSui
 } = {}): Promise<WorkflowEnvelope> {
   const frozen = await frozenBenchmark(config, files);
   if (!('plan' in frozen)) return frozen;
-  const bundle = compileBundle(frozen.plan, frozen.committed, { unattended });
+  const bundle = compileBundle(frozen.plan, frozen.committed, { unattended, correctnessRubric: frozen.correctnessRubric });
   fs.mkdirSync(path.join(config.repo.localPath, 'workflows'), { recursive: true });
   fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'planned.yaml'), body);
   await syncScorersThenWorkflows(config);

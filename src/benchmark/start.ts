@@ -9,7 +9,7 @@ import path from 'node:path';
 import { isRecordableLabel, isRecordableName, observeCheckout } from '../agent-observation.js';
 import { loadLocalConfigForScope } from '../config.js';
 import { isModelAlias, loadModelAliases, loadTeamModelAliases, noModelCause, noModelReason, resolveModelValue, type ModelAliases, type ModelResolution, type NoModel } from '../models/aliases.js';
-import { pinScorers } from '../scorers/cache.js';
+import { defaultScorerRubric, pinScorers } from '../scorers/cache.js';
 import { RunScorers } from '../scorers/run-scorers.js';
 import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
 import { resolveTeamRef, TeamRefError } from '../team-ref.js';
@@ -81,8 +81,8 @@ export async function planBenchmark(config: LocalConfig, name: string, options: 
   const frozen = await freezeSuite(config, name, options);
 
   if (!frozen.ok) return { refused: frozen.refused };
-  const { suite, plan, committed, armWorkflows } = frozen;
-  const { definition, workflows, scorers } = compileBundle(plan, committed, { armWorkflows, unattended: options.unattended });
+  const { suite, plan, committed, armWorkflows, correctnessRubric } = frozen;
+  const { definition, workflows, scorers } = compileBundle(plan, committed, { armWorkflows, unattended: options.unattended, correctnessRubric });
 
   return { planned: { definition: { definition, workflows }, plan }, generated: scorers, timeoutMs: suite.timeoutMs };
 }
@@ -121,11 +121,12 @@ function durationText(ms: number): string {
   return unit ? `${ms / unit[1]}${unit[0]}` : `${ms}ms`;
 }
 
-type Frozen = { ok: true; suite: Suite; plan: BenchmarkPlan; committed: CommittedSuite; pinned: Record<string, PinnedScorer>; armWorkflows: Map<string, PinnedArmWorkflow> } | Refused;
+type Frozen = { ok: true; suite: Suite; plan: BenchmarkPlan; committed: CommittedSuite; pinned: Record<string, PinnedScorer>; armWorkflows: Map<string, PinnedArmWorkflow>; correctnessRubric: string } | Refused;
 
 /**
  * Suite `name` as the plan freezes it, at the team revision this checkout last pulled: its arms' team assets and models,
- * its team scorers pinned, its check files committed into the commit cache, and every task commit fetched into it.
+ * its team scorers pinned, the correctness rubric of every arm (the team's scorers/teamai-correctness.md that pull kept,
+ * else teamai's), its check files committed into the commit cache, and every task commit fetched into it.
  * Refused when any of them cannot be, or when the suite needs a judge this machine cannot run.
  */
 async function freezeSuite(config: LocalConfig, name: string, options: BenchmarkStart): Promise<Frozen> {
@@ -227,11 +228,12 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
   const covered = await coveredTaskRefusal(config, { tasks: found.tasks, pulled: revision, arms, member: selectionOf(config) });
 
   if ('refusal' in covered) return refuse(covered.refusal);
-  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: revision, selection: selectionOf(config), arms, scorers: rubrics, coveredSkills: covered.skills, coveredWithheldFrom: covered.withheldFrom, skillChanges: skillChanges.changes, isSubset });
+  const { content: correctnessRubric } = await defaultScorerRubric(config, 'teamai-correctness');
+  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: revision, selection: selectionOf(config), arms, scorers: rubrics, correctnessRubric, coveredSkills: covered.skills, coveredWithheldFrom: covered.withheldFrom, skillChanges: skillChanges.changes, isSubset });
   const unjudgeable = unjudgeableScorer(found.name, plan.judges, await loadAliases());
 
   if (unjudgeable !== undefined) return refuse(unjudgeable);
-  const { scorers: generated } = compileBundle(plan, committed.suite, { armWorkflows, unattended: options.unattended });
+  const { scorers: generated } = compileBundle(plan, committed.suite, { armWorkflows, unattended: options.unattended, correctnessRubric });
   const criteria = found.tasks.find((task) => task.judge.successCriteria !== undefined);
   const needs = found.scorers.length > 0 ? `its scorers ${found.scorers.join(', ')}` : criteria ? `task "${criteria.id}" has successCriteria` : undefined;
 
@@ -248,7 +250,7 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
     return refuse(error('scoring_unavailable', `This suite needs a judge (${needs}), and this machine cannot judge: ${unjudged} Fix it, or start the benchmark where a judge tool is installed.`));
   }
 
-  return { ok: true, suite: found, plan, committed: committed.suite, pinned, armWorkflows };
+  return { ok: true, suite: found, plan, committed: committed.suite, pinned, armWorkflows, correctnessRubric };
 }
 
 /** The items of `all` that `names` names, in `all`'s order, or the first name none of them has; `[]` names all of them. */

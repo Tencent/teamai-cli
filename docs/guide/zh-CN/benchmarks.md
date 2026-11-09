@@ -903,6 +903,47 @@ These results hold for these tasks, this run and this machine.
 
 `decider.batched` 是标签的 `judge.batched`。`decider.model` 是评判工具报告的模型，没有报告时是启动它时用的模型；别名不属于它。`asPlanned` 把评判给出的标签与计划为该评分器固定的评判相比较。
 
+### 正确性评分标准
+
+每个 `teamai:correctness:<task>` 都是 teamai 的[默认评分器](scorers.md#默认评分器) `scorers/teamai-correctness.md`，填入任务的 `prompt` 和 `successCriteria`（只有 `check` 的任务填空字符串）：
+
+```markdown
+---
+labels:
+  - { value: correct, score: 1, description: The change meets every success criterion. }
+  - { value: incorrect, score: 0, description: The change misses at least one success criterion. }
+passingScore: 1
+samplingRate: 100
+---
+Judge whether the change made from the starting commit, commits included, meets the success criteria.
+Read the task to understand the intent, then the diff. Do not read the transcript. Decide only on the success criteria.
+
+## Task
+
+{{ task.prompt }}
+
+## Success criteria
+
+{{ task.successCriteria }}
+```
+
+团队用一个同名文件替换它，例如用团队便宜的模型别名评判，并加一个部分完成的标签：
+
+```markdown
+---
+labels:
+  - { value: correct, score: 1, description: Meets every criterion. }
+  - { value: partial, score: 0.5, description: Meets the main criterion only. }
+  - { value: incorrect, score: 0, description: Misses the main criterion. }
+passingScore: 1
+samplingRate: 100
+model: fast
+---
+…the team's wording, reading {{ task.prompt }} and {{ task.successCriteria }}…
+```
+
+start 从本检出拉取的团队修订读取这个文件，并用它评判每个 arm，不管 arm 的 `team` 是什么。它的 `model` 和 `tool` 像[任何评分器](#对所有-arm-用同一个评判)的一样固定评判：这里每个 arm 都由 claude 用别名 `fast` 评判。它的标签至少要有一个通过、一个不通过，check 按上表在其中挑选：通过的 check 写 `correct`，失败的写 `incorrect`。新的评分标准就是新的评分标准哈希，所以[回归门禁](#回归时失败)不会把它之前评判的 trial 和之后评判的配对。
+
 ### 对所有 arm 用同一个评判
 
 一个评分器用同一个工具和同一个模型评判所有 arm 的 trial，因此它的通过率比较的是 arm，而不是各自的评判。启动时按评分器固定：评分器的 `tool`，没有时用套件的 `defaults.tool`；以及评分器原样写的 `model`，别名仍是别名（`""` 表示工具的默认模型）。计划把它们冻结为 `judges`，记录也保留它们。例如：

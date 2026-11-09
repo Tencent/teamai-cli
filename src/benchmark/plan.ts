@@ -11,6 +11,7 @@
  */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { DefaultScorers } from '../default-scorers.js';
 import { isRecordableLabel, isRecordableName } from '../agent-observation.js';
 import { RoleIdSchema } from '../roles.js';
 import type { ScorerLabel } from '../scorers/definition.js';
@@ -209,6 +210,8 @@ export function freezePlan(input: {
   arms: [PlannedArm, ...PlannedArm[]];
   /** The team scorers the suite lists, as start pinned them. */
   scorers: Record<string, PinnedRubric>;
+  /** The rubric each task's correctness scorer fills in: the team's scorers/teamai-correctness.md pull kept, else teamai's. */
+  correctnessRubric: string;
   /** Each covered path's bare skill name as plan checked it at the pulled revision, or null when it delivers no skill. */
   coveredSkills: Record<string, string | null>;
   /** By covered path, the arms whose selection pull does not deliver it to, as plan checked it; absent or empty: none. */
@@ -221,6 +224,7 @@ export function freezePlan(input: {
   const { coveredSkills, coveredWithheldFrom = {} } = input;
   const [first, ...rest] = suite.tasks;
   const withheldFrom = (covers: readonly string[]) => (covers.some((path) => (coveredWithheldFrom[path] ?? []).length > 0) ? covers.map((path) => [...(coveredWithheldFrom[path] ?? [])]) : undefined);
+  const correctness = correctnessScorers(suite, input.correctnessRubric);
   const planned = (task: Task): PlannedTask => ({ id: task.id, sourceHash: task.sourceHash, startingCommit: task.startingCommit, judge: plannedJudge(task.judge, files.get(task.id)), covers: task.covers ? [...task.covers] : undefined, coversSkills: task.covers ? task.covers.map((path) => coveredSkills[path] ?? null) : undefined, coversWithheldFrom: task.covers ? withheldFrom(task.covers) : undefined });
 
   return definedFields<BenchmarkPlan>({
@@ -235,8 +239,8 @@ export function freezePlan(input: {
     tasks: [planned(first), ...rest.map(planned)],
     arms: input.arms,
     skillChanges: input.skillChanges && input.skillChanges.length > 0 ? input.skillChanges : undefined,
-    scorers: Object.entries({ ...input.scorers, ...correctnessScorers(suite) }).map(([name, rubric]) => plannedScorer(name, rubric)),
-    judges: plannedJudges(suite, input.scorers),
+    scorers: Object.entries({ ...input.scorers, ...correctness }).map(([name, rubric]) => plannedScorer(name, rubric)),
+    judges: plannedJudges(suite, { ...input.scorers, ...judgedCorrectness(suite, correctness) }),
     trials: trialsOf(suite.tasks, input.arms, suite.repetitions, suite.parallel),
   });
 }
@@ -247,11 +251,16 @@ function plannedScorer(name: string, { pin, definition: { labels: [first, ...res
   return { name, rubric: { sourceHash: pin.sourceHash }, labels: [planned(first), ...rest.map(planned)], passingScore };
 }
 
-/** The judge of each scorer a judge labels: the suite's, and the correctness scorer of each task with success criteria. */
-function plannedJudges(suite: Suite, scorers: Record<string, PinnedRubric>): Record<string, PlannedJudge> {
-  const criteria = suite.tasks.flatMap((task) => (task.judge.successCriteria !== undefined ? [[correctnessScorerName(task.id), correctnessPin(task, task.judge.successCriteria)] as const] : []));
+/** The judge of each of `judged`, the scorers a judge labels: its rubric's tool, else the suite's defaults.tool, and its model. */
+function plannedJudges(suite: Suite, judged: Record<string, PinnedRubric>): Record<string, PlannedJudge> {
+  return Object.fromEntries(Object.entries(judged).map(([name, { definition: { tool, model } }]) => [name, { tool: tool ?? suite.defaults.tool, model: model ?? '' }]));
+}
 
-  return Object.fromEntries([...Object.entries(scorers), ...criteria].map(([name, { definition: { tool, model } }]) => [name, { tool: tool ?? suite.defaults.tool, model: model ?? '' }]));
+/** The correctness scorers of `correctness` a judge labels: those of the tasks with success criteria. */
+function judgedCorrectness(suite: Suite, correctness: Record<string, PinnedRubric>): Record<string, PinnedRubric> {
+  const judged = new Set(suite.tasks.filter((task) => task.judge.successCriteria !== undefined).map((task) => correctnessScorerName(task.id)));
+
+  return Object.fromEntries(Object.entries(correctness).filter(([name]) => judged.has(name)));
 }
 
 function plannedJudge(judge: TaskJudge, checkFiles: Added | undefined): PlannedTask['judge'] {
@@ -314,7 +323,7 @@ export interface CompiledBundle {
  * that runs it is a strict sandbox, so its prompts may run unattended; an arm's workflow copies say so of their own.
  */
 export function compileBundle(
-  plan: BenchmarkPlan, { suite }: CommittedSuite, { armWorkflows = new Map(), unattended }: { armWorkflows?: ReadonlyMap<string, PinnedArmWorkflow>; unattended: boolean },
+  plan: BenchmarkPlan, { suite }: CommittedSuite, { armWorkflows = new Map(), unattended, correctnessRubric }: { armWorkflows?: ReadonlyMap<string, PinnedArmWorkflow>; unattended: boolean; correctnessRubric: string },
 ): CompiledBundle {
   const tasks = new Map(suite.tasks.map((task) => [task.id, task]));
   const arms = new Map(plan.arms.map((arm) => [arm.name, arm]));
@@ -421,7 +430,7 @@ export function compileBundle(
   return {
     definition,
     workflows: Object.fromEntries([...armWorkflows.values()].flatMap(({ files }) => Object.entries(files))),
-    scorers: Object.fromEntries(Object.entries(correctnessScorers(suite)).map(([name, { pin }]) => [name, pin])),
+    scorers: Object.fromEntries(Object.entries(correctnessScorers(suite, correctnessRubric)).map(([name, { pin }]) => [name, pin])),
   };
 }
 
@@ -479,8 +488,8 @@ function cloneTeamOf(team: ArmTeam, selection: TeamSelection, recall: boolean | 
 }
 
 /**
- * The scorer whose label decides each trial of a task, `correct` or `incorrect`: written by the trial's check, or by a
- * judge on its success criteria. Its name has a ":", which no scorer file name may have, so no team scorer can take it,
+ * The scorer whose label decides each trial of a task, one that passes or one that fails: written by the trial's check,
+ * or by a judge on its success criteria. Its name has a ":", which no scorer file name may have, so no team scorer can take it,
  * and one per task keeps one pin per name.
  */
 export function correctnessScorerName(task: string): string {
@@ -495,45 +504,22 @@ export function isCorrectnessScorer(scorer: string): boolean {
 }
 
 /**
- * The correctness scorer of each task, as the run pins it: `generated`, so it is read as `scorers/correctness.md` and
- * named by its key, and `relativePath` is the task file, so a message names a file that exists. Its hash covers the
- * task's prompt and success criteria, empty for a task judged only by its check. No `model`: the judge tool's default
- * model runs it.
+ * The correctness scorer of each task, as the run pins it: `rubric`, teamai's default scorer teamai-correctness or the
+ * team's file of that name, filled in with the task's prompt and success criteria, empty for a task judged only by its
+ * check. `generated`, so it is read as `scorers/correctness.md` and named by its key, and `relativePath` is the task
+ * file, so a message names a file that exists. Its hash covers the filled-in text, so a team's rubric is a new rubric.
  */
-function correctnessScorers(suite: Suite): Record<string, PinnedRubric> {
-  return Object.fromEntries(suite.tasks.map((task) => [correctnessScorerName(task.id), correctnessPin(task, task.judge.successCriteria ?? '')]));
+function correctnessScorers(suite: Suite, rubric: string): Record<string, PinnedRubric> {
+  return Object.fromEntries(suite.tasks.map((task) => [correctnessScorerName(task.id), correctnessPin(task, rubric)]));
 }
 
-const CORRECTNESS_LABELS = [
-  { value: 'correct', score: 1, description: 'The change meets every success criterion.' },
-  { value: 'incorrect', score: 0, description: 'The change misses at least one success criterion.' },
-] as const;
-
-const CORRECTNESS_PASSING_SCORE = 1;
-
-function correctnessPin(task: Task, successCriteria: string): PinnedRubric {
-  const content = [
-    '---',
-    'labels:',
-    ...CORRECTNESS_LABELS.map(({ value, score, description }) => `  - { value: ${value}, score: ${score}, description: ${description} }`),
-    `passingScore: ${CORRECTNESS_PASSING_SCORE}`,
-    'samplingRate: 100',
-    '---',
-    'Judge whether the change made from the starting commit, commits included, meets the success criteria.',
-    'Read the task to understand the intent. Decide only on the success criteria.',
-    '',
-    '## Task',
-    '',
-    task.prompt,
-    '',
-    '## Success criteria',
-    '',
-    successCriteria,
-    '',
-  ].join('\n');
+function correctnessPin(task: Task, rubric: string): PinnedRubric {
+  const scorer = correctnessScorerName(task.id);
+  const values = { 'task.prompt': task.prompt, 'task.successCriteria': task.judge.successCriteria ?? '' };
+  const { content, definition: { labels: [first, ...rest], passingScore, tool, model } } = DefaultScorers.fillIn('teamai-correctness', { file: `scorers/${scorer.replaceAll(':', '-')}.md`, content: rubric }, values);
 
   return {
     pin: { sourceHash: createHash('sha256').update(content).digest('hex'), relativePath: task.relativePath, content, generated: true },
-    definition: { labels: [...CORRECTNESS_LABELS], passingScore: CORRECTNESS_PASSING_SCORE },
+    definition: definedFields<PinnedRubric['definition']>({ labels: [first, ...rest], passingScore, tool, model }),
   };
 }

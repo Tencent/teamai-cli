@@ -903,6 +903,47 @@ Each recorded trial carries its verdicts:
 
 `decider.batched` is the label's `judge.batched`. `decider.model` is the model the judge's tool reported, else the one it was launched with; the alias is not part of it. `asPlanned` compares a judge's label with the judge the plan pins for its scorer.
 
+### The correctness rubric
+
+Each `teamai:correctness:<task>` is teamai's [default scorer](scorers.md#default-scorers) `scorers/teamai-correctness.md`, filled in with the task's `prompt` and `successCriteria` (empty for a task with only a `check`):
+
+```markdown
+---
+labels:
+  - { value: correct, score: 1, description: The change meets every success criterion. }
+  - { value: incorrect, score: 0, description: The change misses at least one success criterion. }
+passingScore: 1
+samplingRate: 100
+---
+Judge whether the change made from the starting commit, commits included, meets the success criteria.
+Read the task to understand the intent, then the diff. Do not read the transcript. Decide only on the success criteria.
+
+## Task
+
+{{ task.prompt }}
+
+## Success criteria
+
+{{ task.successCriteria }}
+```
+
+A team replaces it with a file of the same name, for example to judge with its cheap model alias and a partial label:
+
+```markdown
+---
+labels:
+  - { value: correct, score: 1, description: Meets every criterion. }
+  - { value: partial, score: 0.5, description: Meets the main criterion only. }
+  - { value: incorrect, score: 0, description: Misses the main criterion. }
+passingScore: 1
+samplingRate: 100
+model: fast
+---
+…the team's wording, reading {{ task.prompt }} and {{ task.successCriteria }}…
+```
+
+Start reads the file from the team revision this checkout pulled, and judges every arm with it, whatever the arm's `team`. Its `model` and `tool` pin the judge as [any scorer's](#one-judge-for-every-arm) do: here claude, alias `fast`, for every arm. Its labels need one that passes and one that fails, and a check picks among them by the table above: a passing check writes `correct`, a failing one `incorrect`. A new rubric is a new rubric hash, so [the regression gate](#fail-on-a-regression) does not pair a trial judged before it with one judged after.
+
 ### One judge for every arm
 
 A scorer judges every arm's trials with one tool and one model, so its pass rates compare the arms and not their judges. Start pins, per scorer, its `tool`, else the suite's `defaults.tool`, and its `model` as written, an alias staying an alias (`""`: the tool's default model). The plan freezes them as `judges`, and the record keeps them. With

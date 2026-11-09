@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { RunScorers } from '../scorers/run-scorers.js';
 import os from 'node:os';
@@ -24,6 +25,7 @@ import { readRun, runScratchDir } from '../workflow/store.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import { benchmarkTable, formatBenchmarkTable } from '../benchmark/table.js';
+import { comparePair, type PairSide } from '../benchmark/pairing.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
 import { benchmarkRunConfig, PLANNED_BENCHMARK, RUN_START, RUN_TEAM, settleBaselines, startBenchmarkRun, trialCheckOutput } from './helpers/benchmark-fixture.js';
 
@@ -1091,5 +1093,96 @@ describe('benchmark plan judges at start', () => {
       strict: { tool: 'codex', model: '' },
       'teamai:correctness:copy': { tool: 'claude', model: '' },
     });
+  });
+});
+
+describe('benchmark plan correctness rubric', () => {
+  const COPY_TASK = "schemaVersion: v1alpha1\ntitle: Copy\nprompt: Fix the login copy.\nstartingCommit: '{{startingCommit}}'\nsuccessCriteria: The login page says Sign in.\n";
+  const TEAM_RUBRIC = `---
+labels:
+  - { value: correct, score: 1, description: Meets every criterion. }
+  - { value: partial, score: 0.5, description: Meets the main criterion only. }
+  - { value: incorrect, score: 0, description: Misses the main criterion. }
+passingScore: 1
+samplingRate: 100
+model: fast
+---
+Judge the diff of {{ task.prompt }} against {{ task.successCriteria }}.
+`;
+  const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
+
+  async function plannedOf(member: Awaited<ReturnType<typeof pulledMember>>) {
+    const planned = await member.plan();
+    if (!('planned' in planned)) throw new Error(planned.refused.error.message);
+    return planned;
+  }
+
+  it("judges each task with teamai's scorers/teamai-correctness.md, filled in with its prompt and success criteria, while the team has no file of its name", async () => {
+    judgeTools();
+    const member = await pulledMember({ arms: 'arms:\n  - name: claude\n', team: { 'benchmarks/fix/tasks/copy.yaml': COPY_TASK } });
+
+    const { generated } = await plannedOf(member);
+
+    expect(generated['teamai:correctness:copy']?.content).toBe(`---
+labels:
+  - { value: correct, score: 1, description: The change meets every success criterion. }
+  - { value: incorrect, score: 0, description: The change misses at least one success criterion. }
+passingScore: 1
+samplingRate: 100
+---
+Judge whether the change made from the starting commit, commits included, meets the success criteria.
+Read the task to understand the intent, then the diff. Do not read the transcript. Decide only on the success criteria.
+
+## Task
+
+Fix the login copy.
+
+## Success criteria
+
+The login page says Sign in.
+`);
+  });
+
+  it("judges every arm with the team's scorers/teamai-correctness.md, filled in with each task, its model and labels pinned, and fills a check-only task's success criteria with nothing", async () => {
+    judgeTools();
+    const member = await pulledMember({
+      arms: 'arms:\n  - name: claude\n  - name: codex\n    tool: codex\n',
+      team: { 'benchmarks/fix/tasks/copy.yaml': COPY_TASK, 'models/aliases.yaml': 'aliases:\n  fast:\n    claude: { model: haiku }\n', 'scorers/teamai-correctness.md': TEAM_RUBRIC },
+    });
+    const copy = TEAM_RUBRIC.replace('{{ task.prompt }}', 'Fix the login copy.').replace('{{ task.successCriteria }}', 'The login page says Sign in.');
+    const fix = TEAM_RUBRIC.replace('{{ task.prompt }}', 'Fix.').replace('{{ task.successCriteria }}', '');
+    const labels = [{ value: 'correct', score: 1 }, { value: 'partial', score: 0.5 }, { value: 'incorrect', score: 0 }];
+
+    const { planned: { plan }, generated } = await plannedOf(member);
+
+    expect(plan.judges).toEqual({ 'teamai:correctness:copy': { tool: 'claude', model: 'fast' } });
+    expect(plan.scorers).toEqual([
+      { name: 'teamai:correctness:copy', rubric: { sourceHash: sha256(copy) }, labels, passingScore: 1 },
+      { name: 'teamai:correctness:fix', rubric: { sourceHash: sha256(fix) }, labels, passingScore: 1 },
+    ]);
+    expect(generated['teamai:correctness:copy']).toMatchObject({ sourceHash: sha256(copy), content: copy, generated: true });
+    expect(generated['teamai:correctness:fix']).toMatchObject({ sourceHash: sha256(fix), content: fix, generated: true });
+  });
+
+  it("excludes a pair judged before the team replaced the correctness rubric from one judged after, as its judge changed", async () => {
+    judgeTools();
+    const member = await pulledMember({ arms: 'arms:\n  - name: claude\n', team: { 'benchmarks/fix/tasks/copy.yaml': COPY_TASK } });
+    const before = await plannedOf(member);
+    const { git } = await import('./helpers/delivered-checkout.js');
+    const { syncTeamDefinitions } = await import('../benchmark/suite-cache.js');
+    const head = member.commit({ 'scorers/teamai-correctness.md': TEAM_RUBRIC.replace('model: fast\n', '') });
+    git(member.config.repo.localPath, 'update-ref', 'refs/remotes/origin/main', head);
+    await member.recordPull(head);
+    await syncTeamDefinitions(member.config);
+    const after = await plannedOf(member);
+    const sideOf = ({ planned: { plan } }: typeof before): PairSide => ({
+      taskHash: plan.tasks.find(({ id }) => id === 'copy')?.sourceHash ?? '',
+      decider: { by: 'judge', rubric: plan.scorers.find(({ name }) => name === 'teamai:correctness:copy')?.rubric.sourceHash ?? '', tool: 'claude', model: 'claude-opus-5-5', batched: false },
+    });
+
+    const comparison = comparePair(sideOf(before), sideOf(after));
+
+    expect(sideOf(before).taskHash).toBe(sideOf(after).taskHash);
+    expect(comparison).toEqual({ kind: 'excluded', because: { kind: 'judge_changed', from: sideOf(before).decider, to: sideOf(after).decider } });
   });
 });

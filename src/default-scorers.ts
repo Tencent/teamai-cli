@@ -8,8 +8,9 @@ import { isTemplateRead, parseTemplate, renderText, type Template } from './work
 // ─── Default scorers (#1391) ─────────────────────────────
 //
 //  The CLI ships the rubrics of the questions it generates per
-//  item, a routing question per team skill and an adoption
-//  question per recalled doc, as
+//  item, a routing question per team skill, an adoption
+//  question per recalled doc and a benchmark task's
+//  correctness question, as
 //  scorers/<name>.md in the npm package. Each is a template:
 //  `{{ skill.name }}` reads a variable of the item, from a set
 //  closed per default. A team file of the same name replaces
@@ -22,6 +23,7 @@ import { isTemplateRead, parseTemplate, renderText, type Template } from './work
 const VARIABLES = {
   'teamai-routing': ['skill.name'],
   'teamai-adoption': ['doc.id', 'doc.path', 'doc.file'],
+  'teamai-correctness': ['task.prompt', 'task.successCriteria'],
 } as const satisfies Record<string, readonly string[]>;
 
 export type DefaultScorerName = keyof typeof VARIABLES;
@@ -35,7 +37,7 @@ export type DefaultScorerCode = 'default_scorer_template' | 'default_scorer_vari
 /** A filled-in rubric: its text, which a run pins, and the scorer it parses to. */
 export type FilledScorer = { content: string; definition: ScorerDefinition };
 
-const NAMES: readonly DefaultScorerName[] = ['teamai-routing', 'teamai-adoption'];
+const NAMES: readonly DefaultScorerName[] = ['teamai-routing', 'teamai-adoption', 'teamai-correctness'];
 
 function isName(name: string): name is DefaultScorerName {
   return NAMES.some((known) => known === name);

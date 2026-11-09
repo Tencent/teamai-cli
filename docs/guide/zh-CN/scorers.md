@@ -770,6 +770,7 @@ teamai 为它按条目生成的每类问题附带一份评分标准，作为默�
 |---|---|---|
 | `scorers/teamai-routing.md` | 会话得到的每个团队技能一个[路由问题](#技能路由) | `skill.name` |
 | `scorers/teamai-adoption.md` | 会话从未打开的每篇已召回文档一个[采纳问题](#recall-采纳) | `doc.id`、`doc.path`、`doc.file` |
+| `scorers/teamai-correctness.md` | 每个 benchmark 任务一个[正确性问题](benchmarks.md#正确性评分标准)，它的标签决定每个 trial | `task.prompt`、`task.successCriteria` |
 
 默认评分器是一个评分器文件，文本用 `{{ … }}` 读取变量，按每个条目填入。下面这个评判技能是否值得占用上下文：
 

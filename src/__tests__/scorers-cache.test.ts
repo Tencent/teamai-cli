@@ -362,4 +362,47 @@ Judge only {{ doc.id }}.
     expect(invalid).toEqual([{ file: 'scorers/teamai-adoption.md', code: 'default_scorer_variable', message: 'reads {{ skill.name }}, which teamai\'s default scorer teamai-adoption does not offer. It offers doc.id, doc.path and doc.file; teamai\'s default runs until the file reads only those' }]);
     expect((await defaultScorerRubric(config, 'teamai-adoption')).overridden).toBe(false);
   });
+
+  const CORRECTNESS = `---
+labels:
+  - { value: correct, score: 1, description: Meets every criterion. }
+  - { value: partial, score: 0.5, description: Meets the main criterion only. }
+  - { value: incorrect, score: 0, description: Misses the main criterion. }
+passingScore: 1
+samplingRate: 100
+model: fast
+---
+Judge the diff against {{ task.successCriteria }}, for {{ task.prompt }}.
+`;
+
+  it('keeps a team\'s scorers/teamai-correctness.md that reads the task\'s prompt and success criteria, and lists it as no scorer of its own', async () => {
+    const config = testConfig();
+    writeScorer(config, 'teamai-correctness.md', CORRECTNESS);
+
+    expect(await syncScorerDefinitions(config)).toEqual({ cached: [], invalid: [], verified: [] });
+    expect(await defaultScorerRubric(config, 'teamai-correctness')).toEqual({ file: 'scorers/teamai-correctness.md', content: CORRECTNESS, overridden: true });
+  });
+
+  it.each([
+    ['reads a variable correctness does not offer', CORRECTNESS.replace('{{ task.prompt }}', '{{ task.title }}'), 'default_scorer_variable'],
+    ['fills in to no scorer once its variables hold a colon', CORRECTNESS.replace('description: Meets every criterion.', 'description: Meets {{ task.successCriteria }}'), 'default_scorer_invalid'],
+  ])('refuses a scorers/teamai-correctness.md that %s, and keeps teamai\'s rubric', async (_why, content, code) => {
+    const config = testConfig();
+    writeScorer(config, 'teamai-correctness.md', content);
+
+    const { invalid, cached } = await syncScorerDefinitions(config);
+
+    expect(cached).toEqual([]);
+    expect(invalid).toEqual([expect.objectContaining({ file: 'scorers/teamai-correctness.md', code })]);
+    expect(await defaultScorerRubric(config, 'teamai-correctness')).toMatchObject({ file: 'scorers/teamai-correctness.md', overridden: false });
+  });
+
+  it('names the variables correctness offers when a team file reads another', async () => {
+    const config = testConfig();
+    writeScorer(config, 'teamai-correctness.md', CORRECTNESS.replace('{{ task.prompt }}', '{{ task.title }}'));
+
+    const { invalid } = await syncScorerDefinitions(config);
+
+    expect(invalid).toEqual([{ file: 'scorers/teamai-correctness.md', code: 'default_scorer_variable', message: 'reads {{ task.title }}, which teamai\'s default scorer teamai-correctness does not offer. It offers task.prompt and task.successCriteria; teamai\'s default runs until the file reads only those' }]);
+  });
 });

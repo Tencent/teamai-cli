@@ -770,6 +770,7 @@ teamai ships the rubric of each question it generates per item as a default scor
 |---|---|---|
 | `scorers/teamai-routing.md` | one [routing question](#skill-routing) per team skill a session was delivered | `skill.name` |
 | `scorers/teamai-adoption.md` | one [adoption question](#recall-adoption) per recalled doc a session never opened | `doc.id`, `doc.path`, `doc.file` |
+| `scorers/teamai-correctness.md` | one [correctness question](benchmarks.md#the-correctness-rubric) per benchmark task, whose label decides each trial | `task.prompt`, `task.successCriteria` |
 
 A default is a scorer file whose text reads its variables as `{{ … }}`, filled in for each item. This one judges whether a skill was worth its context:
 
