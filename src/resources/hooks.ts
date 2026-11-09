@@ -10,7 +10,7 @@ import { warnOnce } from '../utils/warn-once.js';
 import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.js';
 import {
   entryFilePath, missingTopLevelKeyReason, readEntryFileText, reportEntryResolution, resolveEntriesFor, unknownEntryKeys,
-  type EntryPlaceReader, type EntryResolution, type ResolvedEntry,
+  readFolderPlace, type EntryPlaceReader, type EntryResolution, type PlaceFolderRead, type ResolvedEntry,
 } from '../namespaced-entries.js';
 import { RESOURCE_LAYOUTS, Resources, type EntryListRead, type ResourceLayout } from './resolver.js';
 import { DeliveredFolders, type FolderDelivery } from './delivered-folders.js';
@@ -161,11 +161,6 @@ export function parseTeamHooks(content: string): TeamHook[] | null {
   }
 }
 
-/** A hook folder read: its definition and the keys its `HOOK.yaml` has that the schema does not know, or why it cannot be used. */
-type HookFolderRead =
-  | { readonly ok: true; readonly definition: TeamHookDefinition; readonly unknownKeys: readonly string[] }
-  | { readonly ok: false; readonly reason: string };
-
 /** A folder's `HOOK.yaml` (at `markerPath`) as the hook named `id`, or why it does not parse. */
 function parseHookMarker(content: string, markerPath: string, id: string): { ok: true; hook: TeamHook; unknownKeys: readonly string[] } | { ok: false; reason: string } {
   try {
@@ -186,67 +181,42 @@ function parseHookMarker(content: string, markerPath: string, id: string): { ok:
 }
 
 /** Read the hook folder at `full` (`folderPath` from the team root, ending in `/`), named `id`. */
-async function readHookFolder(full: string, folderPath: string, id: string): Promise<HookFolderRead> {
+async function readHookFolder(full: string, folderPath: string, id: string): Promise<PlaceFolderRead<TeamHookDefinition>> {
   const read = await FolderFiles.read(full);
 
   if (read.kind === 'invalid') {
-    return { ok: false, reason: `${folderPath} is not a hook folder teamai can deliver: ${read.problems.map(FolderFiles.describe).join(', ')}` };
+    return { kind: 'invalid', reason: `${folderPath} is not a hook folder teamai can deliver: ${read.problems.map(FolderFiles.describe).join(', ')}` };
   }
 
   const marker = read.files.find((file) => file.path === HOOK_MARKER);
   const parsed = parseHookMarker(marker?.bytes.toString('utf8') ?? '', `${folderPath}${HOOK_MARKER}`, id);
 
-  if (!parsed.ok) return parsed;
+  if (!parsed.ok) return { kind: 'invalid', reason: parsed.reason };
 
-  return { ok: true, definition: { kind: 'folder', hook: parsed.hook, files: read.files }, unknownKeys: parsed.unknownKeys };
+  return { kind: 'read', definition: { kind: 'folder', hook: parsed.hook, files: read.files }, unknownKeys: parsed.unknownKeys };
 }
 
 /** How team hooks are read for delivery: each place of the team tree through the resolver, `hooks.yaml` entries and folders. */
 export const hooksEntryReader: EntryPlaceReader<TeamHookDefinition> = {
   type: 'hooks',
-  async readPlace(repoPath, dir) {
-    const { items, diagnostics } = await Resources.layer(TEAM_HOOKS, { root: repoPath, namespace: dir });
-    const invalid = diagnostics.find((diagnostic) => diagnostic.kind === 'invalid');
-
-    if (invalid) return { ok: false, source: invalid.path, reason: invalid.message };
-    const unknownKeys = new Map<TeamHookDefinition, readonly string[]>();
-    const notes = diagnostics.map(({ message }) => message);
-    const entries: Array<{ entry: TeamHookDefinition; source: string }> = [];
-
-    for (const { name, source } of items) {
-      // A support file of a folder in this place: the resolver noted it.
-      if (source.kind === 'file') continue;
-
-      if (source.kind === 'entry') {
-        const definition: TeamHookDefinition = { kind: 'entry', hook: source.entry.hook };
-
-        if (source.entry.unknownKeys.length > 0) unknownKeys.set(definition, source.entry.unknownKeys);
-        entries.push({ entry: definition, source: source.path });
-        continue;
-      }
-
+  readPlace: (repoPath, dir) => readFolderPlace({
+    layout: TEAM_HOOKS,
+    at: { root: repoPath, namespace: dir },
+    fromEntry: ({ hook, unknownKeys }) => ({ definition: { kind: 'entry', hook }, unknownKeys }),
+    readFolder: async ({ name, full, path: folderPath }) => {
       // A teamai- name only replaces a default (#1787, common rule 5), at the root, as builtin: overrides apply to the
       // whole team; defaultHookReplacements reads it there.
       if (DefaultHooks.isName(name)) {
-        if (dir !== null) notes.push(`${source.path} is refused, and teamai's default stays in force: a default hook is replaced at the root of the team repo only. Move it to hooks/${name}/`);
-        continue;
+        return { kind: 'skipped', note: dir === null ? null : `${folderPath} is refused, and teamai's default stays in force: a default hook is replaced at the root of the team repo only. Move it to hooks/${name}/` };
       }
 
       if (name.startsWith('teamai-')) {
-        notes.push(`${source.path} is skipped: a teamai- name only replaces a teamai default, and teamai has no hook named ${name}. Rename the folder.`);
-        continue;
+        return { kind: 'skipped', note: `${folderPath} is skipped: a teamai- name only replaces a teamai default, and teamai has no hook named ${name}. Rename the folder.` };
       }
 
-      const read = await readHookFolder(source.full, source.path, name);
-
-      if (!read.ok) return { ok: false, source: source.path, reason: read.reason };
-
-      if (read.unknownKeys.length > 0) unknownKeys.set(read.definition, read.unknownKeys);
-      entries.push({ entry: read.definition, source: source.path });
-    }
-
-    return { ok: true, entries, notes, unknownKeys };
-  },
+      return readHookFolder(full, folderPath, name);
+    },
+  }),
   nameOf: (definition) => definition.hook.id,
   scopeOf: (definition) => definition.hook,
 };

@@ -27,6 +27,7 @@ import { z } from 'zod';
 import { FOLDER_MARKERS, holdsMarker } from './folder-markers.js';
 import { describeOverride, repeatedNames, resolveNamespacedItems, type NamespaceCandidate } from './namespace-resolver.js';
 import { resolveResourceNamespaces } from './resource-namespaces.js';
+import { Resources, type ResourceLayout } from './resources/resolver.js';
 import { activeRoleIds, findRole, loadRolesManifestIfPresent } from './roles.js';
 import { findProject, loadProjectsManifest, unknownProjectMessage } from './projects.js';
 import { caseFoldKey, isSafeNamespaceSegment, NAMESPACE_RULE } from './manifest-schema.js';
@@ -266,6 +267,79 @@ export type EntryPlaceReader<E> = EntryReaderBase<E> & {
   readPlace(repoPath: string, dir: string | null): Promise<EntryPlaceRead<E>>;
   readonly read?: undefined;
 };
+
+/** What a type makes of one folder of a place: its definition and the keys it has that the schema does not know, a skip with what to tell the team, or why the place cannot be used. */
+export type PlaceFolderRead<E> =
+  | { readonly kind: 'read'; readonly definition: E; readonly unknownKeys: readonly string[] }
+  | { readonly kind: 'skipped'; readonly note: string | null }
+  | { readonly kind: 'invalid'; readonly reason: string };
+
+/**
+ * One place of a type kept as entries of an entry-list file and as folders, whose layout reads no file on its own
+ * (hooks, MCP; #1787), read through the resolver for `EntryPlaceReader.readPlace`. An invalid file or folder stops the
+ * place; the resolver's notes and each skipped folder's note are the place's notes.
+ */
+export async function readFolderPlace<TEntry, E>(place: {
+  readonly layout: ResourceLayout<TEntry>;
+  readonly at: { readonly root: string; readonly namespace: string | null };
+  readonly fromEntry: (entry: TEntry) => { readonly definition: E; readonly unknownKeys: readonly string[] };
+  readonly readFolder: (folder: { readonly name: string; readonly full: string; readonly path: string }) => Promise<PlaceFolderRead<E>>;
+}): Promise<EntryPlaceRead<E>> {
+  const { items, diagnostics } = await Resources.layer(place.layout, place.at);
+  const invalid = diagnostics.find((diagnostic) => diagnostic.kind === 'invalid');
+
+  if (invalid) return { ok: false, source: invalid.path, reason: invalid.message };
+  const unknownKeys = new Map<E, readonly string[]>();
+  const notes = diagnostics.map(({ message }) => message);
+  const entries: Array<{ entry: E; source: string }> = [];
+
+  const add = (definition: E, keys: readonly string[], source: string): void => {
+    if (keys.length > 0) unknownKeys.set(definition, keys);
+    entries.push({ entry: definition, source });
+  };
+
+  for (const { name, source } of items) {
+    switch (source.kind) {
+      case 'file':
+        break;
+      case 'entry': {
+        const { definition, unknownKeys: keys } = place.fromEntry(source.entry);
+        add(definition, keys, source.path);
+        break;
+      }
+
+      case 'folder': {
+        const read = await place.readFolder({ name, full: source.full, path: source.path });
+
+        switch (read.kind) {
+          case 'read':
+            add(read.definition, read.unknownKeys, source.path);
+            break;
+          case 'skipped':
+            if (read.note !== null) notes.push(read.note);
+            break;
+          case 'invalid':
+            return { ok: false, source: source.path, reason: read.reason };
+          default: {
+            const unhandled: never = read;
+
+            return unhandled;
+          }
+        }
+
+        break;
+      }
+
+      default: {
+        const unhandled: never = source;
+
+        return unhandled;
+      }
+    }
+  }
+
+  return { ok: true, entries, notes, unknownKeys };
+}
 
 /** Read one place of `reader`'s type: the root (`dir` null) or the namespace directory `dir`. Null when it holds nothing. */
 async function readEntryPlace<E>(reader: EntryReader<E>, repoPath: string, layout: EntryLayout, dir: string | null): Promise<EntryPlaceRead<E> | null> {
