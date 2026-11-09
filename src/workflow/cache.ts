@@ -301,7 +301,7 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
     }
   })());
 
-  const found = await Resources.list(RESOURCE_LAYOUTS.workflows, {
+  const { resolutions: found, diagnostics: unread } = await Resources.survey(RESOURCE_LAYOUTS.workflows, {
     team: {
       root: knowledgeRoot,
       namespaces: async () => {
@@ -392,6 +392,12 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
     }
 
     toCheck.push({ stem, source });
+  }
+
+  // A folder the survey cannot read, such as one that is a symlink: its name is the folder's.
+  for (const { path: folderPath, message } of unread.filter(({ kind }) => kind === 'invalid')) {
+    const relativePath = `${folderPath}${WORKFLOW_MARKER}`;
+    checked.push({ stem: path.posix.basename(folderPath), relativePath, diagnostics: [{ file: relativePath, line: 1, column: 1, field: '(root)', code: 'workflow_folder_invalid', message }] });
   }
 
   for (const { stem, source } of toCheck) {

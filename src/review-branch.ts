@@ -1841,8 +1841,10 @@ async function reviewBase(repoPath: string, ref: string): Promise<ReviewBase | n
  */
 export async function materializeRef(repoPath: string, ref: string, destDir: string): Promise<number> {
   let written = 0;
+  const linked: string[] = [];
 
-  for (const root of READ_ROOTS) {
+  // A link names a path of the team repo, which pull reads whole: copy what a link names outside these roots too.
+  const copy = async (root: string): Promise<void> => {
     for (const entry of await listTreeAtRev(repoPath, ref, root)) {
       // `./`: ls-tree lists paths relative to the directory git runs in, which
       // in single-repo mode is `.teamai/` inside the business repo, not its root.
@@ -1855,12 +1857,25 @@ export async function materializeRef(repoPath: string, ref: string, destDir: str
       if (entry.mode === '120000') {
         const target = content.toString('utf8');
         await fse.symlink(target, dest);
+        linked.push(path.posix.join(path.posix.dirname(entry.path), target));
       } else {
         await writeFile(dest, content);
       }
 
       written++;
     }
+  };
+
+  const copied = [...READ_ROOTS];
+  const holds = (root: string, target: string): boolean => target === root || target.startsWith(`${root}/`);
+
+  for (const root of READ_ROOTS) await copy(root);
+
+  for (const target of linked) {
+    // Only a path inside the repo, and only once: a link out of it, or to its root, names nothing pull has more of.
+    if (path.posix.isAbsolute(target) || target === '.' || target === '..' || target.startsWith('../') || copied.some((root) => holds(root, target))) continue;
+    copied.push(target);
+    await copy(target);
   }
 
   return written;

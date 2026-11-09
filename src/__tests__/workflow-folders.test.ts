@@ -116,6 +116,25 @@ describe('workflow folders', () => {
     expect(await loadCachedWorkflow(team.config, 'release')).toBeNull();
   });
 
+  it('drops the last valid version of a folder that becomes a symlink, naming it', async () => {
+    const team = teamScope();
+    team.put('workflows/release/WORKFLOW.yaml', RELEASE);
+    team.commit();
+    await syncScorersThenWorkflows(team.config);
+    const workflows = path.join(team.config.repo.localPath, 'workflows');
+    fs.renameSync(path.join(workflows, 'release'), path.join(team.config.repo.localPath, 'shared-release'));
+    fs.symlinkSync(path.join('..', 'shared-release'), path.join(workflows, 'release'), 'dir');
+
+    const result = await syncScorersThenWorkflows(team.config);
+
+    expect(result.invalid).toMatchObject([{
+      file: 'workflows/release/WORKFLOW.yaml',
+      code: 'workflow_folder_invalid',
+      message: 'workflows/release/ is a symlink, and a folder holds its own files, never a link, so nothing is read from it. Put the directory itself in the team repo.',
+    }]);
+    expect(await loadCachedWorkflow(team.config, 'release')).toBeNull();
+  });
+
   it('refuses a folder holding a file that is not UTF-8 text, naming it', async () => {
     const team = teamScope();
     team.put('workflows/release/WORKFLOW.yaml', RELEASE);

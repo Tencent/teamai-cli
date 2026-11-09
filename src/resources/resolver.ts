@@ -538,13 +538,13 @@ function pick<T>(candidates: ReadonlyArray<NamespaceCandidate<T>>, active: reado
 }
 
 /**
- * A layout whose reads name nothing in diagnostics but notes: no entry-list file, which can be invalid, and no name
- * rule, which a folder can break. `list` and `resolve` take only these, so a type that can meet an invalid file reads
- * through `survey` and cannot miss it.
+ * A layout with no entry-list file, which can be invalid, and no name rule, which a folder can break. `list` and
+ * `resolve` take only these. They still drop a folder that is a symlink, which `survey` names, so a type reads the
+ * team's files through `survey` or `walk`.
  */
 export type PlainLayout<TEntry = never> = ResourceLayout<TEntry> & { readonly entryList?: undefined; readonly nameRule?: undefined };
 
-/** `survey`'s resolutions alone, for a layout that cannot meet an invalid file or folder. */
+/** `survey`'s resolutions alone, without its diagnostics: for teamai's own layer, or a lookup whose type reports what its own read finds. */
 async function list<TEntry, TShipped>(layout: PlainLayout<TEntry>, tree: ResourceTree<TShipped>): Promise<Array<ListedResolution<TEntry, TShipped>>> {
   return (await survey<TEntry, TShipped>(layout, tree)).resolutions;
 }

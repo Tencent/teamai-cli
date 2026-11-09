@@ -655,6 +655,8 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
         ['rules/api-style/', 'rules/api-style/ is a symlink, and a folder holds its own files, never a link, so nothing is read from it. Put the directory itself in the team repo.'],
         ['hooks/lint/', 'hooks/lint/ is a symlink, and a folder holds its own files, never a link, so nothing is read from it. Put the directory itself in the team repo; '
           + 'pull leaves every member\'s team hooks as they are until it is fixed.'],
+        ['workflows/release/WORKFLOW.yaml', 'workflows/release/WORKFLOW.yaml:1: field "(root)": workflows/release/ is a symlink, and a folder holds its own files, never a link, so nothing is read from it. '
+          + 'Put the directory itself in the team repo.'],
       ]]);
     } finally {
       await fse.remove(shared);
@@ -1974,6 +1976,29 @@ describe('materializeRef — branch materialization from git', () => {
       expect(await fse.pathExists(path.join(destDir, 'prompts', 'release.md'))).toBe(true);
       expect(await fse.pathExists(path.join(destDir, 'scorers', 'eval.md'))).toBe(true);
       expect(await fse.pathExists(path.join(destDir, 'ignored', 'file.txt'))).toBe(false);
+    } finally {
+      await fse.remove(gitRepo);
+      await fse.remove(destDir);
+    }
+  });
+  it('copies the folder a link names elsewhere in the branch, so the review fails a symlinked folder as pull does', async () => {
+    const gitRepo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-git-repo-'));
+    const destDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-dest-'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', gitRepo, ...args]);
+    try {
+      git('init', '-q');
+      git('config', 'user.name', 'Test');
+      git('config', 'user.email', 'test@example.com');
+      await fse.outputFile(path.join(gitRepo, 'shared', 'release', 'WORKFLOW.yaml'), VALID_BUILD.replace('name: build', 'name: release'));
+      await fse.ensureDir(path.join(gitRepo, 'workflows'));
+      await fse.symlink(path.join('..', 'shared', 'release'), path.join(gitRepo, 'workflows', 'release'), 'dir');
+      git('add', '.');
+      git('commit', '-q', '-m', 'initial');
+
+      await materializeRef(gitRepo, 'HEAD', destDir);
+      const review = await reviewBranchDir(BRANCH, destDir);
+
+      expect(review.findings.filter((f) => f.level === 'fail').map(({ path: at }) => at)).toEqual(['workflows/release/WORKFLOW.yaml']);
     } finally {
       await fse.remove(gitRepo);
       await fse.remove(destDir);
