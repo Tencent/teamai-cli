@@ -14,8 +14,9 @@ defaults:
 steps:
   - id: local
     # This machine's finished sessions with a recorded end, a clean start and end, both commits in the suite's repo,
-    # and no task of the suite coming from them; left_out counts the others by reason.
-    command: teamai session list --finished --all --suite "$SUITE" --sizes "$SIZES" --json
+    # and no task of the suite coming from them; left_out counts the others by reason. --within 30d: Claude Code keeps
+    # a transcript 30 days by default; widen it when your agents keep them longer.
+    command: teamai session list --finished --all --within 30d --suite "$SUITE" --sizes "$SIZES" --json
     env: { SUITE: "{{ inputs.suite }}", SIZES: "{{ inputs.sizes }}" }
     output:
       list: [{ session: string, source: string, ended: string, prompt: string, start: string, solution: string, files: number, lines: number, size: string }]

@@ -555,7 +555,7 @@ $ teamai workflow start teamai-sessions-to-tasks --inputs '{"suite":"benchmarks/
 
 ```text
 step         does
-local        teamai session list --finished --all --suite benchmarks/fix-auth --sizes "$SIZES" --json
+local        teamai session list --finished --all --within 30d --suite benchmarks/fix-auth --sizes "$SIZES" --json
              → each finished session with start, solution, files, lines and size; only those whose commits are reachable
                in the suite's repo and that no task of the suite already comes from (by session or solution commit)
 pushed       teamai session list --all --suite benchmarks/fix-auth --sizes "$SIZES" --json
@@ -582,7 +582,7 @@ draft        for_each pick, max_parallel 1: workflow teamai-session-to-task with
 | `a task of the suite already comes from it` | A task names this session as its `source`, or its solution as `solutionCommit` |
 | `commits not in the suite repo` | The suite's `repo` lacks a commit even after a fetch by SHA: push the branch, and ask again |
 
-A learning contributed from a session does not leave it out here, and only sessions last active within seven days are listed, as `--within` sets for `session list --finished --all`.
+A learning contributed from a session does not leave it out here. The workflow lists sessions last active within 30 days (`--within 30d`), since Claude Code keeps a transcript that long by default; change it in your team's copy of the workflow.
 
 A size is the smallest of S, M and L whose limits both fit the change, else XL. The limits are the workflow's, a team changes them in its copy of the file; the command only applies them:
 

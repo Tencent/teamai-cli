@@ -555,7 +555,7 @@ $ teamai workflow start teamai-sessions-to-tasks --inputs '{"suite":"benchmarks/
 
 ```text
 step         does
-local        teamai session list --finished --all --suite benchmarks/fix-auth --sizes "$SIZES" --json
+local        teamai session list --finished --all --within 30d --suite benchmarks/fix-auth --sizes "$SIZES" --json
              → each finished session with start, solution, files, lines and size; only those whose commits are reachable
                in the suite's repo and that no task of the suite already comes from (by session or solution commit)
 pushed       teamai session list --all --suite benchmarks/fix-auth --sizes "$SIZES" --json
@@ -582,7 +582,7 @@ draft        for_each pick, max_parallel 1: workflow teamai-session-to-task with
 | `a task of the suite already comes from it` | 有任务把这个会话写作 `source`，或把它的解决方案写作 `solutionCommit` |
 | `commits not in the suite repo` | 按 SHA fetch 之后，套件的 `repo` 仍缺少某个提交：推送分支后再试 |
 
-从会话贡献过经验不会让它在这里被排除；只列出七天内活动过的会话，与 `session list --finished --all` 的 `--within` 相同。
+从会话贡献过经验不会让它在这里被排除。该工作流列出 30 天内活动过的会话（`--within 30d`），因为 Claude Code 默认保留会话记录 30 天；可在团队自己的工作流副本中修改。
 
 大小取 S、M、L 中第一个行数和文件数限制都容得下这次改动的，否则为 XL。限制写在工作流里，团队在自己的文件副本中修改；命令只负责套用：
 
