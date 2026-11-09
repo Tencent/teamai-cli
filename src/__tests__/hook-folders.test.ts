@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fse from 'fs-extra';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -149,6 +150,15 @@ describe('team hooks that cannot be delivered stop team hooks for the run', () =
     const resolved = await resolveTeamHooks(teamConfig(), member(), { silent: true });
 
     expect([resolved.ok, warnings()]).toEqual([false, expect.stringContaining('hooks/block-secrets/HOOK.yaml does not parse: command:')]);
+  });
+
+  it('when git cannot list a folder\'s files, naming the folder and what to do', async () => {
+    await write({ 'hooks/block-secrets/HOOK.yaml': BLOCK_SECRETS, '.git/index': 'not an index' });
+    execFileSync('git', ['init', '-q', repo]);
+
+    const resolved = await resolveTeamHooks(teamConfig(), member(), { silent: true });
+
+    expect([resolved.ok, warnings()]).toEqual([false, expect.stringMatching(/hooks\/block-secrets\/ cannot be delivered: git could not list the files of .*Fix what git reports, then run teamai pull again\./s)]);
   });
 
   it('when a hooks.yaml id and a folder share a name, as a duplicate', async () => {

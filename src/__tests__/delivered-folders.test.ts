@@ -6,7 +6,7 @@ import fse from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { contentHash, openLedger } from '../resources/delivered-copies.js';
 import { DeliveredFolders } from '../resources/delivered-folders.js';
-import type { FolderFile } from '../resources/folder-files.js';
+import { FolderFiles, type FolderFile } from '../resources/folder-files.js';
 import type { LocalConfig } from '../types.js';
 
 /** Whether the temp directory's file system takes two names that differ only in case for one. */
@@ -71,34 +71,108 @@ describe('DeliveredFolders.pathOf', () => {
   });
 });
 
-describe('DeliveredFolders.version', () => {
-  /** A team checkout holding `hooks/lint/` with `files`, and a .gitignore that leaves out `__pycache__/`. The bit a file says it has is what pull read. */
-  function checkout(files: readonly FolderFile[]): string {
+describe('DeliveredFolders.identify', () => {
+  const git = (cwd: string, ...args: string[]): string => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd, encoding: 'utf8' });
+
+  /** A team repo whose commit holds `hooks/lint/`: a script git keeps executable and a `.bat` saved in GBK, with `__pycache__/` ignored. */
+  function teamRepo(): string {
     const repo = tempDir();
-    execFileSync('git', ['init', '-q', repo]);
+    git(repo, 'init', '-q');
     fs.writeFileSync(path.join(repo, '.gitignore'), '__pycache__/\n');
+    fse.outputFileSync(path.join(repo, 'hooks', 'lint', 'HOOK.yaml'), 'event: Stop\ncommand: bash "${TEAMAI_HOOK_DIR}/lint.sh"\n');
+    fse.outputFileSync(path.join(repo, 'hooks', 'lint', 'lint.sh'), 'echo lint\n');
+    // "测试" in GBK, which is not UTF-8.
+    fse.outputFileSync(path.join(repo, 'hooks', 'lint', 'lint.bat'), Buffer.from([0x65, 0x63, 0x68, 0x6f, 0x20, 0xb2, 0xe2, 0xca, 0xd4, 0x0a]));
+    git(repo, 'add', '.');
+    git(repo, 'update-index', '--chmod=+x', 'hooks/lint/lint.sh');
+    git(repo, 'commit', '-qm', 'lint');
 
-    for (const { path: filePath, bytes } of files) fse.outputFileSync(path.join(repo, 'hooks', 'lint', ...filePath.split('/')), bytes);
-
-    return path.join(repo, 'hooks', 'lint');
+    return repo;
   }
 
-  it('is the same for every member\'s checkout: CRLF text, no executable bit, and files git ignores make no difference', async () => {
-    const macos = [file('HOOK.yaml', 'event: Stop\ncommand: bash "${TEAMAI_HOOK_DIR}/lint.sh"\n'), file('lint.sh', 'echo lint\n', true)];
-    const windows = [
-      file('HOOK.yaml', 'event: Stop\r\ncommand: bash "${TEAMAI_HOOK_DIR}/lint.sh"\r\n'),
-      file('__pycache__/lint.cpython-312.pyc', '\0compiled'),
-      file('lint.sh', 'echo lint\r\n'),
-    ];
+  /** The hook folder of a clone of `repo` made with `config`, where a member's pull reads it. */
+  function clone(repo: string, ...config: string[]): string {
+    const dir = path.join(tempDir(), 'team');
+    execFileSync('git', ['clone', '-q', ...config.flatMap((setting) => ['-c', setting]), repo, dir]);
 
-    expect(await DeliveredFolders.version(checkout(windows), windows)).toBe(await DeliveredFolders.version(checkout(macos), macos));
+    return path.join(dir, 'hooks', 'lint');
+  }
+
+  /** The files pull reads at `dir`, with what Node on Windows reports for each: no executable bit. */
+  async function filesAt(dir: string, platform: 'posix' | 'windows' = 'posix'): Promise<FolderFile[]> {
+    const read = await FolderFiles.read(dir);
+
+    if (read.kind !== 'files') throw new Error(`${dir} is not a folder: ${read.problems.map(FolderFiles.describe).join(', ')}`);
+
+    return read.files.map((one) => (platform === 'windows' ? { ...one, executable: false } : one));
+  }
+
+  async function versionAt(dir: string, platform: 'posix' | 'windows' = 'posix'): Promise<string> {
+    const identified = await DeliveredFolders.identify(dir, await filesAt(dir, platform));
+
+    if (!identified.ok) throw new Error(identified.reason);
+
+    return identified.version;
+  }
+
+  it('is the same in every checkout of a commit, whatever autocrlf, the executable bit or a file\'s encoding', async () => {
+    const repo = teamRepo();
+    const macos = clone(repo, 'core.autocrlf=false');
+    const windows = clone(repo, 'core.autocrlf=true', 'core.fileMode=false');
+    fse.outputFileSync(path.join(windows, '__pycache__', 'lint.cpython-312.pyc'), '\0compiled');
+
+    expect(fs.readFileSync(path.join(windows, 'lint.bat')).subarray(-2).toString('latin1')).toBe('\r\n');
+    expect(await versionAt(windows, 'windows')).toBe(await versionAt(macos));
   });
 
-  it('changes with a file\'s content, binary bytes included', async () => {
-    const one = [file('HOOK.yaml', 'event: Stop\n'), file('tool.bin', '\0one')];
-    const other = [file('HOOK.yaml', 'event: Stop\n'), file('tool.bin', '\0two')];
+  it('delivers none of the files git ignores', async () => {
+    const windows = clone(teamRepo(), 'core.autocrlf=true');
+    fse.outputFileSync(path.join(windows, '__pycache__', 'lint.cpython-312.pyc'), '\0compiled');
+    const identified = await DeliveredFolders.identify(windows, await filesAt(windows));
 
-    expect(await DeliveredFolders.version(checkout(one), one)).not.toBe(await DeliveredFolders.version(checkout(other), other));
+    expect(identified.ok && identified.files.map((one) => one.path)).toEqual(['HOOK.yaml', 'lint.bat', 'lint.sh']);
+  });
+
+  it('changes when the team commits a change to a file\'s mode alone', async () => {
+    const repo = teamRepo();
+    const before = await versionAt(clone(repo));
+    git(repo, 'update-index', '--chmod=-x', 'hooks/lint/lint.sh');
+    git(repo, 'commit', '-qm', 'not executable');
+
+    expect(await versionAt(clone(repo))).not.toBe(before);
+  });
+
+  it('counts what the author has not committed yet: an edited file, then a new one', async () => {
+    const author = path.join(teamRepo(), 'hooks', 'lint');
+    const committed = await versionAt(author);
+    fs.appendFileSync(path.join(author, 'lint.sh'), 'echo more\n');
+    const edited = await versionAt(author);
+    fs.writeFileSync(path.join(author, 'fix.sh'), 'echo fix\n');
+
+    expect([edited, await versionAt(author)]).toEqual([expect.not.stringMatching(committed), expect.not.stringMatching(edited)]);
+  });
+
+  it('versions the bytes and the executable bit of a folder outside git', async () => {
+    const dir = tempDir();
+    const files = [file('HOOK.yaml', 'event: Stop\n'), file('lint.sh', 'echo lint\n', true)];
+    const version = async (given: FolderFile[]): Promise<string | null> => {
+      const identified = await DeliveredFolders.identify(dir, given);
+
+      return identified.ok ? identified.version : null;
+    };
+
+    expect(await version(files)).toMatch(/^[0-9a-f]{8}$/);
+    expect(await version(files.map((one) => ({ ...one, executable: false })))).not.toBe(await version(files));
+  });
+
+  it('fails, naming the folder, when git cannot list it', async () => {
+    const repo = teamRepo();
+    const dir = path.join(repo, 'hooks', 'lint');
+    const files = await filesAt(dir);
+    fs.writeFileSync(path.join(repo, '.git', 'index'), 'not an index');
+    const identified = await DeliveredFolders.identify(dir, files);
+
+    expect(identified.ok ? null : identified.reason).toContain(dir);
   });
 });
 

@@ -66,7 +66,7 @@ export type TeamHookDefinition =
   | { readonly kind: 'entry'; readonly hook: TeamHook }
   | TeamHookFolder;
 
-/** A team hook folder: its `HOOK.yaml`, with the directory's name as id, every file it holds, `HOOK.yaml` included, and its version (`DeliveredFolders.version`). */
+/** A team hook folder: its `HOOK.yaml`, with the directory's name as id, the files pull delivers, `HOOK.yaml` included, and their version (`DeliveredFolders.identify`). */
 export type TeamHookFolder = { readonly kind: 'folder'; readonly hook: TeamHook; readonly files: readonly FolderFile[]; readonly version: string };
 
 export type HooksYaml = z.infer<typeof HooksYamlSchema>;
@@ -169,8 +169,14 @@ export async function readHookFolder(full: string, folderPath: string, id: strin
       return { kind: 'invalid', reason: `${folderPath} is not a hook folder teamai can deliver: ${read.problems.join(', ')}` };
     case 'invalid':
       return read;
-    case 'read':
-      return { kind: 'read', definition: { kind: 'folder', hook: { ...read.fields, id }, files: read.files, version: await DeliveredFolders.version(full, read.files) }, unknownKeys: read.unknownKeys };
+    case 'read': {
+      const identity = await DeliveredFolders.identify(full, read.files);
+
+      if (!identity.ok) return { kind: 'invalid', reason: `${folderPath} cannot be delivered: ${identity.reason}. Fix what git reports, then run teamai pull again.` };
+
+      return { kind: 'read', definition: { kind: 'folder', hook: { ...read.fields, id }, files: identity.files, version: identity.version }, unknownKeys: read.unknownKeys };
+    }
+
     default: {
       const unhandled: never = read;
 

@@ -11,7 +11,7 @@
  *   workspace, single-repo's hooks   → <worktree>/.teamai/delivered/hooks/[<ns>/]<name>/  (each checkout keeps its own)
  *
  * A rule folder's path stays the same across versions, so the text rendered from it does too. A hook or MCP server
- * folder sits at `<name>.<version>/` (`versionedPathOf`, `version`), one per set of files, so each configuration runs
+ * folder sits at `<name>.<version>/` (`versionedPathOf`, `identify`), one per set of files, so each configuration runs
  * the files it was written with. A new version is written to a hidden sibling and renamed into place. Each file is
  * recorded in the delivery ledger, and a folder goes through `removeDelivered` once the team drops it and no
  * configuration left names it (`namedIn`).
@@ -25,6 +25,7 @@ import { FOLDER_MARKERS } from '../folder-markers.js';
 import { getDataHome, isSelfMode, type LocalConfig } from '../types.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { createGit } from '../utils/git.js';
+import { gitFindsNoRepository } from '../utils/git-discovery.js';
 import { errnoCode, pathExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 
@@ -72,48 +73,83 @@ function pathOf(localConfig: LocalConfig, ref: DeliveredFolderRef): string {
   return path.join(root(localConfig, ref.type), ref.type, ...(ref.namespace === null ? [] : [ref.namespace]), ref.name);
 }
 
-/** Where `ref` is delivered at `folderVersion` (see `version`): `[<namespace>/]<name>.<version>/`. */
+/** Where `ref` is delivered at `folderVersion` (see `identify`): `[<namespace>/]<name>.<version>/`. */
 function versionedPathOf(localConfig: LocalConfig, ref: DeliveredFolderRef, folderVersion: string): string {
   return pathOf(localConfig, { ...ref, name: `${ref.name}.${folderVersion}` });
 }
 
+/** The files of a team folder pull delivers and their version (`identify`), or why git could not tell them. */
+export type FolderIdentity =
+  | { readonly ok: true; readonly files: readonly FolderFile[]; readonly version: string }
+  | { readonly ok: false; readonly reason: string };
+
 /**
- * The version of the team folder at `dir`, whose `files` pull read: the first 8 hex digits of the SHA-256 of its files
- * as canonical JSON, each file's path and the SHA-256 of its content, the marker, so the definition, among them. A
- * version's files never change, so a configuration pull could not rewrite, or one of a tool the member excluded, keeps
- * running the files it was written with, whatever the team changes: the marker, a script, or a team value the
- * configuration holds resolved.
+ * The files of the team folder at `dir`, whose `files` pull read, that pull delivers, and their version: the first 8
+ * hex digits of the SHA-256 of each file's path, mode and git blob id as canonical JSON, the marker, so the definition,
+ * among them. A version's files never change, so a configuration pull could not rewrite, or one of a tool the member
+ * excluded, keeps running the files it was written with, whatever the team changes: the marker, a script, or a team
+ * value the configuration holds resolved.
  *
- * Every member's checkout gives the same version, so a configuration the team commits stays as it is: UTF-8 text is
- * read with CRLF as LF (Git for Windows checks text out with CRLF), the executable bit is left out (Node on Windows
- * reports none; delivery still copies it), and so are the files git ignores there, such as `__pycache__/`.
+ * Every checkout of a commit gives the same version, so a configuration the team commits stays as it is. A file git
+ * tracks counts as git stores it, its committed mode and its blob, whatever `core.autocrlf`, `core.fileMode` or its
+ * encoding made of it there. A file the author has not committed yet, new or edited, counts as it is on disk. A file git
+ * ignores, such as `__pycache__/`, is neither versioned nor delivered. Outside git, every file counts as it is on disk.
  */
-async function version(dir: string, files: readonly FolderFile[]): Promise<string> {
-  const sha256 = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex');
-  const ignored = await gitIgnored(dir);
-  const fileIds = files.flatMap((file) => (ignored.has(file.path) ? [] : [{ path: file.path, sha256: sha256(asText(file.bytes)?.replaceAll('\r\n', '\n') ?? file.bytes) }]));
+async function identify(dir: string, files: readonly FolderFile[]): Promise<FolderIdentity> {
+  const onDisk = (file: FolderFile): FileId => ({ path: file.path, mode: file.executable ? '100755' : '100644', blob: blobId(file.bytes) });
 
-  return sha256(canonicalJson(fileIds)).slice(0, 8);
+  if (await gitFindsNoRepository(dir)) return identified(files, files.map(onDisk));
+  let listed: string;
+
+  try {
+    listed = await createGit(dir).raw(['ls-files', '-z', '-t', '-s', '-o', '-m', '--exclude-standard', '--', '.']);
+  } catch (cause) {
+    return { ok: false, reason: `git could not list the files of ${dir} (${cause instanceof Error ? cause.message.trim() : String(cause)})` };
+  }
+
+  const committed = new Map<string, FileId>();
+  const uncommitted = new Set<string>();
+
+  // `H <mode> <blob> <stage>\t<path>` for a file in the index (`S` when it is skip-worktree), `C ...` again when it is
+  // edited, `M ...` when it is unmerged, `? <path>` when it is new.
+  for (const record of listed.split('\0')) {
+    const tag = record.slice(0, 1);
+    const rest = record.slice(2);
+
+    if (tag === '?') {
+      uncommitted.add(rest);
+      continue;
+    }
+
+    const tab = rest.indexOf('\t');
+    const filePath = rest.slice(tab + 1);
+    const [mode = '', blob = ''] = rest.slice(0, tab).split(' ');
+
+    if (tab === -1) continue;
+
+    if (tag === 'C' || tag === 'M') uncommitted.add(filePath);
+    else if (tag === 'H' || tag === 'S') committed.set(filePath, { path: filePath, mode, blob });
+  }
+
+  const kept = files.filter((file) => uncommitted.has(file.path) || committed.has(file.path));
+
+  return identified(kept, kept.map((file) => (uncommitted.has(file.path) ? undefined : committed.get(file.path)) ?? onDisk(file)));
 }
 
-/** The files under `dir` git ignores, by their `/`-separated path from it; none outside a git checkout. */
-async function gitIgnored(dir: string): Promise<ReadonlySet<string>> {
-  try {
-    const listed = await createGit(dir).raw(['ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--', '.']);
-
-    return new Set(listed.split('\0').filter((file) => file !== ''));
-  } catch {
-    return new Set();
-  }
+/** One file as its folder's version counts it. */
+interface FileId {
+  readonly path: string;
+  readonly mode: string;
+  readonly blob: string;
 }
 
-/** `bytes` as UTF-8 text, or undefined when they are not. */
-function asText(bytes: Buffer): string | undefined {
-  try {
-    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-  } catch {
-    return undefined;
-  }
+function identified(files: readonly FolderFile[], fileIds: readonly FileId[]): FolderIdentity {
+  return { ok: true, files, version: createHash('sha256').update(canonicalJson(fileIds)).digest('hex').slice(0, 8) };
+}
+
+/** The id git gives a blob of `bytes`, as `git hash-object --no-filters` does in a SHA-1 repository. */
+function blobId(bytes: Buffer): string {
+  return createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
 }
 
 /** The version a path from `anyVersionPathOf` holds, which `withoutVersions` gives every version. */
@@ -524,4 +560,4 @@ async function excludeWorktreeFolders(localConfig: LocalConfig, type: DeliveredF
   }
 }
 
-export const DeliveredFolders = { root, worktreeRoot, checkoutRoot, pathOf, versionedPathOf, version, anyVersionPathOf, withoutVersions, namedIn, sync, place, deliver, prune, placeholder, mentions, render } as const;
+export const DeliveredFolders = { root, worktreeRoot, checkoutRoot, pathOf, versionedPathOf, identify, anyVersionPathOf, withoutVersions, namedIn, sync, place, deliver, prune, placeholder, mentions, render } as const;
