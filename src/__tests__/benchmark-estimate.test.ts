@@ -78,6 +78,19 @@ describe('benchmark cost estimate', () => {
     ]);
   });
 
+  it('prices the judging from what calibrating cost too, when no trial of the earlier run was judged', () => {
+    // Every check failed, so no judge labelled a trial, and the correctness judge only calibrated three of them.
+    const basis = earlierRun({ run: 'r-new', startedAt: '2026-11-05T09:00:00Z', costs: { claude: usd(2, 2, 2) } });
+    const decider = { by: 'judge' as const, rubric: 'rc', tool: 'claude', model: 'claude-haiku-5-5', batched: false };
+    const calibrated = { ...basis, benchmark: { ...basis.benchmark, trials: basis.benchmark.trials.map((trial, index) => ({
+      ...trial, result: 'failed' as const, calibration: { label: 'incorrect', passed: false, decider, scoringCost: { amount: [0.1, 0.2, 0.3][index] ?? 0, unit: 'USD', complete: true } },
+    })) } };
+
+    const estimate = estimateOf({ plan: planOf([arm('claude')]), calls: { calls: 0, judgedTrials: 0, calibrationCalls: 6 }, earlier: [calibrated] });
+
+    expect(estimate.judges).toEqual({ perJudgedTrial: { unit: 'USD', low: expect.closeTo(0.15), median: expect.closeTo(0.2), high: expect.closeTo(0.25) }, total: { unit: 'USD', low: expect.closeTo(0.9), median: expect.closeTo(1.2), high: expect.closeTo(1.5) } });
+  });
+
   it('says no earlier run of the suite gives an estimate, and estimates no cost', () => {
     const estimate = estimateOf({ plan: planOf([arm('claude')]), calls: { calls: 6, judgedTrials: 6, calibrationCalls: 0 }, earlier: [earlierRun({ run: 'r-failed', startedAt: '2026-11-05T09:00:00Z', outcome: 'failed', costs: { claude: usd(2) } })] });
 

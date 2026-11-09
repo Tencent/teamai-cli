@@ -1,8 +1,8 @@
 /**
  * What a benchmark run will cost, estimated before it starts from the newest earlier run of the suite that succeeded
  * with this record version, on this machine or published: each arm's trials times what one of its trials cost there,
- * matched by `armKey`, and the judged trials times what judging one cost there, each the median with the quartiles as
- * its range. Start freezes it in the plan and the record keeps it; it never stops a run or changes its exit code.
+ * matched by `armKey`, and the judged trials and calibration calls times what judging one or calibrating one cost there,
+ * each the median with the quartiles as its range. Start freezes it in the plan and the record keeps it; it never stops a run or changes its exit code.
  */
 import { judgeCallKey } from '../scorers/batch.js';
 import type { ScorerDefinition } from '../scorers/definition.js';
@@ -71,7 +71,8 @@ export function estimateOf({ plan, calls, earlier }: { plan: Pick<BenchmarkPlan,
   });
 
   const judged = calls.judgedTrials + calls.calibrationCalls;
-  const perJudgedTrial = judged > 0 ? rangeOf(basis.benchmark.trials.flatMap(({ scoringCost }) => (scoringCost?.complete ? [scoringCost] : []))) : undefined;
+  // A calibration call is priced as a judged trial, so what one cost is a sample of it too.
+  const perJudgedTrial = judged > 0 ? rangeOf(basis.benchmark.trials.flatMap(({ scoringCost, calibration }) => [scoringCost, calibration?.scoringCost].flatMap((cost) => (cost?.complete ? [cost] : [])))) : undefined;
   const judges = judged === 0 ? undefined : perJudgedTrial ? { perJudgedTrial, total: times(perJudgedTrial, judged) } : { unknown: 'no_cost_stated' as const };
 
   return definedFields<BenchmarkEstimate>({ ...counts, basis: { run: basis.run }, arms, judges, total: sumOf([...arms.map(totalOf), ...(judges === undefined ? [] : [totalOf(judges)])]) });

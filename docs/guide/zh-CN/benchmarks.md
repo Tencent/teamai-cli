@@ -712,7 +712,7 @@ $ teamai benchmark run fix-auth --sandbox
 
 `benchmark run` 先规划套件，所以无法运行的套件不会留下运行。然后它用套件的 `timeout` 启动工作流 `teamai-benchmark`，在 `--driver` 指定的驱动上运行；未指定则用 [`workflows.driver`](reference.md#成员设置) 指定的驱动，都未指定则由本地驱动在本机驱动它。
 
-运行开始前，它会打印这次运行的成本估算，依据是该套件最近一次成功的早先运行，来自本机，或来自你的检出目录上次读到的 `teamai-reports`。arm 的成本是它的 trial 数乘以那次运行中它每个 trial 成本的中位数，按名字、工具、模型、effort、team、workflow 和 role 匹配 arm，四分位数作为范围。评判的成本是被评判的 trial 数乘以那次运行中评判一个 trial 成本的中位数。评判调用按 teamai 的 benchmark 工作流的批处理方式计数；同时有 check 和成功标准的任务，它的正确性调用和[校准](#校准评判)调用按最多可能的次数计。工具没有声明成本的 arm，或那次没有运行的 arm，显示 `unknown`，总计会注明 `incomplete`。没有这样的运行时，它打印 `No earlier run of fix-auth to estimate from.`。估算从不停止运行，也不改变退出码：要少花一些，就少运行一些 `--task` 或 `--arm`。计划会保存估算，JSON 返回在最后的 `data.done.outputs.table.estimate` 中带上它，用量表把它放在实际花费旁边，一部分如下：
+运行开始前，它会打印这次运行的成本估算，依据是该套件最近一次成功的早先运行，来自本机，或来自你的检出目录上次读到的 `teamai-reports`。arm 的成本是它的 trial 数乘以那次运行中它每个 trial 成本的中位数，按名字、工具、模型、effort、team、workflow 和 role 匹配 arm，四分位数作为范围。评判的成本是被评判的 trial 数加校准调用数，乘以那次运行中评判一个 trial 或校准一次的成本的中位数。评判调用按 teamai 的 benchmark 工作流的批处理方式计数；同时有 check 和成功标准的任务，它的正确性调用和[校准](#校准评判)调用按最多可能的次数计。工具没有声明成本的 arm，或那次没有运行的 arm，显示 `unknown`，总计会注明 `incomplete`。没有这样的运行时，它打印 `No earlier run of fix-auth to estimate from.`。估算从不停止运行，也不改变退出码：要少花一些，就少运行一些 `--task` 或 `--arm`。计划会保存估算，JSON 返回在最后的 `data.done.outputs.table.estimate` 中带上它，用量表把它放在实际花费旁边，一部分如下：
 
 ```text
 | Arm | Cost | Estimated |
