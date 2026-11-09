@@ -57,6 +57,18 @@ function readDefault({ relativePath, content, folder }: ShippedFile): CachedWork
   const read = folder ? WorkflowFolder.shipped(folder) : undefined;
 
   if (read?.kind === 'invalid') throw new Error(`teamai's default ${relativePath} is not a valid workflow folder: ${read.problem}`);
+  const executable = read?.files.filter((file) => file.executable).map((file) => file.path) ?? [];
+
+  if (executable.length === 1) {
+    throw new Error(`teamai's default ${relativePath} ships ${executable.join(', ')} as an executable file. An npm install on Windows drops the bit, `
+      + 'so the folder would hash differently there and a run of it could not be claimed across systems. Clear the bit, and run the file through its interpreter, such as sh.');
+  }
+
+  if (executable.length > 1) {
+    throw new Error(`teamai's default ${relativePath} ships ${executable.join(', ')} as executable files. An npm install on Windows drops the bit, `
+      + 'so the folder would hash differently there and a run of it could not be claimed across systems. Clear the bit, and run the files through their interpreter, such as sh.');
+  }
+
   const parsed = parseWorkflow(relativePath, content);
 
   if (!parsed.ok) throw new Error(`teamai's default ${relativePath} does not parse: ${parsed.diagnostics.map(formatDiagnostic).join('; ')}`);

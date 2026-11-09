@@ -737,9 +737,11 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
     }
   }
 
-  // A stored workflow folder goes once no run of this data home and no workflow this scope has cached uses it.
+  // A stored workflow folder goes once no run of this data home and no workflow this scope has cached uses it. A run swept
+  // past its retention uses none: no retry reopens it, and a claim pins its folders again.
   const cached = (await listCachedWorkflows(config)).flatMap((workflow) => (workflow.source === 'team' && workflow.files ? [workflow.sourceHash] : []));
-  const referenced = new Set([...cached, ...(await readRuns(config)).flatMap((run) => [...run.folder ? [run.folder] : [], ...Object.values(run.folders ?? {})])]);
+  const using = (await readRuns(config)).filter((run) => !cleaned(run, 'retention'));
+  const referenced = new Set([...cached, ...using.flatMap((run) => [...run.folder ? [run.folder] : [], ...Object.values(run.folders ?? {})])]);
   await WorkflowFolder.prune(config, { referenced, now });
 
   return { retention, swept };

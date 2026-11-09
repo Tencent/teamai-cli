@@ -765,7 +765,7 @@ $ teamai workflow start classify-learning --driver local --inputs '{"learning":"
 
 - `workflow start` 按内容把文件夹的文件存一次，放在 TeamAI 数据目录下的 `workflows/folders/<sourceHash>/`，`$TEAMAI_WORKFLOW_DIR` 在整个运行期间都指向这份副本，之后的 pull 修改或删除什么都不影响它。哈希覆盖每个文件的路径、git 记录的可执行位，以及换行转为 LF 后的文本，因此 Windows、macOS 和 Linux 上的检出结果一致。
 - `workflow publish` 不携带这些文件。另一台机器上的 `workflow resume --claim` 像重建定义一样重建文件夹：取自运行所在的团队提交；teamai 的默认工作流则取自本机 teamai 的安装包，不一致时以 `definition_mismatch` 拒绝。
-- `teamai doctor --fix` 会删除本机没有任何运行、也没有任何已拉取工作流使用的已存文件夹，前提是它已存放满一小时。
+- `teamai doctor --fix` 会删除本机没有任何运行、也没有任何已拉取工作流使用的已存文件夹，前提是它已存放满一小时。`doctor --fix` 已按 `workflows.retention` 清理过遗留内容的运行不再占用它的文件夹：重试不会再打开这个运行。
 - 文件夹含有符号链接、不是 UTF-8 文本的文件，或总大小（包括 `README.md`）超过 1 MB 时，pull 以 `workflow_folder_invalid` 拒绝它。消息会指出那个文件；文件夹过大时列出最大的五个文件。和所有带代码的诊断一样，它也会丢弃上一个有效版本，因此修好文件夹之前该工作流没有可运行的内容。
 - [受限步骤](workflow.md#限定在一个目录里的提示步骤)只能读取自己的目录，所以它的提示词提到该文件夹时 pull 会警告：`step <id> is confined and may not be able to read $TEAMAI_WORKFLOW_DIR`。
 - [基准测试](benchmarks.md)的 arm 暂时不能运行工作流文件夹，也不能运行会运行文件夹的工作流，因为试验运行的是工作流的副本，不带任何文件。plan 会拒绝这样的 arm：`benchmark arms cannot run workflow folders yet`。

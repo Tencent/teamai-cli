@@ -157,6 +157,7 @@ const GOOD_SKILL = [
 
 /** A hook folder's HOOK.yaml that runs the folder's own script. */
 const HOOK_FOLDER = 'description: Lint\nevent: Stop\ncommand: bash "${TEAMAI_HOOK_DIR}/lint.sh"\n';
+const MCP_FOLDER = 'transport: stdio\ncommand: node\nargs: ["${TEAMAI_MCP_DIR}/server.mjs"]\n';
 
 function findings(review: BranchReview) {
   return review.findings;
@@ -482,6 +483,98 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
       '"lint" is defined in both hooks/a/lint and hooks/b/hooks.yaml, and their namespaces can be active together, so pull cannot decide '
         + 'which one a member receives. Rename or remove one of them.',
     ]);
+  });
+
+  it('reviews an MCP server folder by its name, as pull delivers it, not as a namespace', async () => {
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('mcp', ['a']));
+    await fse.outputFile(path.join(repoDir, 'mcp', 'jira-lite', 'MCP.yaml'), MCP_FOLDER);
+    await fse.outputFile(path.join(repoDir, 'mcp', 'jira-lite', 'server.mjs'), 'console.log("jira");\n');
+    await fse.outputFile(path.join(repoDir, 'mcp', 'a', 'db', 'MCP.yaml'), MCP_FOLDER);
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review)]).toEqual([true, [
+      { level: 'info', check: 'structure', path: 'mcp/jira-lite', message: 'mcp/jira-lite sits at the shared root, so it is delivered to every member.' },
+    ]]);
+  });
+
+  it('fails an MCP server folder whose file carries a credential', async () => {
+    await fse.outputFile(path.join(repoDir, 'mcp', 'jira-lite', 'MCP.yaml'), MCP_FOLDER);
+    await fse.outputFile(path.join(repoDir, 'mcp', 'jira-lite', 'server.mjs'), 'const token = "sk-abcdefghijklmnopqrstuvwx0123456789";\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(findings(review).filter((f) => f.check === 'leaks').map((f) => f.path)).toEqual(['mcp/jira-lite/server.mjs']);
+  });
+
+  it('fails an MCP server folder whose MCP.yaml pull cannot read', async () => {
+    await fse.outputFile(path.join(repoDir, 'mcp', 'jira-lite', 'MCP.yaml'), 'transport: stdio\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.check === 'format')]).toEqual([false, [{
+      level: 'fail',
+      check: 'format',
+      path: 'mcp/jira-lite/',
+      message: 'mcp/jira-lite/MCP.yaml does not parse: stdio transport requires `command`; pull leaves every member\'s team MCP servers as they are until it is fixed.',
+    }]]);
+  });
+
+  it('fails an MCP server folder that declares an http transport', async () => {
+    await fse.outputFile(path.join(repoDir, 'mcp', 'jira', 'MCP.yaml'), 'transport: http\nurl: https://jira.example.com/mcp\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.check === 'format')]).toEqual([false, [{
+      level: 'fail',
+      check: 'format',
+      path: 'mcp/jira/',
+      message: 'mcp/jira/MCP.yaml: transport http is refused in a folder, which holds the files of a server teamai starts (stdio). '
+        + 'A URL server carries no files: declare it in mcp.yaml; pull leaves every member\'s team MCP servers as they are until it is fixed.',
+    }]]);
+  });
+
+  it('fails an mcp.yaml server that names ${TEAMAI_MCP_DIR}, which only an MCP server folder has', async () => {
+    await fse.outputFile(path.join(repoDir, 'mcp', 'mcp.yaml'), [
+      'servers:',
+      '  - name: jira-lite',
+      '    transport: stdio',
+      '    command: node',
+      '    args: ["${TEAMAI_MCP_DIR}/server.mjs"]',
+      '',
+    ].join('\n'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.check === 'format')]).toEqual([false, [{
+      level: 'fail',
+      check: 'format',
+      path: 'mcp/mcp.yaml',
+      message: 'mcp/mcp.yaml: server "jira-lite" uses ${TEAMAI_MCP_DIR}, which only an MCP server folder has. Move it to mcp/jira-lite/MCP.yaml, beside the files it runs; '
+        + 'pull leaves every member\'s team MCP servers as they are until it is fixed.',
+    }]]);
+  });
+
+  it('fails an MCP server name that is both an mcp.yaml server and a folder in one place', async () => {
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('mcp', ['a']));
+    await fse.outputFile(path.join(repoDir, 'mcp', 'a', 'mcp.yaml'), [
+      'servers:',
+      '  - name: jira-lite',
+      '    transport: http',
+      '    url: https://jira.example.com/mcp',
+      '',
+    ].join('\n'));
+    await fse.outputFile(path.join(repoDir, 'mcp', 'a', 'jira-lite', 'MCP.yaml'), MCP_FOLDER);
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.check === 'duplicates')]).toEqual([false, [{
+      level: 'fail',
+      check: 'duplicates',
+      path: 'mcp/a/jira-lite/',
+      message: 'MCP server "jira-lite" is defined in both mcp/a/mcp.yaml and mcp/a/jira-lite/, in the same place, so pull leaves every member\'s '
+        + 'team MCP servers as they are. Keep one of them.',
+    }]]);
   });
 
   it('reviews wiki pages at teamwiki/evidence/code, not the wiki/ name', async () => {
@@ -1843,6 +1936,31 @@ describe('materializeRef — branch materialization from git', () => {
       // A delivered copy that was committed by mistake: an older HOOK.yaml, and a script with a credential.
       await fse.outputFile(path.join(gitRepo, '.teamai', 'delivered', 'hooks', 'lint', 'HOOK.yaml'), 'description: Lint\n');
       await fse.outputFile(path.join(gitRepo, '.teamai', 'delivered', 'hooks', 'lint', 'lint.sh'), 'echo sk-abcdefghijklmnopqrstuvwx0123456789\n');
+      git('add', '-f', '.');
+      git('commit', '-q', '-m', 'app and team');
+
+      await materializeRef(path.join(gitRepo, '.teamai'), 'HEAD', destDir);
+      const review = await reviewBranchDir('HEAD', destDir);
+
+      expect([review.ok, review.findings]).toEqual([true, []]);
+    } finally {
+      await fse.remove(gitRepo);
+      await fse.remove(destDir);
+    }
+  });
+  it('reviews a single-repo branch\'s MCP server folders, not the copies pull delivered to .teamai/delivered/', async () => {
+    const gitRepo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-git-repo-'));
+    const destDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-dest-'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', gitRepo, ...args]);
+    try {
+      git('init', '-q');
+      git('config', 'user.name', 'Test');
+      git('config', 'user.email', 'test@example.com');
+      await fse.outputFile(path.join(gitRepo, '.teamai', 'teamai.yaml'), 'team: acme\nmode: self\n');
+      await fse.outputFile(path.join(gitRepo, '.teamai', 'mcp', 'jira-lite', 'MCP.yaml'), MCP_FOLDER);
+      // A delivered copy that was committed by mistake: an older MCP.yaml, and a file with a credential.
+      await fse.outputFile(path.join(gitRepo, '.teamai', 'delivered', 'mcp', 'jira-lite', 'MCP.yaml'), 'transport: stdio\n');
+      await fse.outputFile(path.join(gitRepo, '.teamai', 'delivered', 'mcp', 'jira-lite', 'server.mjs'), 'echo sk-abcdefghijklmnopqrstuvwx0123456789\n');
       git('add', '-f', '.');
       git('commit', '-q', '-m', 'app and team');
 

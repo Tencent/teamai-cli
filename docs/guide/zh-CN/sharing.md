@@ -467,7 +467,7 @@ pull 会复制这个目录，并把 `command`、`args` 和 `env` 里的 `${TEAMA
 
 Claude Code 不会展开 `.mcp.json` 里的 `$CLAUDE_PROJECT_DIR`，所以 single-repo 下各工具的 MCP 文件写的是 worktree 的绝对路径，每个 worktree 都不一样。
 
-`MCP.yaml` 的键和 `mcp.yaml` 里的 server 相同，只是没有 `name`、`roles` 和 `projects`，而且只能是 `transport: stdio`：URL server 不带文件，所以 `http` 和 `sse` server 留在 `mcp.yaml`。只给一个 namespace 的 server 放在 `mcp/<ns>/<name>/`。`${TEAMAI_MCP_DIR}` 只能用在目录里：写在 `mcp.yaml` 里，这次运行的团队 MCP 会全部停下，已安装的保持不变；同一个名字既是 `mcp.yaml` 里的 server 又是目录时也一样。
+`MCP.yaml` 的键和 `mcp.yaml` 里的 server 相同，只是没有 `name`、`roles` 和 `projects`，而且只能是 `transport: stdio`：URL server 不带文件，所以 `http` 和 `sse` server 留在 `mcp.yaml`。只给一个 namespace 的 server 放在 `mcp/<ns>/<name>/`。`${TEAMAI_MCP_DIR}` 只能用在目录里：写在 `mcp.yaml` 里，这次运行的团队 MCP 会全部停下，已安装的保持不变；同一个名字既是 `mcp.yaml` 里的 server 又是目录时也一样。分支上有这两种情况之一，或有 pull 读不了的 `MCP.yaml` 时，`teamai review --branch` 判定失败。
 
 teamai 不安装依赖。目录可以用下面三种方式带上依赖：
 
