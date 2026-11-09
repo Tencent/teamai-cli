@@ -1232,6 +1232,16 @@ steps:
     expect(fs.existsSync(copy ?? '')).toBe(true);
   });
 
+  it('names on the label the model alias its scorer asked for, when the driver\'s report of the judge gives only the model it ran', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer({ extra: 'model: fast\n' }), coverage: scorer() });
+    fs.mkdirSync(path.join(config.repo.localPath, 'models'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'models', 'aliases.yaml'), 'aliases:\n  fast:\n    claude: claude-x\n');
+    const runId = await reviewedRun(config);
+    await walk(config, `run:${runId}:review:1`, { inputs: { scorers: ['quality'] }, judge: { answer: { label: 'good', reasoning: 'ok' } } });
+
+    expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'quality', judge: { kind: 'model', tool: 'claude', model: { requested: 'claude-x', alias: 'fast' } } }]);
+  });
+
   it('label each scorer of a batch from the judge\'s answer, print no reasoning, and write them with what judged, closing their marks', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const runId = await reviewedRun(config);

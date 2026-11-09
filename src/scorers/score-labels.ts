@@ -6,6 +6,7 @@
 import path from 'node:path';
 import { z } from 'zod';
 import { ConfinedUsageSchema, CostSchema, type ConfinedUsage } from '../tool-launch/confined-level.js';
+import { isModelAlias, loadModelAliases } from '../models/aliases.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { writeFileAtomic } from '../utils/fs.js';
 import { findRunConfig } from '../workflow/run-location.js';
@@ -200,7 +201,8 @@ function verdictsIn(members: readonly [Member, ...Member[]], answer: string | un
 }
 
 /** The entries of the judge's answer: one label per member, or one code for all of them. */
-function judgeEntries(labelling: Labelling, members: readonly [Member, ...Member[]], { answer, judged, run, spent }: { answer: string | undefined; judged: string | undefined; run: ConfinedRunReport | undefined; spent: ConfinedUsage | undefined }): Entry[] {
+/** `alias`: the model alias the group's scorers ask for, which a label names when the judge's report does not. */
+function judgeEntries(labelling: Labelling, members: readonly [Member, ...Member[]], { answer, judged, run, spent, alias }: { answer: string | undefined; judged: string | undefined; run: ConfinedRunReport | undefined; spent: ConfinedUsage | undefined; alias: string | undefined }): Entry[] {
   if (judged !== 'success') return failedAll(members, 'judge_failed', `The judge step ended ${judged || 'without running'}, so it gave no answer.`, spent);
   const verdicts = verdictsIn(members, answer);
 
@@ -211,6 +213,8 @@ function judgeEntries(labelling: Labelling, members: readonly [Member, ...Member
   return verdicts.verdicts.map(({ judged: member, label, reasoning }, index) => {
     const { usage, ...ran } = run;
     const judge: ScoreLabel['judge'] = { kind: 'model', ...ran };
+
+    if (alias !== undefined && ran.model?.alias === undefined) judge.model = { ...ran.model, alias };
 
     // The usage of one launch is counted once, on the first label.
     if (usage && index === 0) judge.usage = usage;
@@ -332,8 +336,11 @@ export const ScoreLabels = {
       entries = stageEntries(labelling, [first, ...rest], decided);
     } else {
       const step = judgeStepOf(attempt);
+      // A group's members share one model, which its judge step asked for; a driver may report only what it resolved to.
+      const asked = first.definition.model;
+      const alias = asked !== undefined && isModelAlias(await loadModelAliases(attempt.config), asked) ? asked : undefined;
 
-      entries = judgeEntries(labelling, [first, ...rest], { answer, judged, run: readJudgeRun(attempt.run, step), spent: judgeSpend(attempt.run, step) });
+      entries = judgeEntries(labelling, [first, ...rest], { answer, judged, run: readJudgeRun(attempt.run, step), spent: judgeSpend(attempt.run, step), alias });
     }
 
     await writeFileAtomic(path.join(dir, LABELS), JSON.stringify({ entries }));

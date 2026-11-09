@@ -39,8 +39,8 @@ export interface ConfinedStepInput {
   resolveTool?: (executable: string) => string | null;
 }
 
-/** The first tool of the lease that teamai runs confined and that resolves the step's model, with that model. */
-async function firstResolving({ config, lease }: Pick<ConfinedStepInput, 'config' | 'lease'>): Promise<{ tool: ConfinedTool; model?: StepModel } | { reasons: string[] }> {
+/** The first tool of the lease that teamai runs confined and that resolves the step's model, with that model and the alias it came from. */
+async function firstResolving({ config, lease }: Pick<ConfinedStepInput, 'config' | 'lease'>): Promise<{ tool: ConfinedTool; model?: StepModel; alias?: string } | { reasons: string[] }> {
   const reasons: string[] = [];
 
   const asks = lease.model !== undefined || lease.defaultModel !== undefined;
@@ -60,7 +60,9 @@ async function firstResolving({ config, lease }: Pick<ConfinedStepInput, 'config
 
     const chosen = await chooseStepModel({ step: lease.step, tool, model: lease.model, defaultModel: lease.defaultModel, config });
 
-    if (chosen.ok) return chosen.model ? { tool, model: chosen.model } : { tool };
+    if (chosen.ok && chosen.model) return 'alias' in chosen && chosen.alias ? { tool, model: chosen.model, alias: chosen.alias } : { tool, model: chosen.model };
+
+    if (chosen.ok) return { tool };
     reasons.push(chosen.failure.message);
   }
 
@@ -137,7 +139,10 @@ export async function runConfinedStep(input: ConfinedStepInput): Promise<Confine
 
   if (!result.ok) return { kind: 'ran', report: await failedReport({ file: attemptResultPath(config, run, lease.attempt), tool: found.tool, durationMs, result, secrets }) };
 
-  return { kind: 'ran', report: ranReport({ run: result.run, reply: result.reply, durationMs }) };
+  // The tool reports the model it ran, never the alias the step asked for, which a label of the run names.
+  const confined = found.alias ? { ...result.run, model: { ...result.run.model, alias: found.alias } } : result.run;
+
+  return { kind: 'ran', report: ranReport({ run: confined, reply: result.reply, durationMs }) };
 }
 
 /**
