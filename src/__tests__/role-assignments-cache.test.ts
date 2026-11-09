@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -25,11 +25,31 @@ async function freshProcess() {
     loadLocalConfig: (await import('../config.js')).loadLocalConfig,
     resetWarnOnce: (await import('../utils/warn-once.js')).resetWarnOnce,
     activeRoleIds: (await import('../roles.js')).activeRoleIds,
+    loadRoleAssignments: (await import('../role-assignments.js')).loadRoleAssignments,
     log: (await import('../utils/logger.js')).log,
   };
 }
 
 let cli = await freshProcess();
+
+/** The temporary directory of the run, outside every sandbox's profile. */
+const runTmp = os.tmpdir();
+
+/** As on Windows, where no uid tells who owns the temporary directory. */
+function withoutUid(): void {
+  const getuid = Object.getOwnPropertyDescriptor(process, 'getuid');
+  Object.defineProperty(process, 'getuid', { value: undefined, configurable: true, writable: true });
+  onTestFinished(() => {
+    if (getuid) Object.defineProperty(process, 'getuid', getuid);
+    else Reflect.deleteProperty(process, 'getuid');
+  });
+}
+
+/** Point every variable os.tmpdir() reads, on any platform, at `dir`. */
+function useTmp(dir: string): void {
+  mkdirSync(dir, { recursive: true });
+  for (const name of ['TMPDIR', 'TMP', 'TEMP']) vi.stubEnv(name, dir);
+}
 
 /** The git helpers this process has called, by name. */
 function gitCalls(): string[] {
@@ -83,6 +103,9 @@ describe('role assignments cached by the fetched commit', () => {
     cli = await freshProcess();
     sandbox = mkdtempSync(path.join(os.tmpdir(), 'teamai-roles-cache-'));
     process.env.HOME = sandbox;
+    vi.stubEnv('USERPROFILE', sandbox);
+    // Inside the profile, as Windows' default %LOCALAPPDATA%\Temp is.
+    useTmp(path.join(sandbox, 'AppData', 'Local', 'Temp'));
     upstream = path.join(sandbox, 'upstream');
     clone = path.join(sandbox, 'clone');
     mkdirSync(path.join(upstream, 'manifest'), { recursive: true });
@@ -102,6 +125,7 @@ describe('role assignments cached by the fetched commit', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
     rmSync(sandbox, { recursive: true, force: true });
@@ -158,6 +182,46 @@ describe('role assignments cached by the fetched commit', () => {
     cli = await freshProcess();
     vi.spyOn(cli.log, 'warn').mockImplementation(() => {});
     expect(await activeRoles()).toEqual([]);
+    expect(gitCalls()).toEqual([]);
+  });
+
+  it('keeps the answer for later processes on Windows, in a temporary directory inside the profile', async () => {
+    withoutUid();
+
+    expect(await primaryRole()).toBe('frontend');
+    cli = await freshProcess();
+    expect(await primaryRole()).toBe('frontend');
+    expect(gitCalls()).toEqual([]);
+  });
+
+  // Another user may write a temporary directory outside the profile, and a kept answer says where teamai writes.
+  it('keeps nothing on Windows when the temporary directory lies outside the profile', async () => {
+    withoutUid();
+    const shared = mkdtempSync(path.join(runTmp, 'teamai-shared-tmp-'));
+    onTestFinished(() => rmSync(shared, { recursive: true, force: true }));
+    useTmp(shared);
+
+    expect(await primaryRole()).toBe('frontend');
+    cli = await freshProcess();
+    expect(await primaryRole()).toBe('frontend');
+    expect(gitCalls()).not.toEqual([]);
+  });
+
+  // Single-repo mode: the team repo is `.teamai/` in the business repo, whose git dir is the repo's own.
+  it('reads a single-repo team at the fetched commit once', async () => {
+    mkdirSync(path.join(upstream, '.teamai', 'manifest'), { recursive: true });
+    writeFileSync(path.join(upstream, '.teamai', 'manifest', 'members.yaml'), 'version: 1\nmembers:\n  alice: [backend]\n', 'utf-8');
+    git(upstream, 'add', '-A');
+    git(upstream, 'commit', '-qm', 'single-repo team');
+    git(clone, 'pull', '-q');
+    // Fetched but not merged: the assignment at the tip is the one that holds.
+    writeFileSync(path.join(upstream, '.teamai', 'manifest', 'members.yaml'), 'version: 1\nmembers:\n  alice: [backend, frontend]\n', 'utf-8');
+    git(upstream, 'commit', '-qam', 'reassign alice');
+    git(clone, 'fetch', '-q');
+
+    expect((await cli.loadRoleAssignments(path.join(clone, '.teamai'))).members).toEqual({ alice: ['backend', 'frontend'] });
+    cli = await freshProcess();
+    expect((await cli.loadRoleAssignments(path.join(clone, '.teamai'))).members).toEqual({ alice: ['backend', 'frontend'] });
     expect(gitCalls()).toEqual([]);
   });
 

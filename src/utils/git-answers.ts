@@ -73,8 +73,7 @@ let writing: Promise<void> = Promise.resolve();
  * TeamAI home as it found it. One file per CLI version: another release may
  * stamp or answer differently under the same keys. Null, and nothing kept,
  * when that directory is not this user's alone (another user made it in a
- * shared /tmp), or where its owner cannot be read this way (Windows): answers
- * read from there would say where teamai writes.
+ * shared /tmp): answers read from there would say where teamai writes.
  */
 function keptFile(): Promise<string | null> {
   const tmp = os.tmpdir();
@@ -84,7 +83,7 @@ function keptFile(): Promise<string | null> {
   const file = (async () => {
     const uid = process.getuid?.();
 
-    if (uid === undefined) return null;
+    if (uid === undefined) return keptFileInProfile(tmp);
     const dir = path.join(tmp, `teamai-${uid}`);
     await fs.promises.mkdir(dir, { mode: 0o700 }).catch(() => undefined);
     const stat = await fs.promises.lstat(dir).catch(() => null);
@@ -97,6 +96,23 @@ function keptFile(): Promise<string | null> {
   keptFileAt = { tmp, file };
 
   return file;
+}
+
+/**
+ * Where Windows, which has no uid to check a directory's owner by, keeps the
+ * answers: `teamai/` in a temporary directory inside the user's profile, as
+ * `%LOCALAPPDATA%\Temp` is by default, which no other user can write. Null
+ * for a temporary directory anywhere else (#1788).
+ */
+async function keptFileInProfile(tmp: string): Promise<string | null> {
+  const resolved = await Promise.all([fs.promises.realpath(os.homedir()), fs.promises.realpath(tmp)]).catch(() => null);
+  const fromProfile = resolved && path.relative(...resolved);
+
+  if (!fromProfile || fromProfile === '..' || fromProfile.startsWith(`..${path.sep}`) || path.isAbsolute(fromProfile)) return null;
+  const dir = path.join(tmp, 'teamai');
+  await fs.promises.mkdir(dir, { recursive: true }).catch(() => undefined);
+
+  return path.join(dir, `git-answers-${getCurrentVersion()}.json`);
 }
 
 /** The answers kept in `file`: none when it is missing, unreadable, or not in their shape. */
