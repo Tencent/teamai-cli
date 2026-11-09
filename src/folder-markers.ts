@@ -25,48 +25,49 @@ function isMarkedType(type: string): type is MarkedType {
   return MARKED_TYPES.some((marked) => marked === type);
 }
 
-export interface FolderMarker {
-  /** What the dashboard calls such a folder. */
-  readonly kind: string;
-  /** The file whose presence makes its directory a folder resource. */
-  readonly marker: string;
-  /** Whether this release reads folders of this type. */
-  readonly supported: boolean;
-  /** What pull prints after the folder's path, verbatim. */
-  readonly skipped: string;
-}
+/** A reserved folder type: one this release reads, or one it skips whole with the line pull prints. */
+export type FolderMarker =
+  | {
+    /** What the dashboard calls such a folder. */
+    readonly kind: string;
+    /** The file whose presence makes its directory a folder resource. */
+    readonly marker: string;
+    readonly supported: true;
+  }
+  | {
+    readonly kind: string;
+    readonly marker: string;
+    readonly supported: false;
+    /** What pull prints after the folder's path, verbatim. */
+    readonly skipped: string;
+  };
 
 /** Each type keeps its resources in the team repo directory of the same name. */
-export const FOLDER_MARKERS: Readonly<Record<MarkedType, FolderMarker>> = {
+export const FOLDER_MARKERS = {
   workflows: {
     kind: 'Workflow folder',
     marker: 'WORKFLOW.yaml',
-    supported: false,
-    skipped: 'is a workflow folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
+    supported: true,
   },
   hooks: {
     kind: 'Hook folder',
     marker: 'HOOK.yaml',
-    supported: false,
-    skipped: 'is a hook folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
+    supported: true,
   },
   rules: {
     kind: 'Rule folder',
     marker: 'RULE.md',
-    supported: false,
-    skipped: 'is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
+    supported: true,
   },
   mcp: {
     kind: 'MCP server folder',
     marker: 'MCP.yaml',
-    supported: false,
-    skipped: 'is an MCP server folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
+    supported: true,
   },
   benchmarks: {
     kind: 'Benchmark suite folder',
     marker: 'SUITE.yaml',
-    supported: false,
-    skipped: 'is a benchmark suite folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
+    supported: true,
   },
   scorers: {
     kind: 'Scorer folder',
@@ -80,11 +81,18 @@ export const FOLDER_MARKERS: Readonly<Record<MarkedType, FolderMarker>> = {
     supported: false,
     skipped: 'is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
   },
-};
+} as const satisfies Readonly<Record<MarkedType, FolderMarker>>;
+
+/** The folder types this release skips. */
+type UnreadType = { [Type in MarkedType]: typeof FOLDER_MARKERS[Type]['supported'] extends false ? Type : never }[MarkedType];
+
+function isUnreadType(type: string): type is UnreadType {
+  return isMarkedType(type) && !FOLDER_MARKERS[type].supported;
+}
 
 /** A directory a scan leaves out. */
 export interface SkippedFolder {
-  readonly type: MarkedType;
+  readonly type: UnreadType;
   /** Repo-relative, `/`-separated, with a trailing `/`: `rules/api-style/`. */
   readonly path: string;
 }
@@ -134,7 +142,7 @@ export async function holdsMarker(dir: string, marker: string | null): Promise<b
 export async function skippedFoldersIn(root: string, type: string): Promise<SkippedFolder[]> {
   const marker = unreadMarker(type);
 
-  if (marker === null || !isMarkedType(type)) return [];
+  if (marker === null || !isUnreadType(type)) return [];
   const found: SkippedFolder[] = [];
 
   const walk = async (rel: string): Promise<void> => {

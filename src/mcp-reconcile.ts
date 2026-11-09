@@ -40,7 +40,7 @@ import {
   UntypedStdioEntrySchema,
   type McpFormat,
 } from './resources/mcp-format.js';
-import { mcpEntryReader, parseTeamMcpServers, teamMcpToDef } from './resources/mcp.js';
+import { deliverMcpFolders, historicalFolderMcpServer, pruneMcpFolders, TEAM_MCP_ENTRIES, parseTeamMcpServers, teamMcpDef, teamMcpToDef, type TeamMcpDefinition } from './resources/mcp.js';
 import { historicalContents } from './utils/team-history.js';
 import { describeMembersFile, keepsTrackedCopy } from './resources/delivered-copies.js';
 import { envName, envTable } from './resources/env-key.js';
@@ -54,7 +54,8 @@ import { cleanupOf, installOf, locate, ownOf, writable, type EntryPlace, type In
 import { channelsOf, isToolId, mcpFormatOf, mcpSyntaxOf, hasDefaultHomeLeftovers, TOOLS, type McpProject } from './tools.js';
 import { realHost, type Host } from './tool-home.js';
 import { KNOWN_AGENTS } from './known-agents.js';
-import { entryLayout, reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
+import { entryLayout, reportEntryResolution, type ResolvedEntry } from './namespaced-entries.js';
+import { LayeredEntries } from './resources/layered-entries.js';
 import {
   readJson,
   writeJsonAtomic,
@@ -65,7 +66,7 @@ import {
   pathExists,
   expandHome,
 } from './utils/fs.js';
-import { isPlainJson, parseJson, parseJsonAs, type JsonSyntax } from './utils/json.js';
+import { isPlainJson, mapStrings, parseJson, parseJsonAs, type JsonSyntax } from './utils/json.js';
 import { log } from './utils/logger.js';
 import { warnOnce } from './utils/warn-once.js';
 import { loadProjectMcpManifest } from './utils/mcp-manifest.js';
@@ -94,6 +95,7 @@ import {
   type McpFileObservation,
 } from './mcp-resolved-files.js';
 import { hasWorkspaceChildren } from './workspace-children.js';
+import { DeliveredFolders, type PlacedFolders } from './resources/delivered-folders.js';
 import { isJsonObject, type JsonObject } from './types.js';
 
 // ─── Reconcile engine ────────────────────────────────────────
@@ -293,6 +295,11 @@ function policyViolation(def: McpServerDef, sharing: ReturnType<typeof getMcpSha
   }
 
   return null;
+}
+
+/** Why the team's security policy keeps `resolved` out of every tool, or null when it lets it through. */
+export function teamMcpRefusal(localConfig: LocalConfig, teamConfig: TeamaiConfig, resolved: ResolvedEntry<TeamMcpDefinition>): string | null {
+  return policyViolation(teamMcpDef(localConfig, resolved), getMcpSharing(teamConfig));
 }
 
 /** True when every executable in `requires` is on PATH. Returns a reason, or null when OK. */
@@ -1302,11 +1309,15 @@ function judgeUnrecordedMcpEntry(
     const entries = new Map<string, JsonValue[]>();
 
     for (const version of versions) {
-      if (path.posix.basename(version.path) !== layout.file) continue;
+      const content = version.content.toString('utf8');
 
-      for (const server of parseTeamMcpServers(version.content.toString('utf8')) ?? []) {
+      const defined = path.posix.basename(version.path) === layout.file
+        ? (parseTeamMcpServers(content) ?? []).map((server) => ({ server, def: teamMcpToDef(server) }))
+        // A server folder's MCP.yaml (#1787).
+        : [historicalFolderMcpServer(localConfig, version.path, content)].flatMap((found) => (found === null ? [] : [found]));
+
+      for (const { server, def } of defined) {
         if (!mcpTargetTakes(target, server.tools)) continue;
-        const def = teamMcpToDef(server);
 
         if (!supportsTransport(target.format, def.transport)) continue;
         const rendered = renderMcpEntry(target, def, vars);
@@ -1327,7 +1338,13 @@ function judgeUnrecordedMcpEntry(
 
     if (desired.has(name) && matches(desired.get(name)?.entry)) return 'teamai';
 
-    return (await renders())?.get(name)?.some(matches) ? 'teamai' : 'member';
+    // A folder server's earlier revision renders its folder at any version (#1787).
+    const anyVersion = entry === undefined ? undefined : mapStrings(entry, DeliveredFolders.withoutVersions);
+
+    const matchesEarlier = (rendered: JsonValue) => (recordedHash === undefined || entryHash(rendered) === recordedHash)
+      && isDeepStrictEqual(mapStrings(rendered, DeliveredFolders.withoutVersions), anyVersion);
+
+    return (await renders())?.get(name)?.some(matchesEarlier) ? 'teamai' : 'member';
   };
 }
 
@@ -1400,6 +1417,21 @@ export async function installedMcpEntries(
   normalizeMuseServers(target, doc.servers);
 
   return new Map([...options.underKeyOnly ? [] : Object.entries(doc.beside ?? {}), ...Object.entries(doc.servers)]);
+}
+
+/**
+ * The entries some tool's MCP file holds once a reconcile is done, each as JSON, whoever the entry is: one teamai
+ * wrote, kept (held, a secret not set here), or left in a tool the member excluded, and one the file holds as the
+ * member's. The folder each names stays (#1787).
+ */
+export async function installedMcpEntryTexts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<Array<{ readonly file: string; readonly text: string }>> {
+  const texts: Array<{ readonly file: string; readonly text: string }> = [];
+
+  for (const target of await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true })) {
+    for (const entry of (await installedMcpEntries(target))?.values() ?? []) texts.push({ file: target.file, text: JSON.stringify(entry) });
+  }
+
+  return texts;
 }
 
 /** In a Copilot project file that also holds `mcpServers`, a bare server whose value differs from the one of its name there. */
@@ -1511,10 +1543,10 @@ export async function keptMcpEntries(
   const kept = new Map<string, string[]>();
 
   if (localConfig.repo.kind === 'http') return kept;
-  const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
+  const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig);
 
   if (resolution.kind === 'failed' || resolution.entries.length === 0) return kept;
-  const teamDefs = resolution.entries.map((entry) => teamMcpToDef(entry.entry));
+  const teamDefs = resolution.entries.map((entry) => teamMcpDef(localConfig, entry));
   const targets = await resolveMcpTargets(teamConfig, localConfig);
 
   if (targets.length === 0) return kept;
@@ -2204,8 +2236,8 @@ export async function mcpConfigsNotProvenClean(
   options: { before?: ManagedMcpManifest; otherWorktrees?: 'judged' | 'empty' } = {},
 ): Promise<Map<string, string>> {
   const { before, otherWorktrees = 'judged' } = options;
-  const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
-  const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpToDef(entry.entry));
+  const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig);
+  const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpDef(localConfig, entry));
 
   // Keyed by real path: the protected paths come from git, which resolves symlinks (macOS /var).
   const targets = new Map<string, {
@@ -2623,8 +2655,8 @@ async function protectProjectMcpConfigs(
   written: Set<string>,
   before: ManagedMcpManifest | undefined,
 ): Promise<void> {
-  const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
-  const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpToDef(entry.entry));
+  const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig);
+  const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpDef(localConfig, entry));
   const { manifestPath, manifest } = await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true });
   const vars = await buildVarTable(localConfig);
   const ctx = once(() => buildDesiredMcpContext(teamConfig, localConfig));
@@ -2893,15 +2925,17 @@ async function reconcileTargets(
   let teamDefs: McpServerDef[] = [];
   // The servers a workspace holds back (#913): each tool keeps what it has installed for them.
   let held = new Set<string>();
+  let teamEntries: ReadonlyArray<ResolvedEntry<TeamMcpDefinition>> = [];
 
   if (!removeAll) {
     // A file that does not parse, or a server name defined twice, keeps every
     // installed server as it is: reconciling to an empty set would remove them.
-    const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
+    const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig);
     reportEntryResolution(resolution);
 
     if (resolution.kind === 'failed') return { changes, wrote, unresolved: true };
-    teamDefs = resolution.entries.map((entry) => teamMcpToDef(entry.entry));
+    teamEntries = resolution.entries;
+    teamDefs = resolution.entries.map((entry) => teamMcpDef(localConfig, entry));
     held = new Set(resolution.held);
   }
 
@@ -2911,48 +2945,14 @@ async function reconcileTargets(
     return { changes, wrote };
   }
 
-  const targets = await resolveMcpTargets(teamConfig, localConfig);
-
-  if (targets.length === 0) return { changes, wrote };
-  // Whose entries a file holds is judged with every tool mapping it, detected or not (#993):
-  // detection decides where teamai writes, never what it may delete.
-  const claimTargets = await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true });
-
-  const { manifestPath, manifest } = await loadMcpManifest(localConfig, options.dryRun);
-  // An adoption (#993) records a server without writing its file: the manifest must still be saved.
-  const manifestBefore = JSON.stringify(manifest);
-
-  // An empty desired set still has to run: it is how servers dropped from
-  // mcp.yaml get cleaned out of the tools we previously injected them into.
-  // Other checkouts' local scopes count too: `leaveGoneCheckouts` and `leaveOtherLocalScopes` take theirs out below.
-  const others = localConfig.scope === 'project' ? Object.values(await readManifest(localMcpManifestPath(localConfig))) : [];
-  const nothingOwned = [...Object.values(manifest), ...others].every((r) => !Array.isArray(r) || r.length === 0);
-
-  // A server the team deleted can still sit unrecorded in a tool's file (#993): only target
-  // files with no server at all prove there is nothing to look for, without reading the history.
-  if (teamDefs.length === 0 && nothingOwned && !await someMcpEntryInstalled(targets)) return { changes, wrote };
-  const history = teamMcpHistory(localConfig);
-  // The files an earlier pull recorded, and each record this run rebuilds after it was lost (#882).
-  const ledger = localConfig.scope === 'project' && !options.dryRun ? (await readResolvedMcpFiles(localConfig)).files : {};
-  const listed = new Set(Object.keys(ledger));
-  const rebuilt: Array<{ target: McpTarget; records: ManagedMcpRecord[] }> = [];
-
-  // The tools with no record in managed-mcp.json when this pull began (#882): theirs are marked below.
-  const unrecorded = new Set(localConfig.scope === 'project' && !options.dryRun
-    ? targets.filter((t) => !t.projectKey && manifest[managedMcpManifestKey(t.tool, true)] === undefined).map((t) => t.tool) : []);
-
   const desiredContext = await buildDesiredMcpContext(teamConfig, localConfig, options);
-
   // A failed declaration is not "no secrets": read as none, every server whose
   // secret the member left in their shell would be removed. Keep what is
   // installed rather than guess which variables are secrets. `removeAll`
   // (mcp remove, uninstall) still removes everything.
-  if (!removeAll && desiredContext.secrets.kind === 'failed') {
-    reportEntryResolution(desiredContext.secrets);
+  const secretsUnread = !removeAll && desiredContext.secrets.kind === 'failed';
 
-    return { changes, wrote, unresolved: true };
-  }
-
+  const targets = await resolveMcpTargets(teamConfig, localConfig);
   // Which of this team's servers apply to each tool, and in what rendered
   // form. Targets that share one file under one ownership record
   // (MCP_MANIFEST_KEY_ALIAS) reconcile as one: their per-tool desired sets
@@ -2981,6 +2981,81 @@ async function reconcileTargets(
 
       for (const name of desiredOf.get(other)!.kept) mine.kept.add(name);
     }
+  }
+
+  // The folders team servers run from, before any configuration names them (#1787). A server whose installed
+  // configuration some tool keeps, such as one held back or one whose secret is not set here, keeps its folder as it
+  // is. A folder that cannot be written keeps every installed server, and so do secrets that cannot be read (below).
+  // Each folder replaced keeps its previous version aside until every configuration is written (`settled`), and gets it
+  // back with the configurations when a write fails; the folders no configuration names go only then.
+  let settleFolders = async (): Promise<void> => {};
+
+  if (!removeAll && !options.dryRun && !secretsUnread) {
+    const kept = new Set([...held, ...[...desiredOf.values()].flatMap((desired) => [...desired.kept])]);
+    let placed: PlacedFolders;
+
+    try {
+      placed = await deliverMcpFolders(localConfig, teamEntries, kept);
+    } catch (e) {
+      log.warn(`Team MCP server folders could not be delivered: ${e instanceof Error ? e.message : String(e)}. `
+        + 'mcp was not applied this run, so your installed team MCP servers are unchanged. Run teamai pull again.');
+
+      return { changes, wrote, unresolved: true };
+    }
+
+    // Undone with the configurations (`reconcileMcpForConfig`), under a key no configuration file has.
+    restoreConfigs.set(path.join(DeliveredFolders.root(localConfig, 'mcp'), 'mcp'), placed.rollback);
+    settleFolders = async () => {
+      await placed.commit();
+
+      if (held.size === 0) await pruneMcpFolders(localConfig, teamEntries, (await installedMcpEntryTexts(teamConfig, localConfig)).map(({ text }) => text));
+    };
+  }
+
+  // What the run applied, once the folders it replaced lose their previous versions and those no configuration names go.
+  const settled = async (result: McpReconcileResult): Promise<McpReconcileResult> => {
+    try {
+      await settleFolders();
+    } catch (e) {
+      log.warn(`Team MCP servers are applied, but the record of their folders, or the folders no server uses any more, could not be updated: ${e instanceof Error ? e.message : String(e)}. `
+        + 'Run teamai pull again.');
+    }
+
+    return result;
+  };
+
+  if (targets.length === 0) return settled({ changes, wrote });
+  // Whose entries a file holds is judged with every tool mapping it, detected or not (#993):
+  // detection decides where teamai writes, never what it may delete.
+  const claimTargets = await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true });
+
+  const { manifestPath, manifest } = await loadMcpManifest(localConfig, options.dryRun);
+  // An adoption (#993) records a server without writing its file: the manifest must still be saved.
+  const manifestBefore = JSON.stringify(manifest);
+
+  // An empty desired set still has to run: it is how servers dropped from
+  // mcp.yaml get cleaned out of the tools we previously injected them into.
+  // Other checkouts' local scopes count too: `leaveGoneCheckouts` and `leaveOtherLocalScopes` take theirs out below.
+  const others = localConfig.scope === 'project' ? Object.values(await readManifest(localMcpManifestPath(localConfig))) : [];
+  const nothingOwned = [...Object.values(manifest), ...others].every((r) => !Array.isArray(r) || r.length === 0);
+
+  // A server the team deleted can still sit unrecorded in a tool's file (#993): only target
+  // files with no server at all prove there is nothing to look for, without reading the history.
+  if (teamDefs.length === 0 && nothingOwned && !await someMcpEntryInstalled(targets)) return settled({ changes, wrote });
+  const history = teamMcpHistory(localConfig);
+  // The files an earlier pull recorded, and each record this run rebuilds after it was lost (#882).
+  const ledger = localConfig.scope === 'project' && !options.dryRun ? (await readResolvedMcpFiles(localConfig)).files : {};
+  const listed = new Set(Object.keys(ledger));
+  const rebuilt: Array<{ target: McpTarget; records: ManagedMcpRecord[] }> = [];
+
+  // The tools with no record in managed-mcp.json when this pull began (#882): theirs are marked below.
+  const unrecorded = new Set(localConfig.scope === 'project' && !options.dryRun
+    ? targets.filter((t) => !t.projectKey && manifest[managedMcpManifestKey(t.tool, true)] === undefined).map((t) => t.tool) : []);
+
+  if (!removeAll && desiredContext.secrets.kind === 'failed') {
+    reportEntryResolution(desiredContext.secrets);
+
+    return { changes, wrote, unresolved: true };
   }
 
   for (const resolved of targets) {
@@ -3203,7 +3278,7 @@ async function reconcileTargets(
     if (manifest[mcpManifestKey(target)]?.some((record) => record.resolved === true)) recorded.splice(index, 1);
   }
 
-  return unparsed ? { changes, wrote, unparsed } : { changes, wrote };
+  return settled(unparsed ? { changes, wrote, unparsed } : { changes, wrote });
 }
 
 /**

@@ -10,12 +10,16 @@ import {
   takePendingHint,
 } from '../contribute-check.js';
 import { appendEvent } from '../dashboard-collector.js';
-import {
-  CONTRIBUTE_BASE_THRESHOLD,
-  CONTRIBUTE_FASTPATH_TTL_MS,
-  CONTRIBUTE_SMART_THRESHOLD,
-} from '../types.js';
+import { CONTRIBUTE_FASTPATH_TTL_MS } from '../types.js';
+import { DefaultHooks } from '../default-hooks.js';
 import type { ContributeState, DashboardEvent } from '../types.js';
+
+/** min_tools and min_score of hooks/teamai-friction-reminder/HOOK.yaml, teamai's default. */
+const CONTRIBUTE_BASE_THRESHOLD = 15;
+const CONTRIBUTE_SMART_THRESHOLD = 20;
+
+/** teamai's friction reminder parameters. */
+const { params: frictionParams } = await DefaultHooks.load('teamai-friction-reminder', null);
 
 // ─── Test helpers ──────────────────────────────────────────
 
@@ -255,7 +259,7 @@ describe('computeSmartScore (friction model)', () => {
   const noFriction = { interrupt: 0, toolReject: 0, correction: 0, toolError: 0 };
 
   it('returns 0 for empty events', () => {
-    expect(computeSmartScore([])).toBe(0);
+    expect(computeSmartScore(frictionParams, [])).toBe(0);
   });
 
   it('scores low for a large but frictionless session (scale never triggers alone)', () => {
@@ -265,7 +269,7 @@ describe('computeSmartScore (friction model)', () => {
     const events = Array.from({ length: 50 }, (_, i) =>
       makeEvent({ toolName: tools[i % 5], timestamp: new Date(now - (50 - i) * 1000).toISOString() }),
     );
-    const score = computeSmartScore(events, noFriction);
+    const score = computeSmartScore(frictionParams, events, noFriction);
     // Only the scale nudge (diversity ≤5 + no skill) — must stay well below threshold.
     expect(score).toBeLessThan(CONTRIBUTE_SMART_THRESHOLD);
     expect(score).toBeLessThanOrEqual(10);
@@ -273,30 +277,30 @@ describe('computeSmartScore (friction model)', () => {
 
   it('a single user interrupt lands at/above threshold', () => {
     const events = [makeEvent({ toolName: 'Bash' })];
-    const score = computeSmartScore(events, { ...noFriction, interrupt: 1 });
+    const score = computeSmartScore(frictionParams, events, { ...noFriction, interrupt: 1 });
     expect(score).toBeGreaterThanOrEqual(CONTRIBUTE_SMART_THRESHOLD);
   });
 
   it('a single tool rejection lands at/above threshold', () => {
     const events = [makeEvent({ toolName: 'Bash' })];
-    const score = computeSmartScore(events, { ...noFriction, toolReject: 1 });
+    const score = computeSmartScore(frictionParams, events, { ...noFriction, toolReject: 1 });
     expect(score).toBeGreaterThanOrEqual(CONTRIBUTE_SMART_THRESHOLD);
   });
 
   it('a single correction lands at/above threshold', () => {
     const events = [makeEvent({ toolName: 'Bash' })];
-    const score = computeSmartScore(events, { ...noFriction, correction: 1 });
+    const score = computeSmartScore(frictionParams, events, { ...noFriction, correction: 1 });
     expect(score).toBeGreaterThanOrEqual(CONTRIBUTE_SMART_THRESHOLD);
   });
 
   it('tool errors score on a gradient (more struggle → more points)', () => {
     const events = [makeEvent({ toolName: 'Bash' })];
     // Baseline scale nudge with no tool errors, to isolate the gradient delta.
-    const base = computeSmartScore(events, noFriction);
-    const s2 = computeSmartScore(events, { ...noFriction, toolError: 2 });
-    const s3 = computeSmartScore(events, { ...noFriction, toolError: 3 });
-    const s5 = computeSmartScore(events, { ...noFriction, toolError: 5 });
-    const s8 = computeSmartScore(events, { ...noFriction, toolError: 8 });
+    const base = computeSmartScore(frictionParams, events, noFriction);
+    const s2 = computeSmartScore(frictionParams, events, { ...noFriction, toolError: 2 });
+    const s3 = computeSmartScore(frictionParams, events, { ...noFriction, toolError: 3 });
+    const s5 = computeSmartScore(frictionParams, events, { ...noFriction, toolError: 5 });
+    const s8 = computeSmartScore(frictionParams, events, { ...noFriction, toolError: 8 });
     expect(s2).toBe(base); // below the first tier → no extra points
     expect(s3).toBeGreaterThan(s2);
     expect(s5).toBeGreaterThan(s3);
@@ -305,13 +309,13 @@ describe('computeSmartScore (friction model)', () => {
 
   it('a struggle-heavy session (8+ tool errors + correction) clears threshold', () => {
     const events = [makeEvent({ toolName: 'Bash' })];
-    const score = computeSmartScore(events, { ...noFriction, toolError: 8, correction: 1 });
+    const score = computeSmartScore(frictionParams, events, { ...noFriction, toolError: 8, correction: 1 });
     expect(score).toBeGreaterThanOrEqual(CONTRIBUTE_SMART_THRESHOLD);
   });
 
   it('friction accumulates across signal types', () => {
     const events = [makeEvent({ toolName: 'Bash' })];
-    const score = computeSmartScore(events, { interrupt: 1, toolReject: 1, correction: 1, toolError: 5 });
+    const score = computeSmartScore(frictionParams, events, { interrupt: 1, toolReject: 1, correction: 1, toolError: 5 });
     expect(score).toBeGreaterThan(CONTRIBUTE_SMART_THRESHOLD);
   });
 
@@ -320,7 +324,7 @@ describe('computeSmartScore (friction model)', () => {
       makeEvent({ toolName: 'Bash' }),
       makeEvent({ toolName: 'Skill' }),
     ];
-    const score = computeSmartScore(events);
+    const score = computeSmartScore(frictionParams, events);
     expect(score).toBeLessThan(CONTRIBUTE_SMART_THRESHOLD);
   });
 });

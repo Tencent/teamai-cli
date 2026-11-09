@@ -12,10 +12,10 @@ A benchmark run is a run of the workflow `teamai-benchmark`, which teamai ships 
 
 ## Write a suite
 
-A suite is a directory in the team repo: `benchmarks/<suite>/suite.yaml`, and one file per task in `tasks/`.
+A suite is a directory in the team repo: `benchmarks/<suite>/SUITE.yaml`, and one file per task in `tasks/`. A `suite.yaml` works too, but not both in one directory.
 
 ```yaml
-# benchmarks/fix-auth/suite.yaml
+# benchmarks/fix-auth/SUITE.yaml
 schemaVersion: v1alpha1
 name: fix-auth
 description: Fix bugs in the auth service.
@@ -368,7 +368,7 @@ A test the task's commits do not have, such as one you wrote for the task, can l
 
 ```text
 benchmarks/fix-auth/
-  suite.yaml
+  SUITE.yaml
   tasks/expired-token.yaml
   check-files/expired-token/refresh.test.ts
 ```
@@ -455,7 +455,7 @@ missing-tool   could not run          not tried                          1: name
 setup-error    setup failed           not tried                          1: names setup and 3f2c9a7
 ```
 
-`benchmark try` reads the task file and the `suite.yaml` two directories up from it as they are written, and validates both as `teamai pull` does, with the files its `check.add` entries name from that suite directory. It needs no `teamai init`. A commit the checkout lacks is fetched by SHA from the suite's `repo`, as a run does. Each commit gets a fresh clone, the suite's `setup`, the environment a trial gets (see [Run a suite](#run-a-suite)), and the suite's `timeout`. It creates no run and no record. The check runs the project's code on your machine, so try only tasks you trust.
+`benchmark try` reads the task file and the `SUITE.yaml` two directories up from it as they are written, and validates both as `teamai pull` does, with the files its `check.add` entries name from that suite directory. It needs no `teamai init`. A commit the checkout lacks is fetched by SHA from the suite's `repo`, as a run does. Each commit gets a fresh clone, the suite's `setup`, the environment a trial gets (see [Run a suite](#run-a-suite)), and the suite's `timeout`. It creates no run and no record. The check runs the project's code on your machine, so try only tasks you trust.
 
 ## Turn a session into a task
 

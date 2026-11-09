@@ -3,7 +3,8 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
-import { detectProjectConfig, loadLocalConfig } from '../config.js';
+import { detectProjectConfig, loadLocalConfig, loadTeamAgentLanguage } from '../config.js';
+import { DefaultHooks, type DefaultHook, type HintLanguage } from '../default-hooks.js';
 import { ensureDir, readJson, writeJsonAtomic } from '../utils/fs.js';
 import { getUserHome } from '../utils/home.js';
 import { log } from '../utils/logger.js';
@@ -20,24 +21,24 @@ import {
 import type { LocalConfig } from '../types.js';
 import type { PackageManifest } from './types.js';
 
-export function buildPackageHintMessage(
-  npmCount: number,
-  claudeCount: number,
-  marketplaceCount = 0,
-): string {
+/** How many of each kind of package the team declares. */
+export interface DeclaredPackageCounts {
+  readonly npm: number;
+  readonly claude: number;
+  readonly marketplace: number;
+}
+
+/** The package hint: `hook`'s `message.md` (its variant for `language`), its `{{ summary }}` naming what the team declares. */
+export function buildPackageHintMessage(hook: DefaultHook<'teamai-package-hint'>, { npm, claude, marketplace }: DeclaredPackageCounts, language: HintLanguage): string {
   const summary = [
-    npmCount > 0 ? `${npmCount} npm package${npmCount === 1 ? '' : 's'}` : '',
-    claudeCount > 0 ? `${claudeCount} Claude plugin${claudeCount === 1 ? '' : 's'}` : '',
-    marketplaceCount > 0
-      ? `${marketplaceCount} Claude marketplace${marketplaceCount === 1 ? '' : 's'}`
+    npm > 0 ? `${npm} npm package${npm === 1 ? '' : 's'}` : '',
+    claude > 0 ? `${claude} Claude plugin${claude === 1 ? '' : 's'}` : '',
+    marketplace > 0
+      ? `${marketplace} Claude marketplace${marketplace === 1 ? '' : 's'}`
       : '',
   ].filter(Boolean).join(' and ');
 
-  return [
-    `[teamai:pkg-hint] Team package declarations changed (${summary}).`,
-    'Review the packages section, then run `teamai packages` to apply it.',
-    'TeamAI never installs third-party package or plugin code automatically at SessionStart.',
-  ].join('\n');
+  return hook.text('message', language).render({ summary });
 }
 
 interface PackageHintState {
@@ -92,11 +93,11 @@ async function computePackageHintState(cwd: string): Promise<PackageHintState | 
 
   return {
     manifestHash: packageDeclarationHash(manifest),
-    message: buildPackageHintMessage(
-      manifest.packages.npm?.length ?? 0,
-      manifest.packages.claude?.plugins.length ?? 0,
-      manifest.packages.claude?.marketplaces.length ?? 0,
-    ),
+    message: buildPackageHintMessage(await DefaultHooks.load('teamai-package-hint', localConfig), {
+      npm: manifest.packages.npm?.length ?? 0,
+      claude: manifest.packages.claude?.plugins.length ?? 0,
+      marketplace: manifest.packages.claude?.marketplaces.length ?? 0,
+    }, await loadTeamAgentLanguage(localConfig)),
   };
 }
 

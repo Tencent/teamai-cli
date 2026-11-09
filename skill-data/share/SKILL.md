@@ -20,7 +20,7 @@ Summarize what this AI coding session taught you and push it to the team knowled
   path, title and learnings namespace; return an empty list when nothing is worth sharing. Do not
   run `teamai contribute`: the run's `contribute` step runs it for each one after its approval.
   For a session other than your own, read it with `teamai session show <session> --source <source>`.
-- **The friction reminder** (its `[teamai]` text names `teamai skill get share`): teamai already
+- **The friction reminder** (its text, `[teamai]` or the team's own, names `teamai skill get share`): teamai already
   found that `teamai-share-learnings` cannot run here. Follow How It Works to the end.
 - **The person asked to share what this session taught, or to close it**: start the
   `teamai-share-learnings` workflow (to only publish or score it, `teamai-share-session`). Run

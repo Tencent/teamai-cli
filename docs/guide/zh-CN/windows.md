@@ -20,6 +20,18 @@ teamai hooks list                   # 各工具的内置钩子集合
 
 每个事件做什么，见[基础 Harness](sharing.md#hooks)。
 
+## Hook 目录
+
+[hook 目录](sharing.md#hooks)的路径用正斜杠写出，teamai 不加引号。`C:\Users\Zoë Li` 这样的 home 带空格，所以要给变量加引号：
+
+```text
+command: bash "${TEAMAI_HOOK_DIR}/scan.sh"       # bash "C:/Users/Zoë Li/.teamai/hooks/block-secrets.e246f037/scan.sh"
+command: node "${TEAMAI_HOOK_DIR}/check.mjs"
+command: powershell -File "${TEAMAI_HOOK_DIR}/scan.ps1"
+```
+
+Git Bash、Windows PowerShell 和 Node 都能读正斜杠路径。命令在各工具所用的 shell 里运行，见上文。
+
 ## 拉取时的长路径
 
 TeamAI 在 Windows 上为共享 Git 客户端启用 `core.longpaths`，不会修改全局或仓库的 Git 配置。

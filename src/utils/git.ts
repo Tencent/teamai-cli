@@ -1928,6 +1928,15 @@ export async function getHeadCommit(localPath: string, rev = 'HEAD', abort?: Abo
   }
 }
 
+/** The commit `left` and `right` fork from, or null when they share none, either names no commit, or git fails. */
+export async function getMergeBase(localPath: string, left: string, right: string): Promise<string | null> {
+  try {
+    return (await createGit(localPath).raw(['merge-base', left, right])).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 /** The branch checked out, or null on a detached HEAD, or when git fails or is aborted. */
 export async function getCurrentBranch(localPath: string, abort?: AbortSignal): Promise<string | null> {
   try {

@@ -21,7 +21,6 @@ afterEach(async () => {
 describe('findSkippedFolders', () => {
   it('finds a folder holding its type marker at the root of each type and inside a namespace', async () => {
     const markers = {
-      workflows: 'WORKFLOW.yaml',
       hooks: 'HOOK.yaml',
       rules: 'RULE.md',
       mcp: 'MCP.yaml',
@@ -38,10 +37,18 @@ describe('findSkippedFolders', () => {
 
     const skipped = await findSkippedFolders(repo);
 
-    expect(skipped.map((folder) => folder.path).sort()).toEqual(Object.keys(markers).flatMap((dir) => [
+    // Hook, rule, MCP server and suite folders are read (#1787), so only the other types are skipped.
+    expect(skipped.map((folder) => folder.path).sort()).toEqual(Object.keys(markers).flatMap((dir) => ['hooks', 'rules', 'mcp', 'benchmarks'].includes(dir) ? [] : [
       `${dir}/at-root/`,
       `${dir}/team/in-namespace/`,
     ]).sort());
+  });
+
+  it('skips no workflow folder: this release reads them', async () => {
+    await put('workflows/release/WORKFLOW.yaml');
+    await put('workflows/team/deploy/WORKFLOW.yaml');
+
+    expect(await findSkippedFolders(repo)).toEqual([]);
   });
 
   it('ignores a marker of another type, a lower-case name, and a marker at the type root', async () => {
@@ -61,9 +68,9 @@ describe('findSkippedFolders', () => {
 
 describe('skippedFolderMessage', () => {
   it('names the folder and its kind in one fixed line', () => {
-    expect(skippedFolderMessage({ type: 'rules', path: 'rules/api-style/' }))
-      .toBe('rules/api-style/ is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.');
-    expect(skippedFolderMessage({ type: 'mcp', path: 'mcp/github/' }))
-      .toBe('mcp/github/ is an MCP server folder, which this teamai cannot read yet; it was skipped. Run teamai update.');
+    expect(skippedFolderMessage({ type: 'agents', path: 'agents/reviewer/' }))
+      .toBe('agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.');
+    expect(skippedFolderMessage({ type: 'scorers', path: 'scorers/tone/' }))
+      .toBe('scorers/tone/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.');
   });
 });

@@ -15,7 +15,7 @@ teamai remove skills <name>
 teamai remove rules <name> --force
 ```
 
-`doctor` 有一项没过就以状态码 1 退出。`doctor --fix` 还会在超过 `workflows.retention` 后移除工作流运行留下的内容，并再次删除成功的运行没能删除的分支（见[运行留下的分支](./workflow.md#运行留下的分支)）。`stats` 在有 recall 记录时会多一节，见 [Recall 采纳与 upvote](./knowledge.md#recall-采纳与-upvote)。
+`doctor` 有一项没过就以状态码 1 退出。`doctor --fix` 还会在超过 `workflows.retention` 后移除工作流运行留下的内容，并再次删除成功的运行没能删除的分支（见[运行留下的分支](./workflow.md#运行留下的分支)）。它还会删掉仓库里已删除的 worktree 留在 HOME 里的团队 hook 条目。`stats` 在有 recall 记录时会多一节，见 [Recall 采纳与 upvote](./knowledge.md#recall-采纳与-upvote)。
 
 对于已知 agent 搜索路径的工具，`doctor` 还会检查配置的 agents 目录是否在工具的读取范围内。仅成功写入自定义目录并不能通过此项检查；请修正团队仓库中的 `toolPaths.<tool>.agents`，然后重新 pull。
 

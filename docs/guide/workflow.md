@@ -2,7 +2,7 @@
 
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
-A workflow is a YAML file at `workflows/<name>.yaml` in the team repo. It runs command and prompt steps, each after the steps it needs. A command with no workspace is read-only; [Workspaces](#workspaces) is how a step changes code on its own branch. [Advanced workflows](workflow-advanced.md) covers parallel steps, loops, `for_each`, what an end does to steps that still run, and the full expression language.
+A workflow is a YAML file at `workflows/<name>.yaml` in the team repo, or a [folder](#workflow-folders) that holds it as `workflows/<name>/WORKFLOW.yaml` with the files it needs. It runs command and prompt steps, each after the steps it needs. A command with no workspace is read-only; [Workspaces](#workspaces) is how a step changes code on its own branch. [Advanced workflows](workflow-advanced.md) covers parallel steps, loops, `for_each`, what an end does to steps that still run, and the full expression language.
 
 ```yaml
 schemaVersion: v1alpha1
@@ -22,7 +22,7 @@ steps:
     agent: reviewer
 ```
 
-`schemaVersion` must be `v1alpha1`. `name` must match the file name. `description` is required. Each step has a unique `id` and exactly one action: `command`, `prompt`, `prompt_file`, or `workflow`. A step can omit the action when it has `end`, `approve`, or `choose`. `agent` is optional on prompt steps. `output` uses the existing shorthand: `string`, `number`, `boolean`, a literal union, an object, or an array with one item type. TeamAI validates successful command stdout or a prompt tool's `output` against it.
+`schemaVersion` must be `v1alpha1`. `name` must match the file name, or the folder name of a workflow folder. `description` is required. Each step has a unique `id` and exactly one action: `command`, `prompt`, `prompt_file`, or `workflow`. A step can omit the action when it has `end`, `approve`, or `choose`. `agent` is optional on prompt steps. `output` uses the existing shorthand: `string`, `number`, `boolean`, a literal union, an object, or an array with one item type. TeamAI validates successful command stdout or a prompt tool's `output` against it.
 
 Every driver tells a prompt step its `output` as JSON Schema, so the prompt does not need to repeat it. Each declared field is required, and extra fields are allowed. This step:
 
@@ -86,7 +86,7 @@ A step whose dependency failed still runs when its `if` reads every failed depen
 
 The run still ends `failed` unless it reaches an end. An `if` that does not parse, reads a step it does not need, or reads a field missing from that step's `output` makes the file invalid. So does an `if` that is always false, and then the workflow has nothing to run, even when an older version was valid.
 
-`teamai pull` and `teamai push` check each file, and check a step that runs another workflow against that workflow's runnable version. A `prompt_file` must be a regular, non-symlink file under `prompts/` in the team repo. Its text is cached with the validated workflow, so an existing run keeps that revision even if the source is later changed or deleted. A file that was valid before keeps that version in the local cache when a new revision is invalid, as long as that version still fits the workflows it runs. A field this version of teamai does not know is different: that workflow has nothing to run until teamai is updated.
+`teamai pull` and `teamai push` check each file, and check a step that runs another workflow against that workflow's runnable version. A `prompt_file` must be a regular, non-symlink file under `prompts/` in the team repo, or a file of its [workflow folder](#workflow-folders). Its text is cached with the validated workflow, so an existing run keeps that revision even if the source is later changed or deleted. A file that was valid before keeps that version in the local cache when a new revision is invalid, as long as that version still fits the workflows it runs. A field this version of teamai does not know is different: that workflow has nothing to run until teamai is updated.
 
 `teamai review --branch <name>` checks that branch with the same rules. It exits 1 when any workflow file is invalid, or when a step's `model` or `defaults.model` is an alias the branch's `models/aliases.yaml` maps for no tool. It writes nothing and does not run the workflow. This file fails the check:
 
@@ -146,6 +146,8 @@ steps:
     needs: [collect]
     prompt: Draft release notes from the commits listed in the file commits.txt in the directory $TEAMAI_RUN_DIR names.
 ```
+
+Every process a step of a [workflow folder](#workflow-folders) starts also gets `TEAMAI_WORKFLOW_DIR`: the run's own copy of the folder, under the TeamAI data directory, with forward slashes on Windows too. The run keeps that copy as it started, whatever a later pull does to the folder. A prompt names it the way it names `TEAMAI_RUN_DIR` ("the file notes.md in the directory $TEAMAI_WORKFLOW_DIR names"); teamai does not substitute it in `prompt` or `answer` text. A workflow a step runs sees the folder of the file that defines it: an inline `workflow:` its parent's, a named folder workflow its own, a named single file none. A workflow a [`from` step](workflow-advanced.md#run-a-workflow-a-step-printed) prints sees the folder of the workflow that printed it. A single-file workflow does not get it.
 
 A step can run another workflow from `workflows/` with `workflow: <name>` and pass that workflow's inputs with `with`:
 
@@ -245,6 +247,46 @@ $ teamai workflow start nightly-small --driver local --tools default=claude
 ```
 
 Use `workflow respond <run> <step> <choice>` for a waiting HITL request, `workflow retry <run> <step>` for a failed or stuck step, `workflow cancel <run> [step]` to stop work, `workflow resume <run>` to continue locally, and `workflow publish <run>` to let another machine continue it ([Continue a run on another machine](#continue-a-run-on-another-machine)). `next` answers `lease`, `hitl`, `wait`, or `done`. See [HITL](workflow-advanced.md#hitl-human-in-the-loop) and [Retry, cancel, and resume](workflow-advanced.md#retry-cancel-and-resume).
+
+## Workflow folders
+
+A workflow that needs scripts, prompts or notes keeps them beside it in a folder:
+
+```
+workflows/release/
+├─ WORKFLOW.yaml
+├─ plan.py
+├─ summary.md
+├─ notes.md
+└─ README.md
+```
+
+```yaml
+# workflows/release/WORKFLOW.yaml
+schemaVersion: v1alpha1
+name: release
+description: Plan the release, summarise it and open the PR.
+steps:
+  - id: plan
+    command: python3 "$TEAMAI_WORKFLOW_DIR/plan.py"
+    output: { version: string }
+  - id: summary
+    needs: [plan]
+    prompt_file: summary.md
+  - id: notes
+    needs: [summary]
+    answer_file: notes.md
+    output: { text: string }
+```
+
+- A directory under `workflows/`, at the root or in a namespace (`workflows/<ns>/<name>/`), that holds `WORKFLOW.yaml` is a workflow named after the directory. A namespace directory without it stays a namespace. The name is matched exactly, so a lower-case `workflow.yaml` is a workflow named `workflow`.
+- Every other file of the folder, in subdirectories too, belongs to the workflow; names starting with `.` are skipped. Another `*.yaml` in it is not a workflow, and pull says so once per folder: `workflows/release/ is a workflow folder; checks.yaml in it is not a workflow`.
+- `prompt_file` and [`answer_file`](workflow-advanced.md#ask-the-members-ai-tool-for-an-answer) name a file of the folder, from its root, in a subdirectory too. `..` or an absolute path makes the workflow invalid. Outside a folder, both are looked up under `prompts/`.
+- A file and a folder of one name in one place, such as `workflows/release.yaml` beside `workflows/release/`, leave the workflow nothing to run until one is removed.
+- A `teamai-` folder name only replaces a [default](#default-workflows) of that name. Pull skips any other with a warning: `workflows/teamai-release/ is skipped: a teamai- name only replaces a teamai default, and teamai has no workflow named teamai-release. Rename the folder.`
+- A folder holds UTF-8 text only, 1 MB in all, and no symlink. [Workflow folders in a run](workflow-advanced.md#workflow-folders-in-a-run) covers these limits and how a run keeps its copy.
+- `README.md` is for people. teamai never gives it to an agent, and the skill pull generates for the workflow leaves it out.
+- `teamai status` counts a folder as one workflow. In single-repo, the folder lives under `.teamai/workflows/`, and `teamai push` sends every file of it.
 
 ## Workspaces
 
@@ -437,7 +479,7 @@ teamai workflow start tighten-rule --inputs '{"rule":"backend"}'
 - `branch` reads only `{{ inputs.* }}` and the outputs of steps the step needs, such as `teamai/tasks/{{ steps.draft.outputs.id }}`, so a later run that gives the same values goes on with the same branch and pull request. It is rendered when the step is leased. Without it, the step uses the run's branch for that step and pass. A branch that is the team repo's default branch, or that git cannot name, fails the step with `workspace_base`.
 - A branch that conflicts with the default branch fails the step with `merge_conflict` before it runs. Merge the default branch into it, or delete it.
 - Only a command or prompt step that runs once takes it, never a `workflow` step or a `for_each`, and it lists no `scorers`, since the clone is gone once the step reports. It takes no `role` either, even from a `workflow` step around it, since it runs in its own clone rather than that step's copy. The local driver runs it, and so does the skill driver on a host that starts child agents: a command in its background runner, a prompt in a child working in the clone. `workflow publish` refuses its run, since the clone is on that machine only.
-- Before it pushes, the commit must be one `teamai pull` would take. Every file it changes must be in a directory pull places (`skills/`, `rules/`, `scorers/`, `benchmarks/` and the others), and none may be a symlink or a submodule, or a file a symlink in the clone also reaches, since the step may have written it by the symlink's path. A benchmark file must be inside a suite pull reads, `benchmarks/<suite>/` or `benchmarks/<namespace>/<suite>/` with a `suite.yaml`, and pull must reject nothing it did not reject on the default branch, such as a workflow whose scorer the step deleted. Otherwise the step fails with `push_failed`, names each file and why, and pushes nothing.
+- Before it pushes, the commit must be one `teamai pull` would take. Every file it changes must be in a directory pull places (`skills/`, `rules/`, `scorers/`, `benchmarks/` and the others), and none may be a symlink or a submodule, or a file a symlink in the clone also reaches, since the step may have written it by the symlink's path. A benchmark file must be inside a suite pull reads, `benchmarks/<suite>/` or `benchmarks/<namespace>/<suite>/` with a `SUITE.yaml`, and pull must reject nothing it did not reject on the default branch, such as a workflow whose scorer the step deleted. Otherwise the step fails with `push_failed`, names each file and why, and pushes nothing.
 - A commit a teammate pushed to the branch while the step ran fails it with `push_failed`. Origin keeps that commit, and the next run starts from it.
 - When the branch holds what the default branch holds, as once its pull request was squash-merged, the step pushes nothing and opens no pull request.
 - Opening the pull request waits while a `teamai pull` or `push` holds the member's team repo.
@@ -1104,6 +1146,14 @@ teamai ships workflows a team gets without writing them:
 | `teamai-session-to-task` | turns the work the session finished, such as a bug fix or a feature, into a [benchmark task](benchmarks.md#turn-a-session-into-a-task), proposed to the team as a pull request from the [team workspace](#the-team-workspace). Inputs: `session`, `source`, `suite`, `start`, `solution`, and `team_session` and `author` for a session a teammate pushed (default empty) | always |
 | `teamai-sessions-to-tasks` | [builds a suite from past sessions](benchmarks.md#build-a-suite-from-past-sessions): lists the finished sessions the suite could take a task from, the AI picks representative ones per size, and each pick runs `teamai-session-to-task`, one at a time. Inputs: `suite`, `count`, `sizes` (default `S=40,3 M=200,10 L=800,30`) | always: `invoke: ask`, so an agent starts it once the person agrees |
 
+Most defaults are one file, `workflows/<name>.yaml` in the installed package. Three are [workflow folders](#workflow-folders) that keep what they ask the AI tool in files of their own, with a `README.md` on their inputs, outputs and settings:
+
+```
+workflows/teamai-import-from-mr/          WORKFLOW.yaml  draft.en.md  draft.zh.md  README.md
+workflows/teamai-codebase-deep-enrich/    WORKFLOW.yaml  component.md  architecture.md  scenarios.md  README.md
+workflows/teamai-import-from-repo/        WORKFLOW.yaml  narrative.md  README.md
+```
+
 A command that starts a default workflow, such as `teamai recall promote <id>`, prints what the command always printed. It names its run only when it stops before the run ends, such as on Ctrl-C:
 
 ```text
@@ -1304,6 +1354,34 @@ Start from the file the package ships, edit it, push it, and pull:
 ```bash
 cp "$(npm root -g)/teamai-cli/workflows/teamai-share-learnings.yaml" workflows/teamai-share-learnings.yaml
 ```
+
+Three defaults are folders, at `workflows/<name>/WORKFLOW.yaml` in the package where earlier releases had `workflows/<name>.yaml`: `teamai-import-from-mr`, `teamai-codebase-deep-enrich` and `teamai-import-from-repo`. A `workflows/<name>.yaml` your team already has still replaces the default.
+
+A default that is a folder is copied whole, to the same path. To have MR learnings in English name what the review left open, copy `teamai-import-from-mr`:
+
+```bash
+cp -R "$(npm root -g)/teamai-cli/workflows/teamai-import-from-mr" workflows/
+```
+
+add a section to its English prompt, `workflows/teamai-import-from-mr/draft.en.md`:
+
+```diff
+ ## Lessons
+ - lesson 1
+ - lesson 2
++
++## Open questions
++- what the review threads left unresolved (or "none")
+```
+
+then push it and pull:
+
+```bash
+git add workflows/teamai-import-from-mr && git commit -m "MR learnings name open questions" && git push
+teamai pull
+```
+
+The team's folder replaces teamai's as a whole, `draft.zh.md` and `README.md` included. Keep every file its `WORKFLOW.yaml` names.
 
 describe still proposes values for the inputs that keep their name and type from the default, and leaves any other input to the person:
 

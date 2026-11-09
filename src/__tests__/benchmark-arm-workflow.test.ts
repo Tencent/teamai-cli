@@ -108,6 +108,17 @@ describe('pinArmWorkflow', () => {
     expect(!pinned.ok && pinned.message).toContain('workflows/devops/fix-once.yaml');
   });
 
+  it.each<{ folder: string; files: Record<string, string>; says: string }>([
+    { folder: 'the arm workflow', files: { 'workflows/fixer/WORKFLOW.yaml': FIXER, 'workflows/fix-once.yaml': FIX_ONCE }, says: 'Arm "flow" runs workflow "fixer", which is a workflow folder' },
+    { folder: 'a workflow it runs', files: { 'workflows/fixer.yaml': FIXER, 'workflows/fix-once/WORKFLOW.yaml': FIX_ONCE }, says: 'Arm "flow" runs workflow "fixer", which runs workflow "fix-once", which is a workflow folder' },
+  ])('refuses an arm workflow when $folder is a workflow folder', async ({ files, says }) => {
+    const { config, revision } = teamAt(['ops'], files);
+
+    const pinned = await pinArmWorkflow(config, { arm: ARM, name: 'fixer', revision, unattended: false });
+
+    expect(pinned).toMatchObject({ ok: false, code: 'arm_workflow_unrunnable', message: expect.stringContaining(`${says}, and benchmark arms cannot run workflow folders yet`) });
+  });
+
   const fixThen = (step: string): string => `schemaVersion: v1alpha1
 name: fixer
 description: Fix, then do more.

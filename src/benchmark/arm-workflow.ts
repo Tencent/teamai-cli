@@ -91,6 +91,14 @@ export async function pinArmWorkflow(
 
   const sources = new Map([[top.definition.name, top], ...children.flatMap(([child, cached]) => (cached ? [[child, cached] as const] : []))]);
 
+  // A trial runs a bundle of copies, which carries no files beside the workflow.
+  for (const [file, cached] of sources) {
+    if (cached.files === undefined) continue;
+    const holder = file === top.definition.name ? '' : `, which runs workflow "${file}"`;
+
+    return refuse(`${runs}${holder}, which is a workflow folder, and benchmark arms cannot run workflow folders yet. Write it as one file under workflows/ for the arm, push it, run teamai pull, and start again.`);
+  }
+
   for (const [file, cached] of sources) {
     const refused = unrunnableStep(cached.definition.steps);
 

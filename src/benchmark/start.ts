@@ -9,6 +9,7 @@ import path from 'node:path';
 import { isRecordableLabel, isRecordableName, observeCheckout } from '../agent-observation.js';
 import { loadLocalConfigForScope } from '../config.js';
 import { isModelAlias, loadModelAliases, loadTeamModelAliases, noModelCause, noModelReason, resolveModelValue, type ModelAliases, type ModelResolution, type NoModel } from '../models/aliases.js';
+import { readFolderMarker, RESOURCE_LAYOUTS } from '../resources/resolver.js';
 import { defaultScorerRubric, pinScorers } from '../scorers/cache.js';
 import { RunScorers } from '../scorers/run-scorers.js';
 import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
@@ -171,7 +172,7 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
   const cached = await loadCachedSuite(config, name);
 
   if (cached === null) {
-    return refuse(error('benchmark_not_found', `Suite "${name}" has no runnable version for this member. Check benchmarks/${name}/suite.yaml and that your roles or projects receive its namespace, push it, run teamai pull, and start again.`));
+    return refuse(error('benchmark_not_found', `Suite "${name}" has no runnable version for this member. Check benchmarks/${name}/SUITE.yaml and that your roles or projects receive its namespace, push it, run teamai pull, and start again.`));
   }
 
   const tasks = chosenOf(cached.tasks, options.chosen.tasks, ({ id }) => id);
@@ -664,7 +665,7 @@ export function outdatedBenchmarkPlan(run: RunState): WorkflowFailure | undefine
 
 /**
  * `teamai benchmark try <task file>`: whether a task's check tells its solution from no change, before the task reaches a
- * suite. Reads the task file and the suite.yaml two directories up from it as written, with no
+ * suite. Reads the task file and the SUITE.yaml (or suite.yaml) two directories up from it as written, with no
  * install, and validates both as pull does. A check task's check must fail by its own exit at `startingCommit`, as its
  * baseline must, and with `solutionCommit`, pass at the solution with the protected paths as `startingCommit` has them, as a
  * trial's check would read a correct change. Each runs in a fresh clone from `checkout`, or from a cache that fetched the
@@ -672,14 +673,18 @@ export function outdatedBenchmarkPlan(run: RunState): WorkflowFailure | undefine
  * record.
  */
 export async function tryBenchmarkTask(file: string, options: { checkout: string; signal?: AbortSignal; progress: (line: string) => void }): Promise<WorkflowEnvelope> {
-  const suiteFile = path.join(path.dirname(path.dirname(file)), 'suite.yaml');
+  const posix = (at: string): string => at.split(path.sep).join('/');
+  const suiteDir = path.dirname(path.dirname(file));
+  const held = await readFolderMarker(RESOURCE_LAYOUTS.benchmarks, { full: suiteDir, path: `${posix(suiteDir)}/` });
+
+  if (held.kind === 'invalid') return error('benchmark_invalid', held.message);
+  const suiteFile = path.join(suiteDir, held.kind === 'folder' ? held.marker : RESOURCE_LAYOUTS.benchmarks.marker);
   const read = (at: string): Promise<string | undefined> => fs.readFile(at, 'utf8').catch(() => undefined);
   const [suiteText, taskText] = [await read(suiteFile), await read(file)];
 
   if (taskText === undefined) return error('benchmark_not_found', `The task file ${file} could not be read. Pass the path of a task file, such as benchmarks/<suite>/tasks/<task>.yaml in a checkout of the team repo.`);
 
   if (suiteText === undefined) return error('benchmark_not_found', `${suiteFile} could not be read: teamai benchmark try reads the suite two directories up from the task file, as in benchmarks/<suite>/tasks/<task>.yaml.`);
-  const posix = (at: string): string => at.split(path.sep).join('/');
   const taskSource = { relativePath: posix(file), content: taskText };
   const files = await readSuiteFiles(path.dirname(suiteFile), posix(path.dirname(suiteFile)), [taskSource]);
   const parsed = parseSuite({ suite: { relativePath: posix(suiteFile), content: suiteText }, tasks: [taskSource], files });

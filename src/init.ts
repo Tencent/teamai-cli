@@ -1926,8 +1926,8 @@ export async function initSelfRepo(options: GlobalOptions & {
   log.info('  2. Run `teamai push` for the above — it scans .teamai/{skills,rules,agents,env} plus your AI tool dirs and opens a PR against your repo, without touching your working tree.');
   log.info('  3. docs / hooks / mcp are edited directly and shipped with a normal commit — no push needed:');
   log.info('       .teamai/docs/          team docs');
-  log.info('       .teamai/hooks/hooks.yaml   team hooks');
-  log.info('       .teamai/mcp/mcp.yaml       shared MCP servers');
+  log.info('       .teamai/hooks/         team hooks: hooks.yaml, or a folder <id>/HOOK.yaml beside its script');
+  log.info('       .teamai/mcp/           shared MCP servers: mcp.yaml, or a folder <name>/MCP.yaml beside its files');
   log.info('  4. Push your business repo (e.g. `git push -u origin HEAD`) so teammates get the .teamai/ knowledge and are auto-initialized on clone.');
   closePrompt();
 }

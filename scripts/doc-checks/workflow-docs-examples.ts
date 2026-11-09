@@ -18,6 +18,7 @@ import { formatDiagnostic } from '../../src/workflow/parse.js';
 import { WORKSPACE_MODES, type DriverIdentity, type WorkflowEnvelope } from '../../src/workflow/types.js';
 import { knownSecrets } from '../../src/env-resolution.js';
 import { parseSuite, type SourceFile } from '../../src/benchmark/suite.js';
+import { RESOURCE_LAYOUTS } from '../../src/resources/resolver.js';
 
 const ROOT = process.cwd();
 
@@ -63,16 +64,45 @@ function isWorkflow(value: JsonValue): value is JsonObject {
   return isJsonObject(value) && 'steps' in value;
 }
 
+/** The files a workflow example names with `prompt_file` or `answer_file`. */
 function promptFiles(value: JsonValue): string[] {
   if (Array.isArray(value)) return value.flatMap(promptFiles);
 
   if (!isJsonObject(value)) return [];
 
   return Object.entries(value).flatMap(([key, field]) => {
-    const file = key === 'prompt_file' ? z.string().safeParse(field).data : undefined;
+    const file = key === 'prompt_file' || key === 'answer_file' ? z.string().safeParse(field).data : undefined;
 
     return file === undefined ? promptFiles(field) : [file];
   });
+}
+
+/** The workflow folder an example's first line places it in: `release` for `# workflows/release/WORKFLOW.yaml`. */
+function exampleFolder(example: Example): string | undefined {
+  return /^# workflows\/((?:[A-Za-z0-9._-]+\/)?[A-Za-z0-9._-]+)\/WORKFLOW\.yaml\n/.exec(example.source)?.[1];
+}
+
+/**
+ * Pulls a workflow folder example in a team repo of its own, as `workflows/<folder>/WORKFLOW.yaml` beside each file it
+ * names, since a page may show a single-file example of the same name: what pull refused.
+ */
+async function folderFailures(example: Example, folder: string, value: JsonValue): Promise<string[]> {
+  const config = teamRepo();
+  const dir = path.join(config.repo.localPath, 'workflows', ...folder.split('/'));
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'WORKFLOW.yaml'), example.source);
+
+  for (const file of promptFiles(value)) {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), 'Review the change.\n');
+  }
+
+  const result = await syncScorersThenWorkflows(config, { dryRun: true });
+
+  return [
+    ...result.invalid.map((diagnostic) => `${example.label}: ${formatDiagnostic(diagnostic)}`),
+    ...result.unrunnable.map((file) => `${example.label}: ${file} has no runnable version`),
+  ];
 }
 
 /** Workflows a start line names that its page declares only in prose, as `inputs: { … }` in the same paragraph. */
@@ -150,10 +180,14 @@ function teamRepo(): LocalConfig {
 
 const driver: DriverIdentity = { kind: 'local', machine: 'docs', workspace: '/work' };
 
-/** Writes each complete workflow example on `page` into the team repo, and the prompt files they name. */
+/**
+ * Writes each complete single-file workflow example on `page` into the team repo, and the prompt files they name. A
+ * workflow folder example is returned to pull on its own.
+ */
 function writeExamples(page: string, config: LocalConfig) {
   const failures: string[] = [];
   const byFile = new Map<string, string>();
+  const folders: Array<{ example: Example; folder: string; value: JsonValue }> = [];
 
   for (const example of examplesOf(page)) {
     const document = parseDocument(example.source);
@@ -166,6 +200,12 @@ function writeExamples(page: string, config: LocalConfig) {
     const value: JsonValue = document.toJS();
 
     if (!isWorkflow(value) || example.isFragment) continue;
+    const folder = exampleFolder(example);
+
+    if (folder !== undefined) {
+      folders.push({ example, folder, value });
+      continue;
+    }
 
     // An example that names no workflow is pulled under the name of its page and line, so a new one is checked too.
     const file = `workflows/${value.name === undefined ? example.unnamed : String(value.name)}.yaml`;
@@ -181,7 +221,7 @@ function writeExamples(page: string, config: LocalConfig) {
     }
   }
 
-  return { byFile, failures };
+  return { byFile, failures, folders };
 }
 
 const cleanup = () => {
@@ -271,6 +311,16 @@ await check(
 );
 
 await check(
+  'finds a workflow folder example on the English and Chinese workflow pages',
+  () => {
+    for (const page of ['docs/guide/workflow.md', 'docs/guide/zh-CN/workflow.md']) {
+      assert.ok(examplesOf(page).some((example) => exampleFolder(example) !== undefined), `${page} shows no # workflows/<name>/WORKFLOW.yaml example`);
+    }
+  },
+  cleanup,
+);
+
+await check(
   'checks the workflow examples of the other guide pages and the design notes',
   () => {
     assert.ok(OTHER_PAGES.includes('docs/guide/benchmarks.md'));
@@ -284,9 +334,11 @@ for (const page of [...PAGES, ...SCORER_PAGES, ...OTHER_PAGES]) {
     `${page}: each yaml block parses, and its complete workflows pass pull unless the page shows their failure`,
     async () => {
       const config = teamRepo();
-      const { byFile, failures } = writeExamples(page, config);
+      const { byFile, failures, folders } = writeExamples(page, config);
 
       if (!OTHER_PAGES.includes(page)) assert.ok((byFile.size ?? 0) > 0, `${page} has no complete workflow example`);
+
+      for (const { example, folder, value } of folders) failures.push(...await folderFailures(example, folder, value));
 
       // An example may be invalid only to show a failure: the page prints its exact diagnostic as review output.
       const shown = new Set(
@@ -595,6 +647,8 @@ for (const page of SCORER_PAGES) {
 }
 
 /** Each team file a page shows: a yaml fence whose first line is `# benchmarks/<path>.yaml`. */
+const SUITE_FILES: ReadonlySet<string> = new Set([RESOURCE_LAYOUTS.benchmarks.marker, ...RESOURCE_LAYOUTS.benchmarks.markerAliases]);
+
 function benchmarkFilesOf(page: string): SourceFile[] {
   return examplesOf(page).flatMap(({ source }) => {
     const relativePath = /^# (benchmarks\/\S+\.yaml)\n/.exec(source)?.[1];
@@ -626,7 +680,7 @@ for (const page of BENCHMARK_PAGES) {
   await check(`${page}: each yaml block parses, and its suite and task files pass pull`, () => {
     for (const example of examplesOf(page)) assert.deepEqual(parseDocument(example.source).errors, [], example.label);
     const files = benchmarkFilesOf(page);
-    const [suite, ...others] = files.filter((file) => file.relativePath.endsWith('/suite.yaml'));
+    const [suite, ...others] = files.filter((file) => SUITE_FILES.has(path.posix.basename(file.relativePath)));
 
     if (!suite || others.length > 0) throw new Error(`${page} shows ${others.length + (suite ? 1 : 0)} suite files, not one`);
     const tasks = files.filter((file) => file !== suite);

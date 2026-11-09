@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DefaultWorkflows } from '../default-workflows.js';
+import { RESOURCE_LAYOUTS, Resources } from '../resources/resolver.js';
 import { knownSecrets } from '../env-resolution.js';
 import { getCurrentVersion } from '../package-info.js';
 import { AgentSession } from '../session-flow/agent-session.js';
@@ -12,7 +13,8 @@ import { gitRoot } from '../utils/branch-worktree.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { sanitizeGitUrl } from '../utils/redact.js';
 import { fetchReportsOriginFile, readReportsOriginFile, updateReports, type ReportsChange, type ReportsWriteContext } from '../utils/reports-branch.js';
-import { loadWorkflowBundle, loadWorkflowBundleAt, loadWorkflowTree, type WorkflowBundle } from './cache.js';
+import { folderOf, loadWorkflowBundle, loadWorkflowBundleAt, loadWorkflowTree, type PinnedFolder, type WorkflowBundle } from './cache.js';
+import { WorkflowFolder } from './folder.js';
 import { stepLoops } from './loop.js';
 import { pendingRecords, publishPendingRecords, type RecordDelivery } from './records.js';
 import {
@@ -735,6 +737,19 @@ type ClaimVerdict =
 export interface Definitions {
   definition: WorkflowDefinition;
   workflows: Record<string, WorkflowDefinition>;
+  /** The folder `definition` is written as, which this machine keeps a copy of before it runs a step. */
+  folder?: PinnedFolder;
+  /** The folder each of `workflows` written as one is, by the same name. */
+  folders: Record<string, PinnedFolder>;
+}
+
+/** `bundle`'s definitions, with the folders a run of them reads. */
+function definitionsIn(bundle: Pick<WorkflowBundle, 'definition' | 'workflows' | 'folder' | 'folders'>): Definitions {
+  const definitions: Definitions = { definition: bundle.definition, workflows: bundle.workflows, folders: bundle.folders };
+
+  if (bundle.folder) definitions.folder = bundle.folder;
+
+  return definitions;
 }
 
 /**
@@ -848,7 +863,7 @@ export function settledSteps({ steps, definition, workflows = {} }: { steps: Rea
  * for good, and always at the top of the run. A step whose place in the definitions is not found counts as one a loop
  * can run again.
  */
-function settledForGood({ definition, workflows }: Definitions, byId: ReadonlyMap<string, { status: string; loopFinal?: boolean }>) {
+function settledForGood({ definition, workflows }: Pick<Definitions, 'definition' | 'workflows'>, byId: ReadonlyMap<string, { status: string; loopFinal?: boolean }>) {
   // A run with a `from` step is isolated, so it never comes here.
   const workflowOf = (step: WorkflowStep) => workflowRunBy({ workflows }, step, '');
   const prefixes = (id: string) => id.split('.').map((_, at, segments) => segments.slice(0, at + 1).join('.'));
@@ -900,7 +915,7 @@ function settledForGood({ definition, workflows }: Definitions, byId: ReadonlyMa
 }
 
 /** What a run carries: its definitions and its status. */
-export interface CarriedRun extends Definitions {
+export interface CarriedRun extends Pick<Definitions, 'definition' | 'workflows'> {
   source: WorkflowSource;
   status: RunStatus;
 }
@@ -928,7 +943,7 @@ export async function carriedRun(config: LocalConfig, runId: string, { published
   const definitions = await definitionsOf(config, origin.value);
 
   return definitions.ok
-    ? ok({ ...definitions.value, source: DefaultWorkflows.sourceOfRun(origin.value), status: origin.value.status })
+    ? ok({ definition: definitions.value.definition, workflows: definitions.value.workflows, source: DefaultWorkflows.sourceOfRun(origin.value), status: origin.value.status })
     : definitions;
 }
 
@@ -1184,9 +1199,13 @@ function handedOver(snapshot: RunSnapshot, definitions: Definitions): Handover {
 export function handedRun(snapshot: RunSnapshot, definitions: Definitions, handed = handedOver(snapshot, definitions)): RunState {
   // Every published field comes from the body as it is; only what the snapshot rewrites or leaves out is rebuilt here.
   const { definitionHash: _hash, copies: _copies, steps: _steps, ...body } = snapshotBody(snapshot);
-  const pinned: Pick<RunState, 'workflows' | 'copies'> = {};
+  const pinned: Pick<RunState, 'workflows' | 'folder' | 'folders' | 'copies'> = {};
 
   if (Object.keys(definitions.workflows).length > 0) pinned.workflows = definitions.workflows;
+
+  if (definitions.folder) pinned.folder = definitions.folder.sourceHash;
+
+  if (Object.keys(definitions.folders).length > 0) pinned.folders = Object.fromEntries(Object.entries(definitions.folders).map(([name, folder]) => [name, folder.sourceHash]));
 
   if (Object.keys(handed.copies).length > 0) pinned.copies = handed.copies;
 
@@ -1203,12 +1222,13 @@ export async function definitionsOf(config: LocalConfig, snapshot: RunSnapshot):
 
   // No team commit holds a default: only the default this teamai ships can be the one that ran, whatever the name resolves to here.
   if (snapshot.origin?.source === 'default') {
-    const shipped = DefaultWorkflows.named(snapshot.name);
+    const found = await Resources.resolve(RESOURCE_LAYOUTS.workflows, snapshot.name, { teamai: DefaultWorkflows.layer });
+    const shipped = found.kind === 'resolved' && found.item.layer === 'teamai' ? found.item.shipped : undefined;
     const tree = shipped ? await loadWorkflowTree(config, shipped) : undefined;
 
-    if (shipped && tree && !('failed' in tree) && same({ definition: shipped.definition, workflows: tree.workflows, sourceHash: tree.sourceHash })) {
-      return ok({ definition: shipped.definition, workflows: tree.workflows });
-    }
+    const bundle = shipped && tree && !('failed' in tree) ? { definition: shipped.definition, workflows: tree.workflows, folder: folderOf(shipped), folders: tree.folders, sourceHash: tree.sourceHash } : undefined;
+
+    if (bundle && same(bundle)) return ok(definitionsIn(bundle));
 
     const { teamaiVersion } = snapshot.origin;
 
@@ -1220,7 +1240,7 @@ export async function definitionsOf(config: LocalConfig, snapshot: RunSnapshot):
 
   const cached = await loadWorkflowBundle(config, snapshot.name);
 
-  if (!('failed' in cached) && same(cached)) return ok({ definition: cached.definition, workflows: cached.workflows });
+  if (!('failed' in cached) && same(cached)) return ok(definitionsIn(cached));
   const revision = snapshot.teamRevision;
 
   if (!revision) {
@@ -1248,7 +1268,7 @@ export async function definitionsOf(config: LocalConfig, snapshot: RunSnapshot):
     });
   }
 
-  return ok({ definition: at.definition, workflows: at.workflows });
+  return ok(definitionsIn(at));
 }
 
 /**
@@ -1305,6 +1325,9 @@ async function install(
 
   if (Object.values(handed.copies).some((copy) => copy.commit !== undefined)) publication.reconcileCopies = true;
   const run: RunState = { ...handedRun(snapshot, definitions, handed), checkout, publication };
+
+  // The run reads its folders from this machine's data home from here on, as the one that started it did.
+  await Promise.all([...definitions.folder ? [definitions.folder] : [], ...Object.values(definitions.folders)].map((folder) => WorkflowFolder.pin(config, folder)));
 
   const installed = await updateRun(config, runId, secrets, async (local) => {
     if (local !== 'missing' && local.createdAt !== snapshot.createdAt) return { value: refused(mismatch(runId, local, snapshot)) };

@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
-import { mcpEntryReader, teamMcpToDef } from './resources/mcp.js';
-import { describeEntryFailure, describeOrigin, reportUndeliveredEntryNotices, resolveEntriesFor } from './namespaced-entries.js';
+import { TEAM_MCP_ENTRIES, teamMcpDef } from './resources/mcp.js';
+import { LayeredEntries } from './resources/layered-entries.js';
+import { describeEntryFailure, describeOrigin, reportUndeliveredEntryNotices } from './namespaced-entries.js';
 import {
   reconcileMcpForConfig,
   releaseCleanMcpGitExcludes,
@@ -36,7 +37,7 @@ function displayPath(p: string): string {
 export async function mcpList(_options: GlobalOptions): Promise<void> {
   // Read-only: the load never persists a migration (#893).
   const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: true });
-  const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
+  const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig);
 
   if (resolution.kind === 'failed') {
     reportUndeliveredEntryNotices(resolution);
@@ -63,7 +64,7 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
   }
 
   if (servers.length === 0) {
-    log.info('No team MCP servers reach this directory (mcp/mcp.yaml and active mcp/<ns>/mcp.yaml files are absent or empty)');
+    log.info('No team MCP servers reach this directory (mcp/mcp.yaml, the active mcp/<ns>/mcp.yaml files and the MCP.yaml folders define none)');
     await reportMissingSecrets(localConfig, teamEnv);
 
     return;
@@ -80,14 +81,14 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
   console.log('');
 
   for (const resolved of servers) {
-    const s = teamMcpToDef(resolved.entry);
+    const s = teamMcpDef(localConfig, resolved);
     const endpoint = s.transport === 'stdio' ? `${s.command} ${(s.args ?? []).join(' ')}`.trim() : s.url;
     console.log(`  ${s.name}  [${s.transport}]`);
 
     if (s.description) console.log(`    ${s.description}`);
     console.log(`    endpoint: ${endpoint}`);
     console.log(`    from:     ${resolved.source} (${describeOrigin(resolved)})`);
-    const roles = resolved.entry.roles;
+    const roles = resolved.entry.server.roles;
 
     if (roles) console.log(`    roles:    ${roles.length > 0 ? roles.join(', ') : 'nobody'} (deprecated)`);
 

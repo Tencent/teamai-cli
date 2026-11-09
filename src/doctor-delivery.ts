@@ -989,7 +989,7 @@ async function buildRulesActivationChecks(ctx: DoctorContext, items: ResourceIte
 
   if (soul !== undefined) {
     const { readSoulRules } = await import('./hermes-config.js');
-    const expected = await inlinedRulesText(items);
+    const expected = await inlinedRulesText(items, { teamConfig, localConfig });
     const delivered = await readSoulRules(soul);
     checks.push({
       name: 'Team rules are inlined in Hermes SOUL.md',
@@ -1311,7 +1311,7 @@ async function buildUserRulesFileChecks(ctx: DoctorContext, items: ResourceItem[
   const { inlineRulesLabelOf, inlineRulesLocationOf, teamRulesBlock, unreadableConfigOf } = await import('./resources/rules.js');
   const { isCodexTool } = await import('./utils/tool-names.js');
   const { TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, scopedToolPaths: scopedPaths } = await import('./types.js');
-  const expected = await teamRulesBlock(items);
+  const expected = await teamRulesBlock(items, { teamConfig, localConfig });
   const install = installOf(teamConfig, localConfig);
   const checks: Check[] = [];
 
@@ -1705,12 +1705,13 @@ async function teamMcpForDoctor(ctx: DoctorContext): Promise<TeamMcpForDoctor> {
   if (!getMcpSharing(teamConfig).autoApply) return { kind: 'none' };
 
   const { resolveMcpTargets, mcpTargetExcluded } = await import('./mcp-reconcile.js');
-  const { mcpEntryReader, teamMcpToDef } = await import('./resources/mcp.js');
-  const { describeEntryFailure, resolveEntriesFor } = await import('./namespaced-entries.js');
-  const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
+  const { TEAM_MCP_ENTRIES, teamMcpDef } = await import('./resources/mcp.js');
+  const { LayeredEntries } = await import('./resources/layered-entries.js');
+  const { describeEntryFailure } = await import('./namespaced-entries.js');
+  const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig);
 
   if (resolution.kind === 'failed') return { kind: 'unreadable', fix: describeEntryFailure(resolution.failure) };
-  const teamDefs = resolution.entries.map((entry) => teamMcpToDef(entry.entry));
+  const teamDefs = resolution.entries.map((entry) => teamMcpDef(localConfig, entry));
 
   if (teamDefs.length === 0) return { kind: 'none' };
   const targets = (await resolveMcpTargets(teamConfig, localConfig)).filter((target) => !mcpTargetExcluded(localConfig, target));
@@ -2111,13 +2112,13 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
   const { readResolvedMcpFiles } = await import('./mcp-resolved-files.js');
   const { gitPathOf, gitTracking, gitTracks } = await import('./git-exclude.js');
   const { sameServerKey } = await import('./resources/mcp-format.js');
-  const { mcpEntryReader, teamMcpToDef } = await import('./resources/mcp.js');
-  const { resolveEntriesFor } = await import('./namespaced-entries.js');
+  const { TEAM_MCP_ENTRIES, teamMcpDef } = await import('./resources/mcp.js');
+  const { LayeredEntries } = await import('./resources/layered-entries.js');
   const { loadProjectMcpManifest } = await import('./utils/mcp-manifest.js');
 
   // Unreadable team servers still leave teamai's entries on disk: judged by the manifest, as pull does.
-  const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
-  const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpToDef(entry.entry));
+  const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig);
+  const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpDef(localConfig, entry));
   let manifest: ManagedMcpManifest | undefined;
   let vars: Record<string, string> | undefined;
   let ledger: Record<string, ResolvedMcpFile> | undefined;
@@ -2316,8 +2317,9 @@ async function resolveEntryTypes(
   const { entryLayout, resolveEntriesFor } = await import('./namespaced-entries.js');
   const { envEntryReader } = await import('./resources/env.js');
   const { SECRETS_LAYOUT, secretsEntryReader } = await import('./resources/secrets.js');
-  const { hooksEntryReader } = await import('./resources/hooks.js');
-  const { mcpEntryReader } = await import('./resources/mcp.js');
+  const { TEAM_HOOK_ENTRIES } = await import('./resources/hooks.js');
+  const { TEAM_MCP_ENTRIES } = await import('./resources/mcp.js');
+  const { LayeredEntries } = await import('./resources/layered-entries.js');
   const { modelsEntryReader } = await import('./models/profile.js');
 
   return [
@@ -2329,10 +2331,10 @@ async function resolveEntryTypes(
     },
     {
       layout: entryLayout('hooks'),
-      resolution: await resolveEntriesFor(hooksEntryReader, localConfig),
+      resolution: await LayeredEntries.resolve(TEAM_HOOK_ENTRIES, localConfig),
       checkName: 'Team hooks can be resolved',
     },
-    { layout: entryLayout('mcp'), resolution: await resolveEntriesFor(mcpEntryReader, localConfig), checkName: null },
+    { layout: entryLayout('mcp'), resolution: await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig), checkName: null },
     {
       layout: entryLayout('models'),
       resolution: await resolveEntriesFor(modelsEntryReader, localConfig),

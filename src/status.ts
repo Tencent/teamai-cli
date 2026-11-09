@@ -8,8 +8,9 @@ import { getDefaultBranch, getHeadRev, getRepoStatus } from './utils/git.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import { log } from './utils/logger.js';
 import { findSkippedFolders, isInSkippedFolder, skippedFolderMessage } from './folder-markers.js';
+import { readTeamRules } from './resources/rules.js';
 import { getAllHandlers, getHandler } from './resources/index.js';
-import { listDirs, listFilesRecursive, pathExists, readFileSafe } from './utils/fs.js';
+import { listDirs, pathExists, readFileSafe } from './utils/fs.js';
 import { SkillsHandler } from './resources/skills.js';
 import { DocsHandler } from './resources/docs.js';
 import { detectInstalledAgents, type ResolvedAgent } from './known-agents.js';
@@ -23,8 +24,10 @@ import {
 import { RESOURCE_TYPES, LocalConfigSchema, getDataHome, installScopeName, type GlobalOptions, type ResourceType } from './types.js';
 import { projectsRootDir, readAnchorFile, projectSlug, legacyProjectSlug } from './utils/partition.js';
 import { checkoutForProjectAnchor } from './utils/git.js';
-import { mcpEntryReader } from './resources/mcp.js';
+import { TEAM_MCP_ENTRIES, teamMcpDef } from './resources/mcp.js';
+import { LayeredEntries } from './resources/layered-entries.js';
 import { resolveTeamHookEntries } from './resources/hooks.js';
+import { RESOURCE_LAYOUTS } from './resources/resolver.js';
 import { envEntryReader } from './resources/env.js';
 import { envListing } from './env-listing.js';
 import { resolveTeamEnv } from './env-resolution.js';
@@ -33,6 +36,8 @@ import {
   describeEntryFailure, describeOrigin, describeOrigins, reportUndeliveredEntryNotices, resolveEntriesFor,
   type EntryResolution, type EntryType,
 } from './namespaced-entries.js';
+
+const SUITE_FILES: ReadonlySet<string> = new Set([RESOURCE_LAYOUTS.benchmarks.marker, ...RESOURCE_LAYOUTS.benchmarks.markerAliases]);
 
 export interface ListOptions extends GlobalOptions {
   /** Where to look for resources: 'repo' (default for backwards compat),
@@ -119,10 +124,8 @@ export async function status(options: GlobalOptions): Promise<void> {
 
   const skippedFolders = await findSkippedFolders(repoPath);
 
-  const rulesFiles = (await listFilesRecursive(path.join(repoPath, 'rules')))
-    .filter(f => f.endsWith('.md') && !isInSkippedFolder(`rules/${f}`, skippedFolders));
-
-  counts.rules = rulesFiles.length;
+  // A rule folder is one rule, whatever files it holds (#1787).
+  counts.rules = (await readTeamRules(repoPath)).rules.length;
 
   counts.docs = await new DocsHandler().countDocFiles(path.join(repoPath, 'docs'));
 
@@ -150,15 +153,15 @@ export async function status(options: GlobalOptions): Promise<void> {
     : 0;
 
   count('hooks', (await resolveTeamHookEntries(localConfig)).resolution);
-  count('mcp', await resolveEntriesFor(mcpEntryReader, localConfig));
+  count('mcp', await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig));
 
   // Repo-backed types: count what's in the team repo tree.
   for (const type of ['models', 'claudemd', 'learnings', 'wiki', 'workflows', 'prompts', 'scorers', 'benchmarks'] as const) {
     try {
       counts[type] = (await getHandler(type).scanTeamForPull(teamConfig, localConfig))
         .filter((item) => type !== 'scorers' || path.posix.basename(item.relativePath) !== SCORING_FILE)
-        // A suite is its directory: count its suite.yaml, not its task files.
-        .filter((item) => type !== 'benchmarks' || path.posix.basename(item.relativePath) === 'suite.yaml').length;
+        // A suite is its directory: count its SUITE.yaml or suite.yaml, not its task files.
+        .filter((item) => type !== 'benchmarks' || SUITE_FILES.has(path.posix.basename(item.relativePath))).length;
     } catch {
       counts[type] = 0;
     }
@@ -424,7 +427,7 @@ async function printRepoSection(
   }
 
   if (t === 'mcp') {
-    const mcp = await resolveEntriesFor(mcpEntryReader, localConfig);
+    const mcp = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig);
 
     if (mcp.kind === 'failed') {
       reportUndeliveredEntryNotices(mcp);
@@ -442,7 +445,7 @@ async function printRepoSection(
     }
 
     for (const resolved of mcp.entries) {
-      const s = resolved.entry;
+      const s = teamMcpDef(localConfig, resolved);
 
       const endpoint = s.transport === 'stdio'
         ? `${s.command ?? ''} ${(s.args ?? []).join(' ')}`.trim()
@@ -477,7 +480,7 @@ async function printRepoSection(
     }
 
     for (const resolved of hooks.entries) {
-      const h = resolved.entry;
+      const h = resolved.entry.hook;
       console.log(`  ${h.id}  [${h.event}]  (${describeOrigin(resolved)})`);
 
       if (options.verbose && h.description) {

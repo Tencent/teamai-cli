@@ -26,6 +26,8 @@ import path from 'node:path';
 import chalk from 'chalk';
 import fse from 'fs-extra';
 import { findSkippedFolders, isInSkippedFolder, skippedFolderMessage, skippedFoldersIn } from './folder-markers.js';
+import { readTeamRules } from './resources/rules.js';
+import { RECALL_RULE_NAME, resolveRecall } from './builtin-rules.js';
 import { parseYaml } from './utils/yaml.js';
 import { z } from 'zod';
 
@@ -42,17 +44,21 @@ import type { AssetKind } from './asset-relations.js';
 import matter from 'gray-matter';
 import { isModelAlias, loadTeamModelAliases, noModelCause, resolveAgentModel, resolveModelValue, TEAM_ALIASES_FILE, type ModelAliases } from './models/aliases.js';
 import { parseAgentYaml, type AgentSpec, type ToolName } from './resources/agent-format.js';
-import { hooksEntryReader } from './resources/hooks.js';
+import { TEAM_HOOK_ENTRIES, defaultHookRefusals, parseTeamHooks } from './resources/hooks.js';
+import { TEAM_MCP_ENTRIES } from './resources/mcp.js';
+import { readEntryFileText } from './namespaced-entries.js';
+import { LayeredEntries, type LayeredEntryType } from './resources/layered-entries.js';
 import { getHandler } from './resources/index.js';
 import { listRepoFilesRecursive } from './resources/repo-resource.js';
+import { markerFolderOf, RESOURCE_LAYOUTS, Resources } from './resources/resolver.js';
 import { isNamespaceDir, resolveResourceNamespaces } from './resource-namespaces.js';
 import { loadRoleAssignmentsIfPresent } from './role-assignments.js';
 import { listRoleIds, loadRolesManifestIfPresent, type RolesManifest } from './roles.js';
 import { AGENT_TOOLS } from './tools.js';
 import { LocalConfigSchema, type GlobalOptions, type LocalConfig, type ResourceItem, type TeamaiConfig } from './types.js';
 import { splitFrontmatter, type FrontmatterValue } from './utils/frontmatter.js';
-import { isIgnored, listFilesRecursive, pathExists, readFileIfExists, writeFile, ensureDir } from './utils/fs.js';
-import { getFileContentAtRev, getHeadCommit, listTreeAtRev } from './utils/git.js';
+import { isIgnored, listDirs, listFilesRecursive, pathExists, readFileIfExists, writeFile, ensureDir } from './utils/fs.js';
+import { getFileContentAtRev, getHeadCommit, getMergeBase, listTreeAtRev } from './utils/git.js';
 import { isSilent, log, setSilent } from './utils/logger.js';
 import { redact } from './utils/redact.js';
 import { syncTeamDefinitions } from './benchmark/suite-cache.js';
@@ -104,10 +110,12 @@ interface ReviewResource {
   type: PlaceableType;
   name: string;
   namespace?: string;
-  /** Repo-relative path of the resource (a directory for skills, a file otherwise). */
+  /** Repo-relative path of the resource (a directory for skills, hook and MCP server folders, a file otherwise). */
   relativePath: string;
-  /** Absolute path in the materialized tree: the skill directory, or the file. */
+  /** Absolute path in the materialized tree: the skill, hook or MCP server folder directory, or the file. */
   absolutePath: string;
+  /** Whether the resource is a directory whose every file belongs to it: a skill, a hook folder or an MCP server folder. */
+  folder: boolean;
 }
 
 /** Strip a resource file extension from the last path segment. */
@@ -131,7 +139,11 @@ function parseRelativePath(
   index: ManifestIndex,
 ): PathIdentity {
   const rootSegs = rootSegmentsFor(type);
-  const all = relativePath.split('/');
+
+  // A workflow folder is named as a workflow file in its place would be: workflows/a/release/ as workflows/a/release.yaml.
+  const folder = type === 'workflows' ? markerFolderOf(RESOURCE_LAYOUTS.workflows, relativePath.slice(`${type}/`.length)) : undefined;
+  const all = (folder === undefined ? relativePath : `${type}/${folder}`).split('/');
+
   const rest = all.slice(rootSegs);
 
   if (rest.length <= 1) {
@@ -226,6 +238,46 @@ async function skippedFolderFindings(repoDir: string): Promise<Finding[]> {
   }));
 }
 
+/** What a branch is compared with: the rule folders, as `rules/api-style/`, at the commit it forks from the checkout's HEAD. */
+export interface ReviewBase {
+  readonly ruleFolders: ReadonlySet<string>;
+}
+
+/**
+ * What pull's rules reader says about the branch's rules (#1787): a rule it does not deliver fails, and a note (a
+ * language variant's frontmatter, a directory that became a rule folder) warns. A folder whose `.md` files are now its
+ * own is named only where the branch adds its RULE.md to `base`, as pull names it only when it removes a copy it
+ * delivered; with no base, every such folder is. A replacement of teamai's recall rule that pull refuses fails too.
+ */
+async function ruleFindings(repoDir: string, base: ReviewBase | null): Promise<Finding[]> {
+  const { problems, folderNotes } = await readTeamRules(repoDir);
+  const added = folderNotes.filter((note) => base === null || !base.ruleFolders.has(note.path));
+  // The team's rules/teamai-recall/ is read where the recall rule is, not with the other rules.
+  const { team: recall } = await resolveRecall(undefined, repoDir);
+
+  return [
+    ...[...added, ...problems].map(({ kind, path: at, message }): Finding => ({
+      level: kind === 'invalid' ? 'fail' : 'warn',
+      check: kind === 'invalid' || at.endsWith('/') ? 'structure' : 'format',
+      path: at,
+      message,
+    })),
+    ...recall?.kind === 'refused' ? [{ level: 'fail', check: 'structure', path: recall.folder.path, message: recall.message } satisfies Finding] : [],
+  ];
+}
+
+/** Whether `resource` is a rule folder, read through its `RULE.md`: every file in its directory belongs to it. */
+function isRuleFolder(resource: Pick<ReviewResource, 'type' | 'relativePath'>): boolean {
+  return resource.type === 'rules' && path.posix.basename(resource.relativePath) === RESOURCE_LAYOUTS.rules.marker;
+}
+
+/** Whether `resource` is a workflow folder's `WORKFLOW.yaml`, whose folder's other files are its own. */
+function isWorkflowFolder(resource: Pick<ReviewResource, 'type' | 'relativePath'>): boolean {
+  const { workflows } = RESOURCE_LAYOUTS;
+
+  return resource.type === 'workflows' && markerFolderOf(workflows, resource.relativePath.slice(`${workflows.dir}/`.length)) !== undefined;
+}
+
 /** Enumerate the resources on the branch through the same scanners pull uses. */
 async function scanResources(repoDir: string, index: ManifestIndex): Promise<ReviewResource[]> {
   // SAFETY: the skills, rules, agents and mcp pull scanners read only repo.localPath from LocalConfig.
@@ -235,10 +287,15 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
   const handlerTypes = ['skills', 'rules', 'agents', 'mcp'] as const;
   const isHandlerType = (type: PlaceableType): boolean => handlerTypes.some((handlerType) => handlerType === type);
   const items: Array<{ type: PlaceableType; item: ResourceItem }> = [];
+  // The hook and MCP server folders: each is one resource, all of whose files are its own.
+  const folderPaths = new Set<string>();
 
   for (const type of handlerTypes) {
-    items.push(...(await getHandler(type).scanTeamForPull(teamConfig, localConfig))
-      .map((item) => ({ type, item })));
+    for (const item of await getHandler(type).scanTeamForPull(teamConfig, localConfig)) {
+      // The MCP scan names an mcp.yaml server by its file and a server folder by its directory.
+      if (type === 'mcp' && path.posix.basename(item.relativePath) !== 'mcp.yaml') folderPaths.add(item.sourcePath);
+      items.push({ type, item });
+    }
   }
 
   for (const type of PLACEABLE_TYPES) {
@@ -246,13 +303,26 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
     const rootRel = repoRootFor(type);
     const root = path.join(repoDir, ...rootRel.split('/'));
     const skipped = await skippedFoldersIn(repoDir, type);
+    const hookFolders = type === 'hooks' ? await hookFolderItems(repoDir) : [];
 
-    for (const file of await listRepoFilesRecursive(root)) {
+    for (const item of hookFolders) {
+      folderPaths.add(item.sourcePath);
+      items.push({ type, item });
+    }
+
+    const files = await listRepoFilesRecursive(root);
+    // Every other file of a workflow folder is its support file, never a workflow of its own.
+    const folders = type === 'workflows' ? files.flatMap((file) => markerFolderOf(RESOURCE_LAYOUTS.workflows, file) ?? []).map((folder) => `${folder}/`) : [];
+
+    for (const file of files) {
       if (isInSkippedFolder(`${rootRel}/${file}`, skipped)) continue;
 
-      if (type === 'workflows' && !file.endsWith('.yaml')) continue;
+      if (type === 'workflows' && (!file.endsWith('.yaml') || (markerFolderOf(RESOURCE_LAYOUTS.workflows, file) === undefined && folders.some((folder) => file.startsWith(folder))))) continue;
 
       if (type === 'scorers' && path.posix.basename(file) === SCORING_FILE) continue;
+
+      // A file of a hook folder is part of the folder, which is one hook.
+      if (hookFolders.some((folder) => `${rootRel}/${file}`.startsWith(`${folder.relativePath}/`))) continue;
 
       if (type === 'hooks') {
         // Hooks are reviewed by entry, the same identity pull's hooks reader
@@ -269,10 +339,12 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
         });
 
         if (path.posix.basename(file) === 'hooks.yaml') {
-          const read = await hooksEntryReader.read(absolutePath, relativePath);
+          // A file that cannot be read has no entries here; placeFindings fails it as pull's reader does.
+          const text = await readEntryFileText(absolutePath, relativePath);
+          const hooks = text.ok && text.text !== null ? parseTeamHooks(text.text) : null;
 
-          if (read !== null && read.ok && read.entries.length > 0) {
-            for (const hook of read.entries) {
+          if (hooks !== null && hooks.length > 0) {
+            for (const hook of hooks) {
               items.push(fileEntry(hook.id));
             }
 
@@ -298,7 +370,9 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
     }
   }
 
-  return items.map(({ type, item }) => {
+  return items.map(({ type, item }): ReviewResource => {
+    const folder = type === 'skills' || folderPaths.has(item.sourcePath);
+
     // Handler-provided names (MCP server names, skill names) are authoritative;
     // parseRelativePath would overwrite them with the filename stem (e.g. 'mcp'
     // from mcp/<ns>/mcp.yaml), collapsing distinct servers into one identity.
@@ -313,14 +387,90 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
         namespace: item.namespace,
         relativePath: item.relativePath,
         absolutePath: item.sourcePath,
+        folder,
       };
     }
 
-    const { name, namespace } = parseRelativePath(type, item.relativePath, index);
+    // A rule folder is named as the rule file of its name would be: rules/fe/review/ is fe/review.
+    const { name, namespace } = parseRelativePath(type, item.folder ? `rules/${item.name}.md` : item.relativePath, index);
 
-    return { type, name, namespace, relativePath: item.relativePath, absolutePath: item.sourcePath };
+    return { type, name, namespace, relativePath: item.relativePath, absolutePath: item.sourcePath, folder };
   });
 }
+
+/** The hook folders on the branch, at the root and in each namespace, as pull's resolver finds them (#1787). */
+async function hookFolderItems(repoDir: string): Promise<ResourceItem[]> {
+  const places = [null, ...await listDirs(path.join(repoDir, 'hooks'))];
+  const layers = await Promise.all(places.map((namespace) => Resources.layer(RESOURCE_LAYOUTS.hooks, { root: repoDir, namespace })));
+
+  return layers.flatMap(({ items }) => items.flatMap((item): ResourceItem[] => (item.source.kind === 'folder' ? [{
+    type: 'hooks',
+    name: item.name,
+    namespace: item.layer === 'namespace' ? item.namespace : undefined,
+    sourcePath: item.source.full,
+    relativePath: item.source.path.replace(/\/$/, ''),
+  }] : [])));
+}
+
+/** What `placeFindings` says about one type's places, each as the whole sentence a reviewer reads. */
+interface PlaceMessages {
+  /** A place pull's reader refuses, from its reason without the final period. */
+  readonly unreadable: (reason: string) => string;
+  /** One name from two sources of one place. */
+  readonly duplicate: (name: string, first: string, second: string) => string;
+}
+
+/** A check's findings, and the folders pull skips (`hooks/teamai-lint/`), which nothing delivers. */
+interface PullReadFindings {
+  readonly findings: Finding[];
+  readonly skipped: readonly string[];
+}
+
+/**
+ * What stops pull applying one type of the branch's team entries, read as pull reads it at the root and in each
+ * namespace: a file or folder it cannot read, or one name from two of them in the same place (#1787). A folder pull
+ * skips is a warning.
+ */
+async function placeFindings<TEntry, E>(repoDir: string, type: LayeredEntryType<TEntry, E>, messages: PlaceMessages): Promise<PullReadFindings> {
+  const findings: Finding[] = [];
+  const skipped: string[] = [];
+
+  for (const namespace of [null, ...await listDirs(path.join(repoDir, type.layout.dir))]) {
+    const read = await LayeredEntries.readPlace(type, { root: repoDir, namespace });
+
+    if (!read.ok) {
+      findings.push({ level: 'fail', check: 'format', path: read.source, message: messages.unreadable(read.reason.trimEnd().replace(/\.$/, '')) });
+      continue;
+    }
+
+    for (const note of read.notes) {
+      if (note.kind !== 'skipped') continue;
+      findings.push({ level: 'warn', check: 'naming', path: note.path, message: note.message });
+      skipped.push(note.path);
+    }
+
+    const firstSource = new Map<string, string>();
+
+    for (const { item: { name, source: { path: source } } } of read.definitions) {
+      const first = firstSource.get(name);
+
+      if (first === undefined) firstSource.set(name, source);
+      else if (first !== source) findings.push({ level: 'fail', check: 'duplicates', path: source, message: messages.duplicate(name, first, source) });
+    }
+  }
+
+  return { findings, skipped };
+}
+
+const HOOK_PLACE_MESSAGES: PlaceMessages = {
+  unreadable: (reason) => `${reason}; pull leaves every member's team hooks as they are until it is fixed.`,
+  duplicate: (name, first, second) => `hook "${name}" is defined in both ${first} and ${second}, in the same place, so pull leaves every member's team hooks as they are. Keep one of them.`,
+};
+
+const MCP_PLACE_MESSAGES: PlaceMessages = {
+  unreadable: (reason) => `${reason}; pull leaves every member's team MCP servers as they are until it is fixed.`,
+  duplicate: (name, first, second) => `MCP server "${name}" is defined in both ${first} and ${second}, in the same place, so pull leaves every member's team MCP servers as they are. Keep one of them.`,
+};
 
 /**
  * The repo-relative directory a resource type lives under. It is the type name
@@ -425,10 +575,13 @@ function makeTextReader(): (absolutePath: string) => Promise<string | null> {
   };
 }
 
-async function structureFindings(resources: ReviewResource[], index: ManifestIndex): Promise<Finding[]> {
+/** Where each resource sits, and that a skill folder holds its SKILL.md. A folder in `skipped` reaches no member, so where it sits says nothing. */
+async function structureFindings(resources: ReviewResource[], index: ManifestIndex, skipped: readonly string[]): Promise<Finding[]> {
   const findings: Finding[] = [];
 
   for (const resource of resources) {
+    if (skipped.some((folder) => `${resource.relativePath}/`.startsWith(folder))) continue;
+
     if (resource.type === 'skills' && !await pathExists(path.join(resource.absolutePath, 'SKILL.md'))) {
       findings.push({
         level: 'fail',
@@ -703,12 +856,23 @@ async function filesUnder(relativeDir: string, absoluteDir: string): Promise<Arr
   }));
 }
 
+/** Each replacement of a default hook that pull refuses, with what pull prints about it. */
+async function defaultHookFindings(repoDir: string): Promise<Finding[]> {
+  return (await defaultHookRefusals(repoDir)).flatMap(({ path: folderPath, messages }) => messages.map((message): Finding => ({ level: 'fail', check: 'structure', path: folderPath, message })));
+}
+
 async function leakFindings(repoDir: string, resources: ReviewResource[], readText: (p: string) => Promise<string | null>): Promise<Finding[]> {
   const files = [
-    ...(await Promise.all(resources.map((resource) => resource.type === 'skills'
-      ? filesUnder(resource.relativePath, resource.absolutePath)
-      : [{ relativePath: resource.relativePath, absolutePath: resource.absolutePath }]))).flat(),
+    ...(await Promise.all(resources.map((resource) => {
+      if (resource.folder) return filesUnder(resource.relativePath, resource.absolutePath);
+
+      return isRuleFolder(resource) || isWorkflowFolder(resource)
+        ? filesUnder(path.posix.dirname(resource.relativePath), path.dirname(resource.absolutePath))
+        : [{ relativePath: resource.relativePath, absolutePath: resource.absolutePath }];
+    }))).flat(),
     ...await filesUnder('scorers', path.join(repoDir, 'scorers')),
+    // The team's replacement of the recall rule is not one of the rules read above, and pull delivers its text to every member.
+    ...await filesUnder(`rules/${RECALL_RULE_NAME}`, path.join(repoDir, 'rules', RECALL_RULE_NAME)),
   ];
 
   const findings: Finding[] = [];
@@ -1174,7 +1338,7 @@ function reviewTreeConfig(repoDir: string, dataHome: string): LocalConfig {
  * cache. A workflow file any selection's pull rejects is one finding per message, however many selections receive it.
  * A scorer is missing when no selection receives a valid scorer of that name: one selection's scorer may be another's gap.
  */
-async function workflowFindings(repoDir: string, received: readonly Received[]): Promise<Finding[]> {
+async function workflowFindings(repoDir: string, received: readonly Received[]): Promise<PullReadFindings> {
   const dataHome = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-review-workflows-'));
   const wasSilent = isSilent();
   setSilent(true);
@@ -1207,7 +1371,7 @@ async function workflowFindings(repoDir: string, received: readonly Received[]):
       if (!unknownScorers.has(key)) unknownScorers.set(key, { level: 'fail', check: 'workflows', path: unknown.file, message });
     }
 
-    return [
+    const findings: Finding[] = [
       ...result.scorers.invalid.map((diagnostic): Finding => ({
         level: 'fail',
         check: 'scorers',
@@ -1216,6 +1380,8 @@ async function workflowFindings(repoDir: string, received: readonly Received[]):
       })),
       ...invalid.values(),
       ...unknownScorers.values(),
+      // Every namespace is read here, and a skip depends only on the folder's name, so no selection adds one.
+      ...result.skipped.map(({ path: skippedPath, message }): Finding => ({ level: 'warn', check: 'naming', path: skippedPath, message })),
       // Each still starts by name; the alias starts nothing, or another workflow.
       ...result.aliasConflicts.map((diagnostic): Finding => ({
         level: 'fail',
@@ -1225,6 +1391,8 @@ async function workflowFindings(repoDir: string, received: readonly Received[]):
       })),
       ...await newerWorkflowKeyFindings(repoDir),
     ];
+
+    return { findings, skipped: result.skipped.map(({ path: skippedPath }) => skippedPath) };
   } finally {
     setSilent(wasSilent);
     await fse.remove(dataHome);
@@ -1602,8 +1770,8 @@ async function modelFindings(resources: ReviewResource[], readText: (p: string) 
 
 // ─── Engine ──────────────────────────────────────────────────────────────────
 
-/** Every check, in the order the reporter listed them. */
-export async function reviewBranchDir(branch: string, repoDir: string): Promise<BranchReview> {
+/** Every check, in the order the reporter listed them; `base` is what the branch is compared with, when known. */
+export async function reviewBranchDir(branch: string, repoDir: string, base: ReviewBase | null = null): Promise<BranchReview> {
   const [roles, projects] = await Promise.all([
     loadRolesManifestIfPresent(repoDir),
     loadProjectsManifest(repoDir),
@@ -1618,17 +1786,25 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
 
   for (const context of await modelContexts(repoDir, roles, projects)) received.set(context, await receivedDefinitions(context.config));
 
+  const hooks = await placeFindings(repoDir, TEAM_HOOK_ENTRIES, HOOK_PLACE_MESSAGES);
+  const mcp = await placeFindings(repoDir, TEAM_MCP_ENTRIES, MCP_PLACE_MESSAGES);
+  const workflows = await workflowFindings(repoDir, [...received.values()]);
+
   const findings: Finding[] = [
     ...await skippedFolderFindings(repoDir),
-    ...await structureFindings(resources, index),
+    ...await ruleFindings(repoDir, base),
+    ...await structureFindings(resources, index, [...hooks.skipped, ...mcp.skipped, ...workflows.skipped]),
     ...await namingFindings(resources, readText),
     ...await duplicateFindings(resources, index),
     ...await skillLinkFindings(skillFiles, resources),
     ...await formatFindings(resources, readText),
+    ...hooks.findings,
+    ...await defaultHookFindings(repoDir),
+    ...mcp.findings,
     ...await relationsFindings(resources, readText),
     ...pipedInstallFindings(skillFiles),
     ...await leakFindings(repoDir, resources, readText),
-    ...await workflowFindings(repoDir, [...received.values()]),
+    ...workflows.findings,
     ...await scoringSettingsFindings(repoDir, readText),
     ...await sessionsFindings(repoDir, readText),
     ...await modelFindings(resources, readText, received),
@@ -1664,14 +1840,26 @@ export async function resolveBranchRef(repoPath: string, branch: string): Promis
   return null;
 }
 
+/** The rule folders at the commit `ref` forks from the checkout's HEAD, or null when the two share no commit. */
+async function reviewBase(repoPath: string, ref: string): Promise<ReviewBase | null> {
+  const fork = await getMergeBase(repoPath, 'HEAD', ref);
+
+  if (fork === null) return null;
+  const files = await listTreeAtRev(repoPath, fork, RESOURCE_LAYOUTS.rules.dir);
+
+  return { ruleFolders: new Set(files.flatMap(({ path: file }) => (path.posix.basename(file) === RESOURCE_LAYOUTS.rules.marker ? [`${path.posix.dirname(file)}/`] : []))) };
+}
+
 /**
  * Copy the branch's resource roots out of git's object store into `destDir`.
  * Nothing is checked out into the team repo, so this leaves it untouched.
  */
 export async function materializeRef(repoPath: string, ref: string, destDir: string): Promise<number> {
   let written = 0;
+  const linked: string[] = [];
 
-  for (const root of READ_ROOTS) {
+  // A link names a path of the team repo, which pull reads whole: copy what a link names outside these roots too.
+  const copy = async (root: string): Promise<void> => {
     for (const entry of await listTreeAtRev(repoPath, ref, root)) {
       // `./`: ls-tree lists paths relative to the directory git runs in, which
       // in single-repo mode is `.teamai/` inside the business repo, not its root.
@@ -1684,12 +1872,25 @@ export async function materializeRef(repoPath: string, ref: string, destDir: str
       if (entry.mode === '120000') {
         const target = content.toString('utf8');
         await fse.symlink(target, dest);
+        linked.push(path.posix.join(path.posix.dirname(entry.path), target));
       } else {
         await writeFile(dest, content);
       }
 
       written++;
     }
+  };
+
+  const copied = [...READ_ROOTS];
+  const holds = (root: string, target: string): boolean => target === root || target.startsWith(`${root}/`);
+
+  for (const root of READ_ROOTS) await copy(root);
+
+  for (const target of linked) {
+    // Only a path inside the repo, and only once: a link out of it, or to its root, names nothing pull has more of.
+    if (path.posix.isAbsolute(target) || target === '.' || target === '..' || target.startsWith('../') || copied.some((root) => holds(root, target))) continue;
+    copied.push(target);
+    await copy(target);
   }
 
   return written;
@@ -1756,7 +1957,7 @@ export async function reviewBranchCmd(options: ReviewBranchOptions): Promise<voi
 
   try {
     await materializeRef(repoPath, ref, destDir);
-    review = await reviewBranchDir(options.branch, destDir);
+    review = await reviewBranchDir(options.branch, destDir, await reviewBase(repoPath, ref));
   } finally {
     await fse.remove(destDir).catch(() => undefined);
   }

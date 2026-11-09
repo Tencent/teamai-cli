@@ -16,7 +16,7 @@ vi.mock('../config.js', async (importOriginal) => ({
 }));
 
 vi.mock('../utils/logger.js', () => ({
-  log: { debug: vi.fn() },
+  log: { debug: vi.fn(), error: vi.fn() },
 }));
 
 import {

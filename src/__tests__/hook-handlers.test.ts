@@ -779,7 +779,7 @@ describe('hook-handlers registry', () => {
 
     await handler.execute({ session_id: 'sid-abc', cwd: '/x' }, 'claude', null);
     // transcriptPath is the third arg; absent from this stdin so it is undefined.
-    expect(mockContributeCheckForSession).toHaveBeenCalledWith('sid-abc', '/x', undefined, false, undefined);
+    expect(mockContributeCheckForSession).toHaveBeenCalledWith('sid-abc', '/x', undefined, false, undefined, null);
   });
 
   it('contribute-check handler forwards transcript_path so friction is read live', async () => {
@@ -794,7 +794,7 @@ describe('hook-handlers registry', () => {
       { session_id: 'sid-abc', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
       'claude', null,
     );
-    expect(mockContributeCheckForSession).toHaveBeenCalledWith('sid-abc', '/x', '/t/transcript.jsonl', false, undefined);
+    expect(mockContributeCheckForSession).toHaveBeenCalledWith('sid-abc', '/x', '/t/transcript.jsonl', false, undefined, null);
   });
 
   it('contribute-check handler routes hint through formatStopHookOutput for cursor', async () => {
@@ -838,7 +838,7 @@ describe('hook-handlers registry', () => {
 
     const result = await handler.execute({ session_id: 's1', cwd: '/x' }, tool, null);
     expect(result).toBeNull();
-    expect(mockContributeCheckForSession).toHaveBeenCalledWith('s1', '/x', undefined, true, undefined);
+    expect(mockContributeCheckForSession).toHaveBeenCalledWith('s1', '/x', undefined, true, undefined, null);
   });
 
   it('contribute-check handler returns stdout hint for claude (unchanged)', async () => {
@@ -853,7 +853,7 @@ describe('hook-handlers registry', () => {
     expect(result).not.toBeNull();
     expect(result).toContain('do share');
     // claude is not a stash tool: called with stash=false.
-    expect(mockContributeCheckForSession).toHaveBeenCalledWith('s2', '/x', undefined, false, undefined);
+    expect(mockContributeCheckForSession).toHaveBeenCalledWith('s2', '/x', undefined, false, undefined, null);
   });
 
   it('contribute-check handler stays silent when the team turned the hint off', async () => {

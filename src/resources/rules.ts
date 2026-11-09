@@ -3,11 +3,13 @@ import { ResourceHandler, type PlacementRecords } from './base.js';
 import type { CopyOrigin, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { isDraft, listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, listDirs, readFileSafe, writeFile, pruneEmptyDirs, fileHash } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { isInSkippedFolder, skippedFoldersIn } from '../folder-markers.js';
+import { RESOURCE_LAYOUTS, Resources, type ResourceDiagnostic } from './resolver.js';
+import { RuleFolders } from './rule-folders.js';
+import { FolderFiles } from './folder-files.js';
 import { getUserHome } from '../utils/home.js';
 import { debugOnce, warnOnce } from '../utils/warn-once.js';
 import { TEAMAI_RULES_START, TEAMAI_RULES_END, TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, resolveBaseDir, resolveToolRootDir, isAgentExcluded, SELF_KNOWLEDGE_SCAN_KEY, installScopeName } from '../types.js';
-import { EXCLUDED_RULE_NAMES, isDeployedRecallRule, TEAMAI_CONTEXT_RULE_NAME } from '../builtin-rules.js';
+import { EXCLUDED_RULE_NAMES, isDeployedRecallRule, RECALL_RULE_NAME, TEAMAI_CONTEXT_RULE_NAME } from '../builtin-rules.js';
 import { rulePaths, teamRuleBody, teamRuleData } from './team-rule.js';
 import { joycodeQuotedGlobsWarning } from './joycode-rule.js';
 import type { OpencodeRulesTarget } from './opencode-config.js';
@@ -77,10 +79,17 @@ export class RulesHandler extends ResourceHandler {
   async scanLocalForPush(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
     const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
 
+    // A rule folder's copies are rendered from the folder, which the team
+    // edits in its repo only, and the files in it are not rules (#1787).
+    const folders = (await Resources.walk(RESOURCE_LAYOUTS.rules, localConfig.repo.localPath)).items
+      .flatMap(({ name, source }) => (source.kind === 'folder' ? [{ name, dir: source.path.slice('rules/'.length) }] : []));
+
+    const folderNames = new Set(folders.map(({ name }) => name));
+
     // Recursively list team repo rules to support subdirectories
     const teamRules = new Set(
       (await pathExists(teamRulesDir))
-        ? (await listFilesRecursive(teamRulesDir)).filter((f) => f.endsWith('.md'))
+        ? (await listFilesRecursive(teamRulesDir)).filter((f) => f.endsWith('.md') && !folders.some(({ dir }) => f.startsWith(dir)))
         : [],
     );
 
@@ -153,6 +162,16 @@ export class RulesHandler extends ResourceHandler {
         if (EXCLUDED_RULE_NAMES.has(name)) continue; // Skip CLI built-in and legacy rules
 
         const localFilePath = path.join(rulesDir, file);
+
+        // A copy pull delivered of a rule folder, the team's or one it dropped since.
+        if (folderNames.has(name) || (delivered?.[localFilePath] !== undefined && await RuleFolders.isDelivered(localConfig, name))) continue;
+        const holder = folders.find(({ dir }) => `${name}.md`.startsWith(dir));
+
+        if (holder !== undefined) {
+          warnOnce(`${localFilePath} is not pushed: rules/${holder.dir} is a rule folder, so rules/${name}.md would be one of its files, not a rule. `
+            + 'Rename your rule, or add the file to the folder in the team repo.');
+          continue;
+        }
 
         // A flat name teamai has no record of writing is the member's own
         // file, which pull keeps rather than overwrite (#946).
@@ -254,23 +273,7 @@ export class RulesHandler extends ResourceHandler {
   }
 
   async scanTeamForPull(_teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
-    const rulesDir = path.join(localConfig.repo.localPath, 'rules');
-
-    if (!await pathExists(rulesDir)) return [];
-
-    const skipped = await skippedFoldersIn(localConfig.repo.localPath, 'rules');
-    const files = (await listFilesRecursive(rulesDir)).filter((f) => !isInSkippedFolder(`rules/${f}`, skipped));
-
-    return files
-      // teamai-context is the file pull writes the team instructions to; a team
-      // rule of that name would land on it (#945). pullAllRules names it.
-      .filter((f) => f.endsWith('.md') && !isDraft(f) && f !== `${TEAMAI_CONTEXT_RULE_NAME}.md`)
-      .map((f) => ({
-        name: f.replace(/\.md$/, ''),
-        type: 'rules' as const,
-        sourcePath: path.join(rulesDir, f),
-        relativePath: `rules/${f}`,
-      }));
+    return (await readTeamRules(localConfig.repo.localPath)).rules;
   }
 
   async pushItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
@@ -344,7 +347,8 @@ export class RulesHandler extends ResourceHandler {
     // fields no longer match the source is inert in exactly the way a
     // missing file is. Only a comparison against the render can see that, and
     // the render belongs here rather than in a second copy inside `doctor`.
-    const source = await readFileSafe(item.sourcePath);
+    const folderText = RuleFolders.isFolder(item) ? await RuleFolders.text(item, teamConfig.language) : undefined;
+    const source = folderText === undefined ? await readFileSafe(item.sourcePath) : folderText;
     const localName = await this.localNameFor(item.name, localConfig);
     // For a tool that writes namespaced rules flat: the caller's, or resolved
     // once on first need.
@@ -385,7 +389,10 @@ export class RulesHandler extends ResourceHandler {
       }
 
       const dest = path.join(destDir, `${stem}${ext}`);
-      const content = source === null ? undefined : renderRuleForTool(tool, source);
+
+      const content = source === null ? undefined
+        : renderRuleForTool(tool, RuleFolders.isFolder(item) ? RuleFolders.render(source, { localConfig, rule: item, tool }) : source);
+
       // Tools that read one directory in one format share the copy (#946).
       const shared = targets.find((target) => target.dest === dest && target.content === content);
 
@@ -669,16 +676,34 @@ export class RulesHandler extends ResourceHandler {
       ledger.previous,
     );
 
+    // A rule folder of that name (#1787): its RULE.md is the source, and each tool's copy holds its text as pull renders it.
+    const teamFolder = path.join(localConfig.repo.localPath, 'rules', ...name.split('/'));
+    const { marker } = RESOURCE_LAYOUTS.rules;
+
+    const folderRule: ResourceItem | null = await pathExists(path.join(teamFolder, marker))
+      ? { name, type: 'rules', sourcePath: path.join(teamFolder, marker), relativePath: `rules/${name}/${marker}`, folder: true }
+      : null;
+
+    const locations = await rulesLocations(teamConfig, localConfig);
     // What pull writes today from the team rule also proves a copy teamai's,
     // so it is read before the rule goes: a checkout without history, such as
     // the local agent's resource cache, has no other proof.
-    const current = await readFileSafe(teamFile);
+    const fileText = await readFileSafe(teamFile);
+    const current = new Map<string, string | null>();
 
-    // Remove from team repo (always `.md`)
+    for (const { tool } of locations) current.set(tool, folderRule === null ? fileText : await ruleSourceText(folderRule, { teamConfig, localConfig, tool }));
+
+    // Remove from team repo: the rule file, and a rule folder of that name.
     if (await pathExists(teamFile)) {
       // oxlint-disable-next-line teamai/remove-delivered -- the team repo's source, which pull never records
       await remove(teamFile);
       removed.push(teamFile);
+    }
+
+    if (folderRule !== null) {
+      // oxlint-disable-next-line teamai/remove-delivered -- the team repo's source, which pull never records
+      await remove(teamFolder);
+      removed.push(teamFolder);
     }
 
     for (const { file } of flatCopies.owned) {
@@ -718,7 +743,7 @@ export class RulesHandler extends ResourceHandler {
     // Remove from each tool's rules directory. `.mdc` tools may have an older
     // teamai layout wrote `.md` there, so both are removed — otherwise `remove`
     // would report success while leaving the rule on disk.
-    for (const { tool, location } of await rulesLocations(teamConfig, localConfig)) {
+    for (const { tool, location } of locations) {
       const rulesDir = rulesDirOf(location);
 
       if (rulesDir === null) continue;
@@ -738,9 +763,9 @@ export class RulesHandler extends ResourceHandler {
           // The team file is gone from the working tree only: its history still proves a copy teamai's.
           // The author's root copy is this rule's by the placement record, which proves it here.
           if (localName === name && await pathExists(filePath) && ledger.previous?.[filePath] === undefined
-            && !await holdsCurrentRule(filePath, tool, current)
-            && !await isTeamaiCopy(filePath, ruleOrigin(tool, localConfig.repo.localPath, `rules/${name}.md`))) {
-            log.warn(describeMembersDirLeft(filePath, `rules/${name}.md`, 'remove'));
+            && !await holdsCurrentRule(filePath, tool, current.get(tool) ?? null)
+            && !await isTeamaiCopy(filePath, ruleOrigin(tool, localConfig.repo.localPath, folderRule?.relativePath ?? `rules/${name}.md`))) {
+            log.warn(describeMembersDirLeft(filePath, folderRule?.relativePath ?? `rules/${name}.md`, 'remove'));
             continue;
           }
 
@@ -875,6 +900,19 @@ export class RulesHandler extends ResourceHandler {
   ): Promise<void> {
     const rules = filteredRules ?? await this.scanTeamForPull(teamConfig, localConfig);
 
+    const { problems, folderNotes } = await readTeamRules(localConfig.repo.localPath);
+
+    for (const { message } of problems) warnOnce(message);
+
+    // The copy of a rule whose file a rule folder now holds is removed below: say why it went.
+    const folderNoteOf = new Map(folderNotes.map(({ path: folderPath, message }) => [folderPath, message]));
+
+    const removedRuleNowFolderFile = (ruleName: string): void => {
+      const message = folderNoteOf.get(`rules/${path.posix.dirname(ruleName)}/`);
+
+      if (message !== undefined) warnOnce(message);
+    };
+
     if (await pathExists(path.join(localConfig.repo.localPath, 'rules', `${TEAMAI_CONTEXT_RULE_NAME}.md`))) {
       log.warn(`rules/${TEAMAI_CONTEXT_RULE_NAME}.md is not delivered: ${TEAMAI_CONTEXT_RULE_NAME} is the name of teamai's own instruction file `
         + 'in each rules directory. Rename the rule in the team repo, for example with `git mv`, and push the change.');
@@ -882,7 +920,6 @@ export class RulesHandler extends ResourceHandler {
 
     await this.reclaimReservedRuleCopies(teamConfig, localConfig, ledger);
 
-    await this.syncUserRulesFiles(teamConfig, localConfig, rules, ledger?.toolsMissingRules);
     // Before the empty-set return: a copy outlives the rule that selected it.
     await this.reclaimLegacyRuleCopies(teamConfig, localConfig, rules, ledger);
 
@@ -901,7 +938,14 @@ export class RulesHandler extends ResourceHandler {
       await this.reclaimUnselectedTeamRules(teamConfig, localConfig, ledger, filteredRules === undefined ? undefined : []);
     }
 
-    // 1. Distribute rule files to each tool's rules/ directory
+    // 1. Distribute rule files to each tool's rules/ directory, after the
+    // folders their text names (#1787).
+    const receiving = (await rulesReceivingTools(teamConfig, localConfig)).filter((tool) => !isAgentExcluded(localConfig, tool));
+    const pruneRuleFolders = await RuleFolders.sync({ localConfig, rules, tools: receiving, ledger });
+    // The files that inline the rules, after the folders their text names too. One that still holds the rules of an
+    // earlier pull keeps every folder they name.
+    const blocksWritten = await this.syncUserRulesFiles(teamConfig, localConfig, rules, ledger?.toolsMissingRules);
+
     // The rules this member receives, when the caller resolved them.
     const received = filteredRules?.map((rule) => rule.name);
 
@@ -995,6 +1039,7 @@ export class RulesHandler extends ResourceHandler {
               || (nestedOf && await isUneditedNestedCopy(tool, fullPath, nestedOf, ledger?.previous, localConfig.repo.localPath, await deliveredRevs()))) {
               if (await keepsTrackedCopy(fullPath, flatCopy !== undefined && await pathExists(flatCopy) ? flatCopy : undefined)) continue;
               await removeDelivered(ledger, fullPath);
+              removedRuleNowFolderFile(ruleName);
               log.debug(`Removed stale rule ${localFile} from ${tool}`);
             } else if (nestedOf && flatCopy) {
               log.warn(keptNestedCopyMessage(tool, fullPath, ruleName, flatCopy));
@@ -1069,6 +1114,7 @@ export class RulesHandler extends ResourceHandler {
 
           if (await keepsTrackedCopy(fullPath)) continue;
           await removeDelivered(ledger, fullPath);
+          removedRuleNowFolderFile(ruleName);
           log.debug(`Removed stale rule ${localFile} from ${tool}`);
         }
       }
@@ -1076,6 +1122,31 @@ export class RulesHandler extends ResourceHandler {
       // Clean up empty subdirectories
       await this.removeEmptyDirs(destDir);
     }
+
+    // A folder stays while a tool still holds a copy of its rule: one the member edited, or one in a directory they
+    // share with teamai. The copy of a namespaced rule is flat for some tools (OMP's `fe.api-style.md`). Every folder
+    // stays while a file inlining the rules was not rewritten above.
+    const heldByCopies: string[] = [];
+    const locations = await rulesLocations(teamConfig, localConfig);
+
+    for (const name of await RuleFolders.deliveredNames(localConfig)) {
+      if (!blocksWritten) {
+        heldByCopies.push(name);
+        continue;
+      }
+
+      for (const { tool, location } of locations) {
+        const destDir = rulesDirOf(location);
+        const stem = ruleStemsForTool(tool, new Set([name])).get(name);
+
+        if (destDir !== null && stem !== undefined && await pathExists(path.join(destDir, `${stem}${ruleFileExtensionForTool(tool)}`))) {
+          heldByCopies.push(name);
+          break;
+        }
+      }
+    }
+
+    await pruneRuleFolders(heldByCopies);
 
     // 2. Remove legacy rules section from CLAUDE.md (no longer injected)
     const install = installOf(teamConfig, localConfig);
@@ -1130,6 +1201,8 @@ export class RulesHandler extends ResourceHandler {
    * there the session-start hook (the Codex family, ZCode, DeepSeek Harness)
    * or Pi's extension adds the rules (#938, #946).
    * Public so the "Already synced" pull can run it after a CLI upgrade.
+   * Returns whether every such file now holds `rules`: one that does not may
+   * still name the files of a rule folder the team removed.
    */
   async syncUserRulesFiles(
     teamConfig: TeamaiConfig,
@@ -1137,12 +1210,14 @@ export class RulesHandler extends ResourceHandler {
     rules: ResourceItem[],
     /** Gets each tool whose team-rules block was not written. */
     toolsMissingRules?: Set<string>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (localConfig.scope !== 'user') {
       await this.removeStaleProjectSoulRules(localConfig, installOf(teamConfig, localConfig));
 
-      return;
+      return true;
     }
+
+    let allWritten = true;
 
     // Hermes: inline all team rules into a teamai-managed block in SOUL.md
     // (user-level standing instructions). Only when Hermes is actually
@@ -1158,15 +1233,16 @@ export class RulesHandler extends ResourceHandler {
       const { upsertSoulRules } = await import('../hermes-config.js');
 
       try {
-        await upsertSoulRules(soul.path, await inlinedRulesText(rules));
+        await upsertSoulRules(soul.path, await inlinedRulesText(rules, { teamConfig, localConfig }));
       } catch (e) {
+        allWritten = false;
         toolsMissingRules?.add('hermes');
         log.warn(`Could not write the team rules to ${soul.path}: ${e instanceof Error ? e.message : String(e)}. Hermes reads that `
           + 'file as it is until this succeeds; run `teamai pull` again once the cause above is fixed.');
       }
     }
 
-    const block = await teamRulesBlock(rules);
+    const block = await teamRulesBlock(rules, { teamConfig, localConfig });
 
     for (const tool of Object.keys(install.toolPaths)) {
       // SOUL.md holds Hermes' rules in its own block, above.
@@ -1179,6 +1255,7 @@ export class RulesHandler extends ResourceHandler {
       if (unreadable !== undefined && !isAgentExcluded(localConfig, tool)) {
         const { unreadableRulesFileMessage } = await import('../instruction-targets.js');
         log.warn(await unreadableRulesFileMessage(tool, unreadable));
+        allWritten = false;
         toolsMissingRules?.add(tool);
         continue;
       }
@@ -1198,12 +1275,16 @@ export class RulesHandler extends ResourceHandler {
           await removeClaudeMdSection(file, TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, { deleteIfEmpty: true });
         }
       } catch (e) {
+        allWritten = false;
+
         if (writing) toolsMissingRules?.add(tool);
         const action = writing ? 'write the team-rules block to' : 'remove the team-rules block from';
         log.warn(`Could not ${action} ${file}: ${e instanceof Error ? e.message : String(e)}. ${tool} reads that file as it is until this succeeds; `
           + 'run `teamai pull` again once the cause above is fixed.');
       }
     }
+
+    return allWritten;
   }
 
   /**
@@ -1402,7 +1483,8 @@ export class RulesHandler extends ResourceHandler {
         const recall = path.join(dir, `teamai-recall${ext}`);
         const recallContent = await isLink(recall) ? null : await readFileSafe(recall);
 
-        if (recallContent !== null) (isDeployedRecallRule(recallContent) ? owned : edited).push(recall);
+        // A team replacement's copy is known by its record (#1787).
+        if (recallContent !== null) (isDeployedRecallRule(recallContent) || await onRecord(recall) ? owned : edited).push(recall);
       }
 
       out.push({ entry, dir, copiedFrom, owned: [...new Set(owned)], edited: [...new Set(edited)].filter((file) => !owned.includes(file)) });
@@ -1593,6 +1675,68 @@ export class RulesHandler extends ResourceHandler {
       }
     }
   }
+}
+
+/**
+ * The team's rules in `repoPath`, files and folders, each named by its path under `rules/` (#1787), and what the read
+ * found that the team should hear, for pull to print and review to grade: `invalid`, a rule that is not delivered (a
+ * name defined both as a file and as a folder, a folder that takes a name teamai keeps, a folder that is or holds a link);
+ * `note`, what changes nothing pull delivers (a language variant's frontmatter). `folderNotes` name each rule folder
+ * that holds `.md` files, which would be rules of their own without its RULE.md (common rule 1); pull prints one only
+ * when it removes a copy the last pull delivered of such a file, since a folder that was always one is no news.
+ */
+export async function readTeamRules(repoPath: string): Promise<{ rules: ResourceItem[]; problems: ResourceDiagnostic[]; folderNotes: readonly ResourceDiagnostic[] }> {
+  const { items, duplicates, diagnostics } = await Resources.walk(RESOURCE_LAYOUTS.rules, repoPath);
+  // A folder the walk cannot read (a symlink) is a problem; its notes are the folders whose files are now their own.
+  const problems: ResourceDiagnostic[] = diagnostics.filter(({ kind }) => kind === 'invalid');
+  const folderNotes = diagnostics.filter(({ kind }) => kind === 'note');
+
+  const invalid = (at: string, message: string): void => {
+    problems.push({ kind: 'invalid', path: at, message });
+  };
+
+  for (const { name, first, second } of duplicates) {
+    invalid(second.source.path, `${first.source.path} and ${second.source.path} both define the rule ${name}, so neither is delivered. Remove one of them in the team repo.`);
+  }
+
+  const rules: ResourceItem[] = [];
+
+  for (const { name, source } of items) {
+    // teamai-context is the file pull writes the team instructions to; a team
+    // rule of that name would land on it (#945). pullAllRules names the file.
+    if (name === TEAMAI_CONTEXT_RULE_NAME) {
+      if (source.kind === 'folder') invalid(source.path, `${source.path} is not delivered: ${TEAMAI_CONTEXT_RULE_NAME} is the name of teamai's own instruction file in each rules directory. Rename the folder in the team repo.`);
+      continue;
+    }
+
+    if (source.kind === 'file') {
+      if (!isDraft(source.path)) rules.push({ name, type: 'rules', sourcePath: source.full, relativePath: source.path });
+      continue;
+    }
+
+    // The team's replacement of teamai's recall rule, read where the recall rule is.
+    if (name === RECALL_RULE_NAME) continue;
+
+    if (path.posix.basename(name).startsWith('teamai-')) {
+      invalid(source.path, `${source.path} is not delivered: a teamai-* rule folder replaces teamai's rule of that name, and only rules/${RECALL_RULE_NAME}/ does.`);
+      continue;
+    }
+
+    const read = await FolderFiles.read(source.full);
+
+    if (read.kind === 'invalid') {
+      invalid(source.path, `${source.path} is not delivered: ${read.problems.map(FolderFiles.describe).join(', ')}. `
+        + 'A rule folder holds only files teamai can read, never links; fix it in the team repo.');
+      continue;
+    }
+
+    const marker = RESOURCE_LAYOUTS.rules.marker;
+    const rule = { name, type: 'rules', sourcePath: path.join(source.full, marker), relativePath: `${source.path}${marker}`, folder: true } as const;
+    problems.push(...RuleFolders.variantNotes(rule, read.files));
+    rules.push(rule);
+  }
+
+  return { rules, problems, folderNotes };
 }
 
 /** Where each tool of the team's `toolPaths` takes rules in this scope. */
@@ -1880,6 +2024,23 @@ async function isDeliveredRender(
   return false;
 }
 
+/** What a rule's text is read for: the team's `language`, and the scope it is delivered in. */
+export interface RuleTextContext {
+  readonly teamConfig: TeamaiConfig;
+  readonly localConfig: LocalConfig;
+}
+
+/**
+ * The text of `rule` a tool's render starts from: a rule file as it is, or a rule folder's text for the team's
+ * language with `${TEAMAI_RULE_DIR}` naming where `tool` reads it (#1787). Null when it cannot be read.
+ */
+async function ruleSourceText(rule: ResourceItem, at: RuleTextContext & { readonly tool: string | null }): Promise<string | null> {
+  if (!RuleFolders.isFolder(rule)) return readFileSafe(rule.sourcePath);
+  const text = await RuleFolders.text(rule, at.teamConfig.language);
+
+  return text === null ? null : RuleFolders.render(text, { localConfig: at.localConfig, rule, tool: at.tool });
+}
+
 /**
  * The team rules as one text, for a tool with no rules directory: Hermes,
  * whose SOUL.md block pull writes and `doctor` compares, the tools with a
@@ -1889,11 +2050,11 @@ async function isDeliveredRender(
  * Frontmatter is dropped. Neither can scope a rule to paths, so a path-scoped
  * rule is always on, led by a line naming its globs.
  */
-export async function inlinedRulesText(rules: ResourceItem[]): Promise<string> {
+export async function inlinedRulesText(rules: ResourceItem[], at: RuleTextContext): Promise<string> {
   const bodies: string[] = [];
 
   for (const rule of rules) {
-    const content = await readFileSafe(rule.sourcePath);
+    const content = await ruleSourceText(rule, { ...at, tool: null });
 
     if (!content) continue;
     // The tolerant parse the native renders use, so `paths: **/*.ts` keeps its hint (#946).
@@ -1914,10 +2075,10 @@ export async function inlinedRulesText(rules: ResourceItem[]): Promise<string> {
  * OpenClaw, Pi, JoyCode, #946), markers included. Null when no rule has a body. The body is
  * the same render Hermes gets in SOUL.md.
  */
-export async function teamRulesBlock(rules: ResourceItem[]): Promise<string | null> {
+export async function teamRulesBlock(rules: ResourceItem[], at: RuleTextContext): Promise<string | null> {
   // A marker anywhere in a rule body would cut the block short on the next
   // read, which finds the markers by substring. A line that held only one goes.
-  const body = (await inlinedRulesText(rules))
+  const body = (await inlinedRulesText(rules, at))
     .split('\n')
     .flatMap((line) => {
       const cleaned = line.replaceAll(TEAMAI_TEAM_RULES_START, '').replaceAll(TEAMAI_TEAM_RULES_END, '');
@@ -1950,7 +2111,7 @@ export async function teamRulesBlock(rules: ResourceItem[]): Promise<string | nu
 export async function teamRulesContext(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string | null> {
   const { buildRolePullContext, resolveDesiredRules } = await import('./desired.js');
   const { items } = await resolveDesiredRules(teamConfig, localConfig, await buildRolePullContext(localConfig));
-  const text = await inlinedRulesText(items);
+  const text = await inlinedRulesText(items, { teamConfig, localConfig });
 
   return text === '' ? null : `Team rules (from teamai):\n\n${text}`;
 }

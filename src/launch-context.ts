@@ -87,6 +87,12 @@ export const ATTEMPT_ENV = 'TEAMAI_WORKFLOW_ATTEMPT';
 export const RUN_DIR_ENV = 'TEAMAI_RUN_DIR';
 
 /**
+ * The variable every process of a step of a workflow written as a folder gets: the run's copy of the folder that defines
+ * the step, under the data home. Unset for a step of a workflow written as a single file.
+ */
+export const WORKFLOW_DIR_ENV = 'TEAMAI_WORKFLOW_DIR';
+
+/**
  * The variable every process of a run with no `teamai init` gets: the config file the run built for itself, which
  * config detection reads in place of any config the process's directory has (`readEphemeralConfig` in `config.ts`).
  */

@@ -1,17 +1,17 @@
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { z } from 'zod';
 import { parseReportedAgent, parseReportedUsed, settleObservation, type ReportedAgent, type Used } from '../agent-observation.js';
 import { loadTeamConfig } from '../config.js';
 import { DefaultWorkflows } from '../default-workflows.js';
 import { DriverSchema, sameDriver } from '../driver-identity.js';
-import { RunModeSchema, type RunMode } from '../launch-context.js';
+import { RunModeSchema, WORKFLOW_DIR_ENV, type RunMode } from '../launch-context.js';
 import { log } from '../utils/logger.js';
 import { getDefaultBranch } from '../utils/git.js';
 import { getDataHome, SYNC_LOCK_FILENAME, type JsonValue, type LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
-import { loadCachedWorkflow, loadWorkflowTree, namespaceConflictOf, startingAlias } from './cache.js';
+import { folderOf, loadCachedWorkflow, loadWorkflowTree, namespaceConflictOf, startingAlias } from './cache.js';
 import { claimedAway, claimRun, publishRunEnd, reconcileTakenCopies } from './handoff.js';
 import {
   evaluateExpression, expressionPaths, isRecord, isTruthy, parseExpression, pathValue, resolvePath,
@@ -74,6 +74,7 @@ import type {
 import { hasAction, onlyPersonAnswers, stepWorkflow } from './types.js';
 import { Writes } from './writes.js';
 import { describeWorkflow } from './describe.js';
+import { WorkflowFolder } from './folder.js';
 import { CONFINED_LEVELS, CostSchema } from '../tool-launch/confined-level.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 
@@ -217,6 +218,8 @@ interface RenderedLease {
   defaultModel?: string;
   /** The directory of a step with `workspace: { confined }`, as its template rendered. */
   confined?: string;
+  /** The sourceHash of the workflow folder whose file defines the step, from its scope. */
+  folder?: string;
 }
 
 /** Whether a result that is a plain object or a message is the message. Not for arrays, which are not plain objects. */
@@ -318,6 +321,8 @@ function renderLease(scope: Scope, states: StepState[], state: StepState, defini
   if (definition.env) texts.env = Object.fromEntries(env);
 
   if (model !== undefined) texts.model = model;
+
+  if (scope.folder !== undefined) texts.folder = scope.folder;
 
   // A model that rendered empty asks for the tool's default, so the defaults' model does not stand in for it.
   if (definition.prompt !== undefined && scope.defaultModel !== undefined && model !== '') texts.defaultModel = scope.defaultModel;
@@ -504,7 +509,7 @@ type LeaseData = Omit<LeaseWire, 'attempt'> & {
 type LeaseAnswer = { lease: LeaseData };
 
 function leaseData(
-  run: RunState, state: LeasedStep, definition: WorkflowStep, rendered: RenderedLease,
+  config: LocalConfig, run: RunState, state: LeasedStep, definition: WorkflowStep, rendered: RenderedLease,
   { requires, envScope, maxTurns, setup, role }: Omit<GrantedTerms, 'unenforced' | 'limits'>, plan?: WorkspacePlan, confined?: ConfinedLease,
 ): LeaseAnswer {
   const expiresAt = leaseDeadline(run, state);
@@ -519,7 +524,13 @@ function leaseData(
 
   if (definition.command !== undefined) wire.command = definition.command;
 
+  const folder = rendered.folder === undefined ? undefined : WorkflowFolder.dir(config, rendered.folder);
+
+  // Every process of the step gets the folder, as it gets $TEAMAI_RUN_DIR, which no env the step names replaces. Its
+  // path uses forward slashes on Windows too, which Git Bash, node and PowerShell all read.
   if (rendered.env) wire.env = rendered.env;
+
+  if (folder !== undefined) wire.env = { ...wire.env, [WORKFLOW_DIR_ENV]: folder.split(sep).join('/') };
 
   if (rendered.prompt !== undefined) wire.prompt = rendered.prompt;
 
@@ -1481,7 +1492,7 @@ export async function startRun(
 
     if (conflict) return error('workflow_namespace_conflict', conflict);
 
-    return error('workflow_not_found', `Workflow "${name}" has no runnable version. Check workflows/${name}.yaml and pull again.`);
+    return error('workflow_not_found', `Workflow "${name}" has no runnable version. Check workflows/${name}.yaml, or workflows/${name}/WORKFLOW.yaml for a folder, and pull again.`);
   }
 
   const given = withInputDefaults(cached.definition, inputs);
@@ -1497,11 +1508,17 @@ export async function startRun(
   // oxlint-disable-next-line teamai/workflow-failure-codes -- forwards a code from a classified workflow or scorer producer
   if ('failure' in admission) return error(admission.failure.code, admission.failure.message);
 
+  const folder = folderOf(cached);
+
+  await Promise.all([...(folder ? [folder] : []), ...Object.values(tree.folders)].map((pinned) => WorkflowFolder.pin(config, pinned)));
+
   // createRun reads an undefined inputs or teamRevision as not given.
   return createRun(config, {
     name: cached.definition.name,
     inputs: cached.definition.inputs ? given : undefined,
     sourceHash: tree.sourceHash,
+    folder: folder?.sourceHash,
+    folders: Object.keys(tree.folders).length > 0 ? Object.fromEntries(Object.entries(tree.folders).map(([runs, pinned]) => [runs, pinned.sourceHash])) : undefined,
     teamRevision: tree.teamRevision || undefined,
     origin: DefaultWorkflows.originOf(cached),
     ...admission.admitted,
@@ -1518,7 +1535,7 @@ export async function startRun(
  */
 export async function createRun(
   config: LocalConfig,
-  { secrets, driver, alone, ...input }: Pick<RunState, 'name' | 'inputs' | 'sourceHash' | 'teamRevision' | 'runMode' | 'startedBy' | 'awaits' | 'definition' | 'workflows' | 'base' | 'checkout' | 'timeout'>
+  { secrets, driver, alone, ...input }: Pick<RunState, 'name' | 'inputs' | 'sourceHash' | 'teamRevision' | 'runMode' | 'startedBy' | 'awaits' | 'definition' | 'workflows' | 'folder' | 'folders' | 'base' | 'checkout' | 'timeout'>
     & Required<Pick<RunState, 'origin'>> & { secrets: Record<string, string>; driver?: DriverIdentity; alone?: DriverCan },
 ): Promise<WorkflowEnvelope> {
   const workflows = input.workflows ?? {};
@@ -1555,6 +1572,8 @@ export async function createRun(
     driver,
     definition: input.definition,
     workflows: Object.keys(workflows).length > 0 ? workflows : undefined,
+    folder: input.folder,
+    folders: input.folders,
     steps: input.definition.steps.map((step) => ({ id: step.id, status: 'pending' })),
     settledAttempts: [],
     base: input.base,
@@ -2202,7 +2221,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
           delete run.awaits;
           rememberCopy(run, plan, driver);
 
-          return answer(leaseData(run, step, definition, rendered, terms.terms, plan, confined?.lease));
+          return answer(leaseData(config, run, step, definition, rendered, terms.terms, plan, confined?.lease));
         }
 
         if (settledOne) continue;
@@ -2274,7 +2293,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
 
         if (offered) rememberCopy(run, offered, driver);
 
-        return answer(leaseData(run, leased, located.step, rendered, terms.terms, offered, confined?.lease));
+        return answer(leaseData(config, run, leased, located.step, rendered, terms.terms, offered, confined?.lease));
       }
 
       failStep(leased, rendered, leased.lease.revision);

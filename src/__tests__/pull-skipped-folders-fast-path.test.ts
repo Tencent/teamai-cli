@@ -54,6 +54,9 @@ import { log } from '../utils/logger.js';
 import { loadLocalConfigForScope, loadStateForScope, loadTeamConfig, saveStateForScope } from '../config.js';
 import { TeamaiConfigSchema, type LocalConfig, type State } from '../types.js';
 
+/** A Claude Code agent file, as a team keeps one in `agents/`. */
+const AGENT = (name: string): string => `---\nname: ${name}\ndescription: The ${name} agent.\n---\nDo the ${name} work.\n`;
+
 /**
  * A member upgrades while the team revision stays put: the copies an older
  * release delivered from a folder this release skips must go on the first
@@ -65,15 +68,15 @@ describe('a pull at an unchanged team revision after a folder becomes skipped (#
   let repoPath: string;
   let saved: State;
 
-  const rulesDir = () => path.join(homeDir, '.claude', 'rules');
+  const agentsDir = () => path.join(homeDir, '.claude', 'agents');
 
   beforeEach(async () => {
     tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-skipped-fast-path-'));
     homeDir = path.join(tmpDir, 'home');
     repoPath = path.join(tmpDir, 'team-repo');
     await fse.ensureDir(path.join(homeDir, '.claude'));
-    await fse.outputFile(path.join(repoPath, 'rules', 'style.md'), '# Style\n');
-    await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'checklist.md'), '# Checklist\n');
+    await fse.outputFile(path.join(repoPath, 'agents', 'style.md'), AGENT('style'));
+    await fse.outputFile(path.join(repoPath, 'agents', 'api-style', 'checklist.md'), AGENT('checklist'));
     vi.stubEnv('HOME', homeDir);
     saved = {} as State;
     vi.mocked(saveStateForScope).mockImplementation(async (state) => {
@@ -101,21 +104,23 @@ describe('a pull at an unchanged team revision after a folder becomes skipped (#
     await fse.remove(tmpDir);
   });
 
-  it('removes the copies delivered from the folder and keeps the rest', async () => {
-    expect(await fse.pathExists(path.join(rulesDir(), 'api-style', 'checklist.md'))).toBe(true);
+  it('syncs in full on the first pull, delivering nothing from the folder and the rest as before', async () => {
+    expect(await fse.pathExists(path.join(agentsDir(), 'checklist.md'))).toBe(true);
     // The folder's marker was there all along; the release that pulled it
     // read it as an ordinary directory.
-    await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'RULE.md'), '# API style\n');
+    await fse.outputFile(path.join(repoPath, 'agents', 'api-style', 'AGENT.md'), AGENT('AGENT'));
+    vi.mocked(log.success).mockClear();
 
     await pull({});
 
-    expect(await fse.pathExists(path.join(rulesDir(), 'api-style', 'checklist.md'))).toBe(false);
-    expect(await fse.pathExists(path.join(rulesDir(), 'api-style', 'RULE.md'))).toBe(false);
-    expect(await fse.readFile(path.join(rulesDir(), 'style.md'), 'utf8')).toBe('# Style\n');
+    const successes = vi.mocked(log.success).mock.calls.map(([message]) => String(message));
+    expect(successes.some((message) => message.includes('Already synced at abc1234'))).toBe(false);
+    expect(await fse.pathExists(path.join(agentsDir(), 'AGENT.md'))).toBe(false);
+    expect(await fse.readFile(path.join(agentsDir(), 'style.md'), 'utf8')).toBe(AGENT('style'));
   });
 
   it('takes the fast path again once the folders it skips are on record', async () => {
-    await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'RULE.md'), '# API style\n');
+    await fse.outputFile(path.join(repoPath, 'agents', 'api-style', 'AGENT.md'), AGENT('AGENT'));
     await pull({});
     vi.mocked(log.success).mockClear();
 

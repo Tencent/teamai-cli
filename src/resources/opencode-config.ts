@@ -209,6 +209,7 @@ export async function reconcileOpencodeInstructionSet(
 
   // A file holding the member's comments is theirs too, so it stays.
   if (deleteIfEmpty && target === configFileAbs && Object.keys(data).every((key) => key === '$schema') && isPlainJson(raw)) {
+    // oxlint-disable-next-line teamai/remove-delivered -- an OpenCode config teamai edits in place; the delivery record never names it
     await remove(configFileAbs);
     log.debug(`Removed ${configFileAbs}: it held only teamai ${purpose} entries`);
 

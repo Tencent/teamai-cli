@@ -12,6 +12,7 @@ import { isAgentExcluded, scopedToolPaths, type LocalConfig, type TeamaiConfig }
 import { pathExists, readFileSafe, writeFileAtomic } from '../../utils/fs.js';
 import { warnOnce } from '../../utils/warn-once.js';
 import { DefaultWorkflows } from '../../default-workflows.js';
+import { RESOURCE_LAYOUTS, Resources } from '../../resources/resolver.js';
 import { SessionShare } from '../../session-share.js';
 import { shareBlock } from '../../skill-content.js';
 import { listCachedWorkflows, loadWorkflowTree, startingAlias } from '../cache.js';
@@ -41,7 +42,7 @@ async function advertisedWorkflows(teamConfig: TeamaiConfig, localConfig: LocalC
 
     // No skill for a workflow `start` refuses: a workflow it runs is missing, runs in a cycle, or does not take its inputs.
     if ('failed' in tree || (!sharing && Object.hasOwn(tree.workflows, SessionShare.SHARE_LEARNINGS))) continue;
-    const workflow: AdvertisedWorkflow = { name, description, invoke, source, skill: skillName(name, alias) };
+    const workflow: AdvertisedWorkflow = { name, description, invoke, source, skill: await skillName(name, alias) };
 
     if (alias !== undefined) workflow.alias = alias;
     advertised.push(workflow);
@@ -54,10 +55,11 @@ async function advertisedWorkflows(teamConfig: TeamaiConfig, localConfig: LocalC
  * The skill of workflow `name`: `workflow-<alias>` when `alias` starts it, so people meet it by the name the team chose;
  * else a name teamai ships a default under keeps that name, whoever's file runs; else `workflow-<name>`.
  */
-function skillName(name: string, alias: string | undefined): string {
+async function skillName(name: string, alias: string | undefined): Promise<string> {
   if (alias !== undefined) return `${WORKFLOW_SKILL_PREFIX}${alias}`;
+  const shipped = await Resources.resolve(RESOURCE_LAYOUTS.workflows, name, { teamai: DefaultWorkflows.layer });
 
-  return DefaultWorkflows.named(name) ? name : `${WORKFLOW_SKILL_PREFIX}${name}`;
+  return shipped.kind === 'resolved' ? name : `${WORKFLOW_SKILL_PREFIX}${name}`;
 }
 
 /**
@@ -131,8 +133,8 @@ function shadowed({ tool, workflow, dir }: Pick<Placement, 'tool' | 'workflow' |
 
 function keptEdited(file: string, workflow: string, advertised: boolean): string {
   return advertised
-    ? `Kept ${file}: it was generated from workflows/${workflow}.yaml and edited since, so teamai pull no longer updates it. Delete it to receive the current one, or remove its teamai-generated metadata to keep it as your own.`
-    : `Kept ${file}: it was generated from workflows/${workflow}.yaml and edited since, and that workflow no longer offers a skill, so teamai pull left it. Delete it, or remove its teamai-generated metadata to keep it as your own.`;
+    ? `Kept ${file}: it was generated from workflow ${workflow} and edited since, so teamai pull no longer updates it. Delete it to receive the current one, or remove its teamai-generated metadata to keep it as your own.`
+    : `Kept ${file}: it was generated from workflow ${workflow} and edited since, and that workflow no longer offers a skill, so teamai pull left it. Delete it, or remove its teamai-generated metadata to keep it as your own.`;
 }
 
 /**

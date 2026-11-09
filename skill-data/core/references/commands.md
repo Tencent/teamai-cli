@@ -85,7 +85,7 @@ Generated: do not edit by hand. Regenerate with
 
 - `teamai remove <type> <names...>` — Remove resource(s) from team repo and all local AI tools (type: skills|rules|agents|mcp)
   - `--force` — Skip confirmation prompt
-  - `--role <ns>` — mcp: remove the server from mcp/<ns>/mcp.yaml instead of the root mcp/mcp.yaml
+  - `--role <ns>` — mcp: remove the server from namespace <ns> (mcp/<ns>/mcp.yaml or the folder mcp/<ns>/<name>/) instead of the root
   - `--project <id>` — mcp: remove the server from the project's mcp namespace instead of the root mcp/mcp.yaml
 
 ## packages
@@ -105,7 +105,7 @@ Generated: do not edit by hand. Regenerate with
 
 - `teamai doctor` — Diagnose configuration issues, and print the run mode (attended or unattended) and what set it: TEAMAI_MODE, CI, or the default
   - `--json` — Output the report as JSON (suitable for CI)
-  - `--fix` — Remove lock files left behind by dead processes, delete again the run branches a succeeded workflow run could not delete, and remove what runs settled longer ago than workflows.retention left behind (branches but those a pull request uses, worktrees, kept refs, base pins on origin)
+  - `--fix` — Remove lock files left behind by dead processes, delete again the run branches a succeeded workflow run could not delete, remove what runs settled longer ago than workflows.retention left behind (branches but those a pull request uses, worktrees, kept refs, base pins on origin), remove the stored workflow folders no run and no pulled workflow uses, and remove the team hook entries a removed worktree of the repository left in HOME
 
 ## roles
 
@@ -224,7 +224,7 @@ Generated: do not edit by hand. Regenerate with
 
 ## workflow
 
-- `teamai workflow` — Run a validated workflow from workflows/<name>.yaml. Writable steps may set deliver: pr to open review requests; TeamAI never merges them.
+- `teamai workflow` — Run a validated workflow from workflows/<name>.yaml or the folder workflows/<name>/WORKFLOW.yaml. Writable steps may set deliver: pr to open review requests; TeamAI never merges them.
   - `teamai workflow start <name>` — Create a run. With --driver skill, the current coding session drives it; with --driver local, this process runs it headless, and in unattended mode (TEAMAI_MODE=unattended or CI) runs teamai score --drain once the run settles, before it exits, unless sessions.publish and session scoring are both off for unattended.
     - `--describe` — Show workflow metadata and required input schemas without creating a run. With --driver skill, also say how to start it: the start command, a question for the person, or the local driver.
     - `--driver <kind>` — Select skill for the current coding session, which then runs the commands each reply prints, or local for headless execution in this process.
@@ -294,7 +294,7 @@ Generated: do not edit by hand. Regenerate with
     - `--task <id>` — Run only this task of the suite: one baseline and its trials. Repeatable. Starts the workflow with input tasks, [] without it; a team file that takes no input tasks is refused.
     - `--arm <name>` — Run only this arm of the suite. Repeatable. Starts the workflow with input arms, [] without it; a team file that takes no input arms is refused.
     - `--fail-on-regression` — Also exit 1 when an arm's pass rate dropped by more than chance against the newest earlier succeeded run of the suite published on teamai-reports with the same arms, trials paired by task and repetition as the dashboard's Compare pairs them, a pair left out when its task changed or two different judges decided it: starts the workflow with input fail_on_regression true, false without it, and its regression step fails. With no such run, print a notice and leave the exit code alone. A team file that takes no input fail_on_regression is refused.
-  - `teamai benchmark try <task-file>` — Try one task file before it joins a suite, in a checkout of the suite's repo: setup and the check run at startingCommit, where the check must fail, and at solutionCommit, if set, with the protected paths as startingCommit has them, where it must pass. Reads the task file, the suite.yaml two directories up from it and the files its check.add entries name in that suite directory, needs no teamai init, and creates no run. Exits non-zero naming the commit and the cause when either goes the wrong way.
+  - `teamai benchmark try <task-file>` — Try one task file before it joins a suite, in a checkout of the suite's repo: setup and the check run at startingCommit, where the check must fail, and at solutionCommit, if set, with the protected paths as startingCommit has them, where it must pass. Reads the task file, the SUITE.yaml (or suite.yaml) two directories up from it and the files its check.add entries name in that suite directory, needs no teamai init, and creates no run. Exits non-zero naming the commit and the cause when either goes the wrong way.
   - `teamai benchmark plan <suite>` — The first step of a benchmark run: freeze the team revision this checkout last pulled, fetch every commit a trial reads into the commit cache, and print {"definition":{"definition","workflows"},"plan"}, the workflow the run's trials step runs and the plan its check and report steps read, and write the correctness scorers of tasks judged by successCriteria as files of the run, where teamai score plan reads them. Refuses a run with no timeout, or a longer one than the suite's: start it with workflow start --timeout.
     - `--aliases <whose>` — Whose aliases resolve the arms' model aliases: team (default), the team's models/aliases.yaml, or member, your ~/.teamai/models/aliases.yaml over the team's
     - `--tasks <json>` — The task ids to plan, as a JSON array such as ["fix-login"]; [] or absent plans every task. A name the suite does not have is refused, listing the ones it has.

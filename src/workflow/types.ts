@@ -1,5 +1,6 @@
 /** Workflow types for the v1alpha1 local-driver subset. */
 
+import type { WorkflowFolderFile } from './folder.js';
 import type { ContractCode, RunOrigin } from '../default-workflows.js';
 import type { RunMode } from '../launch-context.js';
 import type { TeamPin } from './team-pin.js';
@@ -74,6 +75,8 @@ export interface WorkflowStep {
    * member's `ai.tool` names, else the first installed one, on its one-shot call launch.
    */
   answer?: string;
+  /** Original path of an answer step's text, as `prompt_file` is a prompt's: `answer` holds the text pull resolved. */
+  answerFile?: string;
   /** On a command step: the paths, relative to the checkout, under which a change the command makes is kept, not `read_only_dirty`. */
   writes?: string[];
   /** A person works in the prompt tool; only a driver with HITL can take the lease. */
@@ -226,7 +229,7 @@ export interface ConfinedPlace {
 export type StepWorkspace = Exclude<typeof WORKSPACE_MODES[number], 'clone' | 'team'> | { clone: ClonePlace } | { team: TeamPlace } | ConfinedPlace;
 
 /** The keys that give a step its action, as YAML writes them, each with the definition field it fills. */
-export const STEP_ACTIONS = { command: 'command', prompt: 'prompt', prompt_file: 'promptFile', answer: 'answer', workflow: 'workflow' } as const satisfies Record<string, keyof WorkflowStep>;
+export const STEP_ACTIONS = { command: 'command', prompt: 'prompt', prompt_file: 'promptFile', answer: 'answer', answer_file: 'answerFile', workflow: 'workflow' } as const satisfies Record<string, keyof WorkflowStep>;
 
 /** Whether a step runs work rather than only a HITL request or end. */
 export function hasAction(step: WorkflowStep): boolean {
@@ -411,11 +414,13 @@ export interface WorkflowDiagnostic {
    *   changed.
    * `alias_conflict`: another workflow has the same alias, or takes it as its name. The workflow is cached and starts by
    *   name; only the alias starts nothing.
+   * `workflow_folder_invalid`: a workflow folder holds a symlink, a file that is not UTF-8 text, or more than its size
+   *   limit; the kept copy would run with files the folder no longer has.
    * `ContractCode`: a team file breaks the contract of a default it replaces or runs (`DefaultWorkflows.overrideProblems`);
    *   teamai's default runs, never an older team copy.
    */
   code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace' | 'bad_role' | 'workflow_namespace_conflict' | 'prompt_namespace_conflict' | 'benchmark_namespace_conflict' | 'bad_delivery' | 'bad_invoke' | 'bad_alias' | 'alias_conflict'
-    | ContractCode;
+    | 'workflow_folder_invalid' | ContractCode;
 }
 
 export type StepOutcome = 'success' | 'failed' | 'released';
@@ -502,6 +507,13 @@ export interface RunState {
   definition: WorkflowDefinition;
   /** The sub-workflows the run uses, by name, as they were cached when it started. */
   workflows?: Record<string, WorkflowDefinition>;
+  /**
+   * The sourceHash of the folder `definition` is written as, whose files the run reads from its copy under the data home
+   * for its whole life. Absent for a single file, and on runs started before workflow folders. Local run state only.
+   */
+  folder?: string;
+  /** The sourceHash of the folder each of `workflows` written as one is, by the same name. Local run state only. */
+  folders?: Record<string, string>;
   /**
    * The `workflow` outputs of the steps a `from` step runs, by the path of the producing step, admitted when it reported
    * and frozen for the run's life. The named workflows each brought are in `workflows`.
@@ -646,6 +658,8 @@ export interface CachedWorkflow {
   content?: string;
   definition: WorkflowDefinition;
   validatedAt: string;
+  /** Every file of a workflow written as a folder, `WORKFLOW.yaml` included, which `sourceHash` covers. Absent for a single file. */
+  files?: WorkflowFolderFile[];
 }
 
 /** Where a workflow `start` runs comes from: a team file `teamai pull` validated, or a default this teamai ships. */

@@ -12,10 +12,10 @@ benchmark 套件用团队自己的任务比较工具或模型。一次运行把�
 
 ## 编写套件
 
-套件是团队仓库里的一个目录：`benchmarks/<suite>/suite.yaml`，以及 `tasks/` 里每个任务一个文件。
+套件是团队仓库里的一个目录：`benchmarks/<suite>/SUITE.yaml`，以及 `tasks/` 里每个任务一个文件。写成 `suite.yaml` 也可以，但同一目录里不能两个都有。
 
 ```yaml
-# benchmarks/fix-auth/suite.yaml
+# benchmarks/fix-auth/SUITE.yaml
 schemaVersion: v1alpha1
 name: fix-auth
 description: Fix bugs in the auth service.
@@ -368,7 +368,7 @@ try at 9a1d4e7                protect restored, then written from 9a1d4e7: the c
 
 ```text
 benchmarks/fix-auth/
-  suite.yaml
+  SUITE.yaml
   tasks/expired-token.yaml
   check-files/expired-token/refresh.test.ts
 ```
@@ -455,7 +455,7 @@ missing-tool   could not run          not tried                          1: name
 setup-error    setup failed           not tried                          1: names setup and 3f2c9a7
 ```
 
-`benchmark try` 按原样读取任务文件及其上两级目录中的 `suite.yaml`，并像 `teamai pull` 一样校验两者（连同其 `check.add` 条目从该套件目录指明的文件）。它不需要 `teamai init`。检出目录缺少的提交会像运行时一样，按 SHA 从套件的 `repo` 获取。每个提交都有一个全新克隆、套件的 `setup`、trial 得到的环境（见[运行套件](#运行套件)），以及套件的 `timeout`。它不创建运行，也不写记录。check 会在你的机器上运行项目代码，所以只试运行你信任的任务。
+`benchmark try` 按原样读取任务文件及其上两级目录中的 `SUITE.yaml`，并像 `teamai pull` 一样校验两者（连同其 `check.add` 条目从该套件目录指明的文件）。它不需要 `teamai init`。检出目录缺少的提交会像运行时一样，按 SHA 从套件的 `repo` 获取。每个提交都有一个全新克隆、套件的 `setup`、trial 得到的环境（见[运行套件](#运行套件)），以及套件的 `timeout`。它不创建运行，也不写记录。check 会在你的机器上运行项目代码，所以只试运行你信任的任务。
 
 ## 把会话变成任务
 

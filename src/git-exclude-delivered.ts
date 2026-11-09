@@ -11,6 +11,8 @@ import {
   remove,
   report,
   sync,
+  updateFileLocked,
+  withOwnerLines,
   type GitExcludeOwner,
   type GitExcludeReport,
   type GitExcludeWrite,
@@ -157,6 +159,32 @@ function partitionOwner(localConfig: LocalConfig, name: string): GitExcludeOwner
       },
     },
   };
+}
+
+// ─── A single-repo worktree's delivered folders (#1787) ─────────
+
+/** The owner of the block that keeps a single-repo worktree's `.teamai/delivered/` out of git. */
+export const DELIVERED_FOLDERS_OWNER = 'delivered-folders';
+
+/**
+ * Keep `dir`, the `.teamai/delivered/` of `localConfig`'s single-repo worktree, out of git: one line in its own block
+ * of the repository's `.git/info/exclude`, whatever `sharing.gitExclude` says, since every worktree delivers its own
+ * copy. The exclude file is recorded, so uninstall finds the block. A repository git cannot locate gets no block; a
+ * block that cannot be written is reported, and the folders stay delivered.
+ */
+export async function excludeDeliveredFolders(localConfig: LocalConfig, dir: string): Promise<void> {
+  const location = await gitExcludeFile(path.dirname(dir));
+
+  if (!location) return;
+  const line = `/${location.prefix}${path.basename(dir)}/`.replace(/[\\*?[\]!#]/g, '\\$&');
+
+  try {
+    await updateFileLocked(location.excludeFile, (content) => withOwnerLines(content, DELIVERED_FOLDERS_OWNER, [line]));
+    await partitionOwner(localConfig, DELIVERED_FOLDERS_OWNER).record?.update({ add: [location.excludeFile], drop: [] });
+  } catch (e) {
+    log.warn(`Could not keep ${dir} out of git in ${location.excludeFile}: ${e instanceof Error ? e.message : String(e)}. `
+      + `git status may list the team folders delivered there; add the line ${line} to that file, or run teamai pull again.`);
+  }
 }
 
 // ─── Every live checkout's list ───────────────────────────────

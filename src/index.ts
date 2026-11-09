@@ -399,7 +399,7 @@ program
   .command('remove <type> <names...>')
   .description('Remove resource(s) from team repo and all local AI tools (type: skills|rules|agents|mcp)')
   .option('--force', 'Skip confirmation prompt')
-  .option('--role <ns>', 'mcp: remove the server from mcp/<ns>/mcp.yaml instead of the root mcp/mcp.yaml')
+  .option('--role <ns>', 'mcp: remove the server from namespace <ns> (mcp/<ns>/mcp.yaml or the folder mcp/<ns>/<name>/) instead of the root')
   .option('--project <id>', "mcp: remove the server from the project's mcp namespace instead of the root mcp/mcp.yaml")
   .action(async (type, names, cmdOpts) => {
     const globalOpts = program.opts<GlobalOptions>();
@@ -413,7 +413,7 @@ program
   .command('doctor')
   .description('Diagnose configuration issues, and print the run mode (attended or unattended) and what set it: TEAMAI_MODE, CI, or the default')
   .option('--json', 'Output the report as JSON (suitable for CI)')
-  .option('--fix', 'Remove lock files left behind by dead processes, delete again the run branches a succeeded workflow run could not delete, and remove what runs settled longer ago than workflows.retention left behind (branches but those a pull request uses, worktrees, kept refs, base pins on origin)')
+  .option('--fix', 'Remove lock files left behind by dead processes, delete again the run branches a succeeded workflow run could not delete, remove what runs settled longer ago than workflows.retention left behind (branches but those a pull request uses, worktrees, kept refs, base pins on origin), remove the stored workflow folders no run and no pulled workflow uses, and remove the team hook entries a removed worktree of the repository left in HOME')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts<GlobalOptions>();
     const { doctor } = await import('./doctor.js');
@@ -840,7 +840,7 @@ envCmd
 
 const workflowCmd = program
   .command('workflow')
-  .description('Run a validated workflow from workflows/<name>.yaml. Writable steps may set deliver: pr to open review requests; TeamAI never merges them.');
+  .description('Run a validated workflow from workflows/<name>.yaml or the folder workflows/<name>/WORKFLOW.yaml. Writable steps may set deliver: pr to open review requests; TeamAI never merges them.');
 
 workflowCmd
   .command('start <name>')
@@ -983,7 +983,7 @@ benchmarkCmd
 
 benchmarkCmd
   .command('try <task-file>')
-  .description('Try one task file before it joins a suite, in a checkout of the suite\'s repo: setup and the check run at startingCommit, where the check must fail, and at solutionCommit, if set, with the protected paths as startingCommit has them, where it must pass. Reads the task file, the suite.yaml two directories up from it and the files its check.add entries name in that suite directory, needs no teamai init, and creates no run. Exits non-zero naming the commit and the cause when either goes the wrong way.')
+  .description('Try one task file before it joins a suite, in a checkout of the suite\'s repo: setup and the check run at startingCommit, where the check must fail, and at solutionCommit, if set, with the protected paths as startingCommit has them, where it must pass. Reads the task file, the SUITE.yaml (or suite.yaml) two directories up from it and the files its check.add entries name in that suite directory, needs no teamai init, and creates no run. Exits non-zero naming the commit and the cause when either goes the wrong way.')
   .action(async (file: string) => {
     const { benchmarkTry } = await import('./workflow-commands.js');
     await benchmarkTry(file);

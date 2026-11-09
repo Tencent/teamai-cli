@@ -278,6 +278,9 @@ const RunProgressSchema = z.object({
     outcome: z.enum(['succeeded', 'failed', 'cancelled']), end: z.string().optional(), failure: FailureSchema.optional(), since: z.string(), until: z.string(),
   }).optional(),
   timeout: z.number().int().positive().optional(),
+  /** A workflow folder's sourceHash names its copy under the data home, so the run reads only one of those. */
+  folder: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  folders: z.record(z.string(), z.string().regex(/^[0-9a-f]{64}$/)).optional(),
   driveOptions: (z.object({
     tools: z.record(z.string(), z.string()).optional(), autoApprove: z.boolean().optional(), sandbox: z.literal(true).optional(),
   }) satisfies z.ZodType<DriveOptions>).optional(),

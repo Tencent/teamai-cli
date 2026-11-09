@@ -119,7 +119,7 @@ You need a scorer whose labels reach `teamai-reports` ([Scorers](scorers.md)), t
 ### 1. The regression suite
 
 ```yaml
-# benchmarks/regressions/suite.yaml
+# benchmarks/regressions/SUITE.yaml
 schemaVersion: v1alpha1
 name: regressions
 description: Failures the team fixed in its prompts, skills and agents. Every change to them runs against all of them.

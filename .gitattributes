@@ -11,3 +11,14 @@
 # (ubuntu/macos) stayed green. Pin them to LF so the anchor holds everywhere.
 src/__tests__/fixtures/hooks/*.json text eol=lf
 src/__tests__/fixtures/hooks-skill-retire/*.json text eol=lf
+
+# teamai's own default files are read as text with LF line endings (#1787):
+# a workflow folder's sourceHash covers its content, so a Windows checkout must
+# hold the same bytes as the package.
+hooks/** text eol=lf
+rules/** text eol=lf
+workflows/** text eol=lf
+
+# The recall rule and blocks as teamai delivered them before rules/teamai-recall/
+# (#1787); src/__tests__/recall-golden.test.ts compares them byte for byte.
+src/__tests__/fixtures/recall-golden/* text eol=lf

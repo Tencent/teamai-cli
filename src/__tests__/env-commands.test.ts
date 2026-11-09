@@ -311,6 +311,16 @@ scope: 'user',
       expect(process.exitCode).toBeUndefined();
     });
 
+    it('warns when env set targets TEAMAI_WORKFLOW_DIR, saying it is a folder path', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: TEAMAI_WORKFLOW_DIR\n');
+      vi.mocked(readStdin).mockResolvedValue('reserved-value');
+
+      await envSet('TEAMAI_WORKFLOW_DIR', { stdin: true });
+
+      expect(log.warn).toHaveBeenCalledWith('TEAMAI_WORKFLOW_DIR is reserved for the folder path teamai gives a workflow step, hook, rule or MCP server; those team env values are ignored.');
+      expect(process.exitCode).toBeUndefined();
+    });
+
     it('reconciles MCP for this scope after setting a secret, without asking for a pull', async () => {
       await fse.writeFile(path.join(repoPath, 'teamai.yaml'), 'team: test\nrepo: https://git.woa.com/test/repo.git\n');
       await fse.ensureDir(path.join(repoPath, 'mcp'));

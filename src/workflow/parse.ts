@@ -27,6 +27,8 @@ import { ClonePlaceSchema } from './clone.js';
 import { mergeRequirements, ON_LIMIT, REQUIREMENT_KEYS, RequirementsSchema, SANDBOX_WITHHELD_ENV, SetupSchema, type InEffect, type OnLimit, type Requirements, type Setup } from './requirements.js';
 import { sameEnvName } from '../resources/env-key.js';
 import { Writes } from './writes.js';
+import type { WorkflowFolderFile } from './folder.js';
+import { markerFolderOf, RESOURCE_LAYOUTS } from '../resources/resolver.js';
 
 /**
  * The first release that reads `invoke` and `alias`. An older CLI refuses either as an unknown key and drops the
@@ -61,12 +63,12 @@ const CONFINED_STEP_KEYS = new Set(['id', 'needs', 'if', 'prompt', 'prompt_file'
  * What an answer step may carry: one prompt the member's AI tool answers, read-only and with no session, in the checkout
  * or with `workspace: new` in a worktree of its own, so no key that names a tool, an agent, a model, a role or a person.
  */
-const ANSWER_STEP_KEYS = new Set(['id', 'needs', 'if', 'answer', 'output', 'end', 'loop', 'break', 'for_each', 'timeout', 'continue_on_failure', 'workspace']);
+const ANSWER_STEP_KEYS = new Set(['id', 'needs', 'if', 'answer', 'answer_file', 'output', 'end', 'loop', 'break', 'for_each', 'timeout', 'continue_on_failure', 'workspace']);
 
 /** What a `finally` step may carry: it runs a command, read-only, in no workspace of its own. */
 const FINALLY_STEP_KEYS = new Set(['id', 'needs', 'if', 'command', 'env', 'output', 'timeout']);
 
-/** The actions as a sentence: `command, prompt, prompt_file, or workflow`. */
+/** The actions as a sentence: `command, prompt, prompt_file, answer, answer_file, or workflow`. */
 const ACTION_LIST = `${ACTION_KEYS.slice(0, -1).join(', ')}, or ${ACTION_KEYS.at(-1)}`;
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
@@ -90,6 +92,17 @@ const EXPRESSION_SITES: Record<Exclude<StepExpression['what'], 'if'>, { code: Wo
   break: { code: 'bad_loop' },
   for_each: undefined,
 };
+
+/**
+ * The name of the folder whose marker `file` is, as `workflows/release/WORKFLOW.yaml` and
+ * `workflows/payments/release/WORKFLOW.yaml` are `release`'s, or undefined for a workflow file of its own: a folder sits
+ * where the scan meets one (`markerFolderOf`).
+ */
+export function workflowFolderName(file: string): string | undefined {
+  const { workflows } = RESOURCE_LAYOUTS;
+
+  return file.startsWith(`${workflows.dir}/`) ? markerFolderOf(workflows, file.slice(workflows.dir.length + 1))?.split('/').at(-1) : undefined;
+}
 
 export function formatDiagnostic(diagnostic: WorkflowDiagnostic): string {
   return `${diagnostic.file}:${diagnostic.line}: field "${diagnostic.field}": ${diagnostic.message}`;
@@ -276,11 +289,14 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
 
   const namePair = root.items.find((pair) => scalarString(pair.key) === 'name');
   const name = scalarString(namePair?.value);
+  const folderName = workflowFolderName(file);
   const fileName = file.slice(file.lastIndexOf('/') + 1).replace(/\.yaml$/, '');
 
   if (!name || !TOKEN.test(name)) {
     diagnostics.push(locate(file, lineCounter, namePair?.value ?? namePair?.key ?? root, 'name', 'name must be a non-empty token'));
-  } else if (name !== fileName) {
+  } else if (folderName !== undefined && name !== folderName) {
+    diagnostics.push(locate(file, lineCounter, namePair?.value ?? namePair?.key ?? root, 'name', `name must match the folder name "${folderName}"`));
+  } else if (folderName === undefined && name !== fileName) {
     diagnostics.push(locate(file, lineCounter, namePair?.value ?? namePair?.key ?? root, 'name', `name must match the file name "${fileName}"`));
   }
 
@@ -537,6 +553,10 @@ function parseBody(
       const promptFile = scalarString(promptFilePair?.value);
       const answerPair = item.items.find((pair) => scalarString(pair.key) === 'answer');
       const answer = scalarString(answerPair?.value);
+      const answerFilePair = item.items.find((pair) => scalarString(pair.key) === 'answer_file');
+      const answerFile = scalarString(answerFilePair?.value);
+      // A step that answers its prompt with text: from `answer`, or from the file `answer_file` names.
+      const answerStep = answerPair ?? answerFilePair;
       const workflowPair = item.items.find((pair) => scalarString(pair.key) === 'workflow');
       const workflow = scalarString(workflowPair?.value)?.trim();
       const forEachPair = item.items.find((pair) => scalarString(pair.key) === 'for_each');
@@ -629,8 +649,8 @@ function parseBody(
         diagnostics.push(locate(file, lineCounter, promptPair.value ?? promptPair.key ?? item, `${field}.prompt`, 'prompt must be a non-empty string'));
       }
 
-      if (answerPair) {
-        if (answer === undefined || answer.trim() === '') {
+      if (answerStep) {
+        if (answerPair && (answer === undefined || answer.trim() === '')) {
           diagnostics.push(locate(file, lineCounter, answerPair.value ?? answerPair.key ?? item, `${field}.answer`, 'answer must be a non-empty string'));
         }
 
@@ -645,16 +665,23 @@ function parseBody(
         const outputValue = item.items.find((pair) => scalarString(pair.key) === 'output')?.value;
 
         if (!isMap(outputValue)) {
-          diagnostics.push(locate(file, lineCounter, outputValue ?? answerPair.key ?? item, `${field}.output`, `${stepLabel} answer needs output: { text: string } to take the reply as text, or the fields of the JSON object the reply holds`));
+          diagnostics.push(locate(file, lineCounter, outputValue ?? answerStep.key ?? item, `${field}.output`, `${stepLabel} answer needs output: { text: string } to take the reply as text, or the fields of the JSON object the reply holds`));
         }
       }
 
-      if (promptFilePair) {
-        if (!isPromptFilePath(promptFile)) {
-          diagnostics.push(locate(file, lineCounter, promptFilePair.value ?? promptFilePair.key ?? item, `${field}.prompt_file`, 'prompt_file must be a relative path under prompts/'));
-        } else if (isYamlNode(promptFilePair.value)) {
-          const promptFileLocate = locate(file, lineCounter, promptFilePair.value, `${field}.prompt_file`, '');
-          promptFileLocations[field] = { line: promptFileLocate.line, column: promptFileLocate.column };
+      // Inside a workflow folder, a file is one of the folder's own; outside, one under prompts/.
+      const inFolder = workflowFolderName(file) !== undefined;
+
+      for (const [key, pair, value] of [['prompt_file', promptFilePair, promptFile], ['answer_file', answerFilePair, answerFile]] as const) {
+        if (!pair) continue;
+
+        if (inFolder && !isFolderFilePath(value)) {
+          diagnostics.push(locate(file, lineCounter, pair.value ?? pair.key ?? item, `${field}.${key}`, `${key} must be a relative path inside the workflow folder, without ..`));
+        } else if (!inFolder && !isPromptFilePath(value)) {
+          diagnostics.push(locate(file, lineCounter, pair.value ?? pair.key ?? item, `${field}.${key}`, `${key} must be a relative path under prompts/`));
+        } else if (isYamlNode(pair.value)) {
+          const located = locate(file, lineCounter, pair.value, `${field}.${key}`, '');
+          promptFileLocations[field] = { line: located.line, column: located.column };
         }
       }
 
@@ -801,7 +828,7 @@ function parseBody(
 
       const confined = workspace instanceof Object && 'confined' in workspace;
 
-      if (answerPair && workspace !== undefined && workspace !== 'new' && !confined) {
+      if (answerStep && workspace !== undefined && workspace !== 'new' && !confined) {
         diagnostics.push({
           ...locate(file, lineCounter, workspacePair?.value ?? item, `${field}.workspace`, `${stepLabel} answer takes workspace only as new: a worktree of its own, which it reads and leaves as it found it`),
           code: 'bad_workspace',
@@ -1067,6 +1094,8 @@ function parseBody(
         if (promptFile) step.promptFile = promptFile;
 
         if (answer) step.answer = answer;
+
+        if (answerFile) step.answerFile = answerFile;
 
         if (inline) step.workflow = inline.workflow;
 
@@ -1363,7 +1392,7 @@ function referenceDiagnostics({ file, lineCounter }: ParseContext, files: Workfl
 
   if (!child) {
     return [locate(file, lineCounter, node, `${field}.workflow`,
-      `${label} runs workflow "${workflow}", which has no runnable version; fix or add workflows/${workflow}.yaml`)];
+      `${label} runs workflow "${workflow}", which has no runnable version; fix or add workflows/${workflow}.yaml or workflows/${workflow}/WORKFLOW.yaml`)];
   }
 
   if (child.finally) {
@@ -2256,7 +2285,7 @@ function withReadProblems(label: string, what: string, template: Template, decla
 }
 
 /**
- * Diagnostics for the templates in the text a step's `prompt_file` resolved to, placed at its `prompt_file` field.
+ * Diagnostics for the templates in the text a step's `prompt_file` or `answer_file` resolved to, placed at that field.
  * `trail` is the step's index in each workflow on the way to it: `[2, 0]` is the first step of the inline workflow of step 2.
  */
 export function promptFileDiagnostics(
@@ -2282,20 +2311,21 @@ export function promptFileDiagnostics(
   const step = levels[levels.length - 1]?.[trail[trail.length - 1] ?? -1];
 
   if (!step) return [];
-  const field = `${stepField(trail)}.prompt_file`;
+  const key = step.answerFile !== undefined ? 'answer_file' : 'prompt_file';
+  const field = `${stepField(trail)}.${key}`;
   const bindsItem = step.forEach !== undefined || runners.some((runner) => runner.forEach !== undefined);
   const parsed = parseTemplate(text, bindsItem);
 
   if (!parsed.ok) {
     return parsed.errors.map((problem): WorkflowDiagnostic => ({
-      file, ...at, field, message: `step "${step.id}" prompt_file template ${problem.source}: ${problem.message}`, code: 'bad_template',
+      file, ...at, field, message: `step "${step.id}" ${key} template ${problem.source}: ${problem.message}`, code: 'bad_template',
     }));
   }
 
-  const diagnostics: WorkflowDiagnostic[] = withReadProblems(`step "${step.id}"`, 'prompt_file', parsed.template, step.with)
+  const diagnostics: WorkflowDiagnostic[] = withReadProblems(`step "${step.id}"`, key, parsed.template, step.with)
     .map((message): WorkflowDiagnostic => ({ file, ...at, field, message, code: 'bad_template' }));
 
-  const promptSite: ReadSite = expressionSite(step.id, field, at, 'prompt_file', templateExpressions(parsed.template));
+  const promptSite: ReadSite = expressionSite(step.id, field, at, key, templateExpressions(parsed.template));
 
   if (step.forEach) promptSite.item = true;
   promptSite.code = 'bad_template';
@@ -2315,6 +2345,49 @@ export function promptFileDiagnostics(
   return diagnostics;
 }
 
+/**
+ * `definition` with each `prompt_file` and `answer_file`, inline workflows' included, read into the step's `prompt` or
+ * `answer` from the files of the workflow folder `folder.path` names; or the diagnostics naming a file the folder lacks
+ * or a template it holds that does not check.
+ */
+export function resolveFolderFiles(
+  file: string,
+  definition: WorkflowDefinition,
+  locations: Record<string, { line: number; column: number }>,
+  folder: { path: string; files: ReadonlyArray<Pick<WorkflowFolderFile, 'path' | 'content'>> },
+): { ok: true; definition: WorkflowDefinition } | { ok: false; diagnostics: WorkflowDiagnostic[] } {
+  const diagnostics: WorkflowDiagnostic[] = [];
+
+  const withTexts = (given: WorkflowStep[], trail: number[]): WorkflowStep[] => given.map((step, index) => {
+    const at = [...trail, index];
+    const child = stepWorkflow(step);
+
+    if (child?.kind === 'inline') return { ...step, workflow: { ...child.workflow, steps: withTexts(child.workflow.steps, at) } };
+    const written = step.promptFile ?? step.answerFile;
+
+    if (written === undefined) return step;
+    const key = step.promptFile !== undefined ? 'prompt_file' : 'answer_file';
+    const field = stepField(at);
+    const location = locations[field] ?? { line: 1, column: 1 };
+    const inside = written.split(/[\\/]/).filter((segment) => segment !== '' && segment !== '.').join('/');
+    const found = folder.files.find((candidate) => candidate.path === inside);
+
+    if (!found) {
+      diagnostics.push({ file, ...location, field: `${field}.${key}`, message: `${key} "${written}" is not a file of the workflow folder ${folder.path}` });
+
+      return step;
+    }
+
+    diagnostics.push(...promptFileDiagnostics(file, definition, at, found.content, location));
+
+    return key === 'prompt_file' ? { ...step, prompt: found.content } : { ...step, answer: found.content };
+  });
+
+  const steps = withTexts(definition.steps, []);
+
+  return diagnostics.length > 0 ? { ok: false, diagnostics } : { ok: true, definition: { ...definition, steps } };
+}
+
 /** The field of the step at `trail`, its index in each workflow on the way to it, such as `steps[2].workflow.steps[0]`. */
 export function stepField(trail: number[]): string {
   return trail.map((index) => `steps[${index}]`).join('.workflow.');
@@ -2322,6 +2395,14 @@ export function stepField(trail: number[]): string {
 
 function pathIsAbsolute(value: string): boolean {
   return value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
+}
+
+/** A path of a file inside a workflow folder: relative, `/`-separated or not, without `..`. */
+function isFolderFilePath(value: string | undefined): value is string {
+  if (!value || value.trim() === '' || pathIsAbsolute(value)) return false;
+  const segments = value.split(/[\\/]/).filter((segment) => segment !== '' && segment !== '.');
+
+  return segments.length >= 1 && !segments.includes('..');
 }
 
 function isPromptFilePath(value: string | undefined): value is string {

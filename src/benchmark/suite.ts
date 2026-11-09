@@ -1,5 +1,5 @@
 /**
- * Benchmark suites and their tasks, as team files: `benchmarks/<suite>/suite.yaml` and
+ * Benchmark suites and their tasks, as team files: `benchmarks/<suite>/SUITE.yaml` (or `suite.yaml`) and
  * `benchmarks/<suite>/tasks/<task>.yaml`. Each file is parsed once, here, into the domain types below.
  *
  * `syncTeamDefinitions` calls `parseSuite` right after it syncs scorers and workflows, and returns suites as

@@ -342,7 +342,7 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
         if (teamHooks.entries.length === 0) console.log('  (none)');
 
         for (const resolved of teamHooks.entries) {
-            const h = resolved.entry;
+            const h = resolved.entry.hook;
             const matcher = h.matcher ? ` [${h.matcher}]` : '';
             const tools = h.tools && h.tools.length > 0 ? h.tools.join(',') : 'all';
             const roles = h.roles ? `, roles: ${h.roles.length > 0 ? h.roles.join(',') : 'nobody'} (deprecated)` : '';

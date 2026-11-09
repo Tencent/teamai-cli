@@ -155,6 +155,10 @@ const GOOD_SKILL = [
   '',
 ].join('\n');
 
+/** A hook folder's HOOK.yaml that runs the folder's own script. */
+const HOOK_FOLDER = 'description: Lint\nevent: Stop\ncommand: bash "${TEAMAI_HOOK_DIR}/lint.sh"\n';
+const MCP_FOLDER = 'transport: stdio\ncommand: node\nargs: ["${TEAMAI_MCP_DIR}/server.mjs"]\n';
+
 function findings(review: BranchReview) {
   return review.findings;
 }
@@ -380,6 +384,340 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     expect(findings(review).some((f) => (
       f.check === 'duplicates' && /"deploy" is defined in both/.test(f.message)
     ))).toBe(true);
+  });
+
+  it('reviews a hook folder by its id, as pull delivers it, not as a namespace', async () => {
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('hooks', ['a']));
+    await fse.outputFile(path.join(repoDir, 'hooks', 'lint', 'HOOK.yaml'), HOOK_FOLDER);
+    await fse.outputFile(path.join(repoDir, 'hooks', 'lint', 'lint.sh'), 'echo lint\n');
+    await fse.outputFile(path.join(repoDir, 'hooks', 'a', 'fmt', 'HOOK.yaml'), HOOK_FOLDER);
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review)]).toEqual([true, [
+      { level: 'info', check: 'structure', path: 'hooks/lint', message: 'hooks/lint sits at the shared root, so it is delivered to every member.' },
+    ]]);
+  });
+
+  it('fails a hook folder whose script carries a credential', async () => {
+    await fse.outputFile(path.join(repoDir, 'hooks', 'lint', 'HOOK.yaml'), HOOK_FOLDER);
+    await fse.outputFile(path.join(repoDir, 'hooks', 'lint', 'lint.sh'), 'curl -H "Authorization: Bearer sk-abcdefghijklmnopqrstuvwx0123456789" https://example.com\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(findings(review).filter((f) => f.check === 'leaks').map((f) => f.path)).toEqual(['hooks/lint/lint.sh']);
+  });
+
+  it('fails a workflow folder whose script carries a credential', async () => {
+    await fse.outputFile(path.join(repoDir, 'workflows', 'release', 'WORKFLOW.yaml'), VALID_BUILD.replace('name: build', 'name: release'));
+    await fse.outputFile(path.join(repoDir, 'workflows', 'release', 'plan.sh'), 'curl -H "Authorization: Bearer sk-abcdefghijklmnopqrstuvwx0123456789" https://example.com\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(findings(review).filter((f) => f.check === 'leaks').map((f) => f.path)).toEqual(['workflows/release/plan.sh']);
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('fails a hooks.yaml it cannot read, as pull does, and never reads it as one with no hooks', async () => {
+    const file = path.join(repoDir, 'hooks', 'hooks.yaml');
+    await fse.outputFile(file, 'hooks:\n  - { id: lint, description: Lint, event: Stop, command: ~/.teamai/team-scripts/lint.sh }\n');
+    await fse.chmod(file, 0o000);
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.check === 'format')]).toEqual([false, [{
+      level: 'fail',
+      check: 'format',
+      path: 'hooks/hooks.yaml',
+      message: expect.stringMatching(/^hooks\/hooks\.yaml cannot be read: EACCES.+; pull leaves every member's team hooks as they are until it is fixed\.$/),
+    }]]);
+  });
+
+  it('fails a hook folder whose HOOK.yaml pull cannot read', async () => {
+    await fse.outputFile(path.join(repoDir, 'hooks', 'lint', 'HOOK.yaml'), 'description: Lint\nevent: Stop\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.check === 'format')]).toEqual([false, [{
+      level: 'fail',
+      check: 'format',
+      path: 'hooks/lint/',
+      message: expect.stringMatching(/^hooks\/lint\/HOOK\.yaml does not parse: command: .+; pull leaves every member's team hooks as they are until it is fixed\.$/),
+    }]]);
+  });
+
+  it('fails a hooks.yaml entry that names ${TEAMAI_HOOK_DIR}, which only a hook folder has', async () => {
+    await fse.outputFile(path.join(repoDir, 'hooks', 'hooks.yaml'), [
+      'hooks:',
+      '  - id: lint',
+      '    description: Lint',
+      '    event: Stop',
+      '    command: bash "${TEAMAI_HOOK_DIR}/lint.sh"',
+      '',
+    ].join('\n'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.check === 'format')]).toEqual([false, [{
+      level: 'fail',
+      check: 'format',
+      path: 'hooks/hooks.yaml',
+      message: 'hooks/hooks.yaml: hook "lint" uses ${TEAMAI_HOOK_DIR}, which only a hook folder has. Move it to hooks/lint/HOOK.yaml, beside the files it runs; '
+        + 'pull leaves every member\'s team hooks as they are until it is fixed.',
+    }]]);
+  });
+
+  it('fails a hook id that is both a hooks.yaml entry and a hook folder in one place', async () => {
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('hooks', ['a']));
+    await fse.outputFile(path.join(repoDir, 'hooks', 'a', 'hooks.yaml'), [
+      'hooks:',
+      '  - id: lint',
+      '    description: Lint',
+      '    event: Stop',
+      '    command: ~/.teamai/team-scripts/lint.sh',
+      '',
+    ].join('\n'));
+    await fse.outputFile(path.join(repoDir, 'hooks', 'a', 'lint', 'HOOK.yaml'), HOOK_FOLDER);
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.check === 'duplicates')]).toEqual([false, [{
+      level: 'fail',
+      check: 'duplicates',
+      path: 'hooks/a/lint/',
+      message: 'hook "lint" is defined in both hooks/a/hooks.yaml and hooks/a/lint/, in the same place, so pull leaves every member\'s '
+        + 'team hooks as they are. Keep one of them.',
+    }]]);
+  });
+
+  it('fails a hook folder and a hooks.yaml entry of one id in two co-active namespaces', async () => {
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('hooks', ['a', 'b']));
+    await fse.outputFile(path.join(repoDir, 'hooks', 'a', 'lint', 'HOOK.yaml'), HOOK_FOLDER);
+    await fse.outputFile(path.join(repoDir, 'hooks', 'b', 'hooks.yaml'), [
+      'hooks:',
+      '  - id: lint',
+      '    description: Lint',
+      '    event: Stop',
+      '    command: ~/.teamai/team-scripts/lint.sh',
+      '',
+    ].join('\n'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(findings(review).filter((f) => f.check === 'duplicates').map((f) => f.message)).toEqual([
+      '"lint" is defined in both hooks/a/lint and hooks/b/hooks.yaml, and their namespaces can be active together, so pull cannot decide '
+        + 'which one a member receives. Rename or remove one of them.',
+    ]);
+  });
+
+  it('reviews an MCP server folder by its name, as pull delivers it, not as a namespace', async () => {
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('mcp', ['a']));
+    await fse.outputFile(path.join(repoDir, 'mcp', 'jira-lite', 'MCP.yaml'), MCP_FOLDER);
+    await fse.outputFile(path.join(repoDir, 'mcp', 'jira-lite', 'server.mjs'), 'console.log("jira");\n');
+    await fse.outputFile(path.join(repoDir, 'mcp', 'a', 'db', 'MCP.yaml'), MCP_FOLDER);
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review)]).toEqual([true, [
+      { level: 'info', check: 'structure', path: 'mcp/jira-lite', message: 'mcp/jira-lite sits at the shared root, so it is delivered to every member.' },
+    ]]);
+  });
+
+  it('fails an MCP server folder whose file carries a credential', async () => {
+    await fse.outputFile(path.join(repoDir, 'mcp', 'jira-lite', 'MCP.yaml'), MCP_FOLDER);
+    await fse.outputFile(path.join(repoDir, 'mcp', 'jira-lite', 'server.mjs'), 'const token = "sk-abcdefghijklmnopqrstuvwx0123456789";\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(findings(review).filter((f) => f.check === 'leaks').map((f) => f.path)).toEqual(['mcp/jira-lite/server.mjs']);
+  });
+
+  it('fails an MCP server folder whose MCP.yaml pull cannot read', async () => {
+    await fse.outputFile(path.join(repoDir, 'mcp', 'jira-lite', 'MCP.yaml'), 'transport: stdio\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.check === 'format')]).toEqual([false, [{
+      level: 'fail',
+      check: 'format',
+      path: 'mcp/jira-lite/',
+      message: 'mcp/jira-lite/MCP.yaml does not parse: stdio transport requires `command`; pull leaves every member\'s team MCP servers as they are until it is fixed.',
+    }]]);
+  });
+
+  it('fails an MCP server folder that declares an http transport', async () => {
+    await fse.outputFile(path.join(repoDir, 'mcp', 'jira', 'MCP.yaml'), 'transport: http\nurl: https://jira.example.com/mcp\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.check === 'format')]).toEqual([false, [{
+      level: 'fail',
+      check: 'format',
+      path: 'mcp/jira/',
+      message: 'mcp/jira/MCP.yaml: transport http is refused in a folder, which holds the files of a server teamai starts (stdio). '
+        + 'A URL server carries no files: declare it in mcp.yaml; pull leaves every member\'s team MCP servers as they are until it is fixed.',
+    }]]);
+  });
+
+  it('fails an mcp.yaml server that names ${TEAMAI_MCP_DIR}, which only an MCP server folder has', async () => {
+    await fse.outputFile(path.join(repoDir, 'mcp', 'mcp.yaml'), [
+      'servers:',
+      '  - name: jira-lite',
+      '    transport: stdio',
+      '    command: node',
+      '    args: ["${TEAMAI_MCP_DIR}/server.mjs"]',
+      '',
+    ].join('\n'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.check === 'format')]).toEqual([false, [{
+      level: 'fail',
+      check: 'format',
+      path: 'mcp/mcp.yaml',
+      message: 'mcp/mcp.yaml: server "jira-lite" uses ${TEAMAI_MCP_DIR}, which only an MCP server folder has. Move it to mcp/jira-lite/MCP.yaml, beside the files it runs; '
+        + 'pull leaves every member\'s team MCP servers as they are until it is fixed.',
+    }]]);
+  });
+
+  it('fails an MCP server name that is both an mcp.yaml server and a folder in one place', async () => {
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('mcp', ['a']));
+    await fse.outputFile(path.join(repoDir, 'mcp', 'a', 'mcp.yaml'), [
+      'servers:',
+      '  - name: jira-lite',
+      '    transport: http',
+      '    url: https://jira.example.com/mcp',
+      '',
+    ].join('\n'));
+    await fse.outputFile(path.join(repoDir, 'mcp', 'a', 'jira-lite', 'MCP.yaml'), MCP_FOLDER);
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.check === 'duplicates')]).toEqual([false, [{
+      level: 'fail',
+      check: 'duplicates',
+      path: 'mcp/a/jira-lite/',
+      message: 'MCP server "jira-lite" is defined in both mcp/a/mcp.yaml and mcp/a/jira-lite/, in the same place, so pull leaves every member\'s '
+        + 'team MCP servers as they are. Keep one of them.',
+    }]]);
+  });
+
+  it('warns about a teamai- workflow, hook or MCP server folder that replaces no teamai default, which pull skips', async () => {
+    await fse.outputFile(path.join(repoDir, 'workflows', 'teamai-release', 'WORKFLOW.yaml'), VALID_BUILD.replace('name: build', 'name: teamai-release'));
+    await fse.outputFile(path.join(repoDir, 'hooks', 'teamai-lint', 'HOOK.yaml'), HOOK_FOLDER);
+    await fse.outputFile(path.join(repoDir, 'mcp', 'teamai-db', 'MCP.yaml'), MCP_FOLDER);
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.check === 'naming')]).toEqual([true, [
+      {
+        level: 'warn',
+        check: 'naming',
+        path: 'hooks/teamai-lint/',
+        message: 'hooks/teamai-lint/ is skipped: a teamai- name only replaces a teamai default, and teamai has no hook named teamai-lint. Rename the folder.',
+      },
+      {
+        level: 'warn',
+        check: 'naming',
+        path: 'mcp/teamai-db/',
+        message: 'mcp/teamai-db/ is skipped: a teamai- name only replaces a teamai default, and teamai has no MCP server named teamai-db. Rename the folder.',
+      },
+      {
+        level: 'warn',
+        check: 'naming',
+        path: 'workflows/teamai-release/',
+        message: 'workflows/teamai-release/ is skipped: a teamai- name only replaces a teamai default, and teamai has no workflow named teamai-release. Rename the folder.',
+      },
+    ]]);
+  });
+
+  it('fails a replacement of teamai\'s recall rule that pull refuses, with what pull prints', async () => {
+    await fse.outputFile(path.join(repoDir, 'rules', 'teamai-recall', 'RULE.md'), '# Recall\n\nRun `teamai recall` first.\n');
+    await fse.outputFile(path.join(repoDir, 'rules', 'teamai-recall', 'block.md'), '## Recall\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.level === 'fail')]).toEqual([false, [{
+      level: 'fail',
+      check: 'structure',
+      path: 'rules/teamai-recall/',
+      message: 'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: rules/teamai-recall/RULE.md does not contain '
+        + '"Nothing was searched:". Fix the folder in the team repo.',
+    }]]);
+  });
+
+  it('fails a replacement of teamai\'s recall rule whose text carries a credential, as it fails a rule', async () => {
+    await fse.outputFile(path.join(repoDir, 'rules', 'teamai-recall', 'RULE.md'), '# Recall\n\nRun `teamai recall` first.\n');
+    await fse.outputFile(path.join(repoDir, 'rules', 'teamai-recall', 'block.md'), '## Recall\n\nUse sk-abcdefghijklmnopqrstuvwx0123456789.\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(findings(review).filter((f) => f.check === 'leaks').map((f) => f.message.split(' (')[0])).toEqual(['rules/teamai-recall/block.md looks like it carries a credential']);
+  });
+
+  it('fails a replacement of a default hook that pull refuses, with what pull prints', async () => {
+    const shipped = path.join(process.cwd(), 'hooks', 'teamai-friction-reminder');
+    await fse.copy(shipped, path.join(repoDir, 'hooks', 'teamai-friction-reminder'));
+    const marker = path.join(repoDir, 'hooks', 'teamai-friction-reminder', 'HOOK.yaml');
+    await fse.writeFile(marker, (await fse.readFile(marker, 'utf8')).replace('min_tools: 15', 'min_tools: 5000'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.level === 'fail').map(({ check, path: file, message }) => ({ check, file, message: message.split(': ')[0] }))]).toEqual([false, [{
+      check: 'structure',
+      file: 'hooks/teamai-friction-reminder/',
+      message: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed',
+    }]]);
+  });
+
+  it('fails a workflow, hook or rule folder that is a symlink, which pull reads nothing from', async () => {
+    const shared = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-review-shared-'));
+    await fse.outputFile(path.join(shared, 'lint', 'HOOK.yaml'), HOOK_FOLDER);
+    await fse.outputFile(path.join(shared, 'api-style', 'RULE.md'), '# API style\n');
+    await fse.outputFile(path.join(shared, 'release', 'WORKFLOW.yaml'), VALID_BUILD.replace('name: build', 'name: release'));
+    await fse.ensureDir(path.join(repoDir, 'workflows'));
+    await fse.symlink(path.join(shared, 'release'), path.join(repoDir, 'workflows', 'release'), 'dir');
+    await fse.ensureDir(path.join(repoDir, 'hooks'));
+    await fse.ensureDir(path.join(repoDir, 'rules'));
+    await fse.symlink(path.join(shared, 'lint'), path.join(repoDir, 'hooks', 'lint'), 'dir');
+    await fse.symlink(path.join(shared, 'api-style'), path.join(repoDir, 'rules', 'api-style'), 'dir');
+
+    try {
+      const review = await reviewBranchDir(BRANCH, repoDir);
+
+      expect([review.ok, findings(review).filter((f) => f.level === 'fail').map(({ path: at, message }) => [at, message])]).toEqual([false, [
+        ['rules/api-style/', 'rules/api-style/ is a symlink, and a folder holds its own files, never a link, so nothing is read from it. Put the directory itself in the team repo.'],
+        ['hooks/lint/', 'hooks/lint/ is a symlink, and a folder holds its own files, never a link, so nothing is read from it. Put the directory itself in the team repo; '
+          + 'pull leaves every member\'s team hooks as they are until it is fixed.'],
+        ['workflows/release/WORKFLOW.yaml', 'workflows/release/WORKFLOW.yaml:1: field "(root)": workflows/release/ is a symlink, and a folder holds its own files, never a link, so nothing is read from it. '
+          + 'Put the directory itself in the team repo.'],
+      ]]);
+    } finally {
+      await fse.remove(shared);
+    }
+  });
+
+  it('does not say a folder pull skips is delivered to every member', async () => {
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), [
+      'version: 1',
+      'roles:',
+      '  - id: dev',
+      '    description: dev',
+      '    resources: { knowledge: [], skills: [], agents: [], hooks: [frontend], mcp: [frontend], workflows: [frontend] }',
+      '',
+    ].join('\n'));
+    await fse.outputFile(path.join(repoDir, 'workflows', 'teamai-release', 'WORKFLOW.yaml'), VALID_BUILD.replace('name: build', 'name: teamai-release'));
+    await fse.outputFile(path.join(repoDir, 'hooks', 'teamai-lint', 'HOOK.yaml'), HOOK_FOLDER);
+    await fse.outputFile(path.join(repoDir, 'mcp', 'teamai-db', 'MCP.yaml'), MCP_FOLDER);
+    await fse.outputFile(path.join(repoDir, 'hooks', 'lint', 'HOOK.yaml'), HOOK_FOLDER);
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(findings(review).filter((f) => f.check === 'structure')).toEqual([{
+      level: 'info',
+      check: 'structure',
+      path: 'hooks/lint',
+      message: 'hooks/lint sits at the shared root, so it is delivered to every member.',
+    }]);
   });
 
   it('reviews wiki pages at teamwiki/evidence/code, not the wiki/ name', async () => {
@@ -685,13 +1023,13 @@ steps:
         level: 'fail',
         check: 'workflows',
         path: 'workflows/check.yaml',
-        message: 'workflows/check.yaml:6: field "steps[0].workflow": step "run" runs workflow "gone", which has no runnable version; fix or add workflows/gone.yaml',
+        message: 'workflows/check.yaml:6: field "steps[0].workflow": step "run" runs workflow "gone", which has no runnable version; fix or add workflows/gone.yaml or workflows/gone/WORKFLOW.yaml',
       },
       {
         level: 'fail',
         check: 'workflows',
         path: 'workflows/ship.yaml',
-        message: 'workflows/ship.yaml:6: field "steps[0].workflow": step "run" runs workflow "check", which has no runnable version; fix or add workflows/check.yaml',
+        message: 'workflows/ship.yaml:6: field "steps[0].workflow": step "run" runs workflow "check", which has no runnable version; fix or add workflows/check.yaml or workflows/check/WORKFLOW.yaml',
       },
     ]);
   });
@@ -1696,6 +2034,29 @@ describe('materializeRef — branch materialization from git', () => {
       await fse.remove(destDir);
     }
   });
+  it('copies the folder a link names elsewhere in the branch, so the review fails a symlinked folder as pull does', async () => {
+    const gitRepo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-git-repo-'));
+    const destDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-dest-'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', gitRepo, ...args]);
+    try {
+      git('init', '-q');
+      git('config', 'user.name', 'Test');
+      git('config', 'user.email', 'test@example.com');
+      await fse.outputFile(path.join(gitRepo, 'shared', 'release', 'WORKFLOW.yaml'), VALID_BUILD.replace('name: build', 'name: release'));
+      await fse.ensureDir(path.join(gitRepo, 'workflows'));
+      await fse.symlink(path.join('..', 'shared', 'release'), path.join(gitRepo, 'workflows', 'release'), 'dir');
+      git('add', '.');
+      git('commit', '-q', '-m', 'initial');
+
+      await materializeRef(gitRepo, 'HEAD', destDir);
+      const review = await reviewBranchDir(BRANCH, destDir);
+
+      expect(review.findings.filter((f) => f.level === 'fail').map(({ path: at }) => at)).toEqual(['workflows/release/WORKFLOW.yaml']);
+    } finally {
+      await fse.remove(gitRepo);
+      await fse.remove(destDir);
+    }
+  });
   it('carries teamai.yaml, and the review fails a sessions.publish value pull would ignore', async () => {
     const gitRepo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-git-repo-'));
     const destDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-dest-'));
@@ -1743,6 +2104,56 @@ describe('materializeRef — branch materialization from git', () => {
       expect(review.findings).toEqual([
         { level: 'fail', check: 'sessions', path: 'teamai.yaml', message: 'teamai.yaml sessions.publish.unattended is "always", not off, ask or auto, so it is ignored' },
       ]);
+    } finally {
+      await fse.remove(gitRepo);
+      await fse.remove(destDir);
+    }
+  });
+  it('reviews a single-repo branch\'s hook folders, not the copies pull delivered to .teamai/delivered/', async () => {
+    const gitRepo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-git-repo-'));
+    const destDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-dest-'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', gitRepo, ...args]);
+    try {
+      git('init', '-q');
+      git('config', 'user.name', 'Test');
+      git('config', 'user.email', 'test@example.com');
+      await fse.outputFile(path.join(gitRepo, '.teamai', 'teamai.yaml'), 'team: acme\nmode: self\n');
+      await fse.outputFile(path.join(gitRepo, '.teamai', 'hooks', 'lint', 'HOOK.yaml'), HOOK_FOLDER);
+      // A delivered copy that was committed by mistake: an older HOOK.yaml, and a script with a credential.
+      await fse.outputFile(path.join(gitRepo, '.teamai', 'delivered', 'hooks', 'lint', 'HOOK.yaml'), 'description: Lint\n');
+      await fse.outputFile(path.join(gitRepo, '.teamai', 'delivered', 'hooks', 'lint', 'lint.sh'), 'echo sk-abcdefghijklmnopqrstuvwx0123456789\n');
+      git('add', '-f', '.');
+      git('commit', '-q', '-m', 'app and team');
+
+      await materializeRef(path.join(gitRepo, '.teamai'), 'HEAD', destDir);
+      const review = await reviewBranchDir('HEAD', destDir);
+
+      expect([review.ok, review.findings]).toEqual([true, []]);
+    } finally {
+      await fse.remove(gitRepo);
+      await fse.remove(destDir);
+    }
+  });
+  it('reviews a single-repo branch\'s MCP server folders, not the copies pull delivered to .teamai/delivered/', async () => {
+    const gitRepo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-git-repo-'));
+    const destDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-dest-'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', gitRepo, ...args]);
+    try {
+      git('init', '-q');
+      git('config', 'user.name', 'Test');
+      git('config', 'user.email', 'test@example.com');
+      await fse.outputFile(path.join(gitRepo, '.teamai', 'teamai.yaml'), 'team: acme\nmode: self\n');
+      await fse.outputFile(path.join(gitRepo, '.teamai', 'mcp', 'jira-lite', 'MCP.yaml'), MCP_FOLDER);
+      // A delivered copy that was committed by mistake: an older MCP.yaml, and a file with a credential.
+      await fse.outputFile(path.join(gitRepo, '.teamai', 'delivered', 'mcp', 'jira-lite', 'MCP.yaml'), 'transport: stdio\n');
+      await fse.outputFile(path.join(gitRepo, '.teamai', 'delivered', 'mcp', 'jira-lite', 'server.mjs'), 'echo sk-abcdefghijklmnopqrstuvwx0123456789\n');
+      git('add', '-f', '.');
+      git('commit', '-q', '-m', 'app and team');
+
+      await materializeRef(path.join(gitRepo, '.teamai'), 'HEAD', destDir);
+      const review = await reviewBranchDir('HEAD', destDir);
+
+      expect([review.ok, review.findings]).toEqual([true, []]);
     } finally {
       await fse.remove(gitRepo);
       await fse.remove(destDir);
@@ -1799,10 +2210,9 @@ describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
   });
 
   it('warns once per skipped folder and reviews none of its files', async () => {
-    // Bad names inside the folders: a review that read them would report them.
-    await fse.outputFile(path.join(repoDir, 'rules', 'api-style', 'RULE.md'), '# API style\n');
-    await fse.outputFile(path.join(repoDir, 'rules', 'api-style', 'Bad Name.md'), '# Bad\n');
-    await fse.outputFile(path.join(repoDir, 'workflows', 'release', 'WORKFLOW.yaml'), 'not: [valid\n');
+    // A bad name inside the agent folder: a review that read it would report it.
+    await fse.outputFile(path.join(repoDir, 'agents', 'reviewer', 'AGENT.md'), '# Reviewer\n');
+    await fse.outputFile(path.join(repoDir, 'agents', 'reviewer', 'Bad Name.md'), '# Bad\n');
 
     const review = await reviewBranchDir(BRANCH, repoDir);
 
@@ -1810,16 +2220,40 @@ describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
       {
         level: 'warn',
         check: 'structure',
-        path: 'rules/api-style/',
-        message: 'rules/api-style/ is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
-      },
-      {
-        level: 'warn',
-        check: 'structure',
-        path: 'workflows/release/',
-        message: 'workflows/release/ is a workflow folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
+        path: 'agents/reviewer/',
+        message: 'agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
       },
     ]);
+  });
+
+  it('reviews a workflow folder as one workflow named after its directory, with the limits pull applies', async () => {
+    const release = 'schemaVersion: v1alpha1\nname: release\ndescription: Release.\nsteps:\n  - id: plan\n    command: python3 "$TEAMAI_WORKFLOW_DIR/plan.py"\n';
+    await fse.outputFile(path.join(repoDir, 'workflows', 'release', 'WORKFLOW.yaml'), release);
+    await fse.outputFile(path.join(repoDir, 'workflows', 'release', 'checks.yaml'), 'not: a workflow\n');
+    await fse.outputFile(path.join(repoDir, 'workflows', 'notes', 'WORKFLOW.yaml'), release.replace('name: release', 'name: notes'));
+    await fse.symlink('WORKFLOW.yaml', path.join(repoDir, 'workflows', 'notes', 'link.yaml'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings).toEqual([{
+      level: 'fail',
+      check: 'workflows',
+      path: 'workflows/notes/WORKFLOW.yaml',
+      message: 'workflows/notes/WORKFLOW.yaml:1: field "(root)": workflows/notes/ is not a valid workflow folder: link.yaml is a symlink',
+    }]);
+  });
+
+  it('names a namespaced workflow folder by its directory and reads no file in it as a workflow of its own', async () => {
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('workflows', ['a', 'b']));
+    const workflow = (name: string): string => `schemaVersion: v1alpha1\nname: ${name}\ndescription: ${name}.\nsteps:\n  - id: run\n    command: echo ${name}\n`;
+    await fse.outputFile(path.join(repoDir, 'workflows', 'a', 'release', 'WORKFLOW.yaml'), workflow('release'));
+    await fse.outputFile(path.join(repoDir, 'workflows', 'a', 'release', 'checks.yaml'), 'not: a workflow\n');
+    await fse.outputFile(path.join(repoDir, 'workflows', 'b', 'deploy', 'WORKFLOW.yaml'), workflow('deploy'));
+    await fse.outputFile(path.join(repoDir, 'workflows', 'b', 'checks.yaml'), workflow('checks'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings).toEqual([]);
   });
 
   it('checks no scoring settings in a scorer folder', async () => {
@@ -1830,6 +2264,77 @@ describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
 
     expect(review.findings.map((finding) => finding.message)).toEqual([
       'scorers/style/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
+    ]);
+  });
+});
+
+describe('reviewBranchDir: rule folders (#1787)', () => {
+  let repoDir: string;
+  const KNOWLEDGE_FE = 'version: 1\nroles:\n  - id: dev\n    description: dev\n    resources:\n      knowledge: [fe]\n      skills: []\n      agents: []\n';
+
+  beforeEach(async () => {
+    repoDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-review-rule-folders-'));
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), KNOWLEDGE_FE);
+    await fse.outputFile(path.join(repoDir, 'rules', 'api-style', 'RULE.md'), 'Follow the API style. Read ${TEAMAI_RULE_DIR}/checklist.md.\n');
+    await fse.outputFile(path.join(repoDir, 'rules', 'fe', 'review', 'RULE.md'), 'Review it.\n');
+  });
+
+  afterEach(async () => {
+    await fse.remove(repoDir);
+  });
+
+  it('reads a root folder as a root rule, and names a variant whose frontmatter pull ignores', async () => {
+    await fse.outputFile(path.join(repoDir, 'rules', 'api-style', 'checklist.md'), '- Plural names.\n');
+    await fse.outputFile(path.join(repoDir, 'rules', 'api-style', 'RULE.zh.md'), '---\npaths: ["x/**"]\n---\n遵循。\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings).toEqual([
+      {
+        level: 'warn',
+        check: 'structure',
+        path: 'rules/api-style/',
+        message: 'rules/api-style/ holds RULE.md, so it is one folder, and checklist.md in it is one of its files, no longer read on its own.',
+      },
+      {
+        level: 'warn',
+        check: 'format',
+        path: 'rules/api-style/RULE.zh.md',
+        message: 'The frontmatter of rules/api-style/RULE.zh.md is ignored: every language of a rule folder takes the frontmatter of its RULE.md. '
+          + 'Move those fields to rules/api-style/RULE.md in the team repo.',
+      },
+      {
+        level: 'info',
+        check: 'structure',
+        path: 'rules/api-style/RULE.md',
+        message: 'rules/api-style/RULE.md sits at the shared root, so it is delivered to every member.',
+      },
+    ]);
+  });
+
+  it('names the files of a folder only where the branch adds its RULE.md to the base, as pull says it once', async () => {
+    await fse.outputFile(path.join(repoDir, 'rules', 'api-style', 'checklist.md'), '- Plural names.\n');
+    await fse.outputFile(path.join(repoDir, 'rules', 'fe', 'review', 'notes.md'), 'Read it twice.\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir, { ruleFolders: new Set(['rules/api-style/']) });
+
+    expect(review.findings.filter(({ level, check }) => level === 'warn' && check === 'structure')).toEqual([{
+      level: 'warn',
+      check: 'structure',
+      path: 'rules/fe/review/',
+      message: 'rules/fe/review/ holds RULE.md, so it is one folder, and notes.md in it is one of its files, no longer read on its own.',
+    }]);
+  });
+
+  it('fails a rule folder pull does not deliver, and a credential in a support file', async () => {
+    await fse.outputFile(path.join(repoDir, 'rules', 'api-style.md'), 'Use named exports.\n');
+    await fse.outputFile(path.join(repoDir, 'rules', 'fe', 'review', 'call.sh'), 'curl -H "Authorization: sk-abcdefghijklmnopqrstuvwx0123456789" api\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings.map(({ level, check, path: at }) => ({ level, check, path: at }))).toEqual([
+      { level: 'fail', check: 'structure', path: 'rules/api-style/' },
+      { level: 'fail', check: 'leaks', path: 'rules/fe/review/call.sh' },
     ]);
   });
 });

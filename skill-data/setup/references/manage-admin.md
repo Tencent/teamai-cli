@@ -282,7 +282,7 @@ teamai env add <KEY> <VALUE> --project <id>   # or --role <ns>: in that namespac
 teamai env remove <KEY>      # remove (same --role / --project)
 teamai env add <KEY> --secret -d "<what it is for>" --url <where to get one>   # declare a secret in env/secrets.yaml, no value (same --role / --project)
 teamai env remove <KEY> --secret   # remove a declared secret (plain `env remove` does too when env.yaml does not set <KEY>)
-teamai remove mcp <name>     # root mcp/mcp.yaml if it has the name, else the one namespace file; --role / --project pick a namespace
+teamai remove mcp <name>     # root mcp/mcp.yaml or mcp/<name>/ if it has the name, else the one namespace; --role / --project pick a namespace
 ```
 
 Env variables, team hooks and MCP servers are scoped like skills: the root file
@@ -290,7 +290,14 @@ Env variables, team hooks and MCP servers are scoped like skills: the root file
 `env/<ns>/env.yaml`, `hooks/<ns>/hooks.yaml`, `mcp/<ns>/mcp.yaml` reach only
 members whose role or project lists `<ns>` under `resources.env`, `resources.hooks`
 or `resources.mcp`. A namespace entry replaces the root entry of the same key, hook
-id or server name. Hooks and MCP servers have no add command, and `teamai push`
+id or server name. A hook that runs a script is a folder, `hooks/[<ns>/]<id>/HOOK.yaml`
+beside the script, its command naming it as `"${TEAMAI_HOOK_DIR}/scan.sh"`; an id
+both in `hooks.yaml` and as a folder stops team hooks like a repeated name. An MCP
+server the team writes is a folder too, `mcp/[<ns>/]<name>/MCP.yaml` beside its files,
+stdio only, its args naming them as `"${TEAMAI_MCP_DIR}/server.py"`; a name both in
+`mcp.yaml` and as a folder stops team MCP the same way. `teamai remove mcp <name>`
+removes a server folder as it removes an `mcp.yaml` server.
+Hooks and MCP servers have no add command, and `teamai push`
 does not pick up `hooks/` or `mcp/`: edit the file in the team repo, then commit
 and push it with git. `teamai doctor` lists each override.
 

@@ -748,6 +748,7 @@ $ teamai workflow start classify-learning --driver local --inputs '{"learning":"
 ```
 
 - 必须写 `output`。`{ text: string }` 把回答当作文字。其他 output 说明回答中的 JSON，本地驱动会向工具要这个 JSON。
+- `answer_file: <file>` 从文件读取提示词，代替 `answer`：[工作流文件夹](workflow.md#工作流文件夹)里的文件，在文件夹之外则是 `prompts/` 下的文件，和 `prompt_file` 一样。它的文本和 `answer` 一样是模板。[`from` 步骤](#运行步骤打印的工作流)打印的工作流不能使用它。
 - 这个步骤不指定工具，由运行它的 driver 回答。skill driver 把它交给会话的子 agent，你自己的 driver 用它自己的模型回答。local driver 启动的工具和 teamai 自己的 AI 调用相同：先看 `TEAMAI_AI_TOOL`，再看项目的 `ai.tool`，再看本机的，最后是 teamai 能启动的第一个已安装工具。pull 拒绝这个步骤上的 `tool`、`agent`、`model` 和 `session`，以及 `new` 以外的 `workspace`。
 - 这次启动标记为 teamai 自己的，成员的 hooks 不会捕获它。
 - 它占用检出目录直到回答结束，因此使用该目录的回答和命令依次运行，包括 `for_each` 的不同项目。修改检出目录会让回答以 `read_only_dirty` 失败。
@@ -757,6 +758,17 @@ $ teamai workflow start classify-learning --driver local --inputs '{"learning":"
 - 没有安装工具时它以 `tool_unavailable` 失败，成员指定的工具无法运行时以 `tool_unconfigured` 失败，调用失败时以 `tool_failed` 失败，回答里没有 JSON 时以 `invalid_output` 失败。
 
 其他驱动把 answer 步骤当作带 `answer: true`、没有独立工作区的提示词租约；带 `workspace: new` 时，租约带有一个只读的 `workspace` 合约，指向它自己的分支。驱动准备租约，在 `cwd` 中回答提示词并报告 outputs；准备过程像其他只读步骤一样占用检出目录或那个 worktree，并记录快照。
+
+## 运行中的工作流文件夹
+
+运行会为它用到的每个[工作流文件夹](workflow.md#工作流文件夹)保留一份自己的副本：
+
+- `workflow start` 按内容把文件夹的文件存一次，放在 TeamAI 数据目录下的 `workflows/folders/<sourceHash>/`，`$TEAMAI_WORKFLOW_DIR` 在整个运行期间都指向这份副本，之后的 pull 修改或删除什么都不影响它。哈希覆盖每个文件的路径、git 记录的可执行位，以及换行转为 LF 后的文本，因此 Windows、macOS 和 Linux 上的检出结果一致。
+- `workflow publish` 不携带这些文件。另一台机器上的 `workflow resume --claim` 像重建定义一样重建文件夹：取自运行所在的团队提交；teamai 的默认工作流则取自本机 teamai 的安装包，不一致时以 `definition_mismatch` 拒绝。
+- `teamai doctor --fix` 会删除本机没有任何运行、也没有任何已拉取工作流使用的已存文件夹，前提是它已存放满一小时。`doctor --fix` 已按 `workflows.retention` 清理过遗留内容的运行不再占用它的文件夹：重试不会再打开这个运行。
+- 文件夹含有符号链接、不是 UTF-8 文本的文件，或总大小（包括 `README.md`）超过 1 MB 时，pull 以 `workflow_folder_invalid` 拒绝它。消息会指出那个文件；文件夹过大时列出最大的五个文件。和所有带代码的诊断一样，它也会丢弃上一个有效版本，因此修好文件夹之前该工作流没有可运行的内容。
+- [受限步骤](workflow.md#限定在一个目录里的提示步骤)只能读取自己的目录，所以它的提示词提到该文件夹时 pull 会警告：`step <id> is confined and may not be able to read $TEAMAI_WORKFLOW_DIR`。
+- [基准测试](benchmarks.md)的 arm 暂时不能运行工作流文件夹，也不能运行会运行文件夹的工作流，因为试验运行的是工作流的副本，不带任何文件。plan 会拒绝这样的 arm：`benchmark arms cannot run workflow folders yet`。
 
 ## 让命令在检出中写入
 
@@ -1575,7 +1587,7 @@ teamai workflow next <run> --prepare --json '{"driver":{"kind":"script","machine
 
 对每个租约，驱动：
 
-1. 运行每个进程时带上 `lease.env` 和 `TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>`，这样从中发出的 `teamai` 调用不会改变任何运行，并去掉 `lease.envScope.withhold` 里的名字。命令租约的 `env` 已经带有 `TEAMAI_WORKFLOW_ATTEMPT`、`TEAMAI_RUN_DIR` 和 `TEAMAI_MODE`，所以 [`teamai-score`](scorers.md) 的 `teamai score` 步骤在任何驱动下都能运行。它在 `cwd` 中运行命令租约（例如 `teamai benchmark check`），没有 `cwd` 的租约则在它自己的工作区中运行，并把命令打印的 JSON 作为 `outputs` 报告。
+1. 运行每个进程时带上 `lease.env` 和 `TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>`，这样从中发出的 `teamai` 调用不会改变任何运行，并去掉 `lease.envScope.withhold` 里的名字。命令租约的 `env` 已经带有 `TEAMAI_WORKFLOW_ATTEMPT`、`TEAMAI_RUN_DIR` 和 `TEAMAI_MODE`，所以 [`teamai-score`](scorers.md) 的 `teamai score` 步骤在任何驱动下都能运行。工作流文件夹中步骤的每个租约，其 `env` 也带有 `TEAMAI_WORKFLOW_DIR`。它在 `cwd` 中运行命令租约（例如 `teamai benchmark check`），没有 `cwd` 的租约则在它自己的工作区中运行，并把命令打印的 JSON 作为 `outputs` 报告。
 2. 在 `cwd` 中以 `lease.prompt` 启动 prompt 租约的 `lease.tool`，按原样使用 `lease.model`，并从工具启动起让它遵守 `lease.limits`。
 3. 报告 prompt 时带上 `tool`、工具报告的 `model`、`session` 和 `tokens`、只围绕工具启动测得的 `durationMs`，以及仅在工具给出时才带的 `cost`（`{"amount":0.12,"unit":"USD"}`）。某个限制停止了工具时，报告带 `outcome: "success"` 和 `limit`：`timeout`、`budget` 或 `max_turns`；驱动无法让工具遵守的 `budget` 或 `max_turns` 列在 `unenforced` 中。`limit` 是租约没有设置的限制时，报告返回 `invalid_report`；带有 `changes` 或 `read`（由 teamai 从克隆中填写）的报告也一样。
 

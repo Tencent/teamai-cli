@@ -50,11 +50,14 @@ export async function withoutStaleTeamRevision<T extends { teamRevision?: string
   return next;
 }
 
-/** Whether `revision` stores every source byte exactly as the cache read it. */
+/**
+ * Whether `revision` stores every source byte exactly as the cache read it. A source with `readsCrlfAsLf`, a file of a
+ * workflow folder, was read with CRLF as LF, so the stored file is compared read the same way.
+ */
 export async function revisionHoldsSources(
   knowledgeRoot: string,
   reachable: ReachableRevision | undefined,
-  sources: Array<{ path: string; content: string }>,
+  sources: Array<{ path: string; content: string; readsCrlfAsLf?: boolean }>,
 ): Promise<boolean> {
   if (!reachable) return false;
   const git = createGit(knowledgeRoot);
@@ -66,7 +69,9 @@ export async function revisionHoldsSources(
 
       if (relative === '..' || relative.startsWith('../')) return false;
 
-      if (await git.show([`${reachable.revision}:${relative}`]) !== source.content) return false;
+      const stored = await git.show([`${reachable.revision}:${relative}`]);
+
+      if ((source.readsCrlfAsLf ? stored.replace(/\r\n/g, '\n') : stored) !== source.content) return false;
     }
 
     return true;

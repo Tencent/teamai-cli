@@ -24,8 +24,8 @@ import { injectClaudeMdSection } from '../utils/claudemd.js';
 import { TEAMAI_RECALL_RULES_START, TEAMAI_RECALL_RULES_END, type LocalConfig, type TeamaiConfig } from '../types.js';
 
 describe('compileRecallRulesBlock', () => {
-  it('produces a marker-delimited block containing both required rules', () => {
-    const block = compileRecallRulesBlock();
+  it('produces a marker-delimited block containing both required rules', async () => {
+    const block = await compileRecallRulesBlock();
     expect(block).toContain(TEAMAI_RECALL_RULES_START);
     expect(block).toContain(TEAMAI_RECALL_RULES_END);
     // Rule 1: must call teamai-recall before tasks
@@ -33,16 +33,16 @@ describe('compileRecallRulesBlock', () => {
     expect(block).toMatch(/Before/i);
   });
 
-  it('is idempotent (same input produces same output)', () => {
-    expect(compileRecallRulesBlock()).toBe(compileRecallRulesBlock());
+  it('is idempotent (same input produces same output)', async () => {
+    expect(await compileRecallRulesBlock()).toBe(await compileRecallRulesBlock());
   });
 
-  it('is English only for language en, and keeps the bilingual self-exemption for zh or no language', () => {
-    const english = compileRecallRulesBlock('en');
+  it('is English only for language en, and keeps the bilingual self-exemption for zh or no language', async () => {
+    const english = await compileRecallRulesBlock('en');
     expect(english).toContain('Self-exemption');
     expect(english).not.toMatch(/[一-鿿]/);
-    expect(compileRecallRulesBlock('zh')).toBe(compileRecallRulesBlock());
-    expect(compileRecallRulesBlock()).toContain('自豁免');
+    expect(await compileRecallRulesBlock('zh')).toBe(await compileRecallRulesBlock());
+    expect(await compileRecallRulesBlock()).toContain('自豁免');
   });
 
   it('follows teamai.yaml language in the blocks pull, the session hook and doctor deliver', async () => {
@@ -59,8 +59,8 @@ describe('compileRecallRulesBlock', () => {
 });
 
 describe('compileDirectRecallRulesBlock (#945)', () => {
-  it('tells a tool without the recall subagent to run teamai recall itself, inside the same markers', () => {
-    const block = compileDirectRecallRulesBlock();
+  it('tells a tool without the recall subagent to run teamai recall itself, inside the same markers', async () => {
+    const block = await compileDirectRecallRulesBlock();
     expect(block.startsWith(TEAMAI_RECALL_RULES_START)).toBe(true);
     expect(block.endsWith(TEAMAI_RECALL_RULES_END)).toBe(true);
     expect(block).toContain('teamai recall "');
@@ -84,7 +84,7 @@ describe('injectClaudeMdSection — recall rules block lifecycle', () => {
   });
 
   it('injects the block into a fresh CLAUDE.md (file did not exist)', async () => {
-    const block = compileRecallRulesBlock();
+    const block = await compileRecallRulesBlock();
     await injectClaudeMdSection(claudeMdPath, TEAMAI_RECALL_RULES_START, TEAMAI_RECALL_RULES_END, block);
 
     const content = await fse.readFile(claudeMdPath, 'utf8');
@@ -95,7 +95,7 @@ describe('injectClaudeMdSection — recall rules block lifecycle', () => {
 
   it('appends the block when CLAUDE.md exists but has no marker', async () => {
     await fse.writeFile(claudeMdPath, '# My Project\n\nUser-written instructions.\n');
-    const block = compileRecallRulesBlock();
+    const block = await compileRecallRulesBlock();
     await injectClaudeMdSection(claudeMdPath, TEAMAI_RECALL_RULES_START, TEAMAI_RECALL_RULES_END, block);
 
     const content = await fse.readFile(claudeMdPath, 'utf8');
@@ -120,7 +120,7 @@ Custom user content below.
 `;
     await fse.writeFile(claudeMdPath, before);
 
-    const block = compileRecallRulesBlock();
+    const block = await compileRecallRulesBlock();
     await injectClaudeMdSection(claudeMdPath, TEAMAI_RECALL_RULES_START, TEAMAI_RECALL_RULES_END, block);
 
     const content = await fse.readFile(claudeMdPath, 'utf8');
@@ -147,7 +147,7 @@ some legacy injected content
       claudeMdPath,
       TEAMAI_RECALL_RULES_START,
       TEAMAI_RECALL_RULES_END,
-      compileRecallRulesBlock(),
+      await compileRecallRulesBlock(),
     );
 
     const content = await fse.readFile(claudeMdPath, 'utf8');

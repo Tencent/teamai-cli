@@ -1,5 +1,7 @@
 /**
- * Env variables, hooks, MCP servers and team model profiles by namespace (#707).
+ * Env variables and team model profiles by namespace (#707), and the entry policy
+ * hooks and MCP servers share with them (`resources/layered-entries.ts`): the
+ * per-entry keys, the failure policy, and how a workspace's members combine.
  *
  *   <type>/<type>.yaml         root, shared
  *   <type>/<ns>/<type>.yaml    read only where <ns> is active in resources.<type>
@@ -15,8 +17,6 @@
  * Failure policy: a file in the active set that does not parse, a name twice in
  * one file, or a name in two active namespaces stops the type for this run.
  * The caller keeps what is installed rather than reconciling to an empty set.
- * While `roles:` is deprecated, a name repeated with `roles:` on every copy is
- * delivered as 0.25.0 did.
  *
  * Legacy mode (no roles, no projects) reads the root file only, as before, and
  * keeps its old handling of a repeated name; doctor lists those as info.
@@ -24,7 +24,7 @@
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
-import { holdsMarker, unreadMarker } from './folder-markers.js';
+import { FOLDER_MARKERS, holdsMarker } from './folder-markers.js';
 import { describeOverride, repeatedNames, resolveNamespacedItems, type NamespaceCandidate } from './namespace-resolver.js';
 import { resolveResourceNamespaces } from './resource-namespaces.js';
 import { activeRoleIds, findRole, loadRolesManifestIfPresent } from './roles.js';
@@ -125,12 +125,15 @@ export async function listEntryFiles(repoPath: string, where: EntryType | EntryL
 }
 
 /**
- * Whether `<typeDir>/<dir>` is a folder of its type this release cannot read
- * (#1791). Such a directory is not a namespace: on a file system that ignores
- * case, its `MCP.yaml` would read as `mcp.yaml`.
+ * Whether `<typeDir>/<dir>` is a folder of its type, whether this release reads
+ * it (#1787) or not (#1791). Such a directory is not a namespace: on a file
+ * system that ignores case, its `MCP.yaml` would read as `mcp.yaml`.
  */
 async function holdsFolderMarker(typeDir: string, dir: string): Promise<boolean> {
-  return holdsMarker(path.join(typeDir, dir), unreadMarker(path.basename(typeDir)));
+  const type = path.basename(typeDir);
+  const marker = Object.entries(FOLDER_MARKERS).find(([marked]) => marked === type)?.[1].marker ?? null;
+
+  return holdsMarker(path.join(typeDir, dir), marker);
 }
 
 /** One parsed file, or why it cannot be used; the reason names the file. */
@@ -221,12 +224,20 @@ export async function readEntryFileText(
   }
 }
 
-export interface EntryReader<E> {
+/** One place of a type, the root or a namespace, read: each entry with the file that defines it, or why it cannot be used. */
+type EntryPlaceRead<E> =
+  | {
+    readonly ok: true;
+    readonly entries: ReadonlyArray<{ readonly entry: E; readonly source: string }>;
+    readonly notes?: readonly string[];
+    readonly unknownKeys?: ReadonlyMap<E, readonly string[]>;
+  }
+  | { readonly ok: false; readonly source: string; readonly reason: string };
+
+export interface EntryReaderBase<E> {
   readonly type: EntryType;
   /** Defaults to `entryLayout(type)`. */
   readonly layout?: EntryLayout;
-  /** null when the file does not exist. */
-  read(absolutePath: string, relativePath: string): Promise<EntryFileRead<E> | null>;
   nameOf(entry: E): string;
   scopeOf(entry: E): EntryScopeKeys;
   /**
@@ -235,6 +246,25 @@ export interface EntryReader<E> {
    * the first and names the difference, instead of holding the name back (#913).
    */
   delivered?(entry: E): JsonValue;
+}
+
+/** How one type's entries are read: one file per place, null when the file does not exist. */
+export type EntryReader<E> = EntryReaderBase<E> & {
+  read(absolutePath: string, relativePath: string): Promise<EntryFileRead<E> | null>;
+};
+
+/** Read one place of `reader`'s type: the root (`dir` null) or the namespace directory `dir`. Null when it holds nothing. */
+async function readEntryPlace<E>(reader: EntryReader<E>, repoPath: string, layout: EntryLayout, dir: string | null): Promise<EntryPlaceRead<E> | null> {
+  // A folder this release cannot read is not a namespace (#1791).
+  if (dir !== null && await holdsFolderMarker(path.join(repoPath, layout.dir), dir)) return null;
+  const source = entryFilePath(layout, dir);
+  const read = await reader.read(entryFileAbsolutePath(repoPath, layout, dir), source);
+
+  if (read === null) return null;
+
+  if (!read.ok) return { ok: false, source, reason: read.reason };
+
+  return { ok: true, entries: read.entries.map((entry) => ({ entry, source })), notes: read.notes, unknownKeys: read.unknownKeys };
 }
 
 export interface ResolvedEntry<E> {
@@ -253,7 +283,8 @@ export interface ResolvedEntry<E> {
 /** Why a type was not applied this run. */
 export type EntryFailure = (
   | { readonly kind: 'broken-file'; readonly type: EntryType; readonly source: string; readonly reason: string }
-  | { readonly kind: 'duplicate'; readonly type: EntryType; readonly name: string; readonly source: string }
+  /** `second` is `source` for a name a file repeats, or the other file or folder of the same place (#1787). */
+  | { readonly kind: 'duplicate'; readonly type: EntryType; readonly name: string; readonly source: string; readonly second: string }
   | {
     readonly kind: 'two-namespaces';
     readonly type: EntryType;
@@ -337,7 +368,7 @@ export async function resolveEntries<E>(
 ): Promise<EntryResolution<E>> {
   const members = await deliveredMembers(localConfig);
 
-  if (members) return resolveWorkspaceEntries(reader, localConfig, members);
+  if (members) return resolveWorkspaceEntries(reader, localConfig, members, (member) => resolveEntriesFor(reader, member));
   const { type } = reader;
   const layout = asLayout(reader.layout ?? type);
   const repoPath = localConfig.repo.localPath;
@@ -348,32 +379,24 @@ export async function resolveEntries<E>(
   const dirs = active && active.length > 0 ? await listDirs(path.join(repoPath, layout.dir)) : [];
 
   const candidates: NamespaceCandidate<E>[] = [];
-  // Entries still scoped by the deprecated per-entry `roles:`.
-  const roleScoped = new Set<NamespaceCandidate<E>>();
 
   for (const namespace of places) {
     const dir = namespace === null ? null : namespaceDir(dirs, namespace);
-
-    if (dir !== null && await holdsFolderMarker(path.join(repoPath, layout.dir), dir)) continue;
-    const source = entryFilePath(layout, dir);
-    const read = await reader.read(entryFileAbsolutePath(repoPath, layout, dir), source);
+    const read = await readEntryPlace(reader, repoPath, layout, dir);
 
     if (read === null) continue;
 
-    if (!read.ok) return { kind: 'failed', failure: { kind: 'broken-file', type, source, reason: read.reason, layout }, notices };
+    if (!read.ok) return { kind: 'failed', failure: { kind: 'broken-file', type, source: read.source, reason: read.reason, layout }, notices };
 
     for (const note of read.notes ?? []) notices.push({ kind: 'file-note', message: note });
 
-    for (const entry of read.entries) {
+    for (const { entry, source } of read.entries) {
       const name = reader.nameOf(entry);
       const scope = reader.scopeOf(entry);
       const unknownKeys = read.unknownKeys?.get(entry) ?? [];
 
       if (!await keepScopedEntry(type, layout.noun, name, source, scope, unknownKeys, localConfig, targets, notices)) continue;
-      const candidate = { name, source, namespace, value: entry };
-      candidates.push(candidate);
-
-      if (scope.roles !== undefined) roleScoped.add(candidate);
+      candidates.push({ name, source, namespace, value: entry });
     }
   }
 
@@ -384,6 +407,7 @@ export async function resolveEntries<E>(
   ).map(([name]) => name);
 
   if (active === null) {
+    // Legacy mode lets the root file repeat a name, as before.
     return {
       kind: 'resolved',
       entries: candidates.map((c) => ({
@@ -395,35 +419,11 @@ export async function resolveEntries<E>(
     };
   }
 
-  // During the `roles:` deprecation window a file may repeat a name under
-  // different `roles:`, as 0.25.0 allowed: every copy that passes the role
-  // filter is delivered, as then (MCP keeps the last one). The resolver sees
-  // one copy of such a name; a name repeated without `roles:` on every copy
-  // is a duplicate.
-  const copies = new Map<string, NamespaceCandidate<E>[]>();
-
-  for (const candidate of candidates) {
-    const key = `${candidate.source}\0${candidate.name}`;
-    copies.set(key, [...(copies.get(key) ?? []), candidate]);
-  }
-
-  const repeatedUnderRoles = new Map<E, NamespaceCandidate<E>[]>();
-  const laterCopies = new Set<NamespaceCandidate<E>>();
-
-  for (const group of copies.values()) {
-    const [first, ...rest] = group;
-
-    if (!first || rest.length === 0 || !group.every((copy) => roleScoped.has(copy))) continue;
-    repeatedUnderRoles.set(first.value, group);
-
-    for (const copy of rest) laterCopies.add(copy);
-  }
-
-  const resolution = resolveNamespacedItems(candidates.filter((candidate) => !laterCopies.has(candidate)), active);
+  const resolution = resolveNamespacedItems(candidates, active);
 
   if (resolution.kind === 'conflict') {
     const failure: EntryFailure = resolution.reason === 'duplicate'
-      ? { kind: 'duplicate', type, name: resolution.name, source: resolution.first.source, layout }
+      ? { kind: 'duplicate', type, name: resolution.name, source: resolution.first.source, second: resolution.second.source, layout }
       : {
         kind: 'two-namespaces', type, name: resolution.name, first: resolution.first.source, second: resolution.second.source, layout,
       };
@@ -431,9 +431,9 @@ export async function resolveEntries<E>(
     return { kind: 'failed', failure, notices };
   }
 
-  // File order, not the resolver's name order: hooks on one event run in the
-  // order they are listed. A namespace entry takes the place of the root entry
-  // it replaces; the other namespace entries follow, in `active` order.
+  // File order, not the resolver's name order. A namespace entry takes the
+  // place of the root entry it replaces; the other namespace entries follow, in
+  // `active` order.
   const firstSeen = new Map<string, number>();
   candidates.forEach((candidate, index) => {
     if (!firstSeen.has(candidate.name)) firstSeen.set(candidate.name, index);
@@ -443,14 +443,14 @@ export async function resolveEntries<E>(
 
   return {
     kind: 'resolved',
-    entries: items.flatMap((item) => (repeatedUnderRoles.get(item.value) ?? [item]).map((copy) => ({
-      entry: copy.value,
+    entries: items.map((item) => ({
+      entry: item.value,
       name: item.name,
       namespace: item.namespace,
       source: item.source,
       replaces: item.replaces?.source ?? null,
       replacedEntry: item.replaces?.value ?? null,
-    }))),
+    })),
     active,
     notices,
     repeated,
@@ -465,12 +465,14 @@ export async function resolveEntries<E>(
  * delivery leaves what is installed for it as it is. An MCP server a member
  * excludes does not come through that member, so the workspace delivers it
  * while another member does (its own exclusions apply after). A member whose
- * files fail stops the type, as it would in that member's own scope.
+ * files fail stops the type, as it would in that member's own scope, which
+ * `resolveMember` resolves.
  */
-async function resolveWorkspaceEntries<E>(
-  reader: EntryReader<E>,
+export async function resolveWorkspaceEntries<E>(
+  reader: Pick<EntryReaderBase<E>, 'type' | 'layout' | 'delivered'>,
   workspace: LocalConfig,
   members: readonly LocalConfig[],
+  resolveMember: (member: LocalConfig) => Promise<EntryResolution<E>>,
 ): Promise<EntryResolution<E>> {
   const layout = asLayout(reader.layout ?? reader.type);
   const perMember: Array<Array<{ name: string; entries: ResolvedEntry<E>[] }>> = [];
@@ -479,7 +481,7 @@ async function resolveWorkspaceEntries<E>(
   const actives: Array<readonly string[] | null> = [];
 
   for (const member of members) {
-    const resolution = await resolveEntriesFor(reader, member);
+    const resolution = await resolveMember(member);
 
     for (const notice of resolution.notices) notices.set(notice.message, notice);
 
@@ -568,7 +570,7 @@ export async function resolveEntriesFor<E>(
  * cannot leak a project's value to the whole team. `roles:` on hooks and MCP
  * shipped in 0.25.0 and keeps filtering for one minor release.
  */
-async function keepScopedEntry(
+export async function keepScopedEntry(
   type: EntryType,
   noun: string,
   name: string,
@@ -716,6 +718,11 @@ export function describeEntryFailure(failure: EntryFailure): string {
       // The reader's reason already names the file.
       return `${failure.reason.trimEnd().replace(/\.$/, '')}. ${kept} Fix the file in the team repo and push.`;
     case 'duplicate':
+      if (failure.second !== failure.source) {
+        return `${noun} "${failure.name}" is defined in both ${failure.source} and ${failure.second}, in the same place. ${kept} `
+          + 'Keep one of them in the team repo and push.';
+      }
+
       return `${failure.source} defines ${noun} "${failure.name}" more than once. ${kept} `
         + 'Keep one of them in the team repo and push.';
     case 'two-namespaces':

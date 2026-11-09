@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { formatUnknownScorer } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
+import { isCaseInsensitiveFs } from '../utils/partition.js';
 import { loadCachedSuite, suiteDirectories, syncTeamDefinitions } from '../benchmark/suite-cache.js';
 import { parseSuite, TaskJudge, type SuiteFile } from '../benchmark/suite.js';
 
@@ -463,6 +464,41 @@ describe('suite sync', () => {
       file: 'benchmarks/dev/fix/suite.yaml',
       code: 'benchmark_namespace_conflict',
       message: 'Suite "fix" is defined in two active namespaces (benchmarks/dev/fix/suite.yaml and benchmarks/ops/fix/suite.yaml); neither runs',
+    })]);
+    expect(await loadCachedSuite(config, 'fix')).toBeNull();
+  });
+
+  it('caches a suite written as SUITE.yaml as one written as suite.yaml, at the root and in a declared namespace', async () => {
+    const config = team({
+      'manifest/roles.yaml': ROLES,
+      'benchmarks/fix/SUITE.yaml': suiteText({ name: 'fix' }),
+      'benchmarks/fix/tasks/fix.yaml': taskText(),
+      'benchmarks/dev/dev-fix/SUITE.yaml': suiteText({ name: 'dev-fix' }),
+      'benchmarks/dev/dev-fix/tasks/fix.yaml': taskText(),
+    });
+    const dev = { ...config, primaryRole: 'dev' };
+
+    const result = await syncTeamDefinitions(dev);
+
+    expect(result.invalid).toEqual([]);
+    expect(result.benchmarks.map((suite) => suite.relativePath).sort()).toEqual(['benchmarks/dev/dev-fix/SUITE.yaml', 'benchmarks/fix/SUITE.yaml']);
+    expect((await loadCachedSuite(dev, 'fix'))?.relativePath).toBe('benchmarks/fix/SUITE.yaml');
+    expect((await loadCachedSuite(dev, 'dev-fix'))?.relativePath).toBe('benchmarks/dev/dev-fix/SUITE.yaml');
+  });
+
+  it('caches no suite from a directory holding both SUITE.yaml and suite.yaml, and names both', async (ctx) => {
+    const config = team({ 'benchmarks/fix/SUITE.yaml': suiteText({ name: 'fix' }), 'benchmarks/fix/tasks/fix.yaml': taskText() });
+    const suiteDir = path.join(config.repo.localPath, 'benchmarks/fix');
+
+    if (isCaseInsensitiveFs(suiteDir)) ctx.skip();
+    fs.writeFileSync(path.join(suiteDir, 'suite.yaml'), suiteText({ name: 'fix' }));
+
+    const result = await syncTeamDefinitions(config);
+
+    expect(result.benchmarks).toEqual([]);
+    expect(result.invalid).toEqual([expect.objectContaining({
+      file: 'benchmarks/fix/',
+      message: 'benchmarks/fix/ holds SUITE.yaml and suite.yaml, two spellings of one file; keep only SUITE.yaml.',
     })]);
     expect(await loadCachedSuite(config, 'fix')).toBeNull();
   });

@@ -140,7 +140,7 @@ export const SharingConfigSchema = z.object({
     /** Auto-apply team hooks during `teamai pull`. When false, pull only hints;
      *  the user must run `teamai hooks inject` to apply (explicit consent). */
     autoApply: z.boolean().default(true),
-    /** Restrict team hook commands to scripts under ~/.teamai/team-scripts/. */
+    /** Keep only team hook commands that run from their hook folder through ${TEAMAI_HOOK_DIR} or from ~/.teamai/team-scripts/. */
     requireTeamScripts: z.boolean().default(false),
   }).optional(),
   recall: z.object({
@@ -794,13 +794,15 @@ export const TeamaiConfigBaseSchema = z.object({
   workflows: z.object({ retention: z.unknown().optional(), driver: z.unknown().optional() }).optional().catch(undefined),
   /**
    * Language of the agent-facing texts teamai injects: the built-in
-   * teamai-recall rule, the todowrite-hint, and the mr-hint.
-   * `en` is English only. `zh` or omitted keeps the historical bilingual
-   * text, byte for byte (#1014).
+   * teamai-recall rule, the todowrite-hint, the mr-hint, and the friction
+   * reminder. `en` is English only. `zh` or omitted keeps the historical
+   * bilingual text, byte for byte (#1014), except that `zh` shows the friction
+   * reminder in Chinese. A hint's `<text>.en.md` or `<text>.zh.md` is used when
+   * its folder has one (#1787).
    */
   language: z.enum(['en', 'zh']).optional(),
   /** Team-owned Node scripts. Distinct from `sharing.hooks.requireTeamScripts`
-   * (the `~/.teamai/team-scripts/` trust boundary for hook commands). Every
+   * (which keeps only hook commands from a hook folder or `~/.teamai/team-scripts/`). Every
    * entry is optional. An older CLI that only knows `postPull` strips the
    * other keys instead of rejecting the file, so a team can add one before
    * every member upgrades. Each `path` is relative to the team repo root and
@@ -1355,6 +1357,11 @@ export const StateSchema = z.object({
      * `.claude/settings.local.json` for the workspaces above it (#913).
      */
     claudeMdExcludes: z.array(z.string()).optional(),
+    /**
+     * The `permissions.additionalDirectories` entries teamai added to a tool's user settings so the tool reads the
+     * rule folders this scope delivers (#1787), by settings file.
+     */
+    ruleFolderGrants: z.record(z.string(), z.array(z.string())).optional(),
   })).optional(),
   /**
    * The exclude files holding each git exclude owner's block that this
@@ -1520,6 +1527,8 @@ export interface ResourceItem {
   needsDeliveredBlob?: boolean;
   /** Repo-backed resources placed into a namespace: the shared-root path the author keeps editing. */
   prePlacementPath?: string;
+  /** Rules only: a rule folder, `rules/[<ns>/]<name>/RULE.md` with the files it names (#1787). `sourcePath` is its RULE.md. */
+  folder?: true;
 }
 
 export interface ResourceDiff {
@@ -1625,6 +1634,18 @@ export interface HookDef {
   description: string;
   /** Team hooks only: restrict to these tools (default = all hook-capable tools). */
   tools?: string[];
+  /** A team hook folder's (#1787): `command` rendered from this, with its folder delivered at `dest`. */
+  folder?: TeamHookFolder;
+}
+
+/** Where a team hook folder's command comes from, so each tool can render it as its file needs (#1787, common rule 10). */
+export interface TeamHookFolder {
+  /** The command as `HOOK.yaml` writes it, `${TEAMAI_HOOK_DIR}` included. */
+  readonly command: string;
+  /** The absolute path the folder is delivered at. */
+  readonly dest: string;
+  /** Single-repo: the worktree the folder is delivered in, which a tool's project-directory variable can stand for; else null. */
+  readonly projectRoot: string | null;
 }
 
 // ─── Hook payloads (what an agent sends a hook on stdin) ─────
@@ -2567,53 +2588,8 @@ export const SessionShareOfferedSchema = z.object({ publish: z.boolean(), scorer
 
 export type SessionShareOffered = z.infer<typeof SessionShareOfferedSchema>;
 
-/**
- * Layer 1 (fast-path) threshold: if toolCount < this, skip reading events.jsonl.
- * Also doubles as a HARD GATE on hint emission — a session with fewer than this
- * many tool calls never triggers a hint no matter how much friction it shows
- * (a one-command session the user rejected is not knowledge-base material).
- */
-export const CONTRIBUTE_BASE_THRESHOLD = 15;
-
-/**
- * Friction score threshold: minimum score to show contribute hint.
- *
- * Calibrated so ONE clear primary friction signal (a single interrupt, rejection,
- * or correction — each worth CONTRIBUTE_*_WEIGHT = 20) crosses it, while the scale
- * nudge alone (diversity + skill, max ~10) never can. Combined with the toolCount
- * hard gate, this fires only on substantive sessions that actually hit friction.
- */
-export const CONTRIBUTE_SMART_THRESHOLD = 20;
-
-// ─── Friction score weights ──────────────────────────
-//  A session earns points from signals that the user had to correct or the AI
-//  had to fight — not from raw activity. Any single strong signal (one interrupt,
-//  one rejection, one correction) lands near the threshold; scale (tool count /
-//  duration) only nudges and can never trigger on its own.
-
-/** Points per user interrupt (ESC mid-output — the user stopped a wrong direction). */
-export const CONTRIBUTE_INTERRUPT_WEIGHT = 20;
-
-/** Points per tool rejection (user denied a tool call — explicit course block). */
-export const CONTRIBUTE_REJECT_WEIGHT = 20;
-
-/** Points per correction (re-prompt with a correction keyword right after a stop). */
-export const CONTRIBUTE_CORRECTION_WEIGHT = 20;
-
-/**
- * Tool-error (retry) score gradient: genuine tool failures the AI had to work
- * around. Keyed by count thresholds → points; the highest matching tier wins.
- * Distinct from a single fluke error — it takes a few to signal a real struggle.
- */
-export const CONTRIBUTE_TOOLERROR_TIERS: ReadonlyArray<{ min: number; points: number }> = [
-  { min: 8, points: 25 },
-  { min: 5, points: 18 },
-  { min: 3, points: 10 },
-];
-
-/** Small scale bonus (diversity + skill use) — nudges, never triggers alone. Max ~10. */
-export const CONTRIBUTE_SKILL_BONUS = 5;
-export const CONTRIBUTE_DIVERSITY_BONUS_MAX = 5;
+// The friction reminder's thresholds and weights are `with:` of
+// hooks/teamai-friction-reminder/HOOK.yaml (#1787), which a team may replace.
 
 /**
  * Debounce TTL for contribute-check re-evaluation. Within this window the
@@ -2622,15 +2598,6 @@ export const CONTRIBUTE_DIVERSITY_BONUS_MAX = 5;
  * zero-score snapshot.
  */
 export const CONTRIBUTE_FASTPATH_TTL_MS = 5 * 60 * 1000;
-
-/** Phase 2: bonus when all recalls return zero results (knowledge gap) */
-export const CONTRIBUTE_KNOWLEDGE_GAP_BONUS = 20;
-
-/** Phase 2: bonus when recalls return results but top score is very low */
-export const CONTRIBUTE_LOW_QUALITY_BONUS = 10;
-
-/** Phase 2: threshold below which recall results are considered low quality */
-export const CONTRIBUTE_LOW_QUALITY_THRESHOLD = 5.0;
 
 /** Phase 2: git commit is neutral (no bonus, no penalty) */
 export const CONTRIBUTE_GIT_COMMIT_DOWNWEIGHT = 0;

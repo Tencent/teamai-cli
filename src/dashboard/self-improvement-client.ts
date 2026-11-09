@@ -109,7 +109,7 @@ function loopSetup(d){
  const s=d.setup, regressions=s.suites.filter(x=>x.regressions);
  const items=[
   loopCheck(d.scorers.length>0,'Scorer labels reach teamai-reports',d.scorers.length?number(d.scorers.length)+' '+label('scorers with labels in the last 30 days'):label('Push a scorer and let it label work, then publish with teamai score --push.')),
-  loopCheck(s.suites.length>0,'A regression suite',s.suites.length?s.suites.map(x=>'<span class="tag" data-verbatim title="'+e(x.path)+'">'+e(x.name)+'</span> '+number(x.tasks)+' '+label('tasks')+', '+number(x.regressions)+' '+label('from failures')).join(' · '):label('Push benchmarks/regressions/suite.yaml with team: [main, pulled].')),
+  loopCheck(s.suites.length>0,'A regression suite',s.suites.length?s.suites.map(x=>'<span class="tag" data-verbatim title="'+e(x.path)+'">'+e(x.name)+'</span> '+number(x.tasks)+' '+label('tasks')+', '+number(x.regressions)+' '+label('from failures')).join(' · '):label('Push benchmarks/regressions/SUITE.yaml with team: [main, pulled].')),
   loopCheck(!!s.jobs.improve,'A CI job runs the loop',s.jobs.improve?'<span data-verbatim>'+e(s.jobs.improve)+'</span>':label('Add a scheduled job that runs teamai self-improvement run on a runner it throws away.')),
   loopCheck(!!s.jobs.proof,'A CI job proves each change',s.jobs.proof?'<span data-verbatim>'+e(s.jobs.proof)+'</span>':label('Add a pull request job that runs teamai benchmark run on the regression suite.')),
   loopCheck(s.workflow.source!=='missing','The workflow',s.workflow.source==='team'?label('The team\\'s')+' <span data-verbatim>'+e(s.workflow.path)+'</span>':s.workflow.source==='default'?label('teamai\\'s default teamai-self-improvement'):label('Not found. Run teamai pull.')),

@@ -10,6 +10,8 @@ import {
   type CodexTrustPolicy, type MainCheckoutHooks, type ReconcileHooksOptions, type SharedHooksManifest, type TeamHookHistory,
 } from './hooks.js';
 import { codexTeamHookIndexPath } from './codex-team-hooks.js';
+import { codebuddyTeamHookPayload } from './codebuddy-team-hooks.js';
+import { mapStrings, parseJsonAs } from './utils/json.js';
 import { bridgedTeamHookDir, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
 import {
   removeOpenClawHooks,
@@ -58,6 +60,9 @@ import { BUILTIN_RULE_NAMES, TEAMAI_CONTEXT_RULE_NAME } from './builtin-rules.js
 import { isLegacyCursorRuleFile, keptLegacyCopiesWarning, ruleStemFromFilename, usesMdcRules, type InstructionBlock, type LegacyRuleDir } from './resources/rule-format.js';
 import { agentStemFromFilename } from './resources/agent-format.js';
 import { resolveDocsDestination } from './resources/docs.js';
+import { DeliveredFolders } from './resources/delivered-folders.js';
+import { RuleFolders } from './resources/rule-folders.js';
+import { RESOURCE_LAYOUTS, Resources } from './resources/resolver.js';
 import { listTeamAgentDirs, ownsAgentCopy, updateJoycodeAgentIndex } from './resources/agents.js';
 import { RulesHandler, inlineRulesLabelOf, inlineRulesLocationOf, isLegacyLayoutCopy, ownsRuleCopy } from './resources/rules.js';
 import { deliveredHashes, projectCheckouts, syncDeliveredGitExclude } from './pull.js';
@@ -132,6 +137,8 @@ interface RemovalPlan {
   dshHookFile: string | null;
   /** The team hooks teamai's bridge runs for a tool (~/.teamai/team-hooks/<tool>.json). */
   bridgedTeamHookFiles: string[];
+  /** A single-repo worktree's `.teamai/delivered/`: the team folders (hooks, MCP servers) it delivered (#1787). */
+  deliveredFolderDirs: string[];
   /** Manifest used by the primary hook injection scope. */
   hookManifestPath: string;
   /** The team's hooks at every revision: an unrecorded entry equal to exactly one of them is teamai's (#993). */
@@ -155,6 +162,8 @@ interface RemovalPlan {
   keptSkillDirs: string[];
   /** The line naming each rule or agent file at a team resource's name that is not teamai's: never removed (#993). */
   keptFiles: string[];
+  /** Every tool's rules directories, whose files may name a delivered folder: a folder one left names stays (#1787). */
+  ruleDirs: string[];
   /** The rules globs teamai owns in OpenCode's opencode.json `instructions`, per file (#946). */
   opencodeOwnedGlobs: OpencodeRuleGlobEntries[];
   /** Built-in agent .md files deployed by the CLI (e.g. teamai-recall). */
@@ -386,20 +395,13 @@ async function collectTeamSkillNames(repoPath: string): Promise<Set<string>> {
 }
 
 /**
- * Collect team repo rule names (relative paths without .md extension).
+ * The team repo's rule names, as pull names them: `fe/style` for `rules/fe/style.md` and for a rule folder
+ * `rules/fe/style/RULE.md`, whose other files are not rules (#1787).
  */
 async function collectTeamRuleNames(repoPath: string): Promise<Set<string>> {
-  const teamRulesDir = path.join(repoPath, 'rules');
+  const { items, duplicates } = await Resources.walk(RESOURCE_LAYOUTS.rules, repoPath);
 
-  if (!await pathExists(teamRulesDir)) return new Set();
-
-  const files = await listFilesRecursive(teamRulesDir);
-
-  return new Set(
-    files
-      .filter((f) => f.endsWith('.md'))
-      .map((f) => f.replace(/\.md$/, '')),
-  );
+  return new Set([...items, ...duplicates].map(({ name }) => name));
 }
 
 /**
@@ -1545,6 +1547,9 @@ async function buildRemovalPlan(
   // Read before anything is deleted: what the projects still set up need stays.
   const projectsKept = includeShared && globalAdapters ? await keptForProjects() : { projects: [], paths: [] };
 
+  // The worktree's .teamai/delivered/ (#1787): the rule and MCP folders of a project scope, and a single-repo scope's hook folders.
+  const worktreeDelivered = DeliveredFolders.worktreeRoot(localConfig);
+
   const plan: RemovalPlan = {
     sharedRetentionOnly: false,
     hookFiles: [],
@@ -1556,6 +1561,8 @@ async function buildRemovalPlan(
     piHookFiles: [],
     dshHookFile: null,
     bridgedTeamHookFiles: [],
+    // A full uninstall only: every tool's team hooks and rules read them.
+    deliveredFolderDirs: !agentFilter && worktreeDelivered !== null && await pathExists(worktreeDelivered) ? [worktreeDelivered] : [],
     hookManifestPath: hookTargets[0].manifestPath,
     teamHookHistory: hookHistory,
     claudeMdFiles: [],
@@ -1567,6 +1574,7 @@ async function buildRemovalPlan(
     keptFlatCopies: flatCopies.edited.filter(({ tool }) => toolsToMerge.includes(tool)).map(({ file }) => file),
     keptSkillDirs: [],
     keptFiles: [],
+    ruleDirs: [...new Set([...rulesDirsByTool.values()].flat())],
     opencodeOwnedGlobs: [],
     agentFiles: [],
     joycodeAgentIndexes: [],
@@ -1833,6 +1841,21 @@ async function buildRemovalPlan(
 
       plan.gitExcludes = await findMcpGitExcludes(dirs);
       await planGitExcludeBlocks(plan, localConfig);
+
+      // The exclude block that kept each worktree's .teamai/delivered/ out of git is shared, so every worktree's goes with it.
+      if (!agentFilter) {
+        const planned = new Set(await Promise.all(plan.deliveredFolderDirs.map((dir) => realpath(dir).catch(() => dir))));
+
+        for (const checkout of plan.checkouts) {
+          const dir = DeliveredFolders.checkoutRoot(checkout);
+          const real = await realpath(dir).catch(() => null);
+
+          if (real === null || planned.has(real)) continue;
+          planned.add(real);
+          plan.deliveredFolderDirs.push(dir);
+        }
+      }
+
       const { removeDocsSearchWhitelist } = await import('./resources/docs.js');
 
       for (const checkout of plan.checkouts) {
@@ -1878,6 +1901,7 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
     plan.opencodePluginDirs.length === 0 &&
     plan.ompHookFiles.length === 0 &&
     plan.bridgedTeamHookFiles.length === 0 &&
+    plan.deliveredFolderDirs.length === 0 &&
     plan.kiroHookFile === null &&
     plan.agyHookFile === null &&
     plan.piHookFiles.length === 0 &&
@@ -1987,6 +2011,8 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
 
     for (const file of plan.bridgedTeamHookFiles) console.log(`     ${file}`);
   }
+
+  for (const dir of plan.deliveredFolderDirs) console.log(`   Team folders delivered in a worktree: ${dir}`);
 
   if (plan.piHookFiles.length > 0) {
     console.log(`   Pi Hooks (${plan.piHookFiles.length} files):`);
@@ -2156,6 +2182,137 @@ async function keepTrackedCopies(plan: RemovalPlan): Promise<void> {
 
   for (const file of plan.agentFiles) if (await untracked(file)) agentFiles.push(file);
   Object.assign(plan, { skillDirs, ruleFiles, agentFiles });
+}
+
+/** A file uninstall leaves, or an entry an MCP file still holds: its text may name a delivered folder (#1787). */
+interface TextLeft {
+  readonly file: string;
+  readonly text: string;
+}
+
+/** A text left, with the checkout its file is in: null when it is in none of the project's. */
+type CheckoutText = TextLeft & { readonly checkout: string | null };
+
+/** `text`, and the commands the CodeBuddy Windows project gates of a JSON or JSONC `text` carry base64-encoded (its settings are JSONC). */
+function withGatedCommands(text: string): string {
+  let json: JsonValue;
+
+  try {
+    json = parseJsonAs(text, 'jsonc');
+  } catch {
+    return text;
+  }
+
+  const commands: string[] = [];
+
+  mapStrings(json, (value) => {
+    const command = codebuddyTeamHookPayload(value);
+
+    if (command !== null) commands.push(command);
+
+    return value;
+  });
+
+  return [text, ...commands].join('\n');
+}
+
+/** The checkout of `checkouts` holding `real`, both real paths; null when none does. */
+function checkoutHolding(real: string, checkouts: readonly string[]): string | null {
+  return checkouts.find((checkout) => real === checkout || real.startsWith(checkout + path.sep)) ?? null;
+}
+
+/**
+ * What the files uninstall leaves hold, read once the removal ran: every tool's rules directories and instruction
+ * files in each checkout of the project (another worktree's copies are not uninstall's to remove), the copies kept in a
+ * legacy rules directory, the hook files, and `mcpEntries`, the entries the MCP files still hold. Each with the
+ * checkout it is in.
+ */
+async function textsLeft(plan: RemovalPlan, mcpEntries: readonly TextLeft[]): Promise<CheckoutText[]> {
+  const checkouts = await Promise.all(plan.checkouts.map(realFilePath));
+
+  const places = [
+    ...plan.ruleDirs,
+    ...plan.keptRuleFiles.flatMap(({ files }) => files),
+    ...plan.claudeMdFiles.map(({ path: file }) => file),
+    ...plan.hookFiles.map(({ path: file }) => file),
+    ...plan.bridgedTeamHookFiles,
+  ];
+
+  const files = new Set<string>();
+
+  for (const place of places) {
+    const real = await realFilePath(place);
+    const holding = checkoutHolding(real, checkouts);
+
+    for (const at of holding === null ? [real] : checkouts.map((checkout) => path.join(checkout, path.relative(holding, real)))) {
+      const entry = await lstat(at).catch(() => null);
+
+      if (entry?.isFile()) files.add(at);
+      else if (entry?.isDirectory()) for (const file of await listFilesRecursive(at)) files.add(path.join(at, file));
+    }
+  }
+
+  const read = await Promise.all([...files].map(async (file) => ({ file, text: await readFileSafe(file) })));
+  const left = [...read.flatMap(({ file, text }) => text === null ? [] : [{ file, text: withGatedCommands(text) }]), ...mcpEntries];
+
+  return Promise.all(left.map(async (one) => ({ ...one, checkout: checkoutHolding(await realFilePath(one.file), checkouts) })));
+}
+
+/**
+ * The delivered folders under `root` (a worktree's `.teamai/delivered/`, or the data home) that a file uninstall
+ * leaves names, which stay with it, as pull keeps them (#1787): a file in a checkout names only that checkout's
+ * folders. Each is named with the files naming it. `mcpUnread`: an MCP file could not be read, so every server folder stays.
+ */
+async function foldersLeftNamed(input: {
+  readonly root: string;
+  readonly texts: readonly CheckoutText[];
+  readonly checkouts: readonly string[];
+  readonly mcpUnread: boolean;
+}): Promise<string[]> {
+  const { root } = input;
+  const checkout = checkoutHolding(await realFilePath(root), await Promise.all(input.checkouts.map(realFilePath)));
+  const named = new Map<string, string[]>();
+
+  for (const { file, text, checkout: holding } of input.texts) {
+    if (holding !== null && checkout !== null && holding !== checkout) continue;
+
+    for (const type of ['hooks', 'rules', 'mcp'] as const) {
+      if (!text.includes(`/${type}/`) || (type === 'mcp' && input.mcpUnread)) continue;
+
+      for (const folder of await DeliveredFolders.namedIn({ root, type, texts: [text] })) named.set(folder, [...named.get(folder) ?? [], file]);
+    }
+  }
+
+  for (const [folder, files] of named) log.warn(`Kept ${folder}: ${files.join(', ')} still ${files.length === 1 ? 'names' : 'name'} it. Delete it once nothing does.`);
+  const servers = path.join(root, 'mcp');
+
+  if (!input.mcpUnread || !await pathExists(servers)) return [...named.keys()];
+  log.warn(`Kept ${servers}: an MCP file teamai could not read may still start a server from it.`);
+
+  return [...named.keys(), servers];
+}
+
+/**
+ * The entries the MCP files of every checkout of `localConfig`'s project hold, each with its file. `unread`: an MCP
+ * file could not be read (`unread`, or reading failed), so what it holds is unknown.
+ */
+async function mcpEntriesLeft(teamConfig: TeamaiConfig, localConfig: LocalConfig, unread: readonly string[]): Promise<TextLeft[] | 'unread'> {
+  if (unread.length > 0) return 'unread';
+
+  try {
+    const { installedMcpEntryTexts, projectWorktreeConfigs } = await import('./mcp-reconcile.js');
+    const entries = new Map<string, TextLeft>();
+
+    for (const config of await projectWorktreeConfigs(localConfig)) {
+      for (const entry of await installedMcpEntryTexts(teamConfig, config)) entries.set(`${entry.file}\0${entry.text}`, entry);
+    }
+
+    return [...entries.values()];
+  } catch (e) {
+    log.warn(`Could not read the MCP servers the tools' MCP files still hold: ${e instanceof Error ? e.message : String(e)}`);
+
+    return 'unread';
+  }
 }
 
 // ─── Git exclude blocks (#915) ─────────────────────────
@@ -2585,7 +2742,7 @@ async function executeRemoval(
   plan: RemovalPlan,
   heldMcp: ReadonlySet<string>,
   /** What stays whatever this removal does (hooks still running, files kept): their records stay too. */
-  alreadyLeft: { hooks?: Array<{ what: string; tool: string }>; files?: string[] } = {},
+  alreadyLeft: { hooks?: Array<{ what: string; tool: string }>; files?: string[]; mcpEntries?: readonly TextLeft[] | 'unread' } = {},
   codexTrust: CodexTrustPolicy,
 ): Promise<{ pendingOpencode: RemovalPlan['opencodeInstructions']; hooksLeft: Array<{ what: string; tool: string }>; blocksLeft: string[]; filesLeft: string[] }> {
   const pendingOpencode: RemovalPlan['opencodeInstructions'] = [];
@@ -3015,7 +3172,28 @@ async function executeRemoval(
     }
   }
 
-  // (f2) teamai's git exclude blocks (#915): after the files they hid, before
+  // (f2) The folders the team hooks, rules and MCP servers of each worktree read (#1787), now that the files naming
+  // them went: one a file uninstall leaves still names stays with it.
+  let left: CheckoutText[] | null = null;
+  const mcpEntries = alreadyLeft.mcpEntries ?? [];
+
+  const keptFolders = async (root: string): Promise<string[]> => foldersLeftNamed({
+    root, texts: left ??= await textsLeft(plan, mcpEntries === 'unread' ? [] : mcpEntries), checkouts: plan.checkouts, mcpUnread: mcpEntries === 'unread',
+  });
+
+  for (const dir of plan.deliveredFolderDirs) {
+    try {
+      const kept = await keptFolders(dir);
+
+      if (kept.length > 0) await removeAllBut(dir, kept);
+      else await remove(dir);
+      log.success(`Removed the team folders delivered in ${dir}${kept.length > 0 ? ` but ${kept.join(', ')}` : ''}`);
+    } catch (e) {
+      log.warn(`Failed to remove ${dir}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  // (f3) teamai's git exclude blocks (#915): after the files they hid, before
   // the partition state that records which exclude files hold them.
   // An incomplete one keeps the data home, so the record of these files, for the retry; so does a block that stays.
   const blocksLeft = plan.includeShared
@@ -3043,7 +3221,11 @@ async function executeRemoval(
       const sharedManifest = plan.preserveSharedManifest && await pathExists(plan.preserveSharedManifest)
         ? await readFileSafe(plan.preserveSharedManifest) : null;
 
-      const kept = [...docsInside ? [plan.docsDir!] : [], ...plan.keptForProjects.paths];
+      const kept = [
+        ...docsInside ? [plan.docsDir!] : [],
+        ...plan.keptForProjects.paths,
+        ...await keptFolders(plan.teamaiHome),
+      ];
 
       if (kept.length > 0) await removeAllBut(plan.teamaiHome, kept);
       else await remove(plan.teamaiHome);
@@ -3400,6 +3582,9 @@ async function removeConfirmed(
     }
   }
 
+  // The entries the MCP files still hold, a server uninstall could not take out among them: the folder each names stays (#1787).
+  const mcpEntries = plan.includeShared ? await mcpEntriesLeft(teamConfig, localConfig, mcpLeft) : [];
+
   // Codex team hooks that ran from the dispatcher in ~/.codex/hooks.json (#915),
   // before the data home goes: a dispatcher left running keeps the records for the retry.
   const dispatchLeft = !agentKey || agentKey === 'codex' || plan.includeShared
@@ -3408,10 +3593,13 @@ async function removeConfirmed(
 
   // The workspace instruction excludes a pull wrote (#913), before the records that own them go.
   const excludesLeft = plan.includeShared ? await withdrawWorkspaceInstructionExcludes(teamConfig, localConfig) : [];
+  // The rule folder grants a pull added to a tool's user settings (#1787), for every tool or the one uninstalled.
+  const grantsLeft = plan.includeShared || agentKey ? await withdrawRuleFolderGrants(localConfig, plan.includeShared ? null : agentKey) : [];
 
   const { pendingOpencode, hooksLeft, blocksLeft, filesLeft } = await executeRemoval(plan, heldMcp, {
     hooks: dispatchLeft ? [{ what: `the Codex team-hook dispatchers in ${dispatchLeft}`, tool: 'codex' }] : [],
-    files: [...httpSourceLeft, ...plan.keptUnjudged, ...excludesLeft, ...mcpLeft],
+    files: [...httpSourceLeft, ...plan.keptUnjudged, ...excludesLeft, ...grantsLeft, ...mcpLeft],
+    mcpEntries,
   }, codexTrustPolicy(localConfig));
 
   const incomplete = pendingOpencode.length > 0 || hooksLeft.length > 0 || blocksLeft.length > 0 || filesLeft.length > 0;
@@ -3458,6 +3646,33 @@ async function removeConfirmed(
   } else {
     log.success('teamai uninstalled');
   }
+}
+
+/**
+ * Take the `permissions.additionalDirectories` entries each checkout's pull added to a tool's user settings for the
+ * rule folders it delivers (#1787) back out, leaving the member's own: every tool's, or with `tool` only its settings
+ * file. The settings files it could not edit.
+ */
+async function withdrawRuleFolderGrants(localConfig: LocalConfig, tool: string | null | undefined): Promise<string[]> {
+  const only = tool && isToolId(tool) ? path.join(toolHome(tool), 'settings.json') : null;
+
+  if (tool && only === null) return [];
+  const left: string[] = [];
+
+  for (const { ruleFolderGrants } of Object.values((await loadStateForScope(localConfig)).lastPullByWorkspace ?? {})) {
+    for (const [settingsFile, previous] of Object.entries(ruleFolderGrants ?? {})) {
+      if (only !== null && settingsFile !== only) continue;
+
+      try {
+        if ((await RuleFolders.grant({ settingsFile, dirs: [], previous, withdraw: true })).length > 0) left.push(settingsFile);
+      } catch (e) {
+        log.warn(`Could not take the rule folder directories out of ${settingsFile}: ${e instanceof Error ? e.message : String(e)}`);
+        left.push(settingsFile);
+      }
+    }
+  }
+
+  return left;
 }
 
 /**

@@ -8,9 +8,9 @@ import { TeamaiConfigSchema, type LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { legacyProjectSlug, projectDataHome, projectsRootDir } from '../utils/partition.js';
-import { resolveEntriesFor } from '../namespaced-entries.js';
+import { LayeredEntries } from '../resources/layered-entries.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
-import { mcpEntryReader } from '../resources/mcp.js';
+import { TEAM_MCP_ENTRIES } from '../resources/mcp.js';
 import { mcpRelocated } from '../mcp-reconcile.js';
 import { buildRolePullContext, deliveredSkillSources, resolveDesiredAgents, resolveDesiredRules, resolveDesiredSkills } from '../resources/desired.js';
 import { readTeamSkillIndex, resolveDestination, withSkillFrontmatter } from '../resources/skills.js';
@@ -485,7 +485,7 @@ describe('delivered selection of a workspace with children', () => {
     repoChild(path.join(ws, 'svc-a'), { projects: ['svc-a'], excludedSkills: ['a-only', 'shared'] });
     repoChild(path.join(ws, 'svc-b'), { projects: ['svc-b'] });
 
-    const resolution = await resolveEntriesFor(mcpEntryReader, await readWorkspaceChildren(workspace));
+    const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, await readWorkspaceChildren(workspace));
 
     expect(resolution.kind).toBe('resolved');
     if (resolution.kind !== 'resolved') return;
@@ -509,7 +509,7 @@ describe('delivered selection of a workspace with children', () => {
     repoChild(path.join(ws, 'svc-a'), { projects: ['svc-a'] });
     repoChild(path.join(ws, 'svc-b'), { projects: ['svc-b'] });
 
-    const resolution = await resolveEntriesFor(mcpEntryReader, await readWorkspaceChildren({ ...workspace, excludedSkills: ['cache'] }));
+    const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, await readWorkspaceChildren({ ...workspace, excludedSkills: ['cache'] }));
 
     expect(resolution.kind === 'resolved' && resolution.notices.map((notice) => notice.message).join('\n'))
       .not.toContain('server "cache" differs');

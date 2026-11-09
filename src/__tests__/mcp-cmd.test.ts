@@ -4,10 +4,10 @@ vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
   autoDetectInit: vi.fn(),
 }));
-vi.mock('../namespaced-entries.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../namespaced-entries.js')>()),
-  resolveEntriesFor: vi.fn(),
-}));
+vi.mock('../resources/layered-entries.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../resources/layered-entries.js')>();
+  return { ...actual, LayeredEntries: { ...actual.LayeredEntries, resolve: vi.fn() } };
+});
 // The per-target delivery filters stay real: `withheld` must name only where a pull would write.
 vi.mock('../mcp-reconcile.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../mcp-reconcile.js')>();
@@ -44,7 +44,8 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { autoDetectInit } from '../config.js';
-import { entryLayout, resolveEntriesFor } from '../namespaced-entries.js';
+import { entryLayout } from '../namespaced-entries.js';
+import { LayeredEntries } from '../resources/layered-entries.js';
 import { mcpInject, mcpList, mcpRemove } from '../mcp-cmd.js';
 import { reconcileMcpForConfig, releaseCleanMcpGitExcludes, resolveMcpTargets } from '../mcp-reconcile.js';
 import { ensureExcludedFromGit } from '../mcp-git-exclude.js';
@@ -53,18 +54,18 @@ import { managedMcpManifestKey } from '../types.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 
 const mockedAutoDetectInit = autoDetectInit as Mock;
-const mockedResolve = resolveEntriesFor as Mock;
+const mockedResolve = LayeredEntries.resolve as Mock;
 
-/** An MCP resolution as `resolveEntriesFor` returns it, from `[server, source, replaces]`. */
+/** An MCP resolution as `LayeredEntries.resolve` returns it, from `[server, source, replaces]`. */
 function resolved(entries: [Record<string, unknown>, string, string | null][]) {
   return {
     kind: 'resolved',
     active: [],
     notices: [],
     repeated: [],
-    entries: entries.map(([entry, source, replaces]) => ({
-      entry,
-      name: entry.name,
+    entries: entries.map(([server, source, replaces]) => ({
+      entry: { kind: 'entry', server },
+      name: server.name,
       source,
       namespace: source === 'mcp/mcp.yaml' ? null : source.split('/')[1],
       replaces,

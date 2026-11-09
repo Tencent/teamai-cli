@@ -57,6 +57,22 @@ async function team(workflows: Record<string, string>, tools: TeamaiConfig['tool
 }
 
 describe('generated workflow skills', () => {
+  it('generates the skill of a workflow folder from its definition alone, leaving its README out', async () => {
+    const { deploy, skill, home, put } = await team({});
+    const folder = path.join(path.dirname(home), 'knowledge', 'workflows', 'release');
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, 'WORKFLOW.yaml'), workflow('release', 'allow'));
+    fs.writeFileSync(path.join(folder, 'README.md'), '# Release\nHow the team replaces this workflow.\n');
+    await put('private', workflow('private', 'deny'));
+
+    await deploy();
+
+    const written = fs.readFileSync(skill('release'), 'utf8');
+    expect(written).toContain('description: "Lint the change. A team workflow: prefer it over doing the task ad hoc."\n');
+    expect(written).not.toContain('How the team replaces this workflow.');
+    expect(fs.readdirSync(path.dirname(skill('release')))).toEqual(['SKILL.md']);
+  });
+
   it('writes a signed skill for each invoke: allow or ask workflow, and none for deny', async () => {
     const { deploy, skill } = await team({
       check: workflow('check', 'allow', 'alias: lint\n'), gated: workflow('gated', 'ask'), private: workflow('private', 'deny'),
@@ -108,7 +124,7 @@ describe('generated workflow skills', () => {
     expect(await shadowed()).toEqual([shadowedLine]);
     expect(warn.mock.calls.map(([message]) => message)).toEqual(expect.arrayContaining([
       shadowedLine,
-      `Kept ${skill('build')}: it was generated from workflows/build.yaml and edited since, so teamai pull no longer updates it. Delete it to receive the current one, or remove its teamai-generated metadata to keep it as your own.`,
+      `Kept ${skill('build')}: it was generated from workflow build and edited since, so teamai pull no longer updates it. Delete it to receive the current one, or remove its teamai-generated metadata to keep it as your own.`,
     ]));
   });
 
@@ -125,7 +141,7 @@ describe('generated workflow skills', () => {
     expect([fs.existsSync(path.dirname(skill('check'))), fs.existsSync(path.dirname(skill('gated')))]).toEqual([false, false]);
     expect(fs.readFileSync(skill('build'), 'utf8')).toBe(edited);
     expect(warn.mock.calls.map(([message]) => message)).toContain(
-      `Kept ${skill('build')}: it was generated from workflows/build.yaml and edited since, and that workflow no longer offers a skill, so teamai pull left it. Delete it, or remove its teamai-generated metadata to keep it as your own.`,
+      `Kept ${skill('build')}: it was generated from workflow build and edited since, and that workflow no longer offers a skill, so teamai pull left it. Delete it, or remove its teamai-generated metadata to keep it as your own.`,
     );
   });
 

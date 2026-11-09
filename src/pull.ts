@@ -35,7 +35,8 @@ import { CODEX_TOOL, codexSkillsSplit, mayDeleteSkillCopy, skillOrigin } from '.
 import { installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH, writable, writesOf, type Install } from './locate.js';
 import { isWithin } from './utils/agent-path.js';
 import { describeToolHomeChange, recordToolHomes } from './tool-home-record.js';
-import { describeInvalidToolHomes, realHost } from './tool-home.js';
+import { describeInvalidToolHomes, realHost, toolHome } from './tool-home.js';
+import { isToolId, ruleFolderReachOf } from './tools.js';
 import { placesOf, placesRecordOf, placesUnmoved, recordPlaces, type PlacesRecord, type SessionToolHomes } from './resources/places.js';
 import { flatStemsOfRemoved, ruleFileExtensionForTool, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
 import { AGENT_FILE_EXTENSIONS } from './resources/agent-format.js';
@@ -1466,6 +1467,50 @@ async function excludeWorkspaceInstructions(localConfig: LocalConfig, options: G
   }
 }
 
+/**
+ * Let each tool whose rule folder cell is `grant` (Claude Code) read the rule folders this scope delivers (#1787):
+ * the scope's delivered `rules` directory in `permissions.additionalDirectories` of the tool's user settings, owned
+ * through the checkout record. Only user scope needs it: a project's folders sit in the worktree, which the tool reads
+ * anyway. While the scope delivers no rule folder there, what an earlier pull added is taken back.
+ */
+async function grantRuleFolders(localConfig: LocalConfig, options: GlobalOptions): Promise<void> {
+  if (options.dryRun) return;
+
+  try {
+    const state = await loadStateForScope(localConfig);
+    const record = await deliveringCheckoutRecord(localConfig, state);
+    const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+
+    if (!record || !teamConfig) return;
+    const { DeliveredFolders } = await import('./resources/delivered-folders.js');
+    const { RuleFolders } = await import('./resources/rule-folders.js');
+    const rulesDir = path.join(DeliveredFolders.root(localConfig, 'rules'), 'rules');
+    const delivers = DeliveredFolders.worktreeRoot(localConfig) === null && (await listDirs(rulesDir)).length > 0;
+
+    const settingsFiles = (await rulesReceivingTools(teamConfig, localConfig))
+      .filter((tool) => !isAgentExcluded(localConfig, tool) && ruleFolderReachOf(tool).reach === 'grant')
+      .flatMap((tool) => (isToolId(tool) ? [path.join(toolHome(tool), 'settings.json')] : []));
+
+    const previous = record.ruleFolderGrants ?? {};
+    const granted: Record<string, string[]> = {};
+
+    for (const settingsFile of new Set([...Object.keys(previous), ...settingsFiles])) {
+      const dirs = delivers && settingsFiles.includes(settingsFile) ? [rulesDir] : [];
+      const owned = await RuleFolders.grant({ settingsFile, dirs, previous: previous[settingsFile] ?? [] });
+
+      if (owned.length > 0) granted[settingsFile] = owned;
+    }
+
+    if (JSON.stringify(granted) === JSON.stringify(previous)) return;
+
+    if (Object.keys(granted).length > 0) record.ruleFolderGrants = granted;
+    else delete record.ruleFolderGrants;
+    await saveStateForScope(state, localConfig);
+  } catch (e) {
+    log.warn(`[${installScopeName(localConfig.scope)}] Claude Code may ask before it reads the files of team rule folders: their directory was not added to its settings (${e instanceof Error ? e.message : String(e)}). Run \`teamai pull\` to retry.`);
+  }
+}
+
 /** Which children a workspace's checkout was delivered with (#913), for the fast path. */
 function setChildren(record: CheckoutRecord, localConfig: LocalConfig): void {
   if (localConfig.scope !== 'project') return;
@@ -1729,6 +1774,8 @@ function awaitingFullSync(records: Record<string, CheckoutRecord>): Record<strin
     if (record.rootsSeeded) reset.rootsSeeded = true;
 
     if (record.claudeMdExcludes) reset.claudeMdExcludes = record.claudeMdExcludes;
+
+    if (record.ruleFolderGrants) reset.ruleFolderGrants = record.ruleFolderGrants;
 
     return [key, pushBaseRevs.length === 0 ? reset : { ...reset, pushBaseRevs }];
   }));
@@ -2992,7 +3039,7 @@ async function pullForScope(
   try {
     const { deployBuiltinRules } = await import('./builtin-rules.js');
     const skipRecall = !isRecallEnabled(localConfig, freshConfig);
-    const deployed = await deployBuiltinRules(freshConfig, localConfig, { skipRecall, recorder, dryRun, toolsMissingRules: ledger.toolsMissingRules });
+    const deployed = await deployBuiltinRules(freshConfig, localConfig, { skipRecall, recorder, dryRun, toolsMissingRules: ledger.toolsMissingRules, ledger });
 
     if (deployed > 0 && !dryRun) {
       log.debug(`[${scopeLabel}] Deployed built-in rules to ${deployed} tool(s)`);
@@ -3154,6 +3201,7 @@ async function pullForScope(
       const gitExcludePaths = storedRecord?.gitExcludePaths;
       const seeded = rootsSeeded || storedRecord?.rootsSeeded;
       const claudeMdExcludes = storedRecord?.claudeMdExcludes;
+      const ruleFolderGrants = storedRecord?.ruleFolderGrants;
 
       const record: CheckoutRecord = { rev: deliveredRev, targets: syncedTargets, delivered: ledger.hashes };
 
@@ -3170,6 +3218,8 @@ async function pullForScope(
       if (seeded) record.rootsSeeded = true;
 
       if (claudeMdExcludes) record.claudeMdExcludes = claudeMdExcludes;
+
+      if (ruleFolderGrants) record.ruleFolderGrants = ruleFolderGrants;
 
       setChildren(record, localConfig);
       record.selection = deliverySelection(localConfig);
@@ -3222,13 +3272,16 @@ async function pullForScope(
   }
 
   // Every checkout of the repo keeps `workspaces/<id>/` in the shared data home
-  // (search index, managed MCP, resource cache), and a removed worktree's stays
+  // (search index, managed MCP, hook records, resource cache), and a removed worktree's stays
   // behind. A full sync records its own root there and drops the directories of
-  // checkouts that are gone; the fast path probes none (#808, #993).
+  // checkouts that are gone, after taking back the hooks they recorded in HOME
+  // (#1787); the fast path probes none (#808, #993).
   if (localConfig.scope === 'project' && localConfig.projectRoot && !options.dryRun) {
     try {
       const { pruneWorkspaceDirs, writeWorkspaceRoot } = await import('./utils/partition.js');
+      const { releaseRemovedCheckoutHooks } = await import('./hooks.js');
       await writeWorkspaceRoot(getDataHome(localConfig), localConfig.projectRoot);
+      await releaseRemovedCheckoutHooks(freshConfig, localConfig);
       const removed = await pruneWorkspaceDirs(getDataHome(localConfig), localConfig.projectRoot);
 
       if (removed.length > 0) log.debug(`[${scopeLabel}] removed ${removed.length} directory(ies) of removed worktrees`);
@@ -3376,8 +3429,8 @@ export async function resolveInstructionBlocks(
   const recallEnabled = isRecallEnabled(localConfig, config);
 
   const blocks: InstructionBlocks = {
-    recall: recallEnabled ? compileRecallRulesBlock(config.language) : null,
-    directRecall: recallEnabled ? compileDirectRecallRulesBlock() : null,
+    recall: recallEnabled ? await compileRecallRulesBlock(config.language, localConfig.repo.localPath) : null,
+    directRecall: recallEnabled ? await compileDirectRecallRulesBlock(config.language, localConfig.repo.localPath) : null,
   };
 
   try {
@@ -3520,46 +3573,23 @@ async function reportInstructionFiles(
   recorder.succeeded('instructions');
 }
 
+/** `body` between the recall markers, with the line that says teamai keeps it. */
+function recallBlock(body: string): string {
+    return [TEAMAI_RECALL_RULES_START, '<!-- DO NOT EDIT: This section is auto-managed by teamai -->', '', body, '', TEAMAI_RECALL_RULES_END].join('\n');
+}
+
 /**
  * The recall block for a tool without the `teamai-recall` subagent (#945):
  * the agent runs `teamai recall` itself. Same markers as
  * compileRecallRulesBlock, so every reader and remover treats both alike.
+ * The text is `block-direct.md` of the recall folder that applies with the
+ * team repo at `repoPath` (#1787), in `language` when it has that file;
+ * teamai ships it in English only.
  */
-export function compileDirectRecallRulesBlock(): string {
-    return [
-        TEAMAI_RECALL_RULES_START,
-        '<!-- DO NOT EDIT: This section is auto-managed by teamai -->',
-        '',
-        '## Team Knowledge Recall (teamai)',
-        '',
-        '**Before** starting a task that involves code changes, debugging,',
-        'or design decisions, you **SHOULD** search the team knowledge base',
-        '(learnings, docs, skills, rules and the codebase wiki) by running:',
-        '',
-        '```bash',
-        'teamai recall "<3-6 high-signal keywords from the task>"',
-        '```',
-        '',
-        'unless one of these skip conditions applies:',
-        '',
-        '1. **User already provided context** — the user referenced specific files,',
-        '   gave a solution, or said "the answer is in this directory/file".',
-        '2. **Local files have the answer** — the task info is directly available',
-        '   from the current workspace (e.g. fixing an obvious bug in the current file).',
-        '3. **Trivial/local change** — small modifications to known files (typo fix,',
-        '   parameter tweak, formatting) that need no additional knowledge.',
-        '4. **Task domain is outside team knowledge coverage** — the task is',
-        '   unrelated to this team\'s systems/workflows. `teamai recall --check "<keywords>"`',
-        '   answers `RELEVANT` or `NOT_RELEVANT` without reading anything.',
-        '',
-        'Matching is lexical: give each domain term in every language the team',
-        'writes in, and keep names, identifiers, error codes and paths as they are.',
-        'Read the files recall returns for their full content. If its output contains',
-        '`Nothing was searched:`, show that line to the user instead of concluding the',
-        'team has no knowledge on the topic.',
-        '',
-        TEAMAI_RECALL_RULES_END,
-    ].join('\n');
+export async function compileDirectRecallRulesBlock(language?: 'en' | 'zh', repoPath?: string): Promise<string> {
+    const { recallTexts } = await import('./builtin-rules.js');
+
+    return recallBlock((await recallTexts(language, repoPath)).directBlock);
 }
 
 /**
@@ -3569,65 +3599,15 @@ export function compileDirectRecallRulesBlock(): string {
  *   2. Declare which doc_ids were actually consulted at task completion.
  *
  * Delivered to the instruction targets of tools with the subagent (an
- * `agents` path) — see syncManagedInstructions. `teamai.yaml` `language: en`
- * drops the Chinese self-exemption, as it does in the recall rule (#1014).
+ * `agents` path) — see syncManagedInstructions. The text is `block.md` of the
+ * recall folder that applies with the team repo at `repoPath` (#1787);
+ * `teamai.yaml` `language: en` takes `block.en.md`, which drops the Chinese
+ * self-exemption, as the recall rule does (#1014).
  */
-export function compileRecallRulesBlock(language?: 'en' | 'zh'): string {
-    const lines = [
-        TEAMAI_RECALL_RULES_START,
-        '<!-- DO NOT EDIT: This section is auto-managed by teamai -->',
-        '',
-        '## Team Knowledge Recall (teamai)',
-        '',
-        '> **Self-exemption (must read first):** If you ARE the `teamai-recall` subagent yourself, this rule does NOT apply to you — do not invoke `teamai-recall` (or any recall) again. Proceed directly to performing the knowledge search that is your task. This prevents infinite subagent recursion in tools (e.g. Cursor) whose always-apply rules leak into subagent sessions.',
-        ...(language === 'en' ? [] : [
-            '>',
-            '> **自豁免（务必先读）：** 如果你自己就是 `teamai-recall` subagent，本规则对你不适用——不要再调用 `teamai-recall`（或任何 recall），直接执行你本职的知识检索任务。此举防止在（如 Cursor 等）会把 always-apply 规则泄漏进 subagent 会话的工具中发生无限递归。',
-        ]),
-        '',
-        '**Before** starting a task that involves code changes, debugging,',
-        'or design decisions, you **SHOULD** invoke the `teamai-recall`',
-        'subagent via the Agent tool with a concise natural-language',
-        'description of the task — unless one of these skip conditions applies:',
-        '',
-        '1. **User already provided context** — the user referenced specific files,',
-        '   gave a solution, or said "the answer is in this directory/file".',
-        '2. **Local files have the answer** — the task info is directly available',
-        '   from the current workspace (e.g. fixing an obvious bug in the current file).',
-        '3. **Trivial/local change** — small modifications to known files (typo fix,',
-        '   parameter tweak, formatting) that need no additional knowledge.',
-        '4. **Task domain is outside team knowledge coverage** — the task is',
-        '   unrelated to this team\'s systems/workflows (e.g. generic language',
-        '   questions, pure frontend styling with no team-specific context).',
-        '   The recall subagent also runs a relevance precheck and returns fast',
-        '   for unrelated tasks, but skipping outright saves a subagent round-trip.',
-        '',
-        'The subagent will return a compact summary of relevant team knowledge',
-        '(skills, learnings, docs, rules) without polluting this conversation',
-        'with raw content. For **feature/large tasks**, recall returns a',
-        '"Candidate change files" list — check your planned changes cover all',
-        'listed files before starting. For **bugfix/small tasks**, recall runs',
-        'a lighter pass and you may skip it entirely per condition 2–3 above.',
-        '',
-        '**Important constraints on agent sequencing (when recall is invoked):**',
-        '1. Invoke `teamai-recall` subagent **first and alone** — never',
-        '   launch it in parallel with Explore or other research agents.',
-        '2. After recall returns results, use Read to get full content of the',
-        '   returned files if you need more detail. Do NOT launch Explore agents',
-        '   to search for the same topics — recall results + Read is the complete',
-        '   workflow for accessing team knowledge.',
-        '3. Explore/research agents have their own scope and must NOT overlap',
-        '   with recall:',
-        '   - **recall subagent covers:** team learnings, codebase docs, skills,',
-        '     rules, and anything under `.teamai/`, `learnings/`, `docs/team-codebase/`.',
-        '   - **Explore agents cover:** navigating source code in the current',
-        '     working directory, and web search for external information.',
-        '   - Explore agents must never search paths covered by recall.',
-        '',
-        TEAMAI_RECALL_RULES_END,
-    ];
+export async function compileRecallRulesBlock(language?: 'en' | 'zh', repoPath?: string): Promise<string> {
+    const { recallTexts } = await import('./builtin-rules.js');
 
-    return lines.join('\n');
+    return recallBlock((await recallTexts(language, repoPath)).block);
 }
 
 /**
@@ -3971,6 +3951,7 @@ export async function pull(
               resourceTypes: ['skills', 'rules', 'docs', 'env', 'agents'],
               revisionField: 'lastInheritedPullRev',
             }, syncResult);
+            await grantRuleFolders(inheritedUserConfig, options);
           }
         } else {
           activeUserConfig = loadedUserConfig;
@@ -3981,6 +3962,7 @@ export async function pull(
             // cannot prompt, and the hook cannot spare the wait.
             if (!options.dryRun && !options.inline) await runTeamScript(activeUserConfig, 'prePull');
             await pullForScope(activeUserConfig, options, reported, {}, syncResult, teamEnvs, instructions);
+            await grantRuleFolders(activeUserConfig, options);
           }
         }
       } else if (inheritUserScope) {
@@ -4016,6 +3998,7 @@ export async function pull(
 
         if (pinRequired && syncResult.teamRepoFailed) return;
         await excludeWorkspaceInstructions(projectConfig, options);
+        await grantRuleFolders(projectConfig, options);
       }
     } catch (e) {
       if (e instanceof EnvScopesUnreadableError) process.exitCode = 1;
@@ -4942,7 +4925,8 @@ async function reconcileMcpAllScopes(
         }
       }
     } catch (e) {
-      log.debug(`[${installScopeName(localConfig.scope)}] MCP reconcile skipped: ${e instanceof Error ? e.message : String(e)}`);
+      log.warn(`[${installScopeName(localConfig.scope)}] Team MCP servers were not applied: ${e instanceof Error ? e.message : String(e)}. `
+        + 'Fix the cause, then run `teamai pull` again.');
       errors.push(`[${installScopeName(localConfig.scope)}] MCP: ${e instanceof Error ? e.message : String(e)}`);
     }
   }

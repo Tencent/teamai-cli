@@ -103,7 +103,7 @@ steps:
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ field: 'steps[0]', message: 'a step has exactly one action: command, prompt, prompt_file, answer, or workflow' }),
+      expect.objectContaining({ field: 'steps[0]', message: 'a step has exactly one action: command, prompt, prompt_file, answer, answer_file, or workflow' }),
       expect.objectContaining({ field: 'steps[0].agent', message: 'agent is only allowed on a prompt or prompt_file step' }),
     ]));
   });
@@ -427,6 +427,22 @@ steps:
     command: node fix.js
     loop: { back_to: review, max_iterations: 3 }
 `;
+
+describe('the name of a workflow in a folder (#1787)', () => {
+  const named = (file: string): string[] => {
+    const result = parse('schemaVersion: v1alpha1\nname: release\ndescription: Ship it.\nsteps:\n  - id: ship\n    command: echo ship\n', file);
+
+    return result.ok ? [] : result.diagnostics.map((diagnostic) => diagnostic.message);
+  };
+
+  it('is its directory\'s at the root and in a namespace, and a WORKFLOW.yaml any deeper is a workflow file of its own', () => {
+    expect([
+      named('workflows/release/WORKFLOW.yaml'),
+      named('workflows/payments/release/WORKFLOW.yaml'),
+      named('workflows/payments/release/v2/WORKFLOW.yaml'),
+    ]).toEqual([[], [], ['name must match the file name "WORKFLOW"']]);
+  });
+});
 
 describe('a workflow header workspace', () => {
   const HEADER = `schemaVersion: v1alpha1

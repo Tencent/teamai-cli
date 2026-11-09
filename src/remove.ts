@@ -183,7 +183,8 @@ async function removeCore(
     }
 
     if (type === 'mcp' && !name.includes('/')) {
-      const target = await mcpRemovalTarget(name, teamItems.filter((item) => item.name === name).map(qualified), localConfig, options);
+      const candidates = teamItems.filter((item) => item.name === name).map((item) => ({ name: qualified(item), source: item.relativePath }));
+      const target = await mcpRemovalTarget(name, candidates, localConfig, options);
 
       switch (target.kind) {
         case 'ambiguous':
@@ -411,10 +412,12 @@ type McpRemovalTarget = { kind: 'target'; name: string } | { kind: 'ambiguous' }
  */
 async function mcpRemovalTarget(
   name: string,
-  candidates: string[],
+  candidates: ReadonlyArray<{ name: string; source: string }>,
   localConfig: LocalConfig,
   options: RemoveOptions,
 ): Promise<McpRemovalTarget> {
+  const names = candidates.map((candidate) => candidate.name);
+
   if (options.role !== undefined || options.project !== undefined) {
     const { entryFilePath, entryNamespaceFromFlags } = await import('./namespaced-entries.js');
     const target = await entryNamespaceFromFlags(localConfig.repo.localPath, 'mcp', options);
@@ -427,7 +430,7 @@ async function mcpRemovalTarget(
 
     const wanted = target.namespace === null ? name : `${target.namespace}/${name}`;
 
-    if (candidates.includes(wanted)) return { kind: 'target', name: wanted };
+    if (names.includes(wanted)) return { kind: 'target', name: wanted };
     // The team scan skipped the named file, so "not found" would be a guess.
     const file = entryFilePath('mcp', target.namespace);
 
@@ -440,7 +443,7 @@ async function mcpRemovalTarget(
     return { kind: 'not-found' };
   }
 
-  if (candidates.includes(name)) return { kind: 'target', name };
+  if (names.includes(name)) return { kind: 'target', name };
   // The team scan skips a file that does not parse, so the candidates may miss
   // the root server this name removes by default, or a second namespace that
   // makes it ambiguous. Picking from what is left would remove the wrong one.
@@ -456,16 +459,15 @@ async function mcpRemovalTarget(
   }
 
   if (candidates.length > 1) {
-    const files = candidates.map((candidate) => `mcp/${candidate.slice(0, candidate.lastIndexOf('/'))}/mcp.yaml`);
     log.error(
-      `MCP server "${name}" is not in mcp/mcp.yaml but is defined in several namespace files (${files.join(', ')}), `
+      `MCP server "${name}" is not defined at the root of mcp/ but in several namespaces (${candidates.map((candidate) => candidate.source).join(', ')}), `
       + 'and each reaches different members. Pass --role <ns> or --project <id> to remove it from one of them.',
     );
 
     return { kind: 'ambiguous' };
   }
 
-  const only = candidates[0];
+  const only = names[0];
 
   return only === undefined ? { kind: 'not-found' } : { kind: 'target', name: only };
 }
@@ -473,11 +475,11 @@ async function mcpRemovalTarget(
 /** The MCP files, root and namespace, that exist and cannot be read or parsed. */
 async function unreadableMcpFiles(repoPath: string): Promise<string[]> {
   const { listEntryFiles } = await import('./namespaced-entries.js');
-  const { mcpEntryReader } = await import('./resources/mcp.js');
+  const { readTeamMcpFile } = await import('./resources/mcp.js');
   const unreadable: string[] = [];
 
   for (const { relativePath, absolutePath } of await listEntryFiles(repoPath, 'mcp')) {
-    const read = await mcpEntryReader.read(absolutePath, relativePath);
+    const read = await readTeamMcpFile(absolutePath, relativePath);
 
     if (read?.ok === false) unreadable.push(relativePath);
   }

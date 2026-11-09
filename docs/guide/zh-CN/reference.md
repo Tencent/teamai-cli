@@ -19,7 +19,7 @@ team: my-team
 description: 团队 AI 资源仓库
 repo: https://github.com/your-org/your-repo.git
 provider: github
-# language: en                # 可选。en 只用英文。省略或 zh 保持中英双语的 recall 规则、TodoWrite 提示和已合入 MR 提示
+# language: en                # 可选。en 只用英文。省略或 zh 保持中英双语的 recall 规则、TodoWrite 提示和已合入 MR 提示。zh 时，摩擦提醒用中文
 # scope: 若存在则忽略。本机安装位置由 teamai init --scope 决定
 
 reviewers:

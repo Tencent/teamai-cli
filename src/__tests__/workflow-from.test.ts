@@ -168,11 +168,13 @@ describe('admitting a workflow output', () => {
     ['a bundle with a key it does not define', { definition: GENERATED, trials: 3 },
       'Step "plan" output definition is not a workflow this run can admit: Unrecognized key: "trials"; a bundle is { definition, workflows? }'],
     ['a definition that does not parse', { definition: { ...GENERATED, steps: [{ id: 'hello' }] } },
-      'Step "plan" output definition is not a workflow this run can admit: workflows/generated.yaml:5: field "steps[0]": a step has exactly one action: command, prompt, prompt_file, answer, or workflow; or no action with end, approve, or choose'],
+      'Step "plan" output definition is not a workflow this run can admit: workflows/generated.yaml:5: field "steps[0]": a step has exactly one action: command, prompt, prompt_file, answer, answer_file, or workflow; or no action with end, approve, or choose'],
     ['a from step of its own', { definition: { ...GENERATED, steps: [{ id: 'make', command: 'node make.js', output: { definition: 'workflow' } }, { id: 'run', needs: ['make'], workflow: { from: 'make' } }] } },
       'Step "plan" output definition is not a workflow this run can admit: workflows/generated.yaml: step "run" runs workflow: { from }, which a workflow output may not'],
     ['a prompt file', { definition: { ...GENERATED, steps: [{ id: 'hello', prompt_file: 'prompts/hello.md' }] } },
       'Step "plan" output definition is not a workflow this run can admit: workflows/generated.yaml: step "hello" has prompt_file, which a workflow output may not; print the prompt as prompt'],
+    ['an answer file', { definition: { ...GENERATED, steps: [{ id: 'hello', answer_file: 'prompts/hello.md', output: { text: 'string' } }] } },
+      'Step "plan" output definition is not a workflow this run can admit: workflows/generated.yaml: step "hello" has answer_file, which a workflow output may not; print the answer as answer'],
     ['finally steps', { definition: { ...GENERATED, finally: [{ id: 'tidy', command: 'rm -rf tmp' }] } },
       'Step "plan" output definition is not a workflow this run can admit: workflows/generated.yaml has finally steps, which a workflow output may not; only a run of that workflow runs them'],
     ['scorers, which a run reads at its team pin and from its own files', { definition: GENERATED, scorers: { 'teamai:correctness:fix': { sourceHash: 'h', content: 'c', generated: true } } },
@@ -188,7 +190,7 @@ describe('admitting a workflow output', () => {
     ['a named workflow that does not parse', {
       definition: GENERATED,
       workflows: { 'inner.0123456789ab': inner([{ id: 'work' }]) },
-    }, 'Step "plan" output definition is not a workflow this run can admit: workflows/inner.0123456789ab.yaml:5: field "steps[0]": a step has exactly one action: command, prompt, prompt_file, answer, or workflow; or no action with end, approve, or choose'],
+    }, 'Step "plan" output definition is not a workflow this run can admit: workflows/inner.0123456789ab.yaml:5: field "steps[0]": a step has exactly one action: command, prompt, prompt_file, answer, answer_file, or workflow; or no action with end, approve, or choose'],
     ['named workflows that run each other', {
       definition: { ...GENERATED, steps: [{ id: 'hello', workflow: 'inner.0123456789ab' }] },
       workflows: {
