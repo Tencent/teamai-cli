@@ -541,7 +541,10 @@ export function correctnessScorerName(task: string): string {
   return `${CORRECTNESS_PREFIX}${task}`;
 }
 
-const CORRECTNESS_PREFIX = 'teamai:correctness:';
+/** What every task's correctness scorer is named under; the judging shows them together by it. */
+export const CORRECTNESS_SCORERS = 'teamai:correctness';
+
+const CORRECTNESS_PREFIX = `${CORRECTNESS_SCORERS}:`;
 
 /** Whether `scorer` is a task's correctness scorer, whose label decides a trial. */
 export function isCorrectnessScorer(scorer: string): boolean {

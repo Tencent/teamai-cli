@@ -11,14 +11,15 @@
  */
 import { definedFields } from '../utils/defined-fields.js';
 import { compareTrials, formatExcluded, splitPairs, type ExcludedPairs } from './pairing.js';
-import { runSourceHash } from './plan.js';
+import { CORRECTNESS_SCORERS, isCorrectnessScorer, runSourceHash, type PlannedJudge } from './plan.js';
 import type { Baseline, BenchmarkRecord, BenchmarkRunRecord } from './result.js';
 import type { TeamChoice } from './suite.js';
 import type { ArmTeam } from './terms.js';
 import {
-  benchmarkTable, deviationsOf, dominanceOf, observedTrials, pairedDifference, usageOf, wilson,
+  benchmarkTable, deviationsOf, dominanceOf, observedTrials, pairedDifference, selfJudgedOf, usageOf, wilson,
   type ArmAgainst, type ArmResults, type ArmStanding, type ArmUsage, type BenchmarkTable, type Dominance, type ObservedTrial, type PairedInterval, type PassRate,
 } from './table.js';
+import type { TrialVerdict } from './verdicts.js';
 
 /** One ended benchmark run, as its end record holds it. `source`: this machine's run file, or the team's record. */
 export interface BenchmarkRunInput {
@@ -162,6 +163,28 @@ export interface ArmComparison {
  */
 export type PooledAgainst = Omit<ArmAgainst, 'dominance'> & { key: string; dominance?: Dominance };
 
+/** A judge as a label names it: the tool it ran in, and the model and effort its tool reported, else those it was launched with. */
+export type JudgeName = Pick<Extract<NonNullable<TrialVerdict['decider']>, { by: 'judge' }>, 'tool' | 'model' | 'effort'>;
+
+/**
+ * Who labelled one scorer's trials over the runs of the current version, those whose work ran: the judges the runs
+ * pinned it to for every arm, how many of its labels a check decided and how many each judge did, how many of a judge's
+ * labels came from another judge than the plan's (`asPlanned` deviation) or could not be compared with it, and how
+ * many verdicts have no label. A label no check or judge decided, such as a person's, counts in none of them.
+ */
+export interface ScorerJudging {
+  /** The scorer the suite or a task lists, or `teamai:correctness` for every task's correctness scorer, which fill in one rubric. */
+  scorer: string;
+  /** Each once, in run order. */
+  planned: PlannedJudge[];
+  byCheck: number;
+  /** Each judge once, in the order it first labelled. */
+  byJudge: Array<{ judge: JudgeName; labels: number }>;
+  deviations: number;
+  notVerified: number;
+  unscored: number;
+}
+
 /** A tool, model, effort, workflow and role, whatever the team: one line of the team changes chart. */
 export interface TeamConfig {
   key: string;
@@ -203,6 +226,11 @@ export interface SuiteView {
    * first, and each other current arm against it; absent with one arm.
    */
   against?: { reference: string; isDefaultsArm: boolean; arms: PooledAgainst[] };
+  /**
+   * Who judged the runs of the current version: each scorer, the correctness scorers first, and each judge tool that is
+   * also an arm's tool, as the run's table warns of it. Empty on runs whose records keep no verdicts.
+   */
+  judging: { scorers: ScorerJudging[]; selfJudged: BenchmarkTable['selfJudged'] };
   /** The team revisions of the current version, for configurations that ran on two or more. */
   teamChanges: { configs: TeamConfig[]; revisions: TeamRevisionView[] };
 }
@@ -552,6 +580,49 @@ function againstOf({ current, newest }: SuiteRuns, arms: readonly ArmSeries[]): 
   };
 }
 
+function judgingOf(current: readonly BenchmarkRunInput[]): SuiteView['judging'] {
+  const scorers = new Map<string, Omit<ScorerJudging, 'planned' | 'byJudge'> & { planned: Map<string, PlannedJudge>; byJudge: Map<string, ScorerJudging['byJudge'][number]> }>();
+
+  const entry = (name: string) => {
+    const scorer = isCorrectnessScorer(name) ? CORRECTNESS_SCORERS : name;
+    const kept = scorers.get(scorer) ?? { scorer, planned: new Map(), byCheck: 0, byJudge: new Map(), deviations: 0, notVerified: 0, unscored: 0 };
+    scorers.set(scorer, kept);
+
+    return kept;
+  };
+
+  for (const { benchmark } of current) {
+    for (const [name, judge] of Object.entries(benchmark.judges ?? {})) entry(name).planned.set(JSON.stringify([judge.tool, judge.model]), judge);
+
+    for (const { scorer, outcome, decider, asPlanned } of benchmark.trials.flatMap((trial) => (trial.result === 'not_run' ? [] : trial.verdicts ?? []))) {
+      const kept = entry(scorer);
+
+      if (outcome.kind === 'unscored') kept.unscored += 1;
+      else if (decider?.by === 'check') kept.byCheck += 1;
+      else if (decider?.by === 'judge') {
+        const judge = definedFields<JudgeName>({ tool: decider.tool, model: decider.model, effort: decider.effort });
+        const key = JSON.stringify([judge.tool, judge.model ?? null, judge.effort ?? null]);
+        const seen = kept.byJudge.get(key);
+        kept.byJudge.set(key, { judge, labels: (seen?.labels ?? 0) + 1 });
+      }
+
+      if (asPlanned === 'deviation') kept.deviations += 1;
+
+      if (asPlanned === 'not_verified') kept.notVerified += 1;
+    }
+  }
+
+  const selfJudged = new Map<string, BenchmarkTable['selfJudged'][number]>();
+
+  for (const judged of current.flatMap(({ benchmark }) => selfJudgedOf(benchmark))) if (!selfJudged.has(judged.tool)) selfJudged.set(judged.tool, judged);
+
+  return {
+    scorers: [...scorers.values()].sort((left, right) => Number(right.scorer === CORRECTNESS_SCORERS) - Number(left.scorer === CORRECTNESS_SCORERS))
+      .map(({ planned, byJudge, ...counts }) => ({ ...counts, planned: [...planned.values()], byJudge: [...byJudge.values()] })),
+    selfJudged: [...selfJudged.values()],
+  };
+}
+
 function teamChangesOf({ current }: SuiteRuns): SuiteView['teamChanges'] {
   const configs = new Map<string, TeamConfig>();
   const revisions = new Map<string, { firstRunAt: string; byConfig: Map<string, { runs: Set<string>; trials: Trial[] }> }>();
@@ -742,6 +813,7 @@ export const BenchmarkHistory = {
         latest: definedFields<SuiteView['latest']>({ run: newest.run, source: newest.source, table: benchmarkTable(newest), against: againstOf(alone, armsOf(alone)) }),
         comparisons: comparisonsOf(suiteRuns),
         against: againstOf(suiteRuns, arms),
+        judging: judgingOf(suiteRuns.current),
         teamChanges: teamChangesOf(suiteRuns),
       }),
     };

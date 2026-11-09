@@ -141,6 +141,19 @@ function armBars(sel){
   +arms.map(a=>{const i=sel.arms.indexOf(a), rate=passOf(a.pooled); return '<div class="arm-bar'+(a.arm===benchArm?' marked" aria-current="true" id="bench-marked-arm" tabindex="-1':'')+'" title="'+e(armTitle(a)+': '+Math.round(rate*100)+'% ('+a.pooled.passed+'/'+a.pooled.planned+'), 95% '+Math.round(a.pooled.low*100)+'–'+Math.round(a.pooled.high*100)+'%')+'"><div class="arm-label">'+armName(a,i)+'</div><div class="arm-track" role="img" aria-label="'+e(armTitle(a)+' '+Math.round(rate*100)+'%')+'"><span class="arm-fill" style="width:'+(rate*100).toFixed(1)+'%;background:'+armColor(i)+'"></span><span class="arm-ci" style="left:'+(a.pooled.low*100).toFixed(1)+'%;width:'+((a.pooled.high-a.pooled.low)*100).toFixed(1)+'%"></span></div><div class="arm-value"><b>'+pct(rate)+'</b><small>'+number(a.pooled.passed)+'/'+number(a.pooled.planned)+' · '+number(a.pooled.runs)+' '+label(a.pooled.runs===1?'run':'runs')+'</small>'+(a.pooled.deviations?'<small class="amber">'+number(a.pooled.deviations)+' '+label(a.pooled.deviations===1?'deviation':'deviations')+'</small>':'')+(a.pooled.notVerified?'<small class="muted">'+number(a.pooled.notVerified)+' '+label('not verified')+'</small>':'')+'</div>'+standingHtml(sel,sel.against,{key:a.key,name:a.arm},a.pooled.usage,a.pooled.correctnessScore)+armProduction(a)+'</div>';}).join('')
   +'</div></section>';
 }
+// Who labelled each scorer's trials, as the runs' verdicts say: nothing on runs whose records keep none.
+function judgesPanel(sel){
+ const j=sel.judging;
+ if(!j||!j.scorers.length)return '';
+ const heads=['SCORER','PINNED JUDGE','DECIDED BY','DEVIATIONS','NOT VERIFIED','UNSCORED'];
+ const pinned=s=>s.planned.length?s.planned.map(p=>p.model?'<span data-verbatim>'+e(p.tool+' · '+p.model)+'</span>':'<span data-verbatim>'+e(p.tool)+'</span> · '+label('tool default')).join(', ')+(s.planned.length>1?' <span class="tag amber">'+label('changed')+'</span>':''):'—';
+ const decided=s=>[s.byCheck?label('check')+' ('+number(s.byCheck)+')':'',...s.byJudge.map(x=>'<span data-verbatim>'+e(judgeName(x.judge))+'</span> ('+number(x.labels)+')')].filter(Boolean).join(' · ')||'—';
+ return '<section class="panel sessions bench-panel judges"><div class="panelhead"><h2>'+label('Judges')+'</h2><span class="label">'+label('Who labelled each scorer\\'s trials over the runs of the current suite version. A deviation is a label from another judge than the one the run pinned.')+'</span></div>'
+  +j.selfJudged.map(x=>'<p class="scorer-hint amber">'+label('Judge')+' <b data-verbatim>'+e(x.tool)+'</b> '+label('is also the tool of arm')+' <b data-verbatim>'+e(x.arm)+'</b> · '+label('Set tool in the scorer to judge with another.')+'</p>').join('')
+  +'<div class="table-scroll card-table"><table class="session-table bench-cards"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+  +j.scorers.map(s=>cardRow('',heads.map(t),['<span data-verbatim>'+e(s.scorer)+'</span>',pinned(s),decided(s),'<span class="'+(s.deviations?'amber':'')+'">'+number(s.deviations)+'</span>',number(s.notVerified),number(s.unscored)])).join('')
+  +'</tbody></table></div></section>';
+}
 function historyChart(sel){
  const runs=[...sel.runs].reverse(), index=new Map(runs.map((r,i)=>[r.run,i]));
  const W=chartWidth('runs',1100),H=W<500?274:284,pl=40,pr=16,pt=54,pb=34,pw=W-pl-pr,ph=H-pt-pb;
@@ -399,7 +412,7 @@ function benchmarksPage(){
   +'<div class="statusline"><span>'+label('Window')+': '+e(when(w.from))+' – '+e(when(w.to))+'</span><span>'+label('Runs by when they started.')+'</span></div>'
   +controls+suitesPanel(benchData)
   +(sel?'<h2 class="section-label"><span data-verbatim>'+e(sel.suite)+'</span> <span class="tag" title="'+e(sel.versions[0].sourceHash)+'">'+label('suite version')+' <span data-verbatim>'+short(sel.versions[0].sourceHash)+'</span></span>'+(sel.versions.length>1?' <span class="tag">'+number(sel.versions.length)+' '+label('versions in the window')+'</span>':'')+'</h2>'
-   +benchTabs(sel)+(benchView==='compare'?comparePanel(sel):benchView==='team'?teamPanel(sel):benchKpis(sel)+'<div class="bench-grid">'+armBars(sel)+scatterPanel(sel)+'</div>'+historyChart(sel)+heatmapPanel(sel)+taskRunsPanel(sel)+latestPanel(sel)+runsPanel(sel)):'');
+   +benchTabs(sel)+(benchView==='compare'?comparePanel(sel):benchView==='team'?teamPanel(sel):benchKpis(sel)+'<div class="bench-grid">'+armBars(sel)+scatterPanel(sel)+'</div>'+judgesPanel(sel)+historyChart(sel)+heatmapPanel(sel)+taskRunsPanel(sel)+latestPanel(sel)+runsPanel(sel)):'');
 }
 async function loadBenchmarks(){
  const generation=workspaceGeneration, request=++benchRequest, current=()=>generation===workspaceGeneration&&request===benchRequest; benchLoading=true;

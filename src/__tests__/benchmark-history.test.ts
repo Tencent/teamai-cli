@@ -611,6 +611,50 @@ describe('BenchmarkHistory arms against the defaults arm', () => {
   });
 });
 
+describe('BenchmarkHistory judging', () => {
+  const SONNET = { by: 'judge' as const, rubric: 'rq', tool: 'claude', model: 'claude-sonnet-5-5', batched: false };
+  const HAIKU = { by: 'judge' as const, rubric: 'rc', tool: 'claude', model: 'claude-haiku-5-5', batched: false };
+  const labelled = (passed: boolean) => ({ kind: 'labelled' as const, label: passed ? 'good' : 'poor', score: passed ? 1 : 0, passed });
+
+  /**
+   * A run of a check-only task, expired-token, and a task with a check and success criteria, login-copy, whose
+   * correctness the plan pins to claude `fast` and review-quality to claude `judge`. Each trial's verdicts: its
+   * correctness label, by the check or, on login-copy's passing check, by claude-haiku-5-5; then `review`'s.
+   */
+  const judgedRun = (id: string, startedAt: string, review: (trial: { task: string; arm: string }) => TrialVerdict) => {
+    const input = run({ id, startedAt, trials: { 'expired-token': { claude: ['passed'], codex: ['failed'] }, 'login-copy': { claude: ['passed'], codex: ['failed'] } } });
+
+    return { ...input, benchmark: { ...input.benchmark,
+      judges: { 'teamai:correctness:login-copy': { tool: 'claude', model: 'fast' }, 'review-quality': { tool: 'claude', model: 'judge' } },
+      trials: input.benchmark.trials.map((trial) => ({ ...trial, verdicts: [
+        { scorer: `teamai:correctness:${trial.task}`, outcome: labelled(trial.result === 'passed'), ...(trial.task === 'login-copy' && trial.result === 'passed' ? { decider: HAIKU, asPlanned: 'match' as const } : { decider: { by: 'check' as const, task: `task-${trial.task}` } }) },
+        review(trial),
+      ] })) } };
+  };
+
+  const runs = [
+    judgedRun('r1', '2026-10-10T09:00:00Z', () => ({ scorer: 'review-quality', outcome: labelled(true), decider: SONNET, asPlanned: 'match' })),
+    // In r2 codex judged codex's login-copy trial, and nothing labelled its expired-token trial.
+    judgedRun('r2', '2026-10-20T09:00:00Z', ({ task, arm }) => (arm !== 'codex' ? { scorer: 'review-quality', outcome: labelled(true), decider: SONNET, asPlanned: 'match' }
+      : task === 'login-copy' ? { scorer: 'review-quality', outcome: labelled(false), decider: { ...SONNET, tool: 'codex', model: 'gpt-6-sol' }, asPlanned: 'deviation' }
+        : { scorer: 'review-quality', outcome: { kind: 'unscored', because: 'run_ended' } })),
+  ];
+
+  it('says, per scorer over the runs of the current version, the judge the runs pinned, who decided its labels, and how many deviated', () => {
+    const judging = BenchmarkHistory.of({ runs, query: { windowDays: 90 }, now: NOW }).selected?.judging;
+
+    expect(judging?.scorers).toEqual([
+      { scorer: 'teamai:correctness', planned: [{ tool: 'claude', model: 'fast' }], byCheck: 6, byJudge: [{ judge: { tool: 'claude', model: 'claude-haiku-5-5' }, labels: 2 }], deviations: 0, notVerified: 0, unscored: 0 },
+      {
+        scorer: 'review-quality', planned: [{ tool: 'claude', model: 'judge' }], byCheck: 0,
+        byJudge: [{ judge: { tool: 'claude', model: 'claude-sonnet-5-5' }, labels: 6 }, { judge: { tool: 'codex', model: 'gpt-6-sol' }, labels: 1 }], deviations: 1, notVerified: 0, unscored: 1,
+      },
+    ]);
+    // The arms vary the tool, and claude judges: the run's table says so too.
+    expect(judging?.selfJudged).toEqual([{ tool: 'claude', arm: 'claude' }]);
+  });
+});
+
 describe('benchmark regression', () => {
   const ONE = [CLAUDE];
   const passes = (results: TrialResult[]) => ({ fix: { claude: results } });

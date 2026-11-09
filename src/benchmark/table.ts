@@ -433,7 +433,7 @@ function unavailableJudgesOf({ trials, judges = {} }: BenchmarkRecord): Benchmar
 }
 
 /** Each judge tool `record` pins that is also an arm's tool, with the first such arm, when its arms vary the tool. */
-function selfJudgedOf({ arms, judges = {} }: BenchmarkRecord): BenchmarkTable['selfJudged'] {
+export function selfJudgedOf({ arms, judges = {} }: BenchmarkRecord): BenchmarkTable['selfJudged'] {
   if (new Set(arms.map(({ tool }) => tool)).size < 2) return [];
 
   return [...new Set(Object.values(judges).map(({ tool }) => tool))].flatMap((tool) => {

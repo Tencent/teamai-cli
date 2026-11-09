@@ -495,6 +495,36 @@ describe('the Benchmarks page reads each arm against the defaults arm', () => {
   });
 });
 
+describe('the Benchmarks page says who judged what', () => {
+  const SONNET = { by: 'judge' as const, rubric: 'rq', tool: 'claude', model: 'claude-sonnet-5-5', batched: true };
+  const base = judgedRun({
+    claude: { tool: 'claude', results: ['passed', 'passed', 'passed', 'failed'], scores: [1, 1, 1, 0], cost: 0.5 },
+    codex: { tool: 'codex', results: ['passed', 'failed', 'failed', 'failed'], scores: [1, 0, 0, 0], cost: 1 },
+  });
+  // The check decides login; review-quality is pinned to claude `judge`, and codex judged codex's first trial; nothing labelled its last.
+  const runs = [{ ...base, benchmark: { ...base.benchmark,
+    judges: { 'review-quality': { tool: 'claude', model: 'judge' } },
+    trials: base.benchmark.trials.map((trial) => ({ ...trial, verdicts: [...trial.verdicts ?? [],
+      trial.arm === 'codex' && trial.repetition === 4 ? { scorer: 'review-quality', outcome: { kind: 'unscored' as const, because: 'run_ended' as const } }
+        : { scorer: 'review-quality', outcome: { kind: 'labelled' as const, label: 'good', score: 1, passed: true }, ...(trial.arm === 'codex' && trial.repetition === 1 ? { decider: { ...SONNET, tool: 'codex', model: 'gpt-6-sol' }, asPlanned: 'deviation' as const } : { decider: SONNET, asPlanned: 'match' as const }) }] })) } }];
+  const panel = (html: string) => text(html.split('<section class="panel sessions bench-panel judges">')[1]?.split('</section>')[0] ?? '');
+
+  it('lists each scorer with the judge the run pinned, who decided its labels, and its deviations, and warns of a judge that is also an arm\'s tool', async () => {
+    const judges = panel(await renderPage(runs));
+
+    expect(judges).toContain('Judge claude is also the tool of arm claude · Set tool in the scorer to judge with another.');
+    expect(judges).toContain('teamai:correctness — check (8) 0 0 0');
+    expect(judges).toContain('review-quality claude · judge claude claude-sonnet-5-5 (6) · codex gpt-6-sol (1) 1 0 1');
+  });
+
+  it('shows no judges panel for runs whose records keep no verdicts', async () => {
+    const [run] = runs;
+    const older: BenchmarkRunInput[] = run ? [{ ...run, schemaVersion: 1, benchmark: { ...run.benchmark, judges: undefined, trials: run.benchmark.trials.map(({ verdicts: _verdicts, ...trial }) => trial) } }] : [];
+
+    expect(await renderPage(older)).not.toContain('judges">');
+  });
+});
+
 describe('the Benchmarks page counts one of a thing in the singular', () => {
   const runs = [roleRun({ 'claude-frontend': 'passed', 'claude-review': 'passed' }, { 'claude-frontend': 1200, 'claude-review': 1000 })];
 
