@@ -20,6 +20,7 @@ import { isCalibrationCandidate } from './calibration.js';
 import { checkStepOf, correctnessScorerName, type PlannedJudge, type PlannedTask } from './plan.js';
 import type { RunPlan } from './run-plan.js';
 import { SCORE_WORKFLOW } from '../scorers/judging-workflows.js';
+import { Subject } from '../scorers/subject.js';
 
 /** No label and no code: no check or `teamai-score` step labelled the scorer before the run's steps ended. */
 const RUN_ENDED = 'run_ended';
@@ -282,7 +283,7 @@ export const TrialVerdicts = {
     return plan.trials.flatMap((trial) => {
       const step = `${prefix}${trial.step}`;
       const pass = stateOf(step)?.pass ?? 1;
-      const item = `run:${run.id}:${step}:${pass}`;
+      const item = Subject.format({ kind: 'run', subject: { runId: run.id, step, pass } });
       const subject = scored.get(item);
       const task = plan.tasks.find(({ id }) => id === trial.task);
       const correctness = correctnessScorerName(trial.task);
@@ -317,7 +318,7 @@ export const TrialVerdicts = {
       const check = stateOf(`${prefix}${checkStepOf(trial)}`);
       const output = CheckOutputSchema.safeParse(check && 'outputs' in check ? check.outputs : undefined).data;
       const scorer = plan.scorers.find(({ name }) => name === correctnessScorerName(trial.task));
-      const tried = labels.get(`run:${run.id}:${step}:${pass}`)?.get(correctnessScorerName(trial.task));
+      const tried = labels.get(Subject.format({ kind: 'run', subject: { runId: run.id, step, pass } }))?.get(correctnessScorerName(trial.task));
       const given = scorer?.labels.find(({ value }) => value === tried?.label);
 
       if (!task || !isCalibrationCandidate(task, output) || !tried || !scorer || !given) return [];
