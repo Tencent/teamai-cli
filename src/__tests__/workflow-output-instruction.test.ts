@@ -5,6 +5,7 @@ import type { StartDriver } from '../workflow/conformance-interpreter.js';
 import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { createLocalToolAdapter, type ToolSpawn } from '../workflow/drivers/local/local-tool-adapter.js';
 import { startRun } from '../workflow/engine.js';
+import { BundleSchema, expectedOutput } from '../workflow/output.js';
 import { RunIdSchema } from '../workflow/store.js';
 import { knownSecrets } from '../env-resolution.js';
 import { skillHarness } from './helpers/skill-harness.js';
@@ -84,4 +85,12 @@ describe.each(Object.entries(handedToAgent))('a prompt step with an output under
     expect(text).toContain('Plan the change.');
     expect(text).toContain(JSON.stringify(PLAN_SCHEMA));
   });
+});
+
+it('renders exactly the workflow bundle keys admission accepts', () => {
+  const rendered = JSON.parse(expectedOutput({ type: 'workflow' }).split('`')[1]);
+
+  expect(Object.keys(rendered.properties)).toEqual(Object.keys(BundleSchema.shape));
+  expect(rendered.required).toEqual(['definition']);
+  expect(rendered.additionalProperties).toBe(false);
 });
