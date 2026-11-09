@@ -1779,9 +1779,8 @@ describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
   });
 
   it('warns once per skipped folder and reviews none of its files', async () => {
-    // Bad names inside the folders: a review that read them would report them.
-    await fse.outputFile(path.join(repoDir, 'rules', 'api-style', 'RULE.md'), '# API style\n');
-    await fse.outputFile(path.join(repoDir, 'rules', 'api-style', 'Bad Name.md'), '# Bad\n');
+    // Invalid YAML inside the workflow folder: a review that read it would report it.
+    await fse.outputFile(path.join(repoDir, 'agents', 'reviewer', 'AGENT.md'), '# Reviewer\n');
     await fse.outputFile(path.join(repoDir, 'workflows', 'release', 'WORKFLOW.yaml'), 'not: [valid\n');
 
     const review = await reviewBranchDir(BRANCH, repoDir);
@@ -1790,8 +1789,8 @@ describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
       {
         level: 'warn',
         check: 'structure',
-        path: 'rules/api-style/',
-        message: 'rules/api-style/ is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
+        path: 'agents/reviewer/',
+        message: 'agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
       },
       {
         level: 'warn',

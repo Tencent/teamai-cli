@@ -35,7 +35,8 @@ import { CODEX_TOOL, codexSkillsSplit, mayDeleteSkillCopy, skillOrigin } from '.
 import { installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH, writable, writesOf, type Install } from './locate.js';
 import { isWithin } from './utils/agent-path.js';
 import { describeToolHomeChange, recordToolHomes } from './tool-home-record.js';
-import { describeInvalidToolHomes, realHost } from './tool-home.js';
+import { describeInvalidToolHomes, realHost, toolHome } from './tool-home.js';
+import { isToolId, ruleFolderReachOf } from './tools.js';
 import { placesOf, placesRecordOf, placesUnmoved, recordPlaces, type PlacesRecord, type SessionToolHomes } from './resources/places.js';
 import { flatStemsOfRemoved, ruleFileExtensionForTool, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
 import { AGENT_FILE_EXTENSIONS } from './resources/agent-format.js';
@@ -63,6 +64,7 @@ import {
   isUsageReportEnabled,
   resolveGitExclude,
   isAgentExcluded,
+  isSelfMode,
   scopedToolPaths,
   SYNC_LOCK_FILENAME,
   usesBranchWorktree,
@@ -1466,6 +1468,50 @@ async function excludeWorkspaceInstructions(localConfig: LocalConfig, options: G
   }
 }
 
+/**
+ * Let each tool whose rule folder cell is `grant` (Claude Code) read the rule folders this scope delivers (#1787):
+ * the scope's delivered `rules` directory in `permissions.additionalDirectories` of the tool's user settings, owned
+ * through the checkout record. Single-repo folders sit in the worktree, which the tool reads anyway. While the scope
+ * delivers no rule folder, what an earlier pull added is taken back.
+ */
+async function grantRuleFolders(localConfig: LocalConfig, options: GlobalOptions): Promise<void> {
+  if (options.dryRun) return;
+
+  try {
+    const state = await loadStateForScope(localConfig);
+    const record = await deliveringCheckoutRecord(localConfig, state);
+    const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+
+    if (!record || !teamConfig) return;
+    const { DeliveredFolders } = await import('./resources/delivered-folders.js');
+    const { RuleFolders } = await import('./resources/rule-folders.js');
+    const rulesDir = path.join(DeliveredFolders.root(localConfig), 'rules');
+    const delivers = !isSelfMode(localConfig) && (await listDirs(rulesDir)).length > 0;
+
+    const settingsFiles = (await rulesReceivingTools(teamConfig, localConfig))
+      .filter((tool) => !isAgentExcluded(localConfig, tool) && ruleFolderReachOf(tool).reach === 'grant')
+      .flatMap((tool) => (isToolId(tool) ? [path.join(toolHome(tool), 'settings.json')] : []));
+
+    const previous = record.ruleFolderGrants ?? {};
+    const granted: Record<string, string[]> = {};
+
+    for (const settingsFile of new Set([...Object.keys(previous), ...settingsFiles])) {
+      const dirs = delivers && settingsFiles.includes(settingsFile) ? [rulesDir] : [];
+      const owned = await RuleFolders.grant({ settingsFile, dirs, previous: previous[settingsFile] ?? [] });
+
+      if (owned.length > 0) granted[settingsFile] = owned;
+    }
+
+    if (JSON.stringify(granted) === JSON.stringify(previous)) return;
+
+    if (Object.keys(granted).length > 0) record.ruleFolderGrants = granted;
+    else delete record.ruleFolderGrants;
+    await saveStateForScope(state, localConfig);
+  } catch (e) {
+    log.warn(`[${installScopeName(localConfig.scope)}] Claude Code may ask before it reads the files of team rule folders: their directory was not added to its settings (${e instanceof Error ? e.message : String(e)}). Run \`teamai pull\` to retry.`);
+  }
+}
+
 /** Which children a workspace's checkout was delivered with (#913), for the fast path. */
 function setChildren(record: CheckoutRecord, localConfig: LocalConfig): void {
   if (localConfig.scope !== 'project') return;
@@ -1729,6 +1775,8 @@ function awaitingFullSync(records: Record<string, CheckoutRecord>): Record<strin
     if (record.rootsSeeded) reset.rootsSeeded = true;
 
     if (record.claudeMdExcludes) reset.claudeMdExcludes = record.claudeMdExcludes;
+
+    if (record.ruleFolderGrants) reset.ruleFolderGrants = record.ruleFolderGrants;
 
     return [key, pushBaseRevs.length === 0 ? reset : { ...reset, pushBaseRevs }];
   }));
@@ -3154,6 +3202,7 @@ async function pullForScope(
       const gitExcludePaths = storedRecord?.gitExcludePaths;
       const seeded = rootsSeeded || storedRecord?.rootsSeeded;
       const claudeMdExcludes = storedRecord?.claudeMdExcludes;
+      const ruleFolderGrants = storedRecord?.ruleFolderGrants;
 
       const record: CheckoutRecord = { rev: deliveredRev, targets: syncedTargets, delivered: ledger.hashes };
 
@@ -3170,6 +3219,8 @@ async function pullForScope(
       if (seeded) record.rootsSeeded = true;
 
       if (claudeMdExcludes) record.claudeMdExcludes = claudeMdExcludes;
+
+      if (ruleFolderGrants) record.ruleFolderGrants = ruleFolderGrants;
 
       setChildren(record, localConfig);
       record.selection = deliverySelection(localConfig);
@@ -3971,6 +4022,7 @@ export async function pull(
               resourceTypes: ['skills', 'rules', 'docs', 'env', 'agents'],
               revisionField: 'lastInheritedPullRev',
             }, syncResult);
+            await grantRuleFolders(inheritedUserConfig, options);
           }
         } else {
           activeUserConfig = loadedUserConfig;
@@ -3981,6 +4033,7 @@ export async function pull(
             // cannot prompt, and the hook cannot spare the wait.
             if (!options.dryRun && !options.inline) await runTeamScript(activeUserConfig, 'prePull');
             await pullForScope(activeUserConfig, options, reported, {}, syncResult, teamEnvs, instructions);
+            await grantRuleFolders(activeUserConfig, options);
           }
         }
       } else if (inheritUserScope) {
@@ -4016,6 +4069,7 @@ export async function pull(
 
         if (pinRequired && syncResult.teamRepoFailed) return;
         await excludeWorkspaceInstructions(projectConfig, options);
+        await grantRuleFolders(projectConfig, options);
       }
     } catch (e) {
       if (e instanceof EnvScopesUnreadableError) process.exitCode = 1;

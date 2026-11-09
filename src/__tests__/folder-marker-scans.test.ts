@@ -36,7 +36,7 @@ afterEach(async () => {
 });
 
 describe('rules', () => {
-  it('delivers no rule from a rule folder and every other rule as before', async () => {
+  it('reads a rule folder as one rule named by its path, none of its files as a rule, and every other rule as before (#1787)', async () => {
     await put('rules/api-style/RULE.md');
     await put('rules/api-style/RULE.zh.md');
     await put('rules/api-style/checklist.md');
@@ -46,9 +46,15 @@ describe('rules', () => {
     await put('rules/lower/rule.md');
     await put('rules/style.md');
 
-    const names = (await new RulesHandler().scanTeamForPull(teamConfig, localConfig)).map((rule) => rule.name).sort();
+    const rules = await new RulesHandler().scanTeamForPull(teamConfig, localConfig);
 
-    expect(names).toEqual(['lower/rule', 'style', 'team/plain']);
+    expect(rules.map((rule) => [rule.name, rule.relativePath]).sort()).toEqual([
+      ['api-style', 'rules/api-style/RULE.md'],
+      ['lower/rule', 'rules/lower/rule.md'],
+      ['style', 'rules/style.md'],
+      ['team/plain', 'rules/team/plain.md'],
+      ['team/review', 'rules/team/review/RULE.md'],
+    ]);
   });
 });
 

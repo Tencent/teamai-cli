@@ -105,7 +105,7 @@ describe('syncTeamUpdatesToLocal — rules', () => {
     expect(content).toBe('v2 content');
   });
 
-  it('leaves a copy alone whose team file now lies in a skipped rule folder (#1791)', async () => {
+  it('leaves a copy alone whose team file now lies in a rule folder, as one of its files (#1787)', async () => {
     await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'RULE.md'), '# API style');
     await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'checklist.md'), 'v2 content');
     await fse.outputFile(path.join(homeDir, '.claude/rules', 'api-style', 'checklist.md'), 'v1 content');

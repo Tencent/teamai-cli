@@ -301,6 +301,13 @@ describe('teamai list / status resource coverage', () => {
     expect(out).toMatch(/rules:\s*1/);
   });
 
+  it('status counts a rule folder as one rule, whatever files it holds (#1787)', async () => {
+    for (const file of ['api-style/RULE.md', 'api-style/RULE.zh.md', 'api-style/checklist.md', 'style.md']) await fse.outputFile(path.join(repoPath, 'rules', file), '# Rule\n');
+    await status({});
+    const out = lines.join('\n');
+    expect(out).toMatch(/rules:\s*2\b/);
+  });
+
   it('status counts nested docs and excludes hidden files at every depth', async () => {
     for (const docPath of ['guide.md', 'ai/setup.md', 'ai/reference/api.pdf', '.gitkeep', 'ai/.draft.md', '.private/note.md']) {
       await fse.outputFile(path.join(repoPath, 'docs', docPath), 'Documentation\n');
