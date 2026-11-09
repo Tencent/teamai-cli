@@ -132,6 +132,22 @@ describe('workflow cache', () => {
     expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBe(localRevision);
   });
 
+  it('stores the team revision of a workflow folder holding a file committed with CRLF, which it reads as LF', async () => {
+    const config = testConfig();
+    const repository = initializeTeamRepository(config);
+    git(config.repo.localPath, 'config', 'core.autocrlf', 'false');
+    const folder = path.join(config.repo.localPath, 'workflows', 'build');
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, 'WORKFLOW.yaml'), VALID.replace('node compile.js', 'cmd /c "%TEAMAI_WORKFLOW_DIR%\\compile.cmd"'));
+    fs.writeFileSync(path.join(folder, 'compile.cmd'), '@echo off\r\nnpm run build\r\n');
+    const revision = repository.commit('add a workflow folder with a Windows helper');
+    repository.push();
+
+    await syncScorersThenWorkflows(config);
+
+    expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBe(revision);
+  });
+
   it('keeps a verified revision when an unrelated unpushed commit moves HEAD', async () => {
     const config = testConfig();
     const repository = initializeTeamRepository(config);

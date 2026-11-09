@@ -467,7 +467,7 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
     }
 
     const sources = folder
-      ? folder.files.map((file) => ({ path: `${source.path}${file.path}`, content: file.content }))
+      ? folder.files.map((file) => ({ path: `${source.path}${file.path}`, content: file.content, readsCrlfAsLf: true }))
       : [{ path: relativePath, content }, ...resolved.sources];
 
     const revision = await (reachable ??= remotelyReachableRevision(knowledgeRoot));
