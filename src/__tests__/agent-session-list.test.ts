@@ -115,6 +115,31 @@ describe('AgentSession.list', () => {
     expect(listed.sessions.map((s) => [s.sessionId, s.cwd])).toEqual([[id, cwd]]);
   });
 
+  it.each(['pi', 'omp'])('%s: lists and finds a session through either spelling of a symlinked workspace', async (platform) => {
+    const cwd = workspace('pi-app');
+    const alias = path.join(mocks.home, 'linked-app');
+    fs.symlinkSync(cwd, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const store = path.join(mocks.home, 'pi-sessions');
+    fs.mkdirSync(store);
+    vi.stubEnv('PI_CODING_AGENT_SESSION_DIR', store);
+    const sessionId = '123e4567-e89b-12d3-a456-426614174000';
+    const filePath = path.join(store, 'session.jsonl');
+
+    for (const [recorded, requested] of [[cwd, alias], [alias, cwd]]) {
+      fs.writeFileSync(filePath, [
+        { type: 'session', version: 3, id: sessionId, cwd: recorded, timestamp: '2026-09-24T10:00:00.000Z' },
+        { type: 'message', id: 'u1', parentId: null, timestamp: '2026-09-24T10:00:01.000Z', message: { role: 'user', content: 'Fix the parser' } },
+      ].map((record) => JSON.stringify(record)).join('\n') + '\n');
+
+      const listed = await AgentSession.list({ platforms: [platform], cwd: requested });
+      expect(listed.failures).toEqual([]);
+      expect(listed.sessions).toMatchObject([{ platform, sessionId, cwd: recorded, filePath }]);
+      const found = await AgentSession.find({ platform, sessionId, cwd: requested }, { scrub: false });
+      expect(found).toMatchObject({ status: 'done', session: { sessionId, cwd: recorded, messages: [{ content: [{ type: 'text', text: 'Fix the parser' }] }] } });
+      expect((await AgentSession.list({ platforms: [platform], cwd: workspace('other-app') })).sessions).toEqual([]);
+    }
+  });
+
   it('lists every installed tool when no tool is named, including Qoder editions in their moved stores', async () => {
     fs.mkdirSync(path.join(mocks.home, '.claude', 'projects'), { recursive: true });
     fs.mkdirSync(path.join(mocks.home, '.codex', 'sessions'), { recursive: true });
