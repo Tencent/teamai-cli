@@ -143,6 +143,29 @@ describe('rule folders (#1787)', () => {
     expect(await fse.pathExists(path.join(projectRoot, '.teamai', 'delivered', 'rules', 'api-style', 'checklist.md'))).toBe(true);
   });
 
+  it('points a workspace rule and an inherited user-scope rule of the same name each at its own files, leaving ~/.teamai/rules alone', async () => {
+    const workspaceRepo = path.join(tmpDir, 'workspace-repo');
+    const projectRoot = path.join(tmpDir, 'project');
+    const dataHome = home('.teamai', 'projects', 'project');
+    await fse.outputFile(path.join(workspaceRepo, 'rules', 'api-style', 'RULE.md'), 'Read ${TEAMAI_RULE_DIR}/checklist.md.\n');
+    await fse.outputFile(path.join(workspaceRepo, 'rules', 'api-style', 'checklist.md'), '- Singular names.\n');
+    await fse.ensureDir(path.join(projectRoot, '.claude'));
+    await new RulesHandler().pullAllRules(teamConfig, localConfig);
+    const userFolder = await fse.readFile(home('.teamai', 'rules', 'api-style', 'checklist.md'), 'utf8');
+
+    await new RulesHandler().pullAllRules(teamConfig, {
+      ...localConfig, repo: { localPath: workspaceRepo, remote: 'https://example.invalid/x/workspace.git' }, scope: 'project', projectRoot, dataHome,
+    });
+
+    expect(await fse.readFile(home('.claude', 'rules', 'api-style.md'), 'utf8')).toContain(`${forward(home('.teamai', 'rules', 'api-style'))}/checklist.md`);
+    expect(await fse.readFile(path.join(projectRoot, '.claude', 'rules', 'api-style.md'), 'utf8'))
+      .toBe(`Read ${forward(path.join(dataHome, 'rules', 'api-style'))}/checklist.md.\n`);
+    expect(await fse.readFile(path.join(dataHome, 'rules', 'api-style', 'checklist.md'), 'utf8')).toBe('- Singular names.\n');
+    expect(userFolder).toBe(CHECKLIST);
+    expect(await fse.readFile(home('.teamai', 'rules', 'api-style', 'checklist.md'), 'utf8')).toBe(CHECKLIST);
+    expect(await fse.pathExists(path.join(projectRoot, '.teamai', 'rules'))).toBe(false);
+  });
+
   it('in user scope, names the data home for every tool, and warns once for a tool that cannot read it', async () => {
     await fse.ensureDir(home('.codebuddy'));
     localConfig = { ...localConfig, enabledAgents: ['claude', 'codebuddy'] };
