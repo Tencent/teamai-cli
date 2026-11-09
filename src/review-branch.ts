@@ -27,6 +27,7 @@ import chalk from 'chalk';
 import fse from 'fs-extra';
 import { findSkippedFolders, isInSkippedFolder, skippedFolderMessage, skippedFoldersIn } from './folder-markers.js';
 import { readTeamRules } from './resources/rules.js';
+import { resolveRecall } from './builtin-rules.js';
 import { parseYaml } from './utils/yaml.js';
 import { z } from 'zod';
 
@@ -246,18 +247,23 @@ export interface ReviewBase {
  * What pull's rules reader says about the branch's rules (#1787): a rule it does not deliver fails, and a note (a
  * language variant's frontmatter, a directory that became a rule folder) warns. A folder whose `.md` files are now its
  * own is named only where the branch adds its RULE.md to `base`, as pull names it only when it removes a copy it
- * delivered; with no base, every such folder is.
+ * delivered; with no base, every such folder is. A replacement of teamai's recall rule that pull refuses fails too.
  */
 async function ruleFindings(repoDir: string, base: ReviewBase | null): Promise<Finding[]> {
   const { problems, folderNotes } = await readTeamRules(repoDir);
   const added = folderNotes.filter((note) => base === null || !base.ruleFolders.has(note.path));
+  // The team's rules/teamai-recall/ is read where the recall rule is, not with the other rules.
+  const { team: recall } = await resolveRecall(undefined, repoDir);
 
-  return [...added, ...problems].map(({ kind, path: at, message }): Finding => ({
-    level: kind === 'invalid' ? 'fail' : 'warn',
-    check: kind === 'invalid' || at.endsWith('/') ? 'structure' : 'format',
-    path: at,
-    message,
-  }));
+  return [
+    ...[...added, ...problems].map(({ kind, path: at, message }): Finding => ({
+      level: kind === 'invalid' ? 'fail' : 'warn',
+      check: kind === 'invalid' || at.endsWith('/') ? 'structure' : 'format',
+      path: at,
+      message,
+    })),
+    ...recall?.kind === 'refused' ? [{ level: 'fail', check: 'structure', path: recall.folder.path, message: recall.message } satisfies Finding] : [],
+  ];
 }
 
 /** Whether `resource` is a rule folder, read through its `RULE.md`: every file in its directory belongs to it. */

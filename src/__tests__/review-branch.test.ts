@@ -621,6 +621,21 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     ]]);
   });
 
+  it('fails a replacement of teamai\'s recall rule that pull refuses, with what pull prints', async () => {
+    await fse.outputFile(path.join(repoDir, 'rules', 'teamai-recall', 'RULE.md'), '# Recall\n\nRun `teamai recall` first.\n');
+    await fse.outputFile(path.join(repoDir, 'rules', 'teamai-recall', 'block.md'), '## Recall\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.level === 'fail')]).toEqual([false, [{
+      level: 'fail',
+      check: 'structure',
+      path: 'rules/teamai-recall/',
+      message: 'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: rules/teamai-recall/RULE.md does not contain '
+        + '"Nothing was searched:". Fix the folder in the team repo.',
+    }]]);
+  });
+
   it('does not say a folder pull skips is delivered to every member', async () => {
     await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), [
       'version: 1',

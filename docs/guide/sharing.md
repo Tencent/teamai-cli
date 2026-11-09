@@ -130,7 +130,7 @@ Keep the body short and put the detail in the folder.
 
 Before you commit a rule folder, have every member upgrade. An older teamai reads each file in `rules/api-style/` as its own always-on rule (`api-style/RULE`, `api-style/RULE.zh`, `api-style/checklist`), or skips the folder.
 
-teamai's recall rule is the folder [`rules/teamai-recall/`](https://github.com/Tencent/teamai-cli/tree/main/rules/teamai-recall). A team replaces it with its own `rules/teamai-recall/` at the root of the team repo. The folder's README lists the files and the lines each must keep. Pull refuses a replacement that drops one, names the file, and keeps teamai's.
+teamai's recall rule is the folder [`rules/teamai-recall/`](https://github.com/Tencent/teamai-cli/tree/main/rules/teamai-recall). A team replaces it with its own `rules/teamai-recall/` at the root of the team repo. The folder's README lists the files and the lines each must keep. Pull refuses a replacement that drops one or holds a link, names the file, and keeps teamai's. `teamai review --branch` fails such a replacement before you merge it.
 
 ## Agents
 

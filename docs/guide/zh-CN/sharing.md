@@ -121,7 +121,7 @@ ${TEAMAI_RULE_DIR}/checklist.md and ${TEAMAI_RULE_DIR}/examples/good-endpoint.ts
 
 提交目录型 rule 之前，让每位成员先升级。旧版 teamai 会把 `rules/api-style/` 里的每个文件各自当作一条始终生效的 rule（`api-style/RULE`、`api-style/RULE.zh`、`api-style/checklist`），或者跳过这个目录。
 
-teamai 的 recall rule 是目录 [`rules/teamai-recall/`](https://github.com/Tencent/teamai-cli/tree/main/rules/teamai-recall)。团队在团队仓库根目录放自己的 `rules/teamai-recall/` 即可替换它。目录里的 README 列出了各个文件以及每个文件必须保留的行。缺少这些行的替换会被 pull 拒绝，pull 会指出是哪个文件，并继续使用 teamai 自带的。
+teamai 的 recall rule 是目录 [`rules/teamai-recall/`](https://github.com/Tencent/teamai-cli/tree/main/rules/teamai-recall)。团队在团队仓库根目录放自己的 `rules/teamai-recall/` 即可替换它。目录里的 README 列出了各个文件以及每个文件必须保留的行。缺少这些行或包含链接的替换会被 pull 拒绝，pull 会指出是哪个文件，并继续使用 teamai 自带的。`teamai review --branch` 会在合并前把这样的替换判为失败。
 
 ## Agents
 
