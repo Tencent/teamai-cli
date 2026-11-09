@@ -40,7 +40,7 @@ import {
   resolveToolRootDir,
 } from './types.js';
 import { builtinHookDefs, applyBuiltinOverride, getCodebuddyTeamHookDispatchCommand, getRawDispatchCommand, retiredBuiltinHookDefs, skipToolsWithoutShell } from './builtin-hooks.js';
-import { encodeCodebuddyProjectGate, isCodebuddyTeamGateForProject, parseCodebuddyTeamGate, regateCodebuddyTeamHookCommand } from './codebuddy-team-hooks.js';
+import { codebuddyTeamHookPayload, encodeCodebuddyProjectGate, isCodebuddyTeamGateForProject, parseCodebuddyTeamGate, regateCodebuddyTeamHookCommand } from './codebuddy-team-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { DeliveredFolders } from './resources/delivered-folders.js';
 import { deliverHookFolders, historicalFolderHookDef, pruneHookFolders, parseTeamHooks, readBuiltinOverride, resolveTeamHooks, teamHookToDef } from './resources/hooks.js';
@@ -5198,7 +5198,12 @@ async function installedTeamHookCommands(localConfig: LocalConfig, manifestPath:
     for (const [key, records] of Object.entries(await readManifest(file))) {
       if (key === 'checkouts' || !Array.isArray(records)) continue;
 
-      for (const record of records) commands.push(record.command);
+      for (const record of records) {
+        // CodeBuddy's Windows project gate carries the command it runs base64-encoded.
+        const payload = codebuddyTeamHookPayload(record.command);
+
+        commands.push(record.command, ...payload === null ? [] : [payload]);
+      }
     }
   }
 

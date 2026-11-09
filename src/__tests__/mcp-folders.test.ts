@@ -74,7 +74,7 @@ describe('an MCP server folder', () => {
       description: 'Read-only Jira lookups for the team',
       transport: 'stdio',
       command: 'uv',
-      args: ['run', '--script', `${rendered(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'jira-lite'))}/server.py`],
+      args: ['run', '--script', `${rendered(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'jira-lite.1702782c'))}/server.py`],
       requires: ['uv'],
     }]);
   });
@@ -90,7 +90,8 @@ describe('an MCP server folder', () => {
         '',
       ].join('\n'),
     });
-    const dest = rendered(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'runner'));
+    // A server folder is `<name>.<first 8 hex digits of the SHA-256 of the server as canonical JSON>`: every MCP.yaml key, plus `name`.
+    const dest = rendered(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'runner.f6e98f9d'));
 
     expect(await servers(workspace())).toEqual([expect.objectContaining({
       command: `${dest}/bin/run`, args: ['--queries', `${dest}/queries.sql`], env: { DATA: `${dest}/data` }, headers: { 'X-Dir': '${TEAMAI_MCP_DIR}' },

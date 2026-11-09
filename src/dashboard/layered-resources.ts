@@ -16,7 +16,7 @@ import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { DeliveredFolders } from '../resources/delivered-folders.js';
 import { FolderFiles } from '../resources/folder-files.js';
 import { TEAM_HOOKS, TEAM_HOOK_ENTRIES, hookFolderPath, readDefaultHookReplacements, readHookFolder, teamScriptRefusal, type TeamHookDefinition } from '../resources/hooks.js';
-import { TEAM_MCP, TEAM_MCP_ENTRIES, readMcpFolder, type TeamMcpDefinition } from '../resources/mcp.js';
+import { TEAM_MCP, TEAM_MCP_ENTRIES, mcpFolderPath, readMcpFolder, type TeamMcpDefinition } from '../resources/mcp.js';
 import { teamMcpRefusal } from '../mcp-reconcile.js';
 import { RESOURCE_LAYOUTS, Resources, type LayeredItem, type ListedResolution, type ResourceLayout } from '../resources/resolver.js';
 import { RuleFolders } from '../resources/rule-folders.js';
@@ -274,7 +274,7 @@ const MCP: EntryType<unknown, TeamMcpDefinition> = {
   layout: TEAM_MCP,
   entries: TEAM_MCP_ENTRIES,
   readFolder: readMcpFolder,
-  deliveredAt: (config, _definition, { namespace, name }) => DeliveredFolders.pathOf(config, { type: 'mcp', namespace, name }),
+  deliveredAt: (config, definition, { namespace }) => mcpFolderPath(config, definition.server, namespace),
   runs: ({ server }, dest) => {
     const render = (text: string): string => DeliveredFolders.render(text, { type: 'mcp', dest });
 

@@ -55,6 +55,17 @@ async function claudeServer(app: string, name: string): Promise<unknown> {
 /** `dir` with forward slashes, as a rendered path names it. */
 const rendered = (dir: string): string => dir.split(path.sep).join('/');
 
+/** The folder delivered for server `name` in `mcp`, a scope's `mcp/` directory: the one directory `<name>.<version>`, one per definition. */
+async function serverDir(mcp: string, name: string): Promise<string> {
+  const names = (await fse.readdir(mcp)).filter((entry) => new RegExp(`^${name}\\.[0-9a-f]{8}$`).test(entry));
+  expect(names).toHaveLength(1);
+
+  return path.join(mcp, names[0] ?? '');
+}
+
+/** The file an installed `node <file>` server starts. */
+const startedFile = (server: unknown): string => (server as { args: string[] }).args[0] ?? '';
+
 beforeEach(async () => {
   sandbox = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-mcp-delivery-'));
   home = path.join(sandbox, 'home');
@@ -76,7 +87,7 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
 
     await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
 
-    const dest = path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'jira-lite');
+    const dest = await serverDir(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp'), 'jira-lite');
 
     expect([await fse.readFile(path.join(dest, 'server.mjs'), 'utf8'), await claudeServer('app', 'jira-lite')]).toEqual([
       'console.log("jira")\n',
@@ -128,7 +139,7 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
     await write('team', { 'mcp/jira-lite/server.mjs': 'console.log("v2")\n' });
     await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
 
-    const dest = path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'jira-lite');
+    const dest = await serverDir(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp'), 'jira-lite');
 
     expect([await claudeServer('app', 'jira-lite'), await fse.readFile(path.join(dest, 'server.mjs'), 'utf8')]).toEqual([before, 'console.log("v2")\n']);
   });
@@ -140,7 +151,7 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
     await fse.remove(path.join(sandbox, 'team', 'mcp', 'jira-lite'));
     await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
 
-    expect([await fse.pathExists(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'jira-lite')), await claudeServer('app', 'jira-lite')]).toEqual([false, undefined]);
+    expect([await fse.readdir(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp')).catch(() => []), await claudeServer('app', 'jira-lite')]).toEqual([[], undefined]);
   });
 
   it('keeps the folder of a server the team drops while a tool the member excluded still has it installed', async () => {
@@ -151,7 +162,7 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
     await fse.remove(path.join(sandbox, 'team', 'mcp', 'jira-lite'));
     await reconcileMcpForConfig(teamConfig(), { ...workspace('team', 'app'), disabledAgents: ['claude', 'tclaude'] });
 
-    expect([await fse.pathExists(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'jira-lite', 'server.mjs')), await claudeServer('app', 'jira-lite')]).toEqual([true, installed]);
+    expect([await fse.pathExists(startedFile(installed)), await claudeServer('app', 'jira-lite')]).toEqual([true, installed]);
   });
 
   it('keeps starting the version a tool the member excluded installed while the team renames the file it runs', async () => {
@@ -164,6 +175,18 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
     const server = await claudeServer('app', 'jira-lite') as { command: string; args: string[] };
 
     expect(execFileSync(server.command, server.args, { encoding: 'utf8' }).trim()).toBe('v1');
+  });
+
+  it('keeps starting the version a tool the member excluded installed while the team changes the arguments a file of the same name takes', async () => {
+    const takes = (flag: string): string => `if (process.argv[2] !== "${flag}") process.exit(2); console.log("${flag}")\n`;
+    await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER.replace('server.mjs"', 'server.mjs", "--v1"'), 'mcp/jira-lite/server.mjs': takes('--v1') });
+    await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
+
+    await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER.replace('server.mjs"', 'server.mjs", "--v2"'), 'mcp/jira-lite/server.mjs': takes('--v2') });
+    await reconcileMcpForConfig(teamConfig(), { ...workspace('team', 'app'), disabledAgents: ['claude', 'tclaude'] });
+    const server = await claudeServer('app', 'jira-lite') as { command: string; args: string[] };
+
+    expect(execFileSync(server.command, server.args, { encoding: 'utf8' }).trim()).toBe('--v1');
   });
 
   it('keeps the folder of a server the team drops while the file keeps an entry of that name teamai cannot prove its own', async () => {
@@ -193,9 +216,7 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
     await write('team', { 'mcp/jira-lite/MCP.yaml': 'transport: sse\nurl: https://jira.example.com/sse\n', 'mcp/jira-lite/server.mjs': 'console.log("v2")\n' });
     const { unresolved } = await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
 
-    const dest = path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'jira-lite');
-
-    expect([unresolved, await claudeServer('app', 'jira-lite'), await fse.readFile(path.join(dest, 'server.mjs'), 'utf8')]).toEqual([true, installed, 'console.log("jira")\n']);
+    expect([unresolved, await claudeServer('app', 'jira-lite'), await fse.readFile(startedFile(installed), 'utf8')]).toEqual([true, installed, 'console.log("jira")\n']);
   });
 
   it('keeps the installed server and the folder it runs from when the team\'s secrets declaration cannot be read', async () => {
@@ -207,9 +228,7 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
     await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER.replace('server.mjs', 'next.mjs'), 'mcp/jira-lite/next.mjs': 'console.log("v2")\n', 'env/secrets.yaml': 'secrets: [\n' });
     const { unresolved } = await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
 
-    const dest = path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'jira-lite');
-
-    expect([unresolved, await claudeServer('app', 'jira-lite'), await fse.readFile(path.join(dest, 'server.mjs'), 'utf8')]).toEqual([true, installed, 'console.log("v1")\n']);
+    expect([unresolved, await claudeServer('app', 'jira-lite'), await fse.readFile(startedFile(installed), 'utf8')]).toEqual([true, installed, 'console.log("v1")\n']);
   });
 
   it('keeps the folder a kept server runs from when its new version needs a secret this machine has not set', async () => {
@@ -225,7 +244,7 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
     });
     await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
 
-    const dest = path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'jira-lite');
+    const dest = path.dirname(startedFile(installed));
 
     expect([await claudeServer('app', 'jira-lite'), (await fse.readdir(dest)).sort(), await fse.readFile(path.join(dest, 'server.mjs'), 'utf8')])
       .toEqual([installed, ['MCP.yaml', 'server.mjs'], 'console.log("v1")\n']);
@@ -243,7 +262,7 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
     });
     await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
 
-    expect([await claudeServer('app', 'notes'), await fse.pathExists(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'notes', 'server.mjs'))]).toEqual([installed, true]);
+    expect([await claudeServer('app', 'notes'), await fse.pathExists(startedFile(installed))]).toEqual([installed, true]);
   });
 
   it('keeps the folder of a server the team drops while the configuration that starts it cannot be rewritten', async () => {
@@ -257,7 +276,7 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
     const outcome = await reconcileMcpForConfig(teamConfig(), workspace('team', 'app')).then(() => 'applied', () => 'failed')
       .finally(() => fse.chmod(path.join(sandbox, 'app'), 0o755));
 
-    expect([outcome, await claudeServer('app', 'jira-lite'), await fse.pathExists(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'jira-lite', 'server.mjs'))])
+    expect([outcome, await claudeServer('app', 'jira-lite'), await fse.pathExists(startedFile(installed))])
       .toEqual(['failed', installed, true]);
   });
 
@@ -284,13 +303,13 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
 });
 
 describe('an MCP server folder in the user scope', () => {
-  it('is delivered to ~/.teamai/mcp/<name>/, and Claude Code\'s user configuration starts it from there', async () => {
+  it('is delivered to ~/.teamai/mcp/<name>.<version>/, and Claude Code\'s user configuration starts it from there', async () => {
     await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER, 'mcp/jira-lite/server.mjs': 'console.log("jira")\n' });
     const user: LocalConfig = { repo: { localPath: path.join(sandbox, 'team'), remote: 'acme/team' }, username: 'tester', scope: 'user', additionalRoles: [] };
 
     await reconcileMcpForConfig(teamConfig(), user);
 
-    const dest = path.join(home, '.teamai', 'mcp', 'jira-lite');
+    const dest = await serverDir(path.join(home, '.teamai', 'mcp'), 'jira-lite');
     const config: { mcpServers?: Record<string, unknown> } = await fse.readJson(path.join(home, '.claude.json'));
 
     expect([await fse.readFile(path.join(dest, 'server.mjs'), 'utf8'), config.mcpServers?.['jira-lite']])
@@ -344,7 +363,7 @@ describe('an MCP server folder in a single-repo worktree', () => {
   it('is delivered in the worktree\'s .teamai/delivered/, and .mcp.json names its absolute path, since Claude Code expands no project variable there', async () => {
     await reconcileMcpForConfig(teamConfig(), self);
 
-    const dest = path.join(team, 'delivered', 'mcp', 'jira-lite');
+    const dest = await serverDir(path.join(team, 'delivered', 'mcp'), 'jira-lite');
     const config: { mcpServers?: Record<string, unknown> } = await fse.readJson(path.join(project, '.mcp.json'));
 
     expect([await fse.readFile(path.join(dest, 'server.mjs'), 'utf8'), config.mcpServers?.['jira-lite']])

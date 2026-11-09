@@ -93,12 +93,12 @@ describe('a team hook folder in the user scope', () => {
       .toEqual(['echo scanning\n', [expect.stringContaining(`bash "${forward(delivered)}/scan.sh"`)]]);
   });
 
-  it('keeps one entry with the same command when the folder changes, and runs the new version', async () => {
+  it('keeps one entry with the same command when only the folder\'s files change, and runs the new version', async () => {
     await write({ 'hooks/block-secrets/HOOK.yaml': BLOCK_SECRETS, 'hooks/block-secrets/scan.sh': 'echo v1\n' });
     await reconcileTeamHooksForConfig(teamConfig, member());
     const before = await claudeCommands('PreToolUse');
 
-    await write({ 'hooks/block-secrets/HOOK.yaml': BLOCK_SECRETS.replace('timeout: 15', 'timeout: 20'), 'hooks/block-secrets/scan.sh': 'echo v2\n' });
+    await write({ 'hooks/block-secrets/scan.sh': 'echo v2\n' });
     await reconcileTeamHooksForConfig(teamConfig, member());
 
     const delivered = await hookDir(path.join(home, '.teamai', 'hooks'), 'block-secrets');
@@ -139,6 +139,22 @@ describe('a team hook folder in the user scope', () => {
     const script = /bash "([^"]+)" --v1/.exec(installed[0] ?? '')?.[1] ?? '';
 
     expect([await claudeCommands('PreToolUse'), await fse.readFile(script, 'utf8')]).toEqual([installed, 'echo v1\n']);
+  });
+});
+
+describe('a team hook folder whose HOOK.yaml changes how a tool runs it, but not its command', () => {
+  it('keeps the files of the timeout a tool installed while its entry cannot be rewritten for a new one', async () => {
+    await write({ 'hooks/block-secrets/HOOK.yaml': BLOCK_SECRETS.replace('timeout: 15', 'timeout: 1'), 'hooks/block-secrets/scan.sh': 'echo fast\n' });
+    await reconcileTeamHooksForConfig(teamConfig, member());
+    const installed = await claudeCommands('PreToolUse');
+
+    await write({ 'hooks/block-secrets/HOOK.yaml': BLOCK_SECRETS.replace('timeout: 15', 'timeout: 5'), 'hooks/block-secrets/scan.sh': 'sleep 2; echo slow\n' });
+    const settings = path.join(home, '.claude', 'settings.json');
+    await fse.chmod(settings, 0o444);
+    await reconcileTeamHooksForConfig(teamConfig, member()).finally(() => fse.chmod(settings, 0o644));
+    const script = /bash "([^"]+)"/.exec(installed[0] ?? '')?.[1] ?? '';
+
+    expect([await claudeCommands('PreToolUse'), await fse.readFile(script, 'utf8')]).toEqual([installed, 'echo fast\n']);
   });
 });
 

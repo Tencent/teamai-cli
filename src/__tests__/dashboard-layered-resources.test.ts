@@ -188,9 +188,9 @@ describe('hooks on the Resources page', () => {
       ['lint', 'root', 'entry', 'hooks/hooks.yaml', 'replaced', null],
     ]);
     expect([blockSecrets?.folder?.runs, blockSecrets?.folder?.delivered]).toEqual([
-      // The folder of a command is `<id>.<first 8 hex digits of the SHA-256 of the command>` (cc468cbd: scan.sh, 34480cc2: lint.sh).
-      { command: `bash "${rendered(path.join(dataHome, 'hooks', 'block-secrets.cc468cbd'))}/scan.sh"`, args: [], env: [] },
-      { path: path.join(dataHome, 'hooks', 'block-secrets.cc468cbd'), present: false, by: 'pull' },
+      // A hook folder is `<id>.<first 8 hex digits of the SHA-256 of the hook as canonical JSON>`: every HOOK.yaml key, plus `id`.
+      { command: `bash "${rendered(path.join(dataHome, 'hooks', 'block-secrets.29cce02d'))}/scan.sh"`, args: [], env: [] },
+      { path: path.join(dataHome, 'hooks', 'block-secrets.29cce02d'), present: false, by: 'pull' },
     ]);
   });
 
@@ -247,7 +247,7 @@ describe('MCP servers on the Resources page', () => {
 
     expect([jira?.state.kind, jira?.folder?.runs]).toEqual(['in-force', {
       command: 'uv',
-      args: ['run', '--script', `${rendered(path.join(dataHome, 'mcp', 'jira-lite'))}/server.py`],
+      args: ['run', '--script', `${rendered(path.join(dataHome, 'mcp', 'jira-lite.abaacf13'))}/server.py`],
       env: ['JIRA_TOKEN', 'JIRA_URL'],
     }]);
     expect(JSON.stringify(await collectLayeredResources(member(), teamConfig))).not.toContain('jira.example.test');
@@ -261,7 +261,7 @@ describe('MCP servers on the Resources page', () => {
 
     // Pull still delivers the folder of every server it resolves; no tool's configuration names this one.
     expect(list?.resources.map((resource) => [resource.name, resource.state, resource.folder?.delivered?.path ?? null])).toEqual([
-      ['jira-lite', { kind: 'refused', message: 'command "node" is not in sharing.mcp.allowedCommands' }, path.join(dataHome, 'mcp', 'jira-lite')],
+      ['jira-lite', { kind: 'refused', message: 'command "node" is not in sharing.mcp.allowedCommands' }, path.join(dataHome, 'mcp', 'jira-lite.97dda340')],
     ]);
   });
 });

@@ -4324,9 +4324,10 @@ servers:
       await folderServer('v2.mjs');
       await pull();
 
+      // Each version of the folder is `notes.<first 8 hex digits of the SHA-256 of its MCP.yaml as canonical JSON, plus name>`.
       expect([before, await args(), keptLines()]).toEqual([
-        [`${path.join(projectRoot, '.teamai', 'delivered', 'mcp', 'notes').split(path.sep).join('/')}/v1.mjs`],
-        [`${path.join(projectRoot, '.teamai', 'delivered', 'mcp', 'notes').split(path.sep).join('/')}/v2.mjs`],
+        [`${path.join(projectRoot, '.teamai', 'delivered', 'mcp', 'notes.3d414c75').split(path.sep).join('/')}/v1.mjs`],
+        [`${path.join(projectRoot, '.teamai', 'delivered', 'mcp', 'notes.ea928dea').split(path.sep).join('/')}/v2.mjs`],
         [],
       ]);
     });

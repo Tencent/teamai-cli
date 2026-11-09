@@ -71,6 +71,13 @@ export function parseCodebuddyTeamGate(command: string): RenderedCodebuddyTeamGa
   return rendered;
 }
 
+/** The team command a teamai-rendered CodeBuddy project dispatcher `command` runs, decoded; null for any other command. */
+export function codebuddyTeamHookPayload(command: string): string | null {
+  const rendered = parseCodebuddyTeamGate(command);
+
+  return rendered === null ? null : Buffer.from(rendered.encodedCommand, 'base64url').toString('utf8');
+}
+
 /** Replace a rendered gate's encoded root/children while preserving its payload. */
 export function regateCodebuddyTeamHookCommand(
   command: string,

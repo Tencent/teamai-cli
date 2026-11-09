@@ -25,7 +25,7 @@ What each event does is in [Core Harness](sharing.md#hooks).
 A [hook folder](sharing.md#hooks)'s path is written with forward slashes, and teamai adds no quotes. A home such as `C:\Users\Zoë Li` holds a space, so quote the variable:
 
 ```text
-command: bash "${TEAMAI_HOOK_DIR}/scan.sh"       # bash "C:/Users/Zoë Li/.teamai/hooks/block-secrets.cc468cbd/scan.sh"
+command: bash "${TEAMAI_HOOK_DIR}/scan.sh"       # bash "C:/Users/Zoë Li/.teamai/hooks/block-secrets.e246f037/scan.sh"
 command: node "${TEAMAI_HOOK_DIR}/check.mjs"
 command: powershell -File "${TEAMAI_HOOK_DIR}/scan.ps1"
 ```

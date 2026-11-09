@@ -1,11 +1,10 @@
-import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
 import { parseYaml } from '../utils/yaml.js';
 import { ResourceHandler } from './base.js';
 import type { HookDef, JsonValue, LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
 import { TEAMAI_CUSTOM_HOOK_PREFIX, areTeamHooksDisabled, getHooksSharing, isSelfMode } from '../types.js';
-import { listDirs, pathExists } from '../utils/fs.js';
+import { pathExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { warnOnce } from '../utils/warn-once.js';
 import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.js';
@@ -335,20 +334,14 @@ interface TeamHookDelivery {
   readonly folder: FolderDelivery | null;
 }
 
-const HOOK_FOLDER_VERSION_LENGTH = 8;
-
-/** The name of a directory `hookFolderPath` gives: a hook id, a dot, and the version. */
-const HOOK_FOLDER_NAME = new RegExp(`^[a-z0-9-]+\\.[0-9a-f]{${HOOK_FOLDER_VERSION_LENGTH}}$`);
-
 /**
  * Where `localConfig`'s scope delivers the folder of `hook`, in `namespace`: `hooks/[<ns>/]<id>.<version>/`, one
- * directory per command its `HOOK.yaml` gives (#1787). Each tool's entry runs the files delivered for the command it
- * holds: a tool whose entry pull could not rewrite keeps the files of its command, while the others run the new ones.
+ * directory per definition its `HOOK.yaml` gives (#1787), its command, timeout and event among them. Each tool's entry
+ * runs the files delivered for the definition it holds: a tool whose entry pull could not rewrite keeps the files of
+ * its own, while the others run the new ones.
  */
-export function hookFolderPath(localConfig: LocalConfig, hook: Pick<TeamHook, 'id' | 'command'>, namespace: string | null): string {
-  const version = createHash('sha256').update(hook.command).digest('hex').slice(0, HOOK_FOLDER_VERSION_LENGTH);
-
-  return DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace, name: `${hook.id}.${version}` });
+export function hookFolderPath(localConfig: LocalConfig, hook: TeamHook, namespace: string | null): string {
+  return DeliveredFolders.versionedPathOf(localConfig, { type: 'hooks', namespace, name: hook.id }, hook);
 }
 
 /** The hook folder `hook`, in `namespace`, as `localConfig`'s scope delivers it: its command names the folder's path (#1787). */
@@ -503,25 +496,9 @@ export async function deliverHookFolders(localConfig: LocalConfig, folders: read
 export async function pruneHookFolders(localConfig: LocalConfig, folders: readonly FolderDelivery[], installed: readonly string[]): Promise<void> {
   const { editDeliveryRecord } = await import('../pull.js');
   const record = await editDeliveryRecord(localConfig);
-  const root = DeliveredFolders.root(localConfig, 'hooks');
-  // A hook folder sits at the root of hooks/, or in a namespace directory there.
-  const candidates: string[] = [];
+  const named = await DeliveredFolders.namedIn({ root: DeliveredFolders.root(localConfig, 'hooks'), type: 'hooks', texts: installed });
 
-  for (const dir of await listDirs(path.join(root, 'hooks'))) {
-    const full = path.join(root, 'hooks', dir);
-
-    if (HOOK_FOLDER_NAME.test(dir)) candidates.push(full);
-    else candidates.push(...(await listDirs(full)).filter((inner) => HOOK_FOLDER_NAME.test(inner)).map((inner) => path.join(full, inner)));
-  }
-
-  // A command names the folder by its path, with forward slashes, from the data home or from the project's variable.
-  const runs = (dir: string): boolean => {
-    const named = `/${path.relative(root, dir).split(path.sep).join('/')}`;
-
-    return installed.some((command) => command.split(named).slice(1).some((after) => !/^[\w.-]/.test(after)));
-  };
-
-  await DeliveredFolders.prune({ localConfig, type: 'hooks', keep: [...folders.map(({ dest }) => dest), ...candidates.filter(runs)], ledger: record.ledger });
+  await DeliveredFolders.prune({ localConfig, type: 'hooks', keep: [...folders.map(({ dest }) => dest), ...named], ledger: record.ledger });
   await record.save();
 }
 

@@ -1414,18 +1414,18 @@ export async function installedMcpEntries(
 }
 
 /**
- * The servers some tool's MCP file holds an entry for once a reconcile is done, whoever the entry is: one teamai
+ * The entries some tool's MCP file holds once a reconcile is done, each as JSON, whoever the entry is: one teamai
  * wrote, kept (held, a secret not set here), or left in a tool the member excluded, and one the file holds as the
- * member's. Each may run from the folder of its name, which therefore stays (#1787).
+ * member's. The folder each names stays (#1787).
  */
-async function installedMcpNames(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<Set<string>> {
-  const names = new Set<string>();
+async function installedMcpEntryTexts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string[]> {
+  const texts: string[] = [];
 
   for (const target of await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true })) {
-    for (const name of (await installedMcpEntries(target))?.keys() ?? []) names.add(name);
+    for (const entry of (await installedMcpEntries(target))?.values() ?? []) texts.push(JSON.stringify(entry));
   }
 
-  return names;
+  return texts;
 }
 
 /** In a Copilot project file that also holds `mcpServers`, a bare server whose value differs from the one of its name there. */
@@ -3002,7 +3002,7 @@ async function reconcileTargets(
     settleFolders = async () => {
       await placed.commit();
 
-      if (held.size === 0) await pruneMcpFolders(localConfig, teamEntries, await installedMcpNames(teamConfig, localConfig));
+      if (held.size === 0) await pruneMcpFolders(localConfig, teamEntries, await installedMcpEntryTexts(teamConfig, localConfig));
     };
   }
 

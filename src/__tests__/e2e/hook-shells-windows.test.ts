@@ -64,8 +64,8 @@ describe.runIf(process.platform === 'win32')('hook shells on Windows: a hook fol
   const run = async (files: Record<string, string>, command: string, shell: (rendered: string, env: NodeJS.ProcessEnv) => ReturnType<typeof spawnSync>): Promise<string> => {
     const { DeliveredFolders } = await import('../../resources/delivered-folders.js');
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'Zoë Li '));
-    // As pull names it: the hook id, then the version of its command.
-    const dest = path.join(home, '.teamai', 'hooks', 'block-secrets.cc468cbd');
+    // As pull names it: the hook id, then the version of its HOOK.yaml.
+    const dest = path.join(home, '.teamai', 'hooks', 'block-secrets.e246f037');
     const folder = Object.entries(files).map(([file, content]) => ({ path: file, executable: false, bytes: Buffer.from(content) }));
 
     try {

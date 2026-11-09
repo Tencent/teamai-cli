@@ -205,9 +205,13 @@ export const TEAM_MCP_ENTRIES: LayeredEntryType<McpFileEntry, TeamMcpDefinition>
   scopeOf: (definition) => definition.server,
 };
 
-/** Where `localConfig`'s scope delivers the server folder `resolved` defines. */
-function mcpFolderPath(localConfig: LocalConfig, resolved: ResolvedEntry<TeamMcpDefinition>): string {
-  return DeliveredFolders.pathOf(localConfig, { type: 'mcp', namespace: resolved.namespace, name: resolved.name });
+/**
+ * Where `localConfig`'s scope delivers the folder of `server`, in `namespace`: `mcp/[<ns>/]<name>.<version>/`, one
+ * directory per definition its `MCP.yaml` gives (#1787). Each tool's configuration starts the files of the definition it
+ * holds: one the member excluded, or one pull could not rewrite, keeps its own, while the others start the new ones.
+ */
+export function mcpFolderPath(localConfig: LocalConfig, server: TeamMcpServer, namespace: string | null): string {
+  return DeliveredFolders.versionedPathOf(localConfig, { type: 'mcp', namespace, name: server.name }, server);
 }
 
 /**
@@ -217,7 +221,7 @@ function mcpFolderPath(localConfig: LocalConfig, resolved: ResolvedEntry<TeamMcp
 export function teamMcpDef(localConfig: LocalConfig, resolved: ResolvedEntry<TeamMcpDefinition>): McpServerDef {
   const def = teamMcpToDef(resolved.entry.server);
 
-  return resolved.entry.kind === 'entry' ? def : folderServerDef(def, mcpFolderPath(localConfig, resolved));
+  return resolved.entry.kind === 'entry' ? def : folderServerDef(def, mcpFolderPath(localConfig, resolved.entry.server, resolved.namespace));
 }
 
 /** A folder server's `def` with `${TEAMAI_MCP_DIR}` in its `command`, `args` and `env` naming `dest`. */
@@ -252,13 +256,14 @@ export function historicalFolderMcpServer(localConfig: LocalConfig, relativePath
   if (!parsed.ok || parsed.fields.transport !== 'stdio' || !parsed.fields.command) return null;
   const server: TeamMcpServer = { ...parsed.fields, name };
 
-  return { server, def: folderServerDef(teamMcpToDef(server), DeliveredFolders.pathOf(localConfig, { type: 'mcp', namespace, name })) };
+  return { server, def: folderServerDef(teamMcpToDef(server), mcpFolderPath(localConfig, server, namespace)) };
 }
 
 /** The folders of the resolved servers `entries` that are folders. */
 function mcpFolders(localConfig: LocalConfig, entries: ReadonlyArray<ResolvedEntry<TeamMcpDefinition>>): FolderDelivery[] {
   return entries.flatMap((resolved) => (resolved.entry.kind === 'folder'
-    ? [{ dest: mcpFolderPath(localConfig, resolved), files: resolved.entry.files, earlierFiles: 'keep' as const }]
+    // A version's folder holds only its files: a configuration that starts another definition's files starts another folder.
+    ? [{ dest: mcpFolderPath(localConfig, resolved.entry.server, resolved.namespace), files: resolved.entry.files, earlierFiles: 'drop' as const }]
     : []));
 }
 
@@ -291,26 +296,20 @@ export async function deliverMcpFolders(
 
 /**
  * Remove the scope's server folders that neither the resolved servers `entries` nor an installed configuration names,
- * once every configuration this run writes is in place: a write that fails leaves the folders as they were. The folder
- * of each server in `installed`, which some tool's file still holds an entry for, stays, whatever the team now makes of
- * it.
+ * once every configuration this run writes is in place: a write that fails leaves the folders as they were. A folder
+ * whose path one of `installed` (each entry some tool's file still holds, as text) names stays, whatever the team now
+ * makes of its server.
  */
 export async function pruneMcpFolders(
   localConfig: LocalConfig,
   entries: ReadonlyArray<ResolvedEntry<TeamMcpDefinition>>,
-  installed: ReadonlySet<string>,
+  installed: readonly string[],
 ): Promise<void> {
   const { editDeliveryRecord } = await import('../pull.js');
   const record = await editDeliveryRecord(localConfig);
-  // A server's record names no namespace: its folder sits at the root, or in a namespace directory.
-  const namespaces = await listDirs(path.join(DeliveredFolders.root(localConfig, 'mcp'), 'mcp'));
+  const named = await DeliveredFolders.namedIn({ root: DeliveredFolders.root(localConfig, 'mcp'), type: 'mcp', texts: installed });
 
-  const keep = [
-    ...mcpFolders(localConfig, entries).map(({ dest }) => dest),
-    ...[...installed].flatMap((name) => [null, ...namespaces].map((namespace) => DeliveredFolders.pathOf(localConfig, { type: 'mcp', namespace, name }))),
-  ];
-
-  await DeliveredFolders.prune({ localConfig, type: 'mcp', keep, ledger: record.ledger });
+  await DeliveredFolders.prune({ localConfig, type: 'mcp', keep: [...mcpFolders(localConfig, entries).map(({ dest }) => dest), ...named], ledger: record.ledger });
   await record.save();
 }
 

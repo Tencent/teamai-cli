@@ -77,8 +77,31 @@ describe('a team hook folder on CodeBuddy\'s Windows project gate', () => {
     const rendered = parseCodebuddyTeamGate(entry?.hooks[0]?.command ?? '');
 
     expect([rendered?.id, Buffer.from(rendered?.encodedCommand ?? '', 'base64url').toString('utf8'), decodeCodebuddyProjectGate(rendered?.encodedGate ?? '')?.root])
-      // The folder of a command is `<id>.<first 8 hex digits of the SHA-256 of the command>` (cc468cbd: scan.sh, 34480cc2: lint.sh).
-      .toEqual(['lint', `bash "${forward(dataHome)}/hooks/lint.34480cc2/lint.sh"`, project]);
+      // A hook folder is `<id>.<first 8 hex digits of the SHA-256 of the hook as canonical JSON>`: every HOOK.yaml key, plus `id`.
+      .toEqual(['lint', `bash "${forward(dataHome)}/hooks/lint.9bae98a4/lint.sh"`, project]);
+  });
+
+  it('keeps the folder, once the team repo drops it, while CodeBuddy, which the member excluded, keeps the entry that runs it', async () => {
+    for (const key of ['ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA']) vi.stubEnv(key, '');
+    await fse.ensureFile(path.join(home, 'AppData', 'Local', 'Programs', 'Git', 'bin', 'bash.exe'));
+    await fse.ensureDir(path.join(home, '.codebuddy'));
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    resetBundledRuntimeCache();
+    const codebuddyTeam = { toolPaths: { codebuddy: { settings: '.codebuddy/settings.json' } } } as unknown as TeamaiConfig;
+    const script = async (): Promise<string> => {
+      const settings: { hooks?: Record<string, Array<{ description?: string; hooks: Array<{ command: string }> }>> } = await fse.readJson(path.join(home, '.codebuddy', 'settings.json'));
+      const entry = (settings.hooks?.SessionStart ?? []).find((candidate) => candidate.description?.startsWith('[teamai:hook:lint]'));
+      const command = Buffer.from(parseCodebuddyTeamGate(entry?.hooks[0]?.command ?? '')?.encodedCommand ?? '', 'base64url').toString('utf8');
+
+      return /bash "([^"]+)"/.exec(command)?.[1] ?? '';
+    };
+
+    await reconcileTeamHooksForConfig(codebuddyTeam, workspace());
+    const installed = await script();
+    await fse.remove(path.join(repo, 'hooks', 'lint'));
+    await reconcileTeamHooksForConfig(codebuddyTeam, { ...workspace(), disabledAgents: ['codebuddy'] });
+
+    expect([await script(), await fse.readFile(installed, 'utf8')]).toEqual([installed, 'echo lint from the team folder\n']);
   });
 });
 
@@ -98,7 +121,7 @@ describe('a team hook folder on Codex, when the project\'s .codex/hooks.json is 
     const ran = await Promise.all((dispatched ?? []).map(async (hook) => (await runHookCommand(hook.command, { cwd: project, timeout: 30, stdin: '' })).stdout));
 
     expect([dispatched?.map((hook) => [hook.id, hook.command]), ran])
-      .toEqual([[['lint', `bash "${forward(dataHome)}/hooks/lint.34480cc2/lint.sh"`]], ['lint from the team folder\n']]);
+      .toEqual([[['lint', `bash "${forward(dataHome)}/hooks/lint.9bae98a4/lint.sh"`]], ['lint from the team folder\n']]);
   });
 });
 
@@ -111,7 +134,7 @@ describe('a team hook folder on a tool whose hooks run through teamai\'s bridge'
 
     const reply = await runBridgedTeamHooks('opencode', 'SessionStart', JSON.stringify({ cwd: project }));
 
-    expect([await fse.readFile(path.join(home, '.teamai', 'hooks', 'lint.34480cc2', 'lint.sh'), 'utf8'), JSON.parse(reply.stdout)])
+    expect([await fse.readFile(path.join(home, '.teamai', 'hooks', 'lint.9bae98a4', 'lint.sh'), 'utf8'), JSON.parse(reply.stdout)])
       .toEqual(['echo lint from the team folder\n', { context: 'lint from the team folder' }]);
   });
 });

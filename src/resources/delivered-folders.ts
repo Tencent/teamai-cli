@@ -10,16 +10,22 @@
  *                                      runs the same entries: the main checkout's files, or HOME's)
  *   workspace, single-repo's hooks   → <worktree>/.teamai/delivered/hooks/[<ns>/]<name>/  (each checkout keeps its own)
  *
- * The path stays the same across versions, so what is rendered from it does too. A new version is written to a
- * hidden sibling and renamed into place. Each file is recorded in the delivery ledger, and a folder the team drops
- * is removed through `removeDelivered`.
+ * A rule folder's path stays the same across versions, so the text rendered from it does too. A hook or MCP server
+ * folder sits at `<name>.<version>/` (`versionedPathOf`), one per definition, so each configuration runs the files of
+ * the definition it was written for. A new version is written to a hidden sibling and renamed into place. Each file is
+ * recorded in the delivery ledger, and a folder goes through `removeDelivered` once the team drops it and no
+ * configuration left names it (`namedIn`).
  */
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { contentHash, forgetDelivered, removeDelivered, type DeliveryLedger } from './delivered-copies.js';
 import { FolderFiles, type FolderFile } from './folder-files.js';
+import { FOLDER_MARKERS } from '../folder-markers.js';
 import { getDataHome, isSelfMode, type LocalConfig } from '../types.js';
+import { canonicalJson } from '../utils/canonical-json.js';
+import type { TeamHook } from './hooks.js';
+import type { TeamMcpServer } from './mcp.js';
 import { errnoCode, pathExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 
@@ -62,9 +68,51 @@ function checkoutRoot(checkout: string): string {
   return path.join(checkout, '.teamai', DELIVERED_DIR);
 }
 
-/** The absolute path `ref` is delivered at in `localConfig`'s scope. The same for every version of the folder. */
+/** The absolute path `ref` is delivered at in `localConfig`'s scope: a rule folder's, the same for every version. */
 function pathOf(localConfig: LocalConfig, ref: DeliveredFolderRef): string {
   return path.join(root(localConfig, ref.type), ref.type, ...(ref.namespace === null ? [] : [ref.namespace]), ref.name);
+}
+
+/**
+ * Where `ref` is delivered at the version `definition` gives: `[<namespace>/]<name>.<version>/`, `<version>` being the
+ * first 8 hex digits of the SHA-256 of `definition` as canonical JSON. For a folder whose definition says how a tool
+ * runs it (a hook's `HOOK.yaml`, a server's `MCP.yaml`): a tool whose configuration pull could not rewrite, or one the
+ * member excluded, keeps running the files of the definition it holds, while the others run the new ones.
+ */
+function versionedPathOf(localConfig: LocalConfig, ref: DeliveredFolderRef, definition: TeamHook | TeamMcpServer): string {
+  const version = createHash('sha256').update(canonicalJson(definition)).digest('hex').slice(0, 8);
+
+  return pathOf(localConfig, { ...ref, name: `${ref.name}.${version}` });
+}
+
+/**
+ * The folders of `type` delivered under `root` (a scope's `root`, or a worktree's `.teamai/delivered/`) that one of
+ * `texts` names: a directory holding the type's marker, named by its path from `root` with forward slashes
+ * (`/hooks/block-secrets.e246f037`), followed by no character a name holds. An absolute path and one from a project
+ * directory variable both carry it.
+ */
+async function namedIn(input: { readonly root: string; readonly type: DeliveredFolderType; readonly texts: readonly string[] }): Promise<string[]> {
+  const { marker } = FOLDER_MARKERS[input.type];
+  const named: string[] = [];
+
+  const visit = async (dir: string, at: string): Promise<void> => {
+    for (const entry of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      const full = path.join(dir, entry.name);
+      const folderAt = `${at}/${entry.name}`;
+
+      if (!await pathExists(path.join(full, marker))) {
+        await visit(full, folderAt);
+        continue;
+      }
+
+      if (input.texts.some((text) => text.split(folderAt).slice(1).some((after) => !/^[\w.-]/.test(after)))) named.push(full);
+    }
+  };
+
+  await visit(path.join(input.root, input.type), `/${input.type}`);
+
+  return named;
 }
 
 /** Write `files` under `dir`, keeping each one's executable bit. */
@@ -426,4 +474,4 @@ async function excludeWorktreeFolders(localConfig: LocalConfig, type: DeliveredF
   }
 }
 
-export const DeliveredFolders = { root, worktreeRoot, checkoutRoot, pathOf, sync, place, deliver, prune, placeholder, mentions, render } as const;
+export const DeliveredFolders = { root, worktreeRoot, checkoutRoot, pathOf, versionedPathOf, namedIn, sync, place, deliver, prune, placeholder, mentions, render } as const;

@@ -327,19 +327,19 @@ command: bash "${TEAMAI_HOOK_DIR}/scan.sh"
 timeout: 15
 ```
 
-Pull copies the folder and puts its path, with forward slashes, in place of `${TEAMAI_HOOK_DIR}`. teamai adds no quotes, so quote the variable as the command needs. The directory is named after the hook and its command (`cc468cbd` below), so it changes only when the command does. A tool whose configuration pull could not rewrite keeps running the files of the command it has, and that directory goes once no entry runs it:
+Pull copies the folder and puts its path, with forward slashes, in place of `${TEAMAI_HOOK_DIR}`. teamai adds no quotes, so quote the variable as the command needs. The directory name is the hook's id and a version taken from its `HOOK.yaml` (`e246f037` below), so it changes when a key such as `command` or `timeout` does, and stays when only a script changes. A tool whose configuration pull could not rewrite keeps running the files of the version it has, and that directory goes once no entry runs it:
 
 | Where the team is | The folder lands in |
 |---|---|
-| User scope | `~/.teamai/hooks/block-secrets.cc468cbd/` |
-| Workspace with a team repo | `~/.teamai/projects/<slug>/hooks/block-secrets.cc468cbd/`, one for every worktree, as every worktree runs the same hook entries |
-| Single-repo | `.teamai/delivered/hooks/block-secrets.cc468cbd/` in each worktree, which git ignores |
+| User scope | `~/.teamai/hooks/block-secrets.e246f037/` |
+| Workspace with a team repo | `~/.teamai/projects/<slug>/hooks/block-secrets.e246f037/`, one for every worktree, as every worktree runs the same hook entries |
+| Single-repo | `.teamai/delivered/hooks/block-secrets.e246f037/` in each worktree, which git ignores |
 
-In single-repo, Claude Code's command reads `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets.cc468cbd/scan.sh"`, so `.claude/settings.json` is the same in every worktree. Other tools get the worktree's absolute path, so their project file differs from one worktree to the next. Cursor's `.cursor/hooks.json`, for example:
+In single-repo, Claude Code's command reads `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"`, so `.claude/settings.json` is the same in every worktree. Other tools get the worktree's absolute path, so their project file differs from one worktree to the next. Cursor's `.cursor/hooks.json`, for example:
 
 ```text
-~/work/shop/.cursor/hooks.json         bash "/Users/ana/work/shop/.teamai/delivered/hooks/block-secrets.cc468cbd/scan.sh"
-~/work/shop-hotfix/.cursor/hooks.json  bash "/Users/ana/work/shop-hotfix/.teamai/delivered/hooks/block-secrets.cc468cbd/scan.sh"
+~/work/shop/.cursor/hooks.json         bash "/Users/ana/work/shop/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"
+~/work/shop-hotfix/.cursor/hooks.json  bash "/Users/ana/work/shop-hotfix/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"
 ```
 
 Once a worktree is removed, the next pull of another worktree, or `teamai doctor --fix`, removes the entries it left in HOME. `HOOK.yaml` takes the keys of a `hooks.yaml` entry except `id`, `roles` and `projects`. A hook for one namespace goes in `hooks/<ns>/<id>/`.
@@ -531,12 +531,12 @@ requires: [uv]
 # ///
 ```
 
-Pull copies the folder and puts its path, with forward slashes, in place of `${TEAMAI_MCP_DIR}` in `command`, `args` and `env`. teamai adds no quotes. The path stays the same when the folder changes, and a file the team removes from it stays until the folder goes, as a configuration pull did not rewrite may still name it:
+Pull copies the folder and puts its path, with forward slashes, in place of `${TEAMAI_MCP_DIR}` in `command`, `args` and `env`. teamai adds no quotes. The directory name is the server's name and a version taken from its `MCP.yaml` (`1702782c` below), so it changes when a key such as `args` does, and stays when only a file changes. A tool whose MCP file pull could not rewrite, or one the member excluded, keeps starting the files of the version it has, and that directory goes once no MCP file names it:
 
 | Where the team is | The folder lands in |
 |---|---|
-| User scope | `~/.teamai/mcp/jira-lite/` |
-| Workspace, with a team repo or single-repo | `.teamai/delivered/mcp/jira-lite/` in each worktree, which git ignores |
+| User scope | `~/.teamai/mcp/jira-lite.1702782c/` |
+| Workspace, with a team repo or single-repo | `.teamai/delivered/mcp/jira-lite.1702782c/` in each worktree, which git ignores |
 
 Claude Code does not expand `$CLAUDE_PROJECT_DIR` in `.mcp.json`, so each tool's MCP file holds the worktree's absolute path and differs from one worktree to the next. A pull in one worktree leaves the servers of the others as they were.
 
