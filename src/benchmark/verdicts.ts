@@ -242,11 +242,11 @@ function verdictOf(entry: ScoredEntry | undefined, stored: ScoreLabel | undefine
 
 /**
  * Whether a trial's check, not a judge, gives its correctness label, from what its check step `output`: always for a
- * task with no success criteria, and for one with them only when its check failed, since a judge decides after a check
- * that passed.
+ * task with no success criteria, and for one with them unless its check passed, since a judge decides only after a
+ * check that passed. A check that could not run, or never ran, leaves the trial unscored, whatever a judge said.
  */
 export function isDecidedByCheck(task: PlannedTask, output: CheckOutput | undefined): boolean {
-  return task.judge.kind === 'check' || (task.judge.kind === 'both' && output?.result === 'failed');
+  return task.judge.kind === 'check' || (task.judge.kind === 'both' && output?.result !== 'passed');
 }
 
 /**

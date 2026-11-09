@@ -150,6 +150,23 @@ successCriteria: answer.js exports 42.
     ]);
   }, 120_000);
 
+  it("leaves a trial of a task with a check and success criteria unscored when its check could not run, whatever a judge said", async () => {
+    // The test fails on the starting commit, so the baseline is valid; once fixed, the check exits 127, as a missing command does.
+    const fixture = await benchmarkFixture({
+      tool: 'fixes', sandbox: true, tools: ['claude'], suite: suite({ arms: [{ name: 'claude' }] }),
+      tasks: { 'login-copy': `${CRITERIA_TASK}check: { run: node test.js && exit 127, protect: [test.js] }\n` },
+    });
+    fixtures.push(fixture);
+
+    const done = await runLocally(fixture);
+
+    const record = z.object({ trials: z.array(z.object({ task: z.string(), result: z.string(), verdicts: z.unknown() })) }).parse(fixture.benchmarkRecord(done.run));
+    expect(done.outcome).toBe('succeeded');
+    expect(record.trials.map(({ task, result, verdicts }) => ({ task, result, verdicts }))).toEqual([
+      { task: 'login-copy', result: 'error', verdicts: [{ scorer: 'teamai:correctness:login-copy', outcome: { kind: 'unscored', because: 'check_could_not_run' } }] },
+    ]);
+  }, 120_000);
+
   it("calibrates the correctness judge on a trial whose check failed, storing nothing, and shows how often it passed that work", async () => {
     const mixed = (name: string, run: string) => `schemaVersion: v1alpha1
 title: ${name}
