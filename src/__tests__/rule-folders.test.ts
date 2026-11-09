@@ -300,6 +300,36 @@ describe('rule folders (#1787)', () => {
     ]).toEqual([true, CHECKLIST]);
   });
 
+  it('leaves the inlined text naming the installed files when the new version of their folder cannot be delivered', async () => {
+    await fse.ensureDir(home('.codex'));
+    localConfig = { ...localConfig, enabledAgents: ['codex'] };
+    await new RulesHandler().pullAllRules(teamConfig, localConfig);
+    await fse.move(path.join(repoPath, 'rules', 'api-style', 'checklist.md'), path.join(repoPath, 'rules', 'api-style', 'steps.md'));
+    await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'RULE.md'), RULE.replace('checklist.md', 'steps.md'));
+
+    // The new version is written beside the installed one, so the directory holding them is what refuses it.
+    await fse.chmod(home('.teamai', 'rules'), 0o555);
+    const outcome = await new RulesHandler().pullAllRules(teamConfig, localConfig).then(() => 'delivered', () => 'failed')
+      .finally(() => fse.chmod(home('.teamai', 'rules'), 0o755));
+    const dir = forward(home('.teamai', 'rules', 'api-style'));
+
+    expect([outcome, await fse.readFile(home('.codex', 'AGENTS.md'), 'utf8').then((text) => text.includes(`${dir}/checklist.md`)), await fse.pathExists(home('.teamai', 'rules', 'api-style', 'checklist.md'))])
+      .toEqual(['failed', true, true]);
+  });
+
+  it('is removed by teamai remove rules, from the team repo, the tools and the data home', async () => {
+    const ledger = openLedger({});
+    await new RulesHandler().pullAllRules(teamConfig, localConfig, undefined, [], ledger);
+
+    await new RulesHandler().removeItem('api-style', teamConfig, localConfig);
+
+    expect([
+      await fse.pathExists(path.join(repoPath, 'rules', 'api-style')),
+      await fse.pathExists(home('.claude', 'rules', 'api-style.md')),
+      await fse.pathExists(home('.teamai', 'rules', 'api-style')),
+    ]).toEqual([false, false, false]);
+  });
+
   it('inlines the rendered text for a tool without native rules', async () => {
     await fse.ensureDir(home('.codex'));
     localConfig = { ...localConfig, enabledAgents: ['codex'] };

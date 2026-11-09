@@ -676,16 +676,34 @@ export class RulesHandler extends ResourceHandler {
       ledger.previous,
     );
 
+    // A rule folder of that name (#1787): its RULE.md is the source, and each tool's copy holds its text as pull renders it.
+    const teamFolder = path.join(localConfig.repo.localPath, 'rules', ...name.split('/'));
+    const { marker } = RESOURCE_LAYOUTS.rules;
+
+    const folderRule: ResourceItem | null = await pathExists(path.join(teamFolder, marker))
+      ? { name, type: 'rules', sourcePath: path.join(teamFolder, marker), relativePath: `rules/${name}/${marker}`, folder: true }
+      : null;
+
+    const locations = await rulesLocations(teamConfig, localConfig);
     // What pull writes today from the team rule also proves a copy teamai's,
     // so it is read before the rule goes: a checkout without history, such as
     // the local agent's resource cache, has no other proof.
-    const current = await readFileSafe(teamFile);
+    const fileText = await readFileSafe(teamFile);
+    const current = new Map<string, string | null>();
 
-    // Remove from team repo (always `.md`)
+    for (const { tool } of locations) current.set(tool, folderRule === null ? fileText : await ruleSourceText(folderRule, { teamConfig, localConfig, tool }));
+
+    // Remove from team repo: the rule file, and a rule folder of that name.
     if (await pathExists(teamFile)) {
       // oxlint-disable-next-line teamai/remove-delivered -- the team repo's source, which pull never records
       await remove(teamFile);
       removed.push(teamFile);
+    }
+
+    if (folderRule !== null) {
+      // oxlint-disable-next-line teamai/remove-delivered -- the team repo's source, which pull never records
+      await remove(teamFolder);
+      removed.push(teamFolder);
     }
 
     for (const { file } of flatCopies.owned) {
@@ -725,7 +743,7 @@ export class RulesHandler extends ResourceHandler {
     // Remove from each tool's rules directory. `.mdc` tools may have an older
     // teamai layout wrote `.md` there, so both are removed — otherwise `remove`
     // would report success while leaving the rule on disk.
-    for (const { tool, location } of await rulesLocations(teamConfig, localConfig)) {
+    for (const { tool, location } of locations) {
       const rulesDir = rulesDirOf(location);
 
       if (rulesDir === null) continue;
@@ -745,9 +763,9 @@ export class RulesHandler extends ResourceHandler {
           // The team file is gone from the working tree only: its history still proves a copy teamai's.
           // The author's root copy is this rule's by the placement record, which proves it here.
           if (localName === name && await pathExists(filePath) && ledger.previous?.[filePath] === undefined
-            && !await holdsCurrentRule(filePath, tool, current)
-            && !await isTeamaiCopy(filePath, ruleOrigin(tool, localConfig.repo.localPath, `rules/${name}.md`))) {
-            log.warn(describeMembersDirLeft(filePath, `rules/${name}.md`, 'remove'));
+            && !await holdsCurrentRule(filePath, tool, current.get(tool) ?? null)
+            && !await isTeamaiCopy(filePath, ruleOrigin(tool, localConfig.repo.localPath, folderRule?.relativePath ?? `rules/${name}.md`))) {
+            log.warn(describeMembersDirLeft(filePath, folderRule?.relativePath ?? `rules/${name}.md`, 'remove'));
             continue;
           }
 
@@ -902,8 +920,6 @@ export class RulesHandler extends ResourceHandler {
 
     await this.reclaimReservedRuleCopies(teamConfig, localConfig, ledger);
 
-    // A file that still holds the rules of an earlier pull keeps every folder they name.
-    const blocksWritten = await this.syncUserRulesFiles(teamConfig, localConfig, rules, ledger?.toolsMissingRules);
     // Before the empty-set return: a copy outlives the rule that selected it.
     await this.reclaimLegacyRuleCopies(teamConfig, localConfig, rules, ledger);
 
@@ -926,6 +942,9 @@ export class RulesHandler extends ResourceHandler {
     // folders their text names (#1787).
     const receiving = (await rulesReceivingTools(teamConfig, localConfig)).filter((tool) => !isAgentExcluded(localConfig, tool));
     const pruneRuleFolders = await RuleFolders.sync({ localConfig, rules, tools: receiving, ledger });
+    // The files that inline the rules, after the folders their text names too. One that still holds the rules of an
+    // earlier pull keeps every folder they name.
+    const blocksWritten = await this.syncUserRulesFiles(teamConfig, localConfig, rules, ledger?.toolsMissingRules);
 
     // The rules this member receives, when the caller resolved them.
     const received = filteredRules?.map((rule) => rule.name);
