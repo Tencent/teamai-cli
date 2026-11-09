@@ -163,7 +163,7 @@ A project is the service they are working on. After this directory is set to tha
 
 `knowledge` covers rules and shared instructions (`claudemd/`, or `agentsmd/` when the team uses that name). A project can also declare learnings, env, hooks, mcp, models, docs, and wiki on its own.
 
-Benchmark suites follow `resources.benchmarks`. `benchmarks/<suite>/` goes to everyone. Once a role or project lists `<ns>`, `benchmarks/<ns>/<suite>/` goes only to members who have `<ns>` active, and `benchmarks/<ns>/` holds suites, not a `suite.yaml` of its own.
+Benchmark suites follow `resources.benchmarks`. `benchmarks/<suite>/` goes to everyone. Once a role or project lists `<ns>`, `benchmarks/<ns>/<suite>/` goes only to members who have `<ns>` active, and `benchmarks/<ns>/` holds suites, not a `SUITE.yaml` of its own.
 
 ```yaml
 # manifest/roles.yaml

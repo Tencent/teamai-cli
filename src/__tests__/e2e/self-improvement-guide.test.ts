@@ -244,7 +244,7 @@ describe.skipIf(spawnSync('jq', ['--version']).status !== 0)('the self-improveme
       'benchmarks/fix': null,
       'scorers/review-quality.md': SCORER,
       'skills/review/SKILL.md': SKILL,
-      'benchmarks/regressions/suite.yaml': guideFile('benchmarks/regressions/suite.yaml').replace('repetitions: 3', 'repetitions: 1'),
+      'benchmarks/regressions/SUITE.yaml': guideFile('benchmarks/regressions/SUITE.yaml').replace('repetitions: 3', 'repetitions: 1'),
     });
     expect(PRODUCT_URL).not.toBe('https://github.com/acme/auth-service.git');
     const clean = { commit: fixture.startingCommit, dirty: false };

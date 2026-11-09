@@ -118,7 +118,7 @@ source: { runId: r38302f8e6a18c377, step: review, pass: 1 }   # a workflow pass 
 ### 1. 回归套件
 
 ```yaml
-# benchmarks/regressions/suite.yaml
+# benchmarks/regressions/SUITE.yaml
 schemaVersion: v1alpha1
 name: regressions
 description: Failures the team fixed in its prompts, skills and agents. Every change to them runs against all of them.
