@@ -190,11 +190,28 @@ successCriteria: answer.js exports 42.
 
     const done = await runLocally(fixture);
 
-    const record = z.object({ trials: z.array(z.object({ task: z.string(), result: z.string(), verdicts: z.unknown() })) }).parse(fixture.benchmarkRecord(done.run));
+    const record = z.object({ trials: z.array(z.object({ task: z.string(), result: z.string(), verdicts: z.unknown(), scoringCost: z.unknown().optional() })) }).parse(fixture.benchmarkRecord(done.run));
     expect(done.outcome).toBe('succeeded');
-    expect(record.trials.map(({ task, result, verdicts }) => ({ task, result, verdicts }))).toEqual([
-      { task: 'login-copy', result: 'error', verdicts: [{ scorer: 'teamai:correctness:login-copy', outcome: { kind: 'unscored', because: 'check_could_not_run' } }] },
+    // The judge still ran, and what it cost is counted though its label is not.
+    expect(fixture.judgeLaunches()).toHaveLength(1);
+    expect(record.trials.map(({ task, result, verdicts, scoringCost }) => ({ task, result, verdicts, scoringCost }))).toEqual([
+      { task: 'login-copy', result: 'error', verdicts: [{ scorer: 'teamai:correctness:login-copy', outcome: { kind: 'unscored', because: 'check_could_not_run' } }], scoringCost: { amount: 0.1, unit: 'USD', complete: true } },
     ]);
+  }, 120_000);
+
+  it("counts what a calibration judge cost in its trial's judging cost when its label is refused, and records no calibration", async () => {
+    const fixture = await benchmarkFixture({
+      tool: 'fixes', sandbox: true, judge: 'another-label', tools: ['claude'], suite: `${suite({ arms: [{ name: 'claude' }] })}calibration: { rate: 100 }\n`,
+      tasks: { 'still-failing': `${CRITERIA_TASK}check: { run: exit 1, protect: [test.js] }\n` },
+    });
+    fixtures.push(fixture);
+
+    const done = await runLocally(fixture);
+
+    const record = z.object({ trials: z.array(z.object({ result: z.string(), calibration: z.unknown().optional(), scoringCost: z.unknown().optional() })) }).parse(fixture.benchmarkRecord(done.run));
+    expect(done.outcome).toBe('succeeded');
+    expect(fixture.judgeLaunches()).toHaveLength(1);
+    expect(record.trials.map(({ result, calibration, scoringCost }) => ({ result, calibration, scoringCost }))).toEqual([{ result: 'failed', calibration: undefined, scoringCost: { amount: 0.1, unit: 'USD', complete: true } }]);
   }, 120_000);
 
   it("calibrates the correctness judge on a trial whose check failed, storing nothing, and shows how often it passed that work", async () => {

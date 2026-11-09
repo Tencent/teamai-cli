@@ -23,7 +23,7 @@ import { baselineStepOf, BenchmarkEstimateSchema, checkStepOf, correctnessScorer
 import type { RunPlan } from './run-plan.js';
 import { ArmTeamSchema, SkillChangesSchema, TrialLimitsSchema } from './terms.js';
 import { leavesOut, skillDefinitionOf } from './team-without.js';
-import { isDecidedByCheck, TrialCalibrationSchema, TrialVerdictSchema, type EntryCalibration, type EntryVerdict, type TrialVerdict } from './verdicts.js';
+import { TrialCalibrationSchema, TrialVerdictSchema, TrialVerdicts, type EntryCalibration, type EntryVerdict, type TrialVerdict } from './verdicts.js';
 
 export const TRIAL_RESULTS = ['passed', 'failed', 'error', 'unscored', 'not_run'] as const;
 
@@ -180,6 +180,7 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdic
   const coveredSkills = [...new Set(plan.tasks.flatMap(namesOf))];
 
   const watched = [...new Set([...(plan.skillChanges ?? []).flatMap(({ skills }) => skills.map(({ name }) => name)), ...coveredSkills])];
+  const judgingCostOf = TrialVerdicts.judgingCosts(run);
 
   return definedFields<BenchmarkRecord>({
     suite: { name: plan.suite.name, sourceHash: plan.suite.sourceHash },
@@ -199,8 +200,6 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdic
       const judged = verdictsOf(trial);
       const task = plan.tasks.find(({ id }) => id === trial.task);
       const check = checkOutputOf(stateOf(checkStepOf(trial)));
-      // A check costs nothing, so its label leaves the trial's judge cost complete.
-      const scoringCost = scoringCostOf(task && isDecidedByCheck(task, check) ? judged.filter(({ scorer }) => scorer !== correctnessScorerName(trial.task)) : judged);
       const work = stateOf(trial.step);
       const result = trialResultOf({ prompt: work, work: workOf(run, `${prefix}${trial.step}`), check, verdicts: judged }, plan, trial);
       const arm = plan.arms.find(({ name }) => name === trial.arm);
@@ -230,6 +229,7 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdic
       const calibration = calibrations.find((one) => one.step === recorded.step && one.pass === (work?.pass ?? 1));
 
       if (calibration) recorded.calibration = definedFields({ label: calibration.label, passed: calibration.passed, decider: calibration.decider, scoringCost: calibration.scoringCost });
+      const scoringCost = judgingCostOf({ step: recorded.step, pass: work?.pass ?? 1, isCalibrated: calibration !== undefined });
 
       if (scoringCost) recorded.scoringCost = scoringCost;
 
@@ -238,19 +238,6 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdic
   });
 }
 
-/** The trial's judge costs in the unit the first one stated: incomplete when one stated none or another unit. */
-function scoringCostOf(verdicts: readonly EntryVerdict[]): BenchmarkRecord['trials'][number]['scoringCost'] {
-  const [first] = verdicts.flatMap(({ scoringCost }) => scoringCost ?? []);
-
-  if (!first) return undefined;
-  const inUnit = verdicts.flatMap(({ scoringCost }) => (scoringCost?.unit === first.unit ? [scoringCost] : []));
-
-  return {
-    amount: inUnit.reduce((sum, cost) => sum + cost.amount, 0),
-    unit: first.unit,
-    complete: inUnit.length === verdicts.length && inUnit.every((cost) => cost.complete),
-  };
-}
 
 /** What one prompt pass reported, as a step keeps it. */
 type PromptPass = Pick<StepPass, 'limit' | 'unenforced' | 'durationMs' | 'tokens' | 'cost' | 'agent' | 'used'>;

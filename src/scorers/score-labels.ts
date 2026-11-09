@@ -304,6 +304,9 @@ export const ScoreLabels = {
   /** The entries `label` left in the group directory `dir`, one per scorer; undefined when it wrote none. */
   read: readEntries,
 
+  /** What judge step `step` of `run` spent, as its confined run or its report stated it; undefined when it stated nothing. */
+  spent: judgeSpend,
+
   /**
    * The labels of the group in `dir`, written with their reasoning to `<dir>/labels.json`, and one entry per scorer
    * without it. A scorer with a check on a delivered pass is refused until its check stage recorded what it found.

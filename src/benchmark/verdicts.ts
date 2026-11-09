@@ -10,7 +10,7 @@ import { definedFields } from '../utils/defined-fields.js';
 import { CheckOutputSchema, type CheckOutput } from '../scorers/check.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { isStageDecider, labelVersion, type ScoreLabel } from '../scorers/label.js';
-import { LABEL_CODES } from '../scorers/score-labels.js';
+import { LABEL_CODES, ScoreLabels } from '../scorers/score-labels.js';
 import type { LocalConfig } from '../types.js';
 import { stepDefinitions } from '../workflow/scope.js';
 import { ConfinedRunReportSchema, type ConfinedRunReport, type ItemResult, type StepState } from '../workflow/step-state.js';
@@ -64,9 +64,9 @@ const ScoringCostSchema = z.object({ amount: z.number().nonnegative(), unit: z.s
 export const EntryVerdictSchema = TrialVerdictSchema.extend({
   step: z.string().min(1),
   pass: z.number().int().positive(),
-  /** What the label's judge stated it cost; absent when it stated none. */
-  scoringCost: ScoringCostSchema.optional(),
 }).strict();
+
+type ScoringCost = z.infer<typeof ScoringCostSchema>;
 
 export type EntryVerdict = z.infer<typeof EntryVerdictSchema>;
 
@@ -84,13 +84,12 @@ export type TrialCalibration = z.infer<typeof TrialCalibrationSchema>;
 
 export type EntryCalibration = TrialCalibration & { step: string; pass: number };
 
-type Judged = Pick<EntryVerdict, 'outcome' | 'decider' | 'scoringCost' | 'asPlanned'>;
+type Judged = Pick<EntryVerdict, 'outcome' | 'decider' | 'asPlanned'>;
 
 /** What `teamai score label` printed of one scorer: its label, or the code of why it has none; the other is ''. */
 const LabelEntrySchema = z.object({ scorer: z.string(), label: z.string(), code: z.union([z.enum(LABEL_CODES), z.literal('')]) });
 
-/** A scorer's entry, and the judge launch that gave it: the group of the `teamai-score` result it came from. */
-type ScoredEntry = Omit<z.infer<typeof LabelEntrySchema>, 'scorer'> & { launch: string };
+type ScoredEntry = Omit<z.infer<typeof LabelEntrySchema>, 'scorer'>;
 
 /** What one group of a `teamai-score` item gave: its entries, and the version of each label its write stored, if it did. */
 const GroupOutputsSchema = z.object({ labels: z.array(LabelEntrySchema), written: z.array(z.string()).nullish() });
@@ -100,9 +99,9 @@ const ScoredItemSchema = z.object({
   item: z.string(),
   outputs: z.object({ labels: z.array(z.object({ outputs: GroupOutputsSchema.optional() })) }).optional(),
 }).transform(({ item, outputs }) => {
-  const groups = (outputs?.labels ?? []).flatMap((group, index) => (group.outputs ? [{ ...group.outputs, index }] : []));
+  const groups = (outputs?.labels ?? []).flatMap((group) => (group.outputs ? [group.outputs] : []));
 
-  return { item, entries: groups.flatMap((group) => group.labels.map((entry) => ({ ...entry, group: group.index }))), written: groups.flatMap((group) => group.written ?? []) };
+  return { item, entries: groups.flatMap((group) => group.labels), written: groups.flatMap((group) => group.written ?? []) };
 });
 
 /** What a `teamai-score` step gave a subject: the entry of each scorer, and the version of each label its writes stored. */
@@ -134,13 +133,13 @@ function scoreResults(run: RunState): ItemResult[] {
 function scoredEntries(run: RunState): Map<string, Scored> {
   const bySubject = new Map<string, Scored>();
 
-  for (const [index, result] of scoreResults(run).entries()) {
+  for (const result of scoreResults(run)) {
     const scored = ScoredItemSchema.safeParse(result);
 
     if (!scored.success) continue;
     const kept = bySubject.get(scored.data.item) ?? { entries: new Map<string, ScoredEntry>(), written: new Set<string>() };
 
-    for (const { scorer, label, code, group } of scored.data.entries) kept.entries.set(scorer, { label, code, launch: `${index}.${group}` });
+    for (const { scorer, label, code } of scored.data.entries) kept.entries.set(scorer, { label, code });
 
     for (const version of scored.data.written) kept.written.add(version);
     bySubject.set(scored.data.item, kept);
@@ -231,10 +230,7 @@ function verdictOf(entry: ScoredEntry | undefined, stored: ScoreLabel | undefine
 
   // A label the write never recorded is no label.
   if (!entry || !stored) return { outcome: { kind: 'unscored', because: isGivenUp ? JUDGE_TOOL_UNAVAILABLE : RUN_ENDED } };
-  const cost = stored.judge.kind === 'model' ? stored.judge.usage?.cost : undefined;
   const verdict = labelledOf(stored, judgeOf(stored));
-
-  if (cost) verdict.scoringCost = { ...cost, complete: true };
 
   if (planned && verdict.decider?.by === 'judge' && stored.judge.kind === 'model') verdict.asPlanned = compareJudge(planned, stored.judge);
 
@@ -276,26 +272,40 @@ function checkedOf(checked: CheckOutput | undefined, labels: readonly ScoreLabel
   }
 }
 
+/** One judge launch of a `teamai-score` group: the subject it judged, whether its instance only tried its labels, and what its tool stated it cost. */
+interface JudgeLaunch {
+  subject: string;
+  isTried: boolean;
+  cost: { amount: number; unit: string } | undefined;
+}
+
 /**
- * `verdicts` of one trial, where a batched judge's one launch states its cost on the first label it gave: each other
- * label of that launch, as `launchOf` names it, cost nothing more, so the trial's judging cost stays complete.
+ * Every judge launch of `run`'s `teamai-score` instances: the judge step of each group that ran, whether it succeeded or
+ * failed, so a launch whose label was refused or left out still counts. A group a stage decided launched no judge.
  */
-function withBatchedCosts(verdicts: EntryVerdict[], launchOf: (scorer: string) => string | undefined): EntryVerdict[] {
-  const stated = new Map(verdicts.flatMap(({ scorer, decider, scoringCost }) => {
-    const launch = launchOf(scorer);
+function judgeLaunches(run: RunState): JudgeLaunch[] {
+  const definitionOf = stepDefinitions(run);
+  const instances = run.steps.filter((state) => runsTeamaiScore(definitionOf(state.id)));
 
-    return decider?.by === 'judge' && decider.batched && scoringCost && launch !== undefined ? [[launch, scoringCost] as const] : [];
-  }));
+  return run.steps.flatMap((state) => {
+    const instance = instances.find(({ id }) => state.id.startsWith(`${id}.`));
+    const group = instance ? GroupItemSchema.safeParse(state.item).data : undefined;
+    const judge = group ? run.steps.find(({ id }) => id === `${state.id}.judge`) : undefined;
 
-  return verdicts.map((verdict) => {
-    const { decider } = verdict;
+    if (!instance || !group || (judge?.status !== 'succeeded' && judge?.status !== 'failed')) return [];
 
-    if (verdict.scoringCost || decider?.by !== 'judge' || !decider.batched) return verdict;
-    const launch = launchOf(verdict.scorer);
-    const cost = launch === undefined ? undefined : stated.get(launch);
-
-    return cost ? { ...verdict, scoringCost: { amount: 0, unit: cost.unit, complete: cost.complete } } : verdict;
+    return [{ subject: group.subject, isTried: TriedInstanceSchema.safeParse(instance).success, cost: ScoreLabels.spent(run, judge.id)?.cost }];
   });
+}
+
+/** What `launches` cost in the unit the first that stated a cost used: incomplete when another stated none or another unit; undefined when none stated one. */
+function costOfLaunches(launches: readonly JudgeLaunch[]): ScoringCost | undefined {
+  const [first] = launches.flatMap(({ cost }) => cost ?? []);
+
+  if (!first) return undefined;
+  const inUnit = launches.flatMap(({ cost }) => (cost?.unit === first.unit ? [cost] : []));
+
+  return { amount: inUnit.reduce((sum, cost) => sum + cost.amount, 0), unit: first.unit, complete: inUnit.length === launches.length };
 }
 
 export const TrialVerdicts = {
@@ -321,16 +331,32 @@ export const TrialVerdicts = {
       const output = CheckOutputSchema.safeParse(check && 'outputs' in check ? check.outputs : undefined).data;
       const checked = task !== undefined && isDecidedByCheck(task, output) ? [{ scorer: correctness, step, pass, ...checkedOf(output, labels, task) }] : [];
 
-      const judged = withBatchedCosts((definitionOf(step)?.scorers?.names ?? []).map((scorer) => {
+      const judged = (definitionOf(step)?.scorers?.names ?? []).map((scorer) => {
         const entry = subject?.entries.get(scorer);
         const stored = labels.find((label) => label.scorer === scorer && subject?.written.has(labelVersion(label)) === true);
 
         return { scorer, step, pass, ...verdictOf(entry, stored, { planned: plan.judges[scorer], isGivenUp: givenUp.get(item)?.has(scorer) === true }) };
-      }), (scorer) => subject?.entries.get(scorer)?.launch);
+      });
 
       // A failed check of a task with success criteria leaves its correctness scorer no judge, so only the check's verdict.
       return [...checked, ...judged.filter(({ scorer }) => scorer === correctness && checked.length === 0), ...judged.filter(({ scorer }) => scorer !== correctness)];
     });
+  },
+
+  /**
+   * What judging each trial pass of `run` cost, from every judge launch of it rather than from the labels kept: those that
+   * stored its labels, and those that only tried one unless its calibration carries that cost. A batched launch counts
+   * once for every scorer it judged; a launch whose label was refused, or left out because the check could not run, counts
+   * too. Undefined when no launch stated a cost.
+   */
+  judgingCosts(run: RunState): (trial: { step: string; pass: number; isCalibrated: boolean }) => ScoringCost | undefined {
+    const launches = judgeLaunches(run);
+
+    return ({ step, pass, isCalibrated }) => {
+      const item = Subject.format({ kind: 'run', subject: { runId: run.id, step, pass } });
+
+      return costOfLaunches(launches.filter(({ subject, isTried }) => subject === item && !(isTried && isCalibrated)));
+    };
   },
 
   /**
