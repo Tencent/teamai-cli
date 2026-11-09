@@ -40,7 +40,7 @@ import {
   UntypedStdioEntrySchema,
   type McpFormat,
 } from './resources/mcp-format.js';
-import { deliverMcpFolders, TEAM_MCP_ENTRIES, parseTeamMcpServers, teamMcpDef, teamMcpToDef, type TeamMcpDefinition } from './resources/mcp.js';
+import { deliverMcpFolders, historicalFolderMcpServer, TEAM_MCP_ENTRIES, parseTeamMcpServers, teamMcpDef, teamMcpToDef, type TeamMcpDefinition } from './resources/mcp.js';
 import { historicalContents } from './utils/team-history.js';
 import { describeMembersFile, keepsTrackedCopy } from './resources/delivered-copies.js';
 import { envName, envTable } from './resources/env-key.js';
@@ -1303,11 +1303,15 @@ function judgeUnrecordedMcpEntry(
     const entries = new Map<string, JsonValue[]>();
 
     for (const version of versions) {
-      if (path.posix.basename(version.path) !== layout.file) continue;
+      const content = version.content.toString('utf8');
 
-      for (const server of parseTeamMcpServers(version.content.toString('utf8')) ?? []) {
+      const defined = path.posix.basename(version.path) === layout.file
+        ? (parseTeamMcpServers(content) ?? []).map((server) => ({ server, def: teamMcpToDef(server) }))
+        // A server folder's MCP.yaml (#1787).
+        : [historicalFolderMcpServer(localConfig, version.path, content)].flatMap((found) => (found === null ? [] : [found]));
+
+      for (const { server, def } of defined) {
         if (!mcpTargetTakes(target, server.tools)) continue;
-        const def = teamMcpToDef(server);
 
         if (!supportsTransport(target.format, def.transport)) continue;
         const rendered = renderMcpEntry(target, def, vars);

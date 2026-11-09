@@ -4309,6 +4309,28 @@ servers:
       vi.mocked(log.info).mockClear();
     });
 
+    it('updates an unrecorded copy of a folder server equal to an older version of its MCP.yaml', async () => {
+      const folderServer = async (script: string): Promise<void> => {
+        await fse.outputFile(path.join(repoPath, 'mcp', 'notes', 'MCP.yaml'), `transport: stdio\ncommand: node\nargs: ["\${TEAMAI_MCP_DIR}/${script}"]\n`);
+        await fse.outputFile(path.join(repoPath, 'mcp', 'notes', script), 'console.log("notes")\n');
+        commitTeamRepo(repoPath, 'mcp');
+      };
+      const args = async (): Promise<unknown> => ((await servers())?.notes as { args?: unknown } | undefined)?.args;
+      await folderServer('v1.mjs');
+      await pull();
+      const before = await args();
+      await removeMcpManifests();
+
+      await folderServer('v2.mjs');
+      await pull();
+
+      expect([before, await args(), keptLines()]).toEqual([
+        [`${path.join(dataHome, 'mcp', 'notes').split(path.sep).join('/')}/v1.mjs`],
+        [`${path.join(dataHome, 'mcp', 'notes').split(path.sep).join('/')}/v2.mjs`],
+        [],
+      ]);
+    });
+
     it('adopts an unrecorded server equal to an older team render, and updates it', async () => {
       await publish(plainApi(v(1).url));
       await publish(plainApi(v(2).url));

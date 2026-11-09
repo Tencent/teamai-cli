@@ -11,7 +11,7 @@ import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.j
 import {
   entryFileAbsolutePath, entryFilePath, listEntryFiles, missingTopLevelKeyReason, readEntryFileText, unknownEntryKeys, type EntryFileRead, type ResolvedEntry,
 } from '../namespaced-entries.js';
-import { readMarkerFolder, type LayeredEntryType, type PlaceFolderRead } from './layered-entries.js';
+import { parseMarker, readMarkerFolder, type LayeredEntryType, type PlaceFolderRead } from './layered-entries.js';
 import { RESOURCE_LAYOUTS, Resources, type EntryListRead, type ResourceLayout } from './resolver.js';
 import { DeliveredFolders } from './delivered-folders.js';
 import type { FolderFile } from './folder-files.js';
@@ -217,8 +217,11 @@ function mcpFolderPath(localConfig: LocalConfig, resolved: ResolvedEntry<TeamMcp
 export function teamMcpDef(localConfig: LocalConfig, resolved: ResolvedEntry<TeamMcpDefinition>): McpServerDef {
   const def = teamMcpToDef(resolved.entry.server);
 
-  if (resolved.entry.kind === 'entry') return def;
-  const dest = mcpFolderPath(localConfig, resolved);
+  return resolved.entry.kind === 'entry' ? def : folderServerDef(def, mcpFolderPath(localConfig, resolved));
+}
+
+/** A folder server's `def` with `${TEAMAI_MCP_DIR}` in its `command`, `args` and `env` naming `dest`. */
+function folderServerDef(def: McpServerDef, dest: string): McpServerDef {
   const render = (text: string): string => DeliveredFolders.render(text, { type: 'mcp', dest });
 
   return {
@@ -227,6 +230,29 @@ export function teamMcpDef(localConfig: LocalConfig, resolved: ResolvedEntry<Tea
     args: def.args?.map(render),
     env: def.env && Object.fromEntries(Object.entries(def.env).map(([key, value]) => [key, render(value)])),
   };
+}
+
+/**
+ * The server a committed `MCP.yaml` at `relativePath` (`mcp/[<ns>/]<name>/MCP.yaml`) defined, as `localConfig`'s scope
+ * gave it to the tools, so teamai recognises the entries it wrote from an earlier version (#993, #1787). Null for any
+ * other path, or a version pull would not have delivered.
+ */
+export function historicalFolderMcpServer(localConfig: LocalConfig, relativePath: string, content: string): { readonly server: TeamMcpServer; readonly def: McpServerDef } | null {
+  const [type, ...rest] = relativePath.split('/');
+  const marker = rest.at(-1);
+  const name = rest.at(-2);
+  const namespace = rest.length === 3 ? rest[0] ?? null : null;
+  const { mcp } = RESOURCE_LAYOUTS;
+
+  if (type !== mcp.dir || marker !== mcp.marker || name === undefined || (rest.length !== 2 && rest.length !== 3)) return null;
+
+  if (!mcp.nameRule.pattern.test(name) || name.startsWith('teamai-')) return null;
+  const parsed = parseMarker(content, relativePath, FolderMcpFields);
+
+  if (!parsed.ok || parsed.fields.transport !== 'stdio' || !parsed.fields.command) return null;
+  const server: TeamMcpServer = { ...parsed.fields, name };
+
+  return { server, def: folderServerDef(teamMcpToDef(server), DeliveredFolders.pathOf(localConfig, { type: 'mcp', namespace, name })) };
 }
 
 /**
