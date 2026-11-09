@@ -166,6 +166,25 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
     expect(execFileSync(server.command, server.args, { encoding: 'utf8' }).trim()).toBe('v1');
   });
 
+  it('keeps the folder of a server the team drops while the file keeps an entry of that name teamai cannot prove its own', async () => {
+    await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER, 'mcp/jira-lite/server.mjs': 'console.log("jira")\n' });
+    await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
+    // Its records lost (#882), and the entry edited, so it matches no version teamai wrote.
+    const records = (await fse.readdir(home, { recursive: true, encoding: 'utf8' })).filter((file) => /managed-.*mcp.*\.json$/.test(path.basename(file)));
+
+    for (const record of records) await fse.remove(path.join(home, record));
+    const file = path.join(sandbox, 'app', '.mcp.json');
+    const config: { mcpServers: Record<string, Record<string, unknown>> } = await fse.readJson(file);
+    config.mcpServers['jira-lite'] = { ...config.mcpServers['jira-lite'], env: { JIRA_URL: 'https://jira.example.com' } };
+    await fse.writeJson(file, config);
+
+    await fse.remove(path.join(sandbox, 'team', 'mcp', 'jira-lite'));
+    await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
+    const server = await claudeServer('app', 'jira-lite') as { command: string; args: string[] };
+
+    expect(execFileSync(server.command, server.args, { encoding: 'utf8' }).trim()).toBe('jira');
+  });
+
   it('keeps the installed server and its folder when the team repo makes the folder invalid', async () => {
     await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER, 'mcp/jira-lite/server.mjs': 'console.log("jira")\n' });
     await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));

@@ -292,8 +292,8 @@ export async function deliverMcpFolders(
 /**
  * Remove the scope's server folders that neither the resolved servers `entries` nor an installed configuration names,
  * once every configuration this run writes is in place: a write that fails leaves the folders as they were. The folder
- * of each server in `installed` stays, whatever the team now makes of it: a configuration pull left as it was (a held or
- * kept server, or one a tool the member excluded has) still starts it from there.
+ * of each server in `installed`, which some tool's file still holds an entry for, stays, whatever the team now makes of
+ * it.
  */
 export async function pruneMcpFolders(
   localConfig: LocalConfig,

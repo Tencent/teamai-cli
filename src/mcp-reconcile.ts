@@ -1413,6 +1413,21 @@ export async function installedMcpEntries(
   return new Map([...options.underKeyOnly ? [] : Object.entries(doc.beside ?? {}), ...Object.entries(doc.servers)]);
 }
 
+/**
+ * The servers some tool's MCP file holds an entry for once a reconcile is done, whoever the entry is: one teamai
+ * wrote, kept (held, a secret not set here), or left in a tool the member excluded, and one the file holds as the
+ * member's. Each may run from the folder of its name, which therefore stays (#1787).
+ */
+async function installedMcpNames(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<Set<string>> {
+  const names = new Set<string>();
+
+  for (const target of await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true })) {
+    for (const name of (await installedMcpEntries(target))?.keys() ?? []) names.add(name);
+  }
+
+  return names;
+}
+
 /** In a Copilot project file that also holds `mcpServers`, a bare server whose value differs from the one of its name there. */
 async function shadowedBareCopilotServer(target: McpTarget): Promise<string | undefined> {
   if (target.format !== 'copilot' || !target.projectScope) return undefined;
@@ -2971,10 +2986,6 @@ async function reconcileTargets(
 
   if (!removeAll && !options.dryRun && !secretsUnread) {
     const kept = new Set([...held, ...[...desiredOf.values()].flatMap((desired) => [...desired.kept])]);
-    // An excluded tool is skipped, not cleaned (below): the servers it has installed keep their folders.
-    const excluded = targets.filter((target) => mcpTargetExcluded(localConfig, target));
-    const records = excluded.length === 0 ? {} : (await loadMcpManifest(localConfig, true)).manifest;
-    const installed = new Set([...kept, ...excluded.flatMap((target) => (records[mcpManifestKey(target)] ?? []).map(({ name }) => name))]);
     let placed: PlacedFolders;
 
     try {
@@ -2991,7 +3002,7 @@ async function reconcileTargets(
     settleFolders = async () => {
       await placed.commit();
 
-      if (held.size === 0) await pruneMcpFolders(localConfig, teamEntries, installed);
+      if (held.size === 0) await pruneMcpFolders(localConfig, teamEntries, await installedMcpNames(teamConfig, localConfig));
     };
   }
 
