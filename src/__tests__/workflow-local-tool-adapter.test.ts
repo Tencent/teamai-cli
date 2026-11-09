@@ -169,6 +169,17 @@ describe('local tool adapter', () => {
     });
   });
 
+  // OpenCode works in PWD rather than its cwd, so a trial launched with the caller's PWD edits the caller's checkout.
+  it('tells the tool its working directory through PWD as well as its cwd', async () => {
+    const cwd = path.join(os.tmpdir(), 'teamai-trial-clone');
+    const spawnTool = vi.fn(() => child('{}')) as unknown as ToolSpawn;
+    const adapter = createLocalToolAdapter(spawnTool, () => 'opencode');
+
+    await adapter.run('opencode', { prompt: 'Fix it.', cwd, env: { ...process.env, PWD: '/member/checkout' }, resultPath: path.join(cwd, 'result.json'), secrets: {} });
+
+    expect(spawnTool).toHaveBeenCalledWith('opencode', expect.any(Array), expect.objectContaining({ cwd, env: expect.objectContaining({ PWD: cwd }) }));
+  });
+
   it('runs a WorkBuddy step on CodeBuddy\'s Claude-like flags, without --effort, and reads its session and tokens', async () => {
     const resultPath = path.join(os.tmpdir(), `teamai-workflow-codebuddy-${Date.now()}.json`);
     files.push(resultPath);

@@ -228,10 +228,10 @@ fs.writeFileSync(args[args.indexOf('-o')+1], JSON.stringify({ verdict: 'fixed' }
   expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
   expect(Object.values(env)).not.toEqual(expect.arrayContaining([expect.stringMatching(/member-shell-secret|member-aws-secret/)]));
   // Nothing outside the common names, Codex's own profile names and the
-  // variables teamai sets itself may reach the child. The suite's own
+  // variables teamai sets itself, PWD among them as the judge's own directory, may reach the child. The suite's own
   // tracker injects NODE_OPTIONS into every child it starts, so that one is
   // not teamai's to account for.
-  const allowed = new Set(['PATH', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'SystemRoot', 'WINDIR', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'TERM', 'USER', 'LOGNAME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'SSL_CERT_FILE', 'NODE_EXTRA_CA_CERTS', 'CODEX_HOME', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CODEX_API_KEY', 'TEAMAI_LAUNCHED_BY', 'TEAMAI_MODE']);
+  const allowed = new Set(['PATH', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'SystemRoot', 'WINDIR', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'TERM', 'USER', 'LOGNAME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'SSL_CERT_FILE', 'NODE_EXTRA_CA_CERTS', 'CODEX_HOME', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CODEX_API_KEY', 'TEAMAI_LAUNCHED_BY', 'TEAMAI_MODE', 'PWD']);
   expect(Object.keys(env).filter((key) => !allowed.has(key) && key !== 'NODE_OPTIONS' && key !== '__CF_USER_TEXT_ENCODING')).toEqual([]);
 });
 
