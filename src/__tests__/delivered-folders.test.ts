@@ -8,6 +8,9 @@ import { DeliveredFolders } from '../resources/delivered-folders.js';
 import type { FolderFile } from '../resources/folder-files.js';
 import type { LocalConfig } from '../types.js';
 
+/** Whether the temp directory's file system takes two names that differ only in case for one. */
+const TMP_IGNORES_CASE = fs.existsSync(fs.realpathSync.native(os.tmpdir()).toUpperCase());
+
 const dirs: string[] = [];
 
 afterEach(() => {
@@ -72,7 +75,7 @@ describe('DeliveredFolders.deliver', () => {
     const dest = path.join(tempDir(), 'hooks', 'block-secrets');
     const ledger = openLedger({});
 
-    await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'event: Stop\n'), file('lib/scan.sh', 'echo scan\n', true)], ledger });
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('HOOK.yaml', 'event: Stop\n'), file('lib/scan.sh', 'echo scan\n', true)], ledger });
 
     expect(tree(path.dirname(dest))).toEqual({ 'block-secrets/HOOK.yaml': 'event: Stop\n', 'block-secrets/lib/scan.sh': 'echo scan\n' });
     expect(ledger.hashes).toEqual({
@@ -84,9 +87,9 @@ describe('DeliveredFolders.deliver', () => {
   it('replaces the previous version at the same path, keeping the files it dropped for what another worktree still runs, and leaves nothing beside it', async () => {
     const dest = path.join(tempDir(), 'hooks', 'block-secrets');
     const ledger = openLedger({});
-    await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v1\n'), file('old.sh', 'old\n')], ledger });
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('HOOK.yaml', 'v1\n'), file('old.sh', 'old\n')], ledger });
 
-    await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v2\n'), file('new.sh', 'new\n')], ledger });
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('HOOK.yaml', 'v2\n'), file('new.sh', 'new\n')], ledger });
 
     expect([tree(path.dirname(dest)), Object.keys(ledger.hashes).sort()]).toEqual([
       { 'block-secrets/HOOK.yaml': 'v2\n', 'block-secrets/new.sh': 'new\n', 'block-secrets/old.sh': 'old\n' },
@@ -94,35 +97,62 @@ describe('DeliveredFolders.deliver', () => {
     ]);
   });
 
-  it('gives the new version a path an earlier file clashes with: a file now a directory, a directory now a file, or the same name in another case', async () => {
+  it('gives the new version a path an earlier file clashes with: a file now a directory, or a directory now a file', async () => {
     const dest = path.join(tempDir(), 'mcp', 'jira-lite');
-    await DeliveredFolders.deliver({ dest, files: [file('Notes.md', 'old\n'), file('lib', 'old\n'), file('util/a.js', 'old\n')], ledger: undefined });
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('lib', 'old\n'), file('util/a.js', 'old\n')], ledger: undefined });
 
-    await DeliveredFolders.deliver({ dest, files: [file('NOTES.md', 'new\n'), file('lib/a.js', 'new\n'), file('util', 'new\n')], ledger: undefined });
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('lib/a.js', 'new\n'), file('util', 'new\n')], ledger: undefined });
 
-    expect(tree(dest)).toEqual({ 'NOTES.md': 'new\n', 'lib/a.js': 'new\n', util: 'new\n' });
+    expect(tree(dest)).toEqual({ 'lib/a.js': 'new\n', util: 'new\n' });
+  });
+
+  it.skipIf(!TMP_IGNORES_CASE)('gives the new version a name an earlier file has in another case, where the file system takes them for one', async () => {
+    const dest = path.join(tempDir(), 'mcp', 'jira-lite');
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('Notes.md', 'old\n'), file('lib/a.js', 'old\n')], ledger: undefined });
+
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('NOTES.md', 'new\n'), file('Lib', 'new\n')], ledger: undefined });
+
+    expect(tree(dest)).toEqual({ 'NOTES.md': 'new\n', Lib: 'new\n' });
+  });
+
+  it.skipIf(TMP_IGNORES_CASE)('keeps an earlier file whose name differs from a new one only in case, where the file system tells them apart', async () => {
+    const dest = path.join(tempDir(), 'mcp', 'jira-lite');
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('Checklist.md', 'old\n')], ledger: undefined });
+
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('checklist.md', 'new\n')], ledger: undefined });
+
+    expect(tree(dest)).toEqual({ 'Checklist.md': 'old\n', 'checklist.md': 'new\n' });
+  });
+
+  it('drops the files an earlier version had for a folder whose reader lists what it holds', async () => {
+    const dest = path.join(tempDir(), 'hooks', 'teamai-friction-reminder');
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'drop', files: [file('HOOK.yaml', 'v1\n'), file('problem.zh.md', 'zh\n')], ledger: undefined });
+
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'drop', files: [file('HOOK.yaml', 'v1\n'), file('problem.md', 'en\n')], ledger: undefined });
+
+    expect(tree(dest)).toEqual({ 'HOOK.yaml': 'v1\n', 'problem.md': 'en\n' });
   });
 
   it('leaves a folder that already holds the version in place, and records it', async () => {
     const dest = path.join(tempDir(), 'hooks', 'block-secrets');
     const files = [file('HOOK.yaml', 'v1\n'), file('scan.sh', 'echo scan\n', true)];
-    await DeliveredFolders.deliver({ dest, files, ledger: undefined });
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files, ledger: undefined });
     const before = fs.statSync(dest).ino;
     const ledger = openLedger({});
 
-    await DeliveredFolders.deliver({ dest, files, ledger });
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files, ledger });
 
     expect([fs.statSync(dest).ino, Object.keys(ledger.hashes).length]).toEqual([before, 2]);
   });
 
   it('names the folder it cannot move aside, and why, and leaves the installed version in place', async () => {
     const dest = path.join(tempDir(), 'hooks', 'block-secrets');
-    await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v1\n')], ledger: undefined });
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('HOOK.yaml', 'v1\n')], ledger: undefined });
     // What Windows answers while a hook still runs from the folder.
     const busy = Object.assign(new Error(`EBUSY: resource busy or locked, rename '${dest}'`), { code: 'EBUSY' });
     vi.spyOn(fs.promises, 'rename').mockRejectedValueOnce(busy);
 
-    await expect(DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v2\n')], ledger: undefined })).rejects.toThrow(
+    await expect(DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('HOOK.yaml', 'v2\n')], ledger: undefined })).rejects.toThrow(
       `could not replace the delivered folder ${dest} (EBUSY: resource busy or locked, rename '${dest}'); `
       + 'a program running from it, such as a hook on Windows, can hold it, so close that program',
     );
@@ -131,13 +161,13 @@ describe('DeliveredFolders.deliver', () => {
 
   it('puts the installed version back when the new one cannot be moved into place, and names the folder and why', async () => {
     const dest = path.join(tempDir(), 'hooks', 'block-secrets');
-    await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v1\n')], ledger: undefined });
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('HOOK.yaml', 'v1\n')], ledger: undefined });
     const rename = fs.promises.rename.bind(fs.promises);
     // What Windows can answer while a scanner holds the new version's files: the old one is already out of the way.
     const denied = Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
     vi.spyOn(fs.promises, 'rename').mockImplementationOnce(rename).mockRejectedValueOnce(denied);
 
-    await expect(DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v2\n')], ledger: undefined })).rejects.toThrow(
+    await expect(DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('HOOK.yaml', 'v2\n')], ledger: undefined })).rejects.toThrow(
       `could not move the new version of the delivered folder ${dest} into place (EPERM: operation not permitted, rename); `
       + 'the installed version stays, and the next pull tries again',
     );
@@ -146,7 +176,7 @@ describe('DeliveredFolders.deliver', () => {
 
   it('records the new version and warns when the previous one cannot be removed, which the next pull removes', async () => {
     const dest = path.join(tempDir(), 'hooks', 'block-secrets');
-    await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v1\n')], ledger: undefined });
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('HOOK.yaml', 'v1\n')], ledger: undefined });
     const rm = fs.promises.rm.bind(fs.promises);
     const denied = Object.assign(new Error('EACCES: permission denied, rmdir'), { code: 'EACCES' });
     vi.spyOn(fs.promises, 'rm').mockImplementation(async (target, options) => (String(target).includes('.block-secrets.old-') ? Promise.reject(denied) : rm(target, options)));
@@ -154,7 +184,7 @@ describe('DeliveredFolders.deliver', () => {
     const warn = vi.spyOn(log, 'warn').mockImplementation(() => undefined);
     const ledger = openLedger({});
 
-    await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v2\n')], ledger });
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('HOOK.yaml', 'v2\n')], ledger });
 
     const [message] = warn.mock.calls.map(([text]) => String(text));
     expect([tree(dest), Object.keys(ledger.hashes), warn.mock.calls.length]).toEqual([{ 'HOOK.yaml': 'v2\n' }, [path.join(dest, 'HOOK.yaml')], 1]);
@@ -167,7 +197,7 @@ describe('DeliveredFolders.deliver', () => {
     fs.writeFileSync(path.join(path.dirname(dest), '.block-secrets.new-0badc0de', 'HOOK.yaml'), 'half written\n');
     fs.mkdirSync(path.join(path.dirname(dest), '.block-secrets.old-0badc0de'), { recursive: true });
 
-    await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v1\n')], ledger: undefined });
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('HOOK.yaml', 'v1\n')], ledger: undefined });
 
     expect(tree(path.dirname(dest))).toEqual({ 'block-secrets/HOOK.yaml': 'v1\n' });
   });
@@ -181,7 +211,7 @@ describe('DeliveredFolders.prune', () => {
     const at = (namespace: string | null, name: string): string => DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace, name });
 
     for (const dest of [at(null, 'lint'), at(null, 'format'), at('payments', 'audit'), at('billing', 'audit')]) {
-      await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'x\n')], ledger });
+      await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('HOOK.yaml', 'x\n')], ledger });
     }
 
     const removed = await DeliveredFolders.prune({ localConfig, type: 'hooks', keep: [at(null, 'lint'), at('payments', 'audit')], ledger });
@@ -198,8 +228,8 @@ describe('DeliveredFolders.prune', () => {
     const localConfig: LocalConfig = { username: 't', additionalRoles: [], scope: 'user', dataHome, repo: { localPath: path.join(dataHome, 'repo'), remote: 'acme/team' } };
     const ledger = openLedger({});
     const at = (namespace: string | null, name: string): string => DeliveredFolders.pathOf(localConfig, { type: 'mcp', namespace, name });
-    await DeliveredFolders.deliver({ dest: at('Payments', 'Jira'), files: [file('MCP.yaml', 'x\n')], ledger });
-    await DeliveredFolders.deliver({ dest: at('payments', 'jira'), files: [file('MCP.yaml', 'x\n')], ledger });
+    await DeliveredFolders.deliver({ dest: at('Payments', 'Jira'), earlierFiles: 'keep', files: [file('MCP.yaml', 'x\n')], ledger });
+    await DeliveredFolders.deliver({ dest: at('payments', 'jira'), earlierFiles: 'keep', files: [file('MCP.yaml', 'x\n')], ledger });
 
     await DeliveredFolders.prune({ localConfig, type: 'mcp', keep: [at('payments', 'jira')], ledger });
 
@@ -218,8 +248,8 @@ describe('DeliveredFolders.sync', () => {
     const localConfig = scope();
     const at = (name: string): string => DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace: null, name });
     await DeliveredFolders.sync({ localConfig, type: 'hooks', ledger: undefined, prune: true, folders: [
-      { dest: at('format'), files: [file('HOOK.yaml', 'v1\n'), file('fmt.sh', 'v1\n')] },
-      { dest: at('lint'), files: [file('HOOK.yaml', 'v1\n'), file('scan.sh', 'v1\n')] },
+      { dest: at('format'), earlierFiles: 'keep', files: [file('HOOK.yaml', 'v1\n'), file('fmt.sh', 'v1\n')] },
+      { dest: at('lint'), earlierFiles: 'keep', files: [file('HOOK.yaml', 'v1\n'), file('scan.sh', 'v1\n')] },
     ] });
     const rename = fs.promises.rename.bind(fs.promises);
     const denied = Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
@@ -227,8 +257,8 @@ describe('DeliveredFolders.sync', () => {
     vi.spyOn(fs.promises, 'rename').mockImplementationOnce(rename).mockImplementationOnce(rename).mockImplementationOnce(rename).mockRejectedValueOnce(denied);
 
     await expect(DeliveredFolders.sync({ localConfig, type: 'hooks', ledger: undefined, prune: true, folders: [
-      { dest: at('format'), files: [file('HOOK.yaml', 'v2\n'), file('check.sh', 'v2\n')] },
-      { dest: at('lint'), files: [file('HOOK.yaml', 'v2\n'), file('check.sh', 'v2\n')] },
+      { dest: at('format'), earlierFiles: 'keep', files: [file('HOOK.yaml', 'v2\n'), file('check.sh', 'v2\n')] },
+      { dest: at('lint'), earlierFiles: 'keep', files: [file('HOOK.yaml', 'v2\n'), file('check.sh', 'v2\n')] },
     ] })).rejects.toThrow(`could not move the new version of the delivered folder ${at('lint')} into place`);
 
     expect(tree(path.dirname(at('lint')))).toEqual({
@@ -239,13 +269,13 @@ describe('DeliveredFolders.sync', () => {
   it('warns about a folder the team dropped that cannot be removed, keeps it, and delivers the rest', async () => {
     const localConfig = scope();
     const at = (name: string): string => DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace: null, name });
-    await DeliveredFolders.sync({ localConfig, type: 'hooks', ledger: undefined, prune: true, folders: [{ dest: at('old'), files: [file('HOOK.yaml', 'v1\n')] }] });
+    await DeliveredFolders.sync({ localConfig, type: 'hooks', ledger: undefined, prune: true, folders: [{ dest: at('old'), earlierFiles: 'keep', files: [file('HOOK.yaml', 'v1\n')] }] });
     const busy = Object.assign(new Error(`EBUSY: resource busy or locked, rmdir '${at('old')}'`), { code: 'EBUSY' });
     vi.spyOn(fse, 'remove').mockRejectedValueOnce(busy);
     const { log } = await import('../utils/logger.js');
     const warn = vi.spyOn(log, 'warn').mockImplementation(() => undefined);
 
-    await DeliveredFolders.sync({ localConfig, type: 'hooks', ledger: undefined, prune: true, folders: [{ dest: at('lint'), files: [file('HOOK.yaml', 'v1\n')] }] });
+    await DeliveredFolders.sync({ localConfig, type: 'hooks', ledger: undefined, prune: true, folders: [{ dest: at('lint'), earlierFiles: 'keep', files: [file('HOOK.yaml', 'v1\n')] }] });
 
     expect([tree(path.dirname(at('lint'))), warn.mock.calls.map(([message]) => String(message))]).toEqual([
       { 'lint/HOOK.yaml': 'v1\n', 'old/HOOK.yaml': 'v1\n' },

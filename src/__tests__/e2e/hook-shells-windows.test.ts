@@ -68,7 +68,7 @@ describe.runIf(process.platform === 'win32')('hook shells on Windows: a hook fol
     const folder = Object.entries(files).map(([file, content]) => ({ path: file, executable: false, bytes: Buffer.from(content) }));
 
     try {
-      await DeliveredFolders.deliver({ dest, files: folder, ledger: undefined });
+      await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: folder, ledger: undefined });
       const result = shell(DeliveredFolders.render(command, { type: 'hooks', dest }), { ...process.env, HOME: home, USERPROFILE: home });
 
       expect(result.status).toBe(0);

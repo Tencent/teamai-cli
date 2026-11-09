@@ -301,7 +301,7 @@ export async function readDefaultHookReplacements(localConfig: LocalConfig): Pro
     const problems = read.kind === 'invalid' ? read.problems.map(FolderFiles.describe) : await DefaultHooks.problems(name, read.files);
 
     if (read.kind === 'files' && problems.length === 0) {
-      replacements.push({ kind: 'delivered', name, path: source.path, delivery: { dest: DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace: null, name }), files: read.files } });
+      replacements.push({ kind: 'delivered', name, path: source.path, delivery: { dest: DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace: null, name }), files: read.files, earlierFiles: 'drop' } });
       continue;
     }
 
@@ -353,7 +353,7 @@ function teamHookDelivery(localConfig: LocalConfig, resolved: ResolvedEntry<Team
   if (definition.kind === 'entry') return { def: teamHookToDef(definition.hook), folder: null };
   const def = folderHookDef(localConfig, definition.hook, resolved.namespace);
 
-  return { def, folder: def.folder ? { dest: def.folder.dest, files: definition.files } : null };
+  return { def, folder: def.folder ? { dest: def.folder.dest, files: definition.files, earlierFiles: 'keep' } : null };
 }
 
 /**

@@ -258,7 +258,7 @@ export function historicalFolderMcpServer(localConfig: LocalConfig, relativePath
 /** The folders of the resolved servers `entries` that are folders. */
 function mcpFolders(localConfig: LocalConfig, entries: ReadonlyArray<ResolvedEntry<TeamMcpDefinition>>): FolderDelivery[] {
   return entries.flatMap((resolved) => (resolved.entry.kind === 'folder'
-    ? [{ dest: mcpFolderPath(localConfig, resolved), files: resolved.entry.files }]
+    ? [{ dest: mcpFolderPath(localConfig, resolved), files: resolved.entry.files, earlierFiles: 'keep' as const }]
     : []));
 }
 

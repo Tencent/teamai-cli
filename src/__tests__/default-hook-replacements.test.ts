@@ -128,6 +128,16 @@ describe('a team replacement of teamai-friction-reminder', () => {
 
       expect(await stopHint(20)).toBe(`[acme] Worth a write-up?\n\n${SHARE_LEARNINGS_ZH}`);
     });
+
+    it('prints its own problem.md once the team deletes the problem.zh.md an earlier pull delivered', async () => {
+      await replace('teamai-friction-reminder', { 'problem.md': '[acme] Worth a write-up?\n', 'problem.zh.md': '[acme] 这次会话卡住过，要不要写下来？\n' });
+      await reconcileTeamHooksForConfig(teamConfig, member());
+
+      await fse.remove(path.join(repo, 'hooks', 'teamai-friction-reminder', 'problem.zh.md'));
+      await reconcileTeamHooksForConfig(teamConfig, member());
+
+      expect(await stopHint(20)).toBe(`[acme] Worth a write-up?\n\n${SHARE_LEARNINGS_ZH}`);
+    });
   });
 });
 

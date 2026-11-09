@@ -107,19 +107,39 @@ async function holds(dest: string, files: readonly FolderFile[]): Promise<boolea
 }
 
 /**
- * `files` with each file of the installed folder at `dest` that the new version dropped (#1787). The folder is shared:
- * another worktree of the workspace, a tool pull leaves alone, or a configuration pull could not rewrite may still run
- * an earlier version from it, so a file goes only with its folder. Where an earlier path clashes with a new one (a file
- * that became a directory, or the same name in another case, which a case-insensitive file system cannot hold twice),
- * the new version's wins.
+ * Whether the file system holding the installed folder `dest` takes two names that differ only in case for one: one of
+ * its `files`, looked up in the other case, is the same file.
+ */
+async function foldsCase(dest: string, files: readonly FolderFile[]): Promise<boolean> {
+  const probe = files.find((file) => file.path.toUpperCase() !== file.path.toLowerCase());
+
+  if (probe === undefined) return false;
+  const other = probe.path === probe.path.toUpperCase() ? probe.path.toLowerCase() : probe.path.toUpperCase();
+
+  try {
+    const [found, swapped] = await Promise.all([probe.path, other].map((file) => fs.stat(path.join(dest, ...file.split('/')))));
+
+    return found !== undefined && swapped !== undefined && found.dev === swapped.dev && found.ino === swapped.ino;
+  } catch (error) {
+    if (errnoCode(error) === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/**
+ * `files` with each file of the installed folder at `dest` that the new version dropped (#1787). A rule copy or an MCP
+ * configuration that a pull could not rewrite, or that a tool the member excluded keeps, may still name an earlier
+ * version's file, so a file goes only with its folder. Where an earlier path clashes with a new one (a file that became a
+ * directory, or, on a file system that takes them for one, the same name in another case), the new version's wins.
  */
 async function withEarlierFiles(dest: string, files: readonly FolderFile[]): Promise<readonly FolderFile[]> {
   const installed = await FolderFiles.read(dest);
 
   if (installed.kind !== 'files') return files;
-  const fresh = files.map((file) => file.path.toLowerCase());
+  const key = await foldsCase(dest, installed.files) ? (file: string) => file.toLowerCase() : (file: string) => file;
+  const fresh = files.map((file) => key(file.path));
   const clashes = (earlier: string): boolean => fresh.some((wanted) => wanted === earlier || wanted.startsWith(`${earlier}/`) || earlier.startsWith(`${wanted}/`));
-  const kept = installed.files.filter((file) => !clashes(file.path.toLowerCase()));
+  const kept = installed.files.filter((file) => !clashes(key(file.path)));
 
   // In the order `FolderFiles.read` lists them, which `holds` compares against.
   return kept.length === 0 ? files : [...files, ...kept].sort((a, b) => (a.path < b.path ? -1 : 1));
@@ -147,7 +167,7 @@ async function moveAside(dest: string, old: string): Promise<boolean> {
 
 /**
  * Deliver each folder's `files`, in path order, at its `dest`, all or none, keeping the files an earlier version had
- * (`withEarlierFiles`): every new version is written to a hidden sibling first, then each is renamed into place. A failure puts back every installed version already replaced, so
+ * where the folder says so (`earlierFiles`): every new version is written to a hidden sibling first, then each is renamed into place. A failure puts back every installed version already replaced, so
  * the folders still match the hooks and servers installed from them. A folder that already holds its version is left
  * in place, so a hook running from it is not disturbed. Each file is recorded in `ledger`, in place of what it
  * recorded under its `dest`.
@@ -165,8 +185,8 @@ async function deliverAll(folders: readonly FolderDelivery[], ledger: DeliveryLe
     for (const folder of folders) {
       const { dest } = folder;
       await removeLeftovers(dest);
-      const files = await withEarlierFiles(dest, folder.files);
-      delivered.push({ dest, files });
+      const files = folder.earlierFiles === 'keep' ? await withEarlierFiles(dest, folder.files) : folder.files;
+      delivered.push({ ...folder, files });
 
       if (await holds(dest, files)) continue;
       const suffix = randomBytes(4).toString('hex');
@@ -230,8 +250,8 @@ async function deliverAll(folders: readonly FolderDelivery[], ledger: DeliveryLe
   }
 }
 
-/** Deliver one folder's `files` at `dest`, as `deliverAll` does. */
-async function deliver(input: { readonly dest: string; readonly files: readonly FolderFile[]; readonly ledger: DeliveryLedger | undefined }): Promise<void> {
+/** Deliver one folder, as `deliverAll` does. */
+async function deliver(input: FolderDelivery & { readonly ledger: DeliveryLedger | undefined }): Promise<void> {
   await deliverAll([input], input.ledger);
 }
 
@@ -330,6 +350,12 @@ async function prune(input: {
 export interface FolderDelivery {
   readonly dest: string;
   readonly files: readonly FolderFile[];
+  /**
+   * What happens to a file an earlier version had and this one drops: `keep` it until the folder goes, for a folder
+   * whose files a configuration or a rule names by path (`withEarlierFiles`); `drop` it, for a folder whose reader takes
+   * whatever files it holds, such as a default hook's language variants.
+   */
+  readonly earlierFiles: 'keep' | 'drop';
 }
 
 /**

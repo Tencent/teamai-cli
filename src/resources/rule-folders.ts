@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import type { DeliveryLedger } from './delivered-copies.js';
-import { DeliveredFolders, type DeliveredFolderRef } from './delivered-folders.js';
+import { DeliveredFolders, type DeliveredFolderRef, type FolderDelivery } from './delivered-folders.js';
 import { FolderFiles, type FolderFile } from './folder-files.js';
 import { isLanguageVariant, RESOURCE_LAYOUTS, type ResourceDiagnostic } from './resolver.js';
 import { splitRuleFrontmatter } from './team-rule.js';
@@ -137,12 +137,12 @@ async function sync(input: {
   readonly ledger: DeliveryLedger | undefined;
 }): Promise<(heldByCopies: readonly string[]) => Promise<void>> {
   const { localConfig, ledger } = input;
-  const folders: { readonly dest: string; readonly name: string; readonly files: readonly FolderFile[] }[] = [];
+  const folders: Array<FolderDelivery & { readonly name: string }> = [];
 
   for (const rule of input.rules.filter(isFolder)) {
     const read = await FolderFiles.read(path.dirname(rule.sourcePath));
 
-    if (read.kind === 'files') folders.push({ dest: DeliveredFolders.pathOf(localConfig, refOf(rule)), name: rule.name, files: read.files });
+    if (read.kind === 'files') folders.push({ dest: DeliveredFolders.pathOf(localConfig, refOf(rule)), name: rule.name, files: read.files, earlierFiles: 'keep' });
   }
 
   if (DeliveredFolders.worktreeRoot(localConfig) === null) {
