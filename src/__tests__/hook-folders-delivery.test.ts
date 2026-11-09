@@ -124,19 +124,36 @@ describe('the team hook history', () => {
 });
 
 describe('a team hook folder in a single-repo worktree', () => {
-  it('is delivered in the worktree\'s .teamai/delivered/, and Claude Code names it through $CLAUDE_PROJECT_DIR', async () => {
-    const project = path.join(home, 'shop');
-    const team = path.join(project, '.teamai');
+  let project: string;
+  let team: string;
+  let self: LocalConfig;
+
+  beforeEach(async () => {
+    project = path.join(home, 'shop');
+    team = path.join(project, '.teamai');
     execFileSync('git', ['init', '-q', project]);
     await fse.ensureDir(path.join(project, '.claude'));
     await fse.outputFile(path.join(team, 'hooks', 'block-secrets', 'HOOK.yaml'), BLOCK_SECRETS);
     await fse.outputFile(path.join(team, 'hooks', 'block-secrets', 'scan.sh'), 'echo scanning\n');
 
-    const self: LocalConfig = {
+    self = {
       repo: { kind: 'self', localPath: team, remote: 'acme/shop', businessRepoRoot: project },
       username: 'tester', additionalRoles: [], scope: 'project', projectRoot: project, enabledAgents: ['claude'],
     };
+  });
 
+  it('is kept out of git by its own exclude block, with sharing.gitExclude off too', async () => {
+    const gitExcludeOff = { ...teamConfig, sharing: { gitExclude: false } } as unknown as TeamaiConfig;
+
+    await reconcileTeamHooksForConfig(gitExcludeOff, self);
+
+    const untracked = execFileSync('git', ['-C', project, 'status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' });
+
+    expect([await fse.readFile(path.join(project, '.git', 'info', 'exclude'), 'utf8'), untracked.includes('.teamai/delivered/')])
+      .toEqual([expect.stringContaining('# [teamai:delivered-folders:start]\n/.teamai/delivered/\n# [teamai:delivered-folders:end]\n'), false]);
+  });
+
+  it('is delivered in the worktree\'s .teamai/delivered/, and Claude Code names it through $CLAUDE_PROJECT_DIR', async () => {
     await reconcileTeamHooksForConfig(teamConfig, self);
 
     const commands = [];

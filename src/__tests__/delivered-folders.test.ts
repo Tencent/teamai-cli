@@ -160,3 +160,13 @@ describe('DeliveredFolders.render', () => {
     })).toBe('bash "$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/lint/scan.sh"');
   });
 });
+
+describe('DELIVERED_DIR', () => {
+  it('is reserved under .teamai/: no resource type or layout reads a directory of that name', async () => {
+    const { RESOURCE_TYPES } = await import('../types.js');
+    const { RESOURCE_LAYOUTS } = await import('../resources/resolver.js');
+    const { DELIVERED_DIR } = await import('../resources/delivered-folders.js');
+
+    expect([...RESOURCE_TYPES, ...Object.values(RESOURCE_LAYOUTS).map((layout) => layout.dir)]).not.toContain(DELIVERED_DIR);
+  });
+});

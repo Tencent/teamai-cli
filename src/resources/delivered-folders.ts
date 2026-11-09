@@ -16,6 +16,7 @@ import path from 'node:path';
 import { contentHash, forgetDelivered, removeDelivered, type DeliveryLedger } from './delivered-copies.js';
 import { FolderFiles, type FolderFile } from './folder-files.js';
 import { getDataHome, isSelfMode, type LocalConfig } from '../types.js';
+import { pathExists } from '../utils/fs.js';
 
 /** The folder types pull delivers. */
 export type DeliveredFolderType = 'hooks' | 'rules' | 'mcp';
@@ -172,4 +173,34 @@ async function prune(input: {
   return removed;
 }
 
-export const DeliveredFolders = { root, pathOf, deliver, prune, mentions, render } as const;
+/** A folder to deliver: where, and its files in path order. */
+export interface FolderDelivery {
+  readonly dest: string;
+  readonly files: readonly FolderFile[];
+}
+
+/**
+ * One run of a type's folders for `localConfig`'s scope: deliver each of `folders`, then, with `prune`, remove the
+ * type's others, all recorded in `ledger`. In single-repo, `.teamai/delivered/` is then kept out of git by its own
+ * block in `.git/info/exclude`. Throws when a folder cannot be written; the caller keeps what it installed.
+ */
+async function sync(input: {
+  readonly localConfig: LocalConfig;
+  readonly type: DeliveredFolderType;
+  readonly folders: readonly FolderDelivery[];
+  readonly ledger: DeliveryLedger | undefined;
+  readonly prune: boolean;
+}): Promise<void> {
+  const { localConfig, type, folders, ledger } = input;
+
+  for (const folder of folders) await deliver({ ...folder, ledger });
+
+  if (input.prune) await prune({ localConfig, type, keep: folders.map(({ dest }) => dest), ledger });
+
+  if (isSelfMode(localConfig) && await pathExists(root(localConfig))) {
+    const { excludeDeliveredFolders } = await import('../git-exclude-delivered.js');
+    await excludeDeliveredFolders(localConfig, root(localConfig));
+  }
+}
+
+export const DeliveredFolders = { root, pathOf, sync, deliver, prune, mentions, render } as const;

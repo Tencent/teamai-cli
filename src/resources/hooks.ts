@@ -12,7 +12,7 @@ import {
   type EntryPlaceReader, type EntryResolution, type ResolvedEntry,
 } from '../namespaced-entries.js';
 import { RESOURCE_LAYOUTS, Resources, type EntryListRead, type ResourceLayout } from './resolver.js';
-import { DeliveredFolders } from './delivered-folders.js';
+import { DeliveredFolders, type FolderDelivery } from './delivered-folders.js';
 import { FolderFiles, type FolderFile } from './folder-files.js';
 
 // ─── Schema for hooks/hooks.yaml ────────────────────────────
@@ -327,10 +327,7 @@ function isTeamScriptCommand(command: string): boolean {
 }
 
 /** A hook folder pull delivers: where, and the files. */
-export interface HookFolderDelivery {
-  readonly dest: string;
-  readonly files: readonly FolderFile[];
-}
+export type HookFolderDelivery = FolderDelivery;
 
 /** One team hook as delivered: its definition for the tools, and the folder it runs from, if any. */
 interface TeamHookDelivery {
@@ -472,12 +469,7 @@ export async function deliverHookFolders(
   const { editDeliveryRecord } = await import('../pull.js');
   const record = await editDeliveryRecord(localConfig);
 
-  for (const folder of folders) await DeliveredFolders.deliver({ ...folder, ledger: record.ledger });
-
-  if (opts.prune) {
-    await DeliveredFolders.prune({ localConfig, type: 'hooks', keep: folders.map(({ dest }) => dest), ledger: record.ledger });
-  }
-
+  await DeliveredFolders.sync({ localConfig, type: 'hooks', folders, ledger: record.ledger, prune: opts.prune });
   await record.save();
 }
 

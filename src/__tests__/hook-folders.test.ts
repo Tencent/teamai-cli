@@ -151,3 +151,11 @@ describe('team hooks that cannot be delivered stop team hooks for the run', () =
     expect([resolved.ok, warnings()]).toEqual([false, expect.stringContaining('hook "block-secrets" is defined in both hooks/block-secrets/ and hooks/hooks.yaml, in the same place.')]);
   });
 });
+
+describe('TEAMAI_HOOK_DIR', () => {
+  it('is reserved, so no team env value can shadow it', async () => {
+    const { reservedTeamEnvWarning } = await import('../env-reserved.js');
+
+    expect(reservedTeamEnvWarning(['TEAMAI_HOOK_DIR', 'LINT_LEVEL'])).toBe('TEAMAI_HOOK_DIR is reserved for TeamAI shell routing; those team env values are ignored.');
+  });
+});

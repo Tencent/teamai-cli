@@ -58,6 +58,7 @@ import { BUILTIN_RULE_NAMES, TEAMAI_CONTEXT_RULE_NAME } from './builtin-rules.js
 import { isLegacyCursorRuleFile, keptLegacyCopiesWarning, ruleStemFromFilename, usesMdcRules, type InstructionBlock, type LegacyRuleDir } from './resources/rule-format.js';
 import { agentStemFromFilename } from './resources/agent-format.js';
 import { resolveDocsDestination } from './resources/docs.js';
+import { DeliveredFolders } from './resources/delivered-folders.js';
 import { listTeamAgentDirs, ownsAgentCopy, updateJoycodeAgentIndex } from './resources/agents.js';
 import { RulesHandler, inlineRulesLabelOf, inlineRulesLocationOf, isLegacyLayoutCopy, ownsRuleCopy } from './resources/rules.js';
 import { deliveredHashes, projectCheckouts, syncDeliveredGitExclude } from './pull.js';
@@ -132,6 +133,8 @@ interface RemovalPlan {
   dshHookFile: string | null;
   /** The team hooks teamai's bridge runs for a tool (~/.teamai/team-hooks/<tool>.json). */
   bridgedTeamHookFiles: string[];
+  /** A single-repo worktree's `.teamai/delivered/`: the hook folders it ran team hooks from (#1787). */
+  deliveredFolderDirs: string[];
   /** Manifest used by the primary hook injection scope. */
   hookManifestPath: string;
   /** The team's hooks at every revision: an unrecorded entry equal to exactly one of them is teamai's (#993). */
@@ -1556,6 +1559,9 @@ async function buildRemovalPlan(
     piHookFiles: [],
     dshHookFile: null,
     bridgedTeamHookFiles: [],
+    // A full uninstall only: every tool's team hooks ran from them.
+    deliveredFolderDirs: !agentFilter && isSelfMode(localConfig) && await pathExists(DeliveredFolders.root(localConfig))
+      ? [DeliveredFolders.root(localConfig)] : [],
     hookManifestPath: hookTargets[0].manifestPath,
     teamHookHistory: hookHistory,
     claudeMdFiles: [],
@@ -1878,6 +1884,7 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
     plan.opencodePluginDirs.length === 0 &&
     plan.ompHookFiles.length === 0 &&
     plan.bridgedTeamHookFiles.length === 0 &&
+    plan.deliveredFolderDirs.length === 0 &&
     plan.kiroHookFile === null &&
     plan.agyHookFile === null &&
     plan.piHookFiles.length === 0 &&
@@ -1987,6 +1994,8 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
 
     for (const file of plan.bridgedTeamHookFiles) console.log(`     ${file}`);
   }
+
+  for (const dir of plan.deliveredFolderDirs) console.log(`   Team hook folders delivered in this worktree: ${dir}`);
 
   if (plan.piHookFiles.length > 0) {
     console.log(`   Pi Hooks (${plan.piHookFiles.length} files):`);
@@ -2771,6 +2780,16 @@ async function executeRemoval(
       log.success(`Removed the team hooks teamai runs from ${file}`);
     } catch (e) {
       log.warn(`Failed to remove ${file}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  // The folders a single-repo worktree's team hooks ran from, now that no entry names them (#1787).
+  for (const dir of plan.deliveredFolderDirs) {
+    try {
+      await remove(dir);
+      log.success(`Removed the team hook folders delivered in ${dir}`);
+    } catch (e) {
+      log.warn(`Failed to remove ${dir}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
