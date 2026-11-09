@@ -1202,6 +1202,7 @@ export const dashboardMessages = {
   "Rule text from": "规则正文取自",
   "Where each tool reads": "各工具读取的位置",
   "Reads the data home: teamai adds it to permissions.additionalDirectories": "读取数据目录：teamai 把它加入 permissions.additionalDirectories",
-  "Reads the copy pull puts in the project": "读取 pull 放在项目里的副本",
+  "Reads it in the worktree": "从工作树读取",
+  "May ask before it reads the data home": "读取数据目录前可能会先询问",
   "Reads the data home": "读取数据目录",
 } satisfies Record<string, string>;

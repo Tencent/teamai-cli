@@ -12,7 +12,7 @@ import { FolderFiles, type FolderFile } from './folder-files.js';
 import { isLanguageVariant, RESOURCE_LAYOUTS, type ResourceDiagnostic } from './resolver.js';
 import { splitRuleFrontmatter } from './team-rule.js';
 import { ruleFolderReachOf } from '../tools.js';
-import { isSelfMode, type LocalConfig, type ResourceItem, type TeamaiConfig } from '../types.js';
+import type { LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
 import { pathExists, readJsonObject, writeJson } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { warnOnce } from '../utils/warn-once.js';
@@ -100,41 +100,35 @@ async function text(rule: RuleFolder, language: TeamaiConfig['language']): Promi
   return `${splitRuleFrontmatter(base).block}${body}\n`;
 }
 
-/** Whether `tool` reads a rule folder's files in the data home without a prompt, once teamai grants what it can. */
-function readsDataHome(tool: string): boolean {
+/** Whether `tool` reads a rule folder's files outside the project without a prompt, once teamai grants what it can. */
+function readsOutsideProject(tool: string): boolean {
   return ruleFolderReachOf(tool).reach !== 'copy';
 }
 
 /**
- * `text` with `${TEAMAI_RULE_DIR}` naming where `tool` reads `rule`'s folder in `localConfig`'s scope: the data home
- * when the tool reads it there, and in a project otherwise the worktree's copy, relative to the project root. A
- * user-scope rule has no worktree, so it names the data home for every tool (`sync` warns for the rest). `tool` null:
- * text teamai injects for the tools without native rules, none of which reads the data home.
+ * `text` with `${TEAMAI_RULE_DIR}` naming `rule`'s folder in `localConfig`'s scope, where every tool reads it: in a
+ * project the worktree's `.teamai/delivered/rules/`, by its path from the project root for a tool that reads nothing
+ * outside the project; in user scope the data home (`sync` warns for the tools that cannot read it). `tool` null: text
+ * teamai injects for the tools without native rules, none of which reads outside the project.
  */
 function render(ruleText: string, at: { readonly localConfig: LocalConfig; readonly rule: RuleFolder; readonly tool: string | null }): string {
-  const copyRoot = DeliveredFolders.worktreeRoot(at.localConfig);
+  const dest = DeliveredFolders.pathOf(at.localConfig, refOf(at.rule));
   const { projectRoot } = at.localConfig;
 
-  if (copyRoot === null || projectRoot === undefined || (at.tool !== null && readsDataHome(at.tool))) {
-    return DeliveredFolders.render(ruleText, { type: 'rules', dest: DeliveredFolders.pathOf(at.localConfig, refOf(at.rule)) });
+  if (DeliveredFolders.worktreeRoot(at.localConfig) === null || projectRoot === undefined || (at.tool !== null && readsOutsideProject(at.tool))) {
+    return DeliveredFolders.render(ruleText, { type: 'rules', dest });
   }
 
-  return DeliveredFolders.render(ruleText, { type: 'rules', dest: path.relative(projectRoot, copyPathOf(copyRoot, refOf(at.rule))) });
-}
-
-/** Where `ref` is copied under `copyRoot`. */
-function copyPathOf(copyRoot: string, ref: DeliveredFolderRef): string {
-  return path.join(copyRoot, ref.type, ...(ref.namespace === null ? [] : [ref.namespace]), ref.name);
+  return DeliveredFolders.render(ruleText, { type: 'rules', dest: path.relative(projectRoot, dest) });
 }
 
 /**
- * Deliver the folder of each rule folder in `rules` to `localConfig`'s scope, recorded in `ledger`. In a remote team's
- * project where one of `tools` (the tools receiving rules) cannot read the data home, the folders are copied into the
- * worktree too, in the same delivery, so a copy that cannot be written leaves the data home as it was; in user scope,
- * each such tool is named once. A folder keeps the files an earlier version had, which a copy the member edited
- * may still name (`DeliveredFolders.deliverAll`). Throws when a folder cannot be written; the caller keeps what it
- * installed. Returns the removal of the scope's other folders, which the caller runs once its stale sweep is done,
- * with the rules a tool still holds a copy of: their folders stay, so the text still names files that exist.
+ * Deliver the folder of each rule folder in `rules` to `localConfig`'s scope, recorded in `ledger`. In user scope, each
+ * of `tools` (the tools receiving rules) that cannot read the data home is named once. A folder keeps the files an
+ * earlier version had, which a copy the member edited may still name (`DeliveredFolders.deliverAll`). Throws when a
+ * folder cannot be written; the caller keeps what it installed. Returns the removal of the scope's other folders, which
+ * the caller runs once its stale sweep is done, with the rules a tool still holds a copy of: their folders stay, so the
+ * text still names files that exist.
  */
 async function sync(input: {
   readonly localConfig: LocalConfig;
@@ -143,49 +137,32 @@ async function sync(input: {
   readonly ledger: DeliveryLedger | undefined;
 }): Promise<(heldByCopies: readonly string[]) => Promise<void>> {
   const { localConfig, ledger } = input;
-  const folders: { readonly ref: DeliveredFolderRef; readonly name: string; readonly files: readonly FolderFile[] }[] = [];
+  const folders: { readonly dest: string; readonly name: string; readonly files: readonly FolderFile[] }[] = [];
 
   for (const rule of input.rules.filter(isFolder)) {
     const read = await FolderFiles.read(path.dirname(rule.sourcePath));
 
-    if (read.kind === 'files') folders.push({ ref: refOf(rule), name: rule.name, files: read.files });
+    if (read.kind === 'files') folders.push({ dest: DeliveredFolders.pathOf(localConfig, refOf(rule)), name: rule.name, files: read.files });
   }
 
-  const delivered = folders.map(({ ref, files }) => ({ dest: DeliveredFolders.pathOf(localConfig, ref), files }));
-  const copying = input.tools.filter((tool) => !readsDataHome(tool));
-  const copyRoot = DeliveredFolders.worktreeRoot(localConfig);
-
-  if (copyRoot === null) {
-    for (const tool of folders.length === 0 ? [] : copying) {
-      warnOnce(`${tool} may ask before it reads the files of user-scope rule folders in ${DeliveredFolders.root(localConfig)}`
+  if (DeliveredFolders.worktreeRoot(localConfig) === null) {
+    for (const tool of folders.length === 0 ? [] : input.tools.filter((name) => !readsOutsideProject(name))) {
+      warnOnce(`${tool} may ask before it reads the files of user-scope rule folders in ${DeliveredFolders.root(localConfig, 'rules')}`
         + `${path.sep}rules (${folders.map(({ name }) => name).join(', ')}): teamai grants it no access there, and a user-scope `
         + 'rule has no project to copy them into. Allow the directory in its settings, or share these rules from a project.');
     }
   }
 
-  // Self mode delivers into the worktree already, so it has no copy to make.
-  const copies = copyRoot === null || isSelfMode(localConfig) || copying.length === 0
-    ? []
-    : folders.map(({ ref, files }) => ({ dest: copyPathOf(copyRoot, ref), files }));
-
-  await DeliveredFolders.sync({ localConfig, type: 'rules', folders: [...delivered, ...copies], ledger, prune: false, root: copies.length === 0 ? undefined : copyRoot ?? undefined });
-
-  const roots: Array<{ readonly root: string; readonly dests: readonly string[]; readonly at: (name: string) => string }> = [
-    { root: DeliveredFolders.root(localConfig), dests: delivered.map(({ dest }) => dest), at: (name) => pathOf(localConfig, name) },
-    // With no tool left to copy for, the copies go.
-    ...copyRoot === null || isSelfMode(localConfig) ? [] : [{ root: copyRoot, dests: copies.map(({ dest }) => dest), at: (name: string) => copyPathOf(copyRoot, refOf({ name })) }],
-  ];
+  await DeliveredFolders.sync({ localConfig, type: 'rules', folders, ledger, prune: false });
 
   return async (heldByCopies) => {
-    for (const { root, dests, at } of roots) {
-      await DeliveredFolders.prune({ localConfig, type: 'rules', keep: [...dests, ...heldByCopies.map(at)], ledger, root });
-    }
+    await DeliveredFolders.prune({ localConfig, type: 'rules', keep: [...folders.map(({ dest }) => dest), ...heldByCopies.map((name) => pathOf(localConfig, name))], ledger });
   };
 }
 
 /** The rule folders delivered in `localConfig`'s scope, by name (`api-style`, `fe/api-style`): each directory holding a `RULE.md`. */
 async function deliveredNames(localConfig: LocalConfig): Promise<string[]> {
-  const rulesRoot = path.join(DeliveredFolders.root(localConfig), 'rules');
+  const rulesRoot = path.join(DeliveredFolders.root(localConfig, 'rules'), 'rules');
   const names: string[] = [];
 
   const walk = async (dir: string, prefix: string): Promise<void> => {

@@ -317,10 +317,10 @@ Files on a folder's row lists its files with size and executable mark, the total
 api-style      rules/api-style/      Team root  Folder  In force  —   Hide
   RULE.md 108 B   RULE.zh.md 55 B   checklist.md 62 B   Total 225 B
   Rule text from RULE.zh.md
-  Pull delivers it to ~/.teamai/projects/<slug>/rules/api-style  Delivered
+  Pull delivers it to ~/work/shop/.teamai/delivered/rules/api-style  Delivered
   Where each tool reads ${TEAMAI_RULE_DIR}
-  claude  ~/.teamai/projects/<slug>/rules/api-style  Reads the data home: teamai adds it to permissions.additionalDirectories
-  codex   .teamai/delivered/rules/api-style          Reads the copy pull puts in the project
+  claude  ~/work/shop/.teamai/delivered/rules/api-style  Reads it in the worktree
+  codex   .teamai/delivered/rules/api-style              Reads it in the worktree
 teamai-recall  rules/teamai-recall/  Team root  Folder  Refused
   rules/teamai-recall/ is not used, so teamai's recall rule stays in force: rules/teamai-recall/RULE.md does not contain "Nothing was searched:". Fix the folder in the team repo.
 ```

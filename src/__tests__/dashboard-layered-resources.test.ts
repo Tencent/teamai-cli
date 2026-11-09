@@ -412,7 +412,7 @@ describe('rule folders on the Resources page', () => {
     });
 
     const list = (await collectLayeredResources(projectMember(), zhTeam)).types.find((found) => found.type === 'rules');
-    const delivered = path.join(dataHome, 'rules', 'api-style');
+    const delivered = path.join(sandbox, 'checkout', '.teamai', 'delivered', 'rules', 'api-style');
 
     expect(list?.resources.filter((resource) => resource.layer.kind !== 'teamai')).toEqual([{
       name: 'api-style',
@@ -433,8 +433,8 @@ describe('rule folders on the Resources page', () => {
         runs: null,
         variant: 'RULE.zh.md',
         reads: [
-          { tool: 'claude', reach: 'grant', path: delivered.split(path.sep).join('/') },
-          { tool: 'codex', reach: 'copy', path: '.teamai/delivered/rules/api-style' },
+          { tool: 'claude', reach: 'worktree', path: delivered.split(path.sep).join('/') },
+          { tool: 'codex', reach: 'worktree', path: '.teamai/delivered/rules/api-style' },
         ],
       },
     }]);

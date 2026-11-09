@@ -66,7 +66,7 @@ afterEach(async () => {
 });
 
 describe('an MCP server folder', () => {
-  it('is one server named after its directory, whose arguments name the folder in the workspace\'s data home', async () => {
+  it('is one server named after its directory, whose arguments name the folder in the worktree\'s .teamai/delivered/', async () => {
     await write({ 'mcp/jira-lite/MCP.yaml': JIRA_LITE, 'mcp/jira-lite/server.py': 'print("jira")\n', 'mcp/jira-lite/queries.sql': 'select 1;\n' });
 
     expect(await servers(workspace())).toEqual([{
@@ -74,7 +74,7 @@ describe('an MCP server folder', () => {
       description: 'Read-only Jira lookups for the team',
       transport: 'stdio',
       command: 'uv',
-      args: ['run', '--script', `${rendered(path.join(dataHome, 'mcp', 'jira-lite'))}/server.py`],
+      args: ['run', '--script', `${rendered(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'jira-lite'))}/server.py`],
       requires: ['uv'],
     }]);
   });
@@ -90,7 +90,7 @@ describe('an MCP server folder', () => {
         '',
       ].join('\n'),
     });
-    const dest = rendered(path.join(dataHome, 'mcp', 'runner'));
+    const dest = rendered(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'runner'));
 
     expect(await servers(workspace())).toEqual([expect.objectContaining({
       command: `${dest}/bin/run`, args: ['--queries', `${dest}/queries.sql`], env: { DATA: `${dest}/data` }, headers: { 'X-Dir': '${TEAMAI_MCP_DIR}' },
@@ -171,10 +171,10 @@ describe('a folder MCP leaves out, with a notice', () => {
   });
 });
 
-describe('a folder server under a home holding a space and non-ASCII letters', () => {
+describe('a folder server under a path holding a space and non-ASCII letters', () => {
   it('starts from its forward-slash path, passed as an argument directly and in a quoted shell command line', async () => {
     await write({ 'mcp/jira-lite/MCP.yaml': 'transport: stdio\ncommand: node\nargs: ["${TEAMAI_MCP_DIR}/server.mjs"]\n', 'mcp/jira-lite/server.mjs': 'console.log("jira-lite ran");\n' });
-    const localConfig = workspace({ dataHome: path.join(sandbox, 'Zoë Li', '.teamai', 'projects', 'app') });
+    const localConfig = workspace({ projectRoot: path.join(sandbox, 'Zoë Li', 'app'), dataHome: path.join(sandbox, 'Zoë Li', '.teamai', 'projects', 'app') });
     const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig);
     const entries = resolution.kind === 'resolved' ? resolution.entries : [];
     await deliverMcpFolders(localConfig, entries, { prune: true, kept: new Set(), installedInExcluded: new Set() });

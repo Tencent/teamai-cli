@@ -4325,8 +4325,8 @@ servers:
       await pull();
 
       expect([before, await args(), keptLines()]).toEqual([
-        [`${path.join(dataHome, 'mcp', 'notes').split(path.sep).join('/')}/v1.mjs`],
-        [`${path.join(dataHome, 'mcp', 'notes').split(path.sep).join('/')}/v2.mjs`],
+        [`${path.join(projectRoot, '.teamai', 'delivered', 'mcp', 'notes').split(path.sep).join('/')}/v1.mjs`],
+        [`${path.join(projectRoot, '.teamai', 'delivered', 'mcp', 'notes').split(path.sep).join('/')}/v2.mjs`],
         [],
       ]);
     });

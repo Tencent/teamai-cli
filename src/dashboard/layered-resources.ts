@@ -80,8 +80,11 @@ export interface ResourceFolder {
   readonly runs: { readonly command: string; readonly args: readonly string[]; readonly env: readonly string[] } | null;
   /** The file pull reads a rule folder's text from for the team's `language`: `RULE.md`, or a variant such as `RULE.zh.md`. */
   readonly variant: string | null;
-  /** Where each tool that receives rules reads a delivered rule folder's files: the path pull writes for `${TEAMAI_RULE_DIR}`. */
-  readonly reads: ReadonlyArray<{ readonly tool: string; readonly reach: RuleFolderReach['reach']; readonly path: string }> | null;
+  /**
+   * Where each tool that receives rules reads a delivered rule folder's files: the path pull writes for
+   * `${TEAMAI_RULE_DIR}`, and how the tool reaches it: `worktree` in a project, else the tool's cell in user scope.
+   */
+  readonly reads: ReadonlyArray<{ readonly tool: string; readonly reach: RuleFolderReach['reach'] | 'worktree'; readonly path: string }> | null;
 }
 
 /** One definition of a name, and what pull does with it. */
@@ -546,7 +549,7 @@ async function ruleList(config: LocalConfig, teamConfig: TeamaiConfig): Promise<
 
     const reads = delivered === null ? null : tools.map((tool) => ({
       tool,
-      reach: ruleFolderReachOf(tool).reach,
+      reach: DeliveredFolders.worktreeRoot(config) === null ? ruleFolderReachOf(tool).reach : 'worktree' as const,
       path: RuleFolders.render(DeliveredFolders.placeholder('rules'), { localConfig: config, rule, tool }),
     }));
 

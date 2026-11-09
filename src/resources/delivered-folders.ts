@@ -1,10 +1,14 @@
 /**
- * Folders pull delivers to the data home of the scope that owns them (#1787, common rule 9): hook, rule and MCP
- * server folders, so a command or a rule can name a file the team ships beside it.
+ * Folders pull delivers (#1787, common rule 9): hook, rule and MCP server folders, so a command or a rule can name a
+ * file the team ships beside it. A folder sits where the configuration that names it is kept, so a pull in one
+ * worktree never changes what another worktree runs or reads:
  *
- *   user scope                → ~/.teamai/<type>/[<ns>/]<name>/
- *   workspace, remote team    → ~/.teamai/projects/<slug>/<type>/[<ns>/]<name>/   (shared by worktrees)
- *   workspace, single-repo    → <worktree>/.teamai/delivered/<type>/[<ns>/]<name>/ (one per worktree)
+ *   user scope                       → ~/.teamai/<type>/[<ns>/]<name>/
+ *   workspace, rules and MCP         → <worktree>/.teamai/delivered/<type>/[<ns>/]<name>/ (one per worktree, as each
+ *                                      worktree has its own rule copies and MCP configuration)
+ *   workspace, remote team's hooks   → ~/.teamai/projects/<slug>/hooks/[<ns>/]<name>/    (shared, as every worktree
+ *                                      runs the same entries: the main checkout's files, or HOME's)
+ *   workspace, single-repo's hooks   → <worktree>/.teamai/delivered/hooks/[<ns>/]<name>/  (each checkout keeps its own)
  *
  * The path stays the same across versions, so what is rendered from it does too. A new version is written to a
  * hidden sibling and renamed into place. Each file is recorded in the delivery ledger, and a folder the team drops
@@ -36,20 +40,19 @@ export const PATH_VARIABLES = {
   mcp: 'TEAMAI_MCP_DIR',
 } as const satisfies Readonly<Record<DeliveredFolderType, string>>;
 
-/** The directory under `.teamai/` that holds a single-repo worktree's delivered folders; no team content type may use it. */
+/** The directory under `.teamai/` that holds a worktree's delivered folders; no team content type may use it. */
 export const DELIVERED_DIR = 'delivered';
 
-/** Where `localConfig`'s scope delivers folders: its data home, or the worktree's `.teamai/delivered/` in single-repo. */
-function root(localConfig: LocalConfig): string {
-  return isSelfMode(localConfig) ? path.join(localConfig.repo.localPath, DELIVERED_DIR) : getDataHome(localConfig);
+/** Where `localConfig`'s scope delivers folders of `type`: the worktree's `.teamai/delivered/`, or its data home (see above). */
+function root(localConfig: LocalConfig, type: DeliveredFolderType): string {
+  const worktree = worktreeRoot(localConfig);
+
+  return worktree !== null && (type !== 'hooks' || isSelfMode(localConfig)) ? worktree : getDataHome(localConfig);
 }
 
-/**
- * The worktree's `.teamai/delivered/`: a single-repo scope's delivered folders, or the copies of a remote team's folders
- * for a tool that cannot read the data home. Null outside a project, which has no worktree.
- */
+/** The worktree's `.teamai/delivered/`, where a project scope delivers its folders (see above). Null outside a project. */
 function worktreeRoot(localConfig: LocalConfig): string | null {
-  if (isSelfMode(localConfig)) return root(localConfig);
+  if (isSelfMode(localConfig)) return path.join(localConfig.repo.localPath, DELIVERED_DIR);
 
   return localConfig.scope === 'project' && localConfig.projectRoot ? checkoutRoot(localConfig.projectRoot) : null;
 }
@@ -61,7 +64,7 @@ function checkoutRoot(checkout: string): string {
 
 /** The absolute path `ref` is delivered at in `localConfig`'s scope. The same for every version of the folder. */
 function pathOf(localConfig: LocalConfig, ref: DeliveredFolderRef): string {
-  return path.join(root(localConfig), ref.type, ...(ref.namespace === null ? [] : [ref.namespace]), ref.name);
+  return path.join(root(localConfig, ref.type), ref.type, ...(ref.namespace === null ? [] : [ref.namespace]), ref.name);
 }
 
 /** Write `files` under `dir`, keeping each one's executable bit. */
@@ -274,11 +277,9 @@ async function prune(input: {
   readonly type: DeliveredFolderType;
   readonly keep: readonly string[];
   readonly ledger: DeliveryLedger | undefined;
-  /** The root the folders sit under, when it is not the scope's (`sync`). */
-  readonly root?: string;
 }): Promise<string[]> {
   const removed: string[] = [];
-  const typeRoot = path.resolve(input.root ?? root(input.localConfig), input.type);
+  const typeRoot = path.resolve(root(input.localConfig, input.type), input.type);
   const kept = new Set<string>();
   // The directories between the type's root and a kept folder: its namespace.
   const holdingKept = new Set<string>();
@@ -333,10 +334,8 @@ export interface FolderDelivery {
 
 /**
  * One run of a type's folders for `localConfig`'s scope: deliver each of `folders`, then, with `prune`, remove the
- * type's others, all recorded in `ledger`. In single-repo, `.teamai/delivered/` is then kept out of git by its own
- * block in `.git/info/exclude`. `root`: the folders sit under it instead, a worktree's `.teamai/delivered/` that holds
- * copies of a remote team's folders for a tool that cannot read the data home (#1787), kept out of git the same way.
- * Throws when a folder cannot be written; the caller keeps what it installed.
+ * type's others, all recorded in `ledger`. A worktree's `.teamai/delivered/` is then kept out of git by its own block
+ * in `.git/info/exclude`. Throws when a folder cannot be written; the caller keeps what it installed.
  */
 async function sync(input: {
   readonly localConfig: LocalConfig;
@@ -344,14 +343,13 @@ async function sync(input: {
   readonly folders: readonly FolderDelivery[];
   readonly ledger: DeliveryLedger | undefined;
   readonly prune: boolean;
-  readonly root?: string;
 }): Promise<void> {
   const { localConfig, type, folders, ledger } = input;
-  const at = input.root ?? root(localConfig);
+  const at = root(localConfig, type);
 
   await deliverAll(folders, ledger);
 
-  if (input.prune) await prune({ localConfig, type, keep: folders.map(({ dest }) => dest), ledger, root: at });
+  if (input.prune) await prune({ localConfig, type, keep: folders.map(({ dest }) => dest), ledger });
 
   if (at === worktreeRoot(localConfig) && await pathExists(at)) {
     const { excludeDeliveredFolders } = await import('../git-exclude-delivered.js');

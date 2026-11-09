@@ -359,10 +359,11 @@ export type ToolFeatures = {
 };
 
 /**
- * How the tool reads the support files a rule folder names through `${TEAMAI_RULE_DIR}` (#1787) where teamai delivers
- * them, in the data home outside the project: `none`, without a prompt; `grant`, once teamai adds that directory to
- * `setting` in the tool's user settings; `copy`, not without a prompt, so a project pull copies the folder into the
- * worktree, `.teamai/delivered/rules/`, and names that copy. A tool with no cell has no evidence, and gets `copy`.
+ * How the tool reads the support files a user-scope rule folder names through `${TEAMAI_RULE_DIR}` (#1787), in the
+ * data home: `none`, without a prompt; `grant`, once teamai adds that directory to `setting` in the tool's user
+ * settings; `copy`, not without a prompt, so pull warns once. In a project every tool reads the folder in the worktree,
+ * `.teamai/delivered/rules/`, a `copy` tool by its path from the project root. A tool with no cell has no evidence,
+ * and gets `copy`.
  */
 export type RuleFolderReach =
   | { readonly reach: 'none'; readonly evidence: Evidence }
@@ -384,7 +385,7 @@ export type ToolDescriptor = {
    */
   readonly skillsFollowSession?: true;
   readonly rules: RulesChannels;
-  /** How the tool reads a rule folder's files; absent: `copy`, with no evidence. */
+  /** How the tool reads a user-scope rule folder's files; absent: `copy`, with no evidence. */
   readonly ruleFolders?: RuleFolderReach;
   readonly blocks: BlocksChannels;
   readonly agents: AgentsChannels;

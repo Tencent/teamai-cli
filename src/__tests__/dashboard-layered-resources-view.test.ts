@@ -146,10 +146,10 @@ const RULES: LayeredResourceList = {
         files: [{ path: 'RULE.md', bytes: 71, executable: false }, { path: 'RULE.zh.md', bytes: 42, executable: false }, { path: 'checklist.md', bytes: 15, executable: false }],
         bytes: 128,
         limit: null,
-        delivered: { path: '/home/m/.teamai/rules/api-style', present: true, by: 'pull' },
+        delivered: { path: '/home/m/app/.teamai/delivered/rules/api-style', present: true, by: 'pull' },
         runs: null,
         variant: 'RULE.zh.md',
-        reads: [{ tool: 'claude', reach: 'grant', path: '/home/m/.teamai/rules/api-style' }, { tool: 'codex', reach: 'copy', path: '.teamai/delivered/rules/api-style' }],
+        reads: [{ tool: 'claude', reach: 'worktree', path: '/home/m/app/.teamai/delivered/rules/api-style' }, { tool: 'codex', reach: 'worktree', path: '.teamai/delivered/rules/api-style' }],
       },
     },
     {
@@ -262,9 +262,9 @@ describe('the resource layers on the Resources page (#1787)', () => {
 
     expect(row(closed, 'rules', 'rules/teamai-recall/', 'teamai-recall')).toContain(`Team root Folder Refused ${escaped(RECALL_REFUSED)} Fix it in the team repo, and push.`);
     expect([closed.includes('Rule folders'), closed.includes('1 teamai default in force'), closed.includes('RULE.zh.md')]).toEqual([true, true, false]);
-    expect(opened).toContain('Rule text from RULE.zh.md Pull delivers it to /home/m/.teamai/rules/api-style Delivered');
-    expect(opened).toContain('Where each tool reads ${TEAMAI_RULE_DIR} claude /home/m/.teamai/rules/api-style Reads the data home: teamai adds it to permissions.additionalDirectories '
-      + 'codex .teamai/delivered/rules/api-style Reads the copy pull puts in the project');
+    expect(opened).toContain('Rule text from RULE.zh.md Pull delivers it to /home/m/app/.teamai/delivered/rules/api-style Delivered');
+    expect(opened).toContain('Where each tool reads ${TEAMAI_RULE_DIR} claude /home/m/app/.teamai/delivered/rules/api-style Reads it in the worktree '
+      + 'codex .teamai/delivered/rules/api-style Reads it in the worktree');
   });
 
   it('opens teamai\'s definition and the team\'s of the same path apart, and says how to turn recall on', () => {

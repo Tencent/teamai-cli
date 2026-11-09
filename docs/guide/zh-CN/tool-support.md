@@ -10,65 +10,67 @@ teamai 为每个工具把每类资源写到哪里，以及工具读取哪里，�
 
 ## 用户范围
 
-| 工具 | 主目录 | 技能 | 规则 | 指令块 | Agents | Hooks | MCP | 会话 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Claude Code | `~/.claude` | `~/.claude/skills` d | `~/.claude/rules` v | `~/.claude/CLAUDE.md` v | `~/.claude/agents` v | `~/.claude/settings.json` v | `~/.claude.json` v | claude-code |
-| Codex CLI | `~/.codex` | `~/.codex/skills` v<br>`~/.agents/skills` v | in the blocks file (Codex AGENTS.md) | `~/.codex/AGENTS.md` v | `~/.codex/agents` v | `~/.codex/hooks.json` v | `~/.codex/config.toml` v | codex |
-| Codex CLI Internal | `~/.codex-internal` | written; reads ? | in the blocks file (Codex AGENTS.md) | written; reads ? | written; reads ? | `~/.codex-internal/hooks.json` t | ? | codex-internal |
-| Claude Code Internal | `~/.claude-internal` | written; reads ? | written; reads ? | written; reads ? | written; reads ? | `~/.claude-internal/settings.json` t | ? | claude-internal |
-| TClaude | `~/.tclaude` | written; reads ? | written; reads ? | written; reads ? | written; reads ? | `~/.tclaude/settings.json` t | written; reads ? | tclaude |
-| TCodex | `~/.tcodex` | written; reads ? | in the blocks file (Codex AGENTS.md) | written; reads ? | written; reads ? | `~/.tcodex/hooks.json` t | ? | tcodex |
-| Cursor | `~/.cursor` | written; reads ? | `~/.cursor/rules` v from a session under ~ | `~/.cursor/rules` v from a session under ~ | `~/.cursor/agents` s | `~/.cursor/hooks.json` s | `~/.cursor/mcp.json` s | cursor |
-| Copilot | `~/.copilot` `$COPILOT_HOME` | `~/.copilot/skills` v | `~/.copilot/instructions` v | `~/.copilot/copilot-instructions.md` v | `~/.copilot/agents` s | `~/.copilot/hooks/teamai.json` s | `~/.copilot/mcp-config.json` v | copilot |
-| JoyCode | `~/.joycode` `$JOYCODE_HOME` | written; reads ? | in the blocks file (JoyCode rules.txt) | `~/.joycode/rules.txt` s | `~/.joycode/agents` s<br>indexed by `agent.json` | `~/.joycode/hooks.json` s | — | joycode |
-| Qoder | `~/.qoder` `$QODER_CONFIG_DIR` `$QODER_CLI_HOME/.qoder` | written; reads ? | `~/.qoder/rules` v | `~/.qoder/rules` s | `~/.qoder/agents` s | `~/.qoder/settings.json` s | `~/.qoder/settings.json` s | qoder |
-| Qoder CN | `~/.qoder-cn` `$QODERCN_CONFIG_DIR` `$QODERCN_CLI_HOME/.qoder-cn` | written; reads ? | `~/.qoder-cn/rules` v | `~/.qoder-cn/rules` t | `~/.qoder-cn/agents` s | `~/.qoder-cn/settings.json` s | `~/.qoder-cn/settings.json` s | qoder-cn |
-| Kiro | `~/.kiro` | written; reads ? | `~/.kiro/steering` d | `~/.kiro/steering` d | `~/.kiro/agents` d | kiro-hooks d | `~/.kiro/settings/mcp.json` d | — |
-| Trae | `~/.trae` | written; reads ? | written; reads ? | `~/.trae/user_rules` d | ? | ? | — | — |
-| Trae CN | `~/.trae-cn` | written; reads ? | written; reads ? | `~/.trae-cn/user_rules` d | `~/.trae-cn/agents` d | ? | — | — |
-| ZCode | `~/.zcode` | written; reads ? | in the blocks file (ZCode AGENTS.md) | `~/.zcode/AGENTS.md` s | `~/.zcode/agents` s | `~/.zcode/cli/config.json` s | `~/.zcode/cli/config.json` s | — |
-| Oh My Pi | `~/.omp/agent` `~/$PI_CONFIG_DIR/agent` `~/$PI_CONFIG_DIR/profiles/$OMP_PROFILE/agent` (or `$PI_PROFILE`) | `~/.omp/agent/skills` v | `~/.omp/agent/rules` v | `~/.omp/agent/RULES.md` v | `~/.omp/agent/agents` v | omp-extension v | `~/.omp/agent/mcp.json` v | omp |
-| Pi Coding Agent | `~/.pi/agent` `$PI_CODING_AGENT_DIR` | `~/.pi/agent/skills` v | in the blocks file (Pi AGENTS.md) | `~/.pi/agent/AGENTS.override.md` v<br>`~/.pi/agent/AGENTS.md` v | — | pi-extension v | `~/.pi/agent/mcp.json` v | pi |
-| CodeBuddy | `~/.codebuddy` `$CODEBUDDY_CONFIG_DIR` | `~/.codebuddy/skills` v | `~/.codebuddy/rules` v | `~/.codebuddy/CODEBUDDY.md` s | `~/.codebuddy/agents` s | `~/.codebuddy/settings.json` s | first of `~/.codebuddy/.mcp.json`, `~/.codebuddy/mcp.json`, `~/.codebuddy.json` (in `$CODEBUDDY_CONFIG_DIR` when set) s | codebuddy |
-| OpenClaw | `~/.openclaw` `$OPENCLAW_STATE_DIR` `$OPENCLAW_HOME/.openclaw[-$OPENCLAW_PROFILE]` | written; reads ? | in the blocks file (OpenClaw workspace AGENTS.md) | written; reads ? | — | openclaw-hook v | — | — |
-| Hermes | `~/.hermes` `$HERMES_HOME` `~/.hermes$HERMES_DATA_DIR_SUFFIX` `%LOCALAPPDATA%\hermes$HERMES_DATA_DIR_SUFFIX` `<home>/profiles/<active_profile>` | `~/.hermes/skills` s | in the blocks file (Hermes SOUL.md) | `~/.hermes/SOUL.md` s | — | hermes-plugin v | — | hermes |
-| DeepSeek Harness | `~/.dsh` `$DSH_HOME` | `~/.dsh/skills` v | in the blocks file (DeepSeek Harness AGENTS.md) | `~/.dsh/AGENTS.md` s | — | dsh-hooks s | — | — |
-| WorkBuddy | `~/.workbuddy` | written; reads ? | `~/.workbuddy/rules` s | `~/.workbuddy/rules` s | `~/.workbuddy/agents` s | `~/.workbuddy/settings.json` t | first of `~/.workbuddy/.mcp.json`, `~/.workbuddy/mcp.json`, `~/.codebuddy.json` (in `$CODEBUDDY_CONFIG_DIR` when set) s | workbuddy |
-| OpenCode | `~/.config/opencode` `$OPENCODE_CONFIG_DIR` `$XDG_CONFIG_HOME/opencode` | `~/.config/opencode/skills` v<br>`~/.claude/skills` v | `~/.config/opencode/rules` v | `~/.config/opencode/teamai-context.md` v | `~/.config/opencode/agents` v | opencode-plugin s | `~/.config/opencode/opencode.json` v | opencode |
-| Muse Code | `~/.config/muse` `$XDG_CONFIG_HOME/muse` | `~/.config/muse/skills` v<br>`~/.agents/skills` v<br>`~/.claude/skills` v | in the blocks file (Muse Code AGENTS.md) | `~/.config/muse/AGENTS.md` v | `~/.config/muse/agents` s | `~/.config/muse/settings.json` v | `~/.config/muse/settings.json` s | muse |
-| Antigravity | `~/.gemini/config` | `~/.gemini/config/skills` v<br>`~/.agents/skills` v | `~/.gemini/config/rules` v | `~/.gemini/config/rules` v | `~/.gemini/config/agents` v | agy-hooks v | `~/.gemini/config/mcp_config.json` v | agy |
+规则文件夹的文件：工具如何读取用户范围的规则文件夹在数据目录中引用的文件：`none` 无需确认，`grant` 在 teamai 把该目录加入所列设置后读取，`copy` 可能会先询问，pull 会提示一次。在项目中，所有工具都从工作树读取这些文件。
+
+| 工具 | 主目录 | 技能 | 规则 | 规则文件夹的文件 | 指令块 | Agents | Hooks | MCP | 会话 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Claude Code | `~/.claude` | `~/.claude/skills` d | `~/.claude/rules` v | grant `permissions.additionalDirectories` v | `~/.claude/CLAUDE.md` v | `~/.claude/agents` v | `~/.claude/settings.json` v | `~/.claude.json` v | claude-code |
+| Codex CLI | `~/.codex` | `~/.codex/skills` v<br>`~/.agents/skills` v | in the blocks file (Codex AGENTS.md) | copy | `~/.codex/AGENTS.md` v | `~/.codex/agents` v | `~/.codex/hooks.json` v | `~/.codex/config.toml` v | codex |
+| Codex CLI Internal | `~/.codex-internal` | written; reads ? | in the blocks file (Codex AGENTS.md) | copy | written; reads ? | written; reads ? | `~/.codex-internal/hooks.json` t | ? | codex-internal |
+| Claude Code Internal | `~/.claude-internal` | written; reads ? | written; reads ? | copy | written; reads ? | written; reads ? | `~/.claude-internal/settings.json` t | ? | claude-internal |
+| TClaude | `~/.tclaude` | written; reads ? | written; reads ? | copy | written; reads ? | written; reads ? | `~/.tclaude/settings.json` t | written; reads ? | tclaude |
+| TCodex | `~/.tcodex` | written; reads ? | in the blocks file (Codex AGENTS.md) | copy | written; reads ? | written; reads ? | `~/.tcodex/hooks.json` t | ? | tcodex |
+| Cursor | `~/.cursor` | written; reads ? | `~/.cursor/rules` v from a session under ~ | copy | `~/.cursor/rules` v from a session under ~ | `~/.cursor/agents` s | `~/.cursor/hooks.json` s | `~/.cursor/mcp.json` s | cursor |
+| Copilot | `~/.copilot` `$COPILOT_HOME` | `~/.copilot/skills` v | `~/.copilot/instructions` v | copy | `~/.copilot/copilot-instructions.md` v | `~/.copilot/agents` s | `~/.copilot/hooks/teamai.json` s | `~/.copilot/mcp-config.json` v | copilot |
+| JoyCode | `~/.joycode` `$JOYCODE_HOME` | written; reads ? | in the blocks file (JoyCode rules.txt) | copy | `~/.joycode/rules.txt` s | `~/.joycode/agents` s<br>indexed by `agent.json` | `~/.joycode/hooks.json` s | — | joycode |
+| Qoder | `~/.qoder` `$QODER_CONFIG_DIR` `$QODER_CLI_HOME/.qoder` | written; reads ? | `~/.qoder/rules` v | copy | `~/.qoder/rules` s | `~/.qoder/agents` s | `~/.qoder/settings.json` s | `~/.qoder/settings.json` s | qoder |
+| Qoder CN | `~/.qoder-cn` `$QODERCN_CONFIG_DIR` `$QODERCN_CLI_HOME/.qoder-cn` | written; reads ? | `~/.qoder-cn/rules` v | copy | `~/.qoder-cn/rules` t | `~/.qoder-cn/agents` s | `~/.qoder-cn/settings.json` s | `~/.qoder-cn/settings.json` s | qoder-cn |
+| Kiro | `~/.kiro` | written; reads ? | `~/.kiro/steering` d | copy | `~/.kiro/steering` d | `~/.kiro/agents` d | kiro-hooks d | `~/.kiro/settings/mcp.json` d | — |
+| Trae | `~/.trae` | written; reads ? | written; reads ? | copy | `~/.trae/user_rules` d | ? | ? | — | — |
+| Trae CN | `~/.trae-cn` | written; reads ? | written; reads ? | copy | `~/.trae-cn/user_rules` d | `~/.trae-cn/agents` d | ? | — | — |
+| ZCode | `~/.zcode` | written; reads ? | in the blocks file (ZCode AGENTS.md) | copy | `~/.zcode/AGENTS.md` s | `~/.zcode/agents` s | `~/.zcode/cli/config.json` s | `~/.zcode/cli/config.json` s | — |
+| Oh My Pi | `~/.omp/agent` `~/$PI_CONFIG_DIR/agent` `~/$PI_CONFIG_DIR/profiles/$OMP_PROFILE/agent` (or `$PI_PROFILE`) | `~/.omp/agent/skills` v | `~/.omp/agent/rules` v | copy | `~/.omp/agent/RULES.md` v | `~/.omp/agent/agents` v | omp-extension v | `~/.omp/agent/mcp.json` v | omp |
+| Pi Coding Agent | `~/.pi/agent` `$PI_CODING_AGENT_DIR` | `~/.pi/agent/skills` v | in the blocks file (Pi AGENTS.md) | copy | `~/.pi/agent/AGENTS.override.md` v<br>`~/.pi/agent/AGENTS.md` v | — | pi-extension v | `~/.pi/agent/mcp.json` v | pi |
+| CodeBuddy | `~/.codebuddy` `$CODEBUDDY_CONFIG_DIR` | `~/.codebuddy/skills` v | `~/.codebuddy/rules` v | copy | `~/.codebuddy/CODEBUDDY.md` s | `~/.codebuddy/agents` s | `~/.codebuddy/settings.json` s | first of `~/.codebuddy/.mcp.json`, `~/.codebuddy/mcp.json`, `~/.codebuddy.json` (in `$CODEBUDDY_CONFIG_DIR` when set) s | codebuddy |
+| OpenClaw | `~/.openclaw` `$OPENCLAW_STATE_DIR` `$OPENCLAW_HOME/.openclaw[-$OPENCLAW_PROFILE]` | written; reads ? | in the blocks file (OpenClaw workspace AGENTS.md) | copy | written; reads ? | — | openclaw-hook v | — | — |
+| Hermes | `~/.hermes` `$HERMES_HOME` `~/.hermes$HERMES_DATA_DIR_SUFFIX` `%LOCALAPPDATA%\hermes$HERMES_DATA_DIR_SUFFIX` `<home>/profiles/<active_profile>` | `~/.hermes/skills` s | in the blocks file (Hermes SOUL.md) | copy | `~/.hermes/SOUL.md` s | — | hermes-plugin v | — | hermes |
+| DeepSeek Harness | `~/.dsh` `$DSH_HOME` | `~/.dsh/skills` v | in the blocks file (DeepSeek Harness AGENTS.md) | copy | `~/.dsh/AGENTS.md` s | — | dsh-hooks s | — | — |
+| WorkBuddy | `~/.workbuddy` | written; reads ? | `~/.workbuddy/rules` s | copy | `~/.workbuddy/rules` s | `~/.workbuddy/agents` s | `~/.workbuddy/settings.json` t | first of `~/.workbuddy/.mcp.json`, `~/.workbuddy/mcp.json`, `~/.codebuddy.json` (in `$CODEBUDDY_CONFIG_DIR` when set) s | workbuddy |
+| OpenCode | `~/.config/opencode` `$OPENCODE_CONFIG_DIR` `$XDG_CONFIG_HOME/opencode` | `~/.config/opencode/skills` v<br>`~/.claude/skills` v | `~/.config/opencode/rules` v | copy | `~/.config/opencode/teamai-context.md` v | `~/.config/opencode/agents` v | opencode-plugin s | `~/.config/opencode/opencode.json` v | opencode |
+| Muse Code | `~/.config/muse` `$XDG_CONFIG_HOME/muse` | `~/.config/muse/skills` v<br>`~/.agents/skills` v<br>`~/.claude/skills` v | in the blocks file (Muse Code AGENTS.md) | copy | `~/.config/muse/AGENTS.md` v | `~/.config/muse/agents` s | `~/.config/muse/settings.json` v | `~/.config/muse/settings.json` s | muse |
+| Antigravity | `~/.gemini/config` | `~/.gemini/config/skills` v<br>`~/.agents/skills` v | `~/.gemini/config/rules` v | copy | `~/.gemini/config/rules` v | `~/.gemini/config/agents` v | agy-hooks v | `~/.gemini/config/mcp_config.json` v | agy |
 
 ## 项目范围
 
-路径相对于项目根目录。`cwd only`：只有在根目录启动的会话才会读取。Hooks 一列是 self 模式写入的位置；`user hooks` 表示沿用用户范围的 hooks。规则文件夹的文件：工具如何读取规则文件夹在数据目录（项目之外）中引用的文件：`none` 无需确认，`grant` 在 teamai 把该目录加入所列设置后读取，`copy` 读取 teamai 在工作树中放的副本。
+路径相对于项目根目录。`cwd only`：只有在根目录启动的会话才会读取。Hooks 一列是 self 模式写入的位置；`user hooks` 表示沿用用户范围的 hooks。
 
-| 工具 | 技能 | 规则 | 规则文件夹的文件 | 指令块 | Agents | Hooks | MCP |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Claude Code | written; reads ? | `.claude/rules` v | grant `permissions.additionalDirectories` v | `.claude/rules` v | `.claude/agents` v | `.claude/settings.json` v<br>`.claude/settings.local.json` v | `.mcp.json` v |
-| Codex CLI | written; reads ? | session hook v | copy | session hook v | `.codex/agents` v | `.codex/hooks.json` v | `.codex/config.toml` v |
-| Codex CLI Internal | written; reads ? | session hook t | copy | session hook t | written; reads ? | written; reads ? | ? |
-| Claude Code Internal | written; reads ? | written; reads ? | copy | written; reads ? | written; reads ? | written; reads ? | ? |
-| TClaude | written; reads ? | written; reads ? | copy | written; reads ? | written; reads ? | written; reads ? | `.mcp.json` t |
-| TCodex | written; reads ? | session hook t | copy | session hook t | written; reads ? | written; reads ? | ? |
-| Cursor | written; reads ? | `.cursor/rules` v | copy | `.cursor/rules` v | `.cursor/agents` v | `.cursor/hooks.json` s | `.cursor/mcp.json` s |
-| Copilot | `.github/skills` v | `.github/instructions` v | copy | `.github/copilot-instructions.md` v<br>`.github/instructions` v | `.github/agents` s | `.github/hooks/teamai.json` s | `.github/mcp.json` v |
-| JoyCode | written; reads ? | `.joycode/rules` v | copy | — | `.joycode/agents` s<br>indexed by `agent.json` | `.joycode/hooks.json` s | — |
-| Qoder | written; reads ? | `.qoder/rules` v | copy | `.qoder/rules` s | `.qoder/agents` s | `.qoder/settings.json` s cwd only<br>`.qoder/settings.local.json` s cwd only | `.qoder/settings.json` s |
-| Qoder CN | written; reads ? | `.qoder/rules` v | copy | `.qoder/rules` t | `.qoder/agents` t | `.qoder/settings.json` s cwd only<br>`.qoder/settings.local.json` t cwd only | `.qoder/settings.json` t |
-| Kiro | written; reads ? | `.kiro/steering` d | copy | `.kiro/steering` d | `.kiro/agents` d | user hooks | `.kiro/settings/mcp.json` d |
-| Trae | written; reads ? | `.trae/rules` t | copy | `.trae/rules` d | `.trae/agents` s cwd only | ? | `.trae/mcp.json` d |
-| Trae CN | written; reads ? | `.trae/rules` t | copy | `.trae/rules` d | `.trae/agents` s cwd only | ? | `.trae/mcp.json` d |
-| ZCode | written; reads ? | session hook s | copy | session hook s | `.zcode/agents` s cwd only | user hooks | `.zcode/config.json` s |
-| Oh My Pi | written; reads ? | `.omp/rules` v cwd only | copy | extension v | `.omp/agents` v | user hooks | `.omp/mcp.json` v cwd only |
-| Pi Coding Agent | `.pi/skills` v cwd only | extension v | copy | extension v | — | user hooks | `.pi/mcp.json` v cwd only |
-| CodeBuddy | written; reads ? | `.codebuddy/rules` s cwd only | copy | `.codebuddy/rules` s cwd only | `.codebuddy/agents` s cwd only | `.codebuddy/settings.json` s cwd only<br>`.codebuddy/settings.local.json` v cwd only | first of `.mcp.json`, `mcp.json` s cwd only |
-| OpenClaw | written; reads ? | — | copy | — | — | user hooks | — |
-| Hermes | `~/.hermes/skills` s | — | copy | plugin s | — | user hooks | — |
-| DeepSeek Harness | written; reads ? | session hook s | copy | session hook s | — | user hooks | — |
-| WorkBuddy | written; reads ? | written; reads ? | copy | written; reads ? | `.workbuddy/agents` t cwd only | written; reads ? | first of `.mcp.json`, `mcp.json` s cwd only |
-| OpenCode | `.opencode/skills` v<br>`.claude/skills` v | `.opencode/rules` v | copy | `.opencode/teamai-context.md` v | `.opencode/agents` v | user hooks | `opencode.json` v<br>`.opencode/teamai-mcp.json` v |
-| Muse Code | `.agents/skills` v | session hook v | copy | session hook v | written; reads ? | `.muse/hooks.json` v | `.mcp.json` s |
-| Antigravity | `.agents/skills` v | `.agents/rules` v | copy | `.agents/rules` v | `.agents/agents` v | user hooks | `.agents/plugins/teamai/mcp_config.json` v |
+| 工具 | 技能 | 规则 | 指令块 | Agents | Hooks | MCP |
+| --- | --- | --- | --- | --- | --- | --- |
+| Claude Code | written; reads ? | `.claude/rules` v | `.claude/rules` v | `.claude/agents` v | `.claude/settings.json` v<br>`.claude/settings.local.json` v | `.mcp.json` v |
+| Codex CLI | written; reads ? | session hook v | session hook v | `.codex/agents` v | `.codex/hooks.json` v | `.codex/config.toml` v |
+| Codex CLI Internal | written; reads ? | session hook t | session hook t | written; reads ? | written; reads ? | ? |
+| Claude Code Internal | written; reads ? | written; reads ? | written; reads ? | written; reads ? | written; reads ? | ? |
+| TClaude | written; reads ? | written; reads ? | written; reads ? | written; reads ? | written; reads ? | `.mcp.json` t |
+| TCodex | written; reads ? | session hook t | session hook t | written; reads ? | written; reads ? | ? |
+| Cursor | written; reads ? | `.cursor/rules` v | `.cursor/rules` v | `.cursor/agents` v | `.cursor/hooks.json` s | `.cursor/mcp.json` s |
+| Copilot | `.github/skills` v | `.github/instructions` v | `.github/copilot-instructions.md` v<br>`.github/instructions` v | `.github/agents` s | `.github/hooks/teamai.json` s | `.github/mcp.json` v |
+| JoyCode | written; reads ? | `.joycode/rules` v | — | `.joycode/agents` s<br>indexed by `agent.json` | `.joycode/hooks.json` s | — |
+| Qoder | written; reads ? | `.qoder/rules` v | `.qoder/rules` s | `.qoder/agents` s | `.qoder/settings.json` s cwd only<br>`.qoder/settings.local.json` s cwd only | `.qoder/settings.json` s |
+| Qoder CN | written; reads ? | `.qoder/rules` v | `.qoder/rules` t | `.qoder/agents` t | `.qoder/settings.json` s cwd only<br>`.qoder/settings.local.json` t cwd only | `.qoder/settings.json` t |
+| Kiro | written; reads ? | `.kiro/steering` d | `.kiro/steering` d | `.kiro/agents` d | user hooks | `.kiro/settings/mcp.json` d |
+| Trae | written; reads ? | `.trae/rules` t | `.trae/rules` d | `.trae/agents` s cwd only | ? | `.trae/mcp.json` d |
+| Trae CN | written; reads ? | `.trae/rules` t | `.trae/rules` d | `.trae/agents` s cwd only | ? | `.trae/mcp.json` d |
+| ZCode | written; reads ? | session hook s | session hook s | `.zcode/agents` s cwd only | user hooks | `.zcode/config.json` s |
+| Oh My Pi | written; reads ? | `.omp/rules` v cwd only | extension v | `.omp/agents` v | user hooks | `.omp/mcp.json` v cwd only |
+| Pi Coding Agent | `.pi/skills` v cwd only | extension v | extension v | — | user hooks | `.pi/mcp.json` v cwd only |
+| CodeBuddy | written; reads ? | `.codebuddy/rules` s cwd only | `.codebuddy/rules` s cwd only | `.codebuddy/agents` s cwd only | `.codebuddy/settings.json` s cwd only<br>`.codebuddy/settings.local.json` v cwd only | first of `.mcp.json`, `mcp.json` s cwd only |
+| OpenClaw | written; reads ? | — | — | — | user hooks | — |
+| Hermes | `~/.hermes/skills` s | — | plugin s | — | user hooks | — |
+| DeepSeek Harness | written; reads ? | session hook s | session hook s | — | user hooks | — |
+| WorkBuddy | written; reads ? | written; reads ? | written; reads ? | `.workbuddy/agents` t cwd only | written; reads ? | first of `.mcp.json`, `mcp.json` s cwd only |
+| OpenCode | `.opencode/skills` v<br>`.claude/skills` v | `.opencode/rules` v | `.opencode/teamai-context.md` v | `.opencode/agents` v | user hooks | `opencode.json` v<br>`.opencode/teamai-mcp.json` v |
+| Muse Code | `.agents/skills` v | session hook v | session hook v | written; reads ? | `.muse/hooks.json` v | `.mcp.json` s |
+| Antigravity | `.agents/skills` v | `.agents/rules` v | `.agents/rules` v | `.agents/agents` v | user hooks | `.agents/plugins/teamai/mcp_config.json` v |
 
 ## 运行时与 teamai 自身的 AI
 

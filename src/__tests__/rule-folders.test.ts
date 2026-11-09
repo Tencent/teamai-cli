@@ -135,21 +135,27 @@ describe('rule folders (#1787)', () => {
     expect(await fse.readFile(home('.teamai', 'rules', 'fe', 'api-style', 'checklist.md'), 'utf8')).toBe(CHECKLIST);
   });
 
-  it('leaves the data-home folder as it was when the worktree copy of a new version cannot be written', async () => {
-    const projectRoot = path.join(tmpDir, 'project');
+  it('keeps naming, in a worktree that did not pull, the files it installed while another worktree of the workspace pulls a new version', async () => {
     const dataHome = home('.teamai', 'projects', 'project');
-    await fse.ensureDir(path.join(projectRoot, '.claude'));
-    await fse.ensureDir(path.join(projectRoot, '.codebuddy'));
-    localConfig = { ...localConfig, scope: 'project', projectRoot, dataHome, enabledAgents: ['claude', 'codebuddy'] };
-    await new RulesHandler().pullAllRules(teamConfig, localConfig);
+    const checkouts = [path.join(tmpDir, 'project'), path.join(tmpDir, 'project-wt')];
+
+    for (const projectRoot of checkouts) {
+      await fse.ensureDir(path.join(projectRoot, '.claude'));
+      await new RulesHandler().pullAllRules(teamConfig, { ...localConfig, scope: 'project', projectRoot, dataHome });
+    }
+
     await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'checklist.md'), `${CHECKLIST}- Version it.\n`);
-    const copies = path.join(projectRoot, '.teamai', 'delivered', 'rules');
-    await fse.chmod(copies, 0o555);
+    await new RulesHandler().pullAllRules(teamConfig, { ...localConfig, scope: 'project', projectRoot: checkouts[0], dataHome });
 
-    const pulled = await new RulesHandler().pullAllRules(teamConfig, localConfig).then(() => 'pulled', () => 'failed');
-    await fse.chmod(copies, 0o755);
+    // What each worktree's rule copy points its agent at.
+    const named = async (projectRoot: string | undefined): Promise<string> => {
+      const text = await fse.readFile(path.join(projectRoot ?? '', '.claude', 'rules', 'api-style.md'), 'utf8');
+      const file = /read\n(\S+\/checklist\.md)/.exec(text)?.[1] ?? '';
 
-    expect([pulled, await fse.readFile(path.join(dataHome, 'rules', 'api-style', 'checklist.md'), 'utf8')]).toEqual(['failed', CHECKLIST]);
+      return fse.readFile(file, 'utf8');
+    };
+
+    expect([await named(checkouts[0]), await named(checkouts[1])]).toEqual([`${CHECKLIST}- Version it.\n`, CHECKLIST]);
   });
 
   it('takes the body of the language variant under the frontmatter of RULE.md', async () => {
@@ -203,7 +209,7 @@ describe('rule folders (#1787)', () => {
     expect(await fse.readFile(home('.teamai', 'rules', 'fe', 'api-style', 'checklist.md'), 'utf8')).toBe(CHECKLIST);
   });
 
-  it('in a project, names the data home for Claude Code and a copy in the worktree for a tool that cannot read it', async () => {
+  it('in a project, names the worktree\'s folder for every tool: by its path for Claude Code, from the project root for a tool that reads nothing outside it', async () => {
     const projectRoot = path.join(tmpDir, 'project');
     const dataHome = home('.teamai', 'projects', 'project');
     await fse.ensureDir(path.join(projectRoot, '.claude'));
@@ -213,11 +219,11 @@ describe('rule folders (#1787)', () => {
     await new RulesHandler().pullAllRules(teamConfig, localConfig);
 
     expect(await fse.readFile(path.join(projectRoot, '.claude', 'rules', 'api-style.md'), 'utf8'))
-      .toContain(`read\n${forward(path.join(dataHome, 'rules', 'api-style'))}/checklist.md and`);
+      .toContain(`read\n${forward(path.join(projectRoot, '.teamai', 'delivered', 'rules', 'api-style'))}/checklist.md and`);
     expect(await fse.readFile(path.join(projectRoot, '.codebuddy', 'rules', 'api-style.md'), 'utf8'))
       .toContain('read\n.teamai/delivered/rules/api-style/checklist.md and .teamai/delivered/rules/api-style/examples/good-endpoint.ts.');
     expect(await fse.readFile(path.join(projectRoot, '.teamai', 'delivered', 'rules', 'api-style', 'checklist.md'), 'utf8')).toBe(CHECKLIST);
-    expect(await fse.readFile(path.join(dataHome, 'rules', 'api-style', 'checklist.md'), 'utf8')).toBe(CHECKLIST);
+    expect(await fse.pathExists(path.join(dataHome, 'rules'))).toBe(false);
   });
 
   it.each([true, false])('keeps the worktree copy out of git with gitExclude %s', async (gitExcludeEnabled) => {
@@ -248,8 +254,8 @@ describe('rule folders (#1787)', () => {
 
     expect(await fse.readFile(home('.claude', 'rules', 'api-style.md'), 'utf8')).toContain(`${forward(home('.teamai', 'rules', 'api-style'))}/checklist.md`);
     expect(await fse.readFile(path.join(projectRoot, '.claude', 'rules', 'api-style.md'), 'utf8'))
-      .toBe(`Read ${forward(path.join(dataHome, 'rules', 'api-style'))}/checklist.md.\n`);
-    expect(await fse.readFile(path.join(dataHome, 'rules', 'api-style', 'checklist.md'), 'utf8')).toBe('- Singular names.\n');
+      .toBe(`Read ${forward(path.join(projectRoot, '.teamai', 'delivered', 'rules', 'api-style'))}/checklist.md.\n`);
+    expect(await fse.readFile(path.join(projectRoot, '.teamai', 'delivered', 'rules', 'api-style', 'checklist.md'), 'utf8')).toBe('- Singular names.\n');
     expect(userFolder).toBe(CHECKLIST);
     expect(await fse.readFile(home('.teamai', 'rules', 'api-style', 'checklist.md'), 'utf8')).toBe(CHECKLIST);
     expect(await fse.pathExists(path.join(projectRoot, '.teamai', 'rules'))).toBe(false);

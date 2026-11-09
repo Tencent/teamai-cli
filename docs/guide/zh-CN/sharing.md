@@ -115,8 +115,8 @@ ${TEAMAI_RULE_DIR}/checklist.md and ${TEAMAI_RULE_DIR}/examples/good-endpoint.ts
 
 - 名字就是路径，和 rule 文件一样：`rules/api-style/` 是 `api-style`，`rules/fe/api-style/` 是 `fe/api-style`。每个工具的 rules 目录里得到 `api-style.md`。
 - `RULE.zh.md` 或 `RULE.en.md` 是对应 `language` 的正文。`RULE.md` 的 frontmatter 对所有语言生效；语言版本里的 frontmatter 会被忽略，pull 会给出警告。
-- pull 把目录复制到数据目录（`~/.teamai/rules/api-style/`；有团队仓库的 workspace 中是 `~/.teamai/projects/<slug>/rules/api-style/`；single-repo 下是每个 worktree 的 `.teamai/delivered/rules/api-style/`），并按工具把 `${TEAMAI_RULE_DIR}` 换成一个用正斜杠的路径。能读取数据目录的工具得到该路径。对 Claude Code，pull 会把该目录追加到 `~/.claude/settings.json` 的 `permissions.additionalDirectories`，排在你自己的条目之后，uninstall 时移除。其他工具得到 `.teamai/delivered/rules/api-style`，这是工作树里的副本，git 会忽略它。哪个工具得到哪种，见[工具支持](tool-support.md#项目范围)的「规则文件夹的文件」一列。
-- 用户范围的 rule 没有工作树，所以总是指向数据目录。对读取那里前可能需要确认的工具，pull 各警告一次。
+- 在工作区中，pull 把目录复制到每个 worktree 的 `.teamai/delivered/rules/api-style/`（git 会忽略它），并把 `${TEAMAI_RULE_DIR}` 换成它的路径（用正斜杠）。所有工具都从这里读取：Claude Code 得到绝对路径，不读取项目之外文件的工具得到从项目根目录算起的 `.teamai/delivered/rules/api-style`。在一个 worktree 里 pull，不会改动其他 worktree 的目录。
+- 用户范围的 rule 没有工作树，所以 pull 把它复制到 `~/.teamai/rules/api-style/` 并指向该路径。对 Claude Code，pull 会把该目录追加到 `~/.claude/settings.json` 的 `permissions.additionalDirectories`，排在你自己的条目之后，uninstall 时移除。对其他读取那里前可能需要确认的工具，pull 各警告一次。哪个工具得到哪种，见[工具支持](tool-support.md#用户范围)的「规则文件夹的文件」一列。
 - 目录型 rule 在团队仓库里修改。push 不会从它的交付副本提出任何改动。
 
 提交目录型 rule 之前，让每位成员先升级。旧版 teamai 会把 `rules/api-style/` 里的每个文件各自当作一条始终生效的 rule（`api-style/RULE`、`api-style/RULE.zh`、`api-style/checklist`），或者跳过这个目录。
@@ -323,7 +323,7 @@ pull 会复制这个目录，并把 `${TEAMAI_HOOK_DIR}` 换成它的路径（�
 | 团队在哪里 | 目录复制到 |
 |---|---|
 | 用户作用域 | `~/.teamai/hooks/block-secrets/` |
-| 有团队仓库的工作区 | `~/.teamai/projects/<slug>/hooks/block-secrets/` |
+| 有团队仓库的工作区 | `~/.teamai/projects/<slug>/hooks/block-secrets/`，所有 worktree 共用一份，因为它们运行同一组 hook 条目 |
 | single-repo | 每个 worktree 的 `.teamai/delivered/hooks/block-secrets/`，git 会忽略它 |
 
 single-repo 下，Claude Code 的命令写成 `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets/scan.sh"`，所以每个 worktree 的 `.claude/settings.json` 都一样。其他工具拿到的是 worktree 的绝对路径，所以它们的项目文件在每个 worktree 里都不一样。以 Cursor 的 `.cursor/hooks.json` 为例：
@@ -527,10 +527,9 @@ pull 会复制这个目录，并把 `command`、`args` 和 `env` 里的 `${TEAMA
 | 团队在哪里 | 目录复制到 |
 |---|---|
 | 用户作用域 | `~/.teamai/mcp/jira-lite/` |
-| 有团队仓库的工作区 | `~/.teamai/projects/<slug>/mcp/jira-lite/` |
-| single-repo | 每个 worktree 的 `.teamai/delivered/mcp/jira-lite/`，git 会忽略它 |
+| 工作区（有团队仓库或 single-repo） | 每个 worktree 的 `.teamai/delivered/mcp/jira-lite/`，git 会忽略它 |
 
-Claude Code 不会展开 `.mcp.json` 里的 `$CLAUDE_PROJECT_DIR`，所以 single-repo 下各工具的 MCP 文件写的是 worktree 的绝对路径，每个 worktree 都不一样。
+Claude Code 不会展开 `.mcp.json` 里的 `$CLAUDE_PROJECT_DIR`，所以各工具的 MCP 文件写的是 worktree 的绝对路径，每个 worktree 都不一样。在一个 worktree 里 pull，不会改动其他 worktree 的 server。
 
 `MCP.yaml` 的键和 `mcp.yaml` 里的 server 相同，只是没有 `name`、`roles` 和 `projects`，而且只能是 `transport: stdio`：URL server 不带文件，所以 `http` 和 `sse` server 留在 `mcp.yaml`。只给一个 namespace 的 server 放在 `mcp/<ns>/<name>/`。`${TEAMAI_MCP_DIR}` 只能用在目录里：写在 `mcp.yaml` 里，这次运行的团队 MCP 会全部停下，已安装的保持不变；同一个名字既是 `mcp.yaml` 里的 server 又是目录时也一样。分支上有这两种情况之一，或有 pull 读不了的 `MCP.yaml` 时，`teamai review --branch` 判定失败。
 

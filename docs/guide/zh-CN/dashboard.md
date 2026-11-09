@@ -317,10 +317,10 @@ deploy    团队仓库根级别      文件  重复定义                       
 api-style      rules/api-style/      团队仓库根级别  目录  生效    —   收起
   RULE.md 108 B   RULE.zh.md 55 B   checklist.md 62 B   合计 225 B
   规则正文取自 RULE.zh.md
-  pull 将它交付到 ~/.teamai/projects/<slug>/rules/api-style  已交付
+  pull 将它交付到 ~/work/shop/.teamai/delivered/rules/api-style  已交付
   各工具读取的位置 ${TEAMAI_RULE_DIR}
-  claude  ~/.teamai/projects/<slug>/rules/api-style  读取数据目录：teamai 把它加入 permissions.additionalDirectories
-  codex   .teamai/delivered/rules/api-style          读取 pull 放在项目里的副本
+  claude  ~/work/shop/.teamai/delivered/rules/api-style  从工作树读取
+  codex   .teamai/delivered/rules/api-style              从工作树读取
 teamai-recall  rules/teamai-recall/  团队仓库根级别  目录  已拒绝
   rules/teamai-recall/ is not used, so teamai's recall rule stays in force: rules/teamai-recall/RULE.md does not contain "Nothing was searched:". Fix the folder in the team repo.
 ```

@@ -64,7 +64,6 @@ import {
   isUsageReportEnabled,
   resolveGitExclude,
   isAgentExcluded,
-  isSelfMode,
   scopedToolPaths,
   SYNC_LOCK_FILENAME,
   usesBranchWorktree,
@@ -1471,8 +1470,8 @@ async function excludeWorkspaceInstructions(localConfig: LocalConfig, options: G
 /**
  * Let each tool whose rule folder cell is `grant` (Claude Code) read the rule folders this scope delivers (#1787):
  * the scope's delivered `rules` directory in `permissions.additionalDirectories` of the tool's user settings, owned
- * through the checkout record. Single-repo folders sit in the worktree, which the tool reads anyway. While the scope
- * delivers no rule folder, what an earlier pull added is taken back.
+ * through the checkout record. Only user scope needs it: a project's folders sit in the worktree, which the tool reads
+ * anyway. While the scope delivers no rule folder there, what an earlier pull added is taken back.
  */
 async function grantRuleFolders(localConfig: LocalConfig, options: GlobalOptions): Promise<void> {
   if (options.dryRun) return;
@@ -1485,8 +1484,8 @@ async function grantRuleFolders(localConfig: LocalConfig, options: GlobalOptions
     if (!record || !teamConfig) return;
     const { DeliveredFolders } = await import('./resources/delivered-folders.js');
     const { RuleFolders } = await import('./resources/rule-folders.js');
-    const rulesDir = path.join(DeliveredFolders.root(localConfig), 'rules');
-    const delivers = !isSelfMode(localConfig) && (await listDirs(rulesDir)).length > 0;
+    const rulesDir = path.join(DeliveredFolders.root(localConfig, 'rules'), 'rules');
+    const delivers = DeliveredFolders.worktreeRoot(localConfig) === null && (await listDirs(rulesDir)).length > 0;
 
     const settingsFiles = (await rulesReceivingTools(teamConfig, localConfig))
       .filter((tool) => !isAgentExcluded(localConfig, tool) && ruleFolderReachOf(tool).reach === 'grant')

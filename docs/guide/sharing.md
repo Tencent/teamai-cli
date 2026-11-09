@@ -124,8 +124,8 @@ Keep the body short and put the detail in the folder.
 
 - The name is the path, as for a rule file: `rules/api-style/` is `api-style`, and `rules/fe/api-style/` is `fe/api-style`. Each tool gets `api-style.md` in its rules directory.
 - `RULE.zh.md` or `RULE.en.md` holds the body for that `language`. The frontmatter of `RULE.md` applies to every language; pull warns about frontmatter in a variant and ignores it.
-- Pull copies the folder to the data home (`~/.teamai/rules/api-style/`, `~/.teamai/projects/<slug>/rules/api-style/` in a workspace with a team repo, or `.teamai/delivered/rules/api-style/` in each worktree in single-repo) and puts a path in place of `${TEAMAI_RULE_DIR}` for each tool, with forward slashes. A tool that can read the data home gets that path. For Claude Code, pull adds the directory to `permissions.additionalDirectories` in `~/.claude/settings.json`, after your own entries, and uninstall takes it out. Any other tool gets `.teamai/delivered/rules/api-style`, a copy in the worktree that git ignores. The "Rule folder files" column of [Tool support](tool-support.md#project-scope) says which tool gets which.
-- A user-scope rule has no worktree, so it always names the data home. Pull warns once for each tool that may ask before it reads there.
+- In a workspace, pull copies the folder to `.teamai/delivered/rules/api-style/` in each worktree, which git ignores, and puts its path, with forward slashes, in place of `${TEAMAI_RULE_DIR}`. Every tool reads the folder there: Claude Code gets the absolute path, and a tool that reads nothing outside the project gets `.teamai/delivered/rules/api-style`, from the project root. A pull in one worktree leaves the other worktrees' folders as they were.
+- A user-scope rule has no worktree, so pull copies it to `~/.teamai/rules/api-style/` and names that path. For Claude Code, pull adds the directory to `permissions.additionalDirectories` in `~/.claude/settings.json`, after your own entries, and uninstall takes it out. Pull warns once for each other tool that may ask before it reads there. The "Rule folder files" column of [Tool support](tool-support.md#user-scope) says which tool gets which.
 - Edit a rule folder in the team repo. Push proposes nothing from its delivered copies.
 
 Before you commit a rule folder, have every member upgrade. An older teamai reads each file in `rules/api-style/` as its own always-on rule (`api-style/RULE`, `api-style/RULE.zh`, `api-style/checklist`), or skips the folder.
@@ -332,7 +332,7 @@ Pull copies the folder and puts its path, with forward slashes, in place of `${T
 | Where the team is | The folder lands in |
 |---|---|
 | User scope | `~/.teamai/hooks/block-secrets/` |
-| Workspace with a team repo | `~/.teamai/projects/<slug>/hooks/block-secrets/` |
+| Workspace with a team repo | `~/.teamai/projects/<slug>/hooks/block-secrets/`, one for every worktree, as every worktree runs the same hook entries |
 | Single-repo | `.teamai/delivered/hooks/block-secrets/` in each worktree, which git ignores |
 
 In single-repo, Claude Code's command reads `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets/scan.sh"`, so `.claude/settings.json` is the same in every worktree. Other tools get the worktree's absolute path, so their project file differs from one worktree to the next. Cursor's `.cursor/hooks.json`, for example:
@@ -536,10 +536,9 @@ Pull copies the folder and puts its path, with forward slashes, in place of `${T
 | Where the team is | The folder lands in |
 |---|---|
 | User scope | `~/.teamai/mcp/jira-lite/` |
-| Workspace with a team repo | `~/.teamai/projects/<slug>/mcp/jira-lite/` |
-| Single-repo | `.teamai/delivered/mcp/jira-lite/` in each worktree, which git ignores |
+| Workspace, with a team repo or single-repo | `.teamai/delivered/mcp/jira-lite/` in each worktree, which git ignores |
 
-Claude Code does not expand `$CLAUDE_PROJECT_DIR` in `.mcp.json`, so in single-repo each tool's MCP file holds the worktree's absolute path and differs from one worktree to the next.
+Claude Code does not expand `$CLAUDE_PROJECT_DIR` in `.mcp.json`, so each tool's MCP file holds the worktree's absolute path and differs from one worktree to the next. A pull in one worktree leaves the servers of the others as they were.
 
 `MCP.yaml` takes the keys of an `mcp.yaml` server except `name`, `roles` and `projects`, with `transport: stdio` only: a URL server carries no files, so `http` and `sse` servers stay in `mcp.yaml`. A server for one namespace goes in `mcp/<ns>/<name>/`. `${TEAMAI_MCP_DIR}` works only in a folder. In `mcp.yaml` it stops team MCP for the run and keeps what is installed, as a name that is both an `mcp.yaml` server and a folder does. `teamai review --branch` fails a branch with either, or with an `MCP.yaml` pull cannot read.
 

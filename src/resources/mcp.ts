@@ -279,7 +279,7 @@ export async function deliverMcpFolders(
 
   if (opts.prune) {
     // A server's record names no namespace: its folder sits at the root, or in a namespace directory.
-    const namespaces = await listDirs(path.join(DeliveredFolders.root(localConfig), 'mcp'));
+    const namespaces = await listDirs(path.join(DeliveredFolders.root(localConfig, 'mcp'), 'mcp'));
     const excluded = [...opts.installedInExcluded].flatMap((name) => [null, ...namespaces].map((namespace) => DeliveredFolders.pathOf(localConfig, { type: 'mcp', namespace, name })));
 
     await DeliveredFolders.prune({ localConfig, type: 'mcp', keep: [...folders.map(({ dest }) => dest), ...excluded], ledger: record.ledger });

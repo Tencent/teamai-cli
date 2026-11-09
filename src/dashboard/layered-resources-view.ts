@@ -29,7 +29,7 @@ const layeredStateNames={'in-force':'In force',replaced:'Replaced',inactive:'Not
 const layeredConflicts={duplicate:['Defined twice','Keep one of them in the team repo, and push.'],'two-namespaces':['In two active namespaces','Rename or remove it in one namespace, and push.']};
 const layeredFallbacks={kept:'The last valid version still runs',default:'teamai\\'s default runs instead',installed:'Your installed copy stays',none:'Nothing runs in its place'};
 const layeredFixes={invalid:'Fix it in the team repo, and push.',refused:'Fix it in the team repo, and push.',blocked:'Another definition holds this one back. Fix that one, and pull again.',inactive:'It applies to members whose roles or projects use its namespace.',unsubscribed:'Omitted by tag subscriptions'};
-const layeredReach={grant:'Reads the data home: teamai adds it to permissions.additionalDirectories',copy:'Reads the copy pull puts in the project',none:'Reads the data home'};
+const layeredReach={worktree:'Reads it in the worktree',grant:'Reads the data home: teamai adds it to permissions.additionalDirectories',copy:'May ask before it reads the data home',none:'Reads the data home'};
 function layeredLadder(layer) { return '<span class="ladder" data-layer="'+e(layer.kind)+'" aria-hidden="true"><i></i><i></i><i></i></span>'; }
 function layeredLayer(layer) { return layeredLadder(layer)+(layer.kind==='namespace'?label('Namespace')+' <code data-verbatim>'+e(layer.namespace)+'</code>':label(layer.kind==='root'?'Team root':'teamai default')); }
 function layeredForm(r) { return r.form==='entry'?label('Entry in')+' '+e(r.path):label(r.form==='folder'?'Folder':'File'); }

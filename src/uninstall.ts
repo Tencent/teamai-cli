@@ -1549,7 +1549,7 @@ async function buildRemovalPlan(
   // Read before anything is deleted: what the projects still set up need stays.
   const projectsKept = includeShared && globalAdapters ? await keptForProjects() : { projects: [], paths: [] };
 
-  // The worktree's .teamai/delivered/ (#1787): a single-repo scope's delivered folders, or a remote team's rule folder copies.
+  // The worktree's .teamai/delivered/ (#1787): the rule and MCP folders of a project scope, and a single-repo scope's hook folders.
   const worktreeDelivered = DeliveredFolders.worktreeRoot(localConfig);
 
   const plan: RemovalPlan = {
