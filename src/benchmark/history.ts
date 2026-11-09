@@ -16,7 +16,8 @@ import type { Baseline, BenchmarkRecord, BenchmarkRunRecord } from './result.js'
 import type { TeamChoice } from './suite.js';
 import type { ArmTeam } from './terms.js';
 import {
-  benchmarkTable, deviationsOf, observedTrials, pairedDifference, usageOf, wilson, type ArmResults, type ArmUsage, type BenchmarkTable, type ObservedTrial, type PassRate,
+  benchmarkTable, deviationsOf, dominanceOf, observedTrials, pairedDifference, usageOf, wilson,
+  type ArmAgainst, type ArmResults, type ArmStanding, type ArmUsage, type BenchmarkTable, type Dominance, type ObservedTrial, type PairedInterval, type PassRate,
 } from './table.js';
 
 /** One ended benchmark run, as its end record holds it. `source`: this machine's run file, or the team's record. */
@@ -76,8 +77,11 @@ export interface SuiteSummary {
 /** A pass rate with its 95% Wilson score interval, which stays inside 0–1 and honest for a handful of trials. */
 export type PooledRate = PassRate & { low: number; high: number; runs: number };
 
-/** An arm over the runs of the current version, counted as each run's own table counts it. */
-export type PooledArm = PooledRate & Pick<ArmResults, 'deviations' | 'notVerified'> & { usage: Omit<ArmUsage, 'arm'> };
+/**
+ * An arm over the runs of the current version, counted as each run's own table counts it. `correctnessScore`: over the
+ * runs whose table has one, those whose correctness rubric has more than two labels; absent when none has.
+ */
+export type PooledArm = PooledRate & Pick<ArmResults, 'deviations' | 'notVerified' | 'correctnessScore'> & { usage: Omit<ArmUsage, 'arm'> };
 
 /**
  * One arm as a configuration: its name, tool, model, effort, team choice, workflow and role. An arm whose model changed
@@ -151,6 +155,13 @@ export interface ArmComparison {
   excluded?: ExcludedPairs[];
 }
 
+/**
+ * A current arm against the suite's reference arm, as the run's table reads one (`ArmAgainst`), by arm key, over the
+ * pairs of their trials in the runs of the current version, with dominance by their pooled pass rate and cost per passed
+ * trial, `neither` included.
+ */
+export type PooledAgainst = Omit<ArmAgainst, 'dominance'> & { key: string; dominance?: Dominance };
+
 /** A tool, model, effort, workflow and role, whatever the team: one line of the team changes chart. */
 export interface TeamConfig {
   key: string;
@@ -183,10 +194,15 @@ export interface SuiteView {
   tasks: TaskView[];
   /** Newest first. */
   runs: RunRow[];
-  /** The newest run's own table, as it printed it. */
-  latest: { run: string; source: BenchmarkRunInput['source']; table: BenchmarkTable };
+  /** The newest run's own table, as it printed it, and its arms against its reference arm, read as `against` reads the runs. */
+  latest: { run: string; source: BenchmarkRunInput['source']; table: BenchmarkTable; against?: SuiteView['against'] };
   /** Every pair of current arms that differ in one dimension, team first. */
   comparisons: ArmComparison[];
+  /**
+   * The arm the others are read against, by key, the defaults arm of the newest run that ran the whole suite, else its
+   * first, and each other current arm against it; absent with one arm.
+   */
+  against?: { reference: string; isDefaultsArm: boolean; arms: PooledAgainst[] };
   /** The team revisions of the current version, for configurations that ran on two or more. */
   teamChanges: { configs: TeamConfig[]; revisions: TeamRevisionView[] };
 }
@@ -311,25 +327,28 @@ interface SuiteRuns {
 }
 
 function armsOf({ runs, current, newest }: SuiteRuns): ArmSeries[] {
-  const configs = new Map<string, { arm: Arm; points: RunPoint[]; pooledTrials: ObservedTrial[]; pooledRuns: number; deviations: number; notVerified: number }>();
+  const configs = new Map<string, { arm: Arm; points: RunPoint[]; pooledTrials: ObservedTrial[]; pooledRuns: number; deviations: number; notVerified: number; scores: Array<NonNullable<ArmResults['correctnessScore']>> }>();
 
   for (const input of runs) {
     const isPooled = current.includes(input);
     const observed = isPooled ? observedTrials(input) : [];
+    const results = isPooled ? benchmarkTable(input).results : [];
 
     for (const arm of input.benchmark.arms) {
       const key = armKey(arm);
-      const config = configs.get(key) ?? { arm, points: [], pooledTrials: [], pooledRuns: 0, deviations: 0, notVerified: 0 };
+      const config = configs.get(key) ?? { arm, points: [], pooledTrials: [], pooledRuns: 0, deviations: 0, notVerified: 0, scores: [] };
       config.points.push({ run: input.run, startedAt: input.startedAt, ...passRate(input.benchmark.trials.filter((trial) => trial.arm === arm.name)) });
 
       if (isPooled) {
         // Each run's arm is compared on its own team revision, as that run's table compares it.
         const own = observed.filter(({ trial }) => trial.arm === arm.name);
         const { deviations, notVerified } = deviationsOf(arm, own);
+        const score = results.find((result) => result.arm === arm.name)?.correctnessScore;
         config.pooledTrials.push(...own);
         config.pooledRuns += 1;
         config.deviations += deviations;
         config.notVerified += notVerified;
+        config.scores.push(...score ? [score] : []);
       }
 
       configs.set(key, config);
@@ -349,17 +368,28 @@ function armsOf({ runs, current, newest }: SuiteRuns): ArmSeries[] {
     const [rightRank, rightLast] = rank(rightKey, right.points);
 
     return leftRank - rightRank || rightLast.localeCompare(leftLast);
-  }).map(([key, { arm, points, pooledTrials, pooledRuns, deviations, notVerified }]) => {
+  }).map(([key, { arm, points, pooledTrials, pooledRuns, deviations, notVerified, scores }]) => {
     const pooled = passRate(pooledTrials.map(({ trial }) => trial));
 
     return definedFields<ArmSeries>({
       key, arm: arm.name, tool: arm.tool, model: arm.model || undefined, effort: arm.effort || undefined, team: teamChoiceOf(arm.team), workflow: arm.workflow?.name,
       role: arm.role,
       isCurrent: order.includes(key),
-      pooled: pooled.planned > 0 ? { ...pooled, ...wilson(pooled), runs: pooledRuns, deviations, notVerified, usage: usageOf(pooledTrials) } : undefined,
+      pooled: pooled.planned > 0
+        ? definedFields<PooledArm>({ ...pooled, ...wilson(pooled), runs: pooledRuns, deviations, notVerified, usage: usageOf(pooledTrials), correctnessScore: pooledScore(scores) })
+        : undefined,
       points,
     });
   });
+}
+
+/** The mean of the runs' mean correctness scores, each weighed by its labels; undefined with no run's. */
+function pooledScore(scores: ReadonlyArray<NonNullable<ArmResults['correctnessScore']>>): ArmResults['correctnessScore'] {
+  if (scores.length === 0) return undefined;
+  const labelled = scores.reduce((sum, score) => sum + score.labelled, 0);
+  const total = scores.reduce((sum, { labelled: count, mean }) => sum + (mean ?? 0) * count, 0);
+
+  return definedFields<NonNullable<ArmResults['correctnessScore']>>({ labelled, mean: labelled > 0 ? total / labelled : undefined });
 }
 
 /** `rate` as optional fields, absent when nothing was planned. */
@@ -437,33 +467,17 @@ function comparisonsOf({ current, newest }: SuiteRuns): ArmComparison[] {
       const [from, to] = ordered(left, right, dimension);
       const [fromKey, toKey] = [armKey(from), armKey(to)];
 
-      const candidates = current.flatMap((record) => {
-        const named = (key: string): string | undefined => record.benchmark.arms.find((arm) => armKey(arm) === key)?.name;
-        const [fromName, toName] = [named(fromKey), named(toKey)];
-
-        if (fromName === undefined || toName === undefined) return [];
-        const trials = observedTrials(record);
-
-        return trials.filter(({ trial }) => trial.arm === fromName).flatMap((one) => {
-          const other = trials.find(({ trial: { arm, task, repetition } }) => arm === toName && task === one.trial.task && repetition === one.trial.repetition);
-          const comparison = other && compareTrials({ from: one.trial, fromTasks: record.benchmark.tasks, to: other.trial, toTasks: record.benchmark.tasks });
-
-          return other && comparison ? [{ pair: { one, other }, comparison }] : [];
-        });
-      });
-
-      const { compared, excluded } = splitPairs(candidates);
+      const { compared, excluded } = pairsOf(current, { from: fromKey, to: toKey });
       const pairs = compared.map(({ one, other }) => ({ task: one.trial.task, from: one.trial.result === 'passed', to: other.trial.result === 'passed' }));
       const [observedFrom, observedTo] = [compared.map(({ one }) => one), compared.map(({ other }) => other)];
 
       if (pairs.length === 0) continue;
-      const count = (test: (pair: { from: boolean; to: boolean }) => boolean): number => pairs.filter(test).length;
       const rate = (of: typeof pairs, side: 'from' | 'to'): PassRate => ({ passed: of.filter((pair) => pair[side]).length, planned: of.length });
       comparisons.push(definedFields<ArmComparison>({
         dimension, from: fromKey, to: toKey, pairs: pairs.length,
         rates: { from: rate(pairs, 'from'), to: rate(pairs, 'to') },
         usage: { from: usageOf(observedFrom), to: usageOf(observedTo) },
-        difference: pairedDifference({ both: count((p) => p.from && p.to), toOnly: count((p) => p.to && !p.from), fromOnly: count((p) => p.from && !p.to), neither: count((p) => !p.from && !p.to) }),
+        difference: differenceOf(pairs),
         tasks: newest.benchmark.tasks.flatMap(({ id }) => {
           const own = pairs.filter((pair) => pair.task === id);
 
@@ -475,6 +489,67 @@ function comparisonsOf({ current, newest }: SuiteRuns): ArmComparison[] {
   });
 
   return comparisons.sort((left, right) => ARM_DIMENSIONS.indexOf(left.dimension) - ARM_DIMENSIONS.indexOf(right.dimension));
+}
+
+/**
+ * The trials of arm keys `from` and `to` of one task and repetition in one run of `current`, compared and excluded by
+ * `compareTrials`: a run that ran only one of the arms gives none.
+ */
+function pairsOf(current: readonly BenchmarkRunInput[], { from, to }: { from: string; to: string }) {
+  return splitPairs(current.flatMap((record) => {
+    const named = (key: string): string | undefined => record.benchmark.arms.find((arm) => armKey(arm) === key)?.name;
+    const [fromName, toName] = [named(from), named(to)];
+
+    if (fromName === undefined || toName === undefined) return [];
+    const trials = observedTrials(record);
+
+    return trials.filter(({ trial }) => trial.arm === fromName).flatMap((one) => {
+      const other = trials.find(({ trial: { arm, task, repetition } }) => arm === toName && task === one.trial.task && repetition === one.trial.repetition);
+      const comparison = other && compareTrials({ from: one.trial, fromTasks: record.benchmark.tasks, to: other.trial, toTasks: record.benchmark.tasks });
+
+      return other && comparison ? [{ pair: { one, other }, comparison }] : [];
+    });
+  }));
+}
+
+/** To's pass rate minus from's over `pairs`, not empty, with its 95% interval. */
+function differenceOf(pairs: ReadonlyArray<{ from: boolean; to: boolean }>): PairedInterval {
+  const count = (test: (pair: { from: boolean; to: boolean }) => boolean): number => pairs.filter(test).length;
+
+  return pairedDifference({ both: count((p) => p.from && p.to), toOnly: count((p) => p.to && !p.from), fromOnly: count((p) => p.from && !p.to), neither: count((p) => !p.from && !p.to) });
+}
+
+/**
+ * Each current arm of `newest` but the reference, its defaults arm, else its first, against it over the pairs of their
+ * trials in `current`, read with each arm's pooled pass rate and cost per passed trial in `arms`, as the run's table
+ * reads one run (`ArmAgainst`); absent with one arm.
+ */
+function againstOf({ current, newest }: SuiteRuns, arms: readonly ArmSeries[]): SuiteView['against'] {
+  const { arms: ran, defaultsArm } = newest.benchmark;
+  const reference = ran.find(({ name }) => name === defaultsArm) ?? ran[0];
+
+  if (reference === undefined || ran.length < 2) return undefined;
+
+  const standingOf = (key: string): ArmStanding => {
+    const pooled = arms.find((arm) => arm.key === key)?.pooled;
+
+    return definedFields<ArmStanding>({ rate: pooled && { passed: pooled.passed, planned: pooled.planned }, cost: pooled?.usage.costPerPassedTrial });
+  };
+
+  return {
+    reference: armKey(reference), isDefaultsArm: reference.name === defaultsArm,
+    arms: ran.filter((arm) => arm !== reference).map((arm) => {
+      const key = armKey(arm);
+      const { compared, excluded } = pairsOf(current, { from: armKey(reference), to: key });
+
+      return definedFields<PooledAgainst>({
+        arm: arm.name, key,
+        difference: compared.length > 0 ? differenceOf(compared.map(({ one, other }) => ({ from: one.trial.result === 'passed', to: other.trial.result === 'passed' }))) : undefined,
+        excluded: excluded.length > 0 ? excluded : undefined,
+        dominance: dominanceOf({ mine: standingOf(key), theirs: standingOf(armKey(reference)) }),
+      });
+    }),
+  };
 }
 
 function teamChangesOf({ current }: SuiteRuns): SuiteView['teamChanges'] {
@@ -652,20 +727,23 @@ export const BenchmarkHistory = {
     const version = runSourceHash(reference.benchmark);
     const isCurrent = ({ schemaVersion, benchmark }: BenchmarkRunInput): boolean => schemaVersion === reference.schemaVersion && runSourceHash(benchmark) === version;
     const suiteRuns = { runs: own, current: own.filter(isCurrent), newest: reference };
+    const arms = armsOf(suiteRuns);
+    const alone = { runs: [newest], current: [newest], newest };
 
     return {
       window,
       suites,
-      selected: {
+      selected: definedFields<SuiteView>({
         suite: chosen.suite,
         versions: versionsOf(versioned),
-        arms: armsOf(suiteRuns),
+        arms,
         tasks: tasksOf(suiteRuns),
         runs: own.map(runRow).toReversed(),
-        latest: { run: newest.run, source: newest.source, table: benchmarkTable(newest) },
+        latest: definedFields<SuiteView['latest']>({ run: newest.run, source: newest.source, table: benchmarkTable(newest), against: againstOf(alone, armsOf(alone)) }),
         comparisons: comparisonsOf(suiteRuns),
+        against: againstOf(suiteRuns, arms),
         teamChanges: teamChangesOf(suiteRuns),
-      },
+      }),
     };
   },
 } as const;

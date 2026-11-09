@@ -21,8 +21,10 @@ const CODEX: Arm = { name: 'codex', tool: 'codex' };
  * first. A trial of an arm in `usage` ran its prompt, on the arm's tool or on the one `ranOn` names, unless its task is
  * in `unstarted`, and reported the tool version `versions` names for its tool.
  */
-function run({ id, suite = 'fix-auth', version = 'v1', taskEdit = '', editedTasks = [], deciders = {}, startedAt, username = 'alice', source = 'reported', arms = [CLAUDE, CODEX], trials, invalid = [], notRun = [], usage = {}, ranOn = {}, unstarted = [], versions = {}, subset = false, recordVersion = 2 }: {
+function run({ id, suite = 'fix-auth', version = 'v1', taskEdit = '', editedTasks = [], deciders = {}, startedAt, username = 'alice', source = 'reported', arms = [CLAUDE, CODEX], defaultsArm, trials, invalid = [], notRun = [], usage = {}, ranOn = {}, unstarted = [], versions = {}, subset = false, recordVersion = 2 }: {
   id: string;
+  /** The arm that changes no `defaults` key. */
+  defaultsArm?: string;
   suite?: string;
   version?: string;
   /** Appended to each task file's hash: an edit to the task files that leaves suite.yaml as it was. */
@@ -53,7 +55,7 @@ function run({ id, suite = 'fix-auth', version = 'v1', taskEdit = '', editedTask
   return {
     run: id, source, username, startedAt, outcome: 'succeeded', schemaVersion: recordVersion,
     benchmark: {
-      suite: { name: suite, sourceHash: version }, repetitions: 1, baselineTeamRevision: `team-${id}`, scorers: [], ...(subset ? { subset: true as const } : {}),
+      suite: { name: suite, sourceHash: version }, repetitions: 1, baselineTeamRevision: `team-${id}`, scorers: [], ...(subset ? { subset: true as const } : {}), ...(defaultsArm ? { defaultsArm } : {}),
       tasks: tasks.map((task) => ({ id: task, startingCommit: 'a'.repeat(40), sourceHash: `task-${task}${taskEdit}${editedTasks.includes(task) ? '-edited' : ''}`, baseline: baseline(task) })),
       arms: arms.map(({ team, ...arm }) => ({ ...arm, source: 'team', team: team ?? { kind: 'pulled' as const, revision: `team-${id}` } })),
       trials: Object.entries(trials).flatMap(([task, byArm]) => Object.entries(byArm).flatMap(([arm, results]) => results.map((result, repetition) => {
@@ -532,6 +534,80 @@ describe('BenchmarkHistory comparisons', () => {
       { id: 'r2', toolVersions: { claude: '2.2.0' } },
       { id: 'r1', toolVersions: { claude: '2.1.0', codex: '0.40.0' } },
     ]);
+  });
+});
+
+describe('BenchmarkHistory arms against the defaults arm', () => {
+  const CHEAP: Arm = { name: 'cheap', tool: 'claude', model: 'claude-haiku-5-5' };
+  const usage = { claude: { tokens: 100, durationMs: 1000, cost: 0.5 }, cheap: { tokens: 100, durationMs: 1000, cost: 0.1 }, codex: { tokens: 100, durationMs: 1000 } };
+
+  // Over both runs, claude and cheap pass 3 of 4 trials each, cheap for a fifth of claude's cost; codex passes 1 of 4 and states no cost.
+  const runs = [
+    run({ id: 'r1', startedAt: '2026-10-10T09:00:00Z', arms: [CLAUDE, CHEAP, CODEX], defaultsArm: 'claude', usage, trials: { login: { claude: ['passed', 'failed'], cheap: ['passed', 'passed'], codex: ['failed', 'failed'] } } }),
+    run({ id: 'r2', startedAt: '2026-10-20T09:00:00Z', arms: [CLAUDE, CHEAP, CODEX], defaultsArm: 'claude', usage, trials: { login: { claude: ['passed', 'passed'], cheap: ['passed', 'failed'], codex: ['passed', 'failed'] } } }),
+  ];
+
+  it('reads each current arm against the defaults arm over the runs of the current version, with the paired difference and dominance by cost per passed trial', () => {
+    const selected = BenchmarkHistory.of({ runs, query: { windowDays: 90 }, now: NOW }).selected;
+    const [claude, cheap, codex] = selected?.arms ?? [];
+
+    // Newcombe intervals: cheap 0 pp (-55 to +55) from 2 pairs both passed and one each way; codex -50 pp (-79 to +14).
+    expect(selected?.against).toEqual({
+      reference: claude?.key, isDefaultsArm: true,
+      arms: [
+        { arm: 'cheap', key: cheap?.key, difference: { value: 0, low: expect.closeTo(-0.55, 2), high: expect.closeTo(0.55, 2) }, dominance: { kind: 'dominates', passRate: 'same', costRatio: expect.closeTo(0.2, 6) } },
+        { arm: 'codex', key: codex?.key, difference: { value: -0.5, low: expect.closeTo(-0.79, 2), high: expect.closeTo(0.14, 2) } },
+      ],
+    });
+  });
+
+  it('reads the newest run on its own too, as its table reads it, for the last run', () => {
+    const latest = BenchmarkHistory.of({ runs, query: { windowDays: 90 }, now: NOW }).selected?.latest;
+
+    // In r2 alone cheap passes 1 of 2 for 0.20 USD, claude 2 of 2 for 1.00 USD: cheaper per passed trial, but lower.
+    expect(latest?.against?.arms[0]).toEqual({
+      arm: 'cheap', key: expect.any(String), difference: { value: -0.5, low: expect.closeTo(-0.91, 2), high: expect.closeTo(0.27, 2) }, dominance: { kind: 'neither', passRate: 'lower', costRatio: expect.closeTo(0.4, 6) },
+    });
+  });
+
+  it('reads the arms against the first arm in a suite without a defaults arm, and marks neither an arm that costs less per passed trial but passes less', () => {
+    const cheaper = [run({ id: 'r1', startedAt: '2026-10-20T09:00:00Z', arms: [CLAUDE, CHEAP], usage, trials: { login: { claude: ['passed', 'passed', 'failed'], cheap: ['passed', 'failed', 'failed'] } } })];
+    const selected = BenchmarkHistory.of({ runs: cheaper, query: { windowDays: 90 }, now: NOW }).selected;
+    const [claude, cheap] = selected?.arms ?? [];
+
+    // claude: 1.50 USD over 2 passed trials, 0.75 each; cheap: 0.30 USD over 1, 0.30.
+    expect(selected?.against).toMatchObject({ reference: claude?.key, isDefaultsArm: false, arms: [{ key: cheap?.key, dominance: { kind: 'neither', passRate: 'lower', costRatio: expect.closeTo(0.4, 6) } }] });
+  });
+
+  /** `input` judged by a correctness rubric of `labels`, each arm's correctness verdicts scored `scores` in trial order. */
+  const scored = (input: BenchmarkRunInput, labels: Array<{ value: string; score: number }>, scores: Record<string, number[]>): BenchmarkRunInput => {
+    const seen = new Map<string, number>();
+
+    return { ...input, benchmark: { ...input.benchmark,
+      scorers: [{ name: 'teamai:correctness:login', rubric: { sourceHash: 'rubric' }, labels, passingScore: 1 }],
+      trials: input.benchmark.trials.map((trial) => {
+        const index = seen.get(trial.arm) ?? 0;
+        seen.set(trial.arm, index + 1);
+
+        return { ...trial, verdicts: trial.verdicts?.map((verdict) => (verdict.outcome.kind === 'labelled' ? { ...verdict, outcome: { ...verdict.outcome, score: scores[trial.arm]?.[index] ?? 0 } } : verdict)) };
+      }) } };
+  };
+
+  it("pools each arm's mean correctness score over the runs whose correctness rubric has more than two labels, as each run's table shows it", () => {
+    const CHECK: Decider = { by: 'check', task: 'task-login' };
+    const graded = [{ value: 'correct', score: 1 }, { value: 'partial', score: 0.5 }, { value: 'incorrect', score: 0 }];
+    const passFail = [{ value: 'correct', score: 1 }, { value: 'incorrect', score: 0 }];
+    const deciders = { claude: CHECK, codex: CHECK };
+    const scoredRuns = [
+      scored(run({ id: 'r1', startedAt: '2026-10-10T09:00:00Z', deciders, trials: { login: { claude: ['passed', 'failed'], codex: ['failed', 'failed'] } } }), graded, { claude: [1, 0.5], codex: [0.5, 0] }),
+      scored(run({ id: 'r2', startedAt: '2026-10-15T09:00:00Z', deciders, trials: { login: { claude: ['passed', 'failed'], codex: ['passed', 'failed'] } } }), graded, { claude: [1, 0], codex: [1, 0.5] }),
+      // A run judged with a pass or fail rubric: its scores are a pass rate again, so no mean reads them.
+      scored(run({ id: 'r3', startedAt: '2026-10-20T09:00:00Z', deciders, trials: { login: { claude: ['failed'], codex: ['passed'] } } }), passFail, { claude: [0], codex: [1] }),
+    ];
+
+    const arms = BenchmarkHistory.of({ runs: scoredRuns, query: { windowDays: 90 }, now: NOW }).selected?.arms ?? [];
+
+    expect(arms.map(({ pooled }) => pooled?.correctnessScore)).toEqual([{ labelled: 4, mean: 0.625 }, { labelled: 4, mean: 0.5 }]);
   });
 });
 

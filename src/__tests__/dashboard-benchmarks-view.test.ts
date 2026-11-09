@@ -444,6 +444,57 @@ describe('the Benchmarks page at every width', () => {
   });
 });
 
+/** One login task, four repetitions, on claude, the defaults arm, and two others: each arm's results, scores and cost per trial. */
+function judgedRun(arms: Record<string, { tool: string; results: TrialResult[]; scores: number[]; cost?: number }>): BenchmarkRunInput {
+  const names = Object.keys(arms);
+  return {
+    run: 'r1', source: 'reported', username: 'lead', startedAt: '2026-10-20T09:00:00Z', outcome: 'succeeded', schemaVersion: 2,
+    benchmark: {
+      suite: { name: 'fix-auth', sourceHash: 'v1' }, repetitions: 4, baselineTeamRevision: TEAM, defaultsArm: 'claude',
+      scorers: [{ name: 'teamai:correctness:login', rubric: { sourceHash: 'r1' }, labels: [{ value: 'correct', score: 1 }, { value: 'partial', score: 0.5 }, { value: 'incorrect', score: 0 }], passingScore: 1 }],
+      tasks: [{ id: 'login', startingCommit: 'a'.repeat(40), sourceHash: 't1', baseline: 'valid' }],
+      arms: names.map((name) => ({ name, tool: arms[name]?.tool ?? '', source: 'team' as const, team: { kind: 'pulled' as const, revision: TEAM } })),
+      trials: names.flatMap((name, index) => (arms[name]?.results ?? []).map((result, repetition) => {
+        const cost = arms[name]?.cost;
+        const score = arms[name]?.scores[repetition] ?? 0;
+        return {
+          task: 'login', arm: name, repetition: repetition + 1, order: index * 4 + repetition + 1, step: `trials.r${repetition + 1}.login.${name}.prompt`, result,
+          verdicts: [{ scorer: 'teamai:correctness:login', outcome: { kind: 'labelled' as const, label: score === 1 ? 'correct' : score > 0 ? 'partial' : 'incorrect', score, passed: result === 'passed' }, decider: { by: 'check' as const, task: 't1' } }],
+          agent: { v: 1 as const, tool: { name: arms[name]?.tool ?? '' }, team: { revision: TEAM, localChanges: false }, teamai: '1.0.0', driver: 'local' as const },
+          ...(cost === undefined ? {} : { cost: { amount: cost, unit: 'USD', complete: true } }),
+        };
+      })),
+    },
+  };
+}
+
+describe('the Benchmarks page reads each arm against the defaults arm', () => {
+  // claude passes 3 of 4 at 0.50 USD a trial; cheap 3 of 4 at 0.10; codex 1 of 4 at 1.00.
+  const runs = [judgedRun({
+    claude: { tool: 'claude', results: ['passed', 'passed', 'passed', 'failed'], scores: [1, 1, 1, 0.5], cost: 0.5 },
+    cheap: { tool: 'claude', results: ['passed', 'passed', 'passed', 'failed'], scores: [1, 1, 1, 0], cost: 0.1 },
+    codex: { tool: 'codex', results: ['passed', 'failed', 'failed', 'failed'], scores: [1, 0.5, 0, 0], cost: 1 },
+  })];
+  const bar = (html: string, arm: string) => text((html.split('<div class="arm-bars">')[1] ?? '').split('<div class="arm-bar').find((one) => one.includes(`<span data-verbatim>${arm}</span>`)) ?? '').trim();
+
+  it('puts its cost per passed trial, its mean correctness score and its standing under each arm\'s pass rate', async () => {
+    const html = await renderPage(runs);
+
+    expect(bar(html, 'claude')).toContain('Cost per passed trial 0.6667 USD · Mean correctness score 0.88 · The arm the others are read against (defaults arm)');
+    // Newcombe intervals over the 4 pairs: cheap 0 pp (-43 to +43), codex -50 pp (-79 to +14).
+    expect(bar(html, 'cheap')).toContain('Cost per passed trial 0.1333 USD · Mean correctness score 0.75 · Against claude (defaults arm): dominates, same pass rate, 80% cheaper per passed trial · 0 pp · 95% −43 pp to +43 pp · not separated');
+    expect(bar(html, 'codex')).toContain('Cost per passed trial 4 USD · Mean correctness score 0.38 · Against claude (defaults arm): dominated, lower pass rate, 500% more expensive per passed trial · −50 pp · 95% −79 pp to +14 pp · not separated');
+  });
+
+  it('reads the last run on its own the same way, under each arm of it', async () => {
+    const html = await renderPage(runs);
+    const latest = (arm: string) => text((html.split('<div class="latest">')[1] ?? '').split('<div class="latest-arm">').find((one) => one.includes(`<span data-verbatim>${arm}</span>`)) ?? '').trim();
+
+    expect(latest('cheap')).toContain('Cost per passed trial 0.1333 USD · Mean correctness score 0.75 · Against claude (defaults arm): dominates, same pass rate, 80% cheaper per passed trial · 0 pp · 95% −43 pp to +43 pp · not separated');
+    expect(latest('claude')).toContain('The arm the others are read against (defaults arm)');
+  });
+});
+
 describe('the Benchmarks page counts one of a thing in the singular', () => {
   const runs = [roleRun({ 'claude-frontend': 'passed', 'claude-review': 'passed' }, { 'claude-frontend': 1200, 'claude-review': 1000 })];
 

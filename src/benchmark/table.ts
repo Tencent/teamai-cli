@@ -89,13 +89,16 @@ export interface ArmAgainst {
   difference?: PairedInterval;
   /** The pairs `compareTrials` left out, by why; absent when none was. */
   excluded?: ExcludedPairs[];
-  /**
-   * `dominates`: this arm costs less per passed trial and its pass rate is at least the reference's; `dominated`: the
-   * reference does that to it. `costRatio` is this arm's cost per passed trial over the reference's. Absent when neither,
-   * or when either cost per passed trial is absent, incomplete or in another unit.
-   */
-  dominance?: { kind: 'dominates' | 'dominated'; passRate: 'same' | 'higher' | 'lower'; costRatio: number };
+  /** Absent when neither dominates, or when either cost per passed trial is absent, incomplete or in another unit. */
+  dominance?: Exclude<Dominance, { kind: 'neither' }>;
 }
+
+/**
+ * One arm against another by cost per passed trial and pass rate. `dominates`: it costs less per passed trial and its
+ * pass rate is at least the other's; `dominated`: the other does that to it; `neither`: their costs compare, and
+ * neither does. `costRatio` is its cost per passed trial over the other's.
+ */
+export type Dominance = { passRate: 'same' | 'higher' | 'lower'; costRatio: number } & ({ kind: 'dominates' } | { kind: 'dominated' } | { kind: 'neither' });
 
 /** One arm's verdicts of one scorer the suite or a task lists, over the arm's trials that ran it. */
 export interface ArmScorerResults {
@@ -333,6 +336,7 @@ function againstOf(record: BenchmarkRecord, results: readonly ArmResults[], usag
 
       const { compared, excluded } = splitPairs(candidates);
       const count = (test: (pair: { from: boolean; to: boolean }) => boolean): number => compared.filter(test).length;
+      const dominance = dominanceOf({ mine: standingOf(name), theirs: standingOf(reference.name) });
 
       return definedFields<ArmAgainst>({
         arm: name,
@@ -340,19 +344,23 @@ function againstOf(record: BenchmarkRecord, results: readonly ArmResults[], usag
           ? pairedDifference({ both: count((p) => p.from && p.to), toOnly: count((p) => p.to && !p.from), fromOnly: count((p) => p.from && !p.to), neither: count((p) => !p.from && !p.to) })
           : undefined,
         excluded: excluded.length > 0 ? excluded : undefined,
-        dominance: dominanceOf({ mine: standingOf(name), theirs: standingOf(reference.name) }),
+        dominance: dominance?.kind === 'neither' ? undefined : dominance,
       });
     }),
   };
 }
 
-interface ArmStanding {
+/** An arm's pass rate and cost per passed trial, what dominance reads. */
+export interface ArmStanding {
   rate?: PassRate;
   cost?: CostPerPassedTrial;
 }
 
-/** Whether `mine` dominates `theirs` or is dominated by it: less per passed trial at a pass rate at least as high. */
-function dominanceOf({ mine, theirs }: { mine: ArmStanding; theirs: ArmStanding }): ArmAgainst['dominance'] {
+/**
+ * Whether `mine` dominates `theirs`, is dominated by it, or neither: less per passed trial at a pass rate at least as
+ * high. Undefined when either cost per passed trial is absent, incomplete or in another unit.
+ */
+export function dominanceOf({ mine, theirs }: { mine: ArmStanding; theirs: ArmStanding }): Dominance | undefined {
   if (mine.rate === undefined || theirs.rate === undefined || mine.cost?.kind !== 'known' || theirs.cost?.kind !== 'known') return undefined;
 
   if (mine.cost.unit !== theirs.cost.unit || theirs.cost.amount === 0) return undefined;
@@ -362,7 +370,7 @@ function dominanceOf({ mine, theirs }: { mine: ArmStanding; theirs: ArmStanding 
 
   if (costRatio < 1 && order >= 0) return { kind: 'dominates', passRate, costRatio };
 
-  return costRatio > 1 && order <= 0 ? { kind: 'dominated', passRate, costRatio } : undefined;
+  return { kind: costRatio > 1 && order <= 0 ? 'dominated' : 'neither', passRate, costRatio };
 }
 
 function correctnessScoreOf(trials: RecordedTrial[]): NonNullable<ArmResults['correctnessScore']> {
