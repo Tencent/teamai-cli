@@ -142,6 +142,38 @@ describe('a team hook folder in the user scope', () => {
   });
 });
 
+describe('a team hook folder in a workspace with a team repo, whose Claude Code entries sit in the main checkout', () => {
+  it('keeps running the files of the command Claude Code installed while settings.local.json cannot be rewritten for a new one', async () => {
+    const project = path.join(home, 'shop');
+    const dataHome = path.join(home, '.teamai', 'projects', 'shop');
+    const teamRepo = path.join(dataHome, 'repo');
+    execFileSync('git', ['init', '-q', project]);
+    await fse.ensureDir(path.join(project, '.claude'));
+    const workspace: LocalConfig = {
+      repo: { localPath: teamRepo, remote: 'acme/shop' }, username: 'tester', additionalRoles: [], scope: 'project', projectRoot: project, dataHome, enabledAgents: ['claude'],
+    };
+    const version = async (flag: string): Promise<void> => {
+      await fse.outputFile(path.join(teamRepo, 'hooks', 'block-secrets', 'HOOK.yaml'), BLOCK_SECRETS.replace('scan.sh"', `scan.sh" ${flag}`));
+      await fse.outputFile(path.join(teamRepo, 'hooks', 'block-secrets', 'scan.sh'), `echo ${flag}\n`);
+    };
+    const settings = path.join(project, '.claude', 'settings.local.json');
+    const scripts = async (): Promise<string[]> => {
+      const file: { hooks?: Record<string, Array<{ hooks: Array<{ command: string }> }>> } = await fse.readJson(settings);
+
+      return (file.hooks?.PreToolUse ?? []).flatMap((entry) => entry.hooks.flatMap((hook) => [.../bash "([^"]+)" --v\d/.exec(hook.command) ?? []].slice(1)));
+    };
+
+    await version('--v1');
+    await reconcileTeamHooksForConfig(teamConfig, workspace);
+    const installed = await scripts();
+    await version('--v2');
+    await fse.chmod(settings, 0o444);
+    await reconcileTeamHooksForConfig(teamConfig, workspace).finally(() => fse.chmod(settings, 0o644));
+
+    expect([await scripts(), await Promise.all(installed.map((script) => fse.readFile(script, 'utf8')))]).toEqual([installed, ['echo --v1\n']]);
+  });
+});
+
 describe('the team hook history', () => {
   it('holds every committed HOOK.yaml version, named after its directory and rendered with the current scope\'s path', async () => {
     const git = (...args: string[]): void => {

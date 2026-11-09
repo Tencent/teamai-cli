@@ -5165,7 +5165,7 @@ export async function reconcileTeamHooksForConfig(
 
   if (pruneFolders) {
     try {
-      await pruneHookFolders(localConfig, resolved.ok ? resolved.folders : [], await installedTeamHookCommands(localConfig, manifestPath));
+      await pruneHookFolders(localConfig, resolved.ok ? resolved.folders : [], await installedTeamHookCommands(localConfig, manifestPath, mainCheckout));
     } catch (e) {
       log.warn(`Team hook folders no hook runs from any more could not be removed: ${e instanceof Error ? e.message : String(e)}. `
         + 'Your team hooks are applied; the next teamai pull removes those folders.');
@@ -5184,11 +5184,11 @@ export async function reconcileTeamHooksForConfig(
 
 /**
  * The commands of the team hooks installed after a reconcile: every record of the manifests `localConfig`'s tools keep
- * their team hooks in, `manifestPath` among them. A tool the member excluded, or one whose file could not be written,
- * keeps its records with its entries.
+ * their team hooks in, `manifestPath` and the main checkout's (`mainCheckout`, as the reconcile resolved it) among them.
+ * A tool the member excluded, or one whose file could not be written, keeps its records with its entries.
  */
-async function installedTeamHookCommands(localConfig: LocalConfig, manifestPath: string): Promise<string[]> {
-  const manifests = new Set([manifestPath, path.join(getDataHome(localConfig), 'managed-main-checkout-hooks.json')]);
+async function installedTeamHookCommands(localConfig: LocalConfig, manifestPath: string, mainCheckout: MainCheckoutHooks | null): Promise<string[]> {
+  const manifests = new Set([manifestPath, ...mainCheckout ? [mainCheckout.manifestPath, mainCheckout.checkoutManifestPath ?? mainCheckout.manifestPath] : []]);
 
   if (localConfig.scope !== 'project' || localConfig.projectRoot) manifests.add(getManagedHooksPath(localConfig));
   const commands: string[] = [];
