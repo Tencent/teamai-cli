@@ -259,7 +259,34 @@ teamai hooks remove
 
 Only tools that are already installed are touched.
 
-Commit the team's own hooks in `hooks/hooks.yaml`. `id` is lowercase letters, digits, and `-`. `builtin` belongs only in the root file. Use it to turn a built-in hook off, or to change its timeout.
+Commit a team hook as a folder: `HOOK.yaml` beside the script it runs. The directory name is the hook's id: lowercase letters, digits, and `-`.
+
+```text
+hooks/block-secrets/
+├─ HOOK.yaml
+└─ scan.sh
+```
+
+```yaml
+# hooks/block-secrets/HOOK.yaml
+description: Scan for secrets before a commit
+event: PreToolUse
+matcher: Bash
+command: bash "${TEAMAI_HOOK_DIR}/scan.sh"
+timeout: 15
+```
+
+Pull copies the folder and puts its path, with forward slashes, in place of `${TEAMAI_HOOK_DIR}`. teamai adds no quotes, so quote the variable as the command needs. The path stays the same when the folder changes:
+
+| Where the team is | The folder lands in |
+|---|---|
+| User scope | `~/.teamai/hooks/block-secrets/` |
+| Workspace with a team repo | `~/.teamai/projects/<slug>/hooks/block-secrets/` |
+| Single-repo | `.teamai/delivered/hooks/block-secrets/` in each worktree, which git ignores |
+
+In single-repo, Claude Code's command reads `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets/scan.sh"`, so `.claude/settings.json` is the same in every worktree. Other tools get the worktree's absolute path. `HOOK.yaml` takes the keys of a `hooks.yaml` entry except `id`, `roles` and `projects`. A hook for one namespace goes in `hooks/<ns>/<id>/`.
+
+Short hooks can stay in `hooks/hooks.yaml`, as a list of the same keys with an `id`. `${TEAMAI_HOOK_DIR}` works only in a folder: in `hooks.yaml` it stops team hooks for the run, as an id that is both a `hooks.yaml` entry and a folder does. `builtin` belongs only in the root file. Use it to turn a built-in hook off, or to change its timeout.
 
 ```yaml
 hooks:
@@ -349,8 +376,10 @@ OpenCode, Oh My Pi, Pi, OpenClaw, Kiro, Hermes, and Antigravity have no Claude C
 sharing:
   hooks:
     autoApply: false          # pull only prints a hint; run teamai hooks inject
-    requireTeamScripts: true  # command must live under ~/.teamai/team-scripts/
+    requireTeamScripts: true  # command must run from its hook folder or ~/.teamai/team-scripts/
 ```
+
+`requireTeamScripts` keeps a folder hook whose `command`, as written, names `${TEAMAI_HOOK_DIR}`, and any command under `~/.teamai/team-scripts/`. It drops the rest, such as `curl … | sh`. It checks where a script comes from, the reviewed team repo. It is not a sandbox: the script runs with your permissions.
 
 Turn team hooks off on this machine with `TEAMAI_HOOKS_DISABLED=1`.
 
@@ -578,7 +607,7 @@ These file names are reserved for resources kept as a folder, the way a skill is
 | `scorers/` | `SCORER.md` |
 | `agents/` | `AGENT.md` |
 
-A directory under that type's directory, at any depth, that holds its marker is a folder. This release reads none of these folder types yet. It skips each folder whole, and pulls the rest of the team repo as usual:
+A directory under that type's directory, at any depth, that holds its marker is a folder. This release reads hook folders ([Hooks](#hooks)) and none of the other folder types yet. It skips each such folder whole, and pulls the rest of the team repo as usual:
 
 ```text
 rules/

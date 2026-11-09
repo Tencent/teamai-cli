@@ -290,7 +290,10 @@ Env variables, team hooks and MCP servers are scoped like skills: the root file
 `env/<ns>/env.yaml`, `hooks/<ns>/hooks.yaml`, `mcp/<ns>/mcp.yaml` reach only
 members whose role or project lists `<ns>` under `resources.env`, `resources.hooks`
 or `resources.mcp`. A namespace entry replaces the root entry of the same key, hook
-id or server name. Hooks and MCP servers have no add command, and `teamai push`
+id or server name. A hook that runs a script is a folder, `hooks/[<ns>/]<id>/HOOK.yaml`
+beside the script, its command naming it as `"${TEAMAI_HOOK_DIR}/scan.sh"`; an id
+both in `hooks.yaml` and as a folder stops team hooks like a repeated name.
+Hooks and MCP servers have no add command, and `teamai push`
 does not pick up `hooks/` or `mcp/`: edit the file in the team repo, then commit
 and push it with git. `teamai doctor` lists each override.
 
