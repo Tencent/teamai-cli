@@ -239,7 +239,7 @@ function scorersPanel(sel){
   +'</tbody></table></div></section>';
 }
 function taskRunsPanel(sel){
- const runs=sel.runs.filter(r=>r.sourceHash===sel.versions[0].sourceHash).reverse();
+ const runs=sel.runs.filter(r=>r.isCurrent).reverse();
  if(runs.length<2)return '';
  return '<section class="panel sessions bench-panel"><div class="panelhead"><h2>'+label('Tasks per run')+'</h2><span class="label">'+label('Every arm together, oldest run first. A task that turns red after a team change is the one to read.')+'</span></div><div class="table-scroll"><table class="session-table heatmap task-runs"><thead><tr><th>'+label('TASK')+'</th>'+runs.map(r=>'<th title="'+e(r.run+' · '+when(r.startedAt))+'">'+e(r.startedAt.slice(5,10))+'</th>').join('')+'</tr></thead><tbody>'
   +sel.tasks.map(task=>'<tr><td data-verbatim>'+e(task.task)+'</td>'+runs.map(r=>{const cell=task.runs.find(c=>c.run===r.run); if(!cell)return '<td class="muted">·</td>'; if(cell.baseline!=='valid'&&cell.baseline!=='not_needed')return '<td class="heat not-measured" title="'+e(t('Not measured: the check passed before any change or could not run, or the run ended first.'))+'">—</td>'; const rate=passOf(cell); return '<td class="heat" style="'+heat(rate)+'" title="'+e(r.run+': '+(rate==null?'—':Math.round(rate*100)+'% ('+cell.passed+'/'+cell.planned+')'))+'">'+(rate==null?'—':pct(rate))+'</td>';}).join('')+'</tr>').join('')
@@ -264,7 +264,7 @@ function runsPanel(sel){
  const arms=sel.arms.filter(a=>a.isCurrent), isCosted=sel.runs.some(r=>r.spend.estimated||r.spend.spent.kind!=='unknown'), heads=['STARTED','MEMBER','FROM','SUITE VERSION','TEAM REVISION','PASS RATE'].concat(isCosted?['COST']:[]);
  const names=heads.map(t).concat(arms.map(a=>a.arm));
  return '<section class="panel sessions bench-panel"><div class="panelhead"><h2>'+label('Runs')+' <span class="count">'+number(sel.runs.length)+'</span></h2><span class="label">'+label('Newest first. A team revision marked changed installed other team assets than the run before it.')+'</span></div><div class="table-scroll card-table"><table class="session-table bench-cards"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+arms.map(a=>'<th title="'+e(armTitle(a))+'"><div class="arm-label">'+swatch(sel.arms.indexOf(a))+'<span data-verbatim>'+e(a.arm)+'</span></div></th>').join('')+'</tr></thead><tbody>'
-  +sel.runs.map((r,i)=>{const older=sel.runs[i+1], current=r.sourceHash===sel.versions[0].sourceHash; return cardRow('',names,[
+  +sel.runs.map((r,i)=>{const older=sel.runs[i+1], current=r.isCurrent; return cardRow('',names,[
    '<button class="link" data-run="'+e(r.run)+'" data-run-source="'+e(r.source)+'">'+e(when(r.startedAt))+' ↗</button><small data-verbatim>'+e(r.run)+'</small>',
    '<span data-verbatim>'+e(r.username||'—')+'</span>',
    r.source==='local'?label('This machine'):label('Team'),

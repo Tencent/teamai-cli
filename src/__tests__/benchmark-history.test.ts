@@ -209,14 +209,14 @@ describe('BenchmarkHistory', () => {
     expect(selected?.runs.map(({ run: id, unmeasuredTasks }) => `${id} ${unmeasuredTasks}`)).toEqual(['r2 0', 'r1 2']);
   });
 
-  it('lists every run of the suite newest first, with who ran it, its version and team revision, each arm in it and what it cost, and the table of the newest', () => {
+  it('lists every run of the suite newest first, with who ran it, its version, whether it is current, its team revision, each arm in it and what it cost, and the table of the newest', () => {
     const view = BenchmarkHistory.of({ runs: history, query: { windowDays: 90 }, now: NOW });
     const [claude, codex, sonnet] = view.selected?.arms ?? [];
 
     expect(view.selected?.runs).toEqual([
-      { run: 'r3', source: 'local', startedAt: '2026-10-20T09:00:00Z', username: 'alice', sourceHash: versionOf(history[2]), teamRevision: 'team-r3', passed: 4, planned: 6, unmeasuredTasks: 0, toolVersions: {}, arms: [{ key: claude?.key, passed: 2, planned: 3 }, { key: codex?.key, passed: 2, planned: 3 }], spend: { spent: { kind: 'known', amount: expect.closeTo(5.4), unit: 'USD', used: 6 } } },
-      { run: 'r2', source: 'reported', startedAt: '2026-10-10T09:00:00Z', username: 'bob', sourceHash: versionOf(history[1]), teamRevision: 'team-r2', passed: 4, planned: 6, unmeasuredTasks: 0, toolVersions: {}, arms: [{ key: claude?.key, passed: 3, planned: 3 }, { key: codex?.key, passed: 1, planned: 3 }], spend: { spent: { kind: 'known', amount: expect.closeTo(1.8), unit: 'USD', used: 6 } } },
-      { run: 'r1', source: 'reported', startedAt: '2026-10-01T09:00:00Z', username: 'alice', sourceHash: versionOf(history[0]), teamRevision: 'team-r1', passed: 0, planned: 2, unmeasuredTasks: 0, toolVersions: {}, arms: [{ key: sonnet?.key, passed: 0, planned: 1 }, { key: codex?.key, passed: 0, planned: 1 }], spend: { spent: { kind: 'unknown' } } },
+      { run: 'r3', source: 'local', startedAt: '2026-10-20T09:00:00Z', username: 'alice', sourceHash: versionOf(history[2]), isCurrent: true, teamRevision: 'team-r3', passed: 4, planned: 6, unmeasuredTasks: 0, toolVersions: {}, arms: [{ key: claude?.key, passed: 2, planned: 3 }, { key: codex?.key, passed: 2, planned: 3 }], spend: { spent: { kind: 'known', amount: expect.closeTo(5.4), unit: 'USD', used: 6 } } },
+      { run: 'r2', source: 'reported', startedAt: '2026-10-10T09:00:00Z', username: 'bob', sourceHash: versionOf(history[1]), isCurrent: true, teamRevision: 'team-r2', passed: 4, planned: 6, unmeasuredTasks: 0, toolVersions: {}, arms: [{ key: claude?.key, passed: 3, planned: 3 }, { key: codex?.key, passed: 1, planned: 3 }], spend: { spent: { kind: 'known', amount: expect.closeTo(1.8), unit: 'USD', used: 6 } } },
+      { run: 'r1', source: 'reported', startedAt: '2026-10-01T09:00:00Z', username: 'alice', sourceHash: versionOf(history[0]), isCurrent: false, teamRevision: 'team-r1', passed: 0, planned: 2, unmeasuredTasks: 0, toolVersions: {}, arms: [{ key: sonnet?.key, passed: 0, planned: 1 }, { key: codex?.key, passed: 0, planned: 1 }], spend: { spent: { kind: 'unknown' } } },
     ]);
     expect(view.selected?.latest.run).toBe('r3');
     expect(view.selected?.latest.table.matrix).toEqual([

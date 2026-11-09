@@ -275,6 +275,8 @@ export interface RunRow extends PassRate {
   startedAt: string;
   username?: string;
   sourceHash: string;
+  /** It ran the suite's current version, in the record version of its newest whole run: the runs its rates pool. */
+  isCurrent: boolean;
   teamRevision: string;
   /** Tasks the run did not measure: see isMeasured. */
   unmeasuredTasks: number;
@@ -765,12 +767,13 @@ function toolVersionsOf(input: BenchmarkRunInput): Record<string, string> {
   return Object.fromEntries([...counts].map(([tool, versions]) => [tool, [...versions].sort(([, left], [, right]) => right - left)[0]?.[0] ?? '']));
 }
 
-function runRow(input: BenchmarkRunInput): RunRow {
+function runRow(input: BenchmarkRunInput, isCurrent: boolean): RunRow {
   const { run, source, startedAt, username, benchmark } = input;
 
   return definedFields<RunRow>({
     run, source, startedAt, username: username || undefined,
     sourceHash: runSourceHash(benchmark),
+    isCurrent,
     teamRevision: benchmark.baselineTeamRevision,
     ...passRate(benchmark.trials),
     unmeasuredTasks: benchmark.tasks.filter(({ baseline }) => !isMeasured(baseline)).length,
@@ -919,7 +922,7 @@ export const BenchmarkHistory = {
         arms,
         tasks: tasksOf(suiteRuns),
         scorers: scorersOf(suiteRuns),
-        runs: own.map(runRow).toReversed(),
+        runs: own.map((input) => runRow(input, isCurrent(input))).toReversed(),
         latest: definedFields<SuiteView['latest']>({ run: newest.run, source: newest.source, table: benchmarkTable(newest), against: againstOf(alone, armsOf(alone)) }),
         ...comparisonsOf(suiteRuns),
         against: againstOf(suiteRuns, arms),

@@ -603,6 +603,20 @@ describe('the Benchmarks page shows each scorer by arm', () => {
   });
 });
 
+describe('the Benchmarks page of a suite whose files stayed while its record version changed', () => {
+  const base = judgedRun({ claude: { tool: 'claude', results: ['passed', 'failed'], scores: [1, 0] } });
+  const older: BenchmarkRunInput = { ...base, run: 'r0', startedAt: '2026-10-19T09:00:00Z', schemaVersion: 1, benchmark: { ...base.benchmark, trials: base.benchmark.trials.map(({ verdicts: _verdicts, ...trial }) => trial) } };
+
+  it('marks only the run of the current record version current, and gives the older one no column of the tasks per run', async () => {
+    const html = await renderPage([older, base]);
+    const row = (run: string) => text(html.split(`data-run="${run}" data-run-source="reported">`).at(-1)?.split('</tr>')[0] ?? '');
+
+    expect(row(base.run)).toContain('current');
+    expect(row('r0')).not.toContain('current');
+    expect(html).not.toContain('Tasks per run');
+  });
+});
+
 describe('the Benchmarks page puts each run\'s cost beside its estimate', () => {
   const base = judgedRun({
     claude: { tool: 'claude', results: ['passed', 'passed', 'passed', 'passed'], scores: [1, 1, 1, 1], cost: 0.5 },
