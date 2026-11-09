@@ -154,6 +154,44 @@ describe.skipIf(process.platform === 'win32')('hook fast path (#1788, real CLI)'
     });
   });
 
+  describe('a prompt', () => {
+    const promptPayload = (sessionId: string) => ({
+      session_id: sessionId, transcript_path: path.join(sandbox, 't.jsonl'), cwd: project, hook_event_name: 'UserPromptSubmit', prompt: 'add a test for the parser',
+    });
+
+    const totals = (log: string) => log.split('\n').filter((line) => /prompt-submit\/claude background: \d+ms total/.test(line));
+
+    it('takes the fast path with no hint waiting, and its child records the prompt', async () => {
+      const result = hook(['prompt-submit', '--tool', 'claude'], promptPayload('p-1'));
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe('');
+      const log = await waitForLog(/prompt-submit\/claude background: \d+ms total/);
+      expect(log).toContain('[hook-dispatch] prompt-submit/claude fast path');
+      expect(totals(log)[0]).toContain('skill-mention=');
+      expect(totals(log)[0]).toContain('dashboard-report=');
+      const events = fs.readFileSync(path.join(home, '.teamai', 'dashboard', 'events.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+      expect(events).toContainEqual(expect.objectContaining({ type: 'prompt_submit', sessionId: 'p-1', runMode: 'attended' }));
+    });
+
+    it('prints a waiting package hint on each of 20 prompts, and completes every background pass', async () => {
+      const hintFile = path.join(home, '.teamai', 'package-hints', 'p-2.pending.json');
+      fs.mkdirSync(path.dirname(hintFile), { recursive: true });
+
+      for (let run = 0; run < 20; run++) {
+        fs.writeFileSync(hintFile, JSON.stringify({ message: `Run npm install (${run})` }));
+        const result = hook(['prompt-submit', '--tool', 'claude'], promptPayload('p-2'));
+
+        expect(result.status, result.stderr).toBe(0);
+        expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toBe(`Run npm install (${run})`);
+      }
+
+      for (let waited = 0; waited < 30_000 && totals(debugLog()).length < 20; waited += 100) await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(totals(debugLog())).toHaveLength(20);
+      expect(debugLog()).not.toContain('prompt-submit/claude fast path');
+    });
+  });
+
   it('runs the full dispatch for a payload without a session id', async () => {
     const { session_id: _omitted, ...payload } = readPayload();
     const result = hook(['post-tool-use', '--tool', 'claude'], payload);

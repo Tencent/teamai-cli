@@ -2,17 +2,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { argvVerdict, ATTEMPT_ENV, childPayload, FOREGROUND_PAYLOAD_KEYS, HTTP_ENDPOINT_ENVS, isHttpEnrolled, LAUNCHED_BY_ENV, runHookFastPath } from '../hook-fast-path.js';
+import { argvVerdict, ATTEMPT_ENV, childPayload, FOREGROUND_PAYLOAD_KEYS, HTTP_ENDPOINT_ENVS, isHttpEnrolled, LAUNCHED_BY_ENV, promptAnswersInForeground, runHookFastPath } from '../hook-fast-path.js';
+import { takePendingHint, writeContributeState } from '../contribute-check.js';
+import { takePendingPackageHint } from '../pkg/pkg-hint.js';
 import { loadLocalAgentConfig } from '../local-agent.js';
 import * as launchContext from '../launch-context.js';
 
 const READ = ['hook-dispatch', 'post-tool-use', '--tool', 'claude'];
 const PAYLOAD = { kind: 'payload', hook: { event: 'post-tool-use', tool: 'claude', matcher: '*' } };
+const PROMPT = ['hook-dispatch', 'prompt-submit', '--tool', 'claude'];
 
 describe('argvVerdict', () => {
   it('reads the payload of the PostToolUse command teamai installs', () => {
     expect(argvVerdict(READ, {}, 'darwin')).toEqual(PAYLOAD);
     expect(argvVerdict([...READ, '--matcher', 'Bash'], {}, 'linux')).toEqual({ kind: 'payload', hook: { event: 'post-tool-use', tool: 'claude', matcher: 'Bash' } });
+  });
+
+  it('reads the payload of the UserPromptSubmit command teamai installs (#1788)', () => {
+    expect(argvVerdict(PROMPT, {}, 'darwin')).toEqual({ kind: 'payload', hook: { event: 'prompt-submit', tool: 'claude', matcher: '*' } });
+  });
+
+  it.each([
+    ['a matcher, which no prompt entry has', [...PROMPT, '--matcher', 'Bash']],
+    ['team hooks', [...PROMPT, '--team-hooks']],
+    ['Windows', PROMPT, 'win32'],
+  ])('runs the full dispatch for a prompt with %s', (_case, argv, platform = 'darwin') => {
+    expect(argvVerdict(argv, {}, platform as NodeJS.Platform)).toEqual({ kind: 'full' });
+  });
+
+  it.each(['copilot', 'agy'])('runs the full dispatch for a %s prompt, whose payload the bundle translates', (tool) => {
+    expect(argvVerdict(['hook-dispatch', 'prompt-submit', '--tool', tool], {}, 'darwin')).toEqual({ kind: 'full' });
   });
 
   it('always runs the full dispatch on Windows, whose child needs the WMI escape in the bundle', () => {
@@ -25,6 +44,7 @@ describe('argvVerdict', () => {
     ['a payload handed over as a file', [...READ, '--stdin-file', '/tmp/payload.json']],
     ['a Copilot user built-in', [...READ, '--copilot-global', 'user']],
     ['another event', ['hook-dispatch', 'stop', '--tool', 'claude']],
+    ['a session start', ['hook-dispatch', 'session-start', '--tool', 'claude']],
     ['a matcher flag without its value', [...READ, '--matcher']],
     ['a command without --tool', ['hook-dispatch', 'post-tool-use']],
     ['a flag spelled otherwise', ['hook-dispatch', 'post-tool-use', '--tools', 'claude']],
@@ -74,7 +94,13 @@ describe('runHookFastPath', () => {
 describe('childPayload', () => {
   it.each(['session_id', 'sessionId', 'conversation_id'])('hands on a payload with a %s as the host sent it', (field) => {
     const raw = JSON.stringify({ [field]: 's-1', tool_name: 'Read' });
-    expect(childPayload(raw)).toBe(raw);
+    expect(childPayload(raw)).toEqual({ payload: raw, sessionId: 's-1' });
+  });
+
+  // The order deriveSessionId (utils/session-id.ts) reads them in, so both name the same session.
+  it('names the session by the first id field that holds one', () => {
+    expect(childPayload(JSON.stringify({ session_id: '', sessionId: 's-2', conversation_id: 's-3' }))?.sessionId).toBe('s-2');
+    expect(childPayload(JSON.stringify({ session_id: 7, conversation_id: 's-3' }))?.sessionId).toBe('s-3');
   });
 
   it.each([
@@ -92,7 +118,7 @@ describe('childPayload', () => {
 
   it('drops the keys only the foreground dispatcher may set', () => {
     const raw = JSON.stringify({ session_id: 's-1', teamai_run: { runMode: 'unattended' }, teamai_launch: { TEAMAI_LAUNCHED_BY: 'workflow' } });
-    expect(JSON.parse(childPayload(raw) ?? 'null')).toEqual({ session_id: 's-1' });
+    expect(JSON.parse(childPayload(raw)?.payload ?? 'null')).toEqual({ session_id: 's-1' });
   });
 });
 
@@ -156,6 +182,54 @@ describe('isHttpEnrolled', () => {
     write('.teamai/local-agent/config.json', '{"endpoint":');
 
     expect(isHttpEnrolled(env())).toBe(true);
+  });
+});
+
+// A prompt's foreground prints what earlier work left for this session (#1788).
+describe('promptAnswersInForeground', () => {
+  let home: string;
+  // Characters outside [a-zA-Z0-9._-] are replaced in the file names, as both hints write them.
+  const SESSION = 'pid-1-/work/My Project';
+
+  beforeEach(() => {
+    home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-prompt-fg-')));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    for (const name of HTTP_ENDPOINT_ENVS) vi.stubEnv(name, undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it('leaves a prompt with nothing waiting to the background', () => {
+    expect(promptAnswersInForeground(SESSION, process.env)).toBe(false);
+  });
+
+  it('keeps a prompt in the foreground while a package hint waits for it', async () => {
+    const file = path.join(home, '.teamai', 'package-hints', `${SESSION.replace(/[^a-zA-Z0-9._-]/g, '_')}.pending.json`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ message: 'Run npm install: package.json changed' }));
+
+    expect(promptAnswersInForeground(SESSION, process.env)).toBe(true);
+    // The hint the foreground handler takes is that same file.
+    expect(await takePendingPackageHint(SESSION)).toBe('Run npm install: package.json changed');
+    expect(promptAnswersInForeground(SESSION, process.env)).toBe(false);
+  });
+
+  it('keeps a prompt in the foreground while a contribute hint waits for it', async () => {
+    await writeContributeState(SESSION, { contributed: false, pendingHint: 'Share what you learned: teamai contribute' });
+
+    expect(promptAnswersInForeground(SESSION, process.env)).toBe(true);
+    expect(await takePendingHint(SESSION)).toBe('Share what you learned: teamai contribute');
+    expect(promptAnswersInForeground(SESSION, process.env)).toBe(false);
+  });
+
+  it('keeps a prompt in the foreground on a machine that syncs over HTTP, whose local agent may print a notice', () => {
+    vi.stubEnv('TEAMAI_HTTP_ENDPOINT', 'https://teamai.example');
+
+    expect(promptAnswersInForeground(SESSION, process.env)).toBe(true);
   });
 });
 

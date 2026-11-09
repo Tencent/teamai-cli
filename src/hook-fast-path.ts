@@ -49,9 +49,12 @@ const FULL_DISPATCH_TOOLS = new Set(['copilot', 'agy', 'git']);
 /** The payload fields a session id may come in; without one, the full dispatch derives one the child must share. */
 const SESSION_ID_FIELDS = ['session_id', 'sessionId', 'conversation_id'] as const;
 
+/** The events the fast path may take: a tool call, and a prompt (#1788). */
+const FAST_EVENTS = ['post-tool-use', 'prompt-submit'] as const;
+
 /** A hook the fast path may take, as its argv names it. */
 export interface FastHook {
-  event: 'post-tool-use';
+  event: typeof FAST_EVENTS[number];
   tool: string;
   matcher: string;
 }
@@ -61,18 +64,21 @@ export type ArgvVerdict = { kind: 'skip' } | { kind: 'full' } | { kind: 'payload
 
 /**
  * The verdict for `teamai <argv>` before any stdin is read. Only the exact
- * command teamai installs, `hook-dispatch post-tool-use --tool <t> [--matcher
- * <m>]`, may take the fast path; any other flag (`--team-hooks`, `--bg-only`,
- * `--stdin-file`, `--copilot-global`) is the full dispatch's.
+ * commands teamai installs, `hook-dispatch post-tool-use --tool <t> [--matcher
+ * <m>]` and `hook-dispatch prompt-submit --tool <t>`, may take the fast path;
+ * any other flag (`--team-hooks`, `--bg-only`, `--stdin-file`,
+ * `--copilot-global`) is the full dispatch's.
  */
 export function argvVerdict(argv: readonly string[], env: NodeJS.ProcessEnv, platform: NodeJS.Platform): ArgvVerdict {
   // A Windows child needs the WMI escape, which lives in the bundle.
   if (platform === 'win32') return { kind: 'full' };
   const [command, event, toolFlag, tool, matcherFlag, matcher, ...rest] = argv;
 
-  if (command !== 'hook-dispatch' || event !== 'post-tool-use' || toolFlag !== '--tool' || !tool || rest.length > 0) return { kind: 'full' };
+  const fastEvent = FAST_EVENTS.find((candidate) => candidate === event);
 
-  if (matcherFlag !== undefined && (matcherFlag !== '--matcher' || !matcher)) return { kind: 'full' };
+  if (command !== 'hook-dispatch' || !fastEvent || toolFlag !== '--tool' || !tool || rest.length > 0) return { kind: 'full' };
+
+  if (matcherFlag !== undefined && (fastEvent !== 'post-tool-use' || matcherFlag !== '--matcher' || !matcher)) return { kind: 'full' };
   const launcher = env[LAUNCHED_BY_ENV];
 
   // A session teamai launched for itself runs no hooks (hookDispatchCli's first check).
@@ -84,29 +90,29 @@ export function argvVerdict(argv: readonly string[], env: NodeJS.ProcessEnv, pla
   // A Claude-format hook may belong to Cursor or Copilot CLI, which the full dispatch tells apart (claude-hook-host.ts).
   if (tool === 'claude' && (env.CURSOR_VERSION?.trim() || env.COPILOT_PROJECT_DIR?.trim())) return { kind: 'full' };
 
-  return { kind: 'payload', hook: { event, tool, matcher: matcher ?? '*' } };
+  return { kind: 'payload', hook: { event: fastEvent, tool, matcher: matcher ?? '*' } };
 }
 
 /**
- * The payload to hand the background child, or null when the full dispatch
- * must take it: a payload that is not a JSON object; one with no session id,
- * for which the foreground derives an id from its own pid that the child
- * could not reproduce; or a TodoWrite call, which the hint answers in the
- * foreground (hook-handlers.ts `todowrite-hint`). Keys only the foreground may
- * set are dropped.
+ * The payload to hand the background child, and the session it names, or null
+ * when the full dispatch must take it: a payload that is not a JSON object;
+ * one with no session id, for which the foreground derives an id from its own
+ * pid that the child could not reproduce; or a TodoWrite call, which the hint
+ * answers in the foreground (hook-handlers.ts `todowrite-hint`). Keys only the
+ * foreground may set are dropped.
  */
-export function childPayload(raw: string): string | null {
+export function childPayload(raw: string): { payload: string; sessionId: string } | null {
   const fields = jsonObjectFields(raw);
+  // The first field that holds an id, as utils/session-id.ts `deriveSessionId` reads them.
+  const sessionId = fields && SESSION_ID_FIELDS.map((field) => fields.get(field)).find(isNonEmptyString);
 
-  if (!fields || !SESSION_ID_FIELDS.some((field) => isNonEmptyString(fields.get(field)))) return null;
+  if (!fields || !sessionId || fields.get('tool_name') === 'TodoWrite') return null;
 
-  if (fields.get('tool_name') === 'TodoWrite') return null;
-
-  if (!FOREGROUND_PAYLOAD_KEYS.some((key) => fields.has(key))) return raw;
+  if (!FOREGROUND_PAYLOAD_KEYS.some((key) => fields.has(key))) return { payload: raw, sessionId };
 
   for (const key of FOREGROUND_PAYLOAD_KEYS) fields.delete(key);
 
-  return JSON.stringify(Object.fromEntries(fields));
+  return { payload: JSON.stringify(Object.fromEntries(fields)), sessionId };
 }
 
 /** The fields of the JSON object `raw` holds, or null for anything else. Parsed by hand: zod loads with the bundle. */
@@ -144,6 +150,24 @@ export function isHttpEnrolled(env: NodeJS.ProcessEnv): boolean {
   const memberConfig = readTextFile(path.join(teamaiHome, 'config.yaml')) ?? '';
 
   return /\bkind:\s*['"]?http\b/.test(memberConfig) || HTTP_ENDPOINT_ENVS.some((name) => !!env[name]);
+}
+
+/**
+ * Whether a prompt of `sessionId` has something only its foreground prints:
+ * a package hint the detached pull left (pkg-hint.ts), a contribute hint a
+ * Stop could not print (contribute-check.ts `pendingHint`), or, on a machine
+ * that syncs over HTTP, the local agent's notices. The hint files are named as
+ * both modules name them. The contribute hint is looked for on every tool,
+ * not only on those whose Stop output is ignored, which is the only place one
+ * is written: one small read, and no copy of the tool table.
+ */
+export function promptAnswersInForeground(sessionId: string, env: NodeJS.ProcessEnv): boolean {
+  const teamaiHome = path.join(getUserHome(), '.teamai');
+  const file = sessionId.replace(/[^a-zA-Z0-9._-]/g, '_');
+
+  return fs.existsSync(path.join(teamaiHome, 'package-hints', `${file}.pending.json`))
+    || (readTextFile(path.join(teamaiHome, 'sessions', `${file}.json`)) ?? '').includes('"pendingHint"')
+    || isHttpEnrolled(env);
 }
 
 /** A file's text, or null when it cannot be read. */
@@ -247,16 +271,16 @@ export async function runHookFastPath(
 
   if (verdict.kind !== 'payload') return verdict.kind === 'skip' ? 'done' : 'full';
   const raw = await readStdin(options.stdin());
-  const payload = childPayload(raw);
+  const { event, tool, matcher } = verdict.hook;
+  const child = childPayload(raw);
 
-  if (payload === null) {
+  if (child === null || (event === 'prompt-submit' && promptAnswersInForeground(child.sessionId, options.env))) {
     globalThis.teamaiHandedOffHookStdin = raw;
 
     return 'full';
   }
 
-  const { event, tool, matcher } = verdict.hook;
-  await spawnBackgroundChild(process.execPath, [options.entry, 'hook-dispatch', event, '--tool', tool, '--bg-only', ...(matcher === '*' ? [] : ['--matcher', matcher])], payload);
+  await spawnBackgroundChild(process.execPath, [options.entry, 'hook-dispatch', event, '--tool', tool, '--bg-only', ...(matcher === '*' ? [] : ['--matcher', matcher])], child.payload);
   writeToFile('DEBUG', `[hook-dispatch] ${event}/${tool} fast path`);
 
   return 'done';

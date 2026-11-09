@@ -297,6 +297,22 @@ describe('hook-handlers registry', () => {
     expect(inline.map((r) => r.handler.name)).toEqual(['todowrite-hint']);
   });
 
+  // What a prompt's foreground runs is what hook-fast-path.ts `promptAnswersInForeground` predicts
+  // the output of: a package hint, a contribute hint, the HTTP local agent's notices (#1788).
+  it.each([
+    ['darwin', ['pending-hint', 'package-pending-hint', 'local-agent-sync']],
+    ['linux', ['pending-hint', 'package-pending-hint', 'local-agent-sync']],
+    // No detached child is added on Windows, where one is a WMI spawn.
+    ['win32', ['pending-hint', 'package-pending-hint', 'skill-mention', 'dashboard-report', 'local-agent-sync']],
+  ])('prompt-submit on %s answers in the foreground with only %j', (platform, foreground) => {
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue(platform as NodeJS.Platform);
+    const handlers = buildHandlerRegistry().filter((r) => r.event === 'prompt-submit');
+    platformSpy.mockRestore();
+
+    expect(handlers.filter((r) => !r.background).map((r) => r.handler.name)).toEqual(foreground);
+    expect(handlers.map((r) => r.handler.name)).toEqual(['pending-hint', 'package-pending-hint', 'skill-mention', 'dashboard-report', 'local-agent-sync']);
+  });
+
   it('session-end records the final dashboard snapshot, dispatches the webhook and pushes votes in the background, and credits votes in the foreground', () => {
     const handlers = buildHandlerRegistry().filter((r) => r.event === 'session-end');
     // Copilot fires SessionEnd (not Stop), so the webhook handler must run here
