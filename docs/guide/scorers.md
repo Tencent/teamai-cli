@@ -70,6 +70,8 @@ Each label records what judged:
 
 `requested` is the model the judge was launched with, or the one a driver's report of the judge step names in `confined.model`. `reported` is the one the tool reports. `alias` stays when the tool default judges. An alias effort adds `"effort":{"requested":"low"}`.
 
+A cheaper judge can pass work it should not. Before you give a benchmark's correctness judge a cheaper `model`, [calibrate it against the check](benchmarks.md#calibrate-a-judge).
+
 ## Score a step
 
 ```yaml

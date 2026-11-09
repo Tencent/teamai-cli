@@ -150,6 +150,37 @@ successCriteria: answer.js exports 42.
     ]);
   }, 120_000);
 
+  it("calibrates the correctness judge on a trial whose check failed, storing nothing, and shows how often it passed that work", async () => {
+    const mixed = (name: string, run: string) => `schemaVersion: v1alpha1
+title: ${name}
+prompt: Make answer.js export 42.
+startingCommit: {{startingCommit}}
+check: { run: ${run}, protect: [test.js] }
+successCriteria: answer.js exports 42.
+`;
+    const fixture = await benchmarkFixture({
+      tool: 'fixes', sandbox: true, tools: ['claude'], suite: `${suite({ arms: [{ name: 'claude' }] })}calibration: { rate: 100 }\n`,
+      tasks: { 'login-copy': mixed('Clearer login error', 'node test.js'), 'still-failing': mixed('Still failing', 'exit 1') },
+    });
+    fixtures.push(fixture);
+
+    const done = await runLocally(fixture);
+
+    const labels = fs.readFileSync(path.join(fixture.dataHome(), 'scores', 'labels.jsonl'), 'utf8').trim().split('\n');
+    const record = z.object({ trials: z.array(z.object({ task: z.string(), result: z.string(), verdicts: z.unknown(), calibration: z.unknown().optional() })) }).parse(fixture.benchmarkRecord(done.run));
+    expect(done.outcome).toBe('succeeded');
+    // The judge of login-copy's passed check, then the one that calibrates still-failing's failed check.
+    expect(fixture.judgeLaunches()).toHaveLength(2);
+    expect(labels).toHaveLength(2);
+    expect(outbox(fixture)).toEqual([]);
+    expect(record.trials.map(({ task, result, calibration }) => ({ task, result, calibration }))).toEqual([
+      { task: 'login-copy', result: 'passed', calibration: undefined },
+      { task: 'still-failing', result: 'failed', calibration: { label: 'correct', passed: true, decider: expect.objectContaining({ by: 'judge', tool: 'claude', model: 'fake-judge', batched: false }) } },
+    ]);
+    expect(record.trials[1]?.verdicts).toEqual([expect.objectContaining({ scorer: 'teamai:correctness:still-failing', outcome: expect.objectContaining({ label: 'incorrect' }), decider: expect.objectContaining({ by: 'check' }) })]);
+    expect(done.outputs.text).toContain('Judge calibration · teamai:correctness\n\n| Judge | Judged with a failed check | Labelled passing | False pass rate | 95% interval |\n| --- | --- | --- | --- | --- |\n| claude fake-judge | 1 | 1 | 100% | 21% to 100% |');
+  }, 120_000);
+
   it("judges every arm's trials with the suite's defaults.tool, though an arm runs codex, and says that judge is also an arm's tool", async () => {
     const fixture = await judgedFixture({ arms: [{ name: 'claude' }, { name: 'codex', tool: 'codex' }], tools: ['claude', 'codex'] });
 

@@ -63,6 +63,7 @@ export async function reportBenchmark(env: NodeJS.ProcessEnv, secrets: Record<st
 
   if ('failure' in planned) return planned;
   const verdicts = await TrialVerdicts.of(config, run, planned.found);
+  const calibrations = TrialVerdicts.calibrations(run, planned.found);
 
   const record = definedFields<BenchmarkRunRecord>({
     schemaVersion: BENCHMARK_RECORD_SCHEMA_VERSION,
@@ -73,7 +74,7 @@ export async function reportBenchmark(env: NodeJS.ProcessEnv, secrets: Record<st
     finishedAt: finalizing.since,
     username: config.username || undefined,
     workflow: { name: run.name, origin: run.origin ?? { source: 'team' }, sourceHash: run.sourceHash },
-    ...benchmarkRecord(run, planned.found, verdicts),
+    ...benchmarkRecord(run, planned.found, verdicts, calibrations),
   });
 
   const file = benchmarkRecordFile(runsDir(config), run.id);

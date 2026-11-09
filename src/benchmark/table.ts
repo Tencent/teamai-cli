@@ -11,6 +11,7 @@ import { compareTrials, formatExcluded, splitPairs, type ExcludedPairs } from '.
 import { isCorrectnessScorer } from './plan.js';
 import { TRIAL_RESULTS, type Baseline, type BenchmarkRecord, type TrialResult } from './result.js';
 import type { SkillChanges } from './terms.js';
+import type { TrialCalibration } from './verdicts.js';
 
 type RecordedArm = BenchmarkRecord['arms'][number];
 
@@ -82,6 +83,17 @@ export interface ArmScorerResults {
   batched?: 'yes' | 'no' | 'mixed';
 }
 
+/**
+ * One judge of the trials whose check failed that it labelled too, to calibrate it: how many it judged, how many it
+ * labelled passing, and the 95% Wilson interval of that false pass rate.
+ */
+export interface JudgeCalibration {
+  judge: Pick<TrialCalibration['decider'], 'tool' | 'model' | 'effort'>;
+  judged: number;
+  passing: number;
+  interval: { low: number; high: number };
+}
+
 export interface BenchmarkTable {
   results: ArmResults[];
   usage: ArmUsage[];
@@ -92,6 +104,8 @@ export interface BenchmarkTable {
    * trials that ran and that scorer judged. These scorers never decide a trial's result.
    */
   scorers: ArmScorerResults[];
+  /** A row per judge, by tool, model and effort, in record order, of the trials it calibrated. These labels never decide a trial. */
+  calibration: JudgeCalibration[];
   /** The tasks whose check, tried on the starting commit, did not fail there as the task expects: none of their trials ran. */
   invalid: Array<{ task: string; baseline: Extract<Baseline, 'invalid' | 'could_not_run'> }>;
   /**
@@ -129,6 +143,8 @@ export interface BenchmarkCells {
   matrix: TextTable;
   /** Absent when no suite or task scorer judged a trial. */
   scorers?: TextTable;
+  /** Absent when no judge labelled a trial whose check failed. */
+  calibration?: TextTable & { title: string };
   /** Absent when every task's baseline let its trials run. */
   invalid?: TextTable;
   /** Absent when no arm changes a team skill. */
@@ -222,6 +238,7 @@ export function benchmarkTable(record: BenchmarkTableInput): BenchmarkTable {
     })),
     usage: arms.map(({ name }) => ({ arm: name, ...usageOf(observed.filter(({ trial }) => trial.arm === name)) })),
     scorers: scorerResultsOf(record.benchmark),
+    calibration: calibrationOf(trials),
     skills: (record.benchmark.skillChanges ?? []).flatMap(({ arm, defaults, skills }) => skills.map(({ name, change }) => definedFields<BenchmarkTable['skills'][number]>({
       arm, skill: name, change, here: skillLoadsOf(trials, arm, name), defaults: defaults ? skillLoadsOf(trials, defaults, name) : undefined,
     }))),
@@ -255,6 +272,26 @@ function scorerResultsOf({ arms, trials, scorers }: BenchmarkRecord): ArmScorerR
       batched: batches.size === 0 ? undefined : batches.size > 1 ? 'mixed' : batches.has(true) ? 'yes' : 'no',
     })];
   }));
+}
+
+/** The judges of `trials`' calibrations, by tool, model and effort, each over the trials it calibrated. */
+function calibrationOf(trials: readonly RecordedTrial[]): JudgeCalibration[] {
+  const byJudge = new Map<string, { judge: JudgeCalibration['judge']; passed: boolean[] }>();
+
+  for (const { calibration } of trials) {
+    if (!calibration) continue;
+    const { tool, model, effort } = calibration.decider;
+    const key = JSON.stringify([tool, model ?? null, effort ?? null]);
+    const kept = byJudge.get(key) ?? { judge: definedFields<JudgeCalibration['judge']>({ tool, model, effort }), passed: [] };
+    kept.passed.push(calibration.passed);
+    byJudge.set(key, kept);
+  }
+
+  return [...byJudge.values()].map(({ judge, passed }) => {
+    const passing = passed.filter(Boolean).length;
+
+    return { judge, judged: passed.length, passing, interval: wilson({ passed: passing, planned: passed.length }) };
+  });
 }
 
 /** Each judge tool `record` pins that no driver of its run offered, with how many trials it left unscored for that. */
@@ -325,7 +362,14 @@ export function benchmarkCells(table: BenchmarkTable): BenchmarkCells {
       header: ['Arm', 'Scorer', 'Passed', 'Labelled', 'Unscored', 'Pass rate', '95% interval', 'Batched'],
       rows: table.scorers.map(({ arm, scorer, passed, labelled, unscored, interval, batched }) => [
         arm, scorer, String(passed), String(labelled), String(unscored), formatPassRate(labelled > 0 ? { passed, planned: labelled } : undefined),
-        interval ? `${Math.round(interval.low * 100)}% to ${Math.round(interval.high * 100)}%` : '-', batched ?? '-',
+        interval ? formatInterval(interval) : '-', batched ?? '-',
+      ]),
+    } : undefined,
+    calibration: table.calibration.length > 0 ? {
+      title: 'Judge calibration · teamai:correctness',
+      header: ['Judge', 'Judged with a failed check', 'Labelled passing', 'False pass rate', '95% interval'],
+      rows: table.calibration.map(({ judge: { tool, model, effort }, judged, passing, interval }) => [
+        [tool, model, effort].filter((part) => part !== undefined).join(' '), String(judged), String(passing), `${Math.round((passing / judged) * 100)}%`, formatInterval(interval),
       ]),
     } : undefined,
     invalid: table.invalid.length > 0 ? { header: ['Task', 'Baseline'], rows: table.invalid.map(({ task, baseline }) => [task, INVALID_REASONS[baseline]]) } : undefined,
@@ -337,6 +381,11 @@ export function benchmarkCells(table: BenchmarkTable): BenchmarkCells {
     notes: notesOf(table),
     caption: BENCHMARK_CAPTION,
   });
+}
+
+/** A 95% interval of a rate: `11% to 60%`. */
+function formatInterval({ low, high }: { low: number; high: number }): string {
+  return `${Math.round(low * 100)}% to ${Math.round(high * 100)}%`;
 }
 
 /** The lines under the tables that qualify them: a judge that is also an arm's tool, and one no driver offered. */
@@ -406,11 +455,14 @@ function formatBound(bound: number): string {
 
 /** benchmarkCells as Markdown pipe tables, so the same text reads in a terminal and renders in a CI job summary. */
 export function formatBenchmarkTable(table: BenchmarkTable): string {
-  const { results, usage, matrix, scorers, invalid, skills, assets, notes, caption } = benchmarkCells(table);
+  const { results, usage, matrix, scorers, calibration, invalid, skills, assets, notes, caption } = benchmarkCells(table);
   const line = (cells: readonly string[]): string => `| ${cells.join(' | ')} |`;
   const markdown = ({ header, rows }: TextTable): string => [line(header), line(header.map(() => '---')), ...rows.map(line)].join('\n');
 
-  return [...[results, usage, matrix, ...(scorers ? [scorers] : []), ...(invalid ? [invalid] : []), ...(skills ? [skills] : [])].map(markdown), ...(assets ?? []), ...(notes ?? []), caption].join('\n\n');
+  return [
+    ...[results, usage, matrix, ...(scorers ? [scorers] : [])].map(markdown), ...(calibration ? [`${calibration.title}\n\n${markdown(calibration)}`] : []),
+    ...[...(invalid ? [invalid] : []), ...(skills ? [skills] : [])].map(markdown), ...(assets ?? []), ...(notes ?? []), caption,
+  ].join('\n\n');
 }
 
 /** `1/2` loaded of the trials seen, `1/2, 1 unknown` with some unseen, `unknown (3)` with none seen. */

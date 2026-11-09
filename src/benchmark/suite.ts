@@ -33,6 +33,7 @@ const RepoUrlSchema = z.string().refine((value) => {
 const SuitePathSchema = z.string().min(1).refine(isRelativePath, 'must be a path inside the suite directory, with no backslash and no ".", ".." or empty segment');
 
 const TOKENS = 'must be a positive whole number of tokens';
+const PERCENT = 'must be a percent from 0 to 100';
 const WHOLE = 'must be a positive whole number';
 
 /** The run's last step waits on every lane, in one expression, which nests at most 100 levels. */
@@ -191,6 +192,8 @@ const SuiteFileSchema = z.object({
   }).optional(),
   setup: SetupSchema.optional(),
   scorers: z.array(ScorerNameSchema).default([]),
+  /** The percent of trials of a task with a check and success criteria whose check failed that a judge labels too. */
+  calibration: z.object({ rate: z.number().min(0, PERCENT).max(100, PERCENT) }).strict().optional(),
 }).strict().superRefine((suite, ctx) => {
   if (suite.trial?.timeoutMs !== undefined && suite.trial.timeoutMs >= suite.timeout) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['trial', 'timeout'], message: 'trial.timeout must be shorter than timeout, which bounds the whole run' });
@@ -558,6 +561,8 @@ export interface Suite {
   trial?: TrialLimits;
   setup?: Setup;
   scorers: string[];
+  /** The percent of failed checks of tasks with success criteria a judge labels too, to measure it; 0 labels none. */
+  calibrationRate: number;
   /** The valid tasks, in file-name order. Never empty. */
   tasks: [Task, ...Task[]];
   sourceHash: string;
@@ -666,6 +671,7 @@ export function parseSuite(input: { suite: SourceFile; tasks: readonly SourceFil
       trial: file.trial,
       setup: file.setup,
       scorers: file.scorers,
+      calibrationRate: file.calibration?.rate ?? 0,
       tasks: [first, ...rest],
       sourceHash: hashOf(input.suite.content),
     }),

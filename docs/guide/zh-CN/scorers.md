@@ -70,6 +70,8 @@ aliases:
 
 `requested` 是评审者启动时使用的模型；对 driver 自己的评审者，是它报告评审步骤时在 `confined.model` 中给出的模型。`reported` 是工具报告的模型。工具默认模型评审时 `alias` 仍会保留。别名设置了 effort 时还会有 `"effort":{"requested":"low"}`。
 
+更便宜的评审者可能让不该通过的工作通过。给 benchmark 的正确性评审者换更便宜的 `model` 之前，先[用 check 校准它](benchmarks.md#校准评判)。
+
 ## 为步骤评分
 
 ```yaml

@@ -13,9 +13,10 @@ import { isStageDecider, labelVersion, type ScoreLabel } from '../scorers/label.
 import { LABEL_CODES } from '../scorers/score-labels.js';
 import type { LocalConfig } from '../types.js';
 import { stepDefinitions } from '../workflow/scope.js';
-import type { StepState } from '../workflow/step-state.js';
+import { ConfinedRunReportSchema, type ConfinedRunReport, type ItemResult, type StepState } from '../workflow/step-state.js';
 import { stepWorkflow, type RunState, type WorkflowStep } from '../workflow/types.js';
 import { COMPARISONS, compareJudge } from './agent-match.js';
+import { isCalibrationCandidate } from './calibration.js';
 import { checkStepOf, correctnessScorerName, type PlannedJudge, type PlannedTask } from './plan.js';
 import type { RunPlan } from './run-plan.js';
 import { SCORE_WORKFLOW } from '../scorers/judging-workflows.js';
@@ -27,15 +28,17 @@ const RUN_ENDED = 'run_ended';
 const JUDGE_TOOL_UNAVAILABLE = 'judge_tool_unavailable';
 
 /**
- * Who decided a label: a task's check, named by the task's hash, or a judge, by its rubric's hash, the tool it ran in,
- * the model and effort its tool reported, else those it was launched with, and whether it judged in a batch.
+ * A judge that decided a label: its rubric's hash, the tool it ran in, the model and effort its tool reported, else those
+ * it was launched with, and whether it judged in a batch.
  */
-const VerdictDeciderSchema = z.discriminatedUnion('by', [
-  z.object({ by: z.literal('check'), task: z.string().min(1) }).strict(),
-  z.object({
-    by: z.literal('judge'), rubric: z.string().min(1), tool: z.string().min(1), model: z.string().min(1).optional(), effort: z.string().min(1).optional(), batched: z.boolean(),
-  }).strict(),
-]);
+const JudgeDeciderSchema = z.object({
+  by: z.literal('judge'), rubric: z.string().min(1), tool: z.string().min(1), model: z.string().min(1).optional(), effort: z.string().min(1).optional(), batched: z.boolean(),
+}).strict();
+
+type JudgeDecider = z.infer<typeof JudgeDeciderSchema>;
+
+/** Who decided a label: a task's check, named by the task's hash, or a judge. */
+const VerdictDeciderSchema = z.discriminatedUnion('by', [z.object({ by: z.literal('check'), task: z.string().min(1) }).strict(), JudgeDeciderSchema]);
 
 /**
  * How one scorer of a recorded trial ended. `decider`: absent for an unscored scorer, and for a label no check or judge
@@ -62,6 +65,16 @@ export const EntryVerdictSchema = TrialVerdictSchema.extend({
 }).strict();
 
 export type EntryVerdict = z.infer<typeof EntryVerdictSchema>;
+
+/**
+ * What a trial's correctness judge labelled work its check failed, storing nothing (calibration.ts): the label, whether
+ * it passes by the scorer's labels and passing score, and the judge. Never one of the trial's verdicts.
+ */
+export const TrialCalibrationSchema = z.object({ label: z.string().min(1), passed: z.boolean(), decider: JudgeDeciderSchema }).strict();
+
+export type TrialCalibration = z.infer<typeof TrialCalibrationSchema>;
+
+export type EntryCalibration = TrialCalibration & { step: string; pass: number };
 
 type Judged = Pick<EntryVerdict, 'outcome' | 'decider' | 'scoringCost' | 'asPlanned'>;
 
@@ -95,11 +108,17 @@ function runsTeamaiScore(step: WorkflowStep | undefined): boolean {
   return child?.kind === 'named' && child.name === SCORE_WORKFLOW;
 }
 
-/** The item results of every `teamai-score` step of `run`. */
-function scoreResults(run: RunState): unknown[] {
-  const definitionOf = stepDefinitions(run);
+/** A `teamai-score` instance whose `store` input is false: its labels were only tried, and none was stored. */
+const TriedInstanceSchema = z.object({ inputs: z.object({ store: z.literal(false) }) });
 
-  return run.steps.flatMap((state) => ('results' in state && runsTeamaiScore(definitionOf(state.id)) ? state.results ?? [] : []));
+/** The item results of every `teamai-score` step of `run` whose instance stores its labels. */
+function scoreResults(run: RunState): ItemResult[] {
+  const definitionOf = stepDefinitions(run);
+  const stateOf = (id: string): StepState | undefined => run.steps.find((state) => state.id === id);
+
+  return run.steps.flatMap((state) => ('results' in state && runsTeamaiScore(definitionOf(state.id))
+    ? (state.results ?? []).filter((_, index) => !TriedInstanceSchema.safeParse(stateOf(`${state.id}[${index}]`)).success)
+    : []));
 }
 
 /** What the `teamai-score` steps of `run` gave each subject they labelled. */
@@ -123,6 +142,42 @@ function scoredEntries(run: RunState): Map<string, Scored> {
 
 /** The group a `teamai-score` instance judges, as `teamai score plan` printed it: its subject and its scorers, joined by `,`. */
 const GroupItemSchema = z.object({ subject: z.string(), scorers: z.string() });
+
+/** A group of a `teamai-score` instance, with the entries its `score label` step gave. */
+const LabelledGroupSchema = z.object({ item: GroupItemSchema, outputs: z.object({ labels: z.array(LabelEntrySchema) }) });
+
+const JudgedStepSchema = z.object({ confined: ConfinedRunReportSchema });
+
+/** A label a tried `teamai-score` instance gave a scorer: its value, the run of the judge that gave it, and whether that judge batched. */
+interface TriedLabel {
+  label: string;
+  judge: ConfinedRunReport;
+  batched: boolean;
+}
+
+/**
+ * By subject, the label each tried `teamai-score` instance of `run` gave each scorer: an entry of a group's `labels`
+ * output, whose judge step reported the confined run that gave it. A group a stage decided ran no judge, so it gives none.
+ */
+function triedLabels(run: RunState): Map<string, Map<string, TriedLabel>> {
+  const definitionOf = stepDefinitions(run);
+  const instances = run.steps.filter((state) => runsTeamaiScore(definitionOf(state.id)) && TriedInstanceSchema.safeParse(state).success);
+  const bySubject = new Map<string, Map<string, TriedLabel>>();
+
+  for (const state of run.steps) {
+    const group = instances.some(({ id }) => state.id.startsWith(`${id}.`)) ? LabelledGroupSchema.safeParse(state).data : undefined;
+    const [judge] = group ? run.steps.flatMap((one) => (one.id.startsWith(`${state.id}.`) ? JudgedStepSchema.safeParse(one).data?.confined ?? [] : [])) : [];
+
+    if (!group || !judge) continue;
+    const kept = bySubject.get(group.item.subject) ?? new Map<string, TriedLabel>();
+    const batched = group.item.scorers.split(',').length > 1;
+
+    for (const { scorer, label } of group.outputs.labels) if (label !== '') kept.set(scorer, { label, judge, batched });
+    bySubject.set(group.item.subject, kept);
+  }
+
+  return bySubject;
+}
 
 /**
  * By subject, the scorers whose `teamai-score` group the skill driver cancelled because no driver of the run could take
@@ -149,14 +204,17 @@ function labelledOf(stored: ScoreLabel, decider: TrialVerdict['decider']): Judge
 }
 
 /** A judge that decided `stored`: its model judge, unless a stage decided it before any judge ran. */
-function judgeOf(stored: ScoreLabel): TrialVerdict['decider'] {
+function judgeOf(stored: ScoreLabel): JudgeDecider | undefined {
   const { judge } = stored;
 
   if (judge.kind !== 'model' || (stored.source === 'workflow' && isStageDecider(stored.decidedBy))) return undefined;
 
-  return definedFields<NonNullable<TrialVerdict['decider']>>({
-    by: 'judge', rubric: stored.rubric.sourceHash, tool: judge.tool, model: judge.model?.reported ?? judge.model?.requested, effort: judge.effort?.reported ?? judge.effort?.requested, batched: judge.batched === true,
-  });
+  return judgeDecider(stored.rubric.sourceHash, { ...judge, batched: judge.batched === true });
+}
+
+/** The judge of a label of rubric `rubric`, from the run that gave it: the model and effort its tool reported, else those it was launched with. */
+function judgeDecider(rubric: string, { tool, model, effort, batched }: Pick<ConfinedRunReport, 'tool' | 'model' | 'effort'> & { batched: boolean }): JudgeDecider {
+  return definedFields<JudgeDecider>({ by: 'judge', rubric, tool, model: model?.reported ?? model?.requested, effort: effort?.reported ?? effort?.requested, batched });
 }
 
 function verdictOf(entry: ScoredEntry | undefined, stored: ScoreLabel | undefined, { planned, isGivenUp }: { planned: PlannedJudge | undefined; isGivenUp: boolean }): Judged {
@@ -241,6 +299,30 @@ export const TrialVerdicts = {
 
       // A failed check of a task with success criteria leaves its correctness scorer no judge, so only the check's verdict.
       return [...checked, ...judged.filter(({ scorer }) => scorer === correctness && checked.length === 0), ...judged.filter(({ scorer }) => scorer !== correctness)];
+    });
+  },
+
+  /**
+   * The calibration of each trial of `plan` its correctness judge labelled though its check failed, on the pass the trial
+   * ran: the label a tried `teamai-score` instance gave its correctness scorer, never one a stage decided.
+   */
+  calibrations(run: RunState, { plan, prefix }: RunPlan): EntryCalibration[] {
+    const labels = triedLabels(run);
+    const stateOf = (id: string): StepState | undefined => run.steps.find((state) => state.id === id);
+
+    return plan.trials.flatMap((trial) => {
+      const step = `${prefix}${trial.step}`;
+      const pass = stateOf(step)?.pass ?? 1;
+      const task = plan.tasks.find(({ id }) => id === trial.task);
+      const check = stateOf(`${prefix}${checkStepOf(trial)}`);
+      const output = CheckOutputSchema.safeParse(check && 'outputs' in check ? check.outputs : undefined).data;
+      const scorer = plan.scorers.find(({ name }) => name === correctnessScorerName(trial.task));
+      const tried = labels.get(`run:${run.id}:${step}:${pass}`)?.get(correctnessScorerName(trial.task));
+      const given = scorer?.labels.find(({ value }) => value === tried?.label);
+
+      if (!task || !isCalibrationCandidate(task, output) || !tried || !scorer || !given) return [];
+
+      return [{ step, pass, label: given.value, passed: given.score >= scorer.passingScore, decider: judgeDecider(scorer.rubric.sourceHash, { ...tried.judge, batched: tried.batched }) }];
     });
   },
 };

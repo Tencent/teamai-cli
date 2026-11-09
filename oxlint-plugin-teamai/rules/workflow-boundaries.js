@@ -87,12 +87,13 @@ const ENTRIES = [
     folder: BENCHMARK,
     entries: {
       'plan.ts': 'any', 'terms.ts': 'any', 'suite.ts': 'any', 'table.ts': 'any', 'result.ts': 'any', 'history.ts': 'any', 'suite-cache.ts': 'any',
-      'run-plan.ts': ['src/scorers/score-plan.ts', 'src/scorers/evidence-dir.ts'],
+      'run-plan.ts': ['src/scorers/score-plan.ts', 'src/scorers/evidence-dir.ts', 'src/scorers/score-subjects.ts'],
+      'calibration.ts': ['src/scorers/score-subjects.ts'],
       'trial.ts': ['src/workflow-commands.ts'],
       'start.ts': ['src/workflow-commands.ts'],
       'report.ts': ['src/workflow-commands.ts'],
     },
-    testEntries: ['plan.ts', 'terms.ts', 'suite.ts', 'table.ts', 'result.ts', 'trial.ts', 'start.ts', 'history.ts', 'run-plan.ts', 'conformance.ts', 'suite-cache.ts', 'arm-workflow.ts', 'team-without.ts', 'verdicts.ts', 'pairing.ts'],
+    testEntries: ['plan.ts', 'terms.ts', 'suite.ts', 'table.ts', 'result.ts', 'trial.ts', 'start.ts', 'history.ts', 'run-plan.ts', 'conformance.ts', 'suite-cache.ts', 'arm-workflow.ts', 'team-without.ts', 'verdicts.ts', 'pairing.ts', 'calibration.ts'],
   },
 ];
 

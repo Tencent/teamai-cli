@@ -51,6 +51,7 @@ setup:
 | `trial` | Optional limits of every trial's prompt. See [Trial limits](#trial-limits). |
 | `setup` | Optional, a [workflow's `setup`](workflow-advanced.md#requirements-and-limits). Runs in every fresh clone before the tool or the check. |
 | `scorers` | Optional [scorers](scorers.md) that judge every trial; a task may [list more](#scorers-per-task). A name with no valid `scorers/<name>.md` fails `teamai review --branch`, `teamai pull` warns, and start refuses the suite. |
+| `calibration` | Optional `{ rate }`, 0 to 100, 0 by default: the percent of trials whose check failed that the correctness judge labels too, to measure it. See [Calibrate a judge](#calibrate-a-judge). |
 
 ### Arms on other team assets
 
@@ -806,6 +807,22 @@ steps:
     with: { subject: "{{ item }}", scorers: [], label: "", batch: true, demand: named }
     timeout: 2h
     continue_on_failure: true
+  # Calibrates each correctness judge against the check: the suite's calibration.rate of the trials of a task with a check
+  # and success criteria whose check failed, labelled by that judge too. store: false keeps the label out of the trial's
+  # verdicts: it decides nothing, and the results show it as Judge calibration. Drop these two steps to calibrate nothing.
+  - id: calibration-subjects
+    needs: [score]
+    if: steps.score.outcome != 'skipped'
+    command: teamai score subjects --calibration --run "$RUN" --step trials
+    env: { RUN: "{{ run.id }}" }
+    output: { list: [{ subject: string, scorer: string }] }
+  - id: calibrate
+    needs: [calibration-subjects]
+    for_each: steps.calibration-subjects.outputs.list
+    workflow: teamai-score
+    with: { subject: "{{ item.subject }}", scorers: ["{{ item.scorer }}"], label: "", store: false, batch: false, demand: named }
+    timeout: 2h
+    continue_on_failure: true
 finally:
   - id: report
     command: teamai benchmark report
@@ -824,6 +841,8 @@ outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 | `teamai benchmark check --baseline\|--trial` | A step in each clone | Writes `check.add`, puts `protect` back for a trial, runs the task's check, and prints `{ result, cause, label }`. A trial's check also stores the trial's correctness label, as [Who decides a trial](#who-decides-a-trial) says. |
 | `teamai score subjects --run <run> --step trials` | The `subjects` step | Lists the trials' scored passes that settled on this machine. |
 | [`teamai-score`](scorers.md#the-teamai-score-workflow) | The `score` step, once per subject | Judges the trial with the scorers as of the run's start. |
+| `teamai score subjects --calibration --run <run> --step trials` | The `calibration-subjects` step | Lists the trials to [calibrate a judge](#calibrate-a-judge) on, each with its correctness scorer. |
+| [`teamai-score`](scorers.md#the-teamai-score-workflow) with `store: false` | The `calibrate` step, once per trial listed | Labels the trial with its correctness scorer, and stores nothing. |
 | `teamai benchmark report` | The `report` `finally` step | Classifies the trials, writes the record, and prints the results. With `COMPARE=true`, also compares the record, as [Fail on a regression](#fail-on-a-regression) says. |
 
 `trials` runs what `plan` printed: see [Run a workflow a step printed](workflow-advanced.md#run-a-workflow-a-step-printed). `report` runs after the trials whatever happened to them, as [finally steps](workflow-advanced.md#finally-steps) do. `benchmark run --member-aliases` passes `aliases` as `member`, else as `team`. `--task` and `--arm` pass `tasks` and `arms`, else `[]`, which plans every task and arm. `--fail-on-regression` passes `fail_on_regression` as `true`, else `false`. `report` reads each trial's labels from the `score` step's results in the run file, since a `finally` step cannot read `steps`.
@@ -836,7 +855,7 @@ To change it, push your own `workflows/teamai-benchmark.yaml`, or `workflows/<na
 
 Yours must take input `suite`, input `aliases` to run with `--member-aliases`, inputs `tasks` and `arms` to run with `--task` and `--arm`, and input `fail_on_regression` to run with `--fail-on-regression`; `benchmark run` refuses it otherwise, naming the input. Keep `plan`'s step id and `report` as a `finally` step. Dropping `strict: true` lets trials run without the credentials being kept from them, and with each tool's own permission settings rather than unattended: a tool that may not edit fails its trials, and the report opens with a line that says so. When two namespaces you receive both have a `teamai-benchmark.yaml`, `benchmark run` refuses with `workflow_namespace_conflict`, naming both files, and never falls back to teamai's.
 
-You may change `score`'s `timeout`, or drop `subjects` and `score` to run without judging. Every trial a judge would decide then ends `unscored`:
+You may change `score`'s `timeout`, drop `calibration-subjects` and `calibrate` to [calibrate](#calibrate-a-judge) no judge, or drop those two with `subjects` and `score` to run without judging. Every trial a judge would decide then ends `unscored`:
 
 ```yaml fragment
 # workflows/teamai-benchmark.yaml: the trials, never judged
@@ -846,7 +865,7 @@ steps:
     needs: [plan]
     workflow: { from: plan }
     requires: { isolation: sandbox, strict: true }
-  # no subjects or score step
+  # no subjects, score, calibration-subjects or calibrate step
 finally:
   # report and regression, as teamai's
 ```
@@ -887,6 +906,7 @@ These results hold for these tasks, this run and this machine.
 | Usage | Each arm's medians and cost total, with how many trials each used. Tokens and cost appear only as the tool stated them, so a tool that states none shows `unknown (0)`. A trial whose passes did not all state its tokens (input and output), cost or duration counts as one that stated none of it, and makes a cost total `incomplete`. |
 | Tasks | Each task's pass rate on each arm. |
 | Scorers | Only when the suite or a task lists scorers: each arm's pass rate per scorer, under [Pass rate per scorer](#pass-rate-per-scorer). |
+| Judge calibration | Only when the suite sets a [calibration rate](#calibrate-a-judge): how often the correctness judge passed work whose check failed. |
 | Baselines | The tasks that did not run, and why. |
 | Skills | Only when an arm changes team skills: each skill it adds, removes or changes, and how many of the arm's trials loaded it, beside the arm that changes nothing. |
 | Asset effects | Only when a task covers a team repo path: a table per covered asset, under [Asset effect](#asset-effect). |
@@ -1056,6 +1076,35 @@ A [task's scorer](#scorers-per-task) counts only the trials it judged. With `ses
 ```
 
 `security-review` judges only the three trials of `session-fixation`, so it spends no judge call on the other tasks, and they do not dilute its pass rate.
+
+### Calibrate a judge
+
+Every pass rate a judge decides rests on the judge being right. A task with both a `check` and `successCriteria` shows when it is not: its check, which its baseline validated, says the work is not done, so a judge that labels that work `correct` is wrong. Set a rate to have the correctness judge label some of those trials too:
+
+```yaml
+# benchmarks/fix-auth/suite.yaml, in part
+calibration: { rate: 20 }     # percent of mixed-task trials whose check failed that a judge also labels; default 0
+```
+
+A trial is sampled when a hash of the run id and its step falls under the rate, so a resumed run samples the same trials. The `calibrate` step of [the benchmark workflow](#the-benchmark-workflow) has its `teamai:correctness:<task>` scorer label it with `store: false`, by [the plan's judge](#one-judge-for-every-arm): no label is stored, the trial stays `failed` as its check decided, and the label pairs with no other trial and never reaches [the regression gate](#fail-on-a-regression). The record keeps it on the trial:
+
+```json
+"calibration": { "label": "correct", "passed": true,
+  "decider": { "by": "judge", "rubric": "<rubric sourceHash>", "tool": "claude", "model": "claude-haiku-4-5", "batched": false } }
+```
+
+The results add a row per judge, by the tool, model and effort it reported. A run judges every trial with [one judge](#one-judge-for-every-arm), so to weigh a cheaper one, run the suite again with its alias as the `model` of your [`scorers/teamai-correctness.md`](#the-correctness-rubric). The rows of two such runs:
+
+```text
+Judge calibration · teamai:correctness
+
+| Judge | Judged with a failed check | Labelled passing | False pass rate | 95% interval |
+| --- | --- | --- | --- | --- |
+| claude claude-opus-5-5 high | 10 | 0 | 0% | 0% to 28% |
+| claude claude-haiku-4-5 | 10 | 3 | 30% | 11% to 60% |
+```
+
+Read it as: the cheap judge passes about a third of the work whose tests fail; it is not a safe `model` for this suite's correctness, whatever it saves. A passing label on a trial whose check passed counts neither way, since success criteria may ask more than the tests.
 
 ### Asset effect
 

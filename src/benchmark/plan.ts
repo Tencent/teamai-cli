@@ -150,6 +150,8 @@ export const BenchmarkPlanSchema = z.object({
   scorers: z.array(PlannedScorerSchema),
   /** By scorer name, the judge of each scorer a judge labels: the suite's, those tasks list, and the correctness scorer of each task with successCriteria. */
   judges: z.record(z.string(), PlannedJudgeSchema),
+  /** The percent of failed checks of tasks with success criteria their correctness judge labels too; absent: none. */
+  calibration: z.object({ rate: z.number().min(0).max(100) }).strict().optional(),
   trials: z.array(PlannedTrialSchema),
 }).strict();
 
@@ -241,6 +243,7 @@ export function freezePlan(input: {
     skillChanges: input.skillChanges && input.skillChanges.length > 0 ? input.skillChanges : undefined,
     scorers: Object.entries({ ...input.scorers, ...correctness }).map(([name, rubric]) => plannedScorer(name, rubric)),
     judges: plannedJudges(suite, { ...input.scorers, ...judgedCorrectness(suite, correctness) }),
+    calibration: suite.calibrationRate > 0 ? { rate: suite.calibrationRate } : undefined,
     trials: trialsOf(suite.tasks, input.arms, suite.repetitions, suite.parallel),
   });
 }

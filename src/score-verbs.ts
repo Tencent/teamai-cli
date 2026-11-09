@@ -222,9 +222,19 @@ export interface SubjectsOptions {
   run?: string;
   step?: string;
   lapsed?: boolean;
+  calibration?: boolean;
 }
 
 async function subjects(options: SubjectsOptions, ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {
+  if (options.calibration) {
+    if (options.lapsed) return refused('invalid_arguments', '--calibration lists the trials of a benchmark run to calibrate its judges and takes no --lapsed.');
+
+    if (options.run === undefined) return refused('invalid_arguments', 'Pass --run <id>, the benchmark run whose trials to calibrate, with --calibration.');
+    const listed = await ScoreSubjects.calibration(ctx.current, ctx.env, { runId: options.run, step: options.step });
+
+    return listed.ok ? { ok: true, output: { list: listed.list.map(({ subject, scorer }) => ({ subject, scorer })) } } : listed;
+  }
+
   if (options.lapsed) {
     if (options.run !== undefined || options.step !== undefined) return refused('invalid_arguments', '--lapsed lists this machine\'s subjects and takes no --run or --step.');
 

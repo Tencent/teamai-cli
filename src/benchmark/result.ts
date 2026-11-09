@@ -23,7 +23,7 @@ import { baselineStepOf, checkStepOf, correctnessScorerName, PlannedJudgeSchema,
 import type { RunPlan } from './run-plan.js';
 import { ArmTeamSchema, SkillChangesSchema, TrialLimitsSchema } from './terms.js';
 import { leavesOut, skillDefinitionOf } from './team-without.js';
-import { isDecidedByCheck, TrialVerdictSchema, type EntryVerdict, type TrialVerdict } from './verdicts.js';
+import { isDecidedByCheck, TrialCalibrationSchema, TrialVerdictSchema, type EntryCalibration, type EntryVerdict, type TrialVerdict } from './verdicts.js';
 
 export const TRIAL_RESULTS = ['passed', 'failed', 'error', 'unscored', 'not_run'] as const;
 
@@ -93,6 +93,8 @@ export const BenchmarkRecordSchema = z.object({
     result: z.enum(TRIAL_RESULTS),
     /** How each of the trial's scorers ended, its correctness scorer first; absent on a record of schemaVersion 1. */
     verdicts: z.array(TrialVerdictSchema).optional(),
+    /** What its correctness judge labelled the work its check failed, to calibrate that judge; absent when none did. Never decides `result`. */
+    calibration: TrialCalibrationSchema.optional(),
     /** Why the trial's check could not run, which made it `error`. */
     failure: z.object({ cause: z.enum(CHECK_CAUSES) }).strict().optional(),
     /** The suite limit that ended the prompt; the check or judge still decided `result`. */
@@ -148,10 +150,11 @@ export function benchmarkRecordFile(runsRoot: string, run: string): string {
 }
 
 /**
- * The block buildEndRecord adds for a benchmark run that has ended, with `verdicts`, those of its trials. Pure, so the
- * `done` envelope and a run with recording off get the same block a published record holds.
+ * The block buildEndRecord adds for a benchmark run that has ended, with `verdicts`, those of its trials, and
+ * `calibrations`, what their correctness judges labelled work a check failed. Pure, so the `done` envelope and a run
+ * with recording off get the same block a published record holds.
  */
-export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdicts: readonly EntryVerdict[]): BenchmarkRecord {
+export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdicts: readonly EntryVerdict[], calibrations: readonly EntryCalibration[] = []): BenchmarkRecord {
   const stateOf = (step: string): StepState | undefined => run.steps.find((state) => state.id === `${prefix}${step}`);
 
   const verdictsOf = (trial: PlannedTrial): EntryVerdict[] => {
@@ -213,6 +216,9 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdic
       };
 
       if (result === 'error' && check?.result === 'could_not_run') recorded.failure = { cause: check.cause };
+      const calibration = calibrations.find((one) => one.step === recorded.step && one.pass === (work?.pass ?? 1));
+
+      if (calibration) recorded.calibration = { label: calibration.label, passed: calibration.passed, decider: calibration.decider };
 
       if (scoringCost) recorded.scoringCost = scoringCost;
 

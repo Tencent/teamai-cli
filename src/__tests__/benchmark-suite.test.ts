@@ -159,6 +159,25 @@ describe('parseSuite', () => {
     expect(parsed.diagnostics).toEqual([expect.objectContaining({ file: 'benchmarks/fix/suite.yaml', field, message })]);
   });
 
+  it('keeps the calibration rate a suite sets, and samples no trial for calibration without one', () => {
+    const parsed = parse(suiteText({ calibration: '{ rate: 20 }' }));
+    const without = parse(suiteText());
+
+    expect(parsed).toMatchObject({ ok: true, diagnostics: [], suite: { calibrationRate: 20 } });
+    expect(without.ok && without.suite.calibrationRate).toBe(0);
+  });
+
+  it.each([
+    ['a calibration rate above 100', '{ rate: 120 }', 'calibration.rate', 'must be a percent from 0 to 100'],
+    ['a negative calibration rate', '{ rate: -5 }', 'calibration.rate', 'must be a percent from 0 to 100'],
+    ['a calibration key the suite does not know', '{ rate: 20, scorer: quality }', 'calibration', 'Unrecognized key: "scorer"'],
+  ])('reports %s at its suite file', (_rule, calibration, field, message) => {
+    const parsed = parse(suiteText({ calibration }));
+
+    expect(parsed.ok).toBe(false);
+    expect(parsed.diagnostics).toEqual([expect.objectContaining({ file: 'benchmarks/fix/suite.yaml', field, message })]);
+  });
+
   it('keeps the limits a suite sets for every trial', () => {
     const parsed = parse(suiteText({ timeout: '45m', trial: '{ timeout: 8m, budget: { tokens: 300000 }, max_turns: 60 }' }));
     const without = parse(suiteText());

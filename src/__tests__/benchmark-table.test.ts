@@ -108,7 +108,7 @@ describe('benchmark results table', () => {
 });
 
 const OBSERVED: AgentObservation = { v: 1, tool: { name: 'claude' }, team: { revision: RUN_TEAM, localChanges: false }, teamai: '0.0.0', driver: 'external' };
-type TrialSpec = Pick<BenchmarkRecord['trials'][number], 'limit' | 'unenforced' | 'durationMs' | 'tokens' | 'cost' | 'used' | 'verdicts'> & {
+type TrialSpec = Pick<BenchmarkRecord['trials'][number], 'limit' | 'unenforced' | 'durationMs' | 'tokens' | 'cost' | 'used' | 'verdicts' | 'calibration'> & {
   task?: string;
   arm?: string;
   result?: TrialResult;
@@ -261,6 +261,44 @@ describe('benchmark pass rate per scorer', () => {
 
     expect(table.scorers).toEqual([]);
     expect(formatBenchmarkTable(table)).not.toContain('| Arm | Scorer |');
+  });
+});
+
+describe('benchmark judge calibration', () => {
+  const ARM = { name: 'claude', tool: 'claude', source: 'team', team: { kind: 'pulled', revision: RUN_TEAM } } as const;
+  const FAILED: TrialVerdict = { scorer: 'teamai:correctness:fix', outcome: { kind: 'labelled', label: 'incorrect', score: 0, passed: false }, decider: { by: 'check', task: 'h' } };
+  const OPUS = { by: 'judge', rubric: 'r', tool: 'claude', model: 'claude-opus-5-5', effort: 'high', batched: false } as const;
+  const HAIKU = { by: 'judge', rubric: 'r', tool: 'claude', model: 'claude-haiku-4-5', batched: false } as const;
+  /** A trial its check failed, whose correctness judge `decider` labelled it passing or not. */
+  const calibrated = (decider: typeof OPUS | typeof HAIKU, passed: boolean) => ({ result: 'failed' as const, verdicts: [FAILED], calibration: { label: passed ? 'correct' : 'incorrect', passed, decider } });
+  const times = <T>(count: number, make: (index: number) => T): T[] => Array.from({ length: count }, (_, index) => make(index));
+
+  it("gives a row per judge of the trials whose check failed it labelled too: how many it labelled passing, the false pass rate and its Wilson interval", () => {
+    const record = recordOf([ARM], [...times(10, () => calibrated(OPUS, false)), ...times(10, (index) => calibrated(HAIKU, index < 3)), { result: 'passed', verdicts: [{ ...FAILED, outcome: { kind: 'labelled', label: 'correct', score: 1, passed: true } }] }]);
+
+    const table = benchmarkTable(record);
+
+    expect(table.calibration).toEqual([
+      { judge: { tool: 'claude', model: 'claude-opus-5-5', effort: 'high' }, judged: 10, passing: 0, interval: { low: 0, high: expect.closeTo(0.278, 3) } },
+      { judge: { tool: 'claude', model: 'claude-haiku-4-5' }, judged: 10, passing: 3, interval: { low: expect.closeTo(0.108, 3), high: expect.closeTo(0.603, 3) } },
+    ]);
+    expect(formatBenchmarkTable(table)).toContain([
+      'Judge calibration · teamai:correctness',
+      '',
+      '| Judge | Judged with a failed check | Labelled passing | False pass rate | 95% interval |',
+      '| --- | --- | --- | --- | --- |',
+      '| claude claude-opus-5-5 high | 10 | 0 | 0% | 0% to 28% |',
+      '| claude claude-haiku-4-5 | 10 | 3 | 30% | 11% to 60% |',
+    ].join('\n'));
+    // A calibration label never decides its trial: each stays failed, as its check said.
+    expect(table.results).toMatchObject([{ counts: { passed: 1, failed: 20 } }]);
+  });
+
+  it('prints no calibration table when no judge labelled a trial whose check failed', () => {
+    const table = benchmarkTable(recordOf([ARM], [{ result: 'failed', verdicts: [FAILED] }]));
+
+    expect(table.calibration).toEqual([]);
+    expect(formatBenchmarkTable(table)).not.toContain('Judge calibration');
   });
 });
 

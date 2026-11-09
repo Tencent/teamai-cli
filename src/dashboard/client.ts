@@ -286,7 +286,7 @@ function gate(s) {
 }
 // A benchmark cell is the CLI's own text, kept as printed; only the column names the table fixes are translated.
 function textTable(t, named) { return '<div class="table-scroll"><table><thead><tr>'+t.header.map((x,i)=>'<th>'+(i<named?label(x):'<span data-verbatim>'+e(x)+'</span>')+'</th>').join('')+'</tr></thead><tbody>'+t.rows.map(r=>'<tr>'+r.map(c=>'<td data-verbatim>'+e(c)+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>'; }
-function benchmarkHtml(b) { return textTable(b.results,Infinity)+textTable(b.usage,Infinity)+textTable(b.matrix,1)+(b.scorers?textTable(b.scorers,Infinity):'')+(b.invalid?textTable(b.invalid,Infinity):'')+(b.skills?textTable(b.skills,Infinity):'')+(b.notes||[]).map(n=>'<p data-verbatim>'+e(n)+'</p>').join('')+'<p>'+label(b.caption)+'</p>'; }
+function benchmarkHtml(b) { return textTable(b.results,Infinity)+textTable(b.usage,Infinity)+textTable(b.matrix,1)+(b.scorers?textTable(b.scorers,Infinity):'')+(b.calibration?'<p data-verbatim>'+e(b.calibration.title)+'</p>'+textTable(b.calibration,Infinity):'')+(b.invalid?textTable(b.invalid,Infinity):'')+(b.skills?textTable(b.skills,Infinity):'')+(b.notes||[]).map(n=>'<p data-verbatim>'+e(n)+'</p>').join('')+'<p>'+label(b.caption)+'</p>'; }
 function runDetailHtml(d) {
  const r=d.run, local=r.source==='local', gates=d.steps.filter(s=>s.gate), counts=r.stepCounts;
  return '<div class="caption">'+label(local?'Local run':'Team-reported run')+'</div><h2 id="detailTitle" data-verbatim>'+e(r.alias||r.workflow)+'</h2><div class="tag">'+(r.alias?'<span data-verbatim>'+e(r.workflow)+'</span> · ':'')+'<span data-verbatim>'+e(r.run)+'</span> · '+label(runStatusNames[r.status]||r.status)+'</div>'

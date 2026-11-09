@@ -51,6 +51,7 @@ setup:
 | `trial` | 可选：每个 trial 的 prompt 的限制。见 [trial 限制](#trial-限制)。 |
 | `setup` | 可选，即[工作流的 `setup`](workflow-advanced.md#要求和限制)。在每个全新克隆中、工具或 check 之前运行。 |
 | `scorers` | 可选，评判每个 trial 的[评分器](scorers.md)；任务可以[再列出更多](#每个任务的评分器)。没有有效 `scorers/<name>.md` 的名字会让 `teamai review --branch` 失败，`teamai pull` 会警告，start 会拒绝该套件。 |
+| `calibration` | 可选的 `{ rate }`，0 到 100，默认 0：check 失败的 trial 中，也交给正确性评判打标签的百分比，用来衡量这个评判。见[校准评判](#校准评判)。 |
 
 ### 使用其他团队资产的 arm
 
@@ -806,6 +807,22 @@ steps:
     with: { subject: "{{ item }}", scorers: [], label: "", batch: true, demand: named }
     timeout: 2h
     continue_on_failure: true
+  # Calibrates each correctness judge against the check: the suite's calibration.rate of the trials of a task with a check
+  # and success criteria whose check failed, labelled by that judge too. store: false keeps the label out of the trial's
+  # verdicts: it decides nothing, and the results show it as Judge calibration. Drop these two steps to calibrate nothing.
+  - id: calibration-subjects
+    needs: [score]
+    if: steps.score.outcome != 'skipped'
+    command: teamai score subjects --calibration --run "$RUN" --step trials
+    env: { RUN: "{{ run.id }}" }
+    output: { list: [{ subject: string, scorer: string }] }
+  - id: calibrate
+    needs: [calibration-subjects]
+    for_each: steps.calibration-subjects.outputs.list
+    workflow: teamai-score
+    with: { subject: "{{ item.subject }}", scorers: ["{{ item.scorer }}"], label: "", store: false, batch: false, demand: named }
+    timeout: 2h
+    continue_on_failure: true
 finally:
   - id: report
     command: teamai benchmark report
@@ -824,6 +841,8 @@ outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 | `teamai benchmark check --baseline\|--trial` | 每个克隆中的一个步骤 | 写入 `check.add`，对 trial 恢复 `protect`，运行任务的 check，并打印 `{ result, cause, label }`。trial 的 check 还会保存该 trial 的正确性标签，见[谁判定一个 trial](#谁判定一个-trial)。 |
 | `teamai score subjects --run <run> --step trials` | `subjects` 步骤 | 列出 trial 在本机结算的、需要评分的执行轮次。 |
 | [`teamai-score`](scorers.md#teamai-score-工作流) | `score` 步骤，每个 subject 一次 | 用运行开始时的评分器评判 trial。 |
+| `teamai score subjects --calibration --run <run> --step trials` | `calibration-subjects` 步骤 | 列出用来[校准评判](#校准评判)的 trial，每个带它的正确性评分器。 |
+| [`teamai-score`](scorers.md#teamai-score-工作流)，带 `store: false` | `calibrate` 步骤，每个列出的 trial 一次 | 用正确性评分器给 trial 打标签，不保存任何东西。 |
 | `teamai benchmark report` | `report` 这个 `finally` 步骤 | 给 trial 分类，写出记录，并打印结果。`COMPARE=true` 时还会比较记录，见[回归时失败](#回归时失败)。 |
 
 `trials` 运行 `plan` 打印的内容：见[运行步骤打印的工作流](workflow-advanced.md#运行步骤打印的工作流)。`report` 在 trial 之后运行，无论它们发生了什么，就像 [finally 步骤](workflow-advanced.md#finally-步骤)那样。`benchmark run --member-aliases` 把 `aliases` 传为 `member`，否则传为 `team`。`--task` 和 `--arm` 传入 `tasks` 和 `arms`，否则传 `[]`，即规划所有任务和 arm。`--fail-on-regression` 把 `fail_on_regression` 传为 `true`，否则传为 `false`。`report` 从运行文件中 `score` 步骤的结果读取每个 trial 的标签，因为 `finally` 步骤不能读取 `steps`。
@@ -836,7 +855,7 @@ outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 
 你的版本必须接受输入 `suite`，要用 `--member-aliases` 运行还必须接受输入 `aliases`，要用 `--task` 和 `--arm` 运行还必须接受输入 `tasks` 和 `arms`，要用 `--fail-on-regression` 运行还必须接受输入 `fail_on_regression`；否则 `benchmark run` 会拒绝它，并指出缺少的输入。保留 `plan` 的步骤 id，并把 `report` 保留为 `finally` 步骤。去掉 `strict: true` 会让 trial 在不扣留凭据的情况下运行，并且使用各工具自己的权限设置，而不是无人值守：不能编辑的工具会让它的 trial 失败，报告的第一行会说明这一点。你接收的两个命名空间都有 `teamai-benchmark.yaml` 时，`benchmark run` 以 `workflow_namespace_conflict` 拒绝，并指出两个文件，绝不退回 teamai 自带的版本。
 
-你可以修改 `score` 的 `timeout`，或者去掉 `subjects` 和 `score`，不经评判地运行。这样一来，每个本该由评判决定的 trial 都以 `unscored` 结束：
+你可以修改 `score` 的 `timeout`，去掉 `calibration-subjects` 和 `calibrate` 以不[校准](#校准评判)任何评判，或者把这两个和 `subjects`、`score` 一起去掉，不经评判地运行。这样一来，每个本该由评判决定的 trial 都以 `unscored` 结束：
 
 ```yaml fragment
 # workflows/teamai-benchmark.yaml：只运行 trial，从不评判
@@ -846,7 +865,7 @@ steps:
     needs: [plan]
     workflow: { from: plan }
     requires: { isolation: sandbox, strict: true }
-  # 没有 subjects 和 score 步骤
+  # 没有 subjects、score、calibration-subjects 和 calibrate 步骤
 finally:
   # report 和 regression，同 teamai 的
 ```
@@ -887,6 +906,7 @@ These results hold for these tasks, this run and this machine.
 | 用量 | 每个 arm 的中位数和成本合计，并注明各自用了多少个 trial。token 和成本只按工具自己声明的显示，所以不声明的工具显示 `unknown (0)`。如果一个 trial 的各次 pass 没有全部声明 token（输入和输出）、成本或时长，它在这一项上按没有声明处理，并让成本合计显示 `incomplete`。 |
 | 任务 | 每个任务在每个 arm 上的通过率。 |
 | 评分器 | 仅当套件或某个任务列出评分器时出现：每个 arm 在每个评分器上的通过率，见[每个评分器的通过率](#每个评分器的通过率)。 |
+| 评判校准 | 仅当套件设置了[校准比例](#校准评判)时出现：正确性评判让多少 check 失败的工作通过。 |
 | 基线 | 没有运行的任务及原因。 |
 | Skill | 仅当某个 arm 改变团队 skill 时出现：它新增、去掉或改变的每个 skill，以及该 arm 的 trial 中有多少加载了它，与什么都不改变的 arm 并列。 |
 | 资产效果 | 仅当某个任务覆盖一个团队仓库路径时出现：每个被覆盖资产一张表，见[资产效果](#资产效果)。 |
@@ -1056,6 +1076,35 @@ scorers: [review-quality, test-coverage]
 ```
 
 `security-review` 只评判 `session-fixation` 的三个 trial，所以不会在其他任务上花评判调用，其他任务也不会稀释它的通过率。
+
+### 校准评判
+
+评判决定的每个通过率，都建立在评判正确的前提上。同时有 `check` 和 `successCriteria` 的任务能看出评判何时出错：它的 check 经过基线验证，说明工作没有完成，所以把这样的工作标为 `correct` 的评判就错了。设置一个比例，让正确性评判也给其中一部分 trial 打标签：
+
+```yaml
+# benchmarks/fix-auth/suite.yaml 的一部分
+calibration: { rate: 20 }     # 混合任务中 check 失败、也交给评判打标签的 trial 百分比；默认 0
+```
+
+运行 id 和 trial 步骤的哈希落在比例之内时，这个 trial 被抽中，所以恢复的运行抽中同样的 trial。[benchmark 工作流](#benchmark-工作流)的 `calibrate` 步骤用 `store: false` 让它的 `teamai:correctness:<task>` 评分器打标签，由[计划的评判](#对所有-arm-用同一个评判)评判：不保存标签，trial 仍是 check 决定的 `failed`，这个标签不与其他 trial 配对，也不会进入[回归门禁](#回归时失败)。记录把它保存在 trial 上：
+
+```json
+"calibration": { "label": "correct", "passed": true,
+  "decider": { "by": "judge", "rubric": "<rubric sourceHash>", "tool": "claude", "model": "claude-haiku-4-5", "batched": false } }
+```
+
+结果为每个评判加一行，按它报告的工具、模型和 effort 区分。一次运行用[同一个评判](#对所有-arm-用同一个评判)评判所有 trial，所以要衡量更便宜的评判，就把它的别名设为你的 [`scorers/teamai-correctness.md`](#正确性评分标准) 的 `model`，再运行一次套件。两次这样的运行得到的行：
+
+```text
+Judge calibration · teamai:correctness
+
+| Judge | Judged with a failed check | Labelled passing | False pass rate | 95% interval |
+| --- | --- | --- | --- | --- |
+| claude claude-opus-5-5 high | 10 | 0 | 0% | 0% to 28% |
+| claude claude-haiku-4-5 | 10 | 3 | 30% | 11% to 60% |
+```
+
+可以这样读：便宜的评判让大约三分之一测试失败的工作通过；无论它省多少，都不适合作为这个套件正确性的 `model`。check 通过的 trial 得到通过标签，既不算对也不算错，因为成功标准可能比测试要求更多。
 
 ### 资产效果
 
