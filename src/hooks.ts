@@ -42,7 +42,8 @@ import {
 import { builtinHookDefs, applyBuiltinOverride, getCodebuddyTeamHookDispatchCommand, getRawDispatchCommand, skipToolsWithoutShell } from './builtin-hooks.js';
 import { encodeCodebuddyProjectGate, isCodebuddyTeamGateForProject, parseCodebuddyTeamGate, regateCodebuddyTeamHookCommand } from './codebuddy-team-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
-import { parseTeamHooks, readBuiltinOverride, resolveTeamHooks, teamHookToDef } from './resources/hooks.js';
+import { DeliveredFolders } from './resources/delivered-folders.js';
+import { deliverHookFolders, historicalFolderHookDef, parseTeamHooks, readBuiltinOverride, resolveTeamHooks, teamHookToDef } from './resources/hooks.js';
 import { entryLayout } from './namespaced-entries.js';
 import { historicalContents } from './utils/team-history.js';
 import { getUserHome } from './utils/home.js';
@@ -410,9 +411,17 @@ export function teamHookHistory(localConfig: LocalConfig): TeamHookHistory {
     const unique = new Map<string, HookDef>();
 
     for (const version of versions) {
-      if (path.posix.basename(version.path) !== layout.file) continue;
+      const content = version.content.toString('utf8');
 
-      for (const hook of parseTeamHooks(version.content.toString('utf8')) ?? []) {
+      if (path.posix.basename(version.path) !== layout.file) {
+        // A hook folder's HOOK.yaml (#1787).
+        const def = historicalFolderHookDef(localConfig, version.path, content);
+
+        if (def) unique.set(JSON.stringify(def), def);
+        continue;
+      }
+
+      for (const hook of parseTeamHooks(content) ?? []) {
         const def = teamHookToDef(hook);
         unique.set(JSON.stringify(def), def);
       }
@@ -1833,6 +1842,23 @@ async function staleCheckoutGateRoots(
   return [...roots];
 }
 
+/**
+ * A single-repo hook folder's command as `tool` runs it from a project file: the folder's path relative to the tool's
+ * project-directory variable, when `TOOLS` records one (#1787, common rule 10), referenced as the hook's shell reads an
+ * environment variable. Any other command is left as rendered.
+ */
+function projectFolderCommand(def: HookDef, tool: string, powershell: boolean): string {
+  const variable = channelsOf(tool).hooks.projectDirVariable;
+
+  if (!def.folder || def.folder.projectRoot === null || variable === undefined) return def.command;
+
+  return DeliveredFolders.render(def.folder.command, {
+    type: 'hooks',
+    dest: def.folder.dest,
+    project: { root: def.folder.projectRoot, variable: powershell ? `$env:${variable}` : `$${variable}` },
+  });
+}
+
 function scopedTeamDefs(
   teamDefs: HookDef[],
   projectRoot: string | undefined,
@@ -1842,10 +1868,13 @@ function scopedTeamDefs(
   codebuddyDualRunner = false,
 ): HookDef[] {
   const prepared = teamDefs.map((def) => {
-    const next: HookDef = { ...def, command: skipWhenAnotherHostLoadsClaudeSettings(def, tool, legacyGuard) };
+    const powershell = tool === 'claude' && def.source === 'team' && process.platform === 'win32' && !legacyGuard
+      && claudeHookUsesPowerShell();
 
-    if (tool === 'claude' && def.source === 'team' && process.platform === 'win32' && !legacyGuard
-      && claudeHookUsesPowerShell()) next.shell = 'powershell';
+    const rendered: HookDef = { ...def, command: projectFolderCommand(def, tool, powershell) };
+    const next: HookDef = { ...rendered, command: skipWhenAnotherHostLoadsClaudeSettings(rendered, tool, legacyGuard) };
+
+    if (powershell) next.shell = 'powershell';
 
     return next;
   });
@@ -4909,10 +4938,10 @@ export async function reconcileTeamHooksForConfig(
   // The team's hooks could not be resolved (reported by resolveTeamHooks).
   // Reconciling the team set now would remove every installed team hook, so
   // only the built-in hooks are reconciled.
-  const builtinsOnly: BuiltinsOnly | undefined = resolved.ok ? undefined
+  let builtinsOnly: BuiltinsOnly | undefined = resolved.ok ? undefined
     : resolved.builtin.known ? 'with-overrides' : 'defaults-where-none';
 
-  const teamDefs = resolved.ok ? resolved.defs : [];
+  let teamDefs = resolved.ok ? resolved.defs : [];
   const heldTeamHookIds = resolved.ok ? resolved.held : undefined;
 
   const builtin = resolved.ok ? resolved.builtin
@@ -4953,6 +4982,19 @@ export async function reconcileTeamHooksForConfig(
     }
 
     return resolved.ok ? { ok: true, defs: teamDefs } : { ok: false, builtins: builtinsOnly ?? 'with-overrides' };
+  }
+
+  // The folders team hooks run from, before any entry names them (#1787). A workspace that holds a hook back keeps
+  // what it has installed, so its folders stay too. A folder that cannot be written keeps the installed team hooks.
+  if (resolved.ok) {
+    try {
+      await deliverHookFolders(localConfig, resolved.folders, { prune: !heldTeamHookIds?.length });
+    } catch (e) {
+      log.warn(`Team hook folders could not be delivered: ${e instanceof Error ? e.message : String(e)}. `
+        + 'Team hooks were not applied this run, so your installed team hooks are unchanged. Run teamai pull again.');
+      builtinsOnly = 'with-overrides';
+      teamDefs = [];
+    }
   }
 
   // Before any reconcile reads this checkout's manifest (#993).

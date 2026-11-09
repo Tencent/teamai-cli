@@ -164,19 +164,10 @@ type HookFolderRead =
   | { readonly ok: true; readonly definition: TeamHookDefinition; readonly unknownKeys: readonly string[] }
   | { readonly ok: false; readonly reason: string };
 
-/** Read the hook folder at `full` (`folderPath` from the team root, ending in `/`), named `id`. */
-async function readHookFolder(full: string, folderPath: string, id: string): Promise<HookFolderRead> {
-  const read = await FolderFiles.read(full);
-
-  if (read.kind === 'invalid') {
-    return { ok: false, reason: `${folderPath} is not a hook folder teamai can deliver: ${read.problems.map(FolderFiles.describe).join(', ')}` };
-  }
-
-  const marker = read.files.find((file) => file.path === HOOK_MARKER);
-  const markerPath = `${folderPath}${HOOK_MARKER}`;
-
+/** A folder's `HOOK.yaml` (at `markerPath`) as the hook named `id`, or why it does not parse. */
+function parseHookMarker(content: string, markerPath: string, id: string): { ok: true; hook: TeamHook; unknownKeys: readonly string[] } | { ok: false; reason: string } {
   try {
-    const raw: JsonValue = parseYaml(marker?.bytes.toString('utf8') ?? '');
+    const raw: JsonValue = parseYaml(content);
     const parsed = FolderHookSchema.safeParse(raw);
 
     if (!parsed.success) {
@@ -186,10 +177,26 @@ async function readHookFolder(full: string, folderPath: string, id: string): Pro
     const known = Object.keys(FolderHookSchema.shape);
     const unknownKeys = isJsonObject(raw) ? Object.keys(raw).filter((key) => !known.includes(key)) : [];
 
-    return { ok: true, definition: { kind: 'folder', hook: { ...parsed.data, id }, files: read.files }, unknownKeys };
+    return { ok: true, hook: { ...parsed.data, id }, unknownKeys };
   } catch (e) {
     return { ok: false, reason: `${markerPath} does not parse: ${e instanceof Error ? e.message : String(e)}` };
   }
+}
+
+/** Read the hook folder at `full` (`folderPath` from the team root, ending in `/`), named `id`. */
+async function readHookFolder(full: string, folderPath: string, id: string): Promise<HookFolderRead> {
+  const read = await FolderFiles.read(full);
+
+  if (read.kind === 'invalid') {
+    return { ok: false, reason: `${folderPath} is not a hook folder teamai can deliver: ${read.problems.map(FolderFiles.describe).join(', ')}` };
+  }
+
+  const marker = read.files.find((file) => file.path === HOOK_MARKER);
+  const parsed = parseHookMarker(marker?.bytes.toString('utf8') ?? '', `${folderPath}${HOOK_MARKER}`, id);
+
+  if (!parsed.ok) return parsed;
+
+  return { ok: true, definition: { kind: 'folder', hook: parsed.hook, files: read.files }, unknownKeys: parsed.unknownKeys };
 }
 
 /** How team hooks are read for delivery: each place of the team tree through the resolver, `hooks.yaml` entries and folders. */
@@ -331,23 +338,46 @@ interface TeamHookDelivery {
   readonly folder: HookFolderDelivery | null;
 }
 
-/** `resolved` for `localConfig`'s scope: a folder's command names the path the folder is delivered at (#1787). */
-function teamHookDelivery(localConfig: LocalConfig, resolved: ResolvedEntry<TeamHookDefinition>): TeamHookDelivery {
-  const definition = resolved.entry;
-  const def = teamHookToDef(definition.hook);
-
-  if (definition.kind === 'entry') return { def, folder: null };
-  const dest = DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace: resolved.namespace, name: definition.hook.id });
+/** The hook folder `hook`, in `namespace`, as `localConfig`'s scope delivers it: its command names the folder's path (#1787). */
+function folderHookDef(localConfig: LocalConfig, hook: TeamHook, namespace: string | null): HookDef {
+  const dest = DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace, name: hook.id });
   const projectRoot = isSelfMode(localConfig) ? localConfig.projectRoot ?? null : null;
 
   return {
-    def: {
-      ...def,
-      command: DeliveredFolders.render(definition.hook.command, { type: 'hooks', dest }),
-      folder: { command: definition.hook.command, dest, projectRoot },
-    },
-    folder: { dest, files: definition.files },
+    ...teamHookToDef(hook),
+    command: DeliveredFolders.render(hook.command, { type: 'hooks', dest }),
+    folder: { command: hook.command, dest, projectRoot },
   };
+}
+
+/** `resolved` for `localConfig`'s scope, with the folder it runs from, if any. */
+function teamHookDelivery(localConfig: LocalConfig, resolved: ResolvedEntry<TeamHookDefinition>): TeamHookDelivery {
+  const definition = resolved.entry;
+
+  if (definition.kind === 'entry') return { def: teamHookToDef(definition.hook), folder: null };
+  const def = folderHookDef(localConfig, definition.hook, resolved.namespace);
+
+  return { def, folder: def.folder ? { dest: def.folder.dest, files: definition.files } : null };
+}
+
+/**
+ * The hook a committed `HOOK.yaml` at `relativePath` (`hooks/[<ns>/]<id>/HOOK.yaml`) defined, rendered with
+ * `localConfig`'s scope, so teamai recognises the entries it wrote from an earlier version (#993, #1787). Null for
+ * any other path, or a version that does not parse.
+ */
+export function historicalFolderHookDef(localConfig: LocalConfig, relativePath: string, content: string): HookDef | null {
+  const segments = relativePath.split('/');
+  const [type, ...rest] = segments;
+  const marker = rest.at(-1);
+  const id = rest.at(-2);
+  const namespace = rest.length === 3 ? rest[0] ?? null : null;
+
+  if (type !== TEAM_HOOKS.dir || marker !== HOOK_MARKER || id === undefined || (rest.length !== 2 && rest.length !== 3)) return null;
+
+  if (!RESOURCE_LAYOUTS.hooks.nameRule.pattern.test(id)) return null;
+  const parsed = parseHookMarker(content, relativePath, id);
+
+  return parsed.ok ? folderHookDef(localConfig, parsed.hook, namespace) : null;
 }
 
 /**
@@ -427,6 +457,28 @@ export async function resolveTeamHooks(
   }
 
   return { ok: true, defs, folders: hooks.flatMap(({ folder }) => folder ? [folder] : []), builtin, ...held };
+}
+
+/**
+ * Deliver the folders the resolved team hooks run from, recorded in the scope's delivery record, then, with `prune`,
+ * remove the scope's hook folders the team dropped (#1787, common rule 9). Throws when a folder cannot be written; the
+ * caller then keeps the installed team hooks, whose folders are left as they were.
+ */
+export async function deliverHookFolders(
+  localConfig: LocalConfig,
+  folders: readonly HookFolderDelivery[],
+  opts: { readonly prune: boolean },
+): Promise<void> {
+  const { editDeliveryRecord } = await import('../pull.js');
+  const record = await editDeliveryRecord(localConfig);
+
+  for (const folder of folders) await DeliveredFolders.deliver({ ...folder, ledger: record.ledger });
+
+  if (opts.prune) {
+    await DeliveredFolders.prune({ localConfig, type: 'hooks', keep: folders.map(({ dest }) => dest), ledger: record.ledger });
+  }
+
+  await record.save();
 }
 
 // ─── Handler ────────────────────────────────────────────────
