@@ -4,6 +4,7 @@ import { holdsMarker, unreadMarker } from '../folder-markers.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { resolveNamespacedItems } from '../namespace-resolver.js';
 import { FolderFiles, type FolderFilesRead } from './folder-files.js';
+import { TeamaiConfigBaseSchema } from '../types.js';
 import { isIgnored } from '../utils/fs.js';
 
 /** How a resource type lays out its items in a tree. `TEntry` is what one entry of its entry-list file holds. */
@@ -211,12 +212,18 @@ async function entryItems<TEntry>(entryList: NonNullable<ResourceLayout<TEntry>[
   }
 }
 
-/** Whether `file` is a language variant of `marker` (`RULE.zh.md` of `RULE.md`, common rule 12 of #1787): part of the folder's own text. */
-function isMarkerVariant(marker: string, file: string): boolean {
-  const ext = path.extname(marker);
-  const stem = marker.slice(0, marker.length - ext.length);
+/** The languages a text teamai renders may have a variant in: the values of `language` in teamai.yaml. */
+const LANGUAGES = TeamaiConfigBaseSchema.shape.language.unwrap().options;
 
-  return file.startsWith(`${stem}.`) && file.endsWith(ext) && /^[a-z]+$/.test(file.slice(stem.length + 1, file.length - ext.length));
+/**
+ * Whether `file` is a language variant of the text file `base` (common rule 12 of #1787): `RULE.zh.md` of `RULE.md`,
+ * with the language's exact lower-case name. Any other name, as `RULE.old.md`, is a support file.
+ */
+export function isLanguageVariant(base: string, file: string): boolean {
+  const ext = path.extname(base);
+  const stem = base.slice(0, base.length - ext.length);
+
+  return LANGUAGES.some((language) => file === `${stem}.${language}${ext}`);
 }
 
 /**
@@ -225,7 +232,7 @@ function isMarkerVariant(marker: string, file: string): boolean {
  * text and are never named. Null when it holds none.
  */
 function itemFilesNote<TEntry>(layout: ResourceLayout<TEntry>, marker: string, folderPath: string, files: readonly string[]): ResourceDiagnostic | null {
-  const read = files.filter((file) => file !== marker && !isMarkerVariant(marker, file) && (file === layout.entryList?.file || layout.fileName(file) !== null));
+  const read = files.filter((file) => file !== marker && !isLanguageVariant(marker, file) && (file === layout.entryList?.file || layout.fileName(file) !== null));
 
   if (read.length === 0) return null;
 

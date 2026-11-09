@@ -10,7 +10,7 @@ import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import type { DeliveryRecorder } from './git-exclude-delivered.js';
 import { recordDelivered, type DeliveryLedger } from './resources/delivered-copies.js';
-import { RESOURCE_LAYOUTS, Resources, type ShippedFile, type TeamaiLayer } from './resources/resolver.js';
+import { isLanguageVariant, RESOURCE_LAYOUTS, Resources, type ShippedFile, type TeamaiLayer } from './resources/resolver.js';
 import { RuleFolders } from './resources/rule-folders.js';
 import { warnOnce } from './utils/warn-once.js';
 
@@ -250,7 +250,7 @@ async function recallFolderProblem(dir: string, shown: string): Promise<string |
     for (const { stem, lines } of RECALL_FILES) {
         if (!names.includes(`${stem}.md`)) return `${shown}${stem}.md is missing`;
 
-        for (const name of names.filter((found) => new RegExp(`^${stem}(\\.[a-z]+)?\\.md$`).test(found))) {
+        for (const name of names.filter((found) => found === `${stem}.md` || isLanguageVariant(`${stem}.md`, found))) {
             const content = await RuleFolders.readTextFile(path.join(dir, name));
 
             if (content === null) return `${shown}${name} cannot be read`;
