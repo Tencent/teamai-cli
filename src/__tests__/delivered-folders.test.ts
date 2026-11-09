@@ -81,7 +81,7 @@ describe('DeliveredFolders.deliver', () => {
     });
   });
 
-  it('replaces the previous version whole, at the same path, and leaves nothing beside it', async () => {
+  it('replaces the previous version at the same path, keeping the files it dropped for what another worktree still runs, and leaves nothing beside it', async () => {
     const dest = path.join(tempDir(), 'hooks', 'block-secrets');
     const ledger = openLedger({});
     await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v1\n'), file('old.sh', 'old\n')], ledger });
@@ -89,9 +89,18 @@ describe('DeliveredFolders.deliver', () => {
     await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v2\n'), file('new.sh', 'new\n')], ledger });
 
     expect([tree(path.dirname(dest)), Object.keys(ledger.hashes).sort()]).toEqual([
-      { 'block-secrets/HOOK.yaml': 'v2\n', 'block-secrets/new.sh': 'new\n' },
-      [path.join(dest, 'HOOK.yaml'), path.join(dest, 'new.sh')],
+      { 'block-secrets/HOOK.yaml': 'v2\n', 'block-secrets/new.sh': 'new\n', 'block-secrets/old.sh': 'old\n' },
+      [path.join(dest, 'HOOK.yaml'), path.join(dest, 'new.sh'), path.join(dest, 'old.sh')],
     ]);
+  });
+
+  it('gives the new version a path an earlier file clashes with: a file now a directory, a directory now a file, or the same name in another case', async () => {
+    const dest = path.join(tempDir(), 'mcp', 'jira-lite');
+    await DeliveredFolders.deliver({ dest, files: [file('Notes.md', 'old\n'), file('lib', 'old\n'), file('util/a.js', 'old\n')], ledger: undefined });
+
+    await DeliveredFolders.deliver({ dest, files: [file('NOTES.md', 'new\n'), file('lib/a.js', 'new\n'), file('util', 'new\n')], ledger: undefined });
+
+    expect(tree(dest)).toEqual({ 'NOTES.md': 'new\n', 'lib/a.js': 'new\n', util: 'new\n' });
   });
 
   it('leaves a folder that already holds the version in place, and records it', async () => {

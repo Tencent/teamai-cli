@@ -123,6 +123,17 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
     expect([await fse.pathExists(path.join(home, '.teamai', 'projects', 'app', 'mcp', 'jira-lite')), await claudeServer('app', 'jira-lite')]).toEqual([false, undefined]);
   });
 
+  it('keeps the folder of a server the team drops while a tool the member excluded still has it installed', async () => {
+    await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER, 'mcp/jira-lite/server.mjs': 'console.log("jira")\n' });
+    await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
+    const installed = await claudeServer('app', 'jira-lite');
+
+    await fse.remove(path.join(sandbox, 'team', 'mcp', 'jira-lite'));
+    await reconcileMcpForConfig(teamConfig(), { ...workspace('team', 'app'), disabledAgents: ['claude', 'tclaude'] });
+
+    expect([await fse.pathExists(path.join(home, '.teamai', 'projects', 'app', 'mcp', 'jira-lite', 'server.mjs')), await claudeServer('app', 'jira-lite')]).toEqual([true, installed]);
+  });
+
   it('keeps the installed server and its folder when the team repo makes the folder invalid', async () => {
     await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER, 'mcp/jira-lite/server.mjs': 'console.log("jira")\n' });
     await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));

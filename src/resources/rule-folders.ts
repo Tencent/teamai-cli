@@ -128,25 +128,12 @@ function copyPathOf(copyRoot: string, ref: DeliveredFolderRef): string {
 }
 
 /**
- * `files`, the new version of a folder, with each file of the version installed at `dest` that it no longer has: a
- * copy the member edited keeps naming those, while the other tools read the new ones.
- */
-async function withInstalledFiles(dest: string, files: readonly FolderFile[]): Promise<readonly FolderFile[]> {
-  const installed = await pathExists(dest) ? await FolderFiles.read(dest) : null;
-
-  if (installed?.kind !== 'files') return files;
-  const paths = new Set(files.map((file) => file.path));
-
-  return [...files, ...installed.files.filter((file) => !paths.has(file.path))].sort((a, b) => a.path.localeCompare(b.path));
-}
-
-/**
  * Deliver the folder of each rule folder in `rules` to `localConfig`'s scope, recorded in `ledger`. In a remote team's
  * project where one of `tools` (the tools receiving rules) cannot read the data home, the folders are copied into the
  * worktree too, in the same delivery, so a copy that cannot be written leaves the data home as it was; in user scope,
- * each such tool is named once. The folder of each rule in `editedCopies`, whose copy the member edited and pull
- * keeps, also keeps the files the new version dropped. Throws when a folder cannot be written; the caller keeps what
- * it installed. Returns the removal of the scope's other folders, which the caller runs once its stale sweep is done,
+ * each such tool is named once. A folder keeps the files an earlier version had, which a copy the member edited
+ * may still name (`DeliveredFolders.deliverAll`). Throws when a folder cannot be written; the caller keeps what it
+ * installed. Returns the removal of the scope's other folders, which the caller runs once its stale sweep is done,
  * with the rules a tool still holds a copy of: their folders stay, so the text still names files that exist.
  */
 async function sync(input: {
@@ -154,16 +141,14 @@ async function sync(input: {
   readonly rules: readonly ResourceItem[];
   readonly tools: readonly string[];
   readonly ledger: DeliveryLedger | undefined;
-  readonly editedCopies: ReadonlySet<string>;
 }): Promise<(heldByCopies: readonly string[]) => Promise<void>> {
   const { localConfig, ledger } = input;
   const folders: { readonly ref: DeliveredFolderRef; readonly name: string; readonly files: readonly FolderFile[] }[] = [];
 
   for (const rule of input.rules.filter(isFolder)) {
     const read = await FolderFiles.read(path.dirname(rule.sourcePath));
-    const dest = DeliveredFolders.pathOf(localConfig, refOf(rule));
 
-    if (read.kind === 'files') folders.push({ ref: refOf(rule), name: rule.name, files: input.editedCopies.has(rule.name) ? await withInstalledFiles(dest, read.files) : read.files });
+    if (read.kind === 'files') folders.push({ ref: refOf(rule), name: rule.name, files: read.files });
   }
 
   const delivered = folders.map(({ ref, files }) => ({ dest: DeliveredFolders.pathOf(localConfig, ref), files }));

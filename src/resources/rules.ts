@@ -23,7 +23,7 @@ import { gitUntracked } from '../git-exclude.js';
 import { historicalVersions } from '../utils/team-history.js';
 import {
   adoptRecord, contentHash, describeMembersDirLeft, describeMembersLink, forgetDelivered, removeDelivered, holdsNonRegular, isLink, isTeamaiCopy, keepsEditedCopy, recordDelivered, recordedUnchanged,
-  judgeCopy, judgeRemoval, keepsTrackedCopy, reportKept,
+  judgeRemoval, keepsTrackedCopy, reportKept,
   type DeliveredHashes, type DeliveryLedger,
 } from './delivered-copies.js';
 import {
@@ -924,19 +924,10 @@ export class RulesHandler extends ResourceHandler {
     // 1. Distribute rule files to each tool's rules/ directory, after the
     // folders their text names (#1787).
     const receiving = (await rulesReceivingTools(teamConfig, localConfig)).filter((tool) => !isAgentExcluded(localConfig, tool));
+    const pruneRuleFolders = await RuleFolders.sync({ localConfig, rules, tools: receiving, ledger });
+
     // The rules this member receives, when the caller resolved them.
     const received = filteredRules?.map((rule) => rule.name);
-    // The rule folders a tool keeps an edited copy of, which `pullItem` below leaves: their folders keep the files that
-    // copy names.
-    const editedCopies = new Set<string>();
-
-    for (const rule of ledger ? rules.filter(RuleFolders.isFolder) : []) {
-      for (const target of await this.deliveryTargets(teamConfig, localConfig, rule, received)) {
-        if ((await judgeCopy(ledger?.previous, rule, target)).kind !== 'write') editedCopies.add(rule.name);
-      }
-    }
-
-    const pruneRuleFolders = await RuleFolders.sync({ localConfig, rules, tools: receiving, ledger, editedCopies });
 
     for (const rule of rules) {
       await this.pullItem(rule, teamConfig, localConfig, ledger, received);

@@ -259,13 +259,14 @@ export function historicalFolderMcpServer(localConfig: LocalConfig, relativePath
  * Deliver the folders of the resolved servers `entries`, recorded in the scope's delivery record, then, with `prune`,
  * remove the scope's server folders the team dropped (#1787, common rule 9). The folder of each server in `kept`, whose
  * installed configuration this run leaves as it is, stays as it is too: that configuration may name a file the new
- * version no longer has. Throws when a folder cannot be written; the caller then keeps the installed servers, whose
- * folders are left as they were.
+ * version no longer has. Prune leaves the folder of each server in `installedInExcluded`, which a tool pull leaves
+ * alone still has installed. Throws when a folder cannot be written; the caller then keeps the installed servers,
+ * whose folders are left as they were.
  */
 export async function deliverMcpFolders(
   localConfig: LocalConfig,
   entries: ReadonlyArray<ResolvedEntry<TeamMcpDefinition>>,
-  opts: { readonly prune: boolean; readonly kept: ReadonlySet<string> },
+  opts: { readonly prune: boolean; readonly kept: ReadonlySet<string>; readonly installedInExcluded: ReadonlySet<string> },
 ): Promise<void> {
   const folders = entries.flatMap((resolved) => (resolved.entry.kind === 'folder'
     ? [{ name: resolved.entry.server.name, dest: mcpFolderPath(localConfig, resolved), files: resolved.entry.files }]
@@ -277,7 +278,11 @@ export async function deliverMcpFolders(
   await DeliveredFolders.sync({ localConfig, type: 'mcp', folders: folders.filter(({ name }) => !opts.kept.has(name)), ledger: record.ledger, prune: false });
 
   if (opts.prune) {
-    await DeliveredFolders.prune({ localConfig, type: 'mcp', keep: folders.map(({ dest }) => dest), ledger: record.ledger });
+    // A server's record names no namespace: its folder sits at the root, or in a namespace directory.
+    const namespaces = await listDirs(path.join(DeliveredFolders.root(localConfig), 'mcp'));
+    const excluded = [...opts.installedInExcluded].flatMap((name) => [null, ...namespaces].map((namespace) => DeliveredFolders.pathOf(localConfig, { type: 'mcp', namespace, name })));
+
+    await DeliveredFolders.prune({ localConfig, type: 'mcp', keep: [...folders.map(({ dest }) => dest), ...excluded], ledger: record.ledger });
   }
 
   await record.save();

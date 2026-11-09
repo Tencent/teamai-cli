@@ -327,7 +327,7 @@ command: bash "${TEAMAI_HOOK_DIR}/scan.sh"
 timeout: 15
 ```
 
-Pull copies the folder and puts its path, with forward slashes, in place of `${TEAMAI_HOOK_DIR}`. teamai adds no quotes, so quote the variable as the command needs. The path stays the same when the folder changes:
+Pull copies the folder and puts its path, with forward slashes, in place of `${TEAMAI_HOOK_DIR}`. teamai adds no quotes, so quote the variable as the command needs. The path stays the same when the folder changes, and a file the team removes from it stays until the folder goes, as a configuration pull did not rewrite may still name it:
 
 | Where the team is | The folder lands in |
 |---|---|
@@ -531,7 +531,7 @@ requires: [uv]
 # ///
 ```
 
-Pull copies the folder and puts its path, with forward slashes, in place of `${TEAMAI_MCP_DIR}` in `command`, `args` and `env`. teamai adds no quotes. The path stays the same when the folder changes:
+Pull copies the folder and puts its path, with forward slashes, in place of `${TEAMAI_MCP_DIR}` in `command`, `args` and `env`. teamai adds no quotes. The path stays the same when the folder changes, and a file the team removes from it stays until the folder goes, as a configuration pull did not rewrite may still name it:
 
 | Where the team is | The folder lands in |
 |---|---|

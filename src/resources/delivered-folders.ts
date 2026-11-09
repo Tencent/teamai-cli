@@ -104,6 +104,25 @@ async function holds(dest: string, files: readonly FolderFile[]): Promise<boolea
 }
 
 /**
+ * `files` with each file of the installed folder at `dest` that the new version dropped (#1787). The folder is shared:
+ * another worktree of the workspace, a tool pull leaves alone, or a configuration pull could not rewrite may still run
+ * an earlier version from it, so a file goes only with its folder. Where an earlier path clashes with a new one (a file
+ * that became a directory, or the same name in another case, which a case-insensitive file system cannot hold twice),
+ * the new version's wins.
+ */
+async function withEarlierFiles(dest: string, files: readonly FolderFile[]): Promise<readonly FolderFile[]> {
+  const installed = await FolderFiles.read(dest);
+
+  if (installed.kind !== 'files') return files;
+  const fresh = files.map((file) => file.path.toLowerCase());
+  const clashes = (earlier: string): boolean => fresh.some((wanted) => wanted === earlier || wanted.startsWith(`${earlier}/`) || earlier.startsWith(`${wanted}/`));
+  const kept = installed.files.filter((file) => !clashes(file.path.toLowerCase()));
+
+  // In the order `FolderFiles.read` lists them, which `holds` compares against.
+  return kept.length === 0 ? files : [...files, ...kept].sort((a, b) => (a.path < b.path ? -1 : 1));
+}
+
+/**
  * Move the delivered folder `dest` to `old`, out of the way of its new version: false when there is none yet. Any other
  * failure stops the delivery, naming the folder and why.
  */
@@ -124,8 +143,8 @@ async function moveAside(dest: string, old: string): Promise<boolean> {
 }
 
 /**
- * Deliver each folder's `files`, in path order, at its `dest`, all or none: every new version is written to a hidden
- * sibling first, then each is renamed into place. A failure puts back every installed version already replaced, so
+ * Deliver each folder's `files`, in path order, at its `dest`, all or none, keeping the files an earlier version had
+ * (`withEarlierFiles`): every new version is written to a hidden sibling first, then each is renamed into place. A failure puts back every installed version already replaced, so
  * the folders still match the hooks and servers installed from them. A folder that already holds its version is left
  * in place, so a hook running from it is not disturbed. Each file is recorded in `ledger`, in place of what it
  * recorded under its `dest`.
@@ -137,9 +156,14 @@ async function deliverAll(folders: readonly FolderDelivery[], ledger: DeliveryLe
     for (const { fresh } of staged) await fs.rm(fresh, { recursive: true, force: true });
   };
 
+  const delivered: FolderDelivery[] = [];
+
   try {
-    for (const { dest, files } of folders) {
+    for (const folder of folders) {
+      const { dest } = folder;
       await removeLeftovers(dest);
+      const files = await withEarlierFiles(dest, folder.files);
+      delivered.push({ dest, files });
 
       if (await holds(dest, files)) continue;
       const suffix = randomBytes(4).toString('hex');
@@ -196,7 +220,7 @@ async function deliverAll(folders: readonly FolderDelivery[], ledger: DeliveryLe
 
   if (!ledger) return;
 
-  for (const { dest, files } of folders) {
+  for (const { dest, files } of delivered) {
     forgetDelivered(ledger.hashes, dest);
 
     for (const file of files) ledger.hashes[path.join(dest, ...file.path.split('/'))] = contentHash(file.bytes);

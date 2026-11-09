@@ -2967,9 +2967,13 @@ async function reconcileTargets(
   // installed server, and so do secrets that cannot be read (below).
   if (!removeAll && !options.dryRun && !secretsUnread) {
     const kept = new Set([...held, ...[...desiredOf.values()].flatMap((desired) => [...desired.kept])]);
+    // An excluded tool is skipped, not cleaned (below): the servers it has installed keep their folders.
+    const excluded = targets.filter((target) => mcpTargetExcluded(localConfig, target));
+    const records = excluded.length === 0 ? {} : (await loadMcpManifest(localConfig, true)).manifest;
+    const installedInExcluded = new Set(excluded.flatMap((target) => (records[mcpManifestKey(target)] ?? []).map(({ name }) => name)));
 
     try {
-      await deliverMcpFolders(localConfig, teamEntries, { prune: held.size === 0, kept });
+      await deliverMcpFolders(localConfig, teamEntries, { prune: held.size === 0, kept, installedInExcluded });
     } catch (e) {
       log.warn(`Team MCP server folders could not be delivered: ${e instanceof Error ? e.message : String(e)}. `
         + 'mcp was not applied this run, so your installed team MCP servers are unchanged. Run teamai pull again.');
