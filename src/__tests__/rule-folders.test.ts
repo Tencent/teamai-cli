@@ -177,6 +177,18 @@ describe('rule folders (#1787)', () => {
     );
   });
 
+  it('proposes no push of a member\'s rule that would land inside a rule folder, and says why', async () => {
+    const handler = new RulesHandler();
+    await handler.pullAllRules(teamConfig, localConfig);
+    await fse.outputFile(home('.claude', 'rules', 'api-style', 'extra.md'), '# Extra\n');
+
+    expect(await handler.scanLocalForPush(teamConfig, localConfig)).toEqual([]);
+    expect(vi.mocked(log.warn).mock.calls.map(([message]) => String(message))).toContain(
+      `${home('.claude', 'rules', 'api-style', 'extra.md')} is not pushed: rules/api-style/ is a rule folder, so rules/api-style/extra.md would be one of `
+      + 'its files, not a rule. Rename your rule, or add the file to the folder in the team repo.',
+    );
+  });
+
   it('delivers neither of a rule file and a rule folder of the same name, and says so', async () => {
     await fse.outputFile(path.join(repoPath, 'rules', 'api-style.md'), 'Use named exports.\n');
 

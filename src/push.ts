@@ -25,6 +25,7 @@ import type {
 } from './types.js';
 import { getDataHome, isSelfMode, SELF_KNOWLEDGE_SCAN_KEY, SYNC_LOCK_FILENAME } from './types.js';
 import { FOLDER_MARKERS, findSkippedFolders, isInSkippedFolder, reportSkippedFolders } from './folder-markers.js';
+import { RESOURCE_LAYOUTS, Resources } from './resources/resolver.js';
 import { acquireLock, releaseLock } from './update.js';
 import { assertSafeResourceName, resolveReal } from './utils/path-safety.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces, roleNamespaceEntries, RolesManifestNotFoundError, type ResourceNamespaces } from './roles.js';
@@ -2022,6 +2023,13 @@ async function pushCore(
     ...isSelfMode(localConfig) && localConfig.projectRoot ? await findSkippedFolders(path.join(localConfig.projectRoot, '.teamai')) : [],
   ];
 
+  // A rule folder holds files, not rules (#1787): a rule placed in one would be one of its files.
+  const ruleFolders = (await Promise.all([
+    localConfig.repo.localPath,
+    ...isSelfMode(localConfig) && localConfig.projectRoot ? [path.join(localConfig.projectRoot, '.teamai')] : [],
+  ].map(async (root) => (await Resources.walk(RESOURCE_LAYOUTS.rules, root)).items))).flat()
+    .flatMap(({ source }) => (source.kind === 'folder' ? [source.path] : []));
+
   // Placement can move a new resource into a namespace that is such a folder:
   // refuse the push there rather than write into it.
   const placedInSkippedFolder = (items: readonly ResourceItem[]): boolean => {
@@ -2029,6 +2037,13 @@ async function pushCore(
 
     for (const item of items) {
       const folder = skippedFolders.find((candidate) => isInSkippedFolder(item.relativePath, [candidate]));
+      const ruleFolder = item.type === 'rules' ? ruleFolders.find((dir) => item.relativePath.startsWith(dir)) : undefined;
+
+      if (ruleFolder !== undefined) {
+        log.error(`[rules] ${item.name} cannot be placed in ${item.relativePath}: ${ruleFolder} is a rule folder, so the file would be one of its files, not a rule. Push it with --role <another namespace> or --shared.`);
+        refused = true;
+        continue;
+      }
 
       if (!folder) continue;
       log.error(`[${item.type}] ${item.name} cannot be placed in ${item.relativePath}: ${folder.path} holds ${FOLDER_MARKERS[folder.type].marker}, which this teamai cannot read. Push it with --role <another namespace> or --shared.`);

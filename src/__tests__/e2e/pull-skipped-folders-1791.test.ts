@@ -16,7 +16,8 @@ const GIT_ENV = {
   GIT_COMMITTER_EMAIL: 'ci@teamai.test',
 };
 
-const RULE_LINE = 'rules/api-style/ is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.';
+// Rule folders are read since #1787, so the rule directory below becomes one; workflow folders are still skipped.
+const RULE_FOLDER_NOTE = 'rules/api-style/ holds RULE.md, so it is one folder, and checklist.md in it is one of its files, no longer read on its own.';
 const WORKFLOW_LINE = 'workflows/release/ is a workflow folder, which this teamai cannot read yet; it was skipped. Run teamai update.';
 
 function runCLI(args: string[], home: string, cwd: string): Promise<{ code: number | null; output: string }> {
@@ -54,7 +55,7 @@ function filesUnder(dir: string): string[] {
     .sort();
 }
 
-describe('real CLI: pull skips a folder whose type this teamai cannot read (#1791)', () => {
+describe('real CLI: pull skips a folder whose type this teamai cannot read (#1791), and reads a rule folder (#1787)', () => {
   let sandbox: string;
   let homeDir: string;
   let seed: string;
@@ -108,7 +109,7 @@ describe('real CLI: pull skips a folder whose type this teamai cannot read (#179
     expect(filesUnder(path.join(homeDir, '.claude', 'rules'))).toEqual(['api-style/checklist.md', 'style.md']);
   }, 60_000);
 
-  it('then skips it once it holds RULE.md, removes what it delivered from it, and says so', async () => {
+  it('then reads it as a rule folder once it holds RULE.md, removes what it delivered from it, and skips the workflow folder', async () => {
     write(seed, 'rules/api-style/RULE.md', '# API style\n');
     write(seed, 'rules/api-style/RULE.zh.md', '# API 风格\n');
     write(seed, 'workflows/release/WORKFLOW.yaml', 'name: release\n');
@@ -119,10 +120,10 @@ describe('real CLI: pull skips a folder whose type this teamai cannot read (#179
     const result = await runCLI(['pull'], homeDir, sandbox);
 
     expect(result.code, result.output).toBe(0);
-    expect(result.output).toContain(RULE_LINE);
-    expect(result.output).toContain(WORKFLOW_LINE);
-    expect(result.output.split(RULE_LINE)).toHaveLength(2);
-    expect(filesUnder(path.join(homeDir, '.claude', 'rules'))).toEqual(['style.md']);
+    expect(result.output).toContain(RULE_FOLDER_NOTE);
+    expect(result.output.split(WORKFLOW_LINE)).toHaveLength(2);
+    expect(filesUnder(path.join(homeDir, '.claude', 'rules'))).toEqual(['api-style.md', 'style.md']);
+    expect(filesUnder(path.join(homeDir, '.teamai', 'rules'))).toEqual(['api-style/RULE.md', 'api-style/RULE.zh.md', 'api-style/checklist.md']);
   }, 60_000);
 
   it('writes the line to debug.log on a silent pull', async () => {
@@ -131,26 +132,24 @@ describe('real CLI: pull skips a folder whose type this teamai cannot read (#179
     const result = await runCLI(['pull', '--silent'], homeDir, sandbox);
 
     expect(result.code, result.output).toBe(0);
-    expect(result.output).not.toContain(RULE_LINE);
-    expect(fs.readFileSync(path.join(homeDir, '.teamai', 'debug.log'), 'utf8')).toContain(RULE_LINE);
+    expect(result.output).not.toContain(WORKFLOW_LINE);
+    expect(fs.readFileSync(path.join(homeDir, '.teamai', 'debug.log'), 'utf8')).toContain(WORKFLOW_LINE);
   }, 60_000);
 
   it('lists the skipped folders in status and doctor', async () => {
     const status = await runCLI(['status'], homeDir, sandbox);
 
     expect(status.output).toContain('Skipped folders:');
-    expect(status.output).toContain(`  ${RULE_LINE}`);
     expect(status.output).toContain(`  ${WORKFLOW_LINE}`);
-    expect(status.output).toContain('  rules: 1');
+    expect(status.output).toContain('  rules: 2');
 
     const doctor = await runCLI(['doctor'], homeDir, sandbox);
 
     expect(doctor.output).toContain('  ⚠ This teamai reads every folder in the team repo');
-    expect(doctor.output).toContain(`    → ${RULE_LINE}`);
     expect(doctor.output).toContain(`    → ${WORKFLOW_LINE}`);
   }, 60_000);
 
-  it('pushes nothing into a skipped folder, and the rest as before', async () => {
+  it('pushes nothing into a rule folder, and the rest as before', async () => {
     write(homeDir, '.claude/rules/api-style/extra.md', '# Extra API rule\n');
     write(homeDir, '.claude/rules/naming.md', '# Naming\n\nName things for what they hold.\n');
 
@@ -165,10 +164,10 @@ describe('real CLI: pull skips a folder whose type this teamai cannot read (#179
     const files = execFileSync('git', ['diff', '--name-only', 'main', branches[0]], { cwd: remote, encoding: 'utf8' }).split('\n').filter(Boolean);
 
     expect(files, pushed.output).toEqual(['rules/naming.md']);
-    expect(pushed.output).toContain(RULE_LINE);
+    expect(pushed.output).toContain('rules/api-style/ is a rule folder, so rules/api-style/extra.md would be one of its files, not a rule.');
   }, 60_000);
 
-  it('refuses to place a new rule in a namespace that is a skipped folder', async () => {
+  it('refuses to place a new rule in a namespace that is a rule folder', async () => {
     write(seed, 'manifest/roles.yaml', 'version: 1\nroles:\n  - id: api\n    resources: { knowledge: [api-style], skills: [] }\n');
     git(['add', '-A'], seed);
     git(['commit', '-q', '-m', 'roles'], seed);
@@ -181,7 +180,7 @@ describe('real CLI: pull skips a folder whose type this teamai cannot read (#179
     const placed = refs.filter((ref) => execFileSync('git', ['ls-tree', '-r', '--name-only', ref], { cwd: remote, encoding: 'utf8' }).includes('rules/api-style/tone.md'));
 
     expect(pushed.code, pushed.output).not.toBe(0);
-    expect(pushed.output).toContain('[rules] tone cannot be placed in rules/api-style/tone.md: rules/api-style/ holds RULE.md, which this teamai cannot read. Push it with --role <another namespace> or --shared.');
+    expect(pushed.output).toContain('[rules] tone cannot be placed in rules/api-style/tone.md: rules/api-style/ is a rule folder, so the file would be one of its files, not a rule. Push it with --role <another namespace> or --shared.');
     expect(placed).toEqual([]);
   }, 60_000);
 });

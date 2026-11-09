@@ -165,6 +165,13 @@ export class RulesHandler extends ResourceHandler {
 
         // A copy pull delivered of a rule folder, the team's or one it dropped since.
         if (folderNames.has(name) || (delivered?.[localFilePath] !== undefined && await RuleFolders.isDelivered(localConfig, name))) continue;
+        const holder = folders.find(({ dir }) => `${name}.md`.startsWith(dir));
+
+        if (holder !== undefined) {
+          warnOnce(`${localFilePath} is not pushed: rules/${holder.dir} is a rule folder, so rules/${name}.md would be one of its files, not a rule. `
+            + 'Rename your rule, or add the file to the folder in the team repo.');
+          continue;
+        }
 
         // A flat name teamai has no record of writing is the member's own
         // file, which pull keeps rather than overwrite (#946).
