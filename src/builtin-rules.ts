@@ -16,12 +16,12 @@ import { warnOnce } from './utils/warn-once.js';
 
 // ─── Built-in rules deployment ──────────────────────────
 //
-//  CLI ships with built-in rules that guide AI tool behavior.
-//  Unlike team repo rules (managed by users), these are
-//  maintained alongside the CLI code and deployed automatically
-//  on each `teamai pull`.
+//  CLI ships with built-in rules that guide AI tool behavior, deployed
+//  automatically on each `teamai pull`.
 //
-//  teamai-recall.md instructs the AI to proactively search the team
+//  The recall rule is the folder rules/teamai-recall/ in the package
+//  (#1787), which a team replaces with its own at the root of the team
+//  repo. It instructs the AI to proactively search the team
 //  knowledge base (via the `teamai-recall` subagent or `teamai recall`)
 //  before starting a task — this replaced the old passive auto-recall
 //  PostToolUse hook, which fired implicitly on every Bash/Grep/WebSearch/

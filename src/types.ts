@@ -140,7 +140,7 @@ export const SharingConfigSchema = z.object({
     /** Auto-apply team hooks during `teamai pull`. When false, pull only hints;
      *  the user must run `teamai hooks inject` to apply (explicit consent). */
     autoApply: z.boolean().default(true),
-    /** Restrict team hook commands to scripts under ~/.teamai/team-scripts/. */
+    /** Keep only team hook commands that run from their hook folder through ${TEAMAI_HOOK_DIR} or from ~/.teamai/team-scripts/. */
     requireTeamScripts: z.boolean().default(false),
   }).optional(),
   recall: z.object({
@@ -802,7 +802,7 @@ export const TeamaiConfigBaseSchema = z.object({
    */
   language: z.enum(['en', 'zh']).optional(),
   /** Team-owned Node scripts. Distinct from `sharing.hooks.requireTeamScripts`
-   * (the `~/.teamai/team-scripts/` trust boundary for hook commands). Every
+   * (which keeps only hook commands from a hook folder or `~/.teamai/team-scripts/`). Every
    * entry is optional. An older CLI that only knows `postPull` strips the
    * other keys instead of rejecting the file, so a team can add one before
    * every member upgrades. Each `path` is relative to the team repo root and

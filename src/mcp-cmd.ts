@@ -63,7 +63,7 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
   }
 
   if (servers.length === 0) {
-    log.info('No team MCP servers reach this directory (mcp/mcp.yaml and active mcp/<ns>/mcp.yaml files are absent or empty)');
+    log.info('No team MCP servers reach this directory (mcp/mcp.yaml, the active mcp/<ns>/mcp.yaml files and the MCP.yaml folders define none)');
     await reportMissingSecrets(localConfig, teamEnv);
 
     return;
