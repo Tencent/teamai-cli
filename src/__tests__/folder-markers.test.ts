@@ -68,9 +68,9 @@ describe('findSkippedFolders', () => {
 
 describe('skippedFolderMessage', () => {
   it('names the folder and its kind in one fixed line', () => {
-    expect(skippedFolderMessage({ type: 'rules', path: 'rules/api-style/' }))
-      .toBe('rules/api-style/ is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.');
-    expect(skippedFolderMessage({ type: 'mcp', path: 'mcp/github/' }))
-      .toBe('mcp/github/ is an MCP server folder, which this teamai cannot read yet; it was skipped. Run teamai update.');
+    expect(skippedFolderMessage({ type: 'agents', path: 'agents/reviewer/' }))
+      .toBe('agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.');
+    expect(skippedFolderMessage({ type: 'scorers', path: 'scorers/tone/' }))
+      .toBe('scorers/tone/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.');
   });
 });
