@@ -25,6 +25,7 @@ import { projectsRootDir, readAnchorFile, projectSlug, legacyProjectSlug } from 
 import { checkoutForProjectAnchor } from './utils/git.js';
 import { mcpEntryReader } from './resources/mcp.js';
 import { resolveTeamHookEntries } from './resources/hooks.js';
+import { RESOURCE_LAYOUTS } from './resources/resolver.js';
 import { envEntryReader } from './resources/env.js';
 import { envListing } from './env-listing.js';
 import { resolveTeamEnv } from './env-resolution.js';
@@ -33,6 +34,8 @@ import {
   describeEntryFailure, describeOrigin, describeOrigins, reportUndeliveredEntryNotices, resolveEntriesFor,
   type EntryResolution, type EntryType,
 } from './namespaced-entries.js';
+
+const SUITE_FILES: ReadonlySet<string> = new Set([RESOURCE_LAYOUTS.benchmarks.marker, ...RESOURCE_LAYOUTS.benchmarks.markerAliases]);
 
 export interface ListOptions extends GlobalOptions {
   /** Where to look for resources: 'repo' (default for backwards compat),
@@ -157,8 +160,8 @@ export async function status(options: GlobalOptions): Promise<void> {
     try {
       counts[type] = (await getHandler(type).scanTeamForPull(teamConfig, localConfig))
         .filter((item) => type !== 'scorers' || path.posix.basename(item.relativePath) !== SCORING_FILE)
-        // A suite is its directory: count its suite.yaml, not its task files.
-        .filter((item) => type !== 'benchmarks' || path.posix.basename(item.relativePath) === 'suite.yaml').length;
+        // A suite is its directory: count its SUITE.yaml or suite.yaml, not its task files.
+        .filter((item) => type !== 'benchmarks' || SUITE_FILES.has(path.posix.basename(item.relativePath))).length;
     } catch {
       counts[type] = 0;
     }

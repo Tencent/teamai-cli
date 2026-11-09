@@ -293,6 +293,16 @@ describe('teamai list / status resource coverage', () => {
     expect(lines.filter((line) => line.startsWith('  scorers: '))).toEqual(['  scorers: 2', '  scorers: 2 (quality, tests)']);
   });
 
+  it('status counts a suite as one, whether it is written as SUITE.yaml or suite.yaml', async () => {
+    await fse.outputFile(path.join(repoPath, 'benchmarks', 'fix', 'SUITE.yaml'), 'name: fix\n');
+    await fse.outputFile(path.join(repoPath, 'benchmarks', 'fix', 'tasks', 'one.yaml'), 'title: One\n');
+    await fse.outputFile(path.join(repoPath, 'benchmarks', 'lint', 'suite.yaml'), 'name: lint\n');
+
+    await status({});
+
+    expect(lines).toContain('  benchmarks: 2');
+  });
+
   it('status counts nested rule files', async () => {
     await fse.ensureDir(path.join(repoPath, 'rules', 'common'));
     await fse.writeFile(path.join(repoPath, 'rules', 'common', 'example.md'), '# Rule\n');

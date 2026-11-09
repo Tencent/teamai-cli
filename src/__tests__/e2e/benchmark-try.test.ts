@@ -27,7 +27,7 @@ const STARTUP_TEST = "require('node:assert').strictEqual(require('../answer.js')
 const OTHER_CASE = "require('node:assert').ok(true);\n";
 
 /** A project checkout whose history holds the starting commit and each kind of fix a task can name, and a team repo checkout beside it. */
-function fixture(suiteLines = '') {
+function fixture(suiteLines = '', suiteFile = 'suite.yaml') {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-try-')));
   roots.push(root);
   const home = path.join(root, 'home');
@@ -64,7 +64,7 @@ function fixture(suiteLines = '') {
   };
   const suiteDir = path.join(team, 'benchmarks', 'fix');
   fs.mkdirSync(path.join(suiteDir, 'tasks'), { recursive: true });
-  fs.writeFileSync(path.join(suiteDir, 'suite.yaml'), `schemaVersion: v1alpha1
+  fs.writeFileSync(path.join(suiteDir, suiteFile), `schemaVersion: v1alpha1
 name: fix
 repo: https://github.com/fixture/app.git
 defaults:
@@ -201,6 +201,27 @@ describe('benchmark try', () => {
     expect(result.code, said(result)).toBe(0);
     expect(message(result)).toContain(`passes at the solution ${short(solution)}`);
     expect(has(solution)).toBe(false);
+  }, 60_000);
+
+  it('reads a suite written as SUITE.yaml, and names that file in its diagnostics', async () => {
+    const { commits, tryTask } = fixture('repetitions: 0\n', 'SUITE.yaml');
+
+    const result = await tryTask('fix', task({ start: commits.start, solution: commits.fix }));
+
+    expect(result.code, said(result)).toBe(1);
+    expect(message(result)).toContain('../team/benchmarks/fix/SUITE.yaml');
+  }, 60_000);
+
+  it('refuses a suite directory holding both SUITE.yaml and suite.yaml, and names both', async (ctx) => {
+    const { commits, suiteDir, tryTask } = fixture('', 'SUITE.yaml');
+
+    if (fs.existsSync(path.join(suiteDir, 'suite.yaml'))) ctx.skip();
+    fs.copyFileSync(path.join(suiteDir, 'SUITE.yaml'), path.join(suiteDir, 'suite.yaml'));
+
+    const result = await tryTask('fix', task({ start: commits.start, solution: commits.fix }));
+
+    expect(result.code, said(result)).toBe(1);
+    expect(message(result)).toContain('../team/benchmarks/fix/ holds SUITE.yaml and suite.yaml, two spellings of one file; keep only SUITE.yaml.');
   }, 60_000);
 
   it('validates the task file as pull does', async () => {

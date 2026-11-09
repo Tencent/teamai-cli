@@ -49,7 +49,7 @@ function withRunDir(value: JsonValue, dir: string): JsonValue {
 }
 
 /**
- * A benchmark suite as files: `benchmarks/<name>/suite.yaml` and `tasks/<task>.yaml`, where `{{startingCommit}}` in a
+ * A benchmark suite as files: `benchmarks/<name>/SUITE.yaml` and `tasks/<task>.yaml`, where `{{startingCommit}}` in a
  * task stands for the commit the runner's project starts at. The interpreter never touches the disk.
  */
 export interface BenchmarkSuiteFiles {
