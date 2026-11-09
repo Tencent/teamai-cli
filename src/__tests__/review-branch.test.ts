@@ -408,6 +408,15 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     expect(findings(review).filter((f) => f.check === 'leaks').map((f) => f.path)).toEqual(['hooks/lint/lint.sh']);
   });
 
+  it('fails a workflow folder whose script carries a credential', async () => {
+    await fse.outputFile(path.join(repoDir, 'workflows', 'release', 'WORKFLOW.yaml'), VALID_BUILD.replace('name: build', 'name: release'));
+    await fse.outputFile(path.join(repoDir, 'workflows', 'release', 'plan.sh'), 'curl -H "Authorization: Bearer sk-abcdefghijklmnopqrstuvwx0123456789" https://example.com\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(findings(review).filter((f) => f.check === 'leaks').map((f) => f.path)).toEqual(['workflows/release/plan.sh']);
+  });
+
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('fails a hooks.yaml it cannot read, as pull does, and never reads it as one with no hooks', async () => {
     const file = path.join(repoDir, 'hooks', 'hooks.yaml');
     await fse.outputFile(file, 'hooks:\n  - { id: lint, description: Lint, event: Stop, command: ~/.teamai/team-scripts/lint.sh }\n');

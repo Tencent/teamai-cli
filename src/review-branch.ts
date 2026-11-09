@@ -271,6 +271,13 @@ function isRuleFolder(resource: Pick<ReviewResource, 'type' | 'relativePath'>): 
   return resource.type === 'rules' && path.posix.basename(resource.relativePath) === RESOURCE_LAYOUTS.rules.marker;
 }
 
+/** Whether `resource` is a workflow folder's `WORKFLOW.yaml`, whose folder's other files are its own. */
+function isWorkflowFolder(resource: Pick<ReviewResource, 'type' | 'relativePath'>): boolean {
+  const { workflows } = RESOURCE_LAYOUTS;
+
+  return resource.type === 'workflows' && markerFolderOf(workflows, resource.relativePath.slice(`${workflows.dir}/`.length)) !== undefined;
+}
+
 /** Enumerate the resources on the branch through the same scanners pull uses. */
 async function scanResources(repoDir: string, index: ManifestIndex): Promise<ReviewResource[]> {
   // SAFETY: the skills, rules, agents and mcp pull scanners read only repo.localPath from LocalConfig.
@@ -854,7 +861,7 @@ async function leakFindings(repoDir: string, resources: ReviewResource[], readTe
     ...(await Promise.all(resources.map((resource) => {
       if (resource.folder) return filesUnder(resource.relativePath, resource.absolutePath);
 
-      return isRuleFolder(resource)
+      return isRuleFolder(resource) || isWorkflowFolder(resource)
         ? filesUnder(path.posix.dirname(resource.relativePath), path.dirname(resource.absolutePath))
         : [{ relativePath: resource.relativePath, absolutePath: resource.absolutePath }];
     }))).flat(),
