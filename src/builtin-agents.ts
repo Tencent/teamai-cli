@@ -244,8 +244,9 @@ export async function deployBuiltinAgents(
     return 0;
   }
 
+  // teamai's agents by name: the directory also holds its README files, which are no agents.
   const agentFiles = entries
-    .filter((f) => f.endsWith('.md') && !f.startsWith('.'))
+    .filter((f) => f.endsWith('.md') && BUILTIN_AGENT_NAMES.has(path.basename(f, '.md')))
     .filter((f) => !(options?.skipRecall && f === 'teamai-recall.md'));
 
   const replaced = await builtinAgentsReplacedByTeam(teamConfig, localConfig);

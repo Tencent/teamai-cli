@@ -110,6 +110,18 @@ describe('deployBuiltinAgents', () => {
     expect(await fse.pathExists(path.join(homeDir, '.cursor/agents/teamai-recall.md'))).toBe(false);
   });
 
+  it('deploys only teamai\'s agents from the package directory, never its README files', async () => {
+    const toolsMissingAgents = new Set<string>();
+    await deployBuiltinAgents(recallOn({ claude: { agents: '.claude/agents' } }), localConfig, { toolsMissingAgents });
+
+    expect([
+      fs.existsSync(path.join(builtinAgentsDir, 'README.md')),
+      (await fse.readdir(path.join(homeDir, '.claude', 'agents'))).sort(),
+      [...toolsMissingAgents],
+      vi.mocked(log.warn).mock.calls.map(([message]) => String(message)),
+    ]).toEqual([true, ['teamai-recall.md'], [], []]);
+  });
+
   it('overwrites stale local copies with the CLI-built-in version', async () => {
     const recallSrc = path.join(builtinAgentsDir, 'teamai-recall.md');
     if (!fs.existsSync(recallSrc)) return; // Same skip guard
