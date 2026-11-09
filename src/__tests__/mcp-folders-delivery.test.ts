@@ -131,17 +131,18 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
     expect([await start('app'), await start('app-wt')]).toEqual(['v2', 'v1']);
   });
 
-  it('keeps one entry naming the same path when the folder changes, and that path holds the new version', async () => {
+  it('moves the entry to a new version when only a file of the folder changes, and removes the earlier one', async () => {
     await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER, 'mcp/jira-lite/server.mjs': 'console.log("v1")\n' });
     await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
-    const before = await claudeServer('app', 'jira-lite');
+    const before = await serverDir(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp'), 'jira-lite');
 
     await write('team', { 'mcp/jira-lite/server.mjs': 'console.log("v2")\n' });
     await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
 
     const dest = await serverDir(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp'), 'jira-lite');
 
-    expect([await claudeServer('app', 'jira-lite'), await fse.readFile(path.join(dest, 'server.mjs'), 'utf8')]).toEqual([before, 'console.log("v2")\n']);
+    expect([dest === before, startedFile(await claudeServer('app', 'jira-lite')), await fse.readFile(path.join(dest, 'server.mjs'), 'utf8')])
+      .toEqual([false, `${rendered(dest)}/server.mjs`, 'console.log("v2")\n']);
   });
 
   it('is removed, with its entry, once the team repo drops it', async () => {
@@ -187,6 +188,19 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
     const server = await claudeServer('app', 'jira-lite') as { command: string; args: string[] };
 
     expect(execFileSync(server.command, server.args, { encoding: 'utf8' }).trim()).toBe('--v1');
+  });
+
+  it('keeps starting the version a tool the member excluded installed while the team changes a team value its arguments take, and the file, but not MCP.yaml', async () => {
+    const takes = (version: string): string => `if (process.argv[2] !== "${version}") process.exit(2); console.log("${version}")\n`;
+    const server = SERVER.replace('server.mjs"', 'server.mjs", "${SERVER_VERSION}"');
+    await write('team', { 'env/env.yaml': 'variables:\n  - key: SERVER_VERSION\n    value: v1\n', 'mcp/jira-lite/MCP.yaml': server, 'mcp/jira-lite/server.mjs': takes('v1') });
+    await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
+
+    await write('team', { 'env/env.yaml': 'variables:\n  - key: SERVER_VERSION\n    value: v2\n', 'mcp/jira-lite/server.mjs': takes('v2') });
+    await reconcileMcpForConfig(teamConfig(), { ...workspace('team', 'app'), disabledAgents: ['claude', 'tclaude'] });
+    const installed = await claudeServer('app', 'jira-lite') as { command: string; args: string[] };
+
+    expect([installed.args.at(-1), execFileSync(installed.command, installed.args, { encoding: 'utf8' }).trim()]).toEqual(['v1', 'v1']);
   });
 
   it('keeps the folder of a server the team drops while the file keeps an entry of that name teamai cannot prove its own', async () => {

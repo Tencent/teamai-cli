@@ -661,7 +661,10 @@ async function judgeUnrecordedTeamEntries(
           : commands.includes(record.command));
 
       if (owned) continue;
-      let matches = (await loadRenders()).filter((r) => r.event === event && isDeepStrictEqual(r.entry, entry));
+      // A hook folder's earlier revision renders its folder at any version (#1787).
+      const anyVersion = (value: JsonValue): JsonValue => mapStrings(value, DeliveredFolders.withoutVersions);
+      const sameAnyVersion = (rendered: JsonValue, installed: JsonValue): boolean => isDeepStrictEqual(anyVersion(rendered), anyVersion(installed));
+      let matches = (await loadRenders()).filter((r) => r.event === event && sameAnyVersion(r.entry, entry));
       // A held entry installed before a child was set up carries that day's gate (#913): with only
       // this workspace's gate rendered for today's children, it equals the render of the one held
       // hook it is. It is adopted as installed; the held pass then gates it again.
@@ -671,7 +674,7 @@ async function judgeUnrecordedTeamEntries(
         const root = opts.teamHookProjectRoot;
         const childRoots = opts.teamHookChildRoots ?? [];
         const regated = mapStrings(entry, (value) => regateTeamHookCommand(value, root, childRoots) ?? value);
-        const candidates = (await loadRenders()).filter((r) => r.event === event && isDeepStrictEqual(r.entry, regated));
+        const candidates = (await loadRenders()).filter((r) => r.event === event && sameAnyVersion(r.entry, regated));
         const candidateIds = new Set(candidates.map((r) => r.def.key));
 
         if (candidateIds.size === 1 && held.has(candidates[0].def.key)) {
@@ -686,7 +689,9 @@ async function judgeUnrecordedTeamEntries(
 
       if (ids.length === 1) {
         const { def } = matches[0];
-        const adopted: ManagedHookRecord = { id: ids[0], event: def.event, command: installedCommand?.(def) ?? def.command };
+        // The command as installed: a folder's version is the entry's, not the render's.
+        const asInstalled = commands.find((installed) => DeliveredFolders.withoutVersions(installed) === DeliveredFolders.withoutVersions(def.command)) ?? def.command;
+        const adopted: ManagedHookRecord = { id: ids[0], event: def.event, command: installedCommand?.(def) ?? asInstalled };
 
         if (def.matcher && def.matcher !== '*') adopted.matcher = def.matcher;
 

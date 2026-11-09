@@ -15,8 +15,8 @@ import { LayeredEntries, type LayeredEntryType, type PlaceFolderRead } from '../
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { DeliveredFolders } from '../resources/delivered-folders.js';
 import { FolderFiles } from '../resources/folder-files.js';
-import { TEAM_HOOKS, TEAM_HOOK_ENTRIES, hookFolderPath, readDefaultHookReplacements, readHookFolder, teamScriptRefusal, type TeamHookDefinition } from '../resources/hooks.js';
-import { TEAM_MCP, TEAM_MCP_ENTRIES, mcpFolderPath, readMcpFolder, type TeamMcpDefinition } from '../resources/mcp.js';
+import { TEAM_HOOKS, TEAM_HOOK_ENTRIES, hookFolderPath, readDefaultHookReplacements, readHookFolder, teamScriptRefusal, type TeamHookDefinition, type TeamHookFolder } from '../resources/hooks.js';
+import { TEAM_MCP, TEAM_MCP_ENTRIES, mcpFolderPath, readMcpFolder, type TeamMcpDefinition, type TeamMcpFolder } from '../resources/mcp.js';
 import { teamMcpRefusal } from '../mcp-reconcile.js';
 import { RESOURCE_LAYOUTS, Resources, type LayeredItem, type ListedResolution, type ResourceLayout } from '../resources/resolver.js';
 import { RuleFolders } from '../resources/rule-folders.js';
@@ -238,17 +238,17 @@ async function workflowFolder(config: LocalConfig, full: string): Promise<Resour
   };
 }
 
-/** A type whose items are entries of an entry-list file or folders, resolved for delivery as `entries`, and how its folders are checked. */
-interface EntryType<TEntry, TDefinition> {
+/** A type whose items are entries of an entry-list file or folders (`TFolder`), resolved for delivery as `entries`, and how its folders are checked. */
+interface EntryType<TEntry, TDefinition, TFolder extends TDefinition> {
   readonly type: 'hooks' | 'mcp';
   readonly layout: ResourceLayout<TEntry>;
   readonly entries: LayeredEntryType<TEntry, TDefinition>;
   /** The folder at `full` read as pull reads it, for the definition named `name`, or why pull cannot use it. */
-  readonly readFolder: (full: string, folderPath: string, name: string) => Promise<PlaceFolderRead<TDefinition>>;
+  readonly readFolder: (full: string, folderPath: string, name: string) => Promise<PlaceFolderRead<TFolder>>;
   /** Where pull delivers the valid folder of `definition`, named `name` in `namespace`. */
-  readonly deliveredAt: (config: LocalConfig, definition: TDefinition, place: { readonly namespace: string | null; readonly name: string }) => string;
+  readonly deliveredAt: (config: LocalConfig, definition: TFolder, place: { readonly namespace: string | null; readonly name: string }) => string;
   /** What a tool runs from a valid folder delivered at `dest`. */
-  readonly runs: (definition: TDefinition, dest: string) => NonNullable<ResourceFolder['runs']>;
+  readonly runs: (definition: TFolder, dest: string) => NonNullable<ResourceFolder['runs']>;
   /** Definitions another list shows: the team's folders that replace teamai's default hooks, at the root. */
   readonly listedElsewhere: (item: Found) => boolean;
   /** Why the team's policy keeps a definition pull resolves out of every tool, as pull reads it, or null. */
@@ -257,24 +257,24 @@ interface EntryType<TEntry, TDefinition> {
   readonly deliversRefused: boolean;
 }
 
-const HOOKS: EntryType<unknown, TeamHookDefinition> = {
+const HOOKS: EntryType<unknown, TeamHookDefinition, TeamHookFolder> = {
   type: 'hooks',
   layout: TEAM_HOOKS,
   entries: TEAM_HOOK_ENTRIES,
   readFolder: readHookFolder,
-  deliveredAt: (config, definition, { namespace }) => hookFolderPath(config, definition.hook, namespace),
+  deliveredAt: (config, definition, { namespace }) => hookFolderPath(config, definition, namespace),
   runs: (definition, dest) => ({ command: DeliveredFolders.render(definition.hook.command, { type: 'hooks', dest }), args: [], env: [] }),
   listedElsewhere: (item) => item.layer === 'root' && item.source.kind === 'folder' && DefaultHooks.isName(item.name),
   refusal: teamScriptRefusal,
   deliversRefused: false,
 };
 
-const MCP: EntryType<unknown, TeamMcpDefinition> = {
+const MCP: EntryType<unknown, TeamMcpDefinition, TeamMcpFolder> = {
   type: 'mcp',
   layout: TEAM_MCP,
   entries: TEAM_MCP_ENTRIES,
   readFolder: readMcpFolder,
-  deliveredAt: (config, definition, { namespace }) => mcpFolderPath(config, definition.server, namespace),
+  deliveredAt: (config, definition, { namespace }) => mcpFolderPath(config, definition, namespace),
   runs: ({ server }, dest) => {
     const render = (text: string): string => DeliveredFolders.render(text, { type: 'mcp', dest });
 
@@ -305,7 +305,7 @@ function failurePaths(failure: EntryFailure): string[] {
  * and pull's resolution says which apply. A problem anywhere stops the whole type for the run, as pull does, which
  * keeps what is installed: the other definitions are `blocked`.
  */
-async function entryList<TEntry, TDefinition>(config: LocalConfig, teamConfig: TeamaiConfig, spec: EntryType<TEntry, TDefinition>): Promise<LayeredResourceList> {
+async function entryList<TEntry, TDefinition, TFolder extends TDefinition>(config: LocalConfig, teamConfig: TeamaiConfig, spec: EntryType<TEntry, TDefinition, TFolder>): Promise<LayeredResourceList> {
   const layout = entryLayout(spec.type);
   const resolution = await LayeredEntries.resolve(spec.entries, config);
   const namespaces = resolution.kind === 'resolved' ? { ok: true as const, active: resolution.active } : await activeEntryNamespaces(config, layout);

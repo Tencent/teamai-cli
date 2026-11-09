@@ -10,6 +10,7 @@ vi.mock('../utils/logger.js', async (importOriginal) => ({
 
 import { collectLayeredResources, type DefaultHookResource, type LayeredResourceList, type LayeredResourceType } from '../dashboard/layered-resources.js';
 import { TeamaiConfigSchema, type LocalConfig, type TeamaiConfig } from '../types.js';
+import { folderVersion } from './helpers/folder-version.js';
 
 // The Resources page answers, per type, which definition of each name applies to this member, from which layer, and
 // what is wrong with the others, as pull reads them (#1787).
@@ -188,9 +189,8 @@ describe('hooks on the Resources page', () => {
       ['lint', 'root', 'entry', 'hooks/hooks.yaml', 'replaced', null],
     ]);
     expect([blockSecrets?.folder?.runs, blockSecrets?.folder?.delivered]).toEqual([
-      // A hook folder is `<id>.<first 8 hex digits of the SHA-256 of the hook as canonical JSON>`: every HOOK.yaml key, plus `id`.
-      { command: `bash "${rendered(path.join(dataHome, 'hooks', 'block-secrets.29cce02d'))}/scan.sh"`, args: [], env: [] },
-      { path: path.join(dataHome, 'hooks', 'block-secrets.29cce02d'), present: false, by: 'pull' },
+      { command: `bash "${rendered(path.join(dataHome, 'hooks', `block-secrets.${folderVersion(path.join(repo, 'hooks', 'block-secrets'))}`))}/scan.sh"`, args: [], env: [] },
+      { path: path.join(dataHome, 'hooks', `block-secrets.${folderVersion(path.join(repo, 'hooks', 'block-secrets'))}`), present: false, by: 'pull' },
     ]);
   });
 
@@ -247,7 +247,7 @@ describe('MCP servers on the Resources page', () => {
 
     expect([jira?.state.kind, jira?.folder?.runs]).toEqual(['in-force', {
       command: 'uv',
-      args: ['run', '--script', `${rendered(path.join(dataHome, 'mcp', 'jira-lite.abaacf13'))}/server.py`],
+      args: ['run', '--script', `${rendered(path.join(dataHome, 'mcp', `jira-lite.${folderVersion(path.join(repo, 'mcp', 'jira-lite'))}`))}/server.py`],
       env: ['JIRA_TOKEN', 'JIRA_URL'],
     }]);
     expect(JSON.stringify(await collectLayeredResources(member(), teamConfig))).not.toContain('jira.example.test');
@@ -261,7 +261,7 @@ describe('MCP servers on the Resources page', () => {
 
     // Pull still delivers the folder of every server it resolves; no tool's configuration names this one.
     expect(list?.resources.map((resource) => [resource.name, resource.state, resource.folder?.delivered?.path ?? null])).toEqual([
-      ['jira-lite', { kind: 'refused', message: 'command "node" is not in sharing.mcp.allowedCommands' }, path.join(dataHome, 'mcp', 'jira-lite.97dda340')],
+      ['jira-lite', { kind: 'refused', message: 'command "node" is not in sharing.mcp.allowedCommands' }, path.join(dataHome, 'mcp', `jira-lite.${folderVersion(path.join(repo, 'mcp', 'jira-lite'))}`)],
     ]);
   });
 });

@@ -114,8 +114,10 @@ const FolderMcpFields = TeamMcpServerFields.omit({ name: true, roles: true, proj
 /** A team MCP server as the team repo defines it. */
 export type TeamMcpDefinition =
   | { readonly kind: 'entry'; readonly server: TeamMcpServer }
-  /** A folder: its `MCP.yaml`, with the directory's name as name, and every file it holds, `MCP.yaml` included. */
-  | { readonly kind: 'folder'; readonly server: TeamMcpServer; readonly files: readonly FolderFile[] };
+  | TeamMcpFolder;
+
+/** A team MCP server folder: its `MCP.yaml`, with the directory's name as name, and every file it holds, `MCP.yaml` included. */
+export type TeamMcpFolder = { readonly kind: 'folder'; readonly server: TeamMcpServer; readonly files: readonly FolderFile[] };
 
 /** One server of an MCP file, with the keys it was written with that the schema does not know. */
 interface McpFileEntry {
@@ -158,7 +160,7 @@ export const TEAM_MCP: ResourceLayout<McpFileEntry> = {
 };
 
 /** Read the server folder at `full` (`folderPath` from the team root, ending in `/`), named `name`. */
-export async function readMcpFolder(full: string, folderPath: string, name: string): Promise<PlaceFolderRead<TeamMcpDefinition>> {
+export async function readMcpFolder(full: string, folderPath: string, name: string): Promise<PlaceFolderRead<TeamMcpFolder>> {
   const read = await readMarkerFolder({ full, path: folderPath }, RESOURCE_LAYOUTS.mcp.marker, FolderMcpFields);
   const markerPath = `${folderPath}${RESOURCE_LAYOUTS.mcp.marker}`;
 
@@ -206,12 +208,13 @@ export const TEAM_MCP_ENTRIES: LayeredEntryType<McpFileEntry, TeamMcpDefinition>
 };
 
 /**
- * Where `localConfig`'s scope delivers the folder of `server`, in `namespace`: `mcp/[<ns>/]<name>.<version>/`, one
- * directory per definition its `MCP.yaml` gives (#1787). Each tool's configuration starts the files of the definition it
- * holds: one the member excluded, or one pull could not rewrite, keeps its own, while the others start the new ones.
+ * Where `localConfig`'s scope delivers the server folder `folder`, in `namespace`: `mcp/[<ns>/]<name>.<version>/`, one
+ * directory per version of its files, `MCP.yaml` among them (#1787). Each tool's configuration starts the files it was
+ * written with: one the member excluded, or one pull could not rewrite, keeps its own, while the others start the new
+ * ones.
  */
-export function mcpFolderPath(localConfig: LocalConfig, server: TeamMcpServer, namespace: string | null): string {
-  return DeliveredFolders.versionedPathOf(localConfig, { type: 'mcp', namespace, name: server.name }, server);
+export function mcpFolderPath(localConfig: LocalConfig, folder: TeamMcpFolder, namespace: string | null): string {
+  return DeliveredFolders.versionedPathOf(localConfig, { type: 'mcp', namespace, name: folder.server.name }, folder.files);
 }
 
 /**
@@ -221,7 +224,7 @@ export function mcpFolderPath(localConfig: LocalConfig, server: TeamMcpServer, n
 export function teamMcpDef(localConfig: LocalConfig, resolved: ResolvedEntry<TeamMcpDefinition>): McpServerDef {
   const def = teamMcpToDef(resolved.entry.server);
 
-  return resolved.entry.kind === 'entry' ? def : folderServerDef(def, mcpFolderPath(localConfig, resolved.entry.server, resolved.namespace));
+  return resolved.entry.kind === 'entry' ? def : folderServerDef(def, mcpFolderPath(localConfig, resolved.entry, resolved.namespace));
 }
 
 /** A folder server's `def` with `${TEAMAI_MCP_DIR}` in its `command`, `args` and `env` naming `dest`. */
@@ -256,14 +259,15 @@ export function historicalFolderMcpServer(localConfig: LocalConfig, relativePath
   if (!parsed.ok || parsed.fields.transport !== 'stdio' || !parsed.fields.command) return null;
   const server: TeamMcpServer = { ...parsed.fields, name };
 
-  return { server, def: folderServerDef(teamMcpToDef(server), mcpFolderPath(localConfig, server, namespace)) };
+  // The files of that revision are not read: its entries are compared with the version left out (`withoutVersions`).
+  return { server, def: folderServerDef(teamMcpToDef(server), DeliveredFolders.anyVersionPathOf(localConfig, { type: 'mcp', namespace, name })) };
 }
 
 /** The folders of the resolved servers `entries` that are folders. */
 function mcpFolders(localConfig: LocalConfig, entries: ReadonlyArray<ResolvedEntry<TeamMcpDefinition>>): FolderDelivery[] {
   return entries.flatMap((resolved) => (resolved.entry.kind === 'folder'
-    // A version's folder holds only its files: a configuration that starts another definition's files starts another folder.
-    ? [{ dest: mcpFolderPath(localConfig, resolved.entry.server, resolved.namespace), files: resolved.entry.files, earlierFiles: 'drop' as const }]
+    // A version's folder holds only its files: a configuration written for other files starts another folder.
+    ? [{ dest: mcpFolderPath(localConfig, resolved.entry, resolved.namespace), files: resolved.entry.files, earlierFiles: 'drop' as const }]
     : []));
 }
 

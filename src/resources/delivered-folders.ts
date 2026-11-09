@@ -11,8 +11,8 @@
  *   workspace, single-repo's hooks   → <worktree>/.teamai/delivered/hooks/[<ns>/]<name>/  (each checkout keeps its own)
  *
  * A rule folder's path stays the same across versions, so the text rendered from it does too. A hook or MCP server
- * folder sits at `<name>.<version>/` (`versionedPathOf`), one per definition, so each configuration runs the files of
- * the definition it was written for. A new version is written to a hidden sibling and renamed into place. Each file is
+ * folder sits at `<name>.<version>/` (`versionedPathOf`), one per set of files, so each configuration runs the files
+ * it was written with. A new version is written to a hidden sibling and renamed into place. Each file is
  * recorded in the delivery ledger, and a folder goes through `removeDelivered` once the team drops it and no
  * configuration left names it (`namedIn`).
  */
@@ -24,8 +24,6 @@ import { FolderFiles, type FolderFile } from './folder-files.js';
 import { FOLDER_MARKERS } from '../folder-markers.js';
 import { getDataHome, isSelfMode, type LocalConfig } from '../types.js';
 import { canonicalJson } from '../utils/canonical-json.js';
-import type { TeamHook } from './hooks.js';
-import type { TeamMcpServer } from './mcp.js';
 import { errnoCode, pathExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 
@@ -74,15 +72,36 @@ function pathOf(localConfig: LocalConfig, ref: DeliveredFolderRef): string {
 }
 
 /**
- * Where `ref` is delivered at the version `definition` gives: `[<namespace>/]<name>.<version>/`, `<version>` being the
- * first 8 hex digits of the SHA-256 of `definition` as canonical JSON. For a folder whose definition says how a tool
- * runs it (a hook's `HOOK.yaml`, a server's `MCP.yaml`): a tool whose configuration pull could not rewrite, or one the
- * member excluded, keeps running the files of the definition it holds, while the others run the new ones.
+ * Where `ref` is delivered at the version its `files` give: `[<namespace>/]<name>.<version>/`, `<version>` being the
+ * first 8 hex digits of the SHA-256 of the files as canonical JSON (each file's path, whether it is executable, and
+ * the SHA-256 of its bytes; the marker, so the definition, among them). A version's files never change, so a
+ * configuration pull could not rewrite, or one of a tool the member excluded, keeps running the files it was written
+ * with, whatever the team changes: the marker, a script, or a team value the configuration holds resolved.
  */
-function versionedPathOf(localConfig: LocalConfig, ref: DeliveredFolderRef, definition: TeamHook | TeamMcpServer): string {
-  const version = createHash('sha256').update(canonicalJson(definition)).digest('hex').slice(0, 8);
+function versionedPathOf(localConfig: LocalConfig, ref: DeliveredFolderRef, files: readonly FolderFile[]): string {
+  const sha256 = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex');
+  const fileIds = files.map((file) => ({ path: file.path, executable: file.executable, sha256: sha256(file.bytes) }));
 
-  return pathOf(localConfig, { ...ref, name: `${ref.name}.${version}` });
+  return pathOf(localConfig, { ...ref, name: `${ref.name}.${sha256(canonicalJson(fileIds)).slice(0, 8)}` });
+}
+
+/** The version a path from `anyVersionPathOf` holds, which `withoutVersions` gives every version. */
+const ANY_VERSION = '.<version>';
+
+/**
+ * Where `ref` is delivered at any version: for a render of a team repo's earlier revision, whose files teamai does not
+ * read, compared with what a tool holds through `withoutVersions`.
+ */
+function anyVersionPathOf(localConfig: LocalConfig, ref: DeliveredFolderRef): string {
+  return pathOf(localConfig, { ...ref, name: `${ref.name}${ANY_VERSION}` });
+}
+
+/**
+ * `text` with the version of every versioned folder it names (`/hooks/block-secrets.e246f037`, `/mcp/notes.3d414c75`)
+ * as `anyVersionPathOf` writes it, so a configuration written for one version equals a render of another.
+ */
+function withoutVersions(text: string): string {
+  return text.replace(/(\/(?:hooks|mcp)\/(?:[\w.-]+\/)*?[\w-]+)\.[0-9a-f]{8}(?![\w.-])/g, `$1${ANY_VERSION}`);
 }
 
 /**
@@ -474,4 +493,4 @@ async function excludeWorktreeFolders(localConfig: LocalConfig, type: DeliveredF
   }
 }
 
-export const DeliveredFolders = { root, worktreeRoot, checkoutRoot, pathOf, versionedPathOf, namedIn, sync, place, deliver, prune, placeholder, mentions, render } as const;
+export const DeliveredFolders = { root, worktreeRoot, checkoutRoot, pathOf, versionedPathOf, anyVersionPathOf, withoutVersions, namedIn, sync, place, deliver, prune, placeholder, mentions, render } as const;

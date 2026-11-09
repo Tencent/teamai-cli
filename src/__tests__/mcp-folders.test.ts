@@ -13,6 +13,7 @@ import { LayeredEntries } from '../resources/layered-entries.js';
 import { deliverMcpFolders, TEAM_MCP_ENTRIES, teamMcpDef } from '../resources/mcp.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import type { LocalConfig } from '../types.js';
+import { folderVersion } from './helpers/folder-version.js';
 
 // A team MCP server written as mcp/<name>/MCP.yaml beside the files it runs (#1787).
 
@@ -74,7 +75,7 @@ describe('an MCP server folder', () => {
       description: 'Read-only Jira lookups for the team',
       transport: 'stdio',
       command: 'uv',
-      args: ['run', '--script', `${rendered(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'jira-lite.1702782c'))}/server.py`],
+      args: ['run', '--script', `${rendered(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', `jira-lite.${folderVersion(path.join(repo, 'mcp', 'jira-lite'))}`))}/server.py`],
       requires: ['uv'],
     }]);
   });
@@ -90,8 +91,7 @@ describe('an MCP server folder', () => {
         '',
       ].join('\n'),
     });
-    // A server folder is `<name>.<first 8 hex digits of the SHA-256 of the server as canonical JSON>`: every MCP.yaml key, plus `name`.
-    const dest = rendered(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'runner.f6e98f9d'));
+    const dest = rendered(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', `runner.${folderVersion(path.join(repo, 'mcp', 'runner'))}`));
 
     expect(await servers(workspace())).toEqual([expect.objectContaining({
       command: `${dest}/bin/run`, args: ['--queries', `${dest}/queries.sql`], env: { DATA: `${dest}/data` }, headers: { 'X-Dir': '${TEAMAI_MCP_DIR}' },

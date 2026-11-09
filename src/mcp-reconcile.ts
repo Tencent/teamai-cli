@@ -66,7 +66,7 @@ import {
   pathExists,
   expandHome,
 } from './utils/fs.js';
-import { isPlainJson, parseJson, parseJsonAs, type JsonSyntax } from './utils/json.js';
+import { isPlainJson, mapStrings, parseJson, parseJsonAs, type JsonSyntax } from './utils/json.js';
 import { log } from './utils/logger.js';
 import { warnOnce } from './utils/warn-once.js';
 import { loadProjectMcpManifest } from './utils/mcp-manifest.js';
@@ -1338,7 +1338,13 @@ function judgeUnrecordedMcpEntry(
 
     if (desired.has(name) && matches(desired.get(name)?.entry)) return 'teamai';
 
-    return (await renders())?.get(name)?.some(matches) ? 'teamai' : 'member';
+    // A folder server's earlier revision renders its folder at any version (#1787).
+    const anyVersion = entry === undefined ? undefined : mapStrings(entry, DeliveredFolders.withoutVersions);
+
+    const matchesEarlier = (rendered: JsonValue) => (recordedHash === undefined || entryHash(rendered) === recordedHash)
+      && isDeepStrictEqual(mapStrings(rendered, DeliveredFolders.withoutVersions), anyVersion);
+
+    return (await renders())?.get(name)?.some(matchesEarlier) ? 'teamai' : 'member';
   };
 }
 

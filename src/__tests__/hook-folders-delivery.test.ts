@@ -93,17 +93,32 @@ describe('a team hook folder in the user scope', () => {
       .toEqual(['echo scanning\n', [expect.stringContaining(`bash "${forward(delivered)}/scan.sh"`)]]);
   });
 
-  it('keeps one entry with the same command when only the folder\'s files change, and runs the new version', async () => {
+  it('moves the entry to a new version when only a script of the folder changes, and removes the earlier one', async () => {
     await write({ 'hooks/block-secrets/HOOK.yaml': BLOCK_SECRETS, 'hooks/block-secrets/scan.sh': 'echo v1\n' });
     await reconcileTeamHooksForConfig(teamConfig, member());
-    const before = await claudeCommands('PreToolUse');
+    const before = await hookDir(path.join(home, '.teamai', 'hooks'), 'block-secrets');
 
     await write({ 'hooks/block-secrets/scan.sh': 'echo v2\n' });
     await reconcileTeamHooksForConfig(teamConfig, member());
 
     const delivered = await hookDir(path.join(home, '.teamai', 'hooks'), 'block-secrets');
 
-    expect([await claudeCommands('PreToolUse'), await fse.readFile(path.join(delivered, 'scan.sh'), 'utf8')]).toEqual([before, 'echo v2\n']);
+    expect([delivered === before, await claudeCommands('PreToolUse'), await fse.readFile(path.join(delivered, 'scan.sh'), 'utf8')])
+      .toEqual([false, [expect.stringContaining(`bash "${forward(delivered)}/scan.sh"`)], 'echo v2\n']);
+  });
+
+  it('keeps running the script a tool installed while its entry cannot be rewritten, when only that script changes', async () => {
+    await write({ 'hooks/block-secrets/HOOK.yaml': BLOCK_SECRETS, 'hooks/block-secrets/scan.sh': 'echo v1\n' });
+    await reconcileTeamHooksForConfig(teamConfig, member());
+    const installed = await claudeCommands('PreToolUse');
+
+    await write({ 'hooks/block-secrets/scan.sh': 'echo v2\n' });
+    const settings = path.join(home, '.claude', 'settings.json');
+    await fse.chmod(settings, 0o444);
+    await reconcileTeamHooksForConfig(teamConfig, member()).finally(() => fse.chmod(settings, 0o644));
+    const script = /bash "([^"]+)"/.exec(installed[0] ?? '')?.[1] ?? '';
+
+    expect([await claudeCommands('PreToolUse'), await fse.readFile(script, 'utf8')]).toEqual([installed, 'echo v1\n']);
   });
 
   it('is removed, with its entry, once the team repo drops it', async () => {
@@ -191,7 +206,7 @@ describe('a team hook folder in a workspace with a team repo, whose Claude Code 
 });
 
 describe('the team hook history', () => {
-  it('holds every committed HOOK.yaml version, named after its directory and rendered with the current scope\'s path', async () => {
+  it('holds every committed HOOK.yaml version, named after its directory and rendered with the current scope\'s path at any version', async () => {
     const git = (...args: string[]): void => {
       execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { stdio: 'ignore' });
     };
@@ -206,10 +221,10 @@ describe('the team hook history', () => {
 
     const dest = forward(path.join(home, '.teamai', 'hooks', 'payments', 'audit'));
     const history = await teamHookHistory(member())();
-    const unversioned = history.map((def) => [def.key, def.command.replace(new RegExp(`audit${VERSION}/`), 'audit.<version>/')]);
 
-    expect([unversioned.sort(), new Set(history.map((def) => def.command.slice(0, -'/v1.sh"'.length))).size])
-      .toEqual([[['audit', `bash "${dest}.<version>/v1.sh"`], ['audit', `bash "${dest}.<version>/v2.sh"`]], 2]);
+    // teamai does not read the files of an earlier revision, so it compares what a tool holds with the version left out.
+    expect(history.map((def) => [def.key, def.command]).sort())
+      .toEqual([['audit', `bash "${dest}.<version>/v1.sh"`], ['audit', `bash "${dest}.<version>/v2.sh"`]]);
   });
 });
 

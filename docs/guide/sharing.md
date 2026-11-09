@@ -327,7 +327,7 @@ command: bash "${TEAMAI_HOOK_DIR}/scan.sh"
 timeout: 15
 ```
 
-Pull copies the folder and puts its path, with forward slashes, in place of `${TEAMAI_HOOK_DIR}`. teamai adds no quotes, so quote the variable as the command needs. The directory name is the hook's id and a version taken from its `HOOK.yaml` (`e246f037` below), so it changes when a key such as `command` or `timeout` does, and stays when only a script changes. A tool whose configuration pull could not rewrite keeps running the files of the version it has, and that directory goes once no entry runs it:
+Pull copies the folder and puts its path, with forward slashes, in place of `${TEAMAI_HOOK_DIR}`. teamai adds no quotes, so quote the variable as the command needs. The directory name is the hook's id and a version taken from the folder's files, `HOOK.yaml` included (`e246f037` below), so it changes whenever a file does, and the files of a version never change. A tool whose configuration pull could not rewrite, or one the member excluded, keeps running the files it was written with, and that directory goes once no entry runs it:
 
 | Where the team is | The folder lands in |
 |---|---|
@@ -531,7 +531,7 @@ requires: [uv]
 # ///
 ```
 
-Pull copies the folder and puts its path, with forward slashes, in place of `${TEAMAI_MCP_DIR}` in `command`, `args` and `env`. teamai adds no quotes. The directory name is the server's name and a version taken from its `MCP.yaml` (`1702782c` below), so it changes when a key such as `args` does, and stays when only a file changes. A tool whose MCP file pull could not rewrite, or one the member excluded, keeps starting the files of the version it has, and that directory goes once no MCP file names it:
+Pull copies the folder and puts its path, with forward slashes, in place of `${TEAMAI_MCP_DIR}` in `command`, `args` and `env`. teamai adds no quotes. The directory name is the server's name and a version taken from the folder's files, `MCP.yaml` included (`1702782c` below), so it changes whenever a file does, and the files of a version never change. A tool whose MCP file pull could not rewrite, or one the member excluded, keeps starting the files it was written with, even when a team value its `args` take changes, and that directory goes once no MCP file names it:
 
 | Where the team is | The folder lands in |
 |---|---|

@@ -12,6 +12,7 @@ vi.mock('../utils/logger.js', () => ({
 import { resolveTeamHooks } from '../resources/hooks.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
+import { folderVersion } from './helpers/folder-version.js';
 
 let sandbox: string;
 let repo: string;
@@ -66,8 +67,7 @@ describe('a team hook folder', () => {
         key: 'block-secrets',
         event: 'PreToolUse',
         matcher: 'Bash',
-        // A hook folder is `<id>.<first 8 hex digits of the SHA-256 of the hook as canonical JSON>`: every HOOK.yaml key, plus `id`.
-        command: `bash "${rendered(path.join(dataHome, 'hooks', 'block-secrets.e246f037'))}/scan.sh"`,
+        command: `bash "${rendered(path.join(dataHome, 'hooks', `block-secrets.${folderVersion(path.join(repo, 'hooks', 'block-secrets'))}`))}/scan.sh"`,
         timeout: 15,
         description: '[teamai:hook:block-secrets] Scan for secrets before a commit',
       }],
@@ -81,7 +81,7 @@ describe('a team hook folder', () => {
     const resolved = await resolveTeamHooks(teamConfig(), member({ dataHome: home }), { silent: true });
     const command = resolved.ok ? resolved.defs[0]?.command : undefined;
 
-    expect([command, command?.includes('\\')]).toEqual([`bash "${rendered(path.join(home, 'hooks', 'block-secrets.e246f037'))}/scan.sh"`, false]);
+    expect([command, command?.includes('\\')]).toEqual([`bash "${rendered(path.join(home, 'hooks', `block-secrets.${folderVersion(path.join(repo, 'hooks', 'block-secrets'))}`))}/scan.sh"`, false]);
   });
 
   it('passes requireTeamScripts when its command names the folder, checked before substitution; other commands keep the old rule', async () => {
@@ -119,7 +119,7 @@ describe('a team hook folder, as pull reports it', () => {
     const resolved = await resolveTeamHooks(teamConfig({ autoApply: false }), member(), { auto: true });
 
     expect([resolved.ok && resolved.defs, infos()])
-      .toEqual([[], expect.stringContaining(`[block-secrets] bash "${rendered(path.join(dataHome, 'hooks', 'block-secrets.e246f037'))}/scan.sh"`)]);
+      .toEqual([[], expect.stringContaining(`[block-secrets] bash "${rendered(path.join(dataHome, 'hooks', `block-secrets.${folderVersion(path.join(repo, 'hooks', 'block-secrets'))}`))}/scan.sh"`)]);
   });
 
   it('with a teamai- name that replaces no teamai default is skipped, with a warning', async () => {

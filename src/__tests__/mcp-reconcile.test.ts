@@ -65,6 +65,7 @@ import { TeamaiConfigSchema, type TeamaiConfig, type LocalConfig } from '../type
 import { readWorkspaceChildren } from '../workspace-children.js';
 import { projectDataHome } from '../utils/partition.js';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
+import { folderVersion } from './helpers/folder-version.js';
 import { installFakeOpencode } from './helpers/fake-opencode.js';
 import { buildPluginSource, OPENCODE_HOOK_FILE, resolveOpencodePluginDir } from '../opencode-hooks.js';
 import YAML from 'yaml';
@@ -4319,15 +4320,15 @@ servers:
       await folderServer('v1.mjs');
       await pull();
       const before = await args();
+      const v1 = folderVersion(path.join(repoPath, 'mcp', 'notes'));
       await removeMcpManifests();
 
       await folderServer('v2.mjs');
       await pull();
 
-      // Each version of the folder is `notes.<first 8 hex digits of the SHA-256 of its MCP.yaml as canonical JSON, plus name>`.
       expect([before, await args(), keptLines()]).toEqual([
-        [`${path.join(projectRoot, '.teamai', 'delivered', 'mcp', 'notes.3d414c75').split(path.sep).join('/')}/v1.mjs`],
-        [`${path.join(projectRoot, '.teamai', 'delivered', 'mcp', 'notes.ea928dea').split(path.sep).join('/')}/v2.mjs`],
+        [`${path.join(projectRoot, '.teamai', 'delivered', 'mcp', `notes.${v1}`).split(path.sep).join('/')}/v1.mjs`],
+        [`${path.join(projectRoot, '.teamai', 'delivered', 'mcp', `notes.${folderVersion(path.join(repoPath, 'mcp', 'notes'))}`).split(path.sep).join('/')}/v2.mjs`],
         [],
       ]);
     });

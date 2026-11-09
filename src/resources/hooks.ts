@@ -64,8 +64,10 @@ const FolderHookSchema = TeamHookSchema.omit({ id: true, roles: true, projects: 
 /** A team hook as the team repo defines it. */
 export type TeamHookDefinition =
   | { readonly kind: 'entry'; readonly hook: TeamHook }
-  /** A folder: its `HOOK.yaml`, with the directory's name as id, and every file it holds, `HOOK.yaml` included. */
-  | { readonly kind: 'folder'; readonly hook: TeamHook; readonly files: readonly FolderFile[] };
+  | TeamHookFolder;
+
+/** A team hook folder: its `HOOK.yaml`, with the directory's name as id, and every file it holds, `HOOK.yaml` included. */
+export type TeamHookFolder = { readonly kind: 'folder'; readonly hook: TeamHook; readonly files: readonly FolderFile[] };
 
 export type HooksYaml = z.infer<typeof HooksYamlSchema>;
 
@@ -159,7 +161,7 @@ export function parseTeamHooks(content: string): TeamHook[] | null {
 }
 
 /** Read the hook folder at `full` (`folderPath` from the team root, ending in `/`), named `id`. */
-export async function readHookFolder(full: string, folderPath: string, id: string): Promise<PlaceFolderRead<TeamHookDefinition>> {
+export async function readHookFolder(full: string, folderPath: string, id: string): Promise<PlaceFolderRead<TeamHookFolder>> {
   const read = await readMarkerFolder({ full, path: folderPath }, RESOURCE_LAYOUTS.hooks.marker, FolderHookSchema);
 
   switch (read.kind) {
@@ -335,18 +337,16 @@ interface TeamHookDelivery {
 }
 
 /**
- * Where `localConfig`'s scope delivers the folder of `hook`, in `namespace`: `hooks/[<ns>/]<id>.<version>/`, one
- * directory per definition its `HOOK.yaml` gives (#1787), its command, timeout and event among them. Each tool's entry
- * runs the files delivered for the definition it holds: a tool whose entry pull could not rewrite keeps the files of
- * its own, while the others run the new ones.
+ * Where `localConfig`'s scope delivers the hook folder `folder`, in `namespace`: `hooks/[<ns>/]<id>.<version>/`, one
+ * directory per version of its files, `HOOK.yaml` among them (#1787). Each tool's entry runs the files it was written
+ * with: a tool whose entry pull could not rewrite keeps its own, while the others run the new ones.
  */
-export function hookFolderPath(localConfig: LocalConfig, hook: TeamHook, namespace: string | null): string {
-  return DeliveredFolders.versionedPathOf(localConfig, { type: 'hooks', namespace, name: hook.id }, hook);
+export function hookFolderPath(localConfig: LocalConfig, folder: TeamHookFolder, namespace: string | null): string {
+  return DeliveredFolders.versionedPathOf(localConfig, { type: 'hooks', namespace, name: folder.hook.id }, folder.files);
 }
 
-/** The hook folder `hook`, in `namespace`, as `localConfig`'s scope delivers it: its command names the folder's path (#1787). */
-function folderHookDef(localConfig: LocalConfig, hook: TeamHook, namespace: string | null): HookDef {
-  const dest = hookFolderPath(localConfig, hook, namespace);
+/** The hook folder `hook`, delivered at `dest` in `localConfig`'s scope: its command names that path (#1787). */
+function folderHookDef(localConfig: LocalConfig, hook: TeamHook, dest: string): HookDef {
   const projectRoot = isSelfMode(localConfig) ? localConfig.projectRoot ?? null : null;
 
   return {
@@ -361,9 +361,9 @@ function teamHookDelivery(localConfig: LocalConfig, resolved: ResolvedEntry<Team
   const definition = resolved.entry;
 
   if (definition.kind === 'entry') return { def: teamHookToDef(definition.hook), folder: null };
-  const def = folderHookDef(localConfig, definition.hook, resolved.namespace);
+  const def = folderHookDef(localConfig, definition.hook, hookFolderPath(localConfig, definition, resolved.namespace));
 
-  // A version's folder holds only its files: an entry that runs the files of another command runs another folder.
+  // A version's folder holds only its files: an entry written for other files runs another folder.
   return { def, folder: def.folder ? { dest: def.folder.dest, files: definition.files, earlierFiles: 'drop' } : null };
 }
 
@@ -384,7 +384,8 @@ export function historicalFolderHookDef(localConfig: LocalConfig, relativePath: 
   if (!RESOURCE_LAYOUTS.hooks.nameRule.pattern.test(id)) return null;
   const parsed = parseMarker(content, relativePath, FolderHookSchema);
 
-  return parsed.ok ? folderHookDef(localConfig, { ...parsed.fields, id }, namespace) : null;
+  // The files of that revision are not read: its entries are compared with the version left out (`withoutVersions`).
+  return parsed.ok ? folderHookDef(localConfig, { ...parsed.fields, id }, DeliveredFolders.anyVersionPathOf(localConfig, { type: 'hooks', namespace, name: id })) : null;
 }
 
 /**
