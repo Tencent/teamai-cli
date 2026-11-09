@@ -183,10 +183,18 @@ function render(text: string, at: { readonly type: DeliveredFolderType; readonly
   return text.split(placeholder(at.type)).join(value);
 }
 
+/** What names one file or directory on disk, however a case-insensitive file system spells its path; null when absent. */
+async function identity(file: string): Promise<string | null> {
+  const stat = await fs.stat(file, { bigint: true }).catch(() => null);
+
+  return stat === null ? null : `${stat.dev}:${stat.ino}`;
+}
+
 /**
  * Remove every folder of `type` in `localConfig`'s scope that is not in `keep` (absolute delivered paths), with an
  * emptied namespace directory, through `removeDelivered`. Hidden entries are left: a delivery in progress writes one.
- * Returns what it removed.
+ * A kept folder is recognised by what it is on disk, not by its spelling: after the team renames `mcp/Jira/` to
+ * `mcp/jira/`, macOS and Windows deliver `jira` into the `Jira` directory already there. Returns what it removed.
  */
 async function prune(input: {
   readonly localConfig: LocalConfig;
@@ -197,18 +205,33 @@ async function prune(input: {
   readonly root?: string;
 }): Promise<string[]> {
   const removed: string[] = [];
-  const keep = new Set(input.keep.map((dest) => path.resolve(dest)));
-  const holdsKept = (dir: string): boolean => [...keep].some((dest) => dest.startsWith(dir + path.sep));
+  const typeRoot = path.resolve(input.root ?? root(input.localConfig), input.type);
+  const kept = new Set<string>();
+  // The directories between the type's root and a kept folder: its namespace.
+  const holdingKept = new Set<string>();
+
+  for (const dest of input.keep) {
+    const id = await identity(dest);
+
+    if (id !== null) kept.add(id);
+
+    for (let dir = path.dirname(path.resolve(dest)); dir.startsWith(typeRoot + path.sep); dir = path.dirname(dir)) {
+      const dirId = await identity(dir);
+
+      if (dirId !== null) holdingKept.add(dirId);
+    }
+  }
 
   const sweep = async (dir: string): Promise<void> => {
     const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
 
     for (const entry of entries.filter((found) => !found.name.startsWith('.'))) {
       const full = path.resolve(dir, entry.name);
+      const id = await identity(full);
 
-      if (keep.has(full)) continue;
+      if (id !== null && kept.has(id)) continue;
 
-      if (entry.isDirectory() && holdsKept(full)) {
+      if (entry.isDirectory() && id !== null && holdingKept.has(id)) {
         await sweep(full);
         continue;
       }
@@ -218,7 +241,7 @@ async function prune(input: {
     }
   };
 
-  await sweep(path.join(input.root ?? root(input.localConfig), input.type));
+  await sweep(typeRoot);
 
   return removed;
 }

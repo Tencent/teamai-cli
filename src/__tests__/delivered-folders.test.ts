@@ -165,6 +165,19 @@ describe('DeliveredFolders.prune', () => {
       [path.join(at(null, 'lint'), 'HOOK.yaml'), path.join(at('payments', 'audit'), 'HOOK.yaml')].sort(),
     ]);
   });
+
+  it('keeps a folder the team renamed only in case, as it is still delivered where a case-insensitive file system finds it', async () => {
+    const dataHome = tempDir();
+    const localConfig: LocalConfig = { username: 't', additionalRoles: [], scope: 'user', dataHome, repo: { localPath: path.join(dataHome, 'repo'), remote: 'acme/team' } };
+    const ledger = openLedger({});
+    const at = (namespace: string | null, name: string): string => DeliveredFolders.pathOf(localConfig, { type: 'mcp', namespace, name });
+    await DeliveredFolders.deliver({ dest: at('Payments', 'Jira'), files: [file('MCP.yaml', 'x\n')], ledger });
+    await DeliveredFolders.deliver({ dest: at('payments', 'jira'), files: [file('MCP.yaml', 'x\n')], ledger });
+
+    await DeliveredFolders.prune({ localConfig, type: 'mcp', keep: [at('payments', 'jira')], ledger });
+
+    expect(fs.readFileSync(path.join(at('payments', 'jira'), 'MCP.yaml'), 'utf8')).toBe('x\n');
+  });
 });
 
 describe('DeliveredFolders.render', () => {
