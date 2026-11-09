@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/teamai-cli-logo.svg" alt="teamai-cli">
+  <img src="docs/assets/teamai-cli-logo.svg" alt="teamai-cli">
 </p>
 
 <h1 align="center">TeamAI — Make Every Team AI Native</h1>
@@ -26,7 +26,7 @@
 ## 为什么选择 TeamAI
 
 <p align="center">
-  <img src="assets/use-cases.zh-CN.png" alt="八个日常场景：使用 TeamAI 前后对比" width="100%">
+  <img src="docs/assets/use-cases.zh-CN.png" alt="八个日常场景：使用 TeamAI 前后对比" width="100%">
 </p>
 
 ## 快速开始
