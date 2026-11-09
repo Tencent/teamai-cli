@@ -1,5 +1,7 @@
 # teamai-codebase-deep-enrich
 
+English | [中文](README.zh-CN.md)
+
 Writes the deep knowledge docs of a codebase `teamai import` extracted into a teamwiki, beside its evidence: a design doc for each component, the architecture overview, the graph docs and the cross-component scenarios.
 
 `teamai codebase --deep-enrich` starts it, and `teamai-import-from-repo` runs it for each repository it imports.

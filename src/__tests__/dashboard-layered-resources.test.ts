@@ -463,7 +463,7 @@ describe('rule folders on the Resources page', () => {
         kind: 'refused',
         message: 'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: rules/teamai-recall/RULE.md does not contain "Nothing was searched:". Fix the folder in the team repo.',
       }, 'RULE.md', ['RULE.md']],
-      ['teamai', 'rules/teamai-recall/', { kind: 'in-force' }, 'RULE.en.md', ['README.md', 'RULE.en.md', 'RULE.md', 'block-direct.md', 'block.en.md', 'block.md']],
+      ['teamai', 'rules/teamai-recall/', { kind: 'in-force' }, 'RULE.en.md', ['README.md', 'README.zh-CN.md', 'RULE.en.md', 'RULE.md', 'block-direct.md', 'block.en.md', 'block.md']],
     ]);
     expect(list?.problems).toEqual([]);
   });

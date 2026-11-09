@@ -1,5 +1,7 @@
 # teamai-todowrite-hint
 
+English | [中文](README.zh-CN.md)
+
 Once the agent plans a task with TodoWrite, teamai suggests one search of the team knowledge base through the `teamai-recall` subagent, once per session. This folder holds the text of that suggestion.
 
 ## Replace it

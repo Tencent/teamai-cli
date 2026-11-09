@@ -1,5 +1,7 @@
 # teamai-recall
 
+English | [中文](README.zh-CN.md)
+
 The rule that tells an AI tool to search the team knowledge base before a task, and the instruction blocks that say the same in each tool's instruction file. Pull writes them while recall is on (`teamai recall enable`, `recallEnabled`).
 
 | File | What pull does with it |
@@ -8,7 +10,7 @@ The rule that tells an AI tool to search the team knowledge base before a task, 
 | `RULE.en.md` | The rule with `language: en` |
 | `block.md`, `block.en.md` | The block for tools with the `teamai-recall` subagent |
 | `block-direct.md` | The block for tools without it, in every language; a `block-direct.en.md` would take `language: en` |
-| `README.md` | Nothing: it is never delivered |
+| `README.md`, `README.zh-CN.md` | Nothing: they are never delivered |
 
 Pull adds the block markers and the `DO NOT EDIT` line around a block. The files hold no template variables. Pull turns CRLF into LF and drops one trailing newline.
 

@@ -1,5 +1,7 @@
 # teamai-friction-reminder
 
+English | [中文](README.zh-CN.md)
+
 At Stop, teamai scores the session for friction. When the score and the tool count reach the thresholds below, it reminds the agent to share what the session taught. This folder holds those thresholds and the texts of the reminder.
 
 ## Replace it

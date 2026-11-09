@@ -1,5 +1,7 @@
 # teamai-mr-hint
 
+English | [中文](README.zh-CN.md)
+
 At session start, teamai lists the team's recently merged MRs that are not in the knowledge base yet, and offers to turn them into learnings. This folder holds how far back it looks and the texts of the offer.
 
 ## Replace it

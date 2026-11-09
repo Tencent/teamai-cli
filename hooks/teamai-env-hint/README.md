@@ -1,5 +1,7 @@
 # teamai-env-hint
 
+English | [中文](README.zh-CN.md)
+
 At session start, teamai names the team env variables and secrets this scope delivers, and tells the agent to run the commands that need them through `teamai env exec`. This folder holds the texts of that hint.
 
 ## Replace it

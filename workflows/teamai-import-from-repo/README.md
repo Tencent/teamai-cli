@@ -1,5 +1,7 @@
 # teamai-import-from-repo
 
+English | [中文](README.zh-CN.md)
+
 Imports repositories or local checkouts into a teamwiki. For each one it extracts the code, asks the AI tool for its narrative, runs `teamai-codebase-enrich` and `teamai-codebase-deep-enrich`, and publishes it. Then it refreshes the teamwiki indexes and publishes them once.
 
 `teamai import --dir`, `--from-repo`, `--from-repo-list` and `--from-org` start it.

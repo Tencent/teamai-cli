@@ -1,5 +1,7 @@
 # teamai-package-hint
 
+English | [中文](README.zh-CN.md)
+
 At session start, when the team's package declarations in `teamai.yaml` changed since this machine last applied them, teamai tells the agent to review them and run `teamai packages`. This folder holds the text of that hint.
 
 ## Replace it

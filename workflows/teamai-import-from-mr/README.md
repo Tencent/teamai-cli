@@ -1,5 +1,7 @@
 # teamai-import-from-mr
 
+English | [中文](README.zh-CN.md)
+
 Turns merged MRs or PRs into team learnings. Your AI tool drafts one per MR, a person accepts, edits or skips each draft, and the accepted ones are published as `teamai contribute` publishes them.
 
 `teamai import --from-mr` starts it, `teamai ci extract-mr` runs it through `teamai-ci-extract-mr`, and the session-start MR hint offers it.
