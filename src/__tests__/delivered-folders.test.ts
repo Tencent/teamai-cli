@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import fse from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { contentHash, openLedger } from '../resources/delivered-copies.js';
 import { DeliveredFolders } from '../resources/delivered-folders.js';
@@ -177,6 +178,53 @@ describe('DeliveredFolders.prune', () => {
     await DeliveredFolders.prune({ localConfig, type: 'mcp', keep: [at('payments', 'jira')], ledger });
 
     expect(fs.readFileSync(path.join(at('payments', 'jira'), 'MCP.yaml'), 'utf8')).toBe('x\n');
+  });
+});
+
+describe('DeliveredFolders.sync', () => {
+  const scope = (): LocalConfig => {
+    const dataHome = tempDir();
+
+    return { username: 't', additionalRoles: [], scope: 'user', dataHome, repo: { localPath: path.join(dataHome, 'repo'), remote: 'acme/team' } };
+  };
+
+  it('leaves every folder as installed when one cannot take its new version, so the installed hooks still match them', async () => {
+    const localConfig = scope();
+    const at = (name: string): string => DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace: null, name });
+    await DeliveredFolders.sync({ localConfig, type: 'hooks', ledger: undefined, prune: true, folders: [
+      { dest: at('format'), files: [file('HOOK.yaml', 'v1\n'), file('fmt.sh', 'v1\n')] },
+      { dest: at('lint'), files: [file('HOOK.yaml', 'v1\n'), file('scan.sh', 'v1\n')] },
+    ] });
+    const rename = fs.promises.rename.bind(fs.promises);
+    const denied = Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+    // format moves aside and takes its new version; lint moves aside, and its new version is refused.
+    vi.spyOn(fs.promises, 'rename').mockImplementationOnce(rename).mockImplementationOnce(rename).mockImplementationOnce(rename).mockRejectedValueOnce(denied);
+
+    await expect(DeliveredFolders.sync({ localConfig, type: 'hooks', ledger: undefined, prune: true, folders: [
+      { dest: at('format'), files: [file('HOOK.yaml', 'v2\n'), file('check.sh', 'v2\n')] },
+      { dest: at('lint'), files: [file('HOOK.yaml', 'v2\n'), file('check.sh', 'v2\n')] },
+    ] })).rejects.toThrow(`could not move the new version of the delivered folder ${at('lint')} into place`);
+
+    expect(tree(path.dirname(at('lint')))).toEqual({
+      'format/HOOK.yaml': 'v1\n', 'format/fmt.sh': 'v1\n', 'lint/HOOK.yaml': 'v1\n', 'lint/scan.sh': 'v1\n',
+    });
+  });
+
+  it('warns about a folder the team dropped that cannot be removed, keeps it, and delivers the rest', async () => {
+    const localConfig = scope();
+    const at = (name: string): string => DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace: null, name });
+    await DeliveredFolders.sync({ localConfig, type: 'hooks', ledger: undefined, prune: true, folders: [{ dest: at('old'), files: [file('HOOK.yaml', 'v1\n')] }] });
+    const busy = Object.assign(new Error(`EBUSY: resource busy or locked, rmdir '${at('old')}'`), { code: 'EBUSY' });
+    vi.spyOn(fse, 'remove').mockRejectedValueOnce(busy);
+    const { log } = await import('../utils/logger.js');
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => undefined);
+
+    await DeliveredFolders.sync({ localConfig, type: 'hooks', ledger: undefined, prune: true, folders: [{ dest: at('lint'), files: [file('HOOK.yaml', 'v1\n')] }] });
+
+    expect([tree(path.dirname(at('lint'))), warn.mock.calls.map(([message]) => String(message))]).toEqual([
+      { 'lint/HOOK.yaml': 'v1\n', 'old/HOOK.yaml': 'v1\n' },
+      [`Could not remove ${at('old')}, which the team no longer delivers (EBUSY: resource busy or locked, rmdir '${at('old')}'). Nothing names it any more; the next pull removes it.`],
+    ]);
   });
 });
 

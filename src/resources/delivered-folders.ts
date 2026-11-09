@@ -17,6 +17,7 @@ import { contentHash, forgetDelivered, removeDelivered, type DeliveryLedger } fr
 import { FolderFiles, type FolderFile } from './folder-files.js';
 import { getDataHome, isSelfMode, type LocalConfig } from '../types.js';
 import { errnoCode, pathExists } from '../utils/fs.js';
+import { log } from '../utils/logger.js';
 
 /** The folder types pull delivers. */
 export type DeliveredFolderType = 'hooks' | 'rules' | 'mcp';
@@ -123,41 +124,81 @@ async function moveAside(dest: string, old: string): Promise<boolean> {
 }
 
 /**
- * Deliver a folder's `files`, in path order, at `dest`: written to a hidden sibling, then renamed into place, so a
- * reader sees the old version or the new one whole. A folder that already holds them is left in place, so a hook
- * running from it is not disturbed. Each file is recorded in `ledger`, in place of what it recorded under `dest`.
+ * Deliver each folder's `files`, in path order, at its `dest`, all or none: every new version is written to a hidden
+ * sibling first, then each is renamed into place. A failure puts back every installed version already replaced, so
+ * the folders still match the hooks and servers installed from them. A folder that already holds its version is left
+ * in place, so a hook running from it is not disturbed. Each file is recorded in `ledger`, in place of what it
+ * recorded under its `dest`.
  */
-async function deliver(input: { readonly dest: string; readonly files: readonly FolderFile[]; readonly ledger: DeliveryLedger | undefined }): Promise<void> {
-  const { dest, files, ledger } = input;
-  const suffix = randomBytes(4).toString('hex');
-  const fresh = path.join(path.dirname(dest), `.${path.basename(dest)}.new-${suffix}`);
-  const old = path.join(path.dirname(dest), `.${path.basename(dest)}.old-${suffix}`);
+async function deliverAll(folders: readonly FolderDelivery[], ledger: DeliveryLedger | undefined): Promise<void> {
+  const staged: Array<{ readonly dest: string; readonly fresh: string; readonly old: string }> = [];
 
-  await removeLeftovers(dest);
+  const discardStaged = async (): Promise<void> => {
+    for (const { fresh } of staged) await fs.rm(fresh, { recursive: true, force: true });
+  };
 
-  if (!await holds(dest, files)) {
-    await writeFiles(fresh, files);
-    const replacing = await moveAside(dest, old);
+  try {
+    for (const { dest, files } of folders) {
+      await removeLeftovers(dest);
 
-    try {
-      await fs.rename(fresh, dest);
-    } catch (error) {
-      if (replacing) await fs.rename(old, dest);
+      if (await holds(dest, files)) continue;
+      const suffix = randomBytes(4).toString('hex');
+      const sibling = (kind: 'new' | 'old'): string => path.join(path.dirname(dest), `.${path.basename(dest)}.${kind}-${suffix}`);
+      staged.push({ dest, fresh: sibling('new'), old: sibling('old') });
+      await writeFiles(sibling('new'), files);
+    }
+  } catch (error) {
+    await discardStaged();
+    throw error;
+  }
 
-      throw new Error(
-        `could not move the new version of the delivered folder ${dest} into place (${error instanceof Error ? error.message : String(error)}); `
-        + 'the installed version stays, and the next pull tries again',
-        { cause: error },
-      );
+  const placed: Array<{ readonly dest: string; readonly old: string; readonly replaced: boolean }> = [];
+
+  try {
+    for (const { dest, fresh, old } of staged) {
+      const replaced = await moveAside(dest, old);
+
+      try {
+        await fs.rename(fresh, dest);
+      } catch (error) {
+        if (replaced) await fs.rename(old, dest);
+
+        throw new Error(
+          `could not move the new version of the delivered folder ${dest} into place (${error instanceof Error ? error.message : String(error)}); `
+          + 'the installed version stays, and the next pull tries again',
+          { cause: error },
+        );
+      }
+
+      placed.push({ dest, old, replaced });
+    }
+  } catch (error) {
+    for (const { dest, old, replaced } of placed.toReversed()) {
+      await fs.rm(dest, { recursive: true, force: true });
+
+      if (replaced) await fs.rename(old, dest);
     }
 
-    if (replacing) await fs.rm(old, { recursive: true, force: true });
+    await discardStaged();
+    throw error;
+  }
+
+  for (const { old, replaced } of placed) {
+    if (replaced) await fs.rm(old, { recursive: true, force: true });
   }
 
   if (!ledger) return;
-  forgetDelivered(ledger.hashes, dest);
 
-  for (const file of files) ledger.hashes[path.join(dest, ...file.path.split('/'))] = contentHash(file.bytes);
+  for (const { dest, files } of folders) {
+    forgetDelivered(ledger.hashes, dest);
+
+    for (const file of files) ledger.hashes[path.join(dest, ...file.path.split('/'))] = contentHash(file.bytes);
+  }
+}
+
+/** Deliver one folder's `files` at `dest`, as `deliverAll` does. */
+async function deliver(input: { readonly dest: string; readonly files: readonly FolderFile[]; readonly ledger: DeliveryLedger | undefined }): Promise<void> {
+  await deliverAll([input], input.ledger);
 }
 
 /** `${TEAMAI_<TYPE>_DIR}`, as a folder's text writes it. */
@@ -194,7 +235,8 @@ async function identity(file: string): Promise<string | null> {
  * Remove every folder of `type` in `localConfig`'s scope that is not in `keep` (absolute delivered paths), with an
  * emptied namespace directory, through `removeDelivered`. Hidden entries are left: a delivery in progress writes one.
  * A kept folder is recognised by what it is on disk, not by its spelling: after the team renames `mcp/Jira/` to
- * `mcp/jira/`, macOS and Windows deliver `jira` into the `Jira` directory already there. Returns what it removed.
+ * `mcp/jira/`, macOS and Windows deliver `jira` into the `Jira` directory already there. A folder it cannot remove is
+ * named in a warning and stays until the next pull. Returns what it removed.
  */
 async function prune(input: {
   readonly localConfig: LocalConfig;
@@ -236,8 +278,14 @@ async function prune(input: {
         continue;
       }
 
-      await removeDelivered(input.ledger, full);
-      removed.push(full);
+      try {
+        await removeDelivered(input.ledger, full);
+        removed.push(full);
+      } catch (error) {
+        // The folders the team delivers are in place, and nothing names this one any more.
+        log.warn(`Could not remove ${full}, which the team no longer delivers (${error instanceof Error ? error.message : String(error)}). `
+          + 'Nothing names it any more; the next pull removes it.');
+      }
     }
   };
 
@@ -270,7 +318,7 @@ async function sync(input: {
   const { localConfig, type, folders, ledger } = input;
   const at = input.root ?? root(localConfig);
 
-  for (const folder of folders) await deliver({ ...folder, ledger });
+  await deliverAll(folders, ledger);
 
   if (input.prune) await prune({ localConfig, type, keep: folders.map(({ dest }) => dest), ledger, root: at });
 
