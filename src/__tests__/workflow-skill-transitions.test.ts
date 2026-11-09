@@ -2388,7 +2388,7 @@ steps:
       expect(done.actions).toMatchObject([{ kind: 'done', outcome: 'succeeded' }]);
       const engine = await readRun(made.config, turn.run);
       expect(typeof engine === 'object' && engine.steps.find((step) => step.id === 'judged')).toMatchObject({
-        status: 'cancelled', failure: { code: 'cancelled', message: expect.stringContaining('no driver of this run can take step "judged.judge"') },
+        status: 'cancelled', failure: { code: 'confined_unoffered', message: expect.stringContaining('no driver of this run can take step "judged.judge"') },
       });
       return made.rows;
     },

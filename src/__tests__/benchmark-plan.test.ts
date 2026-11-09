@@ -631,7 +631,10 @@ describe('benchmark run verdicts', () => {
     expect(await judgedVerdicts(judge, { [CORRECTNESS]: planned })).toEqual([expect.objectContaining({ scorer: CORRECTNESS, asPlanned })]);
   });
 
-  it("leave a trial unscored, judge_tool_unavailable, when no driver offers the judge tool its plan requires and the skill driver gives that judge up, and the results name the tool", async () => {
+  it.each([
+    ['no offer has the judge tool its plan requires', 'confined', 'judge_tool_unavailable'],
+    ['no offered tool resolves its model', 'model', 'run_ended'],
+  ] as const)("leave a trial unscored when the skill driver gives its judge up because %s, and say judge_tool_unavailable only for the tool", async (_, missing, because) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-plan-'));
     dirs.push(root);
     const config = benchmarkRunConfig(root);
@@ -660,7 +663,7 @@ describe('benchmark run verdicts', () => {
       const { step, attempt, revision } = lease.data.data.lease;
       await reportAttempt(config, runId, { attempt, revision, outcome: 'success', driver, tool: 'claude', outputs: outputs[step.split('.').at(-1) ?? step] ?? {} });
     }
-    const held = HeldSchema.parse(waited).data.wait.held.flatMap((entry) => z.object({ step: z.string() }).parse(entry).step);
+    const held = HeldSchema.parse(waited).data.wait.held.map((entry) => ({ step: z.object({ step: z.string() }).parse(entry).step, missing: [missing] }));
     await inProcessClient({ config, env: await resolveWorkflowEnv(config) }).giveUp(runId, held);
 
     const done = await leaseNext(config, runId, driver, { can: codexOnly, prepare: true });
@@ -669,8 +672,9 @@ describe('benchmark run verdicts', () => {
     if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
     const record = await judgedRecordOf(config, run);
     expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
-    expect(record.trials).toEqual([expect.objectContaining({ result: 'unscored', verdicts: [{ scorer: CORRECTNESS, outcome: { kind: 'unscored', because: 'judge_tool_unavailable' } }] })]);
-    expect(formatBenchmarkTable(benchmarkTable({ benchmark: record }))).toContain('No driver of the run offered judge claude, so 1 trial went unscored; drive the run where claude is installed, or set tool in the scorer.');
+    expect(record.trials).toEqual([expect.objectContaining({ result: 'unscored', verdicts: [{ scorer: CORRECTNESS, outcome: { kind: 'unscored', because } }] })]);
+    const unoffered = 'No driver of the run offered judge claude, so 1 trial went unscored; drive the run where claude is installed, or set tool in the scorer.';
+    expect(formatBenchmarkTable(benchmarkTable({ benchmark: record })).includes(unoffered)).toBe(because === 'judge_tool_unavailable');
   });
 
   it('leave a trial unscored when its score step labelled it and the write failed, though an earlier write stored that label', async () => {

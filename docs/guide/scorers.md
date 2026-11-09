@@ -878,7 +878,7 @@ A judge no driver here can take keeps `teamai-score` open until a timeout ends i
 ⚠ [workflows] workflows/score-this.yaml: step "score" runs teamai-score with no timeout, so a judge no driver here can take holds it open until the run ends. Give it a timeout, such as timeout: 30m, and continue_on_failure: true.
 ```
 
-In a coding session, the skill driver gives up such a judge step at once, when nothing else of the run is left and `continue_on_failure` lets it.
+In a coding session, the skill driver gives up such a judge step at once, when nothing else of the run is left and `continue_on_failure` lets it. It cancels the step that sets `continue_on_failure` with `confined_unoffered` when no driver offers the tool `confined.json` asks for, and with `cancelled` when an offered tool resolves no model for it.
 
 A judging run is never judged. Pull refuses `scorers:` on a step that runs `teamai-score` or `teamai-finished-sessions`, with `judging_scored`, and the file does not run:
 

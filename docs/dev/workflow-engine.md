@@ -222,7 +222,7 @@ A skill child's `result.json` may carry `changed`, paths relative to the place. 
 | D25 | drive, done | a poll tick | a `settled` or `stopped` event came after `seen[s]`, and neither D22 nor D23 applies | `seen[s]` := seq | unchanged | the events after the old `seen[s]`, no actions; `then: poll` |
 | D26 | drive | a poll tick | the tick took D14, and D22 does not apply | none | drive | `then: wake` with the next literal, no actions |
 
-`giveUp` in `protocol.ts` is the only cancel a driver makes for steps it can never take: it takes only confined steps, cancels the nearest enclosing step whose definition sets `continue_on_failure` (`isUnder` in `loop.ts`) with a message that says why, and answers `not_cancellable` for a step with none.
+`giveUp` in `protocol.ts` is the only cancel a driver makes for steps it can never take: it takes only confined steps, cancels the nearest enclosing step whose definition sets `continue_on_failure` (`isUnder` in `loop.ts`) with a message that says why, and answers `not_cancellable` for a step with none. The driver passes each held step's `missing`: one that misses `confined` cancels with `confined_unoffered`, which a benchmark reads as a judge tool no driver offered, and one that misses only `model` with `cancelled`.
 
 ### Runner outcomes
 

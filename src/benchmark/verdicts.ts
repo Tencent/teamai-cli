@@ -12,8 +12,6 @@ import { LabelStore } from '../scorers/label-store.js';
 import { isStageDecider, labelVersion, type ScoreLabel } from '../scorers/label.js';
 import { LABEL_CODES } from '../scorers/score-labels.js';
 import type { LocalConfig } from '../types.js';
-import { isUnder } from '../workflow/loop.js';
-import { confinedGiveUpMessage } from '../workflow/protocol.js';
 import { stepDefinitions } from '../workflow/scope.js';
 import type { StepState } from '../workflow/step-state.js';
 import { stepWorkflow, type RunState, type WorkflowStep } from '../workflow/types.js';
@@ -136,10 +134,7 @@ function givenUpJudges(run: RunState): Map<string, Set<string>> {
   for (const state of run.steps) {
     const group = GroupItemSchema.safeParse(state.item);
 
-    if (state.status !== 'cancelled' || !group.success) continue;
-    const { message } = state.failure;
-
-    if (!run.steps.some(({ id }) => isUnder(state.id)(id) && message === confinedGiveUpMessage(id))) continue;
+    if (state.status !== 'cancelled' || state.failure.code !== 'confined_unoffered' || !group.success) continue;
     const scorers = givenUp.get(group.data.subject) ?? new Set<string>();
 
     for (const scorer of group.data.scorers.split(',')) scorers.add(scorer);

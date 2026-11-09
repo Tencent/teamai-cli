@@ -878,7 +878,7 @@ steps:
 ⚠ [workflows] workflows/score-this.yaml: step "score" runs teamai-score with no timeout, so a judge no driver here can take holds it open until the run ends. Give it a timeout, such as timeout: 30m, and continue_on_failure: true.
 ```
 
-在编程会话中，运行里没有别的步骤可做、且 `continue_on_failure` 允许时，skill 驱动会立即放弃这样的评审步骤。
+在编程会话中，运行里没有别的步骤可做、且 `continue_on_failure` 允许时，skill 驱动会立即放弃这样的评审步骤。没有驱动提供 `confined.json` 要求的工具时，它以 `confined_unoffered` 取消设置了 `continue_on_failure` 的那个步骤；提供的工具解析不出它的模型时，以 `cancelled` 取消。
 
 评审运行本身从不被评审。步骤运行 `teamai-score` 或 `teamai-finished-sessions` 并列出 `scorers:` 时，pull 以 `judging_scored` 拒绝它，该文件不会运行：
 
