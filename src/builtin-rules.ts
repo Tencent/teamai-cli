@@ -232,15 +232,24 @@ const RECALL_FILES = [
     { stem: 'block-direct', lines: ['Nothing was searched:'] },
 ] as const;
 
+/** A recall folder: where it is, its path from its repo's root as pull names it, and whether it is the team's. */
+export interface RecallFolder {
+    readonly dir: string;
+    readonly path: string;
+    readonly team: boolean;
+}
+
+/** teamai's recall folder, in its package. */
+const TEAMAI_RECALL: RecallFolder = { dir: path.join(TEAMAI_RULES.root, 'rules', RECALL_RULE_NAME), path: `rules/${RECALL_RULE_NAME}/`, team: false };
+
 /** The recall folder that applies with the team repo at `repoPath`: the team's `rules/teamai-recall/` folder at its root, else teamai's. */
-async function recallFolder(repoPath: string | undefined): Promise<{ readonly dir: string; readonly path: string; readonly team: boolean }> {
+async function recallFolder(repoPath: string | undefined): Promise<RecallFolder> {
     const tree = { team: repoPath === undefined ? undefined : { root: repoPath, namespaces: async () => [] }, teamai: TEAMAI_RULES };
     const resolution = await Resources.resolve(RESOURCE_LAYOUTS.rules, RECALL_RULE_NAME, tree);
     const item = resolution.kind === 'resolved' ? resolution.item : null;
-    const teamai = { dir: path.join(TEAMAI_RULES.root, 'rules', RECALL_RULE_NAME), path: `rules/${RECALL_RULE_NAME}/`, team: false };
 
     // Only a folder replaces it; a rules/teamai-recall.md is a rule like any other.
-    return item !== null && item.layer !== 'teamai' && item.source.kind === 'folder' ? { dir: item.source.full, path: item.source.path, team: true } : teamai;
+    return item !== null && item.layer !== 'teamai' && item.source.kind === 'folder' ? { dir: item.source.full, path: item.source.path, team: true } : TEAMAI_RECALL;
 }
 
 /** Why the recall folder at `dir` (shown as `shown`) breaks the contract (`RECALL_FILES`), or null when it keeps it. */
@@ -264,7 +273,7 @@ async function recallFolderProblem(dir: string, shown: string): Promise<string |
 }
 
 /** The recall texts of the folder at `dir` for `language`, each language falling back to the folder's own base file; null when one cannot be read. */
-async function readRecallTexts(folder: { readonly dir: string; readonly path: string; readonly team: boolean }, language: TeamaiConfig['language']): Promise<RecallTexts | null> {
+async function readRecallTexts(folder: RecallFolder, language: TeamaiConfig['language']): Promise<RecallTexts | null> {
     const read = async (stem: string): Promise<string | null> => RuleFolders.readTextFile(path.join(folder.dir, await RuleFolders.languageFile(folder.dir, stem, language)));
     const rule = await RuleFolders.text({ name: RECALL_RULE_NAME, type: 'rules', sourcePath: path.join(folder.dir, 'RULE.md'), relativePath: `${folder.path}RULE.md`, folder: true }, language);
     const [block, directBlock] = [await read('block'), await read('block-direct')];
@@ -272,24 +281,44 @@ async function readRecallTexts(folder: { readonly dir: string; readonly path: st
     return rule === null || block === null || directBlock === null ? null : { rule, block, directBlock, replaced: folder.team };
 }
 
+/** The recall texts that apply, teamai's folder, and the team's `rules/teamai-recall/` folder: in force, or refused with what pull prints. */
+export interface RecallResolution {
+    readonly texts: RecallTexts;
+    readonly teamai: RecallFolder;
+    readonly team:
+        | { readonly kind: 'replaces'; readonly folder: RecallFolder }
+        | { readonly kind: 'refused'; readonly folder: RecallFolder; readonly message: string }
+        | null;
+}
+
 /**
  * The recall rule and blocks for `language` with the team repo at `repoPath` (#1787): its `rules/teamai-recall/`
- * folder when it keeps the contract (`RECALL_FILES`), else teamai's, which the team's refusal names once.
+ * folder when it keeps the contract (`RECALL_FILES`), else teamai's.
  */
-export async function recallTexts(language: TeamaiConfig['language'], repoPath?: string): Promise<RecallTexts> {
+export async function resolveRecall(language: TeamaiConfig['language'], repoPath?: string): Promise<RecallResolution> {
     const folder = await recallFolder(repoPath);
+    let refused: RecallResolution['team'] = null;
 
     if (folder.team) {
         const problem = await recallFolderProblem(folder.dir, folder.path);
         const texts = problem === null ? await readRecallTexts(folder, language) : null;
 
-        if (texts !== null) return texts;
-        warnOnce(`${folder.path} is not used, so teamai's recall rule stays in force: ${problem ?? `${folder.path} cannot be read`}. Fix the folder in the team repo.`);
+        if (texts !== null) return { texts, teamai: TEAMAI_RECALL, team: { kind: 'replaces', folder } };
+        refused = { kind: 'refused', folder, message: `${folder.path} is not used, so teamai's recall rule stays in force: ${problem ?? `${folder.path} cannot be read`}. Fix the folder in the team repo.` };
     }
 
-    const texts = await readRecallTexts({ dir: path.join(TEAMAI_RULES.root, 'rules', RECALL_RULE_NAME), path: `rules/${RECALL_RULE_NAME}/`, team: false }, language);
+    const texts = await readRecallTexts(TEAMAI_RECALL, language);
 
     if (texts === null) throw new Error(`teamai's ${RECALL_RULE_NAME} folder cannot be read in ${TEAMAI_RULES.root}; reinstall teamai.`);
 
-    return texts;
+    return { texts, teamai: TEAMAI_RECALL, team: refused };
+}
+
+/** The recall texts `resolveRecall` finds, naming the team's refused folder once. */
+export async function recallTexts(language: TeamaiConfig['language'], repoPath?: string): Promise<RecallTexts> {
+    const recall = await resolveRecall(language, repoPath);
+
+    if (recall.team?.kind === 'refused') warnOnce(recall.team.message);
+
+    return recall.texts;
 }
