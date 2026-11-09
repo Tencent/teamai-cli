@@ -299,16 +299,28 @@ async function foldsCase(dest: string, files: readonly FolderFile[]): Promise<bo
  * `files` with each file of the installed folder at `dest` that the new version dropped (#1787). A rule copy or an MCP
  * configuration that a pull could not rewrite, or that a tool the member excluded keeps, may still name an earlier
  * version's file, so a file goes only with its folder. Where an earlier path clashes with a new one (a file that became a
- * directory, or, on a file system that takes them for one, the same name in another case), the new version's wins.
+ * directory, or, on a file system that takes them for one, the same name in another case), the new version's wins, as
+ * every copy this pull writes names it, and pull says which earlier file went.
  */
 async function withEarlierFiles(dest: string, files: readonly FolderFile[]): Promise<readonly FolderFile[]> {
   const installed = await FolderFiles.read(dest);
 
   if (installed.kind !== 'files') return files;
   const key = await foldsCase(dest, installed.files) ? (file: string) => file.toLowerCase() : (file: string) => file;
-  const fresh = files.map((file) => key(file.path));
-  const clashes = (earlier: string): boolean => fresh.some((wanted) => wanted === earlier || wanted.startsWith(`${earlier}/`) || earlier.startsWith(`${wanted}/`));
-  const kept = installed.files.filter((file) => !clashes(key(file.path)));
+  const fresh = new Map(files.map((file) => [key(file.path), file.path]));
+  const clashing = (earlier: string): string | undefined => [...fresh].find(([wanted]) => wanted === earlier || wanted.startsWith(`${earlier}/`) || earlier.startsWith(`${wanted}/`))?.[1];
+  const kept: FolderFile[] = [];
+
+  for (const file of installed.files) {
+    const replacing = clashing(key(file.path));
+
+    if (replacing === undefined) kept.push(file);
+    // A path the new version takes another way: a copy that still names the earlier file no longer finds it.
+    else if (replacing !== file.path) {
+      log.warn(`${path.join(dest, ...file.path.split('/'))} is gone: the new version has ${path.join(dest, ...replacing.split('/'))} in its place. `
+        + 'A rule copy or a configuration pull left as it was may still name it: update it to the new version\'s files.');
+    }
+  }
 
   // In the order `FolderFiles.read` lists them, which `holds` compares against.
   return kept.length === 0 ? files : [...files, ...kept].sort((a, b) => (a.path < b.path ? -1 : 1));

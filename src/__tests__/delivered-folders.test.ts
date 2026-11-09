@@ -8,6 +8,7 @@ import { contentHash, openLedger } from '../resources/delivered-copies.js';
 import { DeliveredFolders } from '../resources/delivered-folders.js';
 import { FolderFiles, type FolderFile } from '../resources/folder-files.js';
 import type { LocalConfig } from '../types.js';
+import { log as logger } from '../utils/logger.js';
 
 /** Whether the temp directory's file system takes two names that differ only in case for one. */
 const TMP_IGNORES_CASE = fs.existsSync(fs.realpathSync.native(os.tmpdir()).toUpperCase());
@@ -270,6 +271,19 @@ describe('DeliveredFolders.deliver', () => {
     await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('lib/a.js', 'new\n'), file('util', 'new\n')], ledger: undefined });
 
     expect(tree(dest)).toEqual({ 'lib/a.js': 'new\n', util: 'new\n' });
+  });
+
+  it('says which earlier file a new one took the place of, which a copy pull left as it was may still name', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const dest = path.join(tempDir(), 'rules', 'api');
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('RULE.md', 'v1\n'), file('details/checklist.md', 'old\n')], ledger: undefined });
+
+    await DeliveredFolders.deliver({ dest, earlierFiles: 'keep', files: [file('RULE.md', 'v2\n'), file('details', 'new\n')], ledger: undefined });
+
+    expect(warn.mock.calls.map((call) => call.join(' '))).toEqual([
+      `${path.join(dest, 'details', 'checklist.md')} is gone: the new version has ${path.join(dest, 'details')} in its place. `
+      + 'A rule copy or a configuration pull left as it was may still name it: update it to the new version\'s files.',
+    ]);
   });
 
   it.skipIf(!TMP_IGNORES_CASE)('gives the new version a name an earlier file has in another case, where the file system takes them for one', async () => {
