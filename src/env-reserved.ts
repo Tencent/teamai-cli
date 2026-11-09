@@ -11,6 +11,8 @@ export const TEAM_ENV_RESERVED_NAMES = [
   'SHELLOPTS', 'BASHOPTS', 'UID', 'EUID', 'PPID',
   'chpwd_functions', 'precmd_functions', 'preexec_functions', 'periodic_functions',
   'zshaddhistory_functions', 'zshexit_functions', 'zsh_directory_name_functions',
+  // teamai sets it on every step of a workflow folder: a team value would point the step at another folder.
+  'TEAMAI_WORKFLOW_DIR',
 ] as const;
 
 export function isReservedTeamEnvKey(key: string): boolean {

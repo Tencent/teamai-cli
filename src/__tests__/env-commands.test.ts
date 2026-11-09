@@ -301,7 +301,7 @@ scope: 'user',
       expect(process.exitCode).toBeUndefined();
     });
 
-    it.each(['BASH_ENV', 'ENV', 'ZDOTDIR', 'HOME', 'home', 'PROMPT_COMMAND', 'chpwd_functions', 'precmd_functions', 'preexec_functions', 'periodic_functions', 'zshaddhistory_functions', 'zshexit_functions', 'zsh_directory_name_functions', '__TEAMAI_ENV_FILES', '__teamai_env_apply'])('warns when env set targets reserved loader control %s', async (key) => {
+    it.each(['BASH_ENV', 'ENV', 'ZDOTDIR', 'HOME', 'home', 'PROMPT_COMMAND', 'chpwd_functions', 'precmd_functions', 'preexec_functions', 'periodic_functions', 'zshaddhistory_functions', 'zshexit_functions', 'zsh_directory_name_functions', '__TEAMAI_ENV_FILES', '__teamai_env_apply', 'TEAMAI_WORKFLOW_DIR'])('warns when env set targets reserved loader control %s', async (key) => {
       await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), `secrets:\n  - key: ${key}\n`);
       vi.mocked(readStdin).mockResolvedValue('reserved-value');
 

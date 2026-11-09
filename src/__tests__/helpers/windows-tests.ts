@@ -46,4 +46,5 @@ export const WINDOWS_TESTS = [
   'src/__tests__/trae.test.ts',
   'src/__tests__/user-home-resolution.test.ts',
   'src/__tests__/windows-test-list.test.ts',
+  'src/__tests__/workflow-folder-paths.test.ts',
 ] as const;

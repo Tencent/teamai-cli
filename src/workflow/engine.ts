@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { z } from 'zod';
 import { parseReportedAgent, parseReportedUsed, settleObservation, type ReportedAgent, type Used } from '../agent-observation.js';
 import { loadTeamConfig } from '../config.js';
@@ -526,10 +526,11 @@ function leaseData(
 
   const folder = rendered.folder === undefined ? undefined : WorkflowFolder.dir(config, rendered.folder);
 
-  // Every process of the step gets the folder, as it gets $TEAMAI_RUN_DIR, which no env the step names replaces.
+  // Every process of the step gets the folder, as it gets $TEAMAI_RUN_DIR, which no env the step names replaces. Its
+  // path uses forward slashes on Windows too, which Git Bash, node and PowerShell all read.
   if (rendered.env) wire.env = rendered.env;
 
-  if (folder !== undefined) wire.env = { ...wire.env, [WORKFLOW_DIR_ENV]: folder };
+  if (folder !== undefined) wire.env = { ...wire.env, [WORKFLOW_DIR_ENV]: folder.split(sep).join('/') };
 
   if (rendered.prompt !== undefined) wire.prompt = rendered.prompt;
 
