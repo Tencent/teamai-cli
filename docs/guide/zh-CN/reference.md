@@ -105,6 +105,8 @@ ai:
 
 成员设置包括 `ai.tool`、`workflows.*`、`recallEnabled`、`contributeHintEnabled`、`mrHintEnabled`、`coAuthorEnabled`、`usageReportEnabled`、`codexTrustEnabled`、`modelAliases`、`sessions`、`scoring`、`autoCompactTokens` 和 `updatePolicy`。`workflows.tools`、`workflows.allow` 和 `modelAliases` 中的每一项单独计算。`~/.teamai/config.yaml` 中的 `scoring` 只会让会话评判比团队的设置更严格（[已结束的会话](./scorers.md#已结束的会话)）。`updatePolicy` 和 `autoCompactTokens` 作用于整台机器，因此由一个 scope 决定：有 user scope 时由它决定，否则由运行的 scope 决定。其他键都属于某一个安装，不会从本机读取。`~/.teamai/config.yaml` 不是安装时，`doctor` 会列出其中这类键。
 
+实际生效的 recall 值也会在每次事件中控制 recall 归因、投票同步和投票推送 hook。因而 `recall disable` 或 `recall enable` 无需重装 hook，下一次事件就会生效。
+
 | 你想要 | 写入 | 位置 |
 |---|---|---|
 | 某一条命令用 Codex | `TEAMAI_AI_TOOL=codex teamai import --dir .` | shell |

@@ -19,6 +19,8 @@ usageReportEnabled: false
 
 `teamai doctor` 会说明当前开没开、设置来自哪里。
 
+Recall 投票不属于使用统计上报。hook 是否记录并推送这些投票由实际生效的 recall 开关决定：先看 `TEAMAI_RECALL_DISABLED=1`，再看成员的 `recallEnabled`，最后看团队的 `sharing.recall.enabled`。即使使用统计上报仍开启，关闭 recall 也会停止这些更新。
+
 自动上报未确认成功时，数据会留在本地。`teamai status` 会显示
 `auto-report: pending since <time>`，并提示运行 `teamai pull --verbose`
 重试、查看原因。重复失败保留首次时间；上报成功，或关闭上报后再次 pull，

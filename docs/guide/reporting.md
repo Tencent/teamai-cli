@@ -19,6 +19,8 @@ usageReportEnabled: false
 
 `teamai doctor` says whether reporting is on and where that comes from.
 
+Recall votes are separate from usage reporting. The effective recall switch controls their hook-time recording and push: `TEAMAI_RECALL_DISABLED=1`, then the member's `recallEnabled`, then the team's `sharing.recall.enabled`. Turning recall off stops those updates even when usage reporting remains on.
+
 If an automatic report is not confirmed, the data stays local. `teamai status`
 shows `auto-report: pending since <time>` and suggests `teamai pull --verbose`
 to retry and see why. Repeated failures keep the first timestamp. A successful

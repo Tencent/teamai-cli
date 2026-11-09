@@ -105,6 +105,8 @@ A member setting is read in this order. The first level that sets it wins:
 
 The member settings are `ai.tool`, `workflows.*`, `recallEnabled`, `contributeHintEnabled`, `mrHintEnabled`, `coAuthorEnabled`, `usageReportEnabled`, `codexTrustEnabled`, `modelAliases`, `sessions`, `scoring`, `autoCompactTokens` and `updatePolicy`. In `workflows.tools`, `workflows.allow` and `modelAliases`, each entry counts on its own. `scoring` from `~/.teamai/config.yaml` only makes session judging stricter than the team's ([Finished sessions](./scorers.md#finished-sessions)). `updatePolicy` and `autoCompactTokens` act on the whole machine, so one scope decides them: the user scope when there is one, else the scope that runs. Every other key belongs to one install and is never read from the machine. `doctor` names such a key in a `~/.teamai/config.yaml` that holds no install.
 
+The effective recall value also gates the recall-attribution, vote-sync and vote-push hook handlers at every event. `recall disable` or `recall enable` therefore takes effect on the next event without reinstalling hooks.
+
 | You want | Write | In |
 |---|---|---|
 | Codex for one command | `TEAMAI_AI_TOOL=codex teamai import --dir .` | the shell |

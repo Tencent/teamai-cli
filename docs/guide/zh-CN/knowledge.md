@@ -143,7 +143,7 @@ teamai recall disable
 teamai recall status
 ```
 
-本机覆盖写在 `~/.teamai/config.yaml` 的 `recallEnabled`。`TEAMAI_RECALL_DISABLED=1` 强制关掉，此时 `teamai recall status` 会指出是这个变量关掉的。关掉之后 pull 不再安装 recall，并会删掉之前 pull 装下的 recall agent 和规则；直接运行 `teamai recall` 仍然可以搜。这个变量改的是同一作用域内所有 shell 共用的文件：在设了它的 shell 里 pull，会把整个作用域的 recall 文件和 CLAUDE.md 里的 recall 段删掉；在没设它的 shell 里再 pull，又会装回来。
+本机覆盖写在 `~/.teamai/config.yaml` 的 `recallEnabled`。`TEAMAI_RECALL_DISABLED=1` 强制关掉，此时 `teamai recall status` 会指出是这个变量关掉的。关掉之后 pull 不再安装 recall，并会删掉之前 pull 装下的 recall agent 和规则；recall 归因、投票同步和投票推送 hook 也不再工作，因此本机不会写入 recall 证据或更新团队的 recall 投票。直接运行 `teamai recall` 仍然可以搜。这个变量改的是同一作用域内所有 shell 共用的文件：在设了它的 shell 里 pull，会把整个作用域的 recall 文件和 CLAUDE.md 里的 recall 段删掉；在没设它的 shell 里再 pull，又会装回来。
 
 团队可以用自己的 recall agent，见[替换 recall agent](sharing.md#替换-recall-agent)。
 

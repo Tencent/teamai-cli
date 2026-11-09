@@ -95,6 +95,18 @@ const LOCAL_AGENT_TIMEOUT_MS = 15_000;
  */
 const VOTES_PUSH_TIMEOUT_MS = 30_000;
 
+/** Resolve the same recall switch used by pull and the recall commands. */
+async function hookRecallEnabled(localConfig: LocalConfig | null): Promise<boolean> {
+  if (!localConfig) return false;
+
+  const [{ loadTeamConfig }, { isRecallEnabled }] = await Promise.all([
+    import('./config.js'),
+    import('./types.js'),
+  ]);
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+  return isRecallEnabled(localConfig, teamConfig ?? {});
+}
+
 /**
  * Budget for the detached session-start pull.
  *
@@ -599,7 +611,7 @@ const skillUseHandler: HookHandler = {
 const recallAttributionHandler: HookHandler = {
   name: 'recall-attribution',
   async execute(stdin, tool, config) {
-    if (process.env.TEAMAI_RECALL_DISABLED === '1' || !config) return null;
+    if (!config || !await hookRecallEnabled(config)) return null;
     const { recordToolCall } = await import('./recall-adoption.js');
     await recordToolCall(stdin, tool, config);
 
@@ -757,7 +769,7 @@ const packagePendingHintHandler: HookHandler = {
 const votesSyncHandler: HookHandler = {
   name: 'votes-sync',
   async execute(stdin, tool, localConfig) {
-    if (process.env.TEAMAI_RECALL_DISABLED === '1' || !localConfig) return null;
+    if (!localConfig || !await hookRecallEnabled(localConfig)) return null;
 
     try {
       const { creditAdoptedDocs } = await import('./recall-adoption.js');
@@ -856,7 +868,7 @@ const votesSyncHandler: HookHandler = {
 const votesPushHandler: HookHandler = {
   name: 'votes-push',
   async execute(_stdin, _tool, localConfig) {
-    if (process.env.TEAMAI_RECALL_DISABLED === '1' || !localConfig) return null;
+    if (!localConfig || !await hookRecallEnabled(localConfig)) return null;
 
     try {
       const { getVotesDir, usesBranchWorktree } = await import('./types.js');

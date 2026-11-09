@@ -105,19 +105,25 @@ const mockAutoDetectInit = vi.fn().mockResolvedValue({
 });
 
 const mockFindUnreadableProjectConfig = vi.fn().mockResolvedValue(null);
+const mockLoadTeamConfig = vi.fn();
 
-vi.mock('../config.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../config.js')>()),
-  autoDetectInit: mockAutoDetectInit,
-  // A payload cwd that no longer exists (these tests use '/x') holds no
-  // project config, so the gate asks the user config: the same mocked one.
-  requireInit: mockAutoDetectInit,
-  findUnreadableProjectConfig: mockFindUnreadableProjectConfig,
-  loadLocalConfigForScope: vi.fn().mockResolvedValue(null),
-  resolveConfigForDir: vi.fn().mockResolvedValue({
-    repo: { localPath: '/tmp/team-repo', remote: '' }, username: 'test', scope: 'user', additionalRoles: [],
-  }),
-}));
+vi.mock('../config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../config.js')>();
+  mockLoadTeamConfig.mockImplementation(actual.loadTeamConfig);
+  return {
+    ...actual,
+    autoDetectInit: mockAutoDetectInit,
+    // A payload cwd that no longer exists (these tests use '/x') holds no
+    // project config, so the gate asks the user config: the same mocked one.
+    requireInit: mockAutoDetectInit,
+    findUnreadableProjectConfig: mockFindUnreadableProjectConfig,
+    loadTeamConfig: mockLoadTeamConfig,
+    loadLocalConfigForScope: vi.fn().mockResolvedValue(null),
+    resolveConfigForDir: vi.fn().mockResolvedValue({
+      repo: { localPath: '/tmp/team-repo', remote: '' }, username: 'test', scope: 'user', additionalRoles: [],
+    }),
+  };
+});
 
 vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -143,11 +149,15 @@ vi.mock('../mr-hint.js', () => ({
 
 // votes-sync's adoption comes from the recall-log reducer (#884); its own
 // behavior is covered end to end in recall-attribution.test.ts.
-const mockCreditAdoptedDocs = vi.hoisted(() => vi.fn());
+const recallMocks = vi.hoisted(() => ({
+  creditAdoptedDocs: vi.fn(),
+  recordToolCall: vi.fn(async () => undefined),
+}));
+const mockCreditAdoptedDocs = recallMocks.creditAdoptedDocs;
 vi.mock('../recall-adoption.js', () => ({
   recalledDocsForSession: vi.fn(async () => []),
   creditAdoptedDocs: mockCreditAdoptedDocs,
-  recordToolCall: vi.fn(async () => undefined),
+  recordToolCall: recallMocks.recordToolCall,
 }));
 
 const voteMocks = vi.hoisted(() => ({
@@ -201,7 +211,9 @@ import type { JsonValue, LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 
 /** The scope hook-dispatch resolved for the hook's cwd, handed to every handler. */
-const scope: LocalConfig = { repo: { localPath: '/tmp', remote: '' }, username: 'test', scope: 'user', additionalRoles: [] };
+const scope: LocalConfig = {
+  repo: { localPath: '/tmp', remote: '' }, username: 'test', scope: 'user', additionalRoles: [], recallEnabled: true,
+};
 
 // ── Tests ────────────────────────────────────────────────
 
@@ -1276,6 +1288,56 @@ describe('hook-handlers registry', () => {
   });
 
   // ── adopted-knowledge summary: show the user what was actually used ──
+
+  it.each([
+    ['recall-attribution', 'post-tool-use'],
+    ['votes-sync', 'stop'],
+    ['votes-push', 'stop'],
+  ] as const)('%s skips all recall work when the member switch is off', async (name, event) => {
+    const handler = buildHandlerRegistry().find(
+      (r) => r.event === event && r.handler.name === name,
+    )!.handler;
+    const disabled = { ...scope, recallEnabled: false };
+
+    await handler.execute({ session_id: 'sid-recall-off', cwd: '/x' }, 'claude', disabled);
+
+    expect(recallMocks.recordToolCall).not.toHaveBeenCalled();
+    expect(mockCreditAdoptedDocs).not.toHaveBeenCalled();
+    expect(voteMocks.hasPendingVoteDeltas).not.toHaveBeenCalled();
+    expect(reportsBranchMocks.updateReports).not.toHaveBeenCalled();
+  });
+
+  it('uses the team recall switch when the member has no override', async () => {
+    const handler = buildHandlerRegistry().find(
+      (r) => r.event === 'post-tool-use' && r.handler.name === 'recall-attribution',
+    )!.handler;
+    const inherited = { ...scope, recallEnabled: undefined };
+
+    mockLoadTeamConfig.mockResolvedValueOnce({
+      team: 'test', repo: '', toolPaths: {}, sharing: { recall: { enabled: false } },
+    });
+    await handler.execute({ session_id: 'sid-team-off', cwd: '/x' }, 'claude', inherited);
+    expect(recallMocks.recordToolCall).not.toHaveBeenCalled();
+
+    mockLoadTeamConfig.mockResolvedValueOnce({
+      team: 'test', repo: '', toolPaths: {}, sharing: { recall: { enabled: true } },
+    });
+    await handler.execute({ session_id: 'sid-team-on', cwd: '/x' }, 'claude', inherited);
+    expect(recallMocks.recordToolCall).toHaveBeenCalledOnce();
+  });
+
+  it('keeps TEAMAI_RECALL_DISABLED as the highest-priority hook kill switch', async () => {
+    const handler = buildHandlerRegistry().find(
+      (r) => r.event === 'post-tool-use' && r.handler.name === 'recall-attribution',
+    )!.handler;
+    process.env.TEAMAI_RECALL_DISABLED = '1';
+    try {
+      await handler.execute({ session_id: 'sid-env-off', cwd: '/x' }, 'claude', scope);
+    } finally {
+      delete process.env.TEAMAI_RECALL_DISABLED;
+    }
+    expect(recallMocks.recordToolCall).not.toHaveBeenCalled();
+  });
 
   it('votes-sync prints an adopted-knowledge summary when a recalled doc was opened', async () => {
     const registry = buildHandlerRegistry();

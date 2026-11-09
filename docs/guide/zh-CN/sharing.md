@@ -237,9 +237,9 @@ shell 获得其启动目录的团队环境变量，因此同时打开的多个�
 | 事件 | 做什么 |
 |------|--------|
 | `SessionStart` | 拉取团队资源，并记下会话开始 |
-| `PostToolUse` | 记录 skill 使用 |
+| `PostToolUse` | 记录 skill 使用；recall 开启时还会记录 recall 归因 |
 | `UserPromptSubmit` | 记录输入 |
-| `Stop` | 检查 CLI 更新，并记下会话结束 |
+| `Stop` | 检查 CLI 更新、记下会话结束；recall 开启时还会同步并推送 recall 投票 |
 
 ```bash
 teamai hooks list

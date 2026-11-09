@@ -246,9 +246,9 @@ Limits:
 | Event | What it does |
 |-------|----------------|
 | `SessionStart` | Pull team resources and record the session start |
-| `PostToolUse` | Record skill use |
+| `PostToolUse` | Record skill use and, while recall is on, recall attribution |
 | `UserPromptSubmit` | Record the prompt |
-| `Stop` | Check for a CLI update and record the session end |
+| `Stop` | Check for a CLI update, record the session end and, while recall is on, sync and push recall votes |
 
 ```bash
 teamai hooks list

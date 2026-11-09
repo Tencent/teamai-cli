@@ -351,6 +351,8 @@ its learning step runs the `share` skill (`teamai skill get share`) to summarize
 session, and its contribute step runs `teamai contribute` for each learning. A team file
 `workflows/teamai-share-learnings.yaml` replaces teamai's default. Nobody has to invoke it by hand. (A member whose teamai config
 cannot be loaded gets no prompt; `teamai skill get share` names the file and the error.)
+While recall is off, the recall-attribution, vote-sync and vote-push hooks also stay
+idle: the machine writes no recall evidence and updates no team recall votes.
 
 Teams that work in English set `language: en` in `teamai.yaml` and `teamai push`.
 That makes the built-in teamai-recall rule, the TodoWrite hint, and the merged-MR
