@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { holdsMarker, unreadMarker } from '../folder-markers.js';
+import { FOLDER_MARKERS, holdsMarker, unreadMarker } from '../folder-markers.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { resolveNamespacedItems } from '../namespace-resolver.js';
 import { FolderFiles, type FolderFilesRead } from './folder-files.js';
@@ -110,12 +110,12 @@ export interface ResourceTree<TShipped> {
  * `entryList` to its row where that parser lives (`hooks.yaml`: `src/resources/hooks.ts`).
  */
 export const RESOURCE_LAYOUTS = {
-  workflows: { dir: 'workflows', marker: 'WORKFLOW.yaml', fileName: (file: string) => (file.endsWith('.yaml') ? file.slice(0, -'.yaml'.length) : null) },
-  hooks: { dir: 'hooks', marker: 'HOOK.yaml', fileName: () => null, nameRule: { pattern: /^[a-z0-9-]+$/, description: 'a hook id uses only lower-case letters, digits and hyphens' } },
-  mcp: { dir: 'mcp', marker: 'MCP.yaml', fileName: () => null, nameRule: { pattern: /^[A-Za-z0-9_-]+$/, description: 'an MCP server name uses only letters, digits, - and _' } },
-  benchmarks: { dir: 'benchmarks', marker: 'SUITE.yaml', markerAliases: ['suite.yaml'], fileName: () => null },
+  workflows: { dir: 'workflows', marker: FOLDER_MARKERS.workflows.marker, fileName: (file: string) => (file.endsWith('.yaml') ? file.slice(0, -'.yaml'.length) : null) },
+  hooks: { dir: 'hooks', marker: FOLDER_MARKERS.hooks.marker, fileName: () => null, nameRule: { pattern: /^[a-z0-9-]+$/, description: 'a hook id uses only lower-case letters, digits and hyphens' } },
+  mcp: { dir: 'mcp', marker: FOLDER_MARKERS.mcp.marker, fileName: () => null, nameRule: { pattern: /^[A-Za-z0-9_-]+$/, description: 'an MCP server name uses only letters, digits, - and _' } },
+  benchmarks: { dir: 'benchmarks', marker: FOLDER_MARKERS.benchmarks.marker, markerAliases: ['suite.yaml'], fileName: () => null },
   /** Names are paths at any depth (`Resources.walk`): `rules/fe/style.md` and `rules/fe/style/RULE.md` are `fe/style`. */
-  rules: { dir: 'rules', marker: 'RULE.md', fileName: (file: string) => (file.endsWith('.md') ? file.slice(0, -'.md'.length) : null) },
+  rules: { dir: 'rules', marker: FOLDER_MARKERS.rules.marker, fileName: (file: string) => (file.endsWith('.md') ? file.slice(0, -'.md'.length) : null) },
 } as const satisfies Readonly<Record<string, ResourceLayout<unknown>>>;
 
 /** The names in `dir`, or none when it is missing, a symlink, or cannot be listed. */

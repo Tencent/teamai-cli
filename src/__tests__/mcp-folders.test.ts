@@ -137,6 +137,12 @@ describe('what stops team MCP for the run, keeping what is installed', () => {
     );
   });
 
+  it('an mcp.yaml server whose name the MCP name rule refuses, in the words a folder name gets', async () => {
+    await write({ 'mcp/mcp.yaml': 'servers:\n  - name: jira.lite\n    transport: http\n    url: https://jira.example.com/mcp\n' });
+
+    expect(await servers(workspace())).toEqual(expect.stringContaining('an MCP server name uses only letters, digits, - and _'));
+  });
+
   it('an MCP.yaml that does not parse', async () => {
     await write({ 'mcp/jira-lite/MCP.yaml': 'transport: stdio\n' });
 

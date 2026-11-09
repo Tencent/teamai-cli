@@ -24,7 +24,7 @@ import type { FolderFile } from './folder-files.js';
 
 const TeamMcpServerFields = z
   .object({
-    name: z.string().regex(RESOURCE_LAYOUTS.mcp.nameRule.pattern, 'name must be alphanumeric with - or _'),
+    name: z.string().regex(RESOURCE_LAYOUTS.mcp.nameRule.pattern, RESOURCE_LAYOUTS.mcp.nameRule.description),
     description: z.string().optional(),
     transport: z.enum(['stdio', 'http', 'sse']),
     command: z.string().optional(),
@@ -111,9 +111,6 @@ export async function readTeamMcpFile(absolutePath: string, relativePath: string
 /** `mcp/[<ns>/]<name>/MCP.yaml`: an mcp.yaml server without its name, which is the directory's, and without roles or projects. */
 const FolderMcpFields = TeamMcpServerFields.omit({ name: true, roles: true, projects: true });
 
-/** The marker of an MCP server folder. */
-const MCP_MARKER = 'MCP.yaml';
-
 /** A team MCP server as the team repo defines it. */
 export type TeamMcpDefinition =
   | { readonly kind: 'entry'; readonly server: TeamMcpServer }
@@ -147,7 +144,7 @@ function mcpFileEntries(content: string, relativePath: string): EntryListRead<Mc
     return {
       kind: 'invalid',
       message: `${relativePath}: server "${folderOnly.name}" uses \${TEAMAI_MCP_DIR}, which only an MCP server folder has. `
-        + `Move it to ${path.posix.dirname(relativePath)}/${folderOnly.name}/${MCP_MARKER}, beside the files it runs.`,
+        + `Move it to ${path.posix.dirname(relativePath)}/${folderOnly.name}/${RESOURCE_LAYOUTS.mcp.marker}, beside the files it runs.`,
     };
   }
 
@@ -162,8 +159,8 @@ const TEAM_MCP: ResourceLayout<McpFileEntry> = {
 
 /** Read the server folder at `full` (`folderPath` from the team root, ending in `/`), named `name`. */
 async function readMcpFolder(full: string, folderPath: string, name: string): Promise<PlaceFolderRead<TeamMcpDefinition>> {
-  const read = await readMarkerFolder({ full, path: folderPath }, MCP_MARKER, FolderMcpFields);
-  const markerPath = `${folderPath}${MCP_MARKER}`;
+  const read = await readMarkerFolder({ full, path: folderPath }, RESOURCE_LAYOUTS.mcp.marker, FolderMcpFields);
+  const markerPath = `${folderPath}${RESOURCE_LAYOUTS.mcp.marker}`;
 
   switch (read.kind) {
     case 'undeliverable':

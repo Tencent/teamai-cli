@@ -24,7 +24,7 @@ import { DefaultHooks } from '../default-hooks.js';
 
 const TeamHookSchema = z.object({
   /** Unique id (marker + manifest index). */
-  id: z.string().regex(/^[a-z0-9-]+$/),
+  id: z.string().regex(RESOURCE_LAYOUTS.hooks.nameRule.pattern),
   /** Written into the hook description. */
   description: z.string(),
   /** Claude PascalCase event name. */
@@ -60,9 +60,6 @@ export type TeamHook = z.infer<typeof TeamHookSchema>;
 
 /** `hooks/[<ns>/]<id>/HOOK.yaml`: a hooks.yaml entry without the id, which is the directory's name, and without roles or projects. */
 const FolderHookSchema = TeamHookSchema.omit({ id: true, roles: true, projects: true });
-
-/** The marker of a hook folder. */
-const HOOK_MARKER = 'HOOK.yaml';
 
 /** A team hook as the team repo defines it. */
 export type TeamHookDefinition =
@@ -163,7 +160,7 @@ export function parseTeamHooks(content: string): TeamHook[] | null {
 
 /** Read the hook folder at `full` (`folderPath` from the team root, ending in `/`), named `id`. */
 async function readHookFolder(full: string, folderPath: string, id: string): Promise<PlaceFolderRead<TeamHookDefinition>> {
-  const read = await readMarkerFolder({ full, path: folderPath }, HOOK_MARKER, FolderHookSchema);
+  const read = await readMarkerFolder({ full, path: folderPath }, RESOURCE_LAYOUTS.hooks.marker, FolderHookSchema);
 
   switch (read.kind) {
     case 'undeliverable':
@@ -360,7 +357,7 @@ export function historicalFolderHookDef(localConfig: LocalConfig, relativePath: 
   const id = rest.at(-2);
   const namespace = rest.length === 3 ? rest[0] ?? null : null;
 
-  if (type !== TEAM_HOOKS.dir || marker !== HOOK_MARKER || id === undefined || (rest.length !== 2 && rest.length !== 3)) return null;
+  if (type !== TEAM_HOOKS.dir || marker !== RESOURCE_LAYOUTS.hooks.marker || id === undefined || (rest.length !== 2 && rest.length !== 3)) return null;
 
   if (!RESOURCE_LAYOUTS.hooks.nameRule.pattern.test(id)) return null;
   const parsed = parseMarker(content, relativePath, FolderHookSchema);
