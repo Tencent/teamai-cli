@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FOLDER_MARKERS } from '../folder-markers.js';
-import { RESOURCE_LAYOUTS, Resources, type ResourceLayout, type ResourceTree } from '../resources/resolver.js';
+import { RESOURCE_LAYOUTS, Resources, type PlainLayout, type ResourceLayout, type ResourceTree } from '../resources/resolver.js';
 
 const dirs: string[] = [];
 
@@ -38,25 +38,36 @@ function treeOf(team: Record<string, string>, active: readonly string[] | 'legac
 const yamlStem = (file: string): string | null => (file.endsWith('.yaml') ? file.slice(0, -'.yaml'.length) : null);
 
 /** A type of this test only, whose folders this release reads: no real type reserves `WIDGET.yaml`. */
-const widgets: ResourceLayout = { dir: 'widgets', marker: 'WIDGET.yaml', fileName: yamlStem };
+const widgets: PlainLayout = { dir: 'widgets', marker: 'WIDGET.yaml', fileName: yamlStem };
 
-/** A type of this test only, whose items are entries in `gadgets.yaml`: one `name=value` line each. */
+/** A type of this test only, whose items are entries in `gadgets.yaml`: one `name=value` line each, `#` a note. */
 const gadgets: ResourceLayout<string> = {
   dir: 'gadgets',
   marker: null,
   fileName: () => null,
   entryList: {
     file: 'gadgets.yaml',
-    entries: (content) => content.split('\n').filter((line) => line.includes('=')).map((line) => ({
-      name: line.slice(0, line.indexOf('=')),
-      entry: line.slice(line.indexOf('=') + 1),
-    })),
+    entries: (content, file) => {
+      const lines = content.split('\n').filter((line) => line !== '');
+      const broken = lines.find((line) => !line.includes('=') && !line.startsWith('#'));
+
+      if (broken !== undefined) return { kind: 'invalid', message: `${file}: "${broken}" is not name=value` };
+
+      return {
+        kind: 'entries',
+        entries: lines.filter((line) => line.includes('=')).map((line) => ({ name: line.slice(0, line.indexOf('=')), entry: line.slice(line.indexOf('=') + 1) })),
+        notes: lines.filter((line) => line.startsWith('#')).map((line) => `${file}: ${line.slice(1)}`),
+      };
+    },
   },
 };
 
+/** `widgets` whose folder names are lower-case letters only. */
+const strictWidgets: ResourceLayout = { ...widgets, nameRule: { pattern: /^[a-z]+$/, description: 'a widget name is lower-case letters only' } };
+
 interface Row {
   readonly case: string;
-  readonly layout: ResourceLayout;
+  readonly layout: PlainLayout;
   /** The team's files, by path. */
   readonly team: Record<string, string>;
   readonly active: readonly string[] | 'legacy';
@@ -184,11 +195,50 @@ describe('Resources.resolve', () => {
   it('resolves an entry inside an entry-list file', async () => {
     const tree = treeOf({ 'gadgets/gadgets.yaml': 'lint=run lint\nformat=run format\n' }, []);
 
-    expect(await Resources.resolve(gadgets, 'format', tree)).toMatchObject({
+    expect((await Resources.survey(gadgets, tree)).resolutions.find(({ name }) => name === 'format')).toMatchObject({
       kind: 'resolved',
       item: { layer: 'root', name: 'format', source: { kind: 'entry', path: 'gadgets/gadgets.yaml', index: 1, entry: 'run format' } },
       replaces: null,
     });
+  });
+});
+
+describe('Resources.survey', () => {
+  it('names an entry-list file that cannot be used, instead of reading it as one with no entries', async () => {
+    const tree = treeOf({ 'gadgets/gadgets.yaml': 'lint=run lint\nformat run format\n' }, []);
+
+    expect(await Resources.survey(gadgets, tree)).toEqual({
+      resolutions: [],
+      diagnostics: [{ kind: 'invalid', path: 'gadgets/gadgets.yaml', message: 'gadgets/gadgets.yaml: "format run format" is not name=value' }],
+    });
+  });
+
+  it('names a folder whose name breaks the layout\'s name rule, and gives no item for it', async () => {
+    const tree = treeOf({ 'widgets/Release/WIDGET.yaml': 'release', 'widgets/build/WIDGET.yaml': 'build' }, []);
+
+    const { resolutions, diagnostics } = await Resources.survey(strictWidgets, tree);
+
+    expect([resolutions.map(({ name }) => name), diagnostics]).toEqual([['build'], [{
+      kind: 'invalid',
+      path: 'widgets/Release/',
+      message: 'widgets/Release/ is not a valid name: a widget name is lower-case letters only. Rename the folder.',
+    }]]);
+  });
+
+  it('notes a directory that holds the marker beside files its type reads, which are now that folder\'s files', async () => {
+    const tree = treeOf({
+      'gadgets/payments/GADGET.yaml': 'marker',
+      'gadgets/payments/gadgets.yaml': 'lint=run lint\n',
+      'gadgets/payments/notes.md': 'support',
+    }, ['payments']);
+
+    const { resolutions, diagnostics } = await Resources.survey({ ...gadgets, marker: 'GADGET.yaml' }, tree);
+
+    expect([resolutions.map(({ name }) => name), diagnostics]).toEqual([['payments'], [{
+      kind: 'note',
+      path: 'gadgets/payments/',
+      message: 'gadgets/payments/ holds GADGET.yaml, so it is one folder, and gadgets.yaml in it is one of its files, no longer read on its own.',
+    }]]);
   });
 });
 
@@ -212,6 +262,31 @@ describe('Resources.list', () => {
       ['deploy', 'conflict', 'workflows/payments/deploy.yaml', 'workflows/billing/deploy.yaml'],
       ['teamai-x', 'workflows/teamai-x.yaml', null],
     ]);
+  });
+});
+
+describe('Resources.layer', () => {
+  it('reads one layer\'s items in scan order, with its diagnostics, and none of another layer\'s', async () => {
+    const root = fixture({
+      'gadgets/gadgets.yaml': 'lint=root lint\n',
+      'gadgets/payments/gadgets.yaml': 'lint=payments lint\n# a payments note\n',
+      'gadgets/payments/deploy/GADGET.yaml': 'marker',
+      'gadgets/billing/gadgets.yaml': 'lint=billing lint\n',
+    });
+
+    expect(await Resources.layer({ ...gadgets, marker: 'GADGET.yaml' }, { root, namespace: 'payments' })).toMatchObject({
+      items: [
+        { layer: 'namespace', namespace: 'payments', name: 'lint', source: { kind: 'entry', path: 'gadgets/payments/gadgets.yaml', entry: 'payments lint' } },
+        { layer: 'namespace', namespace: 'payments', name: 'deploy', source: { kind: 'folder', path: 'gadgets/payments/deploy/' } },
+      ],
+      diagnostics: [{ kind: 'note', path: 'gadgets/payments/gadgets.yaml', message: 'gadgets/payments/gadgets.yaml:  a payments note' }],
+    });
+  });
+
+  it('reads no namespace in a directory that holds the marker: it is a folder', async () => {
+    const root = fixture({ 'gadgets/payments/GADGET.yaml': 'marker', 'gadgets/payments/gadgets.yaml': 'lint=run lint\n' });
+
+    expect(await Resources.layer({ ...gadgets, marker: 'GADGET.yaml' }, { root, namespace: 'payments' })).toEqual({ items: [], diagnostics: [] });
   });
 });
 

@@ -3,7 +3,6 @@ import path from 'node:path';
 import { holdsMarker, unreadMarker } from '../folder-markers.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { resolveNamespacedItems } from '../namespace-resolver.js';
-import { readFileSafe } from '../utils/fs.js';
 
 /** How a resource type lays out its items in a tree. `TEntry` is what one entry of its entry-list file holds. */
 export interface ResourceLayout<TEntry = never> {
@@ -16,11 +15,29 @@ export interface ResourceLayout<TEntry = never> {
   readonly marker: string | null;
   /** The item a file directly in a layer's directory defines, by its name: `release.yaml` is `release`. Null for any other file. */
   readonly fileName: (file: string) => string | null;
-  /** The file in a layer's directory whose entries are items (`hooks.yaml`), and how it names them, in file order. */
+  /** What a folder's directory name must match to be its type's name; a folder that does not is named in diagnostics. */
+  readonly nameRule?: { readonly pattern: RegExp; readonly description: string };
+  /** The file in a layer's directory whose entries are items (`hooks.yaml`), and how it reads them; `file` is its path, for messages. */
   readonly entryList?: {
     readonly file: string;
-    readonly entries: (content: string) => ReadonlyArray<{ readonly name: string; readonly entry: TEntry }>;
+    readonly entries: (content: string, file: string) => EntryListRead<TEntry>;
   };
+}
+
+/** What an entry-list file holds: its entries in file order, with what its type has to say about it, or why it cannot be used. */
+export type EntryListRead<TEntry> =
+  | { readonly kind: 'entries'; readonly entries: ReadonlyArray<{ readonly name: string; readonly entry: TEntry }>; readonly notes?: readonly string[] }
+  | { readonly kind: 'invalid'; readonly message: string };
+
+/**
+ * What a read of the team's files found besides items. `invalid`: a file or folder that defines no item because it
+ * cannot be used; its type decides what that stops. `note`: something the team should hear, which changes nothing.
+ * `path` is relative to the tree's root, `/`-separated; `message` names it.
+ */
+export interface ResourceDiagnostic {
+  readonly kind: 'invalid' | 'note';
+  readonly path: string;
+  readonly message: string;
 }
 
 /** Where an item is defined, relative to its tree's root (`path`, `/`-separated, as messages show it) and absolute (`full`). */
@@ -117,19 +134,56 @@ interface LayerItem<TEntry> {
   readonly definition: string;
 }
 
-/** What one layer's directory holds: the items `layout` defines in it, and the directories that are neither item nor skipped. */
+/** What one layer's directory holds: the items `layout` defines in it, the directories that are neither item nor skipped, and what the read found besides. */
 interface LayerContents<TEntry> {
   readonly items: ReadonlyArray<LayerItem<TEntry>>;
   readonly plain: readonly string[];
+  readonly diagnostics: readonly ResourceDiagnostic[];
 }
 
-/** The entries of the entry-list file at `full`, none when it cannot be read. */
-async function entryItems<TEntry>(entryList: NonNullable<ResourceLayout<TEntry>['entryList']>, full: string, relative: string): Promise<Array<LayerItem<TEntry>>> {
-  const content = await readFileSafe(full);
+/** The entries of the entry-list file at `full`, with its notes, or why it cannot be used. */
+async function entryItems<TEntry>(entryList: NonNullable<ResourceLayout<TEntry>['entryList']>, full: string, relative: string): Promise<LayerContents<TEntry>> {
+  let content: string;
 
-  return content === null ? [] : entryList.entries(content).map(({ name, entry }, index) => ({
-    name, source: { kind: 'entry', path: relative, full, index, entry }, definition: full,
-  }));
+  try {
+    content = await fs.readFile(full, 'utf8');
+  } catch (error) {
+    return { items: [], plain: [], diagnostics: [{ kind: 'invalid', path: relative, message: `${relative} cannot be read: ${error instanceof Error ? error.message : String(error)}` }] };
+  }
+
+  const read = entryList.entries(content, relative);
+
+  switch (read.kind) {
+    case 'invalid':
+      return { items: [], plain: [], diagnostics: [{ kind: 'invalid', path: relative, message: read.message }] };
+    case 'entries':
+      return {
+        items: read.entries.map(({ name, entry }, index) => ({ name, source: { kind: 'entry', path: relative, full, index, entry }, definition: full })),
+        plain: [],
+        diagnostics: (read.notes ?? []).map((message) => ({ kind: 'note', path: relative, message })),
+      };
+    default: {
+      const unhandled: never = read;
+
+      return unhandled;
+    }
+  }
+}
+
+/**
+ * The note for a folder that holds files its layout reads as items elsewhere (common rule 1 of #1787): a directory
+ * that held them gained the marker, so they are its files now. Null when it holds none.
+ */
+function itemFilesNote<TEntry>(layout: ResourceLayout<TEntry>, marker: string, folderPath: string, files: readonly string[]): ResourceDiagnostic | null {
+  const read = files.filter((file) => file !== marker && (file === layout.entryList?.file || layout.fileName(file) !== null));
+
+  if (read.length === 0) return null;
+
+  const message = read.length === 1
+    ? `${folderPath} holds ${marker}, so it is one folder, and ${read[0]} in it is one of its files, no longer read on its own.`
+    : `${folderPath} holds ${marker}, so it is one folder, and ${read.join(', ')} in it are its files, no longer read on their own.`;
+
+  return { kind: 'note', path: folderPath, message };
 }
 
 /** Read the layer in `dir`, naming each source by its path from `root`. */
@@ -139,12 +193,15 @@ async function readLayer<TEntry>(layout: ResourceLayout<TEntry>, root: string, d
   const folderMarker = layout.marker === unread ? null : layout.marker;
 
   const items: Array<LayerItem<TEntry>> = [];
+  const diagnostics: ResourceDiagnostic[] = [];
 
   for (const file of await fileNames(dir)) {
     const full = path.join(dir, file);
 
     if (layout.entryList?.file === file) {
-      items.push(...await entryItems(layout.entryList, full, toPath(full)));
+      const read = await entryItems(layout.entryList, full, toPath(full));
+      items.push(...read.items);
+      diagnostics.push(...read.diagnostics);
       continue;
     }
 
@@ -162,13 +219,23 @@ async function readLayer<TEntry>(layout: ResourceLayout<TEntry>, root: string, d
     if (await holdsMarker(full, unread)) continue;
 
     if (folderMarker !== null && await holdsMarker(full, folderMarker)) {
-      items.push({ name: sub, source: { kind: 'folder', path: `${toPath(full)}/`, full }, definition: path.join(full, folderMarker) });
+      const folderPath = `${toPath(full)}/`;
+
+      if (layout.nameRule && !layout.nameRule.pattern.test(sub)) {
+        diagnostics.push({ kind: 'invalid', path: folderPath, message: `${folderPath} is not a valid name: ${layout.nameRule.description}. Rename the folder.` });
+        continue;
+      }
+
+      items.push({ name: sub, source: { kind: 'folder', path: folderPath, full }, definition: path.join(full, folderMarker) });
+      const note = itemFilesNote(layout, folderMarker, folderPath, await fileNames(full));
+
+      if (note) diagnostics.push(note);
     } else {
       plain.push(sub);
     }
   }
 
-  return { items, plain };
+  return { items, plain, diagnostics };
 }
 
 /** A default file or folder of teamai's package, read. */
@@ -213,32 +280,80 @@ async function shippedItems<TEntry, TShipped>(layout: ResourceLayout<TEntry>, te
   return (await readShipped(layout, teamai.root)).map(({ name, source, file }) => ({ layer: 'teamai', name, source, shipped: teamai.read(file) }));
 }
 
-/** The items of `layout` in the team's files: the root's, then each namespace's, in the order the scan meets them. */
-async function teamItems<TEntry>(layout: ResourceLayout<TEntry>, team: TeamTree): Promise<Array<TeamItem<TEntry>>> {
+/** The items of `layout` in the team's files: the root's, then each namespace's, in the order the scan meets them; and what the scan found besides. */
+async function teamItems<TEntry>(layout: ResourceLayout<TEntry>, team: TeamTree): Promise<{ items: Array<TeamItem<TEntry>>; diagnostics: ResourceDiagnostic[] }> {
   const dir = path.join(team.root, layout.dir);
   const root = await readLayer(layout, team.root, dir);
   const items: Array<TeamItem<TEntry>> = root.items.map(({ name, source }) => ({ layer: 'root', name, source }));
+  const diagnostics = [...root.diagnostics];
 
   for (const namespace of root.plain) {
-    for (const { name, source } of (await readLayer(layout, team.root, path.join(dir, namespace))).items) {
-      items.push({ layer: 'namespace', namespace, name, source });
-    }
+    const read = await readLayer(layout, team.root, path.join(dir, namespace));
+    diagnostics.push(...read.diagnostics);
+
+    for (const { name, source } of read.items) items.push({ layer: 'namespace', namespace, name, source });
   }
 
-  return items;
+  return { items, diagnostics };
+}
+
+/** One layer of the team's files, as `layer` reads it. */
+export interface TeamLayer<TEntry> {
+  readonly items: ReadonlyArray<TeamItem<TEntry>>;
+  readonly diagnostics: readonly ResourceDiagnostic[];
+}
+
+/**
+ * The items of one layer of the team's files, the root's (`namespace: null`) or `<dir>/<namespace>/`'s, in scan order,
+ * with what the read found besides. For a type that applies its own rules to each item before the layers are resolved.
+ * A namespace directory that holds a folder marker, or is a symlink, is no namespace and gives nothing.
+ */
+async function layer<TEntry>(layout: ResourceLayout<TEntry>, at: { readonly root: string; readonly namespace: string | null }): Promise<TeamLayer<TEntry>> {
+  const typeDir = path.join(at.root, layout.dir);
+
+  if (at.namespace === null) {
+    const read = await readLayer(layout, at.root, typeDir);
+
+    return { items: read.items.map(({ name, source }) => ({ layer: 'root', name, source })), diagnostics: read.diagnostics };
+  }
+
+  const { namespace } = at;
+  const dir = path.join(typeDir, namespace);
+  const markers = [layout.marker, unreadMarker(layout.dir)];
+
+  if (await isSymlink(dir) || (await Promise.all(markers.map((marker) => holdsMarker(dir, marker)))).some(Boolean)) return { items: [], diagnostics: [] };
+  const read = await readLayer(layout, at.root, dir);
+
+  return { items: read.items.map(({ name, source }) => ({ layer: 'namespace', namespace, name, source })), diagnostics: read.diagnostics };
+}
+
+/** Whether `file` is a symbolic link itself; false when it is missing. */
+async function isSymlink(file: string): Promise<boolean> {
+  try {
+    return (await fs.lstat(file)).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 /** A resolution `list` gives: every name it gives has a definition, or two that conflict. */
 export type ListedResolution<TEntry, TShipped> = Exclude<LayeredResolution<TEntry, TShipped>, { readonly kind: 'missing' }>;
 
+/** Every name of a layout in a tree, as `list` gives them, and what the read found besides. */
+export interface ResourceSurvey<TEntry, TShipped> {
+  readonly resolutions: Array<ListedResolution<TEntry, TShipped>>;
+  readonly diagnostics: readonly ResourceDiagnostic[];
+}
+
 /**
  * Every name of `layout` in `tree`, each resolved as `resolve` resolves it: the team's names in the order the scan meets
  * them (the root's files in name order, then each namespace's), then the names only teamai ships, in name order. Asks
- * `tree` for its namespaces only once the scan meets an item in one, so a root-only tree reads no manifest.
+ * `tree` for its namespaces only once the scan meets an item in one, so a root-only tree reads no manifest. A file or
+ * folder that cannot be used defines no item and is named in `diagnostics` instead, for its type to act on.
  */
-async function list<TEntry, TShipped>(layout: ResourceLayout<TEntry>, tree: ResourceTree<TShipped>): Promise<Array<ListedResolution<TEntry, TShipped>>> {
+async function survey<TEntry, TShipped>(layout: ResourceLayout<TEntry>, tree: ResourceTree<TShipped>): Promise<ResourceSurvey<TEntry, TShipped>> {
   const shipped = tree.teamai ? await shippedItems(layout, tree.teamai) : [];
-  const items = tree.team ? await teamItems(layout, tree.team) : [];
+  const { items, diagnostics } = tree.team ? await teamItems(layout, tree.team) : { items: [], diagnostics: [] };
   const onDisk = [...new Set(items.flatMap((item) => (item.layer === 'namespace' ? [item.namespace] : [])))];
   const declared = tree.team && onDisk.length > 0 ? await tree.team.namespaces() : [];
   const active = declared === 'legacy' ? onDisk : declared;
@@ -268,14 +383,28 @@ async function list<TEntry, TShipped>(layout: ResourceLayout<TEntry>, tree: Reso
 
   const named = new Set(team.map(({ name }) => name));
 
-  return [...team, ...shipped.flatMap((item): Array<ListedResolution<TEntry, TShipped>> => (
+  const resolutions = [...team, ...shipped.flatMap((item): Array<ListedResolution<TEntry, TShipped>> => (
     named.has(item.name) ? [] : [{ kind: 'resolved', name: item.name, item, replaces: null }]
   ))];
+
+  return { resolutions, diagnostics };
+}
+
+/**
+ * A layout whose reads name nothing in diagnostics but notes: no entry-list file, which can be invalid, and no name
+ * rule, which a folder can break. `list` and `resolve` take only these, so a type that can meet an invalid file reads
+ * through `survey` and cannot miss it.
+ */
+export type PlainLayout<TEntry = never> = ResourceLayout<TEntry> & { readonly entryList?: undefined; readonly nameRule?: undefined };
+
+/** `survey`'s resolutions alone, for a layout that cannot meet an invalid file or folder. */
+async function list<TEntry, TShipped>(layout: PlainLayout<TEntry>, tree: ResourceTree<TShipped>): Promise<Array<ListedResolution<TEntry, TShipped>>> {
+  return (await survey<TEntry, TShipped>(layout, tree)).resolutions;
 }
 
 /** Which definition of `name` applies in `tree`: the most specific layer that has it, as a whole, or a conflict. */
-async function resolve<TEntry, TShipped>(layout: ResourceLayout<TEntry>, name: string, tree: ResourceTree<TShipped>): Promise<LayeredResolution<TEntry, TShipped>> {
+async function resolve<TEntry, TShipped>(layout: PlainLayout<TEntry>, name: string, tree: ResourceTree<TShipped>): Promise<LayeredResolution<TEntry, TShipped>> {
   return (await list(layout, tree)).find((resolution) => resolution.name === name) ?? { kind: 'missing', name };
 }
 
-export const Resources = { list, resolve } as const;
+export const Resources = { list, resolve, survey, layer } as const;
