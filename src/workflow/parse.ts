@@ -27,7 +27,7 @@ import { ClonePlaceSchema } from './clone.js';
 import { mergeRequirements, ON_LIMIT, REQUIREMENT_KEYS, RequirementsSchema, SANDBOX_WITHHELD_ENV, SetupSchema, type InEffect, type OnLimit, type Requirements, type Setup } from './requirements.js';
 import { sameEnvName } from '../resources/env-key.js';
 import { Writes } from './writes.js';
-import { WORKFLOW_MARKER } from './folder.js';
+import { WORKFLOW_MARKER, type WorkflowFolderFile } from './folder.js';
 
 /**
  * The first release that reads `invoke` and `alias`. An older CLI refuses either as an unknown key and drops the
@@ -2341,6 +2341,49 @@ export function promptFileDiagnostics(
   }
 
   return diagnostics;
+}
+
+/**
+ * `definition` with each `prompt_file` and `answer_file`, inline workflows' included, read into the step's `prompt` or
+ * `answer` from the files of the workflow folder `folder.path` names; or the diagnostics naming a file the folder lacks
+ * or a template it holds that does not check.
+ */
+export function resolveFolderFiles(
+  file: string,
+  definition: WorkflowDefinition,
+  locations: Record<string, { line: number; column: number }>,
+  folder: { path: string; files: ReadonlyArray<Pick<WorkflowFolderFile, 'path' | 'content'>> },
+): { ok: true; definition: WorkflowDefinition } | { ok: false; diagnostics: WorkflowDiagnostic[] } {
+  const diagnostics: WorkflowDiagnostic[] = [];
+
+  const withTexts = (given: WorkflowStep[], trail: number[]): WorkflowStep[] => given.map((step, index) => {
+    const at = [...trail, index];
+    const child = stepWorkflow(step);
+
+    if (child?.kind === 'inline') return { ...step, workflow: { ...child.workflow, steps: withTexts(child.workflow.steps, at) } };
+    const written = step.promptFile ?? step.answerFile;
+
+    if (written === undefined) return step;
+    const key = step.promptFile !== undefined ? 'prompt_file' : 'answer_file';
+    const field = stepField(at);
+    const location = locations[field] ?? { line: 1, column: 1 };
+    const inside = written.split(/[\\/]/).filter((segment) => segment !== '' && segment !== '.').join('/');
+    const found = folder.files.find((candidate) => candidate.path === inside);
+
+    if (!found) {
+      diagnostics.push({ file, ...location, field: `${field}.${key}`, message: `${key} "${written}" is not a file of the workflow folder ${folder.path}` });
+
+      return step;
+    }
+
+    diagnostics.push(...promptFileDiagnostics(file, definition, at, found.content, location));
+
+    return key === 'prompt_file' ? { ...step, prompt: found.content } : { ...step, answer: found.content };
+  });
+
+  const steps = withTexts(definition.steps, []);
+
+  return diagnostics.length > 0 ? { ok: false, diagnostics } : { ok: true, definition: { ...definition, steps } };
 }
 
 /** The field of the step at `trail`, its index in each workflow on the way to it, such as `steps[2].workflow.steps[0]`. */

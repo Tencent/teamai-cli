@@ -473,6 +473,37 @@ describe('default workflow folders', () => {
     expect(again.kind === 'resolved' && again.item.layer === 'teamai' ? again.item.shipped : undefined).toBe(shipped);
   });
 
+  it('gives the steps of a default folder the text of the files their prompt_file and answer_file name', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-wf-defaults-'));
+    dirs.push(root);
+    const folder = path.join(root, 'workflows', 'teamai-folder-texts');
+    fs.mkdirSync(path.join(folder, 'texts'), { recursive: true });
+    fs.writeFileSync(path.join(folder, 'WORKFLOW.yaml'), `schemaVersion: v1alpha1
+name: teamai-folder-texts
+description: Demo.
+steps:
+  - id: review
+    prompt_file: review.md
+  - id: each
+    needs: [review]
+    workflow:
+      steps:
+        - id: ask
+          answer_file: texts/ask.md
+          output: { text: string }
+`);
+    fs.writeFileSync(path.join(folder, 'review.md'), 'Review this project.\n');
+    fs.writeFileSync(path.join(folder, 'texts', 'ask.md'), 'Name one color.');
+
+    const found = await Resources.resolve(RESOURCE_LAYOUTS.workflows, 'teamai-folder-texts', { teamai: { root, read: DefaultWorkflows.layer.read } });
+
+    const shipped = found.kind === 'resolved' && found.item.layer === 'teamai' ? found.item.shipped : undefined;
+    expect(shipped?.definition.steps).toMatchObject([
+      { id: 'review', prompt: 'Review this project.\n' },
+      { id: 'each', workflow: { steps: [{ id: 'ask', answer: 'Name one color.' }] } },
+    ]);
+  });
+
   const SCORE = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'workflows', 'teamai-score.yaml'), 'utf8');
 
   it('replaces a default with a team folder of its name', async () => {

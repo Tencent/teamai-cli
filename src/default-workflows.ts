@@ -9,13 +9,14 @@ import { SCORE_WORKFLOW } from './scorers/judging-workflows.js';
 import { ScoreOverride, type ScoreOverrideCode } from './scorers/score-override.js';
 import type { LocalConfig } from './types.js';
 import { WorkflowFolder } from './workflow/folder.js';
-import { formatDiagnostic, parseWorkflow } from './workflow/parse.js';
+import { formatDiagnostic, parseWorkflow, resolveFolderFiles } from './workflow/parse.js';
 import type { CachedWorkflow, ResolvedWorkflow, WorkflowDefinition, WorkflowDiagnostic, WorkflowSource } from './workflow/types.js';
 
 // ─── Default workflows (#1388) ───────────────────────────
 //
 //  The CLI ships workflows a team gets without writing them,
-//  as workflows/<name>.yaml in the npm package: the teamai
+//  as workflows/<name>.yaml or a folder workflows/<name>/
+//  with its WORKFLOW.yaml in the npm package: the teamai
 //  layer the resolver (src/resources/resolver.ts) reads below
 //  the team's files. A team file of the same name replaces
 //  one. The workflow cache resolves them (loadCachedWorkflow,
@@ -62,11 +63,17 @@ function readDefault({ relativePath, content, folder }: ShippedFile): CachedWork
 
   if (!parsed.definition.name.startsWith(PREFIX)) throw new Error(`teamai's default ${relativePath} is named ${parsed.definition.name}, which does not start with ${PREFIX}`);
 
+  const resolved = read
+    ? resolveFolderFiles(relativePath, parsed.definition, parsed.promptFileLocations, { path: `${path.posix.dirname(relativePath)}/`, files: read.files })
+    : parsed;
+
+  if (!resolved.ok) throw new Error(`teamai's default ${relativePath} does not read its files: ${resolved.diagnostics.map(formatDiagnostic).join('; ')}`);
+
   const shipped: CachedWorkflow = {
     relativePath,
     sourceHash: read ? WorkflowFolder.hash(read.files) : createHash('sha256').update(content).digest('hex'),
     content,
-    definition: parsed.definition,
+    definition: resolved.definition,
     validatedAt: new Date(0).toISOString(),
   };
 

@@ -19,7 +19,7 @@ import {
   type LocalConfig,
 } from '../types.js';
 import { LineCounter, parseDocument } from 'yaml';
-import { formatDiagnostic, parseWorkflow, promptFileDiagnostics, stepField } from './parse.js';
+import { formatDiagnostic, parseWorkflow, promptFileDiagnostics, resolveFolderFiles, stepField } from './parse.js';
 import { locate, valueNode, type WorkflowFiles } from './parse-context.js';
 import { stepWorkflow, type CachedWorkflow, type OutputSchema, type ResolvedWorkflow, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from './types.js';
 import { DefaultWorkflows } from '../default-workflows.js';
@@ -1150,6 +1150,12 @@ async function resolvePromptFiles(
   | { ok: true; definition: WorkflowDefinition; sources: Array<{ path: string; content: string }> }
   | { ok: false; diagnostics: WorkflowDiagnostic[] }
 > {
+  if (folder) {
+    const read = resolveFolderFiles(workflowFile, definition, locations, folder);
+
+    return read.ok ? { ...read, sources: [] } : read;
+  }
+
   const root = path.resolve(config.repo.localPath);
   const diagnostics: WorkflowDiagnostic[] = [];
   const sources: Array<{ path: string; content: string }> = [];
@@ -1226,32 +1232,16 @@ async function resolvePromptFiles(
       const key = step.promptFile !== undefined ? 'prompt_file' : 'answer_file';
       const location = locations[field] ?? { line: 1, column: 1 };
       const at = { file: workflowFile, line: location.line, column: location.column, field: `${field}.${key}` };
-      let text: string;
+      const read = await promptsText(key, written, at);
 
-      if (folder) {
-        const inside = written.split(/[\\/]/).filter((segment) => segment !== '' && segment !== '.').join('/');
-        const found = folder.files.find((file) => file.path === inside);
-
-        if (!found) {
-          diagnostics.push({ ...at, message: `${key} "${written}" is not a file of the workflow folder ${folder.path}` });
-          continue;
-        }
-
-        text = found.content;
-      } else {
-        const read = await promptsText(key, written, at);
-
-        if ('message' in read) {
-          diagnostics.push(read);
-          continue;
-        }
-
-        sources.push(read);
-        text = read.content;
+      if ('message' in read) {
+        diagnostics.push(read);
+        continue;
       }
 
-      diagnostics.push(...promptFileDiagnostics(workflowFile, definition, [...trail, index], text, location));
-      steps[index] = key === 'prompt_file' ? { ...step, prompt: text } : { ...step, answer: text };
+      sources.push(read);
+      diagnostics.push(...promptFileDiagnostics(workflowFile, definition, [...trail, index], read.content, location));
+      steps[index] = key === 'prompt_file' ? { ...step, prompt: read.content } : { ...step, answer: read.content };
     }
 
     return steps;
