@@ -13,6 +13,7 @@ import { attemptEnv } from '../workflow/attempt-marker.js';
 import type { BenchmarkSuiteFiles } from '../workflow/conformance-interpreter.js';
 import { leaseNext, reportAttempt } from '../workflow/engine.js';
 import type { DriverCan } from '../workflow/requirements.js';
+import { cancelRun } from '../workflow/run-controls.js';
 import { readRun, runScratchDir } from '../workflow/store.js';
 import type { DriverIdentity } from '../workflow/types.js';
 import { benchmarkRunConfig, PLANNED_BENCHMARK, settleBaselines, startBenchmarkRun, trialCheckOutput } from './helpers/benchmark-fixture.js';
@@ -133,10 +134,10 @@ const PROMPT = 'trials.r1.t01.a01.prompt';
 
 /**
  * The record of the one trial of a mixed task whose check failed, in a suite that calibrates every such trial: its
- * calibration judge labelled it `label`, or gave the code `code` and no label, storing nothing. Also the groups
- * `teamai score plan` gave the calibrate instance.
+ * calibration judge labelled it `label`, or gave the code `code` and no label, storing nothing, or the run was cancelled
+ * while the judge ran (`isJudgeCancelled`). Also the groups `teamai score plan` gave the calibrate instance.
  */
-async function calibratedRecord({ label = 'correct', code = '' }: { label?: string; code?: string } = {}): Promise<{ record: BenchmarkRecord; groups: unknown; task: string | undefined }> {
+async function calibratedRecord({ label = 'correct', code = '', isJudgeCancelled = false }: { label?: string; code?: string; isJudgeCancelled?: boolean } = {}): Promise<{ record: BenchmarkRecord; groups: unknown; task: string | undefined }> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-calibration-'));
   dirs.push(root);
   const config = benchmarkRunConfig(root);
@@ -176,6 +177,10 @@ async function calibratedRecord({ label = 'correct', code = '' }: { label?: stri
     }
     if (id === 'label') outputs = { labels: [{ scorer: CORRECTNESS, label: code === '' ? label : '', code }] };
     if (id === 'write') outputs = { written: 0, labels: [] };
+    if (id === 'judge' && isJudgeCancelled) {
+      await cancelRun(config, runId, {});
+      break;
+    }
     if (id === 'judge') {
       const confined = { tool: 'claude', model: { requested: 'haiku', reported: 'claude-haiku-4-5' }, isolation: 'verified', access: 'read', usage: { cost: { amount: 0.002, unit: 'USD' } } } as const;
       await reportAttempt(config, runId, { attempt, revision, outcome: 'success', driver, tool: 'claude', outputs: { answer: { label, reasoning: 'The message names the field.' } }, confined });
@@ -211,6 +216,13 @@ describe('benchmark run calibration', () => {
 
     expect(record.calibration).toEqual({ rate: 100 });
     expect(record.tasks.map(({ judge }) => judge)).toEqual(['both']);
+  });
+
+  it('records the judging cost of a trial as unknown when the run was cancelled while its calibration judge ran', async () => {
+    const { record } = await calibratedRecord({ isJudgeCancelled: true });
+
+    expect(record.trials[0]).not.toHaveProperty('calibration');
+    expect(record.trials[0]?.scoringCost).toEqual({ complete: false });
   });
 
   it('records no calibration on a trial whose calibration judge gave no label', async () => {

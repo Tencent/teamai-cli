@@ -13,7 +13,7 @@ import { isStageDecider, labelVersion, type ScoreLabel } from '../scorers/label.
 import { LABEL_CODES, ScoreLabels } from '../scorers/score-labels.js';
 import type { LocalConfig } from '../types.js';
 import { stepDefinitions } from '../workflow/scope.js';
-import { ConfinedRunReportSchema, type ConfinedRunReport, type ItemResult, type StepState } from '../workflow/step-state.js';
+import { ConfinedRunReportSchema, wasLeased, type ConfinedRunReport, type ItemResult, type StepState } from '../workflow/step-state.js';
 import { stepWorkflow, type RunState, type WorkflowStep } from '../workflow/types.js';
 import { COMPARISONS, compareJudge } from './agent-match.js';
 import { isCalibrationCandidate } from './calibration.js';
@@ -286,19 +286,21 @@ interface JudgeLaunch {
 }
 
 /**
- * Every judge launch of `run`'s `teamai-score` instances: the judge step of each group that ran, whether it succeeded or
- * failed, so a launch whose label was refused or left out still counts. A group a stage decided launched no judge.
+ * Every judge launch of `run`'s `teamai-score` instances: the judge step of each group that ran, whether it succeeded,
+ * failed or was cancelled once started, so a launch whose label was refused or left out still counts. A group a stage
+ * decided launched no judge.
  */
 function judgeLaunches(run: RunState): JudgeLaunch[] {
   const definitionOf = stepDefinitions(run);
   const instances = run.steps.filter((state) => runsTeamaiScore(definitionOf(state.id)));
+  const hasRun = (judge: StepState | undefined): judge is StepState => judge?.status === 'succeeded' || judge?.status === 'failed' || (judge?.status === 'cancelled' && wasLeased(judge));
 
   return run.steps.flatMap((state) => {
     const instance = instances.find(({ id }) => state.id.startsWith(`${id}.`));
     const group = instance ? GroupItemSchema.safeParse(state.item).data : undefined;
     const judge = group ? run.steps.find(({ id }) => id === `${state.id}.judge`) : undefined;
 
-    if (!instance || !group || (judge?.status !== 'succeeded' && judge?.status !== 'failed')) return [];
+    if (!instance || !group || !hasRun(judge)) return [];
 
     return [{ subject: group.subject, isTried: TriedInstanceSchema.safeParse(instance).success, cost: ScoreLabels.spent(run, judge.id)?.cost }];
   });
