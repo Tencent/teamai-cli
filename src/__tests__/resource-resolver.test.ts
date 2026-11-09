@@ -240,6 +240,22 @@ describe('Resources.survey', () => {
       message: 'gadgets/payments/ holds GADGET.yaml, so it is one folder, and gadgets.yaml in it is one of its files, no longer read on its own.',
     }]]);
   });
+
+  it('never names a language variant of the marker in that note, since it is the folder\'s own text', async () => {
+    const tree = treeOf({
+      'widgets/release/WIDGET.yaml': 'marker',
+      'widgets/release/WIDGET.zh.yaml': 'variant',
+      'widgets/release/steps.yaml': 'was a widget',
+    }, []);
+
+    const { diagnostics } = await Resources.survey(widgets, tree);
+
+    expect(diagnostics).toEqual([{
+      kind: 'note',
+      path: 'widgets/release/',
+      message: 'widgets/release/ holds WIDGET.yaml, so it is one folder, and steps.yaml in it is one of its files, no longer read on its own.',
+    }]);
+  });
 });
 
 describe('Resources.list', () => {

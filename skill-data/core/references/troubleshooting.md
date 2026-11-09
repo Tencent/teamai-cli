@@ -240,11 +240,13 @@ $ teamai pull
 
 ## "rules/<dir>/ holds RULE.md, so it is one folder, and <file> in it is one of its files, no longer read on its own"
 
-`pull` prints this for a rule folder holding other `.md` files, its language
-variants (`RULE.zh.md`) included. They are part of the rule `<dir>`, delivered
-with the folder, not rules of their own.
+`pull` prints this once, when `rules/<dir>/` gains a `RULE.md` and pull removes
+the copy of `<file>` it delivered before as a rule of its own. The
+file is now part of the rule `<dir>`, delivered with the folder. A folder that
+was always a folder pulls without it, and its language variants (`RULE.zh.md`)
+are never named. `review --branch` names every such file.
 
-- The team meant them as part of the folder, such as a `checklist.md` the rule
+- The team meant it as part of the folder, such as a `checklist.md` the rule
   names through `${TEAMAI_RULE_DIR}`: nothing to do.
 - A file used to be a rule of its own, such as `rules/onboarding/db.md` beside
   an old `rules/onboarding/RULE.md` that arrived as `onboarding/RULE`: the team

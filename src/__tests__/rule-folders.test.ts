@@ -17,6 +17,8 @@ vi.mock('../utils/logger.js', () => ({
 import { RulesHandler } from '../resources/rules.js';
 import { RuleFolders } from '../resources/rule-folders.js';
 import { log } from '../utils/logger.js';
+import { resetWarnOnce } from '../utils/warn-once.js';
+import { openLedger } from '../resources/delivered-copies.js';
 import { LocalConfigSchema, TeamaiConfigSchema, type LocalConfig, type TeamaiConfig } from '../types.js';
 
 /** The rule folder the spec documents (#1787, slice 5). */
@@ -69,6 +71,16 @@ describe('rule folders (#1787)', () => {
     expect(await fse.readFile(home('.teamai', 'rules', 'api-style', 'checklist.md'), 'utf8')).toBe(CHECKLIST);
     expect(await fse.pathExists(home('.teamai', 'rules', 'api-style', 'examples', 'good-endpoint.ts'))).toBe(true);
     expect(await fse.pathExists(home('.claude', 'rules', 'api-style'))).toBe(false);
+  });
+
+  it('pulls a folder that was always a folder without naming its files, on the first pull and the next', async () => {
+    const first = openLedger({});
+    resetWarnOnce();
+    await new RulesHandler().pullAllRules(teamConfig, localConfig, undefined, [], first);
+    resetWarnOnce();
+    await new RulesHandler().pullAllRules(teamConfig, localConfig, undefined, [], openLedger(first.hashes));
+
+    expect(vi.mocked(log.warn).mock.calls.map(([message]) => String(message)).filter((message) => message.includes('so it is one folder'))).toEqual([]);
   });
 
   it('takes the body of the language variant under the frontmatter of RULE.md', async () => {

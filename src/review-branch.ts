@@ -243,7 +243,9 @@ async function skippedFolderFindings(repoDir: string): Promise<Finding[]> {
  * directory that became a rule folder, a language variant's frontmatter) warns.
  */
 async function ruleFindings(repoDir: string): Promise<Finding[]> {
-  return (await readTeamRules(repoDir)).problems.map(({ kind, path: at, message }): Finding => ({
+  const { problems, folderNotes } = await readTeamRules(repoDir);
+
+  return [...folderNotes, ...problems].map(({ kind, path: at, message }): Finding => ({
     level: kind === 'invalid' ? 'fail' : 'warn',
     check: kind === 'invalid' || at.endsWith('/') ? 'structure' : 'format',
     path: at,

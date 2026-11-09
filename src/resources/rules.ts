@@ -882,7 +882,18 @@ export class RulesHandler extends ResourceHandler {
   ): Promise<void> {
     const rules = filteredRules ?? await this.scanTeamForPull(teamConfig, localConfig);
 
-    for (const { message } of (await readTeamRules(localConfig.repo.localPath)).problems) warnOnce(message);
+    const { problems, folderNotes } = await readTeamRules(localConfig.repo.localPath);
+
+    for (const { message } of problems) warnOnce(message);
+
+    // The copy of a rule whose file a rule folder now holds is removed below: say why it went.
+    const folderNoteOf = new Map(folderNotes.map(({ path: folderPath, message }) => [folderPath, message]));
+
+    const removedRuleNowFolderFile = (ruleName: string): void => {
+      const message = folderNoteOf.get(`rules/${path.posix.dirname(ruleName)}/`);
+
+      if (message !== undefined) warnOnce(message);
+    };
 
     if (await pathExists(path.join(localConfig.repo.localPath, 'rules', `${TEAMAI_CONTEXT_RULE_NAME}.md`))) {
       log.warn(`rules/${TEAMAI_CONTEXT_RULE_NAME}.md is not delivered: ${TEAMAI_CONTEXT_RULE_NAME} is the name of teamai's own instruction file `
@@ -1008,6 +1019,7 @@ export class RulesHandler extends ResourceHandler {
               || (nestedOf && await isUneditedNestedCopy(tool, fullPath, nestedOf, ledger?.previous, localConfig.repo.localPath, await deliveredRevs()))) {
               if (await keepsTrackedCopy(fullPath, flatCopy !== undefined && await pathExists(flatCopy) ? flatCopy : undefined)) continue;
               await removeDelivered(ledger, fullPath);
+              removedRuleNowFolderFile(ruleName);
               log.debug(`Removed stale rule ${localFile} from ${tool}`);
             } else if (nestedOf && flatCopy) {
               log.warn(keptNestedCopyMessage(tool, fullPath, ruleName, flatCopy));
@@ -1082,6 +1094,7 @@ export class RulesHandler extends ResourceHandler {
 
           if (await keepsTrackedCopy(fullPath)) continue;
           await removeDelivered(ledger, fullPath);
+          removedRuleNowFolderFile(ruleName);
           log.debug(`Removed stale rule ${localFile} from ${tool}`);
         }
       }
@@ -1613,12 +1626,13 @@ export class RulesHandler extends ResourceHandler {
  * The team's rules in `repoPath`, files and folders, each named by its path under `rules/` (#1787), and what the read
  * found that the team should hear, for pull to print and review to grade: `invalid`, a rule that is not delivered (a
  * name defined both as a file and as a folder, a folder that takes a name teamai keeps, a folder holding a link);
- * `note`, what changes nothing pull delivers (a directory that gained RULE.md beside rules of its own, a language
- * variant's frontmatter).
+ * `note`, what changes nothing pull delivers (a language variant's frontmatter). `folderNotes` name each rule folder
+ * that holds `.md` files, which would be rules of their own without its RULE.md (common rule 1); pull prints one only
+ * when it removes a copy the last pull delivered of such a file, since a folder that was always one is no news.
  */
-export async function readTeamRules(repoPath: string): Promise<{ rules: ResourceItem[]; problems: ResourceDiagnostic[] }> {
-  const { items, duplicates, diagnostics } = await Resources.walk(RESOURCE_LAYOUTS.rules, repoPath);
-  const problems = [...diagnostics];
+export async function readTeamRules(repoPath: string): Promise<{ rules: ResourceItem[]; problems: ResourceDiagnostic[]; folderNotes: readonly ResourceDiagnostic[] }> {
+  const { items, duplicates, diagnostics: folderNotes } = await Resources.walk(RESOURCE_LAYOUTS.rules, repoPath);
+  const problems: ResourceDiagnostic[] = [];
 
   const invalid = (at: string, message: string): void => {
     problems.push({ kind: 'invalid', path: at, message });
@@ -1665,7 +1679,7 @@ export async function readTeamRules(repoPath: string): Promise<{ rules: Resource
     rules.push(rule);
   }
 
-  return { rules, problems };
+  return { rules, problems, folderNotes };
 }
 
 /** Where each tool of the team's `toolPaths` takes rules in this scope. */

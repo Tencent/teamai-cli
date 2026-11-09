@@ -211,12 +211,21 @@ async function entryItems<TEntry>(entryList: NonNullable<ResourceLayout<TEntry>[
   }
 }
 
+/** Whether `file` is a language variant of `marker` (`RULE.zh.md` of `RULE.md`, common rule 12 of #1787): part of the folder's own text. */
+function isMarkerVariant(marker: string, file: string): boolean {
+  const ext = path.extname(marker);
+  const stem = marker.slice(0, marker.length - ext.length);
+
+  return file.startsWith(`${stem}.`) && file.endsWith(ext) && /^[a-z]+$/.test(file.slice(stem.length + 1, file.length - ext.length));
+}
+
 /**
  * The note for a folder that holds files its layout reads as items elsewhere (common rule 1 of #1787): a directory
- * that held them gained the marker, so they are its files now. Null when it holds none.
+ * that held them gained the marker, so they are its files now. The marker's language variants are the folder's own
+ * text and are never named. Null when it holds none.
  */
 function itemFilesNote<TEntry>(layout: ResourceLayout<TEntry>, marker: string, folderPath: string, files: readonly string[]): ResourceDiagnostic | null {
-  const read = files.filter((file) => file !== marker && (file === layout.entryList?.file || layout.fileName(file) !== null));
+  const read = files.filter((file) => file !== marker && !isMarkerVariant(marker, file) && (file === layout.entryList?.file || layout.fileName(file) !== null));
 
   if (read.length === 0) return null;
 
@@ -476,14 +485,6 @@ export interface ResourceWalk {
   readonly diagnostics: readonly ResourceDiagnostic[];
 }
 
-/** Whether `file` is a language variant of `marker` (`RULE.zh.md` of `RULE.md`, common rule 12 of #1787): part of the folder's own text. */
-function isMarkerVariant(marker: string, file: string): boolean {
-  const ext = path.extname(marker);
-  const stem = marker.slice(0, marker.length - ext.length);
-
-  return file.startsWith(`${stem}.`) && file.endsWith(ext) && /^[a-z]+$/.test(file.slice(stem.length + 1, file.length - ext.length));
-}
-
 /**
  * Every item of `layout` at any depth of `<root>/<dir>/`, for a type whose names are paths and which applies its own
  * namespace rules to them (rules): `rules/fe/style.md` and `rules/fe/style/RULE.md` are both `fe/style`. A directory
@@ -517,8 +518,7 @@ async function walk(layout: PlainLayout, root: string): Promise<ResourceWalk> {
       if (folderMarker !== null && await holdsMarker(full, folderMarker)) {
         const folderPath = `${toPath(full)}/`;
         found.push({ name: `${prefix}${entry.name}`, source: { kind: 'folder', path: folderPath, full } });
-        const files = (await fileNames(full)).filter((file) => !isMarkerVariant(folderMarker, file));
-        const note = itemFilesNote(layout, folderMarker, folderPath, files);
+        const note = itemFilesNote(layout, folderMarker, folderPath, await fileNames(full));
 
         if (note) diagnostics.push(note);
         continue;
