@@ -307,7 +307,7 @@ describe('recall scope isolation (issue #73)', () => {
     expect(readRecallQuality(hookSessionId)).toEqual(
       expect.objectContaining({ hitCount: 0, missCount: 1 }),
     );
-    expect(applyPhase2Adjustments((await DefaultHooks.load('teamai-friction-reminder')).params, 0, hookSessionId).isKnowledgeGap).toBe(true);
+    expect(applyPhase2Adjustments((await DefaultHooks.load('teamai-friction-reminder', null)).params, 0, hookSessionId).isKnowledgeGap).toBe(true);
   });
 
   it('records under the Pi session, not the outer one, when recall runs from a Pi shell started by Claude Code', async () => {

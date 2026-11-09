@@ -19,7 +19,7 @@ const CONTRIBUTE_BASE_THRESHOLD = 15;
 const CONTRIBUTE_SMART_THRESHOLD = 20;
 
 /** teamai's friction reminder parameters. */
-const { params: frictionParams } = await DefaultHooks.load('teamai-friction-reminder');
+const { params: frictionParams } = await DefaultHooks.load('teamai-friction-reminder', null);
 
 // ─── Test helpers ──────────────────────────────────────────
 

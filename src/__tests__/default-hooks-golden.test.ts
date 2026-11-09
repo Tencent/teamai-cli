@@ -75,13 +75,13 @@ describe('hint texts before and after their move into hook folders', () => {
     { name: 'offer-command', offersWorkflow: false },
     { name: 'offer-workflow', offersWorkflow: true },
   ])('merged-MR hint $name', async ({ name, offersWorkflow }) => {
-    const mrHint = await DefaultHooks.load('teamai-mr-hint');
+    const mrHint = await DefaultHooks.load('teamai-mr-hint', null);
 
     for (const language of LANGUAGES) expect(buildMrHint(MRS, mrHint, { language: asOption(language), offersWorkflow })).toBe(GOLDEN['teamai-mr-hint']?.[name]?.[language]);
   });
 
   it('TodoWrite hint', async () => {
-    const todoWriteHint = await DefaultHooks.load('teamai-todowrite-hint');
+    const todoWriteHint = await DefaultHooks.load('teamai-todowrite-hint', null);
 
     for (const language of LANGUAGES) expect(buildTodoWriteHint(todoWriteHint, asOption(language))).toBe(GOLDEN['teamai-todowrite-hint']?.message?.[language]);
   });
@@ -92,7 +92,7 @@ describe('hint texts before and after their move into hook folders', () => {
     { name: 'plugins-and-marketplace', counts: [0, 2, 1] },
     { name: 'all', counts: [3, 1, 2] },
   ] as const)('package hint $name', async ({ name, counts: [npm, claude, marketplace] }) => {
-    const packageHint = await DefaultHooks.load('teamai-package-hint');
+    const packageHint = await DefaultHooks.load('teamai-package-hint', null);
 
     for (const language of LANGUAGES) expect(buildPackageHintMessage(packageHint, { npm, claude, marketplace })).toBe(GOLDEN['teamai-package-hint']?.[name]?.[language]);
   });

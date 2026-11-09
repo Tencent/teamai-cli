@@ -316,24 +316,6 @@ export async function loadTeamAgentLanguage(
   return (await loadTeamConfig(config.repo.localPath))?.language;
 }
 
-/**
- * Same as {@link loadTeamAgentLanguage}, resolved the way a hook finds its
- * scope: project over user, and a removed worktree keeps the scope its session
- * recorded. A lookup failure keeps the historical bilingual text.
- */
-export async function loadTeamAgentLanguageForHook(
-  payload: Parameters<typeof import('./dashboard-collector.js').resolveHookConfig>[0],
-  tool?: string,
-): Promise<'en' | 'zh' | undefined> {
-  try {
-    const { resolveHookConfig } = await import('./dashboard-collector.js');
-
-    return loadTeamAgentLanguage(await resolveHookConfig(payload, tool ?? 'claude'));
-  } catch {
-    return undefined;
-  }
-}
-
 /** A YAML mapping read from a machine file, its values not validated yet. */
 const RawMappingSchema = z.looseObject({});
 

@@ -6,6 +6,7 @@ import type { HookDef, JsonValue, LocalConfig, ResourceItem, TeamaiConfig } from
 import { TEAMAI_CUSTOM_HOOK_PREFIX, areTeamHooksDisabled, getHooksSharing, isJsonObject, isSelfMode } from '../types.js';
 import { pathExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
+import { warnOnce } from '../utils/warn-once.js';
 import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.js';
 import {
   entryFilePath, missingTopLevelKeyReason, readEntryFileText, reportEntryResolution, resolveEntriesFor, unknownEntryKeys,
@@ -14,6 +15,7 @@ import {
 import { RESOURCE_LAYOUTS, Resources, type EntryListRead, type ResourceLayout } from './resolver.js';
 import { DeliveredFolders, type FolderDelivery } from './delivered-folders.js';
 import { FolderFiles, type FolderFile } from './folder-files.js';
+import { DefaultHooks } from '../default-hooks.js';
 
 // ─── Schema for hooks/hooks.yaml ────────────────────────────
 //
@@ -223,7 +225,13 @@ export const hooksEntryReader: EntryPlaceReader<TeamHookDefinition> = {
         continue;
       }
 
-      // A teamai- name only replaces a default (#1787, common rule 5), and teamai ships no hook folder yet.
+      // A teamai- name only replaces a default (#1787, common rule 5), at the root, as builtin: overrides apply to the
+      // whole team; defaultHookReplacements reads it there.
+      if (DefaultHooks.isName(name)) {
+        if (dir !== null) notes.push(`${source.path} is refused, and teamai's default stays in force: a default hook is replaced at the root of the team repo only. Move it to hooks/${name}/`);
+        continue;
+      }
+
       if (name.startsWith('teamai-')) {
         notes.push(`${source.path} is skipped: a teamai- name only replaces a teamai default, and teamai has no hook named ${name}. Rename the folder.`);
         continue;
@@ -329,6 +337,35 @@ function isTeamScriptCommand(command: string): boolean {
 /** A hook folder pull delivers: where, and the files. */
 export type HookFolderDelivery = FolderDelivery;
 
+/**
+ * The folders at the root of the team repo that replace one of teamai's default hooks (#1787): each is delivered to
+ * the scope's data home, where the hint that uses it reads it. One that breaks the default's contract is refused, with
+ * a warning naming why, and teamai's default stays in force.
+ */
+async function defaultHookReplacements(localConfig: LocalConfig): Promise<HookFolderDelivery[]> {
+  const { items } = await Resources.layer(TEAM_HOOKS, { root: localConfig.repo.localPath, namespace: null });
+  const folders: HookFolderDelivery[] = [];
+
+  for (const { name, source } of items) {
+    if (source.kind !== 'folder' || !DefaultHooks.isName(name)) continue;
+    const read = await FolderFiles.read(source.full);
+    const problems = read.kind === 'invalid' ? read.problems.map(FolderFiles.describe) : await DefaultHooks.problems(name, read.files);
+
+    if (read.kind === 'files' && problems.length === 0) {
+      folders.push({ dest: DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace: null, name }), files: read.files });
+      continue;
+    }
+
+    for (const problem of problems) {
+      const message = `${source.path} is refused, and teamai's default stays in force until it is fixed: ${problem}`;
+
+      if (warnOnce(message)) log.persist(message);
+    }
+  }
+
+  return folders;
+}
+
 /** One team hook as delivered: its definition for the tools, and the folder it runs from, if any. */
 interface TeamHookDelivery {
   readonly def: HookDef;
@@ -416,11 +453,13 @@ export async function resolveTeamHooks(
   let hooks = resolution.entries.map((resolved) => teamHookDelivery(localConfig, resolved));
   // The ids a workspace holds back (#913): each tool keeps what it has installed for them.
   const held = resolution.held ? { held: resolution.held } : {};
+  // Texts and thresholds of teamai's own hints, which run no command of the team's: no gate below holds them back.
+  const replacements = await defaultHookReplacements(localConfig);
 
   if (areTeamHooksDisabled()) {
     if (hooks.length > 0) log.warn(`Team hooks disabled (TEAMAI_HOOKS_DISABLED) — skipping ${hooks.length} team hook(s)`);
 
-    return { ok: true, defs: [], folders: [], builtin };
+    return { ok: true, defs: [], folders: replacements, builtin };
   }
 
   if (sharing.requireTeamScripts) {
@@ -438,7 +477,7 @@ export async function resolveTeamHooks(
 
     for (const { def } of hooks) log.info(`  [${def.key}] ${def.command}`);
 
-    return { ok: true, defs: [], folders: [], builtin, ...held };
+    return { ok: true, defs: [], folders: replacements, builtin, ...held };
   }
 
   const defs = hooks.map(({ def }) => def);
@@ -453,7 +492,7 @@ export async function resolveTeamHooks(
     for (const d of defs) log.info(`  [${d.key}] ${d.command}`);
   }
 
-  return { ok: true, defs, folders: hooks.flatMap(({ folder }) => folder ? [folder] : []), builtin, ...held };
+  return { ok: true, defs, folders: [...hooks.flatMap(({ folder }) => folder ? [folder] : []), ...replacements], builtin, ...held };
 }
 
 /**

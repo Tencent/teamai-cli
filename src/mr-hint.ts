@@ -540,7 +540,7 @@ export async function computeMrHintOutput(
   // Load cache to filter already-hinted MRs
   const cache = loadCache(owner, repo);
   const alreadyHinted = new Set(cache.hintedMrIds);
-  const hook = await DefaultHooks.load('teamai-mr-hint');
+  const hook = await DefaultHooks.load('teamai-mr-hint', localConfig ?? null);
   const { lookback_days: lookbackDays, max_mrs: limit } = hook.params;
 
   // Query the MRs merged in the past lookback_days days

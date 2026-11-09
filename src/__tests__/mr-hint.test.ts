@@ -3,7 +3,7 @@ import { parseRemoteToRepo, buildHintMessage, getGitRemote } from '../mr-hint.js
 import type { MRSummary } from '../mr-hint.js';
 import { DefaultHooks } from '../default-hooks.js';
 
-const mrHint = await DefaultHooks.load('teamai-mr-hint');
+const mrHint = await DefaultHooks.load('teamai-mr-hint', null);
 
 describe('parseRemoteToRepo', () => {
   it('parses TGit HTTPS URL with simple path', () => {

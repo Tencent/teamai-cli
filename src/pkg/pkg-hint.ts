@@ -93,7 +93,7 @@ async function computePackageHintState(cwd: string): Promise<PackageHintState | 
 
   return {
     manifestHash: packageDeclarationHash(manifest),
-    message: buildPackageHintMessage(await DefaultHooks.load('teamai-package-hint'), {
+    message: buildPackageHintMessage(await DefaultHooks.load('teamai-package-hint', localConfig), {
       npm: manifest.packages.npm?.length ?? 0,
       claude: manifest.packages.claude?.plugins.length ?? 0,
       marketplace: manifest.packages.claude?.marketplaces.length ?? 0,

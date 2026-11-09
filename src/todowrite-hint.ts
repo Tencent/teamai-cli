@@ -160,13 +160,17 @@ export async function todoWriteHint(tool?: string): Promise<void> {
     return;
   }
 
-  const { loadTeamAgentLanguageForHook } = await import('./config.js');
-  const language = await loadTeamAgentLanguageForHook(input.payload, tool);
+  // The scope a hook finds, project over user: its teamai.yaml `language` and its replacement of the hint apply. A
+  // lookup failure keeps teamai's historical bilingual text.
+  const { resolveHookConfig } = await import('./dashboard-collector.js');
+  const { loadTeamAgentLanguage } = await import('./config.js');
+  const scope = await resolveHookConfig(input.payload, tool ?? 'claude').catch(() => null);
+  const language = await loadTeamAgentLanguage(scope).catch(() => undefined);
 
   const hookOutput = JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PostToolUse',
-      additionalContext: buildHintMessage(await DefaultHooks.load('teamai-todowrite-hint'), language),
+      additionalContext: buildHintMessage(await DefaultHooks.load('teamai-todowrite-hint', scope), language),
     },
   });
 

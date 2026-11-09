@@ -685,7 +685,7 @@ const contributeCheckHandler: HookHandler = {
     const { readSessionRun, sessionRun } = await import('./launch-context.js');
     const run = readSessionRun(stdin) ?? sessionRun(process.env);
     const offer = localConfig ? async () => (await import('./session-share.js')).SessionShare.reminderOffer(localConfig, { tool, sessionId, cwd: cwd ?? process.cwd(), run }) : undefined;
-    const { hint } = await contributeCheckForSession(sessionId, cwd, transcriptPath, stash, offer);
+    const { hint } = await contributeCheckForSession(sessionId, cwd, transcriptPath, stash, offer, localConfig);
 
     if (!hint) return null;
 
@@ -938,7 +938,7 @@ const todowriteHintHandler: HookHandler = {
     return JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
-        additionalContext: buildHintMessage(await DefaultHooks.load('teamai-todowrite-hint'), await teamAgentLanguage(config)),
+        additionalContext: buildHintMessage(await DefaultHooks.load('teamai-todowrite-hint', config), await teamAgentLanguage(config)),
       },
     });
   },
@@ -1000,7 +1000,7 @@ const teamEnvHintHandler: HookHandler = {
     }).join(', ');
 
     const { DefaultHooks } = await import('./default-hooks.js');
-    const hook = await DefaultHooks.load('teamai-env-hint');
+    const hook = await DefaultHooks.load('teamai-env-hint', config);
 
     return JSON.stringify({
       hookSpecificOutput: {

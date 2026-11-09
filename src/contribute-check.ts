@@ -10,7 +10,7 @@ import { readRecallQuality } from './recall-quality.js';
 import { deriveSessionId } from './utils/session-id.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { redactWithEnv } from './utils/redact.js';
-import type { ContributeState, DashboardEvent, SessionShareOffered, SessionFriction } from './types.js';
+import type { ContributeState, DashboardEvent, LocalConfig, SessionShareOffered, SessionFriction } from './types.js';
 import { CONTRIBUTE_FASTPATH_TTL_MS, CONTRIBUTE_GIT_COMMIT_DOWNWEIGHT, SessionShareOfferedSchema } from './types.js';
 import { DefaultHooks, type DefaultHook, type DefaultHookParams, type HintLanguage } from './default-hooks.js';
 import { getUserHome } from './utils/home.js';
@@ -666,6 +666,7 @@ export async function contributeCheckForSession(
   transcriptPath?: string,
   stashInsteadOfReturn = false,
   offer?: () => Promise<SessionShareOffered | undefined>,
+  scope: LocalConfig | null = null,
 ): Promise<{ hint: string | null }> {
   const state = await readContributeState(sessionId);
   const now = Date.now();
@@ -680,7 +681,7 @@ export async function contributeCheckForSession(
     return { hint: null };
   }
 
-  const reminder = await DefaultHooks.load('teamai-friction-reminder');
+  const reminder = await DefaultHooks.load('teamai-friction-reminder', scope);
   const { params } = reminder;
 
   // Shared debounce for Layer 1 (skip events read) and Layer 2 (reuse cached
@@ -902,6 +903,7 @@ export async function contributeCheck(toolArg?: string): Promise<void> {
     stdinData.transcriptPath,
     stopStdoutUnsupported(tool),
     offer,
+    config,
   );
 
   if (hint !== null) {

@@ -2,8 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { DeliveredFolders } from './resources/delivered-folders.js';
 import { FolderFiles, type FolderFile } from './resources/folder-files.js';
-import { isJsonObject, type JsonObject, type TeamaiConfig } from './types.js';
+import { isJsonObject, type JsonObject, type JsonValue, type LocalConfig, type TeamaiConfig } from './types.js';
+import { log } from './utils/logger.js';
 import { parseYaml } from './utils/yaml.js';
 
 // ─── Default hooks (#1787) ───────────────────────────────
@@ -105,6 +107,13 @@ export interface DefaultHook<TName extends DefaultHookName> {
   text<TText extends DefaultHookTextName<TName>>(text: TText, language: HintLanguage): PickedText<TextVariable<TName, TText>>;
 }
 
+const NAMES = Object.keys(PARAMS).filter((name): name is DefaultHookName => name in PARAMS);
+
+/** Whether `name` is one of teamai's default hook folders, which a team folder of that name at the root replaces. */
+function isName(name: string): name is DefaultHookName {
+  return NAMES.some((known) => known === name);
+}
+
 /** The package root, holding `hooks/`. This file sits one level below it, in src/ and in the bundle in dist/ alike. */
 function packageRoot(): string {
   const modulePath = fileURLToPath(import.meta.url);
@@ -139,10 +148,42 @@ interface TextVariants {
   zh?: string;
 }
 
-/** Default hook `name` from the files of its folder, or why they do not make one. */
-function readFolder<TName extends DefaultHookName>(name: TName, files: readonly FolderFile[]): { ok: true; hook: DefaultHook<TName> } | { ok: false; problems: string[] } {
+/**
+ * `base` with the keys of `own` over it (#1787, common rule 5): a key `own` leaves out keeps `base`'s value, and a
+ * mapping in both is merged one level down, so `weights: { reject: 30 }` keeps the other weights. A list is replaced.
+ */
+function withOver(base: JsonObject, own: JsonValue | undefined): JsonValue {
+  if (own === undefined || own === null) return base;
+
+  if (!isJsonObject(own)) return own;
+  const merged: JsonObject = { ...base };
+
+  for (const [key, value] of Object.entries(own)) {
+    const under = base[key];
+    merged[key] = isJsonObject(under) && isJsonObject(value) ? { ...under, ...value } : value;
+  }
+
+  return merged;
+}
+
+/** What one issue with `with:` of default hook `name` says, naming the parameter: one line per key it does not take. */
+function paramProblems(name: DefaultHookName, issue: z.core.$ZodIssue): string[] {
+  const at = (keys: readonly PropertyKey[]): string => ['with', ...keys.map(String)].join('.');
+
+  if (issue.code === 'unrecognized_keys') return issue.keys.map((key) => `HOOK.yaml: ${at([...issue.path, key])} is not a parameter of ${name}`);
+
+  return [`HOOK.yaml: ${at(issue.path)} ${issue.message}`];
+}
+
+/** A folder read as default hook `TName`: the hook, and the `with:` it was written with, or why its files do not make one. */
+type FolderRead<TName extends DefaultHookName> =
+  | { readonly ok: true; readonly hook: DefaultHook<TName>; readonly with: JsonObject }
+  | { readonly ok: false; readonly problems: string[] };
+
+/** Default hook `name` from the files of its folder, its `with:` over `base` (teamai's, for a team's replacement), or why they do not make one. */
+function readFolder<TName extends DefaultHookName>(name: TName, files: readonly FolderFile[], base: JsonObject): FolderRead<TName> {
   const byPath = new Map(files.map((file) => [file.path, file]));
-  const problems: string[] = [];
+  const refusals: string[] = [];
   const marker = byPath.get('HOOK.yaml');
   let raw: JsonObject = {};
 
@@ -150,36 +191,58 @@ function readFolder<TName extends DefaultHookName>(name: TName, files: readonly 
     const parsed = parseYaml(marker ? textOf(marker) : '');
 
     if (isJsonObject(parsed)) raw = parsed;
-    else problems.push('HOOK.yaml must be a mapping of description and with');
+    else refusals.push('HOOK.yaml must be a mapping of description and with');
+
+    // The folder's name says which behaviour of teamai's it configures, so it runs nothing of its own.
+    for (const key of Object.keys(raw)) {
+      if (key === 'command') refusals.push('HOOK.yaml: command is not taken by a default hook, which runs teamai\'s own handler. Remove it, or give a hook of your own another name');
+      else if (key !== 'description' && key !== 'with') refusals.push(`HOOK.yaml: ${key} is not a key of a default hook, whose HOOK.yaml holds description and with`);
+    }
   } catch (error) {
-    problems.push(`HOOK.yaml does not parse: ${error instanceof Error ? error.message : String(error)}`);
+    refusals.push(`HOOK.yaml does not parse: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  const params = PARAMS_BY_NAME[name].safeParse(raw.with ?? {});
+  const params = PARAMS_BY_NAME[name].safeParse(withOver(base, raw.with));
 
-  if (!params.success) problems.push(...params.error.issues.map((issue) => `HOOK.yaml: with.${issue.path.join('.')} ${issue.message}`));
+  if (!params.success) refusals.push(...params.error.issues.flatMap((issue) => paramProblems(name, issue)));
 
   const texts = new Map<string, TextVariants>();
 
-  for (const text of Object.keys(TEXTS[name])) {
-    const base = byPath.get(`${text}.md`);
+  for (const [text, offered] of Object.entries<readonly string[]>(TEXTS[name])) {
+    // A text with a variable it does not offer, or anything in braces that is not a variable, would print as written.
+    const read = (file: string): string | undefined => {
+      const found = byPath.get(file);
 
-    if (!base) {
-      problems.push(`${text}.md is missing`);
+      if (!found) return undefined;
+      const content = textOf(found);
+
+      for (const [source, inner = ''] of content.matchAll(VARIABLE)) {
+        if (offered.includes(inner.trim())) continue;
+        const offers = offered.length > 0 ? offered.map((variable) => `{{ ${variable} }}`).join(', ') : 'no variable';
+        refusals.push(`${file} reads ${source}, which the ${text} text does not offer: it offers ${offers}`);
+      }
+
+      return content;
+    };
+
+    const baseText = read(`${text}.md`);
+
+    if (baseText === undefined) {
+      refusals.push(`${text}.md is missing. A replacement holds every text of teamai's folder: copy ${text}.md from it`);
       continue;
     }
 
-    const variants: TextVariants = { base: textOf(base) };
-    const en = byPath.get(`${text}.en.md`);
-    const zh = byPath.get(`${text}.zh.md`);
+    const variants: TextVariants = { base: baseText };
+    const en = read(`${text}.en.md`);
+    const zh = read(`${text}.zh.md`);
 
-    if (en) variants.en = textOf(en);
+    if (en !== undefined) variants.en = en;
 
-    if (zh) variants.zh = textOf(zh);
+    if (zh !== undefined) variants.zh = zh;
     texts.set(text, variants);
   }
 
-  if (!params.success || problems.length > 0) return { ok: false, problems };
+  if (!params.success || refusals.length > 0) return { ok: false, problems: refusals };
 
   const hook: DefaultHook<TName> = {
     params: params.data,
@@ -194,20 +257,49 @@ function readFolder<TName extends DefaultHookName>(name: TName, files: readonly 
     },
   };
 
-  return { ok: true, hook };
+  return { ok: true, hook, with: isJsonObject(raw.with) ? raw.with : {} };
 }
 
 /** The folder teamai ships for `name`. It is part of teamai's package, so one that cannot be read is a teamai bug, and throws. */
-async function load<TName extends DefaultHookName>(name: TName): Promise<DefaultHook<TName>> {
+async function shipped<TName extends DefaultHookName>(name: TName): Promise<{ hook: DefaultHook<TName>; with: JsonObject }> {
   const dir = path.join(packageRoot(), 'hooks', name);
   const read = await FolderFiles.read(dir);
 
   if (read.kind === 'invalid') throw new Error(`teamai's default hook folder ${dir} cannot be read: ${read.problems.map(FolderFiles.describe).join(', ')}`);
-  const folder = readFolder(name, read.files);
+  const folder = readFolder(name, read.files, {});
 
   if (!folder.ok) throw new Error(`teamai's default hook folder ${dir} is broken: ${folder.problems.join('; ')}`);
 
-  return folder.hook;
+  return folder;
 }
 
-export const DefaultHooks = { load } as const;
+/**
+ * Default hook `name` as `scope` reads it: the team's replacement pull delivered to the scope, else teamai's folder.
+ * With no scope (teamai is not set up where the hook runs), teamai's folder.
+ */
+async function load<TName extends DefaultHookName>(name: TName, scope: LocalConfig | null): Promise<DefaultHook<TName>> {
+  const teamai = await shipped(name);
+
+  if (scope) {
+    const dir = DeliveredFolders.pathOf(scope, { type: 'hooks', namespace: null, name });
+    const read = await FolderFiles.read(dir);
+
+    if (read.kind === 'files') {
+      const folder = readFolder(name, read.files, teamai.with);
+
+      if (folder.ok) return folder.hook;
+      log.debug(`default hook ${name}: the team's folder at ${dir} is not used, teamai's is: ${folder.problems.join('; ')}`);
+    }
+  }
+
+  return teamai.hook;
+}
+
+/** Why pull refuses `files`, a team folder that would replace default hook `name`; none when it may replace it. */
+async function problems(name: DefaultHookName, files: readonly FolderFile[]): Promise<string[]> {
+  const folder = readFolder(name, files, (await shipped(name)).with);
+
+  return folder.ok ? [] : folder.problems;
+}
+
+export const DefaultHooks = { NAMES, isName, load, problems } as const;
