@@ -11,8 +11,8 @@
  *   workspace, single-repo's hooks   → <worktree>/.teamai/delivered/hooks/[<ns>/]<name>/  (each checkout keeps its own)
  *
  * A rule folder's path stays the same across versions, so the text rendered from it does too. A hook or MCP server
- * folder sits at `<name>.<version>/` (`versionedPathOf`), one per set of files, so each configuration runs the files
- * it was written with. A new version is written to a hidden sibling and renamed into place. Each file is
+ * folder sits at `<name>.<version>/` (`versionedPathOf`, `version`), one per set of files, so each configuration runs
+ * the files it was written with. A new version is written to a hidden sibling and renamed into place. Each file is
  * recorded in the delivery ledger, and a folder goes through `removeDelivered` once the team drops it and no
  * configuration left names it (`namedIn`).
  */
@@ -24,6 +24,7 @@ import { FolderFiles, type FolderFile } from './folder-files.js';
 import { FOLDER_MARKERS } from '../folder-markers.js';
 import { getDataHome, isSelfMode, type LocalConfig } from '../types.js';
 import { canonicalJson } from '../utils/canonical-json.js';
+import { createGit } from '../utils/git.js';
 import { errnoCode, pathExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 
@@ -71,18 +72,48 @@ function pathOf(localConfig: LocalConfig, ref: DeliveredFolderRef): string {
   return path.join(root(localConfig, ref.type), ref.type, ...(ref.namespace === null ? [] : [ref.namespace]), ref.name);
 }
 
-/**
- * Where `ref` is delivered at the version its `files` give: `[<namespace>/]<name>.<version>/`, `<version>` being the
- * first 8 hex digits of the SHA-256 of the files as canonical JSON (each file's path, whether it is executable, and
- * the SHA-256 of its bytes; the marker, so the definition, among them). A version's files never change, so a
- * configuration pull could not rewrite, or one of a tool the member excluded, keeps running the files it was written
- * with, whatever the team changes: the marker, a script, or a team value the configuration holds resolved.
- */
-function versionedPathOf(localConfig: LocalConfig, ref: DeliveredFolderRef, files: readonly FolderFile[]): string {
-  const sha256 = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex');
-  const fileIds = files.map((file) => ({ path: file.path, executable: file.executable, sha256: sha256(file.bytes) }));
+/** Where `ref` is delivered at `folderVersion` (see `version`): `[<namespace>/]<name>.<version>/`. */
+function versionedPathOf(localConfig: LocalConfig, ref: DeliveredFolderRef, folderVersion: string): string {
+  return pathOf(localConfig, { ...ref, name: `${ref.name}.${folderVersion}` });
+}
 
-  return pathOf(localConfig, { ...ref, name: `${ref.name}.${sha256(canonicalJson(fileIds)).slice(0, 8)}` });
+/**
+ * The version of the team folder at `dir`, whose `files` pull read: the first 8 hex digits of the SHA-256 of its files
+ * as canonical JSON, each file's path and the SHA-256 of its content, the marker, so the definition, among them. A
+ * version's files never change, so a configuration pull could not rewrite, or one of a tool the member excluded, keeps
+ * running the files it was written with, whatever the team changes: the marker, a script, or a team value the
+ * configuration holds resolved.
+ *
+ * Every member's checkout gives the same version, so a configuration the team commits stays as it is: UTF-8 text is
+ * read with CRLF as LF (Git for Windows checks text out with CRLF), the executable bit is left out (Node on Windows
+ * reports none; delivery still copies it), and so are the files git ignores there, such as `__pycache__/`.
+ */
+async function version(dir: string, files: readonly FolderFile[]): Promise<string> {
+  const sha256 = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex');
+  const ignored = await gitIgnored(dir);
+  const fileIds = files.flatMap((file) => (ignored.has(file.path) ? [] : [{ path: file.path, sha256: sha256(asText(file.bytes)?.replaceAll('\r\n', '\n') ?? file.bytes) }]));
+
+  return sha256(canonicalJson(fileIds)).slice(0, 8);
+}
+
+/** The files under `dir` git ignores, by their `/`-separated path from it; none outside a git checkout. */
+async function gitIgnored(dir: string): Promise<ReadonlySet<string>> {
+  try {
+    const listed = await createGit(dir).raw(['ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--', '.']);
+
+    return new Set(listed.split('\0').filter((file) => file !== ''));
+  } catch {
+    return new Set();
+  }
+}
+
+/** `bytes` as UTF-8 text, or undefined when they are not. */
+function asText(bytes: Buffer): string | undefined {
+  try {
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return undefined;
+  }
 }
 
 /** The version a path from `anyVersionPathOf` holds, which `withoutVersions` gives every version. */
@@ -493,4 +524,4 @@ async function excludeWorktreeFolders(localConfig: LocalConfig, type: DeliveredF
   }
 }
 
-export const DeliveredFolders = { root, worktreeRoot, checkoutRoot, pathOf, versionedPathOf, anyVersionPathOf, withoutVersions, namedIn, sync, place, deliver, prune, placeholder, mentions, render } as const;
+export const DeliveredFolders = { root, worktreeRoot, checkoutRoot, pathOf, versionedPathOf, version, anyVersionPathOf, withoutVersions, namedIn, sync, place, deliver, prune, placeholder, mentions, render } as const;

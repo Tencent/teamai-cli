@@ -116,8 +116,8 @@ export type TeamMcpDefinition =
   | { readonly kind: 'entry'; readonly server: TeamMcpServer }
   | TeamMcpFolder;
 
-/** A team MCP server folder: its `MCP.yaml`, with the directory's name as name, and every file it holds, `MCP.yaml` included. */
-export type TeamMcpFolder = { readonly kind: 'folder'; readonly server: TeamMcpServer; readonly files: readonly FolderFile[] };
+/** A team MCP server folder: its `MCP.yaml`, with the directory's name as name, every file it holds, `MCP.yaml` included, and its version (`DeliveredFolders.version`). */
+export type TeamMcpFolder = { readonly kind: 'folder'; readonly server: TeamMcpServer; readonly files: readonly FolderFile[]; readonly version: string };
 
 /** One server of an MCP file, with the keys it was written with that the schema does not know. */
 interface McpFileEntry {
@@ -182,7 +182,7 @@ export async function readMcpFolder(full: string, folderPath: string, name: stri
 
       if (!fields.command) return { kind: 'invalid', reason: `${markerPath} does not parse: stdio transport requires \`command\`` };
 
-      return { kind: 'read', definition: { kind: 'folder', server: { ...fields, name }, files: read.files }, unknownKeys: read.unknownKeys };
+      return { kind: 'read', definition: { kind: 'folder', server: { ...fields, name }, files: read.files, version: await DeliveredFolders.version(full, read.files) }, unknownKeys: read.unknownKeys };
     }
 
     default: {
@@ -214,7 +214,7 @@ export const TEAM_MCP_ENTRIES: LayeredEntryType<McpFileEntry, TeamMcpDefinition>
  * ones.
  */
 export function mcpFolderPath(localConfig: LocalConfig, folder: TeamMcpFolder, namespace: string | null): string {
-  return DeliveredFolders.versionedPathOf(localConfig, { type: 'mcp', namespace, name: folder.server.name }, folder.files);
+  return DeliveredFolders.versionedPathOf(localConfig, { type: 'mcp', namespace, name: folder.server.name }, folder.version);
 }
 
 /**

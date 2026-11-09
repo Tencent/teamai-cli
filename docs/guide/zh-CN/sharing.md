@@ -318,7 +318,7 @@ command: bash "${TEAMAI_HOOK_DIR}/scan.sh"
 timeout: 15
 ```
 
-pull 会复制这个目录，并把 `${TEAMAI_HOOK_DIR}` 换成它的路径（用正斜杠）。teamai 不加引号，命令需要时自己给变量加引号。目录名由 hook 的 id 和从目录里所有文件（包括 `HOOK.yaml`）得出的版本组成（下面的 `e246f037`），所以任何文件变了，目录就会变，同一个版本的文件永远不变。pull 没能改写配置的工具，或成员排除的工具，会继续运行写入配置时的那些文件；等没有条目再运行那个目录，它就会被移除：
+pull 会复制这个目录，并把 `${TEAMAI_HOOK_DIR}` 换成它的路径（用正斜杠）。teamai 不加引号，命令需要时自己给变量加引号。目录名由 hook 的 id 和从目录里所有文件（包括 `HOOK.yaml`）得出的版本组成（下面的 `e246f037`），所以任何文件变了，目录就会变，同一个版本的文件永远不变。每个成员的 checkout 得出的版本都一样：换行符、可执行位和 git 忽略的文件（例如 `__pycache__/`）都不计入。pull 没能改写配置的工具，或成员排除的工具，会继续运行写入配置时的那些文件；等没有条目再运行那个目录，它就会被移除：
 
 | 团队在哪里 | 目录复制到 |
 |---|---|
@@ -326,7 +326,7 @@ pull 会复制这个目录，并把 `${TEAMAI_HOOK_DIR}` 换成它的路径（�
 | 有团队仓库的工作区 | `~/.teamai/projects/<slug>/hooks/block-secrets.e246f037/`，所有 worktree 共用一份，因为它们运行同一组 hook 条目 |
 | single-repo | 每个 worktree 的 `.teamai/delivered/hooks/block-secrets.e246f037/`，git 会忽略它 |
 
-single-repo 下，Claude Code 的命令写成 `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"`，所以每个 worktree 的 `.claude/settings.json` 都一样。其他工具拿到的是 worktree 的绝对路径，所以它们的项目文件在每个 worktree 里都不一样。以 Cursor 的 `.cursor/hooks.json` 为例：
+single-repo 下，Claude Code 的命令写成 `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"`，所以每个 worktree 的 `.claude/settings.json` 都一样。只改一个脚本也会让目录换成新版本，pull 会改写 `.claude/settings.json` 里的这个路径：团队如果提交这个文件，也要一起提交这个改动。其他工具拿到的是 worktree 的绝对路径，所以它们的项目文件在每个 worktree 里都不一样。以 Cursor 的 `.cursor/hooks.json` 为例：
 
 ```text
 ~/work/shop/.cursor/hooks.json         bash "/Users/ana/work/shop/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"
@@ -522,7 +522,7 @@ requires: [uv]
 # ///
 ```
 
-pull 会复制这个目录，并把 `command`、`args` 和 `env` 里的 `${TEAMAI_MCP_DIR}` 换成它的路径（用正斜杠）。teamai 不加引号。目录名由 server 名和从目录里所有文件（包括 `MCP.yaml`）得出的版本组成（下面的 `1702782c`），所以任何文件变了，目录就会变，同一个版本的文件永远不变。pull 没能改写 MCP 文件的工具，或成员排除的工具，会继续启动写入配置时的那些文件，即使 `args` 用到的团队变量变了也一样；等没有 MCP 文件再引用那个目录，它就会被移除：
+pull 会复制这个目录，并把 `command`、`args` 和 `env` 里的 `${TEAMAI_MCP_DIR}` 换成它的路径（用正斜杠）。teamai 不加引号。目录名由 server 名和从目录里所有文件（包括 `MCP.yaml`）得出的版本组成（下面的 `1702782c`），所以任何文件变了，目录就会变，同一个版本的文件永远不变。和 hook 一样，每个成员的 checkout 得出的版本都一样。pull 没能改写 MCP 文件的工具，或成员排除的工具，会继续启动写入配置时的那些文件，即使 `args` 用到的团队变量变了也一样；等没有 MCP 文件再引用那个目录，它就会被移除：
 
 | 团队在哪里 | 目录复制到 |
 |---|---|

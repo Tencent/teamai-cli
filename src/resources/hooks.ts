@@ -66,8 +66,8 @@ export type TeamHookDefinition =
   | { readonly kind: 'entry'; readonly hook: TeamHook }
   | TeamHookFolder;
 
-/** A team hook folder: its `HOOK.yaml`, with the directory's name as id, and every file it holds, `HOOK.yaml` included. */
-export type TeamHookFolder = { readonly kind: 'folder'; readonly hook: TeamHook; readonly files: readonly FolderFile[] };
+/** A team hook folder: its `HOOK.yaml`, with the directory's name as id, every file it holds, `HOOK.yaml` included, and its version (`DeliveredFolders.version`). */
+export type TeamHookFolder = { readonly kind: 'folder'; readonly hook: TeamHook; readonly files: readonly FolderFile[]; readonly version: string };
 
 export type HooksYaml = z.infer<typeof HooksYamlSchema>;
 
@@ -170,7 +170,7 @@ export async function readHookFolder(full: string, folderPath: string, id: strin
     case 'invalid':
       return read;
     case 'read':
-      return { kind: 'read', definition: { kind: 'folder', hook: { ...read.fields, id }, files: read.files }, unknownKeys: read.unknownKeys };
+      return { kind: 'read', definition: { kind: 'folder', hook: { ...read.fields, id }, files: read.files, version: await DeliveredFolders.version(full, read.files) }, unknownKeys: read.unknownKeys };
     default: {
       const unhandled: never = read;
 
@@ -342,7 +342,7 @@ interface TeamHookDelivery {
  * with: a tool whose entry pull could not rewrite keeps its own, while the others run the new ones.
  */
 export function hookFolderPath(localConfig: LocalConfig, folder: TeamHookFolder, namespace: string | null): string {
-  return DeliveredFolders.versionedPathOf(localConfig, { type: 'hooks', namespace, name: folder.hook.id }, folder.files);
+  return DeliveredFolders.versionedPathOf(localConfig, { type: 'hooks', namespace, name: folder.hook.id }, folder.version);
 }
 
 /** The hook folder `hook`, delivered at `dest` in `localConfig`'s scope: its command names that path (#1787). */

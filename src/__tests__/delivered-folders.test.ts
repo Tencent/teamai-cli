@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import fse from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { contentHash, openLedger } from '../resources/delivered-copies.js';
@@ -67,6 +68,37 @@ describe('DeliveredFolders.pathOf', () => {
     ['a single-repo worktree, in its own checkout', singleRepo, 'payments', path.join(home, 'shop-wt', '.teamai', 'delivered', 'hooks', 'payments', 'lint')],
   ] as const)('puts a folder of %s in the data home of the scope that owns it', (_case, localConfig, namespace, expected) => {
     expect(DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace, name: 'lint' })).toBe(expected);
+  });
+});
+
+describe('DeliveredFolders.version', () => {
+  /** A team checkout holding `hooks/lint/` with `files`, and a .gitignore that leaves out `__pycache__/`. The bit a file says it has is what pull read. */
+  function checkout(files: readonly FolderFile[]): string {
+    const repo = tempDir();
+    execFileSync('git', ['init', '-q', repo]);
+    fs.writeFileSync(path.join(repo, '.gitignore'), '__pycache__/\n');
+
+    for (const { path: filePath, bytes } of files) fse.outputFileSync(path.join(repo, 'hooks', 'lint', ...filePath.split('/')), bytes);
+
+    return path.join(repo, 'hooks', 'lint');
+  }
+
+  it('is the same for every member\'s checkout: CRLF text, no executable bit, and files git ignores make no difference', async () => {
+    const macos = [file('HOOK.yaml', 'event: Stop\ncommand: bash "${TEAMAI_HOOK_DIR}/lint.sh"\n'), file('lint.sh', 'echo lint\n', true)];
+    const windows = [
+      file('HOOK.yaml', 'event: Stop\r\ncommand: bash "${TEAMAI_HOOK_DIR}/lint.sh"\r\n'),
+      file('__pycache__/lint.cpython-312.pyc', '\0compiled'),
+      file('lint.sh', 'echo lint\r\n'),
+    ];
+
+    expect(await DeliveredFolders.version(checkout(windows), windows)).toBe(await DeliveredFolders.version(checkout(macos), macos));
+  });
+
+  it('changes with a file\'s content, binary bytes included', async () => {
+    const one = [file('HOOK.yaml', 'event: Stop\n'), file('tool.bin', '\0one')];
+    const other = [file('HOOK.yaml', 'event: Stop\n'), file('tool.bin', '\0two')];
+
+    expect(await DeliveredFolders.version(checkout(one), one)).not.toBe(await DeliveredFolders.version(checkout(other), other));
   });
 });
 
