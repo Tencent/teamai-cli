@@ -83,6 +83,46 @@ related:
 
 `MAPS_TO` 指向 teamwiki 代码页面，`REFERENCES` 指向任意资产，`SUPERSEDES` / `CONFLICTS_WITH` 指向规则、文档或 learning。`teamai recall` 会把每条声明的关系、以及每条由 `paths:` glob 派生的关系（见知识指南），作为 `Related:` 行打印在命中结果上，会话拿到关系的一端时也就看到了另一端。`teamai review --branch` 会判定 `related:` 块使用了表格外关系的规则或文档为失败；指向分支上不存在资产的关系是警告，不会判定失败。
 
+### 目录型 rule：确定加载的 skill
+
+`rules/` 下包含 `RULE.md` 的目录是一个目录型 rule。`RULE.md` 就是这条 rule，其他文件是 rule 让 agent 去读的辅助文件：
+
+```text
+rules/api-style/
+├─ RULE.md
+├─ RULE.zh.md
+├─ checklist.md
+└─ examples/good-endpoint.ts
+```
+
+```markdown
+<!-- rules/api-style/RULE.md -->
+---
+paths: ["src/api/**"]
+---
+Follow the team API style. Before adding an endpoint, read
+${TEAMAI_RULE_DIR}/checklist.md and ${TEAMAI_RULE_DIR}/examples/good-endpoint.ts.
+```
+
+| | Skill | 目录型 rule |
+|---|---|---|
+| 由谁加载 | 模型，或 `/skill` / `$skill` | teamai：始终加载，或按 `paths:` |
+| 手动调用 | 可以 | 不可以；rule 可以指向一个 skill，确保它被用上 |
+| 辅助文件 | 有 | 有，需要时才读 |
+| 上下文开销 | 用到之前只占描述 | 每个会话都有正文；没有原生 rule 的工具在 SessionStart 时整段注入 |
+
+正文写短，细节放进目录。
+
+- 名字就是路径，和 rule 文件一样：`rules/api-style/` 是 `api-style`，`rules/fe/api-style/` 是 `fe/api-style`。每个工具的 rules 目录里得到 `api-style.md`。
+- `RULE.zh.md` 或 `RULE.en.md` 是对应 `language` 的正文。`RULE.md` 的 frontmatter 对所有语言生效；语言版本里的 frontmatter 会被忽略，pull 会给出警告。
+- pull 把目录复制到数据目录（`~/.teamai/rules/api-style/`；有团队仓库的 workspace 中是 `~/.teamai/projects/<slug>/rules/api-style/`；single-repo 下是每个 worktree 的 `.teamai/delivered/rules/api-style/`），并按工具把 `${TEAMAI_RULE_DIR}` 换成一个用正斜杠的路径。能读取数据目录的工具得到该路径。对 Claude Code，pull 会把该目录追加到 `~/.claude/settings.json` 的 `permissions.additionalDirectories`，排在你自己的条目之后，uninstall 时移除。其他工具得到 `.teamai/delivered/rules/api-style`，这是工作树里的副本，git 会忽略它。哪个工具得到哪种，见[工具支持](tool-support.md#项目范围)的「规则文件夹的文件」一列。
+- 用户范围的 rule 没有工作树，所以总是指向数据目录。对读取那里前可能需要确认的工具，pull 各警告一次。
+- 目录型 rule 在团队仓库里修改。push 不会从它的交付副本提出任何改动。
+
+提交目录型 rule 之前，让每位成员先升级。旧版 teamai 会把 `rules/api-style/` 里的每个文件各自当作一条始终生效的 rule（`api-style/RULE`、`api-style/RULE.zh`、`api-style/checklist`），或者跳过这个目录。
+
+teamai 的 recall rule 是目录 [`rules/teamai-recall/`](https://github.com/Tencent/teamai-cli/tree/main/rules/teamai-recall)。团队在团队仓库根目录放自己的 `rules/teamai-recall/` 即可替换它。目录里的 README 列出了各个文件以及每个文件必须保留的行。缺少这些行的替换会被 pull 拒绝，pull 会指出是哪个文件，并继续使用 teamai 自带的。
+
 ## Agents
 
 `agents/<name>.yaml`。`name` 与文件名一致。自己 commit，或在工具里改完后 `teamai push`。
@@ -599,7 +639,7 @@ self 模式下，如果当前分支落后于默认分支，推送修改过的 sk
 | `scorers/` | `SCORER.md` |
 | `agents/` | `AGENT.md` |
 
-在该类型目录下（任意深度）包含对应标记文件的目录，就是一个目录型资源。当前版本读取 hook 目录（见 [Hooks](#hooks)），还不读取其他目录类型：它会整体跳过这样的目录，团队仓库的其他内容照常 pull：
+在该类型目录下（任意深度）包含对应标记文件的目录，就是一个目录型资源。当前版本读取 hook 目录（见 [Hooks](#hooks)）和目录型 rule（见[目录型 rule](#目录型-rule确定加载的-skill)），还不读取其他目录类型：它会整体跳过这样的目录，团队仓库的其他内容照常 pull：
 
 ```text
 rules/
