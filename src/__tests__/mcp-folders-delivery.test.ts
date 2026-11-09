@@ -150,6 +150,25 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
     expect([unresolved, await claudeServer('app', 'jira-lite'), await fse.readFile(path.join(dest, 'server.mjs'), 'utf8')]).toEqual([true, installed, 'console.log("v1")\n']);
   });
 
+  it('keeps the folder a kept server runs from when its new version needs a secret this machine has not set', async () => {
+    await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER, 'mcp/jira-lite/server.mjs': 'console.log("v1")\n' });
+    await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
+    const installed = await claudeServer('app', 'jira-lite');
+
+    await fse.remove(path.join(sandbox, 'team', 'mcp', 'jira-lite', 'server.mjs'));
+    await write('team', {
+      'mcp/jira-lite/MCP.yaml': `${SERVER.replace('server.mjs', 'next.mjs')}env: { JIRA_TOKEN: "\${JIRA_TOKEN}" }\n`,
+      'mcp/jira-lite/next.mjs': 'console.log("v2")\n',
+      'env/secrets.yaml': 'secrets:\n  - key: JIRA_TOKEN\n',
+    });
+    await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
+
+    const dest = path.join(home, '.teamai', 'projects', 'app', 'mcp', 'jira-lite');
+
+    expect([await claudeServer('app', 'jira-lite'), (await fse.readdir(dest)).sort(), await fse.readFile(path.join(dest, 'server.mjs'), 'utf8')])
+      .toEqual([installed, ['MCP.yaml', 'server.mjs'], 'console.log("v1")\n']);
+  });
+
   it('writes nothing on a dry run', async () => {
     await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER, 'mcp/jira-lite/server.mjs': 'console.log("jira")\n' });
 

@@ -2925,12 +2925,46 @@ async function reconcileTargets(
   // (mcp remove, uninstall) still removes everything.
   const secretsUnread = !removeAll && desiredContext.secrets.kind === 'failed';
 
-  // The folders team servers run from, before any configuration names them (#1787). A workspace that holds a server
-  // back keeps what it installed, so its folder stays too. A folder that cannot be written keeps every installed server,
-  // and so do secrets that cannot be read (below).
+  const targets = await resolveMcpTargets(teamConfig, localConfig);
+  // Which of this team's servers apply to each tool, and in what rendered
+  // form. Targets that share one file under one ownership record
+  // (MCP_MANIFEST_KEY_ALIAS) reconcile as one: their per-tool desired sets
+  // differ (`tools:` on a server), and either alone would read the shared
+  // record, find the sibling's entry unwanted, and remove it from the file —
+  // so every sharer works from the union of their desired sets.
+  const desiredOf = new Map<McpTarget, ReturnType<typeof desiredMcpForTarget>>();
+  const live = targets.filter((t) => removeAll || !mcpTargetExcluded(localConfig, t));
+
+  for (const target of live) {
+    const desired = desiredMcpForTarget(target, teamDefs, desiredContext);
+
+    for (const name of held) desired.kept.add(name);
+    desiredOf.set(target, desired);
+  }
+
+  for (const target of live) {
+    const mine = desiredOf.get(target)!;
+
+    for (const other of live) {
+      if (other === target || other.file !== target.file) continue;
+
+      if (mcpManifestKey(other) !== mcpManifestKey(target)) continue;
+
+      for (const [name, entry] of desiredOf.get(other)!.desired) mine.desired.set(name, entry);
+
+      for (const name of desiredOf.get(other)!.kept) mine.kept.add(name);
+    }
+  }
+
+  // The folders team servers run from, before any configuration names them (#1787). A server whose installed
+  // configuration some tool keeps, such as one held back or one whose secret is not set here, keeps its folder as it
+  // is: that configuration may name a file the new version dropped. A folder that cannot be written keeps every
+  // installed server, and so do secrets that cannot be read (below).
   if (!removeAll && !options.dryRun && !secretsUnread) {
+    const kept = new Set([...held, ...[...desiredOf.values()].flatMap((desired) => [...desired.kept])]);
+
     try {
-      await deliverMcpFolders(localConfig, teamEntries, { prune: held.size === 0 });
+      await deliverMcpFolders(localConfig, teamEntries, { prune: held.size === 0, kept });
     } catch (e) {
       log.warn(`Team MCP server folders could not be delivered: ${e instanceof Error ? e.message : String(e)}. `
         + 'mcp was not applied this run, so your installed team MCP servers are unchanged. Run teamai pull again.');
@@ -2938,8 +2972,6 @@ async function reconcileTargets(
       return { changes, wrote, unresolved: true };
     }
   }
-
-  const targets = await resolveMcpTargets(teamConfig, localConfig);
 
   if (targets.length === 0) return { changes, wrote };
   // Whose entries a file holds is judged with every tool mapping it, detected or not (#993):
@@ -2973,36 +3005,6 @@ async function reconcileTargets(
     reportEntryResolution(desiredContext.secrets);
 
     return { changes, wrote, unresolved: true };
-  }
-
-  // Which of this team's servers apply to each tool, and in what rendered
-  // form. Targets that share one file under one ownership record
-  // (MCP_MANIFEST_KEY_ALIAS) reconcile as one: their per-tool desired sets
-  // differ (`tools:` on a server), and either alone would read the shared
-  // record, find the sibling's entry unwanted, and remove it from the file —
-  // so every sharer works from the union of their desired sets.
-  const desiredOf = new Map<McpTarget, ReturnType<typeof desiredMcpForTarget>>();
-  const live = targets.filter((t) => removeAll || !mcpTargetExcluded(localConfig, t));
-
-  for (const target of live) {
-    const desired = desiredMcpForTarget(target, teamDefs, desiredContext);
-
-    for (const name of held) desired.kept.add(name);
-    desiredOf.set(target, desired);
-  }
-
-  for (const target of live) {
-    const mine = desiredOf.get(target)!;
-
-    for (const other of live) {
-      if (other === target || other.file !== target.file) continue;
-
-      if (mcpManifestKey(other) !== mcpManifestKey(target)) continue;
-
-      for (const [name, entry] of desiredOf.get(other)!.desired) mine.desired.set(name, entry);
-
-      for (const name of desiredOf.get(other)!.kept) mine.kept.add(name);
-    }
   }
 
   for (const resolved of targets) {
