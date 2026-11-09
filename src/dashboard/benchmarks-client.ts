@@ -28,9 +28,11 @@ const armSetup=a=>a.tool+(a.model?' · '+a.model:'')+(a.effort?' · '+a.effort:'
 const armConfig=a=>(a.role?roleText(a)+' · ':'')+armSetup(a);
 const armTitle=a=>a.arm+' ('+armConfig(a)+')';
 const swatch=i=>'<i class="swatch" style="background:'+armColor(i)+'"></i>';
-// The pairs a comparison left out, by why, as the CLI's formatExcluded names a judge: its tool and model, then its effort.
 const judgeName=j=>j.tool+' '+(j.model||t('an unreported model'))+(j.effort?' '+j.effort:'');
-const excludedText=list=>list.map(x=>number(x.pairs)+' '+t('excluded')+': '+(x.because.kind==='task_changed'?t('their task changed'):t('their judge changed')+' ('+judgeName(x.because.from)+' → '+judgeName(x.because.to)+')')).join(' · ');
+// The pairs a comparison left out, by why, as the CLI's formatExcluded names a changed judge: its tool and model, then
+// each other facet that differs from the other judge's.
+const changedJudge=(j,o)=>[j.tool,j.model||t('an unreported model'),...(j.effort!==o.effort?[t('effort')+' '+(j.effort||t('unset'))]:[]),...(j.batched!==o.batched?[j.batched?t('batched'):t('alone')]:[]),...(j.rubric!==o.rubric?[t('rubric')+' '+j.rubric.slice(0,7)]:[])].join(' ');
+const excludedText=list=>list.map(x=>number(x.pairs)+' '+t('excluded')+': '+(x.because.kind==='task_changed'?t('their task changed'):t('their judge changed')+' ('+changedJudge(x.because.from,x.because.to)+' → '+changedJudge(x.because.to,x.because.from)+')')).join(' · ');
 // An arm named after its role carries a role marker beside its name, not the same word again under it.
 function armName(a,i){ return swatch(i)+'<span data-verbatim>'+e(a.arm)+'</span>'+(a.role===a.arm?' <span class="role-of">'+label('role')+'</span>':a.role?'<span class="arm-role" data-verbatim>'+e(roleText(a))+'</span>':'')+'<small data-verbatim>'+e(armSetup(a))+'</small>'; }
 function heat(rate){ return rate==null?'':'background:color-mix(in oklab,color-mix(in oklab,var(--green) '+Math.round(rate*100)+'%,var(--error)) '+Math.round(30+Math.abs(rate-0.5)*80)+'%,var(--panel))'; }

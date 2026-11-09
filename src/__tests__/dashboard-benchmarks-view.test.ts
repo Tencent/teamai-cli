@@ -218,6 +218,22 @@ describe('the Benchmarks page of a suite with covered assets (#1605)', () => {
     expect(zh).toContain('2 已排除: 评判器已改变 (claude claude-sonnet-5-5 → claude claude-opus-5-5)');
   });
 
+  it('names what changed in a judge whose tool and model stayed, its batching and rubric, as the CLI does', async () => {
+    const OPUS = { by: 'judge' as const, rubric: 'aaaaaaa111', tool: 'claude', model: 'claude-opus-5-5', batched: true };
+    const run = coveredRun();
+    run.benchmark.trials = run.benchmark.trials.map((trial) => ({
+      ...trial,
+      verdicts: [{ scorer: `teamai:correctness:${trial.task}`, outcome: { kind: 'labelled' as const, label: trial.result, score: trial.result === 'passed' ? 1 : 0, passed: trial.result === 'passed' },
+        decider: trial.arm === 'no-tokens' ? { ...OPUS, rubric: 'bbbbbbb222', batched: false } : OPUS }],
+    }));
+
+    const en = text(await renderPage([run], { view: 'compare' }));
+    const zh = text(await renderPage([run], { view: 'compare', language: 'zh-CN' }));
+
+    expect(en).toContain('2 excluded: their judge changed (claude claude-opus-5-5 alone rubric bbbbbbb → claude claude-opus-5-5 batched rubric aaaaaaa)');
+    expect(zh).toContain('2 已排除: 评判器已改变 (claude claude-opus-5-5 单独 评分标准 bbbbbbb → claude claude-opus-5-5 批量 评分标准 aaaaaaa)');
+  });
+
   it('keeps every asset label in zh-CN too', async () => {
     const zh = text(await renderPage([coveredRun()], { view: 'compare', language: 'zh-CN' }));
 
