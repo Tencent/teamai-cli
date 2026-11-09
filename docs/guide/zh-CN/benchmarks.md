@@ -506,7 +506,7 @@ refresh-race   after pull request 77 merged, the same bytes: nothing pushed, no 
 
 ### 从过去的会话构建套件
 
-一周的会话里有许多已完成的修复和功能。让 agent 把它们变成任务（“用这周的会话构建 benchmarks/fix-auth”），它会启动 `teamai-sessions-to-tasks`：
+一周的会话里，你和队友的，都有许多已完成的修复和功能。让 agent 把它们变成任务（“用这周的会话构建 benchmarks/fix-auth”），它会启动 `teamai-sessions-to-tasks`：
 
 ```console
 $ teamai workflow start teamai-sessions-to-tasks --inputs '{"suite":"benchmarks/fix-auth","count":12}'
@@ -517,9 +517,11 @@ step         does
 local        teamai session list --finished --all --suite benchmarks/fix-auth --sizes "$SIZES" --json
              → each finished session with start, solution, files, lines and size; only those whose commits are reachable
                in the suite's repo and that no task of the suite already comes from (by session or solution commit)
+pushed       teamai session list --all --suite benchmarks/fix-auth --sizes "$SIZES" --json
+             → the same, of the sessions the team pushed for the suite's repo, each with its teamSession and author
 pick         an answer step: the AI picks representative candidates per size, up to count
-draft        for_each pick, max_parallel 1: workflow teamai-session-to-task with session, source, suite, start, solution;
-             you accept, edit or skip each draft, and each accepted task is a pull request
+draft        for_each pick, max_parallel 1: workflow teamai-session-to-task with session, source, suite, start, solution
+             (and team_session, author for a pushed one); you accept, edit or skip each draft, and each accepted task is a pull request
 ```
 
 `start` 是会话开始时的提交，`solution` 是它最后一次 Stop 时检出的提交：teamai 把两者记录在会话的 capture 旁边。列表会说明有多少会话被排除，以及原因：
@@ -558,7 +560,19 @@ lines  files  size
 801    1      XL   more lines than L allows
 ```
 
-每份草稿和[为当前会话起草](#把会话变成任务)是同样的对话；agent 先用 `teamai session show <id> --source <platform>` 读取那个过去的会话。
+每份草稿和[为当前会话起草](#把会话变成任务)是同样的对话；agent 先用 `teamai session show <id> --source <platform>` 读取那个过去的会话，队友推送的会话则用 `teamai session show <id> --team-session <name> --author <member>`。
+
+推送会话的归档保留推送它的机器上会话启动时和最后一次 Stop 时记录的提交，所以队友的工作也能成为任务：
+
+```console
+$ teamai session list --all --suite benchmarks/fix-auth --json
+{"list":[{"session":"7c1e2b9a","source":"claude-code","ended":"2026-11-05T17:40:00Z","title":"Refresh tokens past expiry",
+          "teamSession":"claude-code_refresh-tokens-past-expiry_20261105","author":"ana",
+          "start":"3f2c9a7…","solution":"9a1d4e7…","files":2,"lines":31}],
+ "leftOut":[{"reason":"archived without recorded commits","sessions":6}]}
+```
+
+在 teamai 开始记录提交之前推送的会话，以 `archived without recorded commits` 被排除。先运行 `teamai session pull` 拿到团队最新的会话。
 
 ### 在团队仓库的 CI 中检查任务
 

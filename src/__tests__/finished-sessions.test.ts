@@ -17,6 +17,7 @@ import { syncScorerDefinitions } from '../scorers/cache.js';
 import { FinishedSessions, type ListOptions, type ShareOptions } from '../session-flow/finished-sessions.js';
 import { SessionCaptures } from '../session-flow/captures.js';
 import { syncTeamDefinitions } from '../benchmark/suite-cache.js';
+import { SyncManager, defaultSyncMeta, getRepoIdentity } from '../session-flow/sync.js';
 import { markContributed } from '../contribute-check.js';
 import { SessionPublish } from '../session-flow/session-publish.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
@@ -508,6 +509,85 @@ async function listCommand(...args: string[]): Promise<{ code: number; out: stri
     vi.mocked(console.log).mockRestore();
   }
 }
+
+/** Runs `teamai session ...args` from `<root>/app`, and what it printed and its exit code. */
+async function sessionCommand(...args: string[]): Promise<{ code: number; out: string[]; err: string[] }> {
+  const out: string[] = [];
+  const err: string[] = [];
+  vi.spyOn(console, 'log').mockImplementation((...said: unknown[]) => {
+    out.push(said.map(String).join(' '));
+  });
+  vi.spyOn(console, 'error').mockImplementation((...said: unknown[]) => {
+    err.push(said.map(String).join(' '));
+  });
+  vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+    out.push(String(chunk).trimEnd());
+    return true;
+  });
+  const program = new Command();
+  registerSessionFlowCommands(program.command('session'));
+  process.exitCode = 0;
+  try {
+    await program.parseAsync(['node', 'teamai', 'session', ...args]);
+    return { code: Number(process.exitCode ?? 0), out, err };
+  } finally {
+    process.exitCode = 0;
+    vi.mocked(process.stdout.write).mockRestore();
+    vi.mocked(console.error).mockRestore();
+    vi.mocked(console.log).mockRestore();
+  }
+}
+
+/** Archives, at `archive`, a session `sessionId` that `author` pushed from the app, with `commits` when given. */
+async function pushedSession(archive: string, { sessionId, author, commits, repoIdentity = 'github.com/acme/app' }: { sessionId: string; author: string; commits?: { start?: { commit: string; dirty: boolean }; end?: { commit: string; dirty: boolean } }; repoIdentity?: string }): Promise<string> {
+  const session = {
+    sessionId, title: 'Refresh tokens past expiry', cwd: path.join(root, 'app'), platform: 'claude-code', createdAt: '2026-11-05T17:00:00.000Z', updatedAt: '2026-11-05T17:40:00.000Z', metadata: {},
+    messages: [{ role: 'user' as const, timestamp: '2026-11-05T17:00:00.000Z', content: [{ type: 'text' as const, text: 'Refresh tokens past expiry, the secret is s3cr3t-token-value' }] }],
+  };
+  const meta = defaultSyncMeta({ platform: 'claude-code', author, cwd: session.cwd, sessionId, repoIdentity, title: session.title, ...(commits ? { commits } : {}) }, session.createdAt);
+  const written = await new SyncManager(archive).saveSession(session, meta);
+  if (written.status !== 'written') throw new Error(`the session was not archived: ${written.status}`);
+  return path.basename(written.value, '.jsonl');
+}
+
+describe('session list --all --suite, over the sessions the team pushed', () => {
+  it('lists each pushed session of the suite\'s repository with its archive name, author, commits, change and size, and counts one archived without commits', async () => {
+    await suiteTeam();
+    const app = appRepo();
+    const solution = app.commit({ files: 2, lines: 30 });
+    app.pushed();
+    const archive = path.join(root, 'archive');
+    const name = await pushedSession(archive, { sessionId: '7c1e2b9a', author: 'ana', commits: { start: { commit: app.start, dirty: false }, end: { commit: solution, dirty: false } } });
+    await pushedSession(archive, { sessionId: '5d3f9e01', author: 'ana' });
+    fs.mkdirSync(path.join(root, 'app'), { recursive: true });
+
+    const printed = await sessionCommand('list', '--all', '--suite', 'benchmarks/fix-auth', '--sizes', 'S=40,3 M=200,10 L=800,30', '--repo-root', archive, '--cwd', path.join(root, 'app'), '--json');
+
+    expect(printed.code, printed.err.join('\n')).toBe(0);
+    expect(JSON.parse(printed.out.join(''))).toEqual({
+      list: [{ session: '7c1e2b9a', source: 'claude-code', ended: expect.any(String), title: 'Refresh tokens past expiry', teamSession: name, author: 'ana', start: app.start, solution, files: 2, lines: 30, size: 'S' }],
+      leftOut: [{ reason: 'archived without recorded commits', sessions: 1 }],
+    });
+  });
+
+  // A member whose url.insteadOf sends the suite's repo to a mirror archives a session under the mirror's identity.
+  it('lists a session pushed from a checkout that reaches the suite\'s repository through url.insteadOf', async () => {
+    await suiteTeam();
+    const app = appRepo();
+    const solution = app.commit({ files: 2, lines: 30 });
+    app.pushed();
+    const member = path.join(root, 'member');
+    git(root, 'clone', '-q', APP_URL, member);
+    const repoIdentity = getRepoIdentity(member) ?? '';
+    const archive = path.join(root, 'archive');
+    await pushedSession(archive, { sessionId: '7c1e2b9a', author: 'ana', repoIdentity, commits: { start: { commit: app.start, dirty: false }, end: { commit: solution, dirty: false } } });
+
+    const printed = await sessionCommand('list', '--all', '--suite', 'benchmarks/fix-auth', '--repo-root', archive, '--cwd', path.join(root, 'app'), '--json');
+
+    expect(repoIdentity).not.toBe('github.com/acme/app');
+    expect(JSON.parse(printed.out.join('')).list).toEqual([expect.objectContaining({ session: '7c1e2b9a', author: 'ana', start: app.start, solution })]);
+  });
+});
 
 describe('teamai session list --finished', () => {
   it('prints each finished session of this directory\'s scope, as a line or as {"list":[...]} with --json', async () => {

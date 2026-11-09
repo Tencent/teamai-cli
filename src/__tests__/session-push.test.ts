@@ -8,6 +8,7 @@ import { getAdapter } from '../session-flow/adapters/index.js';
 import { loadLocalConfig, saveLocalConfig } from '../config.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { openSessionArchive } from '../session-flow/archive.js';
+import { SessionCaptures } from '../session-flow/captures.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { registerSessionFlowCommands } from '../session-flow/session-cmd.js';
 import { encodeRepoIdentity, withSessionPublicationLock } from '../session-flow/sync.js';
@@ -584,6 +585,80 @@ describe('session commands without --repo-root outside a workspace install', () 
       { title: 'Captured review', teamRevision: revision },
       { title: 'Uncaptured review', teamRevision: undefined },
     ]);
+  });
+
+  it('record the commit the session started at and the one its last Stop found, in its meta.json and index entry', async () => {
+    const team = await userInstall();
+    const { checkout } = repository('product');
+    const captured = await claudeSession(checkout, { id: 'captured-1', title: 'Captured review' });
+    await claudeSession(checkout, { id: 'uncaptured-1', title: 'Uncaptured review' });
+    const config = await loadLocalConfig();
+    if (!config) throw new Error('the user install was not saved');
+    const start = { commit: '8e04ff4308e04ff4308e04ff4308e04ff4308e04', dirty: false };
+    const captureId = '0b6f2a52-5d7e-4c7e-9a43-6a3c1d0e2f10';
+    const dir = path.join(getDataHome(config), 'sessions', 'captures', 'claude-code', captured);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${captureId}.json`), JSON.stringify({
+      captureId, platform: 'claude-code', sessionId: captured, capturedAt: '2026-10-01T10:00:00.000Z',
+      agent: { v: 1, tool: { name: 'claude' }, project: start, teamai: '0.31.0', driver: 'session' },
+    }));
+    await SessionCaptures.atStop(config, 'claude', { session_id: captured, cwd: checkout });
+
+    const pushed = await session('push', '--source', 'claude-code', '--cwd', checkout, '--scrub');
+
+    expect(pushed.code, pushed.stderr).toBe(0);
+    const files = archived(team.origin, 'teamai-reports');
+    const read = (suffix: string, title: string) => JSON.parse(git(team.checkout, 'show', `origin/teamai-reports:${files.find((file) => file.includes(title) && file.endsWith(suffix))}`)) as Record<string, unknown>;
+    const commits = { start, end: { commit: git(checkout, 'rev-parse', 'HEAD'), dirty: false } };
+    expect(read('.meta.json', 'captured-review')).toMatchObject({ commits });
+    expect(read('.meta.json', 'uncaptured-review')).not.toHaveProperty('commits');
+    const index = JSON.parse(git(team.checkout, 'show', `origin/teamai-reports:${files.find((file) => file.endsWith('_index.json'))}`)) as { sessions: Array<{ title: string; commits?: unknown }> };
+    expect(index.sessions.map(({ title, commits: recorded }) => ({ title, commits: recorded })).sort((a, b) => a.title.localeCompare(b.title))).toEqual([
+      { title: 'Captured review', commits },
+      { title: 'Uncaptured review', commits: undefined },
+    ]);
+  });
+
+  it('show a session a teammate pushed by its archive name and author, redacted as a session of this machine is', async () => {
+    await userInstall();
+    const { checkout } = repository('product');
+    const key = `sk-ant-${'a1b2c3d4e5'.repeat(3)}`;
+    const id = await claudeSession(checkout, { id: 'pushed-1', title: 'Pushed review', answers: [`Set ANTHROPIC_API_KEY=${key} first.`] });
+    expect((await session('push', '--source', 'claude-code', '--cwd', checkout, '-y')).code).toBe(0);
+    const listed = await session('list', '--cwd', checkout);
+    const name = listed.stdout.split('\n').map((line) => line.trim().split(/\s+/)[0] ?? '').find((first) => first.includes('pushed-review')) ?? '';
+    const out: string[] = [];
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      out.push(String(chunk));
+      return true;
+    });
+
+    let shown: Awaited<ReturnType<typeof session>>;
+    try {
+      shown = await session('show', id, '--team-session', name, '--author', 'tester', '--cwd', checkout, '--json');
+    } finally {
+      write.mockRestore();
+    }
+
+    expect(shown.code, shown.stderr).toBe(0);
+    const printed = JSON.parse(out.join('')) as { session: string; source: string; transcript: string };
+    expect(printed).toMatchObject({ session: id, source: 'claude-code' });
+    expect(printed.transcript).toContain('Review this project.');
+    expect(printed.transcript).toContain('<REDACTED:anthropic>');
+    expect(printed.transcript).not.toContain(key);
+  });
+
+  it('refuse show --author without --team-session, --team-session with --source, and a pushed session another id names', async () => {
+    await userInstall();
+    const { checkout } = repository('product');
+    const id = await claudeSession(checkout, { id: 'pushed-2', title: 'Pushed fix' });
+    expect((await session('push', '--source', 'claude-code', '--cwd', checkout, '-y')).code).toBe(0);
+    const name = (await session('list', '--cwd', checkout)).stdout.split('\n').map((line) => line.trim().split(/\s+/)[0] ?? '').find((first) => first.includes('pushed-fix')) ?? '';
+
+    expect(await session('show', id, '--source', 'claude-code', '--author', 'tester', '--cwd', checkout)).toMatchObject({ code: 1, stderr: 'Error: --author picks who pushed --team-session <name>. Pass it with --team-session.' });
+    expect(await session('show', id, '--team-session', name, '--source', 'claude-code', '--cwd', checkout)).toMatchObject({ code: 1, stderr: 'Error: --team-session names a pushed session, and --source one on this machine. Pass one of them.' });
+    expect(await session('show', id, '--cwd', checkout)).toMatchObject({ code: 1, stderr: 'Error: Pass --source <platform> for a session of this machine, or --team-session <name> for one a teammate pushed.' });
+    expect(await session('show', 'another-id', '--team-session', name, '--cwd', checkout)).toMatchObject({ code: 1, stderr: `Error: --team-session ${name} is claude-code session ${id}, not another-id. Pass the id session list prints for it.` });
   });
 
   it('throw that teamai is not set up when there is no install at all', async () => {

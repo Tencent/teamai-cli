@@ -116,9 +116,10 @@ export async function nativeSession(from: LocalConfig, demand: SessionDemand): P
  * for it: on teamai-reports, else in the archive a git-kind team kept on its default branch before. Where resume takes
  * the first member who pushed that name, this fails unless `author` picks one of those who pushed it to the first archive
  * that holds the name. Its subject is its origin, so its labels pair with those of the same session scored where it ran.
+ * `cwd` is the directory whose repository the archive is read for.
  * It is redacted as `AgentSession.find` redacts a session.
  */
-export async function pushedSession(config: LocalConfig, { name, author }: TeamSession): Promise<NamedSession | Failure> {
+export async function pushedSession(config: LocalConfig, { name, author }: TeamSession, cwd = process.cwd()): Promise<NamedSession | Failure> {
   let archives: Awaited<ReturnType<typeof sessionArchives>>;
 
   try {
@@ -128,7 +129,7 @@ export async function pushedSession(config: LocalConfig, { name, author }: TeamS
   }
 
   if (!archives) return failure('unsupported_repo', 'This team keeps no session archive here, so it has no pushed session to score. Score a session on this machine with --session <id>.');
-  const repoIdentity = getRepoIdentity(process.cwd());
+  const repoIdentity = getRepoIdentity(cwd);
   const kept = [{ root: archives.root, where: 'teamai-reports' }, ...(archives.legacy ? [{ root: archives.legacy, where: 'the default branch' }] : [])];
 
   for (const { root, where } of kept) {

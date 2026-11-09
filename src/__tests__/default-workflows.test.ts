@@ -129,6 +129,7 @@ describe('default workflows', () => {
       defaults: { inputs: { sizes: 'S=40,3 M=200,10 L=800,30' } },
       steps: [
         { id: 'local', command: 'teamai session list --finished --all --suite "$SUITE" --sizes "$SIZES" --json' },
+        { id: 'pushed', command: 'teamai session list --all --suite "$SUITE" --sizes "$SIZES" --json' },
         { id: 'pick', answer: expect.any(String) },
         { id: 'draft', forEach: { items: 'steps.pick.outputs.picks', maxParallel: 1 }, workflow: 'teamai-session-to-task' },
       ],

@@ -6,20 +6,14 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { CommitState } from '../agent-observation.js';
 import { listCachedSuites } from '../benchmark/suite-cache.js';
 import type { Suite } from '../benchmark/suite.js';
 import type { LocalConfig } from '../types.js';
 import { commitCacheOf } from '../workflow/place/place.js';
 import { git } from '../workflow/worktree.js';
+import type { SessionCommits } from './sync.js';
 
 type Refusal = { ok: false; code: string; message: string };
-
-/** How a session started and ended, as its captures, or the archive of a pushed one, recorded them. */
-export interface SessionCommits {
-  start?: CommitState;
-  end?: CommitState;
-}
 
 const BOUNDED = ['S', 'M', 'L'] as const;
 
@@ -69,7 +63,7 @@ async function suiteIn(config: LocalConfig, dir: string): Promise<{ ok: true; su
 
 /** Why a session is not offered. Each is a phrase the listing prints after a count. */
 export const LEFT_OUT = {
-  unrecorded: 'archived before teamai recorded commits',
+  unrecorded: 'archived without recorded commits',
   noStart: 'no recorded start',
   noEnd: 'no recorded end',
   dirtyStart: 'started with tracked files modified',

@@ -36,7 +36,7 @@ import { getTeamaiHomeDir } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { resolveAnchors } from '../utils/git.js';
 import { z } from 'zod';
-import { AgentObservationSchema, type AgentObservation } from '../agent-observation.js';
+import { AgentObservationSchema, CommitStateSchema, type AgentObservation } from '../agent-observation.js';
 import type { Session } from './ir.js';
 import { OptionalString } from './fs.js';
 import { JsonValueSchema, isJsonObject } from '../types.js';
@@ -188,6 +188,24 @@ export function getRepoIdentity(cwd?: string): string | null {
 }
 
 /**
+ * The identities sessions of the repository at `url` are archived under: `url`'s own, and the one `getRepoIdentity`
+ * gives a checkout whose origin is `url`, since `git remote get-url` applies a member's `url.*.insteadOf`.
+ */
+export function repoIdentitiesOf(url: string, cwd?: string): string[] {
+  const identities = [canonicalizeRemote(url)];
+
+  try {
+    const rewritten = execFileSync('git', ['ls-remote', '--get-url', url], { cwd: cwd ?? process.cwd(), encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+
+    if (rewritten) identities.push(canonicalizeRemote(rewritten));
+  } catch {
+    // Without git here, only the URL as written can match.
+  }
+
+  return [...new Set(identities)];
+}
+
+/**
  * Normalize a git remote URL to `host/owner/repo` (no scheme, no .git suffix,
  * no credentials).
  *
@@ -330,6 +348,11 @@ export function generateSessionName(platform: string, title: string, createdAt: 
 // SessionSyncMeta — meta.json data model
 // ---------------------------------------------------------------------------
 
+/** The commit a session started at, as its first capture recorded it, and the one it ended on, as its last Stop did. */
+export const SessionCommitsSchema = z.object({ start: CommitStateSchema.optional(), end: CommitStateSchema.optional() });
+
+export type SessionCommits = z.infer<typeof SessionCommitsSchema>;
+
 export interface SessionSyncMeta {
   origin: {
     platform: string;
@@ -358,6 +381,8 @@ export interface SessionSyncMeta {
    * (`SessionCaptures.agentOf`). Absent when they disagree, or there are none.
    */
   agent?: AgentObservation;
+  /** How the session started and ended on the machine that pushed it. Absent when it has no captures there, or was pushed before teamai recorded it. */
+  commits?: SessionCommits;
 }
 
 /**
@@ -366,6 +391,7 @@ export interface SessionSyncMeta {
  */
 const SessionSyncMetaSchema = z.looseObject({
   agent: AgentObservationSchema.optional().catch(undefined),
+  commits: SessionCommitsSchema.optional().catch(undefined),
   origin: z.looseObject({
     platform: z.string(),
     title: z.string().optional(),
@@ -391,14 +417,24 @@ const SyncPushedAtSchema = z.object({ sync: z.object({ pushedAt: z.string().null
 
 /** A meta.json as read from the archive: an `agent` that is not an observation is left out, as if absent. */
 function readSyncMeta(file: string): SessionSyncMeta {
-  const { agent, ...rest } = SessionSyncMetaSchema.parse(JSON.parse(fs.readFileSync(file, 'utf-8')));
+  const { agent, commits, ...rest } = SessionSyncMetaSchema.parse(JSON.parse(fs.readFileSync(file, 'utf-8')));
+  const meta: SessionSyncMeta = rest;
 
-  return agent === undefined ? rest : { ...rest, agent };
+  if (agent !== undefined) meta.agent = agent;
+
+  if (commits !== undefined) meta.commits = commits;
+
+  return meta;
 }
 
 /** The index entry's `teamRevision`: the team revision the session ran with, when its meta records one. */
 function teamRevisionOf(meta: SessionSyncMeta): Pick<IndexEntry, 'teamRevision'> {
   return meta.agent?.team ? { teamRevision: meta.agent.team.revision } : {};
+}
+
+/** The index entry's `commits`: how the session started and ended, when its meta records it. */
+function commitsOf(meta: SessionSyncMeta): Pick<IndexEntry, 'commits'> {
+  return meta.commits ? { commits: meta.commits } : {};
 }
 
 /**
@@ -419,6 +455,7 @@ export function defaultSyncMeta(
     /** Persisted verbatim into origin.title (the file name slug is lossy). */
     title?: string;
     agent?: AgentObservation;
+    commits?: SessionCommits;
   },
   createdAt?: string,
 ): SessionSyncMeta {
@@ -446,7 +483,11 @@ export function defaultSyncMeta(
     status: 'active',
   };
 
-  return partial.agent ? { agent: partial.agent, ...meta } : meta;
+  const withAgent = partial.agent ? { agent: partial.agent, ...meta } : meta;
+
+  if (partial.commits) withAgent.commits = partial.commits;
+
+  return withAgent;
 }
 
 // ---------------------------------------------------------------------------
@@ -474,6 +515,8 @@ export interface IndexEntry {
   sessionId?: string;
   /** The team revision the session ran with (`agent.team.revision` of its meta), when that is recorded. */
   teamRevision?: string;
+  /** The `commits` of its meta, when that records them. */
+  commits?: SessionCommits;
 }
 
 interface RepoIndex {
@@ -500,6 +543,7 @@ const IndexEntrySchema = z.looseObject({
   status: z.string().default(''),
   sessionId: z.string().optional(),
   teamRevision: z.string().optional(),
+  commits: SessionCommitsSchema.optional().catch(undefined),
 }) satisfies z.ZodType<IndexEntry>;
 
 /** An `_index.json`, keys in the order they are written; every key it does not name is kept for the write back. */
@@ -1200,6 +1244,7 @@ export class SyncManager {
         status: meta.status,
         sessionId: meta.origin.sessionId,
         ...teamRevisionOf(meta),
+        ...commitsOf(meta),
       }, index);
       committed = true;
     } catch (error) {
@@ -1513,6 +1558,7 @@ export class SyncManager {
             status: meta.status,
             sessionId: meta.origin.sessionId,
             ...teamRevisionOf(meta),
+            ...commitsOf(meta),
           });
         } catch {
           // skip corrupted entries

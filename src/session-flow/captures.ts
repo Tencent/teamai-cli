@@ -19,6 +19,7 @@ import { log } from '../utils/logger.js';
 import { AgentSession } from './agent-session.js';
 import { OptionalString } from './fs.js';
 import type { Session } from './ir.js';
+import type { SessionSyncMeta } from './sync.js';
 import type { HookStdin } from '../hook-dispatch.js';
 
 export const SessionCaptureSchema = z.object({
@@ -472,15 +473,31 @@ function reportedModelOf(session: Session): string | undefined {
 }
 
 /**
- * What `session` of `platform` ran as, as a label of it takes it: `agentOf` its captures in the data home of the scope
- * its hooks resolved from its directory, else of `fallback`. Undefined when they disagree or there are none.
+ * What the archive of `session` of `platform` records from this machine, read in the data home of the scope its hooks
+ * resolved from its directory, else of `fallback`: what it ran as (`agentOf` its captures, as a label of it takes it),
+ * absent when they disagree, and the commits it started and ended on. Neither without a capture.
  */
-async function agentOfSession(platform: string, session: Session, fallback: LocalConfig | undefined): Promise<AgentObservation | undefined> {
+async function archivedFacts(platform: string, session: Session, fallback: LocalConfig | undefined): Promise<Pick<SessionSyncMeta, 'agent' | 'commits'>> {
   const { resolveHookConfig } = await import('../dashboard-collector.js');
   const scope = session.cwd ? await resolveHookConfig({ cwd: session.cwd, session_id: session.sessionId }, AgentSession.toolForPlatform(platform)) : null;
   const config = scope ?? fallback;
 
-  return config && agentOf(await read(config, platform, session.sessionId), reportedModelOf(session));
+  if (!config) return {};
+  const captures = await read(config, platform, session.sessionId);
+  const [first] = captures;
+
+  if (!first) return {};
+  const facts: Pick<SessionSyncMeta, 'agent' | 'commits'> = { commits: {} };
+  const agent = agentOf(captures, reportedModelOf(session));
+  const end = await endOf(config, platform, session.sessionId);
+
+  if (agent) facts.agent = agent;
+
+  if (first.agent.project) facts.commits = { ...facts.commits, start: first.agent.project };
+
+  if (end) facts.commits = { ...facts.commits, end: end.end };
+
+  return facts;
 }
 
 /** The run mode every capture of a session recorded, or undefined when they differ or one recorded none. */
@@ -488,4 +505,4 @@ function runModeOf(captures: readonly SessionCapture[]): RunMode | undefined {
   return agreedRunMode(captures.map((capture) => capture.runMode));
 }
 
-export const SessionCaptures = { atStart, atStop, addToolVersion, checkoutDelivery, markTeamChanged, read, list, markDrained, platformsOf, agentOf, agentOfSession, reportedModelOf, runModeOf, sweep } as const;
+export const SessionCaptures = { atStart, atStop, addToolVersion, checkoutDelivery, markTeamChanged, read, list, markDrained, platformsOf, agentOf, archivedFacts, reportedModelOf, runModeOf, sweep } as const;

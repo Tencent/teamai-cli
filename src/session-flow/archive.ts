@@ -182,7 +182,7 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
 
       const meta = defaultSyncMeta({
         platform: ref.platform, author, cwd: session.cwd || checkout, sessionId: ref.sessionId, repoIdentity, title: session.title,
-        agent: await SessionCaptures.agentOfSession(ref.platform, session, config),
+        ...await SessionCaptures.archivedFacts(ref.platform, session, config),
       }, session.createdAt);
 
       newest = { ref, session, meta };
@@ -227,7 +227,7 @@ export async function pushSession(config: LocalConfig, ref: ArchiveSessionRef): 
     sessionId: ref.sessionId,
     repoIdentity: deriveArchiveIdentity(session, ref.platform),
     title: session.title,
-    agent: await SessionCaptures.agentOfSession(ref.platform, session, config),
+    ...await SessionCaptures.archivedFacts(ref.platform, session, config),
   }, session.createdAt);
 
   return archiveOnReports(config, [{ session, meta }], `sync: push 1 session(s) from ${ref.platform}`);

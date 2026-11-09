@@ -389,6 +389,7 @@ teamai session pull
 teamai session list                                        # --all：全部项目
 teamai session list --finished --all                       # 可分享经验的会话；--within 3d
 teamai session show <id> --source hermes                   # 其中一个，已脱敏
+teamai session show <id> --team-session <name> --author <member>   # 队友推送的会话，已脱敏
 teamai session search <query>
 teamai session resume <name> --platform claude-code
 ```
@@ -418,6 +419,14 @@ The readiness probe fires before the cache warms up; raise initialDelaySeconds t
 ```
 
 加 `--json` 时，`list --finished --all` 输出 `{"list":[{"session","source","ended","prompt"}]}`，`show` 输出 `{"session","source","transcript"}`。`show` 找不到的会话以 1 退出，输出 `{"error":{"code":"session_not_found","message":…}}`。默认工作流 [`teamai-share-learnings-from-sessions`](workflow.md#teamai-share-learnings-from-sessions) 逐个询问是否分享这些会话。
+
+`show --team-session <name> --author <member>` 改为打印队友推送的会话：按 `session list` 打印的名称和推送者，从 `teamai-reports` 中读取本目录仓库的会话，脱敏方式相同；只有两位成员推送了同名会话时才需要 `--author`。先运行 `session pull` 拿到最新的：
+
+```console
+$ teamai session show 7c1e2b9a --team-session claude-code_refresh-tokens-past-expiry_20261105 --author ana
+```
+
+位置参数必须是推送会话自己的 id，即 `session list --all --suite <dir>` 打印的那个；其他 id 以 1 退出，错误码为 `session_not_found`。`--suite` 从本机已结束的会话（`--finished --all --suite`）或团队推送的会话（`--all --suite`）中，列出 benchmark 套件可以[从中取任务](benchmarks.md#从过去的会话构建套件)的会话。
 
 ### 脱敏后的会话保留什么
 

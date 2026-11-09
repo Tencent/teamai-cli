@@ -1069,6 +1069,34 @@ describe('what an archived session ran as', () => {
   });
 });
 
+describe('the commits an archived session started and ended on', () => {
+  const commits = { start: { commit: '3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a', dirty: false }, end: { commit: '9a1d4e7c2b8f0a3d6e5c1b9f8a7d2e4c6b0a1f3e', dirty: false } };
+
+  it('keeps them in meta.json and the index entry, which a rebuild gives again', async () => {
+    const mgr = new SyncManager(repoRoot);
+    const saved = written(await mgr.saveSession(mkSession(), { ...mkMeta(), commits }));
+
+    expect(mgr.loadSession('github.com/org/alpha', path.basename(saved, '.jsonl'), 'alice').meta.commits).toEqual(commits);
+    expect(mgr.listSessions('github.com/org/alpha')[0].commits).toEqual(commits);
+    await mgr.rebuildIndex('github.com/org/alpha');
+    expect(mgr.listSessions('github.com/org/alpha')[0].commits).toEqual(commits);
+  });
+
+  it('records none for a session pushed without them, and reads ones that are not commits as absent', async () => {
+    const mgr = new SyncManager(repoRoot);
+    const saved = written(await mgr.saveSession(mkSession(), mkMeta()));
+    expect(mgr.listSessions('github.com/org/alpha')[0]).not.toHaveProperty('commits');
+    const metaFile = path.join(repoRoot, saved.replace(/\.jsonl$/, '.meta.json'));
+    const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')) as Record<string, unknown>;
+    fs.writeFileSync(metaFile, JSON.stringify({ ...meta, commits: { start: { commit: 'main', dirty: false } } }));
+
+    await mgr.rebuildIndex('github.com/org/alpha');
+
+    expect(mgr.loadSession('github.com/org/alpha', path.basename(saved, '.jsonl'), 'alice').meta).not.toHaveProperty('commits');
+    expect(mgr.listSessions('github.com/org/alpha')[0]).not.toHaveProperty('commits');
+  });
+});
+
 describe('an archive written before cwd was relative and agent was recorded', () => {
   it('lists, loads and rebuilds with its absolute cwd and no agent or team revision', async () => {
     const mgr = new SyncManager(repoRoot);

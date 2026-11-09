@@ -33,7 +33,8 @@ import { SessionCaptures } from './captures.js';
 import { SessionPolicy } from './session-policy.js';
 import { SessionPublish } from './session-publish.js';
 import { SessionWork, type SessionScorer } from './session-work.js';
-import { TaskCandidates, type LeftOut, type SessionCommits, type Sizes, type TaskFields } from './task-candidates.js';
+import type { SessionCommits } from './sync.js';
+import { TaskCandidates, type LeftOut, type Sizes, type TaskFields } from './task-candidates.js';
 
 /** A finished session to archive, judge, or both, in the data home that lists it. */
 export interface FinishedSession {

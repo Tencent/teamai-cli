@@ -389,6 +389,7 @@ teamai session pull
 teamai session list                                        # --all: every project
 teamai session list --finished --all                       # sessions to share learnings from; --within 3d
 teamai session show <id> --source hermes                   # one of them, redacted
+teamai session show <id> --team-session <name> --author <member>   # a session a teammate pushed, redacted
 teamai session search <query>
 teamai session resume <name> --platform claude-code
 ```
@@ -418,6 +419,14 @@ The readiness probe fires before the cache warms up; raise initialDelaySeconds t
 ```
 
 With `--json`, `list --finished --all` prints `{"list":[{"session","source","ended","prompt"}]}` and `show` prints `{"session","source","transcript"}`. A session `show` cannot find exits 1 with `{"error":{"code":"session_not_found","message":…}}`. The default workflow [`teamai-share-learnings-from-sessions`](workflow.md#teamai-share-learnings-from-sessions) offers these sessions one by one.
+
+`show --team-session <name> --author <member>` prints a session a teammate pushed instead, by the name `session list` prints and who pushed it, read from `teamai-reports` for this directory's repository and redacted the same way; `--author` is needed only when two members pushed that name. Run `session pull` first for the newest:
+
+```console
+$ teamai session show 7c1e2b9a --team-session claude-code_refresh-tokens-past-expiry_20261105 --author ana
+```
+
+The positional id must be the pushed session's own, as `session list --all --suite <dir>` prints it; another id exits 1 with `session_not_found`. `--suite` lists, of this machine's finished sessions (`--finished --all --suite`) or of the team's pushed ones (`--all --suite`), those a benchmark suite could [take a task from](benchmarks.md#build-a-suite-from-past-sessions).
 
 ### What a scrubbed session keeps
 

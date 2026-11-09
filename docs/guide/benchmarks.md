@@ -506,7 +506,7 @@ refresh-race   after pull request 77 merged, the same bytes: nothing pushed, no 
 
 ### Build a suite from past sessions
 
-A week of sessions holds many finished fixes and features. Ask your agent to turn them into tasks ("build benchmarks/fix-auth from this week's sessions"), and it starts `teamai-sessions-to-tasks`:
+A week of sessions, yours and your teammates', holds many finished fixes and features. Ask your agent to turn them into tasks ("build benchmarks/fix-auth from this week's sessions"), and it starts `teamai-sessions-to-tasks`:
 
 ```console
 $ teamai workflow start teamai-sessions-to-tasks --inputs '{"suite":"benchmarks/fix-auth","count":12}'
@@ -517,9 +517,11 @@ step         does
 local        teamai session list --finished --all --suite benchmarks/fix-auth --sizes "$SIZES" --json
              → each finished session with start, solution, files, lines and size; only those whose commits are reachable
                in the suite's repo and that no task of the suite already comes from (by session or solution commit)
+pushed       teamai session list --all --suite benchmarks/fix-auth --sizes "$SIZES" --json
+             → the same, of the sessions the team pushed for the suite's repo, each with its teamSession and author
 pick         an answer step: the AI picks representative candidates per size, up to count
-draft        for_each pick, max_parallel 1: workflow teamai-session-to-task with session, source, suite, start, solution;
-             you accept, edit or skip each draft, and each accepted task is a pull request
+draft        for_each pick, max_parallel 1: workflow teamai-session-to-task with session, source, suite, start, solution
+             (and team_session, author for a pushed one); you accept, edit or skip each draft, and each accepted task is a pull request
 ```
 
 `start` is the commit the session started at, and `solution` the one its last Stop found checked out: teamai records both beside the session's captures. The list says how many sessions it left out, and why:
@@ -558,7 +560,19 @@ lines  files  size
 801    1      XL   more lines than L allows
 ```
 
-Each draft is the [same conversation](#turn-a-session-into-a-task) as for the session you are in; the agent reads the past session with `teamai session show <id> --source <platform>` first.
+Each draft is the [same conversation](#turn-a-session-into-a-task) as for the session you are in; the agent reads the past session with `teamai session show <id> --source <platform>` first, or a teammate's with `teamai session show <id> --team-session <name> --author <member>`.
+
+A pushed session's archive keeps the commits its start and its last Stop recorded on the machine that pushed it, so a teammate's work can be a task too:
+
+```console
+$ teamai session list --all --suite benchmarks/fix-auth --json
+{"list":[{"session":"7c1e2b9a","source":"claude-code","ended":"2026-11-05T17:40:00Z","title":"Refresh tokens past expiry",
+          "teamSession":"claude-code_refresh-tokens-past-expiry_20261105","author":"ana",
+          "start":"3f2c9a7…","solution":"9a1d4e7…","files":2,"lines":31}],
+ "leftOut":[{"reason":"archived without recorded commits","sessions":6}]}
+```
+
+A session pushed before teamai recorded commits is left out as `archived without recorded commits`. Run `teamai session pull` first for the team's newest sessions.
 
 ### Check tasks in the team repo's CI
 
