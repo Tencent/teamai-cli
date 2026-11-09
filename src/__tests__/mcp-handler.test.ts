@@ -118,3 +118,58 @@ servers:
     ]);
   });
 });
+
+/** `teamai remove mcp` searches and edits server folders as it does mcp.yaml servers (#1787). */
+describe('McpHandler server folders', () => {
+  const teamConfig: TeamaiConfig = {
+    team: 'test',
+    description: '',
+    repo: 'owner/repo',
+    provider: 'github',
+    reviewers: [],
+    sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: true } },
+    toolPaths: {},
+  };
+
+  async function writeFolder(relativeDir: string, marker = 'transport: stdio\ncommand: node\nargs: ["${TEAMAI_MCP_DIR}/server.mjs"]\n'): Promise<void> {
+    const dir = path.join(repo, ...relativeDir.split('/'));
+    await fse.ensureDir(dir);
+    await fse.writeFile(path.join(dir, 'MCP.yaml'), marker);
+    await fse.writeFile(path.join(dir, 'server.mjs'), 'console.log("hi");\n');
+  }
+
+  it('lists a server folder at the root and in a namespace, with its namespace', async () => {
+    await writeFolder('mcp/jira-lite');
+    await writeFolder('mcp/checkout/db');
+
+    const items = await new McpHandler().scanTeamForPull(teamConfig, member());
+
+    expect(items.map(({ name, namespace, relativePath }) => ({ name, namespace, relativePath }))).toEqual([
+      { name: 'jira-lite', namespace: undefined, relativePath: 'mcp/jira-lite' },
+      { name: 'db', namespace: 'checkout', relativePath: 'mcp/checkout/db' },
+    ]);
+  });
+
+  it('removes a server folder from the team repo, the root one by a bare name and a namespace one by <ns>/<name>', async () => {
+    await writeFolder('mcp/jira-lite');
+    await writeFolder('mcp/checkout/db');
+    await writeFolder('mcp/billing/db');
+
+    const handler = new McpHandler();
+    const removedRoot = await handler.removeItem('jira-lite', teamConfig, member());
+    const removedNamespaced = await handler.removeItem('checkout/db', teamConfig, member());
+
+    expect(removedRoot).toEqual([path.join(repo, 'mcp', 'jira-lite')]);
+    expect(removedNamespaced).toEqual([path.join(repo, 'mcp', 'checkout', 'db')]);
+    expect(await fse.pathExists(path.join(repo, 'mcp', 'jira-lite'))).toBe(false);
+    expect(await fse.pathExists(path.join(repo, 'mcp', 'checkout', 'db'))).toBe(false);
+    expect(await fse.pathExists(path.join(repo, 'mcp', 'billing', 'db', 'MCP.yaml'))).toBe(true);
+  });
+
+  it('removes a folder whose MCP.yaml does not parse', async () => {
+    await writeFolder('mcp/broken', 'transport: [\n');
+
+    expect(await new McpHandler().removeItem('broken', teamConfig, member())).toEqual([path.join(repo, 'mcp', 'broken')]);
+    expect(await fse.pathExists(path.join(repo, 'mcp', 'broken'))).toBe(false);
+  });
+});

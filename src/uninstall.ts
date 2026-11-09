@@ -133,7 +133,7 @@ interface RemovalPlan {
   dshHookFile: string | null;
   /** The team hooks teamai's bridge runs for a tool (~/.teamai/team-hooks/<tool>.json). */
   bridgedTeamHookFiles: string[];
-  /** A single-repo worktree's `.teamai/delivered/`: the hook folders it ran team hooks from (#1787). */
+  /** A single-repo worktree's `.teamai/delivered/`: the team folders (hooks, MCP servers) it delivered (#1787). */
   deliveredFolderDirs: string[];
   /** Manifest used by the primary hook injection scope. */
   hookManifestPath: string;
@@ -1995,7 +1995,7 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
     for (const file of plan.bridgedTeamHookFiles) console.log(`     ${file}`);
   }
 
-  for (const dir of plan.deliveredFolderDirs) console.log(`   Team hook folders delivered in this worktree: ${dir}`);
+  for (const dir of plan.deliveredFolderDirs) console.log(`   Team folders delivered in this worktree: ${dir}`);
 
   if (plan.piHookFiles.length > 0) {
     console.log(`   Pi Hooks (${plan.piHookFiles.length} files):`);
@@ -3427,10 +3427,12 @@ async function removeConfirmed(
 
   // The workspace instruction excludes a pull wrote (#913), before the records that own them go.
   const excludesLeft = plan.includeShared ? await withdrawWorkspaceInstructionExcludes(teamConfig, localConfig) : [];
+  // The rule folder grants a pull added to a tool's user settings (#1787), for every tool or the one uninstalled.
+  const grantsLeft = plan.includeShared || agentKey ? await withdrawRuleFolderGrants(localConfig, plan.includeShared ? null : agentKey) : [];
 
   const { pendingOpencode, hooksLeft, blocksLeft, filesLeft } = await executeRemoval(plan, heldMcp, {
     hooks: dispatchLeft ? [{ what: `the Codex team-hook dispatchers in ${dispatchLeft}`, tool: 'codex' }] : [],
-    files: [...httpSourceLeft, ...plan.keptUnjudged, ...excludesLeft, ...mcpLeft],
+    files: [...httpSourceLeft, ...plan.keptUnjudged, ...excludesLeft, ...grantsLeft, ...mcpLeft],
   }, codexTrustPolicy(localConfig));
 
   const incomplete = pendingOpencode.length > 0 || hooksLeft.length > 0 || blocksLeft.length > 0 || filesLeft.length > 0;
@@ -3477,6 +3479,34 @@ async function removeConfirmed(
   } else {
     log.success('teamai uninstalled');
   }
+}
+
+/**
+ * Take the `permissions.additionalDirectories` entries each checkout's pull added to a tool's user settings for the
+ * rule folders it delivers (#1787) back out, leaving the member's own: every tool's, or with `tool` only its settings
+ * file. The settings files it could not edit.
+ */
+async function withdrawRuleFolderGrants(localConfig: LocalConfig, tool: string | null | undefined): Promise<string[]> {
+  const only = tool && isToolId(tool) ? path.join(toolHome(tool), 'settings.json') : null;
+
+  if (tool && only === null) return [];
+  const { RuleFolders } = await import('./resources/rule-folders.js');
+  const left: string[] = [];
+
+  for (const { ruleFolderGrants } of Object.values((await loadStateForScope(localConfig)).lastPullByWorkspace ?? {})) {
+    for (const [settingsFile, previous] of Object.entries(ruleFolderGrants ?? {})) {
+      if (only !== null && settingsFile !== only) continue;
+
+      try {
+        if ((await RuleFolders.grant({ settingsFile, dirs: [], previous, withdraw: true })).length > 0) left.push(settingsFile);
+      } catch (e) {
+        log.warn(`Could not take the rule folder directories out of ${settingsFile}: ${e instanceof Error ? e.message : String(e)}`);
+        left.push(settingsFile);
+      }
+    }
+  }
+
+  return left;
 }
 
 /**

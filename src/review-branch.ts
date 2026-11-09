@@ -26,6 +26,7 @@ import path from 'node:path';
 import chalk from 'chalk';
 import fse from 'fs-extra';
 import { findSkippedFolders, isInSkippedFolder, skippedFolderMessage, skippedFoldersIn } from './folder-markers.js';
+import { readTeamRules } from './resources/rules.js';
 import { parseYaml } from './utils/yaml.js';
 import { z } from 'zod';
 
@@ -43,6 +44,8 @@ import matter from 'gray-matter';
 import { isModelAlias, loadTeamModelAliases, noModelCause, resolveAgentModel, resolveModelValue, TEAM_ALIASES_FILE, type ModelAliases } from './models/aliases.js';
 import { parseAgentYaml, type AgentSpec, type ToolName } from './resources/agent-format.js';
 import { hooksEntryReader, parseTeamHooks } from './resources/hooks.js';
+import { mcpEntryReader } from './resources/mcp.js';
+import type { EntryPlaceReader } from './namespaced-entries.js';
 import { getHandler } from './resources/index.js';
 import { listRepoFilesRecursive } from './resources/repo-resource.js';
 import { RESOURCE_LAYOUTS, Resources } from './resources/resolver.js';
@@ -106,11 +109,11 @@ interface ReviewResource {
   type: PlaceableType;
   name: string;
   namespace?: string;
-  /** Repo-relative path of the resource (a directory for skills and hook folders, a file otherwise). */
+  /** Repo-relative path of the resource (a directory for skills, hook and MCP server folders, a file otherwise). */
   relativePath: string;
-  /** Absolute path in the materialized tree: the skill or hook folder directory, or the file. */
+  /** Absolute path in the materialized tree: the skill, hook or MCP server folder directory, or the file. */
   absolutePath: string;
-  /** Whether the resource is a directory whose every file belongs to it: a skill or a hook folder. */
+  /** Whether the resource is a directory whose every file belongs to it: a skill, a hook folder or an MCP server folder. */
   folder: boolean;
 }
 
@@ -235,6 +238,24 @@ async function skippedFolderFindings(repoDir: string): Promise<Finding[]> {
   }));
 }
 
+/**
+ * What pull's rules reader says about the branch's rules (#1787): a rule it does not deliver fails, and a note (a
+ * directory that became a rule folder, a language variant's frontmatter) warns.
+ */
+async function ruleFindings(repoDir: string): Promise<Finding[]> {
+  return (await readTeamRules(repoDir)).problems.map(({ kind, path: at, message }): Finding => ({
+    level: kind === 'invalid' ? 'fail' : 'warn',
+    check: kind === 'invalid' || at.endsWith('/') ? 'structure' : 'format',
+    path: at,
+    message,
+  }));
+}
+
+/** Whether `resource` is a rule folder, read through its `RULE.md`: every file in its directory belongs to it. */
+function isRuleFolder(resource: Pick<ReviewResource, 'type' | 'relativePath'>): boolean {
+  return resource.type === 'rules' && path.posix.basename(resource.relativePath) === RESOURCE_LAYOUTS.rules.marker;
+}
+
 /** Enumerate the resources on the branch through the same scanners pull uses. */
 async function scanResources(repoDir: string, index: ManifestIndex): Promise<ReviewResource[]> {
   // SAFETY: the skills, rules, agents and mcp pull scanners read only repo.localPath from LocalConfig.
@@ -244,11 +265,15 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
   const handlerTypes = ['skills', 'rules', 'agents', 'mcp'] as const;
   const isHandlerType = (type: PlaceableType): boolean => handlerTypes.some((handlerType) => handlerType === type);
   const items: Array<{ type: PlaceableType; item: ResourceItem }> = [];
-  const hookFolderPaths = new Set<string>();
+  // The hook and MCP server folders: each is one resource, all of whose files are its own.
+  const folderPaths = new Set<string>();
 
   for (const type of handlerTypes) {
-    items.push(...(await getHandler(type).scanTeamForPull(teamConfig, localConfig))
-      .map((item) => ({ type, item })));
+    for (const item of await getHandler(type).scanTeamForPull(teamConfig, localConfig)) {
+      // The MCP scan names an mcp.yaml server by its file and a server folder by its directory.
+      if (type === 'mcp' && path.posix.basename(item.relativePath) !== 'mcp.yaml') folderPaths.add(item.sourcePath);
+      items.push({ type, item });
+    }
   }
 
   for (const type of PLACEABLE_TYPES) {
@@ -259,7 +284,7 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
     const hookFolders = type === 'hooks' ? await hookFolderItems(repoDir) : [];
 
     for (const item of hookFolders) {
-      hookFolderPaths.add(item.sourcePath);
+      folderPaths.add(item.sourcePath);
       items.push({ type, item });
     }
 
@@ -322,7 +347,7 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
   }
 
   return items.map(({ type, item }): ReviewResource => {
-    const folder = type === 'skills' || hookFolderPaths.has(item.sourcePath);
+    const folder = type === 'skills' || folderPaths.has(item.sourcePath);
 
     // Handler-provided names (MCP server names, skill names) are authoritative;
     // parseRelativePath would overwrite them with the filename stem (e.g. 'mcp'
@@ -342,7 +367,8 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
       };
     }
 
-    const { name, namespace } = parseRelativePath(type, item.relativePath, index);
+    // A rule folder is named as the rule file of its name would be: rules/fe/review/ is fe/review.
+    const { name, namespace } = parseRelativePath(type, item.folder ? `rules/${item.name}.md` : item.relativePath, index);
 
     return { type, name, namespace, relativePath: item.relativePath, absolutePath: item.sourcePath, folder };
   });
@@ -369,46 +395,52 @@ async function hookFolderItems(repoDir: string): Promise<ResourceItem[]> {
   }] : [])));
 }
 
+/** What `placeFindings` says about one type's places, each as the whole sentence a reviewer reads. */
+interface PlaceMessages {
+  /** A place pull's reader refuses, from its reason without the final period. */
+  readonly unreadable: (reason: string) => string;
+  /** One name from two sources of one place. */
+  readonly duplicate: (name: string, first: string, second: string) => string;
+}
+
 /**
- * What stops pull applying the branch's team hooks, read by pull's own hooks reader at the root and in each namespace:
- * a hooks file or hook folder it cannot read, or one id from two of them in the same place (#1787).
+ * What stops pull applying one type of the branch's team entries, read by pull's own reader at the root and in each
+ * namespace of `dir`: a file or folder it cannot read, or one name from two of them in the same place (#1787).
  */
-async function hookFindings(repoDir: string): Promise<Finding[]> {
+async function placeFindings<E>(repoDir: string, reader: EntryPlaceReader<E>, dir: string, messages: PlaceMessages): Promise<Finding[]> {
   const findings: Finding[] = [];
 
-  for (const namespace of [null, ...await listDirs(path.join(repoDir, 'hooks'))]) {
-    const read = await hooksEntryReader.readPlace(repoDir, namespace);
+  for (const namespace of [null, ...await listDirs(path.join(repoDir, dir))]) {
+    const read = await reader.readPlace(repoDir, namespace);
 
     if (!read.ok) {
-      findings.push({
-        level: 'fail',
-        check: 'format',
-        path: read.source,
-        message: `${read.reason.trimEnd().replace(/\.$/, '')}; pull leaves every member's team hooks as they are until it is fixed.`,
-      });
+      findings.push({ level: 'fail', check: 'format', path: read.source, message: messages.unreadable(read.reason.trimEnd().replace(/\.$/, '')) });
       continue;
     }
 
     const firstSource = new Map<string, string>();
 
     for (const { entry, source } of read.entries) {
-      const first = firstSource.get(entry.hook.id);
+      const name = reader.nameOf(entry);
+      const first = firstSource.get(name);
 
-      if (first === undefined) firstSource.set(entry.hook.id, source);
-      else if (first !== source) {
-        findings.push({
-          level: 'fail',
-          check: 'duplicates',
-          path: source,
-          message: `hook "${entry.hook.id}" is defined in both ${first} and ${source}, in the same place, so pull leaves every member's `
-            + 'team hooks as they are. Keep one of them.',
-        });
-      }
+      if (first === undefined) firstSource.set(name, source);
+      else if (first !== source) findings.push({ level: 'fail', check: 'duplicates', path: source, message: messages.duplicate(name, first, source) });
     }
   }
 
   return findings;
 }
+
+const HOOK_PLACE_MESSAGES: PlaceMessages = {
+  unreadable: (reason) => `${reason}; pull leaves every member's team hooks as they are until it is fixed.`,
+  duplicate: (name, first, second) => `hook "${name}" is defined in both ${first} and ${second}, in the same place, so pull leaves every member's team hooks as they are. Keep one of them.`,
+};
+
+const MCP_PLACE_MESSAGES: PlaceMessages = {
+  unreadable: (reason) => `${reason}; pull leaves every member's team MCP servers as they are until it is fixed.`,
+  duplicate: (name, first, second) => `MCP server "${name}" is defined in both ${first} and ${second}, in the same place, so pull leaves every member's team MCP servers as they are. Keep one of them.`,
+};
 
 /**
  * The repo-relative directory a resource type lives under. It is the type name
@@ -793,9 +825,13 @@ async function filesUnder(relativeDir: string, absoluteDir: string): Promise<Arr
 
 async function leakFindings(repoDir: string, resources: ReviewResource[], readText: (p: string) => Promise<string | null>): Promise<Finding[]> {
   const files = [
-    ...(await Promise.all(resources.map((resource) => resource.folder
-      ? filesUnder(resource.relativePath, resource.absolutePath)
-      : [{ relativePath: resource.relativePath, absolutePath: resource.absolutePath }]))).flat(),
+    ...(await Promise.all(resources.map((resource) => {
+      if (resource.folder) return filesUnder(resource.relativePath, resource.absolutePath);
+
+      return isRuleFolder(resource)
+        ? filesUnder(path.posix.dirname(resource.relativePath), path.dirname(resource.absolutePath))
+        : [{ relativePath: resource.relativePath, absolutePath: resource.absolutePath }];
+    }))).flat(),
     ...await filesUnder('scorers', path.join(repoDir, 'scorers')),
   ];
 
@@ -1708,12 +1744,14 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
 
   const findings: Finding[] = [
     ...await skippedFolderFindings(repoDir),
+    ...await ruleFindings(repoDir),
     ...await structureFindings(resources, index),
     ...await namingFindings(resources, readText),
     ...await duplicateFindings(resources, index),
     ...await skillLinkFindings(skillFiles, resources),
     ...await formatFindings(resources, readText),
-    ...await hookFindings(repoDir),
+    ...await placeFindings(repoDir, hooksEntryReader, 'hooks', HOOK_PLACE_MESSAGES),
+    ...await placeFindings(repoDir, mcpEntryReader, 'mcp', MCP_PLACE_MESSAGES),
     ...await relationsFindings(resources, readText),
     ...pipedInstallFindings(skillFiles),
     ...await leakFindings(repoDir, resources, readText),

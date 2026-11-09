@@ -174,6 +174,15 @@ describe('teamai remove mcp picks one file', () => {
     expect(errors).toContain('--role <ns> or --project <id>');
   });
 
+  it('names where each namespace defines the name, a server folder by its directory (#1787)', async () => {
+    handler.scanTeamForPull.mockResolvedValue([{ name: 'db', type: 'mcp', namespace: 'checkout', relativePath: 'mcp/checkout/db' }, server('billing')]);
+
+    await remove('mcp', ['db'], { force: true });
+
+    expect(handler.removeItem).not.toHaveBeenCalled();
+    expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('(mcp/checkout/db, mcp/billing/mcp.yaml)');
+  });
+
   it('targets the namespace --role names, even when the root defines the name', async () => {
     handler.scanTeamForPull.mockResolvedValue([server(), server('checkout')]);
 

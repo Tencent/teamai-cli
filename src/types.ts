@@ -1357,6 +1357,11 @@ export const StateSchema = z.object({
      * `.claude/settings.local.json` for the workspaces above it (#913).
      */
     claudeMdExcludes: z.array(z.string()).optional(),
+    /**
+     * The `permissions.additionalDirectories` entries teamai added to a tool's user settings so the tool reads the
+     * rule folders this scope delivers (#1787), by settings file.
+     */
+    ruleFolderGrants: z.record(z.string(), z.array(z.string())).optional(),
   })).optional(),
   /**
    * The exclude files holding each git exclude owner's block that this
@@ -1522,6 +1527,8 @@ export interface ResourceItem {
   needsDeliveredBlob?: boolean;
   /** Repo-backed resources placed into a namespace: the shared-root path the author keeps editing. */
   prePlacementPath?: string;
+  /** Rules only: a rule folder, `rules/[<ns>/]<name>/RULE.md` with the files it names (#1787). `sourcePath` is its RULE.md. */
+  folder?: true;
 }
 
 export interface ResourceDiff {

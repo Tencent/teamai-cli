@@ -845,7 +845,7 @@ describe('pull skip-sync refreshes CLAUDE.md recall block (CLI upgrade)', () => 
     const updated = await fse.readFile(claudeMdPath, 'utf8');
     // Stale block gone, current block present — verbatim from the CLI source.
     expect(updated).not.toContain('you **MUST** first invoke the `teamai-recall` subagent');
-    expect(updated).toContain(compileRecallRulesBlock());
+    expect(updated).toContain(await compileRecallRulesBlock());
     // Exactly one managed block (replace, not append).
     expect(updated.split(TEAMAI_RECALL_RULES_START).length - 1).toBe(1);
     expect(updated.split(TEAMAI_RECALL_RULES_END).length - 1).toBe(1);
@@ -916,7 +916,7 @@ describe('pull skip-sync refreshes CLAUDE.md recall block (CLI upgrade)', () => 
 
     const updated = await fse.readFile(copilotInstructions, 'utf8');
     expect(updated).toContain('# Personal instructions');
-    expect(updated).toContain(compileRecallRulesBlock());
+    expect(updated).toContain(await compileRecallRulesBlock());
   });
 });
 

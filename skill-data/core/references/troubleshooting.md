@@ -218,7 +218,7 @@ held, or a git error, relay the fix the line gives.
 
 For new HTTP local-agent MCP installs, a failed initial ownership-manifest write leaves the MCP config and Git exclusions unchanged. Retry the install after fixing the manifest write error. A bare Copilot entry beside `mcpServers` is removed only with a matching ownership record proving a completed bare write. Older records without that evidence preserve the bare entry. A bare ownership record cannot claim a same-named member entry under `mcpServers`: updates skip the collision, and removal leaves that keyed entry alone. An unmarked Copilot record needs a matching keyed hash that does not also match the bare entry. Completed writes record `bare: true` or `bare: false`; missing placement remains unproven, including after a failed placement-record write. Existing JSON MCP updates keep the old ownership until the config write completes; a later manifest failure restores the config. `uninstall_mcp` keeps ownership if reading or writing the config fails, and restores the entry if removing its manifest record fails. MCP reconcile also restores all configs written before an ownership-save failure. If restoration fails too, repair the named configs and ownership records before retrying; the error reports both failures, and configs still carrying credentials stay excluded from Git.
 
-## "<dir>/ is a rule folder, which this teamai cannot read yet; it was skipped"
+## "<dir>/ is a <type> folder, which this teamai cannot read yet; it was skipped"
 
 `pull`, `status`, `doctor` and `review --branch` print one such line per
 directory that holds a reserved folder marker (`WORKFLOW.yaml`, `HOOK.yaml`,
@@ -229,16 +229,27 @@ rest of the team repo is. A hook-started pull writes it to
 
 ```console
 $ teamai pull
-⚠ rules/api-style/ is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.
+⚠ scorers/strict/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.
 ```
 
 - The team means it as a folder: tell the user to run `teamai update`, then
   `teamai pull`. Until a release reads that type, the folder stays skipped.
-- The file is an old rule or workflow that happens to carry the name, such as
-  `rules/onboarding/RULE.md` that used to arrive as `onboarding/RULE`: the
-  team renames it (`git mv rules/onboarding/RULE.md rules/onboarding/overview.md`).
-  Do not rename it for them.
+- The file is an old resource that only happens to carry the name: the team
+  renames it with `git mv`. Do not rename it for them.
 - Only the exact name counts: `rule.md` or `workflow.yaml` is read as before.
+
+## "rules/<dir>/ holds RULE.md, so it is one folder, and <file> in it is one of its files, no longer read on its own"
+
+`pull` prints this for a rule folder holding other `.md` files, its language
+variants (`RULE.zh.md`) included. They are part of the rule `<dir>`, delivered
+with the folder, not rules of their own.
+
+- The team meant them as part of the folder, such as a `checklist.md` the rule
+  names through `${TEAMAI_RULE_DIR}`: nothing to do.
+- A file used to be a rule of its own, such as `rules/onboarding/db.md` beside
+  an old `rules/onboarding/RULE.md` that arrived as `onboarding/RULE`: the team
+  renames `RULE.md` (`git mv rules/onboarding/RULE.md rules/onboarding/overview.md`)
+  or moves the file out of the folder. Do not do it for them.
 
 ## "Workspace child <path> is left out" / "<item> differs between ..."
 

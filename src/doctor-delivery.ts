@@ -989,7 +989,7 @@ async function buildRulesActivationChecks(ctx: DoctorContext, items: ResourceIte
 
   if (soul !== undefined) {
     const { readSoulRules } = await import('./hermes-config.js');
-    const expected = await inlinedRulesText(items);
+    const expected = await inlinedRulesText(items, { teamConfig, localConfig });
     const delivered = await readSoulRules(soul);
     checks.push({
       name: 'Team rules are inlined in Hermes SOUL.md',
@@ -1311,7 +1311,7 @@ async function buildUserRulesFileChecks(ctx: DoctorContext, items: ResourceItem[
   const { inlineRulesLabelOf, inlineRulesLocationOf, teamRulesBlock, unreadableConfigOf } = await import('./resources/rules.js');
   const { isCodexTool } = await import('./utils/tool-names.js');
   const { TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, scopedToolPaths: scopedPaths } = await import('./types.js');
-  const expected = await teamRulesBlock(items);
+  const expected = await teamRulesBlock(items, { teamConfig, localConfig });
   const install = installOf(teamConfig, localConfig);
   const checks: Check[] = [];
 

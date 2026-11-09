@@ -25,7 +25,7 @@ const FRONTMATTER_RE = /^﻿?---[ \t]*\r?\n(?:[^\n]*\n)*?---[ \t]*(?:\r?\n|$)/;
  * the frontmatter into the body. Delimiter-based splitting round-trips
  * regardless of YAML validity.
  */
-function splitRuleFrontmatter(raw: string): { block: string; body: string } {
+export function splitRuleFrontmatter(raw: string): { block: string; body: string } {
   const m = raw.match(FRONTMATTER_RE);
 
   return m ? { block: m[0], body: raw.slice(m[0].length) } : { block: '', body: raw };

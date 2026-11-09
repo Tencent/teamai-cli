@@ -147,6 +147,8 @@ async function prune(input: {
   readonly type: DeliveredFolderType;
   readonly keep: readonly string[];
   readonly ledger: DeliveryLedger | undefined;
+  /** The root the folders sit under, when it is not the scope's (`sync`). */
+  readonly root?: string;
 }): Promise<string[]> {
   const removed: string[] = [];
   const keep = new Set(input.keep.map((dest) => path.resolve(dest)));
@@ -170,7 +172,7 @@ async function prune(input: {
     }
   };
 
-  await sweep(path.join(root(input.localConfig), input.type));
+  await sweep(path.join(input.root ?? root(input.localConfig), input.type));
 
   return removed;
 }
@@ -184,7 +186,9 @@ export interface FolderDelivery {
 /**
  * One run of a type's folders for `localConfig`'s scope: deliver each of `folders`, then, with `prune`, remove the
  * type's others, all recorded in `ledger`. In single-repo, `.teamai/delivered/` is then kept out of git by its own
- * block in `.git/info/exclude`. Throws when a folder cannot be written; the caller keeps what it installed.
+ * block in `.git/info/exclude`. `root`: the folders sit under it instead, a worktree's `.teamai/delivered/` that holds
+ * copies of a remote team's folders for a tool that cannot read the data home (#1787), kept out of git the same way.
+ * Throws when a folder cannot be written; the caller keeps what it installed.
  */
 async function sync(input: {
   readonly localConfig: LocalConfig;
@@ -192,16 +196,18 @@ async function sync(input: {
   readonly folders: readonly FolderDelivery[];
   readonly ledger: DeliveryLedger | undefined;
   readonly prune: boolean;
+  readonly root?: string;
 }): Promise<void> {
   const { localConfig, type, folders, ledger } = input;
+  const at = input.root ?? root(localConfig);
 
   for (const folder of folders) await deliver({ ...folder, ledger });
 
-  if (input.prune) await prune({ localConfig, type, keep: folders.map(({ dest }) => dest), ledger });
+  if (input.prune) await prune({ localConfig, type, keep: folders.map(({ dest }) => dest), ledger, root: at });
 
-  if (isSelfMode(localConfig) && await pathExists(root(localConfig))) {
+  if ((input.root !== undefined || isSelfMode(localConfig)) && await pathExists(at)) {
     const { excludeDeliveredFolders } = await import('../git-exclude-delivered.js');
-    await excludeDeliveredFolders(localConfig, root(localConfig));
+    await excludeDeliveredFolders(localConfig, at);
   }
 }
 

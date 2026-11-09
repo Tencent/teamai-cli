@@ -1201,6 +1201,31 @@ describe('uninstall', () => {
     expect([await fse.pathExists(path.join(repoPath, 'delivered')), await fse.pathExists(path.join(repoPath, 'hooks', 'block-secrets', 'scan.sh'))]).toEqual([false, true]);
   });
 
+  it('previews the delivered folders of a single-repo worktree by what they are, whatever their type (#1787)', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    const projectRoot = path.join(tmpDir, 'business-repo');
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    await fse.outputFile(path.join(repoPath, 'delivered', 'mcp', 'jira-lite', 'MCP.yaml'), 'transport: stdio\ncommand: node\n');
+
+    const localConfig = makeLocalConfig(homeDir, repoPath, {
+      scope: 'project',
+      projectRoot,
+      repo: { localPath: repoPath, remote: '', kind: 'self', businessRepoRoot: projectRoot },
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: makeTeamConfig({ toolPaths: {} }) });
+
+    const printed: string[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((line?: unknown) => { printed.push(String(line ?? '')); });
+    try {
+      await uninstall({ force: true, dryRun: true });
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    expect(printed).toContain(`   Team folders delivered in this worktree: ${path.join(repoPath, 'delivered')}`);
+  });
+
   it('targeted WorkBuddy uninstall keeps the .codebuddy rule CodeBuddy still reads (#945)', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     const projectRoot = path.join(tmpDir, 'business-repo');

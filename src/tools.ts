@@ -349,6 +349,17 @@ export type ToolFeatures = {
   readonly agentHooks: Support;
 };
 
+/**
+ * How the tool reads the support files a rule folder names through `${TEAMAI_RULE_DIR}` (#1787) where teamai delivers
+ * them, in the data home outside the project: `none`, without a prompt; `grant`, once teamai adds that directory to
+ * `setting` in the tool's user settings; `copy`, not without a prompt, so a project pull copies the folder into the
+ * worktree, `.teamai/delivered/rules/`, and names that copy. A tool with no cell has no evidence, and gets `copy`.
+ */
+export type RuleFolderReach =
+  | { readonly reach: 'none'; readonly evidence: Evidence }
+  | { readonly reach: 'grant'; readonly setting: 'permissions.additionalDirectories'; readonly evidence: Evidence }
+  | { readonly reach: 'copy'; readonly evidence?: Evidence };
+
 export type ToolDescriptor = {
   readonly home: Home;
   readonly skillLoad: SkillLoad;
@@ -364,6 +375,8 @@ export type ToolDescriptor = {
    */
   readonly skillsFollowSession?: true;
   readonly rules: RulesChannels;
+  /** How the tool reads a rule folder's files; absent: `copy`, with no evidence. */
+  readonly ruleFolders?: RuleFolderReach;
   readonly blocks: BlocksChannels;
   readonly agents: AgentsChannels;
   readonly mcp: McpChannels;
@@ -466,6 +479,9 @@ export const TOOLS = {
       user: { channel: 'dir', format: 'verbatim', reads: [{ base: 'home', path: '.claude/rules', evidence: 'verified' }] },
       project: { channel: 'dir', format: 'verbatim', reads: [{ base: 'project', path: '.claude/rules', when: 'workspaceUnder', evidence: 'verified' }] },
     },
+    // Claude Code 2.1.319: `claude -p` reads a file outside the project with no permission denial once its directory
+    // is in `permissions.additionalDirectories` of ~/.claude/settings.json, and is denied the read without it.
+    ruleFolders: { reach: 'grant', setting: 'permissions.additionalDirectories', evidence: 'verified' },
     blocks: {
       user: { channel: 'file', file: { in: 'claudemd' }, reads: [{ base: 'home', path: '.claude/CLAUDE.md', evidence: 'verified' }] },
       // CLAUDE.local.md would stop Claude's native AGENTS.md load (#945).
@@ -1743,6 +1759,13 @@ const CUSTOM_TOOL = {
 } as const satisfies Pick<ToolDescriptor, 'rules' | 'blocks' | 'agents' | 'mcp' | 'hooks'>;
 
 /** The channels of `tool`: its descriptor's, or `CUSTOM_TOOL`'s for a custom tool id. */
+/** How `tool` reads a rule folder's files (`RuleFolderReach`): a custom tool, or one with no cell, gets `copy`. */
+export function ruleFolderReachOf(tool: string): RuleFolderReach {
+  const descriptor: ToolDescriptor | undefined = isToolId(tool) ? TOOLS[tool] : undefined;
+
+  return descriptor?.ruleFolders ?? { reach: 'copy' };
+}
+
 export function channelsOf(tool: string): Pick<ToolDescriptor, 'rules' | 'blocks' | 'agents' | 'mcp' | 'hooks'> {
   return isToolId(tool) ? TOOLS[tool] : CUSTOM_TOOL;
 }
