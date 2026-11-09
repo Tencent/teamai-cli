@@ -20,7 +20,7 @@ function member(): LocalConfig {
 async function parseTeamHooks(repoPath: string) {
   expect(repoPath).toBe(repo);
   const { resolution } = await resolveTeamHookEntries(member());
-  return resolution.kind === 'resolved' ? resolution.entries.map((entry) => teamHookToDef(entry.entry)) : null;
+  return resolution.kind === 'resolved' ? resolution.entries.map((entry) => teamHookToDef(entry.entry.hook)) : null;
 }
 
 async function teamHookDefs() {
@@ -32,7 +32,7 @@ async function teamHookDefs() {
 async function teamHookEntries() {
   const { resolution } = await resolveTeamHookEntries(member());
   if (resolution.kind !== 'resolved') throw new Error('hooks did not resolve');
-  return resolution.entries.map((entry) => entry.entry);
+  return resolution.entries.map((entry) => entry.entry.hook);
 }
 
 beforeEach(async () => {

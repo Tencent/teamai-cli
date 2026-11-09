@@ -47,7 +47,7 @@ export const FOLDER_MARKERS: Readonly<Record<MarkedType, FolderMarker>> = {
   hooks: {
     kind: 'Hook folder',
     marker: 'HOOK.yaml',
-    supported: false,
+    supported: true,
     skipped: 'is a hook folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
   },
   rules: {

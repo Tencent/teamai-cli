@@ -1625,6 +1625,18 @@ export interface HookDef {
   description: string;
   /** Team hooks only: restrict to these tools (default = all hook-capable tools). */
   tools?: string[];
+  /** A team hook folder's (#1787): `command` rendered from this, with its folder delivered at `dest`. */
+  folder?: TeamHookFolder;
+}
+
+/** Where a team hook folder's command comes from, so each tool can render it as its file needs (#1787, common rule 10). */
+export interface TeamHookFolder {
+  /** The command as `HOOK.yaml` writes it, `${TEAMAI_HOOK_DIR}` included. */
+  readonly command: string;
+  /** The absolute path the folder is delivered at. */
+  readonly dest: string;
+  /** Single-repo: the worktree the folder is delivered in, which a tool's project-directory variable can stand for; else null. */
+  readonly projectRoot: string | null;
 }
 
 // ─── Hook payloads (what an agent sends a hook on stdin) ─────

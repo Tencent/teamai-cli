@@ -20,6 +20,18 @@ teamai hooks list                   # the built-in hook set per tool
 
 What each event does is in [Core Harness](sharing.md#hooks).
 
+## Hook folders
+
+A [hook folder](sharing.md#hooks)'s path is written with forward slashes, and teamai adds no quotes. A home such as `C:\Users\Zoë Li` holds a space, so quote the variable:
+
+```text
+command: bash "${TEAMAI_HOOK_DIR}/scan.sh"       # bash "C:/Users/Zoë Li/.teamai/hooks/block-secrets/scan.sh"
+command: node "${TEAMAI_HOOK_DIR}/check.mjs"
+command: powershell -File "${TEAMAI_HOOK_DIR}/scan.ps1"
+```
+
+Git Bash, Windows PowerShell and Node all read a forward-slash path. The command runs in the shell its tool uses, as above.
+
 ## Long paths during pull
 
 TeamAI enables `core.longpaths` for its shared Git clients on Windows without

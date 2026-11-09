@@ -293,6 +293,12 @@ export type HooksChannels = {
    * which every linked worktree reads (#955), or in HOME behind a `$PWD` gate.
    */
   readonly teamHooks: 'main-checkout' | 'home';
+  /**
+   * The environment variable the tool sets to the project's root when it runs a hook from a project file, if it has
+   * one. A single-repo hook folder's command names the folder through it, so a project file the repository may
+   * commit holds the same command in every worktree (#1787, common rule 10). Without one, the absolute path is written.
+   */
+  readonly projectDirVariable?: string;
 };
 
 /**
@@ -492,6 +498,7 @@ export const TOOLS = {
       stopReply: true,
       shell: 'system',
       teamHooks: 'main-checkout',
+      projectDirVariable: 'CLAUDE_PROJECT_DIR',
     },
     sessions: ['claude-code'],
     launch: 'claude',

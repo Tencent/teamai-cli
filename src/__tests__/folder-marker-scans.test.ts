@@ -10,6 +10,7 @@ import { suiteDirectories } from '../benchmark/suite-cache.js';
 import { AgentsHandler } from '../resources/agents.js';
 import { listEntryFiles, resolveEntries } from '../namespaced-entries.js';
 import { mcpEntryReader } from '../resources/mcp.js';
+import { resolveTeamHookEntries } from '../resources/hooks.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
 // Each type's team scan leaves out a folder holding that type's reserved
@@ -135,15 +136,15 @@ describe('agents', () => {
 });
 
 describe('hooks', () => {
-  it('reads no hooks file from a hook folder', async () => {
+  it('reads a hook folder as one hook, and the hooks file inside it as one of its files (#1787)', async () => {
     await put('hooks/hooks.yaml', 'hooks: []\n');
-    await put('hooks/lint/HOOK.yaml', 'event: PreToolUse\n');
-    await put('hooks/lint/hooks.yaml', 'hooks: []\n');
-    await put('hooks/team/hooks.yaml', 'hooks: []\n');
-    await put('hooks/team/format/HOOK.yaml', 'event: PostToolUse\n');
-    await put('hooks/team/format/hooks.yaml', 'hooks: []\n');
+    await put('hooks/lint/HOOK.yaml', 'description: Lint\nevent: PreToolUse\ncommand: echo lint\n');
+    await put('hooks/lint/hooks.yaml', 'hooks:\n  - id: inner\n    description: Inner\n    event: Stop\n    command: echo inner\n');
 
-    expect((await listEntryFiles(repo, 'hooks')).map((file) => file.relativePath)).toEqual(['hooks/hooks.yaml', 'hooks/team/hooks.yaml']);
+    const { resolution } = await resolveTeamHookEntries({ ...localConfig, username: 't', scope: 'user', additionalRoles: [] });
+
+    expect(resolution.kind === 'resolved' && [resolution.entries.map((entry) => entry.name), resolution.notices.map((notice) => notice.message)])
+      .toEqual([['lint'], [expect.stringContaining('hooks/lint/ holds HOOK.yaml, so it is one folder, and hooks.yaml in it is one of its files')]]);
   });
 });
 

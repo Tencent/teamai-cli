@@ -250,7 +250,34 @@ teamai hooks remove
 
 只处理已经安装的工具。
 
-团队自己的 hook 写在 `hooks/hooks.yaml`，自己 commit。`id` 只用小写字母、数字和 `-`。`builtin` 只放在根文件里，用来关掉某条内置 hook，或改它的超时。
+团队 hook 以目录形式 commit：`HOOK.yaml` 和它要运行的脚本放在一起。目录名就是 hook 的 id，只用小写字母、数字和 `-`。
+
+```text
+hooks/block-secrets/
+├─ HOOK.yaml
+└─ scan.sh
+```
+
+```yaml
+# hooks/block-secrets/HOOK.yaml
+description: Scan for secrets before a commit
+event: PreToolUse
+matcher: Bash
+command: bash "${TEAMAI_HOOK_DIR}/scan.sh"
+timeout: 15
+```
+
+pull 会复制这个目录，并把 `${TEAMAI_HOOK_DIR}` 换成它的路径（用正斜杠）。teamai 不加引号，命令需要时自己给变量加引号。目录内容变了，路径也不变：
+
+| 团队在哪里 | 目录复制到 |
+|---|---|
+| 用户作用域 | `~/.teamai/hooks/block-secrets/` |
+| 有团队仓库的工作区 | `~/.teamai/projects/<slug>/hooks/block-secrets/` |
+| single-repo | 每个 worktree 的 `.teamai/delivered/hooks/block-secrets/`，git 会忽略它 |
+
+single-repo 下，Claude Code 的命令写成 `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets/scan.sh"`，所以每个 worktree 的 `.claude/settings.json` 都一样。其他工具拿到的是 worktree 的绝对路径。`HOOK.yaml` 的键和 `hooks.yaml` 的条目相同，只是没有 `id`、`roles` 和 `projects`。只给一个 namespace 的 hook 放在 `hooks/<ns>/<id>/`。
+
+简短的 hook 仍可写在 `hooks/hooks.yaml`，是带 `id` 的同样键的列表。`${TEAMAI_HOOK_DIR}` 只能用在目录里：写在 `hooks.yaml` 里，这次运行的团队 hook 会全部停下；同一个 id 既是 `hooks.yaml` 条目又是目录时也一样。`builtin` 只放在根文件里，用来关掉某条内置 hook，或改它的超时。
 
 ```yaml
 hooks:
@@ -340,8 +367,10 @@ OpenCode、Oh My Pi、Pi、OpenClaw、Kiro、Hermes 和 Antigravity 没有 Claud
 sharing:
   hooks:
     autoApply: false          # pull 只提示，要自己跑 teamai hooks inject
-    requireTeamScripts: true  # command 必须在 ~/.teamai/team-scripts/ 下
+    requireTeamScripts: true  # command 必须从它的 hook 目录或 ~/.teamai/team-scripts/ 运行
 ```
+
+`requireTeamScripts` 保留 `command` 原文里用到 `${TEAMAI_HOOK_DIR}` 的目录 hook，以及 `~/.teamai/team-scripts/` 下的命令，其余的（比如 `curl … | sh`）都丢掉。它检查脚本的来源是经过评审的团队仓库，不是沙箱：脚本以你的权限运行。
 
 本机全部停用团队 hook：`TEAMAI_HOOKS_DISABLED=1`。
 
@@ -570,7 +599,7 @@ self 模式下，如果当前分支落后于默认分支，推送修改过的 sk
 | `scorers/` | `SCORER.md` |
 | `agents/` | `AGENT.md` |
 
-在该类型目录下（任意深度）包含对应标记文件的目录，就是一个目录型资源。当前版本还不读取这些目录类型：它会整体跳过这样的目录，团队仓库的其他内容照常 pull：
+在该类型目录下（任意深度）包含对应标记文件的目录，就是一个目录型资源。当前版本读取 hook 目录（见 [Hooks](#hooks)），还不读取其他目录类型：它会整体跳过这样的目录，团队仓库的其他内容照常 pull：
 
 ```text
 rules/
