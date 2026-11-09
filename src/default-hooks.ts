@@ -155,6 +155,11 @@ function paramProblems(name: DefaultHookName, issue: z.core.$ZodIssue): string[]
   return [`HOOK.yaml: ${at(issue.path)} ${issue.message}`];
 }
 
+/** Whether `texts` holds every text default hook `name` renders. */
+function holdsEveryText<TName extends DefaultHookName>(name: TName, texts: Partial<Record<string, TextVariants>>): texts is Record<DefaultHookTextName<TName>, TextVariants> {
+  return Object.keys(TEXTS[name]).every((text) => texts[text] !== undefined);
+}
+
 /** A folder read as default hook `TName`: the hook, and the `with:` it was written with, or why its files do not make one. */
 type FolderRead<TName extends DefaultHookName> =
   | { readonly ok: true; readonly hook: DefaultHook<TName>; readonly with: JsonObject }
@@ -186,7 +191,7 @@ function readFolder<TName extends DefaultHookName>(name: TName, files: readonly 
 
   if (!params.success) refusals.push(...params.error.issues.flatMap((issue) => paramProblems(name, issue)));
 
-  const texts = new Map<string, TextVariants>();
+  const texts: Partial<Record<string, TextVariants>> = {};
 
   for (const [text, offered] of Object.entries<readonly string[]>(TEXTS[name])) {
     // A text with a variable it does not offer, or anything in braces that is not a variable, would print as written.
@@ -219,18 +224,15 @@ function readFolder<TName extends DefaultHookName>(name: TName, files: readonly 
     if (en !== undefined) variants.en = en;
 
     if (zh !== undefined) variants.zh = zh;
-    texts.set(text, variants);
+    texts[text] = variants;
   }
 
-  if (!params.success || refusals.length > 0) return { ok: false, problems: refusals };
+  if (!params.success || refusals.length > 0 || !holdsEveryText(name, texts)) return { ok: false, problems: refusals };
 
   const hook: DefaultHook<TName> = {
     params: params.data,
     text(text, language) {
-      const variants = texts.get(text);
-
-      // readFolder read every text the contract names, or returned its problems above.
-      if (!variants) throw new Error(`teamai's default hook ${name} has no text ${text}`);
+      const variants = texts[text];
       const variant = language ? variants[language] : undefined;
 
       return { language: variant !== undefined && language ? language : null, render: (values) => substitute(variant ?? variants.base, values) };
