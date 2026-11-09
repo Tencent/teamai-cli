@@ -24,7 +24,7 @@
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
-import { holdsMarker, unreadMarker } from './folder-markers.js';
+import { FOLDER_MARKERS, holdsMarker } from './folder-markers.js';
 import { describeOverride, repeatedNames, resolveNamespacedItems, type NamespaceCandidate } from './namespace-resolver.js';
 import { resolveResourceNamespaces } from './resource-namespaces.js';
 import { activeRoleIds, findRole, loadRolesManifestIfPresent } from './roles.js';
@@ -125,12 +125,15 @@ export async function listEntryFiles(repoPath: string, where: EntryType | EntryL
 }
 
 /**
- * Whether `<typeDir>/<dir>` is a folder of its type this release cannot read
- * (#1791). Such a directory is not a namespace: on a file system that ignores
- * case, its `MCP.yaml` would read as `mcp.yaml`.
+ * Whether `<typeDir>/<dir>` is a folder of its type, whether this release reads
+ * it (#1787) or not (#1791). Such a directory is not a namespace: on a file
+ * system that ignores case, its `MCP.yaml` would read as `mcp.yaml`.
  */
 async function holdsFolderMarker(typeDir: string, dir: string): Promise<boolean> {
-  return holdsMarker(path.join(typeDir, dir), unreadMarker(path.basename(typeDir)));
+  const type = path.basename(typeDir);
+  const marker = Object.entries(FOLDER_MARKERS).find(([marked]) => marked === type)?.[1].marker ?? null;
+
+  return holdsMarker(path.join(typeDir, dir), marker);
 }
 
 /** One parsed file, or why it cannot be used; the reason names the file. */

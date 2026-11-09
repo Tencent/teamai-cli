@@ -62,9 +62,9 @@ function resolved(entries: [Record<string, unknown>, string, string | null][]) {
     active: [],
     notices: [],
     repeated: [],
-    entries: entries.map(([entry, source, replaces]) => ({
-      entry,
-      name: entry.name,
+    entries: entries.map(([server, source, replaces]) => ({
+      entry: { kind: 'entry', server },
+      name: server.name,
       source,
       namespace: source === 'mcp/mcp.yaml' ? null : source.split('/')[1],
       replaces,

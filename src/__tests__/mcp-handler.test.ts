@@ -33,7 +33,7 @@ function member(over: Partial<Pick<LocalConfig, 'primaryRole' | 'projects'>> = {
 async function serversFor(localConfig: LocalConfig) {
   const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
   if (resolution.kind !== 'resolved') throw new Error('servers did not resolve');
-  return resolution.entries.map((entry) => entry.entry);
+  return resolution.entries.map((entry) => entry.entry.server);
 }
 
 describe('resolveEntriesFor(mcpEntryReader) — per-entry keys (#707)', () => {

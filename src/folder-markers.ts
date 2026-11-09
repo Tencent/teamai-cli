@@ -59,7 +59,7 @@ export const FOLDER_MARKERS: Readonly<Record<MarkedType, FolderMarker>> = {
   mcp: {
     kind: 'MCP server folder',
     marker: 'MCP.yaml',
-    supported: false,
+    supported: true,
     skipped: 'is an MCP server folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
   },
   benchmarks: {

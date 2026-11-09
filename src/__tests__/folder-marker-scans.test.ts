@@ -161,15 +161,14 @@ describe('hooks', () => {
 });
 
 describe('mcp', () => {
-  it('delivers no server from an MCP server folder, even in an active namespace', async () => {
-    const server = (name: string): string => `servers:\n  - name: ${name}\n    transport: http\n    url: https://example.com/${name}/\n`;
-    await put('mcp/mcp.yaml', server('shared'));
-    await putMarkerAndLowerCase('mcp/github', 'MCP.yaml', server('github'));
+  it('reads an MCP server folder as one server, never as a namespace, even when that namespace is active (#1787)', async () => {
+    await put('mcp/mcp.yaml', 'servers:\n  - name: shared\n    transport: http\n    url: https://example.com/shared/\n');
+    await putMarkerAndLowerCase('mcp/github', 'MCP.yaml', 'transport: stdio\ncommand: node\nargs: ["${TEAMAI_MCP_DIR}/server.mjs"]\n');
 
     const resolution = await resolveEntries(mcpEntryReader, localConfig, ['github']);
 
-    expect(resolution.kind).toBe('resolved');
-    expect(resolution.kind === 'resolved' ? resolution.entries.map((entry) => entry.entry.name) : []).toEqual(['shared']);
+    expect(resolution.kind === 'resolved' ? resolution.entries.map((entry) => [entry.name, entry.entry.kind]) : resolution.kind)
+      .toEqual([['shared', 'entry'], ['github', 'folder']]);
     expect((await listEntryFiles(repo, 'mcp')).map((file) => file.relativePath)).toEqual(['mcp/mcp.yaml']);
   });
 });

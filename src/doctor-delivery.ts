@@ -1705,12 +1705,12 @@ async function teamMcpForDoctor(ctx: DoctorContext): Promise<TeamMcpForDoctor> {
   if (!getMcpSharing(teamConfig).autoApply) return { kind: 'none' };
 
   const { resolveMcpTargets, mcpTargetExcluded } = await import('./mcp-reconcile.js');
-  const { mcpEntryReader, teamMcpToDef } = await import('./resources/mcp.js');
+  const { mcpEntryReader, teamMcpDef } = await import('./resources/mcp.js');
   const { describeEntryFailure, resolveEntriesFor } = await import('./namespaced-entries.js');
   const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
 
   if (resolution.kind === 'failed') return { kind: 'unreadable', fix: describeEntryFailure(resolution.failure) };
-  const teamDefs = resolution.entries.map((entry) => teamMcpToDef(entry.entry));
+  const teamDefs = resolution.entries.map((entry) => teamMcpDef(localConfig, entry));
 
   if (teamDefs.length === 0) return { kind: 'none' };
   const targets = (await resolveMcpTargets(teamConfig, localConfig)).filter((target) => !mcpTargetExcluded(localConfig, target));
@@ -2111,13 +2111,13 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
   const { readResolvedMcpFiles } = await import('./mcp-resolved-files.js');
   const { gitPathOf, gitTracking, gitTracks } = await import('./git-exclude.js');
   const { sameServerKey } = await import('./resources/mcp-format.js');
-  const { mcpEntryReader, teamMcpToDef } = await import('./resources/mcp.js');
+  const { mcpEntryReader, teamMcpDef } = await import('./resources/mcp.js');
   const { resolveEntriesFor } = await import('./namespaced-entries.js');
   const { loadProjectMcpManifest } = await import('./utils/mcp-manifest.js');
 
   // Unreadable team servers still leave teamai's entries on disk: judged by the manifest, as pull does.
   const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
-  const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpToDef(entry.entry));
+  const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpDef(localConfig, entry));
   let manifest: ManagedMcpManifest | undefined;
   let vars: Record<string, string> | undefined;
   let ledger: Record<string, ResolvedMcpFile> | undefined;

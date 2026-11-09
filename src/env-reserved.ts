@@ -11,8 +11,8 @@ export const TEAM_ENV_RESERVED_NAMES = [
   'SHELLOPTS', 'BASHOPTS', 'UID', 'EUID', 'PPID',
   'chpwd_functions', 'precmd_functions', 'preexec_functions', 'periodic_functions',
   'zshaddhistory_functions', 'zshexit_functions', 'zsh_directory_name_functions',
-  // The path a hook folder's command names its folder through (#1787).
-  'TEAMAI_HOOK_DIR',
+  // The paths a hook folder's command and an MCP server folder's command, args and env name their folder through (#1787).
+  'TEAMAI_HOOK_DIR', 'TEAMAI_MCP_DIR',
 ] as const;
 
 export function isReservedTeamEnvKey(key: string): boolean {
