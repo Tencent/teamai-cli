@@ -96,6 +96,7 @@ All notable changes to this project will be documented in this file. See [standa
 
 ### 🐛 Bug Fixes
 
+- Pull says when it could not apply the team MCP servers, and why, such as `Team MCP servers were not applied: EACCES: permission denied, open '.../.mcp.json...'`. It wrote that only to `~/.teamai/debug.log`, so a failed write looked like a pull that changed nothing
 - A tool teamai starts in a directory gets `PWD` set to that directory. OpenCode works in `PWD`, not in its process's directory, so a workflow step or benchmark trial on OpenCode started from a member's checkout edited that checkout instead of its own worktree or clone (for [#1793](https://github.com/Tencent/teamai-cli/issues/1793)).
 - A label a local confined judge gave names the model alias its scorer asked for, beside the model the tool reported. It named only the model, so a benchmark read every judged verdict as a deviation from its pinned judge (for [#1793](https://github.com/Tencent/teamai-cli/issues/1793)).
 - `teamai update` exits 1 when the install fails, the running install is still the old version, or the hook refresh after an update fails. It printed the failure and exited 0 before, so a script read a broken update as success. An unreachable registry with nothing newer still exits 0.

@@ -4925,7 +4925,8 @@ async function reconcileMcpAllScopes(
         }
       }
     } catch (e) {
-      log.debug(`[${installScopeName(localConfig.scope)}] MCP reconcile skipped: ${e instanceof Error ? e.message : String(e)}`);
+      log.warn(`[${installScopeName(localConfig.scope)}] Team MCP servers were not applied: ${e instanceof Error ? e.message : String(e)}. `
+        + 'Fix the cause, then run `teamai pull` again.');
       errors.push(`[${installScopeName(localConfig.scope)}] MCP: ${e instanceof Error ? e.message : String(e)}`);
     }
   }

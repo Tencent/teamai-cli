@@ -269,6 +269,16 @@ describe('pull --dry-run reports hooks and MCP entry warnings', () => {
     expect(lines.some((l) => l.includes('Restart your AI tool session'))).toBe(false);
   });
 
+  it('says when the team MCP servers could not be applied, and why', async () => {
+    vi.mocked(reconcileMcpForConfig).mockRejectedValueOnce(new Error("EACCES: permission denied, open '/work/app/.mcp.json.tmp'"));
+
+    await pull({ force: true });
+
+    expect(vi.mocked(log.warn).mock.calls.map(([m]) => String(m)).filter((m) => m.includes('Team MCP servers'))).toEqual([
+      expect.stringMatching(/^\[\w+\] Team MCP servers were not applied: EACCES: permission denied, open '\/work\/app\/\.mcp\.json\.tmp'\. /),
+    ]);
+  });
+
   it('keeps the applied wording on a real pull', async () => {
     vi.mocked(reconcileMcpForConfig).mockResolvedValueOnce({
       changes: [{ tool: 'claude', server: 'team-server', action: 'added' }],
