@@ -137,7 +137,8 @@ describe('todowrite hint follows teamai.yaml language (#1014)', () => {
   });
 
   async function hint(language?: 'en' | 'zh'): Promise<string> {
-    const lines = ['team: t', 'repo: https://example.invalid/t.git'];
+    // The hint names teamai-recall, which only a team with recall on has.
+    const lines = ['team: t', 'repo: https://example.invalid/t.git', 'sharing:', '  recall:', '    enabled: true'];
     if (language) lines.push(`language: ${language}`);
     await fse.writeFile(path.join(repo, 'teamai.yaml'), `${lines.join('\n')}\n`);
     const { buildHandlerRegistry } = await import('../hook-handlers.js');
@@ -180,7 +181,7 @@ describe('the TodoWrite hint comes from the PostToolUse * pass (#1788)', () => {
     tmpHome = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-todowrite-wildcard-'));
     repo = path.join(tmpHome, 'team');
     await fse.ensureDir(repo);
-    await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: t\nrepo: https://example.invalid/t.git\nlanguage: en\n');
+    await fse.writeFile(path.join(repo, 'teamai.yaml'), `${TEAM_YAML}sharing:\n  recall:\n    enabled: true\n`);
     vi.stubEnv('HOME', tmpHome);
     vi.stubEnv('TEAMAI_RECALL_DISABLED', '');
   });
@@ -190,6 +191,7 @@ describe('the TodoWrite hint comes from the PostToolUse * pass (#1788)', () => {
     await fse.remove(tmpHome);
   });
 
+  const TEAM_YAML = 'team: t\nrepo: https://example.invalid/t.git\nlanguage: en\n';
   let call = 0;
 
   /** What the foreground of the one PostToolUse entry the tool now has replies to a `tool_name` call. */
@@ -223,6 +225,13 @@ describe('the TodoWrite hint comes from the PostToolUse * pass (#1788)', () => {
     ['the wildcard key', 'Hook dispatch post-tool-use wildcard'],
   ])('stays off where the team lists %s under builtin.disabled', async (_case, key) => {
     await disable(key);
+
+    expect(await wildcardReply('claude')).toBeNull();
+  });
+
+  // With recall off, pull removes the teamai-recall agent and rule the hint would send the agent to.
+  it('gives no hint while recall is off, its default', async () => {
+    await fse.writeFile(path.join(repo, 'teamai.yaml'), TEAM_YAML);
 
     expect(await wildcardReply('claude')).toBeNull();
   });

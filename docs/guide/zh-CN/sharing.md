@@ -237,11 +237,11 @@ shell 获得其启动目录的团队环境变量，因此同时打开的多个�
 | 事件 | 做什么 |
 |------|--------|
 | `SessionStart` | 拉取团队资源，并记下会话开始 |
-| `PostToolUse` | 记录 skill 使用。`TodoWrite` 调用之后，提醒 agent 用 `teamai-recall` |
+| `PostToolUse` | 记录 skill 使用。recall 开着时，`TodoWrite` 调用之后提醒 agent 用 `teamai-recall` |
 | `UserPromptSubmit` | 记录输入 |
 | `Stop` | 检查 CLI 更新，并记下会话结束 |
 
-在 macOS 和 Linux 上，工具调用和输入提示只在有东西要输出时才等 teamai：`TodoWrite` 提醒、留给下一次输入的提示，或通过 HTTP 同步的机器上本地 agent 的提示。其他时候 hook 启动一个后台进程就返回，由这个进程记下事件。`~/.teamai/debug.log` 里能看到走的是哪条路：
+在 macOS 和 Linux 上，工具调用和输入提示只在可能有东西要输出时才等 teamai：`TodoWrite` 调用（为了提醒，recall 关着时也一样），或者有提示留给它、或在通过 HTTP 同步的机器上的输入提示。其他时候 hook 启动一个后台进程就返回，由这个进程记下事件。`~/.teamai/debug.log` 里能看到走的是哪条路：
 
 ```text
 2026-11-09T09:14:02.118Z [DEBUG] [hook-dispatch] post-tool-use/claude fast path

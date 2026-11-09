@@ -159,7 +159,7 @@ teamai recall disable
 teamai recall status
 ```
 
-One machine overrides this with `recallEnabled` in `~/.teamai/config.yaml`. `TEAMAI_RECALL_DISABLED=1` forces it off, and `teamai recall status` names it when it does. While it is off, pull does not install recall and removes the recall agent and rule an earlier pull installed, and the hooks record no adoption, cast no vote and push none. `teamai recall` still searches. `recall enable` and `recall disable` take effect at the next hook event: nothing is installed or removed for that. The variable changes files that every shell in the scope shares: a pull from a shell with it set removes the recall files and the CLAUDE.md recall block for the whole scope, and a pull from a shell without it puts them back.
+One machine overrides this with `recallEnabled` in `~/.teamai/config.yaml`. `TEAMAI_RECALL_DISABLED=1` forces it off, and `teamai recall status` names it when it does. While it is off, pull does not install recall and removes the recall agent and rule an earlier pull installed, and the hooks record no adoption, cast no vote, push none and give no `TodoWrite` reminder. `teamai recall` still searches. `recall enable` and `recall disable` take effect at the next hook event: nothing is installed or removed for that. The variable changes files that every shell in the scope shares: a pull from a shell with it set removes the recall files and the CLAUDE.md recall block for the whole scope, and a pull from a shell without it puts them back.
 
 A team can ship its own recall agent: see [Replace the recall agent](sharing.md#replace-the-recall-agent).
 

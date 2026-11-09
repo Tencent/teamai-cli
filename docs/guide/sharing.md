@@ -246,11 +246,11 @@ Limits:
 | Event | What it does |
 |-------|----------------|
 | `SessionStart` | Pull team resources and record the session start |
-| `PostToolUse` | Record skill use. After a `TodoWrite` call, remind the agent to use `teamai-recall` |
+| `PostToolUse` | Record skill use. After a `TodoWrite` call, remind the agent to use `teamai-recall` while recall is on |
 | `UserPromptSubmit` | Record the prompt |
 | `Stop` | Check for a CLI update and record the session end |
 
-On macOS and Linux, a tool call or a prompt waits for teamai only when there is something to print: the `TodoWrite` reminder, a hint left for the next prompt, or the notices of a machine that syncs over HTTP. Otherwise the hook starts a background process and returns, and that process records the event. `~/.teamai/debug.log` shows which happened:
+On macOS and Linux, a tool call or a prompt waits for teamai only when it may have something to print: a `TodoWrite` call (for the reminder, even with recall off), or a prompt with a hint left for it or on a machine that syncs over HTTP. Otherwise the hook starts a background process and returns, and that process records the event. `~/.teamai/debug.log` shows which happened:
 
 ```text
 2026-11-09T09:14:02.118Z [DEBUG] [hook-dispatch] post-tool-use/claude fast path

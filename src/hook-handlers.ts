@@ -950,7 +950,7 @@ const todowriteHintHandler: HookHandler = {
   async execute(stdin, tool, config) {
     if (normalizeToolName(stdinString(stdin, 'tool_name') ?? '') !== 'TodoWrite') return null;
 
-    if (process.env.TEAMAI_RECALL_DISABLED === '1' || !config || !await todoWriteHintInstalled(tool, config)) return null;
+    if (!config || !await isRecallOn(config) || !await todoWriteHintInstalled(tool, config)) return null;
 
     const { shouldSkipTodoWriteHint, buildHintMessage } = await import('./todowrite-hint.js');
 
