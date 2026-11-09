@@ -550,6 +550,24 @@ steps:
     expect(await loadCachedWorkflow(team.config, 'teamai-score')).toMatchObject({ source: 'team', relativePath: 'workflows/teamai-score/WORKFLOW.yaml' });
   });
 
+  it('skips a teamai- folder that matches no default with a warning, at the root and in a namespace, and keeps a teamai- file as today', async () => {
+    const team = teamScope();
+    team.put('workflows/teamai-release/WORKFLOW.yaml', RELEASE.replace('name: release', 'name: teamai-release'));
+    team.put('workflows/payments/teamai-deploy/WORKFLOW.yaml', RELEASE.replace('name: release', 'name: teamai-deploy'));
+    team.put('workflows/teamai-notes.yaml', RELEASE.replace('name: release', 'name: teamai-notes'));
+    team.commit();
+    const warn = vi.spyOn(log, 'warn');
+
+    const result = await syncScorersThenWorkflows(team.config);
+
+    expect(result.invalid).toEqual([]);
+    expect(result.cached).toEqual(['teamai-notes']);
+    expect(await loadCachedWorkflow(team.config, 'teamai-release')).toBeNull();
+    expect(await loadCachedWorkflow(team.config, 'teamai-deploy')).toBeNull();
+    expect(warn).toHaveBeenCalledWith('[workflows] workflows/teamai-release/ is skipped: a teamai- name only replaces a teamai default, and teamai has no workflow named teamai-release. Rename the folder.');
+    expect(warn).toHaveBeenCalledWith('[workflows] workflows/payments/teamai-deploy/ is skipped: a teamai- name only replaces a teamai default, and teamai has no workflow named teamai-deploy. Rename the folder.');
+  });
+
   it('refuses a team folder that replaces a default and breaks its contract, as it refuses a file', async () => {
     const team = teamScope();
     team.put('workflows/teamai-score/WORKFLOW.yaml', SCORE.replace('          if: inputs.store\n          workspace: { team: { branch: teamai-reports } }\n', '          workspace: { team: { branch: teamai-reports } }\n'));

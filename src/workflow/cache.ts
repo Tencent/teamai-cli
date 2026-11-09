@@ -377,7 +377,15 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
       continue;
     }
 
-    toCheck.push({ stem, source: resolution.item.source });
+    const { source } = resolution.item;
+
+    // A teamai- name only replaces a default (#1787, common rule 5). A single file keeps its older meaning.
+    if (source.kind === 'folder' && stem.startsWith(DefaultWorkflows.PREFIX) && !shipped.has(stem)) {
+      log.warn(`[workflows] ${source.path} is skipped: a teamai- name only replaces a teamai default, and teamai has no workflow named ${stem}. Rename the folder.`);
+      continue;
+    }
+
+    toCheck.push({ stem, source });
   }
 
   for (const { stem, source } of toCheck) {

@@ -283,6 +283,7 @@ steps:
 - 文件夹里的其他文件（包括子目录里的）都属于这个工作流；以 `.` 开头的名字会被跳过。文件夹里的其他 `*.yaml` 不是工作流，pull 对每个文件夹提示一次：`workflows/release/ is a workflow folder; checks.yaml in it is not a workflow`。
 - `prompt_file` 和 [`answer_file`](workflow-advanced.md#让成员的-ai-工具给出回答) 指向文件夹里的文件，路径从文件夹根目录算起，可以在子目录里。`..` 或绝对路径会让工作流无效。在文件夹之外，两者都在 `prompts/` 下查找。
 - 同一处有同名的文件和文件夹（例如 `workflows/release.yaml` 和 `workflows/release/`）时，该工作流没有可运行版本，直到删掉其中一个。
+- `teamai-` 开头的文件夹名只用来替换同名的[默认工作流](#默认工作流)。其他这样的文件夹会被 pull 跳过并警告：`workflows/teamai-release/ is skipped: a teamai- name only replaces a teamai default, and teamai has no workflow named teamai-release. Rename the folder.`
 - 文件夹只能包含 UTF-8 文本，总共不超过 1 MB，且不能有符号链接。[运行中的工作流文件夹](workflow-advanced.md#运行中的工作流文件夹)介绍这些限制，以及运行如何保留自己的副本。
 - `README.md` 是给人看的。teamai 从不把它交给智能体，pull 为工作流生成的技能也不包含它。
 - `teamai status` 把一个文件夹算作一个工作流。在单仓库模式下，文件夹位于 `.teamai/workflows/` 下，`teamai push` 会推送其中的每个文件。
