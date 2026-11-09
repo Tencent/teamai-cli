@@ -10,6 +10,7 @@ import crypto from 'node:crypto';
 import type { DeliveryRecorder } from './git-exclude-delivered.js';
 import { recordDelivered, type DeliveryLedger } from './resources/delivered-copies.js';
 import { isLanguageVariant, RESOURCE_LAYOUTS, Resources, type ShippedFile, type TeamaiLayer } from './resources/resolver.js';
+import { FolderFiles } from './resources/folder-files.js';
 import { RuleFolders } from './resources/rule-folders.js';
 import { warnOnce } from './utils/warn-once.js';
 
@@ -240,8 +241,15 @@ async function recallFolder(repoPath: string | undefined): Promise<RecallFolder>
     return item !== null && item.layer !== 'teamai' && item.source.kind === 'folder' ? { dir: item.source.full, path: item.source.path, team: true } : TEAMAI_RECALL;
 }
 
-/** Why the recall folder at `dir` (shown as `shown`) breaks the contract (`RECALL_FILES`), or null when it keeps it. */
+/**
+ * Why the recall folder at `dir` (shown as `shown`) breaks the contract (`RECALL_FILES`), or null when it keeps it. Like
+ * every team folder, it holds only files teamai can read, never links (common rule 7): a link could put any file of the
+ * member's machine in the recall block.
+ */
 async function recallFolderProblem(dir: string, shown: string): Promise<string | null> {
+    const read = await FolderFiles.read(dir);
+
+    if (read.kind === 'invalid') return read.problems.map((problem) => `${shown}${FolderFiles.describe(problem)}`).join(', ');
     const names = await fs.readdir(dir).catch((): string[] => []);
 
     for (const { stem, lines } of RECALL_FILES) {

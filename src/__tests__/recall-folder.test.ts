@@ -122,6 +122,19 @@ describe('a team replacement of rules/teamai-recall/ (#1787)', () => {
     );
   });
 
+  it('refuses a replacement holding a symlink, and delivers nothing it points at', async () => {
+    const outside = path.join(home, 'private.txt');
+    fs.writeFileSync(outside, 'PRIVATE KEY MATERIAL\n');
+    fs.rmSync(path.join(repo, 'rules', 'teamai-recall', 'block.md'));
+    fs.symlinkSync(outside, path.join(repo, 'rules', 'teamai-recall', 'block.md'));
+
+    expect(await deployed()).toBe(golden('rule.md'));
+    expect(await blocks()).toMatchObject({ recall: golden('block.md'), directRecall: golden('block-direct.md') });
+    expect(vi.mocked(log.warn).mock.calls.map(([message]) => String(message))).toContain(
+      'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: rules/teamai-recall/block.md is a symlink. Fix the folder in the team repo.',
+    );
+  });
+
   it('falls back to the replacement\'s own base file for a language it lacks, and takes a direct block in that language', async () => {
     write('block-direct.en.md', '## Recall\n\nRun `teamai recall`. Quote any `Nothing was searched:` line.\n');
 
