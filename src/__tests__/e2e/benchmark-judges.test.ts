@@ -175,7 +175,7 @@ successCriteria: answer.js exports 42.
     expect(outbox(fixture)).toEqual([]);
     expect(record.trials.map(({ task, result, calibration }) => ({ task, result, calibration }))).toEqual([
       { task: 'login-copy', result: 'passed', calibration: undefined },
-      { task: 'still-failing', result: 'failed', calibration: { label: 'correct', passed: true, decider: expect.objectContaining({ by: 'judge', tool: 'claude', model: 'fake-judge', batched: false }) } },
+      { task: 'still-failing', result: 'failed', calibration: { label: 'correct', passed: true, decider: expect.objectContaining({ by: 'judge', tool: 'claude', model: 'fake-judge', batched: false }), scoringCost: { amount: 0.1, unit: 'USD', complete: true } } },
     ]);
     expect(record.trials[1]?.verdicts).toEqual([expect.objectContaining({ scorer: 'teamai:correctness:still-failing', outcome: expect.objectContaining({ label: 'incorrect' }), decider: expect.objectContaining({ by: 'check' }) })]);
     expect(done.outputs.text).toContain('Judge calibration · teamai:correctness\n\n| Judge | Judged with a failed check | Labelled passing | False pass rate | 95% interval |\n| --- | --- | --- | --- | --- |\n| claude fake-judge | 1 | 1 | 100% | 21% to 100% |');

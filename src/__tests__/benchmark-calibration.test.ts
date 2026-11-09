@@ -177,7 +177,7 @@ async function calibratedRecord({ label = 'correct', code = '' }: { label?: stri
     if (id === 'label') outputs = { labels: [{ scorer: CORRECTNESS, label: code === '' ? label : '', code }] };
     if (id === 'write') outputs = { written: 0, labels: [] };
     if (id === 'judge') {
-      const confined = { tool: 'claude', model: { requested: 'haiku', reported: 'claude-haiku-4-5' }, isolation: 'verified', access: 'read' } as const;
+      const confined = { tool: 'claude', model: { requested: 'haiku', reported: 'claude-haiku-4-5' }, isolation: 'verified', access: 'read', usage: { cost: { amount: 0.002, unit: 'USD' } } } as const;
       await reportAttempt(config, runId, { attempt, revision, outcome: 'success', driver, tool: 'claude', outputs: { answer: { label, reasoning: 'The message names the field.' } }, confined });
       continue;
     }
@@ -193,7 +193,7 @@ async function calibratedRecord({ label = 'correct', code = '' }: { label?: stri
 }
 
 describe('benchmark run calibration', () => {
-  it("records the calibration judge's label on a trial whose check failed, read from the labels its teamai-score run gave, and keeps the check's result", async () => {
+  it("records the calibration judge's label and what judging it cost on a trial whose check failed, read from the labels its teamai-score run gave, and keeps the check's result", async () => {
     const { record, groups, task } = await calibratedRecord();
     const rubric = record.scorers.find(({ name }) => name === CORRECTNESS)?.rubric.sourceHash;
 
@@ -202,8 +202,15 @@ describe('benchmark run calibration', () => {
     expect(record.trials).toEqual([expect.objectContaining({
       result: 'failed',
       verdicts: [{ scorer: CORRECTNESS, outcome: { kind: 'labelled', label: 'incorrect', score: 0, passed: false }, decider: { by: 'check', task } }],
-      calibration: { label: 'correct', passed: true, decider: { by: 'judge', rubric, tool: 'claude', model: 'claude-haiku-4-5', batched: false } },
+      calibration: { label: 'correct', passed: true, decider: { by: 'judge', rubric, tool: 'claude', model: 'claude-haiku-4-5', batched: false }, scoringCost: { amount: 0.002, unit: 'USD', complete: true } },
     })]);
+  });
+
+  it('records the suite\'s calibration rate and that its task has both a check and success criteria, so a reader need not infer them', async () => {
+    const { record } = await calibratedRecord();
+
+    expect(record.calibration).toEqual({ rate: 100 });
+    expect(record.tasks.map(({ judge }) => judge)).toEqual([{ check: true, criteria: true }]);
   });
 
   it('records no calibration on a trial whose calibration judge gave no label', async () => {

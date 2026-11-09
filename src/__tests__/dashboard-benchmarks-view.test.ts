@@ -604,8 +604,13 @@ describe('the Benchmarks page calibrates the correctness judge', () => {
     claude: { tool: 'claude', results: ['failed', 'failed', 'failed', 'failed'], scores: [0, 0, 0, 0], cost: 0.5 },
     codex: { tool: 'codex', results: ['failed', 'failed', 'failed', 'failed'], scores: [0, 0, 0, 0], cost: 1 },
   });
-  /** login with success criteria too, whose correctness the run pins to claude `fast`, each trial's check failed, and `calibrated` what its judge then labelled. */
-  const mixed = (calibrated: (trial: { arm: string; repetition: number }) => { passed: boolean; decider: typeof HAIKU } | undefined): BenchmarkRunInput[] => [{ ...base, benchmark: { ...base.benchmark,
+  /**
+   * login with success criteria too, whose correctness the run pins to claude `fast`, each trial's check failed, and
+   * `calibrated` what its judge then labelled, in a suite that calibrates at `rate`.
+   */
+  const mixed = (calibrated: (trial: { arm: string; repetition: number }) => { passed: boolean; decider: typeof HAIKU } | undefined, rate = 100): BenchmarkRunInput[] => [{ ...base, benchmark: { ...base.benchmark,
+    calibration: { rate },
+    tasks: base.benchmark.tasks.map((task) => ({ ...task, judge: { check: true as const, criteria: true as const } })),
     judges: { 'teamai:correctness:login': { tool: 'claude', model: 'fast' } },
     trials: base.benchmark.trials.map((trial) => {
       const calibration = calibrated(trial);
@@ -625,8 +630,16 @@ describe('the Benchmarks page calibrates the correctness judge', () => {
     expect(text(panel)).toContain('claude claude-opus-5-5 high 4 0 0% 0% to 49%');
   });
 
-  it('says plainly when no judge was calibrated on failed checks, and how to turn calibration on', async () => {
-    const html = await renderPage(mixed(() => undefined));
+  it('says plainly when the suite calibrates no judge, and how to turn calibration on', async () => {
+    const html = await renderPage(mixed(() => undefined, 0));
+    const panel = html.split('<section class="panel sessions bench-panel calibration">')[1]?.split('</section>')[0] ?? '';
+
+    expect(text(panel)).toContain('This suite calibrates no judge, so these runs do not say how far the correctness judge can be trusted. To measure it, set a calibration rate in suite.yaml:');
+    expect(panel).toContain('<code class="command" data-verbatim>calibration: { rate: 10 }</code>');
+  });
+
+  it('says plainly when a calibrating suite labelled none of the trials whose check failed', async () => {
+    const html = await renderPage(mixed(() => undefined, 10));
     const panel = html.split('<section class="panel sessions bench-panel calibration">')[1]?.split('</section>')[0] ?? '';
 
     expect(html).not.toContain('calibration alert');

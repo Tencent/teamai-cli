@@ -625,6 +625,8 @@ describe('BenchmarkHistory judging', () => {
     const input = run({ id, startedAt, trials: { 'expired-token': { claude: ['passed'], codex: ['failed'] }, 'login-copy': { claude: ['passed'], codex: ['failed'] } } });
 
     return { ...input, benchmark: { ...input.benchmark,
+      calibration: { rate: 0 },
+      tasks: input.benchmark.tasks.map((task) => ({ ...task, judge: task.id === 'login-copy' ? { check: true as const, criteria: true as const } : { check: true as const } })),
       judges: { 'teamai:correctness:login-copy': { tool: 'claude', model: 'fast' }, 'review-quality': { tool: 'claude', model: 'judge' } },
       trials: input.benchmark.trials.map((trial) => ({ ...trial, verdicts: [
         { scorer: `teamai:correctness:${trial.task}`, outcome: labelled(trial.result === 'passed'), ...(trial.task === 'login-copy' && trial.result === 'passed' ? { decider: HAIKU, asPlanned: 'match' as const } : { decider: { by: 'check' as const, task: `task-${trial.task}` } }) },
@@ -654,11 +656,11 @@ describe('BenchmarkHistory judging', () => {
     expect(judging?.selfJudged).toEqual([{ tool: 'claude', arm: 'claude' }]);
   });
 
-  it('says why no judge was calibrated: how many tasks have a check and success criteria, and how many of their trials failed the check', () => {
+  it('says why no judge was calibrated: the suite\'s calibration rate, how many tasks have a check and success criteria, and how many of their trials failed the check', () => {
     const judging = BenchmarkHistory.of({ runs, query: { windowDays: 90 }, now: NOW }).selected?.judging;
 
-    // login-copy has both; codex failed its check in each run.
-    expect(judging?.calibration).toEqual({ judges: [], mixedTasks: 1, failedChecks: 2 });
+    // login-copy has both, as its record says; codex failed its check in each run, and the suite calibrates nothing.
+    expect(judging?.calibration).toEqual({ judges: [], rate: 0, mixedTasks: 1, failedChecks: 2 });
   });
 
   it("pools each correctness judge's calibration over the runs, with the false pass rate's 95% interval", () => {
@@ -756,6 +758,17 @@ describe('BenchmarkHistory spend against the estimate', () => {
     ]);
     expect(rows.find(({ run: id }) => id === 'within')?.spend?.estimated).toEqual(RANGE);
     expect(rows.find(({ run: id }) => id === 'unestimated')?.spend?.estimated).toBeUndefined();
+  });
+
+  it('counts what calibrating a judge cost in what the run spent, as the estimate counts its calls', () => {
+    const plain = spending('calibrated', 16, { claude: 0.5, codex: 0.5 });
+    const decider = { by: 'judge' as const, rubric: 'rc', tool: 'claude', model: 'claude-haiku-5-5', batched: false };
+    const calibrated = { ...plain, benchmark: { ...plain.benchmark, trials: plain.benchmark.trials.map((trial) => (trial.arm === 'codex'
+      ? { ...trial, calibration: { label: 'incorrect', passed: false, decider, scoringCost: { amount: 0.5, unit: 'USD', complete: true } } } : trial)) } };
+    const [row] = BenchmarkHistory.of({ runs: [calibrated], query: { windowDays: 90 }, now: NOW }).selected?.runs ?? [];
+
+    // The agents' 1 USD, the two trials' judging 0.5 USD, and the calibration 0.5 USD.
+    expect(row?.spend.spent).toEqual({ kind: 'known', amount: 2, unit: 'USD', used: 5 });
   });
 });
 

@@ -194,12 +194,13 @@ export interface ScorerJudging {
 
 /**
  * Each correctness judge's calibration over the runs of the current version, as the run's table counts one run's
- * (`JudgeCalibration`). To say why there is none: the newest whole run's tasks with both a check and success criteria,
- * the only ones a judge is calibrated on, and how many of their trials failed the check in those runs. The record does
- * not keep the suite's calibration rate.
+ * (`JudgeCalibration`). To say why there is none: the newest whole run's calibration rate, absent on a record that does
+ * not keep it, its tasks with both a check and success criteria, the only ones a judge is calibrated on, and how many of
+ * their trials failed the check in those runs.
  */
 export interface SuiteCalibration {
   judges: JudgeCalibration[];
+  rate?: number;
   mixedTasks: number;
   failedChecks: number;
 }
@@ -272,8 +273,8 @@ export interface RunRow extends PassRate {
   /** Each arm of the run as a configuration, in the run's order. */
   arms: Array<{ key: string } & PassRate>;
   /**
-   * What start estimated the run costs, from an earlier run, beside what it cost: each trial's agent and judging as they
-   * stated it, `used` counting both. `outside` when that falls outside the estimate's range, only for a complete
+   * What start estimated the run costs, from an earlier run, beside what it cost: each trial's agent, judging and
+   * calibration as they stated it, `used` counting each. `outside` when that falls outside the estimate's range, only for a complete
    * estimate in the same unit, and `below` only for a cost every part stated. `estimated` absent when start had no earlier
    * run to estimate from.
    */
@@ -649,24 +650,22 @@ function judgingOf({ current, newest }: SuiteRuns): SuiteView['judging'] {
     scorers: [...scorers.values()].sort((left, right) => Number(right.scorer === CORRECTNESS_SCORERS) - Number(left.scorer === CORRECTNESS_SCORERS))
       .map(({ planned, byJudge, ...counts }) => ({ ...counts, planned: [...planned.values()], byJudge: [...byJudge.values()] })),
     selfJudged: [...selfJudged.values()],
-    calibration: {
+    calibration: definedFields<SuiteCalibration>({
       judges: calibrationOf(current.flatMap(({ benchmark }) => benchmark.trials)),
+      rate: newest.benchmark.calibration?.rate,
       mixedTasks: newest.benchmark.tasks.filter((task) => isMixedTaskIn(newest.benchmark, task.id)).length,
       failedChecks: current.flatMap(({ benchmark }) => benchmark.trials.filter((trial) => isMixedTaskIn(benchmark, trial.task) && trial.verdicts?.some(({ scorer, outcome, decider }) => (
         scorer === correctnessScorerName(trial.task) && decider?.by === 'check' && outcome.kind === 'labelled' && !outcome.passed
       )))).length,
-    },
+    }),
   };
 }
 
-/**
- * `isMixedTask` as a record tells it, which keeps no task's judge: a baseline to try, so a check, and a judge pinned to
- * the task's correctness scorer, which only a task with success criteria has.
- */
+/** `isMixedTask` as the record keeps it: the task has a check and success criteria. */
 function isMixedTaskIn(record: BenchmarkRecord, task: string): boolean {
-  const recorded = record.tasks.find(({ id }) => id === task);
+  const judge = record.tasks.find(({ id }) => id === task)?.judge;
 
-  return recorded !== undefined && recorded.baseline !== 'not_needed' && record.judges?.[correctnessScorerName(task)] !== undefined;
+  return judge !== undefined && 'check' in judge && judge.criteria === true;
 }
 
 function scorersOf({ current, newest }: SuiteRuns): ScorerView[] {
@@ -765,7 +764,8 @@ function runRow(input: BenchmarkRunInput): RunRow {
 
 function spendOf(input: BenchmarkRunInput): RunRow['spend'] {
   const estimated = input.benchmark.estimate?.total;
-  const spent = costTotal([...agentCostsOf(observedTrials(input)), ...input.benchmark.trials.flatMap(({ scoringCost }) => (scoringCost ? [scoringCost.complete ? scoringCost : undefined] : []))]);
+  const judging = input.benchmark.trials.flatMap(({ scoringCost, calibration }) => [scoringCost, calibration?.scoringCost].flatMap((cost) => (cost ? [cost.complete ? cost : undefined] : [])));
+  const spent = costTotal([...agentCostsOf(observedTrials(input)), ...judging]);
 
   return definedFields<RunRow['spend']>({ estimated, spent, outside: estimated === undefined ? undefined : outsideOf(estimated, spent) });
 }

@@ -58,20 +58,27 @@ export const TrialVerdictSchema = z.object({
 
 export type TrialVerdict = z.infer<typeof TrialVerdictSchema>;
 
+/** What a judge's tool stated judging a trial cost; `complete`: the tool stated all of it. */
+const ScoringCostSchema = z.object({ amount: z.number().nonnegative(), unit: z.string().min(1), complete: z.boolean() }).strict();
+
 export const EntryVerdictSchema = TrialVerdictSchema.extend({
   step: z.string().min(1),
   pass: z.number().int().positive(),
   /** What the label's judge stated it cost; absent when it stated none. */
-  scoringCost: z.object({ amount: z.number().nonnegative(), unit: z.string().min(1), complete: z.boolean() }).strict().optional(),
+  scoringCost: ScoringCostSchema.optional(),
 }).strict();
 
 export type EntryVerdict = z.infer<typeof EntryVerdictSchema>;
 
 /**
  * What a trial's correctness judge labelled work its check failed, storing nothing (calibration.ts): the label, whether
- * it passes by the scorer's labels and passing score, and the judge. Never one of the trial's verdicts.
+ * it passes by the scorer's labels and passing score, the judge, and what its tool reported judging it cost. Never one
+ * of the trial's verdicts.
  */
-export const TrialCalibrationSchema = z.object({ label: z.string().min(1), passed: z.boolean(), decider: JudgeDeciderSchema }).strict();
+export const TrialCalibrationSchema = z.object({
+  label: z.string().min(1), passed: z.boolean(), decider: JudgeDeciderSchema,
+  scoringCost: ScoringCostSchema.optional(),
+}).strict();
 
 export type TrialCalibration = z.infer<typeof TrialCalibrationSchema>;
 
@@ -323,7 +330,12 @@ export const TrialVerdicts = {
 
       if (!task || !isCalibrationCandidate(task, output) || !tried || !scorer || !given) return [];
 
-      return [{ step, pass, label: given.value, passed: given.score >= scorer.passingScore, decider: judgeDecider(scorer.rubric.sourceHash, { ...tried.judge, batched: tried.batched }) }];
+      const cost = tried.judge.usage?.cost;
+
+      return [definedFields<EntryCalibration>({
+        step, pass, label: given.value, passed: given.score >= scorer.passingScore, decider: judgeDecider(scorer.rubric.sourceHash, { ...tried.judge, batched: tried.batched }),
+        scoringCost: cost ? { ...cost, complete: true } : undefined,
+      })];
     });
   },
 };

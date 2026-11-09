@@ -71,6 +71,8 @@ export const BenchmarkRecordSchema = z.object({
     coversSkills: z.array(z.string().min(1).nullable()).nonempty().optional(),
     /** Aligned with `covers`: the arms whose clone did not receive that path, as plan read it; absent on older records and when every arm received each path. */
     coversWithheldFrom: z.array(z.array(z.string())).nonempty().optional(),
+    /** What decides the task's trials: its check, a judge on its success criteria, or both; absent on records written before it was kept. */
+    judge: z.union([z.object({ check: z.literal(true), criteria: z.literal(true).optional() }).strict(), z.object({ criteria: z.literal(true) }).strict()]).optional(),
   })),
   arms: z.array(z.object({
     name: z.string(), tool: z.string(), model: z.string().optional(), alias: z.string().optional(), effort: z.string().optional(),
@@ -90,6 +92,8 @@ export const BenchmarkRecordSchema = z.object({
   defaultsArm: z.string().optional(),
   /** What start estimated the run costs, which the usage table shows beside what it cost; absent on a plan without one. */
   estimate: BenchmarkEstimateSchema.optional(),
+  /** The suite's calibration rate, 0 when it calibrates nothing; absent on records written before it was kept. */
+  calibration: z.object({ rate: z.number().min(0).max(100) }).strict().optional(),
   /** The team skills each arm adds, removes or changes against the baseline team revision; absent when no arm changes one. */
   skillChanges: z.array(SkillChangesSchema).optional(),
   trials: z.array(z.object({
@@ -185,10 +189,11 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdic
     subset: plan.subset,
     scorers: plan.scorers,
     judges: plan.judges,
-    tasks: plan.tasks.map((task) => ({ id: task.id, startingCommit: task.startingCommit, sourceHash: task.sourceHash, baseline: baselineOf(stateOf(baselineStepOf(task.id)), task), covers: task.covers ? [...task.covers] : undefined, coversSkills: task.coversSkills ? [...task.coversSkills] : undefined, coversWithheldFrom: task.coversWithheldFrom?.map((arms) => [...arms]) })),
+    tasks: plan.tasks.map((task) => ({ id: task.id, startingCommit: task.startingCommit, sourceHash: task.sourceHash, baseline: baselineOf(stateOf(baselineStepOf(task.id)), task), covers: task.covers ? [...task.covers] : undefined, coversSkills: task.coversSkills ? [...task.coversSkills] : undefined, coversWithheldFrom: task.coversWithheldFrom?.map((arms) => [...arms]), judge: task.judge.check === undefined ? { criteria: true as const } : definedFields({ check: true as const, criteria: task.judge.criteria }) })),
     arms: plan.arms,
     defaultsArm: plan.defaultsArm,
     estimate: plan.estimate,
+    calibration: { rate: plan.calibration?.rate ?? 0 },
     skillChanges: plan.skillChanges,
     trials: plan.trials.map((trial) => {
       const judged = verdictsOf(trial);
@@ -224,7 +229,7 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdic
       if (result === 'error' && check?.result === 'could_not_run') recorded.failure = { cause: check.cause };
       const calibration = calibrations.find((one) => one.step === recorded.step && one.pass === (work?.pass ?? 1));
 
-      if (calibration) recorded.calibration = { label: calibration.label, passed: calibration.passed, decider: calibration.decider };
+      if (calibration) recorded.calibration = definedFields({ label: calibration.label, passed: calibration.passed, decider: calibration.decider, scoringCost: calibration.scoringCost });
 
       if (scoringCost) recorded.scoringCost = scoringCost;
 

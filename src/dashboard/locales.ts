@@ -603,6 +603,7 @@ export const dashboardMessages = {
   "passes failing work beyond chance: the pass rates it decided may be too high. Pin another model in scorers/teamai-correctness.md.": "放过失败工作的频率超出了偶然范围：它判定的通过率可能偏高。请在 scorers/teamai-correctness.md 中固定另一个模型。",
   "No judge labelled the trials whose check failed": "没有评审为检查失败的 trial 打标签",
   "so these runs do not say how far the correctness judge can be trusted. To measure it, set or raise the calibration rate in suite.yaml:": "因此这些运行无法说明正确性评审有多可信。如需衡量，请在 suite.yaml 中设置或调高校准比例：",
+  "This suite calibrates no judge, so these runs do not say how far the correctness judge can be trusted. To measure it, set a calibration rate in suite.yaml:": "这个套件不校准任何评审，因此这些运行无法说明正确性评审有多可信。如需衡量，请在 suite.yaml 中设置校准比例：",
   "No trial of a task with both a check and success criteria failed its check, so no judge had failing work to label.": "同时有检查和成功标准的任务中，没有 trial 的检查失败，因此没有失败的工作可供评审打标签。",
   "Estimated": "估算",
   "above the estimate": "高于估算",
