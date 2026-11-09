@@ -40,7 +40,7 @@ import {
   UntypedStdioEntrySchema,
   type McpFormat,
 } from './resources/mcp-format.js';
-import { mcpEntryReader, parseTeamMcpServers, teamMcpToDef } from './resources/mcp.js';
+import { deliverMcpFolders, mcpEntryReader, parseTeamMcpServers, teamMcpDef, teamMcpToDef, type TeamMcpDefinition } from './resources/mcp.js';
 import { historicalContents } from './utils/team-history.js';
 import { describeMembersFile, keepsTrackedCopy } from './resources/delivered-copies.js';
 import { envName, envTable } from './resources/env-key.js';
@@ -54,7 +54,7 @@ import { cleanupOf, installOf, locate, ownOf, writable, type EntryPlace, type In
 import { channelsOf, isToolId, mcpFormatOf, mcpSyntaxOf, hasDefaultHomeLeftovers, TOOLS, type McpProject } from './tools.js';
 import { realHost, type Host } from './tool-home.js';
 import { KNOWN_AGENTS } from './known-agents.js';
-import { entryLayout, reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
+import { entryLayout, reportEntryResolution, resolveEntriesFor, type ResolvedEntry } from './namespaced-entries.js';
 import {
   readJson,
   writeJsonAtomic,
@@ -1514,7 +1514,7 @@ export async function keptMcpEntries(
   const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
 
   if (resolution.kind === 'failed' || resolution.entries.length === 0) return kept;
-  const teamDefs = resolution.entries.map((entry) => teamMcpToDef(entry.entry));
+  const teamDefs = resolution.entries.map((entry) => teamMcpDef(localConfig, entry));
   const targets = await resolveMcpTargets(teamConfig, localConfig);
 
   if (targets.length === 0) return kept;
@@ -2205,7 +2205,7 @@ export async function mcpConfigsNotProvenClean(
 ): Promise<Map<string, string>> {
   const { before, otherWorktrees = 'judged' } = options;
   const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
-  const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpToDef(entry.entry));
+  const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpDef(localConfig, entry));
 
   // Keyed by real path: the protected paths come from git, which resolves symlinks (macOS /var).
   const targets = new Map<string, {
@@ -2624,7 +2624,7 @@ async function protectProjectMcpConfigs(
   before: ManagedMcpManifest | undefined,
 ): Promise<void> {
   const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
-  const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpToDef(entry.entry));
+  const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpDef(localConfig, entry));
   const { manifestPath, manifest } = await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true });
   const vars = await buildVarTable(localConfig);
   const ctx = once(() => buildDesiredMcpContext(teamConfig, localConfig));
@@ -2893,6 +2893,7 @@ async function reconcileTargets(
   let teamDefs: McpServerDef[] = [];
   // The servers a workspace holds back (#913): each tool keeps what it has installed for them.
   let held = new Set<string>();
+  let teamEntries: ReadonlyArray<ResolvedEntry<TeamMcpDefinition>> = [];
 
   if (!removeAll) {
     // A file that does not parse, or a server name defined twice, keeps every
@@ -2901,7 +2902,8 @@ async function reconcileTargets(
     reportEntryResolution(resolution);
 
     if (resolution.kind === 'failed') return { changes, wrote, unresolved: true };
-    teamDefs = resolution.entries.map((entry) => teamMcpToDef(entry.entry));
+    teamEntries = resolution.entries;
+    teamDefs = resolution.entries.map((entry) => teamMcpDef(localConfig, entry));
     held = new Set(resolution.held);
   }
 
@@ -2909,6 +2911,19 @@ async function reconcileTargets(
     log.info(`${teamDefs.length} team MCP server(s) available. Run \`teamai mcp inject\` to apply.`);
 
     return { changes, wrote };
+  }
+
+  // The folders team servers run from, before any configuration names them (#1787). A workspace that holds a server
+  // back keeps what it installed, so its folder stays too. A folder that cannot be written keeps every installed server.
+  if (!removeAll && !options.dryRun) {
+    try {
+      await deliverMcpFolders(localConfig, teamEntries, { prune: held.size === 0 });
+    } catch (e) {
+      log.warn(`Team MCP server folders could not be delivered: ${e instanceof Error ? e.message : String(e)}. `
+        + 'mcp was not applied this run, so your installed team MCP servers are unchanged. Run teamai pull again.');
+
+      return { changes, wrote, unresolved: true };
+    }
   }
 
   const targets = await resolveMcpTargets(teamConfig, localConfig);

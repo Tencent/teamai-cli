@@ -7,7 +7,7 @@ import { keptMcpEntries } from './mcp-reconcile.js';
 import { resolvesTeamEnv, resolveTeamEnv, secretState, type TeamEnv, type UnsetReference } from './env-resolution.js';
 import { referencedVars } from './resources/mcp-format.js';
 import { envName } from './resources/env-key.js';
-import { mcpEntryReader, teamMcpToDef } from './resources/mcp.js';
+import { mcpEntryReader, teamMcpDef } from './resources/mcp.js';
 import { declaredSecretKeys } from './resources/secrets.js';
 import { isReservedTeamEnvKey } from './env-reserved.js';
 import { resolveEntriesFor } from './namespaced-entries.js';
@@ -57,7 +57,7 @@ export async function envAdvisories(
   const excluded = new Set(localConfig.excludedSkills ?? []);
 
   const servers = (mcp.kind === 'resolved' ? mcp.entries : [])
-    .map((entry) => teamMcpToDef(entry.entry))
+    .map((entry) => teamMcpDef(localConfig, entry))
     .filter((server) => !excluded.has(server.name));
 
   const usedBy = (key: string): string[] =>

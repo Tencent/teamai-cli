@@ -473,11 +473,11 @@ async function mcpRemovalTarget(
 /** The MCP files, root and namespace, that exist and cannot be read or parsed. */
 async function unreadableMcpFiles(repoPath: string): Promise<string[]> {
   const { listEntryFiles } = await import('./namespaced-entries.js');
-  const { mcpEntryReader } = await import('./resources/mcp.js');
+  const { readTeamMcpFile } = await import('./resources/mcp.js');
   const unreadable: string[] = [];
 
   for (const { relativePath, absolutePath } of await listEntryFiles(repoPath, 'mcp')) {
-    const read = await mcpEntryReader.read(absolutePath, relativePath);
+    const read = await readTeamMcpFile(absolutePath, relativePath);
 
     if (read?.ok === false) unreadable.push(relativePath);
   }

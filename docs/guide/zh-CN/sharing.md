@@ -390,7 +390,63 @@ agy 随后拒绝该命令：`tool call denied by pre-tool hook: rm -rf is blocke
 
 ## MCP Server
 
-Muse 保存 stdio server 时可能省略 `type`。pull 和移除操作会兼容这种格式；其他 server 发生变化时，个人 server 和未变更的受管条目保持原样。
+团队自己写的 server 以目录形式 commit：`MCP.yaml` 和它要运行的文件放在一起。目录名就是 server 的名字，只用字母、数字、`-` 和 `_`。
+
+```text
+mcp/jira-lite/
+├─ MCP.yaml
+├─ server.py
+└─ queries.sql
+```
+
+```yaml
+# mcp/jira-lite/MCP.yaml
+description: Read-only Jira lookups for the team
+transport: stdio
+command: uv
+args: ["run", "--script", "${TEAMAI_MCP_DIR}/server.py"]
+requires: [uv]
+```
+
+```python
+# mcp/jira-lite/server.py
+# /// script
+# dependencies = ["mcp==1.2.0", "httpx==0.27.2"]
+# ///
+```
+
+pull 会复制这个目录，并把 `command`、`args` 和 `env` 里的 `${TEAMAI_MCP_DIR}` 换成它的路径（用正斜杠）。teamai 不加引号。目录内容变了，路径也不变：
+
+| 团队在哪里 | 目录复制到 |
+|---|---|
+| 用户作用域 | `~/.teamai/mcp/jira-lite/` |
+| 有团队仓库的工作区 | `~/.teamai/projects/<slug>/mcp/jira-lite/` |
+| single-repo | 每个 worktree 的 `.teamai/delivered/mcp/jira-lite/`，git 会忽略它 |
+
+Claude Code 不会展开 `.mcp.json` 里的 `$CLAUDE_PROJECT_DIR`，所以 single-repo 下各工具的 MCP 文件写的是 worktree 的绝对路径，每个 worktree 都不一样。
+
+`MCP.yaml` 的键和 `mcp.yaml` 里的 server 相同，只是没有 `name`、`roles` 和 `projects`，而且只能是 `transport: stdio`：URL server 不带文件，所以 `http` 和 `sse` server 留在 `mcp.yaml`。只给一个 namespace 的 server 放在 `mcp/<ns>/<name>/`。`${TEAMAI_MCP_DIR}` 只能用在目录里：写在 `mcp.yaml` 里，这次运行的团队 MCP 会全部停下，已安装的保持不变；同一个名字既是 `mcp.yaml` 里的 server 又是目录时也一样。
+
+teamai 不安装依赖。目录可以用下面三种方式带上依赖：
+
+| 方式 | `command` 和 `args` | 目录里放什么 |
+|---|---|---|
+| PEP 723 脚本 | `uv`，`["run", "--script", "${TEAMAI_MCP_DIR}/server.py"]` | `server.py`，固定版本的依赖写在文件头里 |
+| 一个打包好的 `.mjs` | `node`，`["${TEAMAI_MCP_DIR}/server.mjs"]` | `server.mjs`，依赖已打包进去 |
+| 固定版本的 runner | `npx`，`["-y", "@acme/jira-mcp@1.4.0", "--config", "${TEAMAI_MCP_DIR}/config.json"]`，或用 `uvx` 加 `jira-mcp==1.4.0` | 只放配置和数据文件 |
+
+`requires` 写成员 PATH 上需要有的 runner。缺少其中一个的成员拿不到这个 server，`teamai mcp inject` 会说出缺的是哪个。设置了 `sharing.mcp.allowedCommands` 时，要把 runner 写进去，因为它就是 server 的 `command`：
+
+```yaml
+# teamai.yaml
+sharing:
+  mcp:
+    allowedCommands: [uv, node, npx]
+```
+
+commit server 目录之前，先让每位成员升级。读不了 MCP 目录的 teamai 会跳过它们，这些成员就拿不到这个 server。
+
+运行已发布的包或 URL 的 server 可以继续写在 `mcp/mcp.yaml`。Muse 保存 stdio server 时可能省略 `type`。pull 和移除操作会兼容这种格式；其他 server 发生变化时，个人 server 和未变更的受管条目保持原样。
 
 ```yaml
 # mcp/mcp.yaml

@@ -23,7 +23,7 @@ import {
 import { RESOURCE_TYPES, LocalConfigSchema, getDataHome, installScopeName, type GlobalOptions, type ResourceType } from './types.js';
 import { projectsRootDir, readAnchorFile, projectSlug, legacyProjectSlug } from './utils/partition.js';
 import { checkoutForProjectAnchor } from './utils/git.js';
-import { mcpEntryReader } from './resources/mcp.js';
+import { mcpEntryReader, teamMcpDef } from './resources/mcp.js';
 import { resolveTeamHookEntries } from './resources/hooks.js';
 import { envEntryReader } from './resources/env.js';
 import { envListing } from './env-listing.js';
@@ -442,7 +442,7 @@ async function printRepoSection(
     }
 
     for (const resolved of mcp.entries) {
-      const s = resolved.entry;
+      const s = teamMcpDef(localConfig, resolved);
 
       const endpoint = s.transport === 'stdio'
         ? `${s.command ?? ''} ${(s.args ?? []).join(' ')}`.trim()

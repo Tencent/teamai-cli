@@ -399,7 +399,63 @@ agy then refuses the command with `tool call denied by pre-tool hook: rm -rf is 
 
 ## MCP servers
 
-Muse may save stdio servers without `type`. Pull and removal compare that form without rewriting personal servers or unchanged managed entries when another server changes.
+Commit a server the team writes as a folder: `MCP.yaml` beside the files it runs. The directory name is the server's name: letters, digits, `-` and `_`.
+
+```text
+mcp/jira-lite/
+├─ MCP.yaml
+├─ server.py
+└─ queries.sql
+```
+
+```yaml
+# mcp/jira-lite/MCP.yaml
+description: Read-only Jira lookups for the team
+transport: stdio
+command: uv
+args: ["run", "--script", "${TEAMAI_MCP_DIR}/server.py"]
+requires: [uv]
+```
+
+```python
+# mcp/jira-lite/server.py
+# /// script
+# dependencies = ["mcp==1.2.0", "httpx==0.27.2"]
+# ///
+```
+
+Pull copies the folder and puts its path, with forward slashes, in place of `${TEAMAI_MCP_DIR}` in `command`, `args` and `env`. teamai adds no quotes. The path stays the same when the folder changes:
+
+| Where the team is | The folder lands in |
+|---|---|
+| User scope | `~/.teamai/mcp/jira-lite/` |
+| Workspace with a team repo | `~/.teamai/projects/<slug>/mcp/jira-lite/` |
+| Single-repo | `.teamai/delivered/mcp/jira-lite/` in each worktree, which git ignores |
+
+Claude Code does not expand `$CLAUDE_PROJECT_DIR` in `.mcp.json`, so in single-repo each tool's MCP file holds the worktree's absolute path and differs from one worktree to the next.
+
+`MCP.yaml` takes the keys of an `mcp.yaml` server except `name`, `roles` and `projects`, with `transport: stdio` only: a URL server carries no files, so `http` and `sse` servers stay in `mcp.yaml`. A server for one namespace goes in `mcp/<ns>/<name>/`. `${TEAMAI_MCP_DIR}` works only in a folder. In `mcp.yaml` it stops team MCP for the run and keeps what is installed, as a name that is both an `mcp.yaml` server and a folder does.
+
+teamai installs no dependencies. A folder ships them one of three ways:
+
+| Pattern | `command` and `args` | The folder holds |
+|---|---|---|
+| PEP 723 script | `uv`, `["run", "--script", "${TEAMAI_MCP_DIR}/server.py"]` | `server.py`, its pinned dependencies in its header |
+| One bundled `.mjs` | `node`, `["${TEAMAI_MCP_DIR}/server.mjs"]` | `server.mjs`, built with its dependencies inside |
+| A pinned runner | `npx`, `["-y", "@acme/jira-mcp@1.4.0", "--config", "${TEAMAI_MCP_DIR}/config.json"]`, or `uvx` with `jira-mcp==1.4.0` | configuration and data files only |
+
+`requires` names the runners a member needs on PATH. A member who lacks one does not get the server, and `teamai mcp inject` names the missing runner. With `sharing.mcp.allowedCommands` set, list the runner there, since it is the server's `command`:
+
+```yaml
+# teamai.yaml
+sharing:
+  mcp:
+    allowedCommands: [uv, node, npx]
+```
+
+Upgrade every member before you commit a server folder. A teamai that cannot read MCP folders skips them, so its members do not get the server.
+
+Servers that run a published package or a URL can stay in `mcp/mcp.yaml`. Muse may save stdio servers without `type`. Pull and removal compare that form without rewriting personal servers or unchanged managed entries when another server changes.
 
 ```yaml
 # mcp/mcp.yaml

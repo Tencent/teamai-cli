@@ -292,7 +292,11 @@ members whose role or project lists `<ns>` under `resources.env`, `resources.hoo
 or `resources.mcp`. A namespace entry replaces the root entry of the same key, hook
 id or server name. A hook that runs a script is a folder, `hooks/[<ns>/]<id>/HOOK.yaml`
 beside the script, its command naming it as `"${TEAMAI_HOOK_DIR}/scan.sh"`; an id
-both in `hooks.yaml` and as a folder stops team hooks like a repeated name.
+both in `hooks.yaml` and as a folder stops team hooks like a repeated name. An MCP
+server the team writes is a folder too, `mcp/[<ns>/]<name>/MCP.yaml` beside its files,
+stdio only, its args naming them as `"${TEAMAI_MCP_DIR}/server.py"`; a name both in
+`mcp.yaml` and as a folder stops team MCP the same way, and `teamai remove mcp` does
+not remove a folder: delete it in the team repo.
 Hooks and MCP servers have no add command, and `teamai push`
 does not pick up `hooks/` or `mcp/`: edit the file in the team repo, then commit
 and push it with git. `teamai doctor` lists each override.

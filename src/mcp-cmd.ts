@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
-import { mcpEntryReader, teamMcpToDef } from './resources/mcp.js';
+import { mcpEntryReader, teamMcpDef } from './resources/mcp.js';
 import { describeEntryFailure, describeOrigin, reportUndeliveredEntryNotices, resolveEntriesFor } from './namespaced-entries.js';
 import {
   reconcileMcpForConfig,
@@ -80,14 +80,14 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
   console.log('');
 
   for (const resolved of servers) {
-    const s = teamMcpToDef(resolved.entry);
+    const s = teamMcpDef(localConfig, resolved);
     const endpoint = s.transport === 'stdio' ? `${s.command} ${(s.args ?? []).join(' ')}`.trim() : s.url;
     console.log(`  ${s.name}  [${s.transport}]`);
 
     if (s.description) console.log(`    ${s.description}`);
     console.log(`    endpoint: ${endpoint}`);
     console.log(`    from:     ${resolved.source} (${describeOrigin(resolved)})`);
-    const roles = resolved.entry.roles;
+    const roles = resolved.entry.server.roles;
 
     if (roles) console.log(`    roles:    ${roles.length > 0 ? roles.join(', ') : 'nobody'} (deprecated)`);
 
