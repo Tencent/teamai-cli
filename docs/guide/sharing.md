@@ -327,19 +327,19 @@ command: bash "${TEAMAI_HOOK_DIR}/scan.sh"
 timeout: 15
 ```
 
-Pull copies the folder and puts its path, with forward slashes, in place of `${TEAMAI_HOOK_DIR}`. teamai adds no quotes, so quote the variable as the command needs. The path stays the same when the folder changes, and a file the team removes from it stays until the folder goes, as a configuration pull did not rewrite may still name it:
+Pull copies the folder and puts its path, with forward slashes, in place of `${TEAMAI_HOOK_DIR}`. teamai adds no quotes, so quote the variable as the command needs. The directory is named after the hook and its command (`cc468cbd` below), so it changes only when the command does. A tool whose configuration pull could not rewrite keeps running the files of the command it has, and that directory goes once no entry runs it:
 
 | Where the team is | The folder lands in |
 |---|---|
-| User scope | `~/.teamai/hooks/block-secrets/` |
-| Workspace with a team repo | `~/.teamai/projects/<slug>/hooks/block-secrets/`, one for every worktree, as every worktree runs the same hook entries |
-| Single-repo | `.teamai/delivered/hooks/block-secrets/` in each worktree, which git ignores |
+| User scope | `~/.teamai/hooks/block-secrets.cc468cbd/` |
+| Workspace with a team repo | `~/.teamai/projects/<slug>/hooks/block-secrets.cc468cbd/`, one for every worktree, as every worktree runs the same hook entries |
+| Single-repo | `.teamai/delivered/hooks/block-secrets.cc468cbd/` in each worktree, which git ignores |
 
-In single-repo, Claude Code's command reads `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets/scan.sh"`, so `.claude/settings.json` is the same in every worktree. Other tools get the worktree's absolute path, so their project file differs from one worktree to the next. Cursor's `.cursor/hooks.json`, for example:
+In single-repo, Claude Code's command reads `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets.cc468cbd/scan.sh"`, so `.claude/settings.json` is the same in every worktree. Other tools get the worktree's absolute path, so their project file differs from one worktree to the next. Cursor's `.cursor/hooks.json`, for example:
 
 ```text
-~/work/shop/.cursor/hooks.json         bash "/Users/ana/work/shop/.teamai/delivered/hooks/block-secrets/scan.sh"
-~/work/shop-hotfix/.cursor/hooks.json  bash "/Users/ana/work/shop-hotfix/.teamai/delivered/hooks/block-secrets/scan.sh"
+~/work/shop/.cursor/hooks.json         bash "/Users/ana/work/shop/.teamai/delivered/hooks/block-secrets.cc468cbd/scan.sh"
+~/work/shop-hotfix/.cursor/hooks.json  bash "/Users/ana/work/shop-hotfix/.teamai/delivered/hooks/block-secrets.cc468cbd/scan.sh"
 ```
 
 Once a worktree is removed, the next pull of another worktree, or `teamai doctor --fix`, removes the entries it left in HOME. `HOOK.yaml` takes the keys of a `hooks.yaml` entry except `id`, `roles` and `projects`. A hook for one namespace goes in `hooks/<ns>/<id>/`.

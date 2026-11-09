@@ -318,19 +318,19 @@ command: bash "${TEAMAI_HOOK_DIR}/scan.sh"
 timeout: 15
 ```
 
-pull 会复制这个目录，并把 `${TEAMAI_HOOK_DIR}` 换成它的路径（用正斜杠）。teamai 不加引号，命令需要时自己给变量加引号。目录内容变了，路径也不变；团队从目录里删掉的文件会保留到整个目录被移除，因为 pull 没有改写的配置可能还在引用它：
+pull 会复制这个目录，并把 `${TEAMAI_HOOK_DIR}` 换成它的路径（用正斜杠）。teamai 不加引号，命令需要时自己给变量加引号。目录名由 hook 和它的命令决定（下面的 `cc468cbd`），所以只有命令变了，目录才会变。pull 没能改写配置的工具，会继续运行它现有命令对应的文件；等没有条目再运行那个目录，它就会被移除：
 
 | 团队在哪里 | 目录复制到 |
 |---|---|
-| 用户作用域 | `~/.teamai/hooks/block-secrets/` |
-| 有团队仓库的工作区 | `~/.teamai/projects/<slug>/hooks/block-secrets/`，所有 worktree 共用一份，因为它们运行同一组 hook 条目 |
-| single-repo | 每个 worktree 的 `.teamai/delivered/hooks/block-secrets/`，git 会忽略它 |
+| 用户作用域 | `~/.teamai/hooks/block-secrets.cc468cbd/` |
+| 有团队仓库的工作区 | `~/.teamai/projects/<slug>/hooks/block-secrets.cc468cbd/`，所有 worktree 共用一份，因为它们运行同一组 hook 条目 |
+| single-repo | 每个 worktree 的 `.teamai/delivered/hooks/block-secrets.cc468cbd/`，git 会忽略它 |
 
-single-repo 下，Claude Code 的命令写成 `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets/scan.sh"`，所以每个 worktree 的 `.claude/settings.json` 都一样。其他工具拿到的是 worktree 的绝对路径，所以它们的项目文件在每个 worktree 里都不一样。以 Cursor 的 `.cursor/hooks.json` 为例：
+single-repo 下，Claude Code 的命令写成 `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets.cc468cbd/scan.sh"`，所以每个 worktree 的 `.claude/settings.json` 都一样。其他工具拿到的是 worktree 的绝对路径，所以它们的项目文件在每个 worktree 里都不一样。以 Cursor 的 `.cursor/hooks.json` 为例：
 
 ```text
-~/work/shop/.cursor/hooks.json         bash "/Users/ana/work/shop/.teamai/delivered/hooks/block-secrets/scan.sh"
-~/work/shop-hotfix/.cursor/hooks.json  bash "/Users/ana/work/shop-hotfix/.teamai/delivered/hooks/block-secrets/scan.sh"
+~/work/shop/.cursor/hooks.json         bash "/Users/ana/work/shop/.teamai/delivered/hooks/block-secrets.cc468cbd/scan.sh"
+~/work/shop-hotfix/.cursor/hooks.json  bash "/Users/ana/work/shop-hotfix/.teamai/delivered/hooks/block-secrets.cc468cbd/scan.sh"
 ```
 
 删除一个 worktree 后，下次在另一个 worktree 里 pull，或运行 `teamai doctor --fix`，会删掉它留在 HOME 里的条目。`HOOK.yaml` 的键和 `hooks.yaml` 的条目相同，只是没有 `id`、`roles` 和 `projects`。只给一个 namespace 的 hook 放在 `hooks/<ns>/<id>/`。

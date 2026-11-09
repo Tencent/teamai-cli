@@ -15,7 +15,7 @@ import { LayeredEntries, type LayeredEntryType, type PlaceFolderRead } from '../
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { DeliveredFolders } from '../resources/delivered-folders.js';
 import { FolderFiles } from '../resources/folder-files.js';
-import { TEAM_HOOKS, TEAM_HOOK_ENTRIES, readDefaultHookReplacements, readHookFolder, teamScriptRefusal, type TeamHookDefinition } from '../resources/hooks.js';
+import { TEAM_HOOKS, TEAM_HOOK_ENTRIES, hookFolderPath, readDefaultHookReplacements, readHookFolder, teamScriptRefusal, type TeamHookDefinition } from '../resources/hooks.js';
 import { TEAM_MCP, TEAM_MCP_ENTRIES, readMcpFolder, type TeamMcpDefinition } from '../resources/mcp.js';
 import { teamMcpRefusal } from '../mcp-reconcile.js';
 import { RESOURCE_LAYOUTS, Resources, type LayeredItem, type ListedResolution, type ResourceLayout } from '../resources/resolver.js';
@@ -245,6 +245,8 @@ interface EntryType<TEntry, TDefinition> {
   readonly entries: LayeredEntryType<TEntry, TDefinition>;
   /** The folder at `full` read as pull reads it, for the definition named `name`, or why pull cannot use it. */
   readonly readFolder: (full: string, folderPath: string, name: string) => Promise<PlaceFolderRead<TDefinition>>;
+  /** Where pull delivers the valid folder of `definition`, named `name` in `namespace`. */
+  readonly deliveredAt: (config: LocalConfig, definition: TDefinition, place: { readonly namespace: string | null; readonly name: string }) => string;
   /** What a tool runs from a valid folder delivered at `dest`. */
   readonly runs: (definition: TDefinition, dest: string) => NonNullable<ResourceFolder['runs']>;
   /** Definitions another list shows: the team's folders that replace teamai's default hooks, at the root. */
@@ -260,6 +262,7 @@ const HOOKS: EntryType<unknown, TeamHookDefinition> = {
   layout: TEAM_HOOKS,
   entries: TEAM_HOOK_ENTRIES,
   readFolder: readHookFolder,
+  deliveredAt: (config, definition, { namespace }) => hookFolderPath(config, definition.hook, namespace),
   runs: (definition, dest) => ({ command: DeliveredFolders.render(definition.hook.command, { type: 'hooks', dest }), args: [], env: [] }),
   listedElsewhere: (item) => item.layer === 'root' && item.source.kind === 'folder' && DefaultHooks.isName(item.name),
   refusal: teamScriptRefusal,
@@ -271,6 +274,7 @@ const MCP: EntryType<unknown, TeamMcpDefinition> = {
   layout: TEAM_MCP,
   entries: TEAM_MCP_ENTRIES,
   readFolder: readMcpFolder,
+  deliveredAt: (config, _definition, { namespace, name }) => DeliveredFolders.pathOf(config, { type: 'mcp', namespace, name }),
   runs: ({ server }, dest) => {
     const render = (text: string): string => DeliveredFolders.render(text, { type: 'mcp', dest });
 
@@ -313,63 +317,68 @@ async function entryList<TEntry, TDefinition>(config: LocalConfig, teamConfig: T
   const notices = resolution.notices;
   // What pull prints for a file or folder it cannot use, had it been the first it met.
   const brokenFile = (source: string, reason: string): string => describeEntryFailure({ kind: 'broken-file', type: spec.type, source, reason, layout });
-  const deliveredAt = (item: Found): string => DeliveredFolders.pathOf(config, { type: spec.type, namespace: item.layer === 'namespace' ? item.namespace : null, name: item.name });
 
-  const stateOf = async (item: Found): Promise<{ state: ResourceState; runs: ResourceFolder['runs'] }> => {
-    if (isInactive(item, active)) return { state: { kind: 'inactive' }, runs: null };
+  // What a valid folder runs, from where pull delivers it; null for any other item.
+  type Delivery = { readonly dest: string; readonly runs: NonNullable<ResourceFolder['runs']> } | null;
+
+  const stateOf = async (item: Found): Promise<{ state: ResourceState; delivery: Delivery }> => {
+    if (isInactive(item, active)) return { state: { kind: 'inactive' }, delivery: null };
 
     if (failure && stopped && named.includes(item.source.path) && (failure.kind === 'broken-file' || ('name' in failure && failure.name === item.name))) {
       return {
         state: failure.kind === 'duplicate' || failure.kind === 'two-namespaces'
           ? { kind: 'conflict', reason: failure.kind, message: stopped }
           : { kind: 'invalid', message: stopped, fallback: 'installed' },
-        runs: null,
+        delivery: null,
       };
     }
 
-    let runs: ResourceFolder['runs'] = null;
+    let delivery: Delivery = null;
 
     if (item.source.kind === 'folder' && !item.name.startsWith('teamai-')) {
       const read = await spec.readFolder(item.source.full, item.source.path, item.name);
 
-      if (read.kind === 'invalid') return { state: { kind: 'invalid', message: brokenFile(item.source.path, read.reason), fallback: 'installed' }, runs: null };
+      if (read.kind === 'invalid') return { state: { kind: 'invalid', message: brokenFile(item.source.path, read.reason), fallback: 'installed' }, delivery: null };
 
-      if (read.kind === 'read') runs = spec.runs(read.definition, deliveredAt(item));
+      if (read.kind === 'read') {
+        const dest = spec.deliveredAt(config, read.definition, { namespace: item.layer === 'namespace' ? item.namespace : null, name: item.name });
+        delivery = { dest, runs: spec.runs(read.definition, dest) };
+      }
     }
 
-    if (stopped) return { state: { kind: 'blocked', message: stopped }, runs };
+    if (stopped) return { state: { kind: 'blocked', message: stopped }, delivery };
 
-    if (resolution.kind !== 'resolved') return { state: { kind: 'inactive' }, runs };
+    if (resolution.kind !== 'resolved') return { state: { kind: 'inactive' }, delivery };
     const applied = resolution.entries.find((entry) => entry.name === item.name && entry.source === item.source.path);
 
     if (applied) {
       const refusal = spec.refusal(config, teamConfig, applied);
 
-      return { state: refusal === null ? { kind: 'in-force' } : { kind: 'refused', message: refusal }, runs };
+      return { state: refusal === null ? { kind: 'in-force' } : { kind: 'refused', message: refusal }, delivery };
     }
 
     const replacing = resolution.entries.find((entry) => entry.name === item.name && entry.replaces === item.source.path);
 
-    if (replacing) return { state: { kind: 'replaced', by: replacing.source }, runs };
+    if (replacing) return { state: { kind: 'replaced', by: replacing.source }, delivery };
 
     if (resolution.held?.includes(item.name)) {
-      return { state: { kind: 'blocked', message: notices.find(({ message }) => message.includes(`"${item.name}"`))?.message ?? '' }, runs };
+      return { state: { kind: 'blocked', message: notices.find(({ message }) => message.includes(`"${item.name}"`))?.message ?? '' }, delivery };
     }
 
     // Pull's notices name a folder by its path, and an entry by its file and name.
     const prefix = item.source.kind === 'entry' ? `${item.source.path}: ${layout.noun} "${item.name}"` : item.source.path;
     const notice = notices.find(({ message }) => message.startsWith(prefix));
 
-    if (notice === undefined) return { state: { kind: 'inactive' }, runs };
+    if (notice === undefined) return { state: { kind: 'inactive' }, delivery };
 
     switch (notice.kind) {
       case 'unknown-key':
       case 'removed-key':
-        return { state: { kind: 'invalid', message: notice.message, fallback: 'none' }, runs };
+        return { state: { kind: 'invalid', message: notice.message, fallback: 'none' }, delivery };
       case 'file-note':
-        return { state: { kind: 'refused', message: notice.message }, runs };
+        return { state: { kind: 'refused', message: notice.message }, delivery };
       case 'deprecated-roles':
-        return { state: { kind: 'inactive' }, runs };
+        return { state: { kind: 'inactive' }, delivery };
       default: {
         const unhandled: never = notice.kind;
 
@@ -382,11 +391,11 @@ async function entryList<TEntry, TDefinition>(config: LocalConfig, teamConfig: T
 
   for (const item of survey.definitions) {
     if (spec.listedElsewhere(item)) continue;
-    const { state, runs } = await stateOf(item);
+    const { state, delivery } = await stateOf(item);
     const applied = resolution.kind === 'resolved' ? resolution.entries.find((entry) => entry.name === item.name && entry.source === item.source.path) : undefined;
     const replaced = applied?.replaces ? survey.definitions.find((other) => other.name === item.name && other.source.path === applied.replaces) : undefined;
     const isDelivered = state.kind === 'in-force' || state.kind === 'blocked' || (state.kind === 'refused' && applied !== undefined && spec.deliversRefused);
-    const delivered = item.source.kind === 'folder' && isDelivered ? deliveredAt(item) : null;
+    const delivered = item.source.kind === 'folder' && isDelivered ? delivery?.dest ?? null : null;
 
     resources.push({
       name: item.name,
@@ -394,7 +403,7 @@ async function entryList<TEntry, TDefinition>(config: LocalConfig, teamConfig: T
       replaces: replaced ? placeOf(replaced) : null,
       state,
       folder: item.source.kind === 'folder'
-        ? { ...await folderFiles(item.source.full), limit: null, delivered: delivered === null ? null : { path: delivered, present: await pathExists(delivered), by: 'pull' }, runs, variant: null, reads: null }
+        ? { ...await folderFiles(item.source.full), limit: null, delivered: delivered === null ? null : { path: delivered, present: await pathExists(delivered), by: 'pull' }, runs: delivery?.runs ?? null, variant: null, reads: null }
         : null,
     });
   }

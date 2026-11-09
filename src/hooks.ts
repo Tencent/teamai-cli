@@ -5165,7 +5165,7 @@ export async function reconcileTeamHooksForConfig(
 
   if (pruneFolders) {
     try {
-      await pruneHookFolders(localConfig, resolved.ok ? resolved.folders : [], await installedTeamHookIds(localConfig, manifestPath));
+      await pruneHookFolders(localConfig, resolved.ok ? resolved.folders : [], await installedTeamHookCommands(localConfig, manifestPath));
     } catch (e) {
       log.warn(`Team hook folders no hook runs from any more could not be removed: ${e instanceof Error ? e.message : String(e)}. `
         + 'Your team hooks are applied; the next teamai pull removes those folders.');
@@ -5183,26 +5183,26 @@ export async function reconcileTeamHooksForConfig(
 }
 
 /**
- * The team hooks an installed entry runs after a reconcile, by id: every record of the manifests `localConfig`'s tools
- * keep their team hooks in, `manifestPath` among them. A tool the member excluded, or one whose file could not be
- * written, keeps its records with its entries.
+ * The commands of the team hooks installed after a reconcile: every record of the manifests `localConfig`'s tools keep
+ * their team hooks in, `manifestPath` among them. A tool the member excluded, or one whose file could not be written,
+ * keeps its records with its entries.
  */
-async function installedTeamHookIds(localConfig: LocalConfig, manifestPath: string): Promise<Set<string>> {
+async function installedTeamHookCommands(localConfig: LocalConfig, manifestPath: string): Promise<string[]> {
   const manifests = new Set([manifestPath, path.join(getDataHome(localConfig), 'managed-main-checkout-hooks.json')]);
 
   if (localConfig.scope !== 'project' || localConfig.projectRoot) manifests.add(getManagedHooksPath(localConfig));
-  const ids = new Set<string>();
+  const commands: string[] = [];
 
   for (const file of manifests) {
     // The main checkout's manifest also lists its checkouts, under `checkouts`.
     for (const [key, records] of Object.entries(await readManifest(file))) {
       if (key === 'checkouts' || !Array.isArray(records)) continue;
 
-      for (const record of records) ids.add(record.id);
+      for (const record of records) commands.push(record.command);
     }
   }
 
-  return ids;
+  return commands;
 }
 
 /**

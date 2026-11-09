@@ -53,6 +53,20 @@ async function claudeCommands(event: string): Promise<string[]> {
 
 const forward = (dir: string): string => dir.split(path.sep).join('/');
 
+/** `text` matched literally in a regular expression. */
+const literal = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** The version in the name of a hook folder, `<id>.<version>`, as a regular expression: one directory per command. */
+const VERSION = '\\.[0-9a-f]{8}';
+
+/** The folder delivered for hook `id` in `hooks`, a scope's `hooks/` directory: the one directory `<id>.<version>`. */
+async function hookDir(hooks: string, id: string): Promise<string> {
+  const names = (await fse.readdir(hooks)).filter((name) => new RegExp(`^${id}${VERSION}$`).test(name));
+  expect(names).toHaveLength(1);
+
+  return path.join(hooks, names[0] ?? '');
+}
+
 beforeEach(async () => {
   home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-hook-delivery-home-'));
   repo = path.join(home, '.teamai', 'repo');
@@ -68,12 +82,12 @@ afterEach(async () => {
 });
 
 describe('a team hook folder in the user scope', () => {
-  it('is delivered to ~/.teamai/hooks/<id>/, and the tool runs its script from there', async () => {
+  it('is delivered to ~/.teamai/hooks/<id>.<version>/, and the tool runs its script from there', async () => {
     await write({ 'hooks/block-secrets/HOOK.yaml': BLOCK_SECRETS, 'hooks/block-secrets/scan.sh': 'echo scanning\n' });
 
     await reconcileTeamHooksForConfig(teamConfig, member());
 
-    const delivered = path.join(home, '.teamai', 'hooks', 'block-secrets');
+    const delivered = await hookDir(path.join(home, '.teamai', 'hooks'), 'block-secrets');
 
     expect([await fse.readFile(path.join(delivered, 'scan.sh'), 'utf8'), await claudeCommands('PreToolUse')])
       .toEqual(['echo scanning\n', [expect.stringContaining(`bash "${forward(delivered)}/scan.sh"`)]]);
@@ -87,7 +101,7 @@ describe('a team hook folder in the user scope', () => {
     await write({ 'hooks/block-secrets/HOOK.yaml': BLOCK_SECRETS.replace('timeout: 15', 'timeout: 20'), 'hooks/block-secrets/scan.sh': 'echo v2\n' });
     await reconcileTeamHooksForConfig(teamConfig, member());
 
-    const delivered = path.join(home, '.teamai', 'hooks', 'block-secrets');
+    const delivered = await hookDir(path.join(home, '.teamai', 'hooks'), 'block-secrets');
 
     expect([await claudeCommands('PreToolUse'), await fse.readFile(path.join(delivered, 'scan.sh'), 'utf8')]).toEqual([before, 'echo v2\n']);
   });
@@ -99,7 +113,7 @@ describe('a team hook folder in the user scope', () => {
     await fse.remove(path.join(repo, 'hooks', 'block-secrets'));
     await reconcileTeamHooksForConfig(teamConfig, member());
 
-    expect([await fse.pathExists(path.join(home, '.teamai', 'hooks', 'block-secrets')), await claudeCommands('PreToolUse')]).toEqual([false, []]);
+    expect([await fse.readdir(path.join(home, '.teamai', 'hooks')), await claudeCommands('PreToolUse')]).toEqual([[], []]);
   });
 
   it('stays, once the team repo drops it, while a tool the member excluded keeps the entry that runs it', async () => {
@@ -110,7 +124,21 @@ describe('a team hook folder in the user scope', () => {
     await fse.remove(path.join(repo, 'hooks', 'block-secrets'));
     await reconcileTeamHooksForConfig(teamConfig, { ...member(), disabledAgents: ['claude', 'tclaude'] });
 
-    expect([await claudeCommands('PreToolUse'), await fse.readFile(path.join(home, '.teamai', 'hooks', 'block-secrets', 'scan.sh'), 'utf8')]).toEqual([installed, 'echo v1\n']);
+    expect([await claudeCommands('PreToolUse'), await fse.readFile(path.join(await hookDir(path.join(home, '.teamai', 'hooks'), 'block-secrets'), 'scan.sh'), 'utf8')]).toEqual([installed, 'echo v1\n']);
+  });
+
+  it('keeps running the files of the command a tool installed while its entry cannot be rewritten for a new one', async () => {
+    await write({ 'hooks/block-secrets/HOOK.yaml': BLOCK_SECRETS.replace('scan.sh"', 'scan.sh" --v1'), 'hooks/block-secrets/scan.sh': 'echo v1\n' });
+    await reconcileTeamHooksForConfig(teamConfig, member());
+    const installed = await claudeCommands('PreToolUse');
+
+    await write({ 'hooks/block-secrets/HOOK.yaml': BLOCK_SECRETS.replace('scan.sh"', 'scan.sh" --v2'), 'hooks/block-secrets/scan.sh': 'echo v2\n' });
+    const settings = path.join(home, '.claude', 'settings.json');
+    await fse.chmod(settings, 0o444);
+    await reconcileTeamHooksForConfig(teamConfig, member()).finally(() => fse.chmod(settings, 0o644));
+    const script = /bash "([^"]+)" --v1/.exec(installed[0] ?? '')?.[1] ?? '';
+
+    expect([await claudeCommands('PreToolUse'), await fse.readFile(script, 'utf8')]).toEqual([installed, 'echo v1\n']);
   });
 });
 
@@ -130,8 +158,10 @@ describe('the team hook history', () => {
 
     const dest = forward(path.join(home, '.teamai', 'hooks', 'payments', 'audit'));
     const history = await teamHookHistory(member())();
+    const unversioned = history.map((def) => [def.key, def.command.replace(new RegExp(`audit${VERSION}/`), 'audit.<version>/')]);
 
-    expect(history.map((def) => [def.key, def.command]).sort()).toEqual([['audit', `bash "${dest}/v1.sh"`], ['audit', `bash "${dest}/v2.sh"`]]);
+    expect([unversioned.sort(), new Set(history.map((def) => def.command.slice(0, -'/v1.sh"'.length))).size])
+      .toEqual([[['audit', `bash "${dest}.<version>/v1.sh"`], ['audit', `bash "${dest}.<version>/v2.sh"`]], 2]);
   });
 });
 
@@ -175,8 +205,8 @@ describe('a team hook folder in a single-repo worktree', () => {
       commands.push(...(settings.hooks?.PreToolUse ?? []).flatMap((entry) => entry.hooks.map((hook) => hook.command)));
     }
 
-    expect([await fse.readFile(path.join(team, 'delivered', 'hooks', 'block-secrets', 'scan.sh'), 'utf8'), commands])
-      .toEqual(['echo scanning\n', [expect.stringContaining('bash "$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets/scan.sh"')]]);
+    expect([await fse.readFile(path.join(await hookDir(path.join(team, 'delivered', 'hooks'), 'block-secrets'), 'scan.sh'), 'utf8'), commands])
+      .toEqual(['echo scanning\n', [expect.stringMatching(new RegExp(`bash "\\$CLAUDE_PROJECT_DIR/\\.teamai/delivered/hooks/block-secrets${VERSION}/scan\\.sh"`))]]);
   });
 });
 
@@ -231,7 +261,7 @@ describe('a team hook folder in two worktrees of a single-repo, with a tool that
 
     await pull(main);
 
-    expect(await zcodeFolderCommands()).toEqual([expect.stringContaining(`bash "${forward(main)}/.teamai/delivered/hooks/lint/lint.sh"`)]);
+    expect(await zcodeFolderCommands()).toEqual([expect.stringMatching(new RegExp(`bash "${literal(forward(main))}/\\.teamai/delivered/hooks/lint${VERSION}/lint\\.sh"`))]);
   });
 });
 
@@ -257,7 +287,7 @@ describe('a hook folder of one id in two workspaces bound to different teams, wi
     const commands = (config.hooks?.events?.Stop ?? []).flatMap((entry) => entry.hooks.flatMap((hook) => hook.args?.slice(1) ?? []));
 
     // teamai's own Stop hook is left out: it would start the teamai on PATH.
-    return commands.filter((command) => command.includes('/hooks/lint/lint.sh'))
+    return commands.filter((command) => new RegExp(`/hooks/lint${VERSION}/lint\\.sh`).test(command))
       .map((command) => spawnSync('bash', ['-c', command], { cwd, encoding: 'utf8' }).stdout).join('');
   };
 
@@ -287,7 +317,7 @@ describe('a hook folder of one id in the user scope and in a workspace that inhe
     }
 
     // teamai's own Stop hook is left out: it would start the teamai on PATH.
-    return commands.filter((command) => command.includes('/hooks/lint/lint.sh'))
+    return commands.filter((command) => new RegExp(`/hooks/lint${VERSION}/lint\\.sh`).test(command))
       .map((command) => spawnSync('bash', ['-c', command], { cwd, encoding: 'utf8' }).stdout).join('');
   };
 
@@ -323,7 +353,7 @@ describe('an entry teamai wrote for an earlier version of a hook folder', () => 
     const lintCommands = async (): Promise<string[]> => {
       const file: { hooks?: Record<string, Array<{ hooks: Array<{ command: string }> }>> } = await fse.readJson(path.join(home, '.codex', 'hooks.json'));
 
-      return (file.hooks?.Stop ?? []).flatMap((entry) => entry.hooks.map((hook) => hook.command)).filter((command) => command.includes('/hooks/lint/'));
+      return (file.hooks?.Stop ?? []).flatMap((entry) => entry.hooks.map((hook) => hook.command)).filter((command) => new RegExp(`/hooks/lint${VERSION}/`).test(command));
     };
 
     await fse.ensureDir(path.join(home, '.codex'));
@@ -341,6 +371,6 @@ describe('an entry teamai wrote for an earlier version of a hook folder', () => 
     git('commit', '-q', '-m', 'v2');
     await reconcileTeamHooksForConfig(codexTeam, member());
 
-    expect(await lintCommands()).toEqual([`bash "${forward(path.join(home, '.teamai', 'hooks', 'lint'))}/v2.sh"`]);
+    expect(await lintCommands()).toEqual([`bash "${forward(await hookDir(path.join(home, '.teamai', 'hooks'), 'lint'))}/v2.sh"`]);
   });
 });

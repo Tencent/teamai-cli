@@ -25,7 +25,7 @@ teamai hooks list                   # 各工具的内置钩子集合
 [hook 目录](sharing.md#hooks)的路径用正斜杠写出，teamai 不加引号。`C:\Users\Zoë Li` 这样的 home 带空格，所以要给变量加引号：
 
 ```text
-command: bash "${TEAMAI_HOOK_DIR}/scan.sh"       # bash "C:/Users/Zoë Li/.teamai/hooks/block-secrets/scan.sh"
+command: bash "${TEAMAI_HOOK_DIR}/scan.sh"       # bash "C:/Users/Zoë Li/.teamai/hooks/block-secrets.cc468cbd/scan.sh"
 command: node "${TEAMAI_HOOK_DIR}/check.mjs"
 command: powershell -File "${TEAMAI_HOOK_DIR}/scan.ps1"
 ```

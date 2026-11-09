@@ -188,8 +188,9 @@ describe('hooks on the Resources page', () => {
       ['lint', 'root', 'entry', 'hooks/hooks.yaml', 'replaced', null],
     ]);
     expect([blockSecrets?.folder?.runs, blockSecrets?.folder?.delivered]).toEqual([
-      { command: `bash "${rendered(path.join(dataHome, 'hooks', 'block-secrets'))}/scan.sh"`, args: [], env: [] },
-      { path: path.join(dataHome, 'hooks', 'block-secrets'), present: false, by: 'pull' },
+      // The folder of a command is `<id>.<first 8 hex digits of the SHA-256 of the command>` (cc468cbd: scan.sh, 34480cc2: lint.sh).
+      { command: `bash "${rendered(path.join(dataHome, 'hooks', 'block-secrets.cc468cbd'))}/scan.sh"`, args: [], env: [] },
+      { path: path.join(dataHome, 'hooks', 'block-secrets.cc468cbd'), present: false, by: 'pull' },
     ]);
   });
 

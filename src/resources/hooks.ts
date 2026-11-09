@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
 import { parseYaml } from '../utils/yaml.js';
@@ -334,9 +335,25 @@ interface TeamHookDelivery {
   readonly folder: FolderDelivery | null;
 }
 
+const HOOK_FOLDER_VERSION_LENGTH = 8;
+
+/** The name of a directory `hookFolderPath` gives: a hook id, a dot, and the version. */
+const HOOK_FOLDER_NAME = new RegExp(`^[a-z0-9-]+\\.[0-9a-f]{${HOOK_FOLDER_VERSION_LENGTH}}$`);
+
+/**
+ * Where `localConfig`'s scope delivers the folder of `hook`, in `namespace`: `hooks/[<ns>/]<id>.<version>/`, one
+ * directory per command its `HOOK.yaml` gives (#1787). Each tool's entry runs the files delivered for the command it
+ * holds: a tool whose entry pull could not rewrite keeps the files of its command, while the others run the new ones.
+ */
+export function hookFolderPath(localConfig: LocalConfig, hook: Pick<TeamHook, 'id' | 'command'>, namespace: string | null): string {
+  const version = createHash('sha256').update(hook.command).digest('hex').slice(0, HOOK_FOLDER_VERSION_LENGTH);
+
+  return DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace, name: `${hook.id}.${version}` });
+}
+
 /** The hook folder `hook`, in `namespace`, as `localConfig`'s scope delivers it: its command names the folder's path (#1787). */
 function folderHookDef(localConfig: LocalConfig, hook: TeamHook, namespace: string | null): HookDef {
-  const dest = DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace, name: hook.id });
+  const dest = hookFolderPath(localConfig, hook, namespace);
   const projectRoot = isSelfMode(localConfig) ? localConfig.projectRoot ?? null : null;
 
   return {
@@ -353,7 +370,8 @@ function teamHookDelivery(localConfig: LocalConfig, resolved: ResolvedEntry<Team
   if (definition.kind === 'entry') return { def: teamHookToDef(definition.hook), folder: null };
   const def = folderHookDef(localConfig, definition.hook, resolved.namespace);
 
-  return { def, folder: def.folder ? { dest: def.folder.dest, files: definition.files, earlierFiles: 'keep' } : null };
+  // A version's folder holds only its files: an entry that runs the files of another command runs another folder.
+  return { def, folder: def.folder ? { dest: def.folder.dest, files: definition.files, earlierFiles: 'drop' } : null };
 }
 
 /**
@@ -479,21 +497,31 @@ export async function deliverHookFolders(localConfig: LocalConfig, folders: read
 
 /**
  * Remove the scope's hook folders that neither `folders` nor an installed entry runs from, once every tool's entries are
- * written. The folder of each hook in `installed` stays: an entry pull left as it was, such as one of a tool the member
- * excluded or one it could not write, still runs from there.
+ * written. A folder whose path one of `installed` (the commands of the entries teamai recorded installing) names stays:
+ * an entry pull left as it was, such as one of a tool the member excluded or one it could not write, still runs it.
  */
-export async function pruneHookFolders(localConfig: LocalConfig, folders: readonly FolderDelivery[], installed: ReadonlySet<string>): Promise<void> {
+export async function pruneHookFolders(localConfig: LocalConfig, folders: readonly FolderDelivery[], installed: readonly string[]): Promise<void> {
   const { editDeliveryRecord } = await import('../pull.js');
   const record = await editDeliveryRecord(localConfig);
-  // A hook's record names no namespace: its folder sits at the root, or in a namespace directory.
-  const namespaces = await listDirs(path.join(DeliveredFolders.root(localConfig, 'hooks'), 'hooks'));
+  const root = DeliveredFolders.root(localConfig, 'hooks');
+  // A hook folder sits at the root of hooks/, or in a namespace directory there.
+  const candidates: string[] = [];
 
-  const keep = [
-    ...folders.map(({ dest }) => dest),
-    ...[...installed].flatMap((name) => [null, ...namespaces].map((namespace) => DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace, name }))),
-  ];
+  for (const dir of await listDirs(path.join(root, 'hooks'))) {
+    const full = path.join(root, 'hooks', dir);
 
-  await DeliveredFolders.prune({ localConfig, type: 'hooks', keep, ledger: record.ledger });
+    if (HOOK_FOLDER_NAME.test(dir)) candidates.push(full);
+    else candidates.push(...(await listDirs(full)).filter((inner) => HOOK_FOLDER_NAME.test(inner)).map((inner) => path.join(full, inner)));
+  }
+
+  // A command names the folder by its path, with forward slashes, from the data home or from the project's variable.
+  const runs = (dir: string): boolean => {
+    const named = `/${path.relative(root, dir).split(path.sep).join('/')}`;
+
+    return installed.some((command) => command.split(named).slice(1).some((after) => !/^[\w.-]/.test(after)));
+  };
+
+  await DeliveredFolders.prune({ localConfig, type: 'hooks', keep: [...folders.map(({ dest }) => dest), ...candidates.filter(runs)], ledger: record.ledger });
   await record.save();
 }
 
