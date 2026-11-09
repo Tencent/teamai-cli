@@ -3,6 +3,7 @@ import path from 'node:path';
 import { holdsMarker, unreadMarker } from '../folder-markers.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { resolveNamespacedItems } from '../namespace-resolver.js';
+import { isIgnored } from '../utils/fs.js';
 
 /** How a resource type lays out its items in a tree. `TEntry` is what one entry of its entry-list file holds. */
 export interface ResourceLayout<TEntry = never> {
@@ -102,6 +103,8 @@ export interface ResourceTree<TShipped> {
 export const RESOURCE_LAYOUTS = {
   workflows: { dir: 'workflows', marker: 'WORKFLOW.yaml', fileName: (file: string) => (file.endsWith('.yaml') ? file.slice(0, -'.yaml'.length) : null) },
   hooks: { dir: 'hooks', marker: 'HOOK.yaml', fileName: () => null, nameRule: { pattern: /^[a-z0-9-]+$/, description: 'a hook id uses only lower-case letters, digits and hyphens' } },
+  /** Names are paths at any depth (`Resources.walk`): `rules/fe/style.md` and `rules/fe/style/RULE.md` are `fe/style`. */
+  rules: { dir: 'rules', marker: 'RULE.md', fileName: (file: string) => (file.endsWith('.md') ? file.slice(0, -'.md'.length) : null) },
 } as const satisfies Readonly<Record<string, ResourceLayout<unknown>>>;
 
 /** The names in `dir`, or none when it is missing, a symlink, or cannot be listed. */
@@ -411,4 +414,89 @@ async function resolve<TEntry, TShipped>(layout: PlainLayout<TEntry>, name: stri
   return (await list(layout, tree)).find((resolution) => resolution.name === name) ?? { kind: 'missing', name };
 }
 
-export const Resources = { list, resolve, survey, layer } as const;
+/** An item `walk` found, named by its path from the type's directory: `fe/api-style`. */
+export interface WalkedItem {
+  readonly name: string;
+  readonly source: Extract<ResourceSource<never>, { readonly kind: 'file' | 'folder' }>;
+}
+
+/** What `walk` found: every name defined once, in path order; every name defined twice; and what the walk found besides. */
+export interface ResourceWalk {
+  readonly items: readonly WalkedItem[];
+  /** A file and a folder of one name in one directory (`style.md` beside `style/`); neither is in `items`. */
+  readonly duplicates: ReadonlyArray<{ readonly name: string; readonly first: WalkedItem; readonly second: WalkedItem }>;
+  readonly diagnostics: readonly ResourceDiagnostic[];
+}
+
+/** Whether `file` is a language variant of `marker` (`RULE.zh.md` of `RULE.md`, common rule 12 of #1787): part of the folder's own text. */
+function isMarkerVariant(marker: string, file: string): boolean {
+  const ext = path.extname(marker);
+  const stem = marker.slice(0, marker.length - ext.length);
+
+  return file.startsWith(`${stem}.`) && file.endsWith(ext) && /^[a-z]+$/.test(file.slice(stem.length + 1, file.length - ext.length));
+}
+
+/**
+ * Every item of `layout` at any depth of `<root>/<dir>/`, for a type whose names are paths and which applies its own
+ * namespace rules to them (rules): `rules/fe/style.md` and `rules/fe/style/RULE.md` are both `fe/style`. A directory
+ * that holds the marker is a folder, whose files are its own and are not read as items; every other directory is walked.
+ * As the type read its files before folders: every file but a symlink and the names `isIgnored` gives, hidden ones too.
+ */
+async function walk(layout: PlainLayout, root: string): Promise<ResourceWalk> {
+  const toPath = (full: string): string => path.relative(root, full).split(path.sep).join('/');
+  const unread = unreadMarker(layout.dir);
+  const folderMarker = layout.marker === unread ? null : layout.marker;
+  const found: WalkedItem[] = [];
+  const diagnostics: ResourceDiagnostic[] = [];
+
+  const visit = async (dir: string, prefix: string): Promise<void> => {
+    const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+
+    for (const entry of entries) {
+      if (isIgnored(entry.name)) continue;
+      const full = path.join(dir, entry.name);
+
+      if (entry.isFile()) {
+        const stem = layout.fileName(entry.name);
+
+        if (stem !== null) found.push({ name: `${prefix}${stem}`, source: { kind: 'file', path: toPath(full), full } });
+        continue;
+      }
+
+      // A folder this release cannot read is left out whole (#1791).
+      if (!entry.isDirectory() || await holdsMarker(full, unread)) continue;
+
+      if (folderMarker !== null && await holdsMarker(full, folderMarker)) {
+        const folderPath = `${toPath(full)}/`;
+        found.push({ name: `${prefix}${entry.name}`, source: { kind: 'folder', path: folderPath, full } });
+        const files = (await fileNames(full)).filter((file) => !isMarkerVariant(folderMarker, file));
+        const note = itemFilesNote(layout, folderMarker, folderPath, files);
+
+        if (note) diagnostics.push(note);
+        continue;
+      }
+
+      await visit(full, `${prefix}${entry.name}/`);
+    }
+  };
+
+  await visit(path.join(root, layout.dir), '');
+  found.sort((a, b) => (a.source.path < b.source.path ? -1 : 1));
+  const byName = new Map<string, WalkedItem[]>();
+
+  for (const item of found) byName.set(item.name, [...byName.get(item.name) ?? [], item]);
+
+  const items: WalkedItem[] = [];
+  const duplicates: Array<ResourceWalk['duplicates'][number]> = [];
+
+  for (const [name, [first, second]] of byName) {
+    if (first === undefined) continue;
+
+    if (second === undefined) items.push(first);
+    else duplicates.push({ name, first, second });
+  }
+
+  return { items, duplicates, diagnostics };
+}
+
+export const Resources = { list, resolve, survey, layer, walk } as const;
