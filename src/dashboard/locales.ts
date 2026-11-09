@@ -613,6 +613,8 @@ export const dashboardMessages = {
   "against": "对比",
   "to": "至",
   "not separated": "无法区分",
+  "Arms with no comparable pair": "没有可比较配对的 arm",
+  "Every trial pair of these arms was left out, so no pass rate compares them.": "这些 arm 的每个 trial 配对都被排除，因此没有通过率可以比较它们。",
   "task": "任务",
   "covers": "覆盖",
   "passed without": "去掉时通过",

@@ -199,6 +199,25 @@ describe('the Benchmarks page of a suite with covered assets (#1605)', () => {
     expect(zh).toContain('1 已排除: 评判器已改变 (claude claude-sonnet-5-5 → claude claude-opus-5-5)');
   });
 
+  it('names on Compare two arms whose every pair another judge left out, and why, with no difference for them, in en and zh-CN', async () => {
+    const OPUS = { by: 'judge' as const, rubric: 'r', tool: 'claude', model: 'claude-opus-5-5', batched: true };
+    const run = coveredRun();
+    run.benchmark.trials = run.benchmark.trials.map((trial) => ({
+      ...trial,
+      verdicts: [{ scorer: `teamai:correctness:${trial.task}`, outcome: { kind: 'labelled' as const, label: trial.result, score: trial.result === 'passed' ? 1 : 0, passed: trial.result === 'passed' },
+        decider: trial.arm === 'no-tokens' ? { ...OPUS, model: 'claude-sonnet-5-5' } : OPUS }],
+    }));
+
+    const en = text(await renderPage([run], { view: 'compare' }));
+    const zh = text(await renderPage([run], { view: 'compare', language: 'zh-CN' }));
+
+    expect(en).not.toContain('No two arms of this suite differ in one thing only');
+    expect(en).toContain('Arms with no comparable pair');
+    expect(en).toContain('without skills/auth-tokens → pulled team · claude 2 excluded: their judge changed (claude claude-sonnet-5-5 → claude claude-opus-5-5)');
+    expect(zh).toContain('没有可比较配对的 arm');
+    expect(zh).toContain('2 已排除: 评判器已改变 (claude claude-sonnet-5-5 → claude claude-opus-5-5)');
+  });
+
   it('keeps every asset label in zh-CN too', async () => {
     const zh = text(await renderPage([coveredRun()], { view: 'compare', language: 'zh-CN' }));
 

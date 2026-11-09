@@ -163,6 +163,14 @@ export interface ArmComparison {
   excluded?: ExcludedPairs[];
 }
 
+/** Two current arms that differ in one dimension and have trial pairs, every one of them left out, by why: no rate compares them. */
+export interface UncomparedArms {
+  dimension: ArmDimension;
+  from: string;
+  to: string;
+  excluded: ExcludedPairs[];
+}
+
 /**
  * A current arm against the suite's reference arm, as the run's table reads one (`ArmAgainst`), by arm key, over the
  * pairs of their trials in the runs of the current version, with dominance by their pooled pass rate and cost per passed
@@ -243,6 +251,8 @@ export interface SuiteView {
   latest: { run: string; source: BenchmarkRunInput['source']; table: BenchmarkTable; against?: SuiteView['against'] };
   /** Every pair of current arms that differ in one dimension, team first. */
   comparisons: ArmComparison[];
+  /** Every such pair of arms whose trial pairs were all left out, in the same order. */
+  uncompared: UncomparedArms[];
   /**
    * The arm the others are read against, by key, the defaults arm of the newest run that ran the whole suite, else its
    * first, and each other current arm against it; absent with one arm.
@@ -507,7 +517,7 @@ function dimensionOf(left: Arm, right: Arm): ArmDimension | undefined {
 /** For the team: none, then without some paths, then a named ref, then the pulled revision. */
 const TEAM_ORDER = { none: 0, without: 1, ref: 2, pulled: 3 } as const satisfies Record<ArmTeam['kind'], number>;
 
-function comparisonsOf({ current, newest }: SuiteRuns): ArmComparison[] {
+function comparisonsOf({ current, newest }: SuiteRuns): Pick<SuiteView, 'comparisons' | 'uncompared'> {
   const arms = newest.benchmark.arms;
 
   const ordered = (left: Arm, right: Arm, dimension: ArmDimension): [Arm, Arm] => {
@@ -517,6 +527,7 @@ function comparisonsOf({ current, newest }: SuiteRuns): ArmComparison[] {
   };
 
   const comparisons: ArmComparison[] = [];
+  const uncompared: UncomparedArms[] = [];
   arms.forEach((left, index) => {
     for (const right of arms.slice(index + 1)) {
       const dimension = dimensionOf(left, right);
@@ -529,7 +540,12 @@ function comparisonsOf({ current, newest }: SuiteRuns): ArmComparison[] {
       const pairs = compared.map(({ one, other }) => ({ task: one.trial.task, from: one.trial.result === 'passed', to: other.trial.result === 'passed' }));
       const [observedFrom, observedTo] = [compared.map(({ one }) => one), compared.map(({ other }) => other)];
 
-      if (pairs.length === 0) continue;
+      if (pairs.length === 0) {
+        if (excluded.length > 0) uncompared.push({ dimension, from: fromKey, to: toKey, excluded });
+
+        continue;
+      }
+
       const rate = (of: typeof pairs, side: 'from' | 'to'): PassRate => ({ passed: of.filter((pair) => pair[side]).length, planned: of.length });
       comparisons.push(definedFields<ArmComparison>({
         dimension, from: fromKey, to: toKey, pairs: pairs.length,
@@ -546,7 +562,9 @@ function comparisonsOf({ current, newest }: SuiteRuns): ArmComparison[] {
     }
   });
 
-  return comparisons.sort((left, right) => ARM_DIMENSIONS.indexOf(left.dimension) - ARM_DIMENSIONS.indexOf(right.dimension));
+  const byDimension = (left: { dimension: ArmDimension }, right: { dimension: ArmDimension }): number => ARM_DIMENSIONS.indexOf(left.dimension) - ARM_DIMENSIONS.indexOf(right.dimension);
+
+  return { comparisons: comparisons.sort(byDimension), uncompared: uncompared.sort(byDimension) };
 }
 
 /**
@@ -858,7 +876,7 @@ export function formatRegression(regression: Regression, suite: string): string[
 
 /** The paired comparisons of one run's arms, as Compare derives them over a suite's runs: never stored, always derived. */
 export function runComparisons(input: BenchmarkRunInput): ArmComparison[] {
-  return comparisonsOf({ runs: [input], current: [input], newest: input });
+  return comparisonsOf({ runs: [input], current: [input], newest: input }).comparisons;
 }
 
 export const BenchmarkHistory = {
@@ -903,7 +921,7 @@ export const BenchmarkHistory = {
         scorers: scorersOf(suiteRuns),
         runs: own.map(runRow).toReversed(),
         latest: definedFields<SuiteView['latest']>({ run: newest.run, source: newest.source, table: benchmarkTable(newest), against: againstOf(alone, armsOf(alone)) }),
-        comparisons: comparisonsOf(suiteRuns),
+        ...comparisonsOf(suiteRuns),
         against: againstOf(suiteRuns, arms),
         judging: judgingOf(suiteRuns),
         teamChanges: teamChangesOf(suiteRuns),

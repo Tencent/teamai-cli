@@ -294,14 +294,22 @@ function benchTabs(sel){
 function emptyView(title,text,example,after){
  return '<section class="panel"><div class="empty bench-empty"><h2>'+label(title)+'</h2><p>'+label(text)+'</p><pre class="command" data-verbatim>'+e(example)+'</pre>'+(after?'<p class="label">'+label(after)+'</p>':'')+'</div></section>';
 }
+function uncomparedPanel(sel){
+ const list=sel.uncompared||[];
+ if(!list.length)return '';
+ return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Arms with no comparable pair')+'</h2><span class="label">'+label('Every trial pair of these arms was left out, so no pass rate compares them.')+'</span></div><ul class="bench-uncompared">'
+  +list.map(c=>{const facet=facetOf(sel,c); return '<li><b data-verbatim>'+e(sideName(sel,c.from,c.dimension))+' → '+e(sideName(sel,c.to,c.dimension))+(facet?' · '+e(facet):'')+'</b><span>'+e(excludedText(c.excluded))+'</span></li>';}).join('')
+  +'</ul></section>';
+}
 function comparePanel(sel){
- if(!sel.comparisons.length)return emptyView('No two arms of this suite differ in one thing only','Compare puts two arms side by side, trial by trial, when they differ only in the team assets, the tool or the model. Cross them with a matrix, such as each tool with and without the team\\'s assets:','matrix:\\n  tool: [claude, codex]\\n  team: [pulled, none]','Each arm of a matrix differs from its neighbours in one value, so every difference here has one cause.')+assetPanel(sel,null);
+ const uncompared=uncomparedPanel(sel);
+ if(!sel.comparisons.length)return (uncompared||emptyView('No two arms of this suite differ in one thing only','Compare puts two arms side by side, trial by trial, when they differ only in the team assets, the tool or the model. Cross them with a matrix, such as each tool with and without the team\\'s assets:','matrix:\\n  tool: [claude, codex]\\n  team: [pulled, none]','Each arm of a matrix differs from its neighbours in one value, so every difference here has one cause.'))+assetPanel(sel,null);
  const dims=DIMENSIONS.filter(([key])=>sel.comparisons.some(c=>c.dimension===key));
  const dim=dims.some(([key])=>key===benchDimension)?benchDimension:dims[0][0];
  const list=sel.comparisons.filter(c=>c.dimension===dim);
  const chosen=list.find(c=>comparisonId(c)===benchComparison)||list[0];
  const chips=dims.length===1?'<span class="compare-by-only">'+label(dims[0][1])+'</span>':'<div class="chips" role="group" aria-label="'+e(t('Compare by'))+'">'+dims.map(([key,name])=>'<button class="chip'+(dim===key?' active':'')+'" data-bench-dimension="'+key+'" aria-pressed="'+(dim===key)+'">'+label(name)+'</button>').join('')+'</div>';
- return '<div class="bench-compare-head"><span class="label">'+label('Compare by')+'</span>'+chips+'</div>'+compareKpis(sel,chosen)+'<div class="bench-grid">'+forestPanel(sel,list,chosen)+arrowPanel(sel,list,chosen)+'</div>'+taskDeltaPanel(sel,chosen)+assetPanel(sel,chosen);
+ return '<div class="bench-compare-head"><span class="label">'+label('Compare by')+'</span>'+chips+'</div>'+compareKpis(sel,chosen)+'<div class="bench-grid">'+forestPanel(sel,list,chosen)+arrowPanel(sel,list,chosen)+'</div>'+taskDeltaPanel(sel,chosen)+uncompared+assetPanel(sel,chosen);
 }
 function compareKpis(sel,c){
  const d=c.difference, sides=['from','to'];
