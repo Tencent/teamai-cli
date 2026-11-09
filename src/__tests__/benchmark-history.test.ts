@@ -209,14 +209,14 @@ describe('BenchmarkHistory', () => {
     expect(selected?.runs.map(({ run: id, unmeasuredTasks }) => `${id} ${unmeasuredTasks}`)).toEqual(['r2 0', 'r1 2']);
   });
 
-  it('lists every run of the suite newest first, with who ran it, its version and team revision, and each arm in it, and the table of the newest', () => {
+  it('lists every run of the suite newest first, with who ran it, its version and team revision, each arm in it and what it cost, and the table of the newest', () => {
     const view = BenchmarkHistory.of({ runs: history, query: { windowDays: 90 }, now: NOW });
     const [claude, codex, sonnet] = view.selected?.arms ?? [];
 
     expect(view.selected?.runs).toEqual([
-      { run: 'r3', source: 'local', startedAt: '2026-10-20T09:00:00Z', username: 'alice', sourceHash: versionOf(history[2]), teamRevision: 'team-r3', passed: 4, planned: 6, unmeasuredTasks: 0, toolVersions: {}, arms: [{ key: claude?.key, passed: 2, planned: 3 }, { key: codex?.key, passed: 2, planned: 3 }] },
-      { run: 'r2', source: 'reported', startedAt: '2026-10-10T09:00:00Z', username: 'bob', sourceHash: versionOf(history[1]), teamRevision: 'team-r2', passed: 4, planned: 6, unmeasuredTasks: 0, toolVersions: {}, arms: [{ key: claude?.key, passed: 3, planned: 3 }, { key: codex?.key, passed: 1, planned: 3 }] },
-      { run: 'r1', source: 'reported', startedAt: '2026-10-01T09:00:00Z', username: 'alice', sourceHash: versionOf(history[0]), teamRevision: 'team-r1', passed: 0, planned: 2, unmeasuredTasks: 0, toolVersions: {}, arms: [{ key: sonnet?.key, passed: 0, planned: 1 }, { key: codex?.key, passed: 0, planned: 1 }] },
+      { run: 'r3', source: 'local', startedAt: '2026-10-20T09:00:00Z', username: 'alice', sourceHash: versionOf(history[2]), teamRevision: 'team-r3', passed: 4, planned: 6, unmeasuredTasks: 0, toolVersions: {}, arms: [{ key: claude?.key, passed: 2, planned: 3 }, { key: codex?.key, passed: 2, planned: 3 }], spend: { spent: { kind: 'known', amount: expect.closeTo(5.4), unit: 'USD', used: 6 } } },
+      { run: 'r2', source: 'reported', startedAt: '2026-10-10T09:00:00Z', username: 'bob', sourceHash: versionOf(history[1]), teamRevision: 'team-r2', passed: 4, planned: 6, unmeasuredTasks: 0, toolVersions: {}, arms: [{ key: claude?.key, passed: 3, planned: 3 }, { key: codex?.key, passed: 1, planned: 3 }], spend: { spent: { kind: 'known', amount: expect.closeTo(1.8), unit: 'USD', used: 6 } } },
+      { run: 'r1', source: 'reported', startedAt: '2026-10-01T09:00:00Z', username: 'alice', sourceHash: versionOf(history[0]), teamRevision: 'team-r1', passed: 0, planned: 2, unmeasuredTasks: 0, toolVersions: {}, arms: [{ key: sonnet?.key, passed: 0, planned: 1 }, { key: codex?.key, passed: 0, planned: 1 }], spend: { spent: { kind: 'unknown' } } },
     ]);
     expect(view.selected?.latest.run).toBe('r3');
     expect(view.selected?.latest.table.matrix).toEqual([
@@ -720,6 +720,42 @@ describe('BenchmarkHistory scorers by arm', () => {
       { key: claude?.key, passed: 3, labelled: 4, unscored: 0, interval: { low: expect.closeTo(0.301, 3), high: expect.closeTo(0.954, 3) } },
       { key: codex?.key, passed: 1, labelled: 3, unscored: 1, interval: { low: expect.closeTo(0.061, 3), high: expect.closeTo(0.792, 3) } },
     ] }]);
+  });
+});
+
+describe('BenchmarkHistory spend against the estimate', () => {
+  const RANGE = { unit: 'USD', low: 1, median: 1.5, high: 2, complete: true };
+  /** A run of task fix whose agents stated `costs` and whose judge cost 0.25 USD a trial, and what start estimated it from r0; null when it had no earlier run to estimate from. */
+  const spending = (id: string, day: number, costs: { claude: number; codex?: number }, total: typeof RANGE | null = RANGE): BenchmarkRunInput => {
+    const input = run({ id, startedAt: `2026-10-${day}T09:00:00Z`, trials: { fix: { claude: ['passed'], codex: ['failed'] } }, usage: { claude: { tokens: 1, durationMs: 1, cost: costs.claude }, codex: { tokens: 1, durationMs: 1, cost: costs.codex } } });
+
+    return { ...input, benchmark: { ...input.benchmark,
+      ...(total ? { estimate: { trials: 2, judgeCalls: 2, judgedTrials: 2, calibrationCalls: 0, basis: { run: 'r0' }, total } } : {}),
+      trials: input.benchmark.trials.map((trial) => ({ ...trial, scoringCost: { amount: 0.25, unit: 'USD', complete: true } })) } };
+  };
+
+  it("puts what each run's agents and judges cost beside the estimate, when start made one, flagged outside its range only when the estimate is complete and the cost could be too low", () => {
+    const spendingRuns = [
+      spending('within', 10, { claude: 0.5, codex: 0.5 }),
+      spending('above', 11, { claude: 1, codex: 1 }),
+      spending('below', 12, { claude: 0.125, codex: 0.125 }),
+      // codex stated no cost: what it spent is at least 0.75 USD, which may be within the range.
+      spending('unstated', 13, { claude: 0.25 }),
+      spending('partial', 14, { claude: 1, codex: 1 }, { ...RANGE, complete: false }),
+      spending('unestimated', 15, { claude: 1, codex: 1 }, null),
+    ];
+    const rows = BenchmarkHistory.of({ runs: spendingRuns, query: { windowDays: 90 }, now: NOW }).selected?.runs ?? [];
+
+    expect(rows.map(({ run: id, spend }) => [id, spend?.spent, spend?.outside])).toEqual([
+      ['unestimated', { kind: 'known', amount: 2.5, unit: 'USD', used: 4 }, undefined],
+      ['partial', { kind: 'known', amount: 2.5, unit: 'USD', used: 4 }, undefined],
+      ['unstated', { kind: 'incomplete', amount: 0.75, unit: 'USD', used: 3, unknown: 1 }, undefined],
+      ['below', { kind: 'known', amount: 0.75, unit: 'USD', used: 4 }, 'below'],
+      ['above', { kind: 'known', amount: 2.5, unit: 'USD', used: 4 }, 'above'],
+      ['within', { kind: 'known', amount: 1.5, unit: 'USD', used: 4 }, undefined],
+    ]);
+    expect(rows.find(({ run: id }) => id === 'within')?.spend?.estimated).toEqual(RANGE);
+    expect(rows.find(({ run: id }) => id === 'unestimated')?.spend?.estimated).toBeUndefined();
   });
 });
 

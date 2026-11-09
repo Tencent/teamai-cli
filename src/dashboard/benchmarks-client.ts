@@ -252,8 +252,14 @@ function latestPanel(sel){
   +(table.invalid.length?'<p class="scorer-hint amber">'+label('Not measured in this run')+': '+table.invalid.map(x=>'<span data-verbatim>'+e(x.task)+'</span> ('+(x.baseline==='invalid'?label('check passes without changes'):label('check could not run'))+')').join(', ')+'</p>':'')
   +'</div><p class="scorer-hint">'+label('Started')+' '+e(when(run.startedAt))+(run.username?' · <span data-verbatim>'+e(run.username)+'</span>':'')+' · '+label('These results hold for these tasks, this run and this machine.')+'</p></section>';
 }
+// What a run cost beside what start estimated, to three significant digits as the run's table prints the estimate.
+function spendText(spend){
+ const amount=x=>String(Number(x.toPrecision(3))), r=spend.estimated;
+ if(!r)return costText(spend.spent);
+ return costText(spend.spent)+'<small>'+label('Estimated')+' '+amount(r.low)+'–'+amount(r.high)+' <span data-verbatim>'+e(r.unit)+'</span>'+(r.complete?'':' <span class="amber">'+label('incomplete')+'</span>')+'</small>'+(spend.outside?' <span class="tag amber">'+label(spend.outside==='above'?'above the estimate':'below the estimate')+'</span>':'');
+}
 function runsPanel(sel){
- const arms=sel.arms.filter(a=>a.isCurrent), heads=['STARTED','MEMBER','FROM','SUITE VERSION','TEAM REVISION','PASS RATE'];
+ const arms=sel.arms.filter(a=>a.isCurrent), isCosted=sel.runs.some(r=>r.spend.estimated||r.spend.spent.kind!=='unknown'), heads=['STARTED','MEMBER','FROM','SUITE VERSION','TEAM REVISION','PASS RATE'].concat(isCosted?['COST']:[]);
  const names=heads.map(t).concat(arms.map(a=>a.arm));
  return '<section class="panel sessions bench-panel"><div class="panelhead"><h2>'+label('Runs')+' <span class="count">'+number(sel.runs.length)+'</span></h2><span class="label">'+label('Newest first. A team revision marked changed installed other team assets than the run before it.')+'</span></div><div class="table-scroll card-table"><table class="session-table bench-cards"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+arms.map(a=>'<th title="'+e(armTitle(a))+'"><div class="arm-label">'+swatch(sel.arms.indexOf(a))+'<span data-verbatim>'+e(a.arm)+'</span></div></th>').join('')+'</tr></thead><tbody>'
   +sel.runs.map((r,i)=>{const older=sel.runs[i+1], current=r.sourceHash===sel.versions[0].sourceHash; return cardRow('',names,[
@@ -263,7 +269,7 @@ function runsPanel(sel){
    '<span title="'+e(r.sourceHash)+'" data-verbatim>'+short(r.sourceHash)+'</span>'+(current?' <span class="tag">'+label('current')+'</span>':''),
    '<span title="'+e(r.teamRevision)+'" data-verbatim>'+short(r.teamRevision)+'</span>'+(older&&older.teamRevision!==r.teamRevision?' <span class="tag amber">'+label('changed')+'</span>':''),
    meter(passOf(r))+' '+rateCell(r)+(r.unmeasuredTasks?'<small class="amber">'+number(r.unmeasuredTasks)+' '+label('not measured')+'</small>':''),
-  ].concat(arms.map(a=>rateCell(r.arms.find(c=>c.key===a.key)))));}).join('')
+  ].concat(isCosted?[spendText(r.spend)]:[]).concat(arms.map(a=>rateCell(r.arms.find(c=>c.key===a.key)))));}).join('')
   +'</tbody></table></div></section>';
 }
 const BENCH_VIEWS=[['arms','Arms'],['compare','Compare'],['team','Team changes']];

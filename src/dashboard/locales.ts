@@ -605,6 +605,8 @@ export const dashboardMessages = {
   "so these runs do not say how far the correctness judge can be trusted. To measure it, set or raise the calibration rate in suite.yaml:": "因此这些运行无法说明正确性评审有多可信。如需衡量，请在 suite.yaml 中设置或调高校准比例：",
   "No trial of a task with both a check and success criteria failed its check, so no judge had failing work to label.": "同时有检查和成功标准的任务中，没有 trial 的检查失败，因此没有失败的工作可供评审打标签。",
   "Estimated": "估算",
+  "above the estimate": "高于估算",
+  "below the estimate": "低于估算",
   "Median tokens per trial": "每个 trial 的 token 中位数",
   "Not every arm reported it": "并非每个 arm 都报告了它",
   "against": "对比",

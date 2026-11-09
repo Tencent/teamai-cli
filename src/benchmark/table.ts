@@ -221,7 +221,7 @@ export function observedTrials(record: BenchmarkTableInput): ObservedTrial[] {
  * passes did not all state its tokens or cost has only part of it, so it counts as one that stated none.
  */
 export function usageOf(trials: readonly ObservedTrial[]): Omit<ArmUsage, 'arm'> {
-  const cost = costTotal(trials.flatMap(({ trial, ranAs }) => (ranAs ? [trial.cost?.complete ? trial.cost : undefined] : [])));
+  const cost = costTotal(agentCostsOf(trials));
 
   return definedFields<Omit<ArmUsage, 'arm'>>({
     tokens: { ...median(trials.flatMap(({ trial: { tokens } }) => (tokens?.complete && tokens.input !== undefined && tokens.output !== undefined ? [tokens.input + tokens.output] : []))), components: TOKEN_COMPONENTS },
@@ -229,6 +229,11 @@ export function usageOf(trials: readonly ObservedTrial[]): Omit<ArmUsage, 'arm'>
     cost,
     costPerPassedTrial: costPerPassedTrialOf(cost, trials.filter(({ trial }) => trial.result === 'passed').length),
   });
+}
+
+/** The cost each of `trials` whose prompt ran stated, undefined for one that stated none or only part of it. */
+export function agentCostsOf(trials: readonly ObservedTrial[]): Array<RecordedTrial['cost']> {
+  return trials.flatMap(({ trial, ranAs }) => (ranAs ? [trial.cost?.complete ? trial.cost : undefined] : []));
 }
 
 function costPerPassedTrialOf(cost: CostTotal, passed: number): CostPerPassedTrial | undefined {
@@ -661,8 +666,8 @@ function median(values: readonly number[]): Median {
   return lower === undefined || upper === undefined ? { used: 0 } : { value: (lower + upper) / 2, used: sorted.length };
 }
 
-/** The total of `parts`, one per trial whose prompt ran: the whole cost it stated, or undefined when it stated none or only part. */
-function costTotal(parts: ReadonlyArray<RecordedTrial['cost']>): CostTotal {
+/** The sum of `parts` in their one unit, `incomplete` with how many are undefined; `mixed` in more than one unit. */
+export function costTotal(parts: ReadonlyArray<RecordedTrial['cost']>): CostTotal {
   const known = parts.flatMap((part) => (part ? [part] : []));
   const units = [...new Set(known.map(({ unit }) => unit))].sort();
   const [unit, ...others] = units;

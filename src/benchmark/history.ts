@@ -11,13 +11,13 @@
  */
 import { definedFields } from '../utils/defined-fields.js';
 import { compareTrials, formatExcluded, splitPairs, type ExcludedPairs } from './pairing.js';
-import { CORRECTNESS_SCORERS, correctnessScorerName, isCorrectnessScorer, runSourceHash, type PlannedJudge } from './plan.js';
+import { CORRECTNESS_SCORERS, correctnessScorerName, isCorrectnessScorer, runSourceHash, type BenchmarkEstimate, type PlannedJudge } from './plan.js';
 import type { Baseline, BenchmarkRecord, BenchmarkRunRecord } from './result.js';
 import type { TeamChoice } from './suite.js';
 import type { ArmTeam } from './terms.js';
 import {
-  benchmarkTable, calibrationOf, deviationsOf, dominanceOf, observedTrials, pairedDifference, selfJudgedOf, usageOf, wilson,
-  type ArmAgainst, type ArmResults, type ArmScorerResults, type ArmStanding, type ArmUsage, type BenchmarkTable, type Dominance, type JudgeCalibration, type ObservedTrial, type PairedInterval, type PassRate,
+  agentCostsOf, benchmarkTable, calibrationOf, costTotal, deviationsOf, dominanceOf, observedTrials, pairedDifference, selfJudgedOf, usageOf, wilson,
+  type ArmAgainst, type ArmResults, type ArmScorerResults, type ArmStanding, type ArmUsage, type BenchmarkTable, type CostTotal, type Dominance, type JudgeCalibration, type ObservedTrial, type PairedInterval, type PassRate,
 } from './table.js';
 import type { TrialVerdict } from './verdicts.js';
 
@@ -271,6 +271,13 @@ export interface RunRow extends PassRate {
   toolVersions: Record<string, string>;
   /** Each arm of the run as a configuration, in the run's order. */
   arms: Array<{ key: string } & PassRate>;
+  /**
+   * What start estimated the run costs, from an earlier run, beside what it cost: each trial's agent and judging as they
+   * stated it, `used` counting both. `outside` when that falls outside the estimate's range, only for a complete
+   * estimate in the same unit, and `below` only for a cost every part stated. `estimated` absent when start had no earlier
+   * run to estimate from.
+   */
+  spend: { estimated?: NonNullable<BenchmarkEstimate['total']>; spent: CostTotal; outside?: 'above' | 'below' };
 }
 
 export interface BenchmarkHistoryView {
@@ -752,7 +759,23 @@ function runRow(input: BenchmarkRunInput): RunRow {
     unmeasuredTasks: benchmark.tasks.filter(({ baseline }) => !isMeasured(baseline)).length,
     toolVersions: toolVersionsOf(input),
     arms: benchmark.arms.map((arm) => ({ key: armKey(arm), ...passRate(benchmark.trials.filter((trial) => trial.arm === arm.name)) })),
+    spend: spendOf(input),
   });
+}
+
+function spendOf(input: BenchmarkRunInput): RunRow['spend'] {
+  const estimated = input.benchmark.estimate?.total;
+  const spent = costTotal([...agentCostsOf(observedTrials(input)), ...input.benchmark.trials.flatMap(({ scoringCost }) => (scoringCost ? [scoringCost.complete ? scoringCost : undefined] : []))]);
+
+  return definedFields<RunRow['spend']>({ estimated, spent, outside: estimated === undefined ? undefined : outsideOf(estimated, spent) });
+}
+
+function outsideOf(estimated: NonNullable<BenchmarkEstimate['total']>, spent: CostTotal): 'above' | 'below' | undefined {
+  if (!estimated.complete || (spent.kind !== 'known' && spent.kind !== 'incomplete') || spent.unit !== estimated.unit) return undefined;
+
+  if (spent.amount > estimated.high) return 'above';
+
+  return spent.kind === 'known' && spent.amount < estimated.low ? 'below' : undefined;
 }
 
 /**

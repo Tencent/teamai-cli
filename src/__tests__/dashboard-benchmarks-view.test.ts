@@ -568,6 +568,35 @@ describe('the Benchmarks page shows each scorer by arm', () => {
   });
 });
 
+describe('the Benchmarks page puts each run\'s cost beside its estimate', () => {
+  const base = judgedRun({
+    claude: { tool: 'claude', results: ['passed', 'passed', 'passed', 'passed'], scores: [1, 1, 1, 1], cost: 0.5 },
+    codex: { tool: 'codex', results: ['passed', 'passed', 'passed', 'failed'], scores: [1, 1, 1, 0], cost: 1 },
+  });
+  const estimate = { trials: 8, judgeCalls: 0, judgedTrials: 0, calibrationCalls: 0, basis: { run: 'r1' }, total: { unit: 'USD', low: 3.25, median: 4, high: 4.75, complete: true } };
+  const cell = (html: string, run: string) => text(html.split(`data-run="${run}" data-run-source="reported">`).at(-1)?.split('</tr>')[0]?.split('data-label="COST">')[1]?.split('</td>')[0] ?? '').trim();
+
+  it('flags a run that cost more than its estimate\'s range, and shows a run with no earlier run to estimate from at what it cost', async () => {
+    // The agents stated 4 × 0.5 + 4 × 1 = 6 USD.
+    const html = await renderPage([base, { ...base, run: 'r2', startedAt: '2026-10-21T09:00:00Z', benchmark: { ...base.benchmark, estimate } }]);
+
+    expect(cell(html, 'r2')).toBe('6 USD Estimated 3.25–4.75 USD above the estimate');
+    expect(cell(html, 'r1')).toBe('6 USD');
+  });
+
+  it('says it in zh-CN', async () => {
+    const html = await renderPage([{ ...base, benchmark: { ...base.benchmark, estimate } }], { language: 'zh-CN' });
+
+    expect(text(html)).toContain('6 USD 估算 3.25–4.75 USD 高于估算');
+  });
+
+  it('shows no cost column when no run has an estimate or a stated cost', async () => {
+    const unpriced = { ...base, benchmark: { ...base.benchmark, trials: base.benchmark.trials.map(({ cost: _cost, ...trial }) => trial) } };
+
+    expect(await renderPage([unpriced])).not.toContain('data-label="COST"');
+  });
+});
+
 describe('the Benchmarks page calibrates the correctness judge', () => {
   const HAIKU = { by: 'judge' as const, rubric: 'rc', tool: 'claude', model: 'claude-haiku-5-5', batched: false };
   const OPUS = { ...HAIKU, model: 'claude-opus-5-5', effort: 'high' };
