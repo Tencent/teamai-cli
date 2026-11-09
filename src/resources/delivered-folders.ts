@@ -16,7 +16,7 @@ import path from 'node:path';
 import { contentHash, forgetDelivered, removeDelivered, type DeliveryLedger } from './delivered-copies.js';
 import { FolderFiles, type FolderFile } from './folder-files.js';
 import { getDataHome, isSelfMode, type LocalConfig } from '../types.js';
-import { pathExists } from '../utils/fs.js';
+import { errnoCode, pathExists } from '../utils/fs.js';
 
 /** The folder types pull delivers. */
 export type DeliveredFolderType = 'hooks' | 'rules' | 'mcp';
@@ -88,6 +88,26 @@ async function holds(dest: string, files: readonly FolderFile[]): Promise<boolea
 }
 
 /**
+ * Move the delivered folder `dest` to `old`, out of the way of its new version: false when there is none yet. Any other
+ * failure stops the delivery, naming the folder and why.
+ */
+async function moveAside(dest: string, old: string): Promise<boolean> {
+  try {
+    await fs.rename(dest, old);
+
+    return true;
+  } catch (error) {
+    if (errnoCode(error) === 'ENOENT') return false;
+
+    throw new Error(
+      `could not replace the delivered folder ${dest} (${error instanceof Error ? error.message : String(error)}); `
+      + 'a program running from it, such as a hook on Windows, can hold it, so close that program',
+      { cause: error },
+    );
+  }
+}
+
+/**
  * Deliver a folder's `files`, in path order, at `dest`: written to a hidden sibling, then renamed into place, so a
  * reader sees the old version or the new one whole. A folder that already holds them is left in place, so a hook
  * running from it is not disturbed. Each file is recorded in `ledger`, in place of what it recorded under `dest`.
@@ -102,7 +122,8 @@ async function deliver(input: { readonly dest: string; readonly files: readonly 
 
   if (!await holds(dest, files)) {
     await writeFiles(fresh, files);
-    const replacing = await fs.rename(dest, old).then(() => true, () => false);
+    const replacing = await moveAside(dest, old);
+
     await fs.rename(fresh, dest);
 
     if (replacing) await fs.rm(old, { recursive: true, force: true });
