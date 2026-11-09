@@ -154,6 +154,18 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
     expect([await fse.pathExists(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'jira-lite', 'server.mjs')), await claudeServer('app', 'jira-lite')]).toEqual([true, installed]);
   });
 
+  it('keeps starting the version a tool the member excluded installed while the team renames the file it runs', async () => {
+    await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER, 'mcp/jira-lite/server.mjs': 'console.log("v1")\n' });
+    await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
+
+    await fse.remove(path.join(sandbox, 'team', 'mcp', 'jira-lite', 'server.mjs'));
+    await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER.replace('server.mjs', 'main.mjs'), 'mcp/jira-lite/main.mjs': 'console.log("v2")\n' });
+    await reconcileMcpForConfig(teamConfig(), { ...workspace('team', 'app'), disabledAgents: ['claude', 'tclaude'] });
+    const server = await claudeServer('app', 'jira-lite') as { command: string; args: string[] };
+
+    expect(execFileSync(server.command, server.args, { encoding: 'utf8' }).trim()).toBe('v1');
+  });
+
   it('keeps the installed server and its folder when the team repo makes the folder invalid', async () => {
     await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER, 'mcp/jira-lite/server.mjs': 'console.log("jira")\n' });
     await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
