@@ -17,9 +17,10 @@ vi.mock('../utils/logger.js', async (importOriginal) => ({
 import { writeContributeState } from '../contribute-check.js';
 import { buildHandlerRegistry } from '../hook-handlers.js';
 import { reconcileTeamHooksForConfig } from '../hooks.js';
+import { computePackageHintOutput } from '../pkg/pkg-hint.js';
 import { log } from '../utils/logger.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
-import type { LocalConfig, TeamaiConfig } from '../types.js';
+import { TeamaiConfigSchema, type LocalConfig } from '../types.js';
 
 // A team replaces one of teamai's default hook folders by copying it to the root of its repo
 // and editing it; pull checks the copy and delivers it, and the hint reads it (#1787).
@@ -27,7 +28,7 @@ import type { LocalConfig, TeamaiConfig } from '../types.js';
 let home: string;
 let repo: string;
 
-const teamConfig = { toolPaths: { claude: { settings: '.claude/settings.json' } } } as unknown as TeamaiConfig;
+const teamConfig = TeamaiConfigSchema.parse({ team: 'acme', repo: 'https://example.test/acme/team.git', toolPaths: { claude: { settings: '.claude/settings.json' } } });
 
 /** teamai's own folder for `name`, as the npm package ships it. */
 const shipped = (name: string): string => path.join(__dirname, '..', '..', 'hooks', name);
@@ -102,6 +103,66 @@ describe('a team replacement of teamai-friction-reminder', () => {
     await reconcileTeamHooksForConfig(teamConfig, member());
 
     expect(await stopHint(5)).toBe(`[teamai] This session may contain a problem worth documenting.\n\n${SHARE_LEARNINGS}`);
+  });
+
+  describe('for a team whose language is zh', () => {
+    const SHARE_LEARNINGS_ZH = '向用户提议使用 teamai-share-learnings 工作流：运行 `teamai workflow start --describe teamai-share-learnings --driver skill`，'
+      + '等用户确认它建议的输入后，用这些输入启动它。';
+
+    beforeEach(async () => {
+      await fse.appendFile(path.join(repo, 'teamai.yaml'), 'language: zh\n');
+    });
+
+    it('prints its problem.zh.md', async () => {
+      await replace('teamai-friction-reminder', { 'problem.zh.md': '[acme] 这次会话卡住过，要不要写下来？\n' });
+
+      await reconcileTeamHooksForConfig(teamConfig, member());
+
+      expect(await stopHint(20)).toBe(`[acme] 这次会话卡住过，要不要写下来？\n\n${SHARE_LEARNINGS_ZH}`);
+    });
+
+    it('prints its own problem.md when it has no problem.zh.md, never teamai\'s', async () => {
+      await replace('teamai-friction-reminder', { 'problem.md': '[acme] Worth a write-up?\n', 'problem.zh.md': null });
+
+      await reconcileTeamHooksForConfig(teamConfig, member());
+
+      expect(await stopHint(20)).toBe(`[acme] Worth a write-up?\n\n${SHARE_LEARNINGS_ZH}`);
+    });
+  });
+});
+
+describe('a team replacement read for a team whose language is zh', () => {
+  beforeEach(async () => {
+    await fse.appendFile(path.join(repo, 'teamai.yaml'), 'language: zh\n');
+  });
+
+  it('gives teamai-env-hint its variables.zh.md at session start', async () => {
+    await fse.outputFile(path.join(repo, 'env', 'env.yaml'), 'variables:\n  - key: API_URL\n    value: https://api.example.com\n    description: the staging API\n');
+    await replace('teamai-env-hint', { 'variables.zh.md': '这个范围里有团队环境变量：{{ variables }}。\n' });
+    await reconcileTeamHooksForConfig(teamConfig, member());
+
+    const hint = buildHandlerRegistry().find(({ handler }) => handler.name === 'team-env-hint');
+    const output = await hint?.handler.execute({}, 'claude', member());
+    const context = typeof output === 'string' ? (JSON.parse(output) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext : output;
+
+    expect(context).toBe('这个范围里有团队环境变量：API_URL (the staging API)。 '
+      + 'Run the commands that need them through `teamai env exec -- <command>` so they get this directory\'s team values.');
+  });
+
+  it('gives teamai-package-hint its message.zh.md at session start', async () => {
+    await fse.appendFile(path.join(repo, 'teamai.yaml'), 'packages:\n  npm:\n    - name: typescript\n      version: "*"\n');
+    await replace('teamai-package-hint', { 'message.zh.md': '[acme] 团队声明的包变了（{{ summary }}），运行 `teamai packages` 应用。\n' });
+    await reconcileTeamHooksForConfig(teamConfig, member());
+    const cwd = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-default-hook-cwd-'));
+
+    try {
+      const output = await computePackageHintOutput(cwd);
+      const context = output === null ? null : (JSON.parse(output) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
+
+      expect(context).toBe('[acme] 团队声明的包变了（1 npm package），运行 `teamai packages` 应用。');
+    } finally {
+      await fse.remove(cwd);
+    }
   });
 });
 

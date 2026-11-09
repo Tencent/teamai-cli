@@ -777,7 +777,9 @@ export async function contributeCheckForSession(
   // UserPromptSubmit delivery, never both.
   // The teamai-share-learnings offer is computed only on the Stop where the reminder fires.
   const offered = willHint && offer ? await offer() : undefined;
-  const hintText = willHint ? buildHint({ friction, promptSummary, isKnowledgeGap, offersShareLearnings: offered !== undefined }, reminder, undefined) : null;
+  // The team's `language` picks each text's variant; it is read only on the Stop where the reminder fires.
+  const language = willHint ? await (await import('./config.js')).loadTeamAgentLanguage(scope) : undefined;
+  const hintText = willHint ? buildHint({ friction, promptSummary, isKnowledgeGap, offersShareLearnings: offered !== undefined }, reminder, language) : null;
 
   // Single write: re-read first to avoid clobbering parallel /contribute marks.
   // Skip the write on cache hit + low score (state is already current).

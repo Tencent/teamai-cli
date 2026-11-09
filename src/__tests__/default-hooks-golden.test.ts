@@ -45,8 +45,17 @@ describe('hint texts before and after their move into hook folders', () => {
     fs.rmSync(home, { recursive: true, force: true });
   });
 
-  /** The friction reminder for a session whose cached score fires it. */
-  async function frictionReminder({ reasons, gap, task, offer }: { reasons: boolean; gap: boolean; task: boolean; offer: boolean }): Promise<string | null> {
+  /** A user scope whose team repo sets `language` as given. */
+  function scopeIn(language: Language): LocalConfig {
+    const repoPath = path.join(home, `team-${language}`);
+    fs.mkdirSync(repoPath, { recursive: true });
+    fs.writeFileSync(path.join(repoPath, 'teamai.yaml'), `team: golden\nrepo: https://example.com/golden.git\n${language === 'unset' ? '' : `language: ${language}\n`}`);
+
+    return { repo: { localPath: repoPath, remote: 'https://example.com/golden.git' }, username: 't', scope: 'user', additionalRoles: [] };
+  }
+
+  /** The friction reminder in a scope whose team sets `language`, for a session whose cached score fires it. */
+  async function frictionReminder(language: Language, { reasons, gap, task, offer }: { reasons: boolean; gap: boolean; task: boolean; offer: boolean }): Promise<string | null> {
     const sessionId = `golden-${session++}`;
     await writeContributeState(sessionId, {
       contributed: false,
@@ -60,7 +69,7 @@ describe('hint texts before and after their move into hook folders', () => {
     if (gap) recordRecallQuality(sessionId, [], 'login test retries');
     const offered = offer ? async () => ({ publish: true, scorers: [] }) : undefined;
 
-    return (await contributeCheckForSession(sessionId, undefined, undefined, false, offered)).hint;
+    return (await contributeCheckForSession(sessionId, undefined, undefined, false, offered, scopeIn(language))).hint;
   }
 
   const FRICTION_CASES = [false, true].flatMap((gap) => [false, true].flatMap((reasons) => [false, true].flatMap((task) => [false, true].map((offer) => ({
@@ -68,7 +77,7 @@ describe('hint texts before and after their move into hook folders', () => {
   })))));
 
   it.each(FRICTION_CASES)('friction reminder $name', async ({ name, ...shape }) => {
-    for (const language of LANGUAGES) expect(await frictionReminder(shape)).toBe(GOLDEN['teamai-friction-reminder']?.[name]?.[language]);
+    for (const language of LANGUAGES) expect(await frictionReminder(language, shape)).toBe(GOLDEN['teamai-friction-reminder']?.[name]?.[language]);
   });
 
   it.each([
@@ -94,17 +103,15 @@ describe('hint texts before and after their move into hook folders', () => {
   ] as const)('package hint $name', async ({ name, counts: [npm, claude, marketplace] }) => {
     const packageHint = await DefaultHooks.load('teamai-package-hint', null);
 
-    for (const language of LANGUAGES) expect(buildPackageHintMessage(packageHint, { npm, claude, marketplace })).toBe(GOLDEN['teamai-package-hint']?.[name]?.[language]);
+    for (const language of LANGUAGES) expect(buildPackageHintMessage(packageHint, { npm, claude, marketplace }, asOption(language))).toBe(GOLDEN['teamai-package-hint']?.[name]?.[language]);
   });
 
-  /** The session-start env hint of a user scope whose team repo holds these env files. */
-  async function envHint(files: Record<string, string>): Promise<unknown> {
-    const repoPath = path.join(home, 'team');
-    fs.mkdirSync(path.join(repoPath, 'env'), { recursive: true });
-    fs.writeFileSync(path.join(repoPath, 'teamai.yaml'), 'team: golden\nrepo: https://example.com/golden.git\n');
+  /** The session-start env hint of a user scope whose team sets `language` and whose repo holds these env files. */
+  async function envHint(language: Language, files: Record<string, string>): Promise<unknown> {
+    const config = scopeIn(language);
+    fs.mkdirSync(path.join(config.repo.localPath, 'env'), { recursive: true });
 
-    for (const [file, content] of Object.entries(files)) fs.writeFileSync(path.join(repoPath, file), content);
-    const config: LocalConfig = { repo: { localPath: repoPath, remote: 'https://example.com/golden.git' }, username: 't', scope: 'user', additionalRoles: [] };
+    for (const [file, content] of Object.entries(files)) fs.writeFileSync(path.join(config.repo.localPath, file), content);
     const hint = buildHandlerRegistry().find(({ handler }) => handler.name === 'team-env-hint');
     const output = await hint?.handler.execute({}, 'claude', config);
 
@@ -119,6 +126,6 @@ describe('hint texts before and after their move into hook folders', () => {
     { name: 'secrets', files: { 'env/secrets.yaml': SECRETS_YAML } },
     { name: 'variables-and-secrets', files: { 'env/env.yaml': ENV_YAML, 'env/secrets.yaml': SECRETS_YAML } },
   ])('env hint $name', async ({ name, files }) => {
-    for (const language of LANGUAGES) expect(await envHint(files)).toBe(GOLDEN['teamai-env-hint']?.[name]?.[language]);
+    for (const language of LANGUAGES) expect(await envHint(language, files)).toBe(GOLDEN['teamai-env-hint']?.[name]?.[language]);
   });
 });

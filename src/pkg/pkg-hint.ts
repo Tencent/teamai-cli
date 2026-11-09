@@ -3,8 +3,8 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
-import { detectProjectConfig, loadLocalConfig } from '../config.js';
-import { DefaultHooks, type DefaultHook } from '../default-hooks.js';
+import { detectProjectConfig, loadLocalConfig, loadTeamAgentLanguage } from '../config.js';
+import { DefaultHooks, type DefaultHook, type HintLanguage } from '../default-hooks.js';
 import { ensureDir, readJson, writeJsonAtomic } from '../utils/fs.js';
 import { getUserHome } from '../utils/home.js';
 import { log } from '../utils/logger.js';
@@ -28,8 +28,8 @@ export interface DeclaredPackageCounts {
   readonly marketplace: number;
 }
 
-/** The package hint: `hook`'s `message.md`, its `{{ summary }}` naming what the team declares. */
-export function buildPackageHintMessage(hook: DefaultHook<'teamai-package-hint'>, { npm, claude, marketplace }: DeclaredPackageCounts): string {
+/** The package hint: `hook`'s `message.md` (its variant for `language`), its `{{ summary }}` naming what the team declares. */
+export function buildPackageHintMessage(hook: DefaultHook<'teamai-package-hint'>, { npm, claude, marketplace }: DeclaredPackageCounts, language: HintLanguage): string {
   const summary = [
     npm > 0 ? `${npm} npm package${npm === 1 ? '' : 's'}` : '',
     claude > 0 ? `${claude} Claude plugin${claude === 1 ? '' : 's'}` : '',
@@ -38,7 +38,7 @@ export function buildPackageHintMessage(hook: DefaultHook<'teamai-package-hint'>
       : '',
   ].filter(Boolean).join(' and ');
 
-  return hook.text('message', undefined).render({ summary });
+  return hook.text('message', language).render({ summary });
 }
 
 interface PackageHintState {
@@ -97,7 +97,7 @@ async function computePackageHintState(cwd: string): Promise<PackageHintState | 
       npm: manifest.packages.npm?.length ?? 0,
       claude: manifest.packages.claude?.plugins.length ?? 0,
       marketplace: manifest.packages.claude?.marketplaces.length ?? 0,
-    }),
+    }, await loadTeamAgentLanguage(localConfig)),
   };
 }
 

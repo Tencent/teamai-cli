@@ -1001,15 +1001,16 @@ const teamEnvHintHandler: HookHandler = {
 
     const { DefaultHooks } = await import('./default-hooks.js');
     const hook = await DefaultHooks.load('teamai-env-hint', config);
+    const language = await teamAgentLanguage(config);
 
     return JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
         additionalContext: [
-          ...plain.length > 0 ? [hook.text('variables', undefined).render({ variables: described(plain) })] : [],
-          ...secrets.length > 0 ? [hook.text('secrets', undefined).render({ secrets: described(secrets) })] : [],
-          hook.text('exec', undefined).render({}),
-          ...secrets.length > 0 ? [hook.text('secrets-rule', undefined).render({})] : [],
+          ...plain.length > 0 ? [hook.text('variables', language).render({ variables: described(plain) })] : [],
+          ...secrets.length > 0 ? [hook.text('secrets', language).render({ secrets: described(secrets) })] : [],
+          hook.text('exec', language).render({}),
+          ...secrets.length > 0 ? [hook.text('secrets-rule', language).render({})] : [],
         ].join(' '),
       },
     });
