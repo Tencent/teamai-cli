@@ -228,4 +228,4 @@ async function grant(input: {
   return owned;
 }
 
-export const RuleFolders = { isFolder, isDelivered, languageFile, readTextFile, text, variantNotes, render, sync, grant } as const;
+export const RuleFolders = { isFolder, isDelivered, languageFile, readTextFile, text, variantNotes, copyRootOf, render, sync, grant } as const;

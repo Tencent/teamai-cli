@@ -1201,6 +1201,29 @@ describe('uninstall', () => {
     expect([await fse.pathExists(path.join(repoPath, 'delivered')), await fse.pathExists(path.join(repoPath, 'hooks', 'block-secrets', 'scan.sh'))]).toEqual([false, true]);
   });
 
+  it('removes the rule folder copies a remote team delivered in the worktree\'s .teamai/delivered/, and their exclude block (#1787)', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    const projectRoot = path.join(tmpDir, 'business-repo');
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    await fse.ensureDir(projectRoot);
+    execFileSync('git', ['init', '-q'], { cwd: projectRoot });
+    const excludeFile = path.join(projectRoot, '.git', 'info', 'exclude');
+    await fse.writeFile(excludeFile, '# my own\nscratch/\n');
+    const copies = path.join(projectRoot, '.teamai', 'delivered');
+    await fse.outputFile(path.join(copies, 'rules', 'api-style', 'checklist.md'), '- name every endpoint\n');
+
+    const dataHome = path.join(homeDir, '.teamai', 'projects', 'business-repo-0123456789abcdef');
+    const localConfig = makeLocalConfig(homeDir, repoPath, { scope: 'project', projectRoot, dataHome });
+    const { excludeDeliveredFolders } = await import('../git-exclude-delivered.js');
+    await excludeDeliveredFolders(localConfig, copies);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: makeTeamConfig({ toolPaths: {} }) });
+
+    await uninstall({ force: true });
+
+    expect([await fse.pathExists(copies), await fse.readFile(excludeFile, 'utf8')]).toEqual([false, '# my own\nscratch/\n']);
+  });
+
   it('previews the delivered folders of a single-repo worktree by what they are, whatever their type (#1787)', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     const projectRoot = path.join(tmpDir, 'business-repo');

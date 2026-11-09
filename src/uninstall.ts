@@ -59,6 +59,7 @@ import { isLegacyCursorRuleFile, keptLegacyCopiesWarning, ruleStemFromFilename, 
 import { agentStemFromFilename } from './resources/agent-format.js';
 import { resolveDocsDestination } from './resources/docs.js';
 import { DeliveredFolders } from './resources/delivered-folders.js';
+import { RuleFolders } from './resources/rule-folders.js';
 import { listTeamAgentDirs, ownsAgentCopy, updateJoycodeAgentIndex } from './resources/agents.js';
 import { RulesHandler, inlineRulesLabelOf, inlineRulesLocationOf, isLegacyLayoutCopy, ownsRuleCopy } from './resources/rules.js';
 import { deliveredHashes, projectCheckouts, syncDeliveredGitExclude } from './pull.js';
@@ -1548,6 +1549,9 @@ async function buildRemovalPlan(
   // Read before anything is deleted: what the projects still set up need stays.
   const projectsKept = includeShared && globalAdapters ? await keptForProjects() : { projects: [], paths: [] };
 
+  // The worktree's .teamai/delivered/ (#1787): a single-repo scope's delivered folders, or a remote team's rule folder copies.
+  const worktreeDelivered = isSelfMode(localConfig) ? DeliveredFolders.root(localConfig) : RuleFolders.copyRootOf(localConfig);
+
   const plan: RemovalPlan = {
     sharedRetentionOnly: false,
     hookFiles: [],
@@ -1559,9 +1563,8 @@ async function buildRemovalPlan(
     piHookFiles: [],
     dshHookFile: null,
     bridgedTeamHookFiles: [],
-    // A full uninstall only: every tool's team hooks ran from them.
-    deliveredFolderDirs: !agentFilter && isSelfMode(localConfig) && await pathExists(DeliveredFolders.root(localConfig))
-      ? [DeliveredFolders.root(localConfig)] : [],
+    // A full uninstall only: every tool's team hooks and rules read them.
+    deliveredFolderDirs: !agentFilter && worktreeDelivered !== null && await pathExists(worktreeDelivered) ? [worktreeDelivered] : [],
     hookManifestPath: hookTargets[0].manifestPath,
     teamHookHistory: hookHistory,
     claudeMdFiles: [],
@@ -2783,11 +2786,11 @@ async function executeRemoval(
     }
   }
 
-  // The folders a single-repo worktree's team hooks ran from, now that no entry names them (#1787).
+  // The folders the worktree's team hooks, rules and MCP servers read, now that nothing names them (#1787).
   for (const dir of plan.deliveredFolderDirs) {
     try {
       await remove(dir);
-      log.success(`Removed the team hook folders delivered in ${dir}`);
+      log.success(`Removed the team folders delivered in ${dir}`);
     } catch (e) {
       log.warn(`Failed to remove ${dir}: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -3490,7 +3493,6 @@ async function withdrawRuleFolderGrants(localConfig: LocalConfig, tool: string |
   const only = tool && isToolId(tool) ? path.join(toolHome(tool), 'settings.json') : null;
 
   if (tool && only === null) return [];
-  const { RuleFolders } = await import('./resources/rule-folders.js');
   const left: string[] = [];
 
   for (const { ruleFolderGrants } of Object.values((await loadStateForScope(localConfig)).lastPullByWorkspace ?? {})) {
