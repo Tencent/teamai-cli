@@ -4,7 +4,7 @@ import { parseYaml } from '../utils/yaml.js';
 import { ResourceHandler } from './base.js';
 import type { HookDef, JsonValue, LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
 import { TEAMAI_CUSTOM_HOOK_PREFIX, areTeamHooksDisabled, getHooksSharing, isSelfMode } from '../types.js';
-import { pathExists } from '../utils/fs.js';
+import { listDirs, pathExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { warnOnce } from '../utils/warn-once.js';
 import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.js';
@@ -465,19 +465,35 @@ export async function resolveTeamHooks(
 }
 
 /**
- * Deliver the folders the resolved team hooks run from, recorded in the scope's delivery record, then, with `prune`,
- * remove the scope's hook folders the team dropped (#1787, common rule 9). Throws when a folder cannot be written; the
- * caller then keeps the installed team hooks, whose folders are left as they were.
+ * Deliver the folders the resolved team hooks run from, recorded in the scope's delivery record (#1787, common rule 9),
+ * before any entry names them. Throws when a folder cannot be written; the caller then keeps the installed team hooks,
+ * whose folders are left as they were.
  */
-export async function deliverHookFolders(
-  localConfig: LocalConfig,
-  folders: readonly FolderDelivery[],
-  opts: { readonly prune: boolean },
-): Promise<void> {
+export async function deliverHookFolders(localConfig: LocalConfig, folders: readonly FolderDelivery[]): Promise<void> {
   const { editDeliveryRecord } = await import('../pull.js');
   const record = await editDeliveryRecord(localConfig);
 
-  await DeliveredFolders.sync({ localConfig, type: 'hooks', folders, ledger: record.ledger, prune: opts.prune });
+  await DeliveredFolders.sync({ localConfig, type: 'hooks', folders, ledger: record.ledger, prune: false });
+  await record.save();
+}
+
+/**
+ * Remove the scope's hook folders that neither `folders` nor an installed entry runs from, once every tool's entries are
+ * written. The folder of each hook in `installed` stays: an entry pull left as it was, such as one of a tool the member
+ * excluded or one it could not write, still runs from there.
+ */
+export async function pruneHookFolders(localConfig: LocalConfig, folders: readonly FolderDelivery[], installed: ReadonlySet<string>): Promise<void> {
+  const { editDeliveryRecord } = await import('../pull.js');
+  const record = await editDeliveryRecord(localConfig);
+  // A hook's record names no namespace: its folder sits at the root, or in a namespace directory.
+  const namespaces = await listDirs(path.join(DeliveredFolders.root(localConfig, 'hooks'), 'hooks'));
+
+  const keep = [
+    ...folders.map(({ dest }) => dest),
+    ...[...installed].flatMap((name) => [null, ...namespaces].map((namespace) => DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace, name }))),
+  ];
+
+  await DeliveredFolders.prune({ localConfig, type: 'hooks', keep, ledger: record.ledger });
   await record.save();
 }
 

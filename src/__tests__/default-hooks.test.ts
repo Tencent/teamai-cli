@@ -63,7 +63,7 @@ describe('a team replacement of a default hook', () => {
     await fse.outputFile(path.join(dir, 'message.md'), '[acme] Plan made: read the team runbook before you start.\n');
 
     const resolved = await resolveTeamHooks(TeamaiConfigSchema.parse({ team: 'acme', repo: member.repo.remote }), member, { silent: true });
-    await deliverHookFolders(member, resolved.ok ? resolved.folders : [], { prune: true });
+    await deliverHookFolders(member, resolved.ok ? resolved.folders : []);
     const todoWrite = buildHandlerRegistry().find(({ handler }) => handler.name === 'todowrite-hint');
     const output = await todoWrite?.handler.execute({ session_id: 'replacement-session', tool_name: 'TodoWrite' }, 'claude', member);
     const context = typeof output === 'string' ? (JSON.parse(output) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext : output;

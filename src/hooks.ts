@@ -43,7 +43,7 @@ import { builtinHookDefs, applyBuiltinOverride, getCodebuddyTeamHookDispatchComm
 import { encodeCodebuddyProjectGate, isCodebuddyTeamGateForProject, parseCodebuddyTeamGate, regateCodebuddyTeamHookCommand } from './codebuddy-team-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { DeliveredFolders } from './resources/delivered-folders.js';
-import { deliverHookFolders, historicalFolderHookDef, parseTeamHooks, readBuiltinOverride, resolveTeamHooks, teamHookToDef } from './resources/hooks.js';
+import { deliverHookFolders, historicalFolderHookDef, pruneHookFolders, parseTeamHooks, readBuiltinOverride, resolveTeamHooks, teamHookToDef } from './resources/hooks.js';
 import { entryLayout } from './namespaced-entries.js';
 import { historicalContents } from './utils/team-history.js';
 import { getUserHome } from './utils/home.js';
@@ -5027,10 +5027,14 @@ export async function reconcileTeamHooksForConfig(
 
   // The folders team hooks run from, before any entry names them (#1787). A workspace that holds a hook back keeps
   // what it has installed, so its folders stay too. A folder that cannot be written keeps the installed team hooks.
+  // The folders no entry runs from go once every tool's entries are written (below).
+  let pruneFolders = resolved.ok && !heldTeamHookIds?.length;
+
   if (resolved.ok) {
     try {
-      await deliverHookFolders(localConfig, resolved.folders, { prune: !heldTeamHookIds?.length });
+      await deliverHookFolders(localConfig, resolved.folders);
     } catch (e) {
+      pruneFolders = false;
       log.warn(`Team hook folders could not be delivered: ${e instanceof Error ? e.message : String(e)}. `
         + 'Team hooks were not applied this run, so your installed team hooks are unchanged. Run teamai pull again.');
       builtinsOnly = 'with-overrides';
@@ -5159,6 +5163,15 @@ export async function reconcileTeamHooksForConfig(
   // The pre-#370 import and the sweep above may have emptied the old index.
   await migrateLegacyManagedHooks(localConfig);
 
+  if (pruneFolders) {
+    try {
+      await pruneHookFolders(localConfig, resolved.ok ? resolved.folders : [], await installedTeamHookIds(localConfig, manifestPath));
+    } catch (e) {
+      log.warn(`Team hook folders no hook runs from any more could not be removed: ${e instanceof Error ? e.message : String(e)}. `
+        + 'Your team hooks are applied; the next teamai pull removes those folders.');
+    }
+  }
+
   // Last, so a repository whose hooks cannot be written still gets the agent
   // hooks above; the error then reaches the caller.
   if (!opts.removeAll) await installProjectGitHook(localConfig);
@@ -5167,6 +5180,29 @@ export async function reconcileTeamHooksForConfig(
   if (builtinsOnly) return { ok: false, builtins: builtinsOnly, ...failed };
 
   return { ok: true, defs: teamDefs, ...failed };
+}
+
+/**
+ * The team hooks an installed entry runs after a reconcile, by id: every record of the manifests `localConfig`'s tools
+ * keep their team hooks in, `manifestPath` among them. A tool the member excluded, or one whose file could not be
+ * written, keeps its records with its entries.
+ */
+async function installedTeamHookIds(localConfig: LocalConfig, manifestPath: string): Promise<Set<string>> {
+  const manifests = new Set([manifestPath, path.join(getDataHome(localConfig), 'managed-main-checkout-hooks.json')]);
+
+  if (localConfig.scope !== 'project' || localConfig.projectRoot) manifests.add(getManagedHooksPath(localConfig));
+  const ids = new Set<string>();
+
+  for (const file of manifests) {
+    // The main checkout's manifest also lists its checkouts, under `checkouts`.
+    for (const [key, records] of Object.entries(await readManifest(file))) {
+      if (key === 'checkouts' || !Array.isArray(records)) continue;
+
+      for (const record of records) ids.add(record.id);
+    }
+  }
+
+  return ids;
 }
 
 /**

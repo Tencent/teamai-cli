@@ -101,6 +101,17 @@ describe('a team hook folder in the user scope', () => {
 
     expect([await fse.pathExists(path.join(home, '.teamai', 'hooks', 'block-secrets')), await claudeCommands('PreToolUse')]).toEqual([false, []]);
   });
+
+  it('stays, once the team repo drops it, while a tool the member excluded keeps the entry that runs it', async () => {
+    await write({ 'hooks/block-secrets/HOOK.yaml': BLOCK_SECRETS, 'hooks/block-secrets/scan.sh': 'echo v1\n' });
+    await reconcileTeamHooksForConfig(teamConfig, member());
+    const installed = await claudeCommands('PreToolUse');
+
+    await fse.remove(path.join(repo, 'hooks', 'block-secrets'));
+    await reconcileTeamHooksForConfig(teamConfig, { ...member(), disabledAgents: ['claude', 'tclaude'] });
+
+    expect([await claudeCommands('PreToolUse'), await fse.readFile(path.join(home, '.teamai', 'hooks', 'block-secrets', 'scan.sh'), 'utf8')]).toEqual([installed, 'echo v1\n']);
+  });
 });
 
 describe('the team hook history', () => {
