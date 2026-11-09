@@ -45,7 +45,7 @@ import { isModelAlias, loadTeamModelAliases, noModelCause, resolveAgentModel, re
 import { parseAgentYaml, type AgentSpec, type ToolName } from './resources/agent-format.js';
 import { hooksEntryReader, parseTeamHooks } from './resources/hooks.js';
 import { mcpEntryReader } from './resources/mcp.js';
-import type { EntryPlaceReader } from './namespaced-entries.js';
+import { readEntryFileText, type EntryPlaceReader } from './namespaced-entries.js';
 import { getHandler } from './resources/index.js';
 import { listRepoFilesRecursive } from './resources/repo-resource.js';
 import { RESOURCE_LAYOUTS, Resources } from './resources/resolver.js';
@@ -319,7 +319,9 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
         });
 
         if (path.posix.basename(file) === 'hooks.yaml') {
-          const hooks = parseTeamHooks(await fse.readFile(absolutePath, 'utf8').catch(() => ''));
+          // A file that cannot be read has no entries here; placeFindings fails it as pull's reader does.
+          const text = await readEntryFileText(absolutePath, relativePath);
+          const hooks = text.ok && text.text !== null ? parseTeamHooks(text.text) : null;
 
           if (hooks !== null && hooks.length > 0) {
             for (const hook of hooks) {
