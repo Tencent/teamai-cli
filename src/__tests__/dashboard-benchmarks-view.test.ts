@@ -182,6 +182,23 @@ describe('the Benchmarks page of a suite with covered assets (#1605)', () => {
     expect(html).toContain('teamai:routing:dev:auth-tokens');
   });
 
+  it('says on Compare and under the asset effect how many pairs another judge left out, and why, in en and zh-CN', async () => {
+    const OPUS = { by: 'judge' as const, rubric: 'r', tool: 'claude', model: 'claude-opus-5-5', batched: true };
+    const run = coveredRun();
+    run.benchmark.trials = run.benchmark.trials.map((trial) => ({
+      ...trial,
+      verdicts: [{ scorer: `teamai:correctness:${trial.task}`, outcome: { kind: 'labelled' as const, label: trial.result, score: trial.result === 'passed' ? 1 : 0, passed: trial.result === 'passed' },
+        decider: trial.arm === 'no-tokens' && trial.task === 'login-copy' ? { ...OPUS, model: 'claude-sonnet-5-5' } : OPUS }],
+    }));
+
+    const en = text(await renderPage([run], { view: 'compare' }));
+    const zh = text(await renderPage([run], { view: 'compare', language: 'zh-CN' }));
+
+    expect(en).toContain('1 paired trial · 1 excluded: their judge changed (claude claude-sonnet-5-5 → claude claude-opus-5-5)');
+    expect(en.match(/1 excluded: their judge changed \(claude claude-sonnet-5-5 → claude claude-opus-5-5\)/g)).toHaveLength(2);
+    expect(zh).toContain('1 已排除: 评判器已改变 (claude claude-sonnet-5-5 → claude claude-opus-5-5)');
+  });
+
   it('keeps every asset label in zh-CN too', async () => {
     const zh = text(await renderPage([coveredRun()], { view: 'compare', language: 'zh-CN' }));
 

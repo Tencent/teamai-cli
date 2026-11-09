@@ -7,6 +7,7 @@ import type { AgentObservation } from '../agent-observation.js';
 import { ROUTING_PREFIX, routingScorerName } from '../scorers/skill-routing.js';
 import { definedFields } from '../utils/defined-fields.js';
 import { compareAgent } from './agent-match.js';
+import { compareTrials, formatExcluded, splitPairs, type ExcludedPairs } from './pairing.js';
 import { TRIAL_RESULTS, type Baseline, type BenchmarkRecord, type TrialResult } from './result.js';
 import type { SkillChanges } from './terms.js';
 
@@ -297,8 +298,11 @@ export function formatAssetEffect(effect: AssetEffect): string {
     line.separated ? `95% ${formatBound(line.difference.low)} to ${formatBound(line.difference.high)} pp` : 'not separated',
   ].join('   '));
 
+  const compared = effect.rows.reduce((sum, row) => sum + (row.without?.planned ?? 0), 0);
+
   const lines = [
     [['task', 'covers', 'passed without', 'passed with', 'loaded with'].join('   '), ...rows.map((cells) => cells.join('   '))].join('\n'),
+    effect.excluded === undefined ? undefined : `${compared} comparable ${compared === 1 ? 'pair' : 'pairs'}; ${formatExcluded(effect.excluded)}`,
     [split('tasks that cover it', effect.coversDifference), split('other tasks', effect.othersDifference)].filter((line) => line !== undefined).join('\n'),
     effect.skill !== undefined
       ? `passed when loaded ${effect.passedWhenLoaded ? `${effect.passedWhenLoaded.passed}/${effect.passedWhenLoaded.planned}` : '-'} · passed when not loaded ${effect.passedWhenNotLoaded ? `${effect.passedWhenNotLoaded.passed}/${effect.passedWhenNotLoaded.planned}` : '-'}`
@@ -514,6 +518,8 @@ export interface AssetEffect {
   /** For a skill, over the `with` arm's trials: how many passed when it loaded and when it did not. */
   passedWhenLoaded?: PassRate;
   passedWhenNotLoaded?: PassRate;
+  /** The pairs `compareTrials` left out of the rows and splits, by why; absent when none was. */
+  excluded?: ExcludedPairs[];
 }
 
 /**
@@ -554,17 +560,22 @@ export function assetEffects(record: BenchmarkTableInput): AssetEffect[] {
 
       const own = (arm: string | undefined, task: string): RecordedTrial[] => (arm === undefined ? [] : trials.filter((trial) => trial.arm === arm && trial.task === task));
 
-      // The pair's trials of one task, paired by repetition; a trial whose pair did not run counts in no pair.
-      const paired = (task: string): Array<[RecordedTrial, RecordedTrial]> => {
+      // The pair's trials of one task, paired by repetition; a trial whose pair did not run counts in no pair, and a
+      // pair compareTrials excludes counts only in `excluded`.
+      const candidates = (task: string) => {
         const to = new Map(own(has?.name, task).map((trial) => [trial.repetition, trial]));
 
         return own(without?.name, task).flatMap((trial) => {
           const other = to.get(trial.repetition);
+          const comparison = other && compareTrials({ from: trial, fromTasks: tasks, to: other, toTasks: tasks });
 
           // SAFETY: `other` comes from the same `trials` array, so the pair is two of its entries in repetition order.
-          return other !== undefined ? [[trial, other] as [RecordedTrial, RecordedTrial]] : [];
+          return other !== undefined && comparison ? [{ pair: [trial, other] as [RecordedTrial, RecordedTrial], comparison }] : [];
         });
       };
+
+      const paired = (task: string): Array<[RecordedTrial, RecordedTrial]> => splitPairs(candidates(task)).compared;
+      const { excluded } = splitPairs(tasks.flatMap(({ id }) => candidates(id)));
 
       const rows: AssetEffectRow[] = tasks.flatMap(({ id, covers }): AssetEffectRow[] => {
         const covered = covers?.includes(path) ?? false;
@@ -617,6 +628,7 @@ export function assetEffects(record: BenchmarkTableInput): AssetEffect[] {
         path, without: without?.name, has: has?.name, tool: (without ?? has)?.tool ?? '', skill, routingScorer: skill === undefined ? undefined : routingScorerName({ name: skill, ...skillNamespaceOf(path) }),
         rows, coversDifference: split(true), othersDifference: split(false),
         passedWhenLoaded: whenLoaded(true), passedWhenNotLoaded: whenLoaded(false),
+        excluded: excluded.length > 0 ? excluded : undefined,
       });
 
       effects.push(...effect.rows.length > 0 ? [effect] : []);

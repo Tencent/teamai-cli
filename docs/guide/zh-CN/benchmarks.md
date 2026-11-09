@@ -725,7 +725,7 @@ $ teamai benchmark run fix-auth --sandbox
 $ teamai benchmark run fix-auth --sandbox --task expired-token --arm claude --arm strong
 ```
 
-这次运行包含 `expired-token` 的基线，以及 `claude` 和 `strong` 在它上面的 trial，它的记录和表格只列出这些。之后 `--fail-on-regression` 只把它与任务和 arm 都相同的运行比较。只要套件有一次运行了全部任务和 arm 的运行，Dashboard 就绝不会把这样的运行当作套件的当前版本。套件没有的名字会在任何运行开始之前被拒绝：
+这次运行包含 `expired-token` 的基线，以及 `claude` 和 `strong` 在它上面的 trial，它的记录和表格只列出这些。之后 `--fail-on-regression` 只把它与 arm 相同的运行比较。只要套件有一次运行了全部任务和 arm 的运行，Dashboard 就绝不会把这样的运行当作套件的当前版本。套件没有的名字会在任何运行开始之前被拒绝：
 
 ```console
 $ teamai benchmark run fix-auth --sandbox --task expierd-token
@@ -986,6 +986,8 @@ passed when loaded 6/6 · passed when not loaded 2/3
 
 `loaded with` 用的是[路由](scorers.md#skill-路由)打分器在已结束会话上读的值，只是改由任务而非评判器判定：`fit` 加载了且任务覆盖它，`missed` 没加载但任务覆盖它，`extra` 加载了但任务不覆盖它，`idle` 没加载也不覆盖，`unknown` 是工具不报告 skill 加载——`unknown` 的 trial 仍计入通过率，但不计入"加载时"或"未加载时"。只有 skill 有这一列：teamai 只观察 skill 加载，规则、`claudemd/` 文件、文档或整个命名空间目录都读作 `not observed`。在 dashboard 的[基准测试页面](dashboard.md#基准测试benchmarks)，Compare 页签在配对之下显示这些表（没有可比的两个 arm 时单独显示），skill 还会链接到它在真实会话上的 `teamai:routing:...` 计数。
 
+只有两边由同一方判定时，一对 trial 才计入，规则见[回归时失败](#回归时失败)。因此，如果一次运行中评判器对某些 trial 报告了另一个模型，表格会说明它排除了什么：`2 comparable pairs; 1 excluded: their judge changed (claude claude-opus-5-5 → claude claude-sonnet-5-5)`。
+
 `not separated` 是一个答案，不是失败：配对差异的 95% 区间穿过零，这些 trial 无法把差异与偶然区分开。一条规则通常只影响少数任务——增加覆盖它的任务或重复次数，直到区间离开零。去掉多个路径的 arm 没有单资产表：它的差异属于整个集合，Compare 已经显示。`plan` 会拒绝没有任何 arm 收到的覆盖路径（每个 arm 按其团队修订、role 以及去掉的路径来读），以及两个同名的覆盖 skill 路径，因为 trial 的加载记录只有裸名。
 
 结果不是运行的状态：所有 trial 都失败的运行仍然成功。运行只在超时或被取消时失败。
@@ -1003,13 +1005,31 @@ $ jq -c .data.done.finally done.json
 [{"id":"regression","outcome":"failed"}]
 ```
 
-`--fail-on-regression` 把这次运行与该套件最新的一次更早的运行比较，那次运行必须已成功、已发布在 `teamai-reports` 上，任务和 arm 相同，并且记录版本相同。名字、工具、模型、effort、工作流和团队处理方式都相同的 arm 就是同一个 arm，无论它 pull 到的是哪个修订。trial 按任务和重复次数配对，就像 Dashboard 的 Compare 那样配对，某个 arm 的通过率下降超出偶然范围时，这个 arm 就算下降了。仍在本机等待的记录不参与比较。
+`--fail-on-regression` 把这次运行与该套件最新的一次更早的运行比较，那次运行必须已成功、已发布在 `teamai-reports` 上，arm 相同，并且记录版本相同。名字、工具、模型、effort、工作流和团队处理方式都相同的 arm 就是同一个 arm，无论它 pull 到的是哪个修订。trial 按任务和重复次数配对，只有两边由同一方判定时这一对才计入，就像 Dashboard 的 Compare 那样配对。第一条匹配的规则决定：
+
+| # | 配对 | 是否比较 |
+| --- | --- | --- |
+| 1 | 两次运行之间任务文件改动了 | 否 |
+| 2 | 两边都由评判器判定，且它的评分标准、工具、模型、effort 或是否批量评判不同 | 否 |
+| 3 | 其他情况：两边都由 check 判定、一边由 check 一边由评判器判定（同时有 check 和 `successCriteria` 的任务，其 check 结果翻转了：这是 agent 的变化）、同一个评判器，或某一边是 `error`、`not_run` 或 `unscored`（算作未通过） | 是 |
+
+某个 arm 在它参与比较的配对上通过率下降超出偶然范围时，这个 arm 就算下降了；没有任何可比较配对的 arm 不会下降。文本会说明每个 arm 比较了多少对、排除了多少对以及原因。两次运行之间评判器的模型变了时，没有任何配对可比较：
+
+```text
+run rA (Mon)   judge claude, alias judge → claude-opus-5-5     8/9 passed
+   (a member's models/aliases.yaml maps judge to another model on the judging machine)
+run rB (Tue)   judge claude, alias judge → claude-sonnet-5-5   4/9 passed
+Arm claude: 0 comparable pairs against run rA; 9 excluded: their judge changed (claude claude-opus-5-5 → claude claude-sonnet-5-5).
+No arm has a comparable pair against run rA, so --fail-on-regression has nothing to compare with.
+```
+
+仍在本机等待的记录不参与比较。
 
 | `report` 的输出 `regression` | 何时 | `regression` 步骤 |
 | --- | --- | --- |
 | `dropped` | 有 arm 下降。文本会像上面那样逐个指出。 | 运行 `exit 1` 并失败：`benchmark run` 以 1 退出。 |
 | `held` | 没有 arm 下降。文本指出用来比较的那次运行。 | 跳过。 |
-| `no_comparable` | 没有这样的运行。文本会说明。 | 跳过。 |
+| `no_comparable` | 没有这样的运行，或者那次运行中没有任何 arm 有可比较的配对。文本会指出它尝试比较的运行（如果有），以及每对被排除的原因。 | 跳过。 |
 | `off` | `fail_on_regression` 为 `false`：没有比较任何东西。 | 跳过。 |
 
 这个关卡是运行的一个步骤，所以无论谁启动了运行，运行的驱动都会在这里结束它。teamai 的 `teamai-benchmark` 是 `invoke: deny`，所以要用 `--driver local` 启动它：用 `--driver skill` 启动会得到 `invoke_denied`，除非团队的副本设了 `invoke: allow`。用 `"fail_on_regression":true` 执行 `workflow start teamai-benchmark` 会运行同一个关卡。它的退出码跟随运行的结果，而 `finally` 步骤不会改变这个结果，所以要读取 `done.finally`。

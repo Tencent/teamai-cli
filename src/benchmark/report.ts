@@ -15,7 +15,7 @@ import { findAttemptRun } from '../workflow/run-location.js';
 import { runsDir } from '../workflow/store.js';
 import type { LocalConfig } from '../types.js';
 import type { RunState, WorkflowFailure } from '../workflow/types.js';
-import { regressionOf, runComparisons, type ArmComparison, type BenchmarkRunInput, type Regression } from './history.js';
+import { formatRegression, regressionOf, runComparisons, type ArmComparison, type BenchmarkRunInput, type Regression } from './history.js';
 import { BENCHMARK_RECORD_SCHEMA_VERSION, benchmarkRecord, benchmarkRecordFile, unlaunchedTrial, type BenchmarkRunRecord } from './result.js';
 import { planOfRun, trialsUnattended, type RunPlan } from './run-plan.js';
 import { benchmarkTable, formatBenchmarkTable, type AssetEffect, type BenchmarkTable } from './table.js';
@@ -89,7 +89,7 @@ export async function reportBenchmark(env: NodeJS.ProcessEnv, secrets: Record<st
 
   const text = [
     ...asked, ...unlaunchedArms(run, planned.found), formatBenchmarkTable(table), ...(pending ? ['record: pending'] : []),
-    ...(regression === undefined ? [] : [regressionLines(regression, record.suite.name).join('\n')]),
+    ...(regression === undefined ? [] : [formatRegression(regression, record.suite.name).join('\n')]),
   ].join('\n\n');
 
   return { report: { text, table: { ...table, pairs: runComparisons(current), verdicts }, regression: regression?.kind ?? 'off' } };
@@ -103,24 +103,6 @@ async function regressionAgainstPublished(config: LocalConfig, current: Benchmar
   const { publishedBenchmarkRuns } = await import('../dashboard/benchmarks.js');
 
   return regressionOf(current, await publishedBenchmarkRuns(config, { refresh: true }));
-}
-
-function regressionLines(regression: Regression, suite: string): string[] {
-  const points = (fraction: number): number => Math.round(fraction * 100);
-
-  switch (regression.kind) {
-    case 'no_comparable':
-      return [`No earlier succeeded run of suite ${suite} ran the same tasks on the same arms on teamai-reports in a record of this version: recording is off, nothing comparable has been published yet, or the earlier runs ran on a teamai that recorded them another way. --fail-on-regression has nothing to compare with.`];
-    case 'held':
-      return [`No arm's pass rate dropped by more than chance against run ${regression.against}.`];
-    case 'dropped':
-      return regression.arms.map(({ arm, pairs, rates, difference }) => `Arm "${arm}" passed ${rates.to.passed}/${pairs} paired trials, against ${rates.from.passed}/${pairs} in run ${regression.against}: a drop of ${points(-difference.value)} points, with a 95% interval of ${points(difference.low)} to ${points(difference.high)} points.`);
-    default: {
-      const unhandled: never = regression;
-
-      return unhandled;
-    }
-  }
 }
 
 const ASKED_NOTICE = 'Each trial ran with its tool\'s own permission settings, since the step that runs the plan is not a strict sandbox: a tool that may not edit failed its trials. To run them with permissions: unattended, keep requires: { isolation: sandbox, strict: true } on that step.';

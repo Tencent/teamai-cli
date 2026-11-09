@@ -28,6 +28,9 @@ const armSetup=a=>a.tool+(a.model?' · '+a.model:'')+(a.effort?' · '+a.effort:'
 const armConfig=a=>(a.role?roleText(a)+' · ':'')+armSetup(a);
 const armTitle=a=>a.arm+' ('+armConfig(a)+')';
 const swatch=i=>'<i class="swatch" style="background:'+armColor(i)+'"></i>';
+// The pairs a comparison left out, by why, as the CLI's formatExcluded names a judge: its tool and model, then its effort.
+const judgeName=j=>j.tool+' '+(j.model||t('an unreported model'))+(j.effort?' '+j.effort:'');
+const excludedText=list=>list.map(x=>number(x.pairs)+' '+t('excluded')+': '+(x.because.kind==='task_changed'?t('their task changed'):t('their judge changed')+' ('+judgeName(x.because.from)+' → '+judgeName(x.because.to)+')')).join(' · ');
 // An arm named after its role carries a role marker beside its name, not the same word again under it.
 function armName(a,i){ return swatch(i)+'<span data-verbatim>'+e(a.arm)+'</span>'+(a.role===a.arm?' <span class="role-of">'+label('role')+'</span>':a.role?'<span class="arm-role" data-verbatim>'+e(roleText(a))+'</span>':'')+'<small data-verbatim>'+e(armSetup(a))+'</small>'; }
 function heat(rate){ return rate==null?'':'background:color-mix(in oklab,color-mix(in oklab,var(--green) '+Math.round(rate*100)+'%,var(--error)) '+Math.round(30+Math.abs(rate-0.5)*80)+'%,var(--panel))'; }
@@ -261,7 +264,7 @@ function compareKpis(sel,c){
   :kpiCard(label('Median tokens per trial'),hasTokens?change(tokens[0],tokens[1]):'—',hasTokens?number(Math.round(tokens[0]))+' → '+number(Math.round(tokens[1])):label('Not every arm reported it'));
  return '<div class="kpis bench-kpis">'
   +kpiCard('<span data-verbatim>'+e(sideName(sel,c.from,c.dimension))+' → '+e(sideName(sel,c.to,c.dimension))+'</span>','<span class="'+diffClass(d)+'">'+pp(d.value)+'</span>','95% '+pp(d.low)+' '+label('to')+' '+pp(d.high)+(diffClass(d)==='amber'?' · <b class="amber">'+label('not separated')+'</b>':''))
-  +kpiCard(label('Pass rate'),'<span class="kpi-fit">'+pct(passOf(c.rates.from))+' → '+pct(passOf(c.rates.to))+'</span>',number(c.pairs)+' '+label(c.pairs===1?'paired trial':'paired trials'))
+  +kpiCard(label('Pass rate'),'<span class="kpi-fit">'+pct(passOf(c.rates.from))+' → '+pct(passOf(c.rates.to))+'</span>',number(c.pairs)+' '+label(c.pairs===1?'paired trial':'paired trials')+(c.excluded?' · '+e(excludedText(c.excluded)):''))
   +third
   +kpiCard(label('Tasks'),number(up)+' <span class="up">↑</span> · '+number(down)+' <span class="down">↓</span> · '+number(c.tasks.length-up-down)+' =',label('pass rate on each task, against the arm it is measured from'))
   +'</div>';
@@ -318,6 +321,7 @@ function assetPanel(sel,chosen){
    +'<pre class="asset-table" data-verbatim>'+e([[label('task'),label('covers'),label('passed without'),label('passed with'),label('loaded with')].join('   '),...a.rows.map(r=>[r.task,r.covers?label('yes'):label('no'),rate(r.without),rate(r.with),r.loaded===undefined?label('not observed'):loads(r.loaded)].join('   '))].join('\\n'))
    +(a.coversDifference||a.othersDifference?'\\n'+e([split(label('tasks that cover it'),a.coversDifference),split(label('other tasks'),a.othersDifference)].filter(Boolean).join('\\n')):'')
    +(a.passedWhenLoaded||a.passedWhenNotLoaded?'\\n'+e(label('passed when loaded')+' '+rate(a.passedWhenLoaded)+' · '+label('passed when not loaded')+' '+rate(a.passedWhenNotLoaded)):'')
+   +(a.excluded?'\\n'+e(excludedText(a.excluded)):'')
    +'</pre>'
    +(a.routingScorer&&sel.latest&&sel.latest.table&&sel.latest.table.routing?'<p class="scorer-hint">'+e(a.path)+' <a href="#scorers">'+e(a.routingScorer)+'</a> · '+label('its routing question\\'s counts on real sessions, over the same window')+'</p>':'')
    +'</div>').join('')+'</section>';

@@ -725,7 +725,7 @@ A start that cannot run refuses with a message that says what to do, and makes n
 $ teamai benchmark run fix-auth --sandbox --task expired-token --arm claude --arm strong
 ```
 
-The run has the baseline of `expired-token` and the trials of `claude` and `strong` on it, and its record and table list only them. `--fail-on-regression` then compares it only with a run of the same tasks and arms. The dashboard never takes such a run as the suite's current version while the suite has a run of all its tasks and arms. A name the suite does not have is refused before any run starts:
+The run has the baseline of `expired-token` and the trials of `claude` and `strong` on it, and its record and table list only them. `--fail-on-regression` then compares it only with a run of the same arms. The dashboard never takes such a run as the suite's current version while the suite has a run of all its tasks and arms. A name the suite does not have is refused before any run starts:
 
 ```console
 $ teamai benchmark run fix-auth --sandbox --task expierd-token
@@ -986,6 +986,8 @@ Read it as:
 
 `loaded with` uses the [routing](scorers.md#skill-routing) values a finished session's scorer reads, from the task instead of a judge: `fit` loaded and the task covers it, `missed` not loaded and it does, `extra` loaded and it does not, `idle` not loaded and it does not, and `unknown` when the tool reports no skill loads — an `unknown` trial still counts in the pass rates, in neither "when loaded" nor "when not loaded". Only skills have the column: teamai observes skill loads and nothing else, so a rule, a `claudemd/` file, a doc or a namespace directory reads `not observed`. On the dashboard's [Benchmarks page](dashboard.md#benchmarks), the Compare tab shows the tables under the pair, or on their own when no two arms compare, and a skill links to its `teamai:routing:...` counts on real sessions.
 
+A pair of trials counts only when the same thing decided both, by the rules [Fail on a regression](#fail-on-a-regression) lists, so a table of a run whose judge reported another model for some trials says what it left out: `2 comparable pairs; 1 excluded: their judge changed (claude claude-opus-5-5 → claude claude-sonnet-5-5)`.
+
 `not separated` is an answer, not a failure: the 95% interval of the paired difference crosses zero, so these trials cannot tell the difference from chance. A single rule usually moves a few tasks — add tasks that cover it, or repetitions, until the interval leaves zero. An arm that leaves out more than one path gets no per-asset table: its difference belongs to the set, which Compare already shows. `plan` refuses a covered path no arm receives, each arm read at its team revision, with its role and without the paths it leaves out, and two covered skill paths of the same skill name, since a trial's loads are bare names.
 
 The results are not the run's status: a run whose trials all failed still succeeds. The run fails when it times out or is cancelled.
@@ -1003,13 +1005,31 @@ $ jq -c .data.done.finally done.json
 [{"id":"regression","outcome":"failed"}]
 ```
 
-`--fail-on-regression` compares this run with the newest earlier run of the suite that succeeded and is published on `teamai-reports` with the same tasks and arms, in a record of the same version. An arm is the same when its name, tool, model, effort, workflow and team treatment are, whatever revision it pulled. Trials pair by task and repetition, as the dashboard's Compare pairs them, and an arm dropped when its pass rate dropped by more than chance. Records still waiting on this machine are not compared.
+`--fail-on-regression` compares this run with the newest earlier run of the suite that succeeded and is published on `teamai-reports` with the same arms, in a record of the same version. An arm is the same when its name, tool, model, effort, workflow and team treatment are, whatever revision it pulled. Trials pair by task and repetition, and a pair counts only when the same thing decided both, as the dashboard's Compare pairs them. The first row that matches decides:
+
+| # | Pair | Compared |
+| --- | --- | --- |
+| 1 | The task's file changed between the runs | No |
+| 2 | Both decided by a judge, and its rubric, tool, model, effort or batching differs | No |
+| 3 | Anything else: both by the check, one by the check and one by a judge (a task with a check and `successCriteria` whose check flipped: a change in the agent), the same judge, or a side `error`, `not_run` or `unscored`, which counts as not passed | Yes |
+
+An arm dropped when its pass rate over its compared pairs dropped by more than chance; an arm with no compared pair cannot drop. The text says how many pairs each arm compared and how many it excluded, and why. When a judge's model changed between two runs, no pair compares:
+
+```text
+run rA (Mon)   judge claude, alias judge → claude-opus-5-5     8/9 passed
+   (a member's models/aliases.yaml maps judge to another model on the judging machine)
+run rB (Tue)   judge claude, alias judge → claude-sonnet-5-5   4/9 passed
+Arm claude: 0 comparable pairs against run rA; 9 excluded: their judge changed (claude claude-opus-5-5 → claude claude-sonnet-5-5).
+No arm has a comparable pair against run rA, so --fail-on-regression has nothing to compare with.
+```
+
+Records still waiting on this machine are not compared.
 
 | `report` output `regression` | When | The `regression` step |
 | --- | --- | --- |
 | `dropped` | An arm dropped. The text names each one, as above. | Runs `exit 1` and fails: `benchmark run` exits 1. |
 | `held` | No arm dropped. The text names the run it compared with. | Skipped. |
-| `no_comparable` | No such run. The text says so. | Skipped. |
+| `no_comparable` | No such run, or no arm of it has a compared pair. The text names the run it tried, if any, and why each pair was excluded. | Skipped. |
 | `off` | `fail_on_regression` is `false`: nothing was compared. | Skipped. |
 
 The gate is a step of the run, so the run's driver ends it there whoever started it. teamai's `teamai-benchmark` is `invoke: deny`, so start it with `--driver local`: a `--driver skill` start answers `invoke_denied`, unless your team's copy sets `invoke: allow`. `workflow start teamai-benchmark` with `"fail_on_regression":true` runs the same gate. Its exit code follows the run's outcome, which a `finally` step does not change, so read `done.finally`.

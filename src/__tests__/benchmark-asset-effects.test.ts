@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BenchmarkRecord, TrialResult } from '../benchmark/result.js';
+import type { TrialVerdict } from '../benchmark/verdicts.js';
 import { assetEffects, benchmarkTable, formatBenchmarkTable, type AssetEffect } from '../benchmark/table.js';
 
 const RUN_TEAM = 't'.repeat(40);
@@ -10,6 +11,8 @@ type TrialSpec = {
   arm: string;
   result?: TrialResult;
   routing?: Record<string, 'fit' | 'idle' | 'extra' | 'missed' | 'unknown'>;
+  /** Who decided the trial's correctness label; no verdicts when absent. */
+  decider?: NonNullable<TrialVerdict['decider']>;
 };
 
 /** A record of the migrations example: two tasks that cover the skill and the rule, one that covers neither. */
@@ -34,6 +37,7 @@ function migrationsRecord(trials: TrialSpec[], arms?: BenchmarkRecord['arms']): 
         task: trial.task, arm: trial.arm, repetition: Math.floor(index / 2) + 1, order: index + 1,
         step: `r${Math.floor(index / 2) + 1}.${trial.task}.${trial.arm}.prompt`, result: trial.result ?? 'passed',
         ...(trial.routing ? { routing: trial.routing } : {}),
+        ...(trial.decider ? { verdicts: [{ scorer: `teamai:correctness:${trial.task}`, outcome: { kind: 'labelled' as const, label: trial.result ?? 'passed', score: trial.result === 'failed' ? 0 : 1, passed: trial.result !== 'failed' }, decider: trial.decider }] } : {}),
       })),
     },
   };
@@ -80,6 +84,27 @@ describe('asset effects', () => {
     expect(migrations.coversDifference).toMatchObject({ from: { passed: 1, planned: 2 }, to: { passed: 2, planned: 2 } });
     expect(migrations.othersDifference).toMatchObject({ from: { passed: 1, planned: 1 }, to: { passed: 1, planned: 1 }, difference: { value: 0 } });
     expect(migrations.othersDifference?.separated).toBe(false);
+  });
+
+  it('leaves out of the rows and splits a pair another model judged, and prints how many it left out and why', () => {
+    const OPUS = { by: 'judge', rubric: 'rubric-a', tool: 'claude', model: 'claude-opus-5-5', batched: true } as const;
+    const judged = paired({ 'no-migrations': ['f', 'p', 'p'], pulled: ['p', 'p', 'p'] }).map((trial) => ({ ...trial, decider: trial.task === 'add-column' && trial.arm === 'pulled' ? { ...OPUS, model: 'claude-sonnet-5-5' } : OPUS }));
+
+    const [migrations] = assetEffects(migrationsRecord(judged));
+
+    expect(migrations.excluded).toEqual([{ pairs: 1, because: { kind: 'judge_changed', from: OPUS, to: { ...OPUS, model: 'claude-sonnet-5-5' } } }]);
+    expect(migrations.rows[0]).toMatchObject({ task: 'add-column', without: undefined, with: { passed: 1, planned: 1 } });
+    expect(migrations.coversDifference).toMatchObject({ from: { passed: 1, planned: 1 }, to: { passed: 1, planned: 1 } });
+    expect(formatBenchmarkTable(benchmarkTable(migrationsRecord(judged)))).toContain('2 comparable pairs; 1 excluded: their judge changed (claude claude-opus-5-5 → claude claude-sonnet-5-5)');
+  });
+
+  it('compares a pair the check decided on one arm and the judge on the other', () => {
+    const judged = paired({ 'no-migrations': ['f', 'p', 'p'], pulled: ['p', 'p', 'p'] }).map((trial) => ({ ...trial, decider: trial.arm === 'pulled' ? { by: 'check' as const, task: 'h' } : { by: 'judge' as const, rubric: 'r', tool: 'claude', batched: true } }));
+
+    const [migrations] = assetEffects(migrationsRecord(judged));
+
+    expect(migrations).not.toHaveProperty('excluded');
+    expect(migrations.coversDifference).toMatchObject({ from: { passed: 1, planned: 2 }, to: { passed: 2, planned: 2 } });
   });
 
   it('counts each trial of the arm that has the skill under the routing value the record carries', () => {

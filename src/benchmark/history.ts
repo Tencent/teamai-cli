@@ -10,6 +10,7 @@
  * Each run still shows as a point of its own.
  */
 import { definedFields } from '../utils/defined-fields.js';
+import { compareTrials, formatExcluded, splitPairs, type ExcludedPairs } from './pairing.js';
 import { runSourceHash } from './plan.js';
 import type { Baseline, BenchmarkRecord, BenchmarkRunRecord } from './result.js';
 import type { TeamChoice } from './suite.js';
@@ -30,14 +31,22 @@ export interface BenchmarkRunInput {
   benchmark: BenchmarkRecord;
 }
 
+/** One arm of a run against an earlier one: how many of its trial pairs compared, and the pairs excluded, by why. */
+export interface ArmPairs {
+  arm: string;
+  pairs: number;
+  excluded: ExcludedPairs[];
+}
+
 /**
- * What `teamai benchmark run --fail-on-regression` found against the newest earlier comparable run, `against`: an arm
- * whose pass rate over the trials paired by task and repetition dropped with its whole interval below zero has `dropped`.
+ * What `teamai benchmark run --fail-on-regression` found against the newest earlier comparable run, `against`, each arm
+ * with its pairs (`pairing.ts`): an arm whose pass rate over its compared pairs dropped with its whole interval below
+ * zero is in `drops`. `no_comparable` names the run it `tried` when that run had no compared pair on any arm.
  */
 export type Regression =
-  | { kind: 'no_comparable' }
-  | { kind: 'held'; against: string }
-  | { kind: 'dropped'; against: string; arms: Array<{ arm: string; pairs: number; rates: ArmComparison['rates']; difference: ArmComparison['difference'] }> };
+  | { kind: 'no_comparable'; tried?: { run: string; arms: ArmPairs[] } }
+  | { kind: 'held'; against: string; arms: ArmPairs[] }
+  | { kind: 'dropped'; against: string; arms: ArmPairs[]; drops: Array<{ arm: string; pairs: number; rates: ArmComparison['rates']; difference: ArmComparison['difference'] }> };
 
 /** The windows the page offers, in days before now, by when each run started. */
 export const BENCHMARK_WINDOWS = [30, 90, 365] as const;
@@ -120,9 +129,10 @@ export type ArmDimension = (typeof ARM_DIMENSIONS)[number];
 
 /**
  * Two current arms that differ in exactly one dimension, compared trial by trial: each pair is both arms' trial of one
- * task and repetition in one run of the current version. `from` is the arm the difference is measured from: for the team,
- * none before the pulled revision without some paths, before a named ref, before the pulled revision; otherwise the
- * first in the suite's order.
+ * task and repetition in one run of the current version, counted when `compareTrials` compares it. `from` is the arm the
+ * difference is measured from: for the team, none before the pulled revision without some paths, before a named ref,
+ * before the pulled revision; otherwise the first in the suite's order. Two arms whose every pair was excluded have no
+ * comparison: there is no difference to show.
  */
 export interface ArmComparison {
   dimension: ArmDimension;
@@ -137,6 +147,8 @@ export interface ArmComparison {
   difference: { value: number; low: number; high: number };
   /** Each task's pass rate on both arms over its pairs, in the newest run's task order. */
   tasks: Array<{ task: string; from: PassRate; to: PassRate }>;
+  /** The pairs left out, by why; absent when none was. */
+  excluded?: ExcludedPairs[];
 }
 
 /** A tool, model, effort, workflow and role, whatever the team: one line of the team changes chart. */
@@ -424,31 +436,30 @@ function comparisonsOf({ current, newest }: SuiteRuns): ArmComparison[] {
       if (dimension === undefined) continue;
       const [from, to] = ordered(left, right, dimension);
       const [fromKey, toKey] = [armKey(from), armKey(to)];
-      const pairs: Array<{ task: string; from: boolean; to: boolean }> = [];
-      const observedFrom: ObservedTrial[] = [];
-      const observedTo: ObservedTrial[] = [];
 
-      for (const record of current) {
+      const candidates = current.flatMap((record) => {
         const named = (key: string): string | undefined => record.benchmark.arms.find((arm) => armKey(arm) === key)?.name;
         const [fromName, toName] = [named(fromKey), named(toKey)];
 
-        if (fromName === undefined || toName === undefined) continue;
+        if (fromName === undefined || toName === undefined) return [];
         const trials = observedTrials(record);
 
-        for (const one of trials.filter(({ trial }) => trial.arm === fromName)) {
+        return trials.filter(({ trial }) => trial.arm === fromName).flatMap((one) => {
           const other = trials.find(({ trial: { arm, task, repetition } }) => arm === toName && task === one.trial.task && repetition === one.trial.repetition);
+          const comparison = other && compareTrials({ from: one.trial, fromTasks: record.benchmark.tasks, to: other.trial, toTasks: record.benchmark.tasks });
 
-          if (!other) continue;
-          pairs.push({ task: one.trial.task, from: one.trial.result === 'passed', to: other.trial.result === 'passed' });
-          observedFrom.push(one);
-          observedTo.push(other);
-        }
-      }
+          return other && comparison ? [{ pair: { one, other }, comparison }] : [];
+        });
+      });
+
+      const { compared, excluded } = splitPairs(candidates);
+      const pairs = compared.map(({ one, other }) => ({ task: one.trial.task, from: one.trial.result === 'passed', to: other.trial.result === 'passed' }));
+      const [observedFrom, observedTo] = [compared.map(({ one }) => one), compared.map(({ other }) => other)];
 
       if (pairs.length === 0) continue;
       const count = (test: (pair: { from: boolean; to: boolean }) => boolean): number => pairs.filter(test).length;
       const rate = (of: typeof pairs, side: 'from' | 'to'): PassRate => ({ passed: of.filter((pair) => pair[side]).length, planned: of.length });
-      comparisons.push({
+      comparisons.push(definedFields<ArmComparison>({
         dimension, from: fromKey, to: toKey, pairs: pairs.length,
         rates: { from: rate(pairs, 'from'), to: rate(pairs, 'to') },
         usage: { from: usageOf(observedFrom), to: usageOf(observedTo) },
@@ -458,7 +469,8 @@ function comparisonsOf({ current, newest }: SuiteRuns): ArmComparison[] {
 
           return own.length > 0 ? [{ task: id, from: rate(own, 'from'), to: rate(own, 'to') }] : [];
         }),
-      });
+        excluded: excluded.length > 0 ? excluded : undefined,
+      }));
     }
   });
 
@@ -538,34 +550,73 @@ function runRow(input: BenchmarkRunInput): RunRow {
 
 /**
  * `current` against the newest of `earlier` that started before it, ended `succeeded`, has a record of the same
- * schemaVersion, and ran the same suite, the same tasks by source hash, and the same arms: each arm's name, tool, model,
- * effort, workflow, role and team choice, never the revision a team resolved to. Each arm's trials pair by task and repetition, as Compare pairs two arms of one run.
+ * schemaVersion, and ran the same suite and the same arms: each arm's name, tool, model, effort, workflow, role and team
+ * choice, never the revision a team resolved to. Each arm's trials pair by task and repetition, and a pair counts only
+ * when `comparePair` compares it. An arm with no compared pair cannot drop; no older run is searched when that run has
+ * none on any arm.
  */
 export function regressionOf(current: BenchmarkRunInput, earlier: readonly BenchmarkRunInput[]): Regression {
-  const taskVersions = ({ tasks }: BenchmarkRecord): string => JSON.stringify(tasks.map(({ id, sourceHash }) => [id, sourceHash]).sort());
   const treatments = ({ arms }: BenchmarkRecord): string => JSON.stringify(arms.map(armKey).sort());
 
   const [against] = earlier.filter(({ run, outcome, startedAt, schemaVersion, benchmark }) => run !== current.run && outcome === 'succeeded' && startedAt < current.startedAt
-    && schemaVersion === current.schemaVersion && benchmark.suite.name === current.benchmark.suite.name && taskVersions(benchmark) === taskVersions(current.benchmark) && treatments(benchmark) === treatments(current.benchmark))
+    && schemaVersion === current.schemaVersion && benchmark.suite.name === current.benchmark.suite.name && treatments(benchmark) === treatments(current.benchmark))
     .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
 
   if (!against) return { kind: 'no_comparable' };
 
-  const arms = current.benchmark.arms.flatMap(({ name }) => {
-    const pairs = current.benchmark.trials.filter(({ arm }) => arm === name).flatMap((to) => {
+  const paired = current.benchmark.arms.map(({ name }) => {
+    const candidates = current.benchmark.trials.filter(({ arm }) => arm === name).flatMap((to) => {
       const from = against.benchmark.trials.find(({ arm, task, repetition }) => arm === name && task === to.task && repetition === to.repetition);
+      const comparison = from && compareTrials({ from, fromTasks: against.benchmark.tasks, to, toTasks: current.benchmark.tasks });
 
-      return from ? [{ from: from.result === 'passed', to: to.result === 'passed' }] : [];
+      return from && comparison ? [{ pair: { from: from.result === 'passed', to: to.result === 'passed' }, comparison }] : [];
     });
 
+    return { arm: name, ...splitPairs(candidates) };
+  });
+
+  const arms = paired.map(({ arm, compared, excluded }) => ({ arm, pairs: compared.length, excluded }));
+
+  if (paired.every(({ compared }) => compared.length === 0)) return { kind: 'no_comparable', tried: { run: against.run, arms } };
+
+  const drops = paired.flatMap(({ arm, compared: pairs }) => {
+    if (pairs.length === 0) return [];
     const count = (test: (pair: { from: boolean; to: boolean }) => boolean): number => pairs.filter(test).length;
     const difference = pairedDifference({ both: count((p) => p.from && p.to), toOnly: count((p) => p.to && !p.from), fromOnly: count((p) => p.from && !p.to), neither: count((p) => !p.from && !p.to) });
     const rate = (side: 'from' | 'to'): PassRate => ({ passed: count((pair) => pair[side]), planned: pairs.length });
 
-    return difference.high < 0 ? [{ arm: name, pairs: pairs.length, rates: { from: rate('from'), to: rate('to') }, difference }] : [];
+    return difference.high < 0 ? [{ arm, pairs: pairs.length, rates: { from: rate('from'), to: rate('to') }, difference }] : [];
   });
 
-  return arms.length > 0 ? { kind: 'dropped', against: against.run, arms } : { kind: 'held', against: against.run };
+  return drops.length > 0 ? { kind: 'dropped', against: against.run, arms, drops } : { kind: 'held', against: against.run, arms };
+}
+
+/** What `--fail-on-regression` found, as the report prints it: a line per arm with its pairs, then what they show. */
+export function formatRegression(regression: Regression, suite: string): string[] {
+  const points = (fraction: number): number => Math.round(fraction * 100);
+
+  const armLines = (against: string, arms: readonly ArmPairs[]): string[] => arms.map(({ arm, pairs, excluded }) => (
+    `Arm ${arm}: ${pairs} comparable ${pairs === 1 ? 'pair' : 'pairs'} against run ${against}${excluded.length > 0 ? `; ${formatExcluded(excluded)}` : ''}.`
+  ));
+
+  switch (regression.kind) {
+    case 'no_comparable':
+      return regression.tried === undefined
+        ? [`No earlier succeeded run of suite ${suite} ran the same arms on teamai-reports in a record of this version: recording is off, nothing comparable has been published yet, or the earlier runs ran on a teamai that recorded them another way. --fail-on-regression has nothing to compare with.`]
+        : [...armLines(regression.tried.run, regression.tried.arms), `No arm has a comparable pair against run ${regression.tried.run}, so --fail-on-regression has nothing to compare with.`];
+    case 'held':
+      return [...armLines(regression.against, regression.arms), `No arm's pass rate dropped by more than chance against run ${regression.against}.`];
+    case 'dropped':
+      return [
+        ...armLines(regression.against, regression.arms),
+        ...regression.drops.map(({ arm, pairs, rates, difference }) => `Arm "${arm}" passed ${rates.to.passed}/${pairs} paired trials, against ${rates.from.passed}/${pairs} in run ${regression.against}: a drop of ${points(-difference.value)} points, with a 95% interval of ${points(difference.low)} to ${points(difference.high)} points.`),
+      ];
+    default: {
+      const unhandled: never = regression;
+
+      return unhandled;
+    }
+  }
 }
 
 /** The paired comparisons of one run's arms, as Compare derives them over a suite's runs: never stored, always derived. */

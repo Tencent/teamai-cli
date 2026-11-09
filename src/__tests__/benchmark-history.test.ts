@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { BenchmarkHistory, regressionOf, runComparisons, type BenchmarkRunInput } from '../benchmark/history.js';
+import { BenchmarkHistory, formatRegression, regressionOf, runComparisons, type BenchmarkRunInput } from '../benchmark/history.js';
 import { pairedDifference } from '../benchmark/table.js';
 import { runSourceHash } from '../benchmark/plan.js';
 import type { Baseline, TrialResult } from '../benchmark/result.js';
+import type { TrialVerdict } from '../benchmark/verdicts.js';
 import type { ArmTeam } from '../benchmark/terms.js';
 
 const NOW = new Date('2026-10-28T12:00:00Z');
+
+type Decider = NonNullable<TrialVerdict['decider']>;
 
 /** `team`: the pulled revision of the run when absent. */
 type Arm = { name: string; tool: string; model?: string; alias?: string; team?: ArmTeam; workflow?: { name: string; sourceHash: string }; role?: string };
@@ -18,12 +21,16 @@ const CODEX: Arm = { name: 'codex', tool: 'codex' };
  * first. A trial of an arm in `usage` ran its prompt, on the arm's tool or on the one `ranOn` names, unless its task is
  * in `unstarted`, and reported the tool version `versions` names for its tool.
  */
-function run({ id, suite = 'fix-auth', version = 'v1', taskEdit = '', startedAt, username = 'alice', source = 'reported', arms = [CLAUDE, CODEX], trials, invalid = [], notRun = [], usage = {}, ranOn = {}, unstarted = [], versions = {}, subset = false, recordVersion = 2 }: {
+function run({ id, suite = 'fix-auth', version = 'v1', taskEdit = '', editedTasks = [], deciders = {}, startedAt, username = 'alice', source = 'reported', arms = [CLAUDE, CODEX], trials, invalid = [], notRun = [], usage = {}, ranOn = {}, unstarted = [], versions = {}, subset = false, recordVersion = 2 }: {
   id: string;
   suite?: string;
   version?: string;
   /** Appended to each task file's hash: an edit to the task files that leaves suite.yaml as it was. */
   taskEdit?: string;
+  /** Tasks whose file alone changed: their hash gets `-edited`. */
+  editedTasks?: string[];
+  /** By arm, who decided each of its trials' correctness labels, or by arm and task; a trial not listed has no verdicts. */
+  deciders?: Record<string, Decider | { byTask: Record<string, Decider> }>;
   startedAt: string;
   username?: string;
   source?: 'local' | 'reported';
@@ -47,7 +54,7 @@ function run({ id, suite = 'fix-auth', version = 'v1', taskEdit = '', startedAt,
     run: id, source, username, startedAt, outcome: 'succeeded', schemaVersion: recordVersion,
     benchmark: {
       suite: { name: suite, sourceHash: version }, repetitions: 1, baselineTeamRevision: `team-${id}`, scorers: [], ...(subset ? { subset: true as const } : {}),
-      tasks: tasks.map((task) => ({ id: task, startingCommit: 'a'.repeat(40), sourceHash: `task-${task}${taskEdit}`, baseline: baseline(task) })),
+      tasks: tasks.map((task) => ({ id: task, startingCommit: 'a'.repeat(40), sourceHash: `task-${task}${taskEdit}${editedTasks.includes(task) ? '-edited' : ''}`, baseline: baseline(task) })),
       arms: arms.map(({ team, ...arm }) => ({ ...arm, source: 'team', team: team ?? { kind: 'pulled' as const, revision: `team-${id}` } })),
       trials: Object.entries(trials).flatMap(([task, byArm]) => Object.entries(byArm).flatMap(([arm, results]) => results.map((result, repetition) => {
         const step = `trials.r${repetition + 1}.${task}.${arm}.prompt`;
@@ -55,11 +62,14 @@ function run({ id, suite = 'fix-auth', version = 'v1', taskEdit = '', startedAt,
         const own = arms.find(({ name }) => name === arm);
         const tool = ranOn[arm] ?? own?.tool;
         const toolVersion = tool === undefined ? undefined : versions[tool];
+        const listed = deciders[arm];
+        const decider = listed !== undefined && 'byTask' in listed ? listed.byTask[task] : listed;
+        const verdicts = decider === undefined ? undefined : [{ scorer: `teamai:correctness:${task}`, outcome: result === 'passed' || result === 'failed' ? { kind: 'labelled' as const, label: result, score: result === 'passed' ? 1 : 0, passed: result === 'passed' } : { kind: 'unscored' as const, because: 'run_ended' as const }, decider }];
         const agent = spent && own && tool !== undefined
           ? { v: 1 as const, tool: { name: tool, ...(toolVersion ? { version: toolVersion } : {}) }, ...(own.model ? { model: { reported: own.model } } : {}), team: { revision: `team-${id}`, localChanges: false }, teamai: '0.0.0', driver: 'local' }
           : undefined;
         return {
-          task, arm, repetition: repetition + 1, order: order++, step, result, ...(agent ? { agent } : {}),
+          task, arm, repetition: repetition + 1, order: order++, step, result, ...(verdicts ? { verdicts } : {}), ...(agent ? { agent } : {}),
           ...(spent ? { tokens: { input: spent.tokens, output: 0, complete: true }, durationMs: spent.durationMs, ...(spent.cost === undefined ? {} : { cost: { amount: spent.cost, unit: 'USD', complete: true } }) } : {}),
         };
       }))),
@@ -310,6 +320,33 @@ describe('BenchmarkHistory comparisons', () => {
     }
   });
 
+  describe('pairs two arms of one run by who decided their trials', () => {
+    // Both sides of a pair in one run read the same record's task, so a changed task (row 1) cannot split them.
+    const a: Arm = { name: 'a', tool: 'claude' }, b: Arm = { name: 'b', tool: 'claude', team: { kind: 'none' } };
+    const OPUS = { by: 'judge', rubric: 'rubric-a', tool: 'claude', model: 'claude-opus-5-5', batched: true } as const;
+    const SONNET = { ...OPUS, model: 'claude-sonnet-5-5' } as const;
+    const trials = { one: { a: ['passed', 'passed', 'passed'], b: ['passed', 'failed', 'passed'] }, two: { a: ['passed', 'passed', 'passed'], b: ['passed', 'passed', 'passed'] } } satisfies Record<string, Record<string, TrialResult[]>>;
+
+    // A team pair runs from the arm without team assets, b, to the pulled one, a.
+    it('leaves out and lists the pairs another model judged (row 2)', () => {
+      const input = run({ id: 'r1', startedAt: '2026-10-20T09:00:00Z', arms: [a, b], trials, deciders: { a: OPUS, b: { byTask: { one: SONNET, two: OPUS } } } });
+
+      for (const comparisons of [runComparisons(input), BenchmarkHistory.of({ runs: [input], query: { windowDays: 90 }, now: NOW }).selected?.comparisons ?? []]) {
+        expect(comparisons).toHaveLength(1);
+        expect(comparisons[0]).toMatchObject({ pairs: 3, rates: { from: { passed: 3, planned: 3 }, to: { passed: 3, planned: 3 } }, excluded: [{ pairs: 3, because: { kind: 'judge_changed', from: SONNET, to: OPUS } }] });
+      }
+    });
+
+    it('compares the pairs a check decided on one arm and the judge on the other (row 3)', () => {
+      const input = run({ id: 'r1', startedAt: '2026-10-20T09:00:00Z', arms: [a, b], trials, deciders: { a: { by: 'check', task: 'task-one' }, b: OPUS } });
+
+      const [comparison] = runComparisons(input);
+
+      expect(comparison).toMatchObject({ pairs: 6, rates: { from: { passed: 5, planned: 6 }, to: { passed: 6, planned: 6 } } });
+      expect(comparison).not.toHaveProperty('excluded');
+    });
+  });
+
   it("keeps an arm whose workflow changed apart from its earlier runs, under the workflow it runs now", () => {
     const planFirst: Arm = { name: 'flow', tool: 'claude', workflow: { name: 'plan-then-fix', sourceHash: 'p1' } };
     const direct: Arm = { name: 'flow', tool: 'claude', workflow: { name: 'direct-fix', sourceHash: 'd1' } };
@@ -503,20 +540,19 @@ describe('benchmark regression', () => {
   const at = (day: number): string => `2026-10-${String(day).padStart(2, '0')}T09:00:00Z`;
   const current = run({ id: 'now', startedAt: at(20), arms: ONE, trials: passes(['failed', 'failed', 'failed']) });
 
-  it('compares with the newest earlier succeeded run of the same suite, tasks and arms, whatever revision its team resolved to', () => {
+  it('compares with the newest earlier succeeded run of the same suite and arms, whatever revision its team resolved to', () => {
     const regression = regressionOf(current, [
       run({ id: 'older', startedAt: at(10), arms: ONE, trials: passes(['passed', 'failed', 'failed']) }),
       run({ id: 'newest', startedAt: at(12), arms: ONE, trials: passes(['passed', 'passed', 'passed']) }),
       { ...run({ id: 'failed-run', startedAt: at(14), arms: ONE, trials: passes(['passed', 'passed', 'passed']) }), outcome: 'failed' },
       run({ id: 'other-model', startedAt: at(15), arms: [{ ...CLAUDE, model: 'claude-sonnet-5-5' }], trials: passes(['passed', 'passed', 'passed']) }),
-      run({ id: 'other-task', startedAt: at(16), taskEdit: '-edited', arms: ONE, trials: passes(['passed', 'passed', 'passed']) }),
       run({ id: 'other-suite', suite: 'other', startedAt: at(17), arms: ONE, trials: passes(['passed', 'passed', 'passed']) }),
       run({ id: 'later', startedAt: at(25), arms: ONE, trials: passes(['passed', 'passed', 'passed']) }),
     ]);
 
     expect(regression).toEqual({
-      kind: 'dropped', against: 'newest',
-      arms: [{ arm: 'claude', pairs: 3, rates: { from: { passed: 3, planned: 3 }, to: { passed: 0, planned: 3 } }, difference: { value: -1, low: -1, high: expect.closeTo(-0.206, 3) } }],
+      kind: 'dropped', against: 'newest', arms: [{ arm: 'claude', pairs: 3, excluded: [] }],
+      drops: [{ arm: 'claude', pairs: 3, rates: { from: { passed: 3, planned: 3 }, to: { passed: 0, planned: 3 } }, difference: { value: -1, low: -1, high: expect.closeTo(-0.206, 3) } }],
     });
   });
 
@@ -526,13 +562,59 @@ describe('benchmark regression', () => {
     const before = run({ id: 'before', startedAt: at(12), arms: ONE, trials: passes(['failed', ...Array<TrialResult>(7).fill('passed'), 'passed', 'passed', 'failed', 'failed', 'failed']) });
 
     expect(regressionOf(now, [before])).toEqual({
-      kind: 'dropped', against: 'before',
-      arms: [{ arm: 'claude', pairs: 13, rates: { from: { passed: 9, planned: 13 }, to: { passed: 3, planned: 13 } }, difference: pairedDifference({ both: 2, toOnly: 1, fromOnly: 7, neither: 3 }) }],
+      kind: 'dropped', against: 'before', arms: [{ arm: 'claude', pairs: 13, excluded: [] }],
+      drops: [{ arm: 'claude', pairs: 13, rates: { from: { passed: 9, planned: 13 }, to: { passed: 3, planned: 13 } }, difference: pairedDifference({ both: 2, toOnly: 1, fromOnly: 7, neither: 3 }) }],
     });
   });
 
+  const OPUS = { by: 'judge', rubric: 'rubric-a', tool: 'claude', model: 'claude-opus-5-5', batched: true } as const;
+  const SONNET = { ...OPUS, model: 'claude-sonnet-5-5' } as const;
+  const CHECKED = { by: 'check', task: 'task-fix' } as const;
+
+  it('excludes the pairs of a task whose file changed, and compares the others (row 1)', () => {
+    const both = (results: TrialResult[]) => ({ fix: { claude: results }, login: { claude: results } });
+    const now = run({ id: 'now', startedAt: at(20), arms: ONE, trials: both(['failed', 'failed', 'failed']) });
+    const before = run({ id: 'before', startedAt: at(12), editedTasks: ['login'], arms: ONE, trials: both(['passed', 'passed', 'passed']) });
+
+    expect(regressionOf(now, [before])).toMatchObject({ kind: 'dropped', against: 'before', arms: [{ arm: 'claude', pairs: 3, excluded: [{ pairs: 3, because: { kind: 'task_changed' } }] }] });
+    expect(regressionOf(current, [run({ id: 'other-task', startedAt: at(16), taskEdit: '-edited', arms: ONE, trials: passes(['passed', 'passed', 'passed']) })])).toEqual({
+      kind: 'no_comparable', tried: { run: 'other-task', arms: [{ arm: 'claude', pairs: 0, excluded: [{ pairs: 3, because: { kind: 'task_changed' } }] }] },
+    });
+  });
+
+  it('finds nothing comparable, naming the run it tried and why, when another model judged every pair (row 2)', () => {
+    const nine = (passed: number): TrialResult[] => Array.from({ length: 9 }, (_, index) => (index < passed ? 'passed' : 'failed'));
+    const before = run({ id: 'rA', startedAt: at(12), arms: ONE, trials: passes(nine(8)), deciders: { claude: OPUS } });
+    const now = run({ id: 'rB', startedAt: at(13), arms: ONE, trials: passes(nine(4)), deciders: { claude: SONNET } });
+
+    const regression = regressionOf(now, [before]);
+
+    expect(regression).toEqual({ kind: 'no_comparable', tried: { run: 'rA', arms: [{ arm: 'claude', pairs: 0, excluded: [{ pairs: 9, because: { kind: 'judge_changed', from: OPUS, to: SONNET } }] }] } });
+    expect(formatRegression(regression, 'fix-auth')).toEqual([
+      'Arm claude: 0 comparable pairs against run rA; 9 excluded: their judge changed (claude claude-opus-5-5 → claude claude-sonnet-5-5).',
+      'No arm has a comparable pair against run rA, so --fail-on-regression has nothing to compare with.',
+    ]);
+  });
+
+  it.each([
+    ['by the check before and by the judge now, as a mixed task whose check flipped', CHECKED, OPUS, ['failed', 'failed', 'failed']],
+    ['by the same judge', OPUS, OPUS, ['failed', 'failed', 'failed']],
+    ['by the judge before and by nothing now, as an unscored trial counts as not passed', OPUS, undefined, ['unscored', 'unscored', 'unscored']],
+  ] as const)('compares the pairs decided %s (row 3)', (_pair, from, to, results) => {
+    const before = run({ id: 'before', startedAt: at(12), arms: ONE, trials: passes(['passed', 'passed', 'passed']), deciders: { claude: from } });
+    const now = run({ id: 'now', startedAt: at(20), arms: ONE, trials: passes([...results]), deciders: to === undefined ? {} : { claude: to } });
+
+    const regression = regressionOf(now, [before]);
+
+    expect(regression).toMatchObject({ kind: 'dropped', against: 'before', arms: [{ arm: 'claude', pairs: 3, excluded: [] }], drops: [{ arm: 'claude', pairs: 3 }] });
+    expect(formatRegression(regression, 'fix-auth')).toEqual([
+      'Arm claude: 3 comparable pairs against run before.',
+      expect.stringMatching(/^Arm "claude" passed 0\/3 paired trials, against 3\/3 in run before: a drop of 100 points/),
+    ]);
+  });
+
   it('holds when the paired drop is within chance', () => {
-    expect(regressionOf(current, [run({ id: 'before', startedAt: at(12), arms: ONE, trials: passes(['passed', 'failed', 'failed']) })])).toEqual({ kind: 'held', against: 'before' });
+    expect(regressionOf(current, [run({ id: 'before', startedAt: at(12), arms: ONE, trials: passes(['passed', 'failed', 'failed']) })])).toEqual({ kind: 'held', against: 'before', arms: [{ arm: 'claude', pairs: 3, excluded: [] }] });
   });
 
   it('finds nothing to compare with in a run whose record has another schemaVersion', () => {
