@@ -2250,7 +2250,13 @@ const maintenanceCmd = recallCmd
   .command('maintenance')
   .description('Automatic maintenance of team knowledge base')
   .option('--prune', 'Remove low-confidence learnings')
-  .option('--threshold <n>', 'Confidence threshold for pruning (default 0.15)', parseFloat)
+  .option('--threshold <n>', 'Confidence threshold for pruning (default 0.15)', (value) => {
+    const threshold = value.trim() === '' ? NaN : Number(value);
+
+    if (!Number.isFinite(threshold)) throw new Error('--threshold must be a finite number');
+
+    return threshold;
+  })
   .option('--archive', 'Move to archive/ instead of deleting')
   .option('--confidence-writeback', 'Update frontmatter confidence scores')
   .option('--update-quality', 'Find stale docs/rules/skills and write a .draft.md update beside each: starts the default workflow teamai-draft-learning-updates on the driver workflows.driver names, else local, prints what it drafted, and exits 1 when an entry could not be drafted. --dry-run only lists the entries')
