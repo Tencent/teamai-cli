@@ -72,6 +72,7 @@ describe('parseSuite', () => {
     ['an arm that changes tool and model', suiteText({ arms: '[{ name: baseline }, { name: codex, tool: codex, model: fast }]' }), 'arms.1', 'arm "codex" changes tool and model; an arm changes at most one of the defaults keys'],
     ['two arms of one name', suiteText({ arms: '[{ name: baseline }, { name: baseline, tool: codex }]' }), 'arms.1.name', 'arm "baseline" is named twice; arm names are unique'],
     ['two arms that change nothing', suiteText({ arms: '[{ name: baseline }, { name: same, tool: claude }]' }), 'arms.1', 'arm "same" changes none of the defaults keys, and neither does arm "baseline"; at most one arm changes none'],
+    ['a scorer name with ":", which no scorer file has', suiteText({ scorers: '[review-quality, "teamai:correctness:fix"]' }), 'scorers.1', 'names no scorer file, since a scorer file name has no ":"; list the name of a file in scorers/, without .md'],
   ])('reports %s at its suite file', (_rule, suite, field, message) => {
     const parsed = parse(suite);
 

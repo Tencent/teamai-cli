@@ -157,6 +157,9 @@ type Matrix = z.infer<typeof MatrixSchema>;
 
 const MAX_MATRIX_ARMS = 12;
 
+/** A scorer by the name of its file in scorers/, which has no ":", so a generated scorer's name is never one. */
+const ScorerNameSchema = z.string().min(1).refine((name) => !name.includes(':'), 'names no scorer file, since a scorer file name has no ":"; list the name of a file in scorers/, without .md');
+
 const SuiteFileSchema = z.object({
   schemaVersion: z.literal('v1alpha1'),
   name: BenchmarkNameSchema,
@@ -187,7 +190,7 @@ const SuiteFileSchema = z.object({
     return limits;
   }).optional(),
   setup: SetupSchema.optional(),
-  scorers: z.array(z.string().min(1)).default([]),
+  scorers: z.array(ScorerNameSchema).default([]),
 }).strict().superRefine((suite, ctx) => {
   if (suite.trial?.timeoutMs !== undefined && suite.trial.timeoutMs >= suite.timeout) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['trial', 'timeout'], message: 'trial.timeout must be shorter than timeout, which bounds the whole run' });
@@ -382,7 +385,7 @@ function taskFileSchema(files: ReadonlyMap<string, SuiteFile>) {
     /** Where the task came from: the session or the workflow pass it was made from. Provenance only; nothing runs from it. */
     source: TaskSourceSchema.optional(),
     /** Scorers that judge this task's trials besides the suite's, by the name of their file in scorers/. */
-    scorers: z.array(z.string().min(1).refine((name) => !name.includes(':'), 'names no scorer file, since a scorer file name has no ":"; list the name of a file in scorers/, without .md')).optional(),
+    scorers: z.array(ScorerNameSchema).optional(),
   }).strict().transform(({ check, successCriteria, ...task }, ctx) => {
     if (successCriteria !== undefined && !check) return { ...task, judge: { successCriteria } satisfies TaskJudge };
 
