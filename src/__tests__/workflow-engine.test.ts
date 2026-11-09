@@ -1472,7 +1472,7 @@ describe('file sub-workflows', () => {
 
     expect(await startRun(fixture.config, 'ship', {}, { secrets: await knownSecrets(fixture.config) })).toEqual({ error: {
       code: 'workflow_not_found',
-      message: 'Workflow "ship" step "check" runs workflow "check", which has no runnable version. Check workflows/check.yaml and pull again.',
+      message: 'Workflow "ship" step "check" runs workflow "check", which has no runnable version. Check workflows/check.yaml, or workflows/check/WORKFLOW.yaml for a folder, and pull again.',
     } });
     expect(fs.existsSync(path.join(fixture.config.dataHome!, 'workflows', 'runs'))).toBe(false);
   });

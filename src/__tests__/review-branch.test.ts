@@ -963,13 +963,13 @@ steps:
         level: 'fail',
         check: 'workflows',
         path: 'workflows/check.yaml',
-        message: 'workflows/check.yaml:6: field "steps[0].workflow": step "run" runs workflow "gone", which has no runnable version; fix or add workflows/gone.yaml',
+        message: 'workflows/check.yaml:6: field "steps[0].workflow": step "run" runs workflow "gone", which has no runnable version; fix or add workflows/gone.yaml or workflows/gone/WORKFLOW.yaml',
       },
       {
         level: 'fail',
         check: 'workflows',
         path: 'workflows/ship.yaml',
-        message: 'workflows/ship.yaml:6: field "steps[0].workflow": step "run" runs workflow "check", which has no runnable version; fix or add workflows/check.yaml',
+        message: 'workflows/ship.yaml:6: field "steps[0].workflow": step "run" runs workflow "check", which has no runnable version; fix or add workflows/check.yaml or workflows/check/WORKFLOW.yaml',
       },
     ]);
   });

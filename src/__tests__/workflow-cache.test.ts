@@ -1849,7 +1849,7 @@ steps:
     const result = await syncAndStart(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
-      'workflows/ship.yaml:6: field "steps[0].workflow": step "check" runs workflow "check-issue", which has no runnable version; fix or add workflows/check-issue.yaml',
+      'workflows/ship.yaml:6: field "steps[0].workflow": step "check" runs workflow "check-issue", which has no runnable version; fix or add workflows/check-issue.yaml or workflows/check-issue/WORKFLOW.yaml',
     ]);
     expect(result.unrunnable).toEqual(['workflows/ship.yaml']);
     expect(result.cached).toEqual(['build']);
@@ -1897,7 +1897,7 @@ steps:
     const result = await syncAndStart(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
-      'workflows/check.yaml:6: field "steps[0].workflow": step "run" runs workflow "gone", which has no runnable version; fix or add workflows/gone.yaml',
+      'workflows/check.yaml:6: field "steps[0].workflow": step "run" runs workflow "gone", which has no runnable version; fix or add workflows/gone.yaml or workflows/gone/WORKFLOW.yaml',
     ]);
     expect(result.kept).toEqual(['check']);
     expect(result.cached).toEqual(['build', 'ship']);
@@ -1906,7 +1906,7 @@ steps:
     const second = await syncAndStart(config);
 
     expect(second.invalid.map(formatDiagnostic)).toEqual([
-      'workflows/ship.yaml:6: field "steps[0].workflow": step "run" runs workflow "check", which has no runnable version; fix or add workflows/check.yaml',
+      'workflows/ship.yaml:6: field "steps[0].workflow": step "run" runs workflow "check", which has no runnable version; fix or add workflows/check.yaml or workflows/check/WORKFLOW.yaml',
     ]);
     expect(second.kept).toEqual([]);
     expect(second.unrunnable).toEqual(['workflows/ship.yaml']);
@@ -1929,8 +1929,8 @@ steps:
     const result = await syncAndStart(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
-      'workflows/check.yaml:6: field "steps[0].workflow": step "run" runs workflow "gone", which has no runnable version; fix or add workflows/gone.yaml',
-      'workflows/ship.yaml:6: field "steps[0].workflow": step "run" runs workflow "check", which has no runnable version; fix or add workflows/check.yaml',
+      'workflows/check.yaml:6: field "steps[0].workflow": step "run" runs workflow "gone", which has no runnable version; fix or add workflows/gone.yaml or workflows/gone/WORKFLOW.yaml',
+      'workflows/ship.yaml:6: field "steps[0].workflow": step "run" runs workflow "check", which has no runnable version; fix or add workflows/check.yaml or workflows/check/WORKFLOW.yaml',
     ]);
     expect(result.unrunnable).toEqual(['workflows/check.yaml', 'workflows/ship.yaml']);
   });
@@ -2176,7 +2176,7 @@ steps:
     const result = await syncAndStart(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
-      'workflows/a.yaml:6: field "steps[0].workflow": step "run" runs workflow "missing", which has no runnable version; fix or add workflows/missing.yaml',
+      'workflows/a.yaml:6: field "steps[0].workflow": step "run" runs workflow "missing", which has no runnable version; fix or add workflows/missing.yaml or workflows/missing/WORKFLOW.yaml',
       'workflows/b.yaml:6: field "steps[0].workflow": step "run" runs workflow "a" in a cycle: b -> a -> b',
     ]);
     expect(result.cached).toEqual([]);

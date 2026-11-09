@@ -1392,7 +1392,7 @@ function referenceDiagnostics({ file, lineCounter }: ParseContext, files: Workfl
 
   if (!child) {
     return [locate(file, lineCounter, node, `${field}.workflow`,
-      `${label} runs workflow "${workflow}", which has no runnable version; fix or add workflows/${workflow}.yaml`)];
+      `${label} runs workflow "${workflow}", which has no runnable version; fix or add workflows/${workflow}.yaml or workflows/${workflow}/WORKFLOW.yaml`)];
   }
 
   if (child.finally) {

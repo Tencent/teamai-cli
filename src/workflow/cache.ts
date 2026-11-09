@@ -848,7 +848,7 @@ export async function loadWorkflowTree(
       const child = await loadCachedWorkflow(config, workflow);
 
       if (!child) {
-        return { code: 'workflow_not_found', message: `Workflow "${definition.name}" step "${step}" runs workflow "${workflow}", which has no runnable version. Check workflows/${workflow}.yaml and pull again.` };
+        return { code: 'workflow_not_found', message: `Workflow "${definition.name}" step "${step}" runs workflow "${workflow}", which has no runnable version. Check workflows/${workflow}.yaml, or workflows/${workflow}/WORKFLOW.yaml for a folder, and pull again.` };
       }
 
       const unfit = withMismatch(definition.name, run, child.definition) ?? retyped(definition, run, child.definition);

@@ -133,8 +133,8 @@ function shadowed({ tool, workflow, dir }: Pick<Placement, 'tool' | 'workflow' |
 
 function keptEdited(file: string, workflow: string, advertised: boolean): string {
   return advertised
-    ? `Kept ${file}: it was generated from workflows/${workflow}.yaml and edited since, so teamai pull no longer updates it. Delete it to receive the current one, or remove its teamai-generated metadata to keep it as your own.`
-    : `Kept ${file}: it was generated from workflows/${workflow}.yaml and edited since, and that workflow no longer offers a skill, so teamai pull left it. Delete it, or remove its teamai-generated metadata to keep it as your own.`;
+    ? `Kept ${file}: it was generated from workflow ${workflow} and edited since, so teamai pull no longer updates it. Delete it to receive the current one, or remove its teamai-generated metadata to keep it as your own.`
+    : `Kept ${file}: it was generated from workflow ${workflow} and edited since, and that workflow no longer offers a skill, so teamai pull left it. Delete it, or remove its teamai-generated metadata to keep it as your own.`;
 }
 
 /**

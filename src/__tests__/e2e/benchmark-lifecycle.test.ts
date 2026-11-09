@@ -194,7 +194,7 @@ describe('a benchmark run once it has started', () => {
 
     expect(envelope(resumed).error).toEqual({
       code: 'invoke_denied',
-      message: `Workflow "teamai-benchmark" has invoke: deny, so no coding agent continues it, with any driver, and this command uses --driver skill, which only a coding agent drives. The person can continue it from their own terminal with teamai workflow resume ${runId}. To let agents continue it, the team sets invoke: allow, or invoke: ask for a resume after the person agrees, in workflows/teamai-benchmark.yaml.`,
+      message: `Workflow "teamai-benchmark" has invoke: deny, so no coding agent continues it, with any driver, and this command uses --driver skill, which only a coding agent drives. The person can continue it from their own terminal with teamai workflow resume ${runId}. To let agents continue it, the team sets invoke: allow, or invoke: ask for a resume after the person agrees, in workflows/teamai-benchmark.yaml or workflows/teamai-benchmark/WORKFLOW.yaml.`,
       next: null,
     });
     expect(RunFileSchema.parse(fixture.runFile(runId)).steps.every((step) => step.status === 'pending')).toBe(true);

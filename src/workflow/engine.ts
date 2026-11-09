@@ -1492,7 +1492,7 @@ export async function startRun(
 
     if (conflict) return error('workflow_namespace_conflict', conflict);
 
-    return error('workflow_not_found', `Workflow "${name}" has no runnable version. Check workflows/${name}.yaml and pull again.`);
+    return error('workflow_not_found', `Workflow "${name}" has no runnable version. Check workflows/${name}.yaml, or workflows/${name}/WORKFLOW.yaml for a folder, and pull again.`);
   }
 
   const given = withInputDefaults(cached.definition, inputs);
