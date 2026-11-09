@@ -72,16 +72,18 @@ async function removeLeftovers(dest: string): Promise<void> {
   for (const entry of entries.filter((name) => isLeftoverOf(dest, name))) await fs.rm(path.join(parent, entry), { recursive: true, force: true });
 }
 
-/** Whether the folder at `dest` holds exactly `files`: the same paths, bytes and executable bits. */
+/** Whether the folder at `dest` holds exactly `files`: the same paths, bytes and executable bits, which Windows does not keep. */
 async function holds(dest: string, files: readonly FolderFile[]): Promise<boolean> {
   const read = await FolderFiles.read(dest);
+  const keepsModes = process.platform !== 'win32';
 
   if (read.kind !== 'files' || read.files.length !== files.length) return false;
 
   return read.files.every((onDisk, index) => {
     const wanted = files[index];
 
-    return wanted !== undefined && onDisk.path === wanted.path && onDisk.executable === wanted.executable && onDisk.bytes.equals(wanted.bytes);
+    return wanted !== undefined && onDisk.path === wanted.path && onDisk.bytes.equals(wanted.bytes)
+      && (!keepsModes || onDisk.executable === wanted.executable);
   });
 }
 

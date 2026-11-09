@@ -73,6 +73,16 @@ describe('a team hook folder', () => {
     });
   });
 
+  it('names a home holding a space and non-ASCII letters with forward slashes, quoted only as the command writes it', async () => {
+    await write({ 'hooks/block-secrets/HOOK.yaml': BLOCK_SECRETS, 'hooks/block-secrets/scan.sh': 'exit 0\n' });
+    const home = path.join(sandbox, 'Zoë Li', '.teamai');
+
+    const resolved = await resolveTeamHooks(teamConfig(), member({ dataHome: home }), { silent: true });
+    const command = resolved.ok ? resolved.defs[0]?.command : undefined;
+
+    expect([command, command?.includes('\\')]).toEqual([`bash "${rendered(path.join(home, 'hooks', 'block-secrets'))}/scan.sh"`, false]);
+  });
+
   it('passes requireTeamScripts when its command names the folder, checked before substitution; other commands keep the old rule', async () => {
     await write({
       'hooks/block-secrets/HOOK.yaml': BLOCK_SECRETS,
