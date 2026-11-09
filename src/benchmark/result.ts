@@ -1,7 +1,8 @@
 /**
  * How a trial's steps become its result, and the benchmark record. Pure over an ended run: the step states
- * the engine keeps, with the result each check step output, the frozen plan, and the verdicts of the scorers that
- * judged each trial (`verdicts.ts`). It classifies nothing: `teamai benchmark check` did that once, when the check ran.
+ * the engine keeps, with what each check step output, the frozen plan, and the verdicts of each trial's scorers
+ * (`verdicts.ts`). It classifies nothing: `teamai benchmark check` did that once, when the check ran, and stored the
+ * correctness label of a check task's trial.
  *
  * Results are never failure codes, and no value here enters record `status` or `steps[].outcome`: an older dashboard
  * drops a whole record on an enum value it does not know.
@@ -16,13 +17,13 @@ import { stepDefinitions } from '../workflow/scope.js';
 import { LimitSchema } from '../workflow/requirements.js';
 import type { RunState } from '../workflow/types.js';
 import { definedFields } from '../utils/defined-fields.js';
-import { CheckOutputSchema, type CheckResult } from '../scorers/check.js';
+import { CHECK_CAUSES, CheckOutputSchema, type CheckOutput } from '../scorers/check.js';
 import { compareAgent } from './agent-match.js';
 import { baselineStepOf, checkStepOf, correctnessScorerName, type BenchmarkPlan, type PlannedArm, type PlannedTask, type PlannedTrial } from './plan.js';
 import type { RunPlan } from './run-plan.js';
 import { ArmTeamSchema, SkillChangesSchema, TrialLimitsSchema } from './terms.js';
 import { leavesOut, skillDefinitionOf } from './team-without.js';
-import type { EntryVerdict } from './verdicts.js';
+import { TrialVerdictSchema, type EntryVerdict, type TrialVerdict } from './verdicts.js';
 
 export const TRIAL_RESULTS = ['passed', 'failed', 'error', 'unscored', 'not_run'] as const;
 
@@ -32,6 +33,12 @@ export type TrialResult = (typeof TRIAL_RESULTS)[number];
 const BASELINES = ['valid', 'invalid', 'could_not_run', 'not_run', 'not_needed'] as const;
 
 export type Baseline = (typeof BASELINES)[number];
+
+/**
+ * The shape of the record this teamai writes. 2: every trial carries its verdicts, and every scorer its labels and
+ * passing score. A record of schemaVersion 1 still parses and shows, but runs compare only within one version.
+ */
+export const BENCHMARK_RECORD_SCHEMA_VERSION = 2;
 
 /** The not enforced requirements of a trial's prompt that the record keeps: those of the suite's limits. */
 const UNENFORCED_LIMITS = ['max_turns', 'budget', 'on_limit'] as const;
@@ -50,7 +57,11 @@ export const BenchmarkRecordSchema = z.object({
   baselineTeamRevision: z.string(),
   /** The run ran only the tasks and arms `--task` and `--arm` chose, so it is never its suite's current version; absent: the whole suite. */
   subset: z.literal(true).optional(),
-  scorers: z.array(z.object({ name: z.string(), rubric: z.object({ sourceHash: z.string() }) })),
+  /** `labels` and `passingScore`, as the run pinned them; absent on a record of schemaVersion 1. */
+  scorers: z.array(z.object({
+    name: z.string(), rubric: z.object({ sourceHash: z.string() }),
+    labels: z.array(z.object({ value: z.string(), score: z.number() })).optional(), passingScore: z.number().optional(),
+  })),
   tasks: z.array(z.object({
     id: z.string(), startingCommit: z.string(), sourceHash: z.string(), baseline: z.enum(BASELINES),
     /** The team repo paths the task covers, each listed once, sorted; absent when it covers none. */
@@ -78,6 +89,10 @@ export const BenchmarkRecordSchema = z.object({
   trials: z.array(z.object({
     task: z.string(), arm: z.string(), repetition: z.number().int(), order: z.number().int(), step: z.string(),
     result: z.enum(TRIAL_RESULTS),
+    /** How each of the trial's scorers ended, its correctness scorer first; absent on a record of schemaVersion 1. */
+    verdicts: z.array(TrialVerdictSchema).optional(),
+    /** Why the trial's check could not run, which made it `error`. */
+    failure: z.object({ cause: z.enum(CHECK_CAUSES) }).strict().optional(),
     /** The suite limit that ended the prompt; the check or judge still decided `result`. */
     limit: LimitSchema.optional(),
     /**
@@ -110,7 +125,7 @@ export type BenchmarkRecord = z.infer<typeof BenchmarkRecordSchema>;
 
 /** A benchmark run's record: its plan's trials, classified, with the run they ran in. No prompt, command, URL or path. */
 export const BenchmarkRunRecordSchema = BenchmarkRecordSchema.extend({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.union([z.literal(1), z.literal(BENCHMARK_RECORD_SCHEMA_VERSION)]),
   run: z.string().min(1),
   /** How the run's steps ended, before its `finally` steps ran. */
   outcome: z.enum(['succeeded', 'failed', 'cancelled']),
@@ -165,12 +180,14 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdic
     skillChanges: plan.skillChanges,
     trials: plan.trials.map((trial) => {
       const judged = verdictsOf(trial);
-      const scoringCost = scoringCostOf(judged);
+      const task = plan.tasks.find(({ id }) => id === trial.task);
+      // A check costs nothing, so its label leaves the trial's judge cost complete.
+      const scoringCost = scoringCostOf(task?.judge.kind === 'check' ? judged.filter(({ scorer }) => scorer !== correctnessScorerName(trial.task)) : judged);
       const work = stateOf(trial.step);
-      const result = trialResultOf({ prompt: work, work: workOf(run, `${prefix}${trial.step}`), check: stateOf(checkStepOf(trial)), verdicts: judged }, plan, trial);
+      const check = checkOutputOf(stateOf(checkStepOf(trial)));
+      const result = trialResultOf({ prompt: work, work: workOf(run, `${prefix}${trial.step}`), check, verdicts: judged }, plan, trial);
       const arm = plan.arms.find(({ name }) => name === trial.arm);
 
-      const task = plan.tasks.find(({ id }) => id === trial.task);
       const covers = task === undefined ? [] : namesOf(task);
       // An arm that runs without a covered skill by design, alone, with the directory holding it, with its definition
       // file, or with no team assets at all, or whose selection pull does not deliver it to, reports no routing for it:
@@ -188,7 +205,11 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdic
         ? projectionOf(promptPassesUnder(run, `${prefix}${trial.step}`), { arm, watched, routingSkills: coveredSkills.filter((name) => !absent.has(name)), covers, unenforced: plan.limits?.maxTurns !== undefined ? ['max_turns'] : [] })
         : projectionOf(settledPass(work), { arm, watched, routingSkills: coveredSkills.filter((name) => !absent.has(name)), covers, unenforced: [] });
 
-      const recorded: BenchmarkRecord['trials'][number] = { ...trial, step: `${prefix}${trial.step}`, result, ...entry };
+      const recorded: BenchmarkRecord['trials'][number] = {
+        ...trial, step: `${prefix}${trial.step}`, result, verdicts: judged.map(({ scorer, outcome, decider }) => definedFields<TrialVerdict>({ scorer, outcome, decider })), ...entry,
+      };
+
+      if (result === 'error' && check?.result === 'could_not_run') recorded.failure = { cause: check.cause };
 
       if (scoringCost) recorded.scoringCost = scoringCost;
 
@@ -339,7 +360,7 @@ function baselineOf(state: StepState | undefined, task: PlannedTask): Baseline {
     }
   }
 
-  const result = checkResultOf(state);
+  const result = checkOutputOf(state)?.result;
 
   switch (result) {
     case 'failed':
@@ -407,12 +428,12 @@ export function unlaunchedTrial(run: RunState, step: string): boolean {
  *   work failed tool_unavailable before any prompt's lease: the driver cannot launch
  *               its tool, though a command a workflow arm runs first may have run     -> not_run
  *   work cancelled after a lease, or failed                                         -> error
- *   check task: the result its check output: passed -> passed, failed -> failed, could_not_run -> error;
- *               no result (the check never ran to one)                              -> error
- *   criteria task: its correctness verdict: labelled passing -> passed, labelled not passing -> failed;
+ *   check task whose check could not run, or never ran to an output                 -> error
+ *   otherwise its correctness verdict, whether its check or a judge decided it:
+ *               labelled passing -> passed, labelled not passing -> failed;
  *               unscored, or none                                                   -> unscored, never passed
  */
-function trialResultOf({ prompt, work, check, verdicts }: { prompt: StepState | undefined; work: TrialWork; check: StepState | undefined; verdicts: readonly EntryVerdict[] }, plan: BenchmarkPlan, trial: PlannedTrial): TrialResult {
+function trialResultOf({ prompt, work, check, verdicts }: { prompt: StepState | undefined; work: TrialWork; check: CheckOutput | undefined; verdicts: readonly EntryVerdict[] }, plan: BenchmarkPlan, trial: PlannedTrial): TrialResult {
   switch (prompt?.status) {
     case undefined:
     case 'pending':
@@ -440,20 +461,22 @@ function trialResultOf({ prompt, work, check, verdicts }: { prompt: StepState | 
 
   switch (judge?.kind) {
     case 'check':
-      return checkResult(check);
+      if (check === undefined || check.result === 'could_not_run') return 'error';
+      break;
     case 'criteria':
-      return criteriaResult(verdicts.find((verdict) => verdict.scorer === correctnessScorerName(trial.task)));
     case undefined:
-      return 'unscored';
+      break;
     default: {
       const unhandled: never = judge;
 
       return unhandled;
     }
   }
+
+  return correctnessResult(verdicts.find((verdict) => verdict.scorer === correctnessScorerName(trial.task)));
 }
 
-function criteriaResult(verdict: EntryVerdict | undefined): TrialResult {
+function correctnessResult(verdict: EntryVerdict | undefined): TrialResult {
   if (!verdict) return 'unscored';
   const { outcome } = verdict;
 
@@ -470,28 +493,9 @@ function criteriaResult(verdict: EntryVerdict | undefined): TrialResult {
   }
 }
 
-function checkResult(check: StepState | undefined): TrialResult {
-  const result = checkResultOf(check);
-
-  switch (result) {
-    case 'passed':
-      return 'passed';
-    case 'failed':
-      return 'failed';
-    case 'could_not_run':
-    case undefined:
-      return 'error';
-    default: {
-      const unhandled: never = result;
-
-      return unhandled;
-    }
-  }
-}
-
-/** The result a check step output; undefined when it output none, as one that never ran to a verdict. */
-function checkResultOf(state: StepState | undefined): CheckResult | undefined {
+/** What a check step output; undefined when it output none, as one that never ran to a verdict. */
+function checkOutputOf(state: StepState | undefined): CheckOutput | undefined {
   const output = CheckOutputSchema.safeParse(state && 'outputs' in state ? state.outputs : undefined);
 
-  return output.success ? output.data.result : undefined;
+  return output.success ? output.data : undefined;
 }

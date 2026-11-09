@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { AgentObservation } from '../agent-observation.js';
 import { benchmarkRecord, BenchmarkRunRecordSchema, type BenchmarkRecord, type TrialResult } from '../benchmark/result.js';
 import { planOfRun } from '../benchmark/run-plan.js';
+import { TrialVerdicts } from '../benchmark/verdicts.js';
 import { benchmarkTable, formatBenchmarkTable } from '../benchmark/table.js';
 import { leaseNext, reportAttempt } from '../workflow/engine.js';
 import type { DriverCan } from '../workflow/requirements.js';
@@ -14,11 +15,11 @@ import { readRun } from '../workflow/store.js';
 import type { LocalConfig } from '../types.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
 import type { StepState } from '../workflow/step-state.js';
-import { benchmarkRunConfig, fixTask, PRODUCT_URL, RUN_START, RUN_TEAM, settleBaselines, startBenchmarkRun } from './helpers/benchmark-fixture.js';
+import { benchmarkRunConfig, fixTask, PRODUCT_URL, RUN_START, RUN_TEAM, settleBaselines, startBenchmarkRun, trialCheckOutput } from './helpers/benchmark-fixture.js';
 
 const driver: DriverIdentity = { kind: 'external', machine: 'ci', workspace: '/work' };
 const can: DriverCan = { workspace: ['read-only', 'new', 'continue', 'clone'], isolation: 'sandbox', env: true, tools: ['claude'], end_turn: true };
-const LeaseSchema = z.object({ data: z.object({ lease: z.object({ attempt: z.string(), revision: z.number(), workspace: z.object({ branch: z.string() }) }) }) });
+const LeaseSchema = z.object({ data: z.object({ lease: z.object({ step: z.string(), attempt: z.string(), revision: z.number(), workspace: z.object({ branch: z.string() }) }) }) });
 const dirs: string[] = [];
 
 afterEach(() => {
@@ -43,7 +44,7 @@ async function endRecord(config: LocalConfig, runId: string): Promise<{ benchmar
   if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
   const planned = planOfRun(run);
   if ('failure' in planned) throw new Error(planned.failure.message);
-  return { benchmark: benchmarkRecord(run, planned.found, []) };
+  return { benchmark: benchmarkRecord(run, planned.found, await TrialVerdicts.of(config, run, planned.found)) };
 }
 
 /** The end record of a run of ten repetitions whose first trial passed its check before the run was cancelled. */
@@ -56,7 +57,7 @@ async function onePassedOfTen() {
     changes: { branch: prompt.workspace.branch, base: RUN_START, from: RUN_START, to: 'c'.repeat(40), commits: [] },
   });
   const check = LeaseSchema.parse(await leaseNext(config, runId, driver, { can, prepare: true })).data.lease;
-  await reportAttempt(config, runId, { attempt: check.attempt, revision: check.revision, outcome: 'success', exitCode: 0, outputs: { result: 'passed' }, driver });
+  await reportAttempt(config, runId, { attempt: check.attempt, revision: check.revision, outcome: 'success', exitCode: 0, outputs: await trialCheckOutput(config, runId, { checkStep: check.step, result: 'passed' }), driver });
   await cancelRun(config, runId, {});
   return endRecord(config, runId);
 }

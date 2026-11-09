@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { labelVersion, ScoreLabelSchema } from '../../scorers/label.js';
 import { benchmarkFixture, driveCommands, envelope, FIX_SUITE, fixTask, PRODUCT_URL, said, startFixBenchmark, type BenchmarkFixture } from '../helpers/benchmark-fixture.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -45,7 +46,7 @@ const RecordSchema = z.object({
   suite: z.object({ sourceHash: z.string() }),
   repetitions: z.number(),
   baselineTeamRevision: z.string(),
-  scorers: z.array(z.object({ name: z.string(), rubric: z.object({ sourceHash: z.string() }) })),
+  scorers: z.array(z.object({ name: z.string(), rubric: z.object({ sourceHash: z.string() }) }).passthrough()),
   tasks: z.array(z.object({ id: z.string(), sourceHash: z.string(), baseline: z.string() })),
   trials: z.array(z.object({ arm: z.string(), step: z.string(), result: z.string() })),
 }).passthrough();
@@ -136,7 +137,10 @@ describe('a benchmark run once it has started', () => {
 
     expect(ran.code, said(ran)).toBe(0);
     expect(record.baselineTeamRevision).toBe(teamHead);
-    expect(record.scorers).toEqual([{ name: 'quality', rubric: { sourceHash: createHash('sha256').update(QUALITY).digest('hex') } }]);
+    expect(record.scorers).toEqual([
+      { name: 'quality', rubric: { sourceHash: createHash('sha256').update(QUALITY).digest('hex') }, labels: [{ value: 'tidy', score: 1 }, { value: 'messy', score: 0 }], passingScore: 1 },
+      { name: 'teamai:correctness:fix', rubric: { sourceHash: expect.any(String) }, labels: [{ value: 'correct', score: 1 }, { value: 'incorrect', score: 0 }], passingScore: 1 },
+    ]);
     expect(record.tasks).toEqual([expect.objectContaining({ id: 'fix', baseline: 'valid' })]);
     expect(record.trials.map((trial) => trial.result)).toEqual(['not_run']);
     expect(fixture.toolLaunches()).toEqual([]);
@@ -183,6 +187,49 @@ describe('a benchmark run once it has started', () => {
     ]);
     expect(fixture.toolLaunches()).toEqual([]);
     expect(fixture.status()).toBe(status);
+  }, 120_000);
+
+  it("decides a check task's trial by the correctness label its check stored on this machine, never published, and launches no judge", async () => {
+    const fixture = await fixtureOf({ tool: 'fixes', sandbox: true, suite: FIX_SUITE });
+
+    const ran = await fixture.teamai(['benchmark', 'run', 'fix']);
+
+    const done = DoneSchema.parse(envelope(ran).data?.done);
+    const check = RunFileSchema.parse(fixture.runFile(done.run)).steps.find((step) => step.id === 'trials.r1.fix.claude.check');
+    const labels = fs.readFileSync(path.join(fixture.dataHome(), 'scores', 'labels.jsonl'), 'utf8').trim().split('\n').map((line) => ScoreLabelSchema.parse(JSON.parse(line)));
+    const pending = path.join(fixture.dataHome(), 'scores', 'pending');
+    const record = RecordSchema.extend({ schemaVersion: z.number(), trials: z.array(z.object({ result: z.string(), verdicts: z.unknown() })) }).parse(fixture.benchmarkRecord(done.run));
+    expect(ran.code, said(ran)).toBe(0);
+    expect(labels).toEqual([expect.objectContaining({
+      source: 'workflow', scorer: 'teamai:correctness:fix', label: 'correct', score: 1, passed: true, judge: { kind: 'stage' }, decidedBy: 'check',
+      subject: { runId: done.run, step: 'trials.r1.fix.claude.prompt', pass: 1 },
+    })]);
+    expect(check).toMatchObject({ status: 'succeeded', outputs: { result: 'passed', cause: '', label: labels[0] && labelVersion(labels[0]) } });
+    expect(fs.existsSync(pending) ? fs.readdirSync(pending) : []).toEqual([]);
+    expect(record.schemaVersion).toBe(2);
+    expect(record.trials).toEqual([{
+      result: 'passed',
+      verdicts: [{ scorer: 'teamai:correctness:fix', outcome: { kind: 'labelled', label: 'correct', score: 1, passed: true }, decider: { by: 'check', task: record.tasks[0]?.sourceHash } }],
+    }]);
+    expect(fixture.judgeLaunches()).toEqual([]);
+  }, 120_000);
+
+  it('refuses to resume a run whose plan a teamai before an upgrade froze, naming teamai benchmark run', async () => {
+    const fixture = await fixtureOf({ tool: 'fixes', sandbox: true, suite: FIX_SUITE });
+    const runId = await started(fixture);
+    const file = path.join(fixture.dataHome(), 'workflows', 'runs', `${runId}.json`);
+    const run = z.object({ admitted: z.object({ plan: z.object({ output: z.object({ plan: z.record(z.string(), z.unknown()) }).passthrough() }).passthrough() }).passthrough() }).passthrough().parse(JSON.parse(fs.readFileSync(file, 'utf8')));
+    run.admitted.plan.output.plan.schemaVersion = 1;
+    fs.writeFileSync(file, JSON.stringify(run));
+
+    const resumed = await fixture.teamai(['workflow', 'resume', runId]);
+
+    expect(resumed.code).toBe(1);
+    expect(envelope(resumed).error).toMatchObject({
+      code: 'benchmark_plan_outdated',
+      message: `Run ${runId} measures a benchmark plan of schemaVersion 1, which the teamai that started it froze, and this teamai reads only schemaVersion 2, so the run cannot go on here. Run it with the teamai that started it, or start the suite again with teamai benchmark run fix.`,
+    });
+    expect(fixture.toolLaunches()).toEqual([]);
   }, 120_000);
 
   it("is refused by the skill driver, which launches no trial tool, and handed to the person's local resume", async () => {

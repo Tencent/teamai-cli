@@ -16,7 +16,7 @@ import { runsDir } from '../workflow/store.js';
 import type { LocalConfig } from '../types.js';
 import type { RunState, WorkflowFailure } from '../workflow/types.js';
 import { regressionOf, runComparisons, type ArmComparison, type BenchmarkRunInput, type Regression } from './history.js';
-import { benchmarkRecord, benchmarkRecordFile, unlaunchedTrial, type BenchmarkRunRecord } from './result.js';
+import { BENCHMARK_RECORD_SCHEMA_VERSION, benchmarkRecord, benchmarkRecordFile, unlaunchedTrial, type BenchmarkRunRecord } from './result.js';
 import { planOfRun, trialsUnattended, type RunPlan } from './run-plan.js';
 import { benchmarkTable, formatBenchmarkTable, type AssetEffect, type BenchmarkTable } from './table.js';
 import { toolUnavailableNotice } from './trial.js';
@@ -65,7 +65,7 @@ export async function reportBenchmark(env: NodeJS.ProcessEnv, secrets: Record<st
   const verdicts = await TrialVerdicts.of(config, run, planned.found);
 
   const record = definedFields<BenchmarkRunRecord>({
-    schemaVersion: 1,
+    schemaVersion: BENCHMARK_RECORD_SCHEMA_VERSION,
     run: run.id,
     outcome: finalizing.outcome,
     teamaiVersion: getCurrentVersion(),
@@ -84,7 +84,7 @@ export async function reportBenchmark(env: NodeJS.ProcessEnv, secrets: Record<st
   const pending = queued && (await publishPendingRecords(config, { run: run.id }).catch(() => ({ state: 'pending' as const }))).state === 'pending';
   const table = benchmarkTable({ benchmark: record });
   const asked = trialsUnattended(run, planned.found.producer) ? [] : [ASKED_NOTICE];
-  const current: BenchmarkRunInput = { run: run.id, source: 'local', startedAt: run.createdAt, outcome: record.outcome, benchmark: record };
+  const current: BenchmarkRunInput = { run: run.id, source: 'local', startedAt: run.createdAt, outcome: record.outcome, schemaVersion: record.schemaVersion, benchmark: record };
   const regression = compare.data === 'true' ? await regressionAgainstPublished(config, current) : undefined;
 
   const text = [
@@ -110,7 +110,7 @@ function regressionLines(regression: Regression, suite: string): string[] {
 
   switch (regression.kind) {
     case 'no_comparable':
-      return [`No earlier succeeded run of suite ${suite} ran the same tasks on the same arms on teamai-reports: recording is off, or nothing comparable has been published yet. --fail-on-regression has nothing to compare with.`];
+      return [`No earlier succeeded run of suite ${suite} ran the same tasks on the same arms on teamai-reports in a record of this version: recording is off, nothing comparable has been published yet, or the earlier runs ran on a teamai that recorded them another way. --fail-on-regression has nothing to compare with.`];
     case 'held':
       return [`No arm's pass rate dropped by more than chance against run ${regression.against}.`];
     case 'dropped':

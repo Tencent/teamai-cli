@@ -11,7 +11,7 @@ import { loadLocalConfigForScope } from '../config.js';
 import { isModelAlias, loadModelAliases, loadTeamModelAliases, noModelCause, noModelReason, resolveModelValue, type ModelAliases, type ModelResolution, type NoModel } from '../models/aliases.js';
 import { pinScorers } from '../scorers/cache.js';
 import { RunScorers } from '../scorers/run-scorers.js';
-import type { PinnedScorer } from '../scorers/pin.js';
+import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
 import { resolveTeamRef, TeamRefError } from '../team-ref.js';
 import { roleDeclaration, type RoleDeclaration } from '../roles.js';
 import { isAgentToolId } from '../tools.js';
@@ -23,10 +23,10 @@ import { error } from '../workflow/engine.js';
 import { runDeadline } from '../workflow/limits.js';
 import { findAttemptRun } from '../workflow/run-location.js';
 import { judgeUnavailable } from '../scorers/judges-here.js';
-import type { WorkflowEnvelope, WorkflowFailure } from '../workflow/types.js';
+import type { RunState, WorkflowEnvelope, WorkflowFailure } from '../workflow/types.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import { git } from '../workflow/worktree.js';
-import { addedOf, compileBundle, freezePlan, type BenchmarkPlan, type CompiledBundle, type PlannedArm } from './plan.js';
+import { addedOf, compileBundle, freezePlan, type BenchmarkPlan, type CompiledBundle, type PinnedRubric, type PlannedArm } from './plan.js';
 import { defaultsArmOf, parseSuite, type Arm, type Suite, type Task, type TaskJudge } from './suite.js';
 import { coveredDelivery, coveredSkillName, teamFilesAt } from './team-without.js';
 import { pinArmWorkflow, type PinnedArmWorkflow } from './arm-workflow.js';
@@ -37,7 +37,7 @@ import { runCheckAt, type CheckRun } from '../scorers/check-run.js';
 import { commitCacheOf } from '../workflow/place/place.js';
 import { leavesOut, withoutRefusal } from './team-without.js';
 import { commitCheckFiles, trialBlocker, type CommittedSuite } from './trial.js';
-import { trialsUnattended } from './run-plan.js';
+import { planOfRun, trialsUnattended } from './run-plan.js';
 
 /** What planning reads besides the suite. */
 interface BenchmarkStart {
@@ -204,6 +204,16 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
     return refuse(error('scorer_not_found', `Suite "${found.name}" lists scorer "${unpinned}", which has no valid scorers/${unpinned}.md for this member. Add the scorer, or remove it from ${found.relativePath}, push it, run teamai pull, and start again.`));
   }
 
+  const rubrics: Record<string, PinnedRubric> = {};
+
+  for (const [scorer, pin] of Object.entries(pinned)) {
+    const definition = pinnedDefinition(scorer, pin);
+    const [firstLabel, ...otherLabels] = definition?.labels ?? [];
+
+    if (!definition || !firstLabel) return refuse(error('scorer_invalid', `Scorer "${scorer}" of suite "${found.name}" is written in a form this teamai cannot read. Update teamai, and start again.`));
+    rubrics[scorer] = { pin, definition: { labels: [firstLabel, ...otherLabels], passingScore: definition.passingScore } };
+  }
+
   const committed = await commitCheckFiles(commitCacheOf(config, found.repo), found);
 
   if (!committed.ok) {
@@ -216,7 +226,7 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
   const covered = await coveredTaskRefusal(config, { tasks: found.tasks, pulled: revision, arms, member: selectionOf(config) });
 
   if ('refusal' in covered) return refuse(covered.refusal);
-  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: revision, selection: selectionOf(config), arms, scorers: pinned, coveredSkills: covered.skills, coveredWithheldFrom: covered.withheldFrom, skillChanges: skillChanges.changes, isSubset });
+  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: revision, selection: selectionOf(config), arms, scorers: rubrics, coveredSkills: covered.skills, coveredWithheldFrom: covered.withheldFrom, skillChanges: skillChanges.changes, isSubset });
   const { scorers: generated } = compileBundle(plan, committed.suite, { armWorkflows, unattended: options.unattended });
   const criteria = found.tasks.find((task) => task.judge.kind === 'criteria');
   const needs = found.scorers.length > 0 ? `its scorers ${found.scorers.join(', ')}` : criteria ? `task "${criteria.id}" has successCriteria` : undefined;
@@ -580,6 +590,16 @@ function selectionOf(config: LocalConfig): TeamSelection {
     subscribedTags: config.subscribedTags,
     excludedSkills: config.excludedSkills ?? [],
   });
+}
+
+/**
+ * Why `teamai workflow resume` refuses `run`: a benchmark run whose plan a teamai before an upgrade froze in another
+ * schemaVersion, which this one cannot measure. Undefined for any other run, which resume handles as it does every run.
+ */
+export function outdatedBenchmarkPlan(run: RunState): WorkflowFailure | undefined {
+  const planned = planOfRun(run);
+
+  return 'failure' in planned && planned.failure.code === 'benchmark_plan_outdated' ? planned.failure : undefined;
 }
 
 /**

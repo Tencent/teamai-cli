@@ -1,34 +1,63 @@
 /**
- * How each scorer of a benchmark trial ended: labelled, or unscored and why. Built when the run's steps ended, from the
- * results of its `workflow: teamai-score` steps, each item of which labels one trial pass, and from the labels those
- * runs wrote on this machine, which hold whether a label passes and what its judge cost.
+ * How each scorer of a benchmark trial ended: labelled, by whom, or unscored and why. Built when the run's steps ended.
+ * A check task's correctness label is the one its check step stored, named by the version the step output; every other
+ * scorer's comes from the results of the run's `workflow: teamai-score` steps, each item of which labels one trial
+ * pass. Both are read from the labels on this machine, which hold a label's score, whether it passes, who decided it,
+ * and what its judge cost.
  */
 import { z } from 'zod';
+import { definedFields } from '../utils/defined-fields.js';
+import { CheckOutputSchema } from '../scorers/check.js';
 import { LabelStore } from '../scorers/label-store.js';
-import { labelVersion, type ScoreLabel } from '../scorers/label.js';
+import { isStageDecider, labelVersion, type ScoreLabel } from '../scorers/label.js';
 import { LABEL_CODES } from '../scorers/score-labels.js';
 import type { LocalConfig } from '../types.js';
 import { stepDefinitions } from '../workflow/scope.js';
+import type { StepState } from '../workflow/step-state.js';
 import { stepWorkflow, type RunState, type WorkflowStep } from '../workflow/types.js';
+import { checkStepOf, correctnessScorerName, type PlannedTask } from './plan.js';
 import type { RunPlan } from './run-plan.js';
 import { SCORE_WORKFLOW } from '../scorers/judging-workflows.js';
 
-/** No label and no code: the trial's `teamai-score` step never labelled the scorer before the run's steps ended. */
+/** No label and no code: no check or `teamai-score` step labelled the scorer before the run's steps ended. */
 const RUN_ENDED = 'run_ended';
 
-export const EntryVerdictSchema = z.object({
+/**
+ * Who decided a label: a task's check, named by the task's hash, or a judge, by its rubric's hash, the tool it ran in,
+ * the model and effort its tool reported, else those it was launched with, and whether it judged in a batch.
+ */
+const VerdictDeciderSchema = z.discriminatedUnion('by', [
+  z.object({ by: z.literal('check'), task: z.string().min(1) }).strict(),
+  z.object({
+    by: z.literal('judge'), rubric: z.string().min(1), tool: z.string().min(1), model: z.string().min(1).optional(), effort: z.string().min(1).optional(), batched: z.boolean(),
+  }).strict(),
+]);
+
+/**
+ * How one scorer of a recorded trial ended. `decider`: absent for an unscored scorer, and for a label no check or judge
+ * decided, such as a person's.
+ */
+export const TrialVerdictSchema = z.object({
   scorer: z.string().min(1),
-  step: z.string().min(1),
-  pass: z.number().int().positive(),
   outcome: z.discriminatedUnion('kind', [
-    z.object({ kind: z.literal('labelled'), label: z.string().min(1), passed: z.boolean() }).strict(),
+    z.object({ kind: z.literal('labelled'), label: z.string().min(1), score: z.number(), passed: z.boolean() }).strict(),
     z.object({ kind: z.literal('unscored'), because: z.enum([...LABEL_CODES, RUN_ENDED]) }).strict(),
   ]),
+  decider: VerdictDeciderSchema.optional(),
+}).strict();
+
+export type TrialVerdict = z.infer<typeof TrialVerdictSchema>;
+
+export const EntryVerdictSchema = TrialVerdictSchema.extend({
+  step: z.string().min(1),
+  pass: z.number().int().positive(),
   /** What the label's judge stated it cost; absent when it stated none. */
   scoringCost: z.object({ amount: z.number().nonnegative(), unit: z.string().min(1), complete: z.boolean() }).strict().optional(),
 }).strict();
 
 export type EntryVerdict = z.infer<typeof EntryVerdictSchema>;
+
+type Judged = Pick<EntryVerdict, 'outcome' | 'decider' | 'scoringCost'>;
 
 /** What `teamai score label` printed of one scorer: its label, or the code of why it has none; the other is ''. */
 const LabelEntrySchema = z.object({ scorer: z.string(), label: z.string(), code: z.union([z.enum(LABEL_CODES), z.literal('')]) });
@@ -86,38 +115,90 @@ function scoredEntries(run: RunState): Map<string, Scored> {
   return bySubject;
 }
 
-function verdictOf(entry: ScoredEntry | undefined, stored: ScoreLabel | undefined): Pick<EntryVerdict, 'outcome' | 'scoringCost'> {
+function labelledOf(stored: ScoreLabel, decider: TrialVerdict['decider']): Judged {
+  return definedFields<Judged>({ outcome: { kind: 'labelled', label: stored.label, score: stored.score, passed: stored.passed }, decider });
+}
+
+/** A judge that decided `stored`: its model judge, unless a stage decided it before any judge ran. */
+function judgeOf(stored: ScoreLabel): TrialVerdict['decider'] {
+  const { judge } = stored;
+
+  if (judge.kind !== 'model' || (stored.source === 'workflow' && isStageDecider(stored.decidedBy))) return undefined;
+
+  return definedFields<NonNullable<TrialVerdict['decider']>>({
+    by: 'judge', rubric: stored.rubric.sourceHash, tool: judge.tool, model: judge.model?.reported ?? judge.model?.requested, effort: judge.effort?.reported ?? judge.effort?.requested, batched: judge.batched === true,
+  });
+}
+
+function verdictOf(entry: ScoredEntry | undefined, stored: ScoreLabel | undefined): Judged {
   if (entry?.code) return { outcome: { kind: 'unscored', because: entry.code } };
 
   // A label the write never recorded is no label.
   if (!entry || !stored) return { outcome: { kind: 'unscored', because: RUN_ENDED } };
   const cost = stored.judge.kind === 'model' ? stored.judge.usage?.cost : undefined;
-  const verdict: Pick<EntryVerdict, 'outcome' | 'scoringCost'> = { outcome: { kind: 'labelled', label: stored.label, passed: stored.passed } };
+  const verdict = labelledOf(stored, judgeOf(stored));
 
   if (cost) verdict.scoringCost = { ...cost, complete: true };
 
   return verdict;
 }
 
+/**
+ * The correctness verdict of a check task's trial, from what its check step output: the label whose version it names,
+ * decided by the task's check; `check_could_not_run` when the check could not run; `run_ended` when the step output
+ * nothing, or named a label this machine does not hold.
+ */
+function checkedOf(check: StepState | undefined, labels: readonly ScoreLabel[], task: PlannedTask): Judged {
+  const output = CheckOutputSchema.safeParse(check && 'outputs' in check ? check.outputs : undefined);
+
+  if (!output.success) return { outcome: { kind: 'unscored', because: RUN_ENDED } };
+  const checked = output.data;
+
+  switch (checked.result) {
+    case 'could_not_run':
+      return { outcome: { kind: 'unscored', because: 'check_could_not_run' } };
+    case 'passed':
+    case 'failed': {
+      const stored = labels.find((label) => labelVersion(label) === checked.label);
+
+      return stored ? labelledOf(stored, { by: 'check', task: task.sourceHash }) : { outcome: { kind: 'unscored', because: RUN_ENDED } };
+    }
+
+    default: {
+      const unhandled: never = checked;
+
+      return unhandled;
+    }
+  }
+}
+
 export const TrialVerdicts = {
-  /** A verdict for each scorer each trial of `plan` pinned, on the pass the trial ran, as its steps ended. */
+  /**
+   * A verdict for each scorer each trial of `plan` pinned, on the pass the trial ran, as its steps ended: its
+   * correctness scorer first, whether its check or a judge decided it, then the suite's scorers.
+   */
   async of(config: LocalConfig, run: RunState, { plan, prefix }: RunPlan): Promise<EntryVerdict[]> {
     const definitionOf = stepDefinitions(run);
     const scored = scoredEntries(run);
     const labels = await LabelStore.local(config);
+    const stateOf = (id: string): StepState | undefined => run.steps.find((state) => state.id === id);
 
     return plan.trials.flatMap((trial) => {
       const step = `${prefix}${trial.step}`;
-      const state = run.steps.find(({ id }) => id === step);
-      const pass = state?.pass ?? 1;
+      const pass = stateOf(step)?.pass ?? 1;
       const subject = scored.get(`run:${run.id}:${step}:${pass}`);
+      const task = plan.tasks.find(({ id }) => id === trial.task);
+      const correctness = correctnessScorerName(trial.task);
+      const checked = task?.judge.kind === 'check' ? [{ scorer: correctness, step, pass, ...checkedOf(stateOf(`${prefix}${checkStepOf(trial)}`), labels, task) }] : [];
 
-      return (definitionOf(step)?.scorers?.names ?? []).map((scorer) => {
+      const judged = (definitionOf(step)?.scorers?.names ?? []).map((scorer) => {
         const entry = subject?.entries.get(scorer);
         const stored = labels.find((label) => label.scorer === scorer && subject?.written.has(labelVersion(label)) === true);
 
         return { scorer, step, pass, ...verdictOf(entry, stored) };
       });
+
+      return [...checked, ...judged.filter(({ scorer }) => scorer === correctness), ...judged.filter(({ scorer }) => scorer !== correctness)];
     });
   },
 };

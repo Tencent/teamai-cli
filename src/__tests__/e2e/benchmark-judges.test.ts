@@ -95,10 +95,10 @@ describe('benchmark judges on the local driver', () => {
       expect.objectContaining({ arm: 'second', result: 'passed', scoringCost: { amount: 0.2, unit: 'USD', complete: true } }),
     ]);
     expect(done.outputs.table.verdicts.map(({ scorer, outcome }) => ({ scorer, outcome })).sort((left, right) => left.scorer.localeCompare(right.scorer))).toEqual([
-      { scorer: 'quality', outcome: { kind: 'labelled', label: 'tidy', passed: true } },
-      { scorer: 'quality', outcome: { kind: 'labelled', label: 'tidy', passed: true } },
-      { scorer: CORRECTNESS, outcome: { kind: 'labelled', label: 'correct', passed: true } },
-      { scorer: CORRECTNESS, outcome: { kind: 'labelled', label: 'correct', passed: true } },
+      { scorer: 'quality', outcome: { kind: 'labelled', label: 'tidy', score: 1, passed: true } },
+      { scorer: 'quality', outcome: { kind: 'labelled', label: 'tidy', score: 1, passed: true } },
+      { scorer: CORRECTNESS, outcome: { kind: 'labelled', label: 'correct', score: 1, passed: true } },
+      { scorer: CORRECTNESS, outcome: { kind: 'labelled', label: 'correct', score: 1, passed: true } },
     ]);
     const runFile = RunSchema.parse(fixture.runFile(done.run));
     expect(runFile).not.toHaveProperty('verdicts');
@@ -109,7 +109,7 @@ describe('benchmark judges on the local driver', () => {
   }, 120_000);
 
   it.each([
-    ['incorrect', 'failed', '| claude | claude | tool default (team) | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0% (0/1) |', { kind: 'labelled', label: 'incorrect', passed: false }],
+    ['incorrect', 'failed', '| claude | claude | tool default (team) | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0% (0/1) |', { kind: 'labelled', label: 'incorrect', score: 0, passed: false }],
     ['fails', 'unscored', '| claude | claude | tool default (team) | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0% (0/1) |', { kind: 'unscored', because: 'judge_failed' }],
     ['another-label', 'unscored', '| claude | claude | tool default (team) | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0% (0/1) |', { kind: 'unscored', because: 'judge_answer_invalid' }],
   ] as const)('makes a trial whose judge answers %s %s, and ends the run without waiting for its lease to lapse', async (judge, result, row, outcome) => {
@@ -132,7 +132,7 @@ describe('benchmark judges on the local driver', () => {
 
     const done = await runLocally(fixture);
 
-    expect(done.outputs.table.verdicts).toEqual([expect.objectContaining({ scorer: CORRECTNESS, outcome: { kind: 'labelled', label: 'correct', passed: true } })]);
+    expect(done.outputs.table.verdicts).toEqual([expect.objectContaining({ scorer: CORRECTNESS, outcome: { kind: 'labelled', label: 'correct', score: 1, passed: true } })]);
     expect(done.outputs.table.verdicts[0]).not.toHaveProperty('scoringCost');
     expect(RecordSchema.parse(fixture.benchmarkRecord(done.run)).trials).toEqual([expect.not.objectContaining({ scoringCost: expect.anything() })]);
   }, 120_000);

@@ -29,7 +29,8 @@ import YAML from 'yaml';
 import { z } from 'zod';
 import { syncScorersThenWorkflows } from '../../scorers/team-sync.js';
 import type { LocalConfig } from '../../types.js';
-import { compileBundle, freezePlan, type BenchmarkPlan } from '../../benchmark/plan.js';
+import { checkStepOf, compileBundle, correctnessScorerName, freezePlan, type BenchmarkPlan } from '../../benchmark/plan.js';
+import { LabelStore } from '../../scorers/label-store.js';
 import { RunScorers } from '../../scorers/run-scorers.js';
 import type { BenchmarkRunRecord, TrialResult } from '../../benchmark/result.js';
 import { planOfRun } from '../../benchmark/run-plan.js';
@@ -688,19 +689,50 @@ export async function startBenchmarkRun(config: LocalConfig, files: BenchmarkSui
 
 /**
  * The benchmark record of run `run` of suite `fix`, as `teamai benchmark report` writes it: one trial of task `fix` on
- * each arm of `tools`, each on team revision `team`, every one `result`.
+ * each arm of `tools`, each on team revision `team`, every one `result`. `schemaVersion` 1: as a teamai before
+ * schemaVersion 2 wrote it, with no verdicts and no scorer labels.
  */
-export function fixRecord(run: string, { startedAt, username, result = 'passed', team = RUN_TEAM, tools = ['claude'] }: {
-  startedAt: string; username?: string; result?: TrialResult; team?: string; tools?: string[];
+export function fixRecord(run: string, { startedAt, username, result = 'passed', team = RUN_TEAM, tools = ['claude'], schemaVersion = 2 }: {
+  startedAt: string; username?: string; result?: TrialResult; team?: string; tools?: string[]; schemaVersion?: 1 | 2;
 }): BenchmarkRunRecord {
+  const scorer = 'teamai:correctness:fix';
+  const verdict = result === 'passed' || result === 'failed'
+    ? { scorer, outcome: { kind: 'labelled' as const, label: result === 'passed' ? 'correct' : 'incorrect', score: result === 'passed' ? 1 : 0, passed: result === 'passed' }, decider: { by: 'check' as const, task: 't1' } }
+    : { scorer, outcome: { kind: 'unscored' as const, because: 'run_ended' as const } };
   return {
-    schemaVersion: 1, run, outcome: 'succeeded', teamaiVersion: '0.0.0', startedAt, finishedAt: startedAt, ...(username ? { username } : {}),
+    schemaVersion, run, outcome: 'succeeded', teamaiVersion: '0.0.0', startedAt, finishedAt: startedAt, ...(username ? { username } : {}),
     workflow: { name: 'teamai-benchmark', origin: { source: 'team' }, sourceHash: 'f'.repeat(64) },
-    suite: { name: 'fix', sourceHash: 's1' }, repetitions: 1, baselineTeamRevision: team, scorers: [],
+    suite: { name: 'fix', sourceHash: 's1' }, repetitions: 1, baselineTeamRevision: team,
+    scorers: schemaVersion === 1 ? [] : [{ name: scorer, rubric: { sourceHash: 'c1' }, labels: [{ value: 'correct', score: 1 }, { value: 'incorrect', score: 0 }], passingScore: 1 }],
     tasks: [{ id: 'fix', startingCommit: RUN_START, sourceHash: 't1', baseline: 'valid' }],
     arms: tools.map((tool) => ({ name: tool, tool, source: 'team', team: { kind: 'pulled', revision: team } })),
-    trials: tools.map((tool, index) => ({ task: 'fix', arm: tool, repetition: 1, order: index + 1, step: `trials.r1.fix.${tool}.prompt`, result })),
+    trials: tools.map((tool, index) => ({ task: 'fix', arm: tool, repetition: 1, order: index + 1, step: `trials.r1.fix.${tool}.prompt`, result, ...(schemaVersion === 1 ? {} : { verdicts: [verdict] }) })),
   };
+}
+
+/**
+ * What `teamai benchmark check --trial` outputs as check step `checkStep` of run `runId` made in process, once its check
+ * said `result`: for a check that ran, the version of the trial's correctness label it stored, decided by the check.
+ */
+export async function trialCheckOutput(config: LocalConfig, runId: string, { checkStep, result }: { checkStep: string; result: 'passed' | 'failed' | 'could_not_run' }): Promise<Record<string, string>> {
+  if (result === 'could_not_run') return { result, cause: 'not_found', label: '' };
+  const run = await readRun(config, runId);
+  if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
+  const planned = planOfRun(run);
+  if ('failure' in planned) throw new Error(planned.failure.message);
+  const { plan, prefix } = planned.found;
+  const trial = plan.trials.find((candidate) => `${prefix}${checkStepOf(candidate)}` === checkStep);
+  if (!trial) throw new Error(`run ${runId} plans no trial checked by ${checkStep}`);
+  const scorer = plan.scorers.find(({ name }) => name === correctnessScorerName(trial.task));
+  if (!scorer) throw new Error(`the plan of run ${runId} pins no correctness scorer of task ${trial.task}`);
+  const step = `${prefix}${trial.step}`;
+  const passed = result === 'passed';
+  const written = await LabelStore.append(config, [{ label: {
+    source: 'workflow', scorer: scorer.name, rubric: scorer.rubric, label: passed ? 'correct' : 'incorrect', score: passed ? 1 : 0, passed,
+    judge: { kind: 'stage' }, decidedBy: 'check', subject: { runId, step, pass: run.steps.find(({ id }) => id === step)?.pass ?? 1 }, scoredAt: '2026-11-08T10:12:03.000Z',
+  } }], { outbox: false });
+  if (written.status === 'busy') throw new Error('the label store is busy');
+  return { result, cause: '', label: written.kept[0]?.version ?? '' };
 }
 
 const BaselineLeaseSchema = z.object({ data: z.object({ lease: z.object({ step: z.string().startsWith('trials.baselines.'), attempt: z.string(), revision: z.number() }) }) });
@@ -719,6 +751,6 @@ export async function settleBaselines(
   for (let settled = 0; settled < count; settled += 1) {
     const { attempt, revision, step } = BaselineLeaseSchema.parse(await leaseNext(config, runId, driver, { can, prepare: true })).data.lease;
     const result = baselines[step.slice('trials.baselines.'.length)] ?? 'failed';
-    await reportAttempt(config, runId, { attempt, revision, driver, outcome: 'success', exitCode: 0, outputs: { result } });
+    await reportAttempt(config, runId, { attempt, revision, driver, outcome: 'success', exitCode: 0, outputs: { result, cause: result === 'could_not_run' ? 'not_found' : '', label: '' } });
   }
 }

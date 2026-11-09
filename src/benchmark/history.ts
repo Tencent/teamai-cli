@@ -5,8 +5,8 @@
  *
  * Runs of one suite compare only while the suite's files stay the same, so what the page pools (an arm's pass rate and
  * usage, the task by arm heatmap) covers the runs of the suite's current version: the run `sourceHash` of the newest
- * run that ran the whole suite, over its suite file and each task file. A run of only some tasks or arms is current only
- * while the suite has no whole run.
+ * run that ran the whole suite, over its suite file and each task file, recorded in the same record schemaVersion. A
+ * run of only some tasks or arms is current only while the suite has no whole run.
  * Each run still shows as a point of its own.
  */
 import { definedFields } from '../utils/defined-fields.js';
@@ -25,6 +25,8 @@ export interface BenchmarkRunInput {
   username?: string;
   startedAt: string;
   outcome: BenchmarkRunRecord['outcome'];
+  /** Runs compare only with runs whose record has the same one. */
+  schemaVersion: BenchmarkRunRecord['schemaVersion'];
   benchmark: BenchmarkRecord;
 }
 
@@ -535,16 +537,16 @@ function runRow(input: BenchmarkRunInput): RunRow {
 }
 
 /**
- * `current` against the newest of `earlier` that started before it, ended `succeeded`, and ran the same suite, the same
- * tasks by source hash, and the same arms: each arm's name, tool, model, effort, workflow, role and team choice, never
- * the revision a team resolved to. Each arm's trials pair by task and repetition, as Compare pairs two arms of one run.
+ * `current` against the newest of `earlier` that started before it, ended `succeeded`, has a record of the same
+ * schemaVersion, and ran the same suite, the same tasks by source hash, and the same arms: each arm's name, tool, model,
+ * effort, workflow, role and team choice, never the revision a team resolved to. Each arm's trials pair by task and repetition, as Compare pairs two arms of one run.
  */
 export function regressionOf(current: BenchmarkRunInput, earlier: readonly BenchmarkRunInput[]): Regression {
   const taskVersions = ({ tasks }: BenchmarkRecord): string => JSON.stringify(tasks.map(({ id, sourceHash }) => [id, sourceHash]).sort());
   const treatments = ({ arms }: BenchmarkRecord): string => JSON.stringify(arms.map(armKey).sort());
 
-  const [against] = earlier.filter(({ run, outcome, startedAt, benchmark }) => run !== current.run && outcome === 'succeeded' && startedAt < current.startedAt
-    && benchmark.suite.name === current.benchmark.suite.name && taskVersions(benchmark) === taskVersions(current.benchmark) && treatments(benchmark) === treatments(current.benchmark))
+  const [against] = earlier.filter(({ run, outcome, startedAt, schemaVersion, benchmark }) => run !== current.run && outcome === 'succeeded' && startedAt < current.startedAt
+    && schemaVersion === current.schemaVersion && benchmark.suite.name === current.benchmark.suite.name && taskVersions(benchmark) === taskVersions(current.benchmark) && treatments(benchmark) === treatments(current.benchmark))
     .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
 
   if (!against) return { kind: 'no_comparable' };
@@ -597,7 +599,8 @@ export const BenchmarkHistory = {
     const versioned = whole.length > 0 ? whole : own;
     const reference = versioned.at(-1) ?? newest;
     const version = runSourceHash(reference.benchmark);
-    const suiteRuns = { runs: own, current: own.filter(({ benchmark }) => runSourceHash(benchmark) === version), newest: reference };
+    const isCurrent = ({ schemaVersion, benchmark }: BenchmarkRunInput): boolean => schemaVersion === reference.schemaVersion && runSourceHash(benchmark) === version;
+    const suiteRuns = { runs: own, current: own.filter(isCurrent), newest: reference };
 
     return {
       window,

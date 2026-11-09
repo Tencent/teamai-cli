@@ -704,7 +704,7 @@ $ teamai benchmark run fix-auth --sandbox
 | 卡住的 trial | 没有 [`trial.timeout`](#trial-限制) 时，一个永不返回的工具会一直运行到套件超时，它之后的每个 trial 结算为 `not_run`。 |
 | 评判 | 带 `successCriteria` 的任务和套件的评分器由运行自己的 `score` 步骤评判，它在 trial 之后、`report` 之前运行。机器上没有能以评分器要求的隔离级别运行其模型的评判工具时，需要评判的套件在启动时被拒绝。 |
 | 控制命令 | trial 的步骤要等运行的 `plan` 步骤报告后才存在。在此之前，对 trial 步骤执行 `teamai workflow cancel <run> <step>` 会返回 `step_not_found`。benchmark 运行是[隔离的](workflow-advanced.md#隔离运行)：`workflow retry`、`publish` 和 `--claim` 拒绝它，`publish` 和 `--claim` 返回 `isolated_run`，retry 会给出 `teamai benchmark run <suite>`。 |
-| 停下 | 用 `teamai workflow resume <run>` 继续，沿用启动时的 `--sandbox`。 |
+| 停下 | 用 `teamai workflow resume <run>` 继续，沿用启动时的 `--sandbox`。升级前的 teamai 启动的运行，如果计划的版本不同，就不能继续：`workflow resume` 会拒绝它，并指出 `teamai benchmark run <suite>`。 |
 
 无法运行的启动会被拒绝，消息说明该怎么做，并且不会创建运行。你的 user 范围 teamai 安装也能到达该团队，或团队通过 HTTP 提供时，运行无法固定 trial 得到的团队，会以 `team_ref_blocked` 拒绝，并说明要改什么。
 
@@ -779,7 +779,7 @@ outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 | 命令 | 作为 | 作用 |
 | --- | --- | --- |
 | `teamai benchmark plan <suite>` | `plan` 步骤 | 冻结你 pull 到的团队修订，获取 trial 读取的每个提交，并把 trial 打印成一个工作流，每个基线和 trial 一个克隆。 |
-| `teamai benchmark check --baseline\|--trial` | 每个克隆中的一个步骤 | 写入 `check.add`，对 trial 恢复 `protect`，运行任务的 check，并打印其结果。 |
+| `teamai benchmark check --baseline\|--trial` | 每个克隆中的一个步骤 | 写入 `check.add`，对 trial 恢复 `protect`，运行任务的 check，并打印 `{ result, cause, label }`。trial 的 check 还会保存该 trial 的正确性标签，见[谁判定一个 trial](#谁判定一个-trial)。 |
 | `teamai score subjects --run <run> --step trials` | `subjects` 步骤 | 列出 trial 在本机结算的、需要评分的执行轮次。 |
 | [`teamai-score`](scorers.md#teamai-score-工作流) | `score` 步骤，每个 subject 一次 | 用运行开始时的评分器评判 trial。 |
 | `teamai benchmark report` | `report` 这个 `finally` 步骤 | 给 trial 分类，写出记录，并打印结果。`COMPARE=true` 时还会比较记录，见[回归时失败](#回归时失败)。 |
@@ -811,7 +811,7 @@ finally:
 
 ## 结果
 
-运行结束时，`benchmark run` 把结果打印到 stderr。stdout 上的 JSON 返回在 `data.done.outputs.text` 中带同样的文本，在 `data.done.outputs.table` 中带数字，其中 `verdicts` 给出每个被评判的 trial 在每个评分器下的结论：`labelled` 带它的标签，或 `unscored` 带 `because`，即评判的失败码，没有标签时为 `run_ended`。对这个套件，再加一个 check 本来就通过的第三个任务 `old-bug`：
+运行结束时，`benchmark run` 把结果打印到 stderr。stdout 上的 JSON 返回在 `data.done.outputs.text` 中带同样的文本，在 `data.done.outputs.table` 中带数字，其中 `verdicts` 给出每个 trial 在每个评分器下的结论，正确性评分器排在最前：`labelled` 带它的标签和分数，或 `unscored` 带 `because`，即评判的失败码、`check_could_not_run`，没有标签时为 `run_ended`。对这个套件，再加一个 check 本来就通过的第三个任务 `old-bug`：
 
 ```text
 | Arm | Tool | Model (source) | Planned | Passed | Failed | Error | Unscored | Not run | Stopped by a limit | Deviations | Not verified | Pass rate |
@@ -855,6 +855,38 @@ These results hold for these tasks, this run and this machine.
 ```
 
 只有 teamai 能看到的加载才计数：`unknown` 是其工具不报告 skill 加载的 trial，而不是没有加载该 skill 的 trial。
+
+### 谁判定一个 trial
+
+只有 trial 的 `teamai:correctness:<task>` 标签决定 `passed`、`failed` 或 `unscored`。`error` 和 `not_run` 来自 trial 工作的状态。对带 `check` 的任务，check 步骤在 prompt 之后立即在 trial 的克隆中自己写下这个标签，不运行任何评判。标签和运行的其他标签一起保存在本机上，并且和隔离运行的所有标签一样，从不发布：
+
+```json
+{"source":"workflow","scorer":"teamai:correctness:expired-token","rubric":{"sourceHash":"…"},
+ "label":"correct","score":1,"passed":true,"judge":{"kind":"stage"},"decidedBy":"check",
+ "subject":{"runId":"r38302f8e6a18c377","step":"trials.r1.expired-token.claude.prompt","pass":1},
+ "scoredAt":"2026-11-08T10:12:03Z"}
+```
+
+| check | 标签 | trial 结果 |
+| --- | --- | --- |
+| 以 0 退出 | 分数不低于 `passingScore` 的标签中分数最高的那个 | `passed` |
+| 以非 0 退出 | 分数最低的标签 | `failed` |
+| 无法运行 | 无 | `error`，`failure: { cause }` |
+
+`cause` 是 `not_found`、`not_executable`、`signal`、`timeout`、`spawn_failed`、`prepare_failed`（恢复 `protect` 或写入 `check.add` 失败）之一。
+
+每个记录下来的 trial 都带着它的结论：
+
+```json
+"verdicts": [
+  { "scorer": "teamai:correctness:expired-token", "outcome": { "kind": "labelled", "label": "correct", "score": 1, "passed": true },
+    "decider": { "by": "check", "task": "<task sourceHash>" } },
+  { "scorer": "review-quality", "outcome": { "kind": "labelled", "label": "good", "score": 1, "passed": true },
+    "decider": { "by": "judge", "rubric": "<rubric sourceHash>", "tool": "claude", "model": "claude-opus-5-5", "effort": "high", "batched": true } }
+]
+```
+
+`decider.batched` 是标签的 `judge.batched`。`decider.model` 是评判工具报告的模型，没有报告时是启动它时用的模型；别名不属于它。
 
 ### 资产效果
 
@@ -900,7 +932,7 @@ passed when loaded 6/6 · passed when not loaded 2/3
 
 结果不是运行的状态：所有 trial 都失败的运行仍然成功。运行只在超时或被取消时失败。
 
-`report` 把运行的 benchmark 记录写到本机上该运行的目录中。[使用统计上报](reporting.md)开启时，它还会把记录发布到团队仓库 `teamai-reports` 分支的 `benchmarks/runs/<run>.json`，所以任务的 token 还需要团队仓库的推送权限。发布失败的记录会在队列中等待，并在下一次 `teamai pull` 时重试；在此之前，文本以 `record: pending` 结尾。[运行记录](workflow.md#运行记录)列出记录的字段，并给出只从记录算出每个 arm 通过率的 `jq` 命令。关闭时，结果仍在返回中。Dashboard 的[基准测试页面](dashboard.md#基准测试benchmarks)按时间画出已发布的运行和本机的运行。
+`report` 把运行的 benchmark 记录写到本机上该运行的目录中。[使用统计上报](reporting.md)开启时，它还会把记录发布到团队仓库 `teamai-reports` 分支的 `benchmarks/runs/<run>.json`，所以任务的 token 还需要团队仓库的推送权限。发布失败的记录会在队列中等待，并在下一次 `teamai pull` 时重试；在此之前，文本以 `record: pending` 结尾。[运行记录](workflow.md#运行记录)列出记录的字段，并给出只从记录算出每个 arm 通过率的 `jq` 命令。记录带有 `schemaVersion`。更早的 teamai 写下的记录仍会显示在 Dashboard 上，但 Dashboard 只合并、`--fail-on-regression` 只比较记录版本相同的运行。关闭时，结果仍在返回中。Dashboard 的[基准测试页面](dashboard.md#基准测试benchmarks)按时间画出已发布的运行和本机的运行。
 
 ## 回归时失败
 
@@ -913,7 +945,7 @@ $ jq -c .data.done.finally done.json
 [{"id":"regression","outcome":"failed"}]
 ```
 
-`--fail-on-regression` 把这次运行与该套件最新的一次更早的运行比较，那次运行必须已成功、已发布在 `teamai-reports` 上，并且任务和 arm 相同。名字、工具、模型、effort、工作流和团队处理方式都相同的 arm 就是同一个 arm，无论它 pull 到的是哪个修订。trial 按任务和重复次数配对，就像 Dashboard 的 Compare 那样配对，某个 arm 的通过率下降超出偶然范围时，这个 arm 就算下降了。仍在本机等待的记录不参与比较。
+`--fail-on-regression` 把这次运行与该套件最新的一次更早的运行比较，那次运行必须已成功、已发布在 `teamai-reports` 上，任务和 arm 相同，并且记录版本相同。名字、工具、模型、effort、工作流和团队处理方式都相同的 arm 就是同一个 arm，无论它 pull 到的是哪个修订。trial 按任务和重复次数配对，就像 Dashboard 的 Compare 那样配对，某个 arm 的通过率下降超出偶然范围时，这个 arm 就算下降了。仍在本机等待的记录不参与比较。
 
 | `report` 的输出 `regression` | 何时 | `regression` 步骤 |
 | --- | --- | --- |

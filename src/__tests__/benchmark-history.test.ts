@@ -18,7 +18,7 @@ const CODEX: Arm = { name: 'codex', tool: 'codex' };
  * first. A trial of an arm in `usage` ran its prompt, on the arm's tool or on the one `ranOn` names, unless its task is
  * in `unstarted`, and reported the tool version `versions` names for its tool.
  */
-function run({ id, suite = 'fix-auth', version = 'v1', taskEdit = '', startedAt, username = 'alice', source = 'reported', arms = [CLAUDE, CODEX], trials, invalid = [], notRun = [], usage = {}, ranOn = {}, unstarted = [], versions = {}, subset = false }: {
+function run({ id, suite = 'fix-auth', version = 'v1', taskEdit = '', startedAt, username = 'alice', source = 'reported', arms = [CLAUDE, CODEX], trials, invalid = [], notRun = [], usage = {}, ranOn = {}, unstarted = [], versions = {}, subset = false, recordVersion = 2 }: {
   id: string;
   suite?: string;
   version?: string;
@@ -37,12 +37,14 @@ function run({ id, suite = 'fix-auth', version = 'v1', taskEdit = '', startedAt,
   versions?: Record<string, string>;
   /** The run ran only the tasks and arms `--task` and `--arm` chose. */
   subset?: boolean;
+  /** The schemaVersion of the run's record. */
+  recordVersion?: 1 | 2;
 }): BenchmarkRunInput {
   const tasks = [...Object.keys(trials), ...invalid, ...notRun];
   const baseline = (task: string): Baseline => (invalid.includes(task) ? 'invalid' : notRun.includes(task) ? 'not_run' : 'valid');
   let order = 0;
   return {
-    run: id, source, username, startedAt, outcome: 'succeeded',
+    run: id, source, username, startedAt, outcome: 'succeeded', schemaVersion: recordVersion,
     benchmark: {
       suite: { name: suite, sourceHash: version }, repetitions: 1, baselineTeamRevision: `team-${id}`, scorers: [], ...(subset ? { subset: true as const } : {}),
       tasks: tasks.map((task) => ({ id: task, startingCommit: 'a'.repeat(40), sourceHash: `task-${task}${taskEdit}`, baseline: baseline(task) })),
@@ -268,6 +270,18 @@ describe('BenchmarkHistory comparisons', () => {
     expect(selected?.tasks.map(({ task }) => task)).toEqual(['login', 'logout']);
     expect(selected?.comparisons.map(({ dimension, pairs }) => `${dimension} ${pairs}`)).toEqual(['team 2', 'team 2', 'tool 2', 'tool 2']);
     expect(selected?.latest.run).toBe('r2');
+    expect(selected?.runs.map(({ run: id }) => id)).toEqual(['r2', 'r1']);
+  });
+
+  it("pools only the runs whose record has the current version's schemaVersion, and keeps an older record's run as a point", () => {
+    const older = run({ id: 'r1', startedAt: '2026-10-10T09:00:00Z', arms: [CLAUDE], trials: { login: { claude: ['passed', 'passed'] } }, recordVersion: 1 });
+    const newer = run({ id: 'r2', startedAt: '2026-10-20T09:00:00Z', arms: [CLAUDE], trials: { login: { claude: ['failed', 'passed'] } } });
+
+    const { selected } = BenchmarkHistory.of({ runs: [older, newer], query: { windowDays: 90 }, now: NOW });
+
+    expect(selected?.arms.map(({ arm, pooled, points }) => ({ arm, pooled: pooled && { passed: pooled.passed, planned: pooled.planned, runs: pooled.runs }, points: points.map(({ run: id }) => id) }))).toEqual([
+      { arm: 'claude', pooled: { passed: 1, planned: 2, runs: 1 }, points: ['r1', 'r2'] },
+    ]);
     expect(selected?.runs.map(({ run: id }) => id)).toEqual(['r2', 'r1']);
   });
 
@@ -519,6 +533,10 @@ describe('benchmark regression', () => {
 
   it('holds when the paired drop is within chance', () => {
     expect(regressionOf(current, [run({ id: 'before', startedAt: at(12), arms: ONE, trials: passes(['passed', 'failed', 'failed']) })])).toEqual({ kind: 'held', against: 'before' });
+  });
+
+  it('finds nothing to compare with in a run whose record has another schemaVersion', () => {
+    expect(regressionOf(current, [run({ id: 'before', startedAt: at(12), arms: ONE, trials: passes(['passed', 'passed', 'passed']), recordVersion: 1 })])).toEqual({ kind: 'no_comparable' });
   });
 
   it('finds nothing to compare with when an arm ran another workflow or team choice before', () => {

@@ -54,7 +54,7 @@ async function readRecord(file: string, source: BenchmarkRunInput['source']): Pr
     if (!parsed.success || !isRunId(parsed.data.run)) return undefined;
     const record = parsed.data;
 
-    return definedFields<BenchmarkRunInput>({ run: record.run, source, startedAt: record.startedAt, outcome: record.outcome, username: record.username || undefined, benchmark: record });
+    return definedFields<BenchmarkRunInput>({ run: record.run, source, startedAt: record.startedAt, outcome: record.outcome, schemaVersion: record.schemaVersion, username: record.username || undefined, benchmark: record });
   } catch {
     return undefined;
   }

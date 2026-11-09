@@ -291,6 +291,11 @@ async function closeHeld(attempt: ScoreAttempt, outcomes: ReadonlyArray<{ key: M
   return { ok: true, closed: held.length };
 }
 
+/** Whether a label of a pass of `step` in `run` stays on this machine, out of the outbox: the step is private, or the run isolated. */
+export function keepsLabelsLocal(run: RunState, step: string): boolean {
+  return privateSteps(run)(step) || isIsolated(run);
+}
+
 export const ScoreLabels = {
   /** The entries `label` left in the group directory `dir`, one per scorer; undefined when it wrote none. */
   read: readEntries,
@@ -367,7 +372,7 @@ export const ScoreLabels = {
     }
 
     const run = await subjectRun(attempt, group);
-    const keepLocal = group.judged.kind === 'run' && run !== undefined && (privateSteps(run)(group.judged.subject.step) || isIsolated(run));
+    const keepLocal = group.judged.kind === 'run' && run !== undefined && keepsLabelsLocal(run, group.judged.subject.step);
 
     const written = await LabelStore.append(attempt.config, entries.flatMap((entry) => (entry.kind === 'labelled' ? [entry] : [])), { outbox: !keepLocal });
 

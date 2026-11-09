@@ -13,6 +13,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { isRecordableLabel, isRecordableName } from '../agent-observation.js';
 import { RoleIdSchema } from '../roles.js';
+import type { ScorerLabel } from '../scorers/definition.js';
 import type { PinnedScorer } from '../scorers/pin.js';
 import type { JsonObject } from '../types.js';
 import { definedFields } from '../utils/defined-fields.js';
@@ -84,14 +85,35 @@ const PlannedTrialSchema = z.object({
 
 export type PlannedTrial = z.infer<typeof PlannedTrialSchema>;
 
+/**
+ * A scorer that judges the run's trials, or decides them, as the run pinned it: the rubric's hash, and its labels and
+ * passing score, which pick the label a check writes and tell a reader of the record whether a label passes.
+ */
+const PlannedLabelSchema = z.object({ value: z.string().min(1), score: z.number() }).strict();
+
+const PlannedScorerSchema = z.object({
+  name: z.string().min(1),
+  rubric: z.object({ sourceHash: z.string().min(1) }).strict(),
+  labels: z.tuple([PlannedLabelSchema], PlannedLabelSchema),
+  passingScore: z.number(),
+}).strict();
+
+export type PlannedScorer = z.infer<typeof PlannedScorerSchema>;
+
+/** A scorer the run pins, as start read it: its pin, and its rubric's labels, never none, and passing score. */
+export interface PinnedRubric {
+  pin: PinnedScorer;
+  definition: { labels: readonly [ScorerLabel, ...ScorerLabel[]]; passingScore: number };
+}
+
 /** The plan's `schemaVersion`. A plan of another version makes the run unreadable here, so no step reads it. */
-export const BENCHMARK_PLAN_SCHEMA_VERSION = 1;
+export const BENCHMARK_PLAN_SCHEMA_VERSION = 2;
 
 /**
- * What a run freezes at start. In PINNED (store.ts) so masking never rewrites it, parsed by RunProgressSchema so a
- * malformed plan makes the run corrupt rather than unplanned, and `drop` in RUN_RULES (snapshot.ts) because benchmark
- * runs are never published. No prompt, credential URL or local path; the check command is in it, and the record copies
- * no field that holds it.
+ * What a run freezes at start. In PINNED (store.ts) so masking never rewrites it, parsed by `planOfRun` (run-plan.ts)
+ * whenever a step reads it, so a plan of another schemaVersion refuses the run's steps and its resume rather than being
+ * read as this one, and `drop` in RUN_RULES (snapshot.ts) because benchmark runs are never published. No prompt,
+ * credential URL or local path; the check command is in it, and the record copies no field that holds it.
  */
 export const BenchmarkPlanSchema = z.object({
   schemaVersion: z.literal(BENCHMARK_PLAN_SCHEMA_VERSION),
@@ -109,8 +131,8 @@ export const BenchmarkPlanSchema = z.object({
   arms: z.array(PlannedArmSchema).nonempty(),
   /** Each arm whose team assets differ from the baseline's in skills, with those skills. */
   skillChanges: z.array(SkillChangesSchema).optional(),
-  /** Every scorer that judges a trial, the generated correctness scorers included, with the rubric hash it was pinned with. */
-  scorers: z.array(z.object({ name: z.string().min(1), rubric: z.object({ sourceHash: z.string().min(1) }).strict() }).strict()),
+  /** Every scorer that judges or decides a trial: the suite's, and each task's correctness scorer, which decides its trials. */
+  scorers: z.array(PlannedScorerSchema),
   trials: z.array(PlannedTrialSchema),
 }).strict();
 
@@ -170,7 +192,7 @@ export function freezePlan(input: {
   selection: TeamSelection;
   arms: [PlannedArm, ...PlannedArm[]];
   /** The team scorers the suite lists, as start pinned them. */
-  scorers: Record<string, PinnedScorer>;
+  scorers: Record<string, PinnedRubric>;
   /** Each covered path's bare skill name as plan checked it at the pulled revision, or null when it delivers no skill. */
   coveredSkills: Record<string, string | null>;
   /** By covered path, the arms whose selection pull does not deliver it to, as plan checked it; absent or empty: none. */
@@ -197,9 +219,15 @@ export function freezePlan(input: {
     tasks: [planned(first), ...rest.map(planned)],
     arms: input.arms,
     skillChanges: input.skillChanges && input.skillChanges.length > 0 ? input.skillChanges : undefined,
-    scorers: Object.entries({ ...input.scorers, ...correctnessScorers(suite) }).map(([name, pin]) => ({ name, rubric: { sourceHash: pin.sourceHash } })),
+    scorers: Object.entries({ ...input.scorers, ...correctnessScorers(suite) }).map(([name, rubric]) => plannedScorer(name, rubric)),
     trials: trialsOf(suite.tasks, input.arms, suite.repetitions, suite.parallel),
   });
+}
+
+function plannedScorer(name: string, { pin, definition: { labels: [first, ...rest], passingScore } }: PinnedRubric): PlannedScorer {
+  const planned = ({ value, score }: ScorerLabel) => ({ value, score });
+
+  return { name, rubric: { sourceHash: pin.sourceHash }, labels: [planned(first), ...rest.map(planned)], passingScore };
 }
 
 function plannedJudge(judge: TaskJudge, checkFiles: Added | undefined): PlannedTask['judge'] {
@@ -277,7 +305,7 @@ export function compileBundle(
 ): CompiledBundle {
   const tasks = new Map(suite.tasks.map((task) => [task.id, task]));
   const arms = new Map(plan.arms.map((arm) => [arm.name, arm]));
-  const checkOutput = { result: CHECK_RESULTS.join(' | ') };
+  const checkOutput = { result: CHECK_RESULTS.join(' | '), cause: 'string', label: 'string' };
 
   const baselines = chained(suite.tasks.flatMap((task): FileStep[] => (task.judge.kind === 'check'
     ? [{ id: task.id, command: 'teamai benchmark check --baseline', workspace: { clone: { commit: task.startingCommit, repo: suite.repo, team: { treatment: 'none' } } }, output: checkOutput }]
@@ -380,7 +408,7 @@ export function compileBundle(
   return {
     definition,
     workflows: Object.fromEntries([...armWorkflows.values()].flatMap(({ files }) => Object.entries(files))),
-    scorers: correctnessScorers(suite),
+    scorers: Object.fromEntries(Object.entries(correctnessScorers(suite)).map(([name, { pin }]) => [name, pin])),
   };
 }
 
@@ -438,29 +466,37 @@ function cloneTeamOf(team: ArmTeam, selection: TeamSelection, recall: boolean | 
 }
 
 /**
- * The scorer that labels a task judged by success criteria `correct` or `incorrect` on each of its trials. Its name has a
- * ":", which no scorer file name may have, so no team scorer can take it, and one per task keeps one pin per name.
+ * The scorer whose label decides each trial of a task, `correct` or `incorrect`: written by the trial's check, or by a
+ * judge on its success criteria. Its name has a ":", which no scorer file name may have, so no team scorer can take it,
+ * and one per task keeps one pin per name.
  */
 export function correctnessScorerName(task: string): string {
   return `teamai:correctness:${task}`;
 }
 
 /**
- * The correctness scorer of each task judged by success criteria, as the run pins it: `generated`, so it is read as
- * `scorers/correctness.md` and named by its key, and `relativePath` is the task file, so a message names a file that
- * exists. Its hash covers the task's prompt and success criteria. No `model`: the judge tool's default model runs it.
+ * The correctness scorer of each task, as the run pins it: `generated`, so it is read as `scorers/correctness.md` and
+ * named by its key, and `relativePath` is the task file, so a message names a file that exists. Its hash covers the
+ * task's prompt and success criteria, empty for a task judged only by its check. No `model`: the judge tool's default
+ * model runs it.
  */
-function correctnessScorers(suite: Suite): Record<string, PinnedScorer> {
-  return Object.fromEntries(suite.tasks.flatMap((task) => (task.judge.kind === 'criteria' ? [[correctnessScorerName(task.id), correctnessPin(task, task.judge.successCriteria)]] : [])));
+function correctnessScorers(suite: Suite): Record<string, PinnedRubric> {
+  return Object.fromEntries(suite.tasks.map((task) => [correctnessScorerName(task.id), correctnessPin(task, task.judge.kind === 'criteria' ? task.judge.successCriteria : '')]));
 }
 
-function correctnessPin(task: Task, successCriteria: string): PinnedScorer {
+const CORRECTNESS_LABELS = [
+  { value: 'correct', score: 1, description: 'The change meets every success criterion.' },
+  { value: 'incorrect', score: 0, description: 'The change misses at least one success criterion.' },
+] as const;
+
+const CORRECTNESS_PASSING_SCORE = 1;
+
+function correctnessPin(task: Task, successCriteria: string): PinnedRubric {
   const content = [
     '---',
     'labels:',
-    '  - { value: correct, score: 1, description: The change meets every success criterion. }',
-    '  - { value: incorrect, score: 0, description: The change misses at least one success criterion. }',
-    'passingScore: 1',
+    ...CORRECTNESS_LABELS.map(({ value, score, description }) => `  - { value: ${value}, score: ${score}, description: ${description} }`),
+    `passingScore: ${CORRECTNESS_PASSING_SCORE}`,
     'samplingRate: 100',
     '---',
     'Judge whether the change made from the starting commit, commits included, meets the success criteria.',
@@ -476,5 +512,8 @@ function correctnessPin(task: Task, successCriteria: string): PinnedScorer {
     '',
   ].join('\n');
 
-  return { sourceHash: createHash('sha256').update(content).digest('hex'), relativePath: task.relativePath, content, generated: true };
+  return {
+    pin: { sourceHash: createHash('sha256').update(content).digest('hex'), relativePath: task.relativePath, content, generated: true },
+    definition: { labels: [...CORRECTNESS_LABELS], passingScore: CORRECTNESS_PASSING_SCORE },
+  };
 }

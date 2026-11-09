@@ -704,7 +704,7 @@ The local driver runs each trial as fresh clone, team assets, setup, the arm's t
 | A hung trial | Without [`trial.timeout`](#trial-limits), a tool that never returns runs until the suite's timeout, and every trial after it settles `not_run`. |
 | Judges | A task with `successCriteria`, and the suite's scorers, are judged by the run's own `score` step, after the trials and before `report`. Start refuses a suite that needs a judge on a machine with no judge tool that runs its scorers' model at the isolation they ask for. |
 | Control commands | A trial's steps exist only once the run's `plan` step reported. Until then, `teamai workflow cancel <run> <step>` on a trial step answers `step_not_found`. A benchmark run is [isolated](workflow-advanced.md#isolated-runs): `workflow retry`, `publish` and `--claim` refuse it, `publish` and `--claim` with `isolated_run`, and retry names `teamai benchmark run <suite>`. |
-| Stopped | `teamai workflow resume <run>` continues it, with the `--sandbox` the run started with. |
+| Stopped | `teamai workflow resume <run>` continues it, with the `--sandbox` the run started with. A run that a teamai before an upgrade started, whose plan has another version, cannot go on: `workflow resume` refuses it, naming `teamai benchmark run <suite>`. |
 
 A start that cannot run refuses with a message that says what to do, and makes no run. When your user-scope teamai install also reaches the team, or the team is served over HTTP, the run cannot pin the team a trial gets, and refuses with `team_ref_blocked`, saying what to change.
 
@@ -779,7 +779,7 @@ outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 | Command | Runs as | Does |
 | --- | --- | --- |
 | `teamai benchmark plan <suite>` | The `plan` step | Freezes the team revision you pulled, fetches every commit a trial reads, and prints the trials as a workflow, with one clone per baseline and trial. |
-| `teamai benchmark check --baseline\|--trial` | A step in each clone | Writes `check.add`, puts `protect` back for a trial, runs the task's check, and prints its result. |
+| `teamai benchmark check --baseline\|--trial` | A step in each clone | Writes `check.add`, puts `protect` back for a trial, runs the task's check, and prints `{ result, cause, label }`. A trial's check also stores the trial's correctness label, as [Who decides a trial](#who-decides-a-trial) says. |
 | `teamai score subjects --run <run> --step trials` | The `subjects` step | Lists the trials' scored passes that settled on this machine. |
 | [`teamai-score`](scorers.md#the-teamai-score-workflow) | The `score` step, once per subject | Judges the trial with the scorers as of the run's start. |
 | `teamai benchmark report` | The `report` `finally` step | Classifies the trials, writes the record, and prints the results. With `COMPARE=true`, also compares the record, as [Fail on a regression](#fail-on-a-regression) says. |
@@ -811,7 +811,7 @@ finally:
 
 ## Results
 
-When the run ends, `benchmark run` prints the results on stderr. The JSON envelope on stdout carries the same text in `data.done.outputs.text`, and the numbers in `data.done.outputs.table`, whose `verdicts` give each judged trial's verdict per scorer: `labelled` with its label, or `unscored` with `because`, the judge's failure code, or `run_ended` when no label came. For this suite with a third task, `old-bug`, whose check already passes:
+When the run ends, `benchmark run` prints the results on stderr. The JSON envelope on stdout carries the same text in `data.done.outputs.text`, and the numbers in `data.done.outputs.table`, whose `verdicts` give each trial's verdict per scorer, its correctness scorer first: `labelled` with its label and score, or `unscored` with `because`, the judge's failure code, `check_could_not_run`, or `run_ended` when no label came. For this suite with a third task, `old-bug`, whose check already passes:
 
 ```text
 | Arm | Tool | Model (source) | Planned | Passed | Failed | Error | Unscored | Not run | Stopped by a limit | Deviations | Not verified | Pass rate |
@@ -855,6 +855,38 @@ These results hold for these tasks, this run and this machine.
 ```
 
 A load is counted only where teamai could see it: `unknown` is a trial whose tool reports no skill loads, never a trial that did not load the skill.
+
+### Who decides a trial
+
+Only a trial's `teamai:correctness:<task>` label decides `passed`, `failed` or `unscored`. `error` and `not_run` come from the state of the trial's work. For a task with a `check`, the check step writes that label itself, in the trial's clone, right after the prompt, and no judge runs. The label is stored on this machine with the run's other labels and, like every label of an isolated run, is never published:
+
+```json
+{"source":"workflow","scorer":"teamai:correctness:expired-token","rubric":{"sourceHash":"…"},
+ "label":"correct","score":1,"passed":true,"judge":{"kind":"stage"},"decidedBy":"check",
+ "subject":{"runId":"r38302f8e6a18c377","step":"trials.r1.expired-token.claude.prompt","pass":1},
+ "scoredAt":"2026-11-08T10:12:03Z"}
+```
+
+| The check | Label | Trial result |
+| --- | --- | --- |
+| exits 0 | the highest-scoring label at or above `passingScore` | `passed` |
+| exits non-zero | the lowest-scoring label | `failed` |
+| cannot run | none | `error`, `failure: { cause }` |
+
+`cause` is one of `not_found`, `not_executable`, `signal`, `timeout`, `spawn_failed`, `prepare_failed` (restoring `protect` or writing `check.add` failed).
+
+Each recorded trial carries its verdicts:
+
+```json
+"verdicts": [
+  { "scorer": "teamai:correctness:expired-token", "outcome": { "kind": "labelled", "label": "correct", "score": 1, "passed": true },
+    "decider": { "by": "check", "task": "<task sourceHash>" } },
+  { "scorer": "review-quality", "outcome": { "kind": "labelled", "label": "good", "score": 1, "passed": true },
+    "decider": { "by": "judge", "rubric": "<rubric sourceHash>", "tool": "claude", "model": "claude-opus-5-5", "effort": "high", "batched": true } }
+]
+```
+
+`decider.batched` is the label's `judge.batched`. `decider.model` is the model the judge's tool reported, else the one it was launched with; the alias is not part of it.
 
 ### Asset effect
 
@@ -900,7 +932,7 @@ Read it as:
 
 The results are not the run's status: a run whose trials all failed still succeeds. The run fails when it times out or is cancelled.
 
-`report` writes the run's benchmark record into the run's directory on this machine. With [usage reporting](reporting.md) on, it also publishes it to `benchmarks/runs/<run>.json` on the team repo's `teamai-reports` branch, so the job's token also needs push access to the team repo. A publication that fails waits in the queue and is retried on the next `teamai pull`; until then the text ends with `record: pending`. [Run records](workflow.md#run-records) lists the record's fields and gives the `jq` command that computes each arm's pass rate from the record alone. With it off, the results are still in the envelope. The dashboard's [Benchmarks page](dashboard.md#benchmarks) draws the published runs and this machine's over time.
+`report` writes the run's benchmark record into the run's directory on this machine. With [usage reporting](reporting.md) on, it also publishes it to `benchmarks/runs/<run>.json` on the team repo's `teamai-reports` branch, so the job's token also needs push access to the team repo. A publication that fails waits in the queue and is retried on the next `teamai pull`; until then the text ends with `record: pending`. [Run records](workflow.md#run-records) lists the record's fields and gives the `jq` command that computes each arm's pass rate from the record alone. A record has a `schemaVersion`. One an earlier teamai wrote still shows on the dashboard, but the dashboard pools, and `--fail-on-regression` compares, only runs whose records have the same version. With it off, the results are still in the envelope. The dashboard's [Benchmarks page](dashboard.md#benchmarks) draws the published runs and this machine's over time.
 
 ## Fail on a regression
 
@@ -913,7 +945,7 @@ $ jq -c .data.done.finally done.json
 [{"id":"regression","outcome":"failed"}]
 ```
 
-`--fail-on-regression` compares this run with the newest earlier run of the suite that succeeded and is published on `teamai-reports` with the same tasks and arms. An arm is the same when its name, tool, model, effort, workflow and team treatment are, whatever revision it pulled. Trials pair by task and repetition, as the dashboard's Compare pairs them, and an arm dropped when its pass rate dropped by more than chance. Records still waiting on this machine are not compared.
+`--fail-on-regression` compares this run with the newest earlier run of the suite that succeeded and is published on `teamai-reports` with the same tasks and arms, in a record of the same version. An arm is the same when its name, tool, model, effort, workflow and team treatment are, whatever revision it pulled. Trials pair by task and repetition, as the dashboard's Compare pairs them, and an arm dropped when its pass rate dropped by more than chance. Records still waiting on this machine are not compared.
 
 | `report` output `regression` | When | The `regression` step |
 | --- | --- | --- |

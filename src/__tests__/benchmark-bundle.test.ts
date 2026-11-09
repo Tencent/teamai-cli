@@ -92,6 +92,18 @@ describe('the workflow a benchmark plan prints', () => {
     expect(stepDefinitions(run)('trials.r2.t01.a01.prompt')?.scorers).toEqual({ names: ['teamai:correctness:t01'], sampling: 'all', start: 'workflow' });
   });
 
+  it("pins every task's correctness scorer with its labels and passing score, and lists a check task's on no step, so no judge runs", async () => {
+    const { run, plan } = await plannedRun(suiteOf({ arms: 2 }));
+
+    expect(plan.schemaVersion).toBe(2);
+    expect(plan.scorers).toEqual([{
+      name: 'teamai:correctness:t01', rubric: { sourceHash: expect.stringMatching(/^[0-9a-f]{64}$/) },
+      labels: [{ value: 'correct', score: 1 }, { value: 'incorrect', score: 0 }], passingScore: 1,
+    }]);
+    for (const step of ['trials.r1.t01.a01.prompt', 'trials.r1.t01.a02.prompt']) expect(stepDefinitions(run)(step), step).not.toHaveProperty('scorers');
+    expect(JSON.stringify(run.admitted)).not.toContain('teamai-score');
+  });
+
   it("is admitted for arms that compare two roles, each trial's clone opened with its arm's role and the plan keeping it", async () => {
     const { run, plan } = await plannedRun({
       name: 'fix',
@@ -154,17 +166,17 @@ describe('the workflow a benchmark plan prints', () => {
     expect(stepDefinitions(run)('trials.r1.t01.a01')).not.toHaveProperty('role');
   });
 
-  it('is refused by report and check once its plan is of a schemaVersion this teamai does not read', async () => {
-    const { run } = await plannedRun(suiteOf(), { outputsOf: (bundle, plan) => ({ definition: { ...bundle, workflows: {} }, plan: { ...plan, schemaVersion: 2 } }) });
+  it('is refused by report and check once its plan is of an earlier schemaVersion, naming how to start the suite again', async () => {
+    const { run } = await plannedRun(suiteOf(), { outputsOf: (bundle, plan) => ({ definition: { ...bundle, workflows: {} }, plan: { ...plan, schemaVersion: 1 } }) });
 
     expect(planOfRun(run, 'trials.r1.t01.a01.check')).toEqual({ failure: {
-      code: 'run_unreadable',
-      message: `Step "plan" of run ${run.id} printed a benchmark plan of schemaVersion 2, and this teamai reads only schemaVersion 1. Run the benchmark with the teamai that planned it, or start it again.`,
+      code: 'benchmark_plan_outdated',
+      message: `Run ${run.id} measures a benchmark plan of schemaVersion 1, which the teamai that started it froze, and this teamai reads only schemaVersion 2, so the run cannot go on here. Run it with the teamai that started it, or start the suite again with teamai benchmark run fix.`,
     } });
   });
 
-  it('is refused by report and check once its plan is of schemaVersion 1 but not its shape', async () => {
-    const { run } = await plannedRun(suiteOf(), { outputsOf: (bundle) => ({ definition: { ...bundle, workflows: {} }, plan: { schemaVersion: 1 } }) });
+  it('is refused by report and check once its plan is of schemaVersion 2 but not its shape', async () => {
+    const { run } = await plannedRun(suiteOf(), { outputsOf: (bundle) => ({ definition: { ...bundle, workflows: {} }, plan: { schemaVersion: 2 } }) });
 
     expect(planOfRun(run, 'trials.r1.t01.a01.check')).toMatchObject({ failure: {
       code: 'run_unreadable',

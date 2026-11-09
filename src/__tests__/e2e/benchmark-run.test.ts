@@ -227,7 +227,7 @@ function futurePlan(steps: ReadonlyArray<Record<string, unknown>>): string {
 }
 
 const StepsSchema = z.object({ steps: z.array(z.object({ id: z.string(), status: z.string(), message: z.string().optional() }).passthrough()) }).passthrough();
-const FUTURE = 'printed a benchmark plan of schemaVersion 99, and this teamai reads only schemaVersion 1. Run the benchmark with the teamai that planned it, or start it again.';
+const FUTURE = 'measures a benchmark plan of schemaVersion 99, which the teamai that started it froze, and this teamai reads only schemaVersion 2, so the run cannot go on here. Run it with the teamai that started it, or start the suite again with teamai benchmark run <suite>.';
 
 describe('a plan of an unknown schemaVersion', () => {
   it('fails the report, and benchmark run exits 1 though the run succeeded', async () => {

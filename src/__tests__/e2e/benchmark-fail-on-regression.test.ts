@@ -52,7 +52,7 @@ describe('benchmark run --fail-on-regression', () => {
 
     const first = await fixture.teamai(['benchmark', 'run', 'fix', '--fail-on-regression']);
     expect(first.code, said(first)).toBe(0);
-    expect(first.stderr).toContain('No earlier succeeded run of suite fix ran the same tasks on the same arms on teamai-reports: recording is off, or nothing comparable has been published yet.');
+    expect(first.stderr).toContain('No earlier succeeded run of suite fix ran the same tasks on the same arms on teamai-reports in a record of this version: recording is off, nothing comparable has been published yet, or the earlier runs ran on a teamai that recorded them another way.');
     expect(doneOf(first).finally).toBeUndefined();
     expect(gateOf(fixture, doneOf(first).run)).toEqual({ regression: 'skipped', report: 'no_comparable' });
 
