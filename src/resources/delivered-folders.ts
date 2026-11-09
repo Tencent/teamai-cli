@@ -44,6 +44,16 @@ function root(localConfig: LocalConfig): string {
 }
 
 /** The absolute path `ref` is delivered at in `localConfig`'s scope. The same for every version of the folder. */
+/**
+ * The worktree's `.teamai/delivered/`: a single-repo scope's delivered folders, or the copies of a remote team's folders
+ * for a tool that cannot read the data home. Null outside a project, which has no worktree.
+ */
+function worktreeRoot(localConfig: LocalConfig): string | null {
+  if (isSelfMode(localConfig)) return root(localConfig);
+
+  return localConfig.scope === 'project' && localConfig.projectRoot ? path.join(localConfig.projectRoot, '.teamai', DELIVERED_DIR) : null;
+}
+
 function pathOf(localConfig: LocalConfig, ref: DeliveredFolderRef): string {
   return path.join(root(localConfig), ref.type, ...(ref.namespace === null ? [] : [ref.namespace]), ref.name);
 }
@@ -226,10 +236,10 @@ async function sync(input: {
 
   if (input.prune) await prune({ localConfig, type, keep: folders.map(({ dest }) => dest), ledger, root: at });
 
-  if ((input.root !== undefined || isSelfMode(localConfig)) && await pathExists(at)) {
+  if (at === worktreeRoot(localConfig) && await pathExists(at)) {
     const { excludeDeliveredFolders } = await import('../git-exclude-delivered.js');
     await excludeDeliveredFolders(localConfig, at);
   }
 }
 
-export const DeliveredFolders = { root, pathOf, sync, deliver, prune, placeholder, mentions, render } as const;
+export const DeliveredFolders = { root, worktreeRoot, pathOf, sync, deliver, prune, placeholder, mentions, render } as const;

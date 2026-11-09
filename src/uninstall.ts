@@ -1550,7 +1550,7 @@ async function buildRemovalPlan(
   const projectsKept = includeShared && globalAdapters ? await keptForProjects() : { projects: [], paths: [] };
 
   // The worktree's .teamai/delivered/ (#1787): a single-repo scope's delivered folders, or a remote team's rule folder copies.
-  const worktreeDelivered = isSelfMode(localConfig) ? DeliveredFolders.root(localConfig) : RuleFolders.copyRootOf(localConfig);
+  const worktreeDelivered = DeliveredFolders.worktreeRoot(localConfig);
 
   const plan: RemovalPlan = {
     sharedRetentionOnly: false,

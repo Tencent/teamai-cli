@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import type { DeliveryLedger } from './delivered-copies.js';
-import { DELIVERED_DIR, DeliveredFolders, type DeliveredFolderRef } from './delivered-folders.js';
+import { DeliveredFolders, type DeliveredFolderRef } from './delivered-folders.js';
 import { FolderFiles, type FolderFile } from './folder-files.js';
 import { isLanguageVariant, RESOURCE_LAYOUTS, type ResourceDiagnostic } from './resolver.js';
 import { splitRuleFrontmatter } from './team-rule.js';
@@ -100,14 +100,6 @@ async function text(rule: RuleFolder, language: TeamaiConfig['language']): Promi
   return `${splitRuleFrontmatter(base).block}${body}\n`;
 }
 
-/**
- * Where a project's tools that cannot read the data home take a remote team's rule folders: copies in the worktree,
- * named relative to the project root. Null outside a project. In single-repo it is the data home itself.
- */
-function copyRootOf(localConfig: LocalConfig): string | null {
-  return localConfig.scope === 'project' && localConfig.projectRoot ? path.join(localConfig.projectRoot, '.teamai', DELIVERED_DIR) : null;
-}
-
 /** Whether `tool` reads a rule folder's files in the data home without a prompt, once teamai grants what it can. */
 function readsDataHome(tool: string): boolean {
   return ruleFolderReachOf(tool).reach !== 'copy';
@@ -120,7 +112,7 @@ function readsDataHome(tool: string): boolean {
  * text teamai injects for the tools without native rules, none of which reads the data home.
  */
 function render(ruleText: string, at: { readonly localConfig: LocalConfig; readonly rule: RuleFolder; readonly tool: string | null }): string {
-  const copyRoot = copyRootOf(at.localConfig);
+  const copyRoot = DeliveredFolders.worktreeRoot(at.localConfig);
   const { projectRoot } = at.localConfig;
 
   if (copyRoot === null || projectRoot === undefined || (at.tool !== null && readsDataHome(at.tool))) {
@@ -161,7 +153,7 @@ async function sync(input: {
   // rules by path (`resolveWorkspaceRules`), so a rule pull does not deliver has no copy left to read its folder.
   await DeliveredFolders.sync({ localConfig, type: 'rules', folders: delivered, ledger, prune: true });
   const copying = input.tools.filter((tool) => !readsDataHome(tool));
-  const copyRoot = copyRootOf(localConfig);
+  const copyRoot = DeliveredFolders.worktreeRoot(localConfig);
 
   if (copyRoot === null) {
     for (const tool of folders.length === 0 ? [] : copying) {
@@ -228,4 +220,4 @@ async function grant(input: {
   return owned;
 }
 
-export const RuleFolders = { isFolder, pathOf, isDelivered, languageFile, readTextFile, text, variantNotes, copyRootOf, render, sync, grant } as const;
+export const RuleFolders = { isFolder, pathOf, isDelivered, languageFile, readTextFile, text, variantNotes, render, sync, grant } as const;
