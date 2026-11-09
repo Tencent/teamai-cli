@@ -1,6 +1,6 @@
 /**
  * The clone place a step opens with `workspace: { clone: … }`: a fresh clone of the place's commit with its own `.git`,
- * no remotes and its hooks off, fetched offline from the run's checkout or the commit cache, and the team assets the
+ * no remotes and its hooks off, fetched offline from the run's checkout or the commit cache, and the team resources the
  * place names installed by a `teamai pull` whose HOME is the clone's own. Every step that continues it runs there, and
  * its commits stay there: nothing is pushed.
  *
@@ -214,7 +214,7 @@ export async function openClone(input: { config: LocalConfig; run: RunId; checko
 }
 
 /**
- * Puts back, for a later step in the clone, the team assets its install delivered, which the last step's commit took
+ * Puts back, for a later step in the clone, the team resources its install delivered, which the last step's commit took
  * out with the clone's other agent files, and records them as the overlay again, so they are not that step's edits.
  * A clone that installs no team kept no copy of them; one whose overlay is still on has its `saved`.
  */
@@ -331,7 +331,7 @@ export async function commitClone(input: { dir: string; branch: string; step: st
   const unrestored = await isDirectory(saved) ? await restoreUneditedConfig(dir, start, saved, git) : undefined;
 
   if (unrestored !== undefined) {
-    return { code: 'workspace_base', message: `Step "${step}" ran, but the team assets delivered into its clone could not be told apart from its edits, so nothing was committed: ${unrestored}` };
+    return { code: 'workspace_base', message: `Step "${step}" ran, but the team resources delivered into its clone could not be told apart from its edits, so nothing was committed: ${unrestored}` };
   }
 
   const committed = await commitWork(dir, `teamai: ${step}`, start, git);
@@ -559,7 +559,7 @@ async function installTeam(input: {
 
   if (!anchors) return failed(`The clone ${clone} is not a git repository teamai can install into.`);
   const home = path.join(root, 'h');
-  const partition = path.join(home, '.teamai', 'projects', projectSlug(anchors.projectAnchor));
+  const partition = path.join(home, '.teamai', 'projects', projectSlug(anchors.repoAnchor));
   const source = member.repo.localPath;
   const bare = path.join(root, 'team.git');
   const teamClone = path.join(partition, 'team-repo');

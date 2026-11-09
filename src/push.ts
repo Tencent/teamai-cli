@@ -1130,7 +1130,7 @@ export async function push(
     return;
   }
 
-  // Single-repo mode: knowledge PRs must run in an isolated worktree so the
+  // Self mode: knowledge PRs must run in an isolated worktree so the
   // branch/commit/reset never touch the user's active tree. withKnowledgeWorktree
   // hands pushCore a config whose localPath is the worktree's .teamai.
   if (localConfig.repo.kind === 'self') {
@@ -1862,7 +1862,7 @@ async function pushCore(
 
   const spin = (await spinner('Scanning local resources...')).start();
 
-  // In single-repo mode the team knowledge dirs (.teamai/skills, .teamai/rules)
+  // In self mode the team knowledge dirs (.teamai/skills, .teamai/rules)
   // live inside the user's own repo, so people naturally add or edit skills there
   // directly (e.g. `cp my-skill .teamai/skills/`) instead of in an AI tool dir
   // like ~/.claude/skills. The default scanner only treats AI tool dirs as push

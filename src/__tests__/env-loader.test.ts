@@ -660,7 +660,7 @@ describe('team env by directory (#1018)', () => {
     // checkout fails closed, as a registered one does; anywhere else gets the user env.
     it.each([
       { name: 'a subdirectory of a checkout with .teamai/config.yaml', marker: '.teamai/config.yaml', git: true, sub: 'src', expected: '' },
-      { name: 'a single-repo checkout with .teamai/teamai.yaml', marker: '.teamai/teamai.yaml', git: true, sub: '', expected: '' },
+      { name: 'a checkout in self mode with .teamai/teamai.yaml', marker: '.teamai/teamai.yaml', git: true, sub: '', expected: '' },
       { name: 'a directory outside git with .teamai/config.yaml', marker: '.teamai/config.yaml', git: false, sub: '', expected: '' },
       { name: 'a checkout whose project keeps its data in ~/.teamai/projects', marker: '.git/teamai-env-pending', git: true, sub: 'src', expected: '' },
       { name: 'a checkout with another file in .teamai', marker: '.teamai/notes.md', git: true, sub: '', expected: 'user-secret' },
@@ -691,7 +691,7 @@ describe('team env by directory (#1018)', () => {
     it.each(['bash', 'zsh'].filter(hasShell).flatMap((shell) => [
       { name: 'a failed first pull marks the checkout pending', git: true, sub: 'src', change: '.git/teamai-env-pending', expected: '' },
       { name: 'the checkout gets .teamai/config.yaml', git: true, sub: 'src', change: '.teamai/config.yaml', expected: '' },
-      { name: 'the checkout gets a single-repo .teamai/teamai.yaml', git: true, sub: '', change: '.teamai/teamai.yaml', expected: '' },
+      { name: 'the checkout gets a self-mode .teamai/teamai.yaml', git: true, sub: '', change: '.teamai/teamai.yaml', expected: '' },
       { name: 'a directory outside git gets .teamai/config.yaml', git: false, sub: '', change: '.teamai/config.yaml', expected: '' },
       { name: 'a project directory outside git becomes a checkout', git: false, sub: 'src', change: 'git init', expected: '' },
       { name: 'the registry is created unreadable', git: true, sub: '', change: 'unreadable registry', expected: '' },

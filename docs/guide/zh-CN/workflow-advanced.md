@@ -818,7 +818,7 @@ steps:
     prompt: Fix the failing test.
 ```
 
-带 `workspace: { clone: { commit, repo?, team } }` 的步骤在检出目录之外、`commit` 的全新克隆中运行：有自己的 git 数据，没有远程仓库，hook 关闭。`team` 指明为它安装的团队资产，安装在它自己的 home 下：`{ treatment: none }`，或 `{ revision, selection, treatment }`，其中 `treatment` 为 `pulled`、一个 ref 或 `{ without: [<path>, ...] }`，另可写 `recall: true` 来部署团队的 recall——克隆默认不部署它；这个键由 [benchmark 的 arm](benchmarks.md#开启-recall-的-arm) 设置，测量 recall 的 workflow 步骤也可以设置。`selection` 包含与你的配置同名的 `primaryRole`、`additionalRoles`、`projects`、`subscribedTags` 和 `excludedSkills`，以及 `enabledAgents`，即资产安装到的工具：默认为打开克隆的步骤的工具，否则为你启用的 agent。只要 `revision` 中存在 `manifest/members.yaml`，它就像在你的检出目录中一样决定你在克隆中的角色：`primaryRole` 或 `additionalRoles` 与它分配给你的不同时，克隆以 `clone_prepare_failed` 失败。请省略它们；要以某个角色的知识运行步骤，还需在步骤上设置 `role`。teamai 离线创建克隆，来源是运行的检出目录或提交缓存；`repo` 只指明缓存，从不是 URL。打开克隆的 workflow 步骤拥有它，供其下每个 `continue` 步骤使用。克隆中的任何内容都不会被推送或交付。[Benchmark](benchmarks.md) 会为你写出这些步骤。
+带 `workspace: { clone: { commit, repo?, team } }` 的步骤在检出目录之外、`commit` 的全新克隆中运行：有自己的 git 数据，没有远程仓库，hook 关闭。`team` 指明为它安装的团队资源，安装在它自己的 home 下：`{ treatment: none }`，或 `{ revision, selection, treatment }`，其中 `treatment` 为 `pulled`、一个 ref 或 `{ without: [<path>, ...] }`，另可写 `recall: true` 来部署团队的 recall——克隆默认不部署它；这个键由 [benchmark 的 arm](benchmarks.md#开启-recall-的-arm) 设置，测量 recall 的 workflow 步骤也可以设置。`selection` 包含与你的配置同名的 `primaryRole`、`additionalRoles`、`projects`、`subscribedTags` 和 `excludedSkills`，以及 `enabledAgents`，即资源安装到的工具：默认为打开克隆的步骤的工具，否则为你启用的 agent。只要 `revision` 中存在 `manifest/members.yaml`，它就像在你的检出目录中一样决定你在克隆中的角色：`primaryRole` 或 `additionalRoles` 与它分配给你的不同时，克隆以 `clone_prepare_failed` 失败。请省略它们；要以某个角色的知识运行步骤，还需在步骤上设置 `role`。teamai 离线创建克隆，来源是运行的检出目录或提交缓存；`repo` 只指明缓存，从不是 URL。打开克隆的 workflow 步骤拥有它，供其下每个 `continue` 步骤使用。克隆中的任何内容都不会被推送或交付。[Benchmark](benchmarks.md) 会为你写出这些步骤。
 
 ### 以团队角色运行步骤
 
@@ -1583,7 +1583,7 @@ TeamAI 为准备 attempt 记录的内容只保存在本机：路径和文件指�
 teamai workflow next <run> --prepare --json '{"driver":{"kind":"script","machine":"runner","workspace":"/work","can":{"workspace":["read-only","new","continue","clone"],"isolation":"sandbox","env":true,"setup":true,"tools":["claude"],"end_turn":true}},"running":[]}'
 ```
 
-带上 `--prepare` 时，teamai 在本机为[克隆步骤](#克隆工作区)创建克隆、安装其团队资产并运行 setup，然后返回带 `cwd`（即该克隆）的租约。一次调用可能要等 setup 运行完。驱动未在 `workspace` 中列出 `clone`，或没有用 `--prepare` 请求时，克隆步骤会被暂缓，`wait.held[].missing` 列出 `workspace.clone` 或 `prepare`。以团队角色运行的克隆还需要 `can.role`。[限定在一个目录里](#在自己的驱动里运行受限步骤)的步骤不需要位置：`--prepare` 返回带 `cwd`（即它的 `confined.dir`）的租约，不为它在 checkout 中创建、设置或快照任何东西。
+带上 `--prepare` 时，teamai 在本机为[克隆步骤](#克隆工作区)创建克隆、安装其团队资源并运行 setup，然后返回带 `cwd`（即该克隆）的租约。一次调用可能要等 setup 运行完。驱动未在 `workspace` 中列出 `clone`，或没有用 `--prepare` 请求时，克隆步骤会被暂缓，`wait.held[].missing` 列出 `workspace.clone` 或 `prepare`。以团队角色运行的克隆还需要 `can.role`。[限定在一个目录里](#在自己的驱动里运行受限步骤)的步骤不需要位置：`--prepare` 返回带 `cwd`（即它的 `confined.dir`）的租约，不为它在 checkout 中创建、设置或快照任何东西。
 
 对每个租约，驱动：
 

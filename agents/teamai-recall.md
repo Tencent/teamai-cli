@@ -363,7 +363,7 @@ rather than dropping the reasoning.
 - `<doc_id>` is the filename without extension (e.g. `api-timeout-fix`).
   For codebase hits, use the relative path within teamwiki/ (e.g. `evidence/code/hai_api/modules/business`)
 - **Related: lines**: when a recall hit carries `Related:` lines (relations
-  between team assets, #1552), pass through at most 2 per entry, declared
+  between team resources, #1552), pass through at most 2 per entry, declared
   relations first. They are part of the response and count toward its size
   cap. The LOW shortcut carries none: `--check` output has no Related lines.
 - **Codebase context section**: when a codebase hit is returned, include

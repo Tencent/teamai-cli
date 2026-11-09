@@ -80,7 +80,7 @@ function agentRuns(install: Install, literal: string): Record<string, unknown> {
   return answer.data;
 }
 
-/** A single-repo install whose origin is a local bare repository, after teamai pull. */
+/** An install in self mode whose origin is a local bare repository, after teamai pull. */
 function selfModeInstall(): Install {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-share-from-sessions-')));
   roots.push(root);

@@ -1,5 +1,5 @@
 /**
- * Self-heal bootstrap for single-repo mode (issue #198).
+ * Self-heal bootstrap for self mode (issue #198).
  *
  * When an admin runs `teamai init .`, the knowledge skeleton and
  * `.teamai/teamai.yaml` (carrying `mode: self`) are committed to main and travel
@@ -8,7 +8,7 @@
  * team knowledge on disk but no local config — teamai would otherwise treat the
  * project as uninitialized.
  *
- * `bootstrapSelfRepo` fills that gap: on any teamai command or session-start
+ * `bootstrapSelfMode` fills that gap: on any teamai command or session-start
  * hook, when `.teamai/teamai.yaml` says `mode: self` but there is no local
  * config, it non-interactively writes the local config, injects hooks, and
  * registers the member — no need to re-type repo/role. Best-effort and locked so
@@ -42,7 +42,7 @@ const SelfModeMarkerSchema = z.object({
 
 /**
  * Read `.teamai/teamai.yaml` at dir and return it iff it declares `mode: self`.
- * Returns null otherwise (not a single-repo project). Purely a marker read — no
+ * Returns null otherwise (not a project in self mode). Purely a marker read — no
  * schema validation beyond the mode field so a partial/older file still triggers.
  */
 export async function readSelfModeMarker(dir: string): Promise<{ repo?: string; provider?: string } | null> {
@@ -69,7 +69,7 @@ type SelfModeMarker = NonNullable<Awaited<ReturnType<typeof readSelfModeMarker>>
 /**
  * Where a bootstrap of `businessRepoRoot` would write, or why it would not run:
  * 'already' when a config exists (partition or legacy), 'skip' when the repo is
- * not a single-repo project.
+ * not a project in self mode.
  */
 async function findPendingBootstrap(
   businessRepoRoot: string,
@@ -137,7 +137,7 @@ async function planSelfBootstrap(
     // `teamai init .` handle first-time auth.
     if (!provider.isAuthenticated()) {
       if (!silent) {
-        log.warn('This is a teamai single-repo project, but you are not authenticated yet.');
+        log.warn('This is a teamai project in self mode, but you are not authenticated yet.');
         log.warn(`Run \`teamai init .\` (or authenticate with your git provider) to finish setup.`);
       }
 
@@ -221,7 +221,7 @@ async function planSelfBootstrap(
 }
 
 /**
- * What `bootstrapSelfRepo` would set up, for a --dry-run: the config it would
+ * What `bootstrapSelfMode` would set up, for a --dry-run: the config it would
  * write, kept in memory, and one line saying what it would do. Writes, locks,
  * registers and authenticates nothing, so the config has no username. Null when
  * it would not bootstrap.
@@ -235,7 +235,7 @@ export async function previewSelfBootstrap(dir?: string): Promise<LocalConfig | 
 
   if (!plan) return null;
   log.info(
-    `[dry-run] Would bootstrap this single-repo project if you are authenticated with ${plan.providerName} ` +
+    `[dry-run] Would bootstrap this self-mode project if you are authenticated with ${plan.providerName} ` +
       `(not checked in a dry run): look up your username, write its config and state to ` +
       `${pending.partitionHome}, seed tool dirs, inject hooks and register you as a member`,
   );
@@ -244,13 +244,13 @@ export async function previewSelfBootstrap(dir?: string): Promise<LocalConfig | 
 }
 
 /**
- * If `dir` is a single-repo teamai project (teamai.yaml has `mode: self`) but has
+ * If `dir` is a teamai project in self mode (teamai.yaml has `mode: self`) but has
  * no local config yet, non-interactively bootstrap the machine side. Idempotent.
  *
  * @param dir business repo root (defaults to cwd)
  * @param opts.silent suppress user-facing logs (session-start hook path)
  */
-export async function bootstrapSelfRepo(
+export async function bootstrapSelfMode(
   dir?: string,
   opts?: { silent?: boolean },
 ): Promise<BootstrapResult> {
@@ -282,7 +282,7 @@ export async function bootstrapSelfRepo(
     const { localConfig, teamConfig, username } = plan;
     const localPath = localConfig.repo.localPath;
 
-    info('Detected a teamai single-repo project — finishing local setup...');
+    info('Detected a teamai project in self mode — finishing local setup...');
 
     const { saveLocalConfigForScope, loadStateForScope, saveStateForScope } = await import('./config.js');
 
@@ -361,7 +361,7 @@ export async function bootstrapSelfRepo(
       log.debug(`[bootstrap] member registration skipped (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
     }
 
-    info('teamai single-repo project initialized locally. Team skills/rules are now active.');
+    info('teamai self-mode project initialized locally. Team skills/rules are now active.');
 
     return 'bootstrapped';
   } catch (e) {

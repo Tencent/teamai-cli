@@ -14,7 +14,7 @@ import { projectDataHome } from '../utils/partition.js';
 // ─── P2 cross-worktree self regression (issue #374) ─────────────────────────
 //
 // After P2 a self install's config lives in the SHARED partition (keyed on the
-// main checkout's projectAnchor), read by every worktree. Its persisted
+// main checkout's repoAnchor), read by every worktree. Its persisted
 // repo.localPath / businessRepoRoot name the checkout that first migrated (main).
 // getKnowledgeDir === repo.localPath, so without rebinding, a feature worktree
 // would read MAIN's knowledge and inject it into the FEATURE tree. detection must
@@ -57,7 +57,7 @@ function seedSharedSelfConfig(): string {
 }
 
 describe('P2 self cross-worktree rebind', () => {
-  it('rebinds self repo.localPath/businessRepoRoot to a feature worktree', async () => {
+  it('rebinds self-mode repo.localPath/businessRepoRoot to a feature worktree', async () => {
     const partition = seedSharedSelfConfig();
     const feat0 = path.join(base, 'feature-wt');
     git(main, 'worktree', 'add', '-q', feat0, '-b', 'feature');

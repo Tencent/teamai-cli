@@ -38,7 +38,7 @@ const RecordSchema = z.object({ trials: z.array(z.unknown()) }).passthrough();
 const EndRecordSchema = z.object({ workflow: z.string(), status: z.string(), isolated: z.boolean().optional() }).passthrough();
 const CAPTION = 'These results hold for these tasks, this run and this machine.';
 const NO_SANDBOX = 'Step "trials" requires strict isolation, and the local driver here is not a sandbox. Run it in CI or a container, and declare it with --sandbox or workflows.sandbox: true.';
-const USER_SCOPE = 'A benchmark gives each trial the team revision it plans, but this team also reaches this checkout through user scope, where every workspace shares one copy, so a trial could read team assets that revision does not have. Remove the user-scope install, or turn off inheritUserScope in this workspace, and run the benchmark again.';
+const USER_SCOPE = 'A benchmark gives each trial the team revision it plans, but this team also reaches this checkout through user scope, where every workspace shares one copy, so a trial could read team resources that revision does not have. Remove the user-scope install, or turn off inheritUserScope in this workspace, and run the benchmark again.';
 
 const TWO_BY_TWO = `schemaVersion: v1alpha1
 name: fix

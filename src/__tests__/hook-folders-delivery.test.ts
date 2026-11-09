@@ -228,7 +228,7 @@ describe('the team hook history', () => {
   });
 });
 
-describe('a team hook folder in a single-repo worktree', () => {
+describe('a team hook folder in a worktree in self mode', () => {
   let project: string;
   let team: string;
   let self: LocalConfig;
@@ -273,7 +273,7 @@ describe('a team hook folder in a single-repo worktree', () => {
   });
 });
 
-describe('a team hook folder in two worktrees of a single-repo, with a tool that keeps team hooks in HOME', () => {
+describe('a team hook folder in two worktrees of a repo in self mode, with a tool that keeps team hooks in HOME', () => {
   const LINT = 'description: Lint\nevent: Stop\ncommand: bash "${TEAMAI_HOOK_DIR}/lint.sh"\n';
   const zcodeTeam = { toolPaths: { zcode: { settings: '.zcode/cli/config.json' } } } as unknown as TeamaiConfig;
   let main: string;

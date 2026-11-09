@@ -622,7 +622,7 @@ describe('workflow folders in status and push', () => {
     ]);
   });
 
-  it('pushes every file of a folder under .teamai/workflows/ in single-repo, and only YAML outside one', async () => {
+  it('pushes every file of a folder under .teamai/workflows/ in self mode, and only YAML outside one', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-wf-push-'));
     dirs.push(root);
     const business = path.join(root, 'biz');

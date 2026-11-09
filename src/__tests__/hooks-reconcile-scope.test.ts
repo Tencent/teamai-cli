@@ -577,7 +577,7 @@ builtin:
     expect(await fse.pathExists(path.join(home, '.teamai', 'managed-hooks.json'))).toBe(false);
   });
 
-  it('self single-repo mode injects into projectRoot, not HOME (committed to main, travels on clone)', async () => {
+  it('self mode injects into projectRoot, not HOME (committed to main, travels on clone)', async () => {
     // Pre-create the tool root under projectRoot so it counts as installed there.
     await fse.ensureDir(path.join(project, '.claude'));
     const selfConfig = {
@@ -849,7 +849,7 @@ describe('reconcileTeamHooksForConfig — team hooks in the main checkout', () =
     const main = await fse.realpath(project);
     const worktree = path.join(await fse.realpath(os.tmpdir()), `teamai-recon-wt-${path.basename(main)}`);
     await fse.ensureDir(worktree);
-    vi.mocked(resolveAnchors).mockImplementation(async (cwd) => ({ workspaceRoot: cwd ?? main, projectAnchor: main, mainCheckout: main }));
+    vi.mocked(resolveAnchors).mockImplementation(async (cwd) => ({ workspaceRoot: cwd ?? main, repoAnchor: main, mainCheckout: main }));
     vi.mocked(listWorktrees).mockResolvedValue([main, worktree]);
     return { main, worktree };
   }

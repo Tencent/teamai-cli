@@ -15,7 +15,7 @@ import { changedPaths, snapshotWorktree } from './worktree-snapshot.js';
 
 export interface SetupRun {
   command: string;
-  /** The workspace, after its base config and team assets are in place. */
+  /** The workspace, after its base config and team resources are in place. */
   dir: string;
   /** The inherited environment without every withheld key, with the values of setup's own keys. */
   env: NodeJS.ProcessEnv;

@@ -57,7 +57,7 @@ describe('init member registration failures (#1267)', () => {
       const output = `${result.stdout}${result.stderr}`;
       expect(result.error).toBeUndefined();
       expect(result.status, output).toBe(0);
-      expect(output).toContain('teamai initialized (single-repo mode)!');
+      expect(output).toContain('teamai initialized (self mode)!');
       expect(fs.existsSync(path.join(partition, 'config.yaml'))).toBe(true);
       expect(YAML.parse(fs.readFileSync(path.join(partition, 'config.yaml'), 'utf8')).repo.kind).toBe('self');
       expect(output).toContain('same `teamai init` command');

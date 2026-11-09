@@ -104,7 +104,7 @@ describe('--dry-run on a command with no preview', () => {
     expect(snapshot(home)).toEqual(before);
   });
 
-  /** A fresh clone of a single-repo team: `.teamai/teamai.yaml` says `mode: self`, no local config. */
+  /** A fresh clone of a team in self mode: `.teamai/teamai.yaml` says `mode: self`, no local config. */
   function selfClone(): string {
     const repo = path.join(sandbox, 'repo');
     const env = { ...process.env, ...GIT_ENV };
@@ -151,10 +151,10 @@ describe('--dry-run on a command with no preview', () => {
     expect(snapshot(home)).toEqual(homeBefore);
   });
 
-  // In a single-repo clone even loading the config bootstraps the machine side
+  // In a clone in self mode even loading the config bootstraps the machine side
   // (#852), so every form of init is refused before the migration step, which
   // would preview that bootstrap first.
-  it('every form of init --dry-run in a single-repo clone writes nothing', () => {
+  it('every form of init --dry-run in a clone in self mode writes nothing', () => {
     teamRemote();
     const repo = selfClone();
     const repoBefore = snapshot(repo);

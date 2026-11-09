@@ -18,7 +18,7 @@ function tempWiki(): string {
 }
 
 describe('codebase wiki lint output', () => {
-  it('reports missing wiki assets in English', async () => {
+  it('reports missing wiki files in English', async () => {
     const output = formatWikiLintReport(await lintTeamwiki({ wikiRoot: tempWiki() }));
 
     expect(output).toContain('=== teamwiki/ knowledge graph health check ===');

@@ -286,7 +286,7 @@ steps:
 - `teamai-` 开头的文件夹名只用来替换同名的[默认工作流](#默认工作流)。其他这样的文件夹会被 pull 跳过并警告：`workflows/teamai-release/ is skipped: a teamai- name only replaces a teamai default, and teamai has no workflow named teamai-release. Rename the folder.`
 - 文件夹只能包含 UTF-8 文本，总共不超过 1 MB，且不能有符号链接。[运行中的工作流文件夹](workflow-advanced.md#运行中的工作流文件夹)介绍这些限制，以及运行如何保留自己的副本。
 - `README.md` 是给人看的。teamai 从不把它交给智能体，pull 为工作流生成的技能也不包含它。
-- `teamai status` 把一个文件夹算作一个工作流。在单仓库模式下，文件夹位于 `.teamai/workflows/` 下，`teamai push` 会推送其中的每个文件。
+- `teamai status` 把一个文件夹算作一个工作流。在 self 模式下，文件夹位于 `.teamai/workflows/` 下，`teamai push` 会推送其中的每个文件。
 
 ## 工作区
 
@@ -453,7 +453,7 @@ steps:
 
 ### 团队工作区
 
-`workspace: { team: { branch } }` 让步骤在团队仓库的一个全新克隆里运行，用于修改团队资产而不是项目的工作。配合 `deliver: pr`，它的 pull request 合入团队仓库的默认分支。
+`workspace: { team: { branch } }` 让步骤在团队仓库的一个全新克隆里运行，用于修改团队资源而不是项目的工作。配合 `deliver: pr`，它的 pull request 合入团队仓库的默认分支。
 
 ```yaml
 schemaVersion: v1alpha1
@@ -471,7 +471,7 @@ steps:
 teamai workflow start tighten-rule --inputs '{"rule":"backend"}'
   克隆团队仓库                     origin 有 tighten/backend？从它继续，并合并 main
                                    否则从 main 新建分支
-  在克隆里运行步骤                 单仓库模式下在项目仓库克隆的 .teamai/ 里
+  在克隆里运行步骤                 self 模式下在项目仓库克隆的 .teamai/ 里
   提交、检查、推送 tighten/backend  以克隆时看到的分支顶端作为 lease
   打开合入 main 的 pull request    或更新已经打开的那个
 ```
@@ -1142,7 +1142,7 @@ teamai 自带一些工作流，团队不用自己编写就能使用：
 | `teamai-import-from-mr` | 把已合入的 MR 或 PR 提炼为经验：你的 AI 工具为每个 MR 起草一条，由用户逐条接受、编辑或跳过，接受的经验按 `teamai contribute` 的方式发布，并更新每个仓库的 teamwiki，由 [`teamai import --from-mr`](knowledge.md#代码知识图谱) 启动。会话开始时的 MR 提示会推荐它。输入：`mrs`、`all`、`publish`、`dir`、`output`、`discussions`、`language`。私有 | 始终：`invoke: ask`，agent 在用户同意后启动它 |
 | `teamai-import-learnings` | 把文件分为 rule、doc 或 learning（一次三个），跳过个人内容，逐条请人 accept、edit 或 skip，再把接受的条目按类型写出。它既不提交也不推送。输入：`candidates`、`dir`、`by_type`、`all`。私有 | 从不：`invoke: deny` |
 | `teamai-benchmark` | 通过 `teamai benchmark run` 运行 [benchmark suite](benchmarks.md#benchmark-工作流) | 始终 |
-| `teamai-self-improvement` | 根据评分器反复判定的失败修改团队资产，每个失败加一个回归任务，作为一个由下次运行更新的拉取请求，通过 [`teamai self-improvement run`](self-improvement.md) 运行。输入：`scorer`、`suite` | 始终 |
+| `teamai-self-improvement` | 根据评分器反复判定的失败修改团队资源，每个失败加一个回归任务，作为一个由下次运行更新的拉取请求，通过 [`teamai self-improvement run`](self-improvement.md) 运行。输入：`scorer`、`suite` | 始终 |
 | `teamai-session-to-task` | 把会话完成的工作（如修 bug 或加功能）变成 [benchmark 任务](benchmarks.md#把会话变成任务)，从[团队工作区](#团队工作区)作为拉取请求提议给团队。输入：`session`、`source`、`suite`、`start`、`solution`，以及队友推送的会话所用的 `team_session` 和 `author`（默认为空） | 始终 |
 | `teamai-sessions-to-tasks` | [从过去的会话构建套件](benchmarks.md#从过去的会话构建套件)：列出套件可以从中取任务的已结束会话，由 AI 按大小挑出有代表性的会话，再对每个选中的会话逐个运行 `teamai-session-to-task`。输入：`suite`、`count`、`sizes`（默认 `S=40,3 M=200,10 L=800,30`） | 始终：`invoke: ask`，本人同意后 agent 才启动它 |
 

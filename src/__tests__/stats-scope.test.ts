@@ -68,7 +68,7 @@ function initWorkspace(): void {
 async function seedProjectConfig(): Promise<void> {
   const anchors = await resolveAnchors(workspace);
   if (!anchors) throw new Error('expected the seeded workspace to have git anchors');
-  const partitionDir = await resolvePartitionDir(anchors.projectAnchor);
+  const partitionDir = await resolvePartitionDir(anchors.repoAnchor);
   await ensureDir(partitionDir);
   await writeFile(
     path.join(partitionDir, 'config.yaml'),
@@ -348,7 +348,7 @@ describe('showStats scope and idempotency', () => {
     await writeReportedSnapshots({}, {});
     const anchors = await resolveAnchors(workspace);
     if (!anchors) throw new Error('expected the seeded workspace to have git anchors');
-    const ownDir = path.join(await resolvePartitionDir(anchors.projectAnchor), 'dashboard');
+    const ownDir = path.join(await resolvePartitionDir(anchors.repoAnchor), 'dashboard');
     await ensureDir(ownDir);
     await writeFile(
       path.join(ownDir, 'reported-interventions.json'),

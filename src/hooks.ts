@@ -1261,8 +1261,8 @@ export async function resolveMainCheckoutHooks(
     const manifestRoot = path.join(getDataHome(localConfig), 'workspaces', managedMcpWorkspaceId(root));
     const anchors = await resolveAnchors(root);
 
-    const original = anchors?.projectAnchor === await gitCommonDir(root)
-      || anchors?.projectAnchor === root;
+    const original = anchors?.repoAnchor === await gitCommonDir(root)
+      || anchors?.repoAnchor === root;
 
     const hooks: MainCheckoutHooks = {
       root, current: canonicalProjectRoot(localConfig.projectRoot), worktreeScoped,
@@ -1455,7 +1455,7 @@ export async function codexTeamHookProject(localConfig: LocalConfig): Promise<st
   const anchors = await resolveAnchors(localConfig.projectRoot);
 
   const root = anchors?.mainCheckout === null ? anchors.workspaceRoot
-    : anchors?.projectAnchor ?? canonicalProjectRoot(localConfig.projectRoot);
+    : anchors?.repoAnchor ?? canonicalProjectRoot(localConfig.projectRoot);
 
   return root === canonicalProjectRoot(getUserHome()) ? null : root;
 }
@@ -1479,7 +1479,7 @@ function codexHomeHooksFile(teamConfig: TeamaiConfig, localConfig: LocalConfig):
 
 /**
  * The dispatcher index keys holding registrations of `localConfig`'s project
- * identity (its `projectAnchor`). A checkout registers under:
+ * identity (its `repoAnchor`). A checkout registers under:
  * - its main checkout, for a plain repository and its linked worktrees;
  * - the Git directory, for a `--separate-git-dir` repository's main checkout,
  *   and for its linked worktrees when `core.worktree` names a main checkout;
@@ -1488,12 +1488,12 @@ function codexHomeHooksFile(teamConfig: TeamaiConfig, localConfig: LocalConfig):
  * So a key belongs when it is the identity itself, or a checkout that resolves to it.
  */
 async function codexDispatcherKeysOf(localConfig: LocalConfig, project: string): Promise<string[]> {
-  const identity = (await resolveAnchors(localConfig.projectRoot))?.projectAnchor;
+  const identity = (await resolveAnchors(localConfig.projectRoot))?.repoAnchor;
   const keys: string[] = [];
 
   for (const key of await codexDispatcherProjects()) {
     if (key === project || (identity && (key === identity
-      || (await pathExists(path.join(key, '.git')) && (await resolveAnchors(key))?.projectAnchor === identity)))) keys.push(key);
+      || (await pathExists(path.join(key, '.git')) && (await resolveAnchors(key))?.repoAnchor === identity)))) keys.push(key);
   }
 
   return keys;
@@ -1860,7 +1860,7 @@ async function canonicalRemovedRoot(root: string): Promise<string> {
 
 /**
  * Take back the team hooks a removed checkout of this repository wrote in HOME behind its `$PWD` gate: a project
- * install of ZCode or a bridged tool. A single-repo worktree's entries there run the hook folders it delivered in its
+ * install of ZCode or a bridged tool. A self-mode worktree's entries there run the hook folders it delivered in its
  * own `.teamai/delivered/` (#1787). They are recorded in the checkout's `workspaces/<id>/managed-hooks.json`, which
  * pull prunes with the rest of that directory. So pull calls this once per run, just before that prune, and
  * `doctor --fix` calls it too; nothing else does.
@@ -1889,7 +1889,7 @@ export async function releaseRemovedCheckoutHooks(teamConfig: TeamaiConfig, loca
 }
 
 /**
- * A single-repo hook folder's command as `tool` runs it from a project file: the folder's path relative to the tool's
+ * A self-mode hook folder's command as `tool` runs it from a project file: the folder's path relative to the tool's
  * project-directory variable, when `TOOLS` records one (#1787, common rule 10), referenced as the hook's shell reads an
  * environment variable. Any other command is left as rendered.
  */
@@ -4667,7 +4667,7 @@ async function codexTrustTargets(
     if (mainCheckout && mainFile) {
       sources.push({ file: mainFile, manifestPath: mainCheckout.manifestPath });
     } else if (isSelfMode(localConfig) && path.join(anchor, paths.settings) !== primary) {
-      // A linked worktree of a self repo: Codex reads the main checkout's file.
+      // A linked worktree of a repo in self mode: Codex reads the main checkout's file.
       sources[0] = { file: path.join(anchor, paths.settings), manifestPath };
     }
 

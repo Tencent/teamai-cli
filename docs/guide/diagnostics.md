@@ -23,7 +23,7 @@ Generated-hook checks accept a launcher from another installation when the handl
 
 If a file occupies a tool's skills directory, `pull` keeps it, names the blocked path, and continues delivering to other tools. `doctor` fails the skills-directory check instead of treating the skipped tool as delivered. Move the file aside, then run `teamai pull` again to deliver the missing skills. `uninstall` preserves the blocking file and continues cleaning the tool's other managed resources.
 
-ZCode's CLI reads hooks from `~/.zcode/cli/config.json` even in single-repo mode. `hooks inject` moves teamai's old project-file entries there, keeps personal settings, and gates team hooks to their project. `hooks list` and `doctor` check that same HOME file.
+ZCode's CLI reads hooks from `~/.zcode/cli/config.json` even in self mode. `hooks inject` moves teamai's old project-file entries there, keeps personal settings, and gates team hooks to their project. `hooks list` and `doctor` check that same HOME file.
 
 Manual `teamai update`, `teamai update --check`, and `teamai update --dry-run` always query the npm registry. If the registry cannot be reached, they report the last check from the past 12 hours, or say the update status is unknown. Automatic checks reuse the registry version for up to 12 hours and compare each installed copy against it. A legacy cached null is checked again because it does not identify the registry version. `--dry-run` does not save the check result or install an update.
 

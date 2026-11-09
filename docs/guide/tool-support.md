@@ -1,6 +1,6 @@
 # Tool support
 
-Where teamai writes each resource for each tool, and what the tool reads, as teamai's tool descriptor (`src/tools.ts`) records it.
+Where teamai writes each agent resource for each tool, and what the tool reads, as teamai's tool descriptor (`src/tools.ts`) records it.
 
 Generated: do not edit by hand. Regenerate with `node scripts/check-docs.mjs --write` after changing the descriptor.
 

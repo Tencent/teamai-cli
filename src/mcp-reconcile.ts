@@ -1645,7 +1645,7 @@ export async function unclaimedMcpServers(target: McpTarget, claimed: readonly s
 
 /**
  * Whether `tool`'s project MCP config is never judged teamai-only (#915, its
- * `judgedTeamaiOnly`). In a single-repo team Claude keeps `.mcp.json`
+ * `judgedTeamaiOnly`). In a team in self mode Claude keeps `.mcp.json`
  * (`mcpRelocated`), and it is judged.
  */
 function neverJudgedTeamaiOnly(tool: string, localConfig: LocalConfig): boolean {
@@ -3691,7 +3691,7 @@ function movedBecause(teamConfig: TeamaiConfig, localConfig: LocalConfig, active
   // In a workspace with children the servers come back for a tool that reads `.mcp.json`, whatever git exclude says (#913).
   if (!isGitExcludeEnabled(localConfig, teamConfig) && !hasWorkspaceChildren(localConfig)) return 'with sharing.gitExclude off, ';
 
-  return isSelfMode(localConfig) ? 'in a single-repo team, where each worktree has its own servers, ' : '';
+  return isSelfMode(localConfig) ? 'in a team in self mode, where each worktree has its own servers, ' : '';
 }
 
 /**

@@ -108,7 +108,7 @@ describe('benchmark plan run', () => {
     expect(next).toEqual({ data: { wait: { reason: expect.any(String), held: [{ step: 'trials.baselines.t01', reason: expect.any(String), missing: expect.arrayContaining(['workspace.clone']) }] }, cancelled: [] } });
   });
 
-  it('leases a task baseline, a clone of the starting commit with no team assets, before any trial', async () => {
+  it('leases a task baseline, a clone of the starting commit with no team resources, before any trial', async () => {
     const { config, runId } = await startFix();
 
     const next = await leaseNext(config, runId, driver, { can, prepare: true });
@@ -851,7 +851,7 @@ describe('benchmark plan on a machine that cannot pin the team a trial gets', ()
 
     const planned = await planBenchmark(config, 'fix', { checkout: root, memberAliases: false, unattended: false, chosen: { tasks: [], arms: [] } });
 
-    expect(planned).toEqual({ refused: { error: { code: 'team_ref_blocked', message: 'A benchmark installs each trial\'s team assets from a commit of the team repo, and this team is served over HTTP, which has no commits to install from. Run the benchmark from a workspace whose team is a git repo.' } } });
+    expect(planned).toEqual({ refused: { error: { code: 'team_ref_blocked', message: 'A benchmark installs each trial\'s team resources from a commit of the team repo, and this team is served over HTTP, which has no commits to install from. Run the benchmark from a workspace whose team is a git repo.' } } });
   });
 });
 
@@ -951,9 +951,9 @@ describe('benchmark plan refusals at start', () => {
       message: 'Arm "strong" has a model that is not a plain name, such as a URL or a local path, and a benchmark record publishes it. Fix the suite or the team\'s models/aliases.yaml, push it, run teamai pull, and start again.',
     },
     {
-      refused: 'in single-repo mode, where the project commit decides the team assets', arms: 'arms:\n  - name: now\n  - name: ablated\n    team: { without: [skills/fixer] }\n', code: 'team_ref_blocked',
+      refused: 'in self mode, where the project commit decides the team resources', arms: 'arms:\n  - name: now\n  - name: ablated\n    team: { without: [skills/fixer] }\n', code: 'team_ref_blocked',
       config: { repo: { localPath: '', remote: 'local', kind: 'self' } },
-      message: 'Benchmarks do not run in single-repo mode: the project\'s own commit decides which team assets a checkout has, so no arm can run on a team revision of its own. Start the benchmark from a checkout whose team has a team repo of its own.',
+      message: 'Benchmarks do not run in self mode: the project\'s own commit decides which team resources a checkout has, so no arm can run on a team revision of its own. Start the benchmark from a checkout whose team has a team repo of its own.',
     },
   ])('refuses $refused', async ({ arms, code, message, team = {}, config = {} }) => {
     const member = await pulledMember({ arms, team, config });
@@ -979,7 +979,7 @@ describe('benchmark plan refusals at start', () => {
     } } });
   });
 
-  it('refuses an arm without team assets on a machine whose user-scope install delivers to its tool', async () => {
+  it('refuses an arm without team resources on a machine whose user-scope install delivers to its tool', async () => {
     const member = await pulledMember({ arms: 'arms:\n  - name: now\n  - name: bare\n    team: none\n' });
     // Another team's user-scope install: one of this team would refuse every arm first, as the team could not be pinned.
     const { getUserConfigPath } = await import('../types.js');
@@ -991,12 +991,12 @@ describe('benchmark plan refusals at start', () => {
 
     expect(planned).toEqual({ refused: { error: {
       code: 'arm_team_unclean',
-      message: 'Arm "bare" runs without team assets, and this machine\'s user-scope teamai install delivers team assets to claude in your home, where its trials would read them. Start the benchmark on a machine where teamai is installed only in workspace scope.',
+      message: 'Arm "bare" runs without team resources, and this machine\'s user-scope teamai install delivers team resources to claude in your home, where its trials would read them. Start the benchmark on a machine where teamai is installed only in workspace scope.',
     } } });
   });
 
   it.each([
-    ['its delivered team assets were edited', async (member: Awaited<ReturnType<typeof pulledMember>>) => {
+    ['its delivered team resources were edited', async (member: Awaited<ReturnType<typeof pulledMember>>) => {
       fs.appendFileSync(path.join(member.project, '.claude', 'skills', 'fixer', 'SKILL.md'), 'A local edit.\n');
     }],
     ['its team revision is on no branch of the team remote', async (member: Awaited<ReturnType<typeof pulledMember>>) => {

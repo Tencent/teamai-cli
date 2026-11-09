@@ -37,7 +37,7 @@ Git Bash, Windows PowerShell and Node all read a forward-slash path. The command
 TeamAI enables `core.longpaths` for its shared Git clients on Windows without
 changing your global or repository Git configuration. A team-repo refresh
 checks out paths before role filtering, so even an inactive namespace's deeply
-nested skill assets need long-path support. Other Git commands and tools may
+nested skill files need long-path support. Other Git commands and tools may
 still need their own long-path configuration.
 
 If your Git configuration explicitly sets `core.longpaths=false`, some Git

@@ -50,7 +50,7 @@ describe('runManifestEdit', () => {
     process.exitCode = 0;
   });
 
-  it('pulls and edits the team repo clone directly outside single-repo mode', async () => {
+  it('pulls and edits the team repo clone directly outside self mode', async () => {
     const fn = vi.fn().mockResolvedValue(undefined);
     const localConfig = config(undefined, '/team-repo');
 
@@ -77,7 +77,7 @@ describe('runManifestEdit', () => {
     expect(reportsMocks.withKnowledgeWorktree).not.toHaveBeenCalled();
   });
 
-  it('edits inside the knowledge worktree in single-repo mode', async () => {
+  it('edits inside the knowledge worktree in self mode', async () => {
     const worktreeConfig = config('self', '/worktree/.teamai');
     reportsMocks.withKnowledgeWorktree.mockImplementation(
       async (_config: LocalConfig, body: (wt: LocalConfig) => Promise<void>) => body(worktreeConfig),

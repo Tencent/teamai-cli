@@ -1,7 +1,7 @@
 /**
- * Asset relations (#1552 first slice): relations a team declares between its
- * assets — rules, docs, learnings — and the relations a local Markdown link to
- * another asset implies.
+ * Resource relations (#1552 first slice): relations a team declares between its
+ * resources — rules, docs, learnings — and the relations a local Markdown link to
+ * another resource implies.
  *
  * The vocabulary is four of the seven code-graph `RelationType` names; an edge
  * reads "from RELATION to", the same direction the code graph uses. Only a
@@ -21,34 +21,34 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { FrontmatterValue } from './utils/frontmatter.js';
 
-/** The relations an asset may declare. The other three code-graph relations (`DEPENDS_ON`, `CONTAINS`, `IMPLEMENTS`) relate code to code and can never be declared on an asset. */
-export const ASSET_RELATIONS = ['MAPS_TO', 'REFERENCES', 'SUPERSEDES', 'CONFLICTS_WITH'] as const;
+/** The relations a resource may declare. The other three code-graph relations (`DEPENDS_ON`, `CONTAINS`, `IMPLEMENTS`) relate code to code and can never be declared on a resource. */
+export const RESOURCE_RELATIONS = ['MAPS_TO', 'REFERENCES', 'SUPERSEDES', 'CONFLICTS_WITH'] as const;
 
-export type AssetRelationType = (typeof ASSET_RELATIONS)[number];
+export type ResourceRelationType = (typeof RESOURCE_RELATIONS)[number];
 
 /** Every code-graph relation name, so a code-only key gets its own message instead of "unknown". */
 const CODE_ONLY_RELATIONS = ['DEPENDS_ON', 'CONTAINS', 'IMPLEMENTS'] as const;
 
-const ASSET_RELATION_NAMES = new Set<string>(ASSET_RELATIONS);
+const RESOURCE_RELATION_NAMES = new Set<string>(RESOURCE_RELATIONS);
 
 const CODE_ONLY_RELATION_NAMES = new Set<string>(CODE_ONLY_RELATIONS);
 
-function isAssetRelation(key: string): key is AssetRelationType {
-  return ASSET_RELATION_NAMES.has(key);
+function isResourceRelation(key: string): key is ResourceRelationType {
+  return RESOURCE_RELATION_NAMES.has(key);
 }
 
 /** A relation's targets as written: one string, or a list whose non-strings are reported. Anything else is null. */
 const RelationTargetsSchema = z.union([z.string().transform((target) => [target]), z.array(z.unknown())]).nullable().catch(null);
 
-/** The kind of asset a relation endpoint names. */
-export type AssetKind = 'rule' | 'doc' | 'learning' | 'skill' | 'teamwiki';
+/** The kind of resource a relation endpoint names. */
+export type RelationResourceKind = 'rule' | 'doc' | 'learning' | 'skill' | 'teamwiki';
 
 /** How a relation came about: declared in `related:` frontmatter, or derived from a local Markdown link. */
 export type RelationVia = 'declared' | 'link';
 
 /** One outgoing relation stored on a search-index entry; `target` is a team-tree path (see {@link normalizeTargetPath}). */
 export interface StoredRelation {
-  relation: AssetRelationType;
+  relation: ResourceRelationType;
   target: string;
   via: RelationVia;
 }
@@ -57,11 +57,11 @@ export type RelationSeverity = 'fail' | 'warn';
 
 /**
  * Which targets each source kind may declare each relation to. `REFERENCES`
- * accepts any asset; the concrete rows follow the triage table on #1552.
+ * accepts any resource; the concrete rows follow the triage table on #1552.
  * A learning never `SUPERSEDES` a rule: `contribute` publishes learnings with
  * no review, so a learning that disagrees with a rule declares `CONFLICTS_WITH`.
  */
-const DECLARABLE: Record<'rule' | 'doc' | 'learning', Record<AssetRelationType, readonly AssetKind[]>> = {
+const DECLARABLE: Record<'rule' | 'doc' | 'learning', Record<ResourceRelationType, readonly RelationResourceKind[]>> = {
   rule: {
     MAPS_TO: ['teamwiki'],
     REFERENCES: ['rule', 'doc', 'learning', 'skill', 'teamwiki'],
@@ -82,8 +82,8 @@ const DECLARABLE: Record<'rule' | 'doc' | 'learning', Record<AssetRelationType, 
   },
 };
 
-/** The team-tree prefix of each asset kind, longest first so `teamwiki/` wins over nothing shorter. */
-const KIND_PREFIXES: Array<[AssetKind, string]> = [
+/** The team-tree prefix of each resource kind, longest first so `teamwiki/` wins over nothing shorter. */
+const KIND_PREFIXES: Array<[RelationResourceKind, string]> = [
   ['rule', 'rules/'],
   ['doc', 'docs/'],
   ['learning', 'learnings/'],
@@ -91,8 +91,8 @@ const KIND_PREFIXES: Array<[AssetKind, string]> = [
   ['teamwiki', 'teamwiki/'],
 ];
 
-/** The `AssetKind` a team-tree path starts with, or null when the prefix names no asset. */
-export function classifyTreePath(treePath: string): AssetKind | null {
+/** The `RelationResourceKind` a team-tree path starts with, or null when the prefix names no resource. */
+export function classifyTreePath(treePath: string): RelationResourceKind | null {
   for (const [kind, prefix] of KIND_PREFIXES) {
     if (treePath.startsWith(prefix)) return kind;
   }
@@ -142,9 +142,9 @@ export function teamwikiCodebaseSlug(treePath: string): string | null {
  * Parse one `related:` frontmatter block as declared outgoing relations.
  *
  * `structuralSeverity` is the level the caller wants for structural problems
- * (`fail` in `review --branch`, `warn` in `contribute`); "names no asset" and
+ * (`fail` in `review --branch`, `warn` in `contribute`); "names no resource" and
  * "relation to itself" are always `warn`. `targetExists` decides whether a
- * syntactically valid path names an asset; the caller supplies the scope it
+ * syntactically valid path names a resource; the caller supplies the scope it
  * resolves in (the search index at recall time, the branch tree in
  * `review --branch`, the team clone in `contribute`).
  *
@@ -157,9 +157,9 @@ export function parseRelatedBlock(
   sourceKind: 'rule' | 'doc' | 'learning',
   ownTreePath: string,
   structuralSeverity: RelationSeverity,
-  targetExists: (kind: AssetKind, treePath: string) => boolean,
+  targetExists: (kind: RelationResourceKind, treePath: string) => boolean,
   report: (severity: RelationSeverity, message: string) => void,
-  noAssetNote = 'names no team asset',
+  noResourceNote = 'names no team resource',
 ): StoredRelation[] {
   if (rawRelated === undefined || rawRelated === null) return [];
 
@@ -171,7 +171,7 @@ export function parseRelatedBlock(
 
   const out: StoredRelation[] = [];
   const seen = new Set<string>();
-  const useList = `Use ${ASSET_RELATIONS.join(', ').replace(/, ([^,]*)$/, ' or $1')}.`;
+  const useList = `Use ${RESOURCE_RELATIONS.join(', ').replace(/, ([^,]*)$/, ' or $1')}.`;
 
   for (const [rawKey, rawValue] of Object.entries(rawRelated)) {
     const key = rawKey.toUpperCase();
@@ -181,7 +181,7 @@ export function parseRelatedBlock(
       continue;
     }
 
-    if (!isAssetRelation(key)) {
+    if (!isResourceRelation(key)) {
       report(structuralSeverity, `"${rawKey}" is not a relation. ${useList}`);
       continue;
     }
@@ -229,7 +229,7 @@ export function parseRelatedBlock(
       }
 
       if (!targetExists(kind, target)) {
-        report('warn', `${key} ${written} ${noAssetNote}; this relation is ignored.`);
+        report('warn', `${key} ${written} ${noResourceNote}; this relation is ignored.`);
         continue;
       }
 
@@ -249,7 +249,7 @@ const TEAM_ROOT_PREFIXES = ['rules/', 'docs/', 'learnings/', 'skills/', 'teamwik
 
 /**
  * The relations implied by the local links of a file: a link that lands on an
- * asset becomes `REFERENCES`. A target written as a team-root path
+ * resource becomes `REFERENCES`. A target written as a team-root path
  * (`docs/x.md`) is taken as written; a bare relative destination
  * (`payments-overview.md`) resolves against the file's own directory, so
  * `[overview](payments-overview.md)` in `docs/payments.md` names

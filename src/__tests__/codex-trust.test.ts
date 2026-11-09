@@ -623,11 +623,11 @@ describe('Codex trust — project scopes', () => {
     } as Partial<LocalConfig>);
   }
 
-  it('writes and trusts team hooks in the current workspace when the project anchor is bare', async () => {
+  it('writes and trusts team hooks in the current workspace when the repo anchor is bare', async () => {
     const bare = path.join(home, 'bare.git');
     await fse.ensureDir(bare);
     vi.mocked(resolveAnchors).mockResolvedValue({
-      workspaceRoot: project, projectAnchor: bare, mainCheckout: null,
+      workspaceRoot: project, repoAnchor: bare, mainCheckout: null,
     });
     await writeYaml(LINT_HOOK);
 
@@ -672,7 +672,7 @@ describe('Codex trust — project scopes', () => {
     await fse.ensureDir(other);
     await fse.ensureDir(bare);
     vi.mocked(resolveAnchors).mockImplementation(async (cwd) => ({
-      workspaceRoot: cwd!, projectAnchor: bare, mainCheckout: null,
+      workspaceRoot: cwd!, repoAnchor: bare, mainCheckout: null,
     }));
     const dataHome = path.join(home, 'shared-data');
     const first = projectConfig({ dataHome });
@@ -718,7 +718,7 @@ describe('Codex trust — project scopes', () => {
   it('a self worktree trusts the main checkout\'s hooks, which Codex reads there', async () => {
     const worktree = `${project}-wt`;
     await fse.ensureDir(worktree);
-    vi.mocked(resolveAnchors).mockImplementation(async (cwd) => ({ workspaceRoot: cwd ?? project, projectAnchor: project, mainCheckout: project }));
+    vi.mocked(resolveAnchors).mockImplementation(async (cwd) => ({ workspaceRoot: cwd ?? project, repoAnchor: project, mainCheckout: project }));
     vi.mocked(listWorktrees).mockResolvedValue([project, worktree]);
     try {
       for (const root of [project, worktree]) {
@@ -740,7 +740,7 @@ describe('Codex trust — project scopes', () => {
   it('shares the trusted fingerprint when alternating project checkouts', async () => {
     const worktree = `${project}-wt`;
     await fse.ensureDir(worktree);
-    vi.mocked(resolveAnchors).mockImplementation(async (cwd) => ({ workspaceRoot: cwd ?? project, projectAnchor: project, mainCheckout: project }));
+    vi.mocked(resolveAnchors).mockImplementation(async (cwd) => ({ workspaceRoot: cwd ?? project, repoAnchor: project, mainCheckout: project }));
     vi.mocked(listWorktrees).mockResolvedValue([project, worktree]);
     try {
       await writeYaml(LINT_HOOK);

@@ -340,7 +340,7 @@ async function openWorktree(
 }
 
 /**
- * Every scope and every checkout of a single-repo team resolve one side-branch
+ * Every scope and every checkout of a team in self mode resolve one side-branch
  * home now (#1443), so a checkout this repository registered anywhere else is
  * left over from an older layout. Remove it only when it is a path teamai
  * manages: the legacy `<checkout>/.teamai/<dirname>` or a partition under

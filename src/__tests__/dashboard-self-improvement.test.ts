@@ -242,7 +242,7 @@ describe('dashboard self-improvement', () => {
     expect(view.scorers).toEqual([expect.objectContaining({ startable: 1, isReady: true })]);
   });
 
-  it('lists a change that landed on the default branch with the assets it changed, the tasks it added and the scorer\'s pass rate before and after it', async () => {
+  it('lists a change that landed on the default branch with the resources it changed, the tasks it added and the scorer\'s pass rate before and after it', async () => {
     const start = project();
     const { config, repo } = team(start.dir);
     const before = git(repo, 'rev-parse', 'HEAD');

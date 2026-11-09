@@ -3,8 +3,8 @@ import path from 'node:path';
 import YAML from 'yaml';
 import matter from 'gray-matter';
 import { requireInit, detectProjectConfig, loadLocalConfigForScope } from './config.js';
-import { parseRelatedBlock } from './asset-relations.js';
-import type { AssetKind } from './asset-relations.js';
+import { parseRelatedBlock } from './resource-relations.js';
+import type { RelationResourceKind } from './resource-relations.js';
 import { assertNotReadOnly } from './read-only.js';
 import { pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
@@ -286,7 +286,7 @@ async function relationWarningsForLearning(localConfig: LocalConfig, relPath: st
 
   const repoRoot = localConfig.repo.localPath;
 
-  const targetExists = (kind: AssetKind, treePath: string): boolean => {
+  const targetExists = (kind: RelationResourceKind, treePath: string): boolean => {
     const rel = kind === 'learning'
       ? `${treePath.slice('learnings/'.length)}.md`
       : treePath;
@@ -429,7 +429,7 @@ export async function contribute(
 
   const spin = (await spinner('Contributing session knowledge...')).start();
 
-  // Publishing creates a worktree under `.teamai/`. A single-repo install whose
+  // Publishing creates a worktree under `.teamai/`. An install in self mode whose
   // `.gitignore` predates it would show that worktree in the user's own
   // `git status`, so self-heal it first — `pull` and `push` already do.
   if (isSelfMode(localConfig)) {

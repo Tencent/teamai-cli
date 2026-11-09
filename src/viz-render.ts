@@ -283,12 +283,12 @@ function renderSilentSection(silent: EntryMetric[]): string {
   ].join('');
 }
 
-/** Render the asset-relation health section (#1562 part 2): the counts headline plus the assets behind each count, as an HTML string. */
+/** Render the resource-relation health section (#1562 part 2): the counts headline plus the resources behind each count, as an HTML string. */
 function renderRelationsSection(data: VizData): string {
   const rel = data.relations;
 
   const headline =
-    `${rel.assetCount} assets · ${rel.relationCount} relations · ` +
+    `${rel.resourceCount} resources · ${rel.relationCount} relations · ` +
     `${rel.withoutRelation.length} without a relation · ${rel.unresolved.length} unresolved`;
 
   const details = (title: string, items: readonly string[]): string => {

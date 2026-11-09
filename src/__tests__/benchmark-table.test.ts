@@ -432,7 +432,7 @@ describe('benchmark arm team', () => {
   const NONE = { name: 'bare', tool: 'claude', source: 'team', team: { kind: 'none' } } as const;
   const ABLATED: BenchmarkRecord['arms'][number] = { name: 'no-fixer', tool: 'claude', source: 'team', team: { kind: 'without', paths: ['rules/commits.md', 'skills/fixer'], revision: RUN_TEAM } };
 
-  it('counts a trial of an arm without team assets that ran on some, and one of an arm without some paths that ran on another revision, as deviations', () => {
+  it('counts a trial of an arm without team resources that ran on some, and one of an arm without some paths that ran on another revision, as deviations', () => {
     const table = benchmarkTable(recordOf([NONE, ABLATED], [
       { arm: 'bare', agent: { team: undefined } },
       { arm: 'bare', agent: { team: undefined } },
@@ -445,7 +445,7 @@ describe('benchmark arm team', () => {
     expect(table.results).toMatchObject([{ arm: 'bare', planned: 3, deviations: 1, notVerified: 0 }, { arm: 'no-fixer', planned: 3, deviations: 1, notVerified: 1 }]);
   });
 
-  it('names each arm\'s team assets in a Team column once an arm runs on other assets than the pulled revision', () => {
+  it('names each arm\'s team resources in a Team column once an arm runs on other resources than the pulled revision', () => {
     const main = { name: 'main', tool: 'claude', source: 'team', team: { kind: 'ref', ref: 'main', revision: 'c'.repeat(40) } } as const;
     const pulled = { name: 'pulled', tool: 'claude', source: 'team', team: { kind: 'pulled', revision: RUN_TEAM } } as const;
 

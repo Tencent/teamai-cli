@@ -112,7 +112,7 @@ import {
   type TeamaiConfig,
 } from './types.js';
 import { getUserHome } from './utils/home.js';
-import { checkoutForProjectAnchor, gitCommonDir, isLiveCheckout, listWorktrees, resolveAnchors } from './utils/git.js';
+import { checkoutForRepoAnchor, gitCommonDir, isLiveCheckout, listWorktrees, resolveAnchors } from './utils/git.js';
 import {
   ensure as ensureGitExclude, gitExcludeFile, gitTracks, gitUntracked, remove as removeGitExclude, report as reportGitExclude, stateHomeRecord,
   sync as syncGitExclude, type GitExcludeOwner,
@@ -1685,7 +1685,7 @@ async function promptForProjectBinding(
 /**
  * Persist a ClawPro binding decision for the current checkout.
  *
- * Binding is a per-project decision, so it is recorded on the `projectAnchor`
+ * Binding is a per-project decision, so it is recorded on the `repoAnchor`
  * (the repository identity, shared by a repo and all of its git worktrees — issue
  * #374 / #387). It is ALSO stamped on the current `workspaceRoot` so this
  * checkout is reported with the project_id immediately and its resources land
@@ -1707,7 +1707,7 @@ async function persistWorkspaceBinding(
   const keys = new Set<string>([resolvedPath]);
 
   if (anchors) {
-    keys.add(anchors.projectAnchor);
+    keys.add(anchors.repoAnchor);
     keys.add(anchors.workspaceRoot);
   }
 
@@ -1727,7 +1727,7 @@ async function persistWorkspaceBinding(
 
 /**
  * If the current checkout is unbound and its project identity
- * (`projectAnchor`) is already bound or skipped, copy that decision onto the
+ * (`repoAnchor`) is already bound or skipped, copy that decision onto the
  * current `workspaceRoot` and report success — so a repo is never re-prompted
  * for binding once per new worktree (a `--skip` on the main checkout silences
  * all of them too). Returns true when the worktree inherited a binding.
@@ -1739,8 +1739,8 @@ async function inheritWorktreeBinding(
 ): Promise<boolean> {
   const anchors = await resolveAnchors(cwd);
 
-  if (!anchors || anchors.projectAnchor === anchors.workspaceRoot) return false;
-  const anchorBinding = config.workspaceBindings[anchors.projectAnchor];
+  if (!anchors || anchors.repoAnchor === anchors.workspaceRoot) return false;
+  const anchorBinding = config.workspaceBindings[anchors.repoAnchor];
 
   if (!anchorBinding) return false;
   config.workspaceBindings[resolvedPath] = {
@@ -1808,7 +1808,7 @@ export async function bindWorkspaceToProject(
     boundAt: new Date().toISOString(),
   };
 
-  // Record on the projectAnchor (shared across the repo's worktrees) and the
+  // Record on the repoAnchor (shared across the repo's worktrees) and the
   // current workspaceRoot; workspacePath is already the resolved checkout root.
   await persistWorkspaceBinding(config, workspacePath, workspacePath, project.id, project.name);
   log.success(`Workspace bound to project: ${project.name} [id=${project.id}]`);
@@ -3532,7 +3532,7 @@ export async function localAgentInstructionText(cwd: string, tool = ''): Promise
   if (!config.workspaceBindings[workspacePath]) {
     const anchors = await resolveAnchors(cwd);
 
-    if (!(anchors && config.workspaceBindings[anchors.projectAnchor]) && !await deliveredToWorkspace(workspacePath)) return '';
+    if (!(anchors && config.workspaceBindings[anchors.repoAnchor]) && !await deliveredToWorkspace(workspacePath)) return '';
   }
 
   const native = await nativeProjectInstructions(tool, workspacePath);
@@ -4047,7 +4047,7 @@ export async function localAgentCheckouts(): Promise<string[]> {
 
   for (const workspace of workspaces) {
     const checkout = await pathExists(path.join(workspace, '.git')) ? workspace
-      : await checkoutForProjectAnchor(workspace);
+      : await checkoutForRepoAnchor(workspace);
 
     if (!checkout) {
       if (!await gitCommonDir(workspace)) roots.add(workspace);

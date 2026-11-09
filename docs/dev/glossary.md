@@ -104,7 +104,7 @@ _Avoid_: repo type
 
 **Self mode**:
 The **team repo mode** where the team repo is the git repo teamai is set up in: `teamai init .` or `--self`.
-_Avoid_: "single-repo mode" (it reads as a team repo that is one repo, or a monorepo), "self repo"
+_Avoid_: "single-repo" (it reads as a team repo that is one repo, or a monorepo), "self repo"
 
 **Scope**:
 Where teamai installs: a **workspace** (the default) or user (`~/.teamai`). Independent of the **team repo mode**.

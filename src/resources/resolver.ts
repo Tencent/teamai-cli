@@ -93,7 +93,7 @@ export interface TeamaiLayer<TShipped> {
 
 /** The team's root and namespace layers. */
 export interface TeamTree {
-  /** The directory holding the type's directory: a team checkout, or `.teamai/` in single-repo. */
+  /** The directory holding the type's directory: a team checkout, or `.teamai/` in self mode. */
   readonly root: string;
   /** The namespaces active for the member, or `legacy` (no roles.yaml or projects.yaml) for every namespace on disk. */
   readonly namespaces: () => Promise<readonly string[] | 'legacy'>;

@@ -173,7 +173,7 @@ export const ConfinedOfferSchema = z.object({
  * - `unattended`: the driver launches a prompt leased with `permissions: 'unattended'` in its tool's own mode for
  *   editing and running commands without asking, and fails the step rather than launch a tool that has none.
  * - `role`: the driver runs a step leased with `role` with what teamai delivered into its prepared copy for that role,
- *   and starts nothing that delivers the member's own assets there instead.
+ *   and starts nothing that delivers the member's own resources there instead.
  * - `confined`: the tools the driver runs a prompt on with one directory as its only readable root, each offer at the
  *   level it reaches, with what those tools can do there. An offer without `access` counts as `full`.
  */
@@ -457,7 +457,7 @@ export function negotiate(offer: Offer, can: DriverCan, allow: Allow, env: EnvFa
     ...(offer.unattended && !can.unattended ? ['unattended' as const] : []),
     ...(floor.isolation !== undefined && rank(floor.isolation) > rank(provided) ? ['isolation' as const] : []),
     ...(floor.network === false && !can.network ? ['network' as const] : []),
-    // Only teamai delivers a role into a copy: one a driver makes itself gets the member's assets.
+    // Only teamai delivers a role into a copy: one a driver makes itself gets the member's resources.
     ...((offer.clone || offer.role !== undefined) && !offer.prepare ? ['prepare' as const] : []),
     ...(offer.role !== undefined && !can.role ? ['role' as const] : []),
     ...(offer.interactive && !can.hitl ? ['hitl' as const] : []),

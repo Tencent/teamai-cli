@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BenchmarkRecord, TrialResult } from '../benchmark/result.js';
 import type { TrialVerdict } from '../benchmark/verdicts.js';
-import { assetEffects, benchmarkTable, formatBenchmarkTable, type AssetEffect } from '../benchmark/table.js';
+import { resourceEffects, benchmarkTable, formatBenchmarkTable, type ResourceEffect } from '../benchmark/table.js';
 
 const RUN_TEAM = 't'.repeat(40);
 const RUN_START = 'a'.repeat(40);
@@ -54,27 +54,27 @@ function paired(results: { [arm: string]: Array<'p' | 'f' | undefined> }): Trial
   ]));
 }
 
-describe('asset effects', () => {
+describe('resource effects', () => {
   it('builds one table per covered path, with the arm that runs without exactly it against the pulled arm that differs only by that', () => {
     const record = migrationsRecord(paired({
       'no-migrations': ['f', 'p', 'p'],
       pulled: ['p', 'p', 'p'],
     }));
 
-    const assets = assetEffects(record);
+    const resources = resourceEffects(record);
 
-    expect(assets.map(({ path, without, has }) => ({ path, without, has }))).toEqual([
+    expect(resources.map(({ path, without, has }) => ({ path, without, has }))).toEqual([
       { path: 'skills/db/migrations', without: 'no-migrations', has: 'pulled' },
       { path: 'rules/db.md', without: 'no-db-rule', has: 'pulled' },
     ]);
   });
 
-  it('splits the paired difference by the tasks that cover the asset and the rest, each an interval that can read not separated', () => {
+  it('splits the paired difference by the tasks that cover the resource and the rest, each an interval that can read not separated', () => {
     const record = migrationsRecord(paired({
       'no-migrations': ['f', 'p', 'p'],
       pulled: ['p', 'p', 'p'],
     }));
-    const [migrations] = assetEffects(record);
+    const [migrations] = resourceEffects(record);
 
     expect(migrations.rows.map(({ task, covers, without, with: withIt }) => ({ task, covers, without, with: withIt }))).toEqual([
       { task: 'add-column', covers: true, without: { passed: 0, planned: 1 }, with: { passed: 1, planned: 1 } },
@@ -90,7 +90,7 @@ describe('asset effects', () => {
     const OPUS = { by: 'judge', rubric: 'rubric-a', tool: 'claude', model: 'claude-opus-5-5', batched: true } as const;
     const judged = paired({ 'no-migrations': ['f', 'p', 'p'], pulled: ['p', 'p', 'p'] }).map((trial) => ({ ...trial, decider: trial.task === 'add-column' && trial.arm === 'pulled' ? { ...OPUS, model: 'claude-sonnet-5-5' } : OPUS }));
 
-    const [migrations] = assetEffects(migrationsRecord(judged));
+    const [migrations] = resourceEffects(migrationsRecord(judged));
 
     expect(migrations.excluded).toEqual([{ pairs: 1, because: { kind: 'judge_changed', from: OPUS, to: { ...OPUS, model: 'claude-sonnet-5-5' } } }]);
     expect(migrations.rows[0]).toMatchObject({ task: 'add-column', without: undefined, with: { passed: 1, planned: 1 } });
@@ -101,7 +101,7 @@ describe('asset effects', () => {
   it('compares a pair the check decided on one arm and the judge on the other', () => {
     const judged = paired({ 'no-migrations': ['f', 'p', 'p'], pulled: ['p', 'p', 'p'] }).map((trial) => ({ ...trial, decider: trial.arm === 'pulled' ? { by: 'check' as const, task: 'h' } : { by: 'judge' as const, rubric: 'r', tool: 'claude', batched: true } }));
 
-    const [migrations] = assetEffects(migrationsRecord(judged));
+    const [migrations] = resourceEffects(migrationsRecord(judged));
 
     expect(migrations).not.toHaveProperty('excluded');
     expect(migrations.coversDifference).toMatchObject({ from: { passed: 1, planned: 2 }, to: { passed: 2, planned: 2 } });
@@ -117,7 +117,7 @@ describe('asset effects', () => {
     withArm[0].routing = { [skill]: 'fit' };
     withArm[1].routing = { [skill]: 'missed' };
     withArm[2].routing = { [skill]: 'extra' };
-    const [migrations] = assetEffects(migrationsRecord(trials));
+    const [migrations] = resourceEffects(migrationsRecord(trials));
 
     expect(migrations.rows.map(({ task, loaded }) => ({ task, loaded }))).toEqual([
       { task: 'add-column', loaded: { loaded: 1, planned: 1, byValue: { fit: 1 } } },
@@ -146,30 +146,30 @@ describe('asset effects', () => {
         ],
       },
     };
-    const assets = assetEffects(record);
+    const resources = resourceEffects(record);
 
-    expect(assets.map(({ path, skill }) => ({ path, skill }))).toEqual([
+    expect(resources.map(({ path, skill }) => ({ path, skill }))).toEqual([
       { path: 'claudemd/team.md', skill: undefined },
       { path: 'docs/api', skill: undefined },
       { path: 'rules/db.md', skill: undefined },
     ]);
-    for (const asset of assets) {
-      expect(asset.rows.every(({ loaded }) => loaded === undefined)).toBe(true);
-      expect(asset.passedWhenLoaded).toBeUndefined();
-      expect(asset.passedWhenNotLoaded).toBeUndefined();
+    for (const resource of resources) {
+      expect(resource.rows.every(({ loaded }) => loaded === undefined)).toBe(true);
+      expect(resource.passedWhenLoaded).toBeUndefined();
+      expect(resource.passedWhenNotLoaded).toBeUndefined();
     }
   });
 
-  it('gives an arm that leaves out more than one path no per-asset table', () => {
+  it('gives an arm that leaves out more than one path no per-resource table', () => {
     const arms = [
       { name: 'pulled', tool: 'claude', source: 'team' as const, team: { kind: 'pulled' as const, revision: RUN_TEAM } },
       { name: 'ablated', tool: 'claude', source: 'team' as const, team: { kind: 'without' as const, paths: ['rules/db.md', 'skills/db/migrations'] as [string, ...string[]], revision: RUN_TEAM } },
     ];
     const record = migrationsRecord(paired({ ablated: ['f', 'p', 'p'], pulled: ['p', 'p', 'p'] }), arms);
-    const assets = assetEffects(record);
+    const resources = resourceEffects(record);
 
     // No arm runs without exactly one of them, so both get rows against the pulled arm, and no difference.
-    expect(assets.map(({ path, without }) => ({ path, without }))).toEqual([
+    expect(resources.map(({ path, without }) => ({ path, without }))).toEqual([
       { path: 'skills/db/migrations', without: undefined },
       { path: 'rules/db.md', without: undefined },
     ]);
@@ -189,18 +189,18 @@ describe('asset effects', () => {
       { task: 'add-column', arm: 'codex-no', result: 'failed' },
     ], arms);
 
-    const tables = assetEffects(record);
+    const tables = resourceEffects(record);
 
     expect(tables.filter(({ path }) => path === 'skills/db/migrations').map(({ without, has, tool }) => ({ without, has, tool }))).toEqual([
       { without: 'claude-no', has: 'claude', tool: 'claude' },
       { without: 'codex-no', has: 'codex', tool: 'codex' },
     ]);
-    expect(formatBenchmarkTable(benchmarkTable(record))).toContain('Asset effect · skills/db/migrations · claude-no -> claude · claude');
-    expect(formatBenchmarkTable(benchmarkTable(record))).toContain('Asset effect · skills/db/migrations · codex-no -> codex · codex');
+    expect(formatBenchmarkTable(benchmarkTable(record))).toContain('Resource effect · skills/db/migrations · claude-no -> claude · claude');
+    expect(formatBenchmarkTable(benchmarkTable(record))).toContain('Resource effect · skills/db/migrations · codex-no -> codex · codex');
   });
 
   it('reads a covered namespace directory as no skill even when skills live under it (#1684 review)', () => {
-    const record: Parameters<typeof assetEffects>[0] = {
+    const record: Parameters<typeof resourceEffects>[0] = {
       benchmark: {
         suite: { name: 'migrations', sourceHash: 'h' }, repetitions: 1, baselineTeamRevision: RUN_TEAM, scorers: [],
         tasks: [{ id: 'add-column', startingCommit: RUN_START, sourceHash: 'h', baseline: 'valid', covers: ['skills/db'], coversSkills: [null] }],
@@ -215,7 +215,7 @@ describe('asset effects', () => {
       },
     };
 
-    const [table] = assetEffects(record);
+    const [table] = resourceEffects(record);
 
     expect(table).toMatchObject({ path: 'skills/db', without: 'no-db', has: 'pulled' });
     expect(table?.skill).toBeUndefined();
@@ -232,7 +232,7 @@ describe('asset effects', () => {
       { task: 'drop-index', arm: 'pulled', result: 'failed', routing: { migrations: 'missed' } },
       { task: 'login-copy', arm: 'pulled', result: 'passed', routing: { migrations: 'idle' } },
     ], arms);
-    const [migrations] = assetEffects(record);
+    const [migrations] = resourceEffects(record);
 
     expect(migrations.without).toBeUndefined();
     expect(migrations.has).toBe('pulled');
@@ -258,7 +258,7 @@ describe('asset effects', () => {
         ],
       },
     };
-    const [auth] = assetEffects(record);
+    const [auth] = resourceEffects(record);
 
     expect(auth.has).toBe('dev');
     expect(auth.rows.map(({ task, with: withIt }) => ({ task, with: withIt }))).toEqual([{ task: 'login', with: { passed: 1, planned: 1 } }]);
@@ -279,7 +279,7 @@ describe('asset effects', () => {
         ],
       },
     };
-    const [auth] = assetEffects(record);
+    const [auth] = resourceEffects(record);
 
     expect(auth.has).toBe('dev');
     expect(auth.rows.map(({ task, with: withIt }) => ({ task, with: withIt }))).toEqual([{ task: 'login', with: { passed: 1, planned: 1 } }]);
@@ -300,7 +300,7 @@ describe('asset effects', () => {
         ],
       },
     };
-    const [auth] = assetEffects(record);
+    const [auth] = resourceEffects(record);
 
     expect(auth.has).toBe('dev');
     expect(auth.rows.map(({ task, with: withIt }) => ({ task, with: withIt }))).toEqual([{ task: 'login', with: { passed: 1, planned: 1 } }]);
@@ -315,9 +315,9 @@ describe('asset effects', () => {
     withArm[1].routing = { [skill]: 'unknown' };
     withArm[2].routing = { [skill]: 'unknown' };
     const text = formatBenchmarkTable(benchmarkTable(migrationsRecord(trials)));
-    const [migrations] = assetEffects(migrationsRecord(trials));
+    const [migrations] = resourceEffects(migrationsRecord(trials));
 
-    expect(text).toContain('Asset effect · skills/db/migrations · no-migrations -> pulled · claude');
+    expect(text).toContain('Resource effect · skills/db/migrations · no-migrations -> pulled · claude');
     expect(text).toContain('add-column   yes   0% (0/1)   100% (1/1)   0/1 unknown');
     expect(migrations.passedWhenLoaded).toBeUndefined();
     expect(migrations.passedWhenNotLoaded).toBeUndefined();
@@ -360,7 +360,7 @@ describe('asset effects', () => {
 
   it('names the routing question of a covered skill, with its namespace when a namespace delivers it', () => {
     const record = migrationsRecord(paired({ 'no-migrations': ['f', 'p', 'p'], pulled: ['p', 'p', 'p'] }));
-    const [migrations, rule] = assetEffects(record);
+    const [migrations, rule] = resourceEffects(record);
 
     expect(migrations.routingScorer).toBe('teamai:routing:db:migrations');
     expect(rule.routingScorer).toBeUndefined();
@@ -373,7 +373,7 @@ describe('asset effects', () => {
       { name: 'no-migrations', tool: 'codex', source: 'team' as const, team: { kind: 'without' as const, paths: ['skills/db/migrations'] as [string, ...string[]], revision: RUN_TEAM } },
     ];
     const record = migrationsRecord(paired({ 'no-migrations': ['f', 'p', 'p'], 'pulled-codex': ['p', 'p', 'p'] }), arms);
-    const [migrations] = assetEffects(record);
+    const [migrations] = resourceEffects(record);
 
     expect(migrations.has).toBe('pulled-codex');
   });
@@ -382,10 +382,10 @@ describe('asset effects', () => {
     const record = migrationsRecord(paired({ 'no-migrations': ['f', 'p', 'p'], pulled: ['p', 'p', 'p'] }));
     const bare: { benchmark: BenchmarkRecord } = { benchmark: { ...record.benchmark, tasks: record.benchmark.tasks.map(({ id, startingCommit, sourceHash, baseline }) => ({ id, startingCommit, sourceHash, baseline })) } };
 
-    expect(assetEffects(bare)).toEqual([]);
-    expect(formatBenchmarkTable(benchmarkTable(bare))).not.toContain('Asset effect');
+    expect(resourceEffects(bare)).toEqual([]);
+    expect(formatBenchmarkTable(benchmarkTable(bare))).not.toContain('Resource effect');
   });
 });
 
-/** What a table's rows say about one asset, for the assertions above. */
-export type { AssetEffect };
+/** What a table's rows say about one resource, for the assertions above. */
+export type { ResourceEffect };

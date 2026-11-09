@@ -387,7 +387,7 @@ function parseRoleSelection(answer: string, max: number): number[] {
 }
 
 /**
- * The person did not pick a role at the prompt. Single-repo `init` treats this
+ * The person did not pick a role at the prompt. Self-mode `init` treats this
  * like a repo with no manifest — the role can be set later with `teamai roles
  * set` — while every other caller lets it abort, as it always has.
  */
@@ -1148,7 +1148,7 @@ async function runInitScript(
 }
 
 /**
- * Build the .teamai/.gitignore for single-repo mode. Unlike the standalone
+ * Build the .teamai/.gitignore for self mode. Unlike the standalone
  * project-scope gitignore, knowledge (skills/rules/docs/learnings) is COMMITTED
  * to main here, so it must NOT be ignored.
  *
@@ -1161,12 +1161,12 @@ async function runInitScript(
  *  - should any A1 path ever fail to route to the partition, the ignore keeps it
  *    out of a commit rather than leaking (esp. plaintext env.local/token).
  * `workspaces/` is NEW here — before P2 the user-scope managed-mcp.json and the
- * per-worktree `workspaces/<id>/` tree were NOT ignored, so a self repo that ran
+ * per-worktree `workspaces/<id>/` tree were NOT ignored, so a repo in self mode that ran
  * MCP reconcile or the local agent would leak them into `git status`.
  */
 export function buildSelfModeGitignore(): string {
   return [
-    '# teamai single-repo mode — machine-local state (never commit).',
+    '# teamai self mode — machine-local state (never commit).',
     '# As of P2 this data lives in ~/.teamai/projects/<slug>/; these entries guard',
     '# pre-P2 installs (pre-migration) and any un-relocated path.',
     'config.yaml',
@@ -1180,7 +1180,7 @@ export function buildSelfModeGitignore(): string {
     '.learnings-lock',
     '.bootstrap-lock',
     '.sync-lock',
-    // NB: env/ is intentionally NOT ignored in single-repo mode — team env vars
+    // NB: env/ is intentionally NOT ignored in self mode — team env vars
     // (.teamai/env/env.yaml) are committed to main so `teamai push` can carry them
     // and teammates get them on clone. env.yaml holds plaintext key/value pairs, so
     // only put non-secret config there; keep real secrets out of the repo.
@@ -1201,7 +1201,7 @@ export function buildSelfModeGitignore(): string {
     // The hook index, which releases before #993 wrote here.
     'managed-hooks.json',
     // Per-worktree machine data (managed-mcp.json + the local-agent resource
-    // cache). Not ignored before P2 — a real leak source in self repos.
+    // cache). Not ignored before P2 — a real leak source in repos in self mode.
     'workspaces/',
     'dashboard/',
     '# git worktrees for the reports and learnings orphan branches, and knowledge PRs',
@@ -1251,7 +1251,7 @@ export function buildProjectScopeGitignore(): string {
 }
 
 /**
- * Migrate an existing single-repo `.teamai/.gitignore` written by an older teamai.
+ * Migrate an existing self-mode `.teamai/.gitignore` written by an older teamai.
  * Early versions ignored `env`, which hid `.teamai/env/env.yaml` from push and
  * kept it off main; later versions also predate the machine-local package lock.
  * Pure (no I/O) so it can be unit-tested.
@@ -1309,7 +1309,7 @@ export function migrateSelfModeGitignoreContent(content: string) {
 }
 
 /**
- * Self-heal an older single-repo `.teamai/.gitignore` in place (see
+ * Self-heal an older self-mode `.teamai/.gitignore` in place (see
  * migrateSelfModeGitignoreContent). Best-effort: rewrites the ACTIVE tree's file
  * and logs a one-line hint to commit it — teamai never commits it for the user
  * here (the file is on main; the user owns that commit). No-op for non-self mode,
@@ -1372,7 +1372,7 @@ export function resolveSelfModeSelection(indices: number[], detected: string[]):
 }
 
 /**
- * Decide which AI tools single-repo init should set up (seed skills dir, inject
+ * Decide which AI tools self-mode init should set up (seed skills dir, inject
  * hooks, commit their settings). Priority:
  *   1. `--agent` given → use exactly that (explicit wins, no prompt).
  *   2. Non-interactive (no TTY / --silent / --force) → mirror the tools already
@@ -1451,12 +1451,12 @@ export async function promptForSelfModeAgents(options: {
 }
 
 /**
- * Single-repo mode init (`teamai init .` / `--self`). The current git repo IS
+ * Self mode init (`teamai init .` / `--self`). The current git repo IS
  * the team repo. No clone: knowledge lives on main under <repo>/.teamai/, and
  * report data (members/sessions/votes/stats) goes to the `teamai-reports` orphan
  * branch via an isolated worktree so the user's active tree is never touched.
  */
-export async function initSelfRepo(options: GlobalOptions & {
+export async function initSelfMode(options: GlobalOptions & {
   repo?: string;
   repoPositional?: string;
   provider?: ProviderName;
@@ -1475,12 +1475,12 @@ export async function initSelfRepo(options: GlobalOptions & {
     return;
   }
 
-  // Single-repo mode always installs at project scope. Ignoring an explicit
+  // Self mode always installs at project scope. Ignoring an explicit
   // --scope user would hand back a config the member did not ask for, so refuse
   // before touching the repo (#1454).
   if (options.scope === 'user') {
     log.error(
-      '--scope user is not supported in single-repo mode (`teamai init --self` / `teamai init .`): '
+      '--scope user is not supported in self mode (`teamai init --self` / `teamai init .`): '
       + 'it installs at workspace scope. Run it again without --scope user. '
       + 'For a user-scope install of this repo, write ~/.teamai/config.yaml by hand with '
       + 'scope: user, username: <you>, repo.kind: self, repo.remote: <origin URL>, '
@@ -1491,13 +1491,13 @@ export async function initSelfRepo(options: GlobalOptions & {
     return;
   }
 
-  log.info('Initializing teamai (single-repo mode)...');
+  log.info('Initializing teamai (self mode)...');
 
   const cwd = process.cwd();
 
-  // Step 0: single-repo mode is always project scope, rooted at the business repo.
+  // Step 0: self mode is always project scope, rooted at the business repo.
   if (!(await isInsideGitRepo(cwd))) {
-    log.error('Single-repo mode requires a git repository. Run `teamai init .` inside your project repo.');
+    log.error('Self mode requires a git repository. Run `teamai init .` inside your project repo.');
     process.exit(1);
 
     return;
@@ -1613,7 +1613,7 @@ export async function initSelfRepo(options: GlobalOptions & {
   }
 
   // Step 3: build the .teamai/ knowledge skeleton on the active tree (committed to main).
-  // Includes hooks/ and mcp/ too: in single-repo mode those are contributed by
+  // Includes hooks/ and mcp/ too: in self mode those are contributed by
   // editing .teamai/{hooks/hooks.yaml,mcp/mcp.yaml} directly and committing (they
   // don't go through `teamai push`), so seeding the dirs makes that path obvious.
   await ensureDir(localPath);
@@ -1645,7 +1645,7 @@ export async function initSelfRepo(options: GlobalOptions & {
     const defaultConfig = YAML.stringify({
       team: repoInfo.repo,
       mode: 'self',
-      description: 'TeamAI single-repo (knowledge on main, reports on teamai-reports)',
+      description: 'TeamAI self mode (knowledge on main, reports on teamai-reports)',
       repo: repoInfo.httpsUrl,
       provider: teamProvider,
       sharing: {
@@ -1742,7 +1742,7 @@ export async function initSelfRepo(options: GlobalOptions & {
 
   for (const change of await recordToolHomes('init')) log.info(describeToolHomeChange(change));
 
-  // Step 5: write local config (into the partition via dataHome) + single-repo
+  // Step 5: write local config (into the partition via dataHome) + self-mode
   // gitignore. ensureDir both the knowledge dir (class B, in the repo) and the
   // partition (class A1 machine data). saveLocalConfigForScope writes through
   // getDataHome, which now resolves to the partition.
@@ -1757,10 +1757,10 @@ export async function initSelfRepo(options: GlobalOptions & {
 
   const gitignorePath = path.join(teamaiHome, '.gitignore');
   await writeFile(gitignorePath, buildSelfModeGitignore());
-  log.debug('Generated single-repo .teamai/.gitignore');
+  log.debug('Generated self-mode .teamai/.gitignore');
 
   // Step 5.3: seed the selected tools' skills dir so first-run hook + skill
-  // injection lands. Single-repo mode must inject into the project even on a
+  // injection lands. Self mode must inject into the project even on a
   // brand-new clone where no <repo>/.claude exists yet (isToolInstalled would
   // otherwise skip everything).
   const filterAgents = selectedAgents.length > 0 ? selectedAgents : undefined;
@@ -1782,7 +1782,7 @@ export async function initSelfRepo(options: GlobalOptions & {
   await reconcileHooksForInit(teamConfig, localConfig, filterAgents);
 
   // Step 5.5: commit the .teamai/ knowledge skeleton + selected tools' hook
-  // settings to the current branch. Single-repo mode keeps knowledge on main, and
+  // settings to the current branch. Self mode keeps knowledge on main, and
   // knowledge PRs branch off a base commit — a freshly `git init`'d repo has none,
   // so `teamai push` would fail. Committing here (a) seeds that base commit,
   // (b) makes `mode: self` + hooks travel with `git clone` so teammates
@@ -1815,7 +1815,7 @@ export async function initSelfRepo(options: GlobalOptions & {
 
       const committed = await commitPaths(
         businessRepoRoot,
-        '[teamai] Initialize single-repo mode (skills/rules/docs/learnings skeleton)',
+        '[teamai] Initialize self mode (skills/rules/docs/learnings skeleton)',
         skeletonPaths,
       );
 
@@ -1916,7 +1916,7 @@ export async function initSelfRepo(options: GlobalOptions & {
   // reconciled here when the script ran.
   await runInitScript(localConfig, 'postInit', options.dryRun, true);
 
-  log.success('teamai initialized (single-repo mode)!');
+  log.success('teamai initialized (self mode)!');
   log.info('Next steps:');
   log.info('  1. Add team resources by dropping them into .teamai/ (or author them in your AI tool as usual):');
   log.info('       .teamai/skills/    team skills');
@@ -1955,12 +1955,12 @@ function guideWebCreation(kind: string, name: string, url: string | null): void 
 }
 
 /**
- * Detect whether `repoDir` is a single-repo team repository (`.teamai/teamai.yaml`
+ * Detect whether `repoDir` is a team repository in self mode (`.teamai/teamai.yaml`
  * with `mode: self` on its default branch and no root `teamai.yaml`). Initializing
  * against its remote URL as a standalone team repo would push a default skeleton
  * to the business repo's main branch (#1500).
  */
-export async function isSingleRepoTeam(repoDir: string): Promise<boolean> {
+export async function isSelfModeTeam(repoDir: string): Promise<boolean> {
   if (await pathExists(path.join(repoDir, 'teamai.yaml'))) {
     return false;
   }
@@ -2001,13 +2001,13 @@ export async function init(options: GlobalOptions & {
     return initHttp(options.http, options);
   }
 
-  // Single-repo mode: `teamai init .` or `teamai init --self`. The current git
+  // Self mode: `teamai init .` or `teamai init --self`. The current git
   // repo IS the team repo; knowledge lives on main under .teamai/, reports go to
   // the teamai-reports orphan branch. No separate team repo is cloned.
   const repoArg = (options.repoPositional ?? options.repo ?? '').trim();
 
   if (options.self || repoArg === '.') {
-    return initSelfRepo({ ...options, provider: forcedProvider });
+    return initSelfMode({ ...options, provider: forcedProvider });
   }
 
   const requestedAgents = normalizeAgentList(options.agent);
@@ -2468,14 +2468,14 @@ export async function init(options: GlobalOptions & {
     }
   }
 
-  // Refuse to initialize a single-repo team as a standalone team repo (#1500).
-  if (await isSingleRepoTeam(localPath)) {
+  // Refuse to initialize a team in self mode as a standalone team repo (#1500).
+  if (await isSelfModeTeam(localPath)) {
     if (clonedThisRun) {
       await remove(localPath);
     }
 
     log.error(
-      `${repoInput} is a single-repo team: its config is .teamai/teamai.yaml. ` +
+      `${repoInput} is a repo in self mode: its config is .teamai/teamai.yaml. ` +
         'Clone the repository and run `teamai init --self` in it.',
     );
     process.exit(1);

@@ -1,7 +1,7 @@
 /**
  * Learnings an older `import --from-mr` (0.25.0 to 0.26.0-beta.3) wrote into the learnings
  * checkout and never committed (#823 item 7). They were recallable on this
- * machine, never reached the team, and in single-repo mode they keep git from
+ * machine, never reached the team, and in self mode they keep git from
  * removing the old checkout. Publishing now moves them into the queue first.
  *
  * Real git, no mocks of the units under test, as in git-kind-learnings.test.ts.

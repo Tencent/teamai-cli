@@ -71,7 +71,7 @@ Return typed errors from API handlers.
 
 A rule without `paths:` gets `trigger: always_on`.
 
-A rule can also declare relations to other team assets in a `related:`
+A rule can also declare relations to other team resources in a `related:`
 frontmatter block (a doc can too; a learning declares them the same way when
 it is contributed):
 
@@ -83,13 +83,13 @@ related:
 ---
 ```
 
-`MAPS_TO` points at a teamwiki code page, `REFERENCES` at any asset, and
+`MAPS_TO` points at a teamwiki code page, `REFERENCES` at any resource, and
 `SUPERSEDES` / `CONFLICTS_WITH` at a rule, doc or learning. `teamai recall`
 prints each declared relation as a `Related:` line on the hit, and each
 `paths:`-glob-derived one (knowledge guide), so a session that recalls one end
 of the relation starts with the other end too.
 `teamai review --branch` fails a rule or doc whose `related:` block uses a
-relation outside that table; a relation that points at an asset not on the
+relation outside that table; a relation that points at a resource not on the
 branch is a warning, not a failure.
 
 ### Rules as folders: a deterministic skill
@@ -194,7 +194,7 @@ Once the team file exists, edit the copy in a tool and run `teamai push`, as for
 
 Antigravity's copy keeps no team `model` (agy skips an agent whose model it does not know), only one an alias maps for agy, and lists agy's own names for the agent's tools: `tools: [Bash, Read]` becomes `run_command`, `view_file` and `read_file`. Without them an agy subagent has no shell. In a project, `.agents/agents` is agy's, so Muse Code gets no copy there while agy is installed. The CLI and Antigravity 2.0 run the agent as a subagent; Antigravity IDE has none, so its model can only hand the work to `agy --agent <name>` when the CLI is installed.
 
-In single-repo mode, your root copy of an agent placed in a namespace is pushed to the placed file. Changing it from `.md` to `.yaml` retires the original file, even while your checkout is behind its own merged PR. Either way, TeamAI compares the placed file with the blob your last merged push delivered there. If the team edited it since, the push stops and prints a `teamai push --carried <path>@<blob>` command. Carry that edit into your root copy, then run it. The option accepts only that version, so a plain retry or a later team edit stops the push again. An agent deleted by the team is not re-added from your root copy. An older placement record without a blob catches a team edit only while your checkout is behind it, until your first edit through it merges and records its blob.
+In self mode, your root copy of an agent placed in a namespace is pushed to the placed file. Changing it from `.md` to `.yaml` retires the original file, even while your checkout is behind its own merged PR. Either way, TeamAI compares the placed file with the blob your last merged push delivered there. If the team edited it since, the push stops and prints a `teamai push --carried <path>@<blob>` command. Carry that edit into your root copy, then run it. The option accepts only that version, so a plain retry or a later team edit stops the push again. An agent deleted by the team is not re-added from your root copy. An older placement record without a blob catches a team edit only while your checkout is behind it, until your first edit through it merges and records its blob.
 
 ### Model aliases
 
@@ -334,9 +334,9 @@ Pull copies the folder and puts its path, with forward slashes, in place of `${T
 |---|---|
 | User scope | `~/.teamai/hooks/block-secrets.e246f037/` |
 | Workspace with a team repo | `~/.teamai/projects/<slug>/hooks/block-secrets.e246f037/`, one for every worktree, as every worktree runs the same hook entries |
-| Single-repo | `.teamai/delivered/hooks/block-secrets.e246f037/` in each worktree, which git ignores |
+| Self mode | `.teamai/delivered/hooks/block-secrets.e246f037/` in each worktree, which git ignores |
 
-In single-repo, Claude Code's command reads `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"`, so `.claude/settings.json` is the same in every worktree. Editing only a script gives the folder a new version too, so pull rewrites that path in `.claude/settings.json`: a team that commits the file commits that change with it. Other tools get the worktree's absolute path, so their project file differs from one worktree to the next. Cursor's `.cursor/hooks.json`, for example:
+In self mode, Claude Code's command reads `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"`, so `.claude/settings.json` is the same in every worktree. Editing only a script gives the folder a new version too, so pull rewrites that path in `.claude/settings.json`: a team that commits the file commits that change with it. Other tools get the worktree's absolute path, so their project file differs from one worktree to the next. Cursor's `.cursor/hooks.json`, for example:
 
 ```text
 ~/work/shop/.cursor/hooks.json         bash "/Users/ana/work/shop/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"
@@ -537,7 +537,7 @@ Pull copies the folder and puts its path, with forward slashes, in place of `${T
 | Where the team is | The folder lands in |
 |---|---|
 | User scope | `~/.teamai/mcp/jira-lite.1702782c/` |
-| Workspace, with a team repo or single-repo | `.teamai/delivered/mcp/jira-lite.1702782c/` in each worktree, which git ignores |
+| Workspace, with a team repo or in self mode | `.teamai/delivered/mcp/jira-lite.1702782c/` in each worktree, which git ignores |
 
 Claude Code does not expand `$CLAUDE_PROJECT_DIR` in `.mcp.json`, so each tool's MCP file holds the worktree's absolute path and differs from one worktree to the next. A pull in one worktree leaves the servers of the others as they were.
 
@@ -628,7 +628,7 @@ WorkBuddy's user files go to the data root of whichever app launched last — `.
 
 When a tool's home or configured MCP path moves, pull leaves old copies in place and names them once. Remove them after no tool reads them. Doctor reports unread mappings, moved files, and project MCP that is read only from a session started at the project root. Internal builds with an unknown MCP channel get a note instead of a guessed config.
 
-In a workspace with repos set up inside it, Claude Code, CodeBuddy, and WorkBuddy get the servers through their local scope, not the project's MCP file, so a session in one of those repos does not load them. In single-repo mode, or while tclaude or Muse Code reads that file, Claude Code's servers stay in it, and such a session does load them.
+In a workspace with repos set up inside it, Claude Code, CodeBuddy, and WorkBuddy get the servers through their local scope, not the project's MCP file, so a session in one of those repos does not load them. In self mode, or while tclaude or Muse Code reads that file, Claude Code's servers stay in it, and such a session does load them.
 
 ```bash
 teamai mcp list

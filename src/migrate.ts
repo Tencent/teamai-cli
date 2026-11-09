@@ -208,7 +208,7 @@ export async function planMigration(cwd?: string, options: { dryRun?: boolean } 
   // checks below honest — otherwise an upgraded CLI would see "no partition"
   // and re-copy a retired workspace's data into a second, empty partition.
   // A dry run adopts nothing: the preview reads the partition where it is (#893).
-  const partitionDir = await resolvePartitionDir(anchors.projectAnchor, options);
+  const partitionDir = await resolvePartitionDir(anchors.repoAnchor, options);
   const legacyConfig = path.join(legacyDir, 'config.yaml');
 
   // Gate on scope/kind read from config.yaml. It is normally in the repo, but a
@@ -271,7 +271,7 @@ export async function planMigration(cwd?: string, options: { dryRun?: boolean } 
       return null;
     }
 
-    return { legacyDir, partitionDir, anchor: anchors.projectAnchor, mode: 'self', legacyOwner };
+    return { legacyDir, partitionDir, anchor: anchors.repoAnchor, mode: 'self', legacyOwner };
   }
 
   // Non-self (git/http): keyed on legacy config.yaml — the git-mode migration
@@ -290,10 +290,10 @@ export async function planMigration(cwd?: string, options: { dryRun?: boolean } 
     // checked out the knowledge that switch committed: retiring the whole dir
     // would take it too.
     if (isSelfMode(partition.config) && (await holdsSelfKnowledge(legacyDir))) {
-      return { legacyDir, partitionDir, anchor: anchors.projectAnchor, mode: 'superseded', previousOwner: legacyOwner };
+      return { legacyDir, partitionDir, anchor: anchors.repoAnchor, mode: 'superseded', previousOwner: legacyOwner };
     }
 
-    return { legacyDir, partitionDir, anchor: anchors.projectAnchor, mode: 'retire-only', legacyOwner };
+    return { legacyDir, partitionDir, anchor: anchors.repoAnchor, mode: 'retire-only', legacyOwner };
   }
 
   // A partition config that detection cannot read is not "built": the legacy dir
@@ -307,7 +307,7 @@ export async function planMigration(cwd?: string, options: { dryRun?: boolean } 
     return null;
   }
 
-  return { legacyDir, partitionDir, anchor: anchors.projectAnchor, mode: 'full', legacyOwner };
+  return { legacyDir, partitionDir, anchor: anchors.repoAnchor, mode: 'full', legacyOwner };
 }
 
 /** Tell the member why the legacy dir stays and what lets the next run migrate it (#797). */
@@ -599,7 +599,7 @@ async function settleOrphanQueue(): Promise<void> {
   if (!(await holdsQueued(path.join(legacyDir, SELF_LEGACY_QUEUE)))) return;
 
   if (await pathExists(path.join(legacyDir, 'config.yaml'))) return;
-  const partitionDir = await resolvePartitionDir(anchors.projectAnchor);
+  const partitionDir = await resolvePartitionDir(anchors.repoAnchor);
   const partition = await readPartitionState(partitionDir, anchors.workspaceRoot);
 
   if (partition.state !== 'built') return;
@@ -646,7 +646,7 @@ export async function queueKeptInCheckout(
   const queueDir = config ? pendingLearningsDir(config) : null;
 
   if (queueDir && isInside(queueDir, legacyDir)) {
-    const partitionDir = await resolvePartitionDir(anchors.projectAnchor, options);
+    const partitionDir = await resolvePartitionDir(anchors.repoAnchor, options);
     const partition = await readPartitionState(partitionDir, anchors.workspaceRoot);
 
     switch (partition.state) {
@@ -779,7 +779,7 @@ async function rebasePath(
  *    `.gitignore` (`*`) INTO the dir BEFORE renaming, so the backup ignores its
  *    own contents regardless of its final name or the repo's ignore rules.
  *
- * REFUSES to rename a dir that holds single-repo team knowledge (a `teamai.yaml`
+ * REFUSES to rename a dir that holds self-mode team knowledge (a `teamai.yaml`
  * with `mode: self`): that directory is committed to main, and renaming it to
  * `.bak` would wipe the knowledge from the working tree. Self installs are
  * relocated selectively (migrateSelfA1), never retired wholesale — reaching here
@@ -789,7 +789,7 @@ async function rebasePath(
 async function retireLegacy(legacyDir: string): Promise<string> {
   if (await holdsSelfKnowledge(legacyDir)) {
     throw new Error(
-      `migration refused to rename ${legacyDir} to .bak: it holds single-repo ` +
+      `migration refused to rename ${legacyDir} to .bak: it holds self-mode ` +
         `team knowledge (teamai.yaml mode: self) committed to main. This is a ` +
         `guard against wiping knowledge — self installs relocate machine data ` +
         `selectively, never by renaming the whole directory.`,
@@ -880,7 +880,7 @@ async function retireSupersededInstall(legacyDir: string, partitionDir: string, 
 const SelfModeTeamaiYamlSchema = z.object({ mode: z.literal('self') });
 
 /**
- * True when `dir` (a `.teamai/`) carries single-repo team knowledge — a
+ * True when `dir` (a `.teamai/`) carries self-mode team knowledge — a
  * `teamai.yaml` with `mode: self`. Such a directory is committed to main and must
  * never be renamed away. Malformed/absent yaml → false (nothing to protect).
  */
@@ -973,7 +973,7 @@ async function migrateSelfA1(legacyDir: string, partitionDir: string, legacyOwne
 
   if (moved.length > 0) {
     log.success(
-      `Slimmed single-repo .teamai/: relocated ${moved.length} machine-data item(s) ` +
+      `Slimmed self-mode .teamai/: relocated ${moved.length} machine-data item(s) ` +
         `to ${partitionDir} (team knowledge stays in the repo).`,
     );
   } else {

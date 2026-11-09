@@ -119,7 +119,7 @@ function config(kind: 'git' | 'self'): LocalConfig {
 
 /**
  * `teamai contribute` tells the member that the next pull will publish what it
- * could not. Single-repo mode and HTTP return early from the team-repo refresh,
+ * could not. Self mode and HTTP return early from the team-repo refresh,
  * so a publish that lives inside it keeps that promise for independent clones
  * only.
  */
@@ -144,7 +144,7 @@ describe('teamai pull publishes what contribute could not', () => {
     expect(publishQueuedLearnings).toHaveBeenCalled();
   });
 
-  it('in single-repo mode', async () => {
+  it('in self mode', async () => {
     vi.mocked(loadLocalConfigForScope).mockResolvedValue(config('self'));
 
     await pull({ silent: true, force: true });

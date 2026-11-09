@@ -2494,8 +2494,8 @@ interface RecordedScope {
   cwd?: string;
   /** The last event's data home key, with the `projectAnchor` of that same event. */
   scope?: { key: string; anchor: string | undefined };
-  /** The last `projectAnchor` the session recorded (#809's attribution rule). */
-  projectAnchor?: string;
+  /** The last `repoAnchor` the session recorded (#809's attribution rule). */
+  repoAnchor?: string;
 }
 
 const recordedScopes = new Map<string, Promise<RecordedScope>>();
@@ -2519,7 +2519,7 @@ function recordedScope(sessionId: string, cwd: string): Promise<RecordedScope> {
       return {
         cwd: scoped?.cwd ?? own.find((e) => e.cwd)?.cwd,
         scope: scoped?.dataHomeKey ? { key: scoped.dataHomeKey, anchor: scoped.projectAnchor } : undefined,
-        projectAnchor: (here.find((e) => e.projectAnchor) ?? own.find((e) => e.projectAnchor))?.projectAnchor,
+        repoAnchor: (here.find((e) => e.projectAnchor) ?? own.find((e) => e.projectAnchor))?.projectAnchor,
       };
     });
     recordedScopes.set(key, known);
@@ -2644,9 +2644,9 @@ async function checkoutOf(anchor: string): Promise<string | undefined> {
   if (!fs.existsSync(anchor)) return undefined;
 
   if (fs.existsSync(path.join(anchor, '.git'))) return anchor;
-  const { checkoutForProjectAnchor } = await import('./utils/git.js');
+  const { checkoutForRepoAnchor } = await import('./utils/git.js');
 
-  return await checkoutForProjectAnchor(anchor) ?? undefined;
+  return await checkoutForRepoAnchor(anchor) ?? undefined;
 }
 
 /**
@@ -2657,13 +2657,13 @@ async function checkoutOf(anchor: string): Promise<string | undefined> {
  * to open, it is the last anchor the session recorded there, else anywhere
  * (#810). Both event writers go through here.
  */
-export async function eventProjectAnchor(cwd: string | undefined, sessionId: string): Promise<string | undefined> {
+export async function eventRepoAnchor(cwd: string | undefined, sessionId: string): Promise<string | undefined> {
   if (!cwd) return undefined;
 
-  if (!fs.existsSync(cwd)) return (await recordedScope(sessionId, cwd)).projectAnchor;
+  if (!fs.existsSync(cwd)) return (await recordedScope(sessionId, cwd)).repoAnchor;
   const { resolveAnchors } = await import('./utils/git.js');
 
-  return (await resolveAnchors(cwd))?.projectAnchor;
+  return (await resolveAnchors(cwd))?.repoAnchor;
 }
 
 /** How long a session start waits for `git status` before recording no git state. */
@@ -2787,13 +2787,13 @@ export async function dashboardReport(toolArg?: string): Promise<void> {
 
   event.dataHomeKey = scopeKey;
 
-  const [projectAnchor] = await Promise.all([
-    eventProjectAnchor(event.cwd, event.sessionId),
+  const [repoAnchor] = await Promise.all([
+    eventRepoAnchor(event.cwd, event.sessionId),
     addGitStateAtStart(event, gitStateIn(hookData)),
     addGitHeadAtStop(event),
   ]);
 
-  event.projectAnchor = projectAnchor;
+  event.projectAnchor = repoAnchor;
   const { sessionRun } = await import('./launch-context.js');
   Object.assign(event, sessionRun(process.env));
   await appendEvent(event);

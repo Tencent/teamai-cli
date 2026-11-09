@@ -45,7 +45,7 @@ vi.mock('../dashboard-collector.js', () => ({
   compactEvents: vi.fn().mockResolvedValue(undefined),
   dashboardReport: mockDashboardReport,
   dataHomeKey: vi.fn().mockResolvedValue('key'),
-  eventProjectAnchor: vi.fn().mockResolvedValue(undefined),
+  eventRepoAnchor: vi.fn().mockResolvedValue(undefined),
   addGitStateAtStart: vi.fn().mockResolvedValue(undefined),
   addGitHeadAtStop: vi.fn().mockResolvedValue(undefined),
   gitStateIn: vi.fn().mockReturnValue(undefined),

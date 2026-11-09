@@ -30,7 +30,7 @@ export const SessionCaptureSchema = z.object({
   /** The run mode the session started in. Absent on captures written before it was recorded. */
   runMode: RunModeSchema.optional(),
   agent: AgentObservationSchema,
-  /** The session's own pull delivered a new revision to its checkout, so it may have loaded assets of either. */
+  /** The session's own pull delivered a new revision to its checkout, so it may have loaded resources of either. */
   teamChanged: z.literal(true).optional(),
   /** The session's file as its hook named it, so a sweep can tell when the session is gone. */
   sessionFile: z.string().optional(),

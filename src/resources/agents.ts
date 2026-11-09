@@ -232,7 +232,7 @@ export class AgentsHandler extends ResourceHandler {
     const requestedNamespace = options?.namespace;
     const teamAgentsDir = path.join(localConfig.repo.localPath, 'agents');
     const tombstones = await this.removedStems(teamConfig, localConfig);
-    // Single-repo mode: users drop canonical agent files straight into the repo's
+    // Self mode: users drop canonical agent files straight into the repo's
     // own .teamai/agents/ (<name>.yaml, or legacy <name>.md) rather than authoring
     // them in a tool's agents dir. Those are ALREADY in team-repo format, so we
     // pick them up directly (no reverse/merge) — diffed against the worktree's
@@ -1045,7 +1045,7 @@ export class AgentsHandler extends ResourceHandler {
       }
     }
 
-    // Single-repo mode: the canonical source lives in the repo's own
+    // Self mode: the canonical source lives in the repo's own
     // .teamai/agents/, and the scan picks it up directly. Leaving it behind
     // republishes the agent on the next push, and a bare-stem tombstone cannot
     // stop that without suppressing the same stem in every other namespace,

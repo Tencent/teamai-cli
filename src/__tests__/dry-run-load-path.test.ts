@@ -78,7 +78,7 @@ function gitInit(dir: string): void {
   execFileSync('git', ['config', 'gc.auto', '0'], { cwd: dir, stdio: 'ignore' });
 }
 
-/** A teammate's fresh clone of a single-repo project: the marker travels, no machine config does. */
+/** A teammate's fresh clone of a project in self mode: the marker travels, no machine config does. */
 function setupSelfModeClone(root: string): string {
   const project = path.join(root, 'app');
   fs.mkdirSync(path.join(project, '.teamai', 'manifest'), { recursive: true });

@@ -282,7 +282,7 @@ steps:
   });
 
   describe('a process killed while it puts the base agent files over the branch', () => {
-    /** Runs the first step, which commits its own AGENTS.md, then crashes the prepare of the second while it delivers the team's assets. */
+    /** Runs the first step, which commits its own AGENTS.md, then crashes the prepare of the second while it delivers the team's resources. */
     async function crashedPrepare() {
       const f = await fixture(); const first = await next(f);
       fs.writeFileSync(path.join(first.cwd, 'AGENTS.md'), 'Branch instructions.\n');

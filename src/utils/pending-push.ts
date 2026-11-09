@@ -354,7 +354,7 @@ function sharedRootPaths(root: 'rules' | 'agents', name: string): string[] {
  * anything reads the records. Returns whether `state` changed.
  *
  * `tip` names the default branch as a git ref, for a checkout that is not the
- * default branch itself — a single-repo member's own working tree. Without
+ * default branch itself — a self-mode member's own working tree. Without
  * it, the working tree and HEAD are the default branch as just pulled.
  */
 export async function reconcilePlacementRecords(

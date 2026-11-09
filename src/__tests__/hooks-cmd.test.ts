@@ -863,7 +863,7 @@ describe('hooksRemove', () => {
         );
     });
 
-    it('self single-repo mode removes once, without a redundant legacy sweep (#370)', async () => {
+    it('self mode removes once, without a redundant legacy sweep (#370)', async () => {
         const restoreHome = mockHome('/home/testuser');
         mockedAutoDetectInit.mockResolvedValue({
             localConfig: {

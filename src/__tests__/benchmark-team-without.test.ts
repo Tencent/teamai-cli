@@ -143,9 +143,9 @@ describe('withoutRefusal', () => {
     ['a claudemd file in a namespace the member does not receive', ['claudemd/ops/team.md'], 'arm_team_unresolved',
       'Arm "ablated" runs without claudemd/ops/team.md, which is in namespace ops, and the arm\'s roles or projects don\'t receive ops, so leaving it out changes nothing. Remove it from the arm\'s team, push it, run teamai pull, and start again.'],
     ['a file in a skill namespace that is no skill', ['skills/dev/README.md'], 'arm_team_unresolved',
-      'Arm "ablated" runs without skills/dev/README.md, and teamai pull delivers the same team assets at team revision {r} with or without it, so leaving it out changes nothing. Remove it from the arm\'s team, push it, run teamai pull, and start again.'],
+      'Arm "ablated" runs without skills/dev/README.md, and teamai pull delivers the same team resources at team revision {r} with or without it, so leaving it out changes nothing. Remove it from the arm\'s team, push it, run teamai pull, and start again.'],
     ['a file in rules that is no rule', ['rules/notes.txt'], 'arm_team_unresolved',
-      'Arm "ablated" runs without rules/notes.txt, and teamai pull delivers the same team assets at team revision {r} with or without it, so leaving it out changes nothing. Remove it from the arm\'s team, push it, run teamai pull, and start again.'],
+      'Arm "ablated" runs without rules/notes.txt, and teamai pull delivers the same team resources at team revision {r} with or without it, so leaving it out changes nothing. Remove it from the arm\'s team, push it, run teamai pull, and start again.'],
     ['a rule in a namespace the member does not receive', ['rules/ops/style.md'], 'arm_team_unresolved',
       'Arm "ablated" runs without rules/ops/style.md, which is in namespace ops, and the arm\'s roles or projects don\'t receive ops, so leaving it out changes nothing. Remove it from the arm\'s team, push it, run teamai pull, and start again.'],
     ['a page in a docs namespace a role declares and the member does not receive', ['docs/ops/guide.md'], 'arm_team_unresolved',
@@ -168,7 +168,7 @@ describe('withoutRefusal', () => {
     ['a rule tagged only with tags the member does not subscribe', {}, ['rules/design.md'],
       'Arm "ablated" runs without rules/design.md, a rule tagged only with tags the member does not subscribe, so pull leaves it out already and leaving it out changes nothing. Remove it from the arm\'s team, push it, run teamai pull, and start again.'],
     ['a file in claudemd that pull does not read', {}, ['claudemd/notes.txt'],
-      'Arm "ablated" runs without claudemd/notes.txt, and teamai pull delivers the same team assets at team revision {r} with or without it, so leaving it out changes nothing. Remove it from the arm\'s team, push it, run teamai pull, and start again.'],
+      'Arm "ablated" runs without claudemd/notes.txt, and teamai pull delivers the same team resources at team revision {r} with or without it, so leaving it out changes nothing. Remove it from the arm\'s team, push it, run teamai pull, and start again.'],
   ])('refuses a member with no role or project an arm without %s', async (_case, options, paths, message) => {
     const { config, revision, selection } = team({ role: null, ...options });
 
@@ -290,14 +290,14 @@ describe('coveredDelivery', () => {
     expect(refusal?.message).toBe(`A task covers skills/dev/deploy, which is in namespace dev, and the arm's roles or projects don't receive dev, so leaving it out changes nothing. Fix the team's tasks, push them, run teamai pull, and start again.`);
   });
 
-  it('refuses a path only the member receives when the arm that would pull it runs with no team assets', async () => {
+  it('refuses a path only the member receives when the arm that would pull it runs with no team resources', async () => {
     const { config, revision, selection, files } = team();
     const refusal = await coveredRefusal(config, { paths: ['skills/dev/deploy'], revision, arms: [{ name: 'ops', role: 'ops' }, { name: 'bare', team: { kind: 'none' } }], member: selection, files });
 
     expect(refusal?.message).toBe(`A task covers skills/dev/deploy, which is in namespace dev, and the arm's roles or projects don't receive dev, so leaving it out changes nothing. Fix the team's tasks, push them, run teamai pull, and start again.`);
   });
 
-  it('refuses every covered path when each arm runs with no team assets', async () => {
+  it('refuses every covered path when each arm runs with no team resources', async () => {
     const { config, revision, selection, files } = team();
     const refusal = await coveredRefusal(config, { paths: ['skills/lint'], revision, arms: [{ name: 'bare', team: { kind: 'none' } }], member: selection, files });
 

@@ -137,7 +137,7 @@ interface RemovalPlan {
   dshHookFile: string | null;
   /** The team hooks teamai's bridge runs for a tool (~/.teamai/team-hooks/<tool>.json). */
   bridgedTeamHookFiles: string[];
-  /** A single-repo worktree's `.teamai/delivered/`: the team folders (hooks, MCP servers) it delivered (#1787). */
+  /** A self-mode worktree's `.teamai/delivered/`: the team folders (hooks, MCP servers) it delivered (#1787). */
   deliveredFolderDirs: string[];
   /** Manifest used by the primary hook injection scope. */
   hookManifestPath: string;
@@ -1547,7 +1547,7 @@ async function buildRemovalPlan(
   // Read before anything is deleted: what the projects still set up need stays.
   const projectsKept = includeShared && globalAdapters ? await keptForProjects() : { projects: [], paths: [] };
 
-  // The worktree's .teamai/delivered/ (#1787): the rule and MCP folders of a project scope, and a single-repo scope's hook folders.
+  // The worktree's .teamai/delivered/ (#1787): the rule and MCP folders of a project scope, and a self-mode scope's hook folders.
   const worktreeDelivered = DeliveredFolders.worktreeRoot(localConfig);
 
   const plan: RemovalPlan = {
@@ -2492,8 +2492,8 @@ async function planHomeGitExcludeBlocks(home: string): Promise<HomeGitExcludeBlo
       const anchor = dataHome === home ? null : await readAnchorFile(dataHome);
 
       if (anchor) {
-        const { checkoutForProjectAnchor } = await import('./utils/git.js');
-        const checkout = await checkoutForProjectAnchor(anchor);
+        const { checkoutForRepoAnchor } = await import('./utils/git.js');
+        const checkout = await checkoutForRepoAnchor(anchor);
 
         if (checkout) candidates.add(checkout);
       }
@@ -2538,8 +2538,8 @@ async function removeHomeLocalScopeMcpServers(skip: readonly string[] = []): Pro
 
     if (skip.includes(dataHome)) continue;
     const anchor = await readAnchorFile(dataHome);
-    const { checkoutForProjectAnchor } = await import('./utils/git.js');
-    const checkout = anchor ? await checkoutForProjectAnchor(anchor) : null;
+    const { checkoutForRepoAnchor } = await import('./utils/git.js');
+    const checkout = anchor ? await checkoutForRepoAnchor(anchor) : null;
 
     const toolRoots = checkout
       ? await resolveMemberToolRoots(checkout, { selfHeal: false })

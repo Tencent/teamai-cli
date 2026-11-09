@@ -59,7 +59,7 @@ describe('learningsRoots', () => {
     expect(roots.read).not.toContain(path.join(home, '.teamai', 'learnings'));
   });
 
-  it('keeps the worktree inside .teamai in single-repo mode', () => {
+  it('keeps the worktree inside .teamai in self mode', () => {
     const business = path.join(home, 'product');
     const roots = learningsRoots(gitConfig({
       repo: {

@@ -355,7 +355,7 @@ describe('what a folder server needs on the member\'s machine', () => {
   });
 });
 
-describe('an MCP server folder in a single-repo worktree', () => {
+describe('an MCP server folder in a worktree in self mode', () => {
   let project: string;
   let team: string;
   let self: LocalConfig;

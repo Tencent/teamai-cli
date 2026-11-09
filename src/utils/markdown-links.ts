@@ -1,7 +1,7 @@
 /**
  * The Markdown link parser, shared between `teamai review --branch` (which
- * warns about links that leave a skill) and asset relations (#1552), where a
- * local link from a rule, doc or learning to another team asset becomes a
+ * warns about links that leave a skill) and resource relations (#1552), where a
+ * local link from a rule, doc or learning to another team resource becomes a
  * `REFERENCES` relation. There is deliberately only one parser, so the two
  * readers never disagree about what a link is.
  *

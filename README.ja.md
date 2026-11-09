@@ -19,9 +19,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-**TeamAI は git リポジトリで、チームの skills、rules、agents、learnings、models、MCP などの AI 資産を管理します。**
+**TeamAI は git リポジトリで、チームの skills、rules、agents、learnings、models、MCP などの エージェントリソースを管理します。**
 
-メンバーは一度初期化するだけで、その後はチームの最新 AI 資産が自動で同期されます。
+メンバーは一度初期化するだけで、その後はチームの最新 エージェントリソースが自動で同期されます。
 
 ## なぜ TeamAI なのか
 
@@ -65,7 +65,7 @@ Skills、Rules、MCP など、Agent が使えるリソースはすべて共有�
 /teamai TeamAI ダッシュボードを開いて
 ```
 
-メンバーのセットアップが終われば、エージェントを開くだけでチームの AI 資産をすべて使えます。
+メンバーのセットアップが終われば、エージェントを開くだけでチームの エージェントリソースをすべて使えます。
 
 <details>
 <summary>コマンドラインでインストール</summary>

@@ -3,7 +3,7 @@
  * setting the member wrote in its config. A re-init decides only the install,
  * the role and project selection, the agents and the tool roots.
  *
- * Runs the built CLI against a local team repo, the single-repo mode and an
+ * Runs the built CLI against a local team repo, self mode and an
  * in-process HTTP backend. Each case gets its own HOME and repository.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -126,7 +126,7 @@ function member(name: string) {
 
 const INITS: Array<[string, () => string[]]> = [
   ['a team repo', () => ['init', TEAM_URL, '--provider', 'git', '--agent', 'claude']],
-  ['single-repo mode', () => ['init', '.', '--provider', 'git', '--agent', 'claude']],
+  ['self mode', () => ['init', '.', '--provider', 'git', '--agent', 'claude']],
   ['an HTTP team repo', () => ['init', '--http', server.url, '--token', API_KEY, '--agent', 'claude']],
 ];
 

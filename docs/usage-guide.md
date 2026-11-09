@@ -1,12 +1,12 @@
 # TeamAI CLI — Team Onboarding & Usage Guide
 
-Start with [Getting Started](guide/getting-started.md): set up a team, join one, or share an AI asset with the team.
+Start with [Getting Started](guide/getting-started.md): set up a team, join one, or share an agent resource with the team.
 
 ---
 
 ## Contents
 
-- [Getting Started](guide/getting-started.md) — set up a team, join one, or share an AI asset with the team
+- [Getting Started](guide/getting-started.md) — set up a team, join one, or share an agent resource with the team
 - [teamai skill](guide/skill.md) — talk to TeamAI with `/teamai` inside an AI tool
 - [Member Guide](guide/member-guide.md) — Joining a team, day-to-day use, commit co-author attribution, keeping delivered files out of git
 - [Distribution mechanism](guide/distribution.md) — scope, repo, roles, projects, tags, and subscriptions

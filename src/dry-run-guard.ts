@@ -111,7 +111,7 @@ export const DRY_RUN_PREVIEW: ReadonlySet<string> = new Set([
  */
 export const NO_DRY_RUN_PREVIEW = {
   digest: 'creates or refreshes the reports worktree; #900 C11',
-  init: 'no preview; clones, saves config and injects hooks (single-repo: bootstraps the clone)',
+  init: 'no preview; clones, saves config and injects hooks (self mode: bootstraps the clone)',
   'script run': 'runs the team script, which can write files and read the terminal',
   'models add': 'writes the personal profile and its key',
   'models configure': 'writes the key or the personal profile',

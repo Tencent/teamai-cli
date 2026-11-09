@@ -24,8 +24,8 @@ import {
 } from '../types.js';
 import { getUserHome } from './home.js';
 import { walkLearningsTree } from './learnings-roots.js';
-import { parseRelatedBlock, relationsFromLinks } from '../asset-relations.js';
-import type { StoredRelation } from '../asset-relations.js';
+import { parseRelatedBlock, relationsFromLinks } from '../resource-relations.js';
+import type { StoredRelation } from '../resource-relations.js';
 import { localLinkTargets } from './markdown-links.js';
 import type { FrontmatterValue } from './frontmatter.js';
 import type { ConfidenceFactors } from '../maintenance/confidence.js';
@@ -649,9 +649,9 @@ async function entryFromMdFile(
 
   const docId = filenameForId.replace(/\.md$/i, '');
 
-  // Asset relations (#1552): a rule, doc or learning declares outgoing
+  // Resource relations (#1552): a rule, doc or learning declares outgoing
   // relations in a `related:` frontmatter block; a local link to another
-  // asset becomes REFERENCES. Existence of the target is not checked here —
+  // resource becomes REFERENCES. Existence of the target is not checked here —
   // the build order (learnings before skills) would reject valid targets —
   // recall resolves a stored relation against what this scope can see and
   // prints nothing when the other end does not resolve. Malformed input is
@@ -842,7 +842,7 @@ async function collectLearningsEntries(
  * Collect entries from a recursive *.md directory (used for `docs` and
  * `rules`, which may have subdirectories like `rules/common/`).
  * `treePathPrefix` is the directory's place in the team tree (`rules/`,
- * `docs/`); left undefined for collections that are not team assets, so
+ * `docs/`); left undefined for collections that are not team resources, so
  * their entries stay unaddressable by relations.
  */
 async function collectRecursiveMdEntries(
@@ -1157,7 +1157,7 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
   }
 
   if (opts.codebaseDir) {
-    // Local codebase pages are not team assets: no tree path, so relations
+    // Local codebase pages are not team resources: no tree path, so relations
     // never point at them and they cannot shadow a team doc's tree path.
     entries.push(...await collectRecursiveMdEntries(opts.codebaseDir, 'docs', reads));
   }

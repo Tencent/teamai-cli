@@ -12,9 +12,9 @@ import os from 'node:os';
 import { loadIndex, buildIndex, type BuildIndexOptions } from './utils/search-index.js';
 import { readUserVotes } from './votes.js';
 import { BROKEN_CONFIG_ADVICE, findUnreadableProjectConfig, resolveConfigForDir } from './config.js';
-import type { AssetKind } from './asset-relations.js';
+import type { RelationResourceKind } from './resource-relations.js';
 import { buildRelationContext } from './recall.js';
-import { computeLintAssetGraph, memberScopeGraphs } from './lint-asset-graph.js';
+import { computeLintResourceGraph, memberScopeGraphs } from './lint-resource-graph.js';
 import {
   getTeamaiHomeDir,
   getUserVotesDir,
@@ -95,17 +95,17 @@ export interface VizSource {
 
 /**
  * Relation-derived health counts over the report's own index (#1562 part 2),
- * computed with the same definitions as `codebase --lint`'s asset graph.
+ * computed with the same definitions as `codebase --lint`'s resource graph.
  */
 export interface RelationStats {
-  /** Indexed rules, docs, learnings and skills; teamwiki pages are not assets. */
-  assetCount: number;
+  /** Indexed rules, docs, learnings and skills; teamwiki pages are not resources. */
+  resourceCount: number;
   /**
    * Resolved relations, each counted once (not per direction), links included,
-   * declared beating a link between the same two assets, and no recall line cap.
+   * declared beating a link between the same two resources, and no recall line cap.
    */
   relationCount: number;
-  /** Team-tree paths of assets with no resolved relation in either direction, sorted. */
+  /** Team-tree paths of resources with no resolved relation in either direction, sorted. */
   withoutRelation: string[];
   /** `<from> <RELATION> <target>` lines for declared targets naming nothing on disk, sorted. */
   unresolved: string[];
@@ -127,7 +127,7 @@ export interface VizData {
   topRecalled: EntryMetric[];
   /** All entries with recalledCount === 0. */
   silent: EntryMetric[];
-  /** Relation counts and the assets behind each, resolved for this report's scope. */
+  /** Relation counts and the resources behind each, resolved for this report's scope. */
   relations: RelationStats;
   /** Monthly recall activity, ascending by period. */
   trend: TrendPoint[];
@@ -505,7 +505,7 @@ async function computeRelationStats(
   const memberGraphs = paths.scope ? await memberScopeGraphs({ dryRun: true, config: paths.scope }) : null;
 
   const graph = memberGraphs
-    ? computeLintAssetGraph(memberGraphs)
+    ? computeLintResourceGraph(memberGraphs)
     : await (async () => {
         const ctx = await buildRelationContext({
           index: { builtAt: '', elapsedMs: 0, entries },
@@ -516,20 +516,20 @@ async function computeRelationStats(
           config: { repo: { localPath: paths.knowledgeRoot } } as LocalConfig,
         });
 
-        const targetExists = (kind: AssetKind, treePath: string): boolean => {
+        const targetExists = (kind: RelationResourceKind, treePath: string): boolean => {
           const rel = kind === 'learning' ? `${treePath.slice('learnings/'.length)}.md` : treePath;
           const roots = kind === 'learning' ? paths.indexLearningsDirs : [paths.knowledgeRoot];
 
           return roots.some((root) => existsSync(path.join(root, ...rel.split('/'))));
         };
 
-        return computeLintAssetGraph([{ ctx, targetExists }]);
+        return computeLintResourceGraph([{ ctx, targetExists }]);
       })();
 
   const silentPaths = new Set(entries.flatMap((e) => (isSilent(e) && e.treePath !== undefined ? [e.treePath] : [])));
 
   return {
-    assetCount: graph.assetCount,
+    resourceCount: graph.resourceCount,
     relationCount: graph.relationCount,
     withoutRelation: graph.withoutRelation,
     unresolved: graph.unresolved.map((u) => `${u.from} ${u.relation} ${u.target}`),
@@ -686,7 +686,7 @@ export async function getDashboardContext(opts: VizOptions = {}) {
     overallCoveragePct: data.overallCoveragePct,
     silentCount: data.silent.length,
     relationCounts: {
-      assets: data.relations.assetCount,
+      resources: data.relations.resourceCount,
       relations: data.relations.relationCount,
       withoutRelation: data.relations.withoutRelation.length,
       unresolved: data.relations.unresolved.length,

@@ -59,7 +59,7 @@ describe('resolveHookConfig for a host that sends its own directory (#1516)', ()
     // A project-scope install, and no user-scope one: the payload's directory
     // resolves to no scope at all.
     writeConfig(path.join(project, '.teamai'), { scope: 'project', projectRoot: project });
-    record([{ sessionId: 's-codebuddy', cwd: project, dataHomeKey: await dataHomeKey(path.join(project, '.teamai')), projectAnchor: project }]);
+    record([{ sessionId: 's-codebuddy', cwd: project, dataHomeKey: await dataHomeKey(path.join(project, '.teamai')), repoAnchor: project }]);
 
     // The extension host's own directory, which is what the plugin sends.
     const config = await resolveHookConfig({ session_id: 's-codebuddy', cwd: path.parse(project).root }, 'codebuddy');
@@ -78,7 +78,7 @@ describe('resolveHookConfig for a host that sends its own directory (#1516)', ()
     git(project, 'init', '-q');
     git(project, '-c', 'user.name=T', '-c', 'user.email=t@e.invalid', 'commit', '-q', '--allow-empty', '-m', 'init');
     writeConfig(path.join(project, '.teamai'), { scope: 'project', projectRoot: project });
-    record([{ sessionId: 's-codebuddy', cwd: '/somewhere/else', dataHomeKey: await dataHomeKey(path.join(project, '.teamai')), projectAnchor: project }]);
+    record([{ sessionId: 's-codebuddy', cwd: '/somewhere/else', dataHomeKey: await dataHomeKey(path.join(project, '.teamai')), repoAnchor: project }]);
 
     const config = await resolveHookConfig({ session_id: 's-codebuddy', cwd: project }, 'codebuddy');
 
@@ -95,7 +95,7 @@ describe('resolveHookConfig for a host that sends its own directory (#1516)', ()
     // the session works in.
     writeConfig(path.join(home, '.teamai'), {});
     writeConfig(path.join(project, '.teamai'), { scope: 'project', projectRoot: project });
-    record([{ sessionId: 's-codebuddy', cwd: project, dataHomeKey: await dataHomeKey(path.join(project, '.teamai')), projectAnchor: project }]);
+    record([{ sessionId: 's-codebuddy', cwd: project, dataHomeKey: await dataHomeKey(path.join(project, '.teamai')), repoAnchor: project }]);
 
     const config = await resolveHookConfig({ session_id: 's-codebuddy', cwd: path.parse(project).root }, 'codebuddy');
 
@@ -112,7 +112,7 @@ describe('resolveHookConfig for a host that sends its own directory (#1516)', ()
     git(other, 'init', '-q');
     git(other, '-c', 'user.name=T', '-c', 'user.email=t@e.invalid', 'commit', '-q', '--allow-empty', '-m', 'init');
     writeConfig(path.join(team, '.teamai'), { scope: 'project', projectRoot: team });
-    record([{ sessionId: 's-claude', cwd: team, dataHomeKey: await dataHomeKey(path.join(team, '.teamai')), projectAnchor: team }]);
+    record([{ sessionId: 's-claude', cwd: team, dataHomeKey: await dataHomeKey(path.join(team, '.teamai')), repoAnchor: team }]);
 
     // A host whose payload names the workspace it works in reports to what
     // that directory holds: nothing, for a repository without teamai (#748).

@@ -61,7 +61,7 @@ describe('stats with another repository\'s reports checkout in the partition (#8
     git(['push', '-q', '-u', 'origin', 'main'], businessRoot);
     const anchors = await resolveAnchors(businessRoot);
     if (!anchors) throw new Error('expected the business repo to have git anchors');
-    const partition = await resolvePartitionDir(anchors.projectAnchor);
+    const partition = await resolvePartitionDir(anchors.repoAnchor);
     fs.mkdirSync(partition, { recursive: true });
     fs.writeFileSync(path.join(partition, 'config.yaml'), [
       'repo:',

@@ -1,5 +1,5 @@
 /**
- * Real CLI: every trial runs with the team assets of the run's frozen team revision, delivered into its own clone by its
+ * Real CLI: every trial runs with the team resources of the run's frozen team revision, delivered into its own clone by its
  * own install, whatever the member's checkout pulls during the run, and nothing of that install reaches the member.
  */
 import { execFile, execFileSync, spawnSync } from 'node:child_process';
@@ -132,7 +132,7 @@ const DRIVERS: Array<{ name: string; run(fixture: BenchmarkFixture): Promise<str
   },
 ];
 
-describe.each(DRIVERS)('trial team assets on $name', ({ run }) => {
+describe.each(DRIVERS)('trial team resources on $name', ({ run }) => {
   it('gives every trial the frozen team revision and the starting commit, also after the member pulls a team change', async () => {
     const fixture = await benchmarkFixture({
       tool: 'fixes', sandbox: true, tools: ['claude'], suite: TWO_REPETITIONS, firstLaunch: 'pulls-a-team-change',
@@ -206,8 +206,8 @@ describe("the member's checkout around a benchmark", () => {
   }, 180_000);
 });
 
-describe('trial team assets', () => {
-  it("commits only the agent's edits, not the team assets the trial's install delivered", async () => {
+describe('trial team resources', () => {
+  it("commits only the agent's edits, not the team resources the trial's install delivered", async () => {
     const fixture = await benchmarkFixture({
       tool: 'fixes', sandbox: true, tools: ['claude'], team: { 'skills/fixer/SKILL.md': SKILL }, app: { 'check.js': ONLY_ANSWER_CHANGED },
       tasks: { fix: fixTask('{{startingCommit}}').replace('run: node test.js', 'run: node check.js') },

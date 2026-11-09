@@ -2,7 +2,7 @@
  * E2E (#823, items 2 and 3): push must not offer a teammate's update back as
  * the member's older copy.
  *
- * Item 2: in single-repo mode push runs against a knowledge worktree whose
+ * Item 2: in self mode push runs against a knowledge worktree whose
  * team root is `<wt>/.teamai`, a subdirectory of the git repo. The pre-push
  * sync read each base version with a path relative to that subdirectory, which
  * `git show <rev>:<path>` resolves from the repo root, so it never found one:
@@ -21,7 +21,7 @@
  * pull whose docs mirror failed, and an upgraded install whose last inherited
  * pull an older CLI ran.
  *
- * Item 10: in single-repo mode the active tree's .teamai/rules and
+ * Item 10: in self mode the active tree's .teamai/rules and
  * .teamai/skills are push sources themselves. On a branch behind the default
  * branch they hold an older team version nobody edited, and push listed it as
  * modified, ready to revert the teammate's update.
@@ -75,7 +75,7 @@ function requireCli(): void {
   }
 }
 
-describe('pre-push sync in single-repo mode (#823 items 2 and 10)', () => {
+describe('pre-push sync in self mode (#823 items 2 and 10)', () => {
   let sandbox: string;
   let home: string;
   let projectRoot: string;

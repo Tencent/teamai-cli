@@ -1,6 +1,6 @@
 # 工具支持
 
-teamai 为每个工具把每类资源写到哪里，以及工具读取哪里，以 teamai 的工具描述（`src/tools.ts`）为准。
+teamai 为每个工具把每类 Agent 资源写到哪里，以及工具读取哪里，以 teamai 的工具描述（`src/tools.ts`）为准。
 
 此文件由生成器生成，请勿手动编辑。修改描述后运行 `node scripts/check-docs.mjs --write` 重新生成。
 

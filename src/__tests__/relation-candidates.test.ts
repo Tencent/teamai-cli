@@ -2,7 +2,7 @@
  * #1563 part 2: `teamai codebase --reconcile --dry-run` proposes `related:`
  * relations from team rules and docs to teamwiki code pages, derived by the
  * same term match as the product pages. Candidates are never written and
- * never shown in recall until a person copies one into the asset.
+ * never shown in recall until a person copies one into the resource.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';

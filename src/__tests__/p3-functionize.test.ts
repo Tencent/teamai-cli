@@ -106,7 +106,7 @@ describe('P3 saveLocalConfigForScope writes an anchor into a partition', () => {
 
     const partition = projectDataHome(realRepo);
     expect(await fse.pathExists(path.join(partition, 'config.yaml'))).toBe(true);
-    // The anchor file was written and points back at the project anchor (main checkout).
+    // The anchor file was written and points back at the repo anchor (main checkout).
     expect(await readAnchorFile(partition)).toBe(realRepo);
   });
 
@@ -126,7 +126,7 @@ describe('P3 status --all orphan verdict rests on the anchor, not a persisted wo
 
   it('a pre-P3 partition (no anchor) whose config projectRoot points at a removed worktree is unknown, NOT orphan', async () => {
     const { projectDataHome } = await import('../utils/partition.js');
-    // The shared project anchor (main checkout) still exists; the partition is
+    // The shared repo anchor (main checkout) still exists; the partition is
     // keyed by it. This is what detectProjectConfig(mainCheckout) would load.
     const mainCheckout = path.join(base, 'main-checkout');
     fs.mkdirSync(mainCheckout, { recursive: true });

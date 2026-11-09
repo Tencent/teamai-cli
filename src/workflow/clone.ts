@@ -1,13 +1,13 @@
 /**
  * The clone place a step opens with `workspace: { clone: … }`: a fresh clone of `commit`, with its own git data and no
- * remotes, and the team assets `team` names installed under a HOME of its own. Zod only, so types.ts, parse.ts and the
+ * remotes, and the team resources `team` names installed under a HOME of its own. Zod only, so types.ts, parse.ts and the
  * place import it without a cycle.
  */
 import { z } from 'zod';
 
 export const CommitSchema = z.string().regex(/^[0-9a-f]{40}$/, 'must be a full 40-character commit');
 
-/** The asset selection a team install delivers, as `LocalConfig` names it, frozen when the place was written. */
+/** The resource selection a team install delivers, as `LocalConfig` names it, frozen when the place was written. */
 export const TeamSelectionSchema = z.object({
   primaryRole: z.string().min(1).optional(),
   additionalRoles: z.array(z.string()),
@@ -30,7 +30,7 @@ export const TeamPathSchema = z.string().refine(
 );
 
 /**
- * Which team assets the clone gets at `revision`: the revision as pulled, the revision a ref named (the ref is only its
+ * Which team resources the clone gets at `revision`: the revision as pulled, the revision a ref named (the ref is only its
  * name), or the revision without some of its files and directories, each a path in the team repo. `none` installs
  * nothing.
  *
@@ -51,7 +51,7 @@ export const CloneTeamSchema = z.union([
 
 export type CloneTeam = z.infer<typeof CloneTeamSchema>;
 
-/** A team the clone gets assets of: any treatment but `none`. */
+/** A team the clone gets resources of: any treatment but `none`. */
 export type InstalledTeam = Extract<CloneTeam, { revision: string }>;
 
 /**

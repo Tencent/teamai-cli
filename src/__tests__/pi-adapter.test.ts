@@ -27,7 +27,7 @@ describe('Pi adapter configuration', () => {
     expect(scopedToolPaths(config, { scope: 'project' }).pi).not.toHaveProperty('rules');
   });
 
-  it('registers Pi for discovery and single-repo selection', () => {
+  it('registers Pi for discovery and self-mode selection', () => {
     expect(KNOWN_AGENTS.find((agent) => agent.id === 'pi')).toMatchObject({
       displayName: 'Pi Coding Agent',
       skillsPath: '.pi/skills',

@@ -257,7 +257,7 @@ vi.mock('../utils/prompt.js', async (importOriginal) => ({
 // Prevent process.exit from actually exiting
 const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
 
-import { init, resolveInitProvider, isSingleRepoTeam } from '../init.js';
+import { init, resolveInitProvider, isSelfModeTeam } from '../init.js';
 import { GenericGitProvider } from '../providers/git/index.js';
 import { GitLabProvider } from '../providers/gitlab/index.js';
 import { RepoNotFoundError, RepoCreatePermissionError } from '../providers/types.js';
@@ -294,33 +294,33 @@ describe('init', () => {
     expect(mockGfRepoClone).not.toHaveBeenCalled();
   });
 
-  describe('refusal of single-repo team URL (#1500)', () => {
-    it('isSingleRepoTeam identifies single-repo teams by mode: self in .teamai/teamai.yaml without root teamai.yaml', async () => {
+  describe('refusal of self-mode team URL (#1500)', () => {
+    it('isSelfModeTeam identifies teams in self mode by mode: self in .teamai/teamai.yaml without root teamai.yaml', async () => {
       // 1. root teamai.yaml exists -> false
       pathExistsFn = (p: string) => p === path.join('/fake/repo', 'teamai.yaml');
-      expect(await isSingleRepoTeam('/fake/repo')).toBe(false);
+      expect(await isSelfModeTeam('/fake/repo')).toBe(false);
 
       // 2. .teamai/teamai.yaml has mode: self and no root teamai.yaml -> true
       pathExistsFn = (p: string) => p === path.join('/fake/repo', '.teamai', 'teamai.yaml');
       vi.mocked(readFileSafe).mockResolvedValueOnce(JSON.stringify({ team: 'biz', mode: 'self', repo: 'https://git.example/biz.git' }));
-      expect(await isSingleRepoTeam('/fake/repo')).toBe(true);
+      expect(await isSelfModeTeam('/fake/repo')).toBe(true);
 
       // 3. .teamai/teamai.yaml exists but without mode: self -> false
       vi.mocked(readFileSafe).mockResolvedValueOnce(JSON.stringify({ team: 'biz', repo: 'https://git.example/biz.git' }));
-      expect(await isSingleRepoTeam('/fake/repo')).toBe(false);
+      expect(await isSelfModeTeam('/fake/repo')).toBe(false);
 
       // 4. neither exists -> false
       pathExistsFn = () => false;
       vi.mocked(readFileSafe).mockResolvedValueOnce(null);
-      expect(await isSingleRepoTeam('/fake/repo')).toBe(false);
+      expect(await isSelfModeTeam('/fake/repo')).toBe(false);
 
       // 5. malformed YAML -> false
       pathExistsFn = (p: string) => p === path.join('/fake/repo', '.teamai', 'teamai.yaml');
       vi.mocked(readFileSafe).mockResolvedValueOnce('not-valid-json-{{{');
-      expect(await isSingleRepoTeam('/fake/repo')).toBe(false);
+      expect(await isSelfModeTeam('/fake/repo')).toBe(false);
     });
 
-    it('refuses to initialize a single-repo team as a standalone team repo, removes newly created clone, and exits 1', async () => {
+    it('refuses to initialize a team in self mode as a standalone team repo, removes newly created clone, and exits 1', async () => {
       const { log } = await import('../utils/logger.js');
       mockExit.mockClear();
       mockRemove.mockClear();
@@ -348,7 +348,7 @@ describe('init', () => {
 
       expect(mockRemove).toHaveBeenCalledWith(localPath);
       expect(log.error).toHaveBeenCalledWith(
-        'https://git.woa.com/HyperAI/biz-repo.git is a single-repo team: its config is .teamai/teamai.yaml. ' +
+        'https://git.woa.com/HyperAI/biz-repo.git is a repo in self mode: its config is .teamai/teamai.yaml. ' +
           'Clone the repository and run `teamai init --self` in it.',
       );
       expect(mockExit).toHaveBeenCalledWith(1);
@@ -358,7 +358,7 @@ describe('init', () => {
       vi.mocked(readFileSafe).mockResolvedValue(null);
     });
 
-    it('preserves an existing reused clone when refusing a single-repo team', async () => {
+    it('preserves an existing reused clone when refusing a team in self mode', async () => {
       const { log } = await import('../utils/logger.js');
       mockExit.mockClear();
       mockRemove.mockClear();
@@ -385,7 +385,7 @@ describe('init', () => {
       // Reused clone must NOT be removed
       expect(mockRemove).not.toHaveBeenCalledWith(localPath);
       expect(log.error).toHaveBeenCalledWith(
-        'https://git.woa.com/HyperAI/biz-repo.git is a single-repo team: its config is .teamai/teamai.yaml. ' +
+        'https://git.woa.com/HyperAI/biz-repo.git is a repo in self mode: its config is .teamai/teamai.yaml. ' +
           'Clone the repository and run `teamai init --self` in it.',
       );
       expect(mockExit).toHaveBeenCalledWith(1);
@@ -1281,7 +1281,7 @@ describe('init', () => {
     });
   });
 
-  describe('single-repo mode', () => {
+  describe('self mode', () => {
     it('accepts an existing HTTP origin without persisting its credentials', async () => {
       pathExistsFn = (p: string) => p.endsWith(`${path.sep}.git`) || p.endsWith('/.git');
       mockGit.raw.mockResolvedValue(
@@ -1344,9 +1344,9 @@ describe('init', () => {
 
       expect(mockExit).toHaveBeenCalledWith(1);
       const errorCalls = vi.mocked(log.error).mock.calls.map(([message]) => String(message)).join('\n');
-      expect(errorCalls).toContain('--scope user is not supported in single-repo mode');
+      expect(errorCalls).toContain('--scope user is not supported in self mode');
       expect(errorCalls).toContain('~/.teamai/config.yaml');
-      // The suggestion must not point single-repo members at a team-mode init,
+      // The suggestion must not point self-mode members at a team-mode init,
       // which would clone/skeleton their business repo as a separate team repo.
       expect(errorCalls).not.toContain('teamai init --scope user');
       expect(errorCalls).toContain('repo.kind: self');
@@ -1825,7 +1825,7 @@ describe('init --provider', () => {
     expect(saveLocalConfig).toHaveBeenCalledWith(expect.not.objectContaining({ provider: expect.anything() }));
   });
 
-  it('applies to single-repo mode as well', async () => {
+  it('applies to self mode as well', async () => {
     vi.stubEnv('GITLAB_URL', 'https://gitlab.example.test');
     pathExistsFn = (p: string) => p.endsWith(`${path.sep}.git`) || p.endsWith('/.git');
     mockGit.raw.mockResolvedValue(`${GITLAB_REPO}\n`);
@@ -1855,7 +1855,7 @@ describe('init --provider', () => {
       process.cwd(),
     );
   });
-  it('refuses to create a single-repo teamai.yaml on an unconfigured self-hosted GitLab', async () => {
+  it('refuses to create a self-mode teamai.yaml on an unconfigured self-hosted GitLab', async () => {
     fetchMock.mockResolvedValue(gitlabSignInResponse());
     pathExistsFn = (p: string) => p.endsWith(`${path.sep}.git`) || p.endsWith('/.git');
     mockGit.raw.mockResolvedValue(`${GITLAB_REPO}\n`);

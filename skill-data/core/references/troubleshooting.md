@@ -59,13 +59,13 @@ This is the #1 onboarding issue. In order:
    With `sharing.gitExclude` on, Codex's team hooks run from `~/.codex/hooks.json`
    instead (one `hook-dispatch <Event> --tool codex --team-hooks` entry per event)
    while the project's `.codex/hooks.json` is tracked or holds entries of its own,
-   and always in single-repo mode.
+   and always in self mode.
    Existing Claude/Codex main-checkout hook files count as installed targets
    even when HOME and current worktree tool roots are missing. Injection and
    pull update team hooks and restore HOME built-ins; removal clears managed
    main-checkout hooks without recreating HOME roots.
    If Git-hook installation fails after writing agent hooks, `hooks inject`,
-   `init` and self-repo bootstrap still attempt Codex trust. Injection preserves
+   `init` and self-mode bootstrap still attempt Codex trust. Injection preserves
    the installation error without reporting overall success. Init reports the
    error and retains exit code 1 while completing local setup, including HTTP
    initialization. Bootstrap records the error in the debug log and continues
@@ -257,7 +257,7 @@ are never named. `review --branch` names every such file.
 
 `pull` in a workspace prints these; `teamai doctor` repeats the first.
 
-- **Left out**: that repo uses another team repo, is in single-repo mode, or
+- **Left out**: that repo uses another team repo, is in self mode, or
   its config cannot be read. The line gives the reason. To include it, run
   `teamai init <this workspace's team repo>` in it; otherwise it keeps working
   on its own and nothing needs doing.
