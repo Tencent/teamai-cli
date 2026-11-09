@@ -133,7 +133,7 @@ interface RemovalPlan {
   dshHookFile: string | null;
   /** The team hooks teamai's bridge runs for a tool (~/.teamai/team-hooks/<tool>.json). */
   bridgedTeamHookFiles: string[];
-  /** A single-repo worktree's `.teamai/delivered/`: the hook folders it ran team hooks from (#1787). */
+  /** A single-repo worktree's `.teamai/delivered/`: the team folders (hooks, MCP servers) it delivered (#1787). */
   deliveredFolderDirs: string[];
   /** Manifest used by the primary hook injection scope. */
   hookManifestPath: string;
@@ -1995,7 +1995,7 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
     for (const file of plan.bridgedTeamHookFiles) console.log(`     ${file}`);
   }
 
-  for (const dir of plan.deliveredFolderDirs) console.log(`   Team hook folders delivered in this worktree: ${dir}`);
+  for (const dir of plan.deliveredFolderDirs) console.log(`   Team folders delivered in this worktree: ${dir}`);
 
   if (plan.piHookFiles.length > 0) {
     console.log(`   Pi Hooks (${plan.piHookFiles.length} files):`);
