@@ -621,6 +621,30 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     ]]);
   });
 
+  it('does not say a folder pull skips is delivered to every member', async () => {
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), [
+      'version: 1',
+      'roles:',
+      '  - id: dev',
+      '    description: dev',
+      '    resources: { knowledge: [], skills: [], agents: [], hooks: [frontend], mcp: [frontend], workflows: [frontend] }',
+      '',
+    ].join('\n'));
+    await fse.outputFile(path.join(repoDir, 'workflows', 'teamai-release', 'WORKFLOW.yaml'), VALID_BUILD.replace('name: build', 'name: teamai-release'));
+    await fse.outputFile(path.join(repoDir, 'hooks', 'teamai-lint', 'HOOK.yaml'), HOOK_FOLDER);
+    await fse.outputFile(path.join(repoDir, 'mcp', 'teamai-db', 'MCP.yaml'), MCP_FOLDER);
+    await fse.outputFile(path.join(repoDir, 'hooks', 'lint', 'HOOK.yaml'), HOOK_FOLDER);
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(findings(review).filter((f) => f.check === 'structure')).toEqual([{
+      level: 'info',
+      check: 'structure',
+      path: 'hooks/lint',
+      message: 'hooks/lint sits at the shared root, so it is delivered to every member.',
+    }]);
+  });
+
   it('reviews wiki pages at teamwiki/evidence/code, not the wiki/ name', async () => {
     await fse.ensureDir(path.join(repoDir, 'manifest'));
     await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('wiki', ['a', 'b']));

@@ -407,13 +407,20 @@ interface PlaceMessages {
   readonly duplicate: (name: string, first: string, second: string) => string;
 }
 
+/** A check's findings, and the folders pull skips (`hooks/teamai-lint/`), which nothing delivers. */
+interface PullReadFindings {
+  readonly findings: Finding[];
+  readonly skipped: readonly string[];
+}
+
 /**
  * What stops pull applying one type of the branch's team entries, read as pull reads it at the root and in each
  * namespace: a file or folder it cannot read, or one name from two of them in the same place (#1787). A folder pull
  * skips is a warning.
  */
-async function placeFindings<TEntry, E>(repoDir: string, type: LayeredEntryType<TEntry, E>, messages: PlaceMessages): Promise<Finding[]> {
+async function placeFindings<TEntry, E>(repoDir: string, type: LayeredEntryType<TEntry, E>, messages: PlaceMessages): Promise<PullReadFindings> {
   const findings: Finding[] = [];
+  const skipped: string[] = [];
 
   for (const namespace of [null, ...await listDirs(path.join(repoDir, type.layout.dir))]) {
     const read = await LayeredEntries.readPlace(type, { root: repoDir, namespace });
@@ -424,7 +431,9 @@ async function placeFindings<TEntry, E>(repoDir: string, type: LayeredEntryType<
     }
 
     for (const note of read.notes) {
-      if (note.kind === 'skipped') findings.push({ level: 'warn', check: 'naming', path: note.path, message: note.message });
+      if (note.kind !== 'skipped') continue;
+      findings.push({ level: 'warn', check: 'naming', path: note.path, message: note.message });
+      skipped.push(note.path);
     }
 
     const firstSource = new Map<string, string>();
@@ -437,7 +446,7 @@ async function placeFindings<TEntry, E>(repoDir: string, type: LayeredEntryType<
     }
   }
 
-  return findings;
+  return { findings, skipped };
 }
 
 const HOOK_PLACE_MESSAGES: PlaceMessages = {
@@ -553,10 +562,13 @@ function makeTextReader(): (absolutePath: string) => Promise<string | null> {
   };
 }
 
-async function structureFindings(resources: ReviewResource[], index: ManifestIndex): Promise<Finding[]> {
+/** Where each resource sits, and that a skill folder holds its SKILL.md. A folder in `skipped` reaches no member, so where it sits says nothing. */
+async function structureFindings(resources: ReviewResource[], index: ManifestIndex, skipped: readonly string[]): Promise<Finding[]> {
   const findings: Finding[] = [];
 
   for (const resource of resources) {
+    if (skipped.some((folder) => `${resource.relativePath}/`.startsWith(folder))) continue;
+
     if (resource.type === 'skills' && !await pathExists(path.join(resource.absolutePath, 'SKILL.md'))) {
       findings.push({
         level: 'fail',
@@ -1306,7 +1318,7 @@ function reviewTreeConfig(repoDir: string, dataHome: string): LocalConfig {
  * cache. A workflow file any selection's pull rejects is one finding per message, however many selections receive it.
  * A scorer is missing when no selection receives a valid scorer of that name: one selection's scorer may be another's gap.
  */
-async function workflowFindings(repoDir: string, received: readonly Received[]): Promise<Finding[]> {
+async function workflowFindings(repoDir: string, received: readonly Received[]): Promise<PullReadFindings> {
   const dataHome = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-review-workflows-'));
   const wasSilent = isSilent();
   setSilent(true);
@@ -1339,7 +1351,7 @@ async function workflowFindings(repoDir: string, received: readonly Received[]):
       if (!unknownScorers.has(key)) unknownScorers.set(key, { level: 'fail', check: 'workflows', path: unknown.file, message });
     }
 
-    return [
+    const findings: Finding[] = [
       ...result.scorers.invalid.map((diagnostic): Finding => ({
         level: 'fail',
         check: 'scorers',
@@ -1359,6 +1371,8 @@ async function workflowFindings(repoDir: string, received: readonly Received[]):
       })),
       ...await newerWorkflowKeyFindings(repoDir),
     ];
+
+    return { findings, skipped: result.skipped.map(({ path: skippedPath }) => skippedPath) };
   } finally {
     setSilent(wasSilent);
     await fse.remove(dataHome);
@@ -1752,20 +1766,24 @@ export async function reviewBranchDir(branch: string, repoDir: string, base: Rev
 
   for (const context of await modelContexts(repoDir, roles, projects)) received.set(context, await receivedDefinitions(context.config));
 
+  const hooks = await placeFindings(repoDir, TEAM_HOOK_ENTRIES, HOOK_PLACE_MESSAGES);
+  const mcp = await placeFindings(repoDir, TEAM_MCP_ENTRIES, MCP_PLACE_MESSAGES);
+  const workflows = await workflowFindings(repoDir, [...received.values()]);
+
   const findings: Finding[] = [
     ...await skippedFolderFindings(repoDir),
     ...await ruleFindings(repoDir, base),
-    ...await structureFindings(resources, index),
+    ...await structureFindings(resources, index, [...hooks.skipped, ...mcp.skipped, ...workflows.skipped]),
     ...await namingFindings(resources, readText),
     ...await duplicateFindings(resources, index),
     ...await skillLinkFindings(skillFiles, resources),
     ...await formatFindings(resources, readText),
-    ...await placeFindings(repoDir, TEAM_HOOK_ENTRIES, HOOK_PLACE_MESSAGES),
-    ...await placeFindings(repoDir, TEAM_MCP_ENTRIES, MCP_PLACE_MESSAGES),
+    ...hooks.findings,
+    ...mcp.findings,
     ...await relationsFindings(resources, readText),
     ...pipedInstallFindings(skillFiles),
     ...await leakFindings(repoDir, resources, readText),
-    ...await workflowFindings(repoDir, [...received.values()]),
+    ...workflows.findings,
     ...await scoringSettingsFindings(repoDir, readText),
     ...await sessionsFindings(repoDir, readText),
     ...await modelFindings(resources, readText, received),
