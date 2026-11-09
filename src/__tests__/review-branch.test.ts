@@ -592,6 +592,35 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     }]]);
   });
 
+  it('warns about a teamai- workflow, hook or MCP server folder that replaces no teamai default, which pull skips', async () => {
+    await fse.outputFile(path.join(repoDir, 'workflows', 'teamai-release', 'WORKFLOW.yaml'), VALID_BUILD.replace('name: build', 'name: teamai-release'));
+    await fse.outputFile(path.join(repoDir, 'hooks', 'teamai-lint', 'HOOK.yaml'), HOOK_FOLDER);
+    await fse.outputFile(path.join(repoDir, 'mcp', 'teamai-db', 'MCP.yaml'), MCP_FOLDER);
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.check === 'naming')]).toEqual([true, [
+      {
+        level: 'warn',
+        check: 'naming',
+        path: 'hooks/teamai-lint/',
+        message: 'hooks/teamai-lint/ is skipped: a teamai- name only replaces a teamai default, and teamai has no hook named teamai-lint. Rename the folder.',
+      },
+      {
+        level: 'warn',
+        check: 'naming',
+        path: 'mcp/teamai-db/',
+        message: 'mcp/teamai-db/ is skipped: a teamai- name only replaces a teamai default, and teamai has no MCP server named teamai-db. Rename the folder.',
+      },
+      {
+        level: 'warn',
+        check: 'naming',
+        path: 'workflows/teamai-release/',
+        message: 'workflows/teamai-release/ is skipped: a teamai- name only replaces a teamai default, and teamai has no workflow named teamai-release. Rename the folder.',
+      },
+    ]]);
+  });
+
   it('reviews wiki pages at teamwiki/evidence/code, not the wiki/ name', async () => {
     await fse.ensureDir(path.join(repoDir, 'manifest'));
     await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('wiki', ['a', 'b']));

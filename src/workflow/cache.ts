@@ -48,6 +48,8 @@ export interface SyncWorkflowResult {
   settled: Array<{ relativePath: string; definition: WorkflowDefinition }>;
   /** `alias_conflict` on each cached workflow whose alias another one has as alias or name. Each still starts by name. */
   aliasConflicts: WorkflowDiagnostic[];
+  /** Each folder this sync skipped, at its path from the team root, with what pull prints about it. */
+  skipped: Array<{ path: string; message: string }>;
 }
 
 /** One version of a file, as its reference checks read it: this revision, or the copy the cache keeps. */
@@ -274,7 +276,7 @@ export async function workflowFileNames(dir: string): Promise<string[]> {
  * finds no version that was not checked against the others. Nothing here fails the caller.
  */
 export async function syncWorkflowDefinitions(config: LocalConfig, options: SyncWorkflowOptions): Promise<SyncWorkflowResult> {
-  const result: SyncWorkflowResult = { cached: [], kept: [], invalid: [], unrunnable: [], brokenDefaults: [], settled: [], aliasConflicts: [] };
+  const result: SyncWorkflowResult = { cached: [], kept: [], invalid: [], unrunnable: [], brokenDefaults: [], settled: [], aliasConflicts: [], skipped: [] };
   const knowledgeRoot = getKnowledgeDir(config);
   // Asked on the first valid file: a team without workflows starts no git here.
   let reachable: Promise<ReachableRevision | undefined> | undefined;
@@ -383,7 +385,9 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
 
     // A teamai- name only replaces a default (#1787, common rule 5). A single file keeps its older meaning.
     if (source.kind === 'folder' && stem.startsWith(DefaultWorkflows.PREFIX) && !shipped.has(stem)) {
-      log.warn(`[workflows] ${source.path} is skipped: a teamai- name only replaces a teamai default, and teamai has no workflow named ${stem}. Rename the folder.`);
+      const message = `${source.path} is skipped: a teamai- name only replaces a teamai default, and teamai has no workflow named ${stem}. Rename the folder.`;
+      result.skipped.push({ path: source.path, message });
+      log.warn(`[workflows] ${message}`);
       continue;
     }
 

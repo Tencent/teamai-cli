@@ -47,9 +47,16 @@ export interface PlacedDefinition<TEntry, E> {
   readonly unknownKeys: readonly string[];
 }
 
+/** What a place read tells the team: how the resolver read its layout, or a folder the type skips, at `path`. */
+export interface PlaceNote {
+  readonly kind: 'layout' | 'skipped';
+  readonly path: string;
+  readonly message: string;
+}
+
 /** One place read: its definitions in scan order and what to tell the team, or the file or folder that stops the type, and why. */
 export type LayeredPlaceRead<TEntry, E> =
-  | { readonly ok: true; readonly definitions: ReadonlyArray<PlacedDefinition<TEntry, E>>; readonly notes: readonly string[] }
+  | { readonly ok: true; readonly definitions: ReadonlyArray<PlacedDefinition<TEntry, E>>; readonly notes: readonly PlaceNote[] }
   | { readonly ok: false; readonly source: string; readonly reason: string };
 
 /** A folder marker's YAML (at `markerPath`) read by the type's `schema`, with the keys it has that `schema` does not know, or why it does not parse. */
@@ -103,7 +110,7 @@ async function readPlace<TEntry, E>(type: LayeredEntryType<TEntry, E>, at: { rea
   const invalid = diagnostics.find((diagnostic) => diagnostic.kind === 'invalid');
 
   if (invalid) return { ok: false, source: invalid.path, reason: invalid.message };
-  const notes = diagnostics.map(({ message }) => message);
+  const notes: PlaceNote[] = diagnostics.map(({ path: notePath, message }) => ({ kind: 'layout', path: notePath, message }));
   const definitions: Array<PlacedDefinition<TEntry, E>> = [];
 
   for (const item of items) {
@@ -124,7 +131,7 @@ async function readPlace<TEntry, E>(type: LayeredEntryType<TEntry, E>, at: { rea
             definitions.push({ item, definition: read.definition, unknownKeys: read.unknownKeys });
             break;
           case 'skipped':
-            if (read.note !== null) notes.push(read.note);
+            if (read.note !== null) notes.push({ kind: 'skipped', path: source.path, message: read.note });
             break;
           case 'invalid':
             return { ok: false, source: source.path, reason: read.reason };
@@ -179,7 +186,7 @@ async function resolveScope<TEntry, E>(type: LayeredEntryType<TEntry, E>, localC
 
     if (!read.ok) return { kind: 'failed', failure: { kind: 'broken-file', type: type.type, source: read.source, reason: read.reason, layout }, notices };
 
-    for (const note of read.notes) notices.push({ kind: 'file-note', message: note });
+    for (const { message } of read.notes) notices.push({ kind: 'file-note', message });
 
     for (const { item, definition, unknownKeys } of read.definitions) {
       const scope = type.scopeOf(definition);

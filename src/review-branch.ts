@@ -409,7 +409,8 @@ interface PlaceMessages {
 
 /**
  * What stops pull applying one type of the branch's team entries, read as pull reads it at the root and in each
- * namespace: a file or folder it cannot read, or one name from two of them in the same place (#1787).
+ * namespace: a file or folder it cannot read, or one name from two of them in the same place (#1787). A folder pull
+ * skips is a warning.
  */
 async function placeFindings<TEntry, E>(repoDir: string, type: LayeredEntryType<TEntry, E>, messages: PlaceMessages): Promise<Finding[]> {
   const findings: Finding[] = [];
@@ -420,6 +421,10 @@ async function placeFindings<TEntry, E>(repoDir: string, type: LayeredEntryType<
     if (!read.ok) {
       findings.push({ level: 'fail', check: 'format', path: read.source, message: messages.unreadable(read.reason.trimEnd().replace(/\.$/, '')) });
       continue;
+    }
+
+    for (const note of read.notes) {
+      if (note.kind === 'skipped') findings.push({ level: 'warn', check: 'naming', path: note.path, message: note.message });
     }
 
     const firstSource = new Map<string, string>();
@@ -1343,6 +1348,8 @@ async function workflowFindings(repoDir: string, received: readonly Received[]):
       })),
       ...invalid.values(),
       ...unknownScorers.values(),
+      // Every namespace is read here, and a skip depends only on the folder's name, so no selection adds one.
+      ...result.skipped.map(({ path: skippedPath, message }): Finding => ({ level: 'warn', check: 'naming', path: skippedPath, message })),
       // Each still starts by name; the alias starts nothing, or another workflow.
       ...result.aliasConflicts.map((diagnostic): Finding => ({
         level: 'fail',
