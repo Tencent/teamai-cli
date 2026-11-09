@@ -2231,26 +2231,23 @@ export async function buildEntryScopeKeyCheck(ctx: DoctorContext): Promise<Check
 
 /**
  * A team timeout for the TodoWrite entry, which teamai stopped installing when
- * the hint moved into the wildcard pass (#1788), applies to nothing. Its
+ * the hint moved into the wildcard pass (#1788), applies to nothing. A note,
+ * not a check: nothing is broken, so a team's `teamai doctor` stays green. Its
  * `builtin.disabled` listing still turns the hint off, so only the override is
- * reported.
+ * noted.
  */
-export async function buildRetiredBuiltinOverrideChecks(ctx: DoctorContext): Promise<Check[]> {
+export async function retiredBuiltinOverrideNotes(ctx: DoctorContext): Promise<string[]> {
   const { readBuiltinOverride } = await import('./resources/hooks.js');
   const { POST_TOOL_USE_WILDCARD_KEY, RETIRED_TODOWRITE_HOOK_KEY } = await import('./builtin-hooks.js');
   const builtin = await readBuiltinOverride(ctx.localConfig);
 
   if (!builtin.known || builtin.override?.overrides?.[RETIRED_TODOWRITE_HOOK_KEY] === undefined) return [];
 
-  return [{
-    name: 'Team built-in hook overrides name hooks teamai installs',
-    source: 'local',
-    informational: true,
-    check: async () => false,
-    fix: `hooks/hooks.yaml sets a timeout under \`builtin.overrides\` for \`${RETIRED_TODOWRITE_HOOK_KEY}\`, an entry teamai no longer installs: `
+  return [
+    `hooks/hooks.yaml sets a timeout under \`builtin.overrides\` for \`${RETIRED_TODOWRITE_HOOK_KEY}\`, an entry teamai no longer installs: `
       + `the TodoWrite hint runs in \`${POST_TOOL_USE_WILDCARD_KEY}\`, so this timeout is ignored. `
       + `Remove it from hooks/hooks.yaml; a timeout for \`${POST_TOOL_USE_WILDCARD_KEY}\` applies to every tool call.`,
-  }];
+  ];
 }
 
 /**

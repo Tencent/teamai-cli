@@ -9,7 +9,7 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
-import { buildRetiredBuiltinOverrideChecks } from '../doctor-delivery.js';
+import { retiredBuiltinOverrideNotes } from '../doctor-delivery.js';
 import type { DoctorContext } from '../doctor.js';
 
 /** The TodoWrite hint has no entry of its own since #1788, so a timeout the team sets for that entry has nothing to apply to. */
@@ -31,19 +31,15 @@ describe('doctor — a builtin override for the retired TodoWrite entry', () => 
     await fse.remove(repoPath);
   });
 
-  it('says the timeout is ignored and where the hint runs now', async () => {
+  // A note, not a check: the override does nothing, so it must not turn a team's `teamai doctor` red.
+  it('notes the timeout is ignored and where the hint runs now', async () => {
     await hooksYaml('builtin:\n  overrides:\n    Hook dispatch post-tool-use TodoWrite: { timeout: 5 }\n');
 
-    const [check, ...rest] = await buildRetiredBuiltinOverrideChecks(ctx());
-
-    expect(rest).toEqual([]);
-    expect(check?.informational).toBe(true);
-    expect(await check?.check()).toBe(false);
-    expect(check?.fix).toBe(
+    expect(await retiredBuiltinOverrideNotes(ctx())).toEqual([
       'hooks/hooks.yaml sets a timeout under `builtin.overrides` for `Hook dispatch post-tool-use TodoWrite`, an entry teamai no longer installs: '
       + 'the TodoWrite hint runs in `Hook dispatch post-tool-use wildcard`, so this timeout is ignored. '
       + 'Remove it from hooks/hooks.yaml; a timeout for `Hook dispatch post-tool-use wildcard` applies to every tool call.',
-    );
+    ]);
   });
 
   it.each([
@@ -51,9 +47,9 @@ describe('doctor — a builtin override for the retired TodoWrite entry', () => 
     ['a timeout for a current built-in', 'builtin:\n  overrides:\n    Hook dispatch stop: { timeout: 99 }\n'],
     // Disabling the retired key still turns the hint off, so it is no mistake to report.
     ['the retired key under builtin.disabled', 'builtin:\n  disabled: [Hook dispatch post-tool-use TodoWrite]\n'],
-  ])('adds no check for %s', async (_case, text) => {
+  ])('adds no note for %s', async (_case, text) => {
     if (text !== null) await hooksYaml(text);
 
-    expect(await buildRetiredBuiltinOverrideChecks(ctx())).toEqual([]);
+    expect(await retiredBuiltinOverrideNotes(ctx())).toEqual([]);
   });
 });

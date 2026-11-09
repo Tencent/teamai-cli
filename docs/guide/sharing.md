@@ -250,7 +250,7 @@ Limits:
 | `UserPromptSubmit` | Record the prompt |
 | `Stop` | Check for a CLI update and record the session end |
 
-On macOS and Linux, a tool call or a prompt waits for teamai only when it may have something to print: a `TodoWrite` call (for the reminder, even with recall off), or a prompt with a hint left for it or on a machine that syncs over HTTP. Otherwise the hook starts a background process and returns, and that process records the event. `~/.teamai/debug.log` shows which happened:
+On macOS and Linux, a tool call or a prompt waits for teamai only when it may have something to print: a `TodoWrite` call, which runs in full to find out whether the reminder applies (with recall off it does not, and nothing is printed), or a prompt with a hint left for it or on a machine that syncs over HTTP. Otherwise the hook starts a background process and returns, and that process records the event. `~/.teamai/debug.log` shows which happened:
 
 ```text
 2026-11-09T09:14:02.118Z [DEBUG] [hook-dispatch] post-tool-use/claude fast path
