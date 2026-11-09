@@ -883,7 +883,7 @@ These results hold for these tasks, this run and this machine.
 
 | 表格 | 内容 |
 | --- | --- |
-| Arm | 按结果统计每个 arm 的 trial，以及被 [trial 限制](#trial-限制)停止的数量。偏差是 prompt 运行时的工具、团队修订、模型或角色与其 arm 不同的 trial，其 driver 无法执行某个 trial 限制的 trial，或者由[计划](#对所有-arm-用同一个评判)以外的评判打标签的 trial。记录缺少其中某个值，或缺少其评判的模型的 trial 为未验证。有 arm 使用 pull 到的修订以外的团队资产时，Team 列显示每个 arm 的团队资产，例如 `pulled 3f9c2ab`、`next 81d0e4c`、`3f9c2ab without skills/auth-tokens` 或 `none`。有 arm [以角色运行](#以角色运行的-arm)时，Role 列显示每个 arm 的角色，或 `member's roles`。 |
+| Arm | 按结果统计每个 arm 的 trial，以及被 [trial 限制](#trial-限制)停止的数量。偏差是 prompt 运行时的工具、团队修订、模型或角色与其 arm 不同的 trial，其 driver 无法执行某个 trial 限制的 trial，或者由[计划](#对所有-arm-用同一个评判)以外的评判打标签的 trial。记录缺少其中某个值，或缺少其评判的模型的 trial 为未验证。有 arm 使用 pull 到的修订以外的团队资产时，Team 列显示每个 arm 的团队资产，例如 `pulled 3f9c2ab`、`next 81d0e4c`、`3f9c2ab without skills/auth-tokens` 或 `none`。有 arm [以角色运行](#以角色运行的-arm)时，Role 列显示每个 arm 的角色，或 `member's roles`。正确性评分标准有两个以上标签时，通过率后面还有 Mean correctness score 列，见[正确性评分标准](#正确性评分标准)。 |
 | 用量 | 每个 arm 的中位数和成本合计，并注明各自用了多少个 trial。token 和成本只按工具自己声明的显示，所以不声明的工具显示 `unknown (0)`。如果一个 trial 的各次 pass 没有全部声明 token（输入和输出）、成本或时长，它在这一项上按没有声明处理，并让成本合计显示 `incomplete`。 |
 | 任务 | 每个任务在每个 arm 上的通过率。 |
 | 评分器 | 仅当套件或某个任务列出评分器时出现：每个 arm 在每个评分器上的通过率，见[每个评分器的通过率](#每个评分器的通过率)。 |
@@ -973,6 +973,17 @@ model: fast
 ```
 
 start 从本检出拉取的团队修订读取这个文件，并用它评判每个 arm，不管 arm 的 `team` 是什么。它的 `model` 和 `tool` 像[任何评分器](#对所有-arm-用同一个评判)的一样固定评判：这里每个 arm 都由 claude 用别名 `fast` 评判。它的标签至少要有一个通过、一个不通过，check 按上表在其中挑选：通过的 check 写 `correct`，失败的写 `incorrect`。新的评分标准就是新的评分标准哈希，所以[回归门禁](#回归时失败)不会把它之前评判的 trial 和之后评判的配对。
+
+有两个以上标签时，Arm 表多出 Mean correctness score 列：每个 arm 有标签的正确性结论的平均分，check 写下的也算在内。用上面的评分标准时，部分如下：
+
+```text
+| Arm | Pass rate | Mean correctness score |
+| --- | --- | --- |
+| claude | 44% (4/9) | 0.67 |
+| codex | 44% (4/9) | 0.50 |
+```
+
+两个 arm 都在九个 trial 中通过四个，但 claude 其余的 trial 中 `partial` 更多。没有任何有标签的正确性结论的 arm 显示 `-`。回归门禁仍然只读取通过率。
 
 ### 对所有 arm 用同一个评判
 

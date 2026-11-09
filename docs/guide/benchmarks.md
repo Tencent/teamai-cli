@@ -883,7 +883,7 @@ These results hold for these tasks, this run and this machine.
 
 | Table | Shows |
 | --- | --- |
-| Arms | Each arm's trials by result, and how many a [trial limit](#trial-limits) stopped. A deviation is a trial whose prompt ran on another tool, team revision, model or role than its arm's, or without a trial limit its driver could not enforce, or that a judge other than the [plan's](#one-judge-for-every-arm) labelled. A trial is not verified when its record lacks one of those, or its judge's model. When an arm runs on other team assets than the pulled revision, a Team column shows each arm's, such as `pulled 3f9c2ab`, `next 81d0e4c`, `3f9c2ab without skills/auth-tokens` or `none`. When an arm [runs as a role](#arms-that-run-as-a-role), a Role column shows each arm's role, or `member's roles`. |
+| Arms | Each arm's trials by result, and how many a [trial limit](#trial-limits) stopped. A deviation is a trial whose prompt ran on another tool, team revision, model or role than its arm's, or without a trial limit its driver could not enforce, or that a judge other than the [plan's](#one-judge-for-every-arm) labelled. A trial is not verified when its record lacks one of those, or its judge's model. When an arm runs on other team assets than the pulled revision, a Team column shows each arm's, such as `pulled 3f9c2ab`, `next 81d0e4c`, `3f9c2ab without skills/auth-tokens` or `none`. When an arm [runs as a role](#arms-that-run-as-a-role), a Role column shows each arm's role, or `member's roles`. When a correctness rubric has more than two labels, a Mean correctness score column follows the pass rate, under [The correctness rubric](#the-correctness-rubric). |
 | Usage | Each arm's medians and cost total, with how many trials each used. Tokens and cost appear only as the tool stated them, so a tool that states none shows `unknown (0)`. A trial whose passes did not all state its tokens (input and output), cost or duration counts as one that stated none of it, and makes a cost total `incomplete`. |
 | Tasks | Each task's pass rate on each arm. |
 | Scorers | Only when the suite or a task lists scorers: each arm's pass rate per scorer, under [Pass rate per scorer](#pass-rate-per-scorer). |
@@ -973,6 +973,17 @@ model: fast
 ```
 
 Start reads the file from the team revision this checkout pulled, and judges every arm with it, whatever the arm's `team`. Its `model` and `tool` pin the judge as [any scorer's](#one-judge-for-every-arm) do: here claude, alias `fast`, for every arm. Its labels need one that passes and one that fails, and a check picks among them by the table above: a passing check writes `correct`, a failing one `incorrect`. A new rubric is a new rubric hash, so [the regression gate](#fail-on-a-regression) does not pair a trial judged before it with one judged after.
+
+With more than two labels, the arms table gains a Mean correctness score column: the mean score of each arm's labelled correctness verdicts, those a check wrote included. With the rubric above, in part:
+
+```text
+| Arm | Pass rate | Mean correctness score |
+| --- | --- | --- |
+| claude | 44% (4/9) | 0.67 |
+| codex | 44% (4/9) | 0.50 |
+```
+
+Both arms pass four trials of nine, but more of claude's others are `partial`. An arm with no labelled correctness verdict shows `-`. The regression gate still reads only the pass rate.
 
 ### One judge for every arm
 

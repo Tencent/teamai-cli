@@ -508,6 +508,7 @@ export const dashboardMessages = {
   "Labelled": "已打标签",
   "95% interval": "95% 区间",
   "Batched": "批量评判",
+  "Mean correctness score": "正确性平均分",
   "Median tokens (input + output)": "Token 中位数（输入 + 输出）",
   "Median duration": "时长中位数",
   "Task": "任务",

@@ -31,6 +31,12 @@ export interface ArmResults extends Pick<RecordedArm, 'tool' | 'model' | 'effort
   notVerified: number;
   /** Absent with no planned trials. */
   passRate?: PassRate;
+  /**
+   * The mean score of the arm's labelled correctness verdicts, those its check wrote included, and how many there were;
+   * `mean` absent with none. Present on every arm, only when a correctness scorer of the record has more than two labels.
+   * Never an input of the regression gate.
+   */
+  correctnessScore?: { labelled: number; mean?: number };
 }
 
 /** `passed / planned`, printed `67% (4/6)`. */
@@ -188,8 +194,10 @@ export function deviationsOf(arm: RecordedArm, trials: readonly ObservedTrial[])
 }
 
 export function benchmarkTable(record: BenchmarkTableInput): BenchmarkTable {
-  const { arms, trials, tasks } = record.benchmark;
+  const { arms, trials, tasks, scorers } = record.benchmark;
   const observed = observedTrials(record);
+  // Two labels make the mean the pass rate again; a third, such as partial, is what it tells apart.
+  const isGraded = scorers.some(({ name, labels }) => isCorrectnessScorer(name) && (labels?.length ?? 0) > 2);
 
   return {
     invalid: tasks.flatMap(({ id, baseline }) => (baseline === 'invalid' || baseline === 'could_not_run' ? [{ task: id, baseline }] : [])),
@@ -205,6 +213,7 @@ export function benchmarkTable(record: BenchmarkTableInput): BenchmarkTable {
         stoppedByLimit: own.filter((trial) => trial.limit !== undefined).length,
         ...deviationsOf(arm, observed.filter(({ trial }) => trial.arm === arm.name)),
         ...passRateOf(own),
+        correctnessScore: isGraded ? correctnessScoreOf(own) : undefined,
       });
     }),
     matrix: tasks.map(({ id }) => ({
@@ -220,6 +229,12 @@ export function benchmarkTable(record: BenchmarkTableInput): BenchmarkTable {
     selfJudged: selfJudgedOf(record.benchmark),
     unavailableJudges: unavailableJudgesOf(record.benchmark),
   };
+}
+
+function correctnessScoreOf(trials: RecordedTrial[]): NonNullable<ArmResults['correctnessScore']> {
+  const scores = trials.flatMap(({ verdicts }) => (verdicts ?? []).flatMap(({ scorer, outcome }) => (isCorrectnessScorer(scorer) && outcome.kind === 'labelled' ? [outcome.score] : [])));
+
+  return definedFields({ labelled: scores.length, mean: scores.length > 0 ? scores.reduce((sum, score) => sum + score, 0) / scores.length : undefined });
 }
 
 /** Each arm's verdicts of each scorer `record` pins but the correctness scorers, over its trials that ran and listed it. */
@@ -284,14 +299,16 @@ export function benchmarkCells(table: BenchmarkTable): BenchmarkCells {
   const namesRole = table.results.some(({ role }) => role !== undefined);
   // Only a suite that runs some arm with recall: the column says which arms it was on.
   const namesRecall = table.results.some(({ recall }) => recall !== undefined);
+  const namesScore = table.results.some(({ correctnessScore }) => correctnessScore !== undefined);
 
   return definedFields<BenchmarkCells>({
     results: {
-      header: ['Arm', 'Tool', 'Model (source)', ...(namesTeam ? ['Team'] : []), ...(namesRole ? ['Role'] : []), ...(namesRecall ? ['Recall'] : []), 'Planned', ...TRIAL_RESULTS.map((result) => RESULT_COLUMNS[result]), 'Stopped by a limit', 'Deviations', 'Not verified', 'Pass rate'],
+      header: ['Arm', 'Tool', 'Model (source)', ...(namesTeam ? ['Team'] : []), ...(namesRole ? ['Role'] : []), ...(namesRecall ? ['Recall'] : []), 'Planned', ...TRIAL_RESULTS.map((result) => RESULT_COLUMNS[result]), 'Stopped by a limit', 'Deviations', 'Not verified', 'Pass rate', ...(namesScore ? ['Mean correctness score'] : [])],
       rows: table.results.map((arm) => [
         arm.arm, arm.tool, `${arm.model ? [arm.model, ...(arm.effort ? [arm.effort] : [])].join(' ') : 'tool default'} (${arm.source})`, ...(namesTeam ? [formatTeam(arm.team)] : []),
         ...(namesRole ? [arm.role ?? "member's roles"] : []), ...(namesRecall ? [arm.recall ? 'on' : 'off'] : []), String(arm.planned),
         ...TRIAL_RESULTS.map((result) => String(arm.counts[result])), String(arm.stoppedByLimit), String(arm.deviations), String(arm.notVerified), formatPassRate(arm.passRate),
+        ...(namesScore ? [arm.correctnessScore?.mean === undefined ? '-' : arm.correctnessScore.mean.toFixed(2)] : []),
       ]),
     },
     usage: {

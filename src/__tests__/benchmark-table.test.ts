@@ -264,6 +264,70 @@ describe('benchmark pass rate per scorer', () => {
   });
 });
 
+describe('benchmark mean correctness score', () => {
+  const ARMS = [
+    { name: 'claude', tool: 'claude', source: 'team', team: { kind: 'pulled', revision: RUN_TEAM } },
+    { name: 'codex', tool: 'codex', source: 'team', team: { kind: 'pulled', revision: RUN_TEAM } },
+  ] as const;
+  const LABELS = { correct: 1, partial: 0.5, incorrect: 0 } as const;
+  const correctness = (labels: ReadonlyArray<keyof typeof LABELS>) => [{
+    name: 'teamai:correctness:fix', rubric: { sourceHash: 'r' }, labels: labels.map((value) => ({ value, score: LABELS[value] })), passingScore: 1,
+  }];
+  /** A trial of `arm` whose correctness verdict is `label`, written by its check or given by a judge, or unscored. */
+  const trial = (arm: string, label: keyof typeof LABELS | 'unscored', by: 'check' | 'judge' = 'judge') => {
+    if (label === 'unscored') return { arm, result: 'unscored' as const, verdicts: [{ scorer: 'teamai:correctness:fix', outcome: { kind: 'unscored', because: 'run_ended' } } satisfies TrialVerdict] };
+    const passed = label === 'correct';
+    return {
+      arm, result: passed ? 'passed' as const : 'failed' as const,
+      verdicts: [{
+        scorer: 'teamai:correctness:fix', outcome: { kind: 'labelled', label, score: LABELS[label], passed },
+        decider: by === 'check' ? { by: 'check', task: 'h' } : { by: 'judge', rubric: 'r', tool: 'claude', model: 'claude-opus-5-5', batched: false },
+      } satisfies TrialVerdict],
+    };
+  };
+  const times = (count: number, make: () => ReturnType<typeof trial>) => Array.from({ length: count }, make);
+  const graded = (trials: Array<ReturnType<typeof trial>>, labels: ReadonlyArray<keyof typeof LABELS> = ['correct', 'partial', 'incorrect']) => {
+    const record = recordOf([...ARMS], trials);
+    return { benchmark: { ...record.benchmark, scorers: correctness(labels) } };
+  };
+
+  it('gives each arm the mean score of its labelled correctness verdicts, those its check wrote included, when a correctness rubric has more than two labels', () => {
+    const record = graded([
+      ...times(2, () => trial('claude', 'correct', 'check')), ...times(2, () => trial('claude', 'correct')), ...times(4, () => trial('claude', 'partial')), trial('claude', 'incorrect', 'check'),
+      ...times(4, () => trial('codex', 'correct')), trial('codex', 'partial'), ...times(4, () => trial('codex', 'incorrect', 'check')),
+    ]);
+
+    const table = benchmarkTable(record);
+    const text = formatBenchmarkTable(table);
+
+    expect(table.results.map(({ arm, correctnessScore }) => ({ arm, correctnessScore }))).toEqual([
+      { arm: 'claude', correctnessScore: { labelled: 9, mean: 6 / 9 } },
+      { arm: 'codex', correctnessScore: { labelled: 9, mean: 4.5 / 9 } },
+    ]);
+    expect(text).toContain('| Pass rate | Mean correctness score |\n');
+    expect(text).toMatch(/\| claude \|.*\| 44% \(4\/9\) \| 0\.67 \|\n/);
+    expect(text).toMatch(/\| codex \|.*\| 44% \(4\/9\) \| 0\.50 \|\n/);
+  });
+
+  it('leaves an unscored correctness verdict out of the mean, and gives an arm with no labelled one no mean', () => {
+    const record = graded([trial('claude', 'partial'), trial('claude', 'unscored'), trial('codex', 'unscored')]);
+
+    const table = benchmarkTable(record);
+
+    expect(table.results.map(({ correctnessScore }) => correctnessScore)).toEqual([{ labelled: 1, mean: 0.5 }, { labelled: 0 }]);
+    expect(formatBenchmarkTable(table)).toMatch(/\| codex \|.*\| 0% \(0\/1\) \| - \|\n/);
+  });
+
+  it('shows no mean when every correctness rubric has two labels', () => {
+    const record = graded([trial('claude', 'correct'), trial('codex', 'incorrect')], ['correct', 'incorrect']);
+
+    const table = benchmarkTable(record);
+
+    expect(table.results.map(({ correctnessScore }) => correctnessScore)).toEqual([undefined, undefined]);
+    expect(formatBenchmarkTable(table)).not.toContain('Mean correctness score');
+  });
+});
+
 describe('benchmark arm role', () => {
   const REVIEW = { name: 'review', tool: 'claude', source: 'team', team: { kind: 'pulled', revision: RUN_TEAM }, role: 'review' } as const;
   const ranAs = (stepRole?: string) => ({ agent: { team: { revision: RUN_TEAM, localChanges: false, selection: { scope: 'project' as const, primaryRole: 'frontend', additionalRoles: [], ...(stepRole ? { stepRole } : {}) } } } });
