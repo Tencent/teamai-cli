@@ -16,6 +16,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { reconcileTeamHooksForConfig, teamHookHistory } from '../hooks.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
+import { writeWorkspaceRoot } from '../utils/partition.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
 // A team hook folder is delivered to the data home of the scope that owns it,
@@ -165,5 +166,59 @@ describe('a team hook folder in a single-repo worktree', () => {
 
     expect([await fse.readFile(path.join(team, 'delivered', 'hooks', 'block-secrets', 'scan.sh'), 'utf8'), commands])
       .toEqual(['echo scanning\n', [expect.stringContaining('bash "$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets/scan.sh"')]]);
+  });
+});
+
+describe('a team hook folder in two worktrees of a single-repo, with a tool that keeps team hooks in HOME', () => {
+  const LINT = 'description: Lint\nevent: Stop\ncommand: bash "${TEAMAI_HOOK_DIR}/lint.sh"\n';
+  const zcodeTeam = { toolPaths: { zcode: { settings: '.zcode/cli/config.json' } } } as unknown as TeamaiConfig;
+  let main: string;
+  let feature: string;
+  let dataHome: string;
+
+  const checkout = (root: string): LocalConfig => ({
+    repo: { kind: 'self', localPath: path.join(root, '.teamai'), remote: 'acme/shop', businessRepoRoot: root },
+    username: 'tester', additionalRoles: [], scope: 'project', projectRoot: root, dataHome, enabledAgents: ['zcode'],
+  });
+
+  const git = (cwd: string, ...args: string[]): void => {
+    execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { stdio: 'ignore' });
+  };
+
+  /** A pull of `root`: it records the checkout in the data home, then reconciles the team hooks. */
+  const pull = async (root: string): Promise<void> => {
+    await writeWorkspaceRoot(dataHome, root);
+    await reconcileTeamHooksForConfig(zcodeTeam, checkout(root));
+  };
+
+  /** The commands of ZCode's Stop entries in HOME that run a delivered hook folder. */
+  const zcodeFolderCommands = async (): Promise<string[]> => {
+    const config: { hooks?: { events?: Record<string, Array<{ hooks: Array<{ args?: string[] }> }>> } } = await fse.readJson(path.join(home, '.zcode', 'cli', 'config.json'));
+    const commands = (config.hooks?.events?.Stop ?? []).flatMap((entry) => entry.hooks.flatMap((hook) => hook.args?.slice(1) ?? []));
+
+    return commands.filter((command) => command.includes('/.teamai/delivered/hooks/'));
+  };
+
+  beforeEach(async () => {
+    main = path.join(home, 'shop');
+    feature = path.join(home, 'feature-wt');
+    dataHome = path.join(home, '.teamai', 'projects', 'shop');
+    await fse.ensureDir(path.join(home, '.zcode', 'cli'));
+    execFileSync('git', ['init', '-q', '-b', 'main', main]);
+    await fse.outputFile(path.join(main, '.teamai', 'hooks', 'lint', 'HOOK.yaml'), LINT);
+    await fse.outputFile(path.join(main, '.teamai', 'hooks', 'lint', 'lint.sh'), 'echo lint v1\n');
+    git(main, 'add', '-A');
+    git(main, 'commit', '-q', '-m', 'lint v1');
+    git(main, 'worktree', 'add', '-q', '-b', 'feature', feature);
+  });
+
+  it('leaves no entry pointing into a worktree once it is removed, after the next pull of another one', async () => {
+    await pull(main);
+    await pull(feature);
+    git(main, 'worktree', 'remove', '--force', feature);
+
+    await pull(main);
+
+    expect(await zcodeFolderCommands()).toEqual([expect.stringContaining(`bash "${forward(main)}/.teamai/delivered/hooks/lint/lint.sh"`)]);
   });
 });
