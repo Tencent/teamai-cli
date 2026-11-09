@@ -4,6 +4,7 @@ import { selfImprovementClient } from './self-improvement-client.js';
 import { improvementClient } from './improvement-client.js';
 import { handoffView } from './handoff-view.js';
 import { skippedFoldersView } from './skipped-folders-view.js';
+import { layeredResourcesView } from './layered-resources-view.js';
 import { agentHarnessView } from './agent-harness-view.js';
 import { chartFitView } from './chart-fit-view.js';
 import { judgingView } from './judging-view.js';
@@ -34,6 +35,7 @@ let sessions = [], haveSessions = false, connected = false, trends = null, kb = 
 let trendError = false, kbError = false, selectedSession = null, selectedSnapshot = null, focusBeforeDialog = null;
 let trendLoading = false, kbLoading = false, eventSource = null, reconnectTimer = null, fallbackGeneration = 0;
 let rules = null, rulesError = false, rulesLoading = false;
+let layered = null, layeredError = false, layeredLoading = false, layeredOpen = new Set();
 let sharing = null, sharingError = false, sharingLoading = false;
 let memberSettings = null, memberSettingsError = false, memberSettingsLoading = false;
 let dist = null, distError = false, distLoading = false, distDraft = null, preview = null, previewError = '', previewing = false, saving = false, saveError = '', savedNote = ''; let distVersion = 0;
@@ -83,7 +85,7 @@ function overview() {
  const working=sessions.filter(s=>s.status==='running').length;
  const waiting=sessions.filter(s=>s.status==='waiting_for_input').length;
  const maintenance=kb?Object.values(kb.maintenanceCounts).reduce((a,b)=>a+b,0):null;
- return skippedFoldersNotice(rules&&rules.skippedFolders)+'<div class="cards"><article class="card"><div class="cardtop">'+label('Sessions')+icon('execution')+'</div><div class="source">'+label('Local live sessions')+'</div><div class="big summary-value">'+(haveSessions?number(sessions.length):'—')+'<small>'+label('sessions on this machine')+'</small></div><div class="statusline">'+number(working)+' '+label('Working')+' · '+number(waiting)+' '+label('Your turn')+'</div><div class="cardfoot">'+link('execution','View sessions')+'</div></article>'+
+ return skippedFoldersNotice(rules&&rules.skippedFolders)+layeredResourcesNotice(layered)+'<div class="cards"><article class="card"><div class="cardtop">'+label('Sessions')+icon('execution')+'</div><div class="source">'+label('Local live sessions')+'</div><div class="big summary-value">'+(haveSessions?number(sessions.length):'—')+'<small>'+label('sessions on this machine')+'</small></div><div class="statusline">'+number(working)+' '+label('Working')+' · '+number(waiting)+' '+label('Your turn')+'</div><div class="cardfoot">'+link('execution','View sessions')+'</div></article>'+
  '<article class="card"><div class="cardtop">'+label('Knowledge Base')+'</div>'+source()+'<div class="big summary-value">'+(kb?number(kb.overallCoveragePct)+'%':'—')+'<small>'+label('Knowledge coverage')+'</small></div><div class="statusline">'+(kb?number(kb.totalEntries)+' '+label('Entries')+' · '+number(kb.silentCount)+' '+label('Never recalled'):label(kbError?'Unavailable':'Loading…'))+'</div><div class="cardfoot">'+link('context','View KB Health')+'</div></article>'+
  '<article class="card"><div class="cardtop">'+label('Improvement Center')+'</div><div class="source">'+label('KB Health maintenance candidates')+'</div><div class="big summary-value">'+(maintenance===null?'—':number(maintenance))+'<small>'+label('candidates for review')+'</small></div><div class="statusline">'+(kb?number(kb.maintenanceCounts.promote)+' '+label('Promotion')+' · '+number(kb.maintenanceCounts.prune)+' '+label('Archive')+' · '+number(kb.maintenanceCounts.stale)+' '+label('Stale'):label(kbError?'Unavailable':'Loading…'))+'</div><div class="cardfoot">'+link('improvement','View maintenance')+'</div></article></div>'+
  (kbError?errorPanel('Could not refresh KB Health. Any displayed report is the last successful result.','kb'):'')+sharingSection()+memberSettingsSection()+trendPanel()+outcomePanel()+sessionTable(sessions);
@@ -175,7 +177,14 @@ function resources() {
  // The two panels load and fail independently: a rules outage must not hide
  // the skills list or block its exclusions, and vice versa.
  if((rules&&rules.configured===false)||(skills&&skills.configured===false))return '<section class="panel"><div class="empty"><h2>'+label('No TeamAI scope in this workspace')+'</h2><p>'+label('Pick a project workspace above, or set one up with teamai init.')+'</p></div></section>';
- return skippedFoldersPanel(rules&&rules.skippedFolders)+skillsPanel()+rulesPanel();
+ return skippedFoldersPanel(rules&&rules.skippedFolders)+layeredSection()+skillsPanel()+rulesPanel();
+}
+// Which definition of each resource applies (#1787): loads and fails apart from
+// rules and skills, since it runs pull's definition sync, dry.
+function layeredSection() {
+ if(layeredError)return errorPanel('Could not load resource layers.','layered');
+ if(!layered)return '<section class="panel"><div class="empty" role="status">'+label('Loading resource layers…')+'</div></section>';
+ return layeredResourcesPanel(layered,layeredOpen);
 }
 // The Distribution page: what pull delivers to the chosen workspace, and the
 // role and project picks that filter it (#1028). Reads never write; a save
@@ -261,6 +270,7 @@ function handoffsOf() { return workflows&&workflows.reported&&workflows.reported
 function handoffBadge(id) { const h=handoffsOf().find(x=>x.run===id); return !h?'':h.offer?' · <span class="good">'+label('Offered')+'</span>':h.isMine?'':' · <span class="amber">'+label('Held by')+' <span data-verbatim>'+e(h.owner.user)+'</span></span>'; }
 ${handoffView}
 ${skippedFoldersView}
+${layeredResourcesView}
 ${agentHarnessView}
 ${judgingView}
 ${runStepsView}
@@ -341,7 +351,7 @@ ${benchmarksClient}
 ${improvementClient}
 function render() {
  const focus=document.activeElement;
- const focusKey=focus?.dataset.session, retryKey=focus?.dataset.retry, runFocus=focus?.dataset.run;
+ const focusKey=focus?.dataset.session, retryKey=focus?.dataset.retry, runFocus=focus?.dataset.run, layeredFocus=focus?.dataset.layeredToggle;
  const fieldId=focus?.id&&focus.closest('#view')?focus.id:'', caret=fieldId&&typeof focus.selectionStart==='number'?[focus.selectionStart,focus.selectionEnd]:null;
  const opened=[...document.querySelectorAll('#kb-content details[open]')].map(d=>[...d.parentElement.children].indexOf(d));
  const impOpened=[...document.querySelectorAll('#view details[open][data-imp-key]')].map(d=>d.dataset.impKey);
@@ -355,6 +365,7 @@ function render() {
  if(focusKey) [...document.querySelectorAll('[data-session]')].find(el=>el.dataset.session===focusKey)?.focus({preventScroll:true});
  else if(retryKey) document.querySelector('[data-retry="'+retryKey+'"]')?.focus({preventScroll:true});
  else if(runFocus) [...document.querySelectorAll('[data-run]')].find(el=>el.dataset.run===runFocus)?.focus({preventScroll:true});
+ else if(layeredFocus) [...document.querySelectorAll('[data-layered-toggle]')].find(el=>el.dataset.layeredToggle===layeredFocus)?.focus({preventScroll:true});
  else if(fieldId){const field=$(fieldId);field?.focus({preventScroll:true});if(caret&&field?.setSelectionRange)field.setSelectionRange(caret[0],caret[1]);}
  fitCharts();
 }
@@ -468,6 +479,7 @@ async function loadOutcomes() { if(outcomesLoading)return;const generation=works
 async function loadKb() { if(kbLoading)return;const generation=workspaceGeneration;kbLoading=true;try{const data=await json(api('/api/context'));if(generation===workspaceGeneration){kb=data;kbError=false;}}catch{if(generation===workspaceGeneration)kbError=true;}finally{if(generation===workspaceGeneration){kbLoading=false;render();}} }
 async function loadSharing() { if(sharingLoading)return;const generation=workspaceGeneration;sharingLoading=true;try{const data=await json(api('/api/session-sharing'));if(generation===workspaceGeneration){const changed=sharingError||JSON.stringify(data)!==JSON.stringify(sharing);sharing=data;sharingError=false;if(changed&&page==='overview')render();}}catch{if(generation===workspaceGeneration){sharingError=true;if(page==='overview')render();}}finally{if(generation===workspaceGeneration)sharingLoading=false;} }
 async function loadMemberSettingsPanel() { if(memberSettingsLoading)return;const generation=workspaceGeneration;memberSettingsLoading=true;try{const data=await json(api('/api/member-settings'));if(generation===workspaceGeneration){const changed=memberSettingsError||JSON.stringify(data)!==JSON.stringify(memberSettings);memberSettings=data;memberSettingsError=false;if(changed&&page==='overview')render();}}catch{if(generation===workspaceGeneration){memberSettingsError=true;if(page==='overview')render();}}finally{if(generation===workspaceGeneration)memberSettingsLoading=false;} }
+async function loadLayered() { if(layeredLoading)return;const generation=workspaceGeneration;layeredLoading=true;try{const data=await json(api('/api/resources/layered'));if(generation===workspaceGeneration){layered=data;layeredError=false;}}catch{if(generation===workspaceGeneration)layeredError=true;}finally{if(generation===workspaceGeneration){layeredLoading=false;if(page==='resources'||page==='overview')render();}} }
 async function loadRules() { if(rulesLoading)return;const generation=workspaceGeneration;rulesLoading=true;try{const data=await json(api('/api/resources/rules'));if(generation===workspaceGeneration){rules=data;rulesError=false;}}catch{if(generation===workspaceGeneration)rulesError=true;}finally{if(generation===workspaceGeneration){rulesLoading=false;if(page==='resources'||page==='overview')render();}} }
 async function postJson(route, body) { const response=await fetch(api(route),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(15000)}); const data=await response.json().catch(()=>null); if(!response.ok)throw Error(data&&data.error?data.error:'HTTP '+response.status); return data; }
 async function loadDistribution() { if(distLoading)return;const generation=workspaceGeneration;distLoading=true;try{const data=await json(api('/api/distribution'));if(generation===workspaceGeneration){dist=data;distError=false;distDraft=null;preview=null;previewError='';saveError='';savedNote='';}}catch{if(generation===workspaceGeneration)distError=true;}finally{if(generation===workspaceGeneration){distLoading=false;if(page==='distribution')render();}} }
@@ -541,7 +553,7 @@ document.addEventListener('click',event=>{
  if(run)showRun(run.dataset.runSource,run.dataset.run);
  if(answer)answerGate(answer.dataset.answerStep,answer.dataset.answerPass,answer.dataset.answerChoice);
  if(event.target.closest('[data-close]'))$('session-dialog').close();
- if(retry){if(retry.dataset.retry==='trends')loadTrends();else if(retry.dataset.retry==='outcomes')loadOutcomes();else if(retry.dataset.retry==='kb')loadKb();else if(retry.dataset.retry==='rules')loadRules();else if(retry.dataset.retry==='sharing')loadSharing();else if(retry.dataset.retry==='member-settings')loadMemberSettingsPanel();else if(retry.dataset.retry==='skills')loadSkills();else if(retry.dataset.retry==='distribution')loadDistribution();else if(retry.dataset.retry==='workflows')loadWorkflows();else if(retry.dataset.retry==='run')loadRunDetail();else if(retry.dataset.retry==='tokens')loadTokens();else if(retry.dataset.retry==='scorers'){scorerError='';loadScorers();}else if(retry.dataset.retry==='benchmarks'){benchError='';loadBenchmarks();}else if(retry.dataset.retry==='self-improvement'){loopError='';loadLoop();}else{eventSource?.close();clearTimeout(reconnectTimer);connect();}}
+ if(retry){if(retry.dataset.retry==='trends')loadTrends();else if(retry.dataset.retry==='outcomes')loadOutcomes();else if(retry.dataset.retry==='kb')loadKb();else if(retry.dataset.retry==='rules')loadRules();else if(retry.dataset.retry==='layered')loadLayered();else if(retry.dataset.retry==='sharing')loadSharing();else if(retry.dataset.retry==='member-settings')loadMemberSettingsPanel();else if(retry.dataset.retry==='skills')loadSkills();else if(retry.dataset.retry==='distribution')loadDistribution();else if(retry.dataset.retry==='workflows')loadWorkflows();else if(retry.dataset.retry==='run')loadRunDetail();else if(retry.dataset.retry==='tokens')loadTokens();else if(retry.dataset.retry==='scorers'){scorerError='';loadScorers();}else if(retry.dataset.retry==='benchmarks'){benchError='';loadBenchmarks();}else if(retry.dataset.retry==='self-improvement'){loopError='';loadLoop();}else{eventSource?.close();clearTimeout(reconnectTimer);connect();}}
  const copy=event.target.closest('[data-copy]');
  if(copy)copyCommand(copy);
  if(event.target.closest('[data-preview-button]'))previewSelection();
@@ -557,6 +569,7 @@ function switchWorkspace(id) {
  sessions=[];haveSessions=false;connected=false;trends=null;kb=null;trendLoading=false;kbLoading=false;trendError=false;kbError=false;
  outcomeSummary=null;outcomesError=false;outcomesLoading=false;
  rules=null;rulesError=false;rulesLoading=false;
+ layered=null;layeredError=false;layeredLoading=false;layeredOpen=new Set();
  sharing=null;sharingError=false;sharingLoading=false;
  memberSettings=null;memberSettingsError=false;memberSettingsLoading=false;
  dist=null;distError=false;distLoading=false;distDraft=null;preview=null;previewError='';previewing=false;saving=false;saveError='';savedNote='';
@@ -564,13 +577,14 @@ function switchWorkspace(id) {
  resetScorers();resetBenchmarks();resetLoop();
  resetTokens();
  skills=null;skillsError=false;skillsLoading=false;skillBusy='';skillFilterDelivery='';skillFilterNamespace='';skillFilterAgent='';
- $('repo').value='';$('agent').value='';workspaceOptions();filters();render();connect();loadTrends();loadOutcomes();loadKb();loadSharing();loadMemberSettingsPanel();loadRules();loadSkills();
+ $('repo').value='';$('agent').value='';workspaceOptions();filters();render();connect();loadTrends();loadOutcomes();loadKb();loadSharing();loadMemberSettingsPanel();loadRules();loadLayered();loadSkills();
 }
 $('workspace').onchange=()=>switchWorkspace($('workspace').value);
+document.addEventListener('click',event=>{const toggle=event.target.closest('[data-layered-toggle]');if(toggle){const key=toggle.dataset.layeredToggle;if(layeredOpen.has(key))layeredOpen.delete(key);else layeredOpen.add(key);render();}});
 document.addEventListener('click',event=>{const button=event.target.closest('[data-skill-exclude]');if(button){toggleSkillExclude(button.dataset.skillExclude,button.dataset.excluded==='true');}});
 document.addEventListener('change',event=>{if(event.target.id==='skill-delivery'){skillFilterDelivery=event.target.value;if(page==='resources')render();}else if(event.target.id==='skill-namespace'){skillFilterNamespace=event.target.value;if(page==='resources')render();}else if(event.target.id==='skill-agent'){skillFilterAgent=event.target.value;if(page==='resources')render();}});
 preferences();
-json('/api/workspaces').then(data=>{workspaces=data;const saved=read('teamai-dashboard-workspace','');const fallback=(workspaces.find(w=>w.scope==='project')||workspaces[0])?.id;switchWorkspace(workspaces.some(w=>w.id===saved)?saved:(fallback??''));}).catch(()=>{workspaceOptions();connect();loadTrends();loadOutcomes();loadKb();loadSharing();loadMemberSettingsPanel();loadRules();loadSkills();});
+json('/api/workspaces').then(data=>{workspaces=data;const saved=read('teamai-dashboard-workspace','');const fallback=(workspaces.find(w=>w.scope==='project')||workspaces[0])?.id;switchWorkspace(workspaces.some(w=>w.id===saved)?saved:(fallback??''));}).catch(()=>{workspaceOptions();connect();loadTrends();loadOutcomes();loadKb();loadSharing();loadMemberSettingsPanel();loadRules();loadLayered();loadSkills();});
 setInterval(()=>{loadTrends();loadOutcomes();},30000);
 setInterval(loadSharing,30000);
 setInterval(loadMemberSettingsPanel,30000);
