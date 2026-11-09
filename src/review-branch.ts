@@ -42,16 +42,17 @@ import type { AssetKind } from './asset-relations.js';
 import matter from 'gray-matter';
 import { isModelAlias, loadTeamModelAliases, noModelCause, resolveAgentModel, resolveModelValue, TEAM_ALIASES_FILE, type ModelAliases } from './models/aliases.js';
 import { parseAgentYaml, type AgentSpec, type ToolName } from './resources/agent-format.js';
-import { parseTeamHooks } from './resources/hooks.js';
+import { hooksEntryReader, parseTeamHooks } from './resources/hooks.js';
 import { getHandler } from './resources/index.js';
 import { listRepoFilesRecursive } from './resources/repo-resource.js';
+import { RESOURCE_LAYOUTS, Resources } from './resources/resolver.js';
 import { isNamespaceDir, resolveResourceNamespaces } from './resource-namespaces.js';
 import { loadRoleAssignmentsIfPresent } from './role-assignments.js';
 import { listRoleIds, loadRolesManifestIfPresent, type RolesManifest } from './roles.js';
 import { AGENT_TOOLS } from './tools.js';
 import { LocalConfigSchema, type GlobalOptions, type LocalConfig, type ResourceItem, type TeamaiConfig } from './types.js';
 import { splitFrontmatter, type FrontmatterValue } from './utils/frontmatter.js';
-import { isIgnored, listFilesRecursive, pathExists, readFileIfExists, writeFile, ensureDir } from './utils/fs.js';
+import { isIgnored, listDirs, listFilesRecursive, pathExists, readFileIfExists, writeFile, ensureDir } from './utils/fs.js';
 import { getFileContentAtRev, getHeadCommit, listTreeAtRev } from './utils/git.js';
 import { isSilent, log, setSilent } from './utils/logger.js';
 import { redact } from './utils/redact.js';
@@ -104,10 +105,12 @@ interface ReviewResource {
   type: PlaceableType;
   name: string;
   namespace?: string;
-  /** Repo-relative path of the resource (a directory for skills, a file otherwise). */
+  /** Repo-relative path of the resource (a directory for skills and hook folders, a file otherwise). */
   relativePath: string;
-  /** Absolute path in the materialized tree: the skill directory, or the file. */
+  /** Absolute path in the materialized tree: the skill or hook folder directory, or the file. */
   absolutePath: string;
+  /** Whether the resource is a directory whose every file belongs to it: a skill or a hook folder. */
+  folder: boolean;
 }
 
 /** Strip a resource file extension from the last path segment. */
@@ -235,6 +238,7 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
   const handlerTypes = ['skills', 'rules', 'agents', 'mcp'] as const;
   const isHandlerType = (type: PlaceableType): boolean => handlerTypes.some((handlerType) => handlerType === type);
   const items: Array<{ type: PlaceableType; item: ResourceItem }> = [];
+  const hookFolderPaths = new Set<string>();
 
   for (const type of handlerTypes) {
     items.push(...(await getHandler(type).scanTeamForPull(teamConfig, localConfig))
@@ -246,6 +250,12 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
     const rootRel = repoRootFor(type);
     const root = path.join(repoDir, ...rootRel.split('/'));
     const skipped = await skippedFoldersIn(repoDir, type);
+    const hookFolders = type === 'hooks' ? await hookFolderItems(repoDir) : [];
+
+    for (const item of hookFolders) {
+      hookFolderPaths.add(item.sourcePath);
+      items.push({ type, item });
+    }
 
     for (const file of await listRepoFilesRecursive(root)) {
       if (isInSkippedFolder(`${rootRel}/${file}`, skipped)) continue;
@@ -253,6 +263,9 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
       if (type === 'workflows' && !file.endsWith('.yaml')) continue;
 
       if (type === 'scorers' && path.posix.basename(file) === SCORING_FILE) continue;
+
+      // A file of a hook folder is part of the folder, which is one hook.
+      if (hookFolders.some((folder) => `${rootRel}/${file}`.startsWith(`${folder.relativePath}/`))) continue;
 
       if (type === 'hooks') {
         // Hooks are reviewed by entry, the same identity pull's hooks reader
@@ -298,7 +311,9 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
     }
   }
 
-  return items.map(({ type, item }) => {
+  return items.map(({ type, item }): ReviewResource => {
+    const folder = type === 'skills' || hookFolderPaths.has(item.sourcePath);
+
     // Handler-provided names (MCP server names, skill names) are authoritative;
     // parseRelativePath would overwrite them with the filename stem (e.g. 'mcp'
     // from mcp/<ns>/mcp.yaml), collapsing distinct servers into one identity.
@@ -313,13 +328,69 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
         namespace: item.namespace,
         relativePath: item.relativePath,
         absolutePath: item.sourcePath,
+        folder,
       };
     }
 
     const { name, namespace } = parseRelativePath(type, item.relativePath, index);
 
-    return { type, name, namespace, relativePath: item.relativePath, absolutePath: item.sourcePath };
+    return { type, name, namespace, relativePath: item.relativePath, absolutePath: item.sourcePath, folder };
   });
+}
+
+/** The hook folders on the branch, at the root and in each namespace, as pull's resolver finds them (#1787). */
+async function hookFolderItems(repoDir: string): Promise<ResourceItem[]> {
+  const places = [null, ...await listDirs(path.join(repoDir, 'hooks'))];
+  const layers = await Promise.all(places.map((namespace) => Resources.layer(RESOURCE_LAYOUTS.hooks, { root: repoDir, namespace })));
+
+  return layers.flatMap(({ items }) => items.flatMap((item): ResourceItem[] => (item.source.kind === 'folder' ? [{
+    type: 'hooks',
+    name: item.name,
+    namespace: item.layer === 'namespace' ? item.namespace : undefined,
+    sourcePath: item.source.full,
+    relativePath: item.source.path.replace(/\/$/, ''),
+  }] : [])));
+}
+
+/**
+ * What stops pull applying the branch's team hooks, read by pull's own hooks reader at the root and in each namespace:
+ * a hooks file or hook folder it cannot read, or one id from two of them in the same place (#1787).
+ */
+async function hookFindings(repoDir: string): Promise<Finding[]> {
+  const findings: Finding[] = [];
+
+  for (const namespace of [null, ...await listDirs(path.join(repoDir, 'hooks'))]) {
+    const read = await hooksEntryReader.readPlace(repoDir, namespace);
+
+    if (!read.ok) {
+      findings.push({
+        level: 'fail',
+        check: 'format',
+        path: read.source,
+        message: `${read.reason.trimEnd().replace(/\.$/, '')}; pull leaves every member's team hooks as they are until it is fixed.`,
+      });
+      continue;
+    }
+
+    const firstSource = new Map<string, string>();
+
+    for (const { entry, source } of read.entries) {
+      const first = firstSource.get(entry.hook.id);
+
+      if (first === undefined) firstSource.set(entry.hook.id, source);
+      else if (first !== source) {
+        findings.push({
+          level: 'fail',
+          check: 'duplicates',
+          path: source,
+          message: `hook "${entry.hook.id}" is defined in both ${first} and ${source}, in the same place, so pull leaves every member's `
+            + 'team hooks as they are. Keep one of them.',
+        });
+      }
+    }
+  }
+
+  return findings;
 }
 
 /**
@@ -705,7 +776,7 @@ async function filesUnder(relativeDir: string, absoluteDir: string): Promise<Arr
 
 async function leakFindings(repoDir: string, resources: ReviewResource[], readText: (p: string) => Promise<string | null>): Promise<Finding[]> {
   const files = [
-    ...(await Promise.all(resources.map((resource) => resource.type === 'skills'
+    ...(await Promise.all(resources.map((resource) => resource.folder
       ? filesUnder(resource.relativePath, resource.absolutePath)
       : [{ relativePath: resource.relativePath, absolutePath: resource.absolutePath }]))).flat(),
     ...await filesUnder('scorers', path.join(repoDir, 'scorers')),
@@ -1625,6 +1696,7 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
     ...await duplicateFindings(resources, index),
     ...await skillLinkFindings(skillFiles, resources),
     ...await formatFindings(resources, readText),
+    ...await hookFindings(repoDir),
     ...await relationsFindings(resources, readText),
     ...pipedInstallFindings(skillFiles),
     ...await leakFindings(repoDir, resources, readText),

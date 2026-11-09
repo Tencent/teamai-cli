@@ -155,6 +155,9 @@ const GOOD_SKILL = [
   '',
 ].join('\n');
 
+/** A hook folder's HOOK.yaml that runs the folder's own script. */
+const HOOK_FOLDER = 'description: Lint\nevent: Stop\ncommand: bash "${TEAMAI_HOOK_DIR}/lint.sh"\n';
+
 function findings(review: BranchReview) {
   return review.findings;
 }
@@ -380,6 +383,105 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     expect(findings(review).some((f) => (
       f.check === 'duplicates' && /"deploy" is defined in both/.test(f.message)
     ))).toBe(true);
+  });
+
+  it('reviews a hook folder by its id, as pull delivers it, not as a namespace', async () => {
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('hooks', ['a']));
+    await fse.outputFile(path.join(repoDir, 'hooks', 'lint', 'HOOK.yaml'), HOOK_FOLDER);
+    await fse.outputFile(path.join(repoDir, 'hooks', 'lint', 'lint.sh'), 'echo lint\n');
+    await fse.outputFile(path.join(repoDir, 'hooks', 'a', 'fmt', 'HOOK.yaml'), HOOK_FOLDER);
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review)]).toEqual([true, [
+      { level: 'info', check: 'structure', path: 'hooks/lint', message: 'hooks/lint sits at the shared root, so it is delivered to every member.' },
+    ]]);
+  });
+
+  it('fails a hook folder whose script carries a credential', async () => {
+    await fse.outputFile(path.join(repoDir, 'hooks', 'lint', 'HOOK.yaml'), HOOK_FOLDER);
+    await fse.outputFile(path.join(repoDir, 'hooks', 'lint', 'lint.sh'), 'curl -H "Authorization: Bearer sk-abcdefghijklmnopqrstuvwx0123456789" https://example.com\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(findings(review).filter((f) => f.check === 'leaks').map((f) => f.path)).toEqual(['hooks/lint/lint.sh']);
+  });
+
+  it('fails a hook folder whose HOOK.yaml pull cannot read', async () => {
+    await fse.outputFile(path.join(repoDir, 'hooks', 'lint', 'HOOK.yaml'), 'description: Lint\nevent: Stop\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.check === 'format')]).toEqual([false, [{
+      level: 'fail',
+      check: 'format',
+      path: 'hooks/lint/',
+      message: expect.stringMatching(/^hooks\/lint\/HOOK\.yaml does not parse: command: .+; pull leaves every member's team hooks as they are until it is fixed\.$/),
+    }]]);
+  });
+
+  it('fails a hooks.yaml entry that names ${TEAMAI_HOOK_DIR}, which only a hook folder has', async () => {
+    await fse.outputFile(path.join(repoDir, 'hooks', 'hooks.yaml'), [
+      'hooks:',
+      '  - id: lint',
+      '    description: Lint',
+      '    event: Stop',
+      '    command: bash "${TEAMAI_HOOK_DIR}/lint.sh"',
+      '',
+    ].join('\n'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.check === 'format')]).toEqual([false, [{
+      level: 'fail',
+      check: 'format',
+      path: 'hooks/hooks.yaml',
+      message: 'hooks/hooks.yaml: hook "lint" uses ${TEAMAI_HOOK_DIR}, which only a hook folder has. Move it to hooks/lint/HOOK.yaml, beside the files it runs; '
+        + 'pull leaves every member\'s team hooks as they are until it is fixed.',
+    }]]);
+  });
+
+  it('fails a hook id that is both a hooks.yaml entry and a hook folder in one place', async () => {
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('hooks', ['a']));
+    await fse.outputFile(path.join(repoDir, 'hooks', 'a', 'hooks.yaml'), [
+      'hooks:',
+      '  - id: lint',
+      '    description: Lint',
+      '    event: Stop',
+      '    command: ~/.teamai/team-scripts/lint.sh',
+      '',
+    ].join('\n'));
+    await fse.outputFile(path.join(repoDir, 'hooks', 'a', 'lint', 'HOOK.yaml'), HOOK_FOLDER);
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.check === 'duplicates')]).toEqual([false, [{
+      level: 'fail',
+      check: 'duplicates',
+      path: 'hooks/a/lint/',
+      message: 'hook "lint" is defined in both hooks/a/hooks.yaml and hooks/a/lint/, in the same place, so pull leaves every member\'s '
+        + 'team hooks as they are. Keep one of them.',
+    }]]);
+  });
+
+  it('fails a hook folder and a hooks.yaml entry of one id in two co-active namespaces', async () => {
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('hooks', ['a', 'b']));
+    await fse.outputFile(path.join(repoDir, 'hooks', 'a', 'lint', 'HOOK.yaml'), HOOK_FOLDER);
+    await fse.outputFile(path.join(repoDir, 'hooks', 'b', 'hooks.yaml'), [
+      'hooks:',
+      '  - id: lint',
+      '    description: Lint',
+      '    event: Stop',
+      '    command: ~/.teamai/team-scripts/lint.sh',
+      '',
+    ].join('\n'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(findings(review).filter((f) => f.check === 'duplicates').map((f) => f.message)).toEqual([
+      '"lint" is defined in both hooks/a/lint and hooks/b/hooks.yaml, and their namespaces can be active together, so pull cannot decide '
+        + 'which one a member receives. Rename or remove one of them.',
+    ]);
   });
 
   it('reviews wiki pages at teamwiki/evidence/code, not the wiki/ name', async () => {
@@ -1723,6 +1825,31 @@ describe('materializeRef — branch materialization from git', () => {
       expect(review.findings).toEqual([
         { level: 'fail', check: 'sessions', path: 'teamai.yaml', message: 'teamai.yaml sessions.publish.unattended is "always", not off, ask or auto, so it is ignored' },
       ]);
+    } finally {
+      await fse.remove(gitRepo);
+      await fse.remove(destDir);
+    }
+  });
+  it('reviews a single-repo branch\'s hook folders, not the copies pull delivered to .teamai/delivered/', async () => {
+    const gitRepo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-git-repo-'));
+    const destDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-dest-'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', gitRepo, ...args]);
+    try {
+      git('init', '-q');
+      git('config', 'user.name', 'Test');
+      git('config', 'user.email', 'test@example.com');
+      await fse.outputFile(path.join(gitRepo, '.teamai', 'teamai.yaml'), 'team: acme\nmode: self\n');
+      await fse.outputFile(path.join(gitRepo, '.teamai', 'hooks', 'lint', 'HOOK.yaml'), HOOK_FOLDER);
+      // A delivered copy that was committed by mistake: an older HOOK.yaml, and a script with a credential.
+      await fse.outputFile(path.join(gitRepo, '.teamai', 'delivered', 'hooks', 'lint', 'HOOK.yaml'), 'description: Lint\n');
+      await fse.outputFile(path.join(gitRepo, '.teamai', 'delivered', 'hooks', 'lint', 'lint.sh'), 'echo sk-abcdefghijklmnopqrstuvwx0123456789\n');
+      git('add', '-f', '.');
+      git('commit', '-q', '-m', 'app and team');
+
+      await materializeRef(path.join(gitRepo, '.teamai'), 'HEAD', destDir);
+      const review = await reviewBranchDir('HEAD', destDir);
+
+      expect([review.ok, review.findings]).toEqual([true, []]);
     } finally {
       await fse.remove(gitRepo);
       await fse.remove(destDir);
