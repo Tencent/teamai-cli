@@ -296,7 +296,8 @@ export interface ResolvedEntry<E> {
 /** Why a type was not applied this run. */
 export type EntryFailure = (
   | { readonly kind: 'broken-file'; readonly type: EntryType; readonly source: string; readonly reason: string }
-  | { readonly kind: 'duplicate'; readonly type: EntryType; readonly name: string; readonly source: string }
+  /** `second` is `source` for a name a file repeats, or the other file or folder of the same place (#1787). */
+  | { readonly kind: 'duplicate'; readonly type: EntryType; readonly name: string; readonly source: string; readonly second: string }
   | {
     readonly kind: 'two-namespaces';
     readonly type: EntryType;
@@ -424,6 +425,17 @@ export async function resolveEntries<E>(
   ).map(([name]) => name);
 
   if (active === null) {
+    // Legacy mode lets a file repeat a name, as before; a name in a file and as a folder is a duplicate (#1787).
+    const twice = repeatedNames(candidates, (candidate) => candidate.name, (candidate) => candidate.source)
+      .find(([, sources]) => new Set(sources).size > 1);
+
+    if (twice) {
+      const [name, sources] = twice;
+      const [first = '', second = ''] = new Set(sources);
+
+      return { kind: 'failed', failure: { kind: 'duplicate', type, name, source: first, second, layout }, notices };
+    }
+
     return {
       kind: 'resolved',
       entries: candidates.map((c) => ({
@@ -463,7 +475,7 @@ export async function resolveEntries<E>(
 
   if (resolution.kind === 'conflict') {
     const failure: EntryFailure = resolution.reason === 'duplicate'
-      ? { kind: 'duplicate', type, name: resolution.name, source: resolution.first.source, layout }
+      ? { kind: 'duplicate', type, name: resolution.name, source: resolution.first.source, second: resolution.second.source, layout }
       : {
         kind: 'two-namespaces', type, name: resolution.name, first: resolution.first.source, second: resolution.second.source, layout,
       };
@@ -756,6 +768,11 @@ export function describeEntryFailure(failure: EntryFailure): string {
       // The reader's reason already names the file.
       return `${failure.reason.trimEnd().replace(/\.$/, '')}. ${kept} Fix the file in the team repo and push.`;
     case 'duplicate':
+      if (failure.second !== failure.source) {
+        return `${noun} "${failure.name}" is defined in both ${failure.source} and ${failure.second}, in the same place. ${kept} `
+          + 'Keep one of them in the team repo and push.';
+      }
+
       return `${failure.source} defines ${noun} "${failure.name}" more than once. ${kept} `
         + 'Keep one of them in the team repo and push.';
     case 'two-namespaces':

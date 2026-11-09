@@ -4896,7 +4896,7 @@ export async function reconcileTeamHooksForConfig(
   opts: { removeAll?: boolean; auto?: boolean; silent?: boolean; filterAgents?: string[]; dryRun?: boolean } = {},
 ): Promise<TeamHooksReconcile> {
   const resolved: Awaited<ReturnType<typeof resolveTeamHooks>> = opts.removeAll
-    ? { ok: true, defs: [], builtin: undefined }
+    ? { ok: true, defs: [], folders: [], builtin: undefined }
     : await resolveTeamHooks(teamConfig, localConfig, {
         auto: opts.auto,
         silent: opts.silent,

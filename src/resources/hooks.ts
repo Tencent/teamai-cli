@@ -3,15 +3,17 @@ import { z } from 'zod';
 import { parseYaml } from '../utils/yaml.js';
 import { ResourceHandler } from './base.js';
 import type { HookDef, JsonValue, LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
-import { TEAMAI_CUSTOM_HOOK_PREFIX, areTeamHooksDisabled, getHooksSharing } from '../types.js';
+import { TEAMAI_CUSTOM_HOOK_PREFIX, areTeamHooksDisabled, getHooksSharing, isJsonObject, isSelfMode } from '../types.js';
 import { pathExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.js';
 import {
   entryFilePath, missingTopLevelKeyReason, readEntryFileText, reportEntryResolution, resolveEntriesFor, unknownEntryKeys,
-  type EntryPlaceReader, type EntryResolution,
+  type EntryPlaceReader, type EntryResolution, type ResolvedEntry,
 } from '../namespaced-entries.js';
 import { RESOURCE_LAYOUTS, Resources, type EntryListRead, type ResourceLayout } from './resolver.js';
+import { DeliveredFolders } from './delivered-folders.js';
+import { FolderFiles, type FolderFile } from './folder-files.js';
 
 // ─── Schema for hooks/hooks.yaml ────────────────────────────
 //
@@ -53,6 +55,18 @@ export const HooksYamlSchema = z.object({
 });
 
 export type TeamHook = z.infer<typeof TeamHookSchema>;
+
+/** `hooks/[<ns>/]<id>/HOOK.yaml`: a hooks.yaml entry without the id, which is the directory's name, and without roles or projects. */
+const FolderHookSchema = TeamHookSchema.omit({ id: true, roles: true, projects: true });
+
+/** The marker of a hook folder. */
+const HOOK_MARKER = 'HOOK.yaml';
+
+/** A team hook as the team repo defines it. */
+export type TeamHookDefinition =
+  | { readonly kind: 'entry'; readonly hook: TeamHook }
+  /** A folder: its `HOOK.yaml`, with the directory's name as id, and every file it holds, `HOOK.yaml` included. */
+  | { readonly kind: 'folder'; readonly hook: TeamHook; readonly files: readonly FolderFile[] };
 
 export type HooksYaml = z.infer<typeof HooksYamlSchema>;
 
@@ -99,11 +113,23 @@ interface HooksFileEntry {
   readonly unknownKeys: readonly string[];
 }
 
-/** A hooks file's entries for the resolver. The `builtin:` overrides are team-wide and read from the root file alone. */
+/**
+ * A hooks file's entries for the resolver. The `builtin:` overrides are team-wide and read from the root file alone.
+ * An entry naming `${TEAMAI_HOOK_DIR}` makes the file invalid: only a folder has a directory (#1787, common rule 8).
+ */
 function hooksFileEntries(content: string, relativePath: string): EntryListRead<HooksFileEntry> {
   const read = parseHooksFile(content, relativePath);
 
   if (!read.ok) return { kind: 'invalid', message: read.reason };
+  const folderOnly = read.yaml.hooks.find((hook) => DeliveredFolders.mentions(hook.command, 'hooks'));
+
+  if (folderOnly) {
+    return {
+      kind: 'invalid',
+      message: `${relativePath}: hook "${folderOnly.id}" uses \${TEAMAI_HOOK_DIR}, which only a hook folder has. `
+        + `Move it to hooks/${folderOnly.id}/HOOK.yaml, beside the files it runs.`,
+    };
+  }
 
   return {
     kind: 'entries',
@@ -133,28 +159,81 @@ export function parseTeamHooks(content: string): TeamHook[] | null {
   }
 }
 
-/** How team hooks are read for delivery: each place of the team tree through the resolver. */
-export const hooksEntryReader: EntryPlaceReader<TeamHook> = {
+/** A hook folder read: its definition and the keys its `HOOK.yaml` has that the schema does not know, or why it cannot be used. */
+type HookFolderRead =
+  | { readonly ok: true; readonly definition: TeamHookDefinition; readonly unknownKeys: readonly string[] }
+  | { readonly ok: false; readonly reason: string };
+
+/** Read the hook folder at `full` (`folderPath` from the team root, ending in `/`), named `id`. */
+async function readHookFolder(full: string, folderPath: string, id: string): Promise<HookFolderRead> {
+  const read = await FolderFiles.read(full);
+
+  if (read.kind === 'invalid') {
+    return { ok: false, reason: `${folderPath} is not a hook folder teamai can deliver: ${read.problems.map(FolderFiles.describe).join(', ')}` };
+  }
+
+  const marker = read.files.find((file) => file.path === HOOK_MARKER);
+  const markerPath = `${folderPath}${HOOK_MARKER}`;
+
+  try {
+    const raw: JsonValue = parseYaml(marker?.bytes.toString('utf8') ?? '');
+    const parsed = FolderHookSchema.safeParse(raw);
+
+    if (!parsed.success) {
+      return { ok: false, reason: `${markerPath} does not parse: ${parsed.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ')}` };
+    }
+
+    const known = Object.keys(FolderHookSchema.shape);
+    const unknownKeys = isJsonObject(raw) ? Object.keys(raw).filter((key) => !known.includes(key)) : [];
+
+    return { ok: true, definition: { kind: 'folder', hook: { ...parsed.data, id }, files: read.files }, unknownKeys };
+  } catch (e) {
+    return { ok: false, reason: `${markerPath} does not parse: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
+/** How team hooks are read for delivery: each place of the team tree through the resolver, `hooks.yaml` entries and folders. */
+export const hooksEntryReader: EntryPlaceReader<TeamHookDefinition> = {
   type: 'hooks',
   async readPlace(repoPath, dir) {
     const { items, diagnostics } = await Resources.layer(TEAM_HOOKS, { root: repoPath, namespace: dir });
     const invalid = diagnostics.find((diagnostic) => diagnostic.kind === 'invalid');
 
     if (invalid) return { ok: false, source: invalid.path, reason: invalid.message };
-    const unknownKeys = new Map<TeamHook, readonly string[]>();
+    const unknownKeys = new Map<TeamHookDefinition, readonly string[]>();
+    const notes = diagnostics.map(({ message }) => message);
+    const entries: Array<{ entry: TeamHookDefinition; source: string }> = [];
 
-    const entries = items.flatMap(({ source }) => {
-      if (source.kind !== 'entry') return [];
+    for (const { name, source } of items) {
+      // A support file of a folder in this place: the resolver noted it.
+      if (source.kind === 'file') continue;
 
-      if (source.entry.unknownKeys.length > 0) unknownKeys.set(source.entry.hook, source.entry.unknownKeys);
+      if (source.kind === 'entry') {
+        const definition: TeamHookDefinition = { kind: 'entry', hook: source.entry.hook };
 
-      return [{ entry: source.entry.hook, source: source.path }];
-    });
+        if (source.entry.unknownKeys.length > 0) unknownKeys.set(definition, source.entry.unknownKeys);
+        entries.push({ entry: definition, source: source.path });
+        continue;
+      }
 
-    return { ok: true, entries, notes: diagnostics.map(({ message }) => message), unknownKeys };
+      // A teamai- name only replaces a default (#1787, common rule 5), and teamai ships no hook folder yet.
+      if (name.startsWith('teamai-')) {
+        notes.push(`${source.path} is skipped: a teamai- name only replaces a teamai default, and teamai has no hook named ${name}. Rename the folder.`);
+        continue;
+      }
+
+      const read = await readHookFolder(source.full, source.path, name);
+
+      if (!read.ok) return { ok: false, source: source.path, reason: read.reason };
+
+      if (read.unknownKeys.length > 0) unknownKeys.set(read.definition, read.unknownKeys);
+      entries.push({ entry: read.definition, source: source.path });
+    }
+
+    return { ok: true, entries, notes, unknownKeys };
   },
-  nameOf: (hook) => hook.id,
-  scopeOf: (hook) => hook,
+  nameOf: (definition) => definition.hook.id,
+  scopeOf: (definition) => definition.hook,
 };
 
 /** Convert one validated team hook into the unified HookDef model. */
@@ -186,7 +265,7 @@ export type BuiltinOverrideRead = { known: true; override: BuiltinOverride | und
  */
 export async function resolveTeamHookEntries(
   localConfig: LocalConfig,
-): Promise<{ resolution: EntryResolution<TeamHook>; builtin: BuiltinOverrideRead }> {
+): Promise<{ resolution: EntryResolution<TeamHookDefinition>; builtin: BuiltinOverrideRead }> {
   const resolution = await resolveEntriesFor(hooksEntryReader, localConfig);
 
   return { resolution, builtin: await readBuiltinOverride(localConfig) };
@@ -240,6 +319,45 @@ function isTeamScriptCommand(command: string): boolean {
   return command.includes('.teamai/team-scripts/');
 }
 
+/** A hook folder pull delivers: where, and the files. */
+export interface HookFolderDelivery {
+  readonly dest: string;
+  readonly files: readonly FolderFile[];
+}
+
+/** One team hook as delivered: its definition for the tools, and the folder it runs from, if any. */
+interface TeamHookDelivery {
+  readonly def: HookDef;
+  readonly folder: HookFolderDelivery | null;
+}
+
+/** `resolved` for `localConfig`'s scope: a folder's command names the path the folder is delivered at (#1787). */
+function teamHookDelivery(localConfig: LocalConfig, resolved: ResolvedEntry<TeamHookDefinition>): TeamHookDelivery {
+  const definition = resolved.entry;
+  const def = teamHookToDef(definition.hook);
+
+  if (definition.kind === 'entry') return { def, folder: null };
+  const dest = DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace: resolved.namespace, name: definition.hook.id });
+  const projectRoot = isSelfMode(localConfig) ? localConfig.projectRoot ?? null : null;
+
+  return {
+    def: {
+      ...def,
+      command: DeliveredFolders.render(definition.hook.command, { type: 'hooks', dest }),
+      folder: { command: definition.hook.command, dest, projectRoot },
+    },
+    folder: { dest, files: definition.files },
+  };
+}
+
+/**
+ * Whether `requireTeamScripts` lets `def` through: a folder hook that names its folder through `${TEAMAI_HOOK_DIR}`,
+ * checked before substitution, or a command under `~/.teamai/team-scripts/`. A provenance check, not a sandbox.
+ */
+function runsTeamScript(def: HookDef): boolean {
+  return (def.folder !== undefined && DeliveredFolders.mentions(def.folder.command, 'hooks')) || isTeamScriptCommand(def.command);
+}
+
 /**
  * Resolve the team hooks that should actually be applied, after security gating:
  *   1. Local kill-switch (TEAMAI_HOOKS_DISABLED) → drop all team hooks.
@@ -255,7 +373,7 @@ export async function resolveTeamHooks(
   localConfig: LocalConfig,
   opts: { auto?: boolean; silent?: boolean; preview?: boolean } = {},
 ): Promise<
-  | { ok: true; defs: HookDef[]; builtin: BuiltinOverride | undefined; held?: readonly string[] }
+  | { ok: true; defs: HookDef[]; folders: readonly HookFolderDelivery[]; builtin: BuiltinOverride | undefined; held?: readonly string[] }
   | { ok: false; builtin: BuiltinOverrideRead }
 > {
   // Which hooks this member receives: root plus active namespace files, before
@@ -268,31 +386,35 @@ export async function resolveTeamHooks(
   // A root file that does not parse fails the resolution, so it is known here.
   const builtin = builtinRead.known ? builtinRead.override : undefined;
   const sharing = getHooksSharing(teamConfig);
-  let defs = resolution.entries.map((entry) => teamHookToDef(entry.entry));
+  let hooks = resolution.entries.map((resolved) => teamHookDelivery(localConfig, resolved));
   // The ids a workspace holds back (#913): each tool keeps what it has installed for them.
   const held = resolution.held ? { held: resolution.held } : {};
 
   if (areTeamHooksDisabled()) {
-    if (defs.length > 0) log.warn(`Team hooks disabled (TEAMAI_HOOKS_DISABLED) — skipping ${defs.length} team hook(s)`);
+    if (hooks.length > 0) log.warn(`Team hooks disabled (TEAMAI_HOOKS_DISABLED) — skipping ${hooks.length} team hook(s)`);
 
-    return { ok: true, defs: [], builtin };
+    return { ok: true, defs: [], folders: [], builtin };
   }
 
   if (sharing.requireTeamScripts) {
-    const before = defs.length;
-    defs = defs.filter((d) => isTeamScriptCommand(d.command));
-    const dropped = before - defs.length;
+    const before = hooks.length;
+    hooks = hooks.filter(({ def }) => runsTeamScript(def));
+    const dropped = before - hooks.length;
 
     if (dropped > 0) {
-      log.warn(`Skipped ${dropped} team hook(s) whose command is not under ~/.teamai/team-scripts/ (sharing.hooks.requireTeamScripts)`);
+      log.warn(`Skipped ${dropped} team hook(s) whose command is neither in a hook folder through \${TEAMAI_HOOK_DIR} nor under ~/.teamai/team-scripts/ (sharing.hooks.requireTeamScripts)`);
     }
   }
 
-  if (opts.auto && !(sharing.autoApply ?? true) && defs.length > 0) {
-    log.info(`${defs.length} team hook(s) pending — run 'teamai hooks inject' to apply (sharing.hooks.autoApply=false)`);
+  if (opts.auto && !(sharing.autoApply ?? true) && hooks.length > 0) {
+    log.info(`${hooks.length} team hook(s) pending — run 'teamai hooks inject' to apply (sharing.hooks.autoApply=false):`);
 
-    return { ok: true, defs: [], builtin, ...held };
+    for (const { def } of hooks) log.info(`  [${def.key}] ${def.command}`);
+
+    return { ok: true, defs: [], folders: [], builtin, ...held };
   }
+
+  const defs = hooks.map(({ def }) => def);
 
   if (defs.length > 0 && !opts.silent) {
     // A preview must not claim the hooks were applied: `pull --dry-run` resolves
@@ -304,7 +426,7 @@ export async function resolveTeamHooks(
     for (const d of defs) log.info(`  [${d.key}] ${d.command}`);
   }
 
-  return { ok: true, defs, builtin, ...held };
+  return { ok: true, defs, folders: hooks.flatMap(({ folder }) => folder ? [folder] : []), builtin, ...held };
 }
 
 // ─── Handler ────────────────────────────────────────────────

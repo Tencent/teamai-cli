@@ -477,7 +477,7 @@ async function printRepoSection(
     }
 
     for (const resolved of hooks.entries) {
-      const h = resolved.entry;
+      const h = resolved.entry.hook;
       console.log(`  ${h.id}  [${h.event}]  (${describeOrigin(resolved)})`);
 
       if (options.verbose && h.description) {
