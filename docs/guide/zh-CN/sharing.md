@@ -118,6 +118,7 @@ ${TEAMAI_RULE_DIR}/checklist.md and ${TEAMAI_RULE_DIR}/examples/good-endpoint.ts
 - 在工作区中，pull 把目录复制到每个 worktree 的 `.teamai/delivered/rules/api-style/`（git 会忽略它），并把 `${TEAMAI_RULE_DIR}` 换成它的路径（用正斜杠）。所有工具都从这里读取：Claude Code 得到绝对路径，不读取项目之外文件的工具得到从项目根目录算起的 `.teamai/delivered/rules/api-style`。在一个 worktree 里 pull，不会改动其他 worktree 的目录。
 - 用户范围的 rule 没有工作树，所以 pull 把它复制到 `~/.teamai/rules/api-style/` 并指向该路径。对 Claude Code，pull 会把该目录追加到 `~/.claude/settings.json` 的 `permissions.additionalDirectories`，排在你自己的条目之后，uninstall 时移除。对其他读取那里前可能需要确认的工具，pull 各警告一次。哪个工具得到哪种，见[工具支持](tool-support.md#用户范围)的「规则文件夹的文件」一列。
 - 目录型 rule 在团队仓库里修改。push 不会从它的交付副本提出任何改动。
+- 团队从目录里删掉的文件，会一直留在交付的副本里，直到这条 rule 被移除，因为你改过的 rule 副本可能还引用它。同一个路径不能既是文件又是目录：团队把 `details/` 改成文件 `details`（或反过来）时，新版本占用这个路径，pull 会说明哪个文件被移除了。
 
 提交目录型 rule 之前，让每位成员先升级。旧版 teamai 会把 `rules/api-style/` 里的每个文件各自当作一条始终生效的 rule（`api-style/RULE`、`api-style/RULE.zh`、`api-style/checklist`），或者跳过这个目录。
 

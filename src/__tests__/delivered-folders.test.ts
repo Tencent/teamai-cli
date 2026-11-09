@@ -213,6 +213,26 @@ describe('DeliveredFolders.identify', () => {
     expect(identified.ok ? null : identified.reason).toContain('server/ is a git repository of its own');
   });
 
+  it('leaves out a repository of its own under a directory git ignores, as it does every ignored file', async () => {
+    const repo = teamRepo();
+    const dir = path.join(repo, 'hooks', 'lint');
+    fs.appendFileSync(path.join(repo, '.gitignore'), 'build/\n');
+    git(dir, 'init', '-q', path.join('build', 'vend'));
+    fs.writeFileSync(path.join(dir, 'build', 'vend', 'main.js'), 'console.log(1)\n');
+    const identified = await DeliveredFolders.identify(dir, await filesAt(dir));
+
+    expect(identified.ok ? identified.files.map((one) => one.path) : identified.reason).toEqual(['HOOK.yaml', 'lint.bat', 'lint.sh']);
+  });
+
+  it('names the first few files git does not list, and how many more', async () => {
+    const dir = tempDir();
+    git(dir, 'init', '-q');
+    const files = ['a', 'b', 'c', 'd', 'e'].map((name) => file(`${name}.sh`, 'echo\n'));
+    const identified = await DeliveredFolders.identify(dir, files);
+
+    expect(identified.ok ? null : identified.reason).toMatch(/^git lists a\.sh, b\.sh, c\.sh and 2 more as neither tracked, new nor ignored\./);
+  });
+
   it('versions the bytes and the executable bit of a folder outside git', async () => {
     const dir = tempDir();
     const files = [file('HOOK.yaml', 'event: Stop\n'), file('lint.sh', 'echo lint\n', true)];

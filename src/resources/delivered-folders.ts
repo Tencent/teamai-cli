@@ -94,8 +94,10 @@ export type FolderIdentity =
  * index holds and the checkout has not changed counts by the mode and blob the index holds, the commit's unless the
  * author staged an edit, whatever `core.autocrlf`, `core.fileMode` or its encoding made of it there; its path counts in
  * NFC. A new file, an edited one, or one git is told not to check, counts as it is on disk. A file git ignores, such as
- * `__pycache__/`, is neither versioned nor delivered. A file git neither lists nor ignores, such as one in a submodule,
- * refuses the folder rather than dropping out of it, and so does a submodule or a repository of its own, checked out or not. Outside git, every file counts as it is on disk.
+ * `__pycache__/`, is neither versioned nor delivered, and neither is a repository of its own under a directory git
+ * ignores. A file git neither lists nor ignores refuses the folder rather than dropping out of it, and so does a
+ * submodule or a repository of its own that git does not ignore, checked out or not. Outside git, every file counts as
+ * it is on disk.
  */
 async function identify(dir: string, files: readonly FolderFile[]): Promise<FolderIdentity> {
   const onDisk = (file: FolderFile): FileId => ({ path: file.path.normalize('NFC'), mode: file.executable ? '100755' : '100644', blob: blobId(file.bytes) });
@@ -132,7 +134,10 @@ async function identify(dir: string, files: readonly FolderFile[]): Promise<Fold
     const ignored = await gitLsFiles(dir, ['-o', '-i', '--exclude-standard']);
 
     if (!ignored.ok) return ignored;
-    stray = unlisted.filter((file) => !ignored.paths.has(file.path.normalize('NFC')));
+    // A repository of its own under an ignored directory is one record, `<dir>/`, ignored with everything under it.
+    const isIgnored = (key: string): boolean => ignored.paths.has(key) || [...ignored.paths].some((record) => record.endsWith('/') && key.startsWith(record));
+
+    stray = unlisted.filter((file) => !isIgnored(file.path.normalize('NFC')));
   }
 
   // A submodule refuses its folder whether it is checked out or not: its files are never the team repo's.
@@ -161,9 +166,12 @@ async function gitLsFiles(dir: string, options: readonly string[]): Promise<{ re
 
 /** Why a folder that holds the repositories of its own `ownRepos`, or the files `stray` git neither lists nor ignores, is refused. */
 function refusal(stray: readonly FolderFile[], ownRepos: ReadonlyArray<{ readonly prefix: string; readonly kind: 'submodule' | 'repository' }>): string {
+  const unlisted = stray.flatMap((file) => (ownRepos.some(({ prefix }) => file.path.normalize('NFC').startsWith(prefix)) ? [] : [file.path]));
+  const named = unlisted.length > 3 ? `${unlisted.slice(0, 3).join(', ')} and ${unlisted.length - 3} more` : unlisted.join(', ');
+
   const causes = [
     ...ownRepos.map(({ prefix, kind }) => (kind === 'submodule' ? `${prefix} is a git submodule` : `${prefix} is a git repository of its own`)),
-    ...stray.flatMap((file) => (ownRepos.some(({ prefix }) => file.path.normalize('NFC').startsWith(prefix)) ? [] : [`git lists ${file.path} as neither tracked, new nor ignored`])),
+    ...(unlisted.length === 0 ? [] : [`git lists ${named} as neither tracked, new nor ignored`]),
   ];
 
   return `${causes.join('; ')}. teamai delivers only the team repo's own files: commit those files to the team repo itself, then run teamai pull again.`;
