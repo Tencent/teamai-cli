@@ -645,6 +645,23 @@ describe('the Benchmarks page calibrates the correctness judge', () => {
     expect(zh).toContain('claude claude-haiku-5-5 放过失败工作的频率超出了偶然范围');
   });
 
+  it('heads every cell of the judges and calibration tables, which a narrow screen lays out as cards under those heads', async () => {
+    const html = await renderPage(mixed(({ arm }) => (arm === 'claude' ? { passed: true, decider: HAIKU } : undefined)));
+    const rowsOf = (section: string) => {
+      const table = html.split(`<section class="panel sessions bench-panel ${section}`)[1]?.split('</section>')[0] ?? '';
+      const heads = [...table.matchAll(/<th>([^<]+)<\/th>/g)].map(([, head]) => head);
+
+      return { heads, rows: [...table.matchAll(/<tr class="[^"]*">(.*?)<\/tr>/g)].map(([, row]) => [...(row ?? '').matchAll(/<td data-label="([^"]+)">/g)].map(([, head]) => head)) };
+    };
+
+    for (const section of ['judges', 'calibration']) {
+      const { heads, rows } = rowsOf(section);
+
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) expect(row).toEqual(heads);
+    }
+  });
+
   it('shows no calibration on a suite with no task a judge could be calibrated on', async () => {
     const html = await renderPage([base]);
 
