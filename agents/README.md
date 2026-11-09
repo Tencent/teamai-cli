@@ -51,7 +51,7 @@ instructions: |
 | `description` | Yes. It tells the tool when to call the agent | |
 | `tools` | Yes | `Bash`, which runs `teamai recall` |
 | `model` | Yes, to a model id or a team alias | |
-| `instructions`, or the Markdown body | Yes | `--caller teamai-recall` on each `teamai recall` call. It credits the docs the agent opens to recall |
+| `instructions`, or the Markdown body | Yes | `--caller teamai-recall` on each `teamai recall` call. It marks the run as this agent's, so recall adoption counts the docs the agent opens |
 
 ## Requires
 

@@ -2,27 +2,67 @@
 
 English | [中文](README.zh-CN.md)
 
-At session start, when the team's package declarations in `teamai.yaml` changed since this machine last applied them, teamai tells the agent to review them and run `teamai packages`. This folder holds the text of that hint.
+| | |
+|---|---|
+| Runs | At session start |
+| Input | The `packages` section of the team's `teamai.yaml`, and what this machine last applied |
+| Output | When the section changed, a request to review it and run `teamai packages` |
+| Files | `HOOK.yaml` holds only `description`. `message.md` is the text of the hint |
+
+## When it prints
+
+```mermaid
+flowchart TD
+    start([Session start]) --> off{TEAMAI_PACKAGE_HINT_DISABLED=1?}
+    off -- yes --> none([No hint])
+    off -- no --> changed{"packages changed since this machine last ran teamai packages?"}
+    changed -- no --> none
+    changed -- yes --> hint([message.md])
+    classDef out fill:#2f8f4f,stroke:#1f6b39,color:#fff;
+    classDef skip fill:#6b6b6b,stroke:#4a4a4a,color:#fff;
+    class hint out;
+    class none skip;
+```
 
 ## Replace it
-
-Copy the folder to the root of the team repo, edit `message.md`, and push. The next `teamai pull` checks it and delivers it:
 
 ```bash
 cp -r "$(npm root -g)/teamai-cli/hooks/teamai-package-hint" hooks/
 ```
 
-This hint takes no parameters, so `HOOK.yaml` holds only `description`. Keep every `.md` text: a replacement that misses one is refused. Pull also refuses a `with:` key, a `command`, and a variable the text does not offer. Each time it names the field, and teamai's folder stays in force. A replacement belongs at the root of the team repo, not in a namespace.
+`hooks/teamai-package-hint/message.md`:
+
+```markdown
+The team's packages changed ({{ summary }}). List what `teamai packages` installs, and ask the member before you run it.
+```
+
+Push the folder. The next `teamai pull` checks it and delivers it. The hint takes no parameters.
 
 ## Texts
 
-| File | Shown | Variables |
-|---|---|---|
-| `message.md` | When the declarations changed | `{{ summary }}`, such as "2 npm packages and 1 Claude plugin" |
+| File | Variables |
+|---|---|
+| `message.md` | `{{ summary }}`, such as `2 npm packages and 1 Claude plugin`. It is always English |
 
-`{{ summary }}` stays English. With `language: zh` or `en` in `teamai.yaml`, teamai prints `message.zh.md` or `message.en.md` when the folder has it, and `message.md` otherwise.
+| `language` in `teamai.yaml` | The file teamai prints |
+|---|---|
+| Unset | `message.md` |
+| `en` or `zh` | `message.en.md` or `message.zh.md` when the folder has it, else `message.md` |
 
-## Related settings
+## What pull refuses
 
-- `TEAMAI_PACKAGE_HINT_DISABLED=1` turns the hint off on one machine.
-- `language` picks the text variant.
+| The replacement | What pull does |
+|---|---|
+| Misses `message.md`, sets a `with:` key, or sets a `command` | Names the field and keeps teamai's folder |
+| Uses a variable other than `summary` | The same |
+| Sits in a namespace, such as `hooks/frontend/teamai-package-hint/` | The same. A replacement goes at the root of the team repo |
+
+## Settings that change it
+
+| Setting | Team `teamai.yaml` | Environment | Effect |
+|---|---|---|---|
+| Packages | `packages` | | A change since this machine last ran `teamai packages` shows the hint |
+| The hint | | `TEAMAI_PACKAGE_HINT_DISABLED=1` | Turns the hint off on this machine |
+| Language | `language` | | Picks the text variant |
+
+No member config key changes it.

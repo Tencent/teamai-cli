@@ -2,11 +2,35 @@
 
 English | [中文](README.zh-CN.md)
 
-At session start, teamai lists the team's recently merged MRs that are not in the knowledge base yet, and offers to turn them into learnings. This folder holds how far back it looks and the texts of the offer.
+| | |
+|---|---|
+| Runs | At session start |
+| Input | The MRs merged in the project's repository in the last `lookback_days`, except the ones it already offered |
+| Output | An offer to turn them into learnings with [`teamai-import-from-mr`](../../workflows/teamai-import-from-mr/README.md) |
+| Files | `HOOK.yaml` holds teamai's parameters. Each `.md` file is one text of the offer |
+
+## When it offers
+
+```mermaid
+flowchart TD
+    start([Session start]) --> on{The MR hint on?}
+    on -- no --> none([No hint])
+    on -- yes --> remote{The project's origin is on GitHub or git.woa.com?}
+    remote -- no --> none
+    remote -- yes --> mrs{"MRs merged in the last lookback_days, at most max_mrs, that it has not offered yet?"}
+    mrs -- no --> none
+    mrs -- yes --> can{The agent can start teamai-import-from-mr?}
+    can -- yes --> w([offer-workflow.md])
+    can -- no --> c([offer-command.md, which names teamai import --from-mr])
+    classDef out fill:#2f8f4f,stroke:#1f6b39,color:#fff;
+    classDef skip fill:#6b6b6b,stroke:#4a4a4a,color:#fff;
+    class w,c out;
+    class none skip;
+```
+
+The agent cannot start the workflow in a session that teamai itself launched.
 
 ## Replace it
-
-Copy the folder to the root of the team repo, edit it, and push. The next `teamai pull` checks it and delivers it:
 
 ```bash
 cp -r "$(npm root -g)/teamai-cli/hooks/teamai-mr-hint" hooks/
@@ -16,30 +40,48 @@ cp -r "$(npm root -g)/teamai-cli/hooks/teamai-mr-hint" hooks/
 # hooks/teamai-mr-hint/HOOK.yaml
 description: Offer the last two weeks of MRs
 with:
-  lookback_days: 14
+  lookback_days: 14   # max_mrs keeps teamai's value
 ```
 
-A key you leave out of `with:` keeps teamai's value. Keep every `.md` text: a replacement that misses one is refused. Pull also refuses a value out of its range, a key teamai does not take, a `command`, and a variable a text does not offer. Each time it names the field, and teamai's folder stays in force. A replacement belongs at the root of the team repo, not in a namespace.
+Push the folder. The next `teamai pull` checks it and delivers it. A key you leave out of `with:` keeps teamai's value from its `HOOK.yaml`.
 
 ## Parameters
 
-| Key | Default | Range | What it does |
-|---|---|---|---|
-| `lookback_days` | 7 | 1-90 | How many days back an MR may have merged |
-| `max_mrs` | 10 | 1-100 | Most MRs listed, and the page size asked of the provider |
+| Key | Range | What it sets |
+|---|---|---|
+| `lookback_days` | 1-90 | How many days back an MR may have merged |
+| `max_mrs` | 1-100 | The most MRs listed, and the page size teamai asks the provider for |
 
 ## Texts
 
-| File | Shown | Variables |
-|---|---|---|
-| `offer-command.md` | Where the agent cannot start the workflow, such as a session teamai launched: names `teamai import --from-mr` | `{{ count }}`, `{{ mr_lines }}`, `{{ command }}` |
-| `offer-workflow.md` | Where the agent can start the teamai-import-from-mr workflow | `{{ count }}`, `{{ mr_lines }}`, `{{ command }}` |
+Both texts take `{{ count }}`, `{{ mr_lines }}` and `{{ command }}`. `{{ mr_lines }}` has one line per MR:
 
-`{{ mr_lines }}` holds one line per MR. From a `.en.md` file it reads `- <title> (merged: YYYY-MM-DD)`, and from any other file `- <title>（merged: YYYY-MM-DD）`. In `offer-workflow` each line ends with the MR's URL.
+| File | One line of `{{ mr_lines }}` |
+|---|---|
+| `offer-command.en.md` | `- Fix retry backoff (merged: 2026-11-02)` |
+| `offer-command.md` | `- Fix retry backoff（merged: 2026-11-02）` |
+| `offer-workflow.en.md`, `offer-workflow.md` | The same, followed by the MR's URL |
 
-The base files are bilingual. With `language: en` in `teamai.yaml`, teamai prints `offer-command.en.md` and `offer-workflow.en.md`, which are English only. With `language: zh`, it prints a `.zh.md` file when the folder has one, and the base file otherwise.
+| `language` in `teamai.yaml` | The file teamai prints |
+|---|---|
+| Unset | `<text>.md`, in Chinese and English |
+| `en` | `<text>.en.md`, in English only |
+| `zh` | `<text>.zh.md` when the folder has it, else `<text>.md` |
 
-## Related settings
+## What pull refuses
 
-- `sharing.mrHint.enabled: false` in `teamai.yaml` turns the hint off for the team. One machine turns it off with `mrHintEnabled: false` in `~/.teamai/config.yaml`, or `TEAMAI_MR_HINT_DISABLED=1`.
-- `language` picks the text variants.
+| The replacement | What pull does |
+|---|---|
+| Misses a text, sets a value out of range, sets a key the table above does not list, or sets a `command` | Names the field and keeps teamai's folder |
+| Uses a variable its text does not offer | The same |
+| Sits in a namespace, such as `hooks/frontend/teamai-mr-hint/` | The same. A replacement goes at the root of the team repo |
+
+## Settings that change it
+
+| Setting | Team `teamai.yaml` | Member config | Environment | Effect |
+|---|---|---|---|---|
+| The hint | `sharing.mrHint.enabled` | `mrHintEnabled` | `TEAMAI_MR_HINT_DISABLED=1` | When off, no session gets the hint |
+| Language | `language` | | | Picks the text variant |
+| GitHub token | | | `GITHUB_TOKEN` | When set, teamai sends it to GitHub, which then allows more requests |
+
+The member config is `~/.teamai/projects/<slug>/config.yaml` in a workspace, then `~/.teamai/config.yaml`. The environment wins over the member config, and the member config wins over the team. See [member settings](https://github.com/Tencent/teamai-cli/blob/main/docs/guide/reference.md#member-settings) for the defaults.

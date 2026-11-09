@@ -2,27 +2,67 @@
 
 [English](README.md) | 中文
 
-会话开始时，如果 `teamai.yaml` 里团队的包声明在这台机器上次应用之后有变化，teamai 会告诉 agent 去查看它们并运行 `teamai packages`。这个目录保存这条提示的文案。
+| | |
+|---|---|
+| 运行时机 | 会话开始时 |
+| 输入 | 团队 `teamai.yaml` 的 `packages` 部分，以及本机上次应用的内容 |
+| 输出 | 这部分有变化时，请求检查它并运行 `teamai packages` |
+| 文件 | `HOOK.yaml` 里只有 `description`。`message.md` 是提示的文案 |
+
+## 何时打印
+
+```mermaid
+flowchart TD
+    start(["会话开始"]) --> off{"TEAMAI_PACKAGE_HINT_DISABLED=1？"}
+    off -- 是 --> none(["没有提示"])
+    off -- 否 --> changed{"packages 在本机上次运行 teamai packages 之后有变化？"}
+    changed -- 否 --> none
+    changed -- 是 --> hint([message.md])
+    classDef out fill:#2f8f4f,stroke:#1f6b39,color:#fff;
+    classDef skip fill:#6b6b6b,stroke:#4a4a4a,color:#fff;
+    class hint out;
+    class none skip;
+```
 
 ## 替换它
-
-把目录复制到团队仓库根目录，修改 `message.md` 后推送。下一次 `teamai pull` 会检查并交付它：
 
 ```bash
 cp -r "$(npm root -g)/teamai-cli/hooks/teamai-package-hint" hooks/
 ```
 
-这条提示没有参数，所以 `HOOK.yaml` 里只有 `description`。每个 `.md` 文案都要保留：缺少任何一个的替换会被拒绝。pull 也会拒绝 `with:` 键、`command`，以及文案不提供的变量。每次都会指出是哪个字段，并继续使用 teamai 自带的目录。替换必须放在团队仓库根目录，不能放在命名空间里。
+`hooks/teamai-package-hint/message.md`：
+
+```markdown
+The team's packages changed ({{ summary }}). List what `teamai packages` installs, and ask the member before you run it.
+```
+
+推送这个文件夹。下一次 `teamai pull` 会检查并交付它。这条提示没有参数。
 
 ## 文案
 
-| 文件 | 显示时机 | 变量 |
-|---|---|---|
-| `message.md` | 声明有变化时 | `{{ summary }}`，例如 "2 npm packages and 1 Claude plugin" |
+| 文件 | 变量 |
+|---|---|
+| `message.md` | `{{ summary }}`，例如 `2 npm packages and 1 Claude plugin`。它总是英文 |
 
-`{{ summary }}` 保持英文。`teamai.yaml` 里设了 `language: zh` 或 `en` 时，目录里有 `message.zh.md` 或 `message.en.md` 就打印它，否则打印 `message.md`。
+| `teamai.yaml` 里的 `language` | teamai 打印的文件 |
+|---|---|
+| 未设置 | `message.md` |
+| `en` 或 `zh` | 文件夹里有 `message.en.md` 或 `message.zh.md` 时打印它，否则打印 `message.md` |
 
-## 相关设置
+## pull 拒绝什么
 
-- `TEAMAI_PACKAGE_HINT_DISABLED=1` 在单台机器上关闭这条提示。
-- `language` 决定用哪个文案版本。
+| 替换 | pull 怎么做 |
+|---|---|
+| 缺少 `message.md`、设置了 `with:` 键，或设置了 `command` | 指出是哪个字段，继续使用 teamai 的文件夹 |
+| 使用了 `summary` 以外的变量 | 同上 |
+| 放在命名空间里，例如 `hooks/frontend/teamai-package-hint/` | 同上。替换要放在团队仓库根目录 |
+
+## 影响它的设置
+
+| 设置 | 团队 `teamai.yaml` | 环境变量 | 作用 |
+|---|---|---|---|
+| 包 | `packages` | | 本机上次运行 `teamai packages` 之后有变化，就显示提示 |
+| 提示 | | `TEAMAI_PACKAGE_HINT_DISABLED=1` | 在本机关闭提示 |
+| 语言 | `language` | | 选择文案版本 |
+
+没有成员配置键会改变它。

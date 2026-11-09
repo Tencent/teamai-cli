@@ -2,27 +2,71 @@
 
 English | [中文](README.zh-CN.md)
 
-Once the agent plans a task with TodoWrite, teamai suggests one search of the team knowledge base through the `teamai-recall` subagent, once per session. This folder holds the text of that suggestion.
+| | |
+|---|---|
+| Runs | After a TodoWrite call |
+| Input | None |
+| Output | A suggestion to search the team knowledge base once with the [`teamai-recall`](../../agents/README.md) subagent |
+| Files | `HOOK.yaml` holds only `description`. `message.md` is the text of the hint |
+
+## When it suggests
+
+```mermaid
+flowchart TD
+    call([A tool call]) --> todo{The tool is TodoWrite?}
+    todo -- no --> none([No hint])
+    todo -- yes --> recall{Recall on?}
+    recall -- no --> none
+    recall -- yes --> entry{"The team's hooks/hooks.yaml keeps the hook entry?"}
+    entry -- no --> none
+    entry -- yes --> once{Already suggested in this session?}
+    once -- yes --> none
+    once -- no --> hint([message.md])
+    classDef out fill:#2f8f4f,stroke:#1f6b39,color:#fff;
+    classDef skip fill:#6b6b6b,stroke:#4a4a4a,color:#fff;
+    class hint out;
+    class none skip;
+```
 
 ## Replace it
-
-Copy the folder to the root of the team repo, edit `message.md`, and push. The next `teamai pull` checks it and delivers it:
 
 ```bash
 cp -r "$(npm root -g)/teamai-cli/hooks/teamai-todowrite-hint" hooks/
 ```
 
-This hint takes no parameters, so `HOOK.yaml` holds only `description`. Keep every `.md` text: a replacement that misses one is refused. Pull also refuses a `with:` key, a `command`, and a variable the text does not offer. Each time it names the field, and teamai's folder stays in force. A replacement belongs at the root of the team repo, not in a namespace.
+`hooks/teamai-todowrite-hint/message.md`:
+
+```markdown
+Call the `teamai-recall` subagent once before the first edit.
+```
+
+The copy also holds a language variant of `message.md`. Edit the variant too, or delete it, so every `language` prints your text. Push the folder. The next `teamai pull` checks it and delivers it. The hint takes no parameters.
 
 ## Texts
 
-| File | Shown | Variables |
-|---|---|---|
-| `message.md` | After a TodoWrite call | none |
+| File | Variables |
+|---|---|
+| `message.md` | None |
 
-`message.md` is bilingual. With `language: en` in `teamai.yaml`, teamai prints `message.en.md`, which is English only. With `language: zh`, it prints `message.zh.md` when the folder has one, and `message.md` otherwise.
+| `language` in `teamai.yaml` | The file teamai prints |
+|---|---|
+| Unset | `message.md` |
+| `en` or `zh` | `message.en.md` or `message.zh.md` when the folder has it, else `message.md` |
 
-## Related settings
+## What pull refuses
 
-- `TEAMAI_RECALL_DISABLED=1` turns the hint off, with recall.
-- `language` picks the text variant.
+| The replacement | What pull does |
+|---|---|
+| Misses `message.md`, sets a `with:` key, or sets a `command` | Names the field and keeps teamai's folder |
+| Uses a variable | The same. The text offers none |
+| Sits in a namespace, such as `hooks/frontend/teamai-todowrite-hint/` | The same. A replacement goes at the root of the team repo |
+
+## Settings that change it
+
+| Setting | Team | Member config | Environment | Effect |
+|---|---|---|---|---|
+| Recall | `sharing.recall.enabled` in `teamai.yaml` | `recallEnabled` | `TEAMAI_RECALL_DISABLED=1` | When off, no session gets the hint |
+| The hook entry | `builtin.disabled: [Hook dispatch post-tool-use TodoWrite]` in `hooks/hooks.yaml` | | | When listed, no session gets the hint |
+| Language | `language` in `teamai.yaml` | | | Picks the text variant |
+
+The member config is `~/.teamai/projects/<slug>/config.yaml` in a workspace, then `~/.teamai/config.yaml`. The environment wins over the member config, and the member config wins over the team. See [member settings](https://github.com/Tencent/teamai-cli/blob/main/docs/guide/reference.md#member-settings) for the defaults.
