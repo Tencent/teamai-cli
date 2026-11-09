@@ -301,13 +301,23 @@ scope: 'user',
       expect(process.exitCode).toBeUndefined();
     });
 
-    it.each(['BASH_ENV', 'ENV', 'ZDOTDIR', 'HOME', 'home', 'PROMPT_COMMAND', 'chpwd_functions', 'precmd_functions', 'preexec_functions', 'periodic_functions', 'zshaddhistory_functions', 'zshexit_functions', 'zsh_directory_name_functions', '__TEAMAI_ENV_FILES', '__teamai_env_apply', 'TEAMAI_WORKFLOW_DIR'])('warns when env set targets reserved loader control %s', async (key) => {
+    it.each(['BASH_ENV', 'ENV', 'ZDOTDIR', 'HOME', 'home', 'PROMPT_COMMAND', 'chpwd_functions', 'precmd_functions', 'preexec_functions', 'periodic_functions', 'zshaddhistory_functions', 'zshexit_functions', 'zsh_directory_name_functions', '__TEAMAI_ENV_FILES', '__teamai_env_apply'])('warns when env set targets reserved loader control %s', async (key) => {
       await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), `secrets:\n  - key: ${key}\n`);
       vi.mocked(readStdin).mockResolvedValue('reserved-value');
 
       await envSet(key, { stdin: true });
 
       expect(log.warn).toHaveBeenCalledWith(`${key} is reserved for TeamAI shell routing; those team env values are ignored.`);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('warns when env set targets TEAMAI_WORKFLOW_DIR, saying it is a folder path', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: TEAMAI_WORKFLOW_DIR\n');
+      vi.mocked(readStdin).mockResolvedValue('reserved-value');
+
+      await envSet('TEAMAI_WORKFLOW_DIR', { stdin: true });
+
+      expect(log.warn).toHaveBeenCalledWith('TEAMAI_WORKFLOW_DIR is reserved for the folder path teamai gives a workflow step, hook or MCP server; those team env values are ignored.');
       expect(process.exitCode).toBeUndefined();
     });
 
