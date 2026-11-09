@@ -284,6 +284,48 @@ Update teamai, then pull again to receive them:  teamai update && teamai pull   
 
 Neither shows when no folder is skipped.
 
+### Resource layers
+
+Resource layers lists every definition of each workflow, hook, MCP server, benchmark suite and rule folder, and which one `pull` uses in the workspace: teamai's default, the team root, or an active namespace, a later layer replacing an earlier one of the same name. teamai's defaults in force fold into one row. A definition pull cannot use shows what pull prints and the fix:
+
+```text
+Workflows  4  WORKFLOW.yaml
+NAME      LAYER               FORM  STATE                                        REPLACES
+release   Namespace payments  File  In force                                     Team root  workflows/release.yaml
+release   Team root           File  Replaced by workflows/payments/release.yaml  —
+deploy    Team root           File  Defined twice                                —
+                                    workflows/deploy.yaml:1: field "(root)": Workflow "deploy" is defined twice ...
+                                    Keep one of them in the team repo, and push.
+21 teamai defaults in force                                                      Show
+```
+
+A state is In force, Replaced, Not active here, Not subscribed (a rule its tags leave out), Off (the recall rule while recall is off), Invalid (with what runs instead), Refused, or Held this pull: nothing is wrong with it, but another definition stops its type, so pull keeps what is installed.
+
+Files on a folder's row lists its files with size and executable mark, the total (against the 1 MB limit of a workflow folder), where pull delivers it, and the command it runs with the folder's path filled in. An MCP server's env shows names only. A rule folder names the file its text comes from for the team's `language`, and where each tool reads `${TEAMAI_RULE_DIR}`. teamai's recall rule is listed beside the team's `rules/teamai-recall/`:
+
+```text
+api-style      rules/api-style/      Team root  Folder  In force  —   Hide
+  RULE.md 108 B   RULE.zh.md 55 B   checklist.md 62 B   Total 225 B
+  Rule text from RULE.zh.md
+  Pull delivers it to ~/.teamai/projects/<slug>/rules/api-style  Delivered
+  Where each tool reads ${TEAMAI_RULE_DIR}
+  claude  ~/.teamai/projects/<slug>/rules/api-style  Reads the data home: teamai adds it to permissions.additionalDirectories
+  codex   .teamai/delivered/rules/api-style          Reads the copy pull puts in the project
+teamai-recall  rules/teamai-recall/  Team root  Folder  Refused
+  rules/teamai-recall/ is not used, so teamai's recall rule stays in force: rules/teamai-recall/RULE.md does not contain "Nothing was searched:". Fix the folder in the team repo.
+```
+
+Rule files stay on the rule list above. Default hooks lists teamai's five hints: where each comes from, how many `with:` parameters and texts the team's folder changes, and, opened, each parameter's teamai and team value, the changed ones marked, and the file each text is read from for the team's language.
+
+The Overview counts the problems and links here:
+
+```text
+⚠ 6 resource problems · 2 conflicts · 2 invalid · 2 refused. Pull keeps what is installed, the last valid version, or teamai's default in their place.
+View resource layers →
+```
+
+Below 1100 px wide each row is a card. The page never shows a file's content, a rule or prompt text, or an env value.
+
 ## Human Intervention Metrics
 
 Each session counts three things: an interrupt mid-run (`interrupt`), a denied tool call (`toolReject`), and a correction right after the agent stops, such as "wrong" or "redo" (`correction`).

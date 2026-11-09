@@ -406,6 +406,8 @@ export type ListedResolution<TEntry, TShipped> = Exclude<LayeredResolution<TEntr
 /** Every name of a layout in a tree, as `list` gives them, and what the read found besides. */
 export interface ResourceSurvey<TEntry, TShipped> {
   readonly resolutions: Array<ListedResolution<TEntry, TShipped>>;
+  /** Every definition in the team's files, in scan order, whether or not its namespace is active or it applies. */
+  readonly definitions: ReadonlyArray<TeamItem<TEntry>>;
   readonly diagnostics: readonly ResourceDiagnostic[];
 }
 
@@ -451,7 +453,7 @@ async function survey<TEntry, TShipped>(layout: ResourceLayout<TEntry>, tree: Re
     named.has(item.name) ? [] : [{ kind: 'resolved', name: item.name, item, replaces: null }]
   ))];
 
-  return { resolutions, diagnostics };
+  return { resolutions, definitions: items, diagnostics };
 }
 
 /**

@@ -209,6 +209,7 @@ describe('Resources.survey', () => {
 
     expect(await Resources.survey(gadgets, tree)).toEqual({
       resolutions: [],
+      definitions: [],
       diagnostics: [{ kind: 'invalid', path: 'gadgets/gadgets.yaml', message: 'gadgets/gadgets.yaml: "format run format" is not name=value' }],
     });
   });
@@ -255,6 +256,24 @@ describe('Resources.survey', () => {
       path: 'widgets/release/',
       message: 'widgets/release/ holds WIDGET.yaml, so it is one folder, and steps.yaml in it is one of its files, no longer read on its own.',
     }]);
+  });
+
+  it('lists every definition of the team\'s files, those a namespace that is not active holds included', async () => {
+    const tree = treeOf({
+      'widgets/release.yaml': 'root release',
+      'widgets/payments/release/WIDGET.yaml': 'payments release',
+      'widgets/billing/release.yaml': 'billing release',
+    }, ['payments']);
+
+    const { definitions, resolutions } = await Resources.survey(widgets, tree);
+
+    expect([
+      definitions.map((item) => [item.layer === 'namespace' ? item.namespace : item.layer, item.source.kind, item.source.path]).sort(),
+      resolutions.map((resolution) => (resolution.kind === 'resolved' ? resolution.item.source.path : resolution.kind)),
+    ]).toEqual([
+      [['billing', 'file', 'widgets/billing/release.yaml'], ['payments', 'folder', 'widgets/payments/release/'], ['root', 'file', 'widgets/release.yaml']],
+      ['widgets/payments/release/'],
+    ]);
   });
 });
 

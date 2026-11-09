@@ -284,6 +284,48 @@ workflows/release/   工作流目录     WORKFLOW.yaml
 
 没有被跳过的目录时，两处都不显示。
 
+### 资源分层
+
+资源分层按类型列出每个工作流、Hook、MCP 服务器、基准测试套件和规则目录的所有定义，以及 `pull` 在当前工作区用的是哪一个：teamai 默认定义、团队仓库根级别，或活跃的命名空间，后一层替换前一层的同名定义。生效的 teamai 默认定义合并成一行。`pull` 用不了的定义会显示 `pull` 打印的原话和修复方法：
+
+```text
+工作流  4  WORKFLOW.yaml
+名称      层                  形式  状态                                         替换
+release   命名空间 payments   文件  生效                                         团队仓库根级别  workflows/release.yaml
+release   团队仓库根级别      文件  已被替换 替换者 workflows/payments/release.yaml  —
+deploy    团队仓库根级别      文件  重复定义                                     —
+                                    workflows/deploy.yaml:1: field "(root)": Workflow "deploy" is defined twice ...
+                                    在团队仓库中只保留其中一个，然后 push。
+21 个 teamai 默认定义生效                                                        展开
+```
+
+状态有：生效、已被替换、此处未启用、未订阅（被标签排除的规则）、已关闭（召回关闭时的召回规则）、无效（同时写明由什么代替运行）、已拒绝，以及本次 pull 暂缓：它本身没有问题，但同类型的另一个定义让这一类型本次不生效，`pull` 保留已安装的版本。
+
+目录所在行的「文件」列出它的文件、大小和可执行标记，合计大小（工作流目录对照 1 MB 上限），`pull` 把它交付到哪里，以及填入目录路径后它运行的命令。MCP 服务器的环境变量只显示名称。规则目录会写明按团队的 `language` 取自哪个文件，以及每个工具从哪里读取 `${TEAMAI_RULE_DIR}`。teamai 的召回规则和团队的 `rules/teamai-recall/` 列在一起：
+
+```text
+api-style      rules/api-style/      团队仓库根级别  目录  生效    —   收起
+  RULE.md 108 B   RULE.zh.md 55 B   checklist.md 62 B   合计 225 B
+  规则正文取自 RULE.zh.md
+  pull 将它交付到 ~/.teamai/projects/<slug>/rules/api-style  已交付
+  各工具读取的位置 ${TEAMAI_RULE_DIR}
+  claude  ~/.teamai/projects/<slug>/rules/api-style  读取数据目录：teamai 把它加入 permissions.additionalDirectories
+  codex   .teamai/delivered/rules/api-style          读取 pull 放在项目里的副本
+teamai-recall  rules/teamai-recall/  团队仓库根级别  目录  已拒绝
+  rules/teamai-recall/ is not used, so teamai's recall rule stays in force: rules/teamai-recall/RULE.md does not contain "Nothing was searched:". Fix the folder in the team repo.
+```
+
+规则文件仍在上面的规则列表里。默认 Hook 列出 teamai 的五个提示：各自来自哪里，团队目录改了几个 `with:` 参数和几段文本；展开后逐个对照参数的 teamai 值和团队值并标出改动，以及每段文本按团队语言取自哪个文件。
+
+总览页显示问题数量，并链接到这里：
+
+```text
+⚠ 6 个资源问题 · 2 个冲突 · 2 个无效 · 2 个被拒绝。pull 会以已安装的版本、上一个有效版本或 teamai 默认版本代替它们。
+查看资源分层 →
+```
+
+宽度小于 1100 px 时，每行显示为一张卡片。页面从不显示文件内容、规则或提示词正文，也不显示环境变量的值。
+
 ## 人工干预指标（Human Intervention）
 
 每个会话计三种次数：中途打断（`interrupt`）、拒绝工具调用（`toolReject`）、结束后马上用「不对 / 重来 / wrong」这类词纠正（`correction`）。
