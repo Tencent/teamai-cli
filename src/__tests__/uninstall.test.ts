@@ -1327,6 +1327,41 @@ describe('uninstall', () => {
     ]).toEqual(['- name every endpoint\n', false, false, false, true]);
   });
 
+  it('keeps the hook folder whose command CodeBuddy\'s project gate carries encoded, in settings it cannot rewrite (#1787)', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    const projectRoot = path.join(tmpDir, 'business-repo');
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const folder = path.join(repoPath, 'delivered', 'hooks', 'lint.0123abcd');
+    await fse.outputFile(path.join(folder, 'HOOK.yaml'), 'event: SessionStart\ncommand: bash "${TEAMAI_HOOK_DIR}/lint.sh"\n');
+    await fse.outputFile(path.join(folder, 'lint.sh'), 'echo lint\n');
+    const { encodeCodebuddyProjectGate } = await import('../codebuddy-team-hooks.js');
+    const encoded = Buffer.from(`bash "${folder.split(path.sep).join('/')}/lint.sh"`, 'utf8').toString('base64url');
+    const command = `teamai hook-dispatch session-start --tool codebuddy --team-hooks --team-hook-id lint --team-hook-gate ${encodeCodebuddyProjectGate(projectRoot)} --team-hook-command ${encoded}`;
+    const settings = path.join(projectRoot, '.codebuddy', 'settings.json');
+    await fse.outputJson(settings, { hooks: { SessionStart: [{ description: '[teamai:hook:lint] Lint', hooks: [{ type: 'command', command }] }] } });
+    await fse.chmod(settings, 0o444);
+    await fse.chmod(path.dirname(settings), 0o555);
+    const localConfig = makeLocalConfig(homeDir, repoPath, {
+      scope: 'project',
+      projectRoot,
+      repo: { localPath: repoPath, remote: '', kind: 'self', businessRepoRoot: projectRoot },
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: makeTeamConfig({ toolPaths: { codebuddy: { settings: '.codebuddy/settings.json' } } }) });
+
+    try {
+      await uninstall({ force: true });
+    } finally {
+      await fse.chmod(path.dirname(settings), 0o755);
+      await fse.chmod(settings, 0o644);
+    }
+
+    expect([
+      (await fse.readJson(settings)).hooks.SessionStart[0].hooks[0].command,
+      await fse.readFile(path.join(folder, 'lint.sh'), 'utf8'),
+    ]).toEqual([command, 'echo lint\n']);
+  });
+
   it('keeps the MCP server folder whose entry it cannot remove, and names it (#1787)', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     const projectRoot = path.join(tmpDir, 'business-repo');

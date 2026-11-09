@@ -10,6 +10,8 @@ import {
   type CodexTrustPolicy, type MainCheckoutHooks, type ReconcileHooksOptions, type SharedHooksManifest, type TeamHookHistory,
 } from './hooks.js';
 import { codexTeamHookIndexPath } from './codex-team-hooks.js';
+import { codebuddyTeamHookPayload } from './codebuddy-team-hooks.js';
+import { mapStrings, parseJson } from './utils/json.js';
 import { bridgedTeamHookDir, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
 import {
   removeOpenClawHooks,
@@ -2191,6 +2193,29 @@ interface TextLeft {
 /** A text left, with the checkout its file is in: null when it is in none of the project's. */
 type CheckoutText = TextLeft & { readonly checkout: string | null };
 
+/** `text`, and the commands the CodeBuddy Windows project gates of a JSON `text` carry base64-encoded. */
+function withGatedCommands(text: string): string {
+  let json: JsonValue;
+
+  try {
+    json = parseJson(text);
+  } catch {
+    return text;
+  }
+
+  const commands: string[] = [];
+
+  mapStrings(json, (value) => {
+    const command = codebuddyTeamHookPayload(value);
+
+    if (command !== null) commands.push(command);
+
+    return value;
+  });
+
+  return [text, ...commands].join('\n');
+}
+
 /** The checkout of `checkouts` holding `real`, both real paths; null when none does. */
 function checkoutHolding(real: string, checkouts: readonly string[]): string | null {
   return checkouts.find((checkout) => real === checkout || real.startsWith(checkout + path.sep)) ?? null;
@@ -2228,7 +2253,7 @@ async function textsLeft(plan: RemovalPlan, mcpEntries: readonly TextLeft[]): Pr
   }
 
   const read = await Promise.all([...files].map(async (file) => ({ file, text: await readFileSafe(file) })));
-  const left = [...read.flatMap(({ file, text }) => text === null ? [] : [{ file, text }]), ...mcpEntries];
+  const left = [...read.flatMap(({ file, text }) => text === null ? [] : [{ file, text: withGatedCommands(text) }]), ...mcpEntries];
 
   return Promise.all(left.map(async (one) => ({ ...one, checkout: checkoutHolding(await realFilePath(one.file), checkouts) })));
 }
