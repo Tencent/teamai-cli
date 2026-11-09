@@ -42,6 +42,8 @@ export interface SyncWorkflowResult {
   kept: string[];
   invalid: WorkflowDiagnostic[];
   unrunnable: string[];
+  /** teamai's defaults that cannot start against the team's workflows they run, each with what pull prints about it. */
+  brokenDefaults: Array<{ name: string; message: string }>;
   /** Each file's definition as this sync settled it, the one start runs: for the checks of what its steps list. */
   settled: Array<{ relativePath: string; definition: WorkflowDefinition }>;
   /** `alias_conflict` on each cached workflow whose alias another one has as alias or name. Each still starts by name. */
@@ -272,7 +274,7 @@ export async function workflowFileNames(dir: string): Promise<string[]> {
  * finds no version that was not checked against the others. Nothing here fails the caller.
  */
 export async function syncWorkflowDefinitions(config: LocalConfig, options: SyncWorkflowOptions): Promise<SyncWorkflowResult> {
-  const result: SyncWorkflowResult = { cached: [], kept: [], invalid: [], unrunnable: [], settled: [], aliasConflicts: [] };
+  const result: SyncWorkflowResult = { cached: [], kept: [], invalid: [], unrunnable: [], brokenDefaults: [], settled: [], aliasConflicts: [] };
   const knowledgeRoot = getKnowledgeDir(config);
   // Asked on the first valid file: a team without workflows starts no git here.
   let reachable: Promise<ReachableRevision | undefined> | undefined;
@@ -609,7 +611,9 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
     });
 
     for (const reason of [...(parsed.ok ? [] : parsed.diagnostics.map(({ message }) => message)), ...retypedBy]) {
-      log.warn(`[workflows] teamai's default ${entry.definition.name} cannot start: ${reason}`);
+      const message = `teamai's default ${entry.definition.name} cannot start: ${reason}`;
+      result.brokenDefaults.push({ name: entry.definition.name, message });
+      log.warn(`[workflows] ${message}`);
     }
   }
 

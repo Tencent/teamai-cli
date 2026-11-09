@@ -160,6 +160,10 @@ async function workflowList(config: LocalConfig, sync: SyncTeamResult): Promise<
 
   const stateOf = (item: Found, resolution: ListedResolution<unknown, unknown> | undefined): ResourceState => {
     if (isInactive(item, active) || resolution === undefined) return { kind: 'inactive' };
+    // A default that runs a team workflow of another shape cannot start, though nothing is wrong with it.
+    const broken = item.layer === 'teamai' ? sync.brokenDefaults.filter(({ name }) => name === item.name) : [];
+
+    if (broken.length > 0) return { kind: 'blocked', message: broken.map(({ message }) => message).join('\n') };
 
     if (resolution.kind === 'conflict') {
       const conflict = sync.invalid.filter((diagnostic) => diagnostic.code === 'workflow_namespace_conflict' && diagnostic.file === resolution.first.source.path);

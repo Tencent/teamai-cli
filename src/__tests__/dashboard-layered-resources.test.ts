@@ -115,6 +115,18 @@ describe('workflows on the Resources page', () => {
     ]);
   });
 
+  it('holds teamai\'s default that cannot start against the team\'s replacement of a workflow it runs, with what pull prints', async () => {
+    await write({ 'workflows/teamai-codebase-enrich/WORKFLOW.yaml': workflow('teamai-codebase-enrich') });
+
+    const importer = (await listOf('workflows')).resources.find((resource) => resource.name === 'teamai-import-from-repo');
+
+    expect([importer?.layer, importer?.state.kind, importer?.state.kind === 'blocked' ? importer.state.message.split('\n')[0] : null]).toEqual([
+      { kind: 'teamai' },
+      'blocked',
+      'teamai\'s default teamai-import-from-repo cannot start: step "enrich" with.wiki_root is not an input workflow "teamai-codebase-enrich" declares',
+    ]);
+  });
+
   it('lists a folder\'s files with their size and executable bit, against the 1 MB limit, and where a run keeps them', async () => {
     await write({ 'workflows/release/WORKFLOW.yaml': workflow('release'), 'workflows/release/plan.sh': 'echo plan\n', 'workflows/release/notes/summary.md': 'Summarise.\n' });
     await fse.chmod(path.join(repo, 'workflows', 'release', 'plan.sh'), 0o755);
