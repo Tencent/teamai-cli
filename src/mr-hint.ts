@@ -12,6 +12,7 @@ import { type LocalConfig, JsonObjectSchema } from './types.js';
 import type { SessionRun } from './launch-context.js';
 import { WorkflowOffers, type Proposal } from './workflow-offers.js';
 import type { OutputSchema } from './workflow/types.js';
+import { DefaultHooks, type DefaultHook, type HintLanguage } from './default-hooks.js';
 
 // ─── MR Hint data flow ──────────────────────────────────
 //
@@ -31,12 +32,6 @@ import type { OutputSchema } from './workflow/types.js';
 //          offering teamai-import-from-mr where a hook may offer it, whose
 //          describe then proposes the MRs this session was offered
 //
-
-/** Days to look back for merged MRs. */
-const LOOKBACK_DAYS = 7;
-
-/** Max MRs to list per session. */
-const MAX_MRS = 10;
 
 /** Cache TTL: 30 days. After this, cache is cleared. */
 const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -231,6 +226,12 @@ export function parseRemoteToRepo(remoteUrl: string): RemoteRepo | null {
 
 // ─── MR listing ─────────────────────────────────────────
 
+/** The MRs a listing asks for: merged after `since`, at most `limit` of them (the API page size). */
+interface MergedSince {
+  readonly since: Date;
+  readonly limit: number;
+}
+
 /** TGit API MR object (subset of fields). */
 const TGitMRSchema = z.object({
   iid: z.number(),
@@ -247,13 +248,13 @@ const TGitMRSchema = z.object({
  *
  * @param owner   Owner or group path
  * @param repo    Repository name
- * @param since   Include only MRs merged after this date
+ * @param merged  Which MRs: merged after `since`, at most `limit` of them
  * @returns       Array of MRSummary, empty on any error
  */
 async function listTGitMergedMRs(
   owner: string,
   repo: string,
-  since: Date,
+  { since, limit }: MergedSince,
 ): Promise<MRSummary[]> {
   try {
     getTGitToken();
@@ -267,7 +268,7 @@ async function listTGitMergedMRs(
 
   const apiPath =
     `/projects/${projectId}/merge_requests` +
-    `?state=merged&order_by=updated_at&sort=desc&per_page=${MAX_MRS}`;
+    `?state=merged&order_by=updated_at&sort=desc&per_page=${limit}`;
 
   try {
     const resp = await tgitFetch(apiPath, {
@@ -320,21 +321,21 @@ const GitHubRestPRSchema = z.object({
  * Used as fallback when `gh` CLI is unavailable. Supports public repos
  * without a token; uses GITHUB_TOKEN env var when present to raise rate limits.
  *
- * @param owner  Repository owner
- * @param repo   Repository name
- * @param since  Include only PRs merged after this date
- * @returns      Array of MRSummary, empty on any error
+ * @param owner   Repository owner
+ * @param repo    Repository name
+ * @param merged  Which PRs: merged after `since`, at most `limit` of them
+ * @returns       Array of MRSummary, empty on any error
  */
 async function listGitHubMergedMRsViaREST(
   owner: string,
   repo: string,
-  since: Date,
+  { since, limit }: MergedSince,
 ): Promise<MRSummary[]> {
   const token = process.env['GITHUB_TOKEN'];
   const baseHeaders = { 'User-Agent': 'teamai-cli', Accept: 'application/vnd.github+json' };
   const headers = token ? { ...baseHeaders, Authorization: `Bearer ${token}` } : baseHeaders;
 
-  const url = `https://api.github.com/repos/${owner}/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=${MAX_MRS}`;
+  const url = `https://api.github.com/repos/${owner}/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=${limit}`;
 
   try {
     const resp = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
@@ -369,16 +370,18 @@ async function listGitHubMergedMRsViaREST(
  * Primary path: `gh pr list` CLI.
  * Fallback: GitHub REST API (supports public repos without token).
  *
- * @param owner  Repository owner
- * @param repo   Repository name
- * @param since  Include only PRs merged after this date
- * @returns      Array of MRSummary, empty when all paths fail
+ * @param owner   Repository owner
+ * @param repo    Repository name
+ * @param merged  Which PRs: merged after `since`, at most `limit` of them
+ * @returns       Array of MRSummary, empty when all paths fail
  */
 async function listGitHubMergedMRs(
   owner: string,
   repo: string,
-  since: Date,
+  merged: MergedSince,
 ): Promise<MRSummary[]> {
+  const { since, limit } = merged;
+
   // ── Primary: gh CLI ──────────────────────────────────────
   try {
     const result = spawnSync(
@@ -387,7 +390,7 @@ async function listGitHubMergedMRs(
         'pr', 'list',
         '--repo', `${owner}/${repo}`,
         '--state', 'merged',
-        '--limit', String(MAX_MRS),
+        '--limit', String(limit),
         '--json', 'number,title,url,mergedAt',
       ],
       { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 8000 },
@@ -413,69 +416,37 @@ async function listGitHubMergedMRs(
   }
 
   // ── Fallback: GitHub REST API ────────────────────────────
-  return listGitHubMergedMRsViaREST(owner, repo, since);
+  return listGitHubMergedMRsViaREST(owner, repo, merged);
 }
 
 // ─── Hint message builder ────────────────────────────────
 
 /**
- * Build the additionalContext hint message for AI.
+ * Build the additionalContext hint message for AI from `hook`'s texts: `offer-workflow` when the hint offers
+ * teamai-import-from-mr, else `offer-command`, each English only when language is `en` (its `.en.md` variant).
  *
  * @param mrs  New merged MRs that have not been imported yet
- * @returns    Hint string. English only when language is `en`; otherwise the historical bilingual text.
  */
-export function buildHintMessage(mrs: MRSummary[], language?: 'en' | 'zh', { offersWorkflow = false }: { offersWorkflow?: boolean } = {}): string {
+export function buildHintMessage(
+  mrs: MRSummary[],
+  hook: DefaultHook<'teamai-mr-hint'>,
+  { language, offersWorkflow = false }: { language?: HintLanguage; offersWorkflow?: boolean } = {},
+): string {
   // One run for every MR: teamai-import-from-mr takes several URLs, publishes the
   // accepted learnings once and updates each repository's teamwiki once (#1104).
   // Its describe proposes the URLs, so each MR line names its own.
   const command = offersWorkflow
-    ? '  teamai workflow start --describe teamai-import-from-mr --driver skill'
-    : `  teamai import --from-mr ${mrs.map((mr) => mr.url).join(' ')}`;
+    ? 'teamai workflow start --describe teamai-import-from-mr --driver skill'
+    : `teamai import --from-mr ${mrs.map((mr) => mr.url).join(' ')}`;
 
+  const offer = hook.text(offersWorkflow ? 'offer-workflow' : 'offer-command', language);
   const url = (mr: MRSummary): string => (offersWorkflow ? ` ${mr.url}` : '');
 
-  if (language === 'en') {
-    const lines = [
-      `[teamai:mr-hint] Found ${mrs.length} recently merged MR(s) not yet imported into the team knowledge base.`,
-      '',
-      offersWorkflow
-        ? 'After this task, offer the user to turn these MRs into learnings with the teamai-import-from-mr workflow. Its describe proposes these MRs:'
-        : 'After this task, tell the user they can turn these MRs into learnings with:',
-      '',
-    ];
+  const line = (mr: MRSummary): string => (offer.language === 'en'
+    ? `- ${mr.title} (merged: ${mr.mergedAt.slice(0, 10)})${url(mr)}`
+    : `- ${mr.title}（merged: ${mr.mergedAt.slice(0, 10)}）${url(mr)}`);
 
-    for (const mr of mrs) {
-      lines.push(`- ${mr.title} (merged: ${mr.mergedAt.slice(0, 10)})${url(mr)}`);
-    }
-
-    lines.push('');
-    lines.push(command);
-
-    return lines.join('\n');
-  }
-
-  const lines: string[] = [
-    `[teamai:mr-hint] 发现 ${mrs.length} 个近期已合入但尚未提炼的 MR。`,
-    '',
-    '请在任务完成后告知用户，可运行以下命令将这些 MR 提炼为 learning：',
-    '',
-  ];
-
-  for (const mr of mrs) {
-    const date = mr.mergedAt.slice(0, 10);
-    lines.push(`- ${mr.title}（merged: ${date}）${url(mr)}`);
-  }
-
-  lines.push('');
-  lines.push(command);
-
-  lines.push('');
-  lines.push('[teamai:mr-hint] Found merged MR(s) not yet imported into team knowledge base.');
-  lines.push(offersWorkflow
-    ? 'Please offer the user the teamai-import-from-mr workflow when convenient. Its describe proposes these MRs.'
-    : 'Please remind the user to run `teamai import --from-mr <url...>` when convenient.');
-
-  return lines.join('\n');
+  return offer.render({ count: String(mrs.length), mr_lines: mrs.map(line).join('\n'), command });
 }
 
 // ─── Main entry point ────────────────────────────────────
@@ -526,7 +497,7 @@ async function mrHintAllowed(localConfig?: LocalConfig | null): Promise<boolean>
  * well as from the standalone command.
  */
 export async function computeMrHintOutput(
-  language?: 'en' | 'zh',
+  language: HintLanguage,
   localConfig?: LocalConfig | null,
   session?: { sessionId: string; cwd: string; run: SessionRun },
 ): Promise<string | null> {
@@ -569,15 +540,17 @@ export async function computeMrHintOutput(
   // Load cache to filter already-hinted MRs
   const cache = loadCache(owner, repo);
   const alreadyHinted = new Set(cache.hintedMrIds);
+  const hook = await DefaultHooks.load('teamai-mr-hint', localConfig ?? null);
+  const { lookback_days: lookbackDays, max_mrs: limit } = hook.params;
 
-  // Query merged MRs from past LOOKBACK_DAYS days
-  const since = new Date(Date.now() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+  // Query the MRs merged in the past lookback_days days
+  const merged: MergedSince = { since: new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000), limit };
   let allMrs: MRSummary[] = [];
 
   if (provider === 'tgit') {
-    allMrs = await listTGitMergedMRs(owner, repo, since);
+    allMrs = await listTGitMergedMRs(owner, repo, merged);
   } else {
-    allMrs = await listGitHubMergedMRs(owner, repo, since);
+    allMrs = await listGitHubMergedMRs(owner, repo, merged);
   }
 
   // Filter out already-hinted MRs
@@ -598,7 +571,7 @@ export async function computeMrHintOutput(
   saveCache(owner, repo, { hintedMrIds: updatedIds, updatedAt: new Date().toISOString(), offered });
 
   // Build additionalContext hint
-  const hintText = buildHintMessage(newMrs, language, { offersWorkflow: offeredTo !== undefined });
+  const hintText = buildHintMessage(newMrs, hook, { language, offersWorkflow: offeredTo !== undefined });
 
   return JSON.stringify({
     hookSpecificOutput: {

@@ -4,10 +4,12 @@ import path from 'node:path';
 import os from 'node:os';
 import { applyPhase2Adjustments, hasGitCommitInSession, contributeCheckForSession } from '../contribute-check.js';
 import { appendEvent } from '../dashboard-collector.js';
-import {
-    CONTRIBUTE_KNOWLEDGE_GAP_BONUS,
-    CONTRIBUTE_LOW_QUALITY_BONUS,
-} from '../types.js';
+import { DefaultHooks } from '../default-hooks.js';
+
+/** teamai's friction reminder parameters: knowledge_gap_bonus 20 and low_quality_bonus 10. */
+const { params: frictionParams } = await DefaultHooks.load('teamai-friction-reminder', null);
+const CONTRIBUTE_KNOWLEDGE_GAP_BONUS = 20;
+const CONTRIBUTE_LOW_QUALITY_BONUS = 10;
 
 function makeTmpDir(): string {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-p2-check-test-'));
@@ -42,7 +44,7 @@ describe('applyPhase2Adjustments', () => {
     });
 
     it('returns base score unchanged when no recall-cache exists', () => {
-        const result = applyPhase2Adjustments(40, 'no-cache-session');
+        const result = applyPhase2Adjustments(frictionParams, 40, 'no-cache-session');
         expect(result.score).toBe(40);
         expect(result.isKnowledgeGap).toBe(false);
         expect(result.hasGitCommit).toBe(false);
@@ -59,7 +61,7 @@ describe('applyPhase2Adjustments', () => {
             missCount: 3,
         });
 
-        const result = applyPhase2Adjustments(30, sessionId);
+        const result = applyPhase2Adjustments(frictionParams, 30, sessionId);
         expect(result.score).toBe(30 + CONTRIBUTE_KNOWLEDGE_GAP_BONUS);
         expect(result.isKnowledgeGap).toBe(true);
     });
@@ -75,7 +77,7 @@ describe('applyPhase2Adjustments', () => {
             missCount: 1,
         });
 
-        const result = applyPhase2Adjustments(30, sessionId);
+        const result = applyPhase2Adjustments(frictionParams, 30, sessionId);
         expect(result.score).toBe(30 + CONTRIBUTE_LOW_QUALITY_BONUS);
         expect(result.isKnowledgeGap).toBe(true);
     });
@@ -91,7 +93,7 @@ describe('applyPhase2Adjustments', () => {
             missCount: 0,
         });
 
-        const result = applyPhase2Adjustments(30, sessionId);
+        const result = applyPhase2Adjustments(frictionParams, 30, sessionId);
         expect(result.score).toBe(30);
         expect(result.isKnowledgeGap).toBe(false);
     });
@@ -107,7 +109,7 @@ describe('applyPhase2Adjustments', () => {
             missCount: 0,
         });
 
-        const result = applyPhase2Adjustments(50, sessionId);
+        const result = applyPhase2Adjustments(frictionParams, 50, sessionId);
         expect(result.score).toBe(50);
         expect(result.hasGitCommit).toBe(false);
     });
@@ -125,7 +127,7 @@ describe('applyPhase2Adjustments', () => {
 
         const gitRepo = path.resolve(__dirname, '../../');
         const veryOldStart = '2020-01-01T00:00:00Z';
-        const result = applyPhase2Adjustments(5, sessionId, gitRepo, veryOldStart);
+        const result = applyPhase2Adjustments(frictionParams, 5, sessionId, gitRepo, veryOldStart);
         expect(result.score).toBe(5);
     });
 });

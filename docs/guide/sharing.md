@@ -397,6 +397,48 @@ hooks:
 
 agy then refuses the command with `tool call denied by pre-tool hook: rm -rf is blocked; run git clean -n first.`
 
+### Default hooks
+
+teamai's own hints keep their thresholds and texts in hook folders. A folder of the same name at the root of the team repo replaces one. To remind only after longer sessions, in the team's words:
+
+```bash
+cp -r "$(npm root -g)/teamai-cli/hooks/teamai-friction-reminder" hooks/
+```
+
+```yaml
+# hooks/teamai-friction-reminder/HOOK.yaml
+description: Remind after longer sessions only
+with:
+  min_tools: 30
+```
+
+```markdown
+<!-- hooks/teamai-friction-reminder/problem.md -->
+[acme] This session hit a snag. If the fix is not in the runbook yet, write it down.
+```
+
+After `teamai pull`, the reminder waits for 30 tool calls and opens with that line.
+
+| Folder | What it holds |
+|---|---|
+| `teamai-friction-reminder` | The Stop reminder to share what a session taught: thresholds, score weights, texts |
+| `teamai-mr-hint` | The session-start offer to import recently merged MRs: how far back, how many, texts |
+| `teamai-todowrite-hint` | The suggestion to search team knowledge once a task is planned |
+| `teamai-env-hint` | The session-start note naming the scope's team env variables and secrets |
+| `teamai-package-hint` | The session-start note that the team's package declarations changed |
+
+- `HOOK.yaml` holds `description` and `with:`. A key left out of `with:` keeps teamai's value.
+- A text is `<text>.md`, with `{{ name }}` variables. With `language: en` or `zh`, `<text>.en.md` or `<text>.zh.md` is used when the folder has it.
+- Each folder's `README.md` lists its parameters with their ranges, the variables each text offers, and the settings that turn it off. Those settings stay where they were, such as `sharing.contributeHint.enabled`.
+
+Pull refuses a replacement that sets a value out of range or a key the default does not take, reads a variable a text does not offer, leaves a text out, or has a `command`, and keeps teamai's folder in force:
+
+```text
+hooks/teamai-friction-reminder/ is refused, and teamai's default stays in force until it is fixed: HOOK.yaml: with.min_tools must be a whole number from 1 to 1000
+```
+
+A replacement replaces for the whole team, so pull refuses one in a namespace, such as `hooks/payments/teamai-friction-reminder/`.
+
 ## MCP servers
 
 Commit a server the team writes as a folder: `MCP.yaml` beside the files it runs. The directory name is the server's name: letters, digits, `-` and `_`.

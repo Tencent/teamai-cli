@@ -1,0 +1,142 @@
+{
+  "teamai-env-hint": {
+    "variables": {
+      "unset": "Team env variables in this scope: API_URL (the staging API), LOG_LEVEL. Run the commands that need them through `teamai env exec -- <command>` so they get this directory's team values.",
+      "en": "Team env variables in this scope: API_URL (the staging API), LOG_LEVEL. Run the commands that need them through `teamai env exec -- <command>` so they get this directory's team values.",
+      "zh": "Team env variables in this scope: API_URL (the staging API), LOG_LEVEL. Run the commands that need them through `teamai env exec -- <command>` so they get this directory's team values."
+    },
+    "secrets": {
+      "unset": "Team secrets in this scope: GITHUB_TOKEN (gh and the github MCP server), SENTRY_AUTH_TOKEN. Run the commands that need them through `teamai env exec -- <command>` so they get this directory's team values. Never ask for, read or print a secret value; if one is missing, ask the member to run `teamai env set KEY` in their own terminal.",
+      "en": "Team secrets in this scope: GITHUB_TOKEN (gh and the github MCP server), SENTRY_AUTH_TOKEN. Run the commands that need them through `teamai env exec -- <command>` so they get this directory's team values. Never ask for, read or print a secret value; if one is missing, ask the member to run `teamai env set KEY` in their own terminal.",
+      "zh": "Team secrets in this scope: GITHUB_TOKEN (gh and the github MCP server), SENTRY_AUTH_TOKEN. Run the commands that need them through `teamai env exec -- <command>` so they get this directory's team values. Never ask for, read or print a secret value; if one is missing, ask the member to run `teamai env set KEY` in their own terminal."
+    },
+    "variables-and-secrets": {
+      "unset": "Team env variables in this scope: API_URL (the staging API), LOG_LEVEL. Team secrets in this scope: GITHUB_TOKEN (gh and the github MCP server), SENTRY_AUTH_TOKEN. Run the commands that need them through `teamai env exec -- <command>` so they get this directory's team values. Never ask for, read or print a secret value; if one is missing, ask the member to run `teamai env set KEY` in their own terminal.",
+      "en": "Team env variables in this scope: API_URL (the staging API), LOG_LEVEL. Team secrets in this scope: GITHUB_TOKEN (gh and the github MCP server), SENTRY_AUTH_TOKEN. Run the commands that need them through `teamai env exec -- <command>` so they get this directory's team values. Never ask for, read or print a secret value; if one is missing, ask the member to run `teamai env set KEY` in their own terminal.",
+      "zh": "Team env variables in this scope: API_URL (the staging API), LOG_LEVEL. Team secrets in this scope: GITHUB_TOKEN (gh and the github MCP server), SENTRY_AUTH_TOKEN. Run the commands that need them through `teamai env exec -- <command>` so they get this directory's team values. Never ask for, read or print a secret value; if one is missing, ask the member to run `teamai env set KEY` in their own terminal."
+    }
+  },
+  "teamai-friction-reminder": {
+    "problem": {
+      "unset": "[teamai] This session may contain a problem worth documenting.\n\nConsider running `/teamai share what this session taught me` to summarize what you learned and share it with your team (or run `teamai skill get share`).",
+      "en": "[teamai] This session may contain a problem worth documenting.\n\nConsider running `/teamai share what this session taught me` to summarize what you learned and share it with your team (or run `teamai skill get share`).",
+      "zh": "[teamai] 这次会话可能有值得记录下来的问题。\n\n可以运行 `/teamai share what this session taught me`，总结这次会话学到的东西并分享给团队（也可以运行 `teamai skill get share`）。"
+    },
+    "problem-share-learnings": {
+      "unset": "[teamai] This session may contain a problem worth documenting.\n\nOffer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` and start it with the inputs it proposes, once the person confirms them.",
+      "en": "[teamai] This session may contain a problem worth documenting.\n\nOffer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` and start it with the inputs it proposes, once the person confirms them.",
+      "zh": "[teamai] 这次会话可能有值得记录下来的问题。\n\n向用户提议使用 teamai-share-learnings 工作流：运行 `teamai workflow start --describe teamai-share-learnings --driver skill`，等用户确认它建议的输入后，用这些输入启动它。"
+    },
+    "problem-task": {
+      "unset": "[teamai] This session may contain a problem worth documenting.\n\nTask: Fix the flaky login test\n\nConsider running `/teamai share what this session taught me` to summarize what you learned and share it with your team (or run `teamai skill get share`).",
+      "en": "[teamai] This session may contain a problem worth documenting.\n\nTask: Fix the flaky login test\n\nConsider running `/teamai share what this session taught me` to summarize what you learned and share it with your team (or run `teamai skill get share`).",
+      "zh": "[teamai] 这次会话可能有值得记录下来的问题。\n\n任务：Fix the flaky login test\n\n可以运行 `/teamai share what this session taught me`，总结这次会话学到的东西并分享给团队（也可以运行 `teamai skill get share`）。"
+    },
+    "problem-task-share-learnings": {
+      "unset": "[teamai] This session may contain a problem worth documenting.\n\nTask: Fix the flaky login test\n\nOffer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` and start it with the inputs it proposes, once the person confirms them.",
+      "en": "[teamai] This session may contain a problem worth documenting.\n\nTask: Fix the flaky login test\n\nOffer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` and start it with the inputs it proposes, once the person confirms them.",
+      "zh": "[teamai] 这次会话可能有值得记录下来的问题。\n\n任务：Fix the flaky login test\n\n向用户提议使用 teamai-share-learnings 工作流：运行 `teamai workflow start --describe teamai-share-learnings --driver skill`，等用户确认它建议的输入后，用这些输入启动它。"
+    },
+    "problem-reasons": {
+      "unset": "[teamai] This session may contain a problem worth documenting: you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times.\n\nConsider running `/teamai share what this session taught me` to summarize what you learned and share it with your team (or run `teamai skill get share`).",
+      "en": "[teamai] This session may contain a problem worth documenting: you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times.\n\nConsider running `/teamai share what this session taught me` to summarize what you learned and share it with your team (or run `teamai skill get share`).",
+      "zh": "[teamai] 这次会话可能有值得记录下来的问题：you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times。\n\n可以运行 `/teamai share what this session taught me`，总结这次会话学到的东西并分享给团队（也可以运行 `teamai skill get share`）。"
+    },
+    "problem-reasons-share-learnings": {
+      "unset": "[teamai] This session may contain a problem worth documenting: you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times.\n\nOffer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` and start it with the inputs it proposes, once the person confirms them.",
+      "en": "[teamai] This session may contain a problem worth documenting: you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times.\n\nOffer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` and start it with the inputs it proposes, once the person confirms them.",
+      "zh": "[teamai] 这次会话可能有值得记录下来的问题：you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times。\n\n向用户提议使用 teamai-share-learnings 工作流：运行 `teamai workflow start --describe teamai-share-learnings --driver skill`，等用户确认它建议的输入后，用这些输入启动它。"
+    },
+    "problem-reasons-task": {
+      "unset": "[teamai] This session may contain a problem worth documenting: you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times.\n\nTask: Fix the flaky login test\n\nConsider running `/teamai share what this session taught me` to summarize what you learned and share it with your team (or run `teamai skill get share`).",
+      "en": "[teamai] This session may contain a problem worth documenting: you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times.\n\nTask: Fix the flaky login test\n\nConsider running `/teamai share what this session taught me` to summarize what you learned and share it with your team (or run `teamai skill get share`).",
+      "zh": "[teamai] 这次会话可能有值得记录下来的问题：you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times。\n\n任务：Fix the flaky login test\n\n可以运行 `/teamai share what this session taught me`，总结这次会话学到的东西并分享给团队（也可以运行 `teamai skill get share`）。"
+    },
+    "problem-reasons-task-share-learnings": {
+      "unset": "[teamai] This session may contain a problem worth documenting: you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times.\n\nTask: Fix the flaky login test\n\nOffer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` and start it with the inputs it proposes, once the person confirms them.",
+      "en": "[teamai] This session may contain a problem worth documenting: you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times.\n\nTask: Fix the flaky login test\n\nOffer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` and start it with the inputs it proposes, once the person confirms them.",
+      "zh": "[teamai] 这次会话可能有值得记录下来的问题：you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times。\n\n任务：Fix the flaky login test\n\n向用户提议使用 teamai-share-learnings 工作流：运行 `teamai workflow start --describe teamai-share-learnings --driver skill`，等用户确认它建议的输入后，用这些输入启动它。"
+    },
+    "gap": {
+      "unset": "[teamai] The current task is not covered by the team knowledge base.\n\nConsider running `/teamai share what this session taught me` to summarize what you learned, share it with your team, and fill the knowledge gap (or run `teamai skill get share`).",
+      "en": "[teamai] The current task is not covered by the team knowledge base.\n\nConsider running `/teamai share what this session taught me` to summarize what you learned, share it with your team, and fill the knowledge gap (or run `teamai skill get share`).",
+      "zh": "[teamai] 团队知识库还没有覆盖当前任务。\n\n可以运行 `/teamai share what this session taught me`，总结这次会话学到的东西，分享给团队，补上知识库的这块空白（也可以运行 `teamai skill get share`）。"
+    },
+    "gap-share-learnings": {
+      "unset": "[teamai] The current task is not covered by the team knowledge base.\n\nOffer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` and start it with the inputs it proposes, once the person confirms them.",
+      "en": "[teamai] The current task is not covered by the team knowledge base.\n\nOffer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` and start it with the inputs it proposes, once the person confirms them.",
+      "zh": "[teamai] 团队知识库还没有覆盖当前任务。\n\n向用户提议使用 teamai-share-learnings 工作流：运行 `teamai workflow start --describe teamai-share-learnings --driver skill`，等用户确认它建议的输入后，用这些输入启动它。"
+    },
+    "gap-task": {
+      "unset": "[teamai] The current task is not covered by the team knowledge base.\n\nTask: Fix the flaky login test\n\nConsider running `/teamai share what this session taught me` to summarize what you learned, share it with your team, and fill the knowledge gap (or run `teamai skill get share`).",
+      "en": "[teamai] The current task is not covered by the team knowledge base.\n\nTask: Fix the flaky login test\n\nConsider running `/teamai share what this session taught me` to summarize what you learned, share it with your team, and fill the knowledge gap (or run `teamai skill get share`).",
+      "zh": "[teamai] 团队知识库还没有覆盖当前任务。\n\n任务：Fix the flaky login test\n\n可以运行 `/teamai share what this session taught me`，总结这次会话学到的东西，分享给团队，补上知识库的这块空白（也可以运行 `teamai skill get share`）。"
+    },
+    "gap-task-share-learnings": {
+      "unset": "[teamai] The current task is not covered by the team knowledge base.\n\nTask: Fix the flaky login test\n\nOffer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` and start it with the inputs it proposes, once the person confirms them.",
+      "en": "[teamai] The current task is not covered by the team knowledge base.\n\nTask: Fix the flaky login test\n\nOffer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` and start it with the inputs it proposes, once the person confirms them.",
+      "zh": "[teamai] 团队知识库还没有覆盖当前任务。\n\n任务：Fix the flaky login test\n\n向用户提议使用 teamai-share-learnings 工作流：运行 `teamai workflow start --describe teamai-share-learnings --driver skill`，等用户确认它建议的输入后，用这些输入启动它。"
+    },
+    "gap-reasons": {
+      "unset": "[teamai] The current task is not covered by the team knowledge base, and this session had signs of friction: you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times.\n\nConsider running `/teamai share what this session taught me` to summarize what you learned, share it with your team, and fill the knowledge gap (or run `teamai skill get share`).",
+      "en": "[teamai] The current task is not covered by the team knowledge base, and this session had signs of friction: you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times.\n\nConsider running `/teamai share what this session taught me` to summarize what you learned, share it with your team, and fill the knowledge gap (or run `teamai skill get share`).",
+      "zh": "[teamai] 团队知识库还没有覆盖当前任务，而且这次会话有不顺利的迹象：you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times。\n\n可以运行 `/teamai share what this session taught me`，总结这次会话学到的东西，分享给团队，补上知识库的这块空白（也可以运行 `teamai skill get share`）。"
+    },
+    "gap-reasons-share-learnings": {
+      "unset": "[teamai] The current task is not covered by the team knowledge base, and this session had signs of friction: you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times.\n\nOffer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` and start it with the inputs it proposes, once the person confirms them.",
+      "en": "[teamai] The current task is not covered by the team knowledge base, and this session had signs of friction: you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times.\n\nOffer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` and start it with the inputs it proposes, once the person confirms them.",
+      "zh": "[teamai] 团队知识库还没有覆盖当前任务，而且这次会话有不顺利的迹象：you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times。\n\n向用户提议使用 teamai-share-learnings 工作流：运行 `teamai workflow start --describe teamai-share-learnings --driver skill`，等用户确认它建议的输入后，用这些输入启动它。"
+    },
+    "gap-reasons-task": {
+      "unset": "[teamai] The current task is not covered by the team knowledge base, and this session had signs of friction: you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times.\n\nTask: Fix the flaky login test\n\nConsider running `/teamai share what this session taught me` to summarize what you learned, share it with your team, and fill the knowledge gap (or run `teamai skill get share`).",
+      "en": "[teamai] The current task is not covered by the team knowledge base, and this session had signs of friction: you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times.\n\nTask: Fix the flaky login test\n\nConsider running `/teamai share what this session taught me` to summarize what you learned, share it with your team, and fill the knowledge gap (or run `teamai skill get share`).",
+      "zh": "[teamai] 团队知识库还没有覆盖当前任务，而且这次会话有不顺利的迹象：you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times。\n\n任务：Fix the flaky login test\n\n可以运行 `/teamai share what this session taught me`，总结这次会话学到的东西，分享给团队，补上知识库的这块空白（也可以运行 `teamai skill get share`）。"
+    },
+    "gap-reasons-task-share-learnings": {
+      "unset": "[teamai] The current task is not covered by the team knowledge base, and this session had signs of friction: you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times.\n\nTask: Fix the flaky login test\n\nOffer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` and start it with the inputs it proposes, once the person confirms them.",
+      "en": "[teamai] The current task is not covered by the team knowledge base, and this session had signs of friction: you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times.\n\nTask: Fix the flaky login test\n\nOffer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` and start it with the inputs it proposes, once the person confirms them.",
+      "zh": "[teamai] 团队知识库还没有覆盖当前任务，而且这次会话有不顺利的迹象：you interrupted the AI twice, you rejected 1 tool call, you corrected the AI 3 times, the AI retried failing tools 6 times。\n\n任务：Fix the flaky login test\n\n向用户提议使用 teamai-share-learnings 工作流：运行 `teamai workflow start --describe teamai-share-learnings --driver skill`，等用户确认它建议的输入后，用这些输入启动它。"
+    }
+  },
+  "teamai-mr-hint": {
+    "offer-command": {
+      "unset": "[teamai:mr-hint] 发现 2 个近期已合入但尚未提炼的 MR。\n\n请在任务完成后告知用户，可运行以下命令将这些 MR 提炼为 learning：\n\n- Retry the token refresh once（merged: 2026-11-02）\n- Drop the v1 login endpoint（merged: 2026-11-05）\n\n  teamai import --from-mr https://github.com/acme/api/pull/12 https://github.com/acme/api/pull/15\n\n[teamai:mr-hint] Found merged MR(s) not yet imported into team knowledge base.\nPlease remind the user to run `teamai import --from-mr <url...>` when convenient.",
+      "en": "[teamai:mr-hint] Found 2 recently merged MR(s) not yet imported into the team knowledge base.\n\nAfter this task, tell the user they can turn these MRs into learnings with:\n\n- Retry the token refresh once (merged: 2026-11-02)\n- Drop the v1 login endpoint (merged: 2026-11-05)\n\n  teamai import --from-mr https://github.com/acme/api/pull/12 https://github.com/acme/api/pull/15",
+      "zh": "[teamai:mr-hint] 发现 2 个近期已合入但尚未提炼的 MR。\n\n请在任务完成后告知用户，可运行以下命令将这些 MR 提炼为 learning：\n\n- Retry the token refresh once（merged: 2026-11-02）\n- Drop the v1 login endpoint（merged: 2026-11-05）\n\n  teamai import --from-mr https://github.com/acme/api/pull/12 https://github.com/acme/api/pull/15\n\n[teamai:mr-hint] Found merged MR(s) not yet imported into team knowledge base.\nPlease remind the user to run `teamai import --from-mr <url...>` when convenient."
+    },
+    "offer-workflow": {
+      "unset": "[teamai:mr-hint] 发现 2 个近期已合入但尚未提炼的 MR。\n\n请在任务完成后告知用户，可运行以下命令将这些 MR 提炼为 learning：\n\n- Retry the token refresh once（merged: 2026-11-02） https://github.com/acme/api/pull/12\n- Drop the v1 login endpoint（merged: 2026-11-05） https://github.com/acme/api/pull/15\n\n  teamai workflow start --describe teamai-import-from-mr --driver skill\n\n[teamai:mr-hint] Found merged MR(s) not yet imported into team knowledge base.\nPlease offer the user the teamai-import-from-mr workflow when convenient. Its describe proposes these MRs.",
+      "en": "[teamai:mr-hint] Found 2 recently merged MR(s) not yet imported into the team knowledge base.\n\nAfter this task, offer the user to turn these MRs into learnings with the teamai-import-from-mr workflow. Its describe proposes these MRs:\n\n- Retry the token refresh once (merged: 2026-11-02) https://github.com/acme/api/pull/12\n- Drop the v1 login endpoint (merged: 2026-11-05) https://github.com/acme/api/pull/15\n\n  teamai workflow start --describe teamai-import-from-mr --driver skill",
+      "zh": "[teamai:mr-hint] 发现 2 个近期已合入但尚未提炼的 MR。\n\n请在任务完成后告知用户，可运行以下命令将这些 MR 提炼为 learning：\n\n- Retry the token refresh once（merged: 2026-11-02） https://github.com/acme/api/pull/12\n- Drop the v1 login endpoint（merged: 2026-11-05） https://github.com/acme/api/pull/15\n\n  teamai workflow start --describe teamai-import-from-mr --driver skill\n\n[teamai:mr-hint] Found merged MR(s) not yet imported into team knowledge base.\nPlease offer the user the teamai-import-from-mr workflow when convenient. Its describe proposes these MRs."
+    }
+  },
+  "teamai-package-hint": {
+    "npm-and-plugin": {
+      "unset": "[teamai:pkg-hint] Team package declarations changed (2 npm packages and 1 Claude plugin).\nReview the packages section, then run `teamai packages` to apply it.\nTeamAI never installs third-party package or plugin code automatically at SessionStart.",
+      "en": "[teamai:pkg-hint] Team package declarations changed (2 npm packages and 1 Claude plugin).\nReview the packages section, then run `teamai packages` to apply it.\nTeamAI never installs third-party package or plugin code automatically at SessionStart.",
+      "zh": "[teamai:pkg-hint] Team package declarations changed (2 npm packages and 1 Claude plugin).\nReview the packages section, then run `teamai packages` to apply it.\nTeamAI never installs third-party package or plugin code automatically at SessionStart."
+    },
+    "one-npm": {
+      "unset": "[teamai:pkg-hint] Team package declarations changed (1 npm package).\nReview the packages section, then run `teamai packages` to apply it.\nTeamAI never installs third-party package or plugin code automatically at SessionStart.",
+      "en": "[teamai:pkg-hint] Team package declarations changed (1 npm package).\nReview the packages section, then run `teamai packages` to apply it.\nTeamAI never installs third-party package or plugin code automatically at SessionStart.",
+      "zh": "[teamai:pkg-hint] Team package declarations changed (1 npm package).\nReview the packages section, then run `teamai packages` to apply it.\nTeamAI never installs third-party package or plugin code automatically at SessionStart."
+    },
+    "plugins-and-marketplace": {
+      "unset": "[teamai:pkg-hint] Team package declarations changed (2 Claude plugins and 1 Claude marketplace).\nReview the packages section, then run `teamai packages` to apply it.\nTeamAI never installs third-party package or plugin code automatically at SessionStart.",
+      "en": "[teamai:pkg-hint] Team package declarations changed (2 Claude plugins and 1 Claude marketplace).\nReview the packages section, then run `teamai packages` to apply it.\nTeamAI never installs third-party package or plugin code automatically at SessionStart.",
+      "zh": "[teamai:pkg-hint] Team package declarations changed (2 Claude plugins and 1 Claude marketplace).\nReview the packages section, then run `teamai packages` to apply it.\nTeamAI never installs third-party package or plugin code automatically at SessionStart."
+    },
+    "all": {
+      "unset": "[teamai:pkg-hint] Team package declarations changed (3 npm packages and 1 Claude plugin and 2 Claude marketplaces).\nReview the packages section, then run `teamai packages` to apply it.\nTeamAI never installs third-party package or plugin code automatically at SessionStart.",
+      "en": "[teamai:pkg-hint] Team package declarations changed (3 npm packages and 1 Claude plugin and 2 Claude marketplaces).\nReview the packages section, then run `teamai packages` to apply it.\nTeamAI never installs third-party package or plugin code automatically at SessionStart.",
+      "zh": "[teamai:pkg-hint] Team package declarations changed (3 npm packages and 1 Claude plugin and 2 Claude marketplaces).\nReview the packages section, then run `teamai packages` to apply it.\nTeamAI never installs third-party package or plugin code automatically at SessionStart."
+    }
+  },
+  "teamai-todowrite-hint": {
+    "message": {
+      "unset": "[teamai:todowrite-hint] 任务已规划。\n\n如本次任务可能受益于团队知识库（非简单局部改动、用户未提供相关上下文），\n建议通过 Agent tool 调用 teamai-recall subagent 检索一次。\n若用户已给出充分上下文或仅为简单修改，可跳过。\n\nTask plan detected — if this task may benefit from team knowledge\n(not a trivial local change, user has not provided relevant context),\nconsider invoking the `teamai-recall` subagent once before proceeding.",
+      "en": "[teamai:todowrite-hint] Task plan detected.\n\nIf this task may benefit from the team knowledge base (not a trivial local\nchange, and the user has not provided the relevant context), call the\n`teamai-recall` subagent once via the Agent tool before proceeding.\nSkip that when the user already gave enough context or the change is trivial.",
+      "zh": "[teamai:todowrite-hint] 任务已规划。\n\n如本次任务可能受益于团队知识库（非简单局部改动、用户未提供相关上下文），\n建议通过 Agent tool 调用 teamai-recall subagent 检索一次。\n若用户已给出充分上下文或仅为简单修改，可跳过。\n\nTask plan detected — if this task may benefit from team knowledge\n(not a trivial local change, user has not provided relevant context),\nconsider invoking the `teamai-recall` subagent once before proceeding."
+    }
+  }
+}

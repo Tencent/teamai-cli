@@ -185,7 +185,7 @@ sharing:
 
 On one machine, set `mrHintEnabled: false` in `~/.teamai/config.yaml`, or `TEAMAI_MR_HINT_DISABLED=1`.
 
-`language` in `teamai.yaml` is `en` or `zh`. `en` makes the built-in recall rule, the TodoWrite hint, and the merged-MR hint English only. Omit it, or set `zh`, and those texts stay bilingual. The next `teamai pull` rewrites the recall rule.
+`language` in `teamai.yaml` is `en` or `zh`. `en` makes the built-in recall rule, the TodoWrite hint, and the merged-MR hint English only. Omit it, or set `zh`, and those texts stay bilingual. `zh` shows the friction reminder in Chinese. The next `teamai pull` rewrites the recall rule.
 
 ### Knowledge Base Maintenance
 

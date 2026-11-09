@@ -10,9 +10,12 @@ import { readContributeState, writeContributeState } from '../contribute-check.j
 import { buildHandlerRegistry } from '../hook-handlers.js';
 import { SessionShare } from '../session-share.js';
 import type { LocalConfig } from '../types.js';
-import { CONTRIBUTE_BASE_THRESHOLD, CONTRIBUTE_SMART_THRESHOLD } from '../types.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { skillHarness } from './helpers/skill-harness.js';
+
+/** min_tools and min_score of hooks/teamai-friction-reminder/HOOK.yaml, teamai's default. */
+const CONTRIBUTE_BASE_THRESHOLD = 15;
+const CONTRIBUTE_SMART_THRESHOLD = 20;
 
 const SESSION = '7c1e0000-0000-4000-8000-000000000003';
 const DESCRIBE = 'teamai workflow start --describe teamai-share-learnings --driver skill';

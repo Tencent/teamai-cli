@@ -5,6 +5,7 @@ import { HookStdinSchema, stdinString, type HookStdin } from './hook-dispatch.js
 import { log } from './utils/logger.js';
 import { deriveSessionId } from './utils/session-id.js';
 import { getUserHome } from './utils/home.js';
+import { DefaultHooks, type DefaultHook, type HintLanguage } from './default-hooks.js';
 
 // ─── TodoWrite hint data flow ───────────────────────────
 //
@@ -124,36 +125,9 @@ export async function readStdin(): Promise<HookInput | null> {
   }
 }
 
-/**
- * Reminder text emitted via additionalContext.
- * English only when language is `en`; otherwise the historical bilingual text.
- *
- * Kept as a small pure function so unit tests can assert on its content
- * without exercising STDIN handling.
- */
-export function buildHintMessage(language?: 'en' | 'zh'): string {
-  if (language === 'en') {
-    return [
-      '[teamai:todowrite-hint] Task plan detected.',
-      '',
-      'If this task may benefit from the team knowledge base (not a trivial local',
-      'change, and the user has not provided the relevant context), call the',
-      '`teamai-recall` subagent once via the Agent tool before proceeding.',
-      'Skip that when the user already gave enough context or the change is trivial.',
-    ].join('\n');
-  }
-
-  return [
-    '[teamai:todowrite-hint] 任务已规划。',
-    '',
-    '如本次任务可能受益于团队知识库（非简单局部改动、用户未提供相关上下文），',
-    '建议通过 Agent tool 调用 teamai-recall subagent 检索一次。',
-    '若用户已给出充分上下文或仅为简单修改，可跳过。',
-    '',
-    'Task plan detected — if this task may benefit from team knowledge',
-    '(not a trivial local change, user has not provided relevant context),',
-    'consider invoking the `teamai-recall` subagent once before proceeding.',
-  ].join('\n');
+/** The reminder emitted via additionalContext: `message.md` of `hook`, or `message.en.md` when language is `en`. */
+export function buildHintMessage(hook: DefaultHook<'teamai-todowrite-hint'>, language?: HintLanguage): string {
+  return hook.text('message', language).render({});
 }
 
 /**
@@ -186,13 +160,17 @@ export async function todoWriteHint(tool?: string): Promise<void> {
     return;
   }
 
-  const { loadTeamAgentLanguageForHook } = await import('./config.js');
-  const language = await loadTeamAgentLanguageForHook(input.payload, tool);
+  // The scope a hook finds, project over user: its teamai.yaml `language` and its replacement of the hint apply. A
+  // lookup failure keeps teamai's historical bilingual text.
+  const { resolveHookConfig } = await import('./dashboard-collector.js');
+  const { loadTeamAgentLanguage } = await import('./config.js');
+  const scope = await resolveHookConfig(input.payload, tool ?? 'claude').catch(() => null);
+  const language = await loadTeamAgentLanguage(scope).catch(() => undefined);
 
   const hookOutput = JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PostToolUse',
-      additionalContext: buildHintMessage(language),
+      additionalContext: buildHintMessage(await DefaultHooks.load('teamai-todowrite-hint', scope), language),
     },
   });
 

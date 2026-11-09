@@ -10,23 +10,9 @@ import { readRecallQuality } from './recall-quality.js';
 import { deriveSessionId } from './utils/session-id.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { redactWithEnv } from './utils/redact.js';
-import type { ContributeState, DashboardEvent, SessionShareOffered, SessionFriction } from './types.js';
-import {
-  CONTRIBUTE_SMART_THRESHOLD,
-  CONTRIBUTE_BASE_THRESHOLD,
-  CONTRIBUTE_FASTPATH_TTL_MS,
-  CONTRIBUTE_KNOWLEDGE_GAP_BONUS,
-  CONTRIBUTE_LOW_QUALITY_BONUS,
-  CONTRIBUTE_LOW_QUALITY_THRESHOLD,
-  CONTRIBUTE_GIT_COMMIT_DOWNWEIGHT,
-  CONTRIBUTE_INTERRUPT_WEIGHT,
-  CONTRIBUTE_REJECT_WEIGHT,
-  CONTRIBUTE_CORRECTION_WEIGHT,
-  CONTRIBUTE_TOOLERROR_TIERS,
-  CONTRIBUTE_SKILL_BONUS,
-  CONTRIBUTE_DIVERSITY_BONUS_MAX,
-  SessionShareOfferedSchema,
-} from './types.js';
+import type { ContributeState, DashboardEvent, LocalConfig, SessionShareOffered, SessionFriction } from './types.js';
+import { CONTRIBUTE_FASTPATH_TTL_MS, CONTRIBUTE_GIT_COMMIT_DOWNWEIGHT, SessionShareOfferedSchema } from './types.js';
+import { DefaultHooks, type DefaultHook, type DefaultHookParams, type HintLanguage } from './default-hooks.js';
 import { getUserHome } from './utils/home.js';
 import { HookStdinSchema, stdinString, type HookStdin } from './hook-dispatch.js';
 
@@ -46,8 +32,10 @@ import { HookStdinSchema, stdinString, type HookStdin } from './hook-dispatch.js
 //      │   ├─ state.contributed → exit(no hint)
 //      │   └─ state.hinted      → exit(no hint, dedup)
 //      │
+//      ├─ the teamai-friction-reminder folder: min_tools, min_score, weights, texts
+//      │
 //      ├─ Layer 1 fast-path (short debounce, NOT long-term suppression):
-//      │   └─ toolCount < BASE_THRESHOLD AND lastEvaluated within FASTPATH_TTL_MS (5 min)
+//      │   └─ toolCount < min_tools AND lastEvaluated within FASTPATH_TTL_MS (5 min)
 //      │      → exit(no hint), no events read
 //      │
 //      ├─ Layer 2:
@@ -55,7 +43,7 @@ import { HookStdinSchema, stdinString, type HookStdin } from './hook-dispatch.js
 //      │   │             → reuse score + cached explanation context
 //      │   └─ cache miss → readEvents → computeSmartScore + context
 //      │
-//      ├─ score < SMART_THRESHOLD → persist updates, exit(no hint)
+//      ├─ score < min_score → persist updates, exit(no hint)
 //      │
 //      ├─ reminder fires → offer() (session-share.ts), only now:
 //      │   ├─ undefined (teamai launched the session, unattended, workflow place,
@@ -343,9 +331,12 @@ export async function readReminderDecisions(): Promise<Map<string, boolean>> {
   return decisions;
 }
 
-/** Points from the tool-error retry gradient (highest matching tier wins). */
-function toolErrorPoints(toolError: number): number {
-  for (const tier of CONTRIBUTE_TOOLERROR_TIERS) {
+/** The thresholds and weights of the friction reminder, from `with:` of hooks/teamai-friction-reminder/HOOK.yaml. */
+export type FrictionReminderParams = DefaultHookParams<'teamai-friction-reminder'>;
+
+/** Points from the tool-error retry gradient (the first tier whose min the count reaches wins). */
+function toolErrorPoints(tiers: FrictionReminderParams['tool_error_tiers'], toolError: number): number {
+  for (const tier of tiers) {
     if (toolError >= tier.min) return tier.points;
   }
 
@@ -357,11 +348,11 @@ function toolErrorPoints(toolError: number): number {
  * or the AI had to fight its tools. A session is worth documenting because it hit
  * a real snag, not because it ran a lot of tools.
  *
- * Primary signals (each near-threshold on its own):
- * - interrupt   × CONTRIBUTE_INTERRUPT_WEIGHT   (user stopped a wrong direction)
- * - toolReject  × CONTRIBUTE_REJECT_WEIGHT       (user denied a tool call)
- * - correction  × CONTRIBUTE_CORRECTION_WEIGHT   (re-prompt to course-correct)
- * - toolError   → CONTRIBUTE_TOOLERROR_TIERS      (AI retried failing tools)
+ * Primary signals (each near-threshold on its own), weighted by `params`:
+ * - interrupt   × weights.interrupt   (user stopped a wrong direction)
+ * - toolReject  × weights.reject      (user denied a tool call)
+ * - correction  × weights.correction  (re-prompt to course-correct)
+ * - toolError   → tool_error_tiers    (AI retried failing tools)
  *
  * Scale is only a tiny nudge (diversity + skill use, max ~10) and can never
  * trigger a hint on its own — that is the whole point of the rewrite.
@@ -370,7 +361,7 @@ function toolErrorPoints(toolError: number): number {
  * compile; without it the score reflects the scale nudge alone (effectively "no
  * friction detected").
  */
-export function computeSmartScore(events: DashboardEvent[], friction?: SessionFriction): number {
+export function computeSmartScore(params: FrictionReminderParams, events: DashboardEvent[], friction?: SessionFriction): number {
   if (events.length === 0) return 0;
 
   const toolNames = new Set<string>();
@@ -392,20 +383,20 @@ export function computeSmartScore(events: DashboardEvent[], friction?: SessionFr
 
   // ── Primary: friction signals ──
   if (friction) {
-    score += friction.interrupt * CONTRIBUTE_INTERRUPT_WEIGHT;
-    score += friction.toolReject * CONTRIBUTE_REJECT_WEIGHT;
-    score += friction.correction * CONTRIBUTE_CORRECTION_WEIGHT;
-    score += toolErrorPoints(friction.toolError);
+    score += friction.interrupt * params.weights.interrupt;
+    score += friction.toolReject * params.weights.reject;
+    score += friction.correction * params.weights.correction;
+    score += toolErrorPoints(params.tool_error_tiers, friction.toolError);
   }
 
   // ── Secondary: tiny scale nudge (never triggers alone) ──
   if (hasSkills) {
-    score += CONTRIBUTE_SKILL_BONUS;
+    score += params.skill_bonus;
   }
 
   if (totalToolCalls > 0) {
     const diversity = toolNames.size / Math.min(totalToolCalls, 10);
-    score += Math.min(Math.round(diversity * CONTRIBUTE_DIVERSITY_BONUS_MAX), CONTRIBUTE_DIVERSITY_BONUS_MAX);
+    score += Math.min(Math.round(diversity * params.diversity_bonus_max), params.diversity_bonus_max);
   }
 
   return score;
@@ -440,6 +431,7 @@ export function hasGitCommitInSession(cwd: string, sessionStartIso: string): boo
  * Returns the adjusted score and metadata flags.
  */
 export function applyPhase2Adjustments(
+  params: FrictionReminderParams,
   baseScore: number,
   sessionId: string,
   cwd?: string,
@@ -455,10 +447,10 @@ export function applyPhase2Adjustments(
     const totalRecalls = recallQuality.hitCount + recallQuality.missCount;
 
     if (totalRecalls > 0 && recallQuality.hitCount === 0) {
-      score += CONTRIBUTE_KNOWLEDGE_GAP_BONUS;
+      score += params.knowledge_gap_bonus;
       isKnowledgeGap = true;
-    } else if (recallQuality.topScore < CONTRIBUTE_LOW_QUALITY_THRESHOLD && recallQuality.hitCount > 0) {
-      score += CONTRIBUTE_LOW_QUALITY_BONUS;
+    } else if (recallQuality.topScore < params.low_quality_threshold && recallQuality.hitCount > 0) {
+      score += params.low_quality_bonus;
       isKnowledgeGap = true;
     }
   }
@@ -618,32 +610,24 @@ interface HintContext {
 /** The command that describes teamai-share-learnings's inputs, with values proposed for the calling session. */
 const SHARE_LEARNINGS_DESCRIBE = 'teamai workflow start --describe teamai-share-learnings --driver skill';
 
-/** Build the STDOUT hint from the same context that drove the score. */
-function buildHint({ friction, promptSummary, isKnowledgeGap, offersShareLearnings }: HintContext): string {
+/**
+ * Build the STDOUT hint from the same context that drove the score, with `reminder`'s texts: the headline, the task
+ * when there is one, and the action, separated by a blank line.
+ */
+function buildHint({ friction, promptSummary, isKnowledgeGap, offersShareLearnings }: HintContext, reminder: DefaultHook<'teamai-friction-reminder'>, language: HintLanguage): string {
   const reasons = formatFrictionReasons(friction).join(', ');
-  let headline: string;
 
-  if (isKnowledgeGap) {
-    headline = reasons
-      ? `[teamai] The current task is not covered by the team knowledge base, and this session had signs of friction: ${reasons}.`
-      : '[teamai] The current task is not covered by the team knowledge base.';
-  } else {
-    headline = reasons
-      ? `[teamai] This session may contain a problem worth documenting: ${reasons}.`
-      : '[teamai] This session may contain a problem worth documenting.';
-  }
+  const headline = reasons
+    ? reminder.text(isKnowledgeGap ? 'gap-reasons' : 'problem-reasons', language).render({ reasons })
+    : reminder.text(isKnowledgeGap ? 'gap' : 'problem', language).render({});
 
-  const task = promptSummary ? `\n\nTask: ${promptSummary}` : '';
+  const task = promptSummary ? [reminder.text('task', language).render({ task: promptSummary })] : [];
 
-  if (offersShareLearnings) {
-    return `${headline}${task}\n\nOffer the person the teamai-share-learnings workflow: run \`${SHARE_LEARNINGS_DESCRIBE}\` and start it with the inputs it proposes, once the person confirms them.`;
-  }
+  const action = offersShareLearnings
+    ? reminder.text('action-share-learnings', language).render({ command: SHARE_LEARNINGS_DESCRIBE })
+    : reminder.text(isKnowledgeGap ? 'action-gap' : 'action', language).render({});
 
-  const action = isKnowledgeGap
-    ? 'Consider running `/teamai share what this session taught me` to summarize what you learned, share it with your team, and fill the knowledge gap (or run `teamai skill get share`).'
-    : 'Consider running `/teamai share what this session taught me` to summarize what you learned and share it with your team (or run `teamai skill get share`).';
-
-  return `${headline}${task}\n\n${action}`;
+  return [headline, ...task, action].join('\n\n');
 }
 
 /**
@@ -656,7 +640,7 @@ function buildHint({ friction, promptSummary, isKnowledgeGap, offersShareLearnin
  *     - state.hinted      → skip (hint already emitted, dedup)
  *
  *   Layer 1 fast-path (short debounce, skips events.jsonl read):
- *     - toolCount < BASE_THRESHOLD AND lastEvaluated within FASTPATH_TTL_MS (5 min)
+ *     - toolCount < min_tools AND lastEvaluated within FASTPATH_TTL_MS (5 min)
  *       → skip (small session, just re-evaluated — debounce repeat Stop hooks)
  *
  *   Layer 2 score resolution:
@@ -664,7 +648,7 @@ function buildHint({ friction, promptSummary, isKnowledgeGap, offersShareLearnin
  *                   → reuse cached explanation context, no events read
  *     - cache miss: readEvents → computeSmartScore + explanation context
  *
- *   Hint emission (score >= SMART_THRESHOLD):
+ *   Hint emission (score >= min_score, the thresholds and texts from the teamai-friction-reminder folder):
  *     - `offer`, when given, says what to offer with the teamai-share-learnings workflow; it runs only here
  *     - Return hint string built from cached friction + task context, naming teamai-share-learnings when offered
  *
@@ -682,6 +666,7 @@ export async function contributeCheckForSession(
   transcriptPath?: string,
   stashInsteadOfReturn = false,
   offer?: () => Promise<SessionShareOffered | undefined>,
+  scope: LocalConfig | null = null,
 ): Promise<{ hint: string | null }> {
   const state = await readContributeState(sessionId);
   const now = Date.now();
@@ -696,6 +681,9 @@ export async function contributeCheckForSession(
     return { hint: null };
   }
 
+  const reminder = await DefaultHooks.load('teamai-friction-reminder', scope);
+  const { params } = reminder;
+
   // Shared debounce for Layer 1 (skip events read) and Layer 2 (reuse cached
   // score). Beyond this window we always re-read events.jsonl so a stale
   // snapshot can't suppress a session that got busier later on.
@@ -706,9 +694,9 @@ export async function contributeCheckForSession(
   if (
     debounceFresh &&
     state.toolCount !== undefined &&
-    state.toolCount < CONTRIBUTE_BASE_THRESHOLD
+    state.toolCount < params.min_tools
   ) {
-    log.debug(`contribute-check: fast-path skip (toolCount ${state.toolCount} < ${CONTRIBUTE_BASE_THRESHOLD}, debounce fresh)`);
+    log.debug(`contribute-check: fast-path skip (toolCount ${state.toolCount} < ${params.min_tools}, debounce fresh)`);
 
     return { hint: null };
   }
@@ -753,7 +741,7 @@ export async function contributeCheckForSession(
     }
 
     promptSummary = extractPromptSummary(sessionEvents);
-    score = computeSmartScore(sessionEvents, friction);
+    score = computeSmartScore(params, sessionEvents, friction);
     toolCount = countToolUseEvents(sessionEvents);
     uniqueTools = countUniqueTools(sessionEvents);
     needsPersist = true;
@@ -765,12 +753,12 @@ export async function contributeCheckForSession(
     log.debug(
       `contribute-check: session ${sessionId.slice(0, 16)} friction score = ${score} `
       + `(interrupt=${friction.interrupt}, reject=${friction.toolReject}, `
-      + `correction=${friction.correction}, toolError=${friction.toolError}, threshold=${CONTRIBUTE_SMART_THRESHOLD})`,
+      + `correction=${friction.correction}, toolError=${friction.toolError}, threshold=${params.min_score})`,
     );
   }
 
   // Phase 2: apply knowledge gap + git commit adjustments
-  const phase2 = applyPhase2Adjustments(score, sessionId, cwd, sessionStartIso);
+  const phase2 = applyPhase2Adjustments(params, score, sessionId, cwd, sessionStartIso);
   score = phase2.score;
   const { isKnowledgeGap, hasGitCommit } = phase2;
 
@@ -783,13 +771,15 @@ export async function contributeCheckForSession(
 
   // Hard gate: even a friction-heavy session is not worth documenting if it did
   // almost no work (e.g. a single rejected command). Requires real activity.
-  const willHint = score >= CONTRIBUTE_SMART_THRESHOLD && toolCount >= CONTRIBUTE_BASE_THRESHOLD;
+  const willHint = score >= params.min_score && toolCount >= params.min_tools;
 
   // Build the hint text once; it is either returned (Stop stdout) or stashed for
   // UserPromptSubmit delivery, never both.
   // The teamai-share-learnings offer is computed only on the Stop where the reminder fires.
   const offered = willHint && offer ? await offer() : undefined;
-  const hintText = willHint ? buildHint({ friction, promptSummary, isKnowledgeGap, offersShareLearnings: offered !== undefined }) : null;
+  // The team's `language` picks each text's variant; it is read only on the Stop where the reminder fires.
+  const language = willHint ? await (await import('./config.js')).loadTeamAgentLanguage(scope) : undefined;
+  const hintText = willHint ? buildHint({ friction, promptSummary, isKnowledgeGap, offersShareLearnings: offered !== undefined }, reminder, language) : null;
 
   // Single write: re-read first to avoid clobbering parallel /contribute marks.
   // Skip the write on cache hit + low score (state is already current).
@@ -915,6 +905,7 @@ export async function contributeCheck(toolArg?: string): Promise<void> {
     stdinData.transcriptPath,
     stopStdoutUnsupported(tool),
     offer,
+    config,
   );
 
   if (hint !== null) {
