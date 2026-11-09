@@ -298,6 +298,23 @@ describe('pull keeps a delivered copy the member changed (#822 item 5)', () => {
     expect(fs.existsSync(cursorAgent())).toBe(false);
   });
 
+  it('keeps a local file that replaced a tombstoned skill directory', async () => {
+    await pull();
+    fs.rmSync(claudeSkill(), { recursive: true });
+    fs.writeFileSync(claudeSkill(), 'My replacement file.\n');
+    teamCommit((repo) => {
+      fs.rmSync(path.join(repo, 'skills', 'team-skill'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'skills', '.removed'), 'team-skill\n');
+    });
+
+    const output = await pull();
+
+    expect(fs.existsSync(claudeSkill()), output).toBe(true);
+    expect(read(claudeSkill())).toBe('My replacement file.\n');
+    expect(output).toContain(`Kept ${claudeSkill()}: the team removed team-skill, but you changed this copy.`);
+    expect(fs.existsSync(cursorScript())).toBe(false);
+  });
+
   it('keeps an edited copy of a rule the team deleted without a tombstone, and removes the untouched one', async () => {
     await pull();
     fs.writeFileSync(claudeRule(), '# Team rule\n\nMy version.\n');
