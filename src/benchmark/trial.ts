@@ -42,9 +42,11 @@ export async function commitCheckFiles(cache: string, suite: Suite): Promise<{ o
   const files = new Map<string, Added>();
 
   for (const task of suite.tasks) {
-    if (task.judge.kind !== 'check' || !task.judge.files) continue;
-    const [first, ...rest] = task.judge.files;
-    const committed = await commitFiles(cache, task.judge.files);
+    const written = task.judge.check?.files;
+
+    if (!written) continue;
+    const [first, ...rest] = written;
+    const committed = await commitFiles(cache, written);
 
     if ('failed' in committed) return { ok: false, task: task.id, failed: committed.failed };
     files.set(task.id, { kind: 'suite', commit: committed.commit, paths: [first.path, ...rest.map((file) => file.path)] });
@@ -137,7 +139,7 @@ export type CheckStepMode = 'baseline' | 'trial';
  * run's checkout or the commit cache. Git and the check run with `env` without the names a strict sandbox withholds, which this
  * process may have set itself, until `signal` or the lease's deadline stops them, and the verdict is classified here, once.
  * A trial's check that ran writes the trial's correctness label, decided by the check, through the store `teamai score
- * write` writes to. Answers its output, `could_not_run` with `prepare_failed` when putting back the protected paths or
+ * write` writes to, but not one that passed a task with success criteria, whose judge then decides. Answers its output, `could_not_run` with `prepare_failed` when putting back the protected paths or
  * writing check.add failed, or why the step could not check at all, with one progress line either way.
  */
 export async function runCheckStep({ mode, env: given, cwd, signal }: { mode: CheckStepMode; env: NodeJS.ProcessEnv; cwd: string; signal?: AbortSignal }): Promise<{ output: CheckOutput } | { failure: WorkflowFailure }> {
@@ -183,7 +185,8 @@ export async function runCheckStep({ mode, env: given, cwd, signal }: { mode: Ch
       return { output: { result: 'could_not_run', cause: verdict.cause, label: '' } };
     case 'passed':
     case 'failed': {
-      if (!at) return { output: { result: verdict.verdict, cause: '', label: '' } };
+      // A check that passes a task with success criteria leaves its trial to the judge, so it writes no label.
+      if (!at || (verdict.verdict === 'passed' && task.judge.criteria === true)) return { output: { result: verdict.verdict, cause: '', label: '' } };
       const stored = await storeCheckLabel({ config, run, plan, subject: { runId: run.id, step: `${prefix}${at.step}`, pass: workPass(run, `${prefix}${at.step}`) }, task: task.id, result: verdict.verdict });
 
       return 'failure' in stored ? stored : { output: { result: verdict.verdict, cause: '', label: stored.version } };
@@ -227,13 +230,13 @@ async function storeCheckLabel({ config, run, plan, subject, task, result }: { c
 }
 
 /** The check task `step` checks in `mode`, its check, and for a trial's check, the trial as its lines name it. */
-function checkedBy(plan: BenchmarkPlan, mode: CheckStepMode, step: string): { task: BenchmarkPlan['tasks'][number]; judge: Extract<BenchmarkPlan['tasks'][number]['judge'], { kind: 'check' }>; at?: TrialAt & Pick<PlannedTrial, 'step'> } | undefined {
+function checkedBy(plan: BenchmarkPlan, mode: CheckStepMode, step: string): { task: BenchmarkPlan['tasks'][number]; judge: NonNullable<BenchmarkPlan['tasks'][number]['judge']['check']>; at?: TrialAt & Pick<PlannedTrial, 'step'> } | undefined {
   const trial = mode === 'trial' ? plan.trials.find((planned) => checkStepOf(planned) === step) : undefined;
   const task = plan.tasks.find((planned) => (mode === 'trial' ? planned.id === trial?.task : baselineStepOf(planned.id) === step));
 
-  if (task?.judge.kind !== 'check') return undefined;
+  if (task?.judge.check === undefined) return undefined;
 
-  return { task, judge: task.judge, at: trial ? { ...trial, total: plan.trials.length } : undefined };
+  return { task, judge: task.judge.check, at: trial ? { ...trial, total: plan.trials.length } : undefined };
 }
 
 /** A trial, as its progress lines name it: its place in the plan's trial list of `total`. */

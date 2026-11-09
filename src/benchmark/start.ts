@@ -28,7 +28,7 @@ import type { RunState, WorkflowEnvelope, WorkflowFailure } from '../workflow/ty
 import { formatDiagnostic } from '../workflow/parse.js';
 import { git } from '../workflow/worktree.js';
 import { addedOf, compileBundle, freezePlan, type BenchmarkPlan, type CompiledBundle, type PinnedRubric, type PlannedArm } from './plan.js';
-import { defaultsArmOf, parseSuite, type Arm, type Suite, type Task, type TaskJudge } from './suite.js';
+import { defaultsArmOf, parseSuite, type Arm, type Suite, type Task, type TaskCheck } from './suite.js';
 import { coveredDelivery, coveredSkillName, teamFilesAt } from './team-without.js';
 import { pinArmWorkflow, type PinnedArmWorkflow } from './arm-workflow.js';
 import type { TeamSelection } from '../workflow/clone.js';
@@ -232,7 +232,7 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
 
   if (unjudgeable !== undefined) return refuse(unjudgeable);
   const { scorers: generated } = compileBundle(plan, committed.suite, { armWorkflows, unattended: options.unattended });
-  const criteria = found.tasks.find((task) => task.judge.kind === 'criteria');
+  const criteria = found.tasks.find((task) => task.judge.successCriteria !== undefined);
   const needs = found.scorers.length > 0 ? `its scorers ${found.scorers.join(', ')}` : criteria ? `task "${criteria.id}" has successCriteria` : undefined;
 
   // A correctness scorer a check decides has a pin and no judge.
@@ -588,7 +588,7 @@ async function unreachableTask(config: LocalConfig, suite: Suite, checkout: stri
 
   for (const task of suite.tasks) {
     // A check's added files come from the task's solution commit, so its trials need that commit too.
-    const commit = await firstUnreachable({ checkout, cache, repo: suite.repo, commits: [task.startingCommit, ...(task.judge.kind === 'check' && task.judge.add ? [task.judge.add.commit] : [])] });
+    const commit = await firstUnreachable({ checkout, cache, repo: suite.repo, commits: [task.startingCommit, ...(task.judge.check?.add ? [task.judge.check.add.commit] : [])] });
 
     if (commit !== undefined) return { task, commit };
   }
@@ -641,9 +641,9 @@ export async function tryBenchmarkTask(file: string, options: { checkout: string
   if (!parsed.ok) return error('benchmark_invalid', parsed.diagnostics.map(formatDiagnostic).join('\n'));
   const { suite } = parsed;
   const [task] = suite.tasks;
-  const { judge, startingCommit } = task;
+  const { judge: { check }, startingCommit } = task;
 
-  if (judge.kind === 'criteria') return tried(task.id, `Task "${task.id}" is judged by successCriteria, so there is no check to try. Its files are valid.`);
+  if (check === undefined) return tried(task.id, `Task "${task.id}" is judged by successCriteria, so there is no check to try. Its files are valid.`);
   const { solutionCommit } = task;
   const cache = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-try-commits-'));
 
@@ -662,7 +662,7 @@ export async function tryBenchmarkTask(file: string, options: { checkout: string
       return error('check_files_unwritable', `Task "${committed.task}" writes files from the suite directory before its check, and they could not be written as a commit into a temporary cache: ${committed.failed} Fix that, and try again.`);
     }
 
-    return await tryCheck(suite, task, judge, addedOf(judge, committed.suite.files.get(task.id)), [options.checkout, cache], options);
+    return await tryCheck(suite, task, check, addedOf(check, committed.suite.files.get(task.id)), [options.checkout, cache], options);
   } finally {
     await fs.rm(cache, { recursive: true, force: true, maxRetries: 3 });
   }
@@ -672,7 +672,7 @@ export async function tryBenchmarkTask(file: string, options: { checkout: string
  * --try once the task's commits are reachable from `sources`: its check at the starting commit, then at the solution, each
  * with the files `add` writes.
  */
-async function tryCheck(suite: Suite, task: Suite['tasks'][number], judge: Extract<TaskJudge, { kind: 'check' }>, add: readonly Added[], sources: readonly string[], options: { checkout: string; signal?: AbortSignal; progress: (line: string) => void }): Promise<WorkflowEnvelope> {
+async function tryCheck(suite: Suite, task: Suite['tasks'][number], judge: TaskCheck, add: readonly Added[], sources: readonly string[], options: { checkout: string; signal?: AbortSignal; progress: (line: string) => void }): Promise<WorkflowEnvelope> {
   const { startingCommit } = task;
   const expiresAt = new Date(Date.now() + suite.timeoutMs).toISOString();
 

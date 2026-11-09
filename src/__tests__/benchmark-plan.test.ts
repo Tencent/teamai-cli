@@ -605,6 +605,71 @@ async function judgedVerdicts(judge: LabelJudge, judges: Record<string, { tool: 
   return (await judgedRecordOf(config, run)).trials[0]?.verdicts;
 }
 
+/** The criteria suite's task with a check too, as both decide it. */
+const MIXED_SUITE: BenchmarkSuiteFiles = { ...CRITERIA_SUITE, tasks: { t01: `${CRITERIA_SUITE.tasks.t01 ?? ''}check: { run: node test.js, protect: [test.js] }\n` } };
+
+/**
+ * The record of the one trial of the mixed suite, once its check said `checked` and the score step ran: a failed check
+ * stored its label, so `teamai score plan` planned no judge; a passed one stored none, and a judge labelled it `correct`.
+ */
+async function mixedTrial(checked: 'passed' | 'failed'): Promise<{ trial: BenchmarkRecord['trials'][number] | undefined; task: string | undefined }> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-plan-'));
+  dirs.push(root);
+  const config = benchmarkRunConfig(root);
+  const started = await startBenchmarkRun(config, MIXED_SUITE, { body: SCORED_BENCHMARK });
+  if ('error' in started) throw new Error(started.error.message);
+  const runId = String(started.data.run);
+  const subject = `run:${runId}:${PROMPT}:1`;
+  await settleBaselines(config, runId, driver, can);
+  const judging: DriverCan = { ...can, confined: [{ level: 'verified', access: 'read', tools: ['claude'] }], workspace: [...can.workspace ?? [], 'team'] };
+  for (;;) {
+    const lease = LeaseSchema.safeParse(await leaseNext(config, runId, driver, { can: judging, prepare: true }));
+    if (!lease.success) break;
+    const { step, attempt, revision } = lease.data.data.lease;
+    const id = step.split('.').at(-1) ?? step;
+    let outputs: unknown = {};
+    if (id === 'check') outputs = checked === 'failed' ? await trialCheckOutput(config, runId, { checkStep: step, result: 'failed' }) : { result: 'passed', cause: '', label: '' };
+    if (id === 'subjects') outputs = { list: [subject] };
+    if (id === 'plan') outputs = { groups: checked === 'failed' ? [] : [{ subject, hand: '', scorers: CORRECTNESS, model: '', ci: false, protected: false }] };
+    if (id === 'evidence') outputs = { dir: root, rubric: 'Judge it.', schema: path.join(root, 'answer.schema.json'), delivers: false };
+    if (id === 'label') outputs = { labels: [{ scorer: CORRECTNESS, label: 'correct', code: '' }] };
+    if (id === 'write') {
+      const written = await LabelStore.append(config, [{ label: {
+        scorer: CORRECTNESS, rubric: { sourceHash: 'rubric-1' }, label: 'correct', score: 1, passed: true, scoredAt: RUN_NOW, source: 'workflow',
+        subject: { runId, step: PROMPT, pass: 1 }, judge: { kind: 'model', tool: 'claude', model: { reported: 'claude-x' }, isolation: 'verified', access: 'read' },
+      } }], { outbox: false });
+      outputs = { written: 1, labels: written.status === 'busy' ? [] : written.kept.map(({ version }) => version) };
+    }
+    await reportAttempt(config, runId, { attempt, revision, outcome: 'success', driver, tool: 'claude', outputs });
+  }
+
+  const run = await readRun(config, runId);
+  if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
+  const record = await judgedRecordOf(config, run);
+  return { trial: record.trials[0], task: record.tasks[0]?.sourceHash };
+}
+
+describe('benchmark run verdicts of a task with a check and success criteria', () => {
+  it('decide a trial whose check failed by the label its check stored, with no judge', async () => {
+    const { trial, task } = await mixedTrial('failed');
+
+    expect(trial).toMatchObject({
+      result: 'failed',
+      verdicts: [{ scorer: CORRECTNESS, outcome: { kind: 'labelled', label: 'incorrect', score: 0, passed: false }, decider: { by: 'check', task } }],
+    });
+  });
+
+  it("decide a trial whose check passed by its judge's label", async () => {
+    const { trial } = await mixedTrial('passed');
+
+    expect(trial).toMatchObject({
+      result: 'passed',
+      verdicts: [{ scorer: CORRECTNESS, outcome: { kind: 'labelled', label: 'correct', score: 1, passed: true }, decider: { by: 'judge', tool: 'claude', model: 'claude-x' } }],
+    });
+    expect(trial?.verdicts).toHaveLength(1);
+  });
+});
+
 describe('benchmark run verdicts', () => {
   it("record a judged label with the judge that decided it: its rubric, tool, the model and effort its tool reported or was launched with, and whether it batched", async () => {
     const verdicts = await judgedVerdicts(
@@ -717,8 +782,12 @@ describe('benchmark run verdicts', () => {
 });
 
 describe('benchmark judge calls', () => {
-  /** The groups `teamai score plan` gives the one trial of a criteria suite judged by `scorers` too, its plan pinning `judges`. */
-  async function plannedGroups(judges: Record<string, { tool: string; model: string }>): Promise<unknown> {
+  /**
+   * The groups `teamai score plan` gives the one trial of a criteria suite judged by `scorers` too, its plan pinning
+   * `judges`, for the scorers `named` (none: those the trial pinned), once `labelled` gives its correctness scorer a label
+   * of that judge kind on that pass.
+   */
+  async function plannedGroups(judges: Record<string, { tool: string; model: string }>, { named = [], labelled }: { named?: string[]; labelled?: { judge: 'stage' | 'model'; pass: number } } = {}): Promise<unknown> {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-plan-'));
     dirs.push(root);
     const config = benchmarkRunConfig(root);
@@ -737,7 +806,15 @@ describe('benchmark judge calls', () => {
     const judging: DriverCan = { ...can, confined: [{ level: 'verified', access: 'read', tools: ['claude'] }], workspace: [...can.workspace ?? [], 'team'] };
     for (;;) {
       const { step, attempt, revision } = LeaseSchema.parse(await leaseNext(config, runId, driver, { can: judging, prepare: true })).data.lease;
-      if (step.endsWith('.plan')) return ScoreVerbs.plan({ subject, scorers: '[]', batch: 'true', demand: 'named' }, { env: attemptEnv(config, runId, attempt, 'unattended'), current: config, now: RUN_NOW });
+      if (step.endsWith('.plan')) {
+        if (labelled) {
+          const judge = labelled.judge === 'stage' ? { judge: { kind: 'stage' as const }, decidedBy: 'check' as const } : { judge: { kind: 'model' as const, tool: 'claude', model: { reported: 'claude-x' }, isolation: 'verified' as const, access: 'read' as const } };
+          await LabelStore.append(config, [{ label: {
+            scorer: CORRECTNESS, rubric: { sourceHash: 'rubric-1' }, label: 'incorrect', score: 0, passed: false, scoredAt: RUN_NOW, source: 'workflow', subject: { runId, step: PROMPT, pass: labelled.pass }, ...judge,
+          } }], { outbox: false });
+        }
+        return ScoreVerbs.plan({ subject, scorers: JSON.stringify(named), batch: 'true', demand: 'named' }, { env: attemptEnv(config, runId, attempt, 'unattended'), current: config, now: RUN_NOW });
+      }
       await reportAttempt(config, runId, { attempt, revision, outcome: 'success', driver, tool: 'claude', outputs: step === 'subjects' ? { list: [subject] } : {} });
     }
   }
@@ -746,6 +823,17 @@ describe('benchmark judge calls', () => {
     const judges = { quality: { tool: 'claude', model: '' }, tidy: { tool: 'claude', model: '' } };
 
     expect(await plannedGroups(judges)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality,tidy' }, { scorers: CORRECTNESS }] } });
+  });
+
+  it.each([
+    ['a label a stage decided on its pass, as a failed check writes it, leaves it out of the pinned scorers', { labelled: { judge: 'stage', pass: 1 } }, ['quality,tidy']],
+    ['a label a stage decided on another pass keeps it', { labelled: { judge: 'stage', pass: 2 } }, ['quality,tidy', CORRECTNESS]],
+    ["a judge's label on its pass keeps it, so the pinned scorers judge it again", { labelled: { judge: 'model', pass: 1 } }, ['quality,tidy', CORRECTNESS]],
+    ['a label a stage decided on its pass keeps it when it is named', { labelled: { judge: 'stage', pass: 1 }, named: [CORRECTNESS] }, [CORRECTNESS]],
+  ] as const)("plans a trial's correctness scorer: %s", async (_, options, groups) => {
+    const judges = { quality: { tool: 'claude', model: '' }, tidy: { tool: 'claude', model: '' } };
+
+    expect(await plannedGroups(judges, { ...options, named: 'named' in options ? [...options.named] : [] })).toMatchObject({ ok: true, output: { groups: groups.map((scorers) => ({ scorers })) } });
   });
 
   it('keeps a scorer whose judge tool the plan requires apart from one any judge tool may label', async () => {

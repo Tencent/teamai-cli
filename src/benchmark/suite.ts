@@ -382,10 +382,10 @@ function taskFileSchema(files: ReadonlyMap<string, SuiteFile>) {
     /** Where the task came from: the session or the workflow pass it was made from. Provenance only; nothing runs from it. */
     source: TaskSourceSchema.optional(),
   }).strict().transform(({ check, successCriteria, ...task }, ctx) => {
-    if (successCriteria !== undefined && !check) return { ...task, judge: { kind: 'criteria', successCriteria } satisfies TaskJudge };
+    if (successCriteria !== undefined && !check) return { ...task, judge: { successCriteria } satisfies TaskJudge };
 
-    if (!check || successCriteria !== undefined) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['check'], message: 'a task has exactly one of check and successCriteria' });
+    if (!check) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['check'], message: 'a task has check, successCriteria, or both; add at least one' });
 
       return z.NEVER;
     }
@@ -447,13 +447,13 @@ function taskFileSchema(files: ReadonlyMap<string, SuiteFile>) {
     }
 
     const [firstFile, ...otherFiles] = written.flatMap(({ file }) => (file ? [file] : []));
-    const judge: Extract<TaskJudge, { kind: 'check' }> = { kind: 'check', ...rest };
+    const checked: TaskCheck = { ...rest };
 
-    if (firstSolved !== undefined && solution !== undefined) judge.add = { commit: solution, paths: [firstSolved, ...otherSolved] };
+    if (firstSolved !== undefined && solution !== undefined) checked.add = { commit: solution, paths: [firstSolved, ...otherSolved] };
 
-    if (firstFile) judge.files = [firstFile, ...otherFiles];
+    if (firstFile) checked.files = [firstFile, ...otherFiles];
 
-    return { ...task, judge };
+    return { ...task, judge: definedFields<TaskJudge>({ check: checked, successCriteria }) };
   });
 }
 
@@ -484,11 +484,24 @@ export interface CheckFile {
 /** How git stores a file: executable or not. */
 export type FileMode = '100644' | '100755';
 
-/** How a task is decided. Exactly one, by construction: the file rule above becomes a union here. */
+/**
+ * A task's check. `add`: the files written from `commit`, the task's `solutionCommit`, before the check. `files`: those
+ * written from the suite directory.
+ */
+export interface TaskCheck {
+  run: string;
+  protect: [string, ...string[]];
+  add?: { commit: string; paths: [string, ...string[]] };
+  files?: [CheckFile, ...CheckFile[]];
+}
+
+/**
+ * How a task is decided: by its check, by a judge on its success criteria, or by both, the check first and the judge
+ * only when it passes. Never by neither, by construction: the file rule above becomes this union.
+ */
 export type TaskJudge =
-  /** `add`: the files written from `commit`, the task's `solutionCommit`, before the check. `files`: those written from the suite directory. */
-  | { kind: 'check'; run: string; protect: [string, ...string[]]; add?: { commit: string; paths: [string, ...string[]] }; files?: [CheckFile, ...CheckFile[]] }
-  | { kind: 'criteria'; successCriteria: string };
+  | { check: TaskCheck; successCriteria?: string }
+  | { check?: undefined; successCriteria: string };
 
 export interface Task {
   /** The file name without `.yaml`. Trials are ordered by it. */
@@ -715,7 +728,7 @@ function hashOf(content: string | Buffer): string {
  * hash in order, so editing one changes it. A task without them keeps the hash of its file alone.
  */
 function taskHash(content: string, judge: TaskJudge): string {
-  const files = judge.kind === 'check' ? judge.files ?? [] : [];
+  const files = judge.check?.files ?? [];
 
   if (files.length === 0) return hashOf(content);
 

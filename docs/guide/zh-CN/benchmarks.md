@@ -243,7 +243,7 @@ matrix:
 
 matrix 可以变化 `tool`、`model`、`team`、`workflow` 或 `role`，其中至少一个要有两个或更多值，并生成 2 到 12 个 arm。它没写的键取自 `defaults`。每个 arm 的名字由各个变化键的值拼接而成：ref 原样使用，字母、数字、`-`、`_` 以外的字符写成 `-`，`without: [skills/auth-tokens]` 写成 `without-skills-auth-tokens`。一个套件只能有 `arms` 或 `matrix` 之一。
 
-任务从 `repo` 的一个完整提交开始，并且恰好由 `check` 和 `successCriteria` 之一判定：
+任务从 `repo` 的一个完整提交开始，由 `check`、`successCriteria` 或两者一起判定：
 
 ```yaml
 # benchmarks/fix-auth/tasks/expired-token.yaml
@@ -266,7 +266,17 @@ schemaVersion: v1alpha1
 title: Clearer login error
 prompt: Make the login error say which field is wrong.
 startingCommit: 3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a
+check:
+  run: npx vitest run test/auth/login.test.ts
+  protect: ['test/**', 'package.json', 'package-lock.json']
 successCriteria: The error names the wrong field and still reveals nothing about which accounts exist.
+```
+
+`login-copy` 两者都有：测试能判定的部分由 check 判定，其余部分由评判器判定，且只在 check 通过之后：
+
+```text
+check fails  → the check step writes the failing label, decidedBy check → teamai-score skips the scorer: no judge
+check passes → the check step writes no label → the judge decides on successCriteria, decidedBy judge
 ```
 
 | 键 | 值 |
@@ -275,11 +285,11 @@ successCriteria: The error names the wrong field and still reveals nothing about
 | `solutionCommit` | 可选：包含任务参考解决方案的完整提交。[`benchmark try`](#试运行任务) 会检查 check 在这里通过，`check.add` 也从这里读取文件。 |
 | `check` | `run`：任务完成后以 0 退出的命令；`protect`：agent 不能提供的路径。 |
 | `check.add` | 可选：check 之前写入、agent 永远拿不到的文件：按 `solutionCommit` 中的样子写入的文件，例如解决方案的测试；或者 `{ from, to }`，套件目录中的一个文件或目录。目录会加入其下的所有文件，但不包括以点开头的条目，例如 `.DS_Store`；要加入点文件，在 `from` 中直接指明它。见[解决方案带来的测试](#解决方案带来的测试)和[套件目录中的测试](#套件目录中的测试)。 |
-| `successCriteria` | 代替 `check`：由评判器按这些标准判定。 |
+| `successCriteria` | 评判器据以判定的标准：单独使用，或在 `check` 通过之后。 |
 | `covers` | 可选：该任务的工作预期需要的团队仓库路径，写法与 [`without`](#去掉团队资产) 相同。[资产效果](#资产效果) 表按覆盖它的任务拆分一个去掉了该路径的 arm。 |
 | `source` | 可选：任务的来源：会话的 `platform` 和 `sessionId`，或工作流 pass 的 `runId`、`step` 和 `pass`。不会从它运行任何东西；[`digest --json`](self-improvement.md#teamai-读取什么) 会把它指向的失败标为已覆盖。 |
 
-`teamai pull` 和 `teamai review --branch` 检查每个文件，并带文件和行号报告每个问题。`benchmarks/<namespace>/<suite>/` 下的套件只发给该角色或项目的成员，见[角色和项目](distribution.md#角色和项目)。
+`teamai pull` 和 `teamai review --branch` 检查每个文件，并带文件和行号报告每个问题，例如既没有 `check` 也没有 `successCriteria` 的任务。`benchmarks/<namespace>/<suite>/` 下的套件只发给该角色或项目的成员，见[角色和项目](distribution.md#角色和项目)。
 
 ### `protect` 要覆盖什么
 
@@ -353,7 +363,7 @@ check:
 
 ### 基线
 
-在任务的第一个 trial 之前，teamai 在起始提交的全新克隆上运行 setup，写入任务的 `check.add` 文件，并运行一次 check：
+对带 `check` 的任务，不论有没有 `successCriteria`，teamai 在它的第一个 trial 之前，在起始提交的全新克隆上运行 setup，写入任务的 `check.add` 文件，并运行一次 check。只有 `successCriteria` 的任务没有基线。
 
 | check 在起始提交上 | 任务 |
 | --- | --- |
@@ -460,6 +470,7 @@ source: { platform: claude-code, sessionId: 7c1e2b9a }
 | --- | --- |
 | 修了 bug 并新增 `test/auth/refresh-race.test.ts` | `check`，带 `add: [test/auth/refresh-race.test.ts]`，如上 |
 | 修了 bug 并在 `test/auth/refresh.test.ts` 里加了一个用例 | `check`，带 `add: [test/auth/refresh.test.ts]`：文件取解决方案中的内容，含该用例 |
+| 改写了登录错误信息，`test/auth/login.test.ts` 检查它，而且它仍不能透露任何账号信息 | `check` 和 `successCriteria`，如上面的 `login-copy`：测试失败时由它判定，测试通过后其余部分由评判器判定 |
 | 修了一个没有测试覆盖的布局 bug | `successCriteria: "The checkout button stays visible at 320 px wide."`，由模型评判 |
 | 新增 `POST /sessions/revoke-all` 及 `test/auth/revoke-all.test.ts` | `check`，带 `add: [test/auth/revoke-all.test.ts]`；prompt 写出测试调用的端点及其返回 |
 | 把 token 存储移到 `TokenStore` 之后，行为不变 | `successCriteria: "Every read and write of tokens goes through TokenStore; the auth tests still pass."`：改动前测试也通过，`check` 分不出它和没有改动 |
@@ -860,7 +871,7 @@ These results hold for these tasks, this run and this machine.
 
 ### 谁判定一个 trial
 
-只有 trial 的 `teamai:correctness:<task>` 标签决定 `passed`、`failed` 或 `unscored`。`error` 和 `not_run` 来自 trial 工作的状态。对带 `check` 的任务，check 步骤在 prompt 之后立即在 trial 的克隆中自己写下这个标签，不运行任何评判。标签和运行的其他标签一起保存在本机上，并且和隔离运行的所有标签一样，从不发布：
+只有 trial 的 `teamai:correctness:<task>` 标签决定 `passed`、`failed` 或 `unscored`。`error` 和 `not_run` 来自 trial 工作的状态。对带 `check` 的任务，check 步骤在 prompt 之后立即在 trial 的克隆中自己写下这个标签，不运行任何评判。任务还带 `successCriteria` 时，通过的 check 不写标签，由评判器按 prompt 留下的工作判定，不包括 check 恢复的 `protect` 路径和它写入的 `check.add` 文件。标签和运行的其他标签一起保存在本机上，并且和隔离运行的所有标签一样，从不发布：
 
 ```json
 {"source":"workflow","scorer":"teamai:correctness:expired-token","rubric":{"sourceHash":"…"},
@@ -872,6 +883,7 @@ These results hold for these tasks, this run and this machine.
 | check | 标签 | trial 结果 |
 | --- | --- | --- |
 | 以 0 退出 | 分数不低于 `passingScore` 的标签中分数最高的那个 | `passed` |
+| 以 0 退出，任务带 `successCriteria` | 无：由评判器给 trial 打标签 | 评判器给出的结果 |
 | 以非 0 退出 | 分数最低的标签 | `failed` |
 | 无法运行 | 无 | `error`，`failure: { cause }` |
 

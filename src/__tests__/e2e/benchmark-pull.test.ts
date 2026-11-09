@@ -45,7 +45,7 @@ describe('benchmark suites at pull', () => {
       'benchmarks/both-keys/tasks/fix.yaml': task,
       'benchmarks/tasks/suite.yaml': suite('tasks'),
       'benchmarks/tasks/tasks/fix.yaml': task,
-      'benchmarks/tasks/tasks/judged-twice.yaml': `${task}successCriteria: The answer is 42.\n`,
+      'benchmarks/tasks/tasks/unjudged.yaml': task.replace(/check:\n[\s\S]*$/, ''),
       'benchmarks/tasks/tasks/unprotected.yaml': task.replace('protect: [test.js]', 'protect: []'),
       'benchmarks/tasks/tasks/short-commit.yaml': task.replace(fixture.startingCommit, fixture.startingCommit.slice(0, 7)),
     });
@@ -57,7 +57,7 @@ describe('benchmark suites at pull', () => {
     expect(output).toMatch(/benchmarks\/seven\/suite\.yaml:\d+: field "arms": a suite has 1 to 6 arms/);
     expect(output).toMatch(/benchmarks\/untimed\/suite\.yaml:\d+: field "timeout": timeout is required/);
     expect(output).toMatch(/benchmarks\/both-keys\/suite\.yaml:\d+: field "arms\.1": arm "codex" changes tool and model/);
-    expect(output).toMatch(/benchmarks\/tasks\/tasks\/judged-twice\.yaml:\d+: field "check": a task has exactly one of check and successCriteria/);
+    expect(output).toMatch(/benchmarks\/tasks\/tasks\/unjudged\.yaml:\d+: field "check": a task has check, successCriteria, or both; add at least one/);
     expect(output).toMatch(/benchmarks\/tasks\/tasks\/unprotected\.yaml:\d+: field "check\.protect": check\.protect lists every path/);
     expect(output).toMatch(/benchmarks\/tasks\/tasks\/short-commit\.yaml:\d+: field "startingCommit": must be a full 40-character commit/);
   }, 120_000);

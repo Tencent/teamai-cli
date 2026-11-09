@@ -180,7 +180,7 @@ describe('parseSuite', () => {
   });
 
   it.each([
-    ['a task with both check and successCriteria', taskText({ successCriteria: 'The test passes.' }), 'check', 'a task has exactly one of check and successCriteria'],
+    ['a task with neither check nor successCriteria', taskText({ check: '' }), 'check', 'a task has check, successCriteria, or both; add at least one'],
     ['a task with an empty protect', taskText({ check: '{ run: node test.js, protect: [] }' }), 'check.protect', 'check.protect lists every path the check reads and the agent must not supply'],
     ['a short startingCommit', taskText({ startingCommit: 'abc1234' }), 'startingCommit', 'must be a full 40-character commit'],
     ['a short solutionCommit', taskText({ solutionCommit: '9a1d4e7' }), 'solutionCommit', 'must be a full 40-character commit'],
@@ -202,6 +202,23 @@ describe('parseSuite', () => {
 
     expect(parsed).toMatchObject({ ok: true, suite: { tasks: [{ id: 'fix' }] } });
     expect(parsed.diagnostics).toEqual([expect.objectContaining({ file: 'benchmarks/fix/tasks/bad.yaml', field, message })]);
+  });
+
+  it('keeps a task with both a check and success criteria, as a check-only and a criteria-only one', () => {
+    const criteria = 'The error names the wrong field and still reveals nothing about which accounts exist.';
+    const parsed = parse(suiteText(), {
+      both: taskText({ successCriteria: criteria }),
+      check: taskText(),
+      criteria: taskText({ check: '', successCriteria: criteria }),
+    });
+    const check = { run: 'node test.js', protect: ['test.js'] };
+
+    expect(parsed).toMatchObject({ ok: true, diagnostics: [] });
+    expect(parsed.ok && parsed.suite.tasks.map(({ id, judge }) => ({ id, judge }))).toEqual([
+      { id: 'both', judge: { check, successCriteria: criteria } },
+      { id: 'check', judge: { check } },
+      { id: 'criteria', judge: { successCriteria: criteria } },
+    ]);
   });
 
   it('keeps the workflow pass a regression task came from as its source', () => {
@@ -230,14 +247,14 @@ describe('parseSuite', () => {
     const solution = 'b'.repeat(40);
     const parsed = parse(suiteText(), { fix: taskText({ check: `{ run: node test.js, protect: ${protect}, add: [${added}] }`, solutionCommit: solution }) });
 
-    expect(parsed).toMatchObject({ ok: true, diagnostics: [], suite: { tasks: [{ judge: { kind: 'check', add: { commit: solution, paths: [added] } } }] } });
+    expect(parsed).toMatchObject({ ok: true, diagnostics: [], suite: { tasks: [{ judge: { check: { add: { commit: solution, paths: [added] } } } }] } });
   });
 
   it('keeps the files check.add writes from solutionCommit in a task written by hand, with no source session', () => {
     const solution = 'b'.repeat(40);
     const parsed = parse(suiteText(), { fix: taskText({ solutionCommit: solution, check: "{ run: node test.js, protect: ['test/**'], add: [test/startup.test.js] }" }) });
 
-    expect(parsed).toMatchObject({ ok: true, diagnostics: [], suite: { tasks: [{ judge: { kind: 'check', add: { commit: solution, paths: ['test/startup.test.js'] } } }] } });
+    expect(parsed).toMatchObject({ ok: true, diagnostics: [], suite: { tasks: [{ judge: { check: { add: { commit: solution, paths: ['test/startup.test.js'] } } } }] } });
     expect(parsed.ok && parsed.suite.tasks[0]).not.toHaveProperty('source');
   });
 
@@ -248,10 +265,10 @@ describe('parseSuite', () => {
     ]);
 
     expect(parsed).toMatchObject({ ok: true, diagnostics: [] });
-    expect(parsed.ok && parsed.suite.tasks[0].judge).toEqual({
-      kind: 'check', run: 'node test.js', protect: ['test/**'],
+    expect(parsed.ok && parsed.suite.tasks[0].judge).toEqual({ check: {
+      run: 'node test.js', protect: ['test/**'],
       files: [{ path: 'test/auth/refresh.test.js', mode: '100755', base64: Buffer.from(test).toString('base64') }],
-    });
+    } });
   });
 
   it('keeps every file under a directory of the suite directory that check.add writes, below its own path, in path order', () => {
@@ -261,7 +278,7 @@ describe('parseSuite', () => {
       suiteFile('check-files/other.test.js', 'other'),
     ]);
 
-    expect(parsed.ok && parsed.suite.tasks[0].judge).toMatchObject({
+    expect(parsed.ok && parsed.suite.tasks[0].judge.check).toMatchObject({
       files: [{ path: 'test/auth/fixtures/token.json', base64: Buffer.from('{}').toString('base64') }, { path: 'test/auth/refresh.test.js', base64: Buffer.from('refresh').toString('base64') }],
     });
   });
@@ -434,7 +451,7 @@ describe('suite sync', () => {
     write(config.repo.localPath, { 'benchmarks/fix/check-files/a.test.js': 'edited after the sync' });
 
     expect(result.invalid).toEqual([]);
-    expect((await loadCachedSuite(config, 'fix'))?.tasks[0].judge).toMatchObject({
+    expect((await loadCachedSuite(config, 'fix'))?.tasks[0].judge.check).toMatchObject({
       files: [{ path: 'test/hidden/a.test.js', mode: '100644', base64: base64('a') }, { path: 'test/hidden/run.sh', mode: '100755', base64: base64('run') }],
     });
   });
@@ -464,7 +481,7 @@ describe('suite sync', () => {
 
     await syncTeamDefinitions(config);
 
-    expect((await loadCachedSuite(config, 'fix'))?.tasks[0].judge).toMatchObject({ files: [{ path: 'test/hidden/a.test.js' }] });
+    expect((await loadCachedSuite(config, 'fix'))?.tasks[0].judge.check).toMatchObject({ files: [{ path: 'test/hidden/a.test.js' }] });
   });
 
   it('leaves out the dot entries under a directory a check.add entry names, and reads a dotfile a from names', async () => {
@@ -476,7 +493,7 @@ describe('suite sync', () => {
 
     await syncTeamDefinitions(config);
 
-    expect((await loadCachedSuite(config, 'fix'))?.tasks[0].judge).toMatchObject({
+    expect((await loadCachedSuite(config, 'fix'))?.tasks[0].judge.check).toMatchObject({
       files: [{ path: 'test/hidden/a.test.js', base64: base64('a') }, { path: 'test/.env.test', base64: base64('env') }],
     });
   });

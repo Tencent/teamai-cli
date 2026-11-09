@@ -747,7 +747,7 @@ export async function settleBaselines(
 ): Promise<void> {
   const run = await readRun(config, runId);
   const planned = typeof run === 'object' ? planOfRun(run) : undefined;
-  const count = planned && 'found' in planned ? planned.found.plan.tasks.filter((task) => task.judge.kind === 'check').length : 0;
+  const count = planned && 'found' in planned ? planned.found.plan.tasks.filter((task) => task.judge.check !== undefined).length : 0;
   for (let settled = 0; settled < count; settled += 1) {
     const { attempt, revision, step } = BaselineLeaseSchema.parse(await leaseNext(config, runId, driver, { can, prepare: true })).data.lease;
     const result = baselines[step.slice('trials.baselines.'.length)] ?? 'failed';

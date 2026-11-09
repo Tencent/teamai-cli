@@ -469,6 +469,29 @@ describe('a clone place', () => {
     expect(patch).toContain('+made in the clone');
   });
 
+  it("gives the judges of a prompt in a clone the work as the prompt left it, never what a later step in the clone wrote, as a benchmark trial's check", async () => {
+    const { config, runId } = await fixture(SCORED_THEN_CHECKED, { quality: SCORER });
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+    const work = leaseOf(await prepared(client, runId));
+    fs.writeFileSync(path.join(work.cwd, 'made.txt'), 'made by the prompt\n');
+    await client.report(runId, { attempt: work.attempt, revision: work.revision, outcome: 'success', driver });
+    const check = leaseOf(await prepared(client, runId));
+    fs.mkdirSync(path.join(check.cwd, 'test'));
+    fs.writeFileSync(path.join(check.cwd, 'test', 'added.test.js'), 'written by the check\n');
+    fs.writeFileSync(path.join(check.cwd, 'first.txt'), 'restored by the check\n');
+    await client.report(runId, { attempt: check.attempt, revision: check.revision, outcome: 'success', driver });
+    expect(await prepared(client, runId)).toMatchObject({ data: { done: {} } });
+
+    const evidence = await scoreEvidenceDir(config, `run:${runId}:trial.work:1`, ['quality']);
+
+    const patch = fs.readFileSync(path.join(evidence, 'diff.patch'), 'utf8');
+    expect(check.step).toBe('trial.check');
+    expect(patch).toContain('+made by the prompt');
+    expect(patch).not.toContain('written by the check');
+    expect(patch).not.toContain('restored by the check');
+    expect(fs.existsSync(path.join(evidence, 'repo', 'test', 'added.test.js'))).toBe(false);
+  });
+
   it('stages the evidence of a scored workflow step in a clone in the next that settles it, before its dependent is leased', async () => {
     const { config, runId } = await fixture(SCORED_THEN_AFTER, { quality: SCORER });
     const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
@@ -484,6 +507,25 @@ describe('a clone place', () => {
     expect(fs.readFileSync(path.join(evidence, 'diff.patch'), 'utf8')).toContain('+made in the clone');
   });
 });
+
+/** A clone holding a scored prompt and a step after it in the clone, as a benchmark trial holds its prompt and check. */
+const SCORED_THEN_CHECKED = (commit: string): string => `schemaVersion: v1alpha1
+name: build
+description: Judge work done in a clean clone, then check it there.
+steps:
+  - id: trial
+    workspace: { clone: { commit: ${commit}, team: { treatment: none } } }
+    workflow:
+      steps:
+        - id: work
+          workspace: continue
+          prompt: Make a file.
+          scorers: { names: [quality], sampling: all }
+        - id: check
+          needs: [work]
+          workspace: continue
+          prompt: Check the file.
+`;
 
 /** A scored workflow step that opens a clone, holding one prompt, and a prompt after it outside the clone. */
 const SCORED_THEN_AFTER = (commit: string): string => `schemaVersion: v1alpha1

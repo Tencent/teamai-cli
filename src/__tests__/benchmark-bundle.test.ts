@@ -92,6 +92,21 @@ describe('the workflow a benchmark plan prints', () => {
     expect(stepDefinitions(run)('trials.r2.t01.a01.prompt')?.scorers).toEqual({ names: ['teamai:correctness:t01'], sampling: 'all', start: 'workflow' });
   });
 
+  it("runs a task with a check and success criteria through its baseline and check, and scores each prompt by its correctness scorer, which a judge pins", async () => {
+    const { run, plan } = await plannedRun({
+      name: 'fix',
+      suite: 'schemaVersion: v1alpha1\nname: fix\nrepo: https://github.com/fixture/app.git\ndefaults: { tool: claude }\narms: [{ name: a01 }]\nrepetitions: 1\ntimeout: 10m\n',
+      tasks: { t01: "schemaVersion: v1alpha1\ntitle: Fix it\nprompt: Make the test pass.\nstartingCommit: '{{startingCommit}}'\ncheck: { run: node test.js, protect: [test.js] }\nsuccessCriteria: The error names the wrong field.\n" },
+    });
+
+    expect(plan.tasks[0]?.judge).toEqual({ check: { run: 'node test.js', protect: ['test.js'] }, criteria: true });
+    expect(plan.judges).toEqual({ 'teamai:correctness:t01': { tool: 'claude', model: '' } });
+    expect(stepDefinitions(run)('trials.baselines.t01')).toBeDefined();
+    expect(stepDefinitions(run)('trials.r1.t01.a01')?.if).toBe("steps.baselines.outputs.t01 == 'failed'");
+    expect(stepDefinitions(run)('trials.r1.t01.a01.check')).toBeDefined();
+    expect(stepDefinitions(run)('trials.r1.t01.a01.prompt')?.scorers).toEqual({ names: ['teamai:correctness:t01'], sampling: 'all', start: 'workflow' });
+  });
+
   it("pins every task's correctness scorer with its labels and passing score, and lists a check task's on no step, so no judge runs", async () => {
     const { run, plan } = await plannedRun(suiteOf({ arms: 2 }));
 

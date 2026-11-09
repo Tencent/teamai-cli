@@ -19,6 +19,7 @@ import type { RunState, StepScorers, WorkflowStep } from '../workflow/types.js';
 import { batchesScorers } from './batch.js';
 import { STAGES, type ScorerDefinition, type Stage } from './definition.js';
 import type { RunSubject } from './label.js';
+import { LabelStore } from './label-store.js';
 import { Marks, type Demand, type Launch, type MarkFacts, type MarkKey } from './marks.js';
 import { pinnedDefinition, PinnedScorerSchema, type PinnedScorer } from './pin.js';
 import { RunScorers } from './run-scorers.js';
@@ -210,6 +211,13 @@ export async function judgeablePass(config: LocalConfig, subject: RunSubject): P
   return { ok: true, config: found.config, run: found.run, pass: judgeable.pass, step: judgeable.definition };
 }
 
+/** The scorers a stage, not a judge, labelled on `subject`'s pass, among the labels on this machine. */
+async function stageDecided(config: LocalConfig, subject: RunSubject): Promise<Set<string>> {
+  const labels = await LabelStore.local(config);
+
+  return new Set(labels.flatMap((label) => (label.source === 'workflow' && label.judge.kind === 'stage' && label.subject.runId === subject.runId && label.subject.step === subject.step && label.subject.pass === subject.pass ? [label.scorer] : [])));
+}
+
 async function runJudged(request: PlanRequest, subject: RunSubject, teamBatch: boolean | undefined): Promise<Judged | Refusal> {
   const found = await judgeablePass(request.attempt.config, subject);
 
@@ -219,7 +227,10 @@ async function runJudged(request: PlanRequest, subject: RunSubject, teamBatch: b
   const read = await RunScorers.of(found.config, run);
 
   if (!read.ok) return refused('scorer_not_found', `${read.reason} Nothing was planned.`);
-  const candidates = pinned(request.scorers.length > 0 ? request.scorers : own.names, read.pins, `a scorer of run ${run.id} at the team revision it started from`);
+  // A stage, such as a benchmark trial's failed check, decided these already, so their judge would change nothing.
+  const decided = request.scorers.length > 0 ? new Set<string>() : await stageDecided(found.config, subject);
+  const names = request.scorers.length > 0 ? request.scorers : own.names.filter((name) => !decided.has(name));
+  const candidates = pinned(names, read.pins, `a scorer of run ${run.id} at the team revision it started from`);
 
   if (!Array.isArray(candidates)) return candidates;
   const delivered = isDelivered(run, subject);

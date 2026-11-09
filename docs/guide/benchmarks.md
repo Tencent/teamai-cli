@@ -243,7 +243,7 @@ matrix:
 
 A matrix varies `tool`, `model`, `team`, `workflow` or `role`, at least one of them with two values or more, and makes 2 to 12 arms. A key it leaves out comes from `defaults`. Each arm's name joins its values for the keys that vary: a ref is used as it is, with a character other than a letter, digit, `-` or `_` written `-`, and `without: [skills/auth-tokens]` is `without-skills-auth-tokens`. A suite has `arms` or `matrix`, not both.
 
-A task starts from a full commit of `repo` and is decided by exactly one of `check` and `successCriteria`:
+A task starts from a full commit of `repo` and is decided by `check`, `successCriteria`, or both:
 
 ```yaml
 # benchmarks/fix-auth/tasks/expired-token.yaml
@@ -266,7 +266,17 @@ schemaVersion: v1alpha1
 title: Clearer login error
 prompt: Make the login error say which field is wrong.
 startingCommit: 3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a
+check:
+  run: npx vitest run test/auth/login.test.ts
+  protect: ['test/**', 'package.json', 'package-lock.json']
 successCriteria: The error names the wrong field and still reveals nothing about which accounts exist.
+```
+
+`login-copy` has both: its check decides what the test can, and a judge the rest, only once the check passes:
+
+```text
+check fails  → the check step writes the failing label, decidedBy check → teamai-score skips the scorer: no judge
+check passes → the check step writes no label → the judge decides on successCriteria, decidedBy judge
 ```
 
 | Key | Value |
@@ -275,11 +285,11 @@ successCriteria: The error names the wrong field and still reveals nothing about
 | `solutionCommit` | Optional: the full commit with the task's reference solution. [`benchmark try`](#try-a-task) checks the check passes there, and `check.add` reads its files from it. |
 | `check` | `run`, a command that exits 0 once the task is done, and `protect`, the paths the agent must not supply. |
 | `check.add` | Optional: files written before the check that the agent never has: a file as `solutionCommit` has it, such as the solution's test, or `{ from, to }`, a file or directory of the suite directory. A directory adds every file under it except its dot entries, such as `.DS_Store`; name a dotfile in `from` to add it. See [Tests the solution brought](#tests-the-solution-brought) and [Tests in the suite directory](#tests-in-the-suite-directory). |
-| `successCriteria` | Instead of `check`: a judge decides from these. |
+| `successCriteria` | What a judge decides from: on its own, or after `check` passes. |
 | `covers` | Optional: the team repo paths the task's work is expected to need, as [`without`](#leave-team-assets-out) takes them. The [asset effect](#asset-effect) tables split an arm that runs without one of them by the tasks that cover it. |
 | `source` | Optional: where the task came from: a session's `platform` and `sessionId`, or a workflow pass's `runId`, `step` and `pass`. Nothing runs from it; [`digest --json`](self-improvement.md#what-teamai-reads) marks the failure it names as covered. |
 
-`teamai pull` and `teamai review --branch` check every file and report each problem with its file and line. A suite in `benchmarks/<namespace>/<suite>/` goes only to members of that role or project, as [Roles and projects](distribution.md#roles-and-projects) describes.
+`teamai pull` and `teamai review --branch` check every file and report each problem with its file and line, such as a task with neither `check` nor `successCriteria`. A suite in `benchmarks/<namespace>/<suite>/` goes only to members of that role or project, as [Roles and projects](distribution.md#roles-and-projects) describes.
 
 ### What `protect` covers
 
@@ -353,7 +363,7 @@ check:
 
 ### Baselines
 
-Before a task's first trial, teamai runs setup, writes the task's `check.add` files and runs the check once, on a fresh clone of the starting commit:
+Before the first trial of a task with a `check`, with `successCriteria` or without, teamai runs setup, writes the task's `check.add` files and runs the check once, on a fresh clone of the starting commit. A task with only `successCriteria` has no baseline.
 
 | The check at the starting commit | The task |
 | --- | --- |
@@ -460,6 +470,7 @@ Other sessions draft other tasks:
 | --- | --- |
 | Fixed a bug and added `test/auth/refresh-race.test.ts` | `check` with `add: [test/auth/refresh-race.test.ts]`, as above |
 | Fixed a bug and added a case to `test/auth/refresh.test.ts` | `check` with `add: [test/auth/refresh.test.ts]`: the file as the solution has it, case included |
+| Reworded the login error, which `test/auth/login.test.ts` checks, and must still reveal nothing about accounts | `check` and `successCriteria`, as `login-copy` above: the test decides when it fails, and a judge decides the rest once it passes |
 | Fixed a layout bug no test covers | `successCriteria: "The checkout button stays visible at 320 px wide."`, judged by a model |
 | Added `POST /sessions/revoke-all` with `test/auth/revoke-all.test.ts` | `check` with `add: [test/auth/revoke-all.test.ts]`; the prompt names the endpoint and what it returns, as the test calls it |
 | Moved token storage behind `TokenStore`, behavior unchanged | `successCriteria: "Every read and write of tokens goes through TokenStore; the auth tests still pass."`: the tests pass before the change too, so a `check` could not tell it from no change |
@@ -860,7 +871,7 @@ A load is counted only where teamai could see it: `unknown` is a trial whose too
 
 ### Who decides a trial
 
-Only a trial's `teamai:correctness:<task>` label decides `passed`, `failed` or `unscored`. `error` and `not_run` come from the state of the trial's work. For a task with a `check`, the check step writes that label itself, in the trial's clone, right after the prompt, and no judge runs. The label is stored on this machine with the run's other labels and, like every label of an isolated run, is never published:
+Only a trial's `teamai:correctness:<task>` label decides `passed`, `failed` or `unscored`. `error` and `not_run` come from the state of the trial's work. For a task with a `check`, the check step writes that label itself, in the trial's clone, right after the prompt, and no judge runs. With `successCriteria` too, a passing check writes no label, and the judge decides on the work as the prompt left it, without the `protect` paths the check restored or its `check.add` files. The label is stored on this machine with the run's other labels and, like every label of an isolated run, is never published:
 
 ```json
 {"source":"workflow","scorer":"teamai:correctness:expired-token","rubric":{"sourceHash":"…"},
@@ -872,6 +883,7 @@ Only a trial's `teamai:correctness:<task>` label decides `passed`, `failed` or `
 | The check | Label | Trial result |
 | --- | --- | --- |
 | exits 0 | the highest-scoring label at or above `passingScore` | `passed` |
+| exits 0, on a task with `successCriteria` | none: the judge labels the trial | the judge's |
 | exits non-zero | the lowest-scoring label | `failed` |
 | cannot run | none | `error`, `failure: { cause }` |
 

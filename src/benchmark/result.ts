@@ -23,7 +23,7 @@ import { baselineStepOf, checkStepOf, correctnessScorerName, PlannedJudgeSchema,
 import type { RunPlan } from './run-plan.js';
 import { ArmTeamSchema, SkillChangesSchema, TrialLimitsSchema } from './terms.js';
 import { leavesOut, skillDefinitionOf } from './team-without.js';
-import { TrialVerdictSchema, type EntryVerdict, type TrialVerdict } from './verdicts.js';
+import { isDecidedByCheck, TrialVerdictSchema, type EntryVerdict, type TrialVerdict } from './verdicts.js';
 
 export const TRIAL_RESULTS = ['passed', 'failed', 'error', 'unscored', 'not_run'] as const;
 
@@ -184,10 +184,10 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdic
     trials: plan.trials.map((trial) => {
       const judged = verdictsOf(trial);
       const task = plan.tasks.find(({ id }) => id === trial.task);
-      // A check costs nothing, so its label leaves the trial's judge cost complete.
-      const scoringCost = scoringCostOf(task?.judge.kind === 'check' ? judged.filter(({ scorer }) => scorer !== correctnessScorerName(trial.task)) : judged);
-      const work = stateOf(trial.step);
       const check = checkOutputOf(stateOf(checkStepOf(trial)));
+      // A check costs nothing, so its label leaves the trial's judge cost complete.
+      const scoringCost = scoringCostOf(task && isDecidedByCheck(task, check) ? judged.filter(({ scorer }) => scorer !== correctnessScorerName(trial.task)) : judged);
+      const work = stateOf(trial.step);
       const result = trialResultOf({ prompt: work, work: workOf(run, `${prefix}${trial.step}`), check, verdicts: judged }, plan, trial);
       const arm = plan.arms.find(({ name }) => name === trial.arm);
 
@@ -342,7 +342,7 @@ function usedOf(loaded: readonly string[], unsure: readonly string[]): NonNullab
 
 /**
  * A task's baseline, from the result its step output, first match wins:
- *   criteria task                                   -> not_needed: it has no check to try
+ *   task with no check                              -> not_needed: it has no check to try
  *   result failed                                   -> valid
  *   result passed                                   -> invalid: the check passes without changes
  *   result could_not_run, or failed without one     -> could_not_run: its clone or setup failed, or the check did not run
@@ -351,18 +351,7 @@ function usedOf(loaded: readonly string[], unsure: readonly string[]): NonNullab
  * Its trials need no rule of their own: a task whose baseline is not valid skips them, and a skipped prompt is not_run.
  */
 function baselineOf(state: StepState | undefined, task: PlannedTask): Baseline {
-  switch (task.judge.kind) {
-    case 'criteria':
-      return 'not_needed';
-    case 'check':
-      break;
-    default: {
-      const unhandled: never = task.judge;
-
-      return unhandled;
-    }
-  }
-
+  if (task.judge.check === undefined) return 'not_needed';
   const result = checkOutputOf(state)?.result;
 
   switch (result) {
@@ -462,19 +451,7 @@ function trialResultOf({ prompt, work, check, verdicts }: { prompt: StepState | 
 
   const judge = plan.tasks.find((task) => task.id === trial.task)?.judge;
 
-  switch (judge?.kind) {
-    case 'check':
-      if (check === undefined || check.result === 'could_not_run') return 'error';
-      break;
-    case 'criteria':
-    case undefined:
-      break;
-    default: {
-      const unhandled: never = judge;
-
-      return unhandled;
-    }
-  }
+  if (judge?.check !== undefined && (check === undefined || check.result === 'could_not_run')) return 'error';
 
   return correctnessResult(verdicts.find((verdict) => verdict.scorer === correctnessScorerName(trial.task)));
 }

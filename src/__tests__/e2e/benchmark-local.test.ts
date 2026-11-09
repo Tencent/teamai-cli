@@ -91,7 +91,7 @@ describe('benchmark on the local driver', () => {
       baselineTeamRevision: teamHead,
       selection: { additionalRoles: [], projects: [], excludedSkills: [] },
       repetitions: 1,
-      tasks: [{ id: 'fix', startingCommit: fixture.startingCommit, judge: { kind: 'check', run: 'node test.js', protect: ['test.js'] } }],
+      tasks: [{ id: 'fix', startingCommit: fixture.startingCommit, judge: { check: { run: 'node test.js', protect: ['test.js'] } } }],
       arms: [{ name: 'claude', tool: 'claude', team: { kind: 'pulled', revision: teamHead } }],
       trials: [{ order: 1, repetition: 1, task: 'fix', arm: 'claude', step: 'r1.fix.claude.prompt' }],
     });

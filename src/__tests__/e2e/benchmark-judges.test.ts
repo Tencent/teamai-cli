@@ -59,10 +59,10 @@ afterEach(() => {
   for (const fixture of fixtures.splice(0)) fixture.remove();
 });
 
-async function judgedFixture(options: { judge?: FakeJudge; arms?: Array<{ name: string; model?: string; tool?: string }>; scorers?: string[]; tools?: Array<'claude' | 'codex'>; timeout?: string; team?: Record<string, string> } = {}): Promise<BenchmarkFixture> {
+async function judgedFixture(options: { judge?: FakeJudge; arms?: Array<{ name: string; model?: string; tool?: string }>; scorers?: string[]; tools?: Array<'claude' | 'codex'>; timeout?: string; team?: Record<string, string>; task?: string } = {}): Promise<BenchmarkFixture> {
   const fixture = await benchmarkFixture({
     tool: 'fixes', sandbox: true, judge: options.judge, tools: options.tools ?? ['claude'],
-    suite: suite({ arms: options.arms ?? [{ name: 'claude' }], scorers: options.scorers }).replace('timeout: 10m', `timeout: ${options.timeout ?? '10m'}`), tasks: { fix: CRITERIA_TASK },
+    suite: suite({ arms: options.arms ?? [{ name: 'claude' }], scorers: options.scorers }).replace('timeout: 10m', `timeout: ${options.timeout ?? '10m'}`), tasks: { fix: options.task ?? CRITERIA_TASK },
     team: { ...(options.scorers ? { 'scorers/quality.md': QUALITY } : {}), ...options.team },
   });
   fixtures.push(fixture);
@@ -106,6 +106,48 @@ describe('benchmark judges on the local driver', () => {
     // Each trial is judged by a step of the benchmark run, never by a teamai-score run of its own, and its labels stay here.
     expect(fixture.runIds()).toEqual([done.run]);
     expect(outbox(fixture)).toEqual([]);
+  }, 120_000);
+
+  it("decides a task with a check and success criteria by its failing check with no judge, and by its judge once its check passes, on the work as the prompt left it", async () => {
+    const mixed = (name: string, run: string) => `schemaVersion: v1alpha1
+title: ${name}
+prompt: Make answer.js export 42.
+startingCommit: {{startingCommit}}
+check:
+  run: ${run}
+  protect: [test.js, 'test/**']
+  add: [{ from: check-files/extra.test.js, to: test/extra.test.js }]
+successCriteria: answer.js exports 42.
+`;
+    const fixture = await benchmarkFixture({
+      tool: 'fixes', sandbox: true, tools: ['claude'], suite: suite({ arms: [{ name: 'claude' }] }),
+      tasks: { 'login-copy': mixed('Clearer login error', 'node test.js'), 'still-failing': mixed('Still failing', 'exit 1') },
+      team: { 'benchmarks/fix/check-files/extra.test.js': 'written by the check\n' },
+    });
+    fixtures.push(fixture);
+
+    const done = await runLocally(fixture);
+
+    const runFile = RunSchema.parse(fixture.runFile(done.run));
+    const checks = Object.fromEntries(runFile.steps.filter(({ id }) => id.endsWith('.check')).map((step) => [step.id, step.outputs]));
+    const labels = fs.readFileSync(path.join(fixture.dataHome(), 'scores', 'labels.jsonl'), 'utf8').trim().split('\n').map((line) => z.object({ scorer: z.string(), label: z.string(), judge: z.object({ kind: z.string() }) }).passthrough().parse(JSON.parse(line)));
+    const record = z.object({ tasks: z.array(z.object({ id: z.string(), sourceHash: z.string(), baseline: z.string() })), trials: z.array(z.object({ task: z.string(), result: z.string(), verdicts: z.unknown() })) }).parse(fixture.benchmarkRecord(done.run));
+    const judged = fixture.judgeLaunches();
+    expect(done.outcome).toBe('succeeded');
+    expect(record.tasks.map(({ id, baseline }) => ({ id, baseline }))).toEqual([{ id: 'login-copy', baseline: 'valid' }, { id: 'still-failing', baseline: 'valid' }]);
+    expect(checks['trials.r1.login-copy.claude.check']).toEqual({ result: 'passed', cause: '', label: '' });
+    expect(checks['trials.r1.still-failing.claude.check']).toMatchObject({ result: 'failed', cause: '', label: expect.stringMatching(/.+/) });
+    expect(labels.map(({ scorer, label, judge }) => ({ scorer, label, judge: judge.kind })).sort((left, right) => left.scorer.localeCompare(right.scorer))).toEqual([
+      { scorer: 'teamai:correctness:login-copy', label: 'correct', judge: 'model' },
+      { scorer: 'teamai:correctness:still-failing', label: 'incorrect', judge: 'stage' },
+    ]);
+    expect(judged.map(({ labels: allowed }) => allowed.join(' '))).toEqual(['correct incorrect']);
+    expect(judged[0]?.diff).toContain('+module.exports = 42;');
+    expect(judged[0]?.diff).not.toContain('extra.test.js');
+    expect(record.trials.map(({ task, result, verdicts }) => ({ task, result, verdicts }))).toEqual([
+      { task: 'login-copy', result: 'passed', verdicts: [expect.objectContaining({ scorer: 'teamai:correctness:login-copy', outcome: { kind: 'labelled', label: 'correct', score: 1, passed: true }, decider: expect.objectContaining({ by: 'judge', tool: 'claude' }) })] },
+      { task: 'still-failing', result: 'failed', verdicts: [{ scorer: 'teamai:correctness:still-failing', outcome: { kind: 'labelled', label: 'incorrect', score: 0, passed: false }, decider: { by: 'check', task: record.tasks[1]?.sourceHash } }] },
+    ]);
   }, 120_000);
 
   it("judges every arm's trials with the suite's defaults.tool, though an arm runs codex, and says that judge is also an arm's tool", async () => {
@@ -167,8 +209,11 @@ describe('benchmark judges on the local driver', () => {
     expect(done.outputs.text).toContain('| claude | claude | tool default (team) | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0% (0/1) |');
   }, 120_000);
 
-  it('refuses to start a suite that needs a judge on a machine with no judge tool, and leaves no run', async () => {
-    const fixture = await judgedFixture({ tools: [] });
+  it.each([
+    ['success criteria', CRITERIA_TASK],
+    ['a check and success criteria', `${CRITERIA_TASK}check: { run: node test.js, protect: [test.js] }\n`],
+  ])('refuses to start a suite whose task has %s on a machine with no judge tool, and leaves no run', async (_, task) => {
+    const fixture = await judgedFixture({ tools: [], task });
 
     const started = await fixture.teamai(['benchmark', 'run', 'fix']);
 

@@ -7,7 +7,7 @@
  */
 import { z } from 'zod';
 import { definedFields } from '../utils/defined-fields.js';
-import { CheckOutputSchema } from '../scorers/check.js';
+import { CheckOutputSchema, type CheckOutput } from '../scorers/check.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { isStageDecider, labelVersion, type ScoreLabel } from '../scorers/label.js';
 import { LABEL_CODES } from '../scorers/score-labels.js';
@@ -175,15 +175,21 @@ function verdictOf(entry: ScoredEntry | undefined, stored: ScoreLabel | undefine
 }
 
 /**
- * The correctness verdict of a check task's trial, from what its check step output: the label whose version it names,
- * decided by the task's check; `check_could_not_run` when the check could not run; `run_ended` when the step output
- * nothing, or named a label this machine does not hold.
+ * Whether a trial's check, not a judge, gives its correctness label, from what its check step `output`: always for a
+ * task with no success criteria, and for one with them only when its check failed, since a judge decides after a check
+ * that passed.
  */
-function checkedOf(check: StepState | undefined, labels: readonly ScoreLabel[], task: PlannedTask): Judged {
-  const output = CheckOutputSchema.safeParse(check && 'outputs' in check ? check.outputs : undefined);
+export function isDecidedByCheck(task: PlannedTask, output: CheckOutput | undefined): boolean {
+  return task.judge.check !== undefined && (task.judge.criteria !== true || output?.result === 'failed');
+}
 
-  if (!output.success) return { outcome: { kind: 'unscored', because: RUN_ENDED } };
-  const checked = output.data;
+/**
+ * The correctness verdict of a trial its check decides, from what its check step output: the label whose version it
+ * names, decided by the task's check; `check_could_not_run` when the check could not run; `run_ended` when the step
+ * output nothing, or named a label this machine does not hold.
+ */
+function checkedOf(checked: CheckOutput | undefined, labels: readonly ScoreLabel[], task: PlannedTask): Judged {
+  if (!checked) return { outcome: { kind: 'unscored', because: RUN_ENDED } };
 
   switch (checked.result) {
     case 'could_not_run':
@@ -222,7 +228,9 @@ export const TrialVerdicts = {
       const subject = scored.get(item);
       const task = plan.tasks.find(({ id }) => id === trial.task);
       const correctness = correctnessScorerName(trial.task);
-      const checked = task?.judge.kind === 'check' ? [{ scorer: correctness, step, pass, ...checkedOf(stateOf(`${prefix}${checkStepOf(trial)}`), labels, task) }] : [];
+      const check = stateOf(`${prefix}${checkStepOf(trial)}`);
+      const output = CheckOutputSchema.safeParse(check && 'outputs' in check ? check.outputs : undefined).data;
+      const checked = task !== undefined && isDecidedByCheck(task, output) ? [{ scorer: correctness, step, pass, ...checkedOf(output, labels, task) }] : [];
 
       const judged = (definitionOf(step)?.scorers?.names ?? []).map((scorer) => {
         const entry = subject?.entries.get(scorer);
@@ -231,7 +239,8 @@ export const TrialVerdicts = {
         return { scorer, step, pass, ...verdictOf(entry, stored, { planned: plan.judges[scorer], isGivenUp: givenUp.get(item)?.has(scorer) === true }) };
       });
 
-      return [...checked, ...judged.filter(({ scorer }) => scorer === correctness), ...judged.filter(({ scorer }) => scorer !== correctness)];
+      // A failed check of a task with success criteria leaves its correctness scorer no judge, so only the check's verdict.
+      return [...checked, ...judged.filter(({ scorer }) => scorer === correctness && checked.length === 0), ...judged.filter(({ scorer }) => scorer !== correctness)];
     });
   },
 };
