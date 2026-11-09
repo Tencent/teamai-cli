@@ -514,15 +514,18 @@ async function copyDocs(
     }
   } catch (error) {
     for (const { target, backup } of moved.toReversed()) {
+      // oxlint-disable-next-line teamai/remove-delivered -- a docs target put back from its backup; the delivery record never names docs
       await fse.remove(target);
       await fse.rename(backup, target);
     }
 
     // If restoration itself fails, leave the backup directory for recovery.
+    // oxlint-disable-next-line teamai/remove-delivered -- docs' own staging directory, which the record never names
     if (staging) await fse.remove(staging);
     throw error;
   }
 
+  // oxlint-disable-next-line teamai/remove-delivered -- docs' own staging directory, which the record never names
   if (staging) await fse.remove(staging);
 }
 

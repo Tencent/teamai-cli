@@ -820,6 +820,7 @@ export function forgetDelivered(hashes: DeliveredHashes, dest: string): void {
  * there is no record to update.
  */
 export async function removeDelivered(ledger: DeliveryLedger | undefined, dest: string): Promise<void> {
+  // oxlint-disable-next-line teamai/remove-delivered -- the one deletion the rule points to; the record follows below
   await remove(dest);
 
   if (ledger) forgetDelivered(ledger.hashes, dest);
