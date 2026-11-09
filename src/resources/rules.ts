@@ -3,7 +3,7 @@ import { ResourceHandler, type PlacementRecords } from './base.js';
 import type { CopyOrigin, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { isDraft, listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, listDirs, readFileSafe, writeFile, pruneEmptyDirs, fileHash } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { RESOURCE_LAYOUTS, Resources } from './resolver.js';
+import { RESOURCE_LAYOUTS, Resources, type ResourceDiagnostic } from './resolver.js';
 import { RuleFolders } from './rule-folders.js';
 import { FolderFiles } from './folder-files.js';
 import { getUserHome } from '../utils/home.js';
@@ -875,7 +875,7 @@ export class RulesHandler extends ResourceHandler {
   ): Promise<void> {
     const rules = filteredRules ?? await this.scanTeamForPull(teamConfig, localConfig);
 
-    for (const problem of (await readTeamRules(localConfig.repo.localPath)).problems) warnOnce(problem);
+    for (const { message } of (await readTeamRules(localConfig.repo.localPath)).problems) warnOnce(message);
 
     if (await pathExists(path.join(localConfig.repo.localPath, 'rules', `${TEAMAI_CONTEXT_RULE_NAME}.md`))) {
       log.warn(`rules/${TEAMAI_CONTEXT_RULE_NAME}.md is not delivered: ${TEAMAI_CONTEXT_RULE_NAME} is the name of teamai's own instruction file `
@@ -1604,15 +1604,21 @@ export class RulesHandler extends ResourceHandler {
 
 /**
  * The team's rules in `repoPath`, files and folders, each named by its path under `rules/` (#1787), and what the read
- * found that the team should hear, for pull to print: a name defined both as a file and as a folder, which neither
- * delivers; a folder that takes a name teamai keeps; a directory that gained RULE.md beside rules of its own.
+ * found that the team should hear, for pull to print and review to grade: `invalid`, a rule that is not delivered (a
+ * name defined both as a file and as a folder, a folder that takes a name teamai keeps, a folder holding a link);
+ * `note`, what changes nothing pull delivers (a directory that gained RULE.md beside rules of its own, a language
+ * variant's frontmatter).
  */
-export async function readTeamRules(repoPath: string): Promise<{ rules: ResourceItem[]; problems: string[] }> {
+export async function readTeamRules(repoPath: string): Promise<{ rules: ResourceItem[]; problems: ResourceDiagnostic[] }> {
   const { items, duplicates, diagnostics } = await Resources.walk(RESOURCE_LAYOUTS.rules, repoPath);
-  const problems = diagnostics.map(({ message }) => message);
+  const problems = [...diagnostics];
+
+  const invalid = (at: string, message: string): void => {
+    problems.push({ kind: 'invalid', path: at, message });
+  };
 
   for (const { name, first, second } of duplicates) {
-    problems.push(`${first.source.path} and ${second.source.path} both define the rule ${name}, so neither is delivered. Remove one of them in the team repo.`);
+    invalid(second.source.path, `${first.source.path} and ${second.source.path} both define the rule ${name}, so neither is delivered. Remove one of them in the team repo.`);
   }
 
   const rules: ResourceItem[] = [];
@@ -1621,7 +1627,7 @@ export async function readTeamRules(repoPath: string): Promise<{ rules: Resource
     // teamai-context is the file pull writes the team instructions to; a team
     // rule of that name would land on it (#945). pullAllRules names the file.
     if (name === TEAMAI_CONTEXT_RULE_NAME) {
-      if (source.kind === 'folder') problems.push(`${source.path} is not delivered: ${TEAMAI_CONTEXT_RULE_NAME} is the name of teamai's own instruction file in each rules directory. Rename the folder in the team repo.`);
+      if (source.kind === 'folder') invalid(source.path, `${source.path} is not delivered: ${TEAMAI_CONTEXT_RULE_NAME} is the name of teamai's own instruction file in each rules directory. Rename the folder in the team repo.`);
       continue;
     }
 
@@ -1634,20 +1640,22 @@ export async function readTeamRules(repoPath: string): Promise<{ rules: Resource
     if (name === RECALL_RULE_NAME) continue;
 
     if (path.posix.basename(name).startsWith('teamai-')) {
-      problems.push(`${source.path} is not delivered: a teamai-* rule folder replaces teamai's rule of that name, and only rules/${RECALL_RULE_NAME}/ does.`);
+      invalid(source.path, `${source.path} is not delivered: a teamai-* rule folder replaces teamai's rule of that name, and only rules/${RECALL_RULE_NAME}/ does.`);
       continue;
     }
 
     const read = await FolderFiles.read(source.full);
 
     if (read.kind === 'invalid') {
-      problems.push(`${source.path} is not delivered: ${read.problems.map(FolderFiles.describe).join(', ')}. `
+      invalid(source.path, `${source.path} is not delivered: ${read.problems.map(FolderFiles.describe).join(', ')}. `
         + 'A rule folder holds only files teamai can read, never links; fix it in the team repo.');
       continue;
     }
 
     const marker = RESOURCE_LAYOUTS.rules.marker;
-    rules.push({ name, type: 'rules', sourcePath: path.join(source.full, marker), relativePath: `${source.path}${marker}`, folder: true });
+    const rule = { name, type: 'rules', sourcePath: path.join(source.full, marker), relativePath: `${source.path}${marker}`, folder: true } as const;
+    problems.push(...RuleFolders.variantNotes(rule, read.files));
+    rules.push(rule);
   }
 
   return { rules, problems };

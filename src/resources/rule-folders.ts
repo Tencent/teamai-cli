@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { DeliveryLedger } from './delivered-copies.js';
 import { DELIVERED_DIR, DeliveredFolders, type DeliveredFolderRef } from './delivered-folders.js';
 import { FolderFiles, type FolderFile } from './folder-files.js';
-import { RESOURCE_LAYOUTS } from './resolver.js';
+import { RESOURCE_LAYOUTS, type ResourceDiagnostic } from './resolver.js';
 import { splitRuleFrontmatter } from './team-rule.js';
 import { ruleFolderReachOf } from '../tools.js';
 import { isSelfMode, type LocalConfig, type ResourceItem, type TeamaiConfig } from '../types.js';
@@ -62,6 +62,21 @@ async function languageFile(dir: string, stem: string, language: TeamaiConfig['l
   return variant !== null && (await fs.readdir(dir).catch((): string[] => [])).includes(variant) ? variant : `${stem}.md`;
 }
 
+/** What pull says about the frontmatter of `rule`'s language variant `variantName`, which it ignores. */
+function variantFrontmatterMessage(rule: RuleFolder, variantName: string): string {
+  return `The frontmatter of ${path.posix.join(path.posix.dirname(rule.relativePath), variantName)} is ignored: every language of a rule folder `
+    + `takes the frontmatter of its RULE.md. Move those fields to ${rule.relativePath} in the team repo.`;
+}
+
+/** A note for each language variant among `files` (`RULE.<lang>.md`, common rule 12) of `rule` that carries frontmatter, which pull ignores. */
+function variantNotes(rule: RuleFolder, files: readonly FolderFile[]): ResourceDiagnostic[] {
+  return files.flatMap((file): ResourceDiagnostic[] => {
+    if (!/^RULE\.[a-z]+\.md$/.test(file.path) || splitRuleFrontmatter(readText(file.bytes.toString('utf8'))).block === '') return [];
+
+    return [{ kind: 'note', path: path.posix.join(path.posix.dirname(rule.relativePath), file.path), message: variantFrontmatterMessage(rule, file.path) }];
+  });
+}
+
 /**
  * The rule text of `rule` for `language`, before `${TEAMAI_RULE_DIR}` is rendered, ending in one newline: `RULE.md`,
  * or its language variant's body under the frontmatter of `RULE.md` (`languageFile`). Null when a file it needs
@@ -80,10 +95,7 @@ async function text(rule: RuleFolder, language: TeamaiConfig['language']): Promi
   if (variant === null) return null;
   const { block, body } = splitRuleFrontmatter(variant);
 
-  if (block !== '') {
-    warnOnce(`The frontmatter of ${path.posix.join(path.posix.dirname(rule.relativePath), variantName)} is ignored: every language of a rule folder `
-      + `takes the frontmatter of its RULE.md. Move those fields to ${rule.relativePath} in the team repo.`);
-  }
+  if (block !== '') warnOnce(variantFrontmatterMessage(rule, variantName));
 
   return `${splitRuleFrontmatter(base).block}${body}\n`;
 }
@@ -145,6 +157,8 @@ async function sync(input: {
   }
 
   const delivered = folders.map(({ ref, files }) => ({ dest: DeliveredFolders.pathOf(localConfig, ref), files }));
+  // Always pruned: unlike hooks and MCP, no rule is ever held back with its copy kept. A workspace unions its members'
+  // rules by path (`resolveWorkspaceRules`), so a rule pull does not deliver has no copy left to read its folder.
   await DeliveredFolders.sync({ localConfig, type: 'rules', folders: delivered, ledger, prune: true });
   const copying = input.tools.filter((tool) => !readsDataHome(tool));
   const copyRoot = copyRootOf(localConfig);
@@ -214,4 +228,4 @@ async function grant(input: {
   return owned;
 }
 
-export const RuleFolders = { isFolder, isDelivered, languageFile, readTextFile, text, render, sync, grant } as const;
+export const RuleFolders = { isFolder, isDelivered, languageFile, readTextFile, text, variantNotes, render, sync, grant } as const;

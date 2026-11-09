@@ -26,6 +26,8 @@ import path from 'node:path';
 import chalk from 'chalk';
 import fse from 'fs-extra';
 import { findSkippedFolders, isInSkippedFolder, skippedFolderMessage, skippedFoldersIn } from './folder-markers.js';
+import { RESOURCE_LAYOUTS } from './resources/resolver.js';
+import { readTeamRules } from './resources/rules.js';
 import { parseYaml } from './utils/yaml.js';
 import { z } from 'zod';
 
@@ -226,6 +228,24 @@ async function skippedFolderFindings(repoDir: string): Promise<Finding[]> {
   }));
 }
 
+/**
+ * What pull's rules reader says about the branch's rules (#1787): a rule it does not deliver fails, and a note (a
+ * directory that became a rule folder, a language variant's frontmatter) warns.
+ */
+async function ruleFindings(repoDir: string): Promise<Finding[]> {
+  return (await readTeamRules(repoDir)).problems.map(({ kind, path: at, message }): Finding => ({
+    level: kind === 'invalid' ? 'fail' : 'warn',
+    check: kind === 'invalid' || at.endsWith('/') ? 'structure' : 'format',
+    path: at,
+    message,
+  }));
+}
+
+/** Whether `resource` is a rule folder, read through its `RULE.md`: every file in its directory belongs to it. */
+function isRuleFolder(resource: Pick<ReviewResource, 'type' | 'relativePath'>): boolean {
+  return resource.type === 'rules' && path.posix.basename(resource.relativePath) === RESOURCE_LAYOUTS.rules.marker;
+}
+
 /** Enumerate the resources on the branch through the same scanners pull uses. */
 async function scanResources(repoDir: string, index: ManifestIndex): Promise<ReviewResource[]> {
   // SAFETY: the skills, rules, agents and mcp pull scanners read only repo.localPath from LocalConfig.
@@ -316,7 +336,8 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
       };
     }
 
-    const { name, namespace } = parseRelativePath(type, item.relativePath, index);
+    // A rule folder is named as the rule file of its name would be: rules/fe/review/ is fe/review.
+    const { name, namespace } = parseRelativePath(type, item.folder ? `rules/${item.name}.md` : item.relativePath, index);
 
     return { type, name, namespace, relativePath: item.relativePath, absolutePath: item.sourcePath };
   });
@@ -705,9 +726,13 @@ async function filesUnder(relativeDir: string, absoluteDir: string): Promise<Arr
 
 async function leakFindings(repoDir: string, resources: ReviewResource[], readText: (p: string) => Promise<string | null>): Promise<Finding[]> {
   const files = [
-    ...(await Promise.all(resources.map((resource) => resource.type === 'skills'
-      ? filesUnder(resource.relativePath, resource.absolutePath)
-      : [{ relativePath: resource.relativePath, absolutePath: resource.absolutePath }]))).flat(),
+    ...(await Promise.all(resources.map((resource) => {
+      if (resource.type === 'skills') return filesUnder(resource.relativePath, resource.absolutePath);
+
+      return isRuleFolder(resource)
+        ? filesUnder(path.posix.dirname(resource.relativePath), path.dirname(resource.absolutePath))
+        : [{ relativePath: resource.relativePath, absolutePath: resource.absolutePath }];
+    }))).flat(),
     ...await filesUnder('scorers', path.join(repoDir, 'scorers')),
   ];
 
@@ -1620,6 +1645,7 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
 
   const findings: Finding[] = [
     ...await skippedFolderFindings(repoDir),
+    ...await ruleFindings(repoDir),
     ...await structureFindings(resources, index),
     ...await namingFindings(resources, readText),
     ...await duplicateFindings(resources, index),
