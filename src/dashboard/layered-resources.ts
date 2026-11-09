@@ -188,6 +188,10 @@ async function workflowList(config: LocalConfig, sync: SyncTeamResult): Promise<
     }
 
     if (resolution.item.source.path !== item.source.path) return { kind: 'replaced', by: resolution.item.source.path };
+    // A folder pull skips whole, such as a teamai- name that replaces no default.
+    const skipped = sync.skipped.find(({ path: at }) => at === item.source.path);
+
+    if (skipped) return { kind: 'refused', message: skipped.message };
     const diagnostics = diagnosticsOf(item, sync.invalid);
     diagnostics.forEach((diagnostic) => seen.add(diagnostic));
 

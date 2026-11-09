@@ -115,6 +115,17 @@ describe('workflows on the Resources page', () => {
     ]);
   });
 
+  it('shows a teamai- folder that replaces no default as refused, with what pull prints', async () => {
+    await write({ 'workflows/teamai-release/WORKFLOW.yaml': workflow('teamai-release') });
+
+    const release = (await listOf('workflows')).resources.find((resource) => resource.name === 'teamai-release');
+
+    expect(release?.state).toEqual({
+      kind: 'refused',
+      message: 'workflows/teamai-release/ is skipped: a teamai- name only replaces a teamai default, and teamai has no workflow named teamai-release. Rename the folder.',
+    });
+  });
+
   it('holds teamai\'s default that cannot start against the team\'s replacement of a workflow it runs, with what pull prints', async () => {
     await write({ 'workflows/teamai-codebase-enrich/WORKFLOW.yaml': workflow('teamai-codebase-enrich') });
 
