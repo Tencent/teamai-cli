@@ -384,6 +384,13 @@ function runsTeamScript(def: HookDef): boolean {
   return (def.folder !== undefined && DeliveredFolders.mentions(def.folder.command, 'hooks')) || isTeamScriptCommand(def.command);
 }
 
+/** Why `sharing.hooks.requireTeamScripts` keeps `resolved` out of every tool, or null when it lets it through. */
+export function teamScriptRefusal(localConfig: LocalConfig, teamConfig: TeamaiConfig, resolved: ResolvedEntry<TeamHookDefinition>): string | null {
+  return getHooksSharing(teamConfig).requireTeamScripts && !runsTeamScript(teamHookDelivery(localConfig, resolved).def)
+    ? 'its command is neither in a hook folder through ${TEAMAI_HOOK_DIR} nor under ~/.teamai/team-scripts/ (sharing.hooks.requireTeamScripts)'
+    : null;
+}
+
 /**
  * Resolve the team hooks that should actually be applied, after security gating:
  *   1. Local kill-switch (TEAMAI_HOOKS_DISABLED) → drop all team hooks.

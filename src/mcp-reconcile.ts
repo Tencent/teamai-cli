@@ -296,6 +296,11 @@ function policyViolation(def: McpServerDef, sharing: ReturnType<typeof getMcpSha
   return null;
 }
 
+/** Why the team's security policy keeps `resolved` out of every tool, or null when it lets it through. */
+export function teamMcpRefusal(localConfig: LocalConfig, teamConfig: TeamaiConfig, resolved: ResolvedEntry<TeamMcpDefinition>): string | null {
+  return policyViolation(teamMcpDef(localConfig, resolved), getMcpSharing(teamConfig));
+}
+
 /** True when every executable in `requires` is on PATH. Returns a reason, or null when OK. */
 function requirementsMet(def: McpServerDef, lookPath?: LookPathOptions): string | null {
   if (!def.requires?.length) return null;

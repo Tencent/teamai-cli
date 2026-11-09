@@ -192,6 +192,18 @@ describe('hooks on the Resources page', () => {
       { path: path.join(dataHome, 'hooks', 'block-secrets'), present: false, by: 'pull' },
     ]);
   });
+
+  it('shows a hook that sharing.hooks.requireTeamScripts holds back as refused, with the reason, beside a folder hook it lets through', async () => {
+    await write({ 'hooks/block-secrets/HOOK.yaml': BLOCK_SECRETS, 'hooks/block-secrets/scan.sh': 'exit 0\n', 'hooks/hooks.yaml': hooksYaml('lint') });
+    const strict = TeamaiConfigSchema.parse({ team: 'acme', repo: 'https://example.test/acme/team.git', sharing: { hooks: { requireTeamScripts: true } } });
+
+    const list = (await collectLayeredResources(member(), strict)).types.find((found) => found.type === 'hooks');
+
+    expect(list?.resources.map((resource) => [resource.name, resource.state]).sort()).toEqual([
+      ['block-secrets', { kind: 'in-force' }],
+      ['lint', { kind: 'refused', message: 'its command is neither in a hook folder through ${TEAMAI_HOOK_DIR} nor under ~/.teamai/team-scripts/ (sharing.hooks.requireTeamScripts)' }],
+    ]);
+  });
 });
 
 describe('MCP servers on the Resources page', () => {
@@ -238,6 +250,18 @@ describe('MCP servers on the Resources page', () => {
       env: ['JIRA_TOKEN', 'JIRA_URL'],
     }]);
     expect(JSON.stringify(await collectLayeredResources(member(), teamConfig))).not.toContain('jira.example.test');
+  });
+
+  it('shows a server whose command sharing.mcp.allowedCommands leaves out as refused, with the reason, and the folder pull still delivers', async () => {
+    await write({ 'mcp/jira-lite/MCP.yaml': 'transport: stdio\ncommand: node\nargs: ["${TEAMAI_MCP_DIR}/server.js"]\n', 'mcp/jira-lite/server.js': '\n' });
+    const strict = TeamaiConfigSchema.parse({ team: 'acme', repo: 'https://example.test/acme/team.git', sharing: { mcp: { allowedCommands: ['uv'] } } });
+
+    const list = (await collectLayeredResources(member(), strict)).types.find((found) => found.type === 'mcp');
+
+    // Pull still delivers the folder of every server it resolves; no tool's configuration names this one.
+    expect(list?.resources.map((resource) => [resource.name, resource.state, resource.folder?.delivered?.path ?? null])).toEqual([
+      ['jira-lite', { kind: 'refused', message: 'command "node" is not in sharing.mcp.allowedCommands' }, path.join(dataHome, 'mcp', 'jira-lite')],
+    ]);
   });
 });
 

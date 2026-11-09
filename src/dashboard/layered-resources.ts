@@ -10,13 +10,14 @@ import { RECALL_RULE_NAME, resolveRecall, type RecallFolder } from '../builtin-r
 import { loadCachedSuite, suiteDirectories, syncTeamDefinitions, type SyncTeamResult } from '../benchmark/suite-cache.js';
 import { DefaultHooks, type DefaultHookComparison } from '../default-hooks.js';
 import { DefaultWorkflows } from '../default-workflows.js';
-import { activeEntryNamespaces, describeEntryFailure, entryLayout, type EntryFailure } from '../namespaced-entries.js';
+import { activeEntryNamespaces, describeEntryFailure, entryLayout, type EntryFailure, type ResolvedEntry } from '../namespaced-entries.js';
 import { LayeredEntries, type LayeredEntryType, type PlaceFolderRead } from '../resources/layered-entries.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { DeliveredFolders } from '../resources/delivered-folders.js';
 import { FolderFiles } from '../resources/folder-files.js';
-import { TEAM_HOOKS, TEAM_HOOK_ENTRIES, readDefaultHookReplacements, readHookFolder, type TeamHookDefinition } from '../resources/hooks.js';
+import { TEAM_HOOKS, TEAM_HOOK_ENTRIES, readDefaultHookReplacements, readHookFolder, teamScriptRefusal, type TeamHookDefinition } from '../resources/hooks.js';
 import { TEAM_MCP, TEAM_MCP_ENTRIES, readMcpFolder, type TeamMcpDefinition } from '../resources/mcp.js';
+import { teamMcpRefusal } from '../mcp-reconcile.js';
 import { RESOURCE_LAYOUTS, Resources, type LayeredItem, type ListedResolution, type ResourceLayout } from '../resources/resolver.js';
 import { RuleFolders } from '../resources/rule-folders.js';
 import { buildRolePullContext, resolveDesiredRules } from '../resources/desired.js';
@@ -245,6 +246,10 @@ interface EntryType<TEntry, TDefinition> {
   readonly runs: (definition: TDefinition, dest: string) => NonNullable<ResourceFolder['runs']>;
   /** Definitions another list shows: the team's folders that replace teamai's default hooks, at the root. */
   readonly listedElsewhere: (item: Found) => boolean;
+  /** Why the team's policy keeps a definition pull resolves out of every tool, as pull reads it, or null. */
+  readonly refusal: (config: LocalConfig, teamConfig: TeamaiConfig, resolved: ResolvedEntry<TDefinition>) => string | null;
+  /** Whether pull still delivers the folder of a definition `refusal` refuses: MCP delivers every resolved server's folder. */
+  readonly deliversRefused: boolean;
 }
 
 const HOOKS: EntryType<unknown, TeamHookDefinition> = {
@@ -254,6 +259,8 @@ const HOOKS: EntryType<unknown, TeamHookDefinition> = {
   readFolder: readHookFolder,
   runs: (definition, dest) => ({ command: DeliveredFolders.render(definition.hook.command, { type: 'hooks', dest }), args: [], env: [] }),
   listedElsewhere: (item) => item.layer === 'root' && item.source.kind === 'folder' && DefaultHooks.isName(item.name),
+  refusal: teamScriptRefusal,
+  deliversRefused: false,
 };
 
 const MCP: EntryType<unknown, TeamMcpDefinition> = {
@@ -267,6 +274,8 @@ const MCP: EntryType<unknown, TeamMcpDefinition> = {
     return { command: render(server.command ?? ''), args: (server.args ?? []).map(render), env: Object.keys(server.env ?? {}) };
   },
   listedElsewhere: () => false,
+  refusal: teamMcpRefusal,
+  deliversRefused: true,
 };
 
 /** The paths a failure of pull's resolution names, so the definitions there carry it. */
@@ -289,7 +298,7 @@ function failurePaths(failure: EntryFailure): string[] {
  * and pull's resolution says which apply. A problem anywhere stops the whole type for the run, as pull does, which
  * keeps what is installed: the other definitions are `blocked`.
  */
-async function entryList<TEntry, TDefinition>(config: LocalConfig, spec: EntryType<TEntry, TDefinition>): Promise<LayeredResourceList> {
+async function entryList<TEntry, TDefinition>(config: LocalConfig, teamConfig: TeamaiConfig, spec: EntryType<TEntry, TDefinition>): Promise<LayeredResourceList> {
   const layout = entryLayout(spec.type);
   const resolution = await LayeredEntries.resolve(spec.entries, config);
   const namespaces = resolution.kind === 'resolved' ? { ok: true as const, active: resolution.active } : await activeEntryNamespaces(config, layout);
@@ -330,7 +339,12 @@ async function entryList<TEntry, TDefinition>(config: LocalConfig, spec: EntryTy
     if (resolution.kind !== 'resolved') return { state: { kind: 'inactive' }, runs };
     const applied = resolution.entries.find((entry) => entry.name === item.name && entry.source === item.source.path);
 
-    if (applied) return { state: { kind: 'in-force' }, runs };
+    if (applied) {
+      const refusal = spec.refusal(config, teamConfig, applied);
+
+      return { state: refusal === null ? { kind: 'in-force' } : { kind: 'refused', message: refusal }, runs };
+    }
+
     const replacing = resolution.entries.find((entry) => entry.name === item.name && entry.replaces === item.source.path);
 
     if (replacing) return { state: { kind: 'replaced', by: replacing.source }, runs };
@@ -368,7 +382,8 @@ async function entryList<TEntry, TDefinition>(config: LocalConfig, spec: EntryTy
     const { state, runs } = await stateOf(item);
     const applied = resolution.kind === 'resolved' ? resolution.entries.find((entry) => entry.name === item.name && entry.source === item.source.path) : undefined;
     const replaced = applied?.replaces ? survey.definitions.find((other) => other.name === item.name && other.source.path === applied.replaces) : undefined;
-    const delivered = item.source.kind === 'folder' && (state.kind === 'in-force' || state.kind === 'blocked') ? deliveredAt(item) : null;
+    const isDelivered = state.kind === 'in-force' || state.kind === 'blocked' || (state.kind === 'refused' && applied !== undefined && spec.deliversRefused);
+    const delivered = item.source.kind === 'folder' && isDelivered ? deliveredAt(item) : null;
 
     resources.push({
       name: item.name,
@@ -589,7 +604,7 @@ export async function collectLayeredResources(config: LocalConfig, teamConfig: T
   try {
     const sync = await syncTeamDefinitions(config, { dryRun: true });
 
-    return { language: teamConfig.language ?? null, types: [await workflowList(config, sync), await entryList(config, HOOKS), await entryList(config, MCP), await suiteList(config, sync), await ruleList(config, teamConfig)],
+    return { language: teamConfig.language ?? null, types: [await workflowList(config, sync), await entryList(config, teamConfig, HOOKS), await entryList(config, teamConfig, MCP), await suiteList(config, sync), await ruleList(config, teamConfig)],
       defaultHooks: await defaultHookList(config, teamConfig.language) };
   } finally {
     setSilent(wasSilent);
