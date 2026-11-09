@@ -210,7 +210,7 @@ describe('benchmark run calibration', () => {
     const { record } = await calibratedRecord();
 
     expect(record.calibration).toEqual({ rate: 100 });
-    expect(record.tasks.map(({ judge }) => judge)).toEqual([{ check: true, criteria: true }]);
+    expect(record.tasks.map(({ judge }) => judge)).toEqual(['both']);
   });
 
   it('records no calibration on a trial whose calibration judge gave no label', async () => {

@@ -99,7 +99,7 @@ describe('the workflow a benchmark plan prints', () => {
       tasks: { t01: "schemaVersion: v1alpha1\ntitle: Fix it\nprompt: Make the test pass.\nstartingCommit: '{{startingCommit}}'\ncheck: { run: node test.js, protect: [test.js] }\nsuccessCriteria: The error names the wrong field.\n" },
     });
 
-    expect(plan.tasks[0]?.judge).toEqual({ check: { run: 'node test.js', protect: ['test.js'] }, criteria: true });
+    expect(plan.tasks[0]?.judge).toEqual({ kind: 'both', check: { run: 'node test.js', protect: ['test.js'] } });
     expect(plan.judges).toEqual({ 'teamai:correctness:t01': { tool: 'claude', model: '' } });
     expect(stepDefinitions(run)('trials.baselines.t01')).toBeDefined();
     expect(stepDefinitions(run)('trials.r1.t01.a01')?.if).toBe("steps.baselines.outputs.t01 == 'failed'");

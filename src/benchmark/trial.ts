@@ -25,8 +25,8 @@ import { SANDBOX_WITHHELD_ENV } from '../workflow/requirements.js';
 import { runShellCommand } from '../workflow/shell-command.js';
 import type { RunState, WorkflowFailure } from '../workflow/types.js';
 import { untrustedGit } from '../workflow/worktree.js';
-import { BENCHMARK_PLAN_SCHEMA_VERSION, baselineStepOf, checkStepOf, correctnessScorerName, type BenchmarkPlan, type PlannedArm, type PlannedTrial } from './plan.js';
-import type { CheckFile, Suite } from './suite.js';
+import { BENCHMARK_PLAN_SCHEMA_VERSION, baselineStepOf, checkStepOf, correctnessScorerName, type BenchmarkPlan, type PlannedArm, type PlannedCheck, type PlannedTrial } from './plan.js';
+import { TaskJudge, type CheckFile, type Suite } from './suite.js';
 import { planOfRun } from './run-plan.js';
 
 const CommittedSuiteSchema = z.object({ suite: z.custom<Suite>(), files: z.custom<ReadonlyMap<string, Added>>() }).brand<'CommittedSuite'>();
@@ -42,7 +42,7 @@ export async function commitCheckFiles(cache: string, suite: Suite): Promise<{ o
   const files = new Map<string, Added>();
 
   for (const task of suite.tasks) {
-    const written = task.judge.check?.files;
+    const written = TaskJudge.checkOf(task.judge)?.files;
 
     if (!written) continue;
     const [first, ...rest] = written;
@@ -186,7 +186,7 @@ export async function runCheckStep({ mode, env: given, cwd, signal }: { mode: Ch
     case 'passed':
     case 'failed': {
       // A check that passes a task with success criteria leaves its trial to the judge, so it writes no label.
-      if (!at || (verdict.verdict === 'passed' && task.judge.criteria === true)) return { output: { result: verdict.verdict, cause: '', label: '' } };
+      if (!at || (verdict.verdict === 'passed' && task.judge.kind === 'both')) return { output: { result: verdict.verdict, cause: '', label: '' } };
       const stored = await storeCheckLabel({ config, run, plan, subject: { runId: run.id, step: `${prefix}${at.step}`, pass: workPass(run, `${prefix}${at.step}`) }, task: task.id, result: verdict.verdict });
 
       return 'failure' in stored ? stored : { output: { result: verdict.verdict, cause: '', label: stored.version } };
@@ -230,11 +230,11 @@ async function storeCheckLabel({ config, run, plan, subject, task, result }: { c
 }
 
 /** The check task `step` checks in `mode`, its check, and for a trial's check, the trial as its lines name it. */
-function checkedBy(plan: BenchmarkPlan, mode: CheckStepMode, step: string): { task: BenchmarkPlan['tasks'][number]; judge: NonNullable<BenchmarkPlan['tasks'][number]['judge']['check']>; at?: TrialAt & Pick<PlannedTrial, 'step'> } | undefined {
+function checkedBy(plan: BenchmarkPlan, mode: CheckStepMode, step: string): { task: BenchmarkPlan['tasks'][number]; judge: PlannedCheck; at?: TrialAt & Pick<PlannedTrial, 'step'> } | undefined {
   const trial = mode === 'trial' ? plan.trials.find((planned) => checkStepOf(planned) === step) : undefined;
   const task = plan.tasks.find((planned) => (mode === 'trial' ? planned.id === trial?.task : baselineStepOf(planned.id) === step));
 
-  if (task?.judge.check === undefined) return undefined;
+  if (task === undefined || task.judge.kind === 'criteria') return undefined;
 
   return { task, judge: task.judge.check, at: trial ? { ...trial, total: plan.trials.length } : undefined };
 }

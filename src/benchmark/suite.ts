@@ -390,7 +390,7 @@ function taskFileSchema(files: ReadonlyMap<string, SuiteFile>) {
     /** Scorers that judge this task's trials besides the suite's, by the name of their file in scorers/. */
     scorers: z.array(ScorerNameSchema).optional(),
   }).strict().transform(({ check, successCriteria, ...task }, ctx) => {
-    if (successCriteria !== undefined && !check) return { ...task, judge: { successCriteria } satisfies TaskJudge };
+    if (successCriteria !== undefined && !check) return { ...task, judge: { kind: 'criteria', successCriteria } satisfies TaskJudge };
 
     if (!check) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['check'], message: 'a task has check, successCriteria, or both; add at least one' });
@@ -461,7 +461,9 @@ function taskFileSchema(files: ReadonlyMap<string, SuiteFile>) {
 
     if (firstFile) checked.files = [firstFile, ...otherFiles];
 
-    return { ...task, judge: definedFields<TaskJudge>({ check: checked, successCriteria }) };
+    const judge: TaskJudge = successCriteria === undefined ? { kind: 'check', check: checked } : { kind: 'both', check: checked, successCriteria };
+
+    return { ...task, judge };
   });
 }
 
@@ -508,8 +510,16 @@ export interface TaskCheck {
  * only when it passes. Never by neither, by construction: the file rule above becomes this union.
  */
 export type TaskJudge =
-  | { check: TaskCheck; successCriteria?: string }
-  | { check?: undefined; successCriteria: string };
+  | { kind: 'check'; check: TaskCheck }
+  | { kind: 'criteria'; successCriteria: string }
+  | { kind: 'both'; check: TaskCheck; successCriteria: string };
+
+export const TaskJudge = {
+  /** The task's check; undefined when a judge alone decides it. */
+  checkOf: (judge: TaskJudge): TaskCheck | undefined => (judge.kind === 'criteria' ? undefined : judge.check),
+  /** The task's success criteria; undefined when its check alone decides it. */
+  criteriaOf: (judge: TaskJudge): string | undefined => (judge.kind === 'check' ? undefined : judge.successCriteria),
+} as const;
 
 export interface Task {
   /** The file name without `.yaml`. Trials are ordered by it. */
@@ -742,7 +752,7 @@ function hashOf(content: string | Buffer): string {
  * hash in order, so editing one changes it. A task without them keeps the hash of its file alone.
  */
 function taskHash(content: string, judge: TaskJudge): string {
-  const files = judge.check?.files ?? [];
+  const files = TaskJudge.checkOf(judge)?.files ?? [];
 
   if (files.length === 0) return hashOf(content);
 

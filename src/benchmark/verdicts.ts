@@ -246,7 +246,7 @@ function verdictOf(entry: ScoredEntry | undefined, stored: ScoreLabel | undefine
  * that passed.
  */
 export function isDecidedByCheck(task: PlannedTask, output: CheckOutput | undefined): boolean {
-  return task.judge.check !== undefined && (task.judge.criteria !== true || output?.result === 'failed');
+  return task.judge.kind === 'check' || (task.judge.kind === 'both' && output?.result === 'failed');
 }
 
 /**

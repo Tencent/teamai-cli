@@ -610,7 +610,7 @@ describe('the Benchmarks page calibrates the correctness judge', () => {
    */
   const mixed = (calibrated: (trial: { arm: string; repetition: number }) => { passed: boolean; decider: typeof HAIKU } | undefined, rate = 100): BenchmarkRunInput[] => [{ ...base, benchmark: { ...base.benchmark,
     calibration: { rate },
-    tasks: base.benchmark.tasks.map((task) => ({ ...task, judge: { check: true as const, criteria: true as const } })),
+    tasks: base.benchmark.tasks.map((task) => ({ ...task, judge: 'both' as const })),
     judges: { 'teamai:correctness:login': { tool: 'claude', model: 'fast' } },
     trials: base.benchmark.trials.map((trial) => {
       const calibration = calibrated(trial);

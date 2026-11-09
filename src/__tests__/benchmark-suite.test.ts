@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { formatUnknownScorer } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
 import { loadCachedSuite, suiteDirectories, syncTeamDefinitions } from '../benchmark/suite-cache.js';
-import { parseSuite, type SuiteFile } from '../benchmark/suite.js';
+import { parseSuite, TaskJudge, type SuiteFile } from '../benchmark/suite.js';
 
 const START = 'a'.repeat(40);
 const dirs: string[] = [];
@@ -236,9 +236,9 @@ describe('parseSuite', () => {
 
     expect(parsed).toMatchObject({ ok: true, diagnostics: [] });
     expect(parsed.ok && parsed.suite.tasks.map(({ id, judge }) => ({ id, judge }))).toEqual([
-      { id: 'both', judge: { check, successCriteria: criteria } },
-      { id: 'check', judge: { check } },
-      { id: 'criteria', judge: { successCriteria: criteria } },
+      { id: 'both', judge: { kind: 'both', check, successCriteria: criteria } },
+      { id: 'check', judge: { kind: 'check', check } },
+      { id: 'criteria', judge: { kind: 'criteria', successCriteria: criteria } },
     ]);
   });
 
@@ -295,7 +295,7 @@ describe('parseSuite', () => {
     ]);
 
     expect(parsed).toMatchObject({ ok: true, diagnostics: [] });
-    expect(parsed.ok && parsed.suite.tasks[0].judge).toEqual({ check: {
+    expect(parsed.ok && parsed.suite.tasks[0].judge).toEqual({ kind: 'check', check: {
       run: 'node test.js', protect: ['test/**'],
       files: [{ path: 'test/auth/refresh.test.js', mode: '100755', base64: Buffer.from(test).toString('base64') }],
     } });
@@ -308,7 +308,7 @@ describe('parseSuite', () => {
       suiteFile('check-files/other.test.js', 'other'),
     ]);
 
-    expect(parsed.ok && parsed.suite.tasks[0].judge.check).toMatchObject({
+    expect(parsed.ok && TaskJudge.checkOf(parsed.suite.tasks[0].judge)).toMatchObject({
       files: [{ path: 'test/auth/fixtures/token.json', base64: Buffer.from('{}').toString('base64') }, { path: 'test/auth/refresh.test.js', base64: Buffer.from('refresh').toString('base64') }],
     });
   });
@@ -490,8 +490,8 @@ describe('suite sync', () => {
     write(config.repo.localPath, { 'benchmarks/fix/check-files/a.test.js': 'edited after the sync' });
 
     expect(result.invalid).toEqual([]);
-    expect((await loadCachedSuite(config, 'fix'))?.tasks[0].judge.check).toMatchObject({
-      files: [{ path: 'test/hidden/a.test.js', mode: '100644', base64: base64('a') }, { path: 'test/hidden/run.sh', mode: '100755', base64: base64('run') }],
+    expect((await loadCachedSuite(config, 'fix'))?.tasks[0].judge).toMatchObject({
+      check: { files: [{ path: 'test/hidden/a.test.js', mode: '100644', base64: base64('a') }, { path: 'test/hidden/run.sh', mode: '100755', base64: base64('run') }] },
     });
   });
 
@@ -520,7 +520,7 @@ describe('suite sync', () => {
 
     await syncTeamDefinitions(config);
 
-    expect((await loadCachedSuite(config, 'fix'))?.tasks[0].judge.check).toMatchObject({ files: [{ path: 'test/hidden/a.test.js' }] });
+    expect((await loadCachedSuite(config, 'fix'))?.tasks[0].judge).toMatchObject({ check: { files: [{ path: 'test/hidden/a.test.js' }] } });
   });
 
   it('leaves out the dot entries under a directory a check.add entry names, and reads a dotfile a from names', async () => {
@@ -532,8 +532,8 @@ describe('suite sync', () => {
 
     await syncTeamDefinitions(config);
 
-    expect((await loadCachedSuite(config, 'fix'))?.tasks[0].judge.check).toMatchObject({
-      files: [{ path: 'test/hidden/a.test.js', base64: base64('a') }, { path: 'test/.env.test', base64: base64('env') }],
+    expect((await loadCachedSuite(config, 'fix'))?.tasks[0].judge).toMatchObject({
+      check: { files: [{ path: 'test/hidden/a.test.js', base64: base64('a') }, { path: 'test/.env.test', base64: base64('env') }] },
     });
   });
 

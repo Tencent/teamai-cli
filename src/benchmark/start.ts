@@ -31,7 +31,7 @@ import { addedOf, compileBundle, freezePlan, trialScorersOf, type BenchmarkEstim
 import { isMixedTask } from './calibration.js';
 import { estimateOf, judgeCallsOf } from './estimate.js';
 import { log } from '../utils/logger.js';
-import { defaultsArmOf, parseSuite, type Arm, type Suite, type Task, type TaskCheck } from './suite.js';
+import { defaultsArmOf, parseSuite, type Arm, type Suite, type Task, type TaskCheck, TaskJudge } from './suite.js';
 import { coveredDelivery, coveredSkillName, teamFilesAt } from './team-without.js';
 import { pinArmWorkflow, type PinnedArmWorkflow } from './arm-workflow.js';
 import type { TeamSelection } from '../workflow/clone.js';
@@ -276,7 +276,7 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
 
   if (unjudgeable !== undefined) return refuse(unjudgeable);
   const { scorers: generated } = compileBundle(plan, committed.suite, { armWorkflows, unattended: options.unattended, correctnessRubric });
-  const criteria = found.tasks.find((task) => task.judge.successCriteria !== undefined);
+  const criteria = found.tasks.find((task) => task.judge.kind !== 'check');
   const listing = listedByTasks[0];
   const needs = found.scorers.length > 0 ? `its scorers ${found.scorers.join(', ')}` : listing ? `task "${listing.task.id}" lists scorers ${(listing.task.scorers ?? []).join(', ')}` : criteria ? `task "${criteria.id}" has successCriteria` : undefined;
 
@@ -633,7 +633,8 @@ async function unreachableTask(config: LocalConfig, suite: Suite, checkout: stri
 
   for (const task of suite.tasks) {
     // A check's added files come from the task's solution commit, so its trials need that commit too.
-    const commit = await firstUnreachable({ checkout, cache, repo: suite.repo, commits: [task.startingCommit, ...(task.judge.check?.add ? [task.judge.check.add.commit] : [])] });
+    const added = TaskJudge.checkOf(task.judge)?.add;
+    const commit = await firstUnreachable({ checkout, cache, repo: suite.repo, commits: [task.startingCommit, ...(added ? [added.commit] : [])] });
 
     if (commit !== undefined) return { task, commit };
   }
@@ -686,7 +687,8 @@ export async function tryBenchmarkTask(file: string, options: { checkout: string
   if (!parsed.ok) return error('benchmark_invalid', parsed.diagnostics.map(formatDiagnostic).join('\n'));
   const { suite } = parsed;
   const [task] = suite.tasks;
-  const { judge: { check }, startingCommit } = task;
+  const { startingCommit } = task;
+  const check = TaskJudge.checkOf(task.judge);
 
   if (check === undefined) return tried(task.id, `Task "${task.id}" is judged by successCriteria, so there is no check to try. Its files are valid.`);
   const { solutionCommit } = task;

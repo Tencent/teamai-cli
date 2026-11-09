@@ -18,7 +18,7 @@ import type { ScorerLabel } from '../scorers/definition.js';
 import type { PinnedScorer } from '../scorers/pin.js';
 import type { JsonObject } from '../types.js';
 import { definedFields } from '../utils/defined-fields.js';
-import { defaultsArmOf, type Suite, type Task, type TaskCheck, type TaskJudge } from './suite.js';
+import { defaultsArmOf, type Suite, type Task, type TaskCheck, TaskJudge } from './suite.js';
 import type { CommittedSuite } from './trial.js';
 import type { PinnedArmWorkflow } from './arm-workflow.js';
 import { CommitSchema, TeamSelectionSchema, type CloneTeam, type TeamSelection } from '../workflow/clone.js';
@@ -52,18 +52,21 @@ export type PlannedArm = z.infer<typeof PlannedArmSchema>;
 
 const PlannedCheckSchema = z.object({ run: z.string().min(1), protect: z.array(z.string().min(1)).nonempty(), add: z.array(AddedSchema).nonempty().optional() }).strict();
 
+export type PlannedCheck = z.infer<typeof PlannedCheckSchema>;
+
 const PlannedTaskSchema = z.object({
   id: BenchmarkNameSchema,
   sourceHash: Sha256,
   startingCommit: CommitSchema,
   /**
-   * How the task's trials are decided, never by neither. `check`, which `teamai benchmark check` reads: the command, the
-   * protected paths, and the files check.add writes, by commit and path, never their bytes. `criteria`: a judge decides
-   * on the task's success criteria, after the check when the task has one and only when it passes.
+   * How the task's trials are decided: by its check, by a judge on its success criteria, or by both, the judge only
+   * when the check passes. `check`, which `teamai benchmark check` reads: the command, the protected paths, and the
+   * files check.add writes, by commit and path, never their bytes.
    */
-  judge: z.union([
-    z.object({ check: PlannedCheckSchema, criteria: z.literal(true).optional() }).strict(),
-    z.object({ check: z.undefined().optional(), criteria: z.literal(true) }).strict(),
+  judge: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('check'), check: PlannedCheckSchema }).strict(),
+    z.object({ kind: z.literal('criteria') }).strict(),
+    z.object({ kind: z.literal('both'), check: PlannedCheckSchema }).strict(),
   ]),
   /** The team repo paths the task covers, each listed once, sorted, as plan checked them deliverable at the pulled revision. Absent: the task covers none. */
   covers: z.array(z.string().min(1)).nonempty().optional(),
@@ -298,19 +301,19 @@ function plannedJudges(suite: Suite, judged: Record<string, PinnedRubric>): Reco
 
 /** The correctness scorers of `correctness` a judge labels: those of the tasks with success criteria. */
 function judgedCorrectness(suite: Suite, correctness: Record<string, PinnedRubric>): Record<string, PinnedRubric> {
-  const judged = new Set(suite.tasks.filter((task) => task.judge.successCriteria !== undefined).map((task) => correctnessScorerName(task.id)));
+  const judged = new Set(suite.tasks.filter((task) => task.judge.kind !== 'check').map((task) => correctnessScorerName(task.id)));
 
   return Object.fromEntries(Object.entries(correctness).filter(([name]) => judged.has(name)));
 }
 
 function plannedJudge(judge: TaskJudge, checkFiles: Added | undefined): PlannedTask['judge'] {
-  if (judge.check === undefined) return { criteria: true };
+  if (judge.kind === 'criteria') return { kind: 'criteria' };
   const [added, ...more] = addedOf(judge.check, checkFiles);
-  const check: z.infer<typeof PlannedCheckSchema> = { run: judge.check.run, protect: judge.check.protect };
+  const check: PlannedCheck = { run: judge.check.run, protect: judge.check.protect };
 
   if (added) check.add = [added, ...more];
 
-  return judge.successCriteria === undefined ? { check } : { check, criteria: true };
+  return { kind: judge.kind, check };
 }
 
 /**
@@ -369,7 +372,7 @@ export function compileBundle(
   const arms = new Map(plan.arms.map((arm) => [arm.name, arm]));
   const checkOutput = { result: CHECK_RESULTS.join(' | '), cause: 'string', label: 'string' };
 
-  const baselines = chained(suite.tasks.flatMap((task): FileStep[] => (task.judge.check !== undefined
+  const baselines = chained(suite.tasks.flatMap((task): FileStep[] => (task.judge.kind !== 'criteria'
     ? [{ id: task.id, command: 'teamai benchmark check --baseline', workspace: { clone: { commit: task.startingCommit, repo: suite.repo, team: { treatment: 'none' } } }, output: checkOutput }]
     : [])), plan.parallel ?? 1);
 
@@ -416,10 +419,10 @@ export function compileBundle(
 
     if (!task || !arm) return [];
     const work = workOf(arm, task);
-    const check = task.judge.check !== undefined ? [{ id: 'check', needs: [work.id], command: 'teamai benchmark check --trial', workspace: 'continue', output: checkOutput }] : [];
+    const check = task.judge.kind !== 'criteria' ? [{ id: 'check', needs: [work.id], command: 'teamai benchmark check --trial', workspace: 'continue', output: checkOutput }] : [];
     const step: FileStep = { id: arm.name };
 
-    if (task.judge.check !== undefined) step.if = `steps.${BASELINES}.outputs.${task.id} == 'failed'`;
+    if (task.judge.kind !== 'criteria') step.if = `steps.${BASELINES}.outputs.${task.id} == 'failed'`;
     // The arm's tool, not the first step's: a workflow arm may open its clone with a command.
     step.workspace = { clone: { commit: task.startingCommit, repo: suite.repo, team: cloneTeamOf(arm.team, { ...plan.selection, enabledAgents: [arm.tool] }, arm.recall) } };
 
@@ -529,7 +532,7 @@ function cloneTeamOf(team: ArmTeam, selection: TeamSelection, recall: boolean | 
 
 /** The scorers that judge a trial of `task`: the suite's, the task's own, then its correctness scorer when it has success criteria. */
 export function trialScorersOf(suite: Pick<Suite, 'scorers'>, task: Pick<Task, 'id' | 'scorers' | 'judge'>): string[] {
-  return [...new Set([...suite.scorers, ...(task.scorers ?? [])]), ...(task.judge.successCriteria !== undefined ? [correctnessScorerName(task.id)] : [])];
+  return [...new Set([...suite.scorers, ...(task.scorers ?? [])]), ...(task.judge.kind !== 'check' ? [correctnessScorerName(task.id)] : [])];
 }
 
 /**
@@ -563,7 +566,7 @@ function correctnessScorers(suite: Suite, rubric: string): Record<string, Pinned
 
 function correctnessPin(task: Task, rubric: string): PinnedRubric {
   const scorer = correctnessScorerName(task.id);
-  const values = { 'task.prompt': task.prompt, 'task.successCriteria': task.judge.successCriteria ?? '' };
+  const values = { 'task.prompt': task.prompt, 'task.successCriteria': TaskJudge.criteriaOf(task.judge) ?? '' };
   const { content, definition: { labels: [first, ...rest], passingScore, tool, model } } = DefaultScorers.fillIn('teamai-correctness', { file: `scorers/${scorer.replaceAll(':', '-')}.md`, content: rubric }, values);
 
   return {

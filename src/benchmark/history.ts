@@ -665,7 +665,7 @@ function judgingOf({ current, newest }: SuiteRuns): SuiteView['judging'] {
 function isMixedTaskIn(record: BenchmarkRecord, task: string): boolean {
   const judge = record.tasks.find(({ id }) => id === task)?.judge;
 
-  return judge !== undefined && 'check' in judge && judge.criteria === true;
+  return judge === 'both';
 }
 
 function scorersOf({ current, newest }: SuiteRuns): ScorerView[] {

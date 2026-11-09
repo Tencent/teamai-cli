@@ -626,7 +626,7 @@ describe('BenchmarkHistory judging', () => {
 
     return { ...input, benchmark: { ...input.benchmark,
       calibration: { rate: 0 },
-      tasks: input.benchmark.tasks.map((task) => ({ ...task, judge: task.id === 'login-copy' ? { check: true as const, criteria: true as const } : { check: true as const } })),
+      tasks: input.benchmark.tasks.map((task) => ({ ...task, judge: task.id === 'login-copy' ? 'both' as const : 'check' as const })),
       judges: { 'teamai:correctness:login-copy': { tool: 'claude', model: 'fast' }, 'review-quality': { tool: 'claude', model: 'judge' } },
       trials: input.benchmark.trials.map((trial) => ({ ...trial, verdicts: [
         { scorer: `teamai:correctness:${trial.task}`, outcome: labelled(trial.result === 'passed'), ...(trial.task === 'login-copy' && trial.result === 'passed' ? { decider: HAIKU, asPlanned: 'match' as const } : { decider: { by: 'check' as const, task: `task-${trial.task}` } }) },

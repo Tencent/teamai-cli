@@ -1037,6 +1037,30 @@ describe('benchmark plan refusals at start', () => {
     } } });
   });
 
+  it('refuses a task whose check.add comes from a solution commit neither the checkout nor the suite repo has, naming that commit', async () => {
+    const member = await pulledMember({ arms: 'arms:\n  - name: now\n' });
+    const { git } = await import('./helpers/delivered-checkout.js');
+    const start = git(member.project, 'rev-parse', 'HEAD');
+    const missing = 'e'.repeat(40);
+    member.commit({ 'benchmarks/fix/tasks/fix.yaml': `schemaVersion: v1alpha1\ntitle: Fix it\nprompt: Fix.\nstartingCommit: ${start}\nsolutionCommit: ${missing}\ncheck: { run: node test.js, protect: ['test/**'], add: [test/fix.test.js] }\n` });
+    const head = git(member.config.repo.localPath, 'rev-parse', 'HEAD');
+    git(member.config.repo.localPath, 'update-ref', 'refs/remotes/origin/main', head);
+    await member.recordPull(head);
+    const { syncTeamDefinitions } = await import('../benchmark/suite-cache.js');
+    await syncTeamDefinitions(member.config);
+    // The suite repo is a directory that is not there, so the fetch fails here and never reaches the network.
+    vi.stubEnv('GIT_CONFIG_COUNT', '1');
+    vi.stubEnv('GIT_CONFIG_KEY_0', `url.${path.join(member.project, '..', 'no-such-origin')}/.insteadOf`);
+    vi.stubEnv('GIT_CONFIG_VALUE_0', 'https://github.com/fixture/');
+
+    const planned = await member.plan();
+
+    expect(planned).toEqual({ refused: { error: {
+      code: 'commit_unreachable',
+      message: 'Task "fix" writes check.add from its solutionCommit eeeeeee, which neither this checkout nor https://github.com/fixture/app.git has. Push it, or fix solutionCommit, and start again.',
+    } } });
+  });
+
   it("plans each arm's model with the member's aliases under --member-aliases, and names member as the source of each model they decided", async () => {
     const member = await pulledMember({
       arms: '  model: strong\narms:\n  - name: strong\n  - name: fast\n    model: fast\n  - name: codex\n    tool: codex\n',

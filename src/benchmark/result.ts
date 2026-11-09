@@ -72,7 +72,7 @@ export const BenchmarkRecordSchema = z.object({
     /** Aligned with `covers`: the arms whose clone did not receive that path, as plan read it; absent on older records and when every arm received each path. */
     coversWithheldFrom: z.array(z.array(z.string())).nonempty().optional(),
     /** What decides the task's trials: its check, a judge on its success criteria, or both; absent on records written before it was kept. */
-    judge: z.union([z.object({ check: z.literal(true), criteria: z.literal(true).optional() }).strict(), z.object({ criteria: z.literal(true) }).strict()]).optional(),
+    judge: z.enum(['check', 'criteria', 'both']).optional(),
   })),
   arms: z.array(z.object({
     name: z.string(), tool: z.string(), model: z.string().optional(), alias: z.string().optional(), effort: z.string().optional(),
@@ -189,7 +189,7 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdic
     subset: plan.subset,
     scorers: plan.scorers,
     judges: plan.judges,
-    tasks: plan.tasks.map((task) => ({ id: task.id, startingCommit: task.startingCommit, sourceHash: task.sourceHash, baseline: baselineOf(stateOf(baselineStepOf(task.id)), task), covers: task.covers ? [...task.covers] : undefined, coversSkills: task.coversSkills ? [...task.coversSkills] : undefined, coversWithheldFrom: task.coversWithheldFrom?.map((arms) => [...arms]), judge: task.judge.check === undefined ? { criteria: true as const } : definedFields({ check: true as const, criteria: task.judge.criteria }) })),
+    tasks: plan.tasks.map((task) => ({ id: task.id, startingCommit: task.startingCommit, sourceHash: task.sourceHash, baseline: baselineOf(stateOf(baselineStepOf(task.id)), task), covers: task.covers ? [...task.covers] : undefined, coversSkills: task.coversSkills ? [...task.coversSkills] : undefined, coversWithheldFrom: task.coversWithheldFrom?.map((arms) => [...arms]), judge: task.judge.kind })),
     arms: plan.arms,
     defaultsArm: plan.defaultsArm,
     estimate: plan.estimate,
@@ -368,7 +368,7 @@ function usedOf(loaded: readonly string[], unsure: readonly string[]): NonNullab
  * Its trials need no rule of their own: a task whose baseline is not valid skips them, and a skipped prompt is not_run.
  */
 function baselineOf(state: StepState | undefined, task: PlannedTask): Baseline {
-  if (task.judge.check === undefined) return 'not_needed';
+  if (task.judge.kind === 'criteria') return 'not_needed';
   const result = checkOutputOf(state)?.result;
 
   switch (result) {
@@ -468,7 +468,7 @@ function trialResultOf({ prompt, work, check, verdicts }: { prompt: StepState | 
 
   const judge = plan.tasks.find((task) => task.id === trial.task)?.judge;
 
-  if (judge?.check !== undefined && (check === undefined || check.result === 'could_not_run')) return 'error';
+  if (judge !== undefined && judge.kind !== 'criteria' && (check === undefined || check.result === 'could_not_run')) return 'error';
 
   return correctnessResult(verdicts.find((verdict) => verdict.scorer === correctnessScorerName(trial.task)));
 }
