@@ -1354,6 +1354,8 @@ Start from the file the package ships, edit it, push it, and pull:
 cp "$(npm root -g)/teamai-cli/workflows/teamai-share-learnings.yaml" workflows/teamai-share-learnings.yaml
 ```
 
+Three defaults are folders, at `workflows/<name>/WORKFLOW.yaml` in the package where earlier releases had `workflows/<name>.yaml`: `teamai-import-from-mr`, `teamai-codebase-deep-enrich` and `teamai-import-from-repo`. A `workflows/<name>.yaml` your team already has still replaces the default.
+
 A default that is a folder is copied whole, to the same path. To have MR learnings in English name what the review left open, copy `teamai-import-from-mr`:
 
 ```bash
