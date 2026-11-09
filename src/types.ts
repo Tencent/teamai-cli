@@ -3165,7 +3165,7 @@ export function toolRootRejection(dir: string, at: HomePaths = processHomePaths(
  *
  * Read in exactly two commands: `teamai init` records the answer into
  * `toolRoots.<tool>`, and `teamai doctor` reports a recorded value that no
- * longer matches. Everything else reads the recorded value, so a teamai run
+ * longer matches. The verify ledger also reads it, to check the shell's homes. Everything else reads the recorded value, so a teamai run
  * from a shell that happens not to export the variable (a hook, a cron, a
  * different terminal) still writes where that tool reads.
  */
