@@ -54,6 +54,11 @@ shared state, list every reader and every writer.
 
 ## Code Review Rules
 
+- Find implicit state machines: lifecycles whose state, transitions, or
+  ownership are scattered instead of held in one place, and the illegal
+  combinations they allow. Every non-terminal state needs a guaranteed exit
+  (failure, cancel, timeout, restart), not just the happy path.
+- Find every invariant the code relies on but does not enforce.
 - The PR description must document sufficient testing. For a PR that changes
   runtime behavior (anything beyond a docs-only, tests-only, or lint-rule-only
   diff), that includes an end-to-end / real-CLI verification record, not only unit tests
