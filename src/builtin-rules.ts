@@ -13,6 +13,9 @@ import { isLanguageVariant, RESOURCE_LAYOUTS, Resources, type ShippedFile, type 
 import { RuleFolders } from './resources/rule-folders.js';
 import { warnOnce } from './utils/warn-once.js';
 
+/** The marker of a rule folder, as the rule layout names it. */
+const RULE_MARKER = RESOURCE_LAYOUTS.rules.marker;
+
 // ─── Built-in rules deployment ──────────────────────────
 //
 //  CLI ships with built-in rules that guide AI tool behavior, deployed
@@ -262,7 +265,7 @@ async function readRecallTexts(folder: RecallFolder, language: TeamaiConfig['lan
     const read = async (stem: string): Promise<string | null> => RuleFolders.readTextFile(path.join(folder.dir, await RuleFolders.languageFile(folder.dir, stem, language)));
 
     const [rule, block, directBlock] = await Promise.all([
-        RuleFolders.text({ name: RECALL_RULE_NAME, type: 'rules', sourcePath: path.join(folder.dir, 'RULE.md'), relativePath: `${folder.path}RULE.md`, folder: true }, language),
+        RuleFolders.text({ name: RECALL_RULE_NAME, type: 'rules', sourcePath: path.join(folder.dir, RULE_MARKER), relativePath: `${folder.path}${RULE_MARKER}`, folder: true }, language),
         read('block'),
         read('block-direct'),
     ]);
