@@ -92,8 +92,9 @@ const ENTRIES = [
       'trial.ts': ['src/workflow-commands.ts'],
       'start.ts': ['src/workflow-commands.ts'],
       'report.ts': ['src/workflow-commands.ts'],
+      'estimate.ts': ['src/workflow-commands.ts'],
     },
-    testEntries: ['plan.ts', 'terms.ts', 'suite.ts', 'table.ts', 'result.ts', 'trial.ts', 'start.ts', 'history.ts', 'run-plan.ts', 'conformance.ts', 'suite-cache.ts', 'arm-workflow.ts', 'team-without.ts', 'verdicts.ts', 'pairing.ts', 'calibration.ts'],
+    testEntries: ['plan.ts', 'terms.ts', 'suite.ts', 'table.ts', 'result.ts', 'trial.ts', 'start.ts', 'history.ts', 'run-plan.ts', 'conformance.ts', 'suite-cache.ts', 'arm-workflow.ts', 'team-without.ts', 'verdicts.ts', 'pairing.ts', 'calibration.ts', 'estimate.ts'],
   },
 ];
 

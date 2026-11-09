@@ -19,7 +19,7 @@ import type { RunState } from '../workflow/types.js';
 import { definedFields } from '../utils/defined-fields.js';
 import { CHECK_CAUSES, CheckOutputSchema, type CheckOutput } from '../scorers/check.js';
 import { compareAgent } from './agent-match.js';
-import { baselineStepOf, checkStepOf, correctnessScorerName, PlannedJudgeSchema, type BenchmarkPlan, type PlannedArm, type PlannedTask, type PlannedTrial } from './plan.js';
+import { baselineStepOf, BenchmarkEstimateSchema, checkStepOf, correctnessScorerName, PlannedJudgeSchema, type BenchmarkPlan, type PlannedArm, type PlannedTask, type PlannedTrial } from './plan.js';
 import type { RunPlan } from './run-plan.js';
 import { ArmTeamSchema, SkillChangesSchema, TrialLimitsSchema } from './terms.js';
 import { leavesOut, skillDefinitionOf } from './team-without.js';
@@ -88,6 +88,8 @@ export const BenchmarkRecordSchema = z.object({
   })),
   /** The arm that changes no `defaults` key, which the results read the others against; absent when the plan had none. */
   defaultsArm: z.string().optional(),
+  /** What start estimated the run costs, which the usage table shows beside what it cost; absent on a plan without one. */
+  estimate: BenchmarkEstimateSchema.optional(),
   /** The team skills each arm adds, removes or changes against the baseline team revision; absent when no arm changes one. */
   skillChanges: z.array(SkillChangesSchema).optional(),
   trials: z.array(z.object({
@@ -186,6 +188,7 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdic
     tasks: plan.tasks.map((task) => ({ id: task.id, startingCommit: task.startingCommit, sourceHash: task.sourceHash, baseline: baselineOf(stateOf(baselineStepOf(task.id)), task), covers: task.covers ? [...task.covers] : undefined, coversSkills: task.coversSkills ? [...task.coversSkills] : undefined, coversWithheldFrom: task.coversWithheldFrom?.map((arms) => [...arms]) })),
     arms: plan.arms,
     defaultsArm: plan.defaultsArm,
+    estimate: plan.estimate,
     skillChanges: plan.skillChanges,
     trials: plan.trials.map((trial) => {
       const judged = verdictsOf(trial);

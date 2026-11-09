@@ -11,9 +11,14 @@ import type { RunState } from '../workflow/types.js';
 import { checkStepOf, correctnessScorerName, type PlannedTask } from './plan.js';
 import type { RunPlan } from './run-plan.js';
 
+/** Whether `task` has both a check and success criteria, so its check is ground truth for its correctness judge. */
+export function isMixedTask(task: PlannedTask): boolean {
+  return task.judge.check !== undefined && task.judge.criteria === true;
+}
+
 /** Whether a trial of `task` is one a judge's label calibrates: the task has a check and success criteria, and its check failed. */
 export function isCalibrationCandidate(task: PlannedTask, output: CheckOutput | undefined): boolean {
-  return task.judge.check !== undefined && task.judge.criteria === true && output?.result === 'failed';
+  return isMixedTask(task) && output?.result === 'failed';
 }
 
 /**

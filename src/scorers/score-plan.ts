@@ -6,7 +6,6 @@
 import path from 'node:path';
 import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
-import { canonicalJson } from '../utils/canonical-json.js';
 import { readFileSafe, writeJsonAtomic } from '../utils/fs.js';
 import { SessionWork } from '../session-flow/session-work.js';
 import { judgeablePasses } from '../workflow/judge-work.js';
@@ -16,7 +15,7 @@ import { readRun } from '../workflow/store.js';
 import type { RunPass } from '../workflow/loop.js';
 import { wasLeased } from '../workflow/step-state.js';
 import type { RunState, StepScorers, WorkflowStep } from '../workflow/types.js';
-import { batchesScorers } from './batch.js';
+import { batchesScorers, judgeCallKey } from './batch.js';
 import { STAGES, type ScorerDefinition, type Stage } from './definition.js';
 import type { RunSubject } from './label.js';
 import { LabelStore } from './label-store.js';
@@ -309,27 +308,12 @@ function handGroup(request: PlanRequest, judged: Judged): { ok: true; groups: Pl
   return { ok: true, groups: [{ subject: Subject.format(request.subject), hand: request.label, scorers: only.name, model: '', ci: false, protected: false }] };
 }
 
-/**
- * What `candidate` shares with the scorers one judge call takes with it: the model it asks for, the judge tool it
- * prefers, the one the run requires, and its stages. The judge tool is chosen when the judge step is leased, from what
- * the driver offers, so a required and a preferred scorer never share a call.
- */
-function batchKey(candidate: Candidate, judged: Judged): string {
-  return canonicalJson({ model: candidate.definition.model ?? null, tool: candidate.definition.tool ?? null, require: judged.required(candidate) ?? null, stages: judged.stagesOf(candidate) });
-}
-
-/**
- * The group `candidate` joins: its own; under `batch`, that of the scorers sharing its model, tool and stages; and for a
- * generated question, that of the session's other questions of its family sharing its judge, which only `batch` lets
- * team scorers join.
- */
+/** The judge call `candidate` joins, by `judgeCallKey`. */
 function groupKey(candidate: Candidate, judged: Judged, batch: boolean): string {
-  const family = GeneratedQuestions.familyOf(candidate.name);
-
-  if (!(batch || family) || judged.alone(candidate)) return `${candidate.name}\n`;
-  const shared = batchKey(candidate, judged);
-
-  return family && !batch ? `${family.prefix}\n${shared}` : shared;
+  return judgeCallKey({
+    name: candidate.name, model: candidate.definition.model, tool: candidate.definition.tool, require: judged.required(candidate),
+    stages: judged.stagesOf(candidate), isAlone: judged.alone(candidate), family: GeneratedQuestions.familyOf(candidate.name)?.prefix,
+  }, batch);
 }
 
 /**

@@ -27,7 +27,10 @@ import { chooseJudgeModel } from '../scorers/judge-model.js';
 import type { RunState, WorkflowEnvelope, WorkflowFailure } from '../workflow/types.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import { git } from '../workflow/worktree.js';
-import { addedOf, compileBundle, freezePlan, type BenchmarkPlan, type CompiledBundle, type PinnedRubric, type PlannedArm } from './plan.js';
+import { addedOf, compileBundle, freezePlan, trialScorersOf, type BenchmarkEstimate, type BenchmarkPlan, type CompiledBundle, type PinnedRubric, type PlannedArm } from './plan.js';
+import { isMixedTask } from './calibration.js';
+import { estimateOf, judgeCallsOf } from './estimate.js';
+import { log } from '../utils/logger.js';
 import { defaultsArmOf, parseSuite, type Arm, type Suite, type Task, type TaskCheck } from './suite.js';
 import { coveredDelivery, coveredSkillName, teamFilesAt } from './team-without.js';
 import { pinArmWorkflow, type PinnedArmWorkflow } from './arm-workflow.js';
@@ -81,10 +84,40 @@ export async function planBenchmark(config: LocalConfig, name: string, options: 
   const frozen = await freezeSuite(config, name, options);
 
   if (!frozen.ok) return { refused: frozen.refused };
-  const { suite, plan, committed, armWorkflows, correctnessRubric } = frozen;
+  const { suite, committed, pinned, armWorkflows, correctnessRubric } = frozen;
+  const plan = { ...frozen.plan, estimate: await estimateFor(config, { plan: frozen.plan, committed, pinned }) };
   const { definition, workflows, scorers } = compileBundle(plan, committed, { armWorkflows, unattended: options.unattended, correctnessRubric });
 
   return { planned: { definition: { definition, workflows }, plan }, generated: scorers, timeoutMs: suite.timeoutMs };
+}
+
+/**
+ * What `plan` will cost, from the earlier runs of its suite on this machine and on teamai-reports as this checkout last
+ * read it. Its judge calls are counted batched, as teamai's benchmark workflow judges a trial. The earlier runs never
+ * refuse a plan: when they cannot be read, a warning says why, and the estimate has no basis.
+ */
+async function estimateFor(config: LocalConfig, { plan, committed, pinned }: { plan: BenchmarkPlan; committed: CommittedSuite; pinned: Record<string, PinnedScorer> }): Promise<BenchmarkEstimate> {
+  const definitions = Object.fromEntries(Object.entries(pinned).flatMap(([name, pin]) => {
+    const definition = pinnedDefinition(name, pin);
+
+    return definition ? [[name, { model: definition.model, tool: definition.tool }]] : [];
+  }));
+
+  const calls = judgeCallsOf({
+    trials: plan.trials,
+    tasks: committed.suite.tasks.map((task) => ({ id: task.id, scorers: trialScorersOf(committed.suite, task), isMixed: plan.tasks.some((one) => one.id === task.id && isMixedTask(one)) })),
+    judges: plan.judges, definitions, calibrationRate: plan.calibration?.rate ?? 0, batch: true,
+  });
+
+  const { benchmarkRuns } = await import('../dashboard/benchmarks.js');
+
+  const earlier = await benchmarkRuns(config, { refresh: false }).catch((cause: unknown) => {
+    log.warn(`Could not read the earlier runs of ${plan.suite.name} to estimate its cost, so the run starts without an estimate: ${cause instanceof Error ? cause.message : String(cause)}`);
+
+    return [];
+  });
+
+  return estimateOf({ plan, calls, earlier });
 }
 
 /**

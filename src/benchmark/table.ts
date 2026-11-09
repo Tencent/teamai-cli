@@ -8,7 +8,7 @@ import { ROUTING_PREFIX, routingScorerName } from '../scorers/skill-routing.js';
 import { definedFields } from '../utils/defined-fields.js';
 import { compareAgent } from './agent-match.js';
 import { compareTrials, formatExcluded, splitPairs, type ExcludedPairs } from './pairing.js';
-import { isCorrectnessScorer } from './plan.js';
+import { isCorrectnessScorer, type BenchmarkEstimate, type CostRange } from './plan.js';
 import { TRIAL_RESULTS, type Baseline, type BenchmarkRecord, type TrialResult } from './result.js';
 import type { SkillChanges } from './terms.js';
 import type { TrialCalibration } from './verdicts.js';
@@ -129,6 +129,8 @@ export interface BenchmarkTable {
    * order; absent with one arm.
    */
   against?: { reference: string; isDefaultsArm: boolean; arms: ArmAgainst[] };
+  /** What start estimated the run costs, from the record; absent on a record without one. */
+  estimate?: BenchmarkEstimate;
   /** Each task's pass rate on each arm, tasks and arms in record order; a cell with no planned trials has no rate. */
   matrix: Array<{ task: string; arms: Array<{ arm: string; passRate?: PassRate }> }>;
   /**
@@ -295,6 +297,7 @@ export function benchmarkTable(record: BenchmarkTableInput): BenchmarkTable {
     })),
     usage,
     against: againstOf(record.benchmark, results, usage),
+    estimate: record.benchmark.estimate,
     scorers: scorerResultsOf(record.benchmark),
     calibration: calibrationOf(trials),
     skills: (record.benchmark.skillChanges ?? []).flatMap(({ arm, defaults, skills }) => skills.map(({ name, change }) => definedFields<BenchmarkTable['skills'][number]>({
@@ -451,6 +454,8 @@ export function benchmarkCells(table: BenchmarkTable): BenchmarkCells {
   // Only a suite that runs some arm with recall: the column says which arms it was on.
   const namesRecall = table.results.some(({ recall }) => recall !== undefined);
   const namesScore = table.results.some(({ correctnessScore }) => correctnessScore !== undefined);
+  // Only an estimate from an earlier run: without one there is no cost to put beside the run's.
+  const estimated = table.estimate?.basis === undefined ? undefined : table.estimate.arms ?? [];
 
   return definedFields<BenchmarkCells>({
     results: {
@@ -464,11 +469,12 @@ export function benchmarkCells(table: BenchmarkTable): BenchmarkCells {
     },
     usage: {
       header: [
-        'Arm', `Median tokens (${TOKEN_COMPONENTS.join(' + ')})`, 'Median duration', 'Cost', 'Cost per passed trial',
+        'Arm', `Median tokens (${TOKEN_COMPONENTS.join(' + ')})`, 'Median duration', 'Cost', ...(estimated ? ['Estimated'] : []), 'Cost per passed trial',
         ...(table.against ? [`Against ${table.against.reference} (${table.against.isDefaultsArm ? 'defaults arm' : 'first arm'})`] : []),
       ],
       rows: table.usage.map(({ arm, tokens, durationMs, cost, costPerPassedTrial }) => [
         arm, formatMedian(tokens, (value) => String(Math.round(value))), formatMedian(durationMs, (value) => `${(value / 1000).toFixed(1)} s`), formatCost(cost),
+        ...(estimated ? [formatArmEstimate(estimated.find((one) => one.arm === arm))] : []),
         costPerPassedTrial ? `${formatAmount(costPerPassedTrial.amount)} ${costPerPassedTrial.unit}${costPerPassedTrial.kind === 'incomplete' ? ', incomplete' : ''}` : '—',
         ...(table.against ? [formatAgainst(table.against.arms.find((one) => one.arm === arm))] : []),
       ]),
@@ -662,6 +668,21 @@ function costTotal(parts: ReadonlyArray<RecordedTrial['cost']>): CostTotal {
 
 function formatMedian({ value, used }: Median, format: (value: number) => string): string {
   return value === undefined ? 'unknown (0)' : `${format(value)} (${used})`;
+}
+
+/** An arm's estimated total, `13.1–16.8 USD`, or `unknown`. */
+function formatArmEstimate(estimate: NonNullable<BenchmarkEstimate['arms']>[number] | undefined): string {
+  return estimate !== undefined && 'total' in estimate ? formatCostRange(estimate.total) : 'unknown';
+}
+
+/** An estimated amount, to three significant digits: `0.82`, `13.1`, `41.2`. */
+export function formatEstimateAmount(value: number): string {
+  return String(Number(value.toPrecision(3)));
+}
+
+/** `13.1–16.8 USD`: an estimated cost's range. */
+export function formatCostRange({ low, high, unit }: Pick<CostRange, 'low' | 'high' | 'unit'>): string {
+  return `${formatEstimateAmount(low)}–${formatEstimateAmount(high)} ${unit}`;
 }
 
 /** An amount to four decimals at most: `0.455`, `4.1`. */

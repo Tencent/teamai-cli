@@ -89,6 +89,38 @@ const PlannedTrialSchema = z.object({
 
 export type PlannedTrial = z.infer<typeof PlannedTrialSchema>;
 
+/** An estimated cost in one unit: the median, and the quartiles as its range. */
+const CostRangeSchema = z.object({ unit: z.string().min(1), low: z.number().nonnegative(), median: z.number().nonnegative(), high: z.number().nonnegative() }).strict();
+
+export type CostRange = z.infer<typeof CostRangeSchema>;
+
+const Count = z.number().int().nonnegative();
+
+/**
+ * What the run will cost, as start estimated it (estimate.ts): its trials and judge calls, and, from `basis`, the newest
+ * earlier run of the suite that succeeded with this record version, each arm's and the judging's cost. Absent `basis`:
+ * there was no such run, so no cost is estimated. It never stops a run.
+ */
+export const BenchmarkEstimateSchema = z.object({
+  trials: Count,
+  judgeCalls: Count,
+  judgedTrials: Count,
+  /** The calibration calls the suite's rate expects, as if every check of a task with success criteria failed. */
+  calibrationCalls: Count,
+  basis: z.object({ run: z.string().min(1) }).strict().optional(),
+  arms: z.array(z.union([
+    z.object({ arm: BenchmarkNameSchema, trials: Count, perTrial: CostRangeSchema, total: CostRangeSchema }).strict(),
+    /** `no_cost_stated`: the basis ran the arm, and its tool stated no cost in one unit; `not_in_basis`: it did not run it. */
+    z.object({ arm: BenchmarkNameSchema, trials: Count, unknown: z.enum(['no_cost_stated', 'not_in_basis']) }).strict(),
+  ])).optional(),
+  /** Absent when no trial is judged. */
+  judges: z.union([z.object({ perJudgedTrial: CostRangeSchema, total: CostRangeSchema }).strict(), z.object({ unknown: z.literal('no_cost_stated') }).strict()]).optional(),
+  /** The arms' and the judging's totals in the first unit any of them has; `complete` when every one was known in it. */
+  total: CostRangeSchema.extend({ complete: z.boolean() }).strict().optional(),
+}).strict();
+
+export type BenchmarkEstimate = z.infer<typeof BenchmarkEstimateSchema>;
+
 /**
  * A scorer that judges the run's trials, or decides them, as the run pinned it: the rubric's hash, and its labels and
  * passing score, which pick the label a check writes and tell a reader of the record whether a label passes.
@@ -154,6 +186,8 @@ export const BenchmarkPlanSchema = z.object({
   judges: z.record(z.string(), PlannedJudgeSchema),
   /** The percent of failed checks of tasks with success criteria their correctness judge labels too; absent: none. */
   calibration: z.object({ rate: z.number().min(0).max(100) }).strict().optional(),
+  /** What start estimated the run costs; absent on a plan frozen without one. */
+  estimate: BenchmarkEstimateSchema.optional(),
   trials: z.array(PlannedTrialSchema),
 }).strict();
 
@@ -342,7 +376,7 @@ export function compileBundle(
   const tried = baselines.length > 0;
 
   const workOf = (arm: PlannedArm, task: Task): FileStep => {
-    const names = [...new Set([...suite.scorers, ...(task.scorers ?? [])]), ...(task.judge.successCriteria !== undefined ? [correctnessScorerName(task.id)] : [])];
+    const names = trialScorersOf(suite, task);
     const pinned = armWorkflows.get(arm.name);
     const timeoutMs = plan.limits?.timeoutMs;
     const tokens = plan.limits?.tokens;
@@ -491,6 +525,11 @@ function cloneTeamOf(team: ArmTeam, selection: TeamSelection, recall: boolean | 
       return unhandled;
     }
   }
+}
+
+/** The scorers that judge a trial of `task`: the suite's, the task's own, then its correctness scorer when it has success criteria. */
+export function trialScorersOf(suite: Pick<Suite, 'scorers'>, task: Pick<Task, 'id' | 'scorers' | 'judge'>): string[] {
+  return [...new Set([...suite.scorers, ...(task.scorers ?? [])]), ...(task.judge.successCriteria !== undefined ? [correctnessScorerName(task.id)] : [])];
 }
 
 /**

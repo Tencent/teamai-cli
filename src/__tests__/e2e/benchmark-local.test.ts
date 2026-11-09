@@ -166,6 +166,24 @@ describe('benchmark on the local driver', () => {
     expect(fixture.status()).toBe(before);
   }, 120_000);
 
+  it('estimates a second run from the first before it starts, and shows the estimate beside the cost at the end', async () => {
+    const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true });
+    fixtures.push(fixture);
+
+    const first = await fixture.teamai(['benchmark', 'run', 'fix']);
+    const earlier = DoneSchema.parse(envelope(first).data?.done);
+    const second = await fixture.teamai(['benchmark', 'run', 'fix']);
+    const done = DoneSchema.parse(envelope(second).data?.done);
+
+    expect(first.code, said(first)).toBe(0);
+    expect(first.stderr).toContain('Suite fix: 1 trial (1 arm × 1 task × 1 repetition), 0 judge calls.');
+    expect(first.stderr).toContain('No earlier run of fix to estimate from.');
+    expect(second.code, said(second)).toBe(0);
+    expect(second.stderr).toContain(`Estimated 0.25–0.25 USD (agents 0.25–0.25), from run ${earlier.run}.\n  claude 0.25 USD per trial`);
+    expect(done.outputs.text).toContain('| Cost | Estimated | Cost per passed trial |');
+    expect(done.outputs.text).toContain('| 0.25 USD (1) | 0.25–0.25 USD | 0.25 USD |');
+  }, 120_000);
+
   it('--sandbox declares a sandbox for this process only', async () => {
     const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: false });
     fixtures.push(fixture);

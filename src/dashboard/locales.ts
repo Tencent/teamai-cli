@@ -569,6 +569,7 @@ export const dashboardMessages = {
   "Team assets": "团队资产",
   "Compare by": "对比维度",
   "Cost per passed trial": "每个通过 trial 的成本",
+  "Estimated": "估算",
   "Median tokens per trial": "每个 trial 的 token 中位数",
   "Not every arm reported it": "并非每个 arm 都报告了它",
   "against": "对比",

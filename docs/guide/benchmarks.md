@@ -704,10 +704,21 @@ A matrix entry whose suite the pull request does not touch tries nothing and pas
 
 ```console
 $ teamai benchmark run fix-auth --sandbox
+ℹ Suite fix-auth: 54 trials (3 arms × 6 tasks × 3 repetitions), 36 judge calls, 4 calibration judge calls.
+ℹ Estimated 49.4–68.7 USD, incomplete (agents 41.4–56.7, judges 8–12), from run r1c0d9e2f4a7b3c51.
+  claude 0.82 · codex unknown (no cost stated) · strong 1.95 USD per trial
 ℹ Run r38302f8e6a18c377 started. If it stops before it ends, continue it with: teamai workflow resume r38302f8e6a18c377
 ```
 
 `benchmark run` plans the suite first, so a suite that cannot run leaves no run. It then starts the workflow `teamai-benchmark` with the suite's `timeout`, on the driver `--driver` names, else the one [`workflows.driver`](reference.md#member-settings) names, else the local driver, which drives it here.
+
+Before the run starts, it prints what the run will cost, from the newest earlier run of the suite that succeeded, on this machine or on `teamai-reports` as your checkout last read it. An arm's cost is its trials times the median cost of one of its trials there, matched by name, tool, model, effort, team, workflow and role, with the quartiles as the range. The judging is the judged trials times the median cost of judging one there. Judge calls count as teamai's benchmark workflow batches them; a task with both a check and success criteria counts its correctness call and its [calibration](#calibrate-a-judge) calls as many as they can be. An arm whose tool stated no cost, or that did not run then, is `unknown`, and the total says `incomplete`. With no such run, it prints `No earlier run of fix-auth to estimate from.` The estimate never stops a run or changes the exit code: to spend less, run fewer `--task` or `--arm`. The plan keeps it, the JSON envelope carries it at the end in `data.done.outputs.table.estimate`, and the usage table shows it beside what the run spent, in part:
+
+```text
+| Arm | Cost | Estimated |
+| --- | --- | --- |
+| claude | 15.4 USD (18) | 12.6–17.1 USD |
+```
 
 Each trial prompt runs with [`permissions: unattended`](workflow-advanced.md#unattended-prompts), because the shipped workflow runs the trials in a strict sandbox: the tool edits files and runs commands without asking, whatever this machine's settings for it say.
 
@@ -903,7 +914,7 @@ These results hold for these tasks, this run and this machine.
 | Table | Shows |
 | --- | --- |
 | Arms | Each arm's trials by result, and how many a [trial limit](#trial-limits) stopped. A deviation is a trial whose prompt ran on another tool, team revision, model or role than its arm's, or without a trial limit its driver could not enforce, or that a judge other than the [plan's](#one-judge-for-every-arm) labelled. A trial is not verified when its record lacks one of those, or its judge's model. When an arm runs on other team assets than the pulled revision, a Team column shows each arm's, such as `pulled 3f9c2ab`, `next 81d0e4c`, `3f9c2ab without skills/auth-tokens` or `none`. When an arm [runs as a role](#arms-that-run-as-a-role), a Role column shows each arm's role, or `member's roles`. When a correctness rubric has more than two labels, a Mean correctness score column follows the pass rate, under [The correctness rubric](#the-correctness-rubric). |
-| Usage | Each arm's medians and cost total, with how many trials each used. Tokens and cost appear only as the tool stated them, so a tool that states none shows `unknown (0)`. A trial whose passes did not all state its tokens (input and output), cost or duration counts as one that stated none of it, and makes a cost total `incomplete`. Cost per passed trial is the cost total over the arm's passed trials, as on the dashboard: `—` with no passed trial or no total in one unit, and marked `incomplete` when the total is. Against reads each arm against the defaults arm, under [Cost per passed trial](#cost-per-passed-trial). |
+| Usage | Each arm's medians and cost total, with how many trials each used. Tokens and cost appear only as the tool stated them, so a tool that states none shows `unknown (0)`. A trial whose passes did not all state its tokens (input and output), cost or duration counts as one that stated none of it, and makes a cost total `incomplete`. Cost per passed trial is the cost total over the arm's passed trials, as on the dashboard: `—` with no passed trial or no total in one unit, and marked `incomplete` when the total is. Against reads each arm against the defaults arm, under [Cost per passed trial](#cost-per-passed-trial). Estimated, beside Cost, is what start [estimated](#run-a-suite) each arm would cost, when an earlier run gave it an estimate. |
 | Tasks | Each task's pass rate on each arm. |
 | Scorers | Only when the suite or a task lists scorers: each arm's pass rate per scorer, under [Pass rate per scorer](#pass-rate-per-scorer). |
 | Judge calibration | Only when the suite sets a [calibration rate](#calibrate-a-judge): how often the correctness judge passed work whose check failed. |

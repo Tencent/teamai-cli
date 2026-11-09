@@ -704,10 +704,21 @@ jobs:
 
 ```console
 $ teamai benchmark run fix-auth --sandbox
+ℹ Suite fix-auth: 54 trials (3 arms × 6 tasks × 3 repetitions), 36 judge calls, 4 calibration judge calls.
+ℹ Estimated 49.4–68.7 USD, incomplete (agents 41.4–56.7, judges 8–12), from run r1c0d9e2f4a7b3c51.
+  claude 0.82 · codex unknown (no cost stated) · strong 1.95 USD per trial
 ℹ Run r38302f8e6a18c377 started. If it stops before it ends, continue it with: teamai workflow resume r38302f8e6a18c377
 ```
 
 `benchmark run` 先规划套件，所以无法运行的套件不会留下运行。然后它用套件的 `timeout` 启动工作流 `teamai-benchmark`，在 `--driver` 指定的驱动上运行；未指定则用 [`workflows.driver`](reference.md#成员设置) 指定的驱动，都未指定则由本地驱动在本机驱动它。
+
+运行开始前，它会打印这次运行的成本估算，依据是该套件最近一次成功的早先运行，来自本机，或来自你的检出目录上次读到的 `teamai-reports`。arm 的成本是它的 trial 数乘以那次运行中它每个 trial 成本的中位数，按名字、工具、模型、effort、team、workflow 和 role 匹配 arm，四分位数作为范围。评判的成本是被评判的 trial 数乘以那次运行中评判一个 trial 成本的中位数。评判调用按 teamai 的 benchmark 工作流的批处理方式计数；同时有 check 和成功标准的任务，它的正确性调用和[校准](#校准评判)调用按最多可能的次数计。工具没有声明成本的 arm，或那次没有运行的 arm，显示 `unknown`，总计会注明 `incomplete`。没有这样的运行时，它打印 `No earlier run of fix-auth to estimate from.`。估算从不停止运行，也不改变退出码：要少花一些，就少运行一些 `--task` 或 `--arm`。计划会保存估算，JSON 返回在最后的 `data.done.outputs.table.estimate` 中带上它，用量表把它放在实际花费旁边，一部分如下：
+
+```text
+| Arm | Cost | Estimated |
+| --- | --- | --- |
+| claude | 15.4 USD (18) | 12.6–17.1 USD |
+```
 
 每个 trial 的 prompt 都以 [`permissions: unattended`](workflow-advanced.md#无人值守的-prompt) 运行，因为 teamai 自带的工作流在严格的 sandbox 中运行 trial：无论这台机器上该工具的设置如何，工具都无需询问就编辑文件和运行命令。
 
@@ -903,7 +914,7 @@ These results hold for these tasks, this run and this machine.
 | 表格 | 内容 |
 | --- | --- |
 | Arm | 按结果统计每个 arm 的 trial，以及被 [trial 限制](#trial-限制)停止的数量。偏差是 prompt 运行时的工具、团队修订、模型或角色与其 arm 不同的 trial，其 driver 无法执行某个 trial 限制的 trial，或者由[计划](#对所有-arm-用同一个评判)以外的评判打标签的 trial。记录缺少其中某个值，或缺少其评判的模型的 trial 为未验证。有 arm 使用 pull 到的修订以外的团队资产时，Team 列显示每个 arm 的团队资产，例如 `pulled 3f9c2ab`、`next 81d0e4c`、`3f9c2ab without skills/auth-tokens` 或 `none`。有 arm [以角色运行](#以角色运行的-arm)时，Role 列显示每个 arm 的角色，或 `member's roles`。正确性评分标准有两个以上标签时，通过率后面还有 Mean correctness score 列，见[正确性评分标准](#正确性评分标准)。 |
-| 用量 | 每个 arm 的中位数和成本合计，并注明各自用了多少个 trial。token 和成本只按工具自己声明的显示，所以不声明的工具显示 `unknown (0)`。如果一个 trial 的各次 pass 没有全部声明 token（输入和输出）、成本或时长，它在这一项上按没有声明处理，并让成本合计显示 `incomplete`。Cost per passed trial 是 arm 的成本合计除以它通过的 trial 数，与 dashboard 一致：没有通过的 trial 或合计不在同一单位时显示 `—`，合计为 `incomplete` 时标为 `incomplete`。Against 把每个 arm 与默认 arm 对比，见[每个通过 trial 的成本](#每个通过-trial-的成本)。 |
+| 用量 | 每个 arm 的中位数和成本合计，并注明各自用了多少个 trial。token 和成本只按工具自己声明的显示，所以不声明的工具显示 `unknown (0)`。如果一个 trial 的各次 pass 没有全部声明 token（输入和输出）、成本或时长，它在这一项上按没有声明处理，并让成本合计显示 `incomplete`。Cost per passed trial 是 arm 的成本合计除以它通过的 trial 数，与 dashboard 一致：没有通过的 trial 或合计不在同一单位时显示 `—`，合计为 `incomplete` 时标为 `incomplete`。Against 把每个 arm 与默认 arm 对比，见[每个通过 trial 的成本](#每个通过-trial-的成本)。有早先运行可供估算时，Cost 旁边的 Estimated 列是启动时[估算](#运行套件)的每个 arm 的成本。 |
 | 任务 | 每个任务在每个 arm 上的通过率。 |
 | 评分器 | 仅当套件或某个任务列出评分器时出现：每个 arm 在每个评分器上的通过率，见[每个评分器的通过率](#每个评分器的通过率)。 |
 | 评判校准 | 仅当套件设置了[校准比例](#校准评判)时出现：正确性评判让多少 check 失败的工作通过。 |

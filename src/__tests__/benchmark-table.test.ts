@@ -656,6 +656,22 @@ describe('benchmark cost per passed trial', () => {
     expect((await endRecord(config, runId)).benchmark.defaultsArm).toBe('claude');
   });
 
+  it('puts the estimate start made beside what each arm cost, and leaves the column out with no earlier run to estimate from', () => {
+    const record = recordOf([arm('claude'), arm('codex')], [{ arm: 'claude', ...usd(15.4) }, { arm: 'codex' }]);
+    const range = { unit: 'USD', low: 13.1, median: 15, high: 16.8 };
+    const estimate = {
+      trials: 2, judgeCalls: 0, judgedTrials: 0, calibrationCalls: 0, basis: { run: 'r1c0d9e2f' },
+      arms: [{ arm: 'claude', trials: 1, perTrial: range, total: range }, { arm: 'codex', trials: 1, unknown: 'no_cost_stated' as const }],
+    };
+
+    const text = formatBenchmarkTable(benchmarkTable({ benchmark: { ...record.benchmark, estimate } }));
+
+    expect(text).toContain('| Cost | Estimated | Cost per passed trial |');
+    expect(text).toContain('| 15.4 USD (1) | 13.1–16.8 USD | 15.4 USD |');
+    expect(text).toContain('| unknown (0) | unknown | — |');
+    expect(formatBenchmarkTable(benchmarkTable({ benchmark: { ...record.benchmark, estimate: { trials: 2, judgeCalls: 0, judgedTrials: 0, calibrationCalls: 0 } } }))).not.toContain('Estimated');
+  });
+
   it('shows no Against column for a single arm', () => {
     const text = formatBenchmarkTable(benchmarkTable(recordOf([CLAUDE_ARM], [{ ...usd(0.2) }])));
 
