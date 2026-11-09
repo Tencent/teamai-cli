@@ -275,6 +275,23 @@ function checkedOf(checked: CheckOutput | undefined, labels: readonly ScoreLabel
   }
 }
 
+/**
+ * `verdicts` of one trial, where a batched judge's one launch states its cost on the first label it gave: each other
+ * label of that launch, by the same tool and model, cost nothing more, so the trial's judging cost stays complete.
+ */
+function withBatchedCosts(verdicts: EntryVerdict[]): EntryVerdict[] {
+  const launches = verdicts.flatMap(({ decider, scoringCost }) => (decider?.by === 'judge' && decider.batched && scoringCost ? [{ decider, scoringCost }] : []));
+
+  return verdicts.map((verdict) => {
+    const { decider } = verdict;
+
+    if (verdict.scoringCost || decider?.by !== 'judge' || !decider.batched) return verdict;
+    const launch = launches.find((one) => one.decider.tool === decider.tool && one.decider.model === decider.model);
+
+    return launch ? { ...verdict, scoringCost: { amount: 0, unit: launch.scoringCost.unit, complete: launch.scoringCost.complete } } : verdict;
+  });
+}
+
 export const TrialVerdicts = {
   /**
    * A verdict for each scorer each trial of `plan` pinned, on the pass the trial ran, as its steps ended: its
@@ -298,12 +315,12 @@ export const TrialVerdicts = {
       const output = CheckOutputSchema.safeParse(check && 'outputs' in check ? check.outputs : undefined).data;
       const checked = task !== undefined && isDecidedByCheck(task, output) ? [{ scorer: correctness, step, pass, ...checkedOf(output, labels, task) }] : [];
 
-      const judged = (definitionOf(step)?.scorers?.names ?? []).map((scorer) => {
+      const judged = withBatchedCosts((definitionOf(step)?.scorers?.names ?? []).map((scorer) => {
         const entry = subject?.entries.get(scorer);
         const stored = labels.find((label) => label.scorer === scorer && subject?.written.has(labelVersion(label)) === true);
 
         return { scorer, step, pass, ...verdictOf(entry, stored, { planned: plan.judges[scorer], isGivenUp: givenUp.get(item)?.has(scorer) === true }) };
-      });
+      }));
 
       // A failed check of a task with success criteria leaves its correctness scorer no judge, so only the check's verdict.
       return [...checked, ...judged.filter(({ scorer }) => scorer === correctness && checked.length === 0), ...judged.filter(({ scorer }) => scorer !== correctness)];

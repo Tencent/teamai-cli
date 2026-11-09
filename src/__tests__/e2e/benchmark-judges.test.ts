@@ -108,6 +108,21 @@ describe('benchmark judges on the local driver', () => {
     expect(outbox(fixture)).toEqual([]);
   }, 120_000);
 
+  it("counts a batched judge's one stated cost as the whole cost of the scorers it judged together", async () => {
+    const fixture = await judgedFixture({ scorers: ['quality', 'tidiness'], team: { 'scorers/tidiness.md': QUALITY } });
+
+    const done = await runLocally(fixture);
+
+    const record = z.object({ trials: z.array(z.object({ scoringCost: z.unknown(), verdicts: z.array(z.object({ scorer: z.string(), decider: z.object({ batched: z.boolean().optional() }).passthrough().optional() })) })) }).parse(fixture.benchmarkRecord(done.run));
+    expect(done.outcome).toBe('succeeded');
+    // The correctness scorer is judged alone; quality and tidiness share one launch, which states its cost once.
+    expect(fixture.judgeLaunches()).toHaveLength(2);
+    expect(record.trials[0]?.verdicts.map(({ scorer, decider }) => ({ scorer, batched: decider?.batched }))).toEqual([
+      { scorer: CORRECTNESS, batched: false }, { scorer: 'quality', batched: true }, { scorer: 'tidiness', batched: true },
+    ]);
+    expect(record.trials[0]?.scoringCost).toEqual({ amount: 0.2, unit: 'USD', complete: true });
+  }, 120_000);
+
   it("decides a task with a check and success criteria by its failing check with no judge, and by its judge once its check passes, on the work as the prompt left it", async () => {
     const mixed = (name: string, run: string) => `schemaVersion: v1alpha1
 title: ${name}
