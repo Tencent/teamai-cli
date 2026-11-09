@@ -7,6 +7,8 @@ import { takePendingHint, writeContributeState } from '../contribute-check.js';
 import { takePendingPackageHint } from '../pkg/pkg-hint.js';
 import { loadLocalAgentConfig } from '../local-agent.js';
 import * as launchContext from '../launch-context.js';
+import { deriveSessionId } from '../utils/session-id.js';
+import { GIT_HOOK_TOOL } from '../git-hook.js';
 
 const READ = ['hook-dispatch', 'post-tool-use', '--tool', 'claude'];
 const PAYLOAD = { kind: 'payload', hook: { event: 'post-tool-use', tool: 'claude', matcher: '*' } };
@@ -58,7 +60,7 @@ describe('argvVerdict', () => {
     expect(argvVerdict([...READ, '--matcher', 'TodoWrite'], {}, 'darwin')).toEqual({ kind: 'full' });
   });
 
-  it.each(['copilot', 'agy', 'git'])('runs the full dispatch for %s', (tool) => {
+  it.each(['copilot', 'agy', GIT_HOOK_TOOL])('runs the full dispatch for %s', (tool) => {
     expect(argvVerdict(['hook-dispatch', 'post-tool-use', '--tool', tool], {}, 'darwin')).toEqual({ kind: 'full' });
   });
 
@@ -92,14 +94,29 @@ describe('runHookFastPath', () => {
 });
 
 describe('childPayload', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it.each(['session_id', 'sessionId', 'conversation_id'])('hands on a payload with a %s as the host sent it', (field) => {
     const raw = JSON.stringify({ [field]: 's-1', tool_name: 'Read' });
     expect(childPayload(raw)).toEqual({ payload: raw, sessionId: 's-1' });
   });
 
-  // The order deriveSessionId (utils/session-id.ts) reads them in, so both name the same session.
-  it('names the session by the first id field that holds one', () => {
-    expect(childPayload(JSON.stringify({ session_id: '', sessionId: 's-2', conversation_id: 's-3' }))?.sessionId).toBe('s-2');
+  // The hint files the prompt fast path looks for are named by this id, so it must be the one the bundle derives.
+  it.each([
+    { session_id: 's-1', sessionId: 's-2', conversation_id: 's-3' },
+    { sessionId: 's-2', conversation_id: 's-3' },
+    { session_id: '', sessionId: 's-2', conversation_id: 's-3' },
+    { sessionId: '', conversation_id: 's-3' },
+    { conversation_id: 's-3' },
+  ])('names the session %j as deriveSessionId does', (payload) => {
+    vi.stubEnv('CLAUDE_SESSION_ID', undefined);
+
+    expect(childPayload(JSON.stringify(payload))?.sessionId).toBe(deriveSessionId(payload));
+  });
+
+  it('skips an id field that holds no string', () => {
     expect(childPayload(JSON.stringify({ session_id: 7, conversation_id: 's-3' }))?.sessionId).toBe('s-3');
   });
 

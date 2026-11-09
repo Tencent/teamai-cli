@@ -31,7 +31,8 @@ import { deriveDispatchSessionId } from './utils/session-id.js';
 import { claudeHookRunsInAnotherHost } from './claude-hook-host.js';
 import { claimCopilotHookEvent } from './copilot-hook-claim.js';
 import { launchedBy, LAUNCH_PAYLOAD_KEY, launchEnv, readLaunch, SESSION_RUN_PAYLOAD_KEY, sessionRun } from './launch-context.js';
-import { isHttpEnrolled, readStdin, takeHandedOffHookStdin } from './hook-fast-path.js';
+import { isHttpEnrolled } from './hook-fast-path.js';
+import { readStdin, takeHandedOffHookStdin } from './utils/hook-stdin.js';
 import { isSelfMode } from './types.js';
 
 export { claudeHookRunsInAnotherHost };

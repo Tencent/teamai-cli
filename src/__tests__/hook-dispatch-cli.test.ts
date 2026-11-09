@@ -22,7 +22,8 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawn: mockSpawn,
 }));
 
-const { readStdin, runHookFastPath } = await import('../hook-fast-path.js');
+const { runHookFastPath } = await import('../hook-fast-path.js');
+const { readStdin } = await import('../utils/hook-stdin.js');
 const { parseStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, hookDispatchCli, claudeHookRunsInAnotherHost } =
   await import('../hook-dispatch-cli.js');
 const { claudeHookOtherHostSkip } = await import('../claude-hook-host.js');
