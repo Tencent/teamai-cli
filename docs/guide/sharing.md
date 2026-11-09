@@ -733,57 +733,60 @@ If the team recreates a retired agent at its old namespace, edit that namespace 
 
 ## Reserved folder names
 
-These file names are reserved for resources kept as a folder, the way a skill is `skills/<name>/SKILL.md`:
+A directory that holds its type's marker, at any depth, is a folder: one resource, and every file in it is that resource's. A skill is the same, `skills/<name>/SKILL.md`.
 
-| Directory | Marker |
-|---|---|
-| `workflows/` | `WORKFLOW.yaml` |
-| `hooks/` | `HOOK.yaml` |
-| `rules/` | `RULE.md` |
-| `mcp/` | `MCP.yaml` |
-| `benchmarks/` | `SUITE.yaml` |
-| `scorers/` | `SCORER.md` |
-| `agents/` | `AGENT.md` |
+| Directory | Marker | This release |
+|---|---|---|
+| `workflows/` | `WORKFLOW.yaml` | Reads it: [workflow folders](workflow.md#workflow-folders) |
+| `hooks/` | `HOOK.yaml` | Reads it: [hooks](#hooks) |
+| `rules/` | `RULE.md` | Reads it: [rules as folders](#rules-as-folders-a-deterministic-skill) |
+| `mcp/` | `MCP.yaml` | Reads it: [MCP servers](#mcp-servers) |
+| `benchmarks/` | `SUITE.yaml` | Reads it: [suites](benchmarks.md#write-a-suite) |
+| `scorers/` | `SCORER.md` | Skips it |
+| `agents/` | `AGENT.md` | Skips it |
 
-A directory under that type's directory, at any depth, that holds its marker is a folder. This release reads workflow, hook, rule, MCP server and benchmark suite folders, and not scorer or agent folders yet. It skips each such folder whole, and pulls the rest of the team repo as usual:
+A scorer or agent folder is skipped whole, and the rest of the team repo pulls as usual:
 
 ```text
+agents/
+├── code-reviewer.yaml          delivered: agent "code-reviewer"
+└── reviewer/
+    ├── AGENT.md                skipped: agents/reviewer/ is an agent folder
+    └── checklist.md            skipped
+scorers/
+└── strict/
+    └── SCORER.md               skipped: scorers/strict/ is a scorer folder
 rules/
 ├── style.md                    delivered: rule "style"
-├── api-style/
-│   ├── RULE.md                 skipped: rules/api-style/ is a rule folder
-│   ├── RULE.zh.md              skipped
-│   └── checklist.md            skipped
-└── backend/
-    ├── db.md                   delivered: rule "backend/db"
-    └── migrations/
-        └── RULE.md             skipped: rules/backend/migrations/ is a rule folder
-workflows/
-├── ship.yaml                   delivered: workflow "ship"
-└── release/
-    └── WORKFLOW.yaml           skipped: no workflow "WORKFLOW", no namespace "release"
+└── api-style/
+    ├── RULE.md                 delivered: rule "api-style"
+    └── checklist.md            delivered with the folder
 ```
 
 Pull says so once per folder. A pull a hook starts writes the same lines to `~/.teamai/debug.log`:
 
 ```console
 $ teamai pull
-⚠ rules/api-style/ is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.
-⚠ rules/backend/migrations/ is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.
-⚠ workflows/release/ is a workflow folder, which this teamai cannot read yet; it was skipped. Run teamai update.
+⚠ agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.
+⚠ scorers/strict/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.
 ✔ [user] Synced 2 rule(s)
-✔ [user] Synced 1 workflow
 ```
 
 `teamai status`, `teamai doctor`, `teamai review --branch` and the dashboard list the same folders. Push leaves them alone, and the team declares nothing.
 
 The name must match exactly. `rules/lint/rule.md` is still the rule `lint/rule`, on macOS and Windows too.
 
-A repo that already has one of these names, such as `rules/onboarding/RULE.md`, got it as the rule `onboarding/RULE`. From this release that directory is skipped, and pull removes the copies it delivered from it. To keep it a rule, rename the file:
+A repo that already has a marker name, such as `rules/onboarding/RULE.md`, got it as the rule `onboarding/RULE`. From this release `rules/onboarding/` is one rule folder, `onboarding`, and its other `.md` files are its files. Pull removes the copies it delivered of them and says so once:
+
+```console
+⚠ rules/onboarding/ holds RULE.md, so it is one folder, and db.md in it is one of its files, no longer read on its own.
+```
+
+To keep them separate rules, rename the marker:
 
 ```bash
 git mv rules/onboarding/RULE.md rules/onboarding/overview.md
 git commit -m "rules: rename onboarding/RULE.md, a reserved folder marker"
 ```
 
-Before a team commits a folder, every member should run a release that knows these names. A member on an older one reads each file in `rules/api-style/` as its own always-on rule.
+Before a team commits a folder, every member should upgrade. A release that cannot read a type skips its folders, and one older than these names reads each file in `rules/api-style/` as its own always-on rule.

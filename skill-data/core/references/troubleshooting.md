@@ -221,10 +221,10 @@ For new HTTP local-agent MCP installs, a failed initial ownership-manifest write
 ## "<dir>/ is a <type> folder, which this teamai cannot read yet; it was skipped"
 
 `pull`, `status`, `doctor` and `review --branch` print one such line per
-directory that holds a reserved folder marker (`WORKFLOW.yaml`, `HOOK.yaml`,
-`RULE.md`, `MCP.yaml`, `SUITE.yaml`, `SCORER.md`, `AGENT.md`) whose type this
-release cannot read. Nothing in the directory is delivered, run or pushed; the
-rest of the team repo is. A hook-started pull writes it to
+directory that holds a folder marker of a type this release cannot read:
+`SCORER.md` under `scorers/` or `AGENT.md` under `agents/`. Workflow, hook,
+rule, MCP server and suite folders are read. Nothing in the directory is
+delivered, run or pushed; the rest of the team repo is. A hook-started pull writes it to
 `~/.teamai/debug.log`.
 
 ```console

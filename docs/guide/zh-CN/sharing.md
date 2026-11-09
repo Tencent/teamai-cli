@@ -725,57 +725,60 @@ self 模式下，如果当前分支落后于默认分支，推送修改过的 sk
 
 ## 保留的目录标记文件名
 
-以下文件名保留给以目录形式存放的资源，就像技能是 `skills/<name>/SKILL.md`：
+在类型目录下（任意深度）包含该类型标记文件的目录，就是一个目录型资源：它是一个资源，其中每个文件都属于它。技能也是这样，`skills/<name>/SKILL.md`。
 
-| 目录 | 标记文件 |
-|---|---|
-| `workflows/` | `WORKFLOW.yaml` |
-| `hooks/` | `HOOK.yaml` |
-| `rules/` | `RULE.md` |
-| `mcp/` | `MCP.yaml` |
-| `benchmarks/` | `SUITE.yaml` |
-| `scorers/` | `SCORER.md` |
-| `agents/` | `AGENT.md` |
+| 目录 | 标记文件 | 当前版本 |
+|---|---|---|
+| `workflows/` | `WORKFLOW.yaml` | 读取：[工作流文件夹](workflow.md#工作流文件夹) |
+| `hooks/` | `HOOK.yaml` | 读取：[Hooks](#hooks) |
+| `rules/` | `RULE.md` | 读取：[目录型 rule](#目录型-rule确定加载的-skill) |
+| `mcp/` | `MCP.yaml` | 读取：[MCP Server](#mcp-server) |
+| `benchmarks/` | `SUITE.yaml` | 读取：[套件](benchmarks.md#编写套件) |
+| `scorers/` | `SCORER.md` | 跳过 |
+| `agents/` | `AGENT.md` | 跳过 |
 
-在该类型目录下（任意深度）包含对应标记文件的目录，就是一个目录型资源。当前版本读取 workflow、hook、rule、MCP server 和基准测试套件目录，还不读取 scorer 和 agent 目录：它会整体跳过这样的目录，团队仓库的其他内容照常 pull：
+scorer 或 agent 目录会被整体跳过，团队仓库的其他内容照常 pull：
 
 ```text
+agents/
+├── code-reviewer.yaml          交付：agent "code-reviewer"
+└── reviewer/
+    ├── AGENT.md                跳过：agents/reviewer/ 是 agent 目录
+    └── checklist.md            跳过
+scorers/
+└── strict/
+    └── SCORER.md               跳过：scorers/strict/ 是 scorer 目录
 rules/
 ├── style.md                    交付：规则 "style"
-├── api-style/
-│   ├── RULE.md                 跳过：rules/api-style/ 是规则目录
-│   ├── RULE.zh.md              跳过
-│   └── checklist.md            跳过
-└── backend/
-    ├── db.md                   交付：规则 "backend/db"
-    └── migrations/
-        └── RULE.md             跳过：rules/backend/migrations/ 是规则目录
-workflows/
-├── ship.yaml                   交付：工作流 "ship"
-└── release/
-    └── WORKFLOW.yaml           跳过：不会出现工作流 "WORKFLOW"，也不会出现命名空间 "release"
+└── api-style/
+    ├── RULE.md                 交付：规则 "api-style"
+    └── checklist.md            随目录一起交付
 ```
 
 pull 对每个目录提示一次；由 hook 触发的 pull 会把同样的内容写进 `~/.teamai/debug.log`：
 
 ```console
 $ teamai pull
-⚠ rules/api-style/ is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.
-⚠ rules/backend/migrations/ is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.
-⚠ workflows/release/ is a workflow folder, which this teamai cannot read yet; it was skipped. Run teamai update.
+⚠ agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.
+⚠ scorers/strict/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.
 ✔ [user] Synced 2 rule(s)
-✔ [user] Synced 1 workflow
 ```
 
 `teamai status`、`teamai doctor`、`teamai review --branch` 和 dashboard 都会列出这些目录。push 不会改动它们，团队也不需要声明任何东西。
 
 文件名必须完全一致：`rules/lint/rule.md` 仍然是规则 `lint/rule`，在 macOS 和 Windows 上也一样。
 
-仓库里已经有这些文件名的，例如 `rules/onboarding/RULE.md`，之前会被当作规则 `onboarding/RULE` 交付。从这个版本起该目录会被跳过，pull 会删除之前从中交付的副本。要继续把它当作规则，改个文件名：
+仓库里已经有标记文件名的，例如 `rules/onboarding/RULE.md`，之前会被当作规则 `onboarding/RULE` 交付。从这个版本起 `rules/onboarding/` 是一个目录型 rule `onboarding`，其中其他 `.md` 文件都是它的文件。pull 会删除之前交付的这些文件的副本，并提示一次：
+
+```console
+⚠ rules/onboarding/ holds RULE.md, so it is one folder, and db.md in it is one of its files, no longer read on its own.
+```
+
+要让它们继续是各自独立的规则，改掉标记文件的名字：
 
 ```bash
 git mv rules/onboarding/RULE.md rules/onboarding/overview.md
 git commit -m "rules: rename onboarding/RULE.md, a reserved folder marker"
 ```
 
-团队提交目录型资源之前，每位成员都应升级到认识这些文件名的版本。旧版本会把 `rules/api-style/` 里的每个文件各自当作一条始终生效的规则。
+团队提交目录型资源之前，每位成员都应升级。读不了某个类型的版本会跳过该类型的目录；比这些文件名更早的版本会把 `rules/api-style/` 里的每个文件各自当作一条始终生效的规则。
