@@ -881,11 +881,11 @@ finally:
 | codex | codex | tool default (team) | 9 | 3 | 3 | 0 | 0 | 3 | 0 | 0 | 0 | 33% (3/9) |
 | strong | claude | claude-opus-5-5 high (team) | 9 | 6 | 0 | 0 | 0 | 3 | 0 | 0 | 0 | 67% (6/9) |
 
-| Arm | Median tokens (input + output) | Median duration | Cost |
-| --- | --- | --- | --- |
-| claude | 41200 (6) | 84.0 s (6) | 1.82 USD (6) |
-| codex | 38900 (6) | 97.5 s (6) | unknown (0) |
-| strong | 52300 (6) | 121.0 s (6) | 4.1 USD (6) |
+| Arm | Median tokens (input + output) | Median duration | Cost | Cost per passed trial | Against claude (defaults arm) |
+| --- | --- | --- | --- | --- | --- |
+| claude | 41200 (6) | 84.0 s (6) | 1.82 USD (6) | 0.455 USD |  |
+| codex | 38900 (6) | 97.5 s (6) | unknown (0) | — | -11 pp (-36 to +16, not separated) |
+| strong | 52300 (6) | 121.0 s (6) | 4.1 USD (6) | 0.6833 USD | +22 pp (-11 to +48, not separated) |
 
 | Task | claude | codex | strong |
 | --- | --- | --- | --- |
@@ -903,7 +903,7 @@ These results hold for these tasks, this run and this machine.
 | 表格 | 内容 |
 | --- | --- |
 | Arm | 按结果统计每个 arm 的 trial，以及被 [trial 限制](#trial-限制)停止的数量。偏差是 prompt 运行时的工具、团队修订、模型或角色与其 arm 不同的 trial，其 driver 无法执行某个 trial 限制的 trial，或者由[计划](#对所有-arm-用同一个评判)以外的评判打标签的 trial。记录缺少其中某个值，或缺少其评判的模型的 trial 为未验证。有 arm 使用 pull 到的修订以外的团队资产时，Team 列显示每个 arm 的团队资产，例如 `pulled 3f9c2ab`、`next 81d0e4c`、`3f9c2ab without skills/auth-tokens` 或 `none`。有 arm [以角色运行](#以角色运行的-arm)时，Role 列显示每个 arm 的角色，或 `member's roles`。正确性评分标准有两个以上标签时，通过率后面还有 Mean correctness score 列，见[正确性评分标准](#正确性评分标准)。 |
-| 用量 | 每个 arm 的中位数和成本合计，并注明各自用了多少个 trial。token 和成本只按工具自己声明的显示，所以不声明的工具显示 `unknown (0)`。如果一个 trial 的各次 pass 没有全部声明 token（输入和输出）、成本或时长，它在这一项上按没有声明处理，并让成本合计显示 `incomplete`。 |
+| 用量 | 每个 arm 的中位数和成本合计，并注明各自用了多少个 trial。token 和成本只按工具自己声明的显示，所以不声明的工具显示 `unknown (0)`。如果一个 trial 的各次 pass 没有全部声明 token（输入和输出）、成本或时长，它在这一项上按没有声明处理，并让成本合计显示 `incomplete`。Cost per passed trial 是 arm 的成本合计除以它通过的 trial 数，与 dashboard 一致：没有通过的 trial 或合计不在同一单位时显示 `—`，合计为 `incomplete` 时标为 `incomplete`。Against 把每个 arm 与默认 arm 对比，见[每个通过 trial 的成本](#每个通过-trial-的成本)。 |
 | 任务 | 每个任务在每个 arm 上的通过率。 |
 | 评分器 | 仅当套件或某个任务列出评分器时出现：每个 arm 在每个评分器上的通过率，见[每个评分器的通过率](#每个评分器的通过率)。 |
 | 评判校准 | 仅当套件设置了[校准比例](#校准评判)时出现：正确性评判让多少 check 失败的工作通过。 |
@@ -918,6 +918,20 @@ These results hold for these tasks, this run and this machine.
 ```
 
 只有 teamai 能看到的加载才计数：`unknown` 是其工具不报告 skill 加载的 trial，而不是没有加载该 skill 的 trial。
+
+### 每个通过 trial 的成本
+
+用量表把每个 arm 与默认 arm 对比。默认 arm 是不改变任何 `defaults` 键的 arm；每个 arm 都改变某个键时，与第一个 arm 对比。再加一个 arm `cheap`，它和 `claude` 一样通过九个 trial 中的八个，但成本更低，用量表的一部分：
+
+```text
+| Arm | Cost | Cost per passed trial | Against claude (defaults arm) |
+| --- | --- | --- | --- |
+| claude | 7.2 USD (9) | 0.9 USD |  |
+| cheap | 3.2 USD (9) | 0.4 USD | dominates: same pass rate, 56% cheaper per passed trial; +0 pp (-30 to +30, not separated) |
+| codex | unknown (0) | — | -22 pp (-54 to +14, not separated) |
+```
+
+一个 arm 每个通过 trial 的成本更低、通过率至少一样高时，它 dominates 默认 arm；默认 arm 对它做到这一点时，它是 dominated。成本为 `incomplete`、未知或单位不同时，两者都不标。两个 arm 通过率的配对差值及其 95% 区间总会显示，按[回归门禁](#回归时失败)会比较的那些配对计算，区间跨过零时标 `not separated`，被排除的配对写在后面，例如 `2 excluded: their judge changed (…)`。dominance 看的是通过率的点估计，并不证明两者相当：这里九个 trial 不能排除最多 30 个百分点的下降。这些标记不改变退出码，也不影响回归门禁。
 
 ### 谁判定一个 trial
 

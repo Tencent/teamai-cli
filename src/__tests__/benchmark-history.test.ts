@@ -140,6 +140,7 @@ describe('BenchmarkHistory', () => {
       tokens: { value: 2000, used: 6, components: ['input', 'output'] },
       durationMs: { value: 90_000, used: 6 },
       cost: { kind: 'known', amount: 6, unit: 'USD', used: 6 },
+      costPerPassedTrial: { kind: 'known', amount: 1.2, unit: 'USD' },
     });
   });
 

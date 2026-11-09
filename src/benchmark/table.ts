@@ -68,6 +68,33 @@ export interface ArmUsage {
   /** Milliseconds around each trial's tool launch. */
   durationMs: Median;
   cost: CostTotal;
+  /** The cost total over the passed trials, as the dashboard's Cost per passed trial; absent with none passed or no total in one unit. */
+  costPerPassedTrial?: CostPerPassedTrial;
+}
+
+/** What one passed trial cost: a cost total over the passed trials, `incomplete` when the total is. */
+export interface CostPerPassedTrial {
+  kind: 'known' | 'incomplete';
+  amount: number;
+  unit: string;
+}
+
+/**
+ * One arm against the reference arm: the paired difference of their pass rates, and whether either dominates the other.
+ * Never an input of the regression gate or the exit code.
+ */
+export interface ArmAgainst {
+  arm: string;
+  /** This arm's pass rate minus the reference's over their compared pairs, with its 95% interval; absent when no pair compared. */
+  difference?: PairedInterval;
+  /** The pairs `compareTrials` left out, by why; absent when none was. */
+  excluded?: ExcludedPairs[];
+  /**
+   * `dominates`: this arm costs less per passed trial and its pass rate is at least the reference's; `dominated`: the
+   * reference does that to it. `costRatio` is this arm's cost per passed trial over the reference's. Absent when neither,
+   * or when either cost per passed trial is absent, incomplete or in another unit.
+   */
+  dominance?: { kind: 'dominates' | 'dominated'; passRate: 'same' | 'higher' | 'lower'; costRatio: number };
 }
 
 /** One arm's verdicts of one scorer the suite or a task lists, over the arm's trials that ran it. */
@@ -97,6 +124,11 @@ export interface JudgeCalibration {
 export interface BenchmarkTable {
   results: ArmResults[];
   usage: ArmUsage[];
+  /**
+   * The arm the others are read against, the defaults arm, else the first arm, and each other arm against it, in record
+   * order; absent with one arm.
+   */
+  against?: { reference: string; isDefaultsArm: boolean; arms: ArmAgainst[] };
   /** Each task's pass rate on each arm, tasks and arms in record order; a cell with no planned trials has no rate. */
   matrix: Array<{ task: string; arms: Array<{ arm: string; passRate?: PassRate }> }>;
   /**
@@ -184,11 +216,32 @@ export function observedTrials(record: BenchmarkTableInput): ObservedTrial[] {
  * passes did not all state its tokens or cost has only part of it, so it counts as one that stated none.
  */
 export function usageOf(trials: readonly ObservedTrial[]): Omit<ArmUsage, 'arm'> {
-  return {
+  const cost = costTotal(trials.flatMap(({ trial, ranAs }) => (ranAs ? [trial.cost?.complete ? trial.cost : undefined] : [])));
+
+  return definedFields<Omit<ArmUsage, 'arm'>>({
     tokens: { ...median(trials.flatMap(({ trial: { tokens } }) => (tokens?.complete && tokens.input !== undefined && tokens.output !== undefined ? [tokens.input + tokens.output] : []))), components: TOKEN_COMPONENTS },
     durationMs: median(trials.flatMap(({ trial: { durationMs } }) => (durationMs !== undefined ? [durationMs] : []))),
-    cost: costTotal(trials.flatMap(({ trial, ranAs }) => (ranAs ? [trial.cost?.complete ? trial.cost : undefined] : []))),
-  };
+    cost,
+    costPerPassedTrial: costPerPassedTrialOf(cost, trials.filter(({ trial }) => trial.result === 'passed').length),
+  });
+}
+
+function costPerPassedTrialOf(cost: CostTotal, passed: number): CostPerPassedTrial | undefined {
+  if (passed === 0) return undefined;
+
+  switch (cost.kind) {
+    case 'known':
+    case 'incomplete':
+      return { kind: cost.kind, amount: cost.amount / passed, unit: cost.unit };
+    case 'mixed':
+    case 'unknown':
+      return undefined;
+    default: {
+      const unhandled: never = cost;
+
+      return unhandled;
+    }
+  }
 }
 
 /**
@@ -215,28 +268,33 @@ export function benchmarkTable(record: BenchmarkTableInput): BenchmarkTable {
   // Two labels make the mean the pass rate again; a third, such as partial, is what it tells apart.
   const isGraded = scorers.some(({ name, labels }) => isCorrectnessScorer(name) && (labels?.length ?? 0) > 2);
 
-  return {
-    invalid: tasks.flatMap(({ id, baseline }) => (baseline === 'invalid' || baseline === 'could_not_run' ? [{ task: id, baseline }] : [])),
-    results: arms.map((arm) => {
-      const own = trials.filter((trial) => trial.arm === arm.name);
-      const count = (result: TrialResult): number => own.filter((trial) => trial.result === result).length;
-      const counts = { passed: count('passed'), failed: count('failed'), error: count('error'), unscored: count('unscored'), not_run: count('not_run') } satisfies Record<TrialResult, number>;
+  const results = arms.map((arm) => {
+    const own = trials.filter((trial) => trial.arm === arm.name);
+    const count = (result: TrialResult): number => own.filter((trial) => trial.result === result).length;
+    const counts = { passed: count('passed'), failed: count('failed'), error: count('error'), unscored: count('unscored'), not_run: count('not_run') } satisfies Record<TrialResult, number>;
 
-      return definedFields<ArmResults>({
-        arm: arm.name, tool: arm.tool, model: arm.model || undefined, effort: arm.effort || undefined, source: arm.source, team: arm.team,
-        role: arm.role, recall: arm.recall || undefined,
-        planned: own.length, counts,
-        stoppedByLimit: own.filter((trial) => trial.limit !== undefined).length,
-        ...deviationsOf(arm, observed.filter(({ trial }) => trial.arm === arm.name)),
-        ...passRateOf(own),
-        correctnessScore: isGraded ? correctnessScoreOf(own) : undefined,
-      });
-    }),
+    return definedFields<ArmResults>({
+      arm: arm.name, tool: arm.tool, model: arm.model || undefined, effort: arm.effort || undefined, source: arm.source, team: arm.team,
+      role: arm.role, recall: arm.recall || undefined,
+      planned: own.length, counts,
+      stoppedByLimit: own.filter((trial) => trial.limit !== undefined).length,
+      ...deviationsOf(arm, observed.filter(({ trial }) => trial.arm === arm.name)),
+      ...passRateOf(own),
+      correctnessScore: isGraded ? correctnessScoreOf(own) : undefined,
+    });
+  });
+
+  const usage = arms.map(({ name }) => ({ arm: name, ...usageOf(observed.filter(({ trial }) => trial.arm === name)) }));
+
+  return definedFields<BenchmarkTable>({
+    invalid: tasks.flatMap(({ id, baseline }) => (baseline === 'invalid' || baseline === 'could_not_run' ? [{ task: id, baseline }] : [])),
+    results,
     matrix: tasks.map(({ id }) => ({
       task: id,
       arms: arms.map(({ name }) => ({ arm: name, ...passRateOf(trials.filter((trial) => trial.task === id && trial.arm === name)) })),
     })),
-    usage: arms.map(({ name }) => ({ arm: name, ...usageOf(observed.filter(({ trial }) => trial.arm === name)) })),
+    usage,
+    against: againstOf(record.benchmark, results, usage),
     scorers: scorerResultsOf(record.benchmark),
     calibration: calibrationOf(trials),
     skills: (record.benchmark.skillChanges ?? []).flatMap(({ arm, defaults, skills }) => skills.map(({ name, change }) => definedFields<BenchmarkTable['skills'][number]>({
@@ -245,7 +303,63 @@ export function benchmarkTable(record: BenchmarkTableInput): BenchmarkTable {
     assets: assetEffects(record), routing: record.benchmark.scorers.some(({ name }) => name.startsWith(ROUTING_PREFIX)),
     selfJudged: selfJudgedOf(record.benchmark),
     unavailableJudges: unavailableJudgesOf(record.benchmark),
+  });
+}
+
+/**
+ * Each arm of `record` but the reference, the defaults arm, else the first, against it: the paired difference over the
+ * trials of one task and repetition `compareTrials` compares, and dominance by cost per passed trial and pass rate.
+ */
+function againstOf(record: BenchmarkRecord, results: readonly ArmResults[], usage: readonly ArmUsage[]): BenchmarkTable['against'] {
+  const { arms, trials, tasks, defaultsArm } = record;
+  const [first] = arms;
+
+  if (first === undefined || arms.length < 2) return undefined;
+  const reference = arms.find(({ name }) => name === defaultsArm) ?? first;
+  const standingOf = (name: string): ArmStanding => ({ rate: results.find(({ arm }) => arm === name)?.passRate, cost: usage.find(({ arm }) => arm === name)?.costPerPassedTrial });
+
+  return {
+    reference: reference.name, isDefaultsArm: reference.name === defaultsArm,
+    arms: arms.filter((arm) => arm !== reference).map(({ name }) => {
+      const candidates = trials.filter((trial) => trial.arm === name).flatMap((to) => {
+        const from = trials.find((trial) => trial.arm === reference.name && trial.task === to.task && trial.repetition === to.repetition);
+        const comparison = from && compareTrials({ from, fromTasks: tasks, to, toTasks: tasks });
+
+        return from && comparison ? [{ pair: { from: from.result === 'passed', to: to.result === 'passed' }, comparison }] : [];
+      });
+
+      const { compared, excluded } = splitPairs(candidates);
+      const count = (test: (pair: { from: boolean; to: boolean }) => boolean): number => compared.filter(test).length;
+
+      return definedFields<ArmAgainst>({
+        arm: name,
+        difference: compared.length > 0
+          ? pairedDifference({ both: count((p) => p.from && p.to), toOnly: count((p) => p.to && !p.from), fromOnly: count((p) => p.from && !p.to), neither: count((p) => !p.from && !p.to) })
+          : undefined,
+        excluded: excluded.length > 0 ? excluded : undefined,
+        dominance: dominanceOf({ mine: standingOf(name), theirs: standingOf(reference.name) }),
+      });
+    }),
   };
+}
+
+interface ArmStanding {
+  rate?: PassRate;
+  cost?: CostPerPassedTrial;
+}
+
+/** Whether `mine` dominates `theirs` or is dominated by it: less per passed trial at a pass rate at least as high. */
+function dominanceOf({ mine, theirs }: { mine: ArmStanding; theirs: ArmStanding }): ArmAgainst['dominance'] {
+  if (mine.rate === undefined || theirs.rate === undefined || mine.cost?.kind !== 'known' || theirs.cost?.kind !== 'known') return undefined;
+
+  if (mine.cost.unit !== theirs.cost.unit || theirs.cost.amount === 0) return undefined;
+  const order = Math.sign(mine.rate.passed * theirs.rate.planned - theirs.rate.passed * mine.rate.planned);
+  const passRate = order === 0 ? 'same' : order > 0 ? 'higher' : 'lower';
+  const costRatio = mine.cost.amount / theirs.cost.amount;
+
+  if (costRatio < 1 && order >= 0) return { kind: 'dominates', passRate, costRatio };
+
+  return costRatio > 1 && order <= 0 ? { kind: 'dominated', passRate, costRatio } : undefined;
 }
 
 function correctnessScoreOf(trials: RecordedTrial[]): NonNullable<ArmResults['correctnessScore']> {
@@ -349,9 +463,14 @@ export function benchmarkCells(table: BenchmarkTable): BenchmarkCells {
       ]),
     },
     usage: {
-      header: ['Arm', `Median tokens (${TOKEN_COMPONENTS.join(' + ')})`, 'Median duration', 'Cost'],
-      rows: table.usage.map(({ arm, tokens, durationMs, cost }) => [
+      header: [
+        'Arm', `Median tokens (${TOKEN_COMPONENTS.join(' + ')})`, 'Median duration', 'Cost', 'Cost per passed trial',
+        ...(table.against ? [`Against ${table.against.reference} (${table.against.isDefaultsArm ? 'defaults arm' : 'first arm'})`] : []),
+      ],
+      rows: table.usage.map(({ arm, tokens, durationMs, cost, costPerPassedTrial }) => [
         arm, formatMedian(tokens, (value) => String(Math.round(value))), formatMedian(durationMs, (value) => `${(value / 1000).toFixed(1)} s`), formatCost(cost),
+        costPerPassedTrial ? `${formatAmount(costPerPassedTrial.amount)} ${costPerPassedTrial.unit}${costPerPassedTrial.kind === 'incomplete' ? ', incomplete' : ''}` : '—',
+        ...(table.against ? [formatAgainst(table.against.arms.find((one) => one.arm === arm))] : []),
       ]),
     },
     matrix: {
@@ -381,6 +500,24 @@ export function benchmarkCells(table: BenchmarkTable): BenchmarkCells {
     notes: notesOf(table),
     caption: BENCHMARK_CAPTION,
   });
+}
+
+/**
+ * `dominates: same pass rate, 56% cheaper per passed trial; +0 pp (-30 to +30, not separated)`: an arm against the
+ * reference, blank on the reference's own row.
+ */
+function formatAgainst(against: ArmAgainst | undefined): string {
+  if (against === undefined) return '';
+  const { dominance, difference, excluded } = against;
+  const change = dominance && (dominance.costRatio < 1 ? `${Math.round((1 - dominance.costRatio) * 100)}% cheaper` : `${Math.round((dominance.costRatio - 1) * 100)}% more expensive`);
+
+  const parts = [
+    dominance && `${dominance.kind}: ${dominance.passRate} pass rate, ${change} per passed trial`,
+    difference && `${formatDifference(difference)} (${formatBound(difference.low)} to ${formatBound(difference.high)}${difference.low > 0 || difference.high < 0 ? '' : ', not separated'})`,
+    excluded && formatExcluded(excluded),
+  ].filter((part) => part !== undefined);
+
+  return parts.length > 0 ? parts.join('; ') : '-';
 }
 
 /** A 95% interval of a rate: `11% to 60%`. */
@@ -527,14 +664,17 @@ function formatMedian({ value, used }: Median, format: (value: number) => string
   return value === undefined ? 'unknown (0)' : `${format(value)} (${used})`;
 }
 
-function formatCost(cost: CostTotal): string {
-  const amount = (value: number): string => String(Math.round(value * 10_000) / 10_000);
+/** An amount to four decimals at most: `0.455`, `4.1`. */
+function formatAmount(value: number): string {
+  return String(Math.round(value * 10_000) / 10_000);
+}
 
+function formatCost(cost: CostTotal): string {
   switch (cost.kind) {
     case 'known':
-      return `${amount(cost.amount)} ${cost.unit} (${cost.used})`;
+      return `${formatAmount(cost.amount)} ${cost.unit} (${cost.used})`;
     case 'incomplete':
-      return `${amount(cost.amount)} ${cost.unit} (${cost.used}), incomplete: ${cost.unknown} unknown`;
+      return `${formatAmount(cost.amount)} ${cost.unit} (${cost.used}), incomplete: ${cost.unknown} unknown`;
     case 'mixed':
       return `mixed units: ${cost.units.join(', ')}`;
     case 'unknown':

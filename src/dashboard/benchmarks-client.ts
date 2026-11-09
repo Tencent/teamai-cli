@@ -257,7 +257,7 @@ function compareKpis(sel,c){
  const d=c.difference, sides=['from','to'];
  const up=c.tasks.filter(x=>passOf(x.to)>passOf(x.from)).length, down=c.tasks.filter(x=>passOf(x.to)<passOf(x.from)).length;
  const unit=usageUnit(sides.map(side=>c.usage[side]));
- const costs=unit?sides.map(side=>c.rates[side].passed>0?c.usage[side].cost.amount/c.rates[side].passed:null):[null,null], hasCost=costs.every(v=>v!=null)&&costs[0]>0;
+ const costs=unit?sides.map(side=>c.usage[side].costPerPassedTrial?c.usage[side].costPerPassedTrial.amount:null):[null,null], hasCost=costs.every(v=>v!=null)&&costs[0]>0;
  const tokens=sides.map(side=>usageAt(c.usage[side],'tokens')), hasTokens=tokens.every(v=>v!=null&&v>0);
  const change=(a,b)=>(b>=a?'+':'−')+number(Math.abs(Math.round((b/a-1)*100)))+'%';
  const third=hasCost?kpiCard(label('Cost per passed trial'),diffClass(d)==='amber'?change(costs[0],costs[1]):'<span class="'+(costs[1]<=costs[0]?'up':'down')+'">'+change(costs[0],costs[1])+'</span>',e(costNumber(costs[0])+' → '+costNumber(costs[1])+' '+unit))

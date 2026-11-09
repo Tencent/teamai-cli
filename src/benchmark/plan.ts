@@ -18,7 +18,7 @@ import type { ScorerLabel } from '../scorers/definition.js';
 import type { PinnedScorer } from '../scorers/pin.js';
 import type { JsonObject } from '../types.js';
 import { definedFields } from '../utils/defined-fields.js';
-import type { Suite, Task, TaskCheck, TaskJudge } from './suite.js';
+import { defaultsArmOf, type Suite, type Task, type TaskCheck, type TaskJudge } from './suite.js';
 import type { CommittedSuite } from './trial.js';
 import type { PinnedArmWorkflow } from './arm-workflow.js';
 import { CommitSchema, TeamSelectionSchema, type CloneTeam, type TeamSelection } from '../workflow/clone.js';
@@ -144,6 +144,8 @@ export const BenchmarkPlanSchema = z.object({
   limits: TrialLimitsSchema.optional(),
   tasks: z.array(PlannedTaskSchema).nonempty(),
   arms: z.array(PlannedArmSchema).nonempty(),
+  /** The planned arm that changes no `defaults` key, which the results read the others against; absent when every one changes one. */
+  defaultsArm: BenchmarkNameSchema.optional(),
   /** Each arm whose team assets differ from the baseline's in skills, with those skills. */
   skillChanges: z.array(SkillChangesSchema).optional(),
   /** Every scorer that judges or decides a trial: the suite's, those tasks list, and each task's correctness scorer, which decides its trials. */
@@ -240,6 +242,7 @@ export function freezePlan(input: {
     limits: suite.trial,
     tasks: [planned(first), ...rest.map(planned)],
     arms: input.arms,
+    defaultsArm: defaultsArmOf(suite)?.name,
     skillChanges: input.skillChanges && input.skillChanges.length > 0 ? input.skillChanges : undefined,
     scorers: Object.entries({ ...input.scorers, ...correctness }).map(([name, rubric]) => plannedScorer(name, rubric)),
     judges: plannedJudges(suite, { ...input.scorers, ...judgedCorrectness(suite, correctness) }),

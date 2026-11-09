@@ -86,6 +86,8 @@ export const BenchmarkRecordSchema = z.object({
      */
     recall: z.boolean().optional(),
   })),
+  /** The arm that changes no `defaults` key, which the results read the others against; absent when the plan had none. */
+  defaultsArm: z.string().optional(),
   /** The team skills each arm adds, removes or changes against the baseline team revision; absent when no arm changes one. */
   skillChanges: z.array(SkillChangesSchema).optional(),
   trials: z.array(z.object({
@@ -183,6 +185,7 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdic
     judges: plan.judges,
     tasks: plan.tasks.map((task) => ({ id: task.id, startingCommit: task.startingCommit, sourceHash: task.sourceHash, baseline: baselineOf(stateOf(baselineStepOf(task.id)), task), covers: task.covers ? [...task.covers] : undefined, coversSkills: task.coversSkills ? [...task.coversSkills] : undefined, coversWithheldFrom: task.coversWithheldFrom?.map((arms) => [...arms]) })),
     arms: plan.arms,
+    defaultsArm: plan.defaultsArm,
     skillChanges: plan.skillChanges,
     trials: plan.trials.map((trial) => {
       const judged = verdictsOf(trial);

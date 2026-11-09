@@ -881,11 +881,11 @@ When the run ends, `benchmark run` prints the results on stderr. The JSON envelo
 | codex | codex | tool default (team) | 9 | 3 | 3 | 0 | 0 | 3 | 0 | 0 | 0 | 33% (3/9) |
 | strong | claude | claude-opus-5-5 high (team) | 9 | 6 | 0 | 0 | 0 | 3 | 0 | 0 | 0 | 67% (6/9) |
 
-| Arm | Median tokens (input + output) | Median duration | Cost |
-| --- | --- | --- | --- |
-| claude | 41200 (6) | 84.0 s (6) | 1.82 USD (6) |
-| codex | 38900 (6) | 97.5 s (6) | unknown (0) |
-| strong | 52300 (6) | 121.0 s (6) | 4.1 USD (6) |
+| Arm | Median tokens (input + output) | Median duration | Cost | Cost per passed trial | Against claude (defaults arm) |
+| --- | --- | --- | --- | --- | --- |
+| claude | 41200 (6) | 84.0 s (6) | 1.82 USD (6) | 0.455 USD |  |
+| codex | 38900 (6) | 97.5 s (6) | unknown (0) | — | -11 pp (-36 to +16, not separated) |
+| strong | 52300 (6) | 121.0 s (6) | 4.1 USD (6) | 0.6833 USD | +22 pp (-11 to +48, not separated) |
 
 | Task | claude | codex | strong |
 | --- | --- | --- | --- |
@@ -903,7 +903,7 @@ These results hold for these tasks, this run and this machine.
 | Table | Shows |
 | --- | --- |
 | Arms | Each arm's trials by result, and how many a [trial limit](#trial-limits) stopped. A deviation is a trial whose prompt ran on another tool, team revision, model or role than its arm's, or without a trial limit its driver could not enforce, or that a judge other than the [plan's](#one-judge-for-every-arm) labelled. A trial is not verified when its record lacks one of those, or its judge's model. When an arm runs on other team assets than the pulled revision, a Team column shows each arm's, such as `pulled 3f9c2ab`, `next 81d0e4c`, `3f9c2ab without skills/auth-tokens` or `none`. When an arm [runs as a role](#arms-that-run-as-a-role), a Role column shows each arm's role, or `member's roles`. When a correctness rubric has more than two labels, a Mean correctness score column follows the pass rate, under [The correctness rubric](#the-correctness-rubric). |
-| Usage | Each arm's medians and cost total, with how many trials each used. Tokens and cost appear only as the tool stated them, so a tool that states none shows `unknown (0)`. A trial whose passes did not all state its tokens (input and output), cost or duration counts as one that stated none of it, and makes a cost total `incomplete`. |
+| Usage | Each arm's medians and cost total, with how many trials each used. Tokens and cost appear only as the tool stated them, so a tool that states none shows `unknown (0)`. A trial whose passes did not all state its tokens (input and output), cost or duration counts as one that stated none of it, and makes a cost total `incomplete`. Cost per passed trial is the cost total over the arm's passed trials, as on the dashboard: `—` with no passed trial or no total in one unit, and marked `incomplete` when the total is. Against reads each arm against the defaults arm, under [Cost per passed trial](#cost-per-passed-trial). |
 | Tasks | Each task's pass rate on each arm. |
 | Scorers | Only when the suite or a task lists scorers: each arm's pass rate per scorer, under [Pass rate per scorer](#pass-rate-per-scorer). |
 | Judge calibration | Only when the suite sets a [calibration rate](#calibrate-a-judge): how often the correctness judge passed work whose check failed. |
@@ -918,6 +918,20 @@ These results hold for these tasks, this run and this machine.
 ```
 
 A load is counted only where teamai could see it: `unknown` is a trial whose tool reports no skill loads, never a trial that did not load the skill.
+
+### Cost per passed trial
+
+The usage table reads each arm against the defaults arm, the arm that changes no `defaults` key, or against the first arm when every arm changes one. With an arm `cheap` that passes the same eight trials of nine as `claude` for less, in part:
+
+```text
+| Arm | Cost | Cost per passed trial | Against claude (defaults arm) |
+| --- | --- | --- | --- |
+| claude | 7.2 USD (9) | 0.9 USD |  |
+| cheap | 3.2 USD (9) | 0.4 USD | dominates: same pass rate, 56% cheaper per passed trial; +0 pp (-30 to +30, not separated) |
+| codex | unknown (0) | — | -22 pp (-54 to +14, not separated) |
+```
+
+An arm dominates the defaults arm when it costs less per passed trial and its pass rate is at least as high, and is dominated when the defaults arm does that to it. A cost that is `incomplete`, unknown or in another unit marks neither. The paired difference of the pass rates and its 95% interval always show, over the pairs [the regression gate](#fail-on-a-regression) would compare, with `not separated` when the interval crosses zero, and the pairs left out after it, such as `2 excluded: their judge changed (…)`. Dominance reads the point pass rates and proves no equivalence: here nine trials cannot rule out a drop of up to 30 points. Neither mark changes the exit code or the regression gate.
 
 ### Who decides a trial
 
