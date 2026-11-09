@@ -57,6 +57,22 @@ async function team(workflows: Record<string, string>, tools: TeamaiConfig['tool
 }
 
 describe('generated workflow skills', () => {
+  it('generates the skill of a workflow folder from its definition alone, leaving its README out', async () => {
+    const { deploy, skill, home, put } = await team({});
+    const folder = path.join(path.dirname(home), 'knowledge', 'workflows', 'release');
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, 'WORKFLOW.yaml'), workflow('release', 'allow'));
+    fs.writeFileSync(path.join(folder, 'README.md'), '# Release\nHow the team replaces this workflow.\n');
+    await put('private', workflow('private', 'deny'));
+
+    await deploy();
+
+    const written = fs.readFileSync(skill('release'), 'utf8');
+    expect(written).toContain('description: "Lint the change. A team workflow: prefer it over doing the task ad hoc."\n');
+    expect(written).not.toContain('How the team replaces this workflow.');
+    expect(fs.readdirSync(path.dirname(skill('release')))).toEqual(['SKILL.md']);
+  });
+
   it('writes a signed skill for each invoke: allow or ask workflow, and none for deny', async () => {
     const { deploy, skill } = await team({
       check: workflow('check', 'allow', 'alias: lint\n'), gated: workflow('gated', 'ask'), private: workflow('private', 'deny'),

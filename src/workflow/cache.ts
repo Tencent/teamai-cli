@@ -24,6 +24,8 @@ import { locate, valueNode, type WorkflowFiles } from './parse-context.js';
 import { stepWorkflow, type CachedWorkflow, type OutputSchema, type ResolvedWorkflow, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from './types.js';
 import { DefaultWorkflows } from '../default-workflows.js';
 import { WORKFLOW_MARKER, WorkflowFolder, type WorkflowFolderFile } from './folder.js';
+import { confinedOf } from './workspace.js';
+import { WORKFLOW_DIR_ENV } from '../launch-context.js';
 import { assertSafePath, assertWithinRoot } from '../utils/path-safety.js';
 import { createGit } from '../utils/git.js';
 import {
@@ -439,6 +441,11 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
     }
 
     for (const warning of DefaultWorkflows.callerWarnings(relativePath, resolved.definition)) log.warn(`[workflows] ${warning}`);
+
+    for (const step of confinedFolderReaders(resolved.definition)) {
+      log.warn(`[workflows] ${relativePath}: step ${step} is confined and may not be able to read $TEAMAI_WORKFLOW_DIR`);
+    }
+
     const hash = createHash('sha256').update(content);
 
     for (const prompt of resolved.sources) {
@@ -663,6 +670,20 @@ export function workflowsRunBy(definition: { steps: WorkflowStep[] }, prefix = '
     if (step.with) run.with = step.with;
 
     return [run];
+  });
+}
+
+/**
+ * The path of each step confined to a directory whose prompt names TEAMAI_WORKFLOW_DIR, such as `group.judge`: a
+ * confined launch reads only that directory, so the folder may be out of its reach.
+ */
+function confinedFolderReaders(definition: { steps: WorkflowStep[] }, prefix = ''): string[] {
+  return definition.steps.flatMap((step) => {
+    const child = stepWorkflow(step);
+
+    if (child?.kind === 'inline') return confinedFolderReaders(child.workflow, `${prefix}${step.id}.`);
+
+    return confinedOf(step) !== undefined && step.prompt?.includes(WORKFLOW_DIR_ENV) ? [`${prefix}${step.id}`] : [];
   });
 }
 

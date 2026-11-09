@@ -18,12 +18,14 @@ import { WorkflowFolder } from '../workflow/folder.js';
 import { claimRun, publishRun } from '../workflow/handoff.js';
 import { sweepLeftovers } from '../workflow/leftovers.js';
 import { readRun } from '../workflow/store.js';
+import { skillHarness } from './helpers/skill-harness.js';
 import { dirs as handoffDirs, pull, team as handoffTeam } from './helpers/workflow-handoff-fixture.js';
 
 const dirs: string[] = [];
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   for (const dir of [...dirs.splice(0), ...handoffDirs.splice(0)]) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -222,6 +224,25 @@ describe('workflow folders', () => {
     expect(result.invalid).toMatchObject([{ field: 'steps[1].prompt_file', message }]);
   });
 
+  it('warns at pull of a confined step whose prompt names TEAMAI_WORKFLOW_DIR', async () => {
+    const team = teamScope();
+    team.put('workflows/review/WORKFLOW.yaml', 'schemaVersion: v1alpha1\nname: review\ndescription: Review.\nsteps:\n'
+      + '  - id: evidence\n    command: node -e "0"\n'
+      + '  - id: group\n    needs: [evidence]\n    workflow:\n      steps:\n'
+      + '        - id: judge\n          workspace: { confined: evidence }\n          prompt_file: judge.md\n'
+      + '        - id: plain\n          needs: [judge]\n          workspace: { confined: evidence }\n          prompt: Judge the change.\n');
+    team.put('workflows/review/judge.md', 'Judge the change against $TEAMAI_WORKFLOW_DIR/rubric.md.');
+    team.put('workflows/review/rubric.md', 'Be strict.');
+    team.commit();
+    const warn = vi.spyOn(log, 'warn');
+
+    expect((await syncScorersThenWorkflows(team.config)).invalid).toEqual([]);
+
+    expect(warn.mock.calls.map(([message]) => String(message)).filter((message) => message.includes('confined'))).toEqual([
+      '[workflows] workflows/review/WORKFLOW.yaml: step group.judge is confined and may not be able to read $TEAMAI_WORKFLOW_DIR',
+    ]);
+  });
+
   it('looks answer_file up under prompts/ in the active namespaces outside a folder', async () => {
     const team = teamScope();
     team.put('workflows/notes.yaml', 'schemaVersion: v1alpha1\nname: notes\ndescription: Notes.\nsteps:\n  - id: notes\n    answer_file: prompts/notes.md\n    output: { text: string }\n');
@@ -379,6 +400,31 @@ describe('running a workflow folder', () => {
   });
 });
 
+
+describe('a workflow folder under the skill driver', () => {
+  it('gives a command step the runner starts TEAMAI_WORKFLOW_DIR, as the local driver does', async () => {
+    const made = await skillHarness({}, { teamFiles: {
+      'workflows/release/WORKFLOW.yaml': `schemaVersion: v1alpha1\nname: release\ndescription: Release.\ninvoke: allow\nsteps:\n  - id: plan\n    command: ${printsFolder('plan.txt')}\n    output: json\n`,
+      'workflows/release/plan.txt': 'from the folder',
+    } });
+    dirs.push(made.root);
+    await syncScorersThenWorkflows(made.config);
+    const sourceHash = (await loadCachedWorkflow(made.config, 'release'))?.sourceHash ?? '';
+
+    const start = await made.call({ kind: 'start', name: 'release', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in start) || !('turn' in start.data)) throw new Error(JSON.stringify(start));
+    const { run } = start.data.turn;
+    for (let poll = 0; poll < 10; poll += 1) {
+      const next = await made.call({ kind: 'next', run, wait: true });
+      if ('data' in next && 'turn' in next.data && next.data.turn.status === 'done') break;
+    }
+
+    expect(await readRun(made.config, run)).toMatchObject({
+      status: 'succeeded',
+      steps: [{ id: 'plan', outputs: { dir: path.join(getDataHome(made.config), 'workflows', 'folders', sourceHash), text: 'from the folder' } }],
+    });
+  });
+});
 
 describe('claiming a run of a workflow folder', () => {
   it('gives the member who claims it the files the run started with, from the team commit it ran at', async () => {
