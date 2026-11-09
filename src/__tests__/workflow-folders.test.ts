@@ -398,6 +398,26 @@ describe('running a workflow folder', () => {
     );
     expect(fs.existsSync(old)).toBe(false);
   });
+
+  it('removes on doctor --fix the stored folder of a run swept past workflows.retention, which no retry can reopen', async () => {
+    const { config, workspace } = await runScope({
+      'workflows/release/WORKFLOW.yaml': `schemaVersion: v1alpha1\nname: release\ndescription: Release.\nsteps:\n  - id: plan\n    command: ${printsFolder('plan.txt')}\n    output: json\n`,
+      'workflows/release/plan.txt': 'ran',
+    });
+    await runToEnd(config, workspace, 'release');
+    const ran = await loadCachedWorkflow(config, 'release');
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'release', 'plan.txt'), 'cached');
+    await syncScorersThenWorkflows(config);
+    const cached = await loadCachedWorkflow(config, 'release');
+    const cachedFolder = cached && folderOf(cached);
+    if (!cachedFolder) throw new Error('release is not cached as a folder');
+    await WorkflowFolder.pin(config, cachedFolder);
+
+    await sweepLeftovers(config, null, { now: Date.now() + 15 * 24 * 60 * 60 * 1000, checkout: workspace });
+
+    const folders = path.join(getDataHome(config), 'workflows', 'folders');
+    expect([fs.existsSync(path.join(folders, ran?.sourceHash ?? 'missing')), fs.readdirSync(folders)]).toEqual([false, [cached?.sourceHash]]);
+  });
 });
 
 
