@@ -134,7 +134,17 @@ async function deliver(input: { readonly dest: string; readonly files: readonly 
     await writeFiles(fresh, files);
     const replacing = await moveAside(dest, old);
 
-    await fs.rename(fresh, dest);
+    try {
+      await fs.rename(fresh, dest);
+    } catch (error) {
+      if (replacing) await fs.rename(old, dest);
+
+      throw new Error(
+        `could not move the new version of the delivered folder ${dest} into place (${error instanceof Error ? error.message : String(error)}); `
+        + 'the installed version stays, and the next pull tries again',
+        { cause: error },
+      );
+    }
 
     if (replacing) await fs.rm(old, { recursive: true, force: true });
   }

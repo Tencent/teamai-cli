@@ -119,6 +119,21 @@ describe('DeliveredFolders.deliver', () => {
     expect(tree(dest)).toEqual({ 'HOOK.yaml': 'v1\n' });
   });
 
+  it('puts the installed version back when the new one cannot be moved into place, and names the folder and why', async () => {
+    const dest = path.join(tempDir(), 'hooks', 'block-secrets');
+    await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v1\n')], ledger: undefined });
+    const rename = fs.promises.rename.bind(fs.promises);
+    // What Windows can answer while a scanner holds the new version's files: the old one is already out of the way.
+    const denied = Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+    vi.spyOn(fs.promises, 'rename').mockImplementationOnce(rename).mockRejectedValueOnce(denied);
+
+    await expect(DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v2\n')], ledger: undefined })).rejects.toThrow(
+      `could not move the new version of the delivered folder ${dest} into place (EPERM: operation not permitted, rename); `
+      + 'the installed version stays, and the next pull tries again',
+    );
+    expect(tree(dest)).toEqual({ 'HOOK.yaml': 'v1\n' });
+  });
+
   it('removes what an interrupted delivery left beside the folder', async () => {
     const dest = path.join(tempDir(), 'hooks', 'block-secrets');
     fs.mkdirSync(path.join(path.dirname(dest), '.block-secrets.new-0badc0de'), { recursive: true });
