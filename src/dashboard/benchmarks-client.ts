@@ -269,7 +269,7 @@ function runsPanel(sel){
    '<span title="'+e(r.sourceHash)+'" data-verbatim>'+short(r.sourceHash)+'</span>'+(current?' <span class="tag">'+label('current')+'</span>':''),
    '<span title="'+e(r.teamRevision)+'" data-verbatim>'+short(r.teamRevision)+'</span>'+(older&&older.teamRevision!==r.teamRevision?' <span class="tag amber">'+label('changed')+'</span>':''),
    meter(passOf(r))+' '+rateCell(r)+(r.unmeasuredTasks?'<small class="amber">'+number(r.unmeasuredTasks)+' '+label('not measured')+'</small>':''),
-  ].concat(isCosted?[spendText(r.spend)]:[]).concat(arms.map(a=>rateCell(r.arms.find(c=>c.key===a.key)))));}).join('')
+  ].concat(isCosted?['<div class="spend">'+spendText(r.spend)+'</div>']:[]).concat(arms.map(a=>rateCell(r.arms.find(c=>c.key===a.key)))));}).join('')
   +'</tbody></table></div></section>';
 }
 const BENCH_VIEWS=[['arms','Arms'],['compare','Compare'],['team','Team changes']];
