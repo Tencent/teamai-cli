@@ -281,16 +281,13 @@ function isTeamScriptCommand(command: string): boolean {
   return command.includes('.teamai/team-scripts/');
 }
 
-/** A hook folder pull delivers: where, and the files. */
-export type HookFolderDelivery = FolderDelivery;
-
 /**
  * A folder at the root of the team repo that replaces one of teamai's default hooks (#1787): delivered to the scope's
  * data home, where the hint that uses it reads it, or refused for breaking the default's contract, with what pull
  * prints about it, while teamai's default stays in force. `files` is null for a folder that cannot be read.
  */
 export type DefaultHookReplacement =
-  | { readonly kind: 'delivered'; readonly name: DefaultHookName; readonly path: string; readonly delivery: HookFolderDelivery }
+  | { readonly kind: 'delivered'; readonly name: DefaultHookName; readonly path: string; readonly delivery: FolderDelivery }
   | { readonly kind: 'refused'; readonly name: DefaultHookName; readonly path: string; readonly files: readonly FolderFile[] | null; readonly messages: readonly string[] };
 
 /** The team's replacements of teamai's default hooks, as pull reads them. */
@@ -316,8 +313,8 @@ export async function readDefaultHookReplacements(localConfig: LocalConfig): Pro
 }
 
 /** The default hook replacements to deliver, warning once about each one pull refuses. */
-async function defaultHookReplacements(localConfig: LocalConfig): Promise<HookFolderDelivery[]> {
-  const folders: HookFolderDelivery[] = [];
+async function defaultHookReplacements(localConfig: LocalConfig): Promise<FolderDelivery[]> {
+  const folders: FolderDelivery[] = [];
 
   for (const replacement of await readDefaultHookReplacements(localConfig)) {
     if (replacement.kind === 'delivered') {
@@ -334,7 +331,7 @@ async function defaultHookReplacements(localConfig: LocalConfig): Promise<HookFo
 /** One team hook as delivered: its definition for the tools, and the folder it runs from, if any. */
 interface TeamHookDelivery {
   readonly def: HookDef;
-  readonly folder: HookFolderDelivery | null;
+  readonly folder: FolderDelivery | null;
 }
 
 /** The hook folder `hook`, in `namespace`, as `localConfig`'s scope delivers it: its command names the folder's path (#1787). */
@@ -402,7 +399,7 @@ export async function resolveTeamHooks(
   localConfig: LocalConfig,
   opts: { auto?: boolean; silent?: boolean; preview?: boolean } = {},
 ): Promise<
-  | { ok: true; defs: HookDef[]; folders: readonly HookFolderDelivery[]; builtin: BuiltinOverride | undefined; held?: readonly string[] }
+  | { ok: true; defs: HookDef[]; folders: readonly FolderDelivery[]; builtin: BuiltinOverride | undefined; held?: readonly string[] }
   | { ok: false; builtin: BuiltinOverrideRead }
 > {
   // Which hooks this member receives: root plus active namespace files, before
@@ -467,7 +464,7 @@ export async function resolveTeamHooks(
  */
 export async function deliverHookFolders(
   localConfig: LocalConfig,
-  folders: readonly HookFolderDelivery[],
+  folders: readonly FolderDelivery[],
   opts: { readonly prune: boolean },
 ): Promise<void> {
   const { editDeliveryRecord } = await import('../pull.js');
