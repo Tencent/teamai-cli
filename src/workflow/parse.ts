@@ -67,7 +67,7 @@ const ANSWER_STEP_KEYS = new Set(['id', 'needs', 'if', 'answer', 'answer_file', 
 /** What a `finally` step may carry: it runs a command, read-only, in no workspace of its own. */
 const FINALLY_STEP_KEYS = new Set(['id', 'needs', 'if', 'command', 'env', 'output', 'timeout']);
 
-/** The actions as a sentence: `command, prompt, prompt_file, or workflow`. */
+/** The actions as a sentence: `command, prompt, prompt_file, answer, answer_file, or workflow`. */
 const ACTION_LIST = `${ACTION_KEYS.slice(0, -1).join(', ')}, or ${ACTION_KEYS.at(-1)}`;
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 

@@ -748,6 +748,7 @@ $ teamai workflow start classify-learning --driver local --inputs '{"learning":"
 ```
 
 - `output` is required. `{ text: string }` takes the reply as text. Any other output names the JSON the reply holds, and the local driver asks the tool for it.
+- `answer_file: <file>` takes the prompt from a file in place of `answer`: a file of the [workflow folder](workflow.md#workflow-folders), or outside a folder one under `prompts/`, as `prompt_file` does. Its text is a template, as `answer` is. A workflow a [`from` step](#run-a-workflow-a-step-printed) prints cannot use it.
 - The step names no tool: the driver that runs it answers it. The skill driver gives it to a child agent of the session, and a driver of your own answers it with its own model. The local driver launches the tool teamai's own AI calls use: `TEAMAI_AI_TOOL`, then the project's `ai.tool`, then the machine's, then the first installed tool teamai launches. Pull rejects `tool`, `agent`, `model` and `session` on the step, and any `workspace` but `new`.
 - The launch is marked as teamai's own, so the member's hooks do not capture it.
 - It reserves the checkout until it finishes, so answers and commands using that checkout run one at a time, even
@@ -763,6 +764,17 @@ $ teamai workflow start classify-learning --driver local --inputs '{"learning":"
 Another driver gets an answer step as a prompt lease with `answer: true` and no separate workspace, or with
 `workspace: new` a read-only `workspace` contract on a branch of its own. It prepares the lease, answers in `cwd`, and
 reports the outputs; preparation reserves and snapshots the checkout, or that worktree, as for other read-only steps.
+
+## Workflow folders in a run
+
+A run keeps its own copy of each [workflow folder](workflow.md#workflow-folders) it uses:
+
+- `workflow start` stores the folder's files once per content, in `workflows/folders/<sourceHash>/` under the TeamAI data directory, and `$TEAMAI_WORKFLOW_DIR` names that copy for the run's whole life, whatever a later pull changes or deletes. The hash covers each file's path, its executable bit as git records it, and its text with LF line endings, so checkouts on Windows, macOS and Linux agree.
+- `workflow publish` does not carry the files. `workflow resume --claim` on another machine rebuilds the folder as it rebuilds the definitions: from the team commit the run ran at, or for one of teamai's default workflows from this teamai's package, refused with `definition_mismatch` when that differs.
+- `teamai doctor --fix` removes a stored folder that no run on the machine and no pulled workflow uses, once it is an hour old.
+- Pull refuses a folder that holds a symlink, a file that is not UTF-8 text, or more than 1 MB in all, `README.md` included, with `workflow_folder_invalid`. The message names the file, or the five largest files when the folder is too big. Like every coded diagnostic, it drops the last valid version too, so the workflow has nothing to run until the folder is fixed.
+- A [confined step](workflow.md#a-prompt-confined-to-a-directory) reads only its own directory, so pull warns when its prompt names the folder: `step <id> is confined and may not be able to read $TEAMAI_WORKFLOW_DIR`.
+- A [benchmark](benchmarks.md) arm cannot run a workflow folder yet, nor a workflow that runs one, since a trial runs copies of the workflow, which carry no files. Plan refuses the arm: `benchmark arms cannot run workflow folders yet`.
 
 ## Let a command write in the checkout
 
@@ -1581,7 +1593,7 @@ With `--prepare`, teamai makes a [clone step](#clone-workspaces)'s clone on this
 
 For each lease the driver:
 
-1. Runs every process with `lease.env` and `TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>`, so a `teamai` call from it changes no run, and without the names in `lease.envScope.withhold`. A command lease's `env` already carries `TEAMAI_WORKFLOW_ATTEMPT`, `TEAMAI_RUN_DIR` and `TEAMAI_MODE`, so the `teamai score` steps of [`teamai-score`](scorers.md) run under any driver. It runs a command lease, such as `teamai benchmark check`, in `cwd`, or in its own workspace for a lease without one, and reports the JSON it prints as `outputs`.
+1. Runs every process with `lease.env` and `TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>`, so a `teamai` call from it changes no run, and without the names in `lease.envScope.withhold`. A command lease's `env` already carries `TEAMAI_WORKFLOW_ATTEMPT`, `TEAMAI_RUN_DIR` and `TEAMAI_MODE`, so the `teamai score` steps of [`teamai-score`](scorers.md) run under any driver. Every lease of a step of a workflow folder carries `TEAMAI_WORKFLOW_DIR` in `env` too. It runs a command lease, such as `teamai benchmark check`, in `cwd`, or in its own workspace for a lease without one, and reports the JSON it prints as `outputs`.
 2. Launches a prompt lease's `lease.tool` in `cwd` on `lease.prompt`, with `lease.model` as given, and holds it to `lease.limits` from the tool's launch.
 3. Reports a prompt with `tool`, the `model`, `session` and `tokens` the tool reported, `durationMs` measured around the tool launch only, and `cost` (`{"amount":0.12,"unit":"USD"}`) only when the tool stated one. When a limit stopped the tool, the report has `outcome: "success"` and `limit`: `timeout`, `budget` or `max_turns`; a `budget` or `max_turns` the driver could not hold the tool to goes in `unenforced`. A report whose `limit` the lease does not set answers `invalid_report`, as does one with `changes` or `read`, which teamai fills from the clone.
 
