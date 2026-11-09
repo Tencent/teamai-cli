@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { contributeCheckForSession, writeContributeState } from '../contribute-check.js';
+import { DefaultHooks } from '../default-hooks.js';
 import { buildHandlerRegistry } from '../hook-handlers.js';
 import { buildHintMessage as buildMrHint, type MRSummary } from '../mr-hint.js';
 import { buildPackageHintMessage } from '../pkg/pkg-hint.js';
@@ -73,12 +74,16 @@ describe('hint texts before and after their move into hook folders', () => {
   it.each([
     { name: 'offer-command', offersWorkflow: false },
     { name: 'offer-workflow', offersWorkflow: true },
-  ])('merged-MR hint $name', ({ name, offersWorkflow }) => {
-    for (const language of LANGUAGES) expect(buildMrHint(MRS, asOption(language), { offersWorkflow })).toBe(GOLDEN['teamai-mr-hint']?.[name]?.[language]);
+  ])('merged-MR hint $name', async ({ name, offersWorkflow }) => {
+    const mrHint = await DefaultHooks.load('teamai-mr-hint');
+
+    for (const language of LANGUAGES) expect(buildMrHint(MRS, mrHint, { language: asOption(language), offersWorkflow })).toBe(GOLDEN['teamai-mr-hint']?.[name]?.[language]);
   });
 
-  it('TodoWrite hint', () => {
-    for (const language of LANGUAGES) expect(buildTodoWriteHint(asOption(language))).toBe(GOLDEN['teamai-todowrite-hint']?.message?.[language]);
+  it('TodoWrite hint', async () => {
+    const todoWriteHint = await DefaultHooks.load('teamai-todowrite-hint');
+
+    for (const language of LANGUAGES) expect(buildTodoWriteHint(todoWriteHint, asOption(language))).toBe(GOLDEN['teamai-todowrite-hint']?.message?.[language]);
   });
 
   it.each([
@@ -86,8 +91,10 @@ describe('hint texts before and after their move into hook folders', () => {
     { name: 'one-npm', counts: [1, 0, 0] },
     { name: 'plugins-and-marketplace', counts: [0, 2, 1] },
     { name: 'all', counts: [3, 1, 2] },
-  ] as const)('package hint $name', ({ name, counts: [npm, claude, marketplace] }) => {
-    for (const language of LANGUAGES) expect(buildPackageHintMessage(npm, claude, marketplace)).toBe(GOLDEN['teamai-package-hint']?.[name]?.[language]);
+  ] as const)('package hint $name', async ({ name, counts: [npm, claude, marketplace] }) => {
+    const packageHint = await DefaultHooks.load('teamai-package-hint');
+
+    for (const language of LANGUAGES) expect(buildPackageHintMessage(packageHint, { npm, claude, marketplace })).toBe(GOLDEN['teamai-package-hint']?.[name]?.[language]);
   });
 
   /** The session-start env hint of a user scope whose team repo holds these env files. */
@@ -107,7 +114,7 @@ describe('hint texts before and after their move into hook folders', () => {
   const ENV_YAML = 'variables:\n  - key: API_URL\n    value: https://api.example.com\n    description: the staging API\n  - key: LOG_LEVEL\n    value: debug\n';
   const SECRETS_YAML = 'secrets:\n  - key: GITHUB_TOKEN\n    description: gh and the github MCP server\n  - key: SENTRY_AUTH_TOKEN\n';
 
-  it.each([
+  it.each<{ name: string; files: Record<string, string> }>([
     { name: 'variables', files: { 'env/env.yaml': ENV_YAML } },
     { name: 'secrets', files: { 'env/secrets.yaml': SECRETS_YAML } },
     { name: 'variables-and-secrets', files: { 'env/env.yaml': ENV_YAML, 'env/secrets.yaml': SECRETS_YAML } },

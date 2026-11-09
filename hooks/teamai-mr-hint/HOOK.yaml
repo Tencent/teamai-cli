@@ -1,0 +1,4 @@
+description: Offer to turn recently merged MRs into learnings at session start
+with:
+  lookback_days: 7
+  max_mrs: 10

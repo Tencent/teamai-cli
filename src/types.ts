@@ -2579,53 +2579,8 @@ export const SessionShareOfferedSchema = z.object({ publish: z.boolean(), scorer
 
 export type SessionShareOffered = z.infer<typeof SessionShareOfferedSchema>;
 
-/**
- * Layer 1 (fast-path) threshold: if toolCount < this, skip reading events.jsonl.
- * Also doubles as a HARD GATE on hint emission — a session with fewer than this
- * many tool calls never triggers a hint no matter how much friction it shows
- * (a one-command session the user rejected is not knowledge-base material).
- */
-export const CONTRIBUTE_BASE_THRESHOLD = 15;
-
-/**
- * Friction score threshold: minimum score to show contribute hint.
- *
- * Calibrated so ONE clear primary friction signal (a single interrupt, rejection,
- * or correction — each worth CONTRIBUTE_*_WEIGHT = 20) crosses it, while the scale
- * nudge alone (diversity + skill, max ~10) never can. Combined with the toolCount
- * hard gate, this fires only on substantive sessions that actually hit friction.
- */
-export const CONTRIBUTE_SMART_THRESHOLD = 20;
-
-// ─── Friction score weights ──────────────────────────
-//  A session earns points from signals that the user had to correct or the AI
-//  had to fight — not from raw activity. Any single strong signal (one interrupt,
-//  one rejection, one correction) lands near the threshold; scale (tool count /
-//  duration) only nudges and can never trigger on its own.
-
-/** Points per user interrupt (ESC mid-output — the user stopped a wrong direction). */
-export const CONTRIBUTE_INTERRUPT_WEIGHT = 20;
-
-/** Points per tool rejection (user denied a tool call — explicit course block). */
-export const CONTRIBUTE_REJECT_WEIGHT = 20;
-
-/** Points per correction (re-prompt with a correction keyword right after a stop). */
-export const CONTRIBUTE_CORRECTION_WEIGHT = 20;
-
-/**
- * Tool-error (retry) score gradient: genuine tool failures the AI had to work
- * around. Keyed by count thresholds → points; the highest matching tier wins.
- * Distinct from a single fluke error — it takes a few to signal a real struggle.
- */
-export const CONTRIBUTE_TOOLERROR_TIERS: ReadonlyArray<{ min: number; points: number }> = [
-  { min: 8, points: 25 },
-  { min: 5, points: 18 },
-  { min: 3, points: 10 },
-];
-
-/** Small scale bonus (diversity + skill use) — nudges, never triggers alone. Max ~10. */
-export const CONTRIBUTE_SKILL_BONUS = 5;
-export const CONTRIBUTE_DIVERSITY_BONUS_MAX = 5;
+// The friction reminder's thresholds and weights are `with:` of
+// hooks/teamai-friction-reminder/HOOK.yaml (#1787), which a team may replace.
 
 /**
  * Debounce TTL for contribute-check re-evaluation. Within this window the
@@ -2634,15 +2589,6 @@ export const CONTRIBUTE_DIVERSITY_BONUS_MAX = 5;
  * zero-score snapshot.
  */
 export const CONTRIBUTE_FASTPATH_TTL_MS = 5 * 60 * 1000;
-
-/** Phase 2: bonus when all recalls return zero results (knowledge gap) */
-export const CONTRIBUTE_KNOWLEDGE_GAP_BONUS = 20;
-
-/** Phase 2: bonus when recalls return results but top score is very low */
-export const CONTRIBUTE_LOW_QUALITY_BONUS = 10;
-
-/** Phase 2: threshold below which recall results are considered low quality */
-export const CONTRIBUTE_LOW_QUALITY_THRESHOLD = 5.0;
 
 /** Phase 2: git commit is neutral (no bonus, no penalty) */
 export const CONTRIBUTE_GIT_COMMIT_DOWNWEIGHT = 0;

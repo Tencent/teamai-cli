@@ -19,16 +19,19 @@ import {
   shouldSkipTodoWriteHint,
   getTodoWriteHintCachePath,
 } from '../todowrite-hint.js';
+import { DefaultHooks } from '../default-hooks.js';
+
+const todoWriteHint = await DefaultHooks.load('teamai-todowrite-hint');
 
 describe('buildHintMessage', () => {
   it('contains the recall subagent reference and the [teamai:] prefix', () => {
-    const msg = buildHintMessage();
+    const msg = buildHintMessage(todoWriteHint);
     expect(msg).toContain('[teamai:todowrite-hint]');
     expect(msg).toContain('teamai-recall');
   });
 
   it('is bilingual (Chinese + English) so the agent has the strongest cue', () => {
-    const msg = buildHintMessage();
+    const msg = buildHintMessage(todoWriteHint);
     // Chinese prompt body
     expect(msg).toMatch(/任务/);
     // English prompt body
@@ -36,7 +39,7 @@ describe('buildHintMessage', () => {
   });
 
   it('is English-only when the team language is en (#1014)', () => {
-    const msg = buildHintMessage('en');
+    const msg = buildHintMessage(todoWriteHint, 'en');
     expect(msg).toContain('[teamai:todowrite-hint]');
     expect(msg).toContain('teamai-recall');
     expect(msg).toMatch(/Task plan detected/);
@@ -44,8 +47,8 @@ describe('buildHintMessage', () => {
   });
 
   it('stays byte-identical to the bilingual hint when language is omitted or zh (#1014)', () => {
-    const omitted = buildHintMessage();
-    expect(buildHintMessage('zh')).toBe(omitted);
+    const omitted = buildHintMessage(todoWriteHint);
+    expect(buildHintMessage(todoWriteHint, 'zh')).toBe(omitted);
     expect(omitted).toMatch(/任务/);
     expect(omitted).toMatch(/Task plan detected/);
   });

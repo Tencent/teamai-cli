@@ -933,11 +933,12 @@ const todowriteHintHandler: HookHandler = {
     const { shouldSkipTodoWriteHint, buildHintMessage } = await import('./todowrite-hint.js');
 
     if (shouldSkipTodoWriteHint(deriveSessionId(stdin))) return null;
+    const { DefaultHooks } = await import('./default-hooks.js');
 
     return JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
-        additionalContext: buildHintMessage(await teamAgentLanguage(config)),
+        additionalContext: buildHintMessage(await DefaultHooks.load('teamai-todowrite-hint'), await teamAgentLanguage(config)),
       },
     });
   },
@@ -998,16 +999,17 @@ const teamEnvHintHandler: HookHandler = {
       return description ? `${name} (${description})` : name;
     }).join(', ');
 
+    const { DefaultHooks } = await import('./default-hooks.js');
+    const hook = await DefaultHooks.load('teamai-env-hint');
+
     return JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
         additionalContext: [
-          ...plain.length > 0 ? [`Team env variables in this scope: ${described(plain)}.`] : [],
-          ...secrets.length > 0 ? [`Team secrets in this scope: ${described(secrets)}.`] : [],
-          'Run the commands that need them through `teamai env exec -- <command>` so they get this directory\'s team values.',
-          ...secrets.length > 0
-            ? ['Never ask for, read or print a secret value; if one is missing, ask the member to run `teamai env set KEY` in their own terminal.']
-            : [],
+          ...plain.length > 0 ? [hook.text('variables', undefined).render({ variables: described(plain) })] : [],
+          ...secrets.length > 0 ? [hook.text('secrets', undefined).render({ secrets: described(secrets) })] : [],
+          hook.text('exec', undefined).render({}),
+          ...secrets.length > 0 ? [hook.text('secrets-rule', undefined).render({})] : [],
         ].join(' '),
       },
     });

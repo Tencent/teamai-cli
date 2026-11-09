@@ -15,6 +15,7 @@
     "agents",
     "workflows",
     "scorers",
+    "hooks",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
