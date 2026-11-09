@@ -601,7 +601,7 @@ lines  files  size
 801    1      XL   more lines than L allows
 ```
 
-每份草稿和[为当前会话起草](#把会话变成任务)是同样的对话；agent 先用 `teamai session show <id> --source <platform>` 读取那个过去的会话，队友推送的会话则用 `teamai session show <id> --team-session <name> --author <member>`。
+每份草稿和[为当前会话起草](#把会话变成任务)是同样的对话；agent 先用 `teamai session show <id> --source <platform>` 读取那个过去的会话，队友推送的会话则用 `teamai session show <id> --team-session <name> --author <member> --suite benchmarks/<suite>`。
 
 推送会话的归档保留推送它的机器上会话启动时和最后一次 Stop 时记录的提交，所以队友的工作也能成为任务：
 

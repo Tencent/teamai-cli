@@ -20,7 +20,7 @@ steps:
       Turn the work this {{ inputs.source }} session {{ inputs.session }} finished (a bug fix, a feature, a refactor) into one task of the benchmark suite in {{ inputs.suite }}.
       When the session is not your own, read it first: one of this machine with teamai session show {{ inputs.session }} --source {{ inputs.source }};
       one a teammate pushed, when the pushed name "{{ inputs.team_session }}" is not empty, with
-      teamai session show {{ inputs.session }} --team-session "{{ inputs.team_session }}" --author "{{ inputs.author }}".
+      teamai session show {{ inputs.session }} --team-session "{{ inputs.team_session }}" --author "{{ inputs.author }}" --suite {{ inputs.suite }}.
       Work it with the person. The task starts at commit {{ inputs.start }}; the solution, the commit that completes it, is {{ inputs.solution }} (empty when there is none).
       Write the task file outside the repository, in the format of the files under {{ inputs.suite }}/tasks/:
       schemaVersion v1alpha1; title; prompt, the bug or the request as the person first described it, without the solution;

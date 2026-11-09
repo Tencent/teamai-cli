@@ -459,6 +459,7 @@ Generated: do not edit by hand. Regenerate with
     - `--source <platform>` — Platform a session of this machine belongs to, such as claude-code, codex or hermes. Not with --team-session
     - `--team-session <name>` — Show a session a member pushed with session push instead, by the name session list prints for this directory's repository, as teamai score --team-session reads it. Run session pull first for the newest. Not with --source
     - `--author <name>` — With --team-session: who pushed it, when two members pushed a session with that name
+    - `--suite <dir>` — With --team-session: read it as pushed for the repository of the benchmark suite in <dir>, as session list --suite lists it, instead of for this directory's
     - `--cwd <path>` — Working directory (defaults to current directory)
     - `--json` — Print {"session","source","transcript"}, or {"error":{"code","message"}}
   - `teamai session resume <sessionName>` — Restore a team session to a local platform

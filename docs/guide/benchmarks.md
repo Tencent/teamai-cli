@@ -601,7 +601,7 @@ lines  files  size
 801    1      XL   more lines than L allows
 ```
 
-Each draft is the [same conversation](#turn-a-session-into-a-task) as for the session you are in; the agent reads the past session with `teamai session show <id> --source <platform>` first, or a teammate's with `teamai session show <id> --team-session <name> --author <member>`.
+Each draft is the [same conversation](#turn-a-session-into-a-task) as for the session you are in; the agent reads the past session with `teamai session show <id> --source <platform>` first, or a teammate's with `teamai session show <id> --team-session <name> --author <member> --suite benchmarks/<suite>`.
 
 A pushed session's archive keeps the commits its start and its last Stop recorded on the machine that pushed it, so a teammate's work can be a task too:
 

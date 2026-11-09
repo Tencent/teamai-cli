@@ -454,11 +454,11 @@ async function read(config: LocalConfig, subject: SessionSubject, { control = fa
 }
 
 /**
- * The session a teammate pushed as `teamSession`, for the repository of `cwd`, as a judge of it reads it: redacted as
+ * The session a teammate pushed as `teamSession`, for the repository `identities` name, as a judge of it reads it: redacted as
  * `read` redacts a session of this machine, with what its archive records it ran as.
  */
-async function readPushed(config: LocalConfig, teamSession: TeamSession, cwd: string): Promise<{ ok: true; sessionId: string; platform: string; judged: JudgedSession } | { ok: false; code: string; message: string }> {
-  const pushed = await pushedSession(config, teamSession, cwd);
+async function readPushed(config: LocalConfig, teamSession: TeamSession, identities: ReadonlyArray<string | null>): Promise<{ ok: true; sessionId: string; platform: string; judged: JudgedSession } | { ok: false; code: string; message: string }> {
+  const pushed = await pushedSession(config, teamSession, identities);
 
   if ('error' in pushed) return { ok: false, ...pushed.error };
   const envSecrets = await knownSecrets(pushed.config);

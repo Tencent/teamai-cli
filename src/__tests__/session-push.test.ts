@@ -10,6 +10,7 @@ import { AgentSession } from '../session-flow/agent-session.js';
 import { openSessionArchive } from '../session-flow/archive.js';
 import { SessionCaptures } from '../session-flow/captures.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
+import { syncTeamDefinitions } from '../benchmark/suite-cache.js';
 import { registerSessionFlowCommands } from '../session-flow/session-cmd.js';
 import { encodeRepoIdentity, withSessionPublicationLock } from '../session-flow/sync.js';
 import { getDataHome, getReportsDir, REPORTS_LOCK_FILENAME, type LocalConfig } from '../types.js';
@@ -646,6 +647,30 @@ describe('session commands without --repo-root outside a workspace install', () 
     expect(printed.transcript).toContain('Review this project.');
     expect(printed.transcript).toContain('<REDACTED:anthropic>');
     expect(printed.transcript).not.toContain(key);
+  });
+
+  // session list --all --suite lists the sessions pushed for the suite's repository, wherever it runs; teamai-session-to-task reads each from there.
+  it('show a session pushed for a suite\'s repository from a directory of another repository, with --suite', async () => {
+    const team = await userInstall();
+    fs.mkdirSync(path.join(team.checkout, 'benchmarks', 'product'), { recursive: true });
+    fs.writeFileSync(path.join(team.checkout, 'benchmarks', 'product', 'suite.yaml'), 'schemaVersion: v1alpha1\nname: product\nrepo: https://github.com/acme/product.git\ndefaults: { tool: claude }\narms: [{ name: main }]\nrepetitions: 1\ntimeout: 1h\n');
+    fs.mkdirSync(path.join(team.checkout, 'benchmarks', 'product', 'tasks'));
+    fs.writeFileSync(path.join(team.checkout, 'benchmarks', 'product', 'tasks', 'fix.yaml'), `schemaVersion: v1alpha1\ntitle: Fix it\nprompt: Make the test pass.\nstartingCommit: ${'a'.repeat(40)}\ncheck: { run: node test.js, protect: [test.js] }\n`);
+    git(team.checkout, 'add', '-A');
+    git(team.checkout, 'commit', '-qm', 'product suite');
+    const config = await loadLocalConfig();
+    if (!config) throw new Error('the user install was not saved');
+    await syncTeamDefinitions(config);
+    const { checkout } = repository('product');
+    git(checkout, 'remote', 'set-url', 'origin', 'https://github.com/acme/product.git');
+    const id = await claudeSession(checkout, { id: 'pushed-3', title: 'Pushed refresh' });
+    expect((await session('push', '--source', 'claude-code', '--cwd', checkout, '-y')).code).toBe(0);
+    const name = (await session('list', '--cwd', checkout)).stdout.split('\n').map((line) => line.trim().split(/\s+/)[0] ?? '').find((first) => first.includes('pushed-refresh')) ?? '';
+    const elsewhere = repository('elsewhere').checkout;
+
+    expect(await session('show', id, '--team-session', name, '--cwd', elsewhere)).toMatchObject({ code: 1 });
+    expect(await session('show', id, '--team-session', name, '--suite', 'benchmarks/product', '--cwd', elsewhere)).toMatchObject({ code: 0 });
+    expect(await session('show', id, '--source', 'claude-code', '--suite', 'benchmarks/product', '--cwd', elsewhere)).toMatchObject({ code: 1, stderr: 'Error: --suite reads --team-session <name> as pushed for the suite\'s repository. Pass it with --team-session.' });
   });
 
   it('refuse show --author without --team-session, --team-session with --source, and a pushed session another id names', async () => {

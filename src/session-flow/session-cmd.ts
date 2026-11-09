@@ -31,7 +31,7 @@ import {
   toolRootsLookup,
   writeCopyOnce,
 } from './agent-session.js';
-import { SyncManager, getGitAuthor, repoIdentitiesOf, defaultSyncMeta, withSessionPublicationLock, type IndexEntry } from './sync.js';
+import { SyncManager, getGitAuthor, getRepoIdentity, repoIdentitiesOf, defaultSyncMeta, withSessionPublicationLock, type IndexEntry } from './sync.js';
 import { SessionSearchEngine, type LoadedSession } from './search.js';
 import { isSafeSessionFileId } from './ids.js';
 import { isInteractive } from '../utils/prompt.js';
@@ -258,8 +258,10 @@ function printFinished(list: readonly FinishedSession[]): void {
  * `teamai session show`: a session of this machine, the caller's own or not, or one a teammate pushed, as a judge of it
  * reads it, with the subagents it started and every secret this scope knows redacted.
  */
-async function showSession(sessionId: string, opts: { source?: string; teamSession?: string; author?: string; cwd?: string; json?: boolean }): Promise<void> {
+async function showSession(sessionId: string, opts: { source?: string; teamSession?: string; author?: string; suite?: string; cwd?: string; json?: boolean }): Promise<void> {
   if (opts.teamSession === undefined && opts.author !== undefined) return refuseCommand({ code: 'invalid_arguments', message: '--author picks who pushed --team-session <name>. Pass it with --team-session.' }, opts.json);
+
+  if (opts.teamSession === undefined && opts.suite !== undefined) return refuseCommand({ code: 'invalid_arguments', message: '--suite reads --team-session <name> as pushed for the suite\'s repository. Pass it with --team-session.' }, opts.json);
 
   if (opts.teamSession !== undefined && opts.source !== undefined) return refuseCommand({ code: 'invalid_arguments', message: '--team-session names a pushed session, and --source one on this machine. Pass one of them.' }, opts.json);
 
@@ -276,7 +278,11 @@ async function showSession(sessionId: string, opts: { source?: string; teamSessi
   if (!config) return refuseCommand({ code: 'not_initialized', message: 'teamai is not set up in this directory, so it has no team secrets to redact the session with. Run teamai init.' }, opts.json);
 
   if (target.kind === 'pushed') {
-    const pushed = await SessionWork.readPushed(config, definedFields({ name: target.teamSession, author: opts.author }), opts.cwd ?? process.cwd());
+    const found = opts.suite === undefined ? undefined : await TaskCandidates.suiteIn(config, opts.suite);
+
+    if (found?.ok === false) return refuseCommand(found, opts.json);
+    const identities = found ? repoIdentitiesOf(found.suite.repo, opts.cwd) : [getRepoIdentity(opts.cwd ?? process.cwd())];
+    const pushed = await SessionWork.readPushed(config, definedFields({ name: target.teamSession, author: opts.author }), identities);
 
     if (!pushed.ok) return refuseCommand(pushed, opts.json);
 
@@ -851,9 +857,10 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--source <platform>', 'Platform a session of this machine belongs to, such as claude-code, codex or hermes. Not with --team-session')
     .option('--team-session <name>', 'Show a session a member pushed with session push instead, by the name session list prints for this directory\'s repository, as teamai score --team-session reads it. Run session pull first for the newest. Not with --source')
     .option('--author <name>', 'With --team-session: who pushed it, when two members pushed a session with that name')
+    .option('--suite <dir>', 'With --team-session: read it as pushed for the repository of the benchmark suite in <dir>, as session list --suite lists it, instead of for this directory\'s')
     .option('--cwd <path>', 'Working directory (defaults to current directory)')
     .option('--json', 'Print {"session","source","transcript"}, or {"error":{"code","message"}}')
-    .action(async (sessionId: string, opts: { source?: string; teamSession?: string; author?: string; cwd?: string; json?: boolean }) => {
+    .action(async (sessionId: string, opts: { source?: string; teamSession?: string; author?: string; suite?: string; cwd?: string; json?: boolean }) => {
       await showSession(sessionId, opts);
     });
 
