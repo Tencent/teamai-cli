@@ -179,8 +179,11 @@ class Harness {
     // User scope: one learning in the machine-local mirror, which is a knowledge root.
     const userRepo = path.join(process.env.HOME, '.teamai', 'team-repo');
     fs.mkdirSync(userRepo, { recursive: true });
-    fs.writeFileSync(path.join(userRepo, 'teamai.yaml'), 'team: user-team\nrepo: https://example.test/acme/user-team.git\n');
-    this.user = { repo: { localPath: userRepo, remote: 'https://example.test/acme/user-team.git' }, username: 'tester', scope: 'user', additionalRoles: [] };
+    fs.writeFileSync(path.join(userRepo, 'teamai.yaml'), 'team: user-team\nrepo: https://example.test/acme/user-team.git\nsharing:\n  recall:\n    enabled: true\n');
+    this.user = {
+      repo: { localPath: userRepo, remote: 'https://example.test/acme/user-team.git' },
+      username: 'tester', scope: 'user', additionalRoles: [], recallEnabled: true,
+    };
     fs.writeFileSync(path.join(process.env.HOME, '.teamai', 'config.yaml'), YAML.stringify(this.user));
     fs.mkdirSync(getUserLearningsDir(), { recursive: true });
     fs.writeFileSync(path.join(getUserLearningsDir(), 'cache-warmup.md'), doc('Cache warmup', ['cache', 'warmup'], 'Warm the cache first.'));
@@ -195,7 +198,7 @@ class Harness {
     const docsDir = path.join(this.teamRepo, 'docs');
     fs.mkdirSync(learnings, { recursive: true });
     fs.mkdirSync(path.join(docsDir, 'learnings'), { recursive: true });
-    fs.writeFileSync(path.join(this.teamRepo, 'teamai.yaml'), 'team: team-a\nrepo: https://example.test/acme/team-a.git\n');
+    fs.writeFileSync(path.join(this.teamRepo, 'teamai.yaml'), 'team: team-a\nrepo: https://example.test/acme/team-a.git\nsharing:\n  recall:\n    enabled: true\n');
     fs.writeFileSync(path.join(learnings, 'redis-timeout.md'), doc('Redis timeout fix', ['redis', 'timeout'], 'Raise the pool size SNIPPETMARK.'));
     fs.writeFileSync(path.join(learnings, 'setup.md'), doc('Setup guide', ['setup'], 'Run the installer.'));
     // A doc that shares the `learnings/setup.md` suffix with the learning above.
@@ -211,6 +214,7 @@ class Harness {
     this.project = {
       repo: { localPath: this.teamRepo, remote: 'https://example.test/acme/team-a.git' },
       username: 'tester', scope: 'project', projectRoot: this.root, additionalRoles: [], dataHome,
+      recallEnabled: true,
       ...(options.inheritUserScope ? { inheritUserScope: true } : {}),
     };
     await saveLocalConfigForScope(this.project);
