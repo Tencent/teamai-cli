@@ -177,7 +177,7 @@ describe('a folder server under a path holding a space and non-ASCII letters', (
     const localConfig = workspace({ projectRoot: path.join(sandbox, 'Zoë Li', 'app'), dataHome: path.join(sandbox, 'Zoë Li', '.teamai', 'projects', 'app') });
     const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig);
     const entries = resolution.kind === 'resolved' ? resolution.entries : [];
-    await deliverMcpFolders(localConfig, entries, { prune: true, kept: new Set(), installedInExcluded: new Set() });
+    await deliverMcpFolders(localConfig, entries, new Set());
     const [server] = entries.map((entry) => teamMcpDef(localConfig, entry));
     const command = server?.command ?? '';
     const args = server?.args ?? [];

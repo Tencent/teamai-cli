@@ -283,6 +283,23 @@ describe('rule folders (#1787)', () => {
     expect(await handler.scanLocalForPush(teamConfig, localConfig)).toEqual([]);
   });
 
+  it('keeps the folder of a rule the team removed while the block that inlines it cannot be rewritten', async () => {
+    await fse.ensureDir(home('.codex'));
+    localConfig = { ...localConfig, enabledAgents: ['codex'] };
+    const first = openLedger({});
+    await new RulesHandler().pullAllRules(teamConfig, localConfig, undefined, [], first);
+    await fse.remove(path.join(repoPath, 'rules', 'api-style'));
+    await fse.outputFile(path.join(repoPath, 'rules', 'testing.md'), '# Testing\n');
+
+    await fse.chmod(home('.codex', 'AGENTS.md'), 0o444);
+    await new RulesHandler().pullAllRules(teamConfig, localConfig, undefined, [], openLedger(first.hashes)).finally(() => fse.chmod(home('.codex', 'AGENTS.md'), 0o644));
+
+    expect([
+      await fse.readFile(home('.codex', 'AGENTS.md'), 'utf8').then((text) => text.includes(`${forward(home('.teamai', 'rules', 'api-style'))}/checklist.md`)),
+      await fse.readFile(home('.teamai', 'rules', 'api-style', 'checklist.md'), 'utf8'),
+    ]).toEqual([true, CHECKLIST]);
+  });
+
   it('inlines the rendered text for a tool without native rules', async () => {
     await fse.ensureDir(home('.codex'));
     localConfig = { ...localConfig, enabledAgents: ['codex'] };

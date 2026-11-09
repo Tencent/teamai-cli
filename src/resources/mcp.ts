@@ -13,7 +13,7 @@ import {
 } from '../namespaced-entries.js';
 import { parseMarker, readMarkerFolder, type LayeredEntryType, type PlaceFolderRead } from './layered-entries.js';
 import { RESOURCE_LAYOUTS, Resources, type EntryListRead, type ResourceLayout } from './resolver.js';
-import { DeliveredFolders } from './delivered-folders.js';
+import { DeliveredFolders, type FolderDelivery } from './delivered-folders.js';
 import type { FolderFile } from './folder-files.js';
 
 // ─── Schema for mcp/mcp.yaml ────────────────────────────────
@@ -255,36 +255,54 @@ export function historicalFolderMcpServer(localConfig: LocalConfig, relativePath
   return { server, def: folderServerDef(teamMcpToDef(server), DeliveredFolders.pathOf(localConfig, { type: 'mcp', namespace, name })) };
 }
 
+/** The folders of the resolved servers `entries` that are folders. */
+function mcpFolders(localConfig: LocalConfig, entries: ReadonlyArray<ResolvedEntry<TeamMcpDefinition>>): FolderDelivery[] {
+  return entries.flatMap((resolved) => (resolved.entry.kind === 'folder'
+    ? [{ dest: mcpFolderPath(localConfig, resolved), files: resolved.entry.files }]
+    : []));
+}
+
 /**
- * Deliver the folders of the resolved servers `entries`, recorded in the scope's delivery record, then, with `prune`,
- * remove the scope's server folders the team dropped (#1787, common rule 9). The folder of each server in `kept`, whose
- * installed configuration this run leaves as it is, stays as it is too: that configuration may name a file the new
- * version no longer has. Prune leaves the folder of each server in `installedInExcluded`, which a tool pull leaves
- * alone still has installed. Throws when a folder cannot be written; the caller then keeps the installed servers,
- * whose folders are left as they were.
+ * Deliver the folders of the resolved servers `entries`, recorded in the scope's delivery record (#1787, common rule
+ * 9), before any configuration names them. The folder of each server in `kept`, whose installed configuration this run
+ * leaves as it is, stays as it is too: that configuration may name a file the new version no longer has. Throws when a
+ * folder cannot be written; the caller then keeps the installed servers, whose folders are left as they were.
  */
 export async function deliverMcpFolders(
   localConfig: LocalConfig,
   entries: ReadonlyArray<ResolvedEntry<TeamMcpDefinition>>,
-  opts: { readonly prune: boolean; readonly kept: ReadonlySet<string>; readonly installedInExcluded: ReadonlySet<string> },
+  kept: ReadonlySet<string>,
 ): Promise<void> {
-  const folders = entries.flatMap((resolved) => (resolved.entry.kind === 'folder'
-    ? [{ name: resolved.entry.server.name, dest: mcpFolderPath(localConfig, resolved), files: resolved.entry.files }]
-    : []));
-
   const { editDeliveryRecord } = await import('../pull.js');
   const record = await editDeliveryRecord(localConfig);
+  const folders = mcpFolders(localConfig, entries.filter((resolved) => !kept.has(resolved.entry.server.name)));
 
-  await DeliveredFolders.sync({ localConfig, type: 'mcp', folders: folders.filter(({ name }) => !opts.kept.has(name)), ledger: record.ledger, prune: false });
+  await DeliveredFolders.sync({ localConfig, type: 'mcp', folders, ledger: record.ledger, prune: false });
+  await record.save();
+}
 
-  if (opts.prune) {
-    // A server's record names no namespace: its folder sits at the root, or in a namespace directory.
-    const namespaces = await listDirs(path.join(DeliveredFolders.root(localConfig, 'mcp'), 'mcp'));
-    const excluded = [...opts.installedInExcluded].flatMap((name) => [null, ...namespaces].map((namespace) => DeliveredFolders.pathOf(localConfig, { type: 'mcp', namespace, name })));
+/**
+ * Remove the scope's server folders that neither the resolved servers `entries` nor an installed configuration names,
+ * once every configuration this run writes is in place: a write that fails leaves the folders as they were. The folder
+ * of each server in `installed` stays, whatever the team now makes of it: a configuration pull left as it was (a held or
+ * kept server, or one a tool the member excluded has) still starts it from there.
+ */
+export async function pruneMcpFolders(
+  localConfig: LocalConfig,
+  entries: ReadonlyArray<ResolvedEntry<TeamMcpDefinition>>,
+  installed: ReadonlySet<string>,
+): Promise<void> {
+  const { editDeliveryRecord } = await import('../pull.js');
+  const record = await editDeliveryRecord(localConfig);
+  // A server's record names no namespace: its folder sits at the root, or in a namespace directory.
+  const namespaces = await listDirs(path.join(DeliveredFolders.root(localConfig, 'mcp'), 'mcp'));
 
-    await DeliveredFolders.prune({ localConfig, type: 'mcp', keep: [...folders.map(({ dest }) => dest), ...excluded], ledger: record.ledger });
-  }
+  const keep = [
+    ...mcpFolders(localConfig, entries).map(({ dest }) => dest),
+    ...[...installed].flatMap((name) => [null, ...namespaces].map((namespace) => DeliveredFolders.pathOf(localConfig, { type: 'mcp', namespace, name }))),
+  ];
 
+  await DeliveredFolders.prune({ localConfig, type: 'mcp', keep, ledger: record.ledger });
   await record.save();
 }
 

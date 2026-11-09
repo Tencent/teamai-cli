@@ -902,7 +902,8 @@ export class RulesHandler extends ResourceHandler {
 
     await this.reclaimReservedRuleCopies(teamConfig, localConfig, ledger);
 
-    await this.syncUserRulesFiles(teamConfig, localConfig, rules, ledger?.toolsMissingRules);
+    // A file that still holds the rules of an earlier pull keeps every folder they name.
+    const blocksWritten = await this.syncUserRulesFiles(teamConfig, localConfig, rules, ledger?.toolsMissingRules);
     // Before the empty-set return: a copy outlives the rule that selected it.
     await this.reclaimLegacyRuleCopies(teamConfig, localConfig, rules, ledger);
 
@@ -1104,11 +1105,17 @@ export class RulesHandler extends ResourceHandler {
     }
 
     // A folder stays while a tool still holds a copy of its rule: one the member edited, or one in a directory they
-    // share with teamai. The copy of a namespaced rule is flat for some tools (OMP's `fe.api-style.md`).
+    // share with teamai. The copy of a namespaced rule is flat for some tools (OMP's `fe.api-style.md`). Every folder
+    // stays while a file inlining the rules was not rewritten above.
     const heldByCopies: string[] = [];
     const locations = await rulesLocations(teamConfig, localConfig);
 
     for (const name of await RuleFolders.deliveredNames(localConfig)) {
+      if (!blocksWritten) {
+        heldByCopies.push(name);
+        continue;
+      }
+
       for (const { tool, location } of locations) {
         const destDir = rulesDirOf(location);
         const stem = ruleStemsForTool(tool, new Set([name])).get(name);
@@ -1175,6 +1182,8 @@ export class RulesHandler extends ResourceHandler {
    * there the session-start hook (the Codex family, ZCode, DeepSeek Harness)
    * or Pi's extension adds the rules (#938, #946).
    * Public so the "Already synced" pull can run it after a CLI upgrade.
+   * Returns whether every such file now holds `rules`: one that does not may
+   * still name the files of a rule folder the team removed.
    */
   async syncUserRulesFiles(
     teamConfig: TeamaiConfig,
@@ -1182,12 +1191,14 @@ export class RulesHandler extends ResourceHandler {
     rules: ResourceItem[],
     /** Gets each tool whose team-rules block was not written. */
     toolsMissingRules?: Set<string>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (localConfig.scope !== 'user') {
       await this.removeStaleProjectSoulRules(localConfig, installOf(teamConfig, localConfig));
 
-      return;
+      return true;
     }
+
+    let allWritten = true;
 
     // Hermes: inline all team rules into a teamai-managed block in SOUL.md
     // (user-level standing instructions). Only when Hermes is actually
@@ -1205,6 +1216,7 @@ export class RulesHandler extends ResourceHandler {
       try {
         await upsertSoulRules(soul.path, await inlinedRulesText(rules, { teamConfig, localConfig }));
       } catch (e) {
+        allWritten = false;
         toolsMissingRules?.add('hermes');
         log.warn(`Could not write the team rules to ${soul.path}: ${e instanceof Error ? e.message : String(e)}. Hermes reads that `
           + 'file as it is until this succeeds; run `teamai pull` again once the cause above is fixed.');
@@ -1224,6 +1236,7 @@ export class RulesHandler extends ResourceHandler {
       if (unreadable !== undefined && !isAgentExcluded(localConfig, tool)) {
         const { unreadableRulesFileMessage } = await import('../instruction-targets.js');
         log.warn(await unreadableRulesFileMessage(tool, unreadable));
+        allWritten = false;
         toolsMissingRules?.add(tool);
         continue;
       }
@@ -1243,12 +1256,16 @@ export class RulesHandler extends ResourceHandler {
           await removeClaudeMdSection(file, TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, { deleteIfEmpty: true });
         }
       } catch (e) {
+        allWritten = false;
+
         if (writing) toolsMissingRules?.add(tool);
         const action = writing ? 'write the team-rules block to' : 'remove the team-rules block from';
         log.warn(`Could not ${action} ${file}: ${e instanceof Error ? e.message : String(e)}. ${tool} reads that file as it is until this succeeds; `
           + 'run `teamai pull` again once the cause above is fixed.');
       }
     }
+
+    return allWritten;
   }
 
   /**

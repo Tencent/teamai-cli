@@ -200,6 +200,36 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
       .toEqual([installed, ['MCP.yaml', 'server.mjs'], 'console.log("v1")\n']);
   });
 
+  it('keeps the folder a kept server runs from when the team moves it to mcp.yaml with a secret this machine has not set', async () => {
+    await write('team', { 'mcp/notes/MCP.yaml': SERVER, 'mcp/notes/server.mjs': 'console.log("notes")\n' });
+    await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
+    const installed = await claudeServer('app', 'notes');
+
+    await fse.remove(path.join(sandbox, 'team', 'mcp', 'notes'));
+    await write('team', {
+      'mcp/mcp.yaml': 'servers:\n  - name: notes\n    transport: stdio\n    command: npx\n    args: ["notes-mcp"]\n    env: { NOTES_TOKEN: "${NOTES_TOKEN}" }\n',
+      'env/secrets.yaml': 'secrets:\n  - key: NOTES_TOKEN\n',
+    });
+    await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
+
+    expect([await claudeServer('app', 'notes'), await fse.pathExists(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'notes', 'server.mjs'))]).toEqual([installed, true]);
+  });
+
+  it('keeps the folder of a server the team drops while the configuration that starts it cannot be rewritten', async () => {
+    await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER, 'mcp/jira-lite/server.mjs': 'console.log("jira")\n' });
+    await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
+    const installed = await claudeServer('app', 'jira-lite');
+
+    await fse.remove(path.join(sandbox, 'team', 'mcp', 'jira-lite'));
+    // .mcp.json is written through a sibling renamed into place, so the directory holding it is what refuses the write.
+    await fse.chmod(path.join(sandbox, 'app'), 0o555);
+    const outcome = await reconcileMcpForConfig(teamConfig(), workspace('team', 'app')).then(() => 'applied', () => 'failed')
+      .finally(() => fse.chmod(path.join(sandbox, 'app'), 0o755));
+
+    expect([outcome, await claudeServer('app', 'jira-lite'), await fse.pathExists(path.join(sandbox, 'app', '.teamai', 'delivered', 'mcp', 'jira-lite', 'server.mjs'))])
+      .toEqual(['failed', installed, true]);
+  });
+
   it('writes nothing on a dry run', async () => {
     await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER, 'mcp/jira-lite/server.mjs': 'console.log("jira")\n' });
 

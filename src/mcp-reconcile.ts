@@ -40,7 +40,7 @@ import {
   UntypedStdioEntrySchema,
   type McpFormat,
 } from './resources/mcp-format.js';
-import { deliverMcpFolders, historicalFolderMcpServer, TEAM_MCP_ENTRIES, parseTeamMcpServers, teamMcpDef, teamMcpToDef, type TeamMcpDefinition } from './resources/mcp.js';
+import { deliverMcpFolders, historicalFolderMcpServer, pruneMcpFolders, TEAM_MCP_ENTRIES, parseTeamMcpServers, teamMcpDef, teamMcpToDef, type TeamMcpDefinition } from './resources/mcp.js';
 import { historicalContents } from './utils/team-history.js';
 import { describeMembersFile, keepsTrackedCopy } from './resources/delivered-copies.js';
 import { envName, envTable } from './resources/env-key.js';
@@ -2965,24 +2965,45 @@ async function reconcileTargets(
   // configuration some tool keeps, such as one held back or one whose secret is not set here, keeps its folder as it
   // is: that configuration may name a file the new version dropped. A folder that cannot be written keeps every
   // installed server, and so do secrets that cannot be read (below).
+  // The folders no configuration names go only once this run's writes are in place (`settled`).
+  let pruneFolders = async (): Promise<void> => {};
+
   if (!removeAll && !options.dryRun && !secretsUnread) {
     const kept = new Set([...held, ...[...desiredOf.values()].flatMap((desired) => [...desired.kept])]);
     // An excluded tool is skipped, not cleaned (below): the servers it has installed keep their folders.
     const excluded = targets.filter((target) => mcpTargetExcluded(localConfig, target));
     const records = excluded.length === 0 ? {} : (await loadMcpManifest(localConfig, true)).manifest;
-    const installedInExcluded = new Set(excluded.flatMap((target) => (records[mcpManifestKey(target)] ?? []).map(({ name }) => name)));
+    const installed = new Set([...kept, ...excluded.flatMap((target) => (records[mcpManifestKey(target)] ?? []).map(({ name }) => name))]);
 
     try {
-      await deliverMcpFolders(localConfig, teamEntries, { prune: held.size === 0, kept, installedInExcluded });
+      await deliverMcpFolders(localConfig, teamEntries, kept);
     } catch (e) {
       log.warn(`Team MCP server folders could not be delivered: ${e instanceof Error ? e.message : String(e)}. `
         + 'mcp was not applied this run, so your installed team MCP servers are unchanged. Run teamai pull again.');
 
       return { changes, wrote, unresolved: true };
     }
+
+    if (held.size === 0) {
+      pruneFolders = async () => {
+        try {
+          await pruneMcpFolders(localConfig, teamEntries, installed);
+        } catch (e) {
+          log.warn(`Team MCP server folders no server uses any more could not be removed: ${e instanceof Error ? e.message : String(e)}. `
+            + 'Your MCP servers are applied; the next teamai pull removes those folders.');
+        }
+      };
+    }
   }
 
-  if (targets.length === 0) return { changes, wrote };
+  // What the run applied, after the folders no configuration names any more are removed.
+  const settled = async (result: McpReconcileResult): Promise<McpReconcileResult> => {
+    await pruneFolders();
+
+    return result;
+  };
+
+  if (targets.length === 0) return settled({ changes, wrote });
   // Whose entries a file holds is judged with every tool mapping it, detected or not (#993):
   // detection decides where teamai writes, never what it may delete.
   const claimTargets = await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true });
@@ -2999,7 +3020,7 @@ async function reconcileTargets(
 
   // A server the team deleted can still sit unrecorded in a tool's file (#993): only target
   // files with no server at all prove there is nothing to look for, without reading the history.
-  if (teamDefs.length === 0 && nothingOwned && !await someMcpEntryInstalled(targets)) return { changes, wrote };
+  if (teamDefs.length === 0 && nothingOwned && !await someMcpEntryInstalled(targets)) return settled({ changes, wrote });
   const history = teamMcpHistory(localConfig);
   // The files an earlier pull recorded, and each record this run rebuilds after it was lost (#882).
   const ledger = localConfig.scope === 'project' && !options.dryRun ? (await readResolvedMcpFiles(localConfig)).files : {};
@@ -3236,7 +3257,7 @@ async function reconcileTargets(
     if (manifest[mcpManifestKey(target)]?.some((record) => record.resolved === true)) recorded.splice(index, 1);
   }
 
-  return unparsed ? { changes, wrote, unparsed } : { changes, wrote };
+  return settled(unparsed ? { changes, wrote, unparsed } : { changes, wrote });
 }
 
 /**
