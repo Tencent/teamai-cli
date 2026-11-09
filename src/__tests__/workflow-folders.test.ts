@@ -477,7 +477,7 @@ describe('default workflow folders', () => {
     dirs.push(root);
     fs.mkdirSync(path.join(root, 'workflows', 'teamai-folder-demo', 'lib'), { recursive: true });
     fs.writeFileSync(path.join(root, 'workflows', 'teamai-folder-demo', 'WORKFLOW.yaml'), 'schemaVersion: v1alpha1\nname: teamai-folder-demo\ndescription: Demo.\nsteps:\n  - id: run\n    command: sh "$TEAMAI_WORKFLOW_DIR/lib/run.sh"\n');
-    fs.writeFileSync(path.join(root, 'workflows', 'teamai-folder-demo', 'lib', 'run.sh'), 'echo ok\r\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(root, 'workflows', 'teamai-folder-demo', 'lib', 'run.sh'), 'echo ok\r\n', { mode: 0o644 });
     const teamai = { root, read: DefaultWorkflows.layer.read };
 
     const first = await Resources.resolve(RESOURCE_LAYOUTS.workflows, 'teamai-folder-demo', { teamai });
@@ -487,10 +487,23 @@ describe('default workflow folders', () => {
     expect(shipped?.relativePath).toBe('workflows/teamai-folder-demo/WORKFLOW.yaml');
     expect(shipped?.files).toEqual([
       { path: 'WORKFLOW.yaml', executable: false, content: expect.stringContaining('name: teamai-folder-demo') },
-      { path: 'lib/run.sh', executable: true, content: 'echo ok\n' },
+      { path: 'lib/run.sh', executable: false, content: 'echo ok\n' },
     ]);
     expect(shipped?.sourceHash).toBe(WorkflowFolder.hash(shipped?.files ?? []));
     expect(again.kind === 'resolved' && again.item.layer === 'teamai' ? again.item.shipped : undefined).toBe(shipped);
+  });
+
+  it('refuses a default folder that ships an executable file, as a teamai bug', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-wf-defaults-'));
+    dirs.push(root);
+    fs.mkdirSync(path.join(root, 'workflows', 'teamai-folder-exec', 'lib'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'workflows', 'teamai-folder-exec', 'WORKFLOW.yaml'), 'schemaVersion: v1alpha1\nname: teamai-folder-exec\ndescription: Demo.\nsteps:\n  - id: run\n    command: sh "$TEAMAI_WORKFLOW_DIR/lib/run.sh"\n');
+    fs.writeFileSync(path.join(root, 'workflows', 'teamai-folder-exec', 'lib', 'run.sh'), 'echo ok\n', { mode: 0o755 });
+
+    await expect(Resources.resolve(RESOURCE_LAYOUTS.workflows, 'teamai-folder-exec', { teamai: { root, read: DefaultWorkflows.layer.read } })).rejects.toThrow(
+      'teamai\'s default workflows/teamai-folder-exec/WORKFLOW.yaml ships lib/run.sh as an executable file. An npm install on Windows drops the bit, '
+        + 'so the folder would hash differently there and a run of it could not be claimed across systems. Clear the bit, and run the file through its interpreter, such as sh.',
+    );
   });
 
   it('gives the steps of a default folder the text of the files their prompt_file and answer_file name', async () => {
