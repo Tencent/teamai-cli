@@ -64,7 +64,7 @@ describe('Muse Code hooks', () => {
     const settings = await fse.readJson(settingsPath) as MuseSettings;
     const groups = settings.hooks?.PostToolUse ?? [];
     expect(groups.some((group) => group.hooks.some((handler) => String(handler.command).includes('--matcher Skill')))).toBe(false);
-    expect(groups.map((group) => group.matcher)).toEqual([undefined, 'TodoWrite']);
+    expect(groups.map((group) => group.matcher)).toEqual([undefined]);
   });
 
   it('keeps the rest of an existing settings.json and its schema_version', async () => {

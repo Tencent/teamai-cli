@@ -39,7 +39,7 @@ vi.mock('node:child_process', async () => {
   };
 });
 
-import { hasShell, _resetShellCache, getDispatchCommand } from '../builtin-hooks.js';
+import { hasShell, _resetShellCache, getDispatchCommand, retiredBuiltinHookDefs } from '../builtin-hooks.js';
 import { injectHooksToAllTools } from '../hooks.js';
 import { log } from '../utils/logger.js';
 
@@ -245,11 +245,14 @@ describe('injectHooksToAllTools — codebuddy explicitly launches Git Bash (win3
     await injectHooksToAllTools({ codebuddy: { settings: '.codebuddy/settings.json' } }, tmp);
 
     const settings = await fse.readJson(path.join(tmp, '.codebuddy', 'settings.json'));
-    const todoWrite = settings.hooks.PostToolUse.find((g: { matcher: string }) => g.matcher === 'TodoWrite');
-    const wrapper = path.join(tmp, '.teamai', 'bin', 'teamai-codebuddy-hook').split(path.sep).join('/');
-    expect(todoWrite.hooks[0].command).toBe(
-      `"${fakeGitBash(tmp).split(path.sep).join('/')}" "${wrapper}" hook-dispatch post-tool-use --tool codebuddy --matcher TodoWrite || exit 0`,
-    );
+    const launcher = `"${fakeGitBash(tmp).split(path.sep).join('/')}" "${path.join(tmp, '.teamai', 'bin', 'teamai-codebuddy-hook').split(path.sep).join('/')}"`;
+    expect(settings.hooks.PostToolUse.map((g: { hooks: { command: string }[] }) => g.hooks[0].command)).toEqual([
+      `${launcher} hook-dispatch post-tool-use --tool codebuddy || exit 0`,
+    ]);
+    // The retired TodoWrite entry, as cleanup recognises the copy an earlier release wrote (#1788).
+    expect(retiredBuiltinHookDefs('codebuddy').map((def) => def.command)).toEqual([
+      `${launcher} hook-dispatch post-tool-use --tool codebuddy --matcher TodoWrite || exit 0`,
+    ]);
   });
 
   it('skips codebuddy hook injection and warns when Git Bash is absent', async () => {

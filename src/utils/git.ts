@@ -2034,6 +2034,23 @@ export async function getFileContentAtRev(
   }
 }
 
+/**
+ * The text of `filePath` at `rev`, or `{ absent: true }` when that commit has no
+ * such path. Throws when git fails for any other reason, so a caller that
+ * remembers the answer never remembers a failure as an absence.
+ */
+export async function readFileAtRev(repoPath: string, rev: string, filePath: string): Promise<{ text: string } | { absent: true }> {
+  const git = createGit(repoPath);
+
+  try {
+    return { text: await git.show([`${rev}:${filePath}`]) };
+  } catch (error) {
+    // `show` fails the same way for a missing path and a broken repository; `ls-tree` tells them apart.
+    if ((await git.raw(['ls-tree', '--name-only', rev, '--', filePath])).trim() === '') return { absent: true };
+    throw error;
+  }
+}
+
 export async function getRepoStatus(localPath: string): Promise<{ ahead: number; behind: number; modified: string[] }> {
   const git = createGit(localPath);
   // The fetch talks to origin, so it runs under the block timeout like every

@@ -104,6 +104,7 @@
     "teamai/tool-facts": "error",
     // parseYaml returns JSON values; yaml's own parse can return a Set, Buffer or Date.
     "teamai/yaml-parse": "error",
+    "teamai/uncached-entry": "error",
     // A reducer that copies its accumulator each step is quadratic.
     "oxc/no-accumulating-spread": "error",
     // The generic rules of anti-slop (#828), vendored in

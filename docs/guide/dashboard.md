@@ -22,6 +22,8 @@ The Improvement Center reads what members publish to `teamai-reports` with `team
 - **Friction signals**: the team's corrections, interrupts and rejected tool calls, as a share of sessions.
 - **Knowledge maintenance**: the archive, refresh and promote candidates, with the command for each. The page runs nothing.
 
+A skill counts once per prompt turn. Claude Code, Codex, Cursor, CodeBuddy and Muse send a turn id with each hook. On other hosts the prompt's hook starts the turn, and on macOS and Linux it does that in the background, after the agent already has the prompt. A skill used in the turn's very first tool call can then land in the turn before it, and is not counted again if that turn already had it.
+
 ## Session sharing
 
 The Overview's **Session sharing** panel says, for the selected workspace, whether its sessions are published to `teamai-reports` and scored in each [run mode](workflow.md#attended-and-unattended-runs), and why:

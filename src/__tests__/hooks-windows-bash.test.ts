@@ -338,7 +338,9 @@ describe('Cursor hook command on Windows PowerShell', () => {
       command: `& "${bashExe}" -lc "teamai hook-dispatch prompt-submit --tool cursor 2>/dev/null"; exit 0`,
       timeout: 10,
     }]);
-    expect(parsed.hooks.postToolUse[1]).toMatchObject({ matcher: 'TodoWrite', timeout: 3 });
+    // One entry per tool call, the wildcard's timeout included: the TodoWrite one of its own retired (#1788).
+    expect(parsed.hooks.postToolUse).toEqual([expect.not.objectContaining({ matcher: expect.anything() })]);
+    expect(parsed.hooks.postToolUse[0]).toMatchObject({ timeout: 10 });
     expect(await getHookStatus(hooksPath, 'cursor')).toBe('installed');
 
     const again = fs.readFileSync(hooksPath, 'utf8');
@@ -389,7 +391,8 @@ describe('Cursor hook command on Windows PowerShell', () => {
     const parsed = JSON.parse(fs.readFileSync(hooksPath, 'utf8')) as CursorHooksFile;
 
     expect(parsed.hooks.beforeSubmitPrompt).toHaveLength(1);
-    expect(parsed.hooks.postToolUse).toHaveLength(2);
+    // The legacy TodoWrite entry goes with the rest, and none takes its place (#1788).
+    expect(parsed.hooks.postToolUse).toHaveLength(1);
     expect(parsed.hooks.beforeSubmitPrompt[0].command).toBe(
       `& "${bashExe}" -lc "teamai hook-dispatch prompt-submit --tool cursor 2>/dev/null"; exit 0`,
     );

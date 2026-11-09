@@ -13,7 +13,8 @@ import {
     saveCacheIndex,
     type CacheIndex,
 } from '../utils/cache-index.js';
-import { _resetState, _setLogFilePath, setVerbose } from '../utils/logger.js';
+import { setVerbose } from '../utils/logger.js';
+import { _resetState, _setLogFilePath } from '../utils/debug-log.js';
 
 // ─── Helpers ────────────────────────────────────────────
 
