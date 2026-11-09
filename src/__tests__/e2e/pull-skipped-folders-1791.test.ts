@@ -17,6 +17,7 @@ const GIT_ENV = {
 };
 
 const RULE_LINE = 'rules/api-style/ is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.';
+// Workflow folders are read since #1787, so this one is never among the skipped.
 const WORKFLOW_LINE = 'workflows/release/ is a workflow folder, which this teamai cannot read yet; it was skipped. Run teamai update.';
 
 function runCLI(args: string[], home: string, cwd: string): Promise<{ code: number | null; output: string }> {
@@ -111,7 +112,8 @@ describe('real CLI: pull skips a folder whose type this teamai cannot read (#179
   it('then skips it once it holds RULE.md, removes what it delivered from it, and says so', async () => {
     write(seed, 'rules/api-style/RULE.md', '# API style\n');
     write(seed, 'rules/api-style/RULE.zh.md', '# API 风格\n');
-    write(seed, 'workflows/release/WORKFLOW.yaml', 'name: release\n');
+    write(seed, 'workflows/release/WORKFLOW.yaml', 'schemaVersion: v1alpha1\nname: release\ndescription: Release.\nsteps:\n  - id: plan\n    command: echo plan\n');
+    write(seed, 'workflows/release/notes.md', '# Release notes\n');
     git(['add', '-A'], seed);
     git(['commit', '-q', '-m', 'rule and workflow folders'], seed);
     git(['push', '-q', remote, 'main'], seed);
@@ -120,7 +122,7 @@ describe('real CLI: pull skips a folder whose type this teamai cannot read (#179
 
     expect(result.code, result.output).toBe(0);
     expect(result.output).toContain(RULE_LINE);
-    expect(result.output).toContain(WORKFLOW_LINE);
+    expect(result.output).not.toContain(WORKFLOW_LINE);
     expect(result.output.split(RULE_LINE)).toHaveLength(2);
     expect(filesUnder(path.join(homeDir, '.claude', 'rules'))).toEqual(['style.md']);
   }, 60_000);
@@ -140,14 +142,15 @@ describe('real CLI: pull skips a folder whose type this teamai cannot read (#179
 
     expect(status.output).toContain('Skipped folders:');
     expect(status.output).toContain(`  ${RULE_LINE}`);
-    expect(status.output).toContain(`  ${WORKFLOW_LINE}`);
+    expect(status.output).not.toContain(WORKFLOW_LINE);
     expect(status.output).toContain('  rules: 1');
+    expect(status.output).toContain('  workflows: 1');
 
     const doctor = await runCLI(['doctor'], homeDir, sandbox);
 
     expect(doctor.output).toContain('  ⚠ This teamai reads every folder in the team repo');
     expect(doctor.output).toContain(`    → ${RULE_LINE}`);
-    expect(doctor.output).toContain(`    → ${WORKFLOW_LINE}`);
+    expect(doctor.output).not.toContain(WORKFLOW_LINE);
   }, 60_000);
 
   it('pushes nothing into a skipped folder, and the rest as before', async () => {
