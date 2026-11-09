@@ -183,7 +183,7 @@ export async function excludeDeliveredFolders(localConfig: LocalConfig, dir: str
     await partitionOwner(localConfig, DELIVERED_FOLDERS_OWNER).record?.update({ add: [location.excludeFile], drop: [] });
   } catch (e) {
     log.warn(`Could not keep ${dir} out of git in ${location.excludeFile}: ${e instanceof Error ? e.message : String(e)}. `
-      + `git status may list the delivered hook files; add the line ${line} to that file, or run teamai pull again.`);
+      + `git status may list the team folders delivered there; add the line ${line} to that file, or run teamai pull again.`);
   }
 }
 

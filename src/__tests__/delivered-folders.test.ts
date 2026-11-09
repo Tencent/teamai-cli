@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { contentHash, openLedger } from '../resources/delivered-copies.js';
 import { DeliveredFolders } from '../resources/delivered-folders.js';
 import type { FolderFile } from '../resources/folder-files.js';
@@ -10,6 +10,7 @@ import type { LocalConfig } from '../types.js';
 const dirs: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -102,6 +103,20 @@ describe('DeliveredFolders.deliver', () => {
     await DeliveredFolders.deliver({ dest, files, ledger });
 
     expect([fs.statSync(dest).ino, Object.keys(ledger.hashes).length]).toEqual([before, 2]);
+  });
+
+  it('names the folder it cannot move aside, and why, and leaves the installed version in place', async () => {
+    const dest = path.join(tempDir(), 'hooks', 'block-secrets');
+    await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v1\n')], ledger: undefined });
+    // What Windows answers while a hook still runs from the folder.
+    const busy = Object.assign(new Error(`EBUSY: resource busy or locked, rename '${dest}'`), { code: 'EBUSY' });
+    vi.spyOn(fs.promises, 'rename').mockRejectedValueOnce(busy);
+
+    await expect(DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v2\n')], ledger: undefined })).rejects.toThrow(
+      `could not replace the delivered folder ${dest} (EBUSY: resource busy or locked, rename '${dest}'); `
+      + 'a program running from it, such as a hook on Windows, can hold it, so close that program',
+    );
+    expect(tree(dest)).toEqual({ 'HOOK.yaml': 'v1\n' });
   });
 
   it('removes what an interrupted delivery left beside the folder', async () => {

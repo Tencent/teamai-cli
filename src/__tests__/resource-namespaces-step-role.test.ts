@@ -10,10 +10,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { resolveActiveLearningsNamespaces } from '../projects.js';
 import { buildRolePullContext, resolveDesiredRules } from '../resources/desired.js';
-import { resolveEntriesFor, type EntryReader } from '../namespaced-entries.js';
+import { resolveEntriesFor, type EntryResolution } from '../namespaced-entries.js';
+import { LayeredEntries } from '../resources/layered-entries.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { envEntryReader } from '../resources/env.js';
-import { mcpEntryReader } from '../resources/mcp.js';
+import { TEAM_MCP_ENTRIES } from '../resources/mcp.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 import { loadCachedWorkflow } from '../workflow/cache.js';
 
@@ -91,15 +92,20 @@ describe('the namespaces of a copy that runs with a team role', () => {
     fs.writeFileSync(path.join(repo, 'mcp', 'mcp.yaml'), 'servers: [{ name: shared, description: Shared, transport: stdio, command: shared }]\n');
     fs.writeFileSync(path.join(repo, 'mcp', 'rv-mcp', 'mcp.yaml'), 'servers: [{ name: review-only, description: Review only, transport: stdio, command: review-only }]\n');
     const member = memberOf(repo, { primaryRole: undefined, projects: [] });
-    const names = async <E>(reader: EntryReader<E>, config: LocalConfig): Promise<string[]> => {
-      const resolution = await resolveEntriesFor(reader, config);
+    const names = async (resolve: (config: LocalConfig) => Promise<EntryResolution<unknown>>, config: LocalConfig): Promise<string[]> => {
+      const resolution = await resolve(config);
       return resolution.kind === 'resolved' ? resolution.entries.map((entry) => entry.name) : [`not resolved: ${resolution.kind}`];
     };
 
-    for (const reader of [envEntryReader, mcpEntryReader] as const) {
-      const delivered = await names<unknown>(reader, member);
-      expect(delivered).toEqual(reader === envEntryReader ? ['SHARED'] : ['shared']);
-      expect(await names<unknown>(reader, { ...member, stepRole: 'review' })).toEqual(delivered);
+    const types = [
+      ['env', (config: LocalConfig) => resolveEntriesFor(envEntryReader, config)],
+      ['mcp', (config: LocalConfig) => LayeredEntries.resolve(TEAM_MCP_ENTRIES, config)],
+    ] as const;
+
+    for (const [type, resolve] of types) {
+      const delivered = await names(resolve, member);
+      expect(delivered).toEqual(type === 'env' ? ['SHARED'] : ['shared']);
+      expect(await names(resolve, { ...member, stepRole: 'review' })).toEqual(delivered);
     }
   });
 

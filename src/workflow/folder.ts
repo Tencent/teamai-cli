@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { FOLDER_MARKERS } from '../folder-markers.js';
 import { FolderFiles, type FolderFilesRead } from '../resources/folder-files.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { pathExists } from '../utils/fs.js';
@@ -16,7 +17,7 @@ import { createGit } from '../utils/git.js';
 //
 
 /** The file that makes a directory under `workflows/` a workflow folder. */
-export const WORKFLOW_MARKER = 'WORKFLOW.yaml';
+export const WORKFLOW_MARKER = FOLDER_MARKERS.workflows.marker;
 
 /** What a workflow folder may hold in all, its files' text with LF line endings: each run keeps a copy of its own. */
 const MAX_BYTES = 1024 * 1024;

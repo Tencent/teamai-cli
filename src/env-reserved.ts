@@ -1,10 +1,12 @@
 import { isEnvShMarker } from './env-sh-exports.js';
+import { WORKFLOW_DIR_ENV } from './launch-context.js';
+import { PATH_VARIABLES } from './resources/delivered-folders.js';
 
 /**
  * The paths teamai gives a workflow folder's steps, a hook folder's command, a rule folder's text, and an MCP server folder's command, args
  * and env (#1787): a team value would point them at another folder.
  */
-const FOLDER_DIR_NAMES = ['TEAMAI_WORKFLOW_DIR', 'TEAMAI_HOOK_DIR', 'TEAMAI_RULE_DIR', 'TEAMAI_MCP_DIR'] as const;
+const FOLDER_DIR_NAMES = [WORKFLOW_DIR_ENV, ...Object.values(PATH_VARIABLES)] as const;
 
 /**
  * Shell startup, hook, and loader names team env must not replace: every name

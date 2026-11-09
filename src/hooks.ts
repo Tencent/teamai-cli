@@ -1857,7 +1857,8 @@ async function canonicalRemovedRoot(root: string): Promise<string> {
  * Take back the team hooks a removed checkout of this repository wrote in HOME behind its `$PWD` gate: a project
  * install of ZCode or a bridged tool. A single-repo worktree's entries there run the hook folders it delivered in its
  * own `.teamai/delivered/` (#1787). They are recorded in the checkout's `workspaces/<id>/managed-hooks.json`, which
- * pull prunes with the rest of that directory, so pull calls this first.
+ * pull prunes with the rest of that directory. So pull calls this once per run, just before that prune, and
+ * `doctor --fix` calls it too; nothing else does.
  */
 export async function releaseRemovedCheckoutHooks(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
   if (localConfig.scope !== 'project' || !localConfig.projectRoot) return;
@@ -5034,14 +5035,6 @@ export async function reconcileTeamHooksForConfig(
         + 'Team hooks were not applied this run, so your installed team hooks are unchanged. Run teamai pull again.');
       builtinsOnly = 'with-overrides';
       teamDefs = [];
-    }
-  }
-
-  if (!opts.removeAll) {
-    try {
-      await releaseRemovedCheckoutHooks(teamConfig, localConfig);
-    } catch (e) {
-      log.warn(`Could not remove the team hooks a removed checkout left in HOME: ${e instanceof Error ? e.message : String(e)}. The next teamai pull tries again.`);
     }
   }
 

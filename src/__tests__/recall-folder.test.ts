@@ -92,6 +92,12 @@ describe('a team replacement of rules/teamai-recall/ (#1787)', () => {
     );
   });
 
+  it('delivers a replacement holding RULE.old.md without the required lines: only en and zh are language variants', async () => {
+    write('RULE.old.md', '# Our first recall rule\n');
+
+    expect(await deployed()).toBe(TEAM_RULE);
+  });
+
   it('records the copies of a team replacement in the delivery ledger, and not teamai\'s', async () => {
     const dest = path.join(home, '.claude', 'rules', 'teamai-recall.md');
     fs.mkdirSync(path.dirname(dest), { recursive: true });

@@ -3,20 +3,19 @@ import { holdsMarker } from '../folder-markers.js';
 import type { LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
 import { WORKFLOW_MARKER } from '../workflow/folder.js';
 import { RepoResourceHandler } from './repo-resource.js';
+import { folderPlacesOf } from './resolver.js';
 
 /**
  * The workflow folder `item` lies in, by its path under `workflows/` (`release`, `payments/release`): a directory at the
  * root or in a namespace that holds `WORKFLOW.yaml`. Undefined for a file outside one.
  */
 async function folderOf(item: ResourceItem): Promise<{ name: string; dir: string } | undefined> {
-  const segments = item.name.split('/');
-  const workflowsDir = path.resolve(item.sourcePath, ...segments.map(() => '..'));
+  const workflowsDir = path.resolve(item.sourcePath, ...item.name.split('/').map(() => '..'));
 
-  for (const depth of [1, 2]) {
-    if (segments.length <= depth) return undefined;
-    const dir = path.join(workflowsDir, ...segments.slice(0, depth));
+  for (const place of folderPlacesOf(item.name)) {
+    const dir = path.join(workflowsDir, ...place.split('/'));
 
-    if (await holdsMarker(dir, WORKFLOW_MARKER)) return { name: segments.slice(0, depth).join('/'), dir };
+    if (await holdsMarker(dir, WORKFLOW_MARKER)) return { name: place, dir };
   }
 
   return undefined;

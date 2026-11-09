@@ -4,17 +4,17 @@ import { z } from 'zod';
 import YAML from 'yaml';
 import { parseYaml } from '../utils/yaml.js';
 import { ResourceHandler } from './base.js';
-import { isJsonObject, type JsonValue, type LocalConfig, type McpServerDef, type ResourceItem, type TeamaiConfig } from '../types.js';
+import type { JsonValue, LocalConfig, McpServerDef, ResourceItem, TeamaiConfig } from '../types.js';
 import { listDirs, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.js';
 import {
-  entryFileAbsolutePath, entryFilePath, listEntryFiles, missingTopLevelKeyReason, readEntryFileText, unknownEntryKeys,
-  readFolderPlace, type EntryFileRead, type EntryPlaceReader, type PlaceFolderRead, type ResolvedEntry,
+  entryFileAbsolutePath, entryFilePath, listEntryFiles, missingTopLevelKeyReason, readEntryFileText, unknownEntryKeys, type EntryFileRead, type ResolvedEntry,
 } from '../namespaced-entries.js';
+import { readMarkerFolder, type LayeredEntryType, type PlaceFolderRead } from './layered-entries.js';
 import { RESOURCE_LAYOUTS, Resources, type EntryListRead, type ResourceLayout } from './resolver.js';
 import { DeliveredFolders } from './delivered-folders.js';
-import { FolderFiles, type FolderFile } from './folder-files.js';
+import type { FolderFile } from './folder-files.js';
 
 // ─── Schema for mcp/mcp.yaml ────────────────────────────────
 //
@@ -24,7 +24,7 @@ import { FolderFiles, type FolderFile } from './folder-files.js';
 
 const TeamMcpServerFields = z
   .object({
-    name: z.string().regex(RESOURCE_LAYOUTS.mcp.nameRule.pattern, 'name must be alphanumeric with - or _'),
+    name: z.string().regex(RESOURCE_LAYOUTS.mcp.nameRule.pattern, RESOURCE_LAYOUTS.mcp.nameRule.description),
     description: z.string().optional(),
     transport: z.enum(['stdio', 'http', 'sse']),
     command: z.string().optional(),
@@ -111,9 +111,6 @@ export async function readTeamMcpFile(absolutePath: string, relativePath: string
 /** `mcp/[<ns>/]<name>/MCP.yaml`: an mcp.yaml server without its name, which is the directory's, and without roles or projects. */
 const FolderMcpFields = TeamMcpServerFields.omit({ name: true, roles: true, projects: true });
 
-/** The marker of an MCP server folder. */
-const MCP_MARKER = 'MCP.yaml';
-
 /** A team MCP server as the team repo defines it. */
 export type TeamMcpDefinition =
   | { readonly kind: 'entry'; readonly server: TeamMcpServer }
@@ -147,7 +144,7 @@ function mcpFileEntries(content: string, relativePath: string): EntryListRead<Mc
     return {
       kind: 'invalid',
       message: `${relativePath}: server "${folderOnly.name}" uses \${TEAMAI_MCP_DIR}, which only an MCP server folder has. `
-        + `Move it to ${path.posix.dirname(relativePath)}/${folderOnly.name}/${MCP_MARKER}, beside the files it runs.`,
+        + `Move it to ${path.posix.dirname(relativePath)}/${folderOnly.name}/${RESOURCE_LAYOUTS.mcp.marker}, beside the files it runs.`,
     };
   }
 
@@ -160,65 +157,51 @@ export const TEAM_MCP: ResourceLayout<McpFileEntry> = {
   entryList: { file: 'mcp.yaml', entries: mcpFileEntries },
 };
 
-/** A folder's `MCP.yaml` (at `markerPath`) as the server named `name`, or why it cannot be used. */
-function parseMcpMarker(content: string, markerPath: string, name: string): { ok: true; server: TeamMcpServer; unknownKeys: readonly string[] } | { ok: false; reason: string } {
-  try {
-    const raw: JsonValue = parseYaml(content);
-    const parsed = FolderMcpFields.safeParse(raw);
-
-    if (!parsed.success) {
-      return { ok: false, reason: `${markerPath} does not parse: ${parsed.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ')}` };
-    }
-
-    if (parsed.data.transport !== 'stdio') {
-      return {
-        ok: false,
-        reason: `${markerPath}: transport ${parsed.data.transport} is refused in a folder, which holds the files of a server teamai starts (stdio). `
-          + 'A URL server carries no files: declare it in mcp.yaml.',
-      };
-    }
-
-    if (!parsed.data.command) return { ok: false, reason: `${markerPath} does not parse: stdio transport requires \`command\`` };
-    const known = Object.keys(FolderMcpFields.shape);
-    const unknownKeys = isJsonObject(raw) ? Object.keys(raw).filter((key) => !known.includes(key)) : [];
-
-    return { ok: true, server: { ...parsed.data, name }, unknownKeys };
-  } catch (e) {
-    return { ok: false, reason: `${markerPath} does not parse: ${e instanceof Error ? e.message : String(e)}` };
-  }
-}
-
 /** Read the server folder at `full` (`folderPath` from the team root, ending in `/`), named `name`. */
 export async function readMcpFolder(full: string, folderPath: string, name: string): Promise<PlaceFolderRead<TeamMcpDefinition>> {
-  const read = await FolderFiles.read(full);
+  const read = await readMarkerFolder({ full, path: folderPath }, RESOURCE_LAYOUTS.mcp.marker, FolderMcpFields);
+  const markerPath = `${folderPath}${RESOURCE_LAYOUTS.mcp.marker}`;
 
-  if (read.kind === 'invalid') {
-    return { kind: 'invalid', reason: `${folderPath} is not an MCP server folder teamai can deliver: ${read.problems.map(FolderFiles.describe).join(', ')}` };
+  switch (read.kind) {
+    case 'undeliverable':
+      return { kind: 'invalid', reason: `${folderPath} is not an MCP server folder teamai can deliver: ${read.problems.join(', ')}` };
+    case 'invalid':
+      return read;
+    case 'read': {
+      const { fields } = read;
+
+      if (fields.transport !== 'stdio') {
+        return {
+          kind: 'invalid',
+          reason: `${markerPath}: transport ${fields.transport} is refused in a folder, which holds the files of a server teamai starts (stdio). `
+            + 'A URL server carries no files: declare it in mcp.yaml.',
+        };
+      }
+
+      if (!fields.command) return { kind: 'invalid', reason: `${markerPath} does not parse: stdio transport requires \`command\`` };
+
+      return { kind: 'read', definition: { kind: 'folder', server: { ...fields, name }, files: read.files }, unknownKeys: read.unknownKeys };
+    }
+
+    default: {
+      const unhandled: never = read;
+
+      return unhandled;
+    }
   }
-
-  const marker = read.files.find((file) => file.path === MCP_MARKER);
-  const parsed = parseMcpMarker(marker?.bytes.toString('utf8') ?? '', `${folderPath}${MCP_MARKER}`, name);
-
-  if (!parsed.ok) return { kind: 'invalid', reason: parsed.reason };
-
-  return { kind: 'read', definition: { kind: 'folder', server: parsed.server, files: read.files }, unknownKeys: parsed.unknownKeys };
 }
 
-/** How team MCP servers are read for delivery: each place of the team tree through the resolver, `mcp.yaml` servers and folders. */
-export const mcpEntryReader: EntryPlaceReader<TeamMcpDefinition> = {
+/** How team MCP servers resolve for delivery: `mcp.yaml` servers and folders, in each place of the team tree, through the resolver. */
+export const TEAM_MCP_ENTRIES: LayeredEntryType<McpFileEntry, TeamMcpDefinition> = {
   type: 'mcp',
-  readPlace: (repoPath, dir) => readFolderPlace({
-    layout: TEAM_MCP,
-    at: { root: repoPath, namespace: dir },
-    fromEntry: ({ server, unknownKeys }) => ({ definition: { kind: 'entry', server }, unknownKeys }),
-    readFolder: async ({ name, full, path: folderPath }) => (
-      // A teamai- name only replaces a default (#1787, common rule 5), and teamai ships no MCP server.
-      name.startsWith('teamai-')
-        ? { kind: 'skipped', note: `${folderPath} is skipped: a teamai- name only replaces a teamai default, and teamai has no MCP server named ${name}. Rename the folder.` }
-        : readMcpFolder(full, folderPath, name)
-    ),
-  }),
-  nameOf: (definition) => definition.server.name,
+  layout: TEAM_MCP,
+  fromEntry: ({ server, unknownKeys }) => ({ definition: { kind: 'entry', server }, unknownKeys }),
+  readFolder: async ({ name, full, path: folderPath }) => (
+    // A teamai- name only replaces a default (#1787, common rule 5), and teamai ships no MCP server.
+    name.startsWith('teamai-')
+      ? { kind: 'skipped', note: `${folderPath} is skipped: a teamai- name only replaces a teamai default, and teamai has no MCP server named ${name}. Rename the folder.` }
+      : readMcpFolder(full, folderPath, name)
+  ),
   scopeOf: (definition) => definition.server,
 };
 

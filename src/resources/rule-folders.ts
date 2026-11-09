@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { DeliveryLedger } from './delivered-copies.js';
 import { DELIVERED_DIR, DeliveredFolders, type DeliveredFolderRef } from './delivered-folders.js';
 import { FolderFiles, type FolderFile } from './folder-files.js';
-import { RESOURCE_LAYOUTS, type ResourceDiagnostic } from './resolver.js';
+import { isLanguageVariant, RESOURCE_LAYOUTS, type ResourceDiagnostic } from './resolver.js';
 import { splitRuleFrontmatter } from './team-rule.js';
 import { ruleFolderReachOf } from '../tools.js';
 import { isSelfMode, type LocalConfig, type ResourceItem, type TeamaiConfig } from '../types.js';
@@ -71,7 +71,7 @@ function variantFrontmatterMessage(rule: RuleFolder, variantName: string): strin
 /** A note for each language variant among `files` (`RULE.<lang>.md`, common rule 12) of `rule` that carries frontmatter, which pull ignores. */
 function variantNotes(rule: RuleFolder, files: readonly FolderFile[]): ResourceDiagnostic[] {
   return files.flatMap((file): ResourceDiagnostic[] => {
-    if (!/^RULE\.[a-z]+\.md$/.test(file.path) || splitRuleFrontmatter(FolderFiles.text(file.bytes.toString('utf8'))).block === '') return [];
+    if (!isLanguageVariant(RESOURCE_MARKER, file.path) || splitRuleFrontmatter(FolderFiles.text(file.bytes.toString('utf8'))).block === '') return [];
 
     return [{ kind: 'note', path: path.posix.join(path.posix.dirname(rule.relativePath), file.path), message: variantFrontmatterMessage(rule, file.path) }];
   });

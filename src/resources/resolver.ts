@@ -1,9 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { holdsMarker, unreadMarker } from '../folder-markers.js';
+import { FOLDER_MARKERS, holdsMarker, unreadMarker } from '../folder-markers.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
-import { resolveNamespacedItems } from '../namespace-resolver.js';
+import { resolveNamespacedItems, type NamespaceCandidate, type NamespaceConflict, type ResolvedNamespaceItem } from '../namespace-resolver.js';
 import { FolderFiles, type FolderFilesRead } from './folder-files.js';
+import { TeamaiConfigBaseSchema } from '../types.js';
 import { isIgnored } from '../utils/fs.js';
 
 /** How a resource type lays out its items in a tree. `TEntry` is what one entry of its entry-list file holds. */
@@ -109,13 +110,36 @@ export interface ResourceTree<TShipped> {
  * `entryList` to its row where that parser lives (`hooks.yaml`: `src/resources/hooks.ts`).
  */
 export const RESOURCE_LAYOUTS = {
-  workflows: { dir: 'workflows', marker: 'WORKFLOW.yaml', fileName: (file: string) => (file.endsWith('.yaml') ? file.slice(0, -'.yaml'.length) : null) },
-  hooks: { dir: 'hooks', marker: 'HOOK.yaml', fileName: () => null, nameRule: { pattern: /^[a-z0-9-]+$/, description: 'a hook id uses only lower-case letters, digits and hyphens' } },
-  mcp: { dir: 'mcp', marker: 'MCP.yaml', fileName: () => null, nameRule: { pattern: /^[A-Za-z0-9_-]+$/, description: 'an MCP server name uses only letters, digits, - and _' } },
-  benchmarks: { dir: 'benchmarks', marker: 'SUITE.yaml', markerAliases: ['suite.yaml'], fileName: () => null },
+  workflows: { dir: 'workflows', marker: FOLDER_MARKERS.workflows.marker, fileName: (file: string) => (file.endsWith('.yaml') ? file.slice(0, -'.yaml'.length) : null) },
+  hooks: { dir: 'hooks', marker: FOLDER_MARKERS.hooks.marker, fileName: () => null, nameRule: { pattern: /^[a-z0-9-]+$/, description: 'a hook id uses only lower-case letters, digits and hyphens' } },
+  mcp: { dir: 'mcp', marker: FOLDER_MARKERS.mcp.marker, fileName: () => null, nameRule: { pattern: /^[A-Za-z0-9_-]+$/, description: 'an MCP server name uses only letters, digits, - and _' } },
+  benchmarks: { dir: 'benchmarks', marker: FOLDER_MARKERS.benchmarks.marker, markerAliases: ['suite.yaml'], fileName: () => null },
   /** Names are paths at any depth (`Resources.walk`): `rules/fe/style.md` and `rules/fe/style/RULE.md` are `fe/style`. */
-  rules: { dir: 'rules', marker: 'RULE.md', fileName: (file: string) => (file.endsWith('.md') ? file.slice(0, -'.md'.length) : null) },
+  rules: { dir: 'rules', marker: FOLDER_MARKERS.rules.marker, fileName: (file: string) => (file.endsWith('.md') ? file.slice(0, -'.md'.length) : null) },
 } as const satisfies Readonly<Record<string, ResourceLayout<unknown>>>;
+
+/**
+ * Where a folder holding `file`, a `/`-separated path under the type's directory, can sit, as the scan meets folders: at
+ * the root, then one namespace deep. `payments/release/prompt.md` can be in `payments` or `payments/release`.
+ */
+export function folderPlacesOf(file: string): string[] {
+  const segments = file.split('/');
+
+  return [1, 2].flatMap((depth) => (segments.length > depth ? [segments.slice(0, depth).join('/')] : []));
+}
+
+/**
+ * The folder whose marker `file` is, from its `/`-separated path under the type's directory: `release/WORKFLOW.yaml`
+ * is `release`'s, `payments/release/WORKFLOW.yaml` is `payments/release`'s. Undefined for a file that is no marker, or
+ * a marker deeper than the scan meets folders.
+ */
+export function markerFolderOf(layout: ResourceLayout<unknown>, file: string): string | undefined {
+  const dir = path.posix.dirname(file);
+  const name = path.posix.basename(file);
+  const isMarker = name === layout.marker || (layout.markerAliases ?? []).includes(name);
+
+  return isMarker && folderPlacesOf(file).includes(dir) ? dir : undefined;
+}
 
 /** The names in `dir`, or none when it is missing, a symlink, or cannot be listed. */
 async function fileNames(dir: string): Promise<string[]> {
@@ -211,12 +235,18 @@ async function entryItems<TEntry>(entryList: NonNullable<ResourceLayout<TEntry>[
   }
 }
 
-/** Whether `file` is a language variant of `marker` (`RULE.zh.md` of `RULE.md`, common rule 12 of #1787): part of the folder's own text. */
-function isMarkerVariant(marker: string, file: string): boolean {
-  const ext = path.extname(marker);
-  const stem = marker.slice(0, marker.length - ext.length);
+/** The languages a text teamai renders may have a variant in: the values of `language` in teamai.yaml. */
+const LANGUAGES = TeamaiConfigBaseSchema.shape.language.unwrap().options;
 
-  return file.startsWith(`${stem}.`) && file.endsWith(ext) && /^[a-z]+$/.test(file.slice(stem.length + 1, file.length - ext.length));
+/**
+ * Whether `file` is a language variant of the text file `base` (common rule 12 of #1787): `RULE.zh.md` of `RULE.md`,
+ * with the language's exact lower-case name. Any other name, as `RULE.old.md`, is a support file.
+ */
+export function isLanguageVariant(base: string, file: string): boolean {
+  const ext = path.extname(base);
+  const stem = base.slice(0, base.length - ext.length);
+
+  return LANGUAGES.some((language) => file === `${stem}.${language}${ext}`);
 }
 
 /**
@@ -225,7 +255,7 @@ function isMarkerVariant(marker: string, file: string): boolean {
  * text and are never named. Null when it holds none.
  */
 function itemFilesNote<TEntry>(layout: ResourceLayout<TEntry>, marker: string, folderPath: string, files: readonly string[]): ResourceDiagnostic | null {
-  const read = files.filter((file) => file !== marker && !isMarkerVariant(marker, file) && (file === layout.entryList?.file || layout.fileName(file) !== null));
+  const read = files.filter((file) => file !== marker && !isLanguageVariant(marker, file) && (file === layout.entryList?.file || layout.fileName(file) !== null));
 
   if (read.length === 0) return null;
 
@@ -423,28 +453,16 @@ async function survey<TEntry, TShipped>(layout: ResourceLayout<TEntry>, tree: Re
   const onDisk = [...new Set(items.flatMap((item) => (item.layer === 'namespace' ? [item.namespace] : [])))];
   const declared = tree.team && onDisk.length > 0 ? await tree.team.namespaces() : [];
   const active = declared === 'legacy' ? onDisk : declared;
-  const byName = new Map<string, Array<TeamItem<TEntry>>>();
+  const candidates = items.map((item) => ({ name: item.name, source: item.source.path, namespace: item.layer === 'namespace' ? item.namespace : null, value: item }));
 
-  for (const item of items) {
-    const group = byName.get(item.name);
-
-    if (group) group.push(item);
-    else byName.set(item.name, [item]);
-  }
-
-  const team = [...byName].flatMap(([name, group]): Array<ListedResolution<TEntry, TShipped>> => {
-    const resolution = resolveNamespacedItems(group.map((item) => ({
-      name, source: item.source.path, namespace: item.layer === 'namespace' ? item.namespace : null, value: item,
-    })), active);
-
-    if (resolution.kind === 'conflict') {
-      return [{ kind: 'conflict', name, reason: resolution.reason, first: resolution.first.value, second: resolution.second.value }];
+  const team = pick(candidates, active).map((picked): ListedResolution<TEntry, TShipped> => {
+    if (picked.kind === 'conflict') {
+      return { kind: 'conflict', name: picked.name, reason: picked.reason, first: picked.first.value, second: picked.second.value };
     }
 
-    const [winner] = resolution.items;
-    const replaced = shipped.find((item) => item.name === name) ?? null;
+    const { item: winner } = picked;
 
-    return winner ? [{ kind: 'resolved', name, item: winner.value, replaces: winner.replaces?.value ?? replaced }] : [];
+    return { kind: 'resolved', name: winner.name, item: winner.value, replaces: winner.replaces?.value ?? shipped.find((item) => item.name === winner.name) ?? null };
   });
 
   const named = new Set(team.map(({ name }) => name));
@@ -454,6 +472,35 @@ async function survey<TEntry, TShipped>(layout: ResourceLayout<TEntry>, tree: Re
   ))];
 
   return { resolutions, definitions: items, diagnostics };
+}
+
+/** Which definition of one name applies, or the two that conflict, as `pick` gives it. */
+export type PickedName<T> = { readonly kind: 'resolved'; readonly item: ResolvedNamespaceItem<T> } | NamespaceConflict<T>;
+
+/**
+ * Which of `candidates` applies for each name, among the root and the `active` namespaces: the most specific place that
+ * has it, as a whole, or a conflict. Names come in the order the candidates first meet them; a name only an inactive
+ * namespace has is left out. `survey` resolves the team's files with it, and a type that admits each definition by its
+ * own rules first (hooks, MCP) resolves what it admitted.
+ */
+function pick<T>(candidates: ReadonlyArray<NamespaceCandidate<T>>, active: readonly string[]): Array<PickedName<T>> {
+  const byName = new Map<string, Array<NamespaceCandidate<T>>>();
+
+  for (const candidate of candidates) {
+    const group = byName.get(candidate.name);
+
+    if (group) group.push(candidate);
+    else byName.set(candidate.name, [candidate]);
+  }
+
+  return [...byName.values()].flatMap((group): Array<PickedName<T>> => {
+    const resolution = resolveNamespacedItems(group, active);
+
+    if (resolution.kind === 'conflict') return [resolution];
+    const [item] = resolution.items;
+
+    return item ? [{ kind: 'resolved', item }] : [];
+  });
 }
 
 /**
@@ -549,4 +596,4 @@ async function walk(layout: PlainLayout, root: string): Promise<ResourceWalk> {
   return { items, duplicates, diagnostics };
 }
 
-export const Resources = { list, resolve, survey, layer, walk } as const;
+export const Resources = { list, resolve, survey, pick, layer, walk } as const;

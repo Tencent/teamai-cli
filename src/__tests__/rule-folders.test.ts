@@ -105,6 +105,14 @@ describe('rule folders (#1787)', () => {
     );
   });
 
+  it('reads RULE.old.md as a support file, not a language variant whose frontmatter it ignores', async () => {
+    await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'RULE.old.md'), '---\npaths: ["docs/**"]\n---\nThe old API style.\n');
+
+    await new RulesHandler().pullAllRules(teamConfig, localConfig);
+
+    expect(vi.mocked(log.warn).mock.calls.map(([message]) => String(message)).filter((message) => message.includes('RULE.old.md'))).toEqual([]);
+  });
+
   it('reads RULE.md with CRLF turned into LF, ending in one newline', async () => {
     await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'RULE.md'), 'Use named exports.\r\nKeep it short.\r\n');
 

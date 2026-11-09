@@ -8,8 +8,9 @@ import { syncScorerDefinitions } from '../scorers/cache.js';
 import { scopeScoring } from '../scorers/settings.js';
 import { suiteDirectories } from '../benchmark/suite-cache.js';
 import { AgentsHandler } from '../resources/agents.js';
-import { listEntryFiles, resolveEntries } from '../namespaced-entries.js';
-import { mcpEntryReader } from '../resources/mcp.js';
+import { listEntryFiles } from '../namespaced-entries.js';
+import { LayeredEntries } from '../resources/layered-entries.js';
+import { TEAM_MCP_ENTRIES } from '../resources/mcp.js';
 import { resolveTeamHookEntries } from '../resources/hooks.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
@@ -159,7 +160,9 @@ describe('mcp', () => {
     await put('mcp/mcp.yaml', 'servers:\n  - name: shared\n    transport: http\n    url: https://example.com/shared/\n');
     await putMarkerAndLowerCase('mcp/github', 'MCP.yaml', 'transport: stdio\ncommand: node\nargs: ["${TEAMAI_MCP_DIR}/server.mjs"]\n');
 
-    const resolution = await resolveEntries(mcpEntryReader, localConfig, ['github']);
+    await put('manifest/projects.yaml', 'version: 1\nprojects:\n  - id: tools\n    resources: { mcp: [github] }\n');
+
+    const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, { ...localConfig, username: 't', scope: 'user', additionalRoles: [], projects: ['tools'] });
 
     expect(resolution.kind === 'resolved' ? resolution.entries.map((entry) => [entry.name, entry.entry.kind]) : resolution.kind)
       .toEqual([['shared', 'entry'], ['github', 'folder']]);

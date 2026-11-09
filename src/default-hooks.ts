@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { z } from 'zod';
+import { FOLDER_MARKERS } from './folder-markers.js';
 import { packageRoot } from './package-info.js';
 import { DeliveredFolders } from './resources/delivered-folders.js';
 import { FolderFiles, type FolderFile } from './resources/folder-files.js';
@@ -176,7 +177,7 @@ type FolderRead<TName extends DefaultHookName> =
 function readFolder<TName extends DefaultHookName>(name: TName, files: readonly FolderFile[], base: JsonObject): FolderRead<TName> {
   const byPath = new Map(files.map((file) => [file.path, file]));
   const refusals: string[] = [];
-  const marker = byPath.get('HOOK.yaml');
+  const marker = byPath.get(FOLDER_MARKERS.hooks.marker);
   let raw: JsonObject = {};
 
   try {

@@ -258,6 +258,18 @@ describe('Resources.survey', () => {
     }]);
   });
 
+  it('names a file that only looks like a variant of the marker in that note: en and zh are the only languages', async () => {
+    const root = fixture({ 'widgets/release/WIDGET.yaml': 'marker', 'widgets/release/WIDGET.old.yaml': 'an older marker' });
+
+    const { diagnostics } = await Resources.layer(widgets, { root, namespace: null });
+
+    expect(diagnostics).toEqual([{
+      kind: 'note',
+      path: 'widgets/release/',
+      message: 'widgets/release/ holds WIDGET.yaml, so it is one folder, and WIDGET.old.yaml in it is one of its files, no longer read on its own.',
+    }]);
+  });
+
   it('lists every definition of the team\'s files, those a namespace that is not active holds included', async () => {
     const tree = treeOf({
       'widgets/release.yaml': 'root release',

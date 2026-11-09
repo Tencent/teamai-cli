@@ -1,5 +1,7 @@
 /**
- * Env variables, hooks, MCP servers and team model profiles by namespace (#707).
+ * Env variables and team model profiles by namespace (#707), and the entry policy
+ * hooks and MCP servers share with them (`resources/layered-entries.ts`): the
+ * per-entry keys, the failure policy, and how a workspace's members combine.
  *
  *   <type>/<type>.yaml         root, shared
  *   <type>/<ns>/<type>.yaml    read only where <ns> is active in resources.<type>
@@ -15,8 +17,6 @@
  * Failure policy: a file in the active set that does not parse, a name twice in
  * one file, or a name in two active namespaces stops the type for this run.
  * The caller keeps what is installed rather than reconciling to an empty set.
- * While `roles:` is deprecated, a name repeated with `roles:` on every copy is
- * delivered as 0.25.0 did.
  *
  * Legacy mode (no roles, no projects) reads the root file only, as before, and
  * keeps its old handling of a repeated name; doctor lists those as info.
@@ -27,7 +27,6 @@ import { z } from 'zod';
 import { FOLDER_MARKERS, holdsMarker } from './folder-markers.js';
 import { describeOverride, repeatedNames, resolveNamespacedItems, type NamespaceCandidate } from './namespace-resolver.js';
 import { resolveResourceNamespaces } from './resource-namespaces.js';
-import { Resources, type ResourceLayout } from './resources/resolver.js';
 import { activeRoleIds, findRole, loadRolesManifestIfPresent } from './roles.js';
 import { findProject, loadProjectsManifest, unknownProjectMessage } from './projects.js';
 import { caseFoldKey, isSafeNamespaceSegment, NAMESPACE_RULE } from './manifest-schema.js';
@@ -225,8 +224,8 @@ export async function readEntryFileText(
   }
 }
 
-/** One place of a type, the root or a namespace, read: each entry with the file or folder that defines it, or why it cannot be used. */
-export type EntryPlaceRead<E> =
+/** One place of a type, the root or a namespace, read: each entry with the file that defines it, or why it cannot be used. */
+type EntryPlaceRead<E> =
   | {
     readonly ok: true;
     readonly entries: ReadonlyArray<{ readonly entry: E; readonly source: string }>;
@@ -235,7 +234,7 @@ export type EntryPlaceRead<E> =
   }
   | { readonly ok: false; readonly source: string; readonly reason: string };
 
-interface EntryReaderBase<E> {
+export interface EntryReaderBase<E> {
   readonly type: EntryType;
   /** Defaults to `entryLayout(type)`. */
   readonly layout?: EntryLayout;
@@ -249,102 +248,13 @@ interface EntryReaderBase<E> {
   delivered?(entry: E): JsonValue;
 }
 
-/**
- * How one type's entries are read: one file per place (`read`, null when the
- * file does not exist), or a whole place at a time (`readPlace`), for a type
- * whose entries also live in files and folders of their own (hooks, #1787).
- */
-export type EntryReader<E> = EntryFileReader<E> | EntryPlaceReader<E>;
-
-/** A reader of one file per place. */
-export type EntryFileReader<E> = EntryReaderBase<E> & {
+/** How one type's entries are read: one file per place, null when the file does not exist. */
+export type EntryReader<E> = EntryReaderBase<E> & {
   read(absolutePath: string, relativePath: string): Promise<EntryFileRead<E> | null>;
-  readonly readPlace?: undefined;
 };
-
-/** A reader of a whole place at a time. */
-export type EntryPlaceReader<E> = EntryReaderBase<E> & {
-  readPlace(repoPath: string, dir: string | null): Promise<EntryPlaceRead<E>>;
-  readonly read?: undefined;
-};
-
-/** What a type makes of one folder of a place: its definition and the keys it has that the schema does not know, a skip with what to tell the team, or why the place cannot be used. */
-export type PlaceFolderRead<E> =
-  | { readonly kind: 'read'; readonly definition: E; readonly unknownKeys: readonly string[] }
-  | { readonly kind: 'skipped'; readonly note: string | null }
-  | { readonly kind: 'invalid'; readonly reason: string };
-
-/**
- * One place of a type kept as entries of an entry-list file and as folders, whose layout reads no file on its own
- * (hooks, MCP; #1787), read through the resolver for `EntryPlaceReader.readPlace`. An invalid file or folder stops the
- * place; the resolver's notes and each skipped folder's note are the place's notes.
- */
-export async function readFolderPlace<TEntry, E>(place: {
-  readonly layout: ResourceLayout<TEntry>;
-  readonly at: { readonly root: string; readonly namespace: string | null };
-  readonly fromEntry: (entry: TEntry) => { readonly definition: E; readonly unknownKeys: readonly string[] };
-  readonly readFolder: (folder: { readonly name: string; readonly full: string; readonly path: string }) => Promise<PlaceFolderRead<E>>;
-}): Promise<EntryPlaceRead<E>> {
-  const { items, diagnostics } = await Resources.layer(place.layout, place.at);
-  const invalid = diagnostics.find((diagnostic) => diagnostic.kind === 'invalid');
-
-  if (invalid) return { ok: false, source: invalid.path, reason: invalid.message };
-  const unknownKeys = new Map<E, readonly string[]>();
-  const notes = diagnostics.map(({ message }) => message);
-  const entries: Array<{ entry: E; source: string }> = [];
-
-  const add = (definition: E, keys: readonly string[], source: string): void => {
-    if (keys.length > 0) unknownKeys.set(definition, keys);
-    entries.push({ entry: definition, source });
-  };
-
-  for (const { name, source } of items) {
-    switch (source.kind) {
-      case 'file':
-        break;
-      case 'entry': {
-        const { definition, unknownKeys: keys } = place.fromEntry(source.entry);
-        add(definition, keys, source.path);
-        break;
-      }
-
-      case 'folder': {
-        const read = await place.readFolder({ name, full: source.full, path: source.path });
-
-        switch (read.kind) {
-          case 'read':
-            add(read.definition, read.unknownKeys, source.path);
-            break;
-          case 'skipped':
-            if (read.note !== null) notes.push(read.note);
-            break;
-          case 'invalid':
-            return { ok: false, source: source.path, reason: read.reason };
-          default: {
-            const unhandled: never = read;
-
-            return unhandled;
-          }
-        }
-
-        break;
-      }
-
-      default: {
-        const unhandled: never = source;
-
-        return unhandled;
-      }
-    }
-  }
-
-  return { ok: true, entries, notes, unknownKeys };
-}
 
 /** Read one place of `reader`'s type: the root (`dir` null) or the namespace directory `dir`. Null when it holds nothing. */
 async function readEntryPlace<E>(reader: EntryReader<E>, repoPath: string, layout: EntryLayout, dir: string | null): Promise<EntryPlaceRead<E> | null> {
-  if (reader.readPlace) return reader.readPlace(repoPath, dir);
-
   // A folder this release cannot read is not a namespace (#1791).
   if (dir !== null && await holdsFolderMarker(path.join(repoPath, layout.dir), dir)) return null;
   const source = entryFilePath(layout, dir);
@@ -458,7 +368,7 @@ export async function resolveEntries<E>(
 ): Promise<EntryResolution<E>> {
   const members = await deliveredMembers(localConfig);
 
-  if (members) return resolveWorkspaceEntries(reader, localConfig, members);
+  if (members) return resolveWorkspaceEntries(reader, localConfig, members, (member) => resolveEntriesFor(reader, member));
   const { type } = reader;
   const layout = asLayout(reader.layout ?? type);
   const repoPath = localConfig.repo.localPath;
@@ -469,8 +379,6 @@ export async function resolveEntries<E>(
   const dirs = active && active.length > 0 ? await listDirs(path.join(repoPath, layout.dir)) : [];
 
   const candidates: NamespaceCandidate<E>[] = [];
-  // Entries still scoped by the deprecated per-entry `roles:`.
-  const roleScoped = new Set<NamespaceCandidate<E>>();
 
   for (const namespace of places) {
     const dir = namespace === null ? null : namespaceDir(dirs, namespace);
@@ -488,10 +396,7 @@ export async function resolveEntries<E>(
       const unknownKeys = read.unknownKeys?.get(entry) ?? [];
 
       if (!await keepScopedEntry(type, layout.noun, name, source, scope, unknownKeys, localConfig, targets, notices)) continue;
-      const candidate = { name, source, namespace, value: entry };
-      candidates.push(candidate);
-
-      if (scope.roles !== undefined) roleScoped.add(candidate);
+      candidates.push({ name, source, namespace, value: entry });
     }
   }
 
@@ -502,17 +407,7 @@ export async function resolveEntries<E>(
   ).map(([name]) => name);
 
   if (active === null) {
-    // Legacy mode lets a file repeat a name, as before; a name in a file and as a folder is a duplicate (#1787).
-    const twice = repeatedNames(candidates, (candidate) => candidate.name, (candidate) => candidate.source)
-      .find(([, sources]) => new Set(sources).size > 1);
-
-    if (twice) {
-      const [name, sources] = twice;
-      const [first = '', second = ''] = new Set(sources);
-
-      return { kind: 'failed', failure: { kind: 'duplicate', type, name, source: first, second, layout }, notices };
-    }
-
+    // Legacy mode lets the root file repeat a name, as before.
     return {
       kind: 'resolved',
       entries: candidates.map((c) => ({
@@ -524,31 +419,7 @@ export async function resolveEntries<E>(
     };
   }
 
-  // During the `roles:` deprecation window a file may repeat a name under
-  // different `roles:`, as 0.25.0 allowed: every copy that passes the role
-  // filter is delivered, as then (MCP keeps the last one). The resolver sees
-  // one copy of such a name; a name repeated without `roles:` on every copy
-  // is a duplicate.
-  const copies = new Map<string, NamespaceCandidate<E>[]>();
-
-  for (const candidate of candidates) {
-    const key = `${candidate.source}\0${candidate.name}`;
-    copies.set(key, [...(copies.get(key) ?? []), candidate]);
-  }
-
-  const repeatedUnderRoles = new Map<E, NamespaceCandidate<E>[]>();
-  const laterCopies = new Set<NamespaceCandidate<E>>();
-
-  for (const group of copies.values()) {
-    const [first, ...rest] = group;
-
-    if (!first || rest.length === 0 || !group.every((copy) => roleScoped.has(copy))) continue;
-    repeatedUnderRoles.set(first.value, group);
-
-    for (const copy of rest) laterCopies.add(copy);
-  }
-
-  const resolution = resolveNamespacedItems(candidates.filter((candidate) => !laterCopies.has(candidate)), active);
+  const resolution = resolveNamespacedItems(candidates, active);
 
   if (resolution.kind === 'conflict') {
     const failure: EntryFailure = resolution.reason === 'duplicate'
@@ -560,9 +431,9 @@ export async function resolveEntries<E>(
     return { kind: 'failed', failure, notices };
   }
 
-  // File order, not the resolver's name order: hooks on one event run in the
-  // order they are listed. A namespace entry takes the place of the root entry
-  // it replaces; the other namespace entries follow, in `active` order.
+  // File order, not the resolver's name order. A namespace entry takes the
+  // place of the root entry it replaces; the other namespace entries follow, in
+  // `active` order.
   const firstSeen = new Map<string, number>();
   candidates.forEach((candidate, index) => {
     if (!firstSeen.has(candidate.name)) firstSeen.set(candidate.name, index);
@@ -572,14 +443,14 @@ export async function resolveEntries<E>(
 
   return {
     kind: 'resolved',
-    entries: items.flatMap((item) => (repeatedUnderRoles.get(item.value) ?? [item]).map((copy) => ({
-      entry: copy.value,
+    entries: items.map((item) => ({
+      entry: item.value,
       name: item.name,
       namespace: item.namespace,
       source: item.source,
       replaces: item.replaces?.source ?? null,
       replacedEntry: item.replaces?.value ?? null,
-    }))),
+    })),
     active,
     notices,
     repeated,
@@ -594,12 +465,14 @@ export async function resolveEntries<E>(
  * delivery leaves what is installed for it as it is. An MCP server a member
  * excludes does not come through that member, so the workspace delivers it
  * while another member does (its own exclusions apply after). A member whose
- * files fail stops the type, as it would in that member's own scope.
+ * files fail stops the type, as it would in that member's own scope, which
+ * `resolveMember` resolves.
  */
-async function resolveWorkspaceEntries<E>(
-  reader: EntryReader<E>,
+export async function resolveWorkspaceEntries<E>(
+  reader: Pick<EntryReaderBase<E>, 'type' | 'layout' | 'delivered'>,
   workspace: LocalConfig,
   members: readonly LocalConfig[],
+  resolveMember: (member: LocalConfig) => Promise<EntryResolution<E>>,
 ): Promise<EntryResolution<E>> {
   const layout = asLayout(reader.layout ?? reader.type);
   const perMember: Array<Array<{ name: string; entries: ResolvedEntry<E>[] }>> = [];
@@ -608,7 +481,7 @@ async function resolveWorkspaceEntries<E>(
   const actives: Array<readonly string[] | null> = [];
 
   for (const member of members) {
-    const resolution = await resolveEntriesFor(reader, member);
+    const resolution = await resolveMember(member);
 
     for (const notice of resolution.notices) notices.set(notice.message, notice);
 
@@ -697,7 +570,7 @@ export async function resolveEntriesFor<E>(
  * cannot leak a project's value to the whole team. `roles:` on hooks and MCP
  * shipped in 0.25.0 and keeps filtering for one minor release.
  */
-async function keepScopedEntry(
+export async function keepScopedEntry(
   type: EntryType,
   noun: string,
   name: string,

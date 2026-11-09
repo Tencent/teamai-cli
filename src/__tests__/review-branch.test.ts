@@ -408,6 +408,21 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     expect(findings(review).filter((f) => f.check === 'leaks').map((f) => f.path)).toEqual(['hooks/lint/lint.sh']);
   });
 
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('fails a hooks.yaml it cannot read, as pull does, and never reads it as one with no hooks', async () => {
+    const file = path.join(repoDir, 'hooks', 'hooks.yaml');
+    await fse.outputFile(file, 'hooks:\n  - { id: lint, description: Lint, event: Stop, command: ~/.teamai/team-scripts/lint.sh }\n');
+    await fse.chmod(file, 0o000);
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.check === 'format')]).toEqual([false, [{
+      level: 'fail',
+      check: 'format',
+      path: 'hooks/hooks.yaml',
+      message: expect.stringMatching(/^hooks\/hooks\.yaml cannot be read: EACCES.+; pull leaves every member's team hooks as they are until it is fixed\.$/),
+    }]]);
+  });
+
   it('fails a hook folder whose HOOK.yaml pull cannot read', async () => {
     await fse.outputFile(path.join(repoDir, 'hooks', 'lint', 'HOOK.yaml'), 'description: Lint\nevent: Stop\n');
 
@@ -2124,6 +2139,20 @@ describe('reviewBranchDir: rule folders (#1787)', () => {
         message: 'rules/api-style/RULE.md sits at the shared root, so it is delivered to every member.',
       },
     ]);
+  });
+
+  it('names the files of a folder only where the branch adds its RULE.md to the base, as pull says it once', async () => {
+    await fse.outputFile(path.join(repoDir, 'rules', 'api-style', 'checklist.md'), '- Plural names.\n');
+    await fse.outputFile(path.join(repoDir, 'rules', 'fe', 'review', 'notes.md'), 'Read it twice.\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir, { ruleFolders: new Set(['rules/api-style/']) });
+
+    expect(review.findings.filter(({ level, check }) => level === 'warn' && check === 'structure')).toEqual([{
+      level: 'warn',
+      check: 'structure',
+      path: 'rules/fe/review/',
+      message: 'rules/fe/review/ holds RULE.md, so it is one folder, and notes.md in it is one of its files, no longer read on its own.',
+    }]);
   });
 
   it('fails a rule folder pull does not deliver, and a credential in a support file', async () => {

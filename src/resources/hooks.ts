@@ -3,15 +3,15 @@ import { z } from 'zod';
 import { parseYaml } from '../utils/yaml.js';
 import { ResourceHandler } from './base.js';
 import type { HookDef, JsonValue, LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
-import { TEAMAI_CUSTOM_HOOK_PREFIX, areTeamHooksDisabled, getHooksSharing, isJsonObject, isSelfMode } from '../types.js';
+import { TEAMAI_CUSTOM_HOOK_PREFIX, areTeamHooksDisabled, getHooksSharing, isSelfMode } from '../types.js';
 import { pathExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { warnOnce } from '../utils/warn-once.js';
 import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.js';
 import {
-  entryFilePath, missingTopLevelKeyReason, readEntryFileText, reportEntryResolution, resolveEntriesFor, unknownEntryKeys,
-  readFolderPlace, type EntryPlaceReader, type EntryResolution, type PlaceFolderRead, type ResolvedEntry,
+  entryFilePath, missingTopLevelKeyReason, readEntryFileText, reportEntryResolution, unknownEntryKeys, type EntryResolution, type ResolvedEntry,
 } from '../namespaced-entries.js';
+import { LayeredEntries, parseMarker, readMarkerFolder, type LayeredEntryType, type PlaceFolderRead } from './layered-entries.js';
 import { RESOURCE_LAYOUTS, Resources, type EntryListRead, type ResourceLayout } from './resolver.js';
 import { DeliveredFolders, type FolderDelivery } from './delivered-folders.js';
 import { FolderFiles, type FolderFile } from './folder-files.js';
@@ -24,7 +24,7 @@ import { DefaultHooks, type DefaultHookName } from '../default-hooks.js';
 
 const TeamHookSchema = z.object({
   /** Unique id (marker + manifest index). */
-  id: z.string().regex(/^[a-z0-9-]+$/),
+  id: z.string().regex(RESOURCE_LAYOUTS.hooks.nameRule.pattern),
   /** Written into the hook description. */
   description: z.string(),
   /** Claude PascalCase event name. */
@@ -60,9 +60,6 @@ export type TeamHook = z.infer<typeof TeamHookSchema>;
 
 /** `hooks/[<ns>/]<id>/HOOK.yaml`: a hooks.yaml entry without the id, which is the directory's name, and without roles or projects. */
 const FolderHookSchema = TeamHookSchema.omit({ id: true, roles: true, projects: true });
-
-/** The marker of a hook folder. */
-const HOOK_MARKER = 'HOOK.yaml';
 
 /** A team hook as the team repo defines it. */
 export type TeamHookDefinition =
@@ -161,63 +158,43 @@ export function parseTeamHooks(content: string): TeamHook[] | null {
   }
 }
 
-/** A folder's `HOOK.yaml` (at `markerPath`) as the hook named `id`, or why it does not parse. */
-function parseHookMarker(content: string, markerPath: string, id: string): { ok: true; hook: TeamHook; unknownKeys: readonly string[] } | { ok: false; reason: string } {
-  try {
-    const raw: JsonValue = parseYaml(content);
-    const parsed = FolderHookSchema.safeParse(raw);
-
-    if (!parsed.success) {
-      return { ok: false, reason: `${markerPath} does not parse: ${parsed.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ')}` };
-    }
-
-    const known = Object.keys(FolderHookSchema.shape);
-    const unknownKeys = isJsonObject(raw) ? Object.keys(raw).filter((key) => !known.includes(key)) : [];
-
-    return { ok: true, hook: { ...parsed.data, id }, unknownKeys };
-  } catch (e) {
-    return { ok: false, reason: `${markerPath} does not parse: ${e instanceof Error ? e.message : String(e)}` };
-  }
-}
-
 /** Read the hook folder at `full` (`folderPath` from the team root, ending in `/`), named `id`. */
 export async function readHookFolder(full: string, folderPath: string, id: string): Promise<PlaceFolderRead<TeamHookDefinition>> {
-  const read = await FolderFiles.read(full);
+  const read = await readMarkerFolder({ full, path: folderPath }, RESOURCE_LAYOUTS.hooks.marker, FolderHookSchema);
 
-  if (read.kind === 'invalid') {
-    return { kind: 'invalid', reason: `${folderPath} is not a hook folder teamai can deliver: ${read.problems.map(FolderFiles.describe).join(', ')}` };
+  switch (read.kind) {
+    case 'undeliverable':
+      return { kind: 'invalid', reason: `${folderPath} is not a hook folder teamai can deliver: ${read.problems.join(', ')}` };
+    case 'invalid':
+      return read;
+    case 'read':
+      return { kind: 'read', definition: { kind: 'folder', hook: { ...read.fields, id }, files: read.files }, unknownKeys: read.unknownKeys };
+    default: {
+      const unhandled: never = read;
+
+      return unhandled;
+    }
   }
-
-  const marker = read.files.find((file) => file.path === HOOK_MARKER);
-  const parsed = parseHookMarker(marker?.bytes.toString('utf8') ?? '', `${folderPath}${HOOK_MARKER}`, id);
-
-  if (!parsed.ok) return { kind: 'invalid', reason: parsed.reason };
-
-  return { kind: 'read', definition: { kind: 'folder', hook: parsed.hook, files: read.files }, unknownKeys: parsed.unknownKeys };
 }
 
-/** How team hooks are read for delivery: each place of the team tree through the resolver, `hooks.yaml` entries and folders. */
-export const hooksEntryReader: EntryPlaceReader<TeamHookDefinition> = {
+/** How team hooks resolve for delivery: `hooks.yaml` entries and folders, in each place of the team tree, through the resolver. */
+export const TEAM_HOOK_ENTRIES: LayeredEntryType<HooksFileEntry, TeamHookDefinition> = {
   type: 'hooks',
-  readPlace: (repoPath, dir) => readFolderPlace({
-    layout: TEAM_HOOKS,
-    at: { root: repoPath, namespace: dir },
-    fromEntry: ({ hook, unknownKeys }) => ({ definition: { kind: 'entry', hook }, unknownKeys }),
-    readFolder: async ({ name, full, path: folderPath }) => {
-      // A teamai- name only replaces a default (#1787, common rule 5), at the root, as builtin: overrides apply to the
-      // whole team; defaultHookReplacements reads it there.
-      if (DefaultHooks.isName(name)) {
-        return { kind: 'skipped', note: dir === null ? null : `${folderPath} is refused, and teamai's default stays in force: a default hook is replaced at the root of the team repo only. Move it to hooks/${name}/` };
-      }
+  layout: TEAM_HOOKS,
+  fromEntry: ({ hook, unknownKeys }) => ({ definition: { kind: 'entry', hook }, unknownKeys }),
+  readFolder: async ({ name, full, path: folderPath, namespace }) => {
+    // A teamai- name only replaces a default (#1787, common rule 5), at the root, as builtin: overrides apply to the
+    // whole team; defaultHookReplacements reads it there.
+    if (DefaultHooks.isName(name)) {
+      return { kind: 'skipped', note: namespace === null ? null : `${folderPath} is refused, and teamai's default stays in force: a default hook is replaced at the root of the team repo only. Move it to hooks/${name}/` };
+    }
 
-      if (name.startsWith('teamai-')) {
-        return { kind: 'skipped', note: `${folderPath} is skipped: a teamai- name only replaces a teamai default, and teamai has no hook named ${name}. Rename the folder.` };
-      }
+    if (name.startsWith('teamai-')) {
+      return { kind: 'skipped', note: `${folderPath} is skipped: a teamai- name only replaces a teamai default, and teamai has no hook named ${name}. Rename the folder.` };
+    }
 
-      return readHookFolder(full, folderPath, name);
-    },
-  }),
-  nameOf: (definition) => definition.hook.id,
+    return readHookFolder(full, folderPath, name);
+  },
   scopeOf: (definition) => definition.hook,
 };
 
@@ -251,7 +228,7 @@ export type BuiltinOverrideRead = { known: true; override: BuiltinOverride | und
 export async function resolveTeamHookEntries(
   localConfig: LocalConfig,
 ): Promise<{ resolution: EntryResolution<TeamHookDefinition>; builtin: BuiltinOverrideRead }> {
-  const resolution = await resolveEntriesFor(hooksEntryReader, localConfig);
+  const resolution = await LayeredEntries.resolve(TEAM_HOOK_ENTRIES, localConfig);
 
   return { resolution, builtin: await readBuiltinOverride(localConfig) };
 }
@@ -304,16 +281,13 @@ function isTeamScriptCommand(command: string): boolean {
   return command.includes('.teamai/team-scripts/');
 }
 
-/** A hook folder pull delivers: where, and the files. */
-export type HookFolderDelivery = FolderDelivery;
-
 /**
  * A folder at the root of the team repo that replaces one of teamai's default hooks (#1787): delivered to the scope's
  * data home, where the hint that uses it reads it, or refused for breaking the default's contract, with what pull
  * prints about it, while teamai's default stays in force. `files` is null for a folder that cannot be read.
  */
 export type DefaultHookReplacement =
-  | { readonly kind: 'delivered'; readonly name: DefaultHookName; readonly path: string; readonly delivery: HookFolderDelivery }
+  | { readonly kind: 'delivered'; readonly name: DefaultHookName; readonly path: string; readonly delivery: FolderDelivery }
   | { readonly kind: 'refused'; readonly name: DefaultHookName; readonly path: string; readonly files: readonly FolderFile[] | null; readonly messages: readonly string[] };
 
 /** The team's replacements of teamai's default hooks, as pull reads them. */
@@ -339,8 +313,8 @@ export async function readDefaultHookReplacements(localConfig: LocalConfig): Pro
 }
 
 /** The default hook replacements to deliver, warning once about each one pull refuses. */
-async function defaultHookReplacements(localConfig: LocalConfig): Promise<HookFolderDelivery[]> {
-  const folders: HookFolderDelivery[] = [];
+async function defaultHookReplacements(localConfig: LocalConfig): Promise<FolderDelivery[]> {
+  const folders: FolderDelivery[] = [];
 
   for (const replacement of await readDefaultHookReplacements(localConfig)) {
     if (replacement.kind === 'delivered') {
@@ -357,7 +331,7 @@ async function defaultHookReplacements(localConfig: LocalConfig): Promise<HookFo
 /** One team hook as delivered: its definition for the tools, and the folder it runs from, if any. */
 interface TeamHookDelivery {
   readonly def: HookDef;
-  readonly folder: HookFolderDelivery | null;
+  readonly folder: FolderDelivery | null;
 }
 
 /** The hook folder `hook`, in `namespace`, as `localConfig`'s scope delivers it: its command names the folder's path (#1787). */
@@ -394,12 +368,12 @@ export function historicalFolderHookDef(localConfig: LocalConfig, relativePath: 
   const id = rest.at(-2);
   const namespace = rest.length === 3 ? rest[0] ?? null : null;
 
-  if (type !== TEAM_HOOKS.dir || marker !== HOOK_MARKER || id === undefined || (rest.length !== 2 && rest.length !== 3)) return null;
+  if (type !== TEAM_HOOKS.dir || marker !== RESOURCE_LAYOUTS.hooks.marker || id === undefined || (rest.length !== 2 && rest.length !== 3)) return null;
 
   if (!RESOURCE_LAYOUTS.hooks.nameRule.pattern.test(id)) return null;
-  const parsed = parseHookMarker(content, relativePath, id);
+  const parsed = parseMarker(content, relativePath, FolderHookSchema);
 
-  return parsed.ok ? folderHookDef(localConfig, parsed.hook, namespace) : null;
+  return parsed.ok ? folderHookDef(localConfig, { ...parsed.fields, id }, namespace) : null;
 }
 
 /**
@@ -425,7 +399,7 @@ export async function resolveTeamHooks(
   localConfig: LocalConfig,
   opts: { auto?: boolean; silent?: boolean; preview?: boolean } = {},
 ): Promise<
-  | { ok: true; defs: HookDef[]; folders: readonly HookFolderDelivery[]; builtin: BuiltinOverride | undefined; held?: readonly string[] }
+  | { ok: true; defs: HookDef[]; folders: readonly FolderDelivery[]; builtin: BuiltinOverride | undefined; held?: readonly string[] }
   | { ok: false; builtin: BuiltinOverrideRead }
 > {
   // Which hooks this member receives: root plus active namespace files, before
@@ -490,7 +464,7 @@ export async function resolveTeamHooks(
  */
 export async function deliverHookFolders(
   localConfig: LocalConfig,
-  folders: readonly HookFolderDelivery[],
+  folders: readonly FolderDelivery[],
   opts: { readonly prune: boolean },
 ): Promise<void> {
   const { editDeliveryRecord } = await import('../pull.js');

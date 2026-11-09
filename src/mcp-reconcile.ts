@@ -40,7 +40,7 @@ import {
   UntypedStdioEntrySchema,
   type McpFormat,
 } from './resources/mcp-format.js';
-import { deliverMcpFolders, mcpEntryReader, parseTeamMcpServers, teamMcpDef, teamMcpToDef, type TeamMcpDefinition } from './resources/mcp.js';
+import { deliverMcpFolders, TEAM_MCP_ENTRIES, parseTeamMcpServers, teamMcpDef, teamMcpToDef, type TeamMcpDefinition } from './resources/mcp.js';
 import { historicalContents } from './utils/team-history.js';
 import { describeMembersFile, keepsTrackedCopy } from './resources/delivered-copies.js';
 import { envName, envTable } from './resources/env-key.js';
@@ -54,7 +54,8 @@ import { cleanupOf, installOf, locate, ownOf, writable, type EntryPlace, type In
 import { channelsOf, isToolId, mcpFormatOf, mcpSyntaxOf, hasDefaultHomeLeftovers, TOOLS, type McpProject } from './tools.js';
 import { realHost, type Host } from './tool-home.js';
 import { KNOWN_AGENTS } from './known-agents.js';
-import { entryLayout, reportEntryResolution, resolveEntriesFor, type ResolvedEntry } from './namespaced-entries.js';
+import { entryLayout, reportEntryResolution, type ResolvedEntry } from './namespaced-entries.js';
+import { LayeredEntries } from './resources/layered-entries.js';
 import {
   readJson,
   writeJsonAtomic,
@@ -1511,7 +1512,7 @@ export async function keptMcpEntries(
   const kept = new Map<string, string[]>();
 
   if (localConfig.repo.kind === 'http') return kept;
-  const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
+  const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig);
 
   if (resolution.kind === 'failed' || resolution.entries.length === 0) return kept;
   const teamDefs = resolution.entries.map((entry) => teamMcpDef(localConfig, entry));
@@ -2204,7 +2205,7 @@ export async function mcpConfigsNotProvenClean(
   options: { before?: ManagedMcpManifest; otherWorktrees?: 'judged' | 'empty' } = {},
 ): Promise<Map<string, string>> {
   const { before, otherWorktrees = 'judged' } = options;
-  const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
+  const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig);
   const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpDef(localConfig, entry));
 
   // Keyed by real path: the protected paths come from git, which resolves symlinks (macOS /var).
@@ -2623,7 +2624,7 @@ async function protectProjectMcpConfigs(
   written: Set<string>,
   before: ManagedMcpManifest | undefined,
 ): Promise<void> {
-  const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
+  const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig);
   const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpDef(localConfig, entry));
   const { manifestPath, manifest } = await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true });
   const vars = await buildVarTable(localConfig);
@@ -2898,7 +2899,7 @@ async function reconcileTargets(
   if (!removeAll) {
     // A file that does not parse, or a server name defined twice, keeps every
     // installed server as it is: reconciling to an empty set would remove them.
-    const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
+    const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig);
     reportEntryResolution(resolution);
 
     if (resolution.kind === 'failed') return { changes, wrote, unresolved: true };
