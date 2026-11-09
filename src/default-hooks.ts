@@ -1,7 +1,6 @@
-import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { packageRoot } from './package-info.js';
 import { DeliveredFolders } from './resources/delivered-folders.js';
 import { FolderFiles, type FolderFile } from './resources/folder-files.js';
 import { isJsonObject, type JsonObject, type JsonValue, type LocalConfig, type TeamaiConfig } from './types.js';
@@ -112,20 +111,6 @@ const NAMES = Object.keys(PARAMS).filter((name): name is DefaultHookName => name
 /** Whether `name` is one of teamai's default hook folders, which a team folder of that name at the root replaces. */
 function isName(name: string): name is DefaultHookName {
   return NAMES.some((known) => known === name);
-}
-
-/** The package root, holding `hooks/`. This file sits one level below it, in src/ and in the bundle in dist/ alike. */
-function packageRoot(): string {
-  const modulePath = fileURLToPath(import.meta.url);
-  let moduleDir: string;
-
-  try {
-    moduleDir = path.dirname(fs.realpathSync(modulePath));
-  } catch {
-    moduleDir = path.dirname(modulePath);
-  }
-
-  return path.join(moduleDir, '..');
 }
 
 /** `{{ name }}`: a variable a text reads. */

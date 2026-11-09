@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import chalk from 'chalk';
+import { packageRoot } from './package-info.js';
 import { listFilesRecursive, pathExists } from './utils/fs.js';
 import { readSkillDescription } from './agent-skills.js';
 import { log, setStderrOnly } from './utils/logger.js';
@@ -243,27 +243,13 @@ export interface PackagedSkillRoots {
   dataRoot: string;
 }
 
-/**
- * Locate the packaged roots relative to this module.
- *
- * `realpathSync` first: a global `npm i -g` install exposes the CLI through a
- * symlinked bin, and without resolving it `..` can land outside the package.
- */
+/** The packaged roots, in the package root. */
 export function packagedSkillRoots(): PackagedSkillRoots {
-  const modulePath = fileURLToPath(import.meta.url);
-  let moduleDir: string;
-
-  try {
-    moduleDir = path.dirname(fs.realpathSync(modulePath));
-  } catch {
-    moduleDir = path.dirname(modulePath);
-  }
-
-  const packageRoot = path.join(moduleDir, '..');
+  const root = packageRoot();
 
   return {
-    deployRoot: path.join(packageRoot, 'skills'),
-    dataRoot: path.join(packageRoot, 'skill-data'),
+    deployRoot: path.join(root, 'skills'),
+    dataRoot: path.join(root, 'skill-data'),
   };
 }
 

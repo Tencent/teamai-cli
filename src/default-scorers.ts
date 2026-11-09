@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { packageRoot } from './package-info.js';
 import { parseScorer, type ScorerDefinition, type ScorerDiagnostic } from './scorers/definition.js';
 import { splitFrontmatter } from './utils/frontmatter.js';
 import { isTemplateRead, parseTemplate, renderText, type Template } from './workflow/template.js';
@@ -44,18 +44,9 @@ function isName(name: string): name is DefaultScorerName {
 /** The root of every variable any default offers, so a file reading another default's variable is told so. */
 const ROOTS = [...new Set(Object.values(VARIABLES).flatMap((names) => names.map((name) => name.split('.')[0] ?? name)))];
 
-/** `scorers/` in the package root. This file sits one level below it, in src/ and in the bundle in dist/ alike. */
+/** `scorers/` in the package root. */
 function defaultsDir(): string {
-  const modulePath = fileURLToPath(import.meta.url);
-  let moduleDir: string;
-
-  try {
-    moduleDir = path.dirname(fs.realpathSync(modulePath));
-  } catch {
-    moduleDir = path.dirname(modulePath);
-  }
-
-  return path.join(moduleDir, '..', 'scorers');
+  return path.join(packageRoot(), 'scorers');
 }
 
 const shippedTexts = new Map<DefaultScorerName, string>();
