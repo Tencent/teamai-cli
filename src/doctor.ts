@@ -67,6 +67,7 @@ import {
   buildEntryResolutionChecks,
   buildSecretValuesCheck,
   buildEntryScopeKeyCheck,
+  buildRetiredBuiltinOverrideChecks,
   entryNamespaceNotes,
   buildDocsCheck,
   keptDocNotes,
@@ -966,6 +967,7 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
     ...await buildEntryResolutionChecks(ctx),
     ...buildSecretValuesCheck(ctx),
     ...await buildEntryScopeKeyCheck(ctx),
+    ...await buildRetiredBuiltinOverrideChecks(ctx),
   );
 
   return checks;

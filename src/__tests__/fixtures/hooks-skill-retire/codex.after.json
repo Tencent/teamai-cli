@@ -35,17 +35,6 @@
             "timeout": 10
           }
         ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool codex --matcher TodoWrite 2>/dev/null\" || true",
-            "commandWindows": "cmd.exe /d /s /c \"teamai hook-dispatch post-tool-use --tool codex --matcher TodoWrite 2>nul & exit /b 0\"",
-            "timeout": 3
-          }
-        ],
-        "matcher": "TodoWrite"
       }
     ],
     "UserPromptSubmit": [

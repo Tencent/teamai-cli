@@ -74,9 +74,9 @@ export interface HandlerRegistration {
 const FOREGROUND_HOOK_TIMEOUT_MS = 4_500;
 
 /**
- * TodoWrite runs on a PostToolUse matcher whose host cap is only 3s
- * (builtin-hooks.ts), so it needs a tighter budget than the shared foreground
- * cap. It is a local dedup-cache check that completes in microseconds anyway.
+ * The TodoWrite hint keeps the budget its own 3s entry gave it until #1788,
+ * tighter than the shared foreground cap: it is a local dedup-cache check that
+ * completes in microseconds anyway.
  */
 const TODOWRITE_HINT_TIMEOUT_MS = 2_500;
 
@@ -941,14 +941,16 @@ async function teamAgentLanguage(config: LocalConfig | null): Promise<'en' | 'zh
   return loadTeamAgentLanguage(config);
 }
 
+/**
+ * Runs in the PostToolUse `*` pass (#1788). It asks for the tool name first,
+ * so the other calls of that pass read no file here.
+ */
 const todowriteHintHandler: HookHandler = {
   name: 'todowrite-hint',
-  async execute(stdin, _tool, config) {
-    if (process.env.TEAMAI_RECALL_DISABLED === '1') return null;
+  async execute(stdin, tool, config) {
+    if (normalizeToolName(stdinString(stdin, 'tool_name') ?? '') !== 'TodoWrite') return null;
 
-    const toolName = normalizeToolName(stdinString(stdin, 'tool_name') ?? '');
-
-    if (toolName !== 'TodoWrite') return null;
+    if (process.env.TEAMAI_RECALL_DISABLED === '1' || !config || !await todoWriteHintInstalled(tool, config)) return null;
 
     const { shouldSkipTodoWriteHint, buildHintMessage } = await import('./todowrite-hint.js');
 
@@ -962,6 +964,29 @@ const todowriteHintHandler: HookHandler = {
     });
   },
 };
+
+/**
+ * Whether the hint would still have its retired TodoWrite entry: only the
+ * tools that had it, and not where the team disables that key or the wildcard
+ * one that now carries it. A hooks file that cannot be read keeps it off, as
+ * skill-use.ts treats its own retired key.
+ */
+async function todoWriteHintInstalled(tool: string, config: LocalConfig): Promise<boolean> {
+  const { POST_TOOL_USE_WILDCARD_KEY, RETIRED_TODOWRITE_HOOK_KEY, takesAllBuiltins } = await import('./builtin-hooks.js');
+
+  if (!takesAllBuiltins(tool)) return false;
+  const { readBuiltinDisabledListing } = await import('./resources/hooks.js');
+
+  for (const key of [RETIRED_TODOWRITE_HOOK_KEY, POST_TOOL_USE_WILDCARD_KEY]) {
+    const listing = await readBuiltinDisabledListing(config, key);
+
+    if (listing === 'unreadable') log.debug('hooks/hooks.yaml cannot be read, so the TodoWrite hint is not given');
+
+    if (listing !== 'not-listed') return false;
+  }
+
+  return true;
+}
 
 const mrHintHandler: HookHandler = {
   name: 'mr-hint',
@@ -1335,7 +1360,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // host-visible cost is bundle load + spawn.
     { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
     { event: 'post-tool-use', matcher: '*', handler: recallAttributionHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
-    { event: 'post-tool-use', matcher: 'TodoWrite', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS, requiresConfig: true },
+    { event: 'post-tool-use', matcher: '*', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS, requiresConfig: true },
     { event: 'post-tool-use', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
     { event: 'post-tool-use', matcher: '*', handler: skillUseHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
     // A worktree an agent tool entered without any git hook (Claude Code's EnterWorktree, Codex CLI) gets the

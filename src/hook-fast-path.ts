@@ -78,6 +78,7 @@ export function argvVerdict(argv: readonly string[], env: NodeJS.ProcessEnv, pla
   // A session teamai launched for itself runs no hooks (hookDispatchCli's first check).
   if (launcher && launcher !== 'workflow') return { kind: 'skip' };
 
+  // `--matcher TodoWrite` is the entry an earlier release installed, until the next pull removes it.
   if (env[ATTEMPT_ENV] || FULL_DISPATCH_TOOLS.has(tool) || matcher === 'TodoWrite') return { kind: 'full' };
 
   // A Claude-format hook may belong to Cursor or Copilot CLI, which the full dispatch tells apart (claude-hook-host.ts).
@@ -88,14 +89,18 @@ export function argvVerdict(argv: readonly string[], env: NodeJS.ProcessEnv, pla
 
 /**
  * The payload to hand the background child, or null when the full dispatch
- * must take it: a payload that is not a JSON object, or one with no session
- * id, for which the foreground derives an id from its own pid that the child
- * could not reproduce. Keys only the foreground may set are dropped.
+ * must take it: a payload that is not a JSON object; one with no session id,
+ * for which the foreground derives an id from its own pid that the child
+ * could not reproduce; or a TodoWrite call, which the hint answers in the
+ * foreground (hook-handlers.ts `todowrite-hint`). Keys only the foreground may
+ * set are dropped.
  */
 export function childPayload(raw: string): string | null {
   const fields = jsonObjectFields(raw);
 
   if (!fields || !SESSION_ID_FIELDS.some((field) => isNonEmptyString(fields.get(field)))) return null;
+
+  if (fields.get('tool_name') === 'TodoWrite') return null;
 
   if (!FOREGROUND_PAYLOAD_KEYS.some((key) => fields.has(key))) return raw;
 

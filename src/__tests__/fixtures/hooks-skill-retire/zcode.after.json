@@ -45,20 +45,6 @@
               "timeoutMs": 30000
             }
           ]
-        },
-        {
-          "hooks": [
-            {
-              "type": "process",
-              "command": "bash",
-              "args": [
-                "-c",
-                "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch post-tool-use --tool zcode --matcher TodoWrite"
-              ],
-              "timeoutMs": 30000
-            }
-          ],
-          "matcher": "TodoWrite"
         }
       ],
       "UserPromptSubmit": [

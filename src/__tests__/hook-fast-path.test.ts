@@ -84,6 +84,8 @@ describe('childPayload', () => {
     ['JSON null', 'null'],
     ['a JSON number', '5'],
     ['text that is not JSON', '{"session_id":"s-1"'],
+    // The TodoWrite hint answers in the foreground of the wildcard pass (#1788).
+    ['a TodoWrite call', JSON.stringify({ session_id: 's-1', tool_name: 'TodoWrite' })],
   ])('leaves a payload with %s to the full dispatch', (_case, raw) => {
     expect(childPayload(raw)).toBeNull();
   });

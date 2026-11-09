@@ -246,7 +246,7 @@ Limits:
 | Event | What it does |
 |-------|----------------|
 | `SessionStart` | Pull team resources and record the session start |
-| `PostToolUse` | Record skill use |
+| `PostToolUse` | Record skill use. After a `TodoWrite` call, remind the agent to use `teamai-recall` |
 | `UserPromptSubmit` | Record the prompt |
 | `Stop` | Check for a CLI update and record the session end |
 
@@ -270,7 +270,14 @@ hooks:
     command: bash ~/.teamai/team-scripts/scan-secret.sh
     timeout: 15
     tools: [claude, cursor]
+
+builtin:
+  disabled: [Hook dispatch post-tool-use TodoWrite]   # no TodoWrite reminder
+  overrides:
+    Hook dispatch stop: { timeout: 30 }
 ```
+
+Every tool call runs one `PostToolUse` entry, `Hook dispatch post-tool-use wildcard`, and the `TodoWrite` reminder runs in it. Listing `Hook dispatch post-tool-use TodoWrite` under `disabled` still turns the reminder off. A timeout for that key does nothing, and `teamai doctor` says so.
 
 A hook for one project goes in `hooks/<ns>/hooks.yaml`.
 

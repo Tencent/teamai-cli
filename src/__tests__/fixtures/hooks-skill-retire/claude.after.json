@@ -34,16 +34,6 @@
           }
         ],
         "description": "[teamai] Hook dispatch post-tool-use wildcard"
-      },
-      {
-        "matcher": "TodoWrite",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool claude --matcher TodoWrite 2>/dev/null\" || true"
-          }
-        ],
-        "description": "[teamai] Hook dispatch post-tool-use TodoWrite"
       }
     ],
     "UserPromptSubmit": [

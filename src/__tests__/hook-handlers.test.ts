@@ -291,9 +291,10 @@ describe('hook-handlers registry', () => {
       expect(reg, name).toBeDefined();
       expect(reg!.background, `${name} must run detached`).toBe(true);
     }
-    // What remains inline for a plain tool call: nothing.
+    // What remains inline: the TodoWrite hint alone, which answers nothing but a
+    // TodoWrite call (#1788). The fast path hands every other call to the child.
     const inline = handlers.filter((r) => !r.background);
-    expect(inline).toEqual([]);
+    expect(inline.map((r) => r.handler.name)).toEqual(['todowrite-hint']);
   });
 
   it('session-end records the final dashboard snapshot, dispatches the webhook and pushes votes in the background, and credits votes in the foreground', () => {
@@ -1210,12 +1211,13 @@ describe('hook-handlers registry', () => {
     }
   });
 
-  it('TodoWrite hint stays under its 3s PostToolUse host cap', () => {
+  it('TodoWrite hint keeps the budget of the 3s entry it had before it joined the wildcard pass (#1788)', () => {
     const registry = buildHandlerRegistry();
     const todo = registry.find(
-      (r) => r.event === 'post-tool-use' && r.matcher === 'TodoWrite',
+      (r) => r.event === 'post-tool-use' && r.handler.name === 'todowrite-hint',
     );
-    expect(todo!.timeoutMs).toBeLessThan(3_000);
+    expect(todo?.matcher).toBe('*');
+    expect(todo?.timeoutMs).toBeLessThan(3_000);
   });
 
   it('marks contribute-check, mr-hint, votes-sync and votes-push as gitOnly', () => {
@@ -1275,11 +1277,11 @@ describe('hook-handlers registry', () => {
 
   it('TodoWrite gets no recall nudge where teamai is not set up (#748)', async () => {
     const registry = buildHandlerRegistry();
-    expect(registry.some((r) => r.matcher === 'TodoWrite' && r.handler.name === 'todowrite-hint')).toBe(true);
+    expect(registry.some((r) => r.matcher === '*' && r.handler.name === 'todowrite-hint')).toBe(true);
     const dispatcher = createDispatcher({ handlers: filterHandlersForConfig(registry, null), localConfig: null });
 
     const result = await dispatcher.dispatch(
-      'post-tool-use', 'TodoWrite', { session_id: 'td-748', tool_name: 'TodoWrite' }, 'claude', 'foreground',
+      'post-tool-use', '*', { session_id: 'td-748', tool_name: 'TodoWrite' }, 'claude', 'foreground',
     );
     expect(result.output).toBeNull();
   });

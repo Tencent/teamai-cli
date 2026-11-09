@@ -237,7 +237,7 @@ shell 获得其启动目录的团队环境变量，因此同时打开的多个�
 | 事件 | 做什么 |
 |------|--------|
 | `SessionStart` | 拉取团队资源，并记下会话开始 |
-| `PostToolUse` | 记录 skill 使用 |
+| `PostToolUse` | 记录 skill 使用。`TodoWrite` 调用之后，提醒 agent 用 `teamai-recall` |
 | `UserPromptSubmit` | 记录输入 |
 | `Stop` | 检查 CLI 更新，并记下会话结束 |
 
@@ -261,7 +261,14 @@ hooks:
     command: bash ~/.teamai/team-scripts/scan-secret.sh
     timeout: 15
     tools: [claude, cursor]
+
+builtin:
+  disabled: [Hook dispatch post-tool-use TodoWrite]   # 不要 TodoWrite 提醒
+  overrides:
+    Hook dispatch stop: { timeout: 30 }
 ```
+
+每次工具调用只跑一条 `PostToolUse` 条目 `Hook dispatch post-tool-use wildcard`，`TodoWrite` 提醒也在里面跑。把 `Hook dispatch post-tool-use TodoWrite` 写进 `disabled` 仍然会关掉提醒。给这个 key 设超时不起作用，`teamai doctor` 会提示。
 
 只给一个项目时写到 `hooks/<ns>/hooks.yaml`。
 

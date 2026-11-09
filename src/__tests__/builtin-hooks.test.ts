@@ -5,22 +5,22 @@ beforeEach(() => _resetShellCache());
 afterEach(() => _resetShellCache());
 
 describe('builtinHookDefs — unified built-in hook model', () => {
-  it('returns 6 built-in defs for Claude in canonical order, all tagged source=builtin', () => {
+  it('returns 5 built-in defs for Claude in canonical order, all tagged source=builtin', () => {
     const defs = builtinHookDefs('claude');
-    expect(defs).toHaveLength(6);
+    expect(defs).toHaveLength(5);
     expect(defs.every((d) => d.source === 'builtin')).toBe(true);
     expect(defs.map((d) => d.event)).toEqual([
       'SessionStart', 'Stop',
-      'PostToolUse', 'PostToolUse',
+      'PostToolUse',
       'UserPromptSubmit', 'SubagentStop',
     ]);
   });
 
-  it('installs no matcher-scoped Skill pass: the wildcard post-tool-use pass tracks skill use (#1221)', () => {
+  it('installs no matcher-scoped pass: the wildcard post-tool-use pass tracks skill use (#1221) and gives the TodoWrite hint (#1788)', () => {
     for (const tool of ['claude', 'cursor', 'copilot', 'codex', 'muse', 'zcode']) {
       const defs = builtinHookDefs(tool);
-      expect(defs.some((d) => d.key === 'Hook dispatch post-tool-use Skill' || d.command.includes('--matcher Skill'))).toBe(false);
-      expect(defs.filter((d) => d.event === 'PostToolUse').map((d) => d.matcher)).toEqual(['*', 'TodoWrite']);
+      expect(defs.some((d) => d.command.includes('--matcher'))).toBe(false);
+      expect(defs.filter((d) => d.event === 'PostToolUse').map((d) => d.matcher)).toEqual(['*']);
     }
   });
 
@@ -60,7 +60,7 @@ describe('builtinHookDefs — unified built-in hook model', () => {
 
   it('adds a lifecycle-complete SessionEnd hook only for Copilot', () => {
     const defs = builtinHookDefs('copilot');
-    expect(defs).toHaveLength(6);
+    expect(defs).toHaveLength(5);
     expect(defs.at(-1)).toEqual(expect.objectContaining({
       event: 'SessionEnd',
       matcher: '*',
@@ -74,11 +74,11 @@ describe('builtinHookDefs — unified built-in hook model', () => {
     expect(builtinHookDefs('claude').every((d) => d.timeout === undefined)).toBe(true);
     const cursor = builtinHookDefs('cursor');
     expect(cursor.find((d) => d.key === 'Hook dispatch session-start')?.timeout).toBe(15);
-    expect(cursor.find((d) => d.key === 'Hook dispatch post-tool-use TodoWrite')?.timeout).toBe(3);
+    expect(cursor.find((d) => d.key === 'Hook dispatch post-tool-use wildcard')?.timeout).toBe(10);
     for (const tool of ['codex', 'codex-internal', 'tcodex']) {
       const codex = builtinHookDefs(tool);
       expect(codex.find((d) => d.key === 'Hook dispatch session-start')?.timeout).toBe(15);
-      expect(codex.find((d) => d.key === 'Hook dispatch post-tool-use TodoWrite')?.timeout).toBe(3);
+      expect(codex.find((d) => d.key === 'Hook dispatch post-tool-use wildcard')?.timeout).toBe(10);
     }
   });
 
@@ -174,10 +174,10 @@ describe('applyBuiltinOverride (§4.8)', () => {
 
   it('drops disabled built-in keys', () => {
     const defs = applyBuiltinOverride(builtinHookDefs('claude'), {
-      disabled: ['Hook dispatch post-tool-use TodoWrite'],
+      disabled: ['Hook dispatch stop'],
     });
     expect(defs).toHaveLength(builtinHookDefs('claude').length - 1);
-    expect(defs.some((d) => d.key === 'Hook dispatch post-tool-use TodoWrite')).toBe(false);
+    expect(defs.some((d) => d.key === 'Hook dispatch stop')).toBe(false);
   });
 
   it('applies a whitelisted timeout override', () => {
