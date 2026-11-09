@@ -13,18 +13,41 @@ import { sameEnvName } from './env-key.js';
 //    copilot         { "type": "local"|"http", ..., "tools": ["*"] }
 //    buddy family    { "transportType": "streamable-http", … } (+ timeout)
 //    codex           [mcp_servers.<name>] TOML table          (stdio + http)
+//    openclaw        { "transport": "stdio|sse|streamable-http", … } (+ requestTimeoutMs)
+//    hermes          YAML map: command/args/env, or url/headers (+ timeout seconds)
+//    dsh             a patch-list insert: { id, name, config: { transport, serverName, … } }
 //
 //  Keeping the differences here — rather than in the reconcile engine — is the
 //  same split agents uses between agent-format.ts and its handler.
 
-export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex' | 'opencode' | 'copilot' | 'pi' | 'muse' | 'agy';
+export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex' | 'opencode' | 'copilot' | 'pi' | 'muse' | 'agy' | 'openclaw' | 'hermes' | 'dsh';
+
+/** The DSH plugin that connects one MCP server; each managed server is one instance of it. */
+export const DSH_MCP_PLUGIN = '@deepseek-ai/dsh-mcp-client';
+
+/** DSH's native server identity: the namespace its tool names are built from. */
+const DSH_SERVER_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
+
+/** A stable patch-instance id for one managed server. Identity and ownership come from `config.serverName` and the manifest; this only locates the row. */
+export function dshMcpPatchId(serverName: string): string {
+  return `teamai-mcp-${serverName}`;
+}
+
+/** Why `name` cannot be `format`'s native server identity, or null when it can. DSH refuses anything outside `[A-Za-z0-9_-]{1,32}` rather than renaming. */
+export function serverNameProblem(format: McpFormat, name: string): string | null {
+  if (format !== 'dsh' || DSH_SERVER_NAME_RE.test(name)) return null;
+
+  return `DeepSeek Harness accepts a server name of 1-32 characters from A-Z, a-z, 0-9, "_" and "-"`;
+}
 
 const COPILOT_ALL_TOOLS = '*';
 
 /**
  * Top-level JSON key each format stores its server map under. Claude/cursor/buddy
  * all use `mcpServers`; OpenCode uses `mcp`. Codex is TOML (handled separately) and
- * has no entry here.
+ * has no entry here. The three native formats only ever read their own file under
+ * their own container (`openclaw`'s `mcp` carries `servers` below it, `hermes`'s
+ * `mcp_servers` is the map, `dsh`'s `insert` locates a patch list).
  */
 export const MCP_SERVER_KEY: Record<Exclude<McpFormat, 'codex'>, string> = {
   pi: 'mcpServers',
@@ -35,11 +58,34 @@ export const MCP_SERVER_KEY: Record<Exclude<McpFormat, 'codex'>, string> = {
   buddy: 'mcpServers',
   opencode: 'mcp',
   copilot: 'mcpServers',
+  openclaw: 'mcp',
+  hermes: 'mcp_servers',
+  dsh: 'insert',
+};
+
+/** A format whose servers live inside one JSON object under `MCP_SERVER_KEY[format]`; the native files are never shared with another tool. */
+const JSON_SERVER_MAP_FORMAT: Record<McpFormat, boolean> = {
+  pi: true,
+  muse: true,
+  agy: true,
+  claude: true,
+  cursor: true,
+  buddy: true,
+  opencode: true,
+  copilot: true,
+  codex: false,
+  openclaw: false,
+  hermes: false,
+  dsh: false,
 };
 
 /** Whether two formats keep their servers under one key of a shared file (Claude, Cursor and CodeBuddy all use `mcpServers`). */
 export function sameServerKey(a: McpFormat, b: McpFormat): boolean {
-  if (a === 'codex' || b === 'codex') return a === b;
+  if (a === b) return true;
+
+  if (a === 'codex' || b === 'codex') return false;
+
+  if (!JSON_SERVER_MAP_FORMAT[a] || !JSON_SERVER_MAP_FORMAT[b]) return false;
 
   return MCP_SERVER_KEY[a] === MCP_SERVER_KEY[b];
 }
@@ -62,6 +108,12 @@ const SUPPORTED_TRANSPORTS: Record<McpFormat, Set<McpTransport>> = {
   // (streamable HTTP or SSE, negotiated by its client).
   opencode: new Set<McpTransport>(['stdio', 'http', 'sse']),
   copilot: new Set<McpTransport>(['stdio', 'http', 'sse']),
+  // OpenClaw spells the three native transports stdio, sse and streamable-http.
+  openclaw: new Set<McpTransport>(['stdio', 'http', 'sse']),
+  // Hermes connects stdio, Streamable HTTP (the default for `url`) and legacy SSE (`transport: sse`).
+  hermes: new Set<McpTransport>(['stdio', 'http', 'sse']),
+  // DSH's mcp-client plugin has only `stdio` and `streamable-http`; there is no SSE transport to select.
+  dsh: new Set<McpTransport>(['stdio', 'http']),
 };
 
 export function supportsTransport(format: McpFormat, transport: McpTransport): boolean {
@@ -341,8 +393,91 @@ function renderOpencode(def: McpServerDef): McpJsonEntry {
   return e;
 }
 
+/**
+ * OpenClaw's `mcp.servers.<name>`: `transport` is explicit (`stdio`, `sse` or
+ * `streamable-http`), its own `requestTimeoutMs` is milliseconds, and an HTTP
+ * entry may not carry stdio fields (config validation rejects a mixed one).
+ */
+function renderOpenclaw(def: McpServerDef): McpJsonEntry {
+  const entry: McpJsonEntry = { transport: def.transport === 'http' ? 'streamable-http' : def.transport };
+
+  if (def.transport === 'stdio') {
+    if (def.command !== undefined) entry.command = def.command;
+
+    if (def.args?.length) entry.args = def.args;
+
+    if (def.env && Object.keys(def.env).length) entry.env = def.env;
+  } else {
+    if (def.url !== undefined) entry.url = def.url;
+
+    if (def.headers && Object.keys(def.headers).length) entry.headers = def.headers;
+  }
+
+  if (def.timeout !== undefined) entry.requestTimeoutMs = def.timeout;
+
+  return entry;
+}
+
+/**
+ * Hermes's `mcp_servers.<name>`: no `transport` key means Streamable HTTP for a
+ * `url`, and `transport: sse` selects legacy SSE; `timeout` is in seconds.
+ */
+function renderHermes(def: McpServerDef): McpJsonEntry {
+  const e: McpJsonEntry = {};
+
+  if (def.transport === 'stdio') {
+    if (def.command !== undefined) e.command = def.command;
+
+    if (def.args?.length) e.args = def.args;
+
+    if (def.env && Object.keys(def.env).length) e.env = def.env;
+  } else {
+    if (def.transport === 'sse') e.transport = 'sse';
+
+    if (def.url !== undefined) e.url = def.url;
+
+    if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
+  }
+
+  // Hermes takes seconds, including fractions; team definitions use milliseconds.
+  if (def.timeout !== undefined) e.timeout = def.timeout / 1000;
+
+  return e;
+}
+
+/**
+ * One DSH patch-list instance of `@deepseek-ai/dsh-mcp-client`: `id` only
+ * locates the row, `config.serverName` is the native identity, and the
+ * plugin has no SSE transport. `toolCallTimeoutMs` is milliseconds.
+ */
+function renderDsh(def: McpServerDef): McpJsonEntry {
+  const config: McpJsonEntry = { transport: def.transport === 'stdio' ? 'stdio' : 'streamable-http', serverName: def.name };
+
+  if (def.transport === 'stdio') {
+    if (def.command !== undefined) config.command = def.command;
+
+    if (def.args?.length) config.args = def.args;
+
+    if (def.env && Object.keys(def.env).length) config.env = def.env;
+  } else {
+    if (def.url !== undefined) config.url = def.url;
+
+    if (def.headers && Object.keys(def.headers).length) config.headers = def.headers;
+  }
+
+  if (def.timeout !== undefined) config.toolCallTimeoutMs = def.timeout;
+
+  return { id: dshMcpPatchId(def.name), name: DSH_MCP_PLUGIN, config };
+}
+
 /** Render the JSON-shaped entry for a format. Codex is handled separately (TOML). */
 export function renderJsonEntry(format: Exclude<McpFormat, 'codex'>, def: McpServerDef): McpJsonEntry {
+  if (format === 'openclaw') return renderOpenclaw(def);
+
+  if (format === 'hermes') return renderHermes(def);
+
+  if (format === 'dsh') return renderDsh(def);
+
   if (format === 'pi') {
     const entry = renderClaude(def);
 

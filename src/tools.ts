@@ -375,6 +375,8 @@ export type ToolDescriptor = {
   readonly skillLoad: SkillLoad;
   readonly skills: SkillReads;
   readonly installedBy?: InstallGate;
+  /** HTTP delivery adds models to this tool's own model settings; it reads them like any member entry. */
+  readonly receivesDeliveredModels?: true;
   /**
    * Where teamai writes the tool's skills follows inputs of each session that
    * nothing records: OpenClaw's workspace follows `OPENCLAW_WORKSPACE_DIR`,
@@ -1311,6 +1313,7 @@ export const TOOLS = {
   // Hermes (`skill_view`) and OpenClaw (`skills_read`) have skill tools, but teamai installs no post-tool-use hook for them yet.
   // OpenClaw's skills sit in its workspace.
   openclaw: {
+    receivesDeliveredModels: true,
     home: {
       dir: '.openclaw',
       // docs.openclaw.ai/help/environment; OPENCLAW_STATE_DIR and OPENCLAW_PROFILE also in src/config/paths.ts at 884a96d1.
@@ -1327,7 +1330,12 @@ export const TOOLS = {
       retired: { project: ['.openclaw/workspace/AGENTS.md'] },
     },
     agents: NONE,
-    mcp: NONE,
+    // MCP servers are `mcp.servers` entries of openclaw.json (JSON5). Only its
+    // user config is proven; OpenClaw reads no project openclaw.json.
+    mcp: {
+      user: { format: 'openclaw', key: ['mcp', 'servers'], syntax: 'json5', reads: [{ base: 'home', path: '.openclaw/openclaw.json', evidence: 'docs' }] },
+      project: 'none',
+    },
     hooks: { user: { channel: 'adapter', adapter: 'openclaw-hook', evidence: 'verified', readGates: ['openclaw-hooks-enabled', 'openclaw-plugins-enabled'] }, self: 'user', subagentStop: false, stopReply: false, shell: 'system', teamHooks: 'home', needsBundle: false },
     // OpenClaw 2026.10: rows in ~/.openclaw/agents/<id>/agent/openclaw-agent.sqlite, moved by OPENCLAW_STATE_DIR.
     sessions: 'none',
@@ -1353,6 +1361,7 @@ export const TOOLS = {
   // hermes_constants.py and hermes_cli/main.py at 68134629 (the same rules at 7e9eb8d9). Hermes reads its home in either scope.
   // Out of teamai's sight: another process's -p/--profile flag, and the supervised, desktop SSH and s6 gateway starts that skip active_profile.
   hermes: {
+    receivesDeliveredModels: true,
     home: { dir: '.hermes', moves: { by: [{ kind: 'hermes-home', evidence: 'source' }] } },
     skillLoad: 'unknown',
     skills: {
@@ -1367,7 +1376,12 @@ export const TOOLS = {
       retired: { user: ['AGENTS.md'], project: ['AGENTS.md'] },
     },
     agents: NONE,
-    mcp: NONE,
+    // MCP servers live in `mcp_servers` of the profile's config.yaml. The home
+    // move resolves the active profile; no project channel is proven.
+    mcp: {
+      user: { format: 'hermes', reads: [{ base: 'home', path: '.hermes/config.yaml', evidence: 'docs' }] },
+      project: 'none',
+    },
     hooks: { user: { channel: 'adapter', adapter: 'hermes-plugin', evidence: 'verified' }, self: 'user', subagentStop: false, stopReply: false, shell: 'system', teamHooks: 'home', needsBundle: false },
     sessions: ['hermes'],
     launch: 'hermes',
@@ -1390,6 +1404,7 @@ export const TOOLS = {
     },
   },
   dsh: {
+    receivesDeliveredModels: true,
     home: { dir: '.dsh', moves: { by: [{ kind: 'env', name: 'DSH_HOME', evidence: 'source' }] } },
     skillLoad: { calls: [{ name: 'skill', evidence: 'verified' }] },
     skills: { user: [{ base: 'home', path: '.dsh/skills', evidence: 'verified' }], project: 'unknown' },
@@ -1402,7 +1417,12 @@ export const TOOLS = {
       project: { channel: 'session-hook', probe: 'dsh-session-start', evidence: 'source' },
     },
     agents: NONE,
-    mcp: NONE,
+    // MCP servers are mcp-client plugin instances in the home patch DSH applies
+    // on every boot. Only the user channel is proven.
+    mcp: {
+      user: { format: 'dsh', reads: [{ base: 'home', path: '.dsh/cordis.patch.yml', evidence: 'source' }] },
+      project: 'none',
+    },
     hooks: { user: { channel: 'adapter', adapter: 'dsh-hooks', evidence: 'source' }, self: 'user', subagentStop: false, stopReply: true, shell: 'system', teamHooks: 'home', needsBundle: false },
     sessions: 'none',
     launch: 'none',
@@ -1670,6 +1690,13 @@ export function isToolId(value: string): value is ToolId {
   return Object.hasOwn(TOOLS, value);
 }
 
+/** Tools whose own model settings teamai adds delivered models to. */
+export type DeliveredModelTool = 'openclaw' | 'hermes' | 'dsh';
+
+// SAFETY: only the three descriptors above carry `receivesDeliveredModels`, so the filter selects exactly DeliveredModelTool.
+export const DELIVERED_MODEL_TOOLS = Object.keys(TOOLS)
+  .filter((tool) => isToolId(tool) && 'receivesDeliveredModels' in TOOLS[tool]) as DeliveredModelTool[];
+
 /** Whether releases before #1221 wrote `tool`'s hooks and MCP servers under its default home when the home moved (`Home.moves.defaultHomeLeftovers`). */
 export function hasDefaultHomeLeftovers(tool: ToolId): boolean {
   const { home }: ToolDescriptor = TOOLS[tool];
@@ -1875,4 +1902,19 @@ export function mcpFormatOf(tool: string): McpFormat | null {
   for (const channel of [mcp.user, mcp.project]) if (channel instanceof Object) return channel.format;
 
   return null;
+}
+
+/**
+ * The scope `tool` takes an MCP server in when the install is `scope`. A tool
+ * whose descriptor names no project MCP file writes its user config instead of
+ * skipping the server, as its skills already land in the one place it reads
+ * (OpenClaw's workspace, Hermes' and DSH's home). A tool with neither channel
+ * keeps `scope`: it is skipped either way.
+ */
+export function mcpScopeFor(tool: string, scope: 'user' | 'project'): 'user' | 'project' {
+  const { mcp } = channelsOf(tool);
+
+  if (scope === 'project' && (mcp.project === 'none' || mcp.project === 'unknown') && mcp.user instanceof Object) return 'user';
+
+  return scope;
 }

@@ -3,6 +3,30 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import fse from 'fs-extra';
+import YAML from 'yaml';
+import JSON5 from 'json5';
+import { z } from 'zod';
+import * as localAgent from '../local-agent.js';
+import type { DeliveredModel, ModelDeliveryCommit, ModelDeliveryRecord } from '../local-agent.js';
+
+const { ModelDeliveryRecordSchema, scanDeliveredModels } = localAgent;
+
+const writers = {
+  openclaw: localAgent.reconcileOpenclawModels,
+  hermes: localAgent.reconcileHermesModels,
+  dsh: localAgent.reconcileDshModels,
+} as const;
+
+function reconcile(
+  agent: keyof typeof writers,
+  models: readonly DeliveredModel[],
+  fullSnapshot: boolean,
+  previous: ModelDeliveryRecord | undefined,
+  root: string,
+  commit?: ModelDeliveryCommit,
+): Promise<ModelDeliveryRecord> {
+  return writers[agent](models, fullSnapshot, previous, root, commit);
+}
 
 vi.mock('../utils/logger.js', () => ({
   log: {
@@ -59,6 +83,7 @@ afterEach(async () => {
     else process.env[key] = value;
   }
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await fse.remove(home);
 });
 
@@ -904,6 +929,88 @@ describe('local-agent: apply_model_config', () => {
   });
 });
 
+describe('local-agent: native candidate delivery', () => {
+  it.each(['openclaw', 'hermes'] as const)('accumulates and reports %s candidates without changing the current model', async (tool) => {
+    const file = path.join(home, `.${tool}`, tool === 'openclaw' ? 'openclaw.json' : 'config.yaml');
+    const current = 'personal/current';
+    const original = tool === 'openclaw' ? { agents: { defaults: { model: current } } } : { model: current };
+    await fse.outputFile(file, tool === 'openclaw' ? JSON.stringify(original) : YAML.stringify(original));
+    vi.stubEnv('OPENCLAW_CONFIG_PATH', '');
+    vi.stubEnv('OPENCLAW_STATE_DIR', path.join(home, '.openclaw'));
+    vi.stubEnv('HERMES_HOME', path.join(home, '.hermes'));
+    const first = { ...deliveredModel, model_id: 'tokenhub/vendor/model-a' };
+    const second = { ...deliveredModel, model_id: 'tokenhub/model-b' };
+
+    for (const [index, candidate] of [first, second].entries()) {
+      const acks = stubSync({ id: 80 + index, type: 'apply_model_config', cmd: JSON.stringify(candidate) });
+      await localAgent.reportAndSyncLocalAgent({ tool, status: 'running' });
+      expect(acks).toContainEqual(expect.objectContaining({ id: 80 + index, status: 'success' }));
+    }
+
+    const config = await localAgent.loadLocalAgentConfig();
+    if (!config) throw new Error('missing HTTP source');
+    const payload = await localAgent.buildReportPayload(config, { tool });
+    expect(payload.user_level?.models).toEqual(expect.arrayContaining([
+      expect.objectContaining({ provider: first.provider, model_id: first.model_id }),
+      expect.objectContaining({ provider: second.provider, model_id: second.model_id }),
+    ]));
+    const data = YAML.parse(await fse.readFile(file, 'utf8'));
+    expect(tool === 'openclaw' ? data.agents.defaults.model : data.model).toBe(current);
+
+    stubSync({ id: 85, type: 'apply_model_config', cmd: JSON.stringify({ models: [] }) });
+    await localAgent.reportAndSyncLocalAgent({ tool, status: 'running' });
+    const after = YAML.parse(await fse.readFile(file, 'utf8'));
+    expect(tool === 'openclaw' ? after.agents.defaults.model : after.model).toBe(current);
+    const cleared = await localAgent.buildReportPayload(config, { tool });
+    expect(cleared.user_level?.models ?? []).toEqual([]);
+  });
+
+  it('follows an env-moved home rather than the default one', async () => {
+    const moved = path.join(home, 'hermes-moved');
+    await fse.ensureDir(moved);
+    vi.stubEnv('HERMES_HOME', moved);
+    const acks = stubSync({ id: 95, type: 'apply_model_config', cmd: JSON.stringify(deliveredModel) });
+
+    await localAgent.reportAndSyncLocalAgent({ tool: 'hermes', status: 'running' });
+
+    expect(acks).toContainEqual(expect.objectContaining({ id: 95, status: 'success' }));
+    expect(await fse.pathExists(path.join(moved, 'config.yaml'))).toBe(true);
+    expect(await fse.pathExists(path.join(home, '.hermes', 'config.yaml'))).toBe(false);
+  });
+
+  it.each(['openclaw', 'hermes', 'dsh'] as const)('writes project-scoped %s candidates to the home config that tool reads', async (tool) => {
+    const workspace = path.join(home, 'workspace');
+    await fse.ensureDir(workspace);
+    const configFile = path.join(home, '.teamai/local-agent/config.json');
+    const config = await fse.readJson(configFile);
+    config.workspaceBindings = { [workspace]: { projectId: 1, ideType: tool } };
+    await fse.writeJson(configFile, config);
+
+    if (tool === 'dsh') {
+      // DSH persists providers per profile: one that composes the base bundle.
+      const profileDir = path.join(home, '.dsh', 'profiles', 'web');
+      await fse.outputJson(path.join(profileDir, 'package.json'), {
+        name: 'dsh-profile-web',
+        private: true,
+        dsh: { profile: { bundles: ['@deepseek-ai/dsh-base'] } },
+      });
+      await fse.outputFile(path.join(profileDir, 'cordis.patch.yml'), '[]\n');
+    }
+
+    const acks = stubSync({
+      id: 90, type: 'apply_model_config', cmd: JSON.stringify(deliveredModel),
+      scope: 'workspace', workspace_path: workspace,
+    });
+
+    await localAgent.reportAndSyncLocalAgent({ tool, cwd: workspace, status: 'running' });
+
+    expect(acks).toContainEqual(expect.objectContaining({ id: 90, status: 'success' }));
+    const written = tool === 'openclaw' ? '.openclaw/openclaw.json'
+      : tool === 'hermes' ? '.hermes/config.yaml' : '.dsh/profiles/web/cordis.patch.yml';
+    expect(await fse.pathExists(path.join(home, written))).toBe(true);
+  });
+});
+
 describe('local-agent: report local model inventory', () => {
   async function reportedModels(tool: string): Promise<Array<Record<string, unknown>> | undefined> {
     const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
@@ -1191,4 +1298,722 @@ describe('releaseClaudeModelConfig', () => {
     // Nor is an empty manifest written just to record that nothing was there.
     expect(await fse.pathExists(path.join(home, '.teamai/local-agent/model-manifest.json'))).toBe(false);
   });
+});
+
+describe('delivered model settings', () => {
+
+let root: string;
+let savedOpenclawConfig: string | undefined;
+
+function model(modelId: string, overrides: Partial<DeliveredModel> = {}): DeliveredModel {
+  return {
+    provider: 'deepseek',
+    model_id: modelId,
+    name: `Model ${modelId}`,
+    base_url: 'https://proxy.example.test/v1',
+    api_key: 'sk-teamai-test',
+    context_window: 128_000,
+    max_tokens: 8_192,
+    ...overrides,
+  };
+}
+
+const OpenclawModelSchema = z.object({
+  id: z.string(),
+  name: z.string().optional(),
+  contextWindow: z.number().optional(),
+  maxTokens: z.number().optional(),
+}).passthrough();
+
+const OpenclawProviderSchema = z.object({
+  api: z.string().optional(),
+  baseUrl: z.string().optional(),
+  apiKey: z.string().optional(),
+  models: z.array(OpenclawModelSchema).optional(),
+}).passthrough();
+
+const OpenclawDocSchema = z.object({
+  agents: z.unknown().optional(),
+  models: z.object({ providers: z.record(z.string(), OpenclawProviderSchema).optional() }).passthrough().optional(),
+}).passthrough();
+
+const HermesProviderSchema = z.object({
+  api: z.string().optional(),
+  api_key: z.string().optional(),
+  transport: z.string().optional(),
+  discover_models: z.boolean().optional(),
+  models: z.record(z.string(), z.object({ context_length: z.number().optional() }).passthrough()).optional(),
+}).passthrough();
+
+const HermesDocSchema = z.object({
+  model: z.unknown().optional(),
+  providers: z.record(z.string(), HermesProviderSchema).optional(),
+}).passthrough();
+
+const DshModelSchema = z.object({ id: z.string(), name: z.string().optional() }).passthrough();
+
+const DshProviderSchema = z.object({
+  api: z.string().optional(),
+  apiKeyEnv: z.string().optional(),
+  baseURL: z.string().optional(),
+  models: z.array(DshModelSchema).optional(),
+}).passthrough();
+
+const DshRowSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().optional(),
+  config: z.object({ providers: z.record(z.string(), DshProviderSchema).optional() }).passthrough().optional(),
+}).passthrough();
+
+const DshPatchSchema = z.array(DshRowSchema);
+
+const CredentialsSchema = z.object({
+  version: z.number().optional(),
+  refs: z.record(z.string(), z.string()).optional(),
+}).passthrough();
+
+function readOpenclaw(file: string): z.infer<typeof OpenclawDocSchema> {
+  return OpenclawDocSchema.parse(JSON5.parse(fs.readFileSync(file, 'utf8')));
+}
+
+function openclawProvider(file: string): z.infer<typeof OpenclawProviderSchema> {
+  return readOpenclaw(file).models?.providers?.teamai ?? {};
+}
+
+function readHermes(file: string): z.infer<typeof HermesDocSchema> {
+  return HermesDocSchema.parse(YAML.parse(fs.readFileSync(file, 'utf8')));
+}
+
+function readDshPatch(file: string): z.infer<typeof DshPatchSchema> {
+  return DshPatchSchema.parse(YAML.parse(fs.readFileSync(file, 'utf8')));
+}
+
+function readCredentials(file: string): z.infer<typeof CredentialsSchema> {
+  return CredentialsSchema.parse(YAML.parse(fs.readFileSync(file, 'utf8')));
+}
+
+function documentMap(doc: YAML.Document): YAML.YAMLMap {
+  if (!YAML.isMap(doc.contents)) throw new Error('document root is not a mapping');
+
+  return doc.contents;
+}
+
+function mapIn(node: YAML.YAMLMap, key: string): YAML.YAMLMap {
+  const value = node.get(key);
+
+  if (!YAML.isMap(value)) throw new Error(`${key} is not a mapping`);
+
+  return value;
+}
+
+function seqIn(node: YAML.YAMLMap, key: string): YAML.YAMLSeq {
+  const value = node.get(key);
+
+  if (!YAML.isSeq(value)) throw new Error(`${key} is not a sequence`);
+
+  return value;
+}
+
+function dshRow(doc: YAML.Document): YAML.YAMLMap {
+  if (!YAML.isSeq(doc.contents)) throw new Error('patch is not a sequence');
+
+  const row = doc.contents.items.find((item) => YAML.isMap(item) && item.get('id') === 'llm-pi-ai');
+
+  if (!YAML.isMap(row)) throw new Error('no llm-pi-ai row');
+
+  return row;
+}
+
+function firstMap(seq: YAML.YAMLSeq): YAML.YAMLMap {
+  const [first] = seq.items;
+
+  if (!YAML.isMap(first)) throw new Error('first item is not a mapping');
+
+  return first;
+}
+
+beforeEach(() => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-model-delivery-'));
+  savedOpenclawConfig = process.env.OPENCLAW_CONFIG_PATH;
+  delete process.env.OPENCLAW_CONFIG_PATH;
+});
+
+afterEach(() => {
+  if (savedOpenclawConfig === undefined) delete process.env.OPENCLAW_CONFIG_PATH;
+  else process.env.OPENCLAW_CONFIG_PATH = savedOpenclawConfig;
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+describe('OpenClaw delivered model candidates', () => {
+  it('adds two candidates, accumulates a later one, and never changes the current model', async () => {
+    const file = path.join(root, 'openclaw.json');
+
+    fs.writeFileSync(file, [
+      '// member comment',
+      '{',
+      '  "agents": { "defaults": { "model": { "primary": "member/keep" } } },',
+      '  "models": { "providers": {} }',
+      '}',
+      '',
+    ].join('\n'));
+
+    const first = await reconcile('openclaw', [model('deepseek-v4-pro')], false, undefined, root);
+    const second = await reconcile('openclaw', [model('vendor/models/flash')], false, first, root);
+    const updated = await reconcile(
+      'openclaw',
+      [model('deepseek-v4-pro', { name: 'Renamed Pro' })],
+      false,
+      second,
+      root,
+    );
+
+    const provider = openclawProvider(file);
+
+    expect(provider.api).toBe('openai-completions');
+    expect(provider.baseUrl).toBe('https://proxy.example.test/v1');
+    expect(provider.apiKey).toBe('sk-teamai-test');
+    expect(provider.models?.map((entry) => entry.id)).toEqual(['deepseek-v4-pro', 'vendor/models/flash']);
+    expect(provider.models?.[0]?.name).toBe('Renamed Pro');
+    expect(provider.models?.[0]?.contextWindow).toBe(128_000);
+    expect(provider.models?.[0]?.maxTokens).toBe(8_192);
+    expect(fs.readFileSync(file, 'utf8')).toContain('// member comment');
+    expect(readOpenclaw(file).agents).toEqual({ defaults: { model: { primary: 'member/keep' } } });
+    expect(ModelDeliveryRecordSchema.parse(updated).files[file]?.entries['deepseek-v4-pro']).toBeDefined();
+  });
+
+  it('removes only managed entries on a full snapshot and keeps member entries', async () => {
+    const file = path.join(root, 'openclaw.json');
+    const installed = await reconcile(
+      'openclaw',
+      [model('managed-a'), model('managed-b')],
+      false,
+      undefined,
+      root,
+    );
+
+    const doc = readOpenclaw(file);
+    const providers = doc.models?.providers;
+
+    if (!providers) throw new Error('no providers');
+
+    providers.teamai?.models?.push({ id: 'member-model', name: 'Member' });
+    providers.member = { baseUrl: 'https://member.test/v1', models: [{ id: 'member-only' }] };
+    fs.writeFileSync(file, `${JSON.stringify(doc, null, 2)}\n`);
+
+    const full = await reconcile('openclaw', [model('managed-b')], true, installed, root);
+
+    expect(openclawProvider(file).models?.map((entry) => entry.id)).toEqual(['managed-b', 'member-model']);
+    expect(Object.keys(readOpenclaw(file).models?.providers ?? {})).toEqual(['teamai', 'member']);
+
+    const emptied = await reconcile('openclaw', [], true, full, root);
+
+    expect(openclawProvider(file).models?.map((entry) => entry.id)).toEqual(['member-model']);
+    expect(Object.keys(readOpenclaw(file).models?.providers ?? {})).toEqual(['teamai', 'member']);
+    expect(emptied.files).toEqual({});
+  });
+
+  it('keeps a member-edited managed entry and reports the conflict instead of overwriting it', async () => {
+    const file = path.join(root, 'openclaw.json');
+    const installed = await reconcile('openclaw', [model('managed-a')], false, undefined, root);
+    const doc = readOpenclaw(file);
+    const entry = doc.models?.providers?.teamai?.models?.[0];
+
+    if (!entry) throw new Error('no managed entry');
+    entry.name = 'Member Edited';
+    fs.writeFileSync(file, `${JSON.stringify(doc, null, 2)}\n`);
+    const before = fs.readFileSync(file, 'utf8');
+
+    await expect(reconcile('openclaw', [model('managed-a')], false, installed, root)).rejects.toThrow(/does not manage/);
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+    expect(await scanDeliveredModels('openclaw', installed)).toEqual([]);
+
+    const cleaned = await reconcile('openclaw', [], true, installed, root);
+
+    expect(openclawProvider(file).models?.[0]?.name).toBe('Member Edited');
+    expect(cleaned.files).toEqual({});
+  });
+
+  it('refuses an existing unrecorded provider', async () => {
+    const file = path.join(root, 'openclaw.json');
+
+    fs.writeFileSync(file, `${JSON.stringify({
+      models: { providers: { teamai: { baseUrl: 'https://other.test/v1', apiKey: 'sk-other', models: [] } } },
+    }, null, 2)}\n`);
+    const before = fs.readFileSync(file, 'utf8');
+
+    await expect(reconcile('openclaw', [model('managed-a')], false, undefined, root))
+      .rejects.toThrow(/different base URL/);
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it('adopts a provider with the same connection details and no record', async () => {
+    const file = path.join(root, 'openclaw.json');
+
+    fs.writeFileSync(file, `${JSON.stringify({
+      models: {
+        providers: {
+          teamai: { baseUrl: 'https://proxy.example.test/v1', apiKey: 'sk-teamai-test', api: 'openai-completions', models: [] },
+        },
+      },
+    }, null, 2)}\n`);
+
+    const installed = await reconcile('openclaw', [model('managed-a')], false, undefined, root);
+    const entries = installed.files[file]?.entries ?? {};
+
+    expect(openclawProvider(file).models?.map((entry) => entry.id)).toEqual(['managed-a']);
+    expect(Object.keys(entries)).toEqual(['managed-a']);
+  });
+
+  it('adopts identical entries left by an earlier install', async () => {
+    const file = path.join(root, 'openclaw.json');
+
+    fs.writeFileSync(file, `${JSON.stringify({
+      models: {
+        providers: {
+          teamai: {
+            baseUrl: 'https://proxy.example.test/v1',
+            apiKey: 'sk-teamai-test',
+            api: 'openai-completions',
+            models: [{ id: 'managed-a', name: 'Model managed-a', contextWindow: 128_000, maxTokens: 8_192 }],
+          },
+        },
+      },
+    }, null, 2)}\n`);
+
+    const installed = await reconcile('openclaw', [model('managed-a')], false, undefined, root);
+
+    expect(openclawProvider(file).models).toEqual([{ id: 'managed-a', name: 'Model managed-a', contextWindow: 128_000, maxTokens: 8_192 }]);
+    expect(Object.keys(installed.files[file]?.entries ?? {})).toEqual(['managed-a']);
+  });
+
+  it('retains a provider whose metadata a member added when cleanup removes the last managed model', async () => {
+    const file = path.join(root, 'openclaw.json');
+    const installed = await reconcile('openclaw', [model('managed-a')], false, undefined, root);
+    const doc = readOpenclaw(file);
+    const provider = doc.models?.providers?.teamai;
+
+    if (!provider) throw new Error('no managed provider');
+    provider.timeoutSeconds = 30;
+    fs.writeFileSync(file, `${JSON.stringify(doc, null, 2)}\n`);
+
+    const cleaned = await reconcile('openclaw', [], true, installed, root);
+
+    expect(openclawProvider(file).timeoutSeconds).toBe(30);
+    expect(openclawProvider(file).models).toEqual([]);
+    expect(cleaned.files).toEqual({});
+  });
+
+  it('keeps a full model id with slashes and scans the disk identity', async () => {
+    const file = path.join(root, 'openclaw.json');
+    const manifest = await reconcile('openclaw', [model('vendor/models/deepseek-v4')], false, undefined, root);
+
+    expect(openclawProvider(file).models?.[0]?.id).toBe('vendor/models/deepseek-v4');
+    expect(await scanDeliveredModels('openclaw', manifest)).toEqual([{
+      provider: 'deepseek',
+      model_id: 'vendor/models/deepseek-v4',
+      name: 'Model vendor/models/deepseek-v4',
+      source: 'enterprise',
+    }]);
+
+    const doc = readOpenclaw(file);
+    const entry = doc.models?.providers?.teamai?.models?.[0];
+
+    if (!entry) throw new Error('no managed entry');
+    entry.name = 'Changed elsewhere';
+    fs.writeFileSync(file, `${JSON.stringify(doc, null, 2)}\n`);
+
+    expect(await scanDeliveredModels('openclaw', manifest)).toEqual([]);
+  });
+
+  it('leaves a malformed file untouched', async () => {
+    const file = path.join(root, 'openclaw.json');
+    const before = '{ not json at all';
+
+    fs.writeFileSync(file, before);
+
+    await expect(reconcile('openclaw', [model('managed-a')], false, undefined, root))
+      .rejects.toThrow(/does not parse/);
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it('honors OPENCLAW_CONFIG_PATH', async () => {
+    const override = path.join(root, 'elsewhere', 'openclaw.json');
+
+    fs.mkdirSync(path.dirname(override), { recursive: true });
+    process.env.OPENCLAW_CONFIG_PATH = override;
+
+    const manifest = await reconcile('openclaw', [model('managed-a')], false, undefined, root);
+
+    expect(fs.existsSync(override)).toBe(true);
+    expect(Object.keys(manifest.files)).toEqual([override]);
+    expect(fs.existsSync(path.join(root, 'openclaw.json'))).toBe(false);
+  });
+
+  it('isolates roots and cleans the old root when the root moves', async () => {
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-model-delivery-other-'));
+
+    try {
+      const first = await reconcile('openclaw', [model('root-a')], false, undefined, root);
+
+      expect(openclawProvider(path.join(root, 'openclaw.json')).models?.[0]?.id).toBe('root-a');
+      expect(fs.existsSync(path.join(other, 'openclaw.json'))).toBe(false);
+
+      const moved = await reconcile('openclaw', [model('root-b')], false, first, other);
+
+      expect(openclawProvider(path.join(root, 'openclaw.json')).models).toBeUndefined();
+      expect(openclawProvider(path.join(other, 'openclaw.json')).models?.map((entry) => entry.id)).toEqual(['root-b']);
+      expect(Object.keys(moved.files)).toEqual([path.join(other, 'openclaw.json')]);
+    } finally {
+      fs.rmSync(other, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Hermes delivered model candidates', () => {
+  it('writes managed candidates while keeping the current model, member providers, and comments', async () => {
+    const file = path.join(root, 'config.yaml');
+
+    fs.writeFileSync(file, [
+      '# member comment',
+      'model:',
+      '  provider: openrouter',
+      '  default: keep-me',
+      'providers:',
+      '  other:',
+      '    api: https://other.test/v1',
+      '    key_env: OTHER_KEY',
+      '    models:',
+      '      other-model:',
+      '        context_length: 1000',
+      '',
+    ].join('\n'));
+
+    const first = await reconcile('hermes', [model('deepseek-v4-pro')], false, undefined, root);
+    const manifest = await reconcile('hermes', [model('vendor/models/flash', { context_window: 64_000 })], false, first, root);
+    const config = readHermes(file);
+
+    expect(config.model).toEqual({ provider: 'openrouter', default: 'keep-me' });
+    expect(config.providers?.other?.models).toEqual({ 'other-model': { context_length: 1000 } });
+    expect(config.providers?.teamai).toEqual({
+      api: 'https://proxy.example.test/v1',
+      api_key: 'sk-teamai-test',
+      transport: 'chat_completions',
+      discover_models: false,
+      models: {
+        'deepseek-v4-pro': { context_length: 128_000 },
+        'vendor/models/flash': { context_length: 64_000 },
+      },
+    });
+    expect(fs.readFileSync(file, 'utf8')).toContain('# member comment');
+    expect(await scanDeliveredModels('hermes', manifest)).toEqual([
+      { provider: 'deepseek', model_id: 'deepseek-v4-pro', name: 'Model deepseek-v4-pro', source: 'enterprise' },
+      { provider: 'deepseek', model_id: 'vendor/models/flash', name: 'Model vendor/models/flash', source: 'enterprise' },
+    ]);
+  });
+
+  it('removes only managed models on cleanup and keeps a member-added model', async () => {
+    const file = path.join(root, 'config.yaml');
+    const installed = await reconcile('hermes', [model('managed-a'), model('managed-b')], false, undefined, root);
+    const doc = YAML.parseDocument(fs.readFileSync(file, 'utf8'));
+    const models = mapIn(mapIn(documentMap(doc), 'providers'), 'teamai');
+
+    mapIn(models, 'models').set('member-model', doc.createNode({ context_length: 2000 }));
+    fs.writeFileSync(file, doc.toString());
+
+    const full = await reconcile('hermes', [model('managed-b')], true, installed, root);
+
+    expect(readHermes(file).providers?.teamai?.models).toEqual({
+      'managed-b': { context_length: 128_000 },
+      'member-model': { context_length: 2000 },
+    });
+
+    await reconcile('hermes', [], true, full, root);
+
+    expect(readHermes(file).providers?.teamai?.models).toEqual({ 'member-model': { context_length: 2000 } });
+  });
+
+  it('refuses a provider that already uses a different credential mechanism', async () => {
+    const file = path.join(root, 'config.yaml');
+
+    fs.writeFileSync(file, [
+      'providers:',
+      '  teamai:',
+      '    api: https://proxy.example.test/v1',
+      '    key_env: MEMBER_KEY',
+      '',
+    ].join('\n'));
+    const before = fs.readFileSync(file, 'utf8');
+
+    await expect(reconcile('hermes', [model('managed-a')], false, undefined, root))
+      .rejects.toThrow(/does not overwrite/);
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it('leaves malformed YAML untouched', async () => {
+    const file = path.join(root, 'config.yaml');
+    const before = 'providers: [unclosed';
+
+    fs.writeFileSync(file, before);
+
+    await expect(reconcile('hermes', [model('managed-a')], false, undefined, root))
+      .rejects.toThrow(/does not parse as YAML/);
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+  });
+});
+
+function seedDshProfile(base: string, name = 'web'): string {
+  const dir = path.join(base, 'profiles', name);
+
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'package.json'), `${JSON.stringify({
+    name: `dsh-profile-${name}`,
+    private: true,
+    dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] } },
+  }, null, 2)}\n`);
+  fs.writeFileSync(path.join(dir, 'cordis.patch.yml'), '[]\n');
+
+  return path.join(dir, 'cordis.patch.yml');
+}
+
+describe('DeepSeek Harness delivered model candidates', () => {
+  it('persists candidates in the profile patch and the credential store, then updates one', async () => {
+    const patch = seedDshProfile(root);
+    const credentials = path.join(root, '.credentials.yaml');
+    const first = await reconcile('dsh', [model('deepseek-v4-pro')], false, undefined, root);
+    const manifest = await reconcile('dsh', [model('vendor/models/flash')], false, first, root);
+    const updated = await reconcile('dsh', [model('deepseek-v4-pro', { name: 'Renamed' })], false, manifest, root);
+    const row = readDshPatch(patch).find((entry) => entry.id === 'llm-pi-ai');
+
+    expect(row?.name).toBe('@deepseek-ai/dsh-llm-pi-ai');
+    expect(row?.config?.providers?.teamai).toMatchObject({
+      api: 'openai-completions',
+      apiKeyEnv: 'TEAMAI_MODEL_API_KEY',
+      baseURL: 'https://proxy.example.test/v1',
+    });
+    expect(row?.config?.providers?.teamai?.models?.map((entry) => entry.id)).toEqual(['deepseek-v4-pro', 'vendor/models/flash']);
+    expect(row?.config?.providers?.teamai?.models?.[0]?.name).toBe('Renamed');
+
+    const store = readCredentials(credentials);
+
+    expect(store.version).toBe(1);
+    expect(store.refs?.TEAMAI_MODEL_API_KEY).toBe('sk-teamai-test');
+
+    if (process.platform !== 'win32') expect(fs.statSync(credentials).mode & 0o777).toBe(0o600);
+
+    expect(readDshPatch(patch).some((entry) => entry.id === 'agent-default-model')).toBe(false);
+    expect(updated.credentials?.[credentials]).toMatchObject({ ref: 'TEAMAI_MODEL_API_KEY', created: true });
+    expect((await scanDeliveredModels('dsh', updated)).map((entry) => entry.model_id)).toEqual(['deepseek-v4-pro', 'vendor/models/flash']);
+  });
+
+  it('removes managed candidates on a full snapshot and empty cleanup while keeping member models', async () => {
+    const patch = seedDshProfile(root);
+    const installed = await reconcile('dsh', [model('managed-a'), model('managed-b')], false, undefined, root);
+    const doc = YAML.parseDocument(fs.readFileSync(patch, 'utf8'));
+    const row = dshRow(doc);
+    const provider = mapIn(mapIn(row, 'config'), 'providers');
+
+    seqIn(mapIn(provider, 'teamai'), 'models').items.push(doc.createNode({ id: 'member-model', name: 'Member' }));
+    fs.writeFileSync(patch, doc.toString());
+
+    const full = await reconcile('dsh', [model('managed-b')], true, installed, root);
+
+    expect(readDshPatch(patch)[0]?.config?.providers?.teamai?.models?.map((entry) => entry.id))
+      .toEqual(['managed-b', 'member-model']);
+
+    await reconcile('dsh', [], true, full, root);
+
+    expect(readDshPatch(patch)[0]?.config?.providers?.teamai?.models?.map((entry) => entry.id)).toEqual(['member-model']);
+    expect(readCredentials(path.join(root, '.credentials.yaml')).refs?.TEAMAI_MODEL_API_KEY).toBe('sk-teamai-test');
+  });
+
+  it('removes the llm-pi-ai row and its credential entry on empty cleanup', async () => {
+    const patch = seedDshProfile(root);
+    const installed = await reconcile('dsh', [model('managed-a')], false, undefined, root);
+
+    const cleaned = await reconcile('dsh', [], true, installed, root);
+
+    expect(readDshPatch(patch)).toEqual([]);
+    expect(cleaned.files).toEqual({});
+    expect(fs.existsSync(path.join(root, '.credentials.yaml'))).toBe(false);
+  });
+
+  it('retains the provider and credential when a member changed provider metadata', async () => {
+    const patch = seedDshProfile(root);
+    const credentials = path.join(root, '.credentials.yaml');
+    const installed = await reconcile('dsh', [model('managed-a')], false, undefined, root);
+    const doc = YAML.parseDocument(fs.readFileSync(patch, 'utf8'));
+    const provider = mapIn(mapIn(mapIn(dshRow(doc), 'config'), 'providers'), 'teamai');
+
+    provider.set('displayName', 'Member Label');
+    fs.writeFileSync(patch, doc.toString());
+
+    const cleaned = await reconcile('dsh', [], true, installed, root);
+    const retained = readDshPatch(patch)[0]?.config?.providers?.teamai;
+
+    expect(retained?.displayName).toBe('Member Label');
+    expect(retained?.models).toEqual([]);
+    expect(fs.existsSync(credentials)).toBe(true);
+    expect(cleaned.credentials?.[credentials]).toBeDefined();
+    await reconcile('dsh', [], true, cleaned, root);
+    expect(readCredentials(credentials).refs?.TEAMAI_MODEL_API_KEY).toBe('sk-teamai-test');
+    expect(readDshPatch(patch)[0]?.config?.providers?.teamai?.displayName).toBe('Member Label');
+  });
+
+  it('does not overwrite a conflicting credential value', async () => {
+    const patch = seedDshProfile(root);
+    const credentials = path.join(root, '.credentials.yaml');
+
+    fs.writeFileSync(credentials, 'version: 1\nrefs:\n  TEAMAI_MODEL_API_KEY: member-token\n');
+    fs.chmodSync(credentials, 0o600);
+    const beforePatch = fs.readFileSync(patch, 'utf8');
+    const beforeCredentials = fs.readFileSync(credentials, 'utf8');
+
+    await expect(reconcile('dsh', [model('managed-a')], false, undefined, root))
+      .rejects.toThrow(/different API key/);
+    expect(fs.readFileSync(patch, 'utf8')).toBe(beforePatch);
+    expect(fs.readFileSync(credentials, 'utf8')).toBe(beforeCredentials);
+  });
+
+  it('keeps a member-edited managed model and reports the conflict', async () => {
+    const patch = seedDshProfile(root);
+    const installed = await reconcile('dsh', [model('managed-a')], false, undefined, root);
+    const doc = YAML.parseDocument(fs.readFileSync(patch, 'utf8'));
+    const models = mapIn(mapIn(mapIn(dshRow(doc), 'config'), 'providers'), 'teamai');
+
+    firstMap(seqIn(models, 'models')).set('name', 'Member Edited');
+    fs.writeFileSync(patch, doc.toString());
+    const before = fs.readFileSync(patch, 'utf8');
+
+    await expect(reconcile('dsh', [model('managed-a')], false, installed, root))
+      .rejects.toThrow(/does not manage/);
+    expect(fs.readFileSync(patch, 'utf8')).toBe(before);
+    expect(await scanDeliveredModels('dsh', installed)).toEqual([]);
+  });
+
+  it('leaves a malformed patch and refuses a root without an initialized profile', async () => {
+    const patch = seedDshProfile(root);
+
+    fs.writeFileSync(patch, '- id: [unclosed');
+    const before = fs.readFileSync(patch, 'utf8');
+
+    await expect(reconcile('dsh', [model('managed-a')], false, undefined, root))
+      .rejects.toThrow(/does not parse as YAML/);
+    expect(fs.readFileSync(patch, 'utf8')).toBe(before);
+    await expect(reconcile('dsh', [model('managed-a')], false, undefined, path.join(root, 'empty')))
+      .rejects.toThrow(/no initialized profile/);
+  });
+
+  it('skips a profile whose bundles do not include the base bundle', async () => {
+    seedDshProfile(root, 'sdk-minimal');
+    const dir = path.join(root, 'profiles', 'sdk-minimal');
+
+    fs.writeFileSync(path.join(dir, 'package.json'), `${JSON.stringify({
+      name: 'dsh-profile-sdk-minimal',
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-sdk-minimal'] } },
+    }, null, 2)}\n`);
+
+    await expect(reconcile('dsh', [model('managed-a')], false, undefined, root))
+      .rejects.toThrow(/no initialized profile/);
+    expect(fs.readFileSync(path.join(dir, 'cordis.patch.yml'), 'utf8')).toBe('[]\n');
+  });
+
+  it('includes a profile that already declares the llm-pi-ai row, even without the base bundle', async () => {
+    const patch = seedDshProfile(root, 'custom');
+    const dir = path.join(root, 'profiles', 'custom');
+
+    fs.writeFileSync(path.join(dir, 'package.json'), `${JSON.stringify({
+      name: 'dsh-profile-custom',
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-sdk-minimal'] } },
+    }, null, 2)}\n`);
+    fs.writeFileSync(patch, [
+      '- id: llm-pi-ai',
+      "  name: '@deepseek-ai/dsh-llm-pi-ai'",
+      '  config:',
+      '    providers: {}',
+      '',
+    ].join('\n'));
+
+    await reconcile('dsh', [model('managed-a')], false, undefined, root);
+
+    expect(readDshPatch(patch)[0]?.config?.providers?.teamai?.models?.map((entry) => entry.id)).toEqual(['managed-a']);
+  });
+
+  it('includes a profile whose installed custom bundle composes the llm-pi-ai row', async () => {
+    const patch = seedDshProfile(root, 'custom-bundle');
+    const dir = path.join(root, 'profiles', 'custom-bundle');
+    const bundleDir = path.join(root, 'profiles', 'node_modules', '@acme', 'dsh-custom-bundle');
+
+    fs.writeFileSync(path.join(dir, 'package.json'), `${JSON.stringify({
+      name: 'dsh-profile-custom-bundle',
+      dsh: { profile: { bundles: ['@acme/dsh-custom-bundle'] } },
+    }, null, 2)}\n`);
+    fs.mkdirSync(bundleDir, { recursive: true });
+    fs.writeFileSync(path.join(bundleDir, 'package.json'), `${JSON.stringify({
+      name: '@acme/dsh-custom-bundle',
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+    }, null, 2)}\n`);
+    fs.writeFileSync(path.join(bundleDir, 'cordis.patch.yml'), [
+      '- insert:',
+      '    - id: llm-pi-ai',
+      "      name: '@deepseek-ai/dsh-llm-pi-ai'",
+      '      config:',
+      '        providers:',
+      '          personal:',
+      '            api: openai-completions',
+      '            baseURL: https://personal.example/v1',
+      '            models: [{id: personal-model}]',
+      '',
+    ].join('\n'));
+
+    const installed = await reconcile('dsh', [model('managed-a')], false, undefined, root);
+
+    expect(readDshPatch(patch)[0]?.config?.providers?.teamai?.models?.map((entry) => entry.id)).toEqual(['managed-a']);
+    expect(readDshPatch(patch)[0]?.config?.providers?.personal?.models).toEqual([{ id: 'personal-model' }]);
+    await reconcile('dsh', [], true, installed, root);
+    expect(readDshPatch(patch)).toEqual([]);
+  });
+
+  it('edits an inline profile plugin without shadowing its personal providers', async () => {
+    const patch = seedDshProfile(root);
+    const personal = { api: 'openai-completions', baseURL: 'https://personal.example/v1', models: [{ id: 'mine' }] };
+    const original = [{ insert: [{ id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers: { personal } } }] }];
+    fs.writeFileSync(patch, YAML.stringify(original));
+    const installed = await reconcile('dsh', [model('managed-a')], false, undefined, root);
+    const rows = z.array(z.object({ insert: z.array(DshRowSchema) })).parse(YAML.parse(fs.readFileSync(patch, 'utf8')));
+
+    expect(rows[0]?.insert[0]?.config?.providers?.personal).toEqual(personal);
+    expect(rows[0]?.insert[0]?.config?.providers?.teamai?.models?.[0]?.id).toBe('managed-a');
+    expect(rows).toHaveLength(1);
+    await reconcile('dsh', [], true, installed, root);
+    expect(YAML.parse(fs.readFileSync(patch, 'utf8'))).toEqual(original);
+  });
+
+  it('rejects a home-level LLM override before changing any profile or credential', async () => {
+    const patch = seedDshProfile(root);
+    const original = fs.readFileSync(patch, 'utf8');
+    const homePatch = path.join(root, 'cordis.patch.yml');
+    const homeConfig = YAML.stringify([{ id: 'llm-pi-ai', config: { providers: { personal: { models: [{ id: 'mine' }] } } } }]);
+    fs.writeFileSync(homePatch, homeConfig);
+
+    await expect(reconcile('dsh', [model('managed-a')], false, undefined, root)).rejects.toThrow(/cordis.patch.yml/);
+    expect(fs.readFileSync(patch, 'utf8')).toBe(original);
+    expect(fs.readFileSync(homePatch, 'utf8')).toBe(homeConfig);
+    expect(fs.existsSync(path.join(root, '.credentials.yaml'))).toBe(false);
+  });
+});
+
+describe('model delivery transaction', () => {
+  it('restores every written file when the record commit fails', async () => {
+    const file = path.join(root, 'openclaw.json');
+    const original = '// keep\n{\n  "models": { "providers": {} }\n}\n';
+
+    fs.writeFileSync(file, original);
+
+    await expect(reconcile('openclaw', [model('managed-a')], false, undefined, root, async () => {
+      throw new Error('manifest write failed');
+    })).rejects.toThrow(/manifest write failed.*restored/);
+    expect(fs.readFileSync(file, 'utf8')).toBe(original);
+  });
+
+});
 });

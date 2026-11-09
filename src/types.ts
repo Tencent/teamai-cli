@@ -24,7 +24,7 @@ export type JsonObject = { [key: string]: JsonValue };
 export const JsonObjectSchema = z.record(z.string(), JsonValueSchema) satisfies z.ZodType<JsonObject>;
 
 /** Whether a JSON value is an object, not an array, a primitive or null: JSON and YAML parse every object as an Object instance. */
-export function isJsonObject(value: JsonValue | undefined): value is JsonObject {
+export function isJsonObject(value: unknown): value is JsonObject {
   return value instanceof Object && !Array.isArray(value);
 }
 
@@ -680,12 +680,16 @@ export const DEFAULT_TOOL_PATHS = {
   codebuddy: { skills: '.codebuddy/skills', rules: '.codebuddy/rules', settings: '.codebuddy/settings.json', claudemd: '.codebuddy/CODEBUDDY.md', agents: '.codebuddy/agents', mcp: '.codebuddy/mcp.json', mcpProject: '.mcp.json' },
   // OpenClaw reads no rules directory: in user scope its team rules are a
   // block in the workspace AGENTS.md, and a project gets none (#946).
-  openclaw: { skills: '.openclaw/skills', claudemd: '.openclaw/workspace/AGENTS.md' },
-  hermes: { skills: '.hermes/skills', claudemd: 'AGENTS.md' },
+  // MCP servers live under `mcp.servers` of openclaw.json: one user channel,
+  // no project one (its only project file is the shared AGENTS.md).
+  openclaw: { skills: '.openclaw/skills', claudemd: '.openclaw/workspace/AGENTS.md', mcp: '.openclaw/openclaw.json' },
+  // Hermes keeps one YAML config per profile, which its home move resolves.
+  hermes: { skills: '.hermes/skills', claudemd: 'AGENTS.md', mcp: '.hermes/config.yaml' },
   // DeepSeek Harness: skills synced to ~/.dsh/skills, which its skill-filesystem
   // provider scans as user-dsh root (rank 400). dsh discovers both directory
-  // bundles (<name>/SKILL.md) and flat Markdown files there natively.
-  dsh: { skills: '.dsh/skills' },
+  // bundles (<name>/SKILL.md) and flat Markdown files there natively. MCP servers
+  // are mcp-client instances in the home patch dsh applies on every boot.
+  dsh: { skills: '.dsh/skills', mcp: '.dsh/cordis.patch.yml' },
   // WorkBuddy runs CodeBuddy's engine: in a project it reads CodeBuddy's
   // .codebuddy/rules, which the two share (one copy), and in user scope its
   // own ~/.workbuddy/rules (#946). Its install probe stays .workbuddy
