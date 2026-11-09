@@ -509,7 +509,7 @@ export function benchmarkCells(table: BenchmarkTable): BenchmarkCells {
 }
 
 /**
- * `dominates: same pass rate, 56% cheaper per passed trial; +0 pp (-30 to +30, not separated)`: an arm against the
+ * `dominates: same pass rate, 56% cheaper per passed trial; 0 pp (-30 to +30, not separated)`: an arm against the
  * reference, blank on the reference's own row.
  */
 function formatAgainst(against: ArmAgainst | undefined): string {
@@ -588,7 +588,9 @@ function formatLoads({ loaded, planned, byValue }: NonNullable<AssetEffectRow['l
 
 /** `+33 pp`, `-8 pp`, `0 pp`: the difference in percentage points. */
 function formatDifference({ value }: { value: number }): string {
-  return `${value >= 0 ? '+' : ''}${Math.round(value * 100)} pp`;
+  const points = Math.round(value * 100);
+
+  return `${points > 0 ? '+' : ''}${points} pp`;
 }
 
 /** A bound of an interval in percentage points, signed: `+4`, `-2`. */

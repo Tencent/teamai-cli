@@ -938,7 +938,7 @@ The usage table reads each arm against the defaults arm, the arm that changes no
 | Arm | Cost | Cost per passed trial | Against claude (defaults arm) |
 | --- | --- | --- | --- |
 | claude | 7.2 USD (9) | 0.9 USD |  |
-| cheap | 3.2 USD (9) | 0.4 USD | dominates: same pass rate, 56% cheaper per passed trial; +0 pp (-30 to +30, not separated) |
+| cheap | 3.2 USD (9) | 0.4 USD | dominates: same pass rate, 56% cheaper per passed trial; 0 pp (-30 to +30, not separated) |
 | codex | unknown (0) | — | -22 pp (-54 to +14, not separated) |
 ```
 

@@ -619,7 +619,7 @@ describe('benchmark cost per passed trial', () => {
     const text = formatBenchmarkTable(table);
     expect(text).toContain('| Cost per passed trial | Against claude (defaults arm) |\n');
     expect(text).toContain('| 0.9 USD (3) | 0.45 USD |  |');
-    expect(text).toContain('| 0.15 USD | dominates: same pass rate, 67% cheaper per passed trial; +0 pp (-47 to +47, not separated) |');
+    expect(text).toContain('| 0.15 USD | dominates: same pass rate, 67% cheaper per passed trial; 0 pp (-47 to +47, not separated) |');
     expect(text).toContain('| 1.5 USD | dominated: lower pass rate, 233% more expensive per passed trial; -33 pp (-72 to +32, not separated) |');
   });
 
