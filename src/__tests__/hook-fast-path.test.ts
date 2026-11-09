@@ -9,6 +9,7 @@ import { loadLocalAgentConfig } from '../local-agent.js';
 import * as launchContext from '../launch-context.js';
 import { deriveSessionId } from '../utils/session-id.js';
 import { GIT_HOOK_TOOL } from '../git-hook.js';
+import { TOOL_IDS, TOOLS } from '../tools.js';
 
 const READ = ['hook-dispatch', 'post-tool-use', '--tool', 'claude'];
 const PAYLOAD = { kind: 'payload', hook: { event: 'post-tool-use', tool: 'claude', matcher: '*' } };
@@ -30,10 +31,6 @@ describe('argvVerdict', () => {
     ['Windows', PROMPT, 'win32'],
   ])('runs the full dispatch for a prompt with %s', (_case, argv, platform = 'darwin') => {
     expect(argvVerdict(argv, {}, platform as NodeJS.Platform)).toEqual({ kind: 'full' });
-  });
-
-  it.each(['copilot', 'agy'])('runs the full dispatch for a %s prompt, whose payload the bundle translates', (tool) => {
-    expect(argvVerdict(['hook-dispatch', 'prompt-submit', '--tool', tool], {}, 'darwin')).toEqual({ kind: 'full' });
   });
 
   it('always runs the full dispatch on Windows, whose child needs the WMI escape in the bundle', () => {
@@ -60,8 +57,15 @@ describe('argvVerdict', () => {
     expect(argvVerdict([...READ, '--matcher', 'TodoWrite'], {}, 'darwin')).toEqual({ kind: 'full' });
   });
 
-  it.each(['copilot', 'agy', GIT_HOOK_TOOL])('runs the full dispatch for %s', (tool) => {
-    expect(argvVerdict(['hook-dispatch', 'post-tool-use', '--tool', tool], {}, 'darwin')).toEqual({ kind: 'full' });
+  // The fast path cannot load the tool table, so its list of these tools is a copy of `hooks.needsBundle`.
+  it.each(TOOL_IDS)('takes the full dispatch for %s exactly when TOOLS says its hooks need the bundle', (tool) => {
+    for (const event of ['post-tool-use', 'prompt-submit']) {
+      expect(argvVerdict(['hook-dispatch', event, '--tool', tool], {}, 'darwin').kind).toBe(TOOLS[tool].hooks.needsBundle ? 'full' : 'payload');
+    }
+  });
+
+  it('runs the full dispatch for git, whose hook runs its handlers inline', () => {
+    expect(argvVerdict(['hook-dispatch', 'post-tool-use', '--tool', GIT_HOOK_TOOL], {}, 'darwin')).toEqual({ kind: 'full' });
   });
 
   it.each(['CURSOR_VERSION', 'COPILOT_PROJECT_DIR'])('runs the full dispatch for a Claude-format hook with %s set, which may be another host\'s', (variable) => {

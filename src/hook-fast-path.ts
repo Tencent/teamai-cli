@@ -42,8 +42,9 @@ export const FOREGROUND_PAYLOAD_KEYS = ['teamai_run', 'teamai_launch'] as const;
 export const HTTP_ENDPOINT_ENVS = ['TEAMAI_HTTP_ENDPOINT', 'TEAMAI_ENDPOINT', 'TEAMAI_API_BASE_URL'] as const;
 
 /**
- * Tools whose hook the fast path never takes: Copilot and Antigravity CLI
- * translate their payload in the bundle, and git runs its handlers inline.
+ * Tools whose hook the fast path never takes: those whose `hooks.needsBundle`
+ * is true in TOOLS (src/tools.ts), which hook-fast-path.test.ts checks this
+ * copy against, and git, which runs its handlers inline.
  */
 const FULL_DISPATCH_TOOLS = new Set(['copilot', 'agy', 'git']);
 
