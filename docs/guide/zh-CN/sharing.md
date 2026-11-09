@@ -241,6 +241,17 @@ shell 获得其启动目录的团队环境变量，因此同时打开的多个�
 | `UserPromptSubmit` | 记录输入 |
 | `Stop` | 检查 CLI 更新，并记下会话结束 |
 
+在 macOS 和 Linux 上，工具调用和输入提示只在有东西要输出时才等 teamai：`TodoWrite` 提醒、留给下一次输入的提示，或通过 HTTP 同步的机器上本地 agent 的提示。其他时候 hook 启动一个后台进程就返回，由这个进程记下事件。`~/.teamai/debug.log` 里能看到走的是哪条路：
+
+```text
+2026-11-09T09:14:02.118Z [DEBUG] [hook-dispatch] post-tool-use/claude fast path
+2026-11-09T09:14:02.161Z [DEBUG] [hook-dispatch] post-tool-use/claude background: 16ms total, 5 handlers, slowest dashboard-report=15ms | dashboard-report=15ms(ok) local-agent-sync=13ms(ok) recall-attribution=12ms(ok) skill-use=9ms(ok) new-checkout=8ms(ok)
+2026-11-09T09:14:09.530Z [DEBUG] [hook-dispatch] prompt-submit/claude fast path
+2026-11-09T09:14:09.571Z [DEBUG] [hook-dispatch] prompt-submit/claude background: 13ms total, 2 handlers, slowest dashboard-report=13ms | dashboard-report=13ms(ok) skill-mention=12ms(ok)
+```
+
+在任何 teamai 作用域之外的目录里，后台进程停在 `[hook-dispatch] post-tool-use/claude no scope`。
+
 ```bash
 teamai hooks list
 teamai hooks inject --dry-run

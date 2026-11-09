@@ -250,6 +250,17 @@ Limits:
 | `UserPromptSubmit` | Record the prompt |
 | `Stop` | Check for a CLI update and record the session end |
 
+On macOS and Linux, a tool call or a prompt waits for teamai only when there is something to print: the `TodoWrite` reminder, a hint left for the next prompt, or the notices of a machine that syncs over HTTP. Otherwise the hook starts a background process and returns, and that process records the event. `~/.teamai/debug.log` shows which happened:
+
+```text
+2026-11-09T09:14:02.118Z [DEBUG] [hook-dispatch] post-tool-use/claude fast path
+2026-11-09T09:14:02.161Z [DEBUG] [hook-dispatch] post-tool-use/claude background: 16ms total, 5 handlers, slowest dashboard-report=15ms | dashboard-report=15ms(ok) local-agent-sync=13ms(ok) recall-attribution=12ms(ok) skill-use=9ms(ok) new-checkout=8ms(ok)
+2026-11-09T09:14:09.530Z [DEBUG] [hook-dispatch] prompt-submit/claude fast path
+2026-11-09T09:14:09.571Z [DEBUG] [hook-dispatch] prompt-submit/claude background: 13ms total, 2 handlers, slowest dashboard-report=13ms | dashboard-report=13ms(ok) skill-mention=12ms(ok)
+```
+
+In a folder outside every teamai scope, the background process stops at `[hook-dispatch] post-tool-use/claude no scope`.
+
 ```bash
 teamai hooks list
 teamai hooks inject --dry-run
