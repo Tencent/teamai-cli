@@ -256,6 +256,25 @@ describe('rule folders (#1787)', () => {
       'rules/api-style/ is not delivered: style-link.md is a symlink. A rule folder holds only files teamai can read, never links; fix it in the team repo.',
     );
   });
+
+  it('warns about a rule folder that is itself a symlink, and delivers the other rules', async () => {
+    const shared = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-shared-rules-'));
+    await fse.outputFile(path.join(shared, 'RULE.md'), '# Review\n');
+    await fse.outputFile(path.join(repoPath, 'rules', 'style.md'), 'Use named exports.\n');
+    await fse.symlink(shared, path.join(repoPath, 'rules', 'review'), 'dir');
+
+    try {
+      await new RulesHandler().pullAllRules(teamConfig, localConfig);
+
+      expect(await fse.pathExists(home('.claude', 'rules', 'review.md'))).toBe(false);
+      expect(await fse.readFile(home('.claude', 'rules', 'style.md'), 'utf8')).toBe('Use named exports.\n');
+      expect(vi.mocked(log.warn).mock.calls.map(([message]) => String(message))).toContain(
+        'rules/review/ is a symlink, and a folder holds its own files, never a link, so nothing is read from it. Put the directory itself in the team repo.',
+      );
+    } finally {
+      await fse.remove(shared);
+    }
+  });
 });
 
 describe('the Claude Code grant of the data home (#1787)', () => {

@@ -636,6 +636,31 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     }]]);
   });
 
+  it('fails a workflow, hook or rule folder that is a symlink, which pull reads nothing from', async () => {
+    const shared = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-review-shared-'));
+    await fse.outputFile(path.join(shared, 'lint', 'HOOK.yaml'), HOOK_FOLDER);
+    await fse.outputFile(path.join(shared, 'api-style', 'RULE.md'), '# API style\n');
+    await fse.outputFile(path.join(shared, 'release', 'WORKFLOW.yaml'), VALID_BUILD.replace('name: build', 'name: release'));
+    await fse.ensureDir(path.join(repoDir, 'workflows'));
+    await fse.symlink(path.join(shared, 'release'), path.join(repoDir, 'workflows', 'release'), 'dir');
+    await fse.ensureDir(path.join(repoDir, 'hooks'));
+    await fse.ensureDir(path.join(repoDir, 'rules'));
+    await fse.symlink(path.join(shared, 'lint'), path.join(repoDir, 'hooks', 'lint'), 'dir');
+    await fse.symlink(path.join(shared, 'api-style'), path.join(repoDir, 'rules', 'api-style'), 'dir');
+
+    try {
+      const review = await reviewBranchDir(BRANCH, repoDir);
+
+      expect([review.ok, findings(review).filter((f) => f.level === 'fail').map(({ path: at, message }) => [at, message])]).toEqual([false, [
+        ['rules/api-style/', 'rules/api-style/ is a symlink, and a folder holds its own files, never a link, so nothing is read from it. Put the directory itself in the team repo.'],
+        ['hooks/lint/', 'hooks/lint/ is a symlink, and a folder holds its own files, never a link, so nothing is read from it. Put the directory itself in the team repo; '
+          + 'pull leaves every member\'s team hooks as they are until it is fixed.'],
+      ]]);
+    } finally {
+      await fse.remove(shared);
+    }
+  });
+
   it('does not say a folder pull skips is delivered to every member', async () => {
     await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), [
       'version: 1',

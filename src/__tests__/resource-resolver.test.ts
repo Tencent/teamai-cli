@@ -214,6 +214,21 @@ describe('Resources.survey', () => {
     });
   });
 
+  it('names a folder that is a symlink, and gives no item for it, as it names a symlink inside a folder', async () => {
+    const shared = fixture({ 'WIDGET.yaml': 'release' });
+    const root = fixture({ 'widgets/build/WIDGET.yaml': 'build' });
+    fs.symlinkSync(shared, path.join(root, 'widgets', 'release'), 'dir');
+    const tree: ResourceTree<string> = { team: { root, namespaces: async () => [] } };
+
+    const { resolutions, diagnostics } = await Resources.survey(widgets, tree);
+
+    expect([resolutions.map(({ name }) => name), diagnostics]).toEqual([['build'], [{
+      kind: 'invalid',
+      path: 'widgets/release/',
+      message: 'widgets/release/ is a symlink, and a folder holds its own files, never a link, so nothing is read from it. Put the directory itself in the team repo.',
+    }]]);
+  });
+
   it('names a folder whose name breaks the layout\'s name rule, and gives no item for it', async () => {
     const tree = treeOf({ 'widgets/Release/WIDGET.yaml': 'release', 'widgets/build/WIDGET.yaml': 'build' }, []);
 
@@ -373,6 +388,20 @@ describe('Resources.walk', () => {
       ['other'],
       [['fe/style', 'notes/fe/style.md', 'notes/fe/style/']],
     ]);
+  });
+
+  it('names a folder that is a symlink, at any depth, and gives no item for it', async () => {
+    const shared = fixture({ 'NOTE.md': 'shared' });
+    const root = fixture({ 'notes/fe/api.md': 'namespace file' });
+    fs.symlinkSync(shared, path.join(root, 'notes', 'fe', 'forms'), 'dir');
+
+    const walked = await Resources.walk(notes, root);
+
+    expect([walked.items.map(({ name }) => name), walked.diagnostics]).toEqual([['fe/api'], [{
+      kind: 'invalid',
+      path: 'notes/fe/forms/',
+      message: 'notes/fe/forms/ is a symlink, and a folder holds its own files, never a link, so nothing is read from it. Put the directory itself in the team repo.',
+    }]]);
   });
 
   it('notes a folder that holds files its type reads, but not the marker\'s language variants, which are its own text', async () => {

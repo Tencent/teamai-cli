@@ -155,6 +155,31 @@ async function fileNames(dir: string): Promise<string[]> {
   }
 }
 
+/**
+ * What pull says of `full`, shown as `folderPath`, when it is a symlink to a directory that holds one of `markers`: a
+ * folder holds its own files, never a link (common rule 7 of #1787), so the folder is not read. Only the names behind
+ * the link are read. Null for anything else.
+ */
+async function linkedFolder(full: string, folderPath: string, markers: ReadonlyArray<string | null>): Promise<ResourceDiagnostic | null> {
+  if (!await isSymlink(full)) return null;
+  const names = await fs.readdir(full).catch((): string[] => []);
+
+  if (!markers.some((marker) => marker !== null && names.includes(marker))) return null;
+
+  return {
+    kind: 'invalid',
+    path: folderPath,
+    message: `${folderPath} is a symlink, and a folder holds its own files, never a link, so nothing is read from it. Put the directory itself in the team repo.`,
+  };
+}
+
+/** The entries of `dir` that are symlinks, hidden ones left out. */
+async function symlinks(dir: string): Promise<string[]> {
+  const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+
+  return entries.flatMap((entry) => (entry.isSymbolicLink() && !entry.name.startsWith('.') ? [entry.name] : []));
+}
+
 /** The directories in `dir` that may hold items, in the order `readdir` lists them. */
 async function subdirectories(dir: string): Promise<string[]> {
   try {
@@ -326,6 +351,15 @@ async function readLayer<TEntry>(layout: ResourceLayout<TEntry>, root: string, d
         return unhandled;
       }
     }
+  }
+
+  const markers = [layout.marker, ...layout.markerAliases ?? []].filter((marker) => marker !== unread);
+
+  for (const link of await symlinks(dir)) {
+    const full = path.join(dir, link);
+    const linked = await linkedFolder(full, `${toPath(full)}/`, markers);
+
+    if (linked) diagnostics.push(linked);
   }
 
   return { items, plain, diagnostics };
@@ -558,6 +592,13 @@ async function walk(layout: PlainLayout, root: string): Promise<ResourceWalk> {
         const stem = layout.fileName(entry.name);
 
         if (stem !== null) found.push({ name: `${prefix}${stem}`, source: { kind: 'file', path: toPath(full), full } });
+        continue;
+      }
+
+      if (entry.isSymbolicLink()) {
+        const linked = await linkedFolder(full, `${toPath(full)}/`, [folderMarker]);
+
+        if (linked) diagnostics.push(linked);
         continue;
       }
 
