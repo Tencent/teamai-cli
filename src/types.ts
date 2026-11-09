@@ -794,9 +794,11 @@ export const TeamaiConfigBaseSchema = z.object({
   workflows: z.object({ retention: z.unknown().optional(), driver: z.unknown().optional() }).optional().catch(undefined),
   /**
    * Language of the agent-facing texts teamai injects: the built-in
-   * teamai-recall rule, the todowrite-hint, and the mr-hint.
-   * `en` is English only. `zh` or omitted keeps the historical bilingual
-   * text, byte for byte (#1014).
+   * teamai-recall rule, the todowrite-hint, the mr-hint, and the friction
+   * reminder. `en` is English only. `zh` or omitted keeps the historical
+   * bilingual text, byte for byte (#1014), except that `zh` shows the friction
+   * reminder in Chinese. A hint's `<text>.en.md` or `<text>.zh.md` is used when
+   * its folder has one (#1787).
    */
   language: z.enum(['en', 'zh']).optional(),
   /** Team-owned Node scripts. Distinct from `sharing.hooks.requireTeamScripts`

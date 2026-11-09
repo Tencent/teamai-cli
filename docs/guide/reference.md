@@ -19,7 +19,7 @@ team: my-team
 description: Team AI resource repo
 repo: https://github.com/your-org/your-repo.git
 provider: github
-# language: en                # optional. en is English only. Omit it, or set zh, and the recall rule, TodoWrite hint, and merged-MR hint stay bilingual
+# language: en                # optional. en is English only. Omit it, or set zh, and the recall rule, TodoWrite hint, and merged-MR hint stay bilingual. zh shows the friction reminder in Chinese
 # scope: ignored if present. teamai init --scope sets the local install
 
 reviewers:

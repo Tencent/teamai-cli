@@ -388,6 +388,48 @@ hooks:
 
 agy 随后拒绝该命令：`tool call denied by pre-tool hook: rm -rf is blocked; run git clean -n first.`
 
+### 默认 hook
+
+teamai 自带提示的阈值和文案也放在 hook 目录里。在团队仓库根目录放一个同名目录，就能替换它。比如只在较长的会话后提醒，并换成团队自己的话：
+
+```bash
+cp -r "$(npm root -g)/teamai-cli/hooks/teamai-friction-reminder" hooks/
+```
+
+```yaml
+# hooks/teamai-friction-reminder/HOOK.yaml
+description: Remind after longer sessions only
+with:
+  min_tools: 30
+```
+
+```markdown
+<!-- hooks/teamai-friction-reminder/problem.md -->
+[acme] 这次会话卡住过。如果解决办法还不在 runbook 里，记下来。
+```
+
+`teamai pull` 之后，提醒要等到 30 次工具调用才出现，并以这一行开头。
+
+| 目录 | 放什么 |
+|---|---|
+| `teamai-friction-reminder` | 摩擦提醒：Stop 时提醒分享这次会话学到的东西，含阈值、评分权重、文案 |
+| `teamai-mr-hint` | 会话开始时提议导入最近合并的 MR：往回看多久、列几个、文案 |
+| `teamai-todowrite-hint` | 任务规划好后，建议先查一次团队知识 |
+| `teamai-env-hint` | 会话开始时说明这个作用域有哪些团队环境变量和密钥 |
+| `teamai-package-hint` | 会话开始时说明团队的包声明变了 |
+
+- `HOOK.yaml` 里有 `description` 和 `with:`。`with:` 里没写的键沿用 teamai 的值。
+- 文案是 `<text>.md`，用 `{{ name }}` 引用变量。设了 `language: en` 或 `zh` 时，目录里有 `<text>.en.md` 或 `<text>.zh.md` 就用它。
+- 每个目录的 `README.md` 列出参数及取值范围、每段文案提供的变量，以及关掉它的设置。这些设置还在原来的位置，比如 `sharing.contributeHint.enabled`。
+
+替换目录里的值超出范围、写了默认 hook 不认的键、引用了文案不提供的变量、少了某段文案，或带了 `command` 时，pull 会拒绝它，teamai 自带的目录继续生效：
+
+```text
+hooks/teamai-friction-reminder/ is refused, and teamai's default stays in force until it is fixed: HOOK.yaml: with.min_tools must be a whole number from 1 to 1000
+```
+
+替换对整个团队生效，所以放在 namespace 里的替换（比如 `hooks/payments/teamai-friction-reminder/`）会被 pull 拒绝。
+
 ## MCP Server
 
 Muse 保存 stdio server 时可能省略 `type`。pull 和移除操作会兼容这种格式；其他 server 发生变化时，个人 server 和未变更的受管条目保持原样。
