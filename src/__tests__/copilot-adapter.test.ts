@@ -234,7 +234,7 @@ describe('GitHub Copilot adapter', () => {
       command: expect.stringContaining('teamai hook-dispatch session-start --tool copilot'),
       timeoutSec: expect.any(Number),
     }));
-    expect(parsed.hooks.PostToolUse.map((entry) => entry.matcher)).toEqual([undefined, 'TodoWrite']);
+    expect(parsed.hooks.PostToolUse.map((entry) => entry.matcher)).toEqual([undefined]);
     expect(JSON.stringify(parsed.hooks.PostToolUse)).not.toContain('--matcher Skill');
     expect(await fse.readFile(settingsPath, 'utf8')).toBe(settings);
   });
@@ -318,11 +318,12 @@ describe('GitHub Copilot adapter', () => {
     expect(await getHookStatus(hookPath, 'copilot')).toBe('installed');
     expect(await hasTeamaiHooks(hookPath, 'copilot')).toBe(true);
 
-    const todoHook = reconciled.hooks.PostToolUse.find((entry) => entry.command.includes('--matcher TodoWrite')) as {
+    // A built-in whose matcher changed is not the one teamai installs.
+    const toolHook = reconciled.hooks.PostToolUse.find((entry) => entry.command.includes('hook-dispatch post-tool-use')) as {
       command: string;
       matcher?: string;
     };
-    delete todoHook.matcher;
+    toolHook.matcher = 'Edit';
     await fse.writeJson(hookPath, reconciled);
     expect(await getHookStatus(hookPath, 'copilot')).toBe('missing');
 

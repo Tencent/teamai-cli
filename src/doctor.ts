@@ -67,6 +67,7 @@ import {
   buildEntryResolutionChecks,
   buildSecretValuesCheck,
   buildEntryScopeKeyCheck,
+  retiredBuiltinOverrideNotes,
   entryNamespaceNotes,
   buildDocsCheck,
   keptDocNotes,
@@ -1263,6 +1264,8 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...await skillReadNotes(ctx),
     ...await recordedPlaceNotes(ctx, 'rules'),
     ...await recordedPlaceNotes(ctx, 'blocks'),
+    // A team timeout for the TodoWrite entry teamai no longer installs (#1788).
+    ...await retiredBuiltinOverrideNotes(ctx),
   ];
 
   const memberSettings = await memberSettingsReport(ctx);

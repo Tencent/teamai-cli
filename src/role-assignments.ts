@@ -1,9 +1,13 @@
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { parseYaml } from './utils/yaml.js';
 import type { JsonValue } from './types.js';
 import { z } from 'zod';
 import { caseFoldKey, emptyManifestError, parseManifest, parseManifestOnce, readManifestFile } from './manifest-schema.js';
-import { getDefaultBranch, getFileContentAtRev, getHeadCommit } from './utils/git.js';
+import { getDefaultBranch, getFileContentAtRev, getHeadCommit, readFileAtRev } from './utils/git.js';
+import { readOriginHeadFromFiles } from './utils/git-ref-files.js';
+import { GitAnswers } from './utils/git-answers.js';
+import { log } from './utils/logger.js';
 
 /** Where a team declares who holds which role. Relative to the team repo root. */
 export const ROLE_ASSIGNMENTS_FILE = 'manifest/members.yaml';
@@ -100,6 +104,57 @@ async function fetchedDefaultBranch(repoPath: string): Promise<string | null> {
 }
 
 /**
+ * `members.yaml` as the fetched default branch has it (null content when that
+ * commit has none), or null where no fetched default branch exists.
+ * `./`: relative to the directory git runs in, which in single-repo mode is
+ * `.teamai/` inside the business repo rather than its root.
+ */
+async function membersAtFetchedTip(repoPath: string): Promise<{ tip: string; content: string | null } | null> {
+  const remembered = await membersAtOriginHead(repoPath);
+
+  if (remembered) return remembered;
+  const tip = await fetchedDefaultBranch(repoPath);
+
+  if (!tip) return null;
+
+  return { tip, content: (await getFileContentAtRev(repoPath, tip, `./${ROLE_ASSIGNMENTS_FILE}`))?.toString('utf-8') ?? null };
+}
+
+/** members.yaml at one commit, absent included: GitAnswers remembers no null. */
+const membersAtCommit = GitAnswers.of('members', z.object({ content: z.string().nullable() }));
+
+/**
+ * `membersAtFetchedTip` without a git process while `origin/HEAD` points at
+ * the commit it was last read at (#1788). A hook loads the config on every
+ * tool call, and the three git calls this replaces were most of that load.
+ * The stamp is the ref and its commit, read from files, so any move of the ref
+ * (a pull, a member's own `git fetch`) reads again. Null when the ref cannot
+ * be read from files, or the file at that commit cannot be read; the caller
+ * then asks git as before.
+ */
+async function membersAtOriginHead(repoPath: string): Promise<{ tip: string; content: string | null } | null> {
+  const head = await readOriginHeadFromFiles(repoPath);
+  const repo = head ? await fs.realpath(repoPath).catch(() => null) : null;
+
+  if (!head || !repo) return null;
+
+  const atCommit = await membersAtCommit.answer(repo, JSON.stringify([head.ref, head.sha]), async () => {
+    try {
+      const read = await readFileAtRev(repoPath, head.sha, `./${ROLE_ASSIGNMENTS_FILE}`);
+
+      return { content: 'text' in read ? read.text : null };
+    } catch (error) {
+      // Unreadable is not absent, so nothing is remembered.
+      log.debug(`${ROLE_ASSIGNMENTS_FILE} at ${head.sha} could not be read: ${error instanceof Error ? error.message : String(error)}`);
+
+      return null;
+    }
+  });
+
+  return atCommit && { tip: head.ref.slice('refs/remotes/'.length), content: atCommit.content };
+}
+
+/**
  * The assignments are read from what the forge merged — `origin/<default>` as
  * last fetched — not from the clone's working tree. A local edit, a deletion
  * or an unpushed commit in the clone changes nothing, and a `members.yaml`
@@ -110,15 +165,13 @@ export async function loadRoleAssignments(repoPath: string, repo: { kind?: strin
   const manifestPath = path.join(repoPath, ...ROLE_ASSIGNMENTS_FILE.split('/'));
   // An HTTP source is materialized files with no git of its own; a probe there
   // would find whatever repository the directory sits in, such as the project's.
-  const tip = repo.kind === 'http' ? null : await fetchedDefaultBranch(repoPath);
+  const atTip = repo.kind === 'http' ? null : await membersAtFetchedTip(repoPath);
   let content: string | null;
   let where: string;
 
-  if (tip) {
-    where = `${ROLE_ASSIGNMENTS_FILE} at ${tip}`;
-    // `./`: relative to the directory git runs in, which in single-repo mode
-    // is `.teamai/` inside the business repo rather than its root.
-    content = (await getFileContentAtRev(repoPath, tip, `./${ROLE_ASSIGNMENTS_FILE}`))?.toString('utf-8') ?? null;
+  if (atTip) {
+    where = `${ROLE_ASSIGNMENTS_FILE} at ${atTip.tip}`;
+    content = atTip.content;
 
     if (content !== null && content.trim() === '') throw emptyManifestError('members', where);
   } else {

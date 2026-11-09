@@ -58,7 +58,8 @@ teamai(launch-through-workflows): Only a workflow driver launches an AI tool. Ru
   whose adapter has the profile. To add a tool, add or reuse an adapter, set `launch`, and place it in `LAUNCH_ORDER`.
 - **A launched session says who launched it.** Answer steps, prompt steps and judges set `LAUNCHED_BY_ENV`
   (`launch-context.ts`). `hook-dispatch-cli.ts` skips every hook of a session teamai launched, except a workflow
-  step's, so the member's hooks neither capture nor judge an answer.
+  step's, so the member's hooks neither capture nor judge an answer. `hook-fast-path.ts` makes the same check before
+  the CLI bundle loads, with a copy of the variable's name that `hook-fast-path.test.ts` keeps equal.
 - **The support page follows the adapters.** The `workflows` and `aiBackend` cells in `src/tools.ts` stay hand-written,
   for their evidence and notes, and `tools.test.ts` fails when a cell marks a feature built that the adapter has no
   profile for, or the reverse.

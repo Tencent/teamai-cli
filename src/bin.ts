@@ -1,4 +1,18 @@
 import module from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { runHookFastPath } from './hook-fast-path.js';
+
+// A hook whose handlers all run in the background exits here, before the CLI
+// bundle loads: loading it was most of what a tool call kept the agent
+// waiting for (#1788). Anything else falls through to the CLI.
+const hook = await runHookFastPath(process.argv.slice(2), {
+  env: process.env,
+  platform: process.platform,
+  stdin: () => process.stdin,
+  entry: fileURLToPath(import.meta.url),
+});
+
+if (hook === 'done') process.exit(0);
 
 // The executable npm links as `teamai` (dist/index.js). Node 22.1+ keeps V8's
 // compiled code of the modules loaded after this call, so a later run skips

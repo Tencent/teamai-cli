@@ -1471,7 +1471,7 @@ program
           code = await runCodexDispatcher(event);
         } else if (bridged.isBridgedTeamHookTool(tool)) {
           const { runBridgedTeamHooks } = bridged;
-          const { readStdin } = await import('./hook-dispatch-cli.js');
+          const { readStdin } = await import('./utils/hook-stdin.js');
           const reply = await runBridgedTeamHooks(tool, event, await readStdin());
 
           if (reply.stderr) process.stderr.write(reply.stderr);
@@ -1510,6 +1510,8 @@ program
     // the 4.5s foreground handler budget, so it never truncates legitimate work.
     // The detached `--bg-only` child is unref'd and not awaited by the host, so
     // it is exempt and keeps its full budget to finish real syncs/downloads.
+    // A hook the fast path fell through from read its STDIN before this timer
+    // started, bounded by the same 1s EOF deadline (utils/hook-stdin.ts).
     const HOOK_HARD_EXIT_MS = 7_000;
     // Git (`--tool git`) has no hook timeout to stay under, and a cut here
     // would stop the inline delivery mid-write; its handler bounds itself.

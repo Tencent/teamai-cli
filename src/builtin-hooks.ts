@@ -393,12 +393,30 @@ interface BuiltinHookSpec {
   timeoutSec: number;
 }
 
+/** The PostToolUse entry every tool call runs; since #1788 it also carries the TodoWrite hint. */
+export const POST_TOOL_USE_WILDCARD_KEY = 'Hook dispatch post-tool-use wildcard';
+
+/**
+ * The PostToolUse entry the TodoWrite hint had of its own until #1788. A team
+ * that lists it under `builtin.disabled` still turns the hint off.
+ */
+export const RETIRED_TODOWRITE_HOOK_KEY = 'Hook dispatch post-tool-use TodoWrite';
+
 const BUILTIN_HOOK_SPECS: BuiltinHookSpec[] = [
   { key: 'Hook dispatch session-start', event: 'SessionStart', dispatchEvent: 'session-start', matcher: '*', timeoutSec: 15 },
   { key: 'Hook dispatch stop', event: 'Stop', dispatchEvent: 'stop', matcher: '*', timeoutSec: 15 },
-  { key: 'Hook dispatch post-tool-use wildcard', event: 'PostToolUse', dispatchEvent: 'post-tool-use', matcher: '*', timeoutSec: 10 },
-  { key: 'Hook dispatch post-tool-use TodoWrite', event: 'PostToolUse', dispatchEvent: 'post-tool-use', matcher: 'TodoWrite', timeoutSec: 3 },
+  { key: POST_TOOL_USE_WILDCARD_KEY, event: 'PostToolUse', dispatchEvent: 'post-tool-use', matcher: '*', timeoutSec: 10 },
   { key: 'Hook dispatch prompt-submit', event: 'UserPromptSubmit', dispatchEvent: 'prompt-submit', matcher: '*', timeoutSec: 10 },
+];
+
+/**
+ * Built-ins teamai no longer installs, kept so the exact-match cleanup of a
+ * project's team-only file still recognises the copies an earlier release
+ * wrote there. Entries in user settings go by their `[teamai] ` description.
+ * Drop each one release after it retired.
+ */
+const RETIRED_BUILTIN_HOOK_SPECS: BuiltinHookSpec[] = [
+  { key: RETIRED_TODOWRITE_HOOK_KEY, event: 'PostToolUse', dispatchEvent: 'post-tool-use', matcher: 'TodoWrite', timeoutSec: 3 },
 ];
 
 const COPILOT_SESSION_END_SPEC: BuiltinHookSpec = {
@@ -446,6 +464,20 @@ const SUBAGENT_START_SPEC: BuiltinHookSpec = {
  * explicitly through a script that keeps the fail-open contract.
  */
 export function builtinHookDefs(tool: string): HookDef[] {
+  return renderBuiltinDefs(tool, [
+    ...BUILTIN_HOOK_SPECS,
+    ...(tool === 'copilot' ? [COPILOT_SESSION_END_SPEC] : []),
+    ...(channelsOf(tool).hooks.subagentStop ? [SUBAGENT_STOP_SPEC] : []),
+    ...(isCodexTool(tool) ? [SUBAGENT_START_SPEC] : []),
+  ]);
+}
+
+/** The retired built-ins (RETIRED_BUILTIN_HOOK_SPECS) as an earlier release rendered them for `tool`. */
+export function retiredBuiltinHookDefs(tool: string): HookDef[] {
+  return renderBuiltinDefs(tool, RETIRED_BUILTIN_HOOK_SPECS);
+}
+
+function renderBuiltinDefs(tool: string, specs: BuiltinHookSpec[]): HookDef[] {
   // ZCode renders per-event timeouts from the ZCODE_TIMEOUT_MS table in its own
   // writer (toZcodeEntry), so def.timeout stays unset for it.
   const withTimeout = tool === 'cursor' || tool === 'copilot' || tool === 'workbuddy' || tool === 'codebuddy' || tool === 'joycode' || isCodexTool(tool);
@@ -457,13 +489,6 @@ export function builtinHookDefs(tool: string): HookDef[] {
       : isShellDependentTool(tool) || tool === 'dsh'
         ? getWrapperDispatchCommand
         : getDispatchCommand;
-
-  const specs = [
-    ...BUILTIN_HOOK_SPECS,
-    ...(tool === 'copilot' ? [COPILOT_SESSION_END_SPEC] : []),
-    ...(channelsOf(tool).hooks.subagentStop ? [SUBAGENT_STOP_SPEC] : []),
-    ...(isCodexTool(tool) ? [SUBAGENT_START_SPEC] : []),
-  ];
 
   return specs.map((spec): HookDef => {
     const def = {
@@ -512,7 +537,7 @@ const ADAPTER_BUILTIN_HOOKS: Record<HookAdapterId, AdapterBuiltinHooks | null> =
     keys: [
       'Hook dispatch session-start',
       'Hook dispatch stop',
-      'Hook dispatch post-tool-use wildcard',
+      POST_TOOL_USE_WILDCARD_KEY,
       'Hook dispatch prompt-submit',
     ],
   },
@@ -526,7 +551,7 @@ const ADAPTER_BUILTIN_HOOKS: Record<HookAdapterId, AdapterBuiltinHooks | null> =
     keys: [
       'Hook dispatch session-start',
       'Hook dispatch stop',
-      'Hook dispatch post-tool-use wildcard',
+      POST_TOOL_USE_WILDCARD_KEY,
       'Hook dispatch prompt-submit',
     ],
   },
@@ -535,7 +560,7 @@ const ADAPTER_BUILTIN_HOOKS: Record<HookAdapterId, AdapterBuiltinHooks | null> =
     keys: [
       'Hook dispatch session-start',
       'Hook dispatch stop',
-      'Hook dispatch post-tool-use wildcard',
+      POST_TOOL_USE_WILDCARD_KEY,
       'Hook dispatch prompt-submit',
     ],
   },
@@ -548,7 +573,7 @@ const ADAPTER_BUILTIN_HOOKS: Record<HookAdapterId, AdapterBuiltinHooks | null> =
     keys: [
       'Hook dispatch session-start',
       'Hook dispatch stop',
-      'Hook dispatch post-tool-use wildcard',
+      POST_TOOL_USE_WILDCARD_KEY,
       'Hook dispatch prompt-submit',
     ],
   },
@@ -573,8 +598,7 @@ const ADAPTER_BUILTIN_HOOKS: Record<HookAdapterId, AdapterBuiltinHooks | null> =
  */
 export function installedBuiltinHookDefs(tool: string, settingsDriven: boolean): HookDef[] {
   if (settingsDriven) return builtinHookDefs(tool);
-  const channel = channelsOf(tool).hooks.user;
-  const adapter = channel !== 'none' && channel !== 'unknown' && channel.channel === 'adapter' ? ADAPTER_BUILTIN_HOOKS[channel.adapter] : null;
+  const adapter = adapterBuiltinHooks(tool);
 
   if (!adapter) return [];
 
@@ -586,6 +610,23 @@ export function installedBuiltinHookDefs(tool: string, settingsDriven: boolean):
     command: getRawDispatchCommand(spec.dispatchEvent, tool, spec.matcher) + (adapter.suffix ?? ''),
     description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} ${spec.key}`,
   }] : []));
+}
+
+/** The slice of the built-ins `tool`'s own adapter installs, or null when it takes the full `builtinHookDefs` set or has no adapter. */
+function adapterBuiltinHooks(tool: string): AdapterBuiltinHooks | null {
+  const channel = channelsOf(tool).hooks.user;
+
+  return channel !== 'none' && channel !== 'unknown' && channel.channel === 'adapter' ? ADAPTER_BUILTIN_HOOKS[channel.adapter] : null;
+}
+
+/**
+ * False when `tool`'s adapter installs only a slice of the built-ins
+ * (ADAPTER_BUILTIN_HOOKS); any other tool that runs a teamai hook was
+ * installed the full `builtinHookDefs` set. Those are the tools that had the
+ * retired TodoWrite entry, so the only ones its hint runs for (#1788).
+ */
+export function takesAllBuiltins(tool: string): boolean {
+  return adapterBuiltinHooks(tool) === null;
 }
 
 /** §4.8 team override of built-in hooks. Only whitelisted fields are honored. */

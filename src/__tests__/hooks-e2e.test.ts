@@ -39,7 +39,7 @@ async function readResult(filePath: string): Promise<Record<string, unknown>> {
 
 describe('hooks E2E — real file I/O', () => {
   describe('inject — full injection to temp directories', () => {
-    it('creates Claude settings.json with all 5 events and 6 dispatch hooks', async () => {
+    it('creates Claude settings.json with all 5 events and 5 dispatch hooks', async () => {
       const p = claudePath();
       await injectHooks(p, 'claude');
 
@@ -49,12 +49,12 @@ describe('hooks E2E — real file I/O', () => {
       expect(Object.keys(hooks)).toEqual(['SessionStart', 'Stop', 'PostToolUse', 'UserPromptSubmit', 'SubagentStop']);
       expect(hooks.SessionStart).toHaveLength(1);
       expect(hooks.Stop).toHaveLength(1);
-      expect(hooks.PostToolUse).toHaveLength(2);
+      expect(hooks.PostToolUse).toHaveLength(1);
       expect(hooks.UserPromptSubmit).toHaveLength(1);
       expect(hooks.SubagentStop).toHaveLength(1);
     });
 
-    it('creates Cursor hooks.json with all 4 events and 5 dispatch hooks', async () => {
+    it('creates Cursor hooks.json with all 4 events and 4 dispatch hooks', async () => {
       const p = cursorPath();
       await injectHooks(p, 'cursor');
 
@@ -65,7 +65,7 @@ describe('hooks E2E — real file I/O', () => {
       expect(Object.keys(hooks)).toEqual(['sessionStart', 'stop', 'postToolUse', 'beforeSubmitPrompt']);
       expect(hooks.sessionStart).toHaveLength(1);
       expect(hooks.stop).toHaveLength(1);
-      expect(hooks.postToolUse).toHaveLength(2);
+      expect(hooks.postToolUse).toHaveLength(1);
       expect(hooks.beforeSubmitPrompt).toHaveLength(1);
     });
 
@@ -136,7 +136,7 @@ describe('hooks E2E — real file I/O', () => {
       const claudePostTool = (claudeResult.hooks as Record<string, Array<{ matcher: string }>>).PostToolUse;
       const cursorPostTool = (cursorResult.hooks as Record<string, Array<{ matcher?: string; command: string }>>).postToolUse;
 
-      expect(claudePostTool.map((h) => h.matcher)).toEqual(['*', 'TodoWrite']);
+      expect(claudePostTool.map((h) => h.matcher)).toEqual(['*']);
       // Cursor's wildcard entry has no host matcher; its Read of a SKILL.md is
       // credited by the wildcard pass.
       const cursorWildcard = cursorPostTool.find((h) => h.matcher === undefined);

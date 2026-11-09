@@ -191,6 +191,8 @@ function scenario({ userScope, breakProjectConfig = false, bare = false, project
       git(['init', '-q', '-b', 'main'], elsewhere);
       git(['commit', '-q', '--allow-empty', '-m', 'init'], elsewhere);
       await hook('prompt-submit', { hook_event_name: 'UserPromptSubmit', prompt: 'work elsewhere', cwd: elsewhere });
+      // The prompt is recorded by its detached pass (#1788): it must land before the count below.
+      await waitForDetachedChildren();
     }
     state.before = readJsonl<RecordedEvent>(eventsFile).length;
 
@@ -396,6 +398,8 @@ it.runIf(process.platform !== 'win32').each([[false, false], [true, false], [tru
       const prompt = await runCLI(['hook-dispatch', 'prompt-submit', '--tool', 'claude'], elsewhere, state.home,
         JSON.stringify({ session_id: SESSION, cwd: elsewhere, prompt: 'work elsewhere' }));
       expect(prompt.code, prompt.output).toBe(0);
+      // Recorded by the prompt's detached pass (#1788).
+      await waitForDetachedChildren();
       expect(readJsonl<RecordedEvent & { cwd: string }>(state.eventsFile).at(-1)?.cwd).toBe(elsewhere);
     }
     const before = readJsonl<RecordedEvent>(state.eventsFile).length;

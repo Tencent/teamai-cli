@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { waitForDetachedChildrenSync } from '../helpers/detached-processes.js';
 
 const cli = fileURLToPath(new URL('../../../dist/index.js', import.meta.url));
 let sandbox: string;
@@ -45,6 +46,8 @@ describe('real CLI slash skill tracking (#1132)', () => {
       });
       expect(result.error).toBeUndefined();
       expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+      // hook-dispatch records a prompt's skill use in its detached pass (#1788).
+      waitForDetachedChildrenSync();
     };
 
     run('/Volumes/External/project/.claude/skills/tdd/SKILL.md');

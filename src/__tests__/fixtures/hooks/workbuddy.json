@@ -37,17 +37,6 @@
           }
         ],
         "description": "[teamai] Hook dispatch post-tool-use wildcard"
-      },
-      {
-        "matcher": "TodoWrite",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch post-tool-use --tool workbuddy --matcher TodoWrite 2>/dev/null || true",
-            "timeout": 3
-          }
-        ],
-        "description": "[teamai] Hook dispatch post-tool-use TodoWrite"
       }
     ],
     "UserPromptSubmit": [
