@@ -1418,11 +1418,11 @@ export async function installedMcpEntries(
  * wrote, kept (held, a secret not set here), or left in a tool the member excluded, and one the file holds as the
  * member's. The folder each names stays (#1787).
  */
-async function installedMcpEntryTexts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string[]> {
-  const texts: string[] = [];
+export async function installedMcpEntryTexts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<Array<{ readonly file: string; readonly text: string }>> {
+  const texts: Array<{ readonly file: string; readonly text: string }> = [];
 
   for (const target of await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true })) {
-    for (const entry of (await installedMcpEntries(target))?.values() ?? []) texts.push(JSON.stringify(entry));
+    for (const entry of (await installedMcpEntries(target))?.values() ?? []) texts.push({ file: target.file, text: JSON.stringify(entry) });
   }
 
   return texts;
@@ -3002,7 +3002,7 @@ async function reconcileTargets(
     settleFolders = async () => {
       await placed.commit();
 
-      if (held.size === 0) await pruneMcpFolders(localConfig, teamEntries, await installedMcpEntryTexts(teamConfig, localConfig));
+      if (held.size === 0) await pruneMcpFolders(localConfig, teamEntries, (await installedMcpEntryTexts(teamConfig, localConfig)).map(({ text }) => text));
     };
   }
 
