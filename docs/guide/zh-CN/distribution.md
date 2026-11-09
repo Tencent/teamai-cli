@@ -163,7 +163,7 @@ scripts:
 
 `knowledge` 包含 rules 和共享指令（`claudemd/`，团队用这个名字时也可以是 `agentsmd/`）。项目还可以单独声明 learnings、env、hooks、mcp、models、docs、wiki。
 
-基准测试套件按 `resources.benchmarks` 分发。`benchmarks/<suite>/` 发给所有人。某个角色或项目列出 `<ns>` 后，`benchmarks/<ns>/<suite>/` 只发给激活了 `<ns>` 的成员，`benchmarks/<ns>/` 下放套件，不能直接放 `suite.yaml`。
+基准测试套件按 `resources.benchmarks` 分发。`benchmarks/<suite>/` 发给所有人。某个角色或项目列出 `<ns>` 后，`benchmarks/<ns>/<suite>/` 只发给激活了 `<ns>` 的成员，`benchmarks/<ns>/` 下放套件，不能直接放 `SUITE.yaml`。
 
 ```yaml
 # manifest/roles.yaml

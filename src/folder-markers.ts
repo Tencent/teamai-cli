@@ -65,7 +65,7 @@ export const FOLDER_MARKERS: Readonly<Record<MarkedType, FolderMarker>> = {
   benchmarks: {
     kind: 'Benchmark suite folder',
     marker: 'SUITE.yaml',
-    supported: false,
+    supported: true,
     skipped: 'is a benchmark suite folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
   },
   scorers: {

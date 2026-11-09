@@ -984,7 +984,7 @@ export const dashboardMessages = {
   "A regression suite": "回归套件",
   "tasks": "个任务",
   "from failures": "个来自失败",
-  "Push benchmarks/regressions/suite.yaml with team: [main, pulled].": "推送带 team: [main, pulled] 的 benchmarks/regressions/suite.yaml。",
+  "Push benchmarks/regressions/SUITE.yaml with team: [main, pulled].": "推送带 team: [main, pulled] 的 benchmarks/regressions/SUITE.yaml。",
   "A CI job runs the loop": "有 CI 任务运行这个循环",
   "Add a scheduled job that runs teamai self-improvement run on a runner it throws away.": "添加一个定时任务，在用完即弃的 runner 上运行 teamai self-improvement run。",
   "A CI job proves each change": "有 CI 任务证明每个改动",

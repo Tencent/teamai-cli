@@ -74,7 +74,7 @@ describe('workflows', () => {
 /**
  * Write `file` in `dir` under the marker's name and, on a file system that
  * keeps case, under its lower-case name too: there the older reader finds
- * the marker as `suite.yaml` or `mcp.yaml`, so a folder that carries a
+ * the marker as `mcp.yaml`, so a folder that carries a
  * lower-case copy is what it would misread elsewhere.
  */
 async function putMarkerAndLowerCase(dir: string, marker: string, content: string): Promise<void> {
@@ -108,15 +108,15 @@ describe('scorers', () => {
 });
 
 describe('benchmarks', () => {
-  it('reads no suite from a benchmark suite folder, at the root or in a namespace', async () => {
+  it('reads a suite from a SUITE.yaml folder as from a suite.yaml one, at the root and in a namespace (#1787)', async () => {
     const suite = 'name: fix\n';
     await put('manifest/roles.yaml', 'version: 1\nroles:\n  - id: dev\n    resources: { knowledge: [], skills: [], benchmarks: [dev] }\n');
     await put('benchmarks/fix/suite.yaml', suite);
-    await putMarkerAndLowerCase('benchmarks/api', 'SUITE.yaml', suite);
+    await put('benchmarks/api/SUITE.yaml', suite);
     await put('benchmarks/dev/lint/suite.yaml', suite);
-    await putMarkerAndLowerCase('benchmarks/dev/load', 'SUITE.yaml', suite);
+    await put('benchmarks/dev/load/SUITE.yaml', suite);
 
-    expect(await suiteDirectories({ ...localConfig, dataHome: path.join(repo, '.data') })).toEqual(['benchmarks/dev/lint', 'benchmarks/fix']);
+    expect(await suiteDirectories({ ...localConfig, dataHome: path.join(repo, '.data') })).toEqual(['benchmarks/api', 'benchmarks/dev/lint', 'benchmarks/dev/load', 'benchmarks/fix']);
   });
 });
 

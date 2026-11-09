@@ -170,7 +170,7 @@ async function unplacedTeamFiles(input: { root: string; dir: string; base: strin
     else if (mode === '120000') unplaced.push(`${teamPath}: a symlink, which teamai pull does not place`);
     else if (mode === '160000') unplaced.push(`${teamPath}: a submodule, which teamai pull does not place`);
     else if (top === 'benchmarks' && mode !== undefined && !suites.some((suite) => teamPath.startsWith(`${suite}/`))) {
-      unplaced.push(`${teamPath}: in no suite teamai pull reads: a suite is benchmarks/<suite>/ or benchmarks/<namespace>/<suite>/ with a suite.yaml`);
+      unplaced.push(`${teamPath}: in no suite teamai pull reads: a suite is benchmarks/<suite>/ or benchmarks/<namespace>/<suite>/ with a SUITE.yaml`);
     }
   }
 

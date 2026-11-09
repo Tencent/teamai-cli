@@ -18,6 +18,7 @@ import { formatDiagnostic } from '../../src/workflow/parse.js';
 import { WORKSPACE_MODES, type DriverIdentity, type WorkflowEnvelope } from '../../src/workflow/types.js';
 import { knownSecrets } from '../../src/env-resolution.js';
 import { parseSuite, type SourceFile } from '../../src/benchmark/suite.js';
+import { RESOURCE_LAYOUTS } from '../../src/resources/resolver.js';
 
 const ROOT = process.cwd();
 
@@ -646,6 +647,8 @@ for (const page of SCORER_PAGES) {
 }
 
 /** Each team file a page shows: a yaml fence whose first line is `# benchmarks/<path>.yaml`. */
+const SUITE_FILES: ReadonlySet<string> = new Set([RESOURCE_LAYOUTS.benchmarks.marker, ...RESOURCE_LAYOUTS.benchmarks.markerAliases]);
+
 function benchmarkFilesOf(page: string): SourceFile[] {
   return examplesOf(page).flatMap(({ source }) => {
     const relativePath = /^# (benchmarks\/\S+\.yaml)\n/.exec(source)?.[1];
@@ -677,7 +680,7 @@ for (const page of BENCHMARK_PAGES) {
   await check(`${page}: each yaml block parses, and its suite and task files pass pull`, () => {
     for (const example of examplesOf(page)) assert.deepEqual(parseDocument(example.source).errors, [], example.label);
     const files = benchmarkFilesOf(page);
-    const [suite, ...others] = files.filter((file) => file.relativePath.endsWith('/suite.yaml'));
+    const [suite, ...others] = files.filter((file) => SUITE_FILES.has(path.posix.basename(file.relativePath)));
 
     if (!suite || others.length > 0) throw new Error(`${page} shows ${others.length + (suite ? 1 : 0)} suite files, not one`);
     const tasks = files.filter((file) => file !== suite);

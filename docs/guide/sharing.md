@@ -663,7 +663,7 @@ These file names are reserved for resources kept as a folder, the way a skill is
 | `scorers/` | `SCORER.md` |
 | `agents/` | `AGENT.md` |
 
-A directory under that type's directory, at any depth, that holds its marker is a folder. This release reads hook folders ([Hooks](#hooks)) and none of the other folder types yet. It skips each such folder whole, and pulls the rest of the team repo as usual:
+A directory under that type's directory, at any depth, that holds its marker is a folder. This release reads hook folders ([Hooks](#hooks)) and benchmark suite folders ([Benchmarks](benchmarks.md)), and none of the other folder types yet. It skips each such folder whole, and pulls the rest of the team repo as usual:
 
 ```text
 rules/

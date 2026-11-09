@@ -6,11 +6,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { holdsMarker, unreadMarker } from '../folder-markers.js';
 import { isModelAlias, loadTeamModelAliases } from '../models/aliases.js';
 import { resolveNamespacedItems, type NamespaceCandidate } from '../namespace-resolver.js';
 import { loadProjectsManifest } from '../projects.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
+import { readFolderMarker, Resources, RESOURCE_LAYOUTS, type ResourceDiagnostic } from '../resources/resolver.js';
 import { loadRolesManifestIfPresent } from '../roles.js';
 import { getBusinessRoot, getDataHome, getKnowledgeDir, isSelfMode, managedMcpWorkspaceId, type LocalConfig } from '../types.js';
 import { readFileSafe, remove, writeJsonAtomic } from '../utils/fs.js';
@@ -22,6 +22,8 @@ import { formatDiagnostic } from '../workflow/parse.js';
 import type { WorkflowDiagnostic } from '../workflow/types.js';
 import { checkFilesNamed, parseSuite, type SourceFile, type Suite, type SuiteFile } from './suite.js';
 import { BENCHMARK_NAME } from './terms.js';
+
+const SUITES = RESOURCE_LAYOUTS.benchmarks;
 
 export interface SyncTeamResult extends SyncScoredWorkflowsResult {
   /** The valid benchmark suites of the same tree. Their diagnostics are in `invalid`. */
@@ -158,7 +160,8 @@ export async function suiteDirectories(config: LocalConfig): Promise<string[]> {
 
 /**
  * The files of each suite under benchmarks/ this member receives, read the way workflow files are: symlinks are not
- * files. A namespace suite replaces the shared suite of its name; one name in two active namespaces reads neither.
+ * files. A suite directory holds SUITE.yaml or suite.yaml, never both. A namespace suite replaces the shared suite of
+ * its name; one name in two active namespaces reads neither.
  */
 async function suiteSources(config: LocalConfig, everyNamespace: boolean): Promise<{
   sources: Array<{ suite: SourceFile; tasks: SourceFile[]; files: SuiteFile[] }>;
@@ -176,54 +179,65 @@ async function suiteSources(config: LocalConfig, everyNamespace: boolean): Promi
     return content === null ? undefined : { relativePath, content };
   };
 
-  const directories = async (relativePath: string): Promise<string[]> => {
-    const full = path.join(root, relativePath);
-    const stat = await fs.lstat(full).catch(() => undefined);
+  const suiteFile = async (folder: { readonly path: string; readonly full: string }): Promise<SourceFile | undefined> => {
+    const held = await readFolderMarker(SUITES, folder);
 
-    if (!stat?.isDirectory()) return [];
-
-    const names = (await fs.readdir(full, { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
-      .map((entry) => entry.name)
-      .sort((left, right) => left.localeCompare(right));
-
-    // A suite folder this release cannot read is left out whole (#1791): on a
-    // file system that ignores case its SUITE.yaml would read as suite.yaml.
-    const marker = unreadMarker('benchmarks');
-    const held = await Promise.all(names.map((name) => holdsMarker(path.join(full, name), marker)));
-
-    return names.filter((_, index) => !held[index]);
+    return held.kind === 'folder' ? read(`${folder.path}${held.marker}`) : undefined;
   };
 
   const invalid: WorkflowDiagnostic[] = [];
-  const dirs = await directories('benchmarks');
+
+  const report = (diagnostics: readonly ResourceDiagnostic[]): void => {
+    for (const diagnostic of diagnostics) {
+      switch (diagnostic.kind) {
+        case 'invalid':
+          invalid.push({ file: diagnostic.path, line: 1, column: 1, field: '(file)', message: diagnostic.message });
+          break;
+        case 'note':
+          log.warn(`[benchmarks] ${diagnostic.message}`);
+          break;
+        default: {
+          const unhandled: never = diagnostic.kind;
+          throw new Error(`Unhandled diagnostic kind: ${String(unhandled)}`);
+        }
+      }
+    }
+  };
+
   // Read the manifests only for a tree with suites, as for workflows: push syncs before its pull refreshes them.
-  const namespaces = dirs.length > 0 ? await suiteNamespaces(config, everyNamespace) : undefined;
+  const entries = await fs.readdir(path.join(root, SUITES.dir), { withFileTypes: true }).catch(() => []);
+  const namespaces = entries.some((entry) => entry.isDirectory() && !entry.name.startsWith('.')) ? await suiteNamespaces(config, everyNamespace) : undefined;
 
   if (namespaces === undefined) return { sources: [], invalid };
+  const shared = await Resources.layer(SUITES, { root, namespace: null });
+  report(shared.diagnostics);
   const candidates: NamespaceCandidate<SourceFile>[] = [];
 
-  for (const dir of dirs) {
-    const own = await read(`benchmarks/${dir}/suite.yaml`);
+  for (const { name, source } of shared.items) {
+    const own = await suiteFile(source);
 
-    if (!namespaces.declared.has(dir)) {
-      if (own) candidates.push({ name: dir, source: own.relativePath, namespace: null, value: own });
-      continue;
-    }
+    if (!own) continue;
 
-    if (!namespaces.active.includes(dir)) continue;
-
-    if (own) {
-      invalid.push({ file: own.relativePath, line: 1, column: 1, field: '(file)', message: `benchmarks/${dir} is a namespace; put the suite in benchmarks/${dir}/<suite>/` });
-    }
-
-    for (const name of await directories(`benchmarks/${dir}`)) {
-      const suite = await read(`benchmarks/${dir}/${name}/suite.yaml`);
-
-      if (suite) candidates.push({ name, source: suite.relativePath, namespace: dir, value: suite });
+    if (!namespaces.declared.has(name)) {
+      candidates.push({ name, source: own.relativePath, namespace: null, value: own });
+    } else if (namespaces.active.includes(name)) {
+      invalid.push({ file: own.relativePath, line: 1, column: 1, field: '(file)', message: `benchmarks/${name} is a namespace; put the suite in benchmarks/${name}/<suite>/` });
     }
   }
 
+  for (const namespace of namespaces.active) {
+    // A manifest declares a suite namespace, so it is one whatever it holds: read it as a layer of its own.
+    const inside = await Resources.layer({ ...SUITES, dir: `${SUITES.dir}/${namespace}` }, { root, namespace: null });
+    report(inside.diagnostics);
+
+    for (const { name, source } of inside.items) {
+      const suite = await suiteFile(source);
+
+      if (suite) candidates.push({ name, source: suite.relativePath, namespace, value: suite });
+    }
+  }
+
+  candidates.sort((left, right) => left.source.localeCompare(right.source));
   const byName = new Map<string, NamespaceCandidate<SourceFile>[]>();
 
   for (const candidate of candidates) {

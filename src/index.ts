@@ -983,7 +983,7 @@ benchmarkCmd
 
 benchmarkCmd
   .command('try <task-file>')
-  .description('Try one task file before it joins a suite, in a checkout of the suite\'s repo: setup and the check run at startingCommit, where the check must fail, and at solutionCommit, if set, with the protected paths as startingCommit has them, where it must pass. Reads the task file, the suite.yaml two directories up from it and the files its check.add entries name in that suite directory, needs no teamai init, and creates no run. Exits non-zero naming the commit and the cause when either goes the wrong way.')
+  .description('Try one task file before it joins a suite, in a checkout of the suite\'s repo: setup and the check run at startingCommit, where the check must fail, and at solutionCommit, if set, with the protected paths as startingCommit has them, where it must pass. Reads the task file, the SUITE.yaml (or suite.yaml) two directories up from it and the files its check.add entries name in that suite directory, needs no teamai init, and creates no run. Exits non-zero naming the commit and the cause when either goes the wrong way.')
   .action(async (file: string) => {
     const { benchmarkTry } = await import('./workflow-commands.js');
     await benchmarkTry(file);
