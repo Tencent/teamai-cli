@@ -105,7 +105,7 @@ Generated: do not edit by hand. Regenerate with
 
 - `teamai doctor` — Diagnose configuration issues, and print the run mode (attended or unattended) and what set it: TEAMAI_MODE, CI, or the default
   - `--json` — Output the report as JSON (suitable for CI)
-  - `--fix` — Remove lock files left behind by dead processes, delete again the run branches a succeeded workflow run could not delete, remove what runs settled longer ago than workflows.retention left behind (branches but those a pull request uses, worktrees, kept refs, base pins on origin), and remove the team hook entries a removed worktree of the repository left in HOME
+  - `--fix` — Remove lock files left behind by dead processes, delete again the run branches a succeeded workflow run could not delete, remove what runs settled longer ago than workflows.retention left behind (branches but those a pull request uses, worktrees, kept refs, base pins on origin), remove the stored workflow folders no run and no pulled workflow uses, and remove the team hook entries a removed worktree of the repository left in HOME
 
 ## roles
 
