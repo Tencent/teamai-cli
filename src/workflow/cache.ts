@@ -673,9 +673,17 @@ export interface WorkflowRun {
   with?: WorkflowStep['with'];
 }
 
+/** The folder a workflow is written as: its files, and their sourceHash. */
+export interface PinnedFolder {
+  sourceHash: string;
+  files: WorkflowFolderFile[];
+}
+
 /** The workflows a cached workflow runs, by name, and one hash over its sources and theirs. */
 export interface WorkflowTree {
   workflows: Record<string, WorkflowDefinition>;
+  /** The folder each of `workflows` written as one is, by the same name. */
+  folders: Record<string, PinnedFolder>;
   sourceHash: string;
   /** The team commit that stores every one of those sources, when one does. */
   teamRevision?: string;
@@ -764,6 +772,7 @@ export async function loadWorkflowTree(
   cached: CachedWorkflow,
 ): Promise<WorkflowTree | { failed: TreeFailure }> {
   const workflows: Record<string, WorkflowDefinition> = {};
+  const folders: Record<string, PinnedFolder> = {};
   const hashes: Array<[string, string]> = [];
   const revisions: Array<string | undefined> = [cached.teamRevision];
   const shipped = await shippedWorkflows();
@@ -803,6 +812,8 @@ export async function loadWorkflowTree(
 
       if (unfit) return unfit;
       workflows[workflow] = child.definition;
+
+      if (child.files) folders[workflow] = { sourceHash: child.sourceHash, files: child.files };
       hashes.push([workflow, child.sourceHash]);
       revisions.push(child.teamRevision);
       const failed = await visit(child.definition, [...through, workflow]);
@@ -821,14 +832,14 @@ export async function loadWorkflowTree(
     ? cached.teamRevision
     : undefined;
 
-  if (hashes.length === 0) return treeWithRevision({ workflows, sourceHash: cached.sourceHash }, teamRevision);
+  if (hashes.length === 0) return treeWithRevision({ workflows, folders, sourceHash: cached.sourceHash }, teamRevision);
   const hash = createHash('sha256').update(cached.sourceHash);
 
   for (const [name, sourceHash] of hashes.sort(([left], [right]) => left.localeCompare(right))) {
     hash.update('\0').update(name).update('\0').update(sourceHash);
   }
 
-  return treeWithRevision({ workflows, sourceHash: hash.digest('hex') }, teamRevision);
+  return treeWithRevision({ workflows, folders, sourceHash: hash.digest('hex') }, teamRevision);
 }
 
 /** `tree`, with `teamRevision` when every workflow in it is from that team commit. */
@@ -838,11 +849,20 @@ function treeWithRevision(tree: WorkflowTree, teamRevision: string | undefined):
   return tree;
 }
 
-/** A workflow, every workflow it runs, and one hash over all of their sources. */
+/** A workflow, every workflow it runs, the folders of those written as one, and one hash over all of their sources. */
 export interface WorkflowBundle {
   definition: WorkflowDefinition;
   workflows: Record<string, WorkflowDefinition>;
+  /** The folder `definition` is written as. */
+  folder?: PinnedFolder;
+  /** The folder each of `workflows` written as one is, by the same name. */
+  folders: Record<string, PinnedFolder>;
   sourceHash: string;
+}
+
+/** The folder `cached` is written as, or undefined for a single file. */
+export function folderOf(cached: CachedWorkflow): PinnedFolder | undefined {
+  return cached.files ? { sourceHash: cached.sourceHash, files: cached.files } : undefined;
 }
 
 export async function loadWorkflowBundle(config: LocalConfig, name: string): Promise<WorkflowBundle | { failed: string }> {
@@ -852,8 +872,12 @@ export async function loadWorkflowBundle(config: LocalConfig, name: string): Pro
   const tree = await loadWorkflowTree(config, cached);
 
   if ('failed' in tree) return { failed: tree.failed.message };
+  const bundle: WorkflowBundle = { definition: cached.definition, workflows: tree.workflows, folders: tree.folders, sourceHash: tree.sourceHash };
+  const folder = folderOf(cached);
 
-  return { definition: cached.definition, workflows: tree.workflows, sourceHash: tree.sourceHash };
+  if (folder) bundle.folder = folder;
+
+  return bundle;
 }
 
 /**

@@ -4,6 +4,7 @@ import { holdsMarker, unreadMarker } from '../folder-markers.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { resolveNamespacedItems } from '../namespace-resolver.js';
 import { readFileSafe } from '../utils/fs.js';
+import { FolderFiles, type FolderFilesRead } from './folder-files.js';
 
 /** How a resource type lays out its items in a tree. `TEntry` is what one entry of its entry-list file holds. */
 export interface ResourceLayout<TEntry = never> {
@@ -53,9 +54,11 @@ export type LayeredResolution<TEntry, TShipped> =
 
 /** A default as teamai's package holds it. */
 export interface ShippedFile {
-  /** `/`-separated, from the package root: `workflows/teamai-score.yaml`. */
+  /** `/`-separated, from the package root: `workflows/teamai-score.yaml`, or a folder's marker. */
   readonly relativePath: string;
   readonly content: string;
+  /** Every file of the folder a default is shipped as, the marker included. Absent for a default shipped as one file. */
+  readonly folder?: FolderFilesRead;
 }
 
 /** teamai's defaults, the bottom layer: the package directory holding the type's directory, and how one is read. */
@@ -196,7 +199,8 @@ function readShipped<TEntry>(layout: ResourceLayout<TEntry>, root: string): Prom
       // teamai ships every default as a file or a folder of its own.
       if (source.kind === 'entry') continue;
       const relativePath = path.relative(root, definition).split(path.sep).join('/');
-      found.push({ name, source, file: { relativePath, content: await fs.readFile(definition, 'utf8') } });
+      const file: ShippedFile = { relativePath, content: await fs.readFile(definition, 'utf8') };
+      found.push({ name, source, file: source.kind === 'folder' ? { ...file, folder: await FolderFiles.read(source.full) } : file });
     }
 
     return found;

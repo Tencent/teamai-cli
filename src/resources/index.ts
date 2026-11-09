@@ -7,6 +7,7 @@ import { AgentsHandler } from './agents.js';
 import { HooksHandler } from './hooks.js';
 import { McpHandler } from './mcp.js';
 import { RepoResourceHandler } from './repo-resource.js';
+import { WorkflowsHandler } from './workflows.js';
 import { existingSharedInstructionDirs, SHARED_INSTRUCTION_SOURCE_DIRS } from '../shared-instruction-source.js';
 import type { ResourceType } from '../types.js';
 
@@ -25,7 +26,7 @@ const handlers = {
   claudemd: new RepoResourceHandler('claudemd', 'claudemd', undefined, existingSharedInstructionDirs, SHARED_INSTRUCTION_SOURCE_DIRS),
   learnings: new RepoResourceHandler('learnings', 'learnings'),
   wiki: new RepoResourceHandler('wiki', 'teamwiki/evidence/code'),
-  workflows: new RepoResourceHandler('workflows', 'workflows', (f) => f.endsWith('.yaml')),
+  workflows: new WorkflowsHandler(),
   prompts: new RepoResourceHandler('prompts', 'prompts'),
   scorers: new RepoResourceHandler('scorers', 'scorers'),
   benchmarks: new RepoResourceHandler('benchmarks', 'benchmarks'),

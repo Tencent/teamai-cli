@@ -1,5 +1,9 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { FolderFiles, type FolderFilesRead } from '../resources/folder-files.js';
+import { getDataHome, type LocalConfig } from '../types.js';
+import { pathExists } from '../utils/fs.js';
 import { createGit } from '../utils/git.js';
 
 // ─── Workflow folders (#1787) ────────────────────────────
@@ -30,19 +34,19 @@ export type WorkflowFolderRead =
   | { readonly kind: 'invalid'; readonly problem: string };
 
 /**
- * Every file of the workflow folder at `dir` in a team checkout, in path order, each executable as git records it, so a
+ * Every file of the workflow folder at `folderDir` in a team checkout, in path order, each executable as git records it, so a
  * checkout on a file system without the bit reads the same folder. A file git does not track keeps the bit it has.
  */
-async function read(dir: string): Promise<WorkflowFolderRead> {
-  const [found, modes] = await Promise.all([FolderFiles.read(dir), gitModes(dir)]);
+async function read(folderDir: string): Promise<WorkflowFolderRead> {
+  const [found, modes] = await Promise.all([FolderFiles.read(folderDir), gitModes(folderDir)]);
 
   return fromFiles(found, modes);
 }
 
-/** Whether git's index has each file under `dir` executable, by its path from `dir`; none outside a git checkout. */
-async function gitModes(dir: string): Promise<ReadonlyMap<string, boolean>> {
+/** Whether git's index has each file under `folderDir` executable, by its path from it; none outside a git checkout. */
+async function gitModes(folderDir: string): Promise<ReadonlyMap<string, boolean>> {
   try {
-    const listed = await createGit(dir).raw(['ls-files', '-s', '-z', '--', '.']);
+    const listed = await createGit(folderDir).raw(['ls-files', '-s', '-z', '--', '.']);
 
     return new Map(listed.split('\0').flatMap((line) => {
       const match = /^(\d{6}) [0-9a-f]+ \d\t(.+)$/.exec(line);
@@ -60,11 +64,11 @@ function fromFiles(found: FolderFilesRead, modes: ReadonlyMap<string, boolean>):
   const files: WorkflowFolderFile[] = [];
   const binary: string[] = [];
 
-  for (const { path, executable, bytes } of found.files) {
+  for (const { path: file, executable, bytes } of found.files) {
     const text = utf8(bytes);
 
-    if (text === undefined) binary.push(path);
-    else files.push({ path, executable: modes.get(path) ?? executable, content: text.replace(/\r\n/g, '\n') });
+    if (text === undefined) binary.push(file);
+    else files.push({ path: file, executable: modes.get(file) ?? executable, content: text.replace(/\r\n/g, '\n') });
   }
 
   if (binary.length > 0) return { kind: 'invalid', problem: binary.map((file) => `${file} is not UTF-8 text`).join(', ') };
@@ -72,7 +76,7 @@ function fromFiles(found: FolderFilesRead, modes: ReadonlyMap<string, boolean>):
   const total = sizes.reduce((sum, { bytes }) => sum + bytes, 0);
 
   if (total > MAX_BYTES) {
-    const largest = [...sizes].sort((a, b) => b.bytes - a.bytes || (a.path < b.path ? -1 : 1)).slice(0, 5).map(({ path, bytes }) => `${path} (${bytes} bytes)`);
+    const largest = [...sizes].sort((a, b) => b.bytes - a.bytes || (a.path < b.path ? -1 : 1)).slice(0, 5).map((size) => `${size.path} (${size.bytes} bytes)`);
 
     return { kind: 'invalid', problem: `it holds ${total} bytes, more than the ${MAX_BYTES} bytes (1 MB) a workflow folder may hold. Its largest files: ${largest.join(', ')}` };
   }
@@ -100,4 +104,65 @@ function hash(files: readonly WorkflowFolderFile[]): string {
   return digest.digest('hex');
 }
 
-export const WorkflowFolder = { read, hash } as const;
+/** What a sourceHash looks like, so a path built from one stays in the folders directory. */
+const SOURCE_HASH = /^[0-9a-f]{64}$/;
+
+/** Where the files of the folder with `sourceHash` are kept for the runs that use it: `<dataHome>/workflows/folders/<sourceHash>`. */
+function dir(config: LocalConfig, sourceHash: string): string | undefined {
+  return SOURCE_HASH.test(sourceHash) ? path.join(getDataHome(config), 'workflows', 'folders', sourceHash) : undefined;
+}
+
+/**
+ * Writes `files` to {@link dir} once, for every run that uses the folder with `sourceHash`: into a new sibling first,
+ * renamed into place, so a run never sees a folder half written. A folder already there is kept as it is.
+ */
+async function pin(config: LocalConfig, { sourceHash, files }: { sourceHash: string; files: readonly WorkflowFolderFile[] }): Promise<void> {
+  const target = dir(config, sourceHash);
+
+  if (target === undefined) throw new Error(`${sourceHash} is not the sourceHash of a workflow folder`);
+
+  if (await pathExists(target)) return;
+  const staging = path.join(path.dirname(target), `.${sourceHash}.${randomBytes(4).toString('hex')}`);
+
+  try {
+    for (const file of files) {
+      const full = path.join(staging, ...file.path.split('/'));
+      await fs.mkdir(path.dirname(full), { recursive: true });
+      await fs.writeFile(full, file.content, { mode: file.executable ? 0o755 : 0o644 });
+    }
+
+    await fs.mkdir(staging, { recursive: true });
+    await fs.rename(staging, target);
+  } catch (error) {
+    // Another process pinned the same folder first.
+    if (!await pathExists(target)) throw error;
+  } finally {
+    await fs.rm(staging, { recursive: true, force: true });
+  }
+}
+
+/** How long a stored folder no run references stays: a start or a claim stores the folder before it writes the run. */
+const UNREFERENCED_GRACE_MS = 60 * 60 * 1000;
+
+/**
+ * Removes each stored folder whose sourceHash is not in `referenced` and that was stored more than an hour before `now`,
+ * so a run whose start or claim stored its folder but has not yet written its record keeps it.
+ */
+async function prune(config: LocalConfig, { referenced, now }: { referenced: ReadonlySet<string>; now: number }): Promise<void> {
+  const root = path.join(getDataHome(config), 'workflows', 'folders');
+  const names = await fs.readdir(root).catch(() => []);
+
+  for (const name of names) {
+    if (!SOURCE_HASH.test(name) || referenced.has(name)) continue;
+    const stored = await fs.stat(path.join(root, name)).catch(() => undefined);
+
+    if (stored && stored.mtimeMs + UNREFERENCED_GRACE_MS <= now) await fs.rm(path.join(root, name), { recursive: true, force: true });
+  }
+}
+
+/** A folder teamai's package ships, as {@link FolderFiles.read} found it: no git index records its modes. */
+function shipped(found: FolderFilesRead): WorkflowFolderRead {
+  return fromFiles(found, new Map());
+}
+
+export const WorkflowFolder = { read, shipped, hash, dir, pin, prune } as const;

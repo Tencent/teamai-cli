@@ -508,6 +508,13 @@ export interface RunState {
   /** The sub-workflows the run uses, by name, as they were cached when it started. */
   workflows?: Record<string, WorkflowDefinition>;
   /**
+   * The sourceHash of the folder `definition` is written as, whose files the run reads from its copy under the data home
+   * for its whole life. Absent for a single file, and on runs started before workflow folders. Local run state only.
+   */
+  folder?: string;
+  /** The sourceHash of the folder each of `workflows` written as one is, by the same name. Local run state only. */
+  folders?: Record<string, string>;
+  /**
    * The `workflow` outputs of the steps a `from` step runs, by the path of the producing step, admitted when it reported
    * and frozen for the run's life. The named workflows each brought are in `workflows`.
    */

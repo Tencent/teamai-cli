@@ -8,6 +8,7 @@ import { RESOURCE_LAYOUTS, Resources, type ShippedFile, type TeamaiLayer } from 
 import { SCORE_WORKFLOW } from './scorers/judging-workflows.js';
 import { ScoreOverride, type ScoreOverrideCode } from './scorers/score-override.js';
 import type { LocalConfig } from './types.js';
+import { WorkflowFolder } from './workflow/folder.js';
 import { formatDiagnostic, parseWorkflow } from './workflow/parse.js';
 import type { CachedWorkflow, ResolvedWorkflow, WorkflowDefinition, WorkflowDiagnostic, WorkflowSource } from './workflow/types.js';
 
@@ -48,10 +49,13 @@ const parsedDefaults = new Map<string, CachedWorkflow>();
  * A default as the package ships it, parsed once, so each lookup returns the same definition. A shipped file that does
  * not parse, or whose name lacks `PREFIX`, is a teamai bug, so it throws.
  */
-function readDefault({ relativePath, content }: ShippedFile): CachedWorkflow {
+function readDefault({ relativePath, content, folder }: ShippedFile): CachedWorkflow {
   const known = parsedDefaults.get(relativePath);
 
   if (known) return known;
+  const read = folder ? WorkflowFolder.shipped(folder) : undefined;
+
+  if (read?.kind === 'invalid') throw new Error(`teamai's default ${relativePath} is not a valid workflow folder: ${read.problem}`);
   const parsed = parseWorkflow(relativePath, content);
 
   if (!parsed.ok) throw new Error(`teamai's default ${relativePath} does not parse: ${parsed.diagnostics.map(formatDiagnostic).join('; ')}`);
@@ -60,11 +64,13 @@ function readDefault({ relativePath, content }: ShippedFile): CachedWorkflow {
 
   const shipped: CachedWorkflow = {
     relativePath,
-    sourceHash: createHash('sha256').update(content).digest('hex'),
+    sourceHash: read ? WorkflowFolder.hash(read.files) : createHash('sha256').update(content).digest('hex'),
     content,
     definition: parsed.definition,
     validatedAt: new Date(0).toISOString(),
   };
+
+  if (read) shipped.files = read.files;
 
   parsedDefaults.set(relativePath, shipped);
 

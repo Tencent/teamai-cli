@@ -4,15 +4,27 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
-import type { LocalConfig } from '../types.js';
+import type { LocalConfig, TeamaiConfig } from '../types.js';
+import { knownSecrets } from '../env-resolution.js';
+import { DefaultWorkflows } from '../default-workflows.js';
+import { getHandler } from '../resources/index.js';
+import { RESOURCE_LAYOUTS, Resources } from '../resources/resolver.js';
+import { getDataHome } from '../types.js';
 import { log } from '../utils/logger.js';
-import { loadCachedWorkflow, namespaceConflictOf } from '../workflow/cache.js';
+import { folderOf, loadCachedWorkflow, namespaceConflictOf } from '../workflow/cache.js';
+import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
+import { startRun } from '../workflow/engine.js';
+import { WorkflowFolder } from '../workflow/folder.js';
+import { claimRun, publishRun } from '../workflow/handoff.js';
+import { sweepLeftovers } from '../workflow/leftovers.js';
+import { readRun } from '../workflow/store.js';
+import { dirs as handoffDirs, pull, team as handoffTeam } from './helpers/workflow-handoff-fixture.js';
 
 const dirs: string[] = [];
 
 afterEach(() => {
   vi.restoreAllMocks();
-  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  for (const dir of [...dirs.splice(0), ...handoffDirs.splice(0)]) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 function git(cwd: string, ...args: string[]): string {
@@ -221,5 +233,275 @@ describe('workflow folders', () => {
 
     expect(result.invalid).toEqual([]);
     expect((await loadCachedWorkflow(team.config, 'notes'))?.definition.steps[0]?.answer).toBe('Ops notes.');
+  });
+});
+
+_setDriverPollMs(20);
+
+/** A command that prints its `TEAMAI_WORKFLOW_DIR`, or null without one, and the file `name` there, as `{ dir, text }`. */
+function printsFolder(name: string): string {
+  return `node -e "const d=process.env.TEAMAI_WORKFLOW_DIR;const f=d&&require('path').join(d,'${name}');console.log(JSON.stringify({dir:d??null,text:f&&require('fs').existsSync(f)?require('fs').readFileSync(f,'utf8'):null}))"`;
+}
+
+/** A project scope with a team repo, synced, and a git checkout to run in. */
+async function runScope(files: Record<string, string>): Promise<{ config: LocalConfig; workspace: string }> {
+  const team = teamScope();
+
+  for (const [file, content] of Object.entries(files)) team.put(file, content);
+  team.commit();
+  const workspace = path.join(path.dirname(team.config.repo.localPath), 'workspace');
+  fs.mkdirSync(workspace);
+  git(workspace, 'init', '--quiet');
+  git(workspace, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '--allow-empty', '-m', 'initial');
+  const config = { ...team.config, projectRoot: workspace };
+  const synced = await syncScorersThenWorkflows(config);
+  expect(synced.invalid).toEqual([]);
+
+  return { config, workspace };
+}
+
+/** Starts `name` and drives it with the local driver to its end, returning each step's outputs by id. */
+async function runToEnd(config: LocalConfig, workspace: string, name: string): Promise<Record<string, unknown>> {
+  const started = await startRun(config, name, {}, { secrets: await knownSecrets(config) });
+
+  if ('error' in started) throw new Error(started.error.message);
+  const runId = String(started.data.run);
+  expect(await runLocalDriver(config, runId, workspace, {})).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  const run = await readRun(config, runId);
+
+  if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
+
+  return Object.fromEntries(run.steps.map((step) => [step.id, 'outputs' in step ? step.outputs : undefined]));
+}
+
+describe('running a workflow folder', () => {
+  it('gives a command step TEAMAI_WORKFLOW_DIR, the run\'s copy of the folder in the data home', async () => {
+    const { config, workspace } = await runScope({
+      'workflows/release/WORKFLOW.yaml': `schemaVersion: v1alpha1\nname: release\ndescription: Release.\nsteps:\n  - id: plan\n    command: ${printsFolder('plan.txt')}\n    output: { dir: string, text: string }\n`,
+      'workflows/release/plan.txt': 'version 1.2.0\n',
+    });
+    const cached = await loadCachedWorkflow(config, 'release');
+
+    const outputs = await runToEnd(config, workspace, 'release');
+
+    expect(outputs.plan).toEqual({ dir: path.join(getDataHome(config), 'workflows', 'folders', cached?.sourceHash ?? ''), text: 'version 1.2.0\n' });
+  });
+
+  it('gives each step of a nested workflow the folder of the file that defines it, and none to a single file', async () => {
+    const step = (id: string, extra = ''): string => `  - id: ${id}\n${extra}    command: ${printsFolder('which.txt')}\n    output: json\n`;
+    const { config, workspace } = await runScope({
+      'workflows/release/WORKFLOW.yaml': `schemaVersion: v1alpha1\nname: release\ndescription: Release.\nsteps:\n${step('own')}`
+        + '  - id: inline\n    needs: [own]\n    workflow:\n      steps:\n        - id: inner\n          command: ' + printsFolder('which.txt') + '\n          output: json\n'
+        + '  - id: folder\n    needs: [inline]\n    workflow: notes\n'
+        + '  - id: single\n    needs: [folder]\n    workflow: plain\n',
+      'workflows/release/which.txt': 'release',
+      'workflows/notes/WORKFLOW.yaml': `schemaVersion: v1alpha1\nname: notes\ndescription: Notes.\nsteps:\n${step('write')}`,
+      'workflows/notes/which.txt': 'notes',
+      'workflows/plain.yaml': `schemaVersion: v1alpha1\nname: plain\ndescription: Plain.\nsteps:\n${step('alone')}`
+        + '  - id: inline\n    needs: [alone]\n    workflow:\n      steps:\n        - id: inner\n          command: ' + printsFolder('which.txt') + '\n          output: json\n',
+    });
+
+    const outputs = await runToEnd(config, workspace, 'release');
+
+    expect(outputs).toMatchObject({
+      own: { text: 'release' },
+      'inline.inner': { text: 'release' },
+      'folder.write': { text: 'notes' },
+      'single.alone': { dir: null, text: null },
+      'single.inline.inner': { dir: null, text: null },
+    });
+  });
+
+  it('gives a workflow a from step of a folder workflow generated the folder of that workflow', async () => {
+    const generated = { schemaVersion: 'v1alpha1', name: 'generated', description: 'Generated.', steps: [{ id: 'g', command: 'node "$TEAMAI_WORKFLOW_DIR/print.js"', output: 'json' }] };
+    const { config, workspace } = await runScope({
+      'workflows/release/WORKFLOW.yaml': 'schemaVersion: v1alpha1\nname: release\ndescription: Release.\nsteps:\n'
+        + '  - id: make\n    command: node "$TEAMAI_WORKFLOW_DIR/make.js"\n    output: { definition: workflow }\n'
+        + '  - id: run\n    needs: [make]\n    workflow: { from: make }\n',
+      'workflows/release/make.js': `console.log(JSON.stringify({ definition: { definition: ${JSON.stringify(generated)} } }));\n`,
+      'workflows/release/print.js': "const d = process.env.TEAMAI_WORKFLOW_DIR;\nconsole.log(JSON.stringify({ text: require('fs').readFileSync(require('path').join(d, 'which.txt'), 'utf8') }));\n",
+      'workflows/release/which.txt': 'release',
+    });
+
+    const outputs = await runToEnd(config, workspace, 'release');
+
+    expect(outputs['run.g']).toEqual({ text: 'release' });
+  });
+
+  it('keeps the files a run started with after the folder changes and after it is deleted', async () => {
+    const { config, workspace } = await runScope({
+      'workflows/release/WORKFLOW.yaml': `schemaVersion: v1alpha1\nname: release\ndescription: Release.\nsteps:\n  - id: plan\n    command: ${printsFolder('plan.txt')}\n    output: json\n`,
+      'workflows/release/plan.txt': 'as started',
+    });
+    const started = await startRun(config, 'release', {}, { secrets: await knownSecrets(config) });
+
+    if ('error' in started) throw new Error(started.error.message);
+    const folder = path.join(config.repo.localPath, 'workflows', 'release');
+    fs.writeFileSync(path.join(folder, 'plan.txt'), 'changed');
+    await syncScorersThenWorkflows(config);
+    fs.rmSync(folder, { recursive: true });
+    await syncScorersThenWorkflows(config);
+
+    expect(await runLocalDriver(config, String(started.data.run), workspace, {})).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(await readRun(config, String(started.data.run))).toMatchObject({ steps: [{ id: 'plan', outputs: { text: 'as started' } }] });
+  });
+
+  it('removes on doctor --fix a stored folder that no run record and no cached workflow references, once an hour old', async () => {
+    const { config, workspace } = await runScope({
+      'workflows/release/WORKFLOW.yaml': `schemaVersion: v1alpha1\nname: release\ndescription: Release.\nsteps:\n  - id: plan\n    command: ${printsFolder('plan.txt')}\n    output: json\n`,
+      'workflows/release/plan.txt': 'ran',
+    });
+    await runToEnd(config, workspace, 'release');
+    const ran = await loadCachedWorkflow(config, 'release');
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'release', 'plan.txt'), 'cached');
+    await syncScorersThenWorkflows(config);
+    const cached = await loadCachedWorkflow(config, 'release');
+    const pinned = async (text: string, age: number): Promise<string> => {
+      const files = [{ path: 'plan.txt', executable: false, content: text }];
+      const sourceHash = WorkflowFolder.hash(files);
+      await WorkflowFolder.pin(config, { sourceHash, files });
+      const dir = WorkflowFolder.dir(config, sourceHash) ?? '';
+      fs.utimesSync(dir, new Date(Date.now() - age), new Date(Date.now() - age));
+      return dir;
+    };
+    const cachedFolder = cached && folderOf(cached);
+    if (!cachedFolder) throw new Error('release is not cached as a folder');
+    await WorkflowFolder.pin(config, cachedFolder);
+    const old = await pinned('no longer used', 2 * 60 * 60 * 1000);
+    const fresh = await pinned('a run is starting', 0);
+
+    await sweepLeftovers(config, null, { now: Date.now(), checkout: workspace });
+
+    expect(fs.readdirSync(path.join(getDataHome(config), 'workflows', 'folders')).sort()).toEqual(
+      [ran?.sourceHash, cached?.sourceHash, path.basename(fresh)].sort(),
+    );
+    expect(fs.existsSync(old)).toBe(false);
+  });
+});
+
+
+describe('claiming a run of a workflow folder', () => {
+  it('gives the member who claims it the files the run started with, from the team commit it ran at', async () => {
+    const acme = handoffTeam({}, {
+      'workflows/release/WORKFLOW.yaml': `schemaVersion: v1alpha1\nname: release\ndescription: Release.\nsteps:\n  - id: plan\n    command: ${printsFolder('plan.txt')}\n    output: json\n`,
+      'workflows/release/plan.txt': 'as started',
+    });
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    acme.change({ 'workflows/release/plan.txt': 'changed' });
+    await pull(bob);
+    const started = await startRun(alice.config, 'release', {}, { secrets: await knownSecrets(alice.config) });
+
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    const sourceHash = (await loadCachedWorkflow(alice.config, 'release'))?.sourceHash ?? '';
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true });
+
+    expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
+    expect(await runLocalDriver(bob.config, runId, bob.checkout, {})).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(await readRun(bob.config, runId)).toMatchObject({
+      steps: [{ id: 'plan', outputs: { dir: path.join(getDataHome(bob.config), 'workflows', 'folders', sourceHash), text: 'as started' } }],
+    });
+  });
+});
+
+describe('default workflow folders', () => {
+  it('reads a default folder of teamai\'s package once, with every file, hashed as a team folder is', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-wf-defaults-'));
+    dirs.push(root);
+    fs.mkdirSync(path.join(root, 'workflows', 'teamai-folder-demo', 'lib'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'workflows', 'teamai-folder-demo', 'WORKFLOW.yaml'), 'schemaVersion: v1alpha1\nname: teamai-folder-demo\ndescription: Demo.\nsteps:\n  - id: run\n    command: sh "$TEAMAI_WORKFLOW_DIR/lib/run.sh"\n');
+    fs.writeFileSync(path.join(root, 'workflows', 'teamai-folder-demo', 'lib', 'run.sh'), 'echo ok\r\n', { mode: 0o755 });
+    const teamai = { root, read: DefaultWorkflows.layer.read };
+
+    const first = await Resources.resolve(RESOURCE_LAYOUTS.workflows, 'teamai-folder-demo', { teamai });
+    const again = await Resources.resolve(RESOURCE_LAYOUTS.workflows, 'teamai-folder-demo', { teamai });
+
+    const shipped = first.kind === 'resolved' && first.item.layer === 'teamai' ? first.item.shipped : undefined;
+    expect(shipped?.relativePath).toBe('workflows/teamai-folder-demo/WORKFLOW.yaml');
+    expect(shipped?.files).toEqual([
+      { path: 'WORKFLOW.yaml', executable: false, content: expect.stringContaining('name: teamai-folder-demo') },
+      { path: 'lib/run.sh', executable: true, content: 'echo ok\n' },
+    ]);
+    expect(shipped?.sourceHash).toBe(WorkflowFolder.hash(shipped?.files ?? []));
+    expect(again.kind === 'resolved' && again.item.layer === 'teamai' ? again.item.shipped : undefined).toBe(shipped);
+  });
+
+  const SCORE = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'workflows', 'teamai-score.yaml'), 'utf8');
+
+  it('replaces a default with a team folder of its name', async () => {
+    const team = teamScope();
+    team.put('workflows/teamai-score/WORKFLOW.yaml', SCORE.replace('Judge one piece of work against a scorer\'s rubric.', 'Judge this change for our team, strictly.'));
+    team.put('workflows/teamai-score/notes.md', 'How we judge.\n');
+    team.commit();
+
+    expect((await syncScorersThenWorkflows(team.config)).invalid).toEqual([]);
+
+    expect(await loadCachedWorkflow(team.config, 'teamai-score')).toMatchObject({ source: 'team', relativePath: 'workflows/teamai-score/WORKFLOW.yaml' });
+  });
+
+  it('refuses a team folder that replaces a default and breaks its contract, as it refuses a file', async () => {
+    const team = teamScope();
+    team.put('workflows/teamai-score/WORKFLOW.yaml', SCORE.replace('          if: inputs.store\n          workspace: { team: { branch: teamai-reports } }\n', '          workspace: { team: { branch: teamai-reports } }\n'));
+    team.commit();
+
+    const result = await syncScorersThenWorkflows(team.config);
+
+    expect(result.invalid.map(({ file, field }) => ({ file, field }))).toEqual([{ file: 'workflows/teamai-score/WORKFLOW.yaml', field: 'steps.score.publish.if' }]);
+    expect(await loadCachedWorkflow(team.config, 'teamai-score')).toMatchObject({ source: 'default' });
+  });
+});
+
+describe('workflow folders in status and push', () => {
+  const TEAM: TeamaiConfig = { team: 'acme', description: '', repo: 'https://github.com/acme/app.git', provider: 'github', reviewers: [], sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: true } }, toolPaths: {} };
+
+  it('counts a folder as one workflow, named after it, beside single files', async () => {
+    const team = teamScope();
+    team.put('workflows/release/WORKFLOW.yaml', RELEASE);
+    team.put('workflows/release/checks.yaml', 'checks: []\n');
+    team.put('workflows/release/plan.py', 'print(1)\n');
+    team.put('workflows/payments/deploy/WORKFLOW.yaml', RELEASE.replace('name: release', 'name: deploy'));
+    team.put('workflows/payments/refund.yaml', RELEASE.replace('name: release', 'name: refund'));
+    team.put('workflows/plain.yaml', RELEASE.replace('name: release', 'name: plain'));
+    team.commit();
+
+    const items = await getHandler('workflows').scanTeamForPull(TEAM, team.config);
+
+    expect(items.map(({ name, relativePath }) => ({ name, relativePath })).sort((a, b) => (a.name < b.name ? -1 : 1))).toEqual([
+      { name: 'payments/deploy', relativePath: 'workflows/payments/deploy/' },
+      { name: 'payments/refund.yaml', relativePath: 'workflows/payments/refund.yaml' },
+      { name: 'plain.yaml', relativePath: 'workflows/plain.yaml' },
+      { name: 'release', relativePath: 'workflows/release/' },
+    ]);
+  });
+
+  it('pushes every file of a folder under .teamai/workflows/ in single-repo, and only YAML outside one', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-wf-push-'));
+    dirs.push(root);
+    const business = path.join(root, 'biz');
+    const baseline = path.join(business, '.teamai', 'knowledge-wt', '.teamai');
+    const put = (file: string, content: string): void => {
+      fs.mkdirSync(path.dirname(path.join(business, '.teamai', file)), { recursive: true });
+      fs.writeFileSync(path.join(business, '.teamai', file), content);
+    };
+    fs.mkdirSync(path.join(baseline, 'workflows'), { recursive: true });
+    put('workflows/release/WORKFLOW.yaml', RELEASE);
+    put('workflows/release/plan.py', 'print(1)\n');
+    put('workflows/release/lib/notes.md', 'notes\n');
+    put('workflows/plain.yaml', RELEASE.replace('name: release', 'name: plain'));
+    put('workflows/stray.txt', 'not a workflow\n');
+    const config: LocalConfig = {
+      repo: { localPath: baseline, remote: 'https://github.com/acme/app.git', kind: 'self', businessRepoRoot: path.join(business, '.teamai', 'knowledge-wt') },
+      username: 'alice', scope: 'project', projectRoot: business, additionalRoles: [], dataHome: path.join(root, 'data'),
+    };
+
+    const items = await getHandler('workflows').scanLocalForPush(TEAM, config);
+
+    expect(items.map(({ relativePath, status }) => ({ relativePath, status })).sort((a, b) => (a.relativePath < b.relativePath ? -1 : 1))).toEqual([
+      { relativePath: 'workflows/plain.yaml', status: 'new' },
+      { relativePath: 'workflows/release/WORKFLOW.yaml', status: 'new' },
+      { relativePath: 'workflows/release/lib/notes.md', status: 'new' },
+      { relativePath: 'workflows/release/plan.py', status: 'new' },
+    ]);
   });
 });
