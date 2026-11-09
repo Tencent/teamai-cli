@@ -197,7 +197,7 @@ export function repoIdentitiesOf(url: string, cwd?: string): string[] {
   const identities = [canonicalizeRemote(url)];
 
   try {
-    const rewritten = execFileSync('git', ['ls-remote', '--get-url', url], { cwd: cwd ?? process.cwd(), encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    const rewritten = execFileSync('git', ['ls-remote', '--get-url', url], { cwd: cwd ?? process.cwd(), encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }).trim();
 
     if (rewritten) identities.push(canonicalizeRemote(rewritten));
   } catch {

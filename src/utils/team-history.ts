@@ -122,6 +122,7 @@ async function filteredBlobIdOf(repoPath: string, pathspec: string, content: str
     const child = spawn(gitBinary(), ['hash-object', `--path=${pathspec}`, '--stdin'], {
       cwd: repoPath,
       stdio: ['pipe', 'pipe', 'ignore'],
+      windowsHide: true,
     });
 
     const output: Buffer[] = [];

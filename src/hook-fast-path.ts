@@ -215,7 +215,7 @@ export async function runHookFastPath(
 /** The detached child, in its own process group, once its stdin is flushed: the hook then exits without waiting for it. */
 async function spawnBackgroundChild(command: string, args: string[], stdin: string): Promise<void> {
   try {
-    const child = spawn(command, args, { detached: true, stdio: ['pipe', 'ignore', 'ignore'] });
+    const child = spawn(command, args, { detached: true, stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true });
 
     child.on('error', () => {});
     await new Promise<void>((resolve) => {
