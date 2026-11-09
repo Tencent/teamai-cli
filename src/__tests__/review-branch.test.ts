@@ -1782,7 +1782,6 @@ describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
     // Bad names inside the folders: a review that read them would report them.
     await fse.outputFile(path.join(repoDir, 'rules', 'api-style', 'RULE.md'), '# API style\n');
     await fse.outputFile(path.join(repoDir, 'rules', 'api-style', 'Bad Name.md'), '# Bad\n');
-    await fse.outputFile(path.join(repoDir, 'workflows', 'release', 'WORKFLOW.yaml'), 'not: [valid\n');
 
     const review = await reviewBranchDir(BRANCH, repoDir);
 
@@ -1793,13 +1792,37 @@ describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
         path: 'rules/api-style/',
         message: 'rules/api-style/ is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
       },
-      {
-        level: 'warn',
-        check: 'structure',
-        path: 'workflows/release/',
-        message: 'workflows/release/ is a workflow folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
-      },
     ]);
+  });
+
+  it('reviews a workflow folder as one workflow named after its directory, with the limits pull applies', async () => {
+    const release = 'schemaVersion: v1alpha1\nname: release\ndescription: Release.\nsteps:\n  - id: plan\n    command: python3 "$TEAMAI_WORKFLOW_DIR/plan.py"\n';
+    await fse.outputFile(path.join(repoDir, 'workflows', 'release', 'WORKFLOW.yaml'), release);
+    await fse.outputFile(path.join(repoDir, 'workflows', 'release', 'checks.yaml'), 'not: a workflow\n');
+    await fse.outputFile(path.join(repoDir, 'workflows', 'notes', 'WORKFLOW.yaml'), release.replace('name: release', 'name: notes'));
+    await fse.symlink('WORKFLOW.yaml', path.join(repoDir, 'workflows', 'notes', 'link.yaml'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings).toEqual([{
+      level: 'fail',
+      check: 'workflows',
+      path: 'workflows/notes/WORKFLOW.yaml',
+      message: 'workflows/notes/WORKFLOW.yaml:1: field "(root)": workflows/notes/ is not a valid workflow folder: link.yaml is a symlink',
+    }]);
+  });
+
+  it('names a namespaced workflow folder by its directory and reads no file in it as a workflow of its own', async () => {
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('workflows', ['a', 'b']));
+    const workflow = (name: string): string => `schemaVersion: v1alpha1\nname: ${name}\ndescription: ${name}.\nsteps:\n  - id: run\n    command: echo ${name}\n`;
+    await fse.outputFile(path.join(repoDir, 'workflows', 'a', 'release', 'WORKFLOW.yaml'), workflow('release'));
+    await fse.outputFile(path.join(repoDir, 'workflows', 'a', 'release', 'checks.yaml'), 'not: a workflow\n');
+    await fse.outputFile(path.join(repoDir, 'workflows', 'b', 'deploy', 'WORKFLOW.yaml'), workflow('deploy'));
+    await fse.outputFile(path.join(repoDir, 'workflows', 'b', 'checks.yaml'), workflow('checks'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings).toEqual([]);
   });
 
   it('checks no scoring settings in a scorer folder', async () => {

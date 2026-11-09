@@ -1,5 +1,6 @@
 /** Workflow types for the v1alpha1 local-driver subset. */
 
+import type { WorkflowFolderFile } from './folder.js';
 import type { ContractCode, RunOrigin } from '../default-workflows.js';
 import type { RunMode } from '../launch-context.js';
 import type { TeamPin } from './team-pin.js';
@@ -411,11 +412,13 @@ export interface WorkflowDiagnostic {
    *   changed.
    * `alias_conflict`: another workflow has the same alias, or takes it as its name. The workflow is cached and starts by
    *   name; only the alias starts nothing.
+   * `workflow_folder_invalid`: a workflow folder holds a symlink, a file that is not UTF-8 text, or more than its size
+   *   limit; the kept copy would run with files the folder no longer has.
    * `ContractCode`: a team file breaks the contract of a default it replaces or runs (`DefaultWorkflows.overrideProblems`);
    *   teamai's default runs, never an older team copy.
    */
   code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace' | 'bad_role' | 'workflow_namespace_conflict' | 'prompt_namespace_conflict' | 'benchmark_namespace_conflict' | 'bad_delivery' | 'bad_invoke' | 'bad_alias' | 'alias_conflict'
-    | ContractCode;
+    | 'workflow_folder_invalid' | ContractCode;
 }
 
 export type StepOutcome = 'success' | 'failed' | 'released';
@@ -646,6 +649,8 @@ export interface CachedWorkflow {
   content?: string;
   definition: WorkflowDefinition;
   validatedAt: string;
+  /** Every file of a workflow written as a folder, `WORKFLOW.yaml` included, which `sourceHash` covers. Absent for a single file. */
+  files?: WorkflowFolderFile[];
 }
 
 /** Where a workflow `start` runs comes from: a team file `teamai pull` validated, or a default this teamai ships. */

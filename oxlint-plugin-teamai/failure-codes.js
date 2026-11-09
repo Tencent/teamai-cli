@@ -31,7 +31,7 @@ function literalStrings(file, name) {
   });
 }
 
-const diagnostics = ['unknown_key', 'missing_needs', 'false_if', 'bad_template', 'dotted_name', 'undeclared_output', 'undeclared_end', 'bad_loop', 'bad_workspace', 'bad_role', 'workflow_namespace_conflict', 'prompt_namespace_conflict', 'benchmark_namespace_conflict', 'bad_delivery', 'bad_invoke', 'bad_alias', 'alias_conflict',
+const diagnostics = ['unknown_key', 'missing_needs', 'false_if', 'bad_template', 'dotted_name', 'undeclared_output', 'undeclared_end', 'bad_loop', 'bad_workspace', 'bad_role', 'workflow_namespace_conflict', 'prompt_namespace_conflict', 'benchmark_namespace_conflict', 'bad_delivery', 'bad_invoke', 'bad_alias', 'alias_conflict', 'workflow_folder_invalid',
   // Why pull refuses a team file that would replace a default its contract guards.
   'default_override_alias', 'score_override_contract', 'score_override_command', 'score_override_workflow_step', 'score_override_prompt',
   'score_override_confined_dir', 'score_override_judge_prompt', 'score_override_step_missing', 'score_override_publish',

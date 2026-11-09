@@ -57,6 +57,7 @@ import { isSilent, log, setSilent } from './utils/logger.js';
 import { redact } from './utils/redact.js';
 import { syncTeamDefinitions } from './benchmark/suite-cache.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './workflow/cache.js';
+import { WORKFLOW_MARKER } from './workflow/folder.js';
 import { formatDiagnostic, INVOKE_ALIAS_SINCE, parseWorkflow, STEP_ROLE_SINCE } from './workflow/parse.js';
 import { stepModelUnavailableText } from './workflow/step-model.js';
 import { stepWorkflow, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from './workflow/types.js';
@@ -131,7 +132,12 @@ function parseRelativePath(
   index: ManifestIndex,
 ): PathIdentity {
   const rootSegs = rootSegmentsFor(type);
-  const all = relativePath.split('/');
+
+  // A workflow folder is named as a workflow file in its place would be: workflows/a/release/ as workflows/a/release.yaml.
+  const all = type === 'workflows' && isWorkflowFolderMarker(relativePath.slice(`${type}/`.length))
+    ? relativePath.slice(0, -`/${WORKFLOW_MARKER}`.length).split('/')
+    : relativePath.split('/');
+
   const rest = all.slice(rootSegs);
 
   if (rest.length <= 1) {
@@ -247,10 +253,14 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
     const root = path.join(repoDir, ...rootRel.split('/'));
     const skipped = await skippedFoldersIn(repoDir, type);
 
-    for (const file of await listRepoFilesRecursive(root)) {
+    const files = await listRepoFilesRecursive(root);
+    // Every other file of a workflow folder is its support file, never a workflow of its own.
+    const folders = type === 'workflows' ? files.flatMap((file) => (isWorkflowFolderMarker(file) ? [file.slice(0, -WORKFLOW_MARKER.length)] : [])) : [];
+
+    for (const file of files) {
       if (isInSkippedFolder(`${rootRel}/${file}`, skipped)) continue;
 
-      if (type === 'workflows' && !file.endsWith('.yaml')) continue;
+      if (type === 'workflows' && (!file.endsWith('.yaml') || (!isWorkflowFolderMarker(file) && folders.some((folder) => file.startsWith(folder))))) continue;
 
       if (type === 'scorers' && path.posix.basename(file) === SCORING_FILE) continue;
 
@@ -320,6 +330,13 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
 
     return { type, name, namespace, relativePath: item.relativePath, absolutePath: item.sourcePath };
   });
+}
+
+/** Whether `file`, a path under `workflows/`, is the marker of a folder the workflow scan reads: at the root or in a namespace. */
+function isWorkflowFolderMarker(file: string): boolean {
+  const segments = file.split('/');
+
+  return segments.at(-1) === WORKFLOW_MARKER && (segments.length === 2 || segments.length === 3);
 }
 
 /**

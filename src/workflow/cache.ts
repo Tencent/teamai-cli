@@ -9,7 +9,7 @@ import { pathExists, readFileSafe, remove, writeJsonAtomic } from '../utils/fs.j
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { roleDeclaration, type ResourceNamespaces } from '../roles.js';
-import { RESOURCE_LAYOUTS, Resources } from '../resources/resolver.js';
+import { RESOURCE_LAYOUTS, Resources, type ResourceSource } from '../resources/resolver.js';
 import {
   getBusinessRoot,
   getDataHome,
@@ -23,6 +23,7 @@ import { formatDiagnostic, parseWorkflow, promptFileDiagnostics, stepField } fro
 import { locate, valueNode, type WorkflowFiles } from './parse-context.js';
 import { stepWorkflow, type CachedWorkflow, type OutputSchema, type ResolvedWorkflow, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from './types.js';
 import { DefaultWorkflows } from '../default-workflows.js';
+import { WORKFLOW_MARKER, WorkflowFolder, type WorkflowFolderFile } from './folder.js';
 import { assertSafePath, assertWithinRoot } from '../utils/path-safety.js';
 import { createGit } from '../utils/git.js';
 import {
@@ -58,6 +59,8 @@ interface Candidate extends Version {
   stem: string;
   sourceHash: string;
   teamRevision?: string;
+  /** Every file of a workflow folder. */
+  files?: WorkflowFolderFile[];
 }
 
 /** What a file runs after this sync, and why the versions it did not pick cannot run. */
@@ -88,7 +91,10 @@ function cachePath(config: LocalConfig, name: string): string {
 }
 
 /** The fields a cache file must hold to be read as workflow `name`; `syncWorkflows` writes the rest. */
-const CacheFileSchema = z.looseObject({ definition: z.looseObject({ schemaVersion: z.literal('v1alpha1'), name: z.string() }) });
+const CacheFileSchema = z.looseObject({
+  definition: z.looseObject({ schemaVersion: z.literal('v1alpha1'), name: z.string() }),
+  files: z.array(z.object({ path: z.string(), executable: z.boolean(), content: z.string() })).optional(),
+});
 
 function isCachedWorkflow(value: unknown, name: string): value is CachedWorkflow {
   const cached = CacheFileSchema.safeParse(value);
@@ -334,7 +340,7 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
     effectiveActivePrompts = discovered.size > 0 ? [...discovered] : null;
   }
 
-  const toCheck: Array<{ stem: string; relativePath: string; full: string }> = [];
+  const toCheck: Array<{ stem: string; source: ResourceSource<unknown> }> = [];
 
   for (const resolution of found) {
     const stem = resolution.name;
@@ -357,21 +363,42 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
       continue;
     }
 
-    toCheck.push({ stem, relativePath: resolution.item.source.path, full: resolution.item.source.full });
+    toCheck.push({ stem, source: resolution.item.source });
   }
 
-  for (const { stem, relativePath, full } of toCheck) {
-    let stat: Awaited<ReturnType<typeof fs.lstat>>;
+  for (const { stem, source } of toCheck) {
+    const read = source.kind === 'folder' ? await WorkflowFolder.read(source.full) : undefined;
+    const relativePath = read ? `${source.path}${WORKFLOW_MARKER}` : source.path;
 
-    try {
-      stat = await fs.lstat(full);
-    } catch {
+    if (read?.kind === 'invalid') {
+      checked.push({ stem, relativePath, diagnostics: [{
+        file: relativePath, line: 1, column: 1, field: '(root)', code: 'workflow_folder_invalid', message: `${source.path} is not a valid workflow folder: ${read.problem}`,
+      }] });
       continue;
     }
 
-    // A symlink is not a workflow file, even when the target is a YAML file outside this directory.
-    if (stat.isSymbolicLink() || !stat.isFile()) continue;
-    const content = await readFileSafe(full);
+    const folder = read;
+    let content: string | null;
+
+    if (folder) {
+      content = folder.files.find((file) => file.path === WORKFLOW_MARKER)?.content ?? null;
+      const yaml = folder.files.flatMap((file) => (file.path !== WORKFLOW_MARKER && file.path.endsWith('.yaml') ? [file.path] : []));
+
+      if (yaml.length === 1) log.info(`[workflows] ${source.path} is a workflow folder; ${yaml.join(', ')} in it is not a workflow`);
+      else if (yaml.length > 1) log.info(`[workflows] ${source.path} is a workflow folder; ${yaml.join(', ')} in it are not workflows`);
+    } else {
+      let stat: Awaited<ReturnType<typeof fs.lstat>>;
+
+      try {
+        stat = await fs.lstat(source.full);
+      } catch {
+        continue;
+      }
+
+      // A symlink is not a workflow file, even when the target is a YAML file outside this directory.
+      if (stat.isSymbolicLink() || !stat.isFile()) continue;
+      content = await readFileSafe(source.full);
+    }
 
     if (content === null) {
       checked.push({ stem, relativePath, diagnostics: [{ file: relativePath, line: 1, column: 1, field: '(root)', message: 'workflow file could not be read' }] });
@@ -402,11 +429,14 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
     for (const warning of DefaultWorkflows.callerWarnings(relativePath, resolved.definition)) log.warn(`[workflows] ${warning}`);
     const hash = createHash('sha256').update(content);
 
-    for (const source of resolved.sources) {
-      hash.update('\0').update(source.path).update('\0').update(source.content);
+    for (const prompt of resolved.sources) {
+      hash.update('\0').update(prompt.path).update('\0').update(prompt.content);
     }
 
-    const sources = [{ path: relativePath, content }, ...resolved.sources];
+    const sources = folder
+      ? folder.files.map((file) => ({ path: `${source.path}${file.path}`, content: file.content }))
+      : [{ path: relativePath, content }, ...resolved.sources];
+
     const revision = await (reachable ??= remotelyReachableRevision(knowledgeRoot));
 
     const teamRevision = await revisionHoldsSources(knowledgeRoot, revision, sources)
@@ -414,10 +444,12 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
       : undefined;
 
     const candidate: Candidate = {
-      stem, relativePath, content, definition: resolved.definition, sourceHash: hash.digest('hex'), promptFileLocations: parsed.promptFileLocations,
+      stem, relativePath, content, definition: resolved.definition, sourceHash: folder ? WorkflowFolder.hash(folder.files) : hash.digest('hex'), promptFileLocations: parsed.promptFileLocations,
     };
 
     if (teamRevision) candidate.teamRevision = teamRevision;
+
+    if (folder) candidate.files = folder.files;
     checked.push(candidate);
   }
 
@@ -488,9 +520,11 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
 
     if (options.dryRun || (previous?.sourceHash === file.sourceHash && previous.teamRevision === teamRevision)) continue;
 
-    const pinned: Pick<CachedWorkflow, 'teamRevision'> = {};
+    const pinned: Pick<CachedWorkflow, 'teamRevision' | 'files'> = {};
 
     if (teamRevision) pinned.teamRevision = teamRevision;
+
+    if (file.files) pinned.files = file.files;
 
     await writeJsonAtomic(cachePath(config, file.definition.name), {
       relativePath: file.relativePath,

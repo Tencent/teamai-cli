@@ -27,6 +27,7 @@ import { ClonePlaceSchema } from './clone.js';
 import { mergeRequirements, ON_LIMIT, REQUIREMENT_KEYS, RequirementsSchema, SANDBOX_WITHHELD_ENV, SetupSchema, type InEffect, type OnLimit, type Requirements, type Setup } from './requirements.js';
 import { sameEnvName } from '../resources/env-key.js';
 import { Writes } from './writes.js';
+import { WORKFLOW_MARKER } from './folder.js';
 
 /**
  * The first release that reads `invoke` and `alias`. An older CLI refuses either as an unknown key and drops the
@@ -90,6 +91,16 @@ const EXPRESSION_SITES: Record<Exclude<StepExpression['what'], 'if'>, { code: Wo
   break: { code: 'bad_loop' },
   for_each: undefined,
 };
+
+/**
+ * The name of the folder whose marker `file` is, as `workflows/release/WORKFLOW.yaml` is `release`'s, or undefined for a
+ * workflow file of its own. `workflows/WORKFLOW.yaml` is a file: a folder sits inside the type's directory.
+ */
+export function workflowFolderName(file: string): string | undefined {
+  const segments = file.split('/');
+
+  return segments.length >= 3 && segments.at(-1) === WORKFLOW_MARKER ? segments.at(-2) : undefined;
+}
 
 export function formatDiagnostic(diagnostic: WorkflowDiagnostic): string {
   return `${diagnostic.file}:${diagnostic.line}: field "${diagnostic.field}": ${diagnostic.message}`;
@@ -276,11 +287,14 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
 
   const namePair = root.items.find((pair) => scalarString(pair.key) === 'name');
   const name = scalarString(namePair?.value);
+  const folderName = workflowFolderName(file);
   const fileName = file.slice(file.lastIndexOf('/') + 1).replace(/\.yaml$/, '');
 
   if (!name || !TOKEN.test(name)) {
     diagnostics.push(locate(file, lineCounter, namePair?.value ?? namePair?.key ?? root, 'name', 'name must be a non-empty token'));
-  } else if (name !== fileName) {
+  } else if (folderName !== undefined && name !== folderName) {
+    diagnostics.push(locate(file, lineCounter, namePair?.value ?? namePair?.key ?? root, 'name', `name must match the folder name "${folderName}"`));
+  } else if (folderName === undefined && name !== fileName) {
     diagnostics.push(locate(file, lineCounter, namePair?.value ?? namePair?.key ?? root, 'name', `name must match the file name "${fileName}"`));
   }
 

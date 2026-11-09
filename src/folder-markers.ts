@@ -41,7 +41,7 @@ export const FOLDER_MARKERS: Readonly<Record<MarkedType, FolderMarker>> = {
   workflows: {
     kind: 'Workflow folder',
     marker: 'WORKFLOW.yaml',
-    supported: false,
+    supported: true,
     skipped: 'is a workflow folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
   },
   hooks: {

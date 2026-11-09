@@ -21,7 +21,6 @@ afterEach(async () => {
 describe('findSkippedFolders', () => {
   it('finds a folder holding its type marker at the root of each type and inside a namespace', async () => {
     const markers = {
-      workflows: 'WORKFLOW.yaml',
       hooks: 'HOOK.yaml',
       rules: 'RULE.md',
       mcp: 'MCP.yaml',
@@ -42,6 +41,13 @@ describe('findSkippedFolders', () => {
       `${dir}/at-root/`,
       `${dir}/team/in-namespace/`,
     ]).sort());
+  });
+
+  it('skips no workflow folder: this release reads them', async () => {
+    await put('workflows/release/WORKFLOW.yaml');
+    await put('workflows/team/deploy/WORKFLOW.yaml');
+
+    expect(await findSkippedFolders(repo)).toEqual([]);
   });
 
   it('ignores a marker of another type, a lower-case name, and a marker at the type root', async () => {

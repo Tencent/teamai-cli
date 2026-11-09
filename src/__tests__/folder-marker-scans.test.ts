@@ -4,7 +4,6 @@ import path from 'node:path';
 import fse from 'fs-extra';
 import { RulesHandler } from '../resources/rules.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
-import { getHandler } from '../resources/index.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
 import { scopeScoring } from '../scorers/settings.js';
 import { suiteDirectories } from '../benchmark/suite-cache.js';
@@ -56,29 +55,18 @@ function workflow(name: string): string {
 }
 
 describe('workflows', () => {
-  it('caches no workflow from a workflow folder, and no namespace for it', async () => {
+  it('reads a workflow folder as the workflow named after its directory, at the root and in a namespace', async () => {
     await put('workflows/ship.yaml', workflow('ship'));
-    await put('workflows/release/WORKFLOW.yaml', workflow('WORKFLOW'));
+    await put('workflows/release/WORKFLOW.yaml', workflow('release'));
     await put('workflows/release/notes.yaml', workflow('notes'));
-    await put('workflows/team/deploy/WORKFLOW.yaml', workflow('WORKFLOW'));
+    await put('workflows/team/deploy/WORKFLOW.yaml', workflow('deploy'));
     await put('workflows/lower/workflow.yaml', workflow('workflow'));
     const config = { ...localConfig, dataHome: path.join(repo, '.data'), scope: 'project', projectRoot: repo } as LocalConfig;
 
     const result = await syncWorkflowDefinitions(config, {});
 
     expect(result.invalid).toEqual([]);
-    expect(result.cached.sort()).toEqual(['ship', 'workflow']);
-  });
-
-  it('lists no file of a workflow folder in the team scan', async () => {
-    await put('workflows/ship.yaml', workflow('ship'));
-    await put('workflows/release/WORKFLOW.yaml', workflow('WORKFLOW'));
-    await put('workflows/team/deploy/WORKFLOW.yaml', workflow('WORKFLOW'));
-    await put('workflows/team/deploy/notes.yaml', workflow('notes'));
-
-    const names = (await getHandler('workflows').scanTeamForPull(teamConfig, localConfig)).map((item) => item.name);
-
-    expect(names).toEqual(['ship.yaml']);
+    expect(result.cached.sort()).toEqual(['deploy', 'release', 'ship', 'workflow']);
   });
 });
 
