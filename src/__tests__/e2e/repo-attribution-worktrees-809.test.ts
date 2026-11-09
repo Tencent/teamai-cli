@@ -16,6 +16,7 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { projectSlug } from '../../utils/partition.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -175,6 +176,8 @@ describe('one repo, many worktrees (#809)', () => {
     await session('cd-1', repo);
     await session('api-work', workApi);
     await session('api-personal', personalApi);
+    // Each hook hands its event to a detached child; the last ones may still be writing.
+    await waitForDetachedChildren();
   }, 120_000);
 
   afterAll(async () => {
