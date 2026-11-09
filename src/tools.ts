@@ -1758,7 +1758,6 @@ const CUSTOM_TOOL = {
   },
 } as const satisfies Pick<ToolDescriptor, 'rules' | 'blocks' | 'agents' | 'mcp' | 'hooks'>;
 
-/** The channels of `tool`: its descriptor's, or `CUSTOM_TOOL`'s for a custom tool id. */
 /** How `tool` reads a rule folder's files (`RuleFolderReach`): a custom tool, or one with no cell, gets `copy`. */
 export function ruleFolderReachOf(tool: string): RuleFolderReach {
   const descriptor: ToolDescriptor | undefined = isToolId(tool) ? TOOLS[tool] : undefined;
@@ -1766,6 +1765,7 @@ export function ruleFolderReachOf(tool: string): RuleFolderReach {
   return descriptor?.ruleFolders ?? { reach: 'copy' };
 }
 
+/** The channels of `tool`: its descriptor's, or `CUSTOM_TOOL`'s for a custom tool id. */
 export function channelsOf(tool: string): Pick<ToolDescriptor, 'rules' | 'blocks' | 'agents' | 'mcp' | 'hooks'> {
   return isToolId(tool) ? TOOLS[tool] : CUSTOM_TOOL;
 }
