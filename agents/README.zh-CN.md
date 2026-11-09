@@ -8,11 +8,9 @@ teamai 自带的 agent。这里每个 `<name>.md` 是一个 agent，不需要文
 
 [recall rule](../rules/teamai-recall/README.zh-CN.md) 和 [TodoWrite 提示](../hooks/teamai-todowrite-hint/README.zh-CN.md)会让 agent 在任务开始前先调用这个 subagent。它的 frontmatter 和指令在 `teamai-recall.md` 里。
 
-| | |
-|---|---|
-| 输入 | 用平常的话描述的任务，例如 `fix flaky integration tests` |
-| 输出 | 适用于这个任务的团队知识摘要 |
-| 运行 | `teamai recall --caller teamai-recall` |
+- **输入**: 用平常的话描述的任务，例如 `fix flaky integration tests`
+- **输出**: 适用于这个任务的团队知识摘要
+- **运行**: `teamai recall --caller teamai-recall`
 
 ## 成员拿到哪个 agent
 

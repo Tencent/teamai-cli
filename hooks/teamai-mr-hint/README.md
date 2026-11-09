@@ -2,12 +2,10 @@
 
 English | [中文](README.zh-CN.md)
 
-| | |
-|---|---|
-| Runs | At session start |
-| Input | The MRs merged in the project's repository in the last `lookback_days`, except the ones it already offered |
-| Output | An offer to turn them into learnings with [`teamai-import-from-mr`](../../workflows/teamai-import-from-mr/README.md) |
-| Files | `HOOK.yaml` holds teamai's parameters. Each `.md` file is one text of the offer |
+- **Runs**: At session start
+- **Input**: The MRs merged in the project's repository in the last `lookback_days`, except the ones it already offered
+- **Output**: An offer to turn them into learnings with [`teamai-import-from-mr`](../../workflows/teamai-import-from-mr/README.md)
+- **Files**: `HOOK.yaml` holds teamai's parameters. Each `.md` file is one text of the offer
 
 ## When it offers
 

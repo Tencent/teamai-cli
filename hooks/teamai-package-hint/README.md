@@ -2,12 +2,10 @@
 
 English | [中文](README.zh-CN.md)
 
-| | |
-|---|---|
-| Runs | At session start |
-| Input | The `packages` section of the team's `teamai.yaml`, and what this machine last applied |
-| Output | When the section changed, a request to review it and run `teamai packages` |
-| Files | `HOOK.yaml` holds only `description`. `message.md` is the text of the hint |
+- **Runs**: At session start
+- **Input**: The `packages` section of the team's `teamai.yaml`, and what this machine last applied
+- **Output**: When the section changed, a request to review it and run `teamai packages`
+- **Files**: `HOOK.yaml` holds only `description`. `message.md` is the text of the hint
 
 ## When it prints
 

@@ -2,12 +2,10 @@
 
 English | [中文](README.zh-CN.md)
 
-| | |
-|---|---|
-| Runs | At session start |
-| Input | The team env variables and secrets this scope delivers |
-| Output | Their names and descriptions, and how to run the commands that need them |
-| Files | `HOOK.yaml` holds only `description`. Each `.md` file is one text of the hint |
+- **Runs**: At session start
+- **Input**: The team env variables and secrets this scope delivers
+- **Output**: Their names and descriptions, and how to run the commands that need them
+- **Files**: `HOOK.yaml` holds only `description`. Each `.md` file is one text of the hint
 
 ## What it prints
 

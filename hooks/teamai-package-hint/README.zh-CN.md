@@ -2,12 +2,10 @@
 
 [English](README.md) | 中文
 
-| | |
-|---|---|
-| 运行时机 | 会话开始时 |
-| 输入 | 团队 `teamai.yaml` 的 `packages` 部分，以及本机上次应用的内容 |
-| 输出 | 这部分有变化时，请求检查它并运行 `teamai packages` |
-| 文件 | `HOOK.yaml` 里只有 `description`。`message.md` 是提示的文案 |
+- **运行时机**: 会话开始时
+- **输入**: 团队 `teamai.yaml` 的 `packages` 部分，以及本机上次应用的内容
+- **输出**: 这部分有变化时，请求检查它并运行 `teamai packages`
+- **文件**: `HOOK.yaml` 里只有 `description`。`message.md` 是提示的文案
 
 ## 何时打印
 
