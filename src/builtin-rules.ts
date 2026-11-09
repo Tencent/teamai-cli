@@ -251,8 +251,12 @@ async function recallFolderProblem(dir: string, shown: string): Promise<string |
 /** The recall texts of the folder at `dir` for `language`, each language falling back to the folder's own base file; null when one cannot be read. */
 async function readRecallTexts(folder: { readonly dir: string; readonly path: string; readonly team: boolean }, language: TeamaiConfig['language']): Promise<RecallTexts | null> {
     const read = async (stem: string): Promise<string | null> => RuleFolders.readTextFile(path.join(folder.dir, await RuleFolders.languageFile(folder.dir, stem, language)));
-    const rule = await RuleFolders.text({ name: RECALL_RULE_NAME, type: 'rules', sourcePath: path.join(folder.dir, 'RULE.md'), relativePath: `${folder.path}RULE.md`, folder: true }, language);
-    const [block, directBlock] = [await read('block'), await read('block-direct')];
+
+    const [rule, block, directBlock] = await Promise.all([
+        RuleFolders.text({ name: RECALL_RULE_NAME, type: 'rules', sourcePath: path.join(folder.dir, 'RULE.md'), relativePath: `${folder.path}RULE.md`, folder: true }, language),
+        read('block'),
+        read('block-direct'),
+    ]);
 
     return rule === null || block === null || directBlock === null ? null : { rule, block, directBlock, replaced: folder.team };
 }

@@ -1510,7 +1510,7 @@ export async function startRun(
 
   const folder = folderOf(cached);
 
-  for (const pinned of [...(folder ? [folder] : []), ...Object.values(tree.folders)]) await WorkflowFolder.pin(config, pinned);
+  await Promise.all([...(folder ? [folder] : []), ...Object.values(tree.folders)].map((pinned) => WorkflowFolder.pin(config, pinned)));
 
   // createRun reads an undefined inputs or teamRevision as not given.
   return createRun(config, {

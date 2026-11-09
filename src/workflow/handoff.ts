@@ -1327,7 +1327,7 @@ async function install(
   const run: RunState = { ...handedRun(snapshot, definitions, handed), checkout, publication };
 
   // The run reads its folders from this machine's data home from here on, as the one that started it did.
-  for (const folder of [...definitions.folder ? [definitions.folder] : [], ...Object.values(definitions.folders)]) await WorkflowFolder.pin(config, folder);
+  await Promise.all([...definitions.folder ? [definitions.folder] : [], ...Object.values(definitions.folders)].map((folder) => WorkflowFolder.pin(config, folder)));
 
   const installed = await updateRun(config, runId, secrets, async (local) => {
     if (local !== 'missing' && local.createdAt !== snapshot.createdAt) return { value: refused(mismatch(runId, local, snapshot)) };
