@@ -1144,6 +1144,14 @@ teamai ships workflows a team gets without writing them:
 | `teamai-self-improvement` | changes the team's assets from a scorer's repeated failures and adds one regression task per failure, as one pull request the next run updates, through [`teamai self-improvement run`](self-improvement.md). Inputs: `scorer`, `suite` | always |
 | `teamai-session-to-task` | turns the work the session finished, such as a bug fix or a feature, into a [benchmark task](benchmarks.md#turn-a-session-into-a-task), proposed to the team as a pull request from the [team workspace](#the-team-workspace). Inputs: `session`, `source`, `suite`, `start`, `solution` | always |
 
+Most defaults are one file, `workflows/<name>.yaml` in the installed package. Three are [workflow folders](#workflow-folders) that keep what they ask the AI tool in files of their own, with a `README.md` on their inputs, outputs and settings:
+
+```
+workflows/teamai-import-from-mr/          WORKFLOW.yaml  draft.en.md  draft.zh.md  README.md
+workflows/teamai-codebase-deep-enrich/    WORKFLOW.yaml  component.md  architecture.md  scenarios.md  README.md
+workflows/teamai-import-from-repo/        WORKFLOW.yaml  narrative.md  README.md
+```
+
 A command that starts a default workflow, such as `teamai recall promote <id>`, prints what the command always printed. It names its run only when it stops before the run ends, such as on Ctrl-C:
 
 ```text
@@ -1344,6 +1352,32 @@ Start from the file the package ships, edit it, push it, and pull:
 ```bash
 cp "$(npm root -g)/teamai-cli/workflows/teamai-share-learnings.yaml" workflows/teamai-share-learnings.yaml
 ```
+
+A default that is a folder is copied whole, to the same path. To have MR learnings in English name what the review left open, copy `teamai-import-from-mr`:
+
+```bash
+cp -R "$(npm root -g)/teamai-cli/workflows/teamai-import-from-mr" workflows/
+```
+
+add a section to its English prompt, `workflows/teamai-import-from-mr/draft.en.md`:
+
+```diff
+ ## Lessons
+ - lesson 1
+ - lesson 2
++
++## Open questions
++- what the review threads left unresolved (or "none")
+```
+
+then push it and pull:
+
+```bash
+git add workflows/teamai-import-from-mr && git commit -m "MR learnings name open questions" && git push
+teamai pull
+```
+
+The team's folder replaces teamai's as a whole, `draft.zh.md` and `README.md` included. Keep every file its `WORKFLOW.yaml` names.
 
 describe still proposes values for the inputs that keep their name and type from the default, and leaves any other input to the person:
 

@@ -1144,6 +1144,14 @@ teamai 自带一些工作流，团队不用自己编写就能使用：
 | `teamai-self-improvement` | 根据评分器反复判定的失败修改团队资产，每个失败加一个回归任务，作为一个由下次运行更新的拉取请求，通过 [`teamai self-improvement run`](self-improvement.md) 运行。输入：`scorer`、`suite` | 始终 |
 | `teamai-session-to-task` | 把会话完成的工作（如修 bug 或加功能）变成 [benchmark 任务](benchmarks.md#把会话变成任务)，从[团队工作区](#团队工作区)作为拉取请求提议给团队。输入：`session`、`source`、`suite`、`start`、`solution` | 始终 |
 
+大多数默认工作流是一个文件，即已安装包中的 `workflows/<name>.yaml`。有三个是[工作流文件夹](#工作流文件夹)，把要问 AI 工具的内容放在各自的文件里，并带一个说明输入、输出和相关设置的 `README.md`：
+
+```
+workflows/teamai-import-from-mr/          WORKFLOW.yaml  draft.en.md  draft.zh.md  README.md
+workflows/teamai-codebase-deep-enrich/    WORKFLOW.yaml  component.md  architecture.md  scenarios.md  README.md
+workflows/teamai-import-from-repo/        WORKFLOW.yaml  narrative.md  README.md
+```
+
 启动默认工作流的命令（如 `teamai recall promote <id>`）输出的内容和以前一样。只有在运行结束前停下（如按 Ctrl-C）时，它才会说出这次运行：
 
 ```text
@@ -1344,6 +1352,32 @@ describe 为调用它的会话提议每个输入并附 `why`：会话第一次�
 ```bash
 cp "$(npm root -g)/teamai-cli/workflows/teamai-share-learnings.yaml" workflows/teamai-share-learnings.yaml
 ```
+
+文件夹形式的默认工作流要整个复制到相同路径。比如想让英文的 MR learning 写出评审留下的未决问题，先复制 `teamai-import-from-mr`：
+
+```bash
+cp -R "$(npm root -g)/teamai-cli/workflows/teamai-import-from-mr" workflows/
+```
+
+在它的英文提示词 `workflows/teamai-import-from-mr/draft.en.md` 中加一节：
+
+```diff
+ ## Lessons
+ - lesson 1
+ - lesson 2
++
++## Open questions
++- what the review threads left unresolved (or "none")
+```
+
+然后推送并 pull：
+
+```bash
+git add workflows/teamai-import-from-mr && git commit -m "MR learnings name open questions" && git push
+teamai pull
+```
+
+团队的文件夹整体取代 teamai 的版本，包括 `draft.zh.md` 和 `README.md`。保留它的 `WORKFLOW.yaml` 引用的每个文件。
 
 对名字和类型与默认工作流相同的输入，describe 仍然提议值；其他输入留给本人填写：
 
