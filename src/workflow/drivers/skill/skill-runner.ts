@@ -54,7 +54,9 @@ export function detachedRunners(config: LocalConfig): Runners {
       child.unref();
     },
     alive: (run, attempt) => runnerAlive(config, run, attempt),
-    // A process group of its own, so a stop reaches every process the command started.
+    // On POSIX, a process group of its own, so a stop reaches every process the command started. On Windows the runner
+    // waits for the command, so it stays attached: it ends with the runner, taskkill /T stops its tree, and
+    // DETACHED_PROCESS would cancel CREATE_NO_WINDOW for the console programs it starts.
     command: ({ run, attempt, command, cwd, env }) => startGroupedCommand({ command, cwd, env, detached: process.platform !== 'win32', group: attemptDir(config, run, attempt) }),
     stopLeft: (run, attempt) => stopRecordedGroup(attemptDir(config, run, attempt)),
     sleep: (ms, signal) => new Promise((resolve) => {
