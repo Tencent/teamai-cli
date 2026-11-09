@@ -24,7 +24,8 @@ import {
 import { RESOURCE_TYPES, LocalConfigSchema, getDataHome, installScopeName, type GlobalOptions, type ResourceType } from './types.js';
 import { projectsRootDir, readAnchorFile, projectSlug, legacyProjectSlug } from './utils/partition.js';
 import { checkoutForProjectAnchor } from './utils/git.js';
-import { mcpEntryReader, teamMcpDef } from './resources/mcp.js';
+import { TEAM_MCP_ENTRIES, teamMcpDef } from './resources/mcp.js';
+import { LayeredEntries } from './resources/layered-entries.js';
 import { resolveTeamHookEntries } from './resources/hooks.js';
 import { RESOURCE_LAYOUTS } from './resources/resolver.js';
 import { envEntryReader } from './resources/env.js';
@@ -152,7 +153,7 @@ export async function status(options: GlobalOptions): Promise<void> {
     : 0;
 
   count('hooks', (await resolveTeamHookEntries(localConfig)).resolution);
-  count('mcp', await resolveEntriesFor(mcpEntryReader, localConfig));
+  count('mcp', await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig));
 
   // Repo-backed types: count what's in the team repo tree.
   for (const type of ['models', 'claudemd', 'learnings', 'wiki', 'workflows', 'prompts', 'scorers', 'benchmarks'] as const) {
@@ -426,7 +427,7 @@ async function printRepoSection(
   }
 
   if (t === 'mcp') {
-    const mcp = await resolveEntriesFor(mcpEntryReader, localConfig);
+    const mcp = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig);
 
     if (mcp.kind === 'failed') {
       reportUndeliveredEntryNotices(mcp);

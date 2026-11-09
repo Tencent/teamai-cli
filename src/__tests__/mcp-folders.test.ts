@@ -8,8 +8,9 @@ vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), persist: vi.fn(), dim: vi.fn() },
 }));
 
-import { describeEntryFailure, resolveEntriesFor } from '../namespaced-entries.js';
-import { deliverMcpFolders, mcpEntryReader, teamMcpDef } from '../resources/mcp.js';
+import { describeEntryFailure } from '../namespaced-entries.js';
+import { LayeredEntries } from '../resources/layered-entries.js';
+import { deliverMcpFolders, TEAM_MCP_ENTRIES, teamMcpDef } from '../resources/mcp.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import type { LocalConfig } from '../types.js';
 
@@ -43,14 +44,14 @@ const rendered = (dir: string): string => dir.split(path.sep).join('/');
 
 /** The servers `localConfig` receives, as the tools get them, or why MCP stops for the run. */
 async function servers(localConfig: LocalConfig): Promise<ReturnType<typeof teamMcpDef>[] | string> {
-  const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
+  const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig);
 
   return resolution.kind === 'resolved' ? resolution.entries.map((entry) => teamMcpDef(localConfig, entry)) : describeEntryFailure(resolution.failure);
 }
 
 /** What the run says about the servers it delivers, besides failing. */
 async function notices(localConfig: LocalConfig): Promise<string[]> {
-  return (await resolveEntriesFor(mcpEntryReader, localConfig)).notices.map((notice) => notice.message);
+  return (await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig)).notices.map((notice) => notice.message);
 }
 
 beforeEach(async () => {
@@ -174,7 +175,7 @@ describe('a folder server under a home holding a space and non-ASCII letters', (
   it('starts from its forward-slash path, passed as an argument directly and in a quoted shell command line', async () => {
     await write({ 'mcp/jira-lite/MCP.yaml': 'transport: stdio\ncommand: node\nargs: ["${TEAMAI_MCP_DIR}/server.mjs"]\n', 'mcp/jira-lite/server.mjs': 'console.log("jira-lite ran");\n' });
     const localConfig = workspace({ dataHome: path.join(sandbox, 'Zoë Li', '.teamai', 'projects', 'app') });
-    const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
+    const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig);
     const entries = resolution.kind === 'resolved' ? resolution.entries : [];
     await deliverMcpFolders(localConfig, entries, { prune: true });
     const [server] = entries.map((entry) => teamMcpDef(localConfig, entry));

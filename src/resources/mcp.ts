@@ -9,9 +9,9 @@ import { listDirs, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.js';
 import {
-  entryFileAbsolutePath, entryFilePath, listEntryFiles, missingTopLevelKeyReason, readEntryFileText, readFolderPlace, readMarkerFolder,
-  unknownEntryKeys, type EntryFileRead, type EntryPlaceReader, type PlaceFolderRead, type ResolvedEntry,
+  entryFileAbsolutePath, entryFilePath, listEntryFiles, missingTopLevelKeyReason, readEntryFileText, unknownEntryKeys, type EntryFileRead, type ResolvedEntry,
 } from '../namespaced-entries.js';
+import { readMarkerFolder, type LayeredEntryType, type PlaceFolderRead } from './layered-entries.js';
 import { RESOURCE_LAYOUTS, Resources, type EntryListRead, type ResourceLayout } from './resolver.js';
 import { DeliveredFolders } from './delivered-folders.js';
 import type { FolderFile } from './folder-files.js';
@@ -191,21 +191,17 @@ export async function readMcpFolder(full: string, folderPath: string, name: stri
   }
 }
 
-/** How team MCP servers are read for delivery: each place of the team tree through the resolver, `mcp.yaml` servers and folders. */
-export const mcpEntryReader: EntryPlaceReader<TeamMcpDefinition> = {
+/** How team MCP servers resolve for delivery: `mcp.yaml` servers and folders, in each place of the team tree, through the resolver. */
+export const TEAM_MCP_ENTRIES: LayeredEntryType<McpFileEntry, TeamMcpDefinition> = {
   type: 'mcp',
-  readPlace: (repoPath, dir) => readFolderPlace({
-    layout: TEAM_MCP,
-    at: { root: repoPath, namespace: dir },
-    fromEntry: ({ server, unknownKeys }) => ({ definition: { kind: 'entry', server }, unknownKeys }),
-    readFolder: async ({ name, full, path: folderPath }) => (
-      // A teamai- name only replaces a default (#1787, common rule 5), and teamai ships no MCP server.
-      name.startsWith('teamai-')
-        ? { kind: 'skipped', note: `${folderPath} is skipped: a teamai- name only replaces a teamai default, and teamai has no MCP server named ${name}. Rename the folder.` }
-        : readMcpFolder(full, folderPath, name)
-    ),
-  }),
-  nameOf: (definition) => definition.server.name,
+  layout: TEAM_MCP,
+  fromEntry: ({ server, unknownKeys }) => ({ definition: { kind: 'entry', server }, unknownKeys }),
+  readFolder: async ({ name, full, path: folderPath }) => (
+    // A teamai- name only replaces a default (#1787, common rule 5), and teamai ships no MCP server.
+    name.startsWith('teamai-')
+      ? { kind: 'skipped', note: `${folderPath} is skipped: a teamai- name only replaces a teamai default, and teamai has no MCP server named ${name}. Rename the folder.` }
+      : readMcpFolder(full, folderPath, name)
+  ),
   scopeOf: (definition) => definition.server,
 };
 

@@ -8,8 +8,8 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import YAML from 'yaml';
-import { McpHandler, mcpEntryReader } from '../resources/mcp.js';
-import { resolveEntriesFor } from '../namespaced-entries.js';
+import { McpHandler, TEAM_MCP_ENTRIES } from '../resources/mcp.js';
+import { LayeredEntries } from '../resources/layered-entries.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
 let repo: string;
@@ -31,12 +31,12 @@ function member(over: Partial<Pick<LocalConfig, 'primaryRole' | 'projects'>> = {
 }
 
 async function serversFor(localConfig: LocalConfig) {
-  const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
+  const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig);
   if (resolution.kind !== 'resolved') throw new Error('servers did not resolve');
   return resolution.entries.map((entry) => entry.entry.server);
 }
 
-describe('resolveEntriesFor(mcpEntryReader) — per-entry keys (#707)', () => {
+describe('LayeredEntries.resolve(TEAM_MCP_ENTRIES) — per-entry keys (#707)', () => {
   it('keeps a (deprecated) roles list on the entry, and leaves it undefined when omitted', async () => {
     await writeMcpYaml(`
 servers:

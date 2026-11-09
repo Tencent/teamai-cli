@@ -101,9 +101,7 @@ export function resolveNamespacedItems<T>(
     }
   }
 
-  const [conflict] = conflicts.sort((a, b) => (
-    rank(a.second.namespace) - rank(b.second.namespace) || compareStrings(a.name, b.name)
-  ));
+  const conflict = firstConflict(conflicts, active);
 
   if (conflict) return conflict;
 
@@ -111,6 +109,16 @@ export function resolveNamespacedItems<T>(
     kind: 'resolved',
     items: items.sort((a, b) => rank(a.namespace) - rank(b.namespace) || compareStrings(a.name, b.name)),
   };
+}
+
+/**
+ * The conflict `resolveNamespacedItems` reports among several, for a caller that resolves each name on its own: the
+ * first a reader walking root, then `active` in order, would meet; then by name.
+ */
+export function firstConflict<T>(conflicts: readonly NamespaceConflict<T>[], active: readonly string[]): NamespaceConflict<T> | undefined {
+  const rank = (namespace: string | null): number => (namespace === null ? 0 : active.indexOf(namespace) + 1);
+
+  return [...conflicts].sort((a, b) => rank(a.second.namespace) - rank(b.second.namespace) || compareStrings(a.name, b.name))[0];
 }
 
 /** A namespace item delivered in place of a root item: its name, and both files repo-relative. */

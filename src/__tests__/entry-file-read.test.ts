@@ -12,11 +12,12 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import {
-  describeEntryFailure, entryFilePath, entryLayout, readEntryFileText, resolveEntriesFor, type EntryReader,
+  describeEntryFailure, entryFilePath, entryLayout, readEntryFileText, resolveEntriesFor, type EntryReader, type EntryResolution, type EntryType,
 } from '../namespaced-entries.js';
+import { LayeredEntries } from '../resources/layered-entries.js';
 import { envEntryReader } from '../resources/env.js';
-import { hooksEntryReader } from '../resources/hooks.js';
-import { mcpEntryReader } from '../resources/mcp.js';
+import { TEAM_HOOK_ENTRIES } from '../resources/hooks.js';
+import { TEAM_MCP_ENTRIES } from '../resources/mcp.js';
 import { inactiveNamespaceDefines, modelsEntryReader } from '../models/profile.js';
 import type { LocalConfig } from '../types.js';
 
@@ -37,49 +38,49 @@ describe('reading the active entry files', () => {
     await fse.remove(repoPath);
   });
 
-  const readers: [string, EntryReader<unknown>][] = [
-    ['env', envEntryReader],
-    ['hooks', hooksEntryReader],
-    ['mcp', mcpEntryReader],
-    ['models', modelsEntryReader],
+  const readers: [EntryType, (localConfig: LocalConfig) => Promise<EntryResolution<unknown>>][] = [
+    ['env', (localConfig) => resolveEntriesFor(envEntryReader, localConfig)],
+    ['hooks', (localConfig) => LayeredEntries.resolve(TEAM_HOOK_ENTRIES, localConfig)],
+    ['mcp', (localConfig) => LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig)],
+    ['models', (localConfig) => resolveEntriesFor(modelsEntryReader, localConfig)],
   ];
 
-  it.each(readers)('fails %s instead of taking the namespace file for absent', async (_label, reader) => {
+  it.each(readers)('fails %s instead of taking the namespace file for absent', async (type, resolve) => {
     await fse.outputFile(path.join(repoPath, 'manifest', 'projects.yaml'),
-      `version: 1\nprojects:\n  - id: checkout\n    resources: { ${reader.type}: [checkout] }\n`);
-    await fse.ensureDir(path.join(repoPath, ...entryFilePath(reader.type, 'checkout').split('/')));
+      `version: 1\nprojects:\n  - id: checkout\n    resources: { ${type}: [checkout] }\n`);
+    await fse.ensureDir(path.join(repoPath, ...entryFilePath(type, 'checkout').split('/')));
     const localConfig: LocalConfig = {
       repo: { localPath: repoPath, remote: 'owner/repo' }, username: 't', scope: 'user', additionalRoles: [], projects: ['checkout'],
     };
 
-    const resolution = await resolveEntriesFor(reader, localConfig);
+    const resolution = await resolve(localConfig);
 
     expect(resolution.kind).toBe('failed');
     if (resolution.kind !== 'failed') return;
-    expect(resolution.failure).toEqual(expect.objectContaining({ kind: 'broken-file', source: entryFilePath(reader.type, 'checkout') }));
+    expect(resolution.failure).toEqual(expect.objectContaining({ kind: 'broken-file', source: entryFilePath(type, 'checkout') }));
   });
 
   // Docs namespaces match their directory case-folded; the entry types do too,
   // so a member gets the override on a case-sensitive filesystem as well.
-  it.each(readers)('reads the %s namespace directory whose name differs from the declared one only by case', async (_label, reader) => {
+  it.each(readers)('reads the %s namespace directory whose name differs from the declared one only by case', async (type, resolve) => {
     await fse.outputFile(path.join(repoPath, 'manifest', 'projects.yaml'),
-      `version: 1\nprojects:\n  - id: checkout\n    resources: { ${reader.type}: [checkout] }\n`);
+      `version: 1\nprojects:\n  - id: checkout\n    resources: { ${type}: [checkout] }\n`);
     const content: Record<string, string> = {
       env: 'variables:\n  - { key: A, value: b }\n',
       hooks: 'hooks:\n  - { id: lint, description: x, event: Stop, command: echo }\n',
       mcp: 'servers:\n  - { name: db, transport: stdio, command: db }\n',
       models: "profiles:\n  - { id: gw, name: Gateway, base_url: 'https://gw.test', api_key: '${API_KEY}', model_groups: [{ protocols: [anthropic], models: [m] }] }\n",
     };
-    await fse.outputFile(path.join(repoPath, ...entryFilePath(reader.type, 'Checkout').split('/')), content[reader.type]);
+    await fse.outputFile(path.join(repoPath, ...entryFilePath(type, 'Checkout').split('/')), content[type]);
     const localConfig: LocalConfig = {
       repo: { localPath: repoPath, remote: 'owner/repo' }, username: 't', scope: 'user', additionalRoles: [], projects: ['checkout'],
     };
 
-    const resolution = await resolveEntriesFor(reader, localConfig);
+    const resolution = await resolve(localConfig);
 
     expect(resolution.kind).toBe('resolved');
     if (resolution.kind !== 'resolved') return;
-    expect(resolution.entries.map((entry) => entry.source)).toEqual([entryFilePath(reader.type, 'Checkout')]);
+    expect(resolution.entries.map((entry) => entry.source)).toEqual([entryFilePath(type, 'Checkout')]);
   });
 
   // A second file under a type's directory, as `env/secrets.yaml` (#875): the

@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { FOLDER_MARKERS, holdsMarker, unreadMarker } from '../folder-markers.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
-import { resolveNamespacedItems } from '../namespace-resolver.js';
+import { resolveNamespacedItems, type NamespaceCandidate, type NamespaceConflict, type ResolvedNamespaceItem } from '../namespace-resolver.js';
 import { FolderFiles, type FolderFilesRead } from './folder-files.js';
 import { TeamaiConfigBaseSchema } from '../types.js';
 import { isIgnored } from '../utils/fs.js';
@@ -430,28 +430,16 @@ async function survey<TEntry, TShipped>(layout: ResourceLayout<TEntry>, tree: Re
   const onDisk = [...new Set(items.flatMap((item) => (item.layer === 'namespace' ? [item.namespace] : [])))];
   const declared = tree.team && onDisk.length > 0 ? await tree.team.namespaces() : [];
   const active = declared === 'legacy' ? onDisk : declared;
-  const byName = new Map<string, Array<TeamItem<TEntry>>>();
+  const candidates = items.map((item) => ({ name: item.name, source: item.source.path, namespace: item.layer === 'namespace' ? item.namespace : null, value: item }));
 
-  for (const item of items) {
-    const group = byName.get(item.name);
-
-    if (group) group.push(item);
-    else byName.set(item.name, [item]);
-  }
-
-  const team = [...byName].flatMap(([name, group]): Array<ListedResolution<TEntry, TShipped>> => {
-    const resolution = resolveNamespacedItems(group.map((item) => ({
-      name, source: item.source.path, namespace: item.layer === 'namespace' ? item.namespace : null, value: item,
-    })), active);
-
-    if (resolution.kind === 'conflict') {
-      return [{ kind: 'conflict', name, reason: resolution.reason, first: resolution.first.value, second: resolution.second.value }];
+  const team = pick(candidates, active).map((picked): ListedResolution<TEntry, TShipped> => {
+    if (picked.kind === 'conflict') {
+      return { kind: 'conflict', name: picked.name, reason: picked.reason, first: picked.first.value, second: picked.second.value };
     }
 
-    const [winner] = resolution.items;
-    const replaced = shipped.find((item) => item.name === name) ?? null;
+    const { item: winner } = picked;
 
-    return winner ? [{ kind: 'resolved', name, item: winner.value, replaces: winner.replaces?.value ?? replaced }] : [];
+    return { kind: 'resolved', name: winner.name, item: winner.value, replaces: winner.replaces?.value ?? shipped.find((item) => item.name === winner.name) ?? null };
   });
 
   const named = new Set(team.map(({ name }) => name));
@@ -461,6 +449,35 @@ async function survey<TEntry, TShipped>(layout: ResourceLayout<TEntry>, tree: Re
   ))];
 
   return { resolutions, definitions: items, diagnostics };
+}
+
+/** Which definition of one name applies, or the two that conflict, as `pick` gives it. */
+export type PickedName<T> = { readonly kind: 'resolved'; readonly item: ResolvedNamespaceItem<T> } | NamespaceConflict<T>;
+
+/**
+ * Which of `candidates` applies for each name, among the root and the `active` namespaces: the most specific place that
+ * has it, as a whole, or a conflict. Names come in the order the candidates first meet them; a name only an inactive
+ * namespace has is left out. `survey` resolves the team's files with it, and a type that admits each definition by its
+ * own rules first (hooks, MCP) resolves what it admitted.
+ */
+function pick<T>(candidates: ReadonlyArray<NamespaceCandidate<T>>, active: readonly string[]): Array<PickedName<T>> {
+  const byName = new Map<string, Array<NamespaceCandidate<T>>>();
+
+  for (const candidate of candidates) {
+    const group = byName.get(candidate.name);
+
+    if (group) group.push(candidate);
+    else byName.set(candidate.name, [candidate]);
+  }
+
+  return [...byName.values()].flatMap((group): Array<PickedName<T>> => {
+    const resolution = resolveNamespacedItems(group, active);
+
+    if (resolution.kind === 'conflict') return [resolution];
+    const [item] = resolution.items;
+
+    return item ? [{ kind: 'resolved', item }] : [];
+  });
 }
 
 /**
@@ -556,4 +573,4 @@ async function walk(layout: PlainLayout, root: string): Promise<ResourceWalk> {
   return { items, duplicates, diagnostics };
 }
 
-export const Resources = { list, resolve, survey, layer, walk } as const;
+export const Resources = { list, resolve, survey, pick, layer, walk } as const;

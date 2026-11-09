@@ -15,7 +15,7 @@ import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 import {
   entryLayout, missingTopLevelKeyReason, readEntryFileText, resolveEntries, resolveEntriesFor, unknownEntryKeys,
-  writtenList, type EntryFileReader, type EntryLayout, type EntryResolution,
+  writtenList, type EntryLayout, type EntryReader, type EntryResolution,
 } from '../namespaced-entries.js';
 import { isJsonObject, type JsonValue, type LocalConfig } from '../types.js';
 import { ensureDir, readFileSafe, writeFile } from '../utils/fs.js';
@@ -59,7 +59,7 @@ export const SECRETS_LAYOUT: EntryLayout = {
  * know, `value:` included, keeps that secret from being declared: a value
  * does not belong in the repo.
  */
-export const secretsEntryReader: EntryFileReader<SecretDeclaration> = {
+export const secretsEntryReader: EntryReader<SecretDeclaration> = {
   type: 'env',
   layout: SECRETS_LAYOUT,
   // Only the key: a description or url changes what a member reads, not what is delivered.
@@ -158,7 +158,7 @@ export async function resolveSecretDeclarations(
 ): Promise<SecretDeclarations> {
   let found = false;
 
-  const reader: EntryFileReader<SecretDeclaration> = {
+  const reader: EntryReader<SecretDeclaration> = {
     ...secretsEntryReader,
     async read(absolutePath, relativePath) {
       const read = await secretsEntryReader.read(absolutePath, relativePath);

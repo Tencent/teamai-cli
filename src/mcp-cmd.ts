@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
-import { mcpEntryReader, teamMcpDef } from './resources/mcp.js';
-import { describeEntryFailure, describeOrigin, reportUndeliveredEntryNotices, resolveEntriesFor } from './namespaced-entries.js';
+import { TEAM_MCP_ENTRIES, teamMcpDef } from './resources/mcp.js';
+import { LayeredEntries } from './resources/layered-entries.js';
+import { describeEntryFailure, describeOrigin, reportUndeliveredEntryNotices } from './namespaced-entries.js';
 import {
   reconcileMcpForConfig,
   releaseCleanMcpGitExcludes,
@@ -36,7 +37,7 @@ function displayPath(p: string): string {
 export async function mcpList(_options: GlobalOptions): Promise<void> {
   // Read-only: the load never persists a migration (#893).
   const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: true });
-  const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
+  const resolution = await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig);
 
   if (resolution.kind === 'failed') {
     reportUndeliveredEntryNotices(resolution);

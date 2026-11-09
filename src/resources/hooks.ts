@@ -9,9 +9,9 @@ import { log } from '../utils/logger.js';
 import { warnOnce } from '../utils/warn-once.js';
 import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.js';
 import {
-  entryFilePath, missingTopLevelKeyReason, parseMarker, readEntryFileText, readFolderPlace, readMarkerFolder, reportEntryResolution,
-  resolveEntriesFor, unknownEntryKeys, type EntryPlaceReader, type EntryResolution, type PlaceFolderRead, type ResolvedEntry,
+  entryFilePath, missingTopLevelKeyReason, readEntryFileText, reportEntryResolution, unknownEntryKeys, type EntryResolution, type ResolvedEntry,
 } from '../namespaced-entries.js';
+import { LayeredEntries, parseMarker, readMarkerFolder, type LayeredEntryType, type PlaceFolderRead } from './layered-entries.js';
 import { RESOURCE_LAYOUTS, Resources, type EntryListRead, type ResourceLayout } from './resolver.js';
 import { DeliveredFolders, type FolderDelivery } from './delivered-folders.js';
 import { FolderFiles, type FolderFile } from './folder-files.js';
@@ -177,28 +177,24 @@ export async function readHookFolder(full: string, folderPath: string, id: strin
   }
 }
 
-/** How team hooks are read for delivery: each place of the team tree through the resolver, `hooks.yaml` entries and folders. */
-export const hooksEntryReader: EntryPlaceReader<TeamHookDefinition> = {
+/** How team hooks resolve for delivery: `hooks.yaml` entries and folders, in each place of the team tree, through the resolver. */
+export const TEAM_HOOK_ENTRIES: LayeredEntryType<HooksFileEntry, TeamHookDefinition> = {
   type: 'hooks',
-  readPlace: (repoPath, dir) => readFolderPlace({
-    layout: TEAM_HOOKS,
-    at: { root: repoPath, namespace: dir },
-    fromEntry: ({ hook, unknownKeys }) => ({ definition: { kind: 'entry', hook }, unknownKeys }),
-    readFolder: async ({ name, full, path: folderPath }) => {
-      // A teamai- name only replaces a default (#1787, common rule 5), at the root, as builtin: overrides apply to the
-      // whole team; defaultHookReplacements reads it there.
-      if (DefaultHooks.isName(name)) {
-        return { kind: 'skipped', note: dir === null ? null : `${folderPath} is refused, and teamai's default stays in force: a default hook is replaced at the root of the team repo only. Move it to hooks/${name}/` };
-      }
+  layout: TEAM_HOOKS,
+  fromEntry: ({ hook, unknownKeys }) => ({ definition: { kind: 'entry', hook }, unknownKeys }),
+  readFolder: async ({ name, full, path: folderPath, namespace }) => {
+    // A teamai- name only replaces a default (#1787, common rule 5), at the root, as builtin: overrides apply to the
+    // whole team; defaultHookReplacements reads it there.
+    if (DefaultHooks.isName(name)) {
+      return { kind: 'skipped', note: namespace === null ? null : `${folderPath} is refused, and teamai's default stays in force: a default hook is replaced at the root of the team repo only. Move it to hooks/${name}/` };
+    }
 
-      if (name.startsWith('teamai-')) {
-        return { kind: 'skipped', note: `${folderPath} is skipped: a teamai- name only replaces a teamai default, and teamai has no hook named ${name}. Rename the folder.` };
-      }
+    if (name.startsWith('teamai-')) {
+      return { kind: 'skipped', note: `${folderPath} is skipped: a teamai- name only replaces a teamai default, and teamai has no hook named ${name}. Rename the folder.` };
+    }
 
-      return readHookFolder(full, folderPath, name);
-    },
-  }),
-  nameOf: (definition) => definition.hook.id,
+    return readHookFolder(full, folderPath, name);
+  },
   scopeOf: (definition) => definition.hook,
 };
 
@@ -232,7 +228,7 @@ export type BuiltinOverrideRead = { known: true; override: BuiltinOverride | und
 export async function resolveTeamHookEntries(
   localConfig: LocalConfig,
 ): Promise<{ resolution: EntryResolution<TeamHookDefinition>; builtin: BuiltinOverrideRead }> {
-  const resolution = await resolveEntriesFor(hooksEntryReader, localConfig);
+  const resolution = await LayeredEntries.resolve(TEAM_HOOK_ENTRIES, localConfig);
 
   return { resolution, builtin: await readBuiltinOverride(localConfig) };
 }

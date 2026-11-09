@@ -43,9 +43,10 @@ import type { AssetKind } from './asset-relations.js';
 import matter from 'gray-matter';
 import { isModelAlias, loadTeamModelAliases, noModelCause, resolveAgentModel, resolveModelValue, TEAM_ALIASES_FILE, type ModelAliases } from './models/aliases.js';
 import { parseAgentYaml, type AgentSpec, type ToolName } from './resources/agent-format.js';
-import { hooksEntryReader, parseTeamHooks } from './resources/hooks.js';
-import { mcpEntryReader } from './resources/mcp.js';
-import { readEntryFileText, type EntryPlaceReader } from './namespaced-entries.js';
+import { TEAM_HOOK_ENTRIES, parseTeamHooks } from './resources/hooks.js';
+import { TEAM_MCP_ENTRIES } from './resources/mcp.js';
+import { readEntryFileText } from './namespaced-entries.js';
+import { LayeredEntries, type LayeredEntryType } from './resources/layered-entries.js';
 import { getHandler } from './resources/index.js';
 import { listRepoFilesRecursive } from './resources/repo-resource.js';
 import { RESOURCE_LAYOUTS, Resources } from './resources/resolver.js';
@@ -408,14 +409,14 @@ interface PlaceMessages {
 }
 
 /**
- * What stops pull applying one type of the branch's team entries, read by pull's own reader at the root and in each
- * namespace of `dir`: a file or folder it cannot read, or one name from two of them in the same place (#1787).
+ * What stops pull applying one type of the branch's team entries, read as pull reads it at the root and in each
+ * namespace: a file or folder it cannot read, or one name from two of them in the same place (#1787).
  */
-async function placeFindings<E>(repoDir: string, reader: EntryPlaceReader<E>, dir: string, messages: PlaceMessages): Promise<Finding[]> {
+async function placeFindings<TEntry, E>(repoDir: string, type: LayeredEntryType<TEntry, E>, messages: PlaceMessages): Promise<Finding[]> {
   const findings: Finding[] = [];
 
-  for (const namespace of [null, ...await listDirs(path.join(repoDir, dir))]) {
-    const read = await reader.readPlace(repoDir, namespace);
+  for (const namespace of [null, ...await listDirs(path.join(repoDir, type.layout.dir))]) {
+    const read = await LayeredEntries.readPlace(type, { root: repoDir, namespace });
 
     if (!read.ok) {
       findings.push({ level: 'fail', check: 'format', path: read.source, message: messages.unreadable(read.reason.trimEnd().replace(/\.$/, '')) });
@@ -424,8 +425,7 @@ async function placeFindings<E>(repoDir: string, reader: EntryPlaceReader<E>, di
 
     const firstSource = new Map<string, string>();
 
-    for (const { entry, source } of read.entries) {
-      const name = reader.nameOf(entry);
+    for (const { item: { name, source: { path: source } } } of read.definitions) {
       const first = firstSource.get(name);
 
       if (first === undefined) firstSource.set(name, source);
@@ -1754,8 +1754,8 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
     ...await duplicateFindings(resources, index),
     ...await skillLinkFindings(skillFiles, resources),
     ...await formatFindings(resources, readText),
-    ...await placeFindings(repoDir, hooksEntryReader, 'hooks', HOOK_PLACE_MESSAGES),
-    ...await placeFindings(repoDir, mcpEntryReader, 'mcp', MCP_PLACE_MESSAGES),
+    ...await placeFindings(repoDir, TEAM_HOOK_ENTRIES, HOOK_PLACE_MESSAGES),
+    ...await placeFindings(repoDir, TEAM_MCP_ENTRIES, MCP_PLACE_MESSAGES),
     ...await relationsFindings(resources, readText),
     ...pipedInstallFindings(skillFiles),
     ...await leakFindings(repoDir, resources, readText),

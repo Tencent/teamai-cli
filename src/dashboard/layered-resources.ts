@@ -10,12 +10,13 @@ import { RECALL_RULE_NAME, resolveRecall, type RecallFolder } from '../builtin-r
 import { loadCachedSuite, suiteDirectories, syncTeamDefinitions, type SyncTeamResult } from '../benchmark/suite-cache.js';
 import { DefaultHooks, type DefaultHookComparison } from '../default-hooks.js';
 import { DefaultWorkflows } from '../default-workflows.js';
-import { activeEntryNamespaces, describeEntryFailure, entryLayout, resolveEntriesFor, type EntryFailure, type EntryPlaceReader, type PlaceFolderRead } from '../namespaced-entries.js';
+import { activeEntryNamespaces, describeEntryFailure, entryLayout, type EntryFailure } from '../namespaced-entries.js';
+import { LayeredEntries, type LayeredEntryType, type PlaceFolderRead } from '../resources/layered-entries.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { DeliveredFolders } from '../resources/delivered-folders.js';
 import { FolderFiles } from '../resources/folder-files.js';
-import { TEAM_HOOKS, hooksEntryReader, readDefaultHookReplacements, readHookFolder, type TeamHookDefinition } from '../resources/hooks.js';
-import { TEAM_MCP, mcpEntryReader, readMcpFolder, type TeamMcpDefinition } from '../resources/mcp.js';
+import { TEAM_HOOKS, TEAM_HOOK_ENTRIES, readDefaultHookReplacements, readHookFolder, type TeamHookDefinition } from '../resources/hooks.js';
+import { TEAM_MCP, TEAM_MCP_ENTRIES, readMcpFolder, type TeamMcpDefinition } from '../resources/mcp.js';
 import { RESOURCE_LAYOUTS, Resources, type LayeredItem, type ListedResolution, type ResourceLayout } from '../resources/resolver.js';
 import { RuleFolders } from '../resources/rule-folders.js';
 import { buildRolePullContext, resolveDesiredRules } from '../resources/desired.js';
@@ -229,11 +230,11 @@ async function workflowFolder(config: LocalConfig, full: string): Promise<Resour
   };
 }
 
-/** A type whose items are entries of an entry-list file or folders, read for delivery by `reader`, and how its folders are checked. */
+/** A type whose items are entries of an entry-list file or folders, resolved for delivery as `entries`, and how its folders are checked. */
 interface EntryType<TEntry, TDefinition> {
   readonly type: 'hooks' | 'mcp';
   readonly layout: ResourceLayout<TEntry>;
-  readonly reader: EntryPlaceReader<TDefinition>;
+  readonly entries: LayeredEntryType<TEntry, TDefinition>;
   /** The folder at `full` read as pull reads it, for the definition named `name`, or why pull cannot use it. */
   readonly readFolder: (full: string, folderPath: string, name: string) => Promise<PlaceFolderRead<TDefinition>>;
   /** What a tool runs from a valid folder delivered at `dest`. */
@@ -245,7 +246,7 @@ interface EntryType<TEntry, TDefinition> {
 const HOOKS: EntryType<unknown, TeamHookDefinition> = {
   type: 'hooks',
   layout: TEAM_HOOKS,
-  reader: hooksEntryReader,
+  entries: TEAM_HOOK_ENTRIES,
   readFolder: readHookFolder,
   runs: (definition, dest) => ({ command: DeliveredFolders.render(definition.hook.command, { type: 'hooks', dest }), args: [], env: [] }),
   listedElsewhere: (item) => item.layer === 'root' && item.source.kind === 'folder' && DefaultHooks.isName(item.name),
@@ -254,7 +255,7 @@ const HOOKS: EntryType<unknown, TeamHookDefinition> = {
 const MCP: EntryType<unknown, TeamMcpDefinition> = {
   type: 'mcp',
   layout: TEAM_MCP,
-  reader: mcpEntryReader,
+  entries: TEAM_MCP_ENTRIES,
   readFolder: readMcpFolder,
   runs: ({ server }, dest) => {
     const render = (text: string): string => DeliveredFolders.render(text, { type: 'mcp', dest });
@@ -286,7 +287,7 @@ function failurePaths(failure: EntryFailure): string[] {
  */
 async function entryList<TEntry, TDefinition>(config: LocalConfig, spec: EntryType<TEntry, TDefinition>): Promise<LayeredResourceList> {
   const layout = entryLayout(spec.type);
-  const resolution = await resolveEntriesFor(spec.reader, config);
+  const resolution = await LayeredEntries.resolve(spec.entries, config);
   const namespaces = resolution.kind === 'resolved' ? { ok: true as const, active: resolution.active } : await activeEntryNamespaces(config, layout);
   const active = namespaces.ok ? namespaces.active ?? [] : [];
   const survey = await Resources.survey(spec.layout, { team: { root: getKnowledgeDir(config), namespaces: async () => active } });
