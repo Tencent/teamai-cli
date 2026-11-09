@@ -123,7 +123,7 @@ describe('benchmark arm team', () => {
 
     const record = z.object({ scorers: z.array(z.object({ name: z.string(), rubric: z.object({ sourceHash: z.string() }) })) }).passthrough().parse(fixture.benchmarkRecord(runId));
     const pulledRubric = createHash('sha256').update(quality('Judge how tidy the change is.')).digest('hex');
-    expect(record.scorers).toEqual([{ name: 'quality', rubric: { sourceHash: pulledRubric } }]);
+    expect(record.scorers).toEqual([{ name: 'quality', rubric: { sourceHash: pulledRubric } }, { name: 'teamai:correctness:fix', rubric: { sourceHash: expect.any(String) } }]);
     const { steps } = z.object({
       steps: z.array(z.object({ id: z.string(), agent: z.object({ tool: z.object({ name: z.string() }), model: z.object({ requested: z.string() }).partial().optional(), team: z.object({ revision: z.string() }).passthrough().optional() }).passthrough().optional() }).passthrough()),
     }).parse(fixture.runFile(runId));

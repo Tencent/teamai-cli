@@ -33,6 +33,7 @@ const RepoUrlSchema = z.string().refine((value) => {
 const SuitePathSchema = z.string().min(1).refine(isRelativePath, 'must be a path inside the suite directory, with no backslash and no ".", ".." or empty segment');
 
 const TOKENS = 'must be a positive whole number of tokens';
+const PERCENT = 'must be a percent from 0 to 100';
 const WHOLE = 'must be a positive whole number';
 
 /** The run's last step waits on every lane, in one expression, which nests at most 100 levels. */
@@ -157,6 +158,9 @@ type Matrix = z.infer<typeof MatrixSchema>;
 
 const MAX_MATRIX_ARMS = 12;
 
+/** A scorer by the name of its file in scorers/, which has no ":", so a generated scorer's name is never one. */
+const ScorerNameSchema = z.string().min(1).refine((name) => !name.includes(':'), 'names no scorer file, since a scorer file name has no ":"; list the name of a file in scorers/, without .md');
+
 const SuiteFileSchema = z.object({
   schemaVersion: z.literal('v1alpha1'),
   name: BenchmarkNameSchema,
@@ -187,7 +191,9 @@ const SuiteFileSchema = z.object({
     return limits;
   }).optional(),
   setup: SetupSchema.optional(),
-  scorers: z.array(z.string().min(1)).default([]),
+  scorers: z.array(ScorerNameSchema).default([]),
+  /** The percent of trials of a task with a check and success criteria whose check failed that a judge labels too. */
+  calibration: z.object({ rate: z.number().min(0, PERCENT).max(100, PERCENT) }).strict().optional(),
 }).strict().superRefine((suite, ctx) => {
   if (suite.trial?.timeoutMs !== undefined && suite.trial.timeoutMs >= suite.timeout) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['trial', 'timeout'], message: 'trial.timeout must be shorter than timeout, which bounds the whole run' });
@@ -381,11 +387,13 @@ function taskFileSchema(files: ReadonlyMap<string, SuiteFile>) {
     covers: CoversSchema.optional(),
     /** Where the task came from: the session or the workflow pass it was made from. Provenance only; nothing runs from it. */
     source: TaskSourceSchema.optional(),
+    /** Scorers that judge this task's trials besides the suite's, by the name of their file in scorers/. */
+    scorers: z.array(ScorerNameSchema).optional(),
   }).strict().transform(({ check, successCriteria, ...task }, ctx) => {
     if (successCriteria !== undefined && !check) return { ...task, judge: { kind: 'criteria', successCriteria } satisfies TaskJudge };
 
-    if (!check || successCriteria !== undefined) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['check'], message: 'a task has exactly one of check and successCriteria' });
+    if (!check) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['check'], message: 'a task has check, successCriteria, or both; add at least one' });
 
       return z.NEVER;
     }
@@ -447,11 +455,13 @@ function taskFileSchema(files: ReadonlyMap<string, SuiteFile>) {
     }
 
     const [firstFile, ...otherFiles] = written.flatMap(({ file }) => (file ? [file] : []));
-    const judge: Extract<TaskJudge, { kind: 'check' }> = { kind: 'check', ...rest };
+    const checked: TaskCheck = { ...rest };
 
-    if (firstSolved !== undefined && solution !== undefined) judge.add = { commit: solution, paths: [firstSolved, ...otherSolved] };
+    if (firstSolved !== undefined && solution !== undefined) checked.add = { commit: solution, paths: [firstSolved, ...otherSolved] };
 
-    if (firstFile) judge.files = [firstFile, ...otherFiles];
+    if (firstFile) checked.files = [firstFile, ...otherFiles];
+
+    const judge: TaskJudge = successCriteria === undefined ? { kind: 'check', check: checked } : { kind: 'both', check: checked, successCriteria };
 
     return { ...task, judge };
   });
@@ -484,11 +494,32 @@ export interface CheckFile {
 /** How git stores a file: executable or not. */
 export type FileMode = '100644' | '100755';
 
-/** How a task is decided. Exactly one, by construction: the file rule above becomes a union here. */
+/**
+ * A task's check. `add`: the files written from `commit`, the task's `solutionCommit`, before the check. `files`: those
+ * written from the suite directory.
+ */
+export interface TaskCheck {
+  run: string;
+  protect: [string, ...string[]];
+  add?: { commit: string; paths: [string, ...string[]] };
+  files?: [CheckFile, ...CheckFile[]];
+}
+
+/**
+ * How a task is decided: by its check, by a judge on its success criteria, or by both, the check first and the judge
+ * only when it passes. Never by neither, by construction: the file rule above becomes this union.
+ */
 export type TaskJudge =
-  /** `add`: the files written from `commit`, the task's `solutionCommit`, before the check. `files`: those written from the suite directory. */
-  | { kind: 'check'; run: string; protect: [string, ...string[]]; add?: { commit: string; paths: [string, ...string[]] }; files?: [CheckFile, ...CheckFile[]] }
-  | { kind: 'criteria'; successCriteria: string };
+  | { kind: 'check'; check: TaskCheck }
+  | { kind: 'criteria'; successCriteria: string }
+  | { kind: 'both'; check: TaskCheck; successCriteria: string };
+
+export const TaskJudge = {
+  /** The task's check; undefined when a judge alone decides it. */
+  checkOf: (judge: TaskJudge): TaskCheck | undefined => (judge.kind === 'criteria' ? undefined : judge.check),
+  /** The task's success criteria; undefined when its check alone decides it. */
+  criteriaOf: (judge: TaskJudge): string | undefined => (judge.kind === 'check' ? undefined : judge.successCriteria),
+} as const;
 
 export interface Task {
   /** The file name without `.yaml`. Trials are ordered by it. */
@@ -505,6 +536,8 @@ export interface Task {
   covers?: [string, ...string[]];
   /** The session or workflow pass the task was made from, as provenance. */
   source?: TaskSource;
+  /** The scorers that judge its trials besides the suite's, each listed once; absent: only the suite's. */
+  scorers?: [string, ...string[]];
   /** sha256 of the file bytes. */
   sourceHash: string;
 }
@@ -538,6 +571,8 @@ export interface Suite {
   trial?: TrialLimits;
   setup?: Setup;
   scorers: string[];
+  /** The percent of failed checks of tasks with success criteria a judge labels too, to measure it; 0 labels none. */
+  calibrationRate: number;
   /** The valid tasks, in file-name order. Never empty. */
   tasks: [Task, ...Task[]];
   sourceHash: string;
@@ -602,10 +637,11 @@ export function parseSuite(input: { suite: SourceFile; tasks: readonly SourceFil
       continue;
     }
 
-    const { title, prompt, startingCommit, solutionCommit, judge, covers, source: origin } = task.value;
+    const { title, prompt, startingCommit, solutionCommit, judge, covers, source: origin, scorers = [] } = task.value;
+    const [firstScorer, ...otherScorers] = [...new Set(scorers)];
     tasks.push(definedFields<Task>({
       id, relativePath: source.relativePath, title, prompt, startingCommit, solutionCommit: solutionCommit || undefined, judge,
-      covers, source: origin, sourceHash: taskHash(source.content, judge),
+      covers, source: origin, scorers: firstScorer === undefined ? undefined : [firstScorer, ...otherScorers], sourceHash: taskHash(source.content, judge),
     }));
   }
 
@@ -645,6 +681,7 @@ export function parseSuite(input: { suite: SourceFile; tasks: readonly SourceFil
       trial: file.trial,
       setup: file.setup,
       scorers: file.scorers,
+      calibrationRate: file.calibration?.rate ?? 0,
       tasks: [first, ...rest],
       sourceHash: hashOf(input.suite.content),
     }),
@@ -715,7 +752,7 @@ function hashOf(content: string | Buffer): string {
  * hash in order, so editing one changes it. A task without them keeps the hash of its file alone.
  */
 function taskHash(content: string, judge: TaskJudge): string {
-  const files = judge.kind === 'check' ? judge.files ?? [] : [];
+  const files = TaskJudge.checkOf(judge)?.files ?? [];
 
   if (files.length === 0) return hashOf(content);
 

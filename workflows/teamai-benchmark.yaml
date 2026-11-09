@@ -14,6 +14,8 @@ steps:
     requires: { isolation: sandbox, strict: true }
   # Judges every trial with the scorers it pinned, a criteria task's teamai:correctness:<task> included. Reading
   # trials keeps a failed trial from stopping the others being judged. Without these two steps nothing judges a trial.
+  # batch: the suite's scorers that share a judge tool, model and stages share one judge call per trial; a correctness
+  # scorer is always judged alone. Set it false in a workflow of this name to judge each scorer apart.
   - id: subjects
     needs: [trials]
     if: steps.trials.outcome != 'skipped'
@@ -24,7 +26,23 @@ steps:
     needs: [subjects]
     for_each: steps.subjects.outputs.list
     workflow: teamai-score
-    with: { subject: "{{ item }}", scorers: [], label: "", batch: false, demand: named }
+    with: { subject: "{{ item }}", scorers: [], label: "", batch: true, demand: named }
+    timeout: 2h
+    continue_on_failure: true
+  # Calibrates each correctness judge against the check: the suite's calibration.rate of the trials of a task with a check
+  # and success criteria whose check failed, labelled by that judge too. store: false keeps the label out of the trial's
+  # verdicts: it decides nothing, and the results show it as Judge calibration. Drop these two steps to calibrate nothing.
+  - id: calibration-subjects
+    needs: [score]
+    if: steps.score.outcome != 'skipped'
+    command: teamai score subjects --calibration --run "$RUN" --step trials
+    env: { RUN: "{{ run.id }}" }
+    output: { list: [{ subject: string, scorer: string }] }
+  - id: calibrate
+    needs: [calibration-subjects]
+    for_each: steps.calibration-subjects.outputs.list
+    workflow: teamai-score
+    with: { subject: "{{ item.subject }}", scorers: ["{{ item.scorer }}"], label: "", store: false, batch: false, demand: named }
     timeout: 2h
     continue_on_failure: true
 finally:

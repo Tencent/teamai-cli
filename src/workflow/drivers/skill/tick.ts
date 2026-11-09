@@ -80,7 +80,7 @@ export async function applyEffects(context: SkillContext, lock: RunLock, start: 
       }
 
       case 'give-up': {
-        const answer = await context.client.giveUp(applied.state.run, effect.steps);
+        const answer = await context.client.giveUp(applied.state.run, effect.held);
 
         if ('error' in answer) applied.refused = answer.error;
         break;

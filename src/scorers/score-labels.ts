@@ -6,6 +6,7 @@
 import path from 'node:path';
 import { z } from 'zod';
 import { ConfinedUsageSchema, CostSchema, type ConfinedUsage } from '../tool-launch/confined-level.js';
+import { isModelAlias, loadModelAliases } from '../models/aliases.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { writeFileAtomic } from '../utils/fs.js';
 import { findRunConfig } from '../workflow/run-location.js';
@@ -200,7 +201,8 @@ function verdictsIn(members: readonly [Member, ...Member[]], answer: string | un
 }
 
 /** The entries of the judge's answer: one label per member, or one code for all of them. */
-function judgeEntries(labelling: Labelling, members: readonly [Member, ...Member[]], { answer, judged, run, spent }: { answer: string | undefined; judged: string | undefined; run: ConfinedRunReport | undefined; spent: ConfinedUsage | undefined }): Entry[] {
+/** `alias`: the model alias the group's scorers ask for, which a label names when the judge's report does not. */
+function judgeEntries(labelling: Labelling, members: readonly [Member, ...Member[]], { answer, judged, run, spent, alias }: { answer: string | undefined; judged: string | undefined; run: ConfinedRunReport | undefined; spent: ConfinedUsage | undefined; alias: string | undefined }): Entry[] {
   if (judged !== 'success') return failedAll(members, 'judge_failed', `The judge step ended ${judged || 'without running'}, so it gave no answer.`, spent);
   const verdicts = verdictsIn(members, answer);
 
@@ -211,6 +213,8 @@ function judgeEntries(labelling: Labelling, members: readonly [Member, ...Member
   return verdicts.verdicts.map(({ judged: member, label, reasoning }, index) => {
     const { usage, ...ran } = run;
     const judge: ScoreLabel['judge'] = { kind: 'model', ...ran };
+
+    if (alias !== undefined && ran.model?.alias === undefined) judge.model = { ...ran.model, alias };
 
     // The usage of one launch is counted once, on the first label.
     if (usage && index === 0) judge.usage = usage;
@@ -291,9 +295,17 @@ async function closeHeld(attempt: ScoreAttempt, outcomes: ReadonlyArray<{ key: M
   return { ok: true, closed: held.length };
 }
 
+/** Whether a label of a pass of `step` in `run` stays on this machine, out of the outbox: the step is private, or the run isolated. */
+export function keepsLabelsLocal(run: RunState, step: string): boolean {
+  return privateSteps(run)(step) || isIsolated(run);
+}
+
 export const ScoreLabels = {
   /** The entries `label` left in the group directory `dir`, one per scorer; undefined when it wrote none. */
   read: readEntries,
+
+  /** What judge step `step` of `run` spent, as its confined run or its report stated it; undefined when it stated nothing. */
+  spent: judgeSpend,
 
   /**
    * The labels of the group in `dir`, written with their reasoning to `<dir>/labels.json`, and one entry per scorer
@@ -327,8 +339,11 @@ export const ScoreLabels = {
       entries = stageEntries(labelling, [first, ...rest], decided);
     } else {
       const step = judgeStepOf(attempt);
+      // A group's members share one model, which its judge step asked for; a driver may report only what it resolved to.
+      const asked = first.definition.model;
+      const alias = asked !== undefined && isModelAlias(await loadModelAliases(attempt.config), asked) ? asked : undefined;
 
-      entries = judgeEntries(labelling, [first, ...rest], { answer, judged, run: readJudgeRun(attempt.run, step), spent: judgeSpend(attempt.run, step) });
+      entries = judgeEntries(labelling, [first, ...rest], { answer, judged, run: readJudgeRun(attempt.run, step), spent: judgeSpend(attempt.run, step), alias });
     }
 
     await writeFileAtomic(path.join(dir, LABELS), JSON.stringify({ entries }));
@@ -367,7 +382,7 @@ export const ScoreLabels = {
     }
 
     const run = await subjectRun(attempt, group);
-    const keepLocal = group.judged.kind === 'run' && run !== undefined && (privateSteps(run)(group.judged.subject.step) || isIsolated(run));
+    const keepLocal = group.judged.kind === 'run' && run !== undefined && keepsLabelsLocal(run, group.judged.subject.step);
 
     const written = await LabelStore.append(attempt.config, entries.flatMap((entry) => (entry.kind === 'labelled' ? [entry] : [])), { outbox: !keepLocal });
 

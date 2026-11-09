@@ -33,6 +33,8 @@ import { SessionCaptures } from './captures.js';
 import { SessionPolicy } from './session-policy.js';
 import { SessionPublish } from './session-publish.js';
 import { SessionWork, type SessionScorer } from './session-work.js';
+import type { SessionCommits } from './sync.js';
+import { TaskCandidates, type LeftOut, type Sizes, type TaskFields } from './task-candidates.js';
 
 /** A finished session to archive, judge, or both, in the data home that lists it. */
 export interface FinishedSession {
@@ -76,9 +78,19 @@ export interface ShareableSession {
 /** The flags of `session list --finished --all`, as the command line gives them: `--publish` and `--scorers` are refused. */
 export interface ShareOptions extends ListOptions {
   within?: string;
+  /** A suite's directory: list the sessions it could take a task from instead (`TaskCandidates`). */
+  suite?: string;
+  /** With `suite`: the S, M and L limits that size each listed session's change. */
+  sizes?: string;
 }
 
-export type Shareable = { ok: true; list: ShareableSession[] } | Refusal;
+/** A finished session a suite could take a task from, with its task fields. */
+export type CandidateSession = ShareableSession & TaskFields;
+
+export type Shareable =
+  | { ok: true; list: ShareableSession[] }
+  | { ok: true; list: CandidateSession[]; leftOut: LeftOut[] }
+  | Refusal;
 
 interface Request {
   idleMs: number;
@@ -184,11 +196,15 @@ const SHARE_WITHIN = '7d';
  * from yet, whatever the session policies and archive marks say: it publishes and judges nothing, so any run may list
  * them. Each comes with its first prompt as `teamai session show` redacts it; a session with nothing to read is left out.
  */
-async function shareable({ within = SHARE_WITHIN, ...options }: ShareOptions, ctx: ListContext): Promise<Shareable> {
+async function shareable({ within = SHARE_WITHIN, suite, sizes, ...options }: ShareOptions, ctx: ListContext): Promise<Shareable> {
   if (options.publish !== undefined || options.scorers !== undefined) {
     return refused('invalid_arguments', '--finished --all lists every finished session to share learnings from, whatever the session policies say, so it takes no --publish or --scorers. Drop them, or drop --all to list the sessions to archive and judge.');
   }
 
+  if (suite === undefined && sizes !== undefined) return refused('invalid_arguments', '--sizes sizes the sessions a suite could take a task from, so it takes --suite. Add --suite <dir>.');
+  const parsedSizes = sizes === undefined ? undefined : TaskCandidates.parseSizes(sizes);
+
+  if (parsedSizes?.ok === false) return parsedSizes;
   const request = requestOf(options);
 
   if ('ok' in request) return request;
@@ -199,16 +215,62 @@ async function shareable({ within = SHARE_WITHIN, ...options }: ShareOptions, ct
 
   if (!scope.ok) return scope;
   const since = Date.parse(ctx.now) - withinMs;
+  const finished = (await SessionWork.finished(await SessionCaptures.list(scope.config), ctx.now, () => true, request.idleMs)).filter((session) => session.activeAt >= since);
+
+  if (suite !== undefined) return candidates(scope.config, finished, { dir: suite, sizes: parsedSizes?.sizes });
   const found: ShareableSession[] = [];
 
-  for (const session of await SessionWork.finished(await SessionCaptures.list(scope.config), ctx.now, () => true, request.idleMs)) {
-    if (session.activeAt < since || (await readContributeState(session.sessionId)).contributed) continue;
-    const read = await SessionWork.read(scope.config, { platform: session.platform, sessionId: session.sessionId });
+  for (const session of finished) {
+    if ((await readContributeState(session.sessionId)).contributed) continue;
+    const item = await shareableOf(scope.config, session);
 
-    if (read.ok) found.push({ session: session.sessionId, source: session.platform, ended: new Date(session.activeAt).toISOString(), prompt: read.judged.context.prompt });
+    if (item) found.push(item);
   }
 
   return { ok: true, list: found };
+}
+
+/** `session` as the listing gives it, with its first prompt as `teamai session show` redacts it; none with nothing to read. */
+async function shareableOf(config: LocalConfig, session: Finished): Promise<ShareableSession | undefined> {
+  const read = await SessionWork.read(config, { platform: session.platform, sessionId: session.sessionId });
+
+  return read.ok ? { session: session.sessionId, source: session.platform, ended: new Date(session.activeAt).toISOString(), prompt: read.judged.context.prompt } : undefined;
+}
+
+/**
+ * Of `finished`, those the suite in `dir` could take a task from, whether or not a learning was contributed from them,
+ * with their task fields, sized by `sizes` when given, and how many were left out and why.
+ */
+async function candidates(config: LocalConfig, finished: readonly Finished[], { dir, sizes }: { dir: string; sizes: Sizes | undefined }): Promise<Shareable> {
+  const found = await TaskCandidates.suiteIn(config, dir);
+
+  if (!found.ok) return found;
+
+  const weighed = await TaskCandidates.weigh(config, { suite: found.suite, sizes }, finished.map((session) => ({
+    item: session, session: session.sessionId, source: session.platform, commits: commitsOf(session),
+  })));
+
+  const offered: CandidateSession[] = [];
+
+  for (const { item, fields } of weighed.list) {
+    const shared = await shareableOf(config, item);
+
+    if (shared) offered.push({ ...shared, ...fields });
+  }
+
+  return { ok: true, list: offered, leftOut: weighed.leftOut };
+}
+
+/** How `session` started, as its earliest capture recorded, and ended, as its last Stop did. */
+function commitsOf(session: Finished): SessionCommits {
+  const commits: SessionCommits = {};
+  const started = session.captures[0].agent.project;
+
+  if (started) commits.start = started;
+
+  if (session.end) commits.end = session.end.end;
+
+  return commits;
 }
 
 /** What a request asks of the sessions of each run mode: whether to judge them, with which scorers, and to publish them. */

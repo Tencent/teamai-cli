@@ -27,9 +27,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { z } from 'zod';
+import { defaultScorerRubric } from '../../scorers/cache.js';
 import { syncScorersThenWorkflows } from '../../scorers/team-sync.js';
 import type { LocalConfig } from '../../types.js';
-import { compileBundle, freezePlan, type BenchmarkPlan } from '../../benchmark/plan.js';
+import { checkStepOf, compileBundle, correctnessScorerName, freezePlan, type BenchmarkPlan } from '../../benchmark/plan.js';
+import { LabelStore } from '../../scorers/label-store.js';
 import { RunScorers } from '../../scorers/run-scorers.js';
 import type { BenchmarkRunRecord, TrialResult } from '../../benchmark/result.js';
 import { planOfRun } from '../../benchmark/run-plan.js';
@@ -80,8 +82,8 @@ export type FakeTool = 'fixes' | 'does-nothing' | 'fails-first' | 'skips-the-che
 export type FirstLaunch = 'pulls-a-team-change' | 'kills-its-driver';
 
 /** What the fake `claude` judge answers: the first label of its scorer, `incorrect` where its scorer has one, a label its scorer lacks, or exit 1. */
-/** `states-nothing`: answers the first label, and states no usage or cost. */
-export type FakeJudge = 'first-label' | 'incorrect' | 'another-label' | 'fails' | 'hangs' | 'states-nothing';
+/** `states-nothing`: answers the first label, and states no usage or cost. `states-one-batch`: as `first-label`, but only the first batched launch states its cost. */
+export type FakeJudge = 'first-label' | 'incorrect' | 'another-label' | 'fails' | 'hangs' | 'states-nothing' | 'states-one-batch';
 
 /** One launch of the fake judge: the labels its answer schema allows, its evidence's diff.patch, and the trial roots left. */
 const JudgeLaunchSchema = z.object({ labels: z.array(z.string()), diff: z.string().nullable(), trialRoots: z.array(z.string()) });
@@ -584,17 +586,31 @@ if (process.argv.includes('--json-schema')) {
   const schema = JSON.parse(process.argv[process.argv.indexOf('--json-schema') + 1]);
   // A confined workflow step's reply wraps the answer schema as {"answer": …}; a judge lease's is the answer itself.
   const wrapped = schema.properties.answer !== undefined;
-  const labels = (wrapped ? schema.properties.answer : schema).properties.label.enum;
+  const answerSchema = wrapped ? schema.properties.answer : schema;
+  // A batched judge answers one label per scorer, keyed by the scorer's name.
+  const members = answerSchema.properties.label === undefined ? Object.entries(answerSchema.properties) : undefined;
+  const labels = members ? members.flatMap(([, member]) => member.properties.label.enum) : answerSchema.properties.label.enum;
   const diff = fs.existsSync('diff.patch') ? fs.readFileSync('diff.patch', 'utf8') : null;
+  const claimFirstBatch = () => {
+    try {
+      fs.closeSync(fs.openSync(${JSON.stringify(`${log}.batch-stated`)}, 'wx'));
+      return true;
+    } catch {
+      return false;
+    }
+  };
   fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ labels, diff, trialRoots: fs.existsSync(${JSON.stringify(trialRoots)}) ? fs.readdirSync(${JSON.stringify(trialRoots)}) : [] }) + '\\n');
   process.stdin.resume();
   process.stdin.on('end', () => {
     if (${JSON.stringify(judge)} === 'hangs') { setInterval(() => {}, 1000); return; }
     if (${JSON.stringify(judge)} === 'fails') process.exit(1);
-    const label = ${JSON.stringify(judge)} === 'another-label' ? 'no-such-label' : ${JSON.stringify(judge)} === 'incorrect' && labels.includes('incorrect') ? 'incorrect' : labels[0];
+    const pick = (given) => ${JSON.stringify(judge)} === 'another-label' ? 'no-such-label' : ${JSON.stringify(judge)} === 'incorrect' && given.includes('incorrect') ? 'incorrect' : given[0];
     console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'fake-judge' }));
-    const answer = { label, reasoning: 'The fake judge decided.' };
-    const usage = ${JSON.stringify(judge)} === 'states-nothing' ? {} : { total_cost_usd: 0.1 };
+    const answer = members
+      ? Object.fromEntries(members.map(([name, member]) => [name, { label: pick(member.properties.label.enum), reasoning: 'The fake judge decided.' }]))
+      : { label: pick(labels), reasoning: 'The fake judge decided.' };
+    const statesNothing = ${JSON.stringify(judge)} === 'states-nothing' || (${JSON.stringify(judge)} === 'states-one-batch' && members !== undefined && !claimFirstBatch());
+    const usage = statesNothing ? {} : { total_cost_usd: 0.1 };
     console.log(JSON.stringify({ type: 'result', structured_output: wrapped ? { answer } : answer, ...usage }));
   });
   return;
@@ -620,9 +636,9 @@ export function benchmarkRunConfig(root: string): LocalConfig {
 /**
  * The plan of the suite in `files`, frozen in process as startBenchmark freezes it, at team commit RUN_TEAM and with
  * RUN_START for `{{startingCommit}}`, without the install startBenchmark reads the suite and the team revision from. An
- * arm's model is planned as written: no aliases resolve it.
+ * arm's model is planned as written: no aliases resolve it. `correctnessRubric` is the one the plan filled in.
  */
-export async function frozenBenchmark(config: LocalConfig, files: BenchmarkSuiteFiles): Promise<{ plan: BenchmarkPlan; committed: CommittedSuite } | WorkflowEnvelope> {
+export async function frozenBenchmark(config: LocalConfig, files: BenchmarkSuiteFiles): Promise<{ plan: BenchmarkPlan; committed: CommittedSuite; correctnessRubric: string } | WorkflowEnvelope> {
   const parsed = parseSuite({
     suite: { relativePath: `benchmarks/${files.name}/suite.yaml`, content: files.suite },
     tasks: Object.entries(files.tasks).map(([name, content]) => ({
@@ -636,8 +652,9 @@ export async function frozenBenchmark(config: LocalConfig, files: BenchmarkSuite
   const [first, ...rest] = suite.arms.map((arm) => ({ name: arm.name, tool: arm.tool, ...(arm.model ? { model: arm.model } : {}), source: 'team' as const, team: resolved(arm.team), ...(arm.role ? { role: arm.role } : {}), ...(arm.recall === undefined ? {} : { recall: arm.recall }) }));
   const committed = await commitCheckFiles(commitCacheOf(config, suite.repo), suite);
   if (!committed.ok) return error('check_files_unwritable', committed.failed);
-  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: RUN_TEAM, selection: { additionalRoles: [], projects: [], excludedSkills: [] }, arms: [first, ...rest], scorers: {}, coveredSkills: {} });
-  return { plan, committed: committed.suite };
+  const { content: correctnessRubric } = await defaultScorerRubric(config, 'teamai-correctness');
+  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: RUN_TEAM, selection: { additionalRoles: [], projects: [], excludedSkills: [] }, arms: [first, ...rest], scorers: {}, correctnessRubric, coveredSkills: {} });
+  return { plan, committed: committed.suite, correctnessRubric };
 }
 
 /** The shipped benchmark workflow's plan and trials steps, without its report, which no process here can run. */
@@ -668,7 +685,7 @@ export async function startBenchmarkRun(config: LocalConfig, files: BenchmarkSui
 } = {}): Promise<WorkflowEnvelope> {
   const frozen = await frozenBenchmark(config, files);
   if (!('plan' in frozen)) return frozen;
-  const bundle = compileBundle(frozen.plan, frozen.committed, { unattended });
+  const bundle = compileBundle(frozen.plan, frozen.committed, { unattended, correctnessRubric: frozen.correctnessRubric });
   fs.mkdirSync(path.join(config.repo.localPath, 'workflows'), { recursive: true });
   fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'planned.yaml'), body);
   await syncScorersThenWorkflows(config);
@@ -688,19 +705,50 @@ export async function startBenchmarkRun(config: LocalConfig, files: BenchmarkSui
 
 /**
  * The benchmark record of run `run` of suite `fix`, as `teamai benchmark report` writes it: one trial of task `fix` on
- * each arm of `tools`, each on team revision `team`, every one `result`.
+ * each arm of `tools`, each on team revision `team`, every one `result`. `schemaVersion` 1: as a teamai before
+ * schemaVersion 2 wrote it, with no verdicts and no scorer labels.
  */
-export function fixRecord(run: string, { startedAt, username, result = 'passed', team = RUN_TEAM, tools = ['claude'] }: {
-  startedAt: string; username?: string; result?: TrialResult; team?: string; tools?: string[];
+export function fixRecord(run: string, { startedAt, username, result = 'passed', team = RUN_TEAM, tools = ['claude'], schemaVersion = 2 }: {
+  startedAt: string; username?: string; result?: TrialResult; team?: string; tools?: string[]; schemaVersion?: 1 | 2;
 }): BenchmarkRunRecord {
+  const scorer = 'teamai:correctness:fix';
+  const verdict = result === 'passed' || result === 'failed'
+    ? { scorer, outcome: { kind: 'labelled' as const, label: result === 'passed' ? 'correct' : 'incorrect', score: result === 'passed' ? 1 : 0, passed: result === 'passed' }, decider: { by: 'check' as const, task: 't1' } }
+    : { scorer, outcome: { kind: 'unscored' as const, because: 'run_ended' as const } };
   return {
-    schemaVersion: 1, run, outcome: 'succeeded', teamaiVersion: '0.0.0', startedAt, finishedAt: startedAt, ...(username ? { username } : {}),
+    schemaVersion, run, outcome: 'succeeded', teamaiVersion: '0.0.0', startedAt, finishedAt: startedAt, ...(username ? { username } : {}),
     workflow: { name: 'teamai-benchmark', origin: { source: 'team' }, sourceHash: 'f'.repeat(64) },
-    suite: { name: 'fix', sourceHash: 's1' }, repetitions: 1, baselineTeamRevision: team, scorers: [],
+    suite: { name: 'fix', sourceHash: 's1' }, repetitions: 1, baselineTeamRevision: team,
+    scorers: schemaVersion === 1 ? [] : [{ name: scorer, rubric: { sourceHash: 'c1' }, labels: [{ value: 'correct', score: 1 }, { value: 'incorrect', score: 0 }], passingScore: 1 }],
     tasks: [{ id: 'fix', startingCommit: RUN_START, sourceHash: 't1', baseline: 'valid' }],
     arms: tools.map((tool) => ({ name: tool, tool, source: 'team', team: { kind: 'pulled', revision: team } })),
-    trials: tools.map((tool, index) => ({ task: 'fix', arm: tool, repetition: 1, order: index + 1, step: `trials.r1.fix.${tool}.prompt`, result })),
+    trials: tools.map((tool, index) => ({ task: 'fix', arm: tool, repetition: 1, order: index + 1, step: `trials.r1.fix.${tool}.prompt`, result, ...(schemaVersion === 1 ? {} : { verdicts: [verdict] }) })),
   };
+}
+
+/**
+ * What `teamai benchmark check --trial` outputs as check step `checkStep` of run `runId` made in process, once its check
+ * said `result`: for a check that ran, the version of the trial's correctness label it stored, decided by the check.
+ */
+export async function trialCheckOutput(config: LocalConfig, runId: string, { checkStep, result }: { checkStep: string; result: 'passed' | 'failed' | 'could_not_run' }): Promise<Record<string, string>> {
+  if (result === 'could_not_run') return { result, cause: 'not_found', label: '' };
+  const run = await readRun(config, runId);
+  if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
+  const planned = planOfRun(run);
+  if ('failure' in planned) throw new Error(planned.failure.message);
+  const { plan, prefix } = planned.found;
+  const trial = plan.trials.find((candidate) => `${prefix}${checkStepOf(candidate)}` === checkStep);
+  if (!trial) throw new Error(`run ${runId} plans no trial checked by ${checkStep}`);
+  const scorer = plan.scorers.find(({ name }) => name === correctnessScorerName(trial.task));
+  if (!scorer) throw new Error(`the plan of run ${runId} pins no correctness scorer of task ${trial.task}`);
+  const step = `${prefix}${trial.step}`;
+  const passed = result === 'passed';
+  const written = await LabelStore.append(config, [{ label: {
+    source: 'workflow', scorer: scorer.name, rubric: scorer.rubric, label: passed ? 'correct' : 'incorrect', score: passed ? 1 : 0, passed,
+    judge: { kind: 'stage' }, decidedBy: 'check', subject: { runId, step, pass: run.steps.find(({ id }) => id === step)?.pass ?? 1 }, scoredAt: '2026-11-08T10:12:03.000Z',
+  } }], { outbox: false });
+  if (written.status === 'busy') throw new Error('the label store is busy');
+  return { result, cause: '', label: written.kept[0]?.version ?? '' };
 }
 
 const BaselineLeaseSchema = z.object({ data: z.object({ lease: z.object({ step: z.string().startsWith('trials.baselines.'), attempt: z.string(), revision: z.number() }) }) });
@@ -715,10 +763,10 @@ export async function settleBaselines(
 ): Promise<void> {
   const run = await readRun(config, runId);
   const planned = typeof run === 'object' ? planOfRun(run) : undefined;
-  const count = planned && 'found' in planned ? planned.found.plan.tasks.filter((task) => task.judge.kind === 'check').length : 0;
+  const count = planned && 'found' in planned ? planned.found.plan.tasks.filter((task) => task.judge.kind !== 'criteria').length : 0;
   for (let settled = 0; settled < count; settled += 1) {
     const { attempt, revision, step } = BaselineLeaseSchema.parse(await leaseNext(config, runId, driver, { can, prepare: true })).data.lease;
     const result = baselines[step.slice('trials.baselines.'.length)] ?? 'failed';
-    await reportAttempt(config, runId, { attempt, revision, driver, outcome: 'success', exitCode: 0, outputs: { result } });
+    await reportAttempt(config, runId, { attempt, revision, driver, outcome: 'success', exitCode: 0, outputs: { result, cause: result === 'could_not_run' ? 'not_found' : '', label: '' } });
   }
 }

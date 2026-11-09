@@ -1,6 +1,6 @@
 /**
  * Real CLI: with input fail_on_regression, which `teamai benchmark run --fail-on-regression` sets, the report of
- * `teamai-benchmark` compares the run's record with the newest earlier succeeded record of the same suite, tasks and arms
+ * `teamai-benchmark` compares the run's record with the newest earlier succeeded record of the same suite and arms
  * published on teamai-reports, and its `regression` finally step fails when an arm's paired pass rate dropped by more
  * than chance.
  */
@@ -52,7 +52,7 @@ describe('benchmark run --fail-on-regression', () => {
 
     const first = await fixture.teamai(['benchmark', 'run', 'fix', '--fail-on-regression']);
     expect(first.code, said(first)).toBe(0);
-    expect(first.stderr).toContain('No earlier succeeded run of suite fix ran the same tasks on the same arms on teamai-reports: recording is off, or nothing comparable has been published yet.');
+    expect(first.stderr).toContain('No earlier succeeded run of suite fix ran the same arms on teamai-reports in a record of this version: recording is off, nothing comparable has been published yet, or the earlier runs ran on a teamai that recorded them another way.');
     expect(doneOf(first).finally).toBeUndefined();
     expect(gateOf(fixture, doneOf(first).run)).toEqual({ regression: 'skipped', report: 'no_comparable' });
 
@@ -60,6 +60,7 @@ describe('benchmark run --fail-on-regression', () => {
     const second = await fixture.teamai(['benchmark', 'run', 'fix', '--fail-on-regression']);
 
     expect(second.code, said(second)).toBe(1);
+    expect(second.stderr).toMatch(/Arm claude: 3 comparable pairs against run [\w-]+\./);
     expect(second.stderr).toMatch(/Arm "claude" passed 0\/3 paired trials, against 3\/3 in run [\w-]+: a drop of 100 points, with a 95% interval of -100 to -\d+ points\./);
     expect(doneOf(second)).toMatchObject({ outcome: 'succeeded', finally: [{ id: 'regression', outcome: 'failed' }] });
     expect(gateOf(fixture, doneOf(second).run)).toEqual({ regression: 'failed', report: 'dropped' });
@@ -127,7 +128,7 @@ describe('benchmark run --fail-on-regression', () => {
 
     expect(second.code, said(second)).toBe(0);
     expect(second.stderr).toContain('record: pending');
-    expect(second.stderr).toContain('No earlier succeeded run of suite fix ran the same tasks on the same arms on teamai-reports');
+    expect(second.stderr).toContain('No earlier succeeded run of suite fix ran the same arms on teamai-reports');
   }, 240_000);
 
   it('passes, saying so, when the run held up against the earlier one', async () => {

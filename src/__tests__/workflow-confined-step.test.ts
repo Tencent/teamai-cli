@@ -130,4 +130,15 @@ console.log(JSON.stringify({ type: 'result', structured_output: { verdict: 'pass
       confined: { tool: 'claude', model: { reported: 'claude-fixture' }, isolation: 'verified', access: 'read', usage: { inputTokens: 12, outputTokens: 3 } },
     } });
   });
+
+  it('keeps the alias the step asked for beside the model it resolved to, so a label names the alias its judge ran', async () => {
+    await fs.writeFile(path.join(root, 'team', 'models', 'aliases.yaml'), 'aliases:\n  judge:\n    claude: sonnet\n');
+    const dir = await dirWith(root, 'evidence', { 'diff.txt': 'retries 3' });
+    const resolveTool = await fakeClaude(`console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-sonnet-fixture' }));
+console.log(JSON.stringify({ type: 'result', structured_output: { verdict: 'pass' } }));`);
+
+    const ended = await runConfinedStep({ config, run, secrets: {}, lease: leaseIn(dir, { model: 'judge' }), resolveTool });
+
+    expect(ended).toMatchObject({ kind: 'ran', report: { confined: { model: { alias: 'judge', requested: 'sonnet', reported: 'claude-sonnet-fixture' } } } });
+  });
 });

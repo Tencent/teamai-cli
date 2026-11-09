@@ -3,7 +3,8 @@
  * evidence dir and one answer with a label per scorer.
  */
 import { z } from 'zod';
-import type { ScorerDefinition, ScorerLabel } from './definition.js';
+import { canonicalJson } from '../utils/canonical-json.js';
+import type { ScorerDefinition, ScorerLabel, Stage } from './definition.js';
 
 /**
  * Whether a step's scorers share one judge call: the step's `scorers.batch`, else its workflow's
@@ -11,6 +12,35 @@ import type { ScorerDefinition, ScorerLabel } from './definition.js';
  */
 export function batchesScorers(layers: { step?: boolean; workflow?: boolean; team?: boolean }): boolean {
   return layers.step ?? layers.workflow ?? layers.team ?? false;
+}
+
+/** What decides the judge call a scorer of a subject joins. */
+export interface JudgeCallFacts {
+  name: string;
+  /** The model the scorer asks for; absent: the tool's default. */
+  model?: string;
+  /** The judge tool it prefers. */
+  tool?: string;
+  /** The one judge tool the run requires for it, as a benchmark plan does. */
+  require?: string;
+  stages: readonly Stage[];
+  /** Whether it is judged in a launch of its own: its check runs for it alone, or its label decides a benchmark trial. */
+  isAlone: boolean;
+  /** The prefix of the generated question family it belongs to, whose questions share a call whatever `batch` says. */
+  family?: string;
+}
+
+/**
+ * The judge call a scorer joins, as a key two scorers in one call share: its own; under `batch`, that of the scorers
+ * asking for its model, preferred tool, required tool and stages; and for a generated question, that of its family's
+ * questions sharing its judge, which only `batch` lets team scorers join. The judge tool is chosen when the judge step
+ * is leased, from what the driver offers, so a required and a preferred scorer never share a call.
+ */
+export function judgeCallKey({ name, model, tool, require, stages, isAlone, family }: JudgeCallFacts, batch: boolean): string {
+  if (!(batch || family !== undefined) || isAlone) return `${name}\n`;
+  const shared = canonicalJson({ model: model ?? null, tool: tool ?? null, require: require ?? null, stages: [...stages] });
+
+  return family !== undefined && !batch ? `${family}\n${shared}` : shared;
 }
 
 const LabelAnswerSchema = z.object({ label: z.string().min(1), reasoning: z.string() });

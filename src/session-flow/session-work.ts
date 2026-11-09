@@ -32,6 +32,7 @@ import { AgentSession, sessionKey } from './agent-session.js';
 import type { SubagentsRead } from './adapters/base.js';
 import { SessionCaptures, type CapturedSession, type SessionCapture } from './captures.js';
 import type { Session } from './ir.js';
+import { pushedSession, type TeamSession } from './scoring.js';
 
 /** `value` with `mask` applied to each string in it, object keys included. */
 function maskedArguments(value: JsonValue, mask: (text: string) => string): JsonValue {
@@ -453,6 +454,20 @@ async function read(config: LocalConfig, subject: SessionSubject, { control = fa
 }
 
 /**
+ * The session a teammate pushed as `teamSession`, for the repository `identities` name, as a judge of it reads it: redacted as
+ * `read` redacts a session of this machine, with what its archive records it ran as.
+ */
+async function readPushed(config: LocalConfig, teamSession: TeamSession, identities: ReadonlyArray<string | null>): Promise<{ ok: true; sessionId: string; platform: string; judged: JudgedSession } | { ok: false; code: string; message: string }> {
+  const pushed = await pushedSession(config, teamSession, identities);
+
+  if ('error' in pushed) return { ok: false, ...pushed.error };
+  const envSecrets = await knownSecrets(pushed.config);
+  const archived = { platform: pushed.platform, found: pushed.found, captures: [], mask: (text: string) => redact(text, { envSecrets }) };
+
+  return { ok: true, sessionId: pushed.found.session.sessionId, platform: pushed.platform, judged: judgeSession(pushed.agent ? { ...archived, agent: pushed.agent } : archived) };
+}
+
+/**
  * A directory whose teamai resolves to this scope's data home: the project's root, or for the user scope its data home,
  * which no project holds.
  */
@@ -477,4 +492,4 @@ async function sampledScorers(config: LocalConfig, subject: SessionSubject, fact
   });
 }
 
-export const SessionWork = { finished, read, scopeCwd, sampledScorers, samplingScorers, sessionScorers, generatedQuestions, pinsOf, isGone } as const;
+export const SessionWork = { finished, read, readPushed, scopeCwd, sampledScorers, samplingScorers, sessionScorers, generatedQuestions, pinsOf, isGone } as const;

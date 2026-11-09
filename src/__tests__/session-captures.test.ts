@@ -555,3 +555,74 @@ describe('session captures (#1178)', () => {
       .toEqual([{ version: '2.1.308', teamChanged: true }]);
   }, 30_000);
 });
+
+describe('the end record a Stop writes beside the captures', () => {
+  const stop = (project: string, extra: HookStdin = {}): HookStdin => ({ session_id: SESSION, cwd: project, hook_event_name: 'Stop', ...extra });
+  const endOf = async (config: LocalConfig) => (await SessionCaptures.list(config)).find((one) => one.sessionId === SESSION)?.end;
+
+  it('records the commit the session ended on, and the last Stop wins', async () => {
+    const { config, project } = checkout();
+    await SessionCaptures.atStart(config, 'claude', start(project), {});
+    await SessionCaptures.atStop(config, 'claude', stop(project));
+    const solution = commitFile(project, 'src/fix.js');
+
+    await SessionCaptures.atStop(config, 'claude', stop(project));
+
+    expect(await endOf(config)).toEqual({ sessionId: SESSION, source: 'claude-code', end: { commit: solution, dirty: false }, at: expect.any(String) });
+  });
+
+  it('records dirty when the session ended with tracked files modified, and not for an untracked file', async () => {
+    const { config, project } = checkout();
+    await SessionCaptures.atStart(config, 'claude', start(project), {});
+    fs.writeFileSync(path.join(project, 'notes.txt'), 'untracked\n');
+    await SessionCaptures.atStop(config, 'claude', stop(project));
+    const clean = await endOf(config);
+    fs.writeFileSync(path.join(project, 'README.md'), 'changed\n');
+
+    await SessionCaptures.atStop(config, 'claude', stop(project));
+
+    expect([clean?.end.dirty, (await endOf(config))?.end]).toEqual([false, { commit: git(project, 'rev-parse', 'HEAD'), dirty: true }]);
+  });
+
+  it('keeps the previous end record when git cannot read the checkout at a Stop', async () => {
+    const { config, project } = checkout();
+    await SessionCaptures.atStart(config, 'claude', start(project), {});
+    await SessionCaptures.atStop(config, 'claude', stop(project));
+    const before = await endOf(config);
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-captures-no-git-'));
+    cleanups.push(() => fs.rmSync(outside, { recursive: true, force: true }));
+
+    await SessionCaptures.atStop(config, 'claude', stop(outside));
+
+    expect(await endOf(config)).toEqual(before);
+    expect(before?.end.commit).toBe(git(project, 'rev-parse', 'HEAD'));
+  });
+
+  it('writes no end record for a session with no capture, such as one teamai launched', async () => {
+    const { config, project } = checkout();
+    await SessionCaptures.atStart(config, 'claude', start(project), { TEAMAI_LAUNCHED_BY: 'workflow' });
+
+    await SessionCaptures.atStop(config, 'claude', stop(project));
+
+    expect(fs.existsSync(path.join(config.dataHome ?? '', 'sessions', 'captures', 'claude-code', SESSION))).toBe(false);
+  });
+
+  it('is swept with the captures once the session\'s file is gone', async () => {
+    const { config, project } = checkout();
+    const transcript = path.join(path.dirname(project), 'gone.jsonl');
+    fs.writeFileSync(transcript, '{}\n');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(Date.now() - 2 * 24 * 60 * 60 * 1000));
+      await SessionCaptures.atStart(config, 'claude', start(project, { transcript_path: transcript }), {});
+      await SessionCaptures.atStop(config, 'claude', stop(project));
+    } finally {
+      vi.useRealTimers();
+    }
+    fs.rmSync(transcript);
+
+    await SessionCaptures.sweep(config);
+
+    expect(fs.existsSync(path.join(config.dataHome ?? '', 'sessions', 'captures', 'claude-code', SESSION))).toBe(false);
+  });
+});

@@ -13,6 +13,7 @@ export type UnknownScorer = { file: string; scorer: string } & (
   /** `step` is the step's path, such as `check.review`. */
   | { kind: 'step'; step: string }
   | { kind: 'suite'; suite: string }
+  | { kind: 'task'; suite: string; task: string }
 );
 
 export function formatUnknownScorer(unknown: UnknownScorer): string {
@@ -23,6 +24,8 @@ export function formatUnknownScorer(unknown: UnknownScorer): string {
       return `${file}: step "${unknown.step}" lists scorer "${scorer}", which has no valid scorers/${scorer}.md; the step runs without it`;
     case 'suite':
       return `${file}: suite "${unknown.suite}" lists scorer "${scorer}", which has no valid scorers/${scorer}.md; the benchmark does not start without it`;
+    case 'task':
+      return `${file}: task "${unknown.task}" of suite "${unknown.suite}" lists scorer "${scorer}", which has no valid scorers/${scorer}.md; the benchmark does not start without it`;
     default: {
       const unhandled: never = unknown;
 

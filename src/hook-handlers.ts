@@ -195,6 +195,18 @@ const sessionCaptureHandler: HookHandler = {
   },
 };
 
+/** Records how a captured session's checkout ends at each Stop (`SessionCaptures.atStop`), so a past session still names its solution. */
+const sessionEndHandler: HookHandler = {
+  name: 'session-end-record',
+  async execute(stdin, tool, config) {
+    if (!config) return null;
+    const { SessionCaptures } = await import('./session-flow/captures.js');
+    await SessionCaptures.atStop(config, tool, stdin);
+
+    return null;
+  },
+};
+
 /**
  * The pull each trigger of checkout preparation can afford:
  * - `post-checkout`, git's hook for a new checkout: inline, while git waits.
@@ -1339,6 +1351,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'stop', matcher: '*', handler: votesPushHandler, timeoutMs: VOTES_PUSH_TIMEOUT_MS, background: true, gitOnly: true, requiresConfig: true },
     { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
+    { event: 'stop', matcher: '*', handler: sessionEndHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
     { event: 'stop', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
     { event: 'stop', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
 

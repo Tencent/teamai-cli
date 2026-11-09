@@ -92,6 +92,33 @@ describe('the workflow a benchmark plan prints', () => {
     expect(stepDefinitions(run)('trials.r2.t01.a01.prompt')?.scorers).toEqual({ names: ['teamai:correctness:t01'], sampling: 'all', start: 'workflow' });
   });
 
+  it("runs a task with a check and success criteria through its baseline and check, and scores each prompt by its correctness scorer, which a judge pins", async () => {
+    const { run, plan } = await plannedRun({
+      name: 'fix',
+      suite: 'schemaVersion: v1alpha1\nname: fix\nrepo: https://github.com/fixture/app.git\ndefaults: { tool: claude }\narms: [{ name: a01 }]\nrepetitions: 1\ntimeout: 10m\n',
+      tasks: { t01: "schemaVersion: v1alpha1\ntitle: Fix it\nprompt: Make the test pass.\nstartingCommit: '{{startingCommit}}'\ncheck: { run: node test.js, protect: [test.js] }\nsuccessCriteria: The error names the wrong field.\n" },
+    });
+
+    expect(plan.tasks[0]?.judge).toEqual({ kind: 'both', check: { run: 'node test.js', protect: ['test.js'] } });
+    expect(plan.judges).toEqual({ 'teamai:correctness:t01': { tool: 'claude', model: '' } });
+    expect(stepDefinitions(run)('trials.baselines.t01')).toBeDefined();
+    expect(stepDefinitions(run)('trials.r1.t01.a01')?.if).toBe("steps.baselines.outputs.t01 == 'failed'");
+    expect(stepDefinitions(run)('trials.r1.t01.a01.check')).toBeDefined();
+    expect(stepDefinitions(run)('trials.r1.t01.a01.prompt')?.scorers).toEqual({ names: ['teamai:correctness:t01'], sampling: 'all', start: 'workflow' });
+  });
+
+  it("pins every task's correctness scorer with its labels and passing score, and lists a check task's on no step, so no judge runs", async () => {
+    const { run, plan } = await plannedRun(suiteOf({ arms: 2 }));
+
+    expect(plan.schemaVersion).toBe(2);
+    expect(plan.scorers).toEqual([{
+      name: 'teamai:correctness:t01', rubric: { sourceHash: expect.stringMatching(/^[0-9a-f]{64}$/) },
+      labels: [{ value: 'correct', score: 1 }, { value: 'incorrect', score: 0 }], passingScore: 1,
+    }]);
+    for (const step of ['trials.r1.t01.a01.prompt', 'trials.r1.t01.a02.prompt']) expect(stepDefinitions(run)(step), step).not.toHaveProperty('scorers');
+    expect(JSON.stringify(run.admitted)).not.toContain('teamai-score');
+  });
+
   it("is admitted for arms that compare two roles, each trial's clone opened with its arm's role and the plan keeping it", async () => {
     const { run, plan } = await plannedRun({
       name: 'fix',
@@ -132,7 +159,7 @@ describe('the workflow a benchmark plan prints', () => {
     const [arm] = arms;
     if (!arm) throw new Error('no arm');
     const plan: BenchmarkPlan = { ...frozen.plan, arms: [arm], trials: trialsOf(frozen.committed.suite.tasks, arms, 1) };
-    const { scorers: _generated, ...bundle } = compileBundle(plan, frozen.committed, { armWorkflows: new Map([['flow', pinned]]), unattended: false });
+    const { scorers: _generated, ...bundle } = compileBundle(plan, frozen.committed, { armWorkflows: new Map([['flow', pinned]]), unattended: false, correctnessRubric: frozen.correctnessRubric });
 
     const started = await startBenchmarkRun(config, files, { outputsOf: () => ({ definition: bundle, plan }) });
     if ('error' in started) throw new Error(started.error.message);
@@ -148,23 +175,33 @@ describe('the workflow a benchmark plan prints', () => {
     }
   });
 
+  it("judges a task's trials with the union of the suite's scorers and the task's, each once, and the other tasks' with the suite's", async () => {
+    const files = suiteOf({ tasks: 2 });
+    const listed = { ...files, suite: `${files.suite}scorers: [review-quality]\n`, tasks: { ...files.tasks, t01: `${files.tasks.t01 ?? ''}scorers: [security-review, review-quality]\n` } };
+
+    const { run } = await plannedRun(listed);
+
+    expect(stepDefinitions(run)('trials.r1.t01.a01.prompt')?.scorers).toEqual({ names: ['review-quality', 'security-review'], sampling: 'all', start: 'workflow' });
+    expect(stepDefinitions(run)('trials.r1.t02.a01.prompt')?.scorers).toEqual({ names: ['review-quality'], sampling: 'all', start: 'workflow' });
+  });
+
   it('opens a role-less arm\'s clone with no role', async () => {
     const { run } = await plannedRun(suiteOf({ arms: 2 }));
 
     expect(stepDefinitions(run)('trials.r1.t01.a01')).not.toHaveProperty('role');
   });
 
-  it('is refused by report and check once its plan is of a schemaVersion this teamai does not read', async () => {
-    const { run } = await plannedRun(suiteOf(), { outputsOf: (bundle, plan) => ({ definition: { ...bundle, workflows: {} }, plan: { ...plan, schemaVersion: 2 } }) });
+  it('is refused by report and check once its plan is of an earlier schemaVersion, naming how to start the suite again', async () => {
+    const { run } = await plannedRun(suiteOf(), { outputsOf: (bundle, plan) => ({ definition: { ...bundle, workflows: {} }, plan: { ...plan, schemaVersion: 1 } }) });
 
     expect(planOfRun(run, 'trials.r1.t01.a01.check')).toEqual({ failure: {
-      code: 'run_unreadable',
-      message: `Step "plan" of run ${run.id} printed a benchmark plan of schemaVersion 2, and this teamai reads only schemaVersion 1. Run the benchmark with the teamai that planned it, or start it again.`,
+      code: 'benchmark_plan_outdated',
+      message: `Run ${run.id} measures a benchmark plan of schemaVersion 1, which the teamai that started it froze, and this teamai reads only schemaVersion 2, so the run cannot go on here. Run it with the teamai that started it, or start the suite again with teamai benchmark run fix.`,
     } });
   });
 
-  it('is refused by report and check once its plan is of schemaVersion 1 but not its shape', async () => {
-    const { run } = await plannedRun(suiteOf(), { outputsOf: (bundle) => ({ definition: { ...bundle, workflows: {} }, plan: { schemaVersion: 1 } }) });
+  it('is refused by report and check once its plan is of schemaVersion 2 but not its shape', async () => {
+    const { run } = await plannedRun(suiteOf(), { outputsOf: (bundle) => ({ definition: { ...bundle, workflows: {} }, plan: { schemaVersion: 2 } }) });
 
     expect(planOfRun(run, 'trials.r1.t01.a01.check')).toMatchObject({ failure: {
       code: 'run_unreadable',

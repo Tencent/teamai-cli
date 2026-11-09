@@ -1,7 +1,10 @@
 /**
  * `teamai score subjects`: the subjects a workflow starts `teamai-score` on itself. `--run` lists the passes of a run
- * whose steps say `scorers.start: workflow`; `--lapsed` lists what automatic judging starts again on this machine.
+ * whose steps say `scorers.start: workflow`, and with `--calibration` the benchmark trials its judges are calibrated on;
+ * `--lapsed` lists what automatic judging starts again on this machine.
  */
+import { calibrationSubjects, type CalibrationSubject } from '../benchmark/calibration.js';
+import { planOfRun } from '../benchmark/run-plan.js';
 import { ATTEMPT_ENV } from '../launch-context.js';
 import { SessionWork } from '../session-flow/session-work.js';
 import type { LocalConfig } from '../types.js';
@@ -194,6 +197,21 @@ export const ScoreSubjects = {
       .map(({ subject }) => Subject.format({ kind: 'run', subject }));
 
     return { ok: true, list };
+  },
+
+  /**
+   * The trials of benchmark run `runId` to calibrate its correctness judges on: those of `step` and of every step inside
+   * it, the path read from the calling attempt's workflow, that the run's plan samples (`calibrationSubjects`).
+   */
+  async calibration(current: LocalConfig | undefined, env: NodeJS.ProcessEnv, { runId, step }: { runId: string; step: string | undefined }): Promise<{ ok: true; list: CalibrationSubject[] } | Refusal> {
+    const found = await findRunConfig(runId, current);
+
+    if ('error' in found) return { ok: false, code: found.error.code, message: found.error.message };
+    const planned = planOfRun(found.run);
+
+    if ('failure' in planned) return { ok: false, code: planned.failure.code, message: planned.failure.message };
+
+    return { ok: true, list: calibrationSubjects(found.run, planned.found, step === undefined ? undefined : `${callerPrefix(env, found.run)}${step}`) };
   },
 
   /**

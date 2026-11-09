@@ -16,7 +16,8 @@ export interface ToolRun {
  */
 export async function runTool(input: { executable: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; stdin: string; timeoutMs: number; detached: boolean; group?: string; signal?: AbortSignal }): Promise<ToolRun> {
   const detached = input.detached && process.platform !== 'win32';
-  const child = crossSpawn(input.executable, input.args, { cwd: input.cwd, env: input.env, stdio: ['pipe', 'pipe', 'pipe'], detached, windowsHide: true });
+  // A shell sets PWD to the directory it starts in; OpenCode works in PWD, not in its cwd.
+  const child = crossSpawn(input.executable, input.args, { cwd: input.cwd, env: { ...input.env, PWD: input.cwd }, stdio: ['pipe', 'pipe', 'pipe'], detached, windowsHide: true });
 
   if (detached && input.group !== undefined) recordGroup(child, input.group);
   const stdout: string[] = [];

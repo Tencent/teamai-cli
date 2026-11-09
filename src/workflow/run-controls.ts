@@ -21,7 +21,7 @@ import { contextOf, localId, statesIn, type Scope } from './scope.js';
 import { isRunId, readRun, runScratchDir, withCleanupLock } from './store.js';
 import { answerHitl, cancel, cancellable, redeliver, repend, resetIteration, resetPending, settled, start, stopAttempt, stopWhere, stopped, type HitlAnswer, type StepState } from './step-state.js';
 import { parseTemplate, templatePaths, templatedTexts } from './template.js';
-import type { DriverIdentity, RunState, WorkflowEnvelope } from './types.js';
+import type { DriverIdentity, RunState, WorkflowEnvelope, WorkflowFailure } from './types.js';
 import { isIsolated } from './workspace.js';
 
 async function controlRun(
@@ -263,10 +263,9 @@ export async function respondToHitl(config: LocalConfig, runId: string, secrets:
 }
 
 /** Stops a whole run or one open step and invalidates the attempts it cancelled. */
-export async function cancelRun(config: LocalConfig, runId: string, secrets: Record<string, string>, step?: string, message = 'Cancelled by teamai workflow cancel'): Promise<WorkflowEnvelope> {
+export async function cancelRun(config: LocalConfig, runId: string, secrets: Record<string, string>, step?: string, failure: WorkflowFailure = { code: 'cancelled', message: 'Cancelled by teamai workflow cancel' }): Promise<WorkflowEnvelope> {
   return controlRun(config, runId, secrets, async (run, now, finish) => {
     if (run.status !== 'running') return settledRunError(run);
-    const failure = { code: 'cancelled', message };
 
     if (step !== undefined) {
       const reconciled = reconcileRun(run, now);

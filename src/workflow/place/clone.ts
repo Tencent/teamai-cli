@@ -48,7 +48,7 @@ import { cloneBranchOf } from '../workspace.js';
 import { cloneRoleProblem, copyKnowledgePaths, launchedTools, roleCopyRefusal, roleNotDeliveredFailure, type CloneRoleGap } from './role-copy.js';
 import { commitWithout } from './team-without.js';
 import { teamClonesOf } from './team.js';
-import { AGENT_PATHS, boundedGit, commitWork, recordConfigOverlay, replaceConfig, restoreUneditedConfig, saveConfig, savedConfigPaths, untrustedGit, type Git } from '../worktree.js';
+import { AGENT_PATHS, boundedGit, commitWork, git as memberGit, recordConfigOverlay, replaceConfig, restoreUneditedConfig, saveConfig, savedConfigPaths, untrustedGit, type Git } from '../worktree.js';
 
 /**
  * The commit a clone's install pulled for a treatment without some paths, which teamai made of `revision` without them.
@@ -109,11 +109,31 @@ async function readReceipt(file: string): Promise<CloneReceipt | undefined> {
 
 /**
  * Where a clone fetches commits it starts from, which the run's checkout may lack, such as a shallow CI checkout's,
- * and commits no repo holds, such as those a benchmark makes of its suite files. `repo` keys it and is never fetched.
- * Safe to delete only while no run of `repo` is open.
+ * and commits no repo holds, such as those a benchmark makes of its suite files. `repo` keys it; a clone never fetches
+ * from it, and only {@link firstUnreachable} does. Safe to delete only while no run of `repo` is open.
  */
 export function commitCacheOf(config: LocalConfig, repo: string): string {
   return path.join(getDataHome(config), 'benchmarks', 'objects', `${createHash('sha256').update(repo).digest('hex').slice(0, 16)}.git`);
+}
+
+/**
+ * The first of `commits` neither `checkout`, when given, nor the bare repo `cache` has, after a fetch by SHA from
+ * `repo` into the cache, with the member's own credentials.
+ */
+export async function firstUnreachable(input: { cache: string; repo: string; commits: readonly string[]; checkout?: string }): Promise<string | undefined> {
+  const { cache, repo, commits, checkout } = input;
+  const has = async (dir: string, commit: string): Promise<boolean> => (await memberGit(dir, ['cat-file', '-e', `${commit}^{commit}`])).code === 0;
+
+  for (const commit of commits) {
+    if ((checkout !== undefined && await has(checkout, commit)) || await has(cache, commit)) continue;
+    await fs.mkdir(cache, { recursive: true });
+    const made = await memberGit(cache, ['init', '-q', '--bare']);
+    const fetched = made.code === 0 && (await memberGit(cache, ['fetch', '-q', '--no-tags', repo, `${commit}:refs/benchmark/${commit}`])).code === 0;
+
+    if (!fetched || !await has(cache, commit)) return commit;
+  }
+
+  return undefined;
 }
 
 /** What opening a clone place reads of its lease. */

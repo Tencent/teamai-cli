@@ -45,11 +45,11 @@ function recordFile(run: string): string {
  * The benchmark record the team published for a run of suite `fix` by `username`, whose one trial on each arm of
  * `tools`, on team revision `team`, got `result`. Without `benchmark`, the run's workflow record instead.
  */
-function publish(run: string, { username = 'bob', startedAt = YESTERDAY, result = 'passed' as TrialResult, benchmark = true, team = 'b'.repeat(40), tools = ['claude'] } = {}): void {
+function publish(run: string, { username = 'bob', startedAt = YESTERDAY, result = 'passed' as TrialResult, benchmark = true, team = 'b'.repeat(40), tools = ['claude'], schemaVersion = 2 as 1 | 2 } = {}): void {
   const file = benchmark ? recordFile(run) : path.join(getReportsDir(config), 'workflows', 'runs', `${run}.json`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(benchmark
-    ? fixRecord(run, { username, startedAt, result, team, tools })
+    ? fixRecord(run, { username, startedAt, result, team, tools, schemaVersion })
     : { schemaVersion: 'v1alpha1', run, workflow: 'fix', sourceHash: 'f'.repeat(64), phase: 'end', status: 'succeeded', startedAt, username, isolated: true }));
 }
 
@@ -75,6 +75,22 @@ describe('benchmarkHistory', () => {
     expect(view.selected?.runs.map(({ run, source, username, passed, planned }) => ({ run, source, username, passed, planned }))).toEqual([
       { run: local, source: 'local', username: 'tester', passed: 0, planned: 1 },
       { run: 'rb0b00001', source: 'reported', username: 'bob', passed: 1, planned: 1 },
+    ]);
+  });
+
+  it('shows a record of schemaVersion 1 as a run of its own, and pools only the runs whose record has the newest version', async () => {
+    const daysAgo = (days: number): string => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    publish('rb0b00001', { startedAt: daysAgo(2), result: 'passed', schemaVersion: 1 });
+    publish('rb0b00002', { startedAt: YESTERDAY, result: 'failed' });
+
+    const view = await benchmarkHistory({ config, query: { windowDays: 365 }, now: NOW, refresh: false });
+
+    expect(view.selected?.runs.map(({ run, passed, planned }) => ({ run, passed, planned }))).toEqual([
+      { run: 'rb0b00002', passed: 0, planned: 1 },
+      { run: 'rb0b00001', passed: 1, planned: 1 },
+    ]);
+    expect(view.selected?.arms.map(({ arm, pooled }) => ({ arm, pooled: pooled && { passed: pooled.passed, planned: pooled.planned, runs: pooled.runs } }))).toEqual([
+      { arm: 'claude', pooled: { passed: 0, planned: 1, runs: 1 } },
     ]);
   });
 

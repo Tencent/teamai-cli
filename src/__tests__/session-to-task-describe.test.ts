@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { syncTeamDefinitions } from '../benchmark/suite-cache.js';
+import { GIT_AT_START_PAYLOAD_KEY } from '../dashboard-collector.js';
+import { SessionCaptures } from '../session-flow/captures.js';
 import { skillHarness } from './helpers/skill-harness.js';
 
 const roots: string[] = [];
@@ -44,8 +46,8 @@ interface Fixture {
   origin?: string | null;
   /** A URL git rewrites the origin to, as `url.<base>.insteadOf` does. */
   rewrittenTo?: string;
-  /** The session's dashboard events, oldest first; `start` stands for the commit the checkout starts at. */
-  events?: (start: string) => Array<{ type: string; timestamp: string; gitAtStart?: { head: string; dirty: boolean } }>;
+  /** The starts the session-start hook captured, in the order written; `start` stands for the commit the checkout starts at. */
+  starts?: (start: string) => Array<{ at: string; git: { head: string; dirty: boolean } | null }>;
   /** What the session did to the checkout after it started. */
   work?: 'commit' | 'dirty' | 'commit-then-dirty' | 'nothing';
   caller?: typeof SESSION_CALL | typeof NO_SESSION;
@@ -63,10 +65,16 @@ async function described(fixture: Fixture): Promise<{ inputs: unknown[]; start: 
   if (origin !== null) git(work, 'remote', 'add', 'origin', origin);
   if (origin !== null && fixture.rewrittenTo !== undefined) git(work, 'config', `url.${fixture.rewrittenTo}.insteadOf`, origin);
   const start = git(work, 'rev-parse', 'HEAD');
-  const events = (fixture.events ?? ((head) => [{ type: 'session_start', timestamp: '2026-11-02T09:00:00.000Z', gitAtStart: { head, dirty: false } }]))(start);
-  const dashboard = path.join(harness.root, 'home', '.teamai', 'dashboard');
-  fs.mkdirSync(dashboard, { recursive: true });
-  fs.writeFileSync(path.join(dashboard, 'events.jsonl'), events.map((event) => JSON.stringify({ ...event, sessionId: SESSION, tool: 'claude', cwd: work })).join('\n') + '\n');
+  const starts = (fixture.starts ?? ((head) => [{ at: '2026-11-02T09:00:00.000Z', git: { head, dirty: false } }]))(start);
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    for (const { at, git: state } of starts) {
+      vi.setSystemTime(new Date(at));
+      await SessionCaptures.atStart(config, 'claude', { session_id: SESSION, cwd: work, hook_event_name: 'SessionStart', source: 'startup', [GIT_AT_START_PAYLOAD_KEY]: state }, {});
+    }
+  } finally {
+    vi.useRealTimers();
+  }
   const action = fixture.work ?? 'commit';
   if (action === 'commit' || action === 'commit-then-dirty') {
     fs.writeFileSync(path.join(work, 'startup.js'), 'module.exports = 1;\n');
@@ -103,12 +111,14 @@ describe('describe of teamai-session-to-task', () => {
       { name: 'suite', type: STRING, value: 'benchmarks/frontend', why: 'The one benchmark suite whose repo is this checkout\'s origin.' },
       { name: 'start', type: STRING, value: start, why: 'The commit this session started at.' },
       { name: 'solution', type: STRING, value: head, why: 'The commit at HEAD: the change this session made.' },
+      { name: 'team_session', type: STRING, value: '', why: 'This session ran on this machine, so it names no pushed session.' },
+      { name: 'author', type: STRING, value: '', why: 'This session ran on this machine, so it names no pushed session.' },
     ]);
     expect(head).toMatch(/^[0-9a-f]{40}$/);
   });
 
   it('proposes no start when the session started with tracked files modified', async () => {
-    const { inputs } = await described({ events: (head) => [{ type: 'session_start', timestamp: '2026-11-02T09:00:00.000Z', gitAtStart: { head, dirty: true } }] });
+    const { inputs } = await described({ starts: (head) => [{ at: '2026-11-02T09:00:00.000Z', git: { head, dirty: true } }] });
 
     expect(input(inputs, 'start')).toEqual({ name: 'start', type: STRING, why: 'No value: tracked files were modified when this session started, so no commit holds the starting state. Give the commit the task starts from.' });
     expect(input(inputs, 'solution')).toEqual({ name: 'solution', type: STRING, why: 'No value: there is no starting commit to compare HEAD with. Give the commit that completes the task.' });
@@ -116,20 +126,20 @@ describe('describe of teamai-session-to-task', () => {
 
   it('proposes no start from a resume when the session\'s earliest start recorded no commit', async () => {
     const { inputs } = await described({
-      events: (head) => [
-        { type: 'session_start', timestamp: '2026-11-02T09:00:00.000Z' },
-        { type: 'session_start', timestamp: '2026-11-02T11:00:00.000Z', gitAtStart: { head, dirty: false } },
+      starts: (head) => [
+        { at: '2026-11-02T09:00:00.000Z', git: null },
+        { at: '2026-11-02T11:00:00.000Z', git: { head, dirty: false } },
       ],
     });
 
     expect(input(inputs, 'start')).toEqual({ name: 'start', type: STRING, why: 'No value: teamai did not record the commit this session started at. Give the commit the task starts from.' });
   });
 
-  it('reads the earliest start, whatever order the events were written in', async () => {
+  it('reads the earliest start, whatever order the captures were written in', async () => {
     const { inputs, start } = await described({
-      events: (head) => [
-        { type: 'session_start', timestamp: '2026-11-02T11:00:00.000Z', gitAtStart: { head: 'b'.repeat(40), dirty: false } },
-        { type: 'session_start', timestamp: '2026-11-02T09:00:00.000Z', gitAtStart: { head, dirty: false } },
+      starts: (head) => [
+        { at: '2026-11-02T11:00:00.000Z', git: { head: 'b'.repeat(40), dirty: false } },
+        { at: '2026-11-02T09:00:00.000Z', git: { head, dirty: false } },
       ],
     });
 
@@ -216,6 +226,8 @@ describe('describe of teamai-session-to-task', () => {
       { name: 'suite', type: STRING, why: 'No value: no agent session found. Give the suite\'s directory, such as benchmarks/frontend.' },
       { name: 'start', type: STRING, why: 'No value: no agent session found. Give the commit the task starts from.' },
       { name: 'solution', type: STRING, why: 'No value: no agent session found. Give the commit that completes the task.' },
+      { name: 'team_session', type: STRING, why: 'No value: no agent session found. Leave it empty for a session of this machine, or give the name teamai session list prints for a pushed one.' },
+      { name: 'author', type: STRING, why: 'No value: no agent session found. Leave it empty for a session of this machine, or give who pushed the session.' },
     ]);
   });
 });

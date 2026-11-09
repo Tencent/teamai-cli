@@ -28,9 +28,13 @@ export function trialsUnattended(run: RunState, producer: string): boolean {
 
 const VersionedSchema = z.object({ schemaVersion: z.unknown() }).passthrough();
 
+/** The suite a plan of any version names, so a refusal can say how to start it again. */
+const SuiteNamedSchema = z.object({ suite: z.object({ name: z.string().min(1) }) });
+
 /**
  * The plan of `run`, or of the `from` step `under` sits beneath. Refused when the run runs no benchmark plan there, runs
- * more than one and `under` names none, or the plan is of a schemaVersion this teamai does not read.
+ * more than one and `under` names none, or the plan is of a schemaVersion this teamai does not read
+ * (`benchmark_plan_outdated`: a run started before an upgrade, which cannot resume after it).
  */
 export function planOfRun(run: RunState, under?: string): { found: RunPlan } | { failure: WorkflowFailure } {
   const definitionOf = stepDefinitions(run);
@@ -59,7 +63,9 @@ export function planOfRun(run: RunState, under?: string): { found: RunPlan } | {
   const version = versioned.success ? versioned.data.schemaVersion : undefined;
 
   if (version !== BENCHMARK_PLAN_SCHEMA_VERSION) {
-    return { failure: { code: 'run_unreadable', message: `Step "${only.producer}" of run ${run.id} printed a benchmark plan of schemaVersion ${JSON.stringify(version) ?? 'none'}, and this teamai reads only schemaVersion ${BENCHMARK_PLAN_SCHEMA_VERSION}. Run the benchmark with the teamai that planned it, or start it again.` } };
+    const suite = SuiteNamedSchema.safeParse(only.plan).data?.suite.name ?? '<suite>';
+
+    return { failure: { code: 'benchmark_plan_outdated', message: `Run ${run.id} measures a benchmark plan of schemaVersion ${JSON.stringify(version) ?? 'none'}, which the teamai that started it froze, and this teamai reads only schemaVersion ${BENCHMARK_PLAN_SCHEMA_VERSION}, so the run cannot go on here. Run it with the teamai that started it, or start the suite again with teamai benchmark run ${suite}.` } };
   }
 
   const plan = BenchmarkPlanSchema.safeParse(only.plan);
@@ -69,4 +75,14 @@ export function planOfRun(run: RunState, under?: string): { found: RunPlan } | {
   }
 
   return { found: { plan: plan.data, prefix: `${only.step}.`, producer: only.producer } };
+}
+
+/**
+ * By scorer, the judge the benchmark plan around step `step` of `run` pins for every arm; none when no plan this teamai
+ * reads is there: a run of another workflow, or one a teamai before an upgrade started, whose judges were never pinned.
+ */
+export function plannedJudgesOf(run: RunState, step: string): BenchmarkPlan['judges'] {
+  const planned = planOfRun(run, step);
+
+  return 'found' in planned ? planned.found.plan.judges : {};
 }
