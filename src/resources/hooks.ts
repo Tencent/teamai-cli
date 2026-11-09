@@ -14,7 +14,7 @@ import {
 import { LayeredEntries, parseMarker, readMarkerFolder, type LayeredEntryType, type PlaceFolderRead } from './layered-entries.js';
 import { RESOURCE_LAYOUTS, Resources, type EntryListRead, type ResourceLayout } from './resolver.js';
 import { DeliveredFolders, type FolderDelivery } from './delivered-folders.js';
-import { FolderFiles, type FolderFile } from './folder-files.js';
+import { FolderFiles, type FolderFile, type FolderFilesRead } from './folder-files.js';
 import { DefaultHooks, type DefaultHookName } from '../default-hooks.js';
 
 // ─── Schema for hooks/hooks.yaml ────────────────────────────
@@ -298,26 +298,41 @@ export type DefaultHookReplacement =
   | { readonly kind: 'delivered'; readonly name: DefaultHookName; readonly path: string; readonly delivery: FolderDelivery }
   | { readonly kind: 'refused'; readonly name: DefaultHookName; readonly path: string; readonly files: readonly FolderFile[] | null; readonly messages: readonly string[] };
 
-/** The team's replacements of teamai's default hooks, as pull reads them. */
-export async function readDefaultHookReplacements(localConfig: LocalConfig): Promise<DefaultHookReplacement[]> {
-  const { items } = await Resources.layer(TEAM_HOOKS, { root: localConfig.repo.localPath, namespace: null });
-  const replacements: DefaultHookReplacement[] = [];
+/** A folder at the root of a team tree that replaces one of teamai's default hooks, with what pull prints when it refuses it. */
+interface DefaultHookFolder {
+  readonly name: DefaultHookName;
+  readonly path: string;
+  readonly read: FolderFilesRead;
+  readonly messages: readonly string[];
+}
+
+/** Each folder at the root of the team tree at `root` that replaces one of teamai's default hooks. */
+async function readDefaultHookFolders(root: string): Promise<DefaultHookFolder[]> {
+  const { items } = await Resources.layer(TEAM_HOOKS, { root, namespace: null });
+  const folders: DefaultHookFolder[] = [];
 
   for (const { name, source } of items) {
     if (source.kind !== 'folder' || !DefaultHooks.isName(name)) continue;
     const read = await FolderFiles.read(source.full);
     const problems = read.kind === 'invalid' ? read.problems.map(FolderFiles.describe) : await DefaultHooks.problems(name, read.files);
 
-    if (read.kind === 'files' && problems.length === 0) {
-      replacements.push({ kind: 'delivered', name, path: source.path, delivery: { dest: DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace: null, name }), files: read.files, earlierFiles: 'drop' } });
-      continue;
-    }
-
-    const messages = problems.map((problem) => `${source.path} is refused, and teamai's default stays in force until it is fixed: ${problem}`);
-    replacements.push({ kind: 'refused', name, path: source.path, files: read.kind === 'files' ? read.files : null, messages });
+    folders.push({ name, path: source.path, read, messages: problems.map((problem) => `${source.path} is refused, and teamai's default stays in force until it is fixed: ${problem}`) });
   }
 
-  return replacements;
+  return folders;
+}
+
+/** The team's replacements of teamai's default hooks, as pull reads them. */
+export async function readDefaultHookReplacements(localConfig: LocalConfig): Promise<DefaultHookReplacement[]> {
+  return (await readDefaultHookFolders(localConfig.repo.localPath)).map(({ name, path: folderPath, read, messages }): DefaultHookReplacement => (
+    read.kind === 'files' && messages.length === 0
+      ? { kind: 'delivered', name, path: folderPath, delivery: { dest: DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace: null, name }), files: read.files, earlierFiles: 'drop' } }
+      : { kind: 'refused', name, path: folderPath, files: read.kind === 'files' ? read.files : null, messages }));
+}
+
+/** What pull prints about each replacement of a default hook it refuses in the team tree at `root`, for `teamai review --branch`. */
+export async function defaultHookRefusals(root: string): Promise<Array<{ readonly path: string; readonly messages: readonly string[] }>> {
+  return (await readDefaultHookFolders(root)).flatMap(({ path: folderPath, messages }) => (messages.length === 0 ? [] : [{ path: folderPath, messages }]));
 }
 
 /** The default hook replacements to deliver, warning once about each one pull refuses. */

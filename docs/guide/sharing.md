@@ -503,7 +503,7 @@ Pull refuses a replacement that sets a value out of range or a key the default d
 hooks/teamai-friction-reminder/ is refused, and teamai's default stays in force until it is fixed: HOOK.yaml: with.min_tools must be a whole number from 1 to 1000
 ```
 
-A replacement replaces for the whole team, so pull refuses one in a namespace, such as `hooks/payments/teamai-friction-reminder/`.
+A replacement replaces for the whole team, so pull refuses one in a namespace, such as `hooks/payments/teamai-friction-reminder/`. `teamai review --branch` fails a replacement pull refuses before you merge it.
 
 ## MCP servers
 

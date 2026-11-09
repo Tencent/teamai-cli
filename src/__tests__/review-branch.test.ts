@@ -645,6 +645,30 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     }]]);
   });
 
+  it('fails a replacement of teamai\'s recall rule whose text carries a credential, as it fails a rule', async () => {
+    await fse.outputFile(path.join(repoDir, 'rules', 'teamai-recall', 'RULE.md'), '# Recall\n\nRun `teamai recall` first.\n');
+    await fse.outputFile(path.join(repoDir, 'rules', 'teamai-recall', 'block.md'), '## Recall\n\nUse sk-abcdefghijklmnopqrstuvwx0123456789.\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(findings(review).filter((f) => f.check === 'leaks').map((f) => f.message.split(' (')[0])).toEqual(['rules/teamai-recall/block.md looks like it carries a credential']);
+  });
+
+  it('fails a replacement of a default hook that pull refuses, with what pull prints', async () => {
+    const shipped = path.join(process.cwd(), 'hooks', 'teamai-friction-reminder');
+    await fse.copy(shipped, path.join(repoDir, 'hooks', 'teamai-friction-reminder'));
+    const marker = path.join(repoDir, 'hooks', 'teamai-friction-reminder', 'HOOK.yaml');
+    await fse.writeFile(marker, (await fse.readFile(marker, 'utf8')).replace('min_tools: 15', 'min_tools: 5000'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.level === 'fail').map(({ check, path: file, message }) => ({ check, file, message: message.split(': ')[0] }))]).toEqual([false, [{
+      check: 'structure',
+      file: 'hooks/teamai-friction-reminder/',
+      message: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed',
+    }]]);
+  });
+
   it('fails a workflow, hook or rule folder that is a symlink, which pull reads nothing from', async () => {
     const shared = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-review-shared-'));
     await fse.outputFile(path.join(shared, 'lint', 'HOOK.yaml'), HOOK_FOLDER);

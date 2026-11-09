@@ -27,7 +27,7 @@ import chalk from 'chalk';
 import fse from 'fs-extra';
 import { findSkippedFolders, isInSkippedFolder, skippedFolderMessage, skippedFoldersIn } from './folder-markers.js';
 import { readTeamRules } from './resources/rules.js';
-import { resolveRecall } from './builtin-rules.js';
+import { RECALL_RULE_NAME, resolveRecall } from './builtin-rules.js';
 import { parseYaml } from './utils/yaml.js';
 import { z } from 'zod';
 
@@ -44,7 +44,7 @@ import type { AssetKind } from './asset-relations.js';
 import matter from 'gray-matter';
 import { isModelAlias, loadTeamModelAliases, noModelCause, resolveAgentModel, resolveModelValue, TEAM_ALIASES_FILE, type ModelAliases } from './models/aliases.js';
 import { parseAgentYaml, type AgentSpec, type ToolName } from './resources/agent-format.js';
-import { TEAM_HOOK_ENTRIES, parseTeamHooks } from './resources/hooks.js';
+import { TEAM_HOOK_ENTRIES, defaultHookRefusals, parseTeamHooks } from './resources/hooks.js';
 import { TEAM_MCP_ENTRIES } from './resources/mcp.js';
 import { readEntryFileText } from './namespaced-entries.js';
 import { LayeredEntries, type LayeredEntryType } from './resources/layered-entries.js';
@@ -856,6 +856,11 @@ async function filesUnder(relativeDir: string, absoluteDir: string): Promise<Arr
   }));
 }
 
+/** Each replacement of a default hook that pull refuses, with what pull prints about it. */
+async function defaultHookFindings(repoDir: string): Promise<Finding[]> {
+  return (await defaultHookRefusals(repoDir)).flatMap(({ path: folderPath, messages }) => messages.map((message): Finding => ({ level: 'fail', check: 'structure', path: folderPath, message })));
+}
+
 async function leakFindings(repoDir: string, resources: ReviewResource[], readText: (p: string) => Promise<string | null>): Promise<Finding[]> {
   const files = [
     ...(await Promise.all(resources.map((resource) => {
@@ -866,6 +871,8 @@ async function leakFindings(repoDir: string, resources: ReviewResource[], readTe
         : [{ relativePath: resource.relativePath, absolutePath: resource.absolutePath }];
     }))).flat(),
     ...await filesUnder('scorers', path.join(repoDir, 'scorers')),
+    // The team's replacement of the recall rule is not one of the rules read above, and pull delivers its text to every member.
+    ...await filesUnder(`rules/${RECALL_RULE_NAME}`, path.join(repoDir, 'rules', RECALL_RULE_NAME)),
   ];
 
   const findings: Finding[] = [];
@@ -1792,6 +1799,7 @@ export async function reviewBranchDir(branch: string, repoDir: string, base: Rev
     ...await skillLinkFindings(skillFiles, resources),
     ...await formatFindings(resources, readText),
     ...hooks.findings,
+    ...await defaultHookFindings(repoDir),
     ...mcp.findings,
     ...await relationsFindings(resources, readText),
     ...pipedInstallFindings(skillFiles),
