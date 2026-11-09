@@ -183,8 +183,15 @@ async function deliverAll(folders: readonly FolderDelivery[], ledger: DeliveryLe
     throw error;
   }
 
-  for (const { old, replaced } of placed) {
-    if (replaced) await fs.rm(old, { recursive: true, force: true });
+  // Every new version is in place: a previous one left behind is a leftover the next delivery removes, not a failure.
+  for (const { dest, old, replaced } of placed) {
+    if (!replaced) continue;
+
+    try {
+      await fs.rm(old, { recursive: true, force: true });
+    } catch (error) {
+      log.warn(`Could not remove ${old}, the previous version of ${dest} (${error instanceof Error ? error.message : String(error)}). The new version is in place; the next pull removes it.`);
+    }
   }
 
   if (!ledger) return;

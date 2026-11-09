@@ -135,6 +135,23 @@ describe('DeliveredFolders.deliver', () => {
     expect(tree(dest)).toEqual({ 'HOOK.yaml': 'v1\n' });
   });
 
+  it('records the new version and warns when the previous one cannot be removed, which the next pull removes', async () => {
+    const dest = path.join(tempDir(), 'hooks', 'block-secrets');
+    await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v1\n')], ledger: undefined });
+    const rm = fs.promises.rm.bind(fs.promises);
+    const denied = Object.assign(new Error('EACCES: permission denied, rmdir'), { code: 'EACCES' });
+    vi.spyOn(fs.promises, 'rm').mockImplementation(async (target, options) => (String(target).includes('.block-secrets.old-') ? Promise.reject(denied) : rm(target, options)));
+    const { log } = await import('../utils/logger.js');
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => undefined);
+    const ledger = openLedger({});
+
+    await DeliveredFolders.deliver({ dest, files: [file('HOOK.yaml', 'v2\n')], ledger });
+
+    const [message] = warn.mock.calls.map(([text]) => String(text));
+    expect([tree(dest), Object.keys(ledger.hashes), warn.mock.calls.length]).toEqual([{ 'HOOK.yaml': 'v2\n' }, [path.join(dest, 'HOOK.yaml')], 1]);
+    expect(message).toMatch(/^Could not remove .*\.block-secrets\.old-[0-9a-f]{8}, the previous version of .*block-secrets \(EACCES: permission denied, rmdir\)\. The new version is in place; the next pull removes it\.$/);
+  });
+
   it('removes what an interrupted delivery left beside the folder', async () => {
     const dest = path.join(tempDir(), 'hooks', 'block-secrets');
     fs.mkdirSync(path.join(path.dirname(dest), '.block-secrets.new-0badc0de'), { recursive: true });
