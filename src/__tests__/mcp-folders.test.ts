@@ -2,13 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync, execSync } from 'node:child_process';
 
 vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), persist: vi.fn(), dim: vi.fn() },
 }));
 
 import { describeEntryFailure, resolveEntriesFor } from '../namespaced-entries.js';
-import { mcpEntryReader, teamMcpDef } from '../resources/mcp.js';
+import { deliverMcpFolders, mcpEntryReader, teamMcpDef } from '../resources/mcp.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import type { LocalConfig } from '../types.js';
 
@@ -160,6 +161,25 @@ describe('a folder MCP leaves out, with a notice', () => {
       [],
       ['mcp/teamai-recall/ is skipped: a teamai- name only replaces a teamai default, and teamai has no MCP server named teamai-recall. Rename the folder.'],
     ]);
+  });
+});
+
+describe('a folder server under a home holding a space and non-ASCII letters', () => {
+  it('starts from its forward-slash path, passed as an argument directly and in a quoted shell command line', async () => {
+    await write({ 'mcp/jira-lite/MCP.yaml': 'transport: stdio\ncommand: node\nargs: ["${TEAMAI_MCP_DIR}/server.mjs"]\n', 'mcp/jira-lite/server.mjs': 'console.log("jira-lite ran");\n' });
+    const localConfig = workspace({ dataHome: path.join(sandbox, 'Zoë Li', '.teamai', 'projects', 'app') });
+    const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
+    const entries = resolution.kind === 'resolved' ? resolution.entries : [];
+    await deliverMcpFolders(localConfig, entries, { prune: true });
+    const [server] = entries.map((entry) => teamMcpDef(localConfig, entry));
+    const command = server?.command ?? '';
+    const args = server?.args ?? [];
+
+    expect([
+      args.some((arg) => arg.includes('\\')),
+      execFileSync(command, args, { encoding: 'utf8' }).trim(),
+      execSync([command, ...args.map((arg) => `"${arg}"`)].join(' '), { encoding: 'utf8' }).trim(),
+    ]).toEqual([false, 'jira-lite ran', 'jira-lite ran']);
   });
 });
 
