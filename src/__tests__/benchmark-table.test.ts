@@ -203,6 +203,67 @@ describe('benchmark judges', () => {
   });
 });
 
+describe('benchmark pass rate per scorer', () => {
+  const ARM = { name: 'claude', tool: 'claude', source: 'team', team: { kind: 'pulled', revision: RUN_TEAM } } as const;
+  const SCORERS = ['review-quality', 'test-coverage', 'security-review', 'teamai:correctness:fix'].map((name) => ({ name, rubric: { sourceHash: name } }));
+  const CORRECT: TrialVerdict = { scorer: 'teamai:correctness:fix', outcome: { kind: 'labelled', label: 'correct', score: 1, passed: true }, decider: { by: 'check', task: 'h' } };
+  /** A verdict of `scorer`: passed or failed by a judge that batched as `batched` says, or unscored. */
+  const verdict = (scorer: string, outcome: 'passed' | 'failed' | 'unscored', batched = true): TrialVerdict => (outcome === 'unscored'
+    ? { scorer, outcome: { kind: 'unscored', because: 'run_ended' } }
+    : { scorer, outcome: { kind: 'labelled', label: outcome === 'passed' ? 'good' : 'bad', score: outcome === 'passed' ? 1 : 0, passed: outcome === 'passed' }, decider: { by: 'judge', rubric: scorer, tool: 'claude', model: 'claude-opus-5-5', batched } });
+  const withScorers = (record: { benchmark: BenchmarkRecord }) => ({ benchmark: { ...record.benchmark, scorers: SCORERS } });
+
+  it("gives each arm a row per suite scorer, its pass rate over the labelled verdicts only, with the arm table's 95% interval, and no row for correctness", () => {
+    const quality: Array<'passed' | 'failed'> = ['passed', 'passed', 'passed', 'passed', 'passed', 'failed', 'failed', 'failed', 'failed'];
+    const coverage: Array<'passed' | 'failed' | 'unscored'> = ['passed', 'passed', 'passed', 'failed', 'failed', 'failed', 'failed', 'failed', 'unscored'];
+    const record = withScorers(recordOf([ARM], quality.map((outcome, index) => ({
+      verdicts: [CORRECT, verdict('review-quality', outcome), verdict('test-coverage', coverage[index] ?? 'unscored')],
+    }))));
+
+    const table = benchmarkTable(record);
+
+    expect(table.scorers).toMatchObject([
+      { arm: 'claude', scorer: 'review-quality', passed: 5, labelled: 9, unscored: 0, batched: 'yes' },
+      { arm: 'claude', scorer: 'test-coverage', passed: 3, labelled: 8, unscored: 1, batched: 'yes' },
+    ]);
+    expect(formatBenchmarkTable(table)).toContain([
+      '| Arm | Scorer | Passed | Labelled | Unscored | Pass rate | 95% interval | Batched |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- |',
+      '| claude | review-quality | 5 | 9 | 0 | 56% (5/9) | 27% to 81% | yes |',
+      '| claude | test-coverage | 3 | 8 | 1 | 38% (3/8) | 14% to 69% | yes |',
+    ].join('\n'));
+  });
+
+  it("counts a task's scorer over the trials that ran it, leaves out a trial that did not run, and says when a scorer's labels were judged both in a batch and alone", () => {
+    const record = withScorers(recordOf([ARM], [
+      ...(['passed', 'passed', 'failed'] as const).map((outcome) => ({ task: 'session-fixation', verdicts: [verdict('review-quality', 'passed', false), verdict('security-review', outcome)] })),
+      ...Array.from({ length: 6 }, (_, index) => ({ verdicts: [CORRECT, verdict('review-quality', index < 2 ? 'passed' : 'failed', index % 2 === 0)] })),
+      { result: 'not_run' as const, agent: null, verdicts: [verdict('review-quality', 'unscored'), verdict('security-review', 'unscored')] },
+    ]));
+
+    const text = formatBenchmarkTable(benchmarkTable(record));
+
+    expect(text).toContain('| claude | review-quality | 5 | 9 | 0 | 56% (5/9) | 27% to 81% | mixed |');
+    expect(text).toContain('| claude | security-review | 2 | 3 | 0 | 67% (2/3) | 21% to 94% | yes |');
+  });
+
+  it('says no for a scorer judged alone, and gives one no judge labelled no pass rate, interval or batch', () => {
+    const record = withScorers(recordOf([ARM], [{ verdicts: [CORRECT, verdict('review-quality', 'failed', false), verdict('test-coverage', 'unscored')] }]));
+
+    const text = formatBenchmarkTable(benchmarkTable(record));
+
+    expect(text).toContain('| claude | review-quality | 0 | 1 | 0 | 0% (0/1) | 0% to 79% | no |');
+    expect(text).toContain('| claude | test-coverage | 0 | 0 | 1 | - | - | - |');
+  });
+
+  it('prints no scorer table when no suite or task scorer judged a trial', () => {
+    const table = benchmarkTable(recordOf([ARM], [{ verdicts: [CORRECT] }]));
+
+    expect(table.scorers).toEqual([]);
+    expect(formatBenchmarkTable(table)).not.toContain('| Arm | Scorer |');
+  });
+});
+
 describe('benchmark arm role', () => {
   const REVIEW = { name: 'review', tool: 'claude', source: 'team', team: { kind: 'pulled', revision: RUN_TEAM }, role: 'review' } as const;
   const ranAs = (stepRole?: string) => ({ agent: { team: { revision: RUN_TEAM, localChanges: false, selection: { scope: 'project' as const, primaryRole: 'frontend', additionalRoles: [], ...(stepRole ? { stepRole } : {}) } } } });

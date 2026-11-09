@@ -886,6 +886,7 @@ These results hold for these tasks, this run and this machine.
 | Arms | Each arm's trials by result, and how many a [trial limit](#trial-limits) stopped. A deviation is a trial whose prompt ran on another tool, team revision, model or role than its arm's, or without a trial limit its driver could not enforce, or that a judge other than the [plan's](#one-judge-for-every-arm) labelled. A trial is not verified when its record lacks one of those, or its judge's model. When an arm runs on other team assets than the pulled revision, a Team column shows each arm's, such as `pulled 3f9c2ab`, `next 81d0e4c`, `3f9c2ab without skills/auth-tokens` or `none`. When an arm [runs as a role](#arms-that-run-as-a-role), a Role column shows each arm's role, or `member's roles`. |
 | Usage | Each arm's medians and cost total, with how many trials each used. Tokens and cost appear only as the tool stated them, so a tool that states none shows `unknown (0)`. A trial whose passes did not all state its tokens (input and output), cost or duration counts as one that stated none of it, and makes a cost total `incomplete`. |
 | Tasks | Each task's pass rate on each arm. |
+| Scorers | Only when the suite or a task lists scorers: each arm's pass rate per scorer, under [Pass rate per scorer](#pass-rate-per-scorer). |
 | Baselines | The tasks that did not run, and why. |
 | Skills | Only when an arm changes team skills: each skill it adds, removes or changes, and how many of the arm's trials loaded it, beside the arm that changes nothing. |
 | Asset effects | Only when a task covers a team repo path: a table per covered asset, under [Asset effect](#asset-effect). |
@@ -1015,6 +1016,35 @@ Start refuses the suite (`judge_model_unavailable`) when the alias has no model 
 | The arms vary `tool`, and the judge tool is one of theirs | The results say `Judge claude is also arm claude's tool; set tool in the scorer to judge with another.` |
 
 The suite's scorers that share a tool, model and stages share one judge call per trial. A correctness scorer is always judged alone, so the label that decides a trial never shares an answer.
+
+### Pass rate per scorer
+
+When the suite or a task lists scorers, the results add one row per arm and per scorer, from the trials' verdicts. A correctness scorer has no row: its labels are the arm's pass rate. For
+
+```yaml
+# benchmarks/fix-auth/suite.yaml, in part
+scorers: [review-quality, test-coverage]
+```
+
+```text
+| Arm | Scorer | Passed | Labelled | Unscored | Pass rate | 95% interval | Batched |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| claude | review-quality | 5 | 9 | 0 | 56% (5/9) | 27% to 81% | yes |
+| claude | test-coverage | 3 | 8 | 1 | 38% (3/8) | 14% to 69% | yes |
+```
+
+The pass rate and its 95% interval, the Wilson interval of the arms table, count labelled verdicts only. A verdict with no label counts under Unscored, and a trial that did not run counts in neither. Batched says whether the judge labelled them in a [batch](scorers.md#batching): `yes`, `no`, or `mixed` when some were and some were not, since a batched label is not the same instrument as the same scorer judged alone on real sessions. These scorers never change a trial's result, and [the regression gate](#fail-on-a-regression) does not read them.
+
+A [task's scorer](#scorers-per-task) counts only the trials it judged. With `session-fixation` run three times:
+
+```text
+| Arm | Scorer | Passed | Labelled | Unscored | Pass rate | 95% interval | Batched |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| claude | review-quality | 5 | 9 | 0 | 56% (5/9) | 27% to 81% | yes |
+| claude | security-review | 2 | 3 | 0 | 67% (2/3) | 21% to 94% | yes |
+```
+
+`security-review` judges only the three trials of `session-fixation`, so it spends no judge call on the other tasks, and they do not dilute its pass rate.
 
 ### Asset effect
 

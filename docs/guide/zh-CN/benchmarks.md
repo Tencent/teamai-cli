@@ -886,6 +886,7 @@ These results hold for these tasks, this run and this machine.
 | Arm | 按结果统计每个 arm 的 trial，以及被 [trial 限制](#trial-限制)停止的数量。偏差是 prompt 运行时的工具、团队修订、模型或角色与其 arm 不同的 trial，其 driver 无法执行某个 trial 限制的 trial，或者由[计划](#对所有-arm-用同一个评判)以外的评判打标签的 trial。记录缺少其中某个值，或缺少其评判的模型的 trial 为未验证。有 arm 使用 pull 到的修订以外的团队资产时，Team 列显示每个 arm 的团队资产，例如 `pulled 3f9c2ab`、`next 81d0e4c`、`3f9c2ab without skills/auth-tokens` 或 `none`。有 arm [以角色运行](#以角色运行的-arm)时，Role 列显示每个 arm 的角色，或 `member's roles`。 |
 | 用量 | 每个 arm 的中位数和成本合计，并注明各自用了多少个 trial。token 和成本只按工具自己声明的显示，所以不声明的工具显示 `unknown (0)`。如果一个 trial 的各次 pass 没有全部声明 token（输入和输出）、成本或时长，它在这一项上按没有声明处理，并让成本合计显示 `incomplete`。 |
 | 任务 | 每个任务在每个 arm 上的通过率。 |
+| 评分器 | 仅当套件或某个任务列出评分器时出现：每个 arm 在每个评分器上的通过率，见[每个评分器的通过率](#每个评分器的通过率)。 |
 | 基线 | 没有运行的任务及原因。 |
 | Skill | 仅当某个 arm 改变团队 skill 时出现：它新增、去掉或改变的每个 skill，以及该 arm 的 trial 中有多少加载了它，与什么都不改变的 arm 并列。 |
 | 资产效果 | 仅当某个任务覆盖一个团队仓库路径时出现：每个被覆盖资产一张表，见[资产效果](#资产效果)。 |
@@ -1015,6 +1016,35 @@ scorers: [review-quality]          # scorers/review-quality.md 设置了 model: 
 | 各 arm 的 `tool` 不同，且评判工具是其中之一 | 结果中写出 `Judge claude is also arm claude's tool; set tool in the scorer to judge with another.` |
 
 套件中工具、模型和阶段都相同的评分器，每个 trial 共用一次评判调用。正确性评分器总是单独评判，所以决定 trial 的标签从不与别的评分器共用一个回答。
+
+### 每个评分器的通过率
+
+套件或某个任务列出评分器时，结果按 trial 的结论为每个 arm 的每个评分器加一行。正确性评分器没有这一行：它的标签就是 arm 的通过率。对于
+
+```yaml
+# benchmarks/fix-auth/suite.yaml 的一部分
+scorers: [review-quality, test-coverage]
+```
+
+```text
+| Arm | Scorer | Passed | Labelled | Unscored | Pass rate | 95% interval | Batched |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| claude | review-quality | 5 | 9 | 0 | 56% (5/9) | 27% to 81% | yes |
+| claude | test-coverage | 3 | 8 | 1 | 38% (3/8) | 14% to 69% | yes |
+```
+
+通过率及其 95% 区间（与 Arm 表相同的 Wilson 区间）只计入有标签的结论。没有标签的结论计入 Unscored，没有运行的 trial 两边都不计。Batched 说明评判是否[批量](scorers.md#批量评审)打出这些标签：`yes`、`no`，部分是部分不是时为 `mixed`，因为批量打出的标签与同一评分器在真实会话上单独评判不是同一种测量。这些评分器从不改变 trial 的结果，[回归门禁](#回归时失败)也不读取它们。
+
+[任务的评分器](#每个任务的评分器)只计入它评判过的 trial。`session-fixation` 运行三次时：
+
+```text
+| Arm | Scorer | Passed | Labelled | Unscored | Pass rate | 95% interval | Batched |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| claude | review-quality | 5 | 9 | 0 | 56% (5/9) | 27% to 81% | yes |
+| claude | security-review | 2 | 3 | 0 | 67% (2/3) | 21% to 94% | yes |
+```
+
+`security-review` 只评判 `session-fixation` 的三个 trial，所以不会在其他任务上花评判调用，其他任务也不会稀释它的通过率。
 
 ### 资产效果
 

@@ -8,6 +8,7 @@ import { ROUTING_PREFIX, routingScorerName } from '../scorers/skill-routing.js';
 import { definedFields } from '../utils/defined-fields.js';
 import { compareAgent } from './agent-match.js';
 import { compareTrials, formatExcluded, splitPairs, type ExcludedPairs } from './pairing.js';
+import { isCorrectnessScorer } from './plan.js';
 import { TRIAL_RESULTS, type Baseline, type BenchmarkRecord, type TrialResult } from './result.js';
 import type { SkillChanges } from './terms.js';
 
@@ -62,11 +63,29 @@ export interface ArmUsage {
   cost: CostTotal;
 }
 
+/** One arm's verdicts of one scorer the suite or a task lists, over the arm's trials that ran it. */
+export interface ArmScorerResults {
+  arm: string;
+  scorer: string;
+  passed: number;
+  labelled: number;
+  unscored: number;
+  /** The 95% Wilson interval of `passed` out of `labelled`; absent with no label. */
+  interval?: { low: number; high: number };
+  /** Whether a judge labelled them in a batch, `mixed` when some were and some were not; absent when no judge labelled one. */
+  batched?: 'yes' | 'no' | 'mixed';
+}
+
 export interface BenchmarkTable {
   results: ArmResults[];
   usage: ArmUsage[];
   /** Each task's pass rate on each arm, tasks and arms in record order; a cell with no planned trials has no rate. */
   matrix: Array<{ task: string; arms: Array<{ arm: string; passRate?: PassRate }> }>;
+  /**
+   * A row per arm and per scorer the suite or a task lists, never a correctness scorer, in record order, over the arm's
+   * trials that ran and that scorer judged. These scorers never decide a trial's result.
+   */
+  scorers: ArmScorerResults[];
   /** The tasks whose check, tried on the starting commit, did not fail there as the task expects: none of their trials ran. */
   invalid: Array<{ task: string; baseline: Extract<Baseline, 'invalid' | 'could_not_run'> }>;
   /**
@@ -102,6 +121,8 @@ export interface BenchmarkCells {
   results: TextTable;
   usage: TextTable;
   matrix: TextTable;
+  /** Absent when no suite or task scorer judged a trial. */
+  scorers?: TextTable;
   /** Absent when every task's baseline let its trials run. */
   invalid?: TextTable;
   /** Absent when no arm changes a team skill. */
@@ -191,6 +212,7 @@ export function benchmarkTable(record: BenchmarkTableInput): BenchmarkTable {
       arms: arms.map(({ name }) => ({ arm: name, ...passRateOf(trials.filter((trial) => trial.task === id && trial.arm === name)) })),
     })),
     usage: arms.map(({ name }) => ({ arm: name, ...usageOf(observed.filter(({ trial }) => trial.arm === name)) })),
+    scorers: scorerResultsOf(record.benchmark),
     skills: (record.benchmark.skillChanges ?? []).flatMap(({ arm, defaults, skills }) => skills.map(({ name, change }) => definedFields<BenchmarkTable['skills'][number]>({
       arm, skill: name, change, here: skillLoadsOf(trials, arm, name), defaults: defaults ? skillLoadsOf(trials, defaults, name) : undefined,
     }))),
@@ -198,6 +220,26 @@ export function benchmarkTable(record: BenchmarkTableInput): BenchmarkTable {
     selfJudged: selfJudgedOf(record.benchmark),
     unavailableJudges: unavailableJudgesOf(record.benchmark),
   };
+}
+
+/** Each arm's verdicts of each scorer `record` pins but the correctness scorers, over its trials that ran and listed it. */
+function scorerResultsOf({ arms, trials, scorers }: BenchmarkRecord): ArmScorerResults[] {
+  const listed = scorers.map(({ name }) => name).filter((name) => !isCorrectnessScorer(name));
+
+  return arms.flatMap(({ name: arm }) => listed.flatMap((scorer) => {
+    const verdicts = trials.flatMap((trial) => (trial.arm === arm && trial.result !== 'not_run' ? (trial.verdicts ?? []).filter((one) => one.scorer === scorer) : []));
+
+    if (verdicts.length === 0) return [];
+    const labelled = verdicts.flatMap(({ outcome, decider }) => (outcome.kind === 'labelled' ? [{ passed: outcome.passed, decider }] : []));
+    const passed = labelled.filter((label) => label.passed).length;
+    const batches = new Set(labelled.flatMap(({ decider }) => (decider?.by === 'judge' ? [decider.batched] : [])));
+
+    return [definedFields<ArmScorerResults>({
+      arm, scorer, passed, labelled: labelled.length, unscored: verdicts.length - labelled.length,
+      interval: labelled.length > 0 ? wilson({ passed, planned: labelled.length }) : undefined,
+      batched: batches.size === 0 ? undefined : batches.size > 1 ? 'mixed' : batches.has(true) ? 'yes' : 'no',
+    })];
+  }));
 }
 
 /** Each judge tool `record` pins that no driver of its run offered, with how many trials it left unscored for that. */
@@ -231,7 +273,10 @@ function skillLoadsOf(trials: readonly RecordedTrial[], arm: string, skill: stri
   return { loaded: seen.filter((load) => load === 'loaded').length, observed: seen.filter((load) => load !== 'unknown').length, unknown: seen.filter((load) => load === 'unknown').length };
 }
 
-/** The results, the usage, the task by arm matrix, then the invalid tasks. A median or a total says in parentheses how many values it used. */
+/**
+ * The results, the usage, the task by arm matrix, the pass rate per scorer, then the invalid tasks. A median or a total
+ * says in parentheses how many values it used.
+ */
 export function benchmarkCells(table: BenchmarkTable): BenchmarkCells {
   // Every arm on the pulled revision, as most suites run: the column would repeat one commit on every row.
   const namesTeam = table.results.some(({ team }) => team.kind !== 'pulled');
@@ -259,6 +304,13 @@ export function benchmarkCells(table: BenchmarkTable): BenchmarkCells {
       header: ['Task', ...table.results.map(({ arm }) => arm)],
       rows: table.matrix.map(({ task, arms }) => [task, ...arms.map(({ passRate }) => formatPassRate(passRate))]),
     },
+    scorers: table.scorers.length > 0 ? {
+      header: ['Arm', 'Scorer', 'Passed', 'Labelled', 'Unscored', 'Pass rate', '95% interval', 'Batched'],
+      rows: table.scorers.map(({ arm, scorer, passed, labelled, unscored, interval, batched }) => [
+        arm, scorer, String(passed), String(labelled), String(unscored), formatPassRate(labelled > 0 ? { passed, planned: labelled } : undefined),
+        interval ? `${Math.round(interval.low * 100)}% to ${Math.round(interval.high * 100)}%` : '-', batched ?? '-',
+      ]),
+    } : undefined,
     invalid: table.invalid.length > 0 ? { header: ['Task', 'Baseline'], rows: table.invalid.map(({ task, baseline }) => [task, INVALID_REASONS[baseline]]) } : undefined,
     skills: table.skills.length > 0 ? {
       header: ['Arm', 'Skill', 'Change', 'Loaded in this arm', 'Loaded in the defaults arm'],
@@ -337,11 +389,11 @@ function formatBound(bound: number): string {
 
 /** benchmarkCells as Markdown pipe tables, so the same text reads in a terminal and renders in a CI job summary. */
 export function formatBenchmarkTable(table: BenchmarkTable): string {
-  const { results, usage, matrix, invalid, skills, assets, notes, caption } = benchmarkCells(table);
+  const { results, usage, matrix, scorers, invalid, skills, assets, notes, caption } = benchmarkCells(table);
   const line = (cells: readonly string[]): string => `| ${cells.join(' | ')} |`;
   const markdown = ({ header, rows }: TextTable): string => [line(header), line(header.map(() => '---')), ...rows.map(line)].join('\n');
 
-  return [...[results, usage, matrix, ...(invalid ? [invalid] : []), ...(skills ? [skills] : [])].map(markdown), ...(assets ?? []), ...(notes ?? []), caption].join('\n\n');
+  return [...[results, usage, matrix, ...(scorers ? [scorers] : []), ...(invalid ? [invalid] : []), ...(skills ? [skills] : [])].map(markdown), ...(assets ?? []), ...(notes ?? []), caption].join('\n\n');
 }
 
 /** `1/2` loaded of the trials seen, `1/2, 1 unknown` with some unseen, `unknown (3)` with none seen. */
