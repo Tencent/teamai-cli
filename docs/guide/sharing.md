@@ -434,7 +434,7 @@ Pull copies the folder and puts its path, with forward slashes, in place of `${T
 
 Claude Code does not expand `$CLAUDE_PROJECT_DIR` in `.mcp.json`, so in single-repo each tool's MCP file holds the worktree's absolute path and differs from one worktree to the next.
 
-`MCP.yaml` takes the keys of an `mcp.yaml` server except `name`, `roles` and `projects`, with `transport: stdio` only: a URL server carries no files, so `http` and `sse` servers stay in `mcp.yaml`. A server for one namespace goes in `mcp/<ns>/<name>/`. `${TEAMAI_MCP_DIR}` works only in a folder. In `mcp.yaml` it stops team MCP for the run and keeps what is installed, as a name that is both an `mcp.yaml` server and a folder does.
+`MCP.yaml` takes the keys of an `mcp.yaml` server except `name`, `roles` and `projects`, with `transport: stdio` only: a URL server carries no files, so `http` and `sse` servers stay in `mcp.yaml`. A server for one namespace goes in `mcp/<ns>/<name>/`. `${TEAMAI_MCP_DIR}` works only in a folder. In `mcp.yaml` it stops team MCP for the run and keeps what is installed, as a name that is both an `mcp.yaml` server and a folder does. `teamai review --branch` fails a branch with either, or with an `MCP.yaml` pull cannot read.
 
 teamai installs no dependencies. A folder ships them one of three ways:
 
