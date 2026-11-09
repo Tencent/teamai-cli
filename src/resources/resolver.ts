@@ -14,6 +14,11 @@ export interface ResourceLayout<TEntry = never> {
    * for a type with no folders. A folder holds no other item; a directory without the marker at the root is a namespace.
    */
   readonly marker: string | null;
+  /**
+   * Other spellings a folder may hold in place of `marker`, read the same way: `suite.yaml` for `SUITE.yaml`. A directory
+   * holding two spellings is no folder any type can read, and is named in diagnostics.
+   */
+  readonly markerAliases?: readonly string[];
   /** The item a file directly in a layer's directory defines, by its name: `release.yaml` is `release`. Null for any other file. */
   readonly fileName: (file: string) => string | null;
   /** What a folder's directory name must match to be its type's name; a folder that does not is named in diagnostics. */
@@ -105,6 +110,7 @@ export interface ResourceTree<TShipped> {
 export const RESOURCE_LAYOUTS = {
   workflows: { dir: 'workflows', marker: 'WORKFLOW.yaml', fileName: (file: string) => (file.endsWith('.yaml') ? file.slice(0, -'.yaml'.length) : null) },
   hooks: { dir: 'hooks', marker: 'HOOK.yaml', fileName: () => null, nameRule: { pattern: /^[a-z0-9-]+$/, description: 'a hook id uses only lower-case letters, digits and hyphens' } },
+  benchmarks: { dir: 'benchmarks', marker: 'SUITE.yaml', markerAliases: ['suite.yaml'], fileName: () => null },
 } as const satisfies Readonly<Record<string, ResourceLayout<unknown>>>;
 
 /** The names in `dir`, or none when it is missing, a symlink, or cannot be listed. */
@@ -132,6 +138,30 @@ async function subdirectories(dir: string): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+/** Which spelling of its type's marker a directory holds: none for a directory that is no folder, or two, which make it no folder any type can read. */
+export type FolderMarkerRead =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'folder'; readonly marker: string }
+  | { readonly kind: 'invalid'; readonly message: string };
+
+/**
+ * Which spelling of `layout`'s marker the directory `full` holds, by the names `readdir` returns (common rule 1 of
+ * #1787), so a file system that ignores case cannot read `SUITE.yaml` as `suite.yaml`. `path` names the folder in the
+ * message, ending with `/`. A marker this release cannot read counts for nothing.
+ */
+export async function readFolderMarker(layout: ResourceLayout<unknown>, at: { readonly full: string; readonly path: string }): Promise<FolderMarkerRead> {
+  const unread = unreadMarker(layout.dir);
+  const names = new Set(await fileNames(at.full));
+  const held = [layout.marker, ...layout.markerAliases ?? []].filter((marker): marker is string => marker !== null && marker !== unread && names.has(marker));
+  const [marker, ...others] = held;
+
+  if (marker === undefined) return { kind: 'none' };
+
+  if (others.length > 0) return { kind: 'invalid', message: `${at.path} holds ${held.join(' and ')}, two spellings of one file; keep only ${layout.marker ?? marker}.` };
+
+  return { kind: 'folder', marker };
 }
 
 /** An item one layer's directory holds, with the file that defines it: the file itself, the entry-list file, or the folder's marker. */
@@ -197,7 +227,6 @@ function itemFilesNote<TEntry>(layout: ResourceLayout<TEntry>, marker: string, f
 async function readLayer<TEntry>(layout: ResourceLayout<TEntry>, root: string, dir: string): Promise<LayerContents<TEntry>> {
   const toPath = (full: string): string => path.relative(root, full).split(path.sep).join('/');
   const unread = unreadMarker(layout.dir);
-  const folderMarker = layout.marker === unread ? null : layout.marker;
 
   const items: Array<LayerItem<TEntry>> = [];
   const diagnostics: ResourceDiagnostic[] = [];
@@ -225,20 +254,34 @@ async function readLayer<TEntry>(layout: ResourceLayout<TEntry>, root: string, d
     // A folder this release cannot read is left out whole (#1791): its marker would otherwise be an item in a namespace.
     if (await holdsMarker(full, unread)) continue;
 
-    if (folderMarker !== null && await holdsMarker(full, folderMarker)) {
-      const folderPath = `${toPath(full)}/`;
+    const folderPath = `${toPath(full)}/`;
+    const held = await readFolderMarker(layout, { full, path: folderPath });
 
-      if (layout.nameRule && !layout.nameRule.pattern.test(sub)) {
-        diagnostics.push({ kind: 'invalid', path: folderPath, message: `${folderPath} is not a valid name: ${layout.nameRule.description}. Rename the folder.` });
-        continue;
+    switch (held.kind) {
+      case 'none':
+        plain.push(sub);
+        break;
+      case 'invalid':
+        diagnostics.push({ kind: 'invalid', path: folderPath, message: held.message });
+        break;
+      case 'folder': {
+        if (layout.nameRule && !layout.nameRule.pattern.test(sub)) {
+          diagnostics.push({ kind: 'invalid', path: folderPath, message: `${folderPath} is not a valid name: ${layout.nameRule.description}. Rename the folder.` });
+          break;
+        }
+
+        items.push({ name: sub, source: { kind: 'folder', path: folderPath, full }, definition: path.join(full, held.marker) });
+        const note = itemFilesNote(layout, held.marker, folderPath, await fileNames(full));
+
+        if (note) diagnostics.push(note);
+        break;
       }
 
-      items.push({ name: sub, source: { kind: 'folder', path: folderPath, full }, definition: path.join(full, folderMarker) });
-      const note = itemFilesNote(layout, folderMarker, folderPath, await fileNames(full));
+      default: {
+        const unhandled: never = held;
 
-      if (note) diagnostics.push(note);
-    } else {
-      plain.push(sub);
+        return unhandled;
+      }
     }
   }
 
@@ -327,7 +370,7 @@ async function layer<TEntry>(layout: ResourceLayout<TEntry>, at: { readonly root
 
   const { namespace } = at;
   const dir = path.join(typeDir, namespace);
-  const markers = [layout.marker, unreadMarker(layout.dir)];
+  const markers = [layout.marker, ...layout.markerAliases ?? [], unreadMarker(layout.dir)];
 
   if (await isSymlink(dir) || (await Promise.all(markers.map((marker) => holdsMarker(dir, marker)))).some(Boolean)) return { items: [], diagnostics: [] };
   const read = await readLayer(layout, at.root, dir);

@@ -37,8 +37,8 @@ describe('findSkippedFolders', () => {
 
     const skipped = await findSkippedFolders(repo);
 
-    // Hook folders are read (#1787), so only the other types are skipped.
-    expect(skipped.map((folder) => folder.path).sort()).toEqual(Object.keys(markers).flatMap((dir) => dir === 'hooks' ? [] : [
+    // Hook folders and suite folders are read (#1787), so only the other types are skipped.
+    expect(skipped.map((folder) => folder.path).sort()).toEqual(Object.keys(markers).flatMap((dir) => dir === 'hooks' || dir === 'benchmarks' ? [] : [
       `${dir}/at-root/`,
       `${dir}/team/in-namespace/`,
     ]).sort());
