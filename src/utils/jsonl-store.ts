@@ -96,24 +96,28 @@ export async function appendJsonlBatch(filePath: string, records: object[], opti
  * one a fold already appended is read once. A missing file reads as empty.
  */
 export async function readJsonl(filePath: string, options: { includePending?: boolean } = {}): Promise<JsonlRecord[]> {
-  const records = parseLines(await readOrEmpty(filePath));
+  const pending: JsonlRecord[] = [];
 
+  // Read side records first so a fold cannot move a record past both reads.
   if (options.includePending !== false) {
-    const inFile = new Set(records.flatMap((r) => PendingIdSchema.parse(r.pendingId) ?? []));
-
     for (const pendingPath of await sideRecordPaths(filePath)) {
       const content = await readOrEmpty(pendingPath).catch(() => '');
 
       // One without its newline is still being written.
       if (!content.endsWith('\n')) continue;
 
-      for (const record of parseLines(content)) {
-        const pendingId = PendingIdSchema.parse(record.pendingId);
-
-        if (pendingId !== undefined && inFile.has(pendingId)) continue;
-        records.push(record);
-      }
+      for (const record of parseLines(content)) pending.push(record);
     }
+  }
+
+  const records = parseLines(await readOrEmpty(filePath));
+  const inFile = new Set(records.flatMap((r) => PendingIdSchema.parse(r.pendingId) ?? []));
+
+  for (const record of pending) {
+    const pendingId = PendingIdSchema.parse(record.pendingId);
+
+    if (pendingId !== undefined && inFile.has(pendingId)) continue;
+    records.push(record);
   }
 
   return records.map(({ pendingId: _pendingId, ...rest }) => rest);
