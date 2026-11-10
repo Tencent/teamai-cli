@@ -6,6 +6,7 @@
  *
  *   node scripts/agent-wait-budget.mjs                                     the budget as JSON; exit 1 when an invariant breaks
  *   node scripts/agent-wait-budget.mjs --compare <main.json> [<head.json>] a Markdown report of the change from main
+ *                                                                          (without <head.json> it measures this checkout, and exits 1 as above)
  *   node scripts/agent-wait-budget.mjs --keep                              leave the world for debugging; its run id goes to stderr
  *
  * A process is waited when the tool cannot go on until it ends, and after when it runs once the hook has returned
@@ -840,17 +841,23 @@ export function main(args: readonly string[]): number {
 
   if (flag === '--compare') {
     if (!baseFile) throw new Error('--compare needs the JSON file a run on main wrote.');
-    const { markdown, grew } = compareAgentWait(headFile ? readBudget(headFile) : measureOrFail(false).budget, readBudget(baseFile));
+    // A head measured here answers for its own invariants; one read from a file answered when it was measured.
+    const head = headFile ? { budget: readBudget(headFile), failures: [] } : measureOrFail(false);
+    const { markdown, grew } = compareAgentWait(head.budget, readBudget(baseFile));
     process.stdout.write(`${markdown}\n`);
 
     if (grew.length > 0) console.error(`Agent wait grew: ${grew.join('; ')}.`);
 
-    return 0;
+    return reportFailures(head.failures);
   }
 
   const { budget, failures } = measureOrFail(args.includes('--keep'));
   process.stdout.write(`${JSON.stringify(budget, null, 2)}\n`);
 
+  return reportFailures(failures);
+}
+
+function reportFailures(failures: readonly string[]): number {
   for (const failure of failures) console.error(`Agent wait invariant broken: ${failure}`);
 
   return failures.length === 0 ? 0 : 1;
