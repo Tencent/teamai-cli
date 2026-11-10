@@ -354,7 +354,7 @@ builtin:
     Hook dispatch stop: { timeout: 30 }
 ```
 
-每次工具调用只跑一条 `PostToolUse` 条目 `Hook dispatch post-tool-use wildcard`，`TodoWrite` 提醒也在里面跑。Claude Code 2.1.119 及以上时，`~/.claude/settings.json` 里这个 key 写成两条：一条给除 `TodoWrite` 以外的所有工具，Claude Code 不等它；另一条给 `TodoWrite`，让提醒在同一轮就到 agent。仓库里的 `.claude/settings.json` 仍是单条。禁用这个 key 或给它设超时，两条都生效。把 `Hook dispatch post-tool-use TodoWrite` 写进 `disabled` 仍然会关掉提醒。给这个 key 设超时不起作用，`teamai doctor` 会提示。
+每次工具调用只跑一条 `PostToolUse` 条目 `Hook dispatch post-tool-use wildcard`，`TodoWrite` 提醒也在里面跑。Claude Code 2.1.119 及以上时，`~/.claude/settings.json` 里这个 key 写成两条：一条给除 `TodoWrite` 以外的所有工具，Claude Code 不等它；另一条给 `TodoWrite`，让提醒在同一轮就到 agent。仓库里的 `.claude/settings.json` 仍是单条。Codex 0.148.0 及以上时，`~/.codex/hooks.json` 仍是单条，Codex 不等它。把任一工具升级或降级跨过这些版本后，下一次会话启动或 `teamai pull` 会改写这条。禁用这个 key 或给它设超时，两条都生效。把 `Hook dispatch post-tool-use TodoWrite` 写进 `disabled` 仍然会关掉提醒。给这个 key 设超时不起作用，`teamai doctor` 会提示。
 
 只给一个项目时写到 `hooks/<ns>/hooks.yaml`。
 

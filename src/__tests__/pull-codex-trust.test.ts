@@ -85,7 +85,14 @@ vi.mock('../mcp-reconcile.js', async (importOriginal) => ({
   reconcileMcpForConfig: vi.fn().mockResolvedValue({ changes: [], wrote: false }),
 }));
 
+// The version decides whether the PostToolUse entry is async (builtinHookForm); every other caller asks the real one.
+vi.mock('../agent-version.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../agent-version.js')>();
+  return { ...actual, getAgentVersion: vi.fn(actual.getAgentVersion) };
+});
+
 import { detectProjectConfig, loadLocalConfigForScope, loadTeamConfig } from '../config.js';
+import { getAgentVersion } from '../agent-version.js';
 import { resolveAnchors, listWorktrees } from '../utils/git.js';
 import { pull } from '../pull.js';
 import { reconcileMcpForConfig } from '../mcp-reconcile.js';
@@ -173,6 +180,24 @@ describe('pull trusts the Codex project after writing its MCP servers', () => {
     expect(Object.keys(state.hooksState).some((key) => key.startsWith(`${hooksFile}:session_start`))).toBe(true);
     expect(vi.mocked(log.warn).mock.calls.map(([message]) => message).filter((message) => message.includes('Could not trust'))).toEqual([]);
   });
+  it('trusts the PostToolUse entry again when it turns async, since Codex hashes the handler with its async flag', async () => {
+    const codexAt = (version: string) => vi.mocked(getAgentVersion).mockImplementation(async (tool) => (tool === 'codex' ? version : ''));
+    const hooksFile = path.join(homeDir, '.codex', 'hooks.json');
+    const postToolUseHash = () => Object.entries(readFakeCodexState(path.join(homeDir, '.codex')).hooksState)
+      .find(([key]) => key.startsWith(`${hooksFile}:post_tool_use`))?.[1].trusted_hash;
+    codexAt('0.147.0');
+    await pull({ force: true });
+    const waited = postToolUseHash();
+
+    codexAt('0.163.0');
+    await pull({ force: true });
+
+    expect((await fse.readJson(hooksFile)).hooks.PostToolUse[0].hooks[0].async).toBe(true);
+    expect(waited).toBeDefined();
+    expect(postToolUseHash()).not.toBe(waited);
+    expect(await readCodexHookTrustForScope(teamConfig, localConfig)).toEqual({ kind: 'listed', notTrusted: [] });
+  });
+
   it('pull from a worktree without .codex trusts the main keys before SessionStart', async () => {
     const worktree = path.join(tempDir, 'worktree');
     await fse.ensureDir(worktree);

@@ -26,6 +26,7 @@ import { claudeHookOtherHostSkip, getHookStatus, reconcileHooks, reconcileHooksT
 import * as gitHook from '../git-hook.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
 import { dispatchedCodexHooks } from '../codex-team-hooks.js';
+import { channelReadiness } from '../instruction-targets.js';
 import type { HookDef, LocalConfig, TeamaiConfig } from '../types.js';
 
 let project: string;
@@ -1325,6 +1326,94 @@ describe('reconcileTeamHooksForConfig — a Claude Code that does not wait for P
     expect(await getHookStatus(file, { tool: 'claude', from: 'installed' })).toBe('installed');
     expect(getAgentVersion).not.toHaveBeenCalled();
     expect(await getHookStatus(file, { tool: 'claude', from: 'version' })).toBe('missing');
+  });
+});
+
+describe('reconcileTeamHooksForConfig — a Codex that does not wait for PostToolUse', () => {
+  const COMMAND = 'bash -lc "teamai hook-dispatch post-tool-use --tool codex 2>/dev/null" || true';
+  const COMMAND_WINDOWS = 'cmd.exe /d /s /c "teamai hook-dispatch post-tool-use --tool codex 2>nul & exit /b 0"';
+  const WAITED = [{ hooks: [{ type: 'command', command: COMMAND, commandWindows: COMMAND_WINDOWS, timeout: 10 }] }];
+  // One entry and no matcher: Codex compiles matchers with the Rust regex crate, which has no look-ahead.
+  const UNWAITED = [{ hooks: [{ ...WAITED[0].hooks[0], async: true }] }];
+  const file = () => path.join(home, '.codex', 'hooks.json');
+  const postToolUse = async () => (await fse.readJson(file())).hooks.PostToolUse;
+
+  beforeEach(() => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each(['0.148.0', '0.167.0'])('makes the PostToolUse entry async at %s', async (version) => {
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+    expect(await postToolUse()).toEqual(WAITED);
+    vi.mocked(getAgentVersion).mockResolvedValue(version);
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+
+    expect(await postToolUse()).toEqual(UNWAITED);
+    expect(getAgentVersion).toHaveBeenCalledWith('codex');
+  });
+
+  // Codex 0.134.0 to 0.147.0 skip an async handler instead of running it.
+  it.each(['0.147.0', '0.147.9', '', 'not a version'])('keeps the waited entry when the version reads %j', async (version) => {
+    vi.mocked(getAgentVersion).mockResolvedValue('0.167.0');
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+    vi.mocked(getAgentVersion).mockResolvedValue(version);
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+
+    expect(await postToolUse()).toEqual(WAITED);
+  });
+
+  it('removes the entry on uninstall', async () => {
+    vi.mocked(getAgentVersion).mockResolvedValue('0.167.0');
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig(), { removeAll: true });
+
+    expect((await fse.readJson(file())).hooks?.PostToolUse ?? []).toEqual([]);
+  });
+
+  it('changes nothing on a second pull, and reports the entry as installed', async () => {
+    vi.mocked(getAgentVersion).mockResolvedValue('0.167.0');
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+    const before = await fse.readFile(file(), 'utf8');
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+
+    expect(await fse.readFile(file(), 'utf8')).toBe(before);
+    expect(await getHookStatus(file(), { tool: 'codex', from: 'version' })).toBe('installed');
+  });
+
+  it.each([
+    { installedAt: '0.167.0', installed: UNWAITED, now: '0.147.0', full: WAITED },
+    { installedAt: '0.147.0', installed: WAITED, now: '0.167.0', full: UNWAITED },
+  ])('keeps the form installed at $installedAt on an inline pull at $now and starts no tool, and a full pull moves it', async ({ installedAt, installed, now, full }) => {
+    vi.mocked(getAgentVersion).mockResolvedValue(installedAt);
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+    vi.mocked(getAgentVersion).mockReset().mockResolvedValue(now);
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig(), { builtinFormFrom: 'installed' });
+
+    expect(await postToolUse()).toEqual(installed);
+    expect(getAgentVersion).not.toHaveBeenCalledWith('codex');
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+
+    expect(await postToolUse()).toEqual(full);
+  });
+
+  it('says the instructions channel is ready after a version change across the floor without asking the version, while the status against the version is not current', async () => {
+    vi.mocked(getAgentVersion).mockResolvedValue('0.167.0');
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+    vi.mocked(getAgentVersion).mockReset().mockResolvedValue('0.147.0');
+
+    expect((await channelReadiness('codex', 'codex-hooks', { teamConfig, localConfig: localConfig() })).ready).toBe(true);
+    expect(getAgentVersion).not.toHaveBeenCalled();
+    expect(await getHookStatus(file(), { tool: 'codex', from: 'version' })).toBe('missing');
   });
 });
 

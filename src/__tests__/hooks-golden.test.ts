@@ -28,6 +28,7 @@ const cases = [
   ['claude', 'settings.json'],
   ['claude-internal', 'settings.json'],
   ['codebuddy', 'settings.json'],
+  ['codex', 'hooks.json'],
   ['cursor', 'hooks.json'],
   ['workbuddy', 'settings.json'],
 ];
@@ -56,7 +57,7 @@ describe('hooks golden — built-in output is byte-identical to the captured bas
   }
 });
 
-// The member's own hook file takes the form the installed version allows (builtinHookForm); only Claude Code's changes.
+// The member's own hook file takes the form the installed version allows (builtinHookForm); only Claude Code's and Codex's change.
 describe('hooks golden — the hook file in the member\'s own tool home', () => {
   let tmp: string;
   beforeEach(async () => {
@@ -75,7 +76,9 @@ describe('hooks golden — the hook file in the member\'s own tool home', () => 
   it.each([
     { tool: 'claude', version: '2.1.322', fixture: 'claude-unwaited' },
     { tool: 'claude', version: '2.1.118', fixture: 'claude' },
-    ...cases.filter(([tool]) => tool !== 'claude').map(([tool]) => ({ tool, version: '2.1.322', fixture: tool })),
+    { tool: 'codex', version: '0.167.0', fixture: 'codex-unwaited' },
+    { tool: 'codex', version: '0.147.0', fixture: 'codex' },
+    ...cases.filter(([tool]) => tool !== 'claude' && tool !== 'codex').map(([tool]) => ({ tool, version: '2.1.322', fixture: tool })),
   ] as Array<{ tool: ToolId; version: string; fixture: string }>)('$tool at $version matches fixtures/hooks/$fixture.json', async ({ tool, version, fixture }) => {
     for (const move of 'moves' in TOOLS[tool].home ? TOOLS[tool].home.moves.by : []) if (move.kind === 'env') vi.stubEnv(move.name, '');
     vi.mocked(getAgentVersion).mockResolvedValue(version);

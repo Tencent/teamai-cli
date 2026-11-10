@@ -311,8 +311,9 @@ export type HooksChannels = {
   /**
    * The first version of the tool whose command hooks take `"async": true` and are then not waited for, with no
    * side effect on a hook that prints nothing. Once the installed version reaches it, teamai writes its PostToolUse
-   * built-in that way into the member's own hook file (`builtinHookForm`). Absent: the tool has no such option, or
-   * it was not observed on the real tool.
+   * built-in that way into the member's own hook file (`builtinHookForm`). Set on a run of the real tool, or on its
+   * documentation together with its source read at the floor and at a later release; the comment beside it says
+   * which. Absent: the tool has no such option, or neither shows it.
    */
   readonly unwaitedSince?: string;
   /**
@@ -590,7 +591,19 @@ export const TOOLS = {
       user: { format: 'codex', reads: [{ base: 'home', path: '.codex/config.toml', evidence: 'verified' }] },
       project: { judgedTeamaiOnly: true, format: 'codex', reads: [{ base: 'project', path: '.codex/config.toml', when: 'workspaceUnder', evidence: 'verified' }], readGates: ['codex-project-trust'] },
     },
-    hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex/hooks.json', evidence: 'verified' }] }, self: { channel: 'settings', format: 'codex', reads: [{ base: 'project', path: '.codex/hooks.json', when: 'workspaceUnder', evidence: 'verified' }] }, subagentStop: true, stopReply: false, shell: 'system', teamHooks: 'main-checkout', needsBundle: false },
+    hooks: {
+      user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex/hooks.json', evidence: 'verified' }] },
+      self: { channel: 'settings', format: 'codex', reads: [{ base: 'project', path: '.codex/hooks.json', when: 'workspaceUnder', evidence: 'verified' }] },
+      subagentStop: true,
+      stopReply: false,
+      shell: 'system',
+      teamHooks: 'main-checkout',
+      needsBundle: false,
+      // `async` on a command handler is documented; the source at 0.148.0 to 0.167.0 runs it in the background
+      // (codex-rs/hooks/src/engine/discovery.rs), and 0.134.0 to 0.147.0 skip such a handler. Run on 0.167.0 for
+      // UserPromptSubmit and SessionStart; PostToolUse not run.
+      unwaitedSince: '0.148.0',
+    },
     sessions: ['codex'],
     launch: 'codex',
     autoCompact: 'codex',

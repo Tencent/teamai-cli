@@ -214,7 +214,7 @@ describe('builtinHookForm', () => {
   });
 
   it('keeps the waited login-shell form for a tool with neither fact, and starts no tool to read its version', async () => {
-    for (const tool of ['claude-internal', 'codex', 'cursor', 'qoder']) {
+    for (const tool of ['claude-internal', 'codex-internal', 'tcodex', 'cursor', 'qoder']) {
       expect(await builtinHookForm(tool, 'user')).toEqual({ unwaited: false, loginDeferred: false });
     }
     expect(getAgentVersion).not.toHaveBeenCalled();
