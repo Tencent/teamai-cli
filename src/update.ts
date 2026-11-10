@@ -19,8 +19,23 @@ import { askConfirmation, isInteractive } from './utils/prompt.js';
 // without pulling in update.ts' dependency graph. They are re-exported here
 // for backwards compatibility with existing callers of `./update.js`.
 import { getCurrentVersion, getCurrentPackageName } from './package-info.js';
+import { isVoltaPackageImage, prefixFromEntryPath } from './install-prefix.js';
+import { compareVersions } from './version.js';
+import {
+  describeInstallation,
+  installationNotes,
+  packageDirFromEntry,
+  readInstalledVersion,
+  selectOtherInstallation,
+  setInstallationUpdate,
+  type InstallationRecord,
+} from './installations.js';
 
 export { getCurrentVersion, getCurrentPackageName };
+
+export { isVoltaPackageImage, prefixFromEntryPath } from './install-prefix.js';
+
+export { compareVersions } from './version.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -114,43 +129,6 @@ export function resolveNpmCommand(): NpmCommand {
   log.debug('No npm-cli.js found next to the running Node; falling back to npm from PATH');
 
   return { cmd: 'npm', args: [] };
-}
-
-/**
- * Derive the npm install target from an entry-script path. Two npm-managed
- * layouts are recognized:
- * - POSIX global: `<prefix>/lib/node_modules/<pkg>` — npm -g re-adds the lib/
- *   component itself, so the prefix it expects is the slice above it.
- * - Flat/vendored: `<prefix>/node_modules/<pkg>` (bundled runtimes). POSIX npm
- *   -g CANNOT reinstall into this layout (it always nests under lib/), so the
- *   caller must install non-globally with --prefix — hence the `global` flag.
- * Returns null when the entry cannot be attributed to an npm-managed install
- * (e.g. a linked checkout). Exported for testing — split out from
- * resolveInstallPrefix.
- */
-export function prefixFromEntryPath(entry: string, posix: boolean): { prefix: string; global: boolean } | null {
-  const marker = `${path.sep}node_modules${path.sep}`;
-  const idx = entry.lastIndexOf(marker);
-
-  if (idx <= 0) return null;
-  const root = entry.slice(0, idx);
-  const pkgDir = getCurrentPackageName();
-
-  // POSIX global layout: npm re-adds the lib/ component, so hand it the slice
-  // above and let it nest back down to where the running package sits.
-  if (posix && path.basename(root) === 'lib') {
-    const prefix = path.dirname(root);
-
-    return fs.existsSync(path.join(prefix, 'lib', 'node_modules', pkgDir))
-      ? { prefix, global: true }
-      : null;
-  }
-
-  // Flat layout (<root>/node_modules/<pkg>): the sanity check verifies the
-  // layout that was actually matched, not the one npm would have created.
-  return fs.existsSync(path.join(root, 'node_modules', pkgDir))
-    ? { prefix: root, global: !posix }
-    : null;
 }
 
 /**
@@ -328,28 +306,6 @@ function newestMovedAside(dir: string, marker: string): string | null {
   return newest?.file ?? null;
 }
 
-/** `$VOLTA_HOME/tools/image/packages/<name>`, including the default `~/.volta` and `%LOCALAPPDATA%\\Volta` homes. */
-const VOLTA_PACKAGE_IMAGE = /(?:^|\/)\.?volta\/tools\/image\/packages\//i;
-
-/**
- * A Volta package image is not an npm prefix. `npm install -g --prefix` there
- * removes the current executable before the new one is in place.
- * `voltaHome` defaults to `VOLTA_HOME`; pass `''` to ignore a custom home.
- */
-export function isVoltaPackageImage(filePath: string, voltaHome = process.env.VOLTA_HOME): boolean {
-  if (voltaHome) {
-    const root = path.resolve(voltaHome, 'tools', 'image', 'packages');
-    const resolved = path.resolve(filePath);
-    const fold = (value: string) => process.platform === 'win32' ? value.toLowerCase() : value;
-    const file = fold(resolved);
-    const dir = fold(root);
-
-    if (file === dir || file.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep)) return true;
-  }
-
-  return VOLTA_PACKAGE_IMAGE.test(filePath.replace(/\\/g, '/'));
-}
-
 /**
  * Fetch the latest version from the npm registry
  * Returns null on any error (timeout, network, etc.)
@@ -385,37 +341,6 @@ export async function fetchLatestVersion(
 
     return null;
   }
-}
-
-/**
- * Compare two semver version strings.
- * Handles prerelease suffixes: a version with prerelease (e.g. 1.2.3-beta.1)
- * is always older than the same numeric version without one (semver §11).
- * Returns: -1 if a < b, 0 if equal, 1 if a > b
- */
-export function compareVersions(a: string, b: string): number {
-  const [coreA, preA] = a.split('-', 2);
-  const [coreB, preB] = b.split('-', 2);
-
-  const partsA = coreA.split('.').map(Number);
-  const partsB = coreB.split('.').map(Number);
-  const len = Math.max(partsA.length, partsB.length);
-
-  for (let i = 0; i < len; i++) {
-    const pa = partsA[i] ?? 0;
-    const pb = partsB[i] ?? 0;
-
-    if (pa > pb) return 1;
-
-    if (pa < pb) return -1;
-  }
-
-  // Numeric cores are equal — prerelease is lower than release (semver §11)
-  if (preA && !preB) return -1;
-
-  if (!preA && preB) return 1;
-
-  return 0;
 }
 
 /**
@@ -1088,6 +1013,111 @@ function registryUnreachableMessage(result: CheckResult): string | null {
  */
 export type UpdateOutcome = 'ok' | 'skipped' | 'failed' | 'unreachable';
 
+/**
+ * Install `latest` into one registered npm-global copy that is not the running
+ * one. The copy's own prefix is passed explicitly, its package.json is read
+ * back after npm exits, and hooks are deliberately left alone: the active
+ * session stays bound to the copy that runs it (#1753).
+ */
+async function updateRegisteredCopy(
+  record: InstallationRecord,
+  latest: string,
+  pkgName: string,
+  registry: string,
+): Promise<boolean> {
+  const pkgDir = packageDirFromEntry(record.entry);
+  const prefix = record.prefix;
+
+  if (!prefix) return true;
+
+  if (isVoltaPackageImage(record.entry) || isVoltaPackageImage(prefix)) {
+    const message =
+      `Update skipped: the registered copy at ${prefix} is managed by Volta. ` +
+      `Upgrade it with "volta install ${pkgName}@latest".`;
+
+    log.warn(message);
+    setInstallationUpdate(record.id, 'skipped', message);
+
+    return true;
+  }
+
+  const before = readInstalledVersion(pkgDir);
+
+  if (!before || compareVersions(before, latest) >= 0) {
+    setInstallationUpdate(
+      record.id,
+      'skipped',
+      before ? `Already up to date (v${before})` : `Could not read the version at ${pkgDir}`,
+      before ?? undefined,
+    );
+
+    return true;
+  }
+
+  const npm = resolveNpmCommand();
+
+  try {
+    await execFileAsync(
+      npm.cmd,
+      [
+        ...npm.args,
+        'install', '-g', `${pkgName}@${latest}`,
+        `--prefix=${prefix}`,
+        `--registry=${registry}`,
+      ],
+      { timeout: INSTALL_TIMEOUT, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
+    );
+  } catch (e) {
+    const restored = restoreInterruptedInstall(pkgDir);
+    const restoredBins = restoreInterruptedBins(pkgDir, prefix);
+    const reason = e instanceof Error ? e.message : String(e);
+
+    let message = `Updating the registered copy at ${prefix} failed: ${reason}.`;
+
+    if (restored) {
+      message += ` Put the previous install back from ${path.basename(restored)}`;
+      message += restoredBins.length > 0 ? ` and its command (${restoredBins.join(', ')}).` : '.';
+    }
+
+    log.warn(message);
+    log.persist(message);
+    setInstallationUpdate(record.id, 'failed', message);
+
+    return false;
+  }
+
+  const after = readInstalledVersion(pkgDir);
+
+  // npm exiting 0 only says the command ran. The intended prefix is the only
+  // proof that this copy changed, not the default one (#1752).
+  if (after !== latest) {
+    const restored = restoreInterruptedInstall(pkgDir);
+    const restoredBins = restoreInterruptedBins(pkgDir, prefix);
+
+    let message =
+      `npm reported success, but the copy at ${prefix} is v${after ?? 'unknown'} ` +
+      `(expected v${latest}). Update it manually.`;
+
+    if (restored) {
+      message += ` Put the previous install back from ${path.basename(restored)}`;
+      message += restoredBins.length > 0 ? ` and its command (${restoredBins.join(', ')}).` : '.';
+    }
+
+    log.warn(message);
+    log.persist(message);
+    setInstallationUpdate(record.id, 'failed', message, after ?? undefined);
+
+    return false;
+  }
+
+  const message = `Updated the registered TeamAI copy at ${prefix} to v${latest}`;
+
+  log.success(message);
+  setInstallationUpdate(record.id, 'updated', message, latest);
+
+  return true;
+}
+
 /** Automatic hooks keep a diagnostic record; an explicit update also shows the remedy. */
 function reportUnsupportedUpdate(message: string, automatic: boolean): void {
   if (automatic) log.debug(message);
@@ -1108,12 +1138,56 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
 
   if (unreachable) log.warn(unreachable);
 
+  const runningEntry = fileURLToPath(import.meta.url);
+
   if (!result.available) {
-    if (unreachable) return 'unreachable';
+    const otherCandidate = result.source === 'unknown'
+      ? null
+      : selectOtherInstallation(result.latest, runningEntry);
 
-    log.info(`Already up to date (v${result.current})`);
+    if (!otherCandidate) {
+      if (unreachable) return 'unreachable';
 
-    return 'skipped';
+      log.info(`Already up to date (v${result.current})`);
+
+      return 'skipped';
+    }
+
+    // The running copy is current, but another registered copy is not. That
+    // copy only moves under the member's own opt-in, never because `auto`
+    // happened to be on for the copy that ran (#1753).
+    // oxlint-disable-next-line teamai/config-load-options -- an automatic update reads the same member policy as a self-update
+    const localConfig = await loadLocalConfig().catch(() => null) ?? runningScope;
+    const teamConfig = localConfig ? await loadTeamConfig(localConfig.repo.localPath) : null;
+    const policy = resolveEffectiveUpdatePolicy(localConfig, teamConfig);
+
+    if (policy !== 'auto' || localConfig?.updateOtherInstallations !== true) {
+      log.info(`Already up to date (v${result.current})`);
+
+      return 'skipped';
+    }
+
+    const pkgName = getCurrentPackageName();
+    const locked = await acquireLock();
+
+    if (!locked) {
+      log.warn('Another update is in progress, skipping');
+
+      return 'skipped';
+    }
+
+    try {
+      const updated = await updateRegisteredCopy(
+        otherCandidate,
+        result.latest,
+        pkgName,
+        resolveRegistryForPackage(pkgName),
+      );
+
+      return updated ? 'ok' : 'failed';
+    } finally {
+      await releaseLock();
+    }
   }
 
   // Load configs for update policy. Team config is the default; local
@@ -1215,6 +1289,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
   }
 
   // auto policy or user confirmed — proceed with install
+  const runningRecordId = describeInstallation(runningEntry, result.latest).id;
   const locked = await acquireLock();
 
   if (!locked) {
@@ -1229,7 +1304,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
       npm.cmd,
       [
         ...npm.args,
-        'install', '-g', pkgName,
+        'install', '-g', `${pkgName}@${result.latest}`,
         `--prefix=${target.prefix}`,
         `--registry=${registry}`,
       ],
@@ -1252,6 +1327,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
 
       log.warn(message);
       log.persist(message);
+      setInstallationUpdate(runningRecordId, 'failed', message);
 
       return 'failed';
     }
@@ -1273,6 +1349,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
 
           log.warn(message);
           log.persist(message);
+          setInstallationUpdate(runningRecordId, 'failed', message);
 
           return 'failed';
         }
@@ -1296,10 +1373,22 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
       });
       log.success('Refreshed hooks with new version');
     } catch (e) {
-      log.error(`Hook refresh after update skipped: ${e instanceof Error ? e.message : String(e)}`);
+      const message = `Hook refresh after update skipped: ${e instanceof Error ? e.message : String(e)}`;
+
+      log.error(message);
+      setInstallationUpdate(runningRecordId, 'failed', message);
 
       return 'failed';
     }
+
+    // Record success only after the whole update finished: the install, the
+    // version read-back and the hook refresh (#1753 review).
+    setInstallationUpdate(
+      runningRecordId,
+      'updated',
+      `Updated this TeamAI copy to v${result.latest}`,
+      result.latest,
+    );
   } catch (e) {
     const msg = e instanceof Error ? e.message : '';
 
@@ -1332,6 +1421,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
 
     log.warn(message);
     log.persist(message);
+    setInstallationUpdate(runningRecordId, 'failed', message);
 
     return 'failed';
   } finally {
@@ -1348,6 +1438,21 @@ export interface UpdateOptions {
   dryRun?: boolean;
   verbose?: boolean;
   silent?: boolean;
+}
+
+/**
+ * Show every copy this machine has run. `teamai update` is the one command a
+ * member runs to understand update coverage, and a copy npm must not touch is
+ * only useful with its manual remedy (#1753).
+ */
+function printInstallations(): void {
+  const notes = installationNotes();
+
+  if (notes.length === 0) return;
+
+  log.info('Registered installations:');
+
+  for (const note of notes) log.info(`  ${note}`);
 }
 
 /**
@@ -1369,6 +1474,8 @@ export async function update(options: UpdateOptions): Promise<void> {
       log.info(`Already up to date (v${result.current})`);
     }
 
+    printInstallations();
+
     return;
   }
 
@@ -1377,4 +1484,6 @@ export async function update(options: UpdateOptions): Promise<void> {
   if (await doUpdate(await resolveConfigForDir(), { force: true }) === 'failed') {
     process.exitCode = 1;
   }
+
+  printInstallations();
 }

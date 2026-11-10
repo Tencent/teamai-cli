@@ -12,6 +12,7 @@ import { scopeScoring } from './scorers/settings.js';
 import { readWorkspaceChildren } from './workspace-children.js';
 import { machineUnreadKeys, memberSettingLines, memberSettingsReport, type MemberSettingsReport } from './member-settings-report.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
+import { installationNotes } from './installations.js';
 import { getUserHome } from './utils/home.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import type { GlobalOptions } from './types.js';
@@ -1274,6 +1275,9 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...await recordedPlaceNotes(ctx, 'blocks'),
     // A team timeout for the TodoWrite entry teamai no longer installs (#1788).
     ...await retiredBuiltinOverrideNotes(ctx),
+    // Which copies of teamai this machine has run, and how to update the
+    // layouts npm must not touch (#1753).
+    ...installationNotes(),
   ];
 
   const memberSettings = await memberSettingsReport(ctx);

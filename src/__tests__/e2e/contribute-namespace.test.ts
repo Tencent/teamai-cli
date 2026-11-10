@@ -46,6 +46,7 @@ function snapshot(dir = sandbox, ignoreDebugLog = false): string[] {
     const file = path.join(dir, entry.name);
     const relative = path.relative(sandbox, file);
     // Real command errors use the ordinary diagnostic log; it is not a learning write.
+    if (file === path.join(home, '.teamai', 'installations.json')) return [];
     if (ignoreDebugLog && file === path.join(home, '.teamai', 'debug.log')) return [];
     return entry.isDirectory()
       ? [`${relative}/`, ...snapshot(file, ignoreDebugLog)]
