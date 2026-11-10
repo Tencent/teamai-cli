@@ -1,6 +1,11 @@
 import module from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { runHookFastPath } from './hook-fast-path.js';
+import { runHookFastPath, runLoginDeferredHook } from './hook-fast-path.js';
+
+// A hook whose command deferred the login shell is answered here in every case (#1788).
+const deferred = await runLoginDeferredHook(process.argv.slice(2), { env: process.env, platform: process.platform, stdin: () => process.stdin });
+
+if (deferred !== null) process.exit(deferred);
 
 // A hook whose handlers all run in the background exits here, before the CLI
 // bundle loads: loading it was most of what a tool call kept the agent

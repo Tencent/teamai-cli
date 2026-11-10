@@ -200,4 +200,33 @@ describe.skipIf(process.platform === 'win32')('hook fast path (#1788, real CLI)'
     const log = await waitForLog(/\[hook-dispatch\] post-tool-use\/claude background: \d+ms total/);
     expect(log).not.toContain('fast path');
   });
+
+  // A command that defers its login shell starts teamai through ~/.teamai/bin; the login shell runs around the
+  // background pass only. The tool's PATH here has no teamai, as a tool started from the desktop has none.
+  it('takes the fast path through the wrapper, and its background pass runs in the login shell', async () => {
+    const bin = path.join(sandbox, 'bin');
+    const nodeLog = path.join(sandbox, 'node.log');
+    const preload = path.join(sandbox, 'preload.cjs');
+    const exec = `#!/bin/sh\nexec "${process.execPath}" "${cli}" "$@"\n`;
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'teamai'), exec, { mode: 0o755 });
+    fs.mkdirSync(path.join(home, '.teamai', 'bin'));
+    fs.writeFileSync(path.join(home, '.teamai', 'bin', 'teamai'), exec, { mode: 0o755 });
+    fs.writeFileSync(path.join(home, '.profile'), `export PATH="${bin}:$PATH"\nexport PROBE_LOGIN_VAR=from-login-shell\n`);
+    fs.writeFileSync(preload, `if (process.argv.includes('hook-dispatch')) require('node:fs').appendFileSync(${JSON.stringify(nodeLog)}, (process.argv.includes('--bg-only') ? 'bg ' : 'fg ') + (process.env.PROBE_LOGIN_VAR ?? 'unset') + '\\n');\n`);
+    const { BASH_ENV: _bashEnv, ...toolEnv } = env;
+    const command = 'if [ -x "$HOME/.teamai/bin/teamai" ]; then TEAMAI_HOOK_LOGIN=deferred "$HOME/.teamai/bin/teamai" hook-dispatch post-tool-use --tool claude 2>/dev/null; else bash -lc "teamai hook-dispatch post-tool-use --tool claude 2>/dev/null"; fi || true';
+
+    const result = spawnSync('/bin/sh', ['-c', command], {
+      cwd: project, env: { ...toolEnv, PATH: '/usr/bin:/bin', NODE_OPTIONS: `--require ${preload}` }, input: JSON.stringify(readPayload()), encoding: 'utf8', timeout: 30_000,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe('');
+    const log = await waitForLog(/\[hook-dispatch\] post-tool-use\/claude background: \d+ms total/);
+    expect(log).toContain('[hook-dispatch] post-tool-use/claude fast path');
+    const events = fs.readFileSync(path.join(home, '.teamai', 'dashboard', 'events.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(events).toContainEqual(expect.objectContaining({ type: 'tool_use', sessionId: 's-1', toolName: 'Read' }));
+    expect(fs.readFileSync(nodeLog, 'utf8').trim().split('\n').sort()).toEqual(['bg from-login-shell', 'fg unset']);
+  });
 });

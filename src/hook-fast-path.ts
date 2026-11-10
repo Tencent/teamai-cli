@@ -16,6 +16,7 @@
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
 import { writeToFile } from './utils/debug-log.js';
@@ -40,6 +41,22 @@ export const FOREGROUND_PAYLOAD_KEYS = ['teamai_run', 'teamai_launch'] as const;
 
 /** The variables local-agent.ts `loadLocalAgentConfig` takes an HTTP endpoint from when nothing is stored. */
 export const HTTP_ENDPOINT_ENVS = ['TEAMAI_HTTP_ENDPOINT', 'TEAMAI_ENDPOINT', 'TEAMAI_API_BASE_URL'] as const;
+
+/**
+ * Set to `deferred` by a hook command that starts teamai through `~/.teamai/bin` instead of a login shell
+ * (builtin-hooks.ts `ensureTeamaiWrapper`). The login shell then runs where nothing waits for it: around the
+ * background pass, and around the full dispatch when the fast path cannot take the hook.
+ */
+export const LOGIN_DEFERRED_ENV = 'TEAMAI_HOOK_LOGIN';
+
+/** `teamai <args>` as a login bash finds it: the command teamai installed before the login shell was deferred. */
+const LOGIN_SHELL_ARGS = ['-lc', 'exec teamai "$@"', 'teamai'] as const;
+
+/**
+ * A payload over this goes to the background pass as a file. A pipe holds the writer once its buffer is full
+ * (16 KB to 64 KB) until the reader starts, and the reader now starts after a login shell.
+ */
+const PIPED_PAYLOAD_MAX_BYTES = 16 * 1024;
 
 /**
  * Tools whose hook the fast path never takes: those whose `hooks.needsBundle`
@@ -214,18 +231,102 @@ export async function runHookFastPath(
   return 'done';
 }
 
-/** The detached child, in its own process group, once its stdin is flushed: the hook then exits without waiting for it. */
-async function spawnBackgroundChild(command: string, args: string[], stdin: string): Promise<void> {
-  try {
-    const child = spawn(command, args, { detached: true, stdio: ['pipe', 'ignore', 'ignore'] });
+/**
+ * The hook `teamai <argv>` whose command deferred the login shell, as the status it exits with, or null when
+ * the command did not (then `runHookFastPath` decides). The same verdicts as the fast path, with the login
+ * shell moved behind them: a hook the fast path takes starts its background pass through the login shell and
+ * returns, and any other hook runs through the login shell here, as the command installed before did. Every
+ * process it starts gets the environment the tool gave the hook.
+ */
+export async function runLoginDeferredHook(
+  argv: readonly string[],
+  options: { env: NodeJS.ProcessEnv; platform: NodeJS.Platform; stdin: () => Readable },
+): Promise<number | null> {
+  if (options.env[LOGIN_DEFERRED_ENV] !== 'deferred' || argv[0] !== 'hook-dispatch') return null;
+  const env = hostEnvironment(options.env);
+  const verdict = argvVerdict(argv, env, options.platform);
 
-    child.on('error', () => {});
+  if (verdict.kind === 'skip') return 0;
+
+  if (verdict.kind === 'full') return runThroughLoginShell({ argv, env, stdin: null });
+  const raw = await readStdin(options.stdin());
+  const { event, tool, matcher } = verdict.hook;
+  const child = childPayload(raw);
+
+  if (child === null || (event === 'prompt-submit' && promptAnswersInForeground(child.sessionId, env))) {
+    return runThroughLoginShell({ argv, env, stdin: raw });
+  }
+
+  const payloadFile = Buffer.byteLength(child.payload) > PIPED_PAYLOAD_MAX_BYTES ? writePayloadFile(child.payload) : null;
+
+  const started = await spawnBackgroundChild(
+    'bash',
+    [...LOGIN_SHELL_ARGS, 'hook-dispatch', event, '--tool', tool, '--bg-only', ...(matcher === '*' ? [] : ['--matcher', matcher]), ...(payloadFile === null ? [] : ['--stdin-file', payloadFile])],
+    payloadFile === null ? child.payload : '',
+    env,
+  );
+
+  // The background pass removes the file it reads; one that never started cannot.
+  if (!started && payloadFile !== null) fs.rmSync(payloadFile, { force: true });
+  writeToFile('DEBUG', `[hook-dispatch] ${event}/${tool} fast path`);
+
+  return 0;
+}
+
+/** `env` as the tool gave it to the hook: without the marker. */
+function hostEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const { [LOGIN_DEFERRED_ENV]: _marker, ...host } = env;
+
+  return host;
+}
+
+/** `teamai <argv>` through a login bash, in the foreground: its output is the hook's, and its status is the answer. */
+function runThroughLoginShell({ argv, env, stdin }: { argv: readonly string[]; env: NodeJS.ProcessEnv; stdin: string | null }): Promise<number> {
+  return new Promise((resolve) => {
+    const child = spawn('bash', [...LOGIN_SHELL_ARGS, ...argv], { env, stdio: [stdin === null ? 'inherit' : 'pipe', 'inherit', 'inherit'] });
+
+    child.on('error', () => resolve(127));
+    child.on('exit', (code) => resolve(code ?? 1));
+    child.stdin?.on('error', () => {});
+    child.stdin?.end(stdin ?? '');
+  });
+}
+
+/** The payload in a file the background pass reads and removes (`--stdin-file`), or null when it cannot be written. */
+function writePayloadFile(payload: string): string | null {
+  const file = path.join(os.tmpdir(), `teamai-hook-${process.pid}-${Date.now()}.json`);
+
+  try {
+    fs.writeFileSync(file, payload, { encoding: 'utf8', mode: 0o600 });
+
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The detached child, in its own process group, once its stdin is flushed: the hook then exits without waiting for
+ * it. False when it could not be started.
+ */
+async function spawnBackgroundChild(command: string, args: string[], stdin: string, env?: NodeJS.ProcessEnv): Promise<boolean> {
+  try {
+    const child = spawn(command, args, { detached: true, stdio: ['pipe', 'ignore', 'ignore'], env });
+
+    const started = new Promise<boolean>((resolve) => {
+      child.once('spawn', () => resolve(true));
+      child.on('error', () => resolve(false));
+    });
+
     await new Promise<void>((resolve) => {
       child.stdin.on('error', () => resolve());
       child.stdin.end(stdin, () => resolve());
     });
     child.unref();
+
+    return await started;
   } catch {
     // Background work is best-effort, as for the full dispatch's spawn.
+    return false;
   }
 }
