@@ -543,7 +543,7 @@ const dashboardReportHandler: HookHandler = {
   async execute(stdin, tool, config) {
     // Registered with requiresConfig: a session outside any scope is not recorded.
     if (!config) return null;
-    const { parseHookEvent, appendEvent, compactEvents, dataHomeKey, eventRepoAnchor, addGitStateAtStart, addGitHeadAtStop, gitStateIn } = await import('./dashboard-collector.js');
+    const { parseHookEvent, appendEvent, compactEvents, dataHomeKey, eventRepoAnchor, addGitStateAtStart, addGitHeadAtStop, gitStateIn, gitStateAtStopIn } = await import('./dashboard-collector.js');
     const { getDataHome } = await import('./types.js');
     const raw = JSON.stringify(stdin);
     // The dispatcher's scope, which knows the project even when the event
@@ -564,7 +564,7 @@ const dashboardReportHandler: HookHandler = {
       const [repoAnchor] = await Promise.all([
         eventRepoAnchor(event.cwd, event.sessionId),
         addGitStateAtStart(event, gitStateIn(stdin)),
-        addGitHeadAtStop(event),
+        addGitHeadAtStop(event, gitStateAtStopIn(stdin)),
       ]);
 
       event.projectAnchor = repoAnchor;

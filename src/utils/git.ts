@@ -1974,6 +1974,21 @@ export function headStateOf(out: string): HeadState | null {
   return { head, dirty: lines.some((l) => !l.startsWith('#')) };
 }
 
+/** The branch the output of `git` with `HEAD_STATUS` names, or null on a detached HEAD. */
+export function headBranchOf(out: string): string | null {
+  const branch = out.split('\n').find((l) => l.startsWith('# branch.head '))?.slice('# branch.head '.length).trim();
+
+  return !branch || branch === '(detached)' ? null : branch;
+}
+
+/** {@link getHeadState} and the branch checked out ({@link headBranchOf}), from the same one `git status`. */
+export async function getHeadAndBranch(cwd: string, abort?: AbortSignal): Promise<{ state: HeadState; branch: string | null } | null> {
+  const out = await createGit(cwd, abort).raw([...HEAD_STATUS]);
+  const state = headStateOf(out);
+
+  return state && { state, branch: headBranchOf(out) };
+}
+
 /**
  * Whether `absFile`'s content was, at some point on the current branch, the
  * content of `relPath`. A local copy that matches an OLDER team version and

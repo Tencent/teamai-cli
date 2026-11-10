@@ -176,7 +176,9 @@ async function atStop(config: LocalConfig, tool: string, payload: HookStdin): Pr
   const dir = sessionDir(config, platform, sessionId);
 
   if (!(await fs.stat(dir).catch(() => undefined))) return;
-  const head = await headWithin(cwd, END_GIT_TIMEOUT_MS);
+  const { gitStateAtStopIn } = await import('../dashboard-collector.js');
+  const handed = gitStateAtStopIn(payload);
+  const head = handed === undefined ? await headWithin(cwd, END_GIT_TIMEOUT_MS) : handed;
 
   if (!head) {
     log.debug(`session capture: ${cwd} gave no git state at this Stop, so ${platform} session ${sessionId} keeps its end record`);

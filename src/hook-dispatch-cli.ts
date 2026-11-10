@@ -623,6 +623,13 @@ async function runHookDispatch(
       if (!(SESSION_RUN_PAYLOAD_KEY in stdin)) stdin[SESSION_RUN_PAYLOAD_KEY] = sessionRun(process.env);
 
       if (!(LAUNCH_PAYLOAD_KEY in stdin)) stdin[LAUNCH_PAYLOAD_KEY] = launchPayload();
+
+      // One git status for both readers of the checkout at a Stop: the session's end record and the dashboard's event.
+      if (event === 'stop' && localConfig && cwd) {
+        const { GIT_AT_STOP_PAYLOAD_KEY, readGitStateAtStop } = await import('./dashboard-collector.js');
+        stdin[GIT_AT_STOP_PAYLOAD_KEY] = await readGitStateAtStop(cwd);
+      }
+
       await runDispatch(dispatcher, event, matcher, stdin, tool, 'background');
 
       return;

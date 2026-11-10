@@ -1,11 +1,11 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { buildSync } from 'esbuild';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { GIT_AT_START_PAYLOAD_KEY } from '../dashboard-collector.js';
+import { addGitHeadAtStop, GIT_AT_START_PAYLOAD_KEY, GIT_AT_STOP_PAYLOAD_KEY, gitStateAtStopIn, parseHookEvent, readGitStateAtStop } from '../dashboard-collector.js';
 import { CAPTURE_PAYLOAD_KEY, SessionCaptures } from '../session-flow/captures.js';
 import { loadStateForScope, saveStateForScope } from '../config.js';
 import { saveScopeSelection } from '../scope-selection.js';
@@ -619,6 +619,28 @@ describe('the end record a Stop writes beside the captures', () => {
 
     expect(await endOf(config)).toEqual(before);
     expect(before?.end.commit).toBe(git(project, 'rev-parse', 'HEAD'));
+  });
+
+  it('takes the one git status its Stop read, so the end record and the Stop event start no git of their own', async () => {
+    const { config, project } = checkout();
+    await SessionCaptures.atStart(config, 'claude', start(project), {});
+    const bin = path.join(path.dirname(project), 'bin');
+    const calls = path.join(path.dirname(project), 'git-calls.log');
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
+    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+    const handed = await readGitStateAtStop(project);
+    const payload = stop(project, { [GIT_AT_STOP_PAYLOAD_KEY]: handed });
+    await SessionCaptures.atStop(config, 'claude', payload);
+    const event = await parseHookEvent(JSON.stringify(payload), 'claude');
+    if (event) await addGitHeadAtStop(event, gitStateAtStopIn(payload));
+    vi.unstubAllEnvs();
+
+    // `git --version` runs once per process, whatever it reads.
+    expect(fs.readFileSync(calls, 'utf8').split('\n').filter((call) => call !== '' && call !== '--version')).toHaveLength(1);
+    expect([(await endOf(config))?.end, event?.gitHead, event?.gitBranch])
+      .toEqual([{ commit: git(project, 'rev-parse', 'HEAD'), dirty: false }, git(project, 'rev-parse', 'HEAD'), git(project, 'branch', '--show-current')]);
   });
 
   it('writes no end record for a session with no capture, such as one teamai launched', async () => {
