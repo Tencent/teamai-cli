@@ -12,7 +12,8 @@ import path from 'node:path';
  * main checkout). A hook's hash is its handler's JSON, so editing it reads as
  * `modified`, as in Codex; `hashIgnores` drops fields from it, as codex-cli
  * 0.142.5 ignores `additionalContextLimit`. `--version` prints
- * `codex-cli <version>`, or nothing for a null version (`fakeCodexVersionRuns` counts them), and each recorded call names the install that answered
+ * `codex-cli <version>`, or nothing for a null version (`fakeCodexVersionRuns` counts them), after making
+ * `$CODEX_HOME/tmp/arg0/` as codex does; each recorded call names the install that answered
  * it (`codex`). `fake.json` can also make one method fail (`failMethod`; with
  * `failCodex`, only for the install at that path, so the chosen build still
  * answers), the process exit at once (`exit`), or the listing name a hook by
@@ -22,6 +23,8 @@ import path from 'node:path';
 const SERVER = String.raw`
 if (process.argv[2] === '--version') {
   require('node:fs').appendFileSync(BUILD.codex + '.version-runs', '.');
+  // As codex does before it parses its arguments: its arg0 helpers under $CODEX_HOME/tmp.
+  require('node:fs').mkdirSync(require('node:path').join(process.env.CODEX_HOME || require('node:path').join(require('node:os').homedir(), '.codex'), 'tmp', 'arg0', 'codex-arg0fake'), { recursive: true });
   if (BUILD.version !== null) process.stdout.write('codex-cli ' + BUILD.version + '\n');
   process.exit(0);
 }

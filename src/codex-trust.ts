@@ -1,4 +1,6 @@
 import { realpathSync, statSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import crossSpawn from 'cross-spawn';
 import semver from 'semver';
@@ -7,7 +9,7 @@ import { desktopCodexBinaries } from './codex-desktop.js';
 import { getCurrentVersion } from './package-info.js';
 import type { CodexBuild, CodexBuildSkew, JsonValue } from './types.js';
 import { JsonValueSchema, JsonObjectSchema } from './types.js';
-import { probeBinary } from './utils/exec.js';
+import { execCommand, probeBinary } from './utils/exec.js';
 import { lenientList } from './utils/json.js';
 import { log } from './utils/logger.js';
 import { findOnPath } from './utils/lookpath.js';
@@ -130,9 +132,16 @@ export function codexBuildsIdentity(): string {
 }
 
 async function probeCodexVersion(command: string): Promise<string | null> {
-  const printed = /codex-cli\s+(\S+)/.exec(await probeBinary(command))?.[1];
+  // `codex --version` first sets up its arg0 helpers under $CODEX_HOME/tmp; a throwaway home keeps the member's as it was.
+  const codexHome = await mkdtemp(path.join(os.tmpdir(), 'teamai-codex-version-'));
 
-  return printed ? semver.valid(printed) : null;
+  try {
+    const printed = /codex-cli\s+(\S+)/.exec(await probeBinary(command, ['--version'], (binary, args, options) => execCommand(binary, args, { ...options, env: { ...process.env, CODEX_HOME: codexHome } })))?.[1];
+
+    return printed ? semver.valid(printed) : null;
+  } finally {
+    await rm(codexHome, { recursive: true, force: true });
+  }
 }
 
 const probedVersions = new Map<string, Promise<string | null>>();

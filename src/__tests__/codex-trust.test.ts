@@ -1300,6 +1300,13 @@ describe('Codex trust — which Codex build answers (#1244)', () => {
     expect(await oldestCodexBuildVersion()).toBe(oldest);
   });
 
+  it('asks a build its version without writing into the member\'s Codex home', async () => {
+    installPathCodex({ version: '0.167.0' });
+
+    expect(await oldestCodexBuildVersion()).toBe('0.167.0');
+    expect(await fse.pathExists(path.join(codexHome(), 'tmp'))).toBe(false);
+  });
+
   it('asks each build its version once in a process, the trust pass included', async () => {
     const onPath = installPathCodex({ version: '0.167.0' });
     const desktop = installDesktopCodex('0.163.0');
