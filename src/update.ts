@@ -1133,6 +1133,30 @@ function reportUnsupportedUpdate(message: string, automatic: boolean): void {
  * is one, else `runningScope`, the scope the update runs in.
  */
 export async function doUpdate(runningScope: LocalConfig | null, options?: { force?: boolean; automatic?: boolean }): Promise<UpdateOutcome> {
+  // Load configs for update policy. Team config is the default; local
+  // config overrides (user always wins).
+  // A failed load falls back to the running scope, so no path of an update rejects on it (#1810).
+  // oxlint-disable-next-line teamai/config-load-options -- automatic update policy retains normal config migration and has no preview option
+  const localConfig = await loadLocalConfig().catch(() => null) ?? runningScope;
+
+  const teamConfig = localConfig
+    ? await loadTeamConfig(localConfig.repo.localPath)
+    : null;
+
+  const policy = resolveEffectiveUpdatePolicy(localConfig, teamConfig);
+
+  const skipped = (): UpdateOutcome => {
+    const reason = teamConfig?.autoUpdate === false && localConfig?.updatePolicy === undefined
+      ? 'team policy (autoUpdate: false)'
+      : 'local updatePolicy: skip';
+
+    log.debug(`Auto-update skipped: ${reason}`);
+
+    return 'skipped';
+  };
+
+  // A hook's update under skip has nothing to ask the registry for.
+  if (policy === 'skip' && options?.automatic) return skipped();
   const result = await checkForUpdate(options);
   const unreachable = registryUnreachableMessage(result);
 
@@ -1156,11 +1180,6 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
     // The running copy is current, but another registered copy is not. That
     // copy only moves under the member's own opt-in, never because `auto`
     // happened to be on for the copy that ran (#1753).
-    // oxlint-disable-next-line teamai/config-load-options -- an automatic update reads the same member policy as a self-update
-    const localConfig = await loadLocalConfig().catch(() => null) ?? runningScope;
-    const teamConfig = localConfig ? await loadTeamConfig(localConfig.repo.localPath) : null;
-    const policy = resolveEffectiveUpdatePolicy(localConfig, teamConfig);
-
     if (policy !== 'auto' || localConfig?.updateOtherInstallations !== true) {
       log.info(`Already up to date (v${result.current})`);
 
@@ -1190,26 +1209,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
     }
   }
 
-  // Load configs for update policy. Team config is the default; local
-  // config overrides (user always wins).
-  // oxlint-disable-next-line teamai/config-load-options -- automatic update policy retains normal config migration and has no preview option
-  const localConfig = (await loadLocalConfig()) ?? runningScope;
-
-  const teamConfig = localConfig
-    ? await loadTeamConfig(localConfig.repo.localPath)
-    : null;
-
-  const policy = resolveEffectiveUpdatePolicy(localConfig, teamConfig);
-
-  if (policy === 'skip') {
-    const reason = teamConfig?.autoUpdate === false && localConfig?.updatePolicy === undefined
-      ? 'team policy (autoUpdate: false)'
-      : 'local updatePolicy: skip';
-
-    log.debug(`Auto-update skipped: ${reason}`);
-
-    return 'skipped';
-  }
+  if (policy === 'skip') return skipped();
 
   // Refuse unsupported install layouts before prompting, so nobody confirms
   // an update that is then skipped.
