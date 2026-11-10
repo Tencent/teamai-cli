@@ -1766,10 +1766,19 @@ async function buildRemovalPlan(
     );
 
     const mcpManifest = (await readJson<ManagedMcpManifest>(mcpManifestPath)) ?? {};
+    const { mcpOwnersOf } = await import('./mcp-reconcile.js');
 
     for (const [toolKey, records] of Object.entries(mcpManifest)) {
       for (const rec of records ?? []) {
-        if (rec?.name) plan.mcpServers.push(`${toolKey}/${rec.name}`);
+        if (!rec?.name) continue;
+
+        // OpenClaw's, Hermes' and DSH's one user config keeps an entry another scope still records (`mcpOwnersOf`).
+        const others = rec.file === undefined ? undefined
+          : await mcpOwnersOf({ tool: toolKey.split(':')[0], file: rec.file }, new Set([mcpManifestPath]));
+
+        const kept = others !== undefined && (others.unreadable.length > 0 || others.owners.some(({ record }) => record.name === rec.name));
+
+        plan.mcpServers.push(`${toolKey}/${rec.name}${kept ? ' (kept: another scope may still deliver it)' : ''}`);
       }
     }
 
@@ -3612,6 +3621,8 @@ async function removeConfirmed(
   const heldMcp = new Set([...plan.gitExcludes].flatMap(([file, entries]) => entries.map(({ pattern }) => `${file}\0${pattern}`)));
   // The MCP configs that could not be read: their records, and the data home holding them, stay for the retry.
   const mcpLeft: string[] = [];
+  // A removal that failed keeps the data home too, but the MCP files it could read still name the folders that stay.
+  const mcpRemovalFailed: string[] = [];
 
   if (plan.includeShared) {
     try {
@@ -3626,8 +3637,10 @@ async function removeConfirmed(
       let removedTotal = 0;
 
       for (const cfg of await projectWorktreeConfigs(localConfig)) {
-        const { changes } = await reconcileMcpForConfig(teamConfig, cfg, { removeAll: true });
+        const { changes, unparsed } = await reconcileMcpForConfig(teamConfig, cfg, { removeAll: true });
         removedTotal += changes.filter((c) => c.action === 'removed').length;
+
+        if (unparsed && !mcpLeft.includes(getDataHome(cfg))) mcpLeft.push(getDataHome(cfg));
 
         // Every checkout's config sees the other checkouts' local scopes: name each place once.
         for (const place of await unreadMcpPlaces(teamConfig, cfg)) if (!mcpLeft.includes(place)) mcpLeft.push(place);
@@ -3663,6 +3676,7 @@ async function removeConfirmed(
       }
     } catch (e) {
       log.warn(`Failed to remove MCP servers: ${e instanceof Error ? e.message : String(e)}`);
+      mcpRemovalFailed.push(getDataHome(localConfig));
     }
   }
 
@@ -3682,7 +3696,7 @@ async function removeConfirmed(
 
   const { pendingOpencode, hooksLeft, blocksLeft, filesLeft } = await executeRemoval(plan, heldMcp, {
     hooks: dispatchLeft ? [{ what: `the Codex team-hook dispatchers in ${dispatchLeft}`, tool: 'codex' }] : [],
-    files: [...httpSourceLeft, ...plan.keptUnjudged, ...excludesLeft, ...grantsLeft, ...mcpLeft],
+    files: [...httpSourceLeft, ...plan.keptUnjudged, ...excludesLeft, ...grantsLeft, ...mcpLeft, ...mcpRemovalFailed],
     mcpEntries,
   }, codexTrustPolicy(localConfig));
 

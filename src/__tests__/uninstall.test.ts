@@ -3688,18 +3688,64 @@ describe('uninstall', () => {
     expect(await fse.pathExists(membersAgent)).toBe(true);
   });
 
-  it('uninstall summary lists teamai-managed MCP servers', async () => {
+  it('keeps the ownership home when another scope has an unreadable MCP record', async () => {
+    const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    await fse.ensureDir(path.join(homeDir, '.openclaw', 'workspace'));
+    const file = path.join(homeDir, '.openclaw', 'openclaw.json');
+    const entry = { transport: 'streamable-http', url: 'https://team.example/mcp' };
+    await fse.outputJson(file, { mcp: { servers: { shared: entry } } });
+    const manifest = { openclaw: [{ name: 'shared', hash: entryHash(entry), file }] };
+    const own = path.join(teamaiHome, 'managed-mcp.json');
+    await fse.outputJson(own, manifest);
+    await fse.outputFile(path.join(teamaiHome, 'projects', 'other', 'workspaces', 'checkout', 'managed-mcp.json'), '{ broken');
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig(homeDir, repoPath),
+      teamConfig: makeTeamConfig({ toolPaths: { openclaw: { skills: '.openclaw/skills', mcp: '.openclaw/openclaw.json' } } }),
+    });
+    const exitCode = process.exitCode;
+    try {
+      await uninstall({ force: true });
+      expect((await fse.readJson(file)).mcp.servers.shared).toEqual(entry);
+      expect(await fse.readJson(own)).toEqual(manifest);
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = exitCode;
+    }
+  });
+
+  it.each(['user', 'project'] as const)('%s uninstall summary lists teamai-managed MCP servers', async (scope) => {
     const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);
     vi.stubEnv('SHELL', '/bin/zsh');
+    const projectRoot = path.join(tmpDir, 'work', 'api');
+    const localConfig = scope === 'user' ? makeLocalConfig(homeDir, repoPath)
+      : makeLocalConfig(projectRoot, repoPath, { scope, projectRoot, dataHome: path.join(teamaiHome, 'projects', 'api') });
+    if (scope === 'project') {
+      await fse.ensureDir(projectRoot);
+      execFileSync('git', ['init', '-q', projectRoot]);
+    }
+    const own = scope === 'user' ? path.join(teamaiHome, 'managed-mcp.json') : managedMcpManifestPath(getDataHome(localConfig), projectRoot);
+    const other = scope === 'user' ? path.join(teamaiHome, 'projects', 'other', 'workspaces', 'checkout', 'managed-mcp.json')
+      : path.join(teamaiHome, 'managed-mcp.json');
 
-    await fse.writeJson(path.join(teamaiHome, 'managed-mcp.json'), {
+    const record = (tool: string, file: string, name = 'shared') => ({ name, hash: 'ghi', file: path.join(homeDir, file) });
+    const sharedHomes = {
+      openclaw: [record('openclaw', '.openclaw/openclaw.json')],
+      hermes: [record('hermes', '.hermes/config.yaml')],
+      dsh: [record('dsh', '.dsh/cordis.patch.yml')],
+    };
+    await fse.outputJson(own, {
       claude: [{ name: 'gpu-analysis', hash: 'abc' }],
       cursor: [{ name: 'context7', hash: 'def' }],
+      ...sharedHomes,
+      openclaw: [...sharedHomes.openclaw, record('openclaw', '.openclaw/openclaw.json', 'solo')],
     });
+    // The other scope still records the servers the three shared-home tools keep in their one user config.
+    await fse.outputJson(other, sharedHomes);
 
     mockAutoDetectInit.mockResolvedValue({
-      localConfig: makeLocalConfig(homeDir, repoPath),
+      localConfig,
       teamConfig: makeTeamConfig({
         toolPaths: {
           claude: {
@@ -3722,9 +3768,11 @@ describe('uninstall', () => {
     spy.mockRestore();
 
     const summary = lines.join('\n');
-    expect(summary).toContain('MCP servers (2):');
-    expect(summary).toContain('claude/gpu-analysis');
-    expect(summary).toContain('cursor/context7');
+    expect(summary).toContain('MCP servers (6):');
+    expect(summary).toContain('claude/gpu-analysis\n');
+    expect(summary).toContain('cursor/context7\n');
+    expect(summary).toContain('openclaw/solo\n');
+    for (const tool of ['openclaw', 'hermes', 'dsh']) expect(summary).toContain(`${tool}/shared (kept: another scope may still deliver it)`);
   });
 
   it('什么都不存在时正常退出', async () => {

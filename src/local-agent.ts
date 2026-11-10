@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
+import { isDeepStrictEqual } from 'node:util';
 import { promisify } from 'node:util';
 import fse from 'fs-extra';
 import { z } from 'zod';
@@ -21,6 +22,7 @@ import {
   readJson,
   remove,
   writeFile,
+  writeFileAtomic,
   writeJson,
   writeJsonAtomic,
 } from './utils/fs.js';
@@ -43,6 +45,7 @@ import {
   renderCodexBlock,
   entryHash,
   museEntryHash,
+  serverNameProblem,
   type McpJsonEntry,
 } from './resources/mcp-format.js';
 import {
@@ -50,17 +53,20 @@ import {
   isTeamaiBareCopy,
   ownsJsonMcpEntry,
   writeJsonDoc,
-  writeMcpJson,
+  restoreMcpDoc,
   writeCodexAtomic,
   spliceCodexBlock,
   codexServerNames,
+  codexBlockIn,
   recordedFileOf,
   sameMcpFile,
   claimedByOtherTools,
+  adoptMcpEntriesForOwners,
   deleteEmptiedMcpFile,
   describeMcpLocation,
   loadMcpManifest,
   mcpKeyOf,
+  mcpOwnersOf,
   recordedMcpTarget,
   sameMcpPlace,
   logLeftMcpFiles,
@@ -70,6 +76,7 @@ import {
   resolveMcpTargets,
   saveMcpManifest,
   type McpKey,
+  type McpOwners,
   type McpTarget,
 } from './mcp-reconcile.js';
 import { normalizeAgentType } from './utils/tool-names.js';
@@ -123,10 +130,15 @@ import {
 import { blockingEntries, contentHash, deliveredSkillFiles, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir } from './resources/delivered-copies.js';
 import { skillOrigin, withSkillFrontmatter } from './resources/skills.js';
 import { hookSettingsFile, installOf, locate, ownOf, writable, type FilePlace } from './locate.js';
-import { mcpFormatOf } from './tools.js';
+import { DELIVERED_MODEL_TOOLS, mcpFormatOf, mcpScopeFor } from './tools.js';
+import type { DeliveredModelTool } from './tools.js';
 import { acquireLock, releaseLock } from './update.js';
-import { isJsonObject, type JsonObject } from './types.js';
-import { parseJson } from './utils/json.js';
+import { isJsonObject, JsonObjectSchema, type JsonObject } from './types.js';
+import { editJsonText, parseJson, parseJsonAs } from './utils/json.js';
+import { parseYaml } from './utils/yaml.js';
+import { resolveOpenclawConfigPath } from './openclaw-home.js';
+import { realHost, toolHome } from './tool-home.js';
+import YAML from 'yaml';
 
 const execFileAsync = promisify(execFile);
 
@@ -314,7 +326,70 @@ interface LocalAgentCommand {
   };
 }
 
-interface DeliveredModel {
+type ModelConfigTool = DeliveredModelTool;
+
+// SAFETY: DELIVERED_MODEL_TOOLS holds exactly the DeliveredModelTool ids; zod only needs the non-empty tuple type.
+const ModelConfigToolSchema = z.enum(DELIVERED_MODEL_TOOLS as [ModelConfigTool, ...ModelConfigTool[]]);
+
+/** The provider container every delivered candidate shares, checked before use. */
+const MANAGED_PROVIDER = 'teamai';
+
+/** The DSH credential-store reference the managed provider names. */
+const DSH_CREDENTIAL_REF = 'TEAMAI_MODEL_API_KEY';
+
+export type ModelDeliveryCommit = (record: ModelDeliveryRecord) => Promise<void>;
+
+type FileRecord = ModelDeliveryRecord['files'][string];
+
+type EntryRecord = FileRecord['entries'];
+
+type CredentialRecord = NonNullable<ModelDeliveryRecord['credentials']>[string];
+
+const DSH_LLM_ROW_ID = 'llm-pi-ai';
+const DSH_LLM_ROW_NAME = '@deepseek-ai/dsh-llm-pi-ai';
+const DSH_BASE_BUNDLE = '@deepseek-ai/dsh-base';
+
+/** The provider fields teamai authors; any other provider key is the member's. */
+const OPENCLAW_CONTAINER_KEYS = ['api', 'apiKey', 'baseUrl'];
+const HERMES_CONTAINER_KEYS = ['api', 'api_key', 'discover_models', 'transport'];
+const DSH_CONTAINER_KEYS = ['api', 'apiKeyEnv', 'baseURL'];
+
+const ModelDeliveryEntryRecordSchema = z.object({
+  provider: z.string().min(1),
+  name: z.string().optional(),
+  hash: z.string().min(1),
+}).catchall(JsonValueSchema);
+
+const ModelDeliveryFileRecordSchema = z.object({
+  agent: ModelConfigToolSchema,
+  provider: z.string().min(1),
+  entries: z.record(z.string(), ModelDeliveryEntryRecordSchema),
+  /** Hash of the provider fields teamai authored, excluding models; absence means unproven ownership. */
+  containerHash: z.string().min(1).optional(),
+  /** The DSH llm-pi-ai row did not exist before teamai wrote it. */
+  rowCreated: z.boolean().optional(),
+  /** The DSH llm-pi-ai row already carried a config before teamai wrote it. */
+  rowHadConfig: z.boolean().optional(),
+}).catchall(JsonValueSchema);
+
+const ModelDeliveryCredentialRecordSchema = z.object({
+  ref: z.string().min(1),
+  hash: z.string().min(1),
+  created: z.boolean().optional(),
+  /** False when the same-named reference already existed, so cleanup leaves it alone. */
+  refOwned: z.boolean().optional(),
+}).catchall(JsonValueSchema);
+
+/** teamai's record of the delivered model files it wrote; no secret is stored here. */
+export const ModelDeliveryRecordSchema = z.object({
+  version: z.literal(1),
+  files: z.record(z.string(), ModelDeliveryFileRecordSchema),
+  credentials: z.record(z.string(), ModelDeliveryCredentialRecordSchema).optional(),
+}).catchall(JsonValueSchema);
+
+export type ModelDeliveryRecord = z.infer<typeof ModelDeliveryRecordSchema>;
+
+export interface DeliveredModel {
   provider: string;
   model_id: string;
   name: string;
@@ -322,6 +397,7 @@ interface DeliveredModel {
   api_key: string;
   max_tokens?: number;
   context_window?: number;
+  input_types?: string[];
 }
 
 interface BuddyModelManifest {
@@ -341,6 +417,7 @@ interface ModelConfigManifest extends BuddyModelManifest {
    */
   providers?: Record<string, string>;
   workspaceModels?: Record<string, BuddyModelManifest>;
+  deliveredModels?: Partial<Record<ModelConfigTool, ModelDeliveryRecord>>;
 }
 
 const ManagedModelIdsSchema = z.record(z.string(), z.string());
@@ -357,9 +434,10 @@ const ModelConfigManifestSchema = BuddyModelManifestSchema.extend({
   claudeEnv: ManagedModelIdsSchema.optional(),
   providers: ManagedModelIdsSchema.optional(),
   workspaceModels: z.record(z.string(), BuddyModelManifestSchema).optional(),
+  deliveredModels: z.partialRecord(ModelConfigToolSchema, ModelDeliveryRecordSchema).optional(),
 }) satisfies z.ZodType<ModelConfigManifest>;
 
-type ModelAgentKind = 'codebuddy' | 'workbuddy' | 'claude';
+type ModelAgentKind = 'codebuddy' | 'workbuddy' | 'claude' | ModelConfigTool;
 
 type BuddyAgentKind = 'codebuddy' | 'workbuddy';
 
@@ -390,6 +468,8 @@ function modelAgentKind(tool: string | undefined): ModelAgentKind | undefined {
   if (normalized === 'workbuddy') return 'workbuddy';
 
   if (normalized === 'claude') return 'claude';
+
+  if (normalized === 'openclaw' || normalized === 'hermes' || normalized === 'dsh') return normalized;
 
   return undefined;
 }
@@ -2183,8 +2263,10 @@ function collectManifestSlugs(manifest: LocalAgentManifest): ManifestSlugs {
  *
  * Results are scoped to the current `tool` so a report never leaks another
  * tool's MCP inventory. The manifest is keyed by the same key the installer
- * writes under (see `installMcpServer`): `tool` at user scope, `${tool}:project`
- * at project scope. `tool` is the raw hook-context value (not run through
+ * writes under (see `installMcpServer`): the key of the file the server lands
+ * in, `${tool}:project` for a tool with a project MCP file and `tool` for a tool
+ * that keeps every scope's servers in its user config (`mcpScopeFor`), as a pull
+ * keys it. `tool` is the raw hook-context value (not run through
  * normalizeAgentType), matching how the installer keys the manifest.
  */
 async function scanMcpFromManifest(
@@ -2208,10 +2290,15 @@ async function scanMcpFromManifest(
     manifest = (await readJson<ManagedMcpManifest>(managedMcpManifestPath(dataHome))) ?? {};
   }
 
-  const manifestKey = `${tool}${scope === 'project' ? ':project' : ''}`;
-  const records = manifest[manifestKey];
+  // The installer keys a record by where it writes, which for a tool with no project MCP file is the user config.
+  const manifestScope = mcpScopeFor(tool, scope);
+  const keys = [managedMcpManifestKey(tool, manifestScope === 'project')];
 
-  if (!Array.isArray(records)) return [];
+  // A workspace record written before that key followed the place is still this workspace's server.
+  if (manifestScope !== scope) keys.push(managedMcpManifestKey(tool, scope === 'project'));
+  const records = keys.flatMap((key) => manifest[key] ?? []);
+
+  if (records.length === 0) return [];
 
   const seen = new Set<string>();
   const results: ReportedResource[] = [];
@@ -2275,6 +2362,13 @@ const ClaudeCustomModelSettingsSchema = z.object({
 async function scanModelsFromDisk(tool: string, workspacePath?: string): Promise<ReportedModel[]> {
   const manifest = (await readJson<ModelConfigManifest>(getModelManifestPath())) ?? {};
   const agentKind = modelAgentKind(tool);
+
+  if (agentKind !== undefined && (agentKind === 'openclaw' || agentKind === 'hermes' || agentKind === 'dsh')) {
+    if (workspacePath) return [];
+    const record = manifest.deliveredModels?.[agentKind];
+
+    return record ? scanDeliveredModels(agentKind, record) : [];
+  }
 
   if (agentKind === 'codebuddy' || agentKind === 'workbuddy') {
     const scopeManifest = workspacePath ? manifest.workspaceModels?.[workspacePath] : manifest;
@@ -3855,9 +3949,13 @@ function parseDeliveredModels(raw: string | undefined): DeliveredModels {
       name: requireModelString(input.name, 'name'),
       base_url: requireModelString(input.base_url, 'base_url'),
       api_key: requireModelString(input.api_key, 'api_key'),
-      max_tokens: optionalPositiveInteger(input.max_tokens, 'max_tokens') ?? DEFAULT_MAX_TOKENS,
+      max_tokens: optionalPositiveInteger(input.max_tokens, 'max_tokens'),
       context_window: optionalPositiveInteger(input.context_window, 'context_window'),
     };
+
+    if (input.input_types !== undefined) {
+      model.input_types = z.array(z.string()).parse(input.input_types);
+    }
 
     let parsedUrl: URL;
 
@@ -3901,7 +3999,7 @@ function buddyModelEntry(model: DeliveredModel): BuddyModelEntry {
 
   if (model.context_window !== undefined) limits.maxInputTokens = model.context_window;
 
-  if (model.max_tokens !== undefined) limits.maxOutputTokens = model.max_tokens;
+  limits.maxOutputTokens = model.max_tokens ?? DEFAULT_MAX_TOKENS;
 
   return {
     id: model.model_id,
@@ -4475,7 +4573,11 @@ async function applyModelConfig(
     throw new Error(`apply_model_config: unsupported agent "${context.tool ?? ''}"`);
   }
 
-  const scope = normalizeScope(command.scope);
+  // OpenClaw, Hermes and DSH read delivered models only in their home config,
+  // so a workspace command writes that file, as their skills already land where
+  // the tool reads them. No project scope to honour, nothing to refuse.
+  const scope = agentKind === 'openclaw' || agentKind === 'hermes' || agentKind === 'dsh'
+    ? 'user' : normalizeScope(command.scope);
 
   const workspacePath = scope === 'project'
     ? await resolveWorkspacePath(command.workspace_path ?? context.cwd)
@@ -4493,6 +4595,33 @@ async function applyModelConfig(
 
   if (agentKind === 'claude' && workspacePath) {
     throw new Error('apply_model_config: workspace scope is unsupported for claude');
+  }
+
+  // The record is saved through `commit`, after the writes land: a failed record write rolls the files back instead
+  // of leaving the member with models the manifest does not know teamai delivered.
+  const saveDelivered = (kind: 'openclaw' | 'hermes' | 'dsh') => async (record: ModelDeliveryRecord): Promise<void> => {
+    await writeJsonAtomic(getModelManifestPath(), {
+      ...manifest,
+      deliveredModels: { ...manifest.deliveredModels, [kind]: record },
+    });
+  };
+
+  if (agentKind === 'openclaw') {
+    await reconcileOpenclawModels(models, fullSnapshot, manifest.deliveredModels?.openclaw, toolHome('openclaw'), saveDelivered('openclaw'));
+
+    return;
+  }
+
+  if (agentKind === 'hermes') {
+    await reconcileHermesModels(models, fullSnapshot, manifest.deliveredModels?.hermes, toolHome('hermes'), saveDelivered('hermes'));
+
+    return;
+  }
+
+  if (agentKind === 'dsh') {
+    await reconcileDshModels(models, fullSnapshot, manifest.deliveredModels?.dsh, toolHome('dsh'), saveDelivered('dsh'));
+
+    return;
   }
 
   if (!workspacePath) {
@@ -4948,6 +5077,10 @@ async function installMcpServer(
     throw new Error(`install_mcp: tool "${tool}" has no known MCP format`);
   }
 
+  const nameProblem = serverNameProblem(format, slug);
+
+  if (nameProblem) throw new Error(`install_mcp: ${nameProblem}`);
+
   if (!supportsTransport(format, def.transport)) {
     throw new Error(`install_mcp: tool "${tool}" does not support ${def.transport} transport`);
   }
@@ -4969,26 +5102,54 @@ async function installMcpServer(
   const { resolveDataHomeForScope } = await import('./config.js');
   const dataHome = await resolveDataHomeForScope(projectScope ? 'project' : 'user', projectScope ? workspacePath : undefined);
   const { manifestPath, manifest, save } = await loadLocalAgentMcpManifest(localConfig, dataHome);
-  const manifestKey = active ? mcpManifestKey(active) : managedMcpManifestKey(tool, projectScope);
+  // The key of the place the server lands in, as a pull records it (`mcpManifestKey`): a tool with no project MCP file
+  // writes into its user config, so its record is the user key in this workspace's manifest, and every reader of that
+  // record (`uninstall --force`, the report) looks under the same key.
+  const manifestKey = mcpManifestKey(active ?? place);
+
+  // A tool with no project MCP file writes a workspace's server into its user config (`mcpScopeFor`): that one file
+  // holds every scope's entry, so a record of any scope or workspace owns it. Read them all, so re-delivering a
+  // server another workspace pulled finds its owner instead of refusing teamai's own entry.
+  const fallbackTool = mcpScopeFor(tool, 'project') === 'user';
+
   // Only records of this file: a server an earlier install left in a file CodeBuddy no longer reads moves below.
-  // By real path, as reconciliation compares them: a lookup file linked to another is that file.
-  const records = manifest[manifestKey] ?? [];
+  // By real path, as reconciliation compares them: a lookup file linked to another is that file. A workspace pull
+  // records the same server under the plain key, so that key owns it too.
+  const plainKey = managedMcpManifestKey(tool, false);
+  // A shared-home workspace record keyed `tool:project` can name this user config: the key this command wrote before it
+  // followed the place. Read it too, so its server is recognised as teamai's own.
+  const legacyProjectKey = managedMcpManifestKey(tool, true);
+  const keys = new Set([manifestKey, plainKey, ...(fallbackTool && projectScope ? [legacyProjectKey] : [])]);
+  const records = [...keys].flatMap((key) => manifest[key] ?? []);
+
+  // Every other scope's record for this file counts too, even under a name this scope also records: after an entry
+  // changed in one scope, the other scope's record may be the one that matches what is installed.
+  const elsewhere = fallbackTool
+    ? await mcpOwnersOf({ ...place, tool, file: targetFile, mappedFile }, new Set([manifestPath]))
+    : { owners: [], unreadable: [] };
+
+  const candidates = [...records, ...elsewhere.owners.map(({ record: owned }) => owned)];
   // A local scope's record that notes no file is in that scope, not in a file the project's place names.
   const recordedIn = active?.projectKey === undefined ? place : active;
-  const recordedTargets = new Map(await Promise.all(records.map(async (record) => [record, await recordedMcpTarget(recordedIn, record)] as const)));
+  const recordedTargets = new Map(await Promise.all(candidates.map(async (record) => [record, await recordedMcpTarget(recordedIn, record)] as const)));
 
-  const inTarget = await Promise.all(records.map(async (r: ManagedMcpRecord) => {
+  const inTarget = await Promise.all(candidates.map(async (r: ManagedMcpRecord) => {
     const recorded = recordedTargets.get(r);
 
     return recorded === undefined ? sameMcpFile(fileOf(r), targetFile) : sameMcpPlace(recorded, { ...recordedIn, file: targetFile });
   }));
 
-  const owned = records.filter((_, i) => inTarget[i]);
+  const owned = candidates.filter((_, i) => inTarget[i]);
   const ownedNames = new Set(owned.map((r: ManagedMcpRecord) => r.name));
   const otherKey = other ? mcpManifestKey(other) : undefined;
 
-  const movedFrom = records.find((r: ManagedMcpRecord, i) => r.name === slug && !inTarget[i])
+  const movedFrom = candidates.find((r: ManagedMcpRecord, i) => r.name === slug && !inTarget[i])
     ?? (otherKey ? manifest[otherKey]?.find((r) => r.name === slug) : undefined);
+
+  // A record that does not parse may name the entry already there: incomplete ownership never makes it teamai's to
+  // overwrite (`mcpOwnersOf`).
+  const unreadableRecord = elsewhere.unreadable.length === 0 ? ''
+    : '; an ownership record could not be read, so repair it if that server is teamai\'s';
 
   if (format === 'codex') {
     const block = renderCodexBlock(def);
@@ -4997,7 +5158,7 @@ async function installMcpServer(
     const present = new Set(codexServerNames(source));
 
     if (present.has(slug) && !ownedNames.has(slug)) {
-      throw new Error(`install_mcp: server "${slug}" exists in ${tool} config and is not managed by teamai`);
+      throw new Error(`install_mcp: server "${slug}" exists in ${tool} config and is not managed by teamai${unreadableRecord}`);
     }
 
     updateManifestRecord(manifest, manifestKey, { name: slug, hash, file: targetFile });
@@ -5010,14 +5171,14 @@ async function installMcpServer(
     const hash = entryHash(entry);
     const valueHash = format === 'muse' ? museEntryHash(entry) : undefined;
     const allowBare = format === 'copilot' && projectScope;
-    const doc = await readJsonDoc(targetFile, serverKey, { allowBare, projectKey: active?.projectKey, syntax: (active ?? place).syntax });
+    const doc = await readJsonDoc(targetFile, serverKey, { allowBare, projectKey: active?.projectKey, syntax: (active ?? place).syntax, format });
 
     if (!doc) {
       throw new Error(`install_mcp: cannot parse ${targetFile}`);
     }
 
     if (doc.servers[slug] !== undefined && !ownsJsonMcpEntry(doc, slug, owned, allowBare)) {
-      throw new Error(`install_mcp: server "${slug}" exists in ${tool} config${active?.projectKey ? ` (${target})` : ''} and is not managed by teamai`);
+      throw new Error(`install_mcp: server "${slug}" exists in ${tool} config${active?.projectKey ? ` (${target})` : ''} and is not managed by teamai${unreadableRecord}`);
     }
 
     // The copy a bare install left before another tool added the key would keep the old value beside this one (#882).
@@ -5028,7 +5189,6 @@ async function installMcpServer(
     const credential = projectScope && !active?.projectKey && await keepCredentialOutOfGit({ ...localConfig, dataHome }, tool, slug, targetFile, entry, true);
     // A record of this server in the file CodeBuddy no longer reads is existing ownership too (#993).
     const previousRecord = owned.find((record) => record.name === slug) ?? movedFrom;
-    const previousData = previousRecord ? structuredClone(doc.data) : undefined;
 
     const ownership = (bare?: boolean): ManagedMcpRecord => {
       const record: ManagedMcpRecord = { name: slug, hash };
@@ -5070,9 +5230,9 @@ async function installMcpServer(
       try {
         await save();
       } catch (error) {
-        if (previousData) {
+        if (previousRecord) {
           try {
-            await writeMcpJson(targetFile, previousData);
+            await restoreMcpDoc(targetFile, doc);
           } catch (restoreError) {
             throw new Error(
               `install_mcp: ownership write failed (${error instanceof Error ? error.message : String(error)}), and restoring ${targetFile} failed `
@@ -5117,12 +5277,12 @@ async function installMcpServer(
  * where. Whether it took it out.
  */
 async function removeMovedMcpEntry(
-  from: Pick<McpTarget, 'file' | 'projectKey' | 'syntax'>, serverKey: McpKey, slug: string, target: string, recordedHash: string,
+  from: Pick<McpTarget, 'file' | 'projectKey' | 'syntax' | 'format'>, serverKey: McpKey, slug: string, target: string, recordedHash: string,
 ): Promise<boolean> {
   const file = describeMcpLocation(from);
 
   try {
-    const doc = await readJsonDoc(from.file, serverKey, { projectKey: from.projectKey, syntax: from.syntax });
+    const doc = await readJsonDoc(from.file, serverKey, { projectKey: from.projectKey, syntax: from.syntax, format: from.format });
 
     if (!doc) throw new Error('it does not parse');
 
@@ -5188,6 +5348,20 @@ async function keepCredentialOutOfGit(
   return true;
 }
 
+/**
+ * The records a scope other than the one uninstalling still gives `slug` in `file`, and the records that could not
+ * be read. The three tools keep every scope's servers in one config, so a user-scope uninstall must leave an entry a
+ * workspace still delivers, and the other way round; only the uninstalling scope's record goes.
+ */
+async function ownersInOtherScopes(
+  tool: string, file: string, slug: string, ownManifestPath: string,
+): Promise<McpOwners> {
+  // No unmoved file here: a record that names none is for the file this uninstall names.
+  const { owners, unreadable } = await mcpOwnersOf({ tool, file }, new Set([ownManifestPath]));
+
+  return { owners: owners.filter(({ record }) => record.name === slug), unreadable };
+}
+
 async function uninstallMcpServer(
   config: LocalAgentConfig,
   tool: string,
@@ -5206,31 +5380,65 @@ async function uninstallMcpServer(
   const format = mcpFormatOf(tool);
 
   if (!format) return;
+  // OpenClaw, Hermes and DSH keep every scope's servers in one user config (`mcpScopeFor`).
+  const sharedHome = mcpScopeFor(tool, 'project') === 'user';
 
   const { resolveDataHomeForScope } = await import('./config.js');
   const dataHome = await resolveDataHomeForScope(projectScope ? 'project' : 'user', projectScope ? workspacePath : undefined);
   const { manifestPath, manifest, save } = await loadLocalAgentMcpManifest(localConfig, dataHome);
+
   // Claude's and CodeBuddy's may be in the tool's local scope or in the project's file, whichever the git exclude
   // flag picked when it was installed (#915): taken out wherever a record places it.
   const places = projectScope && workspacePath ? await workspaceMcpLocations(config, localConfig, tool, workspacePath) : null;
+  const here = { manifest, save, manifestPath };
 
-  const locations: Array<{ manifestKey: string; file?: string; projectKey?: string }> = places
-    ? [places.local, places.tree].map((loc) => ({ manifestKey: mcpManifestKey(loc), file: loc.file, projectKey: loc.projectKey }))
-    : [{ manifestKey: managedMcpManifestKey(tool, projectScope) }];
+  // Only this scope's records go: the other scope's are consulted for ownership, never removed here. The key is the
+  // place's own, as the installer writes it; a workspace record written before it followed the place is read too.
+  const locations: Array<{ manifestKey: string; file?: string; projectKey?: string; source: typeof here }> = places
+    ? [places.local, places.tree].map((loc) => ({ manifestKey: mcpManifestKey(loc), file: loc.file, projectKey: loc.projectKey, source: here }))
+    : [
+      { manifestKey: mcpManifestKey(place), source: here },
+      ...(projectScope && mcpManifestKey(place) !== managedMcpManifestKey(tool, true)
+        ? [{ manifestKey: managedMcpManifestKey(tool, true), source: here }] : []),
+    ];
 
-  for (const { manifestKey, file, projectKey } of locations) {
-    const owned = manifest[manifestKey] ?? [];
+  for (const { manifestKey, file, projectKey, source: owner } of locations) {
+    const owned = owner.manifest[manifestKey] ?? [];
 
     if (!owned.some((r: ManagedMcpRecord) => r.name === slug)) continue;
     // A server is in the file its record names (#993), even one a home move left; an older record names none.
-    const record = owned.find((r) => r.name === slug);
-    const recorded = record ? await recordedMcpTarget(place, record) : place;
-    const targetFile = record?.file ?? file ?? recorded.file;
+    const held = owned.find((r) => r.name === slug);
+    const recorded = held ? await recordedMcpTarget(place, held) : place;
+    const targetFile = held?.file ?? file ?? recorded.file;
     const where = describeMcpLocation({ file: targetFile, projectKey });
 
     let restoreConfig: (() => Promise<void>) | undefined;
+    // Another live scope still delivers this server: its entry stays, and only this scope's record goes.
+    const other = await ownersInOtherScopes(tool, targetFile, slug, manifestPath);
+    // A record that could not be read may own it too: the entry stays, and so does this scope's record.
+    const shared = other.unreadable.length > 0 || other.owners.length > 0;
+    // The entry the other owner keeps, as it now is: their record must not read it as a change a member made later.
+    let keptHash: string | undefined;
 
-    if (format === 'codex') {
+    if (shared && other.owners.length === 0) {
+      throw new Error(`uninstall_mcp: kept "${slug}" in ${where}: the MCP ownership record ${other.unreadable.join(', ')} `
+        + 'could not be read, so another scope may still deliver it; fix or remove it, then run this again.');
+    }
+
+    if (shared) {
+      // Nothing to write: the record below is all this scope gives up. The entry stays for its other owner.
+      if (format === 'codex') {
+        const block = codexBlockIn((await readFileIfExists(targetFile)) ?? '', slug);
+
+        if (block !== null) keptHash = entryHash(block);
+      } else {
+        const doc = await readJsonDoc(targetFile, mcpKeyOf(recorded), {
+          allowBare: format === 'copilot' && projectScope, projectKey, syntax: recorded.syntax, format,
+        });
+
+        if (doc?.servers[slug] !== undefined) keptHash = entryHash(doc.servers[slug]);
+      }
+    } else if (format === 'codex') {
       const source = (await readFileIfExists(targetFile)) ?? '';
       const next = spliceCodexBlock(source, slug, null);
 
@@ -5241,30 +5449,56 @@ async function uninstallMcpServer(
     } else {
       const serverKey = mcpKeyOf(recorded);
       const allowBare = format === 'copilot' && projectScope;
-      const doc = await readJsonDoc(targetFile, serverKey, { allowBare, projectKey, syntax: recorded.syntax });
+      const doc = await readJsonDoc(targetFile, serverKey, { allowBare, projectKey, syntax: recorded.syntax, format });
 
       if (!doc) throw new Error(`uninstall_mcp: cannot parse ${targetFile}. Ownership was kept; repair the config and uninstall the server again.`);
       // Also a bare entry another tool's mcpServers now sits beside (#882).
       const bareCopy = isTeamaiBareCopy(doc, slug, owned);
       const ownsEntry = ownsJsonMcpEntry(doc, slug, owned, allowBare);
+      // The three shared-home tools keep every scope's servers in one user config, so an entry there outlives this
+      // scope's record: one a member changed since teamai wrote it is theirs, as a pull leaves it (#993). The other
+      // tools' uninstall rule is as it was; a pull's edit check is reconcile's (`applyJson`).
+      const entry = doc.servers[slug];
+      const entryHashNow = entry === undefined ? undefined : entryHash(entry);
+      const written = owned.some((r) => r.name === slug && r.hash === entryHashNow);
+
+      if (sharedHome && ownsEntry && entry !== undefined && !written) {
+        log.warn(`Kept MCP server ${slug} in ${describeMcpLocation({ file: targetFile, projectKey })}: you changed it since teamai wrote it. `
+          + 'Remove it there when you no longer need it.');
+        // Its record stays too: teamai still owns the entry the record names, for a later uninstall of the edit.
+        continue;
+      }
 
       if ((ownsEntry && doc.servers[slug] !== undefined) || bareCopy) {
-        const previousData = structuredClone(doc.data);
-
         if (ownsEntry) delete doc.servers[slug];
 
         if (bareCopy) delete doc.data[slug];
         await writeJsonDoc(targetFile, serverKey, doc);
-        restoreConfig = () => writeMcpJson(targetFile, previousData);
+        restoreConfig = () => restoreMcpDoc(targetFile, doc);
       }
     }
 
-    manifest[manifestKey] = owned.filter((r: ManagedMcpRecord) => r.name !== slug);
+    // The other owners take the entry as it now is while this scope's record still proves teamai wrote it: once it is
+    // gone, nothing here shows the entry is not a member's. A write that fails keeps the record, so a later uninstall
+    // retries instead of leaving the other scope reading the entry as an edit.
+    if (keptHash !== undefined) {
+      try {
+        await adoptMcpEntriesForOwners(other.owners, new Map([[slug, keptHash]]), owned);
+      } catch (error) {
+        throw new Error(
+          `uninstall_mcp: kept "${slug}" for the scope that still records it, but could not update that record: ${messageOf(error)}. `
+          + 'This scope\'s record is kept; run the uninstall again.',
+          { cause: error },
+        );
+      }
+    }
 
-    if (manifest[manifestKey].length === 0) delete manifest[manifestKey];
+    owner.manifest[manifestKey] = owned.filter((r: ManagedMcpRecord) => r.name !== slug);
+
+    if (owner.manifest[manifestKey].length === 0) delete owner.manifest[manifestKey];
 
     try {
-      await save();
+      await owner.save();
     } catch (error) {
       if (restoreConfig) {
         try {
@@ -5272,7 +5506,7 @@ async function uninstallMcpServer(
         } catch (restoreError) {
           throw new Error(
             `uninstall_mcp: ownership write failed (${error instanceof Error ? error.message : String(error)}), and restoring ${where} failed `
-            + `(${restoreError instanceof Error ? restoreError.message : String(restoreError)}). The config may not match ${manifestPath}. Repair the config and ownership record after fixing both write errors, then uninstall the server again.`,
+            + `(${restoreError instanceof Error ? restoreError.message : String(restoreError)}). The config may not match ${owner.manifestPath}. Repair the config and ownership record after fixing both write errors, then uninstall the server again.`,
             { cause: restoreError },
           );
         }
@@ -5314,6 +5548,10 @@ async function runMcpCommand(
     throw new Error(`${command.type}: workspace command is missing workspace_path`);
   }
 
+  // A tool with no project MCP file takes a workspace's server in its user
+  // config, as its skills already land in the one place it reads. The command
+  // keeps its scope: the server's file is the user one (`locate` writes there),
+  // while its ownership record stays the workspace's, as every other tool's.
   if (command.type === 'install_mcp') {
     return installMcpServer(config, command, tool, slug, scope, workspacePath);
   }
@@ -5679,8 +5917,8 @@ async function moveToLocalScope(
   if (records.length === 0 || tree.format === 'codex') return;
   const serverKey = mcpKeyOf(tree);
   const there = describeMcpLocation(local);
-  const from = await readJsonDoc(tree.file, serverKey, { syntax: tree.syntax });
-  const to = await readJsonDoc(local.file, serverKey, { projectKey: local.projectKey, syntax: local.syntax });
+  const from = await readJsonDoc(tree.file, serverKey, { syntax: tree.syntax, format: tree.format });
+  const to = await readJsonDoc(local.file, serverKey, { projectKey: local.projectKey, syntax: local.syntax, format: local.format });
 
   if (!from || !to) {
     log.warn(`Did not move the local agent's MCP servers for ${tool} from ${tree.file} to ${there}: `
@@ -5721,7 +5959,6 @@ async function moveToLocalScope(
 
   if (left.length === records.length) return;
 
-  const previous = structuredClone(to.data);
   const wrote = moved.some((record) => !owned.has(record.name));
 
   if (wrote) await writeJsonDoc(local.file, serverKey, to);
@@ -5736,7 +5973,7 @@ async function moveToLocalScope(
   try {
     await save();
   } catch (error) {
-    if (wrote) await writeMcpJson(local.file, previous).catch(() => undefined);
+    if (wrote) await restoreMcpDoc(local.file, to).catch(() => undefined);
     throw error;
   }
 
@@ -6473,4 +6710,1638 @@ export async function bindCurrentProject(options?: { projectId?: number; skip?: 
   if (!binding) {
     log.info('No project bound.');
   }
+}
+
+// ─── Delivered model settings ────────────────────────────────────────────────
+
+export interface ModelDeliveryEntry {
+  provider: string;
+  model_id: string;
+  name?: string;
+  source: 'enterprise';
+}
+
+
+/** A stable key order, so a reformatted but unchanged entry keeps its hash. */
+function stableJson(value: JsonValue): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+
+  if (value instanceof Object) {
+    const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
+
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(',')}}`;
+  }
+
+  return JSON.stringify(value) ?? 'null';
+}
+
+type ModelDeliveryValue = JsonObject | z.infer<typeof OpenclawModelSchema> | z.infer<typeof HermesModelSchema> | z.infer<typeof DshModelSchema>;
+
+/** sha256 over a model entry or provider's stable JSON form. */
+function modelHash(value: ModelDeliveryValue): string {
+  return contentHash(stableJson(JsonValueSchema.parse(value)));
+}
+
+/** A member changed provider metadata when an extra key appears or an authored value differs. */
+function authoredFieldsIntact(fields: ModelDeliveryValue, keys: readonly string[], recordedHash: string | undefined): boolean {
+  if (recordedHash === undefined) return false;
+
+  const names = Object.keys(fields);
+
+  return names.length === keys.length
+    && names.every((name) => keys.includes(name))
+    && modelHash(fields) === recordedHash;
+}
+
+/** A YAML/JSON value that is an object, or nothing; also narrows the value for its callers. */
+function jsonObjectOf(value: JsonValue | undefined): JsonObject | undefined {
+  if (value === undefined) return undefined;
+
+  const parsed = JsonObjectSchema.safeParse(value);
+
+  return parsed.success ? parsed.data : undefined;
+}
+
+// ─── the delivered batch ─────────────────────────────────────────────────────
+
+/** Conflict boundaries the HTTP parser cannot know: map keys reserved by the runtime, and one delivery's shared proxy. */
+function checkModels(models: readonly DeliveredModel[]): void {
+  for (const model of models) {
+    if (model.model_id === '__proto__' || model.model_id === 'prototype' || model.model_id === 'constructor') {
+      throw new Error(`apply_model_config: reserved model_id "${model.model_id}"`);
+    }
+  }
+
+  const [first] = models;
+
+  if (first === undefined) return;
+
+  const base = providerBaseUrl(first.base_url);
+
+  for (const model of models) {
+    if (providerBaseUrl(model.base_url) !== base || model.api_key !== first.api_key) {
+      throw new Error('apply_model_config: candidate models in one delivery must share one proxy URL and API key');
+    }
+  }
+}
+
+/** Declared modalities only; a modality this client does not know is not invented. */
+function declaredInput(model: DeliveredModel): string[] | undefined {
+  if (model.input_types === undefined) return undefined;
+
+  const known = model.input_types.filter((value) => value === 'text' || value === 'image');
+
+  return known.length > 0 ? [...new Set(known)] : undefined;
+}
+
+/** The API base a Chat Completions client appends its endpoint to. */
+function providerBaseUrl(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/, '');
+  const endpoint = '/chat/completions';
+
+  return trimmed.toLowerCase().endsWith(endpoint) ? trimmed.slice(0, -endpoint.length).replace(/\/+$/, '') : trimmed;
+}
+
+function failModelFile(file: string, message: string): Error {
+  return new Error(`apply_model_config: ${message} in ${file}; the file is left unchanged`);
+}
+
+function conflictModelFile(file: string, provider: string, detail: string): Error {
+  return new Error(
+    `apply_model_config: the provider "${provider}" in ${file} already has ${detail}; `
+    + 'teamai does not overwrite it',
+  );
+}
+
+// ─── transaction ─────────────────────────────────────────────────────────────
+
+interface PlannedWrite {
+  file: string;
+  /** The bytes before this reconcile, or null when the file did not exist. */
+  original: string | null;
+  originalMode: number | null;
+  /** The new bytes, or null to delete a file this module created. */
+  next: string | null;
+  /** Restrictive permissions for a file that holds a credential. */
+  private?: boolean;
+}
+
+interface FileSnapshot {
+  content: string | null;
+  mode: number | null;
+}
+
+async function fileSnapshot(file: string): Promise<FileSnapshot> {
+  try {
+    const [content, stat] = await Promise.all([fs.promises.readFile(file, 'utf8'), fs.promises.stat(file)]);
+
+    return { content, mode: stat.mode & 0o777 };
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return { content: null, mode: null };
+    throw error;
+  }
+}
+
+async function planWrite(file: string, next: string | null, isPrivate = false): Promise<PlannedWrite> {
+  const { content, mode } = await fileSnapshot(file);
+
+  return { file, original: content, originalMode: mode, next, private: isPrivate };
+}
+
+async function restoreModelWrites(writes: readonly PlannedWrite[]): Promise<string[]> {
+  const failed: string[] = [];
+
+  for (const write of writes.toReversed()) {
+    try {
+      if (write.original === null) await fs.promises.rm(write.file, { force: true });
+      else await writeFileAtomic(write.file, write.original, { mode: write.originalMode ?? undefined });
+    } catch (error) {
+      failed.push(`${write.file}: ${messageOf(error)}`);
+    }
+  }
+
+  return failed;
+}
+
+async function commitWrites(writes: PlannedWrite[], record: ModelDeliveryRecord, commit?: ModelDeliveryCommit): Promise<void> {
+  const applied: PlannedWrite[] = [];
+
+  try {
+    for (const write of writes) {
+      if (write.next === null) await fs.promises.rm(write.file, { force: true });
+      else await writeFileAtomic(write.file, write.next, write.private ? { mode: 0o600 } : undefined);
+
+      applied.push(write);
+    }
+
+    if (commit) await commit(record);
+  } catch (error) {
+    const unrestored = await restoreModelWrites(applied);
+
+    throw new Error(
+      unrestored.length === 0
+        ? `${messageOf(error)}. The model files were restored.`
+        : `${messageOf(error)}. These files could not be restored: ${unrestored.join('; ')}`,
+      { cause: error },
+    );
+  }
+}
+
+// ─── OpenClaw: openclaw.json models.providers.<teamai> ────────────────────────
+
+const OpenclawModelSchema = z.object({
+  id: z.string(),
+  name: z.string().optional(),
+  contextWindow: z.number().optional(),
+  maxTokens: z.number().optional(),
+  input: z.array(z.string()).optional(),
+}).catchall(JsonValueSchema);
+
+const OpenclawProviderSchema = z.object({
+  api: z.string().optional(),
+  baseUrl: z.string().optional(),
+  apiKey: z.string().optional(),
+  models: z.array(OpenclawModelSchema).optional(),
+}).catchall(JsonValueSchema);
+
+const OpenclawModelsSchema = z.object({
+  providers: z.record(z.string(), OpenclawProviderSchema).optional(),
+}).catchall(JsonValueSchema);
+
+const OpenclawDocumentSchema = z.object({
+  models: OpenclawModelsSchema.optional(),
+}).catchall(JsonValueSchema);
+
+type OpenclawDocument = z.infer<typeof OpenclawDocumentSchema>;
+
+type OpenclawProvider = z.infer<typeof OpenclawProviderSchema>;
+
+type OpenclawModel = z.infer<typeof OpenclawModelSchema>;
+
+interface OpenclawRead {
+  document: OpenclawDocument;
+  text: string;
+}
+
+function readOpenclaw(file: string, raw: string | null): OpenclawRead {
+  if (raw === null || raw.trim() === '') return { document: {}, text: '{}\n' };
+
+  let parsed: JsonValue;
+
+  try {
+    parsed = parseJsonAs(raw, 'jsonc');
+  } catch (error) {
+    try {
+      parseJsonAs(raw, 'json5');
+    } catch {
+      throw failModelFile(file, `it does not parse as JSON or JSON with comments (${messageOf(error)})`);
+    }
+
+    // JSON5 allows unquoted keys and single quotes, which the comment-preserving
+    // editor cannot rewrite without reprinting the member's whole file.
+    throw failModelFile(file, 'it uses JSON5 syntax outside JSON with comments, which cannot be edited while keeping its text');
+  }
+
+  try {
+    return { document: OpenclawDocumentSchema.parse(parsed), text: raw };
+  } catch (error) {
+    throw failModelFile(file, `it does not have the expected OpenClaw model shape (${messageOf(error)})`);
+  }
+}
+
+function openclawModels(provider: OpenclawProvider | undefined, file: string): Map<string, OpenclawModel> {
+  const byId = new Map<string, OpenclawModel>();
+
+  for (const model of provider?.models ?? []) {
+    if (model.id === '') throw failModelFile(file, 'a model entry has an empty id');
+
+    if (byId.has(model.id)) throw failModelFile(file, `model "${model.id}" appears more than once`);
+
+    byId.set(model.id, model);
+  }
+
+  return byId;
+}
+
+function openclawEntry(model: DeliveredModel): JsonObject {
+  const entry: JsonObject = { id: model.model_id, name: model.name };
+  const input = declaredInput(model);
+
+  if (model.context_window !== undefined) entry.contextWindow = model.context_window;
+
+  if (model.max_tokens !== undefined) entry.maxTokens = model.max_tokens;
+
+  if (input !== undefined) entry.input = input;
+
+  return entry;
+}
+
+interface ReconcileContext {
+  file: string;
+  models: readonly DeliveredModel[];
+  /** Managed entries are removed from this file (a full snapshot or a moved root). */
+  cleanupOnly: boolean;
+  fullSnapshot: boolean;
+  previousEntries: EntryRecord;
+  /** The record this module persisted for the file; absent means the container is unowned. */
+  previousRecord: FileRecord | undefined;
+}
+
+interface Plan {
+  write: PlannedWrite | null;
+  record?: FileRecord;
+  /** A cleanup left models or metadata in the managed provider, whose DSH credential must stay. */
+  retainsProvider?: boolean;
+}
+
+async function planOpenclaw(context: ReconcileContext): Promise<Plan> {
+  const { file } = context;
+  const raw = await readFileSafe(file);
+  const read = readOpenclaw(file, raw);
+  const provider = read.document.models?.providers?.[MANAGED_PROVIDER];
+  const byId = openclawModels(provider, file);
+  const desired = context.cleanupOnly ? [] : context.models;
+  const desiredIds = new Set(desired.map((model) => model.model_id));
+  const expectedBase = desired[0] ? providerBaseUrl(desired[0].base_url) : undefined;
+  const expectedKey = desired[0]?.api_key;
+  const previous = context.previousEntries;
+  const providerFields: JsonObject = provider === undefined ? {} : { ...JsonObjectSchema.parse(provider) };
+
+  delete providerFields.models;
+
+  // A provider teamai wrote stays replaceable: a team that rotates its key or endpoint must not leave the member on
+  // the old one. The record's container hash is what proves teamai wrote those fields, so a member's edit to them
+  // still stops the rewrite.
+  const teamaiProvider = provider !== undefined
+    && authoredFieldsIntact(providerFields, OPENCLAW_CONTAINER_KEYS, context.previousRecord?.containerHash);
+
+  if (provider && desired.length > 0 && !teamaiProvider) {
+    if (provider.api !== undefined && provider.api !== 'openai-completions') {
+      throw conflictModelFile(file, MANAGED_PROVIDER, `api "${provider.api}"`);
+    }
+
+    if (provider.baseUrl !== undefined && providerBaseUrl(provider.baseUrl) !== expectedBase) {
+      throw conflictModelFile(file, MANAGED_PROVIDER, 'a different base URL');
+    }
+
+    if (provider.apiKey !== undefined && provider.apiKey !== expectedKey) {
+      throw conflictModelFile(file, MANAGED_PROVIDER, 'a different API key');
+    }
+  }
+
+  const nextEntries: EntryRecord = {};
+  const kept: JsonValue[] = [];
+  const managed = new Map<string, JsonObject>();
+  let removedManaged = false;
+
+  for (const [id, model] of byId) {
+    const prior = previous[id];
+    const isManaged = prior !== undefined && modelHash(model) === prior.hash;
+
+    if (isManaged) {
+      if (desired.length === 0 || (context.fullSnapshot && !desiredIds.has(id))) {
+        removedManaged = true;
+        continue;
+      }
+
+      kept.push(JsonValueSchema.parse(model));
+      nextEntries[id] = prior;
+      continue;
+    }
+
+    if (desiredIds.has(id)) {
+      const wanted = desired.find((candidate) => candidate.model_id === id);
+
+      if (wanted === undefined) throw conflictModelFile(file, MANAGED_PROVIDER, `a model "${id}" this delivery does not manage`);
+      const entry = openclawEntry(wanted);
+
+      if (!isDeepStrictEqual(model, entry)) throw conflictModelFile(file, MANAGED_PROVIDER, `a model "${id}" this delivery does not manage`);
+
+      nextEntries[id] = { provider: wanted.provider, name: wanted.name, hash: modelHash(entry) };
+      kept.push(JsonValueSchema.parse(model));
+      continue;
+    }
+
+    kept.push(JsonValueSchema.parse(model));
+  }
+
+  for (const model of desired) {
+    const entry = openclawEntry(model);
+
+    if (!byId.has(model.model_id)) kept.push(entry);
+
+    managed.set(model.model_id, entry);
+    nextEntries[model.model_id] = { provider: model.provider, name: model.name, hash: modelHash(entry) };
+  }
+
+  const nextModels = kept.map((value) => {
+    const id = jsonObjectOf(value)?.id;
+
+    return id === undefined ? value : managed.get(String(id)) ?? value;
+  });
+
+  if (desired.length === 0 && !removedManaged) return { write: null };
+
+  const nextProviders: Record<string, JsonObject> = {};
+
+  for (const [key, value] of Object.entries(read.document.models?.providers ?? {})) {
+    const parsed = JsonObjectSchema.parse(value);
+
+    nextProviders[key] = parsed;
+  }
+
+  if (nextModels.length === 0 && provider !== undefined) {
+    const fields: JsonObject = { ...JsonObjectSchema.parse(provider) };
+
+    delete fields.models;
+
+    if (authoredFieldsIntact(fields, OPENCLAW_CONTAINER_KEYS, context.previousRecord?.containerHash)) {
+      delete nextProviders[MANAGED_PROVIDER];
+    } else {
+      nextProviders[MANAGED_PROVIDER] = { ...JsonObjectSchema.parse(provider), models: [] };
+    }
+  } else if (nextModels.length > 0) {
+    nextProviders[MANAGED_PROVIDER] = desired.length > 0
+      ? {
+        ...JsonObjectSchema.parse(provider ?? {}),
+        baseUrl: expectedBase ?? '',
+        apiKey: expectedKey ?? '',
+        api: 'openai-completions',
+        models: nextModels,
+      }
+      : { ...JsonObjectSchema.parse(provider ?? {}), models: nextModels };
+  }
+
+  const nextModelsNode: JsonObject = {
+    ...JsonObjectSchema.parse(read.document.models ?? {}),
+    providers: nextProviders,
+  };
+
+  const nextDocument: JsonObject = { ...JsonObjectSchema.parse(read.document), models: nextModelsNode };
+  let nextText: string | null = editJsonText(read.text, nextDocument);
+
+  if (nextText === read.text) nextText = null;
+
+  return {
+    write: nextText === null ? null : await planWrite(file, nextText),
+    record: Object.keys(nextEntries).length > 0
+      ? {
+        agent: 'openclaw',
+        provider: MANAGED_PROVIDER,
+        entries: nextEntries,
+        containerHash: modelHash({ baseUrl: expectedBase ?? '', apiKey: expectedKey ?? '', api: 'openai-completions' }),
+      }
+      : undefined,
+  };
+}
+
+// ─── Hermes: config.yaml providers.<teamai> ──────────────────────────────────
+
+const HermesModelSchema = z.object({
+  context_length: z.number().optional(),
+}).catchall(JsonValueSchema);
+
+const HermesProviderSchema = z.object({
+  api: z.string().optional(),
+  base_url: z.string().optional(),
+  url: z.string().optional(),
+  api_key: z.string().optional(),
+  key_env: z.string().optional(),
+  api_key_env: z.string().optional(),
+  transport: z.string().optional(),
+  api_mode: z.string().optional(),
+  discover_models: z.boolean().optional(),
+  models: z.record(z.string(), HermesModelSchema).optional(),
+}).catchall(JsonValueSchema);
+
+const HermesDocumentSchema = z.object({
+  providers: z.record(z.string(), HermesProviderSchema).optional(),
+}).catchall(JsonValueSchema);
+
+type HermesDocument = z.infer<typeof HermesDocumentSchema>;
+
+type HermesProvider = z.infer<typeof HermesProviderSchema>;
+
+function hermesEntry(model: DeliveredModel): JsonObject {
+  const entry: JsonObject = {};
+
+  if (model.context_window !== undefined) entry.context_length = model.context_window;
+
+  return entry;
+}
+
+function hermesEffectiveUrl(provider: HermesProvider): string | undefined {
+  for (const value of [provider.api, provider.base_url, provider.url]) {
+    if (value !== undefined && value.trim() !== '') return providerBaseUrl(value);
+  }
+
+  return undefined;
+}
+
+function readHermes(file: string, raw: string | null): HermesDocument {
+  if (raw === null || raw.trim() === '') return {};
+
+  try {
+    return HermesDocumentSchema.parse(parseYaml(raw));
+  } catch (error) {
+    throw failModelFile(file, `it does not parse as YAML (${messageOf(error)})`);
+  }
+}
+
+async function writeHermes(file: string, raw: string | null, providers: Record<string, JsonObject>): Promise<PlannedWrite | null> {
+  const doc = raw === null || raw.trim() === '' ? new YAML.Document({}) : YAML.parseDocument(raw);
+
+  if (doc.errors.length > 0) throw failModelFile(file, `it does not parse as YAML (${doc.errors[0]?.message ?? 'unknown error'})`);
+
+  if (providers[MANAGED_PROVIDER] === undefined) doc.deleteIn(['providers', MANAGED_PROVIDER]);
+  else doc.setIn(['providers', MANAGED_PROVIDER], doc.createNode(providers[MANAGED_PROVIDER]));
+
+  const next = doc.toString();
+
+  return next === raw ? null : planWrite(file, next);
+}
+
+async function planHermes(context: ReconcileContext): Promise<Plan> {
+  const { file } = context;
+  const raw = await readFileSafe(file);
+  const document = readHermes(file, raw);
+  const provider = document.providers?.[MANAGED_PROVIDER];
+  const existingModels = provider?.models ?? {};
+  const desired = context.cleanupOnly ? [] : context.models;
+  const desiredIds = new Set(desired.map((model) => model.model_id));
+  const expectedBase = desired[0] ? providerBaseUrl(desired[0].base_url) : undefined;
+  const expectedKey = desired[0]?.api_key;
+
+  const previous = context.previousEntries;
+  const providerFields: JsonObject = provider === undefined ? {} : { ...JsonObjectSchema.parse(provider) };
+
+  delete providerFields.models;
+
+  // A provider teamai wrote stays replaceable, as for OpenClaw: the record's container hash proves it, so a member's
+  // edit to the URL or key still stops the rewrite.
+  const teamaiProvider = provider !== undefined
+    && authoredFieldsIntact(providerFields, HERMES_CONTAINER_KEYS, context.previousRecord?.containerHash);
+
+  if (provider && desired.length > 0) {
+    const url = hermesEffectiveUrl(provider);
+
+    if (!teamaiProvider && url !== undefined && url !== expectedBase) throw conflictModelFile(file, MANAGED_PROVIDER, 'a different base URL');
+
+    if (provider.key_env !== undefined || provider.api_key_env !== undefined) {
+      throw conflictModelFile(file, MANAGED_PROVIDER, 'a key_env credential');
+    }
+
+    if (!teamaiProvider && provider.api_key !== undefined && provider.api_key !== expectedKey) {
+      throw conflictModelFile(file, MANAGED_PROVIDER, 'a different API key');
+    }
+
+    const transport = provider.transport ?? provider.api_mode;
+
+    if (transport !== undefined && transport !== 'chat_completions') {
+      throw conflictModelFile(file, MANAGED_PROVIDER, `transport "${transport}"`);
+    }
+
+    if (provider.discover_models === true) throw conflictModelFile(file, MANAGED_PROVIDER, 'model discovery enabled');
+  }
+
+  const nextEntries: EntryRecord = {};
+  const keptModels: Record<string, JsonObject> = {};
+  let removedManaged = false;
+
+  for (const [id, model] of Object.entries(existingModels)) {
+    const prior = previous[id];
+    const isManaged = prior !== undefined && modelHash(model) === prior.hash;
+
+    if (isManaged && (desired.length === 0 || (context.fullSnapshot && !desiredIds.has(id)))) {
+      removedManaged = true;
+      continue;
+    }
+
+    if (!isManaged && desiredIds.has(id)) {
+      const wanted = desired.find((candidate) => candidate.model_id === id);
+
+      if (wanted === undefined) throw conflictModelFile(file, MANAGED_PROVIDER, `a model "${id}" this delivery does not manage`);
+      const entry = hermesEntry(wanted);
+
+      if (!isDeepStrictEqual(model, entry)) throw conflictModelFile(file, MANAGED_PROVIDER, `a model "${id}" this delivery does not manage`);
+
+      nextEntries[id] = { provider: wanted.provider, name: wanted.name, hash: modelHash(entry) };
+      keptModels[id] = JsonObjectSchema.parse(model);
+      continue;
+    }
+
+    if (isManaged) nextEntries[id] = prior;
+
+    keptModels[id] = JsonObjectSchema.parse(model);
+  }
+
+  for (const model of desired) {
+    const entry = hermesEntry(model);
+
+    keptModels[model.model_id] = entry;
+    nextEntries[model.model_id] = { provider: model.provider, name: model.name, hash: modelHash(entry) };
+  }
+
+  const nextProviders: Record<string, JsonObject> = {};
+
+  for (const [key, value] of Object.entries(document.providers ?? {})) {
+    nextProviders[key] = JsonObjectSchema.parse(value);
+  }
+
+  if (desired.length > 0) {
+    nextProviders[MANAGED_PROVIDER] = {
+      ...JsonObjectSchema.parse(provider ?? {}),
+      api: expectedBase ?? '',
+      api_key: expectedKey ?? '',
+      transport: 'chat_completions',
+      discover_models: false,
+      models: keptModels,
+    };
+  } else if (removedManaged && provider !== undefined) {
+    const fields: JsonObject = { ...JsonObjectSchema.parse(provider) };
+
+    delete fields.models;
+
+    if (Object.keys(keptModels).length === 0
+      && authoredFieldsIntact(fields, HERMES_CONTAINER_KEYS, context.previousRecord?.containerHash)) {
+      delete nextProviders[MANAGED_PROVIDER];
+    } else {
+      nextProviders[MANAGED_PROVIDER] = { ...JsonObjectSchema.parse(provider), models: keptModels };
+    }
+  }
+
+  const write = desired.length > 0 || removedManaged ? await writeHermes(file, raw, nextProviders) : null;
+
+  return {
+    write,
+    record: Object.keys(nextEntries).length > 0
+      ? {
+        agent: 'hermes',
+        provider: MANAGED_PROVIDER,
+        entries: nextEntries,
+        containerHash: modelHash({
+          api: expectedBase ?? '',
+          api_key: expectedKey ?? '',
+          transport: 'chat_completions',
+          discover_models: false,
+        }),
+      }
+      : undefined,
+  };
+}
+
+// ─── DeepSeek Harness: profiles/<name>/cordis.patch.yml ──────────────────────
+
+const DshModelSchema = z.object({
+  id: z.string(),
+  name: z.string().optional(),
+  contextWindow: z.number().optional(),
+  maxTokens: z.number().optional(),
+  input: z.array(z.string()).optional(),
+}).catchall(JsonValueSchema);
+
+const DshProviderSchema = z.object({
+  apiKeyEnv: z.string().optional(),
+  api: z.string().optional(),
+  baseURL: z.string().optional(),
+  models: z.array(DshModelSchema).optional(),
+}).catchall(JsonValueSchema);
+
+const DshLlmConfigSchema = z.object({
+  providers: z.record(z.string(), DshProviderSchema).optional(),
+}).catchall(JsonValueSchema);
+
+const DshRowSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().optional(),
+  insert: z.array(JsonValueSchema).optional(),
+  config: JsonValueSchema.optional(),
+}).catchall(JsonValueSchema);
+
+const DshPatchSchema = z.array(DshRowSchema);
+
+type DshRow = z.infer<typeof DshRowSchema>;
+
+type DshConfig = z.infer<typeof DshLlmConfigSchema>;
+
+interface DeclaredPatchRow {
+  id?: string;
+  name?: string;
+  config?: JsonValue;
+  insert?: DeclaredPatchRow[];
+}
+
+interface LlmDeclaration {
+  config?: JsonValue;
+  inserted: boolean;
+}
+
+const DeclaredPatchRowSchema: z.ZodType<DeclaredPatchRow> = z.lazy(() => z.object({
+  id: z.string().optional(),
+  name: z.string().optional(),
+  config: JsonValueSchema.optional(),
+  insert: z.array(DeclaredPatchRowSchema).optional(),
+}));
+
+const DeclaredPatchListSchema = z.array(DeclaredPatchRowSchema);
+
+const ProfileManifestSchema = z.object({
+  dsh: z.object({
+    profile: z.object({ bundles: z.array(z.string()).optional() }).optional(),
+  }).optional(),
+}).catchall(JsonValueSchema);
+
+const BundleManifestSchema = z.object({
+  dsh: z.object({
+    bundle: z.object({ patch: z.union([z.string(), z.array(z.string())]).optional() }).optional(),
+  }).optional(),
+}).catchall(JsonValueSchema);
+
+function llmDeclarations(row: DeclaredPatchRow, inserted = false): LlmDeclaration[] {
+  const declarations: LlmDeclaration[] = [];
+
+  if (row.id === DSH_LLM_ROW_ID || row.name === DSH_LLM_ROW_NAME) declarations.push({ config: row.config, inserted });
+
+  for (const child of row.insert ?? []) declarations.push(...llmDeclarations(child, true));
+
+  return declarations;
+}
+
+function declaresLlmRow(row: DeclaredPatchRow): boolean {
+  return llmDeclarations(row).length > 0;
+}
+
+async function readDeclaredPatch(file: string): Promise<DeclaredPatchRow[] | null> {
+  let raw: string | null;
+
+  try {
+    raw = await readFileSafe(file);
+  } catch {
+    return null;
+  }
+
+  if (raw === null) return null;
+
+  try {
+    return DeclaredPatchListSchema.parse(parseYaml(raw));
+  } catch {
+    return null;
+  }
+}
+
+async function patchDeclaresLlm(file: string): Promise<boolean> {
+  const rows = await readDeclaredPatch(file);
+
+  return rows !== null && rows.some(declaresLlmRow);
+}
+
+function bundlePatchFiles(packageDir: string, manifest: z.infer<typeof BundleManifestSchema>): string[] {
+  const patch = manifest.dsh?.bundle?.patch;
+  const files = patch === undefined ? [] : Array.isArray(patch) ? patch : [patch];
+
+  return files.map((file) => path.resolve(packageDir, file));
+}
+
+/** A profile's declared bundle order, or null when its manifest is missing or unreadable. */
+async function profileBundles(profileDir: string): Promise<string[] | null> {
+  let raw: string;
+
+  try {
+    raw = await fs.promises.readFile(path.join(profileDir, 'package.json'), 'utf8');
+  } catch {
+    return null;
+  }
+
+  try {
+    return ProfileManifestSchema.parse(JSON.parse(raw)).dsh?.profile?.bundles ?? [];
+  } catch {
+    return null;
+  }
+}
+
+/** One resolvable bundle's patch files, in the order that bundle applies them. */
+async function bundlePatchPaths(bundle: string, profilesDir: string, profileDir: string): Promise<string[]> {
+  const dirs = path.isAbsolute(bundle)
+    ? [bundle]
+    : [path.join(profilesDir, 'node_modules', bundle), path.join(profileDir, 'node_modules', bundle)];
+
+  for (const dir of dirs) {
+    let raw: string;
+
+    try {
+      raw = await fs.promises.readFile(path.join(dir, 'package.json'), 'utf8');
+    } catch {
+      continue;
+    }
+
+    try {
+      return bundlePatchFiles(dir, BundleManifestSchema.parse(JSON.parse(raw)));
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
+}
+
+/** Whether an installed bundle package's own patch list declares the llm-pi-ai row. */
+async function bundleDeclaresLlm(bundle: string, profilesDir: string, profileDir: string): Promise<boolean> {
+  const files = await bundlePatchPaths(bundle, profilesDir, profileDir);
+
+  for (const file of files) {
+    if (await patchDeclaresLlm(file)) return true;
+  }
+
+  return false;
+}
+
+/**
+ * The llm-pi-ai config inherited from the profile's bundle layers: bundle
+ * order, then patch order, with a later wholesale-replacing config winning.
+ */
+async function inheritedLlmConfig(
+  bundles: readonly string[],
+  profilesDir: string,
+  profileDir: string,
+): Promise<JsonValue | undefined> {
+  let inherited: JsonValue | undefined;
+
+  for (const bundle of bundles) {
+    for (const file of await bundlePatchPaths(bundle, profilesDir, profileDir)) {
+      const rows = await readDeclaredPatch(file);
+
+      if (rows === null) continue;
+
+      for (const row of rows) {
+        for (const declaration of llmDeclarations(row)) {
+          if (declaration.config !== undefined) inherited = declaration.config;
+        }
+      }
+    }
+  }
+
+  return inherited;
+}
+
+/**
+ * A home-level `$DSH_HOME/cordis.patch.yml` llm-pi-ai entry applies after the
+ * profile and replaces its config wholesale, so delivered candidates would be
+ * unavailable. An inserted entry is equally unsafe to target.
+ */
+async function dshHomeOverride(root: string): Promise<string | null> {
+  const file = path.join(root, 'cordis.patch.yml');
+  const rows = await readDeclaredPatch(file);
+
+  if (rows === null) return null;
+
+  for (const row of rows) {
+    for (const declaration of llmDeclarations(row)) {
+      if (declaration.inserted || declaration.config !== undefined) return file;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * The initialized profiles whose composition provides the llm-pi-ai row:
+ * the base bundle (which declares it), the profile's own explicit patch row,
+ * or an installed bundle whose patch declares the row. SDK-only profiles with
+ * no such row are excluded; no profile is created.
+ */
+async function dshProfilePatches(root: string): Promise<string[]> {
+  const profilesDir = path.join(root, 'profiles');
+  let names: string[];
+
+  try {
+    names = (await fs.promises.readdir(profilesDir, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return [];
+    throw error;
+  }
+
+  const files: string[] = [];
+
+  for (const name of names.sort()) {
+    const profileDir = path.join(profilesDir, name);
+    const bundles = await profileBundles(profileDir);
+
+    if (bundles === null) continue;
+
+    const patch = path.join(profileDir, 'cordis.patch.yml');
+    let eligible = bundles.includes(DSH_BASE_BUNDLE) || await patchDeclaresLlm(patch);
+
+    for (const bundle of eligible ? [] : bundles) {
+      if (await bundleDeclaresLlm(bundle, profilesDir, profileDir)) {
+        eligible = true;
+        break;
+      }
+    }
+
+    if (eligible) files.push(patch);
+  }
+
+  return files;
+}
+
+function dshEntry(model: DeliveredModel): JsonObject {
+  const entry: JsonObject = { id: model.model_id, name: model.name };
+  const input = declaredInput(model);
+
+  if (model.context_window !== undefined) entry.contextWindow = model.context_window;
+
+  if (model.max_tokens !== undefined) entry.maxTokens = model.max_tokens;
+
+  if (input !== undefined) entry.input = input;
+
+  return entry;
+}
+
+function readDshPatch(file: string, raw: string | null): DshRow[] {
+  if (raw === null || raw.trim() === '') return [];
+
+  try {
+    return DshPatchSchema.parse(parseYaml(raw));
+  } catch (error) {
+    throw failModelFile(file, `it does not parse as YAML (${messageOf(error)})`);
+  }
+}
+
+interface NestedLlm {
+  path: (string | number)[];
+  row: DshRow;
+}
+
+function nestedLlm(row: DshRow, base: (string | number)[]): NestedLlm | undefined {
+  const inserts = row.insert ?? [];
+
+  for (let at = 0; at < inserts.length; at++) {
+    let candidate: DshRow;
+
+    try {
+      candidate = DshRowSchema.parse(inserts[at]);
+    } catch {
+      continue;
+    }
+
+    const nodePath = [...base, 'insert', at];
+
+    if (candidate.id === DSH_LLM_ROW_ID || candidate.name === DSH_LLM_ROW_NAME) return { path: nodePath, row: candidate };
+
+    const deeper = nestedLlm(candidate, nodePath);
+
+    if (deeper) return deeper;
+  }
+
+  return undefined;
+}
+
+function findNestedLlm(rows: DshRow[]): NestedLlm | undefined {
+  for (let at = 0; at < rows.length; at++) {
+    const found = nestedLlm(rows[at], [at]);
+
+    if (found) return found;
+  }
+
+  return undefined;
+}
+
+function dshConfig(file: string, config: JsonValue | undefined): DshConfig {
+  try {
+    return DshLlmConfigSchema.parse(config ?? {});
+  } catch (error) {
+    throw failModelFile(file, `its llm-pi-ai config does not have the expected shape (${messageOf(error)})`);
+  }
+}
+
+type DshEdit =
+  | { kind: 'append-row'; row: JsonObject }
+  | { kind: 'set-provider'; path: (string | number)[]; provider: JsonObject }
+  | { kind: 'set-config'; path: (string | number)[]; config: JsonObject }
+  | { kind: 'clear-provider'; path: (string | number)[]; remainingProviders: number; dropConfig: boolean; dropRow: boolean };
+
+async function writeDsh(file: string, raw: string | null, edit: DshEdit): Promise<PlannedWrite | null> {
+  const doc = raw === null || raw.trim() === '' ? new YAML.Document([]) : YAML.parseDocument(raw);
+
+  if (doc.errors.length > 0) throw failModelFile(file, `it does not parse as YAML (${doc.errors[0]?.message ?? 'unknown error'})`);
+
+  switch (edit.kind) {
+    case 'append-row':
+      doc.add(doc.createNode(edit.row));
+      break;
+    case 'set-provider':
+      doc.setIn([...edit.path, 'config', 'providers', MANAGED_PROVIDER], doc.createNode(edit.provider));
+      break;
+    case 'set-config':
+      doc.setIn([...edit.path, 'config'], doc.createNode(edit.config));
+      break;
+    case 'clear-provider':
+      doc.deleteIn([...edit.path, 'config', 'providers', MANAGED_PROVIDER]);
+
+      if (edit.remainingProviders === 0) doc.deleteIn([...edit.path, 'config', 'providers']);
+
+      if (edit.dropConfig) doc.deleteIn([...edit.path, 'config']);
+
+      if (edit.dropRow) doc.deleteIn(edit.path);
+      break;
+  }
+
+  const next = doc.toString();
+
+  return next === raw ? null : planWrite(file, next);
+}
+
+async function planDsh(context: ReconcileContext): Promise<Plan> {
+  const { file } = context;
+  const raw = await readFileSafe(file);
+  const rows = readDshPatch(file, raw);
+  const topIndex = rows.findLastIndex((row) => row.id === DSH_LLM_ROW_ID && row.insert === undefined);
+  const nested = topIndex === -1 ? findNestedLlm(rows) : undefined;
+  const targetRow = topIndex === -1 ? nested?.row : rows[topIndex];
+  const targetPath: (string | number)[] | undefined = topIndex === -1 ? nested?.path : [topIndex];
+  const desired = context.cleanupOnly ? [] : context.models;
+  const desiredModelIds = new Set(desired.map((model) => model.model_id));
+
+  if (targetRow === undefined && desired.length === 0) return { write: null };
+
+  const profileDir = path.dirname(file);
+  const bundles = await profileBundles(profileDir) ?? [];
+  const inherited = await inheritedLlmConfig(bundles, path.dirname(profileDir), profileDir);
+
+  const rowConfig = targetRow === undefined
+    ? inherited
+    : targetRow.config ?? (topIndex === -1 ? undefined : inherited);
+
+  const base = dshConfig(file, rowConfig);
+  const providers = base.providers ?? {};
+  const provider = providers[MANAGED_PROVIDER];
+  const expectedBase = desired[0] ? providerBaseUrl(desired[0].base_url) : undefined;
+
+  const dshFields: JsonObject = provider === undefined ? {} : { ...JsonObjectSchema.parse(provider) };
+
+  delete dshFields.models;
+
+  // As for OpenClaw and Hermes: a container teamai wrote is replaceable, so a rotated endpoint reaches the member.
+  const teamaiProvider = provider !== undefined
+    && authoredFieldsIntact(dshFields, DSH_CONTAINER_KEYS, context.previousRecord?.containerHash);
+
+  if (provider && desired.length > 0) {
+    if (!teamaiProvider && provider.baseURL !== undefined && providerBaseUrl(provider.baseURL) !== expectedBase) {
+      throw conflictModelFile(file, MANAGED_PROVIDER, 'a different baseURL');
+    }
+
+    if (provider.api !== undefined && provider.api !== 'openai-completions') {
+      throw conflictModelFile(file, MANAGED_PROVIDER, `api "${provider.api}"`);
+    }
+
+    if (provider.apiKeyEnv !== undefined && provider.apiKeyEnv !== DSH_CREDENTIAL_REF) {
+      throw conflictModelFile(file, MANAGED_PROVIDER, `credential reference "${provider.apiKeyEnv}"`);
+    }
+  }
+
+  const previous = context.previousEntries;
+  const nextEntries: EntryRecord = {};
+  const keptModels: JsonObject[] = [];
+  const byId = new Set<string>();
+  let removedManaged = false;
+
+  for (const model of provider?.models ?? []) {
+    if (byId.has(model.id)) throw failModelFile(file, `model "${model.id}" appears more than once`);
+
+    byId.add(model.id);
+    const prior = previous[model.id];
+    const isManaged = prior !== undefined && modelHash(model) === prior.hash;
+
+    if (isManaged && (desired.length === 0 || (context.fullSnapshot && !desiredModelIds.has(model.id)))) {
+      removedManaged = true;
+      continue;
+    }
+
+    if (!isManaged && desiredModelIds.has(model.id)) {
+      const wanted = desired.find((candidate) => candidate.model_id === model.id);
+
+      if (wanted === undefined) throw conflictModelFile(file, MANAGED_PROVIDER, `a model "${model.id}" this delivery does not manage`);
+      const entry = dshEntry(wanted);
+
+      if (!isDeepStrictEqual(model, entry)) throw conflictModelFile(file, MANAGED_PROVIDER, `a model "${model.id}" this delivery does not manage`);
+
+      nextEntries[model.id] = { provider: wanted.provider, name: wanted.name, hash: modelHash(entry) };
+      continue;
+    }
+
+    if (isManaged) nextEntries[model.id] = prior;
+
+    keptModels.push(JsonObjectSchema.parse(model));
+  }
+
+  const nextModels = [...keptModels];
+
+  for (const model of desired) {
+    const entry = dshEntry(model);
+    const at = nextModels.findIndex((value) => value.id === model.model_id);
+
+    if (at >= 0) nextModels[at] = entry;
+    else nextModels.push(entry);
+
+    nextEntries[model.model_id] = { provider: model.provider, name: model.name, hash: modelHash(entry) };
+  }
+
+  if (desired.length === 0 && !removedManaged) {
+    // A model the member edited is no longer teamai's: the provider stays, and so does the credential reference the
+    // cleanup would otherwise drop while the model still points at it.
+    const memberKept = (provider?.models ?? []).some((value) => {
+      const id = jsonObjectOf(value)?.id;
+
+      return id !== undefined && previous[String(id)]?.hash !== modelHash(value);
+    });
+
+    return memberKept ? { write: null, retainsProvider: true } : { write: null };
+  }
+
+  let nextProvider: JsonObject | undefined;
+  let retainsProvider = false;
+
+  if (desired.length > 0) {
+    nextProvider = {
+      ...JsonObjectSchema.parse(provider ?? {}),
+      apiKeyEnv: DSH_CREDENTIAL_REF,
+      api: 'openai-completions',
+      baseURL: expectedBase ?? '',
+      models: nextModels,
+    };
+  } else if (provider !== undefined) {
+    const fields: JsonObject = { ...JsonObjectSchema.parse(provider) };
+
+    delete fields.models;
+
+    if (nextModels.length > 0 || !authoredFieldsIntact(fields, DSH_CONTAINER_KEYS, context.previousRecord?.containerHash)) {
+      nextProvider = { ...JsonObjectSchema.parse(provider), models: nextModels };
+      retainsProvider = true;
+    }
+  }
+
+  const nextProviders: Record<string, JsonObject> = {};
+
+  for (const [key, value] of Object.entries(providers)) {
+    if (key !== MANAGED_PROVIDER) nextProviders[key] = JsonObjectSchema.parse(value);
+  }
+
+  if (nextProvider !== undefined) nextProviders[MANAGED_PROVIDER] = nextProvider;
+
+  const nextConfig: JsonObject = { ...JsonObjectSchema.parse(base), providers: nextProviders };
+
+  if (Object.keys(nextProviders).length === 0) delete nextConfig.providers;
+
+  const rowCreated = targetRow === undefined ? true : context.previousRecord?.rowCreated ?? false;
+
+  const rowHadConfig = targetRow === undefined
+    ? false
+    : context.previousRecord?.rowHadConfig ?? (targetRow.config !== undefined);
+
+  let edit: DshEdit;
+
+  if (targetRow === undefined || targetPath === undefined) {
+    edit = { kind: 'append-row', row: { id: DSH_LLM_ROW_ID, name: DSH_LLM_ROW_NAME, config: nextConfig } };
+  } else if (desired.length > 0) {
+    const seedInherited = topIndex !== -1 && targetRow.config === undefined && inherited !== undefined;
+
+    edit = seedInherited
+      ? { kind: 'set-config', path: targetPath, config: nextConfig }
+      : { kind: 'set-provider', path: targetPath, provider: nextProvider ?? {} };
+  } else if (nextProvider !== undefined) {
+    edit = { kind: 'set-provider', path: targetPath, provider: nextProvider };
+  } else {
+    const remainingProviders = Object.keys(nextProviders).length;
+
+    const restored = inherited !== undefined
+      && stableJson(JsonValueSchema.parse(nextConfig)) === stableJson(inherited);
+
+    const emptyConfig = Object.keys(nextConfig).length === 0;
+    const dropConfig = topIndex !== -1 && !rowHadConfig && (restored || (remainingProviders === 0 && emptyConfig));
+
+    edit = {
+      kind: 'clear-provider',
+      path: targetPath,
+      remainingProviders,
+      dropConfig,
+      dropRow: rowCreated && dropConfig,
+    };
+  }
+
+  return {
+    write: await writeDsh(file, raw, edit),
+    retainsProvider,
+    record: Object.keys(nextEntries).length > 0
+      ? {
+        agent: 'dsh',
+        provider: MANAGED_PROVIDER,
+        entries: nextEntries,
+        containerHash: modelHash({
+          apiKeyEnv: DSH_CREDENTIAL_REF,
+          api: 'openai-completions',
+          baseURL: expectedBase ?? '',
+        }),
+        rowCreated,
+        rowHadConfig,
+      }
+      : undefined,
+  };
+}
+
+// ─── DSH credential store ────────────────────────────────────────────────────
+
+const CredentialDocumentSchema = z.object({
+  version: z.literal(1),
+  refs: z.record(z.string(), z.string()).default({}),
+  records: z.record(z.string(), JsonValueSchema).default({}),
+}).strict();
+
+type CredentialDocument = z.infer<typeof CredentialDocumentSchema>;
+
+function readCredentials(file: string, raw: string | null): CredentialDocument {
+  if (raw === null || raw.trim() === '') return { version: 1, refs: {}, records: {} };
+
+  try {
+    return CredentialDocumentSchema.parse(parseYaml(raw));
+  } catch (error) {
+    throw failModelFile(file, `it does not parse as the DSH credential store (${messageOf(error)})`);
+  }
+}
+
+async function writeCredentials(
+  file: string,
+  raw: string | null,
+  ref: string | undefined,
+  value: string | undefined,
+): Promise<PlannedWrite | null> {
+  const doc = raw === null || raw.trim() === '' ? new YAML.Document({}) : YAML.parseDocument(raw);
+
+  if (doc.errors.length > 0) throw failModelFile(file, `it does not parse as YAML (${doc.errors[0]?.message ?? 'unknown error'})`);
+
+  doc.setIn(['version'], 1);
+
+  if (ref !== undefined && value !== undefined) doc.setIn(['refs', ref], value);
+  else if (ref !== undefined) doc.deleteIn(['refs', ref]);
+
+  const next = doc.toString();
+
+  return next === raw ? null : planWrite(file, next, true);
+}
+
+interface CredentialInstallPlan {
+  write: PlannedWrite | null;
+  credential: CredentialRecord;
+}
+
+async function planCredentialInstall(
+  file: string,
+  key: string,
+  previousRecord: CredentialRecord | undefined,
+  hasPreviousManagedEntries: boolean,
+  fullSnapshot: boolean,
+): Promise<CredentialInstallPlan> {
+  const raw = await readFileSafe(file);
+  const document = readCredentials(file, raw);
+  const current = document.refs[DSH_CREDENTIAL_REF];
+  const incomingHash = contentHash(key);
+
+  if (current !== undefined && current !== '') {
+    const currentHash = contentHash(current);
+    const ours = previousRecord !== undefined && previousRecord.hash === currentHash;
+
+    if (currentHash !== incomingHash && (!ours || (hasPreviousManagedEntries && !fullSnapshot))) {
+      throw conflictModelFile(file, `refs.${DSH_CREDENTIAL_REF}`, 'a different API key');
+    }
+  }
+
+  return {
+    write: await writeCredentials(file, raw, DSH_CREDENTIAL_REF, key),
+    credential: {
+      ref: DSH_CREDENTIAL_REF,
+      hash: incomingHash,
+      created: raw === null || previousRecord?.created === true,
+      refOwned: previousRecord?.refOwned ?? current === undefined,
+    },
+  };
+}
+
+interface CredentialCleanupPlan {
+  write: PlannedWrite | null;
+}
+
+async function planCredentialCleanup(
+  file: string,
+  previousRecord: CredentialRecord,
+): Promise<CredentialCleanupPlan> {
+  const raw = await readFileSafe(file);
+
+  if (raw === null) return { write: null };
+
+  const document = readCredentials(file, raw);
+  const current = document.refs[DSH_CREDENTIAL_REF];
+  const removeRef = current !== undefined && contentHash(current) === previousRecord.hash && previousRecord.refOwned !== false;
+
+  const refs = removeRef
+    ? Object.fromEntries(Object.entries(document.refs).filter(([name]) => name !== DSH_CREDENTIAL_REF))
+    : document.refs;
+
+  const empty = Object.keys(refs).length === 0 && Object.keys(document.records).length === 0;
+
+  if (empty && previousRecord.created) return { write: await planWrite(file, null, true) };
+
+  if (empty) {
+    const doc = YAML.parseDocument(raw);
+
+    doc.deleteIn(['refs']);
+
+    const next = doc.toString();
+
+    return { write: next === raw ? null : await planWrite(file, next, true) };
+  }
+
+  return { write: await writeCredentials(file, raw, removeRef ? DSH_CREDENTIAL_REF : undefined, undefined) };
+}
+
+// ─── entry points ─────────────────────────────────────────────────────────────
+
+async function planDshCredentials(input: {
+  root: string;
+  models: readonly DeliveredModel[];
+  fullSnapshot: boolean;
+  previous: ModelDeliveryRecord | undefined;
+  cleanupOnly: boolean;
+  writes: PlannedWrite[];
+  record: ModelDeliveryRecord;
+  retainedStores: ReadonlySet<string>;
+}): Promise<void> {
+  const { root, models, fullSnapshot, previous, cleanupOnly, writes, record, retainedStores } = input;
+  const credentials: NonNullable<ModelDeliveryRecord['credentials']> = {};
+  const priorCredentials = { ...previous?.credentials };
+
+  // A provider the member keeps now owns its credential too. Later cleanup must not revoke it.
+  for (const file of retainedStores) {
+    const credential = priorCredentials[file];
+
+    if (credential) priorCredentials[file] = { ...credential, refOwned: false };
+  }
+
+  if (cleanupOnly) {
+    for (const [file, credential] of Object.entries(priorCredentials)) {
+      if (retainedStores.has(file)) {
+        credentials[file] = credential;
+        continue;
+      }
+
+      const plan = await planCredentialCleanup(file, credential);
+
+      if (plan.write) writes.push(plan.write);
+    }
+
+    if (Object.keys(credentials).length > 0) record.credentials = credentials;
+
+    return;
+  }
+
+  const credentialFile = path.join(root, '.credentials.yaml');
+  const [first] = models;
+
+  if (first === undefined) return;
+
+  const managedBefore = Object.values(previous?.files ?? {}).some((file) =>
+    file.agent === 'dsh' && Object.keys(file.entries).length > 0);
+
+  const install = await planCredentialInstall(
+    credentialFile,
+    first.api_key,
+    priorCredentials[credentialFile],
+    managedBefore,
+    fullSnapshot,
+  );
+
+  if (install.write) writes.push(install.write);
+
+  credentials[credentialFile] = install.credential;
+
+  // A moved root must not leave the old store's reference behind.
+  for (const [file, credential] of Object.entries(priorCredentials)) {
+    if (file === credentialFile) continue;
+    const plan = await planCredentialCleanup(file, credential);
+
+    if (plan.write) writes.push(plan.write);
+  }
+
+  record.credentials = credentials;
+}
+
+export async function reconcileOpenclawModels(
+  models: readonly DeliveredModel[],
+  fullSnapshot: boolean,
+  previous: ModelDeliveryRecord | undefined,
+  root: string,
+  commit?: ModelDeliveryCommit,
+): Promise<ModelDeliveryRecord> {
+  checkModels(models);
+
+  const cleanupOnly = models.length === 0;
+
+  if (cleanupOnly && !fullSnapshot) return previous ?? { version: 1, files: {} };
+
+  const current = resolveOpenclawConfigPath(realHost(), root);
+  const targets = new Map<string, boolean>();
+
+  for (const [file, record] of Object.entries(previous?.files ?? {})) {
+    if (record.agent === 'openclaw') targets.set(file, true);
+  }
+
+  if (!cleanupOnly) targets.set(current, false);
+
+  const writes: PlannedWrite[] = [];
+  const files: ModelDeliveryRecord['files'] = {};
+
+  for (const [file, wasManaged] of targets) {
+    const plan = await planOpenclaw({
+      file,
+      models,
+      cleanupOnly: wasManaged || cleanupOnly,
+      fullSnapshot,
+      previousEntries: previous?.files[file]?.entries ?? {},
+      previousRecord: previous?.files[file],
+    });
+
+    if (plan.write) writes.push(plan.write);
+
+    if (plan.record) files[file] = plan.record;
+  }
+
+  const record: ModelDeliveryRecord = { version: 1, files };
+
+  await commitWrites(writes, record, commit);
+
+  return record;
+}
+
+export async function reconcileHermesModels(
+  models: readonly DeliveredModel[],
+  fullSnapshot: boolean,
+  previous: ModelDeliveryRecord | undefined,
+  root: string,
+  commit?: ModelDeliveryCommit,
+): Promise<ModelDeliveryRecord> {
+  checkModels(models);
+
+  const cleanupOnly = models.length === 0;
+
+  if (cleanupOnly && !fullSnapshot) return previous ?? { version: 1, files: {} };
+
+  const current = path.join(root, 'config.yaml');
+  const targets = new Map<string, boolean>();
+
+  for (const [file, record] of Object.entries(previous?.files ?? {})) {
+    if (record.agent === 'hermes') targets.set(file, true);
+  }
+
+  if (!cleanupOnly) targets.set(current, false);
+
+  const writes: PlannedWrite[] = [];
+  const files: ModelDeliveryRecord['files'] = {};
+
+  for (const [file, wasManaged] of targets) {
+    const plan = await planHermes({
+      file,
+      models,
+      cleanupOnly: wasManaged || cleanupOnly,
+      fullSnapshot,
+      previousEntries: previous?.files[file]?.entries ?? {},
+      previousRecord: previous?.files[file],
+    });
+
+    if (plan.write) writes.push(plan.write);
+
+    if (plan.record) files[file] = plan.record;
+  }
+
+  const record: ModelDeliveryRecord = { version: 1, files };
+
+  await commitWrites(writes, record, commit);
+
+  return record;
+}
+
+export async function reconcileDshModels(
+  models: readonly DeliveredModel[],
+  fullSnapshot: boolean,
+  previous: ModelDeliveryRecord | undefined,
+  root: string,
+  commit?: ModelDeliveryCommit,
+): Promise<ModelDeliveryRecord> {
+  checkModels(models);
+
+  const cleanupOnly = models.length === 0;
+
+  if (cleanupOnly && !fullSnapshot) return previous ?? { version: 1, files: {} };
+
+  if (!cleanupOnly) {
+    const override = await dshHomeOverride(root);
+
+    if (override !== null) {
+      throw new Error(
+        `apply_model_config: ${override} configures llm-pi-ai at the home layer, which applies after every profile `
+        + 'and replaces the profile config wholesale; the delivered candidates would be unavailable. Remove that entry first.',
+      );
+    }
+  }
+
+  const targets = new Map<string, boolean>();
+
+  for (const [file, record] of Object.entries(previous?.files ?? {})) {
+    if (record.agent === 'dsh') targets.set(file, true);
+  }
+
+  if (!cleanupOnly) {
+    const patches = await dshProfilePatches(root);
+
+    if (patches.length === 0) {
+      throw new Error(
+        'apply_model_config: DeepSeek Harness has no initialized profile that provides the llm-pi-ai row '
+        + `under ${root}; provider settings are persisted per profile, so start dsh once (or add the row to a profile) and retry`,
+      );
+    }
+
+    for (const file of patches) targets.set(file, false);
+  }
+
+  const writes: PlannedWrite[] = [];
+  const files: ModelDeliveryRecord['files'] = {};
+  const retainedStores = new Set<string>();
+
+  for (const [file, wasManaged] of targets) {
+    const plan = await planDsh({
+      file,
+      models,
+      cleanupOnly: wasManaged || cleanupOnly,
+      fullSnapshot,
+      previousEntries: previous?.files[file]?.entries ?? {},
+      previousRecord: previous?.files[file],
+    });
+
+    if (plan.write) writes.push(plan.write);
+
+    if (plan.record) files[file] = plan.record;
+
+    if (plan.retainsProvider) retainedStores.add(path.resolve(path.dirname(file), '..', '..', '.credentials.yaml'));
+  }
+
+  const record: ModelDeliveryRecord = { version: 1, files };
+
+  await planDshCredentials({ root, models, fullSnapshot, previous, cleanupOnly, writes, record, retainedStores });
+  await commitWrites(writes, record, commit);
+
+  return record;
+}
+
+interface ModelFileEntry { name?: string; value: ModelDeliveryValue }
+
+/** Read back the managed candidates still present in the files. */
+export async function scanDeliveredModels(
+  agent: ModelConfigTool,
+  record: ModelDeliveryRecord | undefined,
+): Promise<ModelDeliveryEntry[]> {
+  if (!record) return [];
+
+  const found: ModelDeliveryEntry[] = [];
+  const seen = new Set<string>();
+
+  for (const [file, fileRecord] of Object.entries(record.files)) {
+    if (fileRecord.agent !== agent) continue;
+
+    let raw: string | null;
+
+    try {
+      raw = await readFileSafe(file);
+    } catch {
+      continue;
+    }
+
+    if (raw === null) continue;
+
+    let entries: Map<string, ModelFileEntry>;
+
+    try {
+      entries = agent === 'openclaw' ? openclawFileEntries(file, raw) : agent === 'hermes' ? hermesFileEntries(file, raw) : dshFileEntries(file, raw);
+    } catch {
+      continue;
+    }
+
+    for (const [modelId, entry] of Object.entries(fileRecord.entries)) {
+      const actual = entries.get(modelId);
+
+      if (actual === undefined || modelHash(actual.value) !== entry.hash) continue;
+
+      if (seen.has(modelId)) continue;
+      seen.add(modelId);
+
+      const foundEntry: ModelDeliveryEntry = {
+        provider: entry.provider,
+        model_id: modelId,
+        source: 'enterprise',
+      };
+
+      const name = actual.name ?? entry.name;
+
+      if (name !== undefined) foundEntry.name = name;
+
+      found.push(foundEntry);
+    }
+  }
+
+  return found.sort((left, right) => left.model_id.localeCompare(right.model_id));
+}
+
+function openclawFileEntries(file: string, raw: string): Map<string, ModelFileEntry> {
+  const read = readOpenclaw(file, raw);
+  const provider = read.document.models?.providers?.[MANAGED_PROVIDER];
+  const entries = new Map<string, ModelFileEntry>();
+
+  for (const model of provider?.models ?? []) {
+    entries.set(model.id, { name: model.name, value: model });
+  }
+
+  return entries;
+}
+
+function hermesFileEntries(file: string, raw: string): Map<string, ModelFileEntry> {
+  const document = readHermes(file, raw);
+  const entries = new Map<string, ModelFileEntry>();
+
+  for (const [id, model] of Object.entries(document.providers?.[MANAGED_PROVIDER]?.models ?? {})) {
+    entries.set(id, { value: model });
+  }
+
+  return entries;
+}
+
+function dshFileEntries(file: string, raw: string): Map<string, ModelFileEntry> {
+  const rows = readDshPatch(file, raw);
+  const entries = new Map<string, ModelFileEntry>();
+  const targets: DshRow[] = [];
+
+  for (const row of rows) {
+    if (row.id === DSH_LLM_ROW_ID && row.insert === undefined) targets.push(row);
+  }
+
+  const nested = findNestedLlm(rows);
+
+  if (nested) targets.push(nested.row);
+
+  for (const row of targets) {
+    const config = dshConfig(file, row.config);
+
+    for (const model of config.providers?.[MANAGED_PROVIDER]?.models ?? []) {
+      entries.set(model.id, { name: model.name, value: model });
+    }
+  }
+
+  return entries;
 }

@@ -451,12 +451,12 @@ function pluginConfigLeftAsWritten(read: LeftAsWritten, cfgPath: string, file: s
   switch (read.kind) {
     case 'invalid':
       return action === 'load'
-        ? `OpenClaw: ${cfgPath} does not parse as JSON or JSON5 (${read.error}), so teamai left it as it is. The team's hooks do not run until you add ${file} to plugins.load.paths.`
-        : `OpenClaw: ${cfgPath} does not parse as JSON or JSON5 (${read.error}), so teamai left it as it is. Its plugins.load.paths may still list ${file}, the team hooks plugin; remove it by hand.`;
+        ? `OpenClaw: ${cfgPath} does not parse as JSON or JSON5 (${read.error}), so teamai did not add the team hooks plugin to it. The team's hooks do not run until you add ${file} to plugins.load.paths.`
+        : `OpenClaw: ${cfgPath} does not parse as JSON or JSON5 (${read.error}), so teamai did not remove the team hooks plugin from it. Its plugins.load.paths may still list ${file}, the team hooks plugin; remove it by hand.`;
     case 'json5':
       return action === 'load'
-        ? `OpenClaw: ${cfgPath} has comments or other JSON5 syntax, which a rewrite would drop, so teamai left it as it is. The team's hooks do not run until you add ${file} to plugins.load.paths.`
-        : `OpenClaw: ${cfgPath} has comments or other JSON5 syntax, which a rewrite would drop, so teamai left it as it is. Its plugins.load.paths still lists ${file}, the team hooks plugin; remove it by hand.`;
+        ? `OpenClaw: ${cfgPath} has comments or other JSON5 syntax, which a rewrite would drop, so teamai did not add the team hooks plugin to it. The team's hooks do not run until you add ${file} to plugins.load.paths.`
+        : `OpenClaw: ${cfgPath} has comments or other JSON5 syntax, which a rewrite would drop, so teamai did not remove the team hooks plugin from it. Its plugins.load.paths still lists ${file}, the team hooks plugin; remove it by hand.`;
     default: {
       const unhandled: never = read;
 
@@ -469,9 +469,9 @@ function pluginConfigLeftAsWritten(read: LeftAsWritten, cfgPath: string, file: s
 function hookEntryLeftAsWritten(read: LeftAsWritten, cfgPath: string, hookKey: string): string {
   switch (read.kind) {
     case 'invalid':
-      return `OpenClaw: ${cfgPath} does not parse as JSON or JSON5 (${read.error}), so teamai left it as it is. teamai's hook ${hookKey} does not run until you run \`openclaw hooks enable ${hookKey}\`.`;
+      return `OpenClaw: ${cfgPath} does not parse as JSON or JSON5 (${read.error}), so teamai did not enable teamai's hook ${hookKey} in it. teamai's hook ${hookKey} does not run until you run \`openclaw hooks enable ${hookKey}\`.`;
     case 'json5':
-      return `OpenClaw: ${cfgPath} has comments or other JSON5 syntax, which a rewrite would drop, so teamai left it as it is. teamai's hook ${hookKey} does not run until you run \`openclaw hooks enable ${hookKey}\`.`;
+      return `OpenClaw: ${cfgPath} has comments or other JSON5 syntax, which a rewrite would drop, so teamai did not enable teamai's hook ${hookKey} in it. teamai's hook ${hookKey} does not run until you run \`openclaw hooks enable ${hookKey}\`.`;
     default: {
       const unhandled: never = read;
 
@@ -484,9 +484,9 @@ function hookEntryLeftAsWritten(read: LeftAsWritten, cfgPath: string, hookKey: s
 function hookEntryKeptMessage(read: LeftAsWritten, cfgPath: string, hookKey: string): string {
   switch (read.kind) {
     case 'invalid':
-      return `OpenClaw: ${cfgPath} does not parse as JSON or JSON5 (${read.error}), so teamai left it as it is. It may still enable teamai's hook ${hookKey} (hooks.internal.entries.${hookKey}); remove that entry by hand or run \`openclaw hooks disable ${hookKey}\`.`;
+      return `OpenClaw: ${cfgPath} does not parse as JSON or JSON5 (${read.error}), so teamai did not disable teamai's hook ${hookKey} in it. It may still enable teamai's hook ${hookKey} (hooks.internal.entries.${hookKey}); remove that entry by hand or run \`openclaw hooks disable ${hookKey}\`.`;
     case 'json5':
-      return `OpenClaw: ${cfgPath} has comments or other JSON5 syntax, which a rewrite would drop, so teamai left it as it is. It still enables teamai's hook ${hookKey} (hooks.internal.entries.${hookKey}); remove that entry by hand or run \`openclaw hooks disable ${hookKey}\`.`;
+      return `OpenClaw: ${cfgPath} has comments or other JSON5 syntax, which a rewrite would drop, so teamai did not disable teamai's hook ${hookKey} in it. It still enables teamai's hook ${hookKey} (hooks.internal.entries.${hookKey}); remove that entry by hand or run \`openclaw hooks disable ${hookKey}\`.`;
     default: {
       const unhandled: never = read;
 
