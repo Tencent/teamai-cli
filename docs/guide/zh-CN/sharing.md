@@ -479,7 +479,7 @@ with:
 | 目录 | 放什么 |
 |---|---|
 | `teamai-friction-reminder` | 摩擦提醒：Stop 时提醒分享这次会话学到的东西，含阈值、评分权重、文案 |
-| `teamai-mr-hint` | 会话开始时提议导入最近合并的 MR：往回看多久、列几个、文案 |
+| `teamai-mr-hint` | 会话开始时查找、提议导入最近合并的 MR：往回看多久、列几个、文案 |
 | `teamai-todowrite-hint` | 任务规划好后，建议先查一次团队知识 |
 | `teamai-env-hint` | 会话开始时说明这个作用域有哪些团队环境变量和密钥 |
 | `teamai-package-hint` | 会话开始时说明团队的包声明变了 |

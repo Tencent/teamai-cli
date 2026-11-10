@@ -163,7 +163,7 @@ One machine overrides this with `recallEnabled` in `~/.teamai/config.yaml`. `TEA
 
 A team can ship its own recall agent: see [Replace the recall agent](sharing.md#replace-the-recall-agent).
 
-Turning recall off does not silence the SessionStart hint for recently merged MRs. That hint lists them and offers the default workflow [`teamai-import-from-mr`](workflow.md#default-workflows), which can capture and publish a learning before the team enables recall:
+Turning recall off does not silence the hint for recently merged MRs, which a session start looks for and the session's next prompt shows. That hint lists them and offers the default workflow [`teamai-import-from-mr`](workflow.md#default-workflows), which can capture and publish a learning before the team enables recall:
 
 ```text
 [teamai:mr-hint] Found 1 recently merged MR(s) not yet imported into the team knowledge base.

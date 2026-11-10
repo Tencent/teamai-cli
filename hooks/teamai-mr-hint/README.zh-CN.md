@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-- **运行时机**: 会话开始时
+- **运行时机**: 会话开始时，在 hook 返回之后。提议在会话的下一条提示词时显示；teamai 没有给工具装提示词 hook 时，在会话开始时显示
 - **输入**: 项目仓库在最近 `lookback_days` 天内合并的 MR，已经提议过的除外
 - **输出**: 一条提议：用 [`teamai-import-from-mr`](../../workflows/teamai-import-from-mr/README.zh-CN.md) 把它们整理成 learning
 - **文件**: `HOOK.yaml` 保存 teamai 的参数。每个 `.md` 文件是提议的一段文案

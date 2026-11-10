@@ -156,7 +156,8 @@ export function isHttpEnrolled(env: NodeJS.ProcessEnv): boolean {
 
 /**
  * Whether a prompt of `sessionId` has something only its foreground prints:
- * a package hint the detached pull left (pkg-hint.ts), a contribute hint a
+ * a package hint the detached pull left (pkg-hint.ts), an MR hint the
+ * session start's detached pass found (mr-hint.ts), a contribute hint a
  * Stop could not print (contribute-check.ts `pendingHint`), or, on a machine
  * that syncs over HTTP, the local agent's notices. The hint files are named as
  * both modules name them. The contribute hint is looked for on every tool,
@@ -168,6 +169,7 @@ export function promptAnswersInForeground(sessionId: string, env: NodeJS.Process
   const file = sessionId.replace(/[^a-zA-Z0-9._-]/g, '_');
 
   return fs.existsSync(path.join(teamaiHome, 'package-hints', `${file}.pending.json`))
+    || fs.existsSync(path.join(teamaiHome, 'sessions', `${file}.mr-hint.pending.json`))
     || (readTextFile(path.join(teamaiHome, 'sessions', `${file}.json`)) ?? '').includes('"pendingHint"')
     || isHttpEnrolled(env);
 }

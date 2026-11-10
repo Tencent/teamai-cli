@@ -5,6 +5,7 @@ import path from 'node:path';
 import { argvVerdict, ATTEMPT_ENV, childPayload, FOREGROUND_PAYLOAD_KEYS, HTTP_ENDPOINT_ENVS, isHttpEnrolled, LAUNCHED_BY_ENV, promptAnswersInForeground, runHookFastPath } from '../hook-fast-path.js';
 import { takePendingHint, writeContributeState } from '../contribute-check.js';
 import { takePendingPackageHint } from '../pkg/pkg-hint.js';
+import { takePendingMrHint } from '../mr-hint.js';
 import { loadLocalAgentConfig } from '../local-agent.js';
 import * as launchContext from '../launch-context.js';
 import { deriveSessionId } from '../utils/session-id.js';
@@ -236,6 +237,16 @@ describe('promptAnswersInForeground', () => {
     expect(promptAnswersInForeground(SESSION, process.env)).toBe(true);
     // The hint the foreground handler takes is that same file.
     expect(await takePendingPackageHint(SESSION)).toBe('Run npm install: package.json changed');
+    expect(promptAnswersInForeground(SESSION, process.env)).toBe(false);
+  });
+
+  it('keeps a prompt in the foreground while an MR hint the session start found waits for it', async () => {
+    const file = path.join(home, '.teamai', 'sessions', `${SESSION.replace(/[^a-zA-Z0-9._-]/g, '_')}.mr-hint.pending.json`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ message: 'Found 1 recently merged MR(s)', shown: { owner: 'acme', repo: 'shop', ids: ['7'] } }));
+
+    expect(promptAnswersInForeground(SESSION, process.env)).toBe(true);
+    expect(JSON.parse(await takePendingMrHint(SESSION) ?? '').hookSpecificOutput.additionalContext).toBe('Found 1 recently merged MR(s)');
     expect(promptAnswersInForeground(SESSION, process.env)).toBe(false);
   });
 

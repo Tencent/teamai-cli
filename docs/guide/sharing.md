@@ -488,7 +488,7 @@ After `teamai pull`, the reminder waits for 30 tool calls and opens with that li
 | Folder | What it holds |
 |---|---|
 | `teamai-friction-reminder` | The Stop reminder to share what a session taught: thresholds, score weights, texts |
-| `teamai-mr-hint` | The session-start offer to import recently merged MRs: how far back, how many, texts |
+| `teamai-mr-hint` | The offer, looked for at session start, to import recently merged MRs: how far back, how many, texts |
 | `teamai-todowrite-hint` | The suggestion to search team knowledge once a task is planned |
 | `teamai-env-hint` | The session-start note naming the scope's team env variables and secrets |
 | `teamai-package-hint` | The session-start note that the team's package declarations changed |
