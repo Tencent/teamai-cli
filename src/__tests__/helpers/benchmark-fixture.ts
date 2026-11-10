@@ -444,7 +444,7 @@ export async function benchmarkFixture(options: BenchmarkFixtureOptions): Promis
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
-${tool === 'claude' ? judgeMode(judgeLog, path.join(tmp, 'teamai-clones'), options.judge ?? 'first-label') : ''}
+${tool === 'claude' ? judgeMode(judgeLog, path.join(tmp, 'teamai-clones'), options.judge ?? 'first-label') : CODEX_VERSION}
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
 const first = !fs.existsSync(${JSON.stringify(toolLog)});
 const filterPids = ${JSON.stringify(filterPidLog)};
@@ -575,6 +575,12 @@ process.stdout.write(JSON.stringify({ type: 'result', session_id: 'fake-session'
     remove: () => fs.rmSync(root, { recursive: true, force: true }),
   };
 }
+
+/** The start of the fake `codex`: its version, as Codex prints it, which is no launch and logs nothing. */
+const CODEX_VERSION = `if (process.argv.includes('--version')) {
+  console.log('codex-cli 0.163.0');
+  process.exit(0);
+}`;
 
 /** The start of the fake `claude`: its version, which has a verified judge profile, and, launched as a judge, its answer. */
 function judgeMode(log: string, trialRoots: string, judge: FakeJudge): string {
