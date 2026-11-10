@@ -317,9 +317,11 @@ export type HooksChannels = {
    */
   readonly unwaitedSince?: string;
   /**
-   * Set when, on POSIX, the tool was observed to run a hook's command string with a POSIX-compatible `sh -c` that is
-   * not a login shell, so a built-in hook in the member's own hook file may start teamai without one and leave the
-   * login environment to the background pass (`builtinHookForm`). Absent: not observed.
+   * Set when, on POSIX, the tool runs a hook's command string with a POSIX-compatible shell and `-c`, not a login
+   * shell, so a built-in hook in the member's own hook file may start teamai without one and leave the login
+   * environment to the background pass (`builtinHookForm`). Set on a run of the tool's hook executor, which shows the
+   * shell and its flags; source that picks the shell may extend it to the platforms and versions the run did not
+   * cover. The comment beside it says which. Absent: no run shows it.
    */
   readonly loginDeferrable?: true;
 };
@@ -605,6 +607,10 @@ export const TOOLS = {
       // (codex-rs/hooks/src/engine/discovery.rs), and 0.134.0 to 0.147.0 skip such a handler. Run on 0.167.0 for
       // UserPromptSubmit and SessionStart; PostToolUse not run.
       unwaitedSince: '0.148.0',
+      // The account's zsh, bash or sh with `-c`, never `-lc`, and one of those three for any other account shell:
+      // source at 0.134.0 to 0.167.0 (shell_detect.rs, derive_exec_args). Run on 0.167.0, macOS: `/bin/zsh -c`, no
+      // login flag, parent the codex binary. teamai's own entry in this form not run.
+      loginDeferrable: true,
     },
     sessions: ['codex'],
     launch: 'codex',

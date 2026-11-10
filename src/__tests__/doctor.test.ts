@@ -1205,6 +1205,26 @@ describe('buildChecks — the wrapper a login-deferred hook starts', () => {
         expect(check!.fix).toContain('Run `teamai pull`');
     });
 
+    it('names the Codex hook file when it holds a login-deferred entry', async () => {
+        mockedLoadLocalConfig.mockResolvedValue({ ...mockLocalConfig, enabledAgents: ['claude', 'codex'] });
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            toolPaths: { claude: { settings: '.claude/settings.json' }, codex: { settings: '.codex/hooks.json' } },
+        });
+        mockedReadFileSafe.mockImplementation(async (filePath: string) => (
+            filePath.endsWith(path.join('.codex', 'hooks.json'))
+                ? withDeferredEntry().replace('--tool claude', '--tool codex')
+                : filePath.endsWith(path.join('.claude', 'settings.json')) ? buildFullHooksContent() : null
+        ));
+        const ctx = await resolveDoctorContext();
+        if (!ctx) throw new Error('expected a resolved doctor context');
+
+        const check = (await buildChecks(ctx)).find((c) => c.name === NAME);
+
+        expect(check!.fix).toContain(path.join('.codex', 'hooks.json'));
+        expect(check!.fix).not.toContain(path.join('.claude', 'settings.json'));
+    });
+
     it('adds no check when no hook file holds a login-deferred entry', async () => {
         const names = (await checks(buildFullHooksContent(), null)).map((c) => c.name);
 

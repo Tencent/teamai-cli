@@ -2052,6 +2052,20 @@ function toCodexEntry(def: HookDef): CodexHookMatcher {
 // their Windows form through `commandWindows`).
 const BUILTIN_DISPATCH_COMMAND_RE = /^("[^"]+"|bash) -lc "(teamai hook-dispatch [^"]+) 2>\/dev\/null" \|\| true$/;
 
+/** A login-deferred built-in (`getLoginDeferredDispatchCommand`): its `else` branch is today's command without `|| true`. */
+const LOGIN_DEFERRED_COMMAND_RE = /^if \[ -x [^\]]+ \]; then [^;]+; else (.+); fi \|\| true$/;
+
+/**
+ * The launcher and the `teamai hook-dispatch …` text of a built-in command in either form, from which each Windows
+ * form is derived; undefined for any other command.
+ */
+function builtinDispatchOf(command: string): { launcher: string; dispatch: string } | undefined {
+  const deferred = LOGIN_DEFERRED_COMMAND_RE.exec(command);
+  const match = BUILTIN_DISPATCH_COMMAND_RE.exec(deferred ? `${deferred[1]} || true` : command);
+
+  return match ? { launcher: match[1], dispatch: match[2] } : undefined;
+}
+
 /**
  * The `commandWindows` of a built-in Codex entry. `commandWindows` selects the
  * Windows command text, not necessarily its outer shell: Codex can run it from
@@ -2066,26 +2080,26 @@ const BUILTIN_DISPATCH_COMMAND_RE = /^("[^"]+"|bash) -lc "(teamai hook-dispatch 
  * keeps the single command its author wrote because its exit status can block.
  */
 function codexWindowsCommand(command: string): string | undefined {
-  const match = command.match(BUILTIN_DISPATCH_COMMAND_RE);
+  const builtin = builtinDispatchOf(command);
 
-  if (!match) return undefined;
+  if (!builtin) return undefined;
 
-  return `cmd.exe /d /s /c "${match[2]} 2>nul & exit /b 0"`;
+  return `cmd.exe /d /s /c "${builtin.dispatch} 2>nul & exit /b 0"`;
 }
 
 /** Render a valid PowerShell equivalent for TeamAI's generated bash wrapper. */
 function copilotPowershellCommand(command: string): string {
-  const match = command.match(BUILTIN_DISPATCH_COMMAND_RE);
+  const builtin = builtinDispatchOf(command);
 
-  if (!match) return command;
+  if (!builtin) return command;
 
   // PowerShell needs the call operator before a quoted executable path, and
   // `|| true` maps to `; exit 0`. The dispatch command inside is
   // builtin-generated (no `$`, backticks or double quotes), so echoing it
   // inside a double-quoted PowerShell string is interpolation-safe.
-  return match[1] === 'bash'
-    ? `${match[2]} 2>$null; exit 0`
-    : `& ${match[1]} -lc "${match[2]} 2>/dev/null"; exit 0`;
+  return builtin.launcher === 'bash'
+    ? `${builtin.dispatch} 2>$null; exit 0`
+    : `& ${builtin.launcher} -lc "${builtin.dispatch} 2>/dev/null"; exit 0`;
 }
 
 function copilotGlobalSource(file: string): string {

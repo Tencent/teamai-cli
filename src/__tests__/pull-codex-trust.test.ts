@@ -188,6 +188,9 @@ describe('pull trusts the Codex project after writing its MCP servers', () => {
     codexAt('0.147.0');
     await pull({ force: true });
     const waited = postToolUseHash();
+    // Below 0.148.0 the entry stays waited and, on POSIX, starts teamai without a login shell: a new command, trusted too.
+    if (process.platform !== 'win32') expect((await fse.readJson(hooksFile)).hooks.PostToolUse[0].hooks[0].command).toContain('TEAMAI_HOOK_LOGIN=deferred');
+    expect(await readCodexHookTrustForScope(teamConfig, localConfig)).toEqual({ kind: 'listed', notTrusted: [] });
 
     codexAt('0.163.0');
     await pull({ force: true });

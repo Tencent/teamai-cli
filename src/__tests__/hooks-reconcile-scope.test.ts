@@ -1373,14 +1373,33 @@ describe('reconcileTeamHooksForConfig — the form of Claude Code\'s PostToolUse
   });
 });
 
-describe('reconcileTeamHooksForConfig — a Codex that does not wait for PostToolUse', () => {
+describe('reconcileTeamHooksForConfig — the form of Codex\'s hook entries', () => {
   const COMMAND = 'bash -lc "teamai hook-dispatch post-tool-use --tool codex 2>/dev/null" || true';
   const COMMAND_WINDOWS = 'cmd.exe /d /s /c "teamai hook-dispatch post-tool-use --tool codex 2>nul & exit /b 0"';
+  const deferred = (event: string) => 'if [ -x "$HOME/.teamai/bin/teamai" ]; then TEAMAI_HOOK_LOGIN=deferred "$HOME/.teamai/bin/teamai" '
+    + `hook-dispatch ${event} --tool codex 2>/dev/null; else bash -lc "teamai hook-dispatch ${event} --tool codex 2>/dev/null"; fi || true`;
   const WAITED = [{ hooks: [{ type: 'command', command: COMMAND, commandWindows: COMMAND_WINDOWS, timeout: 10 }] }];
+  // Codex on Windows runs `commandWindows`, which stays today's in either form.
+  const LOGIN_DEFERRED = [{ hooks: [{ ...WAITED[0].hooks[0], command: deferred('post-tool-use') }] }];
   // One entry and no matcher: Codex compiles matchers with the Rust regex crate, which has no look-ahead.
   const UNWAITED = [{ hooks: [{ ...WAITED[0].hooks[0], async: true }] }];
+  const PROMPT_WAITED = [{ hooks: [{
+    type: 'command',
+    command: 'bash -lc "teamai hook-dispatch prompt-submit --tool codex 2>/dev/null" || true',
+    commandWindows: 'cmd.exe /d /s /c "teamai hook-dispatch prompt-submit --tool codex 2>nul & exit /b 0"',
+    timeout: 10,
+  }] }];
+  const PROMPT_DEFERRED = [{ hooks: [{ ...PROMPT_WAITED[0].hooks[0], command: deferred('prompt-submit') }] }];
   const file = () => path.join(home, '.codex', 'hooks.json');
   const postToolUse = async () => (await fse.readJson(file())).hooks.PostToolUse;
+  const promptSubmit = async () => (await fse.readJson(file())).hooks.UserPromptSubmit;
+  /** The member's file as a release before the hook forms wrote it. */
+  const writeTodaysEntries = async (): Promise<void> => {
+    const json = await fse.readJson(file());
+    json.hooks.PostToolUse = WAITED;
+    json.hooks.UserPromptSubmit = PROMPT_WAITED;
+    await fse.writeJson(file(), json);
+  };
 
   beforeEach(() => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin');
@@ -1392,7 +1411,7 @@ describe('reconcileTeamHooksForConfig — a Codex that does not wait for PostToo
 
   it.each(['0.148.0', '0.167.0'])('makes the PostToolUse entry async at %s', async (version) => {
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
-    expect(await postToolUse()).toEqual(WAITED);
+    expect(await postToolUse()).toEqual(LOGIN_DEFERRED);
     vi.mocked(getAgentVersion).mockResolvedValue(version);
 
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
@@ -1402,27 +1421,49 @@ describe('reconcileTeamHooksForConfig — a Codex that does not wait for PostToo
   });
 
   // Codex 0.134.0 to 0.147.0 skip an async handler instead of running it.
-  it.each(['0.147.0', '0.147.9', '', 'not a version'])('keeps the waited entry when the version reads %j', async (version) => {
+  it.each(['0.147.0', '0.147.9', '', 'not a version'])('goes back to a waited entry, which defers its login shell, when the version reads %j', async (version) => {
     vi.mocked(getAgentVersion).mockResolvedValue('0.167.0');
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
     vi.mocked(getAgentVersion).mockResolvedValue(version);
 
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
 
-    expect(await postToolUse()).toEqual(WAITED);
+    expect(await postToolUse()).toEqual(LOGIN_DEFERRED);
   });
 
-  it('removes the entry on uninstall', async () => {
-    vi.mocked(getAgentVersion).mockResolvedValue('0.167.0');
+  it.each(['0.167.0', ''])('defers the login shell of the prompt entry at %j and replaces today\'s entries, keeping today\'s commandWindows', async (version) => {
+    vi.mocked(getAgentVersion).mockResolvedValue(version);
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+    await writeTodaysEntries();
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+
+    expect(await promptSubmit()).toEqual(PROMPT_DEFERRED);
+    expect(await postToolUse()).toEqual(version === '' ? LOGIN_DEFERRED : UNWAITED);
+  });
+
+  it.each(['0.167.0', ''])('keeps today\'s entries in every field on Windows, whose hooks run no POSIX shell, at %j', async (version) => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    vi.mocked(getAgentVersion).mockResolvedValue(version);
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+
+    const { hooks } = await fse.readJson(file());
+    const today = (await fse.readJson(path.join(__dirname, 'fixtures', 'hooks', 'codex.json'))).hooks;
+    expect(hooks).toEqual(version === '' ? today : { ...today, PostToolUse: UNWAITED });
+  });
+
+  it.each(['0.167.0', '0.147.0'])('removes the entries of either form on uninstall, at %s', async (version) => {
+    vi.mocked(getAgentVersion).mockResolvedValue(version);
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
 
     await reconcileTeamHooksForConfig(teamConfig, localConfig(), { removeAll: true });
 
-    expect((await fse.readJson(file())).hooks?.PostToolUse ?? []).toEqual([]);
+    expect(JSON.stringify(await fse.readJson(file()))).not.toContain('hook-dispatch');
   });
 
-  it('changes nothing on a second pull, and reports the entry as installed', async () => {
-    vi.mocked(getAgentVersion).mockResolvedValue('0.167.0');
+  it.each(['0.167.0', '0.147.0'])('changes nothing on a second pull, and reports the entries of the form at %s as installed', async (version) => {
+    vi.mocked(getAgentVersion).mockResolvedValue(version);
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
     const before = await fse.readFile(file(), 'utf8');
 
@@ -1433,8 +1474,8 @@ describe('reconcileTeamHooksForConfig — a Codex that does not wait for PostToo
   });
 
   it.each([
-    { installedAt: '0.167.0', installed: UNWAITED, now: '0.147.0', full: WAITED },
-    { installedAt: '0.147.0', installed: WAITED, now: '0.167.0', full: UNWAITED },
+    { installedAt: '0.167.0', installed: UNWAITED, now: '0.147.0', full: LOGIN_DEFERRED },
+    { installedAt: '0.147.0', installed: LOGIN_DEFERRED, now: '0.167.0', full: UNWAITED },
   ])('keeps the form installed at $installedAt on an inline pull at $now and starts no tool, and a full pull moves it', async ({ installedAt, installed, now, full }) => {
     vi.mocked(getAgentVersion).mockResolvedValue(installedAt);
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
@@ -1448,6 +1489,21 @@ describe('reconcileTeamHooksForConfig — a Codex that does not wait for PostToo
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
 
     expect(await postToolUse()).toEqual(full);
+  });
+
+  it('keeps today\'s entries on an inline pull, and the next full pull defers their login shell', async () => {
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+    await writeTodaysEntries();
+    vi.mocked(getAgentVersion).mockClear();
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig(), { builtinFormFrom: 'installed' });
+
+    expect(await promptSubmit()).toEqual(PROMPT_WAITED);
+    expect(getAgentVersion).not.toHaveBeenCalledWith('codex');
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+
+    expect(await promptSubmit()).toEqual(PROMPT_DEFERRED);
   });
 
   it('says the instructions channel is ready after a version change across the floor without asking the version, while the status against the version is not current', async () => {

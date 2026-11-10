@@ -78,7 +78,8 @@ describe('hooks golden — the hook file in the member\'s own tool home', () => 
     { tool: 'claude', version: '2.1.118', fixture: 'claude-login-deferred' },
     { tool: 'claude', version: '', fixture: 'claude-login-deferred' },
     { tool: 'codex', version: '0.167.0', fixture: 'codex-unwaited' },
-    { tool: 'codex', version: '0.147.0', fixture: 'codex' },
+    { tool: 'codex', version: '0.147.0', fixture: 'codex-login-deferred' },
+    { tool: 'codex', version: '', fixture: 'codex-login-deferred' },
     ...cases.filter(([tool]) => tool !== 'claude' && tool !== 'codex').map(([tool]) => ({ tool, version: '2.1.322', fixture: tool })),
   ] as Array<{ tool: ToolId; version: string; fixture: string }>)('$tool at $version matches the $fixture fixture', async ({ tool, version, fixture }) => {
     for (const move of 'moves' in TOOLS[tool].home ? TOOLS[tool].home.moves.by : []) if (move.kind === 'env') vi.stubEnv(move.name, '');
