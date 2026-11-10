@@ -5,7 +5,7 @@ import semver from 'semver';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX } from './types.js';
 import { isCodexTool } from './utils/tool-names.js';
 import type { HookDef } from './types.js';
-import { channelsOf, hookFormatOf, type HookAdapterId } from './tools.js';
+import { channelsOf, hookFormatOf, type HookAdapterId, type HooksChannels } from './tools.js';
 import { LOGIN_DEFERRED_ENV } from './hook-fast-path.js';
 import { getUserHome } from './utils/home.js';
 import { log } from './utils/logger.js';
@@ -541,19 +541,40 @@ export const BUILTIN_HOOK_FORMS: readonly BuiltinHookForm[] = [false, true]
 /**
  * The form of `tool`'s built-ins in its hook file at `destination`: the member's own (`user`), or a project file a
  * repository may commit (`project`), which members with other tool versions and homes share, so it keeps the waited
- * login-shell form. `unwaited` needs the installed version at or above the tool's `unwaitedSince`: a version that
- * cannot be read keeps the hook waited. `loginDeferred` needs the tool's `loginDeferrable`, on POSIX.
+ * login-shell form. `unwaited` needs the version `unwaitedVersionOf` names at or above the tool's `unwaitedSince`: a
+ * version that cannot be read keeps the hook waited. `loginDeferred` needs the tool's `loginDeferrable`, on POSIX.
  */
 export async function builtinHookForm(tool: string, destination: 'user' | 'project'): Promise<BuiltinHookForm> {
   if (destination === 'project') return WAITED_LOGIN_FORM;
-  const { unwaitedSince, loginDeferrable } = channelsOf(tool).hooks;
+  const { unwaitedSince, unwaitedVersionOf, loginDeferrable } = channelsOf(tool).hooks;
   const loginDeferred = loginDeferrable === true && process.platform !== 'win32';
 
   if (unwaitedSince === undefined) return { unwaited: false, loginDeferred };
-  const { getAgentVersion } = await import('./agent-version.js');
-  const version = semver.valid(await getAgentVersion(tool));
+  const version = await unwaitedFloorVersion(tool, unwaitedVersionOf);
 
   return { unwaited: version !== null && semver.gte(version, unwaitedSince), loginDeferred };
+}
+
+async function unwaitedFloorVersion(tool: string, source: HooksChannels['unwaitedVersionOf']): Promise<string | null> {
+  switch (source) {
+    case undefined: {
+      const { getAgentVersion } = await import('./agent-version.js');
+
+      return semver.valid(await getAgentVersion(tool));
+    }
+
+    case 'codex-builds': {
+      const { oldestCodexBuildVersion } = await import('./codex-trust.js');
+
+      return oldestCodexBuildVersion();
+    }
+
+    default: {
+      const unhandled: never = source;
+
+      return unhandled;
+    }
+  }
 }
 
 /**

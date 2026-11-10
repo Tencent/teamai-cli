@@ -14,6 +14,7 @@ import { _resetShellCache } from '../builtin-hooks.js';
 import { getAgentVersion } from '../agent-version.js';
 import { toolHome } from '../tool-home.js';
 import { TOOLS, type ToolId } from '../tools.js';
+import { installFakeCodex, pathWithoutCodex } from './helpers/fake-codex.js';
 
 // Byte-equality anchor for the built-in (A) hooks (issue #19 §8 "兼容锚点").
 // fixtures/hooks/<tool>.json were captured from the pre-refactor injector.
@@ -58,8 +59,10 @@ describe('hooks golden — built-in output is byte-identical to the captured bas
 });
 
 // The member's own hook file takes the form the installed version allows (builtinHookForm); only Claude Code's and Codex's change.
+// A Codex row's version is the one Codex build's on PATH, '' none.
 describe('hooks golden — the hook file in the member\'s own tool home', () => {
   let tmp: string;
+  let codexDir: string | undefined;
   beforeEach(async () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     _resetShellCache();
@@ -71,6 +74,8 @@ describe('hooks golden — the hook file in the member\'s own tool home', () => 
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     await fse.remove(tmp);
+    if (codexDir) await fse.remove(codexDir);
+    codexDir = undefined;
   });
 
   it.each([
@@ -84,6 +89,8 @@ describe('hooks golden — the hook file in the member\'s own tool home', () => 
   ] as Array<{ tool: ToolId; version: string; fixture: string }>)('$tool at $version matches the $fixture fixture', async ({ tool, version, fixture }) => {
     for (const move of 'moves' in TOOLS[tool].home ? TOOLS[tool].home.moves.by : []) if (move.kind === 'env') vi.stubEnv(move.name, '');
     vi.mocked(getAgentVersion).mockResolvedValue(version);
+    codexDir = tool === 'codex' && version !== '' ? installFakeCodex({ version }) : undefined;
+    vi.stubEnv('PATH', codexDir ? `${codexDir}${path.delimiter}${pathWithoutCodex()}` : pathWithoutCodex());
     const p = path.join(toolHome(tool), cases.find(([name]) => name === tool)?.[1] ?? '');
     expect(p.startsWith(`${tmp}${path.sep}`)).toBe(true);
 

@@ -7,7 +7,7 @@
  * Same harness as pull-dry-run-hooks-mcp.test.ts: the order is a property of
  * the orchestration in pull, so that is where it is pinned.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, onTestFinished } from 'vitest';
 import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
@@ -85,14 +85,7 @@ vi.mock('../mcp-reconcile.js', async (importOriginal) => ({
   reconcileMcpForConfig: vi.fn().mockResolvedValue({ changes: [], wrote: false }),
 }));
 
-// The version decides whether the PostToolUse entry is async (builtinHookForm); every other caller asks the real one.
-vi.mock('../agent-version.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../agent-version.js')>();
-  return { ...actual, getAgentVersion: vi.fn(actual.getAgentVersion) };
-});
-
 import { detectProjectConfig, loadLocalConfigForScope, loadTeamConfig } from '../config.js';
-import { getAgentVersion } from '../agent-version.js';
 import { resolveAnchors, listWorktrees } from '../utils/git.js';
 import { pull } from '../pull.js';
 import { reconcileMcpForConfig } from '../mcp-reconcile.js';
@@ -100,7 +93,7 @@ import { getDataHome, managedMcpManifestKey, managedMcpManifestPath } from '../t
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 import { readCodexHookTrustForScope } from '../hooks.js';
 import { log } from '../utils/logger.js';
-import { installFakeCodex, readFakeCodexState, writeFakeCodexOptions } from './helpers/fake-codex.js';
+import { installFakeCodex, pathWithoutCodex, readFakeCodexState, writeFakeCodexOptions } from './helpers/fake-codex.js';
 
 describe('pull trusts the Codex project after writing its MCP servers', () => {
   let tempDir: string;
@@ -181,7 +174,12 @@ describe('pull trusts the Codex project after writing its MCP servers', () => {
     expect(vi.mocked(log.warn).mock.calls.map(([message]) => message).filter((message) => message.includes('Could not trust'))).toEqual([]);
   });
   it('trusts the PostToolUse entry again when it turns async, since Codex hashes the handler with its async flag', async () => {
-    const codexAt = (version: string) => vi.mocked(getAgentVersion).mockImplementation(async (tool) => (tool === 'codex' ? version : ''));
+    // The one Codex build: its version decides whether the PostToolUse entry is async.
+    const codexAt = (version: string) => {
+      const dir = installFakeCodex({ version });
+      onTestFinished(() => fse.remove(dir));
+      vi.stubEnv('PATH', `${dir}${path.delimiter}${pathWithoutCodex()}`);
+    };
     const hooksFile = path.join(homeDir, '.codex', 'hooks.json');
     const postToolUseHash = () => Object.entries(readFakeCodexState(path.join(homeDir, '.codex')).hooksState)
       .find(([key]) => key.startsWith(`${hooksFile}:post_tool_use`))?.[1].trusted_hash;

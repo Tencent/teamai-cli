@@ -28,6 +28,7 @@ import { readWorkspaceChildren } from '../workspace-children.js';
 import { dispatchedCodexHooks } from '../codex-team-hooks.js';
 import { channelReadiness } from '../instruction-targets.js';
 import type { HookDef, LocalConfig, TeamaiConfig } from '../types.js';
+import { fakeCodexVersionRuns, installFakeCodex, pathWithoutCodex } from './helpers/fake-codex.js';
 
 let project: string;
 let repo: string;
@@ -94,6 +95,8 @@ beforeEach(async () => {
   // Point HOME at the sandbox so the non-self project scope resolves its hook
   // base dir to this dir rather than the developer's real home.
   vi.stubEnv('HOME', home);
+  // The Codex form follows the Codex builds found; a test installs the ones it needs.
+  vi.stubEnv('PATH', pathWithoutCodex());
   // Pre-create the tool root dirs under HOME so they are detected as installed.
   await fse.ensureDir(path.join(home, '.claude'));
   await fse.ensureDir(path.join(home, '.cursor'));
@@ -1401,60 +1404,89 @@ describe('reconcileTeamHooksForConfig — the form of Codex\'s hook entries', ()
     await fse.writeJson(file(), json);
   };
 
+  const codexDirs: string[] = [];
+  /** The one Codex on PATH, answering `version` (null: prints none); its directory. */
+  const onlyCodex = (version: string | null): string => {
+    const dir = installFakeCodex({ version });
+    codexDirs.push(dir);
+    vi.stubEnv('PATH', `${dir}${path.delimiter}${pathWithoutCodex()}`);
+    return dir;
+  };
+  /** As `onlyCodex`, or no Codex on PATH for undefined. */
+  const codexBuild = (version: string | null | undefined): void => {
+    if (version === undefined) vi.stubEnv('PATH', pathWithoutCodex());
+    else onlyCodex(version);
+  };
+
   beforeEach(() => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin');
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.restoreAllMocks();
+    await Promise.all(codexDirs.splice(0).map((dir) => fse.remove(dir)));
   });
 
-  it.each(['0.148.0', '0.167.0'])('makes the PostToolUse entry async at %s', async (version) => {
+  it.each(['0.148.0', '0.167.0'])('makes the PostToolUse entry async when the Codex build answers %s', async (version) => {
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
     expect(await postToolUse()).toEqual(LOGIN_DEFERRED);
-    vi.mocked(getAgentVersion).mockResolvedValue(version);
+    codexBuild(version);
 
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
 
     expect(await postToolUse()).toEqual(UNWAITED);
-    expect(getAgentVersion).toHaveBeenCalledWith('codex');
   });
 
   // Codex 0.134.0 to 0.147.0 skip an async handler instead of running it.
-  it.each(['0.147.0', '0.147.9', '', 'not a version'])('goes back to a waited entry, which defers its login shell, when the version reads %j', async (version) => {
-    vi.mocked(getAgentVersion).mockResolvedValue('0.167.0');
+  it.each([
+    { label: 'a build at 0.147.0', build: '0.147.0' },
+    { label: 'a build at 0.147.9', build: '0.147.9' },
+    { label: 'a build that prints no version', build: null },
+    { label: 'a build that prints no semver', build: 'unknown' },
+    { label: 'no build', build: undefined },
+  ])('goes back to a waited entry, which defers its login shell, with $label', async ({ build }) => {
+    codexBuild('0.167.0');
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
-    vi.mocked(getAgentVersion).mockResolvedValue(version);
+    codexBuild(build);
 
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
 
     expect(await postToolUse()).toEqual(LOGIN_DEFERRED);
   });
 
-  it.each(['0.167.0', ''])('defers the login shell of the prompt entry at %j and replaces today\'s entries, keeping today\'s commandWindows', async (version) => {
-    vi.mocked(getAgentVersion).mockResolvedValue(version);
+  it('keeps the PostToolUse entry waited while any Codex build that reads the file is older than 0.148.0', async () => {
+    codexBuild('0.167.0');
+    installFakeCodex({ version: '0.147.0', dir: path.join(home, 'Applications', 'ChatGPT.app', 'Contents', 'Resources') });
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+
+    expect(await postToolUse()).toEqual(LOGIN_DEFERRED);
+  });
+
+  it.each(['0.167.0', undefined])('defers the login shell of the prompt entry with a build at %j and replaces today\'s entries, keeping today\'s commandWindows', async (version) => {
+    codexBuild(version);
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
     await writeTodaysEntries();
 
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
 
     expect(await promptSubmit()).toEqual(PROMPT_DEFERRED);
-    expect(await postToolUse()).toEqual(version === '' ? LOGIN_DEFERRED : UNWAITED);
+    expect(await postToolUse()).toEqual(version === undefined ? LOGIN_DEFERRED : UNWAITED);
   });
 
-  it.each(['0.167.0', ''])('keeps today\'s entries in every field on Windows, whose hooks run no POSIX shell, at %j', async (version) => {
+  it.each(['0.167.0', undefined])('keeps today\'s entries in every field on Windows, whose hooks run no POSIX shell, with a build at %j', async (version) => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    vi.mocked(getAgentVersion).mockResolvedValue(version);
+    codexBuild(version);
 
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
 
     const { hooks } = await fse.readJson(file());
     const today = (await fse.readJson(path.join(__dirname, 'fixtures', 'hooks', 'codex.json'))).hooks;
-    expect(hooks).toEqual(version === '' ? today : { ...today, PostToolUse: UNWAITED });
+    expect(hooks).toEqual(version === undefined ? today : { ...today, PostToolUse: UNWAITED });
   });
 
-  it.each(['0.167.0', '0.147.0'])('removes the entries of either form on uninstall, at %s', async (version) => {
-    vi.mocked(getAgentVersion).mockResolvedValue(version);
+  it.each(['0.167.0', '0.147.0'])('removes the entries of either form on uninstall, with a build at %s', async (version) => {
+    codexBuild(version);
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
 
     await reconcileTeamHooksForConfig(teamConfig, localConfig(), { removeAll: true });
@@ -1462,8 +1494,8 @@ describe('reconcileTeamHooksForConfig — the form of Codex\'s hook entries', ()
     expect(JSON.stringify(await fse.readJson(file()))).not.toContain('hook-dispatch');
   });
 
-  it.each(['0.167.0', '0.147.0'])('changes nothing on a second pull, and reports the entries of the form at %s as installed', async (version) => {
-    vi.mocked(getAgentVersion).mockResolvedValue(version);
+  it.each(['0.167.0', '0.147.0'])('changes nothing on a second pull, and reports the entries of the form a build at %s takes as installed', async (version) => {
+    codexBuild(version);
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
     const before = await fse.readFile(file(), 'utf8');
 
@@ -1476,30 +1508,31 @@ describe('reconcileTeamHooksForConfig — the form of Codex\'s hook entries', ()
   it.each([
     { installedAt: '0.167.0', installed: UNWAITED, now: '0.147.0', full: LOGIN_DEFERRED },
     { installedAt: '0.147.0', installed: LOGIN_DEFERRED, now: '0.167.0', full: UNWAITED },
-  ])('keeps the form installed at $installedAt on an inline pull at $now and starts no tool, and a full pull moves it', async ({ installedAt, installed, now, full }) => {
-    vi.mocked(getAgentVersion).mockResolvedValue(installedAt);
+  ])('keeps the form installed at $installedAt on an inline pull at $now and starts no codex, and a full pull moves it', async ({ installedAt, installed, now, full }) => {
+    codexBuild(installedAt);
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
-    vi.mocked(getAgentVersion).mockReset().mockResolvedValue(now);
+    const dir = onlyCodex(now);
 
     await reconcileTeamHooksForConfig(teamConfig, localConfig(), { builtinFormFrom: 'installed' });
 
     expect(await postToolUse()).toEqual(installed);
-    expect(getAgentVersion).not.toHaveBeenCalledWith('codex');
+    expect(fakeCodexVersionRuns(dir)).toBe(0);
 
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
 
     expect(await postToolUse()).toEqual(full);
+    expect(fakeCodexVersionRuns(dir)).toBe(1);
   });
 
   it('keeps today\'s entries on an inline pull, and the next full pull defers their login shell', async () => {
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
     await writeTodaysEntries();
-    vi.mocked(getAgentVersion).mockClear();
+    const dir = onlyCodex('0.167.0');
 
     await reconcileTeamHooksForConfig(teamConfig, localConfig(), { builtinFormFrom: 'installed' });
 
     expect(await promptSubmit()).toEqual(PROMPT_WAITED);
-    expect(getAgentVersion).not.toHaveBeenCalledWith('codex');
+    expect(fakeCodexVersionRuns(dir)).toBe(0);
 
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
 
@@ -1507,12 +1540,12 @@ describe('reconcileTeamHooksForConfig — the form of Codex\'s hook entries', ()
   });
 
   it('says the instructions channel is ready after a version change across the floor without asking the version, while the status against the version is not current', async () => {
-    vi.mocked(getAgentVersion).mockResolvedValue('0.167.0');
+    codexBuild('0.167.0');
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
-    vi.mocked(getAgentVersion).mockReset().mockResolvedValue('0.147.0');
+    const dir = onlyCodex('0.147.0');
 
     expect((await channelReadiness('codex', 'codex-hooks', { teamConfig, localConfig: localConfig() })).ready).toBe(true);
-    expect(getAgentVersion).not.toHaveBeenCalled();
+    expect(fakeCodexVersionRuns(dir)).toBe(0);
     expect(await getHookStatus(file(), { tool: 'codex', from: 'version' })).toBe('missing');
   });
 });

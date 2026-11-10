@@ -135,6 +135,37 @@ async function probeCodexVersion(command: string): Promise<string | null> {
   return printed ? semver.valid(printed) : null;
 }
 
+const probedVersions = new Map<string, Promise<string | null>>();
+
+/** One `--version` per build identity in a process: the hook form and the trust pass ask the same builds. */
+function codexVersionOf(candidate: CodexCandidate): Promise<string | null> {
+  let version = probedVersions.get(candidate.identity);
+
+  if (!version) {
+    version = probeCodexVersion(candidate.command);
+    probedVersions.set(candidate.identity, version);
+  }
+
+  return version;
+}
+
+/**
+ * The lowest version among the Codex builds that read the member's Codex hook file, or
+ * null when none is found or any build's version cannot be read, so a caller
+ * gating on a floor never guesses for an unknown build.
+ */
+export async function oldestCodexBuildVersion(): Promise<string | null> {
+  const candidates = codexBuildCandidates();
+
+  if (candidates.length === 0) return null;
+  const versions = await Promise.all(candidates.map(codexVersionOf));
+  const known = versions.filter((version): version is string => version !== null);
+
+  if (known.length !== versions.length) return null;
+
+  return [...known].sort(semver.compare)[0] ?? null;
+}
+
 type ResolvedCodexBuild = {
   command: string;
   otherVersions?: { chosen: CodexBuild; others: Array<CodexBuild & { command: string }> };
@@ -158,7 +189,7 @@ function resolveCodexBuild(): Promise<ResolvedCodexBuild | null> {
 
 async function pickCodexBuild(candidates: CodexCandidate[]): Promise<ResolvedCodexBuild | null> {
   if (candidates.length <= 1) return candidates[0] ? { command: candidates[0].command } : null;
-  const probed = await Promise.all(candidates.map(async (c) => ({ ...c, version: await probeCodexVersion(c.command) })));
+  const probed = await Promise.all(candidates.map(async (c) => ({ ...c, version: await codexVersionOf(c) })));
 
   const [chosen, ...rest] = [...probed].sort((a, b) => {
     if (a.version === null || b.version === null) return Number(a.version === null) - Number(b.version === null);

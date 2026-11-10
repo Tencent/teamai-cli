@@ -317,6 +317,12 @@ export type HooksChannels = {
    */
   readonly unwaitedSince?: string;
   /**
+   * Where the version compared with `unwaitedSince` comes from, and means nothing without it. Absent: the tool's
+   * version detector. `codex-builds`: the oldest of the Codex builds that read the member's hook file, a build on PATH
+   * and each desktop app's (`oldestCodexBuildVersion`), since one hook file serves them all.
+   */
+  readonly unwaitedVersionOf?: 'codex-builds';
+  /**
    * Set when, on POSIX, the tool runs a hook's command string with a POSIX-compatible shell and `-c`, not a login
    * shell, so a built-in hook in the member's own hook file may start teamai without one and leave the login
    * environment to the background pass (`builtinHookForm`). Set on a run of the tool's hook executor, which shows the
@@ -607,6 +613,7 @@ export const TOOLS = {
       // (codex-rs/hooks/src/engine/discovery.rs), and 0.134.0 to 0.147.0 skip such a handler. Run on 0.167.0 for
       // UserPromptSubmit and SessionStart; PostToolUse not run.
       unwaitedSince: '0.148.0',
+      unwaitedVersionOf: 'codex-builds',
       // The account's zsh, bash or sh with `-c`, never `-lc`, and one of those three for any other account shell:
       // source at 0.134.0 to 0.167.0 (shell_detect.rs, derive_exec_args). Run on 0.167.0, macOS: `/bin/zsh -c`, no
       // login flag, parent the codex binary. teamai's own entry in this form not run.
