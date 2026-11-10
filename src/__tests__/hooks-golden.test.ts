@@ -75,11 +75,12 @@ describe('hooks golden — the hook file in the member\'s own tool home', () => 
 
   it.each([
     { tool: 'claude', version: '2.1.322', fixture: 'claude-unwaited' },
-    { tool: 'claude', version: '2.1.118', fixture: 'claude' },
+    { tool: 'claude', version: '2.1.118', fixture: 'claude-login-deferred' },
+    { tool: 'claude', version: '', fixture: 'claude-login-deferred' },
     { tool: 'codex', version: '0.167.0', fixture: 'codex-unwaited' },
     { tool: 'codex', version: '0.147.0', fixture: 'codex' },
     ...cases.filter(([tool]) => tool !== 'claude' && tool !== 'codex').map(([tool]) => ({ tool, version: '2.1.322', fixture: tool })),
-  ] as Array<{ tool: ToolId; version: string; fixture: string }>)('$tool at $version matches fixtures/hooks/$fixture.json', async ({ tool, version, fixture }) => {
+  ] as Array<{ tool: ToolId; version: string; fixture: string }>)('$tool at $version matches the $fixture fixture', async ({ tool, version, fixture }) => {
     for (const move of 'moves' in TOOLS[tool].home ? TOOLS[tool].home.moves.by : []) if (move.kind === 'env') vi.stubEnv(move.name, '');
     vi.mocked(getAgentVersion).mockResolvedValue(version);
     const p = path.join(toolHome(tool), cases.find(([name]) => name === tool)?.[1] ?? '');

@@ -1172,13 +1172,16 @@ describe('reconcileTeamHooksForConfig — team hooks in the main checkout', () =
   });
 });
 
-describe('reconcileTeamHooksForConfig — a Claude Code that does not wait for PostToolUse', () => {
+describe('reconcileTeamHooksForConfig — the form of Claude Code\'s PostToolUse entry', () => {
   const COMMAND = 'bash -lc "teamai hook-dispatch post-tool-use --tool claude 2>/dev/null" || true';
+  const LOGIN_DEFERRED_COMMAND = 'if [ -x "$HOME/.teamai/bin/teamai" ]; then TEAMAI_HOOK_LOGIN=deferred "$HOME/.teamai/bin/teamai" hook-dispatch post-tool-use --tool claude 2>/dev/null; '
+    + 'else bash -lc "teamai hook-dispatch post-tool-use --tool claude 2>/dev/null"; fi || true';
   const UNWAITED = [
     { matcher: '^(?!TodoWrite$).*$', command: COMMAND, async: true },
     { matcher: 'TodoWrite', command: COMMAND },
   ];
   const WAITED = [{ matcher: '*', command: COMMAND }];
+  const LOGIN_DEFERRED = [{ matcher: '*', command: LOGIN_DEFERRED_COMMAND }];
 
   type Entry = { matcher?: string; hooks: Array<{ command: string; async?: boolean }> };
   const postToolUse = async (file = path.join(home, '.claude', 'settings.json')) => ((await fse.readJson(file)).hooks.PostToolUse as Entry[])
@@ -1192,9 +1195,17 @@ describe('reconcileTeamHooksForConfig — a Claude Code that does not wait for P
     vi.restoreAllMocks();
   });
 
+  /** The member's file as a release before the hook forms wrote it: today's single waited login-shell entry. */
+  const writeTodaysEntry = async (): Promise<void> => {
+    const file = path.join(home, '.claude', 'settings.json');
+    const json = await fse.readJson(file);
+    json.hooks.PostToolUse = [{ matcher: '*', hooks: [{ type: 'command', command: COMMAND }], description: '[teamai] Hook dispatch post-tool-use wildcard' }];
+    await fse.writeJson(file, json);
+  };
+
   it.each(['2.1.119', '2.1.322'])('replaces the single entry with an unwaited one and a waited TodoWrite one at %s', async (version) => {
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
-    expect(await postToolUse()).toEqual(WAITED);
+    await writeTodaysEntry();
     vi.mocked(getAgentVersion).mockResolvedValue(version);
 
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
@@ -1202,14 +1213,37 @@ describe('reconcileTeamHooksForConfig — a Claude Code that does not wait for P
     expect(await postToolUse()).toEqual(UNWAITED);
   });
 
-  it.each(['2.1.118', '', 'not a version'])('goes back to the single waited entry when the version reads %j', async (version) => {
+  it.each(['2.1.118', '', 'not a version'])('goes back to a single waited entry, which defers its login shell, when the version reads %j', async (version) => {
     vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
     vi.mocked(getAgentVersion).mockResolvedValue(version);
 
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
 
-    expect(await postToolUse()).toEqual(WAITED);
+    expect(await postToolUse()).toEqual(LOGIN_DEFERRED);
+  });
+
+  it('replaces today\'s entry with one that defers its login shell below the floor, and keeps one entry through each change of form', async () => {
+    vi.mocked(getAgentVersion).mockResolvedValue('2.1.118');
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+    await writeTodaysEntry();
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+    expect(await postToolUse()).toEqual(LOGIN_DEFERRED);
+    vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+    expect(await postToolUse()).toEqual(UNWAITED);
+    vi.mocked(getAgentVersion).mockResolvedValue('2.1.118');
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+    expect(await postToolUse()).toEqual(LOGIN_DEFERRED);
+  });
+
+  it('keeps today\'s entry on Windows, whose hooks run no POSIX shell', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+
+    expect((await postToolUse()).map((entry) => entry.command)).toEqual([expect.not.stringContaining('TEAMAI_HOOK_LOGIN')]);
   });
 
   it('replaces the pair of entries a release before #1801 wrote with the two entries and nothing else', async () => {
@@ -1232,8 +1266,8 @@ describe('reconcileTeamHooksForConfig — a Claude Code that does not wait for P
     expect(await postToolUse()).toEqual(UNWAITED);
   });
 
-  it('removes both entries on uninstall', async () => {
-    vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
+  it.each(['2.1.322', '2.1.118'])('removes the entries of either form on uninstall, at %s', async (version) => {
+    vi.mocked(getAgentVersion).mockResolvedValue(version);
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
 
     await reconcileTeamHooksForConfig(teamConfig, localConfig(), { removeAll: true });
@@ -1241,8 +1275,8 @@ describe('reconcileTeamHooksForConfig — a Claude Code that does not wait for P
     expect(await postToolUse()).toEqual([]);
   });
 
-  it('changes nothing on a second pull, and reports the two entries as installed', async () => {
-    vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
+  it.each(['2.1.322', '2.1.118'])('changes nothing on a second pull, and reports the entries of the form at %s as installed', async (version) => {
+    vi.mocked(getAgentVersion).mockResolvedValue(version);
     const file = path.join(home, '.claude', 'settings.json');
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
     const before = await fse.readFile(file, 'utf8');
@@ -1253,8 +1287,8 @@ describe('reconcileTeamHooksForConfig — a Claude Code that does not wait for P
     expect(await getHookStatus(file, { tool: 'claude', from: 'version' })).toBe('installed');
   });
 
-  it('keeps the single waited entry in a self-mode project file, which members with other versions share', async () => {
-    vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
+  it.each(['2.1.322', ''])('keeps today\'s entry in a self-mode project file, which members with other versions share, at %j', async (version) => {
+    vi.mocked(getAgentVersion).mockResolvedValue(version);
     await fse.ensureDir(path.join(project, '.claude'));
     const selfConfig = {
       repo: { localPath: repo, remote: 'x', kind: 'self', businessRepoRoot: project },
@@ -1271,8 +1305,8 @@ describe('reconcileTeamHooksForConfig — a Claude Code that does not wait for P
 
   // An inline pull (a git hook, a new checkout) keeps the form the file has; the next full pull asks the version.
   it.each([
-    { installedAt: '2.1.322', installed: UNWAITED, now: '2.1.118', full: WAITED },
-    { installedAt: '2.1.118', installed: WAITED, now: '2.1.322', full: UNWAITED },
+    { installedAt: '2.1.322', installed: UNWAITED, now: '2.1.118', full: LOGIN_DEFERRED },
+    { installedAt: '2.1.118', installed: LOGIN_DEFERRED, now: '2.1.322', full: UNWAITED },
   ])('keeps the form installed at $installedAt on an inline pull at $now and starts no tool, and a full pull moves it', async ({ installedAt, installed, now, full }) => {
     vi.mocked(getAgentVersion).mockResolvedValue(installedAt);
     await reconcileTeamHooksForConfig(teamConfig, localConfig());

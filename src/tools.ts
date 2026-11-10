@@ -545,6 +545,8 @@ export const TOOLS = {
       // `async` on a command hook since 2.1.23; before 2.1.119 an async PostToolUse hook that prints nothing wrote an
       // empty transcript entry (changelog 2.1.119). Run on 2.1.322, macOS.
       unwaitedSince: '2.1.119',
+      // `/bin/sh -c`, not a login shell: run on 2.1.322, macOS; Linux `sh -c` as documented.
+      loginDeferrable: true,
     },
     sessions: ['claude-code'],
     launch: 'claude',

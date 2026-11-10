@@ -6,6 +6,7 @@ import { TEAMAI_HOOK_DESCRIPTION_PREFIX } from './types.js';
 import { isCodexTool } from './utils/tool-names.js';
 import type { HookDef } from './types.js';
 import { channelsOf, hookFormatOf, type HookAdapterId } from './tools.js';
+import { LOGIN_DEFERRED_ENV } from './hook-fast-path.js';
 import { getUserHome } from './utils/home.js';
 import { log } from './utils/logger.js';
 import { bundledShellFor, findGitBashWindows, resetBundledRuntimeCache, resolveCodebuddyNode, resolveWorkbuddyNode } from './bundled-runtime.js';
@@ -215,9 +216,9 @@ export function skipToolsWithoutShell(tools: string[]): Set<string> {
     }
   }
 
-  // Non-login POSIX dispatch must not rely on a project git hook creating this.
+  // Non-login POSIX dispatch must not rely on a project git hook creating this; a login-deferred entry runs it too.
   const nonLoginWrapper = process.platform !== 'win32'
-    && tools.some(tool => tool === 'zcode' || tool === 'dsh') && hasShell();
+    && tools.some(tool => tool === 'zcode' || tool === 'dsh' || channelsOf(tool).hooks.loginDeferrable === true) && hasShell();
 
   if (withShell || nonLoginWrapper) ensureTeamaiWrapper();
 
@@ -271,6 +272,17 @@ export function getDispatchCommand(event: string, tool: string, matcher?: string
   const shell = isCodexTool(tool) ? 'bash' : getHookShellCommand();
 
   return `${shell} -lc "${bin} hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null" || true`;
+}
+
+/**
+ * `getDispatchCommand` with the login shell deferred: through the wrapper when it is there (hook-fast-path.ts
+ * `runLoginDeferredHook` runs the login shell where nothing waits for it), else today's command, byte for byte.
+ */
+function getLoginDeferredDispatchCommand(event: string, tool: string): string {
+  const wrapper = `"$HOME/${TEAMAI_BIN_DIR}/${WRAPPER_NAME}"`;
+  const today = getDispatchCommand(event, tool).replace(/ \|\| true$/, '');
+
+  return `if [ -x ${wrapper} ]; then ${LOGIN_DEFERRED_ENV}=deferred ${wrapper} hook-dispatch ${event} --tool ${tool} 2>/dev/null; else ${today}; fi || true`;
 }
 
 /**
@@ -574,7 +586,12 @@ function renderBuiltinDefs(tool: string, specs: BuiltinHookSpec[], form: Builtin
     // Codex would otherwise keep only the start and end of a large rule set.
     if (isCodexTool(tool) && (spec.event === 'SessionStart' || spec.event === 'SubagentStart')) return [{ ...def, additionalContextLimit: 0, description }];
 
-    if (!form.unwaited || spec.key !== POST_TOOL_USE_WILDCARD_KEY) return [{ ...def, description }];
+    if (spec.key !== POST_TOOL_USE_WILDCARD_KEY) return [{ ...def, description }];
+
+    // An unwaited entry is not waited for at all, so it keeps today's command.
+    if (!form.unwaited) {
+      return [form.loginDeferred && buildCommand === getDispatchCommand ? { ...def, command: getLoginDeferredDispatchCommand(spec.dispatchEvent, tool), description } : { ...def, description }];
+    }
 
     if (hookFormatOf(tool) !== 'claude') return [{ ...def, async: true, description }];
 

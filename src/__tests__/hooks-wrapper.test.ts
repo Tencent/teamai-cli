@@ -58,7 +58,8 @@ describe('reconcileHooksToAllTools — wrapper creation on main inject path', ()
     vi.restoreAllMocks();
   });
 
-  for (const tool of ['workbuddy', 'codebuddy']) {
+  // Claude Code: its login-deferred hook entry starts teamai through the wrapper.
+  for (const tool of ['workbuddy', 'codebuddy', 'claude']) {
     it(`creates wrapper when ${tool} is in toolPaths`, async () => {
       const settingsFile = `.${tool}/settings.json`;
       const toolRoot = path.join(tmp, `.${tool}`);

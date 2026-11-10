@@ -204,7 +204,7 @@ describe('builtinHookForm', () => {
   /** `claude` with the hook facts `facts` added, every other tool as it is. */
   const withFacts = async (facts: { unwaitedSince?: string; loginDeferrable?: true }) => {
     const actual = (await vi.importActual<typeof import('../tools.js')>('../tools.js')).channelsOf;
-    vi.mocked(real).mockImplementation((tool) => (tool === 'claude' ? { ...actual(tool), hooks: { ...actual(tool).hooks, ...facts } } : actual(tool)));
+    vi.mocked(real).mockImplementation((tool) => (tool === 'claude' ? { ...actual(tool), hooks: { ...actual(tool).hooks, unwaitedSince: undefined, loginDeferrable: undefined, ...facts } } : actual(tool)));
   };
 
   afterEach(async () => {
