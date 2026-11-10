@@ -97,6 +97,7 @@ All notable changes to this project will be documented in this file. See [standa
 
 ### 🐛 Bug Fixes
 
+- `hook-dispatch` removes the temp file that carries a payload to a background child on every exit, including the paths that return before reading it, and a background pass clears payload files an earlier one left in the temp directory. A Windows hook whose child exited early, or one killed before its child started, kept a full hook payload — tool input and output — in `%TEMP%` for good (for [#1812](https://github.com/Tencent/teamai-cli/issues/1812)).
 - Pull says when it could not apply the team MCP servers, and why, such as `Team MCP servers were not applied: EACCES: permission denied, open '.../.mcp.json...'`. It wrote that only to `~/.teamai/debug.log`, so a failed write looked like a pull that changed nothing
 - A tool teamai starts in a directory gets `PWD` set to that directory. OpenCode works in `PWD`, not in its process's directory, so a workflow step or benchmark trial on OpenCode started from a member's checkout edited that checkout instead of its own worktree or clone (for [#1793](https://github.com/Tencent/teamai-cli/issues/1793)).
 - A label a local confined judge gave names the model alias its scorer asked for, beside the model the tool reported. It named only the model, so a benchmark read every judged verdict as a deviation from its pinned judge (for [#1793](https://github.com/Tencent/teamai-cli/issues/1793)).
