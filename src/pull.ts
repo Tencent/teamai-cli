@@ -4763,6 +4763,7 @@ async function reconcileHooksAllScopes(
           silent: options.silent,
           filterAgents: localConfig.enabledAgents,
           dryRun: options.dryRun,
+          builtinFormFrom: options.inline ? 'installed' : 'version',
         });
       } finally {
         // What holds teamai's hook entries now, a file this pass left alone included (#915).

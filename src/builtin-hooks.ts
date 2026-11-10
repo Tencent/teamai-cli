@@ -5,7 +5,7 @@ import semver from 'semver';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX } from './types.js';
 import { isCodexTool } from './utils/tool-names.js';
 import type { HookDef } from './types.js';
-import { channelsOf, type HookAdapterId } from './tools.js';
+import { channelsOf, hookFormatOf, type HookAdapterId } from './tools.js';
 import { getUserHome } from './utils/home.js';
 import { log } from './utils/logger.js';
 import { bundledShellFor, findGitBashWindows, resetBundledRuntimeCache, resolveCodebuddyNode, resolveWorkbuddyNode } from './bundled-runtime.js';
@@ -397,6 +397,9 @@ interface BuiltinHookSpec {
 /** The PostToolUse entry every tool call runs; since #1788 it also carries the TodoWrite hint. */
 export const POST_TOOL_USE_WILDCARD_KEY = 'Hook dispatch post-tool-use wildcard';
 
+/** The unwaited PostToolUse entry's matcher: every tool but TodoWrite, whose entry stays waited. */
+const UNWAITED_POST_TOOL_USE_MATCHER = '^(?!TodoWrite$).*$';
+
 /**
  * The PostToolUse entry the TodoWrite hint had of its own until #1788. A team
  * that lists it under `builtin.disabled` still turns the hint off.
@@ -488,6 +491,10 @@ export type BuiltinHookForm = { readonly unwaited: boolean; readonly loginDeferr
 /** The waited login-shell form: the form of every hook file no tool fact changes. */
 export const WAITED_LOGIN_FORM: BuiltinHookForm = { unwaited: false, loginDeferred: false };
 
+/** Every form a hook file's built-ins may have. */
+export const BUILTIN_HOOK_FORMS: readonly BuiltinHookForm[] = [false, true]
+  .flatMap((unwaited) => [false, true].map((loginDeferred) => ({ unwaited, loginDeferred })));
+
 /**
  * The form of `tool`'s built-ins in its hook file at `destination`: the member's own (`user`), or a project file a
  * repository may commit (`project`), which members with other tool versions and homes share, so it keeps the waited
@@ -511,9 +518,7 @@ export async function builtinHookForm(tool: string, destination: 'user' | 'proje
  * on disk is teamai's own compares with, so a form a newer or an older teamai wrote is still recognised.
  */
 export function recognisedBuiltinHookDefs(tool: string): HookDef[] {
-  const forms = [false, true].flatMap((unwaited) => [false, true].map((loginDeferred) => ({ unwaited, loginDeferred })));
-
-  return [...forms.flatMap((form) => builtinHookDefs(tool, form)), ...retiredBuiltinHookDefs(tool)];
+  return [...BUILTIN_HOOK_FORMS.flatMap((form) => builtinHookDefs(tool, form)), ...retiredBuiltinHookDefs(tool)];
 }
 
 function renderBuiltinDefs(tool: string, specs: BuiltinHookSpec[], form: BuiltinHookForm): HookDef[] {
@@ -529,7 +534,7 @@ function renderBuiltinDefs(tool: string, specs: BuiltinHookSpec[], form: Builtin
         ? getWrapperDispatchCommand
         : getDispatchCommand;
 
-  return specs.map((spec): HookDef => {
+  return specs.flatMap((spec): HookDef[] => {
     const def = {
       source: 'builtin' as const,
       key: spec.key,
@@ -544,9 +549,18 @@ function renderBuiltinDefs(tool: string, specs: BuiltinHookSpec[], form: Builtin
 
     // The team rules reach the Codex family through its start hooks (#938);
     // Codex would otherwise keep only the start and end of a large rule set.
-    if (isCodexTool(tool) && (spec.event === 'SessionStart' || spec.event === 'SubagentStart')) return { ...def, additionalContextLimit: 0, description };
+    if (isCodexTool(tool) && (spec.event === 'SessionStart' || spec.event === 'SubagentStart')) return [{ ...def, additionalContextLimit: 0, description }];
 
-    return form.unwaited && spec.key === POST_TOOL_USE_WILDCARD_KEY ? { ...def, async: true, description } : { ...def, description };
+    if (!form.unwaited || spec.key !== POST_TOOL_USE_WILDCARD_KEY) return [{ ...def, description }];
+
+    if (hookFormatOf(tool) !== 'claude') return [{ ...def, async: true, description }];
+
+    // An async hook's output reaches the model only at the next turn, and the TodoWrite hint belongs to this one.
+    // Both entries keep the wildcard's key, so a team that disables or times it still covers every tool call.
+    return [
+      { ...def, matcher: UNWAITED_POST_TOOL_USE_MATCHER, async: true, description },
+      { ...def, matcher: 'TodoWrite', description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} ${spec.key} for TodoWrite` },
+    ];
   });
 }
 

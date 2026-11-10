@@ -325,10 +325,11 @@ function hooksFileOf(tool: string, context: { teamConfig: TeamaiConfig; localCon
   return settings === undefined ? undefined : path.resolve(hookScope.baseDir, settings);
 }
 
+// Whether the hooks that deliver the instructions are there, which no form changes: the file's own form, no version.
 async function hooksInstalled(file: string, tool: string): Promise<boolean> {
   const { getHookStatus } = await import('./hooks.js');
 
-  return await getHookStatus(file, tool) === 'installed';
+  return await getHookStatus(file, { tool, from: 'installed' }) === 'installed';
 }
 
 /**

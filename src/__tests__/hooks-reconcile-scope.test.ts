@@ -14,11 +14,15 @@ vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), persist: vi.fn() },
 }));
 
+// The machine's own tools never answer: a version decides the form of the built-ins (builtinHookForm).
+vi.mock('../agent-version.js', () => ({ getAgentVersion: vi.fn(async () => '') }));
+
 import { resolveAnchors, listWorktrees } from '../utils/git.js';
+import { getAgentVersion } from '../agent-version.js';
 import { resetBundledRuntimeCache } from '../bundled-runtime.js';
 import { findOnPath } from '../utils/lookpath.js';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { claudeHookOtherHostSkip, reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig } from '../hooks.js';
+import { claudeHookOtherHostSkip, getHookStatus, reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig } from '../hooks.js';
 import * as gitHook from '../git-hook.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
 import { dispatchedCodexHooks } from '../codex-team-hooks.js';
@@ -80,6 +84,7 @@ function mainManifest(): Promise<Record<string, Array<{ id: string }>>> {
 }
 
 beforeEach(async () => {
+  vi.mocked(getAgentVersion).mockReset().mockResolvedValue('');
   vi.mocked(resolveAnchors).mockReset().mockResolvedValue(null);
   vi.mocked(listWorktrees).mockReset().mockResolvedValue([]);
   project = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-recon-proj-'));
@@ -1163,6 +1168,163 @@ describe('reconcileTeamHooksForConfig — team hooks in the main checkout', () =
     } finally {
       await fse.remove(worktreeDir);
     }
+  });
+});
+
+describe('reconcileTeamHooksForConfig — a Claude Code that does not wait for PostToolUse', () => {
+  const COMMAND = 'bash -lc "teamai hook-dispatch post-tool-use --tool claude 2>/dev/null" || true';
+  const UNWAITED = [
+    { matcher: '^(?!TodoWrite$).*$', command: COMMAND, async: true },
+    { matcher: 'TodoWrite', command: COMMAND },
+  ];
+  const WAITED = [{ matcher: '*', command: COMMAND }];
+
+  type Entry = { matcher?: string; hooks: Array<{ command: string; async?: boolean }> };
+  const postToolUse = async (file = path.join(home, '.claude', 'settings.json')) => ((await fse.readJson(file)).hooks.PostToolUse as Entry[])
+    .map((entry) => ({ matcher: entry.matcher, command: entry.hooks[0].command, ...(entry.hooks[0].async ? { async: entry.hooks[0].async } : {}) }));
+
+  beforeEach(() => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each(['2.1.119', '2.1.322'])('replaces the single entry with an unwaited one and a waited TodoWrite one at %s', async (version) => {
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+    expect(await postToolUse()).toEqual(WAITED);
+    vi.mocked(getAgentVersion).mockResolvedValue(version);
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+
+    expect(await postToolUse()).toEqual(UNWAITED);
+  });
+
+  it.each(['2.1.118', '', 'not a version'])('goes back to the single waited entry when the version reads %j', async (version) => {
+    vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+    vi.mocked(getAgentVersion).mockResolvedValue(version);
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+
+    expect(await postToolUse()).toEqual(WAITED);
+  });
+
+  it('replaces the pair of entries a release before #1801 wrote with the two entries and nothing else', async () => {
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+    const file = path.join(home, '.claude', 'settings.json');
+    const json = await fse.readJson(file);
+    json.hooks.PostToolUse = [
+      { matcher: '*', hooks: [{ type: 'command', command: COMMAND }], description: '[teamai] Hook dispatch post-tool-use wildcard' },
+      {
+        matcher: 'TodoWrite',
+        hooks: [{ type: 'command', command: 'bash -lc "teamai hook-dispatch post-tool-use --tool claude --matcher TodoWrite 2>/dev/null" || true' }],
+        description: '[teamai] Hook dispatch post-tool-use TodoWrite',
+      },
+    ];
+    await fse.writeJson(file, json);
+    vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+
+    expect(await postToolUse()).toEqual(UNWAITED);
+  });
+
+  it('removes both entries on uninstall', async () => {
+    vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig(), { removeAll: true });
+
+    expect(await postToolUse()).toEqual([]);
+  });
+
+  it('changes nothing on a second pull, and reports the two entries as installed', async () => {
+    vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
+    const file = path.join(home, '.claude', 'settings.json');
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+    const before = await fse.readFile(file, 'utf8');
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+
+    expect(await fse.readFile(file, 'utf8')).toBe(before);
+    expect(await getHookStatus(file, { tool: 'claude', from: 'version' })).toBe('installed');
+  });
+
+  it('keeps the single waited entry in a self-mode project file, which members with other versions share', async () => {
+    vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
+    await fse.ensureDir(path.join(project, '.claude'));
+    const selfConfig = {
+      repo: { localPath: repo, remote: 'x', kind: 'self', businessRepoRoot: project },
+      username: 'u',
+      scope: 'project',
+      projectRoot: project,
+      additionalRoles: [],
+    } as unknown as LocalConfig;
+
+    await reconcileTeamHooksForConfig(teamConfig, selfConfig);
+
+    expect(await postToolUse(path.join(project, '.claude', 'settings.json'))).toEqual(WAITED);
+  });
+
+  // An inline pull (a git hook, a new checkout) keeps the form the file has; the next full pull asks the version.
+  it.each([
+    { installedAt: '2.1.322', installed: UNWAITED, now: '2.1.118', full: WAITED },
+    { installedAt: '2.1.118', installed: WAITED, now: '2.1.322', full: UNWAITED },
+  ])('keeps the form installed at $installedAt on an inline pull at $now and starts no tool, and a full pull moves it', async ({ installedAt, installed, now, full }) => {
+    vi.mocked(getAgentVersion).mockResolvedValue(installedAt);
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+    vi.mocked(getAgentVersion).mockReset().mockResolvedValue(now);
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig(), { builtinFormFrom: 'installed' });
+
+    expect(await postToolUse()).toEqual(installed);
+    expect(getAgentVersion).not.toHaveBeenCalled();
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+
+    expect(await postToolUse()).toEqual(full);
+  });
+
+  it('asks the version on an inline pull when the file holds no teamai entry', async () => {
+    vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig(), { builtinFormFrom: 'installed' });
+
+    expect(await postToolUse()).toEqual(UNWAITED);
+    expect(getAgentVersion).toHaveBeenCalledWith('claude');
+  });
+
+  it('reads a file whose entries agree with no single form as not installed, and an inline pull writes the form one entry shows', async () => {
+    vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+    const file = path.join(home, '.claude', 'settings.json');
+    const json = await fse.readJson(file);
+    json.hooks.PostToolUse = [
+      json.hooks.PostToolUse[0],
+      { matcher: '*', hooks: [{ type: 'command', command: COMMAND }], description: '[teamai] Hook dispatch post-tool-use wildcard' },
+    ];
+    await fse.writeJson(file, json);
+    vi.mocked(getAgentVersion).mockReset().mockResolvedValue('');
+
+    expect(await getHookStatus(file, { tool: 'claude', from: 'installed' })).toBe('missing');
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig(), { builtinFormFrom: 'installed' });
+
+    expect(await postToolUse()).toEqual(UNWAITED);
+    expect(getAgentVersion).not.toHaveBeenCalled();
+  });
+
+  it('reports a file left in the other form by a version change as installed when asked about its own form, and not current against the version', async () => {
+    vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+    const file = path.join(home, '.claude', 'settings.json');
+    vi.mocked(getAgentVersion).mockReset().mockResolvedValue('2.1.118');
+
+    expect(await getHookStatus(file, { tool: 'claude', from: 'installed' })).toBe('installed');
+    expect(getAgentVersion).not.toHaveBeenCalled();
+    expect(await getHookStatus(file, { tool: 'claude', from: 'version' })).toBe('missing');
   });
 });
 

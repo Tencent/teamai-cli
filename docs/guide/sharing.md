@@ -363,7 +363,7 @@ builtin:
     Hook dispatch stop: { timeout: 30 }
 ```
 
-Every tool call runs one `PostToolUse` entry, `Hook dispatch post-tool-use wildcard`, and the `TodoWrite` reminder runs in it. Listing `Hook dispatch post-tool-use TodoWrite` under `disabled` still turns the reminder off. A timeout for that key does nothing, and `teamai doctor` says so.
+Every tool call runs one `PostToolUse` entry, `Hook dispatch post-tool-use wildcard`, and the `TodoWrite` reminder runs in it. With Claude Code 2.1.119 or later, `~/.claude/settings.json` holds that key as two entries: one Claude Code does not wait for, for every tool but `TodoWrite`, and one for `TodoWrite`, so its reminder reaches the agent in the same turn. A `.claude/settings.json` in the repository keeps the single entry. Disabling the key or setting its timeout applies to both. Listing `Hook dispatch post-tool-use TodoWrite` under `disabled` still turns the reminder off. A timeout for that key does nothing, and `teamai doctor` says so.
 
 A hook for one project goes in `hooks/<ns>/hooks.yaml`.
 

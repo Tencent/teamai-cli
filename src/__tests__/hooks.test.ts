@@ -764,19 +764,19 @@ describe('hooks', () => {
     it('reports installed for current Claude hooks', async () => {
       await injectHooks('/test/settings.json', 'claude');
 
-      await expect(getHookStatus('/test/settings.json', 'claude')).resolves.toBe('installed');
+      await expect(getHookStatus('/test/settings.json', { tool: 'claude', from: 'version' })).resolves.toBe('installed');
     });
 
     it('reports installed for current Cursor hooks', async () => {
       await injectHooks('/test/hooks.json', 'cursor');
 
-      await expect(getHookStatus('/test/hooks.json', 'cursor')).resolves.toBe('installed');
+      await expect(getHookStatus('/test/hooks.json', { tool: 'cursor', from: 'version' })).resolves.toBe('installed');
     });
 
     it('reports missing when settings exist without teamai hooks', async () => {
       mockFiles['/test/settings.json'] = { hooks: {} };
 
-      await expect(getHookStatus('/test/settings.json', 'claude')).resolves.toBe('missing');
+      await expect(getHookStatus('/test/settings.json', { tool: 'claude', from: 'version' })).resolves.toBe('missing');
     });
   });
 

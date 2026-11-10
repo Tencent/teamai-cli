@@ -7,8 +7,13 @@ vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+vi.mock('../agent-version.js', () => ({ getAgentVersion: vi.fn(async () => '') }));
+
 import { injectHooks } from '../hooks.js';
 import { _resetShellCache } from '../builtin-hooks.js';
+import { getAgentVersion } from '../agent-version.js';
+import { toolHome } from '../tool-home.js';
+import { TOOLS, type ToolId } from '../tools.js';
 
 // Byte-equality anchor for the built-in (A) hooks (issue #19 §8 "兼容锚点").
 // fixtures/hooks/<tool>.json were captured from the pre-refactor injector.
@@ -49,4 +54,36 @@ describe('hooks golden — built-in output is byte-identical to the captured bas
       expect(got).toBe(want);
     });
   }
+});
+
+// The member's own hook file takes the form the installed version allows (builtinHookForm); only Claude Code's changes.
+describe('hooks golden — the hook file in the member\'s own tool home', () => {
+  let tmp: string;
+  beforeEach(async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    _resetShellCache();
+    tmp = await fse.realpath(await fse.mkdtemp(path.join(os.tmpdir(), 'hooks-golden-home-')));
+    vi.stubEnv('HOME', tmp);
+  });
+  afterEach(async () => {
+    _resetShellCache();
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    await fse.remove(tmp);
+  });
+
+  it.each([
+    { tool: 'claude', version: '2.1.322', fixture: 'claude-unwaited' },
+    { tool: 'claude', version: '2.1.118', fixture: 'claude' },
+    ...cases.filter(([tool]) => tool !== 'claude').map(([tool]) => ({ tool, version: '2.1.322', fixture: tool })),
+  ] as Array<{ tool: ToolId; version: string; fixture: string }>)('$tool at $version matches fixtures/hooks/$fixture.json', async ({ tool, version, fixture }) => {
+    for (const move of 'moves' in TOOLS[tool].home ? TOOLS[tool].home.moves.by : []) if (move.kind === 'env') vi.stubEnv(move.name, '');
+    vi.mocked(getAgentVersion).mockResolvedValue(version);
+    const p = path.join(toolHome(tool), cases.find(([name]) => name === tool)?.[1] ?? '');
+    expect(p.startsWith(`${tmp}${path.sep}`)).toBe(true);
+
+    await injectHooks(p, tool);
+
+    expect(await fse.readFile(p, 'utf-8')).toBe(await fse.readFile(path.join(fixturesDir, `${fixture}.json`), 'utf-8'));
+  });
 });

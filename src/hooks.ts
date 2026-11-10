@@ -39,7 +39,7 @@ import {
   resolveGitExclude,
   resolveToolRootDir,
 } from './types.js';
-import { builtinHookDefs, builtinHookForm, applyBuiltinOverride, getCodebuddyTeamHookDispatchCommand, getRawDispatchCommand, recognisedBuiltinHookDefs, skipToolsWithoutShell, WAITED_LOGIN_FORM } from './builtin-hooks.js';
+import { BUILTIN_HOOK_FORMS, builtinHookDefs, builtinHookForm, applyBuiltinOverride, getCodebuddyTeamHookDispatchCommand, getRawDispatchCommand, recognisedBuiltinHookDefs, skipToolsWithoutShell, WAITED_LOGIN_FORM } from './builtin-hooks.js';
 import { codebuddyTeamHookPayload, encodeCodebuddyProjectGate, isCodebuddyTeamGateForProject, parseCodebuddyTeamGate, regateCodebuddyTeamHookCommand } from './codebuddy-team-hooks.js';
 import type { BuiltinHookForm, BuiltinHookOverride } from './builtin-hooks.js';
 import { DeliveredFolders } from './resources/delivered-folders.js';
@@ -382,8 +382,10 @@ export interface ReconcileHooksOptions {
   legacyManifestPath?: string;
   /** §4.8 team override of built-in hooks (disabled / timeout). */
   builtinOverride?: BuiltinHookOverride;
-  /** The form of the built-ins in this file: `reconcileHooks` sets it from where the file is (`hookFileDestination`). */
+  /** The form of the built-ins in this file: `reconcileHooks` sets it (`builtinHookFormOf`). */
   builtinForm?: BuiltinHookForm;
+  /** Where `reconcileHooks` reads that form from; `version` when unset. */
+  builtinFormFrom?: BuiltinHookFormSource;
   /** Project root used to gate non-self project-scope team hooks. */
   teamHookProjectRoot?: string;
   /** The roots of a workspace's children, which the gate leaves out (#913). */
@@ -3390,7 +3392,7 @@ export async function reconcileHooks(
   teamDefs: HookDef[] = [],
   given: ReconcileHooksOptions = {},
 ): Promise<void> {
-  const opts = { ...given, builtinForm: given.removeAll ? WAITED_LOGIN_FORM : await builtinHookForm(tool, hookFileDestination(tool, settingsPath)) };
+  const opts = { ...given, builtinForm: given.removeAll ? WAITED_LOGIN_FORM : await builtinHookFormOf({ tool, settingsPath, from: given.builtinFormFrom ?? 'version' }) };
 
   if (opts.mainCheckout) {
     const target = opts.mainCheckout;
@@ -3530,28 +3532,55 @@ export async function removeHooks(settingsPath: string, tool?: string): Promise<
 }
 
 /**
- * Report whether the current built-in (A) hook set is present in a tool settings
- * file. Computed against the unified HookDef model: every built-in entry for the
- * tool must already exist on disk.
- *
- * `builtinOverride` is the team's §4.8 override. Reconciliation applies it when
- * writing, so the status check must apply it too — otherwise a hook the team
- * disabled is still expected on disk and every tool reads as `missing`.
+ * Where the form of a hook file's built-ins is read from. `version`: the installed tool's version
+ * (`builtinHookForm`), which may start the tool. `installed`: the file's own teamai built-ins, which starts nothing,
+ * and the version only when the file holds none. A full pull asks the version and an inline pull keeps the file's
+ * form, so a tool upgrade or downgrade across a floor changes the file at the next full pull.
  */
-export async function getHookStatus(
-  settingsPath: string,
-  tool?: string,
-  builtinOverride?: BuiltinHookOverride,
-): Promise<HookStatus> {
-  const toolName = tool ?? 'claude';
-  const expanded = expandHome(settingsPath);
-  const defs = applyBuiltinOverride(builtinHookDefs(toolName, await builtinHookForm(toolName, hookFileDestination(toolName, settingsPath))), builtinOverride);
+export type BuiltinHookFormSource = 'installed' | 'version';
 
-  const format = hookFormatOf(toolName);
+/**
+ * The form of `tool`'s built-ins in the hook file at `settingsPath`, read `from` the version or the file. A file
+ * whose built-ins show one form is read as that form, whole: an entry of another form in it is then not current.
+ */
+export async function builtinHookFormOf({ tool, settingsPath, from }: { tool: string; settingsPath: string; from: BuiltinHookFormSource }): Promise<BuiltinHookForm> {
+  const destination = hookFileDestination(tool, settingsPath);
+
+  if (from === 'installed' && destination === 'user') {
+    const held = await heldBuiltins(tool, settingsPath);
+    const all = BUILTIN_HOOK_FORMS.flatMap((form) => builtinHookDefs(tool, form));
+
+    if (held && all.some(held)) {
+      // A form shows in an entry that only a form with its flag set renders.
+      const shows = (flag: keyof BuiltinHookForm): boolean => {
+        const without = BUILTIN_HOOK_FORMS.filter((form) => !form[flag]).flatMap((form) => builtinHookDefs(tool, form));
+
+        return BUILTIN_HOOK_FORMS.filter((form) => form[flag]).flatMap((form) => builtinHookDefs(tool, form))
+          .some((def) => held(def) && !without.some((other) => sameBuiltinEntry(other, def)));
+      };
+
+      return { unwaited: shows('unwaited'), loginDeferred: shows('loginDeferred') };
+    }
+  }
+
+  return builtinHookForm(tool, destination);
+}
+
+function sameBuiltinEntry(a: HookDef, b: HookDef): boolean {
+  return a.event === b.event && a.matcher === b.matcher && a.command === b.command && a.async === b.async;
+}
+
+/**
+ * Whether the hook file at `settingsPath` holds a built-in as `tool`'s writer renders it, or null when the file holds
+ * no hooks teamai can read.
+ */
+async function heldBuiltins(tool: string, settingsPath: string): Promise<((def: HookDef) => boolean) | null> {
+  const expanded = expandHome(settingsPath);
+  const format = hookFormatOf(tool);
   const json = await readJson<JsonValue>(expanded);
   const events = hookEventsOf(json, format);
 
-  if (!events || (format === 'copilot' && !(isJsonObject(json) && json.version === COPILOT_HOOK_SCHEMA_VERSION))) return 'missing';
+  if (!events || (format === 'copilot' && !(isJsonObject(json) && json.version === COPILOT_HOOK_SCHEMA_VERSION))) return null;
 
   // The file is the member's: an entry that is not an object holds no hook.
   const entriesOf = (event: string): HookFileEntry[] => (events.get(event) ?? []).flatMap((entry) => {
@@ -3561,20 +3590,18 @@ export async function getHookStatus(
   });
 
   if (format === 'cursor') {
-    const present = defs.every((def) => {
+    return (def) => {
       const cursorEvent = CLAUDE_TO_CURSOR_EVENTS[def.event];
 
       if (!cursorEvent) return true;
       const want = toCursorEntry(def);
 
       return entriesOf(cursorEvent).some((e) => e.command === want.command && e.matcher === want.matcher);
-    });
-
-    return present ? 'installed' : 'missing';
+    };
   }
 
   if (format === 'copilot') {
-    const present = defs.every((def) => {
+    return (def) => {
       const event = CLAUDE_TO_COPILOT_EVENTS[def.event];
 
       if (!event) return true;
@@ -3587,20 +3614,16 @@ export async function getHookStatus(
         && (entry.command && unmarkCopilotGlobal(entry.command)) === want.command
         && entry.matcher === want.matcher,
       );
-    });
-
-    return present ? 'installed' : 'missing';
+    };
   }
 
   if (format === 'codex') {
-    const present = defs.every((def) => {
+    return (def) => {
       const want = toCodexEntry(def);
 
       return entriesOf(def.event).some((e) => e.matcher === want.matcher && e.hooks?.[0]?.command === want.hooks[0].command
         && (e.hooks[0].async === true) === (want.hooks[0].async === true));
-    });
-
-    return present ? 'installed' : 'missing';
+    };
   }
 
   if (format === 'zcode') {
@@ -3608,26 +3631,43 @@ export async function getHookStatus(
 
     // On Windows the entries are dead without the launcher — a deleted, stale,
     // or AV-quarantined script must not be reported as installed.
-    if (process.platform === 'win32' && !(await readFileSafe(launcherPath))) return 'missing';
+    if (process.platform === 'win32' && !(await readFileSafe(launcherPath))) return null;
 
-    const present = defs.every((def) => {
+    return (def) => {
       const want = toZcodeEntry(def, launcherPath);
       const wantCmd = zcodeEntryCommand(want);
 
       return entriesOf(def.event).some((e) => e.matcher === want.matcher && zcodeEntryCommand(e) === wantCmd);
-    });
-
-    return present ? 'installed' : 'missing';
+    };
   }
 
-  const present = defs.every((def) => {
+  return (def) => {
     const want = toClaudeEntry(def);
 
     return entriesOf(def.event).some((e) => e.matcher === want.matcher && e.hooks?.[0]?.command === want.hooks[0].command
       && (e.hooks[0].async === true) === (want.hooks[0].async === true));
-  });
+  };
+}
 
-  return present ? 'installed' : 'missing';
+/**
+ * Report whether the current built-in (A) hook set is present in a tool settings
+ * file. Computed against the unified HookDef model: every built-in entry for the
+ * tool must already exist on disk, in the form read `from` the version or the file.
+ *
+ * `builtinOverride` is the team's §4.8 override. Reconciliation applies it when
+ * writing, so the status check must apply it too — otherwise a hook the team
+ * disabled is still expected on disk and every tool reads as `missing`.
+ */
+export async function getHookStatus(
+  settingsPath: string,
+  { tool = 'claude', from, builtinOverride }: { tool?: string; from: BuiltinHookFormSource; builtinOverride?: BuiltinHookOverride },
+): Promise<HookStatus> {
+  const held = await heldBuiltins(tool, settingsPath);
+
+  if (!held) return 'missing';
+  const defs = applyBuiltinOverride(builtinHookDefs(tool, await builtinHookFormOf({ tool, settingsPath, from })), builtinOverride);
+
+  return defs.every(held) ? 'installed' : 'missing';
 }
 
 /**
@@ -3986,12 +4026,13 @@ async function builtinsInstalled(
   tool: string,
   manifestPath: string,
   builtinOverride: BuiltinHookOverride | undefined,
+  from: BuiltinHookFormSource,
 ): Promise<boolean> {
   switch (builtinsOnly) {
     case undefined:
       return false;
     case 'with-overrides':
-      return await getHookStatus(settingsPath, tool, builtinOverride) === 'installed';
+      return await getHookStatus(settingsPath, { tool, from, builtinOverride }) === 'installed';
     case 'defaults-where-none':
       return hasTeamaiHooks(settingsPath, tool, manifestPath);
     default: {
@@ -4023,7 +4064,7 @@ export async function reconcileHooksToAllTools(
   teamDefs: HookDef[],
   manifestPath: string,
   opts: {
-    removeAll?: boolean; builtinOverride?: BuiltinHookOverride; filterAgents?: string[]; settingsOnly?: boolean; installedBaseDir?: string; teamHookProjectRoot?: string; teamHookChildRoots?: readonly string[]; heldTeamHookIds?: readonly string[]; scope?: Scope; builtinsOnly?: BuiltinsOnly; mainCheckout?: MainCheckoutHooks | null; teamHookHistory?: TeamHookHistory; codebuddyDualRunner?: boolean;
+    removeAll?: boolean; builtinOverride?: BuiltinHookOverride; builtinFormFrom?: BuiltinHookFormSource; filterAgents?: string[]; settingsOnly?: boolean; installedBaseDir?: string; teamHookProjectRoot?: string; teamHookChildRoots?: readonly string[]; heldTeamHookIds?: readonly string[]; scope?: Scope; builtinsOnly?: BuiltinsOnly; mainCheckout?: MainCheckoutHooks | null; teamHookHistory?: TeamHookHistory; codebuddyDualRunner?: boolean;
     /**
      * The active config's `toolRoots`, so the gate probes a member's recorded
      * root rather than the path's two-segment shape (see `toolGateRoot`).
@@ -4045,7 +4086,7 @@ export async function reconcileHooksToAllTools(
   const defs = opts.builtinsOnly ? [] : teamDefs;
 
   const skipInstalled = async (settingsPath: string, tool: string): Promise<boolean> =>
-    builtinsInstalled(opts.builtinsOnly, settingsPath, tool, manifestPath, opts.builtinOverride);
+    builtinsInstalled(opts.builtinsOnly, settingsPath, tool, manifestPath, opts.builtinOverride, opts.builtinFormFrom ?? 'version');
 
   // Removal is JSON editing and needs no shell, so the gate only applies to
   // injection passes — otherwise tools without a shell could never clean up
@@ -4340,6 +4381,7 @@ export async function reconcileHooksToAllTools(
             await reconcileHooks(settingsPath, tool, [], {
               manifestPath: teamManifestPath,
               builtinOverride: opts.builtinOverride,
+              builtinFormFrom: opts.builtinFormFrom,
               teamHookProjectRoot: root,
               teamHookHistory: opts.teamHookHistory,
               codexTrust: opts.codexTrust,
@@ -4364,6 +4406,7 @@ export async function reconcileHooksToAllTools(
             manifestPath: teamManifestPath,
             removeAll: opts.removeAll,
             builtinOverride: opts.builtinOverride,
+            builtinFormFrom: opts.builtinFormFrom,
             teamHookProjectRoot: homeHooks ? opts.installedBaseDir ?? baseDir : opts.teamHookProjectRoot,
             heldTeamHookIds,
             teamHookHistory: opts.teamHookHistory,
@@ -5007,7 +5050,11 @@ async function cleanGitDirectoryHooks(localConfig: LocalConfig, toolPaths: Teama
 export async function reconcileTeamHooksForConfig(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
-  opts: { removeAll?: boolean; auto?: boolean; silent?: boolean; filterAgents?: string[]; dryRun?: boolean } = {},
+  opts: {
+    removeAll?: boolean; auto?: boolean; silent?: boolean; filterAgents?: string[]; dryRun?: boolean;
+    /** `installed` on an inline pull, which keeps the form each hook file has (`BuiltinHookFormSource`). */
+    builtinFormFrom?: BuiltinHookFormSource;
+  } = {},
 ): Promise<TeamHooksReconcile> {
   const resolved: Awaited<ReturnType<typeof resolveTeamHooks>> = opts.removeAll
     ? { ok: true, defs: [], folders: [], builtin: undefined }
@@ -5112,6 +5159,7 @@ export async function reconcileTeamHooksForConfig(
   const reconcileOptions: Parameters<typeof reconcileHooksToAllTools>[4] = {
     removeAll: opts.removeAll,
     builtinOverride: builtin,
+    builtinFormFrom: opts.builtinFormFrom,
     filterAgents,
     teamHookProjectRoot: localConfig.scope === 'project' && !isSelfMode(localConfig)
       ? localConfig.projectRoot
@@ -5171,7 +5219,7 @@ export async function reconcileTeamHooksForConfig(
     const copilotBuiltin = hookScope === 'user' ? undefined : builtin;
 
     const copilotInstalled = await builtinsInstalled(
-      builtinsOnly, copilotHooksPath, COPILOT_TOOL_ID, copilotManifestPath ?? manifestPath, copilotBuiltin);
+      builtinsOnly, copilotHooksPath, COPILOT_TOOL_ID, copilotManifestPath ?? manifestPath, copilotBuiltin, opts.builtinFormFrom ?? 'version');
 
     if (copilotInstalled && hookScope === 'user') await markCopilotGlobalBuiltins(copilotHooksPath);
 

@@ -341,7 +341,7 @@ describe('Cursor hook command on Windows PowerShell', () => {
     // One entry per tool call, the wildcard's timeout included: the TodoWrite one of its own retired (#1788).
     expect(parsed.hooks.postToolUse).toEqual([expect.not.objectContaining({ matcher: expect.anything() })]);
     expect(parsed.hooks.postToolUse[0]).toMatchObject({ timeout: 10 });
-    expect(await getHookStatus(hooksPath, 'cursor')).toBe('installed');
+    expect(await getHookStatus(hooksPath, { tool: 'cursor', from: 'version' })).toBe('installed');
 
     const again = fs.readFileSync(hooksPath, 'utf8');
     await injectHooks(hooksPath, 'cursor');
@@ -364,7 +364,7 @@ describe('Cursor hook command on Windows PowerShell', () => {
       expect(command).not.toContain('-lc');
       expect(command).not.toContain('bash');
     }
-    expect(await getHookStatus(hooksPath, 'cursor')).toBe('installed');
+    expect(await getHookStatus(hooksPath, { tool: 'cursor', from: 'version' })).toBe('installed');
   });
 
   it('replaces a previously injected PowerShell-invalid command instead of appending', async () => {
@@ -386,7 +386,7 @@ describe('Cursor hook command on Windows PowerShell', () => {
       },
     }));
 
-    expect(await getHookStatus(hooksPath, 'cursor')).toBe('missing');
+    expect(await getHookStatus(hooksPath, { tool: 'cursor', from: 'version' })).toBe('missing');
     await injectHooks(hooksPath, 'cursor');
     const parsed = JSON.parse(fs.readFileSync(hooksPath, 'utf8')) as CursorHooksFile;
 
@@ -397,7 +397,7 @@ describe('Cursor hook command on Windows PowerShell', () => {
       `& "${bashExe}" -lc "teamai hook-dispatch prompt-submit --tool cursor 2>/dev/null"; exit 0`,
     );
     expect(cursorCommands(parsed).some((command) => command.includes('||'))).toBe(false);
-    expect(await getHookStatus(hooksPath, 'cursor')).toBe('installed');
+    expect(await getHookStatus(hooksPath, { tool: 'cursor', from: 'version' })).toBe('installed');
   });
 
   it('leaves a team-authored command unchanged, including one that itself contains ||', async () => {
