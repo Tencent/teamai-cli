@@ -311,6 +311,24 @@ const TEAMAI_COMMAND_MARKERS = [
   'teamai auto-recall', 'teamai todowrite-hint', 'teamai mr-hint', 'teamai hook-dispatch',
 ];
 
+/**
+ * Whether `command` is one of the built-in or legacy teamai hook commands.
+ * This is how teamai recognizes its own entries in every hook format except
+ * Claude's description prefix. A command that merely invokes teamai is not
+ * one: a member or team hook can run `teamai env exec`, `teamai recall` and
+ * so on.
+ */
+function isMarkedTeamaiHookCommand(command: string): boolean {
+  return TEAMAI_COMMAND_MARKERS.some((marker) => command.includes(marker));
+}
+
+/**
+ * Whether `command` invokes any teamai subcommand. A conservative probe for
+ * uninstall deciding a hook file may hold teamai's entries, never proof that
+ * an entry is teamai's: only {@link isMarkedTeamaiHookCommand} and a managed
+ * record say that, and reconciliation must not delete a member or team hook
+ * just because it runs teamai.
+ */
 function isTeamaiHookCommand(command: string): boolean {
   return /(?:^|"|\s)teamai\s/.test(command);
 }
@@ -605,13 +623,13 @@ async function judgeUnrecordedTeamEntries(
       .map(def => ({ def, ...render(def) }));
   };
 
-  const marked = (command: string) => TEAMAI_COMMAND_MARKERS.some((m) => command.includes(m));
+  const marked = isMarkedTeamaiHookCommand;
   // A held hook's entry (#913) is judged even where the format's built-in handling would claim it.
   const held = new Set(opts.removeAll ? [] : opts.heldTeamHookIds ?? []);
 
   // Whether the format's built-in handling claims an entry by its command.
-  const builtinClaims = (commands: string[]): boolean => format === 'cursor' ? commands.some(isTeamaiHookCommand)
-    : (format === 'copilot' || format === 'zcode') && commands.some(marked);
+  const builtinClaims = (commands: string[]): boolean =>
+    (format === 'cursor' || format === 'copilot' || format === 'zcode') && commands.some(marked);
 
   // The commands each reconciler owns an entry by; none for an entry its built-in handling claims while nothing is held.
   const commandsOf = (event: string, entry: HookFileEntry | null): string[] => {
@@ -2339,7 +2357,7 @@ async function reconcileCursorFormat(
   const isManaged = (entry: JsonValue): boolean => {
     const command = hookFileEntryOf(entry)?.command;
 
-    return command !== undefined && (isTeamaiHookCommand(command) || priorTeamCommands.has(command));
+    return command !== undefined && (isMarkedTeamaiHookCommand(command) || priorTeamCommands.has(command));
   };
 
   const defs = opts.removeAll ? [] : desiredDefs(tool, teamDefs, opts);
