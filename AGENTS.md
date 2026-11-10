@@ -103,7 +103,7 @@ Do not cover the full tool × repo provider matrix below. Leave extra repo provi
 - `website/` - the standalone public site: its own package, with no CLI code or copied documentation, and its own build, tests and CI.
 - `skills/`, `skill-data/`, `rules/`, `agents/`, `hooks/`, `workflows/`, `scorers/` - the agent resources teamai ships as its default layer. A team replaces each one by name.
 - `oxlint-plugin-teamai/` - the repo's lint rules; its README lists what each one rejects.
-- `scripts/` - repo tooling: documentation checks, the verify world, the context budget.
+- `scripts/` - repo tooling: documentation checks, the verify world, the context budget and the agent wait budget.
 
 ## Taste
 

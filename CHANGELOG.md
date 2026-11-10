@@ -126,7 +126,7 @@ All notable changes to this project will be documented in this file. See [standa
 - A Stop reads the checkout with one `git status --branch` for both the session's end record and the dashboard's Stop event, where it ran three git commands.
 - `git worktree add` waits the same however many worktrees the repository has: teamai's git hook adds the new checkout's git exclude lines while git waits and leaves the other checkouts to the pull it starts after. With four checkouts the wait drops from 16 git processes to 10. A pull asks git which delivered paths each checkout tracks and offers once, not once for the exclude sync and again for the check after it.
 - A login bash that loads the team env asks git for the directory's repository once, not once for each of the two passes of the env loader.
-- `teamai uninstall` removes the rules, skills and agents directories it emptied, so a project no longer keeps an empty `.claude/rules` after a workspace uninstall. A directory that still holds one of your files stays, and so does the tool's own directory.
+- `teamai uninstall` removes the rules, skills and agents directories it emptied, so a project no longer keeps an empty `.claude/rules` after a workspace uninstall. A directory that still holds anything of yours, an empty folder included, stays, and so does the tool's own directory.
 
 ### 💥 Breaking Changes
 

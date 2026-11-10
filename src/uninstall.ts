@@ -1,4 +1,4 @@
-import { lstat, readdir, realpath } from 'node:fs/promises';
+import { lstat, readdir, realpath, rmdir } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { autoDetectInit, loadLocalConfig, loadStateForScope, readConfigFrom, resolveMemberToolRoots, saveLocalConfig, saveLocalConfigForScope, saveStateForScope, UnreadableProjectConfigError, detectProjectConfig } from './config.js';
@@ -3123,7 +3123,7 @@ async function executeRemoval(
   }
 
   // (d3) The directories those were in, once nothing is left in them.
-  for (const dir of emptiedDirs(plan)) await pruneEmptyDirs(dir);
+  for (const dir of emptiedDirs(plan)) await removeIfEmpty(dir);
 
   // (e) Clean shell profile env block(s) — every file discovered in
   // buildRemovalPlan, not just the one detectShellProfile() resolves to today.
@@ -3410,6 +3410,15 @@ function emptiedDirs(plan: RemovalPlan): string[] {
   }
 
   return [...dirs].sort((a, b) => b.length - a.length);
+}
+
+/** Remove `dir` when nothing is left in it; any folder inside, a member's empty one included, keeps it. */
+async function removeIfEmpty(dir: string): Promise<void> {
+  try {
+    await rmdir(dir);
+  } catch (e) {
+    log.debug(`Kept ${dir}: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 /** Remove everything under `root` but each path in `keep` and the directories on the way to them. */

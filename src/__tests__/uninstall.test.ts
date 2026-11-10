@@ -3508,6 +3508,21 @@ describe('uninstall', () => {
     expect(await fse.pathExists(path.join(homeDir, '.claude'))).toBe(true);
   });
 
+  it('keeps an empty folder of the member\'s in the skills directory, and the directory with it', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    await fse.remove(path.join(homeDir, '.claude', 'skills', 'my-own-skill'));
+    await fse.ensureDir(path.join(homeDir, '.claude', 'skills', 'drafts'));
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig: makeTeamConfig() });
+    commitTeamRepo(repoPath);
+
+    await uninstall({ force: true });
+
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'team-skill'))).toBe(false);
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'drafts'))).toBe(true);
+  });
+
   it('保留 CLAUDE.md 中非 teamai 的内容', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);
