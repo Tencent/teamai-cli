@@ -102,9 +102,9 @@ function hostCommand(name: string): string | undefined {
 }
 
 /** The only variables a world's commands get. Anything else, a tool home or a teamai setting, must be set on the command line. */
-function worldEnv(home: string, tmp: string, bin: string) {
+function worldEnv(home: string, tmp: string, bin: string, fakes: string) {
   const commands = ['git', ...TOOL_COMMANDS].flatMap((name) => hostCommand(name) ?? []);
-  const search = [bin, path.dirname(process.execPath), ...commands.map((command) => path.dirname(command)), '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
+  const search = [fakes, bin, path.dirname(process.execPath), ...commands.map((command) => path.dirname(command)), '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
 
   return {
     HOME: home,
@@ -115,6 +115,31 @@ function worldEnv(home: string, tmp: string, bin: string) {
     LANG: process.env.LANG ?? 'C.UTF-8',
     TERM: process.env.TERM ?? 'dumb',
   };
+}
+
+/**
+ * A `gh` that never reaches the network: `pr list` prints fakes/gh-pr-list.json or `[]`, anything else fails the way
+ * a `gh` that is not signed in does. Each call is logged to fakes/gh.log with the side of the agent wait it ran on.
+ */
+function writeFakeGh(fakes: string): void {
+  fs.mkdirSync(fakes, { recursive: true });
+  const gh = path.join(fakes, 'gh');
+  const prList = quote(path.join(fakes, 'gh-pr-list.json'));
+  fs.writeFileSync(
+    gh,
+    `#!/bin/sh
+printf '%s\\t%s\\n' "\${AGENT_WAIT_SIDE:-waited}" "$*" >> ${quote(path.join(fakes, 'gh.log'))}
+case "$1 $2" in
+  'pr list')
+    if [ -f ${prList} ]; then cat ${prList}; else echo '[]'; fi
+    exit 0 ;;
+esac
+if [ "$1" = --version ]; then echo 'gh version 0.0.0 (world)'; exit 0; fi
+echo 'gh: not available in a world' >&2
+exit 1
+`,
+  );
+  fs.chmodSync(gh, 0o755);
 }
 
 export function createWorld(): World {
@@ -158,7 +183,8 @@ function buildWorld(runId: string, dir: string): World {
   );
   const bin = at('bin');
   fs.mkdirSync(bin);
-  const env = worldEnv(at('home'), at('tmp'), path.join(at('install'), 'node_modules', '.bin'));
+  writeFakeGh(at('fakes'));
+  const env = worldEnv(at('home'), at('tmp'), path.join(at('install'), 'node_modules', '.bin'), at('fakes'));
   const run = path.join(bin, 'run');
   fs.writeFileSync(
     run,

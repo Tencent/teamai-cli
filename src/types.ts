@@ -1636,6 +1636,8 @@ export interface HookDef {
   shell?: 'powershell';
   /** Per-hook timeout in seconds (tool-specific; omitted = tool default). */
   timeout?: number;
+  /** The tool starts the hook and does not wait for it (Claude Code and Codex `"async": true`). */
+  async?: true;
   /**
    * Codex only: the token count past which Codex keeps just the start and end
    * of the hook's additionalContext. 0 turns that off. Omitted = Codex's 2,500.
@@ -1888,6 +1890,13 @@ export interface GlobalOptions {
    * while the team repo is unreachable; the session's full pull fetches.
    */
   localOnly?: boolean;
+  /**
+   * Internal (the inline preparation of a new checkout from git's hook): the
+   * delivered git exclude sync lists this checkout's files and drops no line,
+   * asking git about this checkout alone. The detached pull the hook hands
+   * over to then syncs every checkout's lines.
+   */
+  gitExcludeAddOnly?: boolean;
   /**
    * Internal (post-merge/post-rewrite git hooks, with `inline`): fetch the team repo
    * whatever its fetch stamp says, and give up after this many ms; the scope

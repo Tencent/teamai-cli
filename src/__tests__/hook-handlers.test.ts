@@ -49,6 +49,7 @@ vi.mock('../dashboard-collector.js', () => ({
   addGitStateAtStart: vi.fn().mockResolvedValue(undefined),
   addGitHeadAtStop: vi.fn().mockResolvedValue(undefined),
   gitStateIn: vi.fn().mockReturnValue(undefined),
+  gitStateAtStopIn: vi.fn().mockReturnValue(undefined),
   // The payload's cwd: what hookScopeDir answers for a cwd that exists (#810).
   hookScopeDir: async (stdin: Record<string, unknown>) =>
     (await vi.importActual<typeof import('../utils/hook-cwd.js')>('../utils/hook-cwd.js')).resolveHookCwd(stdin),
@@ -137,8 +138,11 @@ vi.mock('../pkg/pkg-hint.js', () => ({
 }));
 
 const mockMrHintOutput = vi.fn().mockResolvedValue(null);
+const mockStashMrHint = vi.fn().mockResolvedValue(undefined);
 vi.mock('../mr-hint.js', () => ({
   computeMrHintOutput: mockMrHintOutput,
+  stashMrHint: mockStashMrHint,
+  takePendingMrHint: vi.fn().mockResolvedValue(null),
 }));
 
 // votes-sync's adoption comes from the recall-log reducer (#884); its own
@@ -298,19 +302,19 @@ describe('hook-handlers registry', () => {
   });
 
   // What a prompt's foreground runs is what hook-fast-path.ts `promptAnswersInForeground` predicts
-  // the output of: a package hint, a contribute hint, the HTTP local agent's notices (#1788).
+  // the output of: a package hint, an MR hint, a contribute hint, the HTTP local agent's notices (#1788).
   it.each([
-    ['darwin', ['pending-hint', 'package-pending-hint', 'local-agent-sync']],
-    ['linux', ['pending-hint', 'package-pending-hint', 'local-agent-sync']],
+    ['darwin', ['pending-hint', 'package-pending-hint', 'mr-hint-pending', 'local-agent-sync']],
+    ['linux', ['pending-hint', 'package-pending-hint', 'mr-hint-pending', 'local-agent-sync']],
     // No detached child is added on Windows, where one is a WMI spawn.
-    ['win32', ['pending-hint', 'package-pending-hint', 'skill-mention', 'dashboard-report', 'local-agent-sync']],
+    ['win32', ['pending-hint', 'package-pending-hint', 'mr-hint-pending', 'skill-mention', 'dashboard-report', 'local-agent-sync']],
   ])('prompt-submit on %s answers in the foreground with only %j', (platform, foreground) => {
     const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue(platform as NodeJS.Platform);
     const handlers = buildHandlerRegistry().filter((r) => r.event === 'prompt-submit');
     platformSpy.mockRestore();
 
     expect(handlers.filter((r) => !r.background).map((r) => r.handler.name)).toEqual(foreground);
-    expect(handlers.map((r) => r.handler.name)).toEqual(['pending-hint', 'package-pending-hint', 'skill-mention', 'dashboard-report', 'local-agent-sync']);
+    expect(handlers.map((r) => r.handler.name)).toEqual(['pending-hint', 'package-pending-hint', 'mr-hint-pending', 'skill-mention', 'dashboard-report', 'local-agent-sync']);
   });
 
   it('session-end records the final dashboard snapshot, dispatches the webhook and pushes votes in the background, and credits votes in the foreground', () => {
@@ -678,8 +682,8 @@ describe('hook-handlers registry', () => {
       captureId, platform: 'claude-code', sessionId: 's-pull', capturedAt: '2026-10-23T10:00:00.000Z',
       agent: { v: 1, tool: { name: 'claude' }, teamai: '0.0.0', driver: 'session' },
     }));
-    const record = (rev: string) => ({ complete: true, key: 'k', commit: rev.repeat(40), record: { rev, targets: ['claude'] } });
-    mockTeamDelivery.mockResolvedValueOnce(record('a')).mockResolvedValueOnce(record('b'));
+    const record = (rev: string) => ({ rev, targets: ['claude'] });
+    mockDeliveringCheckoutRecord.mockResolvedValueOnce(record('a')).mockResolvedValueOnce(record('b'));
     const config: LocalConfig = { repo: { kind: 'git', localPath: root, remote: '' }, username: 'test', scope: 'user', additionalRoles: [], dataHome: path.join(root, 'data') };
     const handler = buildHandlerRegistry().find((r) => r.event === 'session-start' && r.handler.name === 'pull')?.handler;
 
@@ -1241,6 +1245,7 @@ describe('hook-handlers registry', () => {
     const gitOnly = registry.filter((r) => r.gitOnly === true).map((r) => r.handler.name);
     expect(gitOnly).toContain('contribute-check');
     expect(gitOnly).toContain('mr-hint');
+    expect(gitOnly).toContain('mr-hint-stash');
     expect(gitOnly).toContain('votes-sync');
     expect(gitOnly).toContain('votes-push');
   });
@@ -1662,7 +1667,6 @@ describe('session-start team env hint (#875, #1018)', () => {
     teamRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-secrets-hint-'));
     fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), 'team: acme\nrepo: https://example.test/acme/team.git\n');
     const sessionStart = (context: string) => JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context } });
-    mockMrHintOutput.mockResolvedValueOnce(sessionStart('MR context'));
     mockClaimPackageHint.mockResolvedValueOnce(sessionStart('Package context'));
   });
 
@@ -1695,7 +1699,7 @@ describe('session-start team env hint (#875, #1018)', () => {
     expect(secretLines[0]).toContain('SENTRY_AUTH_TOKEN');
     expect(secretLines[0]).toContain('teamai env exec --');
     expect(secretLines[0]).toContain('teamai env set KEY');
-    expect(lines.filter((line) => line !== secretLines[0])).toEqual(['MR context', 'Package context']);
+    expect(lines.filter((line) => line !== secretLines[0])).toEqual(['Package context']);
   });
 
   it('names the scope\'s env variables and env exec when it delivers variables but no secrets (#1018)', async () => {
@@ -1730,14 +1734,14 @@ describe('session-start team env hint (#875, #1018)', () => {
   });
 
   it('adds nothing when the scope delivers no env', async () => {
-    expect(await sessionContext()).toEqual(['MR context', 'Package context']);
+    expect(await sessionContext()).toEqual(['Package context']);
   });
 
   it('adds nothing when the secrets file cannot be read', async () => {
     fs.mkdirSync(path.join(teamRepo, 'env'));
     fs.writeFileSync(path.join(teamRepo, 'env', 'secrets.yaml'), 'secrets: [\n');
 
-    expect(await sessionContext()).toEqual(['MR context', 'Package context']);
+    expect(await sessionContext()).toEqual(['Package context']);
   });
 
   it('is a foreground team handler, so a directory without teamai never gets the line', () => {
@@ -2102,53 +2106,62 @@ describe('buildAdoptedSummary', () => {
   });
 });
 
-describe('mr-hint agent language (#1014)', () => {
-  it('passes language en from teamai.yaml into the hint', async () => {
-    const fsMod = await import('node:fs');
-    const osMod = await import('node:os');
-    const pathMod = await import('node:path');
-    const dir = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'teamai-lang-'));
-    try {
-      fsMod.writeFileSync(pathMod.join(dir, 'teamai.yaml'), 'team: t\nrepo: https://example.invalid/t.git\nlanguage: en\n');
-      const handler = buildHandlerRegistry().find((r) => r.handler.name === 'mr-hint')!.handler;
-      mockMrHintOutput.mockClear();
-      await handler.execute({}, 'claude', {
-        ...scope,
-        repo: { localPath: dir, remote: 'https://example.invalid/t.git' },
-      });
-      expect(mockMrHintOutput.mock.calls.at(-1)).toEqual([
-        'en',
-        expect.objectContaining({ repo: expect.objectContaining({ localPath: dir }) }),
-        // The session the hint may offer teamai-import-from-mr to.
-        { sessionId: expect.any(String), cwd: expect.any(String), run: expect.objectContaining({ runMode: expect.any(String) }) },
-      ]);
-    } finally {
-      fsMod.rmSync(dir, { recursive: true, force: true });
-    }
+describe('the MR hint at session start', () => {
+  let dir: string;
+  const handler = (name: string) => buildHandlerRegistry().find((r) => r.handler.name === name)!.handler;
+  const config = (): LocalConfig => ({ ...scope, repo: { localPath: dir, remote: 'https://example.invalid/t.git' } });
+  // The session the hint may offer teamai-import-from-mr to.
+  const session = { sessionId: expect.any(String), cwd: expect.any(String), run: expect.objectContaining({ runMode: expect.any(String) }) };
+  const hint = JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'Found 1 recently merged MR(s)' } });
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-mr-hint-'));
+    fs.writeFileSync(path.join(dir, 'teamai.yaml'), 'team: t\nrepo: https://example.invalid/t.git\n');
+    mockMrHintOutput.mockReset().mockResolvedValue(hint);
+    mockStashMrHint.mockClear();
   });
 
-  it('passes no English override when language is omitted', async () => {
-    const fsMod = await import('node:fs');
-    const osMod = await import('node:os');
-    const pathMod = await import('node:path');
-    const dir = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'teamai-lang-'));
-    try {
-      fsMod.writeFileSync(pathMod.join(dir, 'teamai.yaml'), 'team: t\nrepo: https://example.invalid/t.git\n');
-      const handler = buildHandlerRegistry().find((r) => r.handler.name === 'mr-hint')!.handler;
-      mockMrHintOutput.mockClear();
-      await handler.execute({}, 'claude', {
-        ...scope,
-        repo: { localPath: dir, remote: 'https://example.invalid/t.git' },
-      });
-      expect(mockMrHintOutput.mock.calls.at(-1)).toEqual([
-        undefined,
-        expect.objectContaining({ repo: expect.objectContaining({ localPath: dir }) }),
-        // The session the hint may offer teamai-import-from-mr to.
-        { sessionId: expect.any(String), cwd: expect.any(String), run: expect.objectContaining({ runMode: expect.any(String) }) },
-      ]);
-    } finally {
-      fsMod.rmSync(dir, { recursive: true, force: true });
-    }
+  afterEach(() => {
+    mockMrHintOutput.mockReset().mockResolvedValue(null);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('asks for merged MRs only in the detached pass of a tool whose next prompt shows them', async () => {
+    expect(await handler('mr-hint').execute({}, 'claude', config())).toBeNull();
+    await handler('mr-hint-stash').execute({}, 'claude', config());
+
+    expect(mockMrHintOutput).not.toHaveBeenCalled();
+    expect(mockStashMrHint.mock.calls).toEqual([[undefined, expect.objectContaining({ repo: expect.objectContaining({ localPath: dir }) }), session]]);
+  });
+
+  it('prints the hint at session start for a tool teamai gives no prompt hook', async () => {
+    expect(await handler('mr-hint').execute({}, 'kiro', config())).toBe(hint);
+    await handler('mr-hint-stash').execute({}, 'kiro', config());
+
+    expect(mockStashMrHint).not.toHaveBeenCalled();
+  });
+
+  it('prints the hint at session start where the team turned the prompt hook off', async () => {
+    fs.mkdirSync(path.join(dir, 'hooks'));
+    fs.writeFileSync(path.join(dir, 'hooks', 'hooks.yaml'), 'builtin:\n  disabled:\n    - Hook dispatch prompt-submit\n');
+
+    expect(await handler('mr-hint').execute({}, 'claude', config())).toBe(hint);
+    await handler('mr-hint-stash').execute({}, 'claude', config());
+
+    expect(mockStashMrHint).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['en', 'language: en\n'],
+    [undefined, ''],
+  ])('passes the agent language %s from teamai.yaml into the hint (#1014)', async (language, line) => {
+    fs.writeFileSync(path.join(dir, 'teamai.yaml'), `team: t\nrepo: https://example.invalid/t.git\n${line}`);
+    await handler('mr-hint').execute({}, 'kiro', config());
+    await handler('mr-hint-stash').execute({}, 'claude', config());
+
+    const call = [language, expect.objectContaining({ repo: expect.objectContaining({ localPath: dir }) }), session];
+    expect(mockMrHintOutput.mock.calls).toEqual([call]);
+    expect(mockStashMrHint.mock.calls).toEqual([call]);
   });
 });
 

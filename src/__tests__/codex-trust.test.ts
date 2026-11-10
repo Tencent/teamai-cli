@@ -20,14 +20,14 @@ vi.mock('../utils/logger.js', () => ({
 
 import fc from 'fast-check';
 import { applyAgentHook, codexTrustPolicy, readCodexHookTrustForScope, reconcileHooks, reconcileTeamHooksForConfig, removeAgentHook, reportCodexTrust, trustCodexAgentHook, trustCodexForScope, type CodexTrustPolicy } from '../hooks.js';
-import { readCodexHookTrust, removeOwnedCodexProjectTrust, trustCodexHooks, trustCodexProject } from '../codex-trust.js';
+import { oldestCodexBuildVersion, readCodexHookTrust, removeOwnedCodexProjectTrust, trustCodexHooks, trustCodexProject } from '../codex-trust.js';
 import { reconcileCodexDispatchers, setCodexDispatcherHooks } from '../codex-team-hooks.js';
 import crossSpawn from 'cross-spawn';
 import { resolveAnchors, listWorktrees } from '../utils/git.js';
 import { log } from '../utils/logger.js';
 import { CODEX_TOOL_ID } from '../types.js';
 import type { HookDef, LocalConfig, TeamaiConfig } from '../types.js';
-import { installFakeCodex, readFakeCodexState, writeFakeCodexOptions } from './helpers/fake-codex.js';
+import { fakeCodexVersionRuns, installFakeCodex, readFakeCodexState, writeFakeCodexOptions } from './helpers/fake-codex.js';
 
 let home: string;
 let repo: string;
@@ -1141,7 +1141,7 @@ describe('Codex hook positions (#1250)', () => {
 describe('Codex trust — which Codex build answers (#1244)', () => {
   const OLD = { version: '0.142.5', hashIgnores: ['additionalContextLimit'] };
 
-  function installPathCodex(options: { version: string; hashIgnores?: string[] }): string {
+  function installPathCodex(options: { version: string | null; hashIgnores?: string[] }): string {
     const dir = installFakeCodex(options);
     extraDirs.push(dir);
     vi.stubEnv('PATH', `${dir}${path.delimiter}${process.env.PATH ?? ''}`);
@@ -1282,6 +1282,40 @@ describe('Codex trust — which Codex build answers (#1244)', () => {
     expect(answeredBy()).toEqual([onPath]);
     reportCodexTrust(codexTrust, 'problems');
     expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  // The builds that read ~/.codex/hooks.json; a build below a floor skips a handler it does not support.
+  it.each([
+    { label: 'one build at 0.167.0', path: '0.167.0', desktop: undefined, oldest: '0.167.0' },
+    { label: 'one build at 0.147.0', path: '0.147.0', desktop: undefined, oldest: '0.147.0' },
+    { label: 'a build on either side of 0.148.0', path: '0.167.0', desktop: '0.147.0', oldest: '0.147.0' },
+    { label: 'only a desktop build', path: undefined, desktop: '0.163.0', oldest: '0.163.0' },
+    { label: 'a build whose --version prints nothing', path: null, desktop: '0.167.0', oldest: null },
+    { label: 'no build', path: undefined, desktop: undefined, oldest: null },
+  ] as Array<{ label: string; path: string | null | undefined; desktop: string | undefined; oldest: string | null }>)('names the oldest Codex build version teamai finds: $label', async ({ path: onPath, desktop, oldest }) => {
+    if (onPath === undefined) await withoutCodexOnPath();
+    else installPathCodex({ version: onPath });
+    if (desktop) installDesktopCodex(desktop);
+
+    expect(await oldestCodexBuildVersion()).toBe(oldest);
+  });
+
+  it('asks a build its version without writing into the member\'s Codex home', async () => {
+    installPathCodex({ version: '0.167.0' });
+
+    expect(await oldestCodexBuildVersion()).toBe('0.167.0');
+    expect(await fse.pathExists(path.join(codexHome(), 'tmp'))).toBe(false);
+  });
+
+  it('asks each build its version once in a process, the trust pass included', async () => {
+    const onPath = installPathCodex({ version: '0.167.0' });
+    const desktop = installDesktopCodex('0.163.0');
+
+    expect(await oldestCodexBuildVersion()).toBe('0.163.0');
+    await writeAndTrust(userConfig());
+
+    expect([fakeCodexVersionRuns(path.dirname(onPath)), fakeCodexVersionRuns(path.dirname(desktop))]).toEqual([1, 1]);
+    expect(answeredBy('config/batchWrite')).toEqual([onPath]);
   });
 
   it('uses the desktop build when codex is not on PATH', async () => {

@@ -13,6 +13,9 @@ import { readWorkspaceChildren } from './workspace-children.js';
 import { machineUnreadKeys, memberSettingLines, memberSettingsReport, type MemberSettingsReport } from './member-settings-report.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
 import { installationNotes } from './installations.js';
+import { hookSourceMatches } from './utils/hook-source.js';
+import { resolveCliEntry, teamaiWrapperPath, teamaiWrapperSource } from './builtin-hooks.js';
+import { LOGIN_DEFERRED_ENV } from './hook-fast-path.js';
 import { getUserHome } from './utils/home.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import type { GlobalOptions } from './types.js';
@@ -473,6 +476,7 @@ async function buildHookChecks(
   install: Install,
 ): Promise<Check[]> {
   const checks: Check[] = [];
+  const loginDeferredIn: string[] = [];
 
   for (const tool of Object.keys(toolPaths)) {
     if (tool === 'kiro') {
@@ -568,9 +572,26 @@ async function buildHookChecks(
     // too, checked with the rules (`buildProjectRulesHookChecks`); only Codex
     // has the SubagentStart entry and the context limit this check is about.
     if (isCodexTool(tool)) checks.push(sessionHookRulesCheck(tool, settingsPath));
+
+    if ((await readFileSafe(settingsPath))?.includes(`${LOGIN_DEFERRED_ENV}=deferred`)) loginDeferredIn.push(settingsPath);
   }
 
+  if (loginDeferredIn.length > 0) checks.push(loginDeferredWrapperCheck(loginDeferredIn));
+
   return checks;
+}
+
+/** A login-deferred hook starts teamai through the wrapper; with its paths gone, it waits for a login shell again. */
+function loginDeferredWrapperCheck(hookFiles: string[]): Check {
+  const wrapper = teamaiWrapperPath();
+
+  return {
+    name: 'The teamai wrapper that login-deferred hooks start is current',
+    source: 'local',
+    check: async () => hookSourceMatches(await readFileSafe(wrapper), teamaiWrapperSource({ node: process.execPath, entry: resolveCliEntry() ?? '' })),
+    fix: `${wrapper} is missing, out of date, or names a Node or a teamai that is gone, so each hook in ${hookFiles.join(', ')} `
+      + 'that starts teamai through it waits for a login shell first. Run `teamai pull` to rewrite it.',
+  };
 }
 
 /**

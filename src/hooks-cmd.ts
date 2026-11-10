@@ -286,7 +286,7 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
 
         rows.push({
             tool,
-            status: await getHookStatus(hookPath, tool, builtinOverride),
+            status: await getHookStatus(hookPath, { tool, from: 'version', builtinOverride }),
             settingsPath: formatDisplayPath(hookPath),
             // The override is applied to the settings-driven defs only: the
             // standalone adapters generate a fixed handler and ignore it, so

@@ -2,7 +2,7 @@
 
 English | [中文](README.zh-CN.md)
 
-- **Runs**: At session start
+- **Runs**: At session start, after the hook returns. The session's next prompt shows the offer, or the session start itself where teamai gives the tool no prompt hook
 - **Input**: The MRs merged in the project's repository in the last `lookback_days`, except the ones it already offered
 - **Output**: An offer to turn them into learnings with [`teamai-import-from-mr`](../../workflows/teamai-import-from-mr/README.md)
 - **Files**: `HOOK.yaml` holds teamai's parameters. Each `.md` file is one text of the offer

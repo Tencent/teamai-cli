@@ -308,6 +308,29 @@ export type HooksChannels = {
    * hook-fast-path.test.ts checks against this field.
    */
   readonly needsBundle: boolean;
+  /**
+   * The first version of the tool whose command hooks take `"async": true` and are then not waited for, with no
+   * side effect on a hook that prints nothing. Once the installed version reaches it, teamai writes its PostToolUse
+   * built-in that way into the member's own hook file, on macOS and Linux only (`builtinHookForm`). Set on a run of
+   * the real tool, or on its documentation together with its source read at the floor and at a later release; the
+   * comment beside it says which. Absent: the tool has no such option, or neither shows it.
+   */
+  readonly unwaitedSince?: string;
+  /**
+   * Where the version compared with `unwaitedSince` comes from, and means nothing without it. Absent: the tool's
+   * version detector. `codex-builds`: the oldest of the Codex builds that read the member's hook file, a build on PATH
+   * and each desktop app's (`oldestCodexBuildVersion`), since one hook file serves them all.
+   */
+  readonly unwaitedVersionOf?: 'codex-builds';
+  /**
+   * Set when, on POSIX, the tool runs a hook's command string with a POSIX-compatible shell and `-c`, not a login
+   * shell, so a built-in hook in the member's own hook file may start teamai without one and leave the login
+   * environment to the background pass (`builtinHookForm`). Set on a run of the executor for a tool of its own, or,
+   * for a variant, the original it is assumed to behave as, which shows the shell and its flags; source that picks
+   * the shell may extend it to the platforms and versions the run did not cover. The comment beside it says which.
+   * Absent: no run shows it.
+   */
+  readonly loginDeferrable?: true;
 };
 
 /**
@@ -528,6 +551,11 @@ export const TOOLS = {
       teamHooks: 'main-checkout',
       projectDirVariable: 'CLAUDE_PROJECT_DIR',
       needsBundle: false,
+      // `async` on a command hook since 2.1.23; before 2.1.119 an async PostToolUse hook that prints nothing wrote an
+      // empty transcript entry (changelog 2.1.119). Run on 2.1.322, macOS.
+      unwaitedSince: '2.1.119',
+      // `/bin/sh -c`, not a login shell: run on 2.1.322, macOS; Linux `sh -c` as documented.
+      loginDeferrable: true,
     },
     sessions: ['claude-code'],
     launch: 'claude',
@@ -574,7 +602,24 @@ export const TOOLS = {
       user: { format: 'codex', reads: [{ base: 'home', path: '.codex/config.toml', evidence: 'verified' }] },
       project: { judgedTeamaiOnly: true, format: 'codex', reads: [{ base: 'project', path: '.codex/config.toml', when: 'workspaceUnder', evidence: 'verified' }], readGates: ['codex-project-trust'] },
     },
-    hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex/hooks.json', evidence: 'verified' }] }, self: { channel: 'settings', format: 'codex', reads: [{ base: 'project', path: '.codex/hooks.json', when: 'workspaceUnder', evidence: 'verified' }] }, subagentStop: true, stopReply: false, shell: 'system', teamHooks: 'main-checkout', needsBundle: false },
+    hooks: {
+      user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex/hooks.json', evidence: 'verified' }] },
+      self: { channel: 'settings', format: 'codex', reads: [{ base: 'project', path: '.codex/hooks.json', when: 'workspaceUnder', evidence: 'verified' }] },
+      subagentStop: true,
+      stopReply: false,
+      shell: 'system',
+      teamHooks: 'main-checkout',
+      needsBundle: false,
+      // `async` on a command handler is documented; the source at 0.148.0 to 0.167.0 runs it in the background
+      // (codex-rs/hooks/src/engine/discovery.rs), and 0.134.0 to 0.147.0 skip such a handler. Run on 0.167.0 for
+      // UserPromptSubmit and SessionStart; PostToolUse not run.
+      unwaitedSince: '0.148.0',
+      unwaitedVersionOf: 'codex-builds',
+      // The account's zsh, bash or sh with `-c`, never `-lc`, and one of those three for any other account shell:
+      // source at 0.134.0 to 0.167.0 (shell_detect.rs, derive_exec_args). Run on 0.167.0, macOS: `/bin/zsh -c`, no
+      // login flag, parent the codex binary. teamai's own entry in this form not run.
+      loginDeferrable: true,
+    },
     sessions: ['codex'],
     launch: 'codex',
     autoCompact: 'codex',
@@ -607,7 +652,17 @@ export const TOOLS = {
     },
     agents: { user: { reads: 'unknown' }, project: { reads: 'unknown' } },
     mcp: UNKNOWN,
-    hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex-internal/hooks.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'codex', reads: 'unknown' }, subagentStop: true, stopReply: false, shell: 'system', teamHooks: 'home', needsBundle: false },
+    hooks: {
+      user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex-internal/hooks.json', evidence: 'assumed' }] },
+      self: { channel: 'settings', format: 'codex', reads: 'unknown' },
+      subagentStop: true,
+      stopReply: false,
+      shell: 'system',
+      teamHooks: 'home',
+      needsBundle: false,
+      // Assumed to run a hook as Codex (`codex`) does: not run, no public source.
+      loginDeferrable: true,
+    },
     sessions: ['codex-internal'],
     launch: 'codex',
     autoCompact: 'codex',
@@ -636,7 +691,17 @@ export const TOOLS = {
     blocks: { user: { channel: 'file', file: { in: 'claudemd' }, reads: 'unknown' }, project: { channel: 'file', file: { in: 'claudemd' }, reads: 'unknown' } },
     agents: { user: { reads: 'unknown' }, project: { reads: 'unknown' } },
     mcp: UNKNOWN,
-    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.claude-internal/settings.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'claude', reads: 'unknown' }, subagentStop: true, stopReply: true, shell: 'system', teamHooks: 'home', needsBundle: false },
+    hooks: {
+      user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.claude-internal/settings.json', evidence: 'assumed' }] },
+      self: { channel: 'settings', format: 'claude', reads: 'unknown' },
+      subagentStop: true,
+      stopReply: true,
+      shell: 'system',
+      teamHooks: 'home',
+      needsBundle: false,
+      // Assumed to run a hook as Claude Code (`claude`) does: not run, no public source.
+      loginDeferrable: true,
+    },
     sessions: ['claude-internal'],
     launch: 'claude',
     autoCompact: 'claude',
@@ -668,7 +733,17 @@ export const TOOLS = {
       user: { format: 'claude', reads: 'unknown' },
       project: { judgedTeamaiOnly: false, format: 'claude', writtenBy: 'claude', reads: [{ base: 'project', path: '.mcp.json', when: 'workspaceUnder', evidence: 'assumed' }] },
     },
-    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.tclaude/settings.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'claude', reads: 'unknown' }, subagentStop: true, stopReply: true, shell: 'system', teamHooks: 'home', needsBundle: false },
+    hooks: {
+      user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.tclaude/settings.json', evidence: 'assumed' }] },
+      self: { channel: 'settings', format: 'claude', reads: 'unknown' },
+      subagentStop: true,
+      stopReply: true,
+      shell: 'system',
+      teamHooks: 'home',
+      needsBundle: false,
+      // Assumed to run a hook as Claude Code (`claude`) does: not run, no public source.
+      loginDeferrable: true,
+    },
     sessions: ['tclaude'],
     launch: 'claude',
     autoCompact: 'claude',
@@ -701,7 +776,17 @@ export const TOOLS = {
     },
     agents: { user: { reads: 'unknown' }, project: { reads: 'unknown' } },
     mcp: UNKNOWN,
-    hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.tcodex/hooks.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'codex', reads: 'unknown' }, subagentStop: true, stopReply: false, shell: 'system', teamHooks: 'home', needsBundle: false },
+    hooks: {
+      user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.tcodex/hooks.json', evidence: 'assumed' }] },
+      self: { channel: 'settings', format: 'codex', reads: 'unknown' },
+      subagentStop: true,
+      stopReply: false,
+      shell: 'system',
+      teamHooks: 'home',
+      needsBundle: false,
+      // Assumed to run a hook as Codex (`codex`) does: not run, no public source.
+      loginDeferrable: true,
+    },
     sessions: ['tcodex'],
     launch: 'codex',
     autoCompact: 'codex',

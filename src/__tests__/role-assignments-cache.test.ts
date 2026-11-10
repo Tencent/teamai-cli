@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { LocalConfig } from '../types.js';
 
 // Every git helper is spied on and still calls through, so a test can tell
 // whether a config load ran git at all.
@@ -239,5 +241,159 @@ describe('role assignments cached by the fetched commit', () => {
     cli = await freshProcess();
     expect(await primaryRole()).toBe('frontend');
     expect(gitCalls()).toEqual([]);
+  });
+});
+
+/**
+ * What a delivered team revision names, its skills and its full commit, is kept by the team clone and the revision
+ * the checkout record holds: every session start asks it, and a pull that delivers something else records another
+ * revision.
+ */
+describe('what a delivered team revision names, kept for later processes', () => {
+  const originalHome = process.env.HOME;
+  let sandbox: string;
+  let upstream: string;
+  let clone: string;
+  let project: string;
+  let rev: string;
+  let skill: string;
+  let delivered: Record<string, string>;
+
+  function git(cwd: string, ...args: string[]): string {
+    return execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      stdio: 'pipe',
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'TeamAI Test', GIT_AUTHOR_EMAIL: 'test@teamai.test',
+        GIT_COMMITTER_NAME: 'TeamAI Test', GIT_COMMITTER_EMAIL: 'test@teamai.test',
+      },
+    }).trim();
+  }
+
+  const configFor = (projectRoot: string): LocalConfig => ({
+    repo: { localPath: clone, remote: 'https://gitlab.com/acme/team.git', kind: 'git' },
+    username: 'alice', scope: 'project', additionalRoles: [], projectRoot, dataHome: path.join(sandbox, 'data', path.basename(projectRoot)),
+  });
+
+  async function recordDelivery(projectRoot: string): Promise<void> {
+    const config = configFor(projectRoot);
+    const { checkoutRecordKey } = await import('../pull.js');
+    const { saveStateForScope } = await import('../config.js');
+    const { StateSchema } = await import('../types.js');
+    const key = await checkoutRecordKey(config);
+
+    if (!key) throw new Error('the fixture checkout has no record key');
+    await saveStateForScope(StateSchema.parse({ lastPullRev: rev, lastPullByWorkspace: { [key]: { rev, targets: ['claude'], delivered } } }), config);
+  }
+
+  async function named(projectRoot = project): Promise<string[]> {
+    const { deliveredTeamSkills } = await import('../skill-use.js');
+
+    return Object.keys((await deliveredTeamSkills(configFor(projectRoot), projectRoot, delivered, rev)).teamSkills);
+  }
+
+  /** The git reads these answers replace. */
+  const revisionReads = (): string[] => gitCalls().filter((name) => name === 'listFilesAtRev' || name === 'getHeadCommit');
+
+  async function commitOf(projectRoot = project): Promise<string | undefined> {
+    const { teamDelivery } = await import('../pull.js');
+    const delivery = await teamDelivery(configFor(projectRoot), 'claude');
+
+    return delivery.complete ? delivery.commit : delivery.gap;
+  }
+
+  beforeEach(async () => {
+    cli = await freshProcess();
+    sandbox = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), 'teamai-delivered-rev-cache-')));
+    process.env.HOME = sandbox;
+    vi.stubEnv('USERPROFILE', sandbox);
+    useTmp(path.join(sandbox, 'AppData', 'Local', 'Temp'));
+    upstream = path.join(sandbox, 'upstream');
+    clone = path.join(sandbox, 'clone');
+    project = path.join(sandbox, 'project');
+    mkdirSync(path.join(upstream, 'skills', 'review'), { recursive: true });
+    writeFileSync(path.join(upstream, 'skills', 'review', 'SKILL.md'), 'review\n', 'utf-8');
+    git(upstream, 'init', '-q', '-b', 'main');
+    git(upstream, 'add', '-A');
+    git(upstream, 'commit', '-q', '-m', 'fixture');
+    git(sandbox, 'clone', '-q', upstream, clone);
+    rev = git(clone, 'rev-parse', '--short', 'HEAD');
+    mkdirSync(project, { recursive: true });
+    writeFileSync(path.join(project, 'README.md'), 'app\n', 'utf-8');
+    git(project, 'init', '-q', '-b', 'main');
+    git(project, 'add', '-A');
+    git(project, 'commit', '-q', '-m', 'app');
+    skill = path.join(project, '.claude', 'skills', 'review', 'SKILL.md');
+    mkdirSync(path.dirname(skill), { recursive: true });
+    writeFileSync(skill, 'review\n', 'utf-8');
+    delivered = { [skill]: createHash('sha256').update('review\n').digest('hex') };
+    await recordDelivery(project);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  it('runs no git for them in a later process at the same revision', async () => {
+    const commit = git(clone, 'rev-parse', 'HEAD');
+    expect([await named(), await commitOf()]).toEqual([['review'], commit]);
+    cli = await freshProcess();
+
+    expect([await named(), await commitOf()]).toEqual([['review'], commit]);
+    expect(revisionReads()).toEqual([]);
+  });
+
+  it('reads them again from a clone removed and cloned again', async () => {
+    expect(await named()).toEqual(['review']);
+    expect(await commitOf()).toBe(git(clone, 'rev-parse', 'HEAD'));
+    rmSync(clone, { recursive: true, force: true });
+    git(sandbox, 'clone', '-q', upstream, clone);
+    cli = await freshProcess();
+
+    expect([await named(), await commitOf()]).toEqual([['review'], git(clone, 'rev-parse', 'HEAD')]);
+    expect(revisionReads().toSorted()).toEqual(['getHeadCommit', 'listFilesAtRev']);
+  });
+
+  it('writes nothing in the TeamAI home', async () => {
+    const before = readdirSync(path.join(sandbox, 'data', 'project'));
+    await named();
+    await commitOf();
+    // The logger's file is the only one a read leaves there.
+    const home = existsSync(path.join(sandbox, '.teamai')) ? readdirSync(path.join(sandbox, '.teamai')).filter((name) => name !== 'debug.log') : [];
+
+    expect([home, readdirSync(path.join(sandbox, 'data', 'project'))]).toEqual([[], before]);
+  });
+
+  it('does not remember a failed read as an answer', async () => {
+    const commit = git(clone, 'rev-parse', 'HEAD');
+    const object = path.join(clone, '.git', 'objects', commit.slice(0, 2), commit.slice(2));
+    renameSync(object, `${object}.away`);
+
+    expect([await named(), await commitOf()]).toEqual([[], 'unresolved_revision']);
+    renameSync(`${object}.away`, object);
+    cli = await freshProcess();
+
+    expect([await named(), await commitOf()]).toEqual([['review'], commit]);
+  });
+
+  it('reuses in a linked worktree of the project what its main checkout read, as both deliver from one team clone', async () => {
+    expect([await named(), await commitOf()]).toEqual([['review'], git(clone, 'rev-parse', 'HEAD')]);
+    const linked = path.join(sandbox, 'linked');
+    git(project, 'worktree', 'add', '-q', '-b', 'linked', linked);
+    const copy = path.join(linked, '.claude', 'skills', 'review', 'SKILL.md');
+    mkdirSync(path.dirname(copy), { recursive: true });
+    writeFileSync(copy, 'review\n', 'utf-8');
+    delivered = { [copy]: delivered[skill] ?? '' };
+    await recordDelivery(linked);
+    cli = await freshProcess();
+
+    expect([await named(linked), await commitOf(linked)]).toEqual([['review'], git(clone, 'rev-parse', 'HEAD')]);
+    expect(revisionReads()).toEqual([]);
   });
 });

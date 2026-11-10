@@ -354,7 +354,7 @@ builtin:
     Hook dispatch stop: { timeout: 30 }
 ```
 
-每次工具调用只跑一条 `PostToolUse` 条目 `Hook dispatch post-tool-use wildcard`，`TodoWrite` 提醒也在里面跑。把 `Hook dispatch post-tool-use TodoWrite` 写进 `disabled` 仍然会关掉提醒。给这个 key 设超时不起作用，`teamai doctor` 会提示。
+每次工具调用只跑一条 `PostToolUse` 条目 `Hook dispatch post-tool-use wildcard`，`TodoWrite` 提醒也在里面跑。在 macOS 和 Linux 上，Claude Code 2.1.119 及以上时，`~/.claude/settings.json` 里这个 key 写成两条：一条给除 `TodoWrite` 以外的所有工具，Claude Code 不等它；另一条给 `TodoWrite`，让提醒在同一轮就到 agent。低于 2.1.119 或读不到版本时，单条条目通过 `~/.teamai/bin/teamai` 启动 teamai，加载你的 profile 和团队 env 的 login shell 只在后台进程里运行；没有这个文件时照旧运行。`~/.claude/settings.json` 里的 `UserPromptSubmit` 条目在任何版本下都这样启动 teamai；在 teamai 从 login shell 里确认这个会话的目录不走 HTTP 同步之前，提示仍在 login shell 里应答。仓库里的 `.claude/settings.json` 仍是单条。`~/.codex/hooks.json` 仍是单条：teamai 找到的每个 Codex 构建（PATH 上的 `codex` 和桌面应用自带的）都在 0.148.0 及以上时，Codex 不等它；否则它像上面那样通过 `~/.teamai/bin/teamai` 启动 teamai，那里的 `UserPromptSubmit` 条目在任何版本下都这样启动。`claude-internal` 和 `tclaude`、`codex-internal` 和 `tcodex` 的 hook 文件，在任何版本下都采用其原版工具低于上述版本时的形式。在 Windows 上，这些文件都保留单条、等待的条目。把任一工具升级或降级跨过这些版本后，下一次会话启动或 `teamai pull` 会改写这条。禁用这个 key 或给它设超时，两条都生效。把 `Hook dispatch post-tool-use TodoWrite` 写进 `disabled` 仍然会关掉提醒。给这个 key 设超时不起作用，`teamai doctor` 会提示。
 
 只给一个项目时写到 `hooks/<ns>/hooks.yaml`。
 
@@ -479,7 +479,7 @@ with:
 | 目录 | 放什么 |
 |---|---|
 | `teamai-friction-reminder` | 摩擦提醒：Stop 时提醒分享这次会话学到的东西，含阈值、评分权重、文案 |
-| `teamai-mr-hint` | 会话开始时提议导入最近合并的 MR：往回看多久、列几个、文案 |
+| `teamai-mr-hint` | 会话开始时查找、提议导入最近合并的 MR：往回看多久、列几个、文案 |
 | `teamai-todowrite-hint` | 任务规划好后，建议先查一次团队知识 |
 | `teamai-env-hint` | 会话开始时说明这个作用域有哪些团队环境变量和密钥 |
 | `teamai-package-hint` | 会话开始时说明团队的包声明变了 |

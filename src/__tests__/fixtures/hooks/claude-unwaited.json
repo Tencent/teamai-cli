@@ -1,0 +1,75 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc \"teamai hook-dispatch session-start --tool claude 2>/dev/null\" || true"
+          }
+        ],
+        "description": "[teamai] Hook dispatch session-start"
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc \"teamai hook-dispatch stop --tool claude 2>/dev/null\" || true"
+          }
+        ],
+        "description": "[teamai] Hook dispatch stop"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(?!TodoWrite$).*$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool claude 2>/dev/null\" || true",
+            "async": true
+          }
+        ],
+        "description": "[teamai] Hook dispatch post-tool-use wildcard"
+      },
+      {
+        "matcher": "TodoWrite",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool claude 2>/dev/null\" || true"
+          }
+        ],
+        "description": "[teamai] Hook dispatch post-tool-use wildcard for TodoWrite"
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x \"$HOME/.teamai/bin/teamai\" ]; then TEAMAI_HOOK_LOGIN=deferred \"$HOME/.teamai/bin/teamai\" hook-dispatch prompt-submit --tool claude 2>/dev/null; else bash -lc \"teamai hook-dispatch prompt-submit --tool claude 2>/dev/null\"; fi || true"
+          }
+        ],
+        "description": "[teamai] Hook dispatch prompt-submit"
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc \"teamai hook-dispatch subagent-stop --tool claude 2>/dev/null\" || true"
+          }
+        ],
+        "description": "[teamai] Hook dispatch subagent-stop"
+      }
+    ]
+  }
+}

@@ -163,7 +163,15 @@ const KNOWN_LEFTOVERS = new Map([
   ['home/.teamai', 'dir'],
   ['home/.teamai/projects', 'dir'],
   ['home/.teamai/debug.log', 'any'],
+  // What the hooks of a session leave today, in a world that ran them.
+  ['home/.teamai/dashboard', 'dir'],
+  ['home/.teamai/dashboard/session-owners.jsonl', 'any'],
+  ['home/.teamai/dashboard/events.jsonl', 'any'],
+  ['home/.teamai/state.json', 'any'],
 ]);
+
+/** Directories left with everything in them: their file names hold session ids. */
+const KNOWN_LEFTOVER_DIRS = ['home/.teamai/sessions'];
 
 /** A way in has a way out: after `teamai uninstall` the world's HOME and project match the snapshot taken at creation. */
 function reverseState(world: World): Section {
@@ -193,10 +201,10 @@ function reverseState(world: World): Section {
   const leaked: string[] = [];
 
   for (const entry of [...new Set([...Object.keys(before), ...Object.keys(after)])].sort()) {
-    if (before[entry] === after[entry] || leaked.some((dir) => entry.startsWith(`${dir}/`))) continue;
+    if (before[entry] === after[entry] || [...leaked, ...KNOWN_LEFTOVER_DIRS].some((dir) => entry.startsWith(`${dir}/`))) continue;
     const change = before[entry] === undefined ? 'left behind' : after[entry] === undefined ? 'removed' : 'changed';
 
-    const known = KNOWN_LEFTOVERS.get(entry);
+    const known = KNOWN_LEFTOVER_DIRS.includes(entry) ? 'any' : KNOWN_LEFTOVERS.get(entry);
 
     if (change === 'left behind' && (known === 'any' || known === after[entry])) notes.push(`${entry} left behind, known: ${KNOWN_LEFTOVERS_ISSUE}`);
     else {

@@ -31,7 +31,8 @@ import { deriveDispatchSessionId } from './utils/session-id.js';
 import { claudeHookRunsInAnotherHost } from './claude-hook-host.js';
 import { claimCopilotHookEvent } from './copilot-hook-claim.js';
 import { launchedBy, LAUNCH_PAYLOAD_KEY, launchEnv, readLaunch, SESSION_RUN_PAYLOAD_KEY, sessionRun } from './launch-context.js';
-import { isHttpEnrolled } from './hook-fast-path.js';
+import { isHttpEnrolled, recordLoginEnrolment } from './hook-fast-path.js';
+import { channelsOf } from './tools.js';
 import { readStdin, takeHandedOffHookStdin } from './utils/hook-stdin.js';
 import { isSelfMode } from './types.js';
 
@@ -512,6 +513,10 @@ async function runHookDispatch(
         : takeHandedOffHookStdin() ?? await readStdin();
 
     const parsed = parseStdin(raw, event);
+
+    // This pass runs inside the login environment: it tells a later prompt whose command deferred that environment
+    // whether the machine syncs over HTTP (hook-fast-path.ts runLoginDeferredHook).
+    if (process.platform !== 'win32' && channelsOf(tool).hooks.loginDeferrable) recordLoginEnrolment(raw, process.env);
     // Antigravity CLI speaks its own hook payload; the detached child gets it already translated.
     const agy = tool === 'agy' && !stdinFile ? await import('./agy-hook-io.js') : undefined;
     const stdin = agy ? agy.agyHookPayload(event, parsed) : parsed;
@@ -623,6 +628,13 @@ async function runHookDispatch(
       if (!(SESSION_RUN_PAYLOAD_KEY in stdin)) stdin[SESSION_RUN_PAYLOAD_KEY] = sessionRun(process.env);
 
       if (!(LAUNCH_PAYLOAD_KEY in stdin)) stdin[LAUNCH_PAYLOAD_KEY] = launchPayload();
+
+      // One git status for both readers of the checkout at a Stop: the session's end record and the dashboard's event.
+      if (event === 'stop' && localConfig && cwd) {
+        const { GIT_AT_STOP_PAYLOAD_KEY, readGitStateAtStop } = await import('./dashboard-collector.js');
+        stdin[GIT_AT_STOP_PAYLOAD_KEY] = await readGitStateAtStop(cwd);
+      }
+
       await runDispatch(dispatcher, event, matcher, stdin, tool, 'background');
 
       return;

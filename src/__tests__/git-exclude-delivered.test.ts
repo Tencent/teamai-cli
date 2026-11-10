@@ -3,9 +3,10 @@ import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { applyDeliveredGitExclude, deliveredUnion, describeForeign } from '../git-exclude-delivered.js';
-import { liveDeliveredLists } from '../pull.js';
-import type { LocalConfig } from '../types.js';
+import { loadStateForScope, saveStateForScope } from '../config.js';
+import { applyDeliveredGitExclude, createDeliveryRecorder, deliveredUnion, describeForeign, type DeliveryRecorder } from '../git-exclude-delivered.js';
+import { checkoutKey, liveDeliveredLists, syncDeliveredGitExclude } from '../pull.js';
+import { StateSchema, type LocalConfig } from '../types.js';
 
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' } });
@@ -245,5 +246,87 @@ describe('applyDeliveredGitExclude', () => {
     expect(await deliveredLines()).toContain('/.claude/skills/fe-skill/SKILL.md');
     expect(outcome.failures).toContain(`git still sees .claude/skills/fe-skill/SKILL.md: \`!*.md\` (${path.join(repo, '.gitignore')}:1) re-includes it. Remove that rule.`);
     expect(status()).toContain('?? .claude/skills/fe-skill/SKILL.md');
+  });
+});
+
+describe('syncDeliveredGitExclude', () => {
+  let tmp: string;
+  let main: string;
+  const checkout = (name: string): string => path.join(tmp, name);
+  const configFor = (projectRoot: string): LocalConfig => ({
+    repo: { localPath: path.join(tmp, 'team'), remote: 'local', kind: 'git' },
+    username: 'tester', scope: 'project', additionalRoles: [], projectRoot, dataHome: path.join(tmp, 'data'),
+  });
+  const exclude = (): string => path.resolve(main, git(main, 'rev-parse', '--git-path', 'info/exclude').trim());
+  const deliveredLines = async (): Promise<string[]> => {
+    const lines = (await fse.readFile(exclude(), 'utf8')).split('\n');
+    return lines.slice(lines.indexOf('# [teamai:delivered:start]') + 1, lines.indexOf('# [teamai:delivered:end]'));
+  };
+  const rule = '.claude/rules/shared.md';
+  const skill = '.claude/skills/review/SKILL.md';
+
+  beforeEach(async () => {
+    tmp = await fse.realpath(await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-sync-delivered-')));
+    main = checkout('main');
+    await fse.outputFile(path.join(tmp, 'team', 'teamai.yaml'), 'team: t\nrepo: https://example.test/t.git\nsharing:\n  gitExclude:\n    enabled: true\n');
+    await fse.outputFile(path.join(main, 'README.md'), 'app\n');
+    git(main, 'init', '-q', '-b', 'main');
+    git(main, 'add', '-A');
+    git(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'app');
+    // A branch that tracks the rule every checkout is delivered.
+    git(main, 'checkout', '-q', '-b', 'tracked');
+    await fse.outputFile(path.join(main, rule), 'tracked\n');
+    git(main, 'add', '-A');
+    git(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'rule');
+    git(main, 'checkout', '-q', 'main');
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(tmp);
+  });
+
+  it('lists a new checkout\'s lines asking git about that checkout alone while its hook waits, and leaves dropping lines to the full pull after it', async () => {
+    const pulled = [main, checkout('wt-1'), checkout('wt-2')];
+    for (const root of pulled.slice(1)) git(main, 'worktree', 'add', '-q', '-b', path.basename(root), root);
+    const records: Record<string, { rev: string; targets: string[]; root: string; gitExcludePaths: Record<string, string[]> }> = {};
+    for (const root of pulled) {
+      for (const rel of [rule, skill]) await fse.outputFile(path.join(root, rel), 'team\n');
+      records[await checkoutKey(root)] = { rev: 'a', targets: ['claude'], root, gitExcludePaths: { rules: [path.join(root, rule)], skills: [path.join(root, skill)] } };
+    }
+    await fse.outputFile(exclude(), ['# [teamai:delivered:start]', `/${rule}`, `/${skill}`, '/.claude/rules/gone.md', '# [teamai:delivered:end]', ''].join('\n'));
+    const files = { delivered: [exclude()] };
+    await saveStateForScope(StateSchema.parse({ lastPullRev: 'a', lastPullByWorkspace: records, gitExcludeFiles: files }), configFor(main));
+
+    // The fourth checkout tracks the rule, and the team added a skill since the others pulled.
+    const fresh = checkout('wt-3');
+    git(main, 'worktree', 'add', '-q', fresh, 'tracked');
+    const added = '.claude/skills/new/SKILL.md';
+    for (const rel of [skill, added]) await fse.outputFile(path.join(fresh, rel), 'team\n');
+    const recorder = (): DeliveryRecorder => {
+      const delivered = createDeliveryRecorder();
+      delivered.report('rules', path.join(fresh, rule));
+      for (const rel of [skill, added]) delivered.report('skills', path.join(fresh, rel));
+      return delivered;
+    };
+    const bin = path.join(tmp, 'bin');
+    const log = path.join(tmp, 'git-calls.log');
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    await fse.outputFile(path.join(bin, 'git'), `#!/bin/sh\nprintf '%s\\t%s\\n' "$PWD" "$*" >> '${log}'\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
+    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+
+    expect(await syncDeliveredGitExclude(configFor(fresh), recorder(), { silent: true, gitHook: 'post-checkout', gitExcludeAddOnly: true })).toBe(true);
+    vi.unstubAllEnvs();
+    const listed = (await fse.readFile(log, 'utf8')).split('\n').filter((line) => /\bls-files\b/.test(line));
+
+    expect(listed.map((line) => line.split('\t')[0])).toEqual([fresh, fresh]);
+    expect(git(fresh, 'status', '--porcelain', '-uall')).toBe('');
+    expect(await deliveredLines()).toEqual([`/${rule}`, `/${skill}`, '/.claude/rules/gone.md', `/${added}`].sort());
+    expect((await loadStateForScope(configFor(main))).gitExcludeFiles).toEqual(files);
+
+    expect(await syncDeliveredGitExclude(configFor(fresh), recorder(), { silent: true, gitHook: 'post-checkout' })).toBe(true);
+
+    expect(await deliveredLines()).toEqual([`/${rule}`, `/${skill}`, `/${added}`].sort());
+    expect(git(fresh, 'status', '--porcelain', '-uall')).toBe('');
   });
 });

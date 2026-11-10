@@ -12,7 +12,8 @@ import path from 'node:path';
  * main checkout). A hook's hash is its handler's JSON, so editing it reads as
  * `modified`, as in Codex; `hashIgnores` drops fields from it, as codex-cli
  * 0.142.5 ignores `additionalContextLimit`. `--version` prints
- * `codex-cli <version>`, and each recorded call names the install that answered
+ * `codex-cli <version>`, or nothing for a null version (`fakeCodexVersionRuns` counts them), after making
+ * `$CODEX_HOME/tmp/arg0/` as codex does; each recorded call names the install that answered
  * it (`codex`). `fake.json` can also make one method fail (`failMethod`; with
  * `failCodex`, only for the install at that path, so the chosen build still
  * answers), the process exit at once (`exit`), or the listing name a hook by
@@ -20,7 +21,13 @@ import path from 'node:path';
  * Windows does.
  */
 const SERVER = String.raw`
-if (process.argv[2] === '--version') { process.stdout.write('codex-cli ' + BUILD.version + '\n'); process.exit(0); }
+if (process.argv[2] === '--version') {
+  require('node:fs').appendFileSync(BUILD.codex + '.version-runs', '.');
+  // As codex does before it parses its arguments: its arg0 helpers under $CODEX_HOME/tmp.
+  require('node:fs').mkdirSync(require('node:path').join(process.env.CODEX_HOME || require('node:path').join(require('node:os').homedir(), '.codex'), 'tmp', 'arg0', 'codex-arg0fake'), { recursive: true });
+  if (BUILD.version !== null) process.stdout.write('codex-cli ' + BUILD.version + '\n');
+  process.exit(0);
+}
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -107,17 +114,33 @@ export interface FakeCodexState {
  * Write the fake `codex` into `dir` (by default a new directory, to prepend to
  * PATH) and return the directory.
  */
-export function installFakeCodex(options: { version?: string; hashIgnores?: string[]; dir?: string } = {}): string {
+export function installFakeCodex(options: { version?: string | null; hashIgnores?: string[]; dir?: string } = {}): string {
   const dir = options.dir ?? fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-fake-codex-')));
   fs.mkdirSync(dir, { recursive: true });
   const script = path.join(dir, 'fake-codex.cjs');
-  const build = { codex: path.join(dir, 'codex'), version: options.version ?? '0.163.0', hashIgnores: options.hashIgnores ?? [] };
+  const build = { codex: path.join(dir, 'codex'), version: options.version === undefined ? '0.163.0' : options.version, hashIgnores: options.hashIgnores ?? [] };
   fs.writeFileSync(script, `const BUILD = ${JSON.stringify(build)};\n${SERVER}`);
   const node = JSON.stringify(process.execPath);
   fs.writeFileSync(path.join(dir, 'codex'), `#!/bin/sh\nexec ${node} ${JSON.stringify(script)} "$@"\n`);
   fs.chmodSync(path.join(dir, 'codex'), 0o755);
   fs.writeFileSync(path.join(dir, 'codex.cmd'), `@"${process.execPath}" "${script}" %*\r\n`);
   return dir;
+}
+
+/** How many times the fake `codex` installed in `dir` answered `--version`. */
+export function fakeCodexVersionRuns(dir: string): number {
+  try {
+    return fs.readFileSync(path.join(dir, 'codex.version-runs'), 'utf8').length;
+  } catch {
+    return 0;
+  }
+}
+
+/** The current PATH without each directory that holds a `codex`, so a test sees only the Codex builds it installs. */
+export function pathWithoutCodex(): string {
+  return (process.env.PATH ?? '').split(path.delimiter)
+    .filter((dir) => dir !== '' && !['codex', 'codex.cmd', 'codex.exe'].some((name) => fs.existsSync(path.join(dir, name))))
+    .join(path.delimiter);
 }
 
 export function readFakeCodexState(codexHome: string): FakeCodexState {

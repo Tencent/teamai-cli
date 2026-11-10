@@ -437,18 +437,15 @@ describe('hooksList', () => {
             expect(mockedGetHookStatus).toHaveBeenCalledTimes(3);
             expect(mockedGetHookStatus).toHaveBeenCalledWith(
                 path.join('/home/testuser', '.claude/settings.json'),
-                'claude',
-                undefined,
+                { tool: 'claude', from: 'version', builtinOverride: undefined },
             );
             expect(mockedGetHookStatus).toHaveBeenCalledWith(
                 path.join('/home/testuser', '.claude-internal/settings.json'),
-                'claude-internal',
-                undefined,
+                { tool: 'claude-internal', from: 'version', builtinOverride: undefined },
             );
             expect(mockedGetHookStatus).toHaveBeenCalledWith(
                 path.join('/home/testuser', '.cursor/hooks.json'),
-                'cursor',
-                undefined,
+                { tool: 'cursor', from: 'version', builtinOverride: undefined },
             );
 
             const output = consoleLog.mock.calls.map((call) => String(call[0])).join('\n');
@@ -486,13 +483,11 @@ describe('hooksList', () => {
             expect(mockedGetHookStatus).toHaveBeenCalledTimes(3);
             expect(mockedGetHookStatus).toHaveBeenCalledWith(
                 path.join('/home/testuser', '.claude/settings.json'),
-                'claude',
-                undefined,
+                { tool: 'claude', from: 'version', builtinOverride: undefined },
             );
             expect(mockedGetHookStatus).not.toHaveBeenCalledWith(
                 path.join('/path/to/project', '.claude/settings.json'),
-                'claude',
-                undefined,
+                { tool: 'claude', from: 'version', builtinOverride: undefined },
             );
         } finally {
             restoreHome();
@@ -527,13 +522,11 @@ describe('hooksList', () => {
 
         expect(mockedGetHookStatus).toHaveBeenCalledWith(
             path.join('/home/testuser', '.qoder-cn', 'settings.json'),
-            'qoder-cn',
-            undefined,
+            { tool: 'qoder-cn', from: 'version', builtinOverride: undefined },
         );
         expect(mockedGetHookStatus).not.toHaveBeenCalledWith(
             path.join('/home/testuser', '.qoder', 'settings.json'),
-            'qoder-cn',
-            undefined,
+            { tool: 'qoder-cn', from: 'version', builtinOverride: undefined },
         );
     });
 
@@ -562,8 +555,8 @@ describe('hooksList', () => {
         }
 
         const shared = path.join(projectRoot, '.qoder', 'settings.json');
-        expect(mockedGetHookStatus).toHaveBeenCalledWith(shared, 'qoder', undefined);
-        expect(mockedGetHookStatus).not.toHaveBeenCalledWith(shared, 'qoder-cn', undefined);
+        expect(mockedGetHookStatus).toHaveBeenCalledWith(shared, { tool: 'qoder', from: 'version' });
+        expect(mockedGetHookStatus).not.toHaveBeenCalledWith(shared, { tool: 'qoder-cn', from: 'version' });
     });
 
     // #667: ownership of the file shared by Qoder and Qoder CN follows the
@@ -596,9 +589,9 @@ describe('hooksList', () => {
         }
 
         const shared = path.join(projectRoot, '.qoder', 'settings.json');
-        expect(mockedGetHookStatus).toHaveBeenCalledWith(shared, 'qoder-cn', undefined);
+        expect(mockedGetHookStatus).toHaveBeenCalledWith(shared, { tool: 'qoder-cn', from: 'version' });
         // `qoder` is not enabled, so it must not claim — and mis-probe — the file.
-        expect(mockedGetHookStatus).not.toHaveBeenCalledWith(shared, 'qoder', undefined);
+        expect(mockedGetHookStatus).not.toHaveBeenCalledWith(shared, { tool: 'qoder', from: 'version' });
     });
 
     // The same rule with no whitelist: `disabledAgents` alone moves ownership.
@@ -625,8 +618,8 @@ describe('hooksList', () => {
         }
 
         const shared = path.join(projectRoot, '.qoder', 'settings.json');
-        expect(mockedGetHookStatus).toHaveBeenCalledWith(shared, 'qoder-cn', undefined);
-        expect(mockedGetHookStatus).not.toHaveBeenCalledWith(shared, 'qoder', undefined);
+        expect(mockedGetHookStatus).toHaveBeenCalledWith(shared, { tool: 'qoder-cn', from: 'version' });
+        expect(mockedGetHookStatus).not.toHaveBeenCalledWith(shared, { tool: 'qoder', from: 'version' });
     });
 
     it('lists standalone Copilot hooks under COPILOT_HOME', async () => {
@@ -648,8 +641,7 @@ describe('hooksList', () => {
 
         expect(mockedGetHookStatus).toHaveBeenCalledWith(
             path.join(COPILOT_HOME_FIXTURE, 'hooks/teamai.json'),
-            'copilot',
-            undefined,
+            { tool: 'copilot', from: 'version', builtinOverride: undefined },
         );
     });
 
@@ -739,8 +731,7 @@ describe('hooksList', () => {
 
         expect(mockedGetHookStatus).toHaveBeenCalledWith(
             expect.any(String),
-            'claude',
-            { disabled: ['Hook dispatch stop'] },
+            { tool: 'claude', from: 'version', builtinOverride: { disabled: ['Hook dispatch stop'] } },
         );
     });
 

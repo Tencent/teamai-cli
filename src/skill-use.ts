@@ -38,6 +38,8 @@ import {
   updateKnownSkills,
 } from './usage-tracker.js';
 import { resolvePath } from './utils/agent-path.js';
+import { GitAnswers } from './utils/git-answers.js';
+import { repositoryStamp } from './utils/git-discovery.js';
 import { listFilesAtRev } from './utils/git.js';
 import { pathExists, readFileSafe, readJson, writeJson } from './utils/fs.js';
 import { splitFrontmatter } from './utils/frontmatter.js';
@@ -353,9 +355,7 @@ export async function deliveredTeamSkills(config: LocalConfig, cwd: string, deli
   teamSkillInfo: Record<string, DeliveredSkillInfo>;
 }> {
   const repo = config.repo.localPath;
-  // One listing for every name. A revision git cannot read lists nothing, so fall back to the clone's own.
-  const listed = await listFilesAtRev(repo, rev, 'skills');
-  const sources = teamSkillDirs(listed.length > 0 ? listed : await listFilesAtRev(repo, 'HEAD', 'skills'));
+  const sources = await teamSkillDirsAt(repo, rev);
   const toolRoots = config.toolRoots ?? await resolveMemberToolRoots(cwd);
   const copies = new Map<string, string[]>();
   const others = new Set<string>();
@@ -385,6 +385,24 @@ export async function deliveredTeamSkills(config: LocalConfig, cwd: string, deli
   }));
 
   return { teamSkills: Object.fromEntries(kept), teamSkillInfo: Object.fromEntries(teamSkillInfo) };
+}
+
+/** The team skill directories a delivered revision lists, by name. A delivered revision names one tree, so the answer stays. */
+const skillDirsAtRev = GitAnswers.of('teamSkillDirs', z.record(z.string(), z.array(z.string())));
+
+/** {@link teamSkillDirs} at `rev` in the team clone, from one listing. A revision git cannot read lists nothing, so the clone's own `HEAD` is listed instead. */
+async function teamSkillDirsAt(repo: string, rev: string): Promise<Map<string, string[]>> {
+  const [real, stamp] = await Promise.all([fs.realpath(repo).catch(() => null), repositoryStamp(repo)]);
+
+  const read = async (): Promise<Record<string, string[]> | null> => {
+    const listed = await listFilesAtRev(repo, rev, 'skills');
+
+    return listed.length > 0 ? Object.fromEntries(teamSkillDirs(listed)) : null;
+  };
+
+  const atRev = real && stamp ? await skillDirsAtRev.answer(JSON.stringify([real, rev]), stamp.stamp, read) : await read();
+
+  return atRev ? new Map(Object.entries(atRev)) : teamSkillDirs(await listFilesAtRev(repo, 'HEAD', 'skills'));
 }
 
 /**

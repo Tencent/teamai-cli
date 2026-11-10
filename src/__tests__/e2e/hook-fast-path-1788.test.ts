@@ -200,4 +200,89 @@ describe.skipIf(process.platform === 'win32')('hook fast path (#1788, real CLI)'
     const log = await waitForLog(/\[hook-dispatch\] post-tool-use\/claude background: \d+ms total/);
     expect(log).not.toContain('fast path');
   });
+
+  // A command that defers its login shell starts teamai through ~/.teamai/bin; the login shell runs around the
+  // background pass only. The tool's PATH here has no teamai, as a tool started from the desktop has none.
+  describe('a command that defers its login shell', () => {
+    let nodeLog: string;
+    let trace: string;
+    let profile: string;
+
+    beforeEach(() => {
+      const bin = path.join(sandbox, 'bin');
+      const preload = path.join(sandbox, 'preload.cjs');
+      const exec = `#!/bin/sh\nexec "${process.execPath}" "${cli}" "$@"\n`;
+      nodeLog = path.join(sandbox, 'node.log');
+      trace = path.join(sandbox, 'trace2.json');
+      profile = path.join(home, '.profile');
+      fs.mkdirSync(bin);
+      fs.writeFileSync(path.join(bin, 'teamai'), exec, { mode: 0o755 });
+      fs.mkdirSync(path.join(home, '.teamai', 'bin'));
+      fs.writeFileSync(path.join(home, '.teamai', 'bin', 'teamai'), exec, { mode: 0o755 });
+      fs.writeFileSync(profile, `export PATH="${bin}:$PATH"\nexport PROBE_LOGIN_VAR=from-login-shell\n`);
+      fs.writeFileSync(preload, `if (process.argv.includes('hook-dispatch')) require('node:fs').appendFileSync(${JSON.stringify(nodeLog)}, (process.argv.includes('--bg-only') ? 'bg ' : 'fg ') + (process.env.PROBE_LOGIN_VAR ?? 'unset') + '\\n');\n`);
+      const { BASH_ENV: _bashEnv, ...toolEnv } = env;
+      env = { ...toolEnv, PATH: '/usr/bin:/bin', NODE_OPTIONS: `--require ${preload}`, GIT_TRACE2_EVENT: trace };
+    });
+
+    const deferred = (event: string, payload: object) => {
+      const command = `if [ -x "$HOME/.teamai/bin/teamai" ]; then TEAMAI_HOOK_LOGIN=deferred "$HOME/.teamai/bin/teamai" hook-dispatch ${event} --tool claude 2>/dev/null; else bash -lc "teamai hook-dispatch ${event} --tool claude 2>/dev/null"; fi || true`;
+      fs.rmSync(trace, { force: true });
+      const result = spawnSync('/bin/sh', ['-c', command], { cwd: project, env, input: JSON.stringify(payload), encoding: 'utf8', timeout: 30_000 });
+      const returned = new Date().toISOString();
+
+      return { result, gitBeforeReturn: () => (fs.existsSync(trace) ? fs.readFileSync(trace, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [])
+        .filter((e: { event: string; time: string }) => e.event === 'start' && e.time < returned).length };
+    };
+    const record = () => JSON.parse(fs.readFileSync(path.join(home, '.teamai', 'sessions', 'p-9.http-enrolment.json'), 'utf8'));
+    const prompt = () => ({ session_id: 'p-9', transcript_path: path.join(sandbox, 't.jsonl'), cwd: project, hook_event_name: 'UserPromptSubmit', prompt: 'add a test for the parser' });
+    const fastPaths = () => (debugLog().match(/prompt-submit\/claude fast path/g) ?? []).length;
+    // Each hook Node started since the last call: `fg` or `bg`, and whether it saw the login environment.
+    const nodes = async (count: number) => {
+      const read = () => (fs.existsSync(nodeLog) ? fs.readFileSync(nodeLog, 'utf8').trim().split('\n') : []);
+      const deadline = Date.now() + 20_000;
+      while (read().length < count && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
+      const seen = read().sort();
+      fs.rmSync(nodeLog, { force: true });
+
+      return seen;
+    };
+
+    it('takes the fast path through the wrapper, and its background pass runs in the login shell', async () => {
+      const { result } = deferred('post-tool-use', readPayload());
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe('');
+      const log = await waitForLog(/\[hook-dispatch\] post-tool-use\/claude background: \d+ms total/);
+      expect(log).toContain('[hook-dispatch] post-tool-use/claude fast path');
+      const events = fs.readFileSync(path.join(home, '.teamai', 'dashboard', 'events.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+      expect(events).toContainEqual(expect.objectContaining({ type: 'tool_use', sessionId: 's-1', toolName: 'Read' }));
+      expect(fs.readFileSync(nodeLog, 'utf8').trim().split('\n').sort()).toEqual(['bg from-login-shell', 'fg unset']);
+    });
+
+    it('answers a first prompt in the login shell, which records the session, and takes the fast path from the next one', async () => {
+      const first = deferred('prompt-submit', prompt());
+
+      expect(first.result.status, first.result.stderr).toBe(0);
+      await waitForLog(/prompt-submit\/claude background: \d+ms total/);
+      expect(record()).toEqual({ cwd: project, enrolled: false });
+      // The wrapper's Node, then teamai in the login shell in the foreground, which starts the background pass.
+      expect(await nodes(3)).toEqual(['bg from-login-shell', 'fg from-login-shell', 'fg unset']);
+
+      const second = deferred('prompt-submit', prompt());
+
+      expect(second.result.status, second.result.stderr).toBe(0);
+      expect(second.gitBeforeReturn()).toBe(0);
+      expect(await nodes(2)).toEqual(['bg from-login-shell', 'fg unset']);
+    });
+
+    it('answers every prompt in the foreground for a member whose HTTP endpoint only the profile sets', async () => {
+      fs.appendFileSync(profile, 'export TEAMAI_HTTP_ENDPOINT=http://127.0.0.1:9\n');
+
+      for (let run = 0; run < 3; run++) expect(deferred('prompt-submit', prompt()).result.status).toBe(0);
+
+      expect(fastPaths()).toBe(0);
+      expect(record()).toEqual({ cwd: project, enrolled: true });
+    });
+  });
 });

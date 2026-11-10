@@ -8,6 +8,8 @@ import { getTGitToken, tgitFetch } from './providers/tgit/rest-auth.js';
 import { log } from './utils/logger.js';
 import { lenientList } from './utils/json.js';
 import { getUserHome } from './utils/home.js';
+import { getRemoteUrl } from './utils/git.js';
+import { readJson, writeJsonAtomic } from './utils/fs.js';
 import { type LocalConfig, JsonObjectSchema } from './types.js';
 import type { SessionRun } from './launch-context.js';
 import { WorkflowOffers, type Proposal } from './workflow-offers.js';
@@ -16,21 +18,21 @@ import { DefaultHooks, type DefaultHook, type HintLanguage } from './default-hoo
 
 // ─── MR Hint data flow ──────────────────────────────────
 //
-//  SessionStart hook
-//      │
-//      ▼
-//  teamai mr-hint --stdin
+//  SessionStart hook: its background pass where the tool gets a
+//  UserPromptSubmit hook, else its foreground, or `teamai mr-hint --stdin`
 //      │
 //      ├─ Read STDIN { session_id }
-//      ├─ getGitRemote(CWD) → remote URL
+//      ├─ getRemoteUrl(CWD) → remote URL
 //      ├─ parseRemoteToRepo(url) → { provider, owner, repo }
 //      ├─ listMergedMRs(provider, owner, repo, since)
 //      │   ├─ TGit: REST API /api/v3/projects/:id/merge_requests
 //      │   └─ GitHub: gh pr list --state merged --json
 //      ├─ filter by hint cache (avoid re-hinting same MR)
-//      └─ Has new MRs? → STDOUT JSON { hookSpecificOutput.additionalContext }
-//          offering teamai-import-from-mr where a hook may offer it, whose
-//          describe then proposes the MRs this session was offered
+//      └─ Has new MRs? → hookSpecificOutput.additionalContext, offering
+//          teamai-import-from-mr where a hook may offer it, whose describe then
+//          proposes the MRs this session was offered. The background pass
+//          stashes it and the session's next UserPromptSubmit shows it. The
+//          cache records an MR as hinted when the hint is shown.
 //
 
 /** Cache TTL: 30 days. After this, cache is cleared. */
@@ -141,32 +143,6 @@ function saveCache(owner: string, repo: string, cache: HintCache): void {
     fs.writeFileSync(cachePath, JSON.stringify(cache), 'utf-8');
   } catch {
     // best-effort
-  }
-}
-
-// ─── Git remote detection ────────────────────────────────
-
-/**
- * Get the `origin` remote URL for the given working directory.
- *
- * Returns null if not in a git repo or remote not configured.
- *
- * @param cwd  Working directory to inspect
- * @returns    Remote URL string, or null
- */
-export function getGitRemote(cwd: string): string | null {
-  try {
-    const result = spawnSync('git', ['remote', 'get-url', 'origin'], {
-      cwd,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    if (result.status !== 0) return null;
-
-    return result.stdout.trim() || null;
-  } catch {
-    return null;
   }
 }
 
@@ -489,21 +465,36 @@ async function mrHintAllowed(localConfig?: LocalConfig | null): Promise<boolean>
   return isMrHintEnabled(localConfig, teamConfig ?? {});
 }
 
+/** Whether the hint is on: neither `TEAMAI_MR_HINT_DISABLED` nor the scope's switch turns it off. Asked when a hint is computed and again when it is shown. */
+async function mrHintOn(localConfig?: LocalConfig | null): Promise<boolean> {
+  return process.env.TEAMAI_MR_HINT_DISABLED !== '1' && await mrHintAllowed(localConfig);
+}
+
+/** What showing a hint records in the repository's cache: its MRs as hinted, and the session offered their URLs. */
+const ShownSchema = z.object({
+  owner: z.string(),
+  repo: z.string(),
+  ids: z.array(z.string()),
+  offer: z.object({ sessionId: z.string(), urls: z.array(z.string()) }).optional(),
+});
+
+type Shown = z.infer<typeof ShownSchema>;
+
+/** A hint for a session, and what showing it records. */
+const MrHintSchema = z.object({ message: z.string().min(1), shown: ShownSchema });
+
+type MrHint = z.infer<typeof MrHintSchema>;
+
 /**
- * Core MR-hint computation: detect repo, query merged MRs, update cache, and
- * build the SessionStart hookSpecificOutput JSON. Returns null when there is
- * nothing to hint, or when the scope's switch turns it off. Does NOT read STDIN
- * — safe to call from the hook dispatcher (which has already consumed STDIN) as
- * well as from the standalone command.
+ * The hint for the MRs merged in the repository at the hook's cwd that no shown hint listed yet, or null when there is
+ * nothing to hint or the scope's switch turns it off. Writes nothing: showing it records it ({@link recordShown}).
  */
-export async function computeMrHintOutput(
+async function computeMrHint(
   language: HintLanguage,
   localConfig?: LocalConfig | null,
   session?: { sessionId: string; cwd: string; run: SessionRun },
-): Promise<string | null> {
-  if (process.env.TEAMAI_MR_HINT_DISABLED === '1') return null;
-
-  if (!(await mrHintAllowed(localConfig))) return null;
+): Promise<MrHint | null> {
+  if (!(await mrHintOn(localConfig))) return null;
 
   // Detect git remote
   const rawCwd = process.env.TEAMAI_MR_HINT_CWD ?? process.cwd();
@@ -519,7 +510,7 @@ export async function computeMrHintOutput(
     return null;
   }
 
-  const remoteUrl = getGitRemote(cwd);
+  const remoteUrl = await getRemoteUrl(cwd);
 
   if (!remoteUrl) {
     log.debug('mr-hint: no git remote, skipping');
@@ -538,8 +529,7 @@ export async function computeMrHintOutput(
   const { provider, owner, repo } = repoInfo;
 
   // Load cache to filter already-hinted MRs
-  const cache = loadCache(owner, repo);
-  const alreadyHinted = new Set(cache.hintedMrIds);
+  const alreadyHinted = new Set(loadCache(owner, repo).hintedMrIds);
   const hook = await DefaultHooks.load('teamai-mr-hint', localConfig ?? null);
   const { lookback_days: lookbackDays, max_mrs: limit } = hook.params;
 
@@ -564,21 +554,94 @@ export async function computeMrHintOutput(
 
   // The workflow where a hook may offer it to this session; else the command, as a session teamai launched gets it.
   const offeredTo = session && localConfig && (await WorkflowOffers.offerable(localConfig, IMPORT_FROM_MR, session)) !== undefined ? session : undefined;
-  const offered = offeredTo ? offerTo(owner, repo, offeredTo.sessionId, newMrs.map((mr) => mr.url)) : cache.offered;
 
-  // Update cache with all MR IDs seen this round
-  const updatedIds = [...alreadyHinted, ...newMrs.map((mr) => mr.id)];
-  saveCache(owner, repo, { hintedMrIds: updatedIds, updatedAt: new Date().toISOString(), offered });
-
-  // Build additionalContext hint
-  const hintText = buildHintMessage(newMrs, hook, { language, offersWorkflow: offeredTo !== undefined });
-
-  return JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'SessionStart',
-      additionalContext: hintText,
+  return {
+    message: buildHintMessage(newMrs, hook, { language, offersWorkflow: offeredTo !== undefined }),
+    shown: {
+      owner,
+      repo,
+      ids: newMrs.map((mr) => mr.id),
+      offer: offeredTo && { sessionId: offeredTo.sessionId, urls: newMrs.map((mr) => mr.url) },
     },
-  });
+  };
+}
+
+/** Record in the repository's cache that a hint was shown, read again so what other sessions recorded since stays. */
+function recordShown({ owner, repo, ids, offer }: Shown): void {
+  const cache = loadCache(owner, repo);
+  const offered = offer ? offerTo(owner, repo, offer.sessionId, offer.urls) : cache.offered;
+
+  saveCache(owner, repo, { hintedMrIds: [...new Set([...cache.hintedMrIds, ...ids])], updatedAt: new Date().toISOString(), offered });
+}
+
+function hookOutput(hookEventName: 'SessionStart' | 'UserPromptSubmit', message: string): string {
+  return JSON.stringify({ hookSpecificOutput: { hookEventName, additionalContext: message } });
+}
+
+/**
+ * The hint as SessionStart hook output, recorded as shown, or null when there is nothing to hint. Does NOT read STDIN
+ * — safe to call from the hook dispatcher (which has already consumed STDIN) as well as from the standalone command.
+ */
+export async function computeMrHintOutput(
+  language: HintLanguage,
+  localConfig?: LocalConfig | null,
+  session?: { sessionId: string; cwd: string; run: SessionRun },
+): Promise<string | null> {
+  const hint = await computeMrHint(language, localConfig, session);
+
+  if (!hint) return null;
+  recordShown(hint.shown);
+
+  return hookOutput('SessionStart', hint.message);
+}
+
+/** Where the hint a session start found waits for the session's next prompt, as hook-fast-path.ts names it too. */
+function pendingPath(sessionId: string): string {
+  return path.join(getUserHome(), '.teamai', 'sessions', `${sessionId.replace(/[^a-zA-Z0-9._-]/g, '_')}.mr-hint.pending.json`);
+}
+
+/**
+ * Leave the hint for the session's next prompt ({@link takePendingMrHint}), in place of the one it had waiting: a
+ * session start that finds nothing new drops that one. Nothing is recorded until the hint is shown.
+ */
+export async function stashMrHint(
+  language: HintLanguage,
+  localConfig: LocalConfig | null,
+  session: { sessionId: string; cwd: string; run: SessionRun },
+): Promise<void> {
+  const hint = await computeMrHint(language, localConfig, session);
+  const file = pendingPath(session.sessionId);
+
+  if (hint) await writeJsonAtomic(file, hint);
+  else await fs.promises.rm(file, { force: true });
+}
+
+/**
+ * The hint a session start left for session `sessionId`, as UserPromptSubmit hook output recorded as shown, at most
+ * once: the file is moved aside before it is read, so two prompts cannot both take it. Null when none waits, when
+ * another session has shown all its MRs since, or when the hint was turned off since: that one is dropped unshown.
+ */
+export async function takePendingMrHint(sessionId: string, localConfig?: LocalConfig | null): Promise<string | null> {
+  const file = pendingPath(sessionId);
+  const taken = `${file}.${process.pid}`;
+
+  try {
+    await fs.promises.rename(file, taken);
+  } catch {
+    return null;
+  }
+
+  const hint = MrHintSchema.safeParse(await readJson(taken));
+  await fs.promises.rm(taken, { force: true });
+
+  if (!hint.success || !(await mrHintOn(localConfig))) return null;
+  const { shown } = hint.data;
+  const hinted = new Set(loadCache(shown.owner, shown.repo).hintedMrIds);
+
+  if (shown.ids.every((id) => hinted.has(id))) return null;
+  recordShown(shown);
+
+  return hookOutput('UserPromptSubmit', hint.data.message);
 }
 
 // ─── describe proposals ──────────────────────────────────
@@ -595,9 +658,9 @@ const CONTRACT = {
 } as const satisfies Record<string, OutputSchema>;
 
 /** The MRs the hint listed in session `session`, in the repository whose checkout is `cwd`. */
-function mrsProposal(cwd: string, session: string | undefined): Proposal {
+async function mrsProposal(cwd: string, session: string | undefined): Promise<Proposal> {
   if (session === undefined) return { why: 'No agent session found: give the MR or PR URLs.' };
-  const remote = getGitRemote(cwd);
+  const remote = await getRemoteUrl(cwd);
   const repo = remote === null ? null : parseRemoteToRepo(remote);
   const urls = repo === null ? undefined : loadCache(repo.owner, repo.repo).offered?.[session];
 
@@ -626,7 +689,7 @@ async function proposals(
   const team = await loadTeamConfig(config.repo.localPath);
 
   const proposed: Record<keyof typeof CONTRACT, Proposal> = {
-    mrs: mrsProposal(caller.cwd, caller.session),
+    mrs: await mrsProposal(caller.cwd, caller.session),
     all: { value: false, why: 'Ask the person to accept, edit or skip each draft. true publishes every draft unasked.' },
     publish: { value: true, why: 'Publish the drafts the person accepts to the team repository. false writes and pushes nothing, so the drafts are only the run\'s outputs.' },
     dir: { value: config.repo.localPath, why: 'The team repository the learnings are published to.' },

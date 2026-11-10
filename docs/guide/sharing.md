@@ -363,7 +363,7 @@ builtin:
     Hook dispatch stop: { timeout: 30 }
 ```
 
-Every tool call runs one `PostToolUse` entry, `Hook dispatch post-tool-use wildcard`, and the `TodoWrite` reminder runs in it. Listing `Hook dispatch post-tool-use TodoWrite` under `disabled` still turns the reminder off. A timeout for that key does nothing, and `teamai doctor` says so.
+Every tool call runs one `PostToolUse` entry, `Hook dispatch post-tool-use wildcard`, and the `TodoWrite` reminder runs in it. On macOS and Linux, with Claude Code 2.1.119 or later, `~/.claude/settings.json` holds that key as two entries: one Claude Code does not wait for, for every tool but `TodoWrite`, and one for `TodoWrite`, so its reminder reaches the agent in the same turn. Below 2.1.119, or when the version cannot be read, the single entry starts teamai through `~/.teamai/bin/teamai`, and the login shell, which loads your profile and the team env, runs only in the background process; without that file it runs as before. The `UserPromptSubmit` entry in `~/.claude/settings.json` starts teamai the same way, at any version, and a prompt is still answered in the login shell until teamai has seen from there that this session's directory does not sync over HTTP. A `.claude/settings.json` in the repository keeps the single entry. `~/.codex/hooks.json` keeps the single entry: when every Codex build teamai finds, `codex` on PATH and the desktop app's, is 0.148.0 or later, Codex does not wait for it; otherwise it starts teamai through `~/.teamai/bin/teamai` as above, and the `UserPromptSubmit` entry there does so at any version. The hook files of `claude-internal` and `tclaude`, and of `codex-internal` and `tcodex`, take the form their original's takes below those versions, at any version. On Windows these files keep the single waited entry. After you upgrade or downgrade either tool across these versions, the next session start or `teamai pull` rewrites the entry. Disabling the key or setting its timeout applies to both. Listing `Hook dispatch post-tool-use TodoWrite` under `disabled` still turns the reminder off. A timeout for that key does nothing, and `teamai doctor` says so.
 
 A hook for one project goes in `hooks/<ns>/hooks.yaml`.
 
@@ -488,7 +488,7 @@ After `teamai pull`, the reminder waits for 30 tool calls and opens with that li
 | Folder | What it holds |
 |---|---|
 | `teamai-friction-reminder` | The Stop reminder to share what a session taught: thresholds, score weights, texts |
-| `teamai-mr-hint` | The session-start offer to import recently merged MRs: how far back, how many, texts |
+| `teamai-mr-hint` | The offer, looked for at session start, to import recently merged MRs: how far back, how many, texts |
 | `teamai-todowrite-hint` | The suggestion to search team knowledge once a task is planned |
 | `teamai-env-hint` | The session-start note naming the scope's team env variables and secrets |
 | `teamai-package-hint` | The session-start note that the team's package declarations changed |

@@ -9,7 +9,6 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 // Mock fs.existsSync to control /bin/sh detection.
-const originalExistsSync = (await import('node:fs')).existsSync;
 let shellExists = true;
 vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
@@ -19,7 +18,7 @@ vi.mock('node:fs', async () => {
       ...actual,
       existsSync: (p: string) => {
         if (p === '/bin/sh') return shellExists;
-        return originalExistsSync(p);
+        return actual.existsSync(p);
       },
     },
   };

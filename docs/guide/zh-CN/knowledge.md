@@ -147,7 +147,7 @@ teamai recall status
 
 团队可以用自己的 recall agent，见[替换 recall agent](sharing.md#替换-recall-agent)。
 
-关闭 recall 不会隐藏 SessionStart 的近期已合入 MR 提示。这条提示列出这些 MR，并推荐默认工作流 [`teamai-import-from-mr`](workflow.md#默认工作流)，团队在开启 recall 前也可以先提炼并发布 learning：
+关闭 recall 不会隐藏近期已合入 MR 的提示：会话开始时查找，在会话的下一条提示词时显示。这条提示列出这些 MR，并推荐默认工作流 [`teamai-import-from-mr`](workflow.md#默认工作流)，团队在开启 recall 前也可以先提炼并发布 learning：
 
 ```text
 [teamai:mr-hint] 发现 1 个近期已合入但尚未提炼的 MR。

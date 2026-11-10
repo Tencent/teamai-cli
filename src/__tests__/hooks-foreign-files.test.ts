@@ -29,7 +29,7 @@ describe('getHookStatus on a hook file the member edited', () => {
     ['codex', { hooks: { SessionStart: {} } }],
     ['zcode', { hooks: { events: { SessionStart: {} } } }],
   ])('reads a %s event that is not a list as missing hooks', async (tool, json) => {
-    await expect(getHookStatus(write('hooks.json', json), tool)).resolves.toBe('missing');
+    await expect(getHookStatus(write('hooks.json', json), { tool, from: 'version' })).resolves.toBe('missing');
   });
 
   it.each([
@@ -39,7 +39,7 @@ describe('getHookStatus on a hook file the member edited', () => {
     ['codex', { hooks: { SessionStart: [null, 1] } }],
     ['zcode', { hooks: { events: { SessionStart: [null, 1] } } }],
   ])('reads a %s entry that is not an object as no hook', async (tool, json) => {
-    await expect(getHookStatus(write('hooks.json', json), tool)).resolves.toBe('missing');
+    await expect(getHookStatus(write('hooks.json', json), { tool, from: 'version' })).resolves.toBe('missing');
   });
 });
 

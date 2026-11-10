@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { argvVerdict, ATTEMPT_ENV, childPayload, FOREGROUND_PAYLOAD_KEYS, HTTP_ENDPOINT_ENVS, isHttpEnrolled, LAUNCHED_BY_ENV, promptAnswersInForeground, runHookFastPath } from '../hook-fast-path.js';
+import { argvVerdict, ATTEMPT_ENV, childPayload, FOREGROUND_PAYLOAD_KEYS, HTTP_ENDPOINT_ENVS, isHttpEnrolled, LAUNCHED_BY_ENV, promptAnswersInForeground, recordLoginEnrolment, runHookFastPath } from '../hook-fast-path.js';
 import { takePendingHint, writeContributeState } from '../contribute-check.js';
 import { takePendingPackageHint } from '../pkg/pkg-hint.js';
+import { takePendingMrHint } from '../mr-hint.js';
 import { loadLocalAgentConfig } from '../local-agent.js';
 import * as launchContext from '../launch-context.js';
 import { deriveSessionId } from '../utils/session-id.js';
@@ -239,6 +240,16 @@ describe('promptAnswersInForeground', () => {
     expect(promptAnswersInForeground(SESSION, process.env)).toBe(false);
   });
 
+  it('keeps a prompt in the foreground while an MR hint the session start found waits for it', async () => {
+    const file = path.join(home, '.teamai', 'sessions', `${SESSION.replace(/[^a-zA-Z0-9._-]/g, '_')}.mr-hint.pending.json`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ message: 'Found 1 recently merged MR(s)', shown: { owner: 'acme', repo: 'shop', ids: ['7'] } }));
+
+    expect(promptAnswersInForeground(SESSION, process.env)).toBe(true);
+    expect(JSON.parse(await takePendingMrHint(SESSION) ?? '').hookSpecificOutput.additionalContext).toBe('Found 1 recently merged MR(s)');
+    expect(promptAnswersInForeground(SESSION, process.env)).toBe(false);
+  });
+
   it('keeps a prompt in the foreground while a contribute hint waits for it', async () => {
     await writeContributeState(SESSION, { contributed: false, pendingHint: 'Share what you learned: teamai contribute' });
 
@@ -251,6 +262,56 @@ describe('promptAnswersInForeground', () => {
     vi.stubEnv('TEAMAI_HTTP_ENDPOINT', 'https://teamai.example');
 
     expect(promptAnswersInForeground(SESSION, process.env)).toBe(true);
+  });
+});
+
+// A pass inside the login environment leaves, per session, what it saw of an HTTP enrolment from its cwd, for a prompt
+// whose command deferred the login shell and so cannot see the profile's or the team env's variables (runLoginDeferredHook).
+describe('recordLoginEnrolment', () => {
+  let home: string;
+  const record = () => path.join(home, '.teamai', 'sessions', 's-1.http-enrolment.json');
+  const payload = (fields: object = {}) => JSON.stringify({ session_id: 's-1', cwd: '/work/a', ...fields });
+
+  beforeEach(() => {
+    home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-login-enrolment-')));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it.each([
+    { env: {}, enrolled: false },
+    { env: { TEAMAI_HTTP_ENDPOINT: 'http://127.0.0.1:9' }, enrolled: true },
+  ])('records the session\'s cwd and enrolled: $enrolled', ({ env, enrolled }) => {
+    recordLoginEnrolment(payload(), env);
+
+    expect(JSON.parse(fs.readFileSync(record(), 'utf8'))).toEqual({ cwd: '/work/a', enrolled });
+  });
+
+  it('writes nothing when the record already says the same, and rewrites it for another cwd', () => {
+    recordLoginEnrolment(payload(), {});
+    const past = new Date(Date.now() - 60_000);
+    fs.utimesSync(record(), past, past);
+
+    recordLoginEnrolment(payload(), {});
+    expect(fs.statSync(record()).mtime).toEqual(past);
+    recordLoginEnrolment(payload({ cwd: '/work/b' }), {});
+    expect(JSON.parse(fs.readFileSync(record(), 'utf8'))).toEqual({ cwd: '/work/b', enrolled: false });
+  });
+
+  it.each([
+    ['no session id', JSON.stringify({ cwd: '/work/a' })],
+    ['no cwd', JSON.stringify({ session_id: 's-1' })],
+    ['a payload the full dispatch handed its own background pass, whose cwd may be the scope\'s', payload({ teamai_run: { mode: 'attended' } })],
+    ['no JSON', 'not json'],
+  ])('records nothing for %s', (_case, raw) => {
+    recordLoginEnrolment(raw, {});
+
+    expect(fs.existsSync(record())).toBe(false);
   });
 });
 

@@ -15,9 +15,10 @@ const HELP = `Verify a teamai change end to end: the real CLI, packed and instal
   npm run -s verify -- dir <run>|--all        the world's directory, or every live world
 
 A world holds a project repo with one commit, a bare team repo at ${TEAM_URL}, the npm pack tarball of
-this checkout installed on its own, and a HOME and TMPDIR of its own. Commands get an environment built from
-nothing: no tool home (CLAUDE_CONFIG_DIR, CODEX_HOME, ...) or TEAMAI_* variable of your shell reaches them. Set one
-on the command line when the claim needs it: \`sh <run> env CODEX_HOME=... teamai pull\`.
+this checkout installed on its own, a HOME and TMPDIR of its own, and a fake gh first on PATH: \`gh pr list\`
+prints fakes/gh-pr-list.json or [], anything else fails as when gh is not signed in, and each call goes to
+fakes/gh.log. Commands get an environment built from nothing: no tool home (CLAUDE_CONFIG_DIR, CODEX_HOME, ...)
+or TEAMAI_* variable of your shell reaches them. Set one on the command line when the claim needs it: \`sh <run> env CODEX_HOME=... teamai pull\`.
 
 A world freezes the build it was made from. Change teamai and the next proof needs a new world; doctor warns when
 the checkout has moved on. Start from \`teamai init ${TEAM_URL} --provider git --agent claude\`.

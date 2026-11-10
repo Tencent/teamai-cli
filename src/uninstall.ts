@@ -1,4 +1,4 @@
-import { lstat, readdir, realpath } from 'node:fs/promises';
+import { lstat, readdir, realpath, rmdir } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { autoDetectInit, loadLocalConfig, loadStateForScope, readConfigFrom, resolveMemberToolRoots, saveLocalConfig, saveLocalConfigForScope, saveStateForScope, UnreadableProjectConfigError, detectProjectConfig } from './config.js';
@@ -12,6 +12,7 @@ import {
 import { codexTeamHookIndexPath } from './codex-team-hooks.js';
 import { codebuddyTeamHookPayload } from './codebuddy-team-hooks.js';
 import { mapStrings, parseJsonAs } from './utils/json.js';
+import { isWithin } from './utils/agent-path.js';
 import { bridgedTeamHookDir, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
 import {
   removeOpenClawHooks,
@@ -3121,6 +3122,9 @@ async function executeRemoval(
     log.success(`Removed ${plan.agentFiles.length} agent files`);
   }
 
+  // (d3) The directories those were in, once nothing is left in them.
+  for (const dir of emptiedDirs(plan)) await removeIfEmpty(dir);
+
   // (e) Clean shell profile env block(s) — every file discovered in
   // buildRemovalPlan, not just the one detectShellProfile() resolves to today.
   // Only this scope's own block: another scope's may share the file (#876).
@@ -3382,6 +3386,38 @@ async function sweepCreatedLeftovers(plan: RemovalPlan, hooksLeft: ReadonlyArray
 
   for (const dir of dirs) {
     if (await pruneEmptyDirs(dir)) log.debug(`Removed empty ${dir}/`);
+  }
+}
+
+/**
+ * The directories uninstall removed teamai's skills, rules and agents from, deepest first. Above a rule file, each
+ * folder up to the tool's rules directory; never a directory outside one, so a tool's own root stays.
+ */
+function emptiedDirs(plan: RemovalPlan): string[] {
+  const dirs = new Set([...plan.skillDirs.map(({ dir }) => path.dirname(dir)), ...plan.agentFiles.map((file) => path.dirname(file))]);
+  const ownedRuleFiles = plan.claudeMdFiles.flatMap(({ path: file, owned }) => (owned ? [file] : []));
+
+  for (const file of [...plan.ruleFiles, ...ownedRuleFiles]) {
+    const root = plan.ruleDirs.find((dir) => isWithin(file, dir));
+
+    if (root === undefined) continue;
+
+    for (let dir = path.dirname(file); isWithin(dir, root); dir = path.dirname(dir)) {
+      dirs.add(dir);
+
+      if (dir === path.dirname(dir)) break;
+    }
+  }
+
+  return [...dirs].sort((a, b) => b.length - a.length);
+}
+
+/** Remove `dir` when nothing is left in it; any folder inside, a member's empty one included, keeps it. */
+async function removeIfEmpty(dir: string): Promise<void> {
+  try {
+    await rmdir(dir);
+  } catch (e) {
+    log.debug(`Kept ${dir}: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 

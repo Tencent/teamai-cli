@@ -356,17 +356,18 @@ export interface DeliveredGitExcludeOutcome {
  * `delivered` block, another repository's (a submodule, a nested clone, a
  * tool home under version control) in this partition's `delivered/<id>`
  * block. Off, remove those blocks, and no other owner's. A path outside every
- * repository is left out. `dryRun` writes nothing (no lock file, no `info/`)
- * and prints one line per block it would change instead.
+ * repository is left out. `addOnly` drops no line (see sync). `dryRun` writes
+ * nothing (no lock file, no `info/`) and prints one line per block it would
+ * change instead.
  */
 export async function applyDeliveredGitExclude(
-  localConfig: LocalConfig, enabled: boolean, paths: Iterable<string>, options: { dryRun?: boolean; context?: GitContext } = {},
+  localConfig: LocalConfig, enabled: boolean, paths: Iterable<string>, options: { dryRun?: boolean; context?: GitContext; addOnly?: boolean } = {},
 ): Promise<DeliveredGitExcludeOutcome> {
   const outcome: DeliveredGitExcludeOutcome = { failures: [], notices: [] };
   const projectRoot = localConfig.projectRoot;
 
   if (!projectRoot) return outcome;
-  const { dryRun } = options;
+  const { dryRun, addOnly } = options;
   // One context for the run: what git says of a directory holds across both owners' syncs.
   const context = options.context ?? new GitContext();
   const own = await gitExcludeFile(projectRoot, context);
@@ -387,7 +388,7 @@ export async function applyDeliveredGitExclude(
 
     // A path git cannot place goes to both blocks: each sync then keeps every line it holds.
     for (const [owner, list] of [[here, [...split.here, ...split.unlocated]], [elsewhere, split.elsewhere]] as const) {
-      const result = await sync(owner, list, { dryRun, context });
+      const result = await sync(owner, list, { dryRun, context, addOnly });
 
       for (const file of result.files) {
         unwritten(file.excludeFile, file.write, 'update');

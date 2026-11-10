@@ -7,7 +7,7 @@
  * Same harness as pull-dry-run-hooks-mcp.test.ts: the order is a property of
  * the orchestration in pull, so that is where it is pinned.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, onTestFinished } from 'vitest';
 import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
@@ -93,7 +93,7 @@ import { getDataHome, managedMcpManifestKey, managedMcpManifestPath } from '../t
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 import { readCodexHookTrustForScope } from '../hooks.js';
 import { log } from '../utils/logger.js';
-import { installFakeCodex, readFakeCodexState, writeFakeCodexOptions } from './helpers/fake-codex.js';
+import { installFakeCodex, pathWithoutCodex, readFakeCodexState, writeFakeCodexOptions } from './helpers/fake-codex.js';
 
 describe('pull trusts the Codex project after writing its MCP servers', () => {
   let tempDir: string;
@@ -173,6 +173,32 @@ describe('pull trusts the Codex project after writing its MCP servers', () => {
     expect(Object.keys(state.hooksState).some((key) => key.startsWith(`${hooksFile}:session_start`))).toBe(true);
     expect(vi.mocked(log.warn).mock.calls.map(([message]) => message).filter((message) => message.includes('Could not trust'))).toEqual([]);
   });
+  it('trusts the PostToolUse entry again when it turns async, since Codex hashes the handler with its async flag', async () => {
+    // The one Codex build: its version decides whether the PostToolUse entry is async.
+    const codexAt = (version: string) => {
+      const dir = installFakeCodex({ version });
+      onTestFinished(() => fse.remove(dir));
+      vi.stubEnv('PATH', `${dir}${path.delimiter}${pathWithoutCodex()}`);
+    };
+    const hooksFile = path.join(homeDir, '.codex', 'hooks.json');
+    const postToolUseHash = () => Object.entries(readFakeCodexState(path.join(homeDir, '.codex')).hooksState)
+      .find(([key]) => key.startsWith(`${hooksFile}:post_tool_use`))?.[1].trusted_hash;
+    codexAt('0.147.0');
+    await pull({ force: true });
+    const waited = postToolUseHash();
+    // Below 0.148.0 the entry stays waited and, on POSIX, starts teamai without a login shell: a new command, trusted too.
+    if (process.platform !== 'win32') expect((await fse.readJson(hooksFile)).hooks.PostToolUse[0].hooks[0].command).toContain('TEAMAI_HOOK_LOGIN=deferred');
+    expect(await readCodexHookTrustForScope(teamConfig, localConfig)).toEqual({ kind: 'listed', notTrusted: [] });
+
+    codexAt('0.163.0');
+    await pull({ force: true });
+
+    expect((await fse.readJson(hooksFile)).hooks.PostToolUse[0].hooks[0].async).toBe(true);
+    expect(waited).toBeDefined();
+    expect(postToolUseHash()).not.toBe(waited);
+    expect(await readCodexHookTrustForScope(teamConfig, localConfig)).toEqual({ kind: 'listed', notTrusted: [] });
+  });
+
   it('pull from a worktree without .codex trusts the main keys before SessionStart', async () => {
     const worktree = path.join(tempDir, 'worktree');
     await fse.ensureDir(worktree);

@@ -114,15 +114,16 @@ async function atStart(config: LocalConfig, tool: string, payload: HookStdin, en
     const model = requested === undefined ? undefined : { requested };
     const { gitStateIn } = await import('../dashboard-collector.js');
     const head = gitStateIn(payload);
-    const launch: ToolLaunch = { config, tool, cwd, beforeOwnPull: true };
+    const { teamDelivery } = await import('../pull.js');
+    const delivery = await teamDelivery(config, tool, { beforeOwnPull: true }).catch(() => null);
+    const launch: ToolLaunch = { config, tool, cwd, beforeOwnPull: true, delivery };
 
     if (head !== undefined) launch.head = head;
     const reported = await observeCheckout(launch);
     const agent = settleObservation({ agent: model ? { ...reported, model } : { ...reported }, tool, driver: { kind: 'session' } }, undefined);
 
     if (!agent) return undefined;
-    const { teamDelivery } = await import('../pull.js');
-    const record = (await teamDelivery(config, tool, { beforeOwnPull: true }).catch(() => undefined))?.record;
+    const record = delivery?.record;
 
     const capture: SessionCapture = {
       captureId: randomUUID(), platform, sessionId, capturedAt: new Date().toISOString(), runMode: resolveRunMode(env), agent,
@@ -175,7 +176,9 @@ async function atStop(config: LocalConfig, tool: string, payload: HookStdin): Pr
   const dir = sessionDir(config, platform, sessionId);
 
   if (!(await fs.stat(dir).catch(() => undefined))) return;
-  const head = await headWithin(cwd, END_GIT_TIMEOUT_MS);
+  const { gitStateAtStopIn } = await import('../dashboard-collector.js');
+  const handed = gitStateAtStopIn(payload);
+  const head = handed === undefined ? await headWithin(cwd, END_GIT_TIMEOUT_MS) : handed;
 
   if (!head) {
     log.debug(`session capture: ${cwd} gave no git state at this Stop, so ${platform} session ${sessionId} keeps its end record`);
@@ -269,10 +272,10 @@ async function addToolVersion(config: LocalConfig, tool: string, payload: HookSt
 /** What a checkout's pull record says the checkout holds. */
 type CheckoutDelivery = { rev?: string; selection?: DeliverySelection; children?: string };
 
-async function checkoutRecord(config: LocalConfig, tool: string): Promise<CheckoutRecord | undefined> {
-  const { teamDelivery } = await import('../pull.js');
+async function checkoutRecord(config: LocalConfig): Promise<CheckoutRecord | undefined> {
+  const { deliveringCheckoutRecord } = await import('../pull.js');
 
-  return (await teamDelivery(config, tool).catch(() => undefined))?.record;
+  return deliveringCheckoutRecord(config).catch(() => undefined);
 }
 
 function deliveryOf(record: CheckoutRecord | undefined): CheckoutDelivery {
@@ -280,8 +283,8 @@ function deliveryOf(record: CheckoutRecord | undefined): CheckoutDelivery {
 }
 
 /** What the pull record of the checkout `config`'s pulls deliver into says it holds. */
-async function checkoutDelivery(config: LocalConfig, tool: string): Promise<CheckoutDelivery> {
-  return deliveryOf(await checkoutRecord(config, tool));
+async function checkoutDelivery(config: LocalConfig): Promise<CheckoutDelivery> {
+  return deliveryOf(await checkoutRecord(config));
 }
 
 /** `capture` with the team skills of `pulled` added to those it holds. */
@@ -315,7 +318,7 @@ async function markTeamChanged(config: LocalConfig, tool: string, payload: HookS
 
   if (!platform || !fields.success) return;
   const { session_id: sessionId, cwd, [CAPTURE_PAYLOAD_KEY]: captureId } = fields.data;
-  const record = await checkoutRecord(config, tool);
+  const record = await checkoutRecord(config);
   const changed = !isDeepStrictEqual(deliveryOf(record), before);
 
   try {

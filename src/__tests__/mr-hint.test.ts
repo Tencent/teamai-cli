@@ -1,7 +1,23 @@
-import { describe, it, expect } from 'vitest';
-import { parseRemoteToRepo, buildHintMessage, getGitRemote } from '../mr-hint.js';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { parseRemoteToRepo, buildHintMessage, computeMrHintOutput, stashMrHint, takePendingMrHint } from '../mr-hint.js';
 import type { MRSummary } from '../mr-hint.js';
 import { DefaultHooks } from '../default-hooks.js';
+import { getRemoteUrl } from '../utils/git.js';
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, spawnSync: vi.fn(actual.spawnSync) };
+});
+
+vi.mock('../utils/git.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/git.js')>();
+  return { ...actual, getRemoteUrl: vi.fn(actual.getRemoteUrl) };
+});
 
 const mrHint = await DefaultHooks.load('teamai-mr-hint', null);
 
@@ -121,9 +137,72 @@ describe('buildHintMessage', () => {
   });
 });
 
-describe('getGitRemote', () => {
-  it('returns null for non-git directory', () => {
-    const result = getGitRemote('/tmp');
-    expect(result).toBeNull();
+describe('a hint the session start leaves for the next prompt', () => {
+  let home: string;
+  const mergedAt = new Date().toISOString();
+  const pr = { number: 7, title: 'Fix the login redirect', url: 'https://github.com/acme/shop/pull/7', mergedAt };
+  const at = (sessionId: string) => ({ sessionId, cwd: home, run: { runMode: 'attended' as const } });
+
+  const ghLists = (prs: unknown[]) => vi.mocked(spawnSync).mockImplementation(() => {
+    const stdout = JSON.stringify(prs);
+    return { pid: 0, output: [null, stdout, ''], stdout, stderr: '', status: 0, signal: null };
+  });
+
+  const hintIn = (output: string | null) => (output === null ? null : JSON.parse(output).hookSpecificOutput);
+
+  beforeEach(() => {
+    home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-mrhint-stash-')));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    vi.stubEnv('TEAMAI_MR_HINT_CWD', home);
+    vi.stubEnv('TEAMAI_MR_HINT_DISABLED', '');
+    vi.mocked(getRemoteUrl).mockResolvedValue('https://github.com/acme/shop.git');
+    ghLists([pr]);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.mocked(getRemoteUrl).mockReset();
+    vi.mocked(spawnSync).mockReset();
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it('shows it once, at the first prompt of that session', async () => {
+    await stashMrHint('en', null, at('s1'));
+
+    expect(await takePendingMrHint('s2')).toBeNull();
+    const shown = hintIn(await takePendingMrHint('s1'));
+    expect(shown?.hookEventName).toBe('UserPromptSubmit');
+    expect(shown?.additionalContext).toContain('- Fix the login redirect');
+    expect(await takePendingMrHint('s1')).toBeNull();
+    // Shown, so a later session start has nothing new to hint.
+    expect(await computeMrHintOutput('en', null, at('s3'))).toBeNull();
+  });
+
+  it('leaves the MRs of a hint no prompt took to the next session that shows them', async () => {
+    await stashMrHint('en', null, at('s1'));
+
+    expect(hintIn(await computeMrHintOutput('en', null, at('s2')))?.additionalContext).toContain('- Fix the login redirect');
+    // s2 showed them since, so s1's late prompt does not show them again.
+    expect(await takePendingMrHint('s1')).toBeNull();
+  });
+
+  it('drops it unshown when the hint was turned off before the prompt', async () => {
+    await stashMrHint('en', null, at('s1'));
+    vi.stubEnv('TEAMAI_MR_HINT_DISABLED', '1');
+
+    expect(await takePendingMrHint('s1')).toBeNull();
+    vi.stubEnv('TEAMAI_MR_HINT_DISABLED', '');
+    // Dropped, not kept for a later prompt; and not recorded as shown, so the next session start hints the same MRs.
+    expect(await takePendingMrHint('s1')).toBeNull();
+    expect(hintIn(await computeMrHintOutput('en', null, at('s2')))?.additionalContext).toContain('- Fix the login redirect');
+  });
+
+  it('drops the hint a session had waiting when its next session start finds nothing new', async () => {
+    await stashMrHint('en', null, at('s1'));
+    ghLists([]);
+    await stashMrHint('en', null, at('s1'));
+
+    expect(await takePendingMrHint('s1')).toBeNull();
   });
 });

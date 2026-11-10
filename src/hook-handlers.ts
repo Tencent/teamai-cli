@@ -147,7 +147,7 @@ const pullHandler: HookHandler = {
 
     const { pull, settleLateUsageReport } = await import('./pull.js');
     const { SessionCaptures } = await import('./session-flow/captures.js');
-    const before = config && await SessionCaptures.checkoutDelivery(config, tool);
+    const before = config && await SessionCaptures.checkoutDelivery(config);
 
     if (config && await needsPreparation(hintCwd, config)) await prepareCheckout(hintCwd, 'session-start');
     else await pull({ silent: true, sessionStart: true });
@@ -215,7 +215,7 @@ const sessionEndHandler: HookHandler = {
  * The last two serve worktrees an agent tool created without any git hook.
  */
 const PREPARING_PULL = {
-  'post-checkout': { inline: true, gitHook: 'post-checkout' },
+  'post-checkout': { inline: true, gitHook: 'post-checkout', gitExcludeAddOnly: true },
   'session-start': { sessionStart: true },
   'tool-use': { inline: true, localOnly: true },
 } as const satisfies Record<string, GlobalOptions>;
@@ -543,7 +543,7 @@ const dashboardReportHandler: HookHandler = {
   async execute(stdin, tool, config) {
     // Registered with requiresConfig: a session outside any scope is not recorded.
     if (!config) return null;
-    const { parseHookEvent, appendEvent, compactEvents, dataHomeKey, eventRepoAnchor, addGitStateAtStart, addGitHeadAtStop, gitStateIn } = await import('./dashboard-collector.js');
+    const { parseHookEvent, appendEvent, compactEvents, dataHomeKey, eventRepoAnchor, addGitStateAtStart, addGitHeadAtStop, gitStateIn, gitStateAtStopIn } = await import('./dashboard-collector.js');
     const { getDataHome } = await import('./types.js');
     const raw = JSON.stringify(stdin);
     // The dispatcher's scope, which knows the project even when the event
@@ -564,7 +564,7 @@ const dashboardReportHandler: HookHandler = {
       const [repoAnchor] = await Promise.all([
         eventRepoAnchor(event.cwd, event.sessionId),
         addGitStateAtStart(event, gitStateIn(stdin)),
-        addGitHeadAtStop(event),
+        addGitHeadAtStop(event, gitStateAtStopIn(stdin)),
       ]);
 
       event.projectAnchor = repoAnchor;
@@ -1001,15 +1001,57 @@ async function todoWriteHintInstalled(tool: string, config: LocalConfig): Promis
   return true;
 }
 
+/**
+ * Whether `tool` gets teamai's UserPromptSubmit hook and the team leaves it on, so what a session start's background
+ * pass leaves for the session is shown at its next prompt. Without it, nothing would ever show that.
+ */
+async function promptHookInstalled(tool: string, config: LocalConfig): Promise<boolean> {
+  const { installedBuiltinHookDefs, takesAllBuiltins } = await import('./builtin-hooks.js');
+  const prompt = installedBuiltinHookDefs(tool, takesAllBuiltins(tool)).find((def) => def.event === 'UserPromptSubmit');
+
+  if (!prompt) return false;
+  const { readBuiltinDisabledListing } = await import('./resources/hooks.js');
+
+  return (await readBuiltinDisabledListing(config, prompt.key)) === 'not-listed';
+}
+
+/** The session the MR hint may offer teamai-import-from-mr to, as the Stop hook's reminder resolves it. */
+async function mrHintSession(stdin: HookStdin) {
+  const { readSessionRun, sessionRun } = await import('./launch-context.js');
+
+  return { sessionId: deriveSessionId(stdin, { includeCwd: true }), cwd: resolveHookCwd(stdin) ?? process.cwd(), run: readSessionRun(stdin) ?? sessionRun(process.env) };
+}
+
+/** SessionStart, for a tool without a prompt hook: the MR hint, which asks the provider for merged MRs. */
 const mrHintHandler: HookHandler = {
   name: 'mr-hint',
-  async execute(stdin, _tool, config) {
+  async execute(stdin, tool, config) {
+    if (!config || await promptHookInstalled(tool, config)) return null;
     const { computeMrHintOutput } = await import('./mr-hint.js');
-    // The session the hint may offer teamai-import-from-mr to, as the Stop hook's reminder resolves it.
-    const { readSessionRun, sessionRun } = await import('./launch-context.js');
-    const session = { sessionId: deriveSessionId(stdin, { includeCwd: true }), cwd: resolveHookCwd(stdin) ?? process.cwd(), run: readSessionRun(stdin) ?? sessionRun(process.env) };
 
-    return computeMrHintOutput(await teamAgentLanguage(config), config, session);
+    return computeMrHintOutput(await teamAgentLanguage(config), config, await mrHintSession(stdin));
+  },
+};
+
+/** SessionStart, detached, for a tool with a prompt hook: the MR hint, left for the session's next prompt. */
+const mrHintStashHandler: HookHandler = {
+  name: 'mr-hint-stash',
+  async execute(stdin, tool, config) {
+    if (!config || !(await promptHookInstalled(tool, config))) return null;
+    const { stashMrHint } = await import('./mr-hint.js');
+    await stashMrHint(await teamAgentLanguage(config), config, await mrHintSession(stdin));
+
+    return null;
+  },
+};
+
+/** UserPromptSubmit: the MR hint the session start left, once. */
+const mrHintPendingHandler: HookHandler = {
+  name: 'mr-hint-pending',
+  async execute(stdin, _tool, config) {
+    const { takePendingMrHint } = await import('./mr-hint.js');
+
+    return takePendingMrHint(deriveSessionId(stdin, { includeCwd: true }), config);
   },
 };
 
@@ -1320,6 +1362,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'session-start', matcher: '*', handler: teamRulesHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: cursorUserRulesHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true, yieldsToContextLimit: true },
     { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
+    { event: 'session-start', matcher: '*', handler: mrHintStashHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, gitOnly: true, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: packageHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: teamEnvHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
@@ -1386,6 +1429,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // ─── UserPromptSubmit ─────────────────────────────
     { event: 'prompt-submit', matcher: '*', handler: pendingHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     { event: 'prompt-submit', matcher: '*', handler: packagePendingHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
+    { event: 'prompt-submit', matcher: '*', handler: mrHintPendingHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     // A prompt's records go to the detached child on POSIX, where the fast path then leaves a prompt that waits on no
     // hint to it (#1788). Windows keeps them inline: a child there is a WMI spawn.
     { event: 'prompt-submit', matcher: '*', handler: skillMentionHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true, background: process.platform !== 'win32' },

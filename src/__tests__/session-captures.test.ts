@@ -1,12 +1,13 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { buildSync } from 'esbuild';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { GIT_AT_START_PAYLOAD_KEY } from '../dashboard-collector.js';
+import { addGitHeadAtStop, GIT_AT_START_PAYLOAD_KEY, GIT_AT_STOP_PAYLOAD_KEY, gitStateAtStopIn, parseHookEvent, readGitStateAtStop } from '../dashboard-collector.js';
 import { CAPTURE_PAYLOAD_KEY, SessionCaptures } from '../session-flow/captures.js';
+import { loadStateForScope, saveStateForScope } from '../config.js';
 import { saveScopeSelection } from '../scope-selection.js';
 import type { LocalConfig } from '../types.js';
 import { withSkillFrontmatter } from '../resources/skills.js';
@@ -176,6 +177,28 @@ describe('session captures (#1178)', () => {
       teamSkills: { review: [skill] },
       teamSkillInfo: { review: {} },
     }]);
+  });
+
+  it('captures the record of the checkout the session starts in, for a linked worktree and its main checkout alike', async () => {
+    const { config, project, rev, skill } = checkout();
+    const worktree = path.join(path.dirname(project), 'worktree');
+    git(project, 'worktree', 'add', '-q', '--detach', worktree);
+    const linked: LocalConfig = { ...config, projectRoot: worktree };
+    const docs = path.join(worktree, '.claude', 'skills', 'docs', 'SKILL.md');
+    fs.mkdirSync(path.dirname(docs), { recursive: true });
+    fs.writeFileSync(docs, 'docs\n');
+    const later = commitFile(config.repo.localPath, 'skills/docs/SKILL.md');
+    await recordDelivery(config, { rev, targets: ['claude'], files: [skill] });
+    const main = await loadStateForScope(config);
+    await recordDelivery(linked, { rev: later, targets: ['claude'], files: [docs] });
+    const both = await loadStateForScope(config);
+    await saveStateForScope({ ...both, lastPullByWorkspace: { ...main.lastPullByWorkspace, ...both.lastPullByWorkspace } }, config);
+
+    await SessionCaptures.atStart(config, 'claude', start(project), {});
+    await SessionCaptures.atStart(linked, 'claude', start(worktree), {});
+
+    expect((await SessionCaptures.read(config, 'claude-code', SESSION)).map((capture) => [capture.agent.team?.revision, capture.teamSkills]))
+      .toEqual([[rev, { review: [skill] }], [later, { docs: [docs] }]]);
   });
 
   it('records each delivered team skill\'s description and skills namespace, and a root skill without one (#1469)', async () => {
@@ -399,11 +422,11 @@ describe('session captures (#1178)', () => {
     await SessionCaptures.atStart(config, 'claude', start(project), {});
     await SessionCaptures.atStart(config, 'claude', start(project, { source: 'resume' }), {});
 
-    const unchanged = await SessionCaptures.checkoutDelivery(config, 'claude');
+    const unchanged = await SessionCaptures.checkoutDelivery(config);
     await SessionCaptures.markTeamChanged(config, 'claude', start(project), unchanged);
     expect((await SessionCaptures.read(config, 'claude-code', SESSION)).map((capture) => capture.teamChanged)).toEqual([undefined, undefined]);
 
-    const before = await SessionCaptures.checkoutDelivery(config, 'claude');
+    const before = await SessionCaptures.checkoutDelivery(config);
     await recordDelivery(config, { rev: commitFile(config.repo.localPath, 'skills/other/SKILL.md'), targets: ['claude'], files: [skill] });
     await SessionCaptures.markTeamChanged(config, 'claude', start(project), before);
     expect((await SessionCaptures.read(config, 'claude-code', SESSION)).map((capture) => capture.teamChanged)).toEqual([true, true]);
@@ -412,7 +435,7 @@ describe('session captures (#1178)', () => {
   it('records an empty skills inventory after the session own pull delivered none (#1469)', async () => {
     const { config, project, rev } = checkout();
     const captureId = await SessionCaptures.atStart(config, 'claude', start(project), {});
-    const before = await SessionCaptures.checkoutDelivery(config, 'claude');
+    const before = await SessionCaptures.checkoutDelivery(config);
     await recordDelivery(config, { rev, targets: ['claude'], files: [] });
 
     await SessionCaptures.markTeamChanged(config, 'claude', withCapture(start(project), captureId), before);
@@ -425,7 +448,7 @@ describe('session captures (#1178)', () => {
     await recordDelivery(config, { rev, targets: ['claude'], files: [skill] });
     const captureId = await SessionCaptures.atStart(config, 'claude', start(project), {});
 
-    const before = await SessionCaptures.checkoutDelivery(config, 'claude');
+    const before = await SessionCaptures.checkoutDelivery(config);
     const deploy = path.join(project, '.claude', 'skills', 'deploy', 'SKILL.md');
     fs.mkdirSync(path.dirname(deploy), { recursive: true });
     fs.writeFileSync(deploy, 'deploy\n');
@@ -441,7 +464,7 @@ describe('session captures (#1178)', () => {
     await SessionCaptures.atStart(config, 'claude', start(project), {});
     const resumed = await SessionCaptures.atStart(config, 'claude', start(project, { source: 'resume' }), {});
 
-    const before = await SessionCaptures.checkoutDelivery(config, 'claude');
+    const before = await SessionCaptures.checkoutDelivery(config);
     const deploy = path.join(project, '.claude', 'skills', 'deploy', 'SKILL.md');
     fs.mkdirSync(path.dirname(deploy), { recursive: true });
     fs.writeFileSync(deploy, 'deploy\n');
@@ -458,7 +481,7 @@ describe('session captures (#1178)', () => {
     fs.rmSync(path.dirname(skill), { recursive: true });
     const captureId = await SessionCaptures.atStart(config, 'claude', start(project), {});
 
-    const before = await SessionCaptures.checkoutDelivery(config, 'claude');
+    const before = await SessionCaptures.checkoutDelivery(config);
     fs.mkdirSync(path.dirname(skill), { recursive: true });
     fs.writeFileSync(skill, 'review\n');
     await SessionCaptures.markTeamChanged(config, 'claude', withCapture(start(project), captureId), before);
@@ -504,7 +527,7 @@ describe('session captures (#1178)', () => {
     await recordDelivery(backend, { rev: rev.slice(0, 7), targets: ['claude'], files: [skill] });
     await SessionCaptures.atStart(backend, 'claude', start(project), {});
 
-    const before = await SessionCaptures.checkoutDelivery(backend, 'claude');
+    const before = await SessionCaptures.checkoutDelivery(backend);
     await recordDelivery({ ...config, primaryRole: 'frontend' }, { rev: rev.slice(0, 7), targets: ['claude'], files: [skill] });
     await SessionCaptures.markTeamChanged(backend, 'claude', start(project), before);
 
@@ -516,7 +539,7 @@ describe('session captures (#1178)', () => {
     await recordDelivery(config, { rev: rev.slice(0, 7), targets: ['claude'], files: [skill], children: 'children-before' });
     await SessionCaptures.atStart(config, 'claude', start(project), {});
 
-    const before = await SessionCaptures.checkoutDelivery(config, 'claude');
+    const before = await SessionCaptures.checkoutDelivery(config);
     await recordDelivery(config, { rev: rev.slice(0, 7), targets: ['claude'], files: [skill], children: 'children-after' });
     await SessionCaptures.markTeamChanged(config, 'claude', start(project), before);
 
@@ -544,7 +567,7 @@ describe('session captures (#1178)', () => {
     const writer = stalledVersionWriter(path.dirname(project), config, withCapture(start(project), captureId));
     await expect.poll(() => fs.existsSync(writer.stalled), { timeout: 10_000 }).toBe(true);
 
-    const before = await SessionCaptures.checkoutDelivery(config, 'claude');
+    const before = await SessionCaptures.checkoutDelivery(config);
     await recordDelivery(config, { rev: commitFile(config.repo.localPath, 'skills/other/SKILL.md'), targets: ['claude'], files: [skill] });
     const marked = SessionCaptures.markTeamChanged(config, 'claude', start(project), before);
     await Promise.race([marked, new Promise((resolve) => setTimeout(resolve, 1000))]);
@@ -596,6 +619,28 @@ describe('the end record a Stop writes beside the captures', () => {
 
     expect(await endOf(config)).toEqual(before);
     expect(before?.end.commit).toBe(git(project, 'rev-parse', 'HEAD'));
+  });
+
+  it('takes the one git status its Stop read, so the end record and the Stop event start no git of their own', async () => {
+    const { config, project } = checkout();
+    await SessionCaptures.atStart(config, 'claude', start(project), {});
+    const bin = path.join(path.dirname(project), 'bin');
+    const calls = path.join(path.dirname(project), 'git-calls.log');
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
+    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+    const handed = await readGitStateAtStop(project);
+    const payload = stop(project, { [GIT_AT_STOP_PAYLOAD_KEY]: handed });
+    await SessionCaptures.atStop(config, 'claude', payload);
+    const event = await parseHookEvent(JSON.stringify(payload), 'claude');
+    if (event) await addGitHeadAtStop(event, gitStateAtStopIn(payload));
+    vi.unstubAllEnvs();
+
+    // `git --version` runs once per process, whatever it reads.
+    expect(fs.readFileSync(calls, 'utf8').split('\n').filter((call) => call !== '' && call !== '--version')).toHaveLength(1);
+    expect([(await endOf(config))?.end, event?.gitHead, event?.gitBranch])
+      .toEqual([{ commit: git(project, 'rev-parse', 'HEAD'), dirty: false }, git(project, 'rev-parse', 'HEAD'), git(project, 'branch', '--show-current')]);
   });
 
   it('writes no end record for a session with no capture, such as one teamai launched', async () => {

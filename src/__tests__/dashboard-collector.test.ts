@@ -21,6 +21,8 @@ import {
   dedupeEvents,
   dashboardReport,
   GIT_AT_START_PAYLOAD_KEY,
+  GIT_AT_STOP_PAYLOAD_KEY,
+  readGitStateAtStop,
   readLocalRequestRecords,
 } from '../dashboard-collector.js';
 import { collectSession } from '../session-collector.js';
@@ -3078,6 +3080,42 @@ describe('dashboard-report records the git state a session started on', () => {
 
     const [stop] = await readEvents();
     expect(stop.gitBranch).toBe('fix-retry');
+  });
+
+  it('records on a Stop the branch by its name when a tag has the same name, from the one git status its background pass read', async () => {
+    const { repo } = committedRepo();
+    git(repo, 'checkout', '-q', '-b', 'release');
+    git(repo, 'tag', 'release');
+
+    await runHook({ hook_event_name: 'Stop', session_id: 'git-tag', cwd: repo, [GIT_AT_STOP_PAYLOAD_KEY]: await readGitStateAtStop(repo) });
+
+    const [stop] = await readEvents();
+    expect([stop.gitHead, stop.gitBranch]).toEqual([git(repo, 'rev-parse', 'HEAD'), 'release']);
+  });
+
+  it('records on a Stop in a bare repository the commit HEAD names, though git status cannot run there', async () => {
+    const { repo, head } = committedRepo();
+    const bare = path.join(tmpDir, 'bare.git');
+    git(tmpDir, 'clone', '-q', '--bare', repo, bare);
+    const handed = await readGitStateAtStop(bare);
+
+    await runHook({ hook_event_name: 'Stop', session_id: 'git-bare', cwd: bare, [GIT_AT_STOP_PAYLOAD_KEY]: handed });
+
+    const [stop] = await readEvents();
+    expect([handed, stop.gitHead]).toEqual([null, head]);
+  });
+
+  it('records on a Stop in a linked worktree that worktree\'s own commit and branch', async () => {
+    const { repo } = committedRepo();
+    const linked = path.join(tmpDir, 'linked');
+    git(repo, 'worktree', 'add', '-q', '-b', 'side', linked);
+    fs.writeFileSync(path.join(linked, 'tracked.txt'), 'side\n');
+    git(linked, 'commit', '-q', '-am', 'on the side');
+
+    await runHook({ hook_event_name: 'Stop', session_id: 'git-linked', cwd: linked, [GIT_AT_STOP_PAYLOAD_KEY]: await readGitStateAtStop(linked) });
+
+    const [stop] = await readEvents();
+    expect([stop.gitHead, stop.gitBranch]).toEqual([git(linked, 'rev-parse', 'HEAD'), 'side']);
   });
 
   it('writes a Stop without its head, in time, when git outlives its time cap with a child holding the pipe (#1387)', async () => {

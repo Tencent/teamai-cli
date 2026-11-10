@@ -374,8 +374,11 @@ describe('uninstall', () => {
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'team-skill'))).toBe(false);
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'my-own-skill'))).toBe(true);
 
-    // Synced rule removed
+    // Synced rule removed, with the rules and agents directories it emptied; the tool's own root stays
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'rules', 'team-rule.md'))).toBe(false);
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'rules'))).toBe(false);
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'agents'))).toBe(false);
+    expect(await fse.pathExists(path.join(homeDir, '.claude'))).toBe(true);
 
     // Shell profile: env block removed, user content preserved
     const zshrc = await fse.readFile(path.join(homeDir, '.zshrc'), 'utf-8');
@@ -3489,6 +3492,35 @@ describe('uninstall', () => {
 
     // User's own skill must survive
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'my-own-skill', 'SKILL.md'))).toBe(true);
+  });
+
+  it('removes the skills directory once the skills it delivered were all it held', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    await fse.remove(path.join(homeDir, '.claude', 'skills', 'my-own-skill'));
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig: makeTeamConfig() });
+    commitTeamRepo(repoPath);
+
+    await uninstall({ force: true });
+
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills'))).toBe(false);
+    expect(await fse.pathExists(path.join(homeDir, '.claude'))).toBe(true);
+  });
+
+  it('keeps an empty folder of the member\'s in the skills directory, and the directory with it', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    await fse.remove(path.join(homeDir, '.claude', 'skills', 'my-own-skill'));
+    await fse.ensureDir(path.join(homeDir, '.claude', 'skills', 'drafts'));
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig: makeTeamConfig() });
+    commitTeamRepo(repoPath);
+
+    await uninstall({ force: true });
+
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'team-skill'))).toBe(false);
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'drafts'))).toBe(true);
   });
 
   it('保留 CLAUDE.md 中非 teamai 的内容', async () => {

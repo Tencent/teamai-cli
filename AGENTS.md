@@ -58,6 +58,7 @@ The most common defect is a change that works on the path you tested and is miss
 - **Layers**: a default, its replacement at the team root, and the active namespace.
 - **Entry points**: the CLI command, a workflow step, a hook, and the dashboard.
 - **Reverse states**: whatever pull delivers, a later pull and `teamai uninstall` remove. A way in has a way out and a way to see it.
+- **Runs**: the first run and the second. A cache, a stamp or a cooldown makes them differ, and a member lives in the second.
 - **OS**: Windows CI runs a subset of the tests. Say when a path change did not run there.
 - **Docs and `skill-data/`**: check whether the change makes existing guidance inaccurate. Apply the [documentation rules](#documentation) before adding anything.
 
@@ -76,6 +77,8 @@ Documentation checks run in `npm run lint`.
 A PR that changes runtime behavior (anything other than docs-only / tests-only / lint-rule-only) must verify the change end to end with the real CLI, in a world (`npm run verify:world`). Type check and unit tests are not enough. **One representative real-CLI run is enough.** Paste the record of what actually passed into the PR. A docs-only, tests-only, or lint-rule-only change (no runtime code touched) needs no real-CLI record. For a required helper call enforced by an enabled `teamai/*` rule, run `npm run lint` and the helper unit test; do not add an E2E file for each command.
 
 CI reports how the text teamai's defaults put in an agent's context changes against main: always loaded, through progressive disclosure, and on hook events. When always-loaded text grows, say why in the PR.
+
+CI also reports the agent wait budget against main: the processes a hook or a pull makes the agent wait on, on its first run and its second. When one grows, say why in the PR.
 
 Test behavior that can break, such as delivery into each tool, layer resolution, workflow runs and their failures, config and external-format parsing, and the logic a bug fix changed. Leave out tests for what types already guarantee, trivial logic, copy text, smoke runs, mock-call mirrors, and callback wiring.
 
@@ -100,13 +103,14 @@ Do not cover the full tool × repo provider matrix below. Leave extra repo provi
 - `website/` - the standalone public site: its own package, with no CLI code or copied documentation, and its own build, tests and CI.
 - `skills/`, `skill-data/`, `rules/`, `agents/`, `hooks/`, `workflows/`, `scorers/` - the agent resources teamai ships as its default layer. A team replaces each one by name.
 - `oxlint-plugin-teamai/` - the repo's lint rules; its README lists what each one rejects.
-- `scripts/` - repo tooling: documentation checks, the verify world, the context budget.
+- `scripts/` - repo tooling: documentation checks, the verify world, the context budget and the agent wait budget.
 
 ## Taste
 
 - Complexity belongs at the tool boundary. A per-tool fact lives in that tool's `TOOLS` entry, and shared code stays tool-agnostic; `teamai/tool-facts` fails a tool list or a partial per-tool table anywhere else.
 - Parse inputs at the boundary with zod. Inferred types over annotations. `any` is the enemy.
 - Default to no comment. Write one only for a constraint, an external quirk, or an invariant the code can't show, in one line where you can. Don't restate names or signatures, narrate steps, record history, or explain the fix you just made; the PR carries that. `teamai/no-low-value-comments` enforces the mechanical cases.
+- An agent waits on every hook and on every pull it runs. Do after the hook returns whatever the agent does not need to continue, and prove a saving in the agent wait budget's counts, never in elapsed time.
 
 ## Self review before push
 

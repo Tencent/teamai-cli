@@ -808,6 +808,130 @@ describe('team env by directory (#1018)', () => {
     }, 20_000);
   });
 
+  // A login bash runs the loader twice: from the profile block, then as the BASH_ENV that pass exported. The second
+  // pass applies the team env again, so a team value wins over a profile line after the block; it reuses the first
+  // pass's route only where nothing that could change git's answer changed in between.
+  describe.skipIf(!hasShell('bash'))('a login bash', () => {
+    let trace: string;
+
+    beforeEach(() => {
+      vi.stubEnv('SHELL', '/bin/bash');
+      trace = path.join(tmpDir, 'git-trace2.json');
+    });
+
+    /** Append `tail` to the login file the pull put teamai's block in, so it runs after the block. */
+    const afterTheBlock = async (tail: string): Promise<void> => {
+      const login = ['.bash_profile', '.bash_login', '.profile'].map((name) => path.join(homeDir, name)).find((file) => fs.existsSync(file)) ?? '';
+      expect(await fse.readFile(login, 'utf-8')).toContain('env-loader.sh');
+      await fse.appendFile(login, tail);
+    };
+
+    // GIT_TRACE2_EVENT counts every git process: macOS's /etc/profile puts the system git ahead of a PATH shim.
+    const run = (shell: string, args: string[], dir: string) => spawnSync(shell, args, {
+      cwd: dir, env: { HOME: homeDir, PATH: process.env.PATH, SHELL: '/bin/bash', GIT_TRACE2_EVENT: trace }, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    /** The routes git answered since the last call: one `rev-parse --git-common-dir` each. */
+    const routes = (): number => {
+      const lines = fs.existsSync(trace) ? fs.readFileSync(trace, 'utf-8').split('\n') : [];
+      fs.rmSync(trace, { force: true });
+      return lines.filter((line) => line.includes('"event":"start"') && line.includes('"rev-parse","--git-common-dir"')).length;
+    };
+
+    it('gives the team value over a profile line after the block that sets the same key', async () => {
+      const a = await project('a');
+      await handler.writeResolvedEnv([{ key: 'MARKER', value: 'from-a' }], teamConfig, a);
+      await afterTheBlock('export MARKER=member-late\n');
+
+      expect(run('bash', ['-lc', 'printf %s "$MARKER"'], a.projectRoot ?? '').stdout).toBe('from-a');
+    });
+
+    it('asks git once in a checkout, for the profile pass and the BASH_ENV pass together', async () => {
+      const a = await project('a');
+      await handler.writeResolvedEnv([{ key: 'MARKER', value: 'from-a' }], teamConfig, a);
+      routes();
+
+      expect(run('bash', ['-lc', 'printf %s "$MARKER"'], a.projectRoot ?? '').stdout).toBe('from-a');
+      expect(routes()).toBe(1);
+    });
+
+    it('gives a linked worktree its main checkout\'s env with one git call', async () => {
+      const a = await project('a');
+      const root = a.projectRoot ?? '';
+      execFileSync('git', ['-C', root, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init']);
+      const worktree = path.join(tmpDir, 'work', 'a-feature');
+      execFileSync('git', ['-C', root, 'worktree', 'add', '-q', worktree]);
+      await handler.writeResolvedEnv([{ key: 'MARKER', value: 'from-a' }], teamConfig, a);
+      routes();
+
+      expect(run('bash', ['-lc', 'printf %s "$MARKER"'], worktree).stdout).toBe('from-a');
+      expect(routes()).toBe(1);
+    });
+
+    it.each([
+      { from: 'a checkout', start: (root: string) => root },
+      { from: 'a linked worktree', start: (_root: string, worktree: string) => worktree },
+    ])('routes again with git when a profile line after the block changes to an unrelated checkout, from $from', async ({ start }) => {
+      const a = await project('a');
+      const b = await project('b');
+      const root = a.projectRoot ?? '';
+      execFileSync('git', ['-C', root, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init']);
+      const worktree = path.join(tmpDir, 'work', 'a-feature');
+      execFileSync('git', ['-C', root, 'worktree', 'add', '-q', worktree]);
+      await handler.writeResolvedEnv([{ key: 'MARKER', value: 'from-a' }], teamConfig, a);
+      await handler.writeResolvedEnv([{ key: 'MARKER', value: 'from-b' }], teamConfig, b);
+      await afterTheBlock(`cd '${b.projectRoot}'\n`);
+      routes();
+
+      expect(run('bash', ['-lc', 'printf %s "$MARKER"'], start(root, worktree)).stdout).toBe('from-b');
+      expect(routes()).toBe(2);
+    });
+
+    it.each(['GIT_DIR', 'GIT_CEILING_DIRECTORIES'])('routes again with git when a profile line after the block sets %s', async (name) => {
+      const a = await project('a');
+      await handler.writeResolvedEnv([{ key: 'MARKER', value: 'from-a' }], teamConfig, a);
+      await afterTheBlock(`export ${name}='${path.join(a.projectRoot ?? '', '.git')}'\n`);
+      routes();
+
+      run('bash', ['-lc', 'true'], a.projectRoot ?? '');
+      expect(routes()).toBe(2);
+    });
+
+    it('leaves a child bash -c to ask git itself', async () => {
+      const a = await project('a');
+      await handler.writeResolvedEnv([{ key: 'MARKER', value: 'from-a' }], teamConfig, a);
+      routes();
+      run('bash', ['-lc', 'true'], a.projectRoot ?? '');
+      const login = routes();
+
+      expect(run('bash', ['-lc', 'bash -c \'printf %s "$MARKER"\''], a.projectRoot ?? '').stdout).toBe('from-a');
+      expect(routes() - login).toBe(1);
+    });
+
+    it.skipIf(!hasShell('zsh'))('leaves a bash -c a zsh starts to ask git itself', async () => {
+      const a = await project('a');
+      await handler.writeResolvedEnv([{ key: 'MARKER', value: 'from-a' }], teamConfig, a);
+      routes();
+      run('zsh', ['-c', 'true'], a.projectRoot ?? '');
+      const zsh = routes();
+
+      expect(run('zsh', ['-c', 'bash -c \'printf %s "$MARKER"\''], a.projectRoot ?? '').stdout).toBe('from-a');
+      expect(routes() - zsh).toBe(1);
+    });
+
+    it('routes an interactive login bash as before', async () => {
+      const a = await project('a');
+      await handler.writeResolvedEnv([{ key: 'MARKER', value: 'from-a' }], teamConfig, a);
+      routes();
+      const interactive = spawnSync('bash', ['-l', '-i'], {
+        cwd: a.projectRoot, env: { HOME: homeDir, PATH: process.env.PATH, SHELL: '/bin/bash', GIT_TRACE2_EVENT: trace }, encoding: 'utf-8', input: 'printenv MARKER\nexit\n',
+      });
+
+      expect(interactive.stdout.trim()).toBe('from-a');
+      expect(routes()).toBe(3);
+    });
+  });
+
   describe('upgrading a profile an older version wrote', () => {
     /** A per-scope block as versions before #1018 wrote it. */
     const oldBlock = (envSh: string): string =>

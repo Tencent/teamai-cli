@@ -1,6 +1,7 @@
 import { toolHome } from '../tool-home.js';
 import { getTeamaiHomeDir } from '../types.js';
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished, type Mock } from 'vitest';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -90,6 +91,7 @@ import { TEAMAI_HOOK_SUBCOMMANDS, readCodexHookTrustForScope } from '../hooks.js
 import { log, setStderrOnly } from '../utils/logger.js';
 import { isGfInstalled, gfIsAuthenticated } from '../providers/tgit/index.js';
 import { buildChecks, doctor, resolveDoctorContext } from '../doctor.js';
+import { teamaiWrapperSource } from '../builtin-hooks.js';
 import type { DoctorReport } from '../doctor.js';
 
 const mockedLoadLocalConfig = loadLocalConfig as Mock;
@@ -1157,6 +1159,77 @@ describe('buildChecks — the Codex team rules hook (#938)', () => {
         const ctx = await resolveDoctorContext();
 
         expect((await buildChecks(ctx!)).map((c) => c.name).filter((n) => n.startsWith('Project rules and instructions reach'))).toEqual([NAME]);
+    });
+});
+
+describe('buildChecks — the wrapper a login-deferred hook starts', () => {
+    const NAME = 'The teamai wrapper that login-deferred hooks start is current';
+    const DEFERRED = 'if [ -x \\"$HOME/.teamai/bin/teamai\\" ]; then TEAMAI_HOOK_LOGIN=deferred \\"$HOME/.teamai/bin/teamai\\" hook-dispatch post-tool-use --tool claude 2>/dev/null; fi || true';
+    let entry: string;
+
+    beforeEach(() => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-doctor-wrapper-'));
+        entry = path.join(dir, 'index.js');
+        fs.writeFileSync(entry, '// teamai entry');
+        onTestFinished(() => fs.rmSync(dir, { recursive: true, force: true }));
+    });
+
+    async function checks(settings: string, wrapper: string | null) {
+        mockedReadFileSafe.mockImplementation(async (filePath: string) => (
+            filePath.endsWith(path.join('.teamai', 'bin', 'teamai'))
+                ? wrapper
+                : filePath.endsWith(path.join('.claude', 'settings.json')) ? settings : null
+        ));
+        const ctx = await resolveDoctorContext();
+        if (!ctx) throw new Error('expected a resolved doctor context');
+        return buildChecks(ctx);
+    }
+
+    const withDeferredEntry = () => buildFullHooksContent().replace(/ \} \}$/, `, "command": "${DEFERRED}" } }`);
+
+    it('passes for the wrapper a pull wrote, whose Node and teamai exist', async () => {
+        const check = (await checks(withDeferredEntry(), teamaiWrapperSource({ node: process.execPath, entry }))).find((c) => c.name === NAME);
+
+        expect(await check!.check()).toBe(true);
+    });
+
+    it.each([
+        ['records a Node that is gone', () => teamaiWrapperSource({ node: path.join(path.dirname(entry), 'gone', 'node'), entry })],
+        ['records a teamai that is gone', () => teamaiWrapperSource({ node: process.execPath, entry: path.join(path.dirname(entry), 'gone.js') })],
+        ['is missing', () => null],
+    ])('fails when the wrapper %s, naming it and `teamai pull`', async (_label, wrapper) => {
+        const check = (await checks(withDeferredEntry(), wrapper())).find((c) => c.name === NAME);
+
+        expect(await check!.check()).toBe(false);
+        expect(check!.fix).toContain(path.join('.teamai', 'bin', 'teamai'));
+        expect(check!.fix).toContain('Run `teamai pull`');
+    });
+
+    it('names the Codex hook file when it holds a login-deferred entry', async () => {
+        mockedLoadLocalConfig.mockResolvedValue({ ...mockLocalConfig, enabledAgents: ['claude', 'codex'] });
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            toolPaths: { claude: { settings: '.claude/settings.json' }, codex: { settings: '.codex/hooks.json' } },
+        });
+        mockedReadFileSafe.mockImplementation(async (filePath: string) => (
+            filePath.endsWith(path.join('.codex', 'hooks.json'))
+                ? withDeferredEntry().replace('--tool claude', '--tool codex')
+                : filePath.endsWith(path.join('.claude', 'settings.json')) ? buildFullHooksContent() : null
+        ));
+        const ctx = await resolveDoctorContext();
+        if (!ctx) throw new Error('expected a resolved doctor context');
+
+        const check = (await buildChecks(ctx)).find((c) => c.name === NAME);
+
+        expect(check!.fix).toContain(path.join('.codex', 'hooks.json'));
+        expect(check!.fix).not.toContain(path.join('.claude', 'settings.json'));
+    });
+
+    it('adds no check when no hook file holds a login-deferred entry', async () => {
+        const names = (await checks(buildFullHooksContent(), null)).map((c) => c.name);
+
+        expect(names).toContain('teamai hooks in claude settings');
+        expect(names).not.toContain(NAME);
     });
 });
 

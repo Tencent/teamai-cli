@@ -46,10 +46,14 @@ case "$1 $2" in
 esac
 `;
 
-/** `claude` writing "Lesson of <MR title>", logging each MR title it was asked about and the prompt's language. */
+/**
+ * `claude` writing "Lesson of <MR title>", logging each MR title it was asked about and the prompt's language.
+ * `--version` answers as Claude Code does and is no AI call, so it logs nothing.
+ */
 function fakeClaude(bin: string, log: string): void {
   fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}
 const fs = require('fs');
+if (process.argv[2] === '--version') { process.stdout.write('2.1.322 (Claude Code)\\n'); process.exit(0); }
 let stdin = ''; process.stdin.on('data', (d) => stdin += d); process.stdin.on('end', () => {
   const title = /MR (?:title|标题)[:：] ?(.*)/.exec(stdin)?.[1] ?? 'Unknown';
   fs.appendFileSync(${JSON.stringify(log)}, title + (stdin.includes('Write in English') ? ' (en)' : ' (zh)') + '\\n');
