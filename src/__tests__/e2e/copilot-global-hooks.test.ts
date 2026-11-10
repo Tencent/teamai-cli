@@ -380,8 +380,10 @@ describe('Copilot built-in hooks in project scope', () => {
       if (path.basename(file).startsWith('managed-') && file.endsWith('.json')) fs.rmSync(path.join(sandbox, file));
     }
     cli(['uninstall', '--agent', 'claude', '--force'], dir);
-    const remaining = JSON.parse(fs.readFileSync(path.join(dir, gitExclude ? '.claude/settings.local.json' : '.claude/settings.json'), 'utf8'));
-    expect(remaining.hooks.Stop ?? []).toEqual([]);
+    // A settings file that held only this agent's hooks goes with them (#1808).
+    const remainingFile = path.join(dir, gitExclude ? '.claude/settings.local.json' : '.claude/settings.json');
+    const remaining = fs.existsSync(remainingFile) ? hooks(remainingFile) : undefined;
+    expect(remaining?.hooks.Stop ?? []).toEqual([]);
   });
 
   it('installs with init, migrates with pull and keeps shared hooks on project uninstall', () => {
