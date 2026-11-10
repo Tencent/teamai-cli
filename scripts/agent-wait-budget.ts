@@ -629,7 +629,7 @@ export function measureAgentWait(options: { keep: boolean }) {
       if (run.cold) clearCaches(world);
       const result = measure(world, path.join(scratch, 'measure', `${index + 1}`), run, failures);
       measured.set(`${run.row}|${run.run}`, result);
-      console.error(`  ${run.row}, ${run.run} run: git ${result.counts.gitWaited} waited, ${result.counts.gitAfter} after; Node ${result.counts.nodeWaited} waited, ${result.counts.nodeAfter} after; other ${result.counts.otherWaited} waited, ${result.counts.otherAfter} after${result.counts.fastPath ? '; fast path' : ''}`);
+      console.error(`  ${run.row}, ${run.run} run: git ${result.counts.gitWaited} waited, ${result.counts.gitAfter} after; Node ${result.counts.nodeWaited} waited, ${result.counts.nodeAfter} after; other ${result.counts.otherWaited} waited, ${result.counts.otherAfter} after${result.counts.fastPath ? '; fast path' : ''}; ${result.counts.waitedMs} ms waited`);
 
       if (run.hook !== undefined || run.command?.[0] === 'git') {
         if (!result.lines.some((line) => / fast path$| foreground: | no scope$/.test(line))) failures.push(`${run.row}, ${run.run} run: the hook added no line to debug.log, so it did not run`);
