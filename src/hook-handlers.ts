@@ -147,7 +147,7 @@ const pullHandler: HookHandler = {
 
     const { pull, settleLateUsageReport } = await import('./pull.js');
     const { SessionCaptures } = await import('./session-flow/captures.js');
-    const before = config && await SessionCaptures.checkoutDelivery(config, tool);
+    const before = config && await SessionCaptures.checkoutDelivery(config);
 
     if (config && await needsPreparation(hintCwd, config)) await prepareCheckout(hintCwd, 'session-start');
     else await pull({ silent: true, sessionStart: true });

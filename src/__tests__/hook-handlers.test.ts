@@ -678,8 +678,8 @@ describe('hook-handlers registry', () => {
       captureId, platform: 'claude-code', sessionId: 's-pull', capturedAt: '2026-10-23T10:00:00.000Z',
       agent: { v: 1, tool: { name: 'claude' }, teamai: '0.0.0', driver: 'session' },
     }));
-    const record = (rev: string) => ({ complete: true, key: 'k', commit: rev.repeat(40), record: { rev, targets: ['claude'] } });
-    mockTeamDelivery.mockResolvedValueOnce(record('a')).mockResolvedValueOnce(record('b'));
+    const record = (rev: string) => ({ rev, targets: ['claude'] });
+    mockDeliveringCheckoutRecord.mockResolvedValueOnce(record('a')).mockResolvedValueOnce(record('b'));
     const config: LocalConfig = { repo: { kind: 'git', localPath: root, remote: '' }, username: 'test', scope: 'user', additionalRoles: [], dataHome: path.join(root, 'data') };
     const handler = buildHandlerRegistry().find((r) => r.event === 'session-start' && r.handler.name === 'pull')?.handler;
 
