@@ -43,7 +43,11 @@ describe('issue #373 project hook isolation (real CLI)', () => {
   type Settings = { hooks: { SessionStart?: Array<unknown>; Stop: Array<{ description?: string; hooks: Array<{ command: string }> }> } };
   const expectedCommand = (file: string, command: string): string =>
     file.includes('.claude') ? `${claudeHookOtherHostSkip('Stop', undefined, command)}${command}` : command;
-  const readSettings = (file: string): Settings => JSON.parse(fs.readFileSync(file, 'utf8')) as Settings;
+  // A settings file that held only this checkout's hook is removed on uninstall
+  // (#1808), so an absent file reads as one with no hooks: every assertion here
+  // counts teamai's entries, and one that should still be there still fails.
+  const readSettings = (file: string): Settings =>
+    (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) as Settings : { hooks: { Stop: [] } });
   const mainFiles = (project: string): string[] => [
     path.join(project, '.claude', 'settings.local.json'),
     path.join(project, '.codex', 'hooks.json'),
