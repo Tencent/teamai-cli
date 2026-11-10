@@ -33,7 +33,7 @@ export function resetBundledRuntimeCache(): void {
 /**
  * Compare two semver-like version strings numerically (segment by segment).
  * Returns negative if a < b, 0 if equal, positive if a > b.
- * Local copy rather than update.ts's compareVersions: this module sits on the
+ * Local copy rather than version.ts's compareVersions: this module sits on the
  * hook-injection fast path and must not drag in update's import graph.
  */
 function compareSemver(a: string, b: string): number {
