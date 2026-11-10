@@ -1248,13 +1248,14 @@ describe('reconcileTeamHooksForConfig — the form of Claude Code\'s PostToolUse
     expect(await postToolUse()).toEqual(LOGIN_DEFERRED);
   });
 
-  it('keeps today\'s entry on Windows, whose hooks run no POSIX shell', async () => {
+  it('keeps today\'s entries on Windows, whose hooks run no POSIX shell, past the floor too', async () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
 
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
 
-    expect((await postToolUse()).map((entry) => entry.command)).toEqual([expect.not.stringContaining('TEAMAI_HOOK_LOGIN')]);
-    expect((await userPromptSubmit()).map((entry) => entry.command)).toEqual([expect.not.stringContaining('TEAMAI_HOOK_LOGIN')]);
+    expect(await postToolUse()).toEqual(WAITED);
+    expect(await userPromptSubmit()).toEqual(PROMPT);
   });
 
   it('replaces the pair of entries a release before #1801 wrote with the two entries and nothing else', async () => {
@@ -1482,7 +1483,7 @@ describe('reconcileTeamHooksForConfig — the form of Codex\'s hook entries', ()
 
     const { hooks } = await fse.readJson(file());
     const today = (await fse.readJson(path.join(__dirname, 'fixtures', 'hooks', 'codex.json'))).hooks;
-    expect(hooks).toEqual(version === undefined ? today : { ...today, PostToolUse: UNWAITED });
+    expect(hooks).toEqual(today);
   });
 
   it.each(['0.167.0', '0.147.0'])('removes the entries of either form on uninstall, with a build at %s', async (version) => {

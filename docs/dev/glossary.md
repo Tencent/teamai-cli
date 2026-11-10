@@ -152,7 +152,7 @@ What a hook or a pull costs in **agent wait**, counted as the processes it start
 _Avoid_: benchmark (that is `teamai benchmark`), perf test
 
 **Hook form**:
-How teamai writes its built-in hooks into one hook file: waited, through a login shell, as a project file a repository may commit always keeps them; unwaited, where the **tool** starts the hook and does not wait for it; or login-deferred, where the hook starts teamai without a login shell and the background pass gets the login environment. A **tool**'s facts and its installed version decide the form of the member's own file.
+How teamai writes its built-in hooks into one hook file: waited, through a login shell, as a project file a repository may commit always keeps them; unwaited, where the **tool** starts the hook and does not wait for it; or login-deferred, where the hook starts teamai without a login shell and the background pass gets the login environment. A **tool**'s facts and its installed version decide the form of the member's own file on macOS and Linux; on Windows it stays waited.
 _Avoid_: hook mode, hook style
 
 **Agent context budget**:

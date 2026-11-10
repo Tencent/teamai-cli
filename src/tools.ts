@@ -311,9 +311,9 @@ export type HooksChannels = {
   /**
    * The first version of the tool whose command hooks take `"async": true` and are then not waited for, with no
    * side effect on a hook that prints nothing. Once the installed version reaches it, teamai writes its PostToolUse
-   * built-in that way into the member's own hook file (`builtinHookForm`). Set on a run of the real tool, or on its
-   * documentation together with its source read at the floor and at a later release; the comment beside it says
-   * which. Absent: the tool has no such option, or neither shows it.
+   * built-in that way into the member's own hook file, on macOS and Linux only (`builtinHookForm`). Set on a run of
+   * the real tool, or on its documentation together with its source read at the floor and at a later release; the
+   * comment beside it says which. Absent: the tool has no such option, or neither shows it.
    */
   readonly unwaitedSince?: string;
   /**

@@ -542,12 +542,13 @@ export const BUILTIN_HOOK_FORMS: readonly BuiltinHookForm[] = [false, true]
  * The form of `tool`'s built-ins in its hook file at `destination`: the member's own (`user`), or a project file a
  * repository may commit (`project`), which members with other tool versions and homes share, so it keeps the waited
  * login-shell form. `unwaited` needs the version `unwaitedVersionOf` names at or above the tool's `unwaitedSince`: a
- * version that cannot be read keeps the hook waited. `loginDeferred` needs the tool's `loginDeferrable`, on POSIX.
+ * version that cannot be read keeps the hook waited. `loginDeferred` needs the tool's `loginDeferrable`. On Windows
+ * neither applies, and no tool is started.
  */
 export async function builtinHookForm(tool: string, destination: 'user' | 'project'): Promise<BuiltinHookForm> {
-  if (destination === 'project') return WAITED_LOGIN_FORM;
+  if (destination === 'project' || process.platform === 'win32') return WAITED_LOGIN_FORM;
   const { unwaitedSince, unwaitedVersionOf, loginDeferrable } = channelsOf(tool).hooks;
-  const loginDeferred = loginDeferrable === true && process.platform !== 'win32';
+  const loginDeferred = loginDeferrable === true;
 
   if (unwaitedSince === undefined) return { unwaited: false, loginDeferred };
   const version = await unwaitedFloorVersion(tool, unwaitedVersionOf);

@@ -227,10 +227,20 @@ describe('builtinHookForm', () => {
     { version: '', unwaited: false },
     { version: 'not a version', unwaited: false },
   ])('unwaits the member\'s own file of a tool at $version against a floor of 2.1.119: $unwaited', async ({ version, unwaited }) => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     await withFacts({ unwaitedSince: '2.1.119' });
     vi.mocked(getAgentVersion).mockResolvedValue(version);
 
     expect(await builtinHookForm('claude', 'user')).toEqual({ unwaited, loginDeferred: false });
+  });
+
+  it('keeps the member\'s own file waited on Windows past the floor, and starts no tool to read its version', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    await withFacts({ unwaitedSince: '2.1.119', loginDeferrable: true });
+    vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
+
+    expect(await builtinHookForm('claude', 'user')).toEqual({ unwaited: false, loginDeferred: false });
+    expect(getAgentVersion).not.toHaveBeenCalled();
   });
 
   it('defers the login shell in the member\'s own file on POSIX only', async () => {
