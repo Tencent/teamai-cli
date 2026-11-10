@@ -78,6 +78,22 @@ vi.mock('../builtin-hooks.js', () => ({
   resolveTeamaiEntryScript: vi.fn(),
 }));
 
+const {
+  mockSelectOtherInstallation,
+  mockReadInstalledVersion,
+  mockSetInstallationUpdate,
+} = vi.hoisted(() => ({
+  mockSelectOtherInstallation: vi.fn(),
+  mockReadInstalledVersion: vi.fn(),
+  mockSetInstallationUpdate: vi.fn(),
+}));
+vi.mock('../installations.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../installations.js')>()),
+  selectOtherInstallation: mockSelectOtherInstallation,
+  readInstalledVersion: mockReadInstalledVersion,
+  setInstallationUpdate: mockSetInstallationUpdate,
+}));
+
 let readlineAnswer = 'n';
 vi.mock('../utils/prompt.js', () => ({
   // Mirror the real predicate's TTY leg so tests that force `isTTY` keep
@@ -216,6 +232,8 @@ beforeEach(() => {
   mockedFse.link.mockResolvedValue(undefined);
   mockedFse.remove.mockResolvedValue(undefined);
   mockedFse.rename.mockResolvedValue(undefined);
+  mockSelectOtherInstallation.mockReturnValue(null);
+  mockReadInstalledVersion.mockReturnValue(null);
 });
 
 // ─── Unit tests: compareVersions ────────────────────────
@@ -440,11 +458,17 @@ describe('doUpdate', () => {
     }
     expect(mockedExecSync).toHaveBeenCalledWith(
       expect.any(String),
-      expect.arrayContaining(['install', '-g']),
+      expect.arrayContaining(['install', '-g', `${getCurrentPackageName()}@99.0.0`]),
       expect.any(Object),
     );
     expect(mockedLog.success).toHaveBeenCalledWith(
       expect.stringContaining('Updated teamai to v99.0.0'),
+    );
+    expect(mockSetInstallationUpdate).toHaveBeenCalledWith(
+      expect.any(String),
+      'updated',
+      expect.stringContaining('v99.0.0'),
+      '99.0.0',
     );
   });
 
@@ -1082,6 +1106,17 @@ describe('hook refresh after update', () => {
     expect(mockedLog.error).toHaveBeenCalledWith(
       expect.stringContaining('Hook refresh after update skipped'),
     );
+    expect(mockSetInstallationUpdate).toHaveBeenCalledWith(
+      expect.any(String),
+      'failed',
+      expect.stringContaining('Hook refresh after update skipped'),
+    );
+    expect(mockSetInstallationUpdate).not.toHaveBeenCalledWith(
+      expect.any(String),
+      'updated',
+      expect.anything(),
+      expect.anything(),
+    );
   });
 });
 
@@ -1642,6 +1677,122 @@ describe('restoreInterruptedBins', () => {
     fs.mkdirSync(path.join(prefix, 'lib', 'node_modules', '.teamai-cli-38m3aZH1'));
 
     expect(restoreInterruptedBins(pkgDir, prefix)).toEqual([]);
+  });
+});
+
+describe('registered copies (#1753)', () => {
+  const current = getCurrentVersion();
+  const record = {
+    id: 'other-copy',
+    entry: '/other/lib/node_modules/teamai-cli/dist/installations.js',
+    version: '0.21.0',
+    method: 'npm-global' as const,
+    prefix: '/other',
+    autoUpdateSupported: true,
+    lastSeenAt: '2026-11-09T09:00:00.000Z',
+    lastUpdateAt: null,
+    lastUpdateOutcome: null,
+    lastUpdateMessage: null,
+  };
+
+  beforeEach(() => {
+    mockedLoadState.mockResolvedValue({
+      ...defaultState,
+      lastUpdateCheck: new Date().toISOString(),
+      availableUpdate: current,
+    });
+    mockSelectOtherInstallation.mockReturnValue(record);
+  });
+
+  it('leaves another registered copy alone without the member opt-in', async () => {
+    mockedLoadLocalConfig.mockResolvedValue({
+      repo: { localPath: '/tmp/repo', remote: 'https://git.woa.com/team/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+    });
+
+    await doUpdate(null);
+
+    expectNoInstall();
+    expect(mockSetInstallationUpdate).not.toHaveBeenCalled();
+  });
+
+  it('updates one registered copy under its own prefix when opted in', async () => {
+    mockedLoadLocalConfig.mockResolvedValue({
+      repo: { localPath: '/tmp/repo', remote: 'https://git.woa.com/team/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      updateOtherInstallations: true,
+    });
+    mockReadInstalledVersion
+      .mockReturnValueOnce('0.21.0')
+      .mockReturnValueOnce(current);
+    mockedExecSync.mockResolvedValue({ stdout: '', stderr: '' });
+
+    await doUpdate(null);
+
+    expect(mockedExecSync).toHaveBeenCalledTimes(1);
+    expect(mockedExecSync).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining(['install', '-g', `${getCurrentPackageName()}@${current}`, '--prefix=/other']),
+      expect.objectContaining({ windowsHide: true }),
+    );
+    expect(mockSetInstallationUpdate).toHaveBeenCalledWith(
+      'other-copy',
+      'updated',
+      expect.stringContaining(`v${current}`),
+      current,
+    );
+  });
+
+  it('reports a copy that stayed on its old version as failed', async () => {
+    mockedLoadLocalConfig.mockResolvedValue({
+      repo: { localPath: '/tmp/repo', remote: 'https://git.woa.com/team/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      updateOtherInstallations: true,
+    });
+    mockReadInstalledVersion
+      .mockReturnValueOnce('0.21.0')
+      .mockReturnValueOnce('0.21.0');
+    mockedExecSync.mockResolvedValue({ stdout: '', stderr: '' });
+
+    await expect(doUpdate(null)).resolves.toBe('failed');
+    expect(mockSetInstallationUpdate).toHaveBeenCalledWith(
+      'other-copy',
+      'failed',
+      expect.stringContaining(`expected v${current}`),
+      '0.21.0',
+    );
+  });
+
+  it('leaves the other copy for the next Stop when the running copy installs', async () => {
+    mockedLoadState.mockResolvedValue({ ...defaultState });
+    mockedLoadLocalConfig.mockResolvedValue({
+      repo: { localPath: '/tmp/repo', remote: 'https://git.woa.com/team/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      updateOtherInstallations: true,
+    });
+    mockedExecSync
+      .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' }) // npm view
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })          // npm install (running copy)
+      .mockResolvedValueOnce({ stdout: '', stderr: '' });         // hooks inject
+
+    await expect(doUpdate(null)).resolves.toBe('ok');
+
+    expect(mockedExecSync).toHaveBeenCalledTimes(3);
+    expect(mockedExecSync).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining(['--prefix=/other']),
+      expect.anything(),
+    );
+    expect(mockSetInstallationUpdate).not.toHaveBeenCalledWith(
+      'other-copy',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
   });
 });
 

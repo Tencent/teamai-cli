@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -63,6 +63,7 @@ describe('jsonl store', () => {
     expect(Date.now() - started).toBeLessThan(HOOK_LOCK_WAIT.budgetMs + 750);
     expect(await sideRecords()).toHaveLength(1);
     expect(await readJsonl(file())).toStrictEqual([{ n: 1 }, { n: 2 }]);
+    expect(await readJsonl(file(), { includePending: false })).toStrictEqual([{ n: 1 }]);
   });
 
   it('folds side records in at the next append, each once', async () => {
@@ -84,6 +85,40 @@ describe('jsonl store', () => {
     await fs.promises.writeFile(file(), await fs.promises.readFile(path.join(dir, side), 'utf-8'));
 
     expect(await readJsonl(file())).toStrictEqual([{ n: 1 }]);
+  });
+
+  it.each(['main', 'pending'])('keeps a side record visible when a fold races the %s file read', async (during) => {
+    await appendJsonl(file(), { n: 1 });
+    await holdLock();
+    await appendJsonl(file(), { n: 2 }, { wait: { budgetMs: 0, delayMs: 0 } });
+    const [side] = await sideRecords();
+    await fs.promises.rm(lockPath());
+    const realReadFile = fs.promises.readFile.bind(fs.promises);
+    let folded = false;
+    const read = vi.spyOn(fs.promises, 'readFile').mockImplementation(async (...args: Parameters<typeof fs.promises.readFile>) => {
+      if (!folded && during === 'pending' && args[0] === path.join(dir, side)) {
+        folded = true;
+        await appendJsonl(file(), { n: 3 });
+      }
+
+      const content = await realReadFile(...args);
+
+      if (!folded && during === 'main' && args[0] === file()) {
+        folded = true;
+        await appendJsonl(file(), { n: 3 });
+      }
+
+      return content;
+    });
+
+    try {
+      const records = await readJsonl(file());
+      expect(records.filter((record) => record.n === 1)).toStrictEqual([{ n: 1 }]);
+      expect(records.filter((record) => record.n === 2)).toStrictEqual([{ n: 2 }]);
+      expect(await sideRecords()).toEqual([]);
+    } finally {
+      read.mockRestore();
+    }
   });
 
   it('appends a batch in order, and records it in one side record while the lock is held', async () => {

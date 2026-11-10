@@ -196,6 +196,15 @@ describe('reconcileHooks — team (B) hooks', () => {
       expect(cursorHooks().postToolUse.some((h) => h.command.includes('scan.sh'))).toBe(true);
       expect(cursorHooks().postToolUse).toHaveLength(2);
     });
+
+    it('Cursor: a built-in-only refresh keeps a member hook that runs a teamai command outside the built-in markers', async () => {
+      const member = 'teamai env exec -- npm test';
+      mockFiles[CURSOR] = { version: 1, hooks: { postToolUse: [{ command: member }] } };
+
+      await reconcileHooks(CURSOR, 'cursor', []);
+
+      expect(cursorHooks().postToolUse.map((h) => h.command)).toContain(member);
+    });
   });
 
   describe('removeAll', () => {

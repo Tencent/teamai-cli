@@ -137,3 +137,6 @@ _Avoid_: primary repo
 **Workspace root**:
 The directory teamai delivers files into.
 _Avoid_: project root, cwd
+
+**Installation**:
+One copy of teamai this machine has run, as `~/.teamai/installations.json` records it. `teamai update` and `teamai doctor` list them. Machine-local: it never enters a team report.

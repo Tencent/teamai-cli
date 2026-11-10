@@ -73,6 +73,7 @@ repo:
   remote: https://github.com/your-org/your-repo.git
 username: your-name
 updatePolicy: auto             # auto / prompt / skip
+updateOtherInstallations: true # 同时更新其他已登记的 npm-global 副本；默认 false
 scope: workspace               # workspace（init 默认）或 user；project 按 workspace 读取
 projectRoot: /path/to/my-workspace
 inheritUserScope: true
@@ -103,7 +104,7 @@ ai:
 4. 团队的 `teamai.yaml`，如果该设置有对应的团队键。
 5. 默认值。
 
-成员设置包括 `ai.tool`、`workflows.*`、`recallEnabled`、`contributeHintEnabled`、`mrHintEnabled`、`coAuthorEnabled`、`usageReportEnabled`、`codexTrustEnabled`、`modelAliases`、`sessions`、`scoring`、`autoCompactTokens` 和 `updatePolicy`。`workflows.tools`、`workflows.allow` 和 `modelAliases` 中的每一项单独计算。`~/.teamai/config.yaml` 中的 `scoring` 只会让会话评判比团队的设置更严格（[已结束的会话](./scorers.md#已结束的会话)）。`updatePolicy` 和 `autoCompactTokens` 作用于整台机器，因此由一个 scope 决定：有 user scope 时由它决定，否则由运行的 scope 决定。其他键都属于某一个安装，不会从本机读取。`~/.teamai/config.yaml` 不是安装时，`doctor` 会列出其中这类键。
+成员设置包括 `ai.tool`、`workflows.*`、`recallEnabled`、`contributeHintEnabled`、`mrHintEnabled`、`coAuthorEnabled`、`usageReportEnabled`、`codexTrustEnabled`、`modelAliases`、`sessions`、`scoring`、`autoCompactTokens`、`updatePolicy` 和 `updateOtherInstallations`。`workflows.tools`、`workflows.allow` 和 `modelAliases` 中的每一项单独计算。`~/.teamai/config.yaml` 中的 `scoring` 只会让会话评判比团队的设置更严格（[已结束的会话](./scorers.md#已结束的会话)）。`updatePolicy`、`updateOtherInstallations` 和 `autoCompactTokens` 作用于整台机器，因此由一个 scope 决定：有 user scope 时由它决定，否则由运行的 scope 决定。其他键都属于某一个安装，不会从本机读取。`~/.teamai/config.yaml` 不是安装时，`doctor` 会列出其中这类键。
 
 | 你想要 | 写入 | 位置 |
 |---|---|---|

@@ -2676,6 +2676,16 @@ if (!process.env.TEAMAI_COMMAND_TABLE_ONLY) {
   // (see bundled-runtime.ts) and pull shells out to git.
   ensureBundledRuntimeOnPath();
 
+  const args = process.argv.slice(2);
+
+  // A workflow step or another child inherits this, so a preview stays a
+  // preview there too (#1753 review).
+  if (args.includes('--dry-run')) process.env.TEAMAI_DRY_RUN = '1';
+
+  const { registerRunningInstallation, registersRunningInstallation } = await import('./installations.js');
+
+  if (registersRunningInstallation(args)) registerRunningInstallation();
+
   // Every error a command action throws leaves as one line on stderr with exit
   // 1, never as an unhandled rejection with a Node stack trace (#1270).
   await program.parseAsync().catch(reportCommandError);

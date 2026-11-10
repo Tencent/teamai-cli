@@ -46,6 +46,7 @@ const MEMBER_SETTINGS = {
   usageReportEnabled: false,
   coAuthorEnabled: false,
   autoCompactTokens: 0,
+  updateOtherInstallations: false,
   codexTrustEnabled: false,
   ai: { tool: 'codex' },
   workflows: { tools: { default: 'codex' }, max_parallel: 2, auto_approve: true, sandbox: true, allow: { network: false, env: ['CI'] } },

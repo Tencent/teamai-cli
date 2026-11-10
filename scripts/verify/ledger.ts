@@ -151,25 +151,18 @@ function environment(world: World): Section {
 const KNOWN_LEFTOVERS_ISSUE = 'https://github.com/Tencent/teamai-cli/issues/1808';
 
 // Each with what it holds: a sha256, `dir`, or `any` where the content names this machine or is a log.
-const NEWLINES = '75a11da44c802486bc6f65640aa48a730f0f684c5c07a42ba3cd1735eb3fb070';
-const EMPTY = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
 
 const KNOWN_LEFTOVERS = new Map([
-  ['home/.bashrc', NEWLINES],
-  ['home/.profile', NEWLINES],
-  ['home/.zshenv', NEWLINES],
+  // A tool's own directory stays: teamai removes what it put inside, not the
+  // directory the tool reads. Removing ~/.claude stopped Claude's MCP config
+  // from being written in the mcp-uninstall e2e, so uninstall leaves it (#1808).
   ['home/.claude', 'dir'],
-  ['home/.claude/settings.json', 'dd575e7cf95bf453e0d555f0f1c5f3fefce79a94f6e6b35d151ea5c8476bce88'],
-  ['home/.teamai', 'dir'],
-  ['home/.teamai/bin', 'dir'],
-  ['home/.teamai/bin/teamai', 'any'],
-  ['home/.teamai/debug.log', 'any'],
-  ['home/.teamai/dashboard', 'dir'],
-  ['home/.teamai/dashboard/session-owners.jsonl', EMPTY],
-  ['home/.teamai/locks', 'dir'],
-  ['home/.teamai/projects', 'dir'],
   ['project/.claude', 'dir'],
-  ['project/.claude/skills', 'dir'],
+  // debug.log stays: an uninstall that failed is explained there, and that
+  // record is worth more than the file, so ~/.teamai stays to hold it (#1808).
+  ['home/.teamai', 'dir'],
+  ['home/.teamai/projects', 'dir'],
+  ['home/.teamai/debug.log', 'any'],
 ]);
 
 /** A way in has a way out: after `teamai uninstall` the world's HOME and project match the snapshot taken at creation. */
