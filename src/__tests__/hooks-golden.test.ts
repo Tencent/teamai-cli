@@ -13,7 +13,7 @@ import { injectHooks } from '../hooks.js';
 import { _resetShellCache } from '../builtin-hooks.js';
 import { getAgentVersion } from '../agent-version.js';
 import { toolHome } from '../tool-home.js';
-import { TOOLS, type ToolId } from '../tools.js';
+import { TOOLS, hookFormatOf, type ToolId } from '../tools.js';
 import { installFakeCodex, pathWithoutCodex } from './helpers/fake-codex.js';
 
 // Byte-equality anchor for the built-in (A) hooks (issue #19 §8 "兼容锚点").
@@ -85,13 +85,15 @@ describe('hooks golden — the hook file in the member\'s own tool home', () => 
     { tool: 'codex', version: '0.167.0', fixture: 'codex-unwaited' },
     { tool: 'codex', version: '0.147.0', fixture: 'codex-login-deferred' },
     { tool: 'codex', version: '', fixture: 'codex-login-deferred' },
-    ...cases.filter(([tool]) => tool !== 'claude' && tool !== 'codex').map(([tool]) => ({ tool, version: '2.1.322', fixture: tool })),
+    // The variants have no version floor, so they keep the login-deferred form at any version.
+    ...['claude-internal', 'tclaude', 'codex-internal', 'tcodex'].map((tool) => ({ tool, version: '2.1.322', fixture: `${tool}-login-deferred` })),
+    ...cases.filter(([tool]) => !['claude', 'codex', 'claude-internal'].includes(tool)).map(([tool]) => ({ tool, version: '2.1.322', fixture: tool })),
   ] as Array<{ tool: ToolId; version: string; fixture: string }>)('$tool at $version matches the $fixture fixture', async ({ tool, version, fixture }) => {
     for (const move of 'moves' in TOOLS[tool].home ? TOOLS[tool].home.moves.by : []) if (move.kind === 'env') vi.stubEnv(move.name, '');
     vi.mocked(getAgentVersion).mockResolvedValue(version);
     codexDir = tool === 'codex' && version !== '' ? installFakeCodex({ version }) : undefined;
     vi.stubEnv('PATH', codexDir ? `${codexDir}${path.delimiter}${pathWithoutCodex()}` : pathWithoutCodex());
-    const p = path.join(toolHome(tool), cases.find(([name]) => name === tool)?.[1] ?? '');
+    const p = path.join(toolHome(tool), hookFormatOf(tool) === 'codex' ? 'hooks.json' : 'settings.json');
     expect(p.startsWith(`${tmp}${path.sep}`)).toBe(true);
 
     await injectHooks(p, tool);

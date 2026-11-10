@@ -214,8 +214,17 @@ describe('builtinHookForm', () => {
   });
 
   it('keeps the waited login-shell form for a tool with neither fact, and starts no tool to read its version', async () => {
-    for (const tool of ['claude-internal', 'codex-internal', 'tcodex', 'cursor', 'qoder']) {
+    for (const tool of ['cursor', 'qoder']) {
       expect(await builtinHookForm(tool, 'user')).toEqual({ unwaited: false, loginDeferred: false });
+    }
+    expect(getAgentVersion).not.toHaveBeenCalled();
+  });
+
+  it('defers the login shell of each internal variant as its original does, with no version floor, and starts no tool', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+
+    for (const tool of ['claude-internal', 'tclaude', 'codex-internal', 'tcodex']) {
+      expect(await builtinHookForm(tool, 'user')).toEqual({ unwaited: false, loginDeferred: true });
     }
     expect(getAgentVersion).not.toHaveBeenCalled();
   });

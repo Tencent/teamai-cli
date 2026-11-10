@@ -1551,6 +1551,91 @@ describe('reconcileTeamHooksForConfig — the form of Codex\'s hook entries', ()
   });
 });
 
+describe('reconcileTeamHooksForConfig — the form of the internal variants\' hook entries', () => {
+  // Each behaves as its original, with no version floor: login-deferred on POSIX, never unwaited.
+  const VARIANTS = [
+    { tool: 'claude-internal', original: 'claude', settings: '.claude-internal/settings.json' },
+    { tool: 'tclaude', original: 'claude', settings: '.tclaude/settings.json' },
+    { tool: 'codex-internal', original: 'codex', settings: '.codex-internal/hooks.json' },
+    { tool: 'tcodex', original: 'codex', settings: '.tcodex/hooks.json' },
+  ] as const;
+  type Variant = typeof VARIANTS[number];
+  /** The original's reviewed fixture, as the variant: the entries a release before the hook forms wrote, or the deferred ones. */
+  const fixtureAs = async ({ tool, original }: Variant, form: 'today' | 'login-deferred') => JSON.parse(
+    (await fse.readFile(path.join(__dirname, 'fixtures', 'hooks', `${original}${form === 'today' ? '' : '-login-deferred'}.json`), 'utf8'))
+      .replaceAll(`--tool ${original} `, `--tool ${tool} `),
+  ).hooks;
+  const configFor = ({ tool, settings }: Variant) => ({ toolPaths: { [tool]: { settings } } }) as unknown as TeamaiConfig;
+  const fileOf = ({ settings }: Variant) => path.join(home, settings);
+  const platform = (name: NodeJS.Platform) => vi.spyOn(process, 'platform', 'get').mockReturnValue(name);
+
+  beforeEach(async () => {
+    for (const { settings } of VARIANTS) await fse.ensureDir(path.join(home, path.dirname(settings)));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each(VARIANTS)('replaces today\'s entries of $tool with the login-deferred ones on POSIX, and gives them back on Windows', async (variant) => {
+    platform('win32');
+    await reconcileTeamHooksForConfig(configFor(variant), localConfig());
+    expect((await fse.readJson(fileOf(variant))).hooks).toEqual(await fixtureAs(variant, 'today'));
+
+    platform('darwin');
+    await reconcileTeamHooksForConfig(configFor(variant), localConfig());
+    const deferred = (await fse.readJson(fileOf(variant))).hooks;
+    expect(deferred).toEqual(await fixtureAs(variant, 'login-deferred'));
+    expect(JSON.stringify(deferred)).not.toContain('"async"');
+
+    platform('win32');
+    await reconcileTeamHooksForConfig(configFor(variant), localConfig());
+    expect((await fse.readJson(fileOf(variant))).hooks).toEqual(await fixtureAs(variant, 'today'));
+  });
+
+  it.each(VARIANTS.filter(({ original }) => original === 'codex'))('keeps today\'s commandWindows in the login-deferred entries of $tool', async (variant) => {
+    const windowsCommands = (hooks: Record<string, Array<{ hooks: Array<{ commandWindows?: string }> }>>) => Object.values(hooks)
+      .flatMap((groups) => groups.flatMap((group) => group.hooks.map((handler) => handler.commandWindows)));
+    platform('darwin');
+
+    await reconcileTeamHooksForConfig(configFor(variant), localConfig());
+
+    expect(windowsCommands((await fse.readJson(fileOf(variant))).hooks)).toEqual(windowsCommands(await fixtureAs(variant, 'today')));
+  });
+
+  it.each(VARIANTS)('changes nothing on a second pull of $tool, reports its entries installed, and removes them on uninstall', async (variant) => {
+    platform('darwin');
+    await reconcileTeamHooksForConfig(configFor(variant), localConfig());
+    const before = await fse.readFile(fileOf(variant), 'utf8');
+
+    await reconcileTeamHooksForConfig(configFor(variant), localConfig());
+
+    expect(await fse.readFile(fileOf(variant), 'utf8')).toBe(before);
+    expect(await getHookStatus(fileOf(variant), { tool: variant.tool, from: 'version' })).toBe('installed');
+
+    await reconcileTeamHooksForConfig(configFor(variant), localConfig(), { removeAll: true });
+
+    expect(await fse.readFile(fileOf(variant), 'utf8')).not.toContain('hook-dispatch');
+  });
+
+  it.each(VARIANTS)('keeps today\'s entries of $tool in a self-mode project file', async (variant) => {
+    platform('darwin');
+    const projectFile = path.join(project, variant.settings);
+    await fse.ensureDir(path.dirname(projectFile));
+    const selfConfig = {
+      repo: { localPath: repo, remote: 'x', kind: 'self', businessRepoRoot: project },
+      username: 'u',
+      scope: 'project',
+      projectRoot: project,
+      additionalRoles: [],
+    } as unknown as LocalConfig;
+
+    await reconcileTeamHooksForConfig(configFor(variant), selfConfig);
+
+    expect((await fse.readJson(projectFile)).hooks).toEqual(await fixtureAs(variant, 'today'));
+  });
+});
+
 describe('reconcileTeamHooksForConfig — legacy projectRoot sweep', () => {
   const withOpencodeAndHermes = {
     toolPaths: {
