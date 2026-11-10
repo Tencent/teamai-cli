@@ -1759,10 +1759,19 @@ async function buildRemovalPlan(
     );
 
     const mcpManifest = (await readJson<ManagedMcpManifest>(mcpManifestPath)) ?? {};
+    const { mcpOwnersOf } = await import('./mcp-reconcile.js');
 
     for (const [toolKey, records] of Object.entries(mcpManifest)) {
       for (const rec of records ?? []) {
-        if (rec?.name) plan.mcpServers.push(`${toolKey}/${rec.name}`);
+        if (!rec?.name) continue;
+
+        // OpenClaw's, Hermes' and DSH's one user config keeps an entry another scope still records (`mcpOwnersOf`).
+        const others = rec.file === undefined ? undefined
+          : await mcpOwnersOf({ tool: toolKey.split(':')[0], file: rec.file }, new Set([mcpManifestPath]));
+
+        const kept = others !== undefined && (others.unreadable.length > 0 || others.owners.some(({ record }) => record.name === rec.name));
+
+        plan.mcpServers.push(`${toolKey}/${rec.name}${kept ? ' (kept: another scope may still deliver it)' : ''}`);
       }
     }
 
