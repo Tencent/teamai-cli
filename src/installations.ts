@@ -40,7 +40,7 @@ export type InstallationRecord = z.infer<typeof InstallationRecordSchema>;
 /** Refresh a row at most this often; any command or hook may run many times a minute. */
 const RESEEN_EVERY_MS = 60 * 60 * 1000;
 
-function installationsPath(): string {
+export function installationsPath(): string {
   return path.join(getTeamaiHomeDir(), 'installations.json');
 }
 
@@ -109,6 +109,21 @@ export function describeInstallation(entry: string, version: string, now = new D
     lastUpdateOutcome: null,
     lastUpdateMessage: null,
   };
+}
+
+/**
+ * Whether a command line records which copy ran, so an update from one copy can
+ * find the others. `--help`, `--version` and `--dry-run` skip it: asking what
+ * the command does, or asking for no changes, must not create `~/.teamai` or a
+ * file in it. `uninstall` skips it so it leaves no inventory behind. Root
+ * options take no value, so the first other argument is the command.
+ */
+export function registersRunningInstallation(args: readonly string[]): boolean {
+  if (args.length === 0 || args.includes('--dry-run')) return false;
+
+  if (args.some((arg) => arg === '--help' || arg === '-h' || arg === '--version' || arg === '-V')) return false;
+
+  return args.find((arg) => !arg.startsWith('-')) !== 'uninstall';
 }
 
 /**

@@ -8,6 +8,7 @@ import {
   installationNotes,
   readInstallations,
   registerRunningInstallation,
+  registersRunningInstallation,
   selectOtherInstallation,
   setInstallationUpdate,
   type InstallationRecord,
@@ -151,6 +152,23 @@ describe('registerRunningInstallation', () => {
     } finally {
       fs.chmodSync(teamai, 0o755);
     }
+  });
+});
+
+describe('registersRunningInstallation', () => {
+  it('registers a command and a hook', () => {
+    expect(registersRunningInstallation(['pull'])).toBe(true);
+    expect(registersRunningInstallation(['-v', 'hook', 'stop'])).toBe(true);
+    expect(registersRunningInstallation(['recall', 'search', 'uninstall'])).toBe(true);
+  });
+
+  it('skips help, version, a dry run and uninstall', () => {
+    expect(registersRunningInstallation([])).toBe(false);
+    expect(registersRunningInstallation(['pull', '--help'])).toBe(false);
+    expect(registersRunningInstallation(['-V'])).toBe(false);
+    expect(registersRunningInstallation(['--dry-run', 'pull'])).toBe(false);
+    expect(registersRunningInstallation(['uninstall', '--force'])).toBe(false);
+    expect(registersRunningInstallation(['-v', 'uninstall'])).toBe(false);
   });
 });
 
