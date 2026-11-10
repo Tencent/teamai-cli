@@ -1162,6 +1162,25 @@ __teamai_env_apply_body() {
       { [ "\${__teamai_route%%'	'*}" = dir ] && ! __teamai_env_project "$__teamai_d"; } || __teamai_cached=
     fi
   fi
+  # A non-interactive bash started with the profile block runs this twice in
+  # one process: from the block, then as the BASH_ENV that pass exported. The
+  # second pass takes the route the first asked git for, once, while the
+  # directory, the stamp, PATH and every GIT_* variable are as they were. It
+  # still loads the files, so a team value wins over a later profile line.
+  __teamai_fp=
+  if [ -n "\${BASH_VERSION-}" ]; then
+    case $- in
+      *i*) ;;
+      *)
+        eval 'for __teamai_n in PATH \${!GIT_*}; do __teamai_fp="$__teamai_fp$__teamai_n=\${!__teamai_n}
+"; done'
+        if [ -z "$__teamai_cached" ] && [ "$__teamai_fp" = "\${__teamai_once_fp-}" ] && [ "$__teamai_d" = "\${__teamai_once_dir-}" ] && [ "$__teamai_stamp" = "\${__teamai_once_stamp-}" ]; then
+          __teamai_cached=1 __teamai_files=$__teamai_once_files __teamai_route=$__teamai_once_route
+        fi
+        ;;
+    esac
+  fi
+  unset __teamai_once_fp __teamai_once_dir __teamai_once_stamp __teamai_once_files __teamai_once_route
   if [ -z "$__teamai_cached" ]; then
     __teamai_files=$(__teamai_env_files "$__teamai_d") __teamai_route=
     case $__teamai_files in
@@ -1172,6 +1191,11 @@ __teamai_env_apply_body() {
 '}
         ;;
     esac
+    # Never exported: a child shell is another process, and asks git itself.
+    if [ -n "$__teamai_fp" ]; then
+      __teamai_once_fp=$__teamai_fp __teamai_once_dir=$__teamai_d __teamai_once_stamp=$__teamai_stamp
+      __teamai_once_files=$__teamai_files __teamai_once_route=$__teamai_route
+    fi
   fi
   export __TEAMAI_ENV_DIR="$__teamai_d" __TEAMAI_ENV_STAMP="$__teamai_stamp"
   export __TEAMAI_ENV_FILES="$__teamai_files" __TEAMAI_ENV_ROUTE="$__teamai_route"
