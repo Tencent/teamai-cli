@@ -258,6 +258,17 @@ describe.skipIf(process.platform === 'win32')('the wrapper a hook that deferred 
     expect(recorded('bash')).toBeNull();
   });
 
+  it('keeps the file it already wrote when nothing in it changed, and replaces it when its Node did', () => {
+    const wrapper = written(path.join(fakeBin, 'node'));
+    const first = fs.statSync(wrapper).ino;
+
+    expect(fs.statSync(written(path.join(fakeBin, 'node'))).ino).toBe(first);
+    fs.chmodSync(wrapper, 0o644);
+    expect(fs.statSync(written(path.join(fakeBin, 'node'))).mode & 0o111).not.toBe(0);
+    written(path.join(tmp, 'other', 'node'));
+    expect(fs.readFileSync(wrapper, 'utf8')).toContain(path.join(tmp, 'other', 'node'));
+  });
+
   it('takes the git hook to teamai with its arguments', () => {
     const wrapper = written(path.join(fakeBin, 'node'));
     const command = gitHookCommand('post-checkout');

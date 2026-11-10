@@ -148,7 +148,7 @@ export function teamaiWrapperSource({ node, entry }: { node: string; entry: stri
  * script, plus a `teamai.cmd` on Windows (cmd.exe resolves commands through
  * PATHEXT, so it can never execute the extensionless sh script). Both invoke
  * the real entry script with the best available Node binary. Idempotent —
- * overwrites on every init/pull so the paths stay current after upgrades.
+ * an init or pull rewrites the one that differs, so the paths stay current after upgrades.
  *
  * Returns the bin directory path, or null if the wrapper could not be created.
  */
@@ -173,10 +173,14 @@ export function ensureTeamaiWrapper(): string | null {
 
   try {
     fs.mkdirSync(binDir, { recursive: true });
-    // A hook may run the wrapper at any moment, so it never sees a half-written one.
-    const partial = `${wrapperPath}.${process.pid}.tmp`;
-    fs.writeFileSync(partial, script, { mode: 0o755 });
-    fs.renameSync(partial, wrapperPath);
+
+    // macOS takes longer over the first run of a new executable file, so a wrapper that already says this stays.
+    if (!isWrapperCurrent(wrapperPath, script)) {
+      // A hook may run the wrapper at any moment, so it never sees a half-written one.
+      const partial = `${wrapperPath}.${process.pid}.tmp`;
+      fs.writeFileSync(partial, script, { mode: 0o755 });
+      fs.renameSync(partial, wrapperPath);
+    }
 
     if (process.platform === 'win32') {
       fs.writeFileSync(path.join(binDir, `${WRAPPER_NAME}.cmd`), cmdScript);
@@ -190,6 +194,14 @@ export function ensureTeamaiWrapper(): string | null {
     return binDir;
   } catch {
     return null;
+  }
+}
+
+function isWrapperCurrent(file: string, script: string): boolean {
+  try {
+    return (fs.statSync(file).mode & 0o111) !== 0 && fs.readFileSync(file, 'utf8') === script;
+  } catch {
+    return false;
   }
 }
 
