@@ -667,10 +667,36 @@ async function onDiskSpelling(file: string): Promise<string> {
  * A per-run cache of what git says about directories and repositories. A
  * caller shares one across the calls of a single run (see
  * applyDeliveredGitExclude), never across runs.
+ * It also holds what git tracks and offers for a commit in each checkout, for the run.
  */
 export class GitContext {
   private readonly locations = new Map<string, ReturnType<typeof locateExclude>>();
   private readonly precompose = new Map<string, Promise<boolean>>();
+  private readonly listings = { tracked: new Map<string, Promise<ExecResult>>(), offered: new Map<string, Promise<ExecResult>>() };
+
+  /** `git ls-files` of `rels` in the checkout at `root`: what git tracks, or what it would still offer for a commit. A failed answer is not kept. */
+  listFiles(root: string, rels: string[], kind: 'tracked' | 'offered'): Promise<ExecResult> {
+    const listing = this.listings[kind];
+    const key = JSON.stringify([root, rels]);
+    let found = listing.get(key);
+
+    if (!found) {
+      const scope = kind === 'tracked' ? ['--'] : ['--others', '--exclude-standard', '--'];
+      found = runGit(['--literal-pathspecs', 'ls-files', '-z', ...scope, ...rels], root).then((listed) => {
+        if (listed.code !== 0) listing.delete(key);
+
+        return listed;
+      });
+      listing.set(key, found);
+    }
+
+    return found;
+  }
+
+  /** Forget what git offers for a commit: writing an exclude file changes it. */
+  forgetOffered(): void {
+    this.listings.offered.clear();
+  }
 
   locate(dir: string): ReturnType<typeof locateExclude> {
     let found = this.locations.get(dir);
@@ -818,15 +844,17 @@ export async function sync(
 
   for (const [excludeFile, placed] of byFile) {
     const checkFailed: GitCheckFailure[] = [];
-    const tracked = await trackedPaths(placed, checkFailed);
+    const tracked = await trackedPaths(placed, checkFailed, context);
     // A line stays while any path it names is untracked somewhere.
     const wanted = placed.filter((p) => !tracked.some((t) => t.path === p.path)).map((p) => p.line);
     const next = (current: string[]): string[] => [...new Set([...addOnly ? current : [], ...wanted])].sort();
     const { lines, ...outcome } = await writeOwnerLines(excludeFile, owner.name, next, options.dryRun);
 
+    if (outcome.write.kind === 'written') context.forgetOffered();
+
     const reincludedLines = options.dryRun || outcome.write.kind !== 'written' && outcome.write.kind !== 'unchanged'
       ? []
-      : await reincludedPaths(placed.filter((p) => lines.includes(p.line)), checkFailed);
+      : await reincludedPaths(placed.filter((p) => lines.includes(p.line)), checkFailed, context);
 
     result.files.push({ excludeFile, ...outcome, lines, tracked, reincluded: reincludedLines, checkFailed });
 
@@ -912,11 +940,11 @@ async function writeOwnerLines(
 }
 
 /** Paths among `placed` git tracks, per checkout: one `ls-files` per checkout. A checkout git fails in goes to `failed`. */
-async function trackedPaths(placed: Placed[], failed: GitCheckFailure[]): Promise<TrackedPath[]> {
+async function trackedPaths(placed: Placed[], failed: GitCheckFailure[], context: GitContext): Promise<TrackedPath[]> {
   const tracked: TrackedPath[] = [];
 
   for (const [root, group] of groupBy(placed, (p) => p.root)) {
-    const listed = await runGit(['--literal-pathspecs', 'ls-files', '-z', '--', ...group.map((p) => p.rel)], root);
+    const listed = await context.listFiles(root, group.map((p) => p.rel), 'tracked');
 
     if (listed.code !== 0) {
       failed.push({ checkout: root, error: listed.stderr.trim() || `git exited with ${listed.code}` });
@@ -938,8 +966,8 @@ async function trackedPaths(placed: Placed[], failed: GitCheckFailure[]): Promis
  * re-includes each when git names one: one `ls-files --others` per checkout,
  * then `check-ignore -v` only for those few.
  */
-async function reincludedPaths(placed: Placed[], failed: GitCheckFailure[]): Promise<Array<{ path: string; rule: ReincludingRule | null }>> {
-  return reincludingRules([...await offeredPaths(placed, failed)]);
+async function reincludedPaths(placed: Placed[], failed: GitCheckFailure[], context: GitContext): Promise<Array<{ path: string; rule: ReincludingRule | null }>> {
+  return reincludingRules([...await offeredPaths(placed, failed, context)]);
 }
 
 /**
@@ -947,11 +975,11 @@ async function reincludedPaths(placed: Placed[], failed: GitCheckFailure[]): Pro
  * ignored), each with the file git offers: one
  * `ls-files --others` per checkout.
  */
-async function offeredPaths(placed: Placed[], failed: GitCheckFailure[]): Promise<Map<Placed, string>> {
+async function offeredPaths(placed: Placed[], failed: GitCheckFailure[], context: GitContext): Promise<Map<Placed, string>> {
   const found = new Map<Placed, string>();
 
   for (const [root, group] of groupBy(placed, (p) => p.root)) {
-    const listed = await runGit(['--literal-pathspecs', 'ls-files', '-z', '--others', '--exclude-standard', '--', ...group.map((p) => p.rel)], root);
+    const listed = await context.listFiles(root, group.map((p) => p.rel), 'offered');
 
     if (listed.code !== 0) {
       if (!failed.some((f) => f.checkout === root)) failed.push({ checkout: root, error: listed.stderr.trim() || `git exited with ${listed.code}` });
@@ -1390,7 +1418,7 @@ export async function report(owner: GitExcludeOwner, expectedPaths: Iterable<str
     const checkFailed: GitCheckFailure[] = [];
     // Both only read, so asked together; a checkout keeps the first failure, as when asked in turn.
     const offerFailed: GitCheckFailure[] = [];
-    const [tracked, offered] = await Promise.all([trackedPaths(placed, checkFailed), offeredPaths(placed, offerFailed)]);
+    const [tracked, offered] = await Promise.all([trackedPaths(placed, checkFailed, context), offeredPaths(placed, offerFailed, context)]);
 
     for (const f of offerFailed) if (!checkFailed.some((c) => c.checkout === f.checkout)) checkFailed.push(f);
     const listed = placed.filter((p) => lines.includes(p.line));
