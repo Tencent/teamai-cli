@@ -16,6 +16,7 @@
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import type { Dirent } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -314,6 +315,57 @@ function readStdinFile(file: string): string {
   }
 }
 
+/** Prefix of the payload temp files the Windows/WMI spawn path names on the child's command line. */
+const HOOK_PAYLOAD_FILE_PREFIX = 'teamai-hook-';
+
+/** Age after which an unread payload file belongs to a parent that died before its child read it. */
+const STALE_HOOK_PAYLOAD_AGE_MS = 10 * 60 * 1000;
+
+/**
+ * Delete payload files a killed Windows hook parent left in the temp directory
+ * (#1812). The WMI spawn path writes the payload to `teamai-hook-<pid>-<ms>.json`
+ * and lets the detached child remove it; a parent that exits before the child
+ * starts, or a child that returns before reading it, leaves the file — and the
+ * full hook payload in it — behind forever. On Windows, every `--bg-only` child
+ * sweeps on entry because it is the one process guaranteed to run after a WMI
+ * launch, so it also collects files orphaned by earlier launches. Only regular
+ * files older than {@link STALE_HOOK_PAYLOAD_AGE_MS} are touched, so a live
+ * sibling's just-written payload survives. Cleanup failures never affect
+ * dispatch.
+ *
+ * @returns the number of files removed
+ */
+export function sweepStaleHookPayloads(
+  tempDir = os.tmpdir(),
+  now = Date.now(),
+): number {
+  let entries: Dirent[];
+
+  try {
+    entries = fs.readdirSync(tempDir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+
+  let removed = 0;
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.startsWith(HOOK_PAYLOAD_FILE_PREFIX) || !entry.name.endsWith('.json')) continue;
+
+    const file = path.join(tempDir, entry.name);
+
+    try {
+      if (now - fs.statSync(file).mtimeMs < STALE_HOOK_PAYLOAD_AGE_MS) continue;
+      fs.rmSync(file, { force: true });
+      removed += 1;
+    } catch {
+      // Another process removed it first, or it is not ours to remove.
+    }
+  }
+
+  return removed;
+}
+
 /** Parse STDIN JSON and normalize the event name for downstream handlers. */
 export function parseStdin(raw: string, event: string): HookStdin {
   let stdin: HookStdin = {};
@@ -398,6 +450,13 @@ export { deriveDispatchSessionId };
 /**
  * Main CLI handler for hook-dispatch.
  *
+ * The Windows/WMI spawn path hands the payload to the child as a temp file
+ * (`--stdin-file`). Every exit path must remove it: the early returns below
+ * never read it, and a failure before the read would skip the read's own
+ * cleanup — either way a full hook payload (prompts, tool input and output)
+ * stays in %TEMP% indefinitely (#1812). Background children also sweep files a
+ * parent left when it died before any child could read them.
+ *
  * @param options Internal-only switches, set by the detached child's own spawn
  *   or by its parent: `bgOnly` runs only background handlers and never spawns
  *   again (prevents recursion), `stdinFile` carries the payload the Windows
@@ -408,6 +467,36 @@ export async function hookDispatchCli(
   tool: string,
   matcher: string,
   options: { bgOnly?: boolean; copilotGlobal?: string; stdinFile?: string; hookArgs?: string[] } = {},
+): Promise<void> {
+  // Only the Windows/WMI spawn path writes a payload file; the plain spawn paths
+  // pipe it, so a macOS or Linux background pass has nothing to sweep.
+  if (options.bgOnly && process.platform === 'win32') {
+    const removed = sweepStaleHookPayloads();
+
+    if (removed > 0) log.debug(`hook-dispatch: removed ${removed} stale payload file(s) from ${os.tmpdir()}`);
+  }
+
+  try {
+    await runHookDispatch(event, tool, matcher, options);
+  } finally {
+    // `force` covers the normal path too: readStdinFile already removed it.
+    if (options.stdinFile) {
+      try {
+        fs.rmSync(options.stdinFile, { force: true });
+      } catch (e) {
+        // A cleanup failure must not turn a completed dispatch into a failed hook.
+        log.debug(`hook-dispatch: could not remove STDIN file ${options.stdinFile}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  }
+}
+
+/** One dispatch pass; {@link hookDispatchCli} owns the stdin-file cleanup around it. */
+async function runHookDispatch(
+  event: string,
+  tool: string,
+  matcher: string,
+  options: { bgOnly?: boolean; copilotGlobal?: string; stdinFile?: string; hookArgs?: string[] },
 ): Promise<void> {
   // A session teamai launched for itself, a judge or an AI call, is not the member's: only a workflow step's runs hooks.
   const launcher = launchedBy(process.env);

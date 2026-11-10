@@ -24,7 +24,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
 
 const { runHookFastPath } = await import('../hook-fast-path.js');
 const { readStdin } = await import('../utils/hook-stdin.js');
-const { parseStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, hookDispatchCli, claudeHookRunsInAnotherHost } =
+const { parseStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, hookDispatchCli, claudeHookRunsInAnotherHost, sweepStaleHookPayloads } =
   await import('../hook-dispatch-cli.js');
 const { claudeHookOtherHostSkip } = await import('../claude-hook-host.js');
 const { reconcileHooks } = await import('../hooks.js');
@@ -72,6 +72,35 @@ describe('hookDispatchCli', () => {
       expect(resolveScope).not.toHaveBeenCalled();
       expect(readFile).not.toHaveBeenCalledWith('/missing-judge-payload', expect.anything());
     } finally { resolveScope.mockRestore(); readFile.mockRestore(); vi.unstubAllEnvs(); }
+  });
+
+  // #1812: an early return skipped readStdinFile, leaving the whole payload in %TEMP%.
+  it('removes the stdin file even when an early return never reads it', async () => {
+    const stdinFile = path.join(os.tmpdir(), `teamai-hook-payload-${process.pid}-${Date.now()}.json`);
+    fs.writeFileSync(stdinFile, JSON.stringify({ hook_event_name: 'Stop', session_id: 's-1' }));
+    vi.stubEnv('TEAMAI_LAUNCHED_BY', 'judge');
+
+    try {
+      await hookDispatchCli('stop', 'claude', '*', { stdinFile });
+      expect(fs.existsSync(stdinFile)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(stdinFile, { force: true });
+    }
+  });
+
+  it('never lets a failed stdin-file cleanup fail the dispatch', async () => {
+    // rmSync on a directory throws even with force; cleanup is best-effort.
+    const notAFile = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-stdin-dir-'));
+    vi.stubEnv('TEAMAI_LAUNCHED_BY', 'judge');
+
+    try {
+      await expect(hookDispatchCli('stop', 'claude', '*', { stdinFile: notAFile })).resolves.toBeUndefined();
+      expect(fs.existsSync(notAFile)).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(notAFile, { recursive: true, force: true });
+    }
   });
 
   // The fast path read stdin before it found the payload had no session id, so the pipe is drained (#1788).
@@ -661,6 +690,45 @@ const createdPayloads: string[] = [];
 afterEach(() => {
   vi.restoreAllMocks();
   for (const f of createdPayloads.splice(0)) fs.rmSync(f, { force: true });
+});
+
+describe('sweepStaleHookPayloads', () => {
+  it.skipIf(process.platform === 'win32')('is not run off Windows, where the spawn paths pipe no temp file', async () => {
+    const stale = path.join(os.tmpdir(), `teamai-hook-sweep-gate-${process.pid}-${Date.now()}.json`);
+    fs.writeFileSync(stale, '{"session_id":"old"}');
+    const old = new Date(Date.now() - 11 * 60 * 1000);
+    fs.utimesSync(stale, old, old);
+    vi.stubEnv('TEAMAI_LAUNCHED_BY', 'judge');
+
+    try {
+      await hookDispatchCli('stop', 'claude', '*', { bgOnly: true });
+      expect(fs.existsSync(stale)).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(stale, { force: true });
+    }
+  });
+
+  it('removes only abandoned teamai payload files', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-payload-sweep-'));
+    const stale = path.join(dir, 'teamai-hook-1-1.json');
+    const fresh = path.join(dir, 'teamai-hook-2-2.json');
+    const unrelated = path.join(dir, 'other.json');
+    fs.writeFileSync(stale, '{"session_id":"old"}');
+    fs.writeFileSync(fresh, '{"session_id":"new"}');
+    fs.writeFileSync(unrelated, '{}');
+    const old = new Date(Date.now() - 11 * 60 * 1000);
+    fs.utimesSync(stale, old, old);
+
+    try {
+      expect(sweepStaleHookPayloads(dir)).toBe(1);
+      expect(fs.existsSync(stale)).toBe(false);
+      expect(fs.existsSync(fresh)).toBe(true);
+      expect(fs.existsSync(unrelated)).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('trySpawnDetachedViaWmi', () => {
