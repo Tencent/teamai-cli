@@ -117,7 +117,7 @@ The doc lands in the team's `learnings/` and appears for teammates on their next
    to reset a team-repo clone with user changes, so commit or stash unrelated
    modified, staged, untracked, or conflicted files before retrying.
 
-   In single-repo mode, a skill or rule under `.teamai/` that matches an older
+   In self mode, a skill or rule under `.teamai/` that matches an older
    version of the team's file, as it does when the branch is behind the default
    branch, is skipped with a warning that it "is an older version of" that file:
    pushing it would revert a teammate's update. To publish an edit of it, bring

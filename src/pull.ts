@@ -182,7 +182,7 @@ async function refreshTeamRepo(
   }
 
   if (localConfig.repo.kind === 'self') {
-    // Single-repo mode: knowledge lives under <business-repo>/.teamai on main and
+    // Self mode: knowledge lives under <business-repo>/.teamai on main and
     // arrives with the business repo's own `git clone`/`git pull`. teamai must NOT
     // run `git pull` on localPath here — that would operate on the business repo
     // root and touch the user's active working tree. Just read the current HEAD as
@@ -209,7 +209,7 @@ async function refreshTeamRepo(
       version = null;
     }
 
-    return { label: 'single-repo (knowledge on main)', version, submodulesFailed: false, submodulesChanged: false };
+    return { label: 'self mode (knowledge on main)', version, submodulesFailed: false, submodulesChanged: false };
   }
 
   // The shared team clone is mutated here (git pull + flushPendingLearnings'
@@ -1081,7 +1081,7 @@ export async function liveCheckoutRecords(
   const commonDir = await gitCommonDir(projectRoot);
 
   if (!commonDir) return records;
-  const identity = (await resolveAnchors(projectRoot))?.projectAnchor;
+  const identity = (await resolveAnchors(projectRoot))?.repoAnchor;
 
   const kept = await Promise.all(Object.entries(records).map(async ([key, record]) => {
     const { root } = record;
@@ -1901,7 +1901,7 @@ async function pullForScope(
   // whose file the team deleted stops being one, and in legacy mode one
   // shadowed by a new shared-root file of the same name is withdrawn (#649
   // review, #707).
-  // A single-repo checkout or pinned clone may lack files still on the default
+  // A checkout in self mode or pinned clone may lack files still on the default
   // branch. Settle against origin/<default>, since a dropped record never comes
   // back when that checkout returns to the default branch (#649 review).
   if (!options.dryRun) {
@@ -1928,7 +1928,7 @@ async function pullForScope(
   }
 
   // Publish what contribute queued. Here rather than inside the refresh, which
-  // returns early for single-repo and HTTP: contribute tells the member the next
+  // returns early for self mode and HTTP: contribute tells the member the next
   // pull will retry, and that has to hold in every mode. pull() holds the
   // partition sync lock across this scope and the lock is not reentrant, so
   // publishing must not try to take it again. Never let it block the pull.

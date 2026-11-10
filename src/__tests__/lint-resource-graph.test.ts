@@ -1,5 +1,5 @@
 /**
- * Tests for `teamai codebase --lint` asset-relation counts (#1562 part 1):
+ * Tests for `teamai codebase --lint` resource-relation counts (#1562 part 1):
  * the pure counting function, and the command's text/JSON output against a
  * team-clone fixture built the way `codebase-reconcile.test.ts` builds one.
  */
@@ -10,8 +10,8 @@ import path from 'node:path';
 
 import { codebaseCmd } from '../codebase-cmd.js';
 import { autoDetectInit, detectProjectConfig, requireInit, type TeamaiInit } from '../config.js';
-import { computeLintAssetGraph } from '../lint-asset-graph.js';
-import type { LintScopeGraph } from '../lint-asset-graph.js';
+import { computeLintResourceGraph } from '../lint-resource-graph.js';
+import type { LintScopeGraph } from '../lint-resource-graph.js';
 import type { RelationContext } from '../recall.js';
 import { LocalConfigSchema, TeamaiConfigSchema, type SearchIndexEntry } from '../types.js';
 import { createGit } from '../utils/git.js';
@@ -24,7 +24,7 @@ vi.mock('../config.js', async (importOriginal) => ({
   requireInit: vi.fn(),
 }));
 
-// ─── computeLintAssetGraph ──────────────────────────────
+// ─── computeLintResourceGraph ──────────────────────────────
 
 function entry(overrides: Partial<SearchIndexEntry> = {}): SearchIndexEntry {
   return {
@@ -50,7 +50,7 @@ function existsOnly(existing: string[]): LintScopeGraph['targetExists'] {
 
 const PAGE = 'teamwiki/evidence/code/pay/modules/ledger-receipts.md';
 
-/** The #1552 example assets: the payments rule, its doc, a skill and a learning. */
+/** The #1552 example resources: the payments rule, its doc, a skill and a learning. */
 function exampleScope(overrides: Partial<LintScopeGraph> = {}): LintScopeGraph {
   const rule = entry({
     filename: 'payments.md', treePath: 'rules/payments.md',
@@ -83,14 +83,14 @@ function exampleScope(overrides: Partial<LintScopeGraph> = {}): LintScopeGraph {
   };
 }
 
-describe('computeLintAssetGraph', () => {
-  it('counts the #1552 example plus the typo: 4 assets, 4 relations, 0 without, 1 unresolved', () => {
-    expect(computeLintAssetGraph([exampleScope()])).toEqual({
-      assetCount: 4,
+describe('computeLintResourceGraph', () => {
+  it('counts the #1552 example plus the typo: 4 resources, 4 relations, 0 without, 1 unresolved', () => {
+    expect(computeLintResourceGraph([exampleScope()])).toEqual({
+      resourceCount: 4,
       relationCount: 4,
       withoutRelation: [],
       unresolved: [
-        { from: 'rules/payments.md', relation: 'REFERENCES', target: 'docs/payment-overview.md', reason: 'no-asset' },
+        { from: 'rules/payments.md', relation: 'REFERENCES', target: 'docs/payment-overview.md', reason: 'no-resource' },
       ],
     });
   });
@@ -101,31 +101,31 @@ describe('computeLintAssetGraph', () => {
       filename: 'payments.md', treePath: 'rules/payments.md',
       related: [{ relation: 'MAPS_TO', target: PAGE, via: 'declared' }],
     });
-    const visible = computeLintAssetGraph([{
+    const visible = computeLintResourceGraph([{
       ctx: ctx({ byTreePath: new Map([['rules/payments.md', rule]]) }),
       targetExists: existsOnly([PAGE]),
     }]);
     expect(visible).toEqual({
-      assetCount: 1,
+      resourceCount: 1,
       relationCount: 1,
       withoutRelation: [],
       unresolved: [],
     });
     // A withheld codebase's page gives no relation; a page the clone does not
     // hold resolves for nobody, so the declared relation is unresolved.
-    const withheld = computeLintAssetGraph([{
+    const withheld = computeLintResourceGraph([{
       ctx: ctx({ byTreePath: new Map([['rules/payments.md', rule]]), withheld: new Set(['pay']) }),
       targetExists: existsOnly([PAGE]),
     }]);
     expect(withheld.relationCount).toBe(0);
     expect(withheld.withoutRelation).toEqual(['rules/payments.md']);
-    const missing = computeLintAssetGraph([{
+    const missing = computeLintResourceGraph([{
       ctx: ctx({ byTreePath: new Map([['rules/payments.md', rule]]) }),
       targetExists: existsOnly([]),
     }]);
     expect(missing.relationCount).toBe(0);
     expect(missing.unresolved).toEqual([
-      { from: 'rules/payments.md', relation: 'MAPS_TO', target: PAGE, reason: 'no-asset' },
+      { from: 'rules/payments.md', relation: 'MAPS_TO', target: PAGE, reason: 'no-resource' },
     ]);
   });
 
@@ -138,7 +138,7 @@ describe('computeLintAssetGraph', () => {
       ],
     });
     const doc = entry({ filename: 'payments-overview.md', treePath: 'docs/payments-overview.md', type: 'docs' });
-    const graph = computeLintAssetGraph([{
+    const graph = computeLintResourceGraph([{
       ctx: ctx({ byTreePath: new Map([['learnings/ledger-timeout', learning], ['docs/payments-overview.md', doc]]) }),
       targetExists: existsOnly(['docs/payments-overview.md']),
     }]);
@@ -151,21 +151,21 @@ describe('computeLintAssetGraph', () => {
       filename: 'payments.md', treePath: 'rules/payments.md',
       related: [{ relation: 'MAPS_TO', target: PAGE, via: 'declared' }],
     });
-    const graph = computeLintAssetGraph([{
+    const graph = computeLintResourceGraph([{
       ctx: ctx({ byTreePath: new Map([['rules/payments.md', rule]]) }),
       targetExists: existsOnly([]),
     }]);
     expect(graph.unresolved).toEqual([
-      { from: 'rules/payments.md', relation: 'MAPS_TO', target: PAGE, reason: 'no-asset' },
+      { from: 'rules/payments.md', relation: 'MAPS_TO', target: PAGE, reason: 'no-resource' },
     ]);
   });
 
-  it('lists assets with no resolved relation in either direction', () => {
+  it('lists resources with no resolved relation in either direction', () => {
     const orphan = entry({ filename: 'orphan.md', treePath: 'rules/orphan.md' });
     const byTreePath = new Map(exampleScope().ctx.byTreePath);
     byTreePath.set('rules/orphan.md', orphan);
-    const graph = computeLintAssetGraph([{ ...exampleScope(), ctx: ctx({ byTreePath }) }]);
-    expect(graph.assetCount).toBe(5);
+    const graph = computeLintResourceGraph([{ ...exampleScope(), ctx: ctx({ byTreePath }) }]);
+    expect(graph.resourceCount).toBe(5);
     expect(graph.withoutRelation).toEqual(['rules/orphan.md']);
   });
 
@@ -178,7 +178,7 @@ describe('computeLintAssetGraph', () => {
       ],
     });
     const doc = entry({ filename: 'b.md', treePath: 'docs/b.md', type: 'docs' });
-    const graph = computeLintAssetGraph([{
+    const graph = computeLintResourceGraph([{
       ctx: ctx({ byTreePath: new Map([['rules/a.md', rule], ['docs/b.md', doc]]) }),
       targetExists: existsOnly(['docs/b.md']),
     }]);
@@ -195,7 +195,7 @@ describe('computeLintAssetGraph', () => {
       filename: 'b.md', treePath: 'rules/b.md',
       related: [{ relation: 'REFERENCES', target: 'rules/a.md', via: 'declared' }],
     });
-    const graph = computeLintAssetGraph([{
+    const graph = computeLintResourceGraph([{
       ctx: ctx({ byTreePath: new Map([['rules/a.md', a], ['rules/b.md', b]]) }),
       targetExists: existsOnly([]),
     }]);
@@ -208,7 +208,7 @@ describe('computeLintAssetGraph', () => {
     const scoped = entry({
       filename: 'ledger-scoped.md', treePath: 'rules/ledger-scoped.md',
     });
-    const graph = computeLintAssetGraph([{
+    const graph = computeLintResourceGraph([{
       ctx: ctx({
         byTreePath: new Map([['rules/ledger-scoped.md', scoped]]),
         ruleGlobs: new Map([['rules/ledger-scoped.md', ['src/ledger/**']]]),
@@ -226,7 +226,7 @@ describe('computeLintAssetGraph', () => {
       { treePath: 'teamwiki/evidence/code/shop/modules/till.md', slug: 'shop', sources: ['src/ledger/shop.ts'] },
     ];
     const scoped = entry({ filename: 'ledger-scoped.md', treePath: 'rules/ledger-scoped.md' });
-    const graph = computeLintAssetGraph([{
+    const graph = computeLintResourceGraph([{
       ctx: ctx({
         byTreePath: new Map([['rules/ledger-scoped.md', scoped]]),
         ruleGlobs: new Map([['rules/ledger-scoped.md', ['src/ledger/**']]]),
@@ -244,7 +244,7 @@ describe('computeLintAssetGraph', () => {
       filename: 'payments.md', treePath: 'rules/payments.md',
       related: [{ relation: 'MAPS_TO', target: PAGE, via: 'declared' }],
     });
-    const graph = computeLintAssetGraph([{
+    const graph = computeLintResourceGraph([{
       ctx: ctx({
         byTreePath: new Map([['rules/payments.md', rule]]),
         ruleGlobs: new Map([['rules/payments.md', ['src/ledger/**']]]),
@@ -264,7 +264,7 @@ describe('computeLintAssetGraph', () => {
       filename: 'b.md', treePath: 'docs/b.md', type: 'docs',
       related: [{ relation: 'REFERENCES', target: 'rules/a.md', via: 'link' }],
     });
-    const graph = computeLintAssetGraph([{
+    const graph = computeLintResourceGraph([{
       ctx: ctx({ byTreePath: new Map([['rules/a.md', rule], ['docs/b.md', doc]]) }),
       targetExists: existsOnly(['docs/b.md']),
     }]);
@@ -279,13 +279,13 @@ describe('computeLintAssetGraph', () => {
       filename: 'a.md', treePath: 'rules/a.md',
       related: [{ relation: 'REFERENCES', target: 'docs/hidden.md', via: 'declared' }],
     });
-    const graph = computeLintAssetGraph([{
+    const graph = computeLintResourceGraph([{
       ctx: ctx({ byTreePath: new Map([['rules/a.md', rule]]) }),
       // The doc exists in the team clone but is not delivered to this member's index.
       targetExists: existsOnly(['docs/hidden.md']),
     }]);
     expect(graph).toEqual({
-      assetCount: 1,
+      resourceCount: 1,
       relationCount: 0,
       withoutRelation: ['rules/a.md'],
       unresolved: [],
@@ -299,7 +299,7 @@ describe('computeLintAssetGraph', () => {
       related: [{ relation: 'REFERENCES', target: 'learnings/ledger-timeout', via: 'declared' }],
     });
     const learning = entry({ filename: 'ledger-timeout.md', treePath: 'learnings/ledger-timeout', type: 'learnings' });
-    computeLintAssetGraph([{
+    computeLintResourceGraph([{
       ctx: ctx({ byTreePath: new Map([['rules/a.md', rule], ['learnings/ledger-timeout', learning]]) }),
       targetExists: (kind, treePath) => {
         seen.push(`${kind}:${treePath}`);
@@ -322,8 +322,8 @@ function makeTmpDir(): string {
   return dir;
 }
 
-/** The #1552 example assets in a team clone, with the typo added to the rule (#1562). */
-function writeTeamAssets(clone: string, opts: { withTeamwiki?: boolean } = {}): void {
+/** The #1552 example resources in a team clone, with the typo added to the rule (#1562). */
+function writeTeamResources(clone: string, opts: { withTeamwiki?: boolean } = {}): void {
   fs.mkdirSync(path.join(clone, 'rules'), { recursive: true });
   fs.mkdirSync(path.join(clone, 'docs'), { recursive: true });
   fs.mkdirSync(path.join(clone, 'skills', 'release'), { recursive: true });
@@ -359,18 +359,18 @@ function pendingDirOf(clone: string): string {
   return path.join(path.dirname(clone), 'pending-learnings');
 }
 
-/** The expected assetGraph of the fixture: 4 assets, 4 relations, 0 without, 1 unresolved. */
-const EXPECTED_ASSET_GRAPH = {
-  assetCount: 4,
+/** The expected resourceGraph of the fixture: 4 resources, 4 relations, 0 without, 1 unresolved. */
+const EXPECTED_RESOURCE_GRAPH = {
+  resourceCount: 4,
   relationCount: 4,
   withoutRelation: [],
   unresolved: [
-    { from: 'rules/payments.md', relation: 'REFERENCES', target: 'docs/payment-overview.md', reason: 'no-asset' },
+    { from: 'rules/payments.md', relation: 'REFERENCES', target: 'docs/payment-overview.md', reason: 'no-resource' },
   ],
 };
 
 /**
- * A team clone of a bare remote whose main holds the example assets, a member
+ * A team clone of a bare remote whose main holds the example resources, a member
  * user-scope config (mocked into the loaders), and the member's recall index
  * built the way pull/contribute build it — the learning pending in the queue.
  */
@@ -383,7 +383,7 @@ async function createMemberFixture(withTeamwiki = true): Promise<{ clone: string
   const git = createGit(clone);
   await git.addConfig('user.name', 'Test');
   await git.addConfig('user.email', 'test@example.com');
-  writeTeamAssets(clone, { withTeamwiki });
+  writeTeamResources(clone, { withTeamwiki });
   fs.writeFileSync(path.join(clone, 'teamai.yaml'), 'team: test\n');
   await git.add('.');
   await git.commit('team');
@@ -443,31 +443,31 @@ afterEach(() => {
   }
 });
 
-describe('codebase --lint asset counts (#1562 part 1)', () => {
-  it('prints the asset line after the report, with exactly the example counts', async () => {
+describe('codebase --lint resource counts (#1562 part 1)', () => {
+  it('prints the resource line after the report, with exactly the example counts', async () => {
     await createMemberFixture();
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
     await codebaseCmd({ lint: true });
 
     const out = log.mock.calls.flat().join('\n');
-    expect(out).toContain('Assets: 4, relations: 4, without a relation: 0, unresolved: 1');
+    expect(out).toContain('Resources: 4, relations: 4, without a relation: 0, unresolved: 1');
     // The graph checks ran too: the fixture's clone has no graph-index.json.
     expect(out).toContain('[graph-missing]');
   });
 
-  it('embeds assetGraph in the JSON report', async () => {
+  it('embeds resourceGraph in the JSON report', async () => {
     await createMemberFixture();
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
     await codebaseCmd({ lint: true, json: true });
 
     const report = JSON.parse(String(log.mock.calls[0][0]));
-    expect(report.assetGraph).toEqual(EXPECTED_ASSET_GRAPH);
+    expect(report.resourceGraph).toEqual(EXPECTED_RESOURCE_GRAPH);
     expect(process.exitCode).toBe(1); // graph-missing stays a high finding; the exit code does not change
   });
 
-  it('still prints the asset line without a teamwiki, and adds no graph-missing findings', async () => {
+  it('still prints the resource line without a teamwiki, and adds no graph-missing findings', async () => {
     await createMemberFixture(false);
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
@@ -475,27 +475,27 @@ describe('codebase --lint asset counts (#1562 part 1)', () => {
 
     // The declared MAPS_TO names a page this clone does not hold, so it is
     // unresolved too — the graph checks are skipped, the counts are not.
-    expect(log.mock.calls.flat().join('\n')).toBe('Assets: 4, relations: 3, without a relation: 0, unresolved: 2');
+    expect(log.mock.calls.flat().join('\n')).toBe('Resources: 4, relations: 3, without a relation: 0, unresolved: 2');
   });
 
-  it('still embeds assetGraph in JSON without a teamwiki', async () => {
+  it('still embeds resourceGraph in JSON without a teamwiki', async () => {
     await createMemberFixture(false);
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
     await codebaseCmd({ lint: true, json: true });
 
-    const { assetGraph } = JSON.parse(String(log.mock.calls[0][0]));
-    expect(assetGraph.assetCount).toBe(4);
-    expect(assetGraph.relationCount).toBe(3);
-    expect(assetGraph.withoutRelation).toEqual([]);
-    expect(assetGraph.unresolved).toEqual([
-      { from: 'rules/payments.md', relation: 'MAPS_TO', target: 'teamwiki/evidence/code/pay/modules/ledger-receipts.md', reason: 'no-asset' },
-      { from: 'rules/payments.md', relation: 'REFERENCES', target: 'docs/payment-overview.md', reason: 'no-asset' },
+    const { resourceGraph } = JSON.parse(String(log.mock.calls[0][0]));
+    expect(resourceGraph.resourceCount).toBe(4);
+    expect(resourceGraph.relationCount).toBe(3);
+    expect(resourceGraph.withoutRelation).toEqual([]);
+    expect(resourceGraph.unresolved).toEqual([
+      { from: 'rules/payments.md', relation: 'MAPS_TO', target: 'teamwiki/evidence/code/pay/modules/ledger-receipts.md', reason: 'no-resource' },
+      { from: 'rules/payments.md', relation: 'REFERENCES', target: 'docs/payment-overview.md', reason: 'no-resource' },
     ]);
     expect(process.exitCode).toBeUndefined();
   });
 
-  it('produces no assetGraph with standalone --output, and leaves the output unchanged', async () => {
+  it('produces no resourceGraph with standalone --output, and leaves the output unchanged', async () => {
     const root = makeTmpDir();
     const wikiRoot = path.join(root, 'standalone', 'teamwiki');
     fs.mkdirSync(path.join(wikiRoot, 'evidence', 'code'), { recursive: true });
@@ -504,13 +504,13 @@ describe('codebase --lint asset counts (#1562 part 1)', () => {
     await codebaseCmd({ lint: true, output: path.join(root, 'standalone'), json: true });
 
     const report = JSON.parse(String(log.mock.calls[0][0]));
-    expect(report.assetGraph).toBeUndefined();
+    expect(report.resourceGraph).toBeUndefined();
     expect(report.issues).toBeDefined();
     // No member was loaded: the fixture's index and pending queue stay unread counts, not sources.
     expect(vi.mocked(autoDetectInit)).not.toHaveBeenCalled();
   });
 
-  it('lists the assets behind without a relation', async () => {
+  it('lists the resources behind without a relation', async () => {
     const { clone } = await createMemberFixture();
     // An unpublished rule of another member: indexed (the member saw it), unrelated.
     fs.writeFileSync(path.join(clone, 'rules', 'unrelated.md'), 'A rule about something else.\n');
@@ -527,8 +527,8 @@ describe('codebase --lint asset counts (#1562 part 1)', () => {
     await codebaseCmd({ lint: true, json: true });
 
     const report = JSON.parse(String(log.mock.calls[0][0]));
-    expect(report.assetGraph.assetCount).toBe(5);
-    expect(report.assetGraph.withoutRelation).toEqual(['rules/unrelated.md']);
-    expect(report.assetGraph.relationCount).toBe(4);
+    expect(report.resourceGraph.resourceCount).toBe(5);
+    expect(report.resourceGraph.withoutRelation).toEqual(['rules/unrelated.md']);
+    expect(report.resourceGraph.relationCount).toBe(4);
   });
 });

@@ -133,8 +133,8 @@ export class RulesHandler extends ResourceHandler {
 
       // Not written or cleaned by teamai, so not a source either: `removeItem`
       // leaves an excluded tool's copy behind, and read here it would republish
-      // the rule just removed (#649 review). The single-repo scan source is not
-      // a tool, and `enabledAgents` — which single-repo init always writes —
+      // the rule just removed (#649 review). The self-mode scan source is not
+      // a tool, and `enabledAgents` — which self-mode init always writes —
       // never lists it.
       if (tool !== SELF_KNOWLEDGE_SCAN_KEY && isAgentExcluded(localConfig, tool)) continue;
 
@@ -202,7 +202,7 @@ export class RulesHandler extends ResourceHandler {
 
           if (equal) continue; // This tool dir's copy is identical, skip
 
-          // Single-repo mode: nothing refreshes the active tree's
+          // Self mode: nothing refreshes the active tree's
           // `.teamai/rules` — pull deploys to tool dirs and the pre-push sync
           // covers those — and a branch behind the default branch holds its
           // older copies. A copy equal to an OLDER version of the team file is

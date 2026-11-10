@@ -87,7 +87,7 @@ describe('unified dashboard', () => {
       coverage: [{ type: 'docs', total: 1, covered: 0, coveragePct: 0 }], topRecalled: [],
       silent: [{ docId: 'x', title: '<img src=x onerror=alert(1)>', author: '<script>bad</script>', type: 'docs', date: '', tags: [], recalledCount: 0, upvotedCount: 0, lastRecalledAt: null }],
       relations: {
-        assetCount: 2, relationCount: 1, withoutRelation: ['docs/<script>lonely</script>'],
+        resourceCount: 2, relationCount: 1, withoutRelation: ['docs/<script>lonely</script>'],
         unresolved: ['rules/x.md REFERENCES docs/<script>missing</script>'], silentAndWithoutRelation: [],
       },
       trend: [], authors: [{ author: '<script>bad</script>', entries: 1, totalRecalled: 0 }],
@@ -105,7 +105,7 @@ describe('unified dashboard', () => {
     const html = getDashboardHtml(3721);
     expect(html).toContain("scorers: 'Scorers'");
     expect(html).toContain("apiQuery('/api/scorers',params)");
-    expect(html).toContain('Labels from sessions and workflow runs show how the tools did on the work that came along. To compare tools, models or team assets on the same tasks, run a benchmark.');
+    expect(html).toContain('Labels from sessions and workflow runs show how the tools did on the work that came along. To compare tools, models or team resources on the same tasks, run a benchmark.');
     const literals = [...scorersClient.matchAll(/\b(?:label|t)\('((?:[^'\\]|\\.)+)'\)/g)].map((match) => (match[1] ?? '').replace(/\\'/g, "'"));
     const dimensions = Object.values(z.record(z.string(), z.string()).parse(JSON.parse(scorersClient.match(/const scorerDimensions=(\{[^}]*\})/)?.[1] ?? 'null')));
     const headings = [...scorersClient.matchAll(/\[((?:'[A-Z][A-Z ,]+',?)+)\]/g)].flatMap((match) => [...(match[1] ?? '').matchAll(/'([^']+)'/g)].map((heading) => heading[1] ?? ''));
@@ -135,7 +135,7 @@ describe('unified dashboard', () => {
       topRecalled: [{ docId: 'a', title: 'A', author: 'x', type: 'docs', date: '', tags: [], recalledCount: 5, upvotedCount: 1, lastRecalledAt: null }],
       silent: [{ docId: 'b', title: 'B', author: 'x', type: 'docs', date: '', tags: [], recalledCount: 0, upvotedCount: 0, lastRecalledAt: null }],
       relations: {
-        assetCount: 3, relationCount: 2, withoutRelation: ['docs/b.md'],
+        resourceCount: 3, relationCount: 2, withoutRelation: ['docs/b.md'],
         unresolved: ['rules/a.md MAPS_TO teamwiki/evidence/code/x/m.md'], silentAndWithoutRelation: ['docs/b.md'],
       },
       trend: [{ period: '2026-08', count: 1 }, { period: '2026-09', count: 2 }],

@@ -1211,7 +1211,7 @@ async function mcpFileOf(
  * Where a project's servers go instead of the project's file (#915), and
  * whether they go there now: while sharing.gitExclude is on or the workspace
  * has children. A tool keyed by the git common root files every worktree
- * under one key, so not in a single-repo (self) team, where each worktree's
+ * under one key, so not in a self-mode team, where each worktree's
  * branch has its own servers; and not while a selected, installed tool reads
  * the project's file (`writtenBy`).
  */

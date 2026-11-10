@@ -20,7 +20,7 @@ export async function pullLatest(repoPath: string): Promise<void> {
 
 /**
  * Run a manifest admin edit (write manifest + open PR) against the right repo.
- * In single-repo mode the manifest is knowledge on main, so the edit runs inside
+ * In self mode the manifest is knowledge on main, so the edit runs inside
  * an isolated knowledge worktree (never the user's active tree); otherwise the
  * team repo clone is pulled first. A dry run reads the post-pull branch contents
  * from a throwaway checkout instead and never pulls, since the pull can reset a clone

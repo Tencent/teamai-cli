@@ -19,9 +19,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-**TeamAI จัดการ skills, rules, agents, learnings, models, MCP และสินทรัพย์ AI อื่นๆ ของทีมผ่าน git repo**
+**TeamAI จัดการ skills, rules, agents, learnings, models, MCP และทรัพยากรของเอเจนต์ อื่นๆ ของทีมผ่าน git repo**
 
-สมาชิกเริ่มต้นครั้งเดียว หลังจากนั้นสินทรัพย์ AI ล่าสุดของทีมจะซิงก์ให้อัตโนมัติ
+สมาชิกเริ่มต้นครั้งเดียว หลังจากนั้นทรัพยากรของเอเจนต์ ล่าสุดของทีมจะซิงก์ให้อัตโนมัติ
 
 ## ทำไมต้อง TeamAI
 
@@ -65,7 +65,7 @@ Skills, Rules, MCP และทรัพยากรอื่นที่ Agent 
 /teamai เปิดแดชบอร์ด TeamAI
 ```
 
-เมื่อสมาชิกทีมเชื่อมต่อเสร็จแล้ว แค่เปิด Agent ก็ใช้สินทรัพย์ AI ของทีมได้ครบ
+เมื่อสมาชิกทีมเชื่อมต่อเสร็จแล้ว แค่เปิด Agent ก็ใช้ทรัพยากรของเอเจนต์ ของทีมได้ครบ
 
 <details>
 <summary>ติดตั้งด้วยคอมมานด์ไลน์</summary>

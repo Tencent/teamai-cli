@@ -349,7 +349,7 @@ const GIT_PULL_FETCH_CAP_MS = 5_000;
  * changed. With a separate team repo, the team repo is fetched inline within
  * GIT_PULL_FETCH_CAP_MS and delivered when its revision moved (the rev fast
  * path skips it otherwise); past the cap, and for learnings, reports and
- * sources, a detached pull takes over. In single-repo (self) mode the team
+ * sources, a detached pull takes over. In self mode the team
  * repo is the working tree `git pull` just updated: delivered with no network.
  */
 const gitPullHandler: HookHandler = {
@@ -543,7 +543,7 @@ const dashboardReportHandler: HookHandler = {
   async execute(stdin, tool, config) {
     // Registered with requiresConfig: a session outside any scope is not recorded.
     if (!config) return null;
-    const { parseHookEvent, appendEvent, compactEvents, dataHomeKey, eventProjectAnchor, addGitStateAtStart, addGitHeadAtStop, gitStateIn } = await import('./dashboard-collector.js');
+    const { parseHookEvent, appendEvent, compactEvents, dataHomeKey, eventRepoAnchor, addGitStateAtStart, addGitHeadAtStop, gitStateIn } = await import('./dashboard-collector.js');
     const { getDataHome } = await import('./types.js');
     const raw = JSON.stringify(stdin);
     // The dispatcher's scope, which knows the project even when the event
@@ -561,13 +561,13 @@ const dashboardReportHandler: HookHandler = {
     if (event) {
       event.dataHomeKey = scopeKey;
 
-      const [projectAnchor] = await Promise.all([
-        eventProjectAnchor(event.cwd, event.sessionId),
+      const [repoAnchor] = await Promise.all([
+        eventRepoAnchor(event.cwd, event.sessionId),
         addGitStateAtStart(event, gitStateIn(stdin)),
         addGitHeadAtStop(event),
       ]);
 
-      event.projectAnchor = projectAnchor;
+      event.projectAnchor = repoAnchor;
       // The foreground dispatcher's, so a background pass records what the session's own environment said.
       const { readSessionRun } = await import('./launch-context.js');
       Object.assign(event, readSessionRun(stdin));

@@ -8,11 +8,9 @@ The agents teamai ships. Each `<name>.md` here is one agent, and needs no folder
 
 The [recall rule](../rules/teamai-recall/README.md) and the [TodoWrite hint](../hooks/teamai-todowrite-hint/README.md) send the agent to this subagent before a task. Its frontmatter and its instructions are in `teamai-recall.md`.
 
-| | |
-|---|---|
-| Input | The task in plain words, such as `fix flaky integration tests` |
-| Output | A summary of the team knowledge that applies to the task |
-| Runs | `teamai recall --caller teamai-recall` |
+- **Input**: The task in plain words, such as `fix flaky integration tests`
+- **Output**: A summary of the team knowledge that applies to the task
+- **Runs**: `teamai recall --caller teamai-recall`
 
 ## Which agent a member gets
 

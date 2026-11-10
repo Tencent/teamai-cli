@@ -304,7 +304,7 @@ const USAGE_SIDE_FILE_PATTERNS = ['usage.jsonl.*', 'usage.pending-*.jsonl'];
  * Add {@link USAGE_SIDE_FILE_PATTERNS} to the `.gitignore` beside a project
  * scope's usage file when it predates them. `teamai init` writes that file only
  * once, so a legacy in-workspace `.teamai/` still ignores `usage.jsonl` alone
- * and the side files would show in the business repo's git status. Single-repo
+ * and the side files would show in the business repo's git status. Self
  * mode heals its own file (migrateSelfModeGitignore). Best-effort: a missing
  * `.gitignore` stays missing, and a failure never costs the event.
  */

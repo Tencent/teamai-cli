@@ -1,5 +1,5 @@
 /**
- * Real CLI: an arm's `team` decides the team assets its trials get: the revision this checkout pulled, none, another
+ * Real CLI: an arm's `team` decides the team resources its trials get: the revision this checkout pulled, none, another
  * revision of the team repo, or the pulled revision without some of its paths. An arm's `role` decides which role's
  * knowledge its trials' clones get.
  */
@@ -72,7 +72,7 @@ async function endedRun(fixture: BenchmarkFixture): Promise<string> {
 }
 
 describe('benchmark arm team', () => {
-  it('gives each arm of a team matrix its own team assets, and records the revision each trial ran on', async () => {
+  it('gives each arm of a team matrix its own team resources, and records the revision each trial ran on', async () => {
     const { fixture, pulled } = await twoRevisions(() => 'matrix:\n  team: [pulled, none, { without: [skills/fixer] }]\n');
 
     const runId = await endedRun(fixture);
@@ -93,7 +93,7 @@ describe('benchmark arm team', () => {
     expect(fixture.toolLaunches()[bare - 1]?.paths.filter((file) => file.startsWith('.claude/'))).toEqual([]);
   }, 240_000);
 
-  it("gives an arm that names another revision of the team repo that revision's assets", async () => {
+  it("gives an arm that names another revision of the team repo that revision's resources", async () => {
     const { fixture, first, pulled } = await twoRevisions((before) => `arms:\n  - name: now\n  - name: before\n    team: ${before}\n`);
 
     const runId = await endedRun(fixture);
@@ -157,7 +157,7 @@ describe('benchmark arm team', () => {
   }, 240_000);
 
   // With no role or project, the member receives every namespace beside the shared root.
-  it('runs an arm without a rule, an agent, a namespaced skill and a file of a shared skill, and its clone gets every other team asset', async () => {
+  it('runs an arm without a rule, an agent, a namespaced skill and a file of a shared skill, and its clone gets every other team resource', async () => {
     const fixture = await benchmarkFixture({
       tool: 'fixes', sandbox: true, tools: ['claude'],
       suite: suite('arms:\n  - name: now\n  - name: ablated\n    team: { without: [skills/dev/deploy, rules/commits.md, agents/reviewer.md, skills/fixer/notes.md] }\n'),

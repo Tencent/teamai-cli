@@ -2,7 +2,7 @@
  * The team place a step opens with `workspace: { team: { branch } }`: a fresh clone of the team repo from its origin,
  * on `branch` as origin has it with origin's default branch merged in, else on the default branch. The step's work is
  * committed and pushed to `branch` only while origin still has the branch where the clone found it, so a commit a
- * teammate pushed meanwhile is never replaced. In single-repo mode the team repo is the project's, and the step runs in
+ * teammate pushed meanwhile is never replaced. In self mode the team repo is the project's, and the step runs in
  * its `.teamai/`.
  *
  *   <runsDir>/<run>/team/<8 hex of the branch>/    the clone, made again by every prepare, so a crash leaves nothing to resume
@@ -224,7 +224,7 @@ async function teamFailures(dir: string): Promise<string[]> {
  * Commits what `step` left in the clone at `root`, deletions included, and pushes it to `branch` while origin still has
  * the branch at `found`, or still has none, unless a file it changed is one `teamai pull` would not place or would reject. The
  * changes run from the commit the branch had, so they hold the merge of the default branch too. `dir` is where the
- * team files are: `root`, or its `.teamai/` in single-repo mode.
+ * team files are: `root`, or its `.teamai/` in self mode.
  */
 export async function finishTeamClone(input: { root: string; dir: string; step: string; branch: string; base: string; start: string; found?: string }): Promise<{ changes: StepChanges } | WorkflowFailure> {
   const { root, dir, step, branch, base, found } = input;

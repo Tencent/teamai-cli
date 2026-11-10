@@ -71,7 +71,7 @@ Return typed errors from API handlers.
 
 没有 `paths:` 的 rule 得到 `trigger: always_on`。
 
-rule 还可以在 frontmatter 的 `related:` 块中声明与其他团队资产的关系（doc 也可以；learning 在贡献时同样这样声明）：
+rule 还可以在 frontmatter 的 `related:` 块中声明与其他团队资源的关系（doc 也可以；learning 在贡献时同样这样声明）：
 
 ```markdown
 ---
@@ -81,7 +81,7 @@ related:
 ---
 ```
 
-`MAPS_TO` 指向 teamwiki 代码页面，`REFERENCES` 指向任意资产，`SUPERSEDES` / `CONFLICTS_WITH` 指向规则、文档或 learning。`teamai recall` 会把每条声明的关系、以及每条由 `paths:` glob 派生的关系（见知识指南），作为 `Related:` 行打印在命中结果上，会话拿到关系的一端时也就看到了另一端。`teamai review --branch` 会判定 `related:` 块使用了表格外关系的规则或文档为失败；指向分支上不存在资产的关系是警告，不会判定失败。
+`MAPS_TO` 指向 teamwiki 代码页面，`REFERENCES` 指向任意资源，`SUPERSEDES` / `CONFLICTS_WITH` 指向规则、文档或 learning。`teamai recall` 会把每条声明的关系、以及每条由 `paths:` glob 派生的关系（见知识指南），作为 `Related:` 行打印在命中结果上，会话拿到关系的一端时也就看到了另一端。`teamai review --branch` 会判定 `related:` 块使用了表格外关系的规则或文档为失败；指向分支上不存在资源的关系是警告，不会判定失败。
 
 ### 目录型 rule：确定加载的 skill
 
@@ -185,7 +185,7 @@ description: >-
 
 Antigravity 的副本不带团队的 `model`（agy 会跳过它不认识模型的 agent），只写别名为 agy 映射的模型；工具名换成 agy 自己的：`tools: [Bash, Read]` 变成 `run_command`、`view_file` 和 `read_file`。没有这些，agy 的 subagent 就没有 shell。项目里的 `.agents/agents` 归 agy，所以装了 agy 时 Muse Code 不在那里写副本。CLI 和 Antigravity 2.0 把 agent 当作 subagent 运行；Antigravity IDE 没有 subagent，装了 CLI 时它的模型只能把活交给 `agy --agent <name>`。
 
-单仓库模式下，已放入命名空间的 agent 的根目录副本会推送到放置后的文件。把它从 `.md` 转为 `.yaml` 会移除原文件，即使当前检出落后于自己已合并的 PR 也是如此。两种情况下，TeamAI 都会把放置后的文件与你上次合并的推送写入的 blob 对比。团队之后又编辑过该文件时，推送会停止并给出 `teamai push --carried <path>@<blob>` 命令。把这次修改带入根目录副本，再运行该命令。该选项只接受这一版本，直接重试或团队之后再次编辑都会再次停止推送。团队已删除的 agent 不会从根目录副本重新添加。没有 blob 的旧放置记录，只有在检出落后于团队修改时才能发现这次修改；你通过它推送的第一次编辑合并后，该记录会补上这次的 blob。
+self 模式下，已放入命名空间的 agent 的根目录副本会推送到放置后的文件。把它从 `.md` 转为 `.yaml` 会移除原文件，即使当前检出落后于自己已合并的 PR 也是如此。两种情况下，TeamAI 都会把放置后的文件与你上次合并的推送写入的 blob 对比。团队之后又编辑过该文件时，推送会停止并给出 `teamai push --carried <path>@<blob>` 命令。把这次修改带入根目录副本，再运行该命令。该选项只接受这一版本，直接重试或团队之后再次编辑都会再次停止推送。团队已删除的 agent 不会从根目录副本重新添加。没有 blob 的旧放置记录，只有在检出落后于团队修改时才能发现这次修改；你通过它推送的第一次编辑合并后，该记录会补上这次的 blob。
 
 ### 模型别名
 
@@ -325,9 +325,9 @@ pull 会复制这个目录，并把 `${TEAMAI_HOOK_DIR}` 换成它的路径（�
 |---|---|
 | 用户作用域 | `~/.teamai/hooks/block-secrets.e246f037/` |
 | 有团队仓库的工作区 | `~/.teamai/projects/<slug>/hooks/block-secrets.e246f037/`，所有 worktree 共用一份，因为它们运行同一组 hook 条目 |
-| single-repo | 每个 worktree 的 `.teamai/delivered/hooks/block-secrets.e246f037/`，git 会忽略它 |
+| self 模式 | 每个 worktree 的 `.teamai/delivered/hooks/block-secrets.e246f037/`，git 会忽略它 |
 
-single-repo 下，Claude Code 的命令写成 `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"`，所以每个 worktree 的 `.claude/settings.json` 都一样。只改一个脚本也会让目录换成新版本，pull 会改写 `.claude/settings.json` 里的这个路径：团队如果提交这个文件，也要一起提交这个改动。其他工具拿到的是 worktree 的绝对路径，所以它们的项目文件在每个 worktree 里都不一样。以 Cursor 的 `.cursor/hooks.json` 为例：
+self 模式下，Claude Code 的命令写成 `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"`，所以每个 worktree 的 `.claude/settings.json` 都一样。只改一个脚本也会让目录换成新版本，pull 会改写 `.claude/settings.json` 里的这个路径：团队如果提交这个文件，也要一起提交这个改动。其他工具拿到的是 worktree 的绝对路径，所以它们的项目文件在每个 worktree 里都不一样。以 Cursor 的 `.cursor/hooks.json` 为例：
 
 ```text
 ~/work/shop/.cursor/hooks.json         bash "/Users/ana/work/shop/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"
@@ -528,7 +528,7 @@ pull 会复制这个目录，并把 `command`、`args` 和 `env` 里的 `${TEAMA
 | 团队在哪里 | 目录复制到 |
 |---|---|
 | 用户作用域 | `~/.teamai/mcp/jira-lite.1702782c/` |
-| 工作区（有团队仓库或 single-repo） | 每个 worktree 的 `.teamai/delivered/mcp/jira-lite.1702782c/`，git 会忽略它 |
+| 工作区（有团队仓库或 self 模式） | 每个 worktree 的 `.teamai/delivered/mcp/jira-lite.1702782c/`，git 会忽略它 |
 
 Claude Code 不会展开 `.mcp.json` 里的 `$CLAUDE_PROJECT_DIR`，所以各工具的 MCP 文件写的是 worktree 的绝对路径，每个 worktree 都不一样。在一个 worktree 里 pull，不会改动其他 worktree 的 server。
 
@@ -620,7 +620,7 @@ WorkBuddy 的用户文件写到**最后启动的那个 app** 的数据根 ——
 
 工具主目录或配置的 MCP 路径改变时，pull 保留旧副本并提示一次。确认没有工具读取后再删除。Doctor 会报告工具不读取的映射、已移动的文件，以及仅在项目根目录启动会话时才读取的项目 MCP。MCP 通道未知的内部版本只显示提示，不猜测配置路径。
 
-在包含已初始化仓库的 workspace 中，Claude Code、CodeBuddy 和 WorkBuddy 通过各自的 local scope 而不是项目 MCP 文件获得这些 server，所以在其中某个仓库里启动的会话不会加载它们。在单仓库模式下，或 tclaude、Muse Code 读取该文件时，Claude Code 的 server 仍留在其中，这样的会话会加载它们。
+在包含已初始化仓库的 workspace 中，Claude Code、CodeBuddy 和 WorkBuddy 通过各自的 local scope 而不是项目 MCP 文件获得这些 server，所以在其中某个仓库里启动的会话不会加载它们。在 self 模式下，或 tclaude、Muse Code 读取该文件时，Claude Code 的 server 仍留在其中，这样的会话会加载它们。
 
 ```bash
 teamai mcp list

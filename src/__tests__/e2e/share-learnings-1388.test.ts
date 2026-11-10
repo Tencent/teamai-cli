@@ -1,5 +1,5 @@
 /**
- * Real CLI: a member's coding session shares what it taught with teamai's default teamai-share-learnings in a single-repo install,
+ * Real CLI: a member's coding session shares what it taught with teamai's default teamai-share-learnings in an install in self mode,
  * driving the run with the skill driver as the session's agent does. The step runner runs `teamai contribute` for real,
  * resolved from PATH to the CLI under test, and the agent takes judge work with the `teamai score` line its step names.
  */
@@ -90,7 +90,7 @@ function turnOf(data: Record<string, unknown>): z.infer<typeof TurnSchema> {
 }
 
 /**
- * A single-repo install of a new checkout whose origin is a local bare repository, with `team` (paths under `.teamai/`)
+ * An install in self mode of a new checkout whose origin is a local bare repository, with `team` (paths under `.teamai/`)
  * committed to main, after `teamai pull`.
  */
 function selfModeInstall(team: Record<string, string> = {}): Install {
@@ -196,7 +196,7 @@ async function succeededStep(install: Install, run: string, id: string) {
 }
 
 describe('sharing an agent session with teamai\'s default teamai-share-learnings (#1388)', () => {
-  it('shares each learning with teamai contribute in a single-repo checkout after teamai pull, and leaves the checkout as it found it', () => {
+  it('shares each learning with teamai contribute in a checkout in self mode after teamai pull, and leaves the checkout as it found it', () => {
     const install = selfModeInstall();
     expect(git(install, 'status', '--porcelain', '--untracked-files=all')).toBe('');
 

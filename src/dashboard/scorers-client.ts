@@ -214,7 +214,7 @@ function scorersPage(){
  if(!scorerData)return '<div class="empty" role="status">'+label('Loading scorer results…')+'</div>';
  if(!scorerData.configured)return '<section class="panel"><div class="empty"><h2>'+label('No TeamAI scope in this workspace')+'</h2><p>'+label('Pick a project workspace above, or set one up with teamai init.')+'</p></div></section>';
  const sel=scorerData.selected, w=scorerData.window;
- const note='<p class="label scorer-note">'+label('Labels from sessions and workflow runs show how the tools did on the work that came along. To compare tools, models or team assets on the same tasks, run a benchmark.')+'</p>';
+ const note='<p class="label scorer-note">'+label('Labels from sessions and workflow runs show how the tools did on the work that came along. To compare tools, models or team resources on the same tasks, run a benchmark.')+'</p>';
  if(!scorerData.scorers.length)return '<section class="panel"><div class="empty"><h2>'+label('No score labels yet')+'</h2><p>'+label('Labels appear here once a workflow scorer or teamai score labels work and the labels reach teamai-reports.')+'</p></div></section>'+note;
  return (scorerError?'<div class="error-panel" role="alert"><p>'+e(scorerError)+'</p></div>':'')
   +'<div class="statusline"><span>'+label('Window')+': '+e(when(w.from))+' – '+e(when(w.to))+'</span><span>'+label('Counted by when labels were scored, not when the work happened.')+'</span><span>'+label('Pass or fail as each label stored it.')+'</span></div>'

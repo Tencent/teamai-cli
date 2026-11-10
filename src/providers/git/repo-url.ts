@@ -118,7 +118,7 @@ export function parseGenericGitRepoInput(input: string): RepoInfo {
 }
 
 /**
- * Parse the already-configured `origin` of a single-repo installation.
+ * Parse the already-configured `origin` of an installation in self mode.
  *
  * This accepts legacy HTTP and URL userinfo only to identify the existing
  * repository. The returned canonical URL deliberately strips userinfo so

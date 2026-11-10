@@ -183,7 +183,7 @@ describe('init --agent validates ids against built-in and team agents', () => {
     expect((YAML.parse(fs.readFileSync(configPath(home), 'utf8')) as { enabledAgents?: string[] }).enabledAgents).toEqual(['my-ide']);
   });
 
-  it('rejects an unknown id in single-repo git init before saving config', () => {
+  it('rejects an unknown id in self-mode git init before saving config', () => {
     const { home, env } = newHome('self-invalid-agent');
     const repo = path.join(sandbox, 'self-invalid-agent-' + homeCount);
     const url = 'https://git.example.invalid/team/self-invalid-agent.git';

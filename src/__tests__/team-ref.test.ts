@@ -130,7 +130,7 @@ describe('team ref scope boundary', () => {
     expect(teamRefBlocker(config({ inheritUserScope: kind === 'inherit' }), kind === 'same-team' ? config({ scope: 'user' }) : null)?.message)
       .toBe('--team-ref pins one workspace, but this team also reaches it through user scope, where every workspace shares one copy. Remove the user-scope install, or turn off inheritUserScope, to pin a workspace.');
   });
-  it('refuses self mode', () => { expect(teamRefBlocker(config({ repo: { localPath: clone, remote: '.', kind: 'self' } }), null)?.message).toBe("--team-ref does not apply in single-repo mode: the project's own commit decides which team assets it has."); });
+  it('refuses self mode', () => { expect(teamRefBlocker(config({ repo: { localPath: clone, remote: '.', kind: 'self' } }), null)?.message).toBe("--team-ref does not apply in self mode: the project's own commit decides which team resources it has."); });
   it('refuses HTTP', () => { expect(teamRefBlocker(config({ repo: { localPath: clone, remote: 'https://example.com', kind: 'http' } }), null)?.message).toBe('--team-ref needs a git team repo. This team is served over HTTP.'); });
 });
 

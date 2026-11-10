@@ -315,7 +315,7 @@ describe('what is never teamai-only', () => {
     expect(m.status()).toContain(' M .cursor/mcp.json');
   });
 
-  it('a single-repo team\'s .codex/hooks.json, which holds the built-in hooks', () => {
+  it('a self-mode team\'s .codex/hooks.json, which holds the built-in hooks', () => {
     const caseDir = fs.mkdtempSync(path.join(sandbox, 'self-codex-'));
     const home = path.join(caseDir, 'home');
     fs.mkdirSync(path.join(home, '.codex'), { recursive: true });

@@ -45,7 +45,7 @@ const REASONS: ReadonlyMap<string, (unchanged: Unchanged) => string | undefined>
 
 /**
  * Why plan refuses arm `arm` that runs without `paths` at team commit `revision`, or undefined when its trials can run
- * without them. `config` is the member's; `selection`, the assets the run's clones install; `role`, the arm's, which its
+ * without them. `config` is the member's; `selection`, the resources the run's clones install; `role`, the arm's, which its
  * clone pulls with in place of the member's roles and filters. Refused: a path the revision
  * does not have; teamai.yaml, which the clone's pull reads; and a path under skills/, rules/, agents/, claudemd/ or docs/
  * whose leaving out leaves what pull delivers as it was, with the reason pull's resolvers give.
@@ -84,7 +84,7 @@ export async function withoutRefusal(
 
 /**
  * Why plan refuses the paths a task covers, before any run exists: each is a file or directory of the pulled team
- * revision, and leaving it out changes what teamai pull delivers, so an arm can run without it and the asset-effect
+ * revision, and leaving it out changes what teamai pull delivers, so an arm can run without it and the resource-effect
  * tables can compare. Undefined when every covered path can be left out. The same resolvers as `withoutRefusal`.
  */
 /** Every file a team revision holds, listed once for the checks on paths the run names. */
@@ -240,7 +240,7 @@ export async function coveredDelivery(
         // or on a revision that lacks it.
         message: reasons.length === withheld.length && reasons[0] !== undefined
           ? reasons[0]
-          : `A task covers ${covered}, and no arm receives it: each arm that pulls team assets runs without it, on a team revision that does not have it, or with roles or projects that leave it out. ${TASK_FIX}`,
+          : `A task covers ${covered}, and no arm receives it: each arm that pulls team resources runs without it, on a team revision that does not have it, or with roles or projects that leave it out. ${TASK_FIX}`,
       },
     };
   }
@@ -295,7 +295,7 @@ async function firstUnchanged(
 
       if (withIt.key === without.key) {
         const why = reason({ listed: one, short, files, excluded, advice, withIt, without })
-          ?? `, and teamai pull delivers the same team assets at team revision ${short} with or without it, so leaving it out changes nothing. ${advice}`;
+          ?? `, and teamai pull delivers the same team resources at team revision ${short} with or without it, so leaving it out changes nothing. ${advice}`;
 
         return `${subject} ${one}${why}`;
       }

@@ -22,7 +22,7 @@ export interface HostProfile {
    * works in an interactive step with the agent. No host meters a child's tokens or turns to the CLI, and teamai scopes
    * team env only in the processes it starts, so prompt steps get none. A coding session never bypasses its person's
    * permissions, so no profile runs a prompt unattended. No host promises that the child it starts loads what teamai
-   * delivered for a step's role rather than the member's own assets, so no profile takes a step with a role. A profile
+   * delivered for a step's role rather than the member's own resources, so no profile takes a step with a role. A profile
    * that names the directory a step works in takes a step in the team workspace: its command runs in the runner, and
    * its prompt in a child TeamAI places in the team clone.
    */

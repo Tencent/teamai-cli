@@ -252,7 +252,7 @@ describe('doctor — hook checks', () => {
         expect(hookCheckLine()).toContain('✔');
     });
 
-    it('self single-repo mode resolves the hook check to <projectRoot>, not HOME', async () => {
+    it('self mode resolves the hook check to <projectRoot>, not HOME', async () => {
         const projectRoot = '/tmp/teamai-doctor-self';
         mockedLoadLocalConfig.mockResolvedValue({
             ...mockLocalConfig,

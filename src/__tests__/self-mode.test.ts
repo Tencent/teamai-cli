@@ -56,7 +56,7 @@ function makeConfig(kind: 'git' | 'http' | 'self', localPath = '/repo/.teamai'):
   };
 }
 
-describe('single-repo mode path helpers', () => {
+describe('self mode path helpers', () => {
   it('isSelfMode is true only for kind: self', () => {
     expect(isSelfMode(makeConfig('self'))).toBe(true);
     expect(isSelfMode(makeConfig('git'))).toBe(false);
@@ -154,7 +154,7 @@ describe('buildSelfModeGitignore', () => {
 
   it('does NOT ignore knowledge (skills/rules/docs/learnings/env stay on main)', () => {
     // These must not appear as ignore lines (they are committed to main).
-    // env is intentionally committed in single-repo mode (unlike standalone mode's
+    // env is intentionally committed in self mode (unlike standalone mode's
     // per-machine env), so `teamai push` can carry team env vars — it must NOT be
     // an ignore line. env.sh (generated locally) stays ignored, checked below.
     const lines = gi.split('\n').map((l) => l.trim());

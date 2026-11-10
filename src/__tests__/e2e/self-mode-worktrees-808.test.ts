@@ -1038,7 +1038,7 @@ describe('self mode with a linked worktree (#808)', () => {
     expect(fs.existsSync(checkout)).toBe(false);
   });
 
-  it('sets aside a git-mode queue when init switches the project to single-repo mode, and uninstall lists every queue', async () => {
+  it('sets aside a git-mode queue when init switches the project to self mode, and uninstall lists every queue', async () => {
     const project = setUpProject();
     const { home, projectRoot } = project;
     const first = await runCLI(['pull'], projectRoot, home);
@@ -1444,7 +1444,7 @@ describe('a checkout an older git-mode install left (#808)', () => {
     for (const name of queued.values()) expect(kept, kept.join('\n')).toContain(name);
   });
 
-  it('lets a checkout pull and contribute after another checkout switched the project to single-repo mode, keeping the knowledge and setting the old queue aside', async () => {
+  it('lets a checkout pull and contribute after another checkout switched the project to self mode, keeping the knowledge and setting the old queue aside', async () => {
     const install = setUpGitInstall();
     const { home, remote, projectRoot, worktree } = install;
     git(['worktree', 'add', '-q', worktree, '-b', 'wt-808'], projectRoot);
@@ -1454,7 +1454,7 @@ describe('a checkout an older git-mode install left (#808)', () => {
     fs.mkdirSync(path.join(legacyDir, 'pending-learnings'), { recursive: true });
     fs.writeFileSync(path.join(legacyDir, 'pending-learnings', oldQueued), '# Queued for the git team repo\n');
 
-    // The main checkout switches the project to single-repo mode. init needs
+    // The main checkout switches the project to self mode. init needs
     // no network here: an unreachable origin fails the GitLab probe at once.
     git(['config', 'user.name', 'TeamAI CI'], projectRoot);
     git(['config', 'user.email', 'ci@teamai.test'], projectRoot);

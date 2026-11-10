@@ -81,10 +81,10 @@ Do not run source installation/removal and push concurrently. The source mutex s
 A Git repository has one identity and checkout paths with separate purposes:
 
 ```
-projectAnchor  = first entry of `git worktree list --porcelain`
+repoAnchor     = first entry of `git worktree list --porcelain`
                  → a checkout or Git directory, SHARED by the repo and its worktrees.
                  → the stable per-project identity; P1 keys machine data under
-                   ~/.teamai/projects/<slug(projectAnchor)>/ by it.
+                   ~/.teamai/projects/<slug(repoAnchor)>/ by it.
 
 mainCheckout   = first entry when it is a checkout, else the common dir's
                  core.worktree, else show-toplevel for a main separate-git-dir
@@ -105,7 +105,7 @@ a superproject worktree inherits `<common>/modules/<name>` as its identity when
 that original Git directory exists. Its checkout paths still refer to its own
 clone, so shared configuration does not share delivery destinations (#1041).
 
-**Why resources must go to `workspaceRoot`, not `projectAnchor`:** every AI tool
+**Why resources must go to `workspaceRoot`, not `repoAnchor`:** every AI tool
 (Claude, Codex, CodeBuddy, OpenCode) discovers project resources by scanning up
 from the launch directory to the *current* repository root. None of them follows
 `git-common-dir` back to the main checkout, and gitignored files do not appear in
@@ -144,7 +144,7 @@ never its directory, which the git exclude module refuses to list, so a file
 the member adds inside a delivered skill stays visible; a tracked file there
 gets no line while the skill's other files keep theirs. The docs writer reports each doc file it wrote, never
 an entry of the member's it kept nor a doc beneath one; with the mirror at
-`<root>/.teamai/docs`, outside single-repo mode, the sync also keeps teamai's
+`<root>/.teamai/docs`, outside self mode, the sync also keeps teamai's
 block (`!/docs/**`) in `<root>/.teamai/.ignore` so ripgrep-based search finds
 the excluded docs, and lists that file while the block is all it holds.
 The `teamai-only` entry is judged anew on every pull,
@@ -325,7 +325,7 @@ named otherwise, since the tool does not read it.
 
 ### Why the main worktree, not `git-common-dir` (verified)
 
-`projectAnchor` uses the first entry of `git worktree list --porcelain` rather than
+`repoAnchor` uses the first entry of `git worktree list --porcelain` rather than
 `dirname(git rev-parse --git-common-dir)`. Two traps make the git-common-dir route
 wrong:
 
@@ -436,7 +436,7 @@ is a P1 concern. This keeps P0 independently reviewable (issue R7).
    keep their signatures and all benefit.
 
 2. **Anchor primitive** — `src/utils/git.ts` `resolveAnchors(cwd?)`.
-   Returns `{ workspaceRoot, projectAnchor, mainCheckout }`, or `null` outside a git repo (callers
+   Returns `{ workspaceRoot, repoAnchor, mainCheckout }`, or `null` outside a git repo (callers
    fall back to cwd-based behavior).
 
 3. **Subdirectory / worktree-aware discovery** — `src/config.ts`
@@ -556,7 +556,7 @@ leaves data half-in-both-places:
    too; every migratable top-level entry is present. Failure → discard staging, abort,
    source untouched.
 3. Atomic switch: fse.rename(staging → partition)  (same-filesystem, atomic).
-4. Write <partition>/anchor with the projectAnchor path — the slug's readable
+4. Write <partition>/anchor with the repoAnchor path — the slug's readable
    prefix is lossy (path chars folded, length-bounded) and its hash is one-way,
    so this file is the authoritative reverse lookup; it lives off the workspace.
 5. Release the lock, then retire the source:
@@ -589,14 +589,14 @@ a raw async-hook rejection.
 **Downgrade is not supported** — an older teamai treats a partitioned install as
 uninitialized; `.teamai.bak/` is the manual rollback. Flag prominently in release notes.
 
-## P2 — self (single-repo) mode slimming (implemented)
+## P2 — self mode slimming (implemented)
 
 Before P2, self mode kept its class-A1 machine data (config, state, env backup,
 search index, managed-mcp, the per-worktree resource cache) inside the business
 repo at `<repo>/.teamai/`, alongside the class-B team knowledge that is committed
 to main. A hand-maintained `.gitignore` blacklist kept `git status` clean — a
 fragile arrangement (the per-worktree `workspaces/` tree and the user-scope
-`managed-mcp.json` were, in fact, never listed, so a self repo running MCP
+`managed-mcp.json` were, in fact, never listed, so a repo in self mode running MCP
 reconcile or the local agent leaked them into the working tree).
 
 P2 physically relocates the A1 data to the partition `~/.teamai/projects/<slug>/`,
@@ -614,11 +614,11 @@ in "Self mode and linked worktrees (#808)" below; only the disposable
 `knowledge-wt/` (a detached checkout for knowledge PRs, removed after each use)
 stays in the checkout's `.teamai/`.
 
-- **init** (`initSelfRepo`): resolves the partition up front, attaches it as
+- **init** (`initSelfMode`): resolves the partition up front, attaches it as
   `dataHome`, and writes config/state there. The pre-P2 "retire the stale
   partition" step is gone — self now USES the partition, so there is nothing to
   retire.
-- **bootstrap** (teammate fresh clone, `bootstrapSelfRepo`): the "already
+- **bootstrap** (teammate fresh clone, `bootstrapSelfMode`): the "already
   initialized" check and the config write both target the partition (with a legacy
   fallback so a pre-P2 install is still recognized).
 - **detection seam** (the delicate part): on a fresh clone the partition config
@@ -636,7 +636,7 @@ stays in the checkout's `.teamai/`.
   injecting hooks or registering the member. It makes no provider auth call
   either (a stale token can send `authenticate()` into an interactive login), so
   the preview names the provider but not the username. `init` detects with
-  `selfHeal: false` (in its `preAction` queue check and in `initSelfRepo`): it
+  `selfHeal: false` (in its `preAction` queue check and in `initSelfMode`): it
   sets the project up itself, and a self-heal there would enable every tool in
   HOME before `--agent` chose them (#993).
 - **migration** (`migrate.ts`, `mode: 'self'`): self CANNOT use the git-mode whole
@@ -660,7 +660,7 @@ would otherwise compute `~/.teamai/reports-wt` while the partition computes
 `~/.teamai/projects/<slug>/reports-wt`, so one scope could take the branch and
 the other could never take it back. The loader attaches a runtime-only
 `branchHome` — a `side-branches/` subdirectory of the project partition,
-resolved from the shared project anchor — to a `kind: self` config of either
+resolved from the shared repo anchor — to a `kind: self` config of either
 scope; `getWorktreeDir` and the lock path beside it follow it, and every reader
 goes through them. The subdirectory matters when a git-mode team clone lives in
 the same partition: its checkouts are siblings of the clone, directly under the
@@ -1334,7 +1334,7 @@ now writes it whenever the config lands in a partition (via the shared
 **`status --all`.** Extends the existing `status` command with an `--all` flag that
 enumerates every partition under `~/.teamai/projects/` and marks each
 active / ORPHAN (project path gone → safe to delete) / unknown / corrupt. The
-verdict rests **only on the `anchor` file** — the shared project anchor the
+verdict rests **only on the `anchor` file** — the shared repo anchor the
 partition is keyed by. The config's businessRepoRoot/projectRoot is read purely as
 a display fallback: it is a persisted *workspace* path that may point at a linked
 worktree, so its disappearance does not prove the shared partition is orphaned. A
@@ -1371,7 +1371,7 @@ Every scope that uses the same team, and every worktree of it, reads the same fi
 
 Each entry records whether it is a secret's value or the member's value for an
 `env.yaml` variable (`kind`), so one is never used as the other.
-It never goes to a partition or to `<dataHome>`, which in single-repo mode is inside
+It never goes to a partition or to `<dataHome>`, which in self mode is inside
 the business repo, and it is not `~/.teamai/env`, which is already the user scope's
 env backup file. Files are written atomically with mode `0600`. Uninstalling a
 project scope removes only its partition, so the values stay; uninstalling the user

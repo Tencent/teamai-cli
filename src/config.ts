@@ -47,7 +47,7 @@ type LoadOptions = {
   /** Omit the legacy-role preview notice for a read-only load on a plain command. */
   suppressMigrationNotice?: boolean;
   /**
-   * false: a single-repo clone with no config yet loads as no config, without
+   * false: a clone in self mode with no config yet loads as no config, without
    * the clone-time self-heal. For `init`, which sets the project up itself.
    */
   selfHeal?: boolean;
@@ -630,7 +630,7 @@ export async function loadLocalConfig(options: LoadOptions = {}): Promise<LocalC
 
 /**
  * Serialize a LocalConfig for on-disk storage, dropping runtime-only fields.
- * `dataHome` is derived from the projectAnchor at runtime and the config file
+ * `dataHome` is derived from the repoAnchor at runtime and the config file
  * lives inside that directory, so it must never be persisted (a stale absolute
  * path would defeat the anchor-derived design and break on another machine).
  * `roleUnresolved` describes one load of the roles manifest, not the member,
@@ -889,7 +889,7 @@ export async function saveLocalConfigForScope(
       if (path.resolve(expandHome(dataHome)) === path.resolve(partition)) {
         const anchors = await resolveAnchors(config.projectRoot);
 
-        if (anchors) await writeAnchorFile(partition, anchors.projectAnchor);
+        if (anchors) await writeAnchorFile(partition, anchors.repoAnchor);
       }
     }
   } catch {
@@ -932,9 +932,9 @@ export async function saveStateForScope(state: State, localConfig: LocalConfig):
  * Resolution order (issue #374 P1):
  *  1. Legacy config directly at `<dir>/.teamai/config.yaml` — the fast path for
  *     an un-migrated install run from the repo root, and the self-heal bootstrap
- *     seam for single-repo mode. dataHome = `<dir>/.teamai`.
+ *     seam for self mode. dataHome = `<dir>/.teamai`.
  *  2. Otherwise resolve the git anchors and try the per-project PARTITION
- *     (`~/.teamai/projects/<slug>/config.yaml`, keyed on the shared projectAnchor)
+ *     (`~/.teamai/projects/<slug>/config.yaml`, keyed on the shared repoAnchor)
  *     — where a new/migrated install keeps its machine data out of the workspace.
  *     dataHome = the partition.
  *  3. Failing that, the repo's workspace-root `.teamai` (the subdirectory case for
@@ -947,7 +947,7 @@ export async function saveStateForScope(state: State, localConfig: LocalConfig):
 /**
  * Resolve the machine-data home for a project given its workspace root:
  * the per-project partition (`~/.teamai/projects/<slug>/`, keyed on the shared
- * projectAnchor) when inside a git repo, else the legacy `<projectRoot>/.teamai`
+ * repoAnchor) when inside a git repo, else the legacy `<projectRoot>/.teamai`
  * (non-git dir). Used by init to place a NEW project's data outside the
  * workspace. Self mode does not call this (its data stays in the repo until P2).
  */
@@ -956,7 +956,7 @@ export async function resolveProjectDataHome(projectRoot: string, options: LoadO
 
   // resolvePartitionDir (not bare projectDataHome) so an install whose partition
   // predates the #546 naming widening is adopted (renamed) at init time too.
-  return anchors ? resolvePartitionDir(anchors.projectAnchor, options) : path.join(projectRoot, '.teamai');
+  return anchors ? resolvePartitionDir(anchors.repoAnchor, options) : path.join(projectRoot, '.teamai');
 }
 
 /**
@@ -1088,18 +1088,18 @@ async function findProjectConfig(
     // 1. An existing partition config is AUTHORITATIVE. It was written by a real
     //    `teamai init`, so it always wins — a mere working-tree `.teamai/teamai.yaml`
     //    (which may be untracked/unverified) must never hijack it. Switching that
-    //    project to single-repo mode is `init --self`'s job (it retires the
+    //    project to self mode is `init --self`'s job (it retires the
     //    partition), not detection's.
     // resolvePartitionDir (not bare projectDataHome): a partition written
     // before the #546 naming widening still carries the legacy
     // `<basename>-<hash>` name; adoption renames it into the current name so
     // detection — and every command after it — keeps finding the config.
-    const partitionDir = await resolvePartitionDir(anchors.projectAnchor, options);
+    const partitionDir = await resolvePartitionDir(anchors.repoAnchor, options);
     const fromPartition = await readConfigFrom(partitionDir, anchors.workspaceRoot, undefined, onUnreadable);
 
     if (fromPartition) return fromPartition;
     // 2. No partition config yet. A workspace that declares `mode: self` self-heals
-    //    on a fresh clone (issue #198): bootstrapSelfRepo now writes the machine
+    //    on a fresh clone (issue #198): bootstrapSelfMode now writes the machine
     //    config into the PARTITION (P2), not <workspaceRoot>/.teamai. So run the
     //    self-heal and, on success, read the config back FROM THE PARTITION.
     const healed = await selfHealAndReadPartition(anchors.workspaceRoot, partitionDir, onUnreadable, options);
@@ -1113,7 +1113,7 @@ async function findProjectConfig(
   }
 
   // Not a git repo: fall back to a legacy `.teamai` directly at `dir` (also runs
-  // the self-heal bootstrap for a freshly-cloned single-repo project).
+  // the self-heal bootstrap for a freshly-cloned self-mode project).
   return readConfigFrom(path.join(dir, '.teamai'), dir, dir, onUnreadable, options);
 }
 
@@ -1134,17 +1134,17 @@ export async function readEphemeralConfig(file: string, cwd: string): Promise<Lo
  * (where machine data lives). Returns null when there is no project-scope
  * config there.
  *
- * When `selfHealRepoRoot` is given and the config is missing, run the single-repo
+ * When `selfHealRepoRoot` is given and the config is missing, run the self-mode
  * self-heal (issue #198): a teammate who cloned a repo carrying
  * `.teamai/teamai.yaml` with `mode: self` has the knowledge on disk but no local
- * config (gitignored). bootstrapSelfRepo writes it under `<repoRoot>/.teamai`,
+ * config (gitignored). bootstrapSelfMode writes it under `<repoRoot>/.teamai`,
  * then we re-read. It is a no-op ('skip') for any non-self dir, so this stays
  * cheap on the hot path. Only passed for the legacy `<root>/.teamai` shape (the
  * partition is teamai-managed and never bootstrapped).
  */
 /**
- * Self-heal a freshly-cloned single-repo project (issue #198), then read the
- * config back from the PARTITION. bootstrapSelfRepo is a no-op ('skip') for any
+ * Self-heal a freshly-cloned self-mode project (issue #198), then read the
+ * config back from the PARTITION. bootstrapSelfMode is a no-op ('skip') for any
  * non-self workspace, so this stays cheap on the hot path; it only writes a
  * config (into the partition, per P2) when the workspace carries a `mode: self`
  * marker and the developer's git provider is already authenticated. Returns the
@@ -1161,8 +1161,8 @@ async function selfHealAndReadPartition(
   if (options.dryRun) return previewSelfHeal(workspaceRoot, partitionDir, workspaceRoot);
 
   try {
-    const { bootstrapSelfRepo } = await import('./bootstrap.js');
-    const result = await bootstrapSelfRepo(workspaceRoot, { silent: true });
+    const { bootstrapSelfMode } = await import('./bootstrap.js');
+    const result = await bootstrapSelfMode(workspaceRoot, { silent: true });
 
     if (result !== 'bootstrapped') return null;
   } catch {
@@ -1187,8 +1187,8 @@ export async function readConfigFrom(
     if (options.dryRun) return previewSelfHeal(selfHealRepoRoot, dataHomeDir, projectRoot);
 
     try {
-      const { bootstrapSelfRepo } = await import('./bootstrap.js');
-      const result = await bootstrapSelfRepo(selfHealRepoRoot, { silent: true });
+      const { bootstrapSelfMode } = await import('./bootstrap.js');
+      const result = await bootstrapSelfMode(selfHealRepoRoot, { silent: true });
 
       if (result !== 'bootstrapped') return null;
     } catch {
@@ -1280,14 +1280,14 @@ function anchorProjectConfig(config: LocalConfig, dataHomeDir: string, projectRo
 }
 
 /**
- * Attach the shared side-branch home (#1443). For a single-repo team both the
+ * Attach the shared side-branch home (#1443). For a team in self mode both the
  * user scope and the project partition keep `reports-wt` / `learnings-wt` in a
  * subdirectory of the repository's project partition, so every scope and every
  * checkout of the business repo resolve one checkout and one lock per branch,
  * and a git-mode clone in the same partition (whose checkouts are its siblings)
  * never claims the same paths.
  *
- * Keyed on the shared project anchor (`resolvePartitionDir`, so a partition
+ * Keyed on the shared repo anchor (`resolvePartitionDir`, so a partition
  * under its pre-#546 name is adopted, not recreated). No anchor (outside git)
  * leaves it unset and `getWorktreeDir` keeps the scope's historical location.
  * Runtime-only: `serializeLocalConfig` drops it, like `dataHome`.
@@ -1298,7 +1298,7 @@ async function withBranchHome(config: LocalConfig, options: LoadOptions = {}): P
   const anchors = await resolveAnchors(root);
 
   if (!anchors) return config;
-  const partition = await resolvePartitionDir(anchors.projectAnchor, { dryRun: options.dryRun });
+  const partition = await resolvePartitionDir(anchors.repoAnchor, { dryRun: options.dryRun });
 
   return { ...config, branchHome: path.join(partition, SELF_BRANCH_HOME_DIRNAME) };
 }

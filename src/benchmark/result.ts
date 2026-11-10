@@ -206,8 +206,8 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdic
 
       const covers = task === undefined ? [] : namesOf(task);
       // An arm that runs without a covered skill by design, alone, with the directory holding it, with its definition
-      // file, or with no team assets at all, or whose selection pull does not deliver it to, reports no routing for it:
-      // the asset is absent, not misrouted.
+      // file, or with no team resources at all, or whose selection pull does not deliver it to, reports no routing for it:
+      // the resource is absent, not misrouted.
       const left = arm?.team.kind === 'without' ? arm.team.paths : arm?.team.kind === 'none' ? ['skills'] : [];
 
       const absent = new Set(plan.tasks.flatMap((one) => (one.covers ?? []).flatMap((covered, index) => {

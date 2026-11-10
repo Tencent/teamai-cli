@@ -106,7 +106,7 @@ async function fetchedDefaultBranch(repoPath: string): Promise<string | null> {
 /**
  * `members.yaml` as the fetched default branch has it (null content when that
  * commit has none), or null where no fetched default branch exists.
- * `./`: relative to the directory git runs in, which in single-repo mode is
+ * `./`: relative to the directory git runs in, which in self mode is
  * `.teamai/` inside the business repo rather than its root.
  */
 async function membersAtFetchedTip(repoPath: string): Promise<{ tip: string; content: string | null } | null> {

@@ -161,13 +161,13 @@ function partitionOwner(localConfig: LocalConfig, name: string): GitExcludeOwner
   };
 }
 
-// ─── A single-repo worktree's delivered folders (#1787) ─────────
+// ─── A self-mode worktree's delivered folders (#1787) ─────────
 
-/** The owner of the block that keeps a single-repo worktree's `.teamai/delivered/` out of git. */
+/** The owner of the block that keeps a self-mode worktree's `.teamai/delivered/` out of git. */
 export const DELIVERED_FOLDERS_OWNER = 'delivered-folders';
 
 /**
- * Keep `dir`, the `.teamai/delivered/` of `localConfig`'s single-repo worktree, out of git: one line in its own block
+ * Keep `dir`, the `.teamai/delivered/` of `localConfig`'s self-mode worktree, out of git: one line in its own block
  * of the repository's `.git/info/exclude`, whatever `sharing.gitExclude` says, since every worktree delivers its own
  * copy. The exclude file is recorded, so uninstall finds the block. A repository git cannot locate gets no block; a
  * block that cannot be written is reported, and the folders stay delivered.

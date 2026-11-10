@@ -209,7 +209,7 @@ describe('the usage report counts what finished sessions delivered (#1387)', () 
     const tree = path.join(tmpDir, 'task-tree');
     gitIn(work, ['worktree', 'add', '-q', '-b', 'task', tree]);
     const mine = commitIn(tree, 'in the worktree', ME);
-    const anchor = (await resolveAnchors(tree))?.projectAnchor;
+    const anchor = (await resolveAnchors(tree))?.repoAnchor;
     const [first, stop] = session('in-worktree', 7, { cwd: tree, projectAnchor: anchor });
     writeEvents([{ ...first, gitAtStart: { head: start, dirty: false } }, { ...stop, gitHead: mine, gitBranch: 'task' }]);
     gitIn(work, ['worktree', 'remove', tree]);

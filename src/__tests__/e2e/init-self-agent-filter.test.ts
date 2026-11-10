@@ -87,7 +87,7 @@ describe('init . --agent sets up only the tools passed (#993 bug 9)', () => {
   };
 
   /**
-   * A teammate's fresh clone of a repo already in single-repo mode: the
+   * A teammate's fresh clone of a repo already in self mode: the
    * committed `.teamai/teamai.yaml` says `mode: self`, and there is no local
    * config yet. Cloned from a local seed, then origin is set to an https URL
    * on a closed local port, as in `project()`.
@@ -191,7 +191,7 @@ describe('init . --agent sets up only the tools passed (#993 bug 9)', () => {
 
   // A fresh clone self-heals on its first command (#198), but not on `init`,
   // which sets the project up itself and must honour --agent.
-  it.each([[[]], [['--force']]])('in a fresh clone of a single-repo project, init . --agent claude %j saves only claude', (extra: string[]) => {
+  it.each([[[]], [['--force']]])('in a fresh clone of a project in self mode, init . --agent claude %j saves only claude', (extra: string[]) => {
     const repo = clone();
 
     const init = teamai(['init', '.', '--provider', 'git', '--agent', 'claude', '--verbose', ...extra], repo);

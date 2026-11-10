@@ -1,5 +1,5 @@
 /**
- * Which two trials of one task and repetition compare: the regression gate, Compare and the asset effect tables count a
+ * Which two trials of one task and repetition compare: the regression gate, Compare and the resource effect tables count a
  * pair only when the same instrument decided both sides, so a difference in pass rate is a change in the agent, not in
  * the task or its judge. The first rule that matches decides:
  *

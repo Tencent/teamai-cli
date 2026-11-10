@@ -33,6 +33,9 @@ name: Codex Review on Assign
 #      of any PR-controlled tooling.
 #   6. The review RULES come from the base checkout's AGENTS.md, so a PR cannot
 #      rewrite its own review criteria.
+#   7. When always-loaded agent context grew, the comment ends with the agent
+#      context budget's rows, never shown to Codex. The PR's own code wrote
+#      them, so only table rows and the budget's one sentence are kept.
 
 on:
   pull_request_target:
@@ -113,6 +116,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read # read the base code + git objects for the diff
+      actions: read # download the agent context budget's report
       pull-requests: write # the comment step posts to the PR
       issues: write # createComment goes through the issues API
     steps:
@@ -215,12 +219,12 @@ jobs:
               '(suggestion), [P3 nit] (minor/optional polish, theoretical edge',
               'case, or coverage deferred to CI).',
               'Also judge whether the PR description documents sufficient',
-              'testing. A PR that changes runtime behavior (beyond a docs-only',
-              'or tests-only diff) needs an end-to-end / real-CLI record; flag',
-              'its absence as [P1 blocking]. A docs-only or tests-only PR needs',
+              'testing. A PR that changes runtime behavior (beyond a docs-only,',
+              'tests-only, or lint-rule-only diff) needs an end-to-end / real-CLI record; flag',
+              'its absence as [P1 blocking]. A docs-only, tests-only, or lint-rule-only PR needs',
               'no e2e record — do not flag it for that. Do NOT require a full',
-              'provider x agent matrix: one representative real-CLI run suffices,',
-              'and missing extra-provider/agent coverage the author flagged as',
+              'tool x repo provider matrix: one representative real-CLI run suffices,',
+              'and missing extra repo provider or tool coverage the author flagged as',
               'untestable here or deferred to CI is at most [P3 nit]. Reply in',
               'the same language the PR author used in the PR description.',
               '',
@@ -272,11 +276,46 @@ jobs:
           # per-string limit before the total ARG_MAX limit. Pass a file instead.
           prompt-file: ${{ steps.pr.outputs.prompt-file }}
 
+      - name: Read agent context budget
+        id: budget
+        if: steps.codex.outputs.final-message != ''
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const head_sha = context.payload.pull_request.head.sha;
+            // On a push the budget runs beside this review, which has usually outlasted it.
+            let run;
+            for (let i = 0; i < 20; i += 1) {
+              ({ data: { workflow_runs: [run] } } = await github.rest.actions.listWorkflowRuns({ owner, repo, workflow_id: 'agent-context-budget.yml', head_sha, per_page: 1 }));
+              if (!run || ['completed', 'waiting', 'action_required'].includes(run.status)) break;
+              await new Promise(resolve => setTimeout(resolve, 15_000));
+            }
+            if (run?.status !== 'completed') return;
+            // The budget uploads its report only when always-loaded text grew.
+            const { data: { artifacts: [artifact] } } = await github.rest.actions.listWorkflowRunArtifacts({ owner, repo, run_id: run.id, name: 'agent-context-budget' });
+            if (!artifact || artifact.expired || artifact.size_in_bytes > 65_536) return;
+            const { data: zip } = await github.rest.actions.downloadArtifact({ owner, repo, artifact_id: artifact.id, archive_format: 'zip' });
+            const dir = `${process.env.RUNNER_TEMP}/agent-context-budget`;
+            require('fs').writeFileSync(`${dir}.zip`, Buffer.from(zip));
+            await exec.exec('unzip', ['-o', '-q', `${dir}.zip`, '-d', dir]);
+            // No cell mixes letters and dots, so none becomes a link.
+            const ROW = /^\| [A-Za-z ,-]{1,60} \|( [0-9 ,.%()+*<B\u2212\u2014-]{1,30} \|){3}$/;
+            const HEAD = /^\| [A-Za-z ]{1,30} \| main \| this PR \| Change \|$|^\| --- \| ---: \| ---: \| ---: \|$/;
+            const file = `${dir}/agent-context-budget.md`;
+            if (!require('fs').lstatSync(file, { throwIfNoEntry: false })?.isFile()) return;
+            const lines = require('fs').readFileSync(file, 'utf8').split('<details>')[0].split('\n').slice(0, 40);
+            const kept = lines.filter(line => line === '' || ROW.test(line) || HEAD.test(line) || line === 'Always loaded grew. Say why in the PR.');
+            core.setOutput('report', kept.join('\n').replace(/\n{3,}/g, '\n\n').trim());
+
       - name: Post review as PR comment
         if: steps.codex.outputs.final-message != ''
         uses: actions/github-script@v7
         env:
           CODEX_FINAL_MESSAGE: ${{ steps.codex.outputs.final-message }}
+          BUDGET_REPORT: ${{ steps.budget.outputs.report }}
         with:
           github-token: ${{ github.token }}
           script: |
@@ -284,5 +323,8 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.payload.pull_request.number,
-              body: `<!-- codex-review-on-assign -->\n${process.env.CODEX_FINAL_MESSAGE}`,
+              body: [
+                `<!-- codex-review-on-assign -->\n${process.env.CODEX_FINAL_MESSAGE}`,
+                ...(process.env.BUDGET_REPORT ? ['', '---', '**Agent context budget** (this head against main)', '', process.env.BUDGET_REPORT] : []),
+              ].join('\n'),
             });

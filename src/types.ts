@@ -761,11 +761,11 @@ export const TeamaiConfigBaseSchema = z.object({
    */
   scope: ScopeEnum.optional(),
   /**
-   * Single-repo mode marker. Committed to main inside <repo>/.teamai/teamai.yaml
+   * Self mode marker. Committed to main inside <repo>/.teamai/teamai.yaml
    * so it travels with `git clone`. When a teammate clones a repo carrying
    * `mode: self` but has no local config yet, teamai auto-bootstraps the machine
    * side (write local config, inject hooks, register member). undefined = a
-   * standalone team repo (existing behavior). See detectProjectConfig / bootstrapSelfRepo.
+   * standalone team repo (existing behavior). See detectProjectConfig / bootstrapSelfMode.
    */
   mode: z.enum(['self']).optional(),
   reviewers: z.array(z.string()).default([]),
@@ -998,7 +998,7 @@ export const LocalConfigSchema = z.object({
      * Team repo backend. Defaults to 'git' for backward compatibility.
      * - 'git':  a standalone team repo cloned to <home>/team-repo.
      * - 'http': a git-free HTTP team repo (read-only consumer).
-     * - 'self': single-repo mode — the business repo IS the team repo.
+     * - 'self': self mode — the business repo IS the team repo.
      *           Knowledge lives on main under <businessRepoRoot>/.teamai/;
      *           reports (members/sessions/votes/stats) live on the
      *           `teamai-reports` orphan branch. localPath = <businessRepoRoot>/.teamai.
@@ -1249,7 +1249,7 @@ const PlacementRecordSchema = z.object({ path: z.string(), blob: z.string() });
 export type PlacementRecord = z.infer<typeof PlacementRecordSchema>;
 
 /**
- * The member's choices that decide which team assets a pull delivers (#1178), as that pull read them from
+ * The member's choices that decide which team resources a pull delivers (#1178), as that pull read them from
  * `LocalConfig`. The lists are sorted, so the same choices compare equal however they were entered.
  */
 export const DeliverySelectionSchema = z.object({
@@ -1644,7 +1644,7 @@ export interface TeamHookFolder {
   readonly command: string;
   /** The absolute path the folder is delivered at. */
   readonly dest: string;
-  /** Single-repo: the worktree the folder is delivered in, which a tool's project-directory variable can stand for; else null. */
+  /** Self mode: the worktree the folder is delivered in, which a tool's project-directory variable can stand for; else null. */
   readonly projectRoot: string | null;
 }
 
@@ -1749,7 +1749,7 @@ export type ManagedMcpManifest = Record<string, ManagedMcpRecord[]>;
 /**
  * Ownership key for the managed-MCP manifest, per tool and scope.
  *
- * The P1 partition (issue #374) keys the data home by the shared `projectAnchor`,
+ * The P1 partition (issue #374) keys the data home by the shared `repoAnchor`,
  * so the main checkout and every linked worktree share ONE managed-mcp.json.
  * But a project MCP file (`<workspace>/.mcp.json`, `.codex/config.toml`, …) is
  * per-worktree. If the manifest key were just `<tool>:project`, one worktree's
@@ -2271,12 +2271,12 @@ export interface DashboardEvent {
    */
   dataHome?: string;
   /**
-   * Stable identity of the git repo holding `cwd` (`resolveAnchors().projectAnchor`),
+   * Stable identity of the git repo holding `cwd` (`resolveAnchors().repoAnchor`),
    * shared by all of its worktrees, so a session is attributed to its repo even
    * after its worktree is removed (#809). An event whose `cwd` no longer exists
    * carries the session's last anchor (#810). Absent outside git, on events that
    * record no `cwd` (Copilot), and on events written before this field existed;
-   * attribution then uses the session's last anchor, else `cwd`.
+   * attribution then uses the session's last anchor, else `cwd`. The key keeps its first name: events on disk carry it.
    */
   projectAnchor?: string;
   /**
@@ -2674,14 +2674,14 @@ export interface SearchIndexEntry {
   /** Snippet from codebase graph recall (depth-dependent content preview). */
   snippet?: string;
   /**
-   * The asset's path in the team tree (e.g. `rules/payments.md`,
+   * The resource's path in the team tree (e.g. `rules/payments.md`,
    * `learnings/<id>`, `skills/<namespace>/<skill>`), set at index build time.
    * Relations resolve against this, never against the absolute `path`, which
    * differs per member and per checkout (#1552).
    */
   treePath?: string;
-  /** Outgoing asset relations declared in `related:` frontmatter or derived from local links (#1552). */
-  related?: import('./asset-relations.js').StoredRelation[];
+  /** Outgoing resource relations declared in `related:` frontmatter or derived from local links (#1552). */
+  related?: import('./resource-relations.js').StoredRelation[];
 }
 
 /** Schema version of the on-disk search-index.json (bump on breaking change). */
@@ -2920,7 +2920,7 @@ export type CultureFrontmatter = z.infer<typeof CultureFrontmatterSchema>;
  * workspace root (subdirectory/worktree aware via `resolveAnchors`).
  *
  * This is deliberately separate from the per-project machine-data home: a later
- * phase (P1) keys machine-local data by the shared `projectAnchor` (the repository identity) under `~/.teamai/projects/<slug>/`, while resources continue to land
+ * phase (P1) keys machine-local data by the shared `repoAnchor` (the repository identity) under `~/.teamai/projects/<slug>/`, while resources continue to land
  * at the workspace root returned here. This function only ever governs resource
  * landing, never machine-data location.
  */
@@ -3165,7 +3165,7 @@ export function toolRootRejection(dir: string, at: HomePaths = processHomePaths(
  *
  * Read in exactly two commands: `teamai init` records the answer into
  * `toolRoots.<tool>`, and `teamai doctor` reports a recorded value that no
- * longer matches. Everything else reads the recorded value, so a teamai run
+ * longer matches. The verify ledger also reads it, to check the shell's homes. Everything else reads the recorded value, so a teamai run
  * from a shell that happens not to export the variable (a hook, a cron, a
  * different terminal) still writes where that tool reads.
  */
@@ -3213,7 +3213,7 @@ export function isAgentDisabled(localConfig: { disabledAgents?: string[] }, tool
  */
 /**
  * Synthetic toolPaths key used only to make `teamai push` scan the active tree's
- * .teamai/{skills,rules} in single-repo mode (see pushCore). It is never written
+ * .teamai/{skills,rules} in self mode (see pushCore). It is never written
  * to disk and never used by pull — the leading marker keeps it from colliding
  * with any real agent id. It is not a tool, so tool exclusions never apply to it.
  */
@@ -3626,7 +3626,7 @@ export function scopedToolPaths(
   return applyWorkBuddyLiveRoot(out, localConfig, at0);
 }
 
-/** True when the local config is single-repo mode (the business repo is the team repo). */
+/** True when the local config is self mode (the business repo is the team repo). */
 export function isSelfMode(localConfig: { repo: { kind?: string } }): boolean {
   return localConfig.repo.kind === 'self';
 }
@@ -3705,14 +3705,14 @@ export const BOOTSTRAP_LOCK_FILENAME = '.bootstrap-lock';
 /**
  * Lock filename (in the project data home) serializing writes to the SHARED team
  * clone during pull/push. All worktrees of a repo resolve to the same partition
- * (keyed on projectAnchor), so this lock coordinates a `git pull`/`git push` that
+ * (keyed on repoAnchor), so this lock coordinates a `git pull`/`git push` that
  * could otherwise run concurrently from the main checkout and a worktree and
  * corrupt the shared clone.
  */
 export const SYNC_LOCK_FILENAME = '.sync-lock';
 
 /**
- * Directory holding team knowledge assets (skills/rules/docs/learnings/...).
+ * Directory holding team knowledge resources (skills/rules/docs/learnings/...).
  * All modes read/write knowledge under localConfig.repo.localPath:
  * - git/http: <home>/team-repo
  * - self:     <businessRepoRoot>/.teamai  (committed to main)
@@ -3728,14 +3728,14 @@ export function getKnowledgeDir(localConfig: LocalConfig): string {
  * phase — config.yaml/state.json and the team-repo clone).
  *
  * This is the single source of truth for the machine-data home, sitting beside
- * `getKnowledgeDir` (team knowledge assets) and `resolveBaseDir` (AI-tool
+ * `getKnowledgeDir` (team knowledge resources) and `resolveBaseDir` (AI-tool
  * resource landing = the workspace root). The three are orthogonal:
  * knowledge / resource-landing / machine-data.
  *
  * Today it returns `getTeamaiHome(scope, projectRoot)` — i.e. `<projectRoot>/.teamai`
  * for project scope, `~/.teamai` for user scope. A later phase (P1) redirects the
  * project-scope case to a per-project partition under `~/.teamai/projects/<slug>/`
- * keyed by the shared `projectAnchor`; every consumer already routes through this
+ * keyed by the shared `repoAnchor`; every consumer already routes through this
  * function, so that redirect happens in one place.
  */
 export function getDataHome(localConfig: LocalConfig): string {
@@ -3845,7 +3845,7 @@ export function getTeamaiHome(scope: Scope, projectRoot?: string): string {
  * backup: an older version may have left a secret there that the failed pull
  * must not apply.
  *
- * Normally this is `<teamaiHome>/env`. But in single-repo mode `<teamaiHome>` is
+ * Normally this is `<teamaiHome>/env`. But in self mode `<teamaiHome>` is
  * `<repo>/.teamai`, where `env/` is a committed DIRECTORY holding the shared
  * `env.yaml` — writing a file at `<teamaiHome>/env` there would collide with that
  * directory (EISDIR). So self mode uses `env.local`, which is gitignored (see
@@ -3942,7 +3942,7 @@ export function legacyManagedHooksPath(projectRoot: string): string {
  * - Non-self project scope → HOME + user manifest. `~/.claude` always exists,
  *   so the gate passes; the dispatch runtime identifies the active project via
  *   detectProjectConfig(stdin.cwd), so a projectRoot copy is unnecessary (#264).
- * - Self single-repo mode → projectRoot (its resolveBaseDir). Hooks live in the
+ * - Self mode → projectRoot (its resolveBaseDir). Hooks live in the
  *   business repo's tool dirs and are committed to main so a teammate's clone
  *   carries the session-start hook that self-heals ("clone = initialized").
  * - User scope → HOME (its resolveBaseDir).
@@ -4026,7 +4026,7 @@ export function recordedToolRootDir(
  * Returns null when there is nothing project-owned to sweep:
  * - user scope (only ever HOME),
  * - project scope without a projectRoot,
- * - self single-repo mode. Self mode's alternate location is HOME, which is
+ * - self mode. Self mode's alternate location is HOME, which is
  *   shared with any user-scope install and its user manifest — a blind
  *   removeAll there would clobber genuine user-scope hooks, so we never sweep
  *   it. (The cross-scope collision itself is tracked separately.)

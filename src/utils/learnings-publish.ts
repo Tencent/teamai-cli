@@ -205,7 +205,7 @@ function sourceMr(frontmatter: FrontmatterData): string | null {
 /**
  * Queue what `import --from-mr` (0.25.0 to 0.26.0-beta.3) wrote into the learnings checkout and
  * never committed (#823 item 7), so the publish that follows sends it. Such a
- * file never reached the team and, in single-repo mode, keeps git from removing
+ * file never reached the team and, in self mode, keeps git from removing
  * the checkout an older teamai left in `.teamai/`.
  *
  * Only that exact shape moves: untracked, directly under `learnings/`, named
@@ -585,7 +585,7 @@ async function commitMaintenance(localConfig: LocalConfig, message: string, inCh
 /**
  * Write every queued learning into the `teamai-learnings` worktree and push it.
  *
- * One path for every git-backed repo: an independent clone and a single-repo
+ * One path for every git-backed repo: an independent clone and a self-mode
  * business repo differ only in where the worktree sits. Nothing touches the
  * default branch, so a member needs no write access to it, and nothing touches
  * the user's active working tree either.

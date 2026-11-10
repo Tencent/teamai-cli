@@ -1,6 +1,6 @@
 schemaVersion: v1alpha1
 name: teamai-self-improvement
-description: Improve the team's harness from a scorer's repeated failures - change the assets teamai delivers so that work like the failing one passes, add one regression task per failure, and propose it all as one pull request on the team repo that the next run updates. Its prompt step needs a sandbox.
+description: Improve the team's harness from a scorer's repeated failures - change the resources teamai delivers so that work like the failing one passes, add one regression task per failure, and propose it all as one pull request on the team repo that the next run updates. Its prompt step needs a sandbox.
 invoke: deny
 inputs: { scorer: string, suite: string }
 steps:
@@ -24,7 +24,7 @@ steps:
       Regression tasks the team already has for other failures of this scorer, keep them: {{ steps.plan.outputs.data.improvement.covered }}
       Each failure has the label its judge gave, what the work ran as (agent, and the team skills it used), the commit it started at (start.commit),
       and, for a session, the learnings that name it: read each one at its path.
-      1. Find what the failures share. Change the team's assets here so that work like this passes the rubric. Any asset teamai delivers may
+      1. Find what the failures share. Change the team's resources here so that work like this passes the rubric. Any resource teamai delivers may
          change: skills, rules, agents, prompts, hooks, MCP servers, models, env, the team culture (claudemd), docs and workflows.
          Change the scorer only when the failures show its rubric is wrong. Never change application code.
          Change only files in the directories teamai pulls, and add no symlink: a file anywhere else fails the whole proposal.
@@ -32,5 +32,5 @@ steps:
          schemaVersion v1alpha1; title, what went wrong in a few words; prompt, the request the work was given, as its learnings or its workflow
          step describe it, without the fix; startingCommit, its start.commit; successCriteria, what the rubric's passing label asks of this work,
          in one or two sentences; source, its failure.subject exactly as given.
-      3. When the failures share no cause an asset can fix, change nothing: nothing is proposed.
+      3. When the failures share no cause a resource can fix, change nothing: nothing is proposed.
       teamai commits what you change, pushes it to teamai/self-improvement/{{ inputs.scorer }} and opens or updates its pull request.

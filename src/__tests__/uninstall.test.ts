@@ -1181,7 +1181,7 @@ describe('uninstall', () => {
     expect(await fse.readFile(projectPiHook, 'utf8')).toBe('// user-owned extension');
   });
 
-  it('removes the folders a single-repo worktree delivered in .teamai/delivered/, and leaves the team content (#1787)', async () => {
+  it('removes the folders a worktree in self mode delivered in .teamai/delivered/, and leaves the team content (#1787)', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     const projectRoot = path.join(tmpDir, 'business-repo');
     vi.stubEnv('HOME', homeDir);
@@ -1447,7 +1447,7 @@ describe('uninstall', () => {
     ]).toEqual([true, '- name every endpoint\n', false]);
   });
 
-  it('previews the delivered folders of a single-repo worktree by what they are, whatever their type (#1787)', async () => {
+  it('previews the delivered folders of a worktree in self mode by what they are, whatever their type (#1787)', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     const projectRoot = path.join(tmpDir, 'business-repo');
     vi.stubEnv('HOME', homeDir);

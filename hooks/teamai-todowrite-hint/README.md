@@ -2,12 +2,10 @@
 
 English | [中文](README.zh-CN.md)
 
-| | |
-|---|---|
-| Runs | After a TodoWrite call |
-| Input | None |
-| Output | A suggestion to search the team knowledge base once with the [`teamai-recall`](../../agents/README.md) subagent |
-| Files | `HOOK.yaml` holds only `description`. `message.md` is the text of the hint |
+- **Runs**: After a TodoWrite call
+- **Input**: None
+- **Output**: A suggestion to search the team knowledge base once with the [`teamai-recall`](../../agents/README.md) subagent
+- **Files**: `HOOK.yaml` holds only `description`. `message.md` is the text of the hint
 
 ## When it suggests
 

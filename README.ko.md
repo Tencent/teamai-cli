@@ -19,9 +19,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-**TeamAI는 git 저장소로 팀의 skills, rules, agents, learnings, models, MCP 등 AI 자산을 관리합니다.**
+**TeamAI는 git 저장소로 팀의 skills, rules, agents, learnings, models, MCP 등 에이전트 리소스를 관리합니다.**
 
-팀원은 한 번 초기화하면, 이후 팀의 최신 AI 자산이 자동으로 동기화됩니다.
+팀원은 한 번 초기화하면, 이후 팀의 최신 에이전트 리소스가 자동으로 동기화됩니다.
 
 ## 왜 TeamAI인가
 
@@ -65,7 +65,7 @@ Skills, Rules, MCP 등 Agent가 사용할 수 있는 리소스는 모두 공유�
 /teamai TeamAI 대시보드 열어줘
 ```
 
-팀원이 한 번 접속하면, 에이전트를 여는 것만으로 팀의 모든 AI 자산을 쓸 수 있습니다.
+팀원이 한 번 접속하면, 에이전트를 여는 것만으로 팀의 모든 에이전트 리소스를 쓸 수 있습니다.
 
 <details>
 <summary>명령줄 설치</summary>

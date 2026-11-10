@@ -2,7 +2,7 @@
 
 > 本文是 [TeamAI CLI 使用指南](../../usage-guide.zh-CN.md) 的一部分。
 
-一个评分器反复判定同一类工作失败，说明团队的 harness 缺了点什么：一个 skill、一条 rule、一个 agent、一个 prompt、一个 hook、一个 MCP 服务、一个模型、团队文化，或 teamai 分发的其他任何东西。`teamai self-improvement run <scorer>` 把这些失败变成团队仓库上的一个 pull request：PR 修改这些资产，为每个失败加一个回归任务；一个 CI 任务在团队用的每个工具上证明这个修改修好了它们、也没有弄坏别的。
+一个评分器反复判定同一类工作失败，说明团队的 harness 缺了点什么：一个 skill、一条 rule、一个 agent、一个 prompt、一个 hook、一个 MCP 服务、一个模型、团队文化，或 teamai 分发的其他任何东西。`teamai self-improvement run <scorer>` 把这些失败变成团队仓库上的一个 pull request：PR 修改这些资源，为每个失败加一个回归任务；一个 CI 任务在团队用的每个工具上证明这个修改修好了它们、也没有弄坏别的。
 
 ```text
 review-quality failed 4 sessions this month, 2 of them also by hand
@@ -177,7 +177,7 @@ jobs:
 | 步骤 | 作用 |
 | --- | --- |
 | `plan` | `teamai digest --json --scorer <scorer> --suite <dir> --proposal teamai/self-improvement/<scorer>`：在 `data.improvement` 里输出能作为任务起点的失败：[`digest --json`](#teamai-读取什么) 里这个评分器的失败中，记录了本检出也有的开始 commit、且团队仓库默认分支和提案上都还没有套件任务指向它的那些。每个对象只取一次，按时间从新到旧；`hasProposal` 表示 origin 上的提案是否还开着。 |
-| `improve` | 它的 `if` 成立时运行：两个或以上失败，或者 origin 上有默认分支尚未包含的提案时再多一个。单个失败不构成规律，即使另一个失败已有合并的任务覆盖。它在团队仓库的全新克隆里运行，在 `teamai/self-improvement/<scorer>` 上并合并默认分支，或从默认分支新建这个分支（[`workspace: { team }`](workflow.md#团队工作区)）。agent 读每个失败、它的 learnings 和评分标准，修改资产，并为每个失败写一个任务。`deliver: pr` 推送分支并打开它的 PR，或更新已经打开的那个。 |
+| `improve` | 它的 `if` 成立时运行：两个或以上失败，或者 origin 上有默认分支尚未包含的提案时再多一个。单个失败不构成规律，即使另一个失败已有合并的任务覆盖。它在团队仓库的全新克隆里运行，在 `teamai/self-improvement/<scorer>` 上并合并默认分支，或从默认分支新建这个分支（[`workspace: { team }`](workflow.md#团队工作区)）。agent 读每个失败、它的 learnings 和评分标准，修改资源，并为每个失败写一个任务。`deliver: pr` 推送分支并打开它的 PR，或更新已经打开的那个。 |
 
 ```console
 $ teamai digest --json --scorer review-quality --suite benchmarks/regressions --proposal teamai/self-improvement/review-quality \
@@ -210,7 +210,7 @@ $ teamai digest --json --scorer review-quality --suite benchmarks/regressions --
 | --- | --- |
 | 分支和默认分支冲突 | `improve` 在 agent 开始前以 `merge_conflict` 失败。把默认分支合并进去，或者删掉它。 |
 | 运行期间队友推送到了分支 | `improve` 以 `push_failed` 失败，不会覆盖那个提交。下一次运行从它开始。 |
-| agent 改了 `teamai pull` 不会放置或会拒绝的文件 | `improve` 以 `push_failed` 失败并逐个列出文件：在 pull 放置的目录之外（单仓库模式下在 `.teamai/` 之外）、符号链接、不属于任何套件的 benchmark 文件，或 pull 会拒绝、而默认分支上原本接受的工作流、评分器、套件（比如 agent 删掉了某个工作流所用的评分器）。什么也不推送。 |
+| agent 改了 `teamai pull` 不会放置或会拒绝的文件 | `improve` 以 `push_failed` 失败并逐个列出文件：在 pull 放置的目录之外（self 模式下在 `.teamai/` 之外）、符号链接、不属于任何套件的 benchmark 文件，或 pull 会拒绝、而默认分支上原本接受的工作流、评分器、套件（比如 agent 删掉了某个工作流所用的评分器）。什么也不推送。 |
 | PR 被 squash 合并，分支保留 | 分支内容和默认分支相同时，什么也不推送，也不打开 PR。 |
 | PR 未合并就被关闭，分支保留 | 从分支继续，有新失败时打开一个新 PR。要放弃提案，关闭 PR 时一并删除分支。 |
 
@@ -274,7 +274,7 @@ jobs:
 
 它在每个 PR 上运行，人提的 PR 也一样，所以每次改动都会和之前修好的每个失败对比。它没有 `paths:` 过滤：被过滤跳过的必需检查在 GitHub 上会一直等待，会挡住所有不在这些路径里的 PR。PR 每推送一次就再跑一次，替换两个标记之间的部分；正文其余部分保持不变。`--team-ref "$HEAD_REF"` 把运行固定到 PR 的分支：`pulled` 组和套件的任务来自它，`main` 组来自 `main`。评审一致性表格在自我改进 PR 上只列这个 PR 针对的评分器，在人提的 PR 上列出所有评分器。最后一步在任何工具上有任务在 PR 上比在 `main` 上通过得少，有任务的检查无法运行或在改动前就通过、有试验没有运行，或者套件运行的某个工具没有 `main` 组和 PR 组的配对可以对比时，让任务失败：只看这些配对，所以去掉 PR 组或 `main` 组的套件也会让它失败。在团队仓库的合并规则里把这个任务设为必需，就能把没通过的改动挡在 `main` 之外。
 
-Dashboard 的[自我改进页面](dashboard.md#自我改进self-improvement)跟踪每个提议和每个已合并的修改：它改了哪些资产、它在回归套件上每个工具的证明，以及合并前后评分器的通过率。
+Dashboard 的[自我改进页面](dashboard.md#自我改进self-improvement)跟踪每个提议和每个已合并的修改：它改了哪些资源、它在回归套件上每个工具的证明，以及合并前后评分器的通过率。
 
 ## 失败什么时候用不上
 

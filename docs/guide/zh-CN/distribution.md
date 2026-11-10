@@ -10,13 +10,13 @@
 
 ### 项目 checkout
 
-同一仓库的 linked worktree 共用项目的 TeamAI 配置和数据，但每个 checkout 都会在自己的工具目录中接收资源。`init` 和 `pull` 会安装 Git checkout hooks，在新 worktree 中为已启用的工具创建根目录并拉取资源，然后 checkout 命令才会返回。有些 agent 工具创建 worktree 时不跑 Git hooks，比如 Claude Code 的 `EnterWorktree` 和 Codex CLI。这样的 worktree 会在其中第一次开会话或第一次用工具时，在后台按同样方式准备好。
+同一仓库的 linked worktree 共用项目的 TeamAI 配置和数据，但每个 checkout 都会在自己的工具目录中接收 Agent 资源。`init` 和 `pull` 会安装 Git checkout hooks，在新 worktree 中为已启用的工具创建根目录并拉取资源，然后 checkout 命令才会返回。有些 agent 工具创建 worktree 时不跑 Git hooks，比如 Claude Code 的 `EnterWorktree` 和 Codex CLI。这样的 worktree 会在其中第一次开会话或第一次用工具时，在后台按同样方式准备好。
 
 在 superproject worktree 中创建的子模块克隆会继承原始子模块的 TeamAI 配置和数据分区。首次 pull 会根据原始配置为克隆创建工具根目录、将资源投递到这些目录，并安装由该克隆拥有的 hooks。每个 checkout 分别记录 hook 所有权；完整卸载会移除所有 checkout 所记录的 hooks。定向卸载行为见[卸载](./faq.md#卸载)。
 
 ### 独立的 teamai 仓库
 
-团队资产在单独的仓库里。当前项目只是指向它。
+团队资源在单独的仓库里。当前项目只是指向它。
 
 只进当前项目：
 
@@ -54,11 +54,11 @@ teamai pull --team-ref main  # 用团队的默认分支名解除固定
 
 切换版本时，新版本没有的 skill、rule 和 agent 的未修改副本会被移除。修改过的副本会保留，解除固定时会指出哪些修改会被 `push` 发到默认分支。固定期间 `push` 不发送任何内容，`source add`、`source remove` 和写入团队 wiki 的 `import` 会拒绝执行；pull 仍上报用量和 learnings。固定版本的 pull 失败或交付不完整时退出码为 1。`--team-ref` 不能与 `--dry-run` 同用。
 
-此功能要求 workspace 安装，不继承 user scope，且同一团队未在 user scope 安装。不支持 HTTP 或单仓库模式。其他 workspace 保持各自的版本。
+此功能要求 workspace 安装，不继承 user scope，且同一团队未在 user scope 安装。不支持 HTTP 或 self 模式。其他 workspace 保持各自的版本。
 
 ### 不独立
 
-业务仓库自己就是团队仓库。资产写在这个仓库的 `.teamai/` 里。
+业务仓库自己就是团队仓库。资源写在这个仓库的 `.teamai/` 里。
 
 ```bash
 cd /path/to/my-workspace

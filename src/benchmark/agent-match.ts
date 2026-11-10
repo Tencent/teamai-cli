@@ -50,9 +50,9 @@ export function compareJudge(planned: PlannedJudge, judge: Extract<ScoreLabel['j
 }
 
 /**
- * Whether the prompt ran on its arm's team assets: the arm's revision, or no team assets at all. A clone without some
+ * Whether the prompt ran on its arm's team resources: the arm's revision, or no team resources at all. A clone without some
  * paths pulls the commit teamai made of the arm's revision without them, and records the arm's revision. A trial of a
- * team arm whose record names no team is not verified; one of an arm without team assets that names one ran on them.
+ * team arm whose record names no team is not verified; one of an arm without team resources that names one ran on them.
  */
 function compareTeam(intended: BenchmarkRecord['arms'][number]['team'], recorded: AgentObservation['team']): Comparison {
   if (intended.kind === 'none') return recorded === undefined ? 'match' : 'deviation';

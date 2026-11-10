@@ -1,5 +1,5 @@
 /**
- * E2E (#915): in a single-repo (self) team with
+ * E2E (#915): in a self-mode team with
  * `sharing.gitExclude.enabled` on, `init .` and every pull leave `git status`
  * clean for Claude and Copilot. The built-in hooks stay in the committed
  * `.claude/settings.json`, so a fresh clone still gets them; the team's hooks
@@ -164,7 +164,7 @@ afterAll(async () => {
   if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
 });
 
-describe('a single-repo team keeps what teamai delivers out of git (#915)', () => {
+describe('a team in self mode keeps what teamai delivers out of git (#915)', () => {
   it('init . turns the setting on and leaves git status clean right away; pull keeps it clean; a fresh clone gets the built-in hooks', () => {
     const m = member('self-on');
 
@@ -242,7 +242,7 @@ describe('a single-repo team keeps what teamai delivers out of git (#915)', () =
     expect(m.deliveredLines()).not.toContain(`/${rel}`);
   });
 
-  it('removes the docs search whitelist a project kept before it switched to single-repo mode', () => {
+  it('removes the docs search whitelist a project kept before it switched to self mode', () => {
     const m = member('self-whitelist', { committed: { '.teamai/docs/guide.md': '# Guide\n' } });
     m.ok(['init', '.', '--provider', 'git', '--agent', 'claude,copilot']);
     // What the git-mode project's pulls left in its .teamai/ before the switch.

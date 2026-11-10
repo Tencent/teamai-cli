@@ -755,7 +755,7 @@ __teamai_env_files() {
 
 # Whether directory $1 is in a project set up in its checkout, as
 # \`detectProjectConfig\` reads one there: a \`.teamai/config.yaml\`, or a
-# single-repo project's \`.teamai/teamai.yaml\`, at the top of its checkout
+# self-mode project's \`.teamai/teamai.yaml\`, at the top of its checkout
 # (the nearest directory holding .git), or in $1 itself outside git. The
 # member's own ~/.teamai is the user scope's. A checkout whose project keeps
 # its data in ~/.teamai/projects says so in its git common directory instead.

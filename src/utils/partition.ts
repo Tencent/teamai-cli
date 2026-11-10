@@ -12,7 +12,7 @@ import { completeWorktreeList, gitCommonDir, isLiveCheckout, isLiveProjectChecko
 /**
  * Per-project data partition identity (issue #374 P1).
  *
- * teamai keys a project's machine-local data by the SHARED `projectAnchor` (the
+ * teamai keys a project's machine-local data by the SHARED `repoAnchor` (the
  * repository identity, so every linked worktree resolves to the same partition), NOT
  * the per-worktree workspace root. The partition lives at
  * `~/.teamai/projects/<slug>/`, entirely outside the business workspace.
@@ -143,7 +143,7 @@ function anchorHash(norm: string): string {
 }
 
 /**
- * `<safe-path>-<sha256(normalized anchor)[:16]>` — stable per projectAnchor.
+ * `<safe-path>-<sha256(normalized anchor)[:16]>` — stable per repoAnchor.
  */
 export function projectSlug(anchor: string): string {
   // Normalize once so BOTH the path prefix and the hash are derived from the
@@ -175,7 +175,7 @@ export function legacyProjectSlug(anchor: string): string {
 /**
  * Absolute path of a project's machine-data partition in the CURRENT naming
  * format: `~/.teamai/projects/<slug(anchor)>`. `anchor` MUST be the shared
- * projectAnchor (the repository identity), so all worktrees of one repo share the
+ * repoAnchor (the repository identity), so all worktrees of one repo share the
  * partition. Pure path math — it does not look at the disk. Callers that need
  * "the partition that actually holds this project's data" (detection, init,
  * migration) must use `resolvePartitionDir` instead, which adopts a partition
@@ -355,7 +355,7 @@ export function projectsRootDir(home = getUserHome()): string {
 
 /**
  * The `anchor` reverse-lookup file inside a partition. The slug is a one-way
- * sha256, so this file is the ONLY way back to the original projectAnchor path;
+ * sha256, so this file is the ONLY way back to the original repoAnchor path;
  * it lives inside the partition (off the workspace), preserving zero-residue.
  * Written on both init and migration so every partition carries it (issue #374).
  */
@@ -419,7 +419,7 @@ export async function staleWorkspaces(dataHome: string, currentRoot: string): Pr
   const commonDir = await gitCommonDir(currentRoot);
 
   if (!commonDir) return [];
-  const identity = (await resolveAnchors(currentRoot))?.projectAnchor;
+  const identity = (await resolveAnchors(currentRoot))?.repoAnchor;
   // The current checkout by the path given and its realpath: a writer may have hashed either.
   const current = new Set([currentRoot, await fs.promises.realpath(currentRoot).catch(() => currentRoot)].map(managedMcpWorkspaceId));
   const workspaces = path.join(dataHome, 'workspaces');

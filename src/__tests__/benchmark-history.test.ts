@@ -330,7 +330,7 @@ describe('BenchmarkHistory comparisons', () => {
     const SONNET = { ...OPUS, model: 'claude-sonnet-5-5' } as const;
     const trials = { one: { a: ['passed', 'passed', 'passed'], b: ['passed', 'failed', 'passed'] }, two: { a: ['passed', 'passed', 'passed'], b: ['passed', 'passed', 'passed'] } } satisfies Record<string, Record<string, TrialResult[]>>;
 
-    // A team pair runs from the arm without team assets, b, to the pulled one, a.
+    // A team pair runs from the arm without team resources, b, to the pulled one, a.
     it('leaves out and lists the pairs another model judged (row 2)', () => {
       const input = run({ id: 'r1', startedAt: '2026-10-20T09:00:00Z', arms: [a, b], trials, deciders: { a: OPUS, b: { byTask: { one: SONNET, two: OPUS } } } });
 

@@ -2,7 +2,7 @@
 
 Setup and daily use are in the [Usage Guide](usage-guide.md).
 
-TeamAI keeps a team's skills, rules, agents, learnings, models, MCP, and other AI assets in a git repo, and syncs them into each person's AI tools.
+TeamAI keeps a team's skills, rules, agents, learnings, models, MCP, and other agent resources in a git repo, and syncs them into each person's AI tools.
 
 ---
 
@@ -26,7 +26,7 @@ SessionStart hook → teamai pull → each AI tool
 
 ## What is in the team repo
 
-| Asset | Location |
+| Resource | Location |
 |-------|----------|
 | Skills | `skills/<name>/SKILL.md` |
 | Rules | `rules/*.md` |
@@ -42,7 +42,7 @@ SessionStart hook → teamai pull → each AI tool
 | Learnings | `learnings/` |
 | Codebase knowledge graph | `teamwiki/` |
 
-An asset under a `<namespace>/` subdirectory goes only to the roles and projects that declare it. See [Distribution mechanism](guide/distribution.md).
+A resource under a `<namespace>/` subdirectory goes only to the roles and projects that declare it. See [Distribution mechanism](guide/distribution.md).
 
 ## Team Context (beta)
 

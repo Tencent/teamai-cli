@@ -113,7 +113,7 @@ export async function readWorkspaceChildren(workspace: LocalConfig): Promise<Loc
     anchors.add(anchor);
 
     if (config.repo.kind === 'self') {
-      leftOut.push({ path: childPath, reason: 'it is set up in single-repo mode, so its team repo is the repo itself' });
+      leftOut.push({ path: childPath, reason: 'it is set up in self mode, so its team repo is the repo itself' });
     } else if (!remotesMatch(config.repo.remote, workspace.repo.remote)) {
       leftOut.push({ path: childPath, reason: `it uses another team repo (${config.repo.remote})` });
     } else {
@@ -471,7 +471,7 @@ async function walk(input: {
  * from their partition without git; another layout (a `core.worktree`, a git
  * dir elsewhere, a config still inside the checkout) takes detection's git
  * probe. Neither previews nor writes: a legacy partition is not renamed and a
- * single-repo clone is not bootstrapped.
+ * self-mode clone is not bootstrapped.
  */
 async function readChildConfig(dir: string, gitWorkspace: boolean): Promise<ChildRead | null> {
   // Loaded here: config.js reaches this module through the resolvers it imports.

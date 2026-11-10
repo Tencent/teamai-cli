@@ -545,7 +545,7 @@ export async function getHeadRev(localPath: string): Promise<string> {
 /**
  * Read the `origin` remote URL of the repo at localPath (or its enclosing repo).
  * Returns null when there is no origin remote or the path is not a git repo.
- * Used by single-repo mode to derive the provider/remote from the business repo.
+ * Used by self mode to derive the provider/remote from the business repo.
  */
 export async function getRemoteUrl(localPath: string, remoteName = 'origin'): Promise<string | null> {
   const git = createGit(localPath);
@@ -685,7 +685,7 @@ export function repoIdentity(url: string): string {
 /**
  * Whether the repo at localPath has at least one commit reachable from HEAD.
  * A freshly `git init`'d repo (HEAD points at an unborn branch) returns false.
- * Used by single-repo mode: knowledge worktrees/PRs need a base commit to exist.
+ * Used by self mode: knowledge worktrees/PRs need a base commit to exist.
  */
 export async function hasCommits(localPath: string): Promise<boolean> {
   const git = createGit(localPath);
@@ -706,7 +706,7 @@ export async function hasCommits(localPath: string): Promise<boolean> {
 /**
  * Stage and commit the given literal paths instead of the user's entire index.
  * Git hooks still run and may change the commit contents.
- * Best-effort helper for single-repo init: it seeds the business repo
+ * Best-effort helper for self-mode init: it seeds the business repo
  * with a base commit carrying the committed .teamai/ knowledge skeleton so later
  * knowledge PRs (which branch off HEAD) have something to branch from.
  *
@@ -779,7 +779,7 @@ export async function assertAttachedTeamRepo(git: SimpleGit, localPath: string):
  *     uncommitted files.
  *   Layer 2: if ff-only fails (diverged / ahead / no tracking) AND the repo is a
  *     dedicated clone root, realign to origin/<branch> via fetch + hard reset.
- *     On a non-dedicated path (e.g. a business-repo subdir in single-repo mode)
+ *     On a non-dedicated path (e.g. a business-repo subdir in self mode)
  *     a hard reset would wipe the user's working tree, so we re-throw the
  *     original error instead of resetting.
  * Before any hard reset we log.warn if it would discard local commits or
@@ -1267,7 +1267,7 @@ async function treeMatchesRemoteBranch(git: SimpleGit, branchName: string): Prom
  * Switch a repo/worktree back to its default branch, tolerating the case where
  * that branch is already checked out in another worktree.
  *
- * In single-repo mode, teamai stages knowledge PRs in a disposable worktree while
+ * In self mode, teamai stages knowledge PRs in a disposable worktree while
  * the user's active tree holds the same default branch (e.g. `main`). Git refuses
  * `checkout main` in a second worktree ("'main' is already used by worktree ...").
  * That's harmless here: the worktree is about to be destroyed, and in a normal
@@ -1414,26 +1414,26 @@ export async function isDedicatedRepoRoot(repoPath: string): Promise<boolean> {
  * Checkout paths and the stable identity used for project partitions.
  * `workspaceRoot` receives this checkout's resources; `mainCheckout` receives
  * shared tool files, or is null when each checkout needs its own files.
- * `projectAnchor` remains Git's first worktree entry, including Git-directory
+ * `repoAnchor` remains Git's first worktree entry, including Git-directory
  * identities, except initialized submodule clones in superproject worktrees
  * inherit the original submodule's identity.
  */
-export interface ProjectAnchors {
+export interface RepoAnchors {
   workspaceRoot: string;
-  projectAnchor: string;
+  repoAnchor: string;
   /** Checkout whose shared project files tools read; null when Git cannot locate one. */
   mainCheckout: string | null;
 }
 
 /**
- * Resolve the {@link ProjectAnchors} for `cwd` (defaults to the process cwd).
+ * Resolve the {@link RepoAnchors} for `cwd` (defaults to the process cwd).
  *
  * Returns `null` when `cwd` is not inside a git repository, or when git cannot
  * resolve the anchors — callers fall back to their existing cwd-based behavior.
  *
  * Implementation notes:
  *  - `workspaceRoot` is `--show-toplevel` (the current checkout).
- *  - `projectAnchor` is the stable identity, taken from the FIRST entry of
+ *  - `repoAnchor` is the stable identity, taken from the FIRST entry of
  *    `git worktree list --porcelain` (git always lists the main worktree first).
  *    Every linked worktree reports the same first entry, so all worktrees of a
  *    repo share one anchor. This is deliberately NOT `dirname(--git-common-dir)`:
@@ -1452,9 +1452,9 @@ export interface ProjectAnchors {
  *    removed after it was first asked, which is what attribution wants. `null`
  *    is not remembered: a directory can become a repository later.
  */
-const anchorsByDir = new Map<string, ProjectAnchors>();
+const anchorsByDir = new Map<string, RepoAnchors>();
 
-export async function resolveAnchors(cwd?: string): Promise<ProjectAnchors | null> {
+export async function resolveAnchors(cwd?: string): Promise<RepoAnchors | null> {
   const dir = path.resolve(cwd ?? process.cwd());
   const known = anchorsByDir.get(dir);
 
@@ -1466,7 +1466,7 @@ export async function resolveAnchors(cwd?: string): Promise<ProjectAnchors | nul
   return anchors;
 }
 
-async function readAnchors(cwd?: string): Promise<ProjectAnchors | null> {
+async function readAnchors(cwd?: string): Promise<RepoAnchors | null> {
   if (await gitFindsNoRepository(cwd ?? process.cwd())) return null;
 
   try {
@@ -1478,11 +1478,11 @@ async function readAnchors(cwd?: string): Promise<ProjectAnchors | null> {
 
     if (!toplevel || !first) return null;
     const workspaceRoot = await realpath(toplevel);
-    let projectAnchor = first.path;
+    let repoAnchor = first.path;
     const commonDir = await gitCommonDir(workspaceRoot);
-    let mainCheckout: string | null = first.bare ? null : projectAnchor;
+    let mainCheckout: string | null = first.bare ? null : repoAnchor;
 
-    if (!first.bare && projectAnchor === commonDir) {
+    if (!first.bare && repoAnchor === commonDir) {
       const worktree = await execCommand('git', ['--git-dir', commonDir, 'config', '--get', 'core.worktree'], { cwd: workspaceRoot, timeoutMs: 10_000 })
         .then(({ code, stdout }) => code === 0 ? stdout : '').catch(() => '');
 
@@ -1496,17 +1496,17 @@ async function readAnchors(cwd?: string): Promise<ProjectAnchors | null> {
 
     // Superproject worktrees clone submodules into their own modules directory.
     // Only an existing original submodule can supply their shared identity.
-    if (commonDir && projectAnchor === commonDir) {
+    if (commonDir && repoAnchor === commonDir) {
       const clone = commonDir.match(/^(.*)[\\/]worktrees[\\/][^\\/]+[\\/]modules[\\/](.+)$/);
 
       if (clone) {
         const original = path.join(clone[1], 'modules', clone[2]);
 
-        if (await fse.pathExists(original)) projectAnchor = await realpath(original);
+        if (await fse.pathExists(original)) repoAnchor = await realpath(original);
       }
     }
 
-    return { workspaceRoot, projectAnchor, mainCheckout };
+    return { workspaceRoot, repoAnchor, mainCheckout };
   } catch {
     return null;
   }
@@ -1657,14 +1657,14 @@ export async function isLiveCheckout(root: string, commonDir: string): Promise<b
 }
 
 /** A live checkout sharing a TeamAI identity, including inherited submodule clones. */
-export async function isLiveProjectCheckout(root: string, projectAnchor: string): Promise<boolean> {
+export async function isLiveProjectCheckout(root: string, repoAnchor: string): Promise<boolean> {
   if (!await fse.pathExists(path.join(root, '.git'))) return false;
 
-  return (await resolveAnchors(root))?.projectAnchor === projectAnchor;
+  return (await resolveAnchors(root))?.repoAnchor === repoAnchor;
 }
 
 /** Recover a checkout from a persisted identity without treating a Git directory as one. */
-export async function checkoutForProjectAnchor(anchor: string, recordedRoot?: string): Promise<string | null> {
+export async function checkoutForRepoAnchor(anchor: string, recordedRoot?: string): Promise<string | null> {
   if (!await fse.pathExists(anchor)) return null;
   const worktree = await createGit(anchor).raw(['config', '--get', 'core.worktree']).catch(() => '');
 
@@ -1675,7 +1675,7 @@ export async function checkoutForProjectAnchor(anchor: string, recordedRoot?: st
     if (!await fse.pathExists(path.join(candidate, '.git'))) continue;
     const anchors = await resolveAnchors(candidate);
 
-    if (anchors?.projectAnchor === anchor) return anchors.mainCheckout ?? anchors.workspaceRoot;
+    if (anchors?.repoAnchor === anchor) return anchors.mainCheckout ?? anchors.workspaceRoot;
   }
 
   return null;

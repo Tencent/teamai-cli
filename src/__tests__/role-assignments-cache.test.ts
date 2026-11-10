@@ -207,12 +207,12 @@ describe('role assignments cached by the fetched commit', () => {
     expect(gitCalls()).not.toEqual([]);
   });
 
-  // Single-repo mode: the team repo is `.teamai/` in the business repo, whose git dir is the repo's own.
-  it('reads a single-repo team at the fetched commit once', async () => {
+  // Self mode: the team repo is `.teamai/` in the business repo, whose git dir is the repo's own.
+  it('reads a team in self mode at the fetched commit once', async () => {
     mkdirSync(path.join(upstream, '.teamai', 'manifest'), { recursive: true });
     writeFileSync(path.join(upstream, '.teamai', 'manifest', 'members.yaml'), 'version: 1\nmembers:\n  alice: [backend]\n', 'utf-8');
     git(upstream, 'add', '-A');
-    git(upstream, 'commit', '-qm', 'single-repo team');
+    git(upstream, 'commit', '-qm', 'self-mode team');
     git(clone, 'pull', '-q');
     // Fetched but not merged: the assignment at the tip is the one that holds.
     writeFileSync(path.join(upstream, '.teamai', 'manifest', 'members.yaml'), 'version: 1\nmembers:\n  alice: [backend, frontend]\n', 'utf-8');

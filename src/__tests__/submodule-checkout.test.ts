@@ -222,7 +222,7 @@ describe('submodule checkouts', () => {
     git(worktree, '-c', 'protocol.file.allow=always', 'submodule', 'update', '--init', '-q');
     fs.rmSync(path.join(parent, '.git/modules/service'), { recursive: true });
     const child = path.join(worktree, 'service');
-    expect((await resolveAnchors(child))?.projectAnchor).toBe(path.join(parent, '.git/worktrees/parent-without-original/modules/service'));
+    expect((await resolveAnchors(child))?.repoAnchor).toBe(path.join(parent, '.git/worktrees/parent-without-original/modules/service'));
   });
 
   it('allows a skill root linked inside a home directory outside Git', async () => {
@@ -283,7 +283,7 @@ describe('submodule checkouts', () => {
     const child = path.join(worktree, 'service');
     expect(await resolveAnchors(child)).toEqual({
       workspaceRoot: child,
-      projectAnchor: path.join(parent, '.git/modules/service'),
+      repoAnchor: path.join(parent, '.git/modules/service'),
       mainCheckout: child,
     });
     const inherited = await detectProjectConfig(child);

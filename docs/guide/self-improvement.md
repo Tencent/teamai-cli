@@ -2,7 +2,7 @@
 
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
-A scorer that keeps failing the same kind of work says the team's harness is missing something: a skill, a rule, an agent, a prompt, a hook, an MCP server, a model, the team culture, or anything else teamai delivers. `teamai self-improvement run <scorer>` turns those failures into one pull request on the team repo. The PR changes the assets, adds one regression task per failure, and a CI job proves on every tool the team uses that the change fixes them and breaks nothing.
+A scorer that keeps failing the same kind of work says the team's harness is missing something: a skill, a rule, an agent, a prompt, a hook, an MCP server, a model, the team culture, or anything else teamai delivers. `teamai self-improvement run <scorer>` turns those failures into one pull request on the team repo. The PR changes the resources, adds one regression task per failure, and a CI job proves on every tool the team uses that the change fixes them and breaks nothing.
 
 ```text
 review-quality failed 4 sessions this month, 2 of them also by hand
@@ -178,7 +178,7 @@ jobs:
 | Step | Does |
 | --- | --- |
 | `plan` | `teamai digest --json --scorer <scorer> --suite <dir> --proposal teamai/self-improvement/<scorer>`: prints in `data.improvement` the failures a task can start from: the scorer's failures in [`digest --json`](#what-teamai-reads) with a recorded start commit this checkout has, and no task of the suite naming them on the team repo's default branch or on the proposal. Each subject once, newest first, with `hasProposal`: whether the proposal is open on origin. |
-| `improve` | Runs when its `if` holds: two failures or more, or one more for a proposal on origin that the default branch does not hold yet. A single failure is not a pattern, even when a task that landed covers another. It runs in a fresh clone of the team repo, on `teamai/self-improvement/<scorer>` with the default branch merged in, or a new branch from it ([`workspace: { team }`](workflow.md#the-team-workspace)). The agent reads each failure, its learnings and the rubric, changes the assets, and writes one task per failure. `deliver: pr` pushes the branch and opens its PR, or updates the one already open. |
+| `improve` | Runs when its `if` holds: two failures or more, or one more for a proposal on origin that the default branch does not hold yet. A single failure is not a pattern, even when a task that landed covers another. It runs in a fresh clone of the team repo, on `teamai/self-improvement/<scorer>` with the default branch merged in, or a new branch from it ([`workspace: { team }`](workflow.md#the-team-workspace)). The agent reads each failure, its learnings and the rubric, changes the resources, and writes one task per failure. `deliver: pr` pushes the branch and opens its PR, or updates the one already open. |
 
 ```console
 $ teamai digest --json --scorer review-quality --suite benchmarks/regressions --proposal teamai/self-improvement/review-quality \
@@ -211,7 +211,7 @@ Run it twice on the same failures and the second run opens nothing: each failure
 | --- | --- |
 | The branch conflicts with the default branch | Fails `improve` with `merge_conflict` before the agent starts. Merge the default branch into it, or delete it. |
 | A teammate pushed to the branch while the run worked | Fails `improve` with `push_failed`, and pushes nothing over that commit. The next run starts from it. |
-| The agent changed a file `teamai pull` would not place or would reject | Fails `improve` with `push_failed`, naming each file: outside the directories pull places (outside `.teamai/` in single-repo mode), a symlink, a benchmark file in no suite, or a workflow, scorer or suite pull rejects and did not reject on the default branch, such as a workflow whose scorer the agent deleted. Nothing is pushed. |
+| The agent changed a file `teamai pull` would not place or would reject | Fails `improve` with `push_failed`, naming each file: outside the directories pull places (outside `.teamai/` in self mode), a symlink, a benchmark file in no suite, or a workflow, scorer or suite pull rejects and did not reject on the default branch, such as a workflow whose scorer the agent deleted. Nothing is pushed. |
 | The PR was squash-merged, and the branch kept | Pushes nothing and opens no PR while the branch holds what the default branch holds. |
 | The PR was closed without merging, and the branch kept | Goes on from the branch, and opens a new PR when it has new failures. Delete the branch with the PR to drop the proposal. |
 
@@ -275,7 +275,7 @@ jobs:
 
 It runs on every PR, a person's too, so every change is measured against every failure fixed before. It has no `paths:` filter: GitHub leaves a required check that a filter skipped pending, which would block every PR outside those paths. Each push to the PR runs it again and replaces the section between the two markers; the rest of the body stays. `--team-ref "$HEAD_REF"` pins the run to the PR's branch: the `pulled` arms and the suite's tasks come from it, the `main` arms from `main`. The judge agreement table lists the scorer a self-improvement PR is for, and every scorer on a person's PR. The last step fails the job when a task passes less often on the PR than on `main` with any tool, when a task's check could not run or passed before any change, when a trial did not run, or when a tool the suite runs has no pair of a `main` arm and a PR arm to compare: only those pairs count, so a suite that drops the PR's or `main`'s arms fails it. Mark the job required in the team repo's merge rules to keep a change that fails it out of `main`.
 
-The dashboard's [Self-improvement page](dashboard.md#self-improvement) follows each proposal and each landed change: the assets it touched, its proof on the regression suite per tool, and the scorer's pass rate before and after it landed.
+The dashboard's [Self-improvement page](dashboard.md#self-improvement) follows each proposal and each landed change: the resources it touched, its proof on the regression suite per tool, and the scorer's pass rate before and after it landed.
 
 ## When a failure is not used
 

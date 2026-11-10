@@ -10,13 +10,13 @@ Where files install, which repo they come from, and who receives them are all he
 
 ### Project checkouts
 
-Linked worktrees of the same repository share the project's TeamAI configuration and data, while each checkout receives resources in its own tool directories. `init` and `pull` install Git checkout hooks that seed a new worktree's enabled tool roots and pull its resources before the checkout command returns. Some agent tools create worktrees without running Git hooks, such as Claude Code's `EnterWorktree` and Codex CLI. Such a worktree is prepared the same way, in the background, on the first session start or tool use there.
+Linked worktrees of the same repository share the project's TeamAI configuration and data, while each checkout receives agent resources in its own tool directories. `init` and `pull` install Git checkout hooks that seed a new worktree's enabled tool roots and pull its resources before the checkout command returns. Some agent tools create worktrees without running Git hooks, such as Claude Code's `EnterWorktree` and Codex CLI. Such a worktree is prepared the same way, in the background, on the first session start or tool use there.
 
 A submodule clone created inside a superproject worktree inherits the original submodule's TeamAI configuration and data partition. Its first pull seeds the clone's tool roots from the original configuration, delivers resources into those roots, and installs hooks owned by that clone. Each checkout keeps its own hook ownership; full uninstall removes hooks recorded for every checkout. For targeted uninstall behavior, see [Uninstall](./faq.md#uninstall).
 
 ### Separate teamai repo
 
-The team's assets live in their own repo. This project points at it.
+The team's resources live in their own repo. This project points at it.
 
 This project:
 
@@ -54,11 +54,11 @@ The pin stays in this workspace's local config and applies to all its checkouts 
 
 A revision switch removes unchanged skill, rule, and agent copies the new revision lacks. Edited copies stay, and unpinning names edits that `push` would send to the default branch. While pinned, `push` sends nothing, and `source add`, `source remove` and `import` into the team wiki refuse; pull still reports usage and learnings. A failed or incomplete pinned pull exits 1. `--team-ref` with `--dry-run` is refused.
 
-This requires a workspace install without user-scope inheritance or the same team installed at user scope. It does not apply to HTTP or single-repo mode. Other workspaces keep their own revision.
+This requires a workspace install without user-scope inheritance or the same team installed at user scope. It does not apply to HTTP or self mode. Other workspaces keep their own revision.
 
 ### Inside the project repo
 
-This repo is the team repo. Assets go in `.teamai/`.
+This repo is the team repo. Resources go in `.teamai/`.
 
 ```bash
 cd /path/to/my-workspace

@@ -268,7 +268,7 @@ export interface SuiteView {
   teamChanges: { configs: TeamConfig[]; revisions: TeamRevisionView[] };
 }
 
-/** One run of the suite. `teamRevision`: the team revision its trials installed team assets from. */
+/** One run of the suite. `teamRevision`: the team revision its trials installed team resources from. */
 export interface RunRow extends PassRate {
   run: string;
   source: BenchmarkRunInput['source'];

@@ -192,7 +192,7 @@ describe('local-agent: project MCP report is per-worktree (issue #374 P1-2C)', (
     const { realpathSync } = await import('node:fs');
     const { managedMcpWorkspaceId } = await import('../types.js');
 
-    // Real git repo + linked worktree → same projectAnchor → same partition.
+    // Real git repo + linked worktree → same repoAnchor → same partition.
     const repo = realpathSync.native(await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-la-wt-')));
     const git = (cwd: string, ...a: string[]) => gitExecFileSync('git', a, { cwd, stdio: 'pipe' });
     git(repo, 'init', '-q');
@@ -354,7 +354,7 @@ describe('local-agent: bindCurrentProject --skip', () => {
     const realMain = fse.realpathSync(mainDir);
     const realWt = fse.realpathSync(worktreeDir);
     // The skip decision is recorded on BOTH the main checkout (the shared
-    // projectAnchor — so sibling worktrees inherit it) and this worktree.
+    // repoAnchor — so sibling worktrees inherit it) and this worktree.
     expect(config.workspaceBindings[realMain]?.projectName).toBe('__skipped__');
     expect(config.workspaceBindings[realWt]?.projectName).toBe('__skipped__');
   });

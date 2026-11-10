@@ -61,7 +61,7 @@ describe('resolveHookConfig for a removed worktree (#810)', () => {
     writeConfig(path.join(main, '.teamai'), { scope: 'project', projectRoot: main });
     writeConfig(path.join(worktree, '.teamai'), { scope: 'project', projectRoot: worktree });
     writeConfig(path.join(home, '.teamai'), { scope: 'user' });
-    record([{ sessionId: 's-legacy', cwd: worktree, dataHomeKey: await dataHomeKey(path.join(worktree, '.teamai')), projectAnchor: main }]);
+    record([{ sessionId: 's-legacy', cwd: worktree, dataHomeKey: await dataHomeKey(path.join(worktree, '.teamai')), repoAnchor: main }]);
     git(main, 'worktree', 'remove', '--force', worktree);
 
     const config = await resolveHookConfig({ session_id: 's-legacy', cwd: worktree }, 'claude');

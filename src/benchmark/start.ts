@@ -158,7 +158,7 @@ function durationText(ms: number): string {
 type Frozen = { ok: true; suite: Suite; plan: BenchmarkPlan; committed: CommittedSuite; pinned: Record<string, PinnedScorer>; armWorkflows: Map<string, PinnedArmWorkflow>; correctnessRubric: string } | Refused;
 
 /**
- * Suite `name` as the plan freezes it, at the team revision this checkout last pulled: its arms' team assets and models,
+ * Suite `name` as the plan freezes it, at the team revision this checkout last pulled: its arms' team resources and models,
  * its team scorers pinned, the correctness rubric of every arm (the team's scorers/teamai-correctness.md that pull kept,
  * else teamai's), its check files committed into the commit cache, and every task commit fetched into it.
  * Refused when any of them cannot be, or when the suite needs a judge this machine cannot run.
@@ -360,7 +360,7 @@ type Refusal = ReturnType<typeof error>;
 
 type Refused = { ok: false; refused: Refusal };
 
-/** The arm as the plan freezes it, its team assets resolved before its model, or why start refuses it. */
+/** The arm as the plan freezes it, its team resources resolved before its model, or why start refuses it. */
 async function plannedArm(config: LocalConfig, arm: Arm, pulled: string, aliases: () => Promise<ModelAliases>): Promise<{ ok: true; arm: PlannedArm } | Refused> {
   const team = await resolveTeam(config, arm, pulled);
 
@@ -371,9 +371,9 @@ async function plannedArm(config: LocalConfig, arm: Arm, pulled: string, aliases
 }
 
 /**
- * The team assets of `arm` as the plan freezes them: a ref resolved, as `pull --team-ref` resolves it, to a commit on the
- * team remote; the paths it runs without checked at the pulled revision, with the arm's role (`withoutRefusal`). An arm without team assets is refused on a
- * machine whose user-scope install delivers to its tool, since the tool would read those assets from the home.
+ * The team resources of `arm` as the plan freezes them: a ref resolved, as `pull --team-ref` resolves it, to a commit on the
+ * team remote; the paths it runs without checked at the pulled revision, with the arm's role (`withoutRefusal`). An arm without team resources is refused on a
+ * machine whose user-scope install delivers to its tool, since the tool would read those resources from the home.
  */
 async function resolveTeam(config: LocalConfig, { name, tool, team, role }: Arm, pulled: string): Promise<{ ok: true; team: ArmTeam } | Refused> {
   switch (team.kind) {
@@ -383,7 +383,7 @@ async function resolveTeam(config: LocalConfig, { name, tool, team, role }: Arm,
       const user = await loadLocalConfigForScope('user', undefined, { dryRun: true, suppressMigrationNotice: true });
 
       if (user && (user.enabledAgents === undefined || user.enabledAgents.includes(tool))) {
-        return { ok: false, refused: error('arm_team_unclean', `Arm "${name}" runs without team assets, and this machine's user-scope teamai install delivers team assets to ${tool} in your home, where its trials would read them. Start the benchmark on a machine where teamai is installed only in workspace scope.`) };
+        return { ok: false, refused: error('arm_team_unclean', `Arm "${name}" runs without team resources, and this machine's user-scope teamai install delivers team resources to ${tool} in your home, where its trials would read them. Start the benchmark on a machine where teamai is installed only in workspace scope.`) };
       }
 
       return { ok: true, team: { kind: 'none' } };
@@ -429,9 +429,9 @@ interface ComparedFiles {
 }
 
 /**
- * The skills each arm's team assets add, remove or change against the `baseline` team revision, by directory under
+ * The skills each arm's team resources add, remove or change against the `baseline` team revision, by directory under
  * skills/: for an arm on another ref, as git compares the two revisions; for an arm without some paths, those of the
- * baseline it leaves out, whole or in part, namespaced ones too. An arm on the pulled revision, or with no team assets,
+ * baseline it leaves out, whole or in part, namespaced ones too. An arm on the pulled revision, or with no team resources,
  * changes none.
  */
 async function skillChangesOf(config: LocalConfig, arms: readonly PlannedArm[], { baseline, defaults }: { baseline: string; defaults: string | undefined }): Promise<{ changes: SkillChanges[] } | { refused: Refusal }> {
@@ -607,7 +607,7 @@ async function armAliases(config: LocalConfig, revision: string, member: boolean
 
 /**
  * The team revision this checkout last pulled, as a launch of a tool that pull delivered to observes it. Refused when
- * pull delivered to no tool, when the delivered assets were edited since, or when the revision is on no branch of the
+ * pull delivered to no tool, when the delivered resources were edited since, or when the revision is on no branch of the
  * team remote, so another machine could not pull it.
  */
 async function pulledTeamRevision(config: LocalConfig, checkout: string): Promise<{ revision: string } | { refused: string }> {

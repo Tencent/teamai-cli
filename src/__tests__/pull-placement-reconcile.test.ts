@@ -116,11 +116,11 @@ function config(kind: 'git' | 'self'): LocalConfig {
 
 /**
  * Placement records are settled against the default branch. An independent
- * clone is that branch once pulled; a single-repo member's own checkout is
+ * clone is that branch once pulled; a self-mode member's own checkout is
  * whatever they have out — a feature branch, a main not pulled yet — and a
  * record dropped against it never comes back, while skipping the pass there
  * left a merged placement unrecorded until the next push (#649 review). So a
- * single-repo pull reads the default branch as the ref origin/<default>.
+ * self-mode pull reads the default branch as the ref origin/<default>.
  */
 describe('teamai pull settles placement records against the default branch', () => {
   beforeEach(async () => {
@@ -143,7 +143,7 @@ describe('teamai pull settles placement records against the default branch', () 
     expect(reconcilePlacementRecords).toHaveBeenCalledWith(path.join(testRoot, 'team-repo'), expect.anything(), undefined, expect.any(Function));
   });
 
-  it('in single-repo mode, through origin/<default> rather than the member\'s checkout', async () => {
+  it('in self mode, through origin/<default> rather than the member\'s checkout', async () => {
     vi.mocked(loadLocalConfigForScope).mockResolvedValue(config('self'));
 
     await pull({ silent: true, force: true });

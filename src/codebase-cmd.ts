@@ -125,7 +125,7 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
         console.log('teamai codebase — team codebase knowledge management');
         console.log('');
         console.log('Usage:');
-        console.log('  teamai codebase --lint                  Run teamwiki consistency lint; also counts the member\'s asset relations (assets, relations, without a relation, unresolved)');
+        console.log('  teamai codebase --lint                  Run teamwiki consistency lint; also counts the member\'s resource relations (resources, relations, without a relation, unresolved)');
         console.log('  teamai codebase --lint --json           Output JSON report (for CI)');
         console.log('  teamai codebase --lint --severity high  Only report high-severity issues');
         console.log('  teamai codebase --reconcile             Reconcile product and code knowledge');
@@ -250,12 +250,12 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
                 console.log(`Reconciliation complete: mappings=${result.mappings}, gaps=${result.gaps.length}, conflicts=${result.conflicts.length}`);
 
                 // Proposed relations are printed only here, and only in a dry
-                // run: a person copies the ones they accept into the asset's
+                // run: a person copies the ones they accept into the resource's
                 // `related:` frontmatter, in an ordinary PR (#1563 part 2).
                 // Until merged there, recall never shows a candidate.
                 if (opts.dryRun && result.relationCandidates.length > 0) {
                     console.log('');
-                    console.log('Relation candidates (copy the ones you accept into the asset\'s related:)');
+                    console.log('Relation candidates (copy the ones you accept into the resource\'s related:)');
 
                     for (const candidate of result.relationCandidates) {
                         console.log(`  ${candidate.from}  ${candidate.relation}  ${candidate.to}   term "${candidate.term}", confidence ${candidate.confidenceScore.toFixed(1)}`);
@@ -286,11 +286,11 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
     }
 
     const { lintTeamwiki, formatWikiLintReport } = await import('./codebase-wiki-lint.js');
-    // Standalone `--output` names no member, so there is no asset data (#1562).
-    const assetGraph = opts.output ? null : await lintAssetGraphForMember();
+    // Standalone `--output` names no member, so there is no resource data (#1562).
+    const resourceGraph = opts.output ? null : await lintResourceGraphForMember();
     const report = await lintTeamwiki({ wikiRoot: teamwikiDir, severity: opts.severity });
 
-    if (assetGraph) report.assetGraph = assetGraph;
+    if (resourceGraph) report.resourceGraph = resourceGraph;
 
     if (opts.json) {
         console.log(JSON.stringify(report, null, 2));
@@ -303,13 +303,13 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
 
 /**
  * `--lint` without a teamwiki: the graph checks are skipped, but the member's
- * asset counts still print (#1562). With standalone `--output` there is no
- * member, so there is no assetGraph and the output is unchanged.
+ * resource counts still print (#1562). With standalone `--output` there is no
+ * member, so there is no resourceGraph and the output is unchanged.
  */
 async function lintWithoutTeamwiki(opts: CodebaseCmdOptions): Promise<void> {
-    const assetGraph = opts.output ? null : await lintAssetGraphForMember();
+    const resourceGraph = opts.output ? null : await lintResourceGraphForMember();
 
-    if (!assetGraph) {
+    if (!resourceGraph) {
         console.log('No teamwiki found. Run `teamai import` first.');
 
         return;
@@ -324,19 +324,19 @@ async function lintWithoutTeamwiki(opts: CodebaseCmdOptions): Promise<void> {
             issues: [],
             summary: { total: 0, high: 0, medium: 0, low: 0, info: 0 },
             graphHealth: null,
-            assetGraph,
+            resourceGraph,
         }, null, 2));
     } else {
-        const { formatAssetGraphLine } = await import('./codebase-wiki-lint.js');
-        console.log(formatAssetGraphLine(assetGraph));
+        const { formatResourceGraphLine } = await import('./codebase-wiki-lint.js');
+        console.log(formatResourceGraphLine(resourceGraph));
     }
 }
 
 // `--lint` only ever reads: the loaders must preview, not persist, a migration (#850).
-async function lintAssetGraphForMember(): Promise<import('./lint-asset-graph.js').LintAssetGraph | null> {
-    const { lintAssetGraph } = await import('./lint-asset-graph.js');
+async function lintResourceGraphForMember(): Promise<import('./lint-resource-graph.js').LintResourceGraph | null> {
+    const { lintResourceGraph } = await import('./lint-resource-graph.js');
 
-    return lintAssetGraph({ dryRun: true }).catch(() => null);
+    return lintResourceGraph({ dryRun: true }).catch(() => null);
 }
 
 /**

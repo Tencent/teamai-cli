@@ -1,4 +1,4 @@
-/** The names, team assets and limits a benchmark plan records. Zod and the commit schema only. */
+/** The names, team resources and limits a benchmark plan records. Zod and the commit schema only. */
 import { z } from 'zod';
 import { CommitSchema, TeamPathSchema } from '../workflow/clone.js';
 
@@ -10,7 +10,7 @@ export const BENCHMARK_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 export const BenchmarkNameSchema = z.string().regex(BENCHMARK_NAME, 'must be letters, digits, "-" or "_", with no "."');
 
 /**
- * The team assets of an arm's trials, as start resolved the suite's `team`: the revision this checkout pulled, a ref of
+ * The team resources of an arm's trials, as start resolved the suite's `team`: the revision this checkout pulled, a ref of
  * the team repo at the commit it named then, the pulled revision without some of its paths, sorted, or none.
  */
 export const ArmTeamSchema = z.discriminatedUnion('kind', [

@@ -50,7 +50,7 @@ const DurationSchema = z.string({ error: (issue) => issue.input === undefined ? 
 });
 
 /**
- * The team assets an arm's trials get: the team revision this checkout pulled, none at all, a branch, tag or commit of
+ * The team resources an arm's trials get: the team revision this checkout pulled, none at all, a branch, tag or commit of
  * the team repo that start resolves, or the pulled revision without some of its files and directories, each a path in
  * the team repo, sorted.
  */
@@ -95,7 +95,7 @@ const TeamValueSchema = z.union([
 });
 
 /**
- * The team repo paths a task's work is expected to need, each listed once and none inside another. The asset-effect
+ * The team repo paths a task's work is expected to need, each listed once and none inside another. The resource-effect
  * tables compare, per covered path, the arm that runs without exactly that path against the arm that differs from it
  * only by leaving nothing out.
  */
@@ -288,9 +288,9 @@ function nameSegment(value: string): string {
   return value.replace(/[^A-Za-z0-9_-]+/g, '-');
 }
 
-const ROLE_NEEDS_TEAM = 'a role selects team assets, so an arm with a role needs a team; remove role, or give the arm another team';
+const ROLE_NEEDS_TEAM = 'a role selects team resources, so an arm with a role needs a team; remove role, or give the arm another team';
 
-/** Whether `arm` names a role but runs without team assets, which have nothing for the role to select. */
+/** Whether `arm` names a role but runs without team resources, which have nothing for the role to select. */
 function isRoleWithoutTeam(arm: Pick<Arm, 'role' | 'team'>): arm is Pick<Arm, 'team'> & { role: string } {
   return arm.role !== undefined && arm.team.kind === 'none';
 }
@@ -383,7 +383,7 @@ function taskFileSchema(files: ReadonlyMap<string, SuiteFile>) {
     solutionCommit: CommitSchema.optional(),
     check: CheckFileSchema.optional(),
     successCriteria: z.string().trim().min(1).optional(),
-    /** The team repo paths the task's work is expected to need, as `without` takes them. Provenance for the asset-effect tables; nothing runs from it. */
+    /** The team repo paths the task's work is expected to need, as `without` takes them. Provenance for the resource-effect tables; nothing runs from it. */
     covers: CoversSchema.optional(),
     /** Where the task came from: the session or the workflow pass it was made from. Provenance only; nothing runs from it. */
     source: TaskSourceSchema.optional(),

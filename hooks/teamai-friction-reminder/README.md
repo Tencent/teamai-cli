@@ -2,12 +2,10 @@
 
 English | [中文](README.zh-CN.md)
 
-| | |
-|---|---|
-| Runs | At Stop |
-| Input | The session's tool calls, interruptions, refusals, corrections, failing retries and recall hits |
-| Output | A reminder to share what the session taught |
-| Files | `HOOK.yaml` holds teamai's thresholds and weights. Each `.md` file is one text of the reminder |
+- **Runs**: At Stop
+- **Input**: The session's tool calls, interruptions, refusals, corrections, failing retries and recall hits
+- **Output**: A reminder to share what the session taught
+- **Files**: `HOOK.yaml` holds teamai's thresholds and weights. Each `.md` file is one text of the reminder
 
 ## When it reminds
 

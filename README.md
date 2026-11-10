@@ -19,9 +19,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-**TeamAI manages a team's skills, rules, agents, learnings, models, MCP, and other AI assets in a git repo.**
+**TeamAI manages a team's skills, rules, agents, learnings, models, MCP, and other agent resources in a git repo.**
 
-A teammate initializes once. After that, the latest team AI assets sync automatically.
+A teammate initializes once. After that, the latest team agent resources sync automatically.
 
 ## Why TeamAI
 
@@ -65,7 +65,7 @@ Skills, rules, MCP servers, and other agent resources can all be shared:
 /teamai Open the TeamAI dashboard
 ```
 
-Once a teammate is set up, they just open their agent and already have the team's full set of AI assets.
+Once a teammate is set up, they just open their agent and already have the team's full set of agent resources.
 
 <details>
 <summary>Command-line install</summary>

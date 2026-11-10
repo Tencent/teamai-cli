@@ -43,7 +43,7 @@ import {
   mergeInterfaceInventories,
 } from './wiki-engine/code-knowledge/code-incremental.js';
 import { writeIfChanged } from './utils/fs.js';
-import { createGit, redactGitCredentials, repoIdentity, resolveAnchors, type ProjectAnchors } from './utils/git.js';
+import { createGit, redactGitCredentials, repoIdentity, resolveAnchors, type RepoAnchors } from './utils/git.js';
 import { assertSafePath } from './utils/path-safety.js';
 import { repoName } from './utils/repo-attribution.js';
 import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
@@ -625,7 +625,7 @@ export async function defaultProjectSlug(dir: string): Promise<string> {
     }
   }
 
-  return repoName(anchors.projectAnchor);
+  return repoName(anchors.repoAnchor);
 }
 
 /**
@@ -635,11 +635,11 @@ export async function defaultProjectSlug(dir: string): Promise<string> {
 export async function checkoutName(dir: string): Promise<string> {
   const anchors = await checkoutRootAnchors(dir);
 
-  return anchors ? repoName(anchors.projectAnchor) : path.basename(dir);
+  return anchors ? repoName(anchors.repoAnchor) : path.basename(dir);
 }
 
 /** The anchors of `dir` when it is a checkout's root, the main one or a linked worktree. */
-async function checkoutRootAnchors(dir: string): Promise<ProjectAnchors | null> {
+async function checkoutRootAnchors(dir: string): Promise<RepoAnchors | null> {
   if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) return null;
   const anchors = await resolveAnchors(dir);
 

@@ -81,7 +81,7 @@ afterEach(() => {
  * crash, and neither may lose the contribution.
  */
 describe('contributing where the learnings branch cannot exist', () => {
-  it('keeps the note when the single-repo business repo has no commits yet', async () => {
+  it('keeps the note when the self-mode business repo has no commits yet', async () => {
     mode = 'self-empty';
     const business = path.join(tmp, 'product');
     fs.mkdirSync(path.join(business, '.teamai'), { recursive: true });
@@ -119,7 +119,7 @@ describe('contributing where the learnings branch cannot exist', () => {
  * contribute must mark the session of the agent it runs in, and only that one.
  */
 describe('marking the agent session contributed', () => {
-  function initEmptySelfRepo(): void {
+  function initEmptySelfModeRepo(): void {
     mode = 'self-empty';
     const business = path.join(tmp, 'product');
     fs.mkdirSync(path.join(business, '.teamai'), { recursive: true });
@@ -132,7 +132,7 @@ describe('marking the agent session contributed', () => {
   });
 
   it('marks the session named by the agent variable', async () => {
-    initEmptySelfRepo();
+    initEmptySelfModeRepo();
     vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'claude-session');
 
     await contribute({ scope: 'project', title: 'agent session', file: note('# knowledge') });
@@ -141,7 +141,7 @@ describe('marking the agent session contributed', () => {
   });
 
   it('marks the Pi session, not the outer Claude Code session, from a Pi shell it started', async () => {
-    initEmptySelfRepo();
+    initEmptySelfModeRepo();
     vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'outer-claude');
     vi.stubEnv('PI_SESSION_ID', 'pi-session');
     // Pi started from Claude Code's shell: its extension records its own session start, later (#884).

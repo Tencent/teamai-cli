@@ -38,7 +38,7 @@ const PlannedArmSchema = z.object({
   effort: z.string().refine(isRecordableLabel).optional(),
   /** Whose aliases resolved the model: the team's, or the member's with `--member-aliases`. */
   source: z.enum(['team', 'member']),
-  /** The team assets the arm's trials get. */
+  /** The team resources the arm's trials get. */
   team: ArmTeamSchema,
   /** The team workflow the arm's trials run on each task instead of one prompt, by the hash of its sources and theirs. */
   workflow: z.object({ name: z.string().min(1), sourceHash: Sha256 }).strict().optional(),
@@ -181,7 +181,7 @@ export const BenchmarkPlanSchema = z.object({
   arms: z.array(PlannedArmSchema).nonempty(),
   /** The planned arm that changes no `defaults` key, which the results read the others against; absent when every one changes one. */
   defaultsArm: BenchmarkNameSchema.optional(),
-  /** Each arm whose team assets differ from the baseline's in skills, with those skills. */
+  /** Each arm whose team resources differ from the baseline's in skills, with those skills. */
   skillChanges: z.array(SkillChangesSchema).optional(),
   /** Every scorer that judges or decides a trial: the suite's, those tasks list, and each task's correctness scorer, which decides its trials. */
   scorers: z.array(PlannedScorerSchema),
@@ -504,7 +504,7 @@ export function addedOf(check: TaskCheck, checkFiles: Added | undefined): Added[
 }
 
 /**
- * The team a trial's clone installs: the arm's, with the run's asset selection
+ * The team a trial's clone installs: the arm's, with the run's resource selection
  * and the arm's recall setting. The `never` branch is the point — a new ArmTeam
  * kind has to be handled here rather than fall through to the last treatment.
  */

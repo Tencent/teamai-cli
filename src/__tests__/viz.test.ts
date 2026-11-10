@@ -35,7 +35,7 @@ function makeVizData(overrides: Partial<VizData> = {}): VizData {
     topRecalled: [],
     silent: [],
     relations: {
-      assetCount: 0,
+      resourceCount: 0,
       relationCount: 0,
       withoutRelation: [],
       unresolved: [],
@@ -250,10 +250,10 @@ describe('renderReport', () => {
     expect(html).toContain('All entries have been recalled at least once.');
   });
 
-  it('renders the relations section with the counts headline and the assets behind each count (#1562 part 2)', () => {
+  it('renders the relations section with the counts headline and the resources behind each count (#1562 part 2)', () => {
     const html = renderReport(makeVizData({
       relations: {
-        assetCount: 4,
+        resourceCount: 4,
         relationCount: 4,
         withoutRelation: [],
         unresolved: ['rules/payments.md REFERENCES docs/payment-overview.md'],
@@ -261,7 +261,7 @@ describe('renderReport', () => {
       },
     }));
     expect(html).toContain('id="relations"');
-    expect(html).toContain('4 assets · 4 relations · 0 without a relation · 1 unresolved');
+    expect(html).toContain('4 resources · 4 relations · 0 without a relation · 1 unresolved');
     expect(html).toContain('rules/payments.md REFERENCES docs/payment-overview.md');
     expect(html).toContain('Silent and without a relation');
     // The counts say which scope they were resolved for, as the header labels its data.
@@ -272,14 +272,14 @@ describe('renderReport', () => {
   it('prints "none" only for the silent-and-without-relation intersection, and lists the other counts', () => {
     const html = renderReport(makeVizData({
       relations: {
-        assetCount: 3,
+        resourceCount: 3,
         relationCount: 1,
         withoutRelation: ['docs/orphan.md'],
         unresolved: [],
         silentAndWithoutRelation: ['docs/orphan.md'],
       },
     }));
-    expect(html).toContain('3 assets · 1 relations · 1 without a relation · 0 unresolved');
+    expect(html).toContain('3 resources · 1 relations · 1 without a relation · 0 unresolved');
     expect(html).toContain('docs/orphan.md');
     expect(html).not.toContain(': <span data-i18n>none</span>');
   });
@@ -287,7 +287,7 @@ describe('renderReport', () => {
   it('escapes XSS in relation list paths', () => {
     const html = renderReport(makeVizData({
       relations: {
-        assetCount: 1,
+        resourceCount: 1,
         relationCount: 0,
         withoutRelation: ['docs/<script>bad</script>'],
         unresolved: [],
@@ -408,23 +408,23 @@ describe('buildVizData relation counts', () => {
     const data = await buildVizData(await resolveVizRoot({ repo: tmpRepo }));
 
     // rules/payments.md, docs/payments-overview.md, skills/pay/release,
-    // learnings/ledger-timeout — teamwiki pages are not assets.
-    expect(data.relations.assetCount).toBe(4);
+    // learnings/ledger-timeout — teamwiki pages are not resources.
+    expect(data.relations.resourceCount).toBe(4);
     // MAPS_TO to the page (it exists and is not withheld) + REFERENCES doc +
     // skill + SUPERSEDES from the learning; the rule's link to the doc
     // deduplicates under its declared REFERENCES.
     expect(data.relations.relationCount).toBe(4);
     expect(data.relations.withoutRelation).toEqual([]);
     expect(data.relations.unresolved).toEqual(['rules/payments.md REFERENCES docs/payment-overview.md']);
-    // No votes anywhere: every asset is silent, and every asset has a relation.
+    // No votes anywhere: every resource is silent, and every resource has a relation.
     expect(data.relations.silentAndWithoutRelation).toEqual([]);
 
     const html = renderReport(data);
-    expect(html).toContain('4 assets · 4 relations · 0 without a relation · 1 unresolved');
+    expect(html).toContain('4 resources · 4 relations · 0 without a relation · 1 unresolved');
     expect(html).toContain('rules/payments.md REFERENCES docs/payment-overview.md');
   });
 
-  it('lists silent assets without a relation by team-tree path and honors votes', async () => {
+  it('lists silent resources without a relation by team-tree path and honors votes', async () => {
     tmpRepo = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-viz-relations-'));
     await write('docs/a.md', [
       '---',
@@ -445,7 +445,7 @@ describe('buildVizData relation counts', () => {
 
     const data = await buildVizData(await resolveVizRoot({ repo: tmpRepo }));
 
-    expect(data.relations.assetCount).toBe(3);
+    expect(data.relations.resourceCount).toBe(3);
     expect(data.relations.relationCount).toBe(1);
     expect(data.relations.withoutRelation).toEqual(['docs/orphan.md']);
     // docs/orphan.md is silent; docs/a.md is connected but silent too.

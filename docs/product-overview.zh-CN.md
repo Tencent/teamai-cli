@@ -2,7 +2,7 @@
 
 安装和日常使用在[使用指南](usage-guide.zh-CN.md)。
 
-TeamAI 把团队的 skills、rules、agents、learnings、models、MCP 等 AI 资产放在一个 git 仓库里，同步到每个人的 AI 工具。
+TeamAI 把团队的 skills、rules、agents、learnings、models、MCP 等 Agent 资源放在一个 git 仓库里，同步到每个人的 AI 工具。
 
 ---
 

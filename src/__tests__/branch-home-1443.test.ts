@@ -113,7 +113,7 @@ describe('one side-branch checkout per self-mode repository (#1443)', () => {
 
   it('resolves the same checkout and lock for both scopes', async () => {
     const anchors = (await resolveAnchors(business))!;
-    const branchHome = path.join(projectDataHome(anchors.projectAnchor), SELF_BRANCH_HOME_DIRNAME);
+    const branchHome = path.join(projectDataHome(anchors.repoAnchor), SELF_BRANCH_HOME_DIRNAME);
     expect(userConfig.branchHome).toBe(branchHome);
     expect(projectConfig.branchHome).toBe(branchHome);
 
@@ -139,7 +139,7 @@ describe('one side-branch checkout per self-mode repository (#1443)', () => {
 
   it('keeps a git-mode checkout in the same partition apart', async () => {
     const anchors = (await resolveAnchors(business))!;
-    const partition = projectDataHome(anchors.projectAnchor);
+    const partition = projectDataHome(anchors.repoAnchor);
     // A git-mode team clone in this partition keeps its side branches as
     // siblings of the clone: <partition>/reports-wt. Self mode must not use it.
     const gitModeCheckout = path.join(partition, REPORTS_WORKTREE_DIRNAME);
@@ -154,7 +154,7 @@ describe('one side-branch checkout per self-mode repository (#1443)', () => {
 
   it('resolves the same checkout from a linked worktree of the business repo', async () => {
     const anchors = (await resolveAnchors(business))!;
-    const partition = projectDataHome(anchors.projectAnchor);
+    const partition = projectDataHome(anchors.repoAnchor);
     fs.mkdirSync(partition, { recursive: true });
     fs.copyFileSync(path.join(business, '.teamai', 'config.yaml'), path.join(partition, 'config.yaml'));
 
@@ -170,10 +170,10 @@ describe('one side-branch checkout per self-mode repository (#1443)', () => {
 
   it('adopts a partition still named for the pre-#546 layout', async () => {
     const anchors = (await resolveAnchors(business))!;
-    const legacy = path.join(path.dirname(projectDataHome(anchors.projectAnchor)), legacyProjectSlug(anchors.projectAnchor));
+    const legacy = path.join(path.dirname(projectDataHome(anchors.repoAnchor)), legacyProjectSlug(anchors.repoAnchor));
     fs.mkdirSync(legacy, { recursive: true });
     const reloaded = (await loadLocalConfigForScope('user'))!;
-    expect(reloaded.branchHome).toBe(path.join(projectDataHome(anchors.projectAnchor), SELF_BRANCH_HOME_DIRNAME));
+    expect(reloaded.branchHome).toBe(path.join(projectDataHome(anchors.repoAnchor), SELF_BRANCH_HOME_DIRNAME));
     expect(fs.existsSync(legacy)).toBe(false);
   });
 

@@ -146,12 +146,12 @@ export interface BenchmarkTable {
   /** The tasks whose check, tried on the starting commit, did not fail there as the task expects: none of their trials ran. */
   invalid: Array<{ task: string; baseline: Extract<Baseline, 'invalid' | 'could_not_run'> }>;
   /**
-   * Each skill an arm's team assets change, with how many of that arm's trials, and of the defaults arm's, loaded it;
+   * Each skill an arm's team resources change, with how many of that arm's trials, and of the defaults arm's, loaded it;
    * record order. Absent `defaults`: the suite has no defaults arm.
    */
   skills: Array<{ arm: string; skill: string; change: SkillChanges['skills'][number]['change']; here: SkillLoads; defaults?: SkillLoads }>;
-  /** A table per covered team asset an arm leaves out; absent when no task covers a path. */
-  assets: AssetEffect[];
+  /** A table per covered team resource an arm leaves out; absent when no task covers a path. */
+  resources: ResourceEffect[];
   /** Whether a team scorer of the run judges skill routing, #1469's `teamai:routing:`. */
   routing: boolean;
   /** Each judge tool the record pins that is also an arm's tool, with the first such arm, when the arms vary the tool. */
@@ -186,8 +186,8 @@ export interface BenchmarkCells {
   invalid?: TextTable;
   /** Absent when no arm changes a team skill. */
   skills?: TextTable;
-  /** Absent when no task covers a team repo path. One table's text per covered asset. */
-  assets?: string[];
+  /** Absent when no task covers a team repo path. One table's text per covered resource. */
+  resources?: string[];
   /** Lines above the caption that qualify the tables, such as a judge that is also an arm's tool; absent when none does. */
   notes?: string[];
   caption: string;
@@ -311,7 +311,7 @@ export function benchmarkTable(record: BenchmarkTableInput): BenchmarkTable {
     skills: (record.benchmark.skillChanges ?? []).flatMap(({ arm, defaults, skills }) => skills.map(({ name, change }) => definedFields<BenchmarkTable['skills'][number]>({
       arm, skill: name, change, here: skillLoadsOf(trials, arm, name), defaults: defaults ? skillLoadsOf(trials, defaults, name) : undefined,
     }))),
-    assets: assetEffects(record), routing: record.benchmark.scorers.some(({ name }) => name.startsWith(ROUTING_PREFIX)),
+    resources: resourceEffects(record), routing: record.benchmark.scorers.some(({ name }) => name.startsWith(ROUTING_PREFIX)),
     selfJudged: selfJudgedOf(record.benchmark),
     unavailableJudges: unavailableJudgesOf(record.benchmark),
   });
@@ -515,7 +515,7 @@ export function benchmarkCells(table: BenchmarkTable): BenchmarkCells {
       header: ['Arm', 'Skill', 'Change', 'Loaded in this arm', 'Loaded in the defaults arm'],
       rows: table.skills.map(({ arm, skill, change, here, defaults }) => [arm, skill, change, formatSkillLoads(here), defaults ? formatSkillLoads(defaults) : '-']),
     } : undefined,
-    assets: table.assets.length > 0 ? table.assets.map(formatAssetEffect) : undefined,
+    resources: table.resources.length > 0 ? table.resources.map(formatResourceEffect) : undefined,
     notes: notesOf(table),
     caption: BENCHMARK_CAPTION,
   });
@@ -555,19 +555,19 @@ function notesOf({ selfJudged, unavailableJudges }: BenchmarkTable): string[] | 
 }
 
 /**
- * One asset effect table as text, led by its title line: the path, the arm that runs without it, the arm that leaves
+ * One resource effect table as text, led by its title line: the path, the arm that runs without it, the arm that leaves
  * nothing out, and the tool. `not separated` names a 95% interval that crosses zero: more tasks or repetitions, not a
  * failed run.
  */
-export function formatAssetEffect(effect: AssetEffect): string {
-  const title = ['Asset effect', effect.path, effect.without !== undefined && effect.has !== undefined ? `${effect.without} -> ${effect.has}` : effect.has, effect.tool].filter((part) => part !== undefined).join(' · ');
+export function formatResourceEffect(effect: ResourceEffect): string {
+  const title = ['Resource effect', effect.path, effect.without !== undefined && effect.has !== undefined ? `${effect.without} -> ${effect.has}` : effect.has, effect.tool].filter((part) => part !== undefined).join(' · ');
 
   const rows = effect.rows.map((row) => [
     row.task, row.covers ? 'yes' : 'no', formatPassRate(row.without), formatPassRate(row.with),
     row.loaded === undefined ? 'not observed' : formatLoads(row.loaded),
   ]);
 
-  const split = (label: string, line: AssetSplit | undefined): string | undefined => (line === undefined ? undefined : [
+  const split = (label: string, line: ResourceSplit | undefined): string | undefined => (line === undefined ? undefined : [
     label, formatDifference(line.difference), `${line.from.passed}/${line.from.planned} -> ${line.to.passed}/${line.to.planned}`,
     line.separated ? `95% ${formatBound(line.difference.low)} to ${formatBound(line.difference.high)} pp` : 'not separated',
   ].join('   '));
@@ -591,7 +591,7 @@ export function formatAssetEffect(effect: AssetEffect): string {
  * (`fit` or `extra`, which the loads count) comes first, then the others counted, in `ROUTING_VALUES` order; `unknown`
  * alone when no trial's tool reported its loads.
  */
-function formatLoads({ loaded, planned, byValue }: NonNullable<AssetEffectRow['loaded']>): string {
+function formatLoads({ loaded, planned, byValue }: NonNullable<ResourceEffectRow['loaded']>): string {
   const isLoaded = (value: RoutingValue): boolean => value === 'fit' || value === 'extra';
   const present = ROUTING_VALUES.filter((value) => (byValue[value] ?? 0) > 0);
   const parts = [...present.filter(isLoaded), ...present.flatMap((value) => (isLoaded(value) ? [] : [`${byValue[value]} ${value}`]))];
@@ -613,13 +613,13 @@ function formatBound(bound: number): string {
 
 /** benchmarkCells as Markdown pipe tables, so the same text reads in a terminal and renders in a CI job summary. */
 export function formatBenchmarkTable(table: BenchmarkTable): string {
-  const { results, usage, matrix, scorers, calibration, invalid, skills, assets, notes, caption } = benchmarkCells(table);
+  const { results, usage, matrix, scorers, calibration, invalid, skills, resources, notes, caption } = benchmarkCells(table);
   const line = (cells: readonly string[]): string => `| ${cells.join(' | ')} |`;
   const markdown = ({ header, rows }: TextTable): string => [line(header), line(header.map(() => '---')), ...rows.map(line)].join('\n');
 
   return [
     ...[results, usage, matrix, ...(scorers ? [scorers] : [])].map(markdown), ...(calibration ? [`${calibration.title}\n\n${markdown(calibration)}`] : []),
-    ...[...(invalid ? [invalid] : []), ...(skills ? [skills] : [])].map(markdown), ...(assets ?? []), ...(notes ?? []), caption,
+    ...[...(invalid ? [invalid] : []), ...(skills ? [skills] : [])].map(markdown), ...(resources ?? []), ...(notes ?? []), caption,
   ].join('\n\n');
 }
 
@@ -634,7 +634,7 @@ function passRateOf(trials: readonly RecordedTrial[]): { passRate?: PassRate } {
   return trials.length > 0 ? { passRate: { passed: trials.filter(({ result }) => result === 'passed').length, planned: trials.length } } : {};
 }
 
-/** An arm's team assets: `pulled 62432de`, `main 1a2b3c4`, `62432de without rules/commits.md, skills/fixer` or `none`. */
+/** An arm's team resources: `pulled 62432de`, `main 1a2b3c4`, `62432de without rules/commits.md, skills/fixer` or `none`. */
 function formatTeam(team: RecordedArm['team']): string {
   switch (team.kind) {
     case 'pulled':
@@ -771,8 +771,8 @@ export const ROUTING_VALUES = ['fit', 'idle', 'extra', 'missed', 'unknown'] as c
 
 export type RoutingValue = (typeof ROUTING_VALUES)[number];
 
-/** One line of an asset effect's split: the paired pass-rate difference over a set of the pair's tasks. */
-export interface AssetSplit {
+/** One line of a resource effect's split: the paired pass-rate difference over a set of the pair's tasks. */
+export interface ResourceSplit {
   difference: { value: number; low: number; high: number };
   from: PassRate;
   to: PassRate;
@@ -780,8 +780,8 @@ export interface AssetSplit {
   separated: boolean;
 }
 
-/** One row of an asset effect table: one task, both arms' pass rates over their paired trials, and the loads with the asset. */
-export interface AssetEffectRow {
+/** One row of a resource effect table: one task, both arms' pass rates over their paired trials, and the loads with the resource. */
+export interface ResourceEffectRow {
   task: string;
   covers: boolean;
   /** The arm that runs without the path; absent, with the rates, when no arm leaves it out. */
@@ -794,8 +794,8 @@ export interface AssetEffectRow {
   loaded?: { loaded: number; planned: number; byValue: Partial<Record<RoutingValue, number>> };
 }
 
-/** A table per covered team asset: the arm that runs without exactly it against the arm that leaves nothing out. */
-export interface AssetEffect {
+/** A table per covered team resource: the arm that runs without exactly it against the arm that leaves nothing out. */
+export interface ResourceEffect {
   /** The covered team repo path. */
   path: string;
   /** The arm that runs without exactly this path; absent when no arm leaves it out. */
@@ -808,10 +808,10 @@ export interface AssetEffect {
   /** For a skill, the name of its routing question on real sessions: `teamai:routing:[<namespace>:]<skill>`. */
   routingScorer?: string;
   /** One row per task, in the record's task order. */
-  rows: AssetEffectRow[];
+  rows: ResourceEffectRow[];
   /** The difference over the tasks that cover the path, and over the others; absent when no arm leaves it out. */
-  coversDifference?: AssetSplit;
-  othersDifference?: AssetSplit;
+  coversDifference?: ResourceSplit;
+  othersDifference?: ResourceSplit;
   /** For a skill, over the `with` arm's trials: how many passed when it loaded and when it did not. */
   passedWhenLoaded?: PassRate;
   passedWhenNotLoaded?: PassRate;
@@ -824,7 +824,7 @@ export interface AssetEffect {
  * against the arm that differs from it only by leaving nothing out. An arm that leaves out more than one path compares
  * as itself, so it gets no table here. Pure over the record, so a published record answers without a rerun.
  */
-export function assetEffects(record: BenchmarkTableInput): AssetEffect[] {
+export function resourceEffects(record: BenchmarkTableInput): ResourceEffect[] {
   const { arms, tasks, trials } = record.benchmark;
   const paths = [...new Map(tasks.flatMap(({ covers }) => (covers ?? []).map((listed) => [listed, listed]))).keys()];
 
@@ -834,7 +834,7 @@ export function assetEffects(record: BenchmarkTableInput): AssetEffect[] {
     return entry === undefined ? undefined : entry[1] ?? undefined;
   };
 
-  const effects: AssetEffect[] = [];
+  const effects: ResourceEffect[] = [];
 
   paths.forEach((path) => {
     const skill = nameOf(path);
@@ -845,7 +845,7 @@ export function assetEffects(record: BenchmarkTableInput): AssetEffect[] {
 
     for (const without of withoutArms.length > 0 ? withoutArms : [undefined]) {
       // The arm that leaves nothing out: the pulled arm that differs from `without` only by that, or, when no arm
-      // leaves the path out, the first pulled arm that receives the path, else the first other arm with team assets that
+      // leaves the path out, the first pulled arm that receives the path, else the first other arm with team resources that
       // does (on another ref, or without other paths), so the rows and loads still show.
       const receives = (arm: (typeof arms)[number]): boolean => !withheld.has(arm.name);
 
@@ -874,7 +874,7 @@ export function assetEffects(record: BenchmarkTableInput): AssetEffect[] {
       const paired = (task: string): Array<[RecordedTrial, RecordedTrial]> => splitPairs(candidates(task)).compared;
       const { excluded } = splitPairs(tasks.flatMap(({ id }) => candidates(id)));
 
-      const rows: AssetEffectRow[] = tasks.flatMap(({ id, covers }): AssetEffectRow[] => {
+      const rows: ResourceEffectRow[] = tasks.flatMap(({ id, covers }): ResourceEffectRow[] => {
         const covered = covers?.includes(path) ?? false;
         const pair = paired(id);
 
@@ -885,12 +885,12 @@ export function assetEffects(record: BenchmarkTableInput): AssetEffect[] {
           }
           : { without: undefined, with: passRateOf(own(has?.name, id)).passRate } as const;
 
-        const row: AssetEffectRow = { task: id, covers: covered, ...rates, loaded: skill === undefined || has === undefined ? undefined : routingLoads(own(has.name, id), skill) };
+        const row: ResourceEffectRow = { task: id, covers: covered, ...rates, loaded: skill === undefined || has === undefined ? undefined : routingLoads(own(has.name, id), skill) };
 
         return row.without !== undefined || row.with !== undefined ? [row] : [];
       });
 
-      const split = (covered: boolean): AssetSplit | undefined => {
+      const split = (covered: boolean): ResourceSplit | undefined => {
         if (without === undefined || has === undefined) return undefined;
 
         const pairs = tasks.filter(({ covers }) => (covers?.includes(path) ?? false) === covered).flatMap(({ id }) => paired(id));
@@ -921,7 +921,7 @@ export function assetEffects(record: BenchmarkTableInput): AssetEffect[] {
         return ofArm.length > 0 ? { passed: ofArm.filter((trial) => trial.result === 'passed').length, planned: ofArm.length } : undefined;
       };
 
-      const effect = definedFields<AssetEffect>({
+      const effect = definedFields<ResourceEffect>({
         path, without: without?.name, has: has?.name, tool: (without ?? has)?.tool ?? '', skill, routingScorer: skill === undefined ? undefined : routingScorerName({ name: skill, ...skillNamespaceOf(path) }),
         rows, coversDifference: split(true), othersDifference: split(false),
         passedWhenLoaded: whenLoaded(true), passedWhenNotLoaded: whenLoaded(false),
@@ -943,7 +943,7 @@ function skillNamespaceOf(covered: string): { namespace?: string } {
 }
 
 /** How the `with` arm's trials of one task loaded `skill`, each counted under its routing value. */
-function routingLoads(trials: readonly RecordedTrial[], skill: string): AssetEffectRow['loaded'] {
+function routingLoads(trials: readonly RecordedTrial[], skill: string): ResourceEffectRow['loaded'] {
   const values = trials.map((trial) => trial.routing?.[skill]);
 
   return {

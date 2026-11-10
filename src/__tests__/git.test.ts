@@ -387,7 +387,7 @@ describe('checkoutMaster', () => {
     expect(mockGit.checkout).toHaveBeenCalledWith('main');
   });
 
-  it('tolerates the "already used by worktree" conflict (single-repo knowledge worktree)', async () => {
+  it('tolerates the "already used by worktree" conflict (self-mode knowledge worktree)', async () => {
     // In self mode the knowledge worktree shares `main` with the user's active
     // tree; git refuses `checkout main` there. checkoutMaster must swallow it
     // rather than throw, so the knowledge-PR flow completes.

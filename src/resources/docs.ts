@@ -55,7 +55,7 @@ export interface DocsSearchWhitelist {
 /**
  * Keep teamai's block in `<root>/.teamai/.ignore` while the delivered git
  * exclude block lists docs of the mirror at its default location: the
- * setting is on (`enabled`), the project is not single-repo (whose
+ * setting is on (`enabled`), the project is not in self mode (whose
  * `.teamai/` is the team's, never excluded), and `docsPaths` (the docs
  * writer's list, absolute real paths) holds a file of `<root>/.teamai/docs`.
  * Otherwise remove the block, and the file when nothing else is in it. The
@@ -409,7 +409,7 @@ async function wasTeamDocFile(repoPath: string, rel: string): Promise<boolean> {
 
 /**
  * Whether the docs directory `localDocsDir` is the team repo's own `docs/`, as
- * in single-repo mode: nothing is mirrored there, and nothing is delivered.
+ * in self mode: nothing is mirrored there, and nothing is delivered.
  */
 export async function isTeamDocsDirectory(localDocsDir: string, repoPath: string): Promise<boolean> {
   const real = (dir: string) => fse.realpath(dir).catch(() => path.resolve(dir));

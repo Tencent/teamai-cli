@@ -490,11 +490,11 @@ projects:
   });
 
   /**
-   * Single-repo mode: the canonical source is the repo's own .teamai/agents/,
+   * Self mode: the canonical source is the repo's own .teamai/agents/,
    * picked up directly rather than reverse-parsed. Both the placement record
    * and removal have to reach it (#649 review).
    */
-  describe('single-repo mode canonical sources', () => {
+  describe('self mode canonical sources', () => {
     function selfConfig(): LocalConfig {
       return { ...localConfig, repo: { ...localConfig.repo, kind: 'self' }, projectRoot: tmpDir };
     }

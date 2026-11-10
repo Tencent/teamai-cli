@@ -6,7 +6,7 @@
 
 ## 卸载
 
-`teamai uninstall` 删除 TeamAI 装上去的资源。你自己建的文件会留下。user scope 卸载会保留本机仍登记的项目的数据。请先逐个卸载项目，再在任何项目之外运行 `teamai uninstall`，移除剩余的共享数据。
+`teamai uninstall` 删除 TeamAI 装上去的 Agent 资源。你自己建的文件会留下。user scope 卸载会保留本机仍登记的项目的数据。请先逐个卸载项目，再在任何项目之外运行 `teamai uninstall`，移除剩余的共享数据。
 
 使用共享数据分区的项目中，完整卸载会先移除所有 checkout 的共享 hooks 和注册，再删除分区。`uninstall --agent <tool>` 只移除当前 checkout 中该工具的 hooks 和注册；若该工具是分区中最后一个工具，则会删除分区以及所有 checkout 的 hooks。bare 仓库的 worktree 分别拥有自己的 hook 文件。
 
@@ -64,7 +64,7 @@ teamai init --repo https://github.com/your-org/your-repo --scope user --role <ro
 
 **Q: `pull` 提示某个 workspace 子项被排除（left out）？**
 
-workspace 中已初始化的仓库，只有在使用 workspace 的团队仓库且不是单仓库模式时才计入。这一行会给出仓库和原因。在该仓库中运行 `teamai init <团队仓库>` 即可把它纳入，也可以保持原样：它仍然独立工作。`teamai doctor` 会列出所有被排除的子项。
+workspace 中已初始化的仓库，只有在使用 workspace 的团队仓库且不是 self 模式时才计入。这一行会给出仓库和原因。在该仓库中运行 `teamai init <团队仓库>` 即可把它纳入，也可以保持原样：它仍然独立工作。`teamai doctor` 会列出所有被排除的子项。
 
 **Q: workspace 中 `pull` 提示某个 skill、agent 或 server 在两个 namespace 之间不同（differs between）？**
 

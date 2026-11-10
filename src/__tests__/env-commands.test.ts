@@ -730,7 +730,7 @@ scope: 'user',
       execFileSync('git', ['init', '-q'], { cwd: root, stdio: 'pipe' });
       const anchors = await resolveAnchors(root);
       if (!anchors) throw new Error('no git anchors for the fixture project');
-      const configPath = path.join(projectDataHome(anchors.projectAnchor), 'config.yaml');
+      const configPath = path.join(projectDataHome(anchors.repoAnchor), 'config.yaml');
       await fse.outputFile(configPath, 'repo: [not a config\n');
       vi.spyOn(process, 'cwd').mockReturnValue(root);
       vi.mocked(readStdin).mockResolvedValue('fixture-work-token');
