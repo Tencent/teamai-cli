@@ -155,13 +155,12 @@ function codexVersionOf(candidate: CodexCandidate): Promise<string | null> {
  * gating on a floor never guesses for an unknown build.
  */
 export async function oldestCodexBuildVersion(): Promise<string | null> {
-  const candidates = codexBuildCandidates();
+  const builds = await Promise.all(codexBuildCandidates().map(async (c) => ({ path: c.path, version: await codexVersionOf(c) })));
 
-  if (candidates.length === 0) return null;
-  const versions = await Promise.all(candidates.map(codexVersionOf));
-  const known = versions.filter((version): version is string => version !== null);
+  log.debug(`Codex builds for the hook form: ${builds.map((b) => `${b.path} → "${b.version ?? ''}"`).join(', ') || 'none'}`);
+  const known = builds.flatMap((b) => (b.version === null ? [] : [b.version]));
 
-  if (known.length !== versions.length) return null;
+  if (known.length === 0 || known.length !== builds.length) return null;
 
   return [...known].sort(semver.compare)[0] ?? null;
 }
