@@ -39,9 +39,9 @@ import {
   resolveGitExclude,
   resolveToolRootDir,
 } from './types.js';
-import { builtinHookDefs, applyBuiltinOverride, getCodebuddyTeamHookDispatchCommand, getRawDispatchCommand, retiredBuiltinHookDefs, skipToolsWithoutShell } from './builtin-hooks.js';
+import { builtinHookDefs, builtinHookForm, applyBuiltinOverride, getCodebuddyTeamHookDispatchCommand, getRawDispatchCommand, recognisedBuiltinHookDefs, skipToolsWithoutShell, WAITED_LOGIN_FORM } from './builtin-hooks.js';
 import { codebuddyTeamHookPayload, encodeCodebuddyProjectGate, isCodebuddyTeamGateForProject, parseCodebuddyTeamGate, regateCodebuddyTeamHookCommand } from './codebuddy-team-hooks.js';
-import type { BuiltinHookOverride } from './builtin-hooks.js';
+import type { BuiltinHookForm, BuiltinHookOverride } from './builtin-hooks.js';
 import { DeliveredFolders } from './resources/delivered-folders.js';
 import { deliverHookFolders, historicalFolderHookDef, pruneHookFolders, parseTeamHooks, readBuiltinOverride, resolveTeamHooks, teamHookToDef } from './resources/hooks.js';
 import { entryLayout } from './namespaced-entries.js';
@@ -56,10 +56,11 @@ import {
 } from './codex-trust.js';
 import { codexDispatcherCheckouts, codexDispatcherProjects, dispatchedCodexHooks, isCodexTeamHookDispatcher, reconcileCodexDispatchers, runsFromCodexDispatcher, setCodexDispatcherHooks } from './codex-team-hooks.js';
 import type { CodexTeamHook } from './codex-team-hooks.js';
-import { channelsOf, hookFormatOf, hookSettingsFormatOf, hookSyntaxOf, selfLocalSettingsOf, TOOL_IDS, TOOLS, type HookFormat } from './tools.js';
+import { channelsOf, hookFormatOf, hookSettingsFormatOf, hookSyntaxOf, isToolId, selfLocalSettingsOf, TOOL_IDS, TOOLS, type HookFormat } from './tools.js';
 import { BRIDGED_TEAM_HOOK_EVENTS, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
 import { earlierHookAdapterDir, hookSettingsFile, installOf, locate, openclawWorkspaceDir, ownOf, workspaceHooksOf } from './locate.js';
 import { toolHome } from './tool-home.js';
+import { isWithin } from './utils/agent-path.js';
 
 export { claudeHookOtherHostSkip };
 
@@ -116,6 +117,8 @@ type HookEntry = {
   shell?: 'powershell';
   /** Per-hook timeout in seconds. Falls back to the tool default if omitted. */
   timeout?: number;
+  /** Claude Code starts the hook and does not wait for it. */
+  async?: true;
 };
 
 type HookMatcher = {
@@ -147,6 +150,8 @@ type CodexHookEntry = {
   commandWindows?: string;
   timeout?: number;
   additionalContextLimit?: number;
+  /** Codex starts the hook and does not wait for it. */
+  async?: true;
 };
 
 type CodexHookMatcher = {
@@ -338,6 +343,11 @@ function teamDefsForTool(teamDefs: HookDef[], tool: string): HookDef[] {
   return teamDefs.filter((d) => !d.tools || d.tools.includes(tool));
 }
 
+/** Whether `settingsPath` is `tool`'s hook file in the member's own tool home, or a project file a repository may commit. */
+function hookFileDestination(tool: string, settingsPath: string): 'user' | 'project' {
+  return isToolId(tool) && isWithin(path.resolve(expandHome(settingsPath)), toolHome(tool)) ? 'user' : 'project';
+}
+
 /**
  * Build the per-tool desired HookDef set: built-in (A) followed by team (B).
  * `teamOnly` leaves the built-ins out, for a file that holds team hooks only
@@ -346,10 +356,10 @@ function teamDefsForTool(teamDefs: HookDef[], tool: string): HookDef[] {
 function desiredDefs(
   tool: string,
   teamDefs: HookDef[],
-  opts: { builtinOverride?: BuiltinHookOverride; teamOnly?: boolean },
+  opts: { builtinOverride?: BuiltinHookOverride; teamOnly?: boolean; builtinForm?: BuiltinHookForm },
 ): HookDef[] {
   // A bridged tool's file holds its team hooks alone: its bridge dispatches the built-ins itself.
-  const builtins = opts.teamOnly || isBridgedTeamHookTool(tool) ? [] : applyBuiltinOverride(builtinHookDefs(tool), opts.builtinOverride);
+  const builtins = opts.teamOnly || isBridgedTeamHookTool(tool) ? [] : applyBuiltinOverride(builtinHookDefs(tool, opts.builtinForm), opts.builtinOverride);
 
   return [...builtins, ...teamDefsForTool(teamDefs, tool)];
 }
@@ -372,6 +382,8 @@ export interface ReconcileHooksOptions {
   legacyManifestPath?: string;
   /** §4.8 team override of built-in hooks (disabled / timeout). */
   builtinOverride?: BuiltinHookOverride;
+  /** The form of the built-ins in this file: `reconcileHooks` sets it from where the file is (`hookFileDestination`). */
+  builtinForm?: BuiltinHookForm;
   /** Project root used to gate non-self project-scope team hooks. */
   teamHookProjectRoot?: string;
   /** The roots of a workspace's children, which the gate leaves out (#913). */
@@ -494,6 +506,7 @@ const FileHookSchema = z.object({
   commandWindows: OptionalTextSchema,
   args: z.array(z.unknown()).optional().catch(undefined),
   timeout: z.number().optional().catch(undefined),
+  async: z.boolean().optional().catch(undefined),
 }).catch({});
 
 /**
@@ -1990,6 +2003,8 @@ function toClaudeEntry(def: HookDef): HookMatcher {
 
   if (def.timeout !== undefined) hook.timeout = def.timeout;
 
+  if (def.async) hook.async = true;
+
   return { matcher: def.matcher ?? '*', hooks: [hook], description: def.description };
 }
 
@@ -2020,6 +2035,8 @@ function toCodexEntry(def: HookDef): CodexHookMatcher {
   if (def.timeout !== undefined) hook.timeout = def.timeout;
 
   if (def.additionalContextLimit !== undefined) hook.additionalContextLimit = def.additionalContextLimit;
+
+  if (def.async) hook.async = true;
   const entry: CodexHookMatcher = { hooks: [hook] };
 
   if (def.matcher && def.matcher !== '*') entry.matcher = def.matcher;
@@ -2201,7 +2218,7 @@ function isExactBuiltinEntry(event: string, tool: string, entry: HookFileEntry):
   if (entry.hooks?.length !== 1 || entry.hooks[0].type !== 'command') return false;
   const command = entry.hooks[0].command;
 
-  return [...builtinHookDefs(tool), ...retiredBuiltinHookDefs(tool)].some((def) => {
+  return recognisedBuiltinHookDefs(tool).some((def) => {
     if (def.event !== event || (entry.matcher ?? '*') !== (def.matcher ?? '*')) return false;
     const dispatch = /\bhook-dispatch ([a-z-]+)/.exec(def.command)?.[1];
 
@@ -3371,8 +3388,10 @@ export async function reconcileHooks(
   settingsPath: string,
   tool: string,
   teamDefs: HookDef[] = [],
-  opts: ReconcileHooksOptions = {},
+  given: ReconcileHooksOptions = {},
 ): Promise<void> {
+  const opts = { ...given, builtinForm: given.removeAll ? WAITED_LOGIN_FORM : await builtinHookForm(tool, hookFileDestination(tool, settingsPath)) };
+
   if (opts.mainCheckout) {
     const target = opts.mainCheckout;
 
@@ -3526,7 +3545,7 @@ export async function getHookStatus(
 ): Promise<HookStatus> {
   const toolName = tool ?? 'claude';
   const expanded = expandHome(settingsPath);
-  const defs = applyBuiltinOverride(builtinHookDefs(toolName), builtinOverride);
+  const defs = applyBuiltinOverride(builtinHookDefs(toolName, await builtinHookForm(toolName, hookFileDestination(toolName, settingsPath))), builtinOverride);
 
   const format = hookFormatOf(toolName);
   const json = await readJson<JsonValue>(expanded);
@@ -3577,7 +3596,8 @@ export async function getHookStatus(
     const present = defs.every((def) => {
       const want = toCodexEntry(def);
 
-      return entriesOf(def.event).some((e) => e.matcher === want.matcher && e.hooks?.[0]?.command === want.hooks[0].command);
+      return entriesOf(def.event).some((e) => e.matcher === want.matcher && e.hooks?.[0]?.command === want.hooks[0].command
+        && (e.hooks[0].async === true) === (want.hooks[0].async === true));
     });
 
     return present ? 'installed' : 'missing';
@@ -3603,7 +3623,8 @@ export async function getHookStatus(
   const present = defs.every((def) => {
     const want = toClaudeEntry(def);
 
-    return entriesOf(def.event).some((e) => e.matcher === want.matcher && e.hooks?.[0]?.command === want.hooks[0].command);
+    return entriesOf(def.event).some((e) => e.matcher === want.matcher && e.hooks?.[0]?.command === want.hooks[0].command
+      && (e.hooks[0].async === true) === (want.hooks[0].async === true));
   });
 
   return present ? 'installed' : 'missing';
@@ -4597,7 +4618,7 @@ async function teamaiCodexHooks(file: string, manifestPath: string): Promise<Cod
 
   if (!events) return [];
   const records = (await readManifest(manifestPath))[CODEX_TOOL_ID] ?? [];
-  const builtins = builtinHookDefs(CODEX_TOOL_ID);
+  const builtins = recognisedBuiltinHookDefs(CODEX_TOOL_ID);
 
   return [...events].flatMap(([event, groups]) => groups.flatMap((entry, index) => {
     // The file is the member's: an entry that is not an object, or a command that is not a string, is no hook of teamai's.

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import semver from 'semver';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX } from './types.js';
 import { isCodexTool } from './utils/tool-names.js';
 import type { HookDef } from './types.js';
@@ -463,21 +464,59 @@ const SUBAGENT_START_SPEC: BuiltinHookSpec = {
  * uses Git Bash but its IDE uses cmd.exe, so its built-ins launch Git Bash
  * explicitly through a script that keeps the fail-open contract.
  */
-export function builtinHookDefs(tool: string): HookDef[] {
+export function builtinHookDefs(tool: string, form: BuiltinHookForm = WAITED_LOGIN_FORM): HookDef[] {
   return renderBuiltinDefs(tool, [
     ...BUILTIN_HOOK_SPECS,
     ...(tool === 'copilot' ? [COPILOT_SESSION_END_SPEC] : []),
     ...(channelsOf(tool).hooks.subagentStop ? [SUBAGENT_STOP_SPEC] : []),
     ...(isCodexTool(tool) ? [SUBAGENT_START_SPEC] : []),
-  ]);
+  ], form);
 }
 
 /** The retired built-ins (RETIRED_BUILTIN_HOOK_SPECS) as an earlier release rendered them for `tool`. */
 export function retiredBuiltinHookDefs(tool: string): HookDef[] {
-  return renderBuiltinDefs(tool, RETIRED_BUILTIN_HOOK_SPECS);
+  return renderBuiltinDefs(tool, RETIRED_BUILTIN_HOOK_SPECS, WAITED_LOGIN_FORM);
 }
 
-function renderBuiltinDefs(tool: string, specs: BuiltinHookSpec[]): HookDef[] {
+/**
+ * How teamai writes its built-in hooks into one hook file. `unwaited`: the tool starts the PostToolUse entry and
+ * does not wait for it. `loginDeferred`: a hook starts teamai without a login shell. Both false is the waited
+ * login-shell form, which every hook file had before and a project file a repository may commit keeps.
+ */
+export type BuiltinHookForm = { readonly unwaited: boolean; readonly loginDeferred: boolean };
+
+/** The waited login-shell form: the form of every hook file no tool fact changes. */
+export const WAITED_LOGIN_FORM: BuiltinHookForm = { unwaited: false, loginDeferred: false };
+
+/**
+ * The form of `tool`'s built-ins in its hook file at `destination`: the member's own (`user`), or a project file a
+ * repository may commit (`project`), which members with other tool versions and homes share, so it keeps the waited
+ * login-shell form. `unwaited` needs the installed version at or above the tool's `unwaitedSince`: a version that
+ * cannot be read keeps the hook waited. `loginDeferred` needs the tool's `loginDeferrable`, on POSIX.
+ */
+export async function builtinHookForm(tool: string, destination: 'user' | 'project'): Promise<BuiltinHookForm> {
+  if (destination === 'project') return WAITED_LOGIN_FORM;
+  const { unwaitedSince, loginDeferrable } = channelsOf(tool).hooks;
+  const loginDeferred = loginDeferrable === true && process.platform !== 'win32';
+
+  if (unwaitedSince === undefined) return { unwaited: false, loginDeferred };
+  const { getAgentVersion } = await import('./agent-version.js');
+  const version = semver.valid(await getAgentVersion(tool));
+
+  return { unwaited: version !== null && semver.gte(version, unwaitedSince), loginDeferred };
+}
+
+/**
+ * The built-ins of every form teamai may have written for `tool`, and the retired ones: what a check that an entry
+ * on disk is teamai's own compares with, so a form a newer or an older teamai wrote is still recognised.
+ */
+export function recognisedBuiltinHookDefs(tool: string): HookDef[] {
+  const forms = [false, true].flatMap((unwaited) => [false, true].map((loginDeferred) => ({ unwaited, loginDeferred })));
+
+  return [...forms.flatMap((form) => builtinHookDefs(tool, form)), ...retiredBuiltinHookDefs(tool)];
+}
+
+function renderBuiltinDefs(tool: string, specs: BuiltinHookSpec[], form: BuiltinHookForm): HookDef[] {
   // ZCode renders per-event timeouts from the ZCODE_TIMEOUT_MS table in its own
   // writer (toZcodeEntry), so def.timeout stays unset for it.
   const withTimeout = tool === 'cursor' || tool === 'copilot' || tool === 'workbuddy' || tool === 'codebuddy' || tool === 'joycode' || isCodexTool(tool);
@@ -505,9 +544,9 @@ function renderBuiltinDefs(tool: string, specs: BuiltinHookSpec[]): HookDef[] {
 
     // The team rules reach the Codex family through its start hooks (#938);
     // Codex would otherwise keep only the start and end of a large rule set.
-    return isCodexTool(tool) && (spec.event === 'SessionStart' || spec.event === 'SubagentStart')
-      ? { ...def, additionalContextLimit: 0, description }
-      : { ...def, description };
+    if (isCodexTool(tool) && (spec.event === 'SessionStart' || spec.event === 'SubagentStart')) return { ...def, additionalContextLimit: 0, description };
+
+    return form.unwaited && spec.key === POST_TOOL_USE_WILDCARD_KEY ? { ...def, async: true, description } : { ...def, description };
   });
 }
 

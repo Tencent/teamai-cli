@@ -308,6 +308,19 @@ export type HooksChannels = {
    * hook-fast-path.test.ts checks against this field.
    */
   readonly needsBundle: boolean;
+  /**
+   * The first version of the tool whose command hooks take `"async": true` and are then not waited for, with no
+   * side effect on a hook that prints nothing. Once the installed version reaches it, teamai writes its PostToolUse
+   * built-in that way into the member's own hook file (`builtinHookForm`). Absent: the tool has no such option, or
+   * it was not observed on the real tool.
+   */
+  readonly unwaitedSince?: string;
+  /**
+   * Set when, on POSIX, the tool was observed to run a hook's command string with a POSIX-compatible `sh -c` that is
+   * not a login shell, so a built-in hook in the member's own hook file may start teamai without one and leave the
+   * login environment to the background pass (`builtinHookForm`). Absent: not observed.
+   */
+  readonly loginDeferrable?: true;
 };
 
 /**
