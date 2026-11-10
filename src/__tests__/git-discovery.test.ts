@@ -456,7 +456,10 @@ describe('a later run', () => {
     execFileSync('git', ['config', '--worktree', 'core.bare', 'true'], { cwd: repo });
     vi.resetModules();
     const later = await import('../utils/git.js');
-    expect(await later.listWorktrees(linked)).toEqual([linked]);
+    // Before Git 2.54 the porcelain list ignores core.bare in config.worktree.
+    // Assert the same checkout set Git reports, rather than requiring the new behavior.
+    const listed = execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: linked, encoding: 'utf8' });
+    expect(await later.listWorktrees(linked)).toEqual(listed.includes('\nbare\n') ? [linked] : [repo, linked]);
   });
 
   // How the main checkout is made bare after an earlier run listed it: the

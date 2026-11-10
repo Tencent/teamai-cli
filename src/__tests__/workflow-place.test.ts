@@ -884,7 +884,7 @@ steps:
     const check = await lease();
     expect(await withRunLock(f.config, run, (lock) => f.client.prepare(lock, check.raw), { waitMs: 0 })).toEqual({ kind: 'failed', failure: {
       code: 'workspace_base',
-      message: expect.stringMatching(new RegExp(`^TeamAI did not go on in ${dir}, the place the host made for branch ${write.workspace.branch}: ${dir} has changes the step would commit \\(\\?\\? stray\\.txt\\).* Making its own worktree of the branch failed too: .*already used by worktree`, 's')),
+      message: expect.stringMatching(new RegExp(`^TeamAI did not go on in ${dir}, the place the host made for branch ${write.workspace.branch}: ${dir} has changes the step would commit \\(\\?\\? stray\\.txt\\).* Making its own worktree of the branch failed too: .*(?:already used by worktree|already checked out at)`, 's')),
     } });
   });
 

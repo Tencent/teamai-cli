@@ -15,6 +15,7 @@ import { dashboardWorkspaces, workspaceEvents } from '../dashboard/workspaces.js
 import { status } from '../status.js';
 import { localAgentCheckouts } from '../local-agent.js';
 import { deployBuiltinSkills } from '../builtin-skills.js';
+import { gitHookStatus } from '../git-hook.js';
 import { allowsSkillDirectory, describeSkippedSkillDirectory, findSkillDirectoryBlock } from '../resources/skills.js';
 
 let base: string;
@@ -150,7 +151,8 @@ describe('submodule checkouts', () => {
     const team = TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.com/team.git' });
     await reconcileTeamHooksForConfig(team, { ...original, enabledAgents: ['claude', 'codex'] });
     expect(fs.readFileSync(file, 'utf8')).toBe('');
-    expect(git(checkout, 'config', '--get', 'hook.teamai-post-checkout.command')).toContain('hook-dispatch');
+    // Config hooks and legacy hook scripts both count as installed.
+    expect(await gitHookStatus(checkout)).toEqual({ installed: true });
   });
 
   it('displays the submodule checkout in status while judging the identity for orphans', async () => {
