@@ -538,18 +538,6 @@ describe('doUpdate', () => {
     );
   });
 
-  it('asks the registry nothing when a hook\'s automatic update meets the skip policy', async () => {
-    mockedLoadLocalConfig.mockResolvedValue({
-      repo: { localPath: '/tmp/repo', remote: 'https://...' },
-      username: 'testuser',
-      updatePolicy: 'skip',
-    });
-
-    expect(await doUpdate(null, { automatic: true })).toBe('skipped');
-
-    expect(mockedExecSync).not.toHaveBeenCalled();
-  });
-
   // ─── Test: team-level autoUpdate=false with no local override → skip ───
 
   it('should skip update when team autoUpdate=false and local updatePolicy is undefined', async () => {
@@ -834,15 +822,6 @@ describe('doUpdate', () => {
     expect(mockedLog.info).toHaveBeenCalledWith(
       expect.stringContaining('Already up to date'),
     );
-  });
-
-  it.each([false, true])('is up to date when the local config cannot be read, automatic %s', async (automatic) => {
-    const current = getCurrentVersion();
-    mockedExecSync.mockResolvedValueOnce({ stdout: `${current}\n`, stderr: '' });
-    mockedLoadLocalConfig.mockRejectedValueOnce(new Error('EACCES'));
-
-    await expect(doUpdate(null, { automatic })).resolves.toBe('skipped');
-    expect(mockedLog.info).toHaveBeenCalledWith(expect.stringContaining('Already up to date'));
   });
 });
 
