@@ -586,12 +586,16 @@ function renderBuiltinDefs(tool: string, specs: BuiltinHookSpec[], form: Builtin
     // Codex would otherwise keep only the start and end of a large rule set.
     if (isCodexTool(tool) && (spec.event === 'SessionStart' || spec.event === 'SubagentStart')) return [{ ...def, additionalContextLimit: 0, description }];
 
+    const loginDeferred = form.loginDeferred && buildCommand === getDispatchCommand
+      ? { ...def, command: getLoginDeferredDispatchCommand(spec.dispatchEvent, tool), description }
+      : { ...def, description };
+
+    if (spec.event === 'UserPromptSubmit') return [loginDeferred];
+
     if (spec.key !== POST_TOOL_USE_WILDCARD_KEY) return [{ ...def, description }];
 
     // An unwaited entry is not waited for at all, so it keeps today's command.
-    if (!form.unwaited) {
-      return [form.loginDeferred && buildCommand === getDispatchCommand ? { ...def, command: getLoginDeferredDispatchCommand(spec.dispatchEvent, tool), description } : { ...def, description }];
-    }
+    if (!form.unwaited) return [loginDeferred];
 
     if (hookFormatOf(tool) !== 'claude') return [{ ...def, async: true, description }];
 

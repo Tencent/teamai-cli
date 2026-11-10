@@ -253,7 +253,7 @@ export async function runLoginDeferredHook(
   const { event, tool, matcher } = verdict.hook;
   const child = childPayload(raw);
 
-  if (child === null || (event === 'prompt-submit' && promptAnswersInForeground(child.sessionId, env))) {
+  if (child === null || (event === 'prompt-submit' && (promptAnswersInForeground(child.sessionId, env) || !loginSawNoEnrolment(child.sessionId, raw)))) {
     return runThroughLoginShell({ argv, env, stdin: raw });
   }
 
@@ -271,6 +271,46 @@ export async function runLoginDeferredHook(
   writeToFile('DEBUG', `[hook-dispatch] ${event}/${tool} fast path`);
 
   return 0;
+}
+
+/** What a pass inside the login environment last saw of this session's HTTP enrolment (recordLoginEnrolment). */
+function loginEnrolmentFile(sessionId: string): string {
+  return path.join(getUserHome(), '.teamai', 'sessions', `${sessionId.replace(/[^a-zA-Z0-9._-]/g, '_')}.http-enrolment.json`);
+}
+
+/**
+ * Record whether the machine is HTTP-enrolled as `env` shows it, for the session and cwd the hook payload `raw` names.
+ * Called by a dispatch pass inside the login environment, so a prompt whose command deferred the login shell, and
+ * which cannot see a variable the profile or the team env sets, can tell whether it may take the fast path. Written
+ * only when it changes. Nothing for a payload the full dispatch handed its own background pass: its cwd may be the
+ * scope's, not the one the login shell ran in.
+ */
+export function recordLoginEnrolment(raw: string, env: NodeJS.ProcessEnv): void {
+  const fields = jsonObjectFields(raw);
+  const sessionId = fields && SESSION_ID_FIELDS.map((field) => fields.get(field)).find(isNonEmptyString);
+  const cwd = fields?.get('cwd');
+
+  if (!fields || !sessionId || !isNonEmptyString(cwd) || FOREGROUND_PAYLOAD_KEYS.some((key) => fields.has(key))) return;
+  const file = loginEnrolmentFile(sessionId);
+  const text = JSON.stringify({ cwd, enrolled: isHttpEnrolled(env) });
+
+  if (readTextFile(file) === text) return;
+
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const partial = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(partial, text);
+    fs.renameSync(partial, file);
+  } catch {
+    // A prompt with no record goes through the login shell, which is today's behaviour.
+  }
+}
+
+/** Whether a pass inside the login environment saw no HTTP enrolment for this session from the cwd `raw` names. */
+function loginSawNoEnrolment(sessionId: string, raw: string): boolean {
+  const recorded = jsonObjectFields(readTextFile(loginEnrolmentFile(sessionId)) ?? '');
+
+  return recorded !== null && recorded.get('enrolled') === false && recorded.get('cwd') === jsonObjectFields(raw)?.get('cwd');
 }
 
 /** `env` as the tool gave it to the hook: without the marker. */

@@ -1172,7 +1172,7 @@ describe('reconcileTeamHooksForConfig — team hooks in the main checkout', () =
   });
 });
 
-describe('reconcileTeamHooksForConfig — the form of Claude Code\'s PostToolUse entry', () => {
+describe('reconcileTeamHooksForConfig — the form of Claude Code\'s PostToolUse and UserPromptSubmit entries', () => {
   const COMMAND = 'bash -lc "teamai hook-dispatch post-tool-use --tool claude 2>/dev/null" || true';
   const LOGIN_DEFERRED_COMMAND = 'if [ -x "$HOME/.teamai/bin/teamai" ]; then TEAMAI_HOOK_LOGIN=deferred "$HOME/.teamai/bin/teamai" hook-dispatch post-tool-use --tool claude 2>/dev/null; '
     + 'else bash -lc "teamai hook-dispatch post-tool-use --tool claude 2>/dev/null"; fi || true';
@@ -1182,10 +1182,14 @@ describe('reconcileTeamHooksForConfig — the form of Claude Code\'s PostToolUse
   ];
   const WAITED = [{ matcher: '*', command: COMMAND }];
   const LOGIN_DEFERRED = [{ matcher: '*', command: LOGIN_DEFERRED_COMMAND }];
+  const PROMPT = [{ matcher: '*', command: COMMAND.replace('post-tool-use', 'prompt-submit') }];
+  const PROMPT_LOGIN_DEFERRED = [{ matcher: '*', command: LOGIN_DEFERRED_COMMAND.replaceAll('post-tool-use', 'prompt-submit') }];
 
   type Entry = { matcher?: string; hooks: Array<{ command: string; async?: boolean }> };
-  const postToolUse = async (file = path.join(home, '.claude', 'settings.json')) => ((await fse.readJson(file)).hooks.PostToolUse as Entry[])
+  const entriesOf = (event: string) => async (file = path.join(home, '.claude', 'settings.json')) => (((await fse.readJson(file)).hooks[event] ?? []) as Entry[])
     .map((entry) => ({ matcher: entry.matcher, command: entry.hooks[0].command, ...(entry.hooks[0].async ? { async: entry.hooks[0].async } : {}) }));
+  const postToolUse = entriesOf('PostToolUse');
+  const userPromptSubmit = entriesOf('UserPromptSubmit');
 
   beforeEach(() => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin');
@@ -1195,11 +1199,12 @@ describe('reconcileTeamHooksForConfig — the form of Claude Code\'s PostToolUse
     vi.restoreAllMocks();
   });
 
-  /** The member's file as a release before the hook forms wrote it: today's single waited login-shell entry. */
+  /** The member's file as a release before the hook forms wrote it: today's single waited login-shell entries. */
   const writeTodaysEntry = async (): Promise<void> => {
     const file = path.join(home, '.claude', 'settings.json');
     const json = await fse.readJson(file);
     json.hooks.PostToolUse = [{ matcher: '*', hooks: [{ type: 'command', command: COMMAND }], description: '[teamai] Hook dispatch post-tool-use wildcard' }];
+    json.hooks.UserPromptSubmit = [{ matcher: '*', hooks: [{ type: 'command', command: PROMPT[0].command }], description: '[teamai] Hook dispatch prompt-submit' }];
     await fse.writeJson(file, json);
   };
 
@@ -1211,6 +1216,7 @@ describe('reconcileTeamHooksForConfig — the form of Claude Code\'s PostToolUse
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
 
     expect(await postToolUse()).toEqual(UNWAITED);
+    expect(await userPromptSubmit()).toEqual(PROMPT_LOGIN_DEFERRED);
   });
 
   it.each(['2.1.118', '', 'not a version'])('goes back to a single waited entry, which defers its login shell, when the version reads %j', async (version) => {
@@ -1230,6 +1236,7 @@ describe('reconcileTeamHooksForConfig — the form of Claude Code\'s PostToolUse
 
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
     expect(await postToolUse()).toEqual(LOGIN_DEFERRED);
+    expect(await userPromptSubmit()).toEqual(PROMPT_LOGIN_DEFERRED);
     vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
     expect(await postToolUse()).toEqual(UNWAITED);
@@ -1244,6 +1251,7 @@ describe('reconcileTeamHooksForConfig — the form of Claude Code\'s PostToolUse
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
 
     expect((await postToolUse()).map((entry) => entry.command)).toEqual([expect.not.stringContaining('TEAMAI_HOOK_LOGIN')]);
+    expect((await userPromptSubmit()).map((entry) => entry.command)).toEqual([expect.not.stringContaining('TEAMAI_HOOK_LOGIN')]);
   });
 
   it('replaces the pair of entries a release before #1801 wrote with the two entries and nothing else', async () => {
@@ -1273,6 +1281,7 @@ describe('reconcileTeamHooksForConfig — the form of Claude Code\'s PostToolUse
     await reconcileTeamHooksForConfig(teamConfig, localConfig(), { removeAll: true });
 
     expect(await postToolUse()).toEqual([]);
+    expect(await userPromptSubmit()).toEqual([]);
   });
 
   it.each(['2.1.322', '2.1.118'])('changes nothing on a second pull, and reports the entries of the form at %s as installed', async (version) => {
@@ -1301,6 +1310,7 @@ describe('reconcileTeamHooksForConfig — the form of Claude Code\'s PostToolUse
     await reconcileTeamHooksForConfig(teamConfig, selfConfig);
 
     expect(await postToolUse(path.join(project, '.claude', 'settings.json'))).toEqual(WAITED);
+    expect(await userPromptSubmit(path.join(project, '.claude', 'settings.json'))).toEqual(PROMPT);
   });
 
   // An inline pull (a git hook, a new checkout) keeps the form the file has; the next full pull asks the version.

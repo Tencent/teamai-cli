@@ -6,6 +6,7 @@ import { Readable } from 'node:stream';
 import { LAUNCHED_BY_ENV, LOGIN_DEFERRED_ENV, runLoginDeferredHook } from '../hook-fast-path.js';
 
 const READ = ['hook-dispatch', 'post-tool-use', '--tool', 'claude'];
+const PROMPT = ['hook-dispatch', 'prompt-submit', '--tool', 'claude'];
 
 // A hook command that deferred its login shell starts teamai through ~/.teamai/bin; the login shell then runs where
 // nothing waits for it. A fake `bash` records how it was started: its argv, its stdin, the marker and PATH.
@@ -116,5 +117,41 @@ describe('runLoginDeferredHook', () => {
 
     expect(await runLoginDeferredHook(READ, { env: marked({ FAKE_READ_STDIN: '1' }), platform: 'darwin', stdin: stdinOf(payload) })).toBe(7);
     expect(await bashCall(false)).toEqual({ argv: [...LOGIN, ...READ], marker: 'unset', path: base.PATH, stdin: payload });
+  });
+
+  // The foreground of this form has no login environment, so it cannot see an endpoint variable the profile or the team
+  // env sets: a prompt takes the fast path only on what a pass inside that environment recorded for this session and cwd.
+  describe('a prompt', () => {
+    const PAYLOAD = JSON.stringify({ session_id: 's-1', cwd: '/work/a', prompt: 'hello' });
+    const writeRecord = (cwd: string, enrolled: boolean) => {
+      fs.mkdirSync(path.join(scratch, 'home', '.teamai', 'sessions'), { recursive: true });
+      fs.writeFileSync(path.join(scratch, 'home', '.teamai', 'sessions', 's-1.http-enrolment.json'), JSON.stringify({ cwd, enrolled }));
+    };
+
+    it('takes the fast path when the login environment saw no enrolment for this session and cwd', async () => {
+      writeRecord('/work/a', false);
+
+      expect(await runLoginDeferredHook(PROMPT, { env: marked({ FAKE_READ_STDIN: '1' }), platform: 'darwin', stdin: stdinOf(PAYLOAD) })).toBe(0);
+      expect(await bashCall(true)).toEqual({ argv: [...LOGIN, ...PROMPT, '--bg-only'], marker: 'unset', path: base.PATH, stdin: PAYLOAD });
+    });
+
+    it.each([
+      { name: 'with no record', setUp: () => {} },
+      { name: 'whose record says enrolled', setUp: () => writeRecord('/work/a', true) },
+      { name: 'from another cwd than the record\'s, as after EnterWorktree', setUp: () => writeRecord('/work/b', false) },
+      {
+        name: 'with a hint waiting for it',
+        setUp: () => {
+          writeRecord('/work/a', false);
+          fs.mkdirSync(path.join(scratch, 'home', '.teamai', 'package-hints'), { recursive: true });
+          fs.writeFileSync(path.join(scratch, 'home', '.teamai', 'package-hints', 's-1.pending.json'), '{}');
+        },
+      },
+    ])('hands a prompt $name to a login shell in the foreground with the same stdin', async ({ setUp }) => {
+      setUp();
+
+      expect(await runLoginDeferredHook(PROMPT, { env: marked({ FAKE_READ_STDIN: '1' }), platform: 'darwin', stdin: stdinOf(PAYLOAD) })).toBe(7);
+      expect(await bashCall(false)).toEqual({ argv: [...LOGIN, ...PROMPT], marker: 'unset', path: base.PATH, stdin: PAYLOAD });
+    });
   });
 });
