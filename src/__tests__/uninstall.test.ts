@@ -1364,7 +1364,7 @@ describe('uninstall', () => {
     ]).toEqual([true, 'echo lint\n']);
   });
 
-  it('keeps the MCP server folder whose entry it cannot remove (#1787)', async () => {
+  it('keeps the MCP server folder whose entry it cannot remove, and names it (#1787)', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     const projectRoot = path.join(tmpDir, 'business-repo');
     vi.stubEnv('HOME', homeDir);
@@ -1396,7 +1396,8 @@ describe('uninstall', () => {
       script.includes('/.teamai/delivered/mcp/jira.'),
       await fse.readJson(config),
       await fse.readFile(script, 'utf8'),
-    ]).toEqual([true, installed, 'console.log("jira");\n']);
+      vi.mocked(log.warn).mock.calls.some(([message]) => String(message).includes(path.dirname(script.split('/').join(path.sep)))),
+    ]).toEqual([true, installed, 'console.log("jira");\n', true]);
   });
 
   it('removes teamai\'s copy of a rule folder, and leaves a member\'s rule of a name inside the folder (#1787)', async () => {

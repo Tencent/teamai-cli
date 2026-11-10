@@ -3537,6 +3537,8 @@ async function removeConfirmed(
   const heldMcp = new Set([...plan.gitExcludes].flatMap(([file, entries]) => entries.map(({ pattern }) => `${file}\0${pattern}`)));
   // The MCP configs that could not be read: their records, and the data home holding them, stay for the retry.
   const mcpLeft: string[] = [];
+  // A removal that failed keeps the data home too, but the MCP files it could read still name the folders that stay.
+  const mcpRemovalFailed: string[] = [];
 
   if (plan.includeShared) {
     try {
@@ -3590,7 +3592,7 @@ async function removeConfirmed(
       }
     } catch (e) {
       log.warn(`Failed to remove MCP servers: ${e instanceof Error ? e.message : String(e)}`);
-      mcpLeft.push(getDataHome(localConfig));
+      mcpRemovalFailed.push(getDataHome(localConfig));
     }
   }
 
@@ -3610,7 +3612,7 @@ async function removeConfirmed(
 
   const { pendingOpencode, hooksLeft, blocksLeft, filesLeft } = await executeRemoval(plan, heldMcp, {
     hooks: dispatchLeft ? [{ what: `the Codex team-hook dispatchers in ${dispatchLeft}`, tool: 'codex' }] : [],
-    files: [...httpSourceLeft, ...plan.keptUnjudged, ...excludesLeft, ...grantsLeft, ...mcpLeft],
+    files: [...httpSourceLeft, ...plan.keptUnjudged, ...excludesLeft, ...grantsLeft, ...mcpLeft, ...mcpRemovalFailed],
     mcpEntries,
   }, codexTrustPolicy(localConfig));
 
