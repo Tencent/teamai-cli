@@ -133,6 +133,7 @@ const MEMBER_SETTING_REPORT_KEYS = [
   'sessions.publish.attended',
   'sessions.publish.unattended',
   'updatePolicy',
+  'updateOtherInstallations',
   'autoCompactTokens',
 ] as const;
 
@@ -141,7 +142,7 @@ function publishMode(key: string): RunMode | undefined {
   return RUN_MODES.find((mode) => key === `sessions.publish.${mode}`);
 }
 
-const MACHINE_WIDE_MEMBER_SETTINGS = new Set(['updatePolicy', 'autoCompactTokens']);
+const MACHINE_WIDE_MEMBER_SETTINGS = new Set(['updatePolicy', 'updateOtherInstallations', 'autoCompactTokens']);
 
 /** A JSON object of a config tree, such as a config file or one of its sections. */
 const ConfigObjectSchema = JsonObjectSchema;
@@ -305,6 +306,8 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
     if (key === 'coAuthorEnabled' || key === 'codexTrustEnabled') return true;
 
     if (key === 'updatePolicy') return 'auto';
+
+    if (key === 'updateOtherInstallations') return false;
     const mode = publishMode(key);
 
     if (mode) return SessionPolicy.publishDefaults[mode];

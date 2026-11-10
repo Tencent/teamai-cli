@@ -2676,6 +2676,22 @@ if (!process.env.TEAMAI_COMMAND_TABLE_ONLY) {
   // (see bundled-runtime.ts) and pull shells out to git.
   ensureBundledRuntimeOnPath();
 
+  // Record which copy ran, so an update from one copy can find the others.
+  // `--help`, `--version` and `--dry-run` skip it: asking what the command
+  // does, or asking for no changes, must not create `~/.teamai` or a file in it.
+  const args = process.argv.slice(2);
+  const dryRun = args.includes('--dry-run');
+
+  // A workflow step or another child inherits this, so a preview stays a
+  // preview there too (#1753 review).
+  if (dryRun) process.env.TEAMAI_DRY_RUN = '1';
+
+  if (!dryRun && args.length > 0 && !args.some((arg) => arg === '--help' || arg === '-h' || arg === '--version' || arg === '-V')) {
+    const { registerRunningInstallation } = await import('./installations.js');
+
+    registerRunningInstallation();
+  }
+
   // Every error a command action throws leaves as one line on stderr with exit
   // 1, never as an unhandled rejection with a Node stack trace (#1270).
   await program.parseAsync().catch(reportCommandError);

@@ -41,6 +41,15 @@ updatePolicy: skip    # auto / prompt / skip，优先于团队设置
 
 更新处理器会将完成更新记为 `ok`，无需或不允许安装记为 `skipped`，检查、安装或 Hook 刷新失败记为 `failed`。自动 Hook 对不支持的安装方式只写 debug 记录。手动运行 `teamai update` 可查看对应的升级指引。
 
+一台机器上可能有多个 TeamAI 副本。`teamai doctor` 和 `teamai update` 会列出本机运行过的副本、版本和安装方式。`updatePolicy: auto` 时，`teamai` 更新正在运行的那个副本。当该副本已经是最新版本时，自动更新还可以再更新一个已登记的其他 npm-global 副本；需要在成员配置中显式开启：
+
+```yaml
+# ~/.teamai/config.yaml
+updateOtherInstallations: true
+```
+
+其他副本使用它自己的 `--prefix` 安装，npm 退出后会重新读取该副本的 `package.json`：npm 退出码为 0 但目标副本版本没变，按失败处理，不算成功。若本次运行已经安装了正在运行的副本，其他副本留给下一次 Stop，因此一次 Stop 最多执行一次安装。其他副本更新失败会让这次 `teamai update` 以 1 退出。Hook 仍绑定正在运行它们的副本。`prompt` 和 `skip` 不会无人值守安装。Volta、vendored 和本地 checkout 会列出人工处理方式，永远不会交给 npm。
+
 对于 OpenClaw 的默认工作区，`doctor` 会根据实际 `openclaw.json` 的 `agents.defaults.bootstrapMaxChars` 和 `bootstrapTotalMaxChars` 检查整个 `AGENTS.md`，包括个人内容。两项默认分别为 20,000 和 60,000 字符。如果会截断或跳过，请缩短文件或检查上限；`pull` 不会截断你的指令。单独智能体的覆盖配置需要另行检查。
 
 OpenCode hooks 使用 `teamai hooks inject` 或 `teamai pull` 记录的 Node 可执行文件和 TeamAI 入口，因此服务的 PATH 无需包含 `teamai`。移动或重新安装 Node 或 TeamAI 后，重新运行其中一个命令并重启 OpenCode。

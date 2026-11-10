@@ -934,6 +934,13 @@ export const MemberSettingsSchema = z.object({
   codexTrustEnabled: z.boolean().optional(),
   updatePolicy: z.enum(['auto', 'prompt', 'skip']).optional(),
   /**
+   * Let an automatic update install a newer version into the other npm-global
+   * copies this machine has run (#1753). Off by default: `updatePolicy: auto`
+   * keeps its meaning of updating the copy that runs. Only `auto` uses it;
+   * `prompt` and `skip` never install unattended.
+   */
+  updateOtherInstallations: z.boolean().optional(),
+  /**
    * Per-machine map from a gateway/proxy model alias to a model the price
    * catalog (`src/token-usage/model-prices.json`) lists, so the dashboard can
    * price requests whose transcript records an opaque alias (e.g.

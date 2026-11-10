@@ -41,6 +41,15 @@ updatePolicy: skip    # auto, prompt, or skip
 
 The update handler records `ok` for a completed update, `skipped` when no install is needed or allowed, and `failed` for a failed check, install or hook refresh. Automatic hooks record unsupported install layouts at debug level. Run `teamai update` to see their manual upgrade instructions.
 
+A machine can hold several copies of TeamAI. `teamai doctor` and `teamai update` list the copies this machine has run, with their version and install method. With `updatePolicy: auto`, `teamai` updates the copy that runs. When that copy is already current, an automatic update can also update one other registered npm-global copy; opt in in the member config:
+
+```yaml
+# ~/.teamai/config.yaml
+updateOtherInstallations: true
+```
+
+The other copy is installed under its own `--prefix`, and its `package.json` is read back after npm exits: npm exiting 0 without changing that copy is a failure, not a success. A run that installs the running copy leaves the other copy for the next Stop, so one Stop runs at most one install. A failed update of the other copy makes that `teamai update` exit 1. Hooks stay bound to the copy that runs them. `prompt` and `skip` never install unattended. Volta, vendored and local checkouts are listed with their manual remedy and are never passed to npm.
+
 For OpenClaw's default workspace, `doctor` checks the whole `AGENTS.md`, including personal text, against `agents.defaults.bootstrapMaxChars` and `bootstrapTotalMaxChars` in the resolved `openclaw.json`. Their defaults are 20,000 and 60,000 characters. Shorten the file or review these limits if it would be truncated or skipped; `pull` does not truncate your instructions. Per-agent overrides require checking that agent's configuration separately.
 
 OpenCode hooks use the Node executable and TeamAI entry recorded by `teamai hooks inject` or `teamai pull`, so a service does not need `teamai` on PATH. After moving or reinstalling Node or TeamAI, run either command again and restart OpenCode.

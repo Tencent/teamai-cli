@@ -200,7 +200,7 @@ describe('teamai ci extract-mr (real CLI, no teamai init)', () => {
     expect(fs.readFileSync(path.join(sb.app, 'out', 'learning.md'), 'utf8')).toBe(LEARNING.trimEnd());
     expect(sb.prompts()).toHaveLength(1);
     expect(sb.prompts()[0]).toContain('MR 标题：Retry flaky upload');
-    expect(filesUnder(sb.home).filter((file) => file !== path.join('.teamai', 'debug.log'))).toEqual([]);
+    expect(filesUnder(sb.home).filter((file) => file !== path.join('.teamai', 'debug.log') && file !== path.join('.teamai', 'installations.json'))).toEqual([]);
     expect(fs.readdirSync(sb.tmp).filter((name) => name.startsWith('teamai-ephemeral-'))).toEqual([]);
   });
 
