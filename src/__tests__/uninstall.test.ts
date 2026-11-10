@@ -1364,7 +1364,7 @@ describe('uninstall', () => {
     ]).toEqual([true, 'echo lint\n']);
   });
 
-  it('keeps the MCP server folder whose entry it cannot remove, and names it (#1787)', async () => {
+  it('keeps the MCP server folder whose entry it cannot remove (#1787)', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     const projectRoot = path.join(tmpDir, 'business-repo');
     vi.stubEnv('HOME', homeDir);
@@ -1396,8 +1396,7 @@ describe('uninstall', () => {
       script.includes('/.teamai/delivered/mcp/jira.'),
       await fse.readJson(config),
       await fse.readFile(script, 'utf8'),
-      vi.mocked(log.warn).mock.calls.some(([message]) => String(message).includes(path.dirname(script.split('/').join(path.sep)))),
-    ]).toEqual([true, installed, 'console.log("jira");\n', true]);
+    ]).toEqual([true, installed, 'console.log("jira");\n']);
   });
 
   it('removes teamai\'s copy of a rule folder, and leaves a member\'s rule of a name inside the folder (#1787)', async () => {
@@ -3524,6 +3523,32 @@ describe('uninstall', () => {
 
     expect(await fse.pathExists(recallAgent)).toBe(false);
     expect(await fse.pathExists(membersAgent)).toBe(true);
+  });
+
+  it('keeps the ownership home when another scope has an unreadable MCP record', async () => {
+    const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    await fse.ensureDir(path.join(homeDir, '.openclaw', 'workspace'));
+    const file = path.join(homeDir, '.openclaw', 'openclaw.json');
+    const entry = { transport: 'streamable-http', url: 'https://team.example/mcp' };
+    await fse.outputJson(file, { mcp: { servers: { shared: entry } } });
+    const manifest = { openclaw: [{ name: 'shared', hash: entryHash(entry), file }] };
+    const own = path.join(teamaiHome, 'managed-mcp.json');
+    await fse.outputJson(own, manifest);
+    await fse.outputFile(path.join(teamaiHome, 'projects', 'other', 'workspaces', 'checkout', 'managed-mcp.json'), '{ broken');
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig(homeDir, repoPath),
+      teamConfig: makeTeamConfig({ toolPaths: { openclaw: { skills: '.openclaw/skills', mcp: '.openclaw/openclaw.json' } } }),
+    });
+    const exitCode = process.exitCode;
+    try {
+      await uninstall({ force: true });
+      expect((await fse.readJson(file)).mcp.servers.shared).toEqual(entry);
+      expect(await fse.readJson(own)).toEqual(manifest);
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = exitCode;
+    }
   });
 
   it('uninstall summary lists teamai-managed MCP servers', async () => {

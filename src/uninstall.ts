@@ -3542,8 +3542,10 @@ async function removeConfirmed(
       let removedTotal = 0;
 
       for (const cfg of await projectWorktreeConfigs(localConfig)) {
-        const { changes } = await reconcileMcpForConfig(teamConfig, cfg, { removeAll: true });
+        const { changes, unparsed } = await reconcileMcpForConfig(teamConfig, cfg, { removeAll: true });
         removedTotal += changes.filter((c) => c.action === 'removed').length;
+
+        if (unparsed && !mcpLeft.includes(getDataHome(cfg))) mcpLeft.push(getDataHome(cfg));
 
         // Every checkout's config sees the other checkouts' local scopes: name each place once.
         for (const place of await unreadMcpPlaces(teamConfig, cfg)) if (!mcpLeft.includes(place)) mcpLeft.push(place);
@@ -3579,6 +3581,7 @@ async function removeConfirmed(
       }
     } catch (e) {
       log.warn(`Failed to remove MCP servers: ${e instanceof Error ? e.message : String(e)}`);
+      mcpLeft.push(getDataHome(localConfig));
     }
   }
 

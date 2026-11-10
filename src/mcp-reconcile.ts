@@ -418,6 +418,20 @@ export function mcpManifestKey(target: Pick<McpTarget, 'tool' | 'projectScope' |
     ? `${target.tool}${LOCAL_KEY_INFIX}${target.projectKey}` : managedMcpManifestKey(target.tool, target.projectScope);
 }
 
+/**
+ * The `<tool>:project` key a workspace command recorded for a server a pull records under `<tool>`: a tool with no
+ * project MCP file takes a workspace's servers into its user config, which one manifest shared by the scope records.
+ * `undefined` for every other target.
+ */
+function legacyProjectKeyOf(
+  target: Pick<McpTarget, 'tool' | 'projectScope' | 'projectKey'>, scope: LocalConfig['scope'],
+): string | undefined {
+  if (scope !== 'project' || target.projectScope || target.projectKey !== undefined) return undefined;
+  const key = managedMcpManifestKey(target.tool, true);
+
+  return key === mcpManifestKey(target) ? undefined : key;
+}
+
 /** A file or a local scope, as a member finds it. */
 export function describeMcpLocation(target: Pick<McpTarget, 'file' | 'projectKey'>): string {
   return target.projectKey ? `${target.file} (projects[${JSON.stringify(target.projectKey)}])` : target.file;
@@ -2822,6 +2836,7 @@ export async function mcpOwnersOf(
   target: Pick<McpTarget, 'tool' | 'file'> & Partial<Pick<McpTarget, 'mappedFile' | 'unmovedFile'>>,
   exclude: ReadonlySet<string> = new Set(),
 ): Promise<McpOwners> {
+  if (mcpScopeFor(target.tool, 'project') !== 'user') return { owners: [], complete: true };
   const paths = await managedMcpShardFiles();
   const owners: McpOwner[] = [];
   let complete = true;
@@ -2855,10 +2870,50 @@ export async function mcpOwnersOf(
  */
 async function namesRecordedElsewhere(
   target: McpTarget, own: ReadonlySet<string>,
-): Promise<{ names: Set<string>; complete: boolean }> {
+): Promise<{ owners: McpOwner[]; names: Set<string>; complete: boolean }> {
   const { owners, complete } = await mcpOwnersOf(target, own);
 
-  return { names: new Set(owners.map(({ record }) => record.name)), complete };
+  return { owners, names: new Set(owners.map(({ record }) => record.name)), complete };
+}
+
+/**
+ * Give the records another scope keeps the entry as it now is, so a later uninstall in that scope does not read the
+ * entry this run inherited as a change a member made. `records` are the records that prove teamai wrote an entry:
+ * this run's departing records and the ones it writes. A hash proves authorship only for the server it is recorded
+ * under, so an entry another server happens to render identically cannot be adopted. A member's edit matches no
+ * record and stays theirs. Throws when a manifest cannot be written, so the caller keeps the records it proved with
+ * and a later run can retry.
+ */
+export async function adoptMcpEntriesForOwners(
+  owners: readonly McpOwner[], installed: ReadonlyMap<string, string>, records: readonly ManagedMcpRecord[],
+  restoreConfigs?: Map<string, () => Promise<void>>,
+): Promise<void> {
+  const wrote = new Map<string, Set<string>>();
+
+  for (const record of [...records, ...owners.map(({ record: owned }) => owned)]) {
+    const hashes = wrote.get(record.name) ?? new Set<string>();
+
+    hashes.add(record.hash);
+    wrote.set(record.name, hashes);
+  }
+
+  const files = new Map<string, ManagedMcpManifest>();
+
+  for (const { record, path: file, manifest } of owners) {
+    const hash = installed.get(record.name);
+
+    if (hash === undefined || hash === record.hash || !wrote.get(record.name)?.has(hash)) continue;
+
+    if (restoreConfigs && !restoreConfigs.has(file)) {
+      const before = structuredClone(manifest);
+      restoreConfigs.set(file, () => writeJsonAtomic(file, before));
+    }
+
+    record.hash = hash;
+    files.set(file, manifest);
+  }
+
+  for (const [file, manifest] of files) await writeJsonAtomic(file, manifest);
 }
 
 /**
@@ -3433,10 +3488,16 @@ async function reconcileTargets(
   const ledger = localConfig.scope === 'project' && !options.dryRun ? (await readResolvedMcpFiles(localConfig)).files : {};
   const listed = new Set(Object.keys(ledger));
   const rebuilt: Array<{ target: McpTarget; records: ManagedMcpRecord[] }> = [];
+  let warnedUnreadable = false;
 
   // The tools with no record in managed-mcp.json when this pull began (#882): theirs are marked below.
   const unrecorded = new Set(localConfig.scope === 'project' && !options.dryRun
-    ? targets.filter((t) => !t.projectKey && manifest[managedMcpManifestKey(t.tool, true)] === undefined).map((t) => t.tool) : []);
+    ? targets.filter((t) => {
+      const legacy = legacyProjectKeyOf(t, localConfig.scope);
+
+      return !t.projectKey && manifest[managedMcpManifestKey(t.tool, true)] === undefined
+        && (legacy === undefined || manifest[legacy] === undefined);
+    }).map((t) => t.tool) : []);
 
   if (!removeAll && desiredContext.secrets.kind === 'failed') {
     reportEntryResolution(desiredContext.secrets);
@@ -3450,6 +3511,9 @@ async function reconcileTargets(
     // and `removeAll` (uninstall) still reaches every tool.
     if (!removeAll && mcpTargetExcluded(localConfig, resolved)) continue;
     const manifestKey = mcpManifestKey(resolved);
+    // A workspace command recorded servers in the user config a pull records under the plain key.
+    const legacyKey = legacyProjectKeyOf(resolved, localConfig.scope);
+    const ownRecords = [...manifest[manifestKey] ?? [], ...(legacyKey === undefined ? [] : manifest[legacyKey] ?? [])];
 
     // Which of this team's servers apply to this tool, and in what rendered form.
     const { desired, skipped, kept } = desiredOf.get(resolved)!;
@@ -3472,19 +3536,32 @@ async function reconcileTargets(
 
     const judge = await judgeIn(resolved);
     // A plain-JSON file an earlier teamai created that hides a later one, holding only teamai's servers, is left (#993).
-    const leaving = removeAll ? null : await leaveFormerMcpFile(resolved, manifest[manifestKey] ?? [], judge);
+    const leaving = removeAll ? null : await leaveFormerMcpFile(resolved, ownRecords, judge);
     const target = leaving ? { ...resolved, file: leaving.next } : resolved;
-    const records = [...manifest[manifestKey] ?? [], ...leaving?.adopted ?? []];
+    const records = [...ownRecords, ...leaving?.adopted ?? []];
     // Records of servers in another file the tool does not read (#993) are moved out of it below.
     const split = await splitByFile(target, records);
-    // A server another scope also records stays, whatever this scope no longer delivers: the file is shared, and its
-    // other owner still needs the entry. Keeping it out of `owned` is what stops the removal loops below.
+    // What the other scopes record for this file: their servers stay, and their records adopt the entry this run keeps.
     const sharedWithOtherScopes = await namesRecordedElsewhere(target, new Set([manifestPath]));
+
+    // A record that could not be read may name any entry here. Nothing is then known to be unowned, so every entry
+    // and every record stays as it is: an uninstall keeps this data home for the repair that follows.
+    if (!sharedWithOtherScopes.complete) {
+      unparsed = true;
+
+      if (!warnedUnreadable) {
+        log.warn('Left MCP servers unchanged: an MCP ownership record could not be read. Repair it, then run the command again.');
+        warnedUnreadable = true;
+      }
+
+      continue;
+    }
+
     const { owned: scopeOwned, left } = split;
 
-    // An unreadable record may name any of them: none may then be taken as unowned and removed.
-    const owned = scopeOwned.filter((record) => !sharedWithOtherScopes.complete
-      || desired.has(record.name) || !sharedWithOtherScopes.names.has(record.name));
+    // A server another scope records stays, whatever this scope no longer delivers: the file is shared, and its
+    // other owner still needs the entry. Keeping it out of `owned` is what stops the removal loops below.
+    const owned = scopeOwned.filter((record) => desired.has(record.name) || !sharedWithOtherScopes.names.has(record.name));
 
     // Uninstall takes teamai's servers out of a file the tool left too; a copy the member changed stays.
     const elsewhere = removeAll ? [...split.elsewhere, ...left] : split.elsewhere;
@@ -3619,6 +3696,9 @@ async function reconcileTargets(
     if (nextRecords.length > 0 || (target.projectScope && manifest[manifestKey] !== undefined && !marked)) manifest[manifestKey] = nextRecords;
     else delete manifest[manifestKey];
 
+    // The workspace command's own key is read above, so keeping it would leave a second owner for the same entries.
+    if (legacyKey !== undefined) delete manifest[legacyKey];
+
     // The tool's other place for them (#915): what teamai wrote there goes, as sharing.gitExclude moved them.
     if (localMcpScopeOf(target.tool) && target.projectScope) {
       wrote = await leaveMcpLocation(teamConfig, localConfig, target, {
@@ -3635,6 +3715,22 @@ async function reconcileTargets(
 
       if (removeAll || !target.projectKey) {
         wrote = await leaveOtherLocalScopes(teamConfig, localConfig, target.tool, { manifest, changes, options, restoreConfigs }) || wrote;
+      }
+    }
+
+    // What this scope gave up here stays for the other owners, whose records must name the entry as it now is.
+    // A dry run writes no other scope's manifest. Before this run's records are saved, the proof it adopts with
+    // is still in `records` and `nextRecords`: a failed adoption write leaves this scope's records for a retry.
+    if (!options.dryRun && sharedWithOtherScopes.owners.length > 0) {
+      const installed = await installedMcpEntries(target);
+
+      if (installed !== null) {
+        await adoptMcpEntriesForOwners(
+          sharedWithOtherScopes.owners,
+          new Map([...installed].map(([name, entry]) => [name, entryHash(entry)])),
+          [...records, ...nextRecords],
+          restoreConfigs,
+        );
       }
     }
   }
@@ -3902,18 +3998,23 @@ async function applyJson(
       continue;
     }
 
+    let removed = false;
+
     if (ownsJsonMcpEntry(comparable, name, owned, allowBare) && doc.servers[name] !== undefined) {
       delete doc.servers[name];
       dirty = true;
+      removed = true;
     }
 
     // One a bare write left before another tool added the key goes too (#882).
     if (isTeamaiBareCopy(doc, name, owned)) {
       delete doc.data[name];
       dirty = true;
+      removed = true;
     }
 
-    changes.push({ tool: target.tool, server: name, action: 'removed' });
+    // A name another scope also records may leave this scope's set without its entry leaving the file.
+    if (removed) changes.push({ tool: target.tool, server: name, action: 'removed' });
   }
 
   // An unrecorded entry of a server the team deleted is teamai's when it equals a render of that
@@ -4785,11 +4886,10 @@ async function applyCodex(
 
     const next = spliceCodexBlock(source, name, null);
 
-    if (next !== source) {
-      source = next;
-      dirty = true;
-    }
-
+    // A name another scope also records may leave this scope's set without its block leaving the file.
+    if (next === source) continue;
+    source = next;
+    dirty = true;
     changes.push({ tool: target.tool, server: name, action: 'removed' });
   }
 
