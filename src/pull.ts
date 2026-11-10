@@ -5,6 +5,7 @@ import path from 'node:path';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 import matter from 'gray-matter';
+import { z } from 'zod';
 import {
   buildRolePullContext, collectClaudemdFiles, describeDeliveryConflict, indexedRuleFiles,
   indexedSkills, resolveDesiredAgents, resolveDesiredRules, resolveDesiredSkills, type RolePullContext, type ShadowedSkill,
@@ -100,6 +101,8 @@ import {
   clearGitExcludeFailure, isBackgroundPull, localAgentGitExcludeNotices, noticeGitExclude, recordGitExcludeFailure,
   sayGitExcludeNotices,
 } from './git-exclude-notices.js';
+import { GitAnswers } from './utils/git-answers.js';
+import { repositoryStamp } from './utils/git-discovery.js';
 
 // A timed-out report still owns its success bookkeeping. Do not start another
 // batch in this process until it settles and finishes consuming its events.
@@ -1368,6 +1371,17 @@ export type TeamDelivery =
   | { complete: true; key: string; record: CheckoutRecord; commit: string }
   | { complete: false; key: string | undefined; record?: CheckoutRecord; gap: DeliveryGap };
 
+/** The full commit a delivered revision names. A pull that delivers another one records another revision, so the answer stays. */
+const deliveredCommits = GitAnswers.of('deliveredCommits', z.string());
+
+/** {@link getHeadCommit} of the revision a checkout record holds, kept by the team clone; null when git cannot resolve it. */
+async function deliveredCommit(repo: string, rev: string): Promise<string | null> {
+  const [real, stamp] = await Promise.all([realpath(repo).catch(() => null), repositoryStamp(repo)]);
+  const read = () => getHeadCommit(repo, rev);
+
+  return real && stamp ? deliveredCommits.answer(JSON.stringify([real, rev]), stamp.stamp, read) : read();
+}
+
 /**
  * Whether the checkout `localConfig`'s pulls deliver into holds one complete
  * team delivery for `tool`, and its full commit in the team clone. It decides
@@ -1395,7 +1409,7 @@ export async function teamDelivery(localConfig: LocalConfig, tool: string, optio
   if (!record.delivered) return gap('no_baseline');
 
   if (!record.targets.includes(tool)) return gap('tool_not_delivered');
-  const commit = await getHeadCommit(localConfig.repo.localPath, record.rev);
+  const commit = await deliveredCommit(localConfig.repo.localPath, record.rev);
 
   if (!commit) return gap('unresolved_revision');
   const bases = await Promise.all((record.pushBaseRevs ?? []).map((base) => getHeadCommit(localConfig.repo.localPath, base)));
