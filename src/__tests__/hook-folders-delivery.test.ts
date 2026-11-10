@@ -408,7 +408,10 @@ describe('a hook folder of one id in the user scope and in a workspace that inhe
 });
 
 describe('an entry teamai wrote for an earlier version of a hook folder', () => {
-  it('is recognised from the team repo\'s history and replaced, with no record of it left', async () => {
+  it.each(['', 'payments', 'research tools', '研发'])('is recognised from the team repo\'s history and replaced in namespace "%s", with no record of it left', async (namespace) => {
+    const folder = ['hooks', namespace, 'lint'].filter(Boolean).join('/');
+    const delivered = path.join(home, '.teamai', 'hooks', namespace);
+    const localConfig = { ...member(), primaryRole: 'dev' };
     const git = (...args: string[]): void => {
       execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { stdio: 'ignore' });
     };
@@ -416,24 +419,26 @@ describe('an entry teamai wrote for an earlier version of a hook folder', () => 
     const lintCommands = async (): Promise<string[]> => {
       const file: { hooks?: Record<string, Array<{ hooks: Array<{ command: string }> }>> } = await fse.readJson(path.join(home, '.codex', 'hooks.json'));
 
-      return (file.hooks?.Stop ?? []).flatMap((entry) => entry.hooks.map((hook) => hook.command)).filter((command) => new RegExp(`/hooks/lint${VERSION}/`).test(command));
+      return (file.hooks?.Stop ?? []).flatMap((entry) => entry.hooks.map((hook) => hook.command)).filter((command) => command.includes(`${forward(delivered)}/lint.`));
     };
 
     await fse.ensureDir(path.join(home, '.codex'));
     await fse.ensureDir(repo);
     git('init', '-q');
-    await write({ 'hooks/lint/HOOK.yaml': 'description: Lint\nevent: Stop\ncommand: bash "${TEAMAI_HOOK_DIR}/v1.sh"\n', 'hooks/lint/v1.sh': 'echo v1\n' });
+    await write({ 'manifest/roles.yaml': JSON.stringify({ version: 1, roles: [{ id: 'dev', resources: { knowledge: [], skills: [], hooks: namespace ? [namespace] : [] } }] }) });
+    await write({ [`${folder}/HOOK.yaml`]: 'description: Lint\nevent: Stop\ncommand: bash "${TEAMAI_HOOK_DIR}/v1.sh"\n', [`${folder}/v1.sh`]: 'echo v1\n' });
     git('add', '-A');
     git('commit', '-q', '-m', 'v1');
-    await reconcileTeamHooksForConfig(codexTeam, member());
+    await reconcileTeamHooksForConfig(codexTeam, localConfig);
     // The record of what teamai wrote is lost, as after a manual cleanup of ~/.teamai.
     await fse.remove(path.join(home, '.teamai', 'managed-hooks.json'));
 
-    await write({ 'hooks/lint/HOOK.yaml': 'description: Lint\nevent: Stop\ncommand: bash "${TEAMAI_HOOK_DIR}/v2.sh"\n', 'hooks/lint/v2.sh': 'echo v2\n' });
+    await write({ [`${folder}/HOOK.yaml`]: 'description: Lint\nevent: Stop\ncommand: bash "${TEAMAI_HOOK_DIR}/v2.sh"\n', [`${folder}/v2.sh`]: 'echo v2\n' });
     git('add', '-A');
     git('commit', '-q', '-m', 'v2');
-    await reconcileTeamHooksForConfig(codexTeam, member());
+    await reconcileTeamHooksForConfig(codexTeam, localConfig);
 
-    expect(await lintCommands()).toEqual([`bash "${forward(await hookDir(path.join(home, '.teamai', 'hooks'), 'lint'))}/v2.sh"`]);
+    expect(await lintCommands()).toEqual([expect.stringContaining('/v2.sh"')]);
+    expect(await lintCommands()).toEqual([`bash "${forward(await hookDir(delivered, 'lint'))}/v2.sh"`]);
   });
 });

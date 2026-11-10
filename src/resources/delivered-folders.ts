@@ -211,7 +211,7 @@ function anyVersionPathOf(localConfig: LocalConfig, ref: DeliveredFolderRef): st
  * as `anyVersionPathOf` writes it, so a configuration written for one version equals a render of another.
  */
 function withoutVersions(text: string): string {
-  return text.replace(/(\/(?:hooks|mcp)\/(?:[\w.-]+\/)*?[\w-]+)\.[0-9a-f]{8}(?![\w.-])/g, `$1${ANY_VERSION}`);
+  return text.replace(/(\/(?:hooks|mcp)\/(?:[^/\\:\p{Cc}]+\/)*?[\w-]+)\.[0-9a-f]{8}(?![\w.-])/gu, `$1${ANY_VERSION}`);
 }
 
 /**
