@@ -298,7 +298,7 @@ describe('recordLoginEnrolment', () => {
     fs.utimesSync(record(), past, past);
 
     recordLoginEnrolment(payload(), {});
-    expect(fs.statSync(record()).mtimeMs).toBe(past.getTime());
+    expect(fs.statSync(record()).mtime).toEqual(past);
     recordLoginEnrolment(payload({ cwd: '/work/b' }), {});
     expect(JSON.parse(fs.readFileSync(record(), 'utf8'))).toEqual({ cwd: '/work/b', enrolled: false });
   });
