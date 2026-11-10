@@ -2738,11 +2738,11 @@ export interface McpOwner {
   manifest: ManagedMcpManifest;
 }
 
-/** Every owner of an entry, and whether all the records could be read. */
+/** Every owner of an entry, and the records that could not be read. */
 export interface McpOwners {
   owners: McpOwner[];
-  /** False when a manifest is there and does not parse: its silence proves no ownership, so an entry must be assumed owned. */
-  complete: boolean;
+  /** Manifests that are there and do not parse: their silence proves no ownership, so an entry must be assumed owned. */
+  unreadable: string[];
 }
 
 /** The data homes whose workspace records this machine wrote outside the projects root, where no fixed path reaches. */
@@ -2836,17 +2836,17 @@ export async function mcpOwnersOf(
   target: Pick<McpTarget, 'tool' | 'file'> & Partial<Pick<McpTarget, 'mappedFile' | 'unmovedFile'>>,
   exclude: ReadonlySet<string> = new Set(),
 ): Promise<McpOwners> {
-  if (mcpScopeFor(target.tool, 'project') !== 'user') return { owners: [], complete: true };
+  if (mcpScopeFor(target.tool, 'project') !== 'user') return { owners: [], unreadable: [] };
   const paths = await managedMcpShardFiles();
   const owners: McpOwner[] = [];
-  let complete = true;
+  const unreadable: string[] = [];
 
   for (const file of paths) {
     if (exclude.has(file)) continue;
     const manifest = await readJson<ManagedMcpManifest>(file).catch(() => null);
 
     if (!(manifest instanceof Object)) {
-      if (await fs.promises.stat(file).then(() => true, () => false)) complete = false;
+      if (await fs.promises.stat(file).then(() => true, () => false)) unreadable.push(file);
 
       continue;
     }
@@ -2860,7 +2860,7 @@ export async function mcpOwnersOf(
     }
   }
 
-  return { owners, complete };
+  return { owners, unreadable };
 }
 
 /**
@@ -2871,9 +2871,9 @@ export async function mcpOwnersOf(
 async function namesRecordedElsewhere(
   target: McpTarget, own: ReadonlySet<string>,
 ): Promise<{ owners: McpOwner[]; names: Set<string>; complete: boolean }> {
-  const { owners, complete } = await mcpOwnersOf(target, own);
+  const { owners, unreadable } = await mcpOwnersOf(target, own);
 
-  return { owners, names: new Set(owners.map(({ record }) => record.name)), complete };
+  return { owners, names: new Set(owners.map(({ record }) => record.name)), complete: unreadable.length === 0 };
 }
 
 /**

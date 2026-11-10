@@ -265,4 +265,35 @@ describe('local-agent MCP ownership across scopes', () => {
     expect(String(acks[0].error)).toContain('not managed by teamai');
     expect((await openclawServers()).mine).toMatchObject({ url: 'https://mine.example/mcp' });
   });
+
+  it.each([
+    ['openclaw', 'user', '.openclaw/openclaw.json'],
+    ['openclaw', 'workspace', '.openclaw/openclaw.json'],
+    ['hermes', 'user', '.hermes/config.yaml'],
+    ['hermes', 'workspace', '.hermes/config.yaml'],
+    ['dsh', 'user', '.dsh/cordis.patch.yml'],
+    ['dsh', 'workspace', '.dsh/cordis.patch.yml'],
+  ] as const)('fails a %s %s-scope uninstall_mcp that an unreadable ownership record blocks, naming that record',
+    async (tool, scope, configFile) => {
+      const otherScope = scope === 'user' ? 'workspace' : 'user';
+      const cwdOf = (s: string) => (s === 'user' ? home : workspace);
+      if (tool !== 'openclaw') await fse.outputFile(path.join(home, configFile), tool === 'dsh' ? '[]\n' : '{}\n');
+      expect((await run([installCmd(1, otherScope, 'https://other.example/mcp', 'other-mcp')], tool, cwdOf(otherScope)))[0].status).toBe('success');
+      expect((await run([installCmd(2, scope, 'https://a.example/mcp')], tool, cwdOf(scope)))[0].status).toBe('success');
+      const unreadable = otherScope === 'user'
+        ? path.join(home, '.teamai', 'managed-mcp.json')
+        : await fse.realpath(await workspaceShardPath(workspace));
+      await fse.writeFile(unreadable, '{ not a manifest');
+      const config = await fse.readFile(path.join(home, configFile), 'utf8');
+
+      const acks = await run([uninstallCmd(3, scope)], tool, cwdOf(scope));
+      expect(acks[0].status).toBe('failed');
+      expect(String(acks[0].error)).toContain(unreadable);
+      expect(String(acks[0].error)).toContain('fix or remove it, then run this again');
+      expect(await fse.readFile(path.join(home, configFile), 'utf8')).toBe(config);
+      const own = scope === 'user'
+        ? await fse.readJson(path.join(home, '.teamai', 'managed-mcp.json')) as Record<string, Array<{ name: string }>>
+        : await workspaceShard(workspace);
+      expect(Object.values(own).flat().map((record) => record.name)).toContain('docs-mcp');
+    });
 });

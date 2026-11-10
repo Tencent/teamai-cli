@@ -76,7 +76,7 @@ import {
   resolveMcpTargets,
   saveMcpManifest,
   type McpKey,
-  type McpOwner,
+  type McpOwners,
   type McpTarget,
 } from './mcp-reconcile.js';
 import { normalizeAgentType } from './utils/tool-names.js';
@@ -5126,7 +5126,7 @@ async function installMcpServer(
   // changed in one scope, the other scope's record may be the one that matches what is installed.
   const elsewhere = fallbackTool
     ? await mcpOwnersOf({ ...place, tool, file: targetFile, mappedFile }, new Set([manifestPath]))
-    : { owners: [], complete: true };
+    : { owners: [], unreadable: [] };
 
   const candidates = [...records, ...elsewhere.owners.map(({ record: owned }) => owned)];
   // A local scope's record that notes no file is in that scope, not in a file the project's place names.
@@ -5148,7 +5148,7 @@ async function installMcpServer(
 
   // A record that does not parse may name the entry already there: incomplete ownership never makes it teamai's to
   // overwrite (`mcpOwnersOf`).
-  const unreadableRecord = elsewhere.complete ? ''
+  const unreadableRecord = elsewhere.unreadable.length === 0 ? ''
     : '; an ownership record could not be read, so repair it if that server is teamai\'s';
 
   if (format === 'codex') {
@@ -5349,17 +5349,17 @@ async function keepCredentialOutOfGit(
 }
 
 /**
- * The records a scope other than the one uninstalling still gives `slug` in `file`, and whether they could all be
- * read. The three tools keep every scope's servers in one config, so a user-scope uninstall must leave an entry a
+ * The records a scope other than the one uninstalling still gives `slug` in `file`, and the records that could not
+ * be read. The three tools keep every scope's servers in one config, so a user-scope uninstall must leave an entry a
  * workspace still delivers, and the other way round; only the uninstalling scope's record goes.
  */
 async function ownersInOtherScopes(
   tool: string, file: string, slug: string, ownManifestPath: string,
-): Promise<{ owners: McpOwner[]; complete: boolean }> {
+): Promise<McpOwners> {
   // No unmoved file here: a record that names none is for the file this uninstall names.
-  const { owners, complete } = await mcpOwnersOf({ tool, file }, new Set([ownManifestPath]));
+  const { owners, unreadable } = await mcpOwnersOf({ tool, file }, new Set([ownManifestPath]));
 
-  return { owners: owners.filter(({ record }) => record.name === slug), complete };
+  return { owners: owners.filter(({ record }) => record.name === slug), unreadable };
 }
 
 async function uninstallMcpServer(
@@ -5416,11 +5416,14 @@ async function uninstallMcpServer(
     // Another live scope still delivers this server: its entry stays, and only this scope's record goes.
     const other = await ownersInOtherScopes(tool, targetFile, slug, manifestPath);
     // A record that could not be read may own it too: the entry stays, and so does this scope's record.
-    const shared = !other.complete || other.owners.length > 0;
+    const shared = other.unreadable.length > 0 || other.owners.length > 0;
     // The entry the other owner keeps, as it now is: their record must not read it as a change a member made later.
     let keptHash: string | undefined;
 
-    if (shared && other.owners.length === 0) continue;
+    if (shared && other.owners.length === 0) {
+      throw new Error(`uninstall_mcp: kept "${slug}" in ${where}: the MCP ownership record ${other.unreadable.join(', ')} `
+        + 'could not be read, so another scope may still deliver it; fix or remove it, then run this again.');
+    }
 
     if (shared) {
       // Nothing to write: the record below is all this scope gives up. The entry stays for its other owner.
