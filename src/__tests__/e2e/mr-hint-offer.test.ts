@@ -1,14 +1,15 @@
 /**
- * E2E: the SessionStart hook's MR hint offers teamai-import-from-mr while `sharing.mrHint.enabled` leaves it on, and
- * `workflow start --describe` then proposes, to that session, the PR the hint listed. `gh` is a stand-in on PATH; the
- * team repo is a local bare repository.
+ * E2E: the MR hint a session start's background pass leaves is shown at the session's first prompt, offering
+ * teamai-import-from-mr while `sharing.mrHint.enabled` leaves it on, and `workflow start --describe` then proposes, to
+ * that session, the PR the hint listed. `gh` is a stand-in on PATH; the team repo is a local bare repository.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { waitForDetachedChildrenSync } from '../helpers/detached-processes.js';
 
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../dist/index.js');
 const GIT_ENV = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', GIT_TERMINAL_PROMPT: '0' };
@@ -18,6 +19,8 @@ const SESSION = 'mr-hint-session';
 const sandboxes: string[] = [];
 
 afterEach(() => {
+  // The session start's background pass writes into the sandbox HOME; it ends before the sandbox goes.
+  waitForDetachedChildrenSync();
   for (const root of sandboxes.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -65,19 +68,35 @@ function sandbox(teamYaml: string[]) {
 
   if (pulled.status !== 0) throw new Error(`teamai pull failed: ${pulled.stdout}${pulled.stderr}`);
 
-  return { app, teamRepo, run };
+  const pendingHint = path.join(home, '.teamai', 'sessions', `${SESSION}.mr-hint.pending.json`);
+  const hook = (event: 'session-start' | 'prompt-submit') => run(['hook-dispatch', event, '--tool', 'claude'], {}, JSON.stringify(event === 'session-start'
+    ? { cwd: app, session_id: SESSION, hook_event_name: 'SessionStart' }
+    : { cwd: app, session_id: SESSION, hook_event_name: 'UserPromptSubmit', prompt: 'hi' }));
+
+  return { app, teamRepo, run, pendingHint, hook };
 }
 
-describe('the session-start MR hint', () => {
-  it('offers teamai-import-from-mr, whose describe proposes the PR it listed to that session', () => {
-    const { app, teamRepo, run } = sandbox([]);
+describe('the MR hint at the session\'s first prompt', () => {
+  it('offers teamai-import-from-mr, whose describe proposes the PR it listed to that session', async () => {
+    const { teamRepo, run, pendingHint, hook } = sandbox([]);
 
-    const hook = run(['hook-dispatch', 'session-start', '--tool', 'claude'], {}, JSON.stringify({ cwd: app, session_id: SESSION, hook_event_name: 'SessionStart' }));
+    const started = hook('session-start');
 
-    expect(hook.status, hook.stderr).toBe(0);
-    expect(hook.stdout).toContain(`- Retry flaky upload (merged: ${new Date().toISOString().slice(0, 10)}) ${PR7}`);
-    expect(hook.stdout).toContain('teamai workflow start --describe teamai-import-from-mr --driver skill');
-    expect(hook.stdout).not.toContain('teamai import --from-mr');
+    expect(started.status, started.stderr).toBe(0);
+    expect(started.stdout).not.toContain(PR7);
+    await vi.waitFor(() => expect(fs.existsSync(pendingHint)).toBe(true), { timeout: 30_000, interval: 50 });
+
+    const prompt = hook('prompt-submit');
+
+    expect(prompt.status, prompt.stderr).toBe(0);
+    expect(prompt.stdout).toContain(`- Retry flaky upload (merged: ${new Date().toISOString().slice(0, 10)}) ${PR7}`);
+    expect(prompt.stdout).toContain('teamai workflow start --describe teamai-import-from-mr --driver skill');
+    expect(prompt.stdout).not.toContain('teamai import --from-mr');
+
+    const second = hook('prompt-submit');
+
+    expect(second.status, second.stderr).toBe(0);
+    expect(second.stdout).toBe('');
 
     const described = run(['workflow', 'start', '--describe', 'teamai-import-from-mr', '--driver', 'skill'], { CLAUDE_CODE_SESSION_ID: SESSION });
 
@@ -89,11 +108,19 @@ describe('the session-start MR hint', () => {
   });
 
   it('says nothing while sharing.mrHint.enabled is false', () => {
-    const { app, run } = sandbox(['sharing:', '  mrHint:', '    enabled: false']);
+    const { pendingHint, hook } = sandbox(['sharing:', '  mrHint:', '    enabled: false']);
 
-    const hook = run(['hook-dispatch', 'session-start', '--tool', 'claude'], {}, JSON.stringify({ cwd: app, session_id: SESSION, hook_event_name: 'SessionStart' }));
+    const started = hook('session-start');
 
-    expect(hook.status, hook.stderr).toBe(0);
-    expect(hook.stdout).not.toContain('[teamai:mr-hint]');
+    expect(started.status, started.stderr).toBe(0);
+    expect(started.stdout).not.toContain(PR7);
+    waitForDetachedChildrenSync();
+    expect(fs.existsSync(pendingHint)).toBe(false);
+
+    const prompt = hook('prompt-submit');
+
+    expect(prompt.status, prompt.stderr).toBe(0);
+    expect(prompt.stdout).not.toContain(PR7);
+    expect(prompt.stdout).not.toContain('teamai-import-from-mr');
   });
 });
