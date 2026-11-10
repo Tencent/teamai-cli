@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { execFileSync, execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 
 import { windowsPowerShell } from './utils/powershell.js';
 
@@ -8,10 +8,9 @@ import { windowsPowerShell } from './utils/powershell.js';
 //  Used by dashboard-collector (at hook time) to find the AI tool PID,
 //  and by dashboard server (at check time) to verify PID liveness.
 //
-//  One reader per platform shape: Linux /proc (zero-cost), the BSD-style
-//  `ps -o` fallback, and — on Windows, which has neither — a single
-//  Win32_Process query. Git Bash ships an MSYS `ps` that rejects `-o`, so the
-//  ps(1) fallback cannot stand in there.
+//  Linux reads /proc (zero-cost). Elsewhere one process table answers every
+//  lookup: `ps -A` on macOS/BSD, and on Windows a single Win32_Process query,
+//  because Git Bash ships an MSYS `ps` that rejects `-o`.
 
 /** Shell executable names to skip when walking the process tree. */
 const SHELL_COMMS = new Set([
@@ -32,11 +31,12 @@ export interface ProcessEntry {
 }
 
 /**
- * Parse the `<pid> <ppid> <name>` rows readWindowsProcessTable() asks PowerShell
- * for. Exported because the CI matrix has no Windows runner: this parser is the
- * only part of the Windows path a POSIX job can pin.
+ * Parse the `<pid> <ppid> <name>` rows readProcessTable() asks PowerShell or ps
+ * for. The name is the last column and may hold spaces. Exported because the CI
+ * matrix has no Windows runner: this parser is the only part of the Windows
+ * path a POSIX job can pin.
  */
-export function parseWindowsProcessTable(text: string): Map<number, ProcessEntry> {
+export function parseProcessTable(text: string): Map<number, ProcessEntry> {
     const table = new Map<number, ProcessEntry>();
 
     for (const line of text.split(/\r?\n/)) {
@@ -49,24 +49,41 @@ export function parseWindowsProcessTable(text: string): Map<number, ProcessEntry
     return table;
 }
 
-let windowsProcessTableRead: { table: Map<number, ProcessEntry> | undefined } | undefined;
+let processTableRead: { table: Map<number, ProcessEntry> | undefined } | undefined;
 
 /**
  * The process table, queried at most once per process, a failed query
  * included. A session start resolves the monitor PID in two handlers
- * (dashboard-report and local-agent-sync), and a walk without a table falls
- * back to getProcessComm/getParentPid, which on Windows ask for this table
- * again, once per step. Without the remembered result a query at its 3s bound
- * started six times per dispatch: 18s of a blocked event loop, past every
- * session-start handler's 4.5s budget, so the session received none of their
- * output (the team rules among it). Only short-lived hook processes read the
- * table; the long-running dashboard checks liveness with isProcessAlive, so a
- * remembered table does not go stale.
+ * (dashboard-report and local-agent-sync), each walking up to five ancestors.
+ * On Windows a query at its 3s bound once started six times per dispatch: 18s
+ * of a blocked event loop, past every session-start handler's 4.5s budget, so
+ * the session received none of their output (the team rules among it). On
+ * macOS a ps per lookup was ten processes the session start waited on. Only
+ * short-lived hook processes read the table; the long-running dashboard checks
+ * liveness with isProcessAlive, so a remembered table does not go stale.
  */
-function readWindowsProcessTable(): Map<number, ProcessEntry> | undefined {
-    windowsProcessTableRead ??= { table: queryWindowsProcessTable() };
+function readProcessTable(): Map<number, ProcessEntry> | undefined {
+    processTableRead ??= {
+        table: process.platform === 'win32' ? queryWindowsProcessTable() : queryPsProcessTable(),
+    };
 
-    return windowsProcessTableRead.table;
+    return processTableRead.table;
+}
+
+/** `comm` goes last because a macOS executable path may hold spaces. */
+function queryPsProcessTable(): Map<number, ProcessEntry> | undefined {
+    try {
+        const out = execFileSync('ps', ['-A', '-o', 'pid=,ppid=,comm='], {
+            encoding: 'utf-8',
+            timeout: 2000,
+            maxBuffer: 16 * 1024 * 1024,
+            stdio: ['pipe', 'pipe', 'pipe'],
+        });
+
+        return parseProcessTable(out);
+    } catch {
+        return undefined;
+    }
 }
 
 /**
@@ -95,7 +112,7 @@ function queryWindowsProcessTable(): Map<number, ProcessEntry> | undefined {
             { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
         );
 
-        return parseWindowsProcessTable(out);
+        return parseProcessTable(out);
     } catch {
         return undefined;
     }
@@ -106,13 +123,13 @@ function queryWindowsProcessTable(): Map<number, ProcessEntry> | undefined {
  * Returns undefined if PID doesn't exist or can't be read.
  */
 export function getParentPid(pid: number): number | undefined {
-    if (process.platform === 'win32') {
-        const ppid = readWindowsProcessTable()?.get(pid)?.ppid;
+    if (process.platform !== 'linux') {
+        const ppid = readProcessTable()?.get(pid)?.ppid;
 
         return ppid !== undefined && ppid > 0 ? ppid : undefined;
     }
 
-    // Linux: read /proc/{pid}/stat (fast, no process spawn)
+    // Read /proc/{pid}/stat (fast, no process spawn)
     try {
         const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf-8');
         // Field 4 is ppid. Field 2 (comm) can contain spaces/parens, so split carefully.
@@ -126,21 +143,6 @@ export function getParentPid(pid: number): number | undefined {
 
         return ppid > 0 ? ppid : undefined;
     } catch {
-        // not Linux, or PID gone
-    }
-
-    // macOS/BSD fallback: ps -o ppid= -p <pid>
-    try {
-        const out = execSync(`ps -o ppid= -p ${pid}`, {
-            encoding: 'utf-8',
-            timeout: 2000,
-            stdio: ['pipe', 'pipe', 'pipe'],
-        });
-
-        const ppid = parseInt(out.trim(), 10);
-
-        return ppid > 0 ? ppid : undefined;
-    } catch {
         return undefined;
     }
 }
@@ -150,27 +152,14 @@ export function getParentPid(pid: number): number | undefined {
  * Returns undefined if PID doesn't exist.
  */
 export function getProcessComm(pid: number): string | undefined {
-    if (process.platform === 'win32') {
-        return readWindowsProcessTable()?.get(pid)?.comm;
+    if (process.platform !== 'linux') {
+        // ps on macOS prints the full path
+        return readProcessTable()?.get(pid)?.comm.split('/').pop();
     }
 
-    // Linux: /proc/{pid}/comm (just the basename, no args)
+    // /proc/{pid}/comm (just the basename, no args)
     try {
         return fs.readFileSync(`/proc/${pid}/comm`, 'utf-8').trim();
-    } catch {
-        // fall through
-    }
-
-    // macOS/BSD fallback
-    try {
-        const out = execSync(`ps -o comm= -p ${pid}`, {
-            encoding: 'utf-8',
-            timeout: 2000,
-            stdio: ['pipe', 'pipe', 'pipe'],
-        });
-
-        // ps on macOS may return full path
-        return out.trim().split('/').pop();
     } catch {
         return undefined;
     }
@@ -219,18 +208,6 @@ export function walkToNonShell(
  * within 5 levels.
  */
 export function resolveMonitorPid(hookPpid: number): number {
-    if (process.platform === 'win32') {
-        const table = readWindowsProcessTable();
-
-        if (table) {
-            return walkToNonShell(
-                hookPpid,
-                (pid) => table.get(pid)?.comm,
-                (pid) => table.get(pid)?.ppid,
-            );
-        }
-    }
-
     return walkToNonShell(hookPpid, getProcessComm, getParentPid);
 }
 
