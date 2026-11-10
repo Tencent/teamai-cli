@@ -978,7 +978,9 @@ export async function commitWork(
   const staged = await runGit(dir, ['diff', '--cached', '--quiet', '--ignore-submodules=none', '--no-ext-diff']);
 
   if (staged.code !== 0 || merging) {
-    const committed = await runGit(dir, ['-c', 'user.name=TeamAI', '-c', 'user.email=teamai@localhost', 'commit', '-m', message]);
+    // Older Git also applies diff.ignoreSubmodules to commit's staged-change check.
+    // We deliberately staged these gitlinks, so do not hide them again here.
+    const committed = await runGit(dir, ['-c', 'user.name=TeamAI', '-c', 'user.email=teamai@localhost', '-c', 'diff.ignoreSubmodules=none', 'commit', '-m', message]);
 
     if (committed.code !== 0) return { error: committed.stderr.trim() || committed.stdout.trim() || 'git commit failed' };
   }

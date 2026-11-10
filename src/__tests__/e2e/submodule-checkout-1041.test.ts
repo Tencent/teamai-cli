@@ -434,8 +434,10 @@ describe('multi-repo checkout delivery', () => {
     expect(m.git(['status', '--porcelain'], m.checkout)).toBe('');
     m.cli(['uninstall', '--force'], m.checkout);
     expect(m.git(['config', '--local', '--list'], child)).not.toContain('hook.teamai-');
-    expect(read(claude)).not.toContain('echo fixture');
-    expect(read(path.join(child, '.claude/settings.local.json'))).not.toContain('echo fixture');
+    // A settings file that held only teamai's hooks goes with them (#1808).
+    const afterUninstall = (file: string) => (fs.existsSync(file) ? read(file) : '');
+    expect(afterUninstall(claude)).not.toContain('echo fixture');
+    expect(afterUninstall(path.join(child, '.claude/settings.local.json'))).not.toContain('echo fixture');
     expect(fs.lstatSync(path.join(m.checkout, '.claude/skills')).isSymbolicLink()).toBe(true);
     expect(read(path.join(m.checkout, '.agents/skills/local/SKILL.md'))).toBe(originalSkill);
     expect(fs.existsSync(path.join(m.checkout, '.agents/skills/teamai/SKILL.md'))).toBe(false);

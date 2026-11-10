@@ -264,7 +264,8 @@ describe('ownership of unrecorded MCP servers and hook entries (#993 bug 12)', (
     writeFile(localSettings, repaired);
     const second = teamai(['uninstall', '--force'], dir);
     expect(second.code, second.output).toBe(0);
-    expect(fs.readFileSync(localSettings, 'utf8'), second.output).not.toContain('echo team-stop-v1');
+    // The repaired file held only that hook, so uninstall takes the file too (#1808).
+    expect(fs.existsSync(localSettings), second.output).toBe(false);
     expect(first.output).toContain(`${localSettings}, which could not be removed`);
   });
 

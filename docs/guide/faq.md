@@ -6,7 +6,7 @@
 
 ## Uninstall
 
-`teamai uninstall` removes the agent resources TeamAI installed. Files you created stay. A user-scope uninstall keeps data for projects still registered on this machine. Uninstall each project first. Then run `teamai uninstall` outside any project to remove the remaining shared data.
+`teamai uninstall` removes the agent resources TeamAI installed. Files you created stay, unless taking teamai's part out of one leaves it empty. A user-scope uninstall keeps data for projects still registered on this machine. Uninstall each project first. Then run `teamai uninstall` outside any project to remove the remaining shared data.
 
 In a project using a shared data partition, full uninstall removes shared hooks and registrations from every checkout before removing the partition. `uninstall --agent <tool>` removes that tool's hooks and registration only from the current checkout, unless that tool is the last one using the partition; in that case the partition and every checkout's hooks are removed. Bare-repository worktrees own their hook files independently.
 
