@@ -1048,10 +1048,10 @@ const mrHintStashHandler: HookHandler = {
 /** UserPromptSubmit: the MR hint the session start left, once. */
 const mrHintPendingHandler: HookHandler = {
   name: 'mr-hint-pending',
-  async execute(stdin) {
+  async execute(stdin, _tool, config) {
     const { takePendingMrHint } = await import('./mr-hint.js');
 
-    return takePendingMrHint(deriveSessionId(stdin, { includeCwd: true }));
+    return takePendingMrHint(deriveSessionId(stdin, { includeCwd: true }), config);
   },
 };
 

@@ -187,6 +187,17 @@ describe('a hint the session start leaves for the next prompt', () => {
     expect(await takePendingMrHint('s1')).toBeNull();
   });
 
+  it('drops it unshown when the hint was turned off before the prompt', async () => {
+    await stashMrHint('en', null, at('s1'));
+    vi.stubEnv('TEAMAI_MR_HINT_DISABLED', '1');
+
+    expect(await takePendingMrHint('s1')).toBeNull();
+    vi.stubEnv('TEAMAI_MR_HINT_DISABLED', '');
+    // Dropped, not kept for a later prompt; and not recorded as shown, so the next session start hints the same MRs.
+    expect(await takePendingMrHint('s1')).toBeNull();
+    expect(hintIn(await computeMrHintOutput('en', null, at('s2')))?.additionalContext).toContain('- Fix the login redirect');
+  });
+
   it('drops the hint a session had waiting when its next session start finds nothing new', async () => {
     await stashMrHint('en', null, at('s1'));
     ghLists([]);

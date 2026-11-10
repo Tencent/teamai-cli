@@ -465,6 +465,11 @@ async function mrHintAllowed(localConfig?: LocalConfig | null): Promise<boolean>
   return isMrHintEnabled(localConfig, teamConfig ?? {});
 }
 
+/** Whether the hint is on: neither `TEAMAI_MR_HINT_DISABLED` nor the scope's switch turns it off. Asked when a hint is computed and again when it is shown. */
+async function mrHintOn(localConfig?: LocalConfig | null): Promise<boolean> {
+  return process.env.TEAMAI_MR_HINT_DISABLED !== '1' && await mrHintAllowed(localConfig);
+}
+
 /** What showing a hint records in the repository's cache: its MRs as hinted, and the session offered their URLs. */
 const ShownSchema = z.object({
   owner: z.string(),
@@ -489,9 +494,7 @@ async function computeMrHint(
   localConfig?: LocalConfig | null,
   session?: { sessionId: string; cwd: string; run: SessionRun },
 ): Promise<MrHint | null> {
-  if (process.env.TEAMAI_MR_HINT_DISABLED === '1') return null;
-
-  if (!(await mrHintAllowed(localConfig))) return null;
+  if (!(await mrHintOn(localConfig))) return null;
 
   // Detect git remote
   const rawCwd = process.env.TEAMAI_MR_HINT_CWD ?? process.cwd();
@@ -615,10 +618,10 @@ export async function stashMrHint(
 
 /**
  * The hint a session start left for session `sessionId`, as UserPromptSubmit hook output recorded as shown, at most
- * once: the file is moved aside before it is read, so two prompts cannot both take it. Null when none waits, or when
- * another session has shown all its MRs since.
+ * once: the file is moved aside before it is read, so two prompts cannot both take it. Null when none waits, when
+ * another session has shown all its MRs since, or when the hint was turned off since: that one is dropped unshown.
  */
-export async function takePendingMrHint(sessionId: string): Promise<string | null> {
+export async function takePendingMrHint(sessionId: string, localConfig?: LocalConfig | null): Promise<string | null> {
   const file = pendingPath(sessionId);
   const taken = `${file}.${process.pid}`;
 
@@ -631,7 +634,7 @@ export async function takePendingMrHint(sessionId: string): Promise<string | nul
   const hint = MrHintSchema.safeParse(await readJson(taken));
   await fs.promises.rm(taken, { force: true });
 
-  if (!hint.success) return null;
+  if (!hint.success || !(await mrHintOn(localConfig))) return null;
   const { shown } = hint.data;
   const hinted = new Set(loadCache(shown.owner, shown.repo).hintedMrIds);
 
