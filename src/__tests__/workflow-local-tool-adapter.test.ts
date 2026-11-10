@@ -680,6 +680,21 @@ it.each([undefined, 'SIGINT', 'SIGQUIT', 'SIGTERM', 'SIGHUP'])('stops a headless
 });
 
 
+it('fails an interactive tool that wrote a result file the driver cannot read, and keeps the file as written', async () => {
+  const resultPath = path.join(os.tmpdir(), `teamai-interactive-invalid-${Date.now()}.json`);
+  files.push(resultPath);
+  // `failure: {}` is what a tool copies from an instruction that shows `failure` as optional, and it is not a result.
+  const written = { output: { change: 'demo' }, failure: {} };
+  await fs.writeFile(resultPath, JSON.stringify(written));
+  const adapter = createLocalToolAdapter((() => child('')) as unknown as ToolSpawn, () => 'codex');
+
+  const result = await adapter.runInteractive('codex', { prompt: 'Pair.', cwd: os.tmpdir(), resultPath, secrets: {} });
+
+  expect(result).toMatchObject({ started: true, exitCode: 0, failure: { code: 'tool_failed' } });
+  expect(JSON.parse(await fs.readFile(resultPath, 'utf8'))).toEqual(written);
+});
+
+
 it('reports an interactive tool exit status without requiring a result file', async () => {
   const resultPath = path.join(os.tmpdir(), `teamai-interactive-failure-${Date.now()}.json`);
   files.push(resultPath);

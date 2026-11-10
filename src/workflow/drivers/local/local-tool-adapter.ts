@@ -181,6 +181,10 @@ async function readResultFile(resultPath: string): Promise<ResultFile | null> {
   }
 }
 
+async function fileExists(filePath: string): Promise<boolean> {
+  return fs.access(filePath).then(() => true, () => false);
+}
+
 function redactFailure(result: ResultFile, input: LocalToolRun): void {
   if (!result.failure) return;
 
@@ -401,7 +405,10 @@ export function createLocalToolAdapter(
       const stated = printed?.unfinished && !stopped ? null : printed;
       // A tool stopped mid-run, such as Claude before its final result, states no total: what the meter counted stands in.
       const reported = metered && !stated?.tokens ? { ...stated, tokens: metered } : stated;
-      const result = combineResults(fileResult, reported) ?? (interactive ? {} : null);
+      // An interactive tool that wrote a result file this driver cannot read gets no empty success: the file stays as
+      // written, and the step fails saying so, rather than the fallback overwriting what the agent reported.
+      const wroteResult = await fileExists(input.resultPath);
+      const result = combineResults(fileResult, reported) ?? (interactive && !wroteResult ? {} : null);
       const stoppedBy: Limit | undefined = stopped ?? (stated?.reachedMaxTurns ? 'max_turns' : undefined);
       const ended = stoppedBy ? { stoppedBy } : {};
 
@@ -411,7 +418,12 @@ export function createLocalToolAdapter(
           exitCode: completed.exitCode,
           ...applied,
           ...ended,
-          failure: { code: 'tool_failed', message: `${tool} did not write a valid workflow result` },
+          failure: {
+            code: 'tool_failed',
+            message: wroteResult
+              ? `${tool} wrote ${input.resultPath}, which is not a workflow result; it is kept as written`
+              : `${tool} did not write a valid workflow result`,
+          },
         };
       }
 
