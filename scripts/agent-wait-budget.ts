@@ -386,7 +386,13 @@ function measure(world: World, dir: string, run: Run, failures: string[]): Measu
 
   for (const { argv, unwaited } of commands) {
     const env = unwaited ? [...instruments, 'AGENT_WAIT_SIDE=after'] : instruments;
-    spawnSync(path.join(world.bin, 'run'), ['env', ...env, 'sh', '-c', 'cd "$1" || exit 97; shift; exec "$@"', 'agent-wait', run.cwd, ...argv], { input, encoding: 'utf8', maxBuffer: 1024 ** 3 });
+    const ran = spawnSync(path.join(world.bin, 'run'), ['env', ...env, 'sh', '-c', 'cd "$1" || exit 97; shift; exec "$@"', 'agent-wait', run.cwd, ...argv], { input, encoding: 'utf8', maxBuffer: 1024 ** 3 });
+
+    // A command that failed is not the command the row names, whatever it left behind.
+    if (ran.error || ran.status !== 0) {
+      const how = ran.error ? `did not start: ${ran.error.message}` : ran.signal ? `was ended by ${ran.signal}` : `exited ${ran.status}`;
+      failures.push(`${run.row}, ${run.run} run: the measured command ${how}`);
+    }
   }
 
   const returned = run.onReturn?.();
@@ -653,6 +659,9 @@ export function measureAgentWait(options: { keep: boolean }) {
     else {
       const clean = runLedger(world);
       console.error(clean ? 'Ledger: CLEAN' : `Ledger found leaks: see ${world.dir}`);
+
+      // The caller reads this list after the return above: a leak fails the measure as a broken invariant does.
+      if (!clean) failures.push(`the ledger found leaks after the measured rows: see ${world.dir}`);
       cleanupWorld(world);
     }
   }
