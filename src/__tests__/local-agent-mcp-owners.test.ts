@@ -127,6 +127,37 @@ const editServer = async (url: string): Promise<void> => {
 };
 
 describe('local-agent MCP ownership across scopes', () => {
+  it('updates a user-owned entry from workspace pull without matching team history', async () => {
+    await run([installCmd(1, 'user', 'https://a.example/mcp')], 'openclaw', home);
+    const config = pullConfig('project', await fse.realpath(workspace));
+    config.repo.kind = 'git';
+    await fse.outputFile(path.join(config.repo.localPath, 'mcp', 'mcp.yaml'),
+      'servers:\n  - name: docs-mcp\n    transport: http\n    url: https://b.example/mcp\n');
+    await reconcileMcpForConfig(TeamaiConfigSchema.parse({ team: 'fixture', repo: 'fixture', provider: 'git' }), config);
+    expect((await openclawServers())['docs-mcp']).toMatchObject({ url: 'https://b.example/mcp' });
+    await reconcileScope('project', await fse.realpath(workspace));
+    expect((await openclawServers())['docs-mcp']).toMatchObject({ url: 'https://b.example/mcp' });
+    await reconcileScope('user');
+    expect(await openclawServers()).not.toHaveProperty('docs-mcp');
+  });
+
+  it('keeps another scope\'s Hermes entry when uninstall cleans a previous home', async () => {
+    const oldHome = path.join(home, '.hermes');
+    await fse.outputFile(path.join(oldHome, 'config.yaml'), '{}\n');
+    await run([installCmd(1, 'user', 'https://a.example/mcp')], 'hermes', home);
+    await run([installCmd(2, 'workspace', 'https://a.example/mcp')], 'hermes');
+    const file = path.join(oldHome, 'config.yaml');
+    const before = await fse.readFile(file, 'utf8');
+    const newHome = path.join(home, 'new-hermes');
+    await fse.outputFile(path.join(newHome, 'config.yaml'), '{}\n');
+    vi.stubEnv('HERMES_HOME', newHome);
+    await reconcileScope('project', await fse.realpath(workspace));
+    expect(await fse.readFile(file, 'utf8')).toBe(before);
+    vi.stubEnv('HERMES_HOME', oldHome);
+    await reconcileScope('user');
+    expect(await fse.readFile(file, 'utf8')).not.toContain('https://a.example/mcp');
+  });
+
   it('a workspace install_mcp is removed by the same workspace\'s uninstall --force', async () => {
     expect((await run([installCmd(1, 'workspace', '')]))[0].status).toBe('success');
     expect(await openclawServers()).toHaveProperty('docs-mcp');

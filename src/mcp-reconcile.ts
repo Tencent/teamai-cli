@@ -3562,6 +3562,11 @@ async function reconcileTargets(
     // A server another scope records stays, whatever this scope no longer delivers: the file is shared, and its
     // other owner still needs the entry. Keeping it out of `owned` is what stops the removal loops below.
     const owned = scopeOwned.filter((record) => desired.has(record.name) || !sharedWithOtherScopes.names.has(record.name));
+    const externalRecords = sharedWithOtherScopes.owners.map(({ record }) => record);
+
+    const sharedJudge: McpEntryJudge = async (name, entry, recordedHash) =>
+      entry !== undefined && externalRecords.some((record) => record.name === name && record.hash === entryHash(entry))
+        ? 'teamai' : judge(name, entry, recordedHash);
 
     // Uninstall takes teamai's servers out of a file the tool left too; a copy the member changed stays.
     const elsewhere = removeAll ? [...split.elsewhere, ...left] : split.elsewhere;
@@ -3612,7 +3617,7 @@ async function reconcileTargets(
       file: target.file, nextRecords, options,
       apply: async () => {
         const result = await applyMcpFile(target, moving.size > 0 ? new Map([...desired, ...moving]) : desired, keep, owned, ownedNames, nextRecords, changes,
-          moving.size > 0 ? await judgeIn(target, { moved: moving }) : judge, options, restoreConfigs);
+          moving.size > 0 ? await judgeIn(target, { moved: moving }) : sharedJudge, options, restoreConfigs);
 
         if (result) {
           written.add(target.file);
@@ -3647,7 +3652,7 @@ async function reconcileTargets(
         if ((target.mappedFile && !target.alternateFile) || apart.length > 0) {
           // Each file is judged with the records of the tools that write it: a lookup file may link to another tool's.
           const judgeFor = (place: McpTarget): Promise<McpEntryJudge> => judgeIn({ ...resolved, file: place.file, key: mcpKeyOf(place) });
-          cleaned = await removeFromOtherFiles(target, apart, nextRecords, changes, judgeFor, options, restoreConfigs, leaving?.former) || cleaned;
+          cleaned = await removeFromOtherFiles(target, apart, nextRecords, changes, judgeFor, options, restoreConfigs, leaving?.former, new Set([manifestPath])) || cleaned;
 
           if (leaving) {
             const names: string[] = [];
@@ -4106,6 +4111,7 @@ async function removeFromOtherFiles(
   restoreConfigs: Map<string, () => Promise<void>>,
   /** A file `deleteLeftMcpFile` deletes and reports. */
   leaving?: string,
+  ownManifests: ReadonlySet<string> = new Set(),
 ): Promise<boolean> {
   // By place: a retired key in `target`'s own file is another place (ZCode's `mcpServers` beside `mcp.servers`).
   const byPlace = new Map<string, { place: McpTarget; real: string; records: ManagedMcpRecord[] }>();
@@ -4131,9 +4137,24 @@ async function removeFromOtherFiles(
 
   for (const { place, real, records } of byPlace.values()) {
     const { file } = place;
-    const names = new Set(records.map((r) => r.name));
+    const shared = await namesRecordedElsewhere(place, ownManifests);
+
+    if (!shared.complete) {
+      nextRecords.push(...records);
+      throw new Error(`Could not establish MCP ownership for ${file}. Repair the unreadable ownership record and retry.`);
+    }
+
+    const owned = records.filter((record) => !shared.names.has(record.name));
+    const names = new Set([...owned.map((r) => r.name), ...shared.names]);
     const removed: McpChange[] = [];
-    const result = await applyMcpFile(place, new Map(), new Map(), records, names, [], removed, await judgeFor(place), options, restoreConfigs);
+    const result = await applyMcpFile(place, new Map(), new Map(), owned, names, [], removed, await judgeFor(place), options, restoreConfigs);
+
+    if (result !== null && !options.dryRun && shared.owners.length > 0) {
+      const installed = await installedMcpEntries(place);
+
+      if (installed !== null) await adoptMcpEntriesForOwners(shared.owners,
+        new Map([...installed].map(([name, entry]) => [name, entryHash(entry)])), records, restoreConfigs);
+    }
 
     if (result === null) {
       nextRecords.push(...records);
