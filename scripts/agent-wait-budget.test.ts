@@ -20,6 +20,7 @@ const row = (name: string, run: Row['run'], counts: Partial<Row> = {}): Row => (
   otherAfter: 0,
   gitByCommand: {},
   otherByCommand: {},
+  waitedMs: 100,
   ...counts,
 });
 
@@ -65,6 +66,14 @@ describe('compareAgentWait', () => {
 
     expect(top(markdown)).toBe('What the agent waits on did not change.');
     expect(markdown).toContain('| Stop, first run | 2 | 3 / 1 |');
+    expect(grew).toEqual([]);
+  });
+
+  it('compares no time: a row whose only difference is how long it waited did not change, and shows both times', () => {
+    const { markdown, grew } = compareAgentWait(budget(row('SessionStart', 'second', { waitedMs: 412 })), budget(row('SessionStart', 'second', { waitedMs: 1180 })));
+
+    expect(top(markdown)).toBe('What the agent waits on did not change.');
+    expect(markdown).toContain('| SessionStart, second run | 2 | 3 | 1 | 1 | 0 | 0 | 0 | 0 | 1 | 1180 / 412 |');
     expect(grew).toEqual([]);
   });
 

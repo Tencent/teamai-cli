@@ -1,7 +1,8 @@
 /**
  * The agent wait budget: what a member's agent waits on in teamai's hooks and pulls, counted as the processes they
- * start and the files they write in a verify world, on a first run and a second. Never elapsed time: the same hook
- * took twice as long in one world as in another while every count stayed the same.
+ * start and the files they write in a verify world, on a first run and a second. The budget is those counts, not
+ * elapsed time: the same hook took twice as long in one world as in another while every count stayed the same. Each
+ * row also records how long the tool waited in that one run (`waitedMs`), for reference: it is never compared.
  *
  *   node scripts/agent-wait-budget.mjs                                     the budget as JSON; exit 1 when an invariant breaks
  *   node scripts/agent-wait-budget.mjs --compare <main.json> [<head.json>] a Markdown report of the change from main
@@ -42,6 +43,8 @@ const RowSchema = z.object({
   otherAfter: z.number().int(),
   gitByCommand: z.record(z.string(), z.object({ waited: z.number().int(), after: z.number().int() })),
   otherByCommand: z.record(z.string(), z.object({ waited: z.number().int(), after: z.number().int() })),
+  /** Milliseconds the tool waited on the row's commands in this one run; not a count, so never compared. */
+  waitedMs: z.number().int().nonnegative(),
 });
 
 export const AgentWaitBudgetSchema = z.object({
@@ -383,10 +386,15 @@ function measure(world: World, dir: string, run: Run, failures: string[]): Measu
   if (commands.length === 0) failures.push(`${run.row}, ${run.run} run: no teamai entry in settings.json for ${run.hook?.event ?? 'the command'}`);
   const instruments = [`GIT_TRACE2_EVENT=${logs.trace2}`, 'GIT_TRACE2_ENV_VARS=AGENT_WAIT_SIDE,AGENT_WAIT_FROM', `AGENT_WAIT_NODE_LOG=${logs.node}`, `NODE_OPTIONS=--require ${JSON.stringify(PRELOAD)}`];
   const input = run.hook?.payload ?? '';
+  let waitedMs = 0;
 
   for (const { argv, unwaited } of commands) {
     const env = unwaited ? [...instruments, 'AGENT_WAIT_SIDE=after'] : instruments;
+    const started = performance.now();
     const ran = spawnSync(path.join(world.bin, 'run'), ['env', ...env, 'sh', '-c', 'cd "$1" || exit 97; shift; exec "$@"', 'agent-wait', run.cwd, ...argv], { input, encoding: 'utf8', maxBuffer: 1024 ** 3 });
+
+    // The tool does not wait for an unwaited entry.
+    if (!unwaited) waitedMs += performance.now() - started;
 
     // A command that failed is not the command the row names, whatever it left behind.
     if (ran.error || ran.status !== 0) {
@@ -453,6 +461,7 @@ function measure(world: World, dir: string, run: Run, failures: string[]): Measu
       otherAfter: others.after,
       gitByCommand: Object.fromEntries(Object.entries(byCommand).sort(([left], [right]) => left.localeCompare(right))),
       otherByCommand: others.byCommand,
+      waitedMs: Math.round(waitedMs),
     },
     lines,
     gits,
@@ -800,7 +809,7 @@ export function compareAgentWait(head: AgentWaitBudget, base: AgentWaitBudget) {
     const now = headRows.get(name);
     const row = now ?? was;
 
-    return `| ${row?.row ?? ''}, ${row?.run ?? ''} run | ${COUNTS.map((count) => cell(was, now, count)).join(' | ')} |`;
+    return `| ${row?.row ?? ''}, ${row?.run ?? ''} run | ${COUNTS.map((count) => cell(was, now, count)).join(' | ')} | ${was?.waitedMs ?? 'none'} / ${now?.waitedMs ?? 'none'} |`;
   });
 
   const top = changed.length === 0
@@ -812,10 +821,10 @@ export function compareAgentWait(head: AgentWaitBudget, base: AgentWaitBudget) {
     '',
     `<details><summary>Every row, main / this PR</summary>`,
     '',
-    `Counts are processes and files, never time: Claude Code ${head.toolVersion}, workspace scope, team repo mode git, ${head.platform}, git ${head.git} (main: git ${base.git}), from the main checkout and linked worktrees. Not measured: ${NOT_MEASURED}.`,
+    `The budget is the counts of processes and files. The last column is how many milliseconds the tool waited in one run on each side on this machine, for reference: it is not compared. Claude Code ${head.toolVersion}, workspace scope, team repo mode git, ${head.platform}, git ${head.git} (main: git ${base.git}), from the main checkout and linked worktrees. Not measured: ${NOT_MEASURED}.`,
     '',
-    `| Row | ${COUNTS.map((count) => COUNT_LABELS[count]).join(' | ')} |`,
-    `| --- |${COUNTS.map(() => ' ---: |').join('')}`,
+    `| Row | ${COUNTS.map((count) => COUNT_LABELS[count]).join(' | ')} | ms waited, one run |`,
+    `| --- |${COUNTS.map(() => ' ---: |').join('')} ---: |`,
     ...all,
     '',
     '</details>',
