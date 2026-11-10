@@ -140,3 +140,17 @@ _Avoid_: project root, cwd
 
 **Installation**:
 One copy of teamai this machine has run, as `~/.teamai/installations.json` records it. `teamai update` and `teamai doctor` list them. Machine-local: it never enters a team report.
+
+## Budgets
+
+**Agent wait**:
+The time an **agent** is blocked on teamai: the foreground pass of a hook, or a pull it runs. Work teamai does after the hook returns is not agent wait.
+_Avoid_: latency, performance, overhead
+
+**Agent wait budget**:
+What a hook or a pull costs in **agent wait**, counted as the processes it starts and the files it writes, on its first run and on its second. Never elapsed time.
+_Avoid_: benchmark (that is `teamai benchmark`), perf test
+
+**Agent context budget**:
+The bytes of text teamai's defaults put in an **agent**'s context, split by when they enter: always, through **progressive disclosure**, or on a hook event.
+_Avoid_: token budget, prompt size
