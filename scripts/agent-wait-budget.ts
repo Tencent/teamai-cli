@@ -700,6 +700,12 @@ function checkInvariants(measured: ReadonlyMap<string, Measured>, world: World, 
   equal(['PostToolUse in a new worktree', 'first'], ['PostToolUse Read', 'first'], WAITED);
   equal(['PostToolUse in a new worktree', 'second'], ['PostToolUse Read', 'second'], COUNTS);
   equal(['SessionStart in a new worktree', 'second'], ['SessionStart', 'second'], WAITED);
+  // git worktree add waits the same however many checkouts the repository already has. The first row also pays cold answers.
+  const worktreeAdds = [['worktree add, two checkouts', 'first'], ['worktree add, three checkouts', 'second'], ['worktree add, four checkouts', 'second']] as const;
+  const listings = worktreeAdds.map(([row, run]) => at(row, run)?.counts.gitByCommand['ls-files']?.waited ?? 0);
+
+  if (new Set(listings).size > 1) failures.push(`git worktree add waits on ls-files ${listings.join(', ')} times with two, three and four checkouts: they must be equal`);
+  equal(['worktree add, three checkouts', 'second'], ['worktree add, four checkouts', 'second'], ['gitWaited']);
 
   // A warm fast-path hook starts no git from Node in the foreground.
   for (const [row, run] of [['UserPromptSubmit', 'second'], ['PostToolUse Read', 'second'], ['PostToolUse outside any scope', 'first'], ['PostToolUse outside any scope', 'second']] as const) {

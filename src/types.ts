@@ -1889,6 +1889,13 @@ export interface GlobalOptions {
    */
   localOnly?: boolean;
   /**
+   * Internal (the inline preparation of a new checkout from git's hook): the
+   * delivered git exclude sync lists this checkout's files and drops no line,
+   * asking git about this checkout alone. The detached pull the hook hands
+   * over to then syncs every checkout's lines.
+   */
+  gitExcludeAddOnly?: boolean;
+  /**
    * Internal (post-merge/post-rewrite git hooks, with `inline`): fetch the team repo
    * whatever its fetch stamp says, and give up after this many ms; the scope
    * is then not delivered and the detached pull after the hook does it.

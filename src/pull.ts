@@ -4403,7 +4403,7 @@ export async function pull(
  * kept) here, and a success clears the one a background pull kept.
  */
 export async function syncDeliveredGitExclude(
-  localConfig: LocalConfig, recorder: DeliveryRecorder, options: Pick<GlobalOptions, 'silent' | 'gitHook'> = {},
+  localConfig: LocalConfig, recorder: DeliveryRecorder, options: Pick<GlobalOptions, 'silent' | 'gitHook' | 'gitExcludeAddOnly'> = {},
   failures: readonly string[] = [], context?: GitContext,
 ): Promise<boolean> {
   const key = await checkoutRecordKey(localConfig);
@@ -4431,7 +4431,9 @@ export async function syncDeliveredGitExclude(
   }
 
   const union = await deliveredUnion(await liveDeliveredLists(localConfig.projectRoot, state.lastPullByWorkspace, { key, paths }));
-  const outcome = await applyDeliveredGitExclude(localConfig, enabled, union.paths, { context });
+  const own = new Set(Object.values(paths).flat());
+  const addOnly = options.gitExcludeAddOnly === true;
+  const outcome = await applyDeliveredGitExclude(localConfig, enabled, addOnly ? union.paths.filter((file) => own.has(file)) : union.paths, { context, addOnly });
 
   if (whitelist?.failure) outcome.failures.push(whitelist.failure);
 

@@ -215,7 +215,7 @@ const sessionEndHandler: HookHandler = {
  * The last two serve worktrees an agent tool created without any git hook.
  */
 const PREPARING_PULL = {
-  'post-checkout': { inline: true, gitHook: 'post-checkout' },
+  'post-checkout': { inline: true, gitHook: 'post-checkout', gitExcludeAddOnly: true },
   'session-start': { sessionStart: true },
   'tool-use': { inline: true, localOnly: true },
 } as const satisfies Record<string, GlobalOptions>;

@@ -817,10 +817,11 @@ export interface GitExcludeSync {
  * reported; a directory is refused (each file is a line). While git cannot
  * place a path (`gitFailed`), no one can say which exclude file holds its line,
  * so the run only adds: no block loses a line and every recorded file stays
- * recorded. `dryRun` writes nothing, not even `info/` or a lock file.
+ * recorded. `addOnly` asks for that run whatever git says. `dryRun` writes
+ * nothing, not even `info/` or a lock file.
  */
 export async function sync(
-  owner: GitExcludeOwner, paths: Iterable<string>, options: { dryRun?: boolean; context?: GitContext } = {},
+  owner: GitExcludeOwner, paths: Iterable<string>, options: { dryRun?: boolean; context?: GitContext; addOnly?: boolean } = {},
 ): Promise<GitExcludeSync> {
   markersOf(owner.name);
   const context = options.context ?? new GitContext();
@@ -837,7 +838,7 @@ export async function sync(
   }
 
   for (const recorded of await owner.record?.files() ?? []) if (!byFile.has(recorded)) byFile.set(recorded, []);
-  const addOnly = result.gitFailed.length > 0;
+  const addOnly = options.addOnly === true || result.gitFailed.length > 0;
 
   const add: string[] = [];
   const drop: string[] = [];
