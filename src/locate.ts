@@ -6,6 +6,7 @@
  * through `host`, and paths are joined in the host's flavor, so a Linux test
  * can resolve a Windows member's paths.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
@@ -320,8 +321,48 @@ const LOCATORS: Locators = {
   sessions: locateSessions,
 };
 
+type Walk = {
+  readonly host: Host;
+  readonly answers: { readonly [R in Resource]: Map<string, Promise<Location<R>>> };
+  readonly toolPathsKeys: WeakMap<Install['toolPaths'], string>;
+};
+
+const walks = new AsyncLocalStorage<Walk>();
+
+/**
+ * Runs `walk` with `locate` answering each tool, resource and install once, on `host` as the walk first saw it: for a
+ * walk that asks again for every item and whose writes change no answer but that of a tool writing the same copies.
+ * A caller that passes its own host still asks.
+ */
+export function locatingOnce<T>(walk: () => Promise<T>, host: Host = realHost()): Promise<T> {
+  const answers = { skills: new Map(), rules: new Map(), blocks: new Map(), agents: new Map(), mcp: new Map(), hooks: new Map(), sessions: new Map() };
+
+  return walks.run({ host, answers, toolPathsKeys: new WeakMap() }, walk);
+}
+
+function installKey(install: Install, walk: Walk): string {
+  let toolPaths = walk.toolPathsKeys.get(install.toolPaths);
+
+  if (toolPaths === undefined) walk.toolPathsKeys.set(install.toolPaths, toolPaths = JSON.stringify(install.toolPaths));
+
+  return JSON.stringify({ ...install, toolPaths });
+}
+
 /** Where `tool` takes `resource` on `host` under `install`. */
-export async function locate<R extends Resource>(tool: string, resource: R, install: Install, host: Host = realHost()): Promise<Location<R>> {
+export async function locate<R extends Resource>(tool: string, resource: R, install: Install, host?: Host): Promise<Location<R>> {
+  const walk = host === undefined ? walks.getStore() : undefined;
+
+  if (walk === undefined) return locateOn(tool, resource, install, host ?? realHost());
+  const answers = walk.answers[resource];
+  const key = `${tool}\n${installKey(install, walk)}`;
+  let answer = answers.get(key);
+
+  if (answer === undefined) answers.set(key, answer = locateOn(tool, resource, install, walk.host));
+
+  return answer;
+}
+
+async function locateOn<R extends Resource>(tool: string, resource: R, install: Install, host: Host): Promise<Location<R>> {
   const location = await LOCATORS[resource](tool, install, host);
 
   if (install.scope !== 'project' || !install.keepsKnowledgeInside || !isKnowledgeResource(resource)) return location;

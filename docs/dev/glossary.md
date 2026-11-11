@@ -148,7 +148,7 @@ The time an **agent** is blocked on teamai: the foreground pass of a hook, or a 
 _Avoid_: latency, performance, overhead
 
 **Agent wait budget**:
-What a hook or a pull costs in **agent wait**, counted as the processes it starts and the files it writes, on its first run and on its second. The budget is those counts, never elapsed time; the time of each run is recorded beside them for reference only.
+What a hook or a pull costs in **agent wait**, counted as the processes it starts and the files it writes, on its first run and on its second. The budget is those counts, never elapsed time; the time of each run and the file system calls each Node process made are recorded beside them for reference only.
 _Avoid_: benchmark (that is `teamai benchmark`), perf test
 
 **Hook form**:

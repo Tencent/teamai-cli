@@ -1,6 +1,6 @@
 // Loaded by scripts/agent-wait-budget.ts into every Node process a measured command starts
-// (NODE_OPTIONS=--require). It logs the process and the children it starts, and tags what runs after the hook returns,
-// so git's trace2 can tell the two sides apart.
+// (NODE_OPTIONS=--require). It logs the process, the children it starts and its file system calls, and tags what runs
+// after the hook returns, so git's trace2 can tell the two sides apart.
 'use strict';
 
 const log = process.env.AGENT_WAIT_NODE_LOG;
@@ -8,10 +8,11 @@ const log = process.env.AGENT_WAIT_NODE_LOG;
 if (log && require('node:worker_threads').isMainThread) {
   const fs = require('node:fs');
   const cp = require('node:child_process');
+  const append = fs.appendFileSync;
 
   const write = (record) => {
     try {
-      fs.appendFileSync(log, `${JSON.stringify(record)}\n`);
+      append(log, `${JSON.stringify(record)}\n`);
     } catch {
       // The measure never fails the process it watches.
     }
@@ -50,6 +51,33 @@ if (log && require('node:worker_threads').isMainThread) {
       return original.apply(this, callArgs);
     };
   }
+
+  // Each call teamai or a library makes into fs, in callback, sync and promise form; fs's own calls between them are not seen.
+  let fsCalls = 0;
+  const FS_CALLS = ['access', 'appendFile', 'chmod', 'copyFile', 'cp', 'lstat', 'mkdir', 'mkdtemp', 'open', 'opendir', 'readdir', 'readFile', 'readlink', 'realpath', 'rename', 'rm', 'rmdir', 'stat', 'symlink', 'unlink', 'utimes', 'writeFile'];
+
+  // Keeps the function's own properties: callers reach realpath's `.native` through them.
+  const counted = (original) => Object.assign(function agentWaitFsCall(...callArgs) {
+    fsCalls++;
+
+    return original.apply(this, callArgs);
+  }, original);
+
+  const count = (owner, name) => {
+    const original = owner[name];
+    owner[name] = counted(original);
+
+    if (original.native) owner[name].native = counted(original.native);
+  };
+
+  for (const name of FS_CALLS) {
+    count(fs, name);
+    count(fs, `${name}Sync`);
+    count(fs.promises, name);
+  }
+
+  count(fs, 'existsSync');
+  process.on('exit', () => write({ ev: 'fs', pid: process.pid, calls: fsCalls }));
 
   require('node:module').syncBuiltinESMExports();
 }

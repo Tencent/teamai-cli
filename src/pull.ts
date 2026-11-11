@@ -33,7 +33,7 @@ import {
 } from './resources/docs.js';
 import { ResourceHandler } from './resources/base.js';
 import { CODEX_TOOL, codexSkillsSplit, mayDeleteSkillCopy, skillOrigin } from './resources/skills.js';
-import { installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH, writable, writesOf, type Install } from './locate.js';
+import { installOf, locate, locatingOnce, ownOf, SHARED_AGENT_SKILLS_PATH, writable, writesOf, type Install } from './locate.js';
 import { isWithin } from './utils/agent-path.js';
 import { describeToolHomeChange, recordToolHomes } from './tool-home-record.js';
 import { describeInvalidToolHomes, realHost, toolHome } from './tool-home.js';
@@ -603,24 +603,26 @@ async function reportWouldKeep(
 ): Promise<void> {
   const received = items.map((item) => item.name);
 
-  for (const item of items) {
-    for (const target of await handler.deliveryTargets(freshConfig, localConfig, item, received)) {
-      const verdict = await judgeCopy(ledger.previous, item, target);
+  await locatingOnce(async () => {
+    for (const item of items) {
+      for (const target of await handler.deliveryTargets(freshConfig, localConfig, item, received)) {
+        const verdict = await judgeCopy(ledger.previous, item, target);
 
-      if (verdict.kind === 'keep') {
-        log.info(`[${scopeLabel}] [dry-run] Would keep ${target.dest}: you changed it since teamai delivered it.`);
-      } else if (verdict.kind === 'member') {
-        log.info(`[${scopeLabel}] [dry-run] Would keep ${target.dest}: ${notTeamaisReason(item.relativePath)}.`);
-      } else if (writer === 'skills') {
-        // As the write would list it: never an entry of the member's it delivers around.
-        const blocked = await blockingEntries(target.dest, item.sourcePath);
+        if (verdict.kind === 'keep') {
+          log.info(`[${scopeLabel}] [dry-run] Would keep ${target.dest}: you changed it since teamai delivered it.`);
+        } else if (verdict.kind === 'member') {
+          log.info(`[${scopeLabel}] [dry-run] Would keep ${target.dest}: ${notTeamaisReason(item.relativePath)}.`);
+        } else if (writer === 'skills') {
+          // As the write would list it: never an entry of the member's it delivers around.
+          const blocked = await blockingEntries(target.dest, item.sourcePath);
 
-        for (const file of await deliveredSkillFiles(item.sourcePath, target.dest, blocked)) ledger.recorder?.report(writer, file);
-      } else if (writer) {
-        ledger.recorder?.report(writer, target.dest);
+          for (const file of await deliveredSkillFiles(item.sourcePath, target.dest, blocked)) ledger.recorder?.report(writer, file);
+        } else if (writer) {
+          ledger.recorder?.report(writer, target.dest);
+        }
       }
     }
-  }
+  });
 }
 
 /**
@@ -2517,6 +2519,8 @@ async function pullForScope(
 
   // Not the fast path: each writer's report replaces its delivered paths (#915).
   policy.recorder?.fullSync();
+  // The tools this sync delivers to, before a copy can make another tool installed: that one is new to the next pull.
+  currentTargets ??= await getInstalledResourceTargets(freshConfig, localConfig);
 
   // Step 2: Sync each resource type
   let totalSynced = 0;
@@ -2814,9 +2818,10 @@ async function pullForScope(
       const canReceive = !needsToolRoot
         || (await getInstalledResourceTargets(freshConfig, localConfig, type)).length > 0;
 
-      for (const item of items) {
-        await handler.pullItem(item, freshConfig, localConfig, ledger);
-      }
+      // A copy changes no tool's answer but that of a tool sharing it (locate.test.ts), so one answer per tool serves every item.
+      await locatingOnce(async () => {
+        for (const item of items) await handler.pullItem(item, freshConfig, localConfig, ledger);
+      });
 
       // A copy it failed to write has said so already (see DeliveryRecorder).
       if (type === 'skills' || type === 'agents') ledger.recorder?.succeeded(type);

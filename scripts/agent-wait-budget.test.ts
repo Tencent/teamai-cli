@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { type AgentWaitBudget, compareAgentWait, otherProcesses } from './agent-wait-budget.js';
+import { type AgentWaitBudget, compareAgentWait, fileSystemCalls, otherProcesses } from './agent-wait-budget.js';
 
 type Row = AgentWaitBudget['rows'][number];
 
@@ -21,6 +21,8 @@ const row = (name: string, run: Row['run'], counts: Partial<Row> = {}): Row => (
   gitByCommand: {},
   otherByCommand: {},
   waitedMs: 100,
+  fsWaited: 40,
+  fsAfter: 0,
   ...counts,
 });
 
@@ -73,7 +75,16 @@ describe('compareAgentWait', () => {
     const { markdown, grew } = compareAgentWait(budget(row('SessionStart', 'second', { waitedMs: 412 })), budget(row('SessionStart', 'second', { waitedMs: 1180 })));
 
     expect(top(markdown)).toBe('What the agent waits on did not change.');
-    expect(markdown).toContain('| SessionStart, second run | 2 | 3 | 1 | 1 | 0 | 0 | 0 | 0 | 1 | 1180 / 412 |');
+    expect(markdown).toContain('| SessionStart, second run | 2 | 3 | 1 | 1 | 0 | 0 | 0 | 0 | 1 | 40 | 0 | 1180 / 412 |');
+    expect(grew).toEqual([]);
+  });
+
+  it('shows file system calls in the full table without comparing them, and none for a main that did not count them', () => {
+    const { fsWaited: _waited, fsAfter: _after, ...uncounted } = row('pull after init', 'second');
+    const { markdown, grew } = compareAgentWait(budget(row('pull after init', 'second', { fsWaited: 900 })), budget(uncounted));
+
+    expect(top(markdown)).toBe('What the agent waits on did not change.');
+    expect(markdown).toContain('| pull after init, second run | 2 | 3 | 1 | 1 | 0 | 0 | 0 | 0 | 1 | none / 900 | none / 0 | 100 / 100 |');
     expect(grew).toEqual([]);
   });
 
@@ -115,5 +126,17 @@ describe('otherProcesses', () => {
       spawn(1, ['/opt/node/bin/node', 'index.js'], 6),
       spawn(1, ['/home/m/.teamai/bin/teamai', 'hook-dispatch'], 5, true),
     ])).toEqual({ waited: 0, after: 0, byCommand: {} });
+  });
+});
+
+describe('fileSystemCalls', () => {
+  it('adds each process\'s calls to the side it ran on, and a process with no start record to the waited side', () => {
+    expect(fileSystemCalls([
+      { ev: 'start', pid: 1, argv: ['node', 'teamai'], side: 'waited' },
+      { ev: 'start', pid: 2, argv: ['node', 'teamai'], side: 'after' },
+      { ev: 'fs', pid: 1, calls: 120 },
+      { ev: 'fs', pid: 2, calls: 30 },
+      { ev: 'fs', pid: 3, calls: 5 },
+    ])).toEqual({ waited: 125, after: 30 });
   });
 });
