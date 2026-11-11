@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { log } from './utils/logger.js';
-import { listDirs, pathExists } from './utils/fs.js';
-import { SkillsHandler } from './resources/skills.js';
+import { pathExists } from './utils/fs.js';
+import { SkillsHandler, readTeamSkills } from './resources/skills.js';
+import { TeamSkillSource } from './resources/team-skill-source.js';
 import { loadTagsConfig } from './utils/tags.js';
 import {
   buildClassifyContext,
@@ -129,7 +130,9 @@ export async function skillShow(name: string, options: GlobalOptions): Promise<v
     ? { kind: 'builtin' }
     : await classifyInstalledSkill(resolvedName, await buildClassifyContext(localConfig), resolved.primaryPath);
 
-  const description = truncate(await readSkillDescription(path.join(resolved.primaryPath, 'SKILL.md')), DESCRIPTION_MAX);
+  // Only the team repo keeps a skill as one file; an installed copy is always a folder, whatever its name.
+  const skillMdPath = resolved.primaryOrigin === 'team' ? TeamSkillSource.skillMd(resolved.primaryPath) : path.join(resolved.primaryPath, 'SKILL.md');
+  const description = truncate(await readSkillDescription(skillMdPath), DESCRIPTION_MAX);
   const contributors = await SkillsHandler.readContributors(resolved.primaryPath);
 
   const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
@@ -151,7 +154,7 @@ export async function skillShow(name: string, options: GlobalOptions): Promise<v
 
   if (options.verbose) {
     console.log('');
-    console.log(`  Verbose: SKILL.md path is ${path.join(resolved.primaryPath, 'SKILL.md')}`);
+    console.log(`  Verbose: SKILL.md path is ${skillMdPath}`);
   }
 }
 
@@ -210,26 +213,15 @@ async function locateSkill(
   agents: ResolvedAgent[],
   served: ServableSkillResolution,
 ): Promise<LocatedSkill | null> {
-  const teamSkillsDir = path.join(localConfig.repo.localPath, 'skills');
+  // 1-2. The team repo: the root's skill, then each namespace's, in either form.
+  const team = (await readTeamSkills(localConfig.repo.localPath)).skills.find((skill) => skill.name === name);
 
-  // 1. Flat layout in team repo
-  const flat = path.join(teamSkillsDir, name);
+  if (team) {
+    const found: ResolvedSkill = { kind: 'found', name, primaryPath: team.source, primaryOrigin: 'team' };
 
-  if (await pathExists(path.join(flat, 'SKILL.md'))) {
-    return { kind: 'found', name, primaryPath: flat, primaryOrigin: 'team' };
-  }
+    if (team.namespace !== undefined) found.namespace = team.namespace;
 
-  // 2. Namespaced layout in team repo
-  if (await pathExists(teamSkillsDir)) {
-    const namespaces = await listDirs(teamSkillsDir);
-
-    for (const ns of namespaces) {
-      const candidate = path.join(teamSkillsDir, ns, name);
-
-      if (await pathExists(path.join(candidate, 'SKILL.md'))) {
-        return { kind: 'found', name, primaryPath: candidate, primaryOrigin: 'team', namespace: ns };
-      }
-    }
+    return found;
   }
 
   // 3. First installed agent that has the skill. Ahead of the packaged content
@@ -313,7 +305,7 @@ function printSkillCard(card: SkillCard): void {
   console.log(`  Description  : ${card.description || '(none)'}`);
   console.log(`  Contributors : ${card.contributors.length > 0 ? card.contributors.join(', ') : '(none)'}`);
   console.log(`  Tags         : ${card.tags.length > 0 ? card.tags.join(', ') : '(none)'}`);
-  console.log(`  ${PRIMARY_PATH_LABEL[card.primaryOrigin]}  : ${card.primaryPath}/`);
+  console.log(`  ${PRIMARY_PATH_LABEL[card.primaryOrigin]}  : ${card.primaryOrigin === 'team' && TeamSkillSource.isFile(card.primaryPath) ? card.primaryPath : `${card.primaryPath}/`}`);
 
   if (card.primaryOrigin === 'builtin') {
     console.log(`  Read it with : teamai skill get ${card.name}`);
