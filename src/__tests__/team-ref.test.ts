@@ -3,11 +3,12 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { autoPushTeamRepo, autoPushViaMR, checkoutMaster, createGit, pullRepo, pullRepoFastForward, pushRepoBranch, pushRepoDirectly, resetToCleanMaster } from '../utils/git.js';
+import { autoPushTeamRepo, autoPushViaMR, checkoutMaster, createGit, prepareExplicitBranch, pullRepo, pullRepoFastForward, pushRepoBranch, pushRepoDirectly, resetToCleanMaster } from '../utils/git.js';
 import { LocalConfigSchema, type LocalConfig } from '../types.js';
 import { loadLocalConfigForScope, saveLocalConfigForScope } from '../config.js';
 import * as gitModule from '../utils/git.js';
 import * as teamRef from '../team-ref.js';
+import { explicitBranchRefusal } from '../push.js';
 import { getHandler } from '../resources/index.js';
 import { TeamaiConfigSchema } from '../types.js';
 import { resolveTeamRef, teamRefBlocker } from '../team-ref.js';
@@ -376,6 +377,185 @@ describe('unborn team clone compatibility', () => {
     const { localPath, git } = await unborn('unborn-reset');
     await expect(resetToCleanMaster(git, localPath)).rejects.toThrow("ambiguous argument 'HEAD'");
     expect((await git.raw(['symbolic-ref', '-q', 'HEAD'])).trim()).toBe('refs/heads/main');
+  });
+});
+
+describe('pushRepoBranch explicit destination', () => {
+  async function fixture(name: string) {
+    const remote = path.join(root, `${name}.git`);
+    const seed = path.join(root, `${name}-seed`);
+    const localPath = path.join(root, name);
+    await fs.mkdir(seed);
+    await createGit(root).raw(['init', '--bare', '-b', 'main', remote]);
+    const seedGit = createGit(seed);
+    await seedGit.init(['-b', 'main']);
+    await seedGit.addConfig('user.name', 'Test');
+    await seedGit.addConfig('user.email', 'test@example.com');
+    await fs.writeFile(path.join(seed, 'teamai.yaml'), 'team: test\n');
+    await seedGit.add('.');
+    await seedGit.commit('team');
+    await seedGit.push([remote, 'main']);
+    await createGit(root).clone(remote, localPath);
+    const git = createGit(localPath);
+    await git.addConfig('user.name', 'Test');
+    await git.addConfig('user.email', 'test@example.com');
+
+    return { remote, localPath, git };
+  }
+
+  it('extends the destination branch a previous push left locally', async () => {
+    const { localPath, git } = await fixture('explicit-local');
+
+    await fs.writeFile(path.join(localPath, 'a.txt'), 'a');
+    await expect(pushRepoBranch(localPath, 'add a', ['a.txt'], 'release/shared', { explicitBranch: true })).resolves.toBe(true);
+    await checkoutMaster(localPath);
+    await fs.writeFile(path.join(localPath, 'b.txt'), 'b');
+    // The branch from the first push is still local; `checkout -b` used to fail here.
+    await expect(pushRepoBranch(localPath, 'add b', ['b.txt'], 'release/shared', { explicitBranch: true })).resolves.toBe(true);
+
+    expect((await git.show(['origin/release/shared:a.txt'])).trim()).toBe('a');
+    expect((await git.show(['origin/release/shared:b.txt'])).trim()).toBe('b');
+  });
+
+  it('creates the destination from origin when only origin has it', async () => {
+    const { localPath, git } = await fixture('explicit-remote');
+
+    await fs.writeFile(path.join(localPath, 'a.txt'), 'a');
+    await expect(pushRepoBranch(localPath, 'add a', ['a.txt'], 'release/shared', { explicitBranch: true })).resolves.toBe(true);
+    await checkoutMaster(localPath);
+    await git.raw(['branch', '-D', 'release/shared']);
+    await fs.writeFile(path.join(localPath, 'b.txt'), 'b');
+    await expect(pushRepoBranch(localPath, 'add b', ['b.txt'], 'release/shared', { explicitBranch: true })).resolves.toBe(true);
+
+    expect((await git.show(['origin/release/shared:a.txt'])).trim()).toBe('a');
+    expect((await git.show(['origin/release/shared:b.txt'])).trim()).toBe('b');
+  });
+
+  it('replaces a file the destination already holds', async () => {
+    const { localPath, git } = await fixture('explicit-same-file');
+
+    await fs.writeFile(path.join(localPath, 'notes.txt'), 'first');
+    await expect(pushRepoBranch(localPath, 'first', ['notes.txt'], 'release/shared', { explicitBranch: true })).resolves.toBe(true);
+    await checkoutMaster(localPath);
+    // The push path checks the destination out before it copies the payload.
+    await prepareExplicitBranch(localPath, 'release/shared');
+    await fs.writeFile(path.join(localPath, 'notes.txt'), 'second');
+    await expect(pushRepoBranch(localPath, 'second', ['notes.txt'], 'release/shared', { explicitBranch: true })).resolves.toBe(true);
+
+    expect((await git.show(['origin/release/shared:notes.txt'])).trim()).toBe('second');
+  });
+
+  it('carries a pending edit across the destination checkout', async () => {
+    const { localPath } = await fixture('explicit-carry');
+
+    await fs.writeFile(path.join(localPath, 'a.txt'), 'a');
+    await expect(pushRepoBranch(localPath, 'add a', ['a.txt'], 'release/shared', { explicitBranch: true })).resolves.toBe(true);
+    await checkoutMaster(localPath);
+    const pendingConfig = path.join(localPath, 'teamai.yaml');
+    await fs.writeFile(pendingConfig, 'team: test\nnote: pending\n');
+
+    await prepareExplicitBranch(localPath, 'release/shared');
+
+    expect(await fs.readFile(pendingConfig, 'utf8')).toContain('note: pending');
+  });
+
+  it('carries a staged rename without recreating the old path', async () => {
+    const { localPath, git } = await fixture('explicit-rename');
+    const oldPath = path.join(localPath, 'old.yaml');
+    const newPath = path.join(localPath, 'new.yaml');
+    await fs.writeFile(oldPath, 'old\n');
+    await git.add('old.yaml');
+    await git.commit('old');
+    await git.raw(['mv', 'old.yaml', 'new.yaml']);
+
+    await prepareExplicitBranch(localPath, 'release/shared');
+
+    await expect(fs.access(oldPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await fs.readFile(newPath, 'utf8')).toBe('old\n');
+  });
+
+  it('carries a rename whose source path is recreated', async () => {
+    const { localPath, git } = await fixture('explicit-rename-replaced');
+    const oldPath = path.join(localPath, 'old.yaml');
+    const newPath = path.join(localPath, 'new.yaml');
+    await fs.writeFile(oldPath, 'old\n');
+    await git.add('old.yaml');
+    await git.commit('old');
+    await git.raw(['mv', 'old.yaml', 'new.yaml']);
+    await fs.writeFile(oldPath, 'replacement\n');
+
+    await prepareExplicitBranch(localPath, 'release/shared');
+
+    expect(await fs.readFile(oldPath, 'utf8')).toBe('replacement\n');
+    expect(await fs.readFile(newPath, 'utf8')).toBe('old\n');
+  });
+
+  it.skipIf(process.platform === 'win32')('carries a dangling symlink', async () => {
+    const { localPath } = await fixture('explicit-dangling-link');
+    const link = path.join(localPath, 'dangling');
+    await fs.symlink('missing-target', link);
+
+    await prepareExplicitBranch(localPath, 'release/shared');
+
+    expect((await fs.lstat(link)).isSymbolicLink()).toBe(true);
+    expect(await fs.readlink(link)).toBe('missing-target');
+  });
+
+  it('refuses a self-mode destination that holds an unpushed commit', async () => {
+    const { localPath, git } = await fixture('explicit-self-refusal');
+    await git.checkoutLocalBranch('feature/mine');
+    await fs.writeFile(path.join(localPath, 'mine.txt'), 'mine\n');
+    await git.add('mine.txt');
+    await git.commit('mine');
+    await git.checkout('main');
+
+    await expect(explicitBranchRefusal(localPath, 'feature/mine', true))
+      .resolves.toContain('1 commit(s) not on origin');
+    await expect(explicitBranchRefusal(localPath, 'feature/mine', false)).resolves.toBeNull();
+    await expect(explicitBranchRefusal(localPath, 'main', true)).resolves.toContain('default branch');
+  });
+
+  it('publishes a destination commit an earlier push could not send', async () => {
+    const { remote, localPath, git } = await fixture('explicit-retry');
+    const hook = path.join(remote, 'hooks', 'pre-receive');
+    await fs.mkdir(path.dirname(hook), { recursive: true });
+    await fs.writeFile(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    await fs.writeFile(path.join(localPath, 'a.txt'), 'a');
+
+    await expect(pushRepoBranch(localPath, 'add a', ['a.txt'], 'release/shared', { explicitBranch: true })).rejects.toThrow();
+
+    await fs.rm(hook);
+    // The retry has nothing new to commit: the commit above is still local.
+    await expect(pushRepoBranch(localPath, 'add a', ['a.txt'], 'release/shared', { explicitBranch: true })).resolves.toBe(true);
+
+    expect((await git.show(['origin/release/shared:a.txt'])).trim()).toBe('a');
+  });
+
+  it('fast-forwards a destination origin advanced before copying the payload', async () => {
+    const { remote, localPath, git } = await fixture('explicit-ahead');
+
+    await fs.writeFile(path.join(localPath, 'a.txt'), 'a');
+    await expect(pushRepoBranch(localPath, 'add a', ['a.txt'], 'release/shared', { explicitBranch: true })).resolves.toBe(true);
+    await checkoutMaster(localPath);
+
+    const other = path.join(root, 'explicit-ahead-other');
+    await createGit(root).clone(remote, other);
+    const otherGit = createGit(other);
+    await otherGit.addConfig('user.name', 'Test');
+    await otherGit.addConfig('user.email', 'test@example.com');
+    await otherGit.checkout('release/shared');
+    await fs.writeFile(path.join(other, 'other.txt'), 'other');
+    await otherGit.add('other.txt');
+    await otherGit.commit('other');
+    await otherGit.push(['origin', 'release/shared']);
+
+    await prepareExplicitBranch(localPath, 'release/shared');
+    await fs.writeFile(path.join(localPath, 'b.txt'), 'b');
+    await expect(pushRepoBranch(localPath, 'add b', ['b.txt'], 'release/shared', { explicitBranch: true })).resolves.toBe(true);
+
+    expect((await git.show(['origin/release/shared:a.txt'])).trim()).toBe('a');
+    expect((await git.show(['origin/release/shared:other.txt'])).trim()).toBe('other');
+    expect((await git.show(['origin/release/shared:b.txt'])).trim()).toBe('b');
   });
 });
 

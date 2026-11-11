@@ -6,7 +6,7 @@ import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.j
 import { assertNotReadOnly } from './read-only.js';
 import {
   createGit, pullRepo, pushRepoBranch, checkoutMaster, unusedBranchName,
-  resetToCleanMaster, isDedicatedRepoRoot, getDefaultBranch, getFileContentAtRev, getHeadCommit, hashObject,
+  resetToCleanMaster, isDedicatedRepoRoot, getDefaultBranch, getFileContentAtRev, getHeadCommit, hashObject, prepareExplicitBranch,
 } from './utils/git.js';
 import { reconcilePlacementRecords, dropClosedPendingPushes,
   findPendingForItem, isRecordedItem, partiallySelectedEntries, pendingNamespaceFor, planPushGroups, recordedNamespace,
@@ -866,6 +866,11 @@ async function pushGroup(args: {
   let workingTreeDirtied = false;
 
   try {
+    // Check the explicit destination out before copying the resources: a
+    // checkout afterwards would collide with a version the branch already
+    // holds, and with the payload already written onto the default branch.
+    if (branch && !reuse) await prepareExplicitBranch(localConfig.repo.localPath, branch);
+
     for (const item of items) {
       const handler = getHandler(item.type);
       await handler.pushItem(item, teamConfig, localConfig);
@@ -922,12 +927,20 @@ async function pushGroup(args: {
 
     const base = headCommit ?? undefined;
 
+    // An explicit --branch names the destination only for a group with no open
+    // PR to reuse; a reuse group keeps its recorded branch.
+    const pushOptions = reuse
+      ? { reuseBranch: true }
+      : branch
+        ? { reuseBranch: false, explicitBranch: true }
+        : { reuseBranch: false };
+
     const hasChanges = await pushRepoBranch(
       localConfig.repo.localPath,
       commitMsg,
       gitFiles,
       branchName,
-      { reuseBranch: Boolean(reuse) },
+      pushOptions,
     );
 
     // pushRepoBranch committed (or deleted the branch) — working tree is
@@ -1061,6 +1074,41 @@ async function validateWorkflows(localConfig: LocalConfig, dryRun: boolean): Pro
   }
 }
 
+/**
+ * Why `--branch` may not use `branch` at `localPath`, or null. The default
+ * branch would skip review. In self mode every local branch is the member's,
+ * so one holding a commit origin does not would publish their work too.
+ */
+export async function explicitBranchRefusal(
+  localPath: string,
+  branch: string,
+  selfMode: boolean,
+): Promise<string | null> {
+  const defaultBranch = await getDefaultBranch(localPath);
+
+  if (branch === defaultBranch) {
+    return `Refusing to push to "${branch}": it is the team repo's default branch. Choose a destination branch for review.`;
+  }
+
+  if (!selfMode) return null;
+  const git = createGit(localPath);
+  const localRef = `refs/heads/${branch}`;
+  const exists = await git.raw(['show-ref', '--verify', '--quiet', localRef]).then(() => true, () => false);
+
+  if (!exists) return null;
+
+  const ahead = await git.raw(['rev-list', '--count', localRef, '--not', '--remotes=origin'])
+    .then((out) => Number.parseInt(out.trim(), 10), () => Number.NaN);
+
+  if (!Number.isFinite(ahead)) {
+    return `Refusing to push to "${branch}": could not tell whether it holds commits origin does not. Choose another --branch.`;
+  }
+
+  return ahead > 0
+    ? `Refusing to push to "${branch}": it has ${ahead} commit(s) not on origin, which are the member's. Choose another --branch, or push them yourself first.`
+    : null;
+}
+
 export async function push(
   options: GlobalOptions & { all?: boolean; role?: string; project?: string; shared?: boolean; branch?: string; carried?: string[] },
   /**
@@ -1093,6 +1141,21 @@ export async function push(
   }
 
   assertNotReadOnly(localConfig, 'teamai push');
+
+  if (options.branch) {
+    const refusal = await explicitBranchRefusal(
+      localConfig.repo.localPath,
+      options.branch,
+      isSelfMode(localConfig),
+    );
+
+    if (refusal !== null) {
+      log.error(refusal);
+      process.exitCode = 1;
+
+      return;
+    }
+  }
 
   // --project is a destination override expressed as a logical project. Each
   // resource type then resolves from its OWN axis in manifest/projects.yaml —
@@ -2810,13 +2873,19 @@ async function pushTeamConfigOnly(
   const pushSpin = (await spinner('Pushing team config...')).start();
   const branchName = options.branch ?? await unusedBranchName(localConfig.repo.localPath, localConfig.username);
   const commitMsg = `[teamai] Update team config from ${localConfig.username}`;
+  const pushOptions = options.branch ? { explicitBranch: true } : undefined;
 
   try {
+    // The config edit is already in the working tree; preparation carries it
+    // across the checkout to an existing destination.
+    if (options.branch) await prepareExplicitBranch(localConfig.repo.localPath, branchName);
+
     const hasChanges = await pushRepoBranch(
       localConfig.repo.localPath,
       commitMsg,
       ['teamai.yaml'],
       branchName,
+      pushOptions,
     );
 
     if (!hasChanges) {
