@@ -1412,7 +1412,7 @@ export class AgentsHandler extends ResourceHandler {
 
       if (!render) continue;
 
-      const origin = agentOrigin(localConfig.repo.localPath, item.name, tool, modelAliases, localConfig.scope);
+      const origin = agentOrigin(localConfig, item.name, tool, modelAliases);
       const location = await locate(tool, 'agents', installOf(teamConfig, localConfig));
       const sidecar = location.channel === 'files' && 'sidecar' in location ? location.sidecar : null;
       renders.push({ tool, dest: path.join(dir, `${item.name}${render.ext}`), render, origin, sidecar });
@@ -2303,7 +2303,9 @@ const PRE_830_EXTRAS_TOOL: Readonly<Partial<Record<ToolName, ToolName>>> = {
  * as an older CLI rendered it: the spec's `model` as written (before aliases),
  * and before #830 another tool's extras (`PRE_830_EXTRAS_TOOL`).
  */
-export function agentOrigin(repoPath: string, stem: string, tool: ToolName, aliases: ModelAliases, scope: Scope): CopyOrigin {
+export function agentOrigin(localConfig: LocalConfig, stem: string, tool: ToolName, aliases: ModelAliases): CopyOrigin {
+  const { scope } = localConfig;
+
   const specOf = (content: Buffer, version: { path: string }): AgentSpec | null => {
     const file = path.posix.basename(version.path);
 
@@ -2318,8 +2320,9 @@ export function agentOrigin(repoPath: string, stem: string, tool: ToolName, alia
   const extrasTool = PRE_830_EXTRAS_TOOL[tool];
 
   const origin: CopyOrigin = {
-    repoPath,
+    repoPath: localConfig.repo.localPath,
     pathspec: `:(glob)agents/**/${stem}.*`,
+    alternatives: [AgentFolders.origin(localConfig, stem, tool)],
     renders: [
       (content, version) => {
         const spec = specOf(content, version);
@@ -2353,9 +2356,9 @@ export function agentOrigin(repoPath: string, stem: string, tool: ToolName, alia
 /** `agentOrigin` for a copy of a removed agent; for a tool teamai renders no agents for, the team agents verbatim. */
 export async function removedAgentOrigin(localConfig: LocalConfig, stem: string, tool: string): Promise<CopyOrigin> {
   // A tool teamai renders no agents for still gets a proof: the team agents' own bytes, verbatim (#993).
-  if (!isAgentToolId(tool)) return { repoPath: localConfig.repo.localPath, pathspec: `:(glob)agents/**/${stem}.*` };
+  if (!isAgentToolId(tool)) return { repoPath: localConfig.repo.localPath, pathspec: `:(glob)agents/**/${stem}.*`, alternatives: [AgentFolders.origin(localConfig, stem, tool)] };
 
-  return agentOrigin(localConfig.repo.localPath, stem, tool, await loadModelAliases(localConfig), localConfig.scope);
+  return agentOrigin(localConfig, stem, tool, await loadModelAliases(localConfig));
 }
 
 /**
@@ -2373,8 +2376,7 @@ export async function ownsAgentCopy(
 
   if (BUILTIN_AGENT_NAMES.has(stem) || previous?.[file] !== undefined) return true;
 
-  return await isTeamaiCopy(file, await removedAgentOrigin(localConfig, stem, tool))
-    || await isTeamaiCopy(file, AgentFolders.origin(localConfig, stem, tool));
+  return isTeamaiCopy(file, await removedAgentOrigin(localConfig, stem, tool));
 }
 
 /**

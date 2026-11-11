@@ -263,7 +263,7 @@ async function withDisk(previous: DeliveredHashes, next: Iterable<[string, strin
 /**
  * Whether the file at `file`, which has no delivery record, is teamai's
  * (#993): it holds a built-in teamai ships (`origin.builtin`), or its bytes
- * are a version of `origin.pathspec` (or `origin.skillFile`) in the history of `origin.repoPath`, or
+ * are a version of `origin.pathspec` (or of one of `origin.alternatives`) in the history of `origin.repoPath`, or
  * one of `origin.renders` of such a version, compared
  * by git blob id. False when there is no file, or git cannot read the history:
  * without proof, it is the member's. Read-only; run it only for a file that
@@ -278,11 +278,11 @@ export async function isTeamaiCopy(file: string, origin: CopyOrigin): Promise<bo
 
   if (origin.builtin) return true;
 
-  for (const pathspec of origin.skillFile === undefined ? [origin.pathspec] : [origin.pathspec, origin.skillFile]) {
-    if (await matchesHistory(origin.repoPath, pathspec, bytes)) return true;
+  for (const { repoPath, pathspec, renders } of [origin, ...origin.alternatives ?? []]) {
+    if (await matchesHistory(repoPath, pathspec, bytes)) return true;
 
-    for (const render of origin.renders ?? []) {
-      if (await matchesHistory(origin.repoPath, pathspec, bytes, render)) return true;
+    for (const render of renders ?? []) {
+      if (await matchesHistory(repoPath, pathspec, bytes, render)) return true;
     }
   }
 
@@ -293,7 +293,7 @@ export async function isTeamaiCopy(file: string, origin: CopyOrigin): Promise<bo
 
 /**
  * Where the file at `rel` in a copy of the skill `origin` names comes from: that path in the skill directory. Its
- * SKILL.md is also a version of the skill kept as one file (`origin.skillFile`), and `origin.renders` apply to it.
+ * SKILL.md is also a version of the skill kept as one file (`origin.alternatives`), and `origin.renders` apply to it.
  */
 function skillFileOrigin(origin: CopyOrigin, rel: string): CopyOrigin {
   const fileOrigin: CopyOrigin = { repoPath: origin.repoPath, pathspec: `${origin.pathspec}/${rel}` };
@@ -301,7 +301,7 @@ function skillFileOrigin(origin: CopyOrigin, rel: string): CopyOrigin {
   if (rel !== SKILL_MD) return fileOrigin;
   fileOrigin.renders = origin.renders;
 
-  if (origin.skillFile !== undefined) fileOrigin.skillFile = origin.skillFile;
+  if (origin.alternatives !== undefined) fileOrigin.alternatives = origin.alternatives;
 
   return fileOrigin;
 }

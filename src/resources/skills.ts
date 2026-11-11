@@ -368,12 +368,9 @@ export function skillTargetsFor(
  * skill kept as one file, `<name>.md`.
  */
 export function skillOrigin(repoPath: string, name: string): CopyOrigin {
-  return {
-    repoPath,
-    pathspec: `:(glob)skills/**/${name}`,
-    skillFile: `:(glob)skills/**/${name}.md`,
-    renders: [(content) => withSkillFrontmatter(content.toString('utf-8'), name)],
-  };
+  const renders = [(content: Buffer) => withSkillFrontmatter(content.toString('utf-8'), name)];
+
+  return { repoPath, pathspec: `:(glob)skills/**/${name}`, renders, alternatives: [{ repoPath, pathspec: `:(glob)skills/**/${name}.md`, renders }] };
 }
 
 /** Add fields immediately before the closing delimiter without reformatting existing YAML. */
