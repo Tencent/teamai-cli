@@ -111,7 +111,7 @@ steps:
     scorers: [review-quality]
 ```
 
-没有有效 `scorers/<name>.md` 的名字会让 `teamai review --branch` 失败；`teamai pull` 会警告，步骤照常运行，只是不用这个评分器。旧版 teamai 不认识 `scorers`，所以先更新所有成员和运行器。完整写法见[工作流](workflow.md)。
+没有有效 `scorers/<name>.md` 或[目录](#评分器目录) `scorers/<name>/SCORER.md` 的名字会让 `teamai review --branch` 失败；`teamai pull` 会警告，步骤照常运行，只是不用这个评分器。旧版 teamai 不认识 `scorers`，所以先更新所有成员和运行器。完整写法见[工作流](workflow.md)。
 
 ## 一次运行和它的评审
 

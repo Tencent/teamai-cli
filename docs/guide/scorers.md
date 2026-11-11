@@ -111,7 +111,7 @@ steps:
     scorers: [review-quality]
 ```
 
-A name with no valid `scorers/<name>.md` fails `teamai review --branch`; `teamai pull` warns and the step runs without it. An older teamai does not know `scorers`, so update every member and runner first. [Workflows](workflow.md) shows the long form.
+A name with no valid `scorers/<name>.md` or [folder](#a-scorer-folder) `scorers/<name>/SCORER.md` fails `teamai review --branch`; `teamai pull` warns and the step runs without it. An older teamai does not know `scorers`, so update every member and runner first. [Workflows](workflow.md) shows the long form.
 
 ## A run and its judge
 
