@@ -1,11 +1,12 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { nextToolHomes } from '../tool-home-record.js';
-import { cleanupOf, installOf, ownOf, unreadWrites, writable, writesOf, type EntryPlace, type FilePlace, type FilesChannel, type Read } from '../locate.js';
+import { cleanupOf, installOf, locate, locatingOnce, ownOf, unreadWrites, writable, writesOf, type EntryPlace, type FilePlace, type FilesChannel, type Install, type Read } from '../locate.js';
 import { envToolHome, movedToolHome, toolHome, type Host } from '../tool-home.js';
 import { isToolId, TOOLS } from '../tools.js';
 import { samePlaces } from '../resources/places.js';
 import type { ToolId } from '../tools.js';
+import { DEFAULT_TOOL_PATHS } from '../types.js';
 
 function linuxHost(env: Record<string, string>, existing: readonly string[] = ['/new/hermes', '/x/opencode', '/home/m/.openclaw']): Host {
   return {
@@ -336,5 +337,35 @@ describe('installOf', () => {
     expect(installOf({ toolPaths: {} }, { scope: 'project', projectRoot: '/repo', repo: { kind: 'self' } })).toMatchObject({ gitExclude: false, repo: 'self', workspaceChildren: false });
     expect(installOf(team, { scope: 'project', projectRoot: '/repo', repo: { kind: 'git' }, children: { children: [child], leftOut: [], roots: [], fingerprint: 'f' } }))
       .toMatchObject({ gitExclude: true, repo: 'team', workspaceChildren: true });
+  });
+});
+
+describe('locatingOnce', () => {
+  const root = '/home/m/work/proj';
+  const install: Install = { toolPaths: DEFAULT_TOOL_PATHS, agents: {}, toolRoots: {}, gitExclude: false, scope: 'project', projectRoot: root, repo: 'team', workspaceChildren: false, keepsKnowledgeInside: false };
+  const claudeSkills = async () => writable(await locate('claude', 'skills', { ...install }));
+
+  it('answers a tool and resource from the disk as the walk first saw it, and the next walk sees what changed', async () => {
+    const existing = new Set<string>();
+    const host: Host = { ...linuxHost({}), exists: async (file) => existing.has(file), existsNow: (file) => existing.has(file) };
+
+    const inWalk = await locatingOnce(async () => {
+      const before = await claudeSkills();
+      existing.add(`${root}/.claude`);
+
+      return [before, await claudeSkills()];
+    }, host);
+
+    expect(inWalk).toEqual([null, null]);
+    expect(await locatingOnce(claudeSkills, host)).toEqual({ kind: 'dir', path: `${root}/.claude/skills` });
+  });
+
+  it('answers an install whose tool paths differ apart from the first, in the same walk', async () => {
+    const host: Host = { ...linuxHost({}), exists: async () => true, existsNow: () => true };
+    const moved: Install = { ...install, toolPaths: { ...DEFAULT_TOOL_PATHS, claude: { ...DEFAULT_TOOL_PATHS.claude, skills: '.claude/team-skills' } } };
+
+    const places = await locatingOnce(async () => [ownOf(await locate('claude', 'skills', install)), ownOf(await locate('claude', 'skills', moved))], host);
+
+    expect(places).toEqual([{ kind: 'dir', path: `${root}/.claude/skills` }, { kind: 'dir', path: `${root}/.claude/team-skills` }]);
   });
 });

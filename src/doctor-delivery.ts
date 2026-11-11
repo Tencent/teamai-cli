@@ -27,7 +27,7 @@ import {
   SHELL_PROFILE_CANDIDATE_NAMES,
 } from './utils/shell-profile.js';
 import { getUserHome } from './utils/home.js';
-import { installOf, isInstalledFor, locate, ownOf, unreadWrites, workspaceHooksOf, writable, writesOf, type DirPlace, type FilesChannel, type Install, type Location, type ReadGate, type Session, type Unread } from './locate.js';
+import { installOf, isInstalledFor, locate, locatingOnce, ownOf, unreadWrites, workspaceHooksOf, writable, writesOf, type DirPlace, type FilesChannel, type Install, type Location, type ReadGate, type Session, type Unread } from './locate.js';
 import { readGateCheckName, readGateVerdict, type Held } from './read-gates.js';
 import { amongPlaces, placesRecordOf, samePlaces } from './resources/places.js';
 import { realHost, toolHome } from './tool-home.js';
@@ -124,26 +124,29 @@ async function walkDelivery(
   const byTool = new Map<string, ToolDelivery>();
   const unreceived: string[] = [];
 
-  for (const item of items) {
-    const targets = await handler.deliveryTargets(teamConfig, localConfig, item, received);
+  // Read-only, so one answer per tool serves every item.
+  await locatingOnce(async () => {
+    for (const item of items) {
+      const targets = await handler.deliveryTargets(teamConfig, localConfig, item, received);
 
-    if (targets.length === 0) unreceived.push(item.name);
+      if (targets.length === 0) unreceived.push(item.name);
 
-    for (const target of targets) {
-      // One check for a copy several tools read, naming them all (#946).
-      const key = [target.tool, ...target.sharedWith ?? []].join(', ');
-      let delivery = byTool.get(key);
+      for (const target of targets) {
+        // One check for a copy several tools read, naming them all (#946).
+        const key = [target.tool, ...target.sharedWith ?? []].join(', ');
+        let delivery = byTool.get(key);
 
-      if (!delivery) {
-        delivery = { tool: target.tool, dir: path.dirname(target.dest), problems: new Map() };
-        byTool.set(key, delivery);
+        if (!delivery) {
+          delivery = { tool: target.tool, dir: path.dirname(target.dest), problems: new Map() };
+          byTool.set(key, delivery);
+        }
+
+        const problem = await classify(target, item);
+
+        if (problem !== null) appendTo(delivery.problems, problem, item.name);
       }
-
-      const problem = await classify(target, item);
-
-      if (problem !== null) appendTo(delivery.problems, problem, item.name);
     }
-  }
+  });
 
   return { byTool, unreceived };
 }
