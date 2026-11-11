@@ -8,8 +8,8 @@ import type { DeliveryLedger } from './delivered-copies.js';
 import { DeliveredFolders, type DeliveredFolderRef } from './delivered-folders.js';
 import { FolderFiles } from './folder-files.js';
 import { FOLDER_MARKERS } from '../folder-markers.js';
-import { folderReachOf } from '../tools.js';
-import type { LocalConfig, ResourceItem } from '../types.js';
+import { folderReachOf, isToolId, TOOLS } from '../tools.js';
+import type { CopyOrigin, LocalConfig, ResourceItem } from '../types.js';
 import { listDirs, listFiles, pathExists, readFileSafe } from '../utils/fs.js';
 import { warnOnce } from '../utils/warn-once.js';
 
@@ -98,6 +98,27 @@ async function prune(input: {
   await DeliveredFolders.prune({ localConfig, type: 'agents', keep: [...kept, ...named], ledger: input.ledger });
 }
 
+/**
+ * How a copy of agent `stem` in `tool`'s agents directory, with no delivery record, is proven a copy pull rendered from
+ * an agent folder (#993): it holds a version of a team `agents/[<ns>/]<stem>/AGENT.md`, its folder named where `tool`
+ * reads it in `localConfig`'s scope, as `render` writes it.
+ */
+function origin(localConfig: LocalConfig, stem: string, tool: string): CopyOrigin {
+  const { marker } = FOLDER_MARKERS.agents;
+
+  return {
+    repoPath: localConfig.repo.localPath,
+    pathspec: `:(glob)agents/**/${stem}/${marker}`,
+    renders: [(content, version) => {
+      if (!isToolId(tool) || !TOOLS[tool].legacyAgentMd) return null;
+      const namespace = path.posix.dirname(path.posix.dirname(version.path)).slice('agents/'.length);
+      const ref: DeliveredFolderRef = { type: 'agents', namespace: namespace === '' ? null : namespace, name: stem };
+
+      return DeliveredFolders.renderFor(content.toString('utf8'), { localConfig, ref, tool });
+    }],
+  };
+}
+
 /** Whether `localConfig`'s scope holds a delivered agent folder named `name`, in any namespace. */
 async function isDelivered(localConfig: LocalConfig, name: string): Promise<boolean> {
   const agentsRoot = path.join(DeliveredFolders.root(localConfig, 'agents'), 'agents');
@@ -111,4 +132,4 @@ async function isDelivered(localConfig: LocalConfig, name: string): Promise<bool
   return false;
 }
 
-export const AgentFolders = { isFolder, pathOf, render, deliver, prune, isDelivered } as const;
+export const AgentFolders = { isFolder, pathOf, render, origin, deliver, prune, isDelivered } as const;

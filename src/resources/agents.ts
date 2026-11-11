@@ -2286,7 +2286,8 @@ export async function removedAgentOrigin(localConfig: LocalConfig, stem: string,
  * teamai's to delete in a command the member ran (`teamai remove`,
  * `uninstall`; #993): a built-in's name, on `previous`, the checkout's
  * record, edited since or not, or a version of a team agent of that stem by
- * the team history, verbatim or as teamai rendered it for `tool`. Read-only.
+ * the team history, verbatim or as teamai rendered it for `tool`, an agent
+ * folder's `AGENT.md` included. Read-only.
  */
 export async function ownsAgentCopy(
   localConfig: LocalConfig, file: string, stem: string, tool: string, previous: DeliveredHashes | undefined,
@@ -2294,9 +2295,9 @@ export async function ownsAgentCopy(
   if (await isLink(file)) return false;
 
   if (BUILTIN_AGENT_NAMES.has(stem) || previous?.[file] !== undefined) return true;
-  const origin = await removedAgentOrigin(localConfig, stem, tool);
 
-  return isTeamaiCopy(file, origin);
+  return await isTeamaiCopy(file, await removedAgentOrigin(localConfig, stem, tool))
+    || await isTeamaiCopy(file, AgentFolders.origin(localConfig, stem, tool));
 }
 
 /**

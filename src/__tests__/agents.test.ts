@@ -1125,6 +1125,22 @@ projects:
     expect(tombstone.split('\n').map((l) => l.trim())).toContain('tf');
   });
 
+  it('removeItem deletes an unrecorded copy pull rendered from an agent folder, and keeps one the member edited (#993)', async () => {
+    await fse.outputFile(path.join(repoPath, 'agents', 'payments', 'reviewer', 'AGENT.md'), 'Apply ${TEAMAI_AGENT_DIR}/rubric.md.\n');
+    await fse.outputFile(path.join(repoPath, 'agents', 'payments', 'reviewer', 'rubric.md'), '- Name what breaks.\n');
+    commitTeamRepo(repoPath);
+    const rendered = `Apply ${path.join(homeDir, '.teamai', 'agents', 'payments', 'reviewer').split(path.sep).join('/')}/rubric.md.\n`;
+    await fse.writeFile(path.join(homeDir, '.claude/agents', 'reviewer.md'), rendered);
+    await fse.writeFile(path.join(homeDir, '.codebuddy/agents', 'reviewer.md'), `${rendered}My own step.\n`);
+
+    await handler.removeItem('reviewer', teamConfig, localConfig);
+
+    expect([
+      await fse.pathExists(path.join(homeDir, '.claude/agents', 'reviewer.md')),
+      await fse.pathExists(path.join(homeDir, '.codebuddy/agents', 'reviewer.md')),
+    ]).toEqual([false, true]);
+  });
+
   it('scanLocalForPush respects tombstones (skips removed items)', async () => {
     await fse.writeFile(path.join(repoPath, 'agents', '.removed'), 'ghost\n');
     await fse.writeFile(path.join(homeDir, '.claude/agents', 'ghost.md'), '# revived');
