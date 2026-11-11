@@ -14,6 +14,7 @@ import { simpleGit } from 'simple-git';
 // "remote" + a working clone), mocking only the provider's PR creation.
 
 const mockCreatePullRequest = vi.fn().mockResolvedValue('https://example.test/pr/1');
+const mockFindOpen = vi.fn().mockResolvedValue(undefined);
 const mockAutoDetectInit = vi.fn();
 const mockLoadStateForScope = vi.fn();
 const mockSaveStateForScope = vi.fn();
@@ -23,6 +24,7 @@ vi.mock('../providers/index.js', () => ({
     name: 'github',
     parseRepoInput: (input: string) => ({ owner: 'acme', repo: 'team', httpsUrl: input }),
     createPullRequest: (...args: unknown[]) => mockCreatePullRequest(...args),
+    pullRequests: { findOpen: (...args: unknown[]) => mockFindOpen(...args) },
   }),
 }));
 
@@ -94,6 +96,7 @@ describe('push carries teamai.yaml (source add regression)', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-push-cfg-'));
     vi.clearAllMocks();
+    mockFindOpen.mockReset().mockResolvedValue(undefined);
     mockCreatePullRequest.mockResolvedValue('https://example.test/pr/1');
     mockLoadStateForScope.mockResolvedValue({
       lastPush: null, pushedSkills: [], pushedRules: [], pushedEnvVars: [],
@@ -133,6 +136,66 @@ describe('push carries teamai.yaml (source add regression)', () => {
     const pushed = await committedYamlOnPushedBranch(teamRepo);
     expect(pushed).toContain('sources:');
     expect(pushed).toContain('https://git.example/dev');
+  });
+
+  it.each([
+    { name: 'carries a second config edit onto the same branch', pending: 'autoUpdate: false\n', conflicts: false, refresh: false },
+    { name: 'keeps both sides when a config key conflicts', pending: 'usageReport: true\n', conflicts: true, refresh: false },
+    { name: 'preserves config added during the default branch refresh', pending: 'autoUpdate: false\n', conflicts: false, refresh: true },
+  ])('$name', async ({ pending, conflicts, refresh }) => {
+    const teamRepo = await initTeamRepos(tmpDir);
+    const remote = path.join(tmpDir, 'remote.git');
+    const remoteGit = simpleGit(remote);
+    const branch = 'review/config';
+    const yamlPath = path.join(teamRepo, 'teamai.yaml');
+    const base = fs.readFileSync(yamlPath, 'utf8');
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: {
+        repo: { localPath: teamRepo, remote },
+        username: 'alice',
+        scope: 'project',
+        projectRoot: teamRepo,
+      },
+      teamConfig: { repo: 'acme/team', toolPaths: {} },
+    });
+
+    const originalExitCode = process.exitCode;
+    try {
+      const { push } = await import('../push.js');
+      fs.writeFileSync(yamlPath, base + '# Keep this destination comment\nusageReport: false\n');
+      await push({ all: true, branch });
+      const destination = await remoteGit.revparse([branch]);
+
+      if (refresh) {
+        const seed = path.join(tmpDir, 'seed');
+        const seedGit = simpleGit(seed);
+        fs.writeFileSync(path.join(seed, 'teamai.yaml'), base + '# Keep this destination comment\nusageReport: false\n');
+        await seedGit.add('teamai.yaml');
+        await seedGit.commit('Enable the destination setting on main');
+        await seedGit.push('origin', 'main');
+      }
+
+      fs.writeFileSync(yamlPath, base + pending);
+      mockFindOpen.mockResolvedValueOnce('https://example.test/pr/1');
+      await push({ all: true, branch });
+
+      const published = await remoteGit.show([`${branch}:teamai.yaml`]);
+      expect(published).toContain('# Keep this destination comment');
+      expect(published).toContain('usageReport: false');
+      expect((await simpleGit(teamRepo).branchLocal()).current).toBe('main');
+      expect(mockCreatePullRequest).toHaveBeenCalledTimes(1);
+
+      if (conflicts) {
+        expect(await remoteGit.revparse([branch])).toBe(destination);
+        expect(fs.readFileSync(yamlPath, 'utf8')).toBe(base + pending);
+        expect(process.exitCode).toBe(1);
+      } else {
+        expect(published).toContain('autoUpdate: false');
+        expect(process.exitCode).toBe(originalExitCode);
+      }
+    } finally {
+      process.exitCode = originalExitCode;
+    }
   });
 
   it('rejects invalid package declarations before creating a PR', async () => {
@@ -242,8 +305,14 @@ describe('push carries teamai.yaml (source add regression)', () => {
     }
   });
 
-  it('no changes at all: reports nothing to push, no PR', async () => {
+  it.each([false, true])('does not push an unchanged config (CRLF only: %s)', async (crlfOnly) => {
     const teamRepo = await initTeamRepos(tmpDir);
+
+    if (crlfOnly) {
+      await simpleGit(teamRepo).addConfig('core.autocrlf', 'false');
+      const yamlPath = path.join(teamRepo, 'teamai.yaml');
+      fs.writeFileSync(yamlPath, fs.readFileSync(yamlPath, 'utf8').replace(/\r?\n/g, '\r\n'));
+    }
 
     mockAutoDetectInit.mockResolvedValue({
       localConfig: {
@@ -257,7 +326,10 @@ describe('push carries teamai.yaml (source add regression)', () => {
 
     const { push } = await import('../push.js');
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    await push({ all: true });
+    const previousExitCode = process.exitCode;
+
+    await push({ all: true, branch: 'review/config' });
+    expect(process.exitCode).toBe(previousExitCode);
     logSpy.mockRestore();
 
     expect(mockCreatePullRequest).not.toHaveBeenCalled();

@@ -36,6 +36,8 @@ Your team's repo on the website is untouched — you can rejoin any time with
 
 A targeted project exclusion needs the same confirmation even when there are no local files to remove. `--dry-run` and declining confirmation leave the project config unchanged.
 
+For a whole-machine uninstall, check the preview before removing the last configured workspace. If it lists built-in hooks under "Kept for other teamai installs" and the user confirms that no other workspace, checkout, user-scope install, or HTTP agent needs them, run `teamai hooks remove` in that workspace before uninstalling it. The final outside-project uninstall can remove remaining TeamAI data even when it has no configuration to clean up the tool hooks.
+
 Whole machine:
 
 ```bash
