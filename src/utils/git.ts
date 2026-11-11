@@ -13,6 +13,7 @@ import { errnoCode } from './fs.js';
 import { GitAnswers } from './git-answers.js';
 import { gitFindsNoRepository, linkedWorktreesStamp, repositoryStamp } from './git-discovery.js';
 import { log } from './logger.js';
+import { mergeTeamConfig } from './yaml.js';
 
 /** What simple-git accepts as a custom binary without its unsafe opt-in. */
 const SIMPLE_GIT_SAFE_BINARY = /^([a-z]:)?([a-z0-9/.\\_~-]+)$/i;
@@ -1339,59 +1340,75 @@ export async function prepareExplicitBranch(localPath: string, branchName: strin
       .trim().split(/\s+/).map((count) => Number.parseInt(count, 10))
     : [0, 0];
 
-  // A rebase can incorporate config changes from either tip.
-  const destinations = [];
+  const hasConfigEdit = (localExists || originExists)
+    && (await git.raw(['status', '--porcelain', '--', 'teamai.yaml'])).trim() !== '';
 
-  if (localExists && (!behind || ahead)) destinations.push(localRef);
+  let source = hasConfigEdit ? await git.revparse(['--abbrev-ref', 'HEAD']) : null;
 
-  if (originExists && (!localExists || behind)) destinations.push(originRef);
+  if (source === 'HEAD') source = await git.revparse(['HEAD']);
 
-  if (destinations.length && (await git.raw(['status', '--porcelain', '--', 'teamai.yaml'])).trim()) {
-    for (const destination of destinations) {
-      if ((await git.diff(['--name-only', 'HEAD', destination, '--', 'teamai.yaml'])).trim()) {
-        throw new Error(
-          `teamai.yaml differs on the destination branch ${branchName}. `
-          + 'Your edit is still in the team repo. Reapply it on top of the destination config or push to a new branch.',
-        );
-      }
-    }
-  }
+  const configPath = hasConfigEdit ? `${(await git.raw(['rev-parse', '--show-prefix'])).trimEnd()}teamai.yaml` : null;
+  const base = configPath === null ? null : await readFileAtRev(localPath, 'HEAD', configPath);
 
   // Pending config or env edits may already be in the working tree; a checkout
   // to the destination must not lose them, and its files must not block it.
   const carried = await carryWorkingTree(git);
 
+  let mergedConfig: string | undefined;
+
   try {
     if (!localExists) {
       if (originExists) await git.checkout(['-b', branchName, originRef]);
       else await git.checkoutLocalBranch(branchName);
+    } else {
+      await git.checkout(branchName);
 
-      return;
+      if (behind && !ahead) await git.reset(['--hard', originRef]);
+
+      if (behind && ahead) {
+        try {
+          await git.rebase([originRef]);
+        } catch (e) {
+          await git.rebase(['--abort']).catch(() => undefined);
+          throw new Error(
+            `The destination branch ${branchName} has unpushed commits that conflict with ${originRef}: `
+            + `${e instanceof Error ? e.message : String(e)}. Resolve it in the team repo, then push again.`,
+            { cause: e },
+          );
+        }
+      }
     }
 
-    await git.checkout(branchName);
+    if (carried && configPath && base && source && carried.entries.some((entry) => entry.relative === configPath && entry.present)) {
+      const backup = path.join(carried.root, 'files', configPath);
 
-    if (!behind) return;
+      try {
+        const destination = await readFileAtRev(localPath, 'HEAD', configPath);
+        const baseText = 'text' in base ? base.text : null;
+        const destinationText = 'text' in destination ? destination.text : null;
 
-    if (!ahead) {
-      // No unpushed commit to keep: follow origin.
-      await git.reset(['--hard', originRef]);
+        if (baseText !== destinationText) {
+          const file = await fse.lstat(destinationText === null ? backup : path.join(localPath, 'teamai.yaml'));
 
-      return;
-    }
+          if (!file.isFile() || !(await fse.lstat(backup)).isFile()) throw new Error('teamai.yaml is not a regular file.');
 
-    try {
-      await git.rebase([originRef]);
-    } catch (e) {
-      await git.rebase(['--abort']).catch(() => undefined);
-      throw new Error(
-        `The destination branch ${branchName} has unpushed commits that conflict with ${originRef}: `
-        + `${e instanceof Error ? e.message : String(e)}. Resolve it in the team repo, then push again.`,
-        { cause: e },
-      );
+          const pending = await fse.readFile(backup, 'utf8');
+          const merged = mergeTeamConfig(baseText, pending, destinationText);
+          const mergedFile = path.join(carried.root, 'merged-teamai.yaml');
+          await fse.writeFile(mergedFile, merged, { encoding: 'utf8', mode: file.mode });
+          mergedConfig = mergedFile;
+        }
+      } catch (error) {
+        await git.checkout([source]);
+        throw new Error(
+          `Cannot apply teamai.yaml to ${branchName}: ${error instanceof Error ? error.message : String(error)} `
+          + `Your edit is still in the team repo. Check out the destination and reapply it there, or push with --branch <new name>.`,
+          { cause: error },
+        );
+      }
     }
   } finally {
-    await restoreWorkingTree(git, carried);
+    await restoreWorkingTree(git, carried, configPath, mergedConfig);
   }
 }
 
@@ -1464,7 +1481,12 @@ async function carryWorkingTree(git: SimpleGit): Promise<CarriedWorkingTree | nu
 }
 
 /** Put the changes {@link carryWorkingTree} moved aside back into the working tree. */
-async function restoreWorkingTree(git: SimpleGit, carried: CarriedWorkingTree | null): Promise<void> {
+async function restoreWorkingTree(
+  git: SimpleGit,
+  carried: CarriedWorkingTree | null,
+  configPath: string | null,
+  mergedConfig: string | undefined,
+): Promise<void> {
   if (carried === null) return;
 
   let restored = false;
@@ -1477,7 +1499,8 @@ async function restoreWorkingTree(git: SimpleGit, carried: CarriedWorkingTree | 
 
       if (present) {
         await fse.ensureDir(path.dirname(target));
-        await fse.copy(path.join(carried.root, 'files', relative), target, {
+        const source = relative === configPath && mergedConfig ? mergedConfig : path.join(carried.root, 'files', relative);
+        await fse.copy(source, target, {
           overwrite: true, preserveTimestamps: true, dereference: false,
         });
       } else {

@@ -42,6 +42,7 @@ export const WINDOWS_TESTS = [
   'src/__tests__/mcp-folders.test.ts',
   'src/__tests__/pi-adapter.test.ts',
   'src/__tests__/pull-user-record-key.test.ts',
+  'src/__tests__/push-team-config.test.ts',
   'src/__tests__/qoder-cn.test.ts',
   'src/__tests__/role-assignments-cache.test.ts',
   'src/__tests__/rule-folder-paths.test.ts',
