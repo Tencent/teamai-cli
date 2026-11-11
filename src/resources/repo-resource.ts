@@ -4,6 +4,9 @@ import { ResourceHandler } from './base.js';
 import { loadStateForScope } from '../config.js';
 import { isSelfMode, type LocalConfig, type ResourceItem, type ResourceType, type State, type TeamaiConfig } from '../types.js';
 import { isPlaceableType, namespaceOfPlacedPath } from '../push-namespaces.js';
+import { holdsMarker } from '../folder-markers.js';
+import { SCORER_MARKER } from '../scorers/folder.js';
+import { folderPlacesOf } from './resolver.js';
 import { ensureDir, fileContentEqual, pathExists } from '../utils/fs.js';
 import { hashObject } from '../utils/git.js';
 
@@ -80,6 +83,35 @@ export async function placedCopy(
   return item;
 }
 
+/**
+ * A file the author added to a scorer folder an earlier push placed elsewhere: it goes into the placed folder, found
+ * through the record of the folder's SCORER.md. Null when `rel`, under the author's `scorers/`, is in no such folder.
+ */
+async function placedScorerFolderFile(
+  rel: string,
+  activeFile: string,
+  localConfig: LocalConfig,
+  placements: NonNullable<State['placements']>,
+): Promise<ResourceItem | null> {
+  const scorersDir = path.resolve(activeFile, ...rel.split('/').map(() => '..'));
+
+  for (const place of folderPlacesOf(rel)) {
+    if (!await holdsMarker(path.join(scorersDir, ...place.split('/')), SCORER_MARKER)) continue;
+    const record = placements[`scorers:scorers/${place}/${SCORER_MARKER}`];
+
+    if (!record || !await pathExists(path.join(localConfig.repo.localPath, ...record.path.split('/')))) return null;
+    const placedPath = `${path.posix.dirname(record.path)}/${rel.slice(place.length + 1)}`;
+
+    if (await pathExists(path.join(localConfig.repo.localPath, ...placedPath.split('/')))) {
+      throw new Error(`${placedPath} is on the team repo, and your scorers/${rel} was never pushed there, so pushing it would overwrite that file. Merge your file into ${placedPath}, then delete scorers/${rel}`);
+    }
+
+    return { name: rel, type: 'scorers', sourcePath: activeFile, relativePath: placedPath, namespace: namespaceOfPlacedPath('scorers', record.path), status: 'new', prePlacementPath: `scorers/${rel}` };
+  }
+
+  return null;
+}
+
 export async function scanRepoResourceForPush(
   type: ResourceType,
   dir: string,
@@ -112,7 +144,8 @@ export async function scanRepoResourceForPush(
       if (atBaseline && await fileContentEqual(activeFile, baseFile)) continue;
 
       if (!atBaseline) {
-        const placed = await placedCopy(type, rel, relativePath, activeFile, localConfig, placements);
+        const placed = await placedCopy(type, rel, relativePath, activeFile, localConfig, placements)
+          ?? (type === 'scorers' ? await placedScorerFolderFile(rel, activeFile, localConfig, placements) : null);
 
         if (placed === 'delivered') continue;
 

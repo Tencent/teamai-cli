@@ -21,10 +21,12 @@ import { createSkillPushItem, scanTeamRepoNamespaces } from './resources/skills.
 import { AgentsHandler } from './resources/agents.js';
 import { deliversEveryNamespace, resolveResourceNamespaces } from './resource-namespaces.js';
 import type {
-  GlobalOptions, PendingPushItem, ResourceItem, ResourceType, LocalConfig, TeamaiConfig, State,
+  GlobalOptions, PendingPush, PendingPushItem, ResourceItem, ResourceType, LocalConfig, TeamaiConfig, State,
 } from './types.js';
 import { getDataHome, isSelfMode, SELF_KNOWLEDGE_SCAN_KEY, SYNC_LOCK_FILENAME } from './types.js';
 import { FOLDER_MARKERS, holdsMarker } from './folder-markers.js';
+import { folderPlacesOf } from './resources/resolver.js';
+import { SCORER_MARKER } from './scorers/folder.js';
 import { acquireLock, releaseLock } from './update.js';
 import { assertSafeResourceName, resolveReal } from './utils/path-safety.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces, roleNamespaceEntries, RolesManifestNotFoundError, type ResourceNamespaces } from './roles.js';
@@ -635,6 +637,9 @@ type PushGroupOutcome = 'pushed' | 'nochange' | 'pr-failed' | 'failed';
  * proposed path alone misses that.
  */
 function collisionPaths(type: PlaceableType, placedAt: string): string[] {
+  // A scorer is `<name>.md` or the folder `<name>/`, and pull refuses a place that holds both.
+  if (type === 'scorers') return [placedAt, placedAt.endsWith('.md') ? placedAt.slice(0, -'.md'.length) : `${placedAt}.md`];
+
   if (type !== 'agents') return [placedAt];
   const stem = placedAt.replace(/\.(yaml|md)$/, '');
 
@@ -649,7 +654,94 @@ type PushItem = ResourceItem & {
   deliveredBlob?: string;
   /** The path the item was scanned at, before placement moved it into a namespace. */
   prePlacementPath?: string;
+  /** A file of a scorer folder: its path in the folder. The folder, `scorers/[<ns>/]<name>`, is the resource push places. */
+  pathInScorerFolder?: string;
 };
+
+/** The path of the resource `item` is part of: a scorer folder's for one of its files, else the item's own. */
+function resourcePathOf(item: PushItem): string {
+  return item.pathInScorerFolder === undefined ? item.relativePath : item.relativePath.slice(0, -(item.pathInScorerFolder.length + 1));
+}
+
+/** The source of the resource `item` is part of: a scorer folder's directory for one of its files, else the item's own. */
+function resourceSourceOf(item: PushItem): string {
+  const inFolder = item.pathInScorerFolder;
+
+  return inFolder === undefined ? item.sourcePath : path.resolve(item.sourcePath, ...inFolder.split('/').map(() => '..'));
+}
+
+/** {@link isAtSharedRoot} for the resource `item` is part of, so a scorer folder's files are judged as their folder. */
+function isResourceAtSharedRoot(item: PushItem): boolean {
+  return isAtSharedRoot({ ...item, relativePath: resourcePathOf(item) });
+}
+
+/** The namespace `entry` recorded for the resource `item` is part of. */
+function pendingResourceNamespace(entry: PendingPush, item: PushItem): string | undefined {
+  if (item.pathInScorerFolder === undefined) return pendingNamespaceFor(entry, item);
+  const recorded = entry.items.find((candidate) => isRecordedItem(candidate, item));
+
+  return recorded && recordedResourceNamespace(recorded, item);
+}
+
+/** The namespace `recorded`, the record of `item`, sends the resource `item` is part of to. */
+function recordedResourceNamespace(recorded: PendingPushItem, item: PushItem): string | undefined {
+  const inFolder = item.pathInScorerFolder;
+
+  return recordedNamespace(inFolder === undefined ? recorded : { ...recorded, relativePath: recorded.relativePath.slice(0, -(inFolder.length + 1)) });
+}
+
+/** Whether `selected` holds some but not all of a scorer folder's `listed` files, which it reports: a folder goes out whole. */
+function selectsPartOfScorerFolder(listed: readonly PushItem[], selected: readonly PushItem[]): boolean {
+  const folders = new Map<string, PushItem[]>();
+
+  for (const item of listed) {
+    if (item.pathInScorerFolder === undefined) continue;
+    const folder = resourcePathOf(item);
+    folders.set(folder, [...folders.get(folder) ?? [], item]);
+  }
+
+  let isPartial = false;
+
+  for (const [folder, files] of folders) {
+    const chosen = files.filter((file) => selected.includes(file)).length;
+
+    if (chosen === 0 || chosen === files.length) continue;
+    log.error(`[scorers] ${folder}/ is one scorer folder, so its files go out together: select all of ${files.map((file) => file.name).join(', ')}, or none of them.`);
+    isPartial = true;
+  }
+
+  if (isPartial) process.exitCode = 2;
+
+  return isPartial;
+}
+
+/**
+ * Marks each scanned file of a scorer folder with its path in the folder and gives it the folder's status: the folder
+ * is new only when its SCORER.md is, so a file added to a team folder is an edit of that scorer, which keeps its place.
+ */
+async function markScorerFolderFiles(items: readonly PushItem[]): Promise<void> {
+  const folders = new Map<string, PushItem[]>();
+
+  for (const item of items) {
+    if (item.type !== 'scorers') continue;
+    const scorersDir = path.resolve(item.sourcePath, ...item.name.split('/').map(() => '..'));
+
+    for (const place of folderPlacesOf(item.name)) {
+      const dir = path.join(scorersDir, ...place.split('/'));
+
+      if (!await holdsMarker(dir, SCORER_MARKER)) continue;
+      item.pathInScorerFolder = item.name.slice(place.length + 1);
+      folders.set(dir, [...folders.get(dir) ?? [], item]);
+      break;
+    }
+  }
+
+  for (const files of folders.values()) {
+    const status = files.some((file) => file.pathInScorerFolder === SCORER_MARKER && file.status === 'new') ? 'new' : 'modified';
+
+    for (const file of files) file.status = status;
+  }
+}
 
 /** The team-relative path `pushItem` retired while writing `item`, if any. */
 function supersededPathOf(item: ResourceItem): string | undefined {
@@ -685,7 +777,7 @@ function reuseRecordedDestinations(groups: PushGroup[]): Set<ResourceItem> {
 
     for (const item of group.items) {
       if (item.status !== 'new' || !isPlaceableType(item.type)) continue;
-      const ns = pendingNamespaceFor(group.reuse, item);
+      const ns = pendingResourceNamespace(group.reuse, item);
       settled.add(item);
 
       if (item.type === 'skills') {
@@ -694,7 +786,7 @@ function reuseRecordedDestinations(groups: PushGroup[]): Set<ResourceItem> {
         rememberPrePlacementPath(item);
         item.namespace = ns;
         item.relativePath = ns ? skillNamespacePath(ns, item.name) : `skills/${item.name}`;
-      } else if (ns && isAtSharedRoot(item)) {
+      } else if (ns && isResourceAtSharedRoot(item)) {
         // A rule or agent carries its own path from the scanner, and that path
         // is authoritative when it already names a namespace (#654).
         rememberPrePlacementPath(item);
@@ -746,7 +838,7 @@ async function placeNewResources(args: {
 
   for (const type of PLACEABLE_TYPES) {
     const newAtRoot = items.filter(
-      (i) => i.type === type && i.status === 'new' && !i.namespace && isAtSharedRoot(i) && !settled.has(i),
+      (i) => i.type === type && i.status === 'new' && !i.namespace && isResourceAtSharedRoot(i) && !settled.has(i),
     );
 
     if (newAtRoot.length === 0) continue;
@@ -785,8 +877,8 @@ async function placeNewResources(args: {
         // saying out loud, so it is never the result of a silent fallback.
         for (const item of newAtRoot) {
           if (options.shared) {
-            const taken = await Promise.all(collisionPaths(type, item.relativePath).map(async candidate =>
-              path.resolve(localConfig.repo.localPath, candidate) !== path.resolve(item.sourcePath)
+            const taken = await Promise.all(collisionPaths(type, resourcePathOf(item)).map(async candidate =>
+              path.resolve(localConfig.repo.localPath, candidate) !== path.resolve(resourceSourceOf(item))
                 && await pathExists(path.join(localConfig.repo.localPath, candidate)) ? candidate : null));
 
             if (taken.some(Boolean)) {
@@ -804,13 +896,14 @@ async function placeNewResources(args: {
       case 'namespace':
         for (const item of newAtRoot) {
           const placedAt = withNamespace(item.relativePath, destination.namespace, rootSegmentsFor(type));
+          const placedResource = withNamespace(resourcePathOf(item), destination.namespace, rootSegmentsFor(type));
           // This resource is NEW here, so nothing of ours is at that path yet.
           // Anything already there is somebody else's, and `pushItem` writes
           // rather than merges: placing on top of it would replace their work
           // with ours, silently, in a run they never reviewed.
           let taken: string | undefined;
 
-          for (const candidate of collisionPaths(type, placedAt)) {
+          for (const candidate of collisionPaths(type, placedResource)) {
             if (await pathExists(path.join(localConfig.repo.localPath, candidate))) {
               taken = candidate;
               break;
@@ -821,7 +914,7 @@ async function placeNewResources(args: {
             log.error(
               `[${type}] ${item.name} cannot be placed: ${taken} already exists in the team repo, `
               + `and this is a new ${type.slice(0, -1)}, so pushing it there would `
-              + (taken === placedAt ? 'overwrite that copy. ' : 'leave two copies of the same agent. ')
+              + (taken === placedResource ? 'overwrite that copy. ' : `leave two copies of the same ${type.slice(0, -1)}. `)
               + 'Pull and edit the existing one, rename yours, or pass --role <ns> to choose another namespace.',
             );
             process.exitCode = 2;
@@ -2098,6 +2191,8 @@ async function pushCore(
     }
   }
 
+  await markScorerFolderFiles(fullScan);
+
   // A project that cannot answer for agents is reported below for an agent the
   // scan itself dropped — skipped as "no active source" with `needsDestination`
   // set. That one never reaches the listing, so deferring its error until the
@@ -2123,7 +2218,7 @@ async function pushCore(
     const marker = folderMarkers[item.type];
 
     if (marker === undefined) return undefined;
-    const parts = item.relativePath.split('/');
+    const parts = resourcePathOf(item).split('/');
 
     for (let depth = 2; depth < parts.length; depth++) {
       const dir = parts.slice(0, depth);
@@ -2482,7 +2577,7 @@ async function pushCore(
 
     if (!item || (item.type !== 'rules' && item.type !== 'agents')) continue;
 
-    if (item.status !== 'modified' || !isAtSharedRoot(item)) continue;
+    if (item.status !== 'modified' || !isResourceAtSharedRoot(item)) continue;
 
     const awaiting = pendingPushes.flatMap((entry) => entry.items.map((recorded) => ({ entry, recorded })))
       .find(({ recorded }) => recorded.type === item.type && recorded.name === item.name
@@ -2502,7 +2597,7 @@ async function pushCore(
   // let the flag look as if it had scoped it.
   if (options.role || options.project) {
     for (const item of allItems) {
-      if ((item.type === 'rules' || item.type === 'agents') && item.status === 'modified' && isAtSharedRoot(item)) {
+      if ((item.type === 'rules' || item.type === 'agents') && item.status === 'modified' && isResourceAtSharedRoot(item)) {
         log.warn(
           `[${item.type}] ${item.name} is an edit of the shared-root ${item.relativePath}, which every member receives; `
           + `${options.role ? '--role' : '--project'} only places new resources, so it stays there.`,
@@ -2573,8 +2668,8 @@ async function pushCore(
   // so an open PR recording that path is still the right one to update, and
   // treating it as a conflict opened a second PR on the same file (#649 review).
   const movedByFlag = (item: ResourceItem): boolean => options.shared
-    ? item.status === 'new' && isAtSharedRoot(item)
-    : isRelocatedByFlag(item) || (item.status === 'new' && !item.namespace && isAtSharedRoot(item));
+    ? item.status === 'new' && isResourceAtSharedRoot(item)
+    : isRelocatedByFlag(item) || (item.status === 'new' && !item.namespace && isResourceAtSharedRoot(item));
 
   const conflictsWithRequest = (
     recorded: PendingPushItem,
@@ -2589,7 +2684,7 @@ async function pushCore(
     if (!movedByFlag(scanned)) {
       // A new resource still at the shared root is placed later and takes the
       // PR's recorded destination; anything else already has its own.
-      if (scanned.status === 'new' && isAtSharedRoot(scanned)) return false;
+      if (scanned.status === 'new' && isResourceAtSharedRoot(scanned)) return false;
 
       return path.posix.dirname(scanned.relativePath) !== path.posix.dirname(recorded.relativePath);
     }
@@ -2603,7 +2698,7 @@ async function pushCore(
     // user did not name from "everyone" to one namespace (#649 review).
     const requested = requestedNamespaceFor(type);
 
-    return requested !== undefined && requested !== (recordedNamespace(recorded) ?? '');
+    return requested !== undefined && requested !== (recordedResourceNamespace(recorded, scanned) ?? '');
   };
 
   const reusablePending = pendingPushes.filter((entry) => {
@@ -2642,7 +2737,7 @@ async function pushCore(
 
     // Show the destination whenever it is already namespaced — which one it is
     // decides who receives the resource, so it is not obvious from the name.
-    if (!isAtSharedRoot(item)) {
+    if (!isResourceAtSharedRoot(item)) {
       console.log(`       to:   ${item.relativePath}`);
     }
 
@@ -2709,6 +2804,8 @@ async function pushCore(
 
     selectedItems = indices.map((i) => allItems[i]);
   }
+
+  if (selectsPartOfScorerFolder(allItems, selectedItems)) return;
 
   if (await branchGuard.stops(selectedItems)) return;
 
