@@ -2519,6 +2519,8 @@ async function pullForScope(
 
   // Not the fast path: each writer's report replaces its delivered paths (#915).
   policy.recorder?.fullSync();
+  // The tools this sync delivers to, before a copy can make another tool installed: that one is new to the next pull.
+  currentTargets ??= await getInstalledResourceTargets(freshConfig, localConfig);
 
   // Step 2: Sync each resource type
   let totalSynced = 0;

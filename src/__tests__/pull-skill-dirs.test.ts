@@ -51,7 +51,7 @@ import { packagedSkillRoots } from '../skill-content.js';
 import { getHandler } from '../resources/index.js';
 import { detectProjectConfig, loadLocalConfigForScope, loadStateForScope, loadTeamConfig, saveStateForScope } from '../config.js';
 import { log } from '../utils/logger.js';
-import { TeamaiConfigSchema, type LocalConfig, type State } from '../types.js';
+import { DEFAULT_TOOL_PATHS, TeamaiConfigSchema, type LocalConfig, type State } from '../types.js';
 import { realHost, recordedHomes, saveToolHomes, toolHomesPath } from '../tool-home.js';
 
 describe('a pull and the homes the env moves', () => {
@@ -151,6 +151,22 @@ describe('a pull and the homes the env moves', () => {
 
     expect(await fse.pathExists(path.join(xdg, 'opencode', 'skills', 'deploy', 'SKILL.md'))).toBe(true);
     expect(Object.values(saved.lastPullByWorkspace ?? {}).map((record) => record.targets)).toEqual([['opencode']]);
+  });
+
+  it('delivers on the next pull to a tool that another tool\'s copy made installed', async () => {
+    const agy = DEFAULT_TOOL_PATHS.agy;
+    vi.mocked(loadTeamConfig).mockResolvedValue(TeamaiConfigSchema.parse({
+      team: 't', repo: 'https://example.invalid/x/t.git',
+      toolPaths: { agy: { ...agy, userScope: { ...agy.userScope, skills: '.codebuddy/agy-skills' } } },
+    }));
+    config.enabledAgents = ['agy', 'codebuddy'];
+    await fse.ensureDir(path.join(home, '.gemini', 'config'));
+
+    await pull({});
+    await pull({});
+
+    expect(await fse.pathExists(path.join(home, '.codebuddy', 'agy-skills', 'deploy', 'SKILL.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(home, '.codebuddy', 'skills', 'deploy', 'SKILL.md'))).toBe(true);
   });
 
   it('syncs in full once on the skills directories an earlier release recorded, which say nothing of rules, instruction blocks or agents, and records them only as places', async () => {
