@@ -29,8 +29,6 @@ export function parseYaml(text: string): JsonValue {
 
 /** Apply changed top-level settings while preserving the destination document. */
 export function mergeTeamConfig(base: string | null, pending: string, destination: string | null): string {
-  if (base === destination) return pending;
-
   if (base !== null && destination === null) throw new Error('The destination removed teamai.yaml.');
 
   const read = (text: string | null) => {
@@ -45,6 +43,9 @@ export function mergeTeamConfig(base: string | null, pending: string, destinatio
 
   const original = read(base).values;
   const edit = read(pending);
+
+  if (base === destination) return pending;
+
   const target = read(destination);
   const expected = new Map(target.values);
   const conflicts: string[] = [];
