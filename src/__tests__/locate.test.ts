@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { nextToolHomes } from '../tool-home-record.js';
 import { cleanupOf, installOf, locate, locatingOnce, ownOf, unreadWrites, writable, writesOf, type EntryPlace, type FilePlace, type FilesChannel, type Install, type Read } from '../locate.js';
@@ -367,5 +368,48 @@ describe('locatingOnce', () => {
     const places = await locatingOnce(async () => [ownOf(await locate('claude', 'skills', install)), ownOf(await locate('claude', 'skills', moved))], host);
 
     expect(places).toEqual([{ kind: 'dir', path: `${root}/.claude/skills` }, { kind: 'dir', path: `${root}/.claude/team-skills` }]);
+  });
+
+  // A pull's item walk keeps its first answers, so a copy one tool writes must not change what another tool would get.
+  it.each(['project', 'user'] as const)('lets a %s pull\'s copies change no answer the rest of its walk reads, but a tool\'s that writes the same copies', async (scope) => {
+    const tools = Object.keys(DEFAULT_TOOL_PATHS);
+    const walks = [{ walked: 'skills', reads: ['skills'] }, { walked: 'rules', reads: ['rules', 'blocks'] }, { walked: 'agents', reads: ['agents'] }] as const;
+    const each: Install = { ...install, agents: { enabledAgents: tools } };
+    const scoped: Install = scope === 'project' ? each : { toolPaths: each.toolPaths, agents: each.agents, toolRoots: {}, gitExclude: false, scope };
+    const changed: string[] = [];
+
+    for (const everyInstalled of [false, true]) {
+      for (const writer of tools) {
+        for (const { walked, reads } of walks) {
+          const existing = new Set<string>();
+          const host: Host = { ...linuxHost({}), exists: async (file) => existing.has(file), existsNow: (file) => existing.has(file) };
+          const create = (file: string) => { for (let dir = file; dir !== '/'; dir = path.posix.dirname(dir)) existing.add(dir); };
+          const writes = async (tool: string, resource: (typeof reads)[number]) => writesOf(await locate(tool, resource, scoped, host)).map((place) => place.path);
+          const answers = async () => Promise.all(tools.flatMap((tool) => reads.map(async (resource) => ({ tool, resource, answer: await locate(tool, resource, scoped, host) }))));
+
+          for (const tool of everyInstalled ? tools : [writer]) {
+            for (const resource of ['skills', 'rules', 'blocks', 'agents'] as const) {
+              for (const gate of (await locate(tool, resource, scoped, host)).gates) if (gate.kind === 'installed') create(gate.probe);
+            }
+          }
+
+          if (writable(await locate(writer, walked, scoped, host)) === null) continue;
+          const before = await answers();
+          for (const file of await writes(writer, walked)) create(file);
+          const after = await answers();
+
+          for (const [index, { tool, resource, answer }] of after.entries()) {
+            const theirs = await writes(tool, resource);
+            const ours = new Set(await writes(writer, resource));
+
+            if (!isDeepStrictEqual(answer, before[index].answer) && !(theirs.length > 0 && theirs.every((file) => ours.has(file)))) {
+              changed.push(`${writer} ${walked} changes ${tool} ${resource}${everyInstalled ? ' with every tool installed' : ''}`);
+            }
+          }
+        }
+      }
+    }
+
+    expect(changed).toEqual([]);
   });
 });

@@ -2816,7 +2816,7 @@ async function pullForScope(
       const canReceive = !needsToolRoot
         || (await getInstalledResourceTargets(freshConfig, localConfig, type)).length > 0;
 
-      // A copy lands in its own directory, so one answer per tool serves every item.
+      // A copy changes no tool's answer but that of a tool sharing it (locate.test.ts), so one answer per tool serves every item.
       await locatingOnce(async () => {
         for (const item of items) await handler.pullItem(item, freshConfig, localConfig, ledger);
       });
