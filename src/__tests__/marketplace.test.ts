@@ -20,6 +20,7 @@ beforeEach(() => {
   repo = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-marketplace-'));
   fs.mkdirSync(path.join(repo, 'skills', 'release'), { recursive: true });
   fs.writeFileSync(path.join(repo, 'skills', 'release', 'SKILL.md'), '---\ndescription: Cut a release\n---\n');
+  fs.writeFileSync(path.join(repo, 'skills', 'greet.md'), '---\ndescription: Say hello\n---\n');
 });
 
 afterEach(() => {
