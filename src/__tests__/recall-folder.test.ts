@@ -113,12 +113,30 @@ describe('a team replacement of rules/teamai-recall/ (#1787)', () => {
     expect(await deploy(path.join(repo, 'elsewhere'))).toBeUndefined();
   });
 
-  it('refuses a replacement missing a base file', async () => {
+  it('takes teamai\'s file for each file a replacement leaves out', async () => {
     fs.rmSync(path.join(repo, 'rules', 'teamai-recall', 'block-direct.md'));
 
-    expect(await deployed()).toBe(golden('rule.md'));
+    expect(await deployed()).toBe(TEAM_RULE);
+    expect(await blocks()).toMatchObject({ recall: wrapped(TEAM_BLOCK), directRecall: golden('block-direct.md') });
+  });
+
+  it('takes teamai\'s rule and its languages for a replacement holding only block.md', async () => {
+    fs.rmSync(path.join(repo, 'rules', 'teamai-recall'), { recursive: true });
+    write('block.md', TEAM_BLOCK);
+
+    expect(await deployed('en')).toBe(golden('rule.en.md'));
+    expect(await blocks('en')).toMatchObject({ recall: wrapped(TEAM_BLOCK), directRecall: golden('block-direct.en.md') });
+  });
+
+  it('warns about a file of a replacement that replaces no file of teamai\'s, and leaves it out', async () => {
+    fs.rmSync(path.join(repo, 'rules', 'teamai-recall'), { recursive: true });
+    write('block.md', TEAM_BLOCK);
+    write('blocks.md', '## A typo\n');
+
+    expect(await blocks()).toMatchObject({ recall: wrapped(TEAM_BLOCK) });
     expect(vi.mocked(log.warn).mock.calls.map(([message]) => String(message))).toContain(
-      'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: rules/teamai-recall/block-direct.md is missing. Fix the folder in the team repo.',
+      'rules/teamai-recall/blocks.md replaces no file of teamai\'s default, so it is not used and teamai\'s files stay in force. '
+      + 'Name it after the file it replaces, or replace the folder\'s marker too, so it can name the file.',
     );
   });
 

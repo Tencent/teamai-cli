@@ -122,7 +122,7 @@ ${TEAMAI_RULE_DIR}/checklist.md and ${TEAMAI_RULE_DIR}/examples/good-endpoint.ts
 
 提交目录型 rule 之前，让每位成员先升级。旧版 teamai 会把 `rules/api-style/` 里的每个文件各自当作一条始终生效的 rule（`api-style/RULE`、`api-style/RULE.zh`、`api-style/checklist`），或者跳过这个目录。
 
-teamai 的 recall rule 是目录 [`rules/teamai-recall/`](https://github.com/Tencent/teamai-cli/tree/main/rules/teamai-recall)。团队在团队仓库根目录放自己的 `rules/teamai-recall/` 即可替换它。目录里的 README 列出了各个文件以及每个文件必须保留的行。缺少这些行或包含链接的替换会被 pull 拒绝，pull 会指出是哪个文件，并继续使用 teamai 自带的。`teamai review --branch` 会在合并前把这样的替换判为失败。
+teamai 的 recall rule 是目录 [`rules/teamai-recall/`](https://github.com/Tencent/teamai-cli/tree/main/rules/teamai-recall)。团队在团队仓库根目录放一个只含要改的文件的 `rules/teamai-recall/` 即可修改它，其他文件仍用 teamai 的。目录里的 README 列出了各个文件以及每个文件必须保留的行。pull 检查两者合起来的目录，缺少这些行或包含链接时会拒绝它，指出是哪个文件，并继续使用 teamai 自带的。`teamai review --branch` 会在合并前把这样的替换判为失败。
 
 ## Agents
 
@@ -456,11 +456,7 @@ agy 随后拒绝该命令：`tool call denied by pre-tool hook: rm -rf is blocke
 
 ### 默认 hook
 
-teamai 自带提示的阈值和文案也放在 hook 目录里。在团队仓库根目录放一个同名目录，就能替换它。比如只在较长的会话后提醒，并换成团队自己的话：
-
-```bash
-cp -r "$(npm root -g)/teamai-cli/hooks/teamai-friction-reminder" hooks/
-```
+teamai 自带提示的阈值和文案也放在 hook 目录里。在团队仓库根目录放一个同名目录，就能修改它。目录里只放你要改的文件；其他文件（包括 `HOOK.yaml`）仍用 teamai 的，并继续获得 teamai 的更新。比如只在较长的会话后提醒，并换成团队自己的话：
 
 ```yaml
 # hooks/teamai-friction-reminder/HOOK.yaml
@@ -474,7 +470,7 @@ with:
 [acme] 这次会话卡住过。如果解决办法还不在 runbook 里，记下来。
 ```
 
-`teamai pull` 之后，提醒要等到 30 次工具调用才出现，并以这一行开头。
+`teamai pull` 之后，提醒要等到 30 次工具调用才出现，并以这一行开头。目录里只有这两个文件。
 
 | 目录 | 放什么 |
 |---|---|
@@ -486,15 +482,18 @@ with:
 
 - `HOOK.yaml` 里有 `description` 和 `with:`。`with:` 里没写的键沿用 teamai 的值。
 - 文案是 `<text>.md`，用 `{{ name }}` 引用变量。设了 `language: en` 或 `zh` 时，目录里有 `<text>.en.md` 或 `<text>.zh.md` 就用它。
+- 你写的文案会替换 teamai 这段文案的所有语言版本：有你的 `problem.md`、没有 `problem.zh.md` 时，`zh` 团队读到的是你的 `problem.md`。只写一种语言时，也要写 `problem.md`。
+- teamai 目录里没有的文件不替换任何东西。pull 会警告、点出文件名，并忽略它。拼错的 `problems.md` 会这样暴露出来，而不是悄悄不起作用。你的目录有自己的 `HOOK.yaml` 时，可以添加文件。
+- 你不能在自己的目录里删掉 teamai 目录的文件。`teamai list hooks --json` 会显示每个文件来自哪里。
 - 每个目录的 `README.md` 列出参数及取值范围、每段文案提供的变量，以及关掉它的设置。这些设置还在原来的位置，比如 `sharing.contributeHint.enabled`。
 
-替换目录里的值超出范围、写了默认 hook 不认的键、引用了文案不提供的变量、少了某段文案，或带了 `command` 时，pull 会拒绝它，teamai 自带的目录继续生效：
+pull 检查你的文件和 teamai 的文件合起来的目录。值超出范围、写了默认 hook 不认的键、引用了文案不提供的变量、只写了一种语言却缺少基础的 `<text>.md`，或带了 `command` 时，pull 会拒绝它，teamai 自带的目录继续生效：
 
 ```text
 hooks/teamai-friction-reminder/ is refused, and teamai's default stays in force until it is fixed: HOOK.yaml: with.min_tools must be a whole number from 1 to 1000
 ```
 
-替换对整个团队生效，所以放在 namespace 里的替换（比如 `hooks/payments/teamai-friction-reminder/`）会被 pull 拒绝。`teamai review --branch` 会在合并前把 pull 拒绝的替换判为失败。
+替换对整个团队生效，所以放在 namespace 里的替换（比如 `hooks/payments/teamai-friction-reminder/`）会被 pull 拒绝。`teamai review --branch` 会在合并前把 pull 拒绝的替换，或带有不替换任何文件的替换，判为失败。
 
 ## MCP Server
 

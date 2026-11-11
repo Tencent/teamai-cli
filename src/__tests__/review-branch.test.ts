@@ -669,6 +669,24 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     }]]);
   });
 
+  const stray = (file: string): string => `${file} replaces no file of teamai's default, so it is not used and teamai's files stay in force. `
+    + 'Name it after the file it replaces, or replace the folder\'s marker too, so it can name the file.';
+
+  it.each([
+    { folder: 'hooks/teamai-friction-reminder', own: 'problem.md', typo: 'problems.md' },
+    { folder: 'rules/teamai-recall', own: 'block.md', typo: 'blocks.md' },
+    { folder: 'workflows/teamai-import-from-repo', own: 'narrative.md', typo: 'narative.md' },
+  ])('passes $folder/ holding only the file it changes, and fails it with a file that replaces nothing', async ({ folder, own, typo }) => {
+    const put = (file: string): Promise<void> => fse.outputFile(path.join(repoDir, ...folder.split('/'), file), '[acme] Ours.\n');
+    await put(own);
+
+    const kept = await reviewBranchDir(BRANCH, repoDir);
+    await put(typo);
+    const typed = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([kept, typed].map((review) => findings(review).filter((f) => f.level === 'fail').map(({ message }) => message))).toEqual([[], [stray(`${folder}/${typo}`)]]);
+  });
+
   it('fails a workflow, hook or rule folder that is a symlink, which pull reads nothing from', async () => {
     const shared = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-review-shared-'));
     await fse.outputFile(path.join(shared, 'lint', 'HOOK.yaml'), HOOK_FOLDER);

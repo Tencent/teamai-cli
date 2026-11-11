@@ -77,7 +77,7 @@ Where a definition comes from. Resolution order: `teamai` (**teamai default**), 
 _Avoid_: level, source, scope (that is a **scope**)
 
 **teamai default**:
-A **resource** teamai ships, named `teamai-<name>`. A team replaces it with the same name at the **team root**. Short form: default, as in default workflow or default scorer.
+A **resource** teamai ships, named `teamai-<name>`. A team replaces it, or some of its files, with a folder of the same name at the **team root**. Short form: default, as in default workflow or default scorer.
 _Avoid_: built-in, shipped, preset
 
 **Team root**:

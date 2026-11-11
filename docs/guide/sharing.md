@@ -131,7 +131,7 @@ Keep the body short and put the detail in the folder.
 
 Before you commit a rule folder, have every member upgrade. An older teamai reads each file in `rules/api-style/` as its own always-on rule (`api-style/RULE`, `api-style/RULE.zh`, `api-style/checklist`), or skips the folder.
 
-teamai's recall rule is the folder [`rules/teamai-recall/`](https://github.com/Tencent/teamai-cli/tree/main/rules/teamai-recall). A team replaces it with its own `rules/teamai-recall/` at the root of the team repo. The folder's README lists the files and the lines each must keep. Pull refuses a replacement that drops one or holds a link, names the file, and keeps teamai's. `teamai review --branch` fails such a replacement before you merge it.
+teamai's recall rule is the folder [`rules/teamai-recall/`](https://github.com/Tencent/teamai-cli/tree/main/rules/teamai-recall). A team changes it with a `rules/teamai-recall/` at the root of the team repo that holds only the files it changes; every other file stays teamai's. The folder's README lists the files and the lines each must keep. Pull checks the folder both make together, refuses one that drops a line or holds a link, names the file, and keeps teamai's. `teamai review --branch` fails such a replacement before you merge it.
 
 ## Agents
 
@@ -465,11 +465,7 @@ agy then refuses the command with `tool call denied by pre-tool hook: rm -rf is 
 
 ### Default hooks
 
-teamai's own hints keep their thresholds and texts in hook folders. A folder of the same name at the root of the team repo replaces one. To remind only after longer sessions, in the team's words:
-
-```bash
-cp -r "$(npm root -g)/teamai-cli/hooks/teamai-friction-reminder" hooks/
-```
+teamai's own hints keep their thresholds and texts in hook folders. A folder of the same name at the root of the team repo changes one. Put in it only the files you change; every other file, `HOOK.yaml` included, stays teamai's and keeps getting teamai's updates. To remind only after longer sessions, in the team's words:
 
 ```yaml
 # hooks/teamai-friction-reminder/HOOK.yaml
@@ -483,7 +479,7 @@ with:
 [acme] This session hit a snag. If the fix is not in the runbook yet, write it down.
 ```
 
-After `teamai pull`, the reminder waits for 30 tool calls and opens with that line.
+After `teamai pull`, the reminder waits for 30 tool calls and opens with that line. The folder holds just those two files.
 
 | Folder | What it holds |
 |---|---|
@@ -495,15 +491,18 @@ After `teamai pull`, the reminder waits for 30 tool calls and opens with that li
 
 - `HOOK.yaml` holds `description` and `with:`. A key left out of `with:` keeps teamai's value.
 - A text is `<text>.md`, with `{{ name }}` variables. With `language: en` or `zh`, `<text>.en.md` or `<text>.zh.md` is used when the folder has it.
+- A text you write replaces all of teamai's languages of it: with your `problem.md` and no `problem.zh.md`, a `zh` team reads your `problem.md`. Write `problem.md` too when you write only one language.
+- A file teamai's folder does not have replaces nothing. Pull warns, names it, and leaves it out. A misspelled `problems.md` shows up this way instead of silently doing nothing. When your folder has its own `HOOK.yaml`, it may add files.
+- You cannot remove a file of teamai's folder from yours. `teamai list hooks --json` shows which file comes from where.
 - Each folder's `README.md` lists its parameters with their ranges, the variables each text offers, and the settings that turn it off. Those settings stay where they were, such as `sharing.contributeHint.enabled`.
 
-Pull refuses a replacement that sets a value out of range or a key the default does not take, reads a variable a text does not offer, leaves a text out, or has a `command`, and keeps teamai's folder in force:
+Pull checks the folder your files and teamai's make together. It refuses one that sets a value out of range or a key the default does not take, reads a variable a text does not offer, lacks the base `<text>.md` of a text you wrote in one language, or has a `command`, and keeps teamai's folder in force:
 
 ```text
 hooks/teamai-friction-reminder/ is refused, and teamai's default stays in force until it is fixed: HOOK.yaml: with.min_tools must be a whole number from 1 to 1000
 ```
 
-A replacement replaces for the whole team, so pull refuses one in a namespace, such as `hooks/payments/teamai-friction-reminder/`. `teamai review --branch` fails a replacement pull refuses before you merge it.
+A replacement replaces for the whole team, so pull refuses one in a namespace, such as `hooks/payments/teamai-friction-reminder/`. `teamai review --branch` fails a replacement pull refuses, or one with a file that replaces nothing, before you merge it.
 
 ## MCP servers
 

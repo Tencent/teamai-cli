@@ -253,7 +253,7 @@ async function ruleFindings(repoDir: string, base: ReviewBase | null): Promise<F
   const { problems, folderNotes } = await readTeamRules(repoDir);
   const added = folderNotes.filter((note) => base === null || !base.ruleFolders.has(note.path));
   // The team's rules/teamai-recall/ is read where the recall rule is, not with the other rules.
-  const { team: recall } = await resolveRecall(undefined, repoDir);
+  const { team: recall, strays } = await resolveRecall(undefined, repoDir);
 
   return [
     ...[...added, ...problems].map(({ kind, path: at, message }): Finding => ({
@@ -263,6 +263,7 @@ async function ruleFindings(repoDir: string, base: ReviewBase | null): Promise<F
       message,
     })),
     ...recall?.kind === 'refused' ? [{ level: 'fail', check: 'structure', path: recall.folder.path, message: recall.message } satisfies Finding] : [],
+    ...strays.map((message): Finding => ({ level: 'fail', check: 'structure', path: `rules/${RECALL_RULE_NAME}/`, message })),
   ];
 }
 
@@ -1382,6 +1383,7 @@ async function workflowFindings(repoDir: string, received: readonly Received[]):
       ...unknownScorers.values(),
       // Every namespace is read here, and a skip depends only on the folder's name, so no selection adds one.
       ...result.skipped.map(({ path: skippedPath, message }): Finding => ({ level: 'warn', check: 'naming', path: skippedPath, message })),
+      ...result.strays.map(({ path: strayPath, message }): Finding => ({ level: 'fail', check: 'structure', path: strayPath, message })),
       // Each still starts by name; the alias starts nothing, or another workflow.
       ...result.aliasConflicts.map((diagnostic): Finding => ({
         level: 'fail',

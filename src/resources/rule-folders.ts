@@ -89,15 +89,20 @@ async function text(rule: RuleFolder, language: TeamaiConfig['language']): Promi
   const dir = path.dirname(rule.sourcePath);
   const variantName = await languageFile(dir, 'RULE', language);
 
-  if (variantName === RESOURCE_MARKER) return `${base}\n`;
+  if (variantName === RESOURCE_MARKER) return composeText({ rule, base, variant: null });
   const variant = await readTextFile(path.join(dir, variantName));
 
-  if (variant === null) return null;
-  const { block, body } = splitRuleFrontmatter(variant);
+  return variant === null ? null : composeText({ rule, base, variant: { name: variantName, content: variant } });
+}
 
-  if (block !== '') warnOnce(variantFrontmatterMessage(rule, variantName));
+/** The rule text of `rule` from its `RULE.md` text and the language variant picked for it, if any, as `text` gives it. */
+function composeText(input: { readonly rule: RuleFolder; readonly base: string; readonly variant: { readonly name: string; readonly content: string } | null }): string {
+  if (input.variant === null) return `${input.base}\n`;
+  const { block, body } = splitRuleFrontmatter(input.variant.content);
 
-  return `${splitRuleFrontmatter(base).block}${body}\n`;
+  if (block !== '') warnOnce(variantFrontmatterMessage(input.rule, input.variant.name));
+
+  return `${splitRuleFrontmatter(input.base).block}${body}\n`;
 }
 
 /** Whether `tool` reads a rule folder's files outside the project without a prompt, once teamai grants what it can. */
@@ -230,4 +235,4 @@ async function grant(input: {
   return owned;
 }
 
-export const RuleFolders = { isFolder, pathOf, isDelivered, deliveredNames, languageFile, readTextFile, text, variantNotes, render, sync, grant } as const;
+export const RuleFolders = { isFolder, pathOf, isDelivered, deliveredNames, languageFile, readTextFile, text, composeText, variantNotes, render, sync, grant } as const;

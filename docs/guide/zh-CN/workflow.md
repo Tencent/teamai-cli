@@ -1357,13 +1357,14 @@ cp "$(npm root -g)/teamai-cli/workflows/teamai-share-learnings.yaml" workflows/t
 
 有三个默认工作流是文件夹，在包中位于 `workflows/<name>/WORKFLOW.yaml`，早期版本是 `workflows/<name>.yaml`：`teamai-import-from-mr`、`teamai-codebase-deep-enrich` 和 `teamai-import-from-repo`。团队已有的 `workflows/<name>.yaml` 仍会替换默认工作流。
 
-文件夹形式的默认工作流要整个复制到相同路径。比如想让英文的 MR learning 写出评审留下的未决问题，先复制 `teamai-import-from-mr`：
+文件夹形式的默认工作流，用同名文件夹修改。里面只放你要改的文件；其他文件（包括 `WORKFLOW.yaml`）仍用 teamai 的，并继续获得 teamai 的更新。比如想让英文的 MR learning 写出评审留下的未决问题，先复制它的提示词：
 
 ```bash
-cp -R "$(npm root -g)/teamai-cli/workflows/teamai-import-from-mr" workflows/
+mkdir -p workflows/teamai-import-from-mr
+cp "$(npm root -g)/teamai-cli/workflows/teamai-import-from-mr/"draft.*.md workflows/teamai-import-from-mr/
 ```
 
-在它的英文提示词 `workflows/teamai-import-from-mr/draft.en.md` 中加一节：
+你写的文件会替换它的所有语言版本，而这个工作流按名字读取 `draft.zh.md`，所以两个都要保留。在英文提示词 `workflows/teamai-import-from-mr/draft.en.md` 中加一节：
 
 ```diff
  ## Lessons
@@ -1381,7 +1382,7 @@ git add workflows/teamai-import-from-mr && git commit -m "MR learnings name open
 teamai pull
 ```
 
-团队的文件夹整体取代 teamai 的版本，包括 `draft.zh.md` 和 `README.md`。保留它的 `WORKFLOW.yaml` 引用的每个文件。
+pull 检查你的文件和 teamai 的文件合起来的文件夹。teamai 文件夹里没有的文件不替换任何东西：pull 会警告、点出文件名并忽略它，除非你的文件夹有自己的 `WORKFLOW.yaml`，可以引用它。这种文件夹的运行会记录团队 commit 和提供其余文件的 teamai 版本，所以 teamai 版本不同的机器不能接着运行它。`workflows/teamai-import-from-mr.yaml` 文件会整体替换这个文件夹。
 
 对名字和类型与默认工作流相同的输入，describe 仍然提议值；其他输入留给本人填写：
 

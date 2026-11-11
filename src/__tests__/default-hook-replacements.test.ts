@@ -48,6 +48,11 @@ async function replace(name: string, files: Record<string, string | null>): Prom
   }
 }
 
+/** `hooks/<name>/` at the root of the team repo holding only `files`: every other file comes from teamai's folder. */
+async function own(name: string, files: Record<string, string>): Promise<void> {
+  for (const [file, content] of Object.entries(files)) await fse.outputFile(path.join(repo, 'hooks', name, file), content);
+}
+
 /** teamai's action line when the reminder offers teamai-share-learnings, as it does in a scope that can run it. */
 const SHARE_LEARNINGS = 'Offer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` '
   + 'and start it with the inputs it proposes, once the person confirms them.';
@@ -95,6 +100,42 @@ describe('a team replacement of teamai-friction-reminder', () => {
     await reconcileTeamHooksForConfig(teamConfig, member());
 
     expect(await stopHint(20)).toBe(`[acme] Worth a write-up? This session hit a snag.\n\n${SHARE_LEARNINGS}`);
+  });
+
+  it('holding only its problem.md, gets teamai\'s other files delivered with it', async () => {
+    await own('teamai-friction-reminder', { 'problem.md': '[acme] Worth a write-up?\n' });
+
+    await reconcileTeamHooksForConfig(teamConfig, member());
+
+    const delivered = path.join(home, '.teamai', 'hooks', 'teamai-friction-reminder');
+    expect({
+      hint: await stopHint(20),
+      problem: await fse.readFile(path.join(delivered, 'problem.md'), 'utf8'),
+      gap: await fse.readFile(path.join(delivered, 'gap.md'), 'utf8'),
+      zh: await fse.pathExists(path.join(delivered, 'problem.zh.md')),
+    }).toEqual({
+      hint: `[acme] Worth a write-up?\n\n${SHARE_LEARNINGS}`,
+      problem: '[acme] Worth a write-up?\n',
+      gap: await fse.readFile(path.join(shipped('teamai-friction-reminder'), 'gap.md'), 'utf8'),
+      zh: false,
+    });
+  });
+
+  it('with a file teamai\'s folder does not have, warns naming it and keeps teamai\'s file in force', async () => {
+    await own('teamai-friction-reminder', { 'problem.md': '[acme] Worth a write-up?\n', 'problems.md': '[acme] A typo\n' });
+
+    await reconcileTeamHooksForConfig(teamConfig, member());
+
+    expect({
+      warned: vi.mocked(log.warn).mock.calls.map(([message]) => message).filter((message) => String(message).includes('teamai-friction-reminder')),
+      stray: await fse.pathExists(path.join(home, '.teamai', 'hooks', 'teamai-friction-reminder', 'problems.md')),
+      hint: await stopHint(20),
+    }).toEqual({
+      warned: ['hooks/teamai-friction-reminder/problems.md replaces no file of teamai\'s default, so it is not used and teamai\'s files stay in force. '
+        + 'Name it after the file it replaces, or replace the folder\'s marker too, so it can name the file.'],
+      stray: false,
+      hint: `[acme] Worth a write-up?\n\n${SHARE_LEARNINGS}`,
+    });
   });
 
   it('reminds after as few tool calls as its min_tools says, the parameters it leaves out keeping teamai\'s values', async () => {
@@ -206,9 +247,9 @@ describe('pull refuses a replacement of a default hook that breaks its contract,
       refusal: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed: HOOK.yaml: event is not a key of a default hook, whose HOOK.yaml holds description and with',
     },
     {
-      broken: 'a text left out',
+      broken: 'a text in one language without its base file',
       files: { 'gap.md': null },
-      refusal: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed: gap.md is missing. A replacement holds every text of teamai\'s folder: copy gap.md from it',
+      refusal: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed: gap.md is missing: the folder replaces the gap text in another language, which replaces every language of it. Add gap.md',
     },
   ])('$broken', async ({ files, refusal }) => {
     await replace('teamai-friction-reminder', { 'problem.md': TEAM_PROBLEM, ...files });
@@ -237,9 +278,10 @@ describe('pull refuses a replacement of a default hook that breaks its contract,
     });
   });
 
-  it('in a namespace', async () => {
+  it.each([{ holding: 'every file of teamai\'s folder', copied: true }, { holding: 'only the file it changes', copied: false }])('in a namespace, holding $holding', async ({ copied }) => {
     await fse.outputFile(path.join(repo, 'manifest', 'projects.yaml'), 'version: 1\nprojects:\n  - id: checkout\n    resources: { hooks: [payments] }\n');
-    await fse.copy(shipped('teamai-friction-reminder'), path.join(repo, 'hooks', 'payments', 'teamai-friction-reminder'));
+
+    if (copied) await fse.copy(shipped('teamai-friction-reminder'), path.join(repo, 'hooks', 'payments', 'teamai-friction-reminder'));
     await fse.outputFile(path.join(repo, 'hooks', 'payments', 'teamai-friction-reminder', 'problem.md'), TEAM_PROBLEM);
 
     await reconcileTeamHooksForConfig(teamConfig, { ...member(), projects: ['checkout'] });
