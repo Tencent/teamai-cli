@@ -43,7 +43,7 @@ const TEXT = {
   en: {
     title: '# Tool support',
     intro: [
-      'Where teamai writes each resource for each tool, and what the tool reads, as teamai\'s tool descriptor (`src/tools.ts`) records it.',
+      'Where teamai writes each agent resource for each tool, and what the tool reads, as teamai\'s tool descriptor (`src/tools.ts`) records it.',
       'Generated: do not edit by hand. Regenerate with `node scripts/check-docs.mjs --write` after changing the descriptor.',
     ],
     legend: [
@@ -66,7 +66,7 @@ const TEXT = {
   'zh-CN': {
     title: '# 工具支持',
     intro: [
-      'teamai 为每个工具把每类资源写到哪里，以及工具读取哪里，以 teamai 的工具描述（`src/tools.ts`）为准。',
+      'teamai 为每个工具把每类 Agent 资源写到哪里，以及工具读取哪里，以 teamai 的工具描述（`src/tools.ts`）为准。',
       '此文件由生成器生成，请勿手动编辑。修改描述后运行 `node scripts/check-docs.mjs --write` 重新生成。',
     ],
     legend: [

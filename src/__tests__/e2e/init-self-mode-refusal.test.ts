@@ -1,5 +1,5 @@
 /**
- * E2E (#1500 Part 2): `teamai init <url>` against a single-repo team URL (a repo
+ * E2E (#1500 Part 2): `teamai init <url>` against a self-mode team URL (a repo
  * holding .teamai/teamai.yaml with mode: self on its default branch and no root
  * teamai.yaml) refuses to initialize as a standalone team repo, pushes nothing,
  * removes the clone when freshly created (preserving existing reused clones),
@@ -32,7 +32,7 @@ let sandbox: string;
 
 beforeAll(() => {
   if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
-  sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-single-repo-refusal-1500-')));
+  sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-self-mode-refusal-1500-')));
 });
 
 afterAll(async () => {
@@ -73,9 +73,9 @@ function createMemberEnv(name: string): { home: string; env: NodeJS.ProcessEnv }
   return { home, env };
 }
 
-describe('init refuses single-repo team URL (#1500)', () => {
-  it('A1: refuses single-repo team URL, leaves remote main unchanged, removes newly created clone and writes no local config', () => {
-    const { home, env } = createMemberEnv('single-repo-a1');
+describe('init refuses self-mode team URL (#1500)', () => {
+  it('A1: refuses self-mode team URL, leaves remote main unchanged, removes newly created clone and writes no local config', () => {
+    const { home, env } = createMemberEnv('self-mode-a1');
     const bizUrl = 'https://git.example.invalid/team/biz.git';
     const seed = path.join(sandbox, 'biz-seed');
     const bare = path.join(sandbox, 'biz.git');
@@ -104,7 +104,7 @@ describe('init refuses single-repo team URL (#1500)', () => {
 
     expect(res.code).toBe(1);
     expect(res.output).toContain(
-      `${bizUrl} is a single-repo team: its config is .teamai/teamai.yaml. Clone the repository and run \`teamai init --self\` in it.`,
+      `${bizUrl} is a repo in self mode: its config is .teamai/teamai.yaml. Clone the repository and run \`teamai init --self\` in it.`,
     );
 
     // Remote bare repository main branch must be completely untouched
@@ -118,8 +118,8 @@ describe('init refuses single-repo team URL (#1500)', () => {
     expect(fs.existsSync(path.join(home, '.teamai', 'team-repo'))).toBe(false);
   });
 
-  it('A1 (preservation): preserves an existing reused clone and its files when refusing a single-repo team', () => {
-    const { home, env } = createMemberEnv('reused-single-repo');
+  it('A1 (preservation): preserves an existing reused clone and its files when refusing a team in self mode', () => {
+    const { home, env } = createMemberEnv('reused-self-mode');
     const bizUrl = 'https://git.example.invalid/team/biz-reused.git';
     const seed = path.join(sandbox, 'biz-reused-seed');
     const bare = path.join(sandbox, 'biz-reused.git');
@@ -153,7 +153,7 @@ describe('init refuses single-repo team URL (#1500)', () => {
 
     expect(res.code).toBe(1);
     expect(res.output).toContain(
-      `${bizUrl} is a single-repo team: its config is .teamai/teamai.yaml. Clone the repository and run \`teamai init --self\` in it.`,
+      `${bizUrl} is a repo in self mode: its config is .teamai/teamai.yaml. Clone the repository and run \`teamai init --self\` in it.`,
     );
 
     // Existing clone and the uncommitted work must be preserved intact!
@@ -162,7 +162,7 @@ describe('init refuses single-repo team URL (#1500)', () => {
     expect(fs.readFileSync(uncommittedFile, 'utf8')).toBe('precious work that must not be deleted\n');
   });
 
-  it('A2: empty repository is not refused as a single-repo team', () => {
+  it('A2: empty repository is not refused as a team in self mode', () => {
     const { home, env } = createMemberEnv('empty-a2');
     const emptyUrl = 'https://git.example.invalid/team/empty.git';
     const bare = path.join(sandbox, 'empty.git');
@@ -176,8 +176,8 @@ describe('init refuses single-repo team URL (#1500)', () => {
       env,
     );
 
-    // An empty repository must NOT be refused with the single-repo message
-    expect(res.output).not.toContain('is a single-repo team: its config is .teamai/teamai.yaml');
+    // An empty repository must NOT be refused with the self-mode message
+    expect(res.output).not.toContain('is a repo in self mode: its config is .teamai/teamai.yaml');
     expect(res.code).toBe(0);
     expect(fs.existsSync(path.join(home, '.teamai', 'config.yaml'))).toBe(true);
   });
@@ -208,8 +208,8 @@ describe('init refuses single-repo team URL (#1500)', () => {
       env,
     );
 
-    // Standalone team repo with root teamai.yaml must NOT be refused with the single-repo message
-    expect(res.output).not.toContain('is a single-repo team: its config is .teamai/teamai.yaml');
+    // Standalone team repo with root teamai.yaml must NOT be refused with the self-mode message
+    expect(res.output).not.toContain('is a repo in self mode: its config is .teamai/teamai.yaml');
     expect(res.code).toBe(0);
     expect(fs.existsSync(path.join(home, '.teamai', 'config.yaml'))).toBe(true);
   });

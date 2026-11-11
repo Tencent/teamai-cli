@@ -70,7 +70,7 @@ describe('contributeSelf — machine-local learnings cache (issue #472)', () => 
     git(['config', 'user.name', 't'], businessRoot);
     fs.mkdirSync(localPath, { recursive: true });
     fs.writeFileSync(path.join(localPath, '.gitkeep'), '');
-    // What `teamai init .` commits for a single-repo install.
+    // What `teamai init .` commits for an install in self mode.
     fs.writeFileSync(path.join(localPath, '.gitignore'), buildSelfModeGitignore());
     git(['add', '.'], businessRoot);
     git(['commit', '-qm', 'init'], businessRoot);

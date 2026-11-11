@@ -198,7 +198,7 @@ export async function workflowLaunch(config: LocalConfig, tool: string): Promise
  * launched in, and its record holds one complete team delivery for that tool. That holds for any tool the launched one
  * starts there, so its pull cannot move the step's files; one the checkout was not delivered to gets its first delivery
  * at its next session outside the step. Anything else pulls, root seeding included, so a new worktree or a newly
- * enabled tool still gets the team's assets.
+ * enabled tool still gets the team's resources.
  */
 export async function launchHoldsCheckout(config: LocalConfig, launch: Launch): Promise<boolean> {
   const { teamDelivery } = await import('./pull.js');

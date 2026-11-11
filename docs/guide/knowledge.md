@@ -86,10 +86,10 @@ teamai recall --check "API timeout"
 
 `--check` answers only `RELEVANT` or `NOT_RELEVANT`. A codebase hit may add a `Source freshness:` line. The statuses are in [Codebase Knowledge Graph](#codebase-knowledge-graph) below.
 
-### Relations between assets
+### Relations between resources
 
-A rule, a doc or a learning can declare relations to other team assets in a
-`related:` frontmatter block, and a local Markdown link to another asset
+A rule, a doc or a learning can declare relations to other team resources in a
+`related:` frontmatter block, and a local Markdown link to another resource
 becomes a `REFERENCES` relation on its own:
 
 ```markdown
@@ -101,18 +101,18 @@ related:
 ```
 
 Four relations are declarable: `MAPS_TO` (this describes that teamwiki code
-page), `REFERENCES` (any asset), `SUPERSEDES` and `CONFLICTS_WITH` (a rule,
+page), `REFERENCES` (any resource), `SUPERSEDES` and `CONFLICTS_WITH` (a rule,
 doc or learning — a learning that disagrees with a rule uses
 `CONFLICTS_WITH`, because `teamai contribute` publishes learnings without
 review). Skills and teamwiki pages are targets only: they never declare.
 The other code-graph relations (`DEPENDS_ON`, `CONTAINS`, `IMPLEMENTS`)
-relate code to code and cannot be declared on an asset.
+relate code to code and cannot be declared on a resource.
 
 `teamai recall` prints each relation as a `Related:` line after the hit's
-`File:` line — `→` for a relation from the hit, `←` for one the other asset
+`File:` line — `→` for a relation from the hit, `←` for one the other resource
 declares, at most 5 per hit. A `→ MAPS_TO` / `← MAPS_TO` pair can also
 be derived from a rule's `paths:` glob (below), not only declared. A relation whose other end this recall
-cannot see (another scope's asset, a withheld codebase's page, a target that
+cannot see (another scope's resource, a withheld codebase's page, a target that
 does not exist) prints nothing. Hits, their order and their scores do not
 change. `teamai review --branch` fails a rule or doc whose `related:` block
 declares something outside the table; `teamai contribute` prints the same
@@ -163,7 +163,7 @@ One machine overrides this with `recallEnabled` in `~/.teamai/config.yaml`. `TEA
 
 A team can ship its own recall agent: see [Replace the recall agent](sharing.md#replace-the-recall-agent).
 
-Turning recall off does not silence the SessionStart hint for recently merged MRs. That hint lists them and offers the default workflow [`teamai-import-from-mr`](workflow.md#default-workflows), which can capture and publish a learning before the team enables recall:
+Turning recall off does not silence the hint for recently merged MRs, which a session start looks for and the session's next prompt shows. That hint lists them and offers the default workflow [`teamai-import-from-mr`](workflow.md#default-workflows), which can capture and publish a learning before the team enables recall:
 
 ```text
 [teamai:mr-hint] Found 1 recently merged MR(s) not yet imported into the team knowledge base.
@@ -315,13 +315,13 @@ Reconciliation complete: mappings=3, gaps=1, conflicts=0
 ✔ Pushed to team knowledge repo (https://git.example.com/acme/team-ai.git)
 ```
 
-`--dry-run` writes nothing and additionally prints relation candidates: team rules and docs matched against the code pages by the key terms they share, proposed as `related:` declarations for you to copy into the asset's frontmatter and land in an ordinary PR (`review --branch` checks it). A candidate shows in recall only once it has been merged into the asset:
+`--dry-run` writes nothing and additionally prints relation candidates: team rules and docs matched against the code pages by the key terms they share, proposed as `related:` declarations for you to copy into the resource's frontmatter and land in an ordinary PR (`review --branch` checks it). A candidate shows in recall only once it has been merged into the resource:
 
 ```text
 $ teamai codebase --reconcile --dry-run
 Reconciliation complete: mappings=0, gaps=1, conflicts=0
 
-Relation candidates (copy the ones you accept into the asset's related:)
+Relation candidates (copy the ones you accept into the resource's related:)
   docs/payments-overview.md  MAPS_TO  teamwiki/evidence/code/pay/modules/ledger-receipts.md   term "LedgerReceipts", confidence 0.9
 ```
 

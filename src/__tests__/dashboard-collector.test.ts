@@ -21,6 +21,8 @@ import {
   dedupeEvents,
   dashboardReport,
   GIT_AT_START_PAYLOAD_KEY,
+  GIT_AT_STOP_PAYLOAD_KEY,
+  readGitStateAtStop,
   readLocalRequestRecords,
 } from '../dashboard-collector.js';
 import { collectSession } from '../session-collector.js';
@@ -60,6 +62,19 @@ const TOOL_ERROR_LINE = JSON.stringify({
   type: 'user',
   message: {
     content: [{ type: 'tool_result', is_error: true, tool_use_id: 'toolu_2', content: 'Error: command not found' }],
+  },
+});
+/** A call Claude Code's auto-mode classifier blocked before the tool ran (issue 1821). */
+const HOST_BLOCKED_LINE = JSON.stringify({
+  type: 'user',
+  message: {
+    content: [{
+      type: 'tool_result',
+      is_error: true,
+      tool_use_id: 'toolu_3',
+      content: 'RCH10-CQ-2MM is temporarily unavailable (timed out), so auto mode cannot determine the safety of '
+        + 'Bash right now. Wait a moment and then try this action again.',
+    }],
   },
 });
 
@@ -2147,6 +2162,23 @@ describe('countInterventions', () => {
     expect(iv.toolError).toBe(2);
   });
 
+  it('counts neither an error nor a rejection for a call the host blocked before it ran', async () => {
+    const p = writeTranscript('t3d.jsonl', [
+      HOST_BLOCKED_LINE, ASSISTANT_LINE, HOST_BLOCKED_LINE, ASSISTANT_LINE, HOST_BLOCKED_LINE,
+    ]);
+    const iv = await countInterventions(p);
+    expect(iv.toolError).toBe(0);
+    expect(iv.toolReject).toBe(0);
+    expect(iv.interrupt).toBe(0);
+  });
+
+  it('still counts ordinary tool errors in a transcript that also has host-blocked calls', async () => {
+    const p = writeTranscript('t3e.jsonl', [HOST_BLOCKED_LINE, TOOL_ERROR_LINE, HOST_BLOCKED_LINE]);
+    const iv = await countInterventions(p);
+    expect(iv.toolError).toBe(1);
+    expect(iv.toolReject).toBe(0);
+  });
+
   it('counts a mix of interrupts and rejections', async () => {
     const p = writeTranscript('t4.jsonl', [INTERRUPT_LINE, REJECT_LINE, NORMAL_USER_LINE, ASSISTANT_LINE, REJECT_LINE]);
     const iv = await countInterventions(p);
@@ -3078,6 +3110,42 @@ describe('dashboard-report records the git state a session started on', () => {
 
     const [stop] = await readEvents();
     expect(stop.gitBranch).toBe('fix-retry');
+  });
+
+  it('records on a Stop the branch by its name when a tag has the same name, from the one git status its background pass read', async () => {
+    const { repo } = committedRepo();
+    git(repo, 'checkout', '-q', '-b', 'release');
+    git(repo, 'tag', 'release');
+
+    await runHook({ hook_event_name: 'Stop', session_id: 'git-tag', cwd: repo, [GIT_AT_STOP_PAYLOAD_KEY]: await readGitStateAtStop(repo) });
+
+    const [stop] = await readEvents();
+    expect([stop.gitHead, stop.gitBranch]).toEqual([git(repo, 'rev-parse', 'HEAD'), 'release']);
+  });
+
+  it('records on a Stop in a bare repository the commit HEAD names, though git status cannot run there', async () => {
+    const { repo, head } = committedRepo();
+    const bare = path.join(tmpDir, 'bare.git');
+    git(tmpDir, 'clone', '-q', '--bare', repo, bare);
+    const handed = await readGitStateAtStop(bare);
+
+    await runHook({ hook_event_name: 'Stop', session_id: 'git-bare', cwd: bare, [GIT_AT_STOP_PAYLOAD_KEY]: handed });
+
+    const [stop] = await readEvents();
+    expect([handed, stop.gitHead]).toEqual([null, head]);
+  });
+
+  it('records on a Stop in a linked worktree that worktree\'s own commit and branch', async () => {
+    const { repo } = committedRepo();
+    const linked = path.join(tmpDir, 'linked');
+    git(repo, 'worktree', 'add', '-q', '-b', 'side', linked);
+    fs.writeFileSync(path.join(linked, 'tracked.txt'), 'side\n');
+    git(linked, 'commit', '-q', '-am', 'on the side');
+
+    await runHook({ hook_event_name: 'Stop', session_id: 'git-linked', cwd: linked, [GIT_AT_STOP_PAYLOAD_KEY]: await readGitStateAtStop(linked) });
+
+    const [stop] = await readEvents();
+    expect([stop.gitHead, stop.gitBranch]).toEqual([git(linked, 'rev-parse', 'HEAD'), 'side']);
   });
 
   it('writes a Stop without its head, in time, when git outlives its time cap with a child holding the pipe (#1387)', async () => {

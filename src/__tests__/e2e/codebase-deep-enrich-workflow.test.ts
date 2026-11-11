@@ -278,7 +278,7 @@ describe('codebase --deep-enrich through teamai-codebase-deep-enrich', () => {
     // A run with no init keeps its config and run files out of the member's data home, which holds the log as before,
     // and the directory of the machine's import locks, with no lock left in it.
     const teamai = path.join(box.home, '.teamai');
-    expect((fs.existsSync(teamai) ? fs.readdirSync(teamai) : []).filter((name) => name !== 'debug.log' && name !== 'locks')).toEqual([]);
+    expect((fs.existsSync(teamai) ? fs.readdirSync(teamai) : []).filter((name) => name !== 'debug.log' && name !== 'locks' && name !== 'installations.json')).toEqual([]);
     expect(fs.readdirSync(path.join(teamai, 'locks'))).toEqual([]);
   });
 

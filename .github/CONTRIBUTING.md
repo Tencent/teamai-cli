@@ -49,7 +49,7 @@ git status   # nothing under .teamai/ or tool dirs should be staged for this rep
 Pitfalls:
 
 - Init the **canonical hub URL**, not a personal fork. `teamai init <url>` treats that URL as the team repo; a fork diverges immediately, and GitHub push/PR today targets the configured remote (no fork-to-upstream flow).
-- Do **not** run `teamai init .`. That is single-repo mode: it turns the CLI source tree into the team repo and writes scaffolding at the repo root (easy to commit by mistake).
+- Do **not** run `teamai init .`. That is self mode: it turns the CLI source tree into the team repo and writes scaffolding at the repo root (easy to commit by mistake).
 - A member-registration warning is **expected** without write access. It names the failure reason, or says another write holds `teamai-reports`. Local config is still saved and `teamai pull` still works. Fix the cause or wait for the other write, then re-run the same `teamai init` command to retry registration.
 
 #### Write access and team stats

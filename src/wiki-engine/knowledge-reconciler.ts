@@ -37,7 +37,7 @@ export interface ReconcileOptions {
    * to the parent of a `teamwiki/` wikiRoot; pass a directory without
    * rules/docs (a standalone `--output` tree) and no candidates are proposed.
    */
-  assetRoot?: string;
+  resourceRoot?: string;
 }
 
 export interface ReconcileGraphEdge {
@@ -73,7 +73,7 @@ export interface ReconcileResult {
   /**
    * Proposed `related:` relations from a team rule or doc to a teamwiki code
    * page (#1563 part 2), derived by the same term match as the product pages.
-   * Never written: a person copies the ones they accept into the asset's
+   * Never written: a person copies the ones they accept into the resource's
    * frontmatter, in an ordinary PR that `review --branch` checks.
    */
   relationCandidates: RelationCandidate[];
@@ -82,7 +82,7 @@ export interface ReconcileResult {
 
 /** A proposed relation from a team rule or doc to a teamwiki code page. */
 export interface RelationCandidate {
-  /** The declaring asset's team-tree path (e.g. `docs/payments-overview.md`). */
+  /** The declaring resource's team-tree path (e.g. `docs/payments-overview.md`). */
   from: string;
   /** The repo-relative teamwiki page path. */
   to: string;
@@ -460,19 +460,19 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
   // Phase 1.5 — team rules/docs → code term match (#1563 part 2). Every rule
   // and doc in the team clone becomes an input to the same term match as the
   // product pages; the proposals are never written and never read by recall
-  // until a person copies one into the asset's `related:` frontmatter.
-  const assetRoot = options.assetRoot
+  // until a person copies one into the resource's `related:` frontmatter.
+  const resourceRoot = options.resourceRoot
     ?? (path.basename(wikiRoot) === 'teamwiki' ? path.dirname(wikiRoot) : undefined);
 
-  if (assetRoot) {
-    const assetPages: PageRecord[] = [];
+  if (resourceRoot) {
+    const resourcePages: PageRecord[] = [];
 
     for (const dir of ['rules', 'docs']) {
-      assetPages.push(...await readPages(path.join(assetRoot, dir)));
+      resourcePages.push(...await readPages(path.join(resourceRoot, dir)));
     }
 
-    for (const assetPage of assetPages) {
-      const terms = keyTerms(assetPage);
+    for (const resourcePage of resourcePages) {
+      const terms = keyTerms(resourcePage);
 
       if (terms.length === 0) continue;
 
@@ -483,8 +483,8 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
         const term = matchedTerms[0];
         const nearTitle = codePage.title.includes(term);
         relationCandidates.push({
-          from: toPosix(path.relative(assetRoot, assetPage.path)),
-          to: toPosix(path.relative(assetRoot, codePage.path)),
+          from: toPosix(path.relative(resourceRoot, resourcePage.path)),
+          to: toPosix(path.relative(resourceRoot, codePage.path)),
           relation: 'MAPS_TO',
           term,
           confidenceScore: buildConfidence([

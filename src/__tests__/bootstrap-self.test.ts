@@ -13,7 +13,7 @@ vi.mock('../providers/index.js', async (importOriginal) => ({
 }));
 
 import { installFakeCodex, readFakeCodexState } from './helpers/fake-codex.js';
-import { bootstrapSelfRepo } from '../bootstrap.js';
+import { bootstrapSelfMode } from '../bootstrap.js';
 import { detectProjectConfig } from '../config.js';
 import * as gitHook from '../git-hook.js';
 import { log } from '../utils/logger.js';
@@ -29,9 +29,9 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe('bootstrapSelfRepo', () => {
+describe('bootstrapSelfMode', () => {
   it("returns 'skip' when there is no .teamai/teamai.yaml (not a teamai project)", async () => {
-    const result = await bootstrapSelfRepo(tmpDir, { silent: true });
+    const result = await bootstrapSelfMode(tmpDir, { silent: true });
     expect(result).toBe('skip');
   });
 
@@ -42,7 +42,7 @@ describe('bootstrapSelfRepo', () => {
       path.join(teamaiDir, 'teamai.yaml'),
       YAML.stringify({ team: 'x', repo: 'https://github.com/acme/app.git' }),
     );
-    const result = await bootstrapSelfRepo(tmpDir, { silent: true });
+    const result = await bootstrapSelfMode(tmpDir, { silent: true });
     expect(result).toBe('skip');
   });
 
@@ -70,7 +70,7 @@ describe('bootstrapSelfRepo', () => {
     if (gitHookFailure) install.mockRejectedValueOnce(failure);
     const debug = vi.spyOn(log, 'debug').mockImplementation(() => {});
     try {
-      expect(await bootstrapSelfRepo(project, { silent })).toBe('bootstrapped');
+      expect(await bootstrapSelfMode(project, { silent })).toBe('bootstrapped');
       if (gitHookFailure) expect(debug).toHaveBeenCalledWith(expect.stringContaining(failure.message));
       const state = readFakeCodexState(codexHome);
       expect(state.projects[project]).toEqual({ trust_level: 'trusted' });
@@ -100,7 +100,7 @@ describe('bootstrapSelfRepo', () => {
         projectRoot: tmpDir,
       }),
     );
-    const result = await bootstrapSelfRepo(tmpDir, { silent: true });
+    const result = await bootstrapSelfMode(tmpDir, { silent: true });
     expect(result).toBe('already');
   });
 });

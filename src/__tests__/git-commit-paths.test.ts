@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { hasCommits, commitPaths } from '../utils/git.js';
 
-// Real-git integration tests for the single-repo init-commit helpers.
+// Real-git integration tests for the self-mode init-commit helpers.
 // (git.test.ts mocks simple-git globally, so these live in their own file.)
 
 let dir: string;
@@ -63,7 +63,7 @@ describe('commitPaths', () => {
   });
 
   it('skips a gitignored path instead of aborting the whole commit', async () => {
-    // env/ is gitignored (single-repo layout), skills/ is not — the commit must
+    // env/ is gitignored (self-mode layout), skills/ is not — the commit must
     // still succeed with the non-ignored path.
     fs.writeFileSync(path.join(dir, '.gitignore'), 'ignored-dir/\n');
     fs.mkdirSync(path.join(dir, 'ignored-dir'), { recursive: true });

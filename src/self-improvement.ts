@@ -7,7 +7,7 @@
  *              task of the suite on origin's default branch or on the proposal naming its subject yet), each subject
  *              once, newest first, the tasks that cover the others, and whether the run is ready
  *   improve  a prompt step in workspace { team: { branch: teamai/self-improvement/<scorer> } }, with deliver: pr: it
- *              changes the team's assets and writes one task per failure, and teamai pushes and proposes them as one
+ *              changes the team's resources and writes one task per failure, and teamai pushes and proposes them as one
  *              pull request, which the next run updates
  */
 import { execFile } from 'node:child_process';

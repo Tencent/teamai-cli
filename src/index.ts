@@ -198,11 +198,11 @@ program
 program
   .command('init')
   .description('Initialize teamai (configure Git provider, clone repo, register member)')
-  .argument('[repo]', 'Team repo (owner/repo or full URL). Pass "." for single-repo mode (the current git repo is the team repo).')
+  .argument('[repo]', 'Team repo (owner/repo or full URL). Pass "." for self mode (the current git repo is the team repo).')
   .option('--repo <repo>', 'Team repo (alias of the positional argument)')
   .option('--http <url>', 'Git-free HTTP team repo (read-only consumer; only needs an API key)')
   .option('--provider <name>', 'Git provider for the team repo on this machine: tgit, github, cnb, gitlab, gitcode, or git. Skips auto-detection. `git` uses your existing Git auth and needs no platform token, but opens no PR/MR.')
-  .option('--self', 'Single-repo mode: the current git repo is the team repo (equivalent to `teamai init .`). Knowledge lives on main under .teamai/; reports go to the teamai-reports orphan branch.')
+  .option('--self', 'Self mode: the current git repo is the team repo (equivalent to `teamai init .`). Knowledge lives on main under .teamai/; reports go to the teamai-reports orphan branch.')
   .option('--token <key>', 'API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN. With --http and a single --agent, an agent access token (sk-) is kept for that agent only, next to the other agents\' tokens (--force keeps them too); while that agent\'s current token still works it is kept and the new one is not used. Without --agent on a machine where one agent already holds a token, that agent takes it, or — keeping its working one — the new token serves the tools without a token of their own.')
   .option('--scope <scope>', 'Install scope: workspace (default, <cwd>/.teamai + <cwd>/.claude) or user (~/.teamai + ~/.claude); project is the older name for workspace')
   .option('--inherit-user-scope', 'In workspace scope, also sync safe user-scope resources, load its env variables (not its secrets) in the workspace, and search its knowledge')
@@ -213,7 +213,7 @@ program
   // comma-separated (`--agent a,b`, split later by normalizeAgentList) both work,
   // WITHOUT the greedy `<name...>` variadic that would swallow the `[repo]`
   // positional (e.g. `init --agent claude .` must keep `.` as the repo arg).
-  .option('--agent <name>', 'AI tools to set up (e.g. claude, codex, cursor, codebuddy, workbuddy, dsh). Repeatable or comma-separated. In single-repo mode, selects which tool dirs to create; a custom agent defined only in teamai.yaml\'s toolPaths also gets its root created here (git-backed init only — an HTTP init has no local teamai.yaml to read custom paths from). Omit for an interactive picker. Additive on repeated runs.', (val: string, acc: string[]) => acc.concat(val), [])
+  .option('--agent <name>', 'AI tools to set up (e.g. claude, codex, cursor, codebuddy, workbuddy, dsh). Repeatable or comma-separated. In self mode, selects which tool dirs to create; a custom agent defined only in teamai.yaml\'s toolPaths also gets its root created here (git-backed init only — an HTTP init has no local teamai.yaml to read custom paths from). Omit for an interactive picker. Additive on repeated runs.', (val: string, acc: string[]) => acc.concat(val), [])
   .option('--force', 'Rewrite the existing config without confirmation, keeping the settings init does not set')
   .action(async (repoArg, cmdOpts) => {
     const globalOpts = program.opts<GlobalOptions>();
@@ -864,7 +864,7 @@ workflowCmd
 workflowCmd
   .command('next <run>')
   .description('Get a lease, hitl, wait, or done JSON envelope. Show hitl.message and hitl.respond to a person, who replaces <option> with a choice.')
-  .option('--prepare', 'Prepare the leased workspace in its original checkout; report commits and pushes it automatically. A step in a clone workspace, such as a benchmark trial, is leased only with --prepare: teamai makes the clone on this machine, installs its team assets and runs setup, and answers the lease with cwd, where the driver runs the step. So is a step that runs with a team role (role on its lease): teamai delivers the role into its copy. A step that requires strict sandbox isolation goes only to a driver that declares driver.can.isolation sandbox and driver.can.env true.')
+  .option('--prepare', 'Prepare the leased workspace in its original checkout; report commits and pushes it automatically. A step in a clone workspace, such as a benchmark trial, is leased only with --prepare: teamai makes the clone on this machine, installs its team resources and runs setup, and answers the lease with cwd, where the driver runs the step. So is a step that runs with a team role (role on its lease): teamai delivers the role into its copy. A step that requires strict sandbox isolation goes only to a driver that declares driver.can.isolation sandbox and driver.can.env true.')
   .option('--attempt <attempt>', 'With --prepare: prepare this attempt, which an earlier next leased this driver, instead of taking a new lease. wrong_attempt when the run no longer leases it to the driver. With --driver skill: the attempt of a place action, with --adopt')
   .option('--adopt <dir>', 'With --prepare --attempt: prepare the attempt in <dir>, a place the host made: a clean worktree of this repository on the lease\'s workspace branch, or detached at its start. A place that does not fit answers adopt_mismatch and leaves the attempt leased. TeamAI never removes an adopted place. With --driver skill --attempt: adopt <dir> as the place action of that attempt asked, as its adopt prints it')
   .option('--json <payload>', 'Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), queued, those of them it has not started, whose own timeout then counts from this call (the answer gives their deadlines in deadlines), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can, what the driver can do on this request: hitl (a person can answer HITL requests and work interactively), workspace, env (true, or "commands" when the driver scopes team env for command steps and setup only), setup, tokens, max_turns, network, isolation, tools (the tools it launches a prompt step that names its tool on), end_turn (it ends a prompt\'s turn at the lease limits), role (it runs a step whose lease has role, the team role its copy runs with, on what teamai delivered there, with --prepare). An omitted key is not offered, so a step that needs it waits, and wait.held names what it lacks. Send driver.can on every next request, including busy polls. claim, true to take a run another install published from teamai-reports before leasing; a run this install owns stays as it is. Every answer lists in cancelled the running attempts whose tools the driver must stop.')
@@ -949,7 +949,7 @@ workflowCmd
 
 const selfImprovementCmd = program
   .command('self-improvement')
-  .description('Improve the team\'s harness from a scorer\'s repeated failures: change the assets teamai delivers so that work like the failing one passes, with one regression task per failure, proposed as one pull request on the team repo that the next run updates. run starts the workflow teamai-self-improvement, teamai\'s default or the team\'s file of that name.');
+  .description('Improve the team\'s harness from a scorer\'s repeated failures: change the resources teamai delivers so that work like the failing one passes, with one regression task per failure, proposed as one pull request on the team repo that the next run updates. run starts the workflow teamai-self-improvement, teamai\'s default or the team\'s file of that name.');
 
 selfImprovementCmd
   .command('run <scorer>')
@@ -1921,7 +1921,7 @@ const codebaseCommand = program
   .description('Inspect and maintain the teamwiki that `teamai import` writes')
   .addOption(new Option('--project <name>', 'Codebase slug under teamwiki/evidence/code/, required for --deep-enrich').hideHelp())
   .addOption(new Option('--upgrade-wiki', 'Migrate docs/team-codebase/ to teamwiki/ graph format').hideHelp())
-  .option('--lint', 'Run global consistency lint over the teamwiki knowledge graph, and count the member\'s asset relations (assets, relations, without a relation, unresolved)')
+  .option('--lint', 'Run global consistency lint over the teamwiki knowledge graph, and count the member\'s resource relations (resources, relations, without a relation, unresolved)')
   .option('--reconcile', 'Reconcile product and code knowledge in teamwiki')
   .option('--deep-enrich', 'Generate deep knowledge docs from extracted evidence. In the team repo it starts the default workflow teamai-codebase-deep-enrich on the driver workflows.driver names, else local, which publishes the docs; an --output teamwiki is written by this process')
   .addOption(new Option('--fix', 'Deprecated: teamwiki lint has no autofix; runs lint in report-only mode').hideHelp())
@@ -2675,6 +2675,16 @@ if (!process.env.TEAMAI_COMMAND_TABLE_ONLY) {
   // Bundled runtimes first: a hook-spawned command may not inherit our PATH
   // (see bundled-runtime.ts) and pull shells out to git.
   ensureBundledRuntimeOnPath();
+
+  const args = process.argv.slice(2);
+
+  // A workflow step or another child inherits this, so a preview stays a
+  // preview there too (#1753 review).
+  if (args.includes('--dry-run')) process.env.TEAMAI_DRY_RUN = '1';
+
+  const { registerRunningInstallation, registersRunningInstallation } = await import('./installations.js');
+
+  if (registersRunningInstallation(args)) registerRunningInstallation();
 
   // Every error a command action throws leaves as one line on stderr with exit
   // 1, never as an unhandled rejection with a Node stack trace (#1270).

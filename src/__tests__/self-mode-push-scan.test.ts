@@ -20,7 +20,7 @@ import { RulesHandler } from '../resources/rules.js';
 import { getDataHome, type TeamaiConfig, type LocalConfig } from '../types.js';
 
 /**
- * Regression for single-repo mode: users edit team knowledge directly under
+ * Regression for self mode: users edit team knowledge directly under
  * <repo>/.teamai/skills (it lives in their own repo), NOT in an AI tool dir like
  * ~/.claude/skills. `teamai push` must scan the active tree's .teamai/{skills,rules}
  * as a source, diffed against the knowledge worktree (origin/<default>), so a
@@ -31,7 +31,7 @@ import { getDataHome, type TeamaiConfig, type LocalConfig } from '../types.js';
  * baseDir = business repo root (project scope) and localConfig.repo.localPath =
  * the worktree checkout that represents origin/<default>.
  */
-describe('single-repo mode: push scans .teamai knowledge dir', () => {
+describe('self mode: push scans .teamai knowledge dir', () => {
   let tmpDir: string;
   let bizRoot: string; // business repo root (= project scope baseDir)
   let worktreeTeamai: string; // knowledge worktree's .teamai (= localConfig.repo.localPath)
@@ -161,7 +161,7 @@ describe('single-repo mode: push scans .teamai knowledge dir', () => {
     expect(items.map((i) => i.name)).not.toContain('my-rule');
   });
 
-  it('still scans .teamai/rules when enabledAgents is set, as single-repo init always writes it', async () => {
+  it('still scans .teamai/rules when enabledAgents is set, as self-mode init always writes it', async () => {
     // The synthetic scan source is not a tool, so the excluded-tool gate must
     // not read it as one outside `enabledAgents` (#649 review).
     await fse.writeFile(path.join(bizRoot, '.teamai', 'rules', 'new-rule.md'), '# New rule\n');

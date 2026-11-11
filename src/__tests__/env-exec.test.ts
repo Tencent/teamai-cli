@@ -67,7 +67,7 @@ describe('teamai env exec', () => {
     git(root, 'worktree', 'add', '-q', worktree, 'HEAD');
     const anchors = await resolveAnchors(root);
     if (!anchors) throw new Error('no git anchors for the fixture project');
-    const partition = projectDataHome(anchors.projectAnchor);
+    const partition = projectDataHome(anchors.repoAnchor);
     const config: LocalConfig = {
       repo: { localPath: repoPath, remote: 'https://example.com/work.git' }, username: 't', scope: 'project',
       projectRoot: root, additionalRoles: [],

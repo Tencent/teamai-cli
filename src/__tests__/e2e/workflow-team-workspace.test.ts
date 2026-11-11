@@ -388,7 +388,7 @@ describe('a step in the team workspace of a team that assigns roles, one of whic
   }, 120_000);
 });
 
-describe('a step in the team workspace in single-repo mode, where the team files are .teamai/ of the project repo', () => {
+describe('a step in the team workspace in self mode, where the team files are .teamai/ of the project repo', () => {
   let fixture: BenchmarkFixture;
   let gh: FakeGh;
   let edit: string;

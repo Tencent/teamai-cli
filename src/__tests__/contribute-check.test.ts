@@ -959,4 +959,18 @@ describe('sessionId filesystem safety (L2)', () => {
 
     expect(fs.existsSync(filePath)).toBe(true);
   });
+
+  it('cleanupStaleSessions removes what a login shell recorded for a stale session with the session\'s state', async () => {
+    const { cleanupStaleSessions } = await import('../contribute-check.js');
+    const { recordLoginEnrolment } = await import('../hook-fast-path.js');
+    await writeContributeState('stale', { contributed: false });
+    recordLoginEnrolment(JSON.stringify({ session_id: 'stale', cwd: '/work/a' }), {});
+    const sessionsDir = path.join(tmpDir, '.teamai', 'sessions');
+    const past = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    for (const file of fs.readdirSync(sessionsDir).filter((name) => name.startsWith('stale'))) fs.utimesSync(path.join(sessionsDir, file), past, past);
+
+    await cleanupStaleSessions(sessionsDir, 'current');
+
+    expect(fs.readdirSync(sessionsDir).filter((name) => name.startsWith('stale'))).toEqual([]);
+  });
 });

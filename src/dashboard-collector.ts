@@ -25,6 +25,7 @@ import {
   TRANSCRIPT_SYSTEM_PREFIXES,
   stripInjectedPrompt,
   TRANSCRIPT_REJECT_MARKERS,
+  TRANSCRIPT_HOST_BLOCK_MARKERS,
   COPILOT_TOOL_ID,
   getDataHome,
   emptyTokenUsage,
@@ -455,6 +456,12 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<Transcri
             : Array.isArray(item.content)
               ? item.content.map((c) => c.text ?? '').join(' ')
               : item.content;
+
+          // A call the host blocked before it ran is neither the member
+          // rejecting it nor the AI failing at it, so it counts as neither:
+          // Claude Code's auto-mode classifier timing out is the host's
+          // problem, not friction the member can document (#1821).
+          if (TRANSCRIPT_HOST_BLOCK_MARKERS.some((m) => text.includes(m))) continue;
 
           if (TRANSCRIPT_REJECT_MARKERS.some((m) => text.includes(m))) {
             toolReject++;
@@ -2494,8 +2501,8 @@ interface RecordedScope {
   cwd?: string;
   /** The last event's data home key, with the `projectAnchor` of that same event. */
   scope?: { key: string; anchor: string | undefined };
-  /** The last `projectAnchor` the session recorded (#809's attribution rule). */
-  projectAnchor?: string;
+  /** The last `repoAnchor` the session recorded (#809's attribution rule). */
+  repoAnchor?: string;
 }
 
 const recordedScopes = new Map<string, Promise<RecordedScope>>();
@@ -2519,7 +2526,7 @@ function recordedScope(sessionId: string, cwd: string): Promise<RecordedScope> {
       return {
         cwd: scoped?.cwd ?? own.find((e) => e.cwd)?.cwd,
         scope: scoped?.dataHomeKey ? { key: scoped.dataHomeKey, anchor: scoped.projectAnchor } : undefined,
-        projectAnchor: (here.find((e) => e.projectAnchor) ?? own.find((e) => e.projectAnchor))?.projectAnchor,
+        repoAnchor: (here.find((e) => e.projectAnchor) ?? own.find((e) => e.projectAnchor))?.projectAnchor,
       };
     });
     recordedScopes.set(key, known);
@@ -2644,9 +2651,9 @@ async function checkoutOf(anchor: string): Promise<string | undefined> {
   if (!fs.existsSync(anchor)) return undefined;
 
   if (fs.existsSync(path.join(anchor, '.git'))) return anchor;
-  const { checkoutForProjectAnchor } = await import('./utils/git.js');
+  const { checkoutForRepoAnchor } = await import('./utils/git.js');
 
-  return await checkoutForProjectAnchor(anchor) ?? undefined;
+  return await checkoutForRepoAnchor(anchor) ?? undefined;
 }
 
 /**
@@ -2657,13 +2664,13 @@ async function checkoutOf(anchor: string): Promise<string | undefined> {
  * to open, it is the last anchor the session recorded there, else anywhere
  * (#810). Both event writers go through here.
  */
-export async function eventProjectAnchor(cwd: string | undefined, sessionId: string): Promise<string | undefined> {
+export async function eventRepoAnchor(cwd: string | undefined, sessionId: string): Promise<string | undefined> {
   if (!cwd) return undefined;
 
-  if (!fs.existsSync(cwd)) return (await recordedScope(sessionId, cwd)).projectAnchor;
+  if (!fs.existsSync(cwd)) return (await recordedScope(sessionId, cwd)).repoAnchor;
   const { resolveAnchors } = await import('./utils/git.js');
 
-  return (await resolveAnchors(cwd))?.projectAnchor;
+  return (await resolveAnchors(cwd))?.repoAnchor;
 }
 
 /** How long a session start waits for `git status` before recording no git state. */
@@ -2719,14 +2726,57 @@ export async function addGitStateAtStart(event: DashboardEvent, known?: HeadStat
 }
 
 /**
+ * The hook payload field in which a Stop's background pass hands its readers, the session's end record and this event,
+ * the one git status it ran: a state with its branch (null on a detached HEAD), or null when it found none.
+ */
+export const GIT_AT_STOP_PAYLOAD_KEY = 'teamai_git_at_stop';
+
+const GitAtStopPayloadSchema = z.object({ head: z.string(), dirty: z.boolean(), branch: z.string().nullable() });
+
+/** The git state a Stop's background pass read once for its readers. */
+export type GitStateAtStop = z.infer<typeof GitAtStopPayloadSchema>;
+
+/** The git state `payload` carries from its Stop's one read: a state, null for none, undefined when it carries none. */
+export function gitStateAtStopIn(payload: HookStdin): GitStateAtStop | null | undefined {
+  if (!(GIT_AT_STOP_PAYLOAD_KEY in payload)) return undefined;
+  const state = GitAtStopPayloadSchema.safeParse(payload[GIT_AT_STOP_PAYLOAD_KEY]);
+
+  return state.success ? state.data : null;
+}
+
+/**
+ * The commit `cwd` has checked out at a Stop, whether tracked files have changes, and the branch, from one `git status`,
+ * or null when it has no commit, git fails (a bare repository), or it takes longer than its time cap.
+ */
+export async function readGitStateAtStop(cwd: string): Promise<GitStateAtStop | null> {
+  const { getHeadAndBranch } = await import('./utils/git.js');
+  const abort = AbortSignal.timeout(GIT_STATE_TIMEOUT_MS);
+  // A git killed at the cap is still waited for while a child of it holds the pipe, so the cap ends the wait itself.
+  const capped = new Promise<null>((resolve) => abort.addEventListener('abort', () => resolve(null), { once: true }));
+  const read = await Promise.race([getHeadAndBranch(cwd, abort).catch(() => null), capped]);
+
+  return read && { ...read.state, branch: read.branch };
+}
+
+/**
  * Add to a `stop` event the commit its `cwd` has checked out, and the branch, so the commits a session made are the
  * range from its start's `gitAtStart` to its last Stop's `gitHead`, and its pull request that of the last branch a Stop
  * recorded, known without reading the checkout as it is when the session is folded (#1387). Other events, events with
  * no cwd, and a cwd with no commit or whose git fails or times out are left as they are; a detached HEAD records no
  * branch.
  */
-export async function addGitHeadAtStop(event: DashboardEvent): Promise<void> {
+export async function addGitHeadAtStop(event: DashboardEvent, known?: GitStateAtStop | null): Promise<void> {
   if (event.type !== 'stop' || !event.cwd) return;
+
+  if (known) {
+    event.gitHead = known.head;
+
+    if (known.branch) event.gitBranch = known.branch;
+
+    return;
+  }
+
+  // Nothing handed over, or a status that failed (a bare repository) or passed its cap (a very large checkout).
   const { getCurrentBranch, getHeadCommit } = await import('./utils/git.js');
   const abort = AbortSignal.timeout(GIT_STATE_TIMEOUT_MS);
   // A git killed at the cap is still waited for while a child of it holds the pipe (a wrapper's), so the cap ends the
@@ -2787,13 +2837,13 @@ export async function dashboardReport(toolArg?: string): Promise<void> {
 
   event.dataHomeKey = scopeKey;
 
-  const [projectAnchor] = await Promise.all([
-    eventProjectAnchor(event.cwd, event.sessionId),
+  const [repoAnchor] = await Promise.all([
+    eventRepoAnchor(event.cwd, event.sessionId),
     addGitStateAtStart(event, gitStateIn(hookData)),
-    addGitHeadAtStop(event),
+    addGitHeadAtStop(event, gitStateAtStopIn(hookData)),
   ]);
 
-  event.projectAnchor = projectAnchor;
+  event.projectAnchor = repoAnchor;
   const { sessionRun } = await import('./launch-context.js');
   Object.assign(event, sessionRun(process.env));
   await appendEvent(event);

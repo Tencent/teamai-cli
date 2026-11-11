@@ -21,7 +21,7 @@ import { interventionsEntry, promptTokensEntry, snapshotPathIn, type ReportedInt
 import { FINISHED_AFTER_MS } from './session-flow/session-work.js';
 import { getDataHome, type DashboardEvent, type LocalConfig, type UserOutcomeStats } from './types.js';
 import { pathExists, readJson, writeJson } from './utils/fs.js';
-import { checkoutForProjectAnchor, getCurrentBranch, getDefaultBranch, getHeadCommit } from './utils/git.js';
+import { checkoutForRepoAnchor, getCurrentBranch, getDefaultBranch, getHeadCommit } from './utils/git.js';
 import { log } from './utils/logger.js';
 import { CommitIdSchema } from './workflow/delivery-schema.js';
 import { findDelivered } from './workflow/pr-delivery.js';
@@ -36,7 +36,7 @@ const FactsSchema = z.object({
   tool: z.string().optional(),
   runMode: RunModeSchema.optional(),
   cwd: z.string().optional(),
-  /** The repository `cwd` is in (`projectAnchor`), whose other checkouts still hold its commits once `cwd` is removed. */
+  /** The repository `cwd` is in (`repoAnchor`), whose other checkouts still hold its commits once `cwd` is removed. */
   anchor: z.string().optional(),
   /** Its first start, and the head that start saw: none in a repository with no commit yet, or when git failed. */
   startedAt: z.string().optional(),
@@ -189,7 +189,7 @@ async function scopeOutcomes(input: FoldInput): Promise<SessionOutcomeEvent[]> {
 async function checkoutOf(facts: Facts): Promise<string | undefined> {
   if (facts.cwd && await pathExists(facts.cwd)) return facts.cwd;
 
-  return facts.anchor ? await checkoutForProjectAnchor(facts.anchor) ?? undefined : undefined;
+  return facts.anchor ? await checkoutForRepoAnchor(facts.anchor) ?? undefined : undefined;
 }
 
 /** `facts` with the head and branch `cwd` has checked out now, as its Stop would record them. */

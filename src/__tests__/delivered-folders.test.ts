@@ -57,7 +57,7 @@ describe('DeliveredFolders.pathOf', () => {
     repo: { localPath: path.join(home, '.teamai', 'projects', 'shop-1a2b', 'repo'), remote: 'acme/team' },
   };
 
-  const singleRepo: LocalConfig = {
+  const selfModeConfig: LocalConfig = {
     ...base, scope: 'project', projectRoot: path.join(home, 'shop-wt'), dataHome: path.join(home, '.teamai', 'projects', 'shop-1a2b'),
     repo: { localPath: path.join(home, 'shop-wt', '.teamai'), remote: 'acme/shop', kind: 'self', businessRepoRoot: path.join(home, 'shop-wt') },
   };
@@ -66,7 +66,7 @@ describe('DeliveredFolders.pathOf', () => {
     ['the user scope', user, null, path.join(home, '.teamai', 'hooks', 'lint')],
     ['the user scope, in a namespace', user, 'payments', path.join(home, '.teamai', 'hooks', 'payments', 'lint')],
     ['a workspace with a remote team, shared by its worktrees', workspace, null, path.join(home, '.teamai', 'projects', 'shop-1a2b', 'hooks', 'lint')],
-    ['a single-repo worktree, in its own checkout', singleRepo, 'payments', path.join(home, 'shop-wt', '.teamai', 'delivered', 'hooks', 'payments', 'lint')],
+    ['a worktree in self mode, in its own checkout', selfModeConfig, 'payments', path.join(home, 'shop-wt', '.teamai', 'delivered', 'hooks', 'payments', 'lint')],
   ] as const)('puts a folder of %s in the data home of the scope that owns it', (_case, localConfig, namespace, expected) => {
     expect(DeliveredFolders.pathOf(localConfig, { type: 'hooks', namespace, name: 'lint' })).toBe(expected);
   });

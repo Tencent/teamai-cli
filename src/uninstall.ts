@@ -1,4 +1,4 @@
-import { lstat, readdir, realpath } from 'node:fs/promises';
+import { lstat, readdir, realpath, rmdir } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { autoDetectInit, loadLocalConfig, loadStateForScope, readConfigFrom, resolveMemberToolRoots, saveLocalConfig, saveLocalConfigForScope, saveStateForScope, UnreadableProjectConfigError, detectProjectConfig } from './config.js';
@@ -12,6 +12,7 @@ import {
 import { codexTeamHookIndexPath } from './codex-team-hooks.js';
 import { codebuddyTeamHookPayload } from './codebuddy-team-hooks.js';
 import { mapStrings, parseJsonAs } from './utils/json.js';
+import { isWithin } from './utils/agent-path.js';
 import { bridgedTeamHookDir, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
 import {
   removeOpenClawHooks,
@@ -78,7 +79,7 @@ import {
 } from './builtin-skills.js';
 import { cleanupOf, hookAdapterDirIn, hookSettingsFile, installOf, isInstalledFor, locate, openclawWorkspaceDir, ownOf, SHARED_AGENT_SKILLS_PATH, workspaceHooksOf, writesOf, type Location } from './locate.js';
 import { toolHome, toolHomesAcrossProfiles } from './tool-home.js';
-import { channelsOf, hookFormatOf, hookSyntaxOf, isToolId, TOOLS } from './tools.js';
+import { channelsOf, hookSyntaxOf, isToolId, TOOLS } from './tools.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import { allowsSkillDirectory, CODEX_TOOL, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, skillOrigin } from './resources/skills.js';
 import { describeKeptDir, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir, teamaiSkillFiles } from './resources/delivered-copies.js';
@@ -100,6 +101,7 @@ import {
   expandHome,
   pruneEmptyDirs,
 } from './utils/fs.js';
+import { installationsPath } from './installations.js';
 import { listQueuesIn } from './utils/pending-learnings.js';
 import { log } from './utils/logger.js';
 import { askConfirmation } from './utils/prompt.js';
@@ -137,7 +139,7 @@ interface RemovalPlan {
   dshHookFile: string | null;
   /** The team hooks teamai's bridge runs for a tool (~/.teamai/team-hooks/<tool>.json). */
   bridgedTeamHookFiles: string[];
-  /** A single-repo worktree's `.teamai/delivered/`: the team folders (hooks, MCP servers) it delivered (#1787). */
+  /** A self-mode worktree's `.teamai/delivered/`: the team folders (hooks, MCP servers) it delivered (#1787). */
   deliveredFolderDirs: string[];
   /** Manifest used by the primary hook injection scope. */
   hookManifestPath: string;
@@ -443,14 +445,20 @@ function isEmptyHooksResidue(parsed: JsonValue | null): boolean {
 }
 
 /**
- * Delete `file`, a standalone Copilot hook file teamai wrote, once removing
- * teamai's entries left it holding only the events they emptied: Copilot runs
- * nothing from it. A file git tracks stays, as the hook pass keeps it.
+ * Delete `file` once removing teamai's entries left it holding nothing of the
+ * member's: no hooks, or an empty JSON object. A file git tracks stays, as the
+ * hook pass keeps it.
  */
-async function removeEmptiedCopilotHookFile(file: string): Promise<void> {
+async function removeEmptiedHookFile(file: string): Promise<void> {
   const parsed = await readJson<JsonValue>(file);
 
-  if (parsed === null || !Object.keys(parsed).every((key) => key === 'version' || key === 'hooks') || !isEmptyHooksResidue(parsed)) return;
+  if (parsed === null) return;
+
+  const keys = Object.keys(parsed);
+
+  if (!keys.every((key) => key === 'version' || key === 'hooks')) return;
+
+  if (keys.length > 0 && !isEmptyHooksResidue(parsed)) return;
 
   if (!await gitUntracked(file, 'entry')) return;
   await remove(file);
@@ -1547,7 +1555,7 @@ async function buildRemovalPlan(
   // Read before anything is deleted: what the projects still set up need stays.
   const projectsKept = includeShared && globalAdapters ? await keptForProjects() : { projects: [], paths: [] };
 
-  // The worktree's .teamai/delivered/ (#1787): the rule and MCP folders of a project scope, and a single-repo scope's hook folders.
+  // The worktree's .teamai/delivered/ (#1787): the rule and MCP folders of a project scope, and a self-mode scope's hook folders.
   const worktreeDelivered = DeliveredFolders.worktreeRoot(localConfig);
 
   const plan: RemovalPlan = {
@@ -1759,10 +1767,19 @@ async function buildRemovalPlan(
     );
 
     const mcpManifest = (await readJson<ManagedMcpManifest>(mcpManifestPath)) ?? {};
+    const { mcpOwnersOf } = await import('./mcp-reconcile.js');
 
     for (const [toolKey, records] of Object.entries(mcpManifest)) {
       for (const rec of records ?? []) {
-        if (rec?.name) plan.mcpServers.push(`${toolKey}/${rec.name}`);
+        if (!rec?.name) continue;
+
+        // OpenClaw's, Hermes' and DSH's one user config keeps an entry another scope still records (`mcpOwnersOf`).
+        const others = rec.file === undefined ? undefined
+          : await mcpOwnersOf({ tool: toolKey.split(':')[0], file: rec.file }, new Set([mcpManifestPath]));
+
+        const kept = others !== undefined && (others.unreadable.length > 0 || others.owners.some(({ record }) => record.name === rec.name));
+
+        plan.mcpServers.push(`${toolKey}/${rec.name}${kept ? ' (kept: another scope may still deliver it)' : ''}`);
       }
     }
 
@@ -2492,8 +2509,8 @@ async function planHomeGitExcludeBlocks(home: string): Promise<HomeGitExcludeBlo
       const anchor = dataHome === home ? null : await readAnchorFile(dataHome);
 
       if (anchor) {
-        const { checkoutForProjectAnchor } = await import('./utils/git.js');
-        const checkout = await checkoutForProjectAnchor(anchor);
+        const { checkoutForRepoAnchor } = await import('./utils/git.js');
+        const checkout = await checkoutForRepoAnchor(anchor);
 
         if (checkout) candidates.add(checkout);
       }
@@ -2538,8 +2555,8 @@ async function removeHomeLocalScopeMcpServers(skip: readonly string[] = []): Pro
 
     if (skip.includes(dataHome)) continue;
     const anchor = await readAnchorFile(dataHome);
-    const { checkoutForProjectAnchor } = await import('./utils/git.js');
-    const checkout = anchor ? await checkoutForProjectAnchor(anchor) : null;
+    const { checkoutForRepoAnchor } = await import('./utils/git.js');
+    const checkout = anchor ? await checkoutForRepoAnchor(anchor) : null;
 
     const toolRoots = checkout
       ? await resolveMemberToolRoots(checkout, { selfHeal: false })
@@ -2791,7 +2808,7 @@ async function executeRemoval(
       if (teamHookProjectRoot) opts.teamHookProjectRoot = teamHookProjectRoot;
       await reconcileHooks(settingsPath, tool, [], opts);
 
-      if (hookFormatOf(tool) === 'copilot') await removeEmptiedCopilotHookFile(settingsPath);
+      await removeEmptiedHookFile(settingsPath);
     } catch (e) {
       failedRecords.add(records);
       log.warn(`Failed to remove hooks from ${settingsPath}: ${e instanceof Error ? e.message : String(e)}`);
@@ -3105,6 +3122,9 @@ async function executeRemoval(
     log.success(`Removed ${plan.agentFiles.length} agent files`);
   }
 
+  // (d3) The directories those were in, once nothing is left in them.
+  for (const dir of emptiedDirs(plan)) await removeIfEmpty(dir);
+
   // (e) Clean shell profile env block(s) — every file discovered in
   // buildRemovalPlan, not just the one detectShellProfile() resolves to today.
   // Only this scope's own block: another scope's may share the file (#876).
@@ -3127,8 +3147,13 @@ async function executeRemoval(
       }
 
       if (cleaned && content !== null) {
-        await writeFile(profilePath, content);
-        log.success(`Cleaned shell profile: ${profilePath}`);
+        if (content.trim() === '') {
+          await remove(profilePath);
+          log.success(`Removed shell profile: ${profilePath}`);
+        } else {
+          await writeFile(profilePath, content);
+          log.success(`Cleaned shell profile: ${profilePath}`);
+        }
       }
     } catch (e) {
       log.warn(`Failed to clean shell profile ${profilePath}: ${e instanceof Error ? e.message : String(e)}`);
@@ -3289,7 +3314,111 @@ async function executeRemoval(
     }
   }
 
+  await sweepCreatedLeftovers(plan, hooksLeft);
+
   return { pendingOpencode, hooksLeft, blocksLeft, filesLeft };
+}
+
+/** The marker every wrapper teamai writes into its own bin directory carries. */
+const WRAPPER_MARKER = 'Auto-generated by teamai';
+
+/**
+ * Remove what teamai created and left empty once its resources are gone (#1808):
+ * the hook wrapper in its own bin directory, the installation inventory, an
+ * empty dashboard file, and the directories that held only those. `debug.log` stays: an uninstall that failed
+ * is explained there, and that record is worth more than the file.
+ */
+async function sweepCreatedLeftovers(plan: RemovalPlan, hooksLeft: ReadonlyArray<{ what: string; tool: string }>): Promise<void> {
+  // Shared resources this uninstall keeps still need what follows, and so do a
+  // hook it could not remove and another checkout on this machine — which every
+  // scope can see, not only the user scope that fills `keptForProjects` in the
+  // plan (#1808 review).
+  if (!plan.includeShared || hooksLeft.length > 0) return;
+
+  // Every other install that runs HOME's hooks, the user scope included: a
+  // workspace uninstall leaves those hooks in place, and they call the wrapper.
+  if ((await installsSharingHome(plan.teamaiHome)).length > 0) return;
+
+  if ((await keptForProjects()).projects.length > 0) return;
+
+  const home = getUserHome();
+  const root = path.join(home, '.teamai');
+  const bin = path.join(root, 'bin');
+
+  for (const name of ['teamai', 'teamai.cmd', 'teamai-codebuddy-hook']) {
+    const file = path.join(bin, name);
+
+    try {
+      const content = await readFileSafe(file);
+
+      if (content === null || (name === 'teamai' && !content.includes(WRAPPER_MARKER))) continue;
+
+      await remove(file);
+      log.success(`Removed ${file}: teamai's hook wrapper`);
+    } catch (e) {
+      log.debug(`Could not remove ${file}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  const owners = path.join(root, 'dashboard', 'session-owners.jsonl');
+
+  try {
+    if (await readFileSafe(owners) === '') await remove(owners);
+  } catch (e) {
+    log.debug(`Could not remove ${owners}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  const inventory = installationsPath();
+
+  try {
+    await remove(inventory);
+  } catch (e) {
+    log.debug(`Could not remove ${inventory}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  const dirs = [
+    bin,
+    path.join(root, 'dashboard'),
+    path.join(root, 'locks'),
+  ];
+
+  if (plan.projectRoot) dirs.push(path.join(plan.projectRoot, '.claude', 'skills'));
+
+  for (const dir of dirs) {
+    if (await pruneEmptyDirs(dir)) log.debug(`Removed empty ${dir}/`);
+  }
+}
+
+/**
+ * The directories uninstall removed teamai's skills, rules and agents from, deepest first. Above a rule file, each
+ * folder up to the tool's rules directory; never a directory outside one, so a tool's own root stays.
+ */
+function emptiedDirs(plan: RemovalPlan): string[] {
+  const dirs = new Set([...plan.skillDirs.map(({ dir }) => path.dirname(dir)), ...plan.agentFiles.map((file) => path.dirname(file))]);
+  const ownedRuleFiles = plan.claudeMdFiles.flatMap(({ path: file, owned }) => (owned ? [file] : []));
+
+  for (const file of [...plan.ruleFiles, ...ownedRuleFiles]) {
+    const root = plan.ruleDirs.find((dir) => isWithin(file, dir));
+
+    if (root === undefined) continue;
+
+    for (let dir = path.dirname(file); isWithin(dir, root); dir = path.dirname(dir)) {
+      dirs.add(dir);
+
+      if (dir === path.dirname(dir)) break;
+    }
+  }
+
+  return [...dirs].sort((a, b) => b.length - a.length);
+}
+
+/** Remove `dir` when nothing is left in it; any folder inside, a member's empty one included, keeps it. */
+async function removeIfEmpty(dir: string): Promise<void> {
+  try {
+    await rmdir(dir);
+  } catch (e) {
+    log.debug(`Kept ${dir}: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 /** Remove everything under `root` but each path in `keep` and the directories on the way to them. */
@@ -3528,6 +3657,8 @@ async function removeConfirmed(
   const heldMcp = new Set([...plan.gitExcludes].flatMap(([file, entries]) => entries.map(({ pattern }) => `${file}\0${pattern}`)));
   // The MCP configs that could not be read: their records, and the data home holding them, stay for the retry.
   const mcpLeft: string[] = [];
+  // A removal that failed keeps the data home too, but the MCP files it could read still name the folders that stay.
+  const mcpRemovalFailed: string[] = [];
 
   if (plan.includeShared) {
     try {
@@ -3542,8 +3673,10 @@ async function removeConfirmed(
       let removedTotal = 0;
 
       for (const cfg of await projectWorktreeConfigs(localConfig)) {
-        const { changes } = await reconcileMcpForConfig(teamConfig, cfg, { removeAll: true });
+        const { changes, unparsed } = await reconcileMcpForConfig(teamConfig, cfg, { removeAll: true });
         removedTotal += changes.filter((c) => c.action === 'removed').length;
+
+        if (unparsed && !mcpLeft.includes(getDataHome(cfg))) mcpLeft.push(getDataHome(cfg));
 
         // Every checkout's config sees the other checkouts' local scopes: name each place once.
         for (const place of await unreadMcpPlaces(teamConfig, cfg)) if (!mcpLeft.includes(place)) mcpLeft.push(place);
@@ -3579,6 +3712,7 @@ async function removeConfirmed(
       }
     } catch (e) {
       log.warn(`Failed to remove MCP servers: ${e instanceof Error ? e.message : String(e)}`);
+      mcpRemovalFailed.push(getDataHome(localConfig));
     }
   }
 
@@ -3598,7 +3732,7 @@ async function removeConfirmed(
 
   const { pendingOpencode, hooksLeft, blocksLeft, filesLeft } = await executeRemoval(plan, heldMcp, {
     hooks: dispatchLeft ? [{ what: `the Codex team-hook dispatchers in ${dispatchLeft}`, tool: 'codex' }] : [],
-    files: [...httpSourceLeft, ...plan.keptUnjudged, ...excludesLeft, ...grantsLeft, ...mcpLeft],
+    files: [...httpSourceLeft, ...plan.keptUnjudged, ...excludesLeft, ...grantsLeft, ...mcpLeft, ...mcpRemovalFailed],
     mcpEntries,
   }, codexTrustPolicy(localConfig));
 

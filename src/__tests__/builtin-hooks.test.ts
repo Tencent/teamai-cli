@@ -1,5 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { builtinHookDefs, applyBuiltinOverride, _resetShellCache } from '../builtin-hooks.js';
+import { builtinHookDefs, builtinHookForm, applyBuiltinOverride, recognisedBuiltinHookDefs, _resetShellCache } from '../builtin-hooks.js';
+import { getAgentVersion } from '../agent-version.js';
+import { channelsOf } from '../tools.js';
+
+vi.mock('../agent-version.js', () => ({ getAgentVersion: vi.fn(async () => '') }));
+
+// The real facts, which a case below extends for one tool.
+vi.mock('../tools.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../tools.js')>();
+  return { ...actual, channelsOf: vi.fn(actual.channelsOf) };
+});
 
 beforeEach(() => _resetShellCache());
 afterEach(() => _resetShellCache());
@@ -185,5 +195,83 @@ describe('applyBuiltinOverride (§4.8)', () => {
       overrides: { 'Hook dispatch stop': { timeout: 99 } },
     });
     expect(defs.find((d) => d.key === 'Hook dispatch stop')?.timeout).toBe(99);
+  });
+});
+
+describe('builtinHookForm', () => {
+  const real = channelsOf;
+
+  /** `claude` with the hook facts `facts` added, every other tool as it is. */
+  const withFacts = async (facts: { unwaitedSince?: string; loginDeferrable?: true }) => {
+    const actual = (await vi.importActual<typeof import('../tools.js')>('../tools.js')).channelsOf;
+    vi.mocked(real).mockImplementation((tool) => (tool === 'claude' ? { ...actual(tool), hooks: { ...actual(tool).hooks, unwaitedSince: undefined, loginDeferrable: undefined, ...facts } } : actual(tool)));
+  };
+
+  afterEach(async () => {
+    vi.mocked(real).mockImplementation((await vi.importActual<typeof import('../tools.js')>('../tools.js')).channelsOf);
+    vi.mocked(getAgentVersion).mockReset().mockResolvedValue('');
+    vi.restoreAllMocks();
+  });
+
+  it('keeps the waited login-shell form for a tool with neither fact, and starts no tool to read its version', async () => {
+    for (const tool of ['cursor', 'qoder']) {
+      expect(await builtinHookForm(tool, 'user')).toEqual({ unwaited: false, loginDeferred: false });
+    }
+    expect(getAgentVersion).not.toHaveBeenCalled();
+  });
+
+  it('defers the login shell of each internal variant as its original does, with no version floor, and starts no tool', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+
+    for (const tool of ['claude-internal', 'tclaude', 'codex-internal', 'tcodex']) {
+      expect(await builtinHookForm(tool, 'user')).toEqual({ unwaited: false, loginDeferred: true });
+    }
+    expect(getAgentVersion).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { version: '2.1.119', unwaited: true },
+    { version: '2.1.322', unwaited: true },
+    { version: '2.1.118', unwaited: false },
+    { version: '', unwaited: false },
+    { version: 'not a version', unwaited: false },
+  ])('unwaits the member\'s own file of a tool at $version against a floor of 2.1.119: $unwaited', async ({ version, unwaited }) => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    await withFacts({ unwaitedSince: '2.1.119' });
+    vi.mocked(getAgentVersion).mockResolvedValue(version);
+
+    expect(await builtinHookForm('claude', 'user')).toEqual({ unwaited, loginDeferred: false });
+  });
+
+  it('keeps the member\'s own file waited on Windows past the floor, and starts no tool to read its version', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    await withFacts({ unwaitedSince: '2.1.119', loginDeferrable: true });
+    vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
+
+    expect(await builtinHookForm('claude', 'user')).toEqual({ unwaited: false, loginDeferred: false });
+    expect(getAgentVersion).not.toHaveBeenCalled();
+  });
+
+  it('defers the login shell in the member\'s own file on POSIX only', async () => {
+    await withFacts({ loginDeferrable: true });
+
+    expect(await builtinHookForm('claude', 'user')).toEqual({ unwaited: false, loginDeferred: process.platform !== 'win32' });
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    expect(await builtinHookForm('claude', 'user')).toEqual({ unwaited: false, loginDeferred: false });
+  });
+
+  it('keeps a project file a repository may commit in the waited login-shell form, whatever the facts and the version', async () => {
+    await withFacts({ unwaitedSince: '2.1.119', loginDeferrable: true });
+    vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
+
+    expect(await builtinHookForm('claude', 'project')).toEqual({ unwaited: false, loginDeferred: false });
+  });
+
+  it('marks only the PostToolUse entry of the unwaited form async, and recognises the entries of every form', () => {
+    const unwaited = builtinHookDefs('codex', { unwaited: true, loginDeferred: false });
+
+    expect(unwaited.filter((def) => def.async).map((def) => def.event)).toEqual(['PostToolUse']);
+    expect(unwaited.map(({ async: _async, ...def }) => def)).toEqual(builtinHookDefs('codex'));
+    expect(recognisedBuiltinHookDefs('codex')).toEqual(expect.arrayContaining([...builtinHookDefs('codex'), ...unwaited]));
   });
 });

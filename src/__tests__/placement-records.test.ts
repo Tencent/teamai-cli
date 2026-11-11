@@ -285,7 +285,7 @@ describe('reconcilePlacementRecords', () => {
     });
 
     it('reads the default branch through a ref when the checkout is somewhere else', async () => {
-      // A single-repo member on a feature branch cut before the placement merged.
+      // A member in self mode on a feature branch cut before the placement merged.
       git(['init', '-q', '-b', 'main']);
       await commitFile('README.md', 'seed\n', 'seed');
       git(['checkout', '-q', '-b', 'feature']);

@@ -8,7 +8,7 @@
  *                                      worktree has its own rule copies and MCP configuration)
  *   workspace, remote team's hooks   → ~/.teamai/projects/<slug>/hooks/[<ns>/]<name>/    (shared, as every worktree
  *                                      runs the same entries: the main checkout's files, or HOME's)
- *   workspace, single-repo's hooks   → <worktree>/.teamai/delivered/hooks/[<ns>/]<name>/  (each checkout keeps its own)
+ *   workspace, self mode's hooks   → <worktree>/.teamai/delivered/hooks/[<ns>/]<name>/  (each checkout keeps its own)
  *
  * A rule folder's path stays the same across versions, so the text rendered from it does too. A hook or MCP server
  * folder sits at `<name>.<version>/` (`versionedPathOf`, `identify`), one per set of files, so each configuration runs
@@ -211,7 +211,7 @@ function anyVersionPathOf(localConfig: LocalConfig, ref: DeliveredFolderRef): st
  * as `anyVersionPathOf` writes it, so a configuration written for one version equals a render of another.
  */
 function withoutVersions(text: string): string {
-  return text.replace(/(\/(?:hooks|mcp)\/(?:[\w.-]+\/)*?[\w-]+)\.[0-9a-f]{8}(?![\w.-])/g, `$1${ANY_VERSION}`);
+  return text.replace(/(\/(?:hooks|mcp)\/(?:[^/\\:\p{Cc}]+\/)*?[\w-]+)\.[0-9a-f]{8}(?![\w.-])/gu, `$1${ANY_VERSION}`);
 }
 
 /**

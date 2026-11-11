@@ -1,5 +1,5 @@
 /**
- * E2E: in single-repo mode push compares the member's `.teamai/` with a fresh
+ * E2E: in self mode push compares the member's `.teamai/` with a fresh
  * checkout of the default branch. A checkout behind that branch holds the
  * older version of every team file a teammate changed since, and push must
  * neither offer it as the member's edit nor push it over the teammate's.
@@ -46,7 +46,7 @@ function git(args: string[], cwd: string): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...GIT_ENV } }).trim();
 }
 
-describe('single-repo push from a checkout behind the default branch', () => {
+describe('self-mode push from a checkout behind the default branch', () => {
   let sandbox: string;
   let home: string;
   let projectRoot: string;

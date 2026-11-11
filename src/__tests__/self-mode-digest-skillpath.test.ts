@@ -18,7 +18,7 @@ describe('buildSkillChangePathspec', () => {
     expect('.teamai/skills/my-skill/SKILL.md'.match(skillRe)).toBeNull();
   });
 
-  it('single-repo mode (.teamai subdir): prefixed pathspec + regex', () => {
+  it('self mode (.teamai subdir): prefixed pathspec + regex', () => {
     const { pathspec, skillRe } = buildSkillChangePathspec('.teamai');
     expect(pathspec).toBe('.teamai/skills/*/SKILL.md');
     // This is exactly the path git emits from the business-repo root — must match.

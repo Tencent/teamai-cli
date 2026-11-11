@@ -2080,7 +2080,7 @@ describe('materializeRef — branch materialization from git', () => {
       await fse.remove(destDir);
     }
   });
-  it('reads a single-repo team from .teamai/ on the branch, so the review reports its problems', async () => {
+  it('reads a team in self mode from .teamai/ on the branch, so the review reports its problems', async () => {
     const gitRepo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-git-repo-'));
     const destDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-dest-'));
     const git = (...args: string[]) => execFileSync('git', ['-C', gitRepo, ...args]);
@@ -2109,7 +2109,7 @@ describe('materializeRef — branch materialization from git', () => {
       await fse.remove(destDir);
     }
   });
-  it('reviews a single-repo branch\'s hook folders, not the copies pull delivered to .teamai/delivered/', async () => {
+  it('reviews a self-mode branch\'s hook folders, not the copies pull delivered to .teamai/delivered/', async () => {
     const gitRepo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-git-repo-'));
     const destDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-dest-'));
     const git = (...args: string[]) => execFileSync('git', ['-C', gitRepo, ...args]);
@@ -2134,7 +2134,7 @@ describe('materializeRef — branch materialization from git', () => {
       await fse.remove(destDir);
     }
   });
-  it('reviews a single-repo branch\'s MCP server folders, not the copies pull delivered to .teamai/delivered/', async () => {
+  it('reviews a self-mode branch\'s MCP server folders, not the copies pull delivered to .teamai/delivered/', async () => {
     const gitRepo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-git-repo-'));
     const destDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-dest-'));
     const git = (...args: string[]) => execFileSync('git', ['-C', gitRepo, ...args]);

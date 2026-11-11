@@ -1,4 +1,6 @@
 import { realpathSync, statSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import crossSpawn from 'cross-spawn';
 import semver from 'semver';
@@ -7,7 +9,7 @@ import { desktopCodexBinaries } from './codex-desktop.js';
 import { getCurrentVersion } from './package-info.js';
 import type { CodexBuild, CodexBuildSkew, JsonValue } from './types.js';
 import { JsonValueSchema, JsonObjectSchema } from './types.js';
-import { probeBinary } from './utils/exec.js';
+import { execCommand, probeBinary } from './utils/exec.js';
 import { lenientList } from './utils/json.js';
 import { log } from './utils/logger.js';
 import { findOnPath } from './utils/lookpath.js';
@@ -130,9 +132,46 @@ export function codexBuildsIdentity(): string {
 }
 
 async function probeCodexVersion(command: string): Promise<string | null> {
-  const printed = /codex-cli\s+(\S+)/.exec(await probeBinary(command))?.[1];
+  // `codex --version` first sets up its arg0 helpers under $CODEX_HOME/tmp; a throwaway home keeps the member's as it was.
+  const codexHome = await mkdtemp(path.join(os.tmpdir(), 'teamai-codex-version-'));
 
-  return printed ? semver.valid(printed) : null;
+  try {
+    const printed = /codex-cli\s+(\S+)/.exec(await probeBinary(command, ['--version'], (binary, args, options) => execCommand(binary, args, { ...options, env: { ...process.env, CODEX_HOME: codexHome } })))?.[1];
+
+    return printed ? semver.valid(printed) : null;
+  } finally {
+    await rm(codexHome, { recursive: true, force: true });
+  }
+}
+
+const probedVersions = new Map<string, Promise<string | null>>();
+
+/** One `--version` per build identity in a process: the hook form and the trust pass ask the same builds. */
+function codexVersionOf(candidate: CodexCandidate): Promise<string | null> {
+  let version = probedVersions.get(candidate.identity);
+
+  if (!version) {
+    version = probeCodexVersion(candidate.command);
+    probedVersions.set(candidate.identity, version);
+  }
+
+  return version;
+}
+
+/**
+ * The lowest version among the Codex builds that read the member's Codex hook file, or
+ * null when none is found or any build's version cannot be read, so a caller
+ * gating on a floor never guesses for an unknown build.
+ */
+export async function oldestCodexBuildVersion(): Promise<string | null> {
+  const builds = await Promise.all(codexBuildCandidates().map(async (c) => ({ path: c.path, version: await codexVersionOf(c) })));
+
+  log.debug(`Codex builds for the hook form: ${builds.map((b) => `${b.path} → "${b.version ?? ''}"`).join(', ') || 'none'}`);
+  const known = builds.flatMap((b) => (b.version === null ? [] : [b.version]));
+
+  if (known.length === 0 || known.length !== builds.length) return null;
+
+  return [...known].sort(semver.compare)[0] ?? null;
 }
 
 type ResolvedCodexBuild = {
@@ -158,7 +197,7 @@ function resolveCodexBuild(): Promise<ResolvedCodexBuild | null> {
 
 async function pickCodexBuild(candidates: CodexCandidate[]): Promise<ResolvedCodexBuild | null> {
   if (candidates.length <= 1) return candidates[0] ? { command: candidates[0].command } : null;
-  const probed = await Promise.all(candidates.map(async (c) => ({ ...c, version: await probeCodexVersion(c.command) })));
+  const probed = await Promise.all(candidates.map(async (c) => ({ ...c, version: await codexVersionOf(c) })));
 
   const [chosen, ...rest] = [...probed].sort((a, b) => {
     if (a.version === null || b.version === null) return Number(a.version === null) - Number(b.version === null);

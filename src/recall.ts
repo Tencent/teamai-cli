@@ -18,8 +18,8 @@ import { deliveredLearningsNamespaces, formatProjectsManifestWarning, readWorksp
 import { recordRecallQuality } from './recall-quality.js';
 import { agentSessionFromEnv, deriveSessionId } from './utils/session-id.js';
 import type { EnvAgentSession } from './utils/session-id.js';
-import { classifyTreePath, teamwikiCodebaseSlug } from './asset-relations.js';
-import type { AssetRelationType, RelationVia } from './asset-relations.js';
+import { classifyTreePath, teamwikiCodebaseSlug } from './resource-relations.js';
+import type { ResourceRelationType, RelationVia } from './resource-relations.js';
 import { caseFoldKey } from './manifest-schema.js';
 import type { RelatedRef } from './recall-log.js';
 import type { SearchIndexEntry } from './types.js';
@@ -323,7 +323,7 @@ function voteKey(result: SearchResult): string {
   return result.entry.filename.replace(/\.md$/i, '');
 }
 
-// ── Asset relations (#1552) ──────────────────────────────
+// ── Resource relations (#1552) ──────────────────────────────
 //
 // A relation stays inside its owner: each scope resolves relations against its
 // own search index and its own teamwiki, and incoming relations are derived at
@@ -338,7 +338,7 @@ const RELATION_LINES_CAP = 5;
 interface IncomingRelation {
   /** The declaring entry's team-tree path. */
   from: string;
-  relation: AssetRelationType;
+  relation: ResourceRelationType;
   via: RelationVia;
 }
 
@@ -467,7 +467,7 @@ async function buildRelationContexts(
 }
 
 /**
- * The relation state of one scope: the assets its index holds (minus the
+ * The relation state of one scope: the resources its index holds (minus the
  * entries another scope shadows) and the relations they declare or link.
  */
 export async function buildRelationContext(args: {
@@ -577,7 +577,7 @@ function printedRelations(
   const relations: PrintedRelation[] = [];
   const seen = new Set<string>();
 
-  const push = (direction: 'out' | 'in', relation: AssetRelationType, otherEnd: string): void => {
+  const push = (direction: 'out' | 'in', relation: ResourceRelationType, otherEnd: string): void => {
     const printed = resolveRelationTarget(ctx, otherEnd);
 
     if (printed === null) return;
@@ -597,7 +597,7 @@ function printedRelations(
   for (const r of own) if (r.via === 'declared') push('out', r.relation, r.target);
 
   for (const r of incoming) if (r.via === 'declared') push('in', r.relation, r.from);
-  // A declared relation to the same asset wins over a derived or linked one.
+  // A declared relation to the same resource wins over a derived or linked one.
   const declaredOut = new Set(own.filter((r) => r.via === 'declared').map((r) => r.target));
   const declaredIn = new Set(incoming.filter((r) => r.via === 'declared').map((r) => r.from));
 
@@ -621,7 +621,7 @@ function printedRelations(
  * incoming, then path-derived, then link outgoing, then link incoming; within
  * each group outgoing keeps the file's order and incoming sorts by the
  * source's tree path. A declared relation beats a derived or linked one
- * between the same two assets in the same direction. Capped at
+ * between the same two resources in the same direction. Capped at
  * {@link RELATION_LINES_CAP}.
  */
 export function relationLines(
@@ -1348,7 +1348,7 @@ export async function recall(
           domain: 'technical' as const,
           path: path.join(wikiRoot, cr.page),
           snippet: cr.snippet,
-          // A code hit is a teamwiki page; its team-tree path is what asset
+          // A code hit is a teamwiki page; its team-tree path is what resource
           // relations point at, so incoming relations can render on it.
           treePath: `teamwiki/${cr.page}`,
         },

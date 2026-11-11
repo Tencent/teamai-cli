@@ -2,12 +2,10 @@
 
 [English](README.md) | 中文
 
-| | |
-|---|---|
-| 运行时机 | TodoWrite 调用之后 |
-| 输入 | 无 |
-| 输出 | 建议用 [`teamai-recall`](../../agents/README.zh-CN.md) subagent 检索一次团队知识库 |
-| 文件 | `HOOK.yaml` 里只有 `description`。`message.md` 是提示的文案 |
+- **运行时机**: TodoWrite 调用之后
+- **输入**: 无
+- **输出**: 建议用 [`teamai-recall`](../../agents/README.zh-CN.md) subagent 检索一次团队知识库
+- **文件**: `HOOK.yaml` 里只有 `description`。`message.md` 是提示的文案
 
 ## 何时建议
 

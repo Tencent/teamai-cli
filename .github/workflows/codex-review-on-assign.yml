@@ -33,6 +33,10 @@ name: Codex Review on Assign
 #      of any PR-controlled tooling.
 #   6. The review RULES come from the base checkout's AGENTS.md, so a PR cannot
 #      rewrite its own review criteria.
+#   7. When always-loaded agent context or what the agent waits on grew, the
+#      comment ends with that budget's rows, never shown to Codex. The PR's own
+#      code wrote them, so only table rows and each budget's own sentences are
+#      kept.
 
 on:
   pull_request_target:
@@ -113,6 +117,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read # read the base code + git objects for the diff
+      actions: read # download the agent context and agent wait budgets' reports
       pull-requests: write # the comment step posts to the PR
       issues: write # createComment goes through the issues API
     steps:
@@ -215,12 +220,12 @@ jobs:
               '(suggestion), [P3 nit] (minor/optional polish, theoretical edge',
               'case, or coverage deferred to CI).',
               'Also judge whether the PR description documents sufficient',
-              'testing. A PR that changes runtime behavior (beyond a docs-only',
-              'or tests-only diff) needs an end-to-end / real-CLI record; flag',
-              'its absence as [P1 blocking]. A docs-only or tests-only PR needs',
+              'testing. A PR that changes runtime behavior (beyond a docs-only,',
+              'tests-only, or lint-rule-only diff) needs an end-to-end / real-CLI record; flag',
+              'its absence as [P1 blocking]. A docs-only, tests-only, or lint-rule-only PR needs',
               'no e2e record — do not flag it for that. Do NOT require a full',
-              'provider x agent matrix: one representative real-CLI run suffices,',
-              'and missing extra-provider/agent coverage the author flagged as',
+              'tool x repo provider matrix: one representative real-CLI run suffices,',
+              'and missing extra repo provider or tool coverage the author flagged as',
               'untestable here or deferred to CI is at most [P3 nit]. Reply in',
               'the same language the PR author used in the PR description.',
               '',
@@ -272,11 +277,61 @@ jobs:
           # per-string limit before the total ARG_MAX limit. Pass a file instead.
           prompt-file: ${{ steps.pr.outputs.prompt-file }}
 
+      - name: Read agent budgets
+        id: budget
+        if: steps.codex.outputs.final-message != ''
+        continue-on-error: true
+        # Past the 5 min each budget is polled, so a budget still running does not lose the other's report.
+        timeout-minutes: 7
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const head_sha = context.payload.pull_request.head.sha;
+            // No cell mixes letters and dots, so none becomes a link.
+            const ROW = /^\| [A-Za-z ,-]{1,60} \|( [0-9 ,.%()+*<B\u2212\u2014-]{1,30} \|){3}$/;
+            const HEAD = /^\| [A-Za-z ]{1,30} \| main \| this PR \| Change \|$|^\| --- \| ---: \| ---: \| ---: \|$/;
+            // Each budget uploads its report only when it grew, under its own name, with its own allowed sentences.
+            const budgets = [
+              { workflow: 'agent-context-budget.yml', name: 'agent-context-budget', allowed: ['Always loaded grew. Say why in the PR.'] },
+              {
+                workflow: 'agent-wait-budget.yml',
+                name: 'agent-wait-budget',
+                allowed: ['| What the agent waits on | main | this PR | Change |', 'Agent wait grew. Say why in the PR.', 'This PR changes the measure. Main was measured with its own.'],
+              },
+            ];
+            const read = async ({ workflow, name, allowed }) => {
+              // On a push the budget runs beside this review, which has usually outlasted it.
+              let run;
+              for (let i = 0; i < 20; i += 1) {
+                ({ data: { workflow_runs: [run] } } = await github.rest.actions.listWorkflowRuns({ owner, repo, workflow_id: workflow, head_sha, per_page: 1 }));
+                if (!run || ['completed', 'waiting', 'action_required'].includes(run.status)) break;
+                await new Promise(resolve => setTimeout(resolve, 15_000));
+              }
+              if (run?.status !== 'completed') return '';
+              const { data: { artifacts: [artifact] } } = await github.rest.actions.listWorkflowRunArtifacts({ owner, repo, run_id: run.id, name });
+              if (!artifact || artifact.expired || artifact.size_in_bytes > 65_536) return '';
+              const { data: zip } = await github.rest.actions.downloadArtifact({ owner, repo, artifact_id: artifact.id, archive_format: 'zip' });
+              const dir = `${process.env.RUNNER_TEMP}/${name}`;
+              fs.writeFileSync(`${dir}.zip`, Buffer.from(zip));
+              await exec.exec('unzip', ['-o', '-q', `${dir}.zip`, '-d', dir]);
+              const file = `${dir}/${name}.md`;
+              if (!fs.lstatSync(file, { throwIfNoEntry: false })?.isFile()) return '';
+              const lines = fs.readFileSync(file, 'utf8').split('<details>')[0].split('\n').slice(0, 40);
+              const kept = lines.filter(line => line === '' || ROW.test(line) || HEAD.test(line) || allowed.includes(line));
+              return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+            };
+            const reports = await Promise.all(budgets.map(budget => read(budget).catch(error => (core.warning(`${budget.name}: ${error.message}`), ''))));
+            budgets.forEach(({ name }, i) => core.setOutput(name, reports[i]));
+
       - name: Post review as PR comment
         if: steps.codex.outputs.final-message != ''
         uses: actions/github-script@v7
         env:
           CODEX_FINAL_MESSAGE: ${{ steps.codex.outputs.final-message }}
+          CONTEXT_BUDGET_REPORT: ${{ steps.budget.outputs.agent-context-budget }}
+          WAIT_BUDGET_REPORT: ${{ steps.budget.outputs.agent-wait-budget }}
         with:
           github-token: ${{ github.token }}
           script: |
@@ -284,5 +339,9 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.payload.pull_request.number,
-              body: `<!-- codex-review-on-assign -->\n${process.env.CODEX_FINAL_MESSAGE}`,
+              body: [
+                `<!-- codex-review-on-assign -->\n${process.env.CODEX_FINAL_MESSAGE}`,
+                ...[['Agent context budget', process.env.CONTEXT_BUDGET_REPORT], ['Agent wait budget', process.env.WAIT_BUDGET_REPORT]]
+                  .flatMap(([title, report]) => (report ? ['', '---', `**${title}** (this head against main)`, '', report] : [])),
+              ].join('\n'),
             });

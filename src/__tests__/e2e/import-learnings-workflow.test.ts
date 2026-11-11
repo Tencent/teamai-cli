@@ -29,11 +29,13 @@ function git(args: string[], cwd: string): string {
 /**
  * A `claude` that classifies a file by the `MARK-<kind>` it holds (rule, doc, personal, learn), logging each kind it
  * was asked about, and answers the iWiki dual prompt with two sections. FAKE_FAIL=<kind> fails that file's call.
+ * `--version` answers as Claude Code does and is no AI call, so it logs nothing.
  */
 function fakeClaude(bin: string, log: string): void {
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}
 const fs = require('fs');
+if (process.argv[2] === '--version') { process.stdout.write('2.1.322 (Claude Code)\\n'); process.exit(0); }
 let stdin = ''; process.stdin.on('data', (d) => stdin += d); process.stdin.on('end', () => {
   if (stdin.includes('三类知识')) {
     fs.appendFileSync(${JSON.stringify(log)}, 'dual\\n');

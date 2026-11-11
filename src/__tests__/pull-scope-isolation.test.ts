@@ -714,13 +714,13 @@ describe('pull scope isolation (issue #73)', () => {
     );
   });
 
-  it('user mode self-repo: reportUsage receives selfConfig so business repo is never reset', async () => {
+  it('user mode, self mode: reportUsage receives selfConfig so business repo is never reset', async () => {
     const businessRoot = path.join(tmpDir, 'business-repo');
-    const selfRepoPath = path.join(businessRoot, '.teamai');
+    const selfModePath = path.join(businessRoot, '.teamai');
     const selfUserConfig: LocalConfig = {
       repo: {
-        localPath: selfRepoPath,
-        remote: 'https://git.woa.com/test/self-repo.git',
+        localPath: selfModePath,
+        remote: 'https://git.woa.com/test/self-mode-repo.git',
         kind: 'self',
         businessRepoRoot: businessRoot,
       },
@@ -736,7 +736,7 @@ describe('pull scope isolation (issue #73)', () => {
     await pull({ silent: true });
 
     expect(reportUsage).toHaveBeenCalledWith(
-      selfRepoPath,
+      selfModePath,
       'selfuser',
       expect.objectContaining({
         selfConfig: expect.objectContaining({

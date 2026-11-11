@@ -286,7 +286,7 @@ steps:
 - A `teamai-` folder name only replaces a [default](#default-workflows) of that name. Pull skips any other with a warning: `workflows/teamai-release/ is skipped: a teamai- name only replaces a teamai default, and teamai has no workflow named teamai-release. Rename the folder.`
 - A folder holds UTF-8 text only, 1 MB in all, and no symlink. [Workflow folders in a run](workflow-advanced.md#workflow-folders-in-a-run) covers these limits and how a run keeps its copy.
 - `README.md` is for people. teamai never gives it to an agent, and the skill pull generates for the workflow leaves it out.
-- `teamai status` counts a folder as one workflow. In single-repo, the folder lives under `.teamai/workflows/`, and `teamai push` sends every file of it.
+- `teamai status` counts a folder as one workflow. In self mode, the folder lives under `.teamai/workflows/`, and `teamai push` sends every file of it.
 
 ## Workspaces
 
@@ -453,7 +453,7 @@ A step that opens a copy of its own may name another role. A step outside any co
 
 ### The team workspace
 
-`workspace: { team: { branch } }` runs a step in a fresh clone of the team repo, for work that changes the team's assets rather than the project. With `deliver: pr`, its pull request goes into the team repo's default branch.
+`workspace: { team: { branch } }` runs a step in a fresh clone of the team repo, for work that changes the team's resources rather than the project. With `deliver: pr`, its pull request goes into the team repo's default branch.
 
 ```yaml
 schemaVersion: v1alpha1
@@ -471,7 +471,7 @@ steps:
 teamai workflow start tighten-rule --inputs '{"rule":"backend"}'
   clone the team repo                         origin has tighten/backend? go on from it, with main merged in
                                               else a new branch from main
-  run the step in the clone                   in .teamai/ of the project repo's clone in single-repo mode
+  run the step in the clone                   in .teamai/ of the project repo's clone in self mode
   commit, check, push tighten/backend         lease on the tip the clone found
   open its pull request into main             or update the one already open
 ```
@@ -1139,10 +1139,10 @@ teamai ships workflows a team gets without writing them:
 | `teamai-import-rules` | imports the rules in the rules directory of every AI tool on this machine: runs `teamai-import-learnings` on them, then commits and pushes what it wrote, through [`teamai import --from-tools`](knowledge.md#importing-rules-and-iwiki-pages). Inputs: `dir`, `by_type`, `all`. Private | never by name: `invoke: deny`. The command runs it from an agent session too |
 | `teamai-import-from-iwiki` | imports the pages of an iWiki space or page: runs `teamai-import-learnings` on them, publishes what it wrote, and with `dual` asks for the business API, external knowledge and glossary sections of `docs/team-codebase/external-knowledge.md`, through [`teamai import --from-iwiki`](knowledge.md#importing-rules-and-iwiki-pages). Inputs: `source`, `dir`, `by_type`, `all`, `dual`, `sections_dir`, `review_dir`, `require_review`. Private | never by name: `invoke: deny`. The command runs it from an agent session too |
 | `teamai-ci-extract-mr` | drafts the learning of one merged MR or PR through `teamai-import-from-mr`, then comments it on the MR, writes it into the team repo's `learnings/` with the teamwiki of the merged checkout updated, or both, through [`teamai ci extract-mr`](knowledge.md#ci-integration), with no `teamai init` needed. Inputs: `url`, `mode`, `team_repo`, `comment_marker`, `individual_comments`, `output`, `discussions`, `language`, `dry_run`. Private | never by name: `invoke: deny`. The command runs it from an agent session too |
-| `teamai-import-from-mr` | turns merged MRs or PRs into learnings: your AI tool drafts one per MR, a person accepts, edits or skips each draft, the accepted ones are published as `teamai contribute` publishes them, and each repository's teamwiki is updated, through [`teamai import --from-mr`](knowledge.md#codebase-knowledge-graph). The session-start MR hint offers it. Inputs: `mrs`, `all`, `publish`, `dir`, `output`, `discussions`, `language`. Private | always: `invoke: ask`, so an agent starts it once the person agrees |
+| `teamai-import-from-mr` | turns merged MRs or PRs into learnings: your AI tool drafts one per MR, a person accepts, edits or skips each draft, the accepted ones are published as `teamai contribute` publishes them, and each repository's teamwiki is updated, through [`teamai import --from-mr`](knowledge.md#codebase-knowledge-graph). The MR hint offers it. Inputs: `mrs`, `all`, `publish`, `dir`, `output`, `discussions`, `language`. Private | always: `invoke: ask`, so an agent starts it once the person agrees |
 | `teamai-import-learnings` | classifies files as rules, docs or learnings, three at once, leaves out the personal ones, asks a person to accept, edit or skip each of the others, and writes the accepted ones by their type. It neither commits nor pushes. Inputs: `candidates`, `dir`, `by_type`, `all`. Private | never: `invoke: deny` |
 | `teamai-benchmark` | runs a [benchmark suite](benchmarks.md#the-benchmark-workflow) through `teamai benchmark run` | always |
-| `teamai-self-improvement` | changes the team's assets from a scorer's repeated failures and adds one regression task per failure, as one pull request the next run updates, through [`teamai self-improvement run`](self-improvement.md). Inputs: `scorer`, `suite` | always |
+| `teamai-self-improvement` | changes the team's resources from a scorer's repeated failures and adds one regression task per failure, as one pull request the next run updates, through [`teamai self-improvement run`](self-improvement.md). Inputs: `scorer`, `suite` | always |
 | `teamai-session-to-task` | turns the work the session finished, such as a bug fix or a feature, into a [benchmark task](benchmarks.md#turn-a-session-into-a-task), proposed to the team as a pull request from the [team workspace](#the-team-workspace). Inputs: `session`, `source`, `suite`, `start`, `solution`, and `team_session` and `author` for a session a teammate pushed (default empty) | always |
 | `teamai-sessions-to-tasks` | [builds a suite from past sessions](benchmarks.md#build-a-suite-from-past-sessions): lists the finished sessions the suite could take a task from, the AI picks representative ones per size, and each pick runs `teamai-session-to-task`, one at a time. Inputs: `suite`, `count`, `sizes` (default `S=40,3 M=200,10 L=800,30`) | always: `invoke: ask`, so an agent starts it once the person agrees |
 

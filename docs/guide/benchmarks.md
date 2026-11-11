@@ -39,8 +39,8 @@ setup:
 | `repo` | The project the tasks start from: an https, ssh or git URL without credentials. |
 | `defaults` | The arm the others are compared with: `tool`, and optionally `model`, `team`, `workflow` and `role`. Not a workflow's `defaults`. |
 | `arms` | 1 to 6. Each changes at most one `defaults` key, and at most one changes none. |
-| `matrix` | Instead of `arms`: lists of values that teamai crosses into arms. See [Cross tools with team assets](#cross-tools-with-team-assets). |
-| `team` | The team assets an arm runs with. See [Arms on other team assets](#arms-on-other-team-assets). |
+| `matrix` | Instead of `arms`: lists of values that teamai crosses into arms. See [Cross tools with team resources](#cross-tools-with-team-resources). |
+| `team` | The team resources an arm runs with. See [Arms on other team resources](#arms-on-other-team-resources). |
 | `workflow` | A team workflow each trial runs on the task, instead of one prompt. See [Arms that run a workflow](#arms-that-run-a-workflow). |
 | `role` | A role from `manifest/roles.yaml` each trial's clone runs with. See [Arms that run as a role](#arms-that-run-as-a-role). |
 | `recall` | Whether the arm's trial clones get the team's recall deployment, which every workflow clone leaves off. See [Arms that run with recall](#arms-that-run-with-recall). |
@@ -53,9 +53,9 @@ setup:
 | `scorers` | Optional [scorers](scorers.md) that judge every trial; a task may [list more](#scorers-per-task). A name with no valid `scorers/<name>.md` fails `teamai review --branch`, `teamai pull` warns, and start refuses the suite. |
 | `calibration` | Optional `{ rate }`, 0 to 100, 0 by default: the percent of trials whose check failed that the correctness judge labels too, to measure it. See [Calibrate a judge](#calibrate-a-judge). |
 
-### Arms on other team assets
+### Arms on other team resources
 
-An arm runs with the team revision this checkout pulled unless it sets `team`. Measure what the team's assets add, a branch before you merge it, or one skill:
+An arm runs with the team revision this checkout pulled unless it sets `team`. Measure what the team's resources add, a branch before you merge it, or one skill:
 
 ```yaml
 defaults:
@@ -63,7 +63,7 @@ defaults:
 arms:
   - name: pulled              # the revision you pulled
   - name: bare
-    team: none                # no team assets at all
+    team: none                # no team resources at all
   - name: next
     team: next                # the team repo's branch next
   - name: no-auth-tokens
@@ -74,13 +74,13 @@ arms:
 | `team` | The arm runs with |
 | --- | --- |
 | `pulled`, or no `team` | The team revision this checkout pulled. |
-| `none` | No team assets. Start refuses it on a machine whose user-scope teamai install delivers to the arm's tool, since its trials would read those assets in your home. |
+| `none` | No team resources. Start refuses it on a machine whose user-scope teamai install delivers to the arm's tool, since its trials would read those resources in your home. |
 | A branch, tag or commit | That revision of the team repo, resolved when the run starts. Name a branch as the team repo names it, `next`, not `origin/next`. |
-| `without: [<path>, ...]` | The pulled revision, without these files and directories of the team repo. See [Leave team assets out](#leave-team-assets-out). |
+| `without: [<path>, ...]` | The pulled revision, without these files and directories of the team repo. See [Leave team resources out](#leave-team-resources-out). |
 
 `skillChanges` in the record lists, for each arm on another revision or `without` paths, the team skills it adds, removes or changes against the pulled revision, and the results show how often each arm loaded them. See [Results](#results).
 
-### Leave team assets out
+### Leave team resources out
 
 `without` takes paths in the team repo, as git lists them: a skill, a rule, an agent, a `claudemd/` (or `agentsmd/`) file, a doc, a whole namespace directory, or any other file, such as `hooks/hooks.yaml`:
 
@@ -113,7 +113,7 @@ arms:
     team: no-github-mcp       # a team repo branch whose mcp/mcp.yaml drops the github server
 ```
 
-Benchmarks do not run in single-repo mode, where the project's own commit decides the team assets: the run refuses every arm with `team_ref_blocked`.
+Benchmarks do not run in self mode, where the project's own commit decides the team resources: the run refuses every arm with `team_ref_blocked`.
 
 ### Arms that run a workflow
 
@@ -184,11 +184,11 @@ The run checks each arm's role in `manifest/roles.yaml` at the team revision the
 role_unavailable: Arm "review" runs with role review, which manifest/roles.yaml at team revision 3f9c2ab does not declare; it declares frontend, backend. Add the role to manifest/roles.yaml, or fix the arm's role, push it, run teamai pull, and start again.
 ```
 
-An arm with a role needs team assets for it to select, so the suite refuses `role` with `team: none`. A matrix crosses roles too: `matrix: { tool: [claude, codex], role: [frontend, review] }` makes `claude-frontend`, `claude-review`, `codex-frontend` and `codex-review`. Compare then pairs the two roles on each tool, and the two tools within each role, never a pair that differs in both.
+An arm with a role needs team resources for it to select, so the suite refuses `role` with `team: none`. A matrix crosses roles too: `matrix: { tool: [claude, codex], role: [frontend, review] }` makes `claude-frontend`, `claude-review`, `codex-frontend` and `codex-review`. Compare then pairs the two roles on each tool, and the two tools within each role, never a pair that differs in both.
 
 ### Arms that run with recall
 
-Does the team's recall help a task at all — say, because a rule declares what its docs and code pages are about? Give the arms recall. Recall is off in a trial's clone, as in every workflow clone; `recall: true` turns it on for that arm's clones, so its sessions see `Related:` lines on the assets they load:
+Does the team's recall help a task at all — say, because a rule declares what its docs and code pages are about? Give the arms recall. Recall is off in a trial's clone, as in every workflow clone; `recall: true` turns it on for that arm's clones, so its sessions see `Related:` lines on the resources they load:
 
 ```yaml
 schemaVersion: v1alpha1
@@ -223,9 +223,9 @@ The record keeps `recall` on the arm, so a later comparison can tell a run that 
 
 An arm that leaves it out reads `off`.
 
-### Cross tools with team assets
+### Cross tools with team resources
 
-`matrix` makes one arm for each combination of its values, so every two arms that differ in one value compare that value alone. Here, how much the team's assets help each tool, and which tool does better with them:
+`matrix` makes one arm for each combination of its values, so every two arms that differ in one value compare that value alone. Here, how much the team's resources help each tool, and which tool does better with them:
 
 ```yaml
 defaults:
@@ -287,7 +287,7 @@ check passes → the check step writes no label → the judge decides on success
 | `check` | `run`, a command that exits 0 once the task is done, and `protect`, the paths the agent must not supply. |
 | `check.add` | Optional: files written before the check that the agent never has: a file as `solutionCommit` has it, such as the solution's test, or `{ from, to }`, a file or directory of the suite directory. A directory adds every file under it except its dot entries, such as `.DS_Store`; name a dotfile in `from` to add it. See [Tests the solution brought](#tests-the-solution-brought) and [Tests in the suite directory](#tests-in-the-suite-directory). |
 | `successCriteria` | What a judge decides from: on its own, or after `check` passes. |
-| `covers` | Optional: the team repo paths the task's work is expected to need, as [`without`](#leave-team-assets-out) takes them. The [asset effect](#asset-effect) tables split an arm that runs without one of them by the tasks that cover it. |
+| `covers` | Optional: the team repo paths the task's work is expected to need, as [`without`](#leave-team-resources-out) takes them. The [resource effect](#resource-effect) tables split an arm that runs without one of them by the tasks that cover it. |
 | `source` | Optional: where the task came from: a session's `platform` and `sessionId`, or a workflow pass's `runId`, `step` and `pass`. Nothing runs from it; [`digest --json`](self-improvement.md#what-teamai-reads) marks the failure it names as covered. |
 | `scorers` | Optional: [scorers](scorers.md) that judge this task's trials besides the suite's. See [Scorers per task](#scorers-per-task). |
 
@@ -741,22 +741,20 @@ A record still waiting for publication never changes the exit code.
 | A trial gets | |
 | --- | --- |
 | A fresh clone of the starting commit | With no remotes. Your checkout is never changed. |
-| The team assets and the suite | Of the team revision this checkout last pulled, which must be pushed, or of the arm's `team`. Frozen at start: a pull during the run changes nothing it runs. |
+| The team resources and the suite | Of the team revision this checkout last pulled, which must be pushed, or of the arm's `team`. Frozen at start: a pull during the run changes nothing it runs. |
 | An environment | Without `GITHUB_TOKEN`, `GH_TOKEN`, `GITLAB_TOKEN`, `GL_TOKEN`, `CI_JOB_TOKEN`, `SSH_AUTH_SOCK`, `GIT_ASKPASS` and `SSH_ASKPASS`: the trials step is a [strict sandbox](workflow-advanced.md#requirements-and-limits), which keeps them from every process of a trial. |
 | Your home directory | As it is: teamai cannot remove its logins, MCP servers and plugins. |
-| The team repo on this machine | As it is: your team checkout, and the copy of the team revision beside each trial's clone that its team assets are installed from, hold `benchmarks/`, check files included. An agent that searches the machine can find them. |
+| The team repo on this machine | As it is: your team checkout, and the copy of the team revision beside each trial's clone that its team resources are installed from, hold `benchmarks/`, check files included. An agent that searches the machine can find them. |
 
-The local driver runs each trial as fresh clone, team assets, setup, the arm's tool on the prompt, then the check.
+The local driver runs each trial as fresh clone, team resources, setup, the arm's tool on the prompt, then the check.
 
-| | |
-| --- | --- |
-| Tools | It runs `claude`, `codex` and `opencode`. Install and log in every tool the arms use. An arm whose tool it cannot find gets its trials `not_run`, and the other arms still run. |
-| Lanes | One trial at a time, unless the suite sets [`parallel`](#parallel-lanes). |
-| Timeout | The suite's `timeout` is the whole run's. Setup, the tool and the check all stop at it: the trial they ran for counts as `error`, and the trials still open settle `not_run`. Keep it below your CI job's limit, or the job is killed before it prints the table. |
-| A hung trial | Without [`trial.timeout`](#trial-limits), a tool that never returns runs until the suite's timeout, and every trial after it settles `not_run`. |
-| Judges | A task with `successCriteria`, and the suite's scorers, are judged by the run's own `score` step, after the trials and before `report`, each scorer by [one judge for every arm](#one-judge-for-every-arm). Start refuses a suite that needs a judge on a machine where a scorer's judge tool is not installed, or does not run its model at the isolation it asks for. |
-| Control commands | A trial's steps exist only once the run's `plan` step reported. Until then, `teamai workflow cancel <run> <step>` on a trial step answers `step_not_found`. A benchmark run is [isolated](workflow-advanced.md#isolated-runs): `workflow retry`, `publish` and `--claim` refuse it, `publish` and `--claim` with `isolated_run`, and retry names `teamai benchmark run <suite>`. |
-| Stopped | `teamai workflow resume <run>` continues it, with the `--sandbox` the run started with. A run that a teamai before an upgrade started, whose plan has another version, cannot go on: `workflow resume` refuses it, naming `teamai benchmark run <suite>`. |
+- **Tools**: It runs `claude`, `codex` and `opencode`. Install and log in every tool the arms use. An arm whose tool it cannot find gets its trials `not_run`, and the other arms still run.
+- **Lanes**: One trial at a time, unless the suite sets [`parallel`](#parallel-lanes).
+- **Timeout**: The suite's `timeout` is the whole run's. Setup, the tool and the check all stop at it: the trial they ran for counts as `error`, and the trials still open settle `not_run`. Keep it below your CI job's limit, or the job is killed before it prints the table.
+- **A hung trial**: Without [`trial.timeout`](#trial-limits), a tool that never returns runs until the suite's timeout, and every trial after it settles `not_run`.
+- **Judges**: A task with `successCriteria`, and the suite's scorers, are judged by the run's own `score` step, after the trials and before `report`, each scorer by [one judge for every arm](#one-judge-for-every-arm). Start refuses a suite that needs a judge on a machine where a scorer's judge tool is not installed, or does not run its model at the isolation it asks for.
+- **Control commands**: A trial's steps exist only once the run's `plan` step reported. Until then, `teamai workflow cancel <run> <step>` on a trial step answers `step_not_found`. A benchmark run is [isolated](workflow-advanced.md#isolated-runs): `workflow retry`, `publish` and `--claim` refuse it, `publish` and `--claim` with `isolated_run`, and retry names `teamai benchmark run <suite>`.
+- **Stopped**: `teamai workflow resume <run>` continues it, with the `--sandbox` the run started with. A run that a teamai before an upgrade started, whose plan has another version, cannot go on: `workflow resume` refuses it, naming `teamai benchmark run <suite>`.
 
 A start that cannot run refuses with a message that says what to do, and makes no run. When your user-scope teamai install also reaches the team, or the team is served over HTTP, the run cannot pin the team a trial gets, and refuses with `team_ref_blocked`, saying what to change.
 
@@ -913,14 +911,14 @@ These results hold for these tasks, this run and this machine.
 
 | Table | Shows |
 | --- | --- |
-| Arms | Each arm's trials by result, and how many a [trial limit](#trial-limits) stopped. A deviation is a trial whose prompt ran on another tool, team revision, model or role than its arm's, or without a trial limit its driver could not enforce, or that a judge other than the [plan's](#one-judge-for-every-arm) labelled. A trial is not verified when its record lacks one of those, or its judge's model. When an arm runs on other team assets than the pulled revision, a Team column shows each arm's, such as `pulled 3f9c2ab`, `next 81d0e4c`, `3f9c2ab without skills/auth-tokens` or `none`. When an arm [runs as a role](#arms-that-run-as-a-role), a Role column shows each arm's role, or `member's roles`. When a correctness rubric has more than two labels, a Mean correctness score column follows the pass rate, under [The correctness rubric](#the-correctness-rubric). |
+| Arms | Each arm's trials by result, and how many a [trial limit](#trial-limits) stopped. A deviation is a trial whose prompt ran on another tool, team revision, model or role than its arm's, or without a trial limit its driver could not enforce, or that a judge other than the [plan's](#one-judge-for-every-arm) labelled. A trial is not verified when its record lacks one of those, or its judge's model. When an arm runs on other team resources than the pulled revision, a Team column shows each arm's, such as `pulled 3f9c2ab`, `next 81d0e4c`, `3f9c2ab without skills/auth-tokens` or `none`. When an arm [runs as a role](#arms-that-run-as-a-role), a Role column shows each arm's role, or `member's roles`. When a correctness rubric has more than two labels, a Mean correctness score column follows the pass rate, under [The correctness rubric](#the-correctness-rubric). |
 | Usage | Each arm's medians and cost total, with how many trials each used. Tokens and cost appear only as the tool stated them, so a tool that states none shows `unknown (0)`. A trial whose passes did not all state its tokens (input and output), cost or duration counts as one that stated none of it, and makes a cost total `incomplete`. Cost per passed trial is the cost total over the arm's passed trials, as on the dashboard: `—` with no passed trial or no total in one unit, and marked `incomplete` when the total is. Against reads each arm against the defaults arm, under [Cost per passed trial](#cost-per-passed-trial). Estimated, beside Cost, is what start [estimated](#run-a-suite) each arm would cost, when an earlier run gave it an estimate. |
 | Tasks | Each task's pass rate on each arm. |
 | Scorers | Only when the suite or a task lists scorers: each arm's pass rate per scorer, under [Pass rate per scorer](#pass-rate-per-scorer). |
 | Judge calibration | Only when the suite sets a [calibration rate](#calibrate-a-judge): how often the correctness judge passed work whose check failed. |
 | Baselines | The tasks that did not run, and why. |
 | Skills | Only when an arm changes team skills: each skill it adds, removes or changes, and how many of the arm's trials loaded it, beside the arm that changes nothing. |
-| Asset effects | Only when a task covers a team repo path: a table per covered asset, under [Asset effect](#asset-effect). |
+| Resource effects | Only when a task covers a team repo path: a table per covered resource, under [Resource effect](#resource-effect). |
 
 ```text
 | Arm | Skill | Change | Loaded in this arm | Loaded in the defaults arm |
@@ -1131,9 +1129,9 @@ Judge calibration · teamai:correctness
 
 Read it as: the cheap judge passes about a third of the work whose tests fail; it is not a safe `model` for this suite's correctness, whatever it saves. A passing label on a trial whose check passed counts neither way, since success criteria may ask more than the tests.
 
-### Asset effect
+### Resource effect
 
-A task's `covers` names the team repo paths its work is expected to need, and the results answer, per covered path, whether an arm that runs [`without`](#leave-team-assets-out) exactly that path passes less on the tasks that cover it — and no less on the others. With a skill `auth-tokens`, a rule `rules/auth.md`, two tasks that cover both and one that covers neither:
+A task's `covers` names the team repo paths its work is expected to need, and the results answer, per covered path, whether an arm that runs [`without`](#leave-team-resources-out) exactly that path passes less on the tasks that cover it — and no less on the others. With a skill `auth-tokens`, a rule `rules/auth.md`, two tasks that cover both and one that covers neither:
 
 ```yaml
 # benchmarks/fix-auth/tasks/refresh-race.yaml
@@ -1148,10 +1146,10 @@ check:
 covers: [skills/auth-tokens, rules/auth.md]
 ```
 
-The run's results then hold one table per covered asset an arm leaves out:
+The run's results then hold one table per covered resource an arm leaves out:
 
 ```text
-Asset effect · skills/auth-tokens · no-auth-tokens -> pulled · claude
+Resource effect · skills/auth-tokens · no-auth-tokens -> pulled · claude
 
 task   covers   passed without   passed with   loaded with
 expired-token   yes   1/3   3/3   3/3 fit
@@ -1173,7 +1171,7 @@ Read it as:
 
 A pair of trials counts only when the same thing decided both, by the rules [Fail on a regression](#fail-on-a-regression) lists, so a table of a run whose judge reported another model for some trials says what it left out: `2 comparable pairs; 1 excluded: their judge changed (claude claude-opus-5-5 → claude claude-sonnet-5-5)`.
 
-`not separated` is an answer, not a failure: the 95% interval of the paired difference crosses zero, so these trials cannot tell the difference from chance. A single rule usually moves a few tasks — add tasks that cover it, or repetitions, until the interval leaves zero. An arm that leaves out more than one path gets no per-asset table: its difference belongs to the set, which Compare already shows. `plan` refuses a covered path no arm receives, each arm read at its team revision, with its role and without the paths it leaves out, and two covered skill paths of the same skill name, since a trial's loads are bare names.
+`not separated` is an answer, not a failure: the 95% interval of the paired difference crosses zero, so these trials cannot tell the difference from chance. A single rule usually moves a few tasks — add tasks that cover it, or repetitions, until the interval leaves zero. An arm that leaves out more than one path gets no per-resource table: its difference belongs to the set, which Compare already shows. `plan` refuses a covered path no arm receives, each arm read at its team revision, with its role and without the paths it leaves out, and two covered skill paths of the same skill name, since a trial's loads are bare names.
 
 The results are not the run's status: a run whose trials all failed still succeeds. The run fails when it times out or is cancelled.
 
@@ -1232,7 +1230,7 @@ finally:
     env: { TEXT: "{{ steps.report.outputs.text }}" }
 ```
 
-To turn a scorer's repeated failures into a PR that changes the team's assets and adds one regression task each, proven on every tool before and after, see [Self-improvement](self-improvement.md).
+To turn a scorer's repeated failures into a PR that changes the team's resources and adds one regression task each, proven on every tool before and after, see [Self-improvement](self-improvement.md).
 
 ## Run in CI
 
@@ -1297,12 +1295,10 @@ teamai workflow next <run> --prepare --json '{"driver":{..., "can":{"workspace":
 teamai workflow report <run> --json '{..., "tool":"claude", "durationMs":84000, "cost":{"amount":0.31,"unit":"USD"}}'
 ```
 
-| | |
-| --- | --- |
-| `driver.can` | On every `next`: `clone` in `workspace`, `isolation: "sandbox"`, `env: true`, `setup: true`, the arms' tools in `tools`, `unattended: true`, and `end_turn: true` when it ends a turn at the lease's limits. A trial is held for a driver that lacks one of them, and `wait.held[].missing` names it. |
-| `--prepare` | teamai makes each clone on this machine, installs its team assets and runs setup, then answers the lease with `cwd`. |
-| Every process | Runs without the names in `lease.envScope.withhold`, with `lease.env`, and with `TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>`, so a `teamai` call from it changes no run. A command step prints its outputs as JSON on stdout; report them as `outputs`. |
-| `report` | For a prompt: `tool`, `durationMs` measured around the tool launch, and `cost` only when the tool stated one. |
-| Limits | Hold the tool to `lease.limits`. When one stopped it, report `outcome: "success"` with `limit`: `timeout`, `budget` or `max_turns`, and list in `unenforced` a `budget` or `max_turns` you could not hold it to. |
-| Timeout | `benchmark run` passes the suite's `timeout` as `--timeout`; a direct `workflow start teamai-benchmark` must pass it too, or `plan` fails. |
-| Judges | A trial's judge is a step of a `teamai-score` run, leased like any other and [confined to a directory](workflow-advanced.md#confined-steps-in-your-own-driver) on the [one tool the plan pins](#one-judge-for-every-arm): offer it in `can.confined`, or the step waits with `wait.held[].missing` naming `confined`. Run one of `lease.confined.tools` and report it as `tool`. |
+- **`driver.can`**: On every `next`: `clone` in `workspace`, `isolation: "sandbox"`, `env: true`, `setup: true`, the arms' tools in `tools`, `unattended: true`, and `end_turn: true` when it ends a turn at the lease's limits. A trial is held for a driver that lacks one of them, and `wait.held[].missing` names it.
+- **`--prepare`**: teamai makes each clone on this machine, installs its team resources and runs setup, then answers the lease with `cwd`.
+- **Every process**: Runs without the names in `lease.envScope.withhold`, with `lease.env`, and with `TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>`, so a `teamai` call from it changes no run. A command step prints its outputs as JSON on stdout; report them as `outputs`.
+- **`report`**: For a prompt: `tool`, `durationMs` measured around the tool launch, and `cost` only when the tool stated one.
+- **Limits**: Hold the tool to `lease.limits`. When one stopped it, report `outcome: "success"` with `limit`: `timeout`, `budget` or `max_turns`, and list in `unenforced` a `budget` or `max_turns` you could not hold it to.
+- **Timeout**: `benchmark run` passes the suite's `timeout` as `--timeout`; a direct `workflow start teamai-benchmark` must pass it too, or `plan` fails.
+- **Judges**: A trial's judge is a step of a `teamai-score` run, leased like any other and [confined to a directory](workflow-advanced.md#confined-steps-in-your-own-driver) on the [one tool the plan pins](#one-judge-for-every-arm): offer it in `can.confined`, or the step waits with `wait.held[].missing` naming `confined`. Run one of `lease.confined.tools` and report it as `tool`.

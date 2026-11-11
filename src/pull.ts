@@ -5,6 +5,7 @@ import path from 'node:path';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 import matter from 'gray-matter';
+import { z } from 'zod';
 import {
   buildRolePullContext, collectClaudemdFiles, describeDeliveryConflict, indexedRuleFiles,
   indexedSkills, resolveDesiredAgents, resolveDesiredRules, resolveDesiredSkills, type RolePullContext, type ShadowedSkill,
@@ -100,6 +101,8 @@ import {
   clearGitExcludeFailure, isBackgroundPull, localAgentGitExcludeNotices, noticeGitExclude, recordGitExcludeFailure,
   sayGitExcludeNotices,
 } from './git-exclude-notices.js';
+import { GitAnswers } from './utils/git-answers.js';
+import { repositoryStamp } from './utils/git-discovery.js';
 
 // A timed-out report still owns its success bookkeeping. Do not start another
 // batch in this process until it settles and finishes consuming its events.
@@ -182,7 +185,7 @@ async function refreshTeamRepo(
   }
 
   if (localConfig.repo.kind === 'self') {
-    // Single-repo mode: knowledge lives under <business-repo>/.teamai on main and
+    // Self mode: knowledge lives under <business-repo>/.teamai on main and
     // arrives with the business repo's own `git clone`/`git pull`. teamai must NOT
     // run `git pull` on localPath here — that would operate on the business repo
     // root and touch the user's active working tree. Just read the current HEAD as
@@ -209,7 +212,7 @@ async function refreshTeamRepo(
       version = null;
     }
 
-    return { label: 'single-repo (knowledge on main)', version, submodulesFailed: false, submodulesChanged: false };
+    return { label: 'self mode (knowledge on main)', version, submodulesFailed: false, submodulesChanged: false };
   }
 
   // The shared team clone is mutated here (git pull + flushPendingLearnings'
@@ -1081,7 +1084,7 @@ export async function liveCheckoutRecords(
   const commonDir = await gitCommonDir(projectRoot);
 
   if (!commonDir) return records;
-  const identity = (await resolveAnchors(projectRoot))?.projectAnchor;
+  const identity = (await resolveAnchors(projectRoot))?.repoAnchor;
 
   const kept = await Promise.all(Object.entries(records).map(async ([key, record]) => {
     const { root } = record;
@@ -1368,6 +1371,17 @@ export type TeamDelivery =
   | { complete: true; key: string; record: CheckoutRecord; commit: string }
   | { complete: false; key: string | undefined; record?: CheckoutRecord; gap: DeliveryGap };
 
+/** The full commit a delivered revision names. A pull that delivers another one records another revision, so the answer stays. */
+const deliveredCommits = GitAnswers.of('deliveredCommits', z.string());
+
+/** {@link getHeadCommit} of the revision a checkout record holds, kept by the team clone; null when git cannot resolve it. */
+async function deliveredCommit(repo: string, rev: string): Promise<string | null> {
+  const [real, stamp] = await Promise.all([realpath(repo).catch(() => null), repositoryStamp(repo)]);
+  const read = () => getHeadCommit(repo, rev);
+
+  return real && stamp ? deliveredCommits.answer(JSON.stringify([real, rev]), stamp.stamp, read) : read();
+}
+
 /**
  * Whether the checkout `localConfig`'s pulls deliver into holds one complete
  * team delivery for `tool`, and its full commit in the team clone. It decides
@@ -1395,7 +1409,7 @@ export async function teamDelivery(localConfig: LocalConfig, tool: string, optio
   if (!record.delivered) return gap('no_baseline');
 
   if (!record.targets.includes(tool)) return gap('tool_not_delivered');
-  const commit = await getHeadCommit(localConfig.repo.localPath, record.rev);
+  const commit = await deliveredCommit(localConfig.repo.localPath, record.rev);
 
   if (!commit) return gap('unresolved_revision');
   const bases = await Promise.all((record.pushBaseRevs ?? []).map((base) => getHeadCommit(localConfig.repo.localPath, base)));
@@ -1901,7 +1915,7 @@ async function pullForScope(
   // whose file the team deleted stops being one, and in legacy mode one
   // shadowed by a new shared-root file of the same name is withdrawn (#649
   // review, #707).
-  // A single-repo checkout or pinned clone may lack files still on the default
+  // A checkout in self mode or pinned clone may lack files still on the default
   // branch. Settle against origin/<default>, since a dropped record never comes
   // back when that checkout returns to the default branch (#649 review).
   if (!options.dryRun) {
@@ -1928,7 +1942,7 @@ async function pullForScope(
   }
 
   // Publish what contribute queued. Here rather than inside the refresh, which
-  // returns early for single-repo and HTTP: contribute tells the member the next
+  // returns early for self mode and HTTP: contribute tells the member the next
   // pull will retry, and that has to hold in every mode. pull() holds the
   // partition sync lock across this scope and the lock is not reentrant, so
   // publishing must not try to take it again. Never let it block the pull.
@@ -4403,7 +4417,7 @@ export async function pull(
  * kept) here, and a success clears the one a background pull kept.
  */
 export async function syncDeliveredGitExclude(
-  localConfig: LocalConfig, recorder: DeliveryRecorder, options: Pick<GlobalOptions, 'silent' | 'gitHook'> = {},
+  localConfig: LocalConfig, recorder: DeliveryRecorder, options: Pick<GlobalOptions, 'silent' | 'gitHook' | 'gitExcludeAddOnly'> = {},
   failures: readonly string[] = [], context?: GitContext,
 ): Promise<boolean> {
   const key = await checkoutRecordKey(localConfig);
@@ -4431,7 +4445,9 @@ export async function syncDeliveredGitExclude(
   }
 
   const union = await deliveredUnion(await liveDeliveredLists(localConfig.projectRoot, state.lastPullByWorkspace, { key, paths }));
-  const outcome = await applyDeliveredGitExclude(localConfig, enabled, union.paths, { context });
+  const own = new Set(Object.values(paths).flat());
+  const addOnly = options.gitExcludeAddOnly === true;
+  const outcome = await applyDeliveredGitExclude(localConfig, enabled, addOnly ? union.paths.filter((file) => own.has(file)) : union.paths, { context, addOnly });
 
   if (whitelist?.failure) outcome.failures.push(whitelist.failure);
 
@@ -4747,6 +4763,7 @@ async function reconcileHooksAllScopes(
           silent: options.silent,
           filterAgents: localConfig.enabledAgents,
           dryRun: options.dryRun,
+          builtinFormFrom: options.inline ? 'installed' : 'version',
         });
       } finally {
         // What holds teamai's hook entries now, a file this pass left alone included (#915).

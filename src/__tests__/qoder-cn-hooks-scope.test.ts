@@ -41,7 +41,7 @@ describe('Qoder CN hooks route by scope', () => {
     additionalRoles: [],
   } as unknown as LocalConfig);
 
-  // Self single-repo mode roots the hook base dir at projectRoot
+  // Self mode roots the hook base dir at projectRoot
   // (`resolveHookScope`), which is where a project-scope layout is observable
   // on disk; a non-self project scope would resolve its base dir to HOME.
   const selfLocalConfig = (): LocalConfig => ({

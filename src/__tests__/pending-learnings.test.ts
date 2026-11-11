@@ -39,7 +39,7 @@ describe('pendingLearningsDir', () => {
       .toBe('/home/user/.teamai/pending-learnings');
   });
 
-  it('stays inside .teamai in single-repo mode, so it never shows up in the business repo', () => {
+  it('stays inside .teamai in self mode, so it never shows up in the business repo', () => {
     const result = pendingLearningsDir({
       repo: {
         localPath: '/workspace/product/.teamai',

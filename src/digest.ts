@@ -104,7 +104,7 @@ function parseGitLogOutput(output: string): Array<{ author: string; message: str
 /**
  * Build the git pathspec + match regex for a team repo's skills SKILL.md files,
  * accounting for a repo-root-relative `subdir` prefix. Exported for testing —
- * this is the exact spot that broke in single-repo mode (git emitted
+ * this is the exact spot that broke in self mode (git emitted
  * ".teamai/skills/..." paths that never matched a bare "skills/..." regex).
  */
 export function buildSkillChangePathspec(subdir = '') {
@@ -122,7 +122,7 @@ export function buildSkillChangePathspec(subdir = '') {
  *
  * `subdir` is the repo-root-relative directory holding the team repo's `skills/`.
  * It's '' for standalone team repos (git log runs at the repo root, paths are
- * `skills/foo/SKILL.md`), but '.teamai' in single-repo mode — there the git log
+ * `skills/foo/SKILL.md`), but '.teamai' in self mode — there the git log
  * must run at the BUSINESS repo root with a `.teamai/skills/...` pathspec, and
  * git emits repo-root-relative paths like `.teamai/skills/foo/SKILL.md`. We build
  * the pathspec and the match regex from `subdir` so both layouts work.

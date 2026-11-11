@@ -357,7 +357,7 @@ describe('a teamai-only .codex/hooks.json', () => {
   });
 });
 
-describe('single-repo mode', () => {
+describe('self mode', () => {
   it('keeps the committed .codex/hooks.json to the built-ins and runs the team hooks from the dispatcher', () => {
     const caseDir = fs.mkdtempSync(path.join(sandbox, 'self-'));
     const home = path.join(caseDir, 'home');

@@ -5,7 +5,7 @@ import chalk from 'chalk';
 import { z } from 'zod';
 
 import { pathExists } from './utils/fs.js';
-import type { LintAssetGraph } from './lint-asset-graph.js';
+import type { LintResourceGraph } from './lint-resource-graph.js';
 
 /** The parts of graph-index.json the lint counts; a field of the wrong type reads as absent. */
 const LintedGraphSchema = z.object({
@@ -44,10 +44,10 @@ export interface WikiLintReport {
     connectivity: number;
   } | null;
   /**
-   * The member's asset-relation counts (#1562). Absent with standalone
-   * `--output` or when there is no member: then there is no asset data.
+   * The member's resource-relation counts (#1562). Absent with standalone
+   * `--output` or when there is no member: then there is no resource data.
    */
-  assetGraph?: LintAssetGraph;
+  resourceGraph?: LintResourceGraph;
 }
 
 export async function lintTeamwiki(opts: {
@@ -288,14 +288,14 @@ export function formatWikiLintReport(report: WikiLintReport): string {
     lines.push(`Total: ${report.summary.high} high, ${report.summary.medium} medium, ${report.summary.low} low, ${report.summary.info} info`);
   }
 
-  if (report.assetGraph) {
-    lines.push(formatAssetGraphLine(report.assetGraph));
+  if (report.resourceGraph) {
+    lines.push(formatResourceGraphLine(report.resourceGraph));
   }
 
   return lines.join('\n');
 }
 
-/** The one asset-count line `--lint` prints after the report (#1562). */
-export function formatAssetGraphLine(graph: LintAssetGraph): string {
-  return `Assets: ${graph.assetCount}, relations: ${graph.relationCount}, without a relation: ${graph.withoutRelation.length}, unresolved: ${graph.unresolved.length}`;
+/** The one resource-count line `--lint` prints after the report (#1562). */
+export function formatResourceGraphLine(graph: LintResourceGraph): string {
+  return `Resources: ${graph.resourceCount}, relations: ${graph.relationCount}, without a relation: ${graph.withoutRelation.length}, unresolved: ${graph.unresolved.length}`;
 }

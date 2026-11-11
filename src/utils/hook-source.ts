@@ -43,6 +43,12 @@ export async function hookSourceMatches(actual: string | null, expected: string)
 
       return 'const launcher = ["<installed-launcher>"];';
     });
+    // The POSIX `teamai` wrapper (builtin-hooks.ts teamaiWrapperSource) names its Node and entry twice.
+    body = body.replace(new RegExp(`(\\[ ! -x |^exec )(${jsonString})( \\] \\|\\| \\[ ! -f | )(${jsonString})`, 'gm'), (_line, before: string, node: string, between: string, entry: string) => {
+      launcher(`[${node},${entry}]`);
+
+      return `${before}"<installed-launcher>"${between}"<installed-launcher>"`;
+    });
     body = body.replace(new RegExp(`\\[(${jsonString}),\\s*(${jsonString}), "hook-dispatch", "instructions", "--tool", "hermes"\\]`, 'g'), (_line, node: string, entry: string) => {
       launcher(`[${node},${entry}]`);
 

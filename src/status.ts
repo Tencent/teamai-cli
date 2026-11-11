@@ -23,7 +23,7 @@ import {
 } from './agent-skills.js';
 import { RESOURCE_TYPES, LocalConfigSchema, getDataHome, installScopeName, type GlobalOptions, type ResourceType } from './types.js';
 import { projectsRootDir, readAnchorFile, projectSlug, legacyProjectSlug } from './utils/partition.js';
-import { checkoutForProjectAnchor } from './utils/git.js';
+import { checkoutForRepoAnchor } from './utils/git.js';
 import { TEAM_MCP_ENTRIES, teamMcpDef } from './resources/mcp.js';
 import { LayeredEntries } from './resources/layered-entries.js';
 import { resolveTeamHookEntries } from './resources/hooks.js';
@@ -279,7 +279,7 @@ async function statusAll(): Promise<void> {
         scope = installScopeName(parsed.scope);
         kind = parsed.repo.kind;
         const recordedRoot = parsed.repo.businessRepoRoot ?? parsed.projectRoot;
-        projectPath = anchor ? await checkoutForProjectAnchor(anchor, recordedRoot) ?? recordedRoot ?? anchor
+        projectPath = anchor ? await checkoutForRepoAnchor(anchor, recordedRoot) ?? recordedRoot ?? anchor
           : recordedRoot ?? null;
       } catch { /* unreadable config — leave fields undefined */ }
     }

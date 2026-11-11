@@ -84,6 +84,14 @@ async function adapterHookArtifacts(tool: string): Promise<string[] | null> {
         return [path.join(hookAdapterDir('opencode-plugin'), OPENCODE_HOOK_FILE)];
     }
 
+    if (tool === 'dsh') {
+        const { resolveDshHookConfigPath, resolveDshHomePatchPath } = await import('./dsh-hooks.js');
+
+        // DSH reads neither settings.json nor hooks.json under its home: the Claude-format hook config teamai
+        // generates is mounted by a row in `$DSH_HOME/cordis.patch.yml`. Both halves are the installation.
+        return [resolveDshHookConfigPath(), resolveDshHomePatchPath()];
+    }
+
     if (tool === 'hermes') {
         const { getReportScriptPath } = await import('./hermes-hooks.js');
 
@@ -278,7 +286,7 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
 
         rows.push({
             tool,
-            status: await getHookStatus(hookPath, tool, builtinOverride),
+            status: await getHookStatus(hookPath, { tool, from: 'version', builtinOverride }),
             settingsPath: formatDisplayPath(hookPath),
             // The override is applied to the settings-driven defs only: the
             // standalone adapters generate a fixed handler and ignore it, so

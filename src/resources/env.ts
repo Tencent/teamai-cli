@@ -376,7 +376,7 @@ export class EnvHandler extends ResourceHandler {
     const listEnvFiles = async (root: string): Promise<EntryFile[]> =>
       [...await listEntryFiles(root, 'env'), ...await listEntryFiles(root, SECRETS_LAYOUT)];
 
-    // Single-repo mode: users edit team env directly at <repo>/.teamai/env/
+    // Self mode: users edit team env directly at <repo>/.teamai/env/
     // (it lives in their own repo). push runs in the knowledge worktree, so
     // localConfig.repo.localPath here is the origin/<default> checkout — diff the
     // ACTIVE tree's copies against it and surface genuine additions/edits. (Active

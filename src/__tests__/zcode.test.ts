@@ -95,7 +95,7 @@ describe('ZCode support', () => {
         }
       }
 
-      expect(await getHookStatus(configPath, 'zcode')).toBe('installed');
+      expect(await getHookStatus(configPath, { tool: 'zcode', from: 'version' })).toBe('installed');
 
       if (process.platform === 'win32') {
         // The launcher is content-managed: assert the template shipped by THIS
@@ -114,7 +114,7 @@ describe('ZCode support', () => {
         // A deleted/quarantined launcher must not be reported as installed:
         // the entries are dead without the script.
         await fse.remove(path.join(path.dirname(configPath), 'teamai-hook-dispatch.mjs'));
-        expect(await getHookStatus(configPath, 'zcode')).toBe('missing');
+        expect(await getHookStatus(configPath, { tool: 'zcode', from: 'version' })).toBe('missing');
       }
     } finally {
       await fse.remove(home);
@@ -205,7 +205,7 @@ describe('ZCode support', () => {
         expect(entries).toEqual([]);
       }
       expect(await hasTeamaiHooks(configPath, 'zcode')).toBe(false);
-      expect(await getHookStatus(configPath, 'zcode')).toBe('missing');
+      expect(await getHookStatus(configPath, { tool: 'zcode', from: 'version' })).toBe('missing');
       // The launcher must be deleted even when its content matches the current
       // template exactly — a content-diff gate would skip it and leave the file
       // behind.
@@ -270,7 +270,7 @@ describe('ZCode support', () => {
       const cfg = await fse.readJson(configPath);
       expect(cfg.hooks.enabled).toBe(true);
       expect(Object.keys(cfg.hooks.events).length).toBeGreaterThan(0);
-      expect(await getHookStatus(configPath, 'zcode')).toBe('installed');
+      expect(await getHookStatus(configPath, { tool: 'zcode', from: 'version' })).toBe('installed');
     } finally {
       await fse.remove(home);
     }
@@ -292,7 +292,7 @@ describe('ZCode support', () => {
       const cfg = await fse.readJson(configPath);
       expect(Object.keys(cfg.hooks).sort()).toEqual(['enabled', 'events']);
       expect(cfg.hooks.enabled).toBe(true);
-      expect(await getHookStatus(configPath, 'zcode')).toBe('installed');
+      expect(await getHookStatus(configPath, { tool: 'zcode', from: 'version' })).toBe('installed');
     } finally {
       await fse.remove(home);
     }
@@ -370,7 +370,7 @@ describe('ZCode support', () => {
       // No entry references the .vbs once the entries point at the .mjs, so
       // inject must delete it rather than strand it in ~/.zcode forever.
       expect(await fse.pathExists(legacy)).toBe(false);
-      expect(await getHookStatus(configPath, 'zcode')).toBe('installed');
+      expect(await getHookStatus(configPath, { tool: 'zcode', from: 'version' })).toBe('installed');
 
       await fse.outputFile(legacy, "' a launcher this fix replaced\n");
       await reconcileHooks(configPath, 'zcode', [], { removeAll: true });

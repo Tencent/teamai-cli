@@ -1,5 +1,5 @@
 /**
- * Tests for the #1552 first slice: declared asset relations (`related:`
+ * Tests for the #1552 first slice: declared resource relations (`related:`
  * frontmatter), link-derived REFERENCES, their storage on search-index
  * entries, and the `Related:` lines recall prints for them.
  */
@@ -15,14 +15,14 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  ASSET_RELATIONS,
+  RESOURCE_RELATIONS,
   classifyTreePath,
   normalizeTargetPath,
   parseRelatedBlock,
   relationsFromLinks,
   teamwikiCodebaseSlug,
-} from '../asset-relations.js';
-import type { RelationSeverity, StoredRelation } from '../asset-relations.js';
+} from '../resource-relations.js';
+import type { RelationSeverity, StoredRelation } from '../resource-relations.js';
 import { indexInMemory } from '../utils/search-index.js';
 import { localLinkTargets } from '../utils/markdown-links.js';
 import type { FrontmatterValue } from '../utils/frontmatter.js';
@@ -163,11 +163,11 @@ describe('parseRelatedBlock — malformed input', () => {
     }
   });
 
-  it('warns when the path names no asset, at warn severity even in review', () => {
+  it('warns when the path names no resource, at warn severity even in review', () => {
     const { relations, findings } = parse({ REFERENCES: 'docs/missing.md' }, 'rule', 'rules/a.md', () => false);
     expect(relations).toEqual([]);
     expect(findings).toEqual([
-      { severity: 'warn', message: 'REFERENCES docs/missing.md names no team asset; this relation is ignored.' },
+      { severity: 'warn', message: 'REFERENCES docs/missing.md names no team resource; this relation is ignored.' },
     ]);
   });
 
@@ -213,7 +213,7 @@ describe('parseRelatedBlock — valid declarations', () => {
 // ─── relationsFromLinks ──────────────────────────────────
 
 describe('relationsFromLinks', () => {
-  it('turns a link landing on an asset into REFERENCES, resolved from the file tree path', () => {
+  it('turns a link landing on a resource into REFERENCES, resolved from the file tree path', () => {
     const rels = relationsFromLinks('See [the overview](../docs/payments-overview.md).', 'learnings/some-id', localLinkTargets);
     expect(rels).toEqual([{ relation: 'REFERENCES', target: 'docs/payments-overview.md', via: 'link' }]);
   });
@@ -236,7 +236,7 @@ describe('relationsFromLinks', () => {
   it('skips links to URLs, code, and itself; ordinary prose resolves relative and is kept as a candidate', () => {
     const md = '[u](https://x.test/a) [c](`code`) [self](./payments.md) [plain](ordinary-prose)';
     const rels = relationsFromLinks(md, 'rules/payments.md', localLinkTargets);
-    // A relative link to something that is not an asset is stored as a
+    // A relative link to something that is not a resource is stored as a
     // candidate; recall prints it only when the target exists in the index.
     expect(rels).toEqual([{ relation: 'REFERENCES', target: 'rules/ordinary-prose.md', via: 'link' }]);
   });
@@ -408,7 +408,7 @@ describe('relationLines', () => {
     expect(relationLines(ctx(), rule)).toEqual([]);
   });
 
-  it('declared beats link between the same two assets in the same direction', () => {
+  it('declared beats link between the same two resources in the same direction', () => {
     const rule = entry({
       filename: 'a.md', treePath: 'rules/a.md',
       related: [
@@ -580,9 +580,9 @@ describe('relatedRefsOf — the run line records what stdout shows (#1562)', () 
   });
 });
 
-describe('ASSET_RELATIONS', () => {
+describe('RESOURCE_RELATIONS', () => {
   it('is the four declarable relation names', () => {
-    expect(ASSET_RELATIONS).toEqual(['MAPS_TO', 'REFERENCES', 'SUPERSEDES', 'CONFLICTS_WITH']);
+    expect(RESOURCE_RELATIONS).toEqual(['MAPS_TO', 'REFERENCES', 'SUPERSEDES', 'CONFLICTS_WITH']);
   });
 });
 

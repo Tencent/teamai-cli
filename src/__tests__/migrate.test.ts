@@ -719,7 +719,7 @@ describe('self mode migration (P2)', () => {
     expect(await fse.pathExists(path.join(legacyDir, 'reports-wt'))).toBe(true);
   });
 
-  it('does NOT rebase self repo.localPath (it is the class-B knowledge anchor)', async () => {
+  it('does NOT rebase self-mode repo.localPath (it is the class-B knowledge anchor)', async () => {
     await seedSelfLayout();
     await runMigration((await planMigration(repoRoot))!);
     const migrated = YAML.parse(
@@ -1061,7 +1061,7 @@ describe('self mode migration (P2)', () => {
 
     const plan = await planMigration(repoRoot);
     expect(plan!.mode).toBe('retire-only');
-    await expect(runMigration(plan!)).rejects.toThrow(/holds single-repo team knowledge/);
+    await expect(runMigration(plan!)).rejects.toThrow(/holds self-mode team knowledge/);
     // Knowledge and the dir are intact — nothing was renamed away.
     expect(await fse.pathExists(path.join(legacyDir, 'skills', 'team-skill.md'))).toBe(true);
     expect(await fse.pathExists(`${legacyDir}.bak`)).toBe(false);

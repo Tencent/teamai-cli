@@ -14,6 +14,9 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
+// The machine's own Claude Code never answers: at 2.1.119 or later its file takes the unwaited form (builtinHookForm).
+vi.mock('../agent-version.js', () => ({ getAgentVersion: vi.fn(async () => '') }));
+
 import {
   buildHintMessage,
   shouldSkipTodoWriteHint,

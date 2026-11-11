@@ -1,0 +1,66 @@
+name: Agent Context Budget
+
+# Reports how the text teamai's defaults put in an agent's context changes against main: always loaded, through
+# progressive disclosure, or on a hook event (scripts/agent-context-budget.ts). Report only: it never fails the PR.
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-context-budget-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  budget:
+    name: Agent context budget
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Compare with main
+        id: compare
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          report="$RUNNER_TEMP/report/agent-context-budget.md"
+          mkdir -p "$(dirname "$report")"
+          git worktree add --quiet "$RUNNER_TEMP/base" "$BASE_SHA"
+          if [ ! -f "$RUNNER_TEMP/base/scripts/agent-context-budget.mjs" ]; then
+            echo "main has no agent context budget yet." | tee "$report" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          ln -s "$PWD/node_modules" "$RUNNER_TEMP/base/node_modules"
+          (cd "$RUNNER_TEMP/base" && node scripts/agent-context-budget.mjs > "$RUNNER_TEMP/main.json")
+          node scripts/agent-context-budget.mjs --compare "$RUNNER_TEMP/main.json" > "$report" 2> "$RUNNER_TEMP/grew.txt"
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          if grep -q '^Always-loaded agent context grew' "$RUNNER_TEMP/grew.txt"; then
+            echo "::warning::$(cat "$RUNNER_TEMP/grew.txt")"
+            echo "grew=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Only when always-loaded text grew: the review then adds it to its comment.
+      - name: Keep the report for the review
+        if: steps.compare.outputs.grew == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-context-budget
+          path: ${{ runner.temp }}/report/agent-context-budget.md
+          retention-days: 7

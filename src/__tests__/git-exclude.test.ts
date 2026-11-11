@@ -10,6 +10,7 @@ import {
   type GitExcludeOwner,
   encodeOwnerSegment,
   ensure,
+  GitContext,
   gitUntracked,
   remove,
   report,
@@ -855,21 +856,58 @@ describe('git exclude blocks (#915)', () => {
       const bin = path.join(tmp, 'bin');
       const log = path.join(tmp, 'git-calls.log');
       await fse.outputFile(path.join(bin, 'git'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
-      const pathBefore = process.env.PATH;
-      process.env.PATH = `${bin}${path.delimiter}${pathBefore ?? ''}`;
-      let result: Awaited<ReturnType<typeof report>>;
-      try {
-        result = await report(memoryOwner('delivered'), paths);
-      } finally {
-        process.env.PATH = pathBefore;
-      }
-      const calls = (await read(log)).split('\n').filter(Boolean);
+      const counted = async <T>(run: () => Promise<T>): Promise<{ result: T; calls: string[] }> => {
+        await fse.remove(log);
+        const pathBefore = process.env.PATH;
+        process.env.PATH = `${bin}${path.delimiter}${pathBefore ?? ''}`;
+        try {
+          const result = await run();
+          return { result, calls: (await read(log)).split('\n').filter(Boolean) };
+        } finally {
+          process.env.PATH = pathBefore;
+        }
+      };
+      const reincluded = [{ path: inRepo('.claude', 'rules', 'fe', 'a.md') }];
 
-      expect(result.files).toMatchObject([{ missing: [], reincluded: [{ path: inRepo('.claude', 'rules', 'fe', 'a.md') }] }]);
+      const { result, calls } = await counted(() => report(memoryOwner('delivered'), paths));
+
+      expect(result.files).toMatchObject([{ missing: [], reincluded }]);
       expect(calls.filter((c) => /\bls-files\b.*--others/.test(c))).toHaveLength(1);
       expect(calls.filter((c) => /\bcheck-ignore\b/.test(c))).toHaveLength(1);
       // Where the file is, what it tracks, what git still offers, the one re-included path, and git for macOS' precompose setting.
       expect(calls.length).toBeLessThanOrEqual(5);
+
+      // A pull's sync and the check after it share one context: git lists what it tracks and what it offers once for both.
+      const owner = memoryOwner('delivered');
+      const context = new GitContext();
+      const pulled = await counted(async () => {
+        await sync(owner, paths, { context });
+        return report(owner, paths, context);
+      });
+
+      expect(pulled.result.files).toMatchObject([{ missing: [], reincluded }]);
+      expect(pulled.calls.filter((c) => /\bls-files\b/.test(c))).toHaveLength(2);
+
+      // A sync that writes the exclude file changes what git offers, so a later report on its context asks again.
+      await fse.outputFile(excludeFile, '');
+      const rewritten = new GitContext();
+      const before = await report(owner, paths, rewritten);
+      await sync(owner, paths, { context: rewritten });
+      const after = await report(owner, paths, rewritten);
+
+      expect([before.files[0]?.visible.length, after.files[0]?.visible]).toEqual([paths.length, [reincluded[0]?.path]]);
+
+      // A linked worktree's answer is its own, though git is asked the same question there.
+      await fse.outputFile(inRepo('base.md'), 'base\n');
+      commit(repo, 'base.md');
+      const worktree = path.join(tmp, 'worktree');
+      git(repo, 'worktree', 'add', '-q', '--detach', worktree);
+      await fse.outputFile(inRepo('shared.md'), 'main\n');
+      commit(repo, 'shared.md');
+      await fse.outputFile(path.join(worktree, 'shared.md'), 'worktree\n');
+      const both = await sync(memoryOwner('delivered'), [inRepo('shared.md'), path.join(worktree, 'shared.md')], { context: new GitContext() });
+
+      expect(both.files).toMatchObject([{ excludeFile, tracked: [{ path: inRepo('shared.md'), checkout: repo }], lines: ['/shared.md'] }]);
     });
 
     it('creates no info/ in a repository without one', async () => {

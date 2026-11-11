@@ -243,11 +243,10 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     await envAdd('TEAM_VAR', 'changed', {});
     // Git sees no mode change in 0600, but reset --hard recreates the file 0644.
     fs.chmodSync(envPath, 0o600);
-    // A local branch of the requested name makes the branch creation throw
-    // after the copy step, so pushGroup resets and cleans the clone.
-    await simpleGit(teamRepo).branch(['teamai/taken']);
+    // An invalid branch name makes the branch creation throw after the copy
+    // step, so pushGroup resets and cleans the clone.
 
-    await push({ all: true, branch: 'teamai/taken' });
+    await push({ all: true, branch: 'teamai/taken..invalid' });
 
     expect(process.exitCode).toBe(1);
     expect(stderrOutput()).toContain('Push failed');
@@ -310,9 +309,8 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     expect(await git.raw(['status', '--porcelain', '--untracked-files=all'])).toContain('?? env/ops/env.yaml');
     // Git records no mode for an untracked file, so only the snapshot can keep it.
     fs.chmodSync(opsEnv, 0o600);
-    await git.branch(['teamai/taken']);
 
-    await push({ all: true, branch: 'teamai/taken' });
+    await push({ all: true, branch: 'teamai/taken..invalid' });
 
     expect(process.exitCode).toBe(1);
     expect(stderrOutput()).toContain('Push failed');
@@ -376,11 +374,10 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     const { push } = await import('../push.js');
     const { saveStateForScope } = await import('../config.js');
     await envAdd('TEAM_VAR', 'changed', {});
-    await simpleGit(teamRepo).branch(['teamai/taken']);
     // The restore after the refresh succeeds; the one after the rollback fails.
     failingWrites.set(path.join(teamRepo, 'env', 'env.yaml'), 1);
 
-    await push({ all: true, branch: 'teamai/taken' });
+    await push({ all: true, branch: 'teamai/taken..invalid' });
 
     expect(process.exitCode).toBe(1);
     expect(stderrOutput()).toContain('Push failed');
@@ -396,9 +393,8 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     // A hand edit saved as Latin-1: 0xE9 is "é" there and invalid UTF-8.
     const latin1 = Buffer.from('variables:\n  - key: TEAM_VAR\n    value: caf\xe9\n', 'latin1');
     fs.writeFileSync(envPath, latin1);
-    await simpleGit(teamRepo).branch(['teamai/taken']);
 
-    await push({ all: true, branch: 'teamai/taken' });
+    await push({ all: true, branch: 'teamai/taken..invalid' });
 
     expect(process.exitCode).toBe(1);
     expect(fs.readFileSync(envPath).equals(latin1)).toBe(true);

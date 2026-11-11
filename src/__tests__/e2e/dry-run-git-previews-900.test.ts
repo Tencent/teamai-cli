@@ -5,7 +5,7 @@
  * These commands used to pull before their dry-run guard, and `pullRepo` falls
  * back to `git reset --hard origin/<b>` when a fast-forward fails, so a dry run
  * on a clone with unpushed commits discarded them. `remove` also saved the
- * reconciled placement records, and in single-repo mode both commands created
+ * reconciled placement records, and in self mode both commands created
  * the knowledge worktree. A preview may fetch; it must not move HEAD, touch the
  * working tree, save state or add a worktree. It still resolves names against
  * the post-pull clone branch, or origin/default in self mode.
@@ -214,7 +214,7 @@ function setUpClone(): Fixture {
   return { home, cwd: home, checkout, statePath, checkoutMarker: markCheckouts(checkout) };
 }
 
-/** A single-repo (self mode) business checkout, diverged from origin. */
+/** A self-mode business checkout, diverged from origin. */
 function setUpSelf(): Fixture {
   const sandbox = newSandbox();
   const home = path.join(sandbox, 'home');
@@ -276,7 +276,7 @@ afterEach(() => {
 
 describe.each([
   ['a team-repo clone', setUpClone],
-  ['single-repo mode', setUpSelf],
+  ['self mode', setUpSelf],
 ])('--dry-run on %s with unpushed commits (#900)', (_label, setUp) => {
   it('roles add keeps the local commits and previews against origin', async () => {
     const fixture = setUp();

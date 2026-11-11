@@ -129,10 +129,10 @@ describe('getDataHome (machine-data home resolver)', () => {
     process.env.HOME = '/home/alice';
     const cfg = makeConfig({
       scope: 'project',
-      projectRoot: '/work/self-repo',
-      repo: { localPath: '/work/self-repo/.teamai', remote: '', kind: 'self' },
+      projectRoot: '/work/self-mode-repo',
+      repo: { localPath: '/work/self-mode-repo/.teamai', remote: '', kind: 'self' },
     });
-    expect(getDataHome(cfg)).toBe(path.join('/work/self-repo', '.teamai'));
+    expect(getDataHome(cfg)).toBe(path.join('/work/self-mode-repo', '.teamai'));
   });
 
   it('co-locates the env backup with the data home (git + self)', () => {
@@ -146,8 +146,8 @@ describe('getDataHome (machine-data home resolver)', () => {
 
     const self = makeConfig({
       scope: 'project',
-      projectRoot: '/work/self-repo',
-      repo: { localPath: '/work/self-repo/.teamai', remote: '', kind: 'self' },
+      projectRoot: '/work/self-mode-repo',
+      repo: { localPath: '/work/self-mode-repo/.teamai', remote: '', kind: 'self' },
     });
     expect(path.dirname(getEnvBackupPath(self))).toBe(getDataHome(self));
     expect(getEnvBackupPath(self)).toBe(path.join(getDataHome(self), 'env.local'));

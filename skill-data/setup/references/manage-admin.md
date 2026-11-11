@@ -42,7 +42,7 @@ members pick them up on sync.
 
 A server with a `${VAR}` the tool cannot expand itself gets the resolved value
 written into its project config (`.mcp.json`, `.cursor/mcp.json`, ...). With
-`sharing.gitExclude` on, Claude's (not in a single-repo team, whose worktrees
+`sharing.gitExclude` on, Claude's (not in a team in self mode, whose worktrees
 each read their own branch's servers) and CodeBuddy's and WorkBuddy's servers go to their local
 scopes in `~/.claude.json` and `.codebuddy.json` instead, outside the project,
 and the next pull (on an HTTP-backed team, the local agent's next sync) moves
@@ -160,7 +160,7 @@ teamai projects remove <id>  # remove a project
 A workspace (a folder set up with `init`) also delivers the projects of the
 repos set up inside it, up to three levels down, with no list to keep: `teamai
 projects list` there shows each one and what it selects. A repo that uses
-another team repo, or single-repo mode, is left out and named.
+another team repo, or self mode, is left out and named.
 
 A member gets the union of their role resources and their active project's
 resources. Admins declare projects in `manifest/projects.yaml` with the commands
@@ -174,7 +174,7 @@ keep the project's content in the team repo until members have pulled: that is
 what lets their next pull clean up the copies they deployed.
 
 `roles init/add/update/remove` and `projects add/update/remove` previews, and resource removal
-previews, refuse a team clone with uncommitted changes. Commit or stash them before retrying. Single-repo
+previews, refuse a team clone with uncommitted changes. Commit or stash them before retrying. Self mode
 previews still work with dirty business files because they read origin. Clone
 previews refresh the configured upstream first, even when its branch or remote
 name differs. A failed fast-forward or missing upstream uses origin/current-branch
@@ -246,7 +246,7 @@ true|false` in the project's `config.yaml` (`~/.teamai/projects/<slug>/config.ya
 Either takes effect on the next pull, no `--force`; turned off, the next pull
 removes only that block. `teamai doctor` says where the setting comes from and
 what git still sees; `teamai pull --dry-run` previews the block.
-In a single-repo team the committed hook settings keep only the built-ins; the
+In a team in self mode the committed hook settings keep only the built-ins; the
 team's hooks for Claude Code, CodeBuddy and Qoder go to the `settings.local.json`
 beside them, listed in that block, and Codex's run from `~/.codex/hooks.json`.
 The other tools have no such file, so their team hooks stay in the committed file.

@@ -107,9 +107,9 @@ describe('parseSuite', () => {
 
   it.each([
     ['an arm with a role and no team', suiteText({ defaults: '{ tool: claude, role: review }', arms: '[{ name: baseline }, { name: bare, team: none }]' }), 'arms.1',
-      'arm "bare" has role review and team none; a role selects team assets, so an arm with a role needs a team; remove role, or give the arm another team'],
+      'arm "bare" has role review and team none; a role selects team resources, so an arm with a role needs a team; remove role, or give the arm another team'],
     ['a matrix that crosses a role with no team', suiteText({ arms: '', matrix: '{ role: [frontend, review], team: [pulled, none] }' }), 'matrix',
-      'the matrix makes arm "none-frontend", with role frontend and team none; a role selects team assets, so an arm with a role needs a team; remove role, or give the arm another team'],
+      'the matrix makes arm "none-frontend", with role frontend and team none; a role selects team resources, so an arm with a role needs a team; remove role, or give the arm another team'],
     ['a role that is not an id', suiteText({ arms: '[{ name: baseline }, { name: review, role: "re view" }]' }), 'arms.1.role', 'must be the id of a role in manifest/roles.yaml, such as review'],
   ])('reports %s at its suite file', (_rule, suite, field, message) => {
     const parsed = parse(suite);

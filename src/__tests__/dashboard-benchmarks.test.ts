@@ -172,7 +172,7 @@ describe('benchmarkHistory team revisions', () => {
     return run(['rev-parse', 'HEAD']);
   }
 
-  it('names each team revision the runs installed from the team clone, in commit order, with the asset files each changed', async () => {
+  it('names each team revision the runs installed from the team clone, in commit order, with the resource files each changed', async () => {
     const first = commitTeam({ 'skills/auth/SKILL.md': 'Refresh tokens.\n', 'benchmarks/fix/suite.yaml': 'v1\n' }, 'Add the auth skill', '2026-10-01T09:00:00Z');
     const second = commitTeam({ 'skills/auth/SKILL.md': 'Refresh tokens.\nReject expired ones.\n', 'rules/testing.md': 'Run the tests.\n', 'benchmarks/fix/suite.yaml': 'v2\n' }, 'Tighten the auth skill', '2026-10-07T09:00:00Z');
     // The newer revision ran first, so only the commit dates put them in order.

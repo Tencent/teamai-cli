@@ -19,7 +19,7 @@ vi.setConfig({ testTimeout: RUN_MS });
 function checkout(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-docs-command-'));
   dirs.push(root);
-  for (const name of ['docs', 'skill-data', 'skills', ...fs.readdirSync(ROOT).filter((file) => /^README.*\.md$/.test(file))]) {
+  for (const name of ['docs', 'skill-data', 'skills', 'AGENTS.md', '.github', ...fs.readdirSync(ROOT).filter((file) => /^README.*\.md$/.test(file))]) {
     fs.cpSync(path.join(ROOT, name), path.join(root, name), { recursive: true });
   }
   return root;
@@ -145,4 +145,13 @@ it('check refuses a deployed stub that pre-approves starting any workflow', () =
   const checked = run(root, '--only=skill-content');
   expect(checked.status).toBe(1);
   expect(checked.output).toContain('pre-approves only read-only skill and workflow calls');
+});
+it('check refuses a quoted glossary Avoid spelling in prose and ignores it in code, also an indented fence, HTML and link targets', () => {
+  const root = checkout();
+  fs.appendFileSync(path.join(root, 'docs/guide/workflow.md'), '\nIn folder resource form, a hook carries its script.\n');
+  fs.appendFileSync(path.join(root, 'docs/guide/sharing.md'), '\n`folder resource`, <img alt="folder resource">, [x](folder-resource.md)\n\n- a step\n\n  ```sh\n  cp -r folder resources/ out/\n  ```\n');
+  const checked = run(root, '--only=glossary-terms');
+  expect(checked.status).toBe(1);
+  expect(checked.output).toContain('docs/guide/workflow.md uses "folder resource" 1 times.');
+  expect(checked.output).not.toContain('docs/guide/sharing.md');
 });

@@ -13,7 +13,7 @@ import { defaultProjectSlug } from '../codebase-extract.js';
 // Uses a real git repository + a real `git worktree add` in a temp dir, so the
 // distinction the two-anchor model rests on is genuinely exercised:
 //   - workspaceRoot = the CURRENT checkout (per-worktree)
-//   - projectAnchor = the MAIN checkout (shared by repo + all worktrees)
+//   - repoAnchor = the MAIN checkout (shared by repo + all worktrees)
 // It also covers the `--path-format=absolute` trap: without it, `--git-common-dir`
 // returns a RELATIVE `.git` in the main repo, which would resolve the anchor
 // against the wrong base.
@@ -62,7 +62,7 @@ describe('resolveAnchors', () => {
     const checkout = path.join(parent, 'service');
     expect(await resolveAnchors(checkout)).toEqual({
       workspaceRoot: checkout,
-      projectAnchor: path.join(parent, '.git', 'modules', 'service'),
+      repoAnchor: path.join(parent, '.git', 'modules', 'service'),
       mainCheckout: checkout,
     });
   });
@@ -72,14 +72,14 @@ describe('resolveAnchors', () => {
     git(repoRoot, 'clone', '-q', repoRoot, nested);
     const linked = path.join(repoRoot, 'child-worktree');
     git(nested, 'worktree', 'add', '-q', '--detach', linked);
-    expect(await resolveAnchors(linked)).toEqual({ workspaceRoot: linked, projectAnchor: nested, mainCheckout: nested });
+    expect(await resolveAnchors(linked)).toEqual({ workspaceRoot: linked, repoAnchor: nested, mainCheckout: nested });
   });
 
   it('returns workspace === anchor === repo root for a plain repository', async () => {
     const a = await resolveAnchors(repoRoot);
     expect(a).not.toBeNull();
     expect(a!.workspaceRoot).toBe(repoRoot);
-    expect(a!.projectAnchor).toBe(repoRoot);
+    expect(a!.repoAnchor).toBe(repoRoot);
     expect(a!.mainCheckout).toBe(repoRoot);
   });
 
@@ -89,7 +89,7 @@ describe('resolveAnchors', () => {
     const a = await resolveAnchors(sub);
     expect(a).not.toBeNull();
     expect(a!.workspaceRoot).toBe(repoRoot);
-    expect(a!.projectAnchor).toBe(repoRoot);
+    expect(a!.repoAnchor).toBe(repoRoot);
     expect(a!.mainCheckout).toBe(repoRoot);
   });
 
@@ -99,9 +99,9 @@ describe('resolveAnchors', () => {
     // The current checkout is the worktree itself...
     expect(a!.workspaceRoot).toBe(worktreeRoot);
     // ...but the anchor points back at the MAIN checkout, shared with the repo.
-    expect(a!.projectAnchor).toBe(repoRoot);
+    expect(a!.repoAnchor).toBe(repoRoot);
     expect(a!.mainCheckout).toBe(repoRoot);
-    expect(a!.workspaceRoot).not.toBe(a!.projectAnchor);
+    expect(a!.workspaceRoot).not.toBe(a!.repoAnchor);
   });
 
   it('resolves a subdirectory of a worktree to that worktree, anchored at main', async () => {
@@ -109,7 +109,7 @@ describe('resolveAnchors', () => {
     fs.mkdirSync(sub, { recursive: true });
     const a = await resolveAnchors(sub);
     expect(a!.workspaceRoot).toBe(worktreeRoot);
-    expect(a!.projectAnchor).toBe(repoRoot);
+    expect(a!.repoAnchor).toBe(repoRoot);
     expect(a!.mainCheckout).toBe(repoRoot);
   });
 
@@ -144,12 +144,12 @@ describe('resolveAnchors', () => {
     expect(b!.mainCheckout).toBe(wsB);
     const linked = path.join(base, 'separate-linked');
     git(wsA, 'worktree', 'add', '-q', '--detach', linked);
-    expect(await resolveAnchors(linked)).toEqual({ workspaceRoot: linked, projectAnchor: a!.projectAnchor, mainCheckout: null });
+    expect(await resolveAnchors(linked)).toEqual({ workspaceRoot: linked, repoAnchor: a!.repoAnchor, mainCheckout: null });
     // The two repos must NOT share an anchor (no partition collision).
-    expect(a!.projectAnchor).not.toBe(b!.projectAnchor);
+    expect(a!.repoAnchor).not.toBe(b!.repoAnchor);
     // And neither anchor is the shared parent directory.
-    expect(a!.projectAnchor).not.toBe(gitdirs);
-    expect(b!.projectAnchor).not.toBe(gitdirs);
+    expect(a!.repoAnchor).not.toBe(gitdirs);
+    expect(b!.repoAnchor).not.toBe(gitdirs);
   });
 });
 
@@ -181,14 +181,14 @@ describe('resolveAnchors memo (#809)', () => {
     git(dir, 'config', 'user.email', 'test@example.com');
     git(dir, 'config', 'user.name', 'Test');
     git(dir, 'commit', '--allow-empty', '-q', '-m', 'init');
-    expect(await resolveAnchors(dir)).toEqual({ workspaceRoot: dir, projectAnchor: dir, mainCheckout: dir });
+    expect(await resolveAnchors(dir)).toEqual({ workspaceRoot: dir, repoAnchor: dir, mainCheckout: dir });
   });
 
   it('keeps one entry per directory', async () => {
     const a = freshRepo('memo-a');
     const b = freshRepo('memo-b');
-    expect((await resolveAnchors(a))?.projectAnchor).toBe(a);
-    expect((await resolveAnchors(b))?.projectAnchor).toBe(b);
+    expect((await resolveAnchors(a))?.repoAnchor).toBe(a);
+    expect((await resolveAnchors(b))?.repoAnchor).toBe(b);
     const sub = path.join(worktreeRoot, 'memo-sub');
     fs.mkdirSync(sub);
     expect((await resolveAnchors(sub))?.workspaceRoot).toBe(worktreeRoot);
@@ -231,7 +231,7 @@ describe('defaultProjectSlug (#809)', () => {
     for (const wt of ['main', 'feature']) {
       const checkout = path.join(base, 'bare-layout', wt);
       git(bare, 'worktree', 'add', '-q', checkout);
-      expect((await resolveAnchors(checkout))?.projectAnchor).toBe(bare);
+      expect((await resolveAnchors(checkout))?.repoAnchor).toBe(bare);
       expect((await resolveAnchors(checkout))?.mainCheckout).toBeNull();
       expect(await defaultProjectSlug(checkout)).toBe('bare-layout');
     }

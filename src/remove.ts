@@ -45,7 +45,7 @@ export async function remove(
   const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
   assertNotReadOnly(localConfig, 'teamai remove');
 
-  // Single-repo mode: run the removal PR in an isolated knowledge worktree so the
+  // Self mode: run the removal PR in an isolated knowledge worktree so the
   // branch/commit never touches the user's active tree. A dry run reads a
   // throwaway checkout of the post-pull branch contents instead: the pull
   // below can reset a clone with unpushed commits (#900).

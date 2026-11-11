@@ -19,9 +19,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-**TeamAI manages a team's skills, rules, agents, learnings, models, MCP, and other AI assets in a git repo.**
+**TeamAI manages a team's skills, rules, agents, learnings, models, MCP, and other agent resources in a git repo.**
 
-A teammate initializes once. After that, the latest team AI assets sync automatically.
+A teammate initializes once. After that, the latest team agent resources sync automatically.
 
 ## Why TeamAI
 
@@ -65,7 +65,7 @@ Skills, rules, MCP servers, and other agent resources can all be shared:
 /teamai Open the TeamAI dashboard
 ```
 
-Once a teammate is set up, they just open their agent and already have the team's full set of AI assets.
+Once a teammate is set up, they just open their agent and already have the team's full set of agent resources.
 
 <details>
 <summary>Command-line install</summary>
@@ -130,9 +130,9 @@ Three layers of capability, built on Git:
     <tr><td>OpenCode</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>Pi Coding Agent</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓²</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td></tr>
     <tr><td>Oh My Pi</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td></tr>
-    <tr><td>OpenClaw</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">✓³</td><td align="center">—</td></tr>
-    <tr><td>Hermes</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td></tr>
-    <tr><td>DeepSeek Harness</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓²</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓³</td><td align="center">—</td></tr>
+    <tr><td>OpenClaw</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">✓³</td><td align="center">—</td></tr>
+    <tr><td>Hermes</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td></tr>
+    <tr><td>DeepSeek Harness</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓²</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓³</td><td align="center">—</td></tr>
     <tr><td>Qoder</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td></tr>
     <tr><td>Qoder CN</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td></tr>
     <tr><td>Kiro</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓³</td><td align="center">—</td></tr>

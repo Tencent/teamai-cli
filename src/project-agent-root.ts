@@ -5,7 +5,7 @@ import { detectProjectConfig, loadTeamConfig } from './config.js';
 import { KNOWN_AGENTS } from './known-agents.js';
 import { isAgentDisabled, resolveBaseDir, scopedToolPaths, toolInstallRoot, type LocalConfig } from './types.js';
 import { ensureDir, pathExists } from './utils/fs.js';
-import { checkoutForProjectAnchor, resolveAnchors } from './utils/git.js';
+import { checkoutForRepoAnchor, resolveAnchors } from './utils/git.js';
 import { log } from './utils/logger.js';
 
 /**
@@ -113,7 +113,7 @@ async function toolsInMainCheckout(
   let mainCheckout = anchors?.mainCheckout;
 
   // An inherited submodule clone is its own main checkout; it came from the original submodule (#1041).
-  if (anchors && mainCheckout === checkout) mainCheckout = await checkoutForProjectAnchor(anchors.projectAnchor);
+  if (anchors && mainCheckout === checkout) mainCheckout = await checkoutForRepoAnchor(anchors.repoAnchor);
 
   if (!mainCheckout || mainCheckout === checkout) return [];
 
@@ -151,7 +151,7 @@ export async function seedInheritedCheckoutRoots(cwd: string): Promise<'seeded' 
   const anchors = await resolveAnchors(cwd);
 
   if (!anchors || anchors.mainCheckout !== anchors.workspaceRoot) return 'not-needed';
-  const original = await checkoutForProjectAnchor(anchors.projectAnchor);
+  const original = await checkoutForRepoAnchor(anchors.repoAnchor);
 
   if (original === anchors.workspaceRoot) return 'not-needed';
 

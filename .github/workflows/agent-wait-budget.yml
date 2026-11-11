@@ -1,0 +1,78 @@
+name: Agent Wait Budget
+
+# Reports how what a member's agent waits on in teamai's hooks and pulls changes against main, counted as processes in a
+# verify world (scripts/agent-wait-budget.ts). The comparison never fails the PR; a broken invariant of the PR's own
+# measurement does.
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-wait-budget-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  budget:
+    name: Agent wait budget
+    runs-on: ubuntu-latest
+    # Two builds and two worlds: main's and this PR's.
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Compare with main
+        id: compare
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          report="$RUNNER_TEMP/report/agent-wait-budget.md"
+          mkdir -p "$(dirname "$report")"
+          git worktree add --quiet "$RUNNER_TEMP/base" "$BASE_SHA"
+          if [ -f "$RUNNER_TEMP/base/scripts/agent-wait-budget.mjs" ]; then
+            ln -s "$PWD/node_modules" "$RUNNER_TEMP/base/node_modules"
+            (cd "$RUNNER_TEMP/base" && node scripts/agent-wait-budget.mjs > "$RUNNER_TEMP/main.json") || echo "main could not be measured." > "$report"
+          else
+            echo "main has no agent wait budget yet." > "$report"
+          fi
+          # Measured once; the invariants it checks fail this step after the report is written.
+          status=0
+          node scripts/agent-wait-budget.mjs > "$RUNNER_TEMP/head.json" || status=$?
+          if [ ! -s "$report" ] && [ -s "$RUNNER_TEMP/head.json" ]; then
+            node scripts/agent-wait-budget.mjs --compare "$RUNNER_TEMP/main.json" "$RUNNER_TEMP/head.json" > "$report" 2> "$RUNNER_TEMP/grew.txt"
+          fi
+          # Above the table: the review keeps nothing below <details>.
+          if ! git diff --quiet "$BASE_SHA" -- scripts/agent-wait-budget.ts scripts/agent-wait-budget.mjs scripts/agent-wait-preload.cjs scripts/verify; then
+            { printf 'This PR changes the measure. Main was measured with its own.\n\n'; cat "$report"; } > "$report.new"
+            mv "$report.new" "$report"
+          fi
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          if grep -q '^Agent wait grew' "$RUNNER_TEMP/grew.txt" 2>/dev/null; then
+            echo "::warning::$(cat "$RUNNER_TEMP/grew.txt")"
+            echo "grew=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$status"
+
+      # Only when a waited count grew: the review then adds it to its comment.
+      - name: Keep the report for the review
+        if: ${{ !cancelled() && steps.compare.outputs.grew == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-wait-budget
+          path: ${{ runner.temp }}/report/agent-wait-budget.md
+          retention-days: 7

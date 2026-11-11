@@ -20,6 +20,8 @@ const mockGit = {
   diff: vi.fn().mockResolvedValue('+some real content change\n'),
   pull: vi.fn(),
   fetch: vi.fn(),
+  branchLocal: vi.fn().mockResolvedValue({ all: ['main'], current: 'main', branches: {} }),
+  listRemote: vi.fn().mockResolvedValue(''),
   raw: vi.fn(),
   outputHandler: vi.fn().mockReturnThis(),
 };
@@ -338,6 +340,36 @@ describe('pushRepoBranch', () => {
     expect(mockGit.commit).not.toHaveBeenCalled();
   });
 
+  it('reuses a local branch when an explicit destination already exists', async () => {
+    // `teamai push --branch release/shared` leaves that branch behind; a later
+    // push to the same destination must extend it, not fail `checkout -b`.
+    mockGit.status.mockResolvedValue({ staged: ['b.txt'] });
+    mockGit.diff.mockResolvedValue('+some real content change\n');
+    mockGit.branchLocal.mockResolvedValueOnce({
+      all: ['main', 'release/shared'], current: 'main', branches: {},
+    });
+
+    const result = await pushRepoBranch('/repo', 'msg', ['b.txt'], 'release/shared', { explicitBranch: true });
+
+    expect(result).toBe(true);
+    expect(mockGit.checkout).toHaveBeenCalledWith('release/shared');
+    expect(mockGit.checkoutLocalBranch).not.toHaveBeenCalled();
+  });
+
+  it('creates an explicit destination from origin when only origin has it', async () => {
+    mockGit.status.mockResolvedValue({ staged: ['b.txt'] });
+    mockGit.diff.mockResolvedValue('+some real content change\n');
+    mockGit.branchLocal.mockResolvedValueOnce({ all: ['main'], current: 'main', branches: {} });
+    mockGit.listRemote.mockResolvedValueOnce('abc123\trefs/heads/release/shared\n');
+
+    const result = await pushRepoBranch('/repo', 'msg', ['b.txt'], 'release/shared', { explicitBranch: true });
+
+    expect(result).toBe(true);
+    expect(mockGit.fetch).toHaveBeenCalledWith(['--progress', 'origin', 'release/shared']);
+    expect(mockGit.checkout).toHaveBeenCalledWith(['-b', 'release/shared', 'origin/release/shared']);
+    expect(mockGit.checkoutLocalBranch).not.toHaveBeenCalled();
+  });
+
   it('skips the branch delete (no throw) when the default branch is busy in another worktree', async () => {
     // Multi-worktree: `checkout master` fails because another worktree holds it,
     // so HEAD stays on the push branch. Deleting the checked-out branch would
@@ -387,7 +419,7 @@ describe('checkoutMaster', () => {
     expect(mockGit.checkout).toHaveBeenCalledWith('main');
   });
 
-  it('tolerates the "already used by worktree" conflict (single-repo knowledge worktree)', async () => {
+  it('tolerates the "already used by worktree" conflict (self-mode knowledge worktree)', async () => {
     // In self mode the knowledge worktree shares `main` with the user's active
     // tree; git refuses `checkout main` there. checkoutMaster must swallow it
     // rather than throw, so the knowledge-PR flow completes.

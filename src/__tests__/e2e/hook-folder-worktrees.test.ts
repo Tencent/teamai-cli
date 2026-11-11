@@ -1,5 +1,5 @@
 /**
- * E2E (#1787): a single-repo's hook folder in two worktrees, with ZCode, which keeps a project's team hooks in HOME
+ * E2E (#1787): a self-mode repo's hook folder in two worktrees, with ZCode, which keeps a project's team hooks in HOME
  * behind a `$PWD` gate. Each worktree's entry runs the script its own branch delivered in its `.teamai/delivered/`,
  * and once a worktree is removed, the next pull of the other one, or `doctor --fix`, leaves no entry naming it.
  */
@@ -28,7 +28,7 @@ interface Repo {
 const sandboxes: string[] = [];
 
 /**
- * A business repo in single-repo mode for ZCode, with a hook folder `lint` committed on main (`echo lint v1`), and a
+ * A business repo in self mode for ZCode, with a hook folder `lint` committed on main (`echo lint v1`), and a
  * worktree on branch `feature` that commits `echo lint v2`. Both checkouts are pulled.
  */
 async function twoWorktrees(): Promise<Repo> {
@@ -98,7 +98,7 @@ function runAt(repo: Repo, cwd: string): string {
   return folderCommands(repo).map((command) => spawnSync('bash', ['-c', command], { cwd, encoding: 'utf8' }).stdout).join('');
 }
 
-describe('a hook folder in two worktrees of a single-repo, with ZCode', () => {
+describe('a hook folder in two worktrees of a repo in self mode, with ZCode', () => {
   beforeAll(() => {
     if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
   });

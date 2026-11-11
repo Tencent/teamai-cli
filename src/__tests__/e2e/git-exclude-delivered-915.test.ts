@@ -401,7 +401,7 @@ describe('delivered team skills stay out of git (#915)', () => {
     expect(m.teamSkillEntries()).toEqual([]);
   });
 
-  it('in single-repo mode, applies an uncommitted edit of .teamai/teamai.yaml on the next pull', () => {
+  it('in self mode, applies an uncommitted edit of .teamai/teamai.yaml on the next pull', () => {
     const name = `self-${++attempt}`;
     const home = path.join(sandbox, `${name}-home`);
     const remote = path.join(sandbox, `${name}.git`);

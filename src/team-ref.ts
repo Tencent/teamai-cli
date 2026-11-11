@@ -22,7 +22,7 @@ export function teamRefBlocker(project: LocalConfig | null, user: LocalConfig | 
     return { block: 'user_scope', message: '--team-ref pins one workspace, but this team also reaches it through user scope, where every workspace shares one copy. Remove the user-scope install, or turn off inheritUserScope, to pin a workspace.' };
   }
 
-  if (project.repo.kind === 'self') return { block: 'self', message: "--team-ref does not apply in single-repo mode: the project's own commit decides which team assets it has." };
+  if (project.repo.kind === 'self') return { block: 'self', message: "--team-ref does not apply in self mode: the project's own commit decides which team resources it has." };
 
   if (project.repo.kind === 'http') return { block: 'http', message: '--team-ref needs a git team repo. This team is served over HTTP.' };
 

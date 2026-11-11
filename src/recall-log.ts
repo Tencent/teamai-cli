@@ -24,14 +24,14 @@ import { z } from 'zod';
 import { appendJsonlBatch, readJsonl, type JsonlRecord } from './utils/jsonl-store.js';
 import { getDataHome, getTeamaiHomeDir } from './types.js';
 import type { KnowledgeType, LocalConfig } from './types.js';
-import type { AssetRelationType } from './asset-relations.js';
+import type { ResourceRelationType } from './resource-relations.js';
 
 /**
  * One `Related:` line's target, as a run records it for a doc (#1562):
  * exactly what recall printed, `direction` naming the arrow.
  */
 export interface RelatedRef {
-  relation: AssetRelationType;
+  relation: ResourceRelationType;
   /** `out` for a printed `→` line, `in` for `←`. */
   direction: 'out' | 'in';
   /** The resolved path the line printed. */

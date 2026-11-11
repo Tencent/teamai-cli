@@ -100,7 +100,7 @@ beforeAll(() => {
 afterAll(async () => { await waitForDetachedChildren(); fs.rmSync(sandbox, { recursive: true, force: true }); });
 
 describe('workspace team ref (#1183)', () => {
-  it('delivers branch assets, follows its tip through plain and hook pulls, and records the delivered revision', async () => {
+  it('delivers branch resources, follows its tip through plain and hook pulls, and records the delivered revision', async () => {
     const m = machine();
     const pin = m.ok(['pull', '--team-ref', 'trial']);
     expect(read(m.copy('trial'))).toContain('trial');

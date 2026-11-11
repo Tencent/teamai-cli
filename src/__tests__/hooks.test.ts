@@ -224,26 +224,26 @@ describe('hooks', () => {
   });
 
   describe('inject — preserves non-teamai hooks', () => {
-    it('Claude format: preserves user hooks', async () => {
-      const userHook = {
-        matcher: '*',
-        hooks: [{ type: 'command', command: 'echo "my custom hook"' }],
-        description: 'My custom hook',
-      };
+    // A member's own hook keeps every field, `"async": true` included, which teamai also writes on its own entries.
+    it.each([
+      { tool: 'claude', event: 'SessionStart', userHook: { matcher: '*', hooks: [{ type: 'command', command: 'echo "my custom hook"' }], description: 'My custom hook' } },
+      { tool: 'claude', event: 'PostToolUse', userHook: { matcher: '*', hooks: [{ type: 'command', command: 'echo "my custom hook"', async: true }], description: 'My custom hook' } },
+      { tool: 'codex', event: 'PostToolUse', userHook: { hooks: [{ type: 'command', command: 'echo "my custom hook"', async: true }] } },
+    ])('$tool format: preserves a user $event hook', async ({ tool, event, userHook }) => {
       mockFiles['/test/settings.json'] = {
-        hooks: { SessionStart: [userHook] },
+        hooks: { [event]: [userHook] },
         language: 'en',
       };
 
-      await injectHooks('/test/settings.json', 'claude');
+      await injectHooks('/test/settings.json', tool);
 
       const result = mockFiles['/test/settings.json'] as {
         hooks: Record<string, unknown[]>;
         language: string;
       };
       // User hook + 1 dispatch entry
-      expect(result.hooks.SessionStart).toHaveLength(2);
-      expect(result.hooks.SessionStart[0]).toEqual(userHook);
+      expect(result.hooks[event]).toHaveLength(2);
+      expect(result.hooks[event][0]).toEqual(userHook);
       expect(result.language).toBe('en');
     });
 
@@ -764,19 +764,19 @@ describe('hooks', () => {
     it('reports installed for current Claude hooks', async () => {
       await injectHooks('/test/settings.json', 'claude');
 
-      await expect(getHookStatus('/test/settings.json', 'claude')).resolves.toBe('installed');
+      await expect(getHookStatus('/test/settings.json', { tool: 'claude', from: 'version' })).resolves.toBe('installed');
     });
 
     it('reports installed for current Cursor hooks', async () => {
       await injectHooks('/test/hooks.json', 'cursor');
 
-      await expect(getHookStatus('/test/hooks.json', 'cursor')).resolves.toBe('installed');
+      await expect(getHookStatus('/test/hooks.json', { tool: 'cursor', from: 'version' })).resolves.toBe('installed');
     });
 
     it('reports missing when settings exist without teamai hooks', async () => {
       mockFiles['/test/settings.json'] = { hooks: {} };
 
-      await expect(getHookStatus('/test/settings.json', 'claude')).resolves.toBe('missing');
+      await expect(getHookStatus('/test/settings.json', { tool: 'claude', from: 'version' })).resolves.toBe('missing');
     });
   });
 

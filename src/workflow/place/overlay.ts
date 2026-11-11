@@ -8,7 +8,7 @@ import { setUpWorktreeRole, worktreeRoleProblem } from './role-copy.js';
 
 /**
  * Puts the base agent configuration at `configCommit` over the copy `dir` of `root`, with the branch's own files kept
- * in `saved`, then delivers the team's assets into it. The delivery is recorded as part of the overlay, so it is not
+ * in `saved`, then delivers the team's resources into it. The delivery is recorded as part of the overlay, so it is not
  * the step's edit. With `resume`, it finishes an overlay a killed process left, over the files it kept in `saved`.
  * Step `step` runs there with the lease's `role` when it has one, delivered for its `tool`: a copy whose pull did not
  * deliver that role gets the branch's files back, and the step fails.
@@ -22,7 +22,7 @@ export async function applyOverlay({ root, dir, configCommit, saved, resume, ste
   const applied = await applyBaseConfig(dir, configCommit, hooksPath(root), saved, resume ? { paths: set.paths, resume } : { paths: set.paths });
 
   if (!applied.ok) return { code: 'base_config', message: applied.message };
-  const delivery = await deliverTeamAssets(dir);
+  const delivery = await deliverTeamResources(dir);
   const refused = role !== undefined ? await worktreeRoleProblem({ dir, step, role, tools: set.tools, delivery }) : undefined;
 
   if (refused && role !== undefined) {
@@ -65,7 +65,7 @@ export function unrestoredConfig(reason: string, dir: string): string {
  * The base agent files replaced what an earlier step's pull delivered into a copy it continues, while the copy's record
  * still holds that delivery, so the pull delivers in full rather than take the fast path. Answers what it did.
  */
-async function deliverTeamAssets(dir: string): Promise<PullDelivery> {
+async function deliverTeamResources(dir: string): Promise<PullDelivery> {
   const exitCode = process.exitCode;
 
   try {

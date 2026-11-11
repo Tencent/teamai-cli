@@ -11,6 +11,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { push } from '../push.js';
+import { createGit as mockedCreateGit } from '../utils/git.js';
+import { log } from '../utils/logger.js';
 import {
   findPendingForItem, partiallySelectedEntries, pendingNamespaceFor, planPushGroups,
   prunePendingPushes, recordPendingPush,
@@ -50,6 +52,8 @@ vi.mock('../utils/git.js', () => ({
     status: vi.fn().mockResolvedValue({
       modified: [], not_added: [], created: [], conflicted: [], staged: [],
     }),
+    revparse: vi.fn().mockResolvedValue('main'),
+    raw: vi.fn(),
     merge: vi.fn(),
     stash: vi.fn(),
     reset: vi.fn(),
@@ -57,6 +61,7 @@ vi.mock('../utils/git.js', () => ({
   }),
   pullRepo: (...args: unknown[]) => mockPullRepo(...args),
   pushRepoBranch: (...args: unknown[]) => mockPushRepoBranch(...args),
+  prepareExplicitBranch: vi.fn().mockResolvedValue(undefined),
   checkoutMaster: (...args: unknown[]) => mockCheckoutMaster(...args),
   generateBranchName: (...args: unknown[]) => mockGenerateBranchName(...args),
   unusedBranchName: async (_localPath: string, username: string) => mockGenerateBranchName(username),
@@ -383,6 +388,32 @@ describe('push() with an open PR', () => {
       prUrl: 'https://github.com/team/repo/pull/9',
     })]);
   });
+
+  it('refuses --branch naming the default branch', async () => {
+    await push({ all: true, branch: 'main' });
+
+    expect(process.exitCode).toBe(1);
+    expect(vi.mocked(log.error)).toHaveBeenCalledWith(expect.stringContaining('default branch'));
+    expect(mockPushRepoBranch).not.toHaveBeenCalled();
+  });
+
+  it('refuses a self-mode --branch whose local branch holds unpushed commits', async () => {
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: { ...makeLocalConfig(), repo: { ...makeLocalConfig().repo, kind: 'self' } },
+      teamConfig: makeTeamConfig(),
+    });
+    const git = mockedCreateGit();
+    (git.raw as unknown as ReturnType<typeof vi.fn>).mockImplementation(async (args: string[]) =>
+      args[0] === 'rev-list' ? '2\n' : '');
+
+    // The member is on main; feature/mine holds their own unpushed commit.
+    await push({ all: true, branch: 'feature/mine' });
+
+    expect(process.exitCode).toBe(1);
+    expect(vi.mocked(log.error)).toHaveBeenCalledWith(expect.stringContaining('2 commit(s) not on origin'));
+    expect(mockPushRepoBranch).not.toHaveBeenCalled();
+  });
+
 
   it('uses --branch for a new push instead of generating a timestamp branch', async () => {
     mockLoadStateForScope.mockResolvedValue(makeState());

@@ -1,5 +1,5 @@
 /**
- * E2E for the #1552 first slice: declared asset relations reach `teamai recall`
+ * E2E for the #1552 first slice: declared resource relations reach `teamai recall`
  * output as `Related:` lines, `teamai contribute` warns and still publishes,
  * and `teamai review --branch` fails relations outside the declaration table.
  *
@@ -122,7 +122,7 @@ function writeTeamFiles(root: string): void {
 }
 
 beforeAll(() => {
-  // The team repo, seeded with the example assets.
+  // The team repo, seeded with the example resources.
   fs.mkdirSync(seed, { recursive: true });
   fs.writeFileSync(path.join(seed, 'teamai.yaml'), ['team: relations-e2e', `repo: ${remote}`, 'provider: git', 'reviewers: []'].join('\n'));
   writeTeamFiles(seed);
@@ -154,7 +154,7 @@ afterAll(() => {
   fs.rmSync(sandbox, { recursive: true, force: true });
 });
 
-describe('asset relations e2e (#1552 first slice)', () => {
+describe('resource relations e2e (#1552 first slice)', () => {
   it('recall shows declared relations on both ends without changing hits, order or scores', () => {
     const withRelations = run(['recall', 'payments ledger'], projectRoot);
 
@@ -204,7 +204,7 @@ describe('asset relations e2e (#1552 first slice)', () => {
     const out = run(['contribute', '--file', learning, '--title', 'Ledger receipt write times out at 3s'], projectRoot);
     expect(out).toContain('⚠');
     expect(out).toContain('related: a learning cannot SUPERSEDES a rule (rules/payments.md). Use CONFLICTS_WITH; this relation is ignored.');
-    expect(out).toContain('related: REFERENCES docs/payment-overview.md names no team asset; this relation is ignored.');
+    expect(out).toContain('related: REFERENCES docs/payment-overview.md names no team resource; this relation is ignored.');
     expect(out).toContain('Your session knowledge has been shared with the team.');
   });
 
@@ -237,7 +237,7 @@ describe('asset relations e2e (#1552 first slice)', () => {
     expect(result.stdout + result.stderr).toContain('[relations] rules/payments.md');
     expect(result.stdout + result.stderr).toContain('"GOVERNS" is not a relation. Use MAPS_TO, REFERENCES, SUPERSEDES or CONFLICTS_WITH.');
     expect(result.stdout + result.stderr).toContain('IMPLEMENTS relates code to code and cannot be declared on a rule.');
-    expect(result.stdout + result.stderr).toContain('REFERENCES docs/payment-overview.md names no team asset on this branch; this relation is ignored.');
+    expect(result.stdout + result.stderr).toContain('REFERENCES docs/payment-overview.md names no team resource on this branch; this relation is ignored.');
   });
 
   it('review --branch fails a related block that does not parse, like a duplicate key', () => {
@@ -273,7 +273,7 @@ expect(result.stdout + result.stderr).toContain('); all of it is ignored.');
     git(['checkout', '-q', 'main'], teamRepo);
     const before = git(['status', '--porcelain'], teamRepo);
     const out = run(['codebase', '--reconcile', '--dry-run'], projectRoot);
-    expect(out).toContain('Relation candidates (copy the ones you accept into the asset\'s related:)');
+    expect(out).toContain('Relation candidates (copy the ones you accept into the resource\'s related:)');
     expect(out).toContain('docs/payments-overview.md  MAPS_TO  teamwiki/evidence/code/pay/modules/ledger-receipts.md');
     expect(out).toContain('term "LedgerReceipts", confidence 0.9');
     // The dry run changes no file.

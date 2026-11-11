@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { parseYaml } from '../utils/yaml.js';
 import { LocalConfigSchema, getDataHome, type LocalConfig, type DashboardEvent } from '../types.js';
 import { getUserHome } from '../utils/home.js';
-import { checkoutForProjectAnchor, resolveAnchors } from '../utils/git.js';
+import { checkoutForRepoAnchor, resolveAnchors } from '../utils/git.js';
 import { readConfigFrom, loadLocalConfigForScope } from '../config.js';
 import { projectCheckouts } from '../pull.js';
 import { dataHomeKey } from '../dashboard-collector.js';
@@ -16,7 +16,7 @@ export interface DashboardWorkspace {
   root: string;
   config: LocalConfig | null;
   roots: string[];
-  projectAnchor?: string;
+  repoAnchor?: string;
   /** Key of this scope's data home — the identity Copilot events are attributed by (#1121). */
   dataHomeKey?: string;
 }
@@ -34,7 +34,7 @@ const inside = (cwd: string, root: string) => cwd === root || cwd.startsWith(roo
  * (#809), else the one whose roots hold its cwd (longest matching root wins).
  */
 function ownerOf(event: DashboardEvent, projects: DashboardWorkspace[]): string | null {
-  const anchored = event.projectAnchor && projects.find(w => (w.projectAnchor ?? w.root) === event.projectAnchor);
+  const anchored = event.projectAnchor && projects.find(w => (w.repoAnchor ?? w.root) === event.projectAnchor);
 
   if (anchored) return anchored.id;
   const cwd = event.cwd;
@@ -72,7 +72,7 @@ export async function dashboardWorkspaces(events: DashboardEvent[]): Promise<Das
     if (seen.has(anchor)) return;
     const persisted = await configAt(dataHome);
 
-    const root = await checkoutForProjectAnchor(anchor, recordedRoot ?? persisted?.repo.businessRepoRoot ?? persisted?.projectRoot)
+    const root = await checkoutForRepoAnchor(anchor, recordedRoot ?? persisted?.repo.businessRepoRoot ?? persisted?.projectRoot)
       ?? (persisted?.projectRoot === anchor ? anchor : null);
 
     if (!root) return;
@@ -90,7 +90,7 @@ export async function dashboardWorkspaces(events: DashboardEvent[]): Promise<Das
     // dispatcher writes the event's dataHomeKey from getDataHome(config) (:2470),
     // and a migrated project's config points at the partitioned home while the
     // guess may be the in-repo `.teamai` it was found through.
-    result.push({ id: createHash('sha256').update(anchor).digest('hex').slice(0, 24), label: path.basename(root), scope: 'project', root, projectAnchor: anchor,
+    result.push({ id: createHash('sha256').update(anchor).digest('hex').slice(0, 24), label: path.basename(root), scope: 'project', root, repoAnchor: anchor,
       config, roots: [...new Set([root, ...await projectCheckouts(config)])], dataHomeKey: await dataHomeKey(getDataHome(config)) });
   }
 
@@ -117,7 +117,7 @@ export async function dashboardWorkspaces(events: DashboardEvent[]): Promise<Das
     const anchors = await resolveAnchors(cwd).catch(() => null);
 
     if (anchors) {
-      await add(anchors.projectAnchor, path.join(anchors.workspaceRoot, '.teamai'), anchors.workspaceRoot);
+      await add(anchors.repoAnchor, path.join(anchors.workspaceRoot, '.teamai'), anchors.workspaceRoot);
     } else if (cwd) await add(cwd, path.join(cwd, '.teamai'));
   }
 

@@ -169,6 +169,19 @@ servers:
     });
   });
 
+  it('does not let a corrupt shared-home ownership shard block Claude and Cursor', async () => {
+    await fse.outputFile(path.join(homeDir, '.teamai', 'projects', 'other', 'workspaces', 'checkout', 'managed-mcp.json'), '{ broken');
+    await writeMcpYaml('servers:\n  - name: team-server\n    transport: http\n    url: https://example.com/mcp\n');
+
+    await reconcileMcpForConfig(teamConfig, localConfig);
+    expect((await fse.readJson(path.join(homeDir, '.claude.json'))).mcpServers['team-server'].url).toBe('https://example.com/mcp');
+    expect((await fse.readJson(path.join(homeDir, '.cursor', 'mcp.json'))).mcpServers['team-server'].url).toBe('https://example.com/mcp');
+
+    await reconcileMcpForConfig(teamConfig, localConfig, { removeAll: true });
+    expect((await fse.readJson(path.join(homeDir, '.claude.json'))).mcpServers?.['team-server']).toBeUndefined();
+    expect((await fse.readJson(path.join(homeDir, '.cursor', 'mcp.json'))).mcpServers?.['team-server']).toBeUndefined();
+  });
+
   it('removeAll on a config narrowed to one tool leaves the other tools\' servers and manifest rows alone', async () => {
     // `teamai init` releases only Claude's MCP file when the Claude root moves;
     // it hands the reconciler a team config whose toolPaths hold Claude alone.
@@ -5080,5 +5093,157 @@ describe('MCP reconcile — a server a workspace holds back (#913)', () => {
     expect((await projectFile('held-stuck'))?.url).toBe('https://member.example.com/mcp');
     expect((await claudeLocal('held-stuck'))?.url).toBe('https://stuck.example.com/mcp');
     expect((await recordsIn('managed-local-mcp.json')).map((record) => record.name)).toContain('held-stuck');
+  });
+});
+
+describe('MCP reconcile — a workspace record for a tool\'s user config', () => {
+  let tmp: string;
+  let home: string;
+  let repo: string;
+  let workspace: string;
+  let dataHome: string;
+  let config: LocalConfig;
+  let team: TeamaiConfig;
+  let openclawFile: string;
+
+  const definition = `
+servers:
+  - name: docs-mcp
+    transport: http
+    url: https://team.example/mcp
+`;
+
+  beforeEach(async () => {
+    const { DEFAULT_TOOL_PATHS } = await import('../types.js');
+    tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-mcp-workspace-'));
+    home = path.join(tmp, 'home');
+    repo = path.join(tmp, 'team-repo');
+    workspace = path.join(tmp, 'workspace');
+    dataHome = path.join(tmp, 'data');
+    await fse.ensureDir(path.join(home, '.teamai'));
+    await fse.ensureDir(path.join(home, '.openclaw', 'workspace'));
+    await fse.ensureDir(workspace);
+    await fse.ensureDir(dataHome);
+    await fse.ensureDir(path.join(repo, 'mcp'));
+    await fse.writeFile(path.join(repo, 'mcp', 'mcp.yaml'), definition);
+    vi.stubEnv('HOME', home);
+    team = TeamaiConfigSchema.parse({ team: 't', description: '', repo: 'r', toolPaths: DEFAULT_TOOL_PATHS });
+    config = { repo: { localPath: repo, remote: 'r' }, username: 'u', scope: 'project', projectRoot: workspace, dataHome, additionalRoles: [] };
+    openclawFile = path.join(home, '.openclaw', 'openclaw.json');
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(tmp);
+  });
+
+  /** Write the entry a team pull renders, so the record below has the hash of what is installed. */
+  async function installed(): Promise<string> {
+    const { entryHash, renderJsonEntry } = await import('../resources/mcp-format.js');
+    const entry = renderJsonEntry('openclaw', { name: 'docs-mcp', transport: 'http', url: 'https://team.example/mcp' });
+
+    await fse.writeJson(openclawFile, { mcp: { servers: { 'docs-mcp': entry } } });
+
+    return entryHash(entry);
+  }
+
+  async function projectManifest(): Promise<Record<string, unknown>> {
+    const { getDataHome, managedMcpManifestPath } = await import('../types.js');
+
+    return await fse.readJson(managedMcpManifestPath(getDataHome(config), workspace));
+  }
+
+  async function writeProjectManifest(manifest: Record<string, unknown>): Promise<string> {
+    const { getDataHome, managedMcpManifestPath } = await import('../types.js');
+    const file = managedMcpManifestPath(getDataHome(config), workspace);
+
+    await fse.outputJson(file, manifest);
+
+    return file;
+  }
+
+  it('removes an entry a workspace command recorded under `<tool>:project`, with that record', async () => {
+    const hash = await installed();
+
+    await writeProjectManifest({ 'openclaw:project': [{ name: 'docs-mcp', hash, file: openclawFile }] });
+    const result = await reconcileMcpForConfig(team, config, { removeAll: true });
+
+    expect((await fse.readJson(openclawFile)).mcp?.servers?.['docs-mcp']).toBeUndefined();
+    expect(result.changes.filter((change) => change.action === 'removed').map((change) => change.server)).toEqual(['docs-mcp']);
+    const manifest = await projectManifest();
+    expect(manifest['openclaw:project']).toBeUndefined();
+    expect(manifest['openclaw']).toBeUndefined();
+  });
+
+  it('keeps a shared entry without reporting it removed', async () => {
+    const hash = await installed();
+    await writeProjectManifest({ openclaw: [{ name: 'docs-mcp', hash, file: openclawFile }] });
+    const other = path.join(home, '.teamai', 'managed-mcp.json');
+    await fse.outputJson(other, { openclaw: [{ name: 'docs-mcp', hash, file: openclawFile }] });
+
+    const result = await reconcileMcpForConfig(team, config, { removeAll: true });
+
+    expect(result.changes.filter((change) => change.action === 'removed')).toEqual([]);
+    expect((await fse.readJson(openclawFile)).mcp.servers['docs-mcp']).toBeDefined();
+    expect((await fse.readJson(other)).openclaw).toEqual([{ name: 'docs-mcp', hash, file: openclawFile }]);
+  });
+
+  it('moves a workspace command record to the key a pull writes', async () => {
+    const hash = await installed();
+    const file = await writeProjectManifest({ 'openclaw:project': [{ name: 'docs-mcp', hash, file: openclawFile }] });
+
+    await reconcileMcpForConfig(team, config);
+
+    const manifest = await fse.readJson(file);
+    expect(manifest['openclaw:project']).toBeUndefined();
+    expect(manifest['openclaw']).toEqual([expect.objectContaining({ name: 'docs-mcp', hash })]);
+    expect((await fse.readJson(openclawFile)).mcp.servers['docs-mcp'].url).toBe('https://team.example/mcp');
+  });
+
+  it('leaves every record and entry alone when another manifest cannot be read', async () => {
+    const hash = await installed();
+    const file = await writeProjectManifest({ openclaw: [{ name: 'docs-mcp', hash, file: openclawFile }] });
+    const before = await fse.readFile(file, 'utf-8');
+
+    await fse.writeFile(path.join(home, '.teamai', 'managed-mcp.json'), '{ not json');
+
+    const result = await reconcileMcpForConfig(team, config, { removeAll: true });
+
+    expect(result.changes.filter((change) => change.action === 'removed')).toEqual([]);
+    expect(await fse.readFile(file, 'utf-8')).toBe(before);
+    expect((await fse.readJson(openclawFile)).mcp.servers['docs-mcp']).toBeDefined();
+  });
+
+  it('restores other owners with the config when saving this scope fails after an update', async () => {
+    const hash = await installed();
+    const own = await writeProjectManifest({ openclaw: [{ name: 'docs-mcp', hash, file: openclawFile }] });
+    const other = path.join(home, '.teamai', 'managed-mcp.json');
+    const previous = { openclaw: [{ name: 'docs-mcp', hash, file: openclawFile }] };
+    await fse.outputJson(other, previous);
+    await fse.writeFile(path.join(repo, 'mcp', 'mcp.yaml'), definition.replace('https://team.example/mcp', 'https://rotated.example/mcp'));
+    beforeJsonWrite.run = async (file) => {
+      if (file === own) throw new Error('ownership write failed');
+    };
+
+    try {
+      await expect(reconcileMcpForConfig(team, config)).rejects.toThrow('ownership write failed');
+    } finally {
+      beforeJsonWrite.run = null;
+    }
+
+    expect((await fse.readJson(openclawFile)).mcp.servers['docs-mcp'].url).toBe('https://team.example/mcp');
+    expect(await fse.readJson(other)).toEqual(previous);
+    expect(await fse.readJson(own)).toEqual(previous);
+  });
+
+  it('does not update another scope\'s record during a dry run', async () => {
+    const hash = await installed();
+    await writeProjectManifest({ openclaw: [{ name: 'docs-mcp', hash, file: openclawFile }] });
+    const other = path.join(home, '.teamai', 'managed-mcp.json');
+    await fse.outputJson(other, { openclaw: [{ name: 'docs-mcp', hash: 'stale' }] });
+
+    await reconcileMcpForConfig(team, config, { dryRun: true, removeAll: true });
+
+    expect((await fse.readJson(other)).openclaw).toEqual([{ name: 'docs-mcp', hash: 'stale' }]);
   });
 });

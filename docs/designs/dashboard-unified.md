@@ -17,7 +17,7 @@ Maintenance commands remain read-only guidance. No new CLI command or browser mu
 
 ## Implementation
 
-- `dashboard-html.ts` embeds the shell, styles, locale catalog and browser application from `src/dashboard/` into one HTML response. No remote assets or package asset-copy step.
+- `dashboard-html.ts` embeds the shell, styles, locale catalog and browser application from `src/dashboard/` into one HTML response. It loads nothing remote, and no package step copies files into it.
 - Existing `/api/sessions`, `/events`, `/api/trends`, `/api/kb-summary` and `/kb-report` stay available. `/api/context` reuses `buildVizData` and the original escaped report section renderers, with a 30-second cache and coalesced concurrent requests.
 - SSE reconnects after failure. A 15-second session reconciliation poll also applies the collector's existing idle and 30-second ended-session rules without requiring another hook event. Relative times update every five seconds without replacing the focused row.
 - Fetch failures have retry controls. Previous successful KB/trend values remain visibly marked as stale on refresh failure. No missing metric is converted into a fabricated zero.

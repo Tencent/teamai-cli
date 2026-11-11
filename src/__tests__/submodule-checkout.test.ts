@@ -15,6 +15,7 @@ import { dashboardWorkspaces, workspaceEvents } from '../dashboard/workspaces.js
 import { status } from '../status.js';
 import { localAgentCheckouts } from '../local-agent.js';
 import { deployBuiltinSkills } from '../builtin-skills.js';
+import { gitHookStatus } from '../git-hook.js';
 import { allowsSkillDirectory, describeSkippedSkillDirectory, findSkillDirectoryBlock } from '../resources/skills.js';
 
 let base: string;
@@ -150,7 +151,8 @@ describe('submodule checkouts', () => {
     const team = TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.com/team.git' });
     await reconcileTeamHooksForConfig(team, { ...original, enabledAgents: ['claude', 'codex'] });
     expect(fs.readFileSync(file, 'utf8')).toBe('');
-    expect(git(checkout, 'config', '--get', 'hook.teamai-post-checkout.command')).toContain('hook-dispatch');
+    // Config hooks and legacy hook scripts both count as installed.
+    expect(await gitHookStatus(checkout)).toEqual({ installed: true });
   });
 
   it('displays the submodule checkout in status while judging the identity for orphans', async () => {
@@ -222,7 +224,7 @@ describe('submodule checkouts', () => {
     git(worktree, '-c', 'protocol.file.allow=always', 'submodule', 'update', '--init', '-q');
     fs.rmSync(path.join(parent, '.git/modules/service'), { recursive: true });
     const child = path.join(worktree, 'service');
-    expect((await resolveAnchors(child))?.projectAnchor).toBe(path.join(parent, '.git/worktrees/parent-without-original/modules/service'));
+    expect((await resolveAnchors(child))?.repoAnchor).toBe(path.join(parent, '.git/worktrees/parent-without-original/modules/service'));
   });
 
   it('allows a skill root linked inside a home directory outside Git', async () => {
@@ -283,7 +285,7 @@ describe('submodule checkouts', () => {
     const child = path.join(worktree, 'service');
     expect(await resolveAnchors(child)).toEqual({
       workspaceRoot: child,
-      projectAnchor: path.join(parent, '.git/modules/service'),
+      repoAnchor: path.join(parent, '.git/modules/service'),
       mainCheckout: child,
     });
     const inherited = await detectProjectConfig(child);

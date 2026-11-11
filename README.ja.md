@@ -19,9 +19,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-**TeamAI は git リポジトリで、チームの skills、rules、agents、learnings、models、MCP などの AI 資産を管理します。**
+**TeamAI は git リポジトリで、チームの skills、rules、agents、learnings、models、MCP などの エージェントリソースを管理します。**
 
-メンバーは一度初期化するだけで、その後はチームの最新 AI 資産が自動で同期されます。
+メンバーは一度初期化するだけで、その後はチームの最新 エージェントリソースが自動で同期されます。
 
 ## なぜ TeamAI なのか
 
@@ -65,7 +65,7 @@ Skills、Rules、MCP など、Agent が使えるリソースはすべて共有�
 /teamai TeamAI ダッシュボードを開いて
 ```
 
-メンバーのセットアップが終われば、エージェントを開くだけでチームの AI 資産をすべて使えます。
+メンバーのセットアップが終われば、エージェントを開くだけでチームの エージェントリソースをすべて使えます。
 
 <details>
 <summary>コマンドラインでインストール</summary>
@@ -130,9 +130,9 @@ Git を基盤に、3 層の能力を構築します：
     <tr><td>OpenCode</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>Pi Coding Agent</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓²</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td></tr>
     <tr><td>Oh My Pi</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td></tr>
-    <tr><td>OpenClaw</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">✓³</td><td align="center">—</td></tr>
-    <tr><td>Hermes</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td></tr>
-    <tr><td>DeepSeek Harness</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓²</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓³</td><td align="center">—</td></tr>
+    <tr><td>OpenClaw</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">✓³</td><td align="center">—</td></tr>
+    <tr><td>Hermes</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td></tr>
+    <tr><td>DeepSeek Harness</td><td align="center">✓</td><td align="center">✓¹</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓²</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓³</td><td align="center">—</td></tr>
     <tr><td>Qoder</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td></tr>
     <tr><td>Qoder CN</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td></tr>
     <tr><td>Kiro</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓³</td><td align="center">—</td></tr>

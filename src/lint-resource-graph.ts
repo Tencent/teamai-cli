@@ -1,16 +1,16 @@
 /**
- * The asset-graph counts behind `teamai codebase --lint` (#1562 part 1).
+ * The resource-graph counts behind `teamai codebase --lint` (#1562 part 1).
  *
  * Lint reads the member's own recall indexes as they are — the same scopes
- * recall selects, never a fresh build — and counts, over the assets visible
- * there: resolved relations, assets without any relation, and declared
- * relations whose target names no asset on disk. The counts cover this
+ * recall selects, never a fresh build — and counts, over the resources visible
+ * there: resolved relations, resources without any relation, and declared
+ * relations whose target names no resource on disk. The counts cover this
  * member's scope, not the whole team.
  */
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
-import { classifyTreePath, normalizeTargetPath, teamwikiCodebaseSlug, type AssetKind, type AssetRelationType, type RelationVia } from './asset-relations.js';
+import { classifyTreePath, normalizeTargetPath, teamwikiCodebaseSlug, type RelationResourceKind, type ResourceRelationType, type RelationVia } from './resource-relations.js';
 import { caseFoldKey } from './manifest-schema.js';
 import { detectProjectConfig, loadLocalConfigForScope, requireInit } from './config.js';
 import { buildRelationContext, type RelationContext } from './recall.js';
@@ -21,22 +21,22 @@ import { pendingLearningsDir } from './utils/pending-learnings.js';
 import { loadIndex } from './utils/search-index.js';
 import { matchGlob } from './utils/glob.js';
 
-/** A declared relation whose target names no asset on disk. */
+/** A declared relation whose target names no resource on disk. */
 export interface LintUnresolvedRelation {
-  /** The declaring asset's team-tree path. */
+  /** The declaring resource's team-tree path. */
   from: string;
-  relation: AssetRelationType;
+  relation: ResourceRelationType;
   /** The target in canonical team-tree form. */
   target: string;
-  /** Always 'no-asset' today: the target is in neither the team clone nor the learnings roots. */
-  reason: 'no-asset';
+  /** Always 'no-resource' today: the target is in neither the team clone nor the learnings roots. */
+  reason: 'no-resource';
 }
 
-/** The counts `--lint` prints and embeds in its JSON report as `assetGraph`. */
-export interface LintAssetGraph {
-  assetCount: number;
+/** The counts `--lint` prints and embeds in its JSON report as `resourceGraph`. */
+export interface LintResourceGraph {
+  resourceCount: number;
   relationCount: number;
-  /** Team-tree paths of assets with no resolved relation in either direction. */
+  /** Team-tree paths of resources with no resolved relation in either direction. */
   withoutRelation: string[];
   unresolved: LintUnresolvedRelation[];
 }
@@ -44,12 +44,12 @@ export interface LintAssetGraph {
 /** One scope's inputs to the count: recall's resolution state, plus the contribute-style existence check. */
 export interface LintScopeGraph {
   ctx: RelationContext;
-  targetExists: (kind: AssetKind, treePath: string) => boolean;
+  targetExists: (kind: RelationResourceKind, treePath: string) => boolean;
 }
 
 /**
- * Count the asset relations of the given scopes, with recall's rules: a
- * relation counts when it resolves — for an asset target, visibility in the
+ * Count the resource relations of the given scopes, with recall's rules: a
+ * relation counts when it resolves — for a resource target, visibility in the
  * scope; for a teamwiki page, existence on disk and an unwithheld codebase —
  * and a local link to a target that also has a declared relation from the
  * same entry is prose, not a second edge. Existence, not visibility, decides
@@ -57,21 +57,21 @@ export interface LintScopeGraph {
  * this member is neither counted nor unresolved, the same check `contribute`
  * makes (#1552).
  */
-export function computeLintAssetGraph(scopes: readonly LintScopeGraph[]): LintAssetGraph {
-  const assets = new Set<string>();
+export function computeLintResourceGraph(scopes: readonly LintScopeGraph[]): LintResourceGraph {
+  const resources = new Set<string>();
   // Declared beats link by target, as recall renders it, before the
   // unordered-pair dedup below; keyed by the ordered triple.
-  const ordered = new Map<string, { from: string; relation: AssetRelationType; target: string; via: RelationVia }>();
+  const ordered = new Map<string, { from: string; relation: ResourceRelationType; target: string; via: RelationVia }>();
   const unresolved = new Map<string, LintUnresolvedRelation>();
 
   for (const { ctx, targetExists } of scopes) {
     for (const [treePath, entry] of ctx.byTreePath) {
       // A teamwiki page can hold a treePath only in exotic index builds; it
-      // is a target, never an asset.
+      // is a target, never a resource.
       if (classifyTreePath(treePath) === 'teamwiki') continue;
-      assets.add(treePath);
+      resources.add(treePath);
       const own = entry.related ?? [];
-      // A local link to an asset that also has a declared relation from this
+      // A local link to a resource that also has a declared relation from this
       // entry is prose, not a second edge — the same declared-beats-link rule
       // recall renders (#1562 review).
       const declaredTargets = new Set(own.filter((r) => r.via === 'declared').map((r) => r.target));
@@ -84,7 +84,7 @@ export function computeLintAssetGraph(scopes: readonly LintScopeGraph[]): LintAs
 
           if (normalized !== null && !targetExists(kind, normalized)) {
             unresolved.set(`${treePath}|${r.relation}|${normalized}`, {
-              from: treePath, relation: r.relation, target: normalized, reason: 'no-asset',
+              from: treePath, relation: r.relation, target: normalized, reason: 'no-resource',
             });
           }
         }
@@ -93,8 +93,8 @@ export function computeLintAssetGraph(scopes: readonly LintScopeGraph[]): LintAs
 
         // A relation to a teamwiki page counts when the page exists on disk
         // and its codebase is not withheld — the same visibility recall
-        // renders. The page stays out of `assets` and `withoutRelation`: a
-        // page is a target, not an asset (#1562).
+        // renders. The page stays out of `resources` and `withoutRelation`: a
+        // page is a target, not a resource (#1562).
         if (kind === 'teamwiki') {
           if (ctx.withheld === null) continue;
           const slug = teamwikiCodebaseSlug(r.target);
@@ -133,7 +133,7 @@ export function computeLintAssetGraph(scopes: readonly LintScopeGraph[]): LintAs
   // Path-derived rule→page edges count with the same visibility and
   // precedence recall renders (#1636): each glob is judged per codebase over
   // the scope's own code-page pool, and a declared relation from the rule to
-  // the page beats the derived one. Pages stay targets, not assets (#1562).
+  // the page beats the derived one. Pages stay targets, not resources (#1562).
   for (const { ctx } of scopes) {
     for (const [rule, globs] of ctx.ruleGlobs ?? []) {
       const declaredTargets = new Set(
@@ -156,9 +156,9 @@ export function computeLintAssetGraph(scopes: readonly LintScopeGraph[]): LintAs
   }
 
   return {
-    assetCount: assets.size,
+    resourceCount: resources.size,
     relationCount: relations.size,
-    withoutRelation: [...assets].filter((a) => !connected.has(a)).sort(),
+    withoutRelation: [...resources].filter((a) => !connected.has(a)).sort(),
     unresolved: [...unresolved.values()].sort((a, b) =>
       `${a.from}|${a.relation}|${a.target}`.localeCompare(`${b.from}|${b.relation}|${b.target}`)),
   };
@@ -169,9 +169,9 @@ export function computeLintAssetGraph(scopes: readonly LintScopeGraph[]): LintAs
  * team clone on disk (rules, docs, skills, teamwiki pages) or in the learnings
  * roots (pending queue included), mirroring `relationWarningsForLearning`
  * (`src/contribute.ts`) so lint and contribute never disagree about what
- * names an asset (#1552).
+ * names a resource (#1552).
  */
-async function scopeTargetExists(config: LocalConfig): Promise<(kind: AssetKind, treePath: string) => boolean> {
+async function scopeTargetExists(config: LocalConfig): Promise<(kind: RelationResourceKind, treePath: string) => boolean> {
   let learningRoots: string[] = [];
 
   try {
@@ -205,7 +205,7 @@ async function scopeTargetExists(config: LocalConfig): Promise<(kind: AssetKind,
  * this re-detect the current directory's (#1637 review).
  *
  * A missing or unreadable index means the member pulled nothing recall
- * indexes; that scope contributes no assets, never a rebuild: lint only
+ * indexes; that scope contributes no resources, never a rebuild: lint only
  * reads.
  */
 export async function memberScopeGraphs(opts: { dryRun?: boolean; config?: LocalConfig } = {}): Promise<LintScopeGraph[] | null> {
@@ -291,9 +291,9 @@ export async function memberScopeGraphs(opts: { dryRun?: boolean; config?: Local
   return graphs;
 }
 
-/** Count the member's asset relations over {@link memberScopeGraphs}. */
-export async function lintAssetGraph(opts: { dryRun?: boolean } = {}): Promise<LintAssetGraph | null> {
+/** Count the member's resource relations over {@link memberScopeGraphs}. */
+export async function lintResourceGraph(opts: { dryRun?: boolean } = {}): Promise<LintResourceGraph | null> {
   const graphs = await memberScopeGraphs(opts);
 
-  return graphs ? computeLintAssetGraph(graphs) : null;
+  return graphs ? computeLintResourceGraph(graphs) : null;
 }

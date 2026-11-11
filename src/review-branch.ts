@@ -39,8 +39,8 @@ import {
 } from './push-namespaces.js';
 import { loadFailure } from './doctor-agent-models.js';
 import { localLinkTargets } from './utils/markdown-links.js';
-import { parseRelatedBlock } from './asset-relations.js';
-import type { AssetKind } from './asset-relations.js';
+import { parseRelatedBlock } from './resource-relations.js';
+import type { RelationResourceKind } from './resource-relations.js';
 import matter from 'gray-matter';
 import { isModelAlias, loadTeamModelAliases, noModelCause, resolveAgentModel, resolveModelValue, TEAM_ALIASES_FILE, type ModelAliases } from './models/aliases.js';
 import { parseAgentYaml, type AgentSpec, type ToolName } from './resources/agent-format.js';
@@ -175,21 +175,21 @@ function parseRelativePath(
 /**
  * The `relations` check (#1552): every relation a rule or doc declares in a
  * `related:` frontmatter block must use one of the four declarable relations
- * and point at an asset that exists on this branch. Targets on the learnings
+ * and point at a resource that exists on this branch. Targets on the learnings
  * branch are shape-checked only, as learnings do not live on this tree.
  */
 async function relationsFindings(resources: ReviewResource[], readText: (p: string) => Promise<string | null>): Promise<Finding[]> {
   const findings: Finding[] = [];
-  const assetPaths = new Set<string>();
+  const resourcePaths = new Set<string>();
 
   for (const resource of resources) {
     if (resource.type === 'rules' || resource.type === 'docs' || resource.type === 'skills' || resource.type === 'wiki') {
-      assetPaths.add(resource.relativePath);
+      resourcePaths.add(resource.relativePath);
     }
   }
 
-  const targetExists = (kind: AssetKind, treePath: string): boolean =>
-    kind === 'learning' || assetPaths.has(treePath);
+  const targetExists = (kind: RelationResourceKind, treePath: string): boolean =>
+    kind === 'learning' || resourcePaths.has(treePath);
 
   for (const resource of resources) {
     if (resource.type !== 'rules' && resource.type !== 'docs') continue;
@@ -222,7 +222,7 @@ async function relationsFindings(resources: ReviewResource[], readText: (p: stri
     const sourceKind = resource.type === 'rules' ? 'rule' : 'doc';
     parseRelatedBlock(rawRelated, sourceKind, resource.relativePath, 'fail', targetExists,
       (severity, message) => findings.push({ level: severity, check: 'relations', path: resource.relativePath, message: `${resource.relativePath}: ${message}` }),
-      'names no team asset on this branch');
+      'names no team resource on this branch');
   }
 
   return findings;
@@ -1862,7 +1862,7 @@ export async function materializeRef(repoPath: string, ref: string, destDir: str
   const copy = async (root: string): Promise<void> => {
     for (const entry of await listTreeAtRev(repoPath, ref, root)) {
       // `./`: ls-tree lists paths relative to the directory git runs in, which
-      // in single-repo mode is `.teamai/` inside the business repo, not its root.
+      // in self mode is `.teamai/` inside the business repo, not its root.
       const content = await getFileContentAtRev(repoPath, ref, `./${entry.path}`);
 
       if (content === null) continue;

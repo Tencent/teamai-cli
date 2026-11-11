@@ -295,7 +295,7 @@ export type HooksChannels = {
   readonly teamHooks: 'main-checkout' | 'home';
   /**
    * The environment variable the tool sets to the project's root when it runs a hook from a project file, if it has
-   * one. A single-repo hook folder's command names the folder through it, so a project file the repository may
+   * one. A self-mode hook folder's command names the folder through it, so a project file the repository may
    * commit holds the same command in every worktree (#1787, common rule 10). Without one, the absolute path is written.
    */
   readonly projectDirVariable?: string;
@@ -308,6 +308,29 @@ export type HooksChannels = {
    * hook-fast-path.test.ts checks against this field.
    */
   readonly needsBundle: boolean;
+  /**
+   * The first version of the tool whose command hooks take `"async": true` and are then not waited for, with no
+   * side effect on a hook that prints nothing. Once the installed version reaches it, teamai writes its PostToolUse
+   * built-in that way into the member's own hook file, on macOS and Linux only (`builtinHookForm`). Set on a run of
+   * the real tool, or on its documentation together with its source read at the floor and at a later release; the
+   * comment beside it says which. Absent: the tool has no such option, or neither shows it.
+   */
+  readonly unwaitedSince?: string;
+  /**
+   * Where the version compared with `unwaitedSince` comes from, and means nothing without it. Absent: the tool's
+   * version detector. `codex-builds`: the oldest of the Codex builds that read the member's hook file, a build on PATH
+   * and each desktop app's (`oldestCodexBuildVersion`), since one hook file serves them all.
+   */
+  readonly unwaitedVersionOf?: 'codex-builds';
+  /**
+   * Set when, on POSIX, the tool runs a hook's command string with a POSIX-compatible shell and `-c`, not a login
+   * shell, so a built-in hook in the member's own hook file may start teamai without one and leave the login
+   * environment to the background pass (`builtinHookForm`). Set on a run of the executor for a tool of its own, or,
+   * for a variant, the original it is assumed to behave as, which shows the shell and its flags; source that picks
+   * the shell may extend it to the platforms and versions the run did not cover. The comment beside it says which.
+   * Absent: no run shows it.
+   */
+  readonly loginDeferrable?: true;
 };
 
 /**
@@ -375,6 +398,8 @@ export type ToolDescriptor = {
   readonly skillLoad: SkillLoad;
   readonly skills: SkillReads;
   readonly installedBy?: InstallGate;
+  /** HTTP delivery adds models to this tool's own model settings; it reads them like any member entry. */
+  readonly receivesDeliveredModels?: true;
   /**
    * Where teamai writes the tool's skills follows inputs of each session that
    * nothing records: OpenClaw's workspace follows `OPENCLAW_WORKSPACE_DIR`,
@@ -526,6 +551,11 @@ export const TOOLS = {
       teamHooks: 'main-checkout',
       projectDirVariable: 'CLAUDE_PROJECT_DIR',
       needsBundle: false,
+      // `async` on a command hook since 2.1.23; before 2.1.119 an async PostToolUse hook that prints nothing wrote an
+      // empty transcript entry (changelog 2.1.119). Run on 2.1.322, macOS.
+      unwaitedSince: '2.1.119',
+      // `/bin/sh -c`, not a login shell: run on 2.1.322, macOS; Linux `sh -c` as documented.
+      loginDeferrable: true,
     },
     sessions: ['claude-code'],
     launch: 'claude',
@@ -572,7 +602,24 @@ export const TOOLS = {
       user: { format: 'codex', reads: [{ base: 'home', path: '.codex/config.toml', evidence: 'verified' }] },
       project: { judgedTeamaiOnly: true, format: 'codex', reads: [{ base: 'project', path: '.codex/config.toml', when: 'workspaceUnder', evidence: 'verified' }], readGates: ['codex-project-trust'] },
     },
-    hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex/hooks.json', evidence: 'verified' }] }, self: { channel: 'settings', format: 'codex', reads: [{ base: 'project', path: '.codex/hooks.json', when: 'workspaceUnder', evidence: 'verified' }] }, subagentStop: true, stopReply: false, shell: 'system', teamHooks: 'main-checkout', needsBundle: false },
+    hooks: {
+      user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex/hooks.json', evidence: 'verified' }] },
+      self: { channel: 'settings', format: 'codex', reads: [{ base: 'project', path: '.codex/hooks.json', when: 'workspaceUnder', evidence: 'verified' }] },
+      subagentStop: true,
+      stopReply: false,
+      shell: 'system',
+      teamHooks: 'main-checkout',
+      needsBundle: false,
+      // `async` on a command handler is documented; the source at 0.148.0 to 0.167.0 runs it in the background
+      // (codex-rs/hooks/src/engine/discovery.rs), and 0.134.0 to 0.147.0 skip such a handler. Run on 0.167.0 for
+      // UserPromptSubmit and SessionStart; PostToolUse not run.
+      unwaitedSince: '0.148.0',
+      unwaitedVersionOf: 'codex-builds',
+      // The account's zsh, bash or sh with `-c`, never `-lc`, and one of those three for any other account shell:
+      // source at 0.134.0 to 0.167.0 (shell_detect.rs, derive_exec_args). Run on 0.167.0, macOS: `/bin/zsh -c`, no
+      // login flag, parent the codex binary. teamai's own entry in this form not run.
+      loginDeferrable: true,
+    },
     sessions: ['codex'],
     launch: 'codex',
     autoCompact: 'codex',
@@ -605,7 +652,17 @@ export const TOOLS = {
     },
     agents: { user: { reads: 'unknown' }, project: { reads: 'unknown' } },
     mcp: UNKNOWN,
-    hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex-internal/hooks.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'codex', reads: 'unknown' }, subagentStop: true, stopReply: false, shell: 'system', teamHooks: 'home', needsBundle: false },
+    hooks: {
+      user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex-internal/hooks.json', evidence: 'assumed' }] },
+      self: { channel: 'settings', format: 'codex', reads: 'unknown' },
+      subagentStop: true,
+      stopReply: false,
+      shell: 'system',
+      teamHooks: 'home',
+      needsBundle: false,
+      // Assumed to run a hook as Codex (`codex`) does: not run, no public source.
+      loginDeferrable: true,
+    },
     sessions: ['codex-internal'],
     launch: 'codex',
     autoCompact: 'codex',
@@ -634,7 +691,17 @@ export const TOOLS = {
     blocks: { user: { channel: 'file', file: { in: 'claudemd' }, reads: 'unknown' }, project: { channel: 'file', file: { in: 'claudemd' }, reads: 'unknown' } },
     agents: { user: { reads: 'unknown' }, project: { reads: 'unknown' } },
     mcp: UNKNOWN,
-    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.claude-internal/settings.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'claude', reads: 'unknown' }, subagentStop: true, stopReply: true, shell: 'system', teamHooks: 'home', needsBundle: false },
+    hooks: {
+      user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.claude-internal/settings.json', evidence: 'assumed' }] },
+      self: { channel: 'settings', format: 'claude', reads: 'unknown' },
+      subagentStop: true,
+      stopReply: true,
+      shell: 'system',
+      teamHooks: 'home',
+      needsBundle: false,
+      // Assumed to run a hook as Claude Code (`claude`) does: not run, no public source.
+      loginDeferrable: true,
+    },
     sessions: ['claude-internal'],
     launch: 'claude',
     autoCompact: 'claude',
@@ -666,7 +733,17 @@ export const TOOLS = {
       user: { format: 'claude', reads: 'unknown' },
       project: { judgedTeamaiOnly: false, format: 'claude', writtenBy: 'claude', reads: [{ base: 'project', path: '.mcp.json', when: 'workspaceUnder', evidence: 'assumed' }] },
     },
-    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.tclaude/settings.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'claude', reads: 'unknown' }, subagentStop: true, stopReply: true, shell: 'system', teamHooks: 'home', needsBundle: false },
+    hooks: {
+      user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.tclaude/settings.json', evidence: 'assumed' }] },
+      self: { channel: 'settings', format: 'claude', reads: 'unknown' },
+      subagentStop: true,
+      stopReply: true,
+      shell: 'system',
+      teamHooks: 'home',
+      needsBundle: false,
+      // Assumed to run a hook as Claude Code (`claude`) does: not run, no public source.
+      loginDeferrable: true,
+    },
     sessions: ['tclaude'],
     launch: 'claude',
     autoCompact: 'claude',
@@ -699,7 +776,17 @@ export const TOOLS = {
     },
     agents: { user: { reads: 'unknown' }, project: { reads: 'unknown' } },
     mcp: UNKNOWN,
-    hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.tcodex/hooks.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'codex', reads: 'unknown' }, subagentStop: true, stopReply: false, shell: 'system', teamHooks: 'home', needsBundle: false },
+    hooks: {
+      user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.tcodex/hooks.json', evidence: 'assumed' }] },
+      self: { channel: 'settings', format: 'codex', reads: 'unknown' },
+      subagentStop: true,
+      stopReply: false,
+      shell: 'system',
+      teamHooks: 'home',
+      needsBundle: false,
+      // Assumed to run a hook as Codex (`codex`) does: not run, no public source.
+      loginDeferrable: true,
+    },
     sessions: ['tcodex'],
     launch: 'codex',
     autoCompact: 'codex',
@@ -1311,6 +1398,7 @@ export const TOOLS = {
   // Hermes (`skill_view`) and OpenClaw (`skills_read`) have skill tools, but teamai installs no post-tool-use hook for them yet.
   // OpenClaw's skills sit in its workspace.
   openclaw: {
+    receivesDeliveredModels: true,
     home: {
       dir: '.openclaw',
       // docs.openclaw.ai/help/environment; OPENCLAW_STATE_DIR and OPENCLAW_PROFILE also in src/config/paths.ts at 884a96d1.
@@ -1327,7 +1415,12 @@ export const TOOLS = {
       retired: { project: ['.openclaw/workspace/AGENTS.md'] },
     },
     agents: NONE,
-    mcp: NONE,
+    // MCP servers are `mcp.servers` entries of openclaw.json (JSON5). Only its
+    // user config is proven; OpenClaw reads no project openclaw.json.
+    mcp: {
+      user: { format: 'openclaw', key: ['mcp', 'servers'], syntax: 'json5', reads: [{ base: 'home', path: '.openclaw/openclaw.json', evidence: 'docs' }] },
+      project: 'none',
+    },
     hooks: { user: { channel: 'adapter', adapter: 'openclaw-hook', evidence: 'verified', readGates: ['openclaw-hooks-enabled', 'openclaw-plugins-enabled'] }, self: 'user', subagentStop: false, stopReply: false, shell: 'system', teamHooks: 'home', needsBundle: false },
     // OpenClaw 2026.10: rows in ~/.openclaw/agents/<id>/agent/openclaw-agent.sqlite, moved by OPENCLAW_STATE_DIR.
     sessions: 'none',
@@ -1353,6 +1446,7 @@ export const TOOLS = {
   // hermes_constants.py and hermes_cli/main.py at 68134629 (the same rules at 7e9eb8d9). Hermes reads its home in either scope.
   // Out of teamai's sight: another process's -p/--profile flag, and the supervised, desktop SSH and s6 gateway starts that skip active_profile.
   hermes: {
+    receivesDeliveredModels: true,
     home: { dir: '.hermes', moves: { by: [{ kind: 'hermes-home', evidence: 'source' }] } },
     skillLoad: 'unknown',
     skills: {
@@ -1367,7 +1461,12 @@ export const TOOLS = {
       retired: { user: ['AGENTS.md'], project: ['AGENTS.md'] },
     },
     agents: NONE,
-    mcp: NONE,
+    // MCP servers live in `mcp_servers` of the profile's config.yaml. The home
+    // move resolves the active profile; no project channel is proven.
+    mcp: {
+      user: { format: 'hermes', reads: [{ base: 'home', path: '.hermes/config.yaml', evidence: 'docs' }] },
+      project: 'none',
+    },
     hooks: { user: { channel: 'adapter', adapter: 'hermes-plugin', evidence: 'verified' }, self: 'user', subagentStop: false, stopReply: false, shell: 'system', teamHooks: 'home', needsBundle: false },
     sessions: ['hermes'],
     launch: 'hermes',
@@ -1390,6 +1489,7 @@ export const TOOLS = {
     },
   },
   dsh: {
+    receivesDeliveredModels: true,
     home: { dir: '.dsh', moves: { by: [{ kind: 'env', name: 'DSH_HOME', evidence: 'source' }] } },
     skillLoad: { calls: [{ name: 'skill', evidence: 'verified' }] },
     skills: { user: [{ base: 'home', path: '.dsh/skills', evidence: 'verified' }], project: 'unknown' },
@@ -1402,7 +1502,12 @@ export const TOOLS = {
       project: { channel: 'session-hook', probe: 'dsh-session-start', evidence: 'source' },
     },
     agents: NONE,
-    mcp: NONE,
+    // MCP servers are mcp-client plugin instances in the home patch DSH applies
+    // on every boot. Only the user channel is proven.
+    mcp: {
+      user: { format: 'dsh', reads: [{ base: 'home', path: '.dsh/cordis.patch.yml', evidence: 'source' }] },
+      project: 'none',
+    },
     hooks: { user: { channel: 'adapter', adapter: 'dsh-hooks', evidence: 'source' }, self: 'user', subagentStop: false, stopReply: true, shell: 'system', teamHooks: 'home', needsBundle: false },
     sessions: 'none',
     launch: 'none',
@@ -1670,6 +1775,13 @@ export function isToolId(value: string): value is ToolId {
   return Object.hasOwn(TOOLS, value);
 }
 
+/** Tools whose own model settings teamai adds delivered models to. */
+export type DeliveredModelTool = 'openclaw' | 'hermes' | 'dsh';
+
+// SAFETY: only the three descriptors above carry `receivesDeliveredModels`, so the filter selects exactly DeliveredModelTool.
+export const DELIVERED_MODEL_TOOLS = Object.keys(TOOLS)
+  .filter((tool) => isToolId(tool) && 'receivesDeliveredModels' in TOOLS[tool]) as DeliveredModelTool[];
+
 /** Whether releases before #1221 wrote `tool`'s hooks and MCP servers under its default home when the home moved (`Home.moves.defaultHomeLeftovers`). */
 export function hasDefaultHomeLeftovers(tool: ToolId): boolean {
   const { home }: ToolDescriptor = TOOLS[tool];
@@ -1875,4 +1987,19 @@ export function mcpFormatOf(tool: string): McpFormat | null {
   for (const channel of [mcp.user, mcp.project]) if (channel instanceof Object) return channel.format;
 
   return null;
+}
+
+/**
+ * The scope `tool` takes an MCP server in when the install is `scope`. A tool
+ * whose descriptor names no project MCP file writes its user config instead of
+ * skipping the server, as its skills already land in the one place it reads
+ * (OpenClaw's workspace, Hermes' and DSH's home). A tool with neither channel
+ * keeps `scope`: it is skipped either way.
+ */
+export function mcpScopeFor(tool: string, scope: 'user' | 'project'): 'user' | 'project' {
+  const { mcp } = channelsOf(tool);
+
+  if (scope === 'project' && (mcp.project === 'none' || mcp.project === 'unknown') && mcp.user instanceof Object) return 'user';
+
+  return scope;
 }

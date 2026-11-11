@@ -372,7 +372,7 @@ describe('toolRoots — re-rooting a relocated tool', () => {
     expect(hookScopedPaths(project).claude.settings).toBe('.claude-work/settings.json');
   });
 
-  it('keeps self single-repo hooks on the business repo', () => {
+  it('keeps self-mode hooks on the business repo', () => {
     const self = localConfig({
       scope: 'project',
       projectRoot: '/work/app',

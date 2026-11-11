@@ -18,7 +18,7 @@ import { getUserHome } from './utils/home.js';
 import { realHost, toolHome, type Host } from './tool-home.js';
 
 /**
- * Single-repo mode: the AI tools offered when `teamai init .` asks which tool
+ * Self mode: the AI tools offered when `teamai init .` asks which tool
  * directories to create (interactive multi-select), and the candidate set probed
  * against the user's HOME in non-interactive contexts. Order is the display order.
  * Kept small on purpose — the common coding agents, not the full KNOWN_AGENTS list.
@@ -161,7 +161,7 @@ export interface ResolvedAgent extends KnownAgent {
  * before ever running teamai. Two cases break that assumption, and both call
  * this to seed the dir instead of relying on it already being there:
  *
- * - Single-repo mode's whole promise is "clone → auto-inject": a teammate's
+ * - Self mode's whole promise is "clone → auto-inject": a teammate's
  *   fresh clone has no <repo>/.claude yet, so nothing would ever inject.
  * - Any mode's `--agent <id>` naming a custom agent configured only in
  *   `teamai.yaml`'s `toolPaths` (not one of the built-in tools a user
@@ -316,7 +316,7 @@ async function seedHookInstallRoot(
 /**
  * Detect which candidate AI tools are already installed under the user's HOME.
  *
- * Used by single-repo mode in non-interactive contexts (CI, session-start hook,
+ * Used by self mode in non-interactive contexts (CI, session-start hook,
  * clone-time bootstrap) to decide which tool dirs to seed when the user cannot be
  * asked: we mirror whatever tools they already use globally (~/.claude, ~/.codex,
  * ...). Returns [] when none are present — the caller then seeds nothing rather

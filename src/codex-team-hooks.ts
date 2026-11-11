@@ -24,7 +24,7 @@ import { runHookCommand } from './hook-command.js';
 import { stdinString, type HookStdin } from './hook-dispatch.js';
 import type { CodexGroupSlot, CodexTrustPolicy } from './hooks.js';
 import { CODEX_TOOL_ID, getTeamaiHomeDir, type JsonValue } from './types.js';
-import { checkoutForProjectAnchor } from './utils/git.js';
+import { checkoutForRepoAnchor } from './utils/git.js';
 import { readJson, readJsonObject, writeJsonAtomic } from './utils/fs.js';
 import { log, setStderrOnly } from './utils/logger.js';
 
@@ -160,7 +160,7 @@ export async function setCodexDispatcherHooks(project: string, hooks: CodexTeamH
       // checkout itself (self mode). A Git directory is none; each real
       // checkout's next pull registers its own hooks.
       const original = previous?.hooks
-        ? await checkoutForProjectAnchor(project) ?? (fs.existsSync(path.join(project, '.git')) ? project : undefined)
+        ? await checkoutForRepoAnchor(project) ?? (fs.existsSync(path.join(project, '.git')) ? project : undefined)
         : undefined;
 
       const registered = checkoutHooks(previous) ?? (original && previous?.hooks ? { [original]: previous.hooks } : {});

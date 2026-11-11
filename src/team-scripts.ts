@@ -77,7 +77,7 @@ export interface TeamScriptOptions {
 
 /**
  * Environment every team script sees. `TEAMAI_PROJECT` is the resolver's
- * `projectAnchor`: the same value for every worktree of one repo.
+ * `repoAnchor`: the same value for every worktree of one repo.
  * `TEAMAI_MAIN_CHECKOUT` is `mainCheckout` when TeamAI resolved one. Scripts
  * use these instead of walking worktrees themselves. A bare anchor is an
  * identity only, not a checkout to write into.
@@ -94,8 +94,8 @@ export async function teamScriptEnv(localConfig: LocalConfig): Promise<NodeJS.Pr
     const anchors = await resolveAnchors(localConfig.projectRoot);
     env.TEAMAI_CHECKOUT = anchors?.workspaceRoot ?? localConfig.projectRoot;
 
-    if (anchors?.projectAnchor) {
-      env.TEAMAI_PROJECT = anchors.projectAnchor;
+    if (anchors?.repoAnchor) {
+      env.TEAMAI_PROJECT = anchors.repoAnchor;
 
       if (anchors.mainCheckout) env.TEAMAI_MAIN_CHECKOUT = anchors.mainCheckout;
     }

@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { benchmarkFixture, envelope, fixTask, PRODUCT_URL, said, type BenchmarkFixture } from '../helpers/benchmark-fixture.js';
 
-const DoneSchema = z.object({ run: z.string(), outcome: z.string(), outputs: z.object({ text: z.string(), table: z.object({ assets: z.array(z.object({ path: z.string(), without: z.string().nullable().optional(), has: z.string().nullable().optional() }).passthrough()) }).passthrough() }).passthrough() }).passthrough();
+const DoneSchema = z.object({ run: z.string(), outcome: z.string(), outputs: z.object({ text: z.string(), table: z.object({ resources: z.array(z.object({ path: z.string(), without: z.string().nullable().optional(), has: z.string().nullable().optional() }).passthrough()) }).passthrough() }).passthrough() }).passthrough();
 const RecordSchema = z.object({
   tasks: z.array(z.object({ id: z.string(), covers: z.array(z.string()).optional() })),
   trials: z.array(z.object({ task: z.string(), arm: z.string(), result: z.string(), routing: z.record(z.string(), z.string()).optional() }).passthrough()),
@@ -47,14 +47,14 @@ async function coveredFixture(): Promise<{ fixture: BenchmarkFixture; run: strin
   return { fixture, run: done.data.run, text: done.data.outputs.text };
 }
 
-describe('asset effect tables on the local driver', () => {
+describe('resource effect tables on the local driver', () => {
   it('prints one table per covered path an arm leaves out exactly, splits by the tasks that cover it, and carries each trial\'s routing value', async () => {
     const { fixture, run, text } = await coveredFixture();
     const record = RecordSchema.parse(fixture.benchmarkRecord(run));
 
     // One table per covered path, against the arm that differs only by leaving nothing out; the two-path arm gets none.
-    expect(text).toContain('Asset effect · skills/auth-tokens · no-tokens -> pulled · claude');
-    expect(text).toContain('Asset effect · rules/auth.md · pulled · claude');
+    expect(text).toContain('Resource effect · skills/auth-tokens · no-tokens -> pulled · claude');
+    expect(text).toContain('Resource effect · rules/auth.md · pulled · claude');
     expect(text).toContain('rules/auth.md');
     expect(text).not.toContain('no-both -> pulled');
     expect(text).toContain('fix   yes');
@@ -69,7 +69,7 @@ describe('asset effect tables on the local driver', () => {
       expect.objectContaining({ task: 'fix', arm: 'no-tokens', result: 'passed' }),
       expect.objectContaining({ task: 'copy', arm: 'no-tokens', result: 'passed' }),
     ]));
-    // The arm that runs without the skill by design reports no routing for it: the asset is absent, not misrouted.
+    // The arm that runs without the skill by design reports no routing for it: the resource is absent, not misrouted.
     expect(record.trials.filter(({ arm }) => arm === 'no-tokens').every(({ routing }) => routing === undefined)).toBe(true);
     // Criterion 2: the two splits add up, in trials, to the pair's paired trials: one paired trial per task.
     expect(text).toContain('tasks that cover it');
@@ -123,7 +123,7 @@ describe('asset effect tables on the local driver', () => {
     expect(record.trials.find(({ arm }) => arm === 'no-dev')?.routing).toBeUndefined();
   }, 300_000);
 
-  it('records no routing for a covered skill on an arm that runs with no team assets', async () => {
+  it('records no routing for a covered skill on an arm that runs with no team resources', async () => {
     const fixture = await benchmarkFixture({
       tool: 'fixes', sandbox: true, tools: ['claude'], loadsSkill: 'auth-tokens',
       suite: SUITE('arms:\n  - name: pulled\n  - name: bare\n    team: none\n'),
@@ -197,7 +197,7 @@ describe('asset effect tables on the local driver', () => {
     const record = RecordSchema.parse(fixture.benchmarkRecord(done.data.run));
 
     expect(record.trials).toHaveLength(4);
-    expect(done.data.outputs.text).toContain('Asset effect · skills/auth-tokens · no-tokens -> pulled · claude');
+    expect(done.data.outputs.text).toContain('Resource effect · skills/auth-tokens · no-tokens -> pulled · claude');
   }, 300_000);
 
   it('refuses two covered skill paths of the same skill name, whose loads a trial could not tell apart', async () => {

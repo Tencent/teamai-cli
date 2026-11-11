@@ -73,6 +73,7 @@ repo:
   remote: https://github.com/your-org/your-repo.git
 username: your-name
 updatePolicy: auto             # auto, prompt, or skip
+updateOtherInstallations: true # also update other registered npm-global copies; default false
 scope: workspace               # workspace (default from init) or user; project is read as workspace
 projectRoot: /path/to/my-workspace
 inheritUserScope: true
@@ -103,7 +104,7 @@ A member setting is read in this order. The first level that sets it wins:
 4. The team's `teamai.yaml`, where the setting has a team key.
 5. The default.
 
-The member settings are `ai.tool`, `workflows.*`, `recallEnabled`, `contributeHintEnabled`, `mrHintEnabled`, `coAuthorEnabled`, `usageReportEnabled`, `codexTrustEnabled`, `modelAliases`, `sessions`, `scoring`, `autoCompactTokens` and `updatePolicy`. In `workflows.tools`, `workflows.allow` and `modelAliases`, each entry counts on its own. `scoring` from `~/.teamai/config.yaml` only makes session judging stricter than the team's ([Finished sessions](./scorers.md#finished-sessions)). `updatePolicy` and `autoCompactTokens` act on the whole machine, so one scope decides them: the user scope when there is one, else the scope that runs. Every other key belongs to one install and is never read from the machine. `doctor` names such a key in a `~/.teamai/config.yaml` that holds no install.
+The member settings are `ai.tool`, `workflows.*`, `recallEnabled`, `contributeHintEnabled`, `mrHintEnabled`, `coAuthorEnabled`, `usageReportEnabled`, `codexTrustEnabled`, `modelAliases`, `sessions`, `scoring`, `autoCompactTokens`, `updatePolicy` and `updateOtherInstallations`. In `workflows.tools`, `workflows.allow` and `modelAliases`, each entry counts on its own. `scoring` from `~/.teamai/config.yaml` only makes session judging stricter than the team's ([Finished sessions](./scorers.md#finished-sessions)). `updatePolicy`, `updateOtherInstallations` and `autoCompactTokens` act on the whole machine, so one scope decides them: the user scope when there is one, else the scope that runs. Every other key belongs to one install and is never read from the machine. `doctor` names such a key in a `~/.teamai/config.yaml` that holds no install.
 
 | You want | Write | In |
 |---|---|---|

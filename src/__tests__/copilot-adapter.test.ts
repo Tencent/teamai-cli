@@ -315,7 +315,7 @@ describe('GitHub Copilot adapter', () => {
       userCommand,
       expect.stringContaining('teamai hook-dispatch session-start --tool copilot'),
     ]);
-    expect(await getHookStatus(hookPath, 'copilot')).toBe('installed');
+    expect(await getHookStatus(hookPath, { tool: 'copilot', from: 'version' })).toBe('installed');
     expect(await hasTeamaiHooks(hookPath, 'copilot')).toBe(true);
 
     // A built-in whose matcher changed is not the one teamai installs.
@@ -325,14 +325,14 @@ describe('GitHub Copilot adapter', () => {
     };
     toolHook.matcher = 'Edit';
     await fse.writeJson(hookPath, reconciled);
-    expect(await getHookStatus(hookPath, 'copilot')).toBe('missing');
+    expect(await getHookStatus(hookPath, { tool: 'copilot', from: 'version' })).toBe('missing');
 
     await reconcileHooks(hookPath, 'copilot');
-    expect(await getHookStatus(hookPath, 'copilot')).toBe('installed');
+    expect(await getHookStatus(hookPath, { tool: 'copilot', from: 'version' })).toBe('installed');
 
     reconciled.version = 0;
     await fse.writeJson(hookPath, reconciled);
-    expect(await getHookStatus(hookPath, 'copilot')).toBe('missing');
+    expect(await getHookStatus(hookPath, { tool: 'copilot', from: 'version' })).toBe('missing');
   });
 
   it('does not create a Copilot hook file when removing from a clean installation', async () => {

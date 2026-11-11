@@ -22,7 +22,7 @@ pull in svc-a/       svc-a's, as before
 - In a workspace that is a git repo, only repos are children.
 - A child counts once per anchor (its data partition), so a linked worktree whose main checkout is also a child adds nothing. A linked worktree of the workspace reads the children of its main checkout.
 - No git process runs: a clone, a submodule and a linked worktree resolve their anchor from the path, the `gitdir:` line or the `commondir` file. A child's config is read with `dryRun`, so nothing in the child is written.
-- One team repo per workspace. A child whose remote does not match (`remotesMatch`), or one in single-repo mode, is left out and named.
+- One team repo per workspace. A child whose remote does not match (`remotesMatch`), or one in self mode, is left out and named.
 
 The result is attached to the workspace's config in memory (`LocalConfig.children`) and never persisted; `serializeLocalConfig` drops it.
 
@@ -42,7 +42,7 @@ The "Already synced" fast path stores a fingerprint of the children (anchor and 
 
 A session started in a child must not pick up what the workspace receives:
 
-- Claude Code and CodeBuddy load a parent folder's project MCP file. In a workspace with children, their MCP servers go to the tool's local scope (the path `sharing.gitExclude` already uses) instead of `.mcp.json`. Claude's stay in `.mcp.json` in single-repo mode or while tclaude or Muse Code reads it (`mcpRelocated`), and a child session then loads them.
+- Claude Code and CodeBuddy load a parent folder's project MCP file. In a workspace with children, their MCP servers go to the tool's local scope (the path `sharing.gitExclude` already uses) instead of `.mcp.json`. Claude's stay in `.mcp.json` in self mode or while tclaude or Muse Code reads it (`mcpRelocated`), and a child session then loads them.
 - A child's pull writes `claudeMdExcludes` into the child's own `.claude/settings.local.json`: the workspace's `CLAUDE.md`, `.claude/CLAUDE.md`, `AGENTS.md` and `.claude/rules/**`. The pull record owns those entries, so a later pull removes stale ones and leaves the member's own, and `uninstall` takes them back.
 - Team hooks for tools without a per-directory hook file are gated on `$PWD`; in a workspace the gate also excludes every folder set up under it: each checkout of a child, and each child left out.
 
@@ -62,5 +62,5 @@ A session started in a child must not pick up what the workspace receives:
 - In a plain-folder workspace, a folder without its own config inside it (such as `ws/notes/`) falls to the user scope.
 - A child without a role, in a team with `manifest/roles.yaml`, receives everything unfiltered, and so does the workspace through it.
 - The `recall --check` threshold reads the index's term statistics, so a workspace with more content has a stricter threshold.
-- A repo in single-repo mode gets its local config from the session-start bootstrap (`src/bootstrap.ts`) without a command from the member. Cloned into a workspace, it shows up as a child left out on every pull.
+- A repo in self mode gets its local config from the session-start bootstrap (`src/bootstrap.ts`) without a command from the member. Cloned into a workspace, it shows up as a child left out on every pull.
 - Children from several team repos, deeper than three levels, or a switch to turn detection off are not supported.
