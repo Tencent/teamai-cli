@@ -27,6 +27,7 @@ import chalk from 'chalk';
 import fse from 'fs-extra';
 import { holdsMarker } from './folder-markers.js';
 import { readTeamRules } from './resources/rules.js';
+import { readTeamSkills } from './resources/skills.js';
 import { RECALL_RULE_NAME, resolveRecall } from './builtin-rules.js';
 import { parseYaml } from './utils/yaml.js';
 import { z } from 'zod';
@@ -57,7 +58,7 @@ import { listRoleIds, loadRolesManifestIfPresent, type RolesManifest } from './r
 import { AGENT_TOOLS } from './tools.js';
 import { LocalConfigSchema, type GlobalOptions, type LocalConfig, type ResourceItem, type TeamaiConfig } from './types.js';
 import { splitFrontmatter, type FrontmatterValue } from './utils/frontmatter.js';
-import { isIgnored, listDirs, listFilesRecursive, pathExists, readFileIfExists, writeFile, ensureDir } from './utils/fs.js';
+import { isIgnored, listDirs, listFilesRecursive, readFileIfExists, writeFile, ensureDir } from './utils/fs.js';
 import { getFileContentAtRev, getHeadCommit, getMergeBase, listTreeAtRev } from './utils/git.js';
 import { isSilent, log, setSilent } from './utils/logger.js';
 import { redact } from './utils/redact.js';
@@ -254,6 +255,21 @@ async function ruleFindings(repoDir: string, base: ReviewBase | null): Promise<F
     })),
     ...recall?.kind === 'refused' ? [{ level: 'fail', check: 'structure', path: recall.folder.path, message: recall.message } satisfies Finding] : [],
     ...strays.map((message): Finding => ({ level: 'fail', check: 'structure', path: `rules/${RECALL_RULE_NAME}/`, message })),
+  ];
+}
+
+/** What pull's skills reader says about the branch's skills: a directory in a namespace without SKILL.md, or a skill pull cannot read, fails. */
+async function skillFindings(repoDir: string): Promise<Finding[]> {
+  const { notSkills, diagnostics } = await readTeamSkills(repoDir);
+
+  return [
+    ...notSkills.map((dir): Finding => ({
+      level: 'fail',
+      check: 'structure',
+      path: dir,
+      message: `${dir}/ has no SKILL.md directly inside it; a skill must be skills/<namespace>/<name>/SKILL.md.`,
+    })),
+    ...diagnostics.flatMap(({ kind, path: at, message }): Finding[] => (kind === 'invalid' ? [{ level: 'fail', check: 'structure', path: at, message }] : [])),
   ];
 }
 
@@ -571,15 +587,6 @@ async function structureFindings(resources: ReviewResource[], index: ManifestInd
 
   for (const resource of resources) {
     if (skipped.some((folder) => `${resource.relativePath}/`.startsWith(folder))) continue;
-
-    if (resource.type === 'skills' && !await pathExists(path.join(resource.absolutePath, 'SKILL.md'))) {
-      findings.push({
-        level: 'fail',
-        check: 'structure',
-        path: resource.relativePath,
-        message: `${resource.relativePath}/ has no SKILL.md directly inside it; a skill must be skills/<namespace>/<name>/SKILL.md.`,
-      });
-    }
 
     if (resource.namespace) {
       const axis = NAMESPACE_AXIS[resource.type];
@@ -1783,6 +1790,7 @@ export async function reviewBranchDir(branch: string, repoDir: string, base: Rev
 
   const findings: Finding[] = [
     ...await ruleFindings(repoDir, base),
+    ...await skillFindings(repoDir),
     ...await structureFindings(resources, index, [...hooks.skipped, ...mcp.skipped, ...workflows.skipped]),
     ...await namingFindings(resources, readText),
     ...await duplicateFindings(resources, index),

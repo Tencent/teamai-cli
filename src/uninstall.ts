@@ -81,7 +81,7 @@ import { cleanupOf, hookAdapterDirIn, hookSettingsFile, installOf, isInstalledFo
 import { toolHome, toolHomesAcrossProfiles } from './tool-home.js';
 import { channelsOf, hookSyntaxOf, isToolId, TOOLS } from './tools.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
-import { allowsSkillDirectory, CODEX_TOOL, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, skillOrigin } from './resources/skills.js';
+import { allowsSkillDirectory, CODEX_TOOL, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, readTeamSkills, skillOrigin } from './resources/skills.js';
 import { describeKeptDir, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir, teamaiSkillFiles } from './resources/delivered-copies.js';
 import { generatedSkillAt } from './workflow/discovery/generated-marker.js';
 import { mayBeGeneratedSkill } from './workflow/discovery/workflow-skills.js';
@@ -366,36 +366,9 @@ function instructionBlocksWrittenBy(tool: string): string[] {
     (block !== 'team-rules' || (tool !== 'hermes' && inlineRulesLabelOf(tool) !== null) ? [start] : []));
 }
 
-/**
- * Collect team repo skill names, handling both flat and namespaced layouts.
- * A directory is a namespace if it does NOT contain SKILL.md.
- */
+/** The team repo's skill names, at the root and in every namespace (`readTeamSkills`). */
 async function collectTeamSkillNames(repoPath: string): Promise<Set<string>> {
-  const teamSkillsDir = path.join(repoPath, 'skills');
-
-  if (!await pathExists(teamSkillsDir)) return new Set();
-
-  const names = new Set<string>();
-  const topDirs = await listDirs(teamSkillsDir);
-
-  for (const dir of topDirs) {
-    const dirPath = path.join(teamSkillsDir, dir);
-    const hasSkillMd = await pathExists(path.join(dirPath, 'SKILL.md'));
-
-    if (hasSkillMd) {
-      // Flat skill
-      names.add(dir);
-    } else {
-      // Namespace directory — add sub-skills
-      const subDirs = await listDirs(dirPath);
-
-      for (const sub of subDirs) {
-        names.add(sub);
-      }
-    }
-  }
-
-  return names;
+  return new Set((await readTeamSkills(repoPath)).skills.map((skill) => skill.name));
 }
 
 /**

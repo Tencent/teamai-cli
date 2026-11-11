@@ -13,7 +13,7 @@ import fs from 'node:fs/promises';
 import { errnoCode } from './utils/fs.js';
 import { log } from './utils/logger.js';
 
-type MarkedType = 'workflows' | 'hooks' | 'rules' | 'mcp' | 'benchmarks' | 'scorers' | 'agents';
+type MarkedType = 'workflows' | 'hooks' | 'rules' | 'mcp' | 'benchmarks' | 'skills' | 'scorers' | 'agents';
 
 /** Each type keeps its resources in the team repo directory of the same name. */
 export const FOLDER_MARKERS = {
@@ -22,6 +22,7 @@ export const FOLDER_MARKERS = {
   rules: { marker: 'RULE.md' },
   mcp: { marker: 'MCP.yaml' },
   benchmarks: { marker: 'SUITE.yaml' },
+  skills: { marker: 'SKILL.md' },
   scorers: { marker: 'SCORER.md' },
   agents: { marker: 'AGENT.md' },
 } as const satisfies Readonly<Record<MarkedType, { readonly marker: string }>>;

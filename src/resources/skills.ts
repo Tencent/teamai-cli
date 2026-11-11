@@ -3,6 +3,7 @@ import { lstat, realpath } from 'node:fs/promises';
 import YAML from 'yaml';
 import { z } from 'zod';
 import { ResourceHandler, type ScanForPushOptions } from './base.js';
+import { RESOURCE_LAYOUTS, Resources, type ResourceDiagnostic } from './resolver.js';
 import type { CopyOrigin, PendingPush, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { getPushignorePath, resolveBaseDir, scopedToolPaths, SELF_KNOWLEDGE_SCAN_KEY } from '../types.js';
 import { isDraft, listDirs, listFilesRecursive, pathExists, copyDir, remove, pruneEmptyDirs, dirContentEqual, dirTeamSubsetEqual, fileContentEqual, fileHash, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
@@ -175,7 +176,7 @@ async function sharedSkillsDelivered(install: Install, sharedDir: string): Promi
  * relative link between two of them resolves (#1501).
  */
 async function holdsTeamSkillCopy(sharedDir: string, repoPath: string, previous: DeliveredHashes | undefined): Promise<boolean> {
-  const teamSkills = await scanSkillsRecursively(path.join(repoPath, 'skills'));
+  const teamSkills = new Set((await readTeamSkills(repoPath)).skills.map((skill) => skill.name));
 
   for (const name of await listDirs(sharedDir)) {
     if (!teamSkills.has(name)) continue;
@@ -478,44 +479,70 @@ function extractDescriptionFromContent(content: string, skillName: string): stri
   return `${skillName} skill`;
 }
 
+/** A skill in the team repo: its folder, at the root of `skills/` or in a namespace. */
+export interface TeamSkill {
+  readonly name: string;
+  readonly namespace?: string;
+  /** Absolute: the folder holding SKILL.md. */
+  readonly source: string;
+  /** Team-repo relative, `/`-separated: `skills/<name>` or `skills/<namespace>/<name>`. */
+  readonly relativePath: string;
+}
+
+/** What the team repo's `skills/` holds. */
+export interface TeamSkillsRead {
+  /** The root's skills, then each namespace's, in the order the scan meets them. */
+  readonly skills: readonly TeamSkill[];
+  /** Directories in a namespace that hold no SKILL.md, team-repo relative: no skill, and pull says so. */
+  readonly notSkills: readonly string[];
+  readonly diagnostics: readonly ResourceDiagnostic[];
+}
+
 /**
- * Scan the team repo skills/ directory to discover namespace subdirectories.
- * A directory is a namespace if it does NOT contain SKILL.md (i.e. it contains
- * skill subdirectories rather than being a skill itself) AND it actually holds
- * at least one skill. The second condition matters: git tracks files, not
- * directories, so a pushed skill whose source had an empty subdirectory (e.g.
- * an unused `assets/`) leaves an untracked, SKILL.md-less shell behind in the
- * working tree. Treating that shell as a namespace nested every later push
- * inside a skill's own name.
- * Returns the list of namespace names found, or [] if layout is purely flat.
+ * Every skill in the team repo at `repoPath`, read through `Resources` as every type with folders is: a directory of
+ * `skills/` holding SKILL.md is a skill, and one without it is a namespace whose skills sit one level down. A
+ * namespace counts only once it holds a skill: git tracks no empty directory, so a pushed skill's empty `assets/` can
+ * leave a SKILL.md-less shell behind in the working tree.
  */
-export async function scanTeamRepoNamespaces(repoPath: string): Promise<string[]> {
-  const teamSkillsDir = path.join(repoPath, 'skills');
+export async function readTeamSkills(repoPath: string): Promise<TeamSkillsRead> {
+  const read = await Resources.survey(RESOURCE_LAYOUTS.skills, { team: { root: repoPath, namespaces: async () => 'legacy' } });
 
-  if (!await pathExists(teamSkillsDir)) return [];
+  const skills = read.definitions.map((item): TeamSkill => {
+    const relativePath = item.source.path.replace(/\/$/, '');
 
-  const topDirs = await listDirs(teamSkillsDir);
-  const namespaces: string[] = [];
+    return item.layer === 'namespace'
+      ? { name: item.name, namespace: item.namespace, source: item.source.full, relativePath }
+      : { name: item.name, source: item.source.full, relativePath };
+  });
 
-  for (const dir of topDirs) {
-    const dirPath = path.join(teamSkillsDir, dir);
-    const hasSkillMd = await pathExists(path.join(dirPath, 'SKILL.md'));
+  const skillsDir = path.join(repoPath, 'skills');
+  const rootSkills = new Set(skills.flatMap((skill) => (skill.namespace === undefined ? [skill.name] : [])));
+  const notSkills: string[] = [];
 
-    if (hasSkillMd) continue;
-    const subDirs = await listDirs(dirPath);
-    let holdsSkill = false;
+  for (const namespace of await listDirs(skillsDir)) {
+    if (rootSkills.has(namespace)) continue;
+    const held = new Set(skills.flatMap((skill) => (skill.namespace === namespace ? [skill.name] : [])));
 
-    for (const subDir of subDirs) {
-      if (await pathExists(path.join(dirPath, subDir, 'SKILL.md'))) {
-        holdsSkill = true;
-        break;
-      }
+    for (const dir of await listDirs(path.join(skillsDir, namespace))) {
+      if (!held.has(dir)) notSkills.push(`skills/${namespace}/${dir}`);
     }
-
-    if (holdsSkill) namespaces.push(dir);
   }
 
-  return namespaces;
+  return { skills, notSkills, diagnostics: read.diagnostics };
+}
+
+/** A team skill as pull and push carry it. */
+export function teamSkillItem(skill: TeamSkill): ResourceItem {
+  const item: ResourceItem = { name: skill.name, type: 'skills', sourcePath: skill.source, relativePath: skill.relativePath };
+
+  if (skill.namespace !== undefined) item.namespace = skill.namespace;
+
+  return item;
+}
+
+/** The namespaces of the team repo's `skills/` that hold a skill, in scan order. */
+export async function scanTeamRepoNamespaces(repoPath: string): Promise<string[]> {
+  return [...new Set((await readTeamSkills(repoPath)).skills.flatMap((skill) => (skill.namespace === undefined ? [] : [skill.namespace])))];
 }
 
 async function readPushIgnoredSkills(): Promise<Set<string>> {
@@ -809,19 +836,7 @@ async function scanSkillsRecursively(dirPath: string): Promise<Map<string, strin
  * relative path maps to that file in every copy that has it.
  */
 async function otherVersionFiles(repoPath: string, item: ResourceItem): Promise<Map<string, string[]>> {
-  const skillsDir = path.join(repoPath, 'skills');
-  const copies: string[] = [];
-
-  for (const dir of await listDirs(skillsDir)) {
-    const dirPath = path.join(skillsDir, dir);
-
-    if (await pathExists(path.join(dirPath, SKILL_MD))) {
-      if (dir === item.name) copies.push(dirPath);
-    } else if (await pathExists(path.join(dirPath, item.name))) {
-      copies.push(path.join(dirPath, item.name));
-    }
-  }
-
+  const copies = (await readTeamSkills(repoPath)).skills.flatMap((skill) => (skill.name === item.name ? [skill.source] : []));
   const files = new Map<string, string[]>();
 
   for (const copy of copies) {
@@ -950,6 +965,7 @@ export interface TeamSkillIndex {
 
 /** Read the team repo's skills at `repoPath` for a push scope (`scopedNamespaces`, null in legacy mode). */
 export async function readTeamSkillIndex(repoPath: string, scopedNamespaces: string[] | null): Promise<TeamSkillIndex> {
+  const { skills } = await readTeamSkills(repoPath);
   const teamSkills = new Map<string, { dir: string; namespace?: string }>();
   const allTeamSkills = new Map<string, { dir: string; namespace?: string }[]>();
 
@@ -964,96 +980,44 @@ export async function readTeamSkillIndex(repoPath: string, scopedNamespaces: str
   const blockedSkills = new Map<string, { dir: string; namespace: string }[]>();
 
   if (scopedNamespaces !== null) {
-    // Role-based mode: load allowed namespaces and track blocked ones.
-    // Also recognize root-level flat skills (those with SKILL.md directly inside).
-    const allSkillsDir = path.join(repoPath, 'skills');
-    const topDirs = await listDirs(allSkillsDir);
-
-    // First pass: identify root-level flat skills (accessible to everyone)
-    for (const dir of topDirs) {
-      const dirPath = path.join(allSkillsDir, dir);
-      const hasSkillMd = await pathExists(path.join(dirPath, 'SKILL.md'));
-
-      if (hasSkillMd) {
-        // Root-level flat skill — shared across all roles
-        const copy = { dir: dirPath };
-        addTeamSkill(dir, copy);
-        teamSkills.set(dir, copy);
-      }
+    // Root skills are shared across all roles.
+    for (const skill of skills) {
+      if (skill.namespace !== undefined) continue;
+      const copy = { dir: skill.source };
+      addTeamSkill(skill.name, copy);
+      teamSkills.set(skill.name, copy);
     }
 
-    // Second pass: load skills from allowed namespaces. A namespace skill
-    // replaces the root skill of its name, as pull delivers it (#707), so an
-    // edit goes back to the namespace; the first namespace keeps a name. A
-    // directory without SKILL.md is not a skill and replaces nothing, as in pull.
+    // A namespace skill replaces the root skill of its name, as pull delivers
+    // it (#707), so an edit goes back to the namespace; the first namespace
+    // keeps a name.
     for (const namespace of scopedNamespaces) {
-      const teamSkillsNsDir = path.join(allSkillsDir, namespace);
-      const names = await listDirs(teamSkillsNsDir);
+      for (const skill of skills) {
+        if (skill.namespace !== namespace) continue;
+        const copy = { dir: skill.source, namespace };
+        addTeamSkill(skill.name, copy);
 
-      for (const name of names) {
-        const dir = path.join(teamSkillsNsDir, name);
-
-        if (await pathExists(path.join(dir, SKILL_MD))) {
-          const copy = { dir, namespace };
-          addTeamSkill(name, copy);
-
-          if (!teamSkills.get(name)?.namespace) teamSkills.set(name, copy);
-        }
+        if (!teamSkills.get(skill.name)?.namespace) teamSkills.set(skill.name, copy);
       }
     }
 
-    // Third pass: scan non-allowed namespace directories for blocked skills
-    for (const dir of topDirs) {
-      const dirPath = path.join(allSkillsDir, dir);
-      const hasSkillMd = await pathExists(path.join(dirPath, 'SKILL.md'));
+    // A shared-root or active skill of the name does not decide alone: the copy may have come from here (#1020).
+    for (const skill of skills) {
+      const { namespace } = skill;
 
-      if (hasSkillMd) continue; // Already handled as root-level flat skill
-
-      if (scopedNamespaces.includes(dir)) continue; // Already processed as allowed namespace
-      const names = await listDirs(dirPath);
-
-      for (const name of names) {
-        // A shared-root or active skill of the name does not decide alone: the copy may have come from here (#1020).
-        const skillDir = path.join(dirPath, name);
-
-        if (!await pathExists(path.join(skillDir, SKILL_MD))) continue;
-        const copy = { dir: skillDir, namespace: dir };
-        addTeamSkill(name, copy);
-        blockedSkills.set(name, [...blockedSkills.get(name) ?? [], copy]);
-      }
+      if (namespace === undefined || scopedNamespaces.includes(namespace)) continue;
+      const copy = { dir: skill.source, namespace };
+      addTeamSkill(skill.name, copy);
+      blockedSkills.set(skill.name, [...blockedSkills.get(skill.name) ?? [], copy]);
     }
   } else {
-    // Legacy mode (no roles): detect flat vs namespaced layout automatically.
-    // A directory is a namespace if it does NOT contain SKILL.md; otherwise it's a flat skill.
-    const teamSkillsDir = path.join(repoPath, 'skills');
-    const topDirs = await listDirs(teamSkillsDir);
+    // Legacy mode (no roles): every skill of each name; a root skill is the one of its name.
+    for (const skill of skills) {
+      const candidate = skill.namespace === undefined ? { dir: skill.source } : { dir: skill.source, namespace: skill.namespace };
+      addTeamSkill(skill.name, candidate);
+      legacyTeamSkills.set(skill.name, [...legacyTeamSkills.get(skill.name) ?? [], candidate]);
 
-    for (const dir of topDirs) {
-      const dirPath = path.join(teamSkillsDir, dir);
-      const hasSkillMd = await pathExists(path.join(dirPath, 'SKILL.md'));
-
-      if (hasSkillMd) {
-        // Flat skill
-        const candidate = { dir: dirPath };
-        addTeamSkill(dir, candidate);
-        legacyTeamSkills.set(dir, [...legacyTeamSkills.get(dir) ?? [], candidate]);
-        teamSkills.set(dir, candidate);
-      } else {
-        // Namespace directory — scan subdirectories as skills
-        const subDirs = await listDirs(dirPath);
-
-        for (const subDir of subDirs) {
-          const candidate = { dir: path.join(dirPath, subDir), namespace: dir };
-
-          if (!await pathExists(path.join(candidate.dir, SKILL_MD))) continue;
-          addTeamSkill(subDir, candidate);
-          legacyTeamSkills.set(subDir, [...legacyTeamSkills.get(subDir) ?? [], candidate]);
-
-          if (!teamSkills.has(subDir)) {
-            teamSkills.set(subDir, candidate);
-          }
-        }
-      }
+      if (skill.namespace === undefined || !teamSkills.has(skill.name)) teamSkills.set(skill.name, candidate);
     }
   }
 
@@ -1404,43 +1368,9 @@ export class SkillsHandler extends ResourceHandler {
     return [...items, ...heldItems];
   }
 
-  /**
-   * Scan team repo for skills to pull.
-   * Handles both flat layout (skills/<name>/) and namespaced layout (skills/<namespace>/<name>/).
-   * A directory is treated as a namespace if it does not contain SKILL.md.
-   */
+  /** The team repo's skills, at the root of `skills/` and in each namespace (`readTeamSkills`). */
   async scanTeamForPull(_teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
-    const teamSkillsDir = path.join(localConfig.repo.localPath, 'skills');
-    const dirs = await listDirs(teamSkillsDir);
-    const items: ResourceItem[] = [];
-
-    for (const dir of dirs) {
-      const dirPath = path.join(teamSkillsDir, dir);
-      const hasSkillMd = await pathExists(path.join(dirPath, 'SKILL.md'));
-
-      if (hasSkillMd) {
-        items.push({
-          name: dir,
-          type: 'skills',
-          sourcePath: dirPath,
-          relativePath: `skills/${dir}`,
-        });
-      } else {
-        const subDirs = await listDirs(dirPath);
-
-        for (const subDir of subDirs) {
-          items.push({
-            name: subDir,
-            type: 'skills',
-            sourcePath: path.join(dirPath, subDir),
-            relativePath: `skills/${dir}/${subDir}`,
-            namespace: dir,
-          });
-        }
-      }
-    }
-
-    return items;
+    return (await readTeamSkills(localConfig.repo.localPath)).skills.map(teamSkillItem);
   }
 
   /**

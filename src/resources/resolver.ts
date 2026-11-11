@@ -125,6 +125,7 @@ export const RESOURCE_LAYOUTS = {
   scorers: { dir: 'scorers', marker: FOLDER_MARKERS.scorers.marker, fileName: (file: string) => (file.endsWith('.md') && file !== 'README.md' ? file.slice(0, -'.md'.length) : null) },
   /** Names are paths at any depth (`Resources.walk`): `rules/fe/style.md` and `rules/fe/style/RULE.md` are `fe/style`. */
   rules: { dir: 'rules', marker: FOLDER_MARKERS.rules.marker, inherits: true, fileName: (file: string) => (file.endsWith('.md') ? file.slice(0, -'.md'.length) : null) },
+  skills: { dir: 'skills', marker: FOLDER_MARKERS.skills.marker, fileName: () => null },
 } as const satisfies Readonly<Record<string, ResourceLayout<unknown>>>;
 
 /**

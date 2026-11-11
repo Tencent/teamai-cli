@@ -2759,7 +2759,10 @@ async function pullForScope(
       desiredSkillNames = new Set([...items.map((i) => i.name), ...desired.held]);
       workspaceHeldSkills = desired.held.length > 0;
       knownRepoSkillNames = new Set(desired.teamItems.map((i) => i.name));
-      knownRepoSkillSources = new Map(desired.teamItems.map((i) => [i.name, [i.sourcePath]]));
+      knownRepoSkillSources = new Map();
+
+      // Every team copy of a name: the root's and each namespace's, any of which the installed copy may be.
+      for (const item of desired.teamItems) knownRepoSkillSources.set(item.name, [...knownRepoSkillSources.get(item.name) ?? [], item.sourcePath]);
 
       // A workspace's copy may come from any member's source of the name (#913).
       for (const [name, sources] of desired.memberSources) {
