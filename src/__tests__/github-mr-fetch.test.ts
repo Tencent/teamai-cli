@@ -5,7 +5,8 @@ import { setImmediate } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchGitHubPR } from '../providers/github/mr-fetch.js';
 
-vi.mock('../providers/github/gh-cli.js', () => ({
+vi.mock('../providers/github/gh-cli.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../providers/github/gh-cli.js')>(),
   ghExec: vi.fn(() => { throw new Error('gh unavailable'); }),
 }));
 import { ghExec } from '../providers/github/gh-cli.js';
@@ -84,7 +85,7 @@ function mockResponses(
 beforeEach(() => {
   vi.mocked(ghExec).mockImplementation(() => { throw new Error('gh unavailable'); });
 });
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe('GitHub PR REST fallback', () => {
   it.each([PR, `${PR}/commits?per_page=100&page=1`, `${PR}.diff`])(
@@ -121,13 +122,25 @@ describe('GitHub PR REST fallback', () => {
       .rejects.toThrow('GitHub API diff error 503: Service Unavailable');
   });
 
-  it('preserves metadata, commit headlines, and diff on success', async () => {
-    mockResponses();
+  it.each([
+    [undefined, 'alias-token', 'Bearer alias-token'],
+    ['primary-token', undefined, 'Bearer primary-token'],
+    ['primary-token', 'alias-token', 'Bearer primary-token'],
+    [undefined, undefined, undefined],
+  ])('preserves PR data and authenticates every REST request with GITHUB_TOKEN=%s and GH_TOKEN=%s', async (githubToken, ghToken, authorization) => {
+    vi.stubEnv('GITHUB_TOKEN', githubToken);
+    vi.stubEnv('GH_TOKEN', ghToken);
+    const seen = mockResponses();
     await expect(fetchGitHubPR('https://github.com/team/repo/pull/42')).resolves.toMatchObject({
       title: 'Fix retries', description: '', author: 'dev',
       commits: [{ hash: 'abc123', message: 'Fix retries' }],
       diff: 'diff --git a/a b/a\n+fixed\n',
     });
+    expect(seen).toHaveLength(6);
+    for (const [options] of vi.mocked(https.request).mock.calls) {
+      const headers = (options as https.RequestOptions).headers as Record<string, string>;
+      expect(headers.Authorization).toBe(authorization);
+    }
   });
 
   it.each([0, 1, 50, 51, 100, 101, 250])('paginates %i commits without dropping or reordering them', async (count) => {
