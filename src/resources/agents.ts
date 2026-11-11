@@ -1342,6 +1342,50 @@ export class AgentsHandler extends ResourceHandler {
   }
 
   /**
+   * Remove the copies the last pull delivered of the agents a namespace held
+   * before it gained an `AGENT.md`: `agents/<ns>/` is one agent folder now, and
+   * those agents are its files (`nowFolderFiles`). The first removal says why,
+   * once; a folder that was always one is no news. The agents this pull
+   * delivers (`delivered`) keep their copies, and a copy the member changed
+   * stays, named.
+   */
+  async removeNowFolderCopies(
+    teamConfig: TeamaiConfig,
+    localConfig: LocalConfig,
+    delivered: readonly ResourceItem[],
+    ledger: DeliveryLedger,
+  ): Promise<void> {
+    const folders = await nowFolderFiles(path.join(localConfig.repo.localPath, 'agents'));
+
+    if (folders.length === 0 || ledger.previous === undefined) return;
+    const live = new Set(delivered.map(({ name }) => name));
+
+    for (const { tool, dir, sidecar } of await this.agentToolDirs(teamConfig, localConfig)) {
+      for (const folder of folders) {
+        for (const stem of folder.stems.filter((name) => !live.has(name))) {
+          for (const ext of AGENT_FILE_EXTENSIONS) {
+            const copy = path.join(dir, `${stem}${ext}`);
+
+            if (ledger.previous[copy] === undefined || !await pathExists(copy)) continue;
+
+            if (!await recordedUnchanged(ledger.previous, copy)) {
+              log.warn(`[${installScopeName(localConfig.scope)}] Kept ${copy}: teamai no longer delivers ${stem} here, but you changed this copy. Delete it when you no longer need it.`);
+              continue;
+            }
+
+            if (await keepsTrackedCopy(copy)) continue;
+            await removeDelivered(ledger, copy);
+            warnOnce(folder.message);
+
+            if (sidecar !== null) await updateJoycodeAgentIndex(joycodeIndexSidecar(sidecar, dir), { kind: 'remove', file: path.basename(copy) }, ledger);
+            log.debug(`[${installScopeName(localConfig.scope)}] Removed ${stem} from ${tool}: ${folder.message}`);
+          }
+        }
+      }
+    }
+  }
+
+  /**
    * Every tool that receives `item`, with the path and the bytes `pullItem`
    * writes there.
    *
@@ -1863,6 +1907,39 @@ export async function listTeamAgentFolders(teamAgentsDir: string): Promise<TeamA
   }
 
   return folders;
+}
+
+/**
+ * The agent folders at the root of `teamAgentsDir` that hold what a namespace
+ * reads as agents (`listTeamAgentDirs`): agent files, and agent folders a level
+ * down. Without their `AGENT.md` they would be a namespace, so each names the
+ * stems a pull may have delivered from it, and the note pull gives when it
+ * removes their copies.
+ */
+async function nowFolderFiles(teamAgentsDir: string): Promise<Array<{ stems: string[]; message: string }>> {
+  const found: Array<{ stems: string[]; message: string }> = [];
+
+  for (const { dir, name, namespace } of await listTeamAgentFolders(teamAgentsDir)) {
+    if (namespace !== undefined) continue;
+    const files = (await listFiles(dir)).filter((file) => file !== AGENT_MARKER && /\.(md|yaml)$/.test(file)).map((file) => ({ file, stem: file.replace(/\.(md|yaml)$/, '') }));
+
+    for (const sub of await listDirs(dir)) {
+      if (isSafeNamespaceSegment(sub) && await holdsMarker(path.join(dir, sub), AGENT_MARKER)) files.push({ file: `${sub}/${AGENT_MARKER}`, stem: sub });
+    }
+
+    if (files.length === 0) continue;
+    const read = files.map(({ file }) => file).sort();
+    const folderPath = `agents/${name}/`;
+
+    found.push({
+      stems: [...new Set(files.map(({ stem }) => stem))],
+      message: read.length === 1
+        ? `${folderPath} holds ${AGENT_MARKER}, so it is one folder, and ${read[0]} in it is one of its files, no longer read on its own.`
+        : `${folderPath} holds ${AGENT_MARKER}, so it is one folder, and ${read.join(', ')} in it are its files, no longer read on their own.`,
+    });
+  }
+
+  return found;
 }
 
 type TeamAgentFile = { path: string; ext: '.yaml' | '.md'; namespace?: string };

@@ -180,6 +180,13 @@ Review the diff against ${TEAMAI_AGENT_DIR}/rubric.md.
 
 提交目录型 agent 之前，让每位成员先升级。旧版 teamai 会跳过这个目录，或者把其中每个 `.md` 各自当作一个 agent。
 
+命名空间里一旦有了 `AGENT.md`，它就是一个目录型 agent：`agents/payments/AGENT.md` 让 `agents/payments/` 成为 agent `payments`，它原来的 agent（例如 `agents/payments/vr.md`）都成为它的文件。pull 会删除之前交付的这些 agent 的副本，保留你改过的副本，并提示一次：
+
+```console
+$ teamai pull
+⚠ agents/payments/ holds AGENT.md, so it is one folder, and vr.md in it is one of its files, no longer read on its own.
+```
+
 ### 替换 recall agent
 
 [recall](knowledge.md#开启--关闭-recall) 开着时，teamai 会装上自己的 `teamai-recall` agent。团队同名的 agent 会替换它，就像团队工作流替换[默认工作流](workflow.md#默认工作流)。放在 `agents/` 下给所有人，放在 `agents/<namespace>/` 下只给一个角色：

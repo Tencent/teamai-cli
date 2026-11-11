@@ -253,6 +253,19 @@ are never named. `review --branch` names every such file.
   renames `RULE.md` (`git mv rules/onboarding/RULE.md rules/onboarding/overview.md`)
   or moves the file out of the folder. Do not do it for them.
 
+## "agents/<dir>/ holds AGENT.md, so it is one folder, and <file> in it is one of its files, no longer read on its own"
+
+`pull` prints this once, when the namespace `agents/<dir>/` gains an
+`AGENT.md` and pull removes the copy it delivered before of an agent the
+namespace held. `<dir>` is now one agent, and `<file>` is one of its files. A
+copy the member changed stays, named in its own line.
+
+- The team meant it, such as a `rubric.md` the agent names through
+  `${TEAMAI_AGENT_DIR}`: nothing to do.
+- The namespace's agents should stay agents: the team moves `AGENT.md` into a
+  folder of its own (`git mv agents/<dir>/AGENT.md agents/<dir>/<name>/AGENT.md`).
+  Do not do it for them.
+
 ## "Workspace child <path> is left out" / "<item> differs between ..."
 
 `pull` in a workspace prints these; `teamai doctor` repeats the first.

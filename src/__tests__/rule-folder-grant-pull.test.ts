@@ -53,6 +53,8 @@ import { pull } from '../pull.js';
 import { AgentsHandler } from '../resources/agents.js';
 import { loadLocalConfigForScope, loadStateForScope, loadTeamConfig, saveStateForScope } from '../config.js';
 import { TeamaiConfigSchema, type LocalConfig, type State } from '../types.js';
+import { log } from '../utils/logger.js';
+import { resetWarnOnce } from '../utils/warn-once.js';
 
 /** A rule folder whose rule names its support file (#1787). */
 const RULE = 'Before adding an endpoint, read ${TEAMAI_RULE_DIR}/checklist.md.\n';
@@ -73,6 +75,7 @@ describe('the Claude Code grant of the rule folders a pull delivers (#1787)', ()
     await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'RULE.md'), RULE);
     await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'checklist.md'), '- Plural names.\n');
     vi.stubEnv('HOME', homeDir);
+    resetWarnOnce();
     saved = {} as State;
     vi.mocked(saveStateForScope).mockImplementation(async (state) => {
       saved = structuredClone(state);
@@ -156,6 +159,24 @@ describe('the Claude Code grant of the rule folders a pull delivers (#1787)', ()
         await fse.pathExists(agentCopy()),
         await fse.pathExists(agentFolder()),
       ]).toEqual([false, false, false]);
+    });
+
+    it('removes the copies of a namespace\'s agents once it holds AGENT.md, keeps an edited one, and says why once', async () => {
+      const copy = (name: string): string => path.join(homeDir, '.claude', 'agents', `${name}.md`);
+      await fse.outputFile(path.join(repoPath, 'agents', 'payments', 'vr.md'), 'Review screenshots.\n');
+      await fse.outputFile(path.join(repoPath, 'agents', 'payments', 'tf.md'), 'Review plans.\n');
+      await pull({});
+      await fse.appendFile(copy('tf'), 'My own note.\n');
+      await fse.outputFile(path.join(repoPath, 'agents', 'payments', 'AGENT.md'), 'Pay with ${TEAMAI_AGENT_DIR}/vr.md.\n');
+      vi.mocked(log.warn).mockClear();
+
+      await pull({ force: true });
+      await pull({ force: true });
+
+      expect([await fse.pathExists(copy('vr')), await fse.pathExists(copy('tf')), await fse.pathExists(copy('payments'))]).toEqual([false, true, true]);
+      expect(vi.mocked(log.warn).mock.calls.map(([message]) => String(message)).filter((message) => message.includes('agents/payments/'))).toEqual([
+        'agents/payments/ holds AGENT.md, so it is one folder, and tf.md, vr.md in it are its files, no longer read on their own.',
+      ]);
     });
 
     it('keeps the folder of an agent the team removed while the member keeps an edited copy, and removes it with the copy', async () => {

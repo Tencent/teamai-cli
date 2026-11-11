@@ -189,6 +189,13 @@ Review the diff against ${TEAMAI_AGENT_DIR}/rubric.md.
 
 Before you commit an agent folder, have every member upgrade. An older teamai skips the folder, or reads each `.md` in it as an agent of its own.
 
+A namespace that gains `AGENT.md` is one agent folder from then on: `agents/payments/AGENT.md` makes `agents/payments/` the agent `payments`, and the agents it held, such as `agents/payments/vr.md`, its files. Pull removes the copies it delivered of those agents, keeps one you changed, and says so once:
+
+```console
+$ teamai pull
+⚠ agents/payments/ holds AGENT.md, so it is one folder, and vr.md in it is one of its files, no longer read on its own.
+```
+
 ### Replace the recall agent
 
 While [recall](knowledge.md#enabling--disabling-recall) is on, teamai installs its own `teamai-recall` agent. A team agent with that name replaces it, the way a team workflow replaces a [default workflow](workflow.md#default-workflows). Put it in `agents/` for everyone, or in `agents/<namespace>/` for one role:

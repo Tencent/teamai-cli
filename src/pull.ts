@@ -3118,8 +3118,11 @@ async function pullForScope(
   if (!isRecallEnabled(localConfig, freshConfig)) await removeRecallFilesQuietly(freshConfig, localConfig, scopeLabel, dryRun);
   recorder?.succeeded('builtin');
 
-  // Step 4.7: once every agent copy this pull removes is gone, the agent folders that neither a resolved agent nor a copy left names.
-  if (!dryRun && resolvedAgents !== null) await pruneAgentFolders({ teamConfig: freshConfig, localConfig, resolved: resolvedAgents, ledger, scopeLabel });
+  // Step 4.7: the copies of a namespace's agents once it holds AGENT.md; then, once every agent copy this pull removes is gone, the agent folders that neither a resolved agent nor a copy left names.
+  if (!dryRun && resolvedAgents !== null) {
+    await getHandler('agents').removeNowFolderCopies(freshConfig, localConfig, resolvedAgents, ledger);
+    await pruneAgentFolders({ teamConfig: freshConfig, localConfig, resolved: resolvedAgents, ledger, scopeLabel });
+  }
 
   if (await checkoutRemoved()) return;
   // Step 4b: Record where each tool took skills, rules, instruction blocks and
