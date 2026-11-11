@@ -3195,7 +3195,12 @@ async function executeRemoval(
       const kept = await keptFolders(dir);
 
       if (kept.length > 0) await removeAllBut(dir, kept);
-      else await remove(dir);
+      else {
+        await remove(dir);
+        // The worktree's .teamai/ held only them, unless the team or the member keeps something else there.
+        await removeIfEmpty(path.dirname(dir));
+      }
+
       log.success(`Removed the team folders delivered in ${dir}${kept.length > 0 ? ` but ${kept.join(', ')}` : ''}`);
     } catch (e) {
       log.warn(`Failed to remove ${dir}: ${e instanceof Error ? e.message : String(e)}`);

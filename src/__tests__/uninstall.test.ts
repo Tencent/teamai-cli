@@ -1386,7 +1386,8 @@ describe('uninstall', () => {
 
     await uninstall({ force: true });
 
-    expect([await fse.pathExists(copies), await fse.readFile(excludeFile, 'utf8')]).toEqual([false, '# my own\nscratch/\n']);
+    // The .teamai/ that held only them goes too.
+    expect([await fse.pathExists(path.dirname(copies)), await fse.readFile(excludeFile, 'utf8')]).toEqual([false, '# my own\nscratch/\n']);
   });
 
   it('removes the .teamai/delivered/ of every worktree of the project, which the exclude block it removes kept out of git (#1787)', async () => {
