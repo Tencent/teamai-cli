@@ -135,6 +135,48 @@ describe('push carries teamai.yaml (source add regression)', () => {
     expect(pushed).toContain('https://git.example/dev');
   });
 
+  it('preserves the destination and pending edit when their team config bases differ', async () => {
+    const teamRepo = await initTeamRepos(tmpDir);
+    const remote = path.join(tmpDir, 'remote.git');
+    const seed = path.join(tmpDir, 'seed');
+    const seedGit = simpleGit(seed);
+    const branch = 'review/config';
+    const yamlPath = path.join(teamRepo, 'teamai.yaml');
+    const base = fs.readFileSync(yamlPath, 'utf8');
+    await seedGit.checkoutLocalBranch(branch);
+    fs.writeFileSync(path.join(seed, 'teamai.yaml'), base + 'usageReport: true\n');
+    await seedGit.add('teamai.yaml');
+    await seedGit.commit('Enable usage reporting on the destination');
+    await seedGit.push('origin', branch);
+    const destination = await seedGit.revparse(['HEAD']);
+
+    const pending = base + 'autoUpdate: true\n';
+    fs.writeFileSync(yamlPath, pending);
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: {
+        repo: { localPath: teamRepo, remote },
+        username: 'alice',
+        scope: 'project',
+        projectRoot: teamRepo,
+      },
+      teamConfig: { repo: 'acme/team', toolPaths: {} },
+    });
+
+    const originalExitCode = process.exitCode;
+    try {
+      const { push } = await import('../push.js');
+      await push({ all: true, branch });
+
+      expect(await simpleGit(remote).revparse([branch])).toBe(destination);
+      expect(fs.readFileSync(yamlPath, 'utf8')).toBe(pending);
+      expect((await simpleGit(teamRepo).branchLocal()).current).toBe('main');
+      expect(mockCreatePullRequest).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = originalExitCode;
+    }
+  });
+
   it('rejects invalid package declarations before creating a PR', async () => {
     const teamRepo = await initTeamRepos(tmpDir);
     const yamlPath = path.join(teamRepo, 'teamai.yaml');

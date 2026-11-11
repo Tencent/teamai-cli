@@ -1317,26 +1317,52 @@ async function checkoutExplicitBranch(
 export async function prepareExplicitBranch(localPath: string, branchName: string): Promise<void> {
   const git = createGit(localPath);
   const remote = createGitWithBlockTimeout(localPath);
+
+  const localBranches: readonly string[] = await git.branchLocal().then(
+    (summary) => summary.all,
+    (): string[] => [],
+  );
+
+  try {
+    await remote.fetch(['--progress', 'origin', branchName]);
+  } catch (e) {
+    log.debug(`Could not fetch ${branchName}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  const localRef = `refs/heads/${branchName}`;
+  const originRef = `refs/remotes/origin/${branchName}`;
+  const localExists = localBranches.includes(branchName);
+  const originExists = await git.revparse(['--verify', `${originRef}^{commit}`]).then(() => true, () => false);
+
+  const [behind, ahead] = localExists && originExists
+    ? (await git.raw(['rev-list', '--left-right', '--count', `${originRef}...${localRef}`]))
+      .trim().split(/\s+/).map((count) => Number.parseInt(count, 10))
+    : [0, 0];
+
+  // A rebase can incorporate config changes from either tip.
+  const destinations = [];
+
+  if (localExists && (!behind || ahead)) destinations.push(localRef);
+
+  if (originExists && (!localExists || behind)) destinations.push(originRef);
+
+  if (destinations.length && (await git.raw(['status', '--porcelain', '--', 'teamai.yaml'])).trim()) {
+    for (const destination of destinations) {
+      if ((await git.diff(['--name-only', 'HEAD', destination, '--', 'teamai.yaml'])).trim()) {
+        throw new Error(
+          `teamai.yaml differs on the destination branch ${branchName}. `
+          + 'Your edit is still in the team repo. Reapply it on top of the destination config or push to a new branch.',
+        );
+      }
+    }
+  }
+
   // Pending config or env edits may already be in the working tree; a checkout
   // to the destination must not lose them, and its files must not block it.
   const carried = await carryWorkingTree(git);
 
   try {
-    const localBranches: readonly string[] = await git.branchLocal().then(
-      (summary) => summary.all,
-      (): string[] => [],
-    );
-
-    try {
-      await remote.fetch(['--progress', 'origin', branchName]);
-    } catch (e) {
-      log.debug(`Could not fetch ${branchName}: ${e instanceof Error ? e.message : String(e)}`);
-    }
-
-    const originRef = `origin/${branchName}`;
-    const originExists = await git.revparse(['--verify', `${originRef}^{commit}`]).then(() => true, () => false);
-
-    if (!localBranches.includes(branchName)) {
+    if (!localExists) {
       if (originExists) await git.checkout(['-b', branchName, originRef]);
       else await git.checkoutLocalBranch(branchName);
 
@@ -1344,11 +1370,6 @@ export async function prepareExplicitBranch(localPath: string, branchName: strin
     }
 
     await git.checkout(branchName);
-
-    if (!originExists) return;
-
-    const [behind, ahead] = (await git.raw(['rev-list', '--left-right', '--count', `${originRef}...HEAD`]))
-      .trim().split(/\s+/).map((count) => Number.parseInt(count, 10));
 
     if (!behind) return;
 
