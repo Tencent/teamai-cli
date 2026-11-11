@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { type JsonValue, type MRData, type MRFetchOptions, type MRThread } from '../../types.js';
 import { log } from '../../utils/logger.js';
 import { pruneThreads } from '../mr-threads.js';
-import { ghExec } from './gh-cli.js';
+import { getGitHubToken, ghExec } from './gh-cli.js';
 
 /** GitHub PR URL 解析结果 */
 interface ParsedGitHubPR {
@@ -63,7 +63,7 @@ const GitHubApiCommitSchema = z.object({
  */
 async function githubApiGet(path: string): Promise<JsonValue> {
   return new Promise((resolve, reject) => {
-    const token = process.env['GITHUB_TOKEN'];
+    const token = getGitHubToken();
 
     const headers: OutgoingHttpHeaders = {
       'User-Agent': 'teamai-cli',
@@ -230,7 +230,7 @@ async function fetchGitHubPRViaApi(owner: string, repo: string, number: string):
 
   // ── 3. diff（Accept: application/vnd.github.v3.diff） ────
   const diff = await new Promise<string>((resolve, reject) => {
-    const token = process.env['GITHUB_TOKEN'];
+    const token = getGitHubToken();
 
     const headers: OutgoingHttpHeaders = {
       'User-Agent': 'teamai-cli',
