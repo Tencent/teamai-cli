@@ -1614,7 +1614,7 @@ describe('reviewBranchDir — scorers', () => {
         level: 'fail',
         check: 'scorers',
         path: 'scorers/eval.yaml',
-        message: 'scorers/eval.yaml: not a scorer file; scorers/ holds <name>.md and <namespace>/<name>.md scorers, scoring.yaml settings and an optional README.md',
+        message: 'scorers/eval.yaml: not a scorer file; scorers/ holds <name>.md and <namespace>/<name>.md scorers, <name>/SCORER.md and <namespace>/<name>/SCORER.md scorer folders, scoring.yaml settings and an optional README.md',
       },
       {
         level: 'fail',
@@ -2216,7 +2216,7 @@ describe('materializeRef — branch materialization from git', () => {
   });
 });
 
-describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
+describe('reviewBranchDir: resource folders (#1787)', () => {
   let repoDir: string;
 
   beforeEach(async () => {
@@ -2225,23 +2225,6 @@ describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
 
   afterEach(async () => {
     await fse.remove(repoDir);
-  });
-
-  it('warns once per skipped folder and reviews none of its files', async () => {
-    // A bad name inside the scorer folder: a review that read it would report it.
-    await fse.outputFile(path.join(repoDir, 'scorers', 'strict', 'SCORER.md'), '# Strict\n');
-    await fse.outputFile(path.join(repoDir, 'scorers', 'strict', 'Bad Name.md'), '# Bad\n');
-
-    const review = await reviewBranchDir(BRANCH, repoDir);
-
-    expect(review.findings).toEqual([
-      {
-        level: 'warn',
-        check: 'structure',
-        path: 'scorers/strict/',
-        message: 'scorers/strict/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
-      },
-    ]);
   });
 
   it('reviews an agent folder as one agent, and none of its support files as an agent', async () => {
@@ -2281,15 +2264,23 @@ describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
     expect(review.findings).toEqual([]);
   });
 
-  it('checks no scoring settings in a scorer folder', async () => {
-    await fse.outputFile(path.join(repoDir, 'scorers', 'style', 'SCORER.md'), '# Style\n');
+  it('reads a scorer folder as one scorer whose other files, scoring.yaml among them, are its own, and fails one that is no scorer', async () => {
+    const scorer = '---\nlabels:\n  - { value: good, score: 1, description: Good. }\n  - { value: bad, score: 0, description: Bad. }\npassingScore: 1\n---\nJudge by ${TEAMAI_SCORER_DIR}/rubric.md.\n';
+    // With a manifest, a directory no role declares is shared: each folder's rubric.md would be the shared scorer rubric.
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: dev\n    description: dev\n    resources: { knowledge: [], skills: [] }\n');
+    await fse.outputFile(path.join(repoDir, 'scorers', 'style', 'SCORER.md'), scorer);
+    await fse.outputFile(path.join(repoDir, 'scorers', 'style', 'rubric.md'), 'Pass a change that names its tests.\n');
+    // A support file's name is the folder's business: a review that read it as a scorer would report it.
+    await fse.outputFile(path.join(repoDir, 'scorers', 'style', 'Good Example.md'), 'A change with tests.\n');
     await fse.outputFile(path.join(repoDir, 'scorers', 'style', 'scoring.yaml'), 'batch: maybe\n');
+    await fse.outputFile(path.join(repoDir, 'scorers', 'tone', 'SCORER.md'), '# Tone\n');
+    await fse.outputFile(path.join(repoDir, 'scorers', 'tone', 'rubric.md'), 'Pass a plain tone.\n');
 
     const review = await reviewBranchDir(BRANCH, repoDir);
 
-    expect(review.findings.map((finding) => finding.message)).toEqual([
-      'scorers/style/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
-    ]);
+    expect(review.findings).toEqual([{
+      level: 'fail', check: 'scorers', path: 'scorers/tone/SCORER.md', message: 'scorers/tone/SCORER.md: a scorer starts with YAML frontmatter between --- lines',
+    }]);
   });
 });
 

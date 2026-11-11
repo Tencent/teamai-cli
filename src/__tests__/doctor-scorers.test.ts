@@ -35,7 +35,7 @@ describe('scorerNotes', () => {
     });
 
     expect(await scorerNotes(config)).toEqual([
-      'Invalid scorer: scorers/eval.yaml: not a scorer file; scorers/ holds <name>.md and <namespace>/<name>.md scorers, scoring.yaml settings and an optional README.md',
+      'Invalid scorer: scorers/eval.yaml: not a scorer file; scorers/ holds <name>.md and <namespace>/<name>.md scorers, <name>/SCORER.md and <namespace>/<name>/SCORER.md scorer folders, scoring.yaml settings and an optional README.md',
       'Unknown scorer: workflows/ship.yaml: step "plan" lists scorer "nope", which has no valid scorers/nope.md; the step runs without it',
     ]);
     expect(fs.existsSync(config.dataHome ?? '')).toBe(false);

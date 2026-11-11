@@ -325,11 +325,14 @@ describe('teamai list / status resource coverage', () => {
     await fse.outputFile(path.join(repoPath, 'scorers', 'quality.md'), scorer);
     await fse.outputFile(path.join(repoPath, 'scorers', 'tests.md'), scorer);
     await fse.outputFile(path.join(repoPath, 'scorers', 'scoring.yaml'), 'batch: true\n');
+    // A scorer folder is one scorer, whatever files it holds.
+    await fse.outputFile(path.join(repoPath, 'scorers', 'style', 'SCORER.md'), scorer);
+    await fse.outputFile(path.join(repoPath, 'scorers', 'style', 'rubric.md'), 'Rubric.\n');
     await syncScorersThenWorkflows(localConfig);
 
     await status({});
 
-    expect(lines.filter((line) => line.startsWith('  scorers: '))).toEqual(['  scorers: 2', '  scorers: 2 (quality, tests)']);
+    expect(lines.filter((line) => line.startsWith('  scorers: '))).toEqual(['  scorers: 3', '  scorers: 3 (quality, style, tests)']);
   });
 
   it('status counts a suite as one, whether it is written as SUITE.yaml or suite.yaml', async () => {

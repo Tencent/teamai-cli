@@ -94,16 +94,18 @@ async function putMarkerAndLowerCase(dir: string, marker: string, content: strin
 const SCORER = '---\nlabels:\n  - { value: good, score: 1, description: Did the work }\n  - { value: bad, score: 0, description: Did not }\npassingScore: 0.5\n---\nJudge the session.\n';
 
 describe('scorers', () => {
-  it('caches no scorer from a scorer folder and reports none of its files', async () => {
+  it('reads a scorer folder as the scorer named after its directory, at the root and in a namespace, and none of its files as a scorer', async () => {
     await put('scorers/quality.md', SCORER);
     await put('scorers/style/SCORER.md', SCORER);
     await put('scorers/style/rubric.md', SCORER);
+    await put('scorers/style/examples/bad.md', 'x\n');
     await put('scorers/team/review/SCORER.md', SCORER);
+    await put('scorers/team/review/notes.txt', 'x\n');
 
     const result = await syncScorerDefinitions({ ...localConfig, dataHome: path.join(repo, '.data') }, { dryRun: true, everyNamespace: true });
 
     expect(result.invalid).toEqual([]);
-    expect(result.cached).toEqual(['quality']);
+    expect(result.cached.sort()).toEqual(['quality', 'review', 'style']);
   });
 
   it('reads no scoring settings from a scorer folder', async () => {

@@ -1361,7 +1361,7 @@ export const StateSchema = z.object({
     children: z.string().optional(),
     /** The selection the last pull that delivered into this checkout read. Absent in a record an older CLI wrote. */
     selection: DeliverySelectionSchema.optional(),
-    /** The folders the last full pull of this checkout left out (#1791), by path. Absent in a record an older CLI wrote. */
+    /** The folders an older release left out of the last full pull (#1791), by path: pull syncs in full while it is set, and never writes it. */
     skippedFolders: z.array(z.string()).optional(),
     /**
      * The `claudeMdExcludes` entries teamai wrote into this checkout's

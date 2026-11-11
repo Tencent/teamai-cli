@@ -785,15 +785,17 @@ self 模式下，如果当前分支落后于默认分支，推送修改过的 sk
 | `rules/` | `RULE.md` | 读取：[目录型 rule](#目录型-rule确定加载的-skill) |
 | `mcp/` | `MCP.yaml` | 读取：[MCP Server](#mcp-server) |
 | `benchmarks/` | `SUITE.yaml` | 读取：[套件](benchmarks.md#编写套件) |
-| `scorers/` | `SCORER.md` | 跳过 |
+| `scorers/` | `SCORER.md` | 读取：[评分器目录](scorers.md#评分器目录) |
 | `agents/` | `AGENT.md` | 读取：[目录型 agent](#目录型-agent) |
 
-scorer 目录会被整体跳过，团队仓库的其他内容照常 pull：
+一个目录就是一个资源，无论其中还有什么文件：
 
 ```text
-scorers/
-└── strict/
-    └── SCORER.md               跳过：scorers/strict/ 是 scorer 目录
+agents/
+├── code-reviewer.md            交付：agent "code-reviewer"
+└── reviewer/
+    ├── AGENT.md                交付：agent "reviewer"
+    └── rubric.md               随目录一起交付
 rules/
 ├── style.md                    交付：规则 "style"
 └── api-style/
@@ -801,15 +803,14 @@ rules/
     └── checklist.md            随目录一起交付
 ```
 
-pull 对每个目录提示一次；由 hook 触发的 pull 会把同样的内容写进 `~/.teamai/debug.log`：
+还不能读取某种目录类型的旧版 teamai 会整体跳过这种目录，团队仓库的其他内容照常 pull。它对每个目录提示一次；由 hook 触发的 pull 会把这行写进 `~/.teamai/debug.log`：
 
 ```console
 $ teamai pull
-⚠ scorers/strict/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.
-✔ [user] Synced 2 rule(s)
+⚠ agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.
 ```
 
-`teamai status`、`teamai doctor`、`teamai review --branch` 和 dashboard 都会列出这些目录。push 不会改动它们，团队也不需要声明任何东西。
+团队添加 agent 或 scorer 目录之前，先让每位成员运行 `teamai update`。
 
 文件名必须完全一致：`rules/lint/rule.md` 仍然是规则 `lint/rule`，在 macOS 和 Windows 上也一样。
 

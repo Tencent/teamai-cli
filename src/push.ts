@@ -24,8 +24,7 @@ import type {
   GlobalOptions, PendingPushItem, ResourceItem, ResourceType, LocalConfig, TeamaiConfig, State,
 } from './types.js';
 import { getDataHome, isSelfMode, SELF_KNOWLEDGE_SCAN_KEY, SYNC_LOCK_FILENAME } from './types.js';
-import { FOLDER_MARKERS, findSkippedFolders, isInSkippedFolder, reportSkippedFolders } from './folder-markers.js';
-import { RESOURCE_LAYOUTS, Resources } from './resources/resolver.js';
+import { FOLDER_MARKERS, holdsMarker } from './folder-markers.js';
 import { acquireLock, releaseLock } from './update.js';
 import { assertSafeResourceName, resolveReal } from './utils/path-safety.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces, roleNamespaceEntries, RolesManifestNotFoundError, type ResourceNamespaces } from './roles.js';
@@ -2112,37 +2111,39 @@ async function pushCore(
   const skippedForWantOfDestination = (item: ResourceItem): boolean => item.type === 'agents'
     && 'needsDestination' in item && item.needsDestination === true;
 
-  // Nothing in a folder this release cannot read goes out as a resource
-  // (#1791), whichever scan found it: the team's folder stays as it is.
-  const skippedFolders = [
-    ...await findSkippedFolders(localConfig.repo.localPath),
-    ...isSelfMode(localConfig) && localConfig.projectRoot ? await findSkippedFolders(path.join(localConfig.projectRoot, '.teamai')) : [],
-  ];
-
-  // A rule folder holds files, not rules (#1787): a rule placed in one would be one of its files.
-  const ruleFolders = (await Promise.all([
+  const folderRoots = [
     localConfig.repo.localPath,
     ...isSelfMode(localConfig) && localConfig.projectRoot ? [path.join(localConfig.projectRoot, '.teamai')] : [],
-  ].map(async (root) => (await Resources.walk(RESOURCE_LAYOUTS.rules, root)).items))).flat()
-    .flatMap(({ source }) => (source.kind === 'folder' ? [source.path] : []));
+  ];
+
+  // A rule, agent or scorer folder holds files, not resources of its type (#1787): one placed in it would be one of its files.
+  const folderMarkers: Partial<Record<ResourceItem['type'], string>> = { rules: FOLDER_MARKERS.rules.marker, agents: FOLDER_MARKERS.agents.marker, scorers: FOLDER_MARKERS.scorers.marker };
+
+  const holdingFolder = async (item: ResourceItem): Promise<{ readonly path: string; readonly marker: string } | undefined> => {
+    const marker = folderMarkers[item.type];
+
+    if (marker === undefined) return undefined;
+    const parts = item.relativePath.split('/');
+
+    for (let depth = 2; depth < parts.length; depth++) {
+      const dir = parts.slice(0, depth);
+
+      for (const root of folderRoots) if (await holdsMarker(path.join(root, ...dir), marker)) return { path: `${dir.join('/')}/`, marker };
+    }
+
+    return undefined;
+  };
 
   // Placement can move a new resource into a namespace that is such a folder:
   // refuse the push there rather than write into it.
-  const placedInSkippedFolder = (items: readonly ResourceItem[]): boolean => {
+  const placedInFolder = async (items: readonly ResourceItem[]): Promise<boolean> => {
     let refused = false;
 
     for (const item of items) {
-      const folder = skippedFolders.find((candidate) => isInSkippedFolder(item.relativePath, [candidate]));
-      const ruleFolder = item.type === 'rules' ? ruleFolders.find((dir) => item.relativePath.startsWith(dir)) : undefined;
+      const folder = await holdingFolder(item);
 
-      if (ruleFolder !== undefined) {
-        log.error(`[rules] ${item.name} cannot be placed in ${item.relativePath}: ${ruleFolder} is a rule folder, so the file would be one of its files, not a rule. Push it with --role <another namespace> or --shared.`);
-        refused = true;
-        continue;
-      }
-
-      if (!folder) continue;
-      log.error(`[${item.type}] ${item.name} cannot be placed in ${item.relativePath}: ${folder.path} holds ${FOLDER_MARKERS[folder.type].marker}, which this teamai cannot read. Push it with --role <another namespace> or --shared.`);
+      if (folder === undefined) continue;
+      log.error(`[${item.type}] ${item.name} cannot be placed in ${item.relativePath}: ${folder.path} holds ${folder.marker}, so the file would be one of its files, not a resource of its own. Push it with --role <another namespace> or --shared.`);
       refused = true;
     }
 
@@ -2154,14 +2155,6 @@ async function pushCore(
   // Preserve blocked items in the full scan so their pending PR records survive.
   // Exclude them before selection and grouping: pushItem cannot write their paths.
   const listed = fullScan.filter((item: PushItem) => {
-    const holding = skippedFolders.filter((folder) => isInSkippedFolder(item.relativePath, [folder]));
-
-    if (holding.length > 0) {
-      reportSkippedFolders(holding);
-
-      return false;
-    }
-
     if (item.skipReason) {
       log.warn(`[${item.type}] Skipped ${item.name}: ${item.skipReason}`);
 
@@ -2689,7 +2682,7 @@ async function pushCore(
       items: allItems, options, localConfig, projectsManifest, roleNamespaces, skillsDestinationError, teamRepoStale, settled,
     });
 
-    if (!placed || placedInSkippedFolder(allItems)) return;
+    if (!placed || await placedInFolder(allItems)) return;
     log.info('Dry run — no changes made');
 
     return;
@@ -2739,7 +2732,7 @@ async function pushCore(
   // ── Step 4: Place NEW root-level resources in a namespace (after selection) ─
   if (!await placeNewResources({
     items: selectedItems, options, localConfig, projectsManifest, roleNamespaces, skillsDestinationError, teamRepoStale, settled,
-  }) || placedInSkippedFolder(selectedItems)) return;
+  }) || await placedInFolder(selectedItems)) return;
 
   // ── Step 5: Push each group — one branch/PR per group ──────────────
   // Config edits ride along with the first group normally. With --branch, an

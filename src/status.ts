@@ -7,7 +7,6 @@ import { teamRefNotice } from './team-ref.js';
 import { getDefaultBranch, getHeadRev, getRepoStatus } from './utils/git.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import { log } from './utils/logger.js';
-import { findSkippedFolders, isInSkippedFolder, skippedFolderMessage } from './folder-markers.js';
 import { readTeamRules } from './resources/rules.js';
 import { getAllHandlers, getHandler } from './resources/index.js';
 import { listDirs, pathExists, readFileSafe } from './utils/fs.js';
@@ -29,7 +28,8 @@ import { LayeredEntries } from './resources/layered-entries.js';
 import { readDefaultHookReplacements, resolveTeamHookEntries } from './resources/hooks.js';
 import { InheritedFolders, type FolderFileLayer, type Inheritance } from './resources/inherited-folders.js';
 import { RECALL_RULE_NAME, resolveRecall } from './builtin-rules.js';
-import { RESOURCE_LAYOUTS } from './resources/resolver.js';
+import { markerFolderOf, RESOURCE_LAYOUTS } from './resources/resolver.js';
+import { listRepoFilesRecursive } from './resources/repo-resource.js';
 import { envEntryReader } from './resources/env.js';
 import { envListing } from './env-listing.js';
 import { resolveTeamEnv } from './env-resolution.js';
@@ -126,8 +126,6 @@ export async function status(options: GlobalOptions): Promise<void> {
   // Match `list skills --source repo`: count skills, not namespace directories.
   counts.skills = (await new SkillsHandler().scanTeamForPull(teamConfig, localConfig)).length;
 
-  const skippedFolders = await findSkippedFolders(repoPath);
-
   // A rule folder is one rule, whatever files it holds (#1787).
   counts.rules = (await readTeamRules(repoPath)).rules.length;
 
@@ -159,11 +157,17 @@ export async function status(options: GlobalOptions): Promise<void> {
   count('hooks', (await resolveTeamHookEntries(localConfig)).resolution);
   count('mcp', await LayeredEntries.resolve(TEAM_MCP_ENTRIES, localConfig));
 
+  // A scorer folder is one scorer, counted by its SCORER.md; scoring.yaml holds settings.
+  const scorerFolders = (await listRepoFilesRecursive(path.join(repoPath, 'scorers'))).flatMap((file) => markerFolderOf(RESOURCE_LAYOUTS.scorers, file) ?? []).map((folder) => `scorers/${folder}/`);
+
+  const isScorerFile = (relativePath: string): boolean => path.posix.basename(relativePath) !== SCORING_FILE
+    && !scorerFolders.some((folder) => relativePath.startsWith(folder) && relativePath !== `${folder}${RESOURCE_LAYOUTS.scorers.marker}`);
+
   // Repo-backed types: count what's in the team repo tree.
   for (const type of ['models', 'claudemd', 'learnings', 'wiki', 'workflows', 'prompts', 'scorers', 'benchmarks'] as const) {
     try {
       counts[type] = (await getHandler(type).scanTeamForPull(teamConfig, localConfig))
-        .filter((item) => type !== 'scorers' || path.posix.basename(item.relativePath) !== SCORING_FILE)
+        .filter((item) => type !== 'scorers' || isScorerFile(item.relativePath))
         // A suite is its directory: count its SUITE.yaml or suite.yaml, not its task files.
         .filter((item) => type !== 'benchmarks' || SUITE_FILES.has(path.posix.basename(item.relativePath))).length;
     } catch {
@@ -177,14 +181,6 @@ export async function status(options: GlobalOptions): Promise<void> {
 
   const scorers = await cachedScorerNames(localConfig);
   console.log(`  scorers: ${scorers.length}${scorers.length > 0 ? ` (${scorers.join(', ')})` : ''}`);
-
-  // Left out of every count above and of what pull delivers (#1791).
-  if (skippedFolders.length > 0) {
-    console.log('');
-    log.info('Skipped folders:');
-
-    for (const folder of skippedFolders) console.log(`  ${skippedFolderMessage(folder)}`);
-  }
 
   // Local pushable items
   console.log('');
@@ -204,9 +200,6 @@ export async function status(options: GlobalOptions): Promise<void> {
       anyUnscanned = true;
       continue;
     }
-
-    // Push leaves out what lies in a folder this release cannot read (#1791).
-    items = items.filter((item) => !isInSkippedFolder(item.relativePath, skippedFolders));
 
     if (items.length > 0) {
       anyNew = true;

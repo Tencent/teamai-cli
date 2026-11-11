@@ -1,4 +1,3 @@
-import { findSkippedFolders, reportSkippedFolders } from './folder-markers.js';
 import { hookToolPathsForConfig, parseUserStats } from './types.js';
 import os from 'node:os';
 import path from 'node:path';
@@ -2016,13 +2015,6 @@ async function pullForScope(
     return;
   }
 
-  // Every scan below leaves out a folder of a type this release cannot read
-  // (#1791). Said here, before the revision fast path, so every pull says it.
-  const skippedFolders = await findSkippedFolders(localConfig.repo.localPath);
-  reportSkippedFolders(skippedFolders);
-
-  if (skippedFolders.length > 0) reported.add('skipped-folders');
-
   // Resolve role-scoped instruction sources before the revision fast path so
   // CLI upgrades can refresh managed instruction blocks without a repo change.
   let roleContext: RolePullContext | null = null;
@@ -2353,12 +2345,11 @@ async function pullForScope(
         || isDeepStrictEqual(rolesDeliveredFor(checkout.selection), rolesDeliveredFor(deliverySelection(localConfig)));
 
       if (!sameRoles) log.debug(`[${scopeLabel}] The roles delivered for changed, syncing`);
-      // A release that skips a folder an older one delivered from must remove
-      // those copies at once, not on the team's next commit (#1791). A record
-      // without the list read no folder as skipped.
-      const sameSkipped = isDeepStrictEqual(checkout?.skippedFolders ?? [], skippedFolders.map((folder) => folder.path));
+      // An older release that skipped folders it could not read listed them (#1791). This one reads every folder type,
+      // so it delivers them now, not on the team's next commit.
+      const sameSkipped = (checkout?.skippedFolders ?? []).length === 0;
 
-      if (!sameSkipped) log.debug(`[${scopeLabel}] The folders this release skips changed, syncing`);
+      if (!sameSkipped) log.debug(`[${scopeLabel}] The last pull skipped folders this release reads, syncing`);
 
       if (currentRev && state[revisionField] === currentRev && recorded?.rev === currentRev && recorded.teamRef === localConfig.repo.ref && listed && sameChildren && sameRoles && sameSkipped) {
         currentTargets = await getInstalledResourceTargets(freshConfig, localConfig);
@@ -3219,7 +3210,7 @@ async function pullForScope(
       if (rootsSeeded) record.rootsSeeded = true;
       setChildren(record, localConfig);
       record.selection = deliverySelection(localConfig);
-      record.skippedFolders = skippedFolders.map((folder) => folder.path);
+      delete record.skippedFolders;
       addPushBaseRev(record, deliveredRev);
       record.delivered = ledger.hashes;
       record.places = syncedPlaces;
@@ -3280,7 +3271,6 @@ async function pullForScope(
 
       setChildren(record, localConfig);
       record.selection = deliverySelection(localConfig);
-      record.skippedFolders = skippedFolders.map((folder) => folder.path);
       setAgentModels(record, ledger.agentModels);
       state.lastPullByWorkspace = {
         ...others,

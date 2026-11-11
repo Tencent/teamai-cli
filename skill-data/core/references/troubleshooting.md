@@ -220,20 +220,20 @@ For new HTTP local-agent MCP installs, a failed initial ownership-manifest write
 
 ## "<dir>/ is a <type> folder, which this teamai cannot read yet; it was skipped"
 
-`pull`, `status`, `doctor` and `review --branch` print one such line per
-directory that holds a folder marker of a type this release cannot read:
-`SCORER.md` under `scorers/`. Workflow, hook, rule, agent, MCP server and
-suite folders are read. Nothing in the directory is
+An older teamai's `pull`, `status`, `doctor` and `review --branch` print one
+such line per directory that holds a folder marker of a type it cannot read,
+such as `AGENT.md` under `agents/` or `SCORER.md` under `scorers/`. This
+release reads every folder type. Nothing in the directory is
 delivered, run or pushed; the rest of the team repo is. A hook-started pull writes it to
 `~/.teamai/debug.log`.
 
 ```console
 $ teamai pull
-⚠ scorers/strict/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.
+⚠ agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.
 ```
 
 - The team means it as a folder: tell the user to run `teamai update`, then
-  `teamai pull`. Until a release reads that type, the folder stays skipped.
+  `teamai pull`.
 - The file is an old resource that only happens to carry the name: the team
   renames it with `git mv`. Do not rename it for them.
 - Only the exact name counts: `rule.md` or `workflow.yaml` is read as before.

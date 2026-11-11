@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { findSkippedFolders, skippedFolderMessage } from './folder-markers.js';
 import { hookToolPathsForConfig } from './types.js';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -956,7 +955,6 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
         + 'next time the same lock is taken; removing them only clears the noise.',
     },
     ...buildWorkspaceChildrenChecks(localConfig),
-    ...await buildSkippedFoldersChecks(localConfig),
     ...await buildGitHookChecks(localConfig, stage),
     ...await buildTrackedHookIndexCheck(localConfig),
     ...buildToolRootChecks(localConfig, teamConfig),
@@ -992,25 +990,6 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
   );
 
   return checks;
-}
-
-/**
- * The folders every scan of the team repo leaves out, because this release
- * cannot read their type yet (#1791). A warning, not a failure: the rest of
- * the team repo is delivered, and `teamai update` is the fix.
- */
-async function buildSkippedFoldersChecks(localConfig: LocalConfig): Promise<Check[]> {
-  const skipped = await findSkippedFolders(localConfig.repo.localPath);
-
-  if (skipped.length === 0) return [];
-
-  return [{
-    name: 'This teamai reads every folder in the team repo',
-    source: 'local',
-    reportedByPull: 'skipped-folders',
-    check: async () => 'warn',
-    fix: skipped.map(skippedFolderMessage).join('\n    → '),
-  }];
 }
 
 /**

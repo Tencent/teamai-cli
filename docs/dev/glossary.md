@@ -57,7 +57,7 @@ Loading a **resource** in stages. Its **context pointer** is always in context; 
 _Avoid_: lazy loading, on-demand context
 
 **Marker file**:
-The file whose presence makes a directory a **resource folder**: `SKILL.md`, `WORKFLOW.yaml`, `HOOK.yaml`, `RULE.md`, `MCP.yaml`, `SUITE.yaml`.
+The file whose presence makes a directory a **resource folder**: `SKILL.md`, `WORKFLOW.yaml`, `HOOK.yaml`, `RULE.md`, `MCP.yaml`, `SUITE.yaml`, `AGENT.md`, `SCORER.md`.
 _Avoid_: manifest, index file
 
 **Resource folder**:

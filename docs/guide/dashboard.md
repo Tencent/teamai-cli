@@ -282,18 +282,6 @@ oncall   sre   Not delivered
 
 Below 1100 px wide the list shows one card per skill.
 
-A folder this teamai cannot read yet ([reserved folder names](sharing.md#reserved-folder-names)) heads the page, with its type, its marker and the command that brings it in. The Overview counts them above the cards and links here:
-
-```text
-⚠ Skipped folders  2                    This teamai cannot read these folder types yet
-FOLDER               TYPE             MARKER
-rules/api-style/     Rule folder      RULE.md
-workflows/release/   Workflow folder  WORKFLOW.yaml
-Update teamai, then pull again to receive them:  teamai update && teamai pull   Copy
-```
-
-Neither shows when no folder is skipped.
-
 ### Resource layers
 
 Resource layers lists every definition of each workflow, hook, MCP server, benchmark suite and rule folder, and which one `pull` uses in the workspace: teamai's default, the team root, or an active namespace, a later layer replacing an earlier one of the same name. teamai's defaults in force fold into one row. A definition pull cannot use shows what pull prints and the fix:

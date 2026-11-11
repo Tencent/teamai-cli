@@ -793,15 +793,17 @@ A directory that holds its type's marker, at any depth, is a folder: one resourc
 | `rules/` | `RULE.md` | Reads it: [rules as folders](#rules-as-folders-a-deterministic-skill) |
 | `mcp/` | `MCP.yaml` | Reads it: [MCP servers](#mcp-servers) |
 | `benchmarks/` | `SUITE.yaml` | Reads it: [suites](benchmarks.md#write-a-suite) |
-| `scorers/` | `SCORER.md` | Skips it |
+| `scorers/` | `SCORER.md` | Reads it: [scorer folders](scorers.md#a-scorer-folder) |
 | `agents/` | `AGENT.md` | Reads it: [agent folders](#agents-as-folders) |
 
-A scorer folder is skipped whole, and the rest of the team repo pulls as usual:
+A folder is one resource, whatever else it holds:
 
 ```text
-scorers/
-└── strict/
-    └── SCORER.md               skipped: scorers/strict/ is a scorer folder
+agents/
+├── code-reviewer.md            delivered: agent "code-reviewer"
+└── reviewer/
+    ├── AGENT.md                delivered: agent "reviewer"
+    └── rubric.md               delivered with the folder
 rules/
 ├── style.md                    delivered: rule "style"
 └── api-style/
@@ -809,15 +811,14 @@ rules/
     └── checklist.md            delivered with the folder
 ```
 
-Pull says so once per folder. A pull a hook starts writes the same lines to `~/.teamai/debug.log`:
+A teamai from before a folder type was read skips such a folder whole, and the rest of the team repo pulls as usual. It says so once per folder, and a pull a hook starts writes the line to `~/.teamai/debug.log`:
 
 ```console
 $ teamai pull
-⚠ scorers/strict/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.
-✔ [user] Synced 2 rule(s)
+⚠ agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.
 ```
 
-`teamai status`, `teamai doctor`, `teamai review --branch` and the dashboard list the same folders. Push leaves them alone, and the team declares nothing.
+Have every member run `teamai update` before the team adds an agent or scorer folder.
 
 The name must match exactly. `rules/lint/rule.md` is still the rule `lint/rule`, on macOS and Windows too.
 

@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { FOLDER_MARKERS, holdsMarker, unreadMarker } from '../folder-markers.js';
+import { FOLDER_MARKERS, holdsMarker } from '../folder-markers.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { packageRoot } from '../package-info.js';
 import { resolveNamespacedItems, type NamespaceCandidate, type NamespaceConflict, type ResolvedNamespaceItem } from '../namespace-resolver.js';
@@ -121,6 +121,8 @@ export const RESOURCE_LAYOUTS = {
   hooks: { dir: 'hooks', marker: FOLDER_MARKERS.hooks.marker, inherits: true, fileName: () => null, nameRule: { pattern: /^[a-z0-9-]+$/, description: 'a hook id uses only lower-case letters, digits and hyphens' } },
   mcp: { dir: 'mcp', marker: FOLDER_MARKERS.mcp.marker, fileName: () => null, nameRule: { pattern: /^[A-Za-z0-9_-]+$/, description: 'an MCP server name uses only letters, digits, - and _' } },
   benchmarks: { dir: 'benchmarks', marker: FOLDER_MARKERS.benchmarks.marker, markerAliases: ['suite.yaml'], fileName: () => null },
+  /** `scorers/<name>.md` or `scorers/<name>/SCORER.md`, read by the scorer cache (`src/scorers/cache.ts`). */
+  scorers: { dir: 'scorers', marker: FOLDER_MARKERS.scorers.marker, fileName: (file: string) => (file.endsWith('.md') && file !== 'README.md' ? file.slice(0, -'.md'.length) : null) },
   /** Names are paths at any depth (`Resources.walk`): `rules/fe/style.md` and `rules/fe/style/RULE.md` are `fe/style`. */
   rules: { dir: 'rules', marker: FOLDER_MARKERS.rules.marker, inherits: true, fileName: (file: string) => (file.endsWith('.md') ? file.slice(0, -'.md'.length) : null) },
 } as const satisfies Readonly<Record<string, ResourceLayout<unknown>>>;
@@ -209,12 +211,11 @@ export type FolderMarkerRead =
 /**
  * Which spelling of `layout`'s marker the directory `full` holds, by the names `readdir` returns (common rule 1 of
  * #1787), so a file system that ignores case cannot read `SUITE.yaml` as `suite.yaml`. `path` names the folder in the
- * message, ending with `/`. A marker this release cannot read counts for nothing.
+ * message, ending with `/`.
  */
 export async function readFolderMarker(layout: ResourceLayout<unknown>, at: { readonly full: string; readonly path: string }): Promise<FolderMarkerRead> {
-  const unread = unreadMarker(layout.dir);
   const names = new Set(await fileNames(at.full));
-  const held = [layout.marker, ...layout.markerAliases ?? []].filter((marker): marker is string => marker !== null && marker !== unread && names.has(marker));
+  const held = [layout.marker, ...layout.markerAliases ?? []].filter((marker): marker is string => marker !== null && names.has(marker));
   const [marker, ...others] = held;
 
   if (marker === undefined) return { kind: 'none' };
@@ -304,7 +305,6 @@ function itemFilesNote<TEntry>(layout: ResourceLayout<TEntry>, marker: string, f
  */
 async function readLayer<TEntry>(layout: ResourceLayout<TEntry>, root: string, dir: string, inheriting: ReadonlySet<string> = new Set()): Promise<LayerContents<TEntry>> {
   const toPath = (full: string): string => path.relative(root, full).split(path.sep).join('/');
-  const unread = unreadMarker(layout.dir);
 
   const items: Array<LayerItem<TEntry>> = [];
   const diagnostics: ResourceDiagnostic[] = [];
@@ -328,9 +328,6 @@ async function readLayer<TEntry>(layout: ResourceLayout<TEntry>, root: string, d
 
   for (const sub of await subdirectories(dir)) {
     const full = path.join(dir, sub);
-
-    // A folder this release cannot read is left out whole (#1791): its marker would otherwise be an item in a namespace.
-    if (await holdsMarker(full, unread)) continue;
 
     const folderPath = `${toPath(full)}/`;
     const held = await readFolderMarker(layout, { full, path: folderPath });
@@ -364,7 +361,7 @@ async function readLayer<TEntry>(layout: ResourceLayout<TEntry>, root: string, d
     }
   }
 
-  const markers = [layout.marker, ...layout.markerAliases ?? []].filter((marker) => marker !== unread);
+  const markers = [layout.marker, ...layout.markerAliases ?? []];
 
   for (const link of await symlinks(dir)) {
     const full = path.join(dir, link);
@@ -475,7 +472,7 @@ async function layer<TEntry>(layout: ResourceLayout<TEntry>, at: { readonly root
 
   const { namespace } = at;
   const dir = path.join(typeDir, namespace);
-  const markers = [layout.marker, ...layout.markerAliases ?? [], unreadMarker(layout.dir)];
+  const markers = [layout.marker, ...layout.markerAliases ?? []];
 
   if (inheriting.has(namespace) || await isSymlink(dir) || (await Promise.all(markers.map((marker) => holdsMarker(dir, marker)))).some(Boolean)) return { items: [], diagnostics: [] };
   const read = await readLayer(layout, at.root, dir, inheriting);
@@ -604,8 +601,7 @@ export interface ResourceWalk {
  */
 async function walk(layout: PlainLayout, root: string): Promise<ResourceWalk> {
   const toPath = (full: string): string => path.relative(root, full).split(path.sep).join('/');
-  const unread = unreadMarker(layout.dir);
-  const folderMarker = layout.marker === unread ? null : layout.marker;
+  const folderMarker = layout.marker;
   const found: WalkedItem[] = [];
   const diagnostics: ResourceDiagnostic[] = [];
   // Names are paths, so only a folder at the type's root is named like a teamai default.
@@ -633,7 +629,7 @@ async function walk(layout: PlainLayout, root: string): Promise<ResourceWalk> {
       }
 
       // A folder this release cannot read is left out whole (#1791).
-      if (!entry.isDirectory() || await holdsMarker(full, unread)) continue;
+      if (!entry.isDirectory()) continue;
 
       if (folderMarker !== null && (await holdsMarker(full, folderMarker) || (prefix === '' && inheriting.has(entry.name)))) {
         const folderPath = `${toPath(full)}/`;
