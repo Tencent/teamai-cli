@@ -222,8 +222,8 @@ For new HTTP local-agent MCP installs, a failed initial ownership-manifest write
 
 `pull`, `status`, `doctor` and `review --branch` print one such line per
 directory that holds a folder marker of a type this release cannot read:
-`SCORER.md` under `scorers/` or `AGENT.md` under `agents/`. Workflow, hook,
-rule, MCP server and suite folders are read. Nothing in the directory is
+`SCORER.md` under `scorers/`. Workflow, hook, rule, agent, MCP server and
+suite folders are read. Nothing in the directory is
 delivered, run or pushed; the rest of the team repo is. A hook-started pull writes it to
 `~/.teamai/debug.log`.
 

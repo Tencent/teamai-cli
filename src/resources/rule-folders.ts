@@ -110,21 +110,9 @@ function readsOutsideProject(tool: string): boolean {
   return ruleFolderReachOf(tool).reach !== 'copy';
 }
 
-/**
- * `text` with `${TEAMAI_RULE_DIR}` naming `rule`'s folder in `localConfig`'s scope, where every tool reads it: in a
- * project the worktree's `.teamai/delivered/rules/`, by its path from the project root for a tool that reads nothing
- * outside the project; in user scope the data home (`sync` warns for the tools that cannot read it). `tool` null: text
- * teamai injects for the tools without native rules, none of which reads outside the project.
- */
+/** `text` with `${TEAMAI_RULE_DIR}` naming `rule`'s folder where `tool` reads it (`DeliveredFolders.renderFor`; `sync` warns for the tools that cannot read it). */
 function render(ruleText: string, at: { readonly localConfig: LocalConfig; readonly rule: RuleFolder; readonly tool: string | null }): string {
-  const dest = DeliveredFolders.pathOf(at.localConfig, refOf(at.rule));
-  const { projectRoot } = at.localConfig;
-
-  if (DeliveredFolders.worktreeRoot(at.localConfig) === null || projectRoot === undefined || (at.tool !== null && readsOutsideProject(at.tool))) {
-    return DeliveredFolders.render(ruleText, { type: 'rules', dest });
-  }
-
-  return DeliveredFolders.render(ruleText, { type: 'rules', dest: path.relative(projectRoot, dest) });
+  return DeliveredFolders.renderFor(ruleText, { localConfig: at.localConfig, ref: refOf(at.rule), tool: at.tool });
 }
 
 /**

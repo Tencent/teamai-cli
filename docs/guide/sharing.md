@@ -155,6 +155,33 @@ teamai push --role frontend
 teamai remove agents code-reviewer
 ```
 
+### Agents as folders
+
+A directory under `agents/` that holds `AGENT.md` is an agent folder. `AGENT.md` is the agent, a Markdown agent file as Claude Code reads one. The other files are support files the agent reads when it needs them:
+
+```text
+agents/reviewer/
+├─ AGENT.md
+└─ rubric.md
+```
+
+```markdown
+<!-- agents/reviewer/AGENT.md -->
+---
+name: reviewer
+description: Review a change before it is pushed
+---
+Review the diff against ${TEAMAI_AGENT_DIR}/rubric.md.
+```
+
+- The name is the directory: `agents/reviewer/` and `agents/payments/reviewer/` are both `reviewer`, as a tool keeps agents in one directory. An agent folder and an agent file of the same name in one place clash, and pull keeps the installed agents until one goes.
+- Each tool that reads Markdown agents (Claude Code, Claude Code Internal, CodeBuddy, JoyCode, Oh My Pi) gets `reviewer.md`. Other tools, such as Codex, get nothing from an agent folder; give them a `.yaml` agent.
+- In a workspace, pull copies the folder to `.teamai/delivered/agents/reviewer/` in each worktree, which git ignores, and puts its path, with forward slashes, in place of `${TEAMAI_AGENT_DIR}`: the absolute path for Claude Code, and `.teamai/delivered/agents/reviewer` from the project root for a tool that reads nothing outside the project. A workflow step that runs in its own worktree reads that worktree's copy.
+- A user-scope agent has no worktree, so pull copies it to `~/.teamai/agents/reviewer/`, adds that directory for Claude Code as it does for [rule folders](#rules-as-folders-a-deterministic-skill), and warns once for each other tool that may ask before it reads there.
+- Edit an agent folder in the team repo. Push proposes nothing from its delivered copies. `teamai remove agents reviewer` removes the folder, the tools' copies and the delivered folder; a later pull removes the delivered folder of an agent the team removed, unless a copy you edited still names it.
+
+Before you commit an agent folder, have every member upgrade. An older teamai skips the folder, or reads each `.md` in it as an agent of its own.
+
 ### Replace the recall agent
 
 While [recall](knowledge.md#enabling--disabling-recall) is on, teamai installs its own `teamai-recall` agent. A team agent with that name replaces it, the way a team workflow replaces a [default workflow](workflow.md#default-workflows). Put it in `agents/` for everyone, or in `agents/<namespace>/` for one role:
@@ -767,16 +794,11 @@ A directory that holds its type's marker, at any depth, is a folder: one resourc
 | `mcp/` | `MCP.yaml` | Reads it: [MCP servers](#mcp-servers) |
 | `benchmarks/` | `SUITE.yaml` | Reads it: [suites](benchmarks.md#write-a-suite) |
 | `scorers/` | `SCORER.md` | Skips it |
-| `agents/` | `AGENT.md` | Skips it |
+| `agents/` | `AGENT.md` | Reads it: [agent folders](#agents-as-folders) |
 
-A scorer or agent folder is skipped whole, and the rest of the team repo pulls as usual:
+A scorer folder is skipped whole, and the rest of the team repo pulls as usual:
 
 ```text
-agents/
-├── code-reviewer.yaml          delivered: agent "code-reviewer"
-└── reviewer/
-    ├── AGENT.md                skipped: agents/reviewer/ is an agent folder
-    └── checklist.md            skipped
 scorers/
 └── strict/
     └── SCORER.md               skipped: scorers/strict/ is a scorer folder
@@ -791,7 +813,6 @@ Pull says so once per folder. A pull a hook starts writes the same lines to `~/.
 
 ```console
 $ teamai pull
-⚠ agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.
 ⚠ scorers/strict/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.
 ✔ [user] Synced 2 rule(s)
 ```

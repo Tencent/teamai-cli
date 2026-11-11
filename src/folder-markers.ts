@@ -78,8 +78,7 @@ export const FOLDER_MARKERS = {
   agents: {
     kind: 'Agent folder',
     marker: 'AGENT.md',
-    supported: false,
-    skipped: 'is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
+    supported: true,
   },
 } as const satisfies Readonly<Record<MarkedType, FolderMarker>>;
 

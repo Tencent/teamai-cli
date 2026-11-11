@@ -195,7 +195,7 @@ describe('TEAMAI_MCP_DIR', () => {
   it('is reserved, so no team env value can shadow it', async () => {
     const { reservedTeamEnvWarning } = await import('../env-reserved.js');
 
-    expect(reservedTeamEnvWarning(['TEAMAI_MCP_DIR', 'JIRA_URL'])).toBe('TEAMAI_MCP_DIR is reserved for the folder path teamai gives a workflow step, hook, rule or MCP server; those team env values are ignored.');
+    expect(reservedTeamEnvWarning(['TEAMAI_MCP_DIR', 'JIRA_URL'])).toBe('TEAMAI_MCP_DIR is reserved for the folder path teamai gives a workflow step, hook, rule, agent or MCP server; those team env values are ignored.');
   });
 
   it('is named with why it is reserved, apart from the shell names', async () => {
@@ -203,7 +203,7 @@ describe('TEAMAI_MCP_DIR', () => {
 
     expect(reservedTeamEnvWarning(['BASH_ENV', 'TEAMAI_MCP_DIR', 'TEAMAI_HOOK_DIR'])).toBe(
       'BASH_ENV is reserved for TeamAI shell routing; those team env values are ignored. '
-        + 'TEAMAI_MCP_DIR, TEAMAI_HOOK_DIR are reserved for the folder path teamai gives a workflow step, hook, rule or MCP server; those team env values are ignored.',
+        + 'TEAMAI_MCP_DIR, TEAMAI_HOOK_DIR are reserved for the folder path teamai gives a workflow step, hook, rule, agent or MCP server; those team env values are ignored.',
     );
   });
 });

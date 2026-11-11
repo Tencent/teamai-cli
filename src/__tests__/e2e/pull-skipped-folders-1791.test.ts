@@ -16,9 +16,9 @@ const GIT_ENV = {
   GIT_COMMITTER_EMAIL: 'ci@teamai.test',
 };
 
-// Rule and workflow folders are read since #1787, so the rule directory below becomes one; agent folders are still skipped.
+// Rule, workflow and agent folders are read since #1787, so the rule directory below becomes one; scorer folders are still skipped.
 const RULE_FOLDER_NOTE = 'rules/api-style/ holds RULE.md, so it is one folder, and checklist.md in it is one of its files, no longer read on its own.';
-const AGENT_LINE = 'agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.';
+const SCORER_LINE = 'scorers/strict/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.';
 
 function runCLI(args: string[], home: string, cwd: string): Promise<{ code: number | null; output: string }> {
   return new Promise((resolve) => {
@@ -55,7 +55,7 @@ function filesUnder(dir: string): string[] {
     .sort();
 }
 
-describe('real CLI: pull skips a folder whose type this teamai cannot read (#1791), and reads a rule folder (#1787)', () => {
+describe('real CLI: pull skips a folder whose type this teamai cannot read (#1791), and reads rule and agent folders (#1787)', () => {
   let sandbox: string;
   let homeDir: string;
   let seed: string;
@@ -109,24 +109,30 @@ describe('real CLI: pull skips a folder whose type this teamai cannot read (#179
     expect(filesUnder(path.join(homeDir, '.claude', 'rules'))).toEqual(['api-style/checklist.md', 'style.md']);
   }, 60_000);
 
-  it('then reads it as a rule folder once it holds RULE.md, removes what it delivered from it, reads the workflow folder and skips the agent folder', async () => {
+  it('then reads it as a rule folder once it holds RULE.md, removes what it delivered from it, reads the workflow and agent folders and skips the scorer folder', async () => {
     write(seed, 'rules/api-style/RULE.md', '# API style\n');
     write(seed, 'rules/api-style/RULE.zh.md', '# API 风格\n');
     write(seed, 'workflows/release/WORKFLOW.yaml', 'schemaVersion: v1alpha1\nname: release\ndescription: Release.\nsteps:\n  - id: plan\n    command: echo plan\n');
     write(seed, 'workflows/release/notes.md', '# Release notes\n');
-    write(seed, 'agents/reviewer/AGENT.md', '---\nname: reviewer\ndescription: Reviews.\n---\nReview.\n');
+    write(seed, 'agents/reviewer/AGENT.md', '---\nname: reviewer\ndescription: Reviews.\n---\nReview against ${TEAMAI_AGENT_DIR}/rubric.md.\n');
+    write(seed, 'agents/reviewer/rubric.md', '- Name what breaks.\n');
+    write(seed, 'scorers/strict/SCORER.md', '# Strict\n');
     git(['add', '-A'], seed);
-    git(['commit', '-q', '-m', 'rule, workflow and agent folders'], seed);
+    git(['commit', '-q', '-m', 'rule, workflow, agent and scorer folders'], seed);
     git(['push', '-q', remote, 'main'], seed);
 
     const result = await runCLI(['pull'], homeDir, sandbox);
 
     expect(result.code, result.output).toBe(0);
     expect(result.output).toContain(RULE_FOLDER_NOTE);
-    expect(result.output.split(AGENT_LINE)).toHaveLength(2);
+    expect(result.output.split(SCORER_LINE)).toHaveLength(2);
     expect(result.output).not.toContain('workflows/release/ is a workflow folder');
+    expect(result.output).not.toContain('agents/reviewer/ is an agent folder');
     expect(filesUnder(path.join(homeDir, '.claude', 'rules'))).toEqual(['api-style.md', 'style.md']);
     expect(filesUnder(path.join(homeDir, '.teamai', 'rules'))).toEqual(['api-style/RULE.md', 'api-style/RULE.zh.md', 'api-style/checklist.md']);
+    expect(fs.readFileSync(path.join(homeDir, '.claude', 'agents', 'reviewer.md'), 'utf8'))
+      .toContain(`Review against ${path.join(homeDir, '.teamai', 'agents', 'reviewer').split(path.sep).join('/')}/rubric.md.`);
+    expect(filesUnder(path.join(homeDir, '.teamai', 'agents'))).toEqual(['reviewer/AGENT.md', 'reviewer/rubric.md']);
   }, 60_000);
 
   it('writes the line to debug.log on a silent pull', async () => {
@@ -135,22 +141,22 @@ describe('real CLI: pull skips a folder whose type this teamai cannot read (#179
     const result = await runCLI(['pull', '--silent'], homeDir, sandbox);
 
     expect(result.code, result.output).toBe(0);
-    expect(result.output).not.toContain(AGENT_LINE);
-    expect(fs.readFileSync(path.join(homeDir, '.teamai', 'debug.log'), 'utf8')).toContain(AGENT_LINE);
+    expect(result.output).not.toContain(SCORER_LINE);
+    expect(fs.readFileSync(path.join(homeDir, '.teamai', 'debug.log'), 'utf8')).toContain(SCORER_LINE);
   }, 60_000);
 
   it('lists the skipped folders in status and doctor', async () => {
     const status = await runCLI(['status'], homeDir, sandbox);
 
     expect(status.output).toContain('Skipped folders:');
-    expect(status.output).toContain(`  ${AGENT_LINE}`);
+    expect(status.output).toContain(`  ${SCORER_LINE}`);
     expect(status.output).toContain('  rules: 2');
     expect(status.output).toContain('  workflows: 1');
 
     const doctor = await runCLI(['doctor'], homeDir, sandbox);
 
     expect(doctor.output).toContain('  ⚠ This teamai reads every folder in the team repo');
-    expect(doctor.output).toContain(`    → ${AGENT_LINE}`);
+    expect(doctor.output).toContain(`    → ${SCORER_LINE}`);
   }, 60_000);
 
   it('pushes nothing into a rule folder, and the rest as before', async () => {

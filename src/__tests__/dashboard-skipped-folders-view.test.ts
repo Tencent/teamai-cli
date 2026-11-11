@@ -28,7 +28,7 @@ function views(language: 'en' | 'zh-CN' = 'en'): Views & { keys: string[] } {
 }
 
 const FOLDERS: DashboardSkippedFolder[] = [
-  { path: 'agents/reviewer/', type: 'agents', kind: 'Agent folder', marker: 'AGENT.md' },
+  { path: 'scorers/strict/', type: 'scorers', kind: 'Scorer folder', marker: 'SCORER.md' },
   { path: 'scorers/tone/', type: 'scorers', kind: 'Scorer folder', marker: 'SCORER.md' },
 ];
 
@@ -43,9 +43,8 @@ describe('skipped folders on the dashboard (#1791)', () => {
   it('lists each folder with its kind and marker, and the command that fixes it', () => {
     const html = views().skippedFoldersPanel(FOLDERS);
 
-    expect(html).toContain('agents/reviewer/');
-    expect(html).toContain('Agent folder');
-    expect(html).toContain('AGENT.md');
+    expect(html).toContain('scorers/strict/');
+    expect(html).toContain('Scorer folder');
     expect(html).toContain('scorers/tone/');
     expect(html).toContain('SCORER.md');
     expect([...html.matchAll(/data-copy="([^"]*)"/g)].map((match) => match[1])).toEqual(['teamai update &amp;&amp; teamai pull']);

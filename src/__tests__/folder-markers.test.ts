@@ -37,8 +37,8 @@ describe('findSkippedFolders', () => {
 
     const skipped = await findSkippedFolders(repo);
 
-    // Hook, rule, MCP server and suite folders are read (#1787), so only the other types are skipped.
-    expect(skipped.map((folder) => folder.path).sort()).toEqual(Object.keys(markers).flatMap((dir) => ['hooks', 'rules', 'mcp', 'benchmarks'].includes(dir) ? [] : [
+    // Hook, rule, MCP server, suite and agent folders are read (#1787), so only the other types are skipped.
+    expect(skipped.map((folder) => folder.path).sort()).toEqual(Object.keys(markers).flatMap((dir) => ['hooks', 'rules', 'mcp', 'benchmarks', 'agents'].includes(dir) ? [] : [
       `${dir}/at-root/`,
       `${dir}/team/in-namespace/`,
     ]).sort());
@@ -68,8 +68,6 @@ describe('findSkippedFolders', () => {
 
 describe('skippedFolderMessage', () => {
   it('names the folder and its kind in one fixed line', () => {
-    expect(skippedFolderMessage({ type: 'agents', path: 'agents/reviewer/' }))
-      .toBe('agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.');
     expect(skippedFolderMessage({ type: 'scorers', path: 'scorers/tone/' }))
       .toBe('scorers/tone/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.');
   });

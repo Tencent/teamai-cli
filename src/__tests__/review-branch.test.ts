@@ -2228,9 +2228,9 @@ describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
   });
 
   it('warns once per skipped folder and reviews none of its files', async () => {
-    // A bad name inside the agent folder: a review that read it would report it.
-    await fse.outputFile(path.join(repoDir, 'agents', 'reviewer', 'AGENT.md'), '# Reviewer\n');
-    await fse.outputFile(path.join(repoDir, 'agents', 'reviewer', 'Bad Name.md'), '# Bad\n');
+    // A bad name inside the scorer folder: a review that read it would report it.
+    await fse.outputFile(path.join(repoDir, 'scorers', 'strict', 'SCORER.md'), '# Strict\n');
+    await fse.outputFile(path.join(repoDir, 'scorers', 'strict', 'Bad Name.md'), '# Bad\n');
 
     const review = await reviewBranchDir(BRANCH, repoDir);
 
@@ -2238,10 +2238,17 @@ describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
       {
         level: 'warn',
         check: 'structure',
-        path: 'agents/reviewer/',
-        message: 'agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
+        path: 'scorers/strict/',
+        message: 'scorers/strict/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
       },
     ]);
+  });
+
+  it('reviews an agent folder as one agent, and none of its support files as an agent', async () => {
+    await fse.outputFile(path.join(repoDir, 'agents', 'reviewer', 'AGENT.md'), '---\nname: reviewer\ndescription: Reviews.\n---\nApply ${TEAMAI_AGENT_DIR}/rubric.md.\n');
+    await fse.outputFile(path.join(repoDir, 'agents', 'reviewer', 'rubric.md'), '- Name what breaks.\n');
+
+    expect((await reviewBranchDir(BRANCH, repoDir)).findings).toEqual([]);
   });
 
   it('reviews a workflow folder as one workflow named after its directory, with the limits pull applies', async () => {

@@ -128,7 +128,7 @@ describe('benchmarks', () => {
 });
 
 describe('agents', () => {
-  it('delivers no agent from an agent folder', async () => {
+  it('reads an agent folder as one agent named by its directory, at the root and in a namespace, and none of its files as an agent', async () => {
     await put('agents/coder.yaml', 'name: coder\n');
     await put('agents/reviewer/AGENT.md', '# Reviewer\n');
     await put('agents/reviewer/checklist.md', '# Checklist\n');
@@ -136,9 +136,14 @@ describe('agents', () => {
     await put('agents/team/planner/AGENT.md', '# Planner\n');
     await put('agents/team/planner/planner.yaml', 'name: planner\n');
 
-    const names = (await new AgentsHandler().scanTeamForPull(teamConfig, localConfig)).map((agent) => agent.name).sort();
+    const agents = await new AgentsHandler().scanTeamForPull(teamConfig, localConfig);
 
-    expect(names).toEqual(['coder', 'helper']);
+    expect(agents.map((agent) => [agent.name, agent.namespace ?? null, agent.relativePath, agent.folder === true]).sort()).toEqual([
+      ['coder', null, 'agents/coder.yaml', false],
+      ['helper', 'team', 'agents/team/helper.yaml', false],
+      ['planner', 'team', 'agents/team/planner/AGENT.md', true],
+      ['reviewer', null, 'agents/reviewer/AGENT.md', true],
+    ]);
   });
 });
 

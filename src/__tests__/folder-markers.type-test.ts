@@ -7,9 +7,12 @@ import { FOLDER_MARKERS, type SkippedFolder } from '../folder-markers.js';
 void FOLDER_MARKERS.workflows.skipped;
 
 // A type that is skipped carries one.
-void FOLDER_MARKERS.agents.skipped;
+void FOLDER_MARKERS.scorers.skipped;
 
 // @ts-expect-error a rule folder is read, so it is never a skipped folder
 export const ruleFolder: SkippedFolder = { type: 'rules', path: 'rules/api-style/' };
 
+// @ts-expect-error an agent folder is read, so it is never a skipped folder
 export const agentFolder: SkippedFolder = { type: 'agents', path: 'agents/reviewer/' };
+
+export const scorerFolder: SkippedFolder = { type: 'scorers', path: 'scorers/tone/' };

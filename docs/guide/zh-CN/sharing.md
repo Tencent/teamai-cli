@@ -146,6 +146,33 @@ teamai push --role frontend
 teamai remove agents code-reviewer
 ```
 
+### 目录型 agent
+
+`agents/` 下包含 `AGENT.md` 的目录是一个目录型 agent。`AGENT.md` 就是这个 agent，写法与 Claude Code 读取的 Markdown agent 文件相同。其他文件是 agent 需要时才读的辅助文件：
+
+```text
+agents/reviewer/
+├─ AGENT.md
+└─ rubric.md
+```
+
+```markdown
+<!-- agents/reviewer/AGENT.md -->
+---
+name: reviewer
+description: Review a change before it is pushed
+---
+Review the diff against ${TEAMAI_AGENT_DIR}/rubric.md.
+```
+
+- 名字就是目录名：`agents/reviewer/` 和 `agents/payments/reviewer/` 都是 `reviewer`，因为工具把 agent 放在同一个目录里。同一位置下同名的目录型 agent 和 agent 文件会冲突，pull 保留已安装的 agent，直到其中一个被移除。
+- 读取 Markdown agent 的工具（Claude Code、Claude Code Internal、CodeBuddy、JoyCode、Oh My Pi）各得到一个 `reviewer.md`。其他工具（例如 Codex）不会从目录型 agent 得到任何东西；请给它们写 `.yaml` agent。
+- 在工作区中，pull 把目录复制到每个 worktree 的 `.teamai/delivered/agents/reviewer/`（git 会忽略它），并把 `${TEAMAI_AGENT_DIR}` 换成它的路径（用正斜杠）：Claude Code 得到绝对路径，不读取项目之外文件的工具得到从项目根目录算起的 `.teamai/delivered/agents/reviewer`。在自己的 worktree 里运行的工作流步骤读取的是那个 worktree 里的副本。
+- 用户范围的 agent 没有 worktree，所以 pull 把它复制到 `~/.teamai/agents/reviewer/`，像[目录型 rule](#目录型-rule确定加载的-skill) 一样为 Claude Code 添加该目录，并对读取那里前可能需要确认的其他工具各警告一次。
+- 目录型 agent 在团队仓库里修改。push 不会从它的交付副本提出任何改动。`teamai remove agents reviewer` 会移除这个目录、各工具里的副本和交付的目录；团队移除 agent 后，之后的 pull 会移除它交付的目录，除非你改过的副本还引用它。
+
+提交目录型 agent 之前，让每位成员先升级。旧版 teamai 会跳过这个目录，或者把其中每个 `.md` 各自当作一个 agent。
+
 ### 替换 recall agent
 
 [recall](knowledge.md#开启--关闭-recall) 开着时，teamai 会装上自己的 `teamai-recall` agent。团队同名的 agent 会替换它，就像团队工作流替换[默认工作流](workflow.md#默认工作流)。放在 `agents/` 下给所有人，放在 `agents/<namespace>/` 下只给一个角色：
@@ -759,16 +786,11 @@ self 模式下，如果当前分支落后于默认分支，推送修改过的 sk
 | `mcp/` | `MCP.yaml` | 读取：[MCP Server](#mcp-server) |
 | `benchmarks/` | `SUITE.yaml` | 读取：[套件](benchmarks.md#编写套件) |
 | `scorers/` | `SCORER.md` | 跳过 |
-| `agents/` | `AGENT.md` | 跳过 |
+| `agents/` | `AGENT.md` | 读取：[目录型 agent](#目录型-agent) |
 
-scorer 或 agent 目录会被整体跳过，团队仓库的其他内容照常 pull：
+scorer 目录会被整体跳过，团队仓库的其他内容照常 pull：
 
 ```text
-agents/
-├── code-reviewer.yaml          交付：agent "code-reviewer"
-└── reviewer/
-    ├── AGENT.md                跳过：agents/reviewer/ 是 agent 目录
-    └── checklist.md            跳过
 scorers/
 └── strict/
     └── SCORER.md               跳过：scorers/strict/ 是 scorer 目录
@@ -783,7 +805,6 @@ pull 对每个目录提示一次；由 hook 触发的 pull 会把同样的内容
 
 ```console
 $ teamai pull
-⚠ agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.
 ⚠ scorers/strict/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.
 ✔ [user] Synced 2 rule(s)
 ```

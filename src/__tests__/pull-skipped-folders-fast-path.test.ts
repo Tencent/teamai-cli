@@ -76,7 +76,7 @@ describe('a pull at an unchanged team revision after a folder becomes skipped (#
     repoPath = path.join(tmpDir, 'team-repo');
     await fse.ensureDir(path.join(homeDir, '.claude'));
     await fse.outputFile(path.join(repoPath, 'agents', 'style.md'), AGENT('style'));
-    await fse.outputFile(path.join(repoPath, 'agents', 'api-style', 'checklist.md'), AGENT('checklist'));
+    await fse.outputFile(path.join(repoPath, 'scorers', 'strict', 'rubric.md'), '# Rubric\n');
     vi.stubEnv('HOME', homeDir);
     saved = {} as State;
     vi.mocked(saveStateForScope).mockImplementation(async (state) => {
@@ -104,23 +104,21 @@ describe('a pull at an unchanged team revision after a folder becomes skipped (#
     await fse.remove(tmpDir);
   });
 
-  it('syncs in full on the first pull, delivering nothing from the folder and the rest as before', async () => {
-    expect(await fse.pathExists(path.join(agentsDir(), 'checklist.md'))).toBe(true);
+  it('syncs in full on the first pull, and delivers the rest as before', async () => {
     // The folder's marker was there all along; the release that pulled it
     // read it as an ordinary directory.
-    await fse.outputFile(path.join(repoPath, 'agents', 'api-style', 'AGENT.md'), AGENT('AGENT'));
+    await fse.outputFile(path.join(repoPath, 'scorers', 'strict', 'SCORER.md'), '# Strict\n');
     vi.mocked(log.success).mockClear();
 
     await pull({});
 
     const successes = vi.mocked(log.success).mock.calls.map(([message]) => String(message));
     expect(successes.some((message) => message.includes('Already synced at abc1234'))).toBe(false);
-    expect(await fse.pathExists(path.join(agentsDir(), 'AGENT.md'))).toBe(false);
     expect(await fse.readFile(path.join(agentsDir(), 'style.md'), 'utf8')).toBe(AGENT('style'));
   });
 
   it('takes the fast path again once the folders it skips are on record', async () => {
-    await fse.outputFile(path.join(repoPath, 'agents', 'api-style', 'AGENT.md'), AGENT('AGENT'));
+    await fse.outputFile(path.join(repoPath, 'scorers', 'strict', 'SCORER.md'), '# Strict\n');
     await pull({});
     vi.mocked(log.success).mockClear();
 
