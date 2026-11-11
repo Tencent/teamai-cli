@@ -16,7 +16,7 @@ import { resolveResourceNamespaces, usesMemberFilters } from '../resource-namesp
 import { loadRolesManifestIfPresent, type ResourceNamespaces } from '../roles.js';
 import { existingSharedInstructionDirs } from '../shared-instruction-source.js';
 import { isRecallEnabled, type LocalConfig, type ResourceItem, type TeamaiConfig } from '../types.js';
-import { dirContentEqual, fileContentEqual, listDirs, listFiles, pathExists, readFileSafe } from '../utils/fs.js';
+import { fileContentEqual, listDirs, listFiles, pathExists, readFileSafe } from '../utils/fs.js';
 import type { BuildIndexOptions, IndexedSkills } from '../utils/search-index.js';
 import { filterByTags, loadTagsConfig } from '../utils/tags.js';
 import { warnOnce } from '../utils/warn-once.js';
@@ -26,6 +26,7 @@ import { resolveAgentsForDirectory } from './agents.js';
 import { resolveDocsForDirectory } from './docs.js';
 import { getHandler } from './index.js';
 import { readTeamSkills, teamSkillItem } from './skills.js';
+import { TeamSkillSource } from './team-skill-source.js';
 
 export interface RolePullContext {
   activeNamespaces: ResourceNamespaces;
@@ -192,16 +193,18 @@ export function filterAgentsByNamespaces(
 }
 
 /**
- * The team repo's skills, with each namespace directory that holds no SKILL.md
- * named once a run: it is not a skill, so it neither replaces the root skill of
- * its name nor is installed over it.
+ * The team repo's skills, with each namespace directory that holds no SKILL.md,
+ * and each skill pull cannot read, named once a run: neither replaces the root
+ * skill of its name nor is installed over it.
  */
 async function teamSkills(localConfig: LocalConfig): Promise<ResourceItem[]> {
-  const { skills, notSkills } = await readTeamSkills(localConfig.repo.localPath);
+  const { skills, notSkills, diagnostics } = await readTeamSkills(localConfig.repo.localPath);
 
   for (const dir of notSkills) {
     warnOnce(`${dir} has no SKILL.md, so it is not delivered as a skill. Add SKILL.md to it in the team repo, or remove it.`);
   }
+
+  for (const { message } of diagnostics) warnOnce(message);
 
   return skills.map(teamSkillItem);
 }
@@ -432,7 +435,7 @@ async function resolveWorkspaceSkills(
   const { items, held } = await unionMemberItems({
     perMember: resolved.map((desired) => desired.items),
     nameOf: (item) => item.name,
-    sameContent: (a, b) => a.sourcePath === b.sourcePath || dirContentEqual(a.sourcePath, b.sourcePath),
+    sameContent: async (a, b) => a.sourcePath === b.sourcePath || await TeamSkillSource.sameFiles(a.sourcePath, b.sourcePath),
   });
 
   const excluded = new Set(usesMemberFilters(localConfig) ? localConfig.excludedSkills ?? [] : []);

@@ -6,7 +6,7 @@ import { packageRoot } from '../package-info.js';
 import { resolveNamespacedItems, type NamespaceCandidate, type NamespaceConflict, type ResolvedNamespaceItem } from '../namespace-resolver.js';
 import { FolderFiles, type FolderFilesRead } from './folder-files.js';
 import { TeamaiConfigBaseSchema } from '../types.js';
-import { isIgnored } from '../utils/fs.js';
+import { isDraft, isIgnored } from '../utils/fs.js';
 
 /** How a resource type lays out its items in a tree. `TEntry` is what one entry of its entry-list file holds. */
 export interface ResourceLayout<TEntry = never> {
@@ -125,7 +125,16 @@ export const RESOURCE_LAYOUTS = {
   scorers: { dir: 'scorers', marker: FOLDER_MARKERS.scorers.marker, fileName: (file: string) => (file.endsWith('.md') && file !== 'README.md' ? file.slice(0, -'.md'.length) : null) },
   /** Names are paths at any depth (`Resources.walk`): `rules/fe/style.md` and `rules/fe/style/RULE.md` are `fe/style`. */
   rules: { dir: 'rules', marker: FOLDER_MARKERS.rules.marker, inherits: true, fileName: (file: string) => (file.endsWith('.md') ? file.slice(0, -'.md'.length) : null) },
-  skills: { dir: 'skills', marker: FOLDER_MARKERS.skills.marker, fileName: () => null },
+  /**
+   * `skills/greet.md` is the skill `greet`, delivered as `greet/SKILL.md`. A folder's name never ends in `.md`, so a
+   * skill's path tells its form. A README.md stays notes: team repos kept one in `skills/` before a file could be a skill.
+   */
+  skills: {
+    dir: 'skills',
+    marker: FOLDER_MARKERS.skills.marker,
+    fileName: (file: string) => (file.endsWith('.md') && file !== FOLDER_MARKERS.skills.marker && !/^readme\.md$/i.test(file) && !file.startsWith('.') && !isDraft(file) ? file.slice(0, -'.md'.length) : null),
+    nameRule: { pattern: /^(?!.*\.md$)/, description: "a skill folder's name does not end in .md, which names a skill kept as one file" },
+  },
 } as const satisfies Readonly<Record<string, ResourceLayout<unknown>>>;
 
 /**

@@ -27,6 +27,13 @@ teamai push --role pm
 
 角色或项目过滤 skill 时，共享根目录的 skill 仍按原有 tags 订阅规则交付。`--shared` 选择的是发布位置。
 
+只有说明的 skill 可以在团队仓库里只是一个文件：`skills/<name>.md` 或 `skills/<ns>/<name>.md`。pull 把它交付给每个工具，成为 `<name>/SKILL.md`，和只含 `SKILL.md` 的目录一样。
+
+- `skills/` 或某个命名空间下直接放的每个 `.md` 文件都是 skill，`README.md` 除外。
+- 同一位置同名的文件和目录（`skills/greet.md` 旁边有 `skills/greet/`）把这个 skill 定义了两次。pull 两个都不交付并指出两者，`teamai review --branch` 失败。
+- push 把编辑写回这个文件。文件放不下别的东西，所以你在 `SKILL.md` 旁边新加的文件不会推送，push 会指出它。要共享它，请在团队仓库里把这个文件改成目录 `skills/<name>/`。
+- 提交之前先让所有成员升级。旧版 teamai 会跳过这个文件，什么也不交付。
+
 ## Rules
 
 ```bash
@@ -776,7 +783,7 @@ self 模式下，如果当前分支落后于默认分支，推送修改过的 sk
 
 ## 保留的目录标记文件名
 
-在类型目录下（任意深度）包含该类型标记文件的目录，就是一个目录型资源：它是一个资源，其中每个文件都属于它。技能也是这样，`skills/<name>/SKILL.md`。
+在类型目录下（任意深度）包含该类型标记文件的目录，就是一个目录型资源：它是一个资源，其中每个文件都属于它。技能也是这样，`skills/<name>/SKILL.md`；和其他类型一样，技能也可以只是一个文件，`skills/<name>.md`。
 
 | 目录 | 标记文件 | 当前版本 |
 |---|---|---|

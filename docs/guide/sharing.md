@@ -27,6 +27,13 @@ teamai push --role pm
 
 Shared-root skills keep the existing tag-subscription delivery rules when roles or projects filter skills. `--shared` selects the publishing location.
 
+A skill that is only its instructions can be one file in the team repo: `skills/<name>.md`, or `skills/<ns>/<name>.md`. Pull delivers it to each tool as `<name>/SKILL.md`, as it would a folder holding only `SKILL.md`.
+
+- Every `.md` file directly in `skills/` or in a namespace is a skill, except `README.md`.
+- A file and a folder of one name in one place, `skills/greet.md` beside `skills/greet/`, define the skill twice. Pull delivers neither and names both, and `teamai review --branch` fails.
+- Push sends an edit back to the file. A file holds nothing else, so a file you add beside `SKILL.md` stays out, and push names it. To share it, turn the file into the folder `skills/<name>/` in the team repo.
+- Have every member upgrade before you commit one. An older teamai skips the file and delivers nothing for it.
+
 ## Rules
 
 ```bash
@@ -784,7 +791,7 @@ If the team recreates a retired agent at its old namespace, edit that namespace 
 
 ## Reserved folder names
 
-A directory that holds its type's marker, at any depth, is a folder: one resource, and every file in it is that resource's. A skill is the same, `skills/<name>/SKILL.md`.
+A directory that holds its type's marker, at any depth, is a folder: one resource, and every file in it is that resource's. A skill is the same, `skills/<name>/SKILL.md`, and, like the other types, it can also be one file, `skills/<name>.md`.
 
 | Directory | Marker | This release |
 |---|---|---|

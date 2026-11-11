@@ -30,6 +30,7 @@ import { localLinkTargets } from './markdown-links.js';
 import type { FrontmatterValue } from './frontmatter.js';
 import type { ConfidenceFactors } from '../maintenance/confidence.js';
 import { parseYaml } from './yaml.js';
+import { TeamSkillSource } from '../resources/team-skill-source.js';
 
 /**
  * After this checkout's index is rebuilt by a pull. Self mode keeps one index
@@ -952,8 +953,9 @@ function skillDirTreePath(dir: string): string {
 }
 
 /**
- * Entries for an explicit list of skill directories, each `<dir>/SKILL.md`,
- * named after the directory (doc_id = skill name) as `collectSkillEntries` does.
+ * Entries for an explicit list of team skills, each its SKILL.md (or the one
+ * file it is kept as), named after the skill (doc_id = skill name) as
+ * `collectSkillEntries` does.
  * Pull delivers only directories with a `SKILL.md`, so a missing one is unreadable.
  */
 async function collectSkillDirEntries(
@@ -961,7 +963,7 @@ async function collectSkillDirEntries(
   reads: BuildReads,
 ): Promise<SearchIndexEntry[]> {
   return entriesFromMdFiles(
-    dirs.map((dir) => ({ absPath: path.join(dir, 'SKILL.md'), id: `${path.basename(dir)}.md`, treePath: skillDirTreePath(dir) })),
+    dirs.map((dir) => ({ absPath: TeamSkillSource.skillMd(dir), id: `${TeamSkillSource.name(dir)}.md`, treePath: skillDirTreePath(dir) })),
     'skills',
     reads,
   );

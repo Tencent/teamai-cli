@@ -17,7 +17,7 @@ import { pendingLearningsDir } from './utils/pending-learnings.js';
 import { indexableLearningsRoots } from './utils/learnings-roots.js';
 import { log, spinner } from './utils/logger.js';
 import { DetachedRecoveryError, transitionTeamRepo, teamRefBlocker, teamRefNotice, removedTeamResources, type RemovedTeamResources } from './team-ref.js';
-import { pathExists, readJson, writeJson, listFiles, listDirs, listFilesRecursive, readFileSafe, dirContentEqual, hasVcsMetadataRecursive } from './utils/fs.js';
+import { pathExists, readJson, writeJson, listFiles, listDirs, listFilesRecursive, readFileSafe, hasVcsMetadataRecursive } from './utils/fs.js';
 import { reconcilePlacementRecords } from './utils/pending-push.js';
 import {
   applyInstructionPlan, channelReadiness, holdsInstructionBlocks, hookLimitProblem, instructionHookChannelInstallable, instructionHookText,
@@ -32,6 +32,7 @@ import {
 } from './resources/docs.js';
 import { ResourceHandler } from './resources/base.js';
 import { CODEX_TOOL, codexSkillsSplit, mayDeleteSkillCopy, skillOrigin } from './resources/skills.js';
+import { TeamSkillSource } from './resources/team-skill-source.js';
 import { installOf, locate, locatingOnce, ownOf, SHARED_AGENT_SKILLS_PATH, writable, writesOf, type Install } from './locate.js';
 import { isWithin } from './utils/agent-path.js';
 import { describeToolHomeChange, recordToolHomes } from './tool-home-record.js';
@@ -394,7 +395,7 @@ async function skillSafeToRemove(deployedDir: string, source: string | undefined
   // The compare does not see links, and a link inside is the member's (#993).
   if (await holdsNonRegular(deployedDir)) return false;
 
-  return dirContentEqual(deployedDir, source, [CONTRIBUTORS_FILE]);
+  return TeamSkillSource.equalsCopy(deployedDir, source, [CONTRIBUTORS_FILE]);
 }
 
 /** `skillSafeToRemove` against each source a copy may come from: safe when one of them proves it. */

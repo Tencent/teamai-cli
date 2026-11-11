@@ -28,6 +28,7 @@ import fse from 'fs-extra';
 import { holdsMarker } from './folder-markers.js';
 import { readTeamRules } from './resources/rules.js';
 import { readTeamSkills } from './resources/skills.js';
+import { TeamSkillSource } from './resources/team-skill-source.js';
 import { RECALL_RULE_NAME, resolveRecall } from './builtin-rules.js';
 import { parseYaml } from './utils/yaml.js';
 import { z } from 'zod';
@@ -377,7 +378,7 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
   }
 
   return items.map(({ type, item }): ReviewResource => {
-    const folder = type === 'skills' || folderPaths.has(item.sourcePath);
+    const folder = (type === 'skills' && !TeamSkillSource.isFile(item.sourcePath)) || folderPaths.has(item.sourcePath);
 
     // Handler-provided names (MCP server names, skill names) are authoritative;
     // parseRelativePath would overwrite them with the filename stem (e.g. 'mcp'
@@ -664,7 +665,7 @@ const FrontmatterTextSchema = z.string().optional().catch(undefined);
 /** The `name` a resource declares in its frontmatter/YAML, or null when it declares none. */
 async function frontmatterName(resource: ReviewResource, readText: (p: string) => Promise<string | null>): Promise<string | null> {
   if (resource.type === 'skills') {
-    const content = await readText(path.join(resource.absolutePath, 'SKILL.md'));
+    const content = await readText(TeamSkillSource.skillMd(resource.absolutePath));
 
     if (content === null) return null;
     const name = FrontmatterTextSchema.parse(splitFrontmatter(content).data['name']);
@@ -700,7 +701,7 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
 
   for (const resource of resources) {
     if (resource.type === 'skills') {
-      const content = await readText(path.join(resource.absolutePath, 'SKILL.md'));
+      const content = await readText(TeamSkillSource.skillMd(resource.absolutePath));
 
       if (content === null) continue;
       const { data, valid, raw } = splitFrontmatter(content);
@@ -929,8 +930,9 @@ async function scannableSkillFiles(resources: ReviewResource[], readText: (p: st
   for (const skill of resources) {
     if (skill.type !== 'skills') continue;
 
-    const listed = (await filesUnder(skill.relativePath, skill.absolutePath))
-      .sort((a, b) => (a.relativePath < b.relativePath ? -1 : 1));
+    const listed = skill.folder
+      ? (await filesUnder(skill.relativePath, skill.absolutePath)).sort((a, b) => (a.relativePath < b.relativePath ? -1 : 1))
+      : [{ relativePath: skill.relativePath, absolutePath: skill.absolutePath }];
 
     for (const file of listed) {
       const content = await readText(file.absolutePath);

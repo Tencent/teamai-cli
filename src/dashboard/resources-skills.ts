@@ -16,6 +16,7 @@ import { loadTagsConfig } from '../utils/tags.js';
 import { readFileSafe } from '../utils/fs.js';
 import { FrontmatterDescriptionSchema } from './resources.js';
 import { pathExists } from '../utils/fs.js';
+import { TeamSkillSource } from '../resources/team-skill-source.js';
 import { type LocalConfig, type TeamaiConfig } from '../types.js';
 import { loadLocalConfig, loadLocalConfigForScope, loadStateForScope, saveLocalConfig, saveLocalConfigForScope, saveStateForScope } from '../config.js';
 import type { RolePullContext } from '../resources/desired.js';
@@ -52,7 +53,7 @@ export interface DashboardSkill {
 
 /** One skill's frontmatter description, or null: the page lists metadata only. */
 async function skillDescription(sourcePath: string): Promise<string | null> {
-  const raw = await readFileSafe(pathJoin(sourcePath, 'SKILL.md'));
+  const raw = await readFileSafe(TeamSkillSource.skillMd(sourcePath));
 
   if (raw === null) return null;
 

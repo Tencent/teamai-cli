@@ -2318,6 +2318,7 @@ async function pushCore(
           sourcePath: skillPath,
           status,
           namespace,
+          teamSource: destination.kind === 'team' && !unresolved ? destination.teamSkill.dir : undefined,
           originCandidates: copies,
           repoPath: localConfig.repo.localPath,
         };

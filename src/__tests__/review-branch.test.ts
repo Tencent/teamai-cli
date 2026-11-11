@@ -186,16 +186,18 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     expect(findings(review)).toEqual([]);
   });
 
-  it('fails a skill directory with no SKILL.md at its root', async () => {
+  it.each([
+    ['a skill directory with no SKILL.md at its root', { 'skills/frontend/vr/notes.md': '# no SKILL.md here' }, /no SKILL\.md/],
+    ['a skill kept both as a file and as a folder in one place', { 'skills/frontend/vr.md': '# VR', 'skills/frontend/vr/SKILL.md': '# VR' }, /skills\/frontend\/vr\.md and skills\/frontend\/vr\/ both define the skill vr/],
+  ])('fails %s', async (_label, files: Record<string, string>, message) => {
     await fse.ensureDir(path.join(repoDir, 'manifest'));
     await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), rolesYaml(['frontend']));
-    await fse.ensureDir(path.join(repoDir, 'skills', 'frontend', 'vr'));
-    await fse.writeFile(path.join(repoDir, 'skills', 'frontend', 'vr', 'notes.md'), '# no SKILL.md here');
+    for (const [file, content] of Object.entries(files)) await fse.outputFile(path.join(repoDir, file), content);
 
     const review = await reviewBranchDir(BRANCH, repoDir);
 
     expect(review.ok).toBe(false);
-    expect(findings(review).some((f) => f.check === 'structure' && /no SKILL\.md/.test(f.message))).toBe(true);
+    expect(findings(review).some((f) => f.check === 'structure' && message.test(f.message))).toBe(true);
   });
 
   it('fails a resource in a namespace no role or project declares', async () => {
@@ -757,10 +759,13 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     expect(findings(review).some((f) => f.path?.startsWith('wiki/'))).toBe(false);
   });
 
-  it('fails when a skill frontmatter name does not match its directory', async () => {
+  it.each([
+    ['folder', 'skills/frontend/vr/SKILL.md'],
+    ['one file', 'skills/frontend/vr.md'],
+  ])('fails when the frontmatter name of a skill kept as a %s does not match its name', async (_form, skillFile) => {
     await fse.ensureDir(path.join(repoDir, 'manifest'));
     await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), rolesYaml(['frontend']));
-    await writeSkill(repoDir, 'skills/frontend/vr', [
+    await fse.outputFile(path.join(repoDir, skillFile), [
       '---',
       'name: not-vr',
       'description: Use this skill when reviewing a merge request for security issues.',

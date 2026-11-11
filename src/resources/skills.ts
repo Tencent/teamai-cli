@@ -3,10 +3,11 @@ import { lstat, realpath } from 'node:fs/promises';
 import YAML from 'yaml';
 import { z } from 'zod';
 import { ResourceHandler, type ScanForPushOptions } from './base.js';
-import { RESOURCE_LAYOUTS, Resources, type ResourceDiagnostic } from './resolver.js';
+import { RESOURCE_LAYOUTS, Resources, type ResourceDiagnostic, type TeamItem } from './resolver.js';
+import { TeamSkillSource } from './team-skill-source.js';
 import type { CopyOrigin, PendingPush, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { getPushignorePath, resolveBaseDir, scopedToolPaths, SELF_KNOWLEDGE_SCAN_KEY } from '../types.js';
-import { isDraft, listDirs, listFilesRecursive, pathExists, copyDir, remove, pruneEmptyDirs, dirContentEqual, dirTeamSubsetEqual, fileContentEqual, fileHash, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
+import { isDraft, listDirs, listFilesRecursive, pathExists, copyDir, remove, pruneEmptyDirs, dirContentEqual, fileContentEqual, fileHash, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { debugOnce, warnOnce } from '../utils/warn-once.js';
 import { getFileContentWhenAdded, isPastVersionOf, resolveAnchors } from '../utils/git.js';
@@ -479,13 +480,13 @@ function extractDescriptionFromContent(content: string, skillName: string): stri
   return `${skillName} skill`;
 }
 
-/** A skill in the team repo: its folder, at the root of `skills/` or in a namespace. */
+/** A skill in the team repo, at the root of `skills/` or in a namespace. */
 export interface TeamSkill {
   readonly name: string;
   readonly namespace?: string;
-  /** Absolute: the folder holding SKILL.md. */
-  readonly source: string;
-  /** Team-repo relative, `/`-separated: `skills/<name>` or `skills/<namespace>/<name>`. */
+  /** Absolute: the folder holding SKILL.md, or the skill's one file (`TeamSkillSource`). */
+  readonly source: TeamSkillSource;
+  /** Team-repo relative, `/`-separated: `skills/<name>`, `skills/<namespace>/<name>`, or the file's path. */
   readonly relativePath: string;
 }
 
@@ -495,24 +496,46 @@ export interface TeamSkillsRead {
   readonly skills: readonly TeamSkill[];
   /** Directories in a namespace that hold no SKILL.md, team-repo relative: no skill, and pull says so. */
   readonly notSkills: readonly string[];
+  /** `invalid`: what defines no skill (a file and a folder of one name in one place, a folder that is a link). */
   readonly diagnostics: readonly ResourceDiagnostic[];
 }
 
 /**
  * Every skill in the team repo at `repoPath`, read through `Resources` as every type with folders is: a directory of
- * `skills/` holding SKILL.md is a skill, and one without it is a namespace whose skills sit one level down. A
- * namespace counts only once it holds a skill: git tracks no empty directory, so a pushed skill's empty `assets/` can
- * leave a SKILL.md-less shell behind in the working tree.
+ * `skills/` holding SKILL.md is a skill, `<name>.md` beside it is one too, and a directory without SKILL.md is a
+ * namespace whose skills sit one level down. A namespace counts only once it holds a skill: git tracks no empty
+ * directory, so a pushed skill's empty `assets/` can leave a SKILL.md-less shell behind in the working tree.
  */
 export async function readTeamSkills(repoPath: string): Promise<TeamSkillsRead> {
   const read = await Resources.survey(RESOURCE_LAYOUTS.skills, { team: { root: repoPath, namespaces: async () => 'legacy' } });
+  const diagnostics = read.diagnostics.filter(({ kind }) => kind === 'invalid');
+  const byPlace = new Map<string, Array<TeamItem<unknown>>>();
 
-  const skills = read.definitions.map((item): TeamSkill => {
+  for (const item of read.definitions) {
+    const place = `${item.layer === 'namespace' ? item.namespace : ''}/${item.name}`;
+    byPlace.set(place, [...byPlace.get(place) ?? [], item]);
+  }
+
+  // Only a file and a folder can share a name in one directory.
+  const duplicated = new Set<TeamItem<unknown>>();
+
+  for (const [first, second] of byPlace.values()) {
+    if (first === undefined || second === undefined) continue;
+    duplicated.add(first).add(second);
+    diagnostics.push({
+      kind: 'invalid',
+      path: second.source.path,
+      message: `${first.source.path} and ${second.source.path} both define the skill ${first.name}, so neither is delivered. Remove one of them in the team repo.`,
+    });
+  }
+
+  const skills = read.definitions.flatMap((item): TeamSkill[] => {
+    if (duplicated.has(item)) return [];
     const relativePath = item.source.path.replace(/\/$/, '');
 
-    return item.layer === 'namespace'
+    return [item.layer === 'namespace'
       ? { name: item.name, namespace: item.namespace, source: item.source.full, relativePath }
-      : { name: item.name, source: item.source.full, relativePath };
+      : { name: item.name, source: item.source.full, relativePath }];
   });
 
   const skillsDir = path.join(repoPath, 'skills');
@@ -528,7 +551,7 @@ export async function readTeamSkills(repoPath: string): Promise<TeamSkillsRead> 
     }
   }
 
-  return { skills, notSkills, diagnostics: read.diagnostics };
+  return { skills, notSkills, diagnostics };
 }
 
 /** A team skill as pull and push carry it. */
@@ -696,6 +719,8 @@ interface SkillPushCandidate {
   mtime: number;
   status: ResourceItemStatus;
   namespace?: string;
+  /** The team skill the edit goes back to, when there is one. */
+  teamSource?: TeamSkillSource;
   fromInactiveNamespace?: true;
   deliveryRecorded?: true;
   originProven?: true;
@@ -708,6 +733,8 @@ export function createSkillPushItem(input: {
   sourcePath: string;
   status: ResourceItemStatus;
   namespace?: string;
+  /** The team skill the edit goes back to, when there is one: a skill kept as one file stays one. */
+  teamSource?: TeamSkillSource;
   fromInactiveNamespace?: true;
   deliveryRecorded?: true;
   originProven?: true;
@@ -723,9 +750,11 @@ export function createSkillPushItem(input: {
     return undefined;
   }
 
-  const relativePath = input.namespace
+  const folderPath = input.namespace
     ? `skills/${input.namespace}/${input.name}`
     : `skills/${input.name}`;
+
+  const relativePath = input.teamSource !== undefined && TeamSkillSource.isFile(input.teamSource) ? `${folderPath}.md` : folderPath;
 
   const item: ResourceItem = {
     name: input.name,
@@ -842,7 +871,7 @@ async function otherVersionFiles(repoPath: string, item: ResourceItem): Promise<
   for (const copy of copies) {
     if (path.resolve(copy) === path.resolve(item.sourcePath)) continue;
 
-    for (const file of await listFilesRecursive(copy)) files.set(file, [...(files.get(file) ?? []), path.join(copy, file)]);
+    for (const file of await TeamSkillSource.files(copy)) files.set(file, [...(files.get(file) ?? []), TeamSkillSource.fileAt(copy, file)]);
   }
 
   return files;
@@ -866,7 +895,7 @@ async function removeLeftoverVersionFiles(
   const delivered = ledger?.previous;
 
   if (otherVersions.size === 0 && delivered === undefined) return;
-  const sourceFiles = new Set((await listFilesRecursive(source)).filter((file) => !isDraft(file)));
+  const sourceFiles = new Set((await TeamSkillSource.files(source)).filter((file) => !isDraft(file)));
   let removed = false;
 
   for (const file of await listFilesRecursive(dest)) {
@@ -906,11 +935,11 @@ async function removeLeftoverVersionFiles(
 async function isPastSkillVersion(
   repoPath: string, activeRoot: string, localDir: string, teamDir: string, teamRelDir: string,
 ): Promise<boolean> {
-  for (const rel of await listFilesRecursive(teamDir)) {
+  for (const rel of await TeamSkillSource.files(teamDir)) {
     if (rel.split('/').includes(CONTRIBUTORS_FILE)) continue;
     const localFile = path.join(localDir, rel);
 
-    if (await fileContentEqual(localFile, path.join(teamDir, rel))) continue;
+    if (await fileContentEqual(localFile, TeamSkillSource.fileAt(teamDir, rel))) continue;
 
     if (!await pathExists(localFile)) {
       const activeRel = path.relative(activeRoot, localFile).split(path.sep).join('/');
@@ -920,7 +949,7 @@ async function isPastSkillVersion(
       return false;
     }
 
-    if (!await isPastVersionOf(repoPath, localFile, `${teamRelDir}/${rel}`)) return false;
+    if (!await isPastVersionOf(repoPath, localFile, TeamSkillSource.isFile(teamDir) ? teamRelDir : `${teamRelDir}/${rel}`)) return false;
   }
 
   return true;
@@ -1109,6 +1138,27 @@ export async function resolveDestination(input: {
   return blockedCopies.length > 0 ? { kind: 'outOfScope', candidates: blockedCopies } : { kind: 'new' };
 }
 
+/**
+ * Write the SKILL.md of the local copy `item` back to the team skill kept as the one file `dest`. A file holds no other
+ * file, so any the copy gained stay out, named: the team turns the file into a folder to share them.
+ */
+async function pushSkillFile(item: ResourceItem, dest: string): Promise<void> {
+  const content = await readFileSafe(path.join(item.sourcePath, SKILL_MD));
+
+  if (content === null) throw new Error(`${item.sourcePath} has no SKILL.md to push to ${item.relativePath}.`);
+  const others = (await listFilesRecursive(item.sourcePath)).filter((rel) => rel !== SKILL_MD && path.posix.basename(rel) !== CONTRIBUTORS_FILE);
+
+  if (others.length > 0) {
+    log.warn(
+      `[skills] Pushed only SKILL.md of ${item.name}: ${item.relativePath} is a skill kept as one file, so ${others.join(', ')} stayed out. `
+      + `To share them, turn it into the folder ${item.relativePath.slice(0, -'.md'.length)}/ in the team repo.`,
+    );
+  }
+
+  await writeFile(dest, withSkillFrontmatter(content, item.name));
+  log.debug(`Copied skill ${item.name} → ${item.relativePath}`);
+}
+
 export class SkillsHandler extends ResourceHandler {
   readonly type = 'skills' as const;
 
@@ -1281,7 +1331,7 @@ export class SkillsHandler extends ResourceHandler {
             // Skill exists in team repo — check if content differs
             const { teamSkill } = copyDestination;
             const teamDirPath = teamSkill.dir;
-            const equal = await dirTeamSubsetEqual(localDirPath, teamDirPath, [CONTRIBUTORS_FILE]);
+            const equal = await TeamSkillSource.isInCopy(localDirPath, teamDirPath, [CONTRIBUTORS_FILE]);
 
             if (equal) continue; // This tool dir's copy is identical, skip
             // Self mode: like `.teamai/rules` (see the rules scan), the
@@ -1318,7 +1368,7 @@ export class SkillsHandler extends ResourceHandler {
             // A destination one copy proves stays proven whichever copy is
             // newer, so a flag cannot move it.
             const proven = fromInactiveNamespace || existing?.originProven === true;
-            const candidate: SkillPushCandidate = { name: dir, sourcePath: localDirPath, mtime, status, namespace: target.namespace };
+            const candidate: SkillPushCandidate = { name: dir, sourcePath: localDirPath, mtime, status, namespace: target.namespace, teamSource: target.dir };
 
             if (proven) candidate.fromInactiveNamespace = true;
 
@@ -1355,6 +1405,7 @@ export class SkillsHandler extends ResourceHandler {
         sourcePath: candidate.sourcePath,
         status: candidate.status,
         namespace: candidate.namespace,
+        teamSource: candidate.teamSource,
         fromInactiveNamespace: candidate.fromInactiveNamespace,
         deliveryRecorded: candidate.deliveryRecorded,
         originProven: candidate.originProven,
@@ -1384,6 +1435,8 @@ export class SkillsHandler extends ResourceHandler {
       dest,
       `Invalid skill destination outside team repo skills directory: ${item.relativePath}`,
     );
+
+    if (TeamSkillSource.isFile(dest)) return pushSkillFile(item, dest);
     // A link in the member's skill stays theirs: teamai never puts links in the team repo (#993).
     await copyDir(item.sourcePath, dest, (link) => {
       log.warn(`Skipped ${link} in ${item.relativePath}: teamai does not push links to the team repo.`);
@@ -1519,11 +1572,13 @@ export class SkillsHandler extends ResourceHandler {
         for (const rel of blocked) {
           const entry = path.join(dest, ...rel.split('/'));
 
-          if (ledger) ledger.members.push({ dest: entry, teamRelPath: `${item.relativePath}/${rel}` });
-          else warnOnce(describeMembersFile(entry, `${item.relativePath}/${rel}`));
+          const teamRelPath = TeamSkillSource.isFile(item.sourcePath) ? item.relativePath : `${item.relativePath}/${rel}`;
+
+          if (ledger) ledger.members.push({ dest: entry, teamRelPath });
+          else warnOnce(describeMembersFile(entry, teamRelPath));
         }
 
-        await copyDir(item.sourcePath, dest, (link) => warnOnce(describeSkippedLink(link, item.relativePath)), blocked);
+        await TeamSkillSource.copyTo(item.sourcePath, dest, (link) => warnOnce(describeSkippedLink(link, item.relativePath)), blocked);
         await removeLeftoverVersionFiles(item.sourcePath, dest, otherVersions, ledger);
         await ensureSkillFrontmatter(dest, item.name);
 
@@ -1548,9 +1603,12 @@ export class SkillsHandler extends ResourceHandler {
     const removed: string[] = [];
     const scopedNamespaces = await resolveSkillNamespaces(localConfig);
 
-    const teamDirs = scopedNamespaces.length > 0
-      ? scopedNamespaces.map((namespace) => path.join(localConfig.repo.localPath, 'skills', namespace, name))
-      : [path.join(localConfig.repo.localPath, 'skills', name)];
+    const places = scopedNamespaces.length > 0
+      ? scopedNamespaces.map((namespace) => path.join(localConfig.repo.localPath, 'skills', namespace))
+      : [path.join(localConfig.repo.localPath, 'skills')];
+
+    // The skill's folder, or the one file it is kept as.
+    const teamDirs = places.flatMap((place) => [path.join(place, name), path.join(place, `${name}.md`)]);
 
     // Only teamai's copy in each tool's skills directory goes (#993): one on
     // this checkout's record, what pull writes today from the team source, or

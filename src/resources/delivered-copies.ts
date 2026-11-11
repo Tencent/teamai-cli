@@ -9,6 +9,7 @@ import { log } from '../utils/logger.js';
 import { resolveReal } from '../utils/path-safety.js';
 import { historicalVersions, matchesHistory, readBlob, readRenderedBlob } from '../utils/team-history.js';
 import { isUneditedGeneratedSkill } from '../workflow/discovery/generated-marker.js';
+import { TeamSkillSource } from './team-skill-source.js';
 import { warnOnce } from '../utils/warn-once.js';
 
 /**
@@ -169,9 +170,9 @@ async function nextHashes(previous: DeliveredHashes, item: ResourceItem, target:
   const { withSkillFrontmatter } = await import('./skills.js');
   const next = new Map<string, string | null>();
 
-  for (const file of await listFilesRecursive(item.sourcePath)) {
+  for (const file of await TeamSkillSource.files(item.sourcePath)) {
     if (path.basename(file) === CONTRIBUTORS_FILE) continue;
-    const bytes = await fse.readFile(path.join(item.sourcePath, file));
+    const bytes = await fse.readFile(TeamSkillSource.fileAt(item.sourcePath, file));
     const text = bytes.toString('utf-8');
     const written = file === 'SKILL.md' ? withSkillFrontmatter(text, item.name) : text;
     next.set(path.join(target.dest, file), contentHash(written === text ? bytes : written));
@@ -211,7 +212,7 @@ export async function isUneditedSkillCopy(previous: DeliveredHashes, dest: strin
  * Read-only.
  */
 export async function isTeamSkillAsDelivered(previous: DeliveredHashes, dest: string, teamDir: string): Promise<boolean> {
-  const item: ResourceItem = { name: path.basename(teamDir), type: 'skills', sourcePath: teamDir, relativePath: '', status: 'modified' };
+  const item: ResourceItem = { name: TeamSkillSource.name(teamDir), type: 'skills', sourcePath: teamDir, relativePath: '', status: 'modified' };
   const next = await nextHashes(previous, item, { tool: '', dest });
 
   return [...next].every(([file, hash]) => hash !== null && previous[file] === hash);
@@ -237,13 +238,13 @@ export async function isRecordedFromTeamSkill(
   if (recorded === undefined) return false;
   const { withSkillFrontmatter } = await import('./skills.js');
 
-  for (const version of await historicalVersions(repoPath, `${teamDir}/${SKILL_MD}`, { currentLifetime: true, rev: options.rev }) ?? []) {
+  for (const version of await historicalVersions(repoPath, TeamSkillSource.skillMd(teamDir).split(path.sep).join('/'), { currentLifetime: true, rev: options.rev }) ?? []) {
     const source = await readBlob(repoPath, version.blob);
     const bytes = source === null ? null : await readRenderedBlob(repoPath, version.blob, version.path) ?? source;
 
     if (bytes === null) continue;
     const text = bytes.toString('utf-8');
-    const written = withSkillFrontmatter(text, path.posix.basename(teamDir));
+    const written = withSkillFrontmatter(text, TeamSkillSource.name(teamDir));
 
     const hashes = options.normalizeLineEndings === false
       ? new Set([contentHash(written === text ? bytes : written)])
@@ -461,7 +462,7 @@ export async function teamaiSkillFiles(
 export async function deliveredSkillFiles(source: string, dest: string, blocked: readonly string[] = []): Promise<string[]> {
   const delivered = (rel: string): boolean => !blocked.some((entry) => rel === entry || rel.startsWith(`${entry}/`));
 
-  return (await listFilesRecursive(source)).filter(delivered).map((rel) => path.join(dest, ...rel.split('/')));
+  return (await TeamSkillSource.files(source)).filter(delivered).map((rel) => path.join(dest, ...rel.split('/')));
 }
 
 /**
@@ -617,8 +618,8 @@ export async function judgeCopy(previous: DeliveredHashes | undefined, item: Res
 export async function blockingEntries(dest: string, sourcePath: string): Promise<string[]> {
   const blocked = new Set<string>();
 
-  for (const rel of await listFilesRecursive(sourcePath)) {
-    if (!(await fse.lstat(path.join(sourcePath, rel)).catch(() => null))?.isFile()) continue;
+  for (const rel of await TeamSkillSource.files(sourcePath)) {
+    if (!(await fse.lstat(TeamSkillSource.fileAt(sourcePath, rel)).catch(() => null))?.isFile()) continue;
     const parts = rel.split(/[\\/]/);
 
     for (let i = 1; i <= parts.length; i++) {
@@ -644,7 +645,7 @@ async function overwritesMembersFile(previous: DeliveredHashes, item: ResourceIt
   if (item.type !== 'skills' || target.origin === undefined) return false;
   const { withSkillFrontmatter } = await import('./skills.js');
 
-  for (const rel of await listFilesRecursive(item.sourcePath)) {
+  for (const rel of await TeamSkillSource.files(item.sourcePath)) {
     const file = path.join(target.dest, rel);
 
     if (previous[file] !== undefined) continue;
@@ -653,7 +654,7 @@ async function overwritesMembersFile(previous: DeliveredHashes, item: ResourceIt
     const disk = await fileHash(file);
 
     if (disk === null) continue;
-    const bytes = await fse.readFile(path.join(item.sourcePath, rel));
+    const bytes = await fse.readFile(TeamSkillSource.fileAt(item.sourcePath, rel));
     const text = bytes.toString('utf-8');
     const written = rel === SKILL_MD ? withSkillFrontmatter(text, item.name) : text;
 
@@ -780,7 +781,7 @@ export async function recordDelivered(hashes: DeliveredHashes, dest: string, ski
 
   const files = skillSource === undefined
     ? [dest]
-    : (await listFilesRecursive(skillSource))
+    : (await TeamSkillSource.files(skillSource))
       .filter((file) => path.basename(file) !== CONTRIBUTORS_FILE && !isDraft(file))
       .map((file) => path.join(dest, file));
 

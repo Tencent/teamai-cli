@@ -716,6 +716,60 @@ describe('pull: an active namespace item replaces the root item of the same name
     });
   });
 
+  describe('skills in the file form', () => {
+    it('delivers skills/<ns>/<name>.md as <name>/SKILL.md with its frontmatter repaired, indexes it, and leaves README.md out', async () => {
+      await team('skills/frontend/greet.md', '# Greet\nSay hello to the member by name.\n');
+      // Notes beside the skills, as team repos kept before a file could be a skill.
+      await team('skills/frontend/README.md', '# Our skills\n');
+
+      await pull({});
+
+      const delivered = await read('.claude/skills/greet/SKILL.md');
+      expect(delivered).toContain('name: greet');
+      expect(delivered).toContain('Say hello to the member by name.');
+      expect(await fse.readdir(path.join(homeDir, '.claude/skills/greet'))).toEqual(['SKILL.md']);
+      expect(await exists('.claude/skills/README')).toBe(false);
+      const index = await fse.readJson(path.join(homeDir, '.teamai', 'search-index.json')) as { entries: Array<{ type: string; filename: string; path?: string }> };
+      expect(index.entries.filter((entry) => entry.type === 'skills').map(({ filename, path: at }) => [filename, at]))
+        .toEqual([['greet.md', path.join(repoPath, 'skills/frontend/greet.md')]]);
+    });
+
+    it('removes the delivered copy of a skill file once its namespace is no longer active', async () => {
+      await team('skills/frontend/greet.md', skillMd('greet', 'Say hello'));
+      keepState();
+      await pull({});
+      expect(await read('.claude/skills/greet/SKILL.md')).toBe(skillMd('greet', 'Say hello'));
+
+      as(['devops']);
+      await pull({ force: true });
+
+      expect(await exists('.claude/skills/greet')).toBe(false);
+    });
+
+    it('replaces a root skill folder whole with a namespace skill file of its name', async () => {
+      await team('tags.yaml', 'skills:\n  review: [ui]\n');
+      await team('skills/review/SKILL.md', skillMd('review', 'Shared review'));
+      await team('skills/review/checklist.md', 'root-only checklist\n');
+      await team('skills/frontend/review.md', skillMd('review', 'Front review'));
+      as(['frontend'], { subscribedTags: ['ui'] });
+
+      await pull({});
+
+      expect(await read('.claude/skills/review/SKILL.md')).toContain('Front review');
+      expect(await exists('.claude/skills/review/checklist.md')).toBe(false);
+    });
+
+    it('delivers neither a file nor a folder that define one skill in one place, and says so', async () => {
+      await team('skills/frontend/greet.md', skillMd('greet', 'File greet'));
+      await team('skills/frontend/greet/SKILL.md', skillMd('greet', 'Folder greet'));
+
+      await pull({});
+
+      expect(await exists('.claude/skills/greet')).toBe(false);
+      expect(logged('warn', /skills\/frontend\/greet\.md and skills\/frontend\/greet\/ both define the skill greet, so neither is delivered/)).toBe(true);
+    });
+  });
+
   describe('env and hooks', () => {
     beforeEach(async () => {
       const base = await loadTeamConfig(repoPath);
