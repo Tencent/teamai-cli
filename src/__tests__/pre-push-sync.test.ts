@@ -30,6 +30,7 @@ vi.mock('../utils/git.js', () => ({
 import { syncTeamUpdatesToLocal } from '../utils/pre-push-sync.js';
 import { fileHash } from '../utils/fs.js';
 import { recordDelivered } from '../resources/delivered-copies.js';
+import { withSkillFrontmatter } from '../resources/skills.js';
 import { teamRuleToCopilotInstructions } from '../resources/copilot-instructions.js';
 import { teamRuleToOmpRule } from '../resources/omp-rule.js';
 import { teamRuleToKiroSteering } from '../resources/kiro-steering.js';
@@ -772,6 +773,24 @@ describe('syncTeamUpdatesToLocal — skills', () => {
     // Local should now have v2
     const content = await fse.readFile(path.join(localSkillDir, 'SKILL.md'), 'utf-8');
     expect(content).toBe('v2 namespaced');
+  });
+
+  it('syncs an unedited copy of a skill kept as one file, as pull delivered it, and keeps an edited one', async () => {
+    const v1 = (skill: string): string => `# ${skill}\n\nv1\n`;
+    await fse.outputFile(path.join(repoPath, 'skills', 'greet.md'), '# greet\n\nv2\n');
+    await fse.outputFile(path.join(repoPath, 'skills', 'ns', 'wave.md'), '# wave\n\nv2\n');
+    const greet = path.join(homeDir, '.claude/skills', 'greet', 'SKILL.md');
+    const wave = path.join(homeDir, '.claude/skills', 'wave', 'SKILL.md');
+    await fse.outputFile(greet, withSkillFrontmatter(v1('greet'), 'greet'));
+    await fse.outputFile(wave, `${withSkillFrontmatter(v1('wave'), 'wave')}mine\n`);
+    mockGetFileContentAtRev.mockImplementation(async (_repo, _rev, file) => (
+      file === './skills/greet.md' ? Buffer.from(v1('greet')) : file === './skills/ns/wave.md' ? Buffer.from(v1('wave')) : null
+    ));
+
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
+
+    expect(await fse.readFile(greet, 'utf-8')).toBe('# greet\n\nv2\n');
+    expect(await fse.readFile(wave, 'utf-8')).toBe(`${withSkillFrontmatter(v1('wave'), 'wave')}mine\n`);
   });
 
   it('should skip skill dirs that are already identical', async () => {

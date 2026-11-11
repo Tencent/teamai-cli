@@ -40,7 +40,7 @@ function fileAt(source: TeamSkillSource, rel: string): string {
 }
 
 /** Copy the skill into the directory `dest`, as `copyDir` copies a folder: `skip` names paths in it left as `dest` has them. */
-async function copyTo(source: TeamSkillSource, dest: string, onLink: (relativePath: string) => void, skip: readonly string[] = []): Promise<void> {
+async function copyTo(source: TeamSkillSource, dest: string, onLink?: (relativePath: string) => void, skip: readonly string[] = []): Promise<void> {
   if (!isFile(source)) return copyDir(source, dest, onLink, skip);
 
   if (isDraft(source) || skip.includes(SKILL_MD)) return;
