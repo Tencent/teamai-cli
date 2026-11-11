@@ -253,15 +253,19 @@ describe('dashboard scorer results', () => {
     expect(view.selected?.agreement.judges).toMatchObject([{ labels: 2, paired: 2, agree: 1, judgePassedHumanFailed: 1 }]);
   });
 
-  it('pairs hand labels with an older rubric by the values the scorer listed at its team revision', async () => {
+  it.each([
+    ['a scorer file', 'review-quality.md', []],
+    ['a scorer folder in a namespace', 'ops/review-quality/SCORER.md', [{ path: 'checklist.md', content: 'Look for a regression test.\n' }]],
+  ] as const)('pairs hand labels with an older rubric of %s by the values the scorer listed at its team revision', async (_form, file, support) => {
     const { config } = team();
     const repo = config.repo.localPath;
     const rubric = (prompt: string) => `---\nlabels:\n  - { value: good, score: 1, description: Fixed it }\n  - { value: missed-bug, score: 0, description: Left the bug }\npassingScore: 1\n---\n${prompt}\n`;
     const commit = (prompt: string) => {
-      write(path.join(repo, 'scorers', 'review-quality.md'), rubric(prompt));
+      write(path.join(repo, 'scorers', ...file.split('/')), rubric(prompt));
+      for (const { path: at, content } of support) write(path.join(repo, 'scorers', ...path.posix.dirname(file).split('/'), at), content);
       git(repo, 'add', '-A');
       git(repo, 'commit', '-q', '-m', prompt);
-      return { sourceHash: scorerSourceHash(rubric(prompt)), teamRevision: git(repo, 'rev-parse', 'HEAD') };
+      return { sourceHash: scorerSourceHash(rubric(prompt), support.length > 0 ? [...support] : undefined), teamRevision: git(repo, 'rev-parse', 'HEAD') };
     };
     const first = commit('Judge whether the session fixed the bug.');
     const second = commit('Judge whether the session fixed the bug. Read the tests it ran.');
