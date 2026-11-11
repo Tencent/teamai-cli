@@ -22,7 +22,7 @@ import path from 'node:path';
 import { contentHash, forgetDelivered, removeDelivered, type DeliveryLedger } from './delivered-copies.js';
 import { FolderFiles, type FolderFile } from './folder-files.js';
 import { FOLDER_MARKERS } from '../folder-markers.js';
-import { ruleFolderReachOf } from '../tools.js';
+import { folderReachOf } from '../tools.js';
 import { getDataHome, isSelfMode, type LocalConfig } from '../types.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { createGit } from '../utils/git.js';
@@ -492,14 +492,14 @@ function render(text: string, at: { readonly type: DeliveredFolderType; readonly
 /**
  * `text` with the variable of `ref`'s type naming the folder in `localConfig`'s scope where `tool` reads it: in a
  * project the worktree's `.teamai/delivered/`, by its path from the project root for a tool that reads nothing outside
- * the project (`ruleFolderReachOf`); in user scope the data home. `tool` null: text teamai injects for a tool without
+ * the project (`folderReachOf`); in user scope the data home. `tool` null: text teamai injects for a tool without
  * native rules, none of which reads outside the project.
  */
 function renderFor(text: string, at: { readonly localConfig: LocalConfig; readonly ref: DeliveredFolderRef; readonly tool: string | null }): string {
   const dest = pathOf(at.localConfig, at.ref);
   const { projectRoot } = at.localConfig;
 
-  if (worktreeRoot(at.localConfig) === null || projectRoot === undefined || (at.tool !== null && ruleFolderReachOf(at.tool).reach !== 'copy')) {
+  if (worktreeRoot(at.localConfig) === null || projectRoot === undefined || (at.tool !== null && folderReachOf(at.tool).reach !== 'copy')) {
     return render(text, { type: at.ref.type, dest });
   }
 

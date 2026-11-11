@@ -10,9 +10,9 @@ Generated: do not edit by hand. Regenerate with `node scripts/check-docs.mjs --w
 
 ## User scope
 
-Rule folder files: how the tool reads the files a user-scope rule folder names in the data home: `none` with no prompt, `grant` once teamai adds that directory to the setting named, `copy`: it may ask, and pull warns once. In a project every tool reads them in the worktree.
+Rule and agent folder files: how the tool reads the files a user-scope rule or agent folder names in the data home: `none` with no prompt, `grant` once teamai adds that directory to the setting named, `copy`: it may ask, and pull warns once. In a project every tool reads them in the worktree.
 
-| Tool | Home | Skills | Rules | Rule folder files | Instruction blocks | Agents | Hooks | MCP | Sessions |
+| Tool | Home | Skills | Rules | Rule and agent folder files | Instruction blocks | Agents | Hooks | MCP | Sessions |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Claude Code | `~/.claude` | `~/.claude/skills` d | `~/.claude/rules` v | grant `permissions.additionalDirectories` v | `~/.claude/CLAUDE.md` v | `~/.claude/agents` v | `~/.claude/settings.json` v | `~/.claude.json` v | claude-code |
 | Codex CLI | `~/.codex` | `~/.codex/skills` v<br>`~/.agents/skills` v | in the blocks file (Codex AGENTS.md) | copy | `~/.codex/AGENTS.md` v | `~/.codex/agents` v | `~/.codex/hooks.json` v | `~/.codex/config.toml` v | codex |

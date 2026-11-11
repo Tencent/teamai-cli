@@ -10,9 +10,9 @@ teamai 为每个工具把每类 Agent 资源写到哪里，以及工具读取哪
 
 ## 用户范围
 
-规则文件夹的文件：工具如何读取用户范围的规则文件夹在数据目录中引用的文件：`none` 无需确认，`grant` 在 teamai 把该目录加入所列设置后读取，`copy` 可能会先询问，pull 会提示一次。在项目中，所有工具都从工作树读取这些文件。
+规则与 agent 文件夹的文件：工具如何读取用户范围的规则或 agent 文件夹在数据目录中引用的文件：`none` 无需确认，`grant` 在 teamai 把该目录加入所列设置后读取，`copy` 可能会先询问，pull 会提示一次。在项目中，所有工具都从工作树读取这些文件。
 
-| 工具 | 主目录 | 技能 | 规则 | 规则文件夹的文件 | 指令块 | Agents | Hooks | MCP | 会话 |
+| 工具 | 主目录 | 技能 | 规则 | 规则与 agent 文件夹的文件 | 指令块 | Agents | Hooks | MCP | 会话 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Claude Code | `~/.claude` | `~/.claude/skills` d | `~/.claude/rules` v | grant `permissions.additionalDirectories` v | `~/.claude/CLAUDE.md` v | `~/.claude/agents` v | `~/.claude/settings.json` v | `~/.claude.json` v | claude-code |
 | Codex CLI | `~/.codex` | `~/.codex/skills` v<br>`~/.agents/skills` v | in the blocks file (Codex AGENTS.md) | copy | `~/.codex/AGENTS.md` v | `~/.codex/agents` v | `~/.codex/hooks.json` v | `~/.codex/config.toml` v | codex |

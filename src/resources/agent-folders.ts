@@ -8,7 +8,7 @@ import type { DeliveryLedger } from './delivered-copies.js';
 import { DeliveredFolders, type DeliveredFolderRef } from './delivered-folders.js';
 import { FolderFiles } from './folder-files.js';
 import { FOLDER_MARKERS } from '../folder-markers.js';
-import { ruleFolderReachOf } from '../tools.js';
+import { folderReachOf } from '../tools.js';
 import type { LocalConfig, ResourceItem } from '../types.js';
 import { listDirs, listFiles, pathExists, readFileSafe } from '../utils/fs.js';
 import { warnOnce } from '../utils/warn-once.js';
@@ -56,7 +56,7 @@ async function deliver(input: {
   }
 
   if (DeliveredFolders.worktreeRoot(localConfig) === null) {
-    for (const tool of input.tools.filter((name) => ruleFolderReachOf(name).reach === 'copy')) {
+    for (const tool of input.tools.filter((name) => folderReachOf(name).reach === 'copy')) {
       warnOnce(`${tool} may ask before it reads the files of user-scope agent folders in ${path.join(DeliveredFolders.root(localConfig, 'agents'), 'agents')}: `
         + 'teamai grants it no access there, and a user-scope agent has no project to copy them into. Allow the directory in its settings, or share these agents from a project.');
     }

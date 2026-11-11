@@ -24,7 +24,7 @@ import { RESOURCE_LAYOUTS, Resources, type LayeredItem, type ListedResolution, t
 import { RuleFolders } from '../resources/rule-folders.js';
 import { buildRolePullContext, resolveDesiredRules } from '../resources/desired.js';
 import { readTeamRules, rulesReceivingTools } from '../resources/rules.js';
-import { ruleFolderReachOf, type RuleFolderReach } from '../tools.js';
+import { folderReachOf, type FolderReach } from '../tools.js';
 import { getKnowledgeDir, isAgentExcluded, isRecallEnabled, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { pathExists } from '../utils/fs.js';
 import { isSilent, setSilent } from '../utils/logger.js';
@@ -89,7 +89,7 @@ export interface ResourceFolder {
    * Where each tool that receives rules reads a delivered rule folder's files: the path pull writes for
    * `${TEAMAI_RULE_DIR}`, and how the tool reaches it: `worktree` in a project, else the tool's cell in user scope.
    */
-  readonly reads: ReadonlyArray<{ readonly tool: string; readonly reach: RuleFolderReach['reach'] | 'worktree'; readonly path: string }> | null;
+  readonly reads: ReadonlyArray<{ readonly tool: string; readonly reach: FolderReach['reach'] | 'worktree'; readonly path: string }> | null;
 }
 
 /** One definition of a name, and what pull does with it. */
@@ -597,7 +597,7 @@ async function ruleList(config: LocalConfig, teamConfig: TeamaiConfig): Promise<
 
     const reads = delivered === null ? null : tools.map((tool) => ({
       tool,
-      reach: DeliveredFolders.worktreeRoot(config) === null ? ruleFolderReachOf(tool).reach : 'worktree' as const,
+      reach: DeliveredFolders.worktreeRoot(config) === null ? folderReachOf(tool).reach : 'worktree' as const,
       path: RuleFolders.render(DeliveredFolders.placeholder('rules'), { localConfig: config, rule, tool }),
     }));
 

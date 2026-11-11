@@ -11,7 +11,7 @@ import { DeliveredFolders, type DeliveredFolderRef, type FolderDelivery } from '
 import { FolderFiles, type FolderFile } from './folder-files.js';
 import { isLanguageVariant, RESOURCE_LAYOUTS, type ResourceDiagnostic } from './resolver.js';
 import { splitRuleFrontmatter } from './team-rule.js';
-import { ruleFolderReachOf } from '../tools.js';
+import { folderReachOf } from '../tools.js';
 import type { LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
 import { pathExists, readJsonObject, writeJson } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
@@ -107,7 +107,7 @@ function composeText(input: { readonly rule: RuleFolder; readonly base: string; 
 
 /** Whether `tool` reads a rule folder's files outside the project without a prompt, once teamai grants what it can. */
 function readsOutsideProject(tool: string): boolean {
-  return ruleFolderReachOf(tool).reach !== 'copy';
+  return folderReachOf(tool).reach !== 'copy';
 }
 
 /** `text` with `${TEAMAI_RULE_DIR}` naming `rule`'s folder where `tool` reads it (`DeliveredFolders.renderFor`; `sync` warns for the tools that cannot read it). */
