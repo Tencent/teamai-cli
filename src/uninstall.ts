@@ -64,7 +64,7 @@ import { resolveDocsDestination } from './resources/docs.js';
 import { DeliveredFolders } from './resources/delivered-folders.js';
 import { RuleFolders } from './resources/rule-folders.js';
 import { RESOURCE_LAYOUTS, Resources } from './resources/resolver.js';
-import { listTeamAgentDirs, ownsAgentCopy, updateJoycodeAgentIndex } from './resources/agents.js';
+import { listTeamAgentDirs, listTeamAgentFolders, ownsAgentCopy, updateJoycodeAgentIndex } from './resources/agents.js';
 import { RulesHandler, inlineRulesLabelOf, inlineRulesLocationOf, isLegacyLayoutCopy, ownsRuleCopy } from './resources/rules.js';
 import { deliveredHashes, projectCheckouts, syncDeliveredGitExclude } from './pull.js';
 import { BUILTIN_AGENT_NAMES } from './builtin-agents.js';
@@ -166,6 +166,8 @@ interface RemovalPlan {
   keptFiles: string[];
   /** Every tool's rules directories, whose files may name a delivered folder: a folder one left names stays (#1787). */
   ruleDirs: string[];
+  /** Every tool's agents directories, read as `ruleDirs` are. */
+  agentDirs: string[];
   /** The rules globs teamai owns in OpenCode's opencode.json `instructions`, per file (#946). */
   opencodeOwnedGlobs: OpencodeRuleGlobEntries[];
   /** Built-in agent .md files deployed by the CLI (e.g. teamai-recall). */
@@ -407,9 +409,9 @@ async function collectTeamRuleNames(repoPath: string): Promise<Set<string>> {
 }
 
 /**
- * Collect custom agent names from canonical YAML and legacy Markdown files,
- * at the root and one level of `agents/<namespace>/` (role-scoped agents
- * deploy flattened, so their stems are removal candidates too).
+ * Collect custom agent names from canonical YAML and legacy Markdown files
+ * and agent folders, at the root and one level of `agents/<namespace>/`
+ * (role-scoped agents deploy flattened, so their stems are removal candidates too).
  */
 async function collectTeamAgentNames(repoPath: string): Promise<Map<string, string>> {
   const teamAgentsDir = path.join(repoPath, 'agents');
@@ -426,6 +428,10 @@ async function collectTeamAgentNames(repoPath: string): Promise<Map<string, stri
       if (stem === file || names.has(stem)) continue;
       names.set(stem, path.relative(repoPath, path.join(dir, file)).split(path.sep).join('/'));
     }
+  }
+
+  for (const { dir, name } of await listTeamAgentFolders(teamAgentsDir)) {
+    if (!names.has(name)) names.set(name, `${path.relative(repoPath, dir).split(path.sep).join('/')}/`);
   }
 
   return names;
@@ -1310,11 +1316,14 @@ async function buildRemovalPlan(
   const install = installOf(teamConfig, localConfig);
   const perTool = new Map<string, ToolResources>();
   const rulesDirsByTool = new Map<string, readonly string[]>();
+  const agentDirsByTool = new Map<string, readonly string[]>();
   const globalAdapters = localConfig.scope === 'user';
 
   for (const [tool, toolPath] of Object.entries(toolPaths)) {
     const rulesDirs = cleanupOf(await locate(tool, 'rules', install)).flatMap((place) => place.kind === 'dir' ? [place.path] : []);
     rulesDirsByTool.set(tool, rulesDirs);
+    const agentDirs = cleanupOf(await locate(tool, 'agents', install)).map((place) => place.path);
+    agentDirsByTool.set(tool, agentDirs);
     const hooks = await locate(tool, 'hooks', install);
     const skillLocation = await locate(tool, 'skills', install);
     const skillWrites = new Set(writesOf(skillLocation).map((place) => place.path));
@@ -1344,7 +1353,7 @@ async function buildRemovalPlan(
         ownsSkill,
         skillFiles,
         teamRuleNames,
-        cleanupOf(await locate(tool, 'agents', install)).map((place) => place.path),
+        agentDirs,
         teamAgentNames,
         hookTargets,
         standaloneHookManifestPath,
@@ -1555,7 +1564,7 @@ async function buildRemovalPlan(
   // Read before anything is deleted: what the projects still set up need stays.
   const projectsKept = includeShared && globalAdapters ? await keptForProjects() : { projects: [], paths: [] };
 
-  // The worktree's .teamai/delivered/ (#1787): the rule and MCP folders of a project scope, and a self-mode scope's hook folders.
+  // The worktree's .teamai/delivered/ (#1787): the rule, agent and MCP folders of a project scope, and a self-mode scope's hook folders.
   const worktreeDelivered = DeliveredFolders.worktreeRoot(localConfig);
 
   const plan: RemovalPlan = {
@@ -1583,6 +1592,7 @@ async function buildRemovalPlan(
     keptSkillDirs: [],
     keptFiles: [],
     ruleDirs: [...new Set([...rulesDirsByTool.values()].flat())],
+    agentDirs: [...new Set([...agentDirsByTool.values()].flat())],
     opencodeOwnedGlobs: [],
     agentFiles: [],
     joycodeAgentIndexes: [],
@@ -2249,6 +2259,7 @@ async function textsLeft(plan: RemovalPlan, mcpEntries: readonly TextLeft[]): Pr
 
   const places = [
     ...plan.ruleDirs,
+    ...plan.agentDirs,
     ...plan.keptRuleFiles.flatMap(({ files }) => files),
     ...plan.claudeMdFiles.map(({ path: file }) => file),
     ...plan.hookFiles.map(({ path: file }) => file),
@@ -2293,7 +2304,7 @@ async function foldersLeftNamed(input: {
   for (const { file, text, checkout: holding } of input.texts) {
     if (holding !== null && checkout !== null && holding !== checkout) continue;
 
-    for (const type of ['hooks', 'rules', 'mcp'] as const) {
+    for (const type of ['hooks', 'rules', 'agents', 'mcp'] as const) {
       if (!text.includes(`/${type}/`) || (type === 'mcp' && input.mcpUnread)) continue;
 
       for (const folder of await DeliveredFolders.namedIn({ root, type, texts: [text] })) named.set(folder, [...named.get(folder) ?? [], file]);
@@ -3197,7 +3208,7 @@ async function executeRemoval(
     }
   }
 
-  // (f2) The folders the team hooks, rules and MCP servers of each worktree read (#1787), now that the files naming
+  // (f2) The folders the team hooks, rules, agents and MCP servers of each worktree read (#1787), now that the files naming
   // them went: one a file uninstall leaves still names stays with it.
   let left: CheckoutText[] | null = null;
   const mcpEntries = alreadyLeft.mcpEntries ?? [];

@@ -1049,12 +1049,16 @@ export class AgentsHandler extends ResourceHandler {
     // naming a namespace leaves the same stem in other namespaces alone.
     const located = await findTeamAgentFiles(teamAgentsDir, name);
 
+    // Agent folders the same way: a bare stem in every namespace, `<ns>/<stem>` in that one only.
+    const folders = (await listTeamAgentFolders(teamAgentsDir))
+      .filter((folder) => (stem === name ? folder.name === name : `${folder.namespace}/${folder.name}` === name));
+
     // The team file a kept copy is named against, before it goes.
     const resource = located.length > 0
       ? path.relative(localConfig.repo.localPath, located[0].path).split(path.sep).join('/')
-      : `agents/${name}.yaml`;
+      : folders.length > 0 ? `${path.relative(localConfig.repo.localPath, folders[0].dir).split(path.sep).join('/')}/` : `agents/${name}.yaml`;
 
-    for (const { path: teamFile } of located) {
+    for (const teamFile of [...located.map((file) => file.path), ...folders.map((folder) => folder.dir)]) {
       // oxlint-disable-next-line teamai/remove-delivered -- the team repo's source, which pull never records
       await remove(teamFile);
       removed.push(teamFile);
@@ -1107,6 +1111,14 @@ export class AgentsHandler extends ResourceHandler {
     const record = await (await import('../pull.js')).editDeliveryRecord(localConfig);
     const { previous } = record.ledger;
     const install = installOf(teamConfig, localConfig);
+
+    for (const folder of folders) {
+      const delivered = AgentFolders.pathOf(localConfig, folder);
+
+      if (!await pathExists(delivered)) continue;
+      await removeDelivered(record.ledger, delivered);
+      removed.push(delivered);
+    }
 
     for (const tool of Object.keys(install.toolPaths)) {
       // A tool the member excluded is not ours to write to, so it is not ours

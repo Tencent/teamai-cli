@@ -50,6 +50,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { pull } from '../pull.js';
+import { AgentsHandler } from '../resources/agents.js';
 import { loadLocalConfigForScope, loadStateForScope, loadTeamConfig, saveStateForScope } from '../config.js';
 import { TeamaiConfigSchema, type LocalConfig, type State } from '../types.js';
 
@@ -114,5 +115,61 @@ describe('the Claude Code grant of the rule folders a pull delivers (#1787)', ()
     await pull({ force: true });
 
     expect(await fse.readJson(settingsFile())).toMatchObject({ permissions: { additionalDirectories: ['/member/dir'] } });
+  });
+
+  describe('with an agent folder', () => {
+    const agentFolder = () => path.join(homeDir, '.teamai', 'agents', 'reviewer');
+    const agentCopy = () => path.join(homeDir, '.claude', 'agents', 'reviewer.md');
+
+    /** What `teamai remove agents reviewer` leaves in the team repo. */
+    const removeAgent = async (): Promise<void> => {
+      await fse.remove(path.join(repoPath, 'agents', 'reviewer'));
+      await fse.outputFile(path.join(repoPath, 'agents', '.removed'), 'reviewer\n');
+    };
+
+    beforeEach(async () => {
+      await fse.outputFile(path.join(repoPath, 'agents', 'reviewer', 'AGENT.md'), '---\nname: reviewer\ndescription: Reviews.\n---\nApply ${TEAMAI_AGENT_DIR}/rubric.md.\n');
+      await fse.outputFile(path.join(repoPath, 'agents', 'reviewer', 'rubric.md'), '- Name what breaks.\n');
+    });
+
+    it('adds the agents directory after the rules one, and takes it back with the folder once the team drops the agent', async () => {
+      await pull({});
+      const granted = (await fse.readJson(settingsFile())).permissions.additionalDirectories;
+      const delivered = await fse.pathExists(path.join(agentFolder(), 'rubric.md'));
+      await removeAgent();
+
+      await pull({ force: true });
+
+      expect([granted, delivered]).toEqual([['/member/dir', path.join(homeDir, '.teamai', 'rules'), path.join(homeDir, '.teamai', 'agents')], true]);
+      expect([await fse.pathExists(agentCopy()), await fse.pathExists(agentFolder())]).toEqual([false, false]);
+      expect(await fse.readJson(settingsFile())).toMatchObject({ permissions: { additionalDirectories: ['/member/dir', path.join(homeDir, '.teamai', 'rules')] } });
+    });
+
+    it('is removed by teamai remove agents, from the team repo, the tools and the data home', async () => {
+      await pull({});
+      const localConfig = await loadLocalConfigForScope('user');
+
+      await new AgentsHandler().removeItem('reviewer', TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/x/team.git' }), localConfig as LocalConfig);
+
+      expect([
+        await fse.pathExists(path.join(repoPath, 'agents', 'reviewer')),
+        await fse.pathExists(agentCopy()),
+        await fse.pathExists(agentFolder()),
+      ]).toEqual([false, false, false]);
+    });
+
+    it('keeps the folder of an agent the team removed while the member keeps an edited copy, and removes it with the copy', async () => {
+      await pull({});
+      await fse.appendFile(agentCopy(), 'My own note.\n');
+      await removeAgent();
+
+      await pull({ force: true });
+      const kept = await fse.pathExists(path.join(agentFolder(), 'rubric.md'));
+      await fse.remove(agentCopy());
+      await pull({ force: true });
+
+      expect([kept, await fse.pathExists(agentFolder())]).toEqual([true, false]);
+      expect(await fse.readJson(settingsFile())).toMatchObject({ permissions: { additionalDirectories: ['/member/dir', path.join(homeDir, '.teamai', 'rules')] } });
+    });
   });
 });

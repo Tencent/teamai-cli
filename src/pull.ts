@@ -1484,12 +1484,13 @@ async function excludeWorkspaceInstructions(localConfig: LocalConfig, options: G
 }
 
 /**
- * Let each tool whose rule folder cell is `grant` (Claude Code) read the rule folders this scope delivers (#1787):
- * the scope's delivered `rules` directory in `permissions.additionalDirectories` of the tool's user settings, owned
- * through the checkout record. Only user scope needs it: a project's folders sit in the worktree, which the tool reads
- * anyway. While the scope delivers no rule folder there, what an earlier pull added is taken back.
+ * Let each tool whose rule folder cell is `grant` (Claude Code) read the rule and agent folders this scope delivers
+ * (#1787): the scope's delivered `rules` and `agents` directories in `permissions.additionalDirectories` of the tool's
+ * user settings, each for a tool that receives that type, owned through the checkout record. Only user scope needs it: a
+ * project's folders sit in the worktree, which the tool reads anyway. While the scope delivers no folder of a type
+ * there, what an earlier pull added for it is taken back.
  */
-async function grantRuleFolders(localConfig: LocalConfig, options: GlobalOptions): Promise<void> {
+async function grantDeliveredFolders(localConfig: LocalConfig, options: GlobalOptions): Promise<void> {
   if (options.dryRun) return;
 
   try {
@@ -1500,18 +1501,31 @@ async function grantRuleFolders(localConfig: LocalConfig, options: GlobalOptions
     if (!record || !teamConfig) return;
     const { DeliveredFolders } = await import('./resources/delivered-folders.js');
     const { RuleFolders } = await import('./resources/rule-folders.js');
-    const rulesDir = path.join(DeliveredFolders.root(localConfig, 'rules'), 'rules');
-    const delivers = DeliveredFolders.worktreeRoot(localConfig) === null && (await listDirs(rulesDir)).length > 0;
+    const inUserScope = DeliveredFolders.worktreeRoot(localConfig) === null;
 
-    const settingsFiles = (await rulesReceivingTools(teamConfig, localConfig))
-      .filter((tool) => !isAgentExcluded(localConfig, tool) && ruleFolderReachOf(tool).reach === 'grant')
-      .flatMap((tool) => (isToolId(tool) ? [path.join(toolHome(tool), 'settings.json')] : []));
+    const granting = async (type: 'rules' | 'agents', receiving: readonly string[]): Promise<{ dir: string; settingsFiles: string[] }> => {
+      const dir = path.join(DeliveredFolders.root(localConfig, type), type);
+      const delivers = inUserScope && (await listDirs(dir)).length > 0;
+
+      const settingsFiles = delivers
+        ? receiving
+          .filter((tool) => !isAgentExcluded(localConfig, tool) && ruleFolderReachOf(tool).reach === 'grant')
+          .flatMap((tool) => (isToolId(tool) ? [path.join(toolHome(tool), 'settings.json')] : []))
+        : [];
+
+      return { dir, settingsFiles };
+    };
+
+    const grants = [
+      await granting('rules', await rulesReceivingTools(teamConfig, localConfig)),
+      await granting('agents', (await getHandler('agents').agentToolDirs(teamConfig, localConfig)).map(({ tool }) => tool)),
+    ];
 
     const previous = record.ruleFolderGrants ?? {};
     const granted: Record<string, string[]> = {};
 
-    for (const settingsFile of new Set([...Object.keys(previous), ...settingsFiles])) {
-      const dirs = delivers && settingsFiles.includes(settingsFile) ? [rulesDir] : [];
+    for (const settingsFile of new Set([...Object.keys(previous), ...grants.flatMap(({ settingsFiles }) => settingsFiles)])) {
+      const dirs = grants.flatMap(({ dir, settingsFiles }) => (settingsFiles.includes(settingsFile) ? [dir] : []));
       const owned = await RuleFolders.grant({ settingsFile, dirs, previous: previous[settingsFile] ?? [] });
 
       if (owned.length > 0) granted[settingsFile] = owned;
@@ -1523,7 +1537,25 @@ async function grantRuleFolders(localConfig: LocalConfig, options: GlobalOptions
     else delete record.ruleFolderGrants;
     await saveStateForScope(state, localConfig);
   } catch (e) {
-    log.warn(`[${installScopeName(localConfig.scope)}] Claude Code may ask before it reads the files of team rule folders: their directory was not added to its settings (${e instanceof Error ? e.message : String(e)}). Run \`teamai pull\` to retry.`);
+    log.warn(`[${installScopeName(localConfig.scope)}] Claude Code may ask before it reads the files of team rule and agent folders: their directories were not added to its settings (${e instanceof Error ? e.message : String(e)}). Run \`teamai pull\` to retry.`);
+  }
+}
+
+/** `AgentFolders.prune` for `localConfig`'s scope, reading the copies in each tool's agents directory. A failure is said and changes nothing else. */
+async function pruneAgentFolders(input: {
+  readonly teamConfig: TeamaiConfig;
+  readonly localConfig: LocalConfig;
+  readonly resolved: readonly ResourceItem[];
+  readonly ledger: DeliveryLedger;
+  readonly scopeLabel: string;
+}): Promise<void> {
+  try {
+    const { AgentFolders } = await import('./resources/agent-folders.js');
+    const copyDirs = (await getHandler('agents').agentToolDirs(input.teamConfig, input.localConfig)).map(({ dir }) => dir);
+
+    await AgentFolders.prune({ localConfig: input.localConfig, kept: input.resolved, copyDirs, ledger: input.ledger });
+  } catch (e) {
+    log.warn(`[${input.scopeLabel}] The agent folders the team no longer delivers were not removed: ${e instanceof Error ? e.message : String(e)}. Run \`teamai pull\` to retry.`);
   }
 }
 
@@ -2533,6 +2565,8 @@ async function pullForScope(
   let workspaceHeldSkills = false;
   // Set on the same collision among agents.
   let agentsHeld = false;
+  // The agents this pull resolved for the scope, whose folders stay; null when it did not sync agents.
+  let resolvedAgents: ResourceItem[] | null = null;
   // Set when an agent's model could not be resolved in some tool (#830). Its
   // cause may be the member's own (their aliases override, the switch state),
   // which they fix without a new team revision, so the next pull must sync
@@ -2758,6 +2792,7 @@ async function pullForScope(
       }
 
       items = desired.items;
+      resolvedAgents = items;
     } else {
       items = await handler.scanTeamForPull(freshConfig, localConfig);
     }
@@ -3087,6 +3122,9 @@ async function pullForScope(
 
   if (!isRecallEnabled(localConfig, freshConfig)) await removeRecallFilesQuietly(freshConfig, localConfig, scopeLabel, dryRun);
   recorder?.succeeded('builtin');
+
+  // Step 4.7: once every agent copy this pull removes is gone, the agent folders that neither a resolved agent nor a copy left names.
+  if (!dryRun && resolvedAgents !== null) await pruneAgentFolders({ teamConfig: freshConfig, localConfig, resolved: resolvedAgents, ledger, scopeLabel });
 
   if (await checkoutRemoved()) return;
   // Step 4b: Record where each tool took skills, rules, instruction blocks and
@@ -3970,7 +4008,7 @@ export async function pull(
               resourceTypes: ['skills', 'rules', 'docs', 'env', 'agents'],
               revisionField: 'lastInheritedPullRev',
             }, syncResult);
-            await grantRuleFolders(inheritedUserConfig, options);
+            await grantDeliveredFolders(inheritedUserConfig, options);
           }
         } else {
           activeUserConfig = loadedUserConfig;
@@ -3981,7 +4019,7 @@ export async function pull(
             // cannot prompt, and the hook cannot spare the wait.
             if (!options.dryRun && !options.inline) await runTeamScript(activeUserConfig, 'prePull');
             await pullForScope(activeUserConfig, options, reported, {}, syncResult, teamEnvs, instructions);
-            await grantRuleFolders(activeUserConfig, options);
+            await grantDeliveredFolders(activeUserConfig, options);
           }
         }
       } else if (inheritUserScope) {
@@ -4017,7 +4055,7 @@ export async function pull(
 
         if (pinRequired && syncResult.teamRepoFailed) return;
         await excludeWorkspaceInstructions(projectConfig, options);
-        await grantRuleFolders(projectConfig, options);
+        await grantDeliveredFolders(projectConfig, options);
       }
     } catch (e) {
       if (e instanceof EnvScopesUnreadableError) process.exitCode = 1;

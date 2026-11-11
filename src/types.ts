@@ -1370,7 +1370,7 @@ export const StateSchema = z.object({
     claudeMdExcludes: z.array(z.string()).optional(),
     /**
      * The `permissions.additionalDirectories` entries teamai added to a tool's user settings so the tool reads the
-     * rule folders this scope delivers (#1787), by settings file.
+     * rule and agent folders this scope delivers (#1787), by settings file.
      */
     ruleFolderGrants: z.record(z.string(), z.array(z.string())).optional(),
   })).optional(),
