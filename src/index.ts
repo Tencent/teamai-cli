@@ -280,10 +280,11 @@ program
 
 program
   .command('list [type]')
-  .description('List resources (skills|rules|docs|env|agents|hooks|mcp|workflows). For skills, --source local/all also scans installed AI agent skill directories. Workflows show their source: team, teamai\'s default, or not runnable.')
+  .description('List resources (skills|rules|docs|env|agents|hooks|mcp|workflows). For skills, --source local/all also scans installed AI agent skill directories. Workflows show their source: team, teamai\'s default, or not runnable. A team folder over a teamai default shows how many of its files are its own and how many it inherits.')
   .option('--source <src>', 'Where to look for skills: repo | local | all', 'all')
   .option('--agent <name>', 'Filter local agents by id (only applies to skills)')
   .option('--reveal', 'Show env values in plaintext (default: masked)')
+  .option('--json', 'Print the team repo\'s resources as JSON, env left out. Each file of a team folder over a teamai default has the layer it comes from: team or teamai')
   .action(async (type, cmdOpts) => {
     const globalOpts = program.opts<GlobalOptions>();
     const { list } = await import('./status.js');

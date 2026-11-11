@@ -1,3 +1,4 @@
+import { PACKAGE_VERSION } from './helpers/workflow-handoff-fixture.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fse from 'fs-extra';
 import os from 'node:os';
@@ -136,6 +137,18 @@ describe('workflows on the Resources page', () => {
       { kind: 'teamai' },
       'blocked',
       'teamai\'s default teamai-import-from-repo cannot start: step "enrich" with.wiki_root is not an input workflow "teamai-codebase-enrich" declares',
+    ]);
+  });
+
+  it('lists each file of a team folder over a default folder with the layer it comes from', async () => {
+    await write({ 'workflows/teamai-import-from-repo/narrative.md': 'Our narrative.\n' });
+
+    const list = (await collectLayeredResources(member(), teamConfig)).types.find((found) => found.type === 'workflows');
+    const folder = list?.resources.find((resource) => resource.layer.kind === 'root' && resource.name === 'teamai-import-from-repo')?.folder;
+
+    expect([folder?.inherited, folder?.files.map((file) => [file.path, file.layer])]).toEqual([
+      { teamaiVersion: PACKAGE_VERSION, own: 1, teamai: 3 },
+      [['README.md', 'teamai'], ['README.zh-CN.md', 'teamai'], ['WORKFLOW.yaml', 'teamai'], ['narrative.md', 'team']],
     ]);
   });
 
@@ -292,12 +305,23 @@ describe('default hooks on the Resources page', () => {
     const text = (name: string) => reminder.texts.find((found) => found.text === name);
 
     expect([reminder.state, param('min_tools'), param('weights.reject'), param('weights.interrupt'), text('task'), text('problem')]).toEqual([
-      { kind: 'replaced', path: 'hooks/teamai-friction-reminder/' },
+      { kind: 'replaced', path: 'hooks/teamai-friction-reminder/', inherited: null },
       { key: 'min_tools', teamai: 15, team: 30 },
       { key: 'weights.reject', teamai: 20, team: 30 },
       { key: 'weights.interrupt', teamai: 20, team: null },
       { text: 'task', file: 'task.md', replaced: true },
       { text: 'problem', file: 'problem.md', replaced: false },
+    ]);
+  });
+
+  it('counts what a folder holding only the texts it changes takes from teamai\'s', async () => {
+    await write({ 'hooks/teamai-friction-reminder/task.md': 'Our task: {{ task }}\n' });
+
+    const reminder = await defaultHook('teamai-friction-reminder');
+
+    expect([reminder.state, reminder.texts.filter((text) => text.replaced).map((text) => text.text)]).toEqual([
+      { kind: 'replaced', path: 'hooks/teamai-friction-reminder/', inherited: { teamaiVersion: PACKAGE_VERSION, own: 1, teamai: 17 } },
+      ['task'],
     ]);
   });
 
@@ -430,6 +454,7 @@ describe('rule folders on the Resources page', () => {
         ],
         bytes: 128,
         limit: null,
+        inherited: null,
         delivered: { path: delivered, present: false, by: 'pull' },
         runs: null,
         variant: 'RULE.zh.md',
@@ -487,7 +512,7 @@ describe('rule folders on the Resources page', () => {
       ['root', 'rules/teamai-recall/', {
         kind: 'refused',
         message: 'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: rules/teamai-recall/RULE.md does not contain "Nothing was searched:". Fix the folder in the team repo.',
-      }, 'RULE.md', ['RULE.md']],
+      }, 'RULE.md', ['README.md', 'README.zh-CN.md', 'RULE.md', 'block-direct.md', 'block.en.md', 'block.md']],
       ['teamai', 'rules/teamai-recall/', { kind: 'in-force' }, 'RULE.en.md', ['README.md', 'README.zh-CN.md', 'RULE.en.md', 'RULE.md', 'block-direct.md', 'block.en.md', 'block.md']],
     ]);
     expect(list?.problems).toEqual([]);

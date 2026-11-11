@@ -56,10 +56,11 @@ Generated: do not edit by hand. Regenerate with
 
 ## list
 
-- `teamai list [type]` — List resources (skills|rules|docs|env|agents|hooks|mcp|workflows). For skills, --source local/all also scans installed AI agent skill directories. Workflows show their source: team, teamai's default, or not runnable.
+- `teamai list [type]` — List resources (skills|rules|docs|env|agents|hooks|mcp|workflows). For skills, --source local/all also scans installed AI agent skill directories. Workflows show their source: team, teamai's default, or not runnable. A team folder over a teamai default shows how many of its files are its own and how many it inherits.
   - `--source <src>` — Where to look for skills: repo | local | all
   - `--agent <name>` — Filter local agents by id (only applies to skills)
   - `--reveal` — Show env values in plaintext (default: masked)
+  - `--json` — Print the team repo's resources as JSON, env left out. Each file of a team folder over a teamai default has the layer it comes from: team or teamai
 
 ## skill
 

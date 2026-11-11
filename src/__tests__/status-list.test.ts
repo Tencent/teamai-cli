@@ -280,6 +280,45 @@ describe('teamai list / status resource coverage', () => {
     ]);
   });
 
+  it('list names a team folder over a teamai default by how many of its files it inherits, and --json gives each file\'s layer', async () => {
+    localConfig.dataHome = path.join(tmpDir, 'data');
+    await fse.outputFile(path.join(repoPath, 'hooks', 'teamai-todowrite-hint', 'message.md'), 'Ask the teamai-recall subagent first.\n');
+    await fse.outputFile(path.join(repoPath, 'rules', 'teamai-recall', 'block.md'), '## Recall\n\nAsk it first.\n');
+    await fse.outputFile(path.join(repoPath, 'workflows', 'teamai-import-from-repo', 'narrative.md'), 'Our narrative.\n');
+    await syncScorersThenWorkflows(localConfig);
+    const version = JSON.parse(await fse.readFile(path.join(import.meta.dirname, '..', '..', 'package.json'), 'utf8')).version;
+
+    await list('hooks', { source: 'repo' });
+    await list('rules', { source: 'repo' });
+    await list('workflows', { source: 'repo' });
+    expect(lines.filter((line) => line.includes('teamai-todowrite-hint') || line.includes('teamai-recall') || line.includes('teamai-import-from-repo'))).toEqual([
+      `  teamai-todowrite-hint  (team, over teamai default ${version} (1 own files, 3 inherited))`,
+      `  teamai-recall  (team, over teamai default ${version} (1 own files, 5 inherited))`,
+      `  teamai-import-from-repo  (team, over teamai default ${version} (1 own files, 3 inherited))`,
+    ]);
+
+    lines.length = 0;
+    await list('hooks', { source: 'repo', json: true });
+    expect(JSON.parse(lines.join('\n'))).toEqual({
+      hooks: {
+        items: [
+          { name: 'marker-hook', source: 'root' },
+          {
+            name: 'teamai-todowrite-hint',
+            source: `team, over teamai default ${version} (1 own files, 3 inherited)`,
+            files: [
+              { path: 'HOOK.yaml', layer: 'teamai' },
+              { path: 'README.md', layer: 'teamai' },
+              { path: 'README.zh-CN.md', layer: 'teamai' },
+              { path: 'message.md', layer: 'team' },
+            ],
+          },
+        ],
+        notes: [],
+      },
+    });
+  });
+
   it('status lists the scorers pull cached, next to the resource counts', async () => {
     localConfig.dataHome = path.join(tmpDir, 'data');
     const scorer = '---\nlabels:\n  - { value: good, score: 1, description: Good }\n  - { value: bad, score: 0, description: Bad }\npassingScore: 0.5\n---\nJudge.\n';
