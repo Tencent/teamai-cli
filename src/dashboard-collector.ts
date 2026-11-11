@@ -25,6 +25,7 @@ import {
   TRANSCRIPT_SYSTEM_PREFIXES,
   stripInjectedPrompt,
   TRANSCRIPT_REJECT_MARKERS,
+  TRANSCRIPT_HOST_BLOCK_MARKERS,
   COPILOT_TOOL_ID,
   getDataHome,
   emptyTokenUsage,
@@ -455,6 +456,12 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<Transcri
             : Array.isArray(item.content)
               ? item.content.map((c) => c.text ?? '').join(' ')
               : item.content;
+
+          // A call the host blocked before it ran is neither the member
+          // rejecting it nor the AI failing at it, so it counts as neither:
+          // Claude Code's auto-mode classifier timing out is the host's
+          // problem, not friction the member can document (#1821).
+          if (TRANSCRIPT_HOST_BLOCK_MARKERS.some((m) => text.includes(m))) continue;
 
           if (TRANSCRIPT_REJECT_MARKERS.some((m) => text.includes(m))) {
             toolReject++;

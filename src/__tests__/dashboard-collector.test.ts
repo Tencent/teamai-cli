@@ -64,6 +64,19 @@ const TOOL_ERROR_LINE = JSON.stringify({
     content: [{ type: 'tool_result', is_error: true, tool_use_id: 'toolu_2', content: 'Error: command not found' }],
   },
 });
+/** A call Claude Code's auto-mode classifier blocked before the tool ran (issue 1821). */
+const HOST_BLOCKED_LINE = JSON.stringify({
+  type: 'user',
+  message: {
+    content: [{
+      type: 'tool_result',
+      is_error: true,
+      tool_use_id: 'toolu_3',
+      content: 'RCH10-CQ-2MM is temporarily unavailable (timed out), so auto mode cannot determine the safety of '
+        + 'Bash right now. Wait a moment and then try this action again.',
+    }],
+  },
+});
 
 // Use a temp dir for each test to avoid cross-test interference
 let tmpDir: string;
@@ -2147,6 +2160,23 @@ describe('countInterventions', () => {
     const iv = await countInterventions(p);
     expect(iv.toolReject).toBe(2);
     expect(iv.toolError).toBe(2);
+  });
+
+  it('counts neither an error nor a rejection for a call the host blocked before it ran', async () => {
+    const p = writeTranscript('t3d.jsonl', [
+      HOST_BLOCKED_LINE, ASSISTANT_LINE, HOST_BLOCKED_LINE, ASSISTANT_LINE, HOST_BLOCKED_LINE,
+    ]);
+    const iv = await countInterventions(p);
+    expect(iv.toolError).toBe(0);
+    expect(iv.toolReject).toBe(0);
+    expect(iv.interrupt).toBe(0);
+  });
+
+  it('still counts ordinary tool errors in a transcript that also has host-blocked calls', async () => {
+    const p = writeTranscript('t3e.jsonl', [HOST_BLOCKED_LINE, TOOL_ERROR_LINE, HOST_BLOCKED_LINE]);
+    const iv = await countInterventions(p);
+    expect(iv.toolError).toBe(1);
+    expect(iv.toolReject).toBe(0);
   });
 
   it('counts a mix of interrupts and rejections', async () => {

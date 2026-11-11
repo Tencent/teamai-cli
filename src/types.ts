@@ -2536,6 +2536,18 @@ export const TRANSCRIPT_REJECT_MARKERS = [
   "doesn't want to proceed with this tool use",
 ];
 
+/**
+ * Substrings that mark a tool_result the host refused to run before it started:
+ * Claude Code's auto-mode classifier could not answer, so it blocked the call
+ * rather than letting the tool fail. The message names the member's gateway
+ * model first (`RCH10-CQ-2MM is temporarily unavailable (timed out), so auto
+ * mode cannot determine the safety of Bash right now`), so nothing before this
+ * marker is matched (#1821).
+ */
+export const TRANSCRIPT_HOST_BLOCK_MARKERS = [
+  'auto mode cannot determine the safety of',
+];
+
 // ─── Contribute (session auto-contribute) ────────────
 //
 //  Friction-based threshold detection (a session is worth documenting when the
