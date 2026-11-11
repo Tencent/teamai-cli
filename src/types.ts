@@ -1601,6 +1601,8 @@ export interface CopyOrigin {
   pathspec: string;
   /** teamai's renders of one version; null when that version renders nothing here. */
   renders?: ReadonlyArray<(content: Buffer, version: { path: string; blob: string }) => string | Uint8Array | null>;
+  /** A skill's file form, `skills/**\/<name>.md`, whose versions, with `renders`, are also the skill's SKILL.md. */
+  skillFile?: string;
   /**
    * The path holds an agent teamai ships under that name, which every pull
    * wrote over before a team agent could replace it: a file there with no

@@ -263,7 +263,7 @@ async function withDisk(previous: DeliveredHashes, next: Iterable<[string, strin
 /**
  * Whether the file at `file`, which has no delivery record, is teamai's
  * (#993): it holds a built-in teamai ships (`origin.builtin`), or its bytes
- * are a version of `origin.pathspec` in the history of `origin.repoPath`, or
+ * are a version of `origin.pathspec` (or `origin.skillFile`) in the history of `origin.repoPath`, or
  * one of `origin.renders` of such a version, compared
  * by git blob id. False when there is no file, or git cannot read the history:
  * without proof, it is the member's. Read-only; run it only for a file that
@@ -278,15 +278,32 @@ export async function isTeamaiCopy(file: string, origin: CopyOrigin): Promise<bo
 
   if (origin.builtin) return true;
 
-  if (await matchesHistory(origin.repoPath, origin.pathspec, bytes)) return true;
+  for (const pathspec of origin.skillFile === undefined ? [origin.pathspec] : [origin.pathspec, origin.skillFile]) {
+    if (await matchesHistory(origin.repoPath, pathspec, bytes)) return true;
 
-  for (const render of origin.renders ?? []) {
-    if (await matchesHistory(origin.repoPath, origin.pathspec, bytes, render)) return true;
+    for (const render of origin.renders ?? []) {
+      if (await matchesHistory(origin.repoPath, pathspec, bytes, render)) return true;
+    }
   }
 
   log.debug(`${file} has no delivery record and matches no team version of ${origin.pathspec}: it is the member's`);
 
   return false;
+}
+
+/**
+ * Where the file at `rel` in a copy of the skill `origin` names comes from: that path in the skill directory. Its
+ * SKILL.md is also a version of the skill kept as one file (`origin.skillFile`), and `origin.renders` apply to it.
+ */
+function skillFileOrigin(origin: CopyOrigin, rel: string): CopyOrigin {
+  const fileOrigin: CopyOrigin = { repoPath: origin.repoPath, pathspec: `${origin.pathspec}/${rel}` };
+
+  if (rel !== SKILL_MD) return fileOrigin;
+  fileOrigin.renders = origin.renders;
+
+  if (origin.skillFile !== undefined) fileOrigin.skillFile = origin.skillFile;
+
+  return fileOrigin;
 }
 
 /**
@@ -366,13 +383,7 @@ export async function isTeamaiSkillCopy(
 
     if (next != null && await fileHash(file) === next) continue;
 
-    const fileOrigin: CopyOrigin = {
-      repoPath: origin.repoPath,
-      pathspec: `${origin.pathspec}/${rel}`,
-      renders: rel === SKILL_MD ? origin.renders : undefined,
-    };
-
-    if (!await isTeamaiCopy(file, fileOrigin)) return false;
+    if (!await isTeamaiCopy(file, skillFileOrigin(origin, rel))) return false;
   }
 
   return true;
@@ -439,11 +450,7 @@ export async function teamaiSkillFiles(
         continue;
       }
 
-      const fileOrigin: CopyOrigin = {
-        repoPath: origin.repoPath, pathspec: `${origin.pathspec}/${entryRel}`, renders: entryRel === SKILL_MD ? origin.renders : undefined,
-      };
-
-      const teamais = previous?.[file] !== undefined || await isTeamaiCopy(file, fileOrigin);
+      const teamais = previous?.[file] !== undefined || await isTeamaiCopy(file, skillFileOrigin(origin, entryRel));
       (teamais ? result.teamais : result.members).push(file);
     }
   };
@@ -478,11 +485,7 @@ async function holdsMembersFile(previous: DeliveredHashes, dir: string, origin?:
 
     if (origin === undefined) return true;
 
-    const fileOrigin: CopyOrigin = {
-      repoPath: origin.repoPath, pathspec: `${origin.pathspec}/${rel}`, renders: rel === SKILL_MD ? origin.renders : undefined,
-    };
-
-    if (!await isTeamaiCopy(file, fileOrigin)) return true;
+    if (!await isTeamaiCopy(file, skillFileOrigin(origin, rel))) return true;
   }
 
   return false;
@@ -660,11 +663,7 @@ async function overwritesMembersFile(previous: DeliveredHashes, item: ResourceIt
 
     if (disk === contentHash(written === text ? bytes : written)) continue;
 
-    const fileOrigin: CopyOrigin = {
-      repoPath: target.origin.repoPath, pathspec: `${target.origin.pathspec}/${rel}`, renders: rel === SKILL_MD ? target.origin.renders : undefined,
-    };
-
-    if (!await isTeamaiCopy(file, fileOrigin)) return true;
+    if (!await isTeamaiCopy(file, skillFileOrigin(target.origin, rel))) return true;
   }
 
   return false;

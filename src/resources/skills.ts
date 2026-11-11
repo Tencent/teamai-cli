@@ -364,12 +364,14 @@ export function skillTargetsFor(
  * (#993): that name's directory at the root of `skills/` or in any namespace
  * of the team repo at `repoPath`, so a copy of the root skill still proves
  * teamai's after the team moved it into a namespace. SKILL.md also counts as
- * pull delivers it, with its frontmatter repaired.
+ * pull delivers it, with its frontmatter repaired, and as a version of the
+ * skill kept as one file, `<name>.md`.
  */
 export function skillOrigin(repoPath: string, name: string): CopyOrigin {
   return {
     repoPath,
     pathspec: `:(glob)skills/**/${name}`,
+    skillFile: `:(glob)skills/**/${name}.md`,
     renders: [(content) => withSkillFrontmatter(content.toString('utf-8'), name)],
   };
 }
