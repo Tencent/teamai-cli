@@ -79,7 +79,7 @@ function fromFiles(found: FolderFilesRead, modes: ReadonlyMap<string, boolean>):
   if (total > MAX_BYTES) {
     const largest = [...sizes].sort((a, b) => b.bytes - a.bytes || (a.path < b.path ? -1 : 1)).slice(0, 5).map((size) => `${size.path} (${size.bytes} bytes)`);
 
-    return { kind: 'invalid', problem: `it holds ${total} bytes, more than the ${MAX_BYTES} bytes (1 MB) a workflow folder may hold. Its largest files: ${largest.join(', ')}` };
+    return { kind: 'invalid', problem: `it holds ${total} bytes, more than the ${MAX_BYTES} bytes (1 MB) a folder may hold. Its largest files: ${largest.join(', ')}` };
   }
 
   return { kind: 'files', files };

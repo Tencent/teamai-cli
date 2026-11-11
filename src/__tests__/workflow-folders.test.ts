@@ -162,7 +162,7 @@ describe('workflow folders', () => {
 
     expect(result.invalid).toMatchObject([{
       code: 'workflow_folder_invalid',
-      message: `workflows/release/ is not a valid workflow folder: it holds ${Buffer.byteLength(RELEASE) + 10 + 1_060_000} bytes, more than the 1048576 bytes (1 MB) a workflow folder may hold. `
+      message: `workflows/release/ is not a valid workflow folder: it holds ${Buffer.byteLength(RELEASE) + 10 + 1_060_000} bytes, more than the 1048576 bytes (1 MB) a folder may hold. `
         + 'Its largest files: data/part-0.txt (300000 bytes), data/part-1.txt (250000 bytes), data/part-2.txt (200000 bytes), data/part-3.txt (150000 bytes), data/part-4.txt (100000 bytes)',
     }]);
   });
