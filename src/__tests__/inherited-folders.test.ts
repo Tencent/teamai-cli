@@ -41,6 +41,16 @@ describe('a team folder over the teamai default of its name', () => {
   ])('$case', ({ team, layers, strays = [] }) => {
     const merged = InheritedFolders.merge({ team: files(...team), teamai: TEAMAI, marker: 'HOOK.yaml' });
 
-    expect({ layers: Object.fromEntries(merged.files.map((file) => [file.path, file.layer])), strays: merged.strays }).toEqual({ layers, strays });
+    // In path order, as list --json and the dashboard show them.
+    expect({ layers: merged.files.map((file) => [file.path, file.layer]), strays: merged.strays }).toEqual({ layers: Object.entries(layers), strays });
+  });
+
+  it.each<{ case: string; team: string[]; inherited: string[] | null }>([
+    { case: 'took nothing when the team replaces every file', team: ['HOOK.yaml', 'README.md', 'gap.md', 'problem.md', 'prompts/plan.md'], inherited: null },
+    { case: 'took the text the team leaves out, in each language', team: ['HOOK.yaml', 'README.md', 'gap.md', 'problem.md'], inherited: ['prompts/plan.en.md', 'prompts/plan.md'] },
+  ])('says the folder $case', ({ team, inherited }) => {
+    const merged = InheritedFolders.merge({ team: files(...team), teamai: TEAMAI, marker: 'HOOK.yaml' });
+
+    expect(InheritedFolders.inheritanceOf(merged, '1.2.3')).toEqual(inherited === null ? null : { teamaiVersion: '1.2.3', files: inherited });
   });
 });
