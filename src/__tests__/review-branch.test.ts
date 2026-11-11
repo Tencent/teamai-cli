@@ -1348,9 +1348,11 @@ describe('reviewBranchDir — skill links, Agent Skills limits and piped install
     await writeSkill(repoDir, 'skills/frontend/release', skill('release', [
       'See [notes](../notes/SKILL.md), [deploy](../deploy/SKILL.md), [deploy by repo path](../../backend/deploy/SKILL.md),',
       '[missing in notes](../notes/references/missing.md) and [guide](../../../docs/guide.md).',
+      'See [greet](../greet/SKILL.md), [greet folder](../greet/), [greet by repo path](../../greet.md) and [missing in greet](../greet/references/x.md).',
     ]));
     await writeSkill(repoDir, 'skills/frontend/notes', skill('notes', ['# Notes']));
     await writeSkill(repoDir, 'skills/backend/deploy', skill('deploy', ['# Deploy']));
+    await writeSkillFile('skills/greet.md', skill('greet', ['# Greet']));
 
     const review = await reviewBranchDir(BRANCH, repoDir);
     const linkFindings = review.findings
@@ -1366,6 +1368,11 @@ describe('reviewBranchDir — skill links, Agent Skills limits and piped install
       'warn ../notes/references/missing.md, which is not in skill "notes".',
       'warn ../../../docs/guide.md, which pull never delivers there: it delivers each skill as <skills>/<name>/, '
         + 'so link another skill as ../<name>/… and move any other file into the skill.',
+      'info ../greet/SKILL.md, in skill "greet"; it resolves only for a member who also receives that skill.',
+      'info ../greet/, in skill "greet"; it resolves only for a member who also receives that skill.',
+      'warn ../../greet.md, which pull never delivers there: it delivers each skill as <skills>/<name>/, '
+        + 'so link another skill as ../<name>/… and move any other file into the skill.',
+      'warn ../greet/references/x.md, which is not in skill "greet".',
     ]);
   });
 

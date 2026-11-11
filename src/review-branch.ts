@@ -969,6 +969,13 @@ async function linkTargetState(root: string, segments: string[], mustBeDirectory
   return 'copied';
 }
 
+/** `linkTargetState` in the skill directory pull delivers `skill` as: a skill kept as one file delivers only its SKILL.md. */
+async function skillEntryState(skill: ReviewResource, segments: string[], mustBeDirectory: boolean): Promise<'copied' | 'missing' | 'skipped'> {
+  if (skill.folder) return linkTargetState(skill.absolutePath, segments, mustBeDirectory);
+
+  return segments.length === 0 || (segments.length === 1 && segments[0] === 'SKILL.md' && !mustBeDirectory) ? 'copied' : 'missing';
+}
+
 /**
  * Links between the files of a skill, read where pull delivers it: each skill on
  * its own as `<skills>/<name>/`, namespaces flattened. A link that leaves the
@@ -996,7 +1003,7 @@ async function skillLinkFindings(files: SkillFile[], resources: ReviewResource[]
       const segments = resolved === '.' ? [] : resolved.split('/');
 
       if (segments[0] !== '..') {
-        reportLinkTarget(await linkTargetState(file.skill.absolutePath, segments, mustBeDirectory), ', which is not in the skill.', finding);
+        reportLinkTarget(await skillEntryState(file.skill, segments, mustBeDirectory), ', which is not in the skill.', finding);
         continue;
       }
 
@@ -1009,7 +1016,7 @@ async function skillLinkFindings(files: SkillFile[], resources: ReviewResource[]
         continue;
       }
 
-      const states = await Promise.all(siblings.map((sibling) => linkTargetState(sibling.absolutePath, inSkill, mustBeDirectory)));
+      const states = await Promise.all(siblings.map((sibling) => skillEntryState(sibling, inSkill, mustBeDirectory)));
       const state = states.includes('copied') ? 'copied' : states.includes('skipped') ? 'skipped' : 'missing';
 
       if (state === 'copied' && skillName !== file.skill.name) {
