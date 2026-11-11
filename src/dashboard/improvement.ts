@@ -8,6 +8,7 @@ import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from '../builtin-skil
 import { DefaultScorers } from '../default-scorers.js';
 import { adoptionRatio, aggregateConfidenceFactors } from '../maintenance/confidence.js';
 import { defaultScorerRubric } from '../scorers/cache.js';
+import { readTeamSkills } from '../resources/skills.js';
 import type { LocalConfig } from '../types.js';
 
 const WINDOW_DAYS = 30;
@@ -123,26 +124,9 @@ async function readStats(statsDir: string): Promise<StatsFile[]> {
   return out;
 }
 
+/** Each team skill's name, with its namespace or '' at the root. */
 async function teamSkills(knowledgeRoot: string): Promise<Map<string, string>> {
-  const skills = new Map<string, string>();
-  const root = path.join(knowledgeRoot, 'skills');
-  let namespaces: fs.Dirent[];
-
-  try { namespaces = await fs.promises.readdir(root, { withFileTypes: true }); } catch { return skills; }
-
-  for (const ns of namespaces.filter((d) => d.isDirectory() && !d.name.startsWith('.'))) {
-    if (fs.existsSync(path.join(root, ns.name, 'SKILL.md'))) { skills.set(ns.name, ''); continue; }
-
-    let entries: fs.Dirent[];
-
-    try { entries = await fs.promises.readdir(path.join(root, ns.name), { withFileTypes: true }); } catch { continue; }
-
-    for (const e of entries) {
-      if (e.isDirectory() && fs.existsSync(path.join(root, ns.name, e.name, 'SKILL.md'))) skills.set(e.name, ns.name);
-    }
-  }
-
-  return skills;
+  return new Map((await readTeamSkills(knowledgeRoot)).skills.map((skill) => [skill.name, skill.namespace ?? '']));
 }
 
 /**
