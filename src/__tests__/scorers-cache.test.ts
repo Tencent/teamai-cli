@@ -121,9 +121,11 @@ describe('scorer cache', () => {
     const config = { ...testConfig(), primaryRole: 'dev' };
     writeRoles(config, OPS_SCORERS);
     writeScorer(config, 'shared/x.md', VALID);
+    writeScorer(config, 'shared/z/SCORER.md', VALID);
 
-    expect(await syncScorerDefinitions(config)).toEqual({ cached: ['x'], invalid: [], verified: [] });
+    expect(await syncScorerDefinitions(config)).toEqual({ cached: ['x', 'z'], invalid: [], verified: [] });
     expect((await loadCachedScorer(config, 'x'))?.relativePath).toBe('scorers/shared/x.md');
+    expect((await loadCachedScorer(config, 'z'))?.relativePath).toBe('scorers/shared/z/SCORER.md');
   });
 
   it('caches neither a root scorer nor the scorer of one name in a scorers/<dir>/ no role or project declares', async () => {

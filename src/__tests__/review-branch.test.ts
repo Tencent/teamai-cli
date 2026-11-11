@@ -1695,12 +1695,15 @@ describe('reviewBranchDir — scorers', () => {
   it('reads a scorers/<dir>/ that no role or project declares as shared, as pull does', async () => {
     await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: ops\n    resources: { knowledge: [], skills: [], scorers: [ops] }\n');
     await writeScorer(repoDir, 'shared/x.md', VALID_SCORER);
+    await writeScorer(repoDir, 'shared/z/SCORER.md', VALID_SCORER);
+    await writeScorer(repoDir, 'shared/z/checklist.md', '- Has a test.\n');
     await writeScorer(repoDir, 'ops/y.md', VALID_SCORER);
 
     const review = await reviewBranchDir(BRANCH, repoDir);
 
     expect(review.findings).toEqual([
       { level: 'info', check: 'structure', path: 'scorers/shared/x.md', message: 'scorers/shared/x.md sits at the shared root, so it is delivered to every member.' },
+      { level: 'info', check: 'structure', path: 'scorers/shared/z/SCORER.md', message: 'scorers/shared/z/SCORER.md sits at the shared root, so it is delivered to every member.' },
     ]);
   });
 
