@@ -3,6 +3,7 @@ import diagnostics from 'node:diagnostics_channel';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import { realpath } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import fse from 'fs-extra';
 import { GitError, simpleGit, type SimpleGit, type SimpleGitOptions, type outputHandler } from 'simple-git';
@@ -1164,6 +1165,11 @@ export async function remoteBranchExists(
  * If the rebuilt tree matches what the remote branch already holds, nothing is
  * pushed and the function returns false.
  *
+ * With `opts.explicitBranch`, `branchName` is a destination the caller named
+ * (`teamai push --branch`). A destination from an earlier push is checked out
+ * and extended, or, when only origin has it, created from origin's tip, instead
+ * of `checkout -b` failing because the branch already exists.
+ *
  * The fetch and the push run under the block timeout (see
  * {@link createGitWithBlockTimeout}); `opts.initPush`, used by init, puts the
  * local steps under it too.
@@ -1173,7 +1179,7 @@ export async function pushRepoBranch(
   message: string,
   files: string[],
   branchName: string,
-  opts: { reuseBranch?: boolean; initPush?: boolean } = {},
+  opts: { reuseBranch?: boolean; initPush?: boolean; explicitBranch?: boolean } = {},
 ): Promise<boolean> {
   const git = opts.initPush ? createGitWithBlockTimeout(localPath) : createGit(localPath);
   const remote = createGitWithBlockTimeout(localPath);
@@ -1189,6 +1195,13 @@ export async function pushRepoBranch(
 
     // -B resets a leftover local branch of the same name onto the default branch.
     await git.checkout(['-B', branchName]);
+  } else if (opts.explicitBranch) {
+    // Callers with a payload to copy prepare the destination before they write
+    // it, so HEAD is already there and a dirty working tree is never carried
+    // across a checkout. The fallback keeps direct callers working.
+    const current = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+
+    if (current !== branchName) await checkoutExplicitBranch(git, remote, localPath, branchName);
   } else {
     // Create and switch to new branch
     await git.checkoutLocalBranch(branchName);
@@ -1199,6 +1212,10 @@ export async function pushRepoBranch(
   const status = await git.status();
 
   if (status.staged.length === 0) {
+    // A destination from an earlier push keeps its unpushed commit: publish it
+    // instead of deleting the branch as a generated one is (#1827).
+    if (opts.explicitBranch) return settleExplicitWithoutCommit(git, remote, localPath, branchName);
+
     // checkout would otherwise carry unmatched copied files back to the
     // default branch as unstaged/untracked changes (#331).
     await git.reset(['--hard', 'HEAD']);
@@ -1214,6 +1231,8 @@ export async function pushRepoBranch(
   const diffOutput = await git.diff(['--cached', '--unified=0']);
 
   if (isMetadataOnlyDiff(diffOutput)) {
+    if (opts.explicitBranch) return settleExplicitWithoutCommit(git, remote, localPath, branchName);
+
     await git.reset(['--hard', 'HEAD']);
     await git.clean('f', ['-d']);
     const defaultBranch = await getDefaultBranch(localPath);
@@ -1246,6 +1265,256 @@ export async function pushRepoBranch(
   await remote.push(['--progress', '-u', 'origin', branchName]);
 
   return true;
+}
+
+/**
+ * Check out the destination branch `teamai push --branch` named, which may
+ * already exist from an earlier push. A local branch is reused as it is, so an
+ * unpushed commit on it survives. One only origin has is fetched and created
+ * from origin's tip, so the new commit is a fast-forward. Only a destination
+ * with neither is created fresh.
+ */
+async function checkoutExplicitBranch(
+  git: SimpleGit,
+  remote: SimpleGit,
+  localPath: string,
+  branchName: string,
+): Promise<void> {
+  const localBranches: readonly string[] = await git.branchLocal().then(
+    (summary) => summary.all,
+    (): string[] => [],
+  );
+
+  if (localBranches.includes(branchName)) {
+    await git.checkout(branchName);
+
+    return;
+  }
+
+  if (await remoteBranchExists(localPath, branchName)) {
+    try {
+      await remote.fetch(['--progress', 'origin', branchName]);
+    } catch (e) {
+      log.debug(`Could not fetch ${branchName}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    await git.checkout(['-b', branchName, `origin/${branchName}`]);
+
+    return;
+  }
+
+  await git.checkoutLocalBranch(branchName);
+}
+
+/**
+ * Prepare the destination branch `teamai push --branch` named, before callers
+ * copy the resources to push into the working tree. Fetches origin, checks a
+ * local destination out (fast-forwarding it when it has no unpushed commit, or
+ * rebasing those commits onto origin's tip), and creates a missing local branch
+ * from origin. Runs with a clean working tree: the resources are copied after
+ * this, so switching branches cannot collide with them.
+ */
+export async function prepareExplicitBranch(localPath: string, branchName: string): Promise<void> {
+  const git = createGit(localPath);
+  const remote = createGitWithBlockTimeout(localPath);
+  // Pending config or env edits may already be in the working tree; a checkout
+  // to the destination must not lose them, and its files must not block it.
+  const carried = await carryWorkingTree(git);
+
+  try {
+    const localBranches: readonly string[] = await git.branchLocal().then(
+      (summary) => summary.all,
+      (): string[] => [],
+    );
+
+    try {
+      await remote.fetch(['--progress', 'origin', branchName]);
+    } catch (e) {
+      log.debug(`Could not fetch ${branchName}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    const originRef = `origin/${branchName}`;
+    const originExists = await git.revparse(['--verify', `${originRef}^{commit}`]).then(() => true, () => false);
+
+    if (!localBranches.includes(branchName)) {
+      if (originExists) await git.checkout(['-b', branchName, originRef]);
+      else await git.checkoutLocalBranch(branchName);
+
+      return;
+    }
+
+    await git.checkout(branchName);
+
+    if (!originExists) return;
+
+    const [behind, ahead] = (await git.raw(['rev-list', '--left-right', '--count', `${originRef}...HEAD`]))
+      .trim().split(/\s+/).map((count) => Number.parseInt(count, 10));
+
+    if (!behind) return;
+
+    if (!ahead) {
+      // No unpushed commit to keep: follow origin.
+      await git.reset(['--hard', originRef]);
+
+      return;
+    }
+
+    try {
+      await git.rebase([originRef]);
+    } catch (e) {
+      await git.rebase(['--abort']).catch(() => undefined);
+      throw new Error(
+        `The destination branch ${branchName} has unpushed commits that conflict with ${originRef}: `
+        + `${e instanceof Error ? e.message : String(e)}. Resolve it in the team repo, then push again.`,
+        { cause: e },
+      );
+    }
+  } finally {
+    await restoreWorkingTree(git, carried);
+  }
+}
+
+/** Working-tree changes set aside while a destination branch is checked out, and where their copies live. */
+interface CarriedWorkingTree {
+  root: string;
+  entries: Array<{ relative: string; present: boolean }>;
+}
+
+/**
+ * Move every working-tree change aside so a branch can be checked out, and
+ * clean them from the tree. The caller restores them with
+ * {@link restoreWorkingTree}. Only tracked and untracked changes git reports
+ * are carried; ignored files stay where they are.
+ */
+async function carryWorkingTree(git: SimpleGit): Promise<CarriedWorkingTree | null> {
+  const status = await git.status();
+
+  if (status.files.length === 0) return null;
+  const top = (await git.revparse(['--show-toplevel'])).trim();
+
+  if (!top) throw new Error('Could not resolve the team repo root to carry its uncommitted changes across the branch switch.');
+  const root = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-push-carry-'));
+  const entries: CarriedWorkingTree['entries'] = [];
+
+  // A staged rename reports its destination in `path` and its source in
+// `from`; the reset below recreates the source, so carry its removal too.
+  const changes = new Map<string, boolean>();
+
+  for (const file of status.files) {
+    const relative = file.path;
+
+    if (!relative || path.isAbsolute(relative) || relative.split(/[\\/]/u).includes('..')) continue;
+    // lstat, not pathExists: a dangling symlink exists and must be carried.
+    changes.set(relative, await fse.lstat(path.join(top, relative)).then(() => true, () => false));
+
+    // A rename source may also be recreated as a replacement file; keep the
+    // presence that entry recorded instead of forcing its removal.
+    if (file.from && file.from !== relative && !changes.has(file.from)) changes.set(file.from, false);
+  }
+
+  try {
+    for (const [relative, present] of changes) {
+      if (present) {
+        await fse.copy(path.join(top, relative), path.join(root, 'files', relative), {
+          overwrite: true, preserveTimestamps: true, dereference: false,
+        });
+      }
+
+      entries.push({ relative, present });
+    }
+
+    // Named before the reset: a process killed before the restore leaves the
+    // only copy here, and debug.log then says where it went.
+    if (entries.length > 0) log.debug(`Uncommitted team-repo changes set aside at ${root} while checking out a push destination.`);
+
+    await git.reset(['--hard', 'HEAD']);
+    await git.clean('f', ['-d']);
+  } catch (e) {
+    // The reset may already have discarded the originals; their copies are the
+    // only remaining source of the member's edits.
+    log.warn(
+      `Could not set aside the team repo's uncommitted changes (${e instanceof Error ? e.message : String(e)}). `
+      + `Their copies stay at ${root}.`,
+    );
+    throw e;
+  }
+
+  return { root, entries };
+}
+
+/** Put the changes {@link carryWorkingTree} moved aside back into the working tree. */
+async function restoreWorkingTree(git: SimpleGit, carried: CarriedWorkingTree | null): Promise<void> {
+  if (carried === null) return;
+
+  let restored = false;
+
+  try {
+    const top = (await git.revparse(['--show-toplevel'])).trim();
+
+    for (const { relative, present } of carried.entries) {
+      const target = path.join(top, relative);
+
+      if (present) {
+        await fse.ensureDir(path.dirname(target));
+        await fse.copy(path.join(carried.root, 'files', relative), target, {
+          overwrite: true, preserveTimestamps: true, dereference: false,
+        });
+      } else {
+        await fse.remove(target);
+      }
+    }
+
+    restored = true;
+  } finally {
+    if (restored) {
+      await fse.remove(carried.root).catch(() => undefined);
+    } else {
+      // A failed restore must not also destroy the only copy of the edits the
+      // preparation already removed from the working tree.
+      log.warn(`Could not restore the team repo's uncommitted changes. Their copies stay at ${carried.root}.`);
+    }
+  }
+}
+
+/** Whether the checked-out branch has any commit origin does not hold, destination branch or not. */
+async function branchHasUnpublishedCommits(git: SimpleGit): Promise<boolean> {
+  try {
+    return (await git.raw(['rev-list', '--count', 'HEAD', '--not', '--remotes=origin'])).trim() !== '0';
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * The no-commit exit for an explicit destination, reached when the tree holds
+ * nothing new to commit. The branch may still carry a commit an earlier push
+ * could not publish: push it and report the push. Otherwise return to the
+ * default branch and report no change — never delete the destination.
+ */
+async function settleExplicitWithoutCommit(
+  git: SimpleGit,
+  remote: SimpleGit,
+  localPath: string,
+  branchName: string,
+): Promise<boolean> {
+  // Metadata-only edits are not committed; drop them before publishing what the
+  // branch already holds.
+  await git.reset(['--hard', 'HEAD']);
+  await git.clean('f', ['-d']);
+
+  if (await branchHasUnpublishedCommits(git)) {
+    await remote.push(['--progress', '-u', 'origin', branchName]);
+
+    return true;
+  }
+
+  try {
+    await checkoutMaster(localPath);
+  } catch (e) {
+    log.debug(`Could not switch back to the default branch: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  return false;
 }
 
 /**
