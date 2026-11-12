@@ -2,12 +2,14 @@
  * What a world's runs left behind, written to <world>/LEDGER-<n>.md. A LEAK line fails the verdict whatever the
  * claim's own checks say: teamai must not reach this checkout or the real HOME, and must not leave worktrees behind.
  */
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { TOOL_IDS } from '../../src/tools.js';
+import { TOOL_IDS, TOOLS, type ToolId } from '../../src/tools.js';
+import { z } from 'zod';
 import { defaultToolHome, envToolHome, toolHome } from '../../src/tool-home.js';
-import { detectToolRoot, RELOCATABLE_TOOLS } from '../../src/types.js';
+import { detectToolRoot, RELOCATABLE_TOOLS, TeamaiConfigBaseSchema } from '../../src/types.js';
 import { checkoutStatus, git, loadWriters, REPO_ROOT, runInWorld, teamRefs, worldFiles, type World } from './world.js';
 
 interface Section {
@@ -152,12 +154,18 @@ const KNOWN_LEFTOVERS_ISSUE = 'https://github.com/Tencent/teamai-cli/issues/1808
 
 // Each with what it holds: a sha256, `dir`, or `any` where the content names this machine or is a log.
 
+/** Each tool's home under HOME, its parents included, and the top directory of each project path teamai writes for a tool. */
+const TOOL_DIRS = [
+  ...TOOL_IDS.flatMap((tool) => TOOLS[tool].home.dir.split('/').map((_, i, parts) => `home/${parts.slice(0, i + 1).join('/')}`)),
+  ...Object.values(TeamaiConfigBaseSchema.shape.toolPaths.parse(undefined)).flatMap((paths) =>
+    [paths.skills, paths.rules, paths.settings, paths.agents, paths.mcpProject].flatMap((dir) => (dir?.includes('/') ? [`project/${dir.split('/')[0]}`] : []))),
+];
+
 const KNOWN_LEFTOVERS = new Map([
   // A tool's own directory stays: teamai removes what it put inside, not the
   // directory the tool reads. Removing ~/.claude stopped Claude's MCP config
   // from being written in the mcp-uninstall e2e, so uninstall leaves it (#1808).
-  ['home/.claude', 'dir'],
-  ['project/.claude', 'dir'],
+  ...TOOL_DIRS.map((dir) => [dir, 'dir'] as const),
   // debug.log stays: an uninstall that failed is explained there, and that
   // record is worth more than the file, so ~/.teamai stays to hold it (#1808).
   ['home/.teamai', 'dir'],
@@ -167,11 +175,41 @@ const KNOWN_LEFTOVERS = new Map([
   ['home/.teamai/dashboard', 'dir'],
   ['home/.teamai/dashboard/session-owners.jsonl', 'any'],
   ['home/.teamai/dashboard/events.jsonl', 'any'],
+  ['home/.teamai/dashboard/requests.jsonl', 'any'],
   ['home/.teamai/state.json', 'any'],
+  // teamai starts Codex's app-server to trust its hooks (#955), and Codex writes its own files where teamai writes:
+  // its system skills, and the table of hook approvals that taking teamai's out leaves empty.
+  ['home/.codex/skills', 'dir'],
+  ['home/.codex/config.toml', createHash('sha256').update('[hooks.state]\n').digest('hex')],
 ]);
 
-/** Directories left with everything in them: their file names hold session ids. */
-const KNOWN_LEFTOVER_DIRS = ['home/.teamai/sessions'];
+/** Directories left with everything in them: session ids name what is in them, or Codex installs them. */
+const KNOWN_LEFTOVER_DIRS = ['home/.teamai/sessions', 'home/.codex/skills/.system'];
+
+const HomeRead = z.object({ base: z.literal('home'), path: z.string() });
+
+/** Every path under HOME that TOOLS says `tool` reads, which is where teamai writes for it there. */
+function homeReads(tool: ToolId): string[] {
+  const paths: string[] = [];
+
+  JSON.stringify(TOOLS[tool], (_key, value) => {
+    const read = HomeRead.safeParse(value);
+
+    if (read.success) paths.push(`home/${read.data.path}`);
+
+    return value;
+  });
+
+  return paths;
+}
+
+const TEAMAI_HOME_WRITES = [...new Set(TOOL_IDS.flatMap(homeReads))];
+
+/** A tool's home under HOME holds the tool's own state (sessions, caches, the runtime of a Codex teamai starts to trust its hooks) beside what teamai writes there. */
+const TOOL_HOMES = [...new Set(TOOL_IDS.map((tool) => `home/${TOOLS[tool].home.dir}`))];
+
+/** A run's branch, which a run that succeeded keeps as its result (docs/guide/workflow.md, The branches a run leaves). */
+const RUN_BRANCH = /^project\/\.git\/refs\/heads\/teamai(\/r[0-9a-f]{16}(\/[^/]+(\/p\d+)?)?)?$/;
 
 /** teamai's own directories: whatever wrote last there, it is teamai's to remove. */
 const TEAMAI_ROOTS = ['home/.teamai', 'project/.teamai'];
@@ -217,6 +255,18 @@ function reverseState(world: World): Section {
       continue;
     }
 
+    if (change === 'left behind' && under(entry, TOOL_HOMES) && !TEAMAI_HOME_WRITES.some((write) => entry === write || entry.startsWith(`${write}/`))) {
+      const home = TOOL_HOMES.find((dir) => entry.startsWith(`${dir}/`)) ?? entry;
+
+      if (!under(entry, [...theirs.values()].flat())) theirs.set(home, [...theirs.get(home) ?? [], entry]);
+      continue;
+    }
+
+    if (change === 'left behind' && RUN_BRANCH.test(entry)) {
+      if (after[entry] !== 'dir') notes.push(`${entry.slice('project/.git/refs/heads/'.length)} left behind: a run's result branch, the member's to keep`);
+      continue;
+    }
+
     const known = KNOWN_LEFTOVER_DIRS.includes(entry) ? 'any' : KNOWN_LEFTOVERS.get(entry);
 
     if (change === 'left behind' && (known === 'any' || known === after[entry])) notes.push(`${entry} left behind, known: ${KNOWN_LEFTOVERS_ISSUE}`);
@@ -226,7 +276,9 @@ function reverseState(world: World): Section {
     }
   }
 
-  for (const [program, entries] of theirs) notes.push(`left as ${program} wrote it, so not teamai's: ${entries.join(', ')}`);
+  for (const [by, entries] of theirs) {
+    notes.push(by.startsWith('home/') ? `the tool's own state in ${by}, where teamai writes none of it: ${entries.join(', ')}` : `left as ${by} wrote it, so not teamai's: ${entries.join(', ')}`);
+  }
 
   if (leaks.length === 0 && notes.length === 0) notes.push('HOME and project match the world as it was made');
 
