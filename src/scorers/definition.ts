@@ -123,7 +123,8 @@ function issueMessages(issue: z.ZodIssue): string[] {
 
 export function parseScorer(relativePath: string, content: string): ParsedScorer {
   const fail = (...messages: string[]): ParsedScorer => ({ ok: false, diagnostics: messages.map((message) => ({ file: relativePath, message })) });
-  const isFolder = path.posix.basename(relativePath) === SCORER_MARKER;
+  // `scorers/SCORER.md` sits in no folder of its own: it is the file-form scorer SCORER.
+  const isFolder = path.posix.basename(relativePath) === SCORER_MARKER && path.posix.dirname(relativePath) !== 'scorers';
   const name = isFolder ? path.posix.basename(path.posix.dirname(relativePath)) : path.posix.basename(relativePath, '.md');
 
   if (!TOKEN.test(name)) return fail(isFolder ? 'the folder name must be a token such as review-quality' : 'the file name must be a token such as review-quality.md');
