@@ -19,7 +19,7 @@ import { EXCLUDED_RULE_NAMES } from '../builtin-rules.js';
 import { log } from './logger.js';
 import { placedResourcePath } from '../push-namespaces.js';
 import { recordDelivered, type DeliveredHashes } from '../resources/delivered-copies.js';
-import { readTeamSkills, withSkillFrontmatter } from '../resources/skills.js';
+import { ensureSkillFrontmatter, readTeamSkills, withSkillFrontmatter } from '../resources/skills.js';
 import { TeamSkillSource } from '../resources/team-skill-source.js';
 
 const CONTRIBUTORS_FILE = 'CONTRIBUTORS';
@@ -296,6 +296,8 @@ async function replaceSkillDir(teamSkill: TeamSkillSource, localSkillDir: string
   try {
     await fse.copy(localSkillDir, staged);
     await TeamSkillSource.copyTo(teamSkill, staged);
+    // As pull delivers it, or the tool reads the skill without its name and description until the next pull.
+    await ensureSkillFrontmatter(staged, TeamSkillSource.name(teamSkill));
     await fse.rename(localSkillDir, previous);
   } catch (error) {
     await removeLeftover(staged);
