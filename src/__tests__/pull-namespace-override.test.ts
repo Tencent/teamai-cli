@@ -717,10 +717,13 @@ describe('pull: an active namespace item replaces the root item of the same name
   });
 
   describe('skills in the file form', () => {
-    it('delivers skills/<ns>/<name>.md as <name>/SKILL.md with its frontmatter repaired, indexes it, and leaves README.md out', async () => {
-      await team('skills/frontend/greet.md', '# Greet\nSay hello to the member by name.\n');
-      // Notes beside the skills, as team repos kept before a file could be a skill.
+    it('delivers skills/<ns>/<name>.md as <name>/SKILL.md with its frontmatter repaired, indexes it, and leaves notes out', async () => {
+      await team('skills/frontend/greet.md', '---\ndescription: Greet the member.\n---\n# Greet\nSay hello to the member by name.\n');
+      // Notes beside the skills, as team repos kept before a file could be a skill: no frontmatter description.
       await team('skills/frontend/README.md', '# Our skills\n');
+      await team('skills/frontend/NOTES.md', '# Notes\n');
+      await team('skills/frontend/CONTRIBUTING.md', '---\ntitle: How to add a skill\n---\nOpen a pull request.\n');
+      await team('skills/docs/guide.md', '# Guide\n');
 
       await pull({});
 
@@ -728,7 +731,7 @@ describe('pull: an active namespace item replaces the root item of the same name
       expect(delivered).toContain('name: greet');
       expect(delivered).toContain('Say hello to the member by name.');
       expect(await fse.readdir(path.join(homeDir, '.claude/skills/greet'))).toEqual(['SKILL.md']);
-      expect(await exists('.claude/skills/README')).toBe(false);
+      expect((await fse.readdir(path.join(homeDir, '.claude/skills'))).filter((dir) => !dir.startsWith('teamai'))).toEqual(['greet']);
       const index = await fse.readJson(path.join(homeDir, '.teamai', 'search-index.json')) as { entries: Array<{ type: string; filename: string; path?: string }> };
       expect(index.entries.filter((entry) => entry.type === 'skills').map(({ filename, path: at }) => [filename, at]))
         .toEqual([['greet.md', path.join(repoPath, 'skills/frontend/greet.md')]]);

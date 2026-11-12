@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { TeamSkillSource } from './resources/team-skill-source.js';
 import path from 'node:path';
 import { createGit, createGitWithBlockTimeout, DetachedTeamRepoError, getDefaultBranch, pullRepo, remotesMatch } from './utils/git.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
@@ -223,7 +224,7 @@ export async function removedTeamResources(localPath: string, previous: string, 
       if (metadata.startsWith('160000 ') && type === 'skills') names.skills.add(file.split('/').at(-1)!);
       const skill = /^skills\/(?:[^/]+\/)?([^/]+)\.md$/.exec(file);
 
-      if (skill && skill[1].toLowerCase() !== 'readme') names.skills.add(skill[1]);
+      if (skill && skill[1].toLowerCase() !== 'readme' && TeamSkillSource.describes(await git.raw(['show', `${rev}:${file}`]))) names.skills.add(skill[1]);
       const rule = /^rules\/(.+)\.md$/.exec(file);
 
       if (rule) names.rules.add(rule[1]);

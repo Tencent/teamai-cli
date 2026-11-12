@@ -29,7 +29,7 @@ teamai push --role pm
 
 只有说明的 skill 可以在团队仓库里只是一个文件：`skills/<name>.md` 或 `skills/<ns>/<name>.md`。pull 把它交付给每个工具，成为 `<name>/SKILL.md`，和只含 `SKILL.md` 的目录一样。
 
-- `skills/` 或某个命名空间下直接放的每个 `.md` 文件都是 skill，`README.md` 除外。
+- `skills/` 或某个命名空间下直接放的 `.md` 文件，只有 frontmatter 里有 `description` 时才是 skill。那里的其他文件，例如 `README.md` 或你的笔记，仍然只是笔记，不会交付给任何人。
 - 同一位置同名的文件和目录（`skills/greet.md` 旁边有 `skills/greet/`）把这个 skill 定义了两次。pull 两个都不交付并指出两者，`teamai review --branch` 失败。
 - push 把编辑写回这个文件。文件放不下别的东西，所以你在 `SKILL.md` 旁边新加的文件不会推送，push 会指出它。要共享它，请在团队仓库里把这个文件改成目录 `skills/<name>/`。
 - 提交之前先让所有成员升级。旧版 teamai 会跳过这个文件，什么也不交付。

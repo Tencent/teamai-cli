@@ -509,8 +509,13 @@ export async function readTeamSkills(repoPath: string): Promise<TeamSkillsRead> 
   const read = await Resources.survey(RESOURCE_LAYOUTS.skills, { team: { root: repoPath, namespaces: async () => 'legacy' } });
   const diagnostics = read.diagnostics.filter(({ kind }) => kind === 'invalid');
   const byPlace = new Map<string, Array<TeamItem<unknown>>>();
+  const definitions: Array<(typeof read.definitions)[number]> = [];
 
   for (const item of read.definitions) {
+    if (item.source.kind !== 'file' || await TeamSkillSource.isDescribed(item.source.full)) definitions.push(item);
+  }
+
+  for (const item of definitions) {
     const place = `${item.layer === 'namespace' ? item.namespace : ''}/${item.name}`;
     byPlace.set(place, [...byPlace.get(place) ?? [], item]);
   }
@@ -528,7 +533,7 @@ export async function readTeamSkills(repoPath: string): Promise<TeamSkillsRead> 
     });
   }
 
-  const skills = read.definitions.flatMap((item): TeamSkill[] => {
+  const skills = definitions.flatMap((item): TeamSkill[] => {
     if (duplicated.has(item)) return [];
     const relativePath = item.source.path.replace(/\/$/, '');
 

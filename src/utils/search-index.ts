@@ -920,7 +920,7 @@ async function collectSkillEntries(
       // A skill kept as one file sits at the root or one namespace deep, as pull reads it.
       const skill = entry.isFile() && !relDir.includes('/') ? RESOURCE_LAYOUTS.skills.fileName(entry.name) : null;
 
-      if (skill !== null) {
+      if (skill !== null && await TeamSkillSource.isDescribed(path.join(current, entry.name))) {
         const e = await entryFromMdFile(path.join(current, entry.name), `${skill}.md`, 'skills', reads, `skills/${relDir ? `${relDir}/` : ''}${skill}`);
 
         if (e) out.push(e);

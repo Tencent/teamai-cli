@@ -29,7 +29,7 @@ Shared-root skills keep the existing tag-subscription delivery rules when roles 
 
 A skill that is only its instructions can be one file in the team repo: `skills/<name>.md`, or `skills/<ns>/<name>.md`. Pull delivers it to each tool as `<name>/SKILL.md`, as it would a folder holding only `SKILL.md`.
 
-- Every `.md` file directly in `skills/` or in a namespace is a skill, except `README.md`.
+- A `.md` file directly in `skills/` or in a namespace is a skill when its frontmatter has a `description`. Any other file there, such as `README.md` or your notes, stays notes and reaches no one.
 - A file and a folder of one name in one place, `skills/greet.md` beside `skills/greet/`, define the skill twice. Pull delivers neither and names both, and `teamai review --branch` fails.
 - Push sends an edit back to the file. A file holds nothing else, so a file you add beside `SKILL.md` stays out, and push names it. To share it, turn the file into the folder `skills/<name>/` in the team repo.
 - Have every member upgrade before you commit one. An older teamai skips the file and delivers nothing for it.

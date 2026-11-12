@@ -776,9 +776,9 @@ describe('syncTeamUpdatesToLocal — skills', () => {
   });
 
   it('syncs an unedited copy of a skill kept as one file, as pull delivered it, and keeps an edited one', async () => {
-    const v1 = (skill: string): string => `# ${skill}\n\nv1\n`;
-    await fse.outputFile(path.join(repoPath, 'skills', 'greet.md'), '# greet\n\nv2\n');
-    await fse.outputFile(path.join(repoPath, 'skills', 'ns', 'wave.md'), '# wave\n\nv2\n');
+    const v1 = (skill: string): string => `---\ndescription: ${skill}\n---\n# ${skill}\n\nv1\n`;
+    await fse.outputFile(path.join(repoPath, 'skills', 'greet.md'), '---\ndescription: greet\n---\n# greet\n\nv2\n');
+    await fse.outputFile(path.join(repoPath, 'skills', 'ns', 'wave.md'), '---\ndescription: wave\n---\n# wave\n\nv2\n');
     const greet = path.join(homeDir, '.claude/skills', 'greet', 'SKILL.md');
     const wave = path.join(homeDir, '.claude/skills', 'wave', 'SKILL.md');
     await fse.outputFile(greet, withSkillFrontmatter(v1('greet'), 'greet'));
@@ -789,7 +789,7 @@ describe('syncTeamUpdatesToLocal — skills', () => {
 
     await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
 
-    expect(await fse.readFile(greet, 'utf-8')).toBe(withSkillFrontmatter('# greet\n\nv2\n', 'greet'));
+    expect(await fse.readFile(greet, 'utf-8')).toBe(withSkillFrontmatter('---\ndescription: greet\n---\n# greet\n\nv2\n', 'greet'));
     expect(await fse.readFile(wave, 'utf-8')).toBe(`${withSkillFrontmatter(v1('wave'), 'wave')}mine\n`);
   });
 

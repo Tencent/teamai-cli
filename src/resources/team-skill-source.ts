@@ -1,6 +1,8 @@
 import path from 'node:path';
 import fse from 'fs-extra';
-import { copyDir, dirContentEqual, dirTeamSubsetEqual, fileContentEqual, isDraft, listFilesRecursive, pathExists } from '../utils/fs.js';
+import { z } from 'zod';
+import { copyDir, dirContentEqual, dirTeamSubsetEqual, fileContentEqual, isDraft, listFilesRecursive, pathExists, readFileSafe } from '../utils/fs.js';
+import { splitFrontmatter } from '../utils/frontmatter.js';
 
 const SKILL_MD = 'SKILL.md';
 
@@ -77,4 +79,21 @@ async function sameFiles(a: TeamSkillSource, b: TeamSkillSource): Promise<boolea
   return true;
 }
 
-export const TeamSkillSource = { isFile, name, skillMd, files, fileAt, copyTo, equalsCopy, isInCopy, sameFiles } as const;
+const DescribedSchema = z.object({ description: z.string().trim().min(1) });
+
+/**
+ * Whether the file `file` is a skill rather than notes kept beside the skills: its frontmatter has a description, which
+ * `review --branch` asks of every skill. Team repos kept notes such as NOTES.md in skills/ before a file could be a skill.
+ */
+async function isDescribed(file: string): Promise<boolean> {
+  const content = await readFileSafe(file);
+
+  return content !== null && describes(content);
+}
+
+/** Whether a skill file's text `content` makes it a skill (`isDescribed`). */
+function describes(content: string): boolean {
+  return DescribedSchema.safeParse(splitFrontmatter(content).data).success;
+}
+
+export const TeamSkillSource = { isFile, isDescribed, describes, name, skillMd, files, fileAt, copyTo, equalsCopy, isInCopy, sameFiles } as const;

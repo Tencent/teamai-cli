@@ -621,12 +621,13 @@ it('matches removal names to handler names for flat and namespaced resources', a
   await git.commit('empty team');
   const empty = (await git.revparse(['HEAD'])).trim();
   for (const file of [
-    'skills/flat/SKILL.md', 'skills/flat/notes.md', 'skills/fe/scoped/SKILL.md', 'skills/single.md', 'skills/fe/one.md', 'skills/README.md',
+    'skills/flat/SKILL.md', 'skills/flat/notes.md', 'skills/fe/scoped/SKILL.md', 'skills/single.md', 'skills/fe/one.md', 'skills/README.md', 'skills/NOTES.md',
     'rules/flat.md', 'rules/fe/scoped.md', 'rules/style/RULE.md', 'rules/style/checklist.md', 'rules/api/SKILL.md', 'rules/api/style.md',
     'agents/flat.yaml', 'agents/fe/scoped.md', 'agents/reviewer/AGENT.md', 'agents/reviewer/rubric.md', 'agents/fe/judge/AGENT.md',
   ]) {
     await fs.mkdir(path.dirname(path.join(repo, file)), { recursive: true });
-    await fs.writeFile(path.join(repo, file), 'fixture\n');
+    // A skill file is a skill by its description; NOTES.md has none, so it stays notes.
+    await fs.writeFile(path.join(repo, file), /^skills\/(?:fe\/)?(?:single|one)\.md$/.test(file) ? '---\ndescription: d\n---\nfixture\n' : 'fixture\n');
   }
   await git.add('.');
   await git.commit('resource names');

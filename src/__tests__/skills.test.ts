@@ -677,12 +677,13 @@ scope: 'user',
     ['one file', 'skills/tencent/tgit.md', 'skills/tencent/tgit.md'],
   ])('detects modified skill kept as a %s in namespaced team repo when no primaryRole is set', async (_form, teamFile, relativePath) => {
     // No primaryRole — legacy mode
-    await fse.outputFile(path.join(localConfig.repo.localPath, teamFile), '# v1');
+    const v1 = '---\ndescription: TGit.\n---\n# v1';
+    await fse.outputFile(path.join(localConfig.repo.localPath, teamFile), v1);
 
     // Local has modified version
     const localSkillDir = path.join(homeDir, '.claude/skills', 'tgit');
     await fse.ensureDir(localSkillDir);
-    await fse.writeFile(path.join(localSkillDir, 'SKILL.md'), '# v2');
+    await fse.writeFile(path.join(localSkillDir, 'SKILL.md'), '---\ndescription: TGit.\n---\n# v2');
 
     const items = await handler.scanLocalForPush(teamConfig, localConfig);
     const item = items.find((i) => i.name === 'tgit');
@@ -693,7 +694,7 @@ scope: 'user',
     expect(item!.relativePath).toBe(relativePath);
 
     // The same bytes as the team's are no edit.
-    await fse.writeFile(path.join(localSkillDir, 'SKILL.md'), '# v1');
+    await fse.writeFile(path.join(localSkillDir, 'SKILL.md'), v1);
     expect((await handler.scanLocalForPush(teamConfig, localConfig)).map((i) => i.name)).not.toContain('tgit');
   });
 
@@ -1177,7 +1178,7 @@ describe('scanTeamRepoNamespaces', () => {
     await fse.ensureDir(path.join(repoPath, 'skills', 'hai_dev', 'hai-log'));
     await fse.writeFile(path.join(repoPath, 'skills', 'hai_dev', 'hai-log', 'SKILL.md'), '# Log');
     // A namespace that holds only skills kept as one file
-    await fse.outputFile(path.join(repoPath, 'skills', 'ops', 'greet.md'), '# Greet');
+    await fse.outputFile(path.join(repoPath, 'skills', 'ops', 'greet.md'), '---\ndescription: Greet.\n---\n# Greet');
 
     const namespaces = await scanTeamRepoNamespaces(repoPath);
     expect(namespaces).toContain('tencent');

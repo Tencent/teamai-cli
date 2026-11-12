@@ -188,7 +188,7 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
 
   it.each([
     ['a skill directory with no SKILL.md at its root', { 'skills/frontend/vr/notes.md': '# no SKILL.md here' }, /no SKILL\.md/],
-    ['a skill kept both as a file and as a folder in one place', { 'skills/frontend/vr.md': '# VR', 'skills/frontend/vr/SKILL.md': '# VR' }, /skills\/frontend\/vr\.md and skills\/frontend\/vr\/ both define the skill vr/],
+    ['a skill kept both as a file and as a folder in one place', { 'skills/frontend/vr.md': '---\ndescription: VR.\n---\n# VR', 'skills/frontend/vr/SKILL.md': '# VR' }, /skills\/frontend\/vr\.md and skills\/frontend\/vr\/ both define the skill vr/],
   ])('fails %s', async (_label, files: Record<string, string>, message) => {
     await fse.ensureDir(path.join(repoDir, 'manifest'));
     await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), rolesYaml(['frontend']));

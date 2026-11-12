@@ -89,6 +89,7 @@ describe('buildIndex — Phase 1 multi-category', () => {
       ['greet.md', '---\nname: greet\ndescription: d\n---\nroot file'],
       ['pay/one.md', '---\nname: one\ndescription: d\n---\nnamespace file'],
       ['README.md', 'notes about the skills'],
+      ['NOTES.md', 'notes kept beside the skills'],
     ]) await fse.outputFile(path.join(skillsDir, file), text);
 
     await buildIndex({ skillsDir, indexPath });
