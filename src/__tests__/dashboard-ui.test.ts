@@ -101,21 +101,6 @@ describe('unified dashboard', () => {
     expect(sections.context).toContain('&lt;img');
   });
 
-  it('shows a promotion-gates error instead of an empty list, escaped, with its translation registered', () => {
-    const data: VizData = {
-      generatedAt: new Date().toISOString(), root: '/tmp/fixture', source: { scope: 'team', label: 'Team' },
-      totalEntries: 0, totalRecalls: 0, overallCoveragePct: 0, contributorCount: 0,
-      coverage: [], topRecalled: [], silent: [], relations: { resourceCount: 0, relationCount: 0, withoutRelation: [], unresolved: [], silentAndWithoutRelation: [] },
-      trend: [], authors: [],
-      maintenance: { promote: [], prune: [], stale: [], promoteError: 'workflows/teamai-promote-learning.yaml: defaults.inputs.min_confidence must be a number from 0 to 1 <b>not html</b>' },
-    };
-    const { maintenance } = renderDashboardReport(data);
-    expect(maintenance).toContain('Promotion gates could not be read');
-    expect(maintenance).toContain('defaults.inputs.min_confidence');
-    expect(maintenance).not.toContain('<b>not html</b>');
-    expect(Object.hasOwn(dashboardMessages, 'Promotion gates could not be read')).toBe(true);
-  });
-
   it('adds a Scorers page whose every label has a zh-CN translation (#1182)', () => {
     const html = getDashboardHtml(3721);
     expect(html).toContain("scorers: 'Scorers'");

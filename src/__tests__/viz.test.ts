@@ -357,6 +357,19 @@ describe('buildVizData with explicit --repo', () => {
     ];
     expect(allTitles.some((t) => t.includes('TEAM ONLY skill'))).toBe(true);
   });
+
+  it('lists the promotion candidates the repo\'s own params.yaml for teamai-promote-learning admits', async () => {
+    tmpRepo = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-viz-repo-'));
+    const put = (rel: string, content: string): Promise<void> => fs.mkdir(path.dirname(path.join(tmpRepo, rel)), { recursive: true }).then(() => fs.writeFile(path.join(tmpRepo, rel), content, 'utf-8'));
+    await put('learnings/retry-deploys.md', '---\ntitle: Retry deploys\n---\nRetry a failed deploy once.\n');
+    await put('votes/alice.yaml', votesYaml({ 'retry-deploys': { recalled_count: 1, upvoted_count: 1, last_recalled_at: new Date().toISOString() } }));
+    const listed = async (): Promise<string[]> => (await buildVizData(await resolveVizRoot({ repo: tmpRepo }))).maintenance.promote.map((candidate) => candidate.docId);
+
+    const teamais = await listed();
+    await put('workflows/teamai-promote-learning/params.yaml', 'min_confidence: 0\nmin_upvoted: 1\nmin_users: 1\nmin_age_days: 0\n');
+
+    expect([teamais, await listed()]).toEqual([[], ['retry-deploys']]);
+  });
 });
 
 // ─── Relation counts in the KB health view (#1562 part 2) ─────────────────────

@@ -2603,10 +2603,10 @@ async function promotionListing(localConfig: LocalConfig, options: { dryRun: boo
 
   if (!paths) return undefined;
 
-  const { resolvePromotionThresholds } = await import('./maintenance/promotion-thresholds.js');
-  const thresholds = await resolvePromotionThresholds(localConfig);
+  const { DefaultFolders } = await import('./default-folders.js');
+  const { params: thresholds } = await DefaultFolders.load({ kind: 'workflows', name: 'teamai-promote-learning' }, localConfig);
 
-  return { paths, candidates: await findPromotionCandidates(paths.learningsReadDirs, paths.votesDir, knowledgeCheckout, { namespaces, thresholds }) };
+  return { paths, candidates: await findPromotionCandidates({ learningsDirs: paths.learningsReadDirs, votesDir: paths.votesDir, knowledgeCheckout, namespaces, thresholds }) };
 }
 
 /**

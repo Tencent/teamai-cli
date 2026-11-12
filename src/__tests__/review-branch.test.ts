@@ -671,6 +671,18 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     }]]);
   });
 
+  it('fails a default workflow\'s params.yaml that pull refuses, with what pull prints', async () => {
+    await fse.outputFile(path.join(repoDir, 'workflows', 'teamai-promote-learning', 'params.yaml'), 'min_confidence: 2\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.level === 'fail').map(({ check, path: file, message }) => ({ check, file, message }))]).toEqual([false, [{
+      check: 'workflows',
+      file: 'workflows/teamai-promote-learning/params.yaml',
+      message: 'workflows/teamai-promote-learning/params.yaml:1: field "(root)": workflows/teamai-promote-learning/params.yaml: min_confidence must be a number from 0 to 1',
+    }]]);
+  });
+
   const stray = (file: string): string => `${file} replaces no file of teamai's default, so it is not used and teamai's files stay in force. `
     + 'Name it after the file it replaces, or replace the folder\'s marker too, so it can name the file.';
 

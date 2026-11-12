@@ -22,6 +22,7 @@ import { LineCounter, parseDocument } from 'yaml';
 import { formatDiagnostic, parseWorkflow, promptFileDiagnostics, resolveFolderFiles, stepField } from './parse.js';
 import { locate, valueNode, type WorkflowFiles } from './parse-context.js';
 import { stepWorkflow, type CachedWorkflow, type OutputSchema, type ResolvedWorkflow, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from './types.js';
+import { DefaultFolders } from '../default-folders.js';
 import { DefaultWorkflows } from '../default-workflows.js';
 import { WORKFLOW_MARKER, WorkflowFolder, type WorkflowFolderFile, type WorkflowFolderRead } from './folder.js';
 import { InheritedFolders, type Inheritance } from '../resources/inherited-folders.js';
@@ -232,6 +233,17 @@ async function shippedWorkflows(): Promise<ReadonlyMap<string, CachedWorkflow>> 
   )));
 }
 
+/**
+ * Why the folder at `folderPath` breaks the contract of teamai's default folder `stem`, when it is one: each a
+ * diagnostic with no code, so the version pull last took keeps running.
+ */
+async function defaultFolderProblems(stem: string, folderPath: string, files: readonly WorkflowFolderFile[]): Promise<WorkflowDiagnostic[]> {
+  if (!DefaultFolders.isName('workflows', stem)) return [];
+  const problems = await DefaultFolders.problems({ kind: 'workflows', name: stem }, files.map((file) => ({ path: file.path, executable: file.executable, bytes: Buffer.from(file.content, 'utf8') })));
+
+  return problems.map((problem) => ({ file: `${folderPath}params.yaml`, line: 1, column: 1, field: '(root)', message: `${folderPath}${problem}` }));
+}
+
 /** The cached team files in name order. */
 async function listTeamWorkflows(config: LocalConfig): Promise<CachedWorkflow[]> {
   let files: string[];
@@ -431,7 +443,9 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
 
     if (folder) {
       content = folder.files.find((file) => file.path === WORKFLOW_MARKER)?.content ?? null;
-      const yaml = folder.files.flatMap((file) => (file.path !== WORKFLOW_MARKER && file.path.endsWith('.yaml') ? [file.path] : []));
+      // A default's params.yaml is its parameters, not a workflow.
+      const data = DefaultFolders.isName('workflows', stem) ? 'params.yaml' : null;
+      const yaml = folder.files.flatMap((file) => (file.path !== WORKFLOW_MARKER && file.path !== data && file.path.endsWith('.yaml') ? [file.path] : []));
 
       if (yaml.length === 1) log.info(`[workflows] ${source.path} is a workflow folder; ${yaml.join(', ')} in it is not a workflow`);
       else if (yaml.length > 1) log.info(`[workflows] ${source.path} is a workflow folder; ${yaml.join(', ')} in it are not workflows`);
@@ -468,7 +482,10 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
       continue;
     }
 
-    const refused = await DefaultWorkflows.overrideProblems(relativePath, resolved.definition, config);
+    const refused = [
+      ...await DefaultWorkflows.overrideProblems(relativePath, resolved.definition, config),
+      ...(folder ? await defaultFolderProblems(stem, source.path, folder.files) : []),
+    ];
 
     if (refused.length > 0) {
       checked.push({ stem, relativePath, diagnostics: refused });

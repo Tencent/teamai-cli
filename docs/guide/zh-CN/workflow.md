@@ -1132,7 +1132,7 @@ teamai 自带一些工作流，团队不用自己编写就能使用：
 | `teamai-try-scorer` | 通过 `store: false` 的 `teamai-score`，用评分器文件评判一个会话和只含其第一条提示的会话，不保存任何标签。由 [`teamai score --scorer <file>`](scorers.md#试用评分器文件) 启动。私有 | 从不：`invoke: deny` |
 | `teamai-new-scorer` | 与用户一起编写评分器，用 `teamai-try-scorer` 试用，再从[团队工作区](#团队工作区)把 `scorers/<name>.md` 作为拉取请求提交给团队。输入：`session`、`source` | 始终：`invoke: ask`，agent 在用户同意后启动它 |
 | `teamai-draft-learning-updates` | 为团队经常召回却很少采用的每个 doc、rule 和 skill 起草更新，写成它旁边的 `<entry>.draft.md`，由 [`teamai recall maintenance --update-quality`](knowledge.md#知识库维护) 启动。输入：`knowledge_root`，存放这些条目的 checkout，草稿写在其中。私有 | 从不按名称启动：`invoke: deny`。该命令在 agent 会话中也能运行它 |
-| `teamai-promote-learning` | 把一条经验晋升为 skill、rule 或 doc：AI 选择类别（`--category` 给出时除外）并改写经验，结果推送到评审分支，并附带说明类别和理由的拉取请求，由 [`teamai recall promote <learning-id>`](knowledge.md#知识库维护) 启动。输入：`learning`、`category`（`''` 表示由 AI 选择）。私有 | 始终：`invoke: ask`，agent 在用户同意后启动它 |
+| `teamai-promote-learning` | 把一条经验晋升为 skill、rule 或 doc：AI 选择类别（`--category` 给出时除外）并改写经验，结果推送到评审分支，并附带说明类别和理由的拉取请求，由 [`teamai recall promote <learning-id>`](knowledge.md#知识库维护) 启动。输入：`learning`、`category`（`''` 表示由 AI 选择）。它的 `params.yaml` 决定接受哪些经验。私有 | 始终：`invoke: ask`，agent 在用户同意后启动它 |
 | `teamai-codebase-deep-enrich` | 为项目的组件写设计文档（一次五个），然后写架构总览和图谱文档；设了 `publish` 时，把它们提交并推送到存放 `wiki_root` 的团队仓库，由 [`teamai codebase --deep-enrich`](knowledge.md#代码知识图谱) 启动。输入：`wiki_root`、`project`、`max_modules`（`0` 表示全部）、`concurrency`、`publish`（默认 `false`）。私有 | 从不按名称启动：`invoke: deny`。该命令在 agent 会话中也能运行它 |
 | `teamai-codebase-enrich` | 询问刚提取的代码库每个模块做什么、整体属于哪个业务域，并在它的 evidence 旁写入 `_manifest.json` 和 `_domains.json`。输入：`wiki_root`、`project`。私有 | 从不：`invoke: deny` |
 | `teamai-import-from-repo` | 把仓库或本地 checkout 导入 teamwiki：逐个提取，对它运行 `teamai-codebase-enrich` 和 `teamai-codebase-deep-enrich`，发布它，最后只重建并发布一次索引，由 [`teamai import --dir`、`--from-repo`、`--from-repo-list` 和 `--from-org`](knowledge.md#代码知识图谱) 启动。输入：`wiki_root`、`mode`、`items`、`settings`、`skipped`、`concurrency`。私有 | 从不按名称启动：`invoke: deny`。该命令在 agent 会话中也能运行它 |
@@ -1355,7 +1355,7 @@ describe 为调用它的会话提议每个输入并附 `why`：会话第一次�
 cp "$(npm root -g)/teamai-cli/workflows/teamai-share-learnings.yaml" workflows/teamai-share-learnings.yaml
 ```
 
-有三个默认工作流是文件夹，在包中位于 `workflows/<name>/WORKFLOW.yaml`，早期版本是 `workflows/<name>.yaml`：`teamai-import-from-mr`、`teamai-codebase-deep-enrich` 和 `teamai-import-from-repo`。团队已有的 `workflows/<name>.yaml` 仍会替换默认工作流。
+有四个默认工作流是文件夹，在包中位于 `workflows/<name>/WORKFLOW.yaml`，早期版本是 `workflows/<name>.yaml`：`teamai-import-from-mr`、`teamai-codebase-deep-enrich`、`teamai-import-from-repo` 和 `teamai-promote-learning`。团队已有的 `workflows/<name>.yaml` 仍会替换默认工作流。
 
 文件夹形式的默认工作流，用同名文件夹修改。里面只放你要改的文件；其他文件（包括 `WORKFLOW.yaml`）仍用 teamai 的，并继续获得 teamai 的更新。比如想让英文的 MR learning 写出评审留下的未决问题，先复制它的提示词：
 

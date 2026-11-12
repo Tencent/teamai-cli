@@ -205,7 +205,7 @@ Confidence is an activity score from 0 to 1, not a probability that the knowledg
 
 ### Promoting Learnings
 
-A learning can become a skill, rule, or doc when its confidence is at least 0.90, it has at least 5 upvotes, at least 2 contributors, and it has existed for at least 14 days.
+A learning can become a skill, rule, or doc when its confidence is at least 0.90, it has at least 5 upvotes, at least 2 contributors, and it has existed for at least 14 days. A team changes these in a `params.yaml` of `workflows/teamai-promote-learning/` at the root of its repo, holding only the keys it changes, such as `min_users: 1`; the [workflow's README](https://github.com/Tencent/teamai-cli/blob/main/workflows/teamai-promote-learning/README.md) lists them and their ranges. Members on a teamai older than the one that reads it keep the old gates, so upgrade every member first.
 
 Promoted skills use `skills/<learningId>/SKILL.md`, with missing `name` and `description` frontmatter filled in so tools can discover them. Rules and docs remain Markdown files in their respective directories.
 

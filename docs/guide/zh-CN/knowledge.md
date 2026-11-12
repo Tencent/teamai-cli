@@ -189,7 +189,7 @@ teamai recall maintenance --update-quality
 
 ### 晋升 Learnings
 
-置信度至少 0.90、至少 5 次 upvote、至少 2 个贡献者、存在至少 14 天，可以升成 skill、rule 或 doc。
+置信度至少 0.90、至少 5 次 upvote、至少 2 个贡献者、存在至少 14 天，可以升成 skill、rule 或 doc。团队可以在团队仓库根目录的 `workflows/teamai-promote-learning/` 里放一个 `params.yaml` 修改这些值，只写要改的键，例如 `min_users: 1`；[这个工作流的 README](https://github.com/Tencent/teamai-cli/blob/main/workflows/teamai-promote-learning/README.zh-CN.md) 列出了这些键及其范围。还没升级 teamai 的成员仍用旧值，所以请先让每位成员升级。
 
 晋升后的 skill 位于 `skills/<learningId>/SKILL.md`，缺少的 `name` 和 `description` 前置信息会自动补齐，便于工具识别。rule 和 doc 仍是各自目录下的 Markdown 文件。
 

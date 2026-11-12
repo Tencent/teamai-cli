@@ -27,6 +27,13 @@ function whole(min: number, max: number) {
   return z.number({ error }).int({ error }).min(min, { error }).max(max, { error });
 }
 
+/** A number from 0 to 1. */
+function ratio() {
+  const error = 'must be a number from 0 to 1';
+
+  return z.number({ error }).min(0, { error }).max(1, { error });
+}
+
 /** The tool-error tiers, the first whose `min` the count reaches giving its points. */
 const ToolErrorTiersSchema = z.array(z.strictObject({ min: whole(1, 1000), points: whole(0, 100) }), { error: 'must be a list of { min, points } tiers' })
   .min(1, { error: 'must list from 1 to 5 tiers' })
@@ -58,6 +65,9 @@ const PARAMS = {
   rules: {
     'teamai-recall': NoParamsSchema,
   },
+  workflows: {
+    'teamai-promote-learning': z.strictObject({ min_confidence: ratio(), min_upvoted: whole(1, 1000), min_users: whole(1, 1000), min_age_days: whole(0, 3650) }),
+  },
 } as const;
 
 /** What a text of a default folder offers and keeps: the variables it may read, and the lines every language of it must hold. */
@@ -87,6 +97,9 @@ const TEXTS = {
   rules: {
     // Recall's own output and doctor point at these lines.
     'teamai-recall': { RULE: { required: ['Nothing was searched:', 'Recall skips the older index'] }, block: {}, 'block-direct': { required: ['Nothing was searched:'] } },
+  },
+  workflows: {
+    'teamai-promote-learning': {},
   },
 } as const satisfies { readonly [TKind in keyof typeof PARAMS]: { readonly [TName in keyof (typeof PARAMS)[TKind]]: Readonly<Record<string, TextContract>> } };
 
@@ -231,6 +244,9 @@ function markerProblems(kind: DefaultFolderKind, byPath: ReadonlyMap<string, Fol
     case 'rules':
       // RULE.md is one of the folder's texts.
       return [];
+    case 'workflows':
+      // The workflow engine checks WORKFLOW.yaml.
+      return [];
     default: {
       const unhandled: never = kind;
 
@@ -243,6 +259,7 @@ function markerProblems(kind: DefaultFolderKind, byPath: ReadonlyMap<string, Fol
 function deliveryProblems(kind: DefaultFolderKind, file: string, content: string): string[] {
   switch (kind) {
     case 'hooks':
+    case 'workflows':
       return [];
     case 'rules':
       return DeliveredFolders.mentions(content, 'rules')
@@ -367,24 +384,65 @@ async function read<TKind extends DefaultFolderKind, TName extends DefaultFolder
   return own.ok ? { ok: true, folder: own.folder } : { ok: false, problems: own.problems };
 }
 
+/** A kind whose team folder teamai delivers or caches, so its code reads it at run time rather than at pull. */
+type LoadedKind = 'hooks' | 'workflows';
+
 /**
- * Default hook `ref` as `scope` reads it: the team's replacement pull delivered to the scope, else teamai's folder.
- * With no scope (teamai is not set up where the hook runs), teamai's folder.
+ * The files of the team folder that changes default `ref` in `scope`, or null when the team changes none: a default
+ * hook's folder pull delivered to the scope, or a default workflow's folder as a run of it would start from it.
  */
-async function load<TName extends DefaultFolderName<'hooks'>>(ref: DefaultFolderRef<'hooks', TName>, scope: LocalConfig | null): Promise<DefaultFolder<'hooks', TName>> {
-  const teamai = await shipped(ref);
+async function teamFiles(ref: { readonly kind: LoadedKind; readonly name: string }, scope: LocalConfig): Promise<{ path: string; files: FolderFile[] } | null> {
+  switch (ref.kind) {
+    case 'hooks': {
+      const dir = DeliveredFolders.pathOf(scope, { type: 'hooks', namespace: null, name: ref.name });
+      const delivered = await FolderFiles.read(dir);
 
-  if (scope) {
-    const dir = DeliveredFolders.pathOf(scope, { type: 'hooks', namespace: null, name: ref.name });
-    const delivered = await FolderFiles.read(dir);
+      return delivered.kind === 'files' ? { path: dir, files: [...delivered.files] } : null;
+    }
 
-    if (delivered.kind === 'files') {
-      const folder = readFolder(ref, delivered.files, teamai.params);
+    case 'workflows': {
+      const { resolveStart } = await import('./workflow/cache.js');
+      const { workflow } = await resolveStart(scope, ref.name);
 
-      if (folder.ok) return folder.folder;
-      log.debug(`default hook ${ref.name}: the team's folder at ${dir} is not used, teamai's is: ${folder.problems.join('; ')}`);
+      // A team's single file replaces the folder whole, so teamai's parameters stay.
+      if (workflow?.source !== 'team' || workflow.files === undefined) return null;
+
+      return { path: workflow.relativePath, files: workflow.files.map((file) => ({ path: file.path, executable: file.executable, bytes: Buffer.from(file.content, 'utf8') })) };
+    }
+
+    default: {
+      const unhandled: never = ref.kind;
+
+      return unhandled;
     }
   }
+}
+
+/**
+ * Default `ref` as `scope` reads it: the team's folder that changes it, else teamai's. With no scope (teamai is not
+ * set up where the code runs), teamai's folder. Pull refuses a team folder that breaks the contract, so one read here
+ * keeps it unless it changed after pull; then teamai's is read.
+ */
+async function load<TKind extends LoadedKind, TName extends DefaultFolderName<TKind>>(ref: DefaultFolderRef<TKind, TName>, scope: LocalConfig | null): Promise<DefaultFolder<TKind, TName>> {
+  return chooseInForce(ref, scope ? await teamFiles(ref, scope) : null);
+}
+
+/** Default `ref` as the team repo at `teamRoot` holds it, for a reader of a repo no pull took, such as `teamai dashboard --repo`. */
+async function loadAt<TKind extends LoadedKind, TName extends DefaultFolderName<TKind>>(ref: DefaultFolderRef<TKind, TName>, teamRoot: string): Promise<DefaultFolder<TKind, TName>> {
+  const dir = path.join(teamRoot, ref.kind, ref.name);
+  const team = await FolderFiles.read(dir);
+
+  return chooseInForce(ref, team.kind === 'files' ? { path: dir, files: [...team.files] } : null);
+}
+
+async function chooseInForce<TKind extends LoadedKind, TName extends DefaultFolderName<TKind>>(ref: DefaultFolderRef<TKind, TName>, team: { path: string; files: FolderFile[] } | null): Promise<DefaultFolder<TKind, TName>> {
+  const teamai = await shipped(ref);
+
+  if (team === null) return teamai.folder;
+  const folder = readFolder(ref, team.files, teamai.params);
+
+  if (folder.ok) return folder.folder;
+  log.debug(`default ${ref.kind} ${ref.name}: the team's folder at ${team.path} is not used, teamai's is: ${folder.problems.join('; ')}`);
 
   return teamai.folder;
 }
@@ -439,4 +497,4 @@ async function compare<TKind extends DefaultFolderKind, TName extends DefaultFol
   return { params, texts };
 }
 
-export const DefaultFolders = { names, isName, read, load, problems, compare } as const;
+export const DefaultFolders = { names, isName, read, load, loadAt, problems, compare } as const;

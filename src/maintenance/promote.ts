@@ -10,6 +10,7 @@ import { assertSafePath } from '../utils/path-safety.js';
 import { createGit, createGitWithBlockTimeout, getDefaultBranch, PUSH_BRANCH_PREFIX } from '../utils/git.js';
 import { isInWriteRoot, listLearningFiles } from '../utils/learnings-roots.js';
 import { log } from '../utils/logger.js';
+import type { DefaultFolderParams } from '../default-folders.js';
 import { computeAllConfidence } from './confidence.js';
 
 /** A frontmatter field that counts only when it is a string. */
@@ -27,45 +28,26 @@ export interface PromotionCandidate {
   suggestedCategory: PromotionCategory;
 }
 
-/** The four gates {@link findPromotionCandidates} applies, a team tunes by replacing `workflows/teamai-promote-learning.yaml`. */
-export const PromotionThresholdsSchema = z.strictObject({
-  minConfidence: z.number().min(0).max(1),
-  minUpvoted: z.number().int().min(1),
-  minUsers: z.number().int().min(1),
-  minAgeDays: z.number().int().min(0),
-});
-
-/** The four gates, as resolved from a team's workflow; the shipped defaults when the team replaces none. */
-export type PromotionThresholds = z.infer<typeof PromotionThresholdsSchema>;
-
-export const DEFAULT_PROMOTION_THRESHOLDS: PromotionThresholds = { minConfidence: 0.90, minUpvoted: 5, minUsers: 2, minAgeDays: 14 };
+/** The gates a learning passes to be a candidate, from the `params.yaml` of `teamai-promote-learning`. */
+export type PromotionThresholds = DefaultFolderParams<'workflows', 'teamai-promote-learning'>;
 
 /**
- * Find learnings eligible for promotion to formal knowledge. A learning marked
- * `promoted_to` stays out only while that target is in place in
+ * Where to look for learnings eligible for promotion to formal knowledge. A
+ * learning marked `promoted_to` stays out only while that target is in place in
  * `knowledgeCheckout`, the git checkout of the team's knowledge: the default
  * branch or an open review branch touched it. One whose review was closed
  * unmerged and its branch deleted is offered again. Without a checkout, the
  * marker alone keeps it out.
  */
-export interface PromotionCandidatesOptions {
+export interface PromotionCandidatesQuery {
+  learningsDirs: readonly string[];
+  votesDir: string;
+  knowledgeCheckout?: string;
   namespaces?: readonly string[];
-  /** The gates to apply; the shipped defaults when absent, so unit callers and `--repo` views stay unchanged. */
-  thresholds?: PromotionThresholds;
+  thresholds: PromotionThresholds;
 }
 
-export async function findPromotionCandidates(
-  learningsDirs: readonly string[],
-  votesDir: string,
-  knowledgeCheckout?: string | PromotionCandidatesOptions,
-  options?: PromotionCandidatesOptions,
-): Promise<PromotionCandidate[]> {
-  const checkout = knowledgeCheckout instanceof Object ? undefined : knowledgeCheckout;
-
-  const opts = knowledgeCheckout instanceof Object ? knowledgeCheckout : options;
-
-  const namespaces = opts?.namespaces;
-  const { minConfidence, minUpvoted, minUsers, minAgeDays } = opts?.thresholds ?? DEFAULT_PROMOTION_THRESHOLDS;
+export async function findPromotionCandidates({ learningsDirs, votesDir, knowledgeCheckout: checkout, namespaces, thresholds }: PromotionCandidatesQuery): Promise<PromotionCandidate[]> {
   const confidenceMap = await computeAllConfidence(votesDir);
   const eligible: Array<Omit<PromotionCandidate, 'suggestedCategory'> & { content: string; promotedTo?: string }> = [];
 
@@ -77,15 +59,15 @@ export async function findPromotionCandidates(
     const docId = file.replace(/\.md$/i, '');
     const confidence = confidenceMap.get(docId) ?? 0;
 
-    if (confidence < minConfidence) continue;
+    if (confidence < thresholds.min_confidence) continue;
 
     const docVotes = perDoc.get(docId);
 
     if (!docVotes) continue;
 
-    if (docVotes.upvoted < minUpvoted) continue;
+    if (docVotes.upvoted < thresholds.min_upvoted) continue;
 
-    if (docVotes.users.size < minUsers) continue;
+    if (docVotes.users.size < thresholds.min_users) continue;
 
     const content = await readFileSafe(absPath);
 
@@ -107,7 +89,7 @@ export async function findPromotionCandidates(
     if (date) {
       const ageInDays = (now - new Date(date).getTime()) / (1000 * 60 * 60 * 24);
 
-      if (ageInDays < minAgeDays) continue;
+      if (ageInDays < thresholds.min_age_days) continue;
     }
 
     eligible.push({
