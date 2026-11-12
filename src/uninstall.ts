@@ -41,6 +41,8 @@ import {
   legacyManagedHooksPath,
   isAgentExcluded,
   isSelfMode,
+  LEARNINGS_BRANCH,
+  REPORTS_BRANCH,
   managedMcpManifestPath,
   resolveBaseDir,
   resolveHookScope,
@@ -106,7 +108,7 @@ import { listQueuesIn } from './utils/pending-learnings.js';
 import { log } from './utils/logger.js';
 import { askConfirmation } from './utils/prompt.js';
 import { getUserHome } from './utils/home.js';
-import { gitCommonDir, listWorktrees } from './utils/git.js';
+import { createGit, gitCommonDir, listWorktrees } from './utils/git.js';
 import {
   envLoaderProfiles,
   findEnvBlockFor,
@@ -168,6 +170,8 @@ interface RemovalPlan {
   ruleDirs: string[];
   /** Every tool's agents directories, read as `ruleDirs` are. */
   agentDirs: string[];
+  /** In self mode, the agents directories of the tools this removes, which init makes before anything is in them: each goes once empty. */
+  seededAgentDirs: string[];
   /** The rules globs teamai owns in OpenCode's opencode.json `instructions`, per file (#946). */
   opencodeOwnedGlobs: OpencodeRuleGlobEntries[];
   /** Built-in agent .md files deployed by the CLI (e.g. teamai-recall). */
@@ -1572,6 +1576,7 @@ async function buildRemovalPlan(
     keptFiles: [],
     ruleDirs: [...new Set([...rulesDirsByTool.values()].flat())],
     agentDirs: [...new Set([...agentDirsByTool.values()].flat())],
+    seededAgentDirs: isSelfMode(localConfig) ? [...new Set(toolsToMerge.flatMap((tool) => agentDirsByTool.get(tool) ?? []))] : [],
     opencodeOwnedGlobs: [],
     agentFiles: [],
     joycodeAgentIndexes: [],
@@ -3280,6 +3285,8 @@ async function executeRemoval(
         ...await keptFolders(plan.teamaiHome),
       ];
 
+      await unregisterWorktreesIn(plan.teamaiHome, plan.checkouts);
+
       if (kept.length > 0) await removeAllBut(plan.teamaiHome, kept);
       else await remove(plan.teamaiHome);
 
@@ -3422,7 +3429,7 @@ async function sweepCreatedLeftovers(plan: RemovalPlan, hooksLeft: ReadonlyArray
  * folder up to the tool's rules directory; never a directory outside one, so a tool's own root stays.
  */
 function emptiedDirs(plan: RemovalPlan): string[] {
-  const dirs = new Set([...plan.skillDirs.map(({ dir }) => path.dirname(dir)), ...plan.agentFiles.map((file) => path.dirname(file))]);
+  const dirs = new Set([...plan.skillDirs.map(({ dir }) => path.dirname(dir)), ...plan.agentFiles.map((file) => path.dirname(file)), ...plan.seededAgentDirs]);
   const ownedRuleFiles = plan.claudeMdFiles.flatMap(({ path: file, owned }) => (owned ? [file] : []));
 
   for (const file of [...plan.ruleFiles, ...ownedRuleFiles]) {
@@ -3438,6 +3445,32 @@ function emptiedDirs(plan: RemovalPlan): string[] {
   }
 
   return [...dirs].sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Takes out of each checkout's repository the worktrees in `dir` before `dir` goes, and with self mode's
+ * the side branches they hold: a learning not yet published lives in its queue, not on the branch.
+ */
+async function unregisterWorktreesIn(dir: string, checkouts: readonly string[]): Promise<void> {
+  const real = await realpath(dir).catch(() => dir);
+  const removed = new Set<string>();
+
+  for (const checkout of checkouts) {
+    for (const worktree of await listWorktrees(checkout)) {
+      if (removed.has(worktree) || !(isWithin(worktree, dir) || isWithin(worktree, real))) continue;
+      removed.add(worktree);
+      const git = createGit(checkout);
+
+      try {
+        const branch = (await createGit(worktree).raw(['symbolic-ref', '--short', '-q', 'HEAD']).catch(() => '')).trim();
+        await git.raw(['worktree', 'remove', '--force', worktree]);
+
+        if (branch === LEARNINGS_BRANCH || branch === REPORTS_BRANCH) await git.raw(['branch', '-D', branch]);
+      } catch (e) {
+        log.warn(`Could not remove the worktree ${worktree} from ${checkout}: ${e instanceof Error ? e.message : String(e)}. Run \`git worktree prune\` there once it is gone.`);
+      }
+    }
+  }
 }
 
 /** Remove `dir` when nothing is left in it; any folder inside, a member's empty one included, keeps it. */

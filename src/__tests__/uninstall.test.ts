@@ -1385,6 +1385,54 @@ describe('uninstall', () => {
     expect([await fse.pathExists(path.join(repoPath, 'delivered')), await fse.pathExists(path.join(repoPath, 'hooks', 'block-secrets', 'scan.sh'))]).toEqual([false, true]);
   });
 
+  it('removes the empty agents folder self mode seeds, and keeps one holding the member\'s agent', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    const projectRoot = path.join(tmpDir, 'business-repo');
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    await fse.ensureDir(path.join(projectRoot, '.codex', 'agents'));
+    await fse.outputFile(path.join(projectRoot, '.claude', 'agents', 'mine.md'), '# mine\n');
+    const dataHome = path.join(homeDir, '.teamai', 'projects', 'business-repo-0123456789abcdef');
+    await fse.ensureDir(dataHome);
+
+    const localConfig = makeLocalConfig(homeDir, repoPath, {
+      scope: 'project',
+      projectRoot,
+      dataHome,
+      repo: { localPath: projectRoot, remote: '', kind: 'self', businessRepoRoot: projectRoot },
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: makeTeamConfig({ toolPaths: { codex: { skills: '.codex/skills', agents: '.codex/agents' }, claude: { skills: '.claude/skills', agents: '.claude/agents' } } }) });
+
+    await uninstall({ force: true });
+
+    expect([await fse.pathExists(path.join(projectRoot, '.codex', 'agents')), await fse.pathExists(path.join(projectRoot, '.claude', 'agents', 'mine.md'))]).toEqual([false, true]);
+  });
+
+  it('takes the side branches self mode keeps in its data home, and their worktrees, out of the project repository', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    const projectRoot = path.join(tmpDir, 'business-repo');
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    await fse.ensureDir(projectRoot);
+    const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: projectRoot, encoding: 'utf8' });
+    git('init', '-q', '-b', 'main');
+    git('commit', '-q', '--allow-empty', '-m', 'init');
+    const dataHome = path.join(homeDir, '.teamai', 'projects', 'business-repo-0123456789abcdef');
+    git('worktree', 'add', '-q', '-b', 'teamai-learnings', path.join(dataHome, 'side-branches', 'learnings-wt'));
+
+    const localConfig = makeLocalConfig(homeDir, repoPath, {
+      scope: 'project',
+      projectRoot,
+      dataHome,
+      repo: { localPath: projectRoot, remote: '', kind: 'self', businessRepoRoot: projectRoot },
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: makeTeamConfig({ toolPaths: {} }) });
+
+    await uninstall({ force: true });
+
+    expect([git('worktree', 'list', '--porcelain').match(/^worktree /gm)?.length, await fse.pathExists(path.join(projectRoot, '.git', 'worktrees')), git('branch', '--list', 'teamai-*')]).toEqual([1, false, '']);
+  });
+
   it('removes the rule folder copies a remote team delivered in the worktree\'s .teamai/delivered/, and their exclude block (#1787)', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     const projectRoot = path.join(tmpDir, 'business-repo');
