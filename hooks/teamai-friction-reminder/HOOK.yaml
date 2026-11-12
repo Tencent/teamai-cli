@@ -1,14 +1,1 @@
 description: Suggest sharing what a session with friction taught
-with:
-  min_tools: 15
-  min_score: 20
-  weights: { interrupt: 20, reject: 20, correction: 20 }
-  tool_error_tiers:
-    - { min: 8, points: 25 }
-    - { min: 5, points: 18 }
-    - { min: 3, points: 10 }
-  skill_bonus: 5
-  diversity_bonus_max: 5
-  knowledge_gap_bonus: 20
-  low_quality_bonus: 10
-  low_quality_threshold: 5.0

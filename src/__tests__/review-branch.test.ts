@@ -659,8 +659,8 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
   it('fails a replacement of a default hook that pull refuses, with what pull prints', async () => {
     const shipped = path.join(process.cwd(), 'hooks', 'teamai-friction-reminder');
     await fse.copy(shipped, path.join(repoDir, 'hooks', 'teamai-friction-reminder'));
-    const marker = path.join(repoDir, 'hooks', 'teamai-friction-reminder', 'HOOK.yaml');
-    await fse.writeFile(marker, (await fse.readFile(marker, 'utf8')).replace('min_tools: 15', 'min_tools: 5000'));
+    const params = path.join(repoDir, 'hooks', 'teamai-friction-reminder', 'params.yaml');
+    await fse.writeFile(params, (await fse.readFile(params, 'utf8')).replace('min_tools: 15', 'min_tools: 5000'));
 
     const review = await reviewBranchDir(BRANCH, repoDir);
 

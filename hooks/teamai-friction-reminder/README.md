@@ -5,7 +5,7 @@ English | [中文](README.zh-CN.md)
 - **Runs**: At Stop
 - **Input**: The session's tool calls, interruptions, refusals, corrections, failing retries and recall hits
 - **Output**: A reminder to share what the session taught
-- **Files**: `HOOK.yaml` holds teamai's thresholds and weights. Each `.md` file is one text of the reminder
+- **Files**: `params.yaml` holds teamai's thresholds and weights. Each `.md` file is one text of the reminder
 
 ## When it reminds
 
@@ -55,17 +55,15 @@ flowchart TD
 
 ## Replace it
 
-Put only the files you change in `hooks/teamai-friction-reminder/` at the root of the team repo. Every other file, `HOOK.yaml` included, stays teamai's and keeps getting teamai's updates.
+Put only the files you change in `hooks/teamai-friction-reminder/` at the root of the team repo. Every other file, `params.yaml` included, stays teamai's and keeps getting teamai's updates.
 
 ```yaml
-# hooks/teamai-friction-reminder/HOOK.yaml
-description: Remind only after longer sessions
-with:
-  min_tools: 30
-  weights: { reject: 30 }   # interrupt and correction keep teamai's values
+# hooks/teamai-friction-reminder/params.yaml
+min_tools: 30
+weights: { reject: 30 }   # interrupt and correction keep teamai's values
 ```
 
-Push the folder. The next `teamai pull` checks your files with teamai's other files and delivers them together. A key you leave out of `with:` keeps teamai's value from its `HOOK.yaml`.
+Push the folder. The next `teamai pull` checks your files with teamai's other files and delivers them together. A key you leave out of `params.yaml` keeps teamai's value from its `params.yaml`.
 
 ## Parameters
 
@@ -101,7 +99,7 @@ Push the folder. The next `teamai pull` checks your files with teamai's other fi
 
 | The replacement | What pull does |
 |---|---|
-| Misses a text, sets a value out of range, sets a key the table above does not list, or sets a `command` | Names the field and keeps teamai's folder |
+| Misses a text, sets a value out of range, sets a key the table above does not list, keeps `with:` in `HOOK.yaml`, or sets a `command` | Names the field and keeps teamai's folder |
 | Uses a variable its text does not offer | The same |
 | Sits in a namespace, such as `hooks/frontend/teamai-friction-reminder/` | The same. A replacement goes at the root of the team repo |
 

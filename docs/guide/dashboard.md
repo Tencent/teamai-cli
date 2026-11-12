@@ -313,7 +313,7 @@ teamai-recall  rules/teamai-recall/  Team root  Folder  Refused
   rules/teamai-recall/ is not used, so teamai's recall rule stays in force: rules/teamai-recall/RULE.md does not contain "Nothing was searched:". Fix the folder in the team repo.
 ```
 
-Rule files stay on the rule list above. Default hooks lists teamai's five hints: where each comes from, how many `with:` parameters and texts the team's folder changes, and, opened, each parameter's teamai and team value, the changed ones marked, and the file each text is read from for the team's language.
+Rule files stay on the rule list above. Default hooks lists teamai's five hints: where each comes from, how many parameters and texts the team's folder changes, and, opened, each parameter's teamai and team value, the changed ones marked, and the file each text is read from for the team's language.
 
 The Overview counts the problems and links here:
 

@@ -5,7 +5,7 @@
 - **运行时机**: 会话开始时，在 hook 返回之后。提议在会话的下一条提示词时显示；teamai 没有给工具装提示词 hook 时，在会话开始时显示
 - **输入**: 项目仓库在最近 `lookback_days` 天内合并的 MR，已经提议过的除外
 - **输出**: 一条提议：用 [`teamai-import-from-mr`](../../workflows/teamai-import-from-mr/README.zh-CN.md) 把它们整理成 learning
-- **文件**: `HOOK.yaml` 保存 teamai 的参数。每个 `.md` 文件是提议的一段文案
+- **文件**: `params.yaml` 保存 teamai 的参数。每个 `.md` 文件是提议的一段文案
 
 ## 何时提议
 
@@ -30,16 +30,14 @@ flowchart TD
 
 ## 替换它
 
-在团队仓库根目录的 `hooks/teamai-mr-hint/` 里只放你要改的文件。其他文件（包括 `HOOK.yaml`）仍用 teamai 的，并继续获得 teamai 的更新。
+在团队仓库根目录的 `hooks/teamai-mr-hint/` 里只放你要改的文件。其他文件（包括 `params.yaml`）仍用 teamai 的，并继续获得 teamai 的更新。
 
 ```yaml
-# hooks/teamai-mr-hint/HOOK.yaml
-description: Offer the last two weeks of MRs
-with:
-  lookback_days: 14   # max_mrs keeps teamai's value
+# hooks/teamai-mr-hint/params.yaml
+lookback_days: 14   # max_mrs keeps teamai's value
 ```
 
-推送这个文件夹。下一次 `teamai pull` 会把你的文件和 teamai 的其他文件一起检查并交付。`with:` 里没写的键，沿用 teamai 的 `HOOK.yaml` 里的值。
+推送这个文件夹。下一次 `teamai pull` 会把你的文件和 teamai 的其他文件一起检查并交付。`params.yaml` 里没写的键，沿用 teamai 的 `params.yaml` 里的值。
 
 ## 参数
 
@@ -68,7 +66,7 @@ with:
 
 | 替换 | pull 怎么做 |
 |---|---|
-| 缺少某段文案、设置了超出范围的值、设置了上表没有列出的键，或设置了 `command` | 指出是哪个字段，继续使用 teamai 的文件夹 |
+| 缺少某段文案、设置了超出范围的值、设置了上表没有列出的键、在 `HOOK.yaml` 里保留了 `with:`，或设置了 `command` | 指出是哪个字段，继续使用 teamai 的文件夹 |
 | 使用了文案不提供的变量 | 同上 |
 | 放在命名空间里，例如 `hooks/frontend/teamai-mr-hint/` | 同上。替换要放在团队仓库根目录 |
 

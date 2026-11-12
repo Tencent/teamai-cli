@@ -33,7 +33,7 @@ function views(language: 'en' | 'zh-CN' = 'en'): Views & { keys: string[] } {
 const DEPLOY_TWICE = 'workflows/deploy.yaml:1: field "(root)": Workflow "deploy" is defined twice in one place, as workflows/deploy.yaml and as workflows/deploy/; a workflow defined twice has no runnable version';
 const HTTP_FOLDER = 'mcp/jira-lite/MCP.yaml: transport http is refused in a folder, which holds the files of a server teamai starts (stdio). A URL server carries no files: declare it in mcp.yaml. mcp was not applied this run, so your installed team MCP servers are unchanged. Fix the file in the team repo and push.';
 const IMPORT_BLOCKED = 'teamai\'s default teamai-import-from-repo cannot start: step "enrich" with.wiki_root is not an input workflow "teamai-codebase-enrich" declares';
-const MR_HINT_REFUSED = 'hooks/teamai-mr-hint/ is refused, and teamai\'s default stays in force until it is fixed: HOOK.yaml: with.lookback_days must be a whole number from 1 to 90';
+const MR_HINT_REFUSED = 'hooks/teamai-mr-hint/ is refused, and teamai\'s default stays in force until it is fixed: params.yaml: lookback_days must be a whole number from 1 to 90';
 
 const DATA: Served = {
   configured: true,

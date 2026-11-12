@@ -138,8 +138,8 @@ describe('a team replacement of teamai-friction-reminder', () => {
     });
   });
 
-  it('reminds after as few tool calls as its min_tools says, the parameters it leaves out keeping teamai\'s values', async () => {
-    await replace('teamai-friction-reminder', { 'HOOK.yaml': 'description: Ask sooner\nwith:\n  min_tools: 3\n' });
+  it('reminds after as few tool calls as its params.yaml min_tools says, the parameters it leaves out keeping teamai\'s values', async () => {
+    await own('teamai-friction-reminder', { 'params.yaml': 'min_tools: 3\n' });
 
     await reconcileTeamHooksForConfig(teamConfig, member());
 
@@ -223,13 +223,18 @@ describe('pull refuses a replacement of a default hook that breaks its contract,
   it.each<{ broken: string; files: Record<string, string | null>; refusal: string }>([
     {
       broken: 'a parameter out of its range',
-      files: { 'HOOK.yaml': 'with:\n  min_tools: 5000\n' },
-      refusal: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed: HOOK.yaml: with.min_tools must be a whole number from 1 to 1000',
+      files: { 'params.yaml': 'min_tools: 5000\n' },
+      refusal: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed: params.yaml: min_tools must be a whole number from 1 to 1000',
     },
     {
       broken: 'a parameter the default does not take',
-      files: { 'HOOK.yaml': 'with:\n  max_tools: 30\n' },
-      refusal: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed: HOOK.yaml: with.max_tools is not a parameter of teamai-friction-reminder',
+      files: { 'params.yaml': 'max_tools: 30\n' },
+      refusal: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed: params.yaml: max_tools is not a parameter of teamai-friction-reminder',
+    },
+    {
+      broken: 'its parameters left in HOOK.yaml',
+      files: { 'HOOK.yaml': 'description: Ask sooner\nwith:\n  min_tools: 3\n' },
+      refusal: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed: HOOK.yaml: with is not a key of a default hook, whose parameters are in params.yaml. Move the keys of with to params.yaml',
     },
     {
       broken: 'a variable its text does not offer',
@@ -244,7 +249,7 @@ describe('pull refuses a replacement of a default hook that breaks its contract,
     {
       broken: 'an event',
       files: { 'HOOK.yaml': 'description: Remind at the end\nevent: Stop\n' },
-      refusal: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed: HOOK.yaml: event is not a key of a default hook, whose HOOK.yaml holds description and with',
+      refusal: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed: HOOK.yaml: event is not a key of a default hook, whose HOOK.yaml holds only description',
     },
     {
       broken: 'a text in one language without its base file',
