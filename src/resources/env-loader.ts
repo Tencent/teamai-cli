@@ -701,6 +701,9 @@ __teamai_env_files() {
     __teamai_kind=git
   elif __teamai_env_in_git "$1"; then
     return 0
+  elif __teamai_env_project "$1"; then
+    # Non-git registrations name the workspace, not the session's subdirectory.
+    __teamai_key=$__teamai_dir
   fi
   if [ -e "$__teamai_env_scopes" ]; then
     # One that cannot be read may route this directory to any scope: load none.
@@ -756,8 +759,8 @@ __teamai_env_files() {
 # Whether directory $1 is in a project set up in its checkout, as
 # \`detectProjectConfig\` reads one there: a \`.teamai/config.yaml\`, or a
 # self-mode project's \`.teamai/teamai.yaml\`, at the top of its checkout
-# (the nearest directory holding .git), or in $1 itself outside git. The
-# member's own ~/.teamai is the user scope's. A checkout whose project keeps
+# (the nearest directory holding .git), or at the nearest parent outside git.
+# The member's own ~/.teamai is the user scope's. A checkout whose project keeps
 # its data in ~/.teamai/projects says so in its git common directory instead.
 __teamai_env_project() {
   __teamai_dir=$1
@@ -766,6 +769,15 @@ __teamai_env_project() {
     until [ -e "$__teamai_dir/.git" ] || [ -L "$__teamai_dir/.git" ]; do
       __teamai_parent=\${__teamai_dir%/*}
       [ -n "$__teamai_parent" ] && [ "$__teamai_parent" != "$__teamai_dir" ] || return 1
+      __teamai_dir=$__teamai_parent
+    done
+  else
+    while :; do
+      if { [ -e "$__teamai_dir/.teamai/config.yaml" ] || [ -e "$__teamai_dir/.teamai/teamai.yaml" ]; } &&
+        [ "$(__teamai_env_realdir "$__teamai_dir/.teamai")" != "$(__teamai_env_realdir "\${__teamai_env_scopes%/*}")" ]; then return 0; fi
+      __teamai_parent=\${__teamai_dir%/*}
+      [ -n "$__teamai_parent" ] || __teamai_parent=/
+      [ "$__teamai_parent" != "$__teamai_dir" ] || return 1
       __teamai_dir=$__teamai_parent
     done
   fi

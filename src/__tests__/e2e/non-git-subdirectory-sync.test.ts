@@ -35,6 +35,8 @@ it('delivers a session-start pull to the non-git workspace root when Claude or C
   fs.writeFileSync(path.join(seed, 'teamai.yaml'), YAML.stringify({
     team: 'subdirectory-fixture', repo: remote, provider: 'git', sharing: { gitExclude: { enabled: false } },
   }));
+  fs.mkdirSync(path.join(seed, 'env'));
+  fs.writeFileSync(path.join(seed, 'env', 'env.yaml'), 'variables:\n  - key: SUBDIR_ENV_PROOF\n    value: workspace-env\n');
   fs.mkdirSync(path.join(seed, 'skills', 'subdir-proof'), { recursive: true });
   fs.writeFileSync(path.join(seed, 'skills', 'subdir-proof', 'SKILL.md'),
     '---\nname: subdir-proof\ndescription: Verify subdirectory delivery\n---\nSUBDIRECTORY_SYNC_PROOF\n');
@@ -66,6 +68,18 @@ it('delivers a session-start pull to the non-git workspace root when Claude or C
     expect(fs.readFileSync(path.join(skills, proof!, 'SKILL.md'), 'utf8')).toContain('SUBDIRECTORY_SYNC_PROOF');
   }
 
+  const cliEnv = spawnSync(process.execPath, [CLI, 'env', 'exec', '--', 'bash', '-c', 'printf "%s" "$SUBDIR_ENV_PROOF"'], {
+    cwd: sub, env, encoding: 'utf8', timeout: 60_000,
+  });
+
+  expect(cliEnv.status, cliEnv.stdout + cliEnv.stderr).toBe(0);
+  expect(cliEnv.stdout.trim()).toBe('workspace-env');
+  const shellEnv = spawnSync('bash', ['-c', 'printf "%s" "$SUBDIR_ENV_PROOF"'], {
+    cwd: sub, env: { ...env, BASH_ENV: path.join(home, '.teamai', 'env-loader.sh') }, encoding: 'utf8', timeout: 60_000,
+  });
+
+  expect(shellEnv.status, shellEnv.stderr).toBe(0);
+  expect(shellEnv.stdout).toBe(cliEnv.stdout.trim());
   expect(fs.existsSync(path.join(sub, '.teamai'))).toBe(false);
   expect(fs.existsSync(path.join(sub, '.claude'))).toBe(false);
   expect(fs.existsSync(path.join(sub, '.cursor'))).toBe(false);
