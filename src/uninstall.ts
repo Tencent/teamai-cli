@@ -127,7 +127,7 @@ interface RemovalPlan {
    *  `keepBuiltins`: another install still runs the built-ins there. */
   hookFiles: Array<{ path: string; tool: string; manifestPath: string; teamOnly?: boolean; legacyManifestPath?: string; teamHookProjectRoot?: string; mainCheckout?: MainCheckoutHooks; keepRecords?: boolean; keepBuiltins?: boolean; copilotGlobal?: true }>;
   /** OpenClaw-style hook dirs (<base>/.<tool>/hooks) holding teamai HOOK.md+handler.ts. */
-  openclawHookDirs: Array<{ hooksDir: string; tool: string; machineWide: boolean }>;
+  openclawHookDirs: Array<{ hooksDir: string; tool: string; takesConfig: boolean }>;
   /** OpenCode teamai plugin files (.opencode/plugin/teamai-*.ts) to delete. */
   opencodePluginDirs: string[];
   /** teamai's OMP extension in every profile that has one (~/.omp/agent/extensions/teamai-hooks.ts, ~/.omp/profiles/<name>/agent/…). */
@@ -279,7 +279,7 @@ interface OpencodeInstruction {
 
 interface ToolResources {
   hookFiles: RemovalPlan['hookFiles'];
-  openclawHookDirs: Array<{ hooksDir: string; tool: string; machineWide: boolean }>;
+  openclawHookDirs: Array<{ hooksDir: string; tool: string; takesConfig: boolean }>;
   opencodePluginDirs: string[];
   ompHookFiles: string[];
   kiroHookFile: string | null;
@@ -746,7 +746,8 @@ async function discoverToolResources(
       if (!await pathExists(path.join(hooksDir, OPENCLAW_HOOK_DIR))) continue;
       const machineWide = machineWideDirs.has(hooksDir) || path.resolve(baseDir) === path.resolve(getUserHome());
 
-      if (globalAdapters || !machineWide) res.openclawHookDirs.push({ hooksDir, tool, machineWide });
+      // OpenClaw's openclaw.json entry and team plugin go with its last install.
+      if (globalAdapters || !machineWide) res.openclawHookDirs.push({ hooksDir, tool, takesConfig: globalAdapters });
       else res.keptGlobal.push(path.join(hooksDir, OPENCLAW_HOOK_DIR));
     }
   }
@@ -2907,7 +2908,7 @@ async function executeRemoval(
     }
   }
 
-  if (plan.openclawHookDirs.some(({ tool, machineWide }) => tool === 'openclaw' && machineWide)) {
+  if (plan.openclawHookDirs.some(({ tool, takesConfig }) => tool === 'openclaw' && takesConfig)) {
     try {
       await removeOpenClawHookEntry();
     } catch (e) {
@@ -2990,7 +2991,7 @@ async function executeRemoval(
     }
   }
 
-  if (plan.openclawHookDirs.some(({ tool, machineWide }) => tool === 'openclaw' && machineWide)) {
+  if (plan.openclawHookDirs.some(({ tool, takesConfig }) => tool === 'openclaw' && takesConfig)) {
     try {
       await removeOpenClawTeamHooks();
     } catch (e) {

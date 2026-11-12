@@ -1353,6 +1353,24 @@ describe('uninstall', () => {
     }
   });
 
+  it('the last project to run OpenClaw takes its entry out of openclaw.json, with only a project copy of the hook left', async () => {
+    const homeDir = path.join(tmpDir, 'home');
+    const projectRoot = path.join(tmpDir, 'only-project');
+    const repoPath = path.join(projectRoot, '.teamai', 'team-repo');
+    vi.stubEnv('HOME', homeDir);
+    await fse.ensureDir(repoPath);
+    const { OPENCLAW_HOOK_DIR, OPENCLAW_HOOK_KEY } = await import('../openclaw-hooks.js');
+    await fse.outputFile(path.join(projectRoot, '.openclaw', 'hooks', OPENCLAW_HOOK_DIR, 'HOOK.md'), '[teamai]\n');
+    const config = path.join(homeDir, '.openclaw', 'openclaw.json');
+    await fse.outputJson(config, { hooks: { internal: { entries: { [OPENCLAW_HOOK_KEY]: { enabled: true }, 'member-hook': { enabled: true } } } } });
+    const teamConfig = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git' });
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath, { scope: 'project', projectRoot }), teamConfig });
+
+    await uninstall({ force: true });
+
+    expect((await fse.readJson(config)).hooks.internal.entries).toEqual({ 'member-hook': { enabled: true } });
+  });
+
   it('still removes global Codex hooks on a user-scope uninstall', async () => {
     const homeDir = path.join(tmpDir, 'home');
     const repoPath = path.join(homeDir, '.teamai/team-repo');
