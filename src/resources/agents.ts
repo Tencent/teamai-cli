@@ -1117,13 +1117,8 @@ export class AgentsHandler extends ResourceHandler {
     const { previous } = record.ledger;
     const install = installOf(teamConfig, localConfig);
 
-    for (const folder of folders) {
-      const delivered = AgentFolders.pathOf(localConfig, folder);
-
-      if (!await pathExists(delivered)) continue;
-      await removeDelivered(record.ledger, delivered);
-      removed.push(delivered);
-    }
+    // A copy kept here still names the delivered folder's files, so the folder stays with it.
+    let keptCopy = false;
 
     for (const tool of Object.keys(install.toolPaths)) {
       // A tool the member excluded is not ours to write to, so it is not ours
@@ -1145,19 +1140,33 @@ export class AgentsHandler extends ResourceHandler {
             if (localName === name && await pathExists(filePath)
               && !await ownsAgentCopy(localConfig, filePath, stem, tool, previous)) {
               log.warn(describeMembersDirLeft(filePath, resource, 'remove'));
+              keptCopy = true;
               continue;
             }
 
-            if (await pathExists(filePath) && !await keepsTrackedCopy(filePath)) {
-              await removeDelivered(record.ledger, filePath);
+            if (!await pathExists(filePath)) continue;
 
-              if (sidecar !== null) await updateJoycodeAgentIndex(joycodeIndexSidecar(sidecar, agentsDir), { kind: 'remove', file: path.basename(filePath) }, record.ledger);
-              removed.push(filePath);
-              log.debug(`Removed agent ${localName} from ${tool}`);
+            if (await keepsTrackedCopy(filePath)) {
+              keptCopy = true;
+              continue;
             }
+
+            await removeDelivered(record.ledger, filePath);
+
+            if (sidecar !== null) await updateJoycodeAgentIndex(joycodeIndexSidecar(sidecar, agentsDir), { kind: 'remove', file: path.basename(filePath) }, record.ledger);
+            removed.push(filePath);
+            log.debug(`Removed agent ${localName} from ${tool}`);
           }
         }
       }
+    }
+
+    for (const folder of keptCopy ? [] : folders) {
+      const delivered = AgentFolders.pathOf(localConfig, folder);
+
+      if (!await pathExists(delivered)) continue;
+      await removeDelivered(record.ledger, delivered);
+      removed.push(delivered);
     }
 
     await record.save();
