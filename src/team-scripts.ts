@@ -247,8 +247,7 @@ function spawnScript(
   const child = spawn(process.execPath, [scriptPath], {
     cwd: repoPath,
     stdio,
-    // Without it, Windows opens a console window for prePull/postPull when the
-    // pull comes from a git hook that has no terminal (#1805).
+    // Windows opens a console for a child of a process without one (#1805).
     windowsHide: true,
     env,
   });
