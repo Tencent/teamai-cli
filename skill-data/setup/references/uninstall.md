@@ -113,14 +113,15 @@ and give it your team repo URL."*
 - If an OpenCode config entry cannot be removed, repair its config or permissions
   and retry the same uninstall command. Uninstall reports failure and keeps
   its ownership record and shared data directory, even for the last tool.
-- Project uninstall keeps the global Pi and Oh My Pi extensions, OpenCode's
-  user plugin, Antigravity's `teamai` hook in `~/.gemini/config/hooks.json`,
-  and the Codex family's user-level hooks while the user scope, the HTTP agent
-  or another project on this machine may run that tool, a project whose config
-  does not parse included, and names them; with none, it removes them.
-  `uninstall --agent <tool>` keeps them. It always keeps the Hermes plugin and
-  config: if nothing else uses them, run `teamai hooks remove` in the project
-  first.
+- Project uninstall keeps a tool's machine-wide hooks (the Codex family's and
+  Copilot's user hooks, the Pi and Oh My Pi extensions, OpenCode's user
+  plugin, the Kiro, Antigravity, OpenClaw and DeepSeek Harness hooks, and the
+  Hermes plugin) while the user scope, the HTTP agent or another project on
+  this machine may run that tool, a project whose config does not parse
+  included, and names them; with none, it removes them.
+  `uninstall --agent <tool>` keeps them. The built-ins in a tool's home
+  settings stay on the same terms, but go with `--agent` when nothing else
+  runs the tool.
 - In self mode, uninstall keeps a `teamai-learnings` or `teamai-reports` branch
   that holds commits origin does not have, such as a publish that could not
   push, and names it: have the user push it or delete it with `git branch -D`.

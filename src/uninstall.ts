@@ -128,7 +128,7 @@ interface RemovalPlan {
    *  `keepBuiltins`: another install still runs the built-ins there. */
   hookFiles: Array<{ path: string; tool: string; manifestPath: string; teamOnly?: boolean; legacyManifestPath?: string; teamHookProjectRoot?: string; mainCheckout?: MainCheckoutHooks; keepRecords?: boolean; keepBuiltins?: boolean }>;
   /** OpenClaw-style hook dirs (<base>/.<tool>/hooks) holding teamai HOOK.md+handler.ts. */
-  openclawHookDirs: Array<{ hooksDir: string; tool: string }>;
+  openclawHookDirs: Array<{ hooksDir: string; tool: string; machineWide: boolean }>;
   /** OpenCode teamai plugin files (.opencode/plugin/teamai-*.ts) to delete. */
   opencodePluginDirs: string[];
   /** teamai's OMP extension in every profile that has one (~/.omp/agent/extensions/teamai-hooks.ts, ~/.omp/profiles/<name>/agent/…). */
@@ -280,7 +280,7 @@ interface OpencodeInstruction {
 
 interface ToolResources {
   hookFiles: RemovalPlan['hookFiles'];
-  openclawHookDirs: Array<{ hooksDir: string; tool: string }>;
+  openclawHookDirs: Array<{ hooksDir: string; tool: string; machineWide: boolean }>;
   opencodePluginDirs: string[];
   ompHookFiles: string[];
   kiroHookFile: string | null;
@@ -555,9 +555,12 @@ async function discoverToolResources(
     const configPath = resolveDshHookConfigPath();
     const patchPath = resolveDshPatchPath();
 
-    if (await isDshHooksMounted(configPath)) res.dshHookFile = resolveDshHomePatchPath();
-    else if (await pathExists(configPath)) res.dshHookFile = configPath;
-    else if (await pathExists(patchPath)) res.dshHookFile = patchPath;
+    const found = await isDshHooksMounted(configPath) ? resolveDshHomePatchPath()
+      : await pathExists(configPath) ? configPath
+        : await pathExists(patchPath) ? patchPath : null;
+
+    if (found !== null && globalAdapters) res.dshHookFile = found;
+    else if (found !== null) res.keptGlobal.push(found);
   } else if (tool === 'opencode') {
     // OpenCode has no settings file; its teamai hooks are plugin .ts files in the
     // user plugin dirs (`hookDirs`) or in <projectRoot>/.opencode/plugin, where an
@@ -745,9 +748,11 @@ async function discoverToolResources(
     }
 
     for (const hooksDir of dirsToCheck) {
-      if (await pathExists(path.join(hooksDir, OPENCLAW_HOOK_DIR))) {
-        res.openclawHookDirs.push({ hooksDir, tool });
-      }
+      if (!await pathExists(path.join(hooksDir, OPENCLAW_HOOK_DIR))) continue;
+      const machineWide = hooksDir !== defaultHooksDir || path.resolve(baseDir) === path.resolve(getUserHome());
+
+      if (globalAdapters || !machineWide) res.openclawHookDirs.push({ hooksDir, tool, machineWide });
+      else res.keptGlobal.push(path.join(hooksDir, OPENCLAW_HOOK_DIR));
     }
   }
 
@@ -1310,9 +1315,11 @@ async function buildRemovalPlan(
   const otherInstalls = globalAdapters ? [] : await installsSharingHome(getDataHome(localConfig));
   const { loadLocalAgentConfig } = await import('./local-agent.js');
   const httpAgent = !globalAdapters && await loadLocalAgentConfig({ dryRun: true, envFallback: false }) !== null;
-  // A tool's machine-wide adapter goes with the last install on the machine that runs that tool; an HTTP agent may run any.
-  // One tool's uninstall leaves the project installed, so its adapters stay.
-  const othersRun = (tool: string): boolean => agentFilter !== undefined || httpAgent || otherInstalls.some((other) => runsTool(other, tool));
+  // Another install on this machine runs `tool` from HOME: the user scope, another workspace, or the HTTP agent, which may run any.
+  const othersRun = (tool: string): boolean => httpAgent || otherInstalls.some((other) => runsTool(other, tool));
+  // A tool's machine-wide hooks go with the last install that runs the tool (#945, #1825). One tool's uninstall leaves the
+  // project installed, so they stay.
+  const takesMachineWide = (tool: string): boolean => globalAdapters || (agentFilter === undefined && !othersRun(tool));
 
   for (const [tool, toolPath] of Object.entries(toolPaths)) {
     const rulesDirs = cleanupOf(await locate(tool, 'rules', install)).flatMap((place) => place.kind === 'dir' ? [place.path] : []);
@@ -1354,23 +1361,24 @@ async function buildRemovalPlan(
         standaloneHookManifestPath,
         localConfig.scope,
         hookToolPaths[tool]?.settings,
-        globalAdapters || !othersRun(tool),
+        takesMachineWide(tool),
       ),
     );
   }
 
-  // A project uninstall leaves Copilot's shared built-ins available to other projects.
   if (localConfig.scope === 'project' && primaryHookScope.scope === 'user') {
+    // Copilot's built-ins are in HOME's file, apart from the project's team hooks.
     const file = hookToolPaths.copilot?.hooks === undefined ? undefined : ownOf(await locate(COPILOT_TOOL_ID, 'hooks', install))?.path;
     const copilot = perTool.get('copilot');
 
-    if (file !== undefined && copilot) {
-      if (await pathExists(file) && await hasTeamaiHooks(file, 'copilot')) copilot.keptGlobal.push(file);
+    if (file !== undefined && copilot && await pathExists(file) && await hasTeamaiHooks(file, 'copilot')) {
+      if (takesMachineWide(COPILOT_TOOL_ID)) copilot.hookFiles.push({ path: file, tool: COPILOT_TOOL_ID, manifestPath: primaryHookScope.manifestPath });
+      else copilot.keptGlobal.push(file);
     }
 
     // The user scope and other workspaces dispatch from the same HOME settings: their built-ins stay, this project's team hooks go.
     for (const [tool, result] of perTool) {
-      if (!otherInstalls.some((other) => runsTool(other, tool))) continue;
+      if (!othersRun(tool)) continue;
 
       for (const hookFile of result.hookFiles) {
         if (!hookFile.teamOnly && hookFile.manifestPath === primaryHookScope.manifestPath) hookFile.keepBuiltins = true;
@@ -1613,7 +1621,7 @@ async function buildRemovalPlan(
     keptForProjects: projectsKept,
     unpushedSideBranches: includeShared && isSelfMode(localConfig) ? await unpushedSideBranches(localConfig) : [],
     includeShared,
-    hermesHomes: globalAdapters && toolsToMerge.includes('hermes') ? await hermesHooksIn(await toolHomesAcrossProfiles('hermes')) : [],
+    hermesHomes: takesMachineWide('hermes') && toolsToMerge.includes('hermes') ? await hermesHooksIn(await toolHomesAcrossProfiles('hermes')) : [],
     hermesSouls: localConfig.scope === 'user' && toolsToMerge.includes('hermes')
       ? await hermesSoulsIn([ownOf(await locate('hermes', 'blocks', install))?.path, ...(await toolHomesAcrossProfiles('hermes')).map((home) => path.join(home, 'SOUL.md'))])
       : [],
@@ -1754,8 +1762,7 @@ async function buildRemovalPlan(
   // The active home's SOUL.md is an instruction file already, which loses the block with the others.
   plan.hermesSouls = plan.hermesSouls.filter((file) => !plan.claudeMdFiles.some((entry) => entry.path === file));
 
-  // Hermes' plugin is machine-wide too: a project uninstall names it as kept.
-  if (!globalAdapters && toolsToMerge.includes('hermes')) {
+  if (!takesMachineWide('hermes') && toolsToMerge.includes('hermes')) {
     const { getInstructionsPluginDir, ownsInstructionsPlugin } = await import('./hermes-hooks.js');
 
     if (await pathExists(getInstructionsPluginDir()) && await ownsInstructionsPlugin()) plan.keptGlobal.push(getInstructionsPluginDir());
@@ -2899,7 +2906,7 @@ async function executeRemoval(
     }
   }
 
-  if (plan.openclawHookDirs.some(({ tool }) => tool === 'openclaw')) {
+  if (plan.openclawHookDirs.some(({ tool, machineWide }) => tool === 'openclaw' && machineWide)) {
     try {
       await removeOpenClawHookEntry();
     } catch (e) {
@@ -2982,7 +2989,7 @@ async function executeRemoval(
     }
   }
 
-  if (plan.openclawHookDirs.some(({ tool }) => tool === 'openclaw')) {
+  if (plan.openclawHookDirs.some(({ tool, machineWide }) => tool === 'openclaw' && machineWide)) {
     try {
       await removeOpenClawTeamHooks();
     } catch (e) {

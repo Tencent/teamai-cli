@@ -65,6 +65,7 @@ import { getTeamSecretsPath } from '../secret-store.js';
 import YAML from 'yaml';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 import { hookAdapterDir } from '../locate.js';
+import { TOOLS, type HookAdapterId } from '../tools.js';
 import { renderWorkflowSkill } from '../workflow/discovery/render.js';
 
 // ─── Helpers ───────────────────────────────────────────
@@ -1205,10 +1206,81 @@ describe('uninstall', () => {
     if (legacy) expect(await actualHooks.hasTeamaiHooks(projectHooks, tool)).toBe(false);
   });
 
-  it.each(['pi', 'omp', 'hermes', 'codex', 'opencode'].flatMap((tool): Array<[string, 'readable' | 'unreadable' | 'none']> => tool === 'hermes'
-    ? [[tool, 'readable']]
-    : [[tool, 'readable'], [tool, 'unreadable'], [tool, 'none']]))(
-    'keeps global %s delivery while another project, %s, may run it, and names it with the command that removes it', async (tool, another) => {
+  // Every tool whose hooks TOOLS puts in a machine-wide adapter, and the user hooks Codex and Copilot run in every project.
+  const machineWide = [
+    ...Object.entries(TOOLS).flatMap(([tool, { hooks }]) => hooks.user !== 'unknown' && hooks.user.channel === 'adapter' ? [{ tool, adapter: hooks.user.adapter }] : []),
+    { tool: 'codex', adapter: 'codex' as const },
+    { tool: 'copilot', adapter: 'copilot' as const },
+  ];
+
+  /** The adapter as pull leaves it: the path uninstall keeps or removes, and whether it still holds teamai's hooks. */
+  async function installMachineWide(adapter: HookAdapterId | 'codex' | 'copilot', homeDir: string): Promise<{ kept: string; holdsTeamai: () => Promise<boolean> }> {
+    const actualHooks = await vi.importActual<typeof import('../hooks.js')>('../hooks.js');
+    switch (adapter) {
+      case 'pi-extension': {
+        const kept = path.join(homeDir, '.pi', 'agent', 'extensions', 'teamai-hooks.ts');
+        await fse.outputFile(kept, TEAMAI_PI_HOOK);
+        return { kept, holdsTeamai: () => fse.pathExists(kept) };
+      }
+      case 'omp-extension': {
+        const { injectOmpHooks, OMP_HOOK_FILE } = await import('../omp-hooks.js');
+        await injectOmpHooks();
+        const kept = path.join(hookAdapterDir('omp-extension'), OMP_HOOK_FILE);
+        return { kept, holdsTeamai: () => fse.pathExists(kept) };
+      }
+      case 'opencode-plugin': {
+        const kept = path.join(homeDir, '.config', 'opencode', 'plugin', 'teamai-hooks.ts');
+        await fse.outputFile(kept, '// [teamai] hooks plugin');
+        return { kept, holdsTeamai: () => fse.pathExists(kept) };
+      }
+      case 'hermes-plugin': {
+        const { injectHermesHooks, getInstructionsPluginDir } = await import('../hermes-hooks.js');
+        await injectHermesHooks();
+        const kept = getInstructionsPluginDir();
+        return { kept, holdsTeamai: () => fse.pathExists(kept) };
+      }
+      case 'openclaw-hook': {
+        const { resolveOpenClawHooksDir, OPENCLAW_HOOK_DIR } = await import('../openclaw-hooks.js');
+        const kept = path.join(resolveOpenClawHooksDir('openclaw'), OPENCLAW_HOOK_DIR);
+        await fse.outputFile(path.join(kept, 'HOOK.md'), '---\nname: teamai-status-report\n---\n[teamai]\n');
+        await fse.outputFile(path.join(kept, 'handler.ts'), '// [teamai]\n');
+        return { kept, holdsTeamai: () => fse.pathExists(kept) };
+      }
+      case 'dsh-hooks': {
+        const { reconcileDshHooks, resolveDshHookConfigPath, resolveDshHomePatchPath } = await import('../dsh-hooks.js');
+        await reconcileDshHooks([], { manifestPath: path.join(homeDir, '.teamai', 'managed-hooks.json') });
+        return { kept: resolveDshHomePatchPath(), holdsTeamai: () => actualHooks.hasTeamaiHooks(resolveDshHookConfigPath(), 'dsh') };
+      }
+      case 'kiro-hooks': {
+        const { injectKiroHooks, kiroHookFile, ownsKiroHooks } = await import('../kiro-hooks.js');
+        await fse.ensureDir(path.join(homeDir, '.kiro'));
+        await injectKiroHooks();
+        return { kept: kiroHookFile(), holdsTeamai: ownsKiroHooks };
+      }
+      case 'agy-hooks': {
+        const { reconcileAgyHooks, agyHookFile, hasAgyHooks } = await import('../agy-hooks.js');
+        await reconcileAgyHooks();
+        return { kept: agyHookFile(), holdsTeamai: hasAgyHooks };
+      }
+      case 'codex': {
+        const kept = path.join(homeDir, '.codex/hooks.json');
+        await actualHooks.reconcileHooks(kept, 'codex', []);
+        return { kept, holdsTeamai: () => actualHooks.hasTeamaiHooks(kept, 'codex') };
+      }
+      case 'copilot': {
+        const kept = path.join(homeDir, '.copilot/hooks/teamai.json');
+        await actualHooks.reconcileHooks(kept, 'copilot', []);
+        return { kept, holdsTeamai: () => actualHooks.hasTeamaiHooks(kept, 'copilot') };
+      }
+      default: {
+        const unhandled: never = adapter;
+        return unhandled;
+      }
+    }
+  }
+
+  it.each(machineWide.flatMap(({ tool, adapter }) => (['readable', 'unreadable', 'none'] as const).map((another) => [tool, another, adapter] as const)))(
+    'keeps global %s delivery while another project, %s, may run it, and names it with the command that removes it', async (tool, another, adapter) => {
     const homeDir = path.join(tmpDir, 'home');
     const projectRoot = path.join(tmpDir, 'only-project');
     const repoPath = path.join(projectRoot, '.teamai', 'team-repo');
@@ -1218,25 +1290,7 @@ describe('uninstall', () => {
     await fse.ensureDir(repoPath);
     const actualHooks = await vi.importActual<typeof import('../hooks.js')>('../hooks.js');
     mockReconcileHooks.mockImplementation(actualHooks.reconcileHooks);
-    let kept: string;
-    if (tool === 'pi') {
-      kept = path.join(homeDir, '.pi', 'agent', 'extensions', 'teamai-hooks.ts');
-      await fse.outputFile(kept, TEAMAI_PI_HOOK);
-    } else if (tool === 'omp') {
-      const { injectOmpHooks, OMP_HOOK_FILE } = await import('../omp-hooks.js');
-      await injectOmpHooks();
-      kept = path.join(hookAdapterDir('omp-extension'), OMP_HOOK_FILE);
-    } else if (tool === 'opencode') {
-      kept = path.join(homeDir, '.config', 'opencode', 'plugin', 'teamai-hooks.ts');
-      await fse.outputFile(kept, '// [teamai] hooks plugin');
-    } else if (tool === 'hermes') {
-      const { injectHermesHooks, getInstructionsPluginDir } = await import('../hermes-hooks.js');
-      await injectHermesHooks();
-      kept = getInstructionsPluginDir();
-    } else {
-      kept = path.join(homeDir, '.codex/hooks.json');
-      await actualHooks.reconcileHooks(kept, 'codex', []);
-    }
+    const { kept, holdsTeamai } = await installMachineWide(adapter, homeDir);
     const teamConfig = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git' });
     const localConfig = makeLocalConfig(homeDir, repoPath, { scope: 'project', projectRoot });
     mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
@@ -1252,12 +1306,11 @@ describe('uninstall', () => {
 
     const summary = printed.join('\n');
     if (another === 'none') {
-      expect(tool === 'codex' ? await actualHooks.hasTeamaiHooks(kept, 'codex') : await fse.pathExists(kept)).toBe(false);
+      expect(await holdsTeamai()).toBe(false);
       expect(summary).not.toContain('run `teamai hooks remove` here first');
       return;
     }
-    expect(await fse.pathExists(kept)).toBe(true);
-    if (tool === 'codex') expect(await actualHooks.hasTeamaiHooks(kept, 'codex')).toBe(true);
+    expect(await holdsTeamai()).toBe(true);
     expect(summary).toContain(`     ${kept}`);
     expect(summary).toContain('run `teamai hooks remove` here first');
   });
@@ -4159,6 +4212,19 @@ describe('uninstall', () => {
       await uninstall({ force: true });
 
       expect(JSON.stringify(await fse.readJson(settings).catch(() => ({})))).not.toContain('teamai hook-dispatch');
+    });
+
+    it('a workspace uninstall leaves HOME\'s Claude hooks the HTTP agent still runs', async () => {
+      const { settings } = await installBoth(['codex']);
+      await fse.outputJson(path.join(tmpDir, 'home', '.teamai', 'local-agent', 'config.json'), {
+        endpoint: 'https://teamai.test/api', token: 't', localAgentId: 'a', createdAt: '2026-01-01T00:00:00.000Z', workspaceBindings: {},
+      });
+      const installed = await fse.readJson(settings);
+
+      await uninstall({ force: true });
+
+      expect(JSON.stringify(await fse.readJson(settings))).toContain('teamai hook-dispatch session-start');
+      expect(JSON.stringify(installed)).toContain('teamai hook-dispatch session-start');
     });
   });
 
