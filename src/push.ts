@@ -1794,7 +1794,7 @@ async function pushCore(
         return;
       }
 
-      const originalHead = options.branch && pendingTeamConfig !== null ? await git.revparse(['HEAD']) : null;
+      const originalHead = pendingTeamConfig !== null ? await git.revparse(['HEAD']) : null;
 
       try {
         await resetToCleanMaster(git, repoPath);
