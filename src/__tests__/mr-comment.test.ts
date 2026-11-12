@@ -96,6 +96,36 @@ describe('postOrUpdateMrComment API failures', () => {
     expect(fetchMock.mock.calls[0][1]?.method).toBe('GET');
   });
 
+  it('throws when neither GITHUB_TOKEN nor GH_TOKEN is set', async () => {
+    vi.stubEnv('GITHUB_TOKEN', '');
+    delete process.env.GITHUB_TOKEN;
+    vi.stubEnv('GH_TOKEN', '');
+    delete process.env.GH_TOKEN;
+
+    await expect(postOrUpdateMrComment(
+      'https://github.com/acme/app/pull/7', undefined, undefined,
+    )).rejects.toThrow('GITHUB_TOKEN or GH_TOKEN environment variable is not set');
+  });
+
+  it('honors GH_TOKEN when GITHUB_TOKEN is unset', async () => {
+    vi.stubEnv('GITHUB_TOKEN', '');
+    delete process.env.GITHUB_TOKEN;
+    vi.stubEnv('GH_TOKEN', 'alias-token');
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 1, body: '<!-- teamai:ci-extract -->\nold' }]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ html_url: 'https://github.com/acme/app/pull/7#comment-1' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await postOrUpdateMrComment('https://github.com/acme/app/pull/7', undefined, undefined);
+
+    expect(result).toEqual({ created: false, url: 'https://github.com/acme/app/pull/7#comment-1' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const call of fetchMock.mock.calls) {
+      const headers = call[1]?.headers as Record<string, string>;
+      expect(headers.Authorization).toBe('Bearer alias-token');
+    }
+  });
+
   it('fails without creating a duplicate TGit note when listing notes fails', async () => {
     vi.stubEnv('TGIT_TOKEN', 'test-token');
     const fetchMock = vi.fn()

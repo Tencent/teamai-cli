@@ -5,6 +5,7 @@ import path from 'node:path';
 import { z } from 'zod';
 
 import { getTGitToken, tgitFetch } from './providers/tgit/rest-auth.js';
+import { getGitHubToken } from './providers/github/gh-cli.js';
 import { log } from './utils/logger.js';
 import { lenientList } from './utils/json.js';
 import { getUserHome } from './utils/home.js';
@@ -295,7 +296,7 @@ const GitHubRestPRSchema = z.object({
  * Fetch merged PRs from the GitHub REST API.
  *
  * Used as fallback when `gh` CLI is unavailable. Supports public repos
- * without a token; uses GITHUB_TOKEN env var when present to raise rate limits.
+ * without a token; uses GITHUB_TOKEN or GH_TOKEN env var when present to raise rate limits.
  *
  * @param owner   Repository owner
  * @param repo    Repository name
@@ -307,7 +308,7 @@ async function listGitHubMergedMRsViaREST(
   repo: string,
   { since, limit }: MergedSince,
 ): Promise<MRSummary[]> {
-  const token = process.env['GITHUB_TOKEN'];
+  const token = getGitHubToken();
   const baseHeaders = { 'User-Agent': 'teamai-cli', Accept: 'application/vnd.github+json' };
   const headers = token ? { ...baseHeaders, Authorization: `Bearer ${token}` } : baseHeaders;
 
