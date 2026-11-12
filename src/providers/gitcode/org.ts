@@ -6,6 +6,7 @@ import { GITCODE_HOST } from './repo-url.js';
 
 const DEFAULT_PER_PAGE = 100;
 const DEFAULT_MAX_REPOS = 200;
+const REQUEST_TIMEOUT_MS = 30_000;
 
 /** GitCode API 返回的 repo 条目（仅使用的字段）。 */
 const GitCodeRepoApiItemSchema = z.object({
@@ -65,7 +66,7 @@ export async function gitcodeListOrgRepos(
     const url = `${gitcodeApiBase()}/orgs/${encodeURIComponent(org)}/repos`
       + `?per_page=${DEFAULT_PER_PAGE}&page=${page}`;
 
-    const resp = await fetch(url, { headers, redirect: 'manual' });
+    const resp = await fetch(url, { headers, redirect: 'manual', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
 
     if (resp.status === 404) {
       throw new Error(`GitCode org ${org} not found or no access`);
