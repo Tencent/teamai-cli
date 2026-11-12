@@ -1981,8 +1981,8 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
   if (plan.hookFiles.length > 0) {
     console.log(`   Hooks (${plan.hookFiles.length} files):`);
 
-    for (const { path: p } of plan.hookFiles) {
-      console.log(`     ${p}`);
+    for (const { path: p, keepBuiltins } of plan.hookFiles) {
+      console.log(`     ${p}${keepBuiltins ? " (teamai's built-ins stay for other installs)" : ''}`);
     }
 
     console.log('');
@@ -3399,9 +3399,12 @@ async function sweepCreatedLeftovers(plan: RemovalPlan, hooksLeft: ReadonlyArray
   // plan (#1808 review).
   if (!plan.includeShared || hooksLeft.length > 0) return;
 
-  // Every other install that runs HOME's hooks, the user scope included: a
+  // Every other install that runs HOME's hooks, the user scope and the HTTP agent included: a
   // workspace uninstall leaves those hooks in place, and they call the wrapper.
   if ((await installsSharingHome(plan.teamaiHome)).length > 0) return;
+  const { loadLocalAgentConfig } = await import('./local-agent.js');
+
+  if (await loadLocalAgentConfig({ dryRun: true, envFallback: false }) !== null) return;
 
   if ((await keptForProjects()).projects.length > 0) return;
 
