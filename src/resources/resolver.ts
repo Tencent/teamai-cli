@@ -302,11 +302,14 @@ function itemFilesNote<TEntry>(layout: ResourceLayout<TEntry>, marker: string, f
 
   if (read.length === 0) return null;
 
-  const message = read.length === 1
-    ? `${folderPath} holds ${marker}, so it is one folder, and ${read[0]} in it is one of its files, no longer read on its own.`
-    : `${folderPath} holds ${marker}, so it is one folder, and ${read.join(', ')} in it are its files, no longer read on their own.`;
+  return { kind: 'note', path: folderPath, message: folderFilesNote(folderPath, marker, read) };
+}
 
-  return { kind: 'note', path: folderPath, message };
+/** What pull says once when `folderPath` gains `marker`: the `files` it read on their own are now the folder's. */
+export function folderFilesNote(folderPath: string, marker: string, files: readonly string[]): string {
+  return files.length === 1
+    ? `${folderPath} holds ${marker}, so it is one folder, and ${files[0]} in it is one of its files, no longer read on its own.`
+    : `${folderPath} holds ${marker}, so it is one folder, and ${files.join(', ')} in it are its files, no longer read on their own.`;
 }
 
 /**

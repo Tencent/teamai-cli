@@ -5,6 +5,7 @@ import matter from 'gray-matter';
 import { z } from 'zod';
 import { FOLDER_MARKERS, holdsMarker } from '../folder-markers.js';
 import { AgentFolders } from './agent-folders.js';
+import { folderFilesNote } from './resolver.js';
 import { ResourceHandler, type PlacementRecords, type ScanForPushOptions } from './base.js';
 import { JsonValueSchema, type JsonValue, JsonObjectSchema } from '../types.js';
 import type { CopyOrigin, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig, AgentModelRecords, RecordedAgentModel, Scope } from '../types.js';
@@ -1933,9 +1934,7 @@ async function nowFolderFiles(teamAgentsDir: string): Promise<Array<{ stems: str
 
     found.push({
       stems: [...new Set(files.map(({ stem }) => stem))],
-      message: read.length === 1
-        ? `${folderPath} holds ${AGENT_MARKER}, so it is one folder, and ${read[0]} in it is one of its files, no longer read on its own.`
-        : `${folderPath} holds ${AGENT_MARKER}, so it is one folder, and ${read.join(', ')} in it are its files, no longer read on their own.`,
+      message: folderFilesNote(folderPath, AGENT_MARKER, read),
     });
   }
 
