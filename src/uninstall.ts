@@ -206,6 +206,8 @@ interface RemovalPlan {
   checkouts: string[];
   /** teamai's git hook in the project repository: config sections and hook scripts holding its block. */
   gitHook: { repoDir: string; entries: string[]; checkouts?: string[] } | null;
+  /** What workflow worktrees set up in each checkout, once none of them is left (`removeWorktreeSetup`). */
+  worktreeSetups: Array<{ checkout: string; entries: string[] }>;
   /** The .teamai home directory path. */
   teamaiHome: string;
   /** Whether teamaiHome exists on disk. */
@@ -1587,6 +1589,7 @@ async function buildRemovalPlan(
     localAgentWorkspacesDropped: null,
     checkouts: [],
     gitHook: null,
+    worktreeSetups: [],
     teamaiHome,
     teamaiHomeExists: includeShared && await pathExists(teamaiHome),
     unpublishedQueues: includeShared
@@ -1860,6 +1863,16 @@ async function buildRemovalPlan(
         }
       }
 
+      if (!agentFilter) {
+        const { removeWorktreeSetup } = await import('./workflow/worktree.js');
+
+        for (const checkout of plan.checkouts) {
+          const entries = await removeWorktreeSetup(checkout, { dryRun: true });
+
+          if (entries.length > 0) plan.worktreeSetups.push({ checkout, entries });
+        }
+      }
+
       const { removeDocsSearchWhitelist } = await import('./resources/docs.js');
 
       for (const checkout of plan.checkouts) {
@@ -1925,6 +1938,7 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
     plan.gitExcludes.size === 0 &&
     plan.gitExcludeBlocks.length === 0 &&
     plan.gitHook === null &&
+    plan.worktreeSetups.length === 0 &&
     !plan.teamaiHomeExists &&
     plan.syntheticManifestCleanup == null
   );
@@ -2124,6 +2138,13 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
     console.log(`   Git hook in ${(plan.gitHook.checkouts ?? [plan.gitHook.repoDir]).join(', ')} (teamai's entries and blocks):`);
 
     for (const entry of plan.gitHook.entries) console.log(`     ${entry}`);
+    console.log('');
+  }
+
+  for (const { checkout, entries } of plan.worktreeSetups) {
+    console.log(`   Workflow worktree setup in ${checkout}, with no workflow worktree left:`);
+
+    for (const entry of entries) console.log(`     ${entry}`);
     console.log('');
   }
 
@@ -3208,6 +3229,20 @@ async function executeRemoval(
       log.success(`Removed the team folders delivered in ${dir}${kept.length > 0 ? ` but ${kept.join(', ')}` : ''}`);
     } catch (e) {
       log.warn(`Failed to remove ${dir}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  if (plan.worktreeSetups.length > 0) {
+    const { removeWorktreeSetup } = await import('./workflow/worktree.js');
+
+    for (const { checkout } of plan.worktreeSetups) {
+      try {
+        const removed = await removeWorktreeSetup(checkout);
+
+        if (removed.length > 0) log.success(`Removed the workflow worktree setup in ${checkout}: ${removed.join(', ')}`);
+      } catch (e) {
+        log.warn(`Failed to remove the workflow worktree setup in ${checkout}: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
   }
 
