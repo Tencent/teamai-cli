@@ -347,7 +347,7 @@ function reverseState(world: World): Section {
       continue;
     }
 
-    if (tracked !== undefined && within(repository.tracked) && after[entry] !== undefined && after[entry] !== 'dir'
+    if (tracked !== undefined && within(repository.tracked) && /^[0-9a-f]{64}$/.test(after[entry] ?? '')
       && !/teamai/i.test(fs.readFileSync(path.join(world.project, tracked), 'utf8'))) {
       excuse("teamai's part taken out of a file the repository tracks, for the member to commit", entry);
       continue;
