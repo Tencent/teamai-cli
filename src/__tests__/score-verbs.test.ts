@@ -2114,6 +2114,17 @@ describe('scorer files tried in a teamai-score run', () => {
     expect(seen.read).toBe('Pass when the client retries.\n');
   });
 
+  it('tries scorers/SCORER.md as the scorer file SCORER, whatever sits beside it', async () => {
+    const { config } = await drafted();
+    const file = path.join(root, 'scorers', 'SCORER.md');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, scorer({ rate: 0 }));
+    fs.symlinkSync(path.join(root, 'nowhere.md'), path.join(root, 'scorers', 'gone.md'));
+    const planned = await ScoreVerbs.plan({ subject: 'session:claude-code:one', scorers: '[]', batch: 'false', demand: 'named' }, (await (await scoreRun(config, { subject: 'session:claude-code:one', demand: 'named', files: [file], store: false })).next('plan')).ctx);
+
+    expect(planned).toMatchObject({ ok: true });
+  });
+
   it('gives the judge the session\'s first prompt alone when control is true', async () => {
     const { config, file } = await drafted();
     const seen: { transcript?: string } = {};

@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { CheckRunSchema } from './check.js';
 import { modelValueProblem } from '../models/aliases.js';
 import { splitFrontmatter } from '../utils/frontmatter.js';
-import { SCORER_MARKER } from './folder.js';
+import { ScorerFolder } from './folder.js';
 import type { DefaultScorerCode } from '../default-scorers.js';
 
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -123,8 +123,7 @@ function issueMessages(issue: z.ZodIssue): string[] {
 
 export function parseScorer(relativePath: string, content: string): ParsedScorer {
   const fail = (...messages: string[]): ParsedScorer => ({ ok: false, diagnostics: messages.map((message) => ({ file: relativePath, message })) });
-  // `scorers/SCORER.md` sits in no folder of its own: it is the file-form scorer SCORER.
-  const isFolder = path.posix.basename(relativePath) === SCORER_MARKER && path.posix.dirname(relativePath) !== 'scorers';
+  const isFolder = ScorerFolder.marks(relativePath);
   const name = isFolder ? path.posix.basename(path.posix.dirname(relativePath)) : path.posix.basename(relativePath, '.md');
 
   if (!TOKEN.test(name)) return fail(isFolder ? 'the folder name must be a token such as review-quality' : 'the file name must be a token such as review-quality.md');

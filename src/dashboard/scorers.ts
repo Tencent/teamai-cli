@@ -15,7 +15,7 @@ import type { ScoreLabel } from '../scorers/label.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { cachedScorerNames, loadCachedScorer, scorerSourceHash } from '../scorers/cache.js';
 import { parseScorer } from '../scorers/definition.js';
-import { SCORER_MARKER, type ScorerFolderFile } from '../scorers/folder.js';
+import { SCORER_MARKER, ScorerFolder, type ScorerFolderFile } from '../scorers/folder.js';
 import { FailureLinks } from '../scorers/failure-links.js';
 import { DIMENSIONS_OFFERED, FAILING_MAX, SCORER_WINDOWS, ScorerResults, type ReminderInput, type RubricLabels, type ScorerResultsQuery, type ScorerResultsView, type Side, type ViewedLabel } from '../scorers/results.js';
 import { sessionArchiveRoot } from '../session-flow/session-cmd-shared.js';
@@ -226,7 +226,7 @@ async function committedRubric(config: LocalConfig, { scorer, sourceHash, teamRe
   const read = async (source: string): Promise<{ content: string; files: ScorerFolderFile[] } | undefined> => {
     const content = await show(source);
 
-    if (content === undefined || path.posix.basename(source) !== SCORER_MARKER) return content === undefined ? undefined : { content, files: [] };
+    if (content === undefined || !ScorerFolder.marks(source)) return content === undefined ? undefined : { content, files: [] };
     const folder = path.posix.dirname(source);
     const files: ScorerFolderFile[] = [];
 

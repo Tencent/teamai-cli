@@ -17,7 +17,7 @@ import type { ScoreLabel, SessionLabelContext, SessionSubject } from './label.js
 import { LabelStore } from './label-store.js';
 import { NamedSubject } from './named-subject.js';
 import type { PinnedScorer } from './pin.js';
-import { SCORER_MARKER, ScorerFolder, type ScorerFolderFile } from './folder.js';
+import { ScorerFolder, type ScorerFolderFile } from './folder.js';
 import { ScoreLabels, type LabelEntry } from './score-labels.js';
 import { Subject } from './subject.js';
 
@@ -37,7 +37,7 @@ export interface TriedFile {
 
 /** The text of the scorer file at `full`, and the files beside it when it is a scorer folder's `SCORER.md`, or why it cannot be read. */
 async function readTried(full: string, file: string): Promise<{ content: string; files?: ScorerFolderFile[] } | Refusal> {
-  if (path.basename(full) !== SCORER_MARKER) {
+  if (!ScorerFolder.marks(full.split(path.sep).join('/'))) {
     const content = await readFileSafe(full);
 
     return content === null ? refused('scorer_not_found', formatScorerDiagnostic({ file, message: 'could not be read' })) : { content };

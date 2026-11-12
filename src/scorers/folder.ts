@@ -67,6 +67,11 @@ function render(prompt: string, dir: string): string {
   return prompt.split(PLACEHOLDER).join(dir.split(path.sep).join('/'));
 }
 
+/** Whether `file`, a `/`-separated path, is a scorer folder's marker. `scorers/SCORER.md` sits in no folder of its own: it is the file-form scorer SCORER. */
+function marks(file: string): boolean {
+  return path.posix.basename(file) === SCORER_MARKER && path.posix.basename(path.posix.dirname(file)) !== 'scorers';
+}
+
 /** Writes `files` under `dir`, which the judge reads. */
 async function write(dir: string, files: readonly ScorerFolderFile[]): Promise<void> {
   for (const file of files) {
@@ -76,4 +81,4 @@ async function write(dir: string, files: readonly ScorerFolderFile[]): Promise<v
   }
 }
 
-export const ScorerFolder = { read, mentions, fileFormProblem, dirIn, render, write } as const;
+export const ScorerFolder = { marks, read, mentions, fileFormProblem, dirIn, render, write } as const;
