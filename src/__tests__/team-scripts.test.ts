@@ -135,8 +135,12 @@ describe('runTeamScript', () => {
     expect(recorded.checkout).toBeNull();
     expect(recorded.hook).toBeNull();
     expect(recorded.prepare).toBeNull();
-    const options = mockSpawn.mock.calls.at(-1)![2] as { stdio: string[] };
+    const options = mockSpawn.mock.calls.at(-1)![2] as { stdio: string[]; windowsHide?: boolean };
     expect(options.stdio).toEqual(['inherit', 'inherit', 'inherit']);
+    // The child inherits this process's stdio, so hiding its window takes away
+    // nothing the user reads; it only stops a hook-launched pull from opening
+    // one (#1805).
+    expect(options.windowsHide).toBe(true);
   });
 
   it('passes the resolver checkout to a project-scope script', async () => {

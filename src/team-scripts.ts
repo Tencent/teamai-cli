@@ -244,7 +244,15 @@ function spawnScript(
   stdio: StdioOptions,
   env: NodeJS.ProcessEnv,
 ): ChildProcess {
-  const child = spawn(process.execPath, [scriptPath], { cwd: repoPath, stdio, env });
+  const child = spawn(process.execPath, [scriptPath], {
+    cwd: repoPath,
+    stdio,
+    // Without it, Windows opens a console window for prePull/postPull when the
+    // pull comes from a git hook that has no terminal (#1805).
+    windowsHide: true,
+    env,
+  });
+
   child.on('error', (e) => {
     log.debug(`scripts: could not run ${scriptPath}: ${e.message}`);
   });

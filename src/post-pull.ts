@@ -147,6 +147,9 @@ function spawnScript(
   const child = spawn(process.execPath, [scriptPath], {
     cwd: repoPath,
     stdio,
+    // Without it, Windows opens a console window for the whole run, even when
+    // the pull was started by a git hook that has no terminal (#1805).
+    windowsHide: true,
     env: {
       ...(env ?? process.env),
       TEAMAI_REPO: repoPath,
