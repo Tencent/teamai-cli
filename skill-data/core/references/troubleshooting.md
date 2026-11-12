@@ -359,6 +359,9 @@ session.
 
 ### Codex
 
+Codex's `/hooks` list labels team hooks by ID, HTTP agent hooks by slug, built-ins as
+`teamai-<Event>`, and shared team-hook dispatchers as `teamai-team-<Event>`.
+
 Codex runs a non-managed hook only once it is **trusted**. `teamai init`, `pull`
 and `teamai hooks inject` trust the hooks they write (and, in a project, the main
 checkout, or the current worktree when Git cannot locate a main checkout) through `codex app-server`.

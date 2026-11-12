@@ -146,6 +146,7 @@ interface CursorHooksJson {
 type CodexHookEntry = {
   type: string;
   command: string;
+  statusMessage?: string;
   /** The command Codex runs instead on Windows, where its hook shell is PowerShell. */
   commandWindows?: string;
   timeout?: number;
@@ -635,7 +636,16 @@ async function judgeUnrecordedTeamEntries(
     if (format === 'claude' && tool === 'claude') historicalDefs.push(...scopedTeamDefs(history, opts.teamHookProjectRoot, tool, true, opts.teamHookChildRoots));
 
     return renders = [...teamDefsForTool(scopedDefs, tool), ...teamDefsForTool(historicalDefs, tool)]
-      .map(def => ({ def, ...render(def) }));
+      .flatMap((def) => {
+        const current = { def, ...render(def) };
+
+        if (format !== 'codex') return [current];
+        // Older Codex entries have no label; only their exact render proves ownership.
+        const legacy = toCodexEntry(def);
+        delete legacy.hooks[0].statusMessage;
+
+        return [current, { def, event: def.event, entry: legacy }];
+      });
   };
 
   const marked = isMarkedTeamaiHookCommand;
@@ -2030,7 +2040,11 @@ function toCursorEntry(def: HookDef): CursorHookEntry {
 function toCodexEntry(def: HookDef): CodexHookMatcher {
   const commandWindows = codexWindowsCommand(def.command);
 
-  const hook: CodexHookEntry = { type: 'command', command: def.command };
+  const hook: CodexHookEntry = {
+    type: 'command',
+    command: def.command,
+    statusMessage: def.source === 'team' ? def.key : `teamai-${def.event}`,
+  };
 
   if (commandWindows !== undefined) hook.commandWindows = commandWindows;
 
