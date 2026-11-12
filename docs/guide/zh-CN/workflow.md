@@ -1261,7 +1261,7 @@ agent 运行 describe，它为调用它的会话给每个输入提议一个 `val
 | 输入 | 情况 | 提议值 |
 |---|---|---|
 | `publish` | 有人值守的发布策略为 `ask`（默认） | `true` |
-| | `off`；或 `auto`，会话空闲 6 小时后反正会发布 | `false` |
+| | `off`；或 `auto`，会话空闲达到 `teamai-finished-sessions` 的 `idle`（团队未修改时为 6 小时）后反正会发布 | `false` |
 | `scorers` | 有人值守的评分策略为 `ask` | 设置了 `sessions: true` 且抽样选中该会话的评分器，与 `auto` 下 `teamai-finished-sessions` 选中的相同 |
 | | `off` 或 `auto` | `[]` |
 | `publish`、`scorers` | teamai 不读取其会话的工具 | `false`、`[]` |
@@ -1355,7 +1355,7 @@ describe 为调用它的会话提议每个输入并附 `why`：会话第一次�
 cp "$(npm root -g)/teamai-cli/workflows/teamai-share-learnings.yaml" workflows/teamai-share-learnings.yaml
 ```
 
-有五个默认工作流是文件夹，在包中位于 `workflows/<name>/WORKFLOW.yaml`，早期版本是 `workflows/<name>.yaml`：`teamai-import-from-mr`、`teamai-codebase-deep-enrich`、`teamai-import-from-repo`、`teamai-promote-learning` 和 `teamai-draft-learning-updates`。团队已有的 `workflows/<name>.yaml` 仍会替换默认工作流。
+有六个默认工作流是文件夹，在包中位于 `workflows/<name>/WORKFLOW.yaml`，早期版本是 `workflows/<name>.yaml`：`teamai-import-from-mr`、`teamai-codebase-deep-enrich`、`teamai-import-from-repo`、`teamai-promote-learning`、`teamai-draft-learning-updates` 和 `teamai-finished-sessions`。团队已有的 `workflows/<name>.yaml` 仍会替换默认工作流。
 
 文件夹形式的默认工作流，用同名文件夹修改。里面只放你要改的文件；其他文件（包括 `WORKFLOW.yaml`）仍用 teamai 的，并继续获得 teamai 的更新。比如想让英文的 MR learning 写出评审留下的未决问题，先复制它的提示词：
 

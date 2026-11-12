@@ -758,7 +758,7 @@ sessions:
   publish: { attended: ask, unattended: auto }
 ```
 
-有人值守的 `ask` 会在摩擦提醒提供 [`teamai-share-learnings`](workflow.md#teamai-share-learnings-和-teamai-share-session) 时提议发布，成员在启动时确认一次。带 `--confirmed` 启动运行的 agent 可以替成员确认，teamai 无法核实。除此之外，成员的会话只会通过 `teamai session push` 等命令归档。无人值守的 `ask` 等同于 `off`，因为没有人在场确认。有人值守的 `auto` 在会话六小时没有任何活动后归档它，由会话启动时开始的 [`teamai-finished-sessions`](scorers.md#teamai-finished-sessions) 运行完成，该运行也评判已结束的会话。在结束前手动推送过的会话，在那次推送之后又有活动时会被再次归档。发布总会脱敏，同时改写本机路径（见[脱敏后的会话保留什么](dashboard.md#脱敏后的会话保留什么)）。HTTP 团队没有会话归档，因此在那里 `sessions.publish` 等同于 `off`，`teamai doctor` 会说明这一点。
+有人值守的 `ask` 会在摩擦提醒提供 [`teamai-share-learnings`](workflow.md#teamai-share-learnings-和-teamai-share-session) 时提议发布，成员在启动时确认一次。带 `--confirmed` 启动运行的 agent 可以替成员确认，teamai 无法核实。除此之外，成员的会话只会通过 `teamai session push` 等命令归档。无人值守的 `ask` 等同于 `off`，因为没有人在场确认。有人值守的 `auto` 在会话六小时（或团队设定的 `idle`）没有任何活动后归档它，由会话启动时开始的 [`teamai-finished-sessions`](scorers.md#teamai-finished-sessions) 运行完成，该运行也评判已结束的会话。在结束前手动推送过的会话，在那次推送之后又有活动时会被再次归档。发布总会脱敏，同时改写本机路径（见[脱敏后的会话保留什么](dashboard.md#脱敏后的会话保留什么)）。HTTP 团队没有会话归档，因此在那里 `sessions.publish` 等同于 `off`，`teamai doctor` 会说明这一点。
 
 成员的 `config.yaml` 优先，按模式分别生效。它没有写的模式沿用 `teamai.yaml`：
 

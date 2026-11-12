@@ -5,6 +5,7 @@ import { packageRoot } from './package-info.js';
 import { DeliveredFolders } from './resources/delivered-folders.js';
 import { FolderFiles, type FolderFile } from './resources/folder-files.js';
 import { isJsonObject, type JsonObject, type JsonValue, type LocalConfig, type TeamaiConfig } from './types.js';
+import { durationMs } from './utils/duration.js';
 import { log } from './utils/logger.js';
 import { parseYaml } from './utils/yaml.js';
 
@@ -32,6 +33,24 @@ function ratio() {
   const error = 'must be a number from 0 to 1';
 
   return z.number({ error }).min(0, { error }).max(1, { error });
+}
+
+/** A duration as a workflow's `timeout` writes it, from `min` to `max`, read as its text and its milliseconds. */
+function duration(min: string, max: string) {
+  const error = `must be a duration from ${min} to ${max}, such as 6h`;
+  const [low = 0, high = 0] = [durationMs(min), durationMs(max)];
+
+  return z.string({ error }).transform((text, ctx) => {
+    const ms = durationMs(text);
+
+    if (ms === undefined || ms < low || ms > high) {
+      ctx.addIssue({ code: 'custom', message: error });
+
+      return z.NEVER;
+    }
+
+    return { text, ms };
+  });
 }
 
 /** The tool-error tiers, the first whose `min` the count reaches giving its points. */
@@ -66,6 +85,7 @@ const PARAMS = {
     'teamai-recall': NoParamsSchema,
   },
   workflows: {
+    'teamai-finished-sessions': z.strictObject({ idle: duration('10m', '7d') }),
     'teamai-draft-learning-updates': z.strictObject({ min_recalled: whole(1, 1000), max_upvoted: whole(0, 1000), min_users: whole(1, 1000), max_related: whole(0, 20) }),
     'teamai-promote-learning': z.strictObject({ min_confidence: ratio(), min_upvoted: whole(1, 1000), min_users: whole(1, 1000), min_age_days: whole(0, 3650) }),
   },
@@ -101,6 +121,7 @@ const TEXTS = {
   },
   workflows: {
     'teamai-draft-learning-updates': {},
+    'teamai-finished-sessions': {},
     'teamai-promote-learning': {},
   },
 } as const satisfies { readonly [TKind in keyof typeof PARAMS]: { readonly [TName in keyof (typeof PARAMS)[TKind]]: Readonly<Record<string, TextContract>> } };

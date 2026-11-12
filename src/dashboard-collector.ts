@@ -1775,7 +1775,7 @@ async function readLogRaw(filePath: string): Promise<{ events: DashboardEvent[];
   return { events, outcomes };
 }
 
-/** How long compaction keeps a session outcome line: past the 6 hours a session takes to finish, and the dashboard's month. */
+/** How long compaction keeps a session outcome line: past the idle a session takes to finish, 7 days at most, and the dashboard's month. */
 export const SESSION_OUTCOME_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** The session outcome events of the log at `eventsPath` (the default log when absent), in file order. */

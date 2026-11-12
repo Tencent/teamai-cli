@@ -774,7 +774,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--author <name>', 'Filter by author')
     .option('--all', 'List sessions across all projects in the team repo (not just the current one). With --finished: every finished session to share learnings from, not only those to archive and judge (no --publish or --scorers)')
     .option('--finished', 'List the finished sessions of this machine to archive and judge, not the team\'s pushed ones')
-    .option('--idle <duration>', 'With --finished: how long an attended session has been idle to count as finished, such as 6h (default). An unattended one counts once a drain reached it.')
+    .option('--idle <duration>', 'With --finished: how long an attended session has been idle to count as finished, such as 1h. Default: the idle of teamai-finished-sessions\'s params.yaml, 6h unless the team changed it. An unattended one counts once a drain reached it.')
     .option('--within <duration>', 'With --finished --all: how recently a session was last active to be listed, such as 3d (default 7d)')
     .option('--publish <policy>', 'With --finished: policy (sessions.publish for the session\'s run mode decides, the default), always or never. Inside a workflow step, only a run a person started may pass always or never.')
     .option('--scorers <json>', 'With --finished: a JSON array of scorers to judge every finished session with, unsampled; [] (the default) takes the scorers scoring.sessions: auto names. Inside a workflow step, only a run a person started may name scorers.')

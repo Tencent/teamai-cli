@@ -1261,7 +1261,7 @@ The proposal follows the team's [publish policy](sharing.md#sessions) and [scori
 | Input | Situation | Proposed |
 |---|---|---|
 | `publish` | attended publish policy `ask` (the default) | `true` |
-| | `off`; or `auto`, which publishes the session once it has been idle 6 hours anyway | `false` |
+| | `off`; or `auto`, which publishes the session once it has been idle for the `idle` of `teamai-finished-sessions`, 6 hours unless the team changed it, anyway | `false` |
 | `scorers` | attended scoring policy `ask` | the scorers with `sessions: true` that sample this session, the same ones `teamai-finished-sessions` picks under `auto` |
 | | `off` or `auto` | `[]` |
 | `publish`, `scorers` | a tool teamai reads no sessions from | `false`, `[]` |
@@ -1355,7 +1355,7 @@ Start from the file the package ships, edit it, push it, and pull:
 cp "$(npm root -g)/teamai-cli/workflows/teamai-share-learnings.yaml" workflows/teamai-share-learnings.yaml
 ```
 
-Five defaults are folders, at `workflows/<name>/WORKFLOW.yaml` in the package where earlier releases had `workflows/<name>.yaml`: `teamai-import-from-mr`, `teamai-codebase-deep-enrich`, `teamai-import-from-repo`, `teamai-promote-learning` and `teamai-draft-learning-updates`. A `workflows/<name>.yaml` your team already has still replaces the default.
+Six defaults are folders, at `workflows/<name>/WORKFLOW.yaml` in the package where earlier releases had `workflows/<name>.yaml`: `teamai-import-from-mr`, `teamai-codebase-deep-enrich`, `teamai-import-from-repo`, `teamai-promote-learning`, `teamai-draft-learning-updates` and `teamai-finished-sessions`. A `workflows/<name>.yaml` your team already has still replaces the default.
 
 A folder of the same name changes a default that is a folder. Put only the files you change in it; every other file, `WORKFLOW.yaml` included, stays teamai's and keeps getting teamai's updates. To have MR learnings in English name what the review left open, copy its prompts:
 
