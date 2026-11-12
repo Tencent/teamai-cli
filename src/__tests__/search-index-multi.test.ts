@@ -81,6 +81,22 @@ describe('buildIndex — Phase 1 multi-category', () => {
     expect(skillEntry?.filename).toBe('sample-skill.md');
   });
 
+  it('indexes a skill kept as one file, at the root and in a namespace, beside skill folders', async () => {
+    const skillsDir = path.join(tmpDir, 'skills');
+    for (const [file, text] of [
+      ['sample-skill/SKILL.md', '---\nname: sample-skill\ndescription: d\n---\nfolder'],
+      ['sample-skill/notes.md', 'a folder skill\'s own file'],
+      ['greet.md', '---\nname: greet\ndescription: d\n---\nroot file'],
+      ['pay/one.md', '---\nname: one\ndescription: d\n---\nnamespace file'],
+      ['README.md', 'notes about the skills'],
+      ['NOTES.md', 'notes kept beside the skills'],
+    ]) await fse.outputFile(path.join(skillsDir, file), text);
+
+    await buildIndex({ skillsDir, indexPath });
+
+    expect((await loadIndex(indexPath))!.entries.map((e) => e.filename).sort()).toEqual(['greet.md', 'one.md', 'sample-skill.md']);
+  });
+
   it('truncates oversized files (>50KB) instead of dropping them', async () => {
     const docsDir = path.join(tmpDir, 'docs');
     await fse.ensureDir(docsDir);

@@ -676,7 +676,7 @@ export async function startDashboard(port?: number): Promise<void> {
           return;
         }
 
-        const [{ loadTeamConfig }, { buildRolePullContext }, { collectRulesInventory, collectSkippedFolders }, { readWorkspaceChildren }] = await Promise.all([
+        const [{ loadTeamConfig }, { buildRolePullContext }, { collectRulesInventory }, { readWorkspaceChildren }] = await Promise.all([
           import('./config.js'), import('./resources/desired.js'), import('./dashboard/resources.js'), import('./workspace-children.js'),
         ]);
 
@@ -690,12 +690,8 @@ export async function startDashboard(port?: number): Promise<void> {
           ? await collectRulesInventory(teamConfig, config, await buildRolePullContext(config))
           : [];
 
-        // The folders of every type pull leaves out (#1791): the Resources page
-        // lists them and the Overview counts them, from this one read.
-        const skippedFolders = teamConfig ? await collectSkippedFolders(config.repo.localPath) : [];
-
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-        res.end(JSON.stringify({ configured: true, rules, skippedFolders }));
+        res.end(JSON.stringify({ configured: true, rules }));
       } catch (e) {
         log.debug(`dashboard: /api/resources/rules failed: ${e instanceof Error ? e.message : String(e)}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });

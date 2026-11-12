@@ -30,6 +30,8 @@ import { localLinkTargets } from './markdown-links.js';
 import type { FrontmatterValue } from './frontmatter.js';
 import type { ConfidenceFactors } from '../maintenance/confidence.js';
 import { parseYaml } from './yaml.js';
+import { TeamSkillSource } from '../resources/team-skill-source.js';
+import { RESOURCE_LAYOUTS } from '../resources/resolver.js';
 
 /**
  * After this checkout's index is rebuilt by a pull. Self mode keeps one index
@@ -914,6 +916,15 @@ async function collectSkillEntries(
       if (entry.isDirectory() && !entry.name.startsWith('.')) {
         await walk(path.join(current, entry.name), entry.name, relDir ? `${relDir}/${entry.name}` : entry.name);
       }
+
+      // A skill kept as one file sits at the root or one namespace deep, as pull reads it.
+      const skill = entry.isFile() && !relDir.includes('/') ? RESOURCE_LAYOUTS.skills.fileName(entry.name) : null;
+
+      if (skill !== null && await TeamSkillSource.isDescribed(path.join(current, entry.name))) {
+        const e = await entryFromMdFile(path.join(current, entry.name), `${skill}.md`, 'skills', reads, `skills/${relDir ? `${relDir}/` : ''}${skill}`);
+
+        if (e) out.push(e);
+      }
     }
   }
 
@@ -952,8 +963,9 @@ function skillDirTreePath(dir: string): string {
 }
 
 /**
- * Entries for an explicit list of skill directories, each `<dir>/SKILL.md`,
- * named after the directory (doc_id = skill name) as `collectSkillEntries` does.
+ * Entries for an explicit list of team skills, each its SKILL.md (or the one
+ * file it is kept as), named after the skill (doc_id = skill name) as
+ * `collectSkillEntries` does.
  * Pull delivers only directories with a `SKILL.md`, so a missing one is unreadable.
  */
 async function collectSkillDirEntries(
@@ -961,7 +973,7 @@ async function collectSkillDirEntries(
   reads: BuildReads,
 ): Promise<SearchIndexEntry[]> {
   return entriesFromMdFiles(
-    dirs.map((dir) => ({ absPath: path.join(dir, 'SKILL.md'), id: `${path.basename(dir)}.md`, treePath: skillDirTreePath(dir) })),
+    dirs.map((dir) => ({ absPath: TeamSkillSource.skillMd(dir), id: `${TeamSkillSource.name(dir)}.md`, treePath: skillDirTreePath(dir) })),
     'skills',
     reads,
   );

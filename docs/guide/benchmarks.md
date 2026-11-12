@@ -50,7 +50,7 @@ setup:
 | `timeout` | Required: the whole run's. |
 | `trial` | Optional limits of every trial's prompt. See [Trial limits](#trial-limits). |
 | `setup` | Optional, a [workflow's `setup`](workflow-advanced.md#requirements-and-limits). Runs in every fresh clone before the tool or the check. |
-| `scorers` | Optional [scorers](scorers.md) that judge every trial; a task may [list more](#scorers-per-task). A name with no valid `scorers/<name>.md` fails `teamai review --branch`, `teamai pull` warns, and start refuses the suite. |
+| `scorers` | Optional [scorers](scorers.md) that judge every trial; a task may [list more](#scorers-per-task). A name with no valid `scorers/<name>.md` or [scorer folder](scorers.md#a-scorer-folder) `scorers/<name>/SCORER.md` fails `teamai review --branch`, `teamai pull` warns, and start refuses the suite. |
 | `calibration` | Optional `{ rate }`, 0 to 100, 0 by default: the percent of trials whose check failed that the correctness judge labels too, to measure it. See [Calibrate a judge](#calibrate-a-judge). |
 
 ### Arms on other team resources
@@ -319,7 +319,7 @@ scorers: [security-review]
 | session-fixation | review-quality, security-review |
 | expired-token | review-quality |
 
-A task's scorer names are checked as the suite's are: one with no valid `scorers/<name>.md` fails `teamai review --branch`, `teamai pull` warns, and start refuses the suite. A name with `:`, such as `teamai:correctness:<task>`, is refused, since no scorer file has one. The list is part of the task file, so changing it changes the task's `sourceHash`, and [the regression gate](#fail-on-a-regression) does not pair its trials across the change. Start [pins each one's judge](#one-judge-for-every-arm) as it pins the suite's, and needs a judge tool once any task lists one.
+A task's scorer names are checked as the suite's are: one with no valid `scorers/<name>.md` or [scorer folder](scorers.md#a-scorer-folder) `scorers/<name>/SCORER.md` fails `teamai review --branch`, `teamai pull` warns, and start refuses the suite. A name with `:`, such as `teamai:correctness:<task>`, is refused, since no scorer file or folder has one. The list is part of the task file, so changing it changes the task's `sourceHash`, and [the regression gate](#fail-on-a-regression) does not pair its trials across the change. Start [pins each one's judge](#one-judge-for-every-arm) as it pins the suite's, and needs a judge tool once any task lists one.
 
 ### What `protect` covers
 

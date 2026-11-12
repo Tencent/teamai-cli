@@ -24,9 +24,7 @@ flowchart TD
 
 ## 替换它
 
-```bash
-cp -r "$(npm root -g)/teamai-cli/hooks/teamai-package-hint" hooks/
-```
+在团队仓库根目录的 `hooks/teamai-package-hint/` 里只放你要改的文件。其他文件（包括 `HOOK.yaml`）仍用 teamai 的，并继续获得 teamai 的更新。
 
 `hooks/teamai-package-hint/message.md`：
 
@@ -34,7 +32,7 @@ cp -r "$(npm root -g)/teamai-cli/hooks/teamai-package-hint" hooks/
 The team's packages changed ({{ summary }}). List what `teamai packages` installs, and ask the member before you run it.
 ```
 
-推送这个文件夹。下一次 `teamai pull` 会检查并交付它。这条提示没有参数。
+推送这个文件夹。下一次 `teamai pull` 会把你的文件和 teamai 的其他文件一起检查并交付。这条提示没有参数。
 
 ## 文案
 

@@ -85,10 +85,11 @@ const layer: TeamaiLayer<CachedWorkflow> = { root: packageRoot(), read: readDefa
 
 /**
  * Where the definition a run executes came from: the team's files, or the default the teamai that started it ships, by
- * version, since another version may ship other bytes and no team commit holds them.
+ * version, since another version may ship other bytes and no team commit holds them. A team folder that took files from
+ * the default of its name records both: the team commit holds its own files, the teamai version the others.
  */
 export const RunOriginSchema = z.discriminatedUnion('source', [
-  z.object({ source: z.literal('team') }),
+  z.object({ source: z.literal('team'), teamRevision: z.string().min(1).optional(), teamaiVersion: z.string().min(1).optional() }),
   z.object({ source: z.literal('default'), teamaiVersion: z.string().min(1) }),
 ]);
 
@@ -96,7 +97,12 @@ export type RunOrigin = z.infer<typeof RunOriginSchema>;
 
 /** The origin a run of `resolved` records. */
 function originOf(resolved: ResolvedWorkflow): RunOrigin {
-  return resolved.source === 'default' ? { source: 'default', teamaiVersion: getCurrentVersion() } : { source: 'team' };
+  if (resolved.source === 'default') return { source: 'default', teamaiVersion: getCurrentVersion() };
+
+  if (resolved.inherited === undefined) return { source: 'team' };
+  const { teamaiVersion } = resolved.inherited;
+
+  return resolved.teamRevision === undefined ? { source: 'team', teamaiVersion } : { source: 'team', teamRevision: resolved.teamRevision, teamaiVersion };
 }
 
 /** The source of a run's definition: a run started before origins were recorded ran the team's, as only those existed. */

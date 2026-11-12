@@ -23,7 +23,9 @@ import { formatDiagnostic, parseWorkflow, promptFileDiagnostics, resolveFolderFi
 import { locate, valueNode, type WorkflowFiles } from './parse-context.js';
 import { stepWorkflow, type CachedWorkflow, type OutputSchema, type ResolvedWorkflow, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from './types.js';
 import { DefaultWorkflows } from '../default-workflows.js';
-import { WORKFLOW_MARKER, WorkflowFolder, type WorkflowFolderFile } from './folder.js';
+import { WORKFLOW_MARKER, WorkflowFolder, type WorkflowFolderFile, type WorkflowFolderRead } from './folder.js';
+import { InheritedFolders, type Inheritance } from '../resources/inherited-folders.js';
+import { getCurrentVersion } from '../package-info.js';
 import { confinedOf } from './workspace.js';
 import { WORKFLOW_DIR_ENV } from '../launch-context.js';
 import { assertSafePath, assertWithinRoot } from '../utils/path-safety.js';
@@ -50,6 +52,8 @@ export interface SyncWorkflowResult {
   aliasConflicts: WorkflowDiagnostic[];
   /** Each folder this sync skipped, at its path from the team root, with what pull prints about it. */
   skipped: Array<{ path: string; message: string }>;
+  /** Each file of a team folder over a default that replaces no file of it, left out, with what pull warns about it. */
+  strays: Array<{ path: string; message: string }>;
 }
 
 /** One version of a file, as its reference checks read it: this revision, or the copy the cache keeps. */
@@ -67,6 +71,7 @@ interface Candidate extends Version {
   teamRevision?: string;
   /** Every file of a workflow folder. */
   files?: WorkflowFolderFile[];
+  inherited?: Inheritance;
 }
 
 /** What a file runs after this sync, and why the versions it did not pick cannot run. */
@@ -276,7 +281,7 @@ export async function workflowFileNames(dir: string): Promise<string[]> {
  * finds no version that was not checked against the others. Nothing here fails the caller.
  */
 export async function syncWorkflowDefinitions(config: LocalConfig, options: SyncWorkflowOptions): Promise<SyncWorkflowResult> {
-  const result: SyncWorkflowResult = { cached: [], kept: [], invalid: [], unrunnable: [], brokenDefaults: [], settled: [], aliasConflicts: [], skipped: [] };
+  const result: SyncWorkflowResult = { cached: [], kept: [], invalid: [], unrunnable: [], brokenDefaults: [], settled: [], aliasConflicts: [], skipped: [], strays: [] };
   const knowledgeRoot = getKnowledgeDir(config);
   // Asked on the first valid file: a team without workflows starts no git here.
   let reachable: Promise<ReachableRevision | undefined> | undefined;
@@ -401,7 +406,17 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
   }
 
   for (const { stem, source } of toCheck) {
-    const read = source.kind === 'folder' ? await WorkflowFolder.read(source.full) : undefined;
+    const own = source.kind === 'folder' ? await WorkflowFolder.read(source.full) : undefined;
+    const base = own?.kind === 'files' ? shipped.get(stem)?.files : undefined;
+    const merged = own?.kind === 'files' && base ? InheritedFolders.merge({ team: own.files, teamai: base, marker: WORKFLOW_MARKER }) : undefined;
+    const read: WorkflowFolderRead | undefined = merged ? WorkflowFolder.withinLimit(merged.files.map(({ layer: _layer, ...file }) => file)) : own;
+
+    for (const file of merged?.strays ?? []) {
+      const message = InheritedFolders.strayMessage(source.path, file);
+      result.strays.push({ path: `${source.path}${file}`, message });
+      log.warn(`[workflows] ${message}`);
+    }
+
     const relativePath = read ? `${source.path}${WORKFLOW_MARKER}` : source.path;
 
     if (read?.kind === 'invalid') {
@@ -472,8 +487,11 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
       hash.update('\0').update(prompt.path).update('\0').update(prompt.content);
     }
 
-    const sources = folder
-      ? folder.files.map((file) => ({ path: `${source.path}${file.path}`, content: file.content, readsCrlfAsLf: true }))
+    // Only the team's own files are in its commit; the ones a default gave are pinned by the teamai version that gave them.
+    const teamFiles = merged ? merged.files.filter((file) => file.layer === 'team') : folder?.files;
+
+    const sources = teamFiles
+      ? teamFiles.map((file) => ({ path: `${source.path}${file.path}`, content: file.content, readsCrlfAsLf: true }))
       : [{ path: relativePath, content }, ...resolved.sources];
 
     const revision = await (reachable ??= remotelyReachableRevision(knowledgeRoot));
@@ -489,6 +507,10 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
     if (teamRevision) candidate.teamRevision = teamRevision;
 
     if (folder) candidate.files = folder.files;
+
+    const inherited = merged ? InheritedFolders.inheritanceOf(merged, getCurrentVersion()) : null;
+
+    if (inherited) candidate.inherited = inherited;
     checked.push(candidate);
   }
 
@@ -559,13 +581,15 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
     // Equal bytes are still stored at the earlier entry's revision; the loop that filled `kept` dropped it if origin no longer reaches it.
     const teamRevision = file.teamRevision ?? (previous?.sourceHash === file.sourceHash ? previous.teamRevision : undefined);
 
-    if (options.dryRun || (previous?.sourceHash === file.sourceHash && previous.teamRevision === teamRevision)) continue;
+    if (options.dryRun || (previous?.sourceHash === file.sourceHash && previous.teamRevision === teamRevision && previous.inherited?.teamaiVersion === file.inherited?.teamaiVersion)) continue;
 
-    const pinned: Pick<CachedWorkflow, 'teamRevision' | 'files'> = {};
+    const pinned: Pick<CachedWorkflow, 'teamRevision' | 'files' | 'inherited'> = {};
 
     if (teamRevision) pinned.teamRevision = teamRevision;
 
     if (file.files) pinned.files = file.files;
+
+    if (file.inherited) pinned.inherited = file.inherited;
 
     await writeJsonAtomic(cachePath(config, file.definition.name), {
       relativePath: file.relativePath,

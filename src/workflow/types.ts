@@ -1,6 +1,7 @@
 /** Workflow types for the v1alpha1 local-driver subset. */
 
 import type { WorkflowFolderFile } from './folder.js';
+import type { Inheritance } from '../resources/inherited-folders.js';
 import type { ContractCode, RunOrigin } from '../default-workflows.js';
 import type { RunMode } from '../launch-context.js';
 import type { TeamPin } from './team-pin.js';
@@ -660,6 +661,8 @@ export interface CachedWorkflow {
   validatedAt: string;
   /** Every file of a workflow written as a folder, `WORKFLOW.yaml` included, which `sourceHash` covers. Absent for a single file. */
   files?: WorkflowFolderFile[];
+  /** The files the teamai default folder of its name gave a team folder that leaves them out, and that teamai's version. Absent when it gave none. */
+  inherited?: Inheritance;
 }
 
 /** Where a workflow `start` runs comes from: a team file `teamai pull` validated, or a default this teamai ships. */

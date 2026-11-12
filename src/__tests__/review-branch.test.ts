@@ -186,16 +186,18 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     expect(findings(review)).toEqual([]);
   });
 
-  it('fails a skill directory with no SKILL.md at its root', async () => {
+  it.each([
+    ['a skill directory with no SKILL.md at its root', { 'skills/frontend/vr/notes.md': '# no SKILL.md here' }, /no SKILL\.md/],
+    ['a skill kept both as a file and as a folder in one place', { 'skills/frontend/vr.md': '---\ndescription: VR.\n---\n# VR', 'skills/frontend/vr/SKILL.md': '# VR' }, /skills\/frontend\/vr\.md and skills\/frontend\/vr\/ both define the skill vr/],
+  ])('fails %s', async (_label, files: Record<string, string>, message) => {
     await fse.ensureDir(path.join(repoDir, 'manifest'));
     await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), rolesYaml(['frontend']));
-    await fse.ensureDir(path.join(repoDir, 'skills', 'frontend', 'vr'));
-    await fse.writeFile(path.join(repoDir, 'skills', 'frontend', 'vr', 'notes.md'), '# no SKILL.md here');
+    for (const [file, content] of Object.entries(files)) await fse.outputFile(path.join(repoDir, file), content);
 
     const review = await reviewBranchDir(BRANCH, repoDir);
 
     expect(review.ok).toBe(false);
-    expect(findings(review).some((f) => f.check === 'structure' && /no SKILL\.md/.test(f.message))).toBe(true);
+    expect(findings(review).some((f) => f.check === 'structure' && message.test(f.message))).toBe(true);
   });
 
   it('fails a resource in a namespace no role or project declares', async () => {
@@ -669,6 +671,24 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     }]]);
   });
 
+  const stray = (file: string): string => `${file} replaces no file of teamai's default, so it is not used and teamai's files stay in force. `
+    + 'Name it after the file it replaces, or replace the folder\'s marker too, so it can name the file.';
+
+  it.each([
+    { folder: 'hooks/teamai-friction-reminder', own: 'problem.md', typo: 'problems.md' },
+    { folder: 'rules/teamai-recall', own: 'block.md', typo: 'blocks.md' },
+    { folder: 'workflows/teamai-import-from-repo', own: 'narrative.md', typo: 'narative.md' },
+  ])('passes $folder/ holding only the file it changes, and fails it with a file that replaces nothing', async ({ folder, own, typo }) => {
+    const put = (file: string): Promise<void> => fse.outputFile(path.join(repoDir, ...folder.split('/'), file), '[acme] Ours.\n');
+    await put(own);
+
+    const kept = await reviewBranchDir(BRANCH, repoDir);
+    await put(typo);
+    const typed = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([kept, typed].map((review) => findings(review).filter((f) => f.level === 'fail').map(({ message }) => message))).toEqual([[], [stray(`${folder}/${typo}`)]]);
+  });
+
   it('fails a workflow, hook or rule folder that is a symlink, which pull reads nothing from', async () => {
     const shared = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-review-shared-'));
     await fse.outputFile(path.join(shared, 'lint', 'HOOK.yaml'), HOOK_FOLDER);
@@ -739,10 +759,13 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     expect(findings(review).some((f) => f.path?.startsWith('wiki/'))).toBe(false);
   });
 
-  it('fails when a skill frontmatter name does not match its directory', async () => {
+  it.each([
+    ['folder', 'skills/frontend/vr/SKILL.md'],
+    ['one file', 'skills/frontend/vr.md'],
+  ])('fails when the frontmatter name of a skill kept as a %s does not match its name', async (_form, skillFile) => {
     await fse.ensureDir(path.join(repoDir, 'manifest'));
     await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), rolesYaml(['frontend']));
-    await writeSkill(repoDir, 'skills/frontend/vr', [
+    await fse.outputFile(path.join(repoDir, skillFile), [
       '---',
       'name: not-vr',
       'description: Use this skill when reviewing a merge request for security issues.',
@@ -1325,9 +1348,11 @@ describe('reviewBranchDir — skill links, Agent Skills limits and piped install
     await writeSkill(repoDir, 'skills/frontend/release', skill('release', [
       'See [notes](../notes/SKILL.md), [deploy](../deploy/SKILL.md), [deploy by repo path](../../backend/deploy/SKILL.md),',
       '[missing in notes](../notes/references/missing.md) and [guide](../../../docs/guide.md).',
+      'See [greet](../greet/SKILL.md), [greet folder](../greet/), [greet by repo path](../../greet.md) and [missing in greet](../greet/references/x.md).',
     ]));
     await writeSkill(repoDir, 'skills/frontend/notes', skill('notes', ['# Notes']));
     await writeSkill(repoDir, 'skills/backend/deploy', skill('deploy', ['# Deploy']));
+    await writeSkillFile('skills/greet.md', skill('greet', ['# Greet']));
 
     const review = await reviewBranchDir(BRANCH, repoDir);
     const linkFindings = review.findings
@@ -1343,6 +1368,11 @@ describe('reviewBranchDir — skill links, Agent Skills limits and piped install
       'warn ../notes/references/missing.md, which is not in skill "notes".',
       'warn ../../../docs/guide.md, which pull never delivers there: it delivers each skill as <skills>/<name>/, '
         + 'so link another skill as ../<name>/… and move any other file into the skill.',
+      'info ../greet/SKILL.md, in skill "greet"; it resolves only for a member who also receives that skill.',
+      'info ../greet/, in skill "greet"; it resolves only for a member who also receives that skill.',
+      'warn ../../greet.md, which pull never delivers there: it delivers each skill as <skills>/<name>/, '
+        + 'so link another skill as ../<name>/… and move any other file into the skill.',
+      'warn ../greet/references/x.md, which is not in skill "greet".',
     ]);
   });
 
@@ -1364,16 +1394,17 @@ describe('reviewBranchDir — skill links, Agent Skills limits and piped install
   it('warns for a name outside the Agent Skills format and not for a lowercase hyphenated one', async () => {
     await writeSkill(repoDir, 'skills/Release_Tool', skill('Release_Tool', ['# Release']));
     await writeSkill(repoDir, 'skills/release-tool', skill('release-tool', ['# Release']));
+    // A skill kept as one file is named by that file.
+    await fse.outputFile(path.join(repoDir, 'skills', 'Ship_It.md'), skill('Ship_It', ['# Ship']));
 
     const review = await reviewBranchDir(BRANCH, repoDir);
+    const rule = 'the Agent Skills format allows 1 to 64 lowercase letters, digits and hyphens, with no leading, trailing or doubled hyphen.';
 
     expect(review.ok).toBe(true);
-    expect(warnings(review)).toEqual([{
-      check: 'format',
-      path: 'skills/Release_Tool',
-      message: 'skills/Release_Tool/SKILL.md has the name "Release_Tool"; the Agent Skills format allows 1 to 64 lowercase letters, '
-        + 'digits and hyphens, with no leading, trailing or doubled hyphen. Rename the skill directory and its name together.',
-    }]);
+    expect(warnings(review)).toEqual([
+      { check: 'format', path: 'skills/Ship_It.md', message: `skills/Ship_It.md has the name "Ship_It"; ${rule} Rename the skill file and its name together.` },
+      { check: 'format', path: 'skills/Release_Tool', message: `skills/Release_Tool/SKILL.md has the name "Release_Tool"; ${rule} Rename the skill directory and its name together.` },
+    ]);
   });
 
   it('warns once for a script that pipes a download into a shell, and not for one that saves it', async () => {
@@ -1596,7 +1627,7 @@ describe('reviewBranchDir — scorers', () => {
         level: 'fail',
         check: 'scorers',
         path: 'scorers/eval.yaml',
-        message: 'scorers/eval.yaml: not a scorer file; scorers/ holds <name>.md and <namespace>/<name>.md scorers, scoring.yaml settings and an optional README.md',
+        message: 'scorers/eval.yaml: not a scorer file; scorers/ holds <name>.md and <namespace>/<name>.md scorers, <name>/SCORER.md and <namespace>/<name>/SCORER.md scorer folders, scoring.yaml settings and an optional README.md',
       },
       {
         level: 'fail',
@@ -1665,12 +1696,15 @@ describe('reviewBranchDir — scorers', () => {
   it('reads a scorers/<dir>/ that no role or project declares as shared, as pull does', async () => {
     await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: ops\n    resources: { knowledge: [], skills: [], scorers: [ops] }\n');
     await writeScorer(repoDir, 'shared/x.md', VALID_SCORER);
+    await writeScorer(repoDir, 'shared/z/SCORER.md', VALID_SCORER);
+    await writeScorer(repoDir, 'shared/z/checklist.md', '- Has a test.\n');
     await writeScorer(repoDir, 'ops/y.md', VALID_SCORER);
 
     const review = await reviewBranchDir(BRANCH, repoDir);
 
     expect(review.findings).toEqual([
       { level: 'info', check: 'structure', path: 'scorers/shared/x.md', message: 'scorers/shared/x.md sits at the shared root, so it is delivered to every member.' },
+      { level: 'info', check: 'structure', path: 'scorers/shared/z/SCORER.md', message: 'scorers/shared/z/SCORER.md sits at the shared root, so it is delivered to every member.' },
     ]);
   });
 
@@ -2198,7 +2232,7 @@ describe('materializeRef — branch materialization from git', () => {
   });
 });
 
-describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
+describe('reviewBranchDir: resource folders (#1787)', () => {
   let repoDir: string;
 
   beforeEach(async () => {
@@ -2209,21 +2243,11 @@ describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
     await fse.remove(repoDir);
   });
 
-  it('warns once per skipped folder and reviews none of its files', async () => {
-    // A bad name inside the agent folder: a review that read it would report it.
-    await fse.outputFile(path.join(repoDir, 'agents', 'reviewer', 'AGENT.md'), '# Reviewer\n');
-    await fse.outputFile(path.join(repoDir, 'agents', 'reviewer', 'Bad Name.md'), '# Bad\n');
+  it('reviews an agent folder as one agent, and none of its support files as an agent', async () => {
+    await fse.outputFile(path.join(repoDir, 'agents', 'reviewer', 'AGENT.md'), '---\nname: reviewer\ndescription: Reviews.\n---\nApply ${TEAMAI_AGENT_DIR}/rubric.md.\n');
+    await fse.outputFile(path.join(repoDir, 'agents', 'reviewer', 'rubric.md'), '- Name what breaks.\n');
 
-    const review = await reviewBranchDir(BRANCH, repoDir);
-
-    expect(review.findings).toEqual([
-      {
-        level: 'warn',
-        check: 'structure',
-        path: 'agents/reviewer/',
-        message: 'agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
-      },
-    ]);
+    expect((await reviewBranchDir(BRANCH, repoDir)).findings).toEqual([]);
   });
 
   it('reviews a workflow folder as one workflow named after its directory, with the limits pull applies', async () => {
@@ -2256,15 +2280,23 @@ describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
     expect(review.findings).toEqual([]);
   });
 
-  it('checks no scoring settings in a scorer folder', async () => {
-    await fse.outputFile(path.join(repoDir, 'scorers', 'style', 'SCORER.md'), '# Style\n');
+  it('reads a scorer folder as one scorer whose other files, scoring.yaml among them, are its own, and fails one that is no scorer', async () => {
+    const scorer = '---\nlabels:\n  - { value: good, score: 1, description: Good. }\n  - { value: bad, score: 0, description: Bad. }\npassingScore: 1\n---\nJudge by ${TEAMAI_SCORER_DIR}/rubric.md.\n';
+    // With a manifest, a directory no role declares is shared: each folder's rubric.md would be the shared scorer rubric.
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: dev\n    description: dev\n    resources: { knowledge: [], skills: [] }\n');
+    await fse.outputFile(path.join(repoDir, 'scorers', 'style', 'SCORER.md'), scorer);
+    await fse.outputFile(path.join(repoDir, 'scorers', 'style', 'rubric.md'), 'Pass a change that names its tests.\n');
+    // A support file's name is the folder's business: a review that read it as a scorer would report it.
+    await fse.outputFile(path.join(repoDir, 'scorers', 'style', 'Good Example.md'), 'A change with tests.\n');
     await fse.outputFile(path.join(repoDir, 'scorers', 'style', 'scoring.yaml'), 'batch: maybe\n');
+    await fse.outputFile(path.join(repoDir, 'scorers', 'tone', 'SCORER.md'), '# Tone\n');
+    await fse.outputFile(path.join(repoDir, 'scorers', 'tone', 'rubric.md'), 'Pass a plain tone.\n');
 
     const review = await reviewBranchDir(BRANCH, repoDir);
 
-    expect(review.findings.map((finding) => finding.message)).toEqual([
-      'scorers/style/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
-    ]);
+    expect(review.findings).toEqual([{
+      level: 'fail', check: 'scorers', path: 'scorers/tone/SCORER.md', message: 'scorers/tone/SCORER.md: a scorer starts with YAML frontmatter between --- lines',
+    }]);
   });
 });
 

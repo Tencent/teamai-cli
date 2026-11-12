@@ -27,6 +27,13 @@ teamai push --role pm
 
 Shared-root skills keep the existing tag-subscription delivery rules when roles or projects filter skills. `--shared` selects the publishing location.
 
+A skill that is only its instructions can be one file in the team repo: `skills/<name>.md`, or `skills/<ns>/<name>.md`. Pull delivers it to each tool as `<name>/SKILL.md`, as it would a folder holding only `SKILL.md`.
+
+- A `.md` file directly in `skills/` or in a namespace is a skill when its frontmatter has a `description`. Any other file there, such as `README.md` or your notes, stays notes and reaches no one.
+- A file and a folder of one name in one place, `skills/greet.md` beside `skills/greet/`, define the skill twice. Pull delivers neither and names both, and `teamai review --branch` fails.
+- Push sends an edit back to the file. A file holds nothing else, so a file you add beside `SKILL.md` stays out, and push names it. To share it, turn the file into the folder `skills/<name>/` in the team repo.
+- Have every member upgrade before you commit one. An older teamai skips the file and delivers nothing for it.
+
 ## Rules
 
 ```bash
@@ -125,13 +132,13 @@ Keep the body short and put the detail in the folder.
 - The name is the path, as for a rule file: `rules/api-style/` is `api-style`, and `rules/fe/api-style/` is `fe/api-style`. Each tool gets `api-style.md` in its rules directory.
 - `RULE.zh.md` or `RULE.en.md` holds the body for that `language`. The frontmatter of `RULE.md` applies to every language; pull warns about frontmatter in a variant and ignores it.
 - In a workspace, pull copies the folder to `.teamai/delivered/rules/api-style/` in each worktree, which git ignores, and puts its path, with forward slashes, in place of `${TEAMAI_RULE_DIR}`. Every tool reads the folder there: Claude Code gets the absolute path, and a tool that reads nothing outside the project gets `.teamai/delivered/rules/api-style`, from the project root. A pull in one worktree leaves the other worktrees' folders as they were.
-- A user-scope rule has no worktree, so pull copies it to `~/.teamai/rules/api-style/` and names that path. For Claude Code, pull adds the directory to `permissions.additionalDirectories` in `~/.claude/settings.json`, after your own entries, and uninstall takes it out. Pull warns once for each other tool that may ask before it reads there. The "Rule folder files" column of [Tool support](tool-support.md#user-scope) says which tool gets which.
+- A user-scope rule has no worktree, so pull copies it to `~/.teamai/rules/api-style/` and names that path. For Claude Code, pull adds the directory to `permissions.additionalDirectories` in `~/.claude/settings.json`, after your own entries, and uninstall takes it out. Pull warns once for each other tool that may ask before it reads there. The "Rule and agent folder files" column of [Tool support](tool-support.md#user-scope) says which tool gets which.
 - Edit a rule folder in the team repo. Push proposes nothing from its delivered copies.
 - A file the team removes from the folder stays in the delivered copy until the rule goes, because a rule copy you edited may still name it. A path can't be both a file and a directory: when the team turns `details/` into a file `details`, or back, the new version takes the path and pull names the file that went.
 
 Before you commit a rule folder, have every member upgrade. An older teamai reads each file in `rules/api-style/` as its own always-on rule (`api-style/RULE`, `api-style/RULE.zh`, `api-style/checklist`), or skips the folder.
 
-teamai's recall rule is the folder [`rules/teamai-recall/`](https://github.com/Tencent/teamai-cli/tree/main/rules/teamai-recall). A team replaces it with its own `rules/teamai-recall/` at the root of the team repo. The folder's README lists the files and the lines each must keep. Pull refuses a replacement that drops one or holds a link, names the file, and keeps teamai's. `teamai review --branch` fails such a replacement before you merge it.
+teamai's recall rule is the folder [`rules/teamai-recall/`](https://github.com/Tencent/teamai-cli/tree/main/rules/teamai-recall). A team changes it with a `rules/teamai-recall/` at the root of the team repo that holds only the files it changes; every other file stays teamai's. The folder's README lists the files and the lines each must keep. Pull checks the folder both make together, refuses one that drops a line or holds a link, names the file, and keeps teamai's. `teamai review --branch` fails such a replacement before you merge it. Have every member upgrade before you commit one: an older teamai reads a file such as `rules/teamai-recall/block.md` as an always-on rule of its own.
 
 ## Agents
 
@@ -153,6 +160,40 @@ Leave `targets` out to send the agent to every installed tool. An agent for one 
 teamai push
 teamai push --role frontend
 teamai remove agents code-reviewer
+```
+
+### Agents as folders
+
+A directory under `agents/` that holds `AGENT.md` is an agent folder. `AGENT.md` is the agent, a Markdown agent file as Claude Code reads one. The other files are support files the agent reads when it needs them:
+
+```text
+agents/reviewer/
+├─ AGENT.md
+└─ rubric.md
+```
+
+```markdown
+<!-- agents/reviewer/AGENT.md -->
+---
+name: reviewer
+description: Review a change before it is pushed
+---
+Review the diff against ${TEAMAI_AGENT_DIR}/rubric.md.
+```
+
+- The name is the directory: `agents/reviewer/` and `agents/payments/reviewer/` are both `reviewer`, as a tool keeps agents in one directory. An agent folder and an agent file of the same name in one place clash, and pull keeps the installed agents until one goes.
+- Each tool that reads Markdown agents (Claude Code, Claude Code Internal, CodeBuddy, JoyCode, Oh My Pi) gets `reviewer.md`. Other tools, such as Codex, get nothing from an agent folder; give them a `.yaml` agent.
+- In a workspace, pull copies the folder to `.teamai/delivered/agents/reviewer/` in each worktree, which git ignores, and puts its path, with forward slashes, in place of `${TEAMAI_AGENT_DIR}`: the absolute path for Claude Code, and `.teamai/delivered/agents/reviewer` from the project root for a tool that reads nothing outside the project. A workflow step that runs in its own worktree reads that worktree's copy.
+- A user-scope agent has no worktree, so pull copies it to `~/.teamai/agents/reviewer/`, adds that directory for Claude Code as it does for [rule folders](#rules-as-folders-a-deterministic-skill), and warns once for each other tool that may ask before it reads there.
+- Edit an agent folder in the team repo. Push proposes nothing from its delivered copies. `teamai remove agents reviewer` removes the folder, the tools' copies and the delivered folder; a later pull removes the delivered folder of an agent the team removed, unless a copy you edited still names it.
+
+Before you commit an agent folder, have every member upgrade. An older teamai skips the folder, or reads each `.md` in it as an agent of its own.
+
+A namespace that gains `AGENT.md` is one agent folder from then on: `agents/payments/AGENT.md` makes `agents/payments/` the agent `payments`, and the agents it held, such as `agents/payments/vr.md`, its files. Pull removes the copies it delivered of those agents, keeps one you changed, and says so once:
+
+```console
+$ teamai pull
+⚠ agents/payments/ holds AGENT.md, so it is one folder, and vr.md in it is one of its files, no longer read on its own.
 ```
 
 ### Replace the recall agent
@@ -465,11 +506,7 @@ agy then refuses the command with `tool call denied by pre-tool hook: rm -rf is 
 
 ### Default hooks
 
-teamai's own hints keep their thresholds and texts in hook folders. A folder of the same name at the root of the team repo replaces one. To remind only after longer sessions, in the team's words:
-
-```bash
-cp -r "$(npm root -g)/teamai-cli/hooks/teamai-friction-reminder" hooks/
-```
+teamai's own hints keep their thresholds and texts in hook folders. A folder of the same name at the root of the team repo changes one. Put in it only the files you change; every other file, `HOOK.yaml` included, stays teamai's and keeps getting teamai's updates. To remind only after longer sessions, in the team's words:
 
 ```yaml
 # hooks/teamai-friction-reminder/HOOK.yaml
@@ -483,7 +520,7 @@ with:
 [acme] This session hit a snag. If the fix is not in the runbook yet, write it down.
 ```
 
-After `teamai pull`, the reminder waits for 30 tool calls and opens with that line.
+After `teamai pull`, the reminder waits for 30 tool calls and opens with that line. The folder holds just those two files.
 
 | Folder | What it holds |
 |---|---|
@@ -495,15 +532,18 @@ After `teamai pull`, the reminder waits for 30 tool calls and opens with that li
 
 - `HOOK.yaml` holds `description` and `with:`. A key left out of `with:` keeps teamai's value.
 - A text is `<text>.md`, with `{{ name }}` variables. With `language: en` or `zh`, `<text>.en.md` or `<text>.zh.md` is used when the folder has it.
+- A text you write replaces all of teamai's languages of it: with your `problem.md` and no `problem.zh.md`, a `zh` team reads your `problem.md`. Write `problem.md` too when you write only one language.
+- A file teamai's folder does not have replaces nothing. Pull warns, names it, and leaves it out. A misspelled `problems.md` shows up this way instead of silently doing nothing. When your folder has its own `HOOK.yaml`, it may add files.
+- You cannot remove a file of teamai's folder from yours. `teamai list hooks --json` shows which file comes from where.
 - Each folder's `README.md` lists its parameters with their ranges, the variables each text offers, and the settings that turn it off. Those settings stay where they were, such as `sharing.contributeHint.enabled`.
 
-Pull refuses a replacement that sets a value out of range or a key the default does not take, reads a variable a text does not offer, leaves a text out, or has a `command`, and keeps teamai's folder in force:
+Pull checks the folder your files and teamai's make together. It refuses one that sets a value out of range or a key the default does not take, reads a variable a text does not offer, lacks the base `<text>.md` of a text you wrote in one language, or has a `command`, and keeps teamai's folder in force:
 
 ```text
 hooks/teamai-friction-reminder/ is refused, and teamai's default stays in force until it is fixed: HOOK.yaml: with.min_tools must be a whole number from 1 to 1000
 ```
 
-A replacement replaces for the whole team, so pull refuses one in a namespace, such as `hooks/payments/teamai-friction-reminder/`. `teamai review --branch` fails a replacement pull refuses before you merge it.
+A replacement replaces for the whole team, so pull refuses one in a namespace, such as `hooks/payments/teamai-friction-reminder/`. `teamai review --branch` fails a replacement pull refuses, or one with a file that replaces nothing, before you merge it.
 
 ## MCP servers
 
@@ -758,7 +798,7 @@ If the team recreates a retired agent at its old namespace, edit that namespace 
 
 ## Reserved folder names
 
-A directory that holds its type's marker, at any depth, is a folder: one resource, and every file in it is that resource's. A skill is the same, `skills/<name>/SKILL.md`.
+A directory that holds its type's marker, at any depth, is a folder: one resource, and every file in it is that resource's. A skill is the same, `skills/<name>/SKILL.md`, and, like the other types, it can also be one file, `skills/<name>.md`.
 
 | Directory | Marker | This release |
 |---|---|---|
@@ -767,20 +807,17 @@ A directory that holds its type's marker, at any depth, is a folder: one resourc
 | `rules/` | `RULE.md` | Reads it: [rules as folders](#rules-as-folders-a-deterministic-skill) |
 | `mcp/` | `MCP.yaml` | Reads it: [MCP servers](#mcp-servers) |
 | `benchmarks/` | `SUITE.yaml` | Reads it: [suites](benchmarks.md#write-a-suite) |
-| `scorers/` | `SCORER.md` | Skips it |
-| `agents/` | `AGENT.md` | Skips it |
+| `scorers/` | `SCORER.md` | Reads it: [scorer folders](scorers.md#a-scorer-folder) |
+| `agents/` | `AGENT.md` | Reads it: [agent folders](#agents-as-folders) |
 
-A scorer or agent folder is skipped whole, and the rest of the team repo pulls as usual:
+A folder is one resource, whatever else it holds:
 
 ```text
 agents/
-├── code-reviewer.yaml          delivered: agent "code-reviewer"
+├── code-reviewer.md            delivered: agent "code-reviewer"
 └── reviewer/
-    ├── AGENT.md                skipped: agents/reviewer/ is an agent folder
-    └── checklist.md            skipped
-scorers/
-└── strict/
-    └── SCORER.md               skipped: scorers/strict/ is a scorer folder
+    ├── AGENT.md                delivered: agent "reviewer"
+    └── rubric.md               delivered with the folder
 rules/
 ├── style.md                    delivered: rule "style"
 └── api-style/
@@ -788,16 +825,14 @@ rules/
     └── checklist.md            delivered with the folder
 ```
 
-Pull says so once per folder. A pull a hook starts writes the same lines to `~/.teamai/debug.log`:
+A teamai from before a folder type was read skips such a folder whole, and the rest of the team repo pulls as usual. It says so once per folder, and a pull a hook starts writes the line to `~/.teamai/debug.log`:
 
 ```console
 $ teamai pull
 ⚠ agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.
-⚠ scorers/strict/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.
-✔ [user] Synced 2 rule(s)
 ```
 
-`teamai status`, `teamai doctor`, `teamai review --branch` and the dashboard list the same folders. Push leaves them alone, and the team declares nothing.
+Have every member run `teamai update` before the team adds an agent or scorer folder.
 
 The name must match exactly. `rules/lint/rule.md` is still the rule `lint/rule`, on macOS and Windows too.
 

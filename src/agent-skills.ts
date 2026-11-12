@@ -4,6 +4,7 @@ import { listDirs, pathExists, readFileSafe } from './utils/fs.js';
 import { detectInstalledAgents, type ResolvedAgent } from './known-agents.js';
 import { isCliOwnedSkillName } from './builtin-skills.js';
 import { generatedSkillAt } from './workflow/discovery/generated-marker.js';
+import { readTeamSkills } from './resources/skills.js';
 import type { LocalConfig, TeamaiConfig } from './types.js';
 import { parseFrontmatter } from './utils/frontmatter.js';
 import { log } from './utils/logger.js';
@@ -90,32 +91,14 @@ export async function buildClassifyContext(localConfig: LocalConfig): Promise<Cl
 }
 
 /**
- * Walk the team repo `skills/` directory, returning a map of
- * skill name → namespace. Flat skills get an empty namespace.
+ * The team repo's skills by name (`readTeamSkills`), each with its namespace;
+ * a root skill has none and wins over a namespace skill of its name.
  */
 export async function collectTeamRepoSkills(repoPath: string): Promise<Map<string, { namespace?: string }>> {
-  const teamSkillsDir = path.join(repoPath, 'skills');
   const result = new Map<string, { namespace?: string }>();
 
-  if (!await pathExists(teamSkillsDir)) return result;
-
-  const topDirs = await listDirs(teamSkillsDir);
-
-  for (const dir of topDirs) {
-    const dirPath = path.join(teamSkillsDir, dir);
-    const hasSkillMd = await pathExists(path.join(dirPath, 'SKILL.md'));
-
-    if (hasSkillMd) {
-      result.set(dir, {});
-    } else {
-      const subDirs = await listDirs(dirPath);
-
-      for (const subDir of subDirs) {
-        if (!result.has(subDir)) {
-          result.set(subDir, { namespace: dir });
-        }
-      }
-    }
+  for (const { name, namespace } of (await readTeamSkills(repoPath)).skills) {
+    if (!result.has(name)) result.set(name, namespace === undefined ? {} : { namespace });
   }
 
   return result;

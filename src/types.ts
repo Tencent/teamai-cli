@@ -1361,7 +1361,7 @@ export const StateSchema = z.object({
     children: z.string().optional(),
     /** The selection the last pull that delivered into this checkout read. Absent in a record an older CLI wrote. */
     selection: DeliverySelectionSchema.optional(),
-    /** The folders the last full pull of this checkout left out (#1791), by path. Absent in a record an older CLI wrote. */
+    /** The folders an older release left out of the last full pull (#1791), by path: pull syncs in full while it is set, and never writes it. */
     skippedFolders: z.array(z.string()).optional(),
     /**
      * The `claudeMdExcludes` entries teamai wrote into this checkout's
@@ -1370,7 +1370,7 @@ export const StateSchema = z.object({
     claudeMdExcludes: z.array(z.string()).optional(),
     /**
      * The `permissions.additionalDirectories` entries teamai added to a tool's user settings so the tool reads the
-     * rule folders this scope delivers (#1787), by settings file.
+     * rule and agent folders this scope delivers (#1787), by settings file.
      */
     ruleFolderGrants: z.record(z.string(), z.array(z.string())).optional(),
   })).optional(),
@@ -1601,6 +1601,11 @@ export interface CopyOrigin {
   pathspec: string;
   /** teamai's renders of one version; null when that version renders nothing here. */
   renders?: ReadonlyArray<(content: Buffer, version: { path: string; blob: string }) => string | Uint8Array | null>;
+  /**
+   * Other places a version of this copy comes from, each proved as this origin is: a skill's SKILL.md is also a
+   * version of `skills/**\/<name>.md`, and an agent's copy a render of `agents/**\/<name>/AGENT.md`.
+   */
+  alternatives?: readonly CopyOrigin[];
   /**
    * The path holds an agent teamai ships under that name, which every pull
    * wrote over before a team agent could replace it: a file there with no

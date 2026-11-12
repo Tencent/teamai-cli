@@ -253,29 +253,35 @@ describe('dashboard scorer results', () => {
     expect(view.selected?.agreement.judges).toMatchObject([{ labels: 2, paired: 2, agree: 1, judgePassedHumanFailed: 1 }]);
   });
 
-  it('pairs hand labels with an older rubric by the values the scorer listed at its team revision', async () => {
+  it.each([
+    ['a scorer file', 'review-quality.md', [], 'review-quality'],
+    ['a scorer folder in a namespace', 'ops/review-quality/SCORER.md', [{ path: 'checklist.md', content: 'Look for a regression test.\n' }], 'review-quality'],
+    ['the scorer file SCORER at the scorers root, beside another scorer', 'SCORER.md', [], 'SCORER'],
+  ] as const)('pairs hand labels with an older rubric of %s by the values the scorer listed at its team revision', async (_form, file, support, scorer) => {
     const { config } = team();
     const repo = config.repo.localPath;
     const rubric = (prompt: string) => `---\nlabels:\n  - { value: good, score: 1, description: Fixed it }\n  - { value: missed-bug, score: 0, description: Left the bug }\npassingScore: 1\n---\n${prompt}\n`;
     const commit = (prompt: string) => {
-      write(path.join(repo, 'scorers', 'review-quality.md'), rubric(prompt));
+      write(path.join(repo, 'scorers', ...file.split('/')), rubric(prompt));
+      for (const { path: at, content } of support) write(path.join(repo, 'scorers', ...path.posix.dirname(file).split('/'), at), content);
+      write(path.join(repo, 'scorers', 'other.md'), rubric(`Judge something else. ${prompt}`));
       git(repo, 'add', '-A');
       git(repo, 'commit', '-q', '-m', prompt);
-      return { sourceHash: scorerSourceHash(rubric(prompt)), teamRevision: git(repo, 'rev-parse', 'HEAD') };
+      return { sourceHash: scorerSourceHash(rubric(prompt), support.length > 0 ? [...support] : undefined), teamRevision: git(repo, 'rev-parse', 'HEAD') };
     };
     const first = commit('Judge whether the session fixed the bug.');
     const second = commit('Judge whether the session fixed the bug. Read the tests it ran.');
     commit('Judge whether the session fixed the bug and added a test.');
     await syncScorerDefinitions(config);
     publishLabels(config, 'bob', [
-      sessionLabel('one', { rubric: second }),
-      sessionLabel('two', { rubric: second }),
-      sessionLabel('one', { rubric: first, judge: { kind: 'human' }, label: 'missed-bug', score: 0, passed: false }),
-      sessionLabel('two', { rubric: first, judge: { kind: 'human' } }),
+      sessionLabel('one', { scorer, rubric: second }),
+      sessionLabel('two', { scorer, rubric: second }),
+      sessionLabel('one', { scorer, rubric: first, judge: { kind: 'human' }, label: 'missed-bug', score: 0, passed: false }),
+      sessionLabel('two', { scorer, rubric: first, judge: { kind: 'human' } }),
     ]);
     const opened = await scorerResults({ config, query: { windowDays: 30 }, now: NOW });
     const cohort = opened.scorers[0]?.cohorts.find((one) => one.rubric.sourceHash === second.sourceHash && one.judge.kind === 'model');
-    const view = await scorerResults({ config, query: { windowDays: 30, scorer: 'review-quality', cohort: cohort?.id }, now: NOW });
+    const view = await scorerResults({ config, query: { windowDays: 30, scorer, cohort: cohort?.id }, now: NOW });
     expect(view.selected?.agreement.judges).toMatchObject([{ labels: 2, paired: 2, agree: 1, judgePassedHumanFailed: 1 }]);
   });
 

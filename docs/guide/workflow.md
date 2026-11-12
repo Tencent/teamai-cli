@@ -1357,13 +1357,14 @@ cp "$(npm root -g)/teamai-cli/workflows/teamai-share-learnings.yaml" workflows/t
 
 Three defaults are folders, at `workflows/<name>/WORKFLOW.yaml` in the package where earlier releases had `workflows/<name>.yaml`: `teamai-import-from-mr`, `teamai-codebase-deep-enrich` and `teamai-import-from-repo`. A `workflows/<name>.yaml` your team already has still replaces the default.
 
-A default that is a folder is copied whole, to the same path. To have MR learnings in English name what the review left open, copy `teamai-import-from-mr`:
+A folder of the same name changes a default that is a folder. Put only the files you change in it; every other file, `WORKFLOW.yaml` included, stays teamai's and keeps getting teamai's updates. To have MR learnings in English name what the review left open, copy its prompts:
 
 ```bash
-cp -R "$(npm root -g)/teamai-cli/workflows/teamai-import-from-mr" workflows/
+mkdir -p workflows/teamai-import-from-mr
+cp "$(npm root -g)/teamai-cli/workflows/teamai-import-from-mr/"draft.*.md workflows/teamai-import-from-mr/
 ```
 
-add a section to its English prompt, `workflows/teamai-import-from-mr/draft.en.md`:
+A file you write replaces every language of it, and this workflow reads `draft.zh.md` by name, so keep both. Add a section to the English prompt, `workflows/teamai-import-from-mr/draft.en.md`:
 
 ```diff
  ## Lessons
@@ -1381,7 +1382,7 @@ git add workflows/teamai-import-from-mr && git commit -m "MR learnings name open
 teamai pull
 ```
 
-The team's folder replaces teamai's as a whole, `draft.zh.md` and `README.md` included. Keep every file its `WORKFLOW.yaml` names.
+Pull checks the folder your files and teamai's make together. A file teamai's folder does not have replaces nothing: pull warns, names it, and leaves it out, unless your folder has its own `WORKFLOW.yaml`, which may name it. A run of such a folder records the team commit and the teamai version that gave it its files, so a machine on another teamai version cannot continue it. A `workflows/teamai-import-from-mr.yaml` file replaces the folder whole.
 
 describe still proposes values for the inputs that keep their name and type from the default, and leaves any other input to the person:
 

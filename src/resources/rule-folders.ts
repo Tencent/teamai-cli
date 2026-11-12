@@ -11,7 +11,7 @@ import { DeliveredFolders, type DeliveredFolderRef, type FolderDelivery } from '
 import { FolderFiles, type FolderFile } from './folder-files.js';
 import { isLanguageVariant, RESOURCE_LAYOUTS, type ResourceDiagnostic } from './resolver.js';
 import { splitRuleFrontmatter } from './team-rule.js';
-import { ruleFolderReachOf } from '../tools.js';
+import { folderReachOf } from '../tools.js';
 import type { LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
 import { pathExists, readJsonObject, writeJson } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
@@ -89,37 +89,30 @@ async function text(rule: RuleFolder, language: TeamaiConfig['language']): Promi
   const dir = path.dirname(rule.sourcePath);
   const variantName = await languageFile(dir, 'RULE', language);
 
-  if (variantName === RESOURCE_MARKER) return `${base}\n`;
+  if (variantName === RESOURCE_MARKER) return composeText({ rule, base, variant: null });
   const variant = await readTextFile(path.join(dir, variantName));
 
-  if (variant === null) return null;
-  const { block, body } = splitRuleFrontmatter(variant);
+  return variant === null ? null : composeText({ rule, base, variant: { name: variantName, content: variant } });
+}
 
-  if (block !== '') warnOnce(variantFrontmatterMessage(rule, variantName));
+/** The rule text of `rule` from its `RULE.md` text and the language variant picked for it, if any, as `text` gives it. */
+function composeText(input: { readonly rule: RuleFolder; readonly base: string; readonly variant: { readonly name: string; readonly content: string } | null }): string {
+  if (input.variant === null) return `${input.base}\n`;
+  const { block, body } = splitRuleFrontmatter(input.variant.content);
 
-  return `${splitRuleFrontmatter(base).block}${body}\n`;
+  if (block !== '') warnOnce(variantFrontmatterMessage(input.rule, input.variant.name));
+
+  return `${splitRuleFrontmatter(input.base).block}${body}\n`;
 }
 
 /** Whether `tool` reads a rule folder's files outside the project without a prompt, once teamai grants what it can. */
 function readsOutsideProject(tool: string): boolean {
-  return ruleFolderReachOf(tool).reach !== 'copy';
+  return folderReachOf(tool).reach !== 'copy';
 }
 
-/**
- * `text` with `${TEAMAI_RULE_DIR}` naming `rule`'s folder in `localConfig`'s scope, where every tool reads it: in a
- * project the worktree's `.teamai/delivered/rules/`, by its path from the project root for a tool that reads nothing
- * outside the project; in user scope the data home (`sync` warns for the tools that cannot read it). `tool` null: text
- * teamai injects for the tools without native rules, none of which reads outside the project.
- */
+/** `text` with `${TEAMAI_RULE_DIR}` naming `rule`'s folder where `tool` reads it (`DeliveredFolders.renderFor`; `sync` warns for the tools that cannot read it). */
 function render(ruleText: string, at: { readonly localConfig: LocalConfig; readonly rule: RuleFolder; readonly tool: string | null }): string {
-  const dest = DeliveredFolders.pathOf(at.localConfig, refOf(at.rule));
-  const { projectRoot } = at.localConfig;
-
-  if (DeliveredFolders.worktreeRoot(at.localConfig) === null || projectRoot === undefined || (at.tool !== null && readsOutsideProject(at.tool))) {
-    return DeliveredFolders.render(ruleText, { type: 'rules', dest });
-  }
-
-  return DeliveredFolders.render(ruleText, { type: 'rules', dest: path.relative(projectRoot, dest) });
+  return DeliveredFolders.renderFor(ruleText, { localConfig: at.localConfig, ref: refOf(at.rule), tool: at.tool });
 }
 
 /**
@@ -230,4 +223,4 @@ async function grant(input: {
   return owned;
 }
 
-export const RuleFolders = { isFolder, pathOf, isDelivered, deliveredNames, languageFile, readTextFile, text, variantNotes, render, sync, grant } as const;
+export const RuleFolders = { isFolder, pathOf, isDelivered, deliveredNames, languageFile, readTextFile, text, composeText, variantNotes, render, sync, grant } as const;

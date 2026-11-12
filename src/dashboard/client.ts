@@ -3,7 +3,6 @@ import { scorersClient } from './scorers-client.js';
 import { selfImprovementClient } from './self-improvement-client.js';
 import { improvementClient } from './improvement-client.js';
 import { handoffView } from './handoff-view.js';
-import { skippedFoldersView } from './skipped-folders-view.js';
 import { layeredResourcesView } from './layered-resources-view.js';
 import { agentHarnessView } from './agent-harness-view.js';
 import { chartFitView } from './chart-fit-view.js';
@@ -85,7 +84,7 @@ function overview() {
  const working=sessions.filter(s=>s.status==='running').length;
  const waiting=sessions.filter(s=>s.status==='waiting_for_input').length;
  const maintenance=kb?Object.values(kb.maintenanceCounts).reduce((a,b)=>a+b,0):null;
- return skippedFoldersNotice(rules&&rules.skippedFolders)+layeredResourcesNotice(layered)+'<div class="cards"><article class="card"><div class="cardtop">'+label('Sessions')+icon('execution')+'</div><div class="source">'+label('Local live sessions')+'</div><div class="big summary-value">'+(haveSessions?number(sessions.length):'—')+'<small>'+label('sessions on this machine')+'</small></div><div class="statusline">'+number(working)+' '+label('Working')+' · '+number(waiting)+' '+label('Your turn')+'</div><div class="cardfoot">'+link('execution','View sessions')+'</div></article>'+
+ return layeredResourcesNotice(layered)+'<div class="cards"><article class="card"><div class="cardtop">'+label('Sessions')+icon('execution')+'</div><div class="source">'+label('Local live sessions')+'</div><div class="big summary-value">'+(haveSessions?number(sessions.length):'—')+'<small>'+label('sessions on this machine')+'</small></div><div class="statusline">'+number(working)+' '+label('Working')+' · '+number(waiting)+' '+label('Your turn')+'</div><div class="cardfoot">'+link('execution','View sessions')+'</div></article>'+
  '<article class="card"><div class="cardtop">'+label('Knowledge Base')+'</div>'+source()+'<div class="big summary-value">'+(kb?number(kb.overallCoveragePct)+'%':'—')+'<small>'+label('Knowledge coverage')+'</small></div><div class="statusline">'+(kb?number(kb.totalEntries)+' '+label('Entries')+' · '+number(kb.silentCount)+' '+label('Never recalled'):label(kbError?'Unavailable':'Loading…'))+'</div><div class="cardfoot">'+link('context','View KB Health')+'</div></article>'+
  '<article class="card"><div class="cardtop">'+label('Improvement Center')+'</div><div class="source">'+label('KB Health maintenance candidates')+'</div><div class="big summary-value">'+(maintenance===null?'—':number(maintenance))+'<small>'+label('candidates for review')+'</small></div><div class="statusline">'+(kb?number(kb.maintenanceCounts.promote)+' '+label('Promotion')+' · '+number(kb.maintenanceCounts.prune)+' '+label('Archive')+' · '+number(kb.maintenanceCounts.stale)+' '+label('Stale'):label(kbError?'Unavailable':'Loading…'))+'</div><div class="cardfoot">'+link('improvement','View maintenance')+'</div></article></div>'+
  (kbError?errorPanel('Could not refresh KB Health. Any displayed report is the last successful result.','kb'):'')+sharingSection()+memberSettingsSection()+trendPanel()+outcomePanel()+sessionTable(sessions);
@@ -177,7 +176,7 @@ function resources() {
  // The two panels load and fail independently: a rules outage must not hide
  // the skills list or block its exclusions, and vice versa.
  if((rules&&rules.configured===false)||(skills&&skills.configured===false))return '<section class="panel"><div class="empty"><h2>'+label('No TeamAI scope in this workspace')+'</h2><p>'+label('Pick a project workspace above, or set one up with teamai init.')+'</p></div></section>';
- return skippedFoldersPanel(rules&&rules.skippedFolders)+layeredSection()+skillsPanel()+rulesPanel();
+ return layeredSection()+skillsPanel()+rulesPanel();
 }
 // Which definition of each resource applies (#1787): loads and fails apart from
 // rules and skills, since it runs pull's definition sync, dry.
@@ -269,7 +268,6 @@ function runTable(rows, local) {
 function handoffsOf() { return workflows&&workflows.reported&&workflows.reported.state==='ok'?workflows.reported.handoffs||[]:[]; }
 function handoffBadge(id) { const h=handoffsOf().find(x=>x.run===id); return !h?'':h.offer?' · <span class="good">'+label('Offered')+'</span>':h.isMine?'':' · <span class="amber">'+label('Held by')+' <span data-verbatim>'+e(h.owner.user)+'</span></span>'; }
 ${handoffView}
-${skippedFoldersView}
 ${layeredResourcesView}
 ${agentHarnessView}
 ${judgingView}

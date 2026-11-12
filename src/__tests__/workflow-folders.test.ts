@@ -10,6 +10,7 @@ import { DefaultWorkflows } from '../default-workflows.js';
 import { getHandler } from '../resources/index.js';
 import { RESOURCE_LAYOUTS, Resources } from '../resources/resolver.js';
 import { getDataHome } from '../types.js';
+import { getCurrentVersion } from '../package-info.js';
 import { log } from '../utils/logger.js';
 import { folderOf, loadCachedWorkflow, namespaceConflictOf } from '../workflow/cache.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
@@ -161,7 +162,7 @@ describe('workflow folders', () => {
 
     expect(result.invalid).toMatchObject([{
       code: 'workflow_folder_invalid',
-      message: `workflows/release/ is not a valid workflow folder: it holds ${Buffer.byteLength(RELEASE) + 10 + 1_060_000} bytes, more than the 1048576 bytes (1 MB) a workflow folder may hold. `
+      message: `workflows/release/ is not a valid workflow folder: it holds ${Buffer.byteLength(RELEASE) + 10 + 1_060_000} bytes, more than the 1048576 bytes (1 MB) a folder may hold. `
         + 'Its largest files: data/part-0.txt (300000 bytes), data/part-1.txt (250000 bytes), data/part-2.txt (200000 bytes), data/part-3.txt (150000 bytes), data/part-4.txt (100000 bytes)',
     }]);
   });
@@ -567,6 +568,58 @@ steps:
     expect((await syncScorersThenWorkflows(team.config)).invalid).toEqual([]);
 
     expect(await loadCachedWorkflow(team.config, 'teamai-score')).toMatchObject({ source: 'team', relativePath: 'workflows/teamai-score/WORKFLOW.yaml' });
+  });
+
+  it('takes every file a team folder of a default folder\'s name leaves out from teamai\'s, and records the teamai version that gave them', async () => {
+    const team = teamScope();
+    team.put('workflows/teamai-import-from-repo/narrative.md', 'Write our narrative, in our words.\n');
+    team.commit();
+
+    expect((await syncScorersThenWorkflows(team.config)).invalid).toEqual([]);
+
+    const cached = await loadCachedWorkflow(team.config, 'teamai-import-from-repo');
+    const shipped = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'workflows', 'teamai-import-from-repo', 'WORKFLOW.yaml'), 'utf8');
+    expect({
+      source: cached?.source,
+      files: cached?.files?.map((file) => [file.path, file.path === 'narrative.md' ? file.content : file.path === 'WORKFLOW.yaml' && file.content === shipped]),
+      origin: cached ? DefaultWorkflows.originOf(cached) : undefined,
+    }).toEqual({
+      source: 'team',
+      files: [['README.md', false], ['README.zh-CN.md', false], ['WORKFLOW.yaml', true], ['narrative.md', 'Write our narrative, in our words.\n']],
+      origin: { source: 'team', teamaiVersion: getCurrentVersion() },
+    });
+  });
+
+  it('refuses a team folder over a default whose resulting folder holds more than 1 MB, though its own files hold less', async () => {
+    const team = teamScope();
+    team.put('workflows/teamai-import-from-repo/narrative.md', 'x'.repeat(1024 * 1024 - 100));
+    team.commit();
+
+    const result = await syncScorersThenWorkflows(team.config);
+
+    expect({
+      invalid: result.invalid.map(({ file, code, message }) => ({ file, code, message: message.split(' bytes, ')[1]?.split('.')[0] })),
+      source: (await loadCachedWorkflow(team.config, 'teamai-import-from-repo'))?.source,
+    }).toEqual({
+      invalid: [{ file: 'workflows/teamai-import-from-repo/WORKFLOW.yaml', code: 'workflow_folder_invalid', message: 'more than the 1048576 bytes (1 MB) a folder may hold' }],
+      source: 'default',
+    });
+  });
+
+  it('leaves out a file of a team folder over a default that replaces no file of it, warning about it', async () => {
+    const team = teamScope();
+    team.put('workflows/teamai-import-from-repo/narative.md', 'A typo.\n');
+    team.commit();
+    const warn = vi.spyOn(log, 'warn');
+
+    const result = await syncScorersThenWorkflows(team.config);
+
+    expect({ strays: result.strays, files: (await loadCachedWorkflow(team.config, 'teamai-import-from-repo'))?.files?.map((file) => file.path) }).toEqual({
+      strays: [{ path: 'workflows/teamai-import-from-repo/narative.md', message: expect.stringContaining('replaces no file of teamai\'s default') }],
+      files: ['README.md', 'README.zh-CN.md', 'WORKFLOW.yaml', 'narrative.md'],
+    });
+    expect(warn).toHaveBeenCalledWith('[workflows] workflows/teamai-import-from-repo/narative.md replaces no file of teamai\'s default, so it is not used and teamai\'s files stay in force. '
+      + 'Name it after the file it replaces, or replace the folder\'s marker too, so it can name the file.');
   });
 
   it('skips a teamai- folder that matches no default with a warning, at the root and in a namespace, and keeps a teamai- file as today', async () => {

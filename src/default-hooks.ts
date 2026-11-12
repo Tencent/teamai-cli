@@ -221,7 +221,7 @@ function readFolder<TName extends DefaultHookName>(name: TName, files: readonly 
     const baseText = read(`${text}.md`);
 
     if (baseText === undefined) {
-      refusals.push(`${text}.md is missing. A replacement holds every text of teamai's folder: copy ${text}.md from it`);
+      refusals.push(`${text}.md is missing: the folder replaces the ${text} text in another language, which replaces every language of it. Add ${text}.md`);
       continue;
     }
 

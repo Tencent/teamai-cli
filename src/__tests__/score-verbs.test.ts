@@ -109,7 +109,12 @@ async function team(workflows: Record<string, string>, scorers: Record<string, s
   fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
   fs.mkdirSync(path.join(knowledge, 'scorers'), { recursive: true });
   for (const [name, text] of Object.entries(workflows)) fs.writeFileSync(path.join(knowledge, 'workflows', `${name}.yaml`), text);
-  for (const [name, text] of Object.entries(scorers)) fs.writeFileSync(path.join(knowledge, 'scorers', `${name}.md`), text);
+  for (const [name, text] of Object.entries(scorers)) {
+    // A name with a `/` is a file of a scorer folder, by its path under scorers/.
+    const file = path.join(knowledge, 'scorers', ...(name.includes('/') ? name.split('/') : [`${name}.md`]));
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text);
+  }
   const config: LocalConfig = {
     repo: { localPath: knowledge, remote: 'local', kind: 'self' },
     username: 'tester', scope: 'project', additionalRoles: [], projectRoot: checkout, dataHome: path.join(root, 'data'),
@@ -865,6 +870,26 @@ describe('score evidence', () => {
     });
   });
 
+  it('gives the judge a scorer folder\'s files in its evidence, at the path its prompt names', async () => {
+    const config = await team({ review: REVIEW }, {
+      quality: scorer(),
+      'coverage/SCORER.md': scorer().replace('Judge the work.', 'Judge the work by ${TEAMAI_SCORER_DIR}/rubric.md.'),
+      'coverage/rubric.md': 'Label bad unless the tests cover pagination.\n',
+    });
+    const runId = await reviewedRun(config);
+    const subject = `run:${runId}:review:1`;
+    const { run, evidence, scorers } = await plannedGroup(config, subject, { scorers: ['coverage'] });
+    const dir = path.join(runScratchDir(config, run.runId), evidence.attempt);
+    const written = await ScoreVerbs.evidence({ subject, scorers }, evidence.ctx);
+    const { rubric } = z.object({ rubric: z.string() }).parse(written.ok ? written.output : {});
+    const named = path.join(dir, 'scorers', 'coverage', 'rubric.md');
+
+    expect(rubric).toContain(`Judge the work by ${named.split(path.sep).join('/')}.`);
+    expect(rubric).not.toContain('${');
+    expect(fs.readFileSync(named, 'utf8')).toBe('Label bad unless the tests cover pagination.\n');
+    expect(fs.readFileSync(path.join(dir, 'prompt.md'), 'utf8')).not.toContain('${');
+  });
+
   it('asks the judge for the tool its scorer prefers, then the tool the pass ran in', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer({ extra: 'tool: codex\n' }), coverage: scorer() });
     const runId = await reviewedRun(config);
@@ -941,6 +966,42 @@ describe('the rubric a pass is judged by is the one its run started with', () =>
       const { pinned, labelled } = await revisionsOf(config, runId, 'quality');
       expect(labelled).toBe(pinned);
     }
+  });
+
+  it('judges an open run\'s pass with the scorer folder files it started with after one is edited, pushed and pulled', async () => {
+    const folder = { 'quality/SCORER.md': scorer().replace('Judge the work.', 'Judge the work by ${TEAMAI_SCORER_DIR}/rubric.md.'), 'quality/rubric.md': 'Pass when the tests cover pagination.\n' };
+    const { config, push } = await pushedTeam(await team({ review: REVIEW_ONE }, folder));
+    const open = await reviewedRun(config);
+    fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'quality', 'rubric.md'), 'Pass when the tests cover sorting.\n');
+    push();
+    await syncScorersThenWorkflows(config);
+    const next = await reviewedRun(config);
+    const rubricFile = async (runId: string): Promise<string> => {
+      const named = /Judge the work by (\S+)\.\n/.exec(await rubricOf(config, runId))?.[1] ?? '';
+      return fs.readFileSync(named, 'utf8');
+    };
+    const sourceHash = async (runId: string): Promise<string | undefined> => {
+      const run = await readRun(config, runId);
+      const read = typeof run === 'object' ? await RunScorers.of(config, run) : undefined;
+      return read?.ok ? read.pins.quality?.sourceHash : undefined;
+    };
+
+    expect(await rubricFile(open)).toBe('Pass when the tests cover pagination.\n');
+    expect(await rubricFile(next)).toBe('Pass when the tests cover sorting.\n');
+    expect(await sourceHash(open)).not.toBe(await sourceHash(next));
+    for (const runId of [open, next]) {
+      const { pinned, labelled } = await revisionsOf(config, runId, 'quality');
+      expect(labelled).toBe(pinned);
+    }
+  });
+
+  it('names no team revision for a scorer folder whose support file the commit does not hold', async () => {
+    const folder = { 'quality/SCORER.md': scorer().replace('Judge the work.', 'Judge the work by ${TEAMAI_SCORER_DIR}/rubric.md.'), 'quality/rubric.md': 'Pass when the tests cover pagination.\n' };
+    const { config } = await pushedTeam(await team({ review: REVIEW_ONE }, folder));
+    fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'quality', 'rubric.md'), 'Pass when the tests cover sorting.\n');
+    const runId = await reviewedRun(config);
+
+    expect(await revisionsOf(config, runId, 'quality')).toEqual({ pinned: expect.stringMatching(/^[0-9a-f]{40}$/), labelled: undefined });
   });
 
   it('judges with an edit the checkout had not committed when the run started, and not with one made after', async () => {
@@ -2033,6 +2094,70 @@ describe('scorer files tried in a teamai-score run', () => {
     expect(await Marks.states(config, [{ scorer: 'quality', subject: SESSION_KEY, sourceHash }], markFacts(config, NOW))).toEqual([{ kind: 'unmarked' }]);
   });
 
+  it('tries a scorer folder by its SCORER.md, and gives the judge the files beside it', async () => {
+    const { config } = await drafted();
+    const file = path.join(root, 'draft', 'style', 'SCORER.md');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, scorer({ rate: 0 }).replace('Judge the work.', 'Judge the work by ${TEAMAI_SCORER_DIR}/rubric.md.'));
+    fs.writeFileSync(path.join(root, 'draft', 'style', 'rubric.md'), 'Pass when the client retries.\n');
+    const seen: { rubric?: string; read?: string } = {};
+    await walk(config, 'session:claude-code:one', { judge: { answer: { label: 'good', reasoning: 'It retries.' } }, inputs: { files: [file], store: false, demand: 'named' }, after: {
+      'score[0].evidence': async (answers) => {
+        const evidence = answers.get('score[0].evidence');
+        seen.rubric = evidence?.ok ? String(evidence.output.rubric) : '';
+        seen.read = fs.readFileSync(/by (\S+)\.\n/.exec(seen.rubric)?.[1] ?? '', 'utf8');
+      },
+    } });
+
+    expect(seen.rubric).toContain('Judge the work by ');
+    expect(seen.rubric).not.toContain('${');
+    expect(seen.read).toBe('Pass when the client retries.\n');
+  });
+
+  it('tries a scorer folder by ./SCORER.md from inside it, whose name is its folder\'s', async () => {
+    const { config } = await drafted();
+    const dir = path.join(root, 'draft', 'style');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'SCORER.md'), scorer({ rate: 0 }));
+    const cwd = process.cwd();
+    process.chdir(dir);
+
+    try {
+      const planned = await ScoreVerbs.plan({ subject: 'session:claude-code:one', scorers: '[]', batch: 'false', demand: 'named' }, (await (await scoreRun(config, { subject: 'session:claude-code:one', demand: 'named', files: ['./SCORER.md'], store: false })).next('plan')).ctx);
+      expect(planned).toMatchObject({ ok: true });
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  it('tries scorers/scorers/SCORER.md as the scorer folder scorers, with the files beside it', async () => {
+    const { config } = await drafted();
+    const dir = path.join(root, 'scorers', 'scorers');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'SCORER.md'), scorer({ rate: 0 }).replace('Judge the work.', 'Judge the work by ${TEAMAI_SCORER_DIR}/rubric.md.'));
+    fs.writeFileSync(path.join(dir, 'rubric.md'), 'Pass when the client retries.\n');
+    const cwd = process.cwd();
+    process.chdir(root);
+
+    try {
+      const planned = await ScoreVerbs.plan({ subject: 'session:claude-code:one', scorers: '[]', batch: 'false', demand: 'named' }, (await (await scoreRun(config, { subject: 'session:claude-code:one', demand: 'named', files: ['scorers/scorers/SCORER.md'], store: false })).next('plan')).ctx);
+      expect(planned).toMatchObject({ ok: true });
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  it('tries scorers/SCORER.md as the scorer file SCORER, whatever sits beside it', async () => {
+    const { config } = await drafted();
+    const file = path.join(root, 'scorers', 'SCORER.md');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, scorer({ rate: 0 }));
+    fs.symlinkSync(path.join(root, 'nowhere.md'), path.join(root, 'scorers', 'gone.md'));
+    const planned = await ScoreVerbs.plan({ subject: 'session:claude-code:one', scorers: '[]', batch: 'false', demand: 'named' }, (await (await scoreRun(config, { subject: 'session:claude-code:one', demand: 'named', files: [file], store: false })).next('plan')).ctx);
+
+    expect(planned).toMatchObject({ ok: true });
+  });
+
   it('gives the judge the session\'s first prompt alone when control is true', async () => {
     const { config, file } = await drafted();
     const seen: { transcript?: string } = {};
@@ -2054,5 +2179,7 @@ describe('scorer files tried in a teamai-score run', () => {
     expect(await planOf({ files: [file], store: true })).toEqual({ ok: false, code: 'invalid_arguments', message: `A scorer file's label is never stored, and this teamai-score run stores its labels: ${file}. Start it with store false.` });
     fs.writeFileSync(file, scorer().replace('passingScore: 1', 'passingScore: 2'));
     expect(await planOf({ files: [file], store: false })).toMatchObject({ ok: false, code: 'scorer_invalid' });
+    fs.writeFileSync(file, scorer().replace('Judge the work.', 'Judge the work by ${TEAMAI_SCORER_DIR}/rubric.md.'));
+    expect(await planOf({ files: [file], store: false })).toMatchObject({ ok: false, code: 'scorer_invalid', message: expect.stringContaining('only a scorer folder has') });
   });
 });

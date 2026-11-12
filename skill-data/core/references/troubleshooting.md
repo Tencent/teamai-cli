@@ -220,20 +220,20 @@ For new HTTP local-agent MCP installs, a failed initial ownership-manifest write
 
 ## "<dir>/ is a <type> folder, which this teamai cannot read yet; it was skipped"
 
-`pull`, `status`, `doctor` and `review --branch` print one such line per
-directory that holds a folder marker of a type this release cannot read:
-`SCORER.md` under `scorers/` or `AGENT.md` under `agents/`. Workflow, hook,
-rule, MCP server and suite folders are read. Nothing in the directory is
+An older teamai's `pull`, `status`, `doctor` and `review --branch` print one
+such line per directory that holds a folder marker of a type it cannot read,
+such as `AGENT.md` under `agents/` or `SCORER.md` under `scorers/`. This
+release reads every folder type. Nothing in the directory is
 delivered, run or pushed; the rest of the team repo is. A hook-started pull writes it to
 `~/.teamai/debug.log`.
 
 ```console
 $ teamai pull
-⚠ scorers/strict/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.
+⚠ agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.
 ```
 
 - The team means it as a folder: tell the user to run `teamai update`, then
-  `teamai pull`. Until a release reads that type, the folder stays skipped.
+  `teamai pull`.
 - The file is an old resource that only happens to carry the name: the team
   renames it with `git mv`. Do not rename it for them.
 - Only the exact name counts: `rule.md` or `workflow.yaml` is read as before.
@@ -252,6 +252,19 @@ are never named. `review --branch` names every such file.
   an old `rules/onboarding/RULE.md` that arrived as `onboarding/RULE`: the team
   renames `RULE.md` (`git mv rules/onboarding/RULE.md rules/onboarding/overview.md`)
   or moves the file out of the folder. Do not do it for them.
+
+## "agents/<dir>/ holds AGENT.md, so it is one folder, and <file> in it is one of its files, no longer read on its own"
+
+`pull` prints this once, when the namespace `agents/<dir>/` gains an
+`AGENT.md` and pull removes the copy it delivered before of an agent the
+namespace held. `<dir>` is now one agent, and `<file>` is one of its files. A
+copy the member changed stays, named in its own line.
+
+- The team meant it, such as a `rubric.md` the agent names through
+  `${TEAMAI_AGENT_DIR}`: nothing to do.
+- The namespace's agents should stay agents: the team moves `AGENT.md` into a
+  folder of its own (`git mv agents/<dir>/AGENT.md agents/<dir>/<name>/AGENT.md`).
+  Do not do it for them.
 
 ## "Workspace child <path> is left out" / "<item> differs between ..."
 

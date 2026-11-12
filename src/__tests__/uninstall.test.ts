@@ -1386,7 +1386,8 @@ describe('uninstall', () => {
 
     await uninstall({ force: true });
 
-    expect([await fse.pathExists(copies), await fse.readFile(excludeFile, 'utf8')]).toEqual([false, '# my own\nscratch/\n']);
+    // The .teamai/ that held only them goes too.
+    expect([await fse.pathExists(path.dirname(copies)), await fse.readFile(excludeFile, 'utf8')]).toEqual([false, '# my own\nscratch/\n']);
   });
 
   it('removes the .teamai/delivered/ of every worktree of the project, which the exclude block it removes kept out of git (#1787)', async () => {
@@ -1456,7 +1457,37 @@ describe('uninstall', () => {
     ]).toEqual([true, '- name every endpoint\n', false, true]);
   });
 
-  it('keeps, in another worktree of the project, the rule folder a rule copy there names, and removes the folders no copy names (#1787)', async () => {
+  it('removes the copies of an agent folder with the folder (#1787)', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    const projectRoot = path.join(tmpDir, 'business-repo');
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    await fse.ensureDir(projectRoot);
+    execFileSync('git', ['init', '-q'], { cwd: projectRoot });
+    await fse.outputFile(path.join(repoPath, 'agents', 'payments', 'reviewer', 'AGENT.md'), 'Apply ${TEAMAI_AGENT_DIR}/rubric.md.\n');
+    const folder = path.join(projectRoot, '.teamai', 'delivered', 'agents', 'payments', 'reviewer');
+    await fse.outputFile(path.join(folder, 'AGENT.md'), 'Apply ${TEAMAI_AGENT_DIR}/rubric.md.\n');
+    const copy = path.join(projectRoot, '.claude', 'agents', 'reviewer.md');
+    await fse.outputFile(copy, `Apply ${folder.split(path.sep).join('/')}/rubric.md.\n`);
+
+    const dataHome = path.join(homeDir, '.teamai', 'projects', 'business-repo-0123456789abcdef');
+    const localConfig = makeLocalConfig(homeDir, repoPath, { scope: 'project', projectRoot, dataHome, enabledAgents: ['claude'] });
+    const record: Record<string, string> = {};
+    const { recordDelivered } = await import('../resources/delivered-copies.js');
+    await recordDelivered(record, copy);
+    await saveStateForScope({
+      ...await loadStateForScope(localConfig),
+      lastPullByWorkspace: { [await checkoutKey(projectRoot)]: { rev: 'r1', targets: [], delivered: record } },
+    }, localConfig);
+    const defaults = TeamaiConfigSchema.parse({ team: 't', repo: 'owner/repo' }).toolPaths;
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: makeTeamConfig({ toolPaths: { claude: defaults.claude } }) });
+
+    await uninstall({ force: true });
+
+    expect([await fse.pathExists(copy), await fse.pathExists(folder)]).toEqual([false, false]);
+  });
+
+  it('keeps, in another worktree of the project, the rule and agent folders a copy there names, and removes the folders no copy names (#1787)', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     const projectRoot = path.join(tmpDir, 'business-repo');
     const linked = path.join(tmpDir, 'business-repo-review');
@@ -1474,6 +1505,11 @@ describe('uninstall', () => {
     }
     // The member edited the copy in the other worktree, which this uninstall leaves.
     await fse.outputFile(path.join(linked, '.claude', 'rules', 'api-style.md'), 'Read .teamai/delivered/rules/api-style/checklist.md first.\n');
+    const agentFolder = (root: string, name: string): string => path.join(root, '.teamai', 'delivered', 'agents', name);
+    for (const root of [projectRoot, linked]) {
+      for (const name of ['reviewer', 'planner']) await fse.outputFile(path.join(agentFolder(root, name), 'AGENT.md'), 'Apply ${TEAMAI_AGENT_DIR}/rubric.md.\n');
+    }
+    await fse.outputFile(path.join(linked, '.claude', 'agents', 'reviewer.md'), `Apply ${agentFolder(linked, 'reviewer').split(path.sep).join('/')}/rubric.md, my way.\n`);
 
     const dataHome = path.join(homeDir, '.teamai', 'projects', 'business-repo-0123456789abcdef');
     const localConfig = makeLocalConfig(homeDir, repoPath, { scope: 'project', projectRoot, dataHome, enabledAgents: ['claude'] });
@@ -1489,7 +1525,9 @@ describe('uninstall', () => {
       await fse.pathExists(folder(linked, 'api')),
       await fse.pathExists(path.join(projectRoot, '.teamai', 'delivered')),
       vi.mocked(log.warn).mock.calls.some(([message]) => String(message).includes(folder(linked, 'api-style'))),
-    ]).toEqual(['- name every endpoint\n', false, false, false, true]);
+      await fse.pathExists(path.join(agentFolder(linked, 'reviewer'), 'AGENT.md')),
+      await fse.pathExists(agentFolder(linked, 'planner')),
+    ]).toEqual(['- name every endpoint\n', false, false, false, true, true, false]);
   });
 
   it('keeps the hook folder whose command CodeBuddy\'s project gate carries encoded, in settings it cannot rewrite (#1787)', async () => {

@@ -672,25 +672,30 @@ scope: 'user',
     expect(item?.relativePath).toBe('skills/checkout/pay');
   });
 
-  it('detects modified skill in namespaced team repo when no primaryRole is set', async () => {
+  it.each([
+    ['folder', 'skills/tencent/tgit/SKILL.md', 'skills/tencent/tgit'],
+    ['one file', 'skills/tencent/tgit.md', 'skills/tencent/tgit.md'],
+  ])('detects modified skill kept as a %s in namespaced team repo when no primaryRole is set', async (_form, teamFile, relativePath) => {
     // No primaryRole — legacy mode
-    // Team repo uses namespaced layout: skills/tencent/tgit/SKILL.md
-    const namespacedSkillDir = path.join(localConfig.repo.localPath, 'skills', 'tencent', 'tgit');
-    await fse.ensureDir(namespacedSkillDir);
-    await fse.writeFile(path.join(namespacedSkillDir, 'SKILL.md'), '# v1');
+    const v1 = '---\ndescription: TGit.\n---\n# v1';
+    await fse.outputFile(path.join(localConfig.repo.localPath, teamFile), v1);
 
     // Local has modified version
     const localSkillDir = path.join(homeDir, '.claude/skills', 'tgit');
     await fse.ensureDir(localSkillDir);
-    await fse.writeFile(path.join(localSkillDir, 'SKILL.md'), '# v2');
+    await fse.writeFile(path.join(localSkillDir, 'SKILL.md'), '---\ndescription: TGit.\n---\n# v2');
 
     const items = await handler.scanLocalForPush(teamConfig, localConfig);
     const item = items.find((i) => i.name === 'tgit');
     expect(item).toBeDefined();
     expect(item!.status).toBe('modified');
-    // Modified skill should carry its original namespace from team repo
+    // Modified skill should carry its original namespace and form from team repo
     expect(item!.namespace).toBe('tencent');
-    expect(item!.relativePath).toBe('skills/tencent/tgit');
+    expect(item!.relativePath).toBe(relativePath);
+
+    // The same bytes as the team's are no edit.
+    await fse.writeFile(path.join(localSkillDir, 'SKILL.md'), v1);
+    expect((await handler.scanLocalForPush(teamConfig, localConfig)).map((i) => i.name)).not.toContain('tgit');
   });
 
   it('skips an undelivered copy of a name several namespaces hold, advising what can push it', async () => {
@@ -864,6 +869,23 @@ scope: 'user',
     const contribPath = path.join(localConfig.repo.localPath, 'skills', 'my-skill', 'CONTRIBUTORS');
     const content = await fse.readFile(contribPath, 'utf-8');
     expect(content).toBe('testuser\n');
+  });
+
+  it('writes an edit of a skill kept as one file back to that file, with SKILL.md only, and names what stayed out', async () => {
+    const warn = vi.spyOn(log, 'warn');
+    const teamFile = path.join(localConfig.repo.localPath, 'skills', 'ops', 'greet.md');
+    await fse.outputFile(teamFile, '# Greet\nv1\n');
+    const localSkillDir = path.join(homeDir, '.claude/skills', 'greet');
+    await fse.outputFile(path.join(localSkillDir, 'SKILL.md'), '# Greet\nSay hello to the member by name.\n');
+    await fse.outputFile(path.join(localSkillDir, 'notes.md'), 'mine\n');
+
+    await handler.pushItem({ name: 'greet', type: 'skills', sourcePath: localSkillDir, relativePath: 'skills/ops/greet.md', namespace: 'ops' }, teamConfig, localConfig);
+
+    const pushed = await fse.readFile(teamFile, 'utf8');
+    expect(pushed).toContain('name: greet');
+    expect(pushed).toContain('Say hello to the member by name.');
+    expect(await fse.pathExists(path.join(localConfig.repo.localPath, 'skills', 'ops', 'greet'))).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Pushed only SKILL.md of greet: skills/ops/greet.md is a skill kept as one file, so notes.md stayed out.'));
   });
 
   it('does not push a link inside the skill into the team repo, and names it (#993)', async () => {
@@ -1155,11 +1177,14 @@ describe('scanTeamRepoNamespaces', () => {
     await fse.writeFile(path.join(repoPath, 'skills', 'tencent', 'tgit', 'SKILL.md'), '# TGit');
     await fse.ensureDir(path.join(repoPath, 'skills', 'hai_dev', 'hai-log'));
     await fse.writeFile(path.join(repoPath, 'skills', 'hai_dev', 'hai-log', 'SKILL.md'), '# Log');
+    // A namespace that holds only skills kept as one file
+    await fse.outputFile(path.join(repoPath, 'skills', 'ops', 'greet.md'), '---\ndescription: Greet.\n---\n# Greet');
 
     const namespaces = await scanTeamRepoNamespaces(repoPath);
     expect(namespaces).toContain('tencent');
     expect(namespaces).toContain('hai_dev');
-    expect(namespaces).toHaveLength(2);
+    expect(namespaces).toContain('ops');
+    expect(namespaces).toHaveLength(3);
   });
 });
 

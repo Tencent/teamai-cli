@@ -2,7 +2,7 @@
 
 > 本文是 [TeamAI CLI 使用指南](../../usage-guide.zh-CN.md) 的一部分。
 
-评分器（scorer）是评审者用来评判工作流步骤成果或已结束的 agent 会话的评分标准。它是团队仓库里的 Markdown 文件 `scorers/<name>.md`。
+评分器（scorer）是评审者用来评判工作流步骤成果或已结束的 agent 会话的评分标准。它是团队仓库里的 Markdown 文件 `scorers/<name>.md`；评审者需要读取旁边的文件时，也可以是一个[目录](#评分器目录)。
 
 `scorers/review-quality.md`：
 
@@ -33,7 +33,7 @@ Judge whether the change does what the step asked. Read the diff and the session
 | `tool` | 可选。优先使用的评审工具，例如 `codex`。租用评审步骤的驱动提供它时由它评审；否则用被评判工作所用的工具，再否则用驱动的第一个工具。teamai 不认识的名称只给出警告，不会被拒绝。在 [benchmark 运行](benchmarks.md#对所有-arm-用同一个评判)中它是必需的：由该工具（没有时用套件的 `defaults.tool`）评判所有 arm，不会换用其他工具。 |
 | `stages` | 可选。哪些[阶段](#为交付的工作评分)可以在评审者之前为该评分器做出判定：`check`、`ci`、`protected` 中的若干个。默认三个都用。 |
 
-frontmatter 之后的文本是评审者的提示词。`teamai pull` 缓存有效的评分器（`teamai status` 会列出它们），并对其余文件给出警告。`teamai review --branch` 遇到格式错误的评分器、分支的 `models/aliases.yaml` 没有为任何工具映射的模型别名、`scorers/` 里除 `<name>.md`、`<namespace>/<name>.md`、`scoring.yaml` 和 `README.md` 以外的文件、含有它不认识的键或值的 `scoring.yaml`，或其中任何文件含有凭据或内网地址时会失败，与规则的检查相同。
+frontmatter 之后的文本是评审者的提示词。`teamai pull` 缓存有效的评分器（`teamai status` 会列出它们），并对其余文件给出警告。`teamai review --branch` 遇到格式错误的评分器、分支的 `models/aliases.yaml` 没有为任何工具映射的模型别名、`scorers/` 里除 `<name>.md`、`<namespace>/<name>.md`、[评分器目录](#评分器目录)、`scoring.yaml` 和 `README.md` 以外的文件、含有它不认识的键或值的 `scoring.yaml`，或其中任何文件含有凭据或内网地址时会失败，与规则的检查相同。
 
 `scorers/ops/review-quality.md` 属于 `ops` 命名空间。成员的角色或项目列出它时才会拿到：
 
@@ -45,6 +45,32 @@ roles:
 ```
 
 它会替换根目录下同名的评分器。同一个名字出现在两个生效的命名空间里会报错。没有任何角色或项目列出的 `scorers/<dir>/` 是共享的：所有成员都会拿到其中的评分器，与根目录评分器同名时报错。没有角色也没有项目的团队会拿到所有命名空间。
+
+## 评分器目录
+
+评审者需要的不止提示词时，例如一份很长的评分标准或几个示例，可以把评分器写成目录：`scorers/<name>/SCORER.md`，其他文件放在旁边。`SCORER.md` 就是评分器，与 `scorers/<name>.md` 相同，它的提示词通过 `${TEAMAI_SCORER_DIR}` 引用目录里的文件：
+
+```text
+scorers/
+└── style/
+    ├── SCORER.md
+    ├── rubric.md
+    └── examples/good.md
+```
+
+`scorers/style/SCORER.md`：
+
+```markdown
+---
+labels:
+  - { value: good, score: 1, description: The change follows the rubric. }
+  - { value: bad, score: 0, description: The change breaks a rule of the rubric. }
+passingScore: 1
+---
+Judge the change against ${TEAMAI_SCORER_DIR}/rubric.md. ${TEAMAI_SCORER_DIR}/examples/good.md is a change that passes.
+```
+
+评审者只能读取它的证据目录，所以 teamai 把目录里的文件复制到那里，并用该路径替换 `${TEAMAI_SCORER_DIR}`。一次运行始终用它开始时的文件评审；修改目录中任何文件都算新的评分标准，与旧的分开统计。`scorers/<namespace>/<name>/SCORER.md` 属于命名空间，与文件相同。目录只能包含 UTF-8 文本文件，不能有符号链接，总共不超过 1 MB；不符合时 pull 给出警告，并且不缓存其中任何内容。提示词引用 `${TEAMAI_SCORER_DIR}` 的 `scorers/<name>.md` 会被拒绝，因为它没有目录。[默认评分器](#默认评分器)只能用文件替换。
 
 ## 选择评审者的模型
 
@@ -85,7 +111,7 @@ steps:
     scorers: [review-quality]
 ```
 
-没有有效 `scorers/<name>.md` 的名字会让 `teamai review --branch` 失败；`teamai pull` 会警告，步骤照常运行，只是不用这个评分器。旧版 teamai 不认识 `scorers`，所以先更新所有成员和运行器。完整写法见[工作流](workflow.md)。
+没有有效 `scorers/<name>.md` 或[目录](#评分器目录) `scorers/<name>/SCORER.md` 的名字会让 `teamai review --branch` 失败；`teamai pull` 会警告，步骤照常运行，只是不用这个评分器。旧版 teamai 不认识 `scorers`，所以先更新所有成员和运行器。完整写法见[工作流](workflow.md)。
 
 ## 一次运行和它的评审
 
@@ -495,7 +521,7 @@ $ teamai workflow next r9a1… --prepare --json '{"driver":{"kind":"cursor","mac
 $ teamai score --session 7c1e… --scorer ./scorers/review-quality.md
 ```
 
-推送新建或修改过的评分器之前，可以在团队仓库的本地检出中先拿一个会话试一下。`--scorer` 接受路径：含 `/` 或以 `.md` 结尾的值，相对当前目录。文件按 `teamai pull` 的方式校验，无效文件在任何运行开始前以 pull 的提示失败。该命令在 `--driver` 或 `workflows.driver` 指定的 driver 上启动[默认工作流](workflow.md#默认工作流) `teamai-try-scorer`，都未指定时用 local。它用该文件和 `store: false` 运行两次 [`teamai-score`](#teamai-score-工作流)：一次评判会话，一次只评判会话的第一条提示，然后由 `teamai score report` 读取两次结论。评审方式与缓存的评分器相同，也支持 `--batch`：本机没有工具能按文件的 `model` 或 `isolation` 接手的评审，会让运行以 `confined_pending` 停下等待。
+推送新建或修改过的评分器之前，可以在团队仓库的本地检出中先拿一个会话试一下。`--scorer` 接受路径：含 `/` 或以 `.md` 结尾的值，相对当前目录。评分器目录传它的 `SCORER.md`，旁边的文件会一起试用。文件按 `teamai pull` 的方式校验，无效文件在任何运行开始前以 pull 的提示失败。该命令在 `--driver` 或 `workflows.driver` 指定的 driver 上启动[默认工作流](workflow.md#默认工作流) `teamai-try-scorer`，都未指定时用 local。它用该文件和 `store: false` 运行两次 [`teamai-score`](#teamai-score-工作流)：一次评判会话，一次只评判会话的第一条提示，然后由 `teamai score report` 读取两次结论。评审方式与缓存的评分器相同，也支持 `--batch`：本机没有工具能按文件的 `model` 或 `isolation` 接手的评审，会让运行以 `confined_pending` 停下等待。
 
 文件的标签从不保存，因此该命令不接受 `--push`，`--run` 也只接受评分器名称，与文件一起给出的评分器名称会被拒绝：请用单独的命令评判它。输出给出标签及其理由，并带 `"stored": false`。旁边的 `stored` 列出本机为该会话和同名评分器保存的最新标签，每个评分标准一条，便于看出修改是否改变了结论。`control` 是用同一文件只对会话的第一条提示再评审一次的结果。它通过时会附带警告：该评分标准会让 agent 什么都没做的会话通过，可能并未评判 agent 的工作。它只警告、从不失败，因为评分标准可能本就是评判提示本身。
 

@@ -30,9 +30,7 @@ flowchart TD
 
 ## 替换它
 
-```bash
-cp -r "$(npm root -g)/teamai-cli/hooks/teamai-mr-hint" hooks/
-```
+在团队仓库根目录的 `hooks/teamai-mr-hint/` 里只放你要改的文件。其他文件（包括 `HOOK.yaml`）仍用 teamai 的，并继续获得 teamai 的更新。
 
 ```yaml
 # hooks/teamai-mr-hint/HOOK.yaml
@@ -41,7 +39,7 @@ with:
   lookback_days: 14   # max_mrs keeps teamai's value
 ```
 
-推送这个文件夹。下一次 `teamai pull` 会检查并交付它。`with:` 里没写的键，沿用 teamai 的 `HOOK.yaml` 里的值。
+推送这个文件夹。下一次 `teamai pull` 会把你的文件和 teamai 的其他文件一起检查并交付。`with:` 里没写的键，沿用 teamai 的 `HOOK.yaml` 里的值。
 
 ## 参数
 

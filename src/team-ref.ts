@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { TeamSkillSource } from './resources/team-skill-source.js';
 import path from 'node:path';
 import { createGit, createGitWithBlockTimeout, DetachedTeamRepoError, getDefaultBranch, pullRepo, remotesMatch } from './utils/git.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
@@ -199,14 +200,31 @@ export async function removedTeamResources(localPath: string, previous: string, 
     const names: RemovedTeamResources = { skills: new Set(), rules: new Set(), agents: new Set() };
     const tree = await git.raw(['ls-tree', '-rz', rev, '--', 'skills/', 'rules/', 'agents/']);
 
-    for (const entry of tree.split('\0')) {
-      const [metadata, file] = entry.split('\t');
+    const entries = tree.split('\0').map((entry) => entry.split('\t')).filter((parts): parts is [string, string] => parts[1] !== undefined);
 
-      if (!file) continue;
-      const skill = /^skills\/(?:[^/]+\/)?([^/]+)\/SKILL\.md$/.exec(file);
+    // A folder that holds its marker is one resource; every other file in it is one of its files.
+    const folders = entries
+      .map(([, file]) => /^(?:skills\/(.+)\/SKILL|rules\/(.+)\/RULE|agents\/(.+)\/AGENT)\.md$/.exec(file))
+      .filter((match) => match !== null)
+      .map((match) => ({ dir: match[0].slice(0, match[0].lastIndexOf('/') + 1), name: match[1] ?? match[2] ?? match[3] ?? '' }));
 
-      if (skill) names.skills.add(skill[1]);
-      else if (metadata.startsWith('160000 ') && file.startsWith('skills/')) names.skills.add(file.split('/').at(-1)!);
+    const folderOf = (file: string): string | undefined => folders.find(({ dir }) => file.startsWith(dir))?.name;
+
+    for (const [metadata, file] of entries) {
+      const type = (['skills', 'rules', 'agents'] as const).find((kind) => file.startsWith(`${kind}/`));
+      const folder = folderOf(file);
+
+      if (type === undefined) continue;
+
+      if (folder !== undefined) {
+        names[type].add(type === 'rules' ? folder : folder.split('/').at(-1)!);
+        continue;
+      }
+
+      if (metadata.startsWith('160000 ') && type === 'skills') names.skills.add(file.split('/').at(-1)!);
+      const skill = /^skills\/(?:[^/]+\/)?([^/]+)\.md$/.exec(file);
+
+      if (skill && skill[1].toLowerCase() !== 'readme' && TeamSkillSource.describes(await git.raw(['show', `${rev}:${file}`]))) names.skills.add(skill[1]);
       const rule = /^rules\/(.+)\.md$/.exec(file);
 
       if (rule) names.rules.add(rule[1]);

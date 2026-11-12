@@ -5,7 +5,8 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fc from 'fast-check';
 import { execFileSync } from 'node:child_process';
-import { classifyCopy, contentHash, openLedger, removeDelivered, describeKeptDir, isRecordedFromTeamSkill, judgeRemoval, keepsTrackedCopy, type DeliveredFile } from '../resources/delivered-copies.js';
+import { classifyCopy, contentHash, openLedger, removeDelivered, describeKeptDir, isRecordedFromTeamSkill, judgeRemoval, keepsTrackedCopy, ownsSkillDir, type DeliveredFile } from '../resources/delivered-copies.js';
+import { skillOrigin } from '../resources/skills.js';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
 
 // #822 item 5: pull keeps a copy only when the record proves teamai wrote
@@ -178,6 +179,39 @@ describe('judgeRemoval', () => {
   it('removes an unrecorded copy when no origin can prove whose it is, as before', async () => {
     fs.writeFileSync(copy, 'mine');
     expect(await judgeRemoval({}, copy)).toBe('remove');
+  });
+});
+
+// #993: with no delivery record, a skill copy is teamai's when every file in it
+// is a version of the team skill, whether the team keeps it as a folder or as
+// one file, whose SKILL.md pull delivers with its frontmatter repaired.
+describe('ownsSkillDir without a record', () => {
+  let root: string;
+  let repo: string;
+  let copy: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'owns-skill-dir-'));
+    repo = path.join(root, 'team');
+    copy = path.join(root, 'skills', 'greet');
+    fs.mkdirSync(copy, { recursive: true });
+  });
+  afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  it.each([
+    ['a folder', 'skills/ops/greet/SKILL.md'],
+    ['one file', 'skills/ops/greet.md'],
+  ])('proves a copy of a skill kept as %s teamai\'s by the history, and keeps an edited one', async (_form, teamFile) => {
+    fs.mkdirSync(path.dirname(path.join(repo, teamFile)), { recursive: true });
+    fs.writeFileSync(path.join(repo, teamFile), '# Greet\nSay hello.\n');
+    commitTeamRepo(repo);
+    // As pull delivered it: the frontmatter repaired.
+    fs.writeFileSync(path.join(copy, 'SKILL.md'), '---\nname: greet\ndescription: Greet\n---\n# Greet\nSay hello.\n');
+
+    expect(await ownsSkillDir({}, copy, skillOrigin(repo, 'greet'))).toBe(true);
+
+    fs.writeFileSync(path.join(copy, 'SKILL.md'), '# Greet\nMy own words.\n');
+    expect(await ownsSkillDir({}, copy, skillOrigin(repo, 'greet'))).toBe(false);
   });
 });
 

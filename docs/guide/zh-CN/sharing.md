@@ -27,6 +27,13 @@ teamai push --role pm
 
 角色或项目过滤 skill 时，共享根目录的 skill 仍按原有 tags 订阅规则交付。`--shared` 选择的是发布位置。
 
+只有说明的 skill 可以在团队仓库里只是一个文件：`skills/<name>.md` 或 `skills/<ns>/<name>.md`。pull 把它交付给每个工具，成为 `<name>/SKILL.md`，和只含 `SKILL.md` 的目录一样。
+
+- `skills/` 或某个命名空间下直接放的 `.md` 文件，只有 frontmatter 里有 `description` 时才是 skill。那里的其他文件，例如 `README.md` 或你的笔记，仍然只是笔记，不会交付给任何人。
+- 同一位置同名的文件和目录（`skills/greet.md` 旁边有 `skills/greet/`）把这个 skill 定义了两次。pull 两个都不交付并指出两者，`teamai review --branch` 失败。
+- push 把编辑写回这个文件。文件放不下别的东西，所以你在 `SKILL.md` 旁边新加的文件不会推送，push 会指出它。要共享它，请在团队仓库里把这个文件改成目录 `skills/<name>/`。
+- 提交之前先让所有成员升级。旧版 teamai 会跳过这个文件，什么也不交付。
+
 ## Rules
 
 ```bash
@@ -116,13 +123,13 @@ ${TEAMAI_RULE_DIR}/checklist.md and ${TEAMAI_RULE_DIR}/examples/good-endpoint.ts
 - 名字就是路径，和 rule 文件一样：`rules/api-style/` 是 `api-style`，`rules/fe/api-style/` 是 `fe/api-style`。每个工具的 rules 目录里得到 `api-style.md`。
 - `RULE.zh.md` 或 `RULE.en.md` 是对应 `language` 的正文。`RULE.md` 的 frontmatter 对所有语言生效；语言版本里的 frontmatter 会被忽略，pull 会给出警告。
 - 在工作区中，pull 把目录复制到每个 worktree 的 `.teamai/delivered/rules/api-style/`（git 会忽略它），并把 `${TEAMAI_RULE_DIR}` 换成它的路径（用正斜杠）。所有工具都从这里读取：Claude Code 得到绝对路径，不读取项目之外文件的工具得到从项目根目录算起的 `.teamai/delivered/rules/api-style`。在一个 worktree 里 pull，不会改动其他 worktree 的目录。
-- 用户范围的 rule 没有工作树，所以 pull 把它复制到 `~/.teamai/rules/api-style/` 并指向该路径。对 Claude Code，pull 会把该目录追加到 `~/.claude/settings.json` 的 `permissions.additionalDirectories`，排在你自己的条目之后，uninstall 时移除。对其他读取那里前可能需要确认的工具，pull 各警告一次。哪个工具得到哪种，见[工具支持](tool-support.md#用户范围)的「规则文件夹的文件」一列。
+- 用户范围的 rule 没有工作树，所以 pull 把它复制到 `~/.teamai/rules/api-style/` 并指向该路径。对 Claude Code，pull 会把该目录追加到 `~/.claude/settings.json` 的 `permissions.additionalDirectories`，排在你自己的条目之后，uninstall 时移除。对其他读取那里前可能需要确认的工具，pull 各警告一次。哪个工具得到哪种，见[工具支持](tool-support.md#用户范围)的「规则与 agent 文件夹的文件」一列。
 - 目录型 rule 在团队仓库里修改。push 不会从它的交付副本提出任何改动。
 - 团队从目录里删掉的文件，会一直留在交付的副本里，直到这条 rule 被移除，因为你改过的 rule 副本可能还引用它。同一个路径不能既是文件又是目录：团队把 `details/` 改成文件 `details`（或反过来）时，新版本占用这个路径，pull 会说明哪个文件被移除了。
 
 提交目录型 rule 之前，让每位成员先升级。旧版 teamai 会把 `rules/api-style/` 里的每个文件各自当作一条始终生效的 rule（`api-style/RULE`、`api-style/RULE.zh`、`api-style/checklist`），或者跳过这个目录。
 
-teamai 的 recall rule 是目录 [`rules/teamai-recall/`](https://github.com/Tencent/teamai-cli/tree/main/rules/teamai-recall)。团队在团队仓库根目录放自己的 `rules/teamai-recall/` 即可替换它。目录里的 README 列出了各个文件以及每个文件必须保留的行。缺少这些行或包含链接的替换会被 pull 拒绝，pull 会指出是哪个文件，并继续使用 teamai 自带的。`teamai review --branch` 会在合并前把这样的替换判为失败。
+teamai 的 recall rule 是目录 [`rules/teamai-recall/`](https://github.com/Tencent/teamai-cli/tree/main/rules/teamai-recall)。团队在团队仓库根目录放一个只含要改的文件的 `rules/teamai-recall/` 即可修改它，其他文件仍用 teamai 的。目录里的 README 列出了各个文件以及每个文件必须保留的行。pull 检查两者合起来的目录，缺少这些行或包含链接时会拒绝它，指出是哪个文件，并继续使用 teamai 自带的。`teamai review --branch` 会在合并前把这样的替换判为失败。提交之前先让所有成员升级：旧版 teamai 会把 `rules/teamai-recall/block.md` 这样的文件当成一条单独的、始终生效的 rule。
 
 ## Agents
 
@@ -144,6 +151,40 @@ targets: [claude, cursor]
 teamai push
 teamai push --role frontend
 teamai remove agents code-reviewer
+```
+
+### 目录型 agent
+
+`agents/` 下包含 `AGENT.md` 的目录是一个目录型 agent。`AGENT.md` 就是这个 agent，写法与 Claude Code 读取的 Markdown agent 文件相同。其他文件是 agent 需要时才读的辅助文件：
+
+```text
+agents/reviewer/
+├─ AGENT.md
+└─ rubric.md
+```
+
+```markdown
+<!-- agents/reviewer/AGENT.md -->
+---
+name: reviewer
+description: Review a change before it is pushed
+---
+Review the diff against ${TEAMAI_AGENT_DIR}/rubric.md.
+```
+
+- 名字就是目录名：`agents/reviewer/` 和 `agents/payments/reviewer/` 都是 `reviewer`，因为工具把 agent 放在同一个目录里。同一位置下同名的目录型 agent 和 agent 文件会冲突，pull 保留已安装的 agent，直到其中一个被移除。
+- 读取 Markdown agent 的工具（Claude Code、Claude Code Internal、CodeBuddy、JoyCode、Oh My Pi）各得到一个 `reviewer.md`。其他工具（例如 Codex）不会从目录型 agent 得到任何东西；请给它们写 `.yaml` agent。
+- 在工作区中，pull 把目录复制到每个 worktree 的 `.teamai/delivered/agents/reviewer/`（git 会忽略它），并把 `${TEAMAI_AGENT_DIR}` 换成它的路径（用正斜杠）：Claude Code 得到绝对路径，不读取项目之外文件的工具得到从项目根目录算起的 `.teamai/delivered/agents/reviewer`。在自己的 worktree 里运行的工作流步骤读取的是那个 worktree 里的副本。
+- 用户范围的 agent 没有 worktree，所以 pull 把它复制到 `~/.teamai/agents/reviewer/`，像[目录型 rule](#目录型-rule确定加载的-skill) 一样为 Claude Code 添加该目录，并对读取那里前可能需要确认的其他工具各警告一次。
+- 目录型 agent 在团队仓库里修改。push 不会从它的交付副本提出任何改动。`teamai remove agents reviewer` 会移除这个目录、各工具里的副本和交付的目录；团队移除 agent 后，之后的 pull 会移除它交付的目录，除非你改过的副本还引用它。
+
+提交目录型 agent 之前，让每位成员先升级。旧版 teamai 会跳过这个目录，或者把其中每个 `.md` 各自当作一个 agent。
+
+命名空间里一旦有了 `AGENT.md`，它就是一个目录型 agent：`agents/payments/AGENT.md` 让 `agents/payments/` 成为 agent `payments`，它原来的 agent（例如 `agents/payments/vr.md`）都成为它的文件。pull 会删除之前交付的这些 agent 的副本，保留你改过的副本，并提示一次：
+
+```console
+$ teamai pull
+⚠ agents/payments/ holds AGENT.md, so it is one folder, and vr.md in it is one of its files, no longer read on its own.
 ```
 
 ### 替换 recall agent
@@ -456,11 +497,7 @@ agy 随后拒绝该命令：`tool call denied by pre-tool hook: rm -rf is blocke
 
 ### 默认 hook
 
-teamai 自带提示的阈值和文案也放在 hook 目录里。在团队仓库根目录放一个同名目录，就能替换它。比如只在较长的会话后提醒，并换成团队自己的话：
-
-```bash
-cp -r "$(npm root -g)/teamai-cli/hooks/teamai-friction-reminder" hooks/
-```
+teamai 自带提示的阈值和文案也放在 hook 目录里。在团队仓库根目录放一个同名目录，就能修改它。目录里只放你要改的文件；其他文件（包括 `HOOK.yaml`）仍用 teamai 的，并继续获得 teamai 的更新。比如只在较长的会话后提醒，并换成团队自己的话：
 
 ```yaml
 # hooks/teamai-friction-reminder/HOOK.yaml
@@ -474,7 +511,7 @@ with:
 [acme] 这次会话卡住过。如果解决办法还不在 runbook 里，记下来。
 ```
 
-`teamai pull` 之后，提醒要等到 30 次工具调用才出现，并以这一行开头。
+`teamai pull` 之后，提醒要等到 30 次工具调用才出现，并以这一行开头。目录里只有这两个文件。
 
 | 目录 | 放什么 |
 |---|---|
@@ -486,15 +523,18 @@ with:
 
 - `HOOK.yaml` 里有 `description` 和 `with:`。`with:` 里没写的键沿用 teamai 的值。
 - 文案是 `<text>.md`，用 `{{ name }}` 引用变量。设了 `language: en` 或 `zh` 时，目录里有 `<text>.en.md` 或 `<text>.zh.md` 就用它。
+- 你写的文案会替换 teamai 这段文案的所有语言版本：有你的 `problem.md`、没有 `problem.zh.md` 时，`zh` 团队读到的是你的 `problem.md`。只写一种语言时，也要写 `problem.md`。
+- teamai 目录里没有的文件不替换任何东西。pull 会警告、点出文件名，并忽略它。拼错的 `problems.md` 会这样暴露出来，而不是悄悄不起作用。你的目录有自己的 `HOOK.yaml` 时，可以添加文件。
+- 你不能在自己的目录里删掉 teamai 目录的文件。`teamai list hooks --json` 会显示每个文件来自哪里。
 - 每个目录的 `README.md` 列出参数及取值范围、每段文案提供的变量，以及关掉它的设置。这些设置还在原来的位置，比如 `sharing.contributeHint.enabled`。
 
-替换目录里的值超出范围、写了默认 hook 不认的键、引用了文案不提供的变量、少了某段文案，或带了 `command` 时，pull 会拒绝它，teamai 自带的目录继续生效：
+pull 检查你的文件和 teamai 的文件合起来的目录。值超出范围、写了默认 hook 不认的键、引用了文案不提供的变量、只写了一种语言却缺少基础的 `<text>.md`，或带了 `command` 时，pull 会拒绝它，teamai 自带的目录继续生效：
 
 ```text
 hooks/teamai-friction-reminder/ is refused, and teamai's default stays in force until it is fixed: HOOK.yaml: with.min_tools must be a whole number from 1 to 1000
 ```
 
-替换对整个团队生效，所以放在 namespace 里的替换（比如 `hooks/payments/teamai-friction-reminder/`）会被 pull 拒绝。`teamai review --branch` 会在合并前把 pull 拒绝的替换判为失败。
+替换对整个团队生效，所以放在 namespace 里的替换（比如 `hooks/payments/teamai-friction-reminder/`）会被 pull 拒绝。`teamai review --branch` 会在合并前把 pull 拒绝的替换，或带有不替换任何文件的替换，判为失败。
 
 ## MCP Server
 
@@ -750,7 +790,7 @@ self 模式下，如果当前分支落后于默认分支，推送修改过的 sk
 
 ## 保留的目录标记文件名
 
-在类型目录下（任意深度）包含该类型标记文件的目录，就是一个目录型资源：它是一个资源，其中每个文件都属于它。技能也是这样，`skills/<name>/SKILL.md`。
+在类型目录下（任意深度）包含该类型标记文件的目录，就是一个目录型资源：它是一个资源，其中每个文件都属于它。技能也是这样，`skills/<name>/SKILL.md`；和其他类型一样，技能也可以只是一个文件，`skills/<name>.md`。
 
 | 目录 | 标记文件 | 当前版本 |
 |---|---|---|
@@ -759,20 +799,17 @@ self 模式下，如果当前分支落后于默认分支，推送修改过的 sk
 | `rules/` | `RULE.md` | 读取：[目录型 rule](#目录型-rule确定加载的-skill) |
 | `mcp/` | `MCP.yaml` | 读取：[MCP Server](#mcp-server) |
 | `benchmarks/` | `SUITE.yaml` | 读取：[套件](benchmarks.md#编写套件) |
-| `scorers/` | `SCORER.md` | 跳过 |
-| `agents/` | `AGENT.md` | 跳过 |
+| `scorers/` | `SCORER.md` | 读取：[评分器目录](scorers.md#评分器目录) |
+| `agents/` | `AGENT.md` | 读取：[目录型 agent](#目录型-agent) |
 
-scorer 或 agent 目录会被整体跳过，团队仓库的其他内容照常 pull：
+一个目录就是一个资源，无论其中还有什么文件：
 
 ```text
 agents/
-├── code-reviewer.yaml          交付：agent "code-reviewer"
+├── code-reviewer.md            交付：agent "code-reviewer"
 └── reviewer/
-    ├── AGENT.md                跳过：agents/reviewer/ 是 agent 目录
-    └── checklist.md            跳过
-scorers/
-└── strict/
-    └── SCORER.md               跳过：scorers/strict/ 是 scorer 目录
+    ├── AGENT.md                交付：agent "reviewer"
+    └── rubric.md               随目录一起交付
 rules/
 ├── style.md                    交付：规则 "style"
 └── api-style/
@@ -780,16 +817,14 @@ rules/
     └── checklist.md            随目录一起交付
 ```
 
-pull 对每个目录提示一次；由 hook 触发的 pull 会把同样的内容写进 `~/.teamai/debug.log`：
+还不能读取某种目录类型的旧版 teamai 会整体跳过这种目录，团队仓库的其他内容照常 pull。它对每个目录提示一次；由 hook 触发的 pull 会把这行写进 `~/.teamai/debug.log`：
 
 ```console
 $ teamai pull
 ⚠ agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.
-⚠ scorers/strict/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.
-✔ [user] Synced 2 rule(s)
 ```
 
-`teamai status`、`teamai doctor`、`teamai review --branch` 和 dashboard 都会列出这些目录。push 不会改动它们，团队也不需要声明任何东西。
+团队添加 agent 或 scorer 目录之前，先让每位成员运行 `teamai update`。
 
 文件名必须完全一致：`rules/lint/rule.md` 仍然是规则 `lint/rule`，在 macOS 和 Windows 上也一样。
 

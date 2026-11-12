@@ -2,7 +2,7 @@
 
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
-A scorer is a rubric a judge applies to a workflow step's work or to a finished agent session. It is a Markdown file at `scorers/<name>.md` in the team repo.
+A scorer is a rubric a judge applies to a workflow step's work or to a finished agent session. It is a Markdown file at `scorers/<name>.md` in the team repo, or a [folder](#a-scorer-folder) when its judge reads files beside it.
 
 `scorers/review-quality.md`:
 
@@ -33,7 +33,7 @@ Judge whether the change does what the step asked. Read the diff and the session
 | `tool` | Optional. The judge tool to prefer, such as `codex`. When the driver that leases the judge offers it, it judges; else the tool the judged work ran in, else the driver's first tool. A name teamai does not know is warned about, not refused. In a [benchmark run](benchmarks.md#one-judge-for-every-arm) it is required: that tool, else the suite's `defaults.tool`, judges every arm, and no other tool does. |
 | `stages` | Optional. Which [stages](#score-what-a-run-delivered) may decide the scorer before its judge: some of `check`, `ci` and `protected`. Default all three. |
 
-The text after the frontmatter is the judge's prompt. `teamai pull` caches valid scorers, which `teamai status` lists, and warns about the rest. `teamai review --branch` fails on a malformed scorer, on a model alias the branch's `models/aliases.yaml` maps for no tool, on any file in `scorers/` other than `<name>.md`, `<namespace>/<name>.md`, `scoring.yaml` and `README.md`, on a `scoring.yaml` with a key or value it does not know, and on a credential or internal address in any file there, as it does for rules.
+The text after the frontmatter is the judge's prompt. `teamai pull` caches valid scorers, which `teamai status` lists, and warns about the rest. `teamai review --branch` fails on a malformed scorer, on a model alias the branch's `models/aliases.yaml` maps for no tool, on any file in `scorers/` other than `<name>.md`, `<namespace>/<name>.md`, a [scorer folder](#a-scorer-folder), `scoring.yaml` and `README.md`, on a `scoring.yaml` with a key or value it does not know, and on a credential or internal address in any file there, as it does for rules.
 
 `scorers/ops/review-quality.md` belongs to the `ops` namespace. Members get it when their role or project lists it:
 
@@ -45,6 +45,32 @@ roles:
 ```
 
 It replaces a root scorer of the same name. One name in two active namespaces is an error. A `scorers/<dir>/` that no role or project lists is shared: every member gets its scorers, and one named like a root scorer is an error. A team without roles or projects gets every namespace.
+
+## A scorer folder
+
+When the judge needs more than its prompt, such as a long rubric or examples, keep the scorer as a folder: `scorers/<name>/SCORER.md` with the files beside it. `SCORER.md` is the scorer, as `scorers/<name>.md` is, and its prompt names the folder's files through `${TEAMAI_SCORER_DIR}`:
+
+```text
+scorers/
+└── style/
+    ├── SCORER.md
+    ├── rubric.md
+    └── examples/good.md
+```
+
+`scorers/style/SCORER.md`:
+
+```markdown
+---
+labels:
+  - { value: good, score: 1, description: The change follows the rubric. }
+  - { value: bad, score: 0, description: The change breaks a rule of the rubric. }
+passingScore: 1
+---
+Judge the change against ${TEAMAI_SCORER_DIR}/rubric.md. ${TEAMAI_SCORER_DIR}/examples/good.md is a change that passes.
+```
+
+The judge reads only its evidence directory, so teamai copies the folder's files there and writes that path in place of `${TEAMAI_SCORER_DIR}`. A run judges with the files it started with, and an edit to any file of the folder is a new rubric, counted apart from the old one. `scorers/<namespace>/<name>/SCORER.md` belongs to a namespace, as a file does. A folder holds UTF-8 text files, no symlink, 1 MB in all; pull warns about one that does not and caches nothing from it. A `scorers/<name>.md` that names `${TEAMAI_SCORER_DIR}` is refused, since it has no folder. A [default scorer](#default-scorers) is replaced by a file only.
 
 ## Choose the judge's model
 
@@ -85,7 +111,7 @@ steps:
     scorers: [review-quality]
 ```
 
-A name with no valid `scorers/<name>.md` fails `teamai review --branch`; `teamai pull` warns and the step runs without it. An older teamai does not know `scorers`, so update every member and runner first. [Workflows](workflow.md) shows the long form.
+A name with no valid `scorers/<name>.md` or [folder](#a-scorer-folder) `scorers/<name>/SCORER.md` fails `teamai review --branch`; `teamai pull` warns and the step runs without it. An older teamai does not know `scorers`, so update every member and runner first. [Workflows](workflow.md) shows the long form.
 
 ## A run and its judge
 
@@ -495,7 +521,7 @@ $ teamai workflow next r9a1… --prepare --json '{"driver":{"kind":"cursor","mac
 $ teamai score --session 7c1e… --scorer ./scorers/review-quality.md
 ```
 
-Before you push a new or edited scorer, try it on a session from your checkout of the team repo. `--scorer` takes a path, a value with a `/` or ending in `.md`, relative to the current directory. The file is checked as `teamai pull` checks it, and an invalid file fails with pull's message before any run starts. The command starts the [default workflow](workflow.md#default-workflows) `teamai-try-scorer` on the driver `--driver` or `workflows.driver` names, else local. It runs [`teamai-score`](#the-teamai-score-workflow) twice with the file and `store: false`, on the session and on its first prompt alone, then `teamai score report` reads both verdicts. The judge runs as it does for a cached scorer, also with `--batch`: a judge no tool here can take for the file's `model` or `isolation` holds the run with `confined_pending`.
+Before you push a new or edited scorer, try it on a session from your checkout of the team repo. `--scorer` takes a path, a value with a `/` or ending in `.md`, relative to the current directory. For a scorer folder, pass its `SCORER.md`: the files beside it are tried with it. The file is checked as `teamai pull` checks it, and an invalid file fails with pull's message before any run starts. The command starts the [default workflow](workflow.md#default-workflows) `teamai-try-scorer` on the driver `--driver` or `workflows.driver` names, else local. It runs [`teamai-score`](#the-teamai-score-workflow) twice with the file and `store: false`, on the session and on its first prompt alone, then `teamai score report` reads both verdicts. The judge runs as it does for a cached scorer, also with `--batch`: a judge no tool here can take for the file's `model` or `isolation` holds the run with `confined_pending`.
 
 The file's label is never stored, so the command takes no `--push`, `--run` takes scorer names only, and a scorer name beside a file is refused: score it in a command of its own. The output prints the label with its reasoning and `"stored": false`. Next to it, `stored` lists the newest label kept on this machine for that session and the scorer of the same name, one per rubric, so you see whether your edit changes the verdict. `control` is the file judged a second time, on the session's first prompt alone. When it passes, it carries a warning: the rubric passes a session where the agent did nothing, so it may not judge the work. It warns and never fails, since a rubric may judge the prompt by design.
 

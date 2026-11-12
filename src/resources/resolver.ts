@@ -1,11 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { FOLDER_MARKERS, holdsMarker, unreadMarker } from '../folder-markers.js';
+import { FOLDER_MARKERS, holdsMarker } from '../folder-markers.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
+import { packageRoot } from '../package-info.js';
 import { resolveNamespacedItems, type NamespaceCandidate, type NamespaceConflict, type ResolvedNamespaceItem } from '../namespace-resolver.js';
 import { FolderFiles, type FolderFilesRead } from './folder-files.js';
 import { TeamaiConfigBaseSchema } from '../types.js';
-import { isIgnored } from '../utils/fs.js';
+import { isDraft, isIgnored } from '../utils/fs.js';
 
 /** How a resource type lays out its items in a tree. `TEntry` is what one entry of its entry-list file holds. */
 export interface ResourceLayout<TEntry = never> {
@@ -30,6 +31,12 @@ export interface ResourceLayout<TEntry = never> {
     readonly file: string;
     readonly entries: (content: string, file: string) => EntryListRead<TEntry>;
   };
+  /**
+   * A team folder named like a teamai default folder of this type inherits the default's files it leaves out
+   * (`InheritedFolders`), and needs no marker of its own. Turning this on for a type whose folders run code needs the
+   * resulting folder's revision accepted first, since teamai's files would then run under the team's name.
+   */
+  readonly inherits?: true;
 }
 
 /** What an entry-list file holds: its entries in file order, with what its type has to say about it, or why it cannot be used. */
@@ -110,12 +117,24 @@ export interface ResourceTree<TShipped> {
  * `entryList` to its row where that parser lives (`hooks.yaml`: `src/resources/hooks.ts`).
  */
 export const RESOURCE_LAYOUTS = {
-  workflows: { dir: 'workflows', marker: FOLDER_MARKERS.workflows.marker, fileName: (file: string) => (file.endsWith('.yaml') ? file.slice(0, -'.yaml'.length) : null) },
-  hooks: { dir: 'hooks', marker: FOLDER_MARKERS.hooks.marker, fileName: () => null, nameRule: { pattern: /^[a-z0-9-]+$/, description: 'a hook id uses only lower-case letters, digits and hyphens' } },
+  workflows: { dir: 'workflows', marker: FOLDER_MARKERS.workflows.marker, inherits: true, fileName: (file: string) => (file.endsWith('.yaml') ? file.slice(0, -'.yaml'.length) : null) },
+  hooks: { dir: 'hooks', marker: FOLDER_MARKERS.hooks.marker, inherits: true, fileName: () => null, nameRule: { pattern: /^[a-z0-9-]+$/, description: 'a hook id uses only lower-case letters, digits and hyphens' } },
   mcp: { dir: 'mcp', marker: FOLDER_MARKERS.mcp.marker, fileName: () => null, nameRule: { pattern: /^[A-Za-z0-9_-]+$/, description: 'an MCP server name uses only letters, digits, - and _' } },
   benchmarks: { dir: 'benchmarks', marker: FOLDER_MARKERS.benchmarks.marker, markerAliases: ['suite.yaml'], fileName: () => null },
+  /** `scorers/<name>.md` or `scorers/<name>/SCORER.md`, read by the scorer cache (`src/scorers/cache.ts`). */
+  scorers: { dir: 'scorers', marker: FOLDER_MARKERS.scorers.marker, fileName: (file: string) => (file.endsWith('.md') && file !== 'README.md' ? file.slice(0, -'.md'.length) : null) },
   /** Names are paths at any depth (`Resources.walk`): `rules/fe/style.md` and `rules/fe/style/RULE.md` are `fe/style`. */
-  rules: { dir: 'rules', marker: FOLDER_MARKERS.rules.marker, fileName: (file: string) => (file.endsWith('.md') ? file.slice(0, -'.md'.length) : null) },
+  rules: { dir: 'rules', marker: FOLDER_MARKERS.rules.marker, inherits: true, fileName: (file: string) => (file.endsWith('.md') ? file.slice(0, -'.md'.length) : null) },
+  /**
+   * `skills/greet.md` is the skill `greet`, delivered as `greet/SKILL.md`. A folder's name never ends in `.md`, so a
+   * skill's path tells its form. A README.md stays notes: team repos kept one in `skills/` before a file could be a skill.
+   */
+  skills: {
+    dir: 'skills',
+    marker: FOLDER_MARKERS.skills.marker,
+    fileName: (file: string) => (file.endsWith('.md') && file !== FOLDER_MARKERS.skills.marker && !/^readme\.md$/i.test(file) && !file.startsWith('.') && !isDraft(file) ? file.slice(0, -'.md'.length) : null),
+    nameRule: { pattern: /^(?!.*\.md$)/, description: "a skill folder's name does not end in .md, which names a skill kept as one file" },
+  },
 } as const satisfies Readonly<Record<string, ResourceLayout<unknown>>>;
 
 /**
@@ -202,12 +221,11 @@ export type FolderMarkerRead =
 /**
  * Which spelling of `layout`'s marker the directory `full` holds, by the names `readdir` returns (common rule 1 of
  * #1787), so a file system that ignores case cannot read `SUITE.yaml` as `suite.yaml`. `path` names the folder in the
- * message, ending with `/`. A marker this release cannot read counts for nothing.
+ * message, ending with `/`.
  */
 export async function readFolderMarker(layout: ResourceLayout<unknown>, at: { readonly full: string; readonly path: string }): Promise<FolderMarkerRead> {
-  const unread = unreadMarker(layout.dir);
   const names = new Set(await fileNames(at.full));
-  const held = [layout.marker, ...layout.markerAliases ?? []].filter((marker): marker is string => marker !== null && marker !== unread && names.has(marker));
+  const held = [layout.marker, ...layout.markerAliases ?? []].filter((marker): marker is string => marker !== null && names.has(marker));
   const [marker, ...others] = held;
 
   if (marker === undefined) return { kind: 'none' };
@@ -284,17 +302,22 @@ function itemFilesNote<TEntry>(layout: ResourceLayout<TEntry>, marker: string, f
 
   if (read.length === 0) return null;
 
-  const message = read.length === 1
-    ? `${folderPath} holds ${marker}, so it is one folder, and ${read[0]} in it is one of its files, no longer read on its own.`
-    : `${folderPath} holds ${marker}, so it is one folder, and ${read.join(', ')} in it are its files, no longer read on their own.`;
-
-  return { kind: 'note', path: folderPath, message };
+  return { kind: 'note', path: folderPath, message: folderFilesNote(folderPath, marker, read) };
 }
 
-/** Read the layer in `dir`, naming each source by its path from `root`. */
-async function readLayer<TEntry>(layout: ResourceLayout<TEntry>, root: string, dir: string): Promise<LayerContents<TEntry>> {
+/** What pull says once when `folderPath` gains `marker`: the `files` it read on their own are now the folder's. */
+export function folderFilesNote(folderPath: string, marker: string, files: readonly string[]): string {
+  return files.length === 1
+    ? `${folderPath} holds ${marker}, so it is one folder, and ${files[0]} in it is one of its files, no longer read on its own.`
+    : `${folderPath} holds ${marker}, so it is one folder, and ${files.join(', ')} in it are its files, no longer read on their own.`;
+}
+
+/**
+ * Read the layer in `dir`, naming each source by its path from `root`. A directory named in `inheriting` is a folder
+ * without its marker: a team folder over the teamai default of that name, which gives the files it leaves out.
+ */
+async function readLayer<TEntry>(layout: ResourceLayout<TEntry>, root: string, dir: string, inheriting: ReadonlySet<string> = new Set()): Promise<LayerContents<TEntry>> {
   const toPath = (full: string): string => path.relative(root, full).split(path.sep).join('/');
-  const unread = unreadMarker(layout.dir);
 
   const items: Array<LayerItem<TEntry>> = [];
   const diagnostics: ResourceDiagnostic[] = [];
@@ -319,15 +342,13 @@ async function readLayer<TEntry>(layout: ResourceLayout<TEntry>, root: string, d
   for (const sub of await subdirectories(dir)) {
     const full = path.join(dir, sub);
 
-    // A folder this release cannot read is left out whole (#1791): its marker would otherwise be an item in a namespace.
-    if (await holdsMarker(full, unread)) continue;
-
     const folderPath = `${toPath(full)}/`;
     const held = await readFolderMarker(layout, { full, path: folderPath });
 
     switch (held.kind) {
       case 'none':
-        plain.push(sub);
+        if (inheriting.has(sub) && layout.marker !== null) items.push({ name: sub, source: { kind: 'folder', path: folderPath, full }, definition: path.join(full, layout.marker) });
+        else plain.push(sub);
         break;
       case 'invalid':
         diagnostics.push({ kind: 'invalid', path: folderPath, message: held.message });
@@ -353,7 +374,7 @@ async function readLayer<TEntry>(layout: ResourceLayout<TEntry>, root: string, d
     }
   }
 
-  const markers = [layout.marker, ...layout.markerAliases ?? []].filter((marker) => marker !== unread);
+  const markers = [layout.marker, ...layout.markerAliases ?? []];
 
   for (const link of await symlinks(dir)) {
     const full = path.join(dir, link);
@@ -408,15 +429,31 @@ async function shippedItems<TEntry, TShipped>(layout: ResourceLayout<TEntry>, te
   return (await readShipped(layout, teamai.root)).map(({ name, source, file }) => ({ layer: 'teamai', name, source, shipped: teamai.read(file) }));
 }
 
+/** The names of `layout`'s teamai default folders in the package at `root`, which a team folder inherits from; none for a type that does not inherit. */
+async function inheritingNames<TEntry>(layout: ResourceLayout<TEntry>, root = packageRoot()): Promise<ReadonlySet<string>> {
+  if (!layout.inherits) return new Set();
+
+  return new Set((await readShipped(layout, root)).flatMap(({ name, source }) => (source.kind === 'folder' ? [name] : [])));
+}
+
+/** teamai's default folder `name` of `layout`, which a team folder of that name inherits from; null when there is none or the type does not inherit. */
+async function inherited<TEntry>(layout: ResourceLayout<TEntry>, name: string): Promise<{ readonly path: string; readonly full: string; readonly files: FolderFilesRead } | null> {
+  if (!layout.inherits) return null;
+  const found = (await readShipped(layout, packageRoot())).find((item) => item.name === name && item.source.kind === 'folder');
+
+  return found?.file.folder && found.source.kind === 'folder' ? { path: found.source.path, full: found.source.full, files: found.file.folder } : null;
+}
+
 /** The items of `layout` in the team's files: the root's, then each namespace's, in the order the scan meets them; and what the scan found besides. */
-async function teamItems<TEntry>(layout: ResourceLayout<TEntry>, team: TeamTree): Promise<{ items: Array<TeamItem<TEntry>>; diagnostics: ResourceDiagnostic[] }> {
+async function teamItems<TEntry>(layout: ResourceLayout<TEntry>, team: TeamTree, teamaiRoot?: string): Promise<{ items: Array<TeamItem<TEntry>>; diagnostics: ResourceDiagnostic[] }> {
   const dir = path.join(team.root, layout.dir);
-  const root = await readLayer(layout, team.root, dir);
+  const inheriting = await inheritingNames(layout, teamaiRoot);
+  const root = await readLayer(layout, team.root, dir, inheriting);
   const items: Array<TeamItem<TEntry>> = root.items.map(({ name, source }) => ({ layer: 'root', name, source }));
   const diagnostics = [...root.diagnostics];
 
   for (const namespace of root.plain) {
-    const read = await readLayer(layout, team.root, path.join(dir, namespace));
+    const read = await readLayer(layout, team.root, path.join(dir, namespace), inheriting);
     diagnostics.push(...read.diagnostics);
 
     for (const { name, source } of read.items) items.push({ layer: 'namespace', namespace, name, source });
@@ -438,19 +475,20 @@ export interface TeamLayer<TEntry> {
  */
 async function layer<TEntry>(layout: ResourceLayout<TEntry>, at: { readonly root: string; readonly namespace: string | null }): Promise<TeamLayer<TEntry>> {
   const typeDir = path.join(at.root, layout.dir);
+  const inheriting = await inheritingNames(layout);
 
   if (at.namespace === null) {
-    const read = await readLayer(layout, at.root, typeDir);
+    const read = await readLayer(layout, at.root, typeDir, inheriting);
 
     return { items: read.items.map(({ name, source }) => ({ layer: 'root', name, source })), diagnostics: read.diagnostics };
   }
 
   const { namespace } = at;
   const dir = path.join(typeDir, namespace);
-  const markers = [layout.marker, ...layout.markerAliases ?? [], unreadMarker(layout.dir)];
+  const markers = [layout.marker, ...layout.markerAliases ?? []];
 
-  if (await isSymlink(dir) || (await Promise.all(markers.map((marker) => holdsMarker(dir, marker)))).some(Boolean)) return { items: [], diagnostics: [] };
-  const read = await readLayer(layout, at.root, dir);
+  if (inheriting.has(namespace) || await isSymlink(dir) || (await Promise.all(markers.map((marker) => holdsMarker(dir, marker)))).some(Boolean)) return { items: [], diagnostics: [] };
+  const read = await readLayer(layout, at.root, dir, inheriting);
 
   return { items: read.items.map(({ name, source }) => ({ layer: 'namespace', namespace, name, source })), diagnostics: read.diagnostics };
 }
@@ -483,7 +521,7 @@ export interface ResourceSurvey<TEntry, TShipped> {
  */
 async function survey<TEntry, TShipped>(layout: ResourceLayout<TEntry>, tree: ResourceTree<TShipped>): Promise<ResourceSurvey<TEntry, TShipped>> {
   const shipped = tree.teamai ? await shippedItems(layout, tree.teamai) : [];
-  const { items, diagnostics } = tree.team ? await teamItems(layout, tree.team) : { items: [], diagnostics: [] };
+  const { items, diagnostics } = tree.team ? await teamItems(layout, tree.team, tree.teamai?.root) : { items: [], diagnostics: [] };
   const onDisk = [...new Set(items.flatMap((item) => (item.layer === 'namespace' ? [item.namespace] : [])))];
   const declared = tree.team && onDisk.length > 0 ? await tree.team.namespaces() : [];
   const active = declared === 'legacy' ? onDisk : declared;
@@ -576,10 +614,11 @@ export interface ResourceWalk {
  */
 async function walk(layout: PlainLayout, root: string): Promise<ResourceWalk> {
   const toPath = (full: string): string => path.relative(root, full).split(path.sep).join('/');
-  const unread = unreadMarker(layout.dir);
-  const folderMarker = layout.marker === unread ? null : layout.marker;
+  const folderMarker = layout.marker;
   const found: WalkedItem[] = [];
   const diagnostics: ResourceDiagnostic[] = [];
+  // Names are paths, so only a folder at the type's root is named like a teamai default.
+  const inheriting = await inheritingNames(layout);
 
   const visit = async (dir: string, prefix: string): Promise<void> => {
     const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
@@ -603,9 +642,9 @@ async function walk(layout: PlainLayout, root: string): Promise<ResourceWalk> {
       }
 
       // A folder this release cannot read is left out whole (#1791).
-      if (!entry.isDirectory() || await holdsMarker(full, unread)) continue;
+      if (!entry.isDirectory()) continue;
 
-      if (folderMarker !== null && await holdsMarker(full, folderMarker)) {
+      if (folderMarker !== null && (await holdsMarker(full, folderMarker) || (prefix === '' && inheriting.has(entry.name)))) {
         const folderPath = `${toPath(full)}/`;
         found.push({ name: `${prefix}${entry.name}`, source: { kind: 'folder', path: folderPath, full } });
         const note = itemFilesNote(layout, folderMarker, folderPath, await fileNames(full));
@@ -637,4 +676,4 @@ async function walk(layout: PlainLayout, root: string): Promise<ResourceWalk> {
   return { items, duplicates, diagnostics };
 }
 
-export const Resources = { list, resolve, survey, pick, layer, walk } as const;
+export const Resources = { list, resolve, survey, pick, layer, walk, inherited } as const;

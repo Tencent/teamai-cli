@@ -15,6 +15,8 @@ import { LayeredEntries, type LayeredEntryType, type PlaceFolderRead } from '../
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { DeliveredFolders } from '../resources/delivered-folders.js';
 import { FolderFiles } from '../resources/folder-files.js';
+import { InheritedFolders, type FolderFileLayer } from '../resources/inherited-folders.js';
+import { getCurrentVersion } from '../package-info.js';
 import { TEAM_HOOKS, TEAM_HOOK_ENTRIES, hookFolderPath, readDefaultHookReplacements, readHookFolder, teamScriptRefusal, type TeamHookDefinition, type TeamHookFolder } from '../resources/hooks.js';
 import { TEAM_MCP, TEAM_MCP_ENTRIES, mcpFolderPath, readMcpFolder, type TeamMcpDefinition, type TeamMcpFolder } from '../resources/mcp.js';
 import { teamMcpRefusal } from '../mcp-reconcile.js';
@@ -22,7 +24,7 @@ import { RESOURCE_LAYOUTS, Resources, type LayeredItem, type ListedResolution, t
 import { RuleFolders } from '../resources/rule-folders.js';
 import { buildRolePullContext, resolveDesiredRules } from '../resources/desired.js';
 import { readTeamRules, rulesReceivingTools } from '../resources/rules.js';
-import { ruleFolderReachOf, type RuleFolderReach } from '../tools.js';
+import { folderReachOf, type FolderReach } from '../tools.js';
 import { getKnowledgeDir, isAgentExcluded, isRecallEnabled, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { pathExists } from '../utils/fs.js';
 import { isSilent, setSilent } from '../utils/logger.js';
@@ -70,7 +72,10 @@ export type ResourceState =
 
 /** What a folder holds and where pull puts it. */
 export interface ResourceFolder {
-  readonly files: ReadonlyArray<{ readonly path: string; readonly bytes: number; readonly executable: boolean }>;
+  /** `layer`: where a file of a team folder over a teamai default comes from. */
+  readonly files: ReadonlyArray<{ readonly path: string; readonly bytes: number; readonly executable: boolean; readonly layer?: FolderFileLayer }>;
+  /** For a team folder over a teamai default: that teamai's version, and how many of its files are the team's and how many teamai's. Null for any other folder. */
+  readonly inherited: { readonly teamaiVersion: string; readonly own: number; readonly teamai: number } | null;
   readonly bytes: number;
   /** The most its files may hold in all: a workflow folder's, which each run keeps a copy of. Null for no limit. */
   readonly limit: number | null;
@@ -84,7 +89,7 @@ export interface ResourceFolder {
    * Where each tool that receives rules reads a delivered rule folder's files: the path pull writes for
    * `${TEAMAI_RULE_DIR}`, and how the tool reaches it: `worktree` in a project, else the tool's cell in user scope.
    */
-  readonly reads: ReadonlyArray<{ readonly tool: string; readonly reach: RuleFolderReach['reach'] | 'worktree'; readonly path: string }> | null;
+  readonly reads: ReadonlyArray<{ readonly tool: string; readonly reach: FolderReach['reach'] | 'worktree'; readonly path: string }> | null;
 }
 
 /** One definition of a name, and what pull does with it. */
@@ -114,7 +119,8 @@ export interface DefaultHookResource extends DefaultHookComparison {
   /** `refused`: pull's messages about the team's folder, while teamai's stays in force. */
   readonly state:
     | { readonly kind: 'teamai' }
-    | { readonly kind: 'replaced'; readonly path: string }
+    /** `inherited`: what the team's folder takes from teamai's, as a folder's `inherited`. */
+    | { readonly kind: 'replaced'; readonly path: string; readonly inherited: ResourceFolder['inherited'] }
     | { readonly kind: 'refused'; readonly path: string; readonly messages: readonly string[] };
   /** Where pull puts the team's folder, which the hint reads. */
   readonly delivered: { readonly path: string; readonly present: boolean } | null;
@@ -136,12 +142,31 @@ function placeOf(item: Found): ResourcePlace {
   return { layer, form: item.source.kind, path: item.source.path };
 }
 
+/**
+ * What the team folder at `full` holds with the files the teamai default at `teamaiFull` gives it, each with its layer,
+ * as pull reads them; none when either cannot be read, which its state says.
+ */
+async function inheritedFolderFiles(full: string, teamaiFull: string, marker: string): Promise<Pick<ResourceFolder, 'files' | 'bytes' | 'inherited'>> {
+  const [own, teamai] = await Promise.all([FolderFiles.read(full), FolderFiles.read(teamaiFull)]);
+
+  if (own.kind === 'invalid' || teamai.kind === 'invalid') return { files: [], bytes: 0, inherited: null };
+  const merged = InheritedFolders.merge({ team: own.files, teamai: teamai.files, marker });
+  const files = merged.files.map((file) => ({ path: file.path, bytes: file.bytes.length, executable: file.executable, layer: file.layer }));
+  const fromTeamai = files.filter((file) => file.layer === 'teamai').length;
+
+  return {
+    files,
+    bytes: files.reduce((sum, file) => sum + file.bytes, 0),
+    inherited: fromTeamai > 0 ? { teamaiVersion: getCurrentVersion(), own: files.length - fromTeamai, teamai: fromTeamai } : null,
+  };
+}
+
 /** What the folder at `full` holds, by path, size and executable bit; none when it cannot be read, which its state says. */
-async function folderFiles(full: string): Promise<Pick<ResourceFolder, 'files' | 'bytes'>> {
+async function folderFiles(full: string): Promise<Pick<ResourceFolder, 'files' | 'bytes' | 'inherited'>> {
   const read = await FolderFiles.read(full);
   const files = read.kind === 'files' ? read.files.map((file) => ({ path: file.path, bytes: file.bytes.length, executable: file.executable })) : [];
 
-  return { files, bytes: files.reduce((sum, file) => sum + file.bytes, 0) };
+  return { files, bytes: files.reduce((sum, file) => sum + file.bytes, 0), inherited: null };
 }
 
 /** The namespaces of `type` active for `config`, as pull's sync asks for them: `legacy` without a manifest, none when it cannot be read. */
@@ -211,7 +236,8 @@ async function workflowList(config: LocalConfig, sync: SyncTeamResult): Promise<
     const resolution = byName.get(item.name);
     const state = stateOf(item, resolution);
     const replaces = state.kind === 'in-force' && resolution?.kind === 'resolved' && resolution.replaces ? placeOf(resolution.replaces) : null;
-    resources.push({ name: item.name, ...placeOf(item), replaces, state, folder: item.source.kind === 'folder' ? await workflowFolder(config, item.source.full) : null });
+    const inheritsFrom = item.layer === 'teamai' ? null : await Resources.inherited(layout, item.name);
+    resources.push({ name: item.name, ...placeOf(item), replaces, state, folder: item.source.kind === 'folder' ? await workflowFolder(config, item.source.full, inheritsFrom?.full ?? null) : null });
   }
 
   return {
@@ -223,13 +249,21 @@ async function workflowList(config: LocalConfig, sync: SyncTeamResult): Promise<
   };
 }
 
-/** A workflow folder: its files against the limit, and where a run's start keeps this version of it. */
-async function workflowFolder(config: LocalConfig, full: string): Promise<ResourceFolder> {
-  const read = await WorkflowFolder.read(full);
+/**
+ * A workflow folder: its files against the limit, and where a run's start keeps this version of it. A team folder over
+ * the teamai default at `teamaiFull` is read with the files the default gives it, as pull reads it.
+ */
+async function workflowFolder(config: LocalConfig, full: string, teamaiFull: string | null): Promise<ResourceFolder> {
+  const [own, teamai] = await Promise.all([WorkflowFolder.read(full), teamaiFull === null ? null : FolderFiles.read(teamaiFull).then(WorkflowFolder.shipped)]);
+
+  const read = own.kind === 'files' && teamai?.kind === 'files'
+    ? { kind: 'files' as const, files: InheritedFolders.merge({ team: own.files, teamai: teamai.files, marker: WORKFLOW_MARKER }).files.map(({ layer: _layer, ...file }) => file) }
+    : own;
+
   const pinned = read.kind === 'files' ? WorkflowFolder.dir(config, WorkflowFolder.hash(read.files)) : undefined;
 
   return {
-    ...await folderFiles(full),
+    ...teamaiFull === null ? await folderFiles(full) : await inheritedFolderFiles(full, teamaiFull, WORKFLOW_MARKER),
     limit: WorkflowFolder.MAX_BYTES,
     delivered: pinned === undefined ? null : { path: pinned, present: await pathExists(pinned), by: 'run' },
     runs: null,
@@ -510,8 +544,13 @@ async function recallResources(config: LocalConfig, teamConfig: TeamaiConfig): P
   const isOff = !isRecallEnabled(config, teamConfig);
   const teamai: ResourcePlace = { layer: { kind: 'teamai' }, form: 'folder', path: recall.teamai.path };
 
-  const folderOf = async ({ dir }: RecallFolder): Promise<ResourceFolder> => ({
-    ...await folderFiles(dir), limit: null, delivered: null, runs: null, variant: await RuleFolders.languageFile(dir, 'RULE', teamConfig.language), reads: null,
+  const folderOf = async ({ dir, team }: RecallFolder): Promise<ResourceFolder> => ({
+    ...team ? await inheritedFolderFiles(dir, recall.teamai.dir, RESOURCE_LAYOUTS.rules.marker) : await folderFiles(dir),
+    limit: null,
+    delivered: null,
+    runs: null,
+    variant: await RuleFolders.languageFile(dir, 'RULE', teamConfig.language),
+    reads: null,
   });
 
   const teamaiState: ResourceState = isOff ? { kind: 'off' } : recall.team?.kind === 'replaces' ? { kind: 'replaced', by: recall.team.folder.path } : { kind: 'in-force' };
@@ -558,7 +597,7 @@ async function ruleList(config: LocalConfig, teamConfig: TeamaiConfig): Promise<
 
     const reads = delivered === null ? null : tools.map((tool) => ({
       tool,
-      reach: DeliveredFolders.worktreeRoot(config) === null ? ruleFolderReachOf(tool).reach : 'worktree' as const,
+      reach: DeliveredFolders.worktreeRoot(config) === null ? folderReachOf(tool).reach : 'worktree' as const,
       path: RuleFolders.render(DeliveredFolders.placeholder('rules'), { localConfig: config, rule, tool }),
     }));
 
@@ -602,8 +641,10 @@ async function defaultHookList(config: LocalConfig, language: TeamaiConfig['lang
     }
 
     const { dest, files } = replacement.delivery;
+    const { inheritance } = replacement;
+    const inherited = inheritance ? { teamaiVersion: inheritance.teamaiVersion, own: files.length - inheritance.files.length, teamai: inheritance.files.length } : null;
 
-    return { name, state: { kind: 'replaced', path: replacement.path }, ...await DefaultHooks.compare(name, files, language), delivered: { path: dest, present: await pathExists(dest) } };
+    return { name, state: { kind: 'replaced', path: replacement.path, inherited }, ...await DefaultHooks.compare(name, files, language), delivered: { path: dest, present: await pathExists(dest) } };
   }));
 }
 

@@ -55,9 +55,7 @@ flowchart TD
 
 ## Replace it
 
-```bash
-cp -r "$(npm root -g)/teamai-cli/hooks/teamai-friction-reminder" hooks/
-```
+Put only the files you change in `hooks/teamai-friction-reminder/` at the root of the team repo. Every other file, `HOOK.yaml` included, stays teamai's and keeps getting teamai's updates.
 
 ```yaml
 # hooks/teamai-friction-reminder/HOOK.yaml
@@ -67,7 +65,7 @@ with:
   weights: { reject: 30 }   # interrupt and correction keep teamai's values
 ```
 
-Push the folder. The next `teamai pull` checks it and delivers it. A key you leave out of `with:` keeps teamai's value from its `HOOK.yaml`.
+Push the folder. The next `teamai pull` checks your files with teamai's other files and delivers them together. A key you leave out of `with:` keeps teamai's value from its `HOOK.yaml`.
 
 ## Parameters
 

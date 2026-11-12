@@ -17,7 +17,6 @@ export const WINDOWS_TESTS = [
   'src/__tests__/default-hooks.test.ts',
   'src/__tests__/delivered-folders.test.ts',
   'src/__tests__/dsh-hooks.test.ts',
-  'src/__tests__/folder-markers.test.ts',
   'src/__tests__/git-process-tree.test.ts',
   'src/__tests__/hermes-config.test.ts',
   'src/__tests__/hermes-hooks.test.ts',

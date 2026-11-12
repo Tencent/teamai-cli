@@ -30,9 +30,7 @@ The agent cannot start the workflow in a session that teamai itself launched.
 
 ## Replace it
 
-```bash
-cp -r "$(npm root -g)/teamai-cli/hooks/teamai-mr-hint" hooks/
-```
+Put only the files you change in `hooks/teamai-mr-hint/` at the root of the team repo. Every other file, `HOOK.yaml` included, stays teamai's and keeps getting teamai's updates.
 
 ```yaml
 # hooks/teamai-mr-hint/HOOK.yaml
@@ -41,7 +39,7 @@ with:
   lookback_days: 14   # max_mrs keeps teamai's value
 ```
 
-Push the folder. The next `teamai pull` checks it and delivers it. A key you leave out of `with:` keeps teamai's value from its `HOOK.yaml`.
+Push the folder. The next `teamai pull` checks your files with teamai's other files and delivers them together. A key you leave out of `with:` keeps teamai's value from its `HOOK.yaml`.
 
 ## Parameters
 

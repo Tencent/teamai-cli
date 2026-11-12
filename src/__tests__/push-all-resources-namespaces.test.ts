@@ -351,7 +351,7 @@ describe('a placed copy the author still edits, against what its push delivered'
     env: { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t' },
   }).trim();
 
-  async function placedCopy(type: 'docs' | 'env', authorPath: string, placedPath: string) {
+  async function placedCopy(type: 'docs' | 'env' | 'scorers', authorPath: string, placedPath: string) {
     const root = makeTmpDir();
     const projectRoot = path.join(root, 'project');
     const repoLocal = path.join(root, 'team-repo');
@@ -447,6 +447,13 @@ describe('a placed copy the author still edits, against what its push delivered'
     await expect(scan()).rejects.toThrow(
       /docs\/ops\/guide\.md changed on the team repo.*Merge your edit into docs\/ops\/guide\.md, keeping the team's change there, then delete docs\/guide\.md/,
     );
+  });
+
+  it('sends a file added to a placed scorer folder into that folder', async () => {
+    const { activeFile, scan } = await placedCopy('scorers', 'scorers/fresh/SCORER.md', 'scorers/ops/fresh/SCORER.md');
+    fs.writeFileSync(path.join(path.dirname(activeFile), 'rubric.md'), '- Names what breaks.\n');
+
+    expect(await scan()).toMatchObject([{ name: 'fresh/rubric.md', relativePath: 'scorers/ops/fresh/rubric.md', namespace: 'ops', prePlacementPath: 'scorers/fresh/rubric.md' }]);
   });
 
   it('treats a placed env file the same way', async () => {

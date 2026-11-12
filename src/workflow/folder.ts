@@ -73,13 +73,19 @@ function fromFiles(found: FolderFilesRead, modes: ReadonlyMap<string, boolean>):
   }
 
   if (binary.length > 0) return { kind: 'invalid', problem: binary.map((file) => `${file} is not UTF-8 text`).join(', ') };
+
+  return withinLimit(files);
+}
+
+/** `files` as a folder read, or why not when together they hold more than a folder may: an inherited folder counts as merged. */
+function withinLimit(files: WorkflowFolderFile[]): WorkflowFolderRead {
   const sizes = files.map((file) => ({ path: file.path, bytes: Buffer.byteLength(file.content) }));
   const total = sizes.reduce((sum, { bytes }) => sum + bytes, 0);
 
   if (total > MAX_BYTES) {
     const largest = [...sizes].sort((a, b) => b.bytes - a.bytes || (a.path < b.path ? -1 : 1)).slice(0, 5).map((size) => `${size.path} (${size.bytes} bytes)`);
 
-    return { kind: 'invalid', problem: `it holds ${total} bytes, more than the ${MAX_BYTES} bytes (1 MB) a workflow folder may hold. Its largest files: ${largest.join(', ')}` };
+    return { kind: 'invalid', problem: `it holds ${total} bytes, more than the ${MAX_BYTES} bytes (1 MB) a folder may hold. Its largest files: ${largest.join(', ')}` };
   }
 
   return { kind: 'files', files };
@@ -166,4 +172,4 @@ function shipped(found: FolderFilesRead): WorkflowFolderRead {
   return fromFiles(found, new Map());
 }
 
-export const WorkflowFolder = { MAX_BYTES, read, shipped, hash, dir, pin, prune } as const;
+export const WorkflowFolder = { MAX_BYTES, read, withinLimit, shipped, hash, dir, pin, prune } as const;

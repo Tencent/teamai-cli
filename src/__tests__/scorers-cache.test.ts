@@ -4,7 +4,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocalConfig } from '../types.js';
-import { defaultScorerRubric, loadCachedScorer, syncScorerDefinitions } from '../scorers/cache.js';
+import { defaultScorerRubric, loadCachedScorer, pinScorers, syncScorerDefinitions } from '../scorers/cache.js';
 import { formatScorerDiagnostic } from '../scorers/definition.js';
 import { log } from '../utils/logger.js';
 import { routingScorers } from '../scorers/skill-routing.js';
@@ -101,7 +101,7 @@ describe('scorer cache', () => {
     expect(result.invalid.map(formatScorerDiagnostic)).toEqual([
       'scorers/broken.md: labels must list 2 to 20 labels: at least one that passes and one that fails',
       'scorers/broken.md: passingScore must be a number',
-      'scorers/eval.yaml: not a scorer file; scorers/ holds <name>.md and <namespace>/<name>.md scorers, scoring.yaml settings and an optional README.md',
+      'scorers/eval.yaml: not a scorer file; scorers/ holds <name>.md and <namespace>/<name>.md scorers, <name>/SCORER.md and <namespace>/<name>/SCORER.md scorer folders, scoring.yaml settings and an optional README.md',
     ]);
     expect(dataFiles(config)).toEqual([]);
   });
@@ -121,9 +121,11 @@ describe('scorer cache', () => {
     const config = { ...testConfig(), primaryRole: 'dev' };
     writeRoles(config, OPS_SCORERS);
     writeScorer(config, 'shared/x.md', VALID);
+    writeScorer(config, 'shared/z/SCORER.md', VALID);
 
-    expect(await syncScorerDefinitions(config)).toEqual({ cached: ['x'], invalid: [], verified: [] });
+    expect(await syncScorerDefinitions(config)).toEqual({ cached: ['x', 'z'], invalid: [], verified: [] });
     expect((await loadCachedScorer(config, 'x'))?.relativePath).toBe('scorers/shared/x.md');
+    expect((await loadCachedScorer(config, 'z'))?.relativePath).toBe('scorers/shared/z/SCORER.md');
   });
 
   it('caches neither a root scorer nor the scorer of one name in a scorers/<dir>/ no role or project declares', async () => {
@@ -217,10 +219,43 @@ describe('scorer cache', () => {
     expect(result.cached).toEqual(['outside']);
     expect(result.invalid.map(formatScorerDiagnostic)).toEqual([
       expect.stringMatching(/^scorers\/ops\.: not a scorer namespace; resource namespace must be a single path segment/),
-      'scorers/ops/deep: not a scorer file; scorers/ holds <name>.md and <namespace>/<name>.md scorers, scoring.yaml settings and an optional README.md',
-      'scorers/ops/eval.yaml: not a scorer file; scorers/ holds <name>.md and <namespace>/<name>.md scorers, scoring.yaml settings and an optional README.md',
-      'scorers/ops/linked.md: not a scorer file; scorers/ holds <name>.md and <namespace>/<name>.md scorers, scoring.yaml settings and an optional README.md',
+      'scorers/ops/deep: not a scorer file; scorers/ holds <name>.md and <namespace>/<name>.md scorers, <name>/SCORER.md and <namespace>/<name>/SCORER.md scorer folders, scoring.yaml settings and an optional README.md',
+      'scorers/ops/eval.yaml: not a scorer file; scorers/ holds <name>.md and <namespace>/<name>.md scorers, <name>/SCORER.md and <namespace>/<name>/SCORER.md scorer folders, scoring.yaml settings and an optional README.md',
+      'scorers/ops/linked.md: not a scorer file; scorers/ holds <name>.md and <namespace>/<name>.md scorers, <name>/SCORER.md and <namespace>/<name>/SCORER.md scorer folders, scoring.yaml settings and an optional README.md',
     ]);
+  });
+
+  it('caches a scorer folder with its support files until the folder is gone, and refuses a folder it cannot read, a file that names ${TEAMAI_SCORER_DIR} and a folder named like a default', async () => {
+    const config = testConfig();
+    const scorers = path.join(config.repo.localPath, 'scorers');
+    writeScorer(config, 'style/SCORER.md', VALID.replace('Judge the change.', 'Judge the change by ${TEAMAI_SCORER_DIR}/rubric.md.'));
+    writeScorer(config, 'style/rubric.md', 'Pass a change that names its tests.\n');
+    writeScorer(config, 'style/examples/good.md', 'A good change.\r\n');
+    writeScorer(config, 'linked/SCORER.md', VALID);
+    fs.symlinkSync(path.join(scorers, 'style', 'rubric.md'), path.join(scorers, 'linked', 'rubric.md'));
+    writeScorer(config, 'plain.md', VALID.replace('Judge the change.', 'Judge the change by ${TEAMAI_SCORER_DIR}/rubric.md.'));
+    writeScorer(config, 'teamai-routing/SCORER.md', VALID);
+
+    const result = await syncScorerDefinitions(config);
+
+    expect(result.cached).toEqual(['style']);
+    expect(result.invalid.map(formatScorerDiagnostic)).toEqual([
+      'scorers/linked/SCORER.md: scorers/linked/ is not a valid scorer folder: rubric.md is a symlink',
+      'scorers/plain.md: names ${TEAMAI_SCORER_DIR}, which only a scorer folder has: move it to scorers/plain/SCORER.md with the files it names beside it',
+      'scorers/teamai-routing/SCORER.md: is a folder, and teamai\'s default scorer teamai-routing is replaced by a file only: scorers/teamai-routing.md. teamai\'s default runs until the team keeps that file instead',
+    ]);
+    expect(await pinScorers(config, ['style'])).toEqual({ style: {
+      sourceHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      relativePath: 'scorers/style/SCORER.md',
+      content: VALID.replace('Judge the change.', 'Judge the change by ${TEAMAI_SCORER_DIR}/rubric.md.'),
+      files: [{ path: 'examples/good.md', content: 'A good change.\n' }, { path: 'rubric.md', content: 'Pass a change that names its tests.\n' }],
+    } });
+
+    fs.rmSync(path.join(scorers, 'style'), { recursive: true });
+    await syncScorerDefinitions(config);
+
+    expect(await loadCachedScorer(config, 'style')).toBeNull();
+    expect(dataFiles(config)).toEqual([]);
   });
 
   it('drops a cached scorer once its file is invalid or gone', async () => {
