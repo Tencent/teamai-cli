@@ -1268,9 +1268,20 @@ describe('uninstall', () => {
         return { kept, holdsTeamai: () => actualHooks.hasTeamaiHooks(kept, 'codex') };
       }
       case 'copilot': {
+        // Pull's built-ins, beside a member's hook that names teamai: it is theirs, whatever the uninstall.
         const kept = path.join(homeDir, '.copilot/hooks/teamai.json');
-        await actualHooks.reconcileHooks(kept, 'copilot', []);
-        return { kept, holdsTeamai: () => actualHooks.hasTeamaiHooks(kept, 'copilot') };
+        await actualHooks.reconcileHooks(kept, 'copilot', [], { copilotGlobal: kept });
+        const file = await fse.readJson(kept);
+        file.hooks.Stop = [...file.hooks.Stop ?? [], { type: 'command', bash: 'echo member; teamai pull' }];
+        await fse.writeJson(kept, file);
+        return {
+          kept,
+          holdsTeamai: async () => {
+            const after = await fse.readJson(kept);
+            expect(JSON.stringify(after.hooks.Stop)).toContain('echo member; teamai pull');
+            return (after.hooks.SessionStart ?? []).length > 0;
+          },
+        };
       }
       default: {
         const unhandled: never = adapter;
@@ -1313,6 +1324,33 @@ describe('uninstall', () => {
     expect(await holdsTeamai()).toBe(true);
     expect(summary).toContain(`     ${kept}`);
     expect(summary).toContain('run `teamai hooks remove` here first');
+  });
+
+  it.each(['a project copy from an earlier release', 'the workspace OpenClaw names in the project'])(
+    'keeps OpenClaw\'s machine-wide hook another project runs, beside %s', async (place) => {
+    const homeDir = path.join(tmpDir, 'home');
+    const projectRoot = path.join(tmpDir, 'only-project');
+    const repoPath = path.join(projectRoot, '.teamai', 'team-repo');
+    vi.stubEnv('HOME', homeDir);
+    await fse.ensureDir(repoPath);
+    const { OPENCLAW_HOOK_DIR } = await import('../openclaw-hooks.js');
+    const projectHook = path.join(projectRoot, '.openclaw', 'hooks', OPENCLAW_HOOK_DIR, 'HOOK.md');
+    const stateHook = path.join(homeDir, '.openclaw', 'hooks', OPENCLAW_HOOK_DIR, 'HOOK.md');
+    await fse.outputFile(projectHook, '[teamai]\n');
+    if (place === 'a project copy from an earlier release') await fse.outputFile(stateHook, '[teamai]\n');
+    else await fse.outputJson(path.join(homeDir, '.openclaw', 'openclaw.json'), { agents: { defaults: { workspace: path.join(projectRoot, '.openclaw') } } });
+    const teamConfig = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git' });
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath, { scope: 'project', projectRoot }), teamConfig });
+    await installAnotherProject(homeDir, tmpDir);
+
+    await uninstall({ force: true });
+
+    if (place === 'a project copy from an earlier release') {
+      expect(await fse.pathExists(projectHook)).toBe(false);
+      expect(await fse.pathExists(stateHook)).toBe(true);
+    } else {
+      expect(await fse.pathExists(projectHook)).toBe(true);
+    }
   });
 
   it('still removes global Codex hooks on a user-scope uninstall', async () => {

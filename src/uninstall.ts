@@ -15,7 +15,6 @@ import { mapStrings, parseJsonAs } from './utils/json.js';
 import { isWithin } from './utils/agent-path.js';
 import { bridgedTeamHookDir, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
 import {
-  removeOpenClawHooks,
   removeOpenClawHookEntry,
   removeOpenClawTeamHooks,
   OPENCLAW_HOOK_DIR,
@@ -126,7 +125,7 @@ interface RemovalPlan {
   /** Tool settings files that contain teamai hooks (each with the manifest that
    *  recorded its team hooks — HOME/user or a legacy <projectRoot>/project one).
    *  `keepBuiltins`: another install still runs the built-ins there. */
-  hookFiles: Array<{ path: string; tool: string; manifestPath: string; teamOnly?: boolean; legacyManifestPath?: string; teamHookProjectRoot?: string; mainCheckout?: MainCheckoutHooks; keepRecords?: boolean; keepBuiltins?: boolean }>;
+  hookFiles: Array<{ path: string; tool: string; manifestPath: string; teamOnly?: boolean; legacyManifestPath?: string; teamHookProjectRoot?: string; mainCheckout?: MainCheckoutHooks; keepRecords?: boolean; keepBuiltins?: boolean; copilotGlobal?: true }>;
   /** OpenClaw-style hook dirs (<base>/.<tool>/hooks) holding teamai HOOK.md+handler.ts. */
   openclawHookDirs: Array<{ hooksDir: string; tool: string; machineWide: boolean }>;
   /** OpenCode teamai plugin files (.opencode/plugin/teamai-*.ts) to delete. */
@@ -739,17 +738,13 @@ async function discoverToolResources(
     // for OpenClaw only, the resolved workspace dir: injection targets `<workspace>/hooks`
     // for OpenClaw alone, so a variant's uninstall must not take OpenClaw's hook.
     const defaultHooksDir = path.join(baseDir, `.${tool}`, 'hooks');
-    const resolvedHooksDir = resolveOpenClawHooksDir(tool);
-    const dirsToCheck = new Set([defaultHooksDir, resolvedHooksDir]);
     const workspaceDir = tool === 'openclaw' ? await openclawWorkspaceDir() : null;
+    // The state and workspace dirs serve every project, wherever the workspace is.
+    const machineWideDirs = new Set([resolveOpenClawHooksDir(tool), ...workspaceDir ? [path.join(workspaceDir, 'hooks')] : []]);
 
-    if (workspaceDir) {
-      dirsToCheck.add(path.join(workspaceDir, 'hooks'));
-    }
-
-    for (const hooksDir of dirsToCheck) {
+    for (const hooksDir of new Set([defaultHooksDir, ...machineWideDirs])) {
       if (!await pathExists(path.join(hooksDir, OPENCLAW_HOOK_DIR))) continue;
-      const machineWide = hooksDir !== defaultHooksDir || path.resolve(baseDir) === path.resolve(getUserHome());
+      const machineWide = machineWideDirs.has(hooksDir) || path.resolve(baseDir) === path.resolve(getUserHome());
 
       if (globalAdapters || !machineWide) res.openclawHookDirs.push({ hooksDir, tool, machineWide });
       else res.keptGlobal.push(path.join(hooksDir, OPENCLAW_HOOK_DIR));
@@ -1372,7 +1367,7 @@ async function buildRemovalPlan(
     const copilot = perTool.get('copilot');
 
     if (file !== undefined && copilot && await pathExists(file) && await hasTeamaiHooks(file, 'copilot')) {
-      if (takesMachineWide(COPILOT_TOOL_ID)) copilot.hookFiles.push({ path: file, tool: COPILOT_TOOL_ID, manifestPath: primaryHookScope.manifestPath });
+      if (takesMachineWide(COPILOT_TOOL_ID)) copilot.hookFiles.push({ path: file, tool: COPILOT_TOOL_ID, manifestPath: primaryHookScope.manifestPath, copilotGlobal: true });
       else copilot.keptGlobal.push(file);
     }
 
@@ -2831,13 +2826,16 @@ async function executeRemoval(
   // A default-home copy that fails keeps the records the moved copy's pass would consume (#1221).
   const failedRecords = new Set<string>();
 
-  for (const { path: settingsPath, tool, manifestPath, teamOnly, legacyManifestPath, teamHookProjectRoot, mainCheckout, keepRecords, keepBuiltins } of plan.hookFiles) {
+  for (const { path: settingsPath, tool, manifestPath, teamOnly, legacyManifestPath, teamHookProjectRoot, mainCheckout, keepRecords, keepBuiltins, copilotGlobal } of plan.hookFiles) {
     const records = `${manifestPath}\0${tool}`;
 
     try {
       const opts: ReconcileHooksOptions = { removeAll: true, manifestPath, keepRecords: keepRecords || failedRecords.has(records), teamHookHistory: plan.teamHookHistory, codexTrust };
 
       if (keepBuiltins) opts.keepBuiltins = keepBuiltins;
+
+      // Only the built-ins pull marked with this file: a member's command naming teamai stays.
+      if (copilotGlobal) opts.copilotGlobal = settingsPath;
 
       if (teamOnly) {
         opts.teamOnly = teamOnly;
@@ -2898,9 +2896,12 @@ async function executeRemoval(
   }
 
   // (a2) Remove OpenClaw-style hook dirs, and OpenClaw's entry enabling ours
+  // Only the dir the plan names: removeOpenClawHooks also sweeps the state dir, which the plan may keep.
   for (const { hooksDir } of plan.openclawHookDirs) {
     try {
-      await removeOpenClawHooks(hooksDir);
+      const dir = path.join(hooksDir, OPENCLAW_HOOK_DIR);
+      await remove(dir);
+      log.success(`Removed teamai OpenClaw hook from ${dir}`);
     } catch (e) {
       log.warn(`Failed to remove OpenClaw hook from ${hooksDir}: ${e instanceof Error ? e.message : String(e)}`);
     }
