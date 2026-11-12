@@ -333,6 +333,19 @@ projects:
     expect(await fse.readFile(path.join(repoPath, 'agents/aaa/reviewer.yaml'), 'utf8')).toBe(inactive);
   });
 
+  it('proposes an edit of a root agent when only an inactive namespace holds an agent folder of its name', async () => {
+    await fse.outputFile(path.join(repoPath, 'manifest/projects.yaml'), 'version: 1\nprojects:\n  - id: inactive\n    resources:\n      agents: [aaa]\n');
+    await fse.outputFile(path.join(repoPath, 'agents/aaa/reviewer/AGENT.md'), '# folder');
+    await fse.outputFile(path.join(repoPath, 'agents/reviewer.md'), 'team version');
+    await fse.outputFile(path.join(homeDir, '.claude/agents/reviewer.md'), 'local edits');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+
+    expect(items.map(({ name, status, relativePath }) => ({ name, status, relativePath }))).toEqual([
+      { name: 'reviewer', status: 'modified', relativePath: 'agents/reviewer.md' },
+    ]);
+  });
+
   it('does not promote an inactive retained agent to a new root agent', async () => {
     await fse.outputFile(path.join(repoPath, 'manifest/projects.yaml'), 'version: 1\nprojects:\n  - id: inactive\n    resources:\n      agents: [aaa]\n');
     await fse.outputFile(path.join(repoPath, 'agents/aaa/reviewer.md'), '# original');

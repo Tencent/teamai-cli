@@ -380,7 +380,13 @@ export class AgentsHandler extends ResourceHandler {
     // A copy still holding the bytes teamai last wrote there is not an edit,
     // even when this CLI would render it differently (#830).
     const delivered = await deliveredHashes(localConfig, state);
-    const folderStems = new Set((await listTeamAgentFolders(teamAgentsDir)).map(({ name }) => name));
+    const resolved = await resolveResourceNamespaces(localConfig);
+    const activeNamespaces = resolved?.activeNamespaces.agents ?? null;
+
+    // Only a folder pull delivers here stands for this name: one in an inactive namespace leaves a root file's copy editable.
+    const folderStems = new Set((await listTeamAgentFolders(teamAgentsDir))
+      .filter(({ namespace }) => activeNamespaces === null || namespace === undefined || activeNamespaces.includes(namespace))
+      .map(({ name }) => name));
 
     for (const tool of Object.keys(install.toolPaths)) {
       // An excluded tool is neither written nor cleaned by teamai, so what it
@@ -437,8 +443,6 @@ export class AgentsHandler extends ResourceHandler {
     // items for other stems are appended below.
     const items: AgentResourceItem[] = [...directItems];
 
-    const resolved = await resolveResourceNamespaces(localConfig);
-    const activeNamespaces = resolved?.activeNamespaces.agents ?? null;
     const aliases = await loadModelAliases(localConfig);
     // What each copy received at the last pull: a copy written with it is
     // unedited even after the alias has changed since (#830).
