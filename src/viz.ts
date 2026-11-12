@@ -588,12 +588,7 @@ export async function buildVizData(paths: VizPaths): Promise<VizData> {
 
   const namespaces = paths.learningsNamespaces.ok ? paths.learningsNamespaces.namespaces : undefined;
 
-  // `--repo` names a team repo no pull took, so its own folders are read.
-  const params = async <TName extends DefaultFolderName<'workflows'>>(name: TName) => {
-    const ref = { kind: 'workflows', name } as const;
-
-    return (await (paths.scope ? DefaultFolders.load(ref, paths.scope) : DefaultFolders.loadAt(ref, paths.knowledgeRoot))).params;
-  };
+  const params = async <TName extends DefaultFolderName<'workflows'>>(name: TName) => (await DefaultFolders.load({ kind: 'workflows', name }, paths.scope ?? null)).params;
 
   const [promote, prune, stale] = await Promise.all([
     params('teamai-promote-learning')

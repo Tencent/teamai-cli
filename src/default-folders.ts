@@ -453,19 +453,8 @@ async function teamFiles(ref: { readonly kind: LoadedKind; readonly name: string
  * keeps it unless it changed after pull; then teamai's is read.
  */
 async function load<TKind extends LoadedKind, TName extends DefaultFolderName<TKind>>(ref: DefaultFolderRef<TKind, TName>, scope: LocalConfig | null): Promise<DefaultFolder<TKind, TName>> {
-  return chooseInForce(ref, scope ? await teamFiles(ref, scope) : null);
-}
-
-/** Default `ref` as the team repo at `teamRoot` holds it, for a reader of a repo no pull took, such as `teamai dashboard --repo`. */
-async function loadAt<TKind extends LoadedKind, TName extends DefaultFolderName<TKind>>(ref: DefaultFolderRef<TKind, TName>, teamRoot: string): Promise<DefaultFolder<TKind, TName>> {
-  const dir = path.join(teamRoot, ref.kind, ref.name);
-  const team = await FolderFiles.read(dir);
-
-  return chooseInForce(ref, team.kind === 'files' ? { path: dir, files: [...team.files] } : null);
-}
-
-async function chooseInForce<TKind extends LoadedKind, TName extends DefaultFolderName<TKind>>(ref: DefaultFolderRef<TKind, TName>, team: { path: string; files: FolderFile[] } | null): Promise<DefaultFolder<TKind, TName>> {
   const teamai = await shipped(ref);
+  const team = scope ? await teamFiles(ref, scope) : null;
 
   if (team === null) return teamai.folder;
   const folder = readFolder(ref, team.files, teamai.params);
@@ -526,4 +515,4 @@ async function compare<TKind extends DefaultFolderKind, TName extends DefaultFol
   return { params, texts };
 }
 
-export const DefaultFolders = { names, isName, read, load, loadAt, problems, compare } as const;
+export const DefaultFolders = { names, isName, read, load, problems, compare } as const;
