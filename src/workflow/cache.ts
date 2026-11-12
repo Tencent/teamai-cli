@@ -409,7 +409,7 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
     const own = source.kind === 'folder' ? await WorkflowFolder.read(source.full) : undefined;
     const base = own?.kind === 'files' ? shipped.get(stem)?.files : undefined;
     const merged = own?.kind === 'files' && base ? InheritedFolders.merge({ team: own.files, teamai: base, marker: WORKFLOW_MARKER }) : undefined;
-    const read: WorkflowFolderRead | undefined = merged ? { kind: 'files', files: merged.files.map(({ layer: _layer, ...file }) => file) } : own;
+    const read: WorkflowFolderRead | undefined = merged ? WorkflowFolder.withinLimit(merged.files.map(({ layer: _layer, ...file }) => file)) : own;
 
     for (const file of merged?.strays ?? []) {
       const message = InheritedFolders.strayMessage(source.path, file);

@@ -590,6 +590,22 @@ steps:
     });
   });
 
+  it('refuses a team folder over a default whose resulting folder holds more than 1 MB, though its own files hold less', async () => {
+    const team = teamScope();
+    team.put('workflows/teamai-import-from-repo/narrative.md', 'x'.repeat(1024 * 1024 - 100));
+    team.commit();
+
+    const result = await syncScorersThenWorkflows(team.config);
+
+    expect({
+      invalid: result.invalid.map(({ file, code, message }) => ({ file, code, message: message.split(' bytes, ')[1]?.split('.')[0] })),
+      source: (await loadCachedWorkflow(team.config, 'teamai-import-from-repo'))?.source,
+    }).toEqual({
+      invalid: [{ file: 'workflows/teamai-import-from-repo/WORKFLOW.yaml', code: 'workflow_folder_invalid', message: 'more than the 1048576 bytes (1 MB) a folder may hold' }],
+      source: 'default',
+    });
+  });
+
   it('leaves out a file of a team folder over a default that replaces no file of it, warning about it', async () => {
     const team = teamScope();
     team.put('workflows/teamai-import-from-repo/narative.md', 'A typo.\n');
