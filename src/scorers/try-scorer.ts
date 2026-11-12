@@ -36,8 +36,8 @@ export interface TriedFile {
 }
 
 /** The text of the scorer file at `full`, and the files beside it when it is a scorer folder's `SCORER.md`, or why it cannot be read. */
-async function readTried(full: string, file: string): Promise<{ content: string; files?: ScorerFolderFile[] } | Refusal> {
-  if (!ScorerFolder.marks(full.split(path.sep).join('/'))) {
+async function readTried(full: string, file: string, place: string): Promise<{ content: string; files?: ScorerFolderFile[] } | Refusal> {
+  if (!ScorerFolder.marks(place)) {
     const content = await readFileSafe(full);
 
     return content === null ? refused('scorer_not_found', formatScorerDiagnostic({ file, message: 'could not be read' })) : { content };
@@ -55,12 +55,14 @@ async function fileOf(value: string): Promise<TriedFile | Refusal> {
   const file = relative.startsWith('..') || path.isAbsolute(relative) ? full : relative.split(path.sep).join('/');
 
   if (!file.endsWith('.md') || path.posix.basename(file) === 'README.md') return refused('scorer_invalid', formatScorerDiagnostic({ file, message: NOT_A_SCORER }));
-  const read = await readTried(full, file);
+  // A tried file sits in no team repo: the directory it is in and its name stand for its place in one.
+  const place = path.posix.join(path.basename(path.dirname(full)), path.basename(full));
+  const read = await readTried(full, file, place);
 
   if ('ok' in read) return read;
-  const parsed = parseScorer(file, read.content);
+  const parsed = parseScorer(place, read.content);
 
-  if (!parsed.ok) return refused('scorer_invalid', parsed.diagnostics.map(formatScorerDiagnostic).join('\n'));
+  if (!parsed.ok) return refused('scorer_invalid', parsed.diagnostics.map((diagnostic) => formatScorerDiagnostic({ ...diagnostic, file })).join('\n'));
 
   if (read.files === undefined && ScorerFolder.mentions(parsed.definition.prompt)) return refused('scorer_invalid', formatScorerDiagnostic({ file, message: ScorerFolder.fileFormProblem(file) }));
   const pin: PinnedScorer = { sourceHash: scorerSourceHash(read.content, read.files), relativePath: file, content: read.content };

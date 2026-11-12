@@ -2114,6 +2114,22 @@ describe('scorer files tried in a teamai-score run', () => {
     expect(seen.read).toBe('Pass when the client retries.\n');
   });
 
+  it('tries a scorer folder by ./SCORER.md from inside it, whose name is its folder\'s', async () => {
+    const { config } = await drafted();
+    const dir = path.join(root, 'draft', 'style');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'SCORER.md'), scorer({ rate: 0 }));
+    const cwd = process.cwd();
+    process.chdir(dir);
+
+    try {
+      const planned = await ScoreVerbs.plan({ subject: 'session:claude-code:one', scorers: '[]', batch: 'false', demand: 'named' }, (await (await scoreRun(config, { subject: 'session:claude-code:one', demand: 'named', files: ['./SCORER.md'], store: false })).next('plan')).ctx);
+      expect(planned).toMatchObject({ ok: true });
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
   it('tries scorers/SCORER.md as the scorer file SCORER, whatever sits beside it', async () => {
     const { config } = await drafted();
     const file = path.join(root, 'scorers', 'SCORER.md');
