@@ -1029,6 +1029,22 @@ export async function reconcileCopy(main: string, branch: string, expected: stri
 }
 
 /**
+ * A bare repository keeps `core.bare = true` in the configuration every worktree shares. With `extensions.worktreeConfig`
+ * on, git still reads it there for the linked worktrees, which then fail with "must be run in a work tree". Moves it to
+ * the `config.worktree` of the main (bare) worktree, so only that one stays bare.
+ */
+async function keepBareWithMain(dir: string): Promise<void> {
+  const bare = (await git(dir, ['config', '--local', '--type=bool', '--get', 'core.bare'])).stdout.trim();
+
+  if (bare !== 'true') return;
+  const common = (await git(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).stdout.trim();
+
+  if (common === '') return;
+  await git(dir, ['config', '--file', path.join(common, 'config.worktree'), 'core.bare', 'true']);
+  await git(dir, ['config', '--local', '--unset', 'core.bare']);
+}
+
+/**
  * Points the hooks of worktree `dir` at `hooks`, an empty directory, so no hook of the repository runs in a step's git,
  * without changing the hooks of any other worktree.
  */
@@ -1040,6 +1056,7 @@ export async function worktreeHooks(dir: string, hooks: string): Promise<void> {
   if (had !== 'true') {
     await git(dir, ['config', WORKTREE_CONFIG_OWNED, had === '' ? 'unset' : had]);
     await git(dir, ['config', 'extensions.worktreeConfig', 'true']);
+    await keepBareWithMain(dir);
   }
 
   await git(dir, ['config', '--worktree', 'core.hooksPath', hooks]);
