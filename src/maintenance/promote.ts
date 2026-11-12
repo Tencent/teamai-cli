@@ -10,6 +10,7 @@ import { assertSafePath } from '../utils/path-safety.js';
 import { createGit, createGitWithBlockTimeout, getDefaultBranch, PUSH_BRANCH_PREFIX } from '../utils/git.js';
 import { isInWriteRoot, listLearningFiles } from '../utils/learnings-roots.js';
 import { log } from '../utils/logger.js';
+import type { DefaultFolderParams } from '../default-folders.js';
 import { computeAllConfidence } from './confidence.js';
 
 /** A frontmatter field that counts only when it is a string. */
@@ -27,34 +28,26 @@ export interface PromotionCandidate {
   suggestedCategory: PromotionCategory;
 }
 
-const MIN_CONFIDENCE = 0.90;
-const MIN_UPVOTED = 5;
-const MIN_USERS = 2;
-const MIN_AGE_DAYS = 14;
+/** The gates a learning passes to be a candidate, from the `params.yaml` of `teamai-promote-learning`. */
+export type PromotionThresholds = DefaultFolderParams<'workflows', 'teamai-promote-learning'>;
 
 /**
- * Find learnings eligible for promotion to formal knowledge. A learning marked
- * `promoted_to` stays out only while that target is in place in
+ * Where to look for learnings eligible for promotion to formal knowledge. A
+ * learning marked `promoted_to` stays out only while that target is in place in
  * `knowledgeCheckout`, the git checkout of the team's knowledge: the default
  * branch or an open review branch touched it. One whose review was closed
  * unmerged and its branch deleted is offered again. Without a checkout, the
  * marker alone keeps it out.
  */
-export interface PromotionCandidatesOptions {
+export interface PromotionCandidatesQuery {
+  learningsDirs: readonly string[];
+  votesDir: string;
+  knowledgeCheckout?: string;
   namespaces?: readonly string[];
+  thresholds: PromotionThresholds;
 }
 
-export async function findPromotionCandidates(
-  learningsDirs: readonly string[],
-  votesDir: string,
-  knowledgeCheckout?: string | PromotionCandidatesOptions,
-  options?: PromotionCandidatesOptions,
-): Promise<PromotionCandidate[]> {
-  const checkout = knowledgeCheckout instanceof Object ? undefined : knowledgeCheckout;
-
-  const opts = knowledgeCheckout instanceof Object ? knowledgeCheckout : options;
-
-  const namespaces = opts?.namespaces;
+export async function findPromotionCandidates({ learningsDirs, votesDir, knowledgeCheckout: checkout, namespaces, thresholds }: PromotionCandidatesQuery): Promise<PromotionCandidate[]> {
   const confidenceMap = await computeAllConfidence(votesDir);
   const eligible: Array<Omit<PromotionCandidate, 'suggestedCategory'> & { content: string; promotedTo?: string }> = [];
 
@@ -66,15 +59,15 @@ export async function findPromotionCandidates(
     const docId = file.replace(/\.md$/i, '');
     const confidence = confidenceMap.get(docId) ?? 0;
 
-    if (confidence < MIN_CONFIDENCE) continue;
+    if (confidence < thresholds.min_confidence) continue;
 
     const docVotes = perDoc.get(docId);
 
     if (!docVotes) continue;
 
-    if (docVotes.upvoted < MIN_UPVOTED) continue;
+    if (docVotes.upvoted < thresholds.min_upvoted) continue;
 
-    if (docVotes.users.size < MIN_USERS) continue;
+    if (docVotes.users.size < thresholds.min_users) continue;
 
     const content = await readFileSafe(absPath);
 
@@ -96,7 +89,7 @@ export async function findPromotionCandidates(
     if (date) {
       const ageInDays = (now - new Date(date).getTime()) / (1000 * 60 * 60 * 24);
 
-      if (ageInDays < MIN_AGE_DAYS) continue;
+      if (ageInDays < thresholds.min_age_days) continue;
     }
 
     eligible.push({

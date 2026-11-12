@@ -12,8 +12,8 @@ inputs:
   scorers: [string]
 steps:
   - id: sessions
-    # A session idle this long counts as finished. Only a run a person started may pass inputs other than policy and [].
-    command: teamai session list --finished --idle 6h --publish "$PUBLISH" --scorers "$SCORERS" --json
+    # A session idle for the idle of params.yaml counts as finished. Only a run a person started may pass inputs other than policy and [].
+    command: teamai session list --finished --publish "$PUBLISH" --scorers "$SCORERS" --json
     env: { PUBLISH: "{{ inputs.publish }}", SCORERS: "{{ inputs.scorers }}" }
     # demand: named when the inputs name the scorers, so daily_limit counts the session but never refuses it
     output: { list: [{ session: string, source: string, publish: boolean, scorers: [string], demand: string }] }

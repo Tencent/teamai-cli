@@ -11,7 +11,7 @@ import { LineCounter, parseDocument } from 'yaml';
 import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 import { isYamlNode, locate } from '../workflow/parse-context.js';
-import { durationMs } from '../workflow/parse.js';
+import { durationMs } from '../utils/duration.js';
 import { SetupSchema, type Setup } from '../workflow/requirements.js';
 import type { WorkflowDiagnostic } from '../workflow/types.js';
 import { CommitSchema, TeamPathSchema } from '../workflow/clone.js';

@@ -69,21 +69,23 @@ A prompt reads the outputs of the steps it needs, as `{{ steps.<id>.outputs.<fie
 
 ## Replace it
 
+Put only the files you change in `workflows/teamai-import-from-repo/` at the root of the team repo. Every other file, `WORKFLOW.yaml` included, stays teamai's and keeps getting teamai's updates. To change the narrative prompt, copy it:
+
 ```bash
-cp -r "$(npm root -g)/teamai-cli/workflows/teamai-import-from-repo" workflows/
+mkdir -p workflows/teamai-import-from-repo
+cp "$(npm root -g)/teamai-cli/workflows/teamai-import-from-repo/narrative.md" workflows/teamai-import-from-repo/
 ```
 
-Then edit the prompt, such as adding this to `narrative.md`:
+Then edit it, such as adding this to `narrative.md`:
 
 ```markdown
 Add a "How to run it locally" section with the commands the README gives.
 ```
 
-Push the folder. The next `teamai pull` uses the team's folder, as a whole, instead of teamai's.
+Push the folder. After the next `teamai pull`, the commands run it with your files. A `workflows/teamai-import-from-repo.yaml` file replaces the folder whole.
 
 | Keep | Why |
 |---|---|
-| Every file `WORKFLOW.yaml` names | The team's folder replaces teamai's as a whole |
 | The inputs and outputs above | The commands pass those inputs and read those outputs |
 
 ## Requires

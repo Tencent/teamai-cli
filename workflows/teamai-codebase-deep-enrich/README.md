@@ -40,6 +40,7 @@ Purple marks a prompt the AI tool answers. A component whose answer fails gets n
 | `component.md` | The prompt for each component's design doc |
 | `architecture.md` | The prompt for the architecture overview |
 | `scenarios.md` | The prompt for the scenario sequence diagrams |
+| `params.yaml` | How many component docs `teamai codebase --deep-enrich` has the run write at once |
 
 A prompt reads `{{ inputs.<name> }}`, `{{ item.<field> }}` inside a step that runs for each component, and the outputs of the steps it needs, as `{{ steps.<id>.outputs.<field> }}`.
 
@@ -50,7 +51,7 @@ A prompt reads `{{ inputs.<name> }}`, `{{ item.<field> }}` inside a step that ru
 | `wiki_root` | `string` | The teamwiki directory |
 | `project` | `string` | The codebase, its directory under `evidence/code/` |
 | `max_modules` | `number` | How many components get a doc. `0` means every component |
-| `concurrency` | `number` | How many component docs the run writes at once |
+| `concurrency` | `number` | How many component docs the run writes at once. `teamai codebase --deep-enrich` passes the `concurrency` of `params.yaml` |
 | `publish` | `boolean` | Commit the docs and push them to the team repo that holds `wiki_root` |
 
 ## Outputs
@@ -63,24 +64,47 @@ A prompt reads `{{ inputs.<name> }}`, `{{ item.<field> }}` inside a step that ru
 | `missing_components` | The components with no doc. The next run writes them |
 | `missing_architecture` | `true` when the architecture overview is missing |
 
+## Parameters
+
+| Key | Range | What it sets |
+|---|---|---|
+| `concurrency` | 1-20 | How many component docs `teamai codebase --deep-enrich` and `teamai deep-enrich` have the run write at once. `teamai-import-from-repo` passes its own, `5` |
+
 ## Replace it
 
+Put only the files you change in `workflows/teamai-codebase-deep-enrich/` at the root of the team repo. Every other file, `WORKFLOW.yaml` included, stays teamai's and keeps getting teamai's updates. To add a section to each design doc, copy its prompt:
+
 ```bash
-cp -r "$(npm root -g)/teamai-cli/workflows/teamai-codebase-deep-enrich" workflows/
+mkdir -p workflows/teamai-codebase-deep-enrich
+cp "$(npm root -g)/teamai-cli/workflows/teamai-codebase-deep-enrich/component.md" workflows/teamai-codebase-deep-enrich/
 ```
 
-Then edit the prompts, such as adding this to `component.md`:
+Then add this to `component.md`:
 
 ```markdown
 End each design doc with a "Failure modes" section that lists what the component does when a dependency is down.
 ```
 
-Push the folder. The next `teamai pull` uses the team's folder, as a whole, instead of teamai's. `teamai-import-from-repo` then runs the team's folder too.
+To write fewer docs at once, against an AI tool's rate limit:
+
+```yaml
+# workflows/teamai-codebase-deep-enrich/params.yaml
+concurrency: 2
+```
+
+Push the folder. After the next `teamai pull`, the command and `teamai-import-from-repo` run it with your files. A `workflows/teamai-codebase-deep-enrich.yaml` file replaces the folder whole, so teamai's parameters apply.
 
 | Keep | Why |
 |---|---|
-| Every file `WORKFLOW.yaml` names | The team's folder replaces teamai's as a whole |
 | The inputs and outputs above | The callers pass those inputs and read those outputs |
+
+## What pull refuses
+
+| A team folder that | Pull |
+|---|---|
+| Sets a value out of range, or a key the table above does not list, in `params.yaml` | Names the file and the field. The version pull last took stays in force, teamai's until it took one |
+
+`teamai review --branch` fails such a folder before you merge it.
 
 ## Requires
 

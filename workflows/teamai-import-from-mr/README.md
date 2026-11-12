@@ -65,21 +65,23 @@ A prompt reads the outputs of the steps it needs, as `{{ steps.<id>.outputs.<fie
 
 ## Replace it
 
+Put only the files you change in `workflows/teamai-import-from-mr/` at the root of the team repo. Every other file, `WORKFLOW.yaml` included, stays teamai's and keeps getting teamai's updates. To change the prompts, copy them:
+
 ```bash
-cp -r "$(npm root -g)/teamai-cli/workflows/teamai-import-from-mr" workflows/
+mkdir -p workflows/teamai-import-from-mr
+cp "$(npm root -g)/teamai-cli/workflows/teamai-import-from-mr/"draft.*.md workflows/teamai-import-from-mr/
 ```
 
-Then edit the prompts, such as adding this to `draft.en.md`:
+A file you write replaces every language of it, and `WORKFLOW.yaml` reads `draft.zh.md` by name, so keep both. Then edit them, such as adding this to `draft.en.md`:
 
 ```markdown
 Name the service the MR changes in the title, such as "billing: ...".
 ```
 
-Push the folder. The next `teamai pull` uses the team's folder, as a whole, instead of teamai's.
+Push the folder. After the next `teamai pull`, the commands run it with your files. A `workflows/teamai-import-from-mr.yaml` file replaces the folder whole.
 
 | Keep | Why |
 |---|---|
-| Every file `WORKFLOW.yaml` names | The team's folder replaces teamai's as a whole |
 | The inputs and outputs above | The commands pass those inputs and read those outputs |
 
 ## Requires

@@ -313,7 +313,7 @@ teamai-recall  rules/teamai-recall/  Team root  Folder  Refused
   rules/teamai-recall/ is not used, so teamai's recall rule stays in force: rules/teamai-recall/RULE.md does not contain "Nothing was searched:". Fix the folder in the team repo.
 ```
 
-Rule files stay on the rule list above. Default hooks lists teamai's five hints: where each comes from, how many `with:` parameters and texts the team's folder changes, and, opened, each parameter's teamai and team value, the changed ones marked, and the file each text is read from for the team's language.
+Rule files stay on the rule list above. Default hooks lists teamai's five hints: where each comes from, how many parameters and texts the team's folder changes, and, opened, each parameter's teamai and team value, the changed ones marked, and the file each text is read from for the team's language.
 
 The Overview counts the problems and links here:
 
@@ -399,7 +399,7 @@ curl -s 'http://localhost:3721/api/tokens?days=30' | jq -r '.byModel[] | select(
 
 The Overview's **What finished sessions delivered** panel shows the sessions the usage report counted in the last 30 days for the selected workspace: the share that delivered a commit, pull request or learning, the rows per run mode and outcome with tokens and interventions per session (see [Usage reporting](reporting.md#what-your-sessions-delivered)), and the latest sessions with their commits, pull request links and learnings.
 
-A session row and its details show the learnings `teamai contribute` recorded for it. Its commits and pull request are counted 6 hours after it goes quiet, after the row has left the list, so they show in the panel. These ids, shas and links stay on this machine.
+A session row and its details show the learnings `teamai contribute` recorded for it. Its commits and pull request are counted once it has been quiet for the [`idle` of `teamai-finished-sessions`](scorers.md#teamai-finished-sessions), 6 hours unless the team changed it, after the row has left the list, so they show in the panel. These ids, shas and links stay on this machine.
 
 ## Session Save
 

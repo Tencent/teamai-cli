@@ -17,6 +17,7 @@ import {
 } from './reads.js';
 import { parseHitl } from './parse-hitl.js';
 import { isDataBranch, JsonValueSchema, type JsonValue } from '../types.js';
+import { durationMs } from '../utils/duration.js';
 import { outputMismatch } from './output.js';
 import { roleDiagnostics } from './parse-roles.js';
 import { loopProblems, stepLoops } from './loop.js';
@@ -75,8 +76,6 @@ const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 /** A scorer a step lists: a token, the name of a file in scorers/, or a scorer a run generates, whose name holds a colon. */
 const SCORER_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const DURATION = /^(\d+)(ms|s|m|h|d)$/;
-const DURATION_UNITS = new Map([['ms', 1], ['s', 1000], ['m', 60_000], ['h', 3_600_000], ['d', 86_400_000]]);
 
 /** The type names of the output shorthand. */
 function isTypeName(name: string | undefined): name is 'string' | 'number' | 'boolean' {
@@ -1945,14 +1944,6 @@ function parseSetup(node: Node | null | undefined, ctx: ParseContext): Setup | u
   }
 
   return parsed.success && diagnostics.length === before ? parsed.data : undefined;
-}
-
-/** A positive whole number of `ms`, `s`, `m`, `h`, or `d`, such as `30s` or `14d`, read as milliseconds; undefined otherwise. */
-export function durationMs(text: string): number | undefined {
-  const [, amount = '', unit = ''] = DURATION.exec(text.trim()) ?? [];
-  const ms = Number(amount) * (DURATION_UNITS.get(unit) ?? 0);
-
-  return ms > 0 && Number.isSafeInteger(ms) ? ms : undefined;
 }
 
 /** A `timeout`, read with durationMs. */

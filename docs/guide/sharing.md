@@ -506,13 +506,11 @@ agy then refuses the command with `tool call denied by pre-tool hook: rm -rf is 
 
 ### Default hooks
 
-teamai's own hints keep their thresholds and texts in hook folders. A folder of the same name at the root of the team repo changes one. Put in it only the files you change; every other file, `HOOK.yaml` included, stays teamai's and keeps getting teamai's updates. To remind only after longer sessions, in the team's words:
+teamai's own hints keep their thresholds and texts in hook folders. A folder of the same name at the root of the team repo changes one. Put in it only the files you change; every other file stays teamai's and keeps getting teamai's updates. To remind only after longer sessions, in the team's words:
 
 ```yaml
-# hooks/teamai-friction-reminder/HOOK.yaml
-description: Remind after longer sessions only
-with:
-  min_tools: 30
+# hooks/teamai-friction-reminder/params.yaml
+min_tools: 30
 ```
 
 ```markdown
@@ -530,7 +528,7 @@ After `teamai pull`, the reminder waits for 30 tool calls and opens with that li
 | `teamai-env-hint` | The session-start note naming the scope's team env variables and secrets |
 | `teamai-package-hint` | The session-start note that the team's package declarations changed |
 
-- `HOOK.yaml` holds `description` and `with:`. A key left out of `with:` keeps teamai's value.
+- `params.yaml` holds the parameters, and a key left out of it keeps teamai's value. `HOOK.yaml` holds only `description`.
 - A text is `<text>.md`, with `{{ name }}` variables. With `language: en` or `zh`, `<text>.en.md` or `<text>.zh.md` is used when the folder has it.
 - A text you write replaces all of teamai's languages of it: with your `problem.md` and no `problem.zh.md`, a `zh` team reads your `problem.md`. Write `problem.md` too when you write only one language.
 - A file teamai's folder does not have replaces nothing. Pull warns, names it, and leaves it out. A misspelled `problems.md` shows up this way instead of silently doing nothing. When your folder has its own `HOOK.yaml`, it may add files.
@@ -540,7 +538,7 @@ After `teamai pull`, the reminder waits for 30 tool calls and opens with that li
 Pull checks the folder your files and teamai's make together. It refuses one that sets a value out of range or a key the default does not take, reads a variable a text does not offer, lacks the base `<text>.md` of a text you wrote in one language, or has a `command`, and keeps teamai's folder in force:
 
 ```text
-hooks/teamai-friction-reminder/ is refused, and teamai's default stays in force until it is fixed: HOOK.yaml: with.min_tools must be a whole number from 1 to 1000
+hooks/teamai-friction-reminder/ is refused, and teamai's default stays in force until it is fixed: params.yaml: min_tools must be a whole number from 1 to 1000
 ```
 
 A replacement replaces for the whole team, so pull refuses one in a namespace, such as `hooks/payments/teamai-friction-reminder/`. `teamai review --branch` fails a replacement pull refuses, or one with a file that replaces nothing, before you merge it.
@@ -768,7 +766,7 @@ sessions:
   publish: { attended: ask, unattended: auto }
 ```
 
-Attended `ask` proposes publishing when the friction reminder offers [`teamai-share-learnings`](workflow.md#teamai-share-learnings-and-teamai-share-session), and the person confirms it once, at the start. An agent that starts the run with `--confirmed` can confirm it for them, and teamai cannot check that they did. Otherwise a person's sessions are archived only by a command such as `teamai session push`. Unattended `ask` acts as `off`, since nobody is there to confirm. Attended `auto` archives a session once nothing has happened in it for six hours, in the [`teamai-finished-sessions`](scorers.md#teamai-finished-sessions) run a session start begins, which also judges finished sessions. A session pushed by hand before it finished is archived again once something happened in it after that push. Publishing always scrubs, which also rewrites local paths ([what a scrubbed session keeps](dashboard.md#what-a-scrubbed-session-keeps)). An HTTP team keeps no session archive, so there `sessions.publish` acts as `off`, and `teamai doctor` says so.
+Attended `ask` proposes publishing when the friction reminder offers [`teamai-share-learnings`](workflow.md#teamai-share-learnings-and-teamai-share-session), and the person confirms it once, at the start. An agent that starts the run with `--confirmed` can confirm it for them, and teamai cannot check that they did. Otherwise a person's sessions are archived only by a command such as `teamai session push`. Unattended `ask` acts as `off`, since nobody is there to confirm. Attended `auto` archives a session once nothing has happened in it for six hours, or the `idle` the team sets, in the [`teamai-finished-sessions`](scorers.md#teamai-finished-sessions) run a session start begins, which also judges finished sessions. A session pushed by hand before it finished is archived again once something happened in it after that push. Publishing always scrubs, which also rewrites local paths ([what a scrubbed session keeps](dashboard.md#what-a-scrubbed-session-keeps)). An HTTP team keeps no session archive, so there `sessions.publish` acts as `off`, and `teamai doctor` says so.
 
 A member's `config.yaml` wins, one mode at a time. A mode it does not name falls through to `teamai.yaml`:
 

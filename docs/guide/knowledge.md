@@ -195,7 +195,7 @@ teamai recall maintenance --prune --archive
 teamai recall maintenance --update-quality
 ```
 
-`--archive` puts aside learnings whose confidence is below 0.15. `--update-quality` writes a `.draft.md` beside each entry the team recalls often but rarely adopts. Rename it to `.md` when the draft is right; until then `teamai pull` delivers none of it. It runs the default workflow [`teamai-draft-learning-updates`](workflow.md#default-workflows), and exits 1 when an entry could not be drafted.
+`--archive` puts aside learnings whose confidence is below 0.15. `--update-quality` writes a `.draft.md` beside each entry the team recalls often but rarely adopts. Rename it to `.md` when the draft is right; until then `teamai pull` delivers none of it. It runs the default workflow [`teamai-draft-learning-updates`](workflow.md#default-workflows), and exits 1 when an entry could not be drafted. By default an entry is drafted when members recalled it at least 5 times in all, at least 2 of them, and upvoted it at most once; a team changes that in `workflows/teamai-draft-learning-updates/params.yaml`, which its [README](https://github.com/Tencent/teamai-cli/blob/main/workflows/teamai-draft-learning-updates/README.md) describes.
 
 Digest and maintenance commands (`teamai digest`, `teamai recall maintenance`, and `teamai recall promote`) include the active learnings namespaces for the current scope alongside the shared root.
 
@@ -205,7 +205,7 @@ Confidence is an activity score from 0 to 1, not a probability that the knowledg
 
 ### Promoting Learnings
 
-A learning can become a skill, rule, or doc when its confidence is at least 0.90, it has at least 5 upvotes, at least 2 contributors, and it has existed for at least 14 days.
+A learning can become a skill, rule, or doc when its confidence is at least 0.90, it has at least 5 upvotes, at least 2 contributors, and it has existed for at least 14 days. A team changes these in a `params.yaml` of `workflows/teamai-promote-learning/` at the root of its repo, holding only the keys it changes, such as `min_users: 1`; the [workflow's README](https://github.com/Tencent/teamai-cli/blob/main/workflows/teamai-promote-learning/README.md) lists them and their ranges. Members on a teamai older than the one that reads it keep the old gates, so upgrade every member first.
 
 Promoted skills use `skills/<learningId>/SKILL.md`, with missing `name` and `description` frontmatter filled in so tools can discover them. Rules and docs remain Markdown files in their respective directories.
 

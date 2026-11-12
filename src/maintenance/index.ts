@@ -9,7 +9,7 @@ export { annotateHotness, HOT_THRESHOLD, ZERO_EVIDENCE_WEIGHT } from './hot-cold
 
 export { findStaleEntries, reportStaleEntries, findRelatedAdoptedLearnings, DraftLearningUpdates } from './quality-update.js';
 
-export type { StaleEntry, QualityUpdateOptions } from './quality-update.js';
+export type { StaleEntry, StaleGates } from './quality-update.js';
 
 export { findPromotionCandidates, writePromotion, fetchPromotionRefs, chooseCategory, PromotionCategorySchema } from './promote.js';
 

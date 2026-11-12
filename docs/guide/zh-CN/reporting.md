@@ -103,7 +103,7 @@ unattended:
 
 ### 你的会话产出了什么
 
-你的一个会话空闲 6 小时后，下一次上报会把它计入 `outcomes`，按它的运行模式和它的产出分行。无人值守的会话还会由结束其任务的 `teamai score --drain` 计入，因此临时运行器也会上报它的会话：
+你的一个会话空闲达到 [`teamai-finished-sessions` 的 `idle`](scorers.md#teamai-finished-sessions)（团队未修改时为 6 小时）后，下一次上报会把它计入 `outcomes`，按它的运行模式和它的产出分行。无人值守的会话还会由结束其任务的 `teamai score --drain` 计入，因此临时运行器也会上报它的会话：
 
 ```yaml
 outcomes:
