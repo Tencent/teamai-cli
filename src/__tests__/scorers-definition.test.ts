@@ -117,7 +117,7 @@ describe('parseScorer', () => {
       return parsed.ok ? parsed.definition.name : parsed.diagnostics;
     };
 
-    expect([nameOf('scorers/style/SCORER.md'), nameOf('scorers/ops/style/SCORER.md'), nameOf('scorers/SCORER.md')]).toEqual(['style', 'style', 'SCORER']);
+    expect([nameOf('scorers/style/SCORER.md'), nameOf('scorers/ops/style/SCORER.md'), nameOf('scorers/SCORER.md'), nameOf('scorers/scorers/SCORER.md')]).toEqual(['style', 'style', 'SCORER', 'scorers']);
   });
 
   it('rejects a file name that is not a token', () => {

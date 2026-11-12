@@ -67,9 +67,9 @@ function render(prompt: string, dir: string): string {
   return prompt.split(PLACEHOLDER).join(dir.split(path.sep).join('/'));
 }
 
-/** Whether `file`, a `/`-separated path, is a scorer folder's marker. `scorers/SCORER.md` sits in no folder of its own: it is the file-form scorer SCORER. */
-function marks(file: string): boolean {
-  return path.posix.basename(file) === SCORER_MARKER && path.posix.basename(path.posix.dirname(file)) !== 'scorers';
+/** Whether `relativePath`, a path in the team repo, is a scorer folder's marker. `scorers/SCORER.md` sits in no folder of its own: it is the file-form scorer SCORER. */
+function marks(relativePath: string): boolean {
+  return path.posix.basename(relativePath) === SCORER_MARKER && path.posix.dirname(relativePath) !== 'scorers';
 }
 
 /** Writes `files` under `dir`, which the judge reads. */
