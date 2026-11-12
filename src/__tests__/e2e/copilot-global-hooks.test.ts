@@ -386,7 +386,7 @@ describe('Copilot built-in hooks in project scope', () => {
     expect(remaining?.hooks.Stop ?? []).toEqual([]);
   });
 
-  it('installs with init, migrates with pull and keeps shared hooks on project uninstall', () => {
+  it('installs with init, migrates with pull and removes the global hooks with the last project that runs Copilot', () => {
     const seed = path.join(sandbox, 'seed');
     const remote = path.join(sandbox, 'origin.git');
     const url = 'https://example.test/team/copilot.git';
@@ -420,7 +420,7 @@ describe('Copilot built-in hooks in project scope', () => {
     expect(cli(['doctor'], dir)).toMatch(/✔.*teamai hooks in copilot settings/);
     const uninstall = cli(['uninstall', '--force'], dir);
     expect(uninstall).toContain(globalFile);
-    expect(hooks(globalFile).hooks.SessionStart).toHaveLength(1);
+    expect(fs.existsSync(globalFile)).toBe(false);
     expect(hooks(localFile).hooks.Stop.map(entry => entry.bash)).toEqual(['echo personal']);
   });
 
@@ -586,7 +586,7 @@ describe('Copilot built-in hooks in project scope', () => {
     expect(hooks(globalFile).hooks.SessionStart ?? []).toEqual([]);
     cli(['hooks', 'inject'], dir);
     expect(cli(['uninstall', '--force'], dir)).toContain(globalFile);
-    expect(hooks(globalFile).hooks.SessionStart).toHaveLength(1);
+    expect(fs.existsSync(globalFile)).toBe(false);
   });
 
 });
