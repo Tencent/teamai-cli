@@ -1145,6 +1145,7 @@ projects:
     const rendered = `Apply ${path.join(homeDir, '.teamai', 'agents', 'payments', 'reviewer').split(path.sep).join('/')}/rubric.md.\n`;
     await fse.writeFile(path.join(homeDir, '.claude/agents', 'reviewer.md'), rendered);
     await fse.writeFile(path.join(homeDir, '.codebuddy/agents', 'reviewer.md'), `${rendered}My own step.\n`);
+    await fse.outputFile(path.join(homeDir, '.teamai', 'agents', 'payments', 'reviewer', 'AGENT.md'), 'Apply ${TEAMAI_AGENT_DIR}/rubric.md.\n');
     await fse.outputFile(path.join(homeDir, '.teamai', 'agents', 'payments', 'reviewer', 'rubric.md'), '- Name what breaks.\n');
 
     await handler.removeItem('reviewer', teamConfig, localConfig);
@@ -1157,16 +1158,20 @@ projects:
     ]).toEqual([false, true, true]);
   });
 
-  it('removeItem removes an agent folder\'s delivered copy once no tool copy of it is kept', async () => {
+  it.each([
+    ['removes it once no tool copy is left', ['claude'], false],
+    ['keeps it while a copy in a tool the member excluded names it', ['codebuddy'], true],
+  ])('removeItem and an agent folder\'s delivered copy: %s', async (_case, enabledAgents, kept) => {
     await fse.outputFile(path.join(repoPath, 'agents', 'payments', 'reviewer', 'AGENT.md'), 'Apply ${TEAMAI_AGENT_DIR}/rubric.md.\n');
     await fse.outputFile(path.join(repoPath, 'agents', 'payments', 'reviewer', 'rubric.md'), '- Name what breaks.\n');
     commitTeamRepo(repoPath);
     await fse.writeFile(path.join(homeDir, '.claude/agents', 'reviewer.md'), `Apply ${path.join(homeDir, '.teamai', 'agents', 'payments', 'reviewer').split(path.sep).join('/')}/rubric.md.\n`);
+    await fse.outputFile(path.join(homeDir, '.teamai', 'agents', 'payments', 'reviewer', 'AGENT.md'), 'Apply ${TEAMAI_AGENT_DIR}/rubric.md.\n');
     await fse.outputFile(path.join(homeDir, '.teamai', 'agents', 'payments', 'reviewer', 'rubric.md'), '- Name what breaks.\n');
 
-    await handler.removeItem('reviewer', teamConfig, localConfig);
+    await handler.removeItem('reviewer', teamConfig, { ...localConfig, enabledAgents });
 
-    expect(await fse.pathExists(path.join(homeDir, '.teamai', 'agents', 'payments', 'reviewer'))).toBe(false);
+    expect(await fse.pathExists(path.join(homeDir, '.teamai', 'agents', 'payments', 'reviewer', 'rubric.md'))).toBe(kept);
   });
 
   it('scanLocalForPush respects tombstones (skips removed items)', async () => {

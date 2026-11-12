@@ -79,12 +79,19 @@ async function prune(input: {
   readonly ledger: DeliveryLedger | undefined;
 }): Promise<void> {
   const { localConfig } = input;
-  const root = DeliveredFolders.root(localConfig, 'agents');
 
-  if ((await listDirs(path.join(root, 'agents'))).length === 0) return;
+  if ((await listDirs(path.join(DeliveredFolders.root(localConfig, 'agents'), 'agents'))).length === 0) return;
+  const named = await namedBy(localConfig, input.copyDirs);
+  const kept = input.kept.filter(isFolder).map((agent) => pathOf(localConfig, agent));
+
+  await DeliveredFolders.prune({ localConfig, type: 'agents', keep: [...kept, ...named], ledger: input.ledger });
+}
+
+/** The delivered agent folders of `localConfig`'s scope that a file in `copyDirs` (each tool's agents directory) names. */
+async function namedBy(localConfig: LocalConfig, copyDirs: readonly string[]): Promise<string[]> {
   const texts: string[] = [];
 
-  for (const dir of input.copyDirs) {
+  for (const dir of copyDirs) {
     for (const file of await listFiles(dir)) {
       const text = await readFileSafe(path.join(dir, file));
 
@@ -92,10 +99,7 @@ async function prune(input: {
     }
   }
 
-  const named = await DeliveredFolders.namedIn({ root, type: 'agents', texts });
-  const kept = input.kept.filter(isFolder).map((agent) => pathOf(localConfig, agent));
-
-  await DeliveredFolders.prune({ localConfig, type: 'agents', keep: [...kept, ...named], ledger: input.ledger });
+  return DeliveredFolders.namedIn({ root: DeliveredFolders.root(localConfig, 'agents'), type: 'agents', texts });
 }
 
 /**
@@ -132,4 +136,4 @@ async function isDelivered(localConfig: LocalConfig, name: string): Promise<bool
   return false;
 }
 
-export const AgentFolders = { isFolder, pathOf, render, origin, deliver, prune, isDelivered } as const;
+export const AgentFolders = { isFolder, pathOf, render, origin, deliver, prune, namedBy, isDelivered } as const;

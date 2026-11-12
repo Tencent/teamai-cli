@@ -1117,14 +1117,17 @@ export class AgentsHandler extends ResourceHandler {
     const { previous } = record.ledger;
     const install = installOf(teamConfig, localConfig);
 
-    // A copy kept here still names the delivered folder's files, so the folder stays with it.
-    let keptCopy = false;
+    // Every tool's agents directory, an excluded tool's too: a copy left in one keeps the folder it names.
+    const copyDirs: string[] = [];
 
     for (const tool of Object.keys(install.toolPaths)) {
+      const location = await locate(tool, 'agents', install);
+
+      copyDirs.push(...cleanupOf(location).map(({ path: agentsDir }) => agentsDir));
+
       // A tool the member excluded is not ours to write to, so it is not ours
       // to delete from either. This is the gate pull's tombstone pass applies.
       if (isAgentExcluded(localConfig, tool)) continue;
-      const location = await locate(tool, 'agents', install);
       const sidecar = location.channel === 'files' && 'sidecar' in location ? location.sidecar : null;
 
       for (const { path: agentsDir } of cleanupOf(location)) {
@@ -1140,31 +1143,27 @@ export class AgentsHandler extends ResourceHandler {
             if (localName === name && await pathExists(filePath)
               && !await ownsAgentCopy(localConfig, filePath, stem, tool, previous)) {
               log.warn(describeMembersDirLeft(filePath, resource, 'remove'));
-              keptCopy = true;
               continue;
             }
 
-            if (!await pathExists(filePath)) continue;
+            if (await pathExists(filePath) && !await keepsTrackedCopy(filePath)) {
+              await removeDelivered(record.ledger, filePath);
 
-            if (await keepsTrackedCopy(filePath)) {
-              keptCopy = true;
-              continue;
+              if (sidecar !== null) await updateJoycodeAgentIndex(joycodeIndexSidecar(sidecar, agentsDir), { kind: 'remove', file: path.basename(filePath) }, record.ledger);
+              removed.push(filePath);
+              log.debug(`Removed agent ${localName} from ${tool}`);
             }
-
-            await removeDelivered(record.ledger, filePath);
-
-            if (sidecar !== null) await updateJoycodeAgentIndex(joycodeIndexSidecar(sidecar, agentsDir), { kind: 'remove', file: path.basename(filePath) }, record.ledger);
-            removed.push(filePath);
-            log.debug(`Removed agent ${localName} from ${tool}`);
           }
         }
       }
     }
 
-    for (const folder of keptCopy ? [] : folders) {
+    const named = new Set(await AgentFolders.namedBy(localConfig, copyDirs));
+
+    for (const folder of folders) {
       const delivered = AgentFolders.pathOf(localConfig, folder);
 
-      if (!await pathExists(delivered)) continue;
+      if (named.has(delivered) || !await pathExists(delivered)) continue;
       await removeDelivered(record.ledger, delivered);
       removed.push(delivered);
     }
