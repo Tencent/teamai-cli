@@ -41,6 +41,8 @@ import {
   legacyManagedHooksPath,
   isAgentExcluded,
   isSelfMode,
+  LEARNINGS_BRANCH,
+  REPORTS_BRANCH,
   managedMcpManifestPath,
   resolveBaseDir,
   resolveHookScope,
@@ -106,7 +108,7 @@ import { listQueuesIn } from './utils/pending-learnings.js';
 import { log } from './utils/logger.js';
 import { askConfirmation } from './utils/prompt.js';
 import { getUserHome } from './utils/home.js';
-import { gitCommonDir, listWorktrees } from './utils/git.js';
+import { createGit, gitCommonDir, listWorktrees } from './utils/git.js';
 import {
   envLoaderProfiles,
   findEnvBlockFor,
@@ -168,6 +170,8 @@ interface RemovalPlan {
   ruleDirs: string[];
   /** Every tool's agents directories, read as `ruleDirs` are. */
   agentDirs: string[];
+  /** In self mode, the agents directories of the tools this removes, which init makes before anything is in them: each goes once empty. */
+  seededAgentDirs: string[];
   /** The rules globs teamai owns in OpenCode's opencode.json `instructions`, per file (#946). */
   opencodeOwnedGlobs: OpencodeRuleGlobEntries[];
   /** Built-in agent .md files deployed by the CLI (e.g. teamai-recall). */
@@ -206,6 +210,8 @@ interface RemovalPlan {
   checkouts: string[];
   /** teamai's git hook in the project repository: config sections and hook scripts holding its block. */
   gitHook: { repoDir: string; entries: string[]; checkouts?: string[] } | null;
+  /** What workflow worktrees set up in each checkout, once none of them is left (`removeWorktreeSetup`). */
+  worktreeSetups: Array<{ checkout: string; entries: string[] }>;
   /** The .teamai home directory path. */
   teamaiHome: string;
   /** Whether teamaiHome exists on disk. */
@@ -215,6 +221,8 @@ interface RemovalPlan {
    * it, each with how many it holds; empty when teamaiHome stays.
    */
   unpublishedQueues: Array<{ dir: string; count: number }>;
+  /** Self mode's side branches holding commits origin lacks, such as a publish that could not push: kept in the repository. */
+  unpushedSideBranches: string[];
   /** What a user-scope removal of teamaiHome leaves for the projects still set up on this machine (#1025). */
   keptForProjects: KeptForProjects;
   /** Whether shared resources (docs / ~/.teamai / shell profile) are part of this removal. */
@@ -516,9 +524,9 @@ async function discoverToolResources(
    */
   hookSettingsPath?: string,
   /**
-   * Whether the machine-wide Pi/OMP extensions and Codex user hooks go too.
-   * Only a user-scope uninstall takes them: a project cannot tell whether an
-   * HTTP agent, a self-mode project or another checkout still uses them (#945).
+   * Whether the machine-wide Pi/OMP extensions and Codex user hooks go too:
+   * on a user-scope uninstall, and on a project's when no other install on the
+   * machine (the user scope, another project or an HTTP agent) runs the tool (#945).
    */
   globalAdapters = scope === 'user',
 ): Promise<ToolResources> {
@@ -566,7 +574,7 @@ async function discoverToolResources(
 
     for (const pluginDir of [...hookDirs, ...projectDirs, ...historicalPluginDirs]) {
       // The user plugin carries hooks, rules and instructions to every OpenCode project and the user
-      // scope (#993): only a user-scope uninstall removes it, as for the other global adapters (#945).
+      // scope (#993): it goes only with the last install that runs OpenCode, as the other global adapters (#1825).
       if (!projectDirs.includes(pluginDir) && !globalAdapters) {
         if (await pathExists(path.join(pluginDir, OPENCODE_HOOK_FILE))) res.keptGlobal.push(path.join(pluginDir, OPENCODE_HOOK_FILE));
 
@@ -952,14 +960,20 @@ function printKeptForProjects({ projects, paths }: KeptForProjects): void {
   console.log('');
 }
 
+/** Another install on this machine, or `unreadable` when its config does not parse: it may run any tool (#1825). */
+type OtherInstall = LocalConfig | 'unreadable';
+
+function runsTool(install: OtherInstall, tool: string): boolean {
+  return install === 'unreadable' || !isAgentExcluded(install, tool);
+}
+
 /**
  * The other installs on this machine that run HOME's built-in hooks: the user
- * scope and each workspace partition but the one in `dataHome`. A config that
- * cannot be read counts as none.
+ * scope and each workspace partition but the one in `dataHome`.
  */
-async function installsSharingHome(dataHome: string): Promise<LocalConfig[]> {
+async function installsSharingHome(dataHome: string): Promise<OtherInstall[]> {
   const { projectsRootDir, readAnchorFile } = await import('./utils/partition.js');
-  const installs: LocalConfig[] = [];
+  const installs: OtherInstall[] = [];
   const user = await loadLocalConfig({ dryRun: true, suppressMigrationNotice: true });
 
   if (user) installs.push(user);
@@ -968,9 +982,11 @@ async function installsSharingHome(dataHome: string): Promise<LocalConfig[]> {
     const partition = path.join(projectsRootDir(), dir);
 
     if (path.resolve(partition) === path.resolve(dataHome)) continue;
-    const config = await readConfigFrom(partition, await readAnchorFile(partition) ?? partition, undefined, undefined, { selfHeal: false });
+    let unreadable = false;
+    const config = await readConfigFrom(partition, await readAnchorFile(partition) ?? partition, undefined, () => { unreadable = true; }, { selfHeal: false });
 
     if (config) installs.push(config);
+    else if (unreadable) installs.push('unreadable');
   }
 
   return installs;
@@ -1291,6 +1307,12 @@ async function buildRemovalPlan(
   const rulesDirsByTool = new Map<string, readonly string[]>();
   const agentDirsByTool = new Map<string, readonly string[]>();
   const globalAdapters = localConfig.scope === 'user';
+  const otherInstalls = globalAdapters ? [] : await installsSharingHome(getDataHome(localConfig));
+  const { loadLocalAgentConfig } = await import('./local-agent.js');
+  const httpAgent = !globalAdapters && await loadLocalAgentConfig({ dryRun: true, envFallback: false }) !== null;
+  // A tool's machine-wide adapter goes with the last install on the machine that runs that tool; an HTTP agent may run any.
+  // One tool's uninstall leaves the project installed, so its adapters stay.
+  const othersRun = (tool: string): boolean => agentFilter !== undefined || httpAgent || otherInstalls.some((other) => runsTool(other, tool));
 
   for (const [tool, toolPath] of Object.entries(toolPaths)) {
     const rulesDirs = cleanupOf(await locate(tool, 'rules', install)).flatMap((place) => place.kind === 'dir' ? [place.path] : []);
@@ -1332,7 +1354,7 @@ async function buildRemovalPlan(
         standaloneHookManifestPath,
         localConfig.scope,
         hookToolPaths[tool]?.settings,
-        globalAdapters,
+        globalAdapters || !othersRun(tool),
       ),
     );
   }
@@ -1347,10 +1369,8 @@ async function buildRemovalPlan(
     }
 
     // The user scope and other workspaces dispatch from the same HOME settings: their built-ins stay, this project's team hooks go.
-    const otherInstalls = await installsSharingHome(getDataHome(localConfig));
-
     for (const [tool, result] of perTool) {
-      if (!otherInstalls.some((other) => !isAgentExcluded(other, tool))) continue;
+      if (!otherInstalls.some((other) => runsTool(other, tool))) continue;
 
       for (const hookFile of result.hookFiles) {
         if (!hookFile.teamOnly && hookFile.manifestPath === primaryHookScope.manifestPath) hookFile.keepBuiltins = true;
@@ -1566,6 +1586,7 @@ async function buildRemovalPlan(
     keptFiles: [],
     ruleDirs: [...new Set([...rulesDirsByTool.values()].flat())],
     agentDirs: [...new Set([...agentDirsByTool.values()].flat())],
+    seededAgentDirs: isSelfMode(localConfig) ? [...new Set(toolsToMerge.flatMap((tool) => agentDirsByTool.get(tool) ?? []))] : [],
     opencodeOwnedGlobs: [],
     agentFiles: [],
     joycodeAgentIndexes: [],
@@ -1583,12 +1604,14 @@ async function buildRemovalPlan(
     localAgentWorkspacesDropped: null,
     checkouts: [],
     gitHook: null,
+    worktreeSetups: [],
     teamaiHome,
     teamaiHomeExists: includeShared && await pathExists(teamaiHome),
     unpublishedQueues: includeShared
       ? (await listQueuesIn(teamaiHome)).filter(({ dir }) => !projectsKept.paths.some((keptPath) => dir.startsWith(keptPath + path.sep)))
       : [],
     keptForProjects: projectsKept,
+    unpushedSideBranches: includeShared && isSelfMode(localConfig) ? await unpushedSideBranches(localConfig) : [],
     includeShared,
     hermesHomes: globalAdapters && toolsToMerge.includes('hermes') ? await hermesHooksIn(await toolHomesAcrossProfiles('hermes')) : [],
     hermesSouls: localConfig.scope === 'user' && toolsToMerge.includes('hermes')
@@ -1856,6 +1879,16 @@ async function buildRemovalPlan(
         }
       }
 
+      if (!agentFilter) {
+        const { removeWorktreeSetup } = await import('./workflow/worktree.js');
+
+        for (const checkout of plan.checkouts) {
+          const entries = await removeWorktreeSetup(checkout, { dryRun: true });
+
+          if (entries.length > 0) plan.worktreeSetups.push({ checkout, entries });
+        }
+      }
+
       const { removeDocsSearchWhitelist } = await import('./resources/docs.js');
 
       for (const checkout of plan.checkouts) {
@@ -1921,6 +1954,7 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
     plan.gitExcludes.size === 0 &&
     plan.gitExcludeBlocks.length === 0 &&
     plan.gitHook === null &&
+    plan.worktreeSetups.length === 0 &&
     !plan.teamaiHomeExists &&
     plan.syntheticManifestCleanup == null
   );
@@ -2123,6 +2157,13 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
     console.log('');
   }
 
+  for (const { checkout, entries } of plan.worktreeSetups) {
+    console.log(`   Workflow worktree setup in ${checkout}, with no workflow worktree left:`);
+
+    for (const entry of entries) console.log(`     ${entry}`);
+    console.log('');
+  }
+
   if (plan.teamaiHomeExists) {
     console.log('   TeamAI home directory:');
     console.log(`     ${plan.teamaiHome}/`);
@@ -2139,6 +2180,15 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
     }
 
     console.log('   Run `teamai pull` to publish them first, or copy them somewhere safe.');
+    console.log('');
+  }
+
+  if (plan.unpushedSideBranches.length > 0) {
+    console.log('ℹ  Kept: branches holding commits origin does not have, such as a publish that could not push:');
+
+    for (const branch of plan.unpushedSideBranches) console.log(`     ${branch}`);
+
+    console.log('   Push them with `git push origin <branch>`, or delete them with `git branch -D <branch>` once you no longer need them.');
     console.log('');
   }
 
@@ -3207,6 +3257,20 @@ async function executeRemoval(
     }
   }
 
+  if (plan.worktreeSetups.length > 0) {
+    const { removeWorktreeSetup } = await import('./workflow/worktree.js');
+
+    for (const { checkout } of plan.worktreeSetups) {
+      try {
+        const removed = await removeWorktreeSetup(checkout);
+
+        if (removed.length > 0) log.success(`Removed the workflow worktree setup in ${checkout}: ${removed.join(', ')}`);
+      } catch (e) {
+        log.warn(`Failed to remove the workflow worktree setup in ${checkout}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  }
+
   // (f3) teamai's git exclude blocks (#915): after the files they hid, before
   // the partition state that records which exclude files hold them.
   // An incomplete one keeps the data home, so the record of these files, for the retry; so does a block that stays.
@@ -3240,6 +3304,8 @@ async function executeRemoval(
         ...plan.keptForProjects.paths,
         ...await keptFolders(plan.teamaiHome),
       ];
+
+      await unregisterWorktreesIn(plan.teamaiHome, plan.checkouts, plan.unpushedSideBranches);
 
       if (kept.length > 0) await removeAllBut(plan.teamaiHome, kept);
       else await remove(plan.teamaiHome);
@@ -3383,7 +3449,7 @@ async function sweepCreatedLeftovers(plan: RemovalPlan, hooksLeft: ReadonlyArray
  * folder up to the tool's rules directory; never a directory outside one, so a tool's own root stays.
  */
 function emptiedDirs(plan: RemovalPlan): string[] {
-  const dirs = new Set([...plan.skillDirs.map(({ dir }) => path.dirname(dir)), ...plan.agentFiles.map((file) => path.dirname(file))]);
+  const dirs = new Set([...plan.skillDirs.map(({ dir }) => path.dirname(dir)), ...plan.agentFiles.map((file) => path.dirname(file)), ...plan.seededAgentDirs]);
   const ownedRuleFiles = plan.claudeMdFiles.flatMap(({ path: file, owned }) => (owned ? [file] : []));
 
   for (const file of [...plan.ruleFiles, ...ownedRuleFiles]) {
@@ -3399,6 +3465,46 @@ function emptiedDirs(plan: RemovalPlan): string[] {
   }
 
   return [...dirs].sort((a, b) => b.length - a.length);
+}
+
+/** Self mode's side branches that hold a commit origin lacks; one git cannot read counts as holding one. */
+async function unpushedSideBranches(localConfig: LocalConfig): Promise<string[]> {
+  const { learningsBranch } = await import('./utils/learnings-branch.js');
+  const { reportsBranch } = await import('./utils/reports-branch.js');
+  const unpushed: string[] = [];
+
+  for (const side of [learningsBranch, reportsBranch]) {
+    if (await pathExists(side.dir(localConfig)) && await side.hasUnpushed(localConfig)) unpushed.push(side.branch);
+  }
+
+  return unpushed;
+}
+
+/**
+ * Takes out of each checkout's repository the worktrees in `dir` before `dir` goes, and with self mode's the side
+ * branches they hold, but those in `keep`: a commit origin lacks lives only there.
+ */
+async function unregisterWorktreesIn(dir: string, checkouts: readonly string[], keep: readonly string[]): Promise<void> {
+  const real = await realpath(dir).catch(() => dir);
+  const removed = new Set<string>();
+
+  for (const checkout of checkouts) {
+    for (const worktree of await listWorktrees(checkout)) {
+      if (removed.has(worktree) || !(isWithin(worktree, dir) || isWithin(worktree, real))) continue;
+      removed.add(worktree);
+      const git = createGit(checkout);
+
+      try {
+        const branch = (await createGit(worktree).raw(['symbolic-ref', '--short', '-q', 'HEAD']).catch(() => '')).trim();
+        await git.raw(['worktree', 'remove', '--force', worktree]);
+
+        if (keep.includes(branch)) log.warn(`Kept the branch ${branch}: it holds commits origin does not have. Push it with \`git push origin ${branch}\`, or delete it with \`git branch -D ${branch}\` once you no longer need it.`);
+        else if (branch === LEARNINGS_BRANCH || branch === REPORTS_BRANCH) await git.raw(['branch', '-D', branch]);
+      } catch (e) {
+        log.warn(`Could not remove the worktree ${worktree} from ${checkout}: ${e instanceof Error ? e.message : String(e)}. Run \`git worktree prune\` there once it is gone.`);
+      }
+    }
+  }
 }
 
 /** Remove `dir` when nothing is left in it; any folder inside, a member's empty one included, keeps it. */

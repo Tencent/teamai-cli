@@ -370,6 +370,18 @@ describe('Codex hook trust — user scope', () => {
     expect(result).toEqual({ kind: 'failed', reason: expect.stringMatching(/hooks\/list.*missing.*not loaded.*teamai pull/) });
   });
 
+  it("takes back the trust of the hooks a removal takes out, and leaves the member's hook", async () => {
+    const file = path.join(codexHome(), 'hooks.json');
+    await fse.writeJson(file, { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo mine' }] }] } });
+    await writeAndTrust(userConfig());
+    expect(trustedKeys()).not.toEqual([]);
+
+    await reconcileHooks(file, CODEX_TOOL_ID, [], { removeAll: true, codexTrust: codexTrustPolicy(userConfig()) });
+
+    expect((await codexEntries(file)).map((e) => e.command)).toEqual(['echo mine']);
+    expect(trustedKeys()).toEqual([]);
+  });
+
   it('writes nothing to Codex when every teamai hook is already trusted', async () => {
     await writeYaml(LINT_HOOK);
     await writeAndTrust(userConfig());
