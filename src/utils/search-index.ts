@@ -31,6 +31,7 @@ import type { FrontmatterValue } from './frontmatter.js';
 import type { ConfidenceFactors } from '../maintenance/confidence.js';
 import { parseYaml } from './yaml.js';
 import { TeamSkillSource } from '../resources/team-skill-source.js';
+import { RESOURCE_LAYOUTS } from '../resources/resolver.js';
 
 /**
  * After this checkout's index is rebuilt by a pull. Self mode keeps one index
@@ -914,6 +915,15 @@ async function collectSkillEntries(
     for (const entry of entries) {
       if (entry.isDirectory() && !entry.name.startsWith('.')) {
         await walk(path.join(current, entry.name), entry.name, relDir ? `${relDir}/${entry.name}` : entry.name);
+      }
+
+      // A skill kept as one file sits at the root or one namespace deep, as pull reads it.
+      const skill = entry.isFile() && !relDir.includes('/') ? RESOURCE_LAYOUTS.skills.fileName(entry.name) : null;
+
+      if (skill !== null) {
+        const e = await entryFromMdFile(path.join(current, entry.name), `${skill}.md`, 'skills', reads, `skills/${relDir ? `${relDir}/` : ''}${skill}`);
+
+        if (e) out.push(e);
       }
     }
   }
