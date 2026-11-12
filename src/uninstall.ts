@@ -516,9 +516,9 @@ async function discoverToolResources(
    */
   hookSettingsPath?: string,
   /**
-   * Whether the machine-wide Pi/OMP extensions and Codex user hooks go too.
-   * Only a user-scope uninstall takes them: a project cannot tell whether an
-   * HTTP agent, a self-mode project or another checkout still uses them (#945).
+   * Whether the machine-wide Pi/OMP extensions and Codex user hooks go too:
+   * on a user-scope uninstall, and on a project's when no other install on the
+   * machine (the user scope, another project or an HTTP agent) runs the tool (#945).
    */
   globalAdapters = scope === 'user',
 ): Promise<ToolResources> {
@@ -1291,6 +1291,12 @@ async function buildRemovalPlan(
   const rulesDirsByTool = new Map<string, readonly string[]>();
   const agentDirsByTool = new Map<string, readonly string[]>();
   const globalAdapters = localConfig.scope === 'user';
+  const otherInstalls = globalAdapters ? [] : await installsSharingHome(getDataHome(localConfig));
+  const { loadLocalAgentConfig } = await import('./local-agent.js');
+  const httpAgent = !globalAdapters && await loadLocalAgentConfig({ dryRun: true, envFallback: false }) !== null;
+  // A tool's machine-wide adapter goes with the last install on the machine that runs that tool; an HTTP agent may run any.
+  // One tool's uninstall leaves the project installed, so its adapters stay.
+  const othersRun = (tool: string): boolean => agentFilter !== undefined || httpAgent || otherInstalls.some((other) => !isAgentExcluded(other, tool));
 
   for (const [tool, toolPath] of Object.entries(toolPaths)) {
     const rulesDirs = cleanupOf(await locate(tool, 'rules', install)).flatMap((place) => place.kind === 'dir' ? [place.path] : []);
@@ -1332,7 +1338,7 @@ async function buildRemovalPlan(
         standaloneHookManifestPath,
         localConfig.scope,
         hookToolPaths[tool]?.settings,
-        globalAdapters,
+        globalAdapters || !othersRun(tool),
       ),
     );
   }
@@ -1347,8 +1353,6 @@ async function buildRemovalPlan(
     }
 
     // The user scope and other workspaces dispatch from the same HOME settings: their built-ins stay, this project's team hooks go.
-    const otherInstalls = await installsSharingHome(getDataHome(localConfig));
-
     for (const [tool, result] of perTool) {
       if (!otherInstalls.some((other) => !isAgentExcluded(other, tool))) continue;
 

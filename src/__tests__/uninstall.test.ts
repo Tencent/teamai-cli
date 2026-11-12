@@ -120,6 +120,17 @@ function makeLocalConfig(homeDir: string, repoPath: string, overrides?: Partial<
   };
 }
 
+/** Another project with teamai on this machine: a reader of the machine-wide adapters a project uninstall leaves. */
+async function installAnotherProject(homeDir: string, tmpDir: string): Promise<void> {
+  const other = path.join(tmpDir, 'another-project');
+  const dataHome = path.join(homeDir, '.teamai', 'projects', 'another-project');
+  await fse.ensureDir(other);
+  await fse.outputFile(path.join(dataHome, 'config.yaml'), YAML.stringify(
+    makeLocalConfig(other, path.join(other, '.teamai', 'team-repo'), { scope: 'project', projectRoot: other }),
+  ));
+  await writeAnchorFile(dataHome, other);
+}
+
 async function setupFixture(tmpDir: string) {
   const homeDir = path.join(tmpDir, 'home');
   const repoPath = path.join(tmpDir, 'team-repo');
@@ -1130,6 +1141,7 @@ describe('uninstall', () => {
       const localConfig = makeLocalConfig(homeDir, repoPath, { scope: 'project', projectRoot });
       mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
       await fse.writeFile(path.join(projectRoot, 'AGENTS.md'), `${TEAMAI_CULTURE_START}\nold\n${TEAMAI_CULTURE_END}\n`);
+      await installAnotherProject(homeDir, tmpDir);
       await uninstall({ force: true, ...(targeted ? { agent: tool as string } : {}) });
       expect(await fse.readFile(globalFile, 'utf8')).toBe(before);
       if (configBefore) expect(await fse.readFile(path.join(homeDir, '.hermes', 'config.yaml'), 'utf8')).toBe(configBefore);
@@ -1193,7 +1205,8 @@ describe('uninstall', () => {
     if (legacy) expect(await actualHooks.hasTeamaiHooks(projectHooks, tool)).toBe(false);
   });
 
-  it.each(['pi', 'omp', 'hermes', 'codex', 'opencode'])('keeps global %s delivery and names it with the command that removes it', async (tool) => {
+  it.each(['pi', 'omp', 'hermes', 'codex', 'opencode'].flatMap((tool): Array<[string, boolean]> => tool === 'hermes' ? [[tool, true]] : [[tool, true], [tool, false]]))(
+    'keeps global %s delivery while another project runs it, and names it with the command that removes it: %s', async (tool, another) => {
     const homeDir = path.join(tmpDir, 'home');
     const projectRoot = path.join(tmpDir, 'only-project');
     const repoPath = path.join(projectRoot, '.teamai', 'team-repo');
@@ -1225,6 +1238,7 @@ describe('uninstall', () => {
     const teamConfig = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git' });
     const localConfig = makeLocalConfig(homeDir, repoPath, { scope: 'project', projectRoot });
     mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+    if (another) await installAnotherProject(homeDir, tmpDir);
 
     const printed: string[] = [];
     const logSpy = vi.spyOn(console, 'log').mockImplementation((line?: unknown) => { printed.push(String(line ?? '')); });
@@ -1234,9 +1248,14 @@ describe('uninstall', () => {
       logSpy.mockRestore();
     }
 
+    const summary = printed.join('\n');
+    if (!another) {
+      expect(tool === 'codex' ? await actualHooks.hasTeamaiHooks(kept, 'codex') : await fse.pathExists(kept)).toBe(false);
+      expect(summary).not.toContain('run `teamai hooks remove` here first');
+      return;
+    }
     expect(await fse.pathExists(kept)).toBe(true);
     if (tool === 'codex') expect(await actualHooks.hasTeamaiHooks(kept, 'codex')).toBe(true);
-    const summary = printed.join('\n');
     expect(summary).toContain(`     ${kept}`);
     expect(summary).toContain('run `teamai hooks remove` here first');
   });
@@ -3117,6 +3136,7 @@ describe('uninstall', () => {
     });
     const localConfig = makeLocalConfig(projectRoot, repoPath, { scope: 'project', projectRoot });
     mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+    await installAnotherProject(homeDir, tmpDir);
 
     await uninstall({ force: true });
 
