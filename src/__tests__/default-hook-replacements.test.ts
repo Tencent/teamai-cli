@@ -59,14 +59,14 @@ const SHARE_LEARNINGS = 'Offer the person the teamai-share-learnings workflow: r
 
 const stdin = { session_id: 'replacement-session', cwd: os.tmpdir() };
 
-/** What the Stop hook prints to Claude Code for a session whose cached friction score is 30 after `toolCount` tool calls. */
-async function stopHint(toolCount: number): Promise<string | null> {
+/** What the Stop hook prints to Claude Code for a session whose cached friction score is 30 after `toolCount` tool calls, with `friction`. */
+async function stopHint(toolCount: number, friction = { interrupt: 0, toolReject: 0, correction: 0, toolError: 0 }): Promise<string | null> {
   await writeContributeState(stdin.session_id, {
     contributed: false,
     smartScore: 30,
     toolCount,
     lastEvaluated: Date.now(),
-    friction: { interrupt: 0, toolReject: 0, correction: 0, toolError: 0 },
+    friction,
   });
   const stop = buildHandlerRegistry().find(({ handler }) => handler.name === 'contribute-check');
   const output = await stop?.handler.execute(stdin, 'claude', member());
@@ -119,6 +119,15 @@ describe('a team replacement of teamai-friction-reminder', () => {
       gap: await fse.readFile(path.join(shipped('teamai-friction-reminder'), 'gap.md'), 'utf8'),
       zh: false,
     });
+  });
+
+  it('words a reason with its own reason-tool-reject.md, which may read {{ count }}', async () => {
+    await own('teamai-friction-reminder', { 'reason-tool-reject.md': 'refused {{ count }} calls\n' });
+
+    await reconcileTeamHooksForConfig(teamConfig, member());
+
+    expect(await stopHint(20, { interrupt: 2, toolReject: 3, correction: 0, toolError: 0 }))
+      .toBe(`[teamai] This session may contain a problem worth documenting: you interrupted the AI twice, refused 3 calls.\n\n${SHARE_LEARNINGS}`);
   });
 
   it('with a file teamai\'s folder does not have, warns naming it and keeps teamai\'s file in force', async () => {
