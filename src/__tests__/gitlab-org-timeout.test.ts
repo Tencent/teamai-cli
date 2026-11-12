@@ -13,6 +13,12 @@ afterEach(() => {
 describe.each([
   ['GitLab', () => import('../providers/gitlab/org.js').then((m) => m.gitlabListOrgRepos('g'))],
   ['GitHub', (origin: string) => import('../providers/github/gh-org.js').then((m) => m.ghListOrgRepos('g', { apiBaseUrl: origin }))],
+  ['GitCode', async (origin: string) => {
+    const api = await import('../providers/gitcode/gitcode-api.js');
+    vi.spyOn(api, 'gitcodeApiBase').mockReturnValue(`${origin}/api/v5`);
+
+    return (await import('../providers/gitcode/org.js')).gitcodeListOrgRepos('g');
+  }],
 ] as const)('%s organization request deadlines', (_label, listOrgRepos) => {
   it.each([
     [1, 'headers'], [1, 'body'], [1, 'error-body'],
@@ -44,6 +50,7 @@ describe.each([
       vi.stubEnv('TEAMAI_GITLAB_HOST', `127.0.0.1:${address.port}`);
       vi.stubEnv('GITLAB_TOKEN', 'fixture-token');
       vi.stubEnv('GITHUB_TOKEN', 'fixture-token');
+      vi.stubEnv('GITCODE_TOKEN', 'fixture-token');
       vi.resetModules();
       const result = await Promise.race([
         listOrgRepos(origin).then((repos) => ({ repos }), (error: unknown) => ({ error })),
