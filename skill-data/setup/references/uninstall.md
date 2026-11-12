@@ -116,10 +116,14 @@ and give it your team repo URL."*
 - Project uninstall keeps the global Pi and Oh My Pi extensions, OpenCode's
   user plugin, Antigravity's `teamai` hook in `~/.gemini/config/hooks.json`,
   and the Codex family's user-level hooks while the user scope, the HTTP agent
-  or another project on this machine runs that tool, and names them; with none,
-  it removes them. `uninstall --agent <tool>` keeps them. It always keeps the
-  Hermes plugin and config: if nothing else uses them, run `teamai hooks remove`
-  in the project first.
+  or another project on this machine may run that tool, a project whose config
+  does not parse included, and names them; with none, it removes them.
+  `uninstall --agent <tool>` keeps them. It always keeps the Hermes plugin and
+  config: if nothing else uses them, run `teamai hooks remove` in the project
+  first.
+- In self mode, uninstall keeps a `teamai-learnings` or `teamai-reports` branch
+  that holds commits origin does not have, such as a publish that could not
+  push, and names it: have the user push it or delete it with `git branch -D`.
   Targeted project Codex uninstall keeps project config and records its
   exclusion, even without local resources. Legacy project hook copies go.
   User-scope uninstall removes these global channels, the Hermes and Oh My
