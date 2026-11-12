@@ -86,7 +86,9 @@ weights: { reject: 30 }   # interrupt and correction keep teamai's values
 | 文件 | 变量 |
 |---|---|
 | `problem.md`、`gap.md`、`action.md`、`action-gap.md` | 无 |
-| `problem-reasons.md`、`gap-reasons.md` | `{{ reasons }}`，例如 `you interrupted the AI twice`。它总是英文 |
+| `problem-reasons.md`、`gap-reasons.md` | `{{ reasons }}`，会话出现的各个信号的原因文本，用逗号连接，例如 `你打断了 AI 2 次，你拒绝了 1 次工具调用` |
+| `reason-interrupt.md`、`reason-correction.md`、`reason-tool-error.md` | `{{ count }}`，例如 `2`；`{{ times }}`，`.zh.md` 文件中例如 `2 次`，英文文件中例如 `twice` |
+| `reason-tool-reject.md` | `{{ count }}`、`{{ times }}`，以及 `{{ tool_calls }}`，`.zh.md` 文件中例如 `1 次工具调用`，英文文件中例如 `1 tool call` |
 | `task.md` | `{{ task }}`，第一条提示压成一行，密钥已打码，过长的提示会截断 |
 | `action-share-learnings.md` | `{{ command }}`，描述 `teamai-share-learnings` 的命令 |
 

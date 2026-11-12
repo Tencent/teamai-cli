@@ -320,7 +320,7 @@ describe('default hooks on the Resources page', () => {
     const reminder = await defaultHook('teamai-friction-reminder');
 
     expect([reminder.state, reminder.texts.filter((text) => text.replaced).map((text) => text.text)]).toEqual([
-      { kind: 'replaced', path: 'hooks/teamai-friction-reminder/', inherited: { teamaiVersion: PACKAGE_VERSION, own: 1, teamai: 18 } },
+      { kind: 'replaced', path: 'hooks/teamai-friction-reminder/', inherited: { teamaiVersion: PACKAGE_VERSION, own: 1, teamai: 26 } },
       ['task'],
     ]);
   });

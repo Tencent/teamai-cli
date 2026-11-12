@@ -567,36 +567,32 @@ function extractPromptSummary(events: DashboardEvent[]): string | undefined {
   return normalizePromptSummary(firstPrompt?.promptSummary);
 }
 
-/** Turn non-zero friction signals into concrete, user-facing reasons. */
-function formatTimes(count: number): string {
-  if (count === 1) return 'once';
+/** `count` as the reason texts of `language` write it: `times` such as `twice` or `2 次`, and `tool_calls` such as `1 tool call`. */
+function countWords(count: number, language: NonNullable<TextLanguage> | null) {
+  if (language === 'zh') return { count: String(count), times: `${count} 次`, tool_calls: `${count} 次工具调用` };
 
-  if (count === 2) return 'twice';
-
-  return `${count} times`;
+  return {
+    count: String(count),
+    times: count === 1 ? 'once' : count === 2 ? 'twice' : `${count} times`,
+    tool_calls: count === 1 ? '1 tool call' : `${count} tool calls`,
+  };
 }
 
-function formatFrictionReasons(friction: SessionFriction): string[] {
-  const reasons: string[] = [];
+/** The friction signals of `friction` that happened, each as its reason text, in the language its file is written in. */
+function frictionReasons(friction: SessionFriction, reminder: DefaultFolder<'hooks', 'teamai-friction-reminder'>, language: TextLanguage): string[] {
+  const signals = [
+    ['reason-interrupt', friction.interrupt],
+    ['reason-tool-reject', friction.toolReject],
+    ['reason-correction', friction.correction],
+    ['reason-tool-error', friction.toolError],
+  ] as const;
 
-  if (friction.interrupt > 0) {
-    reasons.push(`you interrupted the AI ${formatTimes(friction.interrupt)}`);
-  }
+  return signals.flatMap(([name, count]) => {
+    if (count <= 0) return [];
+    const text = reminder.text(name, language);
 
-  if (friction.toolReject > 0) {
-    const toolCall = friction.toolReject === 1 ? 'tool call' : 'tool calls';
-    reasons.push(`you rejected ${friction.toolReject} ${toolCall}`);
-  }
-
-  if (friction.correction > 0) {
-    reasons.push(`you corrected the AI ${formatTimes(friction.correction)}`);
-  }
-
-  if (friction.toolError > 0) {
-    reasons.push(`the AI retried failing tools ${formatTimes(friction.toolError)}`);
-  }
-
-  return reasons;
+    return [text.render(countWords(count, text.language ?? language ?? null))];
+  });
 }
 
 interface HintContext {
@@ -615,7 +611,7 @@ const SHARE_LEARNINGS_DESCRIBE = 'teamai workflow start --describe teamai-share-
  * when there is one, and the action, separated by a blank line.
  */
 function buildHint({ friction, promptSummary, isKnowledgeGap, offersShareLearnings }: HintContext, reminder: DefaultFolder<'hooks', 'teamai-friction-reminder'>, language: TextLanguage): string {
-  const reasons = formatFrictionReasons(friction).join(', ');
+  const reasons = frictionReasons(friction, reminder, language).join(language === 'zh' ? '，' : ', ');
 
   const headline = reasons
     ? reminder.text(isKnowledgeGap ? 'gap-reasons' : 'problem-reasons', language).render({ reasons })

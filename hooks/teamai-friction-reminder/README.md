@@ -86,7 +86,9 @@ Push the folder. The next `teamai pull` checks your files with teamai's other fi
 | File | Variables |
 |---|---|
 | `problem.md`, `gap.md`, `action.md`, `action-gap.md` | None |
-| `problem-reasons.md`, `gap-reasons.md` | `{{ reasons }}`, such as `you interrupted the AI twice`. It is always English |
+| `problem-reasons.md`, `gap-reasons.md` | `{{ reasons }}`, the reason texts of the signals the session had, joined with commas, such as `you interrupted the AI twice, you rejected 1 tool call` |
+| `reason-interrupt.md`, `reason-correction.md`, `reason-tool-error.md` | `{{ count }}`, such as `2`, and `{{ times }}`, such as `twice`, or `2 次` in a `.zh.md` file |
+| `reason-tool-reject.md` | `{{ count }}`, `{{ times }}`, and `{{ tool_calls }}`, such as `1 tool call`, or `1 次工具调用` in a `.zh.md` file |
 | `task.md` | `{{ task }}`, the first prompt on one line, with secrets redacted and long prompts cut |
 | `action-share-learnings.md` | `{{ command }}`, the command that describes `teamai-share-learnings` |
 
