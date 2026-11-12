@@ -27,10 +27,18 @@ export interface PromotionCandidate {
   suggestedCategory: PromotionCategory;
 }
 
-const MIN_CONFIDENCE = 0.90;
-const MIN_UPVOTED = 5;
-const MIN_USERS = 2;
-const MIN_AGE_DAYS = 14;
+/** The four gates {@link findPromotionCandidates} applies, a team tunes by replacing `workflows/teamai-promote-learning.yaml`. */
+export const PromotionThresholdsSchema = z.strictObject({
+  minConfidence: z.number().min(0).max(1),
+  minUpvoted: z.number().int().min(1),
+  minUsers: z.number().int().min(1),
+  minAgeDays: z.number().int().min(0),
+});
+
+/** The four gates, as resolved from a team's workflow; the shipped defaults when the team replaces none. */
+export type PromotionThresholds = z.infer<typeof PromotionThresholdsSchema>;
+
+export const DEFAULT_PROMOTION_THRESHOLDS: PromotionThresholds = { minConfidence: 0.90, minUpvoted: 5, minUsers: 2, minAgeDays: 14 };
 
 /**
  * Find learnings eligible for promotion to formal knowledge. A learning marked
@@ -42,6 +50,8 @@ const MIN_AGE_DAYS = 14;
  */
 export interface PromotionCandidatesOptions {
   namespaces?: readonly string[];
+  /** The gates to apply; the shipped defaults when absent, so unit callers and `--repo` views stay unchanged. */
+  thresholds?: PromotionThresholds;
 }
 
 export async function findPromotionCandidates(
@@ -55,6 +65,7 @@ export async function findPromotionCandidates(
   const opts = knowledgeCheckout instanceof Object ? knowledgeCheckout : options;
 
   const namespaces = opts?.namespaces;
+  const { minConfidence, minUpvoted, minUsers, minAgeDays } = opts?.thresholds ?? DEFAULT_PROMOTION_THRESHOLDS;
   const confidenceMap = await computeAllConfidence(votesDir);
   const eligible: Array<Omit<PromotionCandidate, 'suggestedCategory'> & { content: string; promotedTo?: string }> = [];
 
@@ -66,15 +77,15 @@ export async function findPromotionCandidates(
     const docId = file.replace(/\.md$/i, '');
     const confidence = confidenceMap.get(docId) ?? 0;
 
-    if (confidence < MIN_CONFIDENCE) continue;
+    if (confidence < minConfidence) continue;
 
     const docVotes = perDoc.get(docId);
 
     if (!docVotes) continue;
 
-    if (docVotes.upvoted < MIN_UPVOTED) continue;
+    if (docVotes.upvoted < minUpvoted) continue;
 
-    if (docVotes.users.size < MIN_USERS) continue;
+    if (docVotes.users.size < minUsers) continue;
 
     const content = await readFileSafe(absPath);
 
@@ -96,7 +107,7 @@ export async function findPromotionCandidates(
     if (date) {
       const ageInDays = (now - new Date(date).getTime()) / (1000 * 60 * 60 * 24);
 
-      if (ageInDays < MIN_AGE_DAYS) continue;
+      if (ageInDays < minAgeDays) continue;
     }
 
     eligible.push({

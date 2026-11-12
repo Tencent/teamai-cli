@@ -3,7 +3,10 @@ name: teamai-promote-learning
 description: Promote an adopted, high-confidence learning to a skill, rule or doc - the AI picks the category unless the person gave one, rewrites the learning for it and opens a pull request that says why, then marks it promoted. Use when the person asks to promote a learning that teamai recall promote lists.
 invoke: ask
 private: true
-inputs: { learning: string, category: string }
+inputs: { learning: string, category: string, min_confidence: number, min_upvoted: number, min_users: number, min_age_days: number }
+# The gates recall promote lists with; a team tunes them by replacing this file's defaults (#1829).
+defaults:
+  inputs: { min_confidence: 0.9, min_upvoted: 5, min_users: 2, min_age_days: 14 }
 ends: { unconfigured-tool: failed }
 steps:
   - id: learning

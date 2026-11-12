@@ -14,6 +14,7 @@ import { createPrWithFallback } from '../push.js';
 import { getProvider } from '../providers/index.js';
 import { log } from '../utils/logger.js';
 import { resolveMaintenancePaths } from './paths.js';
+import { resolvePromotionThresholds } from './promotion-thresholds.js';
 import { fetchPromotionRefs, findPromotionCandidates, markPromoted, writePromotion, type PromotionCandidate, type PromotionCategory } from './promote.js';
 
 /** What `publish` writes: the learning rewritten for its category, or the learning as written when the AI could not rewrite it. */
@@ -68,7 +69,9 @@ async function publish(
   return withSyncLock(localConfig, async () => {
     const { repoPath: knowledgeCheckout, votesDir, learningsReadDirs } = await resolveMaintenancePaths(localConfig, { holdsSyncLock: true });
     await fetchPromotionRefs(knowledgeCheckout);
-    const candidate = promotionCandidate(await findPromotionCandidates(learningsReadDirs, votesDir, knowledgeCheckout, { namespaces: options.namespaces }), learningId);
+    // The gates the listing used, so a learning it offered under a team's tuned thresholds is found here too.
+    const thresholds = await resolvePromotionThresholds(localConfig);
+    const candidate = promotionCandidate(await findPromotionCandidates(learningsReadDirs, votesDir, knowledgeCheckout, { namespaces: options.namespaces, thresholds }), learningId);
     const message = `[teamai] Promote ${candidate.docId} to ${options.category}`;
     const description = `Category: ${options.category}\n\n${options.reason}`;
 

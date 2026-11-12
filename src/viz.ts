@@ -25,7 +25,8 @@ import {
   getProjectSearchIndexPath,
 } from './types.js';
 import type { LocalConfig, SearchIndexEntry } from './types.js';
-import { findPromotionCandidates, type PromotionCandidate } from './maintenance/promote.js';
+import { findPromotionCandidates, DEFAULT_PROMOTION_THRESHOLDS, type PromotionCandidate } from './maintenance/promote.js';
+import { resolvePromotionThresholds } from './maintenance/promotion-thresholds.js';
 import { findPruneCandidates, type PruneCandidate } from './maintenance/prune.js';
 import { findStaleEntries, type StaleEntry } from './maintenance/quality-update.js';
 import { renderReport } from './viz-render.js';
@@ -588,11 +589,13 @@ export async function buildVizData(paths: VizPaths): Promise<VizData> {
   const namespaces = paths.learningsNamespaces.ok ? paths.learningsNamespaces.namespaces : undefined;
 
   const [promote, prune, stale] = await Promise.all([
-    findPromotionCandidates(paths.learningsDirs, paths.votesDir, paths.promotionCheckout, { namespaces }).catch((err: Error): PromotionCandidate[] => {
-      console.warn(`Warning: could not load promotion candidates: ${err.message}`);
+    (paths.scope ? resolvePromotionThresholds(paths.scope) : Promise.resolve(DEFAULT_PROMOTION_THRESHOLDS))
+      .then((thresholds) => findPromotionCandidates(paths.learningsDirs, paths.votesDir, paths.promotionCheckout, { namespaces, thresholds }))
+      .catch((err: Error): PromotionCandidate[] => {
+        console.warn(`Warning: could not load promotion candidates: ${err.message}`);
 
-      return [];
-    }),
+        return [];
+      }),
     findPruneCandidates(paths.learningsDirs, paths.votesDir, { namespaces }).catch((err: Error): PruneCandidate[] => {
       console.warn(`Warning: could not load prune candidates: ${err.message}`);
 

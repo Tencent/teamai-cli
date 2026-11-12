@@ -2603,7 +2603,10 @@ async function promotionListing(localConfig: LocalConfig, options: { dryRun: boo
 
   if (!paths) return undefined;
 
-  return { paths, candidates: await findPromotionCandidates(paths.learningsReadDirs, paths.votesDir, knowledgeCheckout, { namespaces }) };
+  const { resolvePromotionThresholds } = await import('./maintenance/promotion-thresholds.js');
+  const thresholds = await resolvePromotionThresholds(localConfig);
+
+  return { paths, candidates: await findPromotionCandidates(paths.learningsReadDirs, paths.votesDir, knowledgeCheckout, { namespaces, thresholds }) };
 }
 
 /**

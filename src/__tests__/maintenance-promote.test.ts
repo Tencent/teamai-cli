@@ -158,6 +158,31 @@ describe('findPromotionCandidates', () => {
     const candidates = await findPromotionCandidates([learningsDir], votesDir, undefined);
     expect(candidates.find((c) => c.docId === 'too-new')).toBeUndefined();
   });
+  it('applies the thresholds a team tunes, over the shipped gates', async () => {
+    const learningsDir = path.join(tmpDir, 'learnings');
+    const votesDir = path.join(tmpDir, 'votes');
+    fs.mkdirSync(learningsDir, { recursive: true });
+    fs.mkdirSync(votesDir, { recursive: true });
+
+    // Adopted and confident, but 3 days old: only the age gate keeps it out under the defaults.
+    const recentDate = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    makeLearning(learningsDir, 'young-star', { date: recentDate });
+    makeHighVotes(votesDir, 'young-star');
+    makeLearning(learningsDir, 'settled');
+    makeHighVotes(votesDir, 'settled');
+
+    // The shipped gates admit the settled learning and keep the young one out.
+    expect((await findPromotionCandidates([learningsDir], votesDir, undefined)).map((c) => c.docId)).toEqual(['settled']);
+
+    // A team's lower bar admits both.
+    const lower = { minConfidence: 0.9, minUpvoted: 5, minUsers: 2, minAgeDays: 2 };
+    expect((await findPromotionCandidates([learningsDir], votesDir, undefined, { thresholds: lower })).map((c) => c.docId).sort()).toEqual(['settled', 'young-star']);
+
+    // A team's higher bar keeps out even the learning the defaults admit.
+    const higher = { minConfidence: 0.9, minUpvoted: 20, minUsers: 2, minAgeDays: 14 };
+    expect(await findPromotionCandidates([learningsDir], votesDir, undefined, { thresholds: higher })).toEqual([]);
+  });
+
   it('finds namespaced learnings when active namespaces are provided', async () => {
     const learningsDir = path.join(tmpDir, 'learnings');
     const votesDir = path.join(tmpDir, 'votes');
