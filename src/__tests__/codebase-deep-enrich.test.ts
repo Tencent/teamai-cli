@@ -16,6 +16,7 @@ import { runShortcut } from '../workflow-commands.js';
 import { autoDetectInit, NotInitializedError } from '../config.js';
 import { LocalConfigSchema, TeamaiConfigSchema } from '../types.js';
 import { createGit } from '../utils/git.js';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -694,6 +695,19 @@ describe('codebase deep-enrich in a team repo', () => {
     for (const name of ['graph-g1-relations.md', 'graph-g2-dataflow.md', 'graph-g3-interfaces.md']) {
       expect(await createGit(remote).raw(['cat-file', '-e', `main:teamwiki/evidence/code/auth/docs/${name}`])).toBe('');
     }
+  });
+
+  it('starts it as many components at a time as the team\'s params.yaml says', async () => {
+    const { clone } = await createTeamDeepEnrichFixture();
+    const { localConfig } = await autoDetectInit();
+    fs.mkdirSync(path.join(clone, 'workflows', 'teamai-codebase-deep-enrich'), { recursive: true });
+    fs.writeFileSync(path.join(clone, 'workflows', 'teamai-codebase-deep-enrich', 'params.yaml'), 'concurrency: 2\n');
+    await syncScorersThenWorkflows(localConfig);
+    vi.mocked(runShortcut).mockResolvedValue({ run: 'r1', outcome: 'failed' });
+
+    await codebaseCmd({ deepEnrich: true, project: 'auth' });
+
+    expect(runShortcut).toHaveBeenCalledWith(expect.objectContaining({ inputs: expect.objectContaining({ concurrency: 2 }) }));
   });
 
   it('publishes nothing when the run did not succeed', async () => {

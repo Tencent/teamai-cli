@@ -690,6 +690,7 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     { folder: 'hooks/teamai-friction-reminder', own: 'problem.md', typo: 'problems.md' },
     { folder: 'rules/teamai-recall', own: 'block.md', typo: 'blocks.md' },
     { folder: 'workflows/teamai-import-from-repo', own: 'narrative.md', typo: 'narative.md' },
+    { folder: 'workflows/teamai-codebase-deep-enrich', own: 'component.md', typo: 'componet.md' },
   ])('passes $folder/ holding only the file it changes, and fails it with a file that replaces nothing', async ({ folder, own, typo }) => {
     const put = (file: string): Promise<void> => fse.outputFile(path.join(repoDir, ...folder.split('/'), file), '[acme] Ours.\n');
     await put(own);

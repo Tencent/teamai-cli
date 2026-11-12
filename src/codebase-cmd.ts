@@ -29,9 +29,6 @@ export interface CodebaseCmdOptions extends GlobalOptions {
     deepEnrich?: boolean;
 }
 
-/** How many components a deep enrichment has in progress at once, the max_parallel of its fan-out. */
-const DEEP_ENRICH_CONCURRENCY = 5;
-
 /**
  * Deep-enriches `project` of `target`, as `codebase --deep-enrich` and the hidden `deep-enrich` do, through a
  * teamai-codebase-deep-enrich run, under the import lock of the team repo when one holds the teamwiki, as every command
@@ -48,8 +45,10 @@ export async function startDeepEnrich({ target, project, maxModules = 0, publish
 }): Promise<ShortcutEnd | undefined> {
     const { lockTeamwiki } = await import('./utils/teamwiki-root.js');
     const { runShortcut } = await import('./workflow-commands.js');
+    const { DefaultFolders } = await import('./default-folders.js');
+    const { concurrency } = (await DefaultFolders.load({ kind: 'workflows', name: 'teamai-codebase-deep-enrich' }, target.team?.localConfig ?? null)).params;
     const releaseLock = await lockTeamwiki(target);
-    const given = { wiki_root: target.wikiRoot, project, max_modules: maxModules, concurrency: DEEP_ENRICH_CONCURRENCY };
+    const given = { wiki_root: target.wikiRoot, project, max_modules: maxModules, concurrency };
     // Only a publishing run passes publish, so a team's own teamai-codebase-deep-enrich need not declare it.
     const inputs = publish ? { ...given, publish } : given;
 

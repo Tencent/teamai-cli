@@ -86,6 +86,7 @@ const PARAMS = {
   },
   workflows: {
     'teamai-finished-sessions': z.strictObject({ idle: duration('10m', '7d') }),
+    'teamai-codebase-deep-enrich': z.strictObject({ concurrency: whole(1, 20) }),
     'teamai-draft-learning-updates': z.strictObject({ min_recalled: whole(1, 1000), max_upvoted: whole(0, 1000), min_users: whole(1, 1000), max_related: whole(0, 20) }),
     'teamai-promote-learning': z.strictObject({ min_confidence: ratio(), min_upvoted: whole(1, 1000), min_users: whole(1, 1000), min_age_days: whole(0, 3650) }),
   },
@@ -126,6 +127,7 @@ const TEXTS = {
   workflows: {
     'teamai-draft-learning-updates': {},
     'teamai-finished-sessions': {},
+    'teamai-codebase-deep-enrich': {},
     'teamai-promote-learning': {},
   },
 } as const satisfies { readonly [TKind in keyof typeof PARAMS]: { readonly [TName in keyof (typeof PARAMS)[TKind]]: Readonly<Record<string, TextContract>> } };
