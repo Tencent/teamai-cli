@@ -105,7 +105,7 @@ function improvement(){
   const lists={
     prune:['teamai recall maintenance --prune --archive',mtTable(['Learning','Confidence','Last activity','Reason','Adoption'],m.prune.map(c=>[e(c.name),Math.round(c.confidence*100)+'%',e((c.lastActivity||'').slice(0,10)||'—'),e(c.reason),adEvidence(c.name.replace(/[.]md$/i,''))]))],
     stale:['teamai recall maintenance --update-quality',mtTable(['Entry','Type','Recalls','Upvotes','Members','Adoption'],m.stale.map(c=>[e(c.docId),e(c.type),number(c.recalled),number(c.upvoted),number(c.users),adEvidence(c.docId)]))],
-    promote:['teamai recall promote <learning-id>',mtTable(['Learning','Category','Confidence','Upvotes','Adoption','Command'],m.promote.map(c=>[e(c.title),e(c.category),Math.round(c.confidence*100)+'%',number(c.upvoted),adEvidence(c.docId),'<button class="link copy" data-copy="'+e('teamai recall promote '+c.docId)+'">'+label('Copy')+'</button>']))],
+    promote:['teamai recall promote <learning-id>',m.promoteError?'<p class="imp-note">'+label('Promotion gates could not be read:')+' '+e(m.promoteError)+'</p>':mtTable(['Learning','Category','Confidence','Upvotes','Adoption','Command'],m.promote.map(c=>[e(c.title),e(c.category),Math.round(c.confidence*100)+'%',number(c.upvoted),adEvidence(c.docId),'<button class="link copy" data-copy="'+e('teamai recall promote '+c.docId)+'">'+label('Copy')+'</button>']))],
   };
   const sel=lists[tab]?tab:'prune', count=tabs.find(x=>x[0]===sel)[2];
   const maintHtml='<section class="panel imp-section" id="imp-maint"><div class="panelhead"><h2>'+label('Knowledge maintenance')+' <span class="count">'+number(m.prune.length+m.stale.length+m.promote.length)+'</span></h2><span class="tag">'+label('Candidates, not actions taken')+'</span></div>'

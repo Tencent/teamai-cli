@@ -84,6 +84,8 @@ export interface MaintenanceCandidates {
   promote: PromotionCandidate[];
   prune: PruneCandidate[];
   stale: StaleEntry[];
+  /** Why the promote list is empty, when that is a failure to read the gates and not "nothing eligible yet". */
+  promoteError?: string;
 }
 
 /** Where the report's data came from, shown to the reader. */
@@ -588,10 +590,14 @@ export async function buildVizData(paths: VizPaths): Promise<VizData> {
 
   const namespaces = paths.learningsNamespaces.ok ? paths.learningsNamespaces.namespaces : undefined;
 
+  // A gate the team set out of range is surfaced in the report, not presented as "nothing eligible" (#1849 review).
+  let promoteError: string | undefined;
+
   const [promote, prune, stale] = await Promise.all([
     (paths.scope ? resolvePromotionThresholds(paths.scope) : Promise.resolve(DEFAULT_PROMOTION_THRESHOLDS))
       .then((thresholds) => findPromotionCandidates(paths.learningsDirs, paths.votesDir, paths.promotionCheckout, { namespaces, thresholds }))
       .catch((err: Error): PromotionCandidate[] => {
+        promoteError = err.message;
         console.warn(`Warning: could not load promotion candidates: ${err.message}`);
 
         return [];
@@ -626,7 +632,7 @@ export async function buildVizData(paths: VizPaths): Promise<VizData> {
     relations,
     trend,
     authors,
-    maintenance: { promote, prune, stale },
+    maintenance: { promote, prune, stale, promoteError },
   };
 }
 

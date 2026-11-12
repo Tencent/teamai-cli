@@ -56,6 +56,13 @@ describe('the Improvement Center payload', () => {
     expect(data.daily.find((d) => d.date === '2026-10-20')).toMatchObject({ ended: 3, prompts: 6, costMicros: 500_000, members: 2 });
   });
 
+  it('carries a promotion-gates error into the maintenance payload, so the dashboard can say why the list is empty', async () => {
+    const data = await buildImprovement(paths(), { ...noMaintenance, promoteError: 'workflows/teamai-promote-learning.yaml: defaults.inputs.min_confidence must be a number from 0 to 1' }, 0);
+
+    expect(data.maintenance.promote).toEqual([]);
+    expect(data.maintenance.promoteError).toContain('defaults.inputs.min_confidence');
+  });
+
   it('adds up friction across members without naming anyone', async () => {
     writeStats('ana', { interventions: { sessions: 10, interrupt: 2, toolReject: 1, correction: 3 } });
     writeStats('bo', { interventions: { sessions: 5, interrupt: 1, toolReject: 0, correction: 0 } });

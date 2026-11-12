@@ -40,6 +40,7 @@ export interface ImprovementData {
     prune: Array<{ name: string; confidence: number; lastActivity: string; reason: string }>;
     stale: Array<{ docId: string; type: string; recalled: number; upvoted: number; users: number }>;
     silent: number;
+    promoteError?: string;
   };
   adoption: {
     /** Docs some session recalled or upvoted, most recalled sessions first. */
@@ -77,6 +78,8 @@ interface MaintenanceInput {
   promote: Array<{ docId: string; title: string; suggestedCategory: string; confidence: number; upvotedCount: number; userCount: number }>;
   prune: Array<{ filename: string; confidence: number; lastActivity: string; reason: string }>;
   stale: Array<{ docId: string; type: string; recalledCount: number; upvotedCount: number; userCount: number }>;
+  /** Why the promote list is empty, when that is a failure to read the gates and not "nothing eligible yet". */
+  promoteError?: string;
 }
 
 async function docAdoption(votesDir: string): Promise<DocAdoption[]> {
@@ -242,6 +245,7 @@ export async function buildImprovement(
       prune: maintenance.prune.slice(0, LIST_LIMIT).map((c) => ({ name: c.filename, confidence: c.confidence, lastActivity: c.lastActivity, reason: c.reason })),
       stale: maintenance.stale.slice(0, LIST_LIMIT).map((c) => ({ docId: c.docId, type: c.type, recalled: c.recalledCount, upvoted: c.upvotedCount, users: c.userCount })),
       silent,
+      promoteError: maintenance.promoteError,
     },
     adoption: { docs: await docAdoption(paths.votesDir), overriddenScorers: await overriddenScorers(paths.scope) },
   };

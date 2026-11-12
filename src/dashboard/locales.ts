@@ -307,6 +307,8 @@ export const dashboardMessages = {
   "Suggested for Archive": "建议归档",
   "Stale (Needs Quality Update)": "过期知识（需要质量更新）",
   "None right now.": "目前没有候选。",
+  "Promotion gates could not be read": "无法读取晋升门槛。",
+  "Promotion gates could not be read:": "无法读取晋升门槛：",
   "Learnings with high confidence and adoption across multiple users — good candidates to promote to formal skills, rules, or docs.": "置信度较高且被多位用户采用的经验，可考虑晋升为正式技能、规则或文档。",
   "How to promote": "如何晋升",
   "— Review a candidate below, then run (each entry shows its own ready-to-copy command):": "— 审查以下候选后运行对应命令：",

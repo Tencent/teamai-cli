@@ -358,7 +358,7 @@ function renderAuthorsSection(authors: AuthorStat[]): string {
 }
 
 /** Render the promotable learnings maintenance block as an HTML string. */
-function renderPromotionBlock(promote: PromotionCandidate[]): string {
+function renderPromotionBlock(promote: PromotionCandidate[], promoteError?: string): string {
   const intro =
     '<p class="muted">Learnings with high confidence and adoption across ' +
     'multiple users — good candidates to promote to formal skills, rules, or docs.</p>';
@@ -369,7 +369,11 @@ function renderPromotionBlock(promote: PromotionCandidate[]): string {
     '<code>teamai recall promote &lt;learning-id&gt;</code></div>';
 
   if (promote.length === 0) {
-    return `<div class="maint-block"><h3 data-i18n>Promotable Learnings</h3>${intro}${guide}<p data-i18n>None right now.</p></div>`;
+    const empty = promoteError
+      ? `<p class="warning" data-i18n>Promotion gates could not be read</p><p class="muted">${escapeHtml(promoteError)}</p>`
+      : '<p data-i18n>None right now.</p>';
+
+    return `<div class="maint-block"><h3 data-i18n>Promotable Learnings</h3>${intro}${guide}${empty}</div>`;
   }
 
   const rows = promote
@@ -463,7 +467,7 @@ function renderStaleBlock(stale: StaleEntry[]): string {
 
 /** Render the full maintenance console section combining promote, prune, and stale blocks. */
 function renderMaintenanceSection(data: VizData): string {
-  const promote = renderPromotionBlock(data.maintenance.promote);
+  const promote = renderPromotionBlock(data.maintenance.promote, data.maintenance.promoteError);
   const prune = renderPruneBlock(data.maintenance.prune);
   const stale = renderStaleBlock(data.maintenance.stale);
 
