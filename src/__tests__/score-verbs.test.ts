@@ -2130,6 +2130,23 @@ describe('scorer files tried in a teamai-score run', () => {
     }
   });
 
+  it('tries scorers/scorers/SCORER.md as the scorer folder scorers, with the files beside it', async () => {
+    const { config } = await drafted();
+    const dir = path.join(root, 'scorers', 'scorers');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'SCORER.md'), scorer({ rate: 0 }).replace('Judge the work.', 'Judge the work by ${TEAMAI_SCORER_DIR}/rubric.md.'));
+    fs.writeFileSync(path.join(dir, 'rubric.md'), 'Pass when the client retries.\n');
+    const cwd = process.cwd();
+    process.chdir(root);
+
+    try {
+      const planned = await ScoreVerbs.plan({ subject: 'session:claude-code:one', scorers: '[]', batch: 'false', demand: 'named' }, (await (await scoreRun(config, { subject: 'session:claude-code:one', demand: 'named', files: ['scorers/scorers/SCORER.md'], store: false })).next('plan')).ctx);
+      expect(planned).toMatchObject({ ok: true });
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
   it('tries scorers/SCORER.md as the scorer file SCORER, whatever sits beside it', async () => {
     const { config } = await drafted();
     const file = path.join(root, 'scorers', 'SCORER.md');

@@ -55,8 +55,8 @@ async function fileOf(value: string): Promise<TriedFile | Refusal> {
   const file = relative.startsWith('..') || path.isAbsolute(relative) ? full : relative.split(path.sep).join('/');
 
   if (!file.endsWith('.md') || path.posix.basename(file) === 'README.md') return refused('scorer_invalid', formatScorerDiagnostic({ file, message: NOT_A_SCORER }));
-  // A tried file sits in no team repo: the directory it is in and its name stand for its place in one.
-  const place = path.posix.join(path.basename(path.dirname(full)), path.basename(full));
+  // A tried file sits in no team repo: its path from here stands for its place in one, or, with no directory in it, the directory it is in and its name.
+  const place = file !== full && file.includes('/') ? file : path.posix.join(path.basename(path.dirname(full)), path.basename(full));
   const read = await readTried(full, file, place);
 
   if ('ok' in read) return read;
