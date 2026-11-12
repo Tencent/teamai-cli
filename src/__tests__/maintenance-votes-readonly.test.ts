@@ -73,11 +73,12 @@ describe('recall maintenance scans never rewrite a v1 votes file (#900 C7)', () 
     writeV1Votes('bob', ['guide']);
     const before = snapshot(votesDir);
 
-    await findStaleEntries(votesDir, { docs: docsDir }, { minRecalled: 1, minUsers: 1 });
+    await findStaleEntries(votesDir, { docs: docsDir }, { min_recalled: 1, max_upvoted: 1, min_users: 1, max_related: 5 });
     await findRelatedAdoptedLearnings(
       { docId: 'guide', path: path.join(docsDir, 'guide.md'), filename: 'guide.md' } as never,
       votesDir,
       [learningsDir],
+      { limit: 5 },
     );
 
     expect(snapshot(votesDir)).toEqual(before);

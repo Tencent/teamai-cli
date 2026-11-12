@@ -66,6 +66,7 @@ const PARAMS = {
     'teamai-recall': NoParamsSchema,
   },
   workflows: {
+    'teamai-draft-learning-updates': z.strictObject({ min_recalled: whole(1, 1000), max_upvoted: whole(0, 1000), min_users: whole(1, 1000), max_related: whole(0, 20) }),
     'teamai-promote-learning': z.strictObject({ min_confidence: ratio(), min_upvoted: whole(1, 1000), min_users: whole(1, 1000), min_age_days: whole(0, 3650) }),
   },
 } as const;
@@ -99,6 +100,7 @@ const TEXTS = {
     'teamai-recall': { RULE: { required: ['Nothing was searched:', 'Recall skips the older index'] }, block: {}, 'block-direct': { required: ['Nothing was searched:'] } },
   },
   workflows: {
+    'teamai-draft-learning-updates': {},
     'teamai-promote-learning': {},
   },
 } as const satisfies { readonly [TKind in keyof typeof PARAMS]: { readonly [TName in keyof (typeof PARAMS)[TKind]]: Readonly<Record<string, TextContract>> } };

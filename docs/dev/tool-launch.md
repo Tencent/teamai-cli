@@ -8,7 +8,7 @@ Each rule below spans more than one file. The rule names the code that owns it, 
 ## How a feature asks an AI tool
 
 It writes an `answer` step in its default workflow. This is the step `recall maintenance --update-quality` runs, from
-`workflows/teamai-draft-learning-updates.yaml`:
+`workflows/teamai-draft-learning-updates/WORKFLOW.yaml`:
 
 ```yaml
 - id: ask
