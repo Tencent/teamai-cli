@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import chalk from 'chalk';
 import { z } from 'zod';
 
-import type { GlobalOptions } from './types.js';
+import type { GlobalOptions, LocalConfig } from './types.js';
 import type { WikiLintSeverity } from './codebase-wiki-lint.js';
 import type { TeamwikiTarget } from './utils/teamwiki-root.js';
 import type { ShortcutEnd } from './workflow-commands.js';
@@ -29,6 +29,18 @@ export interface CodebaseCmdOptions extends GlobalOptions {
     deepEnrich?: boolean;
 }
 
+/** The config of the member running here, or null where no teamai init serves this directory. */
+async function memberScope(): Promise<LocalConfig | null> {
+    const { autoDetectInit, NotInitializedError } = await import('./config.js');
+
+    try {
+        return (await autoDetectInit(undefined, { dryRun: true, selfHeal: false, suppressMigrationNotice: true })).localConfig;
+    } catch (error) {
+        if (error instanceof NotInitializedError) return null;
+        throw error;
+    }
+}
+
 /**
  * Deep-enriches `project` of `target`, as `codebase --deep-enrich` and the hidden `deep-enrich` do, through a
  * teamai-codebase-deep-enrich run, under the import lock of the team repo when one holds the teamwiki, as every command
@@ -46,7 +58,9 @@ export async function startDeepEnrich({ target, project, maxModules = 0, publish
     const { lockTeamwiki } = await import('./utils/teamwiki-root.js');
     const { runShortcut } = await import('./workflow-commands.js');
     const { DefaultFolders } = await import('./default-folders.js');
-    const { concurrency } = (await DefaultFolders.load({ kind: 'workflows', name: 'teamai-codebase-deep-enrich' }, target.team?.localConfig ?? null)).params;
+    // The run is the member's whatever teamwiki it writes, so an --output teamwiki keeps the team's parameters too.
+    const scope = target.team?.localConfig ?? await memberScope();
+    const { concurrency } = (await DefaultFolders.load({ kind: 'workflows', name: 'teamai-codebase-deep-enrich' }, scope)).params;
     const releaseLock = await lockTeamwiki(target);
     const given = { wiki_root: target.wikiRoot, project, max_modules: maxModules, concurrency };
     // Only a publishing run passes publish, so a team's own teamai-codebase-deep-enrich need not declare it.

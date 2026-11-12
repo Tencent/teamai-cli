@@ -577,6 +577,7 @@ describe('codebase deep-enrich', () => {
 
   it('starts teamai-codebase-deep-enrich on an --output teamwiki', async () => {
     const root = createEnrichFixture();
+    vi.mocked(autoDetectInit).mockRejectedValue(new NotInitializedError('teamai is not initialized. Run `teamai init` first.'));
     vi.mocked(runShortcut).mockResolvedValue({ run: 'r1', outcome: 'succeeded', outputs: { exit_code: 1 } });
 
     await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root });
@@ -697,7 +698,7 @@ describe('codebase deep-enrich in a team repo', () => {
     }
   });
 
-  it('starts it as many components at a time as the team\'s params.yaml says', async () => {
+  it('starts it as many components at a time as the team\'s params.yaml says, on the team teamwiki and on an --output one', async () => {
     const { clone } = await createTeamDeepEnrichFixture();
     const { localConfig } = await autoDetectInit();
     fs.mkdirSync(path.join(clone, 'workflows', 'teamai-codebase-deep-enrich'), { recursive: true });
@@ -706,8 +707,9 @@ describe('codebase deep-enrich in a team repo', () => {
     vi.mocked(runShortcut).mockResolvedValue({ run: 'r1', outcome: 'failed' });
 
     await codebaseCmd({ deepEnrich: true, project: 'auth' });
+    await codebaseCmd({ deepEnrich: true, project: 'faketest', output: createEnrichFixture() });
 
-    expect(runShortcut).toHaveBeenCalledWith(expect.objectContaining({ inputs: expect.objectContaining({ concurrency: 2 }) }));
+    expect(vi.mocked(runShortcut).mock.calls.map(([start]) => start.inputs.concurrency)).toEqual([2, 2]);
   });
 
   it('publishes nothing when the run did not succeed', async () => {
