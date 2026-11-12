@@ -22,7 +22,7 @@ import { pathExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
 import { runDeadline } from '../workflow/limits.js';
-import { durationMs } from '../workflow/parse.js';
+import { durationMs } from '../utils/duration.js';
 import { startAsCli, type WorkflowClient } from '../workflow/protocol.js';
 import { findRunConfig } from '../workflow/run-location.js';
 import { wasLeased } from '../workflow/step-state.js';
