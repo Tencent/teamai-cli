@@ -511,7 +511,7 @@ describe('rule folders on the Resources page', () => {
     expect(recall.map((resource) => [resource.layer.kind, resource.path, resource.state, resource.folder?.variant, resource.folder?.files.map((file) => file.path).sort()])).toEqual([
       ['root', 'rules/teamai-recall/', {
         kind: 'refused',
-        message: 'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: rules/teamai-recall/RULE.md does not contain "Nothing was searched:". Fix the folder in the team repo.',
+        message: 'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: RULE.md does not contain "Nothing was searched:"; RULE.md does not contain "Recall skips the older index". Fix the folder in the team repo.',
       }, 'RULE.md', ['README.md', 'README.zh-CN.md', 'RULE.md', 'block-direct.md', 'block.en.md', 'block.md']],
       ['teamai', 'rules/teamai-recall/', { kind: 'in-force' }, 'RULE.en.md', ['README.md', 'README.zh-CN.md', 'RULE.en.md', 'RULE.md', 'block-direct.md', 'block.en.md', 'block.md']],
     ]);

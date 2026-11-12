@@ -642,8 +642,8 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
       level: 'fail',
       check: 'structure',
       path: 'rules/teamai-recall/',
-      message: 'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: rules/teamai-recall/RULE.md does not contain '
-        + '"Nothing was searched:". Fix the folder in the team repo.',
+      message: 'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: RULE.md does not contain '
+        + '"Nothing was searched:"; RULE.md does not contain "Recall skips the older index". Fix the folder in the team repo.',
     }]]);
   });
 

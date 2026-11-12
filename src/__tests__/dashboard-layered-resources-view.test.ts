@@ -130,7 +130,7 @@ const DATA: Served = {
   ],
 };
 
-const RECALL_REFUSED = 'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: rules/teamai-recall/RULE.md does not contain "Nothing was searched:". Fix the folder in the team repo.';
+const RECALL_REFUSED = 'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: RULE.md does not contain "Nothing was searched:". Fix the folder in the team repo.';
 
 /** A rule folder in force, the team's recall folder pull refuses, and teamai's recall rule that stays in force. */
 const RULES: LayeredResourceList = {

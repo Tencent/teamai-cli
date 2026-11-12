@@ -68,6 +68,7 @@ All notable changes to this project will be documented in this file. See [standa
 - `teamai doctor` checks `~/.teamai/bin/teamai` when a tool's hook file has an entry that starts teamai through it. When the file is gone, out of date, or names a Node or a teamai that no longer exists, the hook still runs but waits for a login shell first; doctor names the hook files and says to run `teamai pull`.
 ### Changed
 
+- A team's `rules/teamai-recall/` is checked against the same contract as a default hook's folder. Pull names every line a text is missing, not only the first, and refuses a recall text that holds `{{ }}`, which the recall rule offers no variable for (for [#1829](https://github.com/Tencent/teamai-cli/issues/1829)).
 - Pull reads every folder marker, so the skipped-folders warnings are gone: the doctor check, the list in `teamai status` and the dashboard's Skipped folders panel. A checkout record from an older release that lists skipped folders makes the next pull sync in full once, so it delivers them.
 - `teamai push` refuses to put a rule, agent or scorer file inside a folder of its type: `<path>/ holds <MARKER>, so the file would be one of its files, not a resource of its own.` A scorer folder pushes as one scorer.
 - A teamai default scorer is replaced by a file only, `scorers/teamai-<name>.md`. Pull warns about `scorers/teamai-<name>/SCORER.md`, names the file to keep instead, and teamai's default keeps running.

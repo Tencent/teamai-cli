@@ -8,14 +8,14 @@ vi.mock('../utils/logger.js', async (importOriginal) => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), persist: vi.fn(), dim: vi.fn() },
 }));
 
-import { DefaultHooks } from '../default-hooks.js';
+import { DefaultFolders } from '../default-folders.js';
 import { buildHandlerRegistry } from '../hook-handlers.js';
 import { deliverHookFolders, resolveTeamHooks } from '../resources/hooks.js';
 import { TeamaiConfigSchema, type LocalConfig } from '../types.js';
 
 describe('a default hook text', () => {
   it('fills its variables in one pass, so a value that reads like a variable is printed as written', async () => {
-    const mrHint = await DefaultHooks.load('teamai-mr-hint', null);
+    const mrHint = await DefaultFolders.load({ kind: 'hooks', name: 'teamai-mr-hint' }, null);
 
     expect(mrHint.text('offer-command', 'en').render({
       count: '1',
