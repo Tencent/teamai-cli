@@ -171,6 +171,15 @@ describe('a team replacement of teamai-friction-reminder', () => {
       expect(await stopHint(20)).toBe(`[acme] 这次会话卡住过，要不要写下来？\n\n${SHARE_LEARNINGS_ZH}`);
     });
 
+    it('words its own reason-interrupt.md, which has no .zh.md, in English beside teamai\'s Chinese reasons', async () => {
+      await own('teamai-friction-reminder', { 'reason-interrupt.md': 'you interrupted the AI {{ times }}\n' });
+
+      await reconcileTeamHooksForConfig(teamConfig, member());
+
+      expect(await stopHint(20, { interrupt: 2, toolReject: 1, correction: 0, toolError: 0 }))
+        .toBe(`[teamai] 这次会话可能有值得记录下来的问题：you interrupted the AI twice，你拒绝了 1 次工具调用。\n\n${SHARE_LEARNINGS_ZH}`);
+    });
+
     it('prints its own problem.md when it has no problem.zh.md, never teamai\'s', async () => {
       await replace('teamai-friction-reminder', { 'problem.md': '[acme] Worth a write-up?\n', 'problem.zh.md': null });
 

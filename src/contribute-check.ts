@@ -591,7 +591,7 @@ function frictionReasons(friction: SessionFriction, reminder: DefaultFolder<'hoo
     if (count <= 0) return [];
     const text = reminder.text(name, language);
 
-    return [text.render(countWords(count, text.language ?? language ?? null))];
+    return [text.render(countWords(count, text.language))];
   });
 }
 
