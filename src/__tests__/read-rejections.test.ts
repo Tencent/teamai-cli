@@ -91,6 +91,36 @@ describe('readRejections API failures', () => {
       .rejects.toThrow('GitHub reactions request failed for comment 42 (403)');
   });
 
+  it('throws when neither GITHUB_TOKEN nor GH_TOKEN is set', async () => {
+    vi.stubEnv('GITHUB_TOKEN', '');
+    delete process.env.GITHUB_TOKEN;
+    vi.stubEnv('GH_TOKEN', '');
+    delete process.env.GH_TOKEN;
+
+    await expect(readRejections('https://github.com/acme/app/pull/7'))
+      .rejects.toThrow('GITHUB_TOKEN or GH_TOKEN is not set');
+  });
+
+  it('honors GH_TOKEN when GITHUB_TOKEN is unset', async () => {
+    vi.stubEnv('GITHUB_TOKEN', '');
+    delete process.env.GITHUB_TOKEN;
+    vi.stubEnv('GH_TOKEN', 'alias-token');
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        { id: 42, body: '<!-- teamai:ci-extract:learning -->' },
+      ]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ content: '-1' }]), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await readRejections('https://github.com/acme/app/pull/7');
+    expect(result.rejectedIds).toEqual(new Set(['learning']));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const call of fetchMock.mock.calls) {
+      const headers = call[1]?.headers as Record<string, string>;
+      expect(headers.Authorization).toBe('Bearer alias-token');
+    }
+  });
+
   it('fails when the TGit note list cannot be read', async () => {
     vi.stubEnv('TGIT_TOKEN', 'test-token');
     vi.stubGlobal('fetch', vi.fn()
