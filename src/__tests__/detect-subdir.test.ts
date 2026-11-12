@@ -99,6 +99,51 @@ describe('detectProjectConfig — subdirectory / worktree', () => {
     writeProjectConfig(worktreeRoot, worktreeRoot); // restore for other tests
   });
 
+  it('finds a non-git workspace from a deep subdirectory and anchors delivery at its root', async () => {
+    const root = path.join(base, 'workspace');
+    const sub = path.join(root, 'packages', 'app', 'src');
+    fs.mkdirSync(sub, { recursive: true });
+    writeProjectConfig(root, root);
+    const config = await detectProjectConfig(sub);
+    expect(config?.projectRoot).toBe(root);
+    expect(getDataHome(config!)).toBe(path.join(root, '.teamai'));
+    expect(await resolveDataHomeForScope('project', sub)).toBe(getDataHome(config!));
+  });
+
+  it('uses the nearest non-git workspace config', async () => {
+    const outer = path.join(base, 'outer-workspace');
+    const inner = path.join(outer, 'inner');
+    const sub = path.join(inner, 'src');
+    fs.mkdirSync(sub, { recursive: true });
+    writeProjectConfig(outer, outer);
+    writeProjectConfig(inner, inner);
+    expect((await detectProjectConfig(sub))?.projectRoot).toBe(inner);
+  });
+
+  it('does not read past an invalid non-git workspace config', async () => {
+    const outer = path.join(base, 'invalid-workspace');
+    const inner = path.join(outer, 'inner');
+    const sub = path.join(inner, 'src');
+    fs.mkdirSync(sub, { recursive: true });
+    writeProjectConfig(outer, outer);
+    writeProjectConfig(inner, inner);
+    fs.writeFileSync(path.join(inner, '.teamai', 'config.yaml'), 'repo: [');
+    const problems: string[] = [];
+    expect(await detectProjectConfig(sub, (file) => problems.push(file))).toBeNull();
+    expect(problems).toEqual([path.join(inner, '.teamai', 'config.yaml')]);
+  });
+
+  it.each(['directory', 'file'])('does not inherit an outer workspace across a nested .git %s', async (kind) => {
+    const outer = path.join(base, `git-boundary-${kind}`);
+    const inner = path.join(outer, 'inner');
+    const sub = path.join(inner, 'src');
+    fs.mkdirSync(sub, { recursive: true });
+    writeProjectConfig(outer, outer);
+    if (kind === 'directory') git(inner, 'init', '-q');
+    else fs.writeFileSync(path.join(inner, '.git'), 'gitdir: /nonexistent/teamai-test-gitdir');
+    expect(await detectProjectConfig(sub)).toBeNull();
+  });
+
   it('returns null for a non-git directory with no config (unchanged behavior)', async () => {
     const plain = path.join(base, 'plain');
     fs.mkdirSync(plain);
