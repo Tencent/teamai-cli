@@ -8,7 +8,7 @@ import path from 'node:path';
 import { TOOL_IDS } from '../../src/tools.js';
 import { defaultToolHome, envToolHome, toolHome } from '../../src/tool-home.js';
 import { detectToolRoot, RELOCATABLE_TOOLS } from '../../src/types.js';
-import { checkoutStatus, git, REPO_ROOT, runInWorld, teamRefs, worldFiles, type World } from './world.js';
+import { checkoutStatus, git, loadWriters, REPO_ROOT, runInWorld, teamRefs, worldFiles, type World } from './world.js';
 
 interface Section {
   readonly title: string;
@@ -173,6 +173,9 @@ const KNOWN_LEFTOVERS = new Map([
 /** Directories left with everything in them: their file names hold session ids. */
 const KNOWN_LEFTOVER_DIRS = ['home/.teamai/sessions'];
 
+/** teamai's own directories: whatever wrote last there, it is teamai's to remove. */
+const TEAMAI_ROOTS = ['home/.teamai', 'project/.teamai'];
+
 /** A way in has a way out: after `teamai uninstall` the world's HOME and project match the snapshot taken at creation. */
 function reverseState(world: World): Section {
   const title = '(e) After teamai uninstall';
@@ -199,10 +202,20 @@ function reverseState(world: World): Section {
   const notes: string[] = [];
 
   const leaked: string[] = [];
+  const writers = loadWriters(world);
+  const theirs = new Map<string, string[]>();
+  const under = (entry: string, dirs: Iterable<string>): boolean => [...dirs].some((dir) => entry.startsWith(`${dir}/`));
 
   for (const entry of [...new Set([...Object.keys(before), ...Object.keys(after)])].sort()) {
-    if (before[entry] === after[entry] || [...leaked, ...KNOWN_LEFTOVER_DIRS].some((dir) => entry.startsWith(`${dir}/`))) continue;
+    if (before[entry] === after[entry] || under(entry, [...leaked, ...KNOWN_LEFTOVER_DIRS])) continue;
     const change = before[entry] === undefined ? 'left behind' : after[entry] === undefined ? 'removed' : 'changed';
+    const writer = writers[entry];
+
+    // A tool's sessions, or a member's own commit: left as a member's program left it, whatever teamai did in between.
+    if (writer !== undefined && writer.value === (after[entry] ?? null) && !under(entry, TEAMAI_ROOTS) && !TEAMAI_ROOTS.includes(entry)) {
+      if (!under(entry, [...theirs.values()].flat())) theirs.set(writer.program, [...theirs.get(writer.program) ?? [], entry]);
+      continue;
+    }
 
     const known = KNOWN_LEFTOVER_DIRS.includes(entry) ? 'any' : KNOWN_LEFTOVERS.get(entry);
 
@@ -212,6 +225,8 @@ function reverseState(world: World): Section {
       leaked.push(entry);
     }
   }
+
+  for (const [program, entries] of theirs) notes.push(`left as ${program} wrote it, so not teamai's: ${entries.join(', ')}`);
 
   if (leaks.length === 0 && notes.length === 0) notes.push('HOME and project match the world as it was made');
 
