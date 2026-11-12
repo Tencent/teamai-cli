@@ -253,7 +253,20 @@ This is not a boundary against a determined process running as the member: the a
 
 ## Restricting skills to some members
 
-Namespaces only filter for members who have set a role: a member with no `primaryRole` syncs everything, so `manifest/roles.yaml` alone restricts no one. With `manifest/members.yaml` in place that gap is closed — an unlisted member receives shared resources only. `teamai init` makes new members pick a role; members from before the manifest need `teamai roles set <role-id>` once. Their next pull withdraws teamai-delivered copies outside the new namespaces (locally modified copies are kept).
+By default, namespaces only filter for members who have set a role: a member with no `primaryRole` syncs everything, so `manifest/roles.yaml` alone restricts no one. With `manifest/members.yaml` in place that gap is closed — an unlisted member receives shared resources only. `teamai init` makes new members pick a role; members from before the manifest need `teamai roles set <role-id>` once. Their next pull withdraws teamai-delivered copies outside the new namespaces (locally modified copies are kept).
+
+To require a role for selected skill namespaces while members still choose their own role, set:
+
+```yaml
+# teamai.yaml
+sharing:
+  skills:
+    roleRequiredNamespaces: [bus_common, ebao, health]
+```
+
+A listed namespace is delivered only when an effective role lists it in `resources.skills`. Without a role, pull skips it and names the next step: `teamai roles list`, `teamai roles set developer`, then `teamai pull`. The role must exist in `manifest/roles.yaml`; teamai does not select it for the member. Assigned roles still follow `manifest/members.yaml`. A workflow copy uses its step role.
+
+This condition also applies to tags and project selections. Each workspace child is filtered by its own effective roles before its resources join the workspace. Pull removes unmodified teamai-delivered copies that no longer qualify and keeps local edits. Omit the setting or use `[]` to keep the existing behavior; unlisted namespaces and other resource types keep their existing rules. Names are single directory segments under `skills/`, not paths or globs. All members must upgrade to a CLI that supports this setting before the team relies on it.
 
 To remind members who never set a role, enforce a rule that asks the agent to check `teamai roles list` and prompt them — enforced rules cannot be deleted:
 
@@ -264,7 +277,7 @@ sharing:
     enforced: [set-your-role]
 ```
 
-Tags never restrict: a subscription only adds matching tagged skills. Restrict with namespaces + roles; use tags for opt-in extras.
+Tags add matching skills but cannot bypass `roleRequiredNamespaces`. Use tags for opt-in extras within the allowed skill selection.
 
 ### One skill name in the root and in namespaces
 
@@ -285,7 +298,7 @@ skills/legacy/code-review/SKILL.md   the old monorepo checklist; no role lists l
 | role `dev` | `skills/dev/release` | none | none |
 | role `sre` | none | `skills/sre/oncall` | none |
 
-A member with a role gets the namespaces the role receives; a root skill reaches them only through a [tag](#tags), and an active namespace copy replaces it. A member with no role and no project gets every skill: the root copy wins, and between two namespaces the one whose name sorts first wins. Every machine gets the same copy, and `pull` names each one it skipped:
+A member with a role gets the namespaces the role receives; a root skill reaches them only through a [tag](#tags), and an active namespace copy replaces it. Without `roleRequiredNamespaces`, a member with no role and no project gets every skill: the root copy wins, and between two namespaces the one whose name sorts first wins. Every machine gets the same copy, and `pull` names each one it skipped:
 
 ```text
 $ teamai pull
