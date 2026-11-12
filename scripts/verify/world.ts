@@ -44,7 +44,26 @@ export type World = z.infer<typeof WorldSchema>;
 /** Git rewrites these itself on any command, so they say nothing about what teamai left. */
 const GIT_OWN = new Set(['.git/objects', '.git/logs', '.git/index']);
 
-/** Every entry under the world's HOME and project: a file's sha256, `dir`, or a symlink's target. */
+/** Files git keeps its settings in, which a member's git and teamai's hooks both edit. */
+const GIT_CONFIG = /(^|\/)(\.git\/config|\.git\/worktrees\/[^/]+\/config\.worktree|\.gitconfig)$/;
+
+/** Each setting of a git config file at `${entry}#<key>`, with its value, so a setting is judged by its own writer and what it names. */
+function gitConfigSettings(entry: string, file: string): Record<string, string> | undefined {
+  const values = new Map<string, string[]>();
+  // A file git cannot parse is judged whole, so the command that broke it can still run to fix it.
+  const listed = spawnSync('git', ['config', '--file', file, '--list', '-z'], { encoding: 'utf8' });
+
+  if (listed.status !== 0) return undefined;
+
+  for (const setting of listed.stdout.split('\0').filter(Boolean)) {
+    const [key = '', ...value] = setting.split('\n');
+    values.set(key, [...values.get(key) ?? [], value.join('\n')]);
+  }
+
+  return Object.fromEntries([...values].map(([key, value]) => [`${entry}#${key}`, value.join('\0')]));
+}
+
+/** Every entry under the world's HOME and project: a file's sha256, `dir`, or a symlink's target; a git config file is `git config` and one entry per setting. */
 export function worldFiles(world: Pick<World, 'home' | 'project'>) {
   const files: Record<string, string> = {};
 
@@ -55,10 +74,15 @@ export function worldFiles(world: Pick<World, 'home' | 'project'>) {
 
       if (label === 'project' && GIT_OWN.has(child)) continue;
 
+      const settings = entry.isFile() && GIT_CONFIG.test(child) ? gitConfigSettings(`${label}/${child}`, full) : undefined;
+
       if (entry.isSymbolicLink()) files[`${label}/${child}`] = `-> ${fs.readlinkSync(full)}`;
       else if (entry.isDirectory()) {
         files[`${label}/${child}`] = 'dir';
         walk(root, label, child);
+      } else if (settings !== undefined) {
+        files[`${label}/${child}`] = 'git config';
+        Object.assign(files, settings);
       } else files[`${label}/${child}`] = crypto.createHash('sha256').update(fs.readFileSync(full)).digest('hex');
     }
   };

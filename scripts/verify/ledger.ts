@@ -2,6 +2,7 @@
  * What a world's runs left behind, written to <world>/LEDGER-<n>.md. A LEAK line fails the verdict whatever the
  * claim's own checks say: teamai must not reach this checkout or the real HOME, and must not leave worktrees behind.
  */
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -186,16 +187,22 @@ const KNOWN_LEFTOVERS = new Map([
 /** Directories left with everything in them: session ids name what is in them, or Codex installs them. */
 const KNOWN_LEFTOVER_DIRS = ['home/.teamai/sessions', 'home/.codex/skills/.system'];
 
-const HomeRead = z.object({ base: z.literal('home'), path: z.string() });
+const Base = z.enum(['home', 'project']);
 
-/** Every path under HOME that TOOLS says `tool` reads, which is where teamai writes for it there. */
-function homeReads(tool: ToolId): string[] {
+const Read = z.union([
+  z.object({ base: Base, path: z.string() }).transform(({ base, path: read }) => [`${base}/${read}`]),
+  z.object({ base: Base, firstOf: z.array(z.union([z.string(), z.object({ path: z.string() }).transform((file) => file.path)])) })
+    .transform(({ base, firstOf }) => firstOf.map((read) => `${base}/${read}`)),
+]);
+
+/** Every path under HOME and in the project that TOOLS says `tool` reads, each candidate of a `firstOf` too: where teamai writes for it. */
+function toolReads(tool: ToolId): string[] {
   const paths: string[] = [];
 
   JSON.stringify(TOOLS[tool], (_key, value) => {
-    const read = HomeRead.safeParse(value);
+    const read = Read.safeParse(value);
 
-    if (read.success) paths.push(`home/${read.data.path}`);
+    if (read.success) paths.push(...read.data);
 
     return value;
   });
@@ -203,7 +210,9 @@ function homeReads(tool: ToolId): string[] {
   return paths;
 }
 
-const TEAMAI_HOME_WRITES = [...new Set(TOOL_IDS.flatMap(homeReads))];
+const TOOL_READS = [...new Set(TOOL_IDS.flatMap(toolReads))];
+
+const TEAMAI_HOME_WRITES = TOOL_READS.filter((read) => read.startsWith('home/'));
 
 /** A tool's home under HOME holds the tool's own state (sessions, caches, the runtime of a Codex teamai starts to trust its hooks) beside what teamai writes there. */
 const TOOL_HOMES = [...new Set(TOOL_IDS.map((tool) => `home/${TOOLS[tool].home.dir}`))];
@@ -211,8 +220,52 @@ const TOOL_HOMES = [...new Set(TOOL_IDS.map((tool) => `home/${TOOLS[tool].home.d
 /** A run's branch, which a run that succeeded keeps as its result (docs/guide/workflow.md, The branches a run leaves). */
 const RUN_BRANCH = /^project\/\.git\/refs\/heads\/teamai(\/r[0-9a-f]{16}(\/[^/]+(\/p\d+)?)?)?$/;
 
+/** What the project's repository tracks, and what differs from its HEAD, is untracked or is ignored, each relative to the project. */
+function repositoryView(project: string) {
+  // Untrimmed: a status line starts with a space when the index matches HEAD.
+  const list = (...args: string[]): string[] | undefined => {
+    const listed = spawnSync('git', args, { cwd: project, encoding: 'utf8' });
+
+    return listed.status === 0 ? listed.stdout.split('\0').filter(Boolean) : undefined;
+  };
+
+  const tracked = fs.existsSync(path.join(project, '.git')) ? list('ls-files', '-z') : undefined;
+  const dirty = tracked === undefined ? undefined : list('status', '--porcelain', '-z', '--ignored', '--untracked-files=all');
+
+  // A repository git cannot read, such as one with a broken config, vouches for nothing.
+  return tracked === undefined || dirty === undefined ? { tracked: [], dirty: [] } : { tracked, dirty: dirty.map((line) => line.slice(3)) };
+}
+
+/** git's copy of what a remote holds, which a fetch or a push writes whoever asked for it. */
+const REMOTE_REF = /^project\/\.git\/refs\/remotes(\/|$)/;
+
 /** teamai's own directories: whatever wrote last there, it is teamai's to remove. */
 const TEAMAI_ROOTS = ['home/.teamai', 'project/.teamai'];
+
+/** Each project path teamai delivers a tool's resources to, and those TOOLS says a tool reads there. */
+const TEAMAI_PROJECT_WRITES = [...new Set([
+  ...Object.values(TeamaiConfigBaseSchema.shape.toolPaths.parse(undefined)).flatMap((paths) =>
+    [paths.skills, paths.rules, paths.settings, paths.agents, paths.mcpProject, paths.claudemd].flatMap((write) => (write === undefined ? [] : [`project/${write}`]))),
+  ...TOOL_READS.filter((read) => read.startsWith('project/')),
+])];
+
+/** Where teamai hides what it adds to the project, beside the member's own patterns. */
+const GIT_EXCLUDE = 'project/.git/info/exclude';
+
+/** The files teamai writes its part into beside a tool's own settings, never a resource it delivers into a folder. */
+const SHARED_FILES = new Set([...TEAMAI_HOME_WRITES, ...TEAMAI_PROJECT_WRITES, GIT_EXCLUDE]);
+
+/**
+ * Where teamai writes, which neither a member's command nor a tool's home excuses: an agent's session runs teamai's
+ * hooks, which pull, and teamai names what it adds elsewhere in a tool's home, such as an adapter, after itself.
+ * Of git's settings, teamai writes its own, the worktree extension and a hooks path to its hooks.
+ */
+function teamaiPlace(entry: string, value: string | undefined): boolean {
+  return [...TEAMAI_ROOTS, ...TEAMAI_HOME_WRITES, ...TEAMAI_PROJECT_WRITES, GIT_EXCLUDE].some((write) => entry === write || entry.startsWith(`${write}/`))
+    || entry.split('/').some((segment) => /^teamai([-_.]|$)/i.test(segment))
+    || /#((.*\.)?teamai|extensions\.worktreeconfig$)/i.test(entry)
+    || (/#core\.hookspath$/i.test(entry) && /teamai/i.test(value ?? ''));
+}
 
 /** A way in has a way out: after `teamai uninstall` the world's HOME and project match the snapshot taken at creation. */
 function reverseState(world: World): Section {
@@ -244,21 +297,59 @@ function reverseState(world: World): Section {
   const theirs = new Map<string, string[]>();
   const under = (entry: string, dirs: Iterable<string>): boolean => [...dirs].some((dir) => entry.startsWith(`${dir}/`));
 
+  const excuse = (why: string, entry: string): void => {
+    if (!under(entry, [...theirs.values()].flat())) theirs.set(why, [...theirs.get(why) ?? [], entry]);
+  };
+
+  const repository = repositoryView(world.project);
+  const namesTeamai = (entry: string): boolean => /teamai/i.test(fs.readFileSync(path.join(world.dir, entry), 'utf8'));
+  const remoteTips = new Set(Object.entries(after).flatMap(([entry, value]) => (REMOTE_REF.test(entry) && value !== 'dir' ? [value] : [])));
+
   for (const entry of [...new Set([...Object.keys(before), ...Object.keys(after)])].sort()) {
     if (before[entry] === after[entry] || under(entry, [...leaked, ...KNOWN_LEFTOVER_DIRS])) continue;
     const change = before[entry] === undefined ? 'left behind' : after[entry] === undefined ? 'removed' : 'changed';
     const writer = writers[entry];
 
     // A tool's sessions, or a member's own commit: left as a member's program left it, whatever teamai did in between.
-    if (writer !== undefined && writer.value === (after[entry] ?? null) && !under(entry, TEAMAI_ROOTS) && !TEAMAI_ROOTS.includes(entry)) {
-      if (!under(entry, [...theirs.values()].flat())) theirs.set(writer.program, [...theirs.get(writer.program) ?? [], entry]);
+    if (writer !== undefined && writer.value === (after[entry] ?? null) && !teamaiPlace(entry, after[entry])) {
+      excuse(`left as ${writer.program} wrote it, so not teamai's`, entry);
       continue;
     }
 
-    if (change === 'left behind' && under(entry, TOOL_HOMES) && !TEAMAI_HOME_WRITES.some((write) => entry === write || entry.startsWith(`${write}/`))) {
-      const home = TOOL_HOMES.find((dir) => entry.startsWith(`${dir}/`)) ?? entry;
+    // A file teamai shares with a tool, such as Claude's ~/.claude.json, which keeps the tool's state once teamai's part is out.
+    if (writer !== undefined && writer.value === after[entry] && /^[0-9a-f]{64}$/.test(after[entry]) && SHARED_FILES.has(entry) && !namesTeamai(entry)) {
+      excuse(`left as ${writer.program} wrote it, with nothing of teamai's in it`, entry);
+      continue;
+    }
 
-      if (!under(entry, [...theirs.values()].flat())) theirs.set(home, [...theirs.get(home) ?? [], entry]);
+    if (change === 'left behind' && under(entry, TOOL_HOMES) && !teamaiPlace(entry, after[entry])) {
+      excuse(`the tool's own state in ${TOOL_HOMES.find((dir) => entry.startsWith(`${dir}/`)) ?? entry}, where teamai writes none of it`, entry);
+      continue;
+    }
+
+    if (REMOTE_REF.test(entry)) {
+      excuse("git's copy of what the remote holds", entry);
+      continue;
+    }
+
+    if (change === 'changed' && entry.startsWith('project/.git/refs/heads/') && remoteTips.has(after[entry] ?? '')) {
+      excuse("the member's branch moved to a commit the remote has, history uninstall does not rewrite", entry);
+      continue;
+    }
+
+    // Uninstall keeps what the repository tracks (#915): self mode commits the team's content, and teamai's part of
+    // a tracked file it edits out for the member to commit. A tracked file still naming teamai stays a leak.
+    const tracked = entry.startsWith('project/') && !entry.startsWith('project/.git/') ? entry.slice('project/'.length) : undefined;
+    const within = (paths: string[]): boolean => tracked !== undefined && paths.some((file) => file === tracked || file.startsWith(`${tracked}/`));
+
+    if (within(repository.tracked) && !within(repository.dirty)) {
+      excuse("the repository's, as its HEAD has it", entry);
+      continue;
+    }
+
+    if (tracked !== undefined && within(repository.tracked) && after[entry] !== undefined && after[entry] !== 'dir'
+      && !/teamai/i.test(fs.readFileSync(path.join(world.project, tracked), 'utf8'))) {
+      excuse("teamai's part taken out of a file the repository tracks, for the member to commit", entry);
       continue;
     }
 
@@ -276,9 +367,7 @@ function reverseState(world: World): Section {
     }
   }
 
-  for (const [by, entries] of theirs) {
-    notes.push(by.startsWith('home/') ? `the tool's own state in ${by}, where teamai writes none of it: ${entries.join(', ')}` : `left as ${by} wrote it, so not teamai's: ${entries.join(', ')}`);
-  }
+  for (const [why, entries] of theirs) notes.push(`${why}: ${entries.join(', ')}`);
 
   if (leaks.length === 0 && notes.length === 0) notes.push('HOME and project match the world as it was made');
 
