@@ -1394,16 +1394,17 @@ describe('reviewBranchDir — skill links, Agent Skills limits and piped install
   it('warns for a name outside the Agent Skills format and not for a lowercase hyphenated one', async () => {
     await writeSkill(repoDir, 'skills/Release_Tool', skill('Release_Tool', ['# Release']));
     await writeSkill(repoDir, 'skills/release-tool', skill('release-tool', ['# Release']));
+    // A skill kept as one file is named by that file.
+    await fse.outputFile(path.join(repoDir, 'skills', 'Ship_It.md'), skill('Ship_It', ['# Ship']));
 
     const review = await reviewBranchDir(BRANCH, repoDir);
+    const rule = 'the Agent Skills format allows 1 to 64 lowercase letters, digits and hyphens, with no leading, trailing or doubled hyphen.';
 
     expect(review.ok).toBe(true);
-    expect(warnings(review)).toEqual([{
-      check: 'format',
-      path: 'skills/Release_Tool',
-      message: 'skills/Release_Tool/SKILL.md has the name "Release_Tool"; the Agent Skills format allows 1 to 64 lowercase letters, '
-        + 'digits and hyphens, with no leading, trailing or doubled hyphen. Rename the skill directory and its name together.',
-    }]);
+    expect(warnings(review)).toEqual([
+      { check: 'format', path: 'skills/Ship_It.md', message: `skills/Ship_It.md has the name "Ship_It"; ${rule} Rename the skill file and its name together.` },
+      { check: 'format', path: 'skills/Release_Tool', message: `skills/Release_Tool/SKILL.md has the name "Release_Tool"; ${rule} Rename the skill directory and its name together.` },
+    ]);
   });
 
   it('warns once for a script that pipes a download into a shell, and not for one that saves it', async () => {

@@ -704,6 +704,8 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
       const content = await readText(TeamSkillSource.skillMd(resource.absolutePath));
 
       if (content === null) continue;
+      // The file pull reads: a skill kept as one file is that file.
+      const skillMd = TeamSkillSource.isFile(resource.relativePath) ? resource.relativePath : `${resource.relativePath}/SKILL.md`;
       const { data, valid, raw } = splitFrontmatter(content);
 
       if (raw === '') {
@@ -711,7 +713,7 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
           level: 'fail',
           check: 'format',
           path: resource.relativePath,
-          message: `${resource.relativePath}/SKILL.md has no YAML frontmatter; pull relies on it for the skill's name and description.`,
+          message: `${skillMd} has no YAML frontmatter; pull relies on it for the skill's name and description.`,
         });
         continue;
       }
@@ -721,7 +723,7 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
           level: 'warn',
           check: 'format',
           path: resource.relativePath,
-          message: `${resource.relativePath}/SKILL.md has a frontmatter block that does not parse as a YAML mapping.`,
+          message: `${skillMd} has a frontmatter block that does not parse as a YAML mapping.`,
         });
       }
 
@@ -732,8 +734,9 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
           level: 'warn',
           check: 'format',
           path: resource.relativePath,
-          message: `${resource.relativePath}/SKILL.md has the name "${name}"; the Agent Skills format allows 1 to 64 lowercase letters, `
-            + 'digits and hyphens, with no leading, trailing or doubled hyphen. Rename the skill directory and its name together.',
+          message: `${skillMd} has the name "${name}"; the Agent Skills format allows 1 to 64 lowercase letters, `
+            + 'digits and hyphens, with no leading, trailing or doubled hyphen. '
+            + (TeamSkillSource.isFile(resource.relativePath) ? 'Rename the skill file and its name together.' : 'Rename the skill directory and its name together.'),
         });
       }
 
@@ -745,7 +748,7 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
           level: 'warn',
           check: 'format',
           path: resource.relativePath,
-          message: `${resource.relativePath}/SKILL.md has a "description" of ${descriptionLength} characters; `
+          message: `${skillMd} has a "description" of ${descriptionLength} characters; `
             + `the Agent Skills format allows ${AGENT_SKILLS_DESCRIPTION_MAX}.`,
         });
       }
@@ -755,14 +758,14 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
           level: 'warn',
           check: 'format',
           path: resource.relativePath,
-          message: `${resource.relativePath}/SKILL.md has no frontmatter "description"; say when the skill should be used.`,
+          message: `${skillMd} has no frontmatter "description"; say when the skill should be used.`,
         });
       } else if (description.trim().length < 15) {
         findings.push({
           level: 'warn',
           check: 'format',
           path: resource.relativePath,
-          message: `${resource.relativePath}/SKILL.md has a "description" too short to explain when to use the skill.`,
+          message: `${skillMd} has a "description" too short to explain when to use the skill.`,
         });
       }
     }
