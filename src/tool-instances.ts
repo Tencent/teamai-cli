@@ -347,13 +347,15 @@ export function judgeInstanceHomesAsInit(): void {
 }
 
 /**
- * The instances the files declare, before any is refused for its home: the member's own over the team's, and a
- * workspace's team instance over the user scope's of the same name, as its driver definitions do. One name two team
- * repos of one scope define apart is left out.
+ * The instances the files declare, before any is refused for its home: the member's own (`own`) over the team's,
+ * and a workspace's team instance over the user scope's of the same name, as its driver definitions do. One name two
+ * team repos of one scope define apart is left out.
  */
-function declaredTable(): Map<string, DeclaredTool> {
+export function declaredTable({ repos, own: mine }: {
+  repos: readonly { readonly scope: Scope | undefined; readonly instances: readonly DeclaredTool[] }[];
+  own: readonly DeclaredTool[];
+}): Map<string, DeclaredTool> {
   const table = new Map<string, DeclaredTool>();
-  const repos = [...teamByRepo.values()];
 
   for (const scope of ['user', 'project'] as const) {
     const ofScope = repos.filter((repo) => (repo.scope ?? 'user') === scope).flatMap((repo) => repo.instances);
@@ -377,7 +379,7 @@ function declaredTable(): Map<string, DeclaredTool> {
     for (const [name, instance] of own) table.set(name, instance);
   }
 
-  if (readsPersonal) for (const instance of personal) table.set(instance.name, instance);
+  for (const instance of mine) table.set(instance.name, instance);
 
   return table;
 }
@@ -455,7 +457,7 @@ function withoutSharedHomes(table: Map<string, DeclaredTool>): Map<string, Decla
 }
 
 function publish(): void {
-  const declared = declaredTable();
+  const declared = declaredTable({ repos: [...teamByRepo.values()], own: readsPersonal ? personal : [] });
 
   useToolInstances(withoutSharedHomes(new Map(declared)), declared);
 }

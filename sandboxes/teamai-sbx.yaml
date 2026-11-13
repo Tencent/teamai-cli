@@ -1,0 +1,4 @@
+# A Docker Sandboxes (sbx) microVM per attempt. Name it on a driver's entry with sandbox: sbx.
+provider: sbx
+# agent: claude              # optional: the template each sandbox starts from; unset, each attempt starts from its own tool's
+# warm: { prepare: npm ci --ignore-scripts, cache: [package-lock.json] }   # optional: a saved template with dependencies installed

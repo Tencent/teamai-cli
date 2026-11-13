@@ -1,0 +1,9 @@
+{
+  "name": "@teamai/runtime-sandbox",
+  "private": true,
+  "type": "module",
+  "description": "teamai-runtime-sandbox: the step runtime that runs each workflow attempt in a sandbox (docker or podman), over runtime protocol 1 on stdio; bundled as its own executable in teamai-cli, never imported by it.",
+  "exports": {
+    "./host-commands": "./src/host-commands.ts"
+  }
+}

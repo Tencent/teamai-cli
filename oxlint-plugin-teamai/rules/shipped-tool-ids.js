@@ -59,6 +59,10 @@ const BASE_ID_NAMES = new Set(['CLAUDE_TOOL_ID', 'CODEX_TOOL_ID', 'CLAUDE_TOOL',
  * A new comparison fails; a count above what the file holds fails until it is lowered.
  */
 export const BASE_ID_COMPARISONS = new Map(Object.entries({
+  // Compares the command a step starts with the one executable Vercel's image holds; an instance's own command is not there.
+  'packages/runtime-sandbox/src/providers/vercel.ts': 1,
+  // `tool` is the base an instance extends (`instance?.tool ?? name`), resolved on the line that sets it.
+  'packages/runtime-sandbox/src/wrapper.ts': 1,
   // The session store is ready when Codex's own executable is on PATH; an instance runs a command of its own.
   'packages/tool-core/src/formats/codex.ts': 1,
   // Every caller passes `launchAdapterIdOf(tool)`, the adapter an instance shares with its tool; the package cannot

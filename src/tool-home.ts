@@ -548,7 +548,8 @@ export function reloadToolHomes(): ToolHomesRead {
   return read;
 }
 
-function parseToolHomes(file: string): ToolHomesRead {
+/** The tool-homes record at `file`, as `reloadToolHomes` reads this machine's: the verify harness reads a world's with it. */
+export function parseToolHomes(file: string): ToolHomesRead {
   let raw: string;
 
   try {
