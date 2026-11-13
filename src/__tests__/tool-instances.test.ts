@@ -386,6 +386,17 @@ describe('the built-in hooks of an instance', () => {
   });
 });
 
+describe('the rules of an instance', () => {
+  it('shares its rules directory with the member as the tool it extends does', async () => {
+    const { TOOL_ORDER } = await import('../tool-registry.js');
+    await load(teamRepo(Object.fromEntries(TOOL_ORDER.map((tool) => [`tools/acme-${tool}.yaml`, `schemaVersion: v1alpha1\nname: acme-${tool}\nextends: ${tool}\nhome: { dir: .acme-${tool} }\n`]))));
+    const { sharesRulesDirWithMember } = await import('../resources/rule-format.js');
+
+    expect(Object.fromEntries(TOOL_ORDER.map((tool) => [tool, sharesRulesDirWithMember(`acme-${tool}`)])))
+      .toEqual(Object.fromEntries(TOOL_ORDER.map((tool) => [tool, sharesRulesDirWithMember(tool)])));
+  });
+});
+
 describe('the project instructions of an instance', () => {
   it('reads the project file the tool it extends reads first', async () => {
     await load(teamRepo({ 'tools/acme-codex.yaml': 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n' }));

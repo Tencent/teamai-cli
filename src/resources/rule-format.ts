@@ -20,7 +20,7 @@ import type { RuleFormatId } from '@teamai/tool-core/definition';
  * (`TOOLS[tool].rules`, tools.ts), which says which tools take it.
  */
 
-import { ruleFormatIdOf, runTimeRulesOf } from '../tool-registry.js';
+import { baseToolOf, ruleFormatIdOf, runTimeRulesOf } from '../tool-registry.js';
 import type { Scope } from '../types.js';
 import { AGY_RULE_FORMAT } from './agy-rule.js';
 import { CODEBUDDY_RULE_FORMAT } from './codebuddy-rule.js';
@@ -178,9 +178,11 @@ export function flatStemsOfRemoved(tool: string, removed: Iterable<string>, team
  * `.cursor/rules`), plus Pi.
  */
 export function sharesRulesDirWithMember(tool: string): boolean {
-  if (tool === 'cursor') return false;
+  const base = baseToolOf(tool);
 
-  return ruleFormatForTool(tool) !== undefined || tool === 'pi';
+  if (base === 'cursor') return false;
+
+  return ruleFormatForTool(tool) !== undefined || base === 'pi';
 }
 
 /** Extension teamai writes rules with for a given tool. */

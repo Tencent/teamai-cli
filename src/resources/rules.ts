@@ -230,7 +230,7 @@ export class RulesHandler extends ResourceHandler {
           // Native rule directories can contain personal rules created by the
           // target tool, in its own format. Keep unknown files in a tool with a
           // rules format, and in Pi's rule directory, local.
-          if (format || tool === 'pi') continue;
+          if (format || sharesRulesDirWithMember(tool)) continue;
           const existing = candidates.get(name);
 
           if (!existing) {
