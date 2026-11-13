@@ -12,4 +12,6 @@ export { GitLabProvider } from './gitlab/index.js';
 
 export { GitCodeProvider } from './gitcode/index.js';
 
+export { CodeupProvider } from './codeup/index.js';
+
 export { GenericGitProvider } from './git/index.js';

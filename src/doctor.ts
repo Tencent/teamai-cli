@@ -892,6 +892,16 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
       fix: 'Export GITCODE_TOKEN (a GitCode Personal Access Token), or run `teamai init` '
         + 'to paste one interactively. GC_TOKEN is accepted as an alias.',
     });
+  } else if (providerName === 'codeup') {
+    // Codeup needs no CLI — only a Personal Access Token (env or ~/.netrc).
+    const { codeupIsAuthenticated } = await import('./providers/codeup/index.js');
+    checks.push({
+      name: 'Codeup token is configured',
+      source: 'provider',
+      check: async () => codeupIsAuthenticated(),
+      fix: 'Export CODEUP_TOKEN (a Yunxiao/Codeup Personal Access Token), or run `teamai init` '
+        + 'to paste one interactively. YUNXIAO_TOKEN is accepted as an alias.',
+    });
   }
 
   checks.push(
