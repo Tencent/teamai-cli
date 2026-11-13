@@ -4,6 +4,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const timeout = AbortSignal.timeout.bind(AbortSignal);
 
+async function listTGitOrgRepos(origin: string) {
+  const fetch = globalThis.fetch;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((url, init) => fetch(String(url).replace('https://git.woa.com', origin), init));
+
+  return (await import('../providers/tgit/gf-org.js')).gfListOrgRepos('g');
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
@@ -19,15 +26,23 @@ describe.each([
 
     return (await import('../providers/gitcode/org.js')).gitcodeListOrgRepos('g');
   }],
-] as const)('%s organization request deadlines', (_label, listOrgRepos) => {
-  it.each([
+  ['TGit', listTGitOrgRepos],
+  ['TGit group fallback', listTGitOrgRepos, true],
+] as const)('%s organization request deadlines', (_label, listOrgRepos, fallback?: boolean) => {
+  it.each(([
     [1, 'headers'], [1, 'body'], [1, 'error-body'],
     [2, 'headers'], [2, 'body'], [2, 'error-body'],
-  ] as const)('rejects a stalled page %i %s without returning a partial list', async (page, stage) => {
+  ] as const).filter(([page]) => !fallback || page === 1))('rejects a stalled page %i %s without returning a partial list', async (page, stage) => {
     const deadlines = vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => timeout(300));
     const seen: number[] = [];
     const server = http.createServer((req, res) => {
-      const requested = Number(new URL(req.url!, 'http://localhost').searchParams.get('page'));
+      const url = new URL(req.url!, 'http://localhost');
+      if (fallback && url.pathname.endsWith('/projects')) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      const requested = fallback ? 1 : Number(url.searchParams.get('page'));
       seen.push(requested);
       if (requested === page) {
         if (stage !== 'headers') {
@@ -51,6 +66,7 @@ describe.each([
       vi.stubEnv('GITLAB_TOKEN', 'fixture-token');
       vi.stubEnv('GITHUB_TOKEN', 'fixture-token');
       vi.stubEnv('GITCODE_TOKEN', 'fixture-token');
+      vi.stubEnv('TGIT_TOKEN', 'fixture-token');
       vi.resetModules();
       const result = await Promise.race([
         listOrgRepos(origin).then((repos) => ({ repos }), (error: unknown) => ({ error })),
@@ -59,7 +75,7 @@ describe.each([
       expect(result).not.toBe('request did not settle');
       expect(result).toHaveProperty('error');
       expect(seen).toEqual(page === 1 ? [1] : [1, 2]);
-      expect(deadlines.mock.calls).toEqual(Array.from({ length: page }, () => [30_000]));
+      expect(deadlines.mock.calls).toEqual(Array.from({ length: page + (fallback ? 1 : 0) }, () => [30_000]));
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve, reject) => { server.close((error) => error ? reject(error) : resolve()); });

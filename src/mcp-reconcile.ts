@@ -1924,7 +1924,7 @@ export async function judgeTeamaiOnlyMcpConfigs(
   localConfig: LocalConfig,
 ): Promise<Array<{ file: string; teamaiOnly: boolean }>> {
   if (localConfig.scope !== 'project') return [];
-  const targets = await resolveMcpTargets(teamConfig, localConfig);
+  const targets = (await resolveMcpTargets(teamConfig, localConfig)).filter((t) => t.projectScope && t.projectKey === undefined);
   const { manifest } = await loadMcpManifest(localConfig, true);
   const verdicts: Array<{ file: string; teamaiOnly: boolean }> = [];
 
