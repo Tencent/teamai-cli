@@ -4,7 +4,7 @@ import { hookSourceMatches } from './utils/hook-source.js';
 import { getsRulesFromExtension } from './resources/rule-format.js';
 import { pathExists, readFileSafe, readJsonObject, remove, writeFile } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
-import { CODEX_TOOL_IDS } from './utils/tool-names.js';
+import { isCodexTool } from './utils/tool-names.js';
 import { type BlocksHeader, type ChannelProbe, type RunTime } from '@teamai/tool-core/definition';
 import { channelsOf, TOOL_ORDER } from './tool-registry.js';
 import { hookAdapterDir, installOf, locate, ownOf, writable, type FilePlace, type Gate, type Install } from './locate.js';
@@ -161,7 +161,7 @@ export function instructionHookText(blocks: InstructionBlocks, recall: boolean):
 
 /** The native project context, including legacy blocks that migration could not yet retire. */
 export async function nativeProjectInstructions(tool: string, projectRoot: string): Promise<string> {
-  const preferred = CODEX_TOOL_IDS.some((id) => id === tool) ? 'AGENTS.override.md'
+  const preferred = isCodexTool(tool) ? 'AGENTS.override.md'
     : tool === 'omp' ? '.omp/AGENTS.md' : undefined;
 
   return (preferred ? await readFileSafe(path.join(projectRoot, preferred)) : null)

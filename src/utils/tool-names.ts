@@ -1,5 +1,5 @@
 import { TOOL_IDS, type ToolId } from '../tools.js';
-import { channelsOf, descriptorOf, type DescriptorOf } from '../tool-registry.js';
+import { baseToolOf, channelsOf, descriptorOf, type DescriptorOf } from '../tool-registry.js';
 
 // -*- coding: utf-8 -*-
 /**
@@ -55,9 +55,11 @@ export type CodexToolId = { [T in ToolId]: DescriptorOf<T>['launch'] extends 'co
 
 export const CODEX_TOOL_IDS: readonly CodexToolId[] = TOOL_IDS.filter((tool): tool is CodexToolId => descriptorOf(tool).launch === 'codex');
 
-/** Whether `tool` runs Codex (`CODEX_TOOL_IDS`). */
+/** Whether `tool`, or the tool an instance extends, runs Codex (`CODEX_TOOL_IDS`). */
 export function isCodexTool(tool: string): boolean {
-  return CODEX_TOOL_IDS.some((id) => id === tool);
+  const base = baseToolOf(tool);
+
+  return CODEX_TOOL_IDS.some((id) => id === base);
 }
 
 /**

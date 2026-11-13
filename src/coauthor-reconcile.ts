@@ -20,7 +20,8 @@ import {
   pathExists,
 } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import { hookSyntaxOf } from './tool-registry.js';
+import { baseToolOf, hookSyntaxOf } from './tool-registry.js';
+import { toolHomeOf } from './tool-home.js';
 import type { JsonSyntax } from './utils/json.js';
 
 // ─── Co-author reconcile engine ──────────────────────────────
@@ -66,7 +67,12 @@ type Family = 'claude' | 'codex' | 'cursor';
 function familyOf(tool: string): Family {
   if (isCodexTool(tool)) return 'codex';
 
-  return CURSOR_TOOLS.has(tool) ? 'cursor' : 'claude';
+  return CURSOR_TOOLS.has(baseToolOf(tool)) ? 'cursor' : 'claude';
+}
+
+/** The home of a tool instance, its own or the one it shares with the tool it extends; undefined for a shipped tool. */
+function instanceHome(tool: string): string | undefined {
+  return baseToolOf(tool) === tool ? undefined : toolHomeOf(tool)?.dir;
 }
 
 export interface CoAuthorChange {
@@ -120,7 +126,9 @@ async function resolveTargets(
     // ZCode, Muse Code and Antigravity CLI expose no documented attribution
     // setting — writing one into their shared config file would be an unknown
     // key the tool never reads.
-    if (tool === 'zcode' || tool === 'muse' || tool === 'agy') continue;
+    const base = baseToolOf(tool);
+
+    if (base === 'zcode' || base === 'muse' || base === 'agy') continue;
     const family = familyOf(tool);
 
     // Installation probe: the tool's root dir (parent of its resource dir), same
@@ -170,7 +178,7 @@ async function resolveTargets(
       targets.push({
         tool,
         family,
-        file: path.join(resolveToolRootDir(tool, defaultRoot, localConfig.toolRoots), 'config.toml'),
+        file: path.join(instanceHome(tool) ?? resolveToolRootDir(tool, defaultRoot, localConfig.toolRoots), 'config.toml'),
       });
     } else {
       // Cursor: user scope only. The CLI reads cli-config.json from its config root, not from the
@@ -180,7 +188,7 @@ async function resolveTargets(
         continue;
       }
 
-      targets.push({ tool, family, file: path.join(cursorConfigDir(localConfig.toolRoots), 'cli-config.json') });
+      targets.push({ tool, family, file: path.join(instanceHome(tool) ?? cursorConfigDir(localConfig.toolRoots), 'cli-config.json') });
     }
   }
 

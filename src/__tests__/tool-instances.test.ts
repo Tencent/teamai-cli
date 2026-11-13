@@ -375,6 +375,70 @@ describe('the hooks of an instance', () => {
   });
 });
 
+describe('the built-in hooks of an instance', () => {
+  it('takes the hook entries of the tool it extends, each naming the instance', async () => {
+    const { TOOL_ORDER } = await import('../tool-registry.js');
+    await load(teamRepo(Object.fromEntries(TOOL_ORDER.map((tool) => [`tools/acme-${tool}.yaml`, `schemaVersion: v1alpha1\nname: acme-${tool}\nextends: ${tool}\nhome: { dir: .acme-${tool} }\n`]))));
+    const { builtinHookDefs } = await import('../builtin-hooks.js');
+    const entries = (tool: string, named = tool) => JSON.parse(JSON.stringify(builtinHookDefs(tool)).replaceAll(`--tool ${tool}`, `--tool ${named}`));
+
+    expect(Object.fromEntries(TOOL_ORDER.map((tool) => [tool, entries(`acme-${tool}`, tool)]))).toEqual(Object.fromEntries(TOOL_ORDER.map((tool) => [tool, entries(tool)])));
+  });
+});
+
+describe('the project instructions of an instance', () => {
+  it('reads the project file the tool it extends reads first', async () => {
+    await load(teamRepo({ 'tools/acme-codex.yaml': 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n' }));
+    const project = path.join(root, 'project');
+    fs.mkdirSync(project);
+    fs.writeFileSync(path.join(project, 'AGENTS.md'), 'shared');
+    fs.writeFileSync(path.join(project, 'AGENTS.override.md'), 'override');
+    const { nativeProjectInstructions } = await import('../instruction-targets.js');
+
+    expect(await nativeProjectInstructions('acme-codex', project)).toBe(await nativeProjectInstructions('codex', project));
+  });
+});
+
+describe('the hook replies of an instance', () => {
+  it('takes the reply shape and the context limit of the host it extends', async () => {
+    await load(teamRepo({ 'tools/acme-cursor.yaml': 'schemaVersion: v1alpha1\nname: acme-cursor\nextends: cursor\nhome: { dir: .acme-cursor }\n' }));
+    const { formatStopHookOutput, relayWhenHidden } = await import('../utils/hook-output.js');
+    const { createDispatcher } = await import('../hook-dispatch.js');
+    const context = (name: string, text: string) => ({ name, execute: async () => JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } }) });
+    const dispatcher = createDispatcher({ localConfig: null, handlers: [
+      { event: 'session-start', matcher: '*', handler: context('cursor-user-rules', 'R'.repeat(10_000)), yieldsToContextLimit: true },
+      { event: 'session-start', matcher: '*', handler: context('team-env-hint', 'ENV') },
+    ] });
+    const replies = async (tool: string) => ({ stop: formatStopHookOutput(relayWhenHidden('Pushed.', tool), tool), start: (await dispatcher.dispatch('session-start', '*', {}, tool)).output });
+
+    expect(await replies('acme-cursor')).toEqual(await replies('cursor'));
+  });
+});
+
+describe('the co-author setting of an instance', () => {
+  it('lands in the config of its own home, and never in a tool that reads none', async () => {
+    const repo = teamRepo({
+      'tools/acme-codex.yaml': 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n',
+      'tools/acme-zcode.yaml': 'schemaVersion: v1alpha1\nname: acme-zcode\nextends: zcode\nhome: { dir: .acme-zcode }\n',
+      'tools/acme-cursor.yaml': 'schemaVersion: v1alpha1\nname: acme-cursor\nextends: cursor\nhome: { dir: .acme-cursor }\n',
+    });
+    fs.appendFileSync(path.join(repo, 'teamai.yaml'), 'sharing:\n  coAuthor: { enabled: false }\n');
+    const { config } = await load(repo);
+    for (const dir of ['.acme-codex/skills', '.acme-zcode/cli', '.acme-cursor/skills']) fs.mkdirSync(path.join(home, dir), { recursive: true });
+    const { reconcileCoAuthorForConfig } = await import('../coauthor-reconcile.js');
+    const { StateSchema } = await import('../types.js');
+    const local: LocalConfig = { repo: { localPath: repo, remote: 'https://example.com/acme/team.git' }, username: 'member', additionalRoles: [], scope: 'user', enabledAgents: ['acme-codex', 'acme-zcode', 'acme-cursor'] };
+
+    if (!config) throw new Error('the team config did not load');
+    const { changes } = await reconcileCoAuthorForConfig(config, local, StateSchema.parse({}));
+
+    expect(changes.map(({ tool, file }) => ({ tool, file }))).toEqual([
+      { tool: 'acme-codex', file: path.join(home, '.acme-codex', 'config.toml') },
+      { tool: 'acme-cursor', file: path.join(home, '.acme-cursor', 'cli-config.json') },
+    ]);
+  });
+});
+
 describe('the model aliases of an instance', () => {
   const instance = (name: string, base: string, ownHome = `home: { dir: .${name} }\n`) => `schemaVersion: v1alpha1\nname: ${name}\nextends: ${base}\n${ownHome}`;
   const strong = new Map([['strong', { source: 'models/aliases.yaml', entries: { codex: { model: 'gpt-6', effort: 'high' }, codebuddy: { model: 'glm-5', effort: 'high' } } }]]);
