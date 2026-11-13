@@ -40,6 +40,8 @@ Generated: do not edit by hand. Regenerate with
   - `--project <id>` — Target a project: each new resource goes to that project's namespace for its own type — skills, knowledge for rules, agents, learnings, docs, env, hooks, mcp, models, and more (from manifest/projects.yaml)
   - `--shared` — Place new resources at the shared root for all roles; cannot combine with --role or --project
   - `--branch <name>` — Push to this destination branch instead of a generated teamai/push branch
+  - `--file <local file>` — Push exactly this local file, byte for byte, to the team path --path names, as a pull request. No other change in the team clone joins it; requires --path
+  - `--path <team path>` — Where --file goes in the team repo, such as benchmarks/frontend/tasks/pod-startup.yaml or scorers/review.md. Placed exactly there, never relocated; cannot combine with --skill, --role, --project, --shared, --all or --carried
   - `--carried <path@blob>` — Override the stop for a push that would overwrite or delete a placed agent file a teammate changed. Use it only after carrying that change into your root copy, with the value the stop printed; a later team edit stops the push again. Repeatable
 
 ## pull
