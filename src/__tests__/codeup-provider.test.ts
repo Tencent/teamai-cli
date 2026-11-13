@@ -166,9 +166,7 @@ describe('Codeup REST calls', () => {
   afterEach(() => {
     process.env = OLD_ENV;
     vi.restoreAllMocks();
-  });
-
-  it('whoami reads the platform user endpoint with the yunxiao token header', async () => {
+  });  it('whoami reads the platform user endpoint with the yunxiao token header', async () => {
     const fetchMock = mockFetch([
       {
         match: (url, method) => method === 'GET' && url.endsWith('/oapi/v1/platform/user'),
@@ -333,5 +331,79 @@ describe('Codeup REST calls', () => {
       timeoutMs: 5_000,
     });
     expect(url).toBeUndefined();
+  });
+});
+
+describe('Codeup authenticate (codeup-scope PAT fallback)', () => {
+  const OLD_ENV = process.env;
+
+  /**
+   * A PAT with only codeup scope: /oapi/v1/platform/user answers 403, the org
+   * repository list answers 200 — the exact live behavior verified against
+   * openapi-rdc.aliyuncs.com.
+   */
+  function mockScopeLimitedFetch(repoListStatus = 200) {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any, init?: any) => {
+      const url = String(input);
+
+      if (url.endsWith('/oapi/v1/platform/user')) {
+        return new Response(JSON.stringify({ errorCode: 'Forbidden', errorMessage: 'Current token has no permission to api.' }), { status: 403 });
+      }
+
+      if (/\/oapi\/v1\/codeup\/organizations\/[^/]+\/repositories/.test(url)) {
+        return new Response(JSON.stringify([]), { status: repoListStatus });
+      }
+
+      return new Response(JSON.stringify({ error: `no mock for ${init?.method ?? 'GET'} ${url}` }), { status: 500 });
+    });
+  }
+
+  beforeEach(() => {
+    process.env = { ...OLD_ENV };
+    process.env.CODEUP_TOKEN = 'scope-limited-token';
+    delete process.env.CODEUP_ORG_ID;
+    delete process.env.CODEUP_USERNAME;
+  });
+
+  afterEach(() => {
+    process.env = OLD_ENV;
+    vi.restoreAllMocks();
+  });
+
+  it('returns the platform whoami username when the token has platform scope', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(JSON.stringify({ username: 'zhangsan', lastOrganization: '64700f00f1234' }), { status: 200 }),
+    );
+
+    expect(await new CodeupProvider().authenticate()).toBe('zhangsan');
+  });
+
+  it('falls back to CODEUP_USERNAME when the token is codeup-scope-only and the probe passes', async () => {
+    mockScopeLimitedFetch(200);
+    process.env.CODEUP_ORG_ID = '64700f00f1234';
+    process.env.CODEUP_USERNAME = 'zhangsan';
+
+    expect(await new CodeupProvider().authenticate()).toBe('zhangsan');
+  });
+
+  it('throws guidance when the org id is missing for a codeup-scope-only token', async () => {
+    mockScopeLimitedFetch(200);
+
+    await expect(new CodeupProvider().authenticate()).rejects.toThrow(/organizationId/);
+  });
+
+  it('rejects a token the probe answers with an error', async () => {
+    mockScopeLimitedFetch(401);
+    process.env.CODEUP_ORG_ID = '64700f00f1234';
+    process.env.CODEUP_USERNAME = 'zhangsan';
+
+    await expect(new CodeupProvider().authenticate()).rejects.toThrow(/rejected/);
+  });
+
+  it('throws a headless error when the username is unknown non-interactively', async () => {
+    mockScopeLimitedFetch(200);
+    process.env.CODEUP_ORG_ID = '64700f00f1234';
+
+    await expect(new CodeupProvider().authenticate()).rejects.toThrow(/CODEUP_USERNAME/);
   });
 });

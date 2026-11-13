@@ -232,31 +232,96 @@ export async function codeupWhoami(): Promise<{ username: string | null; lastOrg
   }
 }
 
+// ─── Codeup-specific config (~/.teamai/codeup.json) ──────
+//
+// Small provider-scoped store for the two values a codeup-scope-only PAT
+// cannot discover on its own: the organizationId and the login username
+// (a PAT without platform scope answers no user endpoint — verified live).
+// The environment variables CODEUP_ORG_ID / CODEUP_USERNAME take precedence.
+
+interface CodeupConfig {
+  organizationId?: string;
+  username?: string;
+}
+
+function codeupConfigPath(): string {
+  return path.join(getUserHome(), '.teamai', 'codeup.json');
+}
+
+function loadCodeupConfig(): CodeupConfig {
+  try {
+    const raw = fs.readFileSync(codeupConfigPath(), 'utf-8');
+    const parsed = JSON.parse(raw);
+
+    return typeof parsed === 'object' && parsed !== null ? parsed as CodeupConfig : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveCodeupConfig(values: CodeupConfig): void {
+  const file = codeupConfigPath();
+  const next = { ...loadCodeupConfig(), ...values };
+
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 });
+
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch {
+    // best-effort on platforms without chmod semantics
+  }
+}
+
+/** The organizationId from CODEUP_ORG_ID, then ~/.teamai/codeup.json. */
+export function configuredOrganizationId(): string | null {
+  const fromEnv = process.env.CODEUP_ORG_ID?.trim();
+
+  if (fromEnv) return fromEnv;
+
+  return loadCodeupConfig().organizationId ?? null;
+}
+
+/** The username from CODEUP_USERNAME, then ~/.teamai/codeup.json. */
+export function configuredUsername(): string | null {
+  const fromEnv = process.env.CODEUP_USERNAME?.trim();
+
+  if (fromEnv) return fromEnv;
+
+  return loadCodeupConfig().username ?? null;
+}
+
+/** Persist codeup provider settings (organizationId / username) for later runs. */
+export function saveCodeupSettings(values: { organizationId?: string; username?: string }): void {
+  saveCodeupConfig(values);
+}
+
 // ─── Repository / organization resolution ────────────────
 
 /**
  * Resolve the organizationId the OpenAPI paths need.
- * Precedence: CODEUP_ORG_ID env var, then the authenticated user's
- * lastOrganization. In practice CODEUP_ORG_ID is the reliable source: a PAT
- * created with only codeup scope (the common case) cannot call the platform
- * user endpoint, and the organization *path* (the first URL segment) is not
- * accepted by the repo-scoped API paths — both verified live.
+ * Precedence: CODEUP_ORG_ID env var, then ~/.teamai/codeup.json (written by
+ * the interactive init flow), then the authenticated user's lastOrganization.
+ * In practice CODEUP_ORG_ID is the reliable source: a PAT created with only
+ * codeup scope (the common case) cannot call the platform user endpoint, and
+ * the organization *path* (the first URL segment) is not accepted by the
+ * repo-scoped API paths — both verified live.
  */
 export async function resolveCodeupOrganizationId(): Promise<string> {
   if (isRegionEdition()) return 'default';
 
-  const explicit = process.env.CODEUP_ORG_ID?.trim();
+  const configured = configuredOrganizationId();
 
-  if (explicit) return explicit;
+  if (configured) return configured;
 
   const { lastOrganization } = await codeupWhoami();
 
   if (lastOrganization) return lastOrganization;
 
   throw new Error(
-    'Could not resolve the Codeup organizationId. Set CODEUP_ORG_ID (from '
-      + '云效 组织管理 → 基本信息 → 企业标识), or make sure CODEUP_TOKEN belongs '
-      + 'to a user of that organization.',
+    'Could not resolve the Codeup organizationId. Set CODEUP_ORG_ID (the '
+      + 'numeric 企业标识 from 云效 组织管理 → 基本信息), or let `teamai init` save '
+      + 'it to ~/.teamai/codeup.json interactively.',
   );
 }
 
@@ -325,16 +390,53 @@ export async function getRepositoryNumericId(repo: string): Promise<number> {
   return data.id;
 }
 
+// ─── Token validation (codeup scope) ─────────────────────
+
+export interface CodeupTokenProbe {
+  /** True when the endpoint answered 200 — the token works for the codeup domain. */
+  ok: boolean;
+  /** The HTTP status of the probe, when the endpoint answered. */
+  status?: number;
+}
+
+/**
+ * Validate a token with a codeup-scoped call: the org repository list.
+ * A PAT with only codeup scope cannot answer /oapi/v1/platform/user (403 —
+ * verified live), but `GET …/organizations/{orgId}/repositories` is exactly
+ * what its scope covers, so a 200 here proves both the token and the org id.
+ */
+export async function probeCodeupToken(orgId: string): Promise<CodeupTokenProbe> {
+  const token = requireToken();
+  const base = isRegionEdition()
+    ? `${codeupApiBase()}/oapi/v1/codeup/repositories`
+    : `${codeupApiBase()}/oapi/v1/codeup/organizations/${orgId}/repositories`;
+
+  try {
+    const resp = await fetch(`${base}?perPage=1`, {
+      headers: authHeaders(token),
+      redirect: 'manual',
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    return { ok: resp.ok, status: resp.status };
+  } catch {
+    return { ok: false };
+  }
+}
+
 // ─── Repo operations ─────────────────────────────────────
 
 /**
- * Build the clone URL. SSH is the default transport — an SSH key on the
- * machine is the normal Codeup auth and what `teamai init` relies on. When a
- * token was persisted to ~/.netrc together with the account username, HTTPS
- * Basic auth is used instead.
+ * Build the clone URL. SSH is the default and verified transport — an SSH key
+ * on the machine is the normal Codeup auth. HTTPS Basic (PAT as the git
+ * password, with the netrc username) is used only when the token AND username
+ * are known AND `CODEUP_TRANSPORT=https` opts in, because PAT-as-git-password
+ * is not a verified path on every deployment.
  */
 function cloneUrl(repo: string, username: string | null, token: string | null): string {
-  if (token && username) {
+  const httpsWanted = process.env.CODEUP_TRANSPORT?.trim().toLowerCase() === 'https';
+
+  if (httpsWanted && token && username) {
     return `https://${encodeURIComponent(username)}:${encodeURIComponent(token)}@${CODEUP_HOST}/${repo}.git`;
   }
 
