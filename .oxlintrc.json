@@ -115,6 +115,7 @@
     "teamai/uncached-entry": "error",
     // Startup and the facts modules load a tool family's facts only; its adapters, launch profiles and schemas load on first use.
     "teamai/family-facts": "error",
+    "teamai/shipped-tool-ids": "error",
     // A reducer that copies its accumulator each step is quadratic.
     "oxc/no-accumulating-spread": "error",
     // The generic rules of anti-slop (#828), vendored in
