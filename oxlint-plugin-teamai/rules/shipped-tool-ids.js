@@ -14,20 +14,27 @@ const DEFINITIONS = new Set(scopedFiles(['src/tool-registry.ts', 'packages/tool-
  * reference in any file fails; this list only shrinks, and a count above what the file holds fails until it is lowered.
  */
 export const SHIPPED_ONLY = new Map(Object.entries({
-  // Detects a shipped tool's installed version from its own executable.
+  // A version detector runs the shipped tool's own executable; an instance may run another build, so its version is
+  // unknown and its hooks stay waited.
   'src/agent-version.ts': { count: 1 },
-  // Reads the recorded homes of shipped tools.
+  // The homes `teamai init` recorded, which it records only for shipped tools.
   'src/doctor.ts': { count: 1 },
+  // A toolPaths entry replaces the default of the shipped tool it names; an instance replaces its own only through its
+  // `paths`, read just before.
   'src/doctor-delivery.ts': { count: 1 },
   // Detects shipped tools before any team config, and so any instance, is loaded.
   'src/known-agents.ts': { count: 2 },
-  // The shipped tool's install gate, and the leftovers of a shipped tool's default home that releases before #1221 wrote.
+  // A shipped tool's install gate and the leftovers of its default home that releases before #1221 wrote; and the
+  // sessions channel, typed over the shipped session platforms: an instance's own store is read through `storeDirOf`
+  // (src/session-flow/adapters/index.ts).
   'src/locate.ts': { count: 3 },
+  // The leftovers of a shipped tool's default home that releases before #1221 wrote.
   'src/mcp-reconcile.ts': { count: 1 },
-  // Parses an instance's `extends`, which must name a shipped tool.
+  // Parses an instance's `extends`, which must name a shipped tool, and refuses a name that takes a shipped one.
   'src/tool-instances.ts': { count: 4 },
   // A confined launch runs a shipped tool's own adapter; the local driver passes it the base of an instance.
   'src/tool-launch/confined.ts': { count: 1 },
+  // The instances to list beside the shipped tools: one named like a shipped tool adjusts it and is listed already.
   'src/workflow/drivers/local/local-driver.ts': { count: 1 },
   // An aliases file maps the tools teamai ships; an instance takes the entry of the tool it extends.
   'src/models/aliases.ts': { count: 1 },
