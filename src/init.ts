@@ -17,6 +17,7 @@ import { queueOwner, sameQueueOwner, setAsideQueueOnModeSwitch } from './utils/p
 import { dropAllSearchIndexes } from './utils/search-index.js';
 import { reportsBranch } from './utils/reports-branch.js';
 import { learningsBranch } from './utils/learnings-branch.js';
+import { validateLocalAgentTokenReplacement } from './local-agent.js';
 
 /**
  * A re-init that changes the install's kind or team repository keeps the data
@@ -846,7 +847,7 @@ async function isInsideGitRepo(dir: string): Promise<boolean> {
  */
 export async function initHttp(
   url: string,
-  options: GlobalOptions & { scope?: string; role?: string; project?: string; agent?: string | string[]; force?: boolean; token?: string; inheritUserScope?: boolean },
+  options: GlobalOptions & { scope?: string; role?: string; project?: string; agent?: string | string[]; force?: boolean; token?: string; replaceToken?: boolean; inheritUserScope?: boolean },
 ): Promise<void> {
   const { resolveApiKey, saveApiKey, getApiKeyPath } = await import('./api-key.js');
 
@@ -858,6 +859,8 @@ export async function initHttp(
   // now, before anything is written (resolving the scope may migrate a config),
   // and only here: by Step 6 the local agent may read back the config this init saved.
   const { assertNoLocalAgentReplacement, initLocalAgentHttp } = await import('./local-agent.js');
+
+  validateLocalAgentTokenReplacement({ token: options.token, replaceToken: options.replaceToken });
 
   if (!options.force) {
     await assertNoLocalAgentReplacement({ endpoint: url, token: options.token, filterAgents: requestedAgents });
@@ -1060,7 +1063,7 @@ export async function initHttp(
   let localAgentFailed = false;
 
   try {
-    await initLocalAgentHttp({ endpoint: url, token: options.token, force: options.force, filterAgents });
+    await initLocalAgentHttp({ endpoint: url, token: options.token, force: options.force, replaceToken: options.replaceToken, filterAgents });
   } catch (e) {
     // Not debug: a refusal here (an access token with no single --agent) leaves
     // the credentials this machine already has, so this init did not finish.
@@ -1978,6 +1981,7 @@ export async function init(options: GlobalOptions & {
   force?: boolean;
   http?: string;
   token?: string;
+  replaceToken?: boolean;
   inheritUserScope?: boolean;
   self?: boolean;
   provider?: string;
@@ -1986,6 +1990,10 @@ export async function init(options: GlobalOptions & {
 
   try {
     forcedProvider = resolveInitProvider(options.provider);
+
+    if (options.replaceToken && !options.http) {
+      throw new Error('--replace-token requires --http.');
+    }
 
     if (forcedProvider && options.http) {
       throw new Error('--provider cannot be combined with --http: an HTTP team repo has no git provider.');
