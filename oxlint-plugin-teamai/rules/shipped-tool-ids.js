@@ -31,18 +31,12 @@ export const SHIPPED_ONLY = new Map(Object.entries({
   // A confined launch runs a shipped tool's own adapter; the local driver passes it the base of an instance.
   'src/tool-launch/confined.ts': { count: 1 },
   'src/workflow/drivers/local/local-driver.ts': { count: 1 },
-  // Not yet resolved for an instance: team agents for an instance, model aliases keyed by shipped tool, and the
-  // session a skill-driver run works in. Each moves to toolOf when that tool's instances get the feature.
+  // Not yet resolved for an instance: team agents for an instance.
   'src/resources/agents.ts': { count: 7 },
+  // An aliases file maps the tools teamai ships; an instance takes the entry of the tool it extends.
   'src/models/aliases.ts': { count: 1 },
-  'src/benchmark/start.ts': { count: 1 },
-  'src/scorers/judge-model.ts': { count: 1 },
-  'src/workflow/confined-place.ts': { count: 1 },
-  'src/workflow/confined-step.ts': { count: 1 },
-  'src/workflow/step-model.ts': { count: 1 },
-  'src/workflow/drivers/skill/child-model.ts': { count: 1 },
-  'src/workflow/drivers/skill/skill-driver.ts': { count: 2 },
-  'src/workflow/drivers/skill/skill-state.ts': { count: 1 },
+  // A session variable names the shipped tool that sets it; an instance runs that tool and sets the same variable.
+  'src/workflow/drivers/skill/skill-driver.ts': { count: 1 },
 }));
 
 scopedFiles([...SHIPPED_ONLY.keys()]);

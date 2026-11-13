@@ -9,6 +9,8 @@ import { acquireLock, releaseLock } from '../update.js';
 import { getDataHome } from '../types.js';
 import type { ToolId } from '../tools.js';
 import { skillContext } from '../workflow/drivers/skill/skill-driver.js';
+import { teamToolInstances } from '../tool-instances.js';
+import { useToolInstances } from '../tool-registry.js';
 import { inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
 import { AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, skillStatePath, type RunId } from '../workflow/store.js';
 import { Crash, fakeConfinedClaude, fakeJudge, githubOrigin, LABEL_PASS, scoringStarted, skillHarness, untilStopped } from './helpers/skill-harness.js';
@@ -226,7 +228,7 @@ async function eventsUntil(harness: Harness, run: RunId, kind: string, mode: Run
   return events;
 }
 
-async function reviewed(harness: Harness, mode: RunMode = 'attended', options: { judge?: false; host?: 'h1' | 'h4'; tool?: ToolId; output?: string } = {}): Promise<{ run: RunId; chosen: unknown; turn: unknown; result: string }> {
+async function reviewed(harness: Harness, mode: RunMode = 'attended', options: { judge?: false; host?: 'h1' | 'h4'; tool?: string; output?: string } = {}): Promise<{ run: RunId; chosen: unknown; turn: unknown; result: string }> {
   const { host = 'h1', tool, output = 'Reviewed the change.', ...judge } = options;
   const answers = { ...(mode === 'unattended' ? { confirmed: false, hitl: 'auto-approve' as const } : { confirmed: false }), ...judge };
   const started = await harness.call({ kind: 'start', name: 'review', answers, inputs: undefined, ...(tool !== undefined ? { tool } : {}) }, { mode });
@@ -255,6 +257,7 @@ function unverifiedClaude(harness: Harness): void {
 const roots: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
+  useToolInstances(new Map());
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -1367,6 +1370,20 @@ steps:
     const { chosen, turn: done } = await reviewed(harness, 'attended', { tool: 'claude' });
     expect(chosen).toMatchObject({ data: { turn: { actions: [{ kind: 'dispatch', model: { by: 'step', name: 'claude-opus-4-1' } }] } } });
     expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
+  });
+
+  it('a session in a tool instance names it with --tools: its runner resolves the step\'s model as for the tool it extends, and an unknown name is refused', async () => {
+    const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: claude-opus-4-1') }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: null });
+    roots.push(harness.root);
+    fs.mkdirSync(path.join(harness.root, 'instances', 'tools'), { recursive: true });
+    fs.writeFileSync(path.join(harness.root, 'instances', 'tools', 'acme-claude.yaml'), 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude }\n');
+    useToolInstances(new Map((await teamToolInstances(path.join(harness.root, 'instances'))).map((instance) => [instance.name, instance])));
+    unverifiedClaude(harness);
+    const { chosen, turn: done } = await reviewed(harness, 'attended', { tool: 'acme-claude' });
+    expect(chosen).toMatchObject({ data: { turn: { actions: [{ kind: 'dispatch', model: { by: 'step', name: 'claude-opus-4-1' } }] } } });
+    expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
+    expect(await harness.call({ kind: 'describe', name: 'review', tool: 'vim' }))
+      .toEqual({ error: { code: 'invalid_arguments', message: expect.stringMatching(/^--tools default=vim names no tool teamai knows: claude, .*hermes.*, acme-claude$/), next: null } });
   });
 
   it('a session whose host has no child agent judges its run in the background, at best-effort, on its tool on PATH', async () => {

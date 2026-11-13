@@ -4,7 +4,6 @@
  */
 import { driverIdentity } from '../../../driver-identity.js';
 import { scoredLabels } from '../../../scorers/engine-hooks.js';
-import type { ToolId } from '../../../tools.js';
 import { canonicalJson } from '../../../utils/canonical-json.js';
 import type { PersonHandoff, ResumeClaim, RunReadied } from '../../protocol.js';
 import { AttemptResult } from '../../attempt-result.js';
@@ -462,7 +461,7 @@ async function finish(context: SkillContext, lock: RunLock, state: SkillState, t
  * A `resume --driver skill`: `claim`, which runs it takes from teamai-reports; `confirmed`, the person's yes to
  * continue a run of an `invoke: ask` workflow; `answers`, its options.
  */
-interface Resume { claim: ResumeClaim; confirmed: boolean; answers: ResumeAnswers; tool?: ToolId }
+interface Resume { claim: ResumeClaim; confirmed: boolean; answers: ResumeAnswers; tool?: string }
 
 /**
  * A call that answers with a turn at once: `next`, a takeover, a resume, an answer to the host question, an ack, a place
