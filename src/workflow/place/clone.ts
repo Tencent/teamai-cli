@@ -25,7 +25,7 @@ import { loadTeamConfig, refreshRoleAssignment, saveLocalConfigForScope } from '
 import { stepEnvironment } from '../../env-exec.js';
 import { removeGitHook } from '../../git-hook.js';
 import { createProjectToolRoots } from '../../project-agent-root.js';
-import { homeVariables, isToolId, TOOLS } from '../../tools.js';
+import { homeVariables, TOOL_ORDER } from '../../tool-registry.js';
 import { roleDeclaration } from '../../roles.js';
 import { getDataHome, LocalConfigSchema, type LocalConfig } from '../../types.js';
 import { execCommand } from '../../utils/exec.js';
@@ -500,7 +500,7 @@ export function scratchCloneRoot(): string {
 const DELIVERED = 'delivered';
 
 /** The env variables that move a tool's home away from HOME, which the clone's own pull must not follow. */
-const TOOL_HOME_VARIABLES = [...new Set(Object.keys(TOOLS).filter(isToolId).flatMap(homeVariables))];
+const TOOL_HOME_VARIABLES = [...new Set(TOOL_ORDER.flatMap(homeVariables))];
 
 /** How long the clone's own `teamai pull` may take: it fetches only from the clone's root. */
 const PULL_TIMEOUT_MS = 10 * 60_000;

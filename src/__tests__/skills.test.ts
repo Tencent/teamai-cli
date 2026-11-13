@@ -5,7 +5,7 @@ import fse from 'fs-extra';
 import YAML from 'yaml';
 import { parseFrontmatter } from '../utils/frontmatter.js';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),

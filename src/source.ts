@@ -35,7 +35,7 @@ import { warnOnce } from './utils/warn-once.js';
 import { blobIdOf, historicalVersions } from './utils/team-history.js';
 import { installOf, locate, ownOf } from './locate.js';
 import { resolveOpenclawWorkspace } from './openclaw-home.js';
-import { isToolId, TOOLS } from './tools.js';
+import { TOOL_ORDER } from './tool-registry.js';
 import { toolHome } from './tool-home.js';
 import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import { getUserHome } from './utils/home.js';
@@ -169,7 +169,7 @@ function isCanonicalSkillName(value: string): boolean {
  * destination recorded as an absolute path must lie inside one.
  */
 async function externalToolHomes(): Promise<string[]> {
-  const homes = Object.keys(TOOLS).filter(isToolId).map((tool) => toolHome(tool));
+  const homes = TOOL_ORDER.map((tool) => toolHome(tool));
   // The workspace OpenClaw is configured to read, even once its directory is gone:
   // a record of a copy there stays valid, so pull and `source remove` keep working.
   const workspace = await resolveOpenclawWorkspace();

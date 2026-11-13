@@ -1,0 +1,22 @@
+{
+  "name": "@teamai/shared",
+  "private": true,
+  "type": "module",
+  "description": "Helpers that are not about any one domain, such as secret masking, which src/, the tool packages and the runtimes share; bundled into teamai-cli.",
+  "exports": {
+    "./cli-path": "./src/cli-path.ts",
+    "./debug-log": "./src/debug-log.ts",
+    "./entries-under": "./src/entries-under.ts",
+    "./exec": "./src/exec.ts",
+    "./home": "./src/home.ts",
+    "./json": "./src/json.ts",
+    "./log": "./src/log.ts",
+    "./lookpath": "./src/lookpath.ts",
+    "./process-group": "./src/process-group.ts",
+    "./redact": "./src/redact.ts",
+    "./regular-file": "./src/regular-file.ts",
+    "./timer": "./src/timer.ts",
+    "./type-of-service": "./src/type-of-service.ts",
+    "./yaml": "./src/yaml.ts"
+  }
+}

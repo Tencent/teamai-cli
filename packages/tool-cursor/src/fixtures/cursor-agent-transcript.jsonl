@@ -1,0 +1,2 @@
+{"role":"user","message":{"content":[{"type":"text","text":"Which test runner does this repo use?"}]},"cwd":"{{cwd}}"}
+{"role":"assistant","message":{"content":[{"type":"text","text":"It uses Vitest: package.json runs `vitest run`."}]},"cwd":"{{cwd}}"}

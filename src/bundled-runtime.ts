@@ -10,7 +10,8 @@ import { execFileSync } from 'node:child_process';
 import { getUserHome } from './utils/home.js';
 import { isOnPath, pathDirs } from './utils/lookpath.js';
 import { log } from './utils/logger.js';
-import { isToolId, TOOLS, type ToolId } from './tools.js';
+import { type ToolId } from './tools.js';
+import { isToolId, descriptorOf, type DescriptorOf } from './tool-registry.js';
 
 /**
  * WorkBuddy 5.6.2 and 5.7.6 (`VENDOR_ASSETS` in main/index.js) unpack each
@@ -296,7 +297,7 @@ export function ensureBundledRuntimeOnPath(platform: NodeJS.Platform = process.p
 }
 
 /** The tools whose hook commands run through a shell of their own (`hooks.shell: 'bundled'`). */
-type BundledShellTool = { [T in ToolId]: (typeof TOOLS)[T]['hooks']['shell'] extends 'bundled' ? T : never }[ToolId];
+type BundledShellTool = { [T in ToolId]: DescriptorOf<T>['hooks']['shell'] extends 'bundled' ? T : never }[ToolId];
 
 /** How each tool with a bundled shell finds it. Every other tool falls back to the conservative /bin/sh gate. */
 const BUNDLED_SHELLS: Record<BundledShellTool, () => string | null> = {
@@ -305,7 +306,7 @@ const BUNDLED_SHELLS: Record<BundledShellTool, () => string | null> = {
 };
 
 function isBundledShellTool(tool: string): tool is BundledShellTool {
-  return isToolId(tool) && TOOLS[tool].hooks.shell === 'bundled';
+  return isToolId(tool) && descriptorOf(tool).hooks.shell === 'bundled';
 }
 
 /**

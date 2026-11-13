@@ -8,7 +8,7 @@ import { safeText } from '../session-flow/session-cmd-shared.js';
 import { firstPrompt } from '../session-flow/session-work.js';
 import type { LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
-import { redact } from '../utils/redact.js';
+import { redact } from '@teamai/shared/redact';
 import { judgeablePasses } from '../workflow/judge-work.js';
 import { findRunConfig } from '../workflow/run-location.js';
 import { stepDefinitions } from '../workflow/scope.js';

@@ -14,7 +14,7 @@ import { updateReports } from '../utils/reports-branch.js';
 import { getAdapter } from './adapters/index.js';
 import { AgentSession, noAdapter, recordedToolRoots, writeCopyOnce } from './agent-session.js';
 import { SessionCaptures } from './captures.js';
-import type { Session } from './ir.js';
+import type { Session } from '@teamai/tool-core/sessions/ir';
 import { degradeThinkingBlocks } from './migrate.js';
 import { archiveBusyMessage, authorForCwd, deriveArchiveIdentity, sessionArchiveRoot } from './session-cmd-shared.js';
 import { SyncManager, defaultSyncMeta, getRepoIdentity, type SessionSyncMeta } from './sync.js';

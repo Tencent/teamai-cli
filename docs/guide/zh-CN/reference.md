@@ -248,6 +248,91 @@ teamai webhook test
 teamai webhook test --dry-run
 ```
 
+### 团队工具（`tools/`）
+
+团队用的是某个已支持工具的内部版本或分支时，可以把它加成内置工具的实例，不用等新版本。实例只改命令、home 和路径，沿用该工具的启动参数，以及会话、token、hook 和 MCP 格式。有自己 home 的实例有自己的会话；沿用该工具 home 的实例写的就是该工具的会话。
+
+```yaml
+# 团队仓库中的 tools/acme-claude.yaml
+schemaVersion: v1alpha1
+name: acme-claude                  # 与文件名相同
+extends: claude                    # 它是哪个内置工具的实例
+command: acme-claude               # PATH 上可执行文件的名字，不能是路径
+home: { dir: .acme-claude, env: ACME_CLAUDE_CONFIG_DIR }
+# paths: { skills: .acme-claude/skills }   # 可选；不写时用 claude 的路径，放到 .acme-claude/ 下
+```
+
+成员像启用其他工具一样启用它：
+
+```bash
+teamai init --agent claude,acme-claude
+teamai pull                                        # skills、rules、hooks 和 MCP 写到 .acme-claude/
+teamai workflow start review --tools default=acme-claude
+teamai score --session <id> --source acme-claude --scorer review-quality
+```
+
+步骤运行 `acme-claude`，会话从 `$ACME_CLAUDE_CONFIG_DIR/projects/` 读取，未设置时从 `~/.acme-claude/projects/` 读取。记录、续跑和打分都算在 `acme-claude` 名下，不会算成 Claude 的。
+
+**接受命令。** 设了 `command` 的实例会运行队友指定的程序。第一次运行时在终端里询问：
+
+```text
+Tool "acme-claude" comes from the team repo (…/tools/acme-claude.yaml, content 3f9a1c0e7b2d), which you have not accepted on this machine. It runs acme-claude as you, with your files, in place of claude. Review the file before you accept it.
+Run it? [y/N]
+```
+
+你输入的一行只回答这个问题。同一终端上正在等待的审批或选择，会在你回答后重新询问。`teamai workflow cancel` 会让这个问题不经回答直接结束，命令不会运行。按 Ctrl-C 会停止运行而不作回答，`teamai workflow resume` 会再问一次。
+
+无人值守的运行（`TEAMAI_MODE=unattended`、CI、没有终端）会以 `tool_not_accepted` 拒绝，直到有人在终端里接受一次。接受结果按文件内容记在 `~/.teamai/trust/tools.json`：不改这个文件的提交不会再问，改了文件会再问。只设 `home` 或 `paths` 的实例运行内置命令，不需要接受。
+
+**调整内置工具。** 与内置工具同名的实例用来调整它。它的 `paths` 整体替换该工具的路径，和 `toolPaths` 条目一样，并且优先于 `toolPaths`：
+
+```yaml
+# tools/claude.yaml
+schemaVersion: v1alpha1
+name: claude
+extends: claude
+paths: { skills: .claude/team-skills, rules: .claude/rules }
+```
+
+`teamai doctor` 会列出这类 `paths` 丢掉的每个键：`paths in tools/claude.yaml replaces claude's default entry whole and drops keys the default provides: settings (.claude/settings.json — hook reconciliation silently skips the tool), …`。
+
+**自己的版本。** `~/.teamai/tools/<name>.yaml` 放你自己的实例。teamai 只读这个目录，从不写入。这里的实例会替换团队同名实例（只对你生效），不需要接受；`workflow resume --next` 会忽略它，因为接手的是队友的运行，用团队的工具。
+
+它的 `command` 同样是 PATH 上的一个命令名。要运行你自己编译的版本，把它所在的目录加到 PATH，再写可执行文件的名字：
+
+```yaml
+# ~/.teamai/tools/acme-claude.yaml
+schemaVersion: v1alpha1
+name: acme-claude
+extends: claude
+command: acme-claude-dev           # 在 ~/src/acme-claude/bin 里找到；写成 ~/src/acme-claude/bin/acme-claude-dev 会被拒绝
+home: { dir: .acme-claude, env: ACME_CLAUDE_CONFIG_DIR }
+```
+
+```bash
+export PATH="$HOME/src/acme-claude/bin:$PATH"     # 写在 ~/.zshrc 或 ~/.bashrc 里
+teamai workflow start review --tools default=acme-claude
+```
+
+**实例从哪里来。** `tools/<name>.yaml`，以及 `tools/<namespace>/<name>.yaml`（替换根目录的同名实例）。两个 namespace 定义同一个名字，或两个团队仓库对同一个名字定义不同，算冲突：两个都不用，并给出提示。文件里出现 `command`、`home`、`paths` 以外的键，或 `command` 是 `./scripts/acme-claude` 这样的路径、含有 `:`、`*` 或 `?`，都会被拒绝，并指出问题：路径上的程序可以在文件不变的情况下被改掉，接受就管不到它。teamai 只在 PATH 的目录里查找 `command`，Windows 上也一样，不在检出目录里查找，所以除非成员的 PATH 含有 `.` 或空条目，检出目录里的同名文件不会代替它运行。
+
+```text
+Tool instance …/tools/acme-claude.yaml is not valid: it sets sessions, and an instance sets only command, home and paths. …
+Tool instance …/tools/acme-claude.yaml is not valid: command: command is the name of one executable on PATH, with no path, spaces or arguments, such as acme-claude. …
+```
+
+实例要有自己的会话，被扩展的工具的格式必须能带另一个平台 id：Claude Code、Qoder、Codex、JoyCode、Cursor 和 OpenCode。其他工具的实例可以启动、接收文件，但 teamai 不读取它的会话。OpenCode 把会话放在它的数据目录下，而不是配置目录下，所以 teamai 在哪里读取 OpenCode 实例的会话，取决于它的 `home` 移动的是哪个变量：
+
+```yaml
+# tools/opencode-work.yaml：会话在 ~/.opencode-work/opencode
+schemaVersion: v1alpha1
+name: opencode-work
+extends: opencode
+home: { dir: .opencode-work, env: XDG_DATA_HOME }
+```
+
+如果是 `env: OPENCODE_CONFIG_DIR`，实例有自己的设置，会话仍在你的 OpenCode 数据目录中（`$XDG_DATA_HOME/opencode`，否则为 `~/.local/share/opencode`），teamai 把它们当作 OpenCode 的会话读取。teamai 目前还不为实例渲染 agents。实例不会出现在[工具支持](./tool-support.md)页面上。
+
 ---
 
 ## 模型配置

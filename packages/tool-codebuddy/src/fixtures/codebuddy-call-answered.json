@@ -1,0 +1,1 @@
+{"type": "result", "subtype": "success", "is_error": false, "duration_ms": 4210, "num_turns": 1, "result": "It uses Vitest.", "session_id": "0b6f2a52-5d7e-4c7e-9a43-6a1b2c3d4e5f", "usage": {"input_tokens": 2500, "cache_read_input_tokens": 9000, "cache_creation_input_tokens": 0, "output_tokens": 12}}

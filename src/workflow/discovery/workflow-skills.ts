@@ -13,7 +13,6 @@ import { pathExists, readFileSafe, writeFileAtomic } from '../../utils/fs.js';
 import { warnOnce } from '../../utils/warn-once.js';
 import { DefaultWorkflows } from '../../default-workflows.js';
 import { RESOURCE_LAYOUTS, Resources } from '../../resources/resolver.js';
-import { SessionShare } from '../../session-share.js';
 import { shareBlock } from '../../skill-content.js';
 import { listCachedWorkflows, loadWorkflowTree, startingAlias } from '../cache.js';
 import { generatedSkillAt, readGenerated } from './generated-marker.js';
@@ -36,12 +35,12 @@ async function advertisedWorkflows(teamConfig: TeamaiConfig, localConfig: LocalC
     if (invoke !== 'allow' && invoke !== 'ask') continue;
     const alias = await startingAlias(localConfig, definition);
 
-    if (!sharing && (name === SessionShare.SHARE_LEARNINGS || alias === SessionShare.SHARE_LEARNINGS)) continue;
+    if (!sharing && (name === DefaultWorkflows.SHARE_LEARNINGS || alias === DefaultWorkflows.SHARE_LEARNINGS)) continue;
 
     const tree = await loadWorkflowTree(localConfig, cached);
 
     // No skill for a workflow `start` refuses: a workflow it runs is missing, runs in a cycle, or does not take its inputs.
-    if ('failed' in tree || (!sharing && Object.hasOwn(tree.workflows, SessionShare.SHARE_LEARNINGS))) continue;
+    if ('failed' in tree || (!sharing && Object.hasOwn(tree.workflows, DefaultWorkflows.SHARE_LEARNINGS))) continue;
     const workflow: AdvertisedWorkflow = { name, description, invoke, source, skill: await skillName(name, alias) };
 
     if (alias !== undefined) workflow.alias = alias;

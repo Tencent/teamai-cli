@@ -4,7 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { LocalConfig } from '../../../types.js';
 import { readFileSafe, writeJsonAtomic } from '../../../utils/fs.js';
-import { redactJson } from '../../../utils/redact.js';
+import { redactJson } from '@teamai/shared/redact';
 import { attemptDir, type AttemptId, type RunId } from '../../store.js';
 import { readLease } from './engine-replies.js';
 import type { ReadLease } from './transitions.js';

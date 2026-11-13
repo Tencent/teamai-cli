@@ -12,12 +12,10 @@ import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { MCP_SERVER_KEY } from './resources/mcp-format.js';
 import { SESSION_PLATFORM_FACTS, type SessionPlatform, type StoredSessionPlatform } from './session-flow/adapters/platform-facts.js';
-import {
-  channelsOf, installGateOf, isToolId, hasDefaultHomeLeftovers, mcpScopeFor, TOOLS,
-  type Activation, type BlocksFile, type BlocksHeader, type ChannelProbe, type FirstExistingRead, type HomeRead, type HookAdapter,
-  type HookAdapterId, type HookFormat, type HookSettings, type McpProject, type McpUser, type ProjectRead, type ReadGateKind, type RunTime, type SkillReads,
-  type RunTimeVia, type ToolId,
-} from './tools.js';
+import { TOOLS, type ToolId } from './tools.js';
+import { type Activation, type BlocksFile, type BlocksHeader, type ChannelProbe, type FirstExistingRead, type HomeRead, type HookAdapter, type HookAdapterId, type HookFormat, type HookSettings, type McpProject, type McpUser, type ProjectRead, type ReadGateKind, type RunTime, type SkillReads, type RunTimeVia } from '@teamai/tool-core/definition';
+import { channelsOf, installGateOf, isToolId, hasDefaultHomeLeftovers, mcpScopeFor, toolOf } from './tool-registry.js';
+import { instanceReadPath } from './tool-instances.js';
 import {
   CURSOR_CONFIG_TOOL_ID, CURSOR_DATA_TOOL_ID,
   DEFAULT_TOOL_PATHS, isAgentExcluded, isGitExcludeEnabled, isSelfMode, recordedToolRootDir, resolveBaseDir, scopedToolPaths, toolGateRoot,
@@ -591,6 +589,7 @@ function rootsOf(tool: string, install: Install, host: Host): Roots {
   };
 
   const known = isToolId(tool) ? tool : undefined;
+  const instance = toolOf(tool)?.instance;
   const base = install.scope === 'user' ? host.home : install.projectRoot;
 
   const paths = install.scope === 'user'
@@ -641,7 +640,9 @@ function rootsOf(tool: string, install: Install, host: Host): Roots {
       // User-scope Copilot paths are relative to its home.
       return tool === 'copilot' && home ? join(home.dir, relative) : underHome(relative);
     },
-    declared: (from, relative) => {
+    declared: (from, declared) => {
+      const relative = instance === undefined ? declared : instanceReadPath(instance, { from, relative: declared });
+
       if (from === 'project') return join(base, relative);
 
       const live = install.scope === 'user' ? liveRelative(relative) : null;
@@ -1232,7 +1233,7 @@ function mcpKeyOf(channel: Pick<McpUser, 'format' | 'key'>): readonly [string, .
 }
 
 async function mcpFileOf(
-  channel: McpUser | McpProject, scope: Scope, roots: Roots, host: Host,
+  channel: McpUser | McpProject<ToolId>, scope: Scope, roots: Roots, host: Host,
 ): Promise<{ readonly file: string | null; readonly lookup: McpLookup | null }> {
   if (scope === 'user' && channel.format === 'openclaw' && host.env.OPENCLAW_CONFIG_PATH?.trim()) {
     return { file: resolveOpenclawConfigPath(host, openclawStateDir(roots, host)), lookup: null };
@@ -1402,7 +1403,7 @@ async function mcpGatesOf(tool: string, gates: readonly Gate[], own: EntryPlace 
 }
 
 async function mcpFilesOf(
-  channel: McpUser | McpProject, earlierFiles: readonly string[] | undefined, scope: Scope, roots: Roots, host: Host,
+  channel: McpUser | McpProject<ToolId>, earlierFiles: readonly string[] | undefined, scope: Scope, roots: Roots, host: Host,
 ): Promise<{
   readonly key: readonly [string, ...string[]];
   readonly tree: EntryPlace | null;

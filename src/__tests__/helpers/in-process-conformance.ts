@@ -6,7 +6,7 @@ import { vi } from 'vitest';
 import { syncScorersThenWorkflows } from '../../scorers/team-sync.js';
 import { resolveWorkflowEnv } from '../../env-resolution.js';
 import type { LocalConfig } from '../../types.js';
-import { redactJson } from '../../utils/redact.js';
+import { redactJson } from '@teamai/shared/redact';
 import { inProcessConformanceClient, type ConformanceClient, type ConformanceRunner, type ConformanceScenario } from '../../workflow/conformance-interpreter.js';
 import { inProcessClient } from '../../workflow/protocol.js';
 import { pendingRecords } from '../../workflow/records.js';

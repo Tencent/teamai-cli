@@ -49,6 +49,7 @@ import {
   scopedToolPaths,
   hookToolPathsForConfig,
   SYNC_LOCK_FILENAME,
+  TOOL_ROOT_FIELDS,
   toolInstallRoot,
   type GlobalOptions,
   type TeamaiConfig,
@@ -57,6 +58,7 @@ import {
   type ManagedMcpManifest,
   type JsonValue,
   installScopeName,
+  getTrustDir,
 } from './types.js';
 import { BUILTIN_RULE_NAMES, TEAMAI_CONTEXT_RULE_NAME } from './builtin-rules.js';
 import { isLegacyCursorRuleFile, keptLegacyCopiesWarning, ruleStemFromFilename, usesMdcRules, type InstructionBlock, type LegacyRuleDir } from './resources/rule-format.js';
@@ -80,7 +82,7 @@ import {
 } from './builtin-skills.js';
 import { cleanupOf, hookAdapterDirIn, hookSettingsFile, installOf, isInstalledFor, locate, openclawWorkspaceDir, ownOf, SHARED_AGENT_SKILLS_PATH, workspaceHooksOf, writesOf, type Location } from './locate.js';
 import { toolHome, toolHomesAcrossProfiles } from './tool-home.js';
-import { channelsOf, hookSyntaxOf, isToolId, TOOLS } from './tools.js';
+import { channelsOf, hookSyntaxOf, isToolId, descriptorOf, toolOf } from './tool-registry.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import { allowsSkillDirectory, CODEX_TOOL, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, readTeamSkills, skillOrigin } from './resources/skills.js';
 import { describeKeptDir, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir, teamaiSkillFiles } from './resources/delivered-copies.js';
@@ -171,6 +173,8 @@ interface RemovalPlan {
   agentDirs: string[];
   /** In self mode, the agents directories of the tools this removes, which init makes before anything is in them: each goes once empty. */
   seededAgentDirs: string[];
+  /** The folders the tool instances this removes take teamai's resources in, from their resolved paths, up to the instance's home: each goes once empty. */
+  instanceFolders: string[];
   /** The rules globs teamai owns in OpenCode's opencode.json `instructions`, per file (#946). */
   opencodeOwnedGlobs: OpencodeRuleGlobEntries[];
   /** Built-in agent .md files deployed by the CLI (e.g. teamai-recall). */
@@ -935,6 +939,8 @@ async function keptForProjects(): Promise<KeptForProjects> {
     getUserManagedHooksPath(),
     codexTeamHookIndexPath(),
     bridgedTeamHookDir(),
+    // The member's answers to running a team tool's command, which every project's runs read.
+    getTrustDir(),
     ...await secretsFor(readers),
     ...await sourceRecordsFor(readers),
   ];
@@ -1591,6 +1597,7 @@ async function buildRemovalPlan(
     ruleDirs: [...new Set([...rulesDirsByTool.values()].flat())],
     agentDirs: [...new Set([...agentDirsByTool.values()].flat())],
     seededAgentDirs: isSelfMode(localConfig) ? [...new Set(toolsToMerge.flatMap((tool) => agentDirsByTool.get(tool) ?? []))] : [],
+    instanceFolders: instanceFoldersOf(toolsToMerge, toolPaths, baseDir),
     opencodeOwnedGlobs: [],
     agentFiles: [],
     joycodeAgentIndexes: [],
@@ -3443,6 +3450,18 @@ async function sweepCreatedLeftovers(plan: RemovalPlan, hooksLeft: ReadonlyArray
     log.debug(`Could not remove ${inventory}: ${e instanceof Error ? e.message : String(e)}`);
   }
 
+  // The member's answers to running a team tool's command: no install is left to ask them for.
+  const trust = getTrustDir();
+
+  try {
+    if (await pathExists(trust)) {
+      await remove(trust);
+      log.success(`Removed ${trust}/: the team tools you accepted`);
+    }
+  } catch (e) {
+    log.warn(`Could not remove ${trust}: ${e instanceof Error ? e.message : String(e)}. Delete it by hand.`);
+  }
+
   const dirs = [
     bin,
     path.join(root, 'dashboard'),
@@ -3456,12 +3475,40 @@ async function sweepCreatedLeftovers(plan: RemovalPlan, hooksLeft: ReadonlyArray
   }
 }
 
+/** The fields of a tool's paths that name a folder; the others name a file. */
+const FOLDER_FIELDS: ReadonlySet<string> = new Set(['skills', 'rules', 'agents']);
+
+/**
+ * The folders under `baseDir` the tool instances among `tools` take teamai's resources in, from their resolved
+ * `toolPaths`: each folder a path in the instance's home there names (`.acme-claude`), and those above it up to that home.
+ * Init makes them before anything is in them. A path outside that home, and every path of an instance with no home of its
+ * own or one named like a shipped tool, is the shipped tool's, whose folders stay.
+ */
+function instanceFoldersOf(tools: readonly string[], toolPaths: ReturnType<typeof scopedToolPaths>, baseDir: string): string[] {
+  return [...new Set(tools.flatMap((tool) => {
+    const instance = toolOf(tool)?.instance;
+
+    if (instance?.home === undefined || instance.name === instance.extends) return [];
+    const home = instance.home.dir.split('/');
+    const paths = toolPaths[tool] ?? {};
+
+    return [...TOOL_ROOT_FIELDS, 'mcpProject' as const].flatMap((field) => {
+      const segments = (paths[field] ?? '').split('/');
+
+      if (segments.length <= home.length || home.some((segment, at) => segments[at] !== segment) || segments.some((segment) => ['', '.', '..'].includes(segment))) return [];
+      const deepest = FOLDER_FIELDS.has(field) ? segments.length : segments.length - 1;
+
+      return Array.from({ length: deepest - home.length + 1 }, (_, at) => path.join(baseDir, ...segments.slice(0, home.length + at)));
+    });
+  }))];
+}
+
 /**
  * The directories uninstall removed teamai's skills, rules and agents from, deepest first. Above a rule file, each
  * folder up to the tool's rules directory; never a directory outside one, so a tool's own root stays.
  */
 function emptiedDirs(plan: RemovalPlan): string[] {
-  const dirs = new Set([...plan.skillDirs.map(({ dir }) => path.dirname(dir)), ...plan.agentFiles.map((file) => path.dirname(file)), ...plan.seededAgentDirs]);
+  const dirs = new Set([...plan.skillDirs.map(({ dir }) => path.dirname(dir)), ...plan.agentFiles.map((file) => path.dirname(file)), ...plan.seededAgentDirs, ...plan.instanceFolders]);
   const ownedRuleFiles = plan.claudeMdFiles.flatMap(({ path: file, owned }) => (owned ? [file] : []));
 
   for (const file of [...plan.ruleFiles, ...ownedRuleFiles]) {
@@ -3609,7 +3656,7 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
     for (const line of [...plan.keptSkillDirs, ...plan.keptFiles]) log.warn(line);
 
     const exclusionOnly = isPlanEmpty(plan) && agentKey && localConfig.scope === 'project'
-      && ((isToolId(agentKey) && TOOLS[agentKey].projectFromHome) || plan.sharedRetentionOnly);
+      && ((isToolId(agentKey) && descriptorOf(agentKey).projectFromHome) || plan.sharedRetentionOnly);
 
     if (isPlanEmpty(plan) && !exclusionOnly) {
       log.info('Nothing to uninstall');

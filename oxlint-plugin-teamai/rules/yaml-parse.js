@@ -4,9 +4,9 @@ import { defineRule } from '@oxlint/plugins';
 import { inProductionSource, isOneOf, stringLiteralValue } from '../utils.js';
 
 /** The one module that calls the YAML library's parse. */
-const YAML_OWNER = 'src/utils/yaml.ts';
+const YAML_OWNER = 'packages/shared/src/yaml.ts';
 
-const MESSAGE = 'Parse YAML with parseYaml() from src/utils/yaml.ts: it returns JSON values, where yaml\'s parse turns !!set, !!binary and !!timestamp into a Set, Buffer or Date.';
+const MESSAGE = 'Parse YAML with parseYaml() from @teamai/shared/yaml: it returns JSON values, where yaml\'s parse turns !!set, !!binary and !!timestamp into a Set, Buffer or Date.';
 
 /**
  * Whether `node` is `import('yaml')`, awaited or not.

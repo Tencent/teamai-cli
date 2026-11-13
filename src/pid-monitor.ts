@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 
 import { windowsPowerShell } from './utils/powershell.js';
+import { tellProcessRead } from '@teamai/shared/process-group';
 
 // ─── Process tree helpers ──────────────────────────────
 //
@@ -71,9 +72,20 @@ function readProcessTable(): Map<number, ProcessEntry> | undefined {
 }
 
 /** `comm` goes last because a macOS executable path may hold spaces. */
+const PS_TABLE_ARGS = ['-A', '-o', 'pid=,ppid=,comm='];
+
+let isLinuxReadTold = false;
+
+/** Linux answers each lookup from `/proc`, where macOS reads the table once: told once, as that ps. */
+function tellLinuxRead(): void {
+    if (isLinuxReadTold) return;
+    isLinuxReadTold = true;
+    tellProcessRead({ ps: PS_TABLE_ARGS, spawned: false });
+}
+
 function queryPsProcessTable(): Map<number, ProcessEntry> | undefined {
     try {
-        const out = execFileSync('ps', ['-A', '-o', 'pid=,ppid=,comm='], {
+        const out = execFileSync('ps', PS_TABLE_ARGS, {
             encoding: 'utf-8',
             timeout: 2000,
             maxBuffer: 16 * 1024 * 1024,
@@ -129,6 +141,8 @@ export function getParentPid(pid: number): number | undefined {
         return ppid !== undefined && ppid > 0 ? ppid : undefined;
     }
 
+    tellLinuxRead();
+
     // Read /proc/{pid}/stat (fast, no process spawn)
     try {
         const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf-8');
@@ -156,6 +170,8 @@ export function getProcessComm(pid: number): string | undefined {
         // ps on macOS prints the full path
         return readProcessTable()?.get(pid)?.comm.split('/').pop();
     }
+
+    tellLinuxRead();
 
     // /proc/{pid}/comm (just the basename, no args)
     try {

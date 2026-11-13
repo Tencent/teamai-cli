@@ -7,7 +7,7 @@ import { holdsMarker } from '../folder-markers.js';
 import { getBusinessRoot, getDataHome, getKnowledgeDir, isSelfMode, managedMcpWorkspaceId, type LocalConfig } from '../types.js';
 import { readFileSafe, remove, writeJsonAtomic } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { isToolId } from '../tools.js';
+import { isToolId } from '../tool-registry.js';
 import { isSafeNamespaceSegment, NAMESPACE_RULE } from '../manifest-schema.js';
 import { resolveNamespacedItems, type NamespaceCandidate } from '../namespace-resolver.js';
 import { isNamespaceDir, resolveResourceNamespaces, type NamespaceDeclarations } from '../resource-namespaces.js';

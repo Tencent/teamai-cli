@@ -48,7 +48,7 @@ import { resolveNamespacedItems, type NamespaceCandidate } from '../namespace-re
 import { listDirs } from '../utils/fs.js';
 import { liveModelSwitches, type LiveModelSwitch } from './switch.js';
 import { agentEffortField, toolExtrasFor, type AgentSpec, type ToolName } from '../resources/agent-format.js';
-import { AGENT_TOOLS, isAgentToolId } from '../tools.js';
+import { AGENT_TOOLS, isAgentToolId } from '../tool-registry.js';
 
 /**
  * Alias names every team has, whether or not it maps them. A team maps one

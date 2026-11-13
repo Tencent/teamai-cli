@@ -6,12 +6,12 @@ import crossSpawn from 'cross-spawn';
 import { z } from 'zod';
 import { launchEnv, type Launch } from '../../../launch-context.js';
 import { opencodeMajorVersion } from '../../../opencode-hooks.js';
-import { resolveCliPath } from '../../../utils/cli-path.js';
+import { resolveCliPath, resolvePathCommand } from '../../../utils/cli-path.js';
 import { log } from '../../../utils/logger.js';
 import type { toolExtrasFor } from '../../../resources/agent-format.js';
 import { stopProcess } from '../../../tool-launch/process-stop.js';
 import { tokenMeter, toolStdout, type TokenUsage, type ToolReport } from '../../../tool-launch/stdout.js';
-import type { LaunchAdapter } from '../../../tool-launch/adapters.js';
+import type { LaunchAdapter } from '@teamai/tool-core/launch';
 import { executableOf, launchAdapterIdOf, launchAdapterOf, opencodeModelArgs, type LaunchTool } from '../../../tool-launch/tools.js';
 import { AttemptResult } from '../../attempt-result.js';
 import { budgeted } from '../../limits.js';
@@ -48,6 +48,8 @@ export interface LocalToolRun {
   timeoutMs?: number;
   /** Launch the tool in its own mode for editing and running commands without asking (`permissions: unattended`). */
   unattended?: true;
+  /** The command that starts the tool, when an instance of it has its own; the tool's own command otherwise. */
+  command?: string;
 }
 
 /**
@@ -221,17 +223,20 @@ function combineResults(fileResult: ResultFile | null, reported: ToolReport | nu
 export function createLocalToolAdapter(
   spawnTool: ToolSpawn = crossSpawn,
   resolveTool: ToolResolve = resolveCliPath,
+  // A tool instance's command comes from a config file, so only the PATH directories may hold it.
+  resolveInstanceCommand: ToolResolve = resolvePathCommand,
 ): LocalToolAdapter {
   const launch =
     async (tool: LaunchTool, input: LocalToolRun, signal: AbortSignal | undefined, interactive: boolean): Promise<LocalToolResult> => {
       await fs.mkdir(path.dirname(input.resultPath), { recursive: true });
-      const executable = resolveTool(executableOf(tool));
+      const command = input.command ?? executableOf(tool);
+      const executable = input.command === undefined ? resolveTool(command) : resolveInstanceCommand(command);
 
       if (!executable) {
         return {
           started: false,
           exitCode: 1,
-          failure: { code: 'tool_unavailable', message: `The ${tool} executable is not available on PATH` },
+          failure: { code: 'tool_unavailable', message: `The ${command === executableOf(tool) ? tool : command} executable is not available on PATH` },
         };
       }
 

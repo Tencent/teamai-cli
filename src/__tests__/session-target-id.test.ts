@@ -21,9 +21,9 @@ vi.mock('node:os', async (importOriginal) => {
 });
 
 import { getAdapter } from '../session-flow/adapters/index.js';
-import { deriveOpencodeMessageIds, deriveTargetSessionId } from '../session-flow/ids.js';
-import type { Session } from '../session-flow/ir.js';
-import { installFakeOpencode } from './helpers/fake-opencode.js';
+import { deriveOpencodeMessageIds, deriveTargetSessionId } from '@teamai/tool-core/sessions/ids';
+import type { Session } from '@teamai/tool-core/sessions/ir';
+import { installFakeOpencode } from '@teamai/tool-opencode/testing';
 import { WRITABLE } from './helpers/writable-platforms.js';
 
 /** OpenCode keeps its sessions behind its CLI: a stand-in `opencode`, the only command on PATH. */
@@ -166,7 +166,7 @@ describe('target session id', () => {
 // Windows cannot run here: these spellings go through the derivation with the platform named.
 describe('target session id for a Windows workspace', () => {
   const idFor = (targetCwd: string): string =>
-    deriveTargetSessionId({ targetPlatform: 'codex', targetCwd, sourceSessionId: UUID_SOURCE }, 'win32');
+    deriveTargetSessionId({ targetPlatform: 'codex', idFormat: 'uuid', targetCwd, sourceSessionId: UUID_SOURCE }, 'win32');
 
   it.each([
     ['a lower-case drive letter', 'c:\\work\\repo'],
@@ -193,7 +193,7 @@ describe('target session id in OpenCode', () => {
 
   it('keeps the time part of an OpenCode source and derives the rest from the target workspace', () => {
     const idIn = (targetCwd: string): string =>
-      deriveTargetSessionId({ targetPlatform: 'opencode', targetCwd, sourceSessionId: 'ses_ec4a5b73fffeRP6bDXlApNBFvY' });
+      deriveTargetSessionId({ targetPlatform: 'opencode', idFormat: 'opencode', targetCwd, sourceSessionId: 'ses_ec4a5b73fffeRP6bDXlApNBFvY' });
 
     expect(idIn('/work/a')).toMatch(OPENCODE_ID);
     expect(idIn('/work/a').slice(0, 16)).toBe('ses_ec4a5b73fffe');
@@ -205,6 +205,7 @@ describe('target session id in OpenCode', () => {
   it('encodes the creation time of another source the way OpenCode encodes a new session', () => {
     const id = deriveTargetSessionId({
       targetPlatform: 'opencode',
+      idFormat: 'opencode',
       targetCwd: '/work/a',
       sourceSessionId: UUID_SOURCE,
       sourceCreatedAt: new Date(1791997135040).toISOString(),

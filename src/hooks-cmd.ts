@@ -8,7 +8,7 @@ import { resolveTeamHookEntries } from './resources/hooks.js';
 import { describeEntryFailure, describeOrigin, reportUndeliveredEntryNotices } from './namespaced-entries.js';
 import { log } from './utils/logger.js';
 import type { GlobalOptions, HookDef } from './types.js';
-import type { HookAdapterId } from './tools.js';
+import type { HookAdapterId } from '@teamai/tool-core/definition';
 import {
     COPILOT_TOOL_ID,
     getManagedHooksPath,

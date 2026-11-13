@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs-extra';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
     log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), success: vi.fn() },
     spinner: vi.fn(async () => ({ succeed: vi.fn(), fail: vi.fn() })),
 }));

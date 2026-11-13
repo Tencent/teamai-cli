@@ -20,7 +20,7 @@ import {
   pathExists,
 } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import { hookSyntaxOf } from './tools.js';
+import { hookSyntaxOf } from './tool-registry.js';
 import type { JsonSyntax } from './utils/json.js';
 
 // ─── Co-author reconcile engine ──────────────────────────────

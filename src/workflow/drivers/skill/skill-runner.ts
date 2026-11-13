@@ -12,7 +12,7 @@ import { startGroupedCommand, stopRecordedGroup, type CommandExit } from '../../
 import type { RunMode } from '../../../launch-context.js';
 import type { LocalConfig } from '../../../types.js';
 import { writeFileAtomic } from '../../../utils/fs.js';
-import { redact } from '../../../utils/redact.js';
+import { redact } from '@teamai/shared/redact';
 import { attemptEnv } from '../../attempt-marker.js';
 import { runConfinedStep, type ConfinedStepEnd, type ConfinedStepLease } from '../../confined-step.js';
 import { commandEnd, refuseDirtyAdoptedCommand, type WorkflowClient } from '../../protocol.js';

@@ -141,7 +141,7 @@ export async function readSessionSharing(config: LocalConfig, { env, platform, n
   const [team, scored, finishedAfter] = await Promise.all([
     loadTeamConfig(config.repo.localPath),
     unavailable === undefined ? scopeScoring(config) : { ok: false as const, reason: unavailable },
-    SessionWork.finishedAfter(config),
+    SessionCaptures.finishedAfter(config),
   ]);
 
   const publish = SessionPolicy.publish(config, team);

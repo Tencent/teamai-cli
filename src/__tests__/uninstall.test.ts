@@ -32,7 +32,7 @@ vi.mock('../hooks.js', async (importOriginal) => {
   return { ...actual, reconcileHooks: (...args: unknown[]) => mockReconcileHooks(...args) };
 });
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -65,7 +65,8 @@ import { getTeamSecretsPath } from '../secret-store.js';
 import YAML from 'yaml';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 import { hookAdapterDir } from '../locate.js';
-import { TOOLS, type HookAdapterId } from '../tools.js';
+import { type HookAdapterId } from '@teamai/tool-core/definition';
+import { TOOLS } from '../tools.js';
 import { renderWorkflowSkill } from '../workflow/discovery/render.js';
 
 // ─── Helpers ───────────────────────────────────────────
@@ -533,6 +534,51 @@ describe('uninstall', () => {
     expect(await fse.pathExists(owners)).toBe(false);
     expect(await fse.pathExists(locks)).toBe(false);
     expect(await fse.pathExists(inventory)).toBe(false);
+  });
+
+  // The member's answers to "run this team tool?" (docs/guide/reference.md), which no other install is left to read.
+  it('removes the record of the team tools the member accepted with the last install', async () => {
+    const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    const trust = path.join(teamaiHome, 'trust');
+    await fse.outputJson(path.join(trust, 'tools.json'), { accepted: [] });
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig(homeDir, repoPath, { scope: 'project', projectRoot: homeDir, dataHome: path.join(teamaiHome, 'projects', 'current') }),
+      teamConfig: makeTeamConfig(),
+    });
+
+    await uninstall({ force: true });
+
+    expect(await fse.pathExists(trust)).toBe(false);
+  });
+
+  it('keeps the record of accepted team tools when a user-scope uninstall keeps a project that reads it', async () => {
+    const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    const accepted = path.join(teamaiHome, 'trust', 'tools.json');
+    await fse.outputJson(accepted, { accepted: [] });
+    await installAnotherProject(homeDir, tmpDir);
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig: makeTeamConfig() });
+
+    await uninstall({ force: true });
+
+    expect(await fse.pathExists(accepted)).toBe(true);
+  });
+
+  it('keeps the record of accepted team tools while another project on this machine still reads it', async () => {
+    const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    const accepted = path.join(teamaiHome, 'trust', 'tools.json');
+    await fse.outputJson(accepted, { accepted: [] });
+    await installAnotherProject(homeDir, tmpDir);
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig(homeDir, repoPath, { scope: 'project', projectRoot: homeDir, dataHome: path.join(teamaiHome, 'projects', 'current') }),
+      teamConfig: makeTeamConfig(),
+    });
+
+    await uninstall({ force: true });
+
+    expect(await fse.pathExists(accepted)).toBe(true);
   });
 
   // A workspace-scope uninstall used to see no kept projects at all, because that
@@ -4218,6 +4264,71 @@ describe('uninstall', () => {
     // The checkout's settings file held nothing but this workspace's hook, so it
     // goes with it (#1808).
     expect(await fse.pathExists(checkoutSettings)).toBe(false);
+  });
+
+  describe('a team tool instance in a workspace', () => {
+    const ACME_CLAUDE = 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude }\n';
+
+    /** A workspace whose team repo adds acme-claude, set up as init leaves it: its rules and agents folders made before anything is in them. */
+    async function setupInstance(): Promise<{ projectRoot: string; folder: string }> {
+      const { homeDir, repoPath } = await setupFixture(tmpDir);
+      vi.stubEnv('HOME', homeDir);
+      vi.stubEnv('SHELL', '/bin/zsh');
+      const projectRoot = path.join(tmpDir, 'workspace');
+      const folder = path.join(projectRoot, '.acme-claude');
+      await fse.outputFile(path.join(repoPath, 'teamai.yaml'), YAML.stringify(makeTeamConfig()));
+      await fse.outputFile(path.join(repoPath, 'tools', 'acme-claude.yaml'), ACME_CLAUDE);
+      for (const dir of ['agents', 'rules']) await fse.ensureDir(path.join(folder, dir));
+      const localConfig = makeLocalConfig(projectRoot, repoPath, { scope: 'project', projectRoot, enabledAgents: ['claude', 'acme-claude'] });
+      const { loadTeamConfig } = await import('../config.js');
+      mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: await loadTeamConfig(repoPath) });
+
+      return { projectRoot, folder };
+    }
+
+    it('removes the folders it set up for the instance once nothing is in them', async () => {
+      const { folder } = await setupInstance();
+
+      await uninstall({ force: true });
+
+      expect([await fse.pathExists(path.join(folder, 'agents')), await fse.pathExists(path.join(folder, 'rules'))]).toEqual([false, false]);
+    });
+
+    it('removes the instance\'s home folder in the workspace when nothing of the member\'s is in it, and keeps it with what is', async () => {
+      const { folder } = await setupInstance();
+
+      await uninstall({ force: true });
+
+      expect(await fse.pathExists(folder)).toBe(false);
+
+      const kept = await setupInstance();
+      await fse.outputFile(path.join(kept.folder, 'notes.md'), 'mine\n');
+
+      await uninstall({ force: true });
+
+      expect(await fse.readdir(kept.folder)).toEqual(['notes.md']);
+    });
+
+    it.each([
+      { instance: 'with no home of its own, which takes the paths of the tool it extends', file: 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\n', root: '.claude' },
+      { instance: 'whose project MCP file is in the root of the tool it extends', file: 'schemaVersion: v1alpha1\nname: acme-cursor\nextends: cursor\nhome: { dir: .acme-cursor }\n', root: '.cursor' },
+    ])('keeps the shipped tool\'s folders an instance $instance shares', async ({ file, root }) => {
+      const { homeDir, repoPath } = await setupFixture(tmpDir);
+      vi.stubEnv('HOME', homeDir);
+      vi.stubEnv('SHELL', '/bin/zsh');
+      const projectRoot = path.join(tmpDir, 'workspace');
+      const name = /name: (\S+)/.exec(file)?.[1] ?? '';
+      await fse.outputFile(path.join(repoPath, 'teamai.yaml'), YAML.stringify(makeTeamConfig()));
+      await fse.outputFile(path.join(repoPath, 'tools', `${name}.yaml`), file);
+      await fse.ensureDir(path.join(projectRoot, root));
+      const localConfig = makeLocalConfig(projectRoot, repoPath, { scope: 'project', projectRoot, enabledAgents: [name] });
+      const { loadTeamConfig } = await import('../config.js');
+      mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: await loadTeamConfig(repoPath) });
+
+      await uninstall({ force: true });
+
+      expect(await fse.pathExists(path.join(projectRoot, root))).toBe(true);
+    });
   });
 
   describe('with two workspaces and no user scope', () => {

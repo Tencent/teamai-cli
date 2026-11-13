@@ -56,13 +56,13 @@ import { markerFolderOf, RESOURCE_LAYOUTS, Resources } from './resources/resolve
 import { isNamespaceDir, resolveResourceNamespaces } from './resource-namespaces.js';
 import { loadRoleAssignmentsIfPresent } from './role-assignments.js';
 import { listRoleIds, loadRolesManifestIfPresent, type RolesManifest } from './roles.js';
-import { AGENT_TOOLS } from './tools.js';
+import { AGENT_TOOLS } from './tool-registry.js';
 import { LocalConfigSchema, type GlobalOptions, type LocalConfig, type ResourceItem, type TeamaiConfig } from './types.js';
 import { splitFrontmatter, type FrontmatterValue } from './utils/frontmatter.js';
 import { isIgnored, listDirs, listFilesRecursive, readFileIfExists, writeFile, ensureDir } from './utils/fs.js';
 import { getFileContentAtRev, getHeadCommit, getMergeBase, listTreeAtRev } from './utils/git.js';
 import { isSilent, log, setSilent } from './utils/logger.js';
-import { redact } from './utils/redact.js';
+import { redact } from '@teamai/shared/redact';
 import { syncTeamDefinitions } from './benchmark/suite-cache.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './workflow/cache.js';
 import { formatDiagnostic, INVOKE_ALIAS_SINCE, parseWorkflow, STEP_ROLE_SINCE } from './workflow/parse.js';

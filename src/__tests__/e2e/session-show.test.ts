@@ -8,8 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { encodeCwdClaude } from '../../session-flow/fs.js';
-import { findSqlite3 } from '../../session-flow/sqlite.js';
+import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
+import { findSqlite3 } from '@teamai/tool-core/sessions/sqlite';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const CLI = path.join(ROOT, 'dist', 'index.js');

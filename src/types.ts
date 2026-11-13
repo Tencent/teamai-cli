@@ -1,32 +1,21 @@
 import { z } from 'zod';
+import type { TokenSnapshotScope, TokenUsage } from '@teamai/tool-core/tokens';
+import { isJsonObject, type JsonObject } from '@teamai/shared/json';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { getUserHome, expandHome } from './utils/home.js';
 import { log } from './utils/logger.js';
 import { parseYaml } from './utils/yaml.js';
-import { channelsOf, type ToolId } from './tools.js';
+import { type ToolId } from './tools.js';
+import { channelsOf } from './tool-registry.js';
 import type { WorkspaceChildren } from './workspace-children.js';
 import type { HeadState } from './utils/git.js';
 import type { RunMode } from './launch-context.js';
 import type { OutcomeKind, SessionUsage, WorkOutcome } from './outcomes.js';
 import { AllowSchema } from './workflow/requirements.js';
 
-/** Any value JSON (or YAML read as JSON) can hold: what arbitrary parsed input is before a domain schema narrows it. */
-export const JsonValueSchema = z.json();
-
-export type JsonValue = z.infer<typeof JsonValueSchema>;
-
-/** A JSON object: a document, or a mapping inside one. */
-export type JsonObject = { [key: string]: JsonValue };
-
-/** A JSON object, parsed: a copy that leaves out `__proto__` keys, so check a file that is written back without it. */
-export const JsonObjectSchema = z.record(z.string(), JsonValueSchema) satisfies z.ZodType<JsonObject>;
-
-/** Whether a JSON value is an object, not an array, a primitive or null: JSON and YAML parse every object as an Object instance. */
-export function isJsonObject(value: unknown): value is JsonObject {
-  return value instanceof Object && !Array.isArray(value);
-}
+export { isJsonObject, JsonObjectSchema, JsonValueSchema, type JsonObject, type JsonValue } from '@teamai/shared/json';
 
 const COPILOT_USER_MCP_CONFIG = 'mcp-config.json';
 const COPILOT_PROJECT_MCP_CONFIG = '.github/mcp.json';
@@ -1948,6 +1937,14 @@ export function getTeamaiHomeDir(): string {
   return path.join(getUserHome(), '.teamai');
 }
 
+/**
+ * `~/.teamai/trust`: the member's answers to running a team tool instance's command, which every install on the machine
+ * reads, so only the last uninstall removes it. Evaluated at call time.
+ */
+export function getTrustDir(): string {
+  return path.join(getTeamaiHomeDir(), 'trust');
+}
+
 /** User-scope global config path, `~/.teamai/config.yaml`. Evaluated at call time. */
 export function getUserConfigPath(): string {
   return path.join(getTeamaiHomeDir(), 'config.yaml');
@@ -2199,48 +2196,6 @@ export interface UserInterventionStats {
 //      ▼
 //  SSE → browser (session cards with status lights)
 //
-
-/**
- * Token usage breakdown for a session/user. Claude Code and CodeBuddy usage is
- * summed per request. Codex uses a thread-level cumulative snapshot when available;
- * legacy rollout-scoped snapshots are summed once per transcript. All fields are
- * cumulative token counts; tools without token records leave these at zero.
- */
-export interface TokenUsage {
-  /** Sum of usage.input_tokens. */
-  input: number;
-  /** Sum of usage.output_tokens. */
-  output: number;
-  /** Sum of usage.cache_read_input_tokens. */
-  cacheRead: number;
-  /** Sum of usage.cache_creation_input_tokens. */
-  cacheCreation: number;
-}
-
-/** Scope of a cumulative token snapshot captured from an agent transcript. */
-export type TokenSnapshotScope = 'session' | 'transcript';
-
-/** A fresh zeroed TokenUsage. */
-export function emptyTokenUsage(): TokenUsage {
-  return { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
-}
-
-/** Grand total of all token buckets (input + output + cache read + cache creation). */
-export function totalTokens(t: TokenUsage | undefined): number {
-  if (!t) return 0;
-
-  return t.input + t.output + t.cacheRead + t.cacheCreation;
-}
-
-/** Add two TokenUsage values field-by-field (does not mutate inputs). */
-export function addTokenUsage(a: TokenUsage | undefined, b: TokenUsage | undefined): TokenUsage {
-  return {
-    input: (a?.input ?? 0) + (b?.input ?? 0),
-    output: (a?.output ?? 0) + (b?.output ?? 0),
-    cacheRead: (a?.cacheRead ?? 0) + (b?.cacheRead ?? 0),
-    cacheCreation: (a?.cacheCreation ?? 0) + (b?.cacheCreation ?? 0),
-  };
-}
 
 /**
  * Per-session rolled-up metrics, derived from the dashboard event log.
@@ -2496,8 +2451,6 @@ export const CORRECTION_KEYWORDS = [
   '違う', 'ちがう', 'そうじゃな', 'そうではな', 'やり直', 'やりなおし', '間違って', '間違え', '勝手に', '戻して',
 ];
 
-/** Max bytes to scan from a transcript when counting interventions (guards huge files). */
-export const INTERVENTION_SCAN_MAX_BYTES = 50 * 1024 * 1024;
 
 /** Marker that prefixes a user-interrupt entry in the Claude Code transcript. */
 export const TRANSCRIPT_INTERRUPT_PREFIX = '[Request interrupted by user';
@@ -3222,7 +3175,7 @@ export function detectToolRoot(tool: string, env: NodeJS.ProcessEnv = process.en
  * `CURSOR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/cursor`, else `~/.cursor`. Only
  * the variable can be recorded in `toolRoots` — `XDG_CONFIG_HOME` names a parent
  * directory, and `~/.config` itself is refused as a root — so the fallback is
- * read here, where the write happens, exactly as `session-flow/ide-history.ts`
+ * read here, where the write happens, exactly as `@teamai/tool-codebuddy`'s `ide-history.ts`
  * reads it for the Cursor IDE.
  */
 export function cursorConfigDir(toolRoots?: Record<string, string>): string {
@@ -3323,7 +3276,7 @@ export function toolGateRoot(
 }
 
 /** Path fields of ToolPathsSchema that live under the tool's own user root. */
-const TOOL_ROOT_FIELDS = ['skills', 'rules', 'settings', 'hooks', 'claudemd', 'agents', 'mcp'] as const;
+export const TOOL_ROOT_FIELDS = ['skills', 'rules', 'settings', 'hooks', 'claudemd', 'agents', 'mcp'] as const;
 
 /** `userScope` path fields, which carry the same resources at a user-scope root. */
 const USER_SCOPE_ROOT_FIELDS = ['skills', 'rules', 'agents', 'hooks', 'claudemd'] as const;
@@ -3449,30 +3402,32 @@ export function applyToolRoots(
     const newRoot = toolRootSegment(tool, configured, at);
 
     if (!newRoot) continue;
-    // Every root the tool's paths hang off, not just the first one: a team that
-    // customized `toolPaths.claude` field by field may have spread them over
-    // several. A bare file name (`.claude.json`) is not under a root.
-    const oldRoots = new Set<string>();
-
-    for (const field of TOOL_ROOT_FIELDS) {
-      const value = paths[field];
-
-      if (value?.includes('/')) oldRoots.add(toolInstallRoot(value));
-    }
-
-    for (const field of USER_SCOPE_ROOT_FIELDS) {
-      const value = paths.userScope?.[field];
-
-      if (value?.includes('/')) oldRoots.add(toolInstallRoot(value));
-    }
-
     // Not skipped when the root is unchanged: a bare file name (the MCP
     // companion) still moves inside it (see relocateToolPaths).
     out ??= { ...toolPaths };
-    out[tool] = relocateToolPaths(paths, oldRoots, newRoot);
+    out[tool] = rerootToolPaths(paths, newRoot);
   }
 
   return out ?? toolPaths;
+}
+
+/**
+ * Every root a tool's `paths` hang off, user-scope ones included, not just the first one: a team that customized
+ * `toolPaths.claude` field by field may have spread them over several. A bare file name (`.claude.json`) is not under a root.
+ */
+export function toolPathRoots(paths: z.infer<typeof ToolPathsSchema>): Set<string> {
+  const roots = new Set<string>();
+
+  for (const value of [...TOOL_ROOT_FIELDS.map((field) => paths[field]), ...USER_SCOPE_ROOT_FIELDS.map((field) => paths.userScope?.[field])]) {
+    if (value?.includes('/')) roots.add(toolInstallRoot(value));
+  }
+
+  return roots;
+}
+
+/** `paths` with every root they hang off moved to `newRoot`, and a bare file name moved inside it (`relocateToolPaths`). */
+export function rerootToolPaths(paths: z.infer<typeof ToolPathsSchema>, newRoot: string): z.infer<typeof ToolPathsSchema> {
+  return relocateToolPaths(paths, toolPathRoots(paths), newRoot);
 }
 
 /**

@@ -1,6 +1,6 @@
 /** Before a run: what describe asks the person, and whether a start carries every answer it needs. */
 import { isLaunchTool, LAUNCH_ORDER, type LaunchTool } from '../../../tool-launch/tools.js';
-import { TOOLS } from '../../../tools.js';
+import { TOOL_ORDER } from '../../../tool-registry.js';
 import type { LocalConfig } from '../../../types.js';
 import type { ToolId } from '../../../tools.js';
 import type { GateGuards, WorkflowDescription } from '../../describe.js';
@@ -408,7 +408,7 @@ export function askFor(verdict: DescribeVerdict, description: WorkflowDescriptio
 
     case 'tool':
       return {
-        kind: 'tool', reason: 'This coding session names no tool, which the run needs for the models of its steps or its judging.', describe: describeLiteral(invocation, name, { tool: '{tool}' }), tools: Object.keys(TOOLS),
+        kind: 'tool', reason: 'This coding session names no tool, which the run needs for the models of its steps or its judging.', describe: describeLiteral(invocation, name, { tool: '{tool}' }), tools: [...TOOL_ORDER],
       };
     case 'local':
     case 'denied':

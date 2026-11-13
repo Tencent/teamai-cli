@@ -20,7 +20,7 @@ import { TeamaiConfigSchema } from '../types.js';
 import type { LocalConfig } from '../types.js';
 import { resolveHookCwd } from '../utils/hook-cwd.js';
 import { deriveSessionId } from '../utils/session-id.js';
-import { AGENT_TOOLS } from '../tools.js';
+import { AGENT_TOOLS } from '../tool-registry.js';
 
 describe('Kiro support', () => {
   afterEach(() => vi.unstubAllEnvs());

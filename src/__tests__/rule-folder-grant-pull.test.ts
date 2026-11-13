@@ -29,7 +29,7 @@ vi.mock('../update.js', () => ({
   releaseLock: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     persist: vi.fn(),
     info: vi.fn(),

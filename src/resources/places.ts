@@ -1,7 +1,7 @@
 import { realpath } from 'node:fs/promises';
 import { locate, writable, writesOf, type Install } from '../locate.js';
 import { realHost, toolHome, type Host } from '../tool-home.js';
-import { isToolId, skillsFollowSession } from '../tools.js';
+import { isToolId, skillsFollowSession } from '../tool-registry.js';
 import type { State } from '../types.js';
 import { samePath } from '../utils/agent-path.js';
 import { log } from '../utils/logger.js';

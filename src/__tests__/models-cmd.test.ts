@@ -8,7 +8,7 @@ import { getLocalValuesPath, loadLocalProfiles, loadModelInputs } from '../model
 import { askQuestion, askSecret, isInteractive } from '../utils/prompt.js';
 import { log } from '../utils/logger.js';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 

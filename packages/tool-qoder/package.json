@@ -1,0 +1,10 @@
+{
+  "name": "@teamai/tool-qoder",
+  "private": true,
+  "type": "module",
+  "description": "Qoder CLI and Qoder CN: their descriptors, launch profile and session platforms; bundled into teamai-cli.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./facts": "./src/facts.ts"
+  }
+}

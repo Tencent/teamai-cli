@@ -25,7 +25,7 @@ vi.mock('../utils/git.js', () => ({
   resolveAnchors: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     persist: vi.fn(),
     info: vi.fn(),

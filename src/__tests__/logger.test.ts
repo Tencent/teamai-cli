@@ -11,7 +11,7 @@ vi.mock('chalk', () => ({
 }));
 
 import { log, setVerbose, setSilent, setStderrOnly } from '../utils/logger.js';
-import { _setLogFilePath, _resetState } from '../utils/debug-log.js';
+import { _setLogFilePath, _resetState } from '@teamai/shared/debug-log';
 
 let tmpDir: string;
 let logFile: string;

@@ -1,0 +1,10 @@
+{
+  "name": "@teamai/tool-copilot",
+  "private": true,
+  "type": "module",
+  "description": "GitHub Copilot CLI: its descriptor, launch profile and session adapter; bundled into teamai-cli.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./facts": "./src/facts.ts"
+  }
+}

@@ -129,7 +129,7 @@ pull 之前                            pull 之后
 
 **Q: `teamai.yaml` 里的 `toolPaths` 条目——没有写到的键会怎样？**
 
-该条目会整体替换此工具的默认值：没写的键*消失*，不会被继承。只自定义 `skills` 而省略 `settings` 的条目会让该工具没有 settings 文件，hook 对账会静默跳过它；省略 `skills` 或 `rules` 则是有意停用对应投递。`teamai doctor` 会点名自定义条目丢掉的、默认表提供的每一个键，以及补回用的值。
+该条目会整体替换此工具的默认值：没写的键*消失*，不会被继承。只自定义 `skills` 而省略 `settings` 的条目会让该工具没有 settings 文件，hook 对账会静默跳过它；省略 `skills` 或 `rules` 则是有意停用对应投递。`teamai doctor` 会点名自定义条目丢掉的、默认表提供的每一个键，以及补回用的值。与工具同名的团队[工具实例](./reference.md#团队工具tools)（带 `paths` 的 `tools/claude.yaml`）也以同样方式替换该条目，`doctor` 会指出是哪个文件。
 
 **Q: Hooks 没有自动触发？**
 

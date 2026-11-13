@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"01a19d2e-4c1b-7e30-9b8e-3f2a0c6d5e14"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"It uses Vitest."}}
+{"type":"turn.completed","usage":{"input_tokens":11840,"cached_input_tokens":9216,"output_tokens":12}}

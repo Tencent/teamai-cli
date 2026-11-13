@@ -16,6 +16,13 @@ export function warnOnce(message: string): boolean {
   return true;
 }
 
+/** Like warnOnce, at error level: for a problem that leaves something out, such as an instance file teamai refuses. */
+export function errorOnce(message: string): void {
+  if (shown.has(message)) return;
+  shown.add(message);
+  log.error(message);
+}
+
 /** Debug lines already written in this run: see debugOnce. */
 const written = new Set<string>();
 

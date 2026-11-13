@@ -134,8 +134,7 @@ import {
 import { blockingEntries, contentHash, deliveredSkillFiles, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir } from './resources/delivered-copies.js';
 import { skillOrigin, withSkillFrontmatter } from './resources/skills.js';
 import { hookSettingsFile, installOf, locate, ownOf, writable, type FilePlace, type Install } from './locate.js';
-import { DELIVERED_MODEL_TOOLS, mcpFormatOf, mcpScopeFor } from './tools.js';
-import type { DeliveredModelTool } from './tools.js';
+import { DELIVERED_MODEL_TOOLS, mcpFormatOf, mcpScopeFor, type DeliveredModelTool } from './tool-registry.js';
 import { acquireLock, releaseLock } from './update.js';
 import { isJsonObject, JsonObjectSchema, type JsonObject } from './types.js';
 import { editJsonText, parseJson, parseJsonAs } from './utils/json.js';

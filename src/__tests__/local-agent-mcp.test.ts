@@ -24,12 +24,12 @@ import {
   writeJsonDoc,
 } from '../mcp-reconcile.js';
 import type { McpTarget } from '../mcp-reconcile.js';
-import { mcpFormatOf } from '../tools.js';
+import { mcpFormatOf } from '../tool-registry.js';
 import { DEFAULT_TOOL_PATHS, TeamaiConfigSchema as TeamConfigSchema } from '../types.js';
 import type { LocalConfig, McpServerDef, TeamaiConfig } from '../types.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),

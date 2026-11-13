@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { scrubSession, titleSpellsLocalPath } from '../session-flow/scrub.js';
-import type { Session } from '../session-flow/ir.js';
+import type { Session } from '@teamai/tool-core/sessions/ir';
 
 function makeSession(): Session {
   return {

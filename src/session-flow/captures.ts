@@ -9,6 +9,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { AgentObservationSchema, CommitStateSchema, observeCheckout, sameHarness, settleObservation, type AgentObservation, type ToolLaunch } from '../agent-observation.js';
 import { getAgentVersion } from '../agent-version.js';
+import { DefaultFolders } from '../default-folders.js';
 import { agreedRunMode, launchedBy, resolveRunMode, RunModeSchema, type RunMode } from '../launch-context.js';
 import type { CheckoutRecord } from '../pull.js';
 import { DeliveredSkillInfoSchema, deliveredTeamSkills, type DeliveredSkillInfo } from '../skill-use.js';
@@ -16,9 +17,9 @@ import { getDataHome, type DeliverySelection, type LocalConfig } from '../types.
 import { acquireLock, releaseLock } from '../update.js';
 import { getHeadState, type HeadState } from '../utils/git.js';
 import { log } from '../utils/logger.js';
-import { AgentSession } from './agent-session.js';
-import { OptionalString } from './fs.js';
-import type { Session } from './ir.js';
+import { platformForTool, toolForPlatform } from '../tool-registry.js';
+import { OptionalString } from '@teamai/tool-core/sessions/fs';
+import type { Session } from '@teamai/tool-core/sessions/ir';
 import type { SessionSyncMeta } from './sync.js';
 import type { HookStdin } from '../hook-dispatch.js';
 
@@ -47,6 +48,17 @@ export type SessionCapture = z.infer<typeof SessionCaptureSchema>;
 
 /** The hook payload field the foreground dispatcher hands the background pass the capture it wrote in. */
 export const CAPTURE_PAYLOAD_KEY = 'teamai_capture';
+
+/**
+ * How long nothing happens in an attended session before it is finished, and judge work: the `idle` of
+ * teamai-finished-sessions's params.yaml in `config`.
+ */
+async function finishedAfter(config: LocalConfig): Promise<{ text: string; ms: number }> {
+  return (await DefaultFolders.load({ kind: 'workflows', name: 'teamai-finished-sessions' }, config)).params.idle;
+}
+
+/** Nothing happened in an attended session for this long: it is finished, and judge work. */
+export const FINISHED_AFTER_MS = 6 * 60 * 60 * 1000;
 
 const SEGMENT = /^(?!\.{1,2}$)[A-Za-z0-9._-]{1,200}$/;
 
@@ -102,7 +114,7 @@ async function writeCapture(config: LocalConfig, capture: SessionCapture): Promi
  * that fails is logged at debug level, so it never fails the hook.
  */
 async function atStart(config: LocalConfig, tool: string, payload: HookStdin, env: NodeJS.ProcessEnv): Promise<string | undefined> {
-  const platform = AgentSession.platformForTool(tool);
+  const platform = platformForTool(tool);
 
   if (launchedBy(env) || payload.source === 'compact') return undefined;
   const fields = StartPayloadSchema.safeParse(payload);
@@ -168,7 +180,7 @@ async function headWithin(cwd: string, ms: number): Promise<HeadState | null> {
  * as it was. Written to a file of its own, then renamed, so a reader never sees half of it.
  */
 async function atStop(config: LocalConfig, tool: string, payload: HookStdin): Promise<void> {
-  const platform = AgentSession.platformForTool(tool);
+  const platform = platformForTool(tool);
   const fields = StopPayloadSchema.safeParse(payload);
 
   if (!platform || !fields.success) return;
@@ -253,7 +265,7 @@ async function rewrite(config: LocalConfig, platform: string, sessionId: string,
 
 /** In the hook's background pass: adds the tool's version, which the start leaves out so it never waits on it. */
 async function addToolVersion(config: LocalConfig, tool: string, payload: HookStdin): Promise<void> {
-  const platform = AgentSession.platformForTool(tool);
+  const platform = platformForTool(tool);
   const fields = ToolVersionPayloadSchema.safeParse(payload);
 
   if (!platform || !fields.success) return;
@@ -313,7 +325,7 @@ function withTeamSkillInfo(capture: SessionCapture, pulled: Record<string, Deliv
  * held `before` it.
  */
 async function markTeamChanged(config: LocalConfig, tool: string, payload: HookStdin, before: CheckoutDelivery): Promise<void> {
-  const platform = AgentSession.platformForTool(tool);
+  const platform = platformForTool(tool);
   const fields = PulledPayloadSchema.safeParse(payload);
 
   if (!platform || !fields.success) return;
@@ -482,7 +494,7 @@ function reportedModelOf(session: Session): string | undefined {
  */
 async function archivedFacts(platform: string, session: Session, fallback: LocalConfig | undefined): Promise<Pick<SessionSyncMeta, 'agent' | 'commits'>> {
   const { resolveHookConfig } = await import('../dashboard-collector.js');
-  const scope = session.cwd ? await resolveHookConfig({ cwd: session.cwd, session_id: session.sessionId }, AgentSession.toolForPlatform(platform)) : null;
+  const scope = session.cwd ? await resolveHookConfig({ cwd: session.cwd, session_id: session.sessionId }, toolForPlatform(platform)) : null;
   const config = scope ?? fallback;
 
   if (!config) return {};
@@ -508,4 +520,4 @@ function runModeOf(captures: readonly SessionCapture[]): RunMode | undefined {
   return agreedRunMode(captures.map((capture) => capture.runMode));
 }
 
-export const SessionCaptures = { atStart, atStop, addToolVersion, checkoutDelivery, markTeamChanged, read, list, markDrained, platformsOf, agentOf, archivedFacts, reportedModelOf, runModeOf, sweep } as const;
+export const SessionCaptures = { finishedAfter, atStart, atStop, addToolVersion, checkoutDelivery, markTeamChanged, read, list, markDrained, platformsOf, agentOf, archivedFacts, reportedModelOf, runModeOf, sweep } as const;

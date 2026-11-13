@@ -13,7 +13,7 @@ import { isModelAlias, loadModelAliases, noModelCause, noModelReason, resolveMod
 import {
   agentFileExtensionForTool, reverseByTool, toolExtrasFor, type AgentSpec, type ToolName,
 } from '../resources/agent-format.js';
-import { isAgentToolId } from '../tools.js';
+import { isAgentToolId } from '../tool-registry.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 import { isLaunchTool, launchAdapterIdOf } from '../tool-launch/tools.js';
 import { readFileSafe } from '../utils/fs.js';

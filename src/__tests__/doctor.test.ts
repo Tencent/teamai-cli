@@ -38,7 +38,7 @@ vi.mock('../utils/fs.js', async (importOriginal) => ({
     symlinkTarget: vi.fn(async (p: string) => p),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
     log: {
         info: vi.fn(),
         success: vi.fn(),

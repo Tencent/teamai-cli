@@ -9,7 +9,7 @@ import { log } from '../utils/logger.js';
 import { CallError, memberTools, type MemberTool } from './member-tools.js';
 import { runTool } from './run.js';
 import type { TokenUsage } from './stdout.js';
-import { executableOf, LAUNCH_ORDER, launchAdapterOf, type LaunchOrderTool } from './tools.js';
+import { executableOf, LAUNCH_ORDER, launchAdapterIdOf, launchAdapterOf, type LaunchOrderTool } from './tools.js';
 import { agyGatewayEnv } from '../models/agy-gateway.js';
 
 const DEFAULT_TIMEOUT_MS = 600_000;
@@ -132,7 +132,9 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
         const promptFile = path.join(scratch, 'prompt.md');
 
         if (call.prompt === 'file') await fs.writeFile(promptFile, prompt);
-        const args = call.args({ prompt, promptFile, lastMessageFile });
+        // The OpenCode major on PATH decides how an effort is passed; its module loads only for an OpenCode call.
+        const opencodeMajor = launchAdapterIdOf(tool) === 'opencode' ? await (await import('../opencode-hooks.js')).opencodeMajorVersion(executable) : 1;
+        const args = call.args({ prompt, promptFile, lastMessageFile, opencodeMajor });
         const run = await runTool({ executable, args, cwd, env: callEnv(launchedBy, tool), stdin: call.prompt !== 'stdin' ? '' : 'stdinOf' in call ? call.stdinOf(prompt) : prompt, timeoutMs: timeout, detached: false, signal });
 
         if (run.timedOut) throw new CallError('call_failed', `AI call timed out after ${Math.round(timeout / 1000)}s (tool: ${tool})`);

@@ -3,7 +3,6 @@ import { hookToolPathsForConfig } from './types.js';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { detectProjectConfig, loadLocalConfig, loadTeamConfig, ownMemberSettings } from './config.js';
-import { AgentSession } from './session-flow/agent-session.js';
 import { SessionPolicy, type SessionPolicy as Policy } from './session-flow/session-policy.js';
 import { explainRunMode, RUN_MODES, type ExplainedRunMode } from './launch-context.js';
 import { scoringUnavailable } from './scorers/home.js';
@@ -41,7 +40,7 @@ import {
 import { hookSettingsFile, installOf, isInstalledFor, locate, ownOf, writable, type Gate, type Install } from './locate.js';
 import { samePlace } from './resources/places.js';
 import { describeInvalidToolHomes, envToolHome, ompProfile, realHost, reloadToolHomes, toolHomesPath } from './tool-home.js';
-import { hookFormatOf, hookSyntaxOf, isToolId } from './tools.js';
+import { hookFormatOf, hookSyntaxOf, isToolId, toolsWithoutSessions } from './tool-registry.js';
 import { isCodexTool } from './utils/tool-names.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder, keptTeamHookEntries, readCodexHookTrustForScope, readHookFile, releaseRemovedCheckoutHooks } from './hooks.js';
 import { codexBuildSkewMessage } from './codex-trust.js';
@@ -696,7 +695,7 @@ async function machineUnreadKeyNotes(): Promise<string[]> {
  * (#1385): such a tool's sessions are never captured, so they are neither published nor judged.
  */
 async function unreadSessionToolNotes({ localConfig, teamConfig, toolPaths }: DoctorContext): Promise<string[]> {
-  const tools = AgentSession.toolsWithoutSessions(Object.keys(toolPaths));
+  const tools = toolsWithoutSessions(Object.keys(toolPaths));
 
   if (tools.length === 0) return [];
   const publish = SessionPolicy.publish(localConfig, teamConfig).policies;

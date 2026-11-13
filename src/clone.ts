@@ -8,7 +8,7 @@ import { getGitLabToken } from './providers/gitlab/gitlab-api.js';
 import { getGitCodeToken } from './providers/gitcode/gitcode-api.js';
 import { tgitGitCloneUrl } from './providers/tgit/rest-auth.js';
 import { log } from './utils/logger.js';
-import { sanitizeGitUrl } from './utils/redact.js';
+import { sanitizeGitUrl } from '@teamai/shared/redact';
 import { assertSafeRepoCachePath } from './utils/repo-cache.js';
 
 // ─── Types ──────────────────────────────────────────────

@@ -5,7 +5,8 @@ import { getsRulesFromExtension } from './resources/rule-format.js';
 import { pathExists, readFileSafe, readJsonObject, remove, writeFile } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
-import { channelsOf, TOOLS, type BlocksHeader, type ChannelProbe, type RunTime } from './tools.js';
+import { type BlocksHeader, type ChannelProbe, type RunTime } from '@teamai/tool-core/definition';
+import { channelsOf, TOOL_ORDER } from './tool-registry.js';
 import { hookAdapterDir, installOf, locate, ownOf, writable, type FilePlace, type Gate, type Install } from './locate.js';
 import {
   opencodeContextReference, opencodeV1ClaudeFile, readOpencodeInstructionList, reconcileOpencodeInstructions,
@@ -428,7 +429,7 @@ export async function resolveInstructionTargets(
   const hooks: InstructionHook[] = [];
 
   // A tool the team does not map still names the files earlier releases wrote its blocks to.
-  for (const tool of new Set([...Object.keys(TOOLS), ...Object.keys(install.toolPaths)])) {
+  for (const tool of new Set([...TOOL_ORDER, ...Object.keys(install.toolPaths)])) {
     const location = await locate(tool, 'blocks', install);
 
     // A retired file is cleaned as the member's: one git tracks stays, emptied.

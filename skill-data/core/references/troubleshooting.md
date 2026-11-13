@@ -279,6 +279,10 @@ copy the member changed stays, named in its own line.
   installed for it before stays, in the place the workspace's rules give it. Tell the user to make the two copies equal in the team repo or
   rename one. Each repo still receives its own copy.
 
+## `tool_not_accepted`: a team tool's command did not run
+
+The step's tool is a team instance (`tools/<name>.yaml` in the team repo) that sets `command`, and no one accepted that file on this machine. An agent cannot accept it: tell the person to run the same `teamai workflow start …` once in their own terminal, read the file it names, and answer `y`. An edit to the file asks again.
+
 ## Permission / access denied
 
 `init`, `pull`, or `push` failing with a permission error usually means the user

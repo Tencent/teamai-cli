@@ -9,7 +9,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { readFileSafe } from '../../../utils/fs.js';
-import { redactJson } from '../../../utils/redact.js';
+import { redactJson } from '@teamai/shared/redact';
 import { AttemptIdSchema, skillStatePath, type RunId } from '../../store.js';
 import type { SkillCall, SkillContext } from './skill-driver.js';
 import { readSkillState } from './skill-state.js';

@@ -12,17 +12,17 @@ import { observedEffort, observedModel, type ObservedEffort, type ObservedModel 
 import { LAUNCHED_BY_ENV, resolveRunMode, RUN_MODE_ENV } from '../launch-context.js';
 import { opencodeMajorVersion } from '../opencode-hooks.js';
 import { movedToolHome, realHost, toolHome } from '../tool-home.js';
-import { isToolId, mcpSyntaxOf } from '../tools.js';
+import { isToolId, mcpSyntaxOf } from '../tool-registry.js';
 import { parseJsonAs } from '../utils/json.js';
 import { resolveCliPath } from '../utils/cli-path.js';
 import { execCommand, probeBinary } from '../utils/exec.js';
 import { agyGatewayEnv } from '../models/agy-gateway.js';
 import { JsonValueSchema, type JsonValue } from '../types.js';
-import type { ConfinedLevel, ConfinedAccess, ConfinedUsage } from './confined-level.js';
-import { LAUNCH_ADAPTERS, type CallLaunch, type ConfinedLaunch } from './adapters.js';
+import type { ConfinedLevel, ConfinedUsage } from './confined-level.js';
+import type { CallLaunch, ConfinedAccess, ConfinedLaunch } from '@teamai/tool-core/launch';
 import { runTool, type ToolRun } from './run.js';
 import { toolStdout, type TokenUsage } from './stdout.js';
-import { CONFINED_TOOLS, executableOf, launchAdapterIdOf, opencodeModelArgs, type ConfinedTool } from './tools.js';
+import { CONFINED_TOOLS, executableOf, launchAdapterIdOf, launchAdapterOf, opencodeModelArgs, type ConfinedTool } from './tools.js';
 
 /** A JSON line a tool prints; a field of the wrong type reads as absent. */
 const RecordSchema = z.looseObject({
@@ -52,7 +52,7 @@ export function installedConfinedTools(preferred: readonly string[], { resolveTo
 }
 
 function profileOf(tool: ConfinedTool): ConfinedLaunch {
-  return LAUNCH_ADAPTERS[launchAdapterIdOf(tool)].confined;
+  return launchAdapterOf(tool).confined;
 }
 
 /** What `tool`, run confined, can do beyond answering, by its adapter's profile. */
@@ -334,14 +334,14 @@ interface Spend {
   usage?: ConfinedUsage;
 }
 
-function tokensOf(family: ReturnType<typeof launchAdapterIdOf<ConfinedTool>>, stdout: string): TokenUsage | undefined {
-  const reading = LAUNCH_ADAPTERS[family].call.read({ stdout, lastMessage: undefined });
+function tokensOf(tool: ConfinedTool, stdout: string): TokenUsage | undefined {
+  const reading = launchAdapterOf(tool).call.read({ stdout, lastMessage: undefined });
 
-  return toolStdout(family, stdout)?.tokens ?? (reading.ok ? reading.tokens : undefined);
+  return toolStdout(launchAdapterIdOf(tool), stdout)?.tokens ?? (reading.ok ? reading.tokens : undefined);
 }
 
-function spendOf(family: ReturnType<typeof launchAdapterIdOf<ConfinedTool>>, stdout: string): Spend {
-  const tokens = tokensOf(family, stdout);
+function spendOf(tool: ConfinedTool, stdout: string): Spend {
+  const tokens = tokensOf(tool, stdout);
   const cost = records(stdout).findLast((record) => record.total_cost_usd !== undefined)?.total_cost_usd;
 
   if (!tokens && cost === undefined) return {};
@@ -472,8 +472,8 @@ async function resultRecordReply(stdout: string): Promise<JsonValue | undefined>
   return last?.structured_output ?? parseReply(last?.result ?? '');
 }
 
-async function adapterReply(family: 'pi' | 'agy', stdout: string): Promise<JsonValue | undefined> {
-  const reading = LAUNCH_ADAPTERS[family].call.read({ stdout, lastMessage: undefined });
+async function adapterReply(tool: ConfinedTool, stdout: string): Promise<JsonValue | undefined> {
+  const reading = launchAdapterOf(tool).call.read({ stdout, lastMessage: undefined });
 
   return reading.ok ? parseReply(reading.text) : undefined;
 }
@@ -492,9 +492,9 @@ const REPLIES = {
 
     return parsed.success ? [parsed.data.part.text] : [];
   }).join('\n')),
-  pi: async (stdout) => adapterReply('pi', stdout),
-  agy: async (stdout) => adapterReply('agy', stdout),
-} satisfies { [F in Family]: (stdout: string, tmp: string) => Promise<JsonValue | undefined> };
+  pi: async (stdout, _tmp, tool) => adapterReply(tool, stdout),
+  agy: async (stdout, _tmp, tool) => adapterReply(tool, stdout),
+} satisfies { [F in Family]: (stdout: string, tmp: string, tool: ConfinedTool) => Promise<JsonValue | undefined> };
 
 /** The level `context`'s tool reaches here, or why it does not reach `context.input.level`. */
 async function levelReached({ input, executable, dir, cwd, env, tmp }: LaunchContext): Promise<{ ok: true; isolation: ConfinedLevel } | ConfinedFailure> {
@@ -510,8 +510,9 @@ async function levelReached({ input, executable, dir, cwd, env, tmp }: LaunchCon
 }
 
 /** The error the tool reported, or '' when it reported none. */
-function reportedError(family: Family, run: ToolRun): string {
-  const reading = LAUNCH_ADAPTERS[family].call.read({ stdout: run.stdout, lastMessage: undefined });
+function reportedError(tool: ConfinedTool, run: ToolRun): string {
+  const family = launchAdapterIdOf(tool);
+  const reading = launchAdapterOf(tool).call.read({ stdout: run.stdout, lastMessage: undefined });
 
   if (!reading.ok && reading.message) return reading.message;
 
@@ -531,18 +532,18 @@ function ranOn(input: ConfinedInput, launch: Launch, run: ToolRun, isolation: Co
 async function outcomeOf({ input, tmp }: LaunchContext, launch: Launch, run: ToolRun, isolation: ConfinedLevel): Promise<ConfinedResult> {
   const family = launchAdapterIdOf(input.tool);
   const raw = rawOf(run);
-  const spent = spendOf(family, run.stdout);
+  const spent = spendOf(input.tool, run.stdout);
   const failure = await launch.failureOf?.(run, spent);
 
   if (failure) return failure;
-  const reported = reportedError(family, run);
+  const reported = reportedError(input.tool, run);
 
   const toolError: ConfinedFailure | undefined = reported
     ? { ok: false, code: 'confined_failed', message: `${input.tool} reported an error: ${reported.replace(/\.?$/, '.')} Fix that, then retry or use another tool or driver.`, raw, reported, ...spent }
     : undefined;
 
   if (run.code !== 0) return toolError ?? { ok: false, code: 'confined_failed', message: `${input.tool} exited with code ${run.code}${run.timedOut ? ` after its ${input.timeoutMs} ms limit` : ''}. See the saved output, then retry or use another tool or driver.`, raw, ...spent };
-  const reply = await REPLIES[family](run.stdout, tmp);
+  const reply = await REPLIES[family](run.stdout, tmp, input.tool);
 
   // pi exits 0 on a provider error, which its reply carries.
   if (reply === undefined) return toolError ?? { ok: false, code: 'confined_reply_invalid', message: `${input.tool} did not reply with JSON. See the saved output, then retry.`, raw, ...spent };
@@ -570,7 +571,7 @@ export async function runConfined(input: ConfinedInput, { resolveTool = resolveC
 
     if (!level.ok) return level;
     const launch = await LAUNCHES[family](context);
-    const { stdinOf }: CallLaunch = LAUNCH_ADAPTERS[family].call;
+    const { stdinOf }: CallLaunch = launchAdapterOf(input.tool).call;
     const run = await runTool({ executable, args: launch.args, cwd: context.cwd, env: context.env, stdin: stdinOf ? stdinOf(launch.stdin) : launch.stdin, timeoutMs: input.timeoutMs, detached: true, group: input.group, signal: input.signal });
 
     return await outcomeOf(context, launch, run, level.isolation);

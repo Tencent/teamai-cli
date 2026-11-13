@@ -1,0 +1,9 @@
+{"timestamp":"2026-10-30T09:15:02.118Z","type":"session_meta","payload":{"id":"{{sessionId}}","session_id":"{{sessionId}}","timestamp":"2026-10-30T09:15:02.118Z","cwd":"{{cwd}}","originator":"codex_cli_rs","cli_version":"0.165.0","source":"exec","model_provider":"openai"}}
+{"timestamp":"2026-10-30T09:15:02.301Z","type":"turn_context","payload":{"turn_id":"t1","cwd":"{{cwd}}","approval_policy":"never","sandbox_policy":{"type":"read-only"},"model":"gpt-5.4","effort":"medium"}}
+{"timestamp":"2026-10-30T09:15:02.305Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+{"timestamp":"2026-10-30T09:15:02.306Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Which test runner does this repo use?"}]}}
+{"timestamp":"2026-10-30T09:15:02.306Z","type":"event_msg","payload":{"type":"user_message","message":"Which test runner does this repo use?","images":[]}}
+{"timestamp":"2026-10-30T09:15:05.912Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"It uses Vitest: package.json runs `vitest run`."}]}}
+{"timestamp":"2026-10-30T09:15:05.913Z","type":"event_msg","payload":{"type":"agent_message","message":"It uses Vitest: package.json runs `vitest run`."}}
+{"timestamp":"2026-10-30T09:15:05.990Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":12000,"cached_input_tokens":9000,"cache_write_input_tokens":0,"output_tokens":180,"reasoning_output_tokens":40,"total_tokens":12180},"last_token_usage":{"input_tokens":12000,"cached_input_tokens":9000,"cache_write_input_tokens":0,"output_tokens":180,"reasoning_output_tokens":40,"total_tokens":12180},"model_context_window":272000}}}
+{"timestamp":"2026-10-30T09:15:05.991Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","last_agent_message":"It uses Vitest: package.json runs `vitest run`."}}

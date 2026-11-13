@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import os from 'node:os';
 import fse from 'fs-extra';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),

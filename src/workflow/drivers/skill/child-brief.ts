@@ -4,7 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { LocalConfig } from '../../../types.js';
 import { readFileSafe, writeFileAtomic } from '../../../utils/fs.js';
-import { redact } from '../../../utils/redact.js';
+import { redact } from '@teamai/shared/redact';
 import { expectedOutput } from '../../output.js';
 import { attemptDir, attemptResultPath, type AttemptId, type RunId } from '../../store.js';
 import type { OutputSchema } from '../../types.js';

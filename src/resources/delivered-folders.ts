@@ -22,7 +22,7 @@ import path from 'node:path';
 import { contentHash, forgetDelivered, removeDelivered, type DeliveryLedger } from './delivered-copies.js';
 import { FolderFiles, type FolderFile } from './folder-files.js';
 import { FOLDER_MARKERS } from '../folder-markers.js';
-import { folderReachOf } from '../tools.js';
+import { folderReachOf } from '../tool-registry.js';
 import { getDataHome, isSelfMode, type LocalConfig } from '../types.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { createGit } from '../utils/git.js';

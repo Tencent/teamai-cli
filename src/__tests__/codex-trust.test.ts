@@ -14,7 +14,7 @@ vi.mock('cross-spawn', async (importOriginal) => {
   return { ...actual, default: vi.fn(actual.default) };
 });
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), persist: vi.fn() },
 }));
 

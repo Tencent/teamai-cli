@@ -10,7 +10,8 @@ import {
 import { readTokenUsage } from '../token-usage/index.js';
 import { computePromptTokenDelta, droppedRollouts, mergePromptTokenStats } from '../team-push.js';
 import { summarizeConversation, formatTokenCount } from '../digest.js';
-import type { DashboardEvent, SessionMetrics, TokenUsage, UserStats } from '../types.js';
+import type { DashboardEvent, SessionMetrics, UserStats } from '../types.js';
+import type { TokenUsage } from '@teamai/tool-core/tokens';
 
 let tmpDir: string;
 let originalHome: string;

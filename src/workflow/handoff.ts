@@ -11,7 +11,7 @@ import { getRepoIdentity } from '../session-flow/sync.js';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from '../types.js';
 import { gitRoot } from '../utils/branch-worktree.js';
 import { canonicalJson } from '../utils/canonical-json.js';
-import { sanitizeGitUrl } from '../utils/redact.js';
+import { sanitizeGitUrl } from '@teamai/shared/redact';
 import { fetchReportsOriginFile, readReportsOriginFile, updateReports, type ReportsChange, type ReportsWriteContext } from '../utils/reports-branch.js';
 import { folderOf, loadWorkflowBundle, loadWorkflowBundleAt, loadWorkflowTree, type PinnedFolder, type WorkflowBundle } from './cache.js';
 import { WorkflowFolder } from './folder.js';

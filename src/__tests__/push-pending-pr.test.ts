@@ -96,7 +96,7 @@ vi.mock('../update.js', () => ({
   releaseLock: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn(),
   },

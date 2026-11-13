@@ -7,7 +7,7 @@ const rule = ruleHarness('teamai/yaml-parse', { filename: 'src/config.ts' });
 rule.valid('allows the owner module to call the library parse', `
 import YAML from 'yaml';
 export const parseYaml = (text: string) => YAML.parse(text, { resolveKnownTags: false });
-`, { filename: 'src/utils/yaml.ts' });
+`, { filename: 'packages/shared/src/yaml.ts' });
 
 rule.valid('allows stringify and document parsing', `
 import YAML, { parseDocument } from 'yaml';

@@ -6,7 +6,7 @@ import os from 'node:os';
 import YAML from 'yaml';
 
 const logMocks = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), success: vi.fn() }));
-vi.mock('../utils/logger.js', async (importOriginal) => ({
+vi.mock('@teamai/shared/log', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/logger.js')>()),
   log: logMocks,
 }));

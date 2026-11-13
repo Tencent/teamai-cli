@@ -21,7 +21,7 @@ vi.mock('../utils/git.js', async (importOriginal) => ({
   getHeadRev: vi.fn().mockResolvedValue('abc1234'),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     persist: vi.fn(),
     info: vi.fn(),

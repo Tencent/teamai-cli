@@ -9,7 +9,7 @@ vi.mock('../config.js', async (importOriginal) => ({
   saveStateForScope: vi.fn(),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { persist: vi.fn(), info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));
 

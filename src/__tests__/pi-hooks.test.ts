@@ -34,7 +34,7 @@ async function runSessionStartWithBrokenStdin(src: string): Promise<void> {
   await handlers.get('session_start')?.({}, { cwd: '/tmp/project' });
 }
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));
 

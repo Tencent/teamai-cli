@@ -11,7 +11,7 @@ import { getUserHome } from '../utils/home.js';
 import { agyGatewayOf, agyKeyFilePath, agyKeyFunction } from './agy-gateway.js';
 import { toolHome } from '../tool-home.js';
 import { errnoCode, pathExists, writeFileAtomic, writeJsonAtomic, writeJsonKeepingComments } from '../utils/fs.js';
-import { mcpSyntaxOf } from '../tools.js';
+import { mcpSyntaxOf } from '../tool-registry.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { entryHash } from '../resources/mcp-format.js';
 import { detectShellProfile, SHELL_PROFILE_CANDIDATE_NAMES, shellQuoteValue, toGeneratedForm } from '../utils/shell-profile.js';

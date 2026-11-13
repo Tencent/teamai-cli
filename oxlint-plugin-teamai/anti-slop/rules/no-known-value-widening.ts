@@ -135,42 +135,36 @@ function hasInformativeType(
 	return classifyUnsafeDictionaryValue(type, environment) === null;
 }
 
-function hasKnownCallArgumentEvidence(
+/**
+ * What is known of a call argument's type: `exact` for a literal or an expression whose value is known as written, the
+ * informative type it is annotated or returned with, or null when nothing is known.
+ */
+function knownCallArgumentType(
 	sourceCode: SourceCode,
 	expression: ESTree.Expression,
 	environment: TypeEnvironment,
 	visitedVariables = new Set<Variable>(),
-): boolean {
+): ESTree.TSType | "exact" | null {
 	if (expression.type === "ParenthesizedExpression" || expression.type === "TSNonNullExpression") {
-		return hasKnownCallArgumentEvidence(
-			sourceCode,
-			expression.expression,
-			environment,
-			visitedVariables,
-		);
+		return knownCallArgumentType(sourceCode, expression.expression, environment, visitedVariables);
 	}
 	if (expression.type === "TSAsExpression" || expression.type === "TSTypeAssertion") {
-		return hasInformativeType(expression.typeAnnotation, environment);
+		return informativeOrNull(expression.typeAnnotation, environment);
 	}
 	if (expression.type === "TSSatisfiesExpression") {
-		return hasKnownCallArgumentEvidence(
-			sourceCode,
-			expression.expression,
-			environment,
-			visitedVariables,
-		);
+		return knownCallArgumentType(sourceCode, expression.expression, environment, visitedVariables);
 	}
 	if (expression.type === "CallExpression") {
 		const owner = localFunctionForCall(sourceCode, expression.callee);
 		const returnType = owner?.returnType?.typeAnnotation;
-		return returnType !== undefined && hasInformativeType(returnType, environment);
+		return returnType === undefined ? null : informativeOrNull(returnType, environment);
 	}
-	if (expression.type !== "Identifier") return isKnownEvidenceExpression(expression);
+	if (expression.type !== "Identifier") return isKnownEvidenceExpression(expression) ? "exact" : null;
 	const variable = resolveVariable(sourceCode, expression);
-	if (variable === null || visitedVariables.has(variable)) return false;
+	if (variable === null || visitedVariables.has(variable)) return null;
 	const annotation = variableTypeAnnotation(sourceCode, variable);
 	if (annotation !== null) {
-		return hasInformativeType(annotation.typeAnnotation, environment);
+		return informativeOrNull(annotation.typeAnnotation, environment);
 	}
 	const declarator = variableDeclarator(variable);
 	if (
@@ -178,15 +172,30 @@ function hasKnownCallArgumentEvidence(
 		declarator.init === null ||
 		!isStableConstVariable(variable, declarator)
 	) {
-		return false;
+		return null;
 	}
 	visitedVariables.add(variable);
-	return hasKnownCallArgumentEvidence(
-		sourceCode,
-		declarator.init,
-		environment,
-		visitedVariables,
-	);
+	return knownCallArgumentType(sourceCode, declarator.init, environment, visitedVariables);
+}
+
+function informativeOrNull(type: ESTree.TSType, environment: TypeEnvironment): ESTree.TSType | null {
+	return hasInformativeType(type, environment) ? type : null;
+}
+
+/**
+ * Whether a type guard's call proves nothing new of its argument: the argument is known exactly, or is already of the
+ * type the guard narrows to. An argument of another known type, such as a union the guard picks one member of, is
+ * narrowed, which is what a guard is for.
+ */
+function guardsKnownType(
+	sourceCode: SourceCode,
+	known: ESTree.TSType | "exact",
+	owner: FunctionExpression,
+): boolean {
+	if (known === "exact") return true;
+	const predicate = owner.returnType?.typeAnnotation;
+	const guarded = predicate?.type === "TSTypePredicate" ? predicate.typeAnnotation?.typeAnnotation : undefined;
+	return guarded === undefined || sourceCode.getText(guarded) === sourceCode.getText(known);
 }
 
 function typePredicateSubjectIndex(
@@ -359,15 +368,8 @@ export const noKnownValueWideningRule = defineRule({
 				) {
 					return;
 				}
-				if (
-					!hasKnownCallArgumentEvidence(
-						context.sourceCode,
-						argument,
-						environment,
-					)
-				) {
-					return;
-				}
+				const known = knownCallArgumentType(context.sourceCode, argument, environment);
+				if (known === null || !guardsKnownType(context.sourceCode, known, owner)) return;
 				context.report({
 					node: argument,
 					messageId: "widening",

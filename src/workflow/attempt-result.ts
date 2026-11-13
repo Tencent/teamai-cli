@@ -7,7 +7,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { readFileSafe, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
-import { redact, redactJson } from '../utils/redact.js';
+import { redact, redactJson } from '@teamai/shared/redact';
 import type { WorkflowFailure } from './types.js';
 
 /** What teamai writes as an attempt's result: the step's output and its failure, or the output a failed confined tool gave. */

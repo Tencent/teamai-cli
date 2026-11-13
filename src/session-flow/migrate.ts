@@ -8,7 +8,7 @@
  */
 
 import { SESSION_PLATFORM_FACTS } from './adapters/platform-facts.js';
-import type { Session, ContentBlock } from './ir.js';
+import type { Session, ContentBlock } from '@teamai/tool-core/sessions/ir';
 import { getAdapter, listAvailablePlatforms, listInstalledPlatforms } from './adapters/index.js';
 
 export const THINKING_SUPPORT: Record<string, boolean> = Object.fromEntries(

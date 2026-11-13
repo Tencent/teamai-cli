@@ -31,7 +31,7 @@ vi.mock('../update.js', () => ({
   withFileLock: async <T>(_lock: string, _wait: unknown, body: () => Promise<T>) => ({ held: true, value: await body() }),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     persist: vi.fn(),
     info: vi.fn(),

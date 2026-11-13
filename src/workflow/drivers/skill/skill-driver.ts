@@ -9,7 +9,7 @@ import { resolveCliEntry } from '../../../builtin-hooks.js';
 import type { WorkflowEnv } from '../../../env-resolution.js';
 import { resolveRunMode, type RunMode } from '../../../launch-context.js';
 import type { CommandExit } from '../../../tool-launch/process-stop.js';
-import { isToolId, TOOLS } from '../../../tools.js';
+import { isToolId, TOOL_ORDER } from '../../../tool-registry.js';
 import type { LocalConfig, TeamaiConfig } from '../../../types.js';
 import type { ToolId } from '../../../tools.js';
 import { agentSessionFromEnv } from '../../../utils/session-id.js';
@@ -178,7 +178,7 @@ const SessionToolSchema = z.string().transform((tools, ctx) => {
   }
 
   if (!isToolId(tool)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `--tools default=${tool} names no tool teamai knows: ${Object.keys(TOOLS).join(', ')}` });
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `--tools default=${tool} names no tool teamai knows: ${TOOL_ORDER.join(', ')}` });
 
     return z.NEVER;
   }

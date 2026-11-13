@@ -21,8 +21,8 @@ vi.mock('node:os', async (importOriginal) => {
   return patched;
 });
 
-import { ADAPTER_REGISTRY } from '../session-flow/adapters/index.js';
-import { encodeCwdClaude } from '../session-flow/fs.js';
+import { getAdapter } from '../session-flow/adapters/index.js';
+import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
 import { AgentSession } from '../session-flow/agent-session.js';
 
 const SID = 'c0ffee00-0000-4000-8000-00000000d0de';
@@ -88,7 +88,7 @@ describe('qoder session platforms (#1418)', () => {
     const cwd = workspace();
     writeTranscript(path.join(mocks.home, '.qoder'), cwd);
 
-    const adapter = ADAPTER_REGISTRY.qoder();
+    const adapter = getAdapter('qoder');
     expect(adapter.isReady()).toBe(true);
     const listed = await adapter.listConversations(cwd);
     expect(listed.map((m) => m.sessionId)).toEqual([SID]);
@@ -112,7 +112,7 @@ describe('qoder session platforms (#1418)', () => {
     const cwd = workspace();
     writeTranscript(path.join(mocks.home, '.qoder-cn'), cwd);
 
-    const adapter = ADAPTER_REGISTRY['qoder-cn']();
+    const adapter = getAdapter('qoder-cn');
     expect(adapter.isReady()).toBe(true);
     const session = await adapter.readSession({ sessionId: SID, projectPath: cwd });
     expect(session.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
@@ -124,7 +124,7 @@ describe('qoder session platforms (#1418)', () => {
     writeTranscript(moved, cwd);
     vi.stubEnv('QODER_CONFIG_DIR', moved);
 
-    const adapter = ADAPTER_REGISTRY.qoder();
+    const adapter = getAdapter('qoder');
     expect(adapter.isReady()).toBe(true);
     const session = await adapter.readSession({ sessionId: SID, projectPath: cwd });
     expect(session.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
@@ -136,7 +136,7 @@ describe('qoder session platforms (#1418)', () => {
     writeTranscript(path.join(parent, '.qoder'), cwd);
     vi.stubEnv('QODER_CLI_HOME', parent);
 
-    const adapter = ADAPTER_REGISTRY.qoder();
+    const adapter = getAdapter('qoder');
     expect(adapter.isReady()).toBe(true);
     const session = await adapter.readSession({ sessionId: SID, projectPath: cwd });
     expect(session.messages.map((m) => m.role)).toEqual(['user', 'assistant']);

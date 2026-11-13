@@ -29,7 +29,7 @@ vi.mock('../utils/git.js', async (importOriginal) => ({
   getHeadRev: vi.fn().mockResolvedValue(HEAD_REV),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),

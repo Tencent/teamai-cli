@@ -13,7 +13,7 @@ import crypto from 'node:crypto';
 import fse from 'fs-extra';
 import YAML from 'yaml';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),

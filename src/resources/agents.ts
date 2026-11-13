@@ -13,7 +13,7 @@ import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileConte
 import { log } from '../utils/logger.js';
 import { installScopeName, isAgentExcluded, isSelfMode } from '../types.js';
 import { BUILTIN_AGENT_NAMES, builtinAgentsReplacedByTeam, shippedAgentRender } from '../builtin-agents.js';
-import { isAgentToolId, isToolId, TOOLS } from '../tools.js';
+import { isAgentToolId, isToolId, descriptorOf } from '../tool-registry.js';
 import { cleanupOf, installOf, locate, ownOf, writable, type SidecarFile } from '../locate.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
@@ -1587,7 +1587,7 @@ export class AgentsHandler extends ResourceHandler {
     if (content === null) return null;
 
     if (isLegacyAgent(item)) {
-      if (!isToolId(tool) || !TOOLS[tool].legacyAgentMd) return null;
+      if (!isToolId(tool) || !descriptorOf(tool).legacyAgentMd) return null;
 
       return { ext: '.md', content: AgentFolders.isFolder(item) ? AgentFolders.render(content, { localConfig, agent: item, tool }) : content };
     }

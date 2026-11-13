@@ -1,9 +1,15 @@
-import { TOOLS } from '../tools.js';
+import { resolveCliPath, resolvePathCommand } from '@teamai/shared/cli-path';
+import { descriptorOf, toolOf, type DescriptorOf } from '../tool-registry.js';
+import type { ResolvedToolInstance } from '../tool-instances.js';
 import type { ToolId } from '../tools.js';
-import { LAUNCH_ADAPTERS, type ConfinedLaunch, type LaunchAdapter, type LaunchAdapterId, type StepLaunch } from './adapters.js';
+import { LAUNCH_ADAPTERS } from './adapters.js';
+import type { ConfinedLaunch, LaunchAdapter, StepLaunch } from '@teamai/tool-core/launch';
 
 /** The tools whose `launch` facet names an adapter. */
-export type LaunchedToolId = { [T in ToolId]: (typeof TOOLS)[T]['launch'] extends 'none' ? never : T }[ToolId];
+export type LaunchedToolId = { [T in ToolId]: DescriptorOf<T>['launch'] extends 'none' ? never : T }[ToolId];
+
+/** The adapter teamai launches `tool` headless with (`LAUNCH_ADAPTERS`). */
+export type LaunchAdapterOf<T extends LaunchedToolId> = (typeof LAUNCH_ADAPTERS)[DescriptorOf<T>['launch']];
 
 /**
  * Every tool teamai launches, in the order an AI call takes the first one on PATH. Each list of tools that can run a
@@ -17,11 +23,11 @@ export const LAUNCH_ORDER = ['claude', 'claude-internal', 'tclaude', 'codex', 'c
 export type LaunchOrderTool = (typeof LAUNCH_ORDER)[number];
 
 /** The adapter whose flags and output `tool` shares, from its `launch` facet. */
-export function launchAdapterIdOf<T extends LaunchOrderTool>(tool: T): (typeof TOOLS)[T]['launch'] {
-  return TOOLS[tool].launch;
+export function launchAdapterIdOf<T extends LaunchedToolId>(tool: T): DescriptorOf<T>['launch'] {
+  return descriptorOf(tool).launch;
 }
 
-export function launchAdapterOf(tool: LaunchOrderTool): (typeof LAUNCH_ADAPTERS)[LaunchAdapterId] {
+export function launchAdapterOf<T extends LaunchedToolId>(tool: T): LaunchAdapterOf<T> {
   return LAUNCH_ADAPTERS[launchAdapterIdOf(tool)];
 }
 
@@ -32,10 +38,23 @@ export function executableOf(tool: LaunchOrderTool): string {
   return adapter.executable ?? tool;
 }
 
+/**
+ * The executables of `tool` to try, in order: its command, then those a desktop app installs it as. A tool teamai
+ * launches none of is its own command.
+ */
+export function executablesOf(tool: string): string[] {
+  const launched = LAUNCH_ORDER.find((one) => one === tool);
+
+  if (launched === undefined) return [tool];
+  const adapter: LaunchAdapter = launchAdapterOf(launched);
+
+  return [executableOf(launched), ...(adapter.installs?.() ?? [])];
+}
+
 type Profile = 'step' | 'confined';
 
 /** The tools whose adapter builds `P`. */
-export type ToolWith<P extends Profile> = { [T in LaunchOrderTool]: (typeof LAUNCH_ADAPTERS)[(typeof TOOLS)[T]['launch']] extends { readonly [K in P]: StepLaunch | ConfinedLaunch } ? T : never }[LaunchOrderTool];
+export type ToolWith<P extends Profile> = { [T in LaunchOrderTool]: LaunchAdapterOf<T> extends { readonly [K in P]: StepLaunch | ConfinedLaunch } ? T : never }[LaunchOrderTool];
 
 function toolsWith<P extends Profile>(profile: P): readonly ToolWith<P>[] {
   return LAUNCH_ORDER.filter((tool): tool is ToolWith<P> => profile in launchAdapterOf(tool));
@@ -48,6 +67,33 @@ export type LaunchTool = ToolWith<'step'>;
 
 export function isLaunchTool(value: string): value is LaunchTool {
   return LAUNCH_TOOLS.some((tool) => tool === value);
+}
+
+/**
+ * A tool a workflow step launches, by the name a step, `--tools` or a setting gives it: a shipped tool, or an instance
+ * of one. `tool` is the shipped tool whose flags and formats it runs with; `name` is what its report and its sessions
+ * are credited to.
+ */
+export interface LaunchTarget {
+  readonly name: string;
+  readonly tool: LaunchTool;
+  readonly instance?: ResolvedToolInstance;
+}
+
+/** The launch `name` names, or undefined when it names no tool, or one that runs no workflow step. */
+export function launchTargetOf(name: string): LaunchTarget | undefined {
+  const resolved = toolOf(name);
+
+  if (!resolved || !isLaunchTool(resolved.base)) return undefined;
+
+  return resolved.instance ? { name, tool: resolved.base, instance: resolved.instance } : { name, tool: resolved.base };
+}
+
+/** Where the command that starts `target` is installed, or null. An instance's comes from a config file, so only PATH counts. */
+export function launchExecutableOf(target: LaunchTarget): string | null {
+  const command = target.instance?.command;
+
+  return command === undefined ? resolveCliPath(executableOf(target.tool)) : resolvePathCommand(command);
 }
 
 /** The tools that run confined to one directory, in `LAUNCH_ORDER`. */

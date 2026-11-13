@@ -37,7 +37,7 @@ import { installOf, locate, locatingOnce, ownOf, SHARED_AGENT_SKILLS_PATH, writa
 import { isWithin } from './utils/agent-path.js';
 import { describeToolHomeChange, recordToolHomes } from './tool-home-record.js';
 import { describeInvalidToolHomes, realHost, toolHome } from './tool-home.js';
-import { isToolId, folderReachOf } from './tools.js';
+import { isToolId, folderReachOf } from './tool-registry.js';
 import { placesOf, placesRecordOf, placesUnmoved, recordPlaces, type PlacesRecord, type SessionToolHomes } from './resources/places.js';
 import { flatStemsOfRemoved, ruleFileExtensionForTool, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
 import { AGENT_FILE_EXTENSIONS } from './resources/agent-format.js';

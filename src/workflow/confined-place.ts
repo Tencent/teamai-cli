@@ -6,7 +6,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { isAgentToolId } from '../tools.js';
+import { isAgentToolId } from '../tool-registry.js';
 import type { LocalConfig } from '../types.js';
 import { errnoCode } from '../utils/fs.js';
 import type { ConfinedLease } from './lease-wire.js';

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { DriverSchema } from '../driver-identity.js';
 import { readFileSafe, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
-import { redactJson } from '../utils/redact.js';
+import { redactJson } from '@teamai/shared/redact';
 import { getDataHome, type JsonValue, type LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { ArchivedPassSchema, FailureSchema, ReleasedTokensSchema, SessionContinuationSchema, StepStateSchema, StoppedAttemptSchema } from './step-state.js';

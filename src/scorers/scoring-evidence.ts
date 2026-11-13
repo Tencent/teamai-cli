@@ -11,7 +11,7 @@ import { knownSecrets } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
 import { readFileIfExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { redact } from '../utils/redact.js';
+import { redact } from '@teamai/shared/redact';
 import { scoresDir } from './home.js';
 import {
   fencedEvidence, isEvidenceReady, rubricPrompt, subjectEvidenceDirOf, writeEvidence, SESSION_MAX_CHARS, SUBAGENT_MAX_CHARS, type EvidenceGap, type Rubrics,

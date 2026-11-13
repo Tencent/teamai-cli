@@ -1,5 +1,5 @@
 import { isModelAlias, noModelCause, noModelReason, resolveModelValue, type ModelAliases, type ModelResolution, type NoModel } from '../models/aliases.js';
-import { isAgentToolId } from '../tools.js';
+import { isAgentToolId } from '../tool-registry.js';
 import type { ScorerDefinition } from './definition.js';
 
 /** The model a judge launches with, and how it was chosen: the scorer's, or the tool's own default in its place. */

@@ -28,7 +28,7 @@ import {
 import { collectSession } from '../session-collector.js';
 import type { DashboardEvent } from '../types.js';
 import * as pidMonitor from '../pid-monitor.js';
-import { _resetState as resetLogger, _setLogFilePath } from '../utils/debug-log.js';
+import { _resetState as resetLogger, _setLogFilePath } from '@teamai/shared/debug-log';
 
 // ─── Transcript fixtures for intervention scanning ──────
 const INTERRUPT_LINE = JSON.stringify({

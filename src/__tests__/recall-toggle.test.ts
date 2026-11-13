@@ -16,7 +16,7 @@ vi.mock('../config.js', async (importOriginal) => ({
   saveLocalConfigForScope: (...args: unknown[]) => mockSaveLocalConfigForScope(...args),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),

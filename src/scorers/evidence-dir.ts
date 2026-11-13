@@ -12,7 +12,7 @@ import { pushedSession } from '../session-flow/scoring.js';
 import { firstPromptOnly, judgeSession, SessionWork, writeSessionEvidence, type JudgedSession } from '../session-flow/session-work.js';
 import type { JsonValue } from '../types.js';
 import { readFileIfExists } from '../utils/fs.js';
-import { redact } from '../utils/redact.js';
+import { redact } from '@teamai/shared/redact';
 import { CONFINED_FILE, ConfinedFileSchema, type ConfinedFile } from '../workflow/confined-place.js';
 import type { RunState } from '../workflow/types.js';
 import type { ScorerDefinition } from './definition.js';

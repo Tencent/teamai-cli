@@ -3,7 +3,8 @@ import { AgentObservationSchema, ObservedEffortSchema, ObservedModelSchema, Used
 import { DriverSchema } from '../driver-identity.js';
 import { RunModeSchema } from '../launch-context.js';
 import { WorkOutcomeSchema } from '../outcomes.js';
-import { ACCESS_LEVELS, CONFINED_LEVELS, ConfinedUsageSchema, CostSchema } from '../tool-launch/confined-level.js';
+import { ACCESS_LEVELS } from '@teamai/tool-core/launch';
+import { CONFINED_LEVELS, ConfinedUsageSchema, CostSchema } from '../tool-launch/confined-level.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import { PrUrlSchema, type PrUrl } from './pr-url.js';
 import { LimitSchema, TurnLimitsSchema, UnenforcedSchema } from './requirements.js';

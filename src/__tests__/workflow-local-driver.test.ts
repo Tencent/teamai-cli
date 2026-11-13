@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { launchEnv, sessionRun } from '../launch-context.js';
 import { loadStateForScope, saveStateForScope } from '../config.js';
 import { checkoutRecordKey, type CheckoutRecord } from '../pull.js';
-import { encodeCwdClaude } from '../session-flow/fs.js';
+import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
 import { type LocalConfig, type TeamaiConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import { createLocalToolAdapter, type LocalToolAdapter, type LocalToolResult, type LocalToolRun, type ToolSpawn } from '../workflow/drivers/local/local-tool-adapter.js';

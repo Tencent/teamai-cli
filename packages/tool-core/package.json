@@ -1,0 +1,20 @@
+{
+  "name": "@teamai/tool-core",
+  "private": true,
+  "type": "module",
+  "description": "The tool contract and registry every tool family implements; bundled into teamai-cli.",
+  "exports": {
+    "./definition": "./src/definition.ts",
+    "./detect": "./src/detect.ts",
+    "./family": "./src/family.ts",
+    "./formats/*": "./src/formats/*.ts",
+    "./instance": "./src/instance.ts",
+    "./launch": "./src/launch.ts",
+    "./registry": "./src/registry.ts",
+    "./reply": "./src/reply.ts",
+    "./sessions/*": "./src/sessions/*.ts",
+    "./stdout": "./src/stdout.ts",
+    "./tokens": "./src/tokens.ts",
+    "./usage-limit": "./src/usage-limit.ts"
+  }
+}

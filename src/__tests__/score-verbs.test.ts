@@ -31,7 +31,7 @@ import { PassScoring } from '../scorers/pass-scoring.js';
 import { RunScorers } from '../scorers/run-scorers.js';
 import type { ConfinedRunReport } from '../workflow/step-state.js';
 import { evidenceHash, stageEvidence } from '../scorers/scoring-evidence.js';
-import { encodeCwdClaude } from '../session-flow/fs.js';
+import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
 import { checkConfinedDir } from '../workflow/confined-place.js';
 import { readRun, RunIdSchema, runScratchDir, updateRun } from '../workflow/store.js';
 import type { StepState } from '../workflow/step-state.js';

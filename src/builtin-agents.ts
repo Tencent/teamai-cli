@@ -9,7 +9,8 @@ import {
   contentHash, forgetDelivered, keepsTrackedCopy, type DeliveredHashes, type DeliveryLedger,
 } from './resources/delivered-copies.js';
 import { agentStemFromFilename, renderForTool, reverseFromClaude, type RenderResult } from './resources/agent-format.js';
-import { isAgentToolId, type AgentToolId } from './tools.js';
+import type { AgentToolId } from './tools.js';
+import { isAgentToolId } from './tool-registry.js';
 import { installOf, locate, writable } from './locate.js';
 import type { DeliveryRecorder } from './git-exclude-delivered.js';
 

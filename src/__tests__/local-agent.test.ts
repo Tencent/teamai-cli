@@ -10,7 +10,7 @@ import { keepCodexHookTrust, trustCodexHooks } from '../codex-trust.js';
 import { TEAMAI_CLAUDEMD_START } from '../types.js';
 import { installFakeCodex } from './helpers/fake-codex.js';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),

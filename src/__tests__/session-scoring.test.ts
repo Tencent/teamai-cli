@@ -19,13 +19,13 @@ vi.mock('../utils/reports-branch.js', async (importOriginal) => {
 });
 
 import { getReportsDir, type LocalConfig } from '../types.js';
-import type { Session } from '../session-flow/ir.js';
+import type { Session } from '@teamai/tool-core/sessions/ir';
 import { defaultSyncMeta, getRepoIdentity, SyncManager } from '../session-flow/sync.js';
 import { localAliasesPath } from '../models/aliases.js';
 import { parseScoreLabels } from '../scorers/label.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
-import { encodeCwdClaude } from '../session-flow/fs.js';
+import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
 import { projectDataHome } from '../utils/partition.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { tryScorer } from './helpers/score-run.js';

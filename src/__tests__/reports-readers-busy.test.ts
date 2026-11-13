@@ -8,7 +8,7 @@ import path from 'node:path';
 // checkout in the partition, so a reader must not create it while a write
 // holds the reports lock: the holder may be creating it right now.
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));
 

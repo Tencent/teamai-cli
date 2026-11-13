@@ -1,3 +1,4 @@
+import type { McpFormat } from '@teamai/tool-core/definition';
 import crypto from 'node:crypto';
 import { z } from 'zod';
 import { isJsonObject, type JsonObject, type JsonValue, type McpServerDef, type McpTransport } from '../types.js';
@@ -19,8 +20,6 @@ import { sameEnvName } from './env-key.js';
 //
 //  Keeping the differences here — rather than in the reconcile engine — is the
 //  same split agents uses between agent-format.ts and its handler.
-
-export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex' | 'opencode' | 'copilot' | 'pi' | 'muse' | 'agy' | 'openclaw' | 'hermes' | 'dsh';
 
 /** The DSH plugin that connects one MCP server; each managed server is one instance of it. */
 export const DSH_MCP_PLUGIN = '@deepseek-ai/dsh-mcp-client';

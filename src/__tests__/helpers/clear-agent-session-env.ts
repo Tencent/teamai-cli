@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, vi } from 'vitest';
 import { ATTEMPT_ENV, LAUNCHED_BY_ENV, RUN_MODE_ENV } from '../../launch-context.js';
-import { homeVariables, isToolId, TOOLS } from '../../tools.js';
+import { TOOLS } from '../../tools.js';
+import { homeVariables, isToolId } from '../../tool-registry.js';
 import { GIT_REPOSITORY_ENV } from '../../utils/git-env.js';
 import { AGENT_SESSION_ENV } from '../../utils/session-id.js';
 

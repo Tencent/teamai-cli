@@ -5,14 +5,13 @@ import path from 'node:path';
 import crossSpawn from 'cross-spawn';
 import semver from 'semver';
 import { z } from 'zod';
-import { desktopCodexBinaries } from './codex-desktop.js';
 import { getCurrentVersion } from './package-info.js';
-import type { CodexBuild, CodexBuildSkew, JsonValue } from './types.js';
-import { JsonValueSchema, JsonObjectSchema } from './types.js';
-import { execCommand, probeBinary } from './utils/exec.js';
-import { lenientList } from './utils/json.js';
-import { log } from './utils/logger.js';
-import { findOnPath } from './utils/lookpath.js';
+import type { CodexBuild, CodexBuildSkew } from './types.js';
+import { execCommand, probeBinary } from '@teamai/shared/exec';
+import { lenientList, type JsonValue, JsonValueSchema, JsonObjectSchema } from '@teamai/shared/json';
+import { log } from '@teamai/shared/log';
+import { findOnPath } from '@teamai/shared/lookpath';
+import { isBareCommandName } from '@teamai/shared/cli-path';
 
 /**
  * Trusting what teamai writes into Codex (#955).
@@ -97,13 +96,16 @@ interface CodexCandidate {
 }
 
 /** `codex` on PATH first (it wins a version tie), then the desktop builds. Stat only, no spawn. */
-function codexBuildCandidates(): CodexCandidate[] {
-  const onPath = findOnPath('codex');
+async function codexBuildCandidates(): Promise<CodexCandidate[]> {
+  // The launch registry loads every family's launch profiles: here, where first used, not in every command that imports this module.
+  const { executablesOf } = await import('./tool-launch/tools.js');
 
-  const found = [
-    ...(onPath ? [{ command: 'codex', path: onPath }] : []),
-    ...desktopCodexBinaries().map((binary) => ({ command: binary, path: binary })),
-  ];
+  const found = executablesOf('codex').flatMap((command) => {
+    if (!isBareCommandName(command)) return [{ command, path: command }];
+    const onPath = findOnPath(command);
+
+    return onPath ? [{ command, path: onPath }] : [];
+  });
 
   const seen = new Set<string>();
 
@@ -127,8 +129,8 @@ function codexBuildCandidates(): CodexCandidate[] {
  * fingerprint: an added, removed, or updated build can change which one
  * answers and how it hashes a hook. Stat only, so a cached pull runs no binary.
  */
-export function codexBuildsIdentity(): string {
-  return codexBuildCandidates().map((c) => c.identity).join('\0\0');
+export async function codexBuildsIdentity(): Promise<string> {
+  return (await codexBuildCandidates()).map((c) => c.identity).join('\0\0');
 }
 
 async function probeCodexVersion(command: string): Promise<string | null> {
@@ -164,7 +166,7 @@ function codexVersionOf(candidate: CodexCandidate): Promise<string | null> {
  * gating on a floor never guesses for an unknown build.
  */
 export async function oldestCodexBuildVersion(): Promise<string | null> {
-  const builds = await Promise.all(codexBuildCandidates().map(async (c) => ({ path: c.path, version: await codexVersionOf(c) })));
+  const builds = await Promise.all((await codexBuildCandidates()).map(async (c) => ({ path: c.path, version: await codexVersionOf(c) })));
 
   log.debug(`Codex builds for the hook form: ${builds.map((b) => `${b.path} → "${b.version ?? ''}"`).join(', ') || 'none'}`);
   const known = builds.flatMap((b) => (b.version === null ? [] : [b.version]));
@@ -186,8 +188,8 @@ let resolved: { identity: string; build: Promise<ResolvedCodexBuild | null> } | 
  * unparseable version ranking lowest and a tie keeping candidate order. A lone
  * candidate is used without a probe. Memoized while the candidates are unchanged.
  */
-function resolveCodexBuild(): Promise<ResolvedCodexBuild | null> {
-  const candidates = codexBuildCandidates();
+async function resolveCodexBuild(): Promise<ResolvedCodexBuild | null> {
+  const candidates = await codexBuildCandidates();
   const identity = candidates.map((c) => c.identity).join('\0\0');
 
   if (resolved?.identity !== identity) resolved = { identity, build: pickCodexBuild(candidates) };

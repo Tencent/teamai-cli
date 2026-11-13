@@ -1,7 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { autoDetectInit, loadTeamConfig } from './config.js';
 import { log } from './utils/logger.js';
-import { redactWithEnv } from './utils/redact.js';
+import { redactWithEnv } from '@teamai/shared/redact';
 import { getWebhookSharing, type LocalConfig, type WebhookEndpoint, type WebhookConfig, type WebhookPayload } from './types.js';
 import { formatFeishuMessage, formatWecomMessage, formatGenericJson, type WebhookMessage } from './webhook-formatters.js';
 

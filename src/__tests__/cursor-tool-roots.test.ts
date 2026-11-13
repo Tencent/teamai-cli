@@ -14,7 +14,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -37,10 +37,9 @@ import {
 } from '../types.js';
 import type { LocalConfig, State, TeamaiConfig } from '../types.js';
 import { reconcileCoAuthorForConfig } from '../coauthor-reconcile.js';
-import { encodeCwdGeneric } from '../session-flow/fs.js';
+import { encodeCwdGeneric } from '@teamai/tool-core/sessions/fs';
 import { sessionStoreDir } from '../locate.js';
 import { getAdapter } from '../session-flow/adapters/index.js';
-import { getCursorStateRoot } from '../session-flow/cursor-store.js';
 
 const TOOL_PATHS = {
   claude: { skills: '.claude/skills', settings: '.claude/settings.json' },
@@ -224,32 +223,6 @@ describe('Cursor roots', () => {
       expect(await fse.readJson(path.join(root, 'cli-config.json')))
         .toEqual({ attribution: { attributeCommitsToAgent: false } });
       expect(await fse.pathExists(path.join(home, DEFAULT_CURSOR_ROOT, 'cli-config.json'))).toBe(false);
-    });
-  });
-
-  describe('the IDE store root', () => {
-    const originalPlatform = process.platform;
-
-    afterEach(() => {
-      Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
-    });
-
-    it('honors XDG_CONFIG_HOME on Linux, as ide-history does', () => {
-      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
-      const xdg = path.join(home, 'xdg');
-      vi.stubEnv('XDG_CONFIG_HOME', xdg);
-      expect(getCursorStateRoot()).toBe(path.join(xdg, 'Cursor'));
-
-      vi.stubEnv('XDG_CONFIG_HOME', undefined);
-      // `os.homedir()`, which is what cursor-store reads.
-      expect(getCursorStateRoot()).toBe(path.join(os.homedir(), '.config', 'Cursor'));
-    });
-
-    it('treats a blank XDG_CONFIG_HOME as unset, not as the working directory', () => {
-      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
-      vi.stubEnv('XDG_CONFIG_HOME', '');
-      // `??` would keep the empty string, leaving the result a relative `Cursor`.
-      expect(getCursorStateRoot()).toBe(path.join(os.homedir(), '.config', 'Cursor'));
     });
   });
 });

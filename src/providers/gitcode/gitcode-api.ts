@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { endedRequest, type PullRequestRecord, type PullRequestRef } from '../types.js';
 import { GITCODE_HOST } from './repo-url.js';
 import { getUserHome, legacyUserHome } from '../../utils/home.js';
-import { sanitizeGitUrl } from '../../utils/redact.js';
+import { sanitizeGitUrl } from '@teamai/shared/redact';
 
 /**
  * GitCode (gitcode.com) REST API client.

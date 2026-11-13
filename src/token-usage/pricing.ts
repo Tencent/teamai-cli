@@ -1,4 +1,4 @@
-import type { TokenUsage } from '../types.js';
+import type { TokenSpeed, TokenUsage } from '@teamai/tool-core/tokens';
 import { canonicalModelName } from './model-name.js';
 import catalogJson from './model-prices.json' with { type: 'json' };
 
@@ -21,8 +21,6 @@ const CATALOG: PriceCatalog = catalogJson;
 /** The LiteLLM revision the bundled catalog was built from, stored with each cost so a later price change never rewrites it. */
 export const PRICE_CATALOG_VERSION = CATALOG.version;
 
-/** Fast mode (Claude's `speed: "fast"`, Codex's priority tier) bills at the model's fast rates, Codex's flex tier at its flex rates. */
-export type TokenSpeed = 'standard' | 'fast' | 'flex';
 
 /** `reported`: the tool recorded what the request cost. `catalog`: estimated from the bundled price list at `priceVersion`. */
 export type PricedTokens =

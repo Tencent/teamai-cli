@@ -9,11 +9,11 @@
 
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import os from 'node:os';
-import type { AgentAdapter, SessionMeta } from '../session-flow/adapters/base.js';
+import type { AgentAdapter, SessionMeta } from '@teamai/tool-core/sessions/base';
 import { ADAPTER_REGISTRY, type AdapterFactory } from '../session-flow/adapters/index.js';
 import { fidelityFromSession, previewMigration } from '../session-flow/migrate.js';
 import { AgentSession } from '../session-flow/agent-session.js';
-import type { Session } from '../session-flow/ir.js';
+import type { Session } from '@teamai/tool-core/sessions/ir';
 
 function makeSession(overrides: Partial<Session> = {}): Session {
   return {

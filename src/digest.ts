@@ -6,9 +6,11 @@ import { parseLearningDoc, titleFromFilename } from './utils/search-index.js';
 import { requireInit, detectProjectConfig } from './config.js';
 import { calculateTeamHealth } from './skill-health.js';
 import { createGit } from './utils/git.js';
-import type { RunModeSplit, UserStats, UserModeStats, UserOutcomeStats, TokenUsage } from './types.js';
+import type { RunModeSplit, UserStats, UserModeStats, UserOutcomeStats } from './types.js';
+import type { TokenUsage } from '@teamai/tool-core/tokens';
 import { OUTCOME_MODES, OUTCOME_ROWS, addOutcomeStats } from './outcomes.js';
-import { parseUserStats, totalTokens } from './types.js';
+import { parseUserStats } from './types.js';
+import { totalTokens } from '@teamai/tool-core/tokens';
 import { mergeDailyStats, summarizeTrendWindow, type TrendPeriod } from './session-trends.js';
 
 interface SkillChange {

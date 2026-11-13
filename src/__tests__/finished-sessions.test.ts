@@ -20,7 +20,7 @@ import { syncTeamDefinitions } from '../benchmark/suite-cache.js';
 import { SyncManager, defaultSyncMeta, getRepoIdentity } from '../session-flow/sync.js';
 import { markContributed } from '../contribute-check.js';
 import { SessionPublish } from '../session-flow/session-publish.js';
-import { encodeCwdClaude } from '../session-flow/fs.js';
+import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
 import type { LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';

@@ -27,7 +27,7 @@ import { withTimeout } from './utils/async.js';
 import { log } from './utils/logger.js';
 import { captureTail, detachChild } from './utils/exec.js';
 import { assertSafePath } from './utils/path-safety.js';
-import { redactWithEnv } from './utils/redact.js';
+import { redactWithEnv } from '@teamai/shared/redact';
 import type { LocalConfig, TeamaiConfig } from './types.js';
 
 /** Output kept from a failed script, for its log line. */

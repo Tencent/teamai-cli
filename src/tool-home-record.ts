@@ -1,5 +1,5 @@
 import { withFileLock } from './update.js';
-import { homeVariables, isToolId, TOOLS } from './tools.js';
+import { homeVariables, TOOL_ORDER } from './tool-registry.js';
 import { envToolHome, realHost, type EnvToolHome, recordedHomes, reloadToolHomes, rememberToolHome, saveToolHomes, toolHomesPath, type Host } from './tool-home.js';
 import type { ToolId } from './tools.js';
 import { log } from './utils/logger.js';
@@ -38,7 +38,7 @@ export async function nextToolHomes(
   const homes = { ...recorded };
   const changes: ToolHomeChange[] = [];
 
-  for (const tool of Object.keys(TOOLS).filter(isToolId)) {
+  for (const tool of TOOL_ORDER) {
     const moved = envToolHome(tool, host);
 
     const blank = by === 'init' && homes[tool] !== undefined && (moved === null || moved.kind === 'platform-default')

@@ -1,6 +1,7 @@
 /**
- * The level a confined run reaches, what its tool can do there and what it spent, as offers, leases, reports and labels
- * name them. It imports only zod, so the workflow's schemas read it without loading the scorers.
+ * The level a confined run reaches and what it spent, as offers, leases, reports and labels name them. What its tool can
+ * do there (`ACCESS_LEVELS`) is part of each tool's launch profile, in `@teamai/tool-core/launch`. It imports only zod,
+ * so the workflow's schemas read it without loading the scorers.
  */
 import { z } from 'zod';
 
@@ -8,11 +9,6 @@ import { z } from 'zod';
 export const CONFINED_LEVELS = ['best-effort', 'verified'] as const;
 
 export type ConfinedLevel = (typeof CONFINED_LEVELS)[number];
-
-/** What a tool run confined can do beyond answering: nothing, read its directory, or whatever its tool allows. */
-export const ACCESS_LEVELS = ['answer', 'read', 'full'] as const;
-
-export type ConfinedAccess = (typeof ACCESS_LEVELS)[number];
 
 /** What a tool stated a run cost, in its own unit. */
 export const CostSchema = z.object({ amount: z.number().finite().nonnegative(), unit: z.string().min(1) });

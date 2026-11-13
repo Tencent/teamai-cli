@@ -5,7 +5,7 @@ import { remove, pathExists } from './utils/fs.js';
 import { keepsTrackedCopy } from './resources/delivered-copies.js';
 import { applyInstructionPlan, planInstructionFiles, registerOpencodeContext, resolveInstructionTargets } from './instruction-targets.js';
 import { agentFileExtensionForTool } from './resources/agent-format.js';
-import { isAgentToolId } from './tools.js';
+import { isAgentToolId } from './tool-registry.js';
 import { cleanupOf, installOf, locate, ownOf } from './locate.js';
 import { ruleFileExtensionForTool } from './resources/rule-format.js';
 import { LEGACY_RECALL_SKILL_NAMES, builtinSkillsTarget, pruneLegacyBuiltinSkills } from './builtin-skills.js';

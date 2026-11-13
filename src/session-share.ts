@@ -9,14 +9,13 @@ import type { SessionRun } from './launch-context.js';
 import { scopeScoring } from './scorers/settings.js';
 import { AgentSession } from './session-flow/agent-session.js';
 import { SessionPolicy, type SessionPolicies } from './session-flow/session-policy.js';
+import { SessionCaptures } from './session-flow/captures.js';
 import { SessionWork, type SessionScorer } from './session-flow/session-work.js';
 import { markFacts } from './scorers/score-plan.js';
 import type { LocalConfig, SessionShareOffered } from './types.js';
 import { WorkflowOffers } from './workflow-offers.js';
+import { DefaultWorkflows } from './default-workflows.js';
 import type { OutputSchema } from './workflow/types.js';
-
-/** teamai's default that shares what a session taught, then the session: the one the friction reminder offers. */
-const SHARE_LEARNINGS = 'teamai-share-learnings';
 
 /** A value teamai proposes for one input, and why it proposes that value. */
 interface Proposal<T> {
@@ -51,7 +50,7 @@ async function publishProposal(config: LocalConfig, policy: SessionPolicies['att
     case 'off':
       return { value: false, why: `${PUBLISH_WHY} Not proposed: the attended publish policy (${SessionPolicy.setBy(policy.source)}) is off.` };
     case 'auto':
-      return { value: false, why: `${PUBLISH_WHY} Not proposed: the attended publish policy is auto, so teamai publishes this session, scrubbed, once it has been idle for ${(await SessionWork.finishedAfter(config)).text}.` };
+      return { value: false, why: `${PUBLISH_WHY} Not proposed: the attended publish policy is auto, so teamai publishes this session, scrubbed, once it has been idle for ${(await SessionCaptures.finishedAfter(config)).text}.` };
     default: {
       const unhandled: never = policy.policy;
 
@@ -118,7 +117,7 @@ async function propose(config: LocalConfig, { tool, sessionId }: { tool: string;
     case 'off':
       return { session, source, publish, scorers: { value: [], why: `${SCORERS_WHY} None proposed: the attended scoring policy (${SessionPolicy.setBy(policy.source)}) is off. ${NAME_ANY}` } };
     case 'auto':
-      return { session, source, publish, scorers: { value: [], why: `${SCORERS_WHY} None proposed: the attended scoring policy is auto, so the background judge scores this session once it has been idle for ${(await SessionWork.finishedAfter(config)).text}. ${NAME_ANY}` } };
+      return { session, source, publish, scorers: { value: [], why: `${SCORERS_WHY} None proposed: the attended scoring policy is auto, so the background judge scores this session once it has been idle for ${(await SessionCaptures.finishedAfter(config)).text}. ${NAME_ANY}` } };
     default: {
       const unhandled: never = policy.policy;
 
@@ -145,7 +144,7 @@ async function reminderOffer(
   { tool, sessionId, cwd, run }: { tool: string; sessionId: string; cwd: string; run: SessionRun },
   options: OfferOptions = {},
 ): Promise<SessionShareOffered | undefined> {
-  const startConfig = await WorkflowOffers.offerable(config, SHARE_LEARNINGS, { sessionId, cwd, run });
+  const startConfig = await WorkflowOffers.offerable(config, DefaultWorkflows.SHARE_LEARNINGS, { sessionId, cwd, run });
 
   if (startConfig === undefined) return undefined;
   const { publish, scorers } = await propose(startConfig, { tool, sessionId }, options);
@@ -187,4 +186,4 @@ async function proposals(
   return Object.fromEntries(matching.map((input) => [input, proposed[input]]));
 }
 
-export const SessionShare = { SHARE_LEARNINGS, offer, reminderOffer, proposals } as const;
+export const SessionShare = { offer, reminderOffer, proposals } as const;

@@ -12,7 +12,7 @@ vi.mock('node:os', async (importOriginal) => {
 import type { LocalConfig } from '../types.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
 import { LabelStore } from '../scorers/label-store.js';
-import { encodeCwdClaude } from '../session-flow/fs.js';
+import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
 import { SessionWork } from '../session-flow/session-work.js';
 import { markFacts } from '../scorers/score-plan.js';
 import { SessionShare } from '../session-share.js';

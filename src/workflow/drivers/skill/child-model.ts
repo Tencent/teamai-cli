@@ -1,5 +1,5 @@
 /** The model the child of a prompt step must run, as `chooseStepModel` resolves it for the session's tool. */
-import { isAgentToolId } from '../../../tools.js';
+import { isAgentToolId } from '../../../tool-registry.js';
 import type { LocalConfig, TeamaiConfig } from '../../../types.js';
 import type { ToolId } from '../../../tools.js';
 import { StepModelSchema, chooseStepModel, loadDeployedAgent, type StepModel, type StepModelRequest } from '../../step-model.js';

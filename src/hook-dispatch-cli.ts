@@ -32,7 +32,7 @@ import { claudeHookRunsInAnotherHost } from './claude-hook-host.js';
 import { claimCopilotHookEvent } from './copilot-hook-claim.js';
 import { launchedBy, LAUNCH_PAYLOAD_KEY, launchEnv, readLaunch, SESSION_RUN_PAYLOAD_KEY, sessionRun } from './launch-context.js';
 import { isHttpEnrolled, recordLoginEnrolment } from './hook-fast-path.js';
-import { channelsOf } from './tools.js';
+import { channelsOf } from './tool-registry.js';
 import { readStdin, takeHandedOffHookStdin } from './utils/hook-stdin.js';
 import { isSelfMode } from './types.js';
 

@@ -39,7 +39,7 @@ vi.mock('../utils/fs.js', () => ({
   // No teamai env.sh on this machine (member-env.ts, via the env advisories).
   readFileSafe: vi.fn().mockResolvedValue(null),
 }));
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), persist: vi.fn() },
 }));
 

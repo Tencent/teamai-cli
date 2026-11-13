@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { builtinHookDefs, builtinHookForm, applyBuiltinOverride, recognisedBuiltinHookDefs, _resetShellCache } from '../builtin-hooks.js';
 import { getAgentVersion } from '../agent-version.js';
-import { channelsOf } from '../tools.js';
+import { channelsOf } from '../tool-registry.js';
 
 vi.mock('../agent-version.js', () => ({ getAgentVersion: vi.fn(async () => '') }));
 
 // The real facts, which a case below extends for one tool.
-vi.mock('../tools.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../tools.js')>();
+vi.mock('../tool-registry.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../tool-registry.js')>();
   return { ...actual, channelsOf: vi.fn(actual.channelsOf) };
 });
 
@@ -203,12 +203,12 @@ describe('builtinHookForm', () => {
 
   /** `claude` with the hook facts `facts` added, every other tool as it is. */
   const withFacts = async (facts: { unwaitedSince?: string; loginDeferrable?: true }) => {
-    const actual = (await vi.importActual<typeof import('../tools.js')>('../tools.js')).channelsOf;
+    const actual = (await vi.importActual<typeof import('../tool-registry.js')>('../tool-registry.js')).channelsOf;
     vi.mocked(real).mockImplementation((tool) => (tool === 'claude' ? { ...actual(tool), hooks: { ...actual(tool).hooks, unwaitedSince: undefined, loginDeferrable: undefined, ...facts } } : actual(tool)));
   };
 
   afterEach(async () => {
-    vi.mocked(real).mockImplementation((await vi.importActual<typeof import('../tools.js')>('../tools.js')).channelsOf);
+    vi.mocked(real).mockImplementation((await vi.importActual<typeof import('../tool-registry.js')>('../tool-registry.js')).channelsOf);
     vi.mocked(getAgentVersion).mockReset().mockResolvedValue('');
     vi.restoreAllMocks();
   });

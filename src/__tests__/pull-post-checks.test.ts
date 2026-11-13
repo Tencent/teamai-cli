@@ -20,7 +20,7 @@ vi.mock('../utils/git.js', async (importOriginal) => ({
   remotesMatch: (await importOriginal<typeof import('../utils/git.js')>()).remotesMatch,
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     debug: vi.fn(), error: vi.fn(), info: vi.fn(), success: vi.fn(), warn: vi.fn(), dim: vi.fn(),
   },

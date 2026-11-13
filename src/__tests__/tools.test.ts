@@ -4,11 +4,14 @@ import { installedBuiltinHookDefs } from '../builtin-hooks.js';
 import { KNOWN_AGENTS, SELF_MODE_AGENT_CHOICES } from '../known-agents.js';
 import { ModelAgentSchema, type ModelAgent } from '../models/profile.js';
 import { EXTRAS_BASE_TOOL, type ToolName } from '../resources/agent-format.js';
-import { AGENT_TOOLS, isToolId, TOOLS, type Support, type ToolDescriptor } from '../tools.js';
+import { TOOLS, type ShippedDescriptor } from '../tools.js';
+import { type Support } from '@teamai/tool-core/definition';
+import { AGENT_TOOLS, isToolId } from '../tool-registry.js';
 import { DEFAULT_TOOL_PATHS, scopedToolPaths, TeamaiConfigSchema } from '../types.js';
 import type { ToolId } from '../tools.js';
 import { CODEX_TOOL_IDS, normalizeAgentType } from '../utils/tool-names.js';
-import { LAUNCH_ADAPTERS, type LaunchAdapter } from '../tool-launch/adapters.js';
+import { LAUNCH_ADAPTERS } from '../tool-launch/adapters.js';
+import { type LaunchAdapter } from '@teamai/tool-core/launch';
 import type { LaunchTool } from '../tool-launch/tools.js';
 
 const TOOL_IDS = Object.keys(DEFAULT_TOOL_PATHS).filter(isToolId);
@@ -106,7 +109,7 @@ describe('TOOLS skillLoad', () => {
       ...TOOLS,
       // @ts-expect-error a tool whose skill loading nobody has observed says 'unknown'
       pi: { home: { dir: '.pi' } },
-    } satisfies Record<ToolId, ToolDescriptor>;
+    } satisfies Record<ToolId, ShippedDescriptor>;
     expect(tools.pi.home.dir).toBe('.pi');
   });
 });

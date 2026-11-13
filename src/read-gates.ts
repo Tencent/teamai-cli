@@ -14,7 +14,7 @@ import { codexProjectTrust, codexTrustFix } from './codex-project-trust.js';
 import { realFilePath } from './git-exclude.js';
 import { isJsonObject, type JsonObject, type JsonValue } from './types.js';
 import { pathExists, readFileIfExists } from './utils/fs.js';
-import { hookSyntaxOf, mcpSyntaxOf } from './tools.js';
+import { hookSyntaxOf, mcpSyntaxOf } from './tool-registry.js';
 import { mapStrings, parseJson, parseJsonAs, type JsonSyntax } from './utils/json.js';
 
 /**

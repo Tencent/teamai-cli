@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { AgentSession } from '../session-flow/agent-session.js';
-import type { Message, Session } from '../session-flow/ir.js';
+import type { Message, Session } from '@teamai/tool-core/sessions/ir';
 
 function sessionOf(messages: Message[]): Session {
   return {

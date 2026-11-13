@@ -15,7 +15,7 @@ import { RunScorers } from '../scorers/run-scorers.js';
 import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
 import { resolveTeamRef, TeamRefError } from '../team-ref.js';
 import { roleDeclaration, type RoleDeclaration } from '../roles.js';
-import { isAgentToolId } from '../tools.js';
+import { isAgentToolId } from '../tool-registry.js';
 import type { LocalConfig } from '../types.js';
 import { definedFields } from '../utils/defined-fields.js';
 import { withTeamRevision } from '../workflow/cache.js';

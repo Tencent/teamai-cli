@@ -4,7 +4,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { spawnSync } from 'node:child_process';
 import semver from 'semver';
 import { z } from 'zod';
-import { hookSyntaxOf, isToolId } from './tools.js';
+import { hookSyntaxOf, isToolId, toolOf } from './tool-registry.js';
+import { defaultPathsOf } from './tool-instances.js';
 import { existingSharedInstructionDirs, shadowedSharedInstructionFiles } from './shared-instruction-source.js';
 import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
@@ -327,18 +328,21 @@ export function toolPathsDroppedKeyNotes(ctx: DoctorContext): string[] {
   // default and drops nothing. The enabled filter still comes from `toolPaths`.
   for (const [tool, entry] of Object.entries(teamConfig.toolPaths)) {
     if (toolPaths[tool] === undefined) continue; // not enabled or excluded here.
+    // An instance's own `paths` replace what it would get without them; a toolPaths entry, the tool's default.
+    const instance = toolOf(tool)?.instance;
+    const replaced = instance?.paths ? defaultPathsOf(instance) : isToolId(tool) ? DEFAULT_TOOL_PATHS[tool] : undefined;
 
-    if (!isToolId(tool)) continue; // a custom tool: no default entry to drop keys from.
+    if (replaced === undefined) continue; // a custom tool: no default entry to drop keys from.
     const kept = new Map(Object.entries(entry));
 
-    const dropped = Object.entries(DEFAULT_TOOL_PATHS[tool]).flatMap(([key, value]) => {
+    const dropped = Object.entries(replaced).flatMap(([key, value]) => {
       const consequence = CONSEQUENCES.get(key);
 
       return key !== 'userScope' && kept.get(key) === undefined && consequence !== undefined ? [`\`${key}\` (${String(value)} — ${consequence})`] : [];
     });
 
     if (dropped.length === 0) continue;
-    notes.push(`toolPaths.${tool} replaces the tool's default entry whole and drops keys the default provides: `
+    notes.push(`${instance?.paths ? `paths in ${instance.location} replaces ${tool}'s` : `toolPaths.${tool} replaces the tool's`} default entry whole and drops keys the default provides: `
       + `${dropped.join(', ')}. Add a key back to restore its surface, or leave it out on purpose.`);
   }
 
