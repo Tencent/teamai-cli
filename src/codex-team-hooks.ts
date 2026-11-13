@@ -229,6 +229,7 @@ export async function reconcileCodexDispatchers(hooksFile: string, codexTrust: C
             hooks: [{
               type: 'command',
               command: getTeamHookDispatchCommand(event, CODEX_TOOL_ID),
+              statusMessage: `teamai-team-${event}`,
               // The Windows form drops the bash wrapper cmd.exe cannot resolve
               // (#1215); the block contract passes through natively (#1209). On
               // `command` the entry keeps the POSIX form on every platform, like

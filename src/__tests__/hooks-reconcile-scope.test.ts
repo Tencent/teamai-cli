@@ -66,7 +66,7 @@ function claudeSettings(): Promise<{ hooks: Record<string, Array<{ description?:
 function cursorSettings(): Promise<{ hooks: Record<string, Array<{ command: string }>> }> {
   return fse.readJson(path.join(home, '.cursor', 'hooks.json'));
 }
-function codexSettings(): Promise<{ hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; timeout?: number }> }>> }> {
+function codexSettings(): Promise<{ hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; timeout?: number; statusMessage?: string }> }>> }> {
   return fse.readJson(path.join(home, '.codex', 'hooks.json'));
 }
 function manifest(): Promise<Record<string, Array<{ id: string }>>> {
@@ -78,7 +78,7 @@ function manifest(): Promise<Record<string, Array<{ id: string }>>> {
 function claudeLocal(): Promise<{ hooks: Record<string, Array<{ description?: string; hooks: Array<{ command: string }> }>> }> {
   return fse.readJson(path.join(project, '.claude', 'settings.local.json'));
 }
-function codexProject(): Promise<{ hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; timeout?: number }> }>> }> {
+function codexProject(): Promise<{ hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; timeout?: number; statusMessage?: string }> }>> }> {
   return fse.readJson(path.join(project, '.codex', 'hooks.json'));
 }
 function mainManifest(): Promise<Record<string, Array<{ id: string }>>> {
@@ -159,6 +159,7 @@ hooks:
     expect(codex.hooks.Stop).toHaveLength(1);
     expect(codex.hooks.Stop.some((h) => h.hooks[0].command.includes('npm run lint'))).toBe(false);
     expect((await codexProject()).hooks.Stop.map((h) => h.hooks[0].command)).toEqual(['npm run lint']);
+    expect((await codexProject()).hooks.Stop[0].hooks[0].statusMessage).toBe('lint');
 
     const m = await manifest();
     expect(m.cursor.map((r) => r.id)).toEqual(['lint']);
@@ -995,7 +996,7 @@ describe('reconcileTeamHooksForConfig — team hooks in the main checkout', () =
       await reconcileTeamHooksForConfig(teamConfig, cfg, { removeAll });
 
       expect((await fse.readJson(file)).hooks.Stop).toEqual(removeAll ? [member] : [
-        member, { hooks: [{ type: 'command', command: 'npm run lint' }] },
+        member, { hooks: [{ type: 'command', command: 'npm run lint', statusMessage: 'lint' }] },
       ]);
       expect((await fse.readJson(file)).hooks.PreToolUse).toEqual([oldEntry]);
       expect(await fse.readJson(legacyManifest)).toEqual({ cursor: cursorRecords });
@@ -1382,7 +1383,7 @@ describe('reconcileTeamHooksForConfig — the form of Codex\'s hook entries', ()
   const COMMAND_WINDOWS = 'cmd.exe /d /s /c "teamai hook-dispatch post-tool-use --tool codex 2>nul & exit /b 0"';
   const deferred = (event: string) => 'if [ -x "$HOME/.teamai/bin/teamai" ]; then TEAMAI_HOOK_LOGIN=deferred "$HOME/.teamai/bin/teamai" '
     + `hook-dispatch ${event} --tool codex 2>/dev/null; else bash -lc "teamai hook-dispatch ${event} --tool codex 2>/dev/null"; fi || true`;
-  const WAITED = [{ hooks: [{ type: 'command', command: COMMAND, commandWindows: COMMAND_WINDOWS, timeout: 10 }] }];
+  const WAITED = [{ hooks: [{ type: 'command', command: COMMAND, statusMessage: 'teamai-PostToolUse', commandWindows: COMMAND_WINDOWS, timeout: 10 }] }];
   // Codex on Windows runs `commandWindows`, which stays today's in either form.
   const LOGIN_DEFERRED = [{ hooks: [{ ...WAITED[0].hooks[0], command: deferred('post-tool-use') }] }];
   // One entry and no matcher: Codex compiles matchers with the Rust regex crate, which has no look-ahead.
@@ -1390,6 +1391,7 @@ describe('reconcileTeamHooksForConfig — the form of Codex\'s hook entries', ()
   const PROMPT_WAITED = [{ hooks: [{
     type: 'command',
     command: 'bash -lc "teamai hook-dispatch prompt-submit --tool codex 2>/dev/null" || true',
+    statusMessage: 'teamai-UserPromptSubmit',
     commandWindows: 'cmd.exe /d /s /c "teamai hook-dispatch prompt-submit --tool codex 2>nul & exit /b 0"',
     timeout: 10,
   }] }];
