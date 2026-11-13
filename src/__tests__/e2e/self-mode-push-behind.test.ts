@@ -680,4 +680,19 @@ describe('self-mode push from a checkout behind the default branch', () => {
       expect(git(['show', `${branch}:.teamai/agents/ops/sample.yaml`], remote)).toContain('Converted instructions.');
     }
   });
+
+  it('pushes to a new and then existing explicit --branch in self mode', async () => {
+    expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
+    fs.writeFileSync(active('.teamai/docs/alpha.md'), '# Alpha\n');
+
+    const first = await runCLI(['push', '--all', '--branch', 'release/knowledge'], projectRoot, home);
+    expect(first.output).toContain('Pushed branch release/knowledge');
+    expect(git(['show', 'release/knowledge:.teamai/docs/alpha.md'], remote)).toBe('# Alpha');
+
+    fs.writeFileSync(active('.teamai/docs/beta.md'), '# Beta\n');
+    const second = await runCLI(['push', '--all', '--branch', 'release/knowledge'], projectRoot, home);
+    expect(second.output).toContain('Pushed branch release/knowledge');
+    expect(git(['show', 'release/knowledge:.teamai/docs/alpha.md'], remote)).toBe('# Alpha');
+    expect(git(['show', 'release/knowledge:.teamai/docs/beta.md'], remote)).toBe('# Beta');
+  });
 });

@@ -1199,7 +1199,7 @@ export async function explicitBranchRefusal(
   if (!selfMode) return null;
   const git = createGit(localPath);
   const localRef = `refs/heads/${branch}`;
-  const exists = await git.raw(['show-ref', '--verify', '--quiet', localRef]).then(() => true, () => false);
+  const exists = await git.raw(['show-ref', '--verify', localRef]).then(() => true, () => false);
 
   if (!exists) return null;
 
