@@ -277,6 +277,25 @@ describe('teamai push --file --path', () => {
     expect(member.gh.calls().filter((call) => call.args[1] === 'create')).toEqual([]);
   });
 
+  it('updates the open pull request of the branch --branch names when the bytes go back to the default branch\'s, so it proposes nothing', async () => {
+    const member = teamMember();
+    const file = localFile(member, 'old-bug.yaml', TASK.replace('Make it start.', 'Make it start within 10 s.'));
+    const args = ['push', '--file', file, '--path', 'benchmarks/frontend/tasks/old-bug.yaml', '--branch', 'tasks/old-bug'];
+    const first = teamai(member, args);
+    expect(first.code, first.output).toBe(0);
+    expect(proposed(member, ['tasks/old-bug'])).toEqual({ 'tasks/old-bug': ['benchmarks/frontend/tasks/old-bug.yaml'] });
+
+    // The member puts the default branch's bytes back. The request still proposes the old bytes, so the
+    // push must say which request is open rather than report that there is nothing to push.
+    fs.writeFileSync(file, TASK);
+    const again = teamai(member, args);
+
+    expect(again.code, again.output).not.toBe(0);
+    expect(again.output).toContain('The open pull request https://github.com/acme/team/pull/1 still proposes other bytes for benchmarks/frontend/tasks/old-bug.yaml');
+    expect(again.output).toContain('Close that request, or push the bytes you want there.');
+    expect(proposed(member, ['tasks/old-bug'])).toEqual({ 'tasks/old-bug': ['benchmarks/frontend/tasks/old-bug.yaml'] });
+  });
+
   it('answers no changes when the path already holds the same bytes', async () => {
     const member = teamMember();
     const file = localFile(member, 'old-bug.yaml', TASK);

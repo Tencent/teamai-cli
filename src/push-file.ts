@@ -214,8 +214,20 @@ async function proposeFile({ source, isExecutable, destination, teamRoot, branch
   const { existing } = placement;
   // A dry run hashes without writing the object.
   const blob = (await git.raw(['hash-object', '--no-filters', ...(dryRun ? [] : ['-w']), '--', source])).trim();
+  const branch = requested ?? generateBranchName(username);
 
   if (existing?.object === blob) {
+    // The default branch holds these bytes, but an open request of the target branch may still propose others:
+    // the member put the file back and expects the request to follow. Closing it is the host's, not teamai's,
+    // so name the request instead of reporting that there is nothing to push.
+    const open = await openRequestOf(top, { branch, target: defaultBranch });
+
+    if (open !== undefined) {
+      refuse(`The open pull request ${open} still proposes other bytes for ${teamPath}, and ${defaultBranch} already holds these. Close that request, or push the bytes you want there.`);
+
+      return { kind: 'stopped' };
+    }
+
     log.info(`No changes to push: ${teamPath} already holds these bytes on ${defaultBranch}.`);
 
     return { kind: 'stopped' };
@@ -229,7 +241,6 @@ async function proposeFile({ source, isExecutable, destination, teamRoot, branch
   }
 
   const title = `[teamai] ${existing ? 'Update' : 'Add'} ${teamPath} from ${username}`;
-  const branch = requested ?? generateBranchName(username);
   // Rebuilding a branch replaces its commits, so only the branch of an open pull request is rebuilt: that request is
   // what the rebuild updates. When the host cannot say, the branch is left alone too.
   const [tip] = (await git.raw(['ls-remote', 'origin', `refs/heads/${branch}`])).trim().split(/\s+/);
