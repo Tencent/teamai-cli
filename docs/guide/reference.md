@@ -250,7 +250,7 @@ teamai webhook test --dry-run
 
 ### Team tools (`tools/`)
 
-A team on an internal build or a fork of a supported tool adds it as an instance of the shipped tool, with no release. An instance sets another command, home and paths. It keeps the tool's launch flags and session, token, hook and MCP formats. An instance with a home of its own keeps sessions of its own; one that keeps the tool's home writes that tool's sessions.
+A team on an internal build or a fork of a supported tool adds it as an instance of the shipped tool, with no release. An instance sets another command, home and paths. It keeps the tool's launch flags and session, token, hook and MCP formats. teamai writes no hooks for an instance of Kiro, Antigravity, Pi, OpenClaw, Hermes, OpenCode or OMP yet, as it installs those tools' hooks in the tool's own home, and Codex may skip the hooks of a Codex instance until you approve them in its `/hooks`. An instance with a home of its own keeps sessions of its own; one that keeps the tool's home writes that tool's sessions.
 
 ```yaml
 # tools/acme-claude.yaml in the team repo

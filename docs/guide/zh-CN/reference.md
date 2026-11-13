@@ -250,7 +250,7 @@ teamai webhook test --dry-run
 
 ### 团队工具（`tools/`）
 
-团队用的是某个已支持工具的内部版本或分支时，可以把它加成内置工具的实例，不用等新版本。实例只改命令、home 和路径，沿用该工具的启动参数，以及会话、token、hook 和 MCP 格式。有自己 home 的实例有自己的会话；沿用该工具 home 的实例写的就是该工具的会话。
+团队用的是某个已支持工具的内部版本或分支时，可以把它加成内置工具的实例，不用等新版本。实例只改命令、home 和路径，沿用该工具的启动参数，以及会话、token、hook 和 MCP 格式。Kiro、Antigravity、Pi、OpenClaw、Hermes、OpenCode 和 OMP 的实例目前还不会装上 teamai 的 hook，因为这些工具的 hook 装在工具自己的 home 里；Codex 实例的 hook 在你于它的 `/hooks` 里批准之前，Codex 可能会跳过。有自己 home 的实例有自己的会话；沿用该工具 home 的实例写的就是该工具的会话。
 
 ```yaml
 # 团队仓库中的 tools/acme-claude.yaml
