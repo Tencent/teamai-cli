@@ -242,6 +242,21 @@ describe('the home of an instance', () => {
     expect(storeDirOf('acme-claude', undefined)).toBe(path.join(moved, 'projects'));
   });
 
+  it('makes, at init in user scope, the folders of the home its variable moves and none in the home it would have', async () => {
+    const moved = path.join(root, 'acme');
+    vi.stubEnv('ACME_CLAUDE_CONFIG_DIR', moved);
+    const repo = teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE });
+    const { config } = await load(repo);
+    const { seedSelfModeToolDirs } = await import('../known-agents.js');
+    const local: LocalConfig = { repo: { localPath: repo, remote: 'https://example.com/acme/team.git' }, username: 'member', additionalRoles: [], scope: 'user', enabledAgents: ['acme-claude'] };
+
+    if (!config) throw new Error('the team config did not load');
+
+    expect(await seedSelfModeToolDirs(local, config)).toEqual(['acme-claude']);
+    expect(fs.readdirSync(moved).sort()).toEqual(['agents', 'rules', 'skills']);
+    expect(fs.existsSync(path.join(home, '.acme-claude'))).toBe(false);
+  });
+
   it('reads where the tool it extends reads when it sets its own paths, which teamai writes to whole', async () => {
     const repo = teamRepo({ 'tools/acme-claude.yaml': `${ACME_CLAUDE}paths: { skills: .claude/skills, rules: .claude/rules }\n` });
     const { config } = await load(repo);

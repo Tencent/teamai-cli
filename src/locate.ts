@@ -1437,11 +1437,12 @@ const HOOK_LIST_KEY = ['hooks'] as const;
  * self mode too (ZCode's CLI) gets them there whatever `baseDir` says.
  */
 export function hookSettingsFile(tool: string, baseDir: string, relative: string, host: Host = realHost()): string {
-  const p = host.path;
+  return channelsOf(tool).hooks.self === 'user' ? underToolHome(tool, relative, host) : toolPathUnder(tool, baseDir, relative, host);
+}
 
-  if (channelsOf(tool).hooks.self !== 'user' && !samePathOn(p, baseDir, host.home)) return p.join(baseDir, ...relative.split('/'));
-
-  return underToolHome(tool, relative, host);
+/** `relative`, a path of `tool`'s under `baseDir`: under a project as it is, under `$HOME` in the tool's home, which a recorded or env move relocates. */
+export function toolPathUnder(tool: string, baseDir: string, relative: string, host: Host = realHost()): string {
+  return samePathOn(host.path, baseDir, host.home) ? underToolHome(tool, relative, host) : host.path.join(baseDir, ...relative.split('/'));
 }
 
 /** The directory `adapter` writes teamai's hook file into: in its tool's home, which a recorded or env move relocates, on `host`. */

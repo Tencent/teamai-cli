@@ -11,7 +11,7 @@ import {
   detectToolRoot,
 } from './types.js';
 import { isToolId, descriptorOf } from './tool-registry.js';
-import { installOf, isInstalledFor, locate, ownOf } from './locate.js';
+import { installOf, isInstalledFor, locate, ownOf, toolPathUnder } from './locate.js';
 import type { LocalConfig, TeamaiConfig, Scope } from './types.js';
 import type { ToolId } from './tools.js';
 import { getUserHome } from './utils/home.js';
@@ -257,7 +257,7 @@ async function seedToolRoots(
   const dirPaths = [paths?.skills, paths?.rules].filter((p): p is string => !!p);
 
   if (dirPaths.length === 0 && agentsDir === null && fallbackSkills) dirPaths.push(fallbackSkills);
-  const dirs = [...dirPaths.map((dirPath) => path.join(baseDir, dirPath)), ...agentsDir === null ? [] : [agentsDir]];
+  const dirs = [...dirPaths.map((dirPath) => toolPathUnder(tool, baseDir, dirPath)), ...agentsDir === null ? [] : [agentsDir]];
 
   for (const dir of dirs) await ensureDir(dir);
 
@@ -268,7 +268,7 @@ async function seedToolRoots(
     const claudemdRoot = toolGateRoot(tool, claudemd, toolRoots);
 
     if (claudemdRoot !== claudemd) {
-      await ensureDir(path.join(baseDir, claudemdRoot));
+      await ensureDir(toolPathUnder(tool, baseDir, claudemdRoot));
       ensuredAnything = true;
     }
   }
@@ -300,9 +300,9 @@ async function seedHookInstallRoot(
     const root = toolGateRoot(tool, filePath, toolRoots);
 
     if (root !== filePath) {
-      await ensureDir(path.join(baseDir, root));
+      await ensureDir(toolPathUnder(tool, baseDir, root));
     } else {
-      const full = path.join(baseDir, filePath);
+      const full = toolPathUnder(tool, baseDir, filePath);
 
       if (!await pathExists(full)) await writeJson(full, {});
     }
