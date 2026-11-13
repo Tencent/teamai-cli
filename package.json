@@ -10,6 +10,7 @@
     "teamai-sandbox-codex": "dist/runtime-sandbox.js",
     "teamai-sandbox-codebuddy": "dist/runtime-sandbox.js",
     "teamai-sandbox-opencode": "dist/runtime-sandbox.js",
+    "teamai-runtime-t3": "dist/runtime-t3.js",
     "teamai-runtime-paseo": "dist/runtime-paseo.js"
   },
   "files": [
