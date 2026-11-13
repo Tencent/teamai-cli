@@ -82,6 +82,9 @@ rule.valid('allows a comparison of a closed union of shipped ids: a resolved fie
 export const b = (format: AgentTool['format']) => format === 'claude';
 export const c = (target: { tool: 'claude' | 'codex' }) => { switch (target.tool) { case 'claude': return 1; case 'codex': return 2; default: { const unhandled: never = target.tool; return unhandled; } } };`, { filename: 'src/new-area/reader.ts' });
 
+rule.valid('allows a comparison of a Paseo tool, the shipped tool a Paseo provider runs', `import type { PaseoTool } from './providers.js';
+export const a = (tool: PaseoTool) => tool === 'codex';`, { filename: 'src/new-area/reader.ts' });
+
 rule.invalid('rejects a switch whose default holds another value as never', `export const a = (tool: string, other: never) => { switch (tool) { case 'codex': return 1; default: { const unhandled: never = other; return unhandled; } } };`, undefined, { filename: 'src/new-area/reader.ts' });
 
 rule.invalid('rejects a comparison of a field that holds a tool\'s own name', `export const a = (tool: { name: string }['name']) => tool === 'codex';`, undefined, { filename: 'src/new-area/reader.ts' });

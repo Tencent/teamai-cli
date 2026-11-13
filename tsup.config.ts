@@ -54,6 +54,7 @@ export default defineConfig({
     cli: 'src/index.ts',
     // The sandbox step runtime's own executable.
     'runtime-sandbox': 'packages/runtime-sandbox/src/main.ts',
+    'runtime-paseo': 'packages/runtime-paseo/src/main.ts',
   },
   format: ['esm'],
   target: 'node20',
