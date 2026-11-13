@@ -23,7 +23,7 @@ import {
   WORKBUDDY_AI_ROOT, WORKBUDDY_LIVE_ROOT_LEAVES, WORKBUDDY_TOOL_ID, WORKBUDDY_TOOL_ROOT,
   type HomePaths, type LocalConfig, type Scope, type TeamaiConfig,
 } from './types.js';
-import { absoluteOn, defaultToolHome, homeRoot, movedToolHome, realHost, toolHome, type Host } from './tool-home.js';
+import { absoluteOn, defaultToolHome, homeRoot, instanceHomeDir, movedToolHome, realHost, toolHome, type Host } from './tool-home.js';
 import { openclawTeamHookPluginIn, resolveOpenclawConfigPath, resolveOpenclawWorkspace, type OpenclawWorkspace } from './openclaw-home.js';
 import { hasWorkspaceChildren } from './workspace-children.js';
 
@@ -565,15 +565,24 @@ type Roots = {
   readonly underHome: (relative: string) => string;
 };
 
+/**
+ * `tool`'s home on `host`, and the `$HOME`-relative directory it replaces: a shipped tool's, moved by a record or its
+ * variable, or an instance's own, moved by its `home.env`. Undefined for a custom tool and for an instance that keeps
+ * the home of the tool it extends.
+ */
+function homeOf(tool: string, host: Host): { readonly root: string; readonly dir: string } | undefined {
+  if (isToolId(tool)) return { root: homeRoot(tool), dir: toolHome(tool, host) };
+  const home = toolOf(tool)?.instance?.home;
+
+  return home === undefined ? undefined : { root: home.dir, dir: instanceHomeDir(home, host) };
+}
+
 /** `relative`, a `$HOME`-relative path, re-rooted in `tool`'s home where it falls under the home's root, which a recorded or env move relocates. */
 function underToolHome(tool: string, relative: string, host: Host): string {
   const p = host.path;
+  const home = homeOf(tool, host);
 
-  if (isToolId(tool)) {
-    const root = homeRoot(tool);
-
-    if (relative === root || relative.startsWith(`${root}/`)) return p.join(toolHome(tool, host), ...relative.slice(root.length + 1).split('/'));
-  }
+  if (home && (relative === home.root || relative.startsWith(`${home.root}/`))) return p.join(home.dir, ...relative.slice(home.root.length + 1).split('/'));
 
   return p.join(host.home, ...relative.split('/'));
 }
@@ -588,7 +597,6 @@ function rootsOf(tool: string, install: Install, host: Host): Roots {
     existsNow: (file) => host.existsNow(file),
   };
 
-  const known = isToolId(tool) ? tool : undefined;
   const instance = toolOf(tool)?.instance;
   const base = install.scope === 'user' ? host.home : install.projectRoot;
 
@@ -597,7 +605,7 @@ function rootsOf(tool: string, install: Install, host: Host): Roots {
     : install.toolPaths[tool];
 
   const join = (root: string, relative: string): string => p.join(root, ...relative.split('/'));
-  const home = known === undefined ? undefined : { root: homeRoot(known), dir: toolHome(known, host) };
+  const home = homeOf(tool, host);
   const underHome = (relative: string): string => underToolHome(tool, relative, host);
 
   const relocated = (relative: string): string =>
@@ -608,7 +616,7 @@ function rootsOf(tool: string, install: Install, host: Host): Roots {
   // applies the same rule for pull and push; this is its read-only twin for the
   // user-scope leaves (#1273). Project scope keeps the default root — the swap
   // there is a project path, not the member's data root.
-  const liveRoot = known === WORKBUDDY_TOOL_ID && install.scope === 'user' ? liveWorkbuddyRoot(base, host) : null;
+  const liveRoot = tool === WORKBUDDY_TOOL_ID && install.scope === 'user' ? liveWorkbuddyRoot(base, host) : null;
 
   // A path that still spells one of the leaves the swap moves follows it to the
   // live root. Everything else keeps what it says: `settings.json` because hooks

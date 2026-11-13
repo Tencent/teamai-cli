@@ -271,7 +271,7 @@ teamai workflow start review --tools default=acme-claude
 teamai score --session <id> --source acme-claude --scorer review-quality
 ```
 
-步骤运行 `acme-claude`，会话从 `$ACME_CLAUDE_CONFIG_DIR/projects/` 读取，未设置时从 `~/.acme-claude/projects/` 读取。记录、续跑和打分都算在 `acme-claude` 名下，不会算成 Claude 的。
+步骤运行 `acme-claude`，会话从 `$ACME_CLAUDE_CONFIG_DIR/projects/` 读取，未设置时从 `~/.acme-claude/projects/` 读取；用户级 pull 也写到这个目录。记录、续跑和打分都算在 `acme-claude` 名下，不会算成 Claude 的。
 
 **接受命令。** 设了 `command` 的实例会运行队友指定的程序。第一次运行时在终端里询问：
 

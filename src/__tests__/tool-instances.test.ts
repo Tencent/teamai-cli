@@ -225,6 +225,22 @@ describe('the home of an instance', () => {
     expect(unreadWrites(where, undefined, { kind: 'anywhere' })).toEqual([]);
   });
 
+  it('delivers, in user scope, to the home its variable moves, where it reads its sessions', async () => {
+    const moved = path.join(root, 'acme');
+    vi.stubEnv('ACME_CLAUDE_CONFIG_DIR', moved);
+    fs.mkdirSync(moved, { recursive: true });
+    const { config } = await load(teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE }));
+    const { installOf, isInstalledFor, locate, writesOf } = await import('../locate.js');
+    const { storeDirOf } = await import('../session-flow/adapters/index.js');
+    const install = installOf(config ?? { toolPaths: {} }, { repo: {}, scope: 'user' });
+    const skills = await locate('acme-claude', 'skills', install);
+
+    expect(writesOf(skills).map((place) => place.path)).toEqual([path.join(moved, 'skills')]);
+    expect(isInstalledFor(skills)).toBe(true);
+    expect(writesOf(await locate('acme-claude', 'mcp', install)).map((place) => place.path)).toEqual([path.join(moved, '.claude.json')]);
+    expect(storeDirOf('acme-claude', undefined)).toBe(path.join(moved, 'projects'));
+  });
+
   it('reads where the tool it extends reads when it sets its own paths, which teamai writes to whole', async () => {
     const repo = teamRepo({ 'tools/acme-claude.yaml': `${ACME_CLAUDE}paths: { skills: .claude/skills, rules: .claude/rules }\n` });
     const { config } = await load(repo);

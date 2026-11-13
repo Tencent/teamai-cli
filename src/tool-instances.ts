@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { isBareCommandName } from '@teamai/shared/cli-path';
-import { INSTANCE_KEYS, type ToolInstance, type ToolInstanceHome } from '@teamai/tool-core/instance';
+import { INSTANCE_KEYS, type ToolInstance } from '@teamai/tool-core/instance';
 import { isSafeNamespaceSegment } from './manifest-schema.js';
 import { resolveNamespacedItems, type NamespaceCandidate } from './namespace-resolver.js';
 import { isSessionPlatform } from './session-flow/adapters/platform-facts.js';
@@ -11,7 +11,6 @@ import { isToolId, TOOL_ORDER, useToolInstances } from './tool-registry.js';
 import type { ToolId } from './tools.js';
 import { DEFAULT_TOOL_PATHS, getTeamaiHomeDir, getTrustDir, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type TeamaiConfig } from './types.js';
 import { writeJsonAtomic } from './utils/fs.js';
-import { getUserHome } from './utils/home.js';
 import { log } from './utils/logger.js';
 import { errorOnce, warnOnce } from './utils/warn-once.js';
 import { parseYaml } from './utils/yaml.js';
@@ -182,13 +181,6 @@ function resolveWithoutConflicts(candidates: readonly NamespaceCandidate<Resolve
   log.error(`Tool instance "${resolution.name}" is defined twice in the team repo (${resolution.first.source} and ${resolution.second.source}), so teamai uses neither. Keep one, push it, and run teamai pull.`);
 
   return resolveWithoutConflicts(candidates.filter((candidate) => candidate.name !== resolution.name), namespaces);
-}
-
-/** Where an instance's home is on this machine: its variable's value when set, else its directory under `$HOME`. */
-export function instanceHomeDir(home: ToolInstanceHome, env: NodeJS.ProcessEnv = process.env): string {
-  const moved = home.env === undefined ? undefined : env[home.env];
-
-  return moved ? moved : path.join(getUserHome(), home.dir);
 }
 
 /** The member's own instance directory, `~/.teamai/tools/`: teamai reads it and never writes it. */

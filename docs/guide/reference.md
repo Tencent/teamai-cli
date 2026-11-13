@@ -271,7 +271,7 @@ teamai workflow start review --tools default=acme-claude
 teamai score --session <id> --source acme-claude --scorer review-quality
 ```
 
-The step runs `acme-claude`, and its session is read from `$ACME_CLAUDE_CONFIG_DIR/projects/`, else `~/.acme-claude/projects/`. It is recorded, resumed and scored as `acme-claude`'s, never as Claude's.
+The step runs `acme-claude`, and its session is read from `$ACME_CLAUDE_CONFIG_DIR/projects/`, else `~/.acme-claude/projects/`, and a user-scope pull writes to that same home. It is recorded, resumed and scored as `acme-claude`'s, never as Claude's.
 
 **Accepting the command.** An instance that sets `command` runs a program a teammate named. Its first run asks in a terminal:
 

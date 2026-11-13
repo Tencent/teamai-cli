@@ -14,7 +14,7 @@ import { locatesOwnStore, type SessionHost, type StoredPlatformDefinition } from
 import { executablesOf } from '../../tool-launch/tools.js';
 import { isSessionPlatform, isStoredSessionPlatform, type SessionPlatform, type StoredSessionPlatform } from './platform-facts.js';
 import { sessionStoreDir } from '../../locate.js';
-import { instanceHomeDir } from '../../tool-instances.js';
+import { instanceHomeDir } from '../../tool-home.js';
 import { instanceNames, instancePlatform } from '../../tool-registry.js';
 
 /**
