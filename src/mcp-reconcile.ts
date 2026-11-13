@@ -1924,7 +1924,7 @@ export async function judgeTeamaiOnlyMcpConfigs(
   localConfig: LocalConfig,
 ): Promise<Array<{ file: string; teamaiOnly: boolean }>> {
   if (localConfig.scope !== 'project') return [];
-  const targets = await resolveMcpTargets(teamConfig, localConfig);
+  const targets = (await resolveMcpTargets(teamConfig, localConfig)).filter((t) => t.projectScope && t.projectKey === undefined);
   const { manifest } = await loadMcpManifest(localConfig, true);
   const verdicts: Array<{ file: string; teamaiOnly: boolean }> = [];
 
@@ -2521,10 +2521,11 @@ export async function mcpConfigsNotProvenClean(
     const cfgTargets: McpTarget[] = [];
     recordedBy.set(cfg, cfgTargets);
     const { files: ledger } = await readResolvedMcpFiles(cfg);
-    const unmapped = [...await unmappedMcpDefaults(await resolveMcpTargets(teamConfig, cfg, { includeUndetected: true }))];
+    const projectTargets = (await resolveMcpTargets(teamConfig, cfg, { includeUndetected: true })).filter((t) => t.projectScope);
+    const unmapped = [...await unmappedMcpDefaults(projectTargets)];
     unmappedBy.set(cfg, unmapped);
 
-    for (const target of await resolveMcpTargets(teamConfig, cfg, { includeUndetected: true })) {
+    for (const target of projectTargets) {
       const key = await realFilePath(target.file);
       cfgTargets.push(target);
 
@@ -3071,7 +3072,7 @@ export async function protectLocalAgentMcpConfigs(
   localConfig: LocalConfig,
   options: { rerun?: string } = {},
 ): Promise<void> {
-  const mapped = await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true });
+  const mapped = (await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true })).filter((t) => t.projectScope);
   const unmapped = await unmappedMcpDefaults(mapped);
   const held = await localAgentCredentialFiles(localConfig, mapped.filter((target) => !unmapped.has(target)));
 
@@ -3101,7 +3102,7 @@ async function protectProjectMcpConfigs(
   const { manifestPath, manifest } = await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true });
   const vars = await buildVarTable(localConfig);
   const ctx = once(() => buildDesiredMcpContext(teamConfig, localConfig));
-  const mapped = await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true });
+  const mapped = (await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true })).filter((t) => t.projectScope);
   const unmapped = await unmappedMcpDefaults(mapped);
   // Tried before its write this run, and reported there.
   const targets = mapped.filter((target) => !unmapped.has(target) && exclusions.get(target.file)?.kind !== 'failed');
@@ -3263,7 +3264,7 @@ export async function releaseCleanMcpGitExcludes(teamConfig: TeamaiConfig, local
   try {
     await releaseMcpGitExcludes(teamConfig, localConfig, projectRoot, []);
     const { manifest } = await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true });
-    const mapped = await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true });
+    const mapped = (await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true })).filter((t) => t.projectScope);
     const unmapped = await unmappedMcpDefaults(mapped);
     const targets = mapped.filter((target) => !unmapped.has(target));
     await settleRecordedMcpConfigs(localConfig, await observeMcpConfigs(localConfig, targets, manifest, async () => false));
@@ -3295,7 +3296,7 @@ async function releaseMcpGitExcludes(
   const dirs = [projectRoot, ...await projectCheckouts(localConfig)];
 
   const files = [
-    ...(await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true })).map((target) => target.file),
+    ...(await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true })).filter((t) => t.projectScope).map((target) => target.file),
     ...Object.keys((await readResolvedMcpFiles(localConfig)).files),
   ];
 
@@ -3495,7 +3496,7 @@ async function reconcileTargets(
     ? targets.filter((t) => {
       const legacy = legacyProjectKeyOf(t, localConfig.scope);
 
-      return !t.projectKey && manifest[managedMcpManifestKey(t.tool, true)] === undefined
+      return t.projectScope && !t.projectKey && manifest[managedMcpManifestKey(t.tool, true)] === undefined
         && (legacy === undefined || manifest[legacy] === undefined);
     }).map((t) => t.tool) : []);
 
