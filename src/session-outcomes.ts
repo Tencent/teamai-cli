@@ -2,7 +2,7 @@
  * What the member's finished sessions delivered, folded into the usage report once each (#1387).
  *
  *   report ─ fold(): each member session of the scope's log → its facts in reported-outcomes.json, until it is
- *            │       finished (6 hours idle, or unattended at a drain); a finished one gets its outcomes (learnings recorded for it, commits
+ *            │       finished (idle for teamai-finished-sessions's idle, or unattended at a drain); a finished one gets its outcomes (learnings recorded for it, commits
  *            │       its member made, the open pull request holding one, as a report found it) and adds to its
  *            │       (run mode, kind) rows
  *            └ push confirmed ─ markReported(): flagged reported, and a `counted` session outcome event written
@@ -18,7 +18,7 @@ import { RunModeSchema } from './launch-context.js';
 import { appendEvent, dataHomeKey, readSessionOutcomes, SESSION_OUTCOME_RETENTION_MS, sessionRuns } from './dashboard-collector.js';
 import { addCounts, uniqueOutcomes, type SessionOutcomeEvent, type SessionUsage, type WorkOutcome } from './outcomes.js';
 import { interventionsEntry, promptTokensEntry, snapshotPathIn, type ReportedInterventions, type ReportedPromptTokens } from './session-owners.js';
-import { FINISHED_AFTER_MS } from './session-flow/session-work.js';
+import { SessionWork } from './session-flow/session-work.js';
 import { getDataHome, type DashboardEvent, type LocalConfig, type UserOutcomeStats } from './types.js';
 import { pathExists, readJson, writeJson } from './utils/fs.js';
 import { checkoutForRepoAnchor, getCurrentBranch, getDefaultBranch, getHeadCommit } from './utils/git.js';
@@ -105,13 +105,13 @@ async function readBaseline(config: LocalConfig): Promise<Record<string, Entry> 
   return parsed.success ? parsed.data : undefined;
 }
 
-function isIdle(facts: Facts, now: number): boolean {
-  return Date.parse(facts.activeAt) + FINISHED_AFTER_MS <= now;
+function isIdle(facts: Facts, now: number, idleMs: number): boolean {
+  return Date.parse(facts.activeAt) + idleMs <= now;
 }
 
-/** Idle for 6 hours, or unattended at a drain: an ephemeral runner's sessions are counted before the job ends. */
-function isFinished(facts: Facts, { now, drain }: Pick<FoldInput, 'now' | 'drain'>): boolean {
-  return isIdle(facts, now) || (drain !== undefined && facts.runMode === 'unattended');
+/** Idle for `idleMs`, or unattended at a drain: an ephemeral runner's sessions are counted before the job ends. */
+function isFinished(facts: Facts, { now, drain }: Pick<FoldInput, 'now' | 'drain'>, idleMs: number): boolean {
+  return isIdle(facts, now, idleMs) || (drain !== undefined && facts.runMode === 'unattended');
 }
 
 /** The facts the scope's member events give each session, merged over what an earlier report kept. */
@@ -273,6 +273,7 @@ async function lookUpPr({ cwd, branch, commits }: { cwd: string; branch: string;
 async function fold(input: FoldInput): Promise<OutcomeFold> {
   const outcomes = await scopeOutcomes(input);
   const kept = await readBaseline(input.config);
+  const { ms: idleMs } = await SessionWork.finishedAfter(input.config);
   const baseline = kept ?? {};
   // Written on the first report even with no session, so a later one never takes its sessions for an earlier release's.
   let changed = kept === undefined;
@@ -284,7 +285,7 @@ async function fold(input: FoldInput): Promise<OutcomeFold> {
     const facts = merged(entry?.facts, seen);
 
     // A drain's first report is an ephemeral runner's every report, so only idle sessions are an earlier release's.
-    if (kept === undefined && isIdle(facts, input.now)) {
+    if (kept === undefined && isIdle(facts, input.now, idleMs)) {
       baseline[sessionId] = { reported: true };
     } else if (JSON.stringify(facts) !== JSON.stringify(entry?.facts)) {
       baseline[sessionId] = { reported: false, facts };
@@ -295,7 +296,7 @@ async function fold(input: FoldInput): Promise<OutcomeFold> {
   if (changed) await writeJson(baselinePath(input.config), baseline);
 
   const pending = Object.entries(baseline).flatMap(([sessionId, entry]) =>
-    (entry.reported ? [] : [{ sessionId, facts: entry.facts, isDue: isFinished(entry.facts, input) }]));
+    (entry.reported ? [] : [{ sessionId, facts: entry.facts, isDue: isFinished(entry.facts, input, idleMs) }]));
 
   // A session's pull request is looked up at each report until one is found, so one merged before the session is
   // finished still counts, and once more when it is; the answer is kept for a report whose push fails.

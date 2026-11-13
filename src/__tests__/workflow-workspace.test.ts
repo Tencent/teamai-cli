@@ -22,7 +22,7 @@ import { parseWorkflow } from '../workflow/parse.js';
 import { readRun, updateRun } from '../workflow/store.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
 import { branchName, stepRoleOf } from '../workflow/workspace.js';
-import { applyBaseConfig, ensureWorktree, git as workflowGit, hooksPath, pushIfOrigin, worktreePath } from '../workflow/worktree.js';
+import { applyBaseConfig, ensureWorktree, git as workflowGit, hooksPath, pushIfOrigin, removeWorktree, removeWorktreeSetup, worktreePath } from '../workflow/worktree.js';
 import { launchHoldsCheckout } from '../launch-context.js';
 import { teamDelivery } from '../pull.js';
 import { pendingRecords } from '../workflow/records.js';
@@ -514,6 +514,39 @@ steps:
     expect(git(['show', `${joined}:joined.txt`], workspace)).toBe('J');
     expect(git(['show', `${joined}:left.txt`], workspace)).toBe('L');
     expect(git(['show', `${joined}:right.txt`], workspace)).toBe('R');
+  });
+
+  it.each([
+    ['', [], 4],
+    [' and the member\'s own extensions.worktreeConfig', [['extensions.worktreeConfig', 'true']], 3],
+    [' and the member\'s extensions.worktreeConfig=false and hooks', [['extensions.worktreeConfig', 'false'], ['core.hooksPath', 'member-hooks']], 4],
+  ])('undoes what its worktrees set up in the checkout once none is left, and keeps it while one is%s', async (_name, memberSettings, undone) => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: One change on its own branch.
+steps:
+  - id: change
+    workspace: new
+    command: node -e "require('fs').writeFileSync('new.txt','yes')"
+`);
+    const exclude = path.join(workspace, '.git', 'info', 'exclude');
+    const excludeBefore = fs.readFileSync(exclude, 'utf8');
+    for (const [key, value] of memberSettings) git(['config', key, value], workspace);
+    const configBefore = git(['config', '--local', '--list'], workspace);
+    expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const left = await ensureWorktree(workspace, 'teamai/left/p1', 'HEAD');
+    if ('error' in left) throw new Error(left.error);
+
+    expect(await removeWorktreeSetup(workspace)).toEqual([]);
+    expect(fs.readFileSync(exclude, 'utf8')).not.toBe(excludeBefore);
+
+    await removeWorktree(workspace, left.dir);
+    expect(await removeWorktreeSetup(workspace, { dryRun: true })).toHaveLength(undone);
+    expect(await removeWorktreeSetup(workspace)).toHaveLength(undone);
+    expect(fs.readFileSync(exclude, 'utf8')).toBe(excludeBefore);
+    expect(git(['config', '--local', '--list'], workspace)).toBe(configBefore);
+    expect(fs.existsSync(path.join(workspace, '.teamai'))).toBe(false);
+    expect(git(['status', '--porcelain'], workspace)).toBe('');
   });
 
   it('says where a failed push left the commits, so pushing them from there works', async () => {

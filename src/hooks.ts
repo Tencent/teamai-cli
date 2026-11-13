@@ -146,6 +146,7 @@ interface CursorHooksJson {
 type CodexHookEntry = {
   type: string;
   command: string;
+  statusMessage?: string;
   /** The command Codex runs instead on Windows, where its hook shell is PowerShell. */
   commandWindows?: string;
   timeout?: number;
@@ -635,7 +636,16 @@ async function judgeUnrecordedTeamEntries(
     if (format === 'claude' && tool === 'claude') historicalDefs.push(...scopedTeamDefs(history, opts.teamHookProjectRoot, tool, true, opts.teamHookChildRoots));
 
     return renders = [...teamDefsForTool(scopedDefs, tool), ...teamDefsForTool(historicalDefs, tool)]
-      .map(def => ({ def, ...render(def) }));
+      .flatMap((def) => {
+        const current = { def, ...render(def) };
+
+        if (format !== 'codex') return [current];
+        // Older Codex entries have no label; only their exact render proves ownership.
+        const legacy = toCodexEntry(def);
+        delete legacy.hooks[0].statusMessage;
+
+        return [current, { def, event: def.event, entry: legacy }];
+      });
   };
 
   const marked = isMarkedTeamaiHookCommand;
@@ -2030,7 +2040,11 @@ function toCursorEntry(def: HookDef): CursorHookEntry {
 function toCodexEntry(def: HookDef): CodexHookMatcher {
   const commandWindows = codexWindowsCommand(def.command);
 
-  const hook: CodexHookEntry = { type: 'command', command: def.command };
+  const hook: CodexHookEntry = {
+    type: 'command',
+    command: def.command,
+    statusMessage: def.source === 'team' ? def.key : `teamai-${def.event}`,
+  };
 
   if (commandWindows !== undefined) hook.commandWindows = commandWindows;
 
@@ -2679,14 +2693,16 @@ type CodexHookPlan = Record<string, CodexGroupSlot[] | null>;
  * byte-identical (#993). Codex keys a member's approval of a group by its
  * position (#1250), so a write that moves a kept group in the public Codex's
  * file carries the approvals of the groups that moved to their new keys, unless
- * `codexTrust` is disabled; no other write starts Codex. True when the file was
- * written.
+ * `codexTrust` is disabled. `withdrawsDroppedTrust` also takes the approvals of
+ * the handlers the write drops out of Codex's config; no other write starts
+ * Codex. True when the file was written.
  */
 export async function editCodexHookFile(
   file: string,
   tool: string,
   plan: (hooks: Readonly<Record<string, readonly JsonValue[]>>) => CodexHookPlan,
   codexTrust: CodexTrustPolicy,
+  { withdrawsDroppedTrust = false } = {},
 ): Promise<boolean> {
   const doc = await readHookFile<CodexHooksJson>(file, {}, 'codex', hookSyntaxOf(tool));
   // readHookFile refused a file whose hooks are not an object of lists.
@@ -2737,7 +2753,13 @@ export async function editCodexHookFile(
     await writeHookFile(file, codexFormatDocument(tool, { ...doc, hooks: next }));
   };
 
-  if (codexTrust.kind === 'disabled' || !isCodexTrustGatedTool(tool) || [...retained].every(([to, from]) => to === from)) {
+  const keptFrom = new Set(retained.values());
+
+  const dropsHandlers = Object.entries(hooks).some(([event, groups]) => groups.some((group, index) =>
+    hookFileEntryOf(group)?.hooks?.some((_, handler) => !keptFrom.has(codexHookKey(file, event, index, handler)))));
+
+  if (codexTrust.kind === 'disabled' || !isCodexTrustGatedTool(tool)
+    || ([...retained].every(([to, from]) => to === from) && !(withdrawsDroppedTrust && dropsHandlers))) {
     await write();
 
     return true;
@@ -2828,7 +2850,7 @@ async function reconcileCodexFormat(
       });
 
       return [event, slots];
-    })), opts.codexTrust ?? { kind: 'disabled' });
+    })), opts.codexTrust ?? { kind: 'disabled' }, { withdrawsDroppedTrust: opts.removeAll === true });
 
   if (changed) {
     log.success(`${opts.removeAll ? 'Removed' : 'Updated'} teamai hooks in ${hooksPath}`);

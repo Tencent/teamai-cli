@@ -253,7 +253,9 @@ describe('multi-repo checkout delivery', () => {
 
     expect(dispatch(linked).stdout).toBe('');
     expect(fs.existsSync(indexFile) ? json(indexFile).projects : {}).toEqual({});
-    expect(read(path.join(m.home, '.codex/hooks.json'))).not.toContain('--team-hooks');
+    // The only install on the machine goes, so its machine-wide hook file may go with it (#1825).
+    const homeHooks = path.join(m.home, '.codex/hooks.json');
+    expect(fs.existsSync(homeHooks) ? read(homeHooks) : '').not.toContain('--team-hooks');
   });
 
   it('cleans older team hooks from an inherited clone Git directory and keeps member hooks', () => {

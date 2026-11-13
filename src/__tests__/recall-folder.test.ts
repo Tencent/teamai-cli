@@ -87,7 +87,7 @@ describe('a team replacement of rules/teamai-recall/ (#1787)', () => {
     expect(await deployed('en')).toBe(golden('rule.en.md'));
     expect(await blocks('en')).toMatchObject({ recall: golden('block.en.md'), directRecall: golden('block-direct.en.md') });
     expect(vi.mocked(log.warn).mock.calls.map(([message]) => String(message))).toContain(
-      'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: rules/teamai-recall/RULE.en.md does not contain '
+      'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: RULE.en.md does not contain '
       + '"Recall skips the older index". Fix the folder in the team repo.',
     );
   });
@@ -159,8 +159,8 @@ describe('a team replacement of rules/teamai-recall/ (#1787)', () => {
 
     expect(await blocks()).toMatchObject({ recall: golden('block.md'), directRecall: golden('block-direct.md') });
     expect(vi.mocked(log.warn).mock.calls.map(([message]) => String(message))).toContain(
-      'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: rules/teamai-recall/block.md names ${TEAMAI_RULE_DIR}, '
-      + 'but a recall file is delivered as its text, and no other file of the folder is. Put what it points at in the file. Fix the folder in the team repo.',
+      'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: block.md names ${TEAMAI_RULE_DIR}, '
+      + 'but the text of a teamai default rule is delivered alone, without the other files of its folder. Put what it points at in the file. Fix the folder in the team repo.',
     );
   });
 

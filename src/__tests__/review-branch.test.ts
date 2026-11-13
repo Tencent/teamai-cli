@@ -642,8 +642,8 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
       level: 'fail',
       check: 'structure',
       path: 'rules/teamai-recall/',
-      message: 'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: rules/teamai-recall/RULE.md does not contain '
-        + '"Nothing was searched:". Fix the folder in the team repo.',
+      message: 'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: RULE.md does not contain '
+        + '"Nothing was searched:"; RULE.md does not contain "Recall skips the older index". Fix the folder in the team repo.',
     }]]);
   });
 
@@ -659,8 +659,8 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
   it('fails a replacement of a default hook that pull refuses, with what pull prints', async () => {
     const shipped = path.join(process.cwd(), 'hooks', 'teamai-friction-reminder');
     await fse.copy(shipped, path.join(repoDir, 'hooks', 'teamai-friction-reminder'));
-    const marker = path.join(repoDir, 'hooks', 'teamai-friction-reminder', 'HOOK.yaml');
-    await fse.writeFile(marker, (await fse.readFile(marker, 'utf8')).replace('min_tools: 15', 'min_tools: 5000'));
+    const params = path.join(repoDir, 'hooks', 'teamai-friction-reminder', 'params.yaml');
+    await fse.writeFile(params, (await fse.readFile(params, 'utf8')).replace('min_tools: 15', 'min_tools: 5000'));
 
     const review = await reviewBranchDir(BRANCH, repoDir);
 
@@ -671,6 +671,18 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     }]]);
   });
 
+  it('fails a default workflow\'s params.yaml that pull refuses, with what pull prints', async () => {
+    await fse.outputFile(path.join(repoDir, 'workflows', 'teamai-promote-learning', 'params.yaml'), 'min_confidence: 2\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect([review.ok, findings(review).filter((f) => f.level === 'fail').map(({ check, path: file, message }) => ({ check, file, message }))]).toEqual([false, [{
+      check: 'workflows',
+      file: 'workflows/teamai-promote-learning/params.yaml',
+      message: 'workflows/teamai-promote-learning/params.yaml:1: field "(root)": workflows/teamai-promote-learning/params.yaml: min_confidence must be a number from 0 to 1',
+    }]]);
+  });
+
   const stray = (file: string): string => `${file} replaces no file of teamai's default, so it is not used and teamai's files stay in force. `
     + 'Name it after the file it replaces, or replace the folder\'s marker too, so it can name the file.';
 
@@ -678,6 +690,7 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     { folder: 'hooks/teamai-friction-reminder', own: 'problem.md', typo: 'problems.md' },
     { folder: 'rules/teamai-recall', own: 'block.md', typo: 'blocks.md' },
     { folder: 'workflows/teamai-import-from-repo', own: 'narrative.md', typo: 'narative.md' },
+    { folder: 'workflows/teamai-codebase-deep-enrich', own: 'component.md', typo: 'componet.md' },
   ])('passes $folder/ holding only the file it changes, and fails it with a file that replaces nothing', async ({ folder, own, typo }) => {
     const put = (file: string): Promise<void> => fse.outputFile(path.join(repoDir, ...folder.split('/'), file), '[acme] Ours.\n');
     await put(own);

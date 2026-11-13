@@ -967,12 +967,12 @@ const todowriteHintHandler: HookHandler = {
     const { shouldSkipTodoWriteHint, buildHintMessage } = await import('./todowrite-hint.js');
 
     if (shouldSkipTodoWriteHint(deriveSessionId(stdin))) return null;
-    const { DefaultHooks } = await import('./default-hooks.js');
+    const { DefaultFolders } = await import('./default-folders.js');
 
     return JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
-        additionalContext: buildHintMessage(await DefaultHooks.load('teamai-todowrite-hint', config), await teamAgentLanguage(config)),
+        additionalContext: buildHintMessage(await DefaultFolders.load({ kind: 'hooks', name: 'teamai-todowrite-hint' }, config), await teamAgentLanguage(config)),
       },
     });
   },
@@ -1098,8 +1098,8 @@ const teamEnvHintHandler: HookHandler = {
       return description ? `${name} (${description})` : name;
     }).join(', ');
 
-    const { DefaultHooks } = await import('./default-hooks.js');
-    const hook = await DefaultHooks.load('teamai-env-hint', config);
+    const { DefaultFolders } = await import('./default-folders.js');
+    const hook = await DefaultFolders.load({ kind: 'hooks', name: 'teamai-env-hint' }, config);
     const language = await teamAgentLanguage(config);
 
     return JSON.stringify({

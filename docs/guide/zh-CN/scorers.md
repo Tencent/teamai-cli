@@ -555,7 +555,7 @@ daily_limit: 10                                  # 按数据目录计数：在�
 |---|---|---|
 | `off` | 什么都不做。默认值。 | 什么都不做。 |
 | `ask` | 摩擦提醒提供 [`teamai-share-learnings`](workflow.md#teamai-share-learnings-和-teamai-share-session) 时，它提议抽样选中该会话的评分器，成员确认后由它们评判。 | 等同于 `off`，因为没有人回答。 |
-| `auto` | 会话六小时没有任何活动后，由会话启动时开始的 [`teamai-finished-sessions`](#teamai-finished-sessions) 运行评判。 | 在任务结束前运行 `teamai score --drain` 时评判。默认值。 |
+| `auto` | 会话六小时（或团队设定的 `idle`）没有任何活动后，由会话启动时开始的 [`teamai-finished-sessions`](#teamai-finished-sessions) 运行评判。 | 在任务结束前运行 `teamai score --drain` 时评判。默认值。 |
 
 每种模式单独解析，取下面第一个设置了它的位置：成员 `config.yaml` 中的 `scoring.sessions`、生效命名空间的 `scoring.yaml`、根目录的 `scorers/scoring.yaml`、默认值。两个生效命名空间不一致时，最严格的策略生效（`off`，其次 `ask`，最后 `auto`），`daily_limit` 也取最低值。只写一种模式的映射（例如 `{ attended: ask }`）会把另一种模式留给下一级：
 
@@ -732,7 +732,7 @@ teamai:adoption:b27e04… (retry-policy)          → ignored   judged_count +1
 
 ```text
 teamai-finished-sessions   private, invoke: deny, timeout 30m
-  sessions   teamai session list --finished --idle 6h   the finished sessions to archive or judge here
+  sessions   teamai session list --finished             the finished sessions to archive or judge here
   share      teamai-share-session, for each             its publish step, then its teamai-score step
   lapsed     teamai score subjects --lapsed             passes and sessions whose judging lapsed, and passes no run scored, each with its scorers
   rescore    teamai-score, for each                     starts their judging again with those scorers only
@@ -748,12 +748,12 @@ $ teamai workflow start teamai-finished-sessions --driver local --inputs '{"publ
 
 | 时钟 | 设置位置 | 默认 |
 |---|---|---|
-| 会话算作已结束 | `sessions` 步骤的 `--idle` | 最后一次活动后 6 小时；无人值守的会话在 drain 到达它时 |
+| 会话算作已结束 | 文件夹 `params.yaml` 的 `idle` | 最后一次活动后 6 小时；无人值守的会话在 drain 到达它时 |
 | 运行结束 | 文件的 `timeout` | 30 分钟；它取消的工作会过期，下一次运行会重新开始 |
 | 本机没有 driver 领取的评审 | share-session 的 `score` 步骤的 `timeout` | 30 分钟；会话保持已发布，它的评审过期 |
 | 过期被重新开始 | 评分标记 | 直到第四次过期，且只在运行最后一次变更后的 14 天内；只用标记里的评分器，包括有人点名的那个，不抽样；点名过的不会被 `daily_limit` 拒绝；不加入会话策略此时会选的其他评分器 |
 
-团队在团队仓库的 `workflows/teamai-finished-sessions.yaml` 中修改这些，它会替换默认文件：`--idle 1h` 在会话最后一次活动一小时后就处理它，`timeout` 限定一次运行的时长。也可以在那里添加或调整步骤的顺序。团队不能改变的部分留在 CLI 中：自动启动不传递 agent 证据，只传策略输入。
+团队在团队仓库的 `workflows/teamai-finished-sessions/params.yaml` 中修改空闲时长：写 `idle: 1h` 就在会话最后一次活动一小时后处理它，范围是 `10m` 到 `7d`。dashboard、会话分享的提议和用量报告的产出会在同一时间把会话算作已结束。在这个文件夹里放自己的 `WORKFLOW.yaml` 可以修改步骤和它们的 `timeout`，也可以添加或调整步骤的顺序；文件夹的 [README](https://github.com/Tencent/teamai-cli/blob/main/workflows/teamai-finished-sessions/README.zh-CN.md) 列出了需要保留的部分。团队不能改变的部分留在 CLI 中：自动启动不传递 agent 证据，只传策略输入。
 
 ### 无人值守任务结束前运行 drain
 
@@ -768,7 +768,7 @@ $ teamai score --drain
 
 每个无人值守的 driver 都以 `teamai score --drain` 结束。本地驱动在无人值守运行结束时自动执行它，除非无人值守会话的发布和评判都设为 `off`，或该运行本身是 `teamai-finished-sessions` 运行。skill 驱动、T3、Paseo 和 CI 脚本把它作为最后一步执行。它按以下顺序工作：
 
-1. 在无人值守模式下，本数据目录记录为无人值守的每个已捕获会话都算已结束，包括调用它的会话。有人值守的会话仍按六小时规则。
+1. 在无人值守模式下，本数据目录记录为无人值守的每个已捕获会话都算已结束，包括调用它的会话。有人值守的会话仍按空闲规则，团队未修改时为六小时。
 2. 像会话启动那样在这里启动一次 [`teamai-finished-sessions`](#teamai-finished-sessions) 运行，并用 `workflows.driver` 指定的驱动（未指定则用本地驱动）驱动它。指定的驱动本机不运行时，运行会等待该驱动，drain 会说明如何在本机驱动它。该运行在会话所属模式的 `publish` 为 `auto` 时归档已结束的会话，并在 `daily_limit` 内评判策略允许的抽样会话。它为评审过期的每个 pass 和会话、运行未评分的每个 `start: workflow` pass，以及升级时从评审尝试带过来的未完成 pass 和会话重新启动 `teamai-score`，但运行最后一次变更已超过 14 天的 pass 除外。已在处理该数据目录的运行会被留给它，drain 会说明这一点：等它结束后再运行一次 drain。
 3. 像 `score --push` 一样发布每个待发布的标签，以及 [`deliver: publish`](workflow.md#发布到数据分支) 步骤留在数据分支上待发布的内容，并像 `teamai pull` 一样发布运行当时没能发布的工作流运行记录。
 4. 当前模式的 `publish` 为 `auto` 时，把在这里驱动的运行中尚未归档的步骤会话，脱敏后归档到 `teamai-reports`。无法从这里归档的步骤会话（teamai 读不到其工具的会话，或本机读不到这个会话）只列出一次已跳过及原因，之后不再重试。该运行的其他步骤会话照常归档。[基准测试](benchmarks.md)运行的 trial 会话留在运行它的机器上。

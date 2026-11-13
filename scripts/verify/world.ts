@@ -44,7 +44,26 @@ export type World = z.infer<typeof WorldSchema>;
 /** Git rewrites these itself on any command, so they say nothing about what teamai left. */
 const GIT_OWN = new Set(['.git/objects', '.git/logs', '.git/index']);
 
-/** Every entry under the world's HOME and project: a file's sha256, `dir`, or a symlink's target. */
+/** Files git keeps its settings in, which a member's git and teamai's hooks both edit. */
+const GIT_CONFIG = /(^|\/)(\.git\/config|\.git\/worktrees\/[^/]+\/config\.worktree|\.gitconfig)$/;
+
+/** Each setting of a git config file at `${entry}#<key>`, with its value, so a setting is judged by its own writer and what it names. */
+function gitConfigSettings(entry: string, file: string): Record<string, string> | undefined {
+  const values = new Map<string, string[]>();
+  // A file git cannot parse is judged whole, so the command that broke it can still run to fix it.
+  const listed = spawnSync('git', ['config', '--file', file, '--list', '-z'], { encoding: 'utf8' });
+
+  if (listed.status !== 0) return undefined;
+
+  for (const setting of listed.stdout.split('\0').filter(Boolean)) {
+    const [key = '', ...value] = setting.split('\n');
+    values.set(key, [...values.get(key) ?? [], value.join('\n')]);
+  }
+
+  return Object.fromEntries([...values].map(([key, value]) => [`${entry}#${key}`, value.join('\0')]));
+}
+
+/** Every entry under the world's HOME and project: a file's sha256, `dir`, or a symlink's target; a git config file is `git config` and one entry per setting. */
 export function worldFiles(world: Pick<World, 'home' | 'project'>) {
   const files: Record<string, string> = {};
 
@@ -55,10 +74,15 @@ export function worldFiles(world: Pick<World, 'home' | 'project'>) {
 
       if (label === 'project' && GIT_OWN.has(child)) continue;
 
+      const settings = entry.isFile() && GIT_CONFIG.test(child) ? gitConfigSettings(`${label}/${child}`, full) : undefined;
+
       if (entry.isSymbolicLink()) files[`${label}/${child}`] = `-> ${fs.readlinkSync(full)}`;
       else if (entry.isDirectory()) {
         files[`${label}/${child}`] = 'dir';
         walk(root, label, child);
+      } else if (settings !== undefined) {
+        files[`${label}/${child}`] = 'git config';
+        Object.assign(files, settings);
       } else files[`${label}/${child}`] = crypto.createHash('sha256').update(fs.readFileSync(full)).digest('hex');
     }
   };
@@ -102,7 +126,7 @@ function hostCommand(name: string): string | undefined {
 }
 
 /** The only variables a world's commands get. Anything else, a tool home or a teamai setting, must be set on the command line. */
-function worldEnv(home: string, tmp: string, bin: string, fakes: string) {
+function worldEnv(home: string, tmp: string, bin: string, fakes: string, npmCache: string) {
   const commands = ['git', ...TOOL_COMMANDS].flatMap((name) => hostCommand(name) ?? []);
   const search = [fakes, bin, path.dirname(process.execPath), ...commands.map((command) => path.dirname(command)), '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
 
@@ -112,6 +136,8 @@ function worldEnv(home: string, tmp: string, bin: string, fakes: string) {
     TMPDIR: tmp,
     PATH: [...new Set(search)].join(':'),
     GIT_CONFIG_NOSYSTEM: '1',
+    // A member's npm cache predates teamai, so what teamai's update check makes npm write there is not teamai's.
+    npm_config_cache: npmCache,
     LANG: process.env.LANG ?? 'C.UTF-8',
     TERM: process.env.TERM ?? 'dumb',
   };
@@ -184,7 +210,7 @@ function buildWorld(runId: string, dir: string): World {
   const bin = at('bin');
   fs.mkdirSync(bin);
   writeFakeGh(at('fakes'));
-  const env = worldEnv(at('home'), at('tmp'), path.join(at('install'), 'node_modules', '.bin'), at('fakes'));
+  const env = worldEnv(at('home'), at('tmp'), path.join(at('install'), 'node_modules', '.bin'), at('fakes'), at('npm-cache'));
   const run = path.join(bin, 'run');
   fs.writeFileSync(
     run,
@@ -273,9 +299,60 @@ export function liveWorlds(): World[] {
     .filter((world) => world.cleanedAt === undefined);
 }
 
+/** Programs a member runs on their own: what one of them writes is theirs, such as a tool's sessions. A shell may run teamai. */
+const MEMBER_PROGRAMS = new Set([...TOOL_COMMANDS, 'cp', 'mkdir', 'touch', 'git']);
+
+/** git commands that run the hooks teamai installs in a project (post-checkout, post-merge, post-rewrite), which pull. */
+const HOOKED_GIT = new Set(['checkout', 'switch', 'clone', 'merge', 'pull', 'rebase', 'worktree', 'am']);
+
+/** The member program `args` runs, past `env` and its assignments, or undefined when teamai may run in it. */
+function memberProgramOf(args: readonly string[]): string | undefined {
+  const command = args[0] === 'env' ? args.slice(1) : args;
+  const at = command.findIndex((word) => !/^[A-Za-z_]\w*=/.test(word));
+  const words = at === -1 ? [] : command.slice(at);
+  const program = path.basename(words[0] ?? '');
+
+  if (!MEMBER_PROGRAMS.has(program)) return undefined;
+
+  if (program !== 'git') return program;
+  // Past git's own options: -C <dir> and -c <name=value> take a value.
+  const sub = words.slice(1).find((word, i, rest) => !word.startsWith('-') && !['-C', '-c'].includes(rest[i - 1] ?? ''));
+
+  return sub === undefined || HOOKED_GIT.has(sub) || (sub === 'commit' && words.includes('--amend')) ? undefined : program;
+}
+
+const Writer = z.object({ program: z.string(), value: z.string().nullable() });
+
+export type Writers = Record<string, z.infer<typeof Writer>>;
+
+function writersFile(world: World): string {
+  return path.join(world.dir, 'writers.json');
+}
+
+/** For each entry of the world's HOME and project a member's program changed, the last such program and what it left there. */
+export function loadWriters(world: World): Writers {
+  const file = writersFile(world);
+
+  return fs.existsSync(file) ? z.record(z.string(), Writer).parse(JSON.parse(fs.readFileSync(file, 'utf8'))) : {};
+}
+
+function recordWriters(world: World, args: readonly string[], before: Record<string, string>, after: Record<string, string>): void {
+  const program = memberProgramOf(args);
+
+  if (program === undefined) return;
+  const writers = loadWriters(world);
+
+  for (const entry of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (before[entry] !== after[entry]) writers[entry] = { program, value: after[entry] ?? null };
+  }
+
+  fs.writeFileSync(writersFile(world), `${JSON.stringify(writers, null, 2)}\n`);
+}
+
 /** Runs a command in the world, its output shown and kept in logs/<n>-<name>.log. */
 export function runInWorld(world: World, args: readonly string[]): number {
   if (world.cleanedAt !== undefined) throw new Error(`World ${world.runId} was cleaned up at ${world.cleanedAt}. Make a new one.`);
+  const before = worldFiles(world);
   const result = spawnSync(path.join(world.bin, 'run'), args, { encoding: 'utf8', stdio: ['inherit', 'pipe', 'pipe'], maxBuffer: 1024 ** 3 });
   process.stdout.write(result.stdout ?? '');
   process.stderr.write(result.stderr ?? '');
@@ -285,6 +362,7 @@ export function runInWorld(world: World, args: readonly string[]): number {
     path.join(world.logs, `${n}-${name}.log`),
     `$ ${args.join(' ')}\n${result.stdout ?? ''}${result.stderr ?? ''}exit ${result.status ?? 'signal'}\n`,
   );
+  recordWriters(world, args, before, worldFiles(world));
 
   return result.status ?? 1;
 }

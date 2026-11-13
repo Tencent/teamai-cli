@@ -313,7 +313,7 @@ teamai-recall  rules/teamai-recall/  团队仓库根级别  目录  已拒绝
   rules/teamai-recall/ is not used, so teamai's recall rule stays in force: rules/teamai-recall/RULE.md does not contain "Nothing was searched:". Fix the folder in the team repo.
 ```
 
-规则文件仍在上面的规则列表里。默认 Hook 列出 teamai 的五个提示：各自来自哪里，团队目录改了几个 `with:` 参数和几段文本；展开后逐个对照参数的 teamai 值和团队值并标出改动，以及每段文本按团队语言取自哪个文件。
+规则文件仍在上面的规则列表里。默认 Hook 列出 teamai 的五个提示：各自来自哪里，团队目录改了几个参数和几段文本；展开后逐个对照参数的 teamai 值和团队值并标出改动，以及每段文本按团队语言取自哪个文件。
 
 总览页显示问题数量，并链接到这里：
 
@@ -399,7 +399,7 @@ curl -s 'http://localhost:3721/api/tokens?days=30' | jq -r '.byModel[] | select(
 
 总览的**已结束会话的产出**面板显示当前工作区最近 30 天内被使用统计上报计入的会话：产出了 commit、拉取请求或经验的会话占比；按运行模式和产出分行，带每个会话的 token 和干预次数（参见[使用统计上报](reporting.md#你的会话产出了什么)）；以及最近的会话和它们的 commit、拉取请求链接和经验。
 
-会话行和会话详情显示 `teamai contribute` 为该会话记录的经验。它的 commit 和拉取请求在会话空闲 6 小时后才计入，那时会话行已离开列表，因此显示在上述面板中。这些 ID、哈希和链接只保存在本机。
+会话行和会话详情显示 `teamai contribute` 为该会话记录的经验。它的 commit 和拉取请求在会话空闲达到 [`teamai-finished-sessions` 的 `idle`](scorers.md#teamai-finished-sessions)（团队未修改时为 6 小时）后才计入，那时会话行已离开列表，因此显示在上述面板中。这些 ID、哈希和链接只保存在本机。
 
 ## Session Save（会话存档）
 

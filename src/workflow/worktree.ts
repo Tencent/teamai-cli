@@ -232,17 +232,83 @@ export async function gitPath(cwd: string, name: string): Promise<string | undef
   return printed === '' ? undefined : path.resolve(cwd, printed);
 }
 
+const EXCLUDE_MARKER = '# teamai workflow worktrees';
+const EXCLUDE_BLOCK = `${EXCLUDE_MARKER}\n.teamai/workflow-worktrees/\n.teamai/workflow-hooks/\n`;
+
 /** Keeps TeamAI worktrees out of `git status` in the active checkout. */
 async function hideTeamaiWorktrees(main: string): Promise<void> {
   const exclude = await gitPath(main, 'info/exclude');
 
   if (!exclude) return;
-  const marker = '# teamai workflow worktrees';
   const current = await fs.readFile(exclude, 'utf8').catch(() => '');
 
-  if (current.includes(marker)) return;
+  if (current.includes(EXCLUDE_MARKER)) return;
   await fs.mkdir(path.dirname(exclude), { recursive: true });
-  await fs.appendFile(exclude, `${current.endsWith('\n') || current === '' ? '' : '\n'}${marker}\n.teamai/workflow-worktrees/\n.teamai/workflow-hooks/\n`);
+  await fs.appendFile(exclude, `${current.endsWith('\n') || current === '' ? '' : '\n'}${EXCLUDE_BLOCK}`);
+}
+
+async function removeEmptyDir(dir: string, dryRun: boolean): Promise<boolean> {
+  const entries = await fs.readdir(dir).catch(() => null);
+
+  if (entries === null || entries.length > 0) return false;
+
+  if (!dryRun) await fs.rmdir(dir);
+
+  return true;
+}
+
+/**
+ * Undoes in `checkout` what its workflow worktrees set up: the directories that held them, the exclude block that hid
+ * them, and `extensions.worktreeConfig` when teamai turned it on and no worktree has a configuration of its own. Nothing while a TeamAI worktree
+ * of the repository is left, since it still needs them. Returns what it removed, or with `dryRun` what it would.
+ */
+/** Marks `extensions.worktreeConfig` as one teamai turned on, holding the member's value before (`unset` when none). */
+const WORKTREE_CONFIG_OWNED = 'teamai.worktreeconfig';
+
+export async function removeWorktreeSetup(checkout: string, { dryRun = false } = {}): Promise<string[]> {
+  const listed = await git(checkout, ['worktree', 'list', '--porcelain']);
+
+  if (listed.code !== 0) return [];
+  const worktrees = listed.stdout.split('\n').flatMap((line) => (line.startsWith('worktree ') ? [line.slice('worktree '.length)] : []));
+
+  if (worktrees.some((dir) => worktreeCheckout(dir) !== undefined)) return [];
+  const removed: string[] = [];
+
+  for (const dir of [path.join(checkout, '.teamai', 'workflow-worktrees'), hooksPath(checkout)]) {
+    if (await removeEmptyDir(dir, dryRun)) removed.push(dir);
+  }
+
+  const exclude = await gitPath(checkout, 'info/exclude');
+  const current = exclude === undefined ? '' : await fs.readFile(exclude, 'utf8').catch(() => '');
+
+  if (exclude !== undefined && current.includes(EXCLUDE_BLOCK)) {
+    if (!dryRun) await fs.writeFile(exclude, current.replace(EXCLUDE_BLOCK, ''));
+    removed.push(`${exclude} (${EXCLUDE_MARKER.slice(2)})`);
+  }
+
+  const had = (await git(checkout, ['config', '--local', '--get', WORKTREE_CONFIG_OWNED])).stdout.trim();
+
+  if (had !== '') {
+    const ownConfigs = await Promise.all(worktrees.map(async (dir) => {
+      const file = await gitPath(dir, 'config.worktree');
+
+      return file !== undefined && await pathExists(file);
+    }));
+
+    if (!dryRun) {
+      await git(checkout, ['config', '--local', '--unset', WORKTREE_CONFIG_OWNED]);
+
+      if (!ownConfigs.includes(true)) {
+        await git(checkout, had === 'unset' ? ['config', '--local', '--unset', 'extensions.worktreeConfig'] : ['config', '--local', 'extensions.worktreeConfig', had]);
+      }
+    }
+
+    removed.push(ownConfigs.includes(true) ? `${WORKTREE_CONFIG_OWNED} in the git config` : 'extensions.worktreeConfig in the git config');
+  }
+
+  if (removed.length > 0) await removeEmptyDir(path.join(checkout, '.teamai'), dryRun);
+
+  return removed;
 }
 
 export function hooksPath(main: string): string {
@@ -394,8 +460,15 @@ export async function reconcileCopy(main: string, branch: string, expected: stri
  * without changing the hooks of any other worktree.
  */
 export async function worktreeHooks(dir: string, hooks: string): Promise<void> {
-  // Set in the configuration every worktree of the repository shares.
-  await git(dir, ['config', 'extensions.worktreeConfig', 'true']);
+  // Set in the configuration every worktree of the repository shares. Off, `--worktree` writes there too, over the
+  // member's hooks. The mark keeps what the member had, so taking it back restores that.
+  const had = (await git(dir, ['config', '--local', '--type=bool', '--get', 'extensions.worktreeConfig'])).stdout.trim();
+
+  if (had !== 'true') {
+    await git(dir, ['config', WORKTREE_CONFIG_OWNED, had === '' ? 'unset' : had]);
+    await git(dir, ['config', 'extensions.worktreeConfig', 'true']);
+  }
+
   await git(dir, ['config', '--worktree', 'core.hooksPath', hooks]);
 }
 

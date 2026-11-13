@@ -96,6 +96,7 @@ describe('runDeclaredPostPull (interactive)', () => {
     expect(command).toBe(process.execPath);
     expect(args[0]).toBe(path.join(dir, 'post.mjs'));
     expect(options.stdio).toEqual(['ignore', 'inherit', 'inherit']);
+    expect(options.windowsHide).toBe(true);
     expect(options.env.TEAMAI_POSTPULL_TIMEOUT_SEC).toBe(String(POST_PULL_BUDGET_SEC));
     // spawnScript attaches the canonical 'error' listener; this pull is the
     // child's only guard against an async spawn failure.
@@ -118,6 +119,7 @@ describe('runPostPull (in-process)', () => {
     expect(args[0]).toBe(path.join(dir, 'ok.mjs'));
     expect(options.cwd).toBe(dir);
     expect(options.stdio).toEqual(['ignore', 'pipe', 'pipe']);
+    expect(options.windowsHide).toBe(true);
     expect(options.env.TEAMAI_REPO).toBe(dir);
     expect(options.env.TEAMAI_POSTPULL_TIMEOUT_SEC).toBe(String(POST_PULL_BUDGET_SEC));
     expect(debugSpy).toHaveBeenCalledWith(expect.stringMatching(/postPull: exited 0 in \d+ms/));

@@ -38,6 +38,8 @@ export type SessionSharing =
     /** The enabled tools teamai reads no sessions from: their sessions are never captured, published or judged. */
     unreadTools: string[];
     captured: CapturedSessions;
+    /** How long an attended session is idle before it is finished, as teamai-finished-sessions writes it, such as `6h`. */
+    finishedAfter: string;
     /** The step sessions of the runs that ended here in each run mode that wait to be archived: none while `publish` is not `auto` for it. */
     stepSessionsWaitingToArchive: Record<RunMode, number>;
     /** Labels judged here that a drain publishes to teamai-reports. */
@@ -53,9 +55,9 @@ type Configured = Extract<SessionSharing, { configured: true }>;
  * active until it is finished, an unattended one waits for a drain until one reaches it; a finished one waits to be
  * archived while `publish` is `auto` for its mode. One whose file is gone and that was not archived is left out.
  */
-async function capturedHere(config: LocalConfig, now: string, publish: SessionPolicies): Promise<CapturedSessions> {
+async function capturedHere(config: LocalConfig, { now, idleMs }: { now: string; idleMs: number }, publish: SessionPolicies): Promise<CapturedSessions> {
   const sessions = await SessionCaptures.list(config);
-  const finished = new Set((await SessionWork.finished(sessions, now, () => true)).map(sessionKey));
+  const finished = new Set((await SessionWork.finished(sessions, now, () => true, idleMs)).map(sessionKey));
 
   const counts: CapturedSessions = {
     attended: { active: 0, finished: 0, waitingToArchive: 0, archived: 0 },
@@ -136,16 +138,17 @@ function nextSteps(
 export async function readSessionSharing(config: LocalConfig, { env, platform, now }: { env: NodeJS.ProcessEnv; platform: NodeJS.Platform; now: string }): Promise<SessionSharing> {
   const unavailable = scoringUnavailable(config);
 
-  const [team, scored] = await Promise.all([
+  const [team, scored, finishedAfter] = await Promise.all([
     loadTeamConfig(config.repo.localPath),
     unavailable === undefined ? scopeScoring(config) : { ok: false as const, reason: unavailable },
+    SessionWork.finishedAfter(config),
   ]);
 
   const publish = SessionPolicy.publish(config, team);
 
   const [scorers, captured, stepSessionsWaitingToArchive, pendingLabels] = await Promise.all([
     scored.ok ? SessionWork.sessionScorers(config) : [],
-    capturedHere(config, now, publish.policies),
+    capturedHere(config, { now, idleMs: finishedAfter.ms }, publish.policies),
     stepsWaitingToArchive(config, publish.policies),
     LabelStore.unpublished(config),
   ]);
@@ -158,6 +161,7 @@ export async function readSessionSharing(config: LocalConfig, { env, platform, n
       ? { state: 'ok', ...scored.sessions, scorers: scorers.map(({ scorer }) => scorer).sort() }
       : { state: 'unavailable', reason: scored.reason },
     captured,
+    finishedAfter: finishedAfter.text,
     stepSessionsWaitingToArchive,
     pendingLabels,
   } satisfies Omit<Configured, 'configured' | 'problems' | 'unreadTools' | 'next'>;

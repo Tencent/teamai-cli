@@ -18,7 +18,7 @@ import { FolderFiles, type FolderFile, type FolderFilesRead } from './folder-fil
 import { InheritedFolders, type Inheritance } from './inherited-folders.js';
 import { getCurrentVersion } from '../package-info.js';
 import { FOLDER_MARKERS } from '../folder-markers.js';
-import { DefaultHooks, type DefaultHookName } from '../default-hooks.js';
+import { DefaultFolders, type DefaultFolderName } from '../default-folders.js';
 
 // ─── Schema for hooks/hooks.yaml ────────────────────────────
 //
@@ -196,7 +196,7 @@ export const TEAM_HOOK_ENTRIES: LayeredEntryType<HooksFileEntry, TeamHookDefinit
   readFolder: async ({ name, full, path: folderPath, namespace }) => {
     // A teamai- name only replaces a default (#1787, common rule 5), at the root, as builtin: overrides apply to the
     // whole team; defaultHookReplacements reads it there.
-    if (DefaultHooks.isName(name)) {
+    if (DefaultFolders.isName('hooks', name)) {
       return { kind: 'skipped', note: namespace === null ? null : `${folderPath} is refused, and teamai's default stays in force: a default hook is replaced at the root of the team repo only. Move it to hooks/${name}/` };
     }
 
@@ -298,8 +298,8 @@ function isTeamScriptCommand(command: string): boolean {
  * prints about it, while teamai's default stays in force. `files` is null for a folder that cannot be read.
  */
 export type DefaultHookReplacement = (
-  | { readonly kind: 'delivered'; readonly name: DefaultHookName; readonly path: string; readonly delivery: FolderDelivery }
-  | { readonly kind: 'refused'; readonly name: DefaultHookName; readonly path: string; readonly files: readonly FolderFile[] | null; readonly messages: readonly string[] }
+  | { readonly kind: 'delivered'; readonly name: DefaultFolderName<'hooks'>; readonly path: string; readonly delivery: FolderDelivery }
+  | { readonly kind: 'refused'; readonly name: DefaultFolderName<'hooks'>; readonly path: string; readonly files: readonly FolderFile[] | null; readonly messages: readonly string[] }
 ) & {
   /** What pull warns about each team file that replaces no file of teamai's folder, and `review --branch` fails. */
   readonly strays: readonly string[];
@@ -312,7 +312,7 @@ export type DefaultHookReplacement = (
  * make, what pull prints when it refuses them, and what it warns about the team files that replace nothing.
  */
 interface DefaultHookFolder {
-  readonly name: DefaultHookName;
+  readonly name: DefaultFolderName<'hooks'>;
   readonly path: string;
   readonly read: FolderFilesRead;
   readonly messages: readonly string[];
@@ -326,12 +326,12 @@ async function readDefaultHookFolders(root: string): Promise<DefaultHookFolder[]
   const folders: DefaultHookFolder[] = [];
 
   for (const { name, source } of items) {
-    if (source.kind !== 'folder' || !DefaultHooks.isName(name)) continue;
+    if (source.kind !== 'folder' || !DefaultFolders.isName('hooks', name)) continue;
     const own = await FolderFiles.read(source.full);
     const teamai = await Resources.inherited(TEAM_HOOKS, name);
     const merged = own.kind === 'files' && teamai?.files.kind === 'files' ? InheritedFolders.merge({ team: own.files, teamai: teamai.files.files, marker: FOLDER_MARKERS.hooks.marker }) : null;
     const read: FolderFilesRead = merged ? { kind: 'files', files: merged.files } : own;
-    const problems = read.kind === 'invalid' ? read.problems.map(FolderFiles.describe) : await DefaultHooks.problems(name, read.files);
+    const problems = read.kind === 'invalid' ? read.problems.map(FolderFiles.describe) : await DefaultFolders.problems({ kind: 'hooks', name: name }, read.files);
 
     folders.push({
       name,
