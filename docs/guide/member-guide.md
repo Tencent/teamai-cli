@@ -32,6 +32,14 @@ teamai init --http https://your-team-host/api --token <api-key>
 
 An agent access token (`sk-`) works for one agent only. Pass that agent with `--agent <tool>`; each agent then keeps its own token. While an agent's current token still works, a new one for the same agent is not used, so its delivered models keep working.
 
+To deliberately replace a working token, pass `--replace-token --token <new-key>` to `init --http` or `source add-http`. An `sk-` token still belongs to one agent, so pass `--agent <tool>` with it, as before; TeamAI uses the new token without probing the old one and keeps the other agents' credentials and workspace bindings at the same endpoint. A shared `hk-` key is replaced without this option, so it only changes an `sk-` token. `--force` still controls replacing the existing initialization, not token selection:
+
+```bash
+teamai init --http https://your-team-host/api --agent workbuddy --token <new-key> --force --replace-token
+```
+
+Binding the new token can invalidate the old one at the backend. This option changes the connection credential, not the keys in existing model files; those still need a successful model configuration sync.
+
 Then enroll each workspace you want synced: run `teamai bind-project` once there. Binding it to a ClawPro project is optional — add `--skip` to stay unbound, and no prompt asks again. A worktree inherits its main checkout's choice. The HTTP agent leaves a workspace where this never ran alone, saying so once per session; a workspace enrolled but still pending a project keeps asking in each new chat (and after a pause) until it is bound or skipped, and a non-interactive `teamai bind-project` lists the account's projects so a setup script can act on them.
 
 Running it again with the same endpoint and key keeps them. Moving to another endpoint or key needs `--force`, and without it nothing is changed:
