@@ -20,6 +20,21 @@ import YAML from 'yaml';
 export const read = YAML.parse('a: 1');
 `, { filename: 'src/__tests__/config.test.ts' });
 
+rule.invalid('rejects the library parse in a workspace package', `
+import YAML from 'yaml';
+export const read = YAML.parse('a: 1');
+`, undefined, { filename: 'packages/tool-core/src/config.ts', files: { 'packages/tool-core/package.json': '{}' } });
+
+rule.invalid('rejects the library parse in a packages/ folder without a package.json', `
+import YAML from 'yaml';
+export const read = YAML.parse('a: 1');
+`, undefined, { filename: 'packages/tool-core/src/config.ts' });
+
+rule.valid('allows a test beside its source in a workspace package to call the library parse', `
+import YAML from 'yaml';
+export const read = YAML.parse('a: 1');
+`, { filename: 'packages/tool-core/src/config.test.ts', files: { 'packages/tool-core/package.json': '{}' } });
+
 rule.invalid('rejects YAML.parse on the default import', `
 import YAML from 'yaml';
 export const team = YAML.parse('team: lab');

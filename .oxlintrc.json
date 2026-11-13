@@ -102,6 +102,8 @@
     "teamai/rules-locate": "error",
     "teamai/workflow-failure-codes": "error",
     "teamai/tool-facts": "error",
+    // packages/* never imports src/, src/ never imports a runtime package, and a package is reached only by its name.
+    "teamai/package-boundaries": "error",
     // parseYaml returns JSON values; yaml's own parse can return a Set, Buffer or Date.
     "teamai/yaml-parse": "error",
     "teamai/uncached-entry": "error",
