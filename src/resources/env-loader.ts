@@ -1164,20 +1164,18 @@ __teamai_env_apply_body() {
   fi
   # A child in the same directory reuses its parent's files only where the
   # whole decision can be checked again without git: outside a checkout, with
-  # the same stamp, and for a user env no registry row chose, no project
-  # marker. In a checkout only git can tell, so it routes again, as a cd does.
-  __teamai_cached=
-  if [ "$__teamai_stamp" = "\${__TEAMAI_ENV_STAMP-}" ] && [ "$__teamai_d" = "\${__TEAMAI_ENV_DIR-}" ] && ! __teamai_env_in_git "$__teamai_d"; then
+  # the same stamp, and under no project marker, which a nearer workspace may
+  # have added since. In a checkout only git can tell, so it routes again, as a cd does.
+  __teamai_cached= __teamai_kind=dir
+  if [ "$__teamai_stamp" = "\${__TEAMAI_ENV_STAMP-}" ] && [ "$__teamai_d" = "\${__TEAMAI_ENV_DIR-}" ] && ! __teamai_env_in_git "$__teamai_d" && ! __teamai_env_project "$__teamai_d"; then
     __teamai_cached=1 __teamai_files=\${__TEAMAI_ENV_FILES-} __teamai_route=\${__TEAMAI_ENV_ROUTE-}
-    if [ -n "$__teamai_route" ]; then
-      __teamai_kind=dir
-      { [ "\${__teamai_route%%'	'*}" = dir ] && ! __teamai_env_project "$__teamai_d"; } || __teamai_cached=
-    fi
+    case $__teamai_route in '' | dir'	'*) ;; *) __teamai_cached= ;; esac
   fi
   # A non-interactive bash started with the profile block runs this twice in
   # one process: from the block, then as the BASH_ENV that pass exported. The
   # second pass takes the route the first asked git for, once, while the
-  # directory, the stamp, PATH and every GIT_* variable are as they were. It
+  # directory, the stamp, PATH and every GIT_* variable are as they were, and
+  # outside a checkout no project marker may have appeared in between. It
   # still loads the files, so a team value wins over a later profile line.
   __teamai_fp=
   if [ -n "\${BASH_VERSION-}" ]; then
@@ -1186,7 +1184,8 @@ __teamai_env_apply_body() {
       *)
         eval 'for __teamai_n in PATH \${!GIT_*}; do __teamai_fp="$__teamai_fp$__teamai_n=\${!__teamai_n}
 "; done'
-        if [ -z "$__teamai_cached" ] && [ "$__teamai_fp" = "\${__teamai_once_fp-}" ] && [ "$__teamai_d" = "\${__teamai_once_dir-}" ] && [ "$__teamai_stamp" = "\${__teamai_once_stamp-}" ]; then
+        if [ -z "$__teamai_cached" ] && [ "$__teamai_fp" = "\${__teamai_once_fp-}" ] && [ "$__teamai_d" = "\${__teamai_once_dir-}" ] && [ "$__teamai_stamp" = "\${__teamai_once_stamp-}" ] &&
+          { __teamai_env_in_git "$__teamai_d" || ! __teamai_env_project "$__teamai_d"; }; then
           __teamai_cached=1 __teamai_files=$__teamai_once_files __teamai_route=$__teamai_once_route
         fi
         ;;

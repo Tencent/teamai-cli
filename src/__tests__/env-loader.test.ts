@@ -187,6 +187,43 @@ describe('team env by directory (#1018)', () => {
 
       expect(shellSees(shell, sub, 'TOKEN')).toBe(kind === 'registered' ? getDataHome(innerConfig) : kind === 'nested-git' ? getDataHome(user) : '');
     });
+
+    // The registry stamp holds, so only the nearer marker says the outer route is stale.
+    it('routes again once an unregistered workspace appears inside the registered one', async () => {
+      vi.stubEnv('SHELL', `/bin/${shell}`);
+      const outer = path.join(tmpDir, 'work', 'outer');
+      const inner = path.join(outer, 'inner');
+      const sub = path.join(inner, 'src');
+      const base = {
+        repo: { localPath: path.join(tmpDir, 'team-repo'), remote: teamConfig.repo },
+        username: 'member', additionalRoles: [],
+      };
+      const outerConfig = { ...base, scope: 'project', projectRoot: outer } as LocalConfig;
+      await fse.ensureDir(sub);
+      for (const config of [{ ...base, scope: 'user' } as LocalConfig, outerConfig]) {
+        await saveLocalConfigForScope(config);
+        await handler.writeResolvedEnv([{ key: 'TOKEN', value: getDataHome(config) }], teamConfig, config);
+      }
+      const registry = await fse.readFile(path.join(homeDir, '.teamai', 'env-scopes'), 'utf-8');
+      const loader = path.join(homeDir, '.teamai', 'env-loader.sh');
+      const marker = path.join(inner, '.teamai', 'config.yaml');
+      const env = { HOME: homeDir, PATH: process.env.PATH, SHELL: `/bin/${shell}`, BASH_ENV: loader };
+      const parent = JSON.parse(spawnSync(shell, ['-c', `'${process.execPath}' -e 'process.stdout.write(JSON.stringify(process.env))'`], {
+        cwd: sub, env, encoding: 'utf-8',
+      }).stdout) as NodeJS.ProcessEnv;
+      expect(parent.TOKEN).toBe(getDataHome(outerConfig));
+
+      await fse.outputFile(marker, 'scope: project\n');
+      expect(await fse.readFile(path.join(homeDir, '.teamai', 'env-scopes'), 'utf-8')).toBe(registry);
+      expect(shellSees(shell, sub, 'TOKEN', parent)).toBe('');
+
+      if (shell !== 'bash') return;
+      await fse.remove(path.dirname(marker));
+      const passes = spawnSync('bash', ['-c', 'printf "%s\\n" "${TOKEN-}"; mkdir -p "${1%/*}" && : > "$1"; . "$BASH_ENV"; printf "%s\\n" "${TOKEN-}"', 'bash', marker], {
+        cwd: sub, env, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      expect(passes.stdout).toBe(`${getDataHome(outerConfig)}\n\n`);
+    });
   });
 
   describe('restores the member environment exactly', () => {
