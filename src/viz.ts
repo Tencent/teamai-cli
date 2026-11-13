@@ -25,6 +25,7 @@ import {
   getProjectSearchIndexPath,
 } from './types.js';
 import type { LocalConfig, SearchIndexEntry } from './types.js';
+import { DefaultFolders, type DefaultFolderName } from './default-folders.js';
 import { findPromotionCandidates, type PromotionCandidate } from './maintenance/promote.js';
 import { findPruneCandidates, type PruneCandidate } from './maintenance/prune.js';
 import { findStaleEntries, type StaleEntry } from './maintenance/quality-update.js';
@@ -587,22 +588,26 @@ export async function buildVizData(paths: VizPaths): Promise<VizData> {
 
   const namespaces = paths.learningsNamespaces.ok ? paths.learningsNamespaces.namespaces : undefined;
 
-  const [promote, prune, stale] = await Promise.all([
-    findPromotionCandidates(paths.learningsDirs, paths.votesDir, paths.promotionCheckout, { namespaces }).catch((err: Error): PromotionCandidate[] => {
-      console.warn(`Warning: could not load promotion candidates: ${err.message}`);
+  const params = async <TName extends DefaultFolderName<'workflows'>>(name: TName) => (await DefaultFolders.load({ kind: 'workflows', name }, paths.scope ?? null)).params;
 
-      return [];
-    }),
+  const [promote, prune, stale] = await Promise.all([
+    params('teamai-promote-learning')
+      .then((thresholds) => findPromotionCandidates({ learningsDirs: paths.learningsDirs, votesDir: paths.votesDir, knowledgeCheckout: paths.promotionCheckout, namespaces, thresholds }))
+      .catch((err: Error): PromotionCandidate[] => {
+        console.warn(`Warning: could not load promotion candidates: ${err.message}`);
+
+        return [];
+      }),
     findPruneCandidates(paths.learningsDirs, paths.votesDir, { namespaces }).catch((err: Error): PruneCandidate[] => {
       console.warn(`Warning: could not load prune candidates: ${err.message}`);
 
       return [];
     }),
-    findStaleEntries(paths.votesDir, {
+    params('teamai-draft-learning-updates').then((gates) => findStaleEntries(paths.votesDir, {
       docs: path.join(paths.knowledgeRoot, 'docs'),
       rules: path.join(paths.knowledgeRoot, 'rules'),
       skills: path.join(paths.knowledgeRoot, 'skills'),
-    }).catch((err: Error): StaleEntry[] => {
+    }, gates)).catch((err: Error): StaleEntry[] => {
       console.warn(`Warning: could not load stale entries: ${err.message}`);
 
       return [];

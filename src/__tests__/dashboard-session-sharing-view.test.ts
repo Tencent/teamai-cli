@@ -33,6 +33,7 @@ const defaults: Extract<SessionSharing, { configured: true }> = {
     attended: { active: 2, finished: 1, waitingToArchive: 0, archived: 0 },
     unattended: { waitingForDrain: 1, finished: 0, waitingToArchive: 0, archived: 3 },
   },
+  finishedAfter: '6h',
   stepSessionsWaitingToArchive: { attended: 0, unattended: 0 },
   pendingLabels: 2,
   next: [{ mode: 'unattended', command: 'TEAMAI_MODE=unattended teamai score --drain' }],
@@ -46,6 +47,8 @@ describe('the session sharing panel', () => {
     expect(shown).toContain('Attended Neither published nor scored');
     expect(shown).toContain('Unattended Published and scored');
     expect(shown).toContain('by teamai score --drain before the job ends');
+    expect(text(render({ ...defaults, publish: { ...defaults.publish, attended: { policy: 'auto', source: { kind: 'default' } } }, finishedAfter: '1h' }).html))
+      .toContain('Attended Published, not scored in the background, once a session has been idle for 1h');
     expect(shown).toContain('Publish ask proposed when the friction reminder offers teamai-share-learnings Set by the default');
     expect(shown).toContain('Score auto Set by the default');
     expect(shown).toMatch(/1 waiting for a drain/);

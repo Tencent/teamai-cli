@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { githubApiUrl, parseMrUrl } from './mr-comment.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
 import { getGitLabToken } from '../providers/gitlab/gitlab-api.js';
+import { getGitHubToken } from '../providers/github/gh-cli.js';
 import { parseGitLabMRUrl } from '../providers/gitlab/mr-fetch.js';
 import { paginateGitLab } from './gitlab-paginate.js';
 import { log } from '../utils/logger.js';
@@ -64,9 +65,9 @@ const GitHubReactionSchema = z.object({
 });
 
 async function githubRequest(path: string): Promise<Response> {
-  const token = process.env['GITHUB_TOKEN'];
+  const token = getGitHubToken();
 
-  if (!token) throw new Error('GITHUB_TOKEN is not set');
+  if (!token) throw new Error('GITHUB_TOKEN or GH_TOKEN is not set');
 
   return fetch(`${githubApiUrl()}${path}`, {
     headers: {

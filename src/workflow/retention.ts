@@ -8,7 +8,7 @@ import { z } from 'zod';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 import type { RunState } from './types.js';
 import { resolveKeptSetting } from './kept-setting.js';
-import { durationMs } from './parse.js';
+import { durationMs } from '../utils/duration.js';
 
 export const DEFAULT_RETENTION = '14d';
 

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { gitTracks, realFilePath } from './git-exclude.js';
+import { gitTracking, gitTracks, realFilePath } from './git-exclude.js';
 import { judgeTeamaiOnlyCodexHooks } from './hooks.js';
 import { holdsOnlyInstructionBlocks, resolveInstructionTargets } from './instruction-targets.js';
 import { installOf, locate, ownOf } from './locate.js';
@@ -67,8 +67,9 @@ export async function judgeTeamaiOnlyFiles(teamConfig: TeamaiConfig, localConfig
   for (const [file, teamaiOnly] of byFile) {
     const tracking = await gitTracks(file);
 
-    if (tracking.kind === 'unknown') judged.push({ file, state: 'unknown', error: tracking.error });
-    else judged.push({ file, state: tracking.kind === 'tracked' ? 'tracked' : teamaiOnly ? 'teamai-only' : 'mixed' });
+    if (tracking.kind === 'unknown') {
+      if ((await gitTracking(file)).kind !== 'outside-repo') judged.push({ file, state: 'unknown', error: tracking.error });
+    } else judged.push({ file, state: tracking.kind === 'tracked' ? 'tracked' : teamaiOnly ? 'teamai-only' : 'mixed' });
   }
 
   return judged;

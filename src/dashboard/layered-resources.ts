@@ -8,7 +8,7 @@
 import path from 'node:path';
 import { RECALL_RULE_NAME, resolveRecall, type RecallFolder } from '../builtin-rules.js';
 import { loadCachedSuite, suiteDirectories, syncTeamDefinitions, type SyncTeamResult } from '../benchmark/suite-cache.js';
-import { DefaultHooks, type DefaultHookComparison } from '../default-hooks.js';
+import { DefaultFolders, type DefaultFolderComparison } from '../default-folders.js';
 import { DefaultWorkflows } from '../default-workflows.js';
 import { activeEntryNamespaces, describeEntryFailure, entryLayout, type EntryFailure, type ResolvedEntry } from '../namespaced-entries.js';
 import { LayeredEntries, type LayeredEntryType, type PlaceFolderRead } from '../resources/layered-entries.js';
@@ -114,7 +114,7 @@ export interface LayeredResourceList {
 }
 
 /** One of teamai's default hooks: teamai's folder, or the team's that replaces it, and how the two differ. */
-export interface DefaultHookResource extends DefaultHookComparison {
+export interface DefaultHookResource extends DefaultFolderComparison {
   readonly name: string;
   /** `refused`: pull's messages about the team's folder, while teamai's stays in force. */
   readonly state:
@@ -298,7 +298,7 @@ const HOOKS: EntryType<unknown, TeamHookDefinition, TeamHookFolder> = {
   readFolder: readHookFolder,
   deliveredAt: (config, definition, { namespace }) => hookFolderPath(config, definition, namespace),
   runs: (definition, dest) => ({ command: DeliveredFolders.render(definition.hook.command, { type: 'hooks', dest }), args: [], env: [] }),
-  listedElsewhere: (item) => item.layer === 'root' && item.source.kind === 'folder' && DefaultHooks.isName(item.name),
+  listedElsewhere: (item) => item.layer === 'root' && item.source.kind === 'folder' && DefaultFolders.isName('hooks', item.name),
   refusal: teamScriptRefusal,
   deliversRefused: false,
 };
@@ -631,20 +631,20 @@ async function defaultHookList(config: LocalConfig, language: TeamaiConfig['lang
   const replacements = new Map((await readDefaultHookReplacements(config)).map((replacement) => [replacement.name, replacement]));
 
   // Each hook's comparison reads its own folders; one that throws is a teamai bug, and fails the page's data.
-  return Promise.all(DefaultHooks.NAMES.map(async (name): Promise<DefaultHookResource> => {
+  return Promise.all(DefaultFolders.names('hooks').map(async (name): Promise<DefaultHookResource> => {
     const replacement = replacements.get(name);
 
-    if (replacement === undefined) return { name, state: { kind: 'teamai' }, ...await DefaultHooks.compare(name, null, language), delivered: null };
+    if (replacement === undefined) return { name, state: { kind: 'teamai' }, ...await DefaultFolders.compare({ kind: 'hooks', name: name }, null, language), delivered: null };
 
     if (replacement.kind === 'refused') {
-      return { name, state: { kind: 'refused', path: replacement.path, messages: replacement.messages }, ...await DefaultHooks.compare(name, replacement.files, language), delivered: null };
+      return { name, state: { kind: 'refused', path: replacement.path, messages: replacement.messages }, ...await DefaultFolders.compare({ kind: 'hooks', name: name }, replacement.files, language), delivered: null };
     }
 
     const { dest, files } = replacement.delivery;
     const { inheritance } = replacement;
     const inherited = inheritance ? { teamaiVersion: inheritance.teamaiVersion, own: files.length - inheritance.files.length, teamai: inheritance.files.length } : null;
 
-    return { name, state: { kind: 'replaced', path: replacement.path, inherited }, ...await DefaultHooks.compare(name, files, language), delivered: { path: dest, present: await pathExists(dest) } };
+    return { name, state: { kind: 'replaced', path: replacement.path, inherited }, ...await DefaultFolders.compare({ kind: 'hooks', name: name }, files, language), delivered: { path: dest, present: await pathExists(dest) } };
   }));
 }
 

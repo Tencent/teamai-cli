@@ -555,7 +555,7 @@ daily_limit: 10                                  # per data home: on a fresh CI 
 |---|---|---|
 | `off` | Nothing. The default. | Nothing. |
 | `ask` | When the friction reminder offers [`teamai-share-learnings`](workflow.md#teamai-share-learnings-and-teamai-share-session), it proposes the scorers that sample the session, and they judge it once the person confirms. | Acts as `off`, since nobody is there to answer. |
-| `auto` | A session is judged once nothing has happened in it for six hours, by the [`teamai-finished-sessions`](#teamai-finished-sessions) run a session start begins. | A session is judged when `teamai score --drain` runs, before the job ends. The default. |
+| `auto` | A session is judged once nothing has happened in it for six hours, or the `idle` the team sets, by the [`teamai-finished-sessions`](#teamai-finished-sessions) run a session start begins. | A session is judged when `teamai score --drain` runs, before the job ends. The default. |
 
 Each mode resolves on its own, from the first of these that sets it: a member's `scoring.sessions` in `config.yaml`, the active namespaces' `scoring.yaml` files, the root `scorers/scoring.yaml`, the default. When two active namespaces disagree, the most restrictive policy wins (`off`, then `ask`, then `auto`), and so does the lowest `daily_limit`. A partial mapping such as `{ attended: ask }` leaves the other mode to the next level:
 
@@ -732,7 +732,7 @@ The rubric is the [default scorer](#default-scorers) `scorers/teamai-adoption.md
 
 ```text
 teamai-finished-sessions   private, invoke: deny, timeout 30m
-  sessions   teamai session list --finished --idle 6h   the finished sessions to archive or judge here
+  sessions   teamai session list --finished             the finished sessions to archive or judge here
   share      teamai-share-session, for each             its publish step, then its teamai-score step
   lapsed     teamai score subjects --lapsed             passes and sessions whose judging lapsed, and passes no run scored, each with its scorers
   rescore    teamai-score, for each                     starts their judging again with those scorers only
@@ -748,12 +748,12 @@ $ teamai workflow start teamai-finished-sessions --driver local --inputs '{"publ
 
 | Clock | Set in | Default |
 |---|---|---|
-| A session counts as finished | `--idle` of the `sessions` step | 6 hours after its last activity; an unattended session once a drain reached it |
+| A session counts as finished | `idle` of the folder's `params.yaml` | 6 hours after its last activity; an unattended session once a drain reached it |
 | A run ends | the file's `timeout` | 30 minutes; what it cancels lapses, and the next run starts it again |
 | A judge no driver here takes | the `timeout` of share-session's `score` step | 30 minutes; the session stays published and its judging lapses |
 | A lapse is started again | the scoring marks | until the fourth lapse, and only within 14 days of the run's last change; with the scorers its marks hold, a named one included, unsampled and, once named, never refused by `daily_limit`, and with no scorer the session policy would add now |
 
-A team changes these in `workflows/teamai-finished-sessions.yaml` in its team repo, which replaces the default: `--idle 1h` takes a session one hour after its last activity, and `timeout` bounds a run. Steps can be added or reordered there too. What a team cannot change stays in the CLI: the automatic starts pass no agent evidence and only the policy inputs.
+A team changes the idle time with `workflows/teamai-finished-sessions/params.yaml` in its team repo, holding `idle: 1h` to take a session one hour after its last activity, from `10m` to `7d`. The dashboard, the session sharing proposals and the usage report's outcomes count a session finished at the same time. A `WORKFLOW.yaml` of its own in that folder changes the steps and their `timeout`, and steps can be added or reordered there too; the folder's [README](https://github.com/Tencent/teamai-cli/blob/main/workflows/teamai-finished-sessions/README.md) lists what it keeps. What a team cannot change stays in the CLI: the automatic starts pass no agent evidence and only the policy inputs.
 
 ### Drain before an unattended job ends
 
@@ -768,7 +768,7 @@ $ teamai score --drain
 
 Every unattended driver ends with `teamai score --drain`. The local driver runs it at the end of an unattended run, unless publishing and scoring of unattended sessions are both `off`, or the run is a `teamai-finished-sessions` run. The skill driver, T3, Paseo and a CI script run it as their last step. It works in this order:
 
-1. In unattended mode, every session this data home captured as unattended counts as finished, the calling session included. Attended sessions keep the six-hour rule.
+1. In unattended mode, every session this data home captured as unattended counts as finished, the calling session included. Attended sessions keep the idle rule, six hours unless the team changed it.
 2. It starts a [`teamai-finished-sessions`](#teamai-finished-sessions) run here, as a session start does, and drives it on the driver `workflows.driver` names, else on the local driver. A run for a driver this machine does not run waits for it, and the drain says how to drive it here. The run archives the finished sessions with `publish: auto` for their mode and judges the sampled ones the policies allow, within `daily_limit`. It starts `teamai-score` again for each pass and session whose judging lapsed, for each `start: workflow` pass its run left unscored, and for the open passes and sessions the upgrade carried over from judge attempts, except a pass whose run last changed more than 14 days ago. A run already working on this data home is left to it, and the drain says so: run the drain again once it ends.
 3. It publishes every pending label, and what a [`deliver: publish`](workflow.md#publish-to-a-data-branch) step left pending on a data branch, as `score --push` does, and the workflow run records a run could not publish, as `teamai pull` does.
 4. With `publish: auto` for the current mode, it archives on `teamai-reports`, scrubbed, the step sessions of the runs driven here that are not archived yet. A step session it cannot archive from here, because teamai reads no sessions from its tool or this machine cannot read it, is listed once as skipped with the reason, and never tried again. The other step sessions of that run are still archived. The trial sessions of a [benchmark](benchmarks.md) run stay on the machine that ran it.

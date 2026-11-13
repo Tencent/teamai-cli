@@ -27,7 +27,7 @@ import { buildIndex } from '../utils/search-index.js';
 import { getTeamaiHome, type LocalConfig } from '../types.js';
 import { readRecallQuality } from '../recall-quality.js';
 import { applyPhase2Adjustments } from '../contribute-check.js';
-import { DefaultHooks } from '../default-hooks.js';
+import { DefaultFolders } from '../default-folders.js';
 import { queryCodeKnowledge } from '../code-knowledge-recall.js';
 import { incrementRecalled } from '../votes.js';
 
@@ -307,7 +307,7 @@ describe('recall scope isolation (issue #73)', () => {
     expect(readRecallQuality(hookSessionId)).toEqual(
       expect.objectContaining({ hitCount: 0, missCount: 1 }),
     );
-    expect(applyPhase2Adjustments((await DefaultHooks.load('teamai-friction-reminder', null)).params, 0, hookSessionId).isKnowledgeGap).toBe(true);
+    expect(applyPhase2Adjustments((await DefaultFolders.load({ kind: 'hooks', name: 'teamai-friction-reminder' }, null)).params, 0, hookSessionId).isKnowledgeGap).toBe(true);
   });
 
   it('records under the Pi session, not the outer one, when recall runs from a Pi shell started by Claude Code', async () => {

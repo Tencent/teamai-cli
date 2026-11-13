@@ -233,17 +233,23 @@ program
     + '— skills, knowledge for rules, agents, learnings, docs, env, hooks, mcp, models, and more (from manifest/projects.yaml)')
   .option('--shared', 'Place new resources at the shared root for all roles; cannot combine with --role or --project')
   .option('--branch <name>', 'Push to this destination branch instead of a generated teamai/push branch')
+  .option('--file <local file>', 'Push exactly this local file, byte for byte, to the team path --path names, as a pull request. '
+    + 'No other change in the team clone joins it; requires --path')
+  .option('--path <team path>', 'Where --file goes in the team repo, such as benchmarks/frontend/tasks/pod-startup.yaml or scorers/review.md. '
+    + 'Placed exactly there, never relocated; cannot combine with --skill, --role, --project, --shared, --all or --carried')
   .option('--carried <path@blob>', 'Override the stop for a push that would overwrite or delete a placed agent file a teammate changed. '
     + 'Use it only after carrying that change into your root copy, with the value the stop printed; '
     + 'a later team edit stops the push again. Repeatable', (val: string, acc: string[]) => acc.concat(val), [])
   .action(async (cmdOpts) => {
     const globalOpts = program.opts<GlobalOptions>();
+    // --file and --path name one file and its destination: no scan, no placement.
+    const { isFilePush, pushFile } = await import('./push-file.js');
     const { push } = await import('./push.js');
     // Only notify when a real push actually happened — not on dry-run, cancel,
     // no-change, or a handled failure (#702 follow-up).
     const outcome = { completed: false };
     const options = { ...globalOpts, ...cmdOpts };
-    await reportNotInitialized(() => push(options, outcome));
+    await reportNotInitialized(() => (isFilePush(options) ? pushFile(options, outcome) : push(options, outcome)));
 
     if (outcome.completed) await notifyWebhook('push');
   });
@@ -2357,7 +2363,9 @@ const maintenanceCmd = recallCmd
     if (cmdOpts.updateQuality) {
       // Listing makes no AI call, so a dry run lists here and starts no run.
       const { findStaleEntries, reportStaleEntries } = await import('./maintenance/index.js');
-      reportStaleEntries(await findStaleEntries(votesDir, { docs: `${repoPath}/docs`, rules: `${repoPath}/rules`, skills: `${repoPath}/skills` }));
+      const { DefaultFolders } = await import('./default-folders.js');
+      const { params: gates } = await DefaultFolders.load({ kind: 'workflows', name: 'teamai-draft-learning-updates' }, localConfig);
+      reportStaleEntries(await findStaleEntries(votesDir, { docs: `${repoPath}/docs`, rules: `${repoPath}/rules`, skills: `${repoPath}/skills` }, gates));
 
       return;
     }
@@ -2373,7 +2381,9 @@ maintenanceCmd
 
     if (!paths) return;
     const { DraftLearningUpdates } = await import('./maintenance/index.js');
-    process.stdout.write(`${JSON.stringify(await DraftLearningUpdates.stale(paths.votesDir, paths.repoPath))}\n`);
+    const { DefaultFolders } = await import('./default-folders.js');
+    const { params: gates } = await DefaultFolders.load({ kind: 'workflows', name: 'teamai-draft-learning-updates' }, paths.config);
+    process.stdout.write(`${JSON.stringify(await DraftLearningUpdates.stale(paths.votesDir, paths.repoPath, gates))}\n`);
   });
 
 maintenanceCmd
@@ -2390,7 +2400,9 @@ maintenanceCmd
     const { DraftLearningUpdates } = await import('./maintenance/index.js');
     const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
     const namespaces = await safeDeliveredLearningsNamespaces(paths.config, 'recall maintenance');
-    process.stdout.write(`${JSON.stringify(await DraftLearningUpdates.context({ path: cmdOpts.path, docId: cmdOpts.docId }, paths.votesDir, paths.learningsReadDirs, namespaces))}\n`);
+    const { DefaultFolders } = await import('./default-folders.js');
+    const { params } = await DefaultFolders.load({ kind: 'workflows', name: 'teamai-draft-learning-updates' }, paths.config);
+    process.stdout.write(`${JSON.stringify(await DraftLearningUpdates.context({ path: cmdOpts.path, docId: cmdOpts.docId }, paths.votesDir, paths.learningsReadDirs, { limit: params.max_related, namespaces }))}\n`);
   });
 
 maintenanceCmd
@@ -2603,7 +2615,10 @@ async function promotionListing(localConfig: LocalConfig, options: { dryRun: boo
 
   if (!paths) return undefined;
 
-  return { paths, candidates: await findPromotionCandidates(paths.learningsReadDirs, paths.votesDir, knowledgeCheckout, { namespaces }) };
+  const { DefaultFolders } = await import('./default-folders.js');
+  const { params: thresholds } = await DefaultFolders.load({ kind: 'workflows', name: 'teamai-promote-learning' }, localConfig);
+
+  return { paths, candidates: await findPromotionCandidates({ learningsDirs: paths.learningsReadDirs, votesDir: paths.votesDir, knowledgeCheckout, namespaces, thresholds }) };
 }
 
 /**

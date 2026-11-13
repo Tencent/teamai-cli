@@ -503,6 +503,12 @@ describe('pushRepoBranch explicit destination', () => {
 
   it('refuses a self-mode destination that holds an unpushed commit', async () => {
     const { localPath, git } = await fixture('explicit-self-refusal');
+    await git.checkoutLocalBranch('feature/pushed');
+    await fs.writeFile(path.join(localPath, 'pushed.txt'), 'pushed\n');
+    await git.add('pushed.txt');
+    await git.commit('pushed');
+    await git.push(['-u', 'origin', 'feature/pushed']);
+    await git.checkout('main');
     await git.checkoutLocalBranch('feature/mine');
     await fs.writeFile(path.join(localPath, 'mine.txt'), 'mine\n');
     await git.add('mine.txt');
@@ -512,6 +518,8 @@ describe('pushRepoBranch explicit destination', () => {
     await expect(explicitBranchRefusal(localPath, 'feature/mine', true))
       .resolves.toContain('1 commit(s) not on origin');
     await expect(explicitBranchRefusal(localPath, 'feature/mine', false)).resolves.toBeNull();
+    await expect(explicitBranchRefusal(localPath, 'feature/pushed', true)).resolves.toBeNull();
+    await expect(explicitBranchRefusal(localPath, 'release/new', true)).resolves.toBeNull();
     await expect(explicitBranchRefusal(localPath, 'main', true)).resolves.toContain('default branch');
   });
 

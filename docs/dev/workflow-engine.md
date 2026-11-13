@@ -81,7 +81,7 @@ A default whose scorer is asked once per item of a session (a delivered skill, a
 - **A fallback reads why a step failed, never only that it failed.** `currentStep` in `scope.ts` gives a settled step's `failure` (code and message, current pass only) to expressions and templates; `stepFieldSchema` in `expression.ts` types it, and `undeclaredField` in `parse-context.ts` refuses a field it lacks. A migrated default that kept a success-shaped fallback guards it on the code, and ends the run `failed` on a code the fallback must not hide, such as `tool_unconfigured` for a tool the member names that cannot run: `continue_on_failure` alone would let the run succeed with nothing done. A command that exits `INPUT_REJECTED_EXIT` (65) fails `input_rejected`, and one that exits any other non-zero status fails `command_failed` (`commandEnd` in `protocol.ts`), so a failed command step's `failure` is never null. `explainFailedSteps` in `workflow-commands.ts` offers no retry for `input_rejected`, and says `command_failed` by its message alone, which names the status. Under a shortcut, whose progress already showed a command's stderr, it names a failed command step by its exit status only, so each message is said once.
 
   ```yaml fragment
-  # workflows/teamai-promote-learning.yaml, abridged
+  # workflows/teamai-promote-learning/WORKFLOW.yaml, abridged
   ends: { unconfigured-tool: failed }
   steps:
     - id: content

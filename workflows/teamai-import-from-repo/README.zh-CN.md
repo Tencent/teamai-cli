@@ -69,21 +69,23 @@ flowchart TD
 
 ## 替换它
 
+在团队仓库根目录的 `workflows/teamai-import-from-repo/` 里只放你要改的文件。其他文件（包括 `WORKFLOW.yaml`）仍用 teamai 的，并继续获得 teamai 的更新。要修改 narrative 提示词，先复制它：
+
 ```bash
-cp -r "$(npm root -g)/teamai-cli/workflows/teamai-import-from-repo" workflows/
+mkdir -p workflows/teamai-import-from-repo
+cp "$(npm root -g)/teamai-cli/workflows/teamai-import-from-repo/narrative.md" workflows/teamai-import-from-repo/
 ```
 
-然后编辑提示词，例如在 `narrative.md` 里加上这一句：
+然后编辑它，例如在 `narrative.md` 里加上这一句：
 
 ```markdown
 Add a "How to run it locally" section with the commands the README gives.
 ```
 
-推送这个文件夹。下一次 `teamai pull` 会用团队的文件夹整体代替 teamai 的。
+推送这个文件夹。下一次 `teamai pull` 之后，命令都用你的文件运行它。`workflows/teamai-import-from-repo.yaml` 单个文件会整体替换这个文件夹。
 
 | 保留 | 原因 |
 |---|---|
-| `WORKFLOW.yaml` 引用的每个文件 | 团队的文件夹整体替换 teamai 的 |
 | 上面的输入和输出 | 命令会传这些输入、读这些输出 |
 
 ## 依赖
