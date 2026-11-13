@@ -24,15 +24,11 @@ export const SHIPPED_ONLY = new Map(Object.entries({
   // The shipped tool's install gate, and the leftovers of a shipped tool's default home that releases before #1221 wrote.
   'src/locate.ts': { count: 3 },
   'src/mcp-reconcile.ts': { count: 1 },
-  // The legacy agent Markdown only shipped tools wrote.
-  'src/resources/agent-folders.ts': { count: 1 },
   // Parses an instance's `extends`, which must name a shipped tool.
   'src/tool-instances.ts': { count: 4 },
   // A confined launch runs a shipped tool's own adapter; the local driver passes it the base of an instance.
   'src/tool-launch/confined.ts': { count: 1 },
   'src/workflow/drivers/local/local-driver.ts': { count: 1 },
-  // Not yet resolved for an instance: team agents for an instance.
-  'src/resources/agents.ts': { count: 7 },
   // An aliases file maps the tools teamai ships; an instance takes the entry of the tool it extends.
   'src/models/aliases.ts': { count: 1 },
   // A session variable names the shipped tool that sets it; an instance runs that tool and sets the same variable.

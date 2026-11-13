@@ -152,6 +152,7 @@ describe.skipIf(process.platform === 'win32')('tool instances through the CLI', 
     execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo });
     write('README.md', '# fixture\n');
     write('.teamai/tools/acme-claude.yaml', ACME_CLAUDE);
+    write('.teamai/agents/reviewer.yaml', 'name: reviewer\ndescription: Reviews a change\ninstructions: Review it.\n');
     write('.teamai/skills/review-checklist/SKILL.md', '---\nname: review-checklist\ndescription: What to check in a review.\n---\nCheck the tests first.\n');
     write('.teamai/workflows/review.yaml', 'schemaVersion: v1alpha1\nname: review\ndescription: One review prompt.\nsteps:\n  - id: review\n    prompt: Review the repository without changing it.\n    output:\n      ok: boolean\n');
     write('.teamai/workflows/gated.yaml', 'schemaVersion: v1alpha1\nname: gated\ndescription: An approval beside a review.\nsteps:\n  - id: warmup\n    command: sleep 2\n  - id: ship\n    needs: []\n    approve: { message: Ship it?, required: true }\n  - id: review\n    needs: [warmup]\n    prompt: Review the repository without changing it.\n    output:\n      ok: boolean\n');
@@ -168,12 +169,13 @@ describe.skipIf(process.platform === 'win32')('tool instances through the CLI', 
     if (root) fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it('delivers the team skills to the instance\'s own paths, beside Claude\'s', async () => {
+  it('delivers the team skills and agents to the instance\'s own paths, beside Claude\'s', async () => {
     const pulled = await runCLI(['pull']);
 
     expect(pulled.code, `${pulled.stdout}\n${pulled.stderr}`).toBe(0);
     expect(fs.existsSync(path.join(repo, '.acme-claude', 'skills', 'review-checklist', 'SKILL.md'))).toBe(true);
     expect(fs.existsSync(path.join(repo, '.claude', 'skills', 'review-checklist', 'SKILL.md'))).toBe(true);
+    expect(fs.readFileSync(path.join(repo, '.acme-claude', 'agents', 'reviewer.md'), 'utf8')).toBe(fs.readFileSync(path.join(repo, '.claude', 'agents', 'reviewer.md'), 'utf8'));
   });
 
   it('refuses to run a team instance\'s command no one accepted in an unattended run, and says how to accept it', async () => {

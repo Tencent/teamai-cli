@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -418,6 +419,51 @@ describe('the model aliases of an instance', () => {
 });
 
 describe('the agents of an instance', () => {
+  const ACME_CODEX = 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n';
+  const REVIEWER = 'name: reviewer\ndescription: Reviews a change\ninstructions: Review it.\nmodel: strong\ntargets: [codex]\n';
+  const ALIASES = 'aliases:\n  strong:\n    codex: gpt-6\n';
+
+  async function delivered() {
+    const repo = teamRepo({ 'tools/acme-codex.yaml': ACME_CODEX, 'agents/reviewer.yaml': REVIEWER, 'models/aliases.yaml': ALIASES });
+    const { config } = await load(repo);
+    fs.mkdirSync(path.join(home, '.acme-codex'), { recursive: true });
+    const { AgentsHandler } = await import('../resources/agents.js');
+    const handler = new AgentsHandler();
+    const local: LocalConfig = { repo: { localPath: repo, remote: 'https://example.com/acme/team.git' }, username: 'member', additionalRoles: [], scope: 'user', enabledAgents: ['acme-codex'] };
+
+    if (!config) throw new Error('the team config did not load');
+    await handler.pullItem({ name: 'reviewer', type: 'agents', sourcePath: path.join(repo, 'agents', 'reviewer.yaml'), relativePath: 'agents/reviewer.yaml' }, config, local);
+
+    return { handler, config, local, copy: path.join(home, '.acme-codex', 'agents', 'reviewer.toml') };
+  }
+
+  it('gets the team\'s agents in the format of the tool it extends, with that tool\'s model alias', async () => {
+    const { copy } = await delivered();
+    const { reverseByTool } = await import('../resources/agent-format.js');
+
+    expect(reverseByTool('codex', copy, fs.readFileSync(copy, 'utf8'))).toMatchObject({ ok: true, spec: { name: 'reviewer', description: 'Reviews a change', model: 'gpt-6' } });
+  });
+
+  it('gives push the edit made to its copy, its alias kept', async () => {
+    const { handler, config, local, copy } = await delivered();
+    fs.writeFileSync(copy, fs.readFileSync(copy, 'utf8').replace('Reviews a change', 'Reviews a change closely'));
+
+    expect(await handler.scanLocalForPush(config, local)).toMatchObject([
+      { name: 'reviewer', status: 'modified', mergedSpec: { description: 'Reviews a change closely', model: 'strong' } },
+    ]);
+  });
+
+  it('takes back a copy the team history proves teamai rendered for it when the agent is removed', async () => {
+    const { handler, config, local, copy } = await delivered();
+    const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd: local.repo.localPath, stdio: 'ignore' });
+    git('init', '-q');
+    git('add', '-A');
+    git('commit', '-qm', 'team');
+
+    expect(await handler.removeItem('reviewer', config, local)).toContain(copy);
+    expect(fs.existsSync(copy)).toBe(false);
+  });
+
   it('reads the definition a step names from the instance\'s own agents, in the format of the tool it extends', async () => {
     const repo = teamRepo({ 'tools/acme-codex.yaml': 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n' });
     const { config } = await load(repo);
