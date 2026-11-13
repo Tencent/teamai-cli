@@ -2357,7 +2357,9 @@ const maintenanceCmd = recallCmd
     if (cmdOpts.updateQuality) {
       // Listing makes no AI call, so a dry run lists here and starts no run.
       const { findStaleEntries, reportStaleEntries } = await import('./maintenance/index.js');
-      reportStaleEntries(await findStaleEntries(votesDir, { docs: `${repoPath}/docs`, rules: `${repoPath}/rules`, skills: `${repoPath}/skills` }));
+      const { DefaultFolders } = await import('./default-folders.js');
+      const { params: gates } = await DefaultFolders.load({ kind: 'workflows', name: 'teamai-draft-learning-updates' }, localConfig);
+      reportStaleEntries(await findStaleEntries(votesDir, { docs: `${repoPath}/docs`, rules: `${repoPath}/rules`, skills: `${repoPath}/skills` }, gates));
 
       return;
     }
@@ -2373,7 +2375,9 @@ maintenanceCmd
 
     if (!paths) return;
     const { DraftLearningUpdates } = await import('./maintenance/index.js');
-    process.stdout.write(`${JSON.stringify(await DraftLearningUpdates.stale(paths.votesDir, paths.repoPath))}\n`);
+    const { DefaultFolders } = await import('./default-folders.js');
+    const { params: gates } = await DefaultFolders.load({ kind: 'workflows', name: 'teamai-draft-learning-updates' }, paths.config);
+    process.stdout.write(`${JSON.stringify(await DraftLearningUpdates.stale(paths.votesDir, paths.repoPath, gates))}\n`);
   });
 
 maintenanceCmd
@@ -2390,7 +2394,9 @@ maintenanceCmd
     const { DraftLearningUpdates } = await import('./maintenance/index.js');
     const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
     const namespaces = await safeDeliveredLearningsNamespaces(paths.config, 'recall maintenance');
-    process.stdout.write(`${JSON.stringify(await DraftLearningUpdates.context({ path: cmdOpts.path, docId: cmdOpts.docId }, paths.votesDir, paths.learningsReadDirs, namespaces))}\n`);
+    const { DefaultFolders } = await import('./default-folders.js');
+    const { params } = await DefaultFolders.load({ kind: 'workflows', name: 'teamai-draft-learning-updates' }, paths.config);
+    process.stdout.write(`${JSON.stringify(await DraftLearningUpdates.context({ path: cmdOpts.path, docId: cmdOpts.docId }, paths.votesDir, paths.learningsReadDirs, { limit: params.max_related, namespaces }))}\n`);
   });
 
 maintenanceCmd
@@ -2603,7 +2609,10 @@ async function promotionListing(localConfig: LocalConfig, options: { dryRun: boo
 
   if (!paths) return undefined;
 
-  return { paths, candidates: await findPromotionCandidates(paths.learningsReadDirs, paths.votesDir, knowledgeCheckout, { namespaces }) };
+  const { DefaultFolders } = await import('./default-folders.js');
+  const { params: thresholds } = await DefaultFolders.load({ kind: 'workflows', name: 'teamai-promote-learning' }, localConfig);
+
+  return { paths, candidates: await findPromotionCandidates({ learningsDirs: paths.learningsReadDirs, votesDir: paths.votesDir, knowledgeCheckout, namespaces, thresholds }) };
 }
 
 /**

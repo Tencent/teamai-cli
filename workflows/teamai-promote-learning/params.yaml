@@ -1,0 +1,4 @@
+min_confidence: 0.9
+min_upvoted: 5
+min_users: 2
+min_age_days: 14

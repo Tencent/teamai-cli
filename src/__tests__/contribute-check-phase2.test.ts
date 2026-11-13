@@ -4,10 +4,10 @@ import path from 'node:path';
 import os from 'node:os';
 import { applyPhase2Adjustments, hasGitCommitInSession, contributeCheckForSession } from '../contribute-check.js';
 import { appendEvent } from '../dashboard-collector.js';
-import { DefaultHooks } from '../default-hooks.js';
+import { DefaultFolders } from '../default-folders.js';
 
 /** teamai's friction reminder parameters: knowledge_gap_bonus 20 and low_quality_bonus 10. */
-const { params: frictionParams } = await DefaultHooks.load('teamai-friction-reminder', null);
+const { params: frictionParams } = await DefaultFolders.load({ kind: 'hooks', name: 'teamai-friction-reminder' }, null);
 const CONTRIBUTE_KNOWLEDGE_GAP_BONUS = 20;
 const CONTRIBUTE_LOW_QUALITY_BONUS = 10;
 

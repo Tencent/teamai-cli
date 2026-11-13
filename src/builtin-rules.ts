@@ -9,12 +9,12 @@ import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import type { DeliveryRecorder } from './git-exclude-delivered.js';
 import { recordDelivered, type DeliveryLedger } from './resources/delivered-copies.js';
-import { isLanguageVariant, RESOURCE_LAYOUTS, Resources, type ShippedFile, type TeamaiLayer } from './resources/resolver.js';
-import { DeliveredFolders } from './resources/delivered-folders.js';
-import { FolderFiles } from './resources/folder-files.js';
+import { RESOURCE_LAYOUTS, Resources, type ShippedFile, type TeamaiLayer } from './resources/resolver.js';
+import { FolderFiles, type FolderFile } from './resources/folder-files.js';
 import { InheritedFolders, type Inheritance } from './resources/inherited-folders.js';
 import { RuleFolders } from './resources/rule-folders.js';
 import { warnOnce } from './utils/warn-once.js';
+import { DefaultFolders } from './default-folders.js';
 
 /** The marker of a rule folder, as the rule layout names it. */
 const RULE_MARKER = RESOURCE_LAYOUTS.rules.marker;
@@ -213,15 +213,8 @@ export interface RecallTexts {
     readonly replaced: boolean;
 }
 
-/**
- * What a recall folder holds, text by text: the base file, which a team replacement must have, and the lines every
- * language of it must keep, because recall's own output and doctor point at them (#1787).
- */
-const RECALL_FILES = [
-    { stem: 'RULE', lines: ['Nothing was searched:', 'Recall skips the older index'] },
-    { stem: 'block', lines: [] },
-    { stem: 'block-direct', lines: ['Nothing was searched:'] },
-] as const;
+/** teamai's recall rule as a default folder, whose texts and the lines they keep `DefaultFolders` holds. */
+const RECALL_DEFAULT = { kind: 'rules', name: RECALL_RULE_NAME } as const;
 
 /** A recall folder: where it is, its path from its repo's root as pull names it, and whether it is the team's. */
 export interface RecallFolder {
@@ -245,7 +238,7 @@ async function recallFolder(repoPath: string | undefined): Promise<RecallFolder>
 
 /** The text of each file a recall folder gives, by its path in it, with the team files that replace nothing; or why it cannot be read. */
 type RecallFiles =
-    | { readonly kind: 'files'; readonly texts: ReadonlyMap<string, string>; readonly strays: readonly string[]; readonly inheritance: Inheritance | null }
+    | { readonly kind: 'files'; readonly files: readonly FolderFile[]; readonly texts: ReadonlyMap<string, string>; readonly strays: readonly string[]; readonly inheritance: Inheritance | null }
     | { readonly kind: 'invalid'; readonly problem: string };
 
 /**
@@ -263,54 +256,28 @@ async function recallFiles(folder: RecallFolder): Promise<RecallFiles> {
 
     return {
         kind: 'files',
+        files: merged.files,
         texts: new Map(merged.files.map((file) => [file.path, FolderFiles.text(file.bytes.toString('utf8'))])),
         strays: merged.strays,
         inheritance: teamai === null ? null : InheritedFolders.inheritanceOf(merged, getCurrentVersion()),
     };
 }
 
-/** Why the recall files `texts` of the folder shown as `shown` break the contract (`RECALL_FILES`), or null when they keep it. */
-function recallFolderProblem(texts: ReadonlyMap<string, string>, shown: string): string | null {
-    for (const { stem, lines } of RECALL_FILES) {
-        if (!texts.has(`${stem}.md`)) return `${shown}${stem}.md is missing`;
+/** The recall texts `files` give for `language`, or why they break the contract `DefaultFolders` holds for it. */
+async function readRecallTexts(folder: RecallFolder, files: Extract<RecallFiles, { kind: 'files' }>, language: TeamaiConfig['language']): Promise<{ ok: true; texts: RecallTexts } | { ok: false; problem: string }> {
+    const read = await DefaultFolders.read(RECALL_DEFAULT, files.files);
 
-        for (const [name, content] of [...texts].filter(([found]) => found === `${stem}.md` || isLanguageVariant(`${stem}.md`, found))) {
-            if (DeliveredFolders.mentions(content, 'rules')) {
-                return `${shown}${name} names \${TEAMAI_RULE_DIR}, but a recall file is delivered as its text, and no other file of the folder is. `
-                    + 'Put what it points at in the file';
-            }
-
-            const missing = lines.find((line) => !content.includes(line));
-
-            if (missing !== undefined) return `${shown}${name} does not contain "${missing}"`;
-        }
-    }
-
-    return null;
-}
-
-/** The recall texts of `texts`, the files of `folder`, for `language`, each language falling back to the folder's own base file. */
-function readRecallTexts(folder: RecallFolder, texts: ReadonlyMap<string, string>, language: TeamaiConfig['language']): RecallTexts | null {
-    const pick = (stem: string): { name: string; content: string } | null => {
-        const variant = language === undefined ? undefined : `${stem}.${language}.md`;
-        const name = variant !== undefined && texts.has(variant) ? variant : `${stem}.md`;
-        const content = texts.get(name);
-
-        return content === undefined ? null : { name, content };
-    };
-
-    const [base, block, directBlock] = [pick('RULE'), pick('block'), pick('block-direct')];
-    const baseText = texts.get(RULE_MARKER);
-
-    if (base === null || baseText === undefined || block === null || directBlock === null) return null;
+    if (!read.ok) return { ok: false, problem: read.problems.join('; ') };
+    const recall = read.folder;
+    const variant = recall.text('RULE', language);
 
     const rule = RuleFolders.composeText({
         rule: { name: RECALL_RULE_NAME, type: 'rules', sourcePath: path.join(folder.dir, RULE_MARKER ?? ''), relativePath: `${folder.path}${RULE_MARKER}`, folder: true },
-        base: baseText,
-        variant: base.name === RULE_MARKER ? null : base,
+        base: recall.text('RULE', undefined).render({}),
+        variant: variant.language === null ? null : { name: variant.file, content: variant.render({}) },
     });
 
-    return { rule, block: block.content, directBlock: directBlock.content, replaced: folder.team };
+    return { ok: true, texts: { rule, block: recall.text('block', language).render({}), directBlock: recall.text('block-direct', language).render({}), replaced: folder.team } };
 }
 
 /** The recall texts that apply, teamai's folder, and the team's `rules/teamai-recall/` folder: in force, or refused with what pull prints. */
@@ -328,7 +295,7 @@ export interface RecallResolution {
 
 /**
  * The recall rule and blocks for `language` with the team repo at `repoPath` (#1787): its `rules/teamai-recall/`
- * folder over teamai's when the result keeps the contract (`RECALL_FILES`), else teamai's.
+ * folder over teamai's when the result keeps the contract (`DefaultFolders`), else teamai's.
  */
 export async function resolveRecall(language: TeamaiConfig['language'], repoPath?: string): Promise<RecallResolution> {
     const folder = await recallFolder(repoPath);
@@ -337,20 +304,19 @@ export async function resolveRecall(language: TeamaiConfig['language'], repoPath
 
     if (folder.team) {
         const files = await recallFiles(folder);
-        const problem = files.kind === 'invalid' ? files.problem : recallFolderProblem(files.texts, folder.path);
-        const texts = problem === null && files.kind === 'files' ? readRecallTexts(folder, files.texts, language) : null;
+        const read = files.kind === 'files' ? await readRecallTexts(folder, files, language) : { ok: false as const, problem: files.problem };
         strays = files.kind === 'files' ? files.strays.map((file) => InheritedFolders.strayMessage(folder.path, file)) : [];
 
-        if (texts !== null && files.kind === 'files') return { texts, teamai: TEAMAI_RECALL, team: { kind: 'replaces', folder, files: [...files.texts.keys()], inheritance: files.inheritance }, strays };
-        refused = { kind: 'refused', folder, message: `${folder.path} is not used, so teamai's recall rule stays in force: ${problem ?? `${folder.path} cannot be read`}. Fix the folder in the team repo.` };
+        if (read.ok && files.kind === 'files') return { texts: read.texts, teamai: TEAMAI_RECALL, team: { kind: 'replaces', folder, files: [...files.texts.keys()], inheritance: files.inheritance }, strays };
+        refused = { kind: 'refused', folder, message: `${folder.path} is not used, so teamai's recall rule stays in force: ${read.ok ? `${folder.path} cannot be read` : read.problem}. Fix the folder in the team repo.` };
     }
 
     const own = await recallFiles(TEAMAI_RECALL);
-    const texts = own.kind === 'files' ? readRecallTexts(TEAMAI_RECALL, own.texts, language) : null;
+    const read = own.kind === 'files' ? await readRecallTexts(TEAMAI_RECALL, own, language) : null;
 
-    if (texts === null) throw new Error(`teamai's ${RECALL_RULE_NAME} folder cannot be read in ${TEAMAI_RULES.root}; reinstall teamai.`);
+    if (read === null || !read.ok) throw new Error(`teamai's ${RECALL_RULE_NAME} folder cannot be read in ${TEAMAI_RULES.root}; reinstall teamai.`);
 
-    return { texts, teamai: TEAMAI_RECALL, team: refused, strays };
+    return { texts: read.texts, teamai: TEAMAI_RECALL, team: refused, strays };
 }
 
 /** The recall texts `resolveRecall` finds, naming the team's refused folder once. */

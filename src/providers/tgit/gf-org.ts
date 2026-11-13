@@ -7,6 +7,7 @@ import { log } from '../../utils/logger.js';
 const TGIT_API_BASE = 'https://git.woa.com/api/v3';
 const DEFAULT_PER_PAGE = 100;
 const DEFAULT_MAX_REPOS = 200;
+const REQUEST_TIMEOUT_MS = 30_000;
 
 // 响应体最大 50 MB，防止恶意服务器返回超大响应导致 OOM
 const MAX_RESPONSE_BYTES = 50 * 1024 * 1024;
@@ -87,7 +88,7 @@ export async function gfListOrgRepos(
 
     while (useProjectsEndpoint && collected.length < maxRepos) {
         const url = `${TGIT_API_BASE}/groups/${encodedGroup}/projects?per_page=${perPage}&page=${page}`;
-        const resp = await fetch(url, { headers, redirect: 'manual' });
+        const resp = await fetch(url, { headers, redirect: 'manual', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
 
         if (resp.status >= 300 && resp.status < 400) {
             throw new Error(`Unexpected redirect from TGit API: ${resp.status}`);
@@ -143,7 +144,7 @@ export async function gfListOrgRepos(
     // 策略 2: 从 /groups/<id> 响应中提取内嵌 projects 数组（工蜂兼容）
     if (!useProjectsEndpoint && collected.length === 0) {
         const url = `${TGIT_API_BASE}/groups/${encodedGroup}`;
-        const resp = await fetch(url, { headers, redirect: 'manual' });
+        const resp = await fetch(url, { headers, redirect: 'manual', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
 
         if (resp.status >= 300 && resp.status < 400) {
             throw new Error(`Unexpected redirect from TGit API: ${resp.status}`);

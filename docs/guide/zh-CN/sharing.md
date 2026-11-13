@@ -497,13 +497,11 @@ agy 随后拒绝该命令：`tool call denied by pre-tool hook: rm -rf is blocke
 
 ### 默认 hook
 
-teamai 自带提示的阈值和文案也放在 hook 目录里。在团队仓库根目录放一个同名目录，就能修改它。目录里只放你要改的文件；其他文件（包括 `HOOK.yaml`）仍用 teamai 的，并继续获得 teamai 的更新。比如只在较长的会话后提醒，并换成团队自己的话：
+teamai 自带提示的阈值和文案也放在 hook 目录里。在团队仓库根目录放一个同名目录，就能修改它。目录里只放你要改的文件；其他文件仍用 teamai 的，并继续获得 teamai 的更新。比如只在较长的会话后提醒，并换成团队自己的话：
 
 ```yaml
-# hooks/teamai-friction-reminder/HOOK.yaml
-description: Remind after longer sessions only
-with:
-  min_tools: 30
+# hooks/teamai-friction-reminder/params.yaml
+min_tools: 30
 ```
 
 ```markdown
@@ -521,7 +519,7 @@ with:
 | `teamai-env-hint` | 会话开始时说明这个作用域有哪些团队环境变量和密钥 |
 | `teamai-package-hint` | 会话开始时说明团队的包声明变了 |
 
-- `HOOK.yaml` 里有 `description` 和 `with:`。`with:` 里没写的键沿用 teamai 的值。
+- `params.yaml` 里放参数，没写的键沿用 teamai 的值。`HOOK.yaml` 里只有 `description`。
 - 文案是 `<text>.md`，用 `{{ name }}` 引用变量。设了 `language: en` 或 `zh` 时，目录里有 `<text>.en.md` 或 `<text>.zh.md` 就用它。
 - 你写的文案会替换 teamai 这段文案的所有语言版本：有你的 `problem.md`、没有 `problem.zh.md` 时，`zh` 团队读到的是你的 `problem.md`。只写一种语言时，也要写 `problem.md`。
 - teamai 目录里没有的文件不替换任何东西。pull 会警告、点出文件名，并忽略它。拼错的 `problems.md` 会这样暴露出来，而不是悄悄不起作用。你的目录有自己的 `HOOK.yaml` 时，可以添加文件。
@@ -531,7 +529,7 @@ with:
 pull 检查你的文件和 teamai 的文件合起来的目录。值超出范围、写了默认 hook 不认的键、引用了文案不提供的变量、只写了一种语言却缺少基础的 `<text>.md`，或带了 `command` 时，pull 会拒绝它，teamai 自带的目录继续生效：
 
 ```text
-hooks/teamai-friction-reminder/ is refused, and teamai's default stays in force until it is fixed: HOOK.yaml: with.min_tools must be a whole number from 1 to 1000
+hooks/teamai-friction-reminder/ is refused, and teamai's default stays in force until it is fixed: params.yaml: min_tools must be a whole number from 1 to 1000
 ```
 
 替换对整个团队生效，所以放在 namespace 里的替换（比如 `hooks/payments/teamai-friction-reminder/`）会被 pull 拒绝。`teamai review --branch` 会在合并前把 pull 拒绝的替换，或带有不替换任何文件的替换，判为失败。
@@ -760,7 +758,7 @@ sessions:
   publish: { attended: ask, unattended: auto }
 ```
 
-有人值守的 `ask` 会在摩擦提醒提供 [`teamai-share-learnings`](workflow.md#teamai-share-learnings-和-teamai-share-session) 时提议发布，成员在启动时确认一次。带 `--confirmed` 启动运行的 agent 可以替成员确认，teamai 无法核实。除此之外，成员的会话只会通过 `teamai session push` 等命令归档。无人值守的 `ask` 等同于 `off`，因为没有人在场确认。有人值守的 `auto` 在会话六小时没有任何活动后归档它，由会话启动时开始的 [`teamai-finished-sessions`](scorers.md#teamai-finished-sessions) 运行完成，该运行也评判已结束的会话。在结束前手动推送过的会话，在那次推送之后又有活动时会被再次归档。发布总会脱敏，同时改写本机路径（见[脱敏后的会话保留什么](dashboard.md#脱敏后的会话保留什么)）。HTTP 团队没有会话归档，因此在那里 `sessions.publish` 等同于 `off`，`teamai doctor` 会说明这一点。
+有人值守的 `ask` 会在摩擦提醒提供 [`teamai-share-learnings`](workflow.md#teamai-share-learnings-和-teamai-share-session) 时提议发布，成员在启动时确认一次。带 `--confirmed` 启动运行的 agent 可以替成员确认，teamai 无法核实。除此之外，成员的会话只会通过 `teamai session push` 等命令归档。无人值守的 `ask` 等同于 `off`，因为没有人在场确认。有人值守的 `auto` 在会话六小时（或团队设定的 `idle`）没有任何活动后归档它，由会话启动时开始的 [`teamai-finished-sessions`](scorers.md#teamai-finished-sessions) 运行完成，该运行也评判已结束的会话。在结束前手动推送过的会话，在那次推送之后又有活动时会被再次归档。发布总会脱敏，同时改写本机路径（见[脱敏后的会话保留什么](dashboard.md#脱敏后的会话保留什么)）。HTTP 团队没有会话归档，因此在那里 `sessions.publish` 等同于 `off`，`teamai doctor` 会说明这一点。
 
 成员的 `config.yaml` 优先，按模式分别生效。它没有写的模式沿用 `teamai.yaml`：
 

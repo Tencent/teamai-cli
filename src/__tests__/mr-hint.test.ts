@@ -6,7 +6,7 @@ import path from 'node:path';
 
 import { parseRemoteToRepo, buildHintMessage, computeMrHintOutput, stashMrHint, takePendingMrHint } from '../mr-hint.js';
 import type { MRSummary } from '../mr-hint.js';
-import { DefaultHooks } from '../default-hooks.js';
+import { DefaultFolders } from '../default-folders.js';
 import { getRemoteUrl } from '../utils/git.js';
 
 vi.mock('node:child_process', async (importOriginal) => {
@@ -19,7 +19,7 @@ vi.mock('../utils/git.js', async (importOriginal) => {
   return { ...actual, getRemoteUrl: vi.fn(actual.getRemoteUrl) };
 });
 
-const mrHint = await DefaultHooks.load('teamai-mr-hint', null);
+const mrHint = await DefaultFolders.load({ kind: 'hooks', name: 'teamai-mr-hint' }, null);
 
 describe('parseRemoteToRepo', () => {
   it('parses TGit HTTPS URL with simple path', () => {

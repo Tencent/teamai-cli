@@ -2,6 +2,7 @@
 import path from 'node:path';
 
 import { z } from 'zod';
+import type { DefaultFolderParams } from '../default-folders.js';
 
 import { DRAFT_SUFFIX, listDirs, listFiles, pathExists, readFileSafe, writeFile } from '../utils/fs.js';
 import { parseJson } from '../utils/json.js';
@@ -20,16 +21,8 @@ export interface StaleEntry {
   type: string;
 }
 
-export interface QualityUpdateOptions {
-  minRecalled?: number;
-  maxUpvoted?: number;
-  minUsers?: number;
-  dryRun?: boolean;
-}
-
-const DEFAULT_MIN_RECALLED = 5;
-const DEFAULT_MAX_UPVOTED = 1;
-const DEFAULT_MIN_USERS = 2;
+/** The gates an entry passes to be stale, and how many adopted learnings a draft's prompt shows, from the `params.yaml` of `teamai-draft-learning-updates`. */
+export type StaleGates = DefaultFolderParams<'workflows', 'teamai-draft-learning-updates'>;
 
 /**
  * Find docs/rules/skills that are frequently recalled but rarely adopted.
@@ -38,12 +31,8 @@ const DEFAULT_MIN_USERS = 2;
 export async function findStaleEntries(
   votesDir: string,
   knowledgeDirs: { docs?: string; rules?: string; skills?: string },
-  options: QualityUpdateOptions = {},
+  gates: StaleGates,
 ): Promise<StaleEntry[]> {
-  const minRecalled = options.minRecalled ?? DEFAULT_MIN_RECALLED;
-  const maxUpvoted = options.maxUpvoted ?? DEFAULT_MAX_UPVOTED;
-  const minUsers = options.minUsers ?? DEFAULT_MIN_USERS;
-
   const perDoc = new Map<string, { recalled: number; upvoted: number; users: Set<string> }>();
 
   const voteFiles = await listFiles(votesDir);
@@ -73,11 +62,11 @@ export async function findStaleEntries(
   const unresolved: string[] = [];
 
   for (const [docId, data] of perDoc) {
-    if (data.recalled < minRecalled) continue;
+    if (data.recalled < gates.min_recalled) continue;
 
-    if (data.upvoted > maxUpvoted) continue;
+    if (data.upvoted > gates.max_upvoted) continue;
 
-    if (data.users.size < minUsers) continue;
+    if (data.users.size < gates.min_users) continue;
 
     const found = await resolveEntry(docId, knowledgeDirs);
 
@@ -219,7 +208,7 @@ export function reportStaleEntries(entries: StaleEntry[]): void {
  * AI to understand what the team actually preferred.
  */
 export interface RelatedAdoptedLearningsOptions {
-  limit?: number;
+  limit: number;
   namespaces?: readonly string[];
 }
 
@@ -227,10 +216,8 @@ export async function findRelatedAdoptedLearnings(
   staleEntry: Pick<StaleEntry, 'docId' | 'path'>,
   votesDir: string,
   learningsDirs: readonly string[],
-  options?: RelatedAdoptedLearningsOptions,
+  { limit, namespaces }: RelatedAdoptedLearningsOptions,
 ): Promise<string[]> {
-  const limit = options?.limit ?? 5;
-  const namespaces = options?.namespaces;
   const perDoc = new Map<string, number>();
   const voteFiles = await listFiles(votesDir);
 
@@ -380,8 +367,8 @@ export interface DraftEntry {
  * The `stale` step: lists the entries recalled often but rarely adopted, as `--dry-run` does, and says that their
  * drafts come next when there are any.
  */
-async function stale(votesDir: string, repoPath: string): Promise<{ entries: DraftEntry[] }> {
-  const entries = await findStaleEntries(votesDir, { docs: `${repoPath}/docs`, rules: `${repoPath}/rules`, skills: `${repoPath}/skills` });
+async function stale(votesDir: string, repoPath: string, gates: StaleGates): Promise<{ entries: DraftEntry[] }> {
+  const entries = await findStaleEntries(votesDir, { docs: `${repoPath}/docs`, rules: `${repoPath}/rules`, skills: `${repoPath}/skills` }, gates);
   reportStaleEntries(entries);
 
   if (entries.length > 0) log.info('\nGenerating AI-powered update drafts...');
@@ -397,11 +384,11 @@ async function stale(votesDir: string, repoPath: string): Promise<{ entries: Dra
  * The `context` step: the entry's content, and the learnings members adopted instead, as the part of the prompt that
  * shows them, or '' when there are none.
  */
-async function context(entry: { path: string; docId: string }, votesDir: string, learningsDirs: readonly string[], namespaces: readonly string[] | undefined): Promise<{ content: string; related: string }> {
+async function context(entry: { path: string; docId: string }, votesDir: string, learningsDirs: readonly string[], options: RelatedAdoptedLearningsOptions): Promise<{ content: string; related: string }> {
   const content = await readFileSafe(entry.path);
 
   if (!content) throw new Error(`${entry.path} is empty or cannot be read, so there is nothing to draft an update of.`);
-  const related = await findRelatedAdoptedLearnings(entry, votesDir, learningsDirs, { namespaces });
+  const related = await findRelatedAdoptedLearnings(entry, votesDir, learningsDirs, options);
 
   return {
     content,

@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { contributeCheckForSession, writeContributeState } from '../contribute-check.js';
-import { DefaultHooks } from '../default-hooks.js';
+import { DefaultFolders } from '../default-folders.js';
 import { buildHandlerRegistry } from '../hook-handlers.js';
 import { buildHintMessage as buildMrHint, type MRSummary } from '../mr-hint.js';
 import { buildPackageHintMessage } from '../pkg/pkg-hint.js';
@@ -84,13 +84,13 @@ describe('hint texts before and after their move into hook folders', () => {
     { name: 'offer-command', offersWorkflow: false },
     { name: 'offer-workflow', offersWorkflow: true },
   ])('merged-MR hint $name', async ({ name, offersWorkflow }) => {
-    const mrHint = await DefaultHooks.load('teamai-mr-hint', null);
+    const mrHint = await DefaultFolders.load({ kind: 'hooks', name: 'teamai-mr-hint' }, null);
 
     for (const language of LANGUAGES) expect(buildMrHint(MRS, mrHint, { language: asOption(language), offersWorkflow })).toBe(GOLDEN['teamai-mr-hint']?.[name]?.[language]);
   });
 
   it('TodoWrite hint', async () => {
-    const todoWriteHint = await DefaultHooks.load('teamai-todowrite-hint', null);
+    const todoWriteHint = await DefaultFolders.load({ kind: 'hooks', name: 'teamai-todowrite-hint' }, null);
 
     for (const language of LANGUAGES) expect(buildTodoWriteHint(todoWriteHint, asOption(language))).toBe(GOLDEN['teamai-todowrite-hint']?.message?.[language]);
   });
@@ -101,7 +101,7 @@ describe('hint texts before and after their move into hook folders', () => {
     { name: 'plugins-and-marketplace', counts: [0, 2, 1] },
     { name: 'all', counts: [3, 1, 2] },
   ] as const)('package hint $name', async ({ name, counts: [npm, claude, marketplace] }) => {
-    const packageHint = await DefaultHooks.load('teamai-package-hint', null);
+    const packageHint = await DefaultFolders.load({ kind: 'hooks', name: 'teamai-package-hint' }, null);
 
     for (const language of LANGUAGES) expect(buildPackageHintMessage(packageHint, { npm, claude, marketplace }, asOption(language))).toBe(GOLDEN['teamai-package-hint']?.[name]?.[language]);
   });

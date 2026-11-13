@@ -5,7 +5,7 @@
 - **运行时机**: Stop 时
 - **输入**: 会话的工具调用、打断、拒绝、纠正、失败后的重试和 recall 命中
 - **输出**: 提醒分享这次会话学到的东西
-- **文件**: `HOOK.yaml` 保存 teamai 的阈值和权重。每个 `.md` 文件是提醒的一段文案
+- **文件**: `params.yaml` 保存 teamai 的阈值和权重。每个 `.md` 文件是提醒的一段文案
 
 ## 何时提醒
 
@@ -55,17 +55,15 @@ flowchart TD
 
 ## 替换它
 
-在团队仓库根目录的 `hooks/teamai-friction-reminder/` 里只放你要改的文件。其他文件（包括 `HOOK.yaml`）仍用 teamai 的，并继续获得 teamai 的更新。
+在团队仓库根目录的 `hooks/teamai-friction-reminder/` 里只放你要改的文件。其他文件（包括 `params.yaml`）仍用 teamai 的，并继续获得 teamai 的更新。
 
 ```yaml
-# hooks/teamai-friction-reminder/HOOK.yaml
-description: Remind only after longer sessions
-with:
-  min_tools: 30
-  weights: { reject: 30 }   # interrupt and correction keep teamai's values
+# hooks/teamai-friction-reminder/params.yaml
+min_tools: 30
+weights: { reject: 30 }   # interrupt and correction keep teamai's values
 ```
 
-推送这个文件夹。下一次 `teamai pull` 会把你的文件和 teamai 的其他文件一起检查并交付。`with:` 里没写的键，沿用 teamai 的 `HOOK.yaml` 里的值。
+推送这个文件夹。下一次 `teamai pull` 会把你的文件和 teamai 的其他文件一起检查并交付。`params.yaml` 里没写的键，沿用 teamai 的 `params.yaml` 里的值。
 
 ## 参数
 
@@ -88,7 +86,9 @@ with:
 | 文件 | 变量 |
 |---|---|
 | `problem.md`、`gap.md`、`action.md`、`action-gap.md` | 无 |
-| `problem-reasons.md`、`gap-reasons.md` | `{{ reasons }}`，例如 `you interrupted the AI twice`。它总是英文 |
+| `problem-reasons.md`、`gap-reasons.md` | `{{ reasons }}`，会话出现的各个信号的原因文本，用逗号连接，例如 `你打断了 AI 2 次，你拒绝了 1 次工具调用` |
+| `reason-interrupt.md`、`reason-correction.md`、`reason-tool-error.md` | `{{ count }}`，例如 `2`；`{{ times }}`，`.zh.md` 文件中例如 `2 次`，英文文件中例如 `twice` |
+| `reason-tool-reject.md` | `{{ count }}`、`{{ times }}`，以及 `{{ tool_calls }}`，`.zh.md` 文件中例如 `1 次工具调用`，英文文件中例如 `1 tool call` |
 | `task.md` | `{{ task }}`，第一条提示压成一行，密钥已打码，过长的提示会截断 |
 | `action-share-learnings.md` | `{{ command }}`，描述 `teamai-share-learnings` 的命令 |
 
@@ -101,7 +101,7 @@ with:
 
 | 替换 | pull 怎么做 |
 |---|---|
-| 缺少某段文案、设置了超出范围的值、设置了上表没有列出的键，或设置了 `command` | 指出是哪个字段，继续使用 teamai 的文件夹 |
+| 缺少某段文案、设置了超出范围的值、设置了上表没有列出的键、在 `HOOK.yaml` 里保留了 `with:`，或设置了 `command` | 指出是哪个字段，继续使用 teamai 的文件夹 |
 | 使用了文案不提供的变量 | 同上 |
 | 放在命名空间里，例如 `hooks/frontend/teamai-friction-reminder/` | 同上。替换要放在团队仓库根目录 |
 

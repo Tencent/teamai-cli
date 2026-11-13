@@ -5,7 +5,7 @@ English | [中文](README.zh-CN.md)
 - **Runs**: At session start, after the hook returns. The session's next prompt shows the offer, or the session start itself where teamai gives the tool no prompt hook
 - **Input**: The MRs merged in the project's repository in the last `lookback_days`, except the ones it already offered
 - **Output**: An offer to turn them into learnings with [`teamai-import-from-mr`](../../workflows/teamai-import-from-mr/README.md)
-- **Files**: `HOOK.yaml` holds teamai's parameters. Each `.md` file is one text of the offer
+- **Files**: `params.yaml` holds teamai's parameters. Each `.md` file is one text of the offer
 
 ## When it offers
 
@@ -30,16 +30,14 @@ The agent cannot start the workflow in a session that teamai itself launched.
 
 ## Replace it
 
-Put only the files you change in `hooks/teamai-mr-hint/` at the root of the team repo. Every other file, `HOOK.yaml` included, stays teamai's and keeps getting teamai's updates.
+Put only the files you change in `hooks/teamai-mr-hint/` at the root of the team repo. Every other file, `params.yaml` included, stays teamai's and keeps getting teamai's updates.
 
 ```yaml
-# hooks/teamai-mr-hint/HOOK.yaml
-description: Offer the last two weeks of MRs
-with:
-  lookback_days: 14   # max_mrs keeps teamai's value
+# hooks/teamai-mr-hint/params.yaml
+lookback_days: 14   # max_mrs keeps teamai's value
 ```
 
-Push the folder. The next `teamai pull` checks your files with teamai's other files and delivers them together. A key you leave out of `with:` keeps teamai's value from its `HOOK.yaml`.
+Push the folder. The next `teamai pull` checks your files with teamai's other files and delivers them together. A key you leave out of `params.yaml` keeps teamai's value from its `params.yaml`.
 
 ## Parameters
 
@@ -68,7 +66,7 @@ Both texts take `{{ count }}`, `{{ mr_lines }}` and `{{ command }}`. `{{ mr_line
 
 | The replacement | What pull does |
 |---|---|
-| Misses a text, sets a value out of range, sets a key the table above does not list, or sets a `command` | Names the field and keeps teamai's folder |
+| Misses a text, sets a value out of range, sets a key the table above does not list, keeps `with:` in `HOOK.yaml`, or sets a `command` | Names the field and keeps teamai's folder |
 | Uses a variable its text does not offer | The same |
 | Sits in a namespace, such as `hooks/frontend/teamai-mr-hint/` | The same. A replacement goes at the root of the team repo |
 

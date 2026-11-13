@@ -43,14 +43,15 @@ function listOf(items: readonly string[]): string {
   return items.length > 1 ? `${items.slice(0, -1).join(', ')} and ${items.slice(-1).join('')}` : items.join('');
 }
 
-function publishProposal(policy: SessionPolicies['attended']): Proposal<boolean> {
+/** The attended publish proposal under `policy`; the idle time of `config` is read only for `auto`, which names it. */
+async function publishProposal(config: LocalConfig, policy: SessionPolicies['attended']): Promise<Proposal<boolean>> {
   switch (policy.policy) {
     case 'ask':
       return { value: true, why: `${PUBLISH_WHY} Proposed because the attended publish policy (${SessionPolicy.setBy(policy.source)}) is ask. It publishes once the run starts, with no other approval. Set it false to skip publishing.` };
     case 'off':
       return { value: false, why: `${PUBLISH_WHY} Not proposed: the attended publish policy (${SessionPolicy.setBy(policy.source)}) is off.` };
     case 'auto':
-      return { value: false, why: `${PUBLISH_WHY} Not proposed: the attended publish policy is auto, so teamai publishes this session, scrubbed, once it has been idle 6 hours.` };
+      return { value: false, why: `${PUBLISH_WHY} Not proposed: the attended publish policy is auto, so teamai publishes this session, scrubbed, once it has been idle for ${(await SessionWork.finishedAfter(config)).text}.` };
     default: {
       const unhandled: never = policy.policy;
 
@@ -101,7 +102,7 @@ async function propose(config: LocalConfig, { tool, sessionId }: { tool: string;
   }
 
   const [team, scoring] = await Promise.all([loadTeamConfig(config.repo.localPath), scopeScoring(config)]);
-  const publish = publishProposal(SessionPolicy.publish(config, team).policies.attended);
+  const publish = await publishProposal(config, SessionPolicy.publish(config, team).policies.attended);
   const source = { value: platform, why: 'This session\'s tool, as teamai session list names it.' };
 
   if (!scoring.ok) return { session, source, publish, scorers: { value: [], why: `${SCORERS_WHY} None proposed: ${scoring.reason} ${NAME_ANY}` } };
@@ -117,7 +118,7 @@ async function propose(config: LocalConfig, { tool, sessionId }: { tool: string;
     case 'off':
       return { session, source, publish, scorers: { value: [], why: `${SCORERS_WHY} None proposed: the attended scoring policy (${SessionPolicy.setBy(policy.source)}) is off. ${NAME_ANY}` } };
     case 'auto':
-      return { session, source, publish, scorers: { value: [], why: `${SCORERS_WHY} None proposed: the attended scoring policy is auto, so the background judge scores this session once it has been idle 6 hours. ${NAME_ANY}` } };
+      return { session, source, publish, scorers: { value: [], why: `${SCORERS_WHY} None proposed: the attended scoring policy is auto, so the background judge scores this session once it has been idle for ${(await SessionWork.finishedAfter(config)).text}. ${NAME_ANY}` } };
     default: {
       const unhandled: never = policy.policy;
 

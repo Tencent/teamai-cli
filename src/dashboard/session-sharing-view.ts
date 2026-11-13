@@ -5,7 +5,7 @@
 export const sessionSharingView = `
 const sharingModeNames = { attended: 'Attended', unattended: 'Unattended' };
 const sharingModeSources = { TEAMAI_MODE: 'set by TEAMAI_MODE', CI: 'set by CI', default: 'neither TEAMAI_MODE nor CI is set' };
-const sharingWhen = { attended: 'in the background, once a session has been idle for 6 hours', unattended: 'by teamai score --drain before the job ends' };
+const sharingWhen = { attended: 'in the background, once a session has been idle for', unattended: 'by teamai score --drain before the job ends' };
 const sharingAsk = { attended: 'proposed when the friction reminder offers teamai-share-learnings', unattended: 'acts as off: nobody is there to confirm' };
 const sharingStates = {
  attended: [['active','active'],['finished','kept on this machine'],['waitingToArchive','waiting to be archived'],['archived','archived']],
@@ -21,7 +21,7 @@ function sharingMode(s, mode) {
   :'<dt>'+label('Score')+'</dt><dd><b>off</b><small class="amber">'+label('Scoring is unavailable here')+'</small></dd>';
  return '<article class="sharing-mode'+(s.runMode.mode===mode?' here':'')+'"><h3>'+label(sharingModeNames[mode])+'</h3>'
   +'<p class="verdict'+(published||judged?' on':'')+'">'+label(sharingVerdict(published,judged))+'</p>'
-  +(published||judged?'<p class="label">'+label(sharingWhen[mode])+'</p>':'')
+  +(published||judged?'<p class="label">'+label(sharingWhen[mode])+(mode==='attended'?' <span data-verbatim>'+e(s.finishedAfter)+'</span>':'')+'</p>':'')
   +'<dl class="sharing-policies">'+sharingPolicy('Publish',publish,publish.policy==='ask'?sharingAsk[mode]:'')+scoreRow+'</dl>'
   +'<ul class="sharing-counts">'+sharingStates[mode].map(([key,name])=>'<li class="'+(!counts[key]?'muted':key.startsWith('waiting')?'amber':'')+'"><b>'+number(counts[key])+'</b> '+label(name)+'</li>').join('')
   +(steps?'<li class="amber"><b>'+number(steps)+'</b> '+label(steps===1?'step session waiting to be archived':'step sessions waiting to be archived')+'</li>':'')+'</ul></article>';

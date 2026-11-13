@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -11,7 +11,8 @@ vi.mock('../utils/logger.js', async (importOriginal) => ({
   log: logMocks,
 }));
 
-import { findStaleEntries, findRelatedAdoptedLearnings, type StaleEntry } from '../maintenance/quality-update.js';
+import { DefaultFolders } from '../default-folders.js';
+import { findStaleEntries, findRelatedAdoptedLearnings, type StaleEntry, type StaleGates } from '../maintenance/quality-update.js';
 
 let tmp: string;
 let votesDir: string;
@@ -19,6 +20,7 @@ let docsDir: string;
 let rulesDir: string;
 let skillsDir: string;
 let learningsDir: string;
+let gates: StaleGates;
 
 /** A v2 votes file: v1 carries only `at`, so it never reaches a counter threshold. */
 function writeVotes(user: string, table: Record<string, { recalled: number; upvoted: number }>): void {
@@ -48,6 +50,10 @@ function stale(docId: string, dir = docsDir): StaleEntry {
   };
 }
 
+beforeAll(async () => {
+  ({ params: gates } = await DefaultFolders.load({ kind: 'workflows', name: 'teamai-draft-learning-updates' }, null));
+});
+
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-quality-update-'));
   votesDir = path.join(tmp, 'votes');
@@ -69,7 +75,7 @@ describe('findStaleEntries locates an entry by the id its votes are kept under',
     writeVotes('alice', { guide: { recalled: 5, upvoted: 0 } });
     writeVotes('bob', { guide: { recalled: 3, upvoted: 0 } });
 
-    const entries = await findStaleEntries(votesDir, { docs: docsDir, rules: rulesDir, skills: skillsDir });
+    const entries = await findStaleEntries(votesDir, { docs: docsDir, rules: rulesDir, skills: skillsDir }, gates);
 
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({ docId: 'guide', type: 'docs', recalledCount: 8, userCount: 2 });
@@ -80,7 +86,7 @@ describe('findStaleEntries locates an entry by the id its votes are kept under',
     writeVotes('alice', { naming: { recalled: 5, upvoted: 0 } });
     writeVotes('bob', { naming: { recalled: 3, upvoted: 0 } });
 
-    const entries = await findStaleEntries(votesDir, { docs: docsDir, rules: rulesDir, skills: skillsDir });
+    const entries = await findStaleEntries(votesDir, { docs: docsDir, rules: rulesDir, skills: skillsDir }, gates);
 
     expect(entries[0]).toMatchObject({ docId: 'naming', type: 'rules' });
   });
@@ -90,7 +96,7 @@ describe('findStaleEntries locates an entry by the id its votes are kept under',
     writeVotes('alice', { 'flat-skill': { recalled: 5, upvoted: 0 } });
     writeVotes('bob', { 'flat-skill': { recalled: 3, upvoted: 0 } });
 
-    const entries = await findStaleEntries(votesDir, { docs: docsDir, rules: rulesDir, skills: skillsDir });
+    const entries = await findStaleEntries(votesDir, { docs: docsDir, rules: rulesDir, skills: skillsDir }, gates);
 
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({ docId: 'flat-skill', type: 'skills' });
@@ -102,7 +108,7 @@ describe('findStaleEntries locates an entry by the id its votes are kept under',
     writeVotes('alice', { 'refund-skill': { recalled: 5, upvoted: 0 } });
     writeVotes('bob', { 'refund-skill': { recalled: 3, upvoted: 0 } });
 
-    const entries = await findStaleEntries(votesDir, { docs: docsDir, rules: rulesDir, skills: skillsDir });
+    const entries = await findStaleEntries(votesDir, { docs: docsDir, rules: rulesDir, skills: skillsDir }, gates);
 
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({ docId: 'refund-skill', type: 'skills' });
@@ -115,7 +121,7 @@ describe('findStaleEntries locates an entry by the id its votes are kept under',
     writeVotes('alice', { 'dup-skill': { recalled: 5, upvoted: 0 } });
     writeVotes('bob', { 'dup-skill': { recalled: 3, upvoted: 0 } });
 
-    const entries = await findStaleEntries(votesDir, { docs: docsDir, rules: rulesDir, skills: skillsDir });
+    const entries = await findStaleEntries(votesDir, { docs: docsDir, rules: rulesDir, skills: skillsDir }, gates);
 
     expect(entries[0].path).toBe(path.join(skillsDir, 'dup-skill', 'SKILL.md'));
   });
@@ -125,9 +131,21 @@ describe('findStaleEntries locates an entry by the id its votes are kept under',
     writeVotes('alice', { '../escape': { recalled: 5, upvoted: 0 } });
     writeVotes('bob', { '../escape': { recalled: 5, upvoted: 0 } });
 
-    const entries = await findStaleEntries(votesDir, { docs: docsDir, rules: rulesDir, skills: skillsDir });
+    const entries = await findStaleEntries(votesDir, { docs: docsDir, rules: rulesDir, skills: skillsDir }, gates);
 
     expect(entries).toEqual([]);
+  });
+});
+
+describe('findStaleEntries applies the gates it is given', () => {
+  it('lists an entry teamai\'s gates leave out once a team lowers the bar, and leaves one out once it raises it', async () => {
+    writeFile(path.join(docsDir, 'solo.md'), '# solo\n');
+    writeFile(path.join(docsDir, 'shared.md'), '# shared\n');
+    writeVotes('alice', { solo: { recalled: 9, upvoted: 0 }, shared: { recalled: 5, upvoted: 0 } });
+    writeVotes('bob', { shared: { recalled: 1, upvoted: 0 } });
+    const listed = async (set: StaleGates): Promise<string[]> => (await findStaleEntries(votesDir, { docs: docsDir }, set)).map((entry) => entry.docId).sort();
+
+    expect([await listed(gates), await listed({ ...gates, min_users: 1 }), await listed({ ...gates, min_recalled: 7 })]).toEqual([['shared'], ['shared', 'solo'], []]);
   });
 });
 
@@ -136,7 +154,7 @@ describe('findStaleEntries reports an entry it could not place', () => {
     writeVotes('alice', { 'gone-skill': { recalled: 5, upvoted: 0 } });
     writeVotes('bob', { 'gone-skill': { recalled: 3, upvoted: 0 } });
 
-    const entries = await findStaleEntries(votesDir, { docs: docsDir, rules: rulesDir, skills: skillsDir });
+    const entries = await findStaleEntries(votesDir, { docs: docsDir, rules: rulesDir, skills: skillsDir }, gates);
 
     expect(entries).toEqual([]);
     expect(logMocks.warn).toHaveBeenCalledTimes(1);
@@ -147,7 +165,7 @@ describe('findStaleEntries reports an entry it could not place', () => {
     writeVotes('alice', { 'a-learning': { recalled: 2, upvoted: 0 } });
     writeVotes('bob', { 'a-learning': { recalled: 1, upvoted: 0 } });
 
-    await findStaleEntries(votesDir, { docs: docsDir, rules: rulesDir, skills: skillsDir });
+    await findStaleEntries(votesDir, { docs: docsDir, rules: rulesDir, skills: skillsDir }, gates);
 
     expect(logMocks.warn).not.toHaveBeenCalled();
   });
@@ -176,7 +194,7 @@ describe('findRelatedAdoptedLearnings attaches what the entry is about', () => {
     for (const name of ['a', 'b', 'c', 'd', 'e']) votes[`doc-${name}`] = { recalled: 0, upvoted: 20 };
     writeVotes('alice', votes);
 
-    const contents = await findRelatedAdoptedLearnings(stale('deploy-rollback'), votesDir, [learningsDir]);
+    const contents = await findRelatedAdoptedLearnings(stale('deploy-rollback'), votesDir, [learningsDir], { limit: gates.max_related });
 
     expect(contents).toHaveLength(1);
     expect(contents[0]).toContain('deploy canary');
@@ -189,7 +207,7 @@ describe('findRelatedAdoptedLearnings attaches what the entry is about', () => {
       'billing-invoice': { recalled: 2, upvoted: 1 },
     });
 
-    const contents = await findRelatedAdoptedLearnings(stale('deploy-rollback'), votesDir, [learningsDir]);
+    const contents = await findRelatedAdoptedLearnings(stale('deploy-rollback'), votesDir, [learningsDir], { limit: gates.max_related });
 
     expect(contents).toEqual([]);
   });
@@ -225,6 +243,7 @@ describe('findRelatedAdoptedLearnings attaches what the entry is about', () => {
     });
 
     const contents = await findRelatedAdoptedLearnings(stale('refund-policy'), votesDir, [learningsDir], {
+      limit: gates.max_related,
       namespaces: ['pay'],
     });
 
@@ -240,7 +259,7 @@ describe('findRelatedAdoptedLearnings attaches what the entry is about', () => {
     });
     const before = fs.readFileSync(path.join(votesDir, 'alice.yaml'), 'utf-8');
 
-    await findRelatedAdoptedLearnings(stale('deploy-rollback'), votesDir, [learningsDir]);
+    await findRelatedAdoptedLearnings(stale('deploy-rollback'), votesDir, [learningsDir], { limit: gates.max_related });
 
     expect(fs.readFileSync(path.join(votesDir, 'alice.yaml'), 'utf-8')).toBe(before);
   });

@@ -146,12 +146,19 @@ describe('session list --finished', () => {
     });
   });
 
-  it('takes a session idle for --idle, so a team file with --idle 1h takes it one hour after its last activity', async () => {
+  it('takes a session idle for --idle, else for the idle of the team\'s params.yaml, so 1h takes it one hour after its last activity', async () => {
     const config = await team({}, { scoring: { sessions: true } });
     capturedSession(IDLE, 'attended', { idleFor: 1.5 * HOUR });
+    const teamais = await listed(config, {});
+    fs.mkdirSync(path.join(config.repo.localPath, 'workflows', 'teamai-finished-sessions'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'teamai-finished-sessions', 'params.yaml'), 'idle: 1h\n');
+    await syncScorersThenWorkflows(config);
 
-    expect(await listed(config, { idle: '6h' })).toEqual({ ok: true, list: [] });
-    expect(await listed(config, { idle: '1h' })).toMatchObject({ ok: true, list: [{ session: IDLE }] });
+    expect([teamais, await listed(config, {}), await listed(config, { idle: '6h' })]).toMatchObject([
+      { ok: true, list: [] },
+      { ok: true, list: [{ session: IDLE }] },
+      { ok: true, list: [] },
+    ]);
   });
 
   it('publishes a session where sessions.publish is auto for its run mode, and with scoring off lists it with no scorer', async () => {
@@ -748,7 +755,7 @@ describe('the start of teamai-finished-sessions', () => {
   });
 
   it('ends a run of a team copy that sets no timeout once 30 minutes passed, so the session it was judging is started again', async () => {
-    const shipped = fs.readFileSync(path.resolve('workflows/teamai-finished-sessions.yaml'), 'utf8');
+    const shipped = fs.readFileSync(path.resolve('workflows/teamai-finished-sessions/WORKFLOW.yaml'), 'utf8');
     const config = await team({ 'workflows/teamai-finished-sessions.yaml': shipped.replace(/^timeout: .*\r?\n/mu, '') }, { scoring: { sessions: true } });
     await syncScorersThenWorkflows(config);
     capturedSession(IDLE, 'attended');

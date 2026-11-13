@@ -134,7 +134,7 @@ describe('the session share offer', () => {
     });
     expect((await offerOf(await member({ scorers, files: { 'teamai.yaml': 'team: acme\nrepo: local\nsessions:\n  publish:\n    attended: auto\n' } }))).publish).toEqual({
       value: false,
-      why: `${PUBLISH_WHY} Not proposed: the attended publish policy is auto, so teamai publishes this session, scrubbed, once it has been idle 6 hours.`,
+      why: `${PUBLISH_WHY} Not proposed: the attended publish policy is auto, so teamai publishes this session, scrubbed, once it has been idle for 6h.`,
     });
   });
 
@@ -147,7 +147,7 @@ describe('the session share offer', () => {
     });
     expect((await offerOf(await member({ scorers, config: { scoring: { sessions: { attended: 'auto' } } } }))).scorers).toEqual({
       value: [],
-      why: `${SCORERS_WHY} None proposed: the attended scoring policy is auto, so the background judge scores this session once it has been idle 6 hours. Name any scorer to judge with it.`,
+      why: `${SCORERS_WHY} None proposed: the attended scoring policy is auto, so the background judge scores this session once it has been idle for 6h. Name any scorer to judge with it.`,
     });
   });
 
