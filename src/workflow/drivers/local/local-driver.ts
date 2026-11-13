@@ -510,7 +510,7 @@ async function promptReport(
     : contract && lease.cwd ? await detectProjectConfig(lease.cwd) ?? config : config;
 
   const stepConfig = teamConfig ?? config;
-  const loaded = lease.agent && teamConfig ? await loadDeployedAgent({ tool: selected, name: lease.agent, config: teamConfig, toolPaths: options.toolPaths }) : undefined;
+  const loaded = lease.agent && teamConfig ? await loadDeployedAgent({ tool: launched, name: lease.agent, config: teamConfig, toolPaths: options.toolPaths }) : undefined;
   const agent = loaded?.spec;
 
   if (lease.agent && !agent) {
@@ -521,7 +521,7 @@ async function promptReport(
   }
 
   const chosen = await chooseStepModel({
-    step: lease.step, tool: selected, model: lease.model, defaultModel: lease.defaultModel, agent: agent ?? undefined, config: stepConfig,
+    step: lease.step, tool: launched, model: lease.model, defaultModel: lease.defaultModel, agent: agent ?? undefined, config: stepConfig,
   });
 
   if (!chosen.ok) return giveUp(chosen.failure, launched);

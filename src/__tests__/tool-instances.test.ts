@@ -374,7 +374,64 @@ describe('the hooks of an instance', () => {
   });
 });
 
+describe('the model aliases of an instance', () => {
+  const instance = (name: string, base: string, ownHome = `home: { dir: .${name} }\n`) => `schemaVersion: v1alpha1\nname: ${name}\nextends: ${base}\n${ownHome}`;
+  const strong = new Map([['strong', { source: 'models/aliases.yaml', entries: { codex: { model: 'gpt-6', effort: 'high' }, codebuddy: { model: 'glm-5', effort: 'high' } } }]]);
+  const aliases = { ok: true, names: new Set(['strong']), team: strong, local: new Map(), inactive: new Map(), warnings: [], switches: { codex: { ok: true, switched: true } } } as const;
+
+  beforeEach(async () => {
+    await load(teamRepo({
+      'tools/acme-codex.yaml': instance('acme-codex', 'codex'),
+      'tools/twin-codex.yaml': instance('twin-codex', 'codex', ''),
+      'tools/acme-buddy.yaml': instance('acme-buddy', 'codebuddy'),
+    }));
+  });
+
+  it('gives an instance the entry of the tool it extends, and that tool\'s model switch only when it reads that tool\'s home', async () => {
+    const { resolveModelValue } = await import('../models/aliases.js');
+
+    expect(resolveModelValue(aliases, 'strong', 'acme-codex')).toMatchObject({ ok: true, step: 'team', model: 'gpt-6' });
+    expect(resolveModelValue(aliases, 'strong', 'twin-codex')).toEqual(resolveModelValue(aliases, 'strong', 'codex'));
+    expect(resolveModelValue(aliases, 'strong', 'custom-tool')).toEqual({ ok: true, step: 'default' });
+    expect(resolveModelValue(aliases, 'gpt-5', 'custom-tool')).toEqual({ ok: true, step: 'literal', model: 'gpt-5' });
+  });
+
+  it('says an aliases entry keyed by an instance is ignored, as the instance takes the entry of the tool it extends', async () => {
+    const repo = teamRepo({ 'tools/acme-codex.yaml': instance('acme-codex', 'codex'), 'models/aliases.yaml': 'aliases:\n  strong:\n    acme-codex: gpt-6\n' });
+    await load(repo);
+    const { loadTeamModelAliases } = await import('../models/aliases.js');
+    const loaded = await loadTeamModelAliases({ repo: { localPath: repo, remote: 'https://example.com/acme/team.git' }, username: 'member', additionalRoles: [], scope: 'user' });
+
+    expect(loaded.ok && loaded.warnings.map(({ message }) => message)).toEqual([
+      'models/aliases.yaml: alias "strong" maps "acme-codex", a tool instance, so that entry is ignored: an instance takes the entry of the tool it extends. Map codex instead.',
+    ]);
+  });
+
+  it('judges with the model the tool it extends gets, and with no effort where that tool\'s launch passes none', async () => {
+    const { chooseJudgeModel } = await import('../scorers/judge-model.js');
+
+    expect(chooseJudgeModel(aliases, { name: 'quality', model: 'strong' }, ['acme-codex']))
+      .toMatchObject({ ok: true, choice: { tool: 'acme-codex', by: 'scorer', model: { name: 'gpt-6' }, alias: 'strong' } });
+    expect(chooseJudgeModel(aliases, { name: 'quality', model: 'strong' }, ['acme-buddy']))
+      .toEqual({ ok: true, choice: { tool: 'acme-buddy', by: 'scorer', model: { name: 'glm-5' }, alias: 'strong' } });
+  });
+});
+
 describe('the agents of an instance', () => {
+  it('reads the definition a step names from the instance\'s own agents, in the format of the tool it extends', async () => {
+    const repo = teamRepo({ 'tools/acme-codex.yaml': 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n' });
+    const { config } = await load(repo);
+    const { renderForTool } = await import('../resources/agent-format.js');
+    const { loadDeployedAgent } = await import('../workflow/step-model.js');
+    const spec = { name: 'rev', description: 'Reviews a change', instructions: 'Review it.', model: 'gpt-6' };
+    fs.mkdirSync(path.join(home, '.acme-codex', 'agents'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.acme-codex', 'agents', 'rev.toml'), renderForTool(spec, 'codex').content);
+    const local: LocalConfig = { repo: { localPath: repo, remote: 'https://example.com/acme/team.git' }, username: 'member', additionalRoles: [], scope: 'user' };
+
+    expect(await loadDeployedAgent({ tool: 'acme-codex', name: 'rev', config: local, toolPaths: config?.toolPaths }))
+      .toMatchObject({ spec: { name: 'rev', model: 'gpt-6' }, file: path.join(home, '.acme-codex', 'agents', 'rev.toml') });
+  });
+
   it('gets teamai\'s own agents in the format of the tool it extends, and recall off takes them back', async () => {
     const repo = teamRepo({ 'tools/acme-codex.yaml': 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n' });
     const { config } = await load(repo);
