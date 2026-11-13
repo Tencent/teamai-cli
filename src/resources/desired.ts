@@ -13,7 +13,7 @@ import {
 } from '../namespace-resolver.js';
 import { placedResourcePath } from '../push-namespaces.js';
 import { resolveResourceNamespaces, usesMemberFilters } from '../resource-namespaces.js';
-import { loadRolesManifestIfPresent, type ResourceNamespaces } from '../roles.js';
+import { activeRoleIds, loadRolesManifestIfPresent, type ResourceNamespaces } from '../roles.js';
 import { existingSharedInstructionDirs } from '../shared-instruction-source.js';
 import { isRecallEnabled, type LocalConfig, type ResourceItem, type TeamaiConfig } from '../types.js';
 import { fileContentEqual, listDirs, listFiles, pathExists, readFileSafe } from '../utils/fs.js';
@@ -212,8 +212,9 @@ async function teamSkills(localConfig: LocalConfig): Promise<ResourceItem[]> {
 export async function scanRoleAwareSkills(
   localConfig: LocalConfig,
   namespaces: ResourceNamespaces,
+  candidates?: readonly ResourceItem[],
 ): Promise<{ kind: 'resolved'; items: ResourceItem[] } | DeliveryConflict> {
-  const skills = await teamSkills(localConfig);
+  const skills = candidates ?? await teamSkills(localConfig);
   const items = namespaces.skills.flatMap((namespace) => skills.filter((item) => item.namespace === namespace));
   const resolution = resolveNamespacedItems(items.map(itemCandidate), namespaces.skills);
 
@@ -298,6 +299,34 @@ async function sharedFirst(repoPath: string, items: readonly ResourceItem[]): Pr
   return { items: [...kept.values()], shadowed };
 }
 
+async function roleAllowedSkills(teamConfig: TeamaiConfig, localConfig: LocalConfig, items: ResourceItem[]): Promise<ResourceItem[]> {
+  const required = new Set(teamConfig.sharing.skills.roleRequiredNamespaces ?? []);
+
+  if (required.size === 0) return items;
+  const manifest = await loadRolesManifestIfPresent(localConfig.repo.localPath);
+  const ids = localConfig.stepRole !== undefined ? [localConfig.stepRole] : activeRoleIds(localConfig) ?? [];
+  const roles = manifest?.roles.filter((role) => ids.includes(role.id)) ?? [];
+  const allowed = new Set(roles.length === ids.length ? roles.flatMap((role) => role.resources.skills) : []);
+  const skipped = new Set<string>();
+
+  const eligible = items.filter((item) => {
+    if (!item.namespace || !required.has(item.namespace) || allowed.has(item.namespace)) return true;
+    skipped.add(item.namespace);
+
+    return false;
+  });
+
+  if (skipped.size > 0) {
+    const next = localConfig.roleAssignment
+      ? 'Ask the team to update your roles in manifest/members.yaml if you need these skills.'
+      : 'Run `teamai roles list` and `teamai roles set <role>` to select a receiving role, then `teamai pull`.';
+
+    warnOnce(`Skipped role-required skill namespaces: ${[...skipped].sort().join(', ')}. Your effective roles do not receive them. ${next}`);
+  }
+
+  return eligible;
+}
+
 /**
  * Resolve the skills this member should have: role namespaces ∪ subscribed
  * tags − exclusions. Read-only: `pull` calls it to decide what to install, and
@@ -322,16 +351,17 @@ export async function resolveDesiredSkills(
   const excludedSkills = new Set(usesMemberFilters(localConfig) ? localConfig.excludedSkills ?? [] : []);
 
   const teamItems = await teamSkills(localConfig);
+  const eligibleItems = await roleAllowedSkills(teamConfig, localConfig, teamItems);
   let directoryItems: ResourceItem[];
   let shadowed: ShadowedSkill[] = [];
 
   if (roleContext) {
-    const scanned = await scanRoleAwareSkills(localConfig, roleContext.activeNamespaces);
+    const scanned = await scanRoleAwareSkills(localConfig, roleContext.activeNamespaces, eligibleItems);
 
     if (scanned.kind === 'conflict') return scanned;
     directoryItems = scanned.items;
   } else {
-    ({ items: directoryItems, shadowed } = await sharedFirst(localConfig.repo.localPath, teamItems));
+    ({ items: directoryItems, shadowed } = await sharedFirst(localConfig.repo.localPath, eligibleItems));
   }
 
   // Tag channel: only augment when subscriptions are actually active
@@ -343,7 +373,7 @@ export async function resolveDesiredSkills(
   let skippedByTags = 0;
 
   if (hasActiveTagSubscriptions) {
-    const tagResult = filterByTags(teamItems, tagsConfig, subscribedTags, 'skills');
+    const tagResult = filterByTags(eligibleItems, tagsConfig, subscribedTags, 'skills');
     const subscribedTagSet = new Set(subscribedTags);
     tagIncluded = tagResult.included.filter((item) => {
       const itemTags = tagsConfig.skills[item.name];
