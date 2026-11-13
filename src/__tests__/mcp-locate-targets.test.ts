@@ -1004,7 +1004,30 @@ describe('pull writes MCP servers where each tool reads them (#1221)', () => {
       expect(await judgeTeamaiOnlyFiles(teamConfig, nonGitLocal)).toEqual([]);
     });
 
-    it('does not treat user-scope MCP targets in a project install as unrecorded project MCP files', async () => {
+    it('keeps a member\'s own MCP config in a HOME that is a git repository out of git', async () => {
+      const project = path.join(root, 'project');
+      const openclaw = path.join(home, '.openclaw', 'openclaw.json');
+      execFileSync('git', ['init', '-q', home]);
+      await fse.ensureDir(path.join(home, '.openclaw', 'workspace'));
+      await fse.outputJson(openclaw, {
+        mcp: { servers: { mine: { url: 'https://mine.example.com/mcp', headers: { Authorization: 'Bearer abc123' } } } },
+      });
+      execFileSync('git', ['init', '-q', project]);
+      const local: LocalConfig = {
+        ...userConfig('openclaw'),
+        scope: 'project',
+        projectRoot: project,
+        dataHome: path.join(root, 'data'),
+        enabledAgents: ['claude', 'openclaw'],
+      };
+
+      await reconcileMcpForConfig(team({ gitExclude: { enabled: true } }), local);
+
+      expect(await fse.readFile(path.join(home, '.git', 'info', 'exclude'), 'utf-8')).toMatch(/^\/\.openclaw\/openclaw\.json$/m);
+      expect(execFileSync('git', ['add', '-A', '--dry-run'], { cwd: home, encoding: 'utf-8' })).not.toContain('.openclaw/openclaw.json');
+    });
+
+    it('names no user-home MCP config in a warning, and doctor\'s git exclude check passes, when HOME is not a git repository', async () => {
       const project = path.join(root, 'project');
       await fse.ensureDir(path.join(home, '.hermes'));
       await fse.ensureDir(path.join(home, '.dsh'));

@@ -2140,7 +2140,7 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
   };
 
   // Every tool's file, delivery on or off, the same files and evidence pull protects. Two tools may share one.
-  const mapped = (await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true })).filter((t) => t.projectScope);
+  const mapped = await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true });
   // A built-in location no mapping reaches today (its tool moved or dropped): its tool's records describe another file.
   const unmapped = await unmappedMcpDefaults(mapped);
   const targets = mapped.filter((target) => !unmapped.has(target));

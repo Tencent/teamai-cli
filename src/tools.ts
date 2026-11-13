@@ -220,7 +220,7 @@ export type McpProject = McpCommon<HomeRead | ProjectRead | FirstExistingRead> &
   readonly writtenBy?: ToolId;
   /**
    * Whether a project file holding only teamai's servers is judged teamai's (#915). Not for
-   * Claude's, CodeBuddy's and WorkBuddy's `.mcp.json`, whose servers have a per-member place outside the
+   * Claude's and CodeBuddy's `.mcp.json`, whose servers have a per-member place outside the
    * project, or Qoder's `settings.json`, which also holds its settings.
    */
   readonly judgedTeamaiOnly: boolean;
@@ -1568,7 +1568,7 @@ export const TOOLS = {
         reads: [{ base: 'home', firstOf: ['.workbuddy/.mcp.json', '.workbuddy/mcp.json', { in: 'codebuddy-config-dir', path: '.codebuddy.json' }], evidence: 'source' }],
       },
       project: {
-        judgedTeamaiOnly: false,
+        judgedTeamaiOnly: true,
         format: 'buddy',
         localScope: { file: { in: 'codebuddy-config-dir', path: '.codebuddy.json' }, key: 'realpath' },
         reads: [{ base: 'project', firstOf: ['.mcp.json', 'mcp.json'], when: 'cwdOnly', evidence: 'source' }],
