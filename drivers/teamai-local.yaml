@@ -1,0 +1,5 @@
+schemaVersion: v1alpha1
+name: teamai-local
+description: Run every step on this machine, with prompt steps on the tool a step, --tools or workflows.tools names.
+runtimes:
+  - use: tools

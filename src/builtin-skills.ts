@@ -2,23 +2,23 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import fse from 'fs-extra';
-import { errnoCode, pathExists, remove } from './utils/fs.js';
-import { log } from './utils/logger.js';
+import { pathExists } from './utils/fs.js';
+import { log } from '@teamai/shared/log';
 import { warnOnce } from './utils/warn-once.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
-import { COPILOT_TOOL_ID, resolveBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
-import { installOf, locate, openclawWorkspaceDir, SHARED_AGENT_SKILLS_PATH, writable } from './locate.js';
-import { toolHome } from './tool-home.js';
-import {
-  readsCodexSharedSkills, allowsSkillDirectory, describeSkippedSkillDirectory, findSkillDirectoryBlock,
-  skillTargetsFor,
-} from './resources/skills.js';
-import { getUserHome } from './utils/home.js';
+import { resolveBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
+import { installOf, locate, SHARED_AGENT_SKILLS_PATH, writable } from './locate.js';
+import { readsCodexSharedSkills, skillTargetsFor } from './resources/skills.js';
+import { allowsSkillDirectory, describeSkippedSkillDirectory, findSkillDirectoryBlock } from './skill-directory.js';
+import { getUserHome } from '@teamai/shared/home';
 import { packagedSkillRoots } from './skill-content.js';
 import { PACKAGED_SKILL_DIGESTS } from './packaged-skill-digests.js';
+import { LEGACY_BUILTIN_SKILL_NAMES } from './cli-skill-names.js';
+import { isOwnedFile, ownedSkillFiles, prunedWhole, removeOwnedFiles, skillsGuardBase, walkFiles } from './skill-owned-files.js';
 import { keepsTrackedCopy } from './resources/delivered-copies.js';
 import { generatedSkillAt } from './workflow/discovery/generated-marker.js';
 import type { DeliveryRecorder } from './git-exclude-delivered.js';
+import { copyRegularTree } from '@teamai/shared/regular-file';
 
 // ─── Built-in skills deployment ──────────────────────────
 //
@@ -42,43 +42,6 @@ import type { DeliveryRecorder } from './git-exclude-delivered.js';
 //
 
 /**
- * Names of CLI built-in skills. Used by push to exclude them from team repo
- * push, by pull cleanup, and by uninstall.
- */
-export const BUILTIN_SKILL_NAMES = new Set(['teamai']);
-
-/**
- * Built-in skill directories earlier releases deployed, kept only so that pull
- * can remove them from agent skills directories. Retire this set once 0.25.x,
- * the last release to deploy them, is no longer in the field.
- *
- * Only names the CLI actually wrote belong here. `teamai-workflow` and
- * `teamai-import` were reserved in the old BUILTIN_SKILL_NAMES guard but never
- * packaged, so a directory by either name is a user's own skill and must not be
- * removed.
- */
-export const LEGACY_BUILTIN_SKILL_NAMES = new Set([
-  'teamai-share-learnings',
-  'team-wiki-codebase',
-]);
-
-/**
- * The legacy directory that depended on recall. `teamai recall disable` still
- * removes it, as it did before the stub, so a member who upgrades and disables
- * recall before their next pull is not left with the old share workflow.
- */
-export const LEGACY_RECALL_SKILL_NAMES = new Set(['teamai-share-learnings']);
-
-/**
- * Whether a skill directory by this name is the CLI's, current or legacy, and
- * therefore never a user's own to push. A member who runs `teamai push --all`
- * after upgrading but before pulling still has the legacy trees on disk.
- */
-export function isCliOwnedSkillName(name: string): boolean {
-  return BUILTIN_SKILL_NAMES.has(name) || LEGACY_BUILTIN_SKILL_NAMES.has(name);
-}
-
-/**
  * Every file a release ever packaged under `skills/`, by directory name: the
  * paths of PACKAGED_SKILL_DIGESTS. A path alone does not make a file ours —
  * `removeOwnedFiles` also needs its content to match a shipped version — but
@@ -91,263 +54,6 @@ export function isCliOwnedSkillName(name: string): boolean {
 export const PACKAGED_SKILL_FILES: ReadonlyMap<string, readonly string[]> = new Map(
   [...PACKAGED_SKILL_DIGESTS].map(([skill, files]) => [skill, [...files.keys()]]),
 );
-
-/**
- * The digest PACKAGED_SKILL_DIGESTS records for a file: sha256 of its bytes.
- * The whole file, frontmatter included: a member who changed only a skill's
- * name, description or allowed-tools changed the skill, and it is theirs.
- */
-export function packagedSkillDigest(content: Buffer): string {
-  return createHash('sha256').update(content).digest('hex');
-}
-
-/** Digests by path: what `removeOwnedFiles` may remove, and only at that content. */
-export type OwnedSkillFiles = ReadonlyMap<string, ReadonlySet<string>>;
-
-/**
- * The files of `skillName` the CLI provably wrote — every version a release
- * shipped, plus, for the stub, the one this package ships now — optionally
- * narrowed to `paths`.
- */
-export async function ownedSkillFiles(skillName: string, paths?: readonly string[]): Promise<OwnedSkillFiles> {
-  const owned = new Map<string, Set<string>>();
-
-  for (const [relative, digests] of PACKAGED_SKILL_DIGESTS.get(skillName) ?? []) {
-    if (!paths || paths.includes(relative)) owned.set(relative, new Set(digests));
-  }
-
-  if (BUILTIN_SKILL_NAMES.has(skillName) && (!paths || paths.includes('SKILL.md'))) {
-    const stubPath = path.join(packagedSkillRoots().deployRoot, skillName, 'SKILL.md');
-
-    if (await pathExists(stubPath)) {
-      const digests = owned.get('SKILL.md') ?? new Set<string>();
-      digests.add(packagedSkillDigest(await fs.promises.readFile(stubPath)));
-      owned.set('SKILL.md', digests);
-    }
-  }
-
-  return owned;
-}
-
-/** True when `file` sits at an owned path with content a release shipped there. */
-async function isOwnedFile(file: string, relative: string, owned: OwnedSkillFiles): Promise<boolean> {
-  const digests = owned.get(relative);
-
-  if (!digests) return false;
-
-  return digests.has(packagedSkillDigest(await fs.promises.readFile(file)));
-}
-
-/**
- * Python bytecode cache of a script we shipped: `a/__pycache__/x.cpython-311.pyc`
- * for an `a/x.py` present and proven ours by content. Compiler output of our
- * own file, so it carries nothing a member wrote and does not make a directory
- * theirs. Bytecode beside a member's edit of the script, or with no script at
- * all, is theirs.
- */
-function isDerivedArtifact(relativePath: string, provenScripts: ReadonlySet<string>): boolean {
-  const parts = relativePath.split('/');
-
-  if (parts.length < 2 || parts[parts.length - 2] !== '__pycache__' || !relativePath.endsWith('.pyc')) return false;
-  const stem = parts[parts.length - 1].split('.')[0];
-
-  return provenScripts.has([...parts.slice(0, -2), `${stem}.py`].join('/'));
-}
-
-/**
- * Every file under `dir`, as paths relative to it. Symlinks count as files.
- * Not the shared walker in utils/fs: that one skips `__pycache__`, and the prune
- * has to see it to decide whether a directory is empty of the member's files.
- */
-async function walkFiles(dir: string, prefix = ''): Promise<string[]> {
-  const found: string[] = [];
-
-  for (const entry of await fs.promises.readdir(dir, { withFileTypes: true })) {
-    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
-
-    if (entry.isDirectory()) {
-      found.push(...await walkFiles(path.join(dir, entry.name), relative));
-    } else {
-      found.push(relative);
-    }
-  }
-
-  return found;
-}
-
-/**
- * Remove `dir` and every directory under it that holds nothing. A directory
- * that still has something in it stays, which is the point: that something is
- * the member's. Any other failure (permissions, a busy mount) is returned, so
- * the prune does not report a directory gone that is still there.
- */
-async function removeEmptyDirs(dir: string): Promise<{ file: string; error: string }[]> {
-  const failures: { file: string; error: string }[] = [];
-  let entries;
-
-  try {
-    entries = await fs.promises.readdir(dir, { withFileTypes: true });
-  } catch (e) {
-    if (errnoCode(e) !== 'ENOENT') failures.push({ file: dir, error: e instanceof Error ? e.message : String(e) });
-
-    return failures;
-  }
-
-  for (const entry of entries) {
-    if (entry.isDirectory()) failures.push(...await removeEmptyDirs(path.join(dir, entry.name)));
-  }
-
-  try {
-    await fs.promises.rmdir(dir);
-  } catch (e) {
-    // Not empty is the expected outcome for a directory holding the member's
-    // files — and some platforms say EACCES for that under a read-only parent,
-    // so the directory's contents, not the error code, decide.
-    const code = errnoCode(e);
-
-    const stillHolds = code === 'ENOTEMPTY' || code === 'EEXIST'
-      || (await fs.promises.readdir(dir).catch(() => [])).length > 0;
-
-    if (!stillHolds) failures.push({ file: dir, error: e instanceof Error ? e.message : String(e) });
-  }
-
-  return failures;
-}
-
-/** What `removeOwnedFiles` did and did not do, for the caller to report. */
-export interface PruneResult {
-  /** True when a link sits between the base and the skill directory: nothing was touched. */
-  skippedSymlink: boolean;
-  /** Files left in place because the member, not the CLI, put them there. */
-  foreign: number;
-  /** The CLI's files left in place because the repository tracks them, each named by `keepsTrackedCopy`. */
-  tracked: number;
-  /** Files left in place because their backup could not be written, and why. */
-  unbackedUp: { file: string; error: string }[];
-  /** Files archived but not deleted, leaving the tree half-pruned, and why. */
-  notRemoved: { file: string; error: string }[];
-  /** Whether anything was actually copied, so a log only names a backup that exists. */
-  backedUp: number;
-}
-
-/** True when the directory is gone: nothing of the member's, nothing unsaved. */
-export function prunedWhole(result: PruneResult): boolean {
-  return !result.skippedSymlink
-    && result.foreign === 0
-    && result.tracked === 0
-    && result.unbackedUp.length === 0
-    && result.notRemoved.length === 0;
-}
-
-/**
- * Remove from `dir` the files the CLI put there, then the directories that end
- * up empty. Anything that stopped it — a member's own file, a failed backup, a
- * failed delete, a link — is in the result, so the caller can say which.
- *
- * Exported because uninstall must delete a CLI-owned skill directory by the same
- * rule pull does: a file a member added beside our packaged ones was never ours
- * to write and is not ours to remove, whichever command is doing the removing.
- */
-export async function removeOwnedFiles(
-  dir: string,
-  owned: OwnedSkillFiles,
-  baseDir: string,
-  backupDir?: string,
-): Promise<PruneResult> {
-  const result: PruneResult = {
-    skippedSymlink: false, foreign: 0, tracked: 0, unbackedUp: [], notRemoved: [], backedUp: 0,
-  };
-
-  // Root links may stay within this repository; foreign and skill links are not owned.
-  if (!await allowsSkillDirectory(baseDir, dir)) {
-    result.skippedSymlink = true;
-
-    return result;
-  }
-
-  let entries: string[];
-
-  try {
-    entries = await walkFiles(dir);
-  } catch (e) {
-    // Another tool may have removed this same tree through an allowed root alias.
-    if (errnoCode(e) === 'ENOENT') return result;
-    // An unreadable subdirectory. Reporting it is the point: a silent return
-    // leaves the tree in place while `pull` says it succeeded.
-    result.notRemoved.push({ file: dir, error: e instanceof Error ? e.message : String(e) });
-
-    return result;
-  }
-
-  // Decide ownership before removing anything: bytecode is ours only beside a
-  // script proven ours, and that proof has to be taken while the script is
-  // still there.
-  const proven = new Set<string>();
-
-  for (const relative of entries) {
-    const file = path.join(dir, relative);
-
-    try {
-      // Ours only at a path a release shipped *and* with content one of them
-      // shipped there. A member's edit, or a skill of their own that uses a
-      // packaged name under a root TeamAI never managed, fails the second test
-      // and stays, with its directory. No release shipped a symlink.
-      if (!(await fs.promises.lstat(file)).isSymbolicLink() && await isOwnedFile(file, relative, owned)) proven.add(relative);
-    } catch (e) {
-      // Unreadable, so unprovable: kept, and said so.
-      result.notRemoved.push({ file, error: e instanceof Error ? e.message : String(e) });
-    }
-  }
-
-  for (const relative of entries) {
-    const file = path.join(dir, relative);
-
-    if (result.notRemoved.some((failure) => failure.file === file)) continue;
-
-    const owns = proven.has(relative)
-      || (isDerivedArtifact(relative, proven) && !(await fs.promises.lstat(file)).isSymbolicLink());
-
-    if (!owns) {
-      result.foreign++;
-      continue;
-    }
-
-    // Ours, but a file the repository tracks is never deleted (#915); named there.
-    if (await keepsTrackedCopy(file)) {
-      result.tracked++;
-      continue;
-    }
-
-    // Content proves the CLI wrote the file; a copy still goes to the archive
-    // before the delete, so no removal is a one-way door.
-    if (backupDir) {
-      try {
-        // `errorOnExist` turns a colliding path into a failure rather than a
-        // silent overwrite: a lost copy would be the data loss this exists to
-        // prevent, wearing the log line of a success.
-        await fse.copy(file, path.join(backupDir, relative), { overwrite: false, errorOnExist: true });
-        result.backedUp++;
-      } catch (e) {
-        // A full disk, a read-only home, a colliding copy. Keep the file: a
-        // backup that did not happen must not authorise the delete.
-        result.unbackedUp.push({ file, error: e instanceof Error ? e.message : String(e) });
-        continue;
-      }
-    }
-
-    try {
-      await remove(file);
-    } catch (e) {
-      // A read-only parent. The archive holds the copy, but the original stays,
-      // so the tree is half-pruned: say so rather than let a debug line carry it.
-      result.notRemoved.push({ file, error: e instanceof Error ? e.message : String(e) });
-    }
-  }
-
-  result.notRemoved.push(...await removeEmptyDirs(dir));
-
-  return result;
-}
 
 /**
  * One backup root per process run. A date alone collides: two pulls on the same
@@ -367,7 +73,7 @@ function skillBackupDir(baseDir: string, tool: string, skillRoot: string, skillN
   const rootSlug = skillRoot.replace(/[\\/:]+/g, '-').replace(/^-+/, '');
   // `inheritUserScope` deploys to the user base and then the project base in one
   // process, with the same tool, root and skill name. Without the base in the
-  // path the second pass collides with the first, and `errorOnExist` turns that
+  // path the second pass collides with the first, and `existing: 'fail'` turns that
   // into files it can neither archive nor prune.
   const baseSlug = `${path.basename(baseDir) || 'root'}-${createHash('sha256').update(baseDir).digest('hex').slice(0, 8)}`;
 
@@ -386,30 +92,6 @@ export interface BuiltinSkillsTarget {
    * must still check that root and every component below it.
    */
   guardBase: string;
-}
-
-/**
- * The base the link guard walks down from: the scope root — home, or the
- * project root — when `skillsDir` sits under it, since a link at or above that
- * is ordinary. Not the tool's home: for Copilot that is
- * `COPILOT_HOME`, and starting there would never check whether `COPILOT_HOME`
- * itself is a link. A root outside the scope root has the walk start at the
- * parent of the tool home holding it (`COPILOT_HOME`, `HERMES_HOME`, the
- * OpenClaw workspace), however deep the skills path below it, so that home is
- * checked too.
- */
-export async function skillsGuardBase(scopeRoot: string, skillsDir: string): Promise<string> {
-  const under = (root: string): boolean => {
-    const relative = path.relative(root, skillsDir);
-
-    return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
-  };
-
-  if (under(scopeRoot)) return scopeRoot;
-  const homes = [toolHome(COPILOT_TOOL_ID), toolHome('hermes'), await openclawWorkspaceDir()];
-  const home = homes.filter((dir): dir is string => dir !== null && under(dir)).sort((a, b) => a.length - b.length)[0];
-
-  return home ? path.dirname(home) : path.dirname(path.dirname(skillsDir));
 }
 
 /**
@@ -668,7 +350,7 @@ export async function deployBuiltinSkills(
         // references it points at stay together, a working old skill rather
         // than an old skill whose references are gone.
         await fse.ensureDir(destDir);
-        await fse.copy(path.join(srcDir, 'SKILL.md'), path.join(destDir, 'SKILL.md'), { overwrite: true });
+        await copyRegularTree(path.join(srcDir, 'SKILL.md'), path.join(destDir, 'SKILL.md'));
         // Releases before the discovery stub deployed this same directory with a
         // references/ tree beside SKILL.md, ~39 KB of pre-stub instructions the
         // new SKILL.md no longer points at. The files those releases wrote go —

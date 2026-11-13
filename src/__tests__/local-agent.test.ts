@@ -8,7 +8,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { agentHookDescription } from '../hooks.js';
 import { keepCodexHookTrust, trustCodexHooks } from '../codex-trust.js';
 import { TEAMAI_CLAUDEMD_START } from '../types.js';
-import { installFakeCodex } from './helpers/fake-codex.js';
+import { installFakeCodex } from '@teamai/tool-codex/testing';
 
 vi.mock('@teamai/shared/log', () => ({
   log: {
@@ -439,7 +439,7 @@ describe('local-agent: bindCurrentProject --skip', () => {
     expect(binding.projectId).toBe(0);
     expect(binding.projectName).toBe('__skipped__');
     expect(binding.boundAt).toBeTruthy();
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     expect(vi.mocked(log.info).mock.calls.map((call) => call.join(' ')).join('\n'))
       .toContain('Skipped binding; this workspace will not be prompted again.');
   });
@@ -558,7 +558,7 @@ describe('local-agent: per-workspace enrollment', () => {
     Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
 
     const { bindCurrentProject } = await import('../local-agent.js');
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     vi.mocked(log.info).mockClear();
     await bindCurrentProject({ cwd: projectDir });
 
@@ -1476,7 +1476,7 @@ describe('local-agent: one access token per agent', () => {
     const stored = await fse.readJson(configFile());
     await fse.writeJson(configFile(), { ...stored, token: 'sk-dead', agentTokens: { codebuddy: 'sk-cb' } });
     const calls = backend(['sk-cb', 'sk-new']);
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     vi.mocked(log.warn).mockClear();
     const { initLocalAgentHttp } = await import('../local-agent.js');
 
@@ -2756,7 +2756,7 @@ describe('local-agent: cmds[] migration', () => {
       await removeLocalAgentHttp();
       expect(process.exitCode).toBe(1);
       expect(await fse.readFile(configPath, 'utf8')).toBe(before);
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
       expect(log.error).toHaveBeenCalledWith(expect.stringContaining('nothing was removed'));
     } finally {
       process.exitCode = exitCode;
@@ -3989,7 +3989,7 @@ describe('local-agent: project installs stay out of git, and a member\'s file st
     fs.chmodSync(rules, 0o555);
     process.exitCode = undefined;
     const { removeLocalAgentHttp } = await import('../local-agent.js');
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     (log.warn as ReturnType<typeof vi.fn>).mockClear();
     try {
       await removeLocalAgentHttp();

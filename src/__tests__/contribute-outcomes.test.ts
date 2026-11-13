@@ -184,4 +184,25 @@ describe('a learning contributed inside a workflow attempt', () => {
 
     expect(await readContributeState('the-step-session')).toMatchObject({ contributed: true });
   });
+
+  it.skipIf(process.platform === 'win32')('goes on at once when the step left a FIFO at its outcome file, rather than waiting for a reader', async () => {
+    const outcomes = path.join(runsDir(config()), run, 'outcomes');
+    fs.mkdirSync(outcomes, { recursive: true });
+    const pipe = path.join(outcomes, `${attempt}.jsonl`);
+    const { execFileSync, spawn } = await import('node:child_process');
+    execFileSync('mkfifo', [pipe]);
+    // A write that waits on the FIFO ends only once another process opens it, from three seconds on.
+    const releaser = spawn('sh', ['-c', 'sleep 3; while :; do exec 3<>"$1"; exec 3>&-; sleep 0.1; done', 'sh', pipe], { stdio: 'ignore' });
+    process.env.CLAUDE_CODE_SESSION_ID = 'the-step-session';
+    const start = Date.now();
+
+    try {
+      await contributeNote('Back off before retrying.\n', { title: 'Retry backoff' });
+    } finally {
+      releaser.kill();
+    }
+
+    expect(Date.now() - start).toBeLessThan(2_000);
+    expect(await readContributeState('the-step-session')).toMatchObject({ contributed: true });
+  });
 });

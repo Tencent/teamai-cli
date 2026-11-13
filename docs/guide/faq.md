@@ -6,7 +6,17 @@
 
 ## Uninstall
 
-`teamai uninstall` removes the agent resources TeamAI installed. Files you created stay, unless taking teamai's part out of one leaves it empty. A user-scope uninstall keeps data for projects still registered on this machine. Uninstall each project first. Then run `teamai uninstall` outside any project to remove the remaining shared data.
+`teamai uninstall` removes the agent resources TeamAI installed. Files you created stay, unless taking teamai's part out of one leaves it empty. A user-scope uninstall removes `~/.teamai` but your own `drivers/`, `runtimes/`, `sandboxes/` and `tools/` in it, and its preview and output name what it keeps. The last one also removes the warm images and sbx templates teamai's sandbox recorded making, and names any it leaves. It also keeps data for projects still registered on this machine. Uninstall each project first. Then run `teamai uninstall` outside any project to remove the remaining shared data.
+
+In a project, uninstall also removes the worktrees that failed or cancelled workflow runs kept, when nothing in one is left out of its branch: no uncommitted change, and no file git ignores. The branches stay, with the runs' commits. Once no run worktree is left, it removes what teamai set up for them: its block in `.git/info/exclude`, the `extensions.worktreeConfig` it turned on, and an empty `.teamai/`. Any other worktree stays, such as one with uncommitted changes, an ignored `.env`, or a HEAD on no branch. The preview and the output name it with the `git worktree remove --force` command that removes it, and that setup stays with it.
+
+An uninstall that removes the shared data refuses while a workflow run still holds a place on a step runtime, such as a sandbox, a T3 thread or a Paseo agent: removing teamai's records would leave nothing to close it. Let the run end, or stop it with `teamai workflow cancel <run>`, then uninstall again. It also refuses while teamai drives a workflow run on this machine:
+
+```text
+✖ Cannot uninstall while teamai drives run r844ee61183cc4915 on this machine (process 83460): it would write the run again into what the uninstall removes. Stop that driver (Ctrl-C), then run `teamai uninstall` again.
+```
+
+`--dry-run` still previews, and warns of each run that would make it refuse.
 
 A workspace uninstall can keep built-in hooks in your tool home because other installs may use them. If the uninstall preview lists hooks under "Kept for other teamai installs" and you have confirmed that no other workspace, checkout, user-scope install, or HTTP agent needs them, run `teamai hooks remove` in the still-configured workspace before uninstalling it. A later uninstall outside the workspace may only remove `~/.teamai`.
 

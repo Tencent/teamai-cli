@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadLocalConfig, saveLocalConfig, saveLocalConfigForScope } from '../config.js';
 import type { LocalConfig } from '../types.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { trySymlink } from './helpers/symlink.js';
 
 // Issue #823 item 14: config.yaml was written in place. Opening it for writing

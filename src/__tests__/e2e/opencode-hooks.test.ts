@@ -34,7 +34,8 @@ describe.each([{ version: 'V1', binary: V1 }, { version: 'V2', binary: V2 }])('r
     const commands = path.join(sandbox, 'team-hook.txt');
     const env = {
       ...process.env, HOME: home, USERPROFILE: home,
-      PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
+      // teamai meets the OpenCode this case runs, not the E2E stand-in.
+      PATH: [bin, path.dirname(binary!), process.env.PATH ?? ''].join(path.delimiter),
       XDG_CONFIG_HOME: path.join(home, '.config'), XDG_DATA_HOME: path.join(sandbox, 'data'),
       XDG_CACHE_HOME: path.join(sandbox, 'cache'), XDG_STATE_HOME: path.join(sandbox, 'state'),
       OPENCODE_CONFIG_DIR: path.join(home, '.config/opencode'),

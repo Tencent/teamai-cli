@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -275,6 +276,22 @@ describe('promptAnswersInForeground', () => {
     vi.stubEnv('TEAMAI_HTTP_ENDPOINT', 'https://teamai.example');
 
     expect(promptAnswersInForeground(SESSION, process.env)).toBe(true);
+  });
+
+  // A plain read of a FIFO waits for a writer; the child here is that writer, three seconds late, so a read that waits shows.
+  it.skipIf(process.platform === 'win32')('answers at once when a FIFO stands where the session file is', () => {
+    const file = path.join(home, '.teamai', 'sessions', `${SESSION.replace(/[^a-zA-Z0-9._-]/g, '_')}.json`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    execFileSync('mkfifo', [file]);
+    const writer = spawn(process.execPath, ['-e', 'setTimeout(() => require("node:fs").openSync(process.argv[1], "w"), 3000)', file], { stdio: 'ignore' });
+    const started = Date.now();
+
+    try {
+      expect(promptAnswersInForeground(SESSION, process.env)).toBe(false);
+      expect(Date.now() - started).toBeLessThan(1_000);
+    } finally {
+      writer.kill();
+    }
   });
 });
 

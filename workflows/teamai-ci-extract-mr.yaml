@@ -32,6 +32,7 @@ steps:
   - id: comment
     needs: [extract]
     if: steps.extract.outputs.exit_code == 0 && inputs.mode != 'write'
+    requires: { host: true }
     command: teamai ci comment --url "$URL" --learnings "$LEARNINGS" --marker "$MARKER" --individual "$INDIVIDUAL" --preview "$PREVIEW"
     env:
       URL: "{{ inputs.url }}"
@@ -42,6 +43,7 @@ steps:
   - id: write
     needs: [extract, comment]
     if: steps.extract.outputs.exit_code == 0 && inputs.mode != 'comment'
+    requires: { host: true }
     # Updates the team repo's teamwiki from the merged checkout through a teamai-import-from-repo run, under its import
     # lock; a failed update is said and leaves the learning to be written.
     command: teamai ci write --url "$URL" --learnings "$LEARNINGS" --team-repo "$TEAM_REPO" --individual "$INDIVIDUAL" --preview "$PREVIEW"
@@ -55,6 +57,7 @@ steps:
   - id: artifacts
     needs: [extract, comment, write]
     if: steps.extract.outputs.exit_code == 0 && inputs.output != ''
+    requires: { host: true }
     command: teamai ci artifacts --learnings "$LEARNINGS" --dir "$DIR"
     env: { LEARNINGS: "{{ steps.extract.outputs.learnings }}", DIR: "{{ inputs.output }}" }
     writes: ["{{ inputs.output }}"]

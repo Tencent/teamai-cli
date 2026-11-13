@@ -48,7 +48,7 @@ const rollouts = (codexHome: string): string[] => {
 };
 
 const readSession = (codexHome: string, sessionId: string, projectPath: string) =>
-  new CodexAdapter('codex', path.join(codexHome, 'sessions'), { processes: HOST_PROCESSES, executablesOf: (tool) => [tool], homeEnvAt: (_tool, dir) => ({ CODEX_HOME: dir }) }).readSession({ sessionId, projectPath });
+  new CodexAdapter('codex', path.join(codexHome, 'sessions'), { processes: HOST_PROCESSES, executablesOf: (tool) => [tool], skippedFolder: (folder) => { throw new Error(`skipped ${folder}`); }, homeEnvAt: (_tool, dir) => ({ CODEX_HOME: dir }) }).readSession({ sessionId, projectPath });
 
 describe('fake codex', () => {
   it('answers a call in the recorded format, which the Codex call profile reads as the answer it was given', async () => {

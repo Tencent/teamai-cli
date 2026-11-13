@@ -9,6 +9,7 @@
  * each tool and model's revision changed since the one it ran on before: a commit never changes, so each is read once.
  */
 import fs from 'node:fs/promises';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import path from 'node:path';
 import { z } from 'zod';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from '../types.js';
@@ -46,7 +47,7 @@ const reads = new Map<string, { stamp: string; input: BenchmarkRunInput | undefi
 
 /** The benchmark record in `file`, as `teamai benchmark report` writes it on this machine and publishes it. Throws when `file` cannot be read. */
 async function readRecord(file: string, source: BenchmarkRunInput['source']): Promise<BenchmarkRunInput | undefined> {
-  const text = await fs.readFile(file, 'utf8');
+  const text = await readRegularFile(file, 'utf8');
 
   try {
     const parsed = BenchmarkRunRecordSchema.safeParse(JSON.parse(text));

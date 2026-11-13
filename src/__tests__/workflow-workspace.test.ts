@@ -17,16 +17,24 @@ import * as engine from '../workflow/engine.js';
 import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/engine.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { cancelRun, respondProvenance, respondToHitl, retryStep } from '../workflow/run-controls.js';
-import type { LocalToolAdapter } from '../workflow/drivers/local/local-tool-adapter.js';
+import { type StepLauncher } from '@teamai/runtime-tools';
 import { parseWorkflow } from '../workflow/parse.js';
 import { readRun, updateRun } from '../workflow/store.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
 import { branchName, stepRoleOf } from '../workflow/workspace.js';
-import { applyBaseConfig, ensureWorktree, git as workflowGit, hooksPath, pushIfOrigin, removeWorktree, removeWorktreeSetup, worktreePath } from '../workflow/worktree.js';
-import { launchHoldsCheckout } from '../launch-context.js';
+import { applyBaseConfig, ensureWorktree, git as workflowGit, hooksPath, pushIfOrigin, readMemberConfig, removeWorktree, removeWorktreeSetup, untrustedGit, worktreePath, type MemberRemote } from '../workflow/worktree.js';
+import { launchHoldsCheckout, readLaunch } from '../launch-context.js';
 import { teamDelivery } from '../pull.js';
 import { pendingRecords } from '../workflow/records.js';
 import { knownSecrets } from '../env-resolution.js';
+
+/** What the member's checkout `repo` kept before a run, as a run's first prepare reads it. */
+async function memberOf(repo: string): Promise<MemberRemote> {
+  const kept = await readMemberConfig(repo);
+  if ('error' in kept) throw new Error(kept.error);
+
+  return { kept: new Set(kept), env: process.env };
+}
 
 _setDriverPollMs(20);
 
@@ -141,7 +149,7 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-describe('workflow workspaces', () => {
+describe('workflow workspaces', { timeout: 30_000 }, () => {
   it('keeps a literal hyphen distinct from a for_each index in branch names', () => {
     expect(branchName('run', 'foo-1', 1)).not.toBe(branchName('run', 'foo[1]', 1));
     expect(branchName('run', 'foo_1', 1)).not.toBe(branchName('run', 'foo[1]', 1));
@@ -448,7 +456,7 @@ steps:
     workspace: read-only
 `);
     config.workflows = { tools: { default: 'claude' }, max_parallel: 1 };
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async run() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'headless is not used' } };
       },
@@ -517,10 +525,11 @@ steps:
   });
 
   it.each([
-    ['', [], 4],
-    [' and the member\'s own extensions.worktreeConfig', [['extensions.worktreeConfig', 'true']], 3],
-    [' and the member\'s extensions.worktreeConfig=false and hooks', [['extensions.worktreeConfig', 'false'], ['core.hooksPath', 'member-hooks']], 4],
-  ])('undoes what its worktrees set up in the checkout once none is left, and keeps it while one is%s', async (_name, memberSettings, undone) => {
+    ['', [], 4, false],
+    [' and the member\'s own extensions.worktreeConfig', [['extensions.worktreeConfig', 'true']], 3, false],
+    [' and the member\'s extensions.worktreeConfig=false and hooks', [['extensions.worktreeConfig', 'false'], ['core.hooksPath', 'member-hooks']], 4, false],
+    [' and the member\'s exclude a link to a file of theirs', [], 4, true],
+  ])('undoes what its worktrees set up in the checkout once none is left, and keeps it while one is%s', async (_name, memberSettings, undone, isExcludeLinked) => {
     const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
 name: build
 description: One change on its own branch.
@@ -531,6 +540,13 @@ steps:
 `);
     const exclude = path.join(workspace, '.git', 'info', 'exclude');
     const excludeBefore = fs.readFileSync(exclude, 'utf8');
+
+    if (isExcludeLinked) {
+      // As a dotfile manager links it: teamai edits the member's file the link leads to, and keeps the link.
+      fs.renameSync(exclude, path.join(workspace, '.git', 'member-exclude'));
+      fs.symlinkSync('../member-exclude', exclude);
+    }
+
     for (const [key, value] of memberSettings) git(['config', key, value], workspace);
     const configBefore = git(['config', '--local', '--list'], workspace);
     expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
@@ -544,9 +560,35 @@ steps:
     expect(await removeWorktreeSetup(workspace, { dryRun: true })).toHaveLength(undone);
     expect(await removeWorktreeSetup(workspace)).toHaveLength(undone);
     expect(fs.readFileSync(exclude, 'utf8')).toBe(excludeBefore);
+    expect(fs.lstatSync(exclude).isSymbolicLink()).toBe(isExcludeLinked);
     expect(git(['config', '--local', '--list'], workspace)).toBe(configBefore);
     expect(fs.existsSync(path.join(workspace, '.teamai'))).toBe(false);
     expect(git(['status', '--porcelain'], workspace)).toBe('');
+  });
+
+  it("removes the upstream a run's push recorded for its branch once no worktree is left, and keeps the member's own", async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: One change on its own branch, pushed.
+steps:
+  - id: change
+    workspace: new
+    command: node -e "require('fs').writeFileSync('new.txt','yes')"
+`);
+    const bare = path.join(path.dirname(workspace), 'origin.git');
+    execFileSync('git', ['init', '-q', '--bare', bare]);
+    git(['remote', 'add', 'origin', bare], workspace);
+    const own = git(['rev-parse', '--abbrev-ref', 'HEAD'], workspace).trim();
+    git(['config', `branch.${own}.remote`, 'origin'], workspace);
+    git(['config', `branch.${own}.merge`, `refs/heads/${own}`], workspace);
+    const configBefore = git(['config', '--local', '--list'], workspace);
+
+    expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(git(['config', '--local', '--get-regexp', String.raw`^branch\.teamai/`], workspace)).toContain(`branch.teamai/${runId}/change/p1.remote origin`);
+
+    await removeWorktreeSetup(workspace);
+    expect(git(['config', '--local', '--list'], workspace)).toBe(configBefore);
+    expect(git(['for-each-ref', '--format=%(refname)', `refs/heads/teamai/${runId}/`], workspace).trim()).toBe(`refs/heads/teamai/${runId}/change/p1`);
   });
 
   it('says where a failed push left the commits, so pushing them from there works', async () => {
@@ -590,7 +632,7 @@ steps:
 `);
     config.workflows = { tools: { default: 'claude' }, max_parallel: 1 };
     git(['remote', 'add', 'origin', path.join(path.dirname(workspace), 'missing.git')], workspace);
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async runInteractive() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
       },
@@ -1299,7 +1341,7 @@ steps:
     workspace: new
     prompt: Read the team skill.
 `);
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async runInteractive() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
       },
@@ -1344,13 +1386,14 @@ steps:
     fs.appendFileSync(path.join(workspace, '.claude', 'skills', 'fe-skill', 'SKILL.md'), 'Member edit.\n');
     let holds: boolean | undefined;
     let revision: string | undefined;
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async runInteractive() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
       },
       async run(_tool, input) {
         const own = await detectProjectConfig(input.cwd);
-        holds = own && input.launch ? await launchHoldsCheckout(own, input.launch) : false;
+        const launch = readLaunch(input.launchEnv ?? {});
+        holds = own && launch ? await launchHoldsCheckout(own, launch) : false;
         const delivery = own ? await teamDelivery(own, 'claude') : undefined;
         revision = delivery?.complete ? delivery.commit : undefined;
         return { started: true, exitCode: 0 };
@@ -1614,21 +1657,21 @@ steps:
     execFileSync('git', ['add', 'tracked.txt'], { cwd: repo });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'three'], { cwd: repo });
 
-    expect(await pushIfOrigin(repo, 'teamai/demo', [])).toBe('pushed');
+    expect(await pushIfOrigin(repo, 'teamai/demo', [], untrustedGit(process.env), await memberOf(repo))).toBe('pushed');
     expect(git(['rev-parse', 'teamai/demo'], bare)).toBe(git(['rev-parse', 'HEAD'], repo));
-    expect(await pushIfOrigin(repo, 'teamai/demo', [])).toBe('unchanged');
-    expect(await pushIfOrigin(repo, 'teamai/never-pushed', [])).toBe('unchanged');
+    expect(await pushIfOrigin(repo, 'teamai/demo', [], untrustedGit(process.env), await memberOf(repo))).toBe('unchanged');
+    expect(await pushIfOrigin(repo, 'teamai/never-pushed', [], untrustedGit(process.env), await memberOf(repo))).toBe('unchanged');
 
     execFileSync('git', ['checkout', '-q', '-b', 'teamai/first'], { cwd: repo });
     fs.writeFileSync(path.join(repo, 'tracked.txt'), 'four\n');
     execFileSync('git', ['add', 'tracked.txt'], { cwd: repo });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'four'], { cwd: repo });
-    expect(await pushIfOrigin(repo, 'teamai/first', [])).toBe('pushed');
+    expect(await pushIfOrigin(repo, 'teamai/first', [], untrustedGit(process.env), await memberOf(repo))).toBe('pushed');
     expect(git(['rev-parse', 'teamai/first'], bare)).toBe(git(['rev-parse', 'HEAD'], repo));
-    expect(await pushIfOrigin(repo, 'teamai/first', [])).toBe('unchanged');
+    expect(await pushIfOrigin(repo, 'teamai/first', [], untrustedGit(process.env), await memberOf(repo))).toBe('unchanged');
 
     execFileSync('git', ['checkout', '-q', '-b', 'teamai/already', 'main'], { cwd: repo });
-    expect(await pushIfOrigin(repo, 'teamai/already', [])).toBe('unchanged');
+    expect(await pushIfOrigin(repo, 'teamai/already', [], untrustedGit(process.env), await memberOf(repo))).toBe('unchanged');
   });
 
   it('keeps an executable hook executable after a step that does not edit it', async () => {
@@ -1709,10 +1752,10 @@ steps:
     execFileSync('git', ['add', 'tracked.txt'], { cwd: repo });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'two'], { cwd: repo });
 
-    expect(await pushIfOrigin(repo, 'teamai/solo', [])).toBe('pushed');
+    expect(await pushIfOrigin(repo, 'teamai/solo', [], untrustedGit(process.env), await memberOf(repo))).toBe('pushed');
     expect(git(['rev-parse', 'teamai/solo'], bare)).toBe(git(['rev-parse', 'HEAD'], repo));
     execFileSync('git', ['checkout', '-q', '-b', 'teamai/same', 'main'], { cwd: repo });
-    expect(await pushIfOrigin(repo, 'teamai/same', [])).toBe('unchanged');
+    expect(await pushIfOrigin(repo, 'teamai/same', [], untrustedGit(process.env), await memberOf(repo))).toBe('unchanged');
   });
 
   it('pushes a branch only it holds when the user forces branch colors', async () => {
@@ -1730,7 +1773,7 @@ steps:
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-q', '--allow-empty', '-m', 'two'], { cwd: repo });
     git(['config', 'color.branch', 'always'], repo);
 
-    expect(await pushIfOrigin(repo, 'teamai/solo', [])).toBe('pushed');
+    expect(await pushIfOrigin(repo, 'teamai/solo', [], untrustedGit(process.env), await memberOf(repo))).toBe('pushed');
   });
 
   // While `git worktree add` writes a new worktree's entry, git's own `worktree add` and `worktree list` in the same
@@ -1822,9 +1865,9 @@ exec "${realGit}" "$@"
     const opened = await ensureWorktree(repo, 'teamai/r/step/p1', head);
     if ('error' in opened) throw new Error(opened.error);
     const saved = path.join(root, 'attempt', 'overlay');
-    await killed({ dir: opened.dir, saved, apply: () => applyBaseConfig(opened.dir, base, hooksPath(repo), saved) });
+    await killed({ dir: opened.dir, saved, apply: () => applyBaseConfig(opened.dir, base, hooksPath(repo), saved, { run: workflowGit }) });
 
-    expect(await applyBaseConfig(opened.dir, base, hooksPath(repo), saved, { resume: true })).toEqual({ ok: true, saved });
+    expect(await applyBaseConfig(opened.dir, base, hooksPath(repo), saved, { run: workflowGit, resume: true })).toEqual({ ok: true, saved });
 
     expect(fs.readFileSync(path.join(opened.dir, 'AGENTS.md'), 'utf8')).toBe('base rules\n');
     expect(fs.readFileSync(path.join(saved, 'AGENTS.md'), 'utf8')).toBe('branch rules\n');
@@ -1847,7 +1890,7 @@ exec "${realGit}" "$@"
     const opened = await ensureWorktree(repo, 'teamai/r/step/p1', head);
     if ('error' in opened) throw new Error(opened.error);
 
-    const applied = await applyBaseConfig(opened.dir, elsewhere, hooksPath(repo), path.join(root, 'overlay'));
+    const applied = await applyBaseConfig(opened.dir, elsewhere, hooksPath(repo), path.join(root, 'overlay'), { run: workflowGit });
 
     expect(applied).toEqual({ ok: false, message: expect.stringContaining(elsewhere) });
     expect(fs.readFileSync(path.join(opened.dir, 'AGENTS.md'), 'utf8')).toBe('branch rules\n');
@@ -1880,7 +1923,7 @@ exec "${realGit}" "$@"
     const temp = path.join(root, 'tmp');
     fs.mkdirSync(temp);
 
-    const applied = await applyBaseConfig(opened.dir, base, hooksPath(repo), path.join(temp, 'overlay'));
+    const applied = await applyBaseConfig(opened.dir, base, hooksPath(repo), path.join(temp, 'overlay'), { run: workflowGit });
 
     expect(fs.readFileSync(path.join(opened.dir, 'AGENTS.md'), 'utf8')).toBe('branch rules\n');
     expect(git(['status', '--porcelain'], opened.dir)).toBe('');
@@ -1899,7 +1942,7 @@ steps:
       steps:
         - id: plant
           workspace: continue
-          command: node -e "require('fs').writeFileSync('AGENTS.md','branch rules\\n')" && git config filter.boom.smudge false && git config filter.boom.clean cat && git config filter.boom.required true && echo 'AGENTS.md filter=boom' > "$(git rev-parse --git-common-dir)/info/attributes"
+          command: node -e "require('fs').writeFileSync('AGENTS.md','branch rules\\n')" && echo 'AGENTS.md filter=boom' > "$(git rev-parse --git-common-dir)/info/attributes"
         - id: check
           needs: [plant]
           workspace: continue
@@ -1908,6 +1951,9 @@ steps:
     fs.writeFileSync(path.join(workspace, 'AGENTS.md'), 'base rules\n');
     execFileSync('git', ['add', 'AGENTS.md'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: workspace });
+    // The member's own filter, set before the run, so it still runs in the step's copy: once a step points AGENTS.md at
+    // it, git cannot check out the base agent configuration.
+    for (const [key, value] of [['smudge', 'false'], ['clean', 'cat'], ['required', 'true']]) execFileSync('git', ['config', `filter.boom.${key}`, value], { cwd: workspace });
     const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
@@ -2097,7 +2143,7 @@ steps:
     fs.writeFileSync(path.join(workspace, 'AGENTS.md'), 'base\n');
     execFileSync('git', ['add', 'AGENTS.md'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: workspace });
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async runInteractive() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
       },
@@ -2137,7 +2183,7 @@ steps:
     fs.writeFileSync(path.join(workspace, 'AGENTS.md'), 'base\n');
     execFileSync('git', ['add', 'AGENTS.md'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: workspace });
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async runInteractive() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
       },
@@ -2277,7 +2323,7 @@ steps:
     const opened = await retryStep(config, runId, await knownSecrets(config), 'work.ask');
     expect(opened, JSON.stringify(opened)).toMatchObject({ data: { retried: { pass: 2 } } });
     config.workflows = { tools: { default: 'claude' }, max_parallel: 1 };
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async runInteractive() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
       },
@@ -2347,7 +2393,7 @@ steps:
     fs.writeFileSync(path.join(workspace, 'AGENTS.md'), 'base\n');
     execFileSync('git', ['add', 'AGENTS.md'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: workspace });
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async runInteractive() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
       },
@@ -2388,7 +2434,7 @@ steps:
     fs.writeFileSync(path.join(workspace, 'note.txt'), 'base\n');
     execFileSync('git', ['add', 'note.txt'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'note'], { cwd: workspace });
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async runInteractive() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
       },
@@ -2499,7 +2545,7 @@ steps:
     fs.writeFileSync(path.join(workspace, 'note.txt'), 'base\n');
     execFileSync('git', ['add', 'note.txt'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'note'], { cwd: workspace });
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async runInteractive() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
       },
@@ -2562,7 +2608,7 @@ steps:
     fs.writeFileSync(path.join(workspace, 'AGENTS.md'), 'base\n');
     execFileSync('git', ['add', 'AGENTS.md'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: workspace });
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async runInteractive() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
       },
@@ -2638,7 +2684,7 @@ steps:
     fs.writeFileSync(path.join(workspace, 'note.txt'), 'base\n');
     execFileSync('git', ['add', 'note.txt'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'note'], { cwd: workspace });
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async runInteractive() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
       },
@@ -2681,7 +2727,7 @@ steps:
     execFileSync('git', ['add', 'résumé.txt'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'note'], { cwd: workspace });
     execFileSync('git', ['config', 'core.quotepath', 'true'], { cwd: workspace });
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async runInteractive() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
       },
@@ -2725,7 +2771,7 @@ steps:
     execFileSync('git', ['add', '.claude'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: workspace });
     execFileSync('git', ['config', 'core.quotepath', 'true'], { cwd: workspace });
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async runInteractive() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
       },
@@ -2766,7 +2812,7 @@ steps:
     fs.writeFileSync(path.join(workspace, 'AGENTS.md'), 'base\n');
     execFileSync('git', ['add', 'AGENTS.md'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: workspace });
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async runInteractive() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
       },
@@ -2808,7 +2854,7 @@ steps:
     fs.writeFileSync(path.join(workspace, 'AGENTS.md'), 'base\n');
     execFileSync('git', ['add', 'AGENTS.md'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: workspace });
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async runInteractive() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
       },
@@ -2850,7 +2896,7 @@ steps:
     execFileSync('git', ['add', 'note.txt'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'note'], { cwd: workspace });
     let calls = 0;
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async runInteractive() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
       },
@@ -2906,7 +2952,7 @@ steps:
     execFileSync('git', ['add', 'note.txt'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'note'], { cwd: workspace });
     let calls = 0;
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async runInteractive() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
       },
@@ -3000,7 +3046,7 @@ setInterval(() => {}, 1000);
   });
 });
 
-describe('read-only steps in a workspace', () => {
+describe('read-only steps in a workspace', { timeout: 30_000 }, () => {
   const EXAMPLE = `schemaVersion: v1alpha1
 name: build
 description: A test reads the change it needs.
@@ -3305,7 +3351,7 @@ ${steps}`, steps.startsWith('inputs:') ? { items: ['a', 'b'] } : undefined);
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'verify'], { cwd: workspace });
     const base = git(['rev-parse', 'HEAD'], workspace).trim();
     config.workflows = { tools: { default: 'claude' }, max_parallel: 1 };
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async runInteractive() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
       },
@@ -3694,7 +3740,7 @@ steps:
     execFileSync('git', ['init', '-q', '--bare', origin]);
     git(['remote', 'add', 'origin', origin], workspace);
     config.workflows = { tools: { default: 'claude' }, max_parallel: 1 };
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       async runInteractive() {
         return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
       },

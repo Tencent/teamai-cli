@@ -8,7 +8,7 @@ import { z } from 'zod';
 
 import { canonicalModelName } from '../src/token-usage/model-name.js';
 import type { ModelPrice, PriceCatalog, TieredRates, TokenRates } from '../src/token-usage/pricing.js';
-import { isJsonObject, type JsonObject, type JsonValue } from '../src/types.js';
+import { isJsonObject, type JsonObject, type JsonValue } from '@teamai/shared/json';
 
 const LITELLM_FILE = 'model_prices_and_context_window.json';
 const ChatMode = z.enum(['chat', 'responses']);

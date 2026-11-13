@@ -1,6 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { readFileSafe, listFiles } from './utils/fs.js';
 import { parseLearningDoc, titleFromFilename } from './utils/search-index.js';
 import { requireInit, detectProjectConfig } from './config.js';

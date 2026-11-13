@@ -3,18 +3,18 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-vi.mock('node:fs/promises', async (original) => {
-  const actual = await original<typeof import('node:fs/promises')>();
-  return { ...actual, readFile: vi.fn(actual.readFile) };
+vi.mock('@teamai/shared/regular-file', async (original) => {
+  const actual = await original<typeof import('@teamai/shared/regular-file')>();
+  return { ...actual, readRegularFile: vi.fn(actual.readRegularFile) };
 });
-import { readFile } from 'node:fs/promises';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import { buildIndex, indexInMemory, loadIndex } from '../utils/search-index.js';
 
 describe('incremental search index (#1239)', () => {
   let dir: string;
   let learningsDir: string;
   let indexPath: string;
-  const sourceReads = () => vi.mocked(readFile).mock.calls
+  const sourceReads = () => vi.mocked(readRegularFile).mock.calls
     .map(([file]) => String(file)).filter((file) => file.endsWith('.md'));
 
   beforeEach(async () => {
@@ -24,18 +24,18 @@ describe('incremental search index (#1239)', () => {
     await fs.mkdir(learningsDir);
     await fs.writeFile(path.join(learningsDir, 'a.md'), '---\ntitle: Alpha\n---\nOriginal token.');
     await fs.writeFile(path.join(learningsDir, 'b.md'), '---\ntitle: Beta\n---\nOther token.');
-    vi.mocked(readFile).mockClear();
+    vi.mocked(readRegularFile).mockClear();
   });
   afterEach(async () => { await fs.rm(dir, { recursive: true, force: true }); });
 
   it('reads no unchanged source, and rebuilds just an edited file', async () => {
     await buildIndex({ learningsDir, indexPath });
-    vi.mocked(readFile).mockClear();
+    vi.mocked(readRegularFile).mockClear();
     await buildIndex({ learningsDir, indexPath });
     expect(sourceReads()).toEqual([]);
 
     await fs.writeFile(path.join(learningsDir, 'a.md'), '---\ntitle: Alpha\n---\nChanged token.');
-    vi.mocked(readFile).mockClear();
+    vi.mocked(readRegularFile).mockClear();
     await buildIndex({ learningsDir, indexPath });
     expect(sourceReads()).toEqual([path.join(learningsDir, 'a.md')]);
     expect((await loadIndex(indexPath))?.entries[0].tokens).toContain('changed');
@@ -97,7 +97,7 @@ describe('incremental search index (#1239)', () => {
     const invalid = (await loadIndex(indexPath))!;
     invalid.fileCache!.derivation = 'obsolete';
     await fs.writeFile(indexPath, JSON.stringify(invalid));
-    vi.mocked(readFile).mockClear();
+    vi.mocked(readRegularFile).mockClear();
     await buildIndex({ learningsDir, indexPath });
     expect(sourceReads()).toHaveLength(2);
     expect((await loadIndex(indexPath))?.entries).toEqual(before.entries);
@@ -115,7 +115,7 @@ describe('incremental search index (#1239)', () => {
     await fs.writeFile(path.join(skillsDir, 'demo', 'SKILL.md'), 'Skill words.');
     const opts = { learningsDir, docsDir, rulesDir, skillsDir, indexPath };
     await buildIndex(opts);
-    vi.mocked(readFile).mockClear();
+    vi.mocked(readRegularFile).mockClear();
     const cached = await indexInMemory(opts);
     expect(sourceReads()).toEqual([]);
     const full = await indexInMemory({ ...opts, indexPath: path.join(dir, 'full.json') });

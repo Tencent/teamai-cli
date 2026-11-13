@@ -10,9 +10,8 @@ import { AGENT_TOOLS, isToolId } from '../tool-registry.js';
 import { DEFAULT_TOOL_PATHS, scopedToolPaths, TeamaiConfigSchema } from '../types.js';
 import type { ToolId } from '../tools.js';
 import { CODEX_TOOL_IDS, normalizeAgentType } from '../utils/tool-names.js';
-import { LAUNCH_ADAPTERS } from '../tool-launch/adapters.js';
 import { type LaunchAdapter } from '@teamai/tool-core/launch';
-import type { LaunchTool } from '../tool-launch/tools.js';
+import { LAUNCH_ADAPTERS, type LaunchTool } from '../launch-registry.js';
 
 const TOOL_IDS = Object.keys(DEFAULT_TOOL_PATHS).filter(isToolId);
 const USER_PATHS = scopedToolPaths(TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.com/t.git' }), { scope: 'user' });

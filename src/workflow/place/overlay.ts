@@ -3,7 +3,7 @@ import type { PullDelivery, PullOutcome } from '../../pull.js';
 import { pathExists } from '../../utils/fs.js';
 import type { Executor } from '../requirements.js';
 import type { WorkflowFailure } from '../types.js';
-import { applyBaseConfig, hooksPath, recordConfigOverlay, restoreUneditedConfig } from '../worktree.js';
+import { applyBaseConfig, hooksPath, recordConfigOverlay, restoreUneditedConfig, type Git } from '../worktree.js';
 import { setUpWorktreeRole, worktreeRoleProblem } from './role-copy.js';
 
 /**
@@ -11,22 +11,22 @@ import { setUpWorktreeRole, worktreeRoleProblem } from './role-copy.js';
  * in `saved`, then delivers the team's resources into it. The delivery is recorded as part of the overlay, so it is not
  * the step's edit. With `resume`, it finishes an overlay a killed process left, over the files it kept in `saved`.
  * Step `step` runs there with the lease's `role` when it has one, delivered for its `tool`: a copy whose pull did not
- * deliver that role gets the branch's files back, and the step fails.
+ * deliver that role gets the branch's files back, and the step fails. `run` is the git it runs in the copy.
  */
-export async function applyOverlay({ root, dir, configCommit, saved, resume, step, executor, role, tool }: {
-  root: string; dir: string; configCommit: string; saved: string; resume?: true; step: string; executor: Executor; role?: string; tool?: string;
+export async function applyOverlay({ root, dir, configCommit, saved, resume, step, executor, role, tool, run }: {
+  root: string; dir: string; configCommit: string; saved: string; resume?: true; step: string; executor: Executor; role?: string; tool?: string; run: Git;
 }): Promise<WorkflowFailure | undefined> {
   const set = await setUpWorktreeRole({ dir, step, executor, role, tool });
 
   if ('code' in set) return set;
-  const applied = await applyBaseConfig(dir, configCommit, hooksPath(root), saved, resume ? { paths: set.paths, resume } : { paths: set.paths });
+  const applied = await applyBaseConfig(dir, configCommit, hooksPath(root), saved, resume ? { run, paths: set.paths, resume } : { run, paths: set.paths });
 
   if (!applied.ok) return { code: 'base_config', message: applied.message };
   const delivery = await deliverTeamResources(dir);
   const refused = role !== undefined ? await worktreeRoleProblem({ dir, step, role, tools: set.tools, delivery }) : undefined;
 
   if (refused && role !== undefined) {
-    const unrestored = await restoreOverlay({ dir, configCommit, saved, unfinished: true });
+    const unrestored = await restoreOverlay({ dir, configCommit, saved, unfinished: true, run });
 
     if (!unrestored) return refused;
 
@@ -42,8 +42,9 @@ export async function applyOverlay({ root, dir, configCommit, saved, resume, ste
  * Puts back each branch agent file the step left unchanged. Why they are not back, when git could not list the copy's
  * files. An overlay already restored, whose `saved` is gone, has nothing left to put back. An overlay a killed process
  * left `unfinished` had no step run over it, so every agent file in the copy is the overlay's, and all are put back.
+ * `run` is the git it runs: `untrustedGit` once a step ran in the copy, so nothing that step planted in its config runs.
  */
-export async function restoreOverlay({ dir, configCommit, saved, unfinished }: { dir: string; configCommit: string; saved: string; unfinished?: true }): Promise<string | undefined> {
+export async function restoreOverlay({ dir, configCommit, saved, unfinished, run }: { dir: string; configCommit: string; saved: string; unfinished?: true; run: Git }): Promise<string | undefined> {
   // A copy aside cut short left the branch's files in the copy.
   if (unfinished) await fs.rm(`${saved}.partial`, { recursive: true, force: true });
 
@@ -51,7 +52,7 @@ export async function restoreOverlay({ dir, configCommit, saved, unfinished }: {
 
   if (unfinished) await recordConfigOverlay(dir, saved);
 
-  return restoreUneditedConfig(dir, configCommit, saved);
+  return restoreUneditedConfig(dir, configCommit, saved, run);
 }
 
 /** What a step's failure adds when git could not list its copy `dir` to put the branch's agent files back. */

@@ -6,13 +6,15 @@ import { realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import fse from 'fs-extra';
+import { copyRegularTree, openRegularFileSync, readRegularFile } from '@teamai/shared/regular-file';
 import { GitError, simpleGit, type SimpleGit, type SimpleGitOptions, type outputHandler } from 'simple-git';
 import { z } from 'zod';
-import { execCommand } from './exec.js';
+import { execCommand } from '@teamai/shared/exec';
+import { descendantsOf, signalChild, signalStillRunning } from '@teamai/shared/process-group';
 import { errnoCode } from './fs.js';
 import { GitAnswers } from './git-answers.js';
 import { gitFindsNoRepository, linkedWorktreesStamp, repositoryStamp } from './git-discovery.js';
-import { log } from './logger.js';
+import { log } from '@teamai/shared/log';
 import { mergeTeamConfig } from './yaml.js';
 
 /** What simple-git accepts as a custom binary without its unsafe opt-in. */
@@ -115,7 +117,7 @@ const NATIVE_MAGIC = new Set(['7f454c46', 'feedface', 'feedfacf', 'cefaedfe', 'c
 function isNativeExecutable(file: string): boolean {
   try {
     fs.accessSync(file, fs.constants.X_OK);
-    const fd = fs.openSync(file, 'r');
+    const fd = openRegularFileSync(file);
 
     try {
       const head = Buffer.alloc(4);
@@ -327,15 +329,35 @@ export function createGitWithBlockTimeout(basePath?: string, abort?: AbortSignal
     lastChildProcess = undefined;
 
     if (child?.stdout !== stdout) return;
-    const kill = child.kill.bind(child);
 
-    // simple-git ends git through this kill on both the timeout and the abort.
+    // What the stop signals git through: the handle's own kill again, from the moment git is signalled.
+    const handle = {
+      pid: child.pid,
+      kill: (signal?: NodeJS.Signals | number): boolean => {
+        Reflect.deleteProperty(child, 'kill');
+
+        return signalChild(child, signal) === 'sent';
+      },
+    };
+
+    let isStopping = false;
+
+    // simple-git ends git through this kill on both the timeout and the abort, the second while the first one's stop
+    // may still list the tree: that call joins the stop, or git would end first and the processes under it escape it.
     child.kill = (signal) => {
+      if (isStopping) return true;
+      isStopping = true;
+
       if (!abort?.aborted) stalled = gitCommandLine(args);
 
-      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) endProcessTree(child.pid);
+      if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return signalChild(handle, signal) === 'sent';
 
-      return kill(signal);
+      // git is signalled once its tree is listed: the processes under a git that ended move to init, out of its tree.
+      const end = (): void => { signalChild(handle, signal); };
+
+      void endProcessTree(handle).then(end, end);
+
+      return true;
     };
   });
 }
@@ -382,39 +404,28 @@ function watchChildProcesses(): void {
 }
 
 /**
- * End `pid` and every process under it. On Windows `taskkill /T /F`. Elsewhere
+ * End `child` and every process under it. On Windows `taskkill /T /F`. Elsewhere
  * SIGTERM to each, which git handles by removing its lock files and ssh by
  * exiting; the tree is listed before any is signalled, because a killed
- * parent's children move to init and can no longer be found from `pid`.
- * When `ps` cannot list the tree, only `pid` is signalled.
+ * parent's children move to init and can no longer be found from its pid.
+ * `child` is signalled through its handle, which reaches no later process given
+ * its pid, and each process under it only while it is still the one listed.
+ * When `ps` cannot list the tree, or read it again, only `child` is signalled.
  */
-export function endProcessTree(pid: number): void {
+export async function endProcessTree(child: Pick<ChildProcess, 'pid' | 'kill'>): Promise<void> {
+  // A spawn that failed has no pid, and no tree.
+  if (child.pid === undefined) return;
+
   if (process.platform === 'win32') {
-    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    await new Promise((resolve) => { execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }, resolve); });
 
     return;
   }
 
-  const listed = spawnSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8' });
-  const children = new Map<number, number[]>();
+  const found = await descendantsOf(child.pid);
 
-  for (const line of (listed.stdout ?? '').split('\n')) {
-    const [child, parent] = line.trim().split(/\s+/).map(Number);
-
-    if (child > 0 && parent > 0) children.set(parent, [...(children.get(parent) ?? []), child]);
-  }
-
-  const tree = [pid];
-
-  for (let at = 0; at < tree.length; at++) tree.push(...(children.get(tree[at]) ?? []));
-
-  for (const member of tree) {
-    try {
-      process.kill(member, 'SIGTERM');
-    } catch {
-      // Already exited.
-    }
-  }
+  signalChild(child, 'SIGTERM');
+  await signalStillRunning(found, 'SIGTERM');
 }
 
 /**
@@ -1392,7 +1403,7 @@ export async function prepareExplicitBranch(localPath: string, branchName: strin
 
           if (!file.isFile() || !(await fse.lstat(backup)).isFile()) throw new Error('teamai.yaml is not a regular file.');
 
-          const pending = await fse.readFile(backup, 'utf8');
+          const pending = await readRegularFile(backup, 'utf8');
           const merged = mergeTeamConfig(baseText, pending, destinationText);
           const mergedFile = path.join(carried.root, 'merged-teamai.yaml');
           await fse.writeFile(mergedFile, merged, { encoding: 'utf8', mode: file.mode });
@@ -1453,9 +1464,7 @@ async function carryWorkingTree(git: SimpleGit): Promise<CarriedWorkingTree | nu
   try {
     for (const [relative, present] of changes) {
       if (present) {
-        await fse.copy(path.join(top, relative), path.join(root, 'files', relative), {
-          overwrite: true, preserveTimestamps: true, dereference: false,
-        });
+        await copyRegularTree(path.join(top, relative), path.join(root, 'files', relative), { keepTimes: true });
       }
 
       entries.push({ relative, present });
@@ -1498,11 +1507,8 @@ async function restoreWorkingTree(
       const target = path.join(top, relative);
 
       if (present) {
-        await fse.ensureDir(path.dirname(target));
         const source = relative === configPath && mergedConfig ? mergedConfig : path.join(carried.root, 'files', relative);
-        await fse.copy(source, target, {
-          overwrite: true, preserveTimestamps: true, dereference: false,
-        });
+        await copyRegularTree(source, target, { keepTimes: true });
       } else {
         await fse.remove(target);
       }

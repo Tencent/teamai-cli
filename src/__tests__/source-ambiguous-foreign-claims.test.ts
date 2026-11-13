@@ -26,7 +26,7 @@ vi.mock('../config.js', async (importOriginal) => ({
 import { autoDetectInit } from '../config.js';
 import { getSourceManifestPath, pullSources, sourceRemove } from '../source.js';
 import { copyDir } from '../utils/fs.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { LocalConfig, SourceInstallManifest, TeamaiConfig } from '../types.js';
 
 describe('ambiguous foreign source claims sharing HOME', () => {

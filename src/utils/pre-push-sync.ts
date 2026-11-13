@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import path from 'node:path';
 import fse from 'fs-extra';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
@@ -11,14 +10,16 @@ import {
   copyFile,
   readFileSafe,
   writeFile,
+  syncFolders,
 } from './fs.js';
 import { getFileContentAtRev, getFileContentWhenAdded } from './git.js';
 import { installOf, locate, ownOf, writable } from '../locate.js';
 import { ruleFileExtensionForTool, ruleFormatForTool, teamRuleNameForFile, usesCopilotInstructions } from '../resources/rule-format.js';
 import { EXCLUDED_RULE_NAMES } from '../builtin-rules.js';
-import { log } from './logger.js';
+import { log } from '@teamai/shared/log';
 import { placedResourcePath } from '../push-namespaces.js';
 import { recordDelivered, type DeliveredHashes } from '../resources/delivered-copies.js';
+import { copyRegularTree, readRegularFile } from '@teamai/shared/regular-file';
 import { ensureSkillFrontmatter, readTeamSkills, withSkillFrontmatter } from '../resources/skills.js';
 import { TeamSkillSource } from '../resources/team-skill-source.js';
 
@@ -288,13 +289,10 @@ async function syncSkillsToLocal(
  * as they would a copy over it, and renamed into place.
  */
 async function replaceSkillDir(teamSkill: TeamSkillSource, localSkillDir: string): Promise<void> {
-  const parent = path.dirname(localSkillDir);
-  const tag = `${path.basename(localSkillDir)}.${process.pid}.${crypto.randomBytes(6).toString('hex')}`;
-  const staged = path.join(parent, `.${tag}.teamai-sync`);
-  const previous = path.join(parent, `.${tag}.teamai-prev`);
+  const { staged, previous } = syncFolders(localSkillDir);
 
   try {
-    await fse.copy(localSkillDir, staged);
+    await copyRegularTree(localSkillDir, staged);
     await TeamSkillSource.copyTo(teamSkill, staged);
     // As pull delivers it, or the tool reads the skill without its name and description until the next pull.
     await ensureSkillFrontmatter(staged, TeamSkillSource.name(teamSkill));
@@ -361,7 +359,7 @@ async function holdsDelivered(localFile: string, team: Buffer, rel: string, skil
 /** Whether the local skill holds every file of the team skill (`teamFiles`) as it is now. */
 async function holdsTeamSkill(localSkillDir: string, teamSkill: TeamSkillSource, teamFiles: readonly string[]): Promise<boolean> {
   for (const file of teamFiles) {
-    const team = await fse.readFile(TeamSkillSource.fileAt(teamSkill, file));
+    const team = await readRegularFile(TeamSkillSource.fileAt(teamSkill, file));
 
     if (!await holdsDelivered(path.join(localSkillDir, file), team, file, TeamSkillSource.name(teamSkill))) return false;
   }
@@ -400,7 +398,7 @@ async function skillAtBase(
       continue;
     }
 
-    if (await holdsDelivered(localFile, await fse.readFile(teamFile), file, skillName)) continue;
+    if (await holdsDelivered(localFile, await readRegularFile(teamFile), file, skillName)) continue;
 
     anyDiffers = true;
 

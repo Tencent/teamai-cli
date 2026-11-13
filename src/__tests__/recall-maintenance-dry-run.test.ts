@@ -43,7 +43,7 @@ vi.mock('../workflow-commands.js', async (importOriginal) => ({
   runShortcut: vi.fn(async () => undefined),
 }));
 vi.mock('@teamai/shared/log', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../utils/logger.js')>()),
+  ...(await importOriginal<typeof import('@teamai/shared/log')>()),
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));
 

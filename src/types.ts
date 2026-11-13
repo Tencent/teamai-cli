@@ -1,22 +1,21 @@
 import { z } from 'zod';
 import type { TokenSnapshotScope, TokenUsage } from '@teamai/tool-core/tokens';
-import { isJsonObject, type JsonObject } from '@teamai/shared/json';
+import { isJsonObject, JsonValueSchema, type JsonObject } from '@teamai/shared/json';
 import fs from 'node:fs';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { getUserHome, expandHome } from './utils/home.js';
-import { log } from './utils/logger.js';
-import { parseYaml } from './utils/yaml.js';
+import { getUserHome, expandHome } from '@teamai/shared/home';
+import { log } from '@teamai/shared/log';
+import { parseYaml } from '@teamai/shared/yaml';
 import { type ToolId } from './tools.js';
 import { channelsOf, descriptorOf, toolRootsKeyOf } from './tool-registry.js';
 import type { WorkspaceChildren } from './workspace-children.js';
 import type { HeadState } from './utils/git.js';
 import type { RunMode } from './launch-context.js';
 import type { OutcomeKind, SessionUsage, WorkOutcome } from './outcomes.js';
-import { AllowSchema } from './workflow/requirements.js';
+import { AllowSchema, LabelSchema } from './workflow/requirements.js';
 import { NamespaceSegmentSchema } from './manifest-schema.js';
-
-export { isJsonObject, JsonObjectSchema, JsonValueSchema, type JsonObject, type JsonValue } from '@teamai/shared/json';
 
 const COPILOT_USER_MCP_CONFIG = 'mcp-config.json';
 const COPILOT_PROJECT_MCP_CONFIG = '.github/mcp.json';
@@ -884,20 +883,38 @@ export const WorkflowToolSchema = z.string().min(1);
  * separate from install metadata: a workspace/self config overlays them at
  * runtime, but never persists the machine value into its own file.
  */
+/** One `workflows.drivers` entry: options per runtime of that definition, which the runtime validates at `init`. */
+export const DriverTuningSchema = z.object({ runtimes: z.record(z.string(), z.record(z.string(), JsonValueSchema)) }).strict();
+
+export type DriverTuning = z.infer<typeof DriverTuningSchema>;
+
 export const MemberWorkflowSettingsSchema = z.object({
   tools: z.record(z.string(), WorkflowToolSchema).default({}),
   /** How many command steps the local driver runs at once. Unset means 1. */
   max_parallel: z.number().int().positive().optional(),
+  /**
+   * How long the tool of an answer or prompt step may print nothing before the local driver stops it, as a duration,
+   * where that tool prints as it works. Unset means no limit. Kept as written, so a wrong value fails only the step that
+   * reads it.
+   */
+  idle_timeout: z.unknown().optional(),
   /** Whether a driver without HITL automatically answers optional approve requests and uses choose defaults. Unset means false. */
   auto_approve: z.boolean().optional(),
   /** This host contains what it runs, such as a CI VM or a container, so the local driver declares `sandbox` isolation. */
   sandbox: z.boolean().optional(),
   /** What a workflow step may use on this machine, whatever driver runs it. An unset key allows. */
   allow: AllowSchema.optional(),
+  /** What this machine has that teamai does not model, such as `computer-use` or `gpu`: a step's `requires.labels` runs only where each is declared. */
+  labels: z.array(LabelSchema).optional(),
   /** How long `doctor --fix` leaves what a settled run left behind: a duration or never. Kept as written; `resolveRetention` reads it. */
   retention: z.unknown().optional(),
   /** The driver `teamai score`, `teamai score --drain` and the finished-sessions hook start their runs for. Kept as written; `driveByDefault` reads it. */
   driver: z.unknown().optional(),
+  /**
+   * The member's options for the runtimes of a driver definition, by its canonical name and each runtime's `use`, over
+   * those the definition gives, key by key: `{ sandboxed: { runtimes: { sandbox: { max_parallel: 2 } } } }`.
+   */
+  drivers: z.record(z.string(), DriverTuningSchema).optional(),
 });
 
 export type MemberWorkflowSettings = z.infer<typeof MemberWorkflowSettingsSchema>;
@@ -982,9 +999,13 @@ export const MemberSettingsSchema = z.object({
 
 export type MemberSettings = z.infer<typeof MemberSettingsSchema>;
 
-/** Runtime bookkeeping for restoring local values before a save. */
+/**
+ * Runtime bookkeeping for restoring local values before a save: the config's own (`local`), and every member setting it
+ * held once the overlay was applied or a setting marked written (`applied`), so a save refuses a change made otherwise.
+ */
 export interface MemberSettingsOverlay {
   local: MemberSettings;
+  applied: MemberSettings;
 }
 
 // ─── Local config (~/.teamai/config.yaml) ──────────────────
@@ -1943,8 +1964,8 @@ export function getTeamaiHomeDir(): string {
 }
 
 /**
- * `~/.teamai/trust`: the member's answers to running a team tool instance's command, which every install on the machine
- * reads, so only the last uninstall removes it. Evaluated at call time.
+ * `~/.teamai/trust`: the member's answers to running a team file's command (tool instances, step runtimes), which every
+ * install on the machine reads, so only the last uninstall removes it. Evaluated at call time.
  */
 export function getTrustDir(): string {
   return path.join(getTeamaiHomeDir(), 'trust');
@@ -3028,7 +3049,7 @@ function readTextAt(at: HomePaths, file: string): string | null {
   if (at.readTextNow !== undefined) return at.readTextNow(file);
 
   try {
-    return fs.readFileSync(file, 'utf8');
+    return readRegularFileSync(file, 'utf8');
   } catch {
     return null;
   }
@@ -3055,6 +3076,13 @@ function isUnderUserHome(dir: string, at: HomePaths): boolean {
   const rel = at.path.relative(at.home, at.path.resolve(dir));
 
   return rel !== '' && !rel.startsWith('..') && !at.path.isAbsolute(rel);
+}
+
+/** True when `dir` resolves to somewhere neither the home directory nor inside it: a tool root there holds only its sessions for teamai. */
+export function isOutsideUserHome(dir: string, at: HomePaths = processHomePaths()): boolean {
+  const rel = at.path.relative(at.home, at.path.resolve(dir));
+
+  return rel === '..' || rel.startsWith(`..${at.path.sep}`) || at.path.isAbsolute(rel);
 }
 
 /**
@@ -3126,26 +3154,47 @@ export const RELOCATABLE_TOOLS: RelocatableToolTable = {
 };
 
 /**
- * Why `dir` cannot serve as a tool root, as a sentence fragment for a warning —
- * or null when it can. One place decides, so `teamai init` refuses to record
- * exactly the roots `applyToolRoots` would refuse to apply.
+ * Why a directory cannot serve as a tool root the sync writes to: it is outside the home directory, where a recorded
+ * root holds only the tool's sessions for teamai; it is the home directory itself; or its shape is one the
+ * "is this tool installed?" check cannot tell apart from an unrelated directory.
  */
-export function toolRootRejection(dir: string, at: HomePaths = processHomePaths()): string | null {
+export type ToolRootRejection =
+  | { kind: 'outside_home'; home: string }
+  | { kind: 'home_itself'; home: string }
+  | { kind: 'not_addressable' };
+
+/**
+ * Why `dir` cannot serve as a tool root the sync writes to, or null when it can. One place decides, so `teamai init`
+ * refuses to record exactly the roots `applyToolRoots` would refuse to apply.
+ */
+export function toolRootRejection(dir: string, at: HomePaths = processHomePaths()): ToolRootRejection | null {
   const resolved = at.path.resolve(expandHomeAt(dir, at));
 
-  if (!isUnderUserHome(resolved, at)) {
-    return `it is outside the home directory ${at.home}, and every tool path is resolved relative to it`;
-  }
+  if (isOutsideUserHome(resolved, at)) return { kind: 'outside_home', home: at.home };
 
+  if (!isUnderUserHome(resolved, at)) return { kind: 'home_itself', home: at.home };
   const segment = at.path.relative(at.home, resolved).split(at.path.sep).join('/');
 
-  if (!isAddressableRootSegment(segment)) {
-    return 'a tool root has to be a directory in the home directory other than '
-      + '~/.config itself (~/.claude-work), or a directory under a ~/.config/<name> one, '
-      + 'so the "is this tool installed?" check can tell it apart from an unrelated directory';
-  }
+  return isAddressableRootSegment(segment) ? null : { kind: 'not_addressable' };
+}
 
-  return null;
+/** `rejection` as a sentence fragment for a warning. */
+export function toolRootRejectionText(rejection: ToolRootRejection): string {
+  switch (rejection.kind) {
+    case 'outside_home':
+      return `it is outside the home directory ${rejection.home}, and every tool path is resolved relative to it`;
+    case 'home_itself':
+      return `it is the home directory ${rejection.home} itself, and a tool root has to be a directory in it`;
+    case 'not_addressable':
+      return 'a tool root has to be a directory in the home directory other than '
+        + '~/.config itself (~/.claude-work), or a directory under a ~/.config/<name> one, '
+        + 'so the "is this tool installed?" check can tell it apart from an unrelated directory';
+    default: {
+      const unhandled: never = rejection;
+
+      return unhandled;
+    }
+  }
 }
 
 /**
@@ -3287,8 +3336,29 @@ export const TOOL_ROOT_FIELDS = ['skills', 'rules', 'settings', 'hooks', 'claude
 /** `userScope` path fields, which carry the same resources at a user-scope root. */
 const USER_SCOPE_ROOT_FIELDS = ['skills', 'rules', 'agents', 'hooks', 'claudemd'] as const;
 
-/** Warned roots, so one bad entry does not repeat on every scoped lookup of a pull. */
+/** Warned roots, by `toolRootWarning`'s key, so one bad entry does not repeat on every scoped lookup of a pull. */
 const warnedToolRoots = new Set<string>();
+
+/** Logs `message` once per process for `tool`'s root `root`, or for `tool` itself when the warning names no root. */
+function warnToolRootOnce(tool: string, root: string | undefined, message: string): void {
+  const key = `${tool}\u0000${root ?? ''}`;
+
+  if (warnedToolRoots.has(key)) return;
+  warnedToolRoots.add(key);
+  log.warn(message);
+}
+
+/**
+ * Says, once per process, that `tool`'s recorded root `resolved`, outside the home directory, holds only its sessions
+ * for teamai: the sync keeps writing the tool's other files to its default root.
+ */
+export function warnSessionsOnlyToolRoot(tool: string, resolved: string, at: HomePaths = processHomePaths()): void {
+  const spec = RELOCATABLE_TOOLS[tool];
+
+  if (!spec) return;
+  const syncedTo = at.path.join(at.home, ...spec.defaultRoot.split('/'));
+  warnToolRootOnce(tool, resolved, `toolRoots.${tool} (${resolved}) is outside the home directory ${at.home}: teamai reads ${spec.label} sessions there, and keeps syncing ${spec.label} to ${syncedTo}, since every tool path is resolved relative to the home directory.`);
+}
 
 /**
  * A configured root as a HOME-relative segment, or null when it cannot be used.
@@ -3299,14 +3369,13 @@ const warnedToolRoots = new Set<string>();
  */
 function toolRootSegment(tool: string, configured: string, at: HomePaths = processHomePaths()): string | null {
   if (!(tool in RELOCATABLE_TOOLS)) {
-    if (!warnedToolRoots.has(tool)) {
-      warnedToolRoots.add(tool);
-      log.warn(
-        `Ignoring toolRoots.${tool}: toolRoots currently supports ${Object.keys(RELOCATABLE_TOOLS).join(', ')} only — `
+    warnToolRootOnce(
+      tool,
+      undefined,
+      `Ignoring toolRoots.${tool}: toolRoots currently supports ${Object.keys(RELOCATABLE_TOOLS).join(', ')} only — `
         + `${tool} has writes teamai does not resolve through toolPaths.`
         + (tool === COPILOT_TOOL_ID ? ' Copilot CLI is relocated with COPILOT_HOME instead.' : ''),
-      );
-    }
+    );
 
     return null;
   }
@@ -3314,13 +3383,14 @@ function toolRootSegment(tool: string, configured: string, at: HomePaths = proce
   const resolved = at.path.resolve(expandHomeAt(configured, at));
   const rejection = toolRootRejection(resolved, at);
 
-  if (rejection) {
-    const key = `${tool}:${resolved}`;
+  if (rejection?.kind === 'outside_home') {
+    warnSessionsOnlyToolRoot(tool, resolved, at);
 
-    if (!warnedToolRoots.has(key)) {
-      warnedToolRoots.add(key);
-      log.warn(`Ignoring toolRoots.${tool} (${resolved}): ${rejection}.`);
-    }
+    return null;
+  }
+
+  if (rejection) {
+    warnToolRootOnce(tool, resolved, `Ignoring toolRoots.${tool} (${resolved}): ${toolRootRejectionText(rejection)}.`);
 
     return null;
   }
@@ -3999,6 +4069,24 @@ export function resolveToolRootDir(
   at: HomePaths = processHomePaths(),
 ): string {
   return recordedToolRootDir(tool, toolRoots, at) ?? at.path.join(at.home, ...defaultRoot.split('/'));
+}
+
+/**
+ * Where the member's recorded root of `tool` sits for the tool itself, which keeps its sessions there: under `at.home`
+ * as `recordedToolRootDir` gives it, or outside it, where teamai syncs none of its other files. Null when none is
+ * recorded or it is ignored.
+ */
+export function recordedToolHomeDir(
+  tool: string,
+  toolRoots: Readonly<Record<string, string>> | undefined,
+  at: HomePaths = processHomePaths(),
+): string | null {
+  const configured = toolRoots?.[tool];
+
+  if (configured === undefined || !(tool in RELOCATABLE_TOOLS)) return null;
+  const resolved = at.path.resolve(expandHomeAt(configured, at));
+
+  return isOutsideUserHome(resolved, at) ? resolved : recordedToolRootDir(tool, toolRoots, at);
 }
 
 /** The member's recorded root of `tool` under `at.home`, or null when none is recorded or it is ignored (and warned). */

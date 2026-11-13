@@ -8,6 +8,5 @@ export const platforms = {
   'opencode': {
     ...facts.platforms.opencode,
     adapter: (storeDir, host): AgentAdapter => new OpencodeAdapter(storeDir, host),
-    adapterAs: (platform, storeDir, host): AgentAdapter => new OpencodeAdapter(storeDir, host, platform),
   },
 } as const satisfies Record<keyof typeof facts.platforms, SessionPlatformDefinition>;

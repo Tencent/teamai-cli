@@ -3,11 +3,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import type { LocalConfig } from '../../../types.js';
-import { readFileSafe, writeJsonAtomic } from '../../../utils/fs.js';
+import { writeJsonAtomic } from '../../../utils/fs.js';
 import { redactJson } from '@teamai/shared/redact';
 import { attemptDir, type AttemptId, type RunId } from '../../store.js';
 import { readLease } from './engine-replies.js';
 import type { ReadLease } from './transitions.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 const JobSchema = z.object({ lease: z.unknown().optional() });
 
@@ -23,7 +24,7 @@ function jobPath(config: LocalConfig, run: RunId, attempt: AttemptId): string {
 
 export async function readJob(config: LocalConfig, run: RunId, attempt: AttemptId): Promise<Job | undefined> {
   try {
-    const parsed = JobSchema.safeParse(JSON.parse(await readFileSafe(jobPath(config, run, attempt)) ?? 'null'));
+    const parsed = JobSchema.safeParse(JSON.parse(await readRegularFile(jobPath(config, run, attempt), 'utf8').catch(() => null) ?? 'null'));
     const lease = parsed.success ? readLease(parsed.data.lease) : undefined;
 
     return parsed.success && lease ? { raw: parsed.data.lease, lease } : undefined;

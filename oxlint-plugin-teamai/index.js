@@ -7,10 +7,12 @@ import attemptResultWrites from './rules/attempt-result-writes.js';
 import learningsRoot from './rules/learnings-root.js';
 import configuredToolPaths from './rules/configured-tool-paths.js';
 import launchEnv from './rules/launch-env.js';
+import attemptMarkerReads from './rules/attempt-marker-reads.js';
 import launchThroughWorkflows from './rules/launch-through-workflows.js';
 import noProviderMerge from './rules/no-provider-merge.js';
 import workflowBoundaries from './rules/workflow-boundaries.js';
 import windowsTests from './rules/windows-tests.js';
+import launcherConformance from './rules/launcher-conformance.js';
 import rulesLocate from './rules/rules-locate.js';
 import workflowFailureCodes from './rules/workflow-failure-codes.js';
 import configLoadOptions from './rules/config-load-options.js';
@@ -19,11 +21,26 @@ import noLowValueComments from './rules/no-low-value-comments.js';
 import suppressionReason from './rules/suppression-reason.js';
 import yamlParse from './rules/yaml-parse.js';
 import packageBoundaries from './rules/package-boundaries.js';
+import runtimeServe from './rules/runtime-serve.js';
+import testSeams from './rules/test-seams.js';
 import toolRegistry from './rules/tool-registry.js';
 import mockSource from './rules/mock-source.js';
+import untrustedFinishGit from './rules/untrusted-finish-git.js';
+import gitExitCode from './rules/git-exit-code.js';
+import pipedGit from './rules/piped-git.js';
 import processReads from './rules/process-reads.js';
+import unspawnedChild from './rules/unspawned-child.js';
+import signalOwner from './rules/signal-owner.js';
+import readlineError from './rules/readline-error.js';
+import spawnCommand from './rules/spawn-command.js';
+import recursiveReaddir from './rules/recursive-readdir.js';
+import regularFileReads from './rules/regular-file-reads.js';
+import stepPathWrites from './rules/step-path-writes.js';
+import toolFamily from './rules/tool-family-shape.js';
 import uncachedEntry from './rules/uncached-entry.js';
 import familyFacts from './rules/family-facts.js';
+import worktreeRemoval from './rules/worktree-removal.js';
+import opencodeMajor from './rules/opencode-major.js';
 import shippedToolIds from './rules/shipped-tool-ids.js';
 import toolHomeEnv from './rules/tool-home-env.js';
 
@@ -40,10 +57,12 @@ export default definePlugin({
     'config-load-options': configLoadOptions,
     'configured-tool-paths': configuredToolPaths,
     'launch-env': launchEnv,
+    'attempt-marker-reads': attemptMarkerReads,
     'launch-through-workflows': launchThroughWorkflows,
     'no-provider-merge': noProviderMerge,
     'workflow-boundaries': workflowBoundaries,
     'windows-tests': windowsTests,
+    'launcher-conformance': launcherConformance,
     'rules-locate': rulesLocate,
     'workflow-failure-codes': workflowFailureCodes,
     'home-env': homeEnv,
@@ -55,11 +74,26 @@ export default definePlugin({
     'suppression-reason': suppressionReason,
     'yaml-parse': yamlParse,
     'package-boundaries': packageBoundaries,
+    'runtime-serve': runtimeServe,
+    'test-seams': testSeams,
     'tool-registry': toolRegistry,
     'mock-source': mockSource,
+    'untrusted-finish-git': untrustedFinishGit,
+    'git-exit-code': gitExitCode,
+    'piped-git': pipedGit,
+    'readline-error': readlineError,
     'process-reads': processReads,
+    'unspawned-child': unspawnedChild,
+    'signal-owner': signalOwner,
+    'spawn-command': spawnCommand,
+    'recursive-readdir': recursiveReaddir,
+    'regular-file-reads': regularFileReads,
+    'step-path-writes': stepPathWrites,
+    'tool-family-shape': toolFamily,
     'uncached-entry': uncachedEntry,
     'family-facts': familyFacts,
+    'opencode-major': opencodeMajor,
+    'worktree-removal': worktreeRemoval,
     'shipped-tool-ids': shippedToolIds,
     'tool-home-env': toolHomeEnv,
     ...antiSlopRules,

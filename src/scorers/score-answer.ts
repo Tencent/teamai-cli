@@ -4,7 +4,7 @@
  */
 import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { StepState } from '../workflow/step-state.js';
 import { readRun } from '../workflow/store.js';
 import type { RunState, WorkflowEnvelope } from '../workflow/types.js';

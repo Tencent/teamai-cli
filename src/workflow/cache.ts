@@ -4,8 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { loadLocalConfigForScope } from '../config.js';
-import { log } from '../utils/logger.js';
-import { pathExists, readFileSafe, remove, writeJsonAtomic } from '../utils/fs.js';
+import { log } from '@teamai/shared/log';
+import { pathExists, remove, writeJsonAtomic } from '../utils/fs.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { roleDeclaration, type ResourceNamespaces } from '../roles.js';
@@ -30,10 +30,13 @@ import { getCurrentVersion } from '../package-info.js';
 import { confinedOf } from './workspace.js';
 import { WORKFLOW_DIR_ENV } from '../launch-context.js';
 import { assertSafePath, assertWithinRoot } from '../utils/path-safety.js';
-import { createGit } from '../utils/git.js';
+import { createGit, getDefaultBranch } from '../utils/git.js';
+import { failureReason } from '../utils/branch-worktree.js';
+import { gitAnswer, git as gitAt, saidYes, unansweredGit, type GitAnswer } from './worktree.js';
 import {
   remotelyReachableRevision, revisionHoldsSources, withoutStaleTeamRevision, type ReachableRevision,
 } from '../utils/team-revision.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 export interface SyncWorkflowOptions {
   scopeLabel?: string;
@@ -115,7 +118,7 @@ function isCachedWorkflow(value: unknown, name: string): value is CachedWorkflow
 }
 
 async function readCache(config: LocalConfig, name: string): Promise<CachedWorkflow | null> {
-  const raw = await readFileSafe(cachePath(config, name));
+  const raw = await readRegularFile(cachePath(config, name), 'utf8').catch(() => null);
 
   if (raw === null) return null;
 
@@ -138,7 +141,7 @@ const NamespaceConflictSchema = z.object({ conflict: z.string(), reason: z.liter
 type NamespaceConflict = z.infer<typeof NamespaceConflictSchema>;
 
 async function readConflict(config: LocalConfig, name: string): Promise<NamespaceConflict | undefined> {
-  const raw = await readFileSafe(cachePath(config, name));
+  const raw = await readRegularFile(cachePath(config, name), 'utf8').catch(() => null);
 
   if (raw === null) return undefined;
 
@@ -460,7 +463,7 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
 
       // A symlink is not a workflow file, even when the target is a YAML file outside this directory.
       if (stat.isSymbolicLink() || !stat.isFile()) continue;
-      content = await readFileSafe(source.full);
+      content = await readRegularFile(source.full, 'utf8').catch(() => null);
     }
 
     if (content === null) {
@@ -984,6 +987,36 @@ export async function loadWorkflowBundleAt(config: LocalConfig, name: string, re
 }
 
 /**
+ * Where team commit `revision` is, for a member about to read workflows at it, from `checkout`, the repository that
+ * holds the team's files (the business repository in self mode): `member` when the member would run it itself, as
+ * `checkout`'s HEAD or the team's default branch on origin holds it; `elsewhere` when only another ref has it, such as a
+ * side branch or teamai-reports, whose commits come from whoever can push there; `missing` when `checkout` lacks it
+ * even after fetching origin, with `fetchError`, the fetch's own error, when the fetch failed.
+ */
+export type TeamCommitReach =
+  | { kind: 'member' }
+  | { kind: 'elsewhere'; checkout: string; selfMode: boolean }
+  | { kind: 'missing'; checkout: string; fetchError: string | undefined };
+
+export async function teamCommitReach(config: LocalConfig, revision: string): Promise<TeamCommitReach> {
+  const selfMode = isSelfMode(config);
+  const checkout = selfMode ? getBusinessRoot(config) : config.repo.localPath;
+  const present = async (): Promise<boolean> => saidYes(gitAnswer(await gitAt(checkout, ['cat-file', '-e', `${revision}^{commit}`])), `whether ${checkout} has commit ${revision}`);
+
+  if (!await present()) {
+    const fetched = await gitAt(checkout, ['fetch', '--quiet', 'origin']);
+
+    if (fetched.code !== 0) return { kind: 'missing', checkout, fetchError: failureReason(fetched.stderr) || `git fetch exited with code ${fetched.code}` };
+
+    if (!await present()) return { kind: 'missing', checkout, fetchError: undefined };
+  }
+
+  const reaches = async (tip: string): Promise<boolean> => saidYes(gitAnswer(await gitAt(checkout, ['merge-base', '--is-ancestor', revision, tip])), `whether ${tip} in ${checkout} holds ${revision}`);
+
+  return await reaches('HEAD') || await reaches(`refs/remotes/origin/${await getDefaultBranch(checkout)}`) ? { kind: 'member' } : { kind: 'elsewhere', checkout, selfMode };
+}
+
+/**
  * Calls `use` with `config` at team commit `revision`. Its team repo is a `--shared` clone at that commit and its data
  * home a directory of its own, both removed once `use` settles. Only a fetch of origin, when the team repo lacks the
  * commit, touches the member's repository. A commit it cannot reach, or an error `use` throws, is `{ failed }`.
@@ -995,15 +1028,19 @@ export async function withTeamRevision<T>(
 ): Promise<T | { failed: string }> {
   const repoRoot = isSelfMode(config) ? getBusinessRoot(config) : config.repo.localPath;
   const git = createGit(repoRoot);
-  const present = (): Promise<boolean> => git.raw(['cat-file', '-e', `${revision}^{commit}`]).then(() => true, () => false);
+  const present = async (): Promise<GitAnswer> => gitAnswer(await gitAt(repoRoot, ['cat-file', '-e', `${revision}^{commit}`]));
+  let found = await present();
 
-  if (!await present()) {
+  if (found.said === 'no') {
     const fetched = await git.fetch(['origin']).then(() => '', (cause: unknown) => (cause instanceof Error ? cause.message.trim() : String(cause)));
+    found = await present();
 
-    if (!await present()) {
+    if (found.said === 'no') {
       return { failed: `the team repo at ${repoRoot} does not have it, even after fetching origin${fetched ? ` (${fetched})` : ''}` };
     }
   }
+
+  if (found.said === 'nothing') return { failed: unansweredGit(`whether the team repo at ${repoRoot} has it`, found.result).message };
 
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-revision-'));
 
@@ -1273,7 +1310,7 @@ async function resolvePromptFiles(
 
       if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('not a regular file');
       assertSafePath(target, [root]);
-      const prompt = await readFileSafe(target);
+      const prompt = await readRegularFile(target, 'utf8').catch(() => null);
 
       if (prompt === null) throw new Error('unreadable');
 

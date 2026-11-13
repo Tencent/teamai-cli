@@ -2,8 +2,6 @@ import { isDeepStrictEqual } from 'node:util';
 import YAML from 'yaml';
 import { z } from 'zod';
 
-export * from '@teamai/shared/yaml';
-
 /** Apply changed top-level settings while preserving the destination document. */
 export function mergeTeamConfig(base: string | null, pending: string, destination: string | null): string {
   if (base !== null && destination === null) throw new Error('The destination removed teamai.yaml.');

@@ -11,7 +11,7 @@ vi.mock('@teamai/shared/log', () => ({
 
 import { writeBackConfidence } from '../maintenance/confidence.js';
 import { executePrune } from '../maintenance/prune.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 /**
  * Learnings live in two roots after #485: the branch worktree, which is pushed,

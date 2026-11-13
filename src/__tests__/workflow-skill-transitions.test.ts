@@ -6,23 +6,28 @@ import { z } from 'zod';
 import { driverIdentity } from '../driver-identity.js';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import { publishRun } from '../workflow/handoff.js';
-import { recordGroup } from '../tool-launch/process-stop.js';
+import { recordGroup } from '@teamai/shared/process-group';
 import { reportsBranch } from '../utils/reports-branch.js';
 import { inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
 import type { LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
-import { WORKSPACE_MODES } from '../workflow/types.js';
+import { WORKSPACE_MODES } from '@teamai/runtime-protocol';
 import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { respondProvenance, respondToHitl } from '../workflow/run-controls.js';
 import { attemptDir, AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, runScratchDir, runsDir, skillStatePath, updateRun, type RunId } from '../workflow/store.js';
 import { DeliveryReceiptSchema } from '../workflow/delivery-schema.js';
+import { attemptToolHome } from '../workflow/runtimes/attempt.js';
+import { holdLoginFrom, loginHolder, loginLockFile } from '../workflow/runtimes/login.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { Runners } from '../workflow/drivers/skill/skill-driver.js';
 // The doc comparison reads the table itself; every behaviour below goes through runSkillCall.
 // oxlint-disable-next-line teamai/workflow-boundaries -- checks runtime coverage of every transition
 import { TRANSITIONS } from '../workflow/drivers/skill/transitions.js';
+import { SESSION_APPS } from '../workflow/session-apps.js';
 import { fakeConfinedClaude, fakeJudge, githubOrigin, LABEL_PASS, scoringStarted, sharedTeam, skillHarness, untilStopped } from './helpers/skill-harness.js';
+
+const T3_APP = SESSION_APPS.find((app) => app.driver === 't3') ?? SESSION_APPS[0];
 
 const CHECK = `schemaVersion: v1alpha1
 name: check
@@ -407,6 +412,9 @@ steps:
     command: node -e "process.exit(0)"
 `;
 
+/** `workflow` with a prompt step after its step `last`, so a run of it needs an AI tool and describe keeps it off the host driver. */
+const withPrompt = (workflow: string, last: string): string => `${workflow}  - id: review\n    needs: [${last}]\n    prompt: Review it.\n`;
+
 // An approval beside a step this driver is held from: the engine answers the held step first.
 const SHIP_BESIDE = SHIP_AFTER.replace('needs: [go]', 'needs: []');
 
@@ -490,7 +498,7 @@ async function turnOf(answer: Awaited<ReturnType<Awaited<ReturnType<typeof harne
   return answer.data.turn;
 }
 
-/** Starts `name` and answers the host question with `choice`: the turn of the answer. */
+/** Starts `name` and answers the session host question with `choice`: the turn of the answer. */
 async function chosen(made: Awaited<ReturnType<typeof harness>>, name: string, parallel: number, choice: 'h1' | 'h2' = 'h1') {
   const { run } = await turnOf(await made.call({ kind: 'start', name, answers: { parallel, confirmed: false }, inputs: undefined }));
   return turnOf(await made.call({ kind: 'choose', run, choice }));
@@ -593,6 +601,21 @@ async function reviewed(made: Awaited<ReturnType<typeof harness>>, answers: { ju
   return turnOf(await made.call({ kind: 'next', run: turn.run, wait: false }));
 }
 
+/**
+ * Starts REVIEW, answers the session host question with h1, and has the child of its dispatch stop on claude's usage limit,
+ * which resets `resetsMs` from the harness clock on: the run and the dispatch.
+ */
+async function limitedReview(made: Awaited<ReturnType<typeof harness>>, resetsMs: number) {
+  const { run } = await turnOf(await made.call({ kind: 'start', name: 'review', answers: { confirmed: false, judge: false }, inputs: undefined }));
+  const [dispatch] = dispatches(await turnOf(await made.call({ kind: 'choose', run, choice: 'h1' })));
+  if (!dispatch) throw new Error('the session host answer dispatched nothing');
+  await made.call({ kind: 'ack', run, attempt: dispatch.attempt });
+  const resetsAt = Math.ceil((made.context.now().getTime() + resetsMs) / 1000);
+  childWrites(dispatch.brief, { kind: 'failure', failure: { code: 'usage_limited', message: `claude hit its usage limit: Claude AI usage limit reached|${resetsAt}` } });
+  await made.call({ kind: 'report', run, attempt: dispatch.attempt, role: 'agent', modelUnavailable: false });
+  return { run, dispatch };
+}
+
 /** Starts RELEASE with `hitl`, then polls until a turn carries a gate's action: that turn. */
 async function gated(made: Awaited<ReturnType<typeof harness>>, hitl: 'person' | 'recommend' | 'auto-approve') {
   const { run } = await turnOf(await made.call({ kind: 'start', name: 'release', answers: { confirmed: false, hitl }, inputs: undefined }));
@@ -655,12 +678,12 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     rows: ['R3', 'R9', 'D12', 'H2'],
     run: async () => {
       const made = await harness({ release: RELEASE });
+      // A run of commands and gates goes to the host driver; a required gate there still needs the person's terminal.
       expect(await made.call({ kind: 'describe', name: 'release' })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: {
-        text: '- Only you can answer the approval at go-live, from your own terminal or teamai dashboard.\n- Optional approval at plan-review: before `node -e "process.exit(0)"`.\n- The recommended start lets this session\'s agent answer optional approvals and say why; "answer optional approvals automatically" answers each approval yes.\nHow should it run?',
+        text: '- Only you can answer the approval at go-live, from your own terminal or teamai dashboard.\n- Optional approval at plan-review: before `node -e "process.exit(0)"`.\n- This session\'s agent asks you at optional approvals as the run reaches them; "answer optional approvals automatically" answers each approval yes.\nHow should it run?',
         options: [
-          { label: 'Recommended: you decide optional approvals', start: 'teamai workflow start release --driver skill --hitl recommend' },
-          { label: 'Same, but ask me at optional approvals', start: 'teamai workflow start release --driver skill --hitl person' },
-          { label: 'Same, but answer optional approvals automatically', start: 'teamai workflow start release --driver skill --auto-approve' },
+          { label: 'Start it, and ask me at optional approvals', start: 'teamai workflow start release --driver host' },
+          { label: 'Same, but answer optional approvals automatically', start: 'teamai workflow start release --driver host --auto-approve' },
         ],
       } } } } });
       expect(await made.call({ kind: 'start', name: 'release', answers: { confirmed: false }, inputs: undefined }))
@@ -852,11 +875,11 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'a command-only run, from describe to done and a next after it',
-    rows: ['R4', 'R10', 'S1', 'S5', 'D1', 'D6', 'D15', 'D16', 'D18', 'D20', 'D21', 'D23', 'C1', 'C8', 'P7', 'X2'],
+    name: 'a command-only run, which describe sends to the host driver, started on the skill driver all the same, to done and a next after it',
+    rows: ['R32', 'R10', 'S1', 'S5', 'D1', 'D6', 'D15', 'D16', 'D18', 'D20', 'D21', 'D23', 'C1', 'C8', 'P7', 'X2'],
     run: async () => {
       const made = await harness({ check: CHECK });
-      expect(await made.call({ kind: 'describe', name: 'check' })).toMatchObject({ data: { describe: { ask: { kind: 'start' } } } });
+      expect(await made.call({ kind: 'describe', name: 'check' })).toMatchObject({ data: { describe: { ask: { kind: 'background', start: 'teamai workflow start check --driver host' } } } });
       const { run } = await started(made);
       await polledToDone(made, run);
       const after = await made.call({ kind: 'next', run, wait: false });
@@ -1029,15 +1052,104 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'an agent session asking about an invoke: deny workflow is told why, with nothing to run',
-    rows: ['R1'],
+    name: 'an agent session asking about an invoke: deny workflow is given the start the person runs, on the driver of the app it runs in, and an unattended one nothing to run',
+    rows: ['R1', 'R31'],
     run: async () => {
       const made = await harness({ locked: LOCKED }, { evidence: { kind: 'session', variable: 'CLAUDE_CODE_SESSION_ID' } });
-      const answer = await made.call({ kind: 'describe', name: 'locked' });
-      expect(answer).toMatchObject({ data: { describe: { ask: {
-        kind: 'denied', reason: expect.stringContaining('Workflow "locked" has invoke: deny, so no coding agent starts it, with any driver, and this command runs inside an agent session (CLAUDE_CODE_SESSION_ID is set). The person can start it from their own terminal'),
+      const describeCall = { kind: 'describe', name: 'locked' } as const;
+      expect(await made.call(describeCall)).toMatchObject({ data: { describe: { ask: {
+        kind: 'local', start: 'teamai workflow start locked --driver local --tools default=claude',
+        reason: expect.stringContaining('Workflow "locked" has invoke: deny, so no coding agent starts it, with any driver, and this command runs inside an agent session (CLAUDE_CODE_SESSION_ID is set). The person can start it from their own terminal with teamai workflow start locked --driver local.'),
       } } } });
-      expect(answer).not.toMatchObject({ data: { describe: { ask: { start: expect.anything() } } } });
+      const unready = { session: T3_APP, canStart: () => Promise.reject(new Error('describe asked the app\'s driver about a workflow no agent starts')) };
+      expect(await made.call(describeCall, { app: unready })).toMatchObject({ data: { describe: { ask: {
+        kind: 'local', start: 'teamai workflow start locked --driver t3',
+        reason: expect.stringContaining('The person can start it from this thread\'s T3 terminal with teamai workflow start locked --driver t3.'),
+      } } } });
+      const unattended = await made.call(describeCall, { mode: 'unattended', app: unready });
+      expect(unattended).toMatchObject({ data: { describe: { ask: { kind: 'denied', reason: expect.stringContaining('has invoke: deny') } } } });
+      expect(unattended).not.toMatchObject({ data: { describe: { ask: { start: expect.anything() } } } });
+      return made.rows;
+    },
+  },
+  {
+    name: 'describe sends a run whose steps need no AI tool to the built-in host driver in the background, in an app\'s session too, asking the person first when something is left to ask',
+    rows: ['R32', 'R3'],
+    run: async () => {
+      const made = await harness({ check: CHECK, gated: GATED, approved: APPROVED });
+      const app = { session: T3_APP, canStart: () => Promise.reject(new Error('describe asked the app\'s driver about a run that needs no AI tool')) };
+      const onHost = 'Each step runs on this machine in teamai, and no agent runs any of them.';
+      for (const context of [{}, { app }]) {
+        expect(await made.call({ kind: 'describe', name: 'check' }, context)).toMatchObject({ data: { describe: { ask: { kind: 'background', start: 'teamai workflow start check --driver host', background: onHost } } } });
+      }
+      expect(await made.call({ kind: 'describe', name: 'gated' })).toMatchObject({ data: { describe: { ask: {
+        kind: 'ask', background: onHost, question: { options: [{ label: 'Yes, start it', start: 'teamai workflow start gated --driver host --confirmed' }] },
+      } } } });
+      expect(await made.call({ kind: 'describe', name: 'approved' }, { app })).toMatchObject({ data: { describe: { ask: {
+        kind: 'ask',
+        question: {
+          text: expect.stringContaining('This session\'s agent asks you at optional approvals as the run reaches them; "answer optional approvals automatically" answers each approval yes.'),
+          options: [
+            { label: 'Start it, and ask me at optional approvals', start: 'teamai workflow start approved --driver host' },
+            { label: 'Same, but answer optional approvals automatically', start: 'teamai workflow start approved --driver host --auto-approve' },
+          ],
+        },
+      } } } });
+
+      // Through the workflows its steps run by name; a workflow a step produces, or a judge, may need an AI tool.
+      const flow = (name: string, steps: string): string => `schemaVersion: v1alpha1\nname: ${name}\ndescription: ${name}\ninvoke: allow\nsteps:\n${steps}`;
+      const nested = await harness({
+        tidy: flow('tidy', '  - id: lint\n    command: node -e "0"\n'),
+        look: flow('look', '  - id: read\n    prompt: Read it.\n'),
+        fixed: flow('fixed', '  - id: tidy\n    workflow: tidy\n'),
+        reviewed: flow('reviewed', '  - id: look\n    workflow: look\n'),
+        produced: flow('produced', '  - id: make\n    command: node -e "0"\n    output: { definition: workflow }\n  - id: run\n    needs: [make]\n    workflow: { from: make }\n'),
+        scored: flow('scored', '  - id: tidy\n    workflow: tidy\n    scorers: [quality]\n'),
+      }, { scorers: { quality: '---\nlabels:\n  - { value: good, score: 1, description: Did the work }\n  - { value: bad, score: 0, description: Did not }\npassingScore: 1\nsamplingRate: 100\n---\nJudge the work.\n' } });
+      expect(await nested.call({ kind: 'describe', name: 'fixed' })).toMatchObject({ data: { describe: { ask: { kind: 'background', start: 'teamai workflow start fixed --driver host' } } } });
+      for (const name of ['reviewed', 'produced', 'scored']) {
+        const described = await nested.call({ kind: 'describe', name });
+        expect('data' in described && 'describe' in described.data ? described.data.describe.ask : described, name).not.toHaveProperty('background');
+      }
+      return made.rows;
+    },
+  },
+  {
+    name: 'in an app\'s session whose driver a run could start on now, describe answers a start on that driver in the background, asking the person first when something is left to ask',
+    rows: ['R30', 'R3'],
+    run: async () => {
+      const made = await harness({ check: withPrompt(CHECK, 'test'), gated: withPrompt(GATED, 'lint'), approved: withPrompt(APPROVED, 'lint') });
+      const ready = { session: T3_APP, canStart: () => Promise.resolve(true) };
+      expect(await made.call({ kind: 'describe', name: 'check' }, { app: ready })).toMatchObject({ data: { describe: { ask: {
+        kind: 'background', start: 'teamai workflow start check --driver t3', background: "Each prompt step appears in T3 Code as a thread under this thread, except a step that resumes the session of an earlier step in the same workspace on the same tool (session: continue or session: { from }), which goes on in that step's thread while T3 Code still has it.",
+      } } } });
+      expect(await made.call({ kind: 'describe', name: 'gated' }, { app: ready })).toMatchObject({ data: { describe: { ask: {
+        kind: 'ask', background: "Each prompt step appears in T3 Code as a thread under this thread, except a step that resumes the session of an earlier step in the same workspace on the same tool (session: continue or session: { from }), which goes on in that step's thread while T3 Code still has it.",
+        question: { options: [{ label: 'Yes, start it', start: 'teamai workflow start gated --driver t3 --confirmed' }] },
+      } } } });
+      expect(await made.call({ kind: 'describe', name: 'approved' }, { app: ready })).toMatchObject({ data: { describe: { ask: {
+        kind: 'ask',
+        question: {
+          text: expect.stringContaining('This session\'s agent asks you at optional approvals as the run reaches them; "answer optional approvals automatically" answers each approval yes.'),
+          options: [
+            { label: 'Start it, and ask me at optional approvals', start: 'teamai workflow start approved --driver t3' },
+            { label: 'Same, but answer optional approvals automatically', start: 'teamai workflow start approved --driver t3 --auto-approve' },
+          ],
+        },
+      } } } });
+      return made.rows;
+    },
+  },
+  {
+    name: 'in an app\'s session whose driver no run could start on now, or in an unattended run, describe answers as outside the app',
+    rows: ['R4', 'R18'],
+    run: async () => {
+      const made = await harness({ check: withPrompt(CHECK, 'test') });
+      const asked: string[] = [];
+      const unready = { session: T3_APP, canStart: () => { asked.push('canStart'); return Promise.resolve(false); } };
+      expect(await made.call({ kind: 'describe', name: 'check' }, { app: unready })).toMatchObject({ data: { describe: { ask: { kind: 'start', start: 'teamai workflow start check --driver skill' } } } });
+      expect(await made.call({ kind: 'describe', name: 'check' }, { app: unready, mode: 'unattended' })).toMatchObject({ data: { describe: { ask: { kind: 'start', start: 'teamai workflow start check --driver skill --auto-approve' } } } });
+      expect(asked).toEqual(['canStart']);
       return made.rows;
     },
   },
@@ -1067,7 +1179,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'an unattended run on a host that starts no child hands a step that needs a worktree to the person, and the turn ends the loop',
+    name: 'an unattended run on a session host that starts no child hands a step that needs a worktree to the person, and the turn ends the loop',
     rows: ['R13', 'D14'],
     run: async () => {
       const made = await harness({ inline: INLINE }, { mode: 'unattended' });
@@ -1129,7 +1241,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     run: async () => {
       const made = await harness({ gated: GATED });
       expect(await made.call({ kind: 'describe', name: 'gated' })).toMatchObject({ data: { describe: { ask: {
-        kind: 'ask', question: { text: '- The team asks that you agree before it starts.\nStart it?', options: [{ label: 'Yes, start it', start: 'teamai workflow start gated --driver skill --confirmed' }] },
+        kind: 'ask', question: { text: '- The team asks that you agree before it starts.\nStart it?', options: [{ label: 'Yes, start it', start: 'teamai workflow start gated --driver host --confirmed' }] },
       } } } });
       expect(await made.call({ kind: 'start', name: 'gated', answers: { confirmed: false }, inputs: undefined }))
         .toMatchObject({ error: { code: 'confirm_needed', next: 'teamai workflow start --describe gated --driver skill' } });
@@ -1259,7 +1371,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       expect(fs.existsSync(skillStatePath(made.config, gatedRun))).toBe(false);
       expect(await turnOf(await made.call({ kind: 'resume', run: gatedRun, claim: 'lacking', confirmed: true, answers: {} }, { evidence: AGENT }))).toMatchObject({ run: gatedRun });
       expect(await turnOf(await made.call({ kind: 'takeover', run: await runOf('check'), confirmed: false }, { evidence: AGENT }))).toMatchObject({ status: expect.any(String) });
-      // Only a coding agent drives --driver skill, so a host that sets no agent variable is refused alike.
+      // Only a coding agent drives --driver skill, so a session host that sets no agent variable is refused alike.
       expect(await made.call({ kind: 'takeover', run: locked, confirmed: false }, { evidence: { kind: 'skill-driver' } }))
         .toMatchObject({ error: { code: 'invoke_denied', message: expect.stringContaining('this command uses --driver skill'), next: null } });
       return made.rows;
@@ -1332,6 +1444,17 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       return made.rows;
     },
   })),
+  {
+    name: 'a resume of a run whose skill state is kept here, which the claim did not replace, goes on with the options the run started with',
+    rows: ['S1'],
+    run: async () => {
+      const made = await harness({ approved: APPROVED });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'approved', answers: { confirmed: false, hitl: 'auto-approve' }, inputs: undefined }));
+      expect(await turnOf(await made.call({ kind: 'resume', run, claim: 'lacking', confirmed: false, answers: {} }))).toMatchObject({ run });
+      expect(JSON.parse(fs.readFileSync(skillStatePath(made.config, run), 'utf8'))).toMatchObject({ options: { hitl: 'auto-approve' } });
+      return made.rows;
+    },
+  },
   {
     name: 'an unattended takeover of a run a person attends gives its kept options no person: the optional gate is auto-approved',
     rows: ['R26'],
@@ -1429,6 +1552,44 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const message = new RegExp(`^Step "go-live" needs a person, and run ${run} could not be offered to one: .+\\. Its state is on this machine\\. Retry the step here, then resume the run where a person answers: teamai workflow retry ${run} go-live; then teamai workflow resume ${run}$`);
       expect(await polledToDone(made, run)).toMatchObject({ status: 'done', actions: [{ kind: 'done', outcome: 'failed' }] });
       expect(await readRun(made.config, run)).toMatchObject({ steps: expect.arrayContaining([expect.objectContaining({ id: 'go-live', status: 'failed', failure: { code: 'hitl_required', message: expect.stringMatching(message) } })]) });
+      return made.rows;
+    },
+  },
+  {
+    name: 'a child that stops on its tool\'s usage limit holds its step instead of failing it, says what it waits for, and dispatches it again once the limit resets',
+    rows: ['P12', 'D36'],
+    run: async () => {
+      const made = await harness({ review: REVIEW });
+      const { run, dispatch } = await limitedReview(made, 60_000);
+      const held = await turnOf(await made.call({ kind: 'next', run, wait: false }));
+      expect(dispatches(held)).toEqual([]);
+      expect(held.waiting?.reason).toMatch(/^claude hit its usage limit, which resets at /);
+      expect(held.then?.kind).toBe('poll');
+      expect(await readRun(made.config, run)).toMatchObject({ steps: [{ id: 'review', status: 'pending' }] });
+      made.advance(61_000);
+      const [again] = dispatches(await turnOf(await made.call({ kind: 'next', run, wait: false })));
+      expect(again).toMatchObject({ step: 'review' });
+      expect(again?.attempt).not.toBe(dispatch.attempt);
+      return made.rows;
+    },
+  },
+  {
+    name: 'an unattended session whose step a usage limit holds past the wait offers the run once, and when it cannot be offered ends its loop with the step held, saying how to go on',
+    rows: ['P12', 'D37', 'D38', 'D26'],
+    run: async () => {
+      let offers = 0;
+      // A team repository of the checkout itself has no teamai-reports to offer the run on.
+      const made = await harness({ review: REVIEW }, { mode: 'unattended', client: (client) => ({ ...client, offer: (run, checkout) => { offers += 1; return client.offer(run, checkout); } }) });
+      const { run } = await limitedReview(made, 7 * 3_600_000);
+      // The poll offers the run once and wakes the session, whose call offers it once more and ends the loop.
+      expect((await turnOf(await made.call({ kind: 'next', run, wait: true }))).then?.kind).toBe('wake');
+      expect(offers).toBe(1);
+      const held = await turnOf(await made.call({ kind: 'next', run, wait: false }));
+      expect(offers).toBe(2);
+      expect(held.then).toBeUndefined();
+      expect(dispatches(held)).toEqual([]);
+      expect(held.waiting?.reason).toMatch(/^claude hit its usage limit, which resets at .+, past the .+ an unattended run waits for it, and the run could not be offered on teamai-reports: .+\. Once the limit resets, continue it from this session$/);
+      expect(await readRun(made.config, run)).toMatchObject({ steps: [{ id: 'review', status: 'pending' }] });
       return made.rows;
     },
   },
@@ -1551,6 +1712,42 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'a resume of a run whose local driver on this machine was killed while its Codex judge held the member\'s login writes back what that judge refreshed, then frees the login',
+    rows: ['R19'],
+    run: async () => {
+      const made = await harness({ check: CHECK });
+      const daily = path.join(made.work, '..', 'codex');
+      // Codex rotates its refresh token on a refresh and refuses the old one after (refresh_token_reused).
+      const login = (refresh: string): string => JSON.stringify({ auth_mode: 'chatgpt', tokens: { account_id: 'acct-1', refresh_token: refresh } });
+      fs.mkdirSync(daily, { recursive: true });
+      onTestFinished(() => { fs.rmSync(loginLockFile('codex'), { force: true }); });
+      // The killed local driver's judge took the member's login, and its Codex refreshed it in the attempt's own home.
+      const killedHolding = async (): Promise<RunId> => {
+        fs.writeFileSync(path.join(daily, 'auth.json'), login('refresh-1'), { mode: 0o600 });
+        const startAnswer = await made.context.client.start('check', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
+        if (!('data' in startAnswer)) throw new Error(JSON.stringify(startAnswer));
+        const run = RunIdSchema.parse(startAnswer.data.run);
+        const leased = await made.context.client.next(run, { driver: { ...driverIdentity('local', made.work), can: { workspace: [...WORKSPACE_MODES] } } });
+        const { attempt } = z.object({ data: z.object({ lease: z.object({ attempt: AttemptIdSchema }) }) }).parse(leased).data.lease;
+        const toolHome = attemptToolHome(made.config, run, attempt, 'codex');
+        expect(await holdLoginFrom({ tool: 'codex', executable: 'codex', from: daily, toolHome, run, attempt, signal: new AbortController().signal })).toMatchObject({ ok: true });
+        fs.writeFileSync(path.join(toolHome, 'auth.json.tmp'), login('refresh-2'));
+        fs.renameSync(path.join(toolHome, 'auth.json.tmp'), path.join(toolHome, 'auth.json'));
+        return run;
+      };
+      const member = async (): Promise<{ daily: unknown; holder: unknown }> => ({ daily: JSON.parse(fs.readFileSync(path.join(daily, 'auth.json'), 'utf8')).tokens.refresh_token, holder: await loginHolder('codex') });
+      const resumed = await killedHolding();
+      await turnOf(await made.call({ kind: 'resume', run: resumed, claim: 'lacking', confirmed: false, answers: {} }));
+      expect(await member()).toEqual({ daily: 'refresh-2', holder: undefined });
+      // A step of that driver cancelled before the resume holds no lease any more, yet its judge's login comes back as well.
+      const cancelled = await killedHolding();
+      expect(await made.context.client.cancel(cancelled, 'lint')).toMatchObject({ data: {} });
+      await made.call({ kind: 'resume', run: cancelled, claim: 'lacking', confirmed: false, answers: {} });
+      expect(await member()).toEqual({ daily: 'refresh-2', holder: undefined });
+      return made.rows;
+    },
+  },
+  {
     name: 'a resume of a run another install owns now is refused with the --claim literal for the person, and the claim takes it back',
     rows: ['R20', 'R19'],
     run: async () => {
@@ -1565,7 +1762,8 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       });
       expect(await back.call({ kind: 'resume', run, claim: 'lacking', confirmed: false, answers: {}, tool: 'claude' }))
         .toMatchObject({ error: { code: 'not_owner', next: `teamai workflow resume ${run} --driver skill --tools default=claude --claim` } });
-      expect(await turnOf(await back.call({ kind: 'resume', run, claim: 'any', confirmed: false, answers: {} }))).toMatchObject({ run, status: 'driving', actions: [{ kind: 'choose', about: 'host' }] });
+      // The member claimed it a moment ago and may drive it, so taking it back needs the person's yes.
+      expect(await turnOf(await back.call({ kind: 'resume', run, claim: 'any', confirmed: true, answers: {} }))).toMatchObject({ run, status: 'driving', actions: [{ kind: 'choose', about: 'host' }] });
       return [...member.rows, ...back.rows];
     },
   },
@@ -1606,6 +1804,50 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const made = await harness({}, { install: await team.install('member') });
       expect(await made.call({ kind: 'resume', run, claim: 'lacking', confirmed: false, answers: {} })).toEqual({
         error: { code: 'needs_local_driver', message: expect.stringContaining(`Ask the person to run teamai workflow resume ${run} --tools default=claude in their own terminal.`), next: null },
+      });
+      return made.rows;
+    },
+  },
+  {
+    name: 'an unattended resume of a run teamai cannot read before the claim is refused, and claims nothing',
+    rows: ['R24'],
+    run: async () => {
+      const team = sharedTeam({ 'release-docs': RELEASE_DOCS });
+      const ci = await team.install('ci');
+      const { run } = await publishedMidStep(ci, 'release-docs');
+      const member = await team.install('member');
+      // The published run could not be fetched a moment ago, and can be now.
+      const made = await harness({}, { install: member, client: (client) => ({ ...client, carried: async () => ({ kind: 'failed', failure: { code: 'run_unreadable', message: 'teamai-reports could not be fetched' } }) }) });
+      expect(await made.call({ kind: 'resume', run, claim: 'lacking', confirmed: false, answers: {} }, { mode: 'unattended' })).toEqual({ error: {
+        code: 'unattended_denied',
+        message: `Run ${run} could not be read before it is claimed (teamai-reports could not be fetched), so this unattended session does not take it: nobody is there if it needs a person or the local driver. Run the same command again, or continue the run from a session a person attends.`,
+        next: null,
+      } });
+      expect(await readRun(member.config, run)).toBe('missing');
+      return made.rows;
+    },
+  },
+  {
+    name: 'a resume of a run this session drives is handed to the person\'s local resume when its definition has a local route here, as for a run it does not drive',
+    rows: ['R8'],
+    run: async () => {
+      // As after an upgrade that takes from this driver what a step of the run's workspace needs.
+      let routed = false;
+      const made = await harness({ check: CHECK }, {
+        client: (client) => ({
+          ...client,
+          resume: async (run, options) => {
+            const readied = await client.resume(run, options);
+            if (!routed || readied.kind !== 'ready') return readied;
+            const { facts } = readied.description;
+            return { ...readied, description: { ...readied.description, facts: { ...facts, localRoute: { copy: 'run', held: 'test', missing: 'env' }, held: [{ step: 'test', missing: ['env'], env: ['SIGNING_KEY'] }] } } };
+          },
+        }),
+      });
+      const { run } = await started(made);
+      routed = true;
+      expect(await made.call({ kind: 'resume', run, claim: 'lacking', confirmed: false, answers: {} })).toMatchObject({
+        error: { code: 'needs_local_driver', message: expect.stringContaining(`teamai workflow resume ${run}`), next: null },
       });
       return made.rows;
     },
@@ -1680,6 +1922,25 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const { run } = await started(made);
       const done = await polledToDone(made, run);
       expect(done.actions).toMatchObject([{ kind: 'done', outcome: 'succeeded' }]);
+      return made.rows;
+    },
+  },
+  {
+    name: 'a runner that exits at once every time is started again three times, then its step fails runner_crashed',
+    rows: ['C10', 'C14'],
+    run: async () => {
+      let spawns = 0;
+      // A runner that dies before it takes its lock, as one a step crashes at its start does, every time.
+      const crashing = (runners: Runners): Runners => ({ ...runners, spawn: async () => { spawns += 1; } });
+      const made = await harness({ check: CHECK }, { runners: crashing });
+      const { run } = await started(made);
+      const done = await polledToDone(made, run).catch((error: unknown) => ({ unfinished: String(error) }));
+      expect(spawns).toBe(4);
+      expect(done).toMatchObject({ actions: [{ kind: 'done', outcome: 'failed' }] });
+      const engine = await readRun(made.config, run);
+      expect(typeof engine === 'object' && engine.steps.find((step) => step.id === 'lint')).toMatchObject({
+        status: 'failed', failure: { code: 'runner_crashed', message: expect.stringContaining('started again 3 times') },
+      });
       return made.rows;
     },
   },
@@ -1922,7 +2183,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'two prompt steps: the host question, dispatches, a wake, acks, reports from result.json, and a repeated report',
+    name: 'two prompt steps: the session host question, dispatches, a wake, acks, reports from result.json, and a repeated report',
     rows: ['R12', 'R13', 'D7', 'C2', 'D22', 'K1', 'K2', 'P5', 'P1'],
     run: async () => {
       const made = await harness({ pair: PAIR });
@@ -1966,7 +2227,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'the host question first: an ack or a report waits for it, and a second answer is refused',
+    name: 'the session host question first: an ack or a report waits for it, and a second answer is refused',
     rows: ['R14', 'R15', 'K3'],
     run: async () => {
       const made = await harness({ pair: PAIR });
@@ -2009,7 +2270,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'a model the host cannot run fails the step: an alias with no model for the tool, and a model the agent reports unavailable',
+    name: 'a model the session host cannot run fails the step: an alias with no model for the tool, and a model the agent reports unavailable',
     rows: ['C3', 'P4'],
     run: async () => {
       const aliased = await harness({ pair: PAIR.replace('model: claude-haiku-4-5', 'model: fast') });
@@ -2039,7 +2300,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'on a host that makes places, a step that commits to a branch asks for one; a refused place is asked for again, an adopted one is dispatched, and an adopt for an attempt that waits for none is refused',
+    name: 'on a session host that makes places, a step that commits to a branch asks for one; a refused place is asked for again, an adopted one is dispatched, and an adopt for an attempt that waits for none is refused',
     rows: ['D8', 'C5', 'C6', 'K4', 'K5'],
     run: async () => {
       const made = await harness({ write: WRITE });
@@ -2063,7 +2324,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'a step in the team workspace runs in a fresh clone of the team repo, a command in the runner and a prompt in a child TeamAI places there, also on a host that makes places, and each pushes what it changed to its branch',
+    name: 'a step in the team workspace runs in a fresh clone of the team repo, a command in the runner and a prompt in a child TeamAI places there, also on a session host that makes places, and each pushes what it changed to its branch',
     rows: ['D6', 'D7'],
     run: async () => {
       const member = await sharedTeam({ tidy: TIDY }).install('member');
@@ -2087,7 +2348,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'on a host that starts no child, a step in the checkout is the session\'s to work in the foreground, and a step that needs a worktree is held',
+    name: 'on a session host that starts no child, a step in the checkout is the session\'s to work in the foreground, and a step that needs a worktree is held',
     rows: ['R13', 'D1', 'D7', 'C2', 'K1', 'P5'],
     run: async () => {
       const made = await harness({ inline: INLINE });
@@ -2221,7 +2482,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'describe asks a session whose host names no tool for it, with a describe whose {tool} slot it fills, when the run needs a tool',
+    name: 'describe asks a session whose session host names no tool for it, with a describe whose {tool} slot it fills, when the run needs a tool',
     rows: ['R27', 'R3', 'R4'],
     run: async () => {
       const plain = REVIEW.replace('    scorers: { names: [review-quality], start: workflow }\n', '');
@@ -2238,8 +2499,8 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       } } } } });
       // A model the workflow's defaults pin needs the tool too.
       expect(await made.call({ kind: 'describe', name: 'defaulted' })).toMatchObject({ data: { describe: { ask: { kind: 'tool' } } } });
-      // A run of commands alone needs no tool, and neither does a prompt step that pins no model and is not judged.
-      expect(await made.call({ kind: 'describe', name: 'check' })).toMatchObject({ data: { describe: { ask: { kind: 'start', start: 'teamai workflow start check --driver skill' } } } });
+      // A run of commands alone needs no tool, and goes to the host driver; neither does a prompt step that pins no model and is not judged.
+      expect(await made.call({ kind: 'describe', name: 'check' })).toMatchObject({ data: { describe: { ask: { kind: 'background', start: 'teamai workflow start check --driver host' } } } });
       expect(await made.call({ kind: 'describe', name: 'plain' })).toMatchObject({ data: { describe: { ask: { kind: 'start', start: 'teamai workflow start plain --driver skill' } } } });
       return made.rows;
     },

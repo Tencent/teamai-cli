@@ -17,6 +17,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import { z } from 'zod';
 import { observeCheckout, PreparedAgentSchema, type PreparedAgent } from '../../agent-observation.js';
 import { resolveCliEntry } from '../../builtin-hooks.js';
@@ -28,10 +29,10 @@ import { createProjectToolRoots } from '../../project-agent-root.js';
 import { toolHomeVariableNames } from '../../tool-home.js';
 import { roleDeclaration } from '../../roles.js';
 import { getDataHome, LocalConfigSchema, type LocalConfig } from '../../types.js';
-import { execCommand } from '../../utils/exec.js';
-import { readJson, writeJsonAtomic } from '../../utils/fs.js';
+import { execCommand } from '@teamai/shared/exec';
+import { writeJsonAtomic } from '../../utils/fs.js';
 import { getDefaultBranch, HEAD_STATUS, headStateOf, resolveAnchors, type HeadState } from '../../utils/git.js';
-import { log } from '../../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { projectSlug } from '../../utils/partition.js';
 import type { TeamDelivery } from '../../pull.js';
 import { CommitSchema, type ClonePlace, type InstalledTeam, type TeamSelection } from '../clone.js';
@@ -41,14 +42,15 @@ import { stepDefinitions } from '../scope.js';
 import { removeStagedEvidence, stageEvidence } from '../../scorers/engine-hooks.js';
 import { settled } from '../step-state.js';
 import { findAttemptRun } from '../run-location.js';
-import { readRun, runsDir, type RunId } from '../store.js';
+import { readRun, RunIdSchema, runsDir, type RunId } from '../store.js';
 import type { Executor } from '../requirements.js';
 import type { RunState, WorkflowFailure } from '../types.js';
 import { cloneBranchOf } from '../workspace.js';
 import { cloneRoleProblem, copyKnowledgePaths, launchedTools, roleCopyRefusal, roleNotDeliveredFailure, type CloneRoleGap } from './role-copy.js';
 import { commitWithout } from './team-without.js';
 import { teamClonesOf } from './team.js';
-import { AGENT_PATHS, boundedGit, commitWork, git as memberGit, recordConfigOverlay, replaceConfig, restoreUneditedConfig, saveConfig, savedConfigPaths, untrustedGit, type Git } from '../worktree.js';
+import { dataCheckoutsOf, removeDataCheckout } from './data.js';
+import { AGENT_PATHS, boundedGit, commitWork, git as memberGit, gitAnswer, recordConfigOverlay, replaceConfig, restoreUneditedConfig, saidYes, saveConfig, savedConfigPaths, untrustedGit, type UntrustedGit } from '../worktree.js';
 
 /**
  * The commit a clone's install pulled for a treatment without some paths, which teamai made of `revision` without them.
@@ -102,7 +104,20 @@ function receiptPath(runsRoot: string, run: string, branch: string): string {
 }
 
 async function readReceipt(file: string): Promise<CloneReceipt | undefined> {
-  const parsed = CloneReceiptSchema.safeParse(await readJson(file));
+  const text = await readRegularFile(file, 'utf8').catch(() => null);
+
+  if (text === null) return undefined;
+  let raw: unknown;
+
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    log.warn(`Failed to parse JSON: ${file}`);
+
+    return undefined;
+  }
+
+  const parsed = CloneReceiptSchema.safeParse(raw);
 
   return parsed.success ? parsed.data : undefined;
 }
@@ -122,7 +137,7 @@ export function commitCacheOf(config: LocalConfig, repo: string): string {
  */
 export async function firstUnreachable(input: { cache: string; repo: string; commits: readonly string[]; checkout?: string }): Promise<string | undefined> {
   const { cache, repo, commits, checkout } = input;
-  const has = async (dir: string, commit: string): Promise<boolean> => (await memberGit(dir, ['cat-file', '-e', `${commit}^{commit}`])).code === 0;
+  const has = async (dir: string, commit: string): Promise<boolean> => saidYes(gitAnswer(await memberGit(dir, ['cat-file', '-e', `${commit}^{commit}`])), `whether ${dir} has commit ${commit}`);
 
   for (const commit of commits) {
     if ((checkout !== undefined && await has(checkout, commit)) || await has(cache, commit)) continue;
@@ -360,7 +375,7 @@ export async function cloneHead(config: LocalConfig, run: RunId, branch: string,
 }
 
 /** `untrustedGit` without `withhold`: a step ran in the clone, so its config may start anything. */
-async function cloneGit(withhold: readonly string[], expiresAt: string | undefined): Promise<Git | WorkflowFailure> {
+async function cloneGit(withhold: readonly string[], expiresAt: string | undefined): Promise<UntrustedGit | WorkflowFailure> {
   const scoped = await cloneEnv(withhold);
 
   return scoped.ok ? untrustedGit(scoped.env, expiresAt) : scoped.failure;
@@ -376,9 +391,11 @@ export function cloneEnv(withhold: readonly string[]): ReturnType<typeof stepEnv
  * runs in it is still to settle. Every step there that settled had its evidence staged then. The evidence a report
  * staged for a pass there that did not succeed goes too, as no judge reads it. The clones of the team repo a run's steps
  * ran in go once it is not running, as a step that failed there kept its own. `runId` limits it to one run. A receipt this teamai cannot read is kept.
+ * Answers the runs whose clone or team folder it removed.
  */
-export async function sweepClones(config: LocalConfig, runId?: string): Promise<void> {
+export async function sweepClones(config: LocalConfig, runId?: string): Promise<RunId[]> {
   const root = runsDir(config);
+  const swept = new Set<string>();
 
   const runs = runId !== undefined
     ? [runId]
@@ -387,11 +404,17 @@ export async function sweepClones(config: LocalConfig, runId?: string): Promise<
   for (const id of runs) {
     const dir = path.join(root, id, 'clones');
     const teamClones = teamClonesOf(config, id);
+    const dataCheckouts = dataCheckoutsOf(config, id);
+    const hasTeamClones = await fs.stat(teamClones).then(() => true, () => false);
+    const hasDataCheckouts = await fs.stat(dataCheckouts).then(() => true, () => false);
+    const state = hasTeamClones || hasDataCheckouts ? await readRun(config, id) : undefined;
 
-    if (await fs.stat(teamClones).then(() => true, () => false)) {
-      const read = await readRun(config, id);
+    if (state !== undefined && (state === 'missing' || state === 'corrupt' || state.status !== 'running')) {
+      if (hasTeamClones) await fs.rm(teamClones, { recursive: true, force: true });
 
-      if (read === 'missing' || read === 'corrupt' || read.status !== 'running') await fs.rm(teamClones, { recursive: true, force: true });
+      // An attempt's data checkout goes when it finishes or is given up: one left was kept for a next attempt that never came.
+      if (hasDataCheckouts) await removeDataCheckout(config, dataCheckouts);
+      swept.add(id);
     }
 
     for (const name of (await fs.readdir(dir).catch((): string[] => [])).filter((entry) => entry.endsWith('.json'))) {
@@ -409,10 +432,17 @@ export async function sweepClones(config: LocalConfig, runId?: string): Promise<
 
       if (run?.status === 'running' && run.steps.some((step) => !settled(step) && inClone(step.id))) continue;
       await removeRoot(receipt.root, file);
+      swept.add(id);
 
       if (run) await removeUnjudgedEvidence(config, run, inClone);
     }
   }
+
+  return [...swept].flatMap((id) => {
+    const parsed = RunIdSchema.safeParse(id);
+
+    return parsed.success ? [parsed.data] : [];
+  });
 }
 
 /**
@@ -630,7 +660,7 @@ async function installTeam(input: {
     if (declaration.kind !== 'declared') return undelivered(role, { kind: 'undeclared', declaration, revision });
   }
 
-  const teamConfig = await loadTeamConfig(teamClone);
+  const teamConfig = await loadTeamConfig(teamClone, config);
 
   if (role !== undefined) {
     // Without a teamai.yaml that parses, where the clone's knowledge would land is unknown, so nothing is delivered.

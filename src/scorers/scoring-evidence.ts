@@ -5,24 +5,26 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { sameHarness } from '../agent-observation.js';
 import { agreedRunMode } from '../launch-context.js';
-import { AgentSession } from '../session-flow/agent-session.js';
+import { AgentSession, type AgentSessionRef } from '../session-flow/agent-session.js';
 import { judgedTranscript } from '../session-flow/session-work.js';
 import { knownSecrets } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
 import { readFileIfExists } from '../utils/fs.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { redact } from '@teamai/shared/redact';
+import { copyRegularTree, readRegularFile } from '@teamai/shared/regular-file';
 import { scoresDir } from './home.js';
 import {
   fencedEvidence, isEvidenceReady, rubricPrompt, subjectEvidenceDirOf, writeEvidence, SESSION_MAX_CHARS, SUBAGENT_MAX_CHARS, type EvidenceGap, type Rubrics,
 } from './evidence.js';
 import type { RunSubject, ScoreLabel } from './label.js';
 import { firstSettled, isUnder, passRange, passesWithin, runPasses, type RunPass } from '../workflow/loop.js';
+import { attemptSessionStore } from '../workflow/runtimes/attempt.js';
 import { stepDefinitions } from '../workflow/scope.js';
 import { agentPassOf, type StepPass } from '../workflow/step-state.js';
 import type { RunState } from '../workflow/types.js';
 import { branchName, cloneBranchOf } from '../workflow/workspace.js';
-import { stepCheckout, UNTRUSTED_CONFIG } from '../workflow/worktree.js';
+import { gitAnswer, git as gitAt, saidYes, stepCheckout, UNTRUSTED_CONFIG } from '../workflow/worktree.js';
 
 const exec = promisify(execFile);
 
@@ -39,7 +41,7 @@ function ranIn(run: RunState, pass: StepPass): string | undefined {
 export function evidencePlan(run: RunState, subject: RunSubject, settling?: RunPass) {
   const definitionOf = stepDefinitions(run);
   const all = runPasses(run, agentPassOf);
-  const own = settling ?? all.find((pass) => pass.step === subject.step && pass.pass === subject.pass);
+  const own = settling ?? all.findLast((pass) => pass.step === subject.step && pass.pass === subject.pass);
   const workflow = definitionOf(subject.step)?.workflow !== undefined;
   const gaps: EvidenceGap[] = [];
   const under = isUnder(subject.step);
@@ -116,13 +118,12 @@ export function judgedFacts(run: RunState, subject: RunSubject): JudgedFacts {
  * spans, or a session one of its passes recorded. Empty when everything is there, or when the step ran in a clone, whose
  * evidence was copied when it settled.
  */
-export async function missingEvidence(run: RunState, subject: RunSubject): Promise<string[]> {
+export async function missingEvidence(config: LocalConfig, run: RunState, subject: RunSubject): Promise<string[]> {
   if (cloneBranchOf(run, subject.step) !== undefined) return [];
   const plan = evidencePlan(run, subject);
   const ranges = plan.diff ? [plan.diff] : plan.ranges;
   const commits = [...new Set(ranges.flatMap((range) => [range.from, range.to]))];
-  const gitIn: GitIn = { env: process.env, config: [] };
-  const has = async (commit: string) => plan.checkout !== undefined && await git(plan.checkout, ['cat-file', '-e', `${commit}^{commit}`], gitIn).then(() => true, () => false);
+  const has = async (commit: string) => plan.checkout !== undefined && saidYes(gitAnswer(await gitAt(plan.checkout, ['cat-file', '-e', `${commit}^{commit}`])), `whether ${plan.checkout} has commit ${commit}`);
   const missing: string[] = [];
 
   for (const commit of commits) if (!await has(commit)) missing.push(`commit ${commit} of branch ${ranges.find((range) => range.from === commit || range.to === commit)?.branch ?? 'unknown'}`);
@@ -131,12 +132,19 @@ export async function missingEvidence(run: RunState, subject: RunSubject): Promi
     const platform = pass.tool && AgentSession.platformForTool(pass.tool);
 
     if (!pass.session || !platform) continue;
-    const found = await AgentSession.find({ platform, sessionId: pass.session, cwd: ranIn(run, pass) });
+    const found = await AgentSession.find(await passSession(config, run, pass, { platform, sessionId: pass.session, cwd: ranIn(run, pass) }));
 
     if (found.status !== 'done') missing.push(`${platform} session ${pass.session} of ${pass.step}#${pass.pass}`);
   }
 
   return missing;
+}
+
+/** `ref` to the session of `pass`, in the tool home of its attempt when the attempt ran on a step runtime. */
+async function passSession(config: LocalConfig, run: RunState, pass: RunPass, ref: AgentSessionRef): Promise<AgentSessionRef> {
+  const storeDir = await attemptSessionStore(config, run.id, pass.attempt);
+
+  return storeDir === undefined ? ref : { ...ref, storeDir };
 }
 
 /**
@@ -289,7 +297,7 @@ export async function collectEvidence(
 
       if (!pass.session || !platform) { gaps.add('transcript_not_found'); continue; }
 
-      const found = await AgentSession.find({ platform, sessionId: pass.session, cwd: source?.sessionCwd ?? ranIn(run, pass) }, { subagents: true });
+      const found = await AgentSession.find(await passSession(config, run, pass, { platform, sessionId: pass.session, cwd: source?.sessionCwd ?? ranIn(run, pass) }), { subagents: true });
 
       if (found.status !== 'done') { gaps.add('transcript_not_found'); continue; }
 
@@ -364,7 +372,7 @@ export async function evidenceHash(dir: string): Promise<string | undefined> {
 /** Writes prompt.md in `dir`, which collectEvidence filled: what `rubrics` ask, then the fenced evidence. */
 async function assembleJudgePrompt(config: LocalConfig, dir: string, rubrics: Rubrics): Promise<void> {
   const mask = await secretMask(config);
-  const fenced = await fs.readFile(path.join(dir, FENCED), 'utf8');
+  const fenced = await readRegularFile(path.join(dir, FENCED), 'utf8');
   await fs.writeFile(path.join(dir, 'prompt.md'), mask(rubricPrompt(rubrics)) + fenced);
 }
 
@@ -379,7 +387,7 @@ export async function buildEvidence(config: LocalConfig, run: RunState, subject:
 
     if (!await isEvidenceReady(collected)) return { ok: false, code: 'evidence_empty' };
 
-    if (!await isEvidenceReady(dir)) await writeEvidence(dir, (tmp) => fs.cp(collected, tmp, { recursive: true }));
+    if (!await isEvidenceReady(dir)) await writeEvidence(dir, (tmp) => copyRegularTree(collected, tmp));
     await assembleJudgePrompt(config, dir, rubrics);
 
     return { ok: true };

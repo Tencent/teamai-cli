@@ -9,7 +9,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { getBusinessRoot, isSelfMode, type LocalConfig } from '../types.js';
 import { readFileSafe, writeFileAtomic } from '../utils/fs.js';
-import { setStderrOnly } from '../utils/logger.js';
+import { setStderrOnly } from '@teamai/shared/log';
 import { revisionHoldsSources, withoutStaleTeamRevision } from '../utils/team-revision.js';
 import { scoredPasses, type ScorablePass } from '../workflow/judge-work.js';
 import { runsDir } from '../workflow/store.js';

@@ -105,7 +105,7 @@ vi.mock('../config.js', async (importOriginal) => ({
   // the same file the pull under test resolves.
   loadTeamConfig: vi.fn(async (repoPath: string) => {
     const { loadTeamConfig } = await vi.importActual<typeof import('../config.js')>('../config.js');
-    return loadTeamConfig(repoPath);
+    return loadTeamConfig(repoPath, null);
   }),
   // The state file IS the fast path's cache key, so these must really read and
   // write <home>/.teamai/state.json. Omitting them from this factory makes the
@@ -147,7 +147,7 @@ vi.mock('@teamai/shared/log', () => ({
 }));
 
 const { pull, checkoutKey } = await import('../pull.js');
-const { log } = await import('../utils/logger.js');
+const { log } = await import('@teamai/shared/log');
 
 afterAll(() => {
   fs.rmSync(gitConfigRoot, { recursive: true, force: true });

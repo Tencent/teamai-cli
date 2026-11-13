@@ -2,18 +2,25 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 import type { RunMode } from '../launch-context.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { getDataHome } from '../types.js';
 import type { ToolId } from '../tools.js';
-import { skillContext } from '../workflow/drivers/skill/skill-driver.js';
+import { isSkillRunnerHolding, skillContext } from '../workflow/drivers/skill/skill-driver.js';
 import { teamToolInstances } from '../tool-instances.js';
 import { useToolInstances } from '../tool-registry.js';
 import { inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
-import { AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, skillStatePath, type RunId } from '../workflow/store.js';
+import { AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, runnerAlive, skillStatePath, takeRunLock, type RunId } from '../workflow/store.js';
+import { attemptToolHome } from '../workflow/runtimes/attempt.js';
+import { holdLoginFrom, loginHolder } from '../workflow/runtimes/login.js';
+import { stopCancelledAttempts } from '../workflow/runtimes/cancelled.js';
+import { cancelRun } from '../workflow/run-controls.js';
+import { knownSecrets } from '../env-resolution.js';
+import { log } from '@teamai/shared/log';
 import { Crash, fakeConfinedClaude, fakeJudge, githubOrigin, LABEL_PASS, scoringStarted, skillHarness, untilStopped } from './helpers/skill-harness.js';
+import { signalPid } from '@teamai/shared/process-group';
 
 const CHECK = `schemaVersion: v1alpha1
 name: check
@@ -168,6 +175,96 @@ steps:
     prompt: Change the code.
 `;
 
+// Step two goes on in step one's conversation.
+const PLAN = `schemaVersion: v1alpha1
+name: plan
+description: Plan a change, then make it in the same conversation
+invoke: allow
+steps:
+  - id: plan
+    prompt: Plan the change.
+  - id: make
+    needs: [plan]
+    session:
+      from: plan
+    prompt: Make the change you planned.
+`;
+
+// A chain: step three goes on in step two's conversation, which goes on in step one's.
+const CHAIN = `schemaVersion: v1alpha1
+name: chain
+description: Plan a change, make it, then test it, all in one conversation
+invoke: allow
+steps:
+  - id: plan
+    prompt: Plan the change.
+  - id: make
+    needs: [plan]
+    session:
+      from: plan
+    prompt: Make the change you planned.
+  - id: test
+    needs: [make]
+    session:
+      from: make
+    prompt: Test the change you made.
+`;
+
+// An item of a for_each body goes on in the conversation of a step beside the for_each.
+const FAN = `schemaVersion: v1alpha1
+name: fan
+description: Plan a change, then make it for each item in the same conversation
+invoke: allow
+inputs:
+  items: [string]
+steps:
+  - id: plan
+    prompt: Plan the change.
+  - id: each
+    needs: [plan]
+    for_each: inputs.items
+    workflow:
+      steps:
+        - id: make
+          session:
+            from: plan
+          prompt: Make the change you planned for this item.
+`;
+
+// A step that goes on in its own conversation each pass a loop runs it.
+const AGAIN = `schemaVersion: v1alpha1
+name: again
+description: Make a change, then improve it in the same conversation
+invoke: allow
+steps:
+  - id: make
+    session: continue
+    prompt: Make the change, or improve the one you made.
+    loop: { back_to: make, while: "steps.make.outputs == 'done'", max_iterations: 2 }
+`;
+
+// Two steps side by side go on from one earlier step.
+const FORK = `schemaVersion: v1alpha1
+name: fork
+description: Plan a change, then make two parts of it beside each other
+invoke: allow
+steps:
+  - id: plan
+    prompt: Plan the change.
+  - id: left
+    needs: [plan]
+    workspace: new
+    session:
+      from: plan
+    prompt: Make the left part.
+  - id: right
+    needs: [plan]
+    workspace: new
+    session:
+      from: plan
+    prompt: Make the right part.
+`;
+
 // Setup passes only when it gets the run mode the start kept, and the command prints the one it gets.
 const MODE = `schemaVersion: v1alpha1
 name: mode
@@ -281,7 +378,8 @@ describe('skill driver', () => {
     const described = await harness.call({ kind: 'describe', name: 'check' });
     expect(described).toMatchObject({ data: { describe: {
       workflow: { name: 'check', description: 'Lint and test', invoke: 'allow', inputs: {} },
-      ask: { kind: 'start', start: 'teamai workflow start check --driver skill' },
+      // It needs no AI tool, so describe sends it to the host driver; a start on this driver still runs it.
+      ask: { kind: 'background', start: 'teamai workflow start check --driver host' },
     } } });
 
     const started = await harness.call({ kind: 'start', name: 'check', answers: { confirmed: false }, inputs: undefined });
@@ -400,13 +498,13 @@ describe('skill driver', () => {
     expect(fs.existsSync(path.join(getDataHome(harness.config), 'workflows', 'runs'))).toBe(false);
   });
 
-  it('refuses a start of a workflow without invoke from a host that sets no agent session variable, since only a coding agent drives --driver skill', async () => {
+  it('refuses a start of a workflow without invoke from a session host that sets no agent session variable, since only a coding agent drives --driver skill', async () => {
     const harness = await skillHarness({ check: CHECK.replace('invoke: allow\n', '') });
     roots.push(harness.root);
-    // The test env carries no agent session variable, as a host that sets none.
+    // The test env carries no agent session variable, as a session host that sets none.
     const { evidence } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work, aiTools: [] });
     const message = 'Workflow "check" has invoke: deny, so no coding agent starts it, with any driver, and this command uses --driver skill, which only a coding agent drives. The person can start it from their own terminal with teamai workflow start check --driver local. To let agents start it, the team sets invoke: allow, or invoke: ask for a start after the person agrees, in workflows/check.yaml or workflows/check/WORKFLOW.yaml.';
-    expect(await harness.call({ kind: 'describe', name: 'check' }, { evidence })).toMatchObject({ data: { describe: { ask: { kind: 'denied', reason: message } } } });
+    expect(await harness.call({ kind: 'describe', name: 'check' }, { evidence })).toMatchObject({ data: { describe: { ask: { kind: 'local', reason: message, start: 'teamai workflow start check --driver local --tools default=claude' } } } });
     expect(await harness.call({ kind: 'start', name: 'check', answers: { confirmed: false }, inputs: undefined }, { evidence }))
       .toEqual({ error: { code: 'invoke_denied', message, next: null } });
     expect(fs.existsSync(path.join(getDataHome(harness.config), 'workflows', 'runs'))).toBe(false);
@@ -593,6 +691,26 @@ describe('skill driver', () => {
     expect(JSON.stringify(answers)).not.toContain('journal');
   });
 
+  it('refuses a call on a run whose journal a step replaced with a FIFO, naming it, without waiting for a reader of it', async () => {
+    const harness = await skillHarness({ note: NOTE });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'note', answers: { confirmed: false }, inputs: { topic: 'a-topic' } });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    // The journal is beside the run's $TEAMAI_RUN_DIR, which a step's command reaches.
+    const journal = path.join(path.dirname(skillStatePath(harness.config, run)), 'journal.jsonl');
+    fs.rmSync(journal);
+    execFileSync('mkfifo', [journal]);
+    // A writer blocked on the FIFO is let go at the end, so the test process can exit either way.
+    onTestFinished(() => {
+      if (fs.existsSync(journal)) fs.closeSync(fs.openSync(journal, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK));
+    });
+    const settled = harness.call({ kind: 'choose', run, choice: 'h1' }).then(() => 'answered', (error: unknown) => (error instanceof Error ? error.message : String(error)));
+
+    expect(await Promise.race([settled, new Promise((resolve) => setTimeout(() => resolve('blocked'), 5_000))])).toBe(`${journal} is a pipe, not a regular file, so teamai does not write it`);
+    expect(fs.statSync(journal).isFIFO()).toBe(true);
+  });
+
   it('journals a person action once, however many turns show it', async () => {
     const harness = await skillHarness({ deploy: DEPLOY });
     roots.push(harness.root);
@@ -693,7 +811,7 @@ describe('skill driver', () => {
     expect(brief).not.toContain('your last message');
   });
 
-  it('h3 asks the host for a place, adopts it, and a continue step reuses it', async () => {
+  it('h3 asks the session host for a place, adopts it, and a continue step reuses it', async () => {
     const harness = await skillHarness({ change: CHANGE });
     roots.push(harness.root);
     const started = await harness.call({ kind: 'start', name: 'change', answers: { confirmed: false }, inputs: undefined });
@@ -721,7 +839,7 @@ describe('skill driver', () => {
       then: { kind: 'wake', run: `teamai workflow next ${run} --driver skill` },
     }) } });
 
-    // The host makes a place on a branch of its own: it is refused, and the attempt waits for another.
+    // The session host makes a place on a branch of its own: it is refused, and the attempt waits for another.
     const hosts = path.join(harness.root, 'hosts');
     execFileSync('git', ['worktree', 'add', '-q', '-b', 'host/other', path.join(hosts, 'other'), start], { cwd: harness.work });
     const refused = await harness.call({ kind: 'adopt', run, attempt: place.attempt, dir: path.join(hosts, 'other') });
@@ -747,7 +865,7 @@ describe('skill driver', () => {
     fs.writeFileSync(result(write.brief), JSON.stringify({ kind: 'output', output: 'Wrote the change.', changed: ['change.txt'] }));
     expect(await harness.call({ kind: 'report', run, attempt: write.attempt, role: 'agent', modelUnavailable: false })).toMatchObject({ data: { runner: { status: 'reported' } } });
 
-    // polish continues the branch in the place the host made, and nobody is asked for another.
+    // polish continues the branch in the place the session host made, and nobody is asked for another.
     const next = await harness.call({ kind: 'next', run, wait: false });
     if (!('data' in next) || !('turn' in next.data)) throw new Error(JSON.stringify(next));
     const [polish] = next.data.turn.actions;
@@ -761,9 +879,49 @@ describe('skill driver', () => {
     await harness.call({ kind: 'report', run, attempt: polish.attempt, role: 'agent', modelUnavailable: false });
     const done = await harness.call({ kind: 'next', run, wait: false });
     expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
-    // TeamAI leaves the place to its host, with both steps committed on the branch.
+    // TeamAI leaves the place to its session host, with both steps committed on the branch.
     expect(fs.readFileSync(path.join(dir, 'change.txt'), 'utf8')).toBe('written\npolished\n');
     expect(execFileSync('git', ['log', '--format=%s', `teamai/${run}/work/p1`], { cwd: dir, encoding: 'utf8' }).trim().split('\n')).toHaveLength(3);
+  });
+
+  it('goes on with a run whose skill state names the session host as earlier versions stored it', async () => {
+    const harness = await skillHarness({ change: `schemaVersion: v1alpha1
+name: change
+description: Write a change
+invoke: allow
+steps:
+  - id: work
+    workspace: new
+    prompt: Write the change.
+` });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'change', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    const file = skillStatePath(harness.config, run);
+    const Stored = z.object({ host: z.unknown() }).passthrough();
+    // What an earlier version kept before the session host question was answered, and after h3.
+    const pending = Stored.parse(JSON.parse(fs.readFileSync(file, 'utf8')));
+    expect(pending.host).toEqual({ kind: 'pending', hasPromptStep: true });
+    fs.writeFileSync(file, JSON.stringify({ ...pending, host: { kind: 'pending' } }));
+    const chosen = await harness.call({ kind: 'choose', run, choice: 'h3' });
+    if (!('data' in chosen) || !('turn' in chosen.data)) throw new Error(JSON.stringify(chosen));
+    expect(Stored.parse(JSON.parse(fs.readFileSync(file, 'utf8'))).host).toEqual({ kind: 'chosen', id: 'h3', children: 'parallel', places: 'host' });
+    const [place] = chosen.data.turn.actions;
+    if (place?.kind !== 'place') throw new Error(JSON.stringify(chosen));
+    const dir = path.join(harness.root, 'hosts', 'place');
+    execFileSync('git', ['worktree', 'add', '-q', '--detach', dir, place.start], { cwd: harness.work });
+    const adopted = await harness.call({ kind: 'adopt', run, attempt: place.attempt, dir });
+    if (!('data' in adopted) || !('turn' in adopted.data)) throw new Error(JSON.stringify(adopted));
+    const [write] = adopted.data.turn.actions;
+    if (write?.kind !== 'dispatch') throw new Error(JSON.stringify(adopted));
+    await harness.call({ kind: 'ack', run, attempt: write.attempt });
+    fs.writeFileSync(path.join(dir, 'change.txt'), 'written\n');
+    const result = /Write `([^`]+result\.json)`/.exec(fs.readFileSync(write.brief, 'utf8'))?.[1];
+    if (!result) throw new Error('the brief names no result file');
+    fs.writeFileSync(result, JSON.stringify({ kind: 'output', output: 'Wrote the change.', changed: ['change.txt'] }));
+    await harness.call({ kind: 'report', run, attempt: write.attempt, role: 'agent', modelUnavailable: false });
+    expect(await harness.call({ kind: 'next', run, wait: false })).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
   });
 
   it('does not run a command in an adopted place that is already dirty', async () => {
@@ -829,7 +987,7 @@ steps:
     expect(execFileSync('git', ['log', '--format=%s', `teamai/${run}/work/p1`], { cwd: dir, encoding: 'utf8' })).not.toContain('.setup-out');
   });
 
-  it('leaves a host file in place when a read-only command in an adopted place is already dirty', async () => {
+  it('leaves a session host file in place when a read-only command in an adopted place is already dirty', async () => {
     const commands: string[] = [];
     const harness = await skillHarness({ change: `schemaVersion: v1alpha1
 name: change
@@ -970,6 +1128,28 @@ steps:
     for (const running of later) expect(running).not.toContain(serve.attempt);
   });
 
+  it('stops the command of a run an uninstall removed while it ran, and makes no data home again', async () => {
+    const stops: string[] = [];
+    const harness = await skillHarness({ serve: SERVE }, {
+      runners: (runners) => ({ ...runners, command: (input) => (input.command === 'sleep 300' ? untilStopped(() => { stops.push(input.attempt); }) : runners.command(input)) }),
+    });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'serve', answers: { parallel: 1, confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const { run } = started.data.turn;
+    const serve = started.data.turn.running.find((entry) => entry.step === 'serve');
+    if (serve?.phase !== 'running') throw new Error(JSON.stringify(started.data.turn));
+    const dataHome = getDataHome(harness.config);
+    fs.rmSync(dataHome, { recursive: true, force: true });
+
+    const checked = async (): Promise<void> => {
+      for (let poll = 0; poll < 5; poll += 1) await harness.context.runners.sleep(0);
+    };
+    await expect(checked()).rejects.toThrow(`Run ${run} is not on this machine`);
+    expect(stops).toEqual([serve.attempt]);
+    expect(fs.existsSync(dataHome)).toBe(false);
+  });
+
   it.each([
     // The person cancels the run from their terminal while setup runs.
     { stop: 'the run cancelled', timeout: '', meanwhile: async (client: WorkflowClient, run: RunId) => { await client.cancel(run); }, step: { status: 'cancelled' } },
@@ -1063,7 +1243,7 @@ steps:
       else await new Promise((resolve) => { setTimeout(resolve, 50); });
     }
     expect(pid).toBeGreaterThan(0);
-    const alive = (): boolean => { try { return process.kill(pid, 0); } catch { return false; } };
+    const alive = (): boolean => signalPid(pid, 0) === 'sent';
     expect(alive()).toBe(true);
 
     const { runners } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work, aiTools: [] });
@@ -1120,6 +1300,81 @@ steps:
     expect(typeof stored === 'object' && stored.steps.find((item) => item.id === 'build')).toMatchObject({ status: 'cancelled' });
   });
 
+  // A runner works outside the run's lock, which `teamai workflow cancel` holds while it stops what cancelled attempts left.
+  it('leaves an attempt whose runner still runs to that runner when the person cancels the run, and the runner stops it', async () => {
+    const stops: string[] = [];
+    const harness = await skillHarness({ serve: `schemaVersion: v1alpha1
+name: serve
+description: Serve the app
+invoke: allow
+steps:
+  - id: serve
+    command: sleep 300
+` }, { runners: (runners) => ({ ...runners, command: (input) => (input.command === 'sleep 300' ? untilStopped(() => { stops.push(input.attempt); }) : runners.command(input)) }) });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'serve', answers: { parallel: 1, confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    const attempt = AttemptIdSchema.parse(started.data.turn.running.find((entry) => entry.phase === 'running')?.attempt);
+    // What a Codex judge of the runner's attempt holds while it runs, and refreshed.
+    const daily = path.join(harness.root, 'codex');
+    const login = (refresh: string): string => JSON.stringify({ tokens: { account_id: 'acct-1', refresh_token: refresh } });
+    fs.mkdirSync(daily);
+    fs.writeFileSync(path.join(daily, 'auth.json'), login('refresh-1'), { mode: 0o600 });
+    const toolHome = attemptToolHome(harness.config, run, attempt, 'codex');
+    expect((await holdLoginFrom({ tool: 'codex', executable: 'codex', from: daily, toolHome, run, attempt, signal: new AbortController().signal })).ok).toBe(true);
+    fs.writeFileSync(path.join(toolHome, 'auth.json'), login('refresh-2'));
+    const info = vi.spyOn(log, 'info').mockImplementation(() => undefined);
+    onTestFinished(() => { info.mockRestore(); });
+    const cancelHere = async (): Promise<void> => {
+      expect(await takeRunLock(harness.config, run, (lock) => stopCancelledAttempts(harness.config, lock, { isRunnerHolding: isSkillRunnerHolding }), { waitMs: 0 })).toMatchObject({ kind: 'held' });
+    };
+
+    expect(await cancelRun(harness.config, run, await knownSecrets(harness.config))).not.toHaveProperty('error');
+    await cancelHere();
+
+    expect(await loginHolder('codex')).toMatchObject({ run, attempt });
+    expect(info).toHaveBeenCalledWith(`Attempt ${attempt} of run ${run} runs in the skill driver's runner on this machine, which stops it and releases what it holds once it sees the cancel. If that runner (teamai workflow report ${run} --driver skill --attempt ${attempt}) still runs in a minute, stop it; once it has ended, teamai workflow cancel ${run} again releases what it left.`);
+    await eventsToDone(harness, run);
+    expect(stops).toEqual([attempt]);
+    // A runner that ended without releasing the login, as a killed one does, leaves it to the next cancel.
+    await cancelHere();
+    expect({ daily: JSON.parse(fs.readFileSync(path.join(daily, 'auth.json'), 'utf8')).tokens.refresh_token, holder: await loginHolder('codex') })
+      .toEqual({ daily: 'refresh-2', holder: undefined });
+  });
+
+  it('leaves an attempt whose runner was just spawned, and holds no runner.lock yet, to that runner when the person cancels the run', async () => {
+    const spawned: string[] = [];
+    const harness = await skillHarness({ serve: `schemaVersion: v1alpha1
+name: serve
+description: Serve the app
+invoke: allow
+steps:
+  - id: serve
+    command: sleep 300
+` }, { runners: (runners) => ({ ...runners, spawn: async (job) => { spawned.push(job.attempt); } }) });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'serve', answers: { parallel: 1, confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    const attempt = AttemptIdSchema.parse(spawned[0]);
+    // The runner process is on its way, not yet running: it takes runner.lock first thing, and a judge's login after.
+    expect(await runnerAlive(harness.config, run, attempt)).toBe(false);
+    const daily = path.join(harness.root, 'codex');
+    fs.mkdirSync(daily);
+    fs.writeFileSync(path.join(daily, 'auth.json'), JSON.stringify({ tokens: { account_id: 'acct-1', refresh_token: 'refresh-1' } }), { mode: 0o600 });
+    const toolHome = attemptToolHome(harness.config, run, attempt, 'codex');
+    expect((await holdLoginFrom({ tool: 'codex', executable: 'codex', from: daily, toolHome, run, attempt, signal: new AbortController().signal })).ok).toBe(true);
+    const info = vi.spyOn(log, 'info').mockImplementation(() => undefined);
+    onTestFinished(() => { info.mockRestore(); });
+
+    expect(await cancelRun(harness.config, run, await knownSecrets(harness.config))).not.toHaveProperty('error');
+    expect(await takeRunLock(harness.config, run, (lock) => stopCancelledAttempts(harness.config, lock, { isRunnerHolding: isSkillRunnerHolding }), { waitMs: 0 })).toMatchObject({ kind: 'held' });
+
+    expect(await loginHolder('codex')).toMatchObject({ run, attempt });
+    expect(info).toHaveBeenCalledWith(expect.stringContaining(`Attempt ${attempt} of run ${run} runs in the skill driver's runner on this machine`));
+  });
+
   it('masks the run\'s secrets in the result a child wrote once it reports', async () => {
     vi.stubEnv('ACME_API_TOKEN', 'tm-child-credential-5810');
     const harness = await skillHarness({ review: REVIEW });
@@ -1174,7 +1429,7 @@ steps:
     expect(await harness.call({ kind: 'describe', name: 'review' }, { tool })).toMatchObject({ data: { describe: { judging: { kind: 'session', tool: 'pi' } } } });
   });
 
-  it('describe tells a session whose host names no tool how to name it, as nobody judges its run here until it does', async () => {
+  it('describe tells a session whose session host names no tool how to name it, as nobody judges its run here until it does', async () => {
     const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: null });
     roots.push(harness.root);
     expect(await harness.call({ kind: 'describe', name: 'review' })).toMatchObject({ data: { describe: {
@@ -1183,7 +1438,7 @@ steps:
     } } });
   });
 
-  it('describe tells a session whose host names no tool to name it, when the workflow has prompt steps and nothing scored', async () => {
+  it('describe tells a session whose session host names no tool to name it, when the workflow has prompt steps and nothing scored', async () => {
     const harness = await skillHarness({ review: REVIEW.replace('    scorers: { names: [review-quality], start: workflow }', '    model: claude-opus-4-1') }, { tool: null });
     roots.push(harness.root);
     expect(await harness.call({ kind: 'describe', name: 'review' })).toMatchObject({ data: { describe: { judging: { kind: 'none' }, ask: {
@@ -1191,7 +1446,7 @@ steps:
     } } } });
   });
 
-  it('gives a session whose host names no tool a resume of a run it does not drive with a {tool} slot to fill', async () => {
+  it('gives a session whose session host names no tool a resume of a run it does not drive with a {tool} slot to fill', async () => {
     const harness = await skillHarness({ check: CHECK }, { tool: null });
     roots.push(harness.root);
     const other = await harness.context.client.start('check', { checkout: harness.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
@@ -1213,7 +1468,7 @@ steps:
     expect(await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false, judge: false }, inputs: undefined })).toMatchObject({ data: { turn: { status: 'driving' } } });
   });
 
-  it('a step that needs a model fails once a session whose host names no tool takes the run over, and says how to name it', async () => {
+  it('a step that needs a model fails once a session whose session host names no tool takes the run over, and says how to name it', async () => {
     const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: claude-opus-4-1') }, { tool: null });
     roots.push(harness.root);
     const started = await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false }, inputs: undefined, tool: 'claude' });
@@ -1231,7 +1486,7 @@ steps:
     expect(await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false, judge: false }, inputs: undefined })).toMatchObject({ data: { turn: { status: 'driving' } } });
   });
 
-  it('a step with an exact model dispatches it as written, even once a session whose host names no tool takes the run over', async () => {
+  it('a step with an exact model dispatches it as written, even once a session whose session host names no tool takes the run over', async () => {
     const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: { name: claude-opus-4-1, effort: high }') }, { tool: null });
     roots.push(harness.root);
     const started = await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false }, inputs: undefined, tool: 'claude' });
@@ -1355,7 +1610,8 @@ steps:
     unverifiedClaude(harness);
     expect(await harness.call({ kind: 'describe', name: 'check', tool: 'claude' }, { mode: 'unattended' }))
       .toMatchObject({ data: { describe: { ask: { kind: 'start', start: 'teamai workflow start check --driver skill --tools default=claude --auto-approve' } } } });
-    expect(await harness.call({ kind: 'describe', name: 'check', tool: 'claude' })).toMatchObject({ data: { describe: { ask: { kind: 'start', start: 'teamai workflow start check --driver skill --tools default=claude' } } } });
+    // The host driver, which a run of commands alone goes to, launches no tool, so its start names none.
+    expect(await harness.call({ kind: 'describe', name: 'check', tool: 'claude' })).toMatchObject({ data: { describe: { ask: { kind: 'background', start: 'teamai workflow start check --driver host' } } } });
     const starts = JSON.stringify(await harness.call({ kind: 'describe', name: 'review', tool: 'claude' })).match(/teamai workflow start review --driver skill[^"]*/g) ?? [];
     expect(starts).not.toHaveLength(0);
     for (const start of starts) expect(start).toMatch(/^teamai workflow start review --driver skill --tools default=claude /);
@@ -1363,7 +1619,7 @@ steps:
       .toMatchObject({ error: { code: 'confirm_needed', next: 'teamai workflow start --describe review --driver skill --tools default=claude' } });
   });
 
-  it('a session whose host names no tool names it with --tools: its runner resolves the step\'s model for that tool', async () => {
+  it('a session whose session host names no tool names it with --tools: its runner resolves the step\'s model for that tool', async () => {
     const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: claude-opus-4-1') }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: null });
     roots.push(harness.root);
     unverifiedClaude(harness);
@@ -1377,7 +1633,7 @@ steps:
     roots.push(harness.root);
     fs.mkdirSync(path.join(harness.root, 'instances', 'tools'), { recursive: true });
     fs.writeFileSync(path.join(harness.root, 'instances', 'tools', 'acme-claude.yaml'), 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude }\n');
-    useToolInstances(new Map((await teamToolInstances(path.join(harness.root, 'instances'))).map((instance) => [instance.name, instance])));
+    useToolInstances(new Map((await teamToolInstances({ root: path.join(harness.root, 'instances'), namespaces: async () => 'legacy' })).map((instance) => [instance.name, instance])));
     unverifiedClaude(harness);
     const { chosen, turn: done } = await reviewed(harness, 'attended', { tool: 'acme-claude' });
     expect(chosen).toMatchObject({ data: { turn: { actions: [{ kind: 'dispatch', model: { by: 'step', name: 'claude-opus-4-1' } }] } } });
@@ -1386,7 +1642,7 @@ steps:
       .toEqual({ error: { code: 'invalid_arguments', message: expect.stringMatching(/^--tools default=vim names no tool teamai knows: claude, .*hermes.*, acme-claude$/), next: null } });
   });
 
-  it('a session whose host has no child agent judges its run in the background, at best-effort, on its tool on PATH', async () => {
+    it('a session whose session host has no child agent judges its run in the background, at best-effort, on its tool on PATH', async () => {
     const scoring: { label?: RunId } = {};
     const harness = await skillHarness({ review: REVIEW, 'label-pass': LABEL_PASS('best-effort') }, { scorers: { 'review-quality': REVIEW_QUALITY }, client: scoringStarted(scoring) });
     roots.push(harness.root);
@@ -1398,16 +1654,20 @@ steps:
     expect(typeof judged === 'object' && judged.steps.find((step) => step.id === 'score[0].judge')).toMatchObject({ confined: { tool: 'claude', isolation: 'best-effort' } });
   });
 
-  it('a session whose host has no child agent, and whose tool is not on PATH, does not judge its run: choosing h4 turns judging off', async () => {
+  it('a session whose session host has no child agent, and whose tool is not on PATH, does not judge its run: choosing h4 turns judging off', async () => {
     const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
     roots.push(harness.root);
-    vi.stubEnv('PATH', path.join(harness.root, 'empty-bin'));
+    // Only claude is gone: the step's worktree still needs git.
+    const bin = path.join(harness.root, 'git-only-bin');
+    fs.mkdirSync(bin);
+    fs.symlinkSync(execFileSync('which', ['git'], { encoding: 'utf8' }).trim(), path.join(bin, 'git'));
+    vi.stubEnv('PATH', bin);
     const { chosen, turn: done } = await reviewed(harness, 'attended', { host: 'h4' });
     expect(chosen).toMatchObject({ data: { turn: { events: expect.arrayContaining([{ kind: 'judging-off', failure: { code: 'no_child_agent', message: expect.stringContaining('claude') } }]) } } });
     expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
   });
 
-  it('a run of commands alone that its session judges asks the host question for its judging alone: h4 turns judging off, and its steps still run in a new worktree', async () => {
+  it('a run of commands alone that its session judges asks the session host question for its judging alone: h4 turns judging off, and its steps still run in a new worktree', async () => {
     const build = 'schemaVersion: v1alpha1\nname: build\ndescription: Build\ninvoke: allow\nsteps:\n  - id: edit\n    workspace: new\n    command: node -e "require(\'fs\').writeFileSync(\'built.txt\', \'1\')"\n';
     const gated = 'schemaVersion: v1alpha1\nname: gated\ndescription: Build, scored\ninvoke: allow\nsteps:\n  - id: built\n    workflow: build\n    scorers: [review-quality]\n';
     const harness = await skillHarness({ build, gated }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: 'pi' });
@@ -1508,6 +1768,115 @@ steps:
   });
 });
 
+describe('a step that continues an earlier step\'s conversation, under the skill driver', () => {
+  /** The dispatch `answer` offers, acked, its result written and reported from `session`. */
+  const work = async (harness: Awaited<ReturnType<typeof skillHarness>>, run: RunId, answer: unknown, session: string) => {
+    const turn = z.object({ data: z.object({ turn: z.object({ actions: z.array(z.object({ kind: z.string() }).passthrough()) }) }) }).parse(answer);
+    const dispatch = DispatchShape.parse(turn.data.turn.actions.find((action) => action.kind === 'dispatch'));
+    await harness.call({ kind: 'ack', run, attempt: dispatch.attempt }, { session });
+    const file = /Write `([^`]+result\.json)`/.exec(fs.readFileSync(dispatch.brief, 'utf8'))?.[1];
+    if (!file) throw new Error(`${dispatch.brief} names no result file`);
+    fs.writeFileSync(file, JSON.stringify({ kind: 'output', output: 'done' }));
+    expect(await harness.call({ kind: 'report', run, attempt: dispatch.attempt, role: 'agent', modelUnavailable: false }, { session })).toMatchObject({ data: { runner: { status: 'reported' } } });
+
+    return { dispatch, next: await harness.call({ kind: 'next', run, wait: false }, { session }) };
+  };
+
+  const DispatchShape = z.object({ attempt: AttemptIdSchema, step: z.string(), title: z.string(), brief: z.string(), continue: z.object({ title: z.string() }).optional() }).passthrough();
+
+  const startOn = async (host: 'h1' | 'h4') => {
+    const harness = await skillHarness({ plan: PLAN });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'plan', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+
+    return { harness, run, chosen: await harness.call({ kind: 'choose', run, choice: host }) };
+  };
+
+  it('on h1, dispatches the later step to the child that worked the earlier one, and records no resumed it cannot prove', async () => {
+    const { harness, run, chosen } = await startOn('h1');
+    const plan = await work(harness, run, chosen, 'session-a');
+    expect(plan.dispatch.continue).toBeUndefined();
+
+    const make = await work(harness, run, plan.next, 'session-a');
+
+    expect(make.dispatch.continue).toEqual({ title: plan.dispatch.title });
+    const state = await readRun(harness.config, run);
+    if (typeof state !== 'object') throw new Error('run was not stored');
+    expect(state.steps.find((step) => step.id === 'make')).not.toHaveProperty('resumed');
+  });
+
+  it('on h1, dispatches every later step of a chain to the child that worked its first step', async () => {
+    const harness = await skillHarness({ chain: CHAIN });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'chain', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    const plan = await work(harness, run, await harness.call({ kind: 'choose', run, choice: 'h1' }), 'session-a');
+    const make = await work(harness, run, plan.next, 'session-a');
+    const test = await work(harness, run, make.next, 'session-a');
+
+    expect(make.dispatch.continue).toEqual({ title: plan.dispatch.title });
+    expect(test.dispatch.continue).toEqual({ title: plan.dispatch.title });
+  });
+
+  it('on h1, dispatches an item of a for_each body to the child of the step beside the for_each it goes on from', async () => {
+    const harness = await skillHarness({ fan: FAN });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'fan', answers: { confirmed: false, parallel: 1 }, inputs: { items: ['a'] } });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    const plan = await work(harness, run, await harness.call({ kind: 'choose', run, choice: 'h1' }), 'session-a');
+    const make = await work(harness, run, plan.next, 'session-a');
+
+    expect(make.dispatch).toMatchObject({ step: 'each[0].make', continue: { title: plan.dispatch.title } });
+  });
+
+  it('on h1, dispatches the next pass of a step with session: continue to the child that worked its earlier pass', async () => {
+    const harness = await skillHarness({ again: AGAIN });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'again', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    const first = await work(harness, run, await harness.call({ kind: 'choose', run, choice: 'h1' }), 'session-a');
+    const second = await work(harness, run, first.next, 'session-a');
+
+    expect(first.dispatch.continue).toBeUndefined();
+    expect(second.dispatch).toMatchObject({ step: 'make', continue: { title: first.dispatch.title } });
+  });
+
+  it('on h1, sends only one of two steps beside each other to the earlier child, and the other to a new one', async () => {
+    const harness = await skillHarness({ fork: FORK });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'fork', answers: { confirmed: false, parallel: 2 }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    const plan = await work(harness, run, await harness.call({ kind: 'choose', run, choice: 'h1' }), 'session-a');
+    const byStep = new Map<string, z.infer<typeof DispatchShape>>();
+
+    for (let answer = plan.next, polls = 0; byStep.size < 2 && polls < 10; answer = await harness.call({ kind: 'next', run, wait: true }, { session: 'session-a' }), polls += 1) {
+      const turn = z.object({ data: z.object({ turn: z.object({ actions: z.array(z.object({ kind: z.string() }).passthrough()) }) }) }).parse(answer);
+      for (const action of turn.data.turn.actions) if (action.kind === 'dispatch') { const dispatch = DispatchShape.parse(action); byStep.set(dispatch.step, dispatch); }
+    }
+
+    const dispatches = [...byStep.values()];
+    expect([...byStep.keys()].sort()).toEqual(['left', 'right']);
+    expect(dispatches.filter((dispatch) => dispatch.continue !== undefined)).toEqual([expect.objectContaining({ continue: { title: plan.dispatch.title } })]);
+  });
+
+  it('on h4, records the session that worked each step, and resumed for the later step the same session reports', async () => {
+    const { harness, run, chosen } = await startOn('h4');
+    const plan = await work(harness, run, chosen, 'session-a');
+    await work(harness, run, plan.next, 'session-a');
+
+    const state = await readRun(harness.config, run);
+    if (typeof state !== 'object') throw new Error('run was not stored');
+    expect(state.steps.find((step) => step.id === 'plan')).toMatchObject({ tool: 'claude', session: 'session-a' });
+    expect(state.steps.find((step) => step.id === 'make')).toMatchObject({ session: 'session-a', resumed: { tool: 'claude', id: 'session-a' } });
+  });
+});
+
 describe('detached runners', () => {
   it('refuse to start a runner in a checkout that is gone, saying what to do', async () => {
     const harness = await skillHarness({ check: CHECK });
@@ -1517,5 +1886,27 @@ describe('detached runners', () => {
     const { runners } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work, aiTools: [] });
     const spawned = runners.spawn({ run, attempt: AttemptIdSchema.parse('a00000000'), checkout, mode: 'attended' });
     await expect(spawned).rejects.toThrow(`The runner of attempt a00000000 cannot start in ${checkout}, the checkout run ${run} started from: it does not exist. Restore that checkout at that path, then run the same call again, or end the run with teamai workflow cancel ${run}.`);
+  });
+
+  // A tick stops what a runner left once its runner.lock is free (C10, C11): its Codex judge held the member's login.
+  it('write back and free the Codex login the judge of a killed runner refreshed, as they stop what that runner left', async () => {
+    const harness = await skillHarness({ check: CHECK });
+    roots.push(harness.root);
+    const run = RunIdSchema.parse('r0123456789abcdef');
+    const attempt = AttemptIdSchema.parse('a00000000');
+    const daily = path.join(harness.root, 'codex');
+    // Codex rotates its refresh token on a refresh and refuses the old one after (refresh_token_reused).
+    const login = (refresh: string): string => JSON.stringify({ auth_mode: 'chatgpt', tokens: { account_id: 'acct-1', refresh_token: refresh } });
+    fs.mkdirSync(daily);
+    fs.writeFileSync(path.join(daily, 'auth.json'), login('refresh-1'), { mode: 0o600 });
+    const toolHome = attemptToolHome(harness.config, run, attempt, 'codex');
+    expect((await holdLoginFrom({ tool: 'codex', executable: 'codex', from: daily, toolHome, run, attempt, signal: new AbortController().signal })).ok).toBe(true);
+    fs.writeFileSync(path.join(toolHome, 'auth.json'), login('refresh-2'));
+    const { runners } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work, aiTools: [] });
+
+    await runners.stopLeft(run, attempt);
+
+    expect({ daily: JSON.parse(fs.readFileSync(path.join(daily, 'auth.json'), 'utf8')).tokens.refresh_token, holder: await loginHolder('codex') })
+      .toEqual({ daily: 'refresh-2', holder: undefined });
   });
 });

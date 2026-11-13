@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { JsonObject } from '../types.js';
+import type { JsonObject } from '@teamai/shared/json';
 import { isRecord } from './expression.js';
 import type { OutputSchema } from './types.js';
 

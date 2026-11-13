@@ -7,6 +7,7 @@ private: true
 # publish commits and pushes the docs to the team repo that holds wiki_root, for a caller that does not publish them.
 inputs: { wiki_root: string, project: string, max_modules: number, concurrency: number, publish: boolean }
 defaults:
+  requires: { host: true }
   inputs: { publish: false }
 ends: { unconfigured-tool: failed }
 steps:

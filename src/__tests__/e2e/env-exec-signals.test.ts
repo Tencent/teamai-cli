@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hasPython, IN_TERMINAL } from '../helpers/in-terminal.js';
+import { signalGroup, signalPid } from '@teamai/shared/process-group';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.resolve(__dirname, '..', '..', '..', 'dist', 'index.js');
@@ -83,7 +84,7 @@ describe.skipIf(process.platform === 'win32')('teamai env exec: signals', () => 
     async (signal) => {
       const run = await counting(signal, 'terminal');
 
-      process.kill(-run.pid, signal);
+      expect(signalGroup(run.pid, signal)).toBe('sent');
 
       expect(await run.ended).toMatchObject({ code: 1, signal: null });
     },
@@ -92,7 +93,7 @@ describe.skipIf(process.platform === 'win32')('teamai env exec: signals', () => 
   it.each(['SIGINT', 'SIGQUIT'] as const)('passes a %s sent to teamai alone, without a terminal, on to the command, once', async (signal) => {
     const run = await counting(signal, 'no terminal');
 
-    process.kill(run.pid, signal);
+    expect(signalPid(run.pid, signal)).toBe('sent');
 
     expect(await run.ended).toMatchObject({ code: 1, signal: null });
   });
@@ -100,7 +101,7 @@ describe.skipIf(process.platform === 'win32')('teamai env exec: signals', () => 
   it('passes a SIGTERM sent to teamai alone on to the command, once', async () => {
     const run = await counting('SIGTERM', 'no terminal');
 
-    process.kill(run.pid, 'SIGTERM');
+    expect(signalPid(run.pid, 'SIGTERM')).toBe('sent');
 
     expect(await run.ended).toMatchObject({ code: 1, signal: null });
   });

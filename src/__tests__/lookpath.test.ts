@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { isOnPath } from '../utils/lookpath.js';
+import { isOnPath } from '@teamai/shared/lookpath';
 
 describe('isOnPath', () => {
   const dirs: string[] = [];

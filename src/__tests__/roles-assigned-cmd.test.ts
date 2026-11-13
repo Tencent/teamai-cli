@@ -12,7 +12,7 @@ vi.mock('../scope-selection.js', () => ({ saveScopeSelection: vi.fn() }));
 import { rolesList, rolesSet } from '../roles-cmd.js';
 import { autoDetectInit } from '../config.js';
 import { saveScopeSelection } from '../scope-selection.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
 /** `teamai roles set` and `roles list` once the team assigns roles (#1186). */

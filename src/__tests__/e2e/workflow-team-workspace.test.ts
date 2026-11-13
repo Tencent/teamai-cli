@@ -4,8 +4,9 @@
  * repo's default branch. The team origin is a GitHub URL git rewrites to a bare repository, and `gh` is a fake that
  * keeps the pull requests.
  */
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -38,6 +39,21 @@ steps:
     command: node ${JSON.stringify(edit)}
 `;
 
+/** A workflow whose team step is kept from TEAM_DEPLOY_TOKEN, which its later deploy step requires. */
+const guarded = (edit: string): string => `schemaVersion: v1alpha1
+name: edit-guarded
+description: Add a line to the team's notes rule, then deploy with a token the edit never sees.
+inputs: { topic: string }
+steps:
+  - id: edit
+    workspace: { team: { branch: "teamai/notes/{{ inputs.topic }}" } }
+    command: node ${JSON.stringify(edit)}
+  - id: deploy
+    needs: [edit]
+    requires: { env: [TEAM_DEPLOY_TOKEN] }
+    command: node -e "console.log('deployed')"
+`;
+
 const RunSchema = z.object({
   steps: z.array(z.object({ id: z.string(), status: z.string(), failure: z.object({ code: z.string(), message: z.string() }).optional() })),
   deliveries: z.array(z.object({ url: z.string(), branch: z.string(), base: z.string(), step: z.string(), pass: z.number() })).optional(),
@@ -52,6 +68,50 @@ async function runEdit(fixture: BenchmarkFixture, edit: string, script: string, 
   const done = z.object({ run: z.string(), outcome: z.string() }).safeParse(envelope(ran).data?.done);
   if (!done.success) throw new Error(`no run: ${said(ran)}`);
   return { run: done.data.run, outcome: done.data.outcome, state: RunSchema.parse(fixture.runFile(done.data.run)), said: said(ran) };
+}
+
+/** Serves the bare repositories under `root` over smart HTTP through `git http-backend`, to a client that signs in as `user:password`. */
+async function gitOverHttp(root: string, credentials: string): Promise<{ url: string; close(): Promise<void> }> {
+  const server = http.createServer((request, response) => {
+    if (request.headers.authorization !== `Basic ${Buffer.from(credentials).toString('base64')}`) {
+      response.writeHead(401, { 'WWW-Authenticate': 'Basic realm="team"' }).end();
+      return;
+    }
+
+    const asked = new URL(request.url ?? '/', 'http://localhost');
+    const backend = spawn('git', ['http-backend'], {
+      env: {
+        PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: os.devNull, GIT_PROJECT_ROOT: root, GIT_HTTP_EXPORT_ALL: '1', REMOTE_USER: 'member',
+        REQUEST_METHOD: request.method ?? 'GET', PATH_INFO: asked.pathname, QUERY_STRING: asked.search.slice(1),
+        CONTENT_TYPE: request.headers['content-type'] ?? '', HTTP_CONTENT_ENCODING: request.headers['content-encoding'] ?? '',
+      },
+    });
+    const chunks: Buffer[] = [];
+    request.pipe(backend.stdin);
+    backend.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+    backend.on('close', () => {
+      const answer = Buffer.concat(chunks);
+      const split = answer.indexOf('\r\n\r\n');
+      const headers: Record<string, string> = {};
+      let status = 200;
+
+      for (const line of answer.subarray(0, split).toString().split('\r\n')) {
+        const colon = line.indexOf(':');
+        const name = line.slice(0, colon);
+        const value = line.slice(colon + 1).trim();
+        if (name.toLowerCase() === 'status') status = Number.parseInt(value, 10);
+        else headers[name] = value;
+      }
+
+      response.writeHead(status, headers).end(answer.subarray(split + 4));
+    });
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (address === null || typeof address === 'string') throw new Error('the git HTTP server has no port');
+
+  return { url: `http://127.0.0.1:${address.port}`, close: () => new Promise((resolve) => server.close(() => resolve())) };
 }
 
 describe('a step in the team workspace, run through the real CLI', () => {
@@ -74,7 +134,7 @@ describe('a step in the team workspace, run through the real CLI', () => {
     gh = fakeGhHost(path.join(fixture.root, 'gh'));
     fs.symlinkSync(gh.bin, path.join(fixture.bin, 'gh'));
     edit = path.join(fixture.root, 'edit.js');
-    fixture.pushTeam({ 'workflows/edit-team.yaml': workflow(edit), 'workflows/edit-any.yaml': anyBranch(edit), 'rules/old.md': '# Old\n', 'rules/notes.md': '# Notes\n' });
+    fixture.pushTeam({ 'workflows/edit-team.yaml': workflow(edit), 'workflows/edit-any.yaml': anyBranch(edit), 'workflows/edit-guarded.yaml': guarded(edit), 'rules/old.md': '# Old\n', 'rules/notes.md': '# Notes\n' });
     const pulled = await fixture.teamai(['pull']);
     expect(pulled.code, said(pulled)).toBe(0);
   }, 120_000);
@@ -90,6 +150,61 @@ describe('a step in the team workspace, run through the real CLI', () => {
     expect(onBranch(BRANCH, 'skills/draft/SKILL.md')).toBe('---\nname: draft\n---\n# Draft');
     expect(pullsFrom(BRANCH)).toHaveLength(1);
     expect(first.state.deliveries).toEqual([{ url: pullsFrom(BRANCH)[0]?.url, branch: BRANCH, base: 'main', step: 'edit', pass: 1 }]);
+  }, 120_000);
+
+  it('runs no hook the step planted in the clone while it commits, checks and pushes the step\'s work', async () => {
+    const hooks = path.join(fixture.root, 'planted-hooks');
+    const mark = path.join(fixture.root, 'hook-ran');
+    fs.mkdirSync(hooks, { recursive: true });
+    for (const hook of ['pre-commit', 'commit-msg', 'post-commit', 'post-checkout', 'reference-transaction', 'pre-push']) {
+      fs.writeFileSync(path.join(hooks, hook), `#!/bin/sh\necho ${hook} >> ${JSON.stringify(mark)}\n`, { mode: 0o755 });
+    }
+
+    const planted = await run(`const { execFileSync } = require('child_process'); const fs = require('fs'); execFileSync('git', ['config', 'core.hooksPath', ${JSON.stringify(hooks)}]); fs.appendFileSync('rules/notes.md', 'hooked\\n');`, { inputs: { topic: 'hooked' } });
+
+    expect(planted.outcome, planted.said).toBe('succeeded');
+    expect(onBranch('teamai/notes/hooked', 'rules/notes.md')).toBe('# Notes\nhooked');
+    expect(fs.existsSync(mark) ? fs.readFileSync(mark, 'utf8') : '').toBe('');
+  }, 120_000);
+
+  it('keeps from git in the clone each variable the step is kept from, so a filter of the member\'s own reads none of them', async () => {
+    const mark = path.join(fixture.root, 'filter-saw');
+    const gitconfig = z.string().parse(fixture.env.GIT_CONFIG_GLOBAL);
+    execFileSync('git', ['config', '--file', gitconfig, 'filter.probe.clean', `sh -c 'echo "\${TEAM_DEPLOY_TOKEN:-unset}" >> ${mark}; cat'`]);
+    fixture.env.TEAM_DEPLOY_TOKEN = 'deploy-secret';
+
+    try {
+      const ran = await run("const fs = require('fs'); fs.writeFileSync('.git/info/attributes', '* filter=probe\\n'); fs.appendFileSync('rules/notes.md', 'guarded\\n');", { name: 'edit-guarded', inputs: { topic: 'guarded' } });
+
+      expect(ran.outcome, ran.said).toBe('succeeded');
+      expect(onBranch('teamai/notes/guarded', 'rules/notes.md')).toBe('# Notes\nguarded');
+      const saw = fs.readFileSync(mark, 'utf8').split('\n').filter(Boolean);
+      expect(saw.length).toBeGreaterThan(0);
+      expect(saw.every((line) => line === 'unset'), saw.join(', ')).toBe(true);
+    } finally {
+      delete fixture.env.TEAM_DEPLOY_TOKEN;
+      execFileSync('git', ['config', '--file', gitconfig, '--unset', 'filter.probe.clean']);
+    }
+  }, 120_000);
+
+  it('pushes the step\'s work with the credential helper the member\'s team checkout names, to an origin that asks for one', async () => {
+    const origin = await gitOverHttp(fixture.root, 'member:secret');
+    const checkout = (args: string[]): string => execFileSync('git', ['-C', fixture.teamClone, ...args], { encoding: 'utf8' }).trim();
+    const before = checkout(['remote', 'get-url', 'origin']);
+    checkout(['remote', 'set-url', 'origin', `${origin.url}/team.git`]);
+    checkout(['config', '--local', 'credential.helper', '!f() { echo username=member; echo password=secret; }; f']);
+
+    try {
+      const pushed = await run("require('fs').appendFileSync('rules/notes.md', 'signed in\\n');", { inputs: { topic: 'signed' } });
+
+      expect(onBranch('teamai/notes/signed', 'rules/notes.md')).toBe('# Notes\nsigned in');
+      // The push signed in; only the pull request cannot open, since an origin on this machine is no GitHub repository.
+      expect(pushed.state.steps.map((step) => step.failure?.code), pushed.said).toEqual(['delivery_failed']);
+    } finally {
+      checkout(['config', '--local', '--unset', 'credential.helper']);
+      checkout(['remote', 'set-url', 'origin', before]);
+      await origin.close();
+    }
   }, 120_000);
 
   it('goes on from the branch as origin has it, with main merged in, deletes what the step deletes, and keeps the one pull request', async () => {

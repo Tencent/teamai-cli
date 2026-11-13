@@ -10,15 +10,18 @@ import { AgentSession } from '../session-flow/agent-session.js';
 import type { Session } from '@teamai/tool-core/sessions/ir';
 import { SyncManager, defaultSyncMeta, getRepoIdentity } from '../session-flow/sync.js';
 import { getDataHome, getReportsDir, type LocalConfig, type TeamaiConfig } from '../types.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
+import * as workflowEngine from '../workflow/engine.js';
 import { leaseNext, reportAttempt } from '../workflow/engine.js';
 import { cancelRun, respondProvenance, respondToHitl, retryStep } from '../workflow/run-controls.js';
-import { createLocalToolAdapter, type LocalToolAdapter, type LocalToolResult, type LocalToolRun } from '../workflow/drivers/local/local-tool-adapter.js';
+import { type StepLauncher, type StepRunResult, type StepRun } from '@teamai/runtime-tools';
+import { hostLauncher } from './helpers/host-launcher.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
+import { hostStepRuntime } from '../workflow/runtimes/host.js';
+import type { ExecEnd, StepRuntime } from '@teamai/runtime-protocol/step-runtime';
+import type { DriverCan } from '../workflow/requirements.js';
 import { driverIdentity } from '../driver-identity.js';
-import { driverLockPath, readRun } from '../workflow/store.js';
-// oxlint-disable-next-line teamai/workflow-boundaries -- fails the snapshot taken by a reader in the checkout
-import * as worktreeSnapshot from '../workflow/place/worktree-snapshot.js';
+import { AttemptIdSchema, attemptStdoutPath, driverLockPath, readRun, RunIdSchema } from '../workflow/store.js';
 import type { DriverIdentity } from '../workflow/types.js';
 import { git } from './helpers/delivered-checkout.js';
 import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
@@ -101,7 +104,7 @@ fs.writeFileSync(process.env.TEAMAI_WORKFLOW_RESULT, '{"output":{"ok":true}}');
 process.stdout.write(${JSON.stringify(STDOUT[tool])} + '\\n');
 `, { mode: 0o755 });
     const done = await runLocalDriver(config, runId, workspace, {
-      adapter: createLocalToolAdapter(undefined, () => executable),
+      adapter: hostLauncher(undefined, () => executable),
       toolPaths: Object.fromEntries(Object.entries(AGENT_FILES).map(([name, { dir }]) => [name, { agents: dir }])) as TeamaiConfig['toolPaths'],
     });
     const argv = fs.existsSync(argvFile)
@@ -125,11 +128,15 @@ ${fields}`;
 
   /** The prompt every tool receives for `text`, with the result instruction the adapter adds. */
   const prompt = (text: string) => expect.stringMatching(new RegExp(`^${text.replaceAll('.', '\\.')}\\n\\nWrite the workflow result as JSON to .+result\\.json\\. Use this shape`, 's'));
+  /** The attempt's out/ directory, which Codex's `--add-dir` lets its sandbox write the result file in. */
+  const resultDir = expect.stringMatching(/[\\/]attempts[\\/]a[0-9a-f]+[\\/]out$/);
+  /** Claude's allow rule for the attempt's out/ directory, which holds the result file, and only it. */
+  const resultGrant = expect.stringMatching(/^--allowedTools=Edit\(\/.+\/attempts\/[^/]+\/out\/\*\*\)$/);
 
   it('launches claude with --model and --effort of the alias for claude', async () => {
     const { argv, run } = await runOn('claude', oneStep('    model: strong\n'));
 
-    expect(argv).toEqual([['-p', prompt('Review this project.'), '--output-format', 'stream-json', '--verbose', '--model', 'opus', '--effort', 'high']]);
+    expect(argv).toEqual([['-p', prompt('Review this project.'), '--output-format', 'stream-json', '--verbose', resultGrant, '--model', 'opus', '--effort', 'high']]);
     expect(run.steps[0]).toMatchObject({
       status: 'succeeded',
       model: 'claude-opus-4-1-20250805',
@@ -141,8 +148,8 @@ ${fields}`;
     const strong = await runOn('codex', oneStep('    model: strong\n'));
     const fast = await runOn('codex', oneStep('    model: fast\n'));
 
-    expect(strong.argv).toEqual([['exec', '--json', '--model', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', prompt('Review this project.')]]);
-    expect(fast.argv).toEqual([['exec', '--json', '--model', 'gpt-6-mini', prompt('Review this project.')]]);
+    expect(strong.argv).toEqual([['exec', '--add-dir', resultDir, '--json', '--model', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', prompt('Review this project.')]]);
+    expect(fast.argv).toEqual([['exec', '--add-dir', resultDir, '--json', '--model', 'gpt-6-mini', prompt('Review this project.')]]);
   });
 
   it('runs an agent with a model, an effort and allowed tools on the step model and effort, and keeps its other settings', async () => {
@@ -157,7 +164,7 @@ Follow the review checklist.
 `;
     const claude = await runOn('claude', oneStep('    agent: reviewer\n    model: strong\n'), { agents: { reviewer } });
 
-    expect(claude.argv).toEqual([['-p', prompt('Review this project.'), '--output-format', 'stream-json', '--verbose', '--agent', 'reviewer', '--model', 'opus', '--effort', 'high']]);
+    expect(claude.argv).toEqual([['-p', prompt('Review this project.'), '--output-format', 'stream-json', '--verbose', resultGrant, '--agent', 'reviewer', '--model', 'opus', '--effort', 'high']]);
     expect(fs.readFileSync(path.join(claude.workspace, '.claude', 'agents', 'reviewer.md'), 'utf8')).toBe(reviewer);
     expect(claude.run.steps[0]).toMatchObject({
       status: 'succeeded',
@@ -172,7 +179,7 @@ model = "gpt-5.4"
 model_reasoning_effort = "low"
 ` } });
 
-    expect(codex.argv).toEqual([['exec', '--json', '--model', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', prompt('Follow the review checklist.\n\nReview this project.')]]);
+    expect(codex.argv).toEqual([['exec', '--add-dir', resultDir, '--json', '--model', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', prompt('Follow the review checklist.\n\nReview this project.')]]);
     expect(codex.argv?.flat()).not.toContain('gpt-5.4');
   });
 
@@ -180,14 +187,14 @@ model_reasoning_effort = "low"
     const claude = await runOn('claude', oneStep('    model: claude-opus-4.1\n'));
     const opencode = await runOn('opencode', oneStep('    model: anthropic/claude-sonnet\n'));
 
-    expect(claude.argv).toEqual([['-p', prompt('Review this project.'), '--output-format', 'stream-json', '--verbose', '--model', 'claude-opus-4.1']]);
+    expect(claude.argv).toEqual([['-p', prompt('Review this project.'), '--output-format', 'stream-json', '--verbose', resultGrant, '--model', 'claude-opus-4.1']]);
     expect(opencode.argv).toEqual([['run', '--format', 'json', prompt('Review this project.'), '--model', 'anthropic/claude-sonnet']]);
   });
 
   it('passes an exact model and effort as written, never through an alias of the same name', async () => {
     const { argv, run } = await runOn('claude', oneStep('    model: { name: strong, effort: max }\n'));
 
-    expect(argv).toEqual([['-p', prompt('Review this project.'), '--output-format', 'stream-json', '--verbose', '--model', 'strong', '--effort', 'max']]);
+    expect(argv).toEqual([['-p', prompt('Review this project.'), '--output-format', 'stream-json', '--verbose', resultGrant, '--model', 'strong', '--effort', 'max']]);
     expect(run.steps[0]).toMatchObject({ status: 'succeeded', agent: { model: { requested: 'strong' }, effort: { requested: 'max' } } });
     expect(run.steps[0]).not.toMatchObject({ agent: { model: { alias: expect.anything() } } });
   });
@@ -266,8 +273,8 @@ model = "gpt-5.4"
 ` } });
     const opencode = await runOn('opencode', oneStep(''));
 
-    expect(claude.argv).toEqual([['-p', prompt('Review this project.'), '--output-format', 'stream-json', '--verbose', '--agent', 'reviewer']]);
-    expect(codex.argv).toEqual([['exec', '--json', '--model', 'gpt-5.4', prompt('Follow the review checklist.\n\nReview this project.')]]);
+    expect(claude.argv).toEqual([['-p', prompt('Review this project.'), '--output-format', 'stream-json', '--verbose', resultGrant, '--agent', 'reviewer']]);
+    expect(codex.argv).toEqual([['exec', '--add-dir', resultDir, '--json', '--model', 'gpt-5.4', prompt('Follow the review checklist.\n\nReview this project.')]]);
     expect(opencode.argv).toEqual([['run', '--format', 'json', prompt('Review this project.')]]);
   });
 
@@ -298,10 +305,10 @@ steps:
     } });
 
     expect(argv).toEqual([
-      ['-p', prompt('Plan it.'), '--output-format', 'stream-json', '--verbose', '--model', 'haiku'],
-      ['-p', prompt('Help with it.'), '--output-format', 'stream-json', '--verbose', '--agent', 'helper', '--model', 'haiku'],
-      ['-p', prompt('Review it.'), '--output-format', 'stream-json', '--verbose', '--agent', 'reviewer'],
-      ['-p', prompt('Summarize it.'), '--output-format', 'stream-json', '--verbose', '--model', 'opus', '--effort', 'high'],
+      ['-p', prompt('Plan it.'), '--output-format', 'stream-json', '--verbose', resultGrant, '--model', 'haiku'],
+      ['-p', prompt('Help with it.'), '--output-format', 'stream-json', '--verbose', resultGrant, '--agent', 'helper', '--model', 'haiku'],
+      ['-p', prompt('Review it.'), '--output-format', 'stream-json', '--verbose', resultGrant, '--agent', 'reviewer'],
+      ['-p', prompt('Summarize it.'), '--output-format', 'stream-json', '--verbose', resultGrant, '--model', 'opus', '--effort', 'high'],
     ]);
   });
 
@@ -348,7 +355,7 @@ steps:
       'run', '--format', 'json', prompt('Review this project.'), '--agent', 'reviewer', '--model', 'anthropic/claude-sonnet', '--variant', 'low',
     ]]);
     expect(defaults.argv).toEqual([['run', '--format', 'json', prompt('Review this project.'), '--agent', 'helper', '--model', 'anthropic/claude-haiku']]);
-    expect(ownOn2.argv).toEqual([['run', '--format', 'json', prompt('Review this project.'), '--agent', 'reviewer', '--model', 'anthropic/claude-sonnet']]);
+    expect(ownOn2.argv).toEqual([['run', '--standalone', '--format', 'json', prompt('Review this project.'), '--agent', 'reviewer', '--model', 'anthropic/claude-sonnet']]);
     expect(subagent.argv).toEqual([['run', '--format', 'json', prompt('Follow the review checklist.\n\nReview this project.'), '--model', 'anthropic/claude-sonnet']]);
     expect(own.argv).toBeUndefined();
     expect(own.run.steps[0]).toMatchObject({
@@ -369,7 +376,7 @@ steps:
     expect(warn).not.toHaveBeenCalled();
     const on1 = await runOn('opencode', oneStep('    agent: reviewer\n'), { agents: { reviewer } });
 
-    expect(on2.argv).toEqual([['run', '--format', 'json', prompt('Review this project.'), '--agent', 'reviewer', '--model', 'anthropic/claude-sonnet#low']]);
+    expect(on2.argv).toEqual([['run', '--standalone', '--format', 'json', prompt('Review this project.'), '--agent', 'reviewer', '--model', 'anthropic/claude-sonnet#low']]);
     expect(on1.argv).toEqual([[
       'run', '--format', 'json', prompt('Follow the review checklist.\n\nReview this project.'), '--model', 'anthropic/claude-sonnet', '--variant', 'low',
     ]]);
@@ -389,7 +396,7 @@ steps:
         + 'from the deployed agent file. The step is not blocked.',
     );
     const helperOn2 = await runOn('opencode', oneStep('    agent: helper\n'), { agents: { helper }, version: 'opencode v2.0.30' });
-    expect(helperOn2.argv).toEqual([['run', '--format', 'json', prompt('Review this project.'), '--agent', 'helper']]);
+    expect(helperOn2.argv).toEqual([['run', '--standalone', '--format', 'json', prompt('Review this project.'), '--agent', 'helper']]);
     expect(warn).toHaveBeenLastCalledWith(
       'Agent "helper" sets a variant with no model, and opencode 2 takes a variant only with a model, so it does not apply variant '
         + 'from the deployed agent file. The step is not blocked.',
@@ -400,8 +407,8 @@ steps:
     const strong = await runOn('opencode', oneStep('    model: strong\n'), { version: 'opencode v2.0.30' });
     const literal = await runOn('opencode', oneStep('    model: anthropic/claude-sonnet\n'), { version: 'opencode v2.0.30' });
 
-    expect(strong.argv).toEqual([['run', '--format', 'json', prompt('Review this project.'), '--model', 'anthropic/claude-opus#high']]);
-    expect(literal.argv).toEqual([['run', '--format', 'json', prompt('Review this project.'), '--model', 'anthropic/claude-sonnet']]);
+    expect(strong.argv).toEqual([['run', '--standalone', '--format', 'json', prompt('Review this project.'), '--model', 'anthropic/claude-opus#high']]);
+    expect(literal.argv).toEqual([['run', '--standalone', '--format', 'json', prompt('Review this project.'), '--model', 'anthropic/claude-sonnet']]);
   });
 });
 
@@ -423,7 +430,7 @@ steps:
 `);
     config.workflows!.max_parallel = 2;
     const question = vi.fn(async () => 'yes');
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       runInteractive: vi.fn(),
       run: vi.fn(async () => {
         await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -512,9 +519,9 @@ steps:
   it('polls and aborts a cancelled prompt while the adapter is running', async () => {
     const { config, workspace, runId } = await fixture();
     let aborted = false;
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       runInteractive: vi.fn(),
-      run: vi.fn<LocalToolAdapter['run']>((_tool, _input, signal) => new Promise<LocalToolResult>((resolve) => {
+      run: vi.fn<StepLauncher['run']>((_tool, _input, signal) => new Promise<StepRunResult>((resolve) => {
         signal!.addEventListener('abort', () => {
           aborted = true;
           resolve({ started: true, exitCode: 1 });
@@ -535,7 +542,7 @@ steps:
     prompt: Work together.
     interactive: true
 `);
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       run: vi.fn(),
       runInteractive: vi.fn(async () => ({ started: true as const, exitCode: 0 })),
     };
@@ -553,12 +560,12 @@ steps:
     prompt: Plan it.
     max_turns: 3
 ${interactive ? '    interactive: true\n' : ''}`;
-    const inputs: LocalToolRun[] = [];
-    const ran = vi.fn(async (_tool: string, input: LocalToolRun) => {
+    const inputs: StepRun[] = [];
+    const ran = vi.fn(async (_tool: string, input: StepRun) => {
       inputs.push(input);
       return { started: true as const, exitCode: 0, tokens: { input: 1, output: 1 } };
     });
-    const adapter: LocalToolAdapter = { run: ran, runInteractive: ran };
+    const adapter: StepLauncher = { run: ran, runInteractive: ran };
     const headless = await workflowFixture(yaml(false));
     const codex = await workflowFixture(yaml(false));
     codex.config.workflows = { tools: { default: 'codex' } };
@@ -673,8 +680,8 @@ steps:
     prompt: Explain it.
 `);
     config.workflows = { tools: { default: 'claude' }, sandbox: true };
-    const inputs: LocalToolRun[] = [];
-    const ran = vi.fn(async (_tool: string, input: LocalToolRun) => {
+    const inputs: StepRun[] = [];
+    const ran = vi.fn(async (_tool: string, input: StepRun) => {
       inputs.push(input);
       return { started: true as const, exitCode: 0 };
     });
@@ -734,7 +741,7 @@ steps:
     vi.unstubAllEnvs();
     const attempts = path.join(getDataHome(config), 'workflows', 'runs', runId, 'attempts');
     const [attempt] = fs.readdirSync(attempts);
-    const kept = fs.readFileSync(path.join(attempts, attempt ?? '', 'result.json'), 'utf8');
+    const kept = fs.readFileSync(path.join(attempts, attempt ?? '', 'out', 'result.json'), 'utf8');
     expect(kept).toContain('<REDACTED:DEPLOY_TOKEN>');
     expect(kept).not.toContain('deploy-secret-value-1082');
   });
@@ -824,13 +831,13 @@ steps:
 
   function keptResult(config: LocalConfig, runId: string): string {
     const attempts = path.join(getDataHome(config), 'workflows', 'runs', runId, 'attempts');
-    return fs.readdirSync(attempts).map((attempt) => fs.readFileSync(path.join(attempts, attempt, 'result.json'), 'utf8')).join('\n');
+    return fs.readdirSync(attempts).map((attempt) => fs.readFileSync(path.join(attempts, attempt, 'out', 'result.json'), 'utf8')).join('\n');
   }
 
   it('masks a result file that is not valid JSON', async () => {
     const { config, workspace, runId } = await fixture();
     vi.stubEnv('DEPLOY_TOKEN', 'deploy-secret-value-1082');
-    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn<LocalToolAdapter['run']>(async (_tool, input) => {
+    const adapter: StepLauncher = { runInteractive: vi.fn(), run: vi.fn<StepLauncher['run']>(async (_tool, input) => {
       fs.mkdirSync(path.dirname(input.resultPath), { recursive: true });
       fs.writeFileSync(input.resultPath, '{"output":{"token":"deploy-secret-value-1082');
       return { started: true, exitCode: 1, failure: { code: 'tool_failed', message: 'claude wrote no result' } };
@@ -844,7 +851,7 @@ steps:
     const { config, workspace, runId } = await fixture();
     const secret = 'deploy"secret\\value-1082';
     vi.stubEnv('DEPLOY_TOKEN', secret);
-    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn<LocalToolAdapter['run']>(async (_tool, input) => {
+    const adapter: StepLauncher = { runInteractive: vi.fn(), run: vi.fn<StepLauncher['run']>(async (_tool, input) => {
       fs.mkdirSync(path.dirname(input.resultPath), { recursive: true });
       fs.writeFileSync(input.resultPath, `{"output":{"token":${JSON.stringify(secret)}`);
       return { started: true, exitCode: 1, failure: { code: 'tool_failed', message: 'claude wrote no result' } };
@@ -857,19 +864,14 @@ steps:
   it('masks every result file when the driver stops on an error before it reports', async () => {
     const { config, workspace, runId } = await fixture();
     vi.stubEnv('DEPLOY_TOKEN', 'deploy-secret-value-1082');
-    let ran = false;
-    const snapshot = worktreeSnapshot.snapshotWorktree;
-    vi.spyOn(worktreeSnapshot, 'snapshotWorktree').mockImplementation(async (dir) => {
-      if (ran) throw new Error('snapshot failed');
-      return snapshot(dir);
-    });
-    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn<LocalToolAdapter['run']>(async (_tool, input) => {
+    // The report of the step fails once its tool ran: the driver stops on that error before the engine took the report.
+    vi.spyOn(workflowEngine, 'reportAttempt').mockRejectedValue(new Error('report failed'));
+    const adapter: StepLauncher = { runInteractive: vi.fn(), run: vi.fn<StepLauncher['run']>(async (_tool, input) => {
       fs.mkdirSync(path.dirname(input.resultPath), { recursive: true });
       fs.writeFileSync(input.resultPath, JSON.stringify({ output: { token: 'deploy-secret-value-1082' } }));
-      ran = true;
       return { started: true, exitCode: 0 };
     }) };
-    await expect(runLocalDriver(config, runId, workspace, { hitl: false, adapter })).rejects.toThrow('snapshot failed');
+    await expect(runLocalDriver(config, runId, workspace, { hitl: false, adapter })).rejects.toThrow('report failed');
     vi.unstubAllEnvs();
     expect(keptResult(config, runId)).toContain('<REDACTED:DEPLOY_TOKEN>');
     expect(keptResult(config, runId)).not.toContain('deploy-secret-value-1082');
@@ -880,7 +882,7 @@ steps:
     vi.stubEnv('DEPLOY_TOKEN', 'deploy-secret-value-1082');
     vi.spyOn(envExec, 'exitLike').mockImplementation(() => {});
     const before = new Set(process.listeners('SIGTERM'));
-    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn<LocalToolAdapter['run']>((_tool, input, signal) => new Promise((resolve) => {
+    const adapter: StepLauncher = { runInteractive: vi.fn(), run: vi.fn<StepLauncher['run']>((_tool, input, signal) => new Promise((resolve) => {
       fs.mkdirSync(path.dirname(input.resultPath), { recursive: true });
       fs.writeFileSync(input.resultPath, JSON.stringify({ output: { token: 'deploy-secret-value-1082' } }));
       signal?.addEventListener('abort', () => resolve({ started: true, exitCode: 1 }));
@@ -913,9 +915,9 @@ steps:
 `);
     let interactive = false;
     const overlaps: boolean[] = [];
-    const adapter: LocalToolAdapter = {
+    const adapter: StepLauncher = {
       run: vi.fn(),
-      runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => {
+      runInteractive: vi.fn<StepLauncher['runInteractive']>(async () => {
         interactive = true;
         await new Promise((resolve) => setTimeout(resolve, 2300));
         interactive = false;
@@ -943,7 +945,7 @@ steps:
       signal.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); });
       void knownSecrets(config).then((secrets) => respondToHitl(config, runId, secrets, { step: 'pair', choice: 'yes', provenance: respondProvenance({ kind: 'terminal', caller: { tty: false, evidence: { kind: 'none' } } }) }));
     }));
-    const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => {
+    const adapter: StepLauncher = { run: vi.fn(), runInteractive: vi.fn<StepLauncher['runInteractive']>(async () => {
       abortedBeforeLaunch = aborted;
       return { started: true, exitCode: 0 };
     }) };
@@ -961,7 +963,7 @@ steps:
     prompt: Fix the build with me.
     interactive: true
 `);
-    const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => {
+    const adapter: StepLauncher = { run: vi.fn(), runInteractive: vi.fn<StepLauncher['runInteractive']>(async () => {
       fs.writeFileSync(path.join(workspace, 'tracked.txt'), 'fixed\n');
       return { started: true, exitCode: 0 };
     }) };
@@ -979,7 +981,7 @@ steps:
     interactive: true
 `);
     await leaseNext(config, runId, driverIdentity('local', workspace), { can: { hitl: true } });
-    const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => ({ started: true, exitCode: 0 })) };
+    const adapter: StepLauncher = { run: vi.fn(), runInteractive: vi.fn<StepLauncher['runInteractive']>(async () => ({ started: true, exitCode: 0 })) };
     expect(await runLocalDriver(config, runId, workspace, { hitl: false, adapter })).toMatchObject({ data: { done: { outcome: 'failed' } } });
     expect(adapter.runInteractive).not.toHaveBeenCalled();
     expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'pair', status: 'failed', failure: {
@@ -1002,7 +1004,7 @@ steps:
     const exit = vi.spyOn(envExec, 'exitLike').mockImplementation(() => {});
     const before = new Set(process.listeners('SIGINT'));
     let aborted = false;
-    const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async (_tool, _input, signal) => {
+    const adapter: StepLauncher = { run: vi.fn(), runInteractive: vi.fn<StepLauncher['runInteractive']>(async (_tool, _input, signal) => {
       signal!.addEventListener('abort', () => { aborted = true; });
       for (const handler of process.listeners('SIGINT')) if (!before.has(handler)) handler('SIGINT');
       for (const handler of process.listeners('SIGQUIT')) handler('SIGQUIT');
@@ -1029,7 +1031,7 @@ steps:
   const exit = vi.spyOn(envExec, 'exitLike').mockImplementation(() => {});
   const before = new Set(process.listeners(signalName));
   let reason: unknown;
-  const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>((_tool, _input, signal) => new Promise((resolve) => {
+  const adapter: StepLauncher = { run: vi.fn(), runInteractive: vi.fn<StepLauncher['runInteractive']>((_tool, _input, signal) => new Promise((resolve) => {
     signal!.addEventListener('abort', () => { reason = signal!.reason; resolve({ started: true, exitCode: 1 }); });
     for (const handler of process.listeners(signalName)) if (!before.has(handler)) handler(signalName);
   })) };
@@ -1061,7 +1063,7 @@ steps:
     if (ran) return Promise.resolve('yes');
     return new Promise<string>((_resolve, reject) => signal.addEventListener('abort', () => { closed = true; reject(new Error('closed')); }));
   });
-  const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => {
+  const adapter: StepLauncher = { run: vi.fn(), runInteractive: vi.fn<StepLauncher['runInteractive']>(async () => {
     closedBeforeLaunch = closed;
     ran = true;
     return { started: true, exitCode: 0 };
@@ -1071,6 +1073,30 @@ steps:
   expect(question).toHaveBeenCalledTimes(2);
 });
 
+
+it('asks a waiting approval while every other ready step is held back, then stops busy on the held step', async () => {
+  const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Ship while the fetch is held back.
+steps:
+  - id: fetch
+    command: echo fetched
+    requires: { network: true }
+  - id: ship
+    needs: []
+    approve: { message: Ship it?, required: true }
+    command: echo shipped
+`);
+  config.workflows = { ...config.workflows, tools: {}, allow: { network: false } };
+  const asked: string[] = [];
+  const question = async (hitl: { step: string }): Promise<string> => { asked.push(hitl.step); return 'yes'; };
+
+  const ended = await runLocalDriver(config, runId, workspace, { hitl: true, question });
+
+  expect(asked).toEqual(['ship']);
+  expect(ended).toMatchObject({ error: { code: 'busy' } });
+  expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'fetch', status: 'pending' }, { id: 'ship', status: 'succeeded' }] });
+});
 
 it('asks HITL only after a held interactive tool has run', async () => {
   const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
@@ -1090,7 +1116,7 @@ steps:
   config.workflows!.max_parallel = 2;
   let ran = false;
   const askedAfterTool: boolean[] = [];
-  const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => {
+  const adapter: StepLauncher = { run: vi.fn(), runInteractive: vi.fn<StepLauncher['runInteractive']>(async () => {
     ran = true;
     return { started: true, exitCode: 0 };
   }) };
@@ -1152,7 +1178,7 @@ steps:
   }
 
   /** A tool that records the session each run resumes, and reports none of its own. */
-  function recordingTool(resumed: Array<string | undefined>): LocalToolAdapter {
+  function recordingTool(resumed: Array<string | undefined>): StepLauncher {
     return {
       runInteractive: vi.fn(),
       run: vi.fn(async (_tool, input) => {
@@ -1237,6 +1263,36 @@ steps:
 
     expect(resumed).toEqual([undefined]);
     expect(seen).toBe('{"sessions": [');
+  });
+});
+
+describe('a step that requires labels', () => {
+  const LABELLED = `schemaVersion: v1alpha1
+name: build
+description: Runs the browser tests.
+steps:
+  - id: e2e
+    requires: { labels: [computer-use] }
+    command: echo '{"ran":true}'
+`;
+
+  it('runs here when workflows.labels on this machine declares each label', async () => {
+    const { config, workspace, runId } = await workflowFixture(LABELLED);
+    config.workflows = { tools: {}, labels: ['computer-use'] };
+
+    await runLocalDriver(config, runId, workspace, { toolPaths });
+
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'e2e', status: 'succeeded', outputs: { ran: true } }] });
+  });
+
+  it('fails a step whose label this machine does not declare, naming the label and where to declare it', async () => {
+    const { config, workspace, runId } = await workflowFixture(LABELLED);
+
+    await runLocalDriver(config, runId, workspace, { toolPaths });
+
+    expect(await readRun(config, runId)).toMatchObject({
+      steps: [{ id: 'e2e', status: 'failed', failure: { code: 'requirement_unmet', message: expect.stringMatching(/computer-use.*workflows\.labels/) } }],
+    });
   });
 });
 
@@ -1404,7 +1460,7 @@ ${timeout}`);
     vi.spyOn(envExec, 'terminalReachesCommand').mockResolvedValue(true);
     const exit = vi.spyOn(envExec, 'exitLike').mockImplementation(() => {});
     const before = new Set(process.listeners('SIGINT'));
-    const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => ({ started: true, exitCode: 0 })) };
+    const adapter: StepLauncher = { run: vi.fn(), runInteractive: vi.fn<StepLauncher['runInteractive']>(async () => ({ started: true, exitCode: 0 })) };
     const driving = runLocalDriver(config, runId, workspace, { hitl: true, adapter });
     const pid = await setupPid(pidFile);
     for (const handler of process.listeners('SIGINT')) if (!before.has(handler)) handler('SIGINT');
@@ -1494,5 +1550,102 @@ steps:
 
     expect(await runLocalDriver(config, runId, workspace, { toolPaths })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'close', outcomes: [{ kind: 'learning', id: 'retry-backoff' }] }] });
+  });
+});
+
+describe('a workflow step a runtime runs whole', () => {
+  it('counts what its steps spent before the run stopped it, though the run records nothing else of it', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Reviews the project whole.
+steps:
+  - id: work
+    workspace: new
+    timeout: 1s
+    workflow:
+      steps:
+        - id: review
+          workspace: continue
+          command: echo reviewed
+`);
+    const local = hostStepRuntime({ config });
+    let stopWhole: (() => void) | undefined;
+    // The whole workflow runs until the run stops it, then answers what its steps spent, as a fleet member's does.
+    const runtime: StepRuntime<DriverCan> = {
+      ...local,
+      exec: async (request, events, kind) => (kind !== 'workflow' ? local.exec(request, events, kind) : new Promise<ExecEnd>((resolve) => {
+        events.onAccepted?.({});
+        stopWhole = () => resolve({ kind: 'cancelled', stdout: JSON.stringify({ outcome: 'failed', tokens: { input: 4, output: 2 } }) });
+      })),
+      cancel: async (op) => {
+        stopWhole?.();
+        await local.cancel(op);
+      },
+    };
+    const engine = { logins: [] };
+
+    const done = await runLocalDriver(config, runId, workspace, {
+      runtimes: { driver: 'whole', asked: 'whole', runtimes: [{ kind: 'external', use: 'whole', runtime, can: { workflow: true, tokens: true, workspace: ['new', 'continue'] }, launchesAgents: false, engine, credentials: {}, found: [], masks: {}, optionsFrom: 'test' }] },
+    });
+
+    expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'work', failure: { code: 'timeout' } }], releasedTokens: [{ step: 'work', tokens: { input: 4, output: 2 } }] });
+  }, 30_000);
+
+  it('keeps no stdout of a workflow with no outputs as text it printed, since that stdout is how it answers', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Reviews the project whole.
+steps:
+  - id: work
+    workspace: new
+    workflow:
+      steps:
+        - id: review
+          workspace: continue
+          command: echo reviewed
+`);
+    const local = hostStepRuntime({ config });
+    const runtime: StepRuntime<DriverCan> = {
+      ...local,
+      exec: async (request, events, kind) => (kind !== 'workflow' ? local.exec(request, events, kind) : { kind: 'exited', code: 0, stdout: JSON.stringify({ outcome: 'succeeded', tokens: { input: 4, output: 2 } }) }),
+    };
+
+    const done = await runLocalDriver(config, runId, workspace, {
+      runtimes: { driver: 'whole', asked: 'whole', runtimes: [{ kind: 'external', use: 'whole', runtime, can: { workflow: true, tokens: true, workspace: ['new', 'continue'] }, launchesAgents: false, engine: { logins: [] }, credentials: {}, found: [], masks: {}, optionsFrom: 'test' }] },
+    });
+
+    expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const state = await readRun(config, runId);
+    if (state === 'missing' || state === 'corrupt') throw new Error(`run ${runId} is ${state}`);
+    const [step] = state.steps;
+    if (step === undefined || !('attempt' in step)) throw new Error('the step ran no attempt');
+    expect(fs.existsSync(attemptStdoutPath(config, RunIdSchema.parse(runId), AttemptIdSchema.parse(step.attempt)))).toBe(false);
+  });
+  it('fails the step when its exec exits 0 without saying how the workflow ended, rather than counting it succeeded', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Reviews the project whole.
+steps:
+  - id: work
+    workspace: new
+    workflow:
+      steps:
+        - id: review
+          workspace: continue
+          command: echo reviewed
+`);
+    const local = hostStepRuntime({ config });
+    const runtime: StepRuntime<DriverCan> = {
+      ...local,
+      exec: async (request, events, kind) => (kind !== 'workflow' ? local.exec(request, events, kind) : { kind: 'exited', code: 0, stdout: JSON.stringify({ reviewed: true }) }),
+    };
+
+    const done = await runLocalDriver(config, runId, workspace, {
+      runtimes: { driver: 'whole', asked: 'whole', runtimes: [{ kind: 'external', use: 'whole', runtime, can: { workflow: true, tokens: true, workspace: ['new', 'continue'] }, launchesAgents: false, engine: { logins: [] }, credentials: {}, found: [], masks: {}, optionsFrom: 'test' }] },
+    });
+
+    expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'work', status: 'failed', failure: { code: 'runtime_protocol' } }] });
   });
 });

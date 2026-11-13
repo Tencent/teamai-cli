@@ -7,6 +7,7 @@ import type { LocalConfig } from '../types.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
 import { agentSessionFromEnv } from '../utils/session-id.js';
+import { reportsRefusedMessage } from '../utils/reports-branch.js';
 import { AgentSession } from './agent-session.js';
 import { listAvailablePlatforms, listInstalledPlatforms } from './adapters/index.js';
 import type { SubagentsRead } from '@teamai/tool-core/sessions/base';
@@ -14,6 +15,7 @@ import { SessionCaptures } from './captures.js';
 import { safeText, sessionArchives } from './session-cmd-shared.js';
 import { scrubSession } from './scrub.js';
 import { getRepoIdentity, SyncManager, type SessionSyncMeta } from './sync.js';
+import type { ArchivedEvidence } from './session-evidence.js';
 import type { Session } from '@teamai/tool-core/sessions/ir';
 
 type Failure = Extract<WorkflowEnvelope, { error: unknown }>;
@@ -63,7 +65,7 @@ async function sessionOf(config: LocalConfig, demand: SessionDemand): Promise<{ 
 
   return { error: { code: 'source_required', message: holding.length > 0
     ? `Pass --source with --session ${sessionId}: the platform that holds it. Found in: ${holding.join(', ')}.`
-    : `No installed tool holds session ${sessionId}. Pass --source <platform> to read it from one of: ${listAvailablePlatforms().join(', ')}.` } };
+    : `No installed tool holds session ${sessionId}. Pass --source <platform> to read it from one of: ${listAvailablePlatforms().join(', ')}. A workflow step's session on a step runtime is kept with its run: score it with teamai score --run <run>.` } };
 }
 
 /**
@@ -89,6 +91,8 @@ export interface NamedSession {
   pushedBy?: string;
   /** What a pushed session ran as, as its archive records it. */
   agent?: AgentObservation;
+  /** The evidence a pushed session's step left, as the archive keeps it beside the session. */
+  evidence?: ArchivedEvidence;
 }
 
 /** The session of a tool on this machine that `--session`, or the agent session variable, names. */
@@ -125,7 +129,8 @@ export async function pushedSession(config: LocalConfig, { name, author }: TeamS
   try {
     archives = await sessionArchives(config, { dryRun: false, read: true });
   } catch (e) {
-    return failure('reports_unreachable', `teamai-reports, where pushed sessions are kept, could not be read (${e instanceof Error ? e.message : String(e)}). Check the connection and run the command again.`);
+    return failure('reports_unreachable', reportsRefusedMessage(e)
+      ?? `teamai-reports, where pushed sessions are kept, could not be read (${e instanceof Error ? e.message : String(e)}). Check the connection and run the command again.`);
   }
 
   if (!archives) return failure('unsupported_repo', 'This team keeps no session archive here, so it has no pushed session to score. Score a session on this machine with --session <id>.');
@@ -161,6 +166,14 @@ export async function pushedSession(config: LocalConfig, { name, author }: TeamS
     const pushed: NamedSession = { platform: session.platform, found: { session: scrubSession(session).session }, config, pushedBy: entry.author };
 
     if (meta.agent) pushed.agent = meta.agent;
+
+    try {
+      const evidence = archive.loadEvidence(entry.identity, name, entry.author);
+
+      if (evidence) pushed.evidence = evidence;
+    } catch (e) {
+      return failure('evidence_unreadable', `The evidence pushed with session ${name} could not be read, so it is not judged without it: ${e instanceof Error ? e.message : String(e)}. Push the session again from the machine that ran it.`);
+    }
 
     return pushed;
   }

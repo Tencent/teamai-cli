@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { hookSourceMatches } from './utils/hook-source.js';
 import { getsRulesFromExtension } from './resources/rule-format.js';
 import { pathExists, readFileSafe, readJsonObject, remove, writeFile } from './utils/fs.js';
-import { getUserHome } from './utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 import { isCodexTool } from './utils/tool-names.js';
 import { type BlocksHeader, type ChannelProbe, type RunTime } from '@teamai/tool-core/definition';
 import { channelsOf, TOOL_ORDER } from './tool-registry.js';

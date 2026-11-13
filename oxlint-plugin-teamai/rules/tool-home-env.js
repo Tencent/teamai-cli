@@ -4,7 +4,7 @@ import { inProductionSource, inTestSupport, isOneOf, isScriptSource, repositoryP
 /** @typedef {import('@oxlint/plugins').ESTree.Node} Node */
 
 /** The one module that decides which home variables start a tool's command (`toolCommandEnv`). */
-const OWNER = 'src/tool-launch/tools.ts';
+const OWNER = 'src/launch-registry.ts';
 
 /**
  * Every variable that moves a shipped tool's home, as `toolHomeVariableNames` in `src/tool-home.ts` lists them, which
@@ -85,7 +85,7 @@ export default defineRule({
     const inScope = (inProductionSource(context) && !inTestSupport(context) && !testOnly) || isScriptSource(sourcePath(context));
 
     if (!inScope || isOneOf(context, [OWNER])) return {};
-    const message = 'Take a tool\'s home variables from toolCommandEnv in src/tool-launch/tools.ts, the one place that decides which variables start a tool\'s command in which home, instead of setting one here.';
+    const message = 'Take a tool\'s home variables from toolCommandEnv in src/launch-registry.ts, the one place that decides which variables start a tool\'s command in which home, instead of setting one here.';
     const namingFile = NAMING_FILES.test(repositoryPath(context).relative);
 
     return {

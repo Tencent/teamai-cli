@@ -92,8 +92,8 @@ import { reconcileMcpForConfig } from '../mcp-reconcile.js';
 import { getDataHome, managedMcpManifestKey, managedMcpManifestPath } from '../types.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 import { readCodexHookTrustForScope } from '../hooks.js';
-import { log } from '../utils/logger.js';
-import { installFakeCodex, pathWithoutCodex, readFakeCodexState, writeFakeCodexOptions } from './helpers/fake-codex.js';
+import { log } from '@teamai/shared/log';
+import { installFakeCodex, pathWithoutCodex, readFakeCodexState, writeFakeCodexOptions } from '@teamai/tool-codex/testing';
 
 describe('pull trusts the Codex project after writing its MCP servers', () => {
   let tempDir: string;

@@ -8,6 +8,7 @@
     "./debug-log": "./src/debug-log.ts",
     "./entries-under": "./src/entries-under.ts",
     "./exec": "./src/exec.ts",
+    "./fs-failure": "./src/fs-failure.ts",
     "./home": "./src/home.ts",
     "./json": "./src/json.ts",
     "./log": "./src/log.ts",

@@ -49,7 +49,7 @@ export interface Delivery {
  * too (#913). Throws where pull would fail (an invalid manifest).
  */
 export async function resolveDelivery(config: LocalConfig): Promise<Delivery> {
-  const teamConfig = await loadTeamConfig(config.repo.localPath);
+  const teamConfig = await loadTeamConfig(config.repo.localPath, config);
 
   if (!teamConfig) return { namespaces: null, skills: [], skillNamespaces: [], rules: [], heldSkills: [] };
   const roleContext = await buildRolePullContext(config);

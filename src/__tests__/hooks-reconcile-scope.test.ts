@@ -20,7 +20,7 @@ vi.mock('../agent-version.js', () => ({ getAgentVersion: vi.fn(async () => '') }
 import { resolveAnchors, listWorktrees } from '../utils/git.js';
 import { getAgentVersion } from '../agent-version.js';
 import { resetBundledRuntimeCache } from '../bundled-runtime.js';
-import { findOnPath } from '../utils/lookpath.js';
+import { findOnPath } from '@teamai/shared/lookpath';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { claudeHookOtherHostSkip, getHookStatus, reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig } from '../hooks.js';
 import * as gitHook from '../git-hook.js';
@@ -30,7 +30,7 @@ import { dispatchedCodexHooks } from '../codex-team-hooks.js';
 import { channelReadiness } from '../instruction-targets.js';
 import type { HookDef, LocalConfig, TeamaiConfig } from '../types.js';
 import type { ToolId } from '../tools.js';
-import { fakeCodexVersionRuns, installFakeCodex, pathWithoutCodex } from './helpers/fake-codex.js';
+import { fakeCodexVersionRuns, installFakeCodex, pathWithoutCodex } from '@teamai/tool-codex/testing';
 
 let project: string;
 let repo: string;
@@ -436,7 +436,7 @@ hooks:
     await writeYaml(`hooks:${lint}`);
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
     const before = await claudeLocal();
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     vi.mocked(log.warn).mockClear();
 
     await writeYaml(`hook:${lint}`);
@@ -2178,7 +2178,7 @@ describe('reconcileHooks — an unrecorded team hook entry, judged by the team\'
     const installed = await commands();
     expect(installed.length).toBeGreaterThan(0);
     await fse.writeJson(manifestPath, {});
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     vi.mocked(log.warn).mockClear();
 
     await reconcileHooks(file, tool, [stop('v2')], { manifestPath, teamHookProjectRoot: root, teamHookHistory: async () => [stop('v1'), stop('v2')] });

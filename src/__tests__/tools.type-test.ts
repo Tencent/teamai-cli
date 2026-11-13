@@ -1,8 +1,7 @@
 /** Checked by `tsc` only: Vitest runs `*.test.ts`. */
 import type { AgentToolId, InlineRulesWithoutBlocksFile, ToolsWithTwoMcpFormats, ShippedDescriptor, STEP_LAUNCH_ADAPTERS } from '../tools.js';
 import type { BlocksTarget, HomeRead, RunTime } from '@teamai/tool-core/definition';
-import type { LaunchedToolId, LaunchOrderTool } from '../tool-launch/tools.js';
-import type { LAUNCH_ADAPTERS, LaunchAdapterId } from '../tool-launch/adapters.js';
+import type { LAUNCH_ADAPTERS, LaunchAdapterId, LaunchedToolId, LaunchOrderTool } from '../launch-registry.js';
 import type { StepLaunch } from '@teamai/tool-core/launch';
 
 declare const full: ShippedDescriptor;

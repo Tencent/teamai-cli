@@ -18,7 +18,7 @@ import type { GlobalOptions, LocalConfig, WebhookPayload } from './types.js';
 import type { DriverName } from './workflow/driver-name.js';
 import type { GitHookEvent } from './git-hook.js';
 import { deriveDispatchSessionId, deriveSessionId } from './utils/session-id.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { normalizeToolName } from './utils/tool-names.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { pathExists } from './utils/fs.js';
@@ -257,8 +257,9 @@ async function needsPreparation(cwd: string, config: LocalConfig): Promise<boole
  * and a submodule have none.
  */
 async function isLinkedWorktree(root: string): Promise<boolean> {
-  const { readFile } = await import('node:fs/promises');
-  const pointer = /^gitdir:\s*(.+)$/m.exec(await readFile(path.join(root, '.git'), 'utf8').catch(() => ''));
+  // The checkout may be a step's copy, where the step could leave a FIFO at .git.
+  const { readRegularFile } = await import('@teamai/shared/regular-file');
+  const pointer = /^gitdir:\s*(.+)$/m.exec(await readRegularFile(path.join(root, '.git'), 'utf8').catch(() => ''));
 
   return pointer !== null && pathExists(path.join(path.resolve(root, pointer[1].trim()), 'commondir'));
 }
@@ -457,7 +458,7 @@ async function startFinishedSessions(config: LocalConfig): Promise<void> {
         return;
       case 'started':
         if (decided.kind === 'drive') await spawnDetachedResume(started.run, { driver: decided.driver, cwd: started.cwd, env: withoutAgentEvidence(process.env) });
-        else if (awaits) log.debug(`hook-dispatch: ${awaitsLine(started.run, awaits.driver)}`);
+        else if (awaits) log.debug(`hook-dispatch: ${await awaitsLine(config, started.run, awaits.driver)}`);
 
         return;
       default: {
@@ -530,7 +531,7 @@ async function teamCorrectionKeywords(
   try {
     const { loadTeamConfig } = await import('./config.js');
     const { getInterventionSharing } = await import('./types.js');
-    const teamConfig = await loadTeamConfig(config.repo.localPath);
+    const teamConfig = await loadTeamConfig(config.repo.localPath, config);
 
     return teamConfig ? getInterventionSharing(teamConfig).correctionKeywords : [];
   } catch {
@@ -613,7 +614,7 @@ async function isRecallOn(config: LocalConfig): Promise<boolean> {
   const { loadTeamConfig } = await import('./config.js');
 
   try {
-    return isRecallEnabled(config, await loadTeamConfig(config.repo.localPath) ?? {});
+    return isRecallEnabled(config, await loadTeamConfig(config.repo.localPath, config) ?? {});
   } catch (error) {
     log.debug(`teamai.yaml cannot be read, so the recall hooks take the team's recall setting as off: ${error instanceof Error ? error.message : String(error)}`);
 
@@ -1136,7 +1137,7 @@ const teamRulesHandler: HookHandler = {
 
     if (!getsRulesFromSessionHook(tool) || isAgentExcluded(config, tool)) return null;
     const { loadTeamConfig } = await import('./config.js');
-    const teamConfig = await loadTeamConfig(config.repo.localPath);
+    const teamConfig = await loadTeamConfig(config.repo.localPath, config);
 
     if (!teamConfig) return null;
     const { deliversInstructionsByHook, instructionHookTextFor } = await import('./instruction-targets.js');
@@ -1188,7 +1189,7 @@ const instructionsHandler: HookHandler = {
 
     if (!deliversInstructionsByHook(tool, config.scope) || isAgentExcluded(config, tool)) return null;
     const { loadTeamConfig } = await import('./config.js');
-    const teamConfig = await loadTeamConfig(config.repo.localPath);
+    const teamConfig = await loadTeamConfig(config.repo.localPath, config);
 
     if (!teamConfig) return null;
     const text = await instructionHookTextFor(teamConfig, config, tool);

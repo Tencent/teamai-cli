@@ -10,7 +10,8 @@ import { judgeTeamaiOnlyMcpConfigs, opencodeV1Servers } from './mcp-reconcile.js
 import { opencodeDeliversThroughPlugin } from './opencode-hooks.js';
 import { opencodeContextReference, readOpencodeInstructionList, reconcileOpencodeInstructionSet } from './resources/opencode-config.js';
 import { RulesHandler } from './resources/rules.js';
-import { isJsonObject, resolveBaseDir, type JsonValue, type LocalConfig, type TeamaiConfig } from './types.js';
+import { resolveBaseDir, type LocalConfig, type TeamaiConfig } from './types.js';
+import { isJsonObject, type JsonValue } from '@teamai/shared/json';
 import { readFileSafe } from './utils/fs.js';
 
 // ─── teamai-only files (#915) ─────────────────────────────────

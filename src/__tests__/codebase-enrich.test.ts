@@ -5,7 +5,7 @@ import path from 'node:path';
 
 import { extractCodebase } from '../codebase-extract.js';
 import { CodebaseEnrich } from '../enrich-with-ai.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 const temporaryDirectories: string[] = [];
 

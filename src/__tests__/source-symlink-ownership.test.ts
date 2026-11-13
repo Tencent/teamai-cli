@@ -77,7 +77,7 @@ describe('source physical destination ownership', () => {
   }
 
   async function removeSource(alias = 'current', local = config): Promise<void> {
-    const currentTeam = await loadTeamConfig(local.repo.localPath);
+    const currentTeam = await loadTeamConfig(local.repo.localPath, null);
     expect(currentTeam).not.toBeNull();
     vi.mocked(autoDetectInit).mockResolvedValue({ localConfig: local, teamConfig: currentTeam! });
     await sourceRemove(alias, {});
@@ -195,7 +195,7 @@ describe('source physical destination ownership', () => {
     await removeSource();
 
     expect(await fse.pathExists(getSourceManifestPath('current', config))).toBe(false);
-    expect((await loadTeamConfig(config.repo.localPath))?.sources).toEqual([]);
+    expect((await loadTeamConfig(config.repo.localPath, null))?.sources).toEqual([]);
     expect(await fse.pathExists(config.projectRoot!)).toBe(true);
   });
 
@@ -234,7 +234,7 @@ describe('source physical destination ownership', () => {
     const outside = path.join(root, 'outside.md');
     await fse.writeFile(outside, 'outside');
     await fse.symlink(outside, path.join(home, '.teamai/source-repos', id, 'repo', 'skills', 'foo', 'linked.md'));
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     vi.mocked(log.warn).mockClear();
 
     await pullSources(config, { force: true });
@@ -265,7 +265,7 @@ describe('source physical destination ownership', () => {
     await fse.writeFile(mine, '# Original source: foo\n');
     await fse.remove(skillFile);
     await fse.symlink(mine, skillFile);
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
 
     await publish(producer, ['foo'], 'Updated source');
     await pullSources(config, { force: true });

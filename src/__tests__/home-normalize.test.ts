@@ -8,7 +8,7 @@
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { expandHome, normalizeHomePath } from '../utils/home.js';
+import { expandHome, normalizeHomePath } from '@teamai/shared/home';
 
 const realPlatform = process.platform;
 

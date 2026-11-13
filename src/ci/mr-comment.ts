@@ -15,7 +15,7 @@ import { getGitHubToken } from '../providers/github/gh-cli.js';
 import { parseGitLabMRUrl } from '../providers/gitlab/mr-fetch.js';
 import { TEAMAI_COMMENT_SIGNATURE } from '../providers/mr-threads.js';
 import { paginateGitLab } from './gitlab-paginate.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 // ─── Constants ────────────────────────────────────────────────
 

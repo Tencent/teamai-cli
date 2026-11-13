@@ -3,7 +3,7 @@
  * install judges has no label, from its mark and the scorer's sampling. Read only: nothing here opens or closes a mark.
  */
 import { z } from 'zod';
-import type { ConfinedUsage } from '../tool-launch/confined-level.js';
+import type { ConfinedUsage } from '@teamai/tool-core/stdout';
 import type { LocalConfig } from '../types.js';
 import { scoredPasses, type ScorablePass } from '../workflow/judge-work.js';
 import { stepDefinitions } from '../workflow/scope.js';

@@ -25,6 +25,7 @@ defaults:
   inputs: { files: [], store: true, control: false }
 steps:
   - id: plan
+    requires: { host: true }
     command: teamai score plan --subject "$SUBJECT" --scorers "$SCORERS" --batch="$BATCH" --demand "$DEMAND"
     env: { SUBJECT: "{{ inputs.subject }}", SCORERS: "{{ inputs.scorers }}", BATCH: "{{ inputs.batch }}", DEMAND: "{{ inputs.demand }}" }
     output:
@@ -37,21 +38,25 @@ steps:
     workflow:
       # written: the version of each label write stored; null when it did not succeed, so the labels were not stored.
       # evidence: the directory that holds the group's labels.json, with the reasoning, while the run's directory lasts.
-      outputs: { labels: steps.label.outputs.labels, written: steps.write.outputs.labels, evidence: steps.evidence.outputs.dir }
+      # judged: how the judge ended, so a group whose judge was cancelled is said as cancelled, not as a failed step.
+      outputs: { labels: steps.label.outputs.labels, written: steps.write.outputs.labels, evidence: steps.evidence.outputs.dir, judged: steps.judge.outcome }
       steps:
         - id: evidence
+          requires: { host: true }
           command: teamai score evidence --subject "$SUBJECT" --scorers "$GROUP"
           env: { SUBJECT: "{{ item.subject }}", GROUP: "{{ item.scorers }}" }
           output: { dir: string, rubric: string, schema: string, delivers: boolean }
         - id: check
           needs: [evidence]
           if: item.hand == '' && steps.evidence.outputs.delivers
+          requires: { host: true }
           command: teamai score stage check --evidence "$DIR"
           env: { DIR: "{{ steps.evidence.outputs.dir }}" }
           output: { decided: boolean }
         - id: ci
           needs: [evidence, check]
           if: item.hand == '' && item.ci && steps.evidence.outputs.delivers && steps.check.outputs.decided != true
+          requires: { host: true }
           # Past 2h of a CI run that has not finished, judge without it.
           command: teamai score stage ci --evidence "$DIR" --wait 2h
           env: { DIR: "{{ steps.evidence.outputs.dir }}" }
@@ -59,6 +64,7 @@ steps:
         - id: protected
           needs: [evidence, ci]
           if: item.hand == '' && item.protected && steps.evidence.outputs.delivers && steps.check.outputs.decided != true && steps.ci.outputs.decided != true && steps.ci.outputs.pending != true
+          requires: { host: true }
           command: teamai score stage protected --evidence "$DIR"
           env: { DIR: "{{ steps.evidence.outputs.dir }}" }
           output: { decided: boolean }
@@ -84,11 +90,13 @@ steps:
           needs: [evidence, judge]
           # Reading judge keeps a failed judge from skipping label.
           if: steps.evidence.outcome == 'success' && steps.judge.outcome != 'cancelled'
+          requires: { host: true }
           command: teamai score label --evidence "$DIR" --answer "$ANSWER" --judge "$JUDGE"
           env: { DIR: "{{ steps.evidence.outputs.dir }}", ANSWER: "{{ steps.judge.outputs.answer }}", JUDGE: "{{ steps.judge.outcome }}" }
           output: { labels: [{ scorer: string, label: string, code: string }] }
         - id: write
           needs: [label]
+          requires: { host: true }
           command: teamai score write --evidence "$DIR"
           env: { DIR: "{{ steps.evidence.outputs.dir }}" }
           output: { written: number, labels: [string] }   # labels: the version of each label written, which teamai score answers with
@@ -98,6 +106,7 @@ steps:
           needs: [write]
           if: inputs.store
           workspace: { team: { branch: teamai-reports } }
+          requires: { host: true }
           command: teamai score publish
           deliver: publish
         - id: settle
@@ -106,6 +115,7 @@ steps:
           if: >-
             !(steps.evidence.outcome == 'success' || steps.evidence.outcome == 'skipped') || !(steps.check.outcome == 'success' || steps.check.outcome == 'skipped') || !(steps.ci.outcome == 'success' || steps.ci.outcome == 'skipped')
             || !(steps.protected.outcome == 'success' || steps.protected.outcome == 'skipped') || !(steps.label.outcome == 'success' || steps.label.outcome == 'skipped') || !(steps.write.outcome == 'success' || steps.write.outcome == 'skipped')
+          requires: { host: true }
           command: teamai score settle --subject "$SUBJECT" --scorers "$GROUP"
           env: { SUBJECT: "{{ item.subject }}", GROUP: "{{ item.scorers }}" }
 outputs: { labels: steps.score.results }

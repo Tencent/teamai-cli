@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -284,17 +283,14 @@ describe('teamai hook script on a Git without config hooks', () => {
     const file = hookFile('post-checkout');
     const original = '#!/bin/sh\necho owner-hook-content\n';
     fs.writeFileSync(file, original, { mode: 0o755 });
-    const read = fse.readFile.bind(fse);
-    const spy = vi.spyOn(fse, 'readFile').mockImplementation(((...args: Parameters<typeof read>) => {
-      if (args[0] === file) return Promise.reject(Object.assign(new Error('permission denied'), { code: 'EACCES' }));
-      return read(...args);
-    }) as typeof read);
+    fs.chmodSync(file, 0o000);
     try {
       await expect(installGitHook(repo)).rejects.toThrow('permission denied');
+      fs.chmodSync(file, 0o755);
       expect(fs.readFileSync(file, 'utf8')).toBe(original);
       expect(fs.existsSync(hookFile('post-merge'))).toBe(false);
     } finally {
-      spy.mockRestore();
+      fs.chmodSync(file, 0o755);
     }
   });
 

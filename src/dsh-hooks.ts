@@ -15,7 +15,7 @@ import { isAgentExcluded, type HookDef, type LocalConfig } from './types.js';
 import { hookAdapterDir } from './locate.js';
 import { toolHome } from './tool-home.js';
 import { pathExists, readFileSafe, remove, writeIfChanged } from './utils/fs.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 export const DSH_HOOK_CONFIG_FILE = 'hooks.json';
 export const DSH_PATCH_FILE = 'cordis.patch.yml';

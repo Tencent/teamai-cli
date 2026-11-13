@@ -874,7 +874,7 @@ scope: 'user',
       await handler.pullItem(item, teamConfig, { ...localConfig, projects: ['checkout'] });
 
       expect(await envSh()).toBe(before);
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
       expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('env/checkout/env.yaml is not valid YAML'));
     });
 
@@ -893,7 +893,7 @@ scope: 'user',
       expect(content).toContain('export SHARED=');
       expect(content).not.toContain('CHECKOUT_URL');
       expect(content).not.toContain('DEVOPS_TOKEN');
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
       expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(
         'env/env.yaml: variable "CHECKOUT_URL" is scoped with per-entry `projects:`, which this version no longer reads, so it reaches nobody.',
       ));
@@ -907,7 +907,7 @@ scope: 'user',
           { key: 'SHARED', value: 's' },
         ],
       }));
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
       vi.mocked(log.warn).mockClear();
 
       await handler.pullItem(item, teamConfig, localConfig);
@@ -926,7 +926,7 @@ scope: 'user',
       await fse.outputFile(path.join(repoPath, 'env', 'checkout', 'env.yaml'), YAML.stringify({
         variables: [{ key: 'MODEL_ENDPOINT', value: 'https://checkout.example.com', role: ['frontend'] }],
       }));
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
       vi.mocked(log.warn).mockClear();
 
       await handler.pullItem(item, teamConfig, { ...localConfig, projects: ['checkout'] });
@@ -944,7 +944,7 @@ scope: 'user',
       await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({
         variables: [{ key: 'FULL', value: 'f', description: 'every known key' }],
       }));
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
       vi.mocked(log.warn).mockClear();
 
       await handler.pullItem(item, teamConfig, localConfig);
@@ -972,7 +972,7 @@ scope: 'user',
 
   describe('removeItem', () => {
     it('should return empty array and warn', async () => {
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
       const result = await handler.removeItem('test', teamConfig, localConfig);
       expect(result).toEqual([]);
       expect(log.warn).toHaveBeenCalled();

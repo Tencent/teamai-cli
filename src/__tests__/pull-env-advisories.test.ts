@@ -74,7 +74,7 @@ vi.mock('../doctor.js', async (importOriginal) => ({
 import { detectProjectConfig, loadLocalConfigForScope, loadStateForScope, loadTeamConfig } from '../config.js';
 import { acquireLock } from '../update.js';
 import { buildChecks, resolveDoctorContext, type DoctorContext } from '../doctor.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { pull } from '../pull.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 import { resetWarnOnce } from '../utils/warn-once.js';

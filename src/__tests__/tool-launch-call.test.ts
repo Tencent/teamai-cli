@@ -4,11 +4,11 @@ import path from 'node:path';
 import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 import { readConfigFrom } from '../config.js';
-import { createToolCaller } from '../tool-launch/call.js';
+import { createToolCaller } from '../workflow/runtimes/tool-caller.js';
 import { useToolInstances } from '../tool-registry.js';
 import { getDataHome, getUserConfigPath, type LocalConfig } from '../types.js';
-import { getUserHome } from '../utils/home.js';
-import { log } from '../utils/logger.js';
+import { getUserHome } from '@teamai/shared/home';
+import { log } from '@teamai/shared/log';
 
 let root = '';
 afterEach(async () => { vi.unstubAllEnvs(); if (root) await fs.rm(root, { recursive: true, force: true }); root = ''; });
@@ -17,14 +17,17 @@ const Invocation = z.object({ args: z.array(z.string()), env: z.record(z.string(
 
 /**
  * A fake tool on disk: it records how it was launched, with the file after `--prompt-file`, prints `stdout` and
- * `stderr`, and writes `lastMessage` to the file after `-o`, as Codex does.
+ * `stderr`, and writes `lastMessage` to the file after `-o`, as Codex does. With `version`, `--version` prints only
+ * that, unrecorded.
  */
-async function fakeTool(name: string, { stdout = '', stderr = '', exitCode = 0, lastMessage }: { stdout?: string; stderr?: string; exitCode?: number; lastMessage?: string }): Promise<{ executable: string; invocation: () => Promise<z.infer<typeof Invocation>> }> {
+async function fakeTool(name: string, { stdout = '', stderr = '', exitCode = 0, lastMessage, version }: { stdout?: string; stderr?: string; exitCode?: number; lastMessage?: string; version?: string }): Promise<{ executable: string; invocation: () => Promise<z.infer<typeof Invocation>> }> {
   root ||= await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-call-'));
   const executable = path.join(root, name);
   const record = path.join(root, `${name}.json`);
   await fs.writeFile(executable, `#!${process.execPath}
 const fs = require('fs');
+const version = ${JSON.stringify(version ?? null)};
+if (version !== null && process.argv[2] === '--version') { process.stdout.write(version + '\\n'); process.exit(0); }
 let stdin = ''; process.stdin.on('data', (d) => stdin += d); process.stdin.on('end', () => {
   const args = process.argv.slice(2);
   const promptFile = args.includes('--prompt-file') ? fs.readFileSync(args[args.indexOf('--prompt-file') + 1], 'utf8') : null;
@@ -126,6 +129,7 @@ it('runs Codex with the prompt on stdin, reads its last message from the -o file
 
 it('runs OpenCode with the prompt on stdin and joins the text parts it prints, with the step tokens', async () => {
   const opencode = await fakeTool('opencode', {
+    version: 'opencode v2.0.29',
     stdout: [
       JSON.stringify({ type: 'step_start', part: { type: 'step-start' } }),
       JSON.stringify({ type: 'text', part: { type: 'text', text: 'first line' } }),
@@ -138,8 +142,18 @@ it('runs OpenCode with the prompt on stdin and joins the text parts it prints, w
 
   expect(answer).toEqual({ text: 'first line\nsecond line', tool: 'opencode', tokens: { input: 30, output: 6, cachedInput: 7 } });
   const { args, stdin } = await opencode.invocation();
-  expect(args).toEqual(['run', '--format', 'json']);
+  // OpenCode V2 runs the call on its own server.
+  expect(args).toEqual(['run', '--standalone', '--format', 'json']);
   expect(stdin).toBe('Summarize');
+});
+
+it.each([
+  ['fails usage_limited on an OpenCode error whose type is a usage limit, whatever its message says', 'provider.rate-limit', 'Too many requests', 'usage_limited'],
+  ['fails call_failed on an OpenCode error whose type is no usage limit, though its message reads like one', 'provider.no-route', 'Rate limit reached for anthropic/claude-nonexistent-9 on no route', 'call_failed'],
+])('%s', async (_, type, message, kind) => {
+  const opencode = await fakeTool('opencode', { stdout: JSON.stringify({ type: 'error', sessionID: 'ses_1', error: { type, message } }), exitCode: 1 });
+
+  await expect(only('opencode', opencode.executable).callTool('Summarize', { launchedBy: 'answer' })).rejects.toMatchObject({ kind });
 });
 
 it('runs WorkBuddy through the CodeBuddy adapter, which prints Claude\'s result record', async () => {

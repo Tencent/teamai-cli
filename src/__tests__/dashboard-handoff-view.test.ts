@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { handoffView } from '../dashboard/handoff-view.js';
 import { dashboardMessages } from '../dashboard/locales.js';
-import type { HandoffRow } from '../dashboard/workflow-runs.js';
+import type { HandoffRow, LocalRunRow } from '../dashboard/workflow-runs.js';
 import { RunIdSchema } from '../workflow/store.js';
 
 const messages: Record<string, string> = dashboardMessages;
@@ -100,5 +100,31 @@ describe('the Handed-off runs panel', () => {
       row('r0000000000000007', { isMine: false, offer: PERHAPS }),
     ], 'zh-CN');
     expect(render([], 'zh-CN').keys.concat(keys).filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
+  });
+});
+
+describe('a local run another install took', () => {
+  /** The state the Local runs table shows for `taken`, in `language`, with every message key it asked to translate. */
+  function state(taken: NonNullable<LocalRunRow['elsewhere']>, language: 'en' | 'zh-CN' = 'en'): { text: string; keys: string[] } {
+    const keys: string[] = [];
+    const t = (text: string) => {
+      keys.push(text);
+      return language === 'zh-CN' && Object.hasOwn(dashboardMessages, text) ? messages[text] : text;
+    };
+    const e = (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    const label = (text: string) => e(t(text));
+    const takenState = new Function('t', 'e', 'label', 'number', 'when', `${handoffView}\nreturn takenState;`)(t, e, label, String, String) as (taken: unknown) => string;
+    return { text: takenState(taken).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim(), keys };
+  }
+
+  const bob = { id: 'install-bob', user: 'bob' };
+
+  it('says who holds it now, or how it ended there, never that it runs here', () => {
+    expect(state({ kind: 'claimed', owner: bob, ownedAt: '2026-10-28T09:00:00.000Z', isOffered: false }).text).toBe('Held by bob');
+    expect(state({ kind: 'claimed', owner: bob, ownedAt: '2026-10-28T09:00:00.000Z', isOffered: true }).text).toBe('Held by bob · Offered');
+    expect(state({ kind: 'ended', owner: bob, status: 'succeeded' }).text).toBe('Succeeded · Ended by bob');
+
+    const keys = [state({ kind: 'claimed', owner: bob, ownedAt: '2026-10-28T09:00:00.000Z', isOffered: true }, 'zh-CN'), state({ kind: 'ended', owner: bob, status: 'cancelled' }, 'zh-CN')].flatMap((shown) => shown.keys);
+    expect(keys.filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
   });
 });

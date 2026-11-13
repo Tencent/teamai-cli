@@ -2,7 +2,7 @@ import { type GlobalOptions, type LocalConfig } from '../types.js';
 import { autoDetectInit } from '../config.js';
 import { assertNotReadOnly } from '../read-only.js';
 import { pathExists } from '../utils/fs.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import {
   ClaudePluginAdapter,
   marketplaceSourceLocation,

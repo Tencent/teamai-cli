@@ -5,13 +5,13 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../providers/tgit/gf-cli.js', () => ({ gfGetOAuthToken: vi.fn(() => null) }));
+vi.mock('../providers/tgit/oauth-token.js', () => ({ gfGetOAuthToken: vi.fn(() => null) }));
 vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));
 
 import { fetchTGitMR } from '../providers/tgit/mr-fetch.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 const URL = 'https://git.woa.com/group/repo/merge_requests/5';
 const API = 'https://git.woa.com/api/v3/projects/group%2Frepo';

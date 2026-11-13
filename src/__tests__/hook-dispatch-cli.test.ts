@@ -21,6 +21,11 @@ vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:child_process')>()),
   spawn: mockSpawn,
 }));
+vi.mock('@teamai/shared/regular-file', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@teamai/shared/regular-file')>();
+
+  return { ...actual, readRegularFileSync: vi.fn(actual.readRegularFileSync) };
+});
 
 const { runHookFastPath } = await import('../hook-fast-path.js');
 const { readStdin } = await import('../utils/hook-stdin.js');
@@ -28,9 +33,10 @@ const { parseStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, hookDispatc
   await import('../hook-dispatch-cli.js');
 const { claudeHookOtherHostSkip } = await import('../claude-hook-host.js');
 const { reconcileHooks } = await import('../hooks.js');
-const { log, setSilent } = await import('../utils/logger.js');
+const { log, setSilent } = await import('@teamai/shared/log');
 const { _resetState, _setLogFilePath } = await import('@teamai/shared/debug-log');
 const { commitFile, initRepo, recordDelivery } = await import('./helpers/delivered-checkout.js');
+const { readRegularFileSync } = await import('@teamai/shared/regular-file');
 
 describe('readStdin', () => {
   it('closes a pipe after the EOF timeout so the hook process can exit', async () => {
@@ -65,13 +71,13 @@ describe('deriveDispatchSessionId', () => {
 describe('hookDispatchCli', () => {
   it.each(['scorer', 'recall-promote', 'codebase'])('skips the hooks of a session teamai launched for %s before reading stdin or resolving config, including background children', async (launchedBy) => {
     const resolveScope = vi.spyOn(await import('../dashboard-collector.js'), 'resolveHookScopeFor');
-    const readFile = vi.spyOn(fs, 'readFileSync');
+    vi.mocked(readRegularFileSync).mockClear();
     vi.stubEnv('TEAMAI_LAUNCHED_BY', launchedBy);
     try {
       for (const bgOnly of [false, true]) await hookDispatchCli('SessionStart', 'claude', '*', { bgOnly, stdinFile: '/missing-judge-payload' });
       expect(resolveScope).not.toHaveBeenCalled();
-      expect(readFile).not.toHaveBeenCalledWith('/missing-judge-payload', expect.anything());
-    } finally { resolveScope.mockRestore(); readFile.mockRestore(); vi.unstubAllEnvs(); }
+      expect(readRegularFileSync).not.toHaveBeenCalledWith('/missing-judge-payload', expect.anything());
+    } finally { resolveScope.mockRestore(); vi.unstubAllEnvs(); }
   });
 
   // The payload file is a child's to remove, and an early return used to skip

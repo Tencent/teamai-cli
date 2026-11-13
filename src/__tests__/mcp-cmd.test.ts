@@ -191,7 +191,7 @@ describe('mcpList', () => {
         layout: entryLayout('mcp'),
       },
     });
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     await listOutput();
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('server "hidden" has unknown key `role:`'));
     expect(log.error).toHaveBeenCalledWith(expect.stringContaining('server "db" is defined in both mcp/checkout/mcp.yaml and mcp/billing/mcp.yaml'));
@@ -210,7 +210,7 @@ describe('mcpList', () => {
           + 'It lists no id: remove it, or move it to the namespace file it is meant for.',
       }],
     });
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     const text = await listOutput();
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(
       'server "scoped_server" is scoped with per-entry `projects:`, which this version no longer reads, so it reaches nobody.',
@@ -230,7 +230,7 @@ describe('mcpList', () => {
         message: 'mcp/mcp.yaml: server "scoped_server" uses deprecated per-entry `roles:`.',
       }],
     });
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     vi.mocked(log.warn).mockClear();
     await listOutput();
     expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining('deprecated per-entry `roles:`'));
@@ -248,7 +248,7 @@ describe('mcpInject', () => {
   it('fails instead of saying "Already up to date" when the team servers cannot be resolved', async () => {
     // The reconcile reported why and left every installed server as it was.
     vi.mocked(reconcileMcpForConfig).mockResolvedValue({ changes: [], wrote: false, unresolved: true });
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     const spy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     try {
       await mcpInject({});
@@ -309,7 +309,7 @@ describe('MCP commands with unreadable tool configs', () => {
     { command: 'inject', run: mcpInject, success: 'MCP servers updated. Restart your AI tool session to load them.', unchanged: 'Already up to date.' },
     { command: 'remove', run: mcpRemove, success: 'teamai-managed MCP servers removed.', unchanged: 'Nothing to remove.' },
   ])('$command fails for both an unchanged and a partially written result, including dry runs', async ({ command, run, success, unchanged }) => {
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     mockedAutoDetectInit.mockResolvedValue({
       localConfig: { repo: { localPath: '/repo' }, scope: 'user', additionalRoles: [] },
       teamConfig: { toolPaths: {} },

@@ -8,6 +8,7 @@ private: true
 inputs: { dir: string, by_type: boolean, all: boolean }
 steps:
   - id: scan
+    requires: { host: true }
     command: teamai import scan-rules
     output: { candidates: [{ path: string, file: string }] }
   - id: learnings
@@ -22,6 +23,7 @@ steps:
   - id: publish
     needs: [learnings]
     if: steps.learnings.outcome == 'success'
+    requires: { host: true }
     command: teamai import publish-rules --kept "$KEPT" --written "$WRITTEN" --target "$DIR" --by-type "$BY_TYPE"
     env:
       KEPT: "{{ steps.learnings.outputs.kept }}"

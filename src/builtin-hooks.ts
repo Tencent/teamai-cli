@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import semver from 'semver';
@@ -8,8 +9,8 @@ import type { HookDef } from './types.js';
 import { type HookAdapterId, type HooksChannels } from '@teamai/tool-core/definition';
 import { baseToolOf, channelsOf, hookFormatOf } from './tool-registry.js';
 import { LOGIN_DEFERRED_ENV } from './hook-fast-path.js';
-import { getUserHome } from './utils/home.js';
-import { log } from './utils/logger.js';
+import { getUserHome } from '@teamai/shared/home';
+import { log } from '@teamai/shared/log';
 import { bundledShellFor, findGitBashWindows, resetBundledRuntimeCache, resolveCodebuddyNode, resolveWorkbuddyNode } from './bundled-runtime.js';
 
 // ─── Built-in (A) operational hooks as data ─────────────────
@@ -200,7 +201,7 @@ export function ensureTeamaiWrapper(): string | null {
 
 function isWrapperCurrent(file: string, script: string): boolean {
   try {
-    return (fs.statSync(file).mode & 0o111) !== 0 && fs.readFileSync(file, 'utf8') === script;
+    return (fs.statSync(file).mode & 0o111) !== 0 && readRegularFileSync(file, 'utf8') === script;
   } catch {
     return false;
   }

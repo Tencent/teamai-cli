@@ -6,7 +6,7 @@ import { RunOriginSchema } from '../default-workflows.js';
 import { RunModeSchema } from '../launch-context.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { redact } from '@teamai/shared/redact';
-import type { JsonValue } from '../types.js';
+import type { JsonValue } from '@teamai/shared/json';
 import { isRecord } from './expression.js';
 import { CommitIdSchema, DeliveryReceiptSchema, UnresolvedCreateSchema } from './delivery-schema.js';
 import { privateSteps } from './scope.js';
@@ -86,6 +86,25 @@ const BodySchema = z.object({
 });
 
 export type SnapshotBody = z.infer<typeof BodySchema>;
+
+/**
+ * Which definitions a run executes, as another install finds them (`definitionsOf`): the run's workflow, a hash of its
+ * parsed definitions, and the team commit or teamai release that holds them. Never the definitions themselves.
+ */
+export const RunDefinitionSchema = BodySchema.pick({ name: true, sourceHash: true, definitionHash: true, teamRevision: true, origin: true });
+
+export type RunDefinition = z.infer<typeof RunDefinitionSchema>;
+
+/** Which definitions `run` executes, as a published run names them. */
+export function runDefinition(run: Pick<RunState, 'name' | 'sourceHash' | 'teamRevision' | 'origin' | 'definition' | 'workflows'>): RunDefinition {
+  const named: RunDefinition = { name: run.name, sourceHash: run.sourceHash, definitionHash: definitionHash(run.definition, run.workflows) };
+
+  if (run.teamRevision !== undefined) named.teamRevision = run.teamRevision;
+
+  if (run.origin !== undefined) named.origin = run.origin;
+
+  return named;
+}
 
 /**
  * What a publish says of the run beside its state: the business repository it works in, as `host/owner/repo`, and, while
@@ -249,9 +268,9 @@ type FieldRules<T> = { readonly [K in KeysOfUnion<T>]-?: 'publish' | 'drop' | 'r
 type Rewrites<T, R> = { readonly [K in keyof R as R[K] extends 'rewrite' ? K : never]: (value: T) => Partial<Record<string, JsonValue>> };
 
 const RUN_RULES = {
-  schemaVersion: 'publish', id: 'rewrite', name: 'publish', alias: 'publish', revision: 'publish', status: 'publish', driver: 'drop',
+  schemaVersion: 'publish', id: 'rewrite', name: 'publish', alias: 'publish', revision: 'publish', status: 'publish', driver: 'drop', takesWhole: 'drop', isLeasedUnderLock: 'drop',
   end: 'publish', failure: 'rewrite', finalizing: 'rewrite', timeout: 'publish', inputs: 'publish', sourceHash: 'publish', teamRevision: 'publish', teamPin: 'publish', runMode: 'publish', origin: 'publish',
-  startedBy: 'publish', awaits: 'publish', definition: 'rewrite', workflows: 'rewrite', folder: 'drop', folders: 'drop', admitted: 'drop', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
+  startedBy: 'publish', awaits: 'publish', nestedIn: 'drop', partOf: 'drop', definition: 'rewrite', workflows: 'rewrite', folder: 'drop', folders: 'drop', admitted: 'drop', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
   endRecordQueued: 'drop', cancelledAttempts: 'rewrite', archive: 'rewrite', round: 'publish', base: 'publish',
   checkout: 'drop', driveOptions: 'drop', copies: 'rewrite', deliveries: 'publish', creating: 'publish', sessionContinuations: 'publish', releasedTokens: 'publish',
   stoppedAttempts: 'drop', publication: 'drop', leftovers: 'drop', createdAt: 'publish', limitsFrom: 'publish', updatedAt: 'publish', retainedUntil: 'publish',
@@ -261,17 +280,17 @@ const STEP_RULES = {
   id: 'publish', pass: 'publish', passes: 'rewrite', answer: 'rewrite', item: 'publish', inputs: 'publish',
   iteration: 'publish', round: 'publish', status: 'publish', attempt: 'publish', lease: 'rewrite', outcome: 'publish',
   outputs: 'publish', end: 'publish', results: 'publish', pr: 'publish', settledAt: 'publish', exitCode: 'publish', message: 'drop',
-  tool: 'publish', model: 'publish', session: 'publish', tokens: 'publish', changes: 'publish', read: 'publish',
+  tool: 'publish', model: 'publish', session: 'publish', resumed: 'publish', tokens: 'publish', changes: 'publish', read: 'publish',
   agent: 'publish', used: 'publish', installId: 'publish', loopFinal: 'publish', failure: 'rewrite', delivery: 'publish', unenforced: 'publish',
-  runMode: 'publish', expiresAt: 'publish', limitsFrom: 'publish', allowanceSpent: 'publish', outcomes: 'publish', limit: 'publish', durationMs: 'publish', cost: 'publish',
+  runMode: 'publish', runtime: 'publish', expiresAt: 'publish', limitsFrom: 'publish', allowanceSpent: 'publish', outcomes: 'publish', limit: 'publish', durationMs: 'publish', cost: 'publish',
   confined: 'publish', progress: 'drop',
 } satisfies FieldRules<StepState>;
 
 const PASS_RULES = {
   pass: 'publish', attempt: 'publish', outcome: 'publish', outputs: 'publish', end: 'publish', results: 'publish', pr: 'publish',
-  failure: 'rewrite', exitCode: 'publish', message: 'drop', tool: 'publish', model: 'publish', session: 'publish',
+  failure: 'rewrite', exitCode: 'publish', message: 'drop', tool: 'publish', model: 'publish', session: 'publish', resumed: 'publish',
   tokens: 'publish', changes: 'publish', read: 'publish', agent: 'publish', used: 'publish', installId: 'publish', answer: 'rewrite',
-  delivery: 'publish', unenforced: 'publish', runMode: 'publish', outcomes: 'publish', limit: 'publish', durationMs: 'publish', cost: 'publish',
+  delivery: 'publish', unenforced: 'publish', runMode: 'publish', runtime: 'publish', outcomes: 'publish', limit: 'publish', durationMs: 'publish', cost: 'publish',
   confined: 'publish', progress: 'drop',
 } satisfies FieldRules<StepPass>;
 
@@ -294,7 +313,7 @@ const PRIVATE_ANSWER_RULES = { ...ANSWER_RULES, note: 'drop' } satisfies FieldRu
 const FAILURE_RULES = { 'code': 'publish', message: 'rewrite' } satisfies FieldRules<WorkflowFailure>;
 
 // A lease another machine held is released when the run is handed over, so the session it offered stays here.
-const LEASE_RULES = { attempt: 'publish', revision: 'publish', driver: 'rewrite', session: 'drop', unenforced: 'drop', expiresAt: 'drop', leasedAt: 'drop', runMode: 'drop', limits: 'drop', confined: 'drop' } satisfies FieldRules<StepLease>;
+const LEASE_RULES = { attempt: 'publish', revision: 'publish', driver: 'rewrite', session: 'drop', unenforced: 'drop', expiresAt: 'drop', leasedAt: 'drop', runMode: 'drop', runtime: 'drop', limits: 'drop', confined: 'drop' } satisfies FieldRules<StepLease>;
 
 // An isolated run, the only one with a clone, is never published. A team copy is delivered only where it ran: another
 // machine reads its branch as a run branch, which the project's origin does not have, so its delivery fails.
@@ -424,22 +443,60 @@ function holdsLocalPath(text: string): boolean {
 
 type Unfit = { kind: 'secret'; label: string } | { kind: 'path' };
 
-function firstUnpublishable(runId: string, body: Record<string, JsonValue>, envSecrets: Record<string, string>): SnapshotError | undefined {
-  const labelOf = (text: string): string | undefined => {
-    const redacted = redact(text, { envSecrets });
+/** The secret label `redact` gives `text`, or undefined when it finds none. */
+function secretLabelOf(text: string, envSecrets: Record<string, string>): string | undefined {
+  const redacted = redact(text, { envSecrets });
 
-    return redacted === text ? undefined : PLACEHOLDER.exec(redacted)?.[1] ?? 'secret';
-  };
+  return redacted === text ? undefined : PLACEHOLDER.exec(redacted)?.[1] ?? 'secret';
+}
 
+/**
+ * The first string or key in `value` that may not leave this machine, with where it is under `value`: what looks like a
+ * secret (the secret patterns, or a value of `envSecrets`), or an absolute path of this machine.
+ */
+export function firstUnfit(value: JsonValue | undefined, envSecrets: Record<string, string>, at: Array<string | number> = []): { at: Array<string | number>; unfit: Unfit } | undefined {
   const unfitOf = (text: string): Unfit | undefined => {
-    const label = labelOf(text);
+    const label = secretLabelOf(text, envSecrets);
 
     if (label !== undefined) return { kind: 'secret', label };
 
     return holdsLocalPath(text) ? { kind: 'path' } : undefined;
   };
 
-  const found = (step: string | undefined, at: ReadonlyArray<string | number>, unfit: Unfit): SnapshotError => {
+  if (value === null || value === undefined) return undefined;
+
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      const hit = firstUnfit(item, envSecrets, [...at, index]);
+
+      if (hit) return hit;
+    }
+
+    return undefined;
+  }
+
+  if (!isRecord(value)) {
+    const unfit = unfitOf(String(value));
+
+    return unfit === undefined ? undefined : { at, unfit };
+  }
+
+  for (const [key, item] of Object.entries(value)) {
+    const unfit = unfitOf(key);
+
+    if (unfit !== undefined) return { at, unfit };
+    const hit = firstUnfit(item, envSecrets, [...at, key]);
+
+    if (hit) return hit;
+  }
+
+  return undefined;
+}
+
+function firstUnpublishable(runId: string, body: Record<string, JsonValue>, envSecrets: Record<string, string>): SnapshotError | undefined {
+  const found = (step: string | undefined, hit: { at: ReadonlyArray<string | number>; unfit: Unfit } | undefined): SnapshotError | undefined => {
+    if (hit === undefined) return undefined;
+    const { at, unfit } = hit;
     const field = fieldPath(at);
     const where = step === undefined ? `field "${field}"` : `step "${step}" field "${field}"`;
     const named: { step?: string; field: string } = step === undefined ? { field } : { step, field };
@@ -466,42 +523,11 @@ function firstUnpublishable(runId: string, body: Record<string, JsonValue>, envS
     }
   };
 
-  const search = (value: JsonValue | undefined, step: string | undefined, at: Array<string | number>): SnapshotError | undefined => {
-    if (value === null || value === undefined) return undefined;
-
-    if (Array.isArray(value)) {
-      for (const [index, item] of value.entries()) {
-        const hit = search(item, step, [...at, index]);
-
-        if (hit) return hit;
-      }
-
-      return undefined;
-    }
-
-    if (!isRecord(value)) {
-      const unfit = unfitOf(String(value));
-
-      return unfit === undefined ? undefined : found(step, at, unfit);
-    }
-
-    for (const [key, item] of Object.entries(value)) {
-      const unfit = unfitOf(key);
-
-      if (unfit !== undefined) return found(step, at, unfit);
-      const hit = search(item, step, [...at, key]);
-
-      if (hit) return hit;
-    }
-
-    return undefined;
-  };
-
   for (const [key, value] of Object.entries(body)) {
     const items = key === 'steps' || key === 'archive' ? value : undefined;
 
     if (!Array.isArray(items)) {
-      const hit = search(value, undefined, [key]);
+      const hit = found(undefined, firstUnfit(value, envSecrets, [key]));
 
       if (hit) return hit;
       continue;
@@ -510,7 +536,7 @@ function firstUnpublishable(runId: string, body: Record<string, JsonValue>, envS
     for (const [index, item] of items.entries()) {
       const step = isRecord(item) ? String(key === 'steps' ? item.id : item.step) : undefined;
       // A step whose id itself looks like a secret is named by its place in the list instead.
-      const hit = step !== undefined && labelOf(step) === undefined ? search(item, step, []) : search(item, undefined, [key, index]);
+      const hit = step !== undefined && secretLabelOf(step, envSecrets) === undefined ? found(step, firstUnfit(item, envSecrets)) : found(undefined, firstUnfit(item, envSecrets, [key, index]));
 
       if (hit) return hit;
     }

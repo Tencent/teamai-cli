@@ -8,7 +8,7 @@ import { agyToolsFor } from '../agy-hook-io.js';
 import { getDispatchCommand } from '../builtin-hooks.js';
 import type { AgentToolId } from '../tools.js';
 import type { Scope } from '../types.js';
-import { parseYaml } from '../utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 
 // ─── Tool name type ──────────────────────────────────────────────────────────
 

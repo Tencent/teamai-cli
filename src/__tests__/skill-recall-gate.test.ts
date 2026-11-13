@@ -206,7 +206,7 @@ describe('recall gate on served skills', () => {
   it('keeps a config-migration line off stdout, so the content and the JSON stay exact', async () => {
     // Loading an upgraded config can migrate it and say so with log.info.
     autoDetectInit.mockImplementation(async () => {
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
       log.info('Migrated legacy teamai config to default role profile: hai');
       return { localConfig: { recallEnabled: true }, teamConfig: { sharing: { recall: { enabled: true } } } };
     });

@@ -1,4 +1,4 @@
-import { probeBinary, type CommandExecutor } from '../utils/exec.js';
+import { probeBinary, type CommandExecutor } from '@teamai/shared/exec';
 
 export interface EnvironmentVersion {
   name: 'Node' | 'npm' | 'Claude Code';

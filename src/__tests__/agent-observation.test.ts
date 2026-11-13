@@ -11,6 +11,7 @@ import {
   type ReportedAgent,
 } from '../agent-observation.js';
 import { getCurrentVersion } from '../package-info.js';
+import { clearVersionCache } from '../agent-version.js';
 import type { LocalConfig } from '../types.js';
 import { commitFile, fakeClaude, git, initRepo, recordDelivery } from './helpers/delivered-checkout.js';
 
@@ -202,6 +203,22 @@ describe('observeLaunch (#1176)', () => {
       team: { revision: rev, localChanges: false, selection: { scope: 'project', additionalRoles: [] } },
       project: { commit: git(project, 'rev-parse', 'HEAD'), dirty: false },
     });
+  });
+
+  it.skipIf(process.platform === 'win32')('observes the version of a Codex launch as codex --version reports it', async () => {
+    const { config, root, project } = checkout();
+    const bin = path.join(root, 'codex-bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'codex'), '#!/bin/sh\necho "codex-cli 0.167.0"\n', { mode: 0o755 });
+    const previous = process.env.PATH;
+    process.env.PATH = `${bin}${path.delimiter}${previous ?? ''}`;
+    clearVersionCache();
+    cleanups.push(() => {
+      process.env.PATH = previous;
+      clearVersionCache();
+    });
+
+    expect((await observeLaunch({ config, tool: 'codex', cwd: project })).tool).toEqual({ version: '0.167.0' });
   });
 
   it('names the selection the last pull delivered for, with the workspace children it kept, never the current config', async () => {

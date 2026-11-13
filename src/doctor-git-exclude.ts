@@ -7,7 +7,7 @@ import {
 } from './git-exclude-delivered.js';
 import { localAgentGitExcludeNotices, readGitExcludeNotices, type GitExcludeNotices } from './git-exclude-notices.js';
 import { getDataHome, isUnmigratedDataHome, resolveGitExclude } from './types.js';
-import { execCommand } from './utils/exec.js';
+import { execCommand } from '@teamai/shared/exec';
 import { withoutGitRepositoryEnv } from './utils/git-env.js';
 
 // ─── doctor: teamai's delivered git exclude blocks (#915) ──────

@@ -20,7 +20,7 @@ vi.mock('../code-knowledge-recall.js', () => ({
 const { recall } = await import('../recall.js');
 const { resolveProjectDataHome, saveLocalConfigForScope } = await import('../config.js');
 const { readRecallQuality } = await import('../recall-quality.js');
-const { log } = await import('../utils/logger.js');
+const { log } = await import('@teamai/shared/log');
 
 const SESSION = 'recall-unreadable-session';
 const QUERY = 'deployment timeout';

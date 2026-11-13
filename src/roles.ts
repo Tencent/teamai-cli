@@ -1,7 +1,7 @@
 import path from 'node:path';
 import YAML from 'yaml';
-import { parseYaml } from './utils/yaml.js';
-import type { JsonValue } from './types.js';
+import { parseYaml } from '@teamai/shared/yaml';
+import type { JsonValue } from '@teamai/shared/json';
 import { z } from 'zod';
 import { ensureDir, writeFile } from './utils/fs.js';
 import {

@@ -9,7 +9,7 @@ import { FrontmatterDateSchema } from '../utils/frontmatter.js';
 import { assertSafePath } from '../utils/path-safety.js';
 import { createGit, createGitWithBlockTimeout, getDefaultBranch, PUSH_BRANCH_PREFIX } from '../utils/git.js';
 import { isInWriteRoot, listLearningFiles } from '../utils/learnings-roots.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { DefaultFolderParams } from '../default-folders.js';
 import { computeAllConfidence } from './confidence.js';
 

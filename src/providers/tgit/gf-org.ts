@@ -1,8 +1,8 @@
 import { z } from 'zod';
-import type { JsonValue } from '../../types.js';
+import type { JsonValue } from '@teamai/shared/json';
 import type { OrgRepoInfo } from '../types.js';
 import { getTGitToken, tgitAuthHeaders } from './rest-auth.js';
-import { log } from '../../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 const TGIT_API_BASE = 'https://git.woa.com/api/v3';
 const DEFAULT_PER_PAGE = 100;

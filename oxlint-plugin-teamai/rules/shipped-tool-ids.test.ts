@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { entriesUnder } from '@teamai/shared/entries-under';
 
 import { ruleHarness } from '../test/harness.ts';
 import { isProductionSource, isScriptSource } from '../utils.js';
@@ -116,7 +117,7 @@ describe('in this checkout', () => {
   it('scopes the production source the rule reads', () => {
     const scoped = ['src', ...fs.readdirSync(path.join(REPO, 'packages')).map((folder) => `packages/${folder}/src`)]
       .filter((dir) => fs.existsSync(path.join(REPO, dir)))
-      .flatMap((dir) => fs.readdirSync(path.join(REPO, dir), { recursive: true, encoding: 'utf8' }).map((file) => `${dir}/${file.split(path.sep).join('/')}`))
+      .flatMap((dir) => entriesUnder(path.join(REPO, dir)).map(({ relative }) => `${dir}/${relative.split(path.sep).join('/')}`))
       .filter((file) => /\.[cm]?tsx?$/.test(file) && isProductionSource(file));
 
     expect(scoped.length).toBeGreaterThan(500);

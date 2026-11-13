@@ -87,7 +87,7 @@ describe('a Claude Code session title', () => {
     const prompt = 'Use mysql-prod-7Hq2xVb9Lk and compare with mysql-prod-7Hq2xVb9Lk';
     fs.writeFileSync(file, `${JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: null, cwd: dir, sessionId, timestamp: '2026-10-20T10:00:00.000Z', message: { role: 'user', content: prompt } })}\n`);
     try {
-      const { session } = scrubSession(await new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', undefined)).readSession({ sessionId, filePath: file }), { secrets: { DSN: 'mysql-prod-7Hq2xVb9Lk' } });
+      const { session } = scrubSession(await new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', { kind: 'recorded', toolRoots: undefined })).readSession({ sessionId, filePath: file }), { secrets: { DSN: 'mysql-prod-7Hq2xVb9Lk' } });
 
       expect(session.title).toBe('Use <REDACTED:DSN> and compare with <REDACTED:DSN>');
     } finally {

@@ -279,15 +279,18 @@ export function archiveUnder(run: RunState, path: string): void {
 /** A pass of the run, current or archived, with the path of the instance it belongs to. */
 export type RunPass = StepPass & { step: string; within?: { step: string; pass: number } };
 
-/** Every pass of the run, current and archived, with each step's current pass as `current` reads it. */
+/**
+ * Every pass of the run, oldest first: those a loop archived, which an earlier round ran, then each step's passes and
+ * its current one as `currentPass` reads it. A later pass of one step and pass number is the one that ran last.
+ */
 export function runPasses(run: RunState, currentPass: (state: StepState) => StepPass | undefined = passOf): RunPass[] {
   return [
+    ...(run.archive ?? []),
     ...run.steps.flatMap((state) => {
       const current = currentPass(state);
 
       return [...state.passes ?? [], ...(current ? [current] : [])].map((pass) => ({ ...pass, step: state.id }));
     }),
-    ...(run.archive ?? []),
   ];
 }
 

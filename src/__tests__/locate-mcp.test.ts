@@ -210,6 +210,17 @@ const COMPLETE_ROWS: readonly MatrixRow[] = [
     source: 'the two Cursor roots are recorded independently: one recorded root moves only its own gate path',
   },
   {
+    tool: 'cursor', scope: 'project', platforms: ['darwin', 'linux'],
+    env: { CURSOR_DATA_DIR: '/cursor-data', CURSOR_CONFIG_DIR: '/cursor-config' },
+    userToolRoots: { 'cursor-data': '/opt/cursor-data', 'cursor-config': '/opt/cursor-config' },
+    writes: [{ at: '<root>/.cursor/mcp.json', key: ['mcpServers'] }],
+    existingDirs: ['<root>/.cursor'],
+    installed: { probe: '<root>/.cursor', met: true },
+    reads: [{ at: '<root>/.cursor/mcp.json', key: ['mcpServers'], when: 'workspaceUnder' }],
+    readGates: [{ kind: 'cursor-mcp-approval', projects: '/opt/cursor-data/projects', cliConfig: '/opt/cursor-config/cli-config.json', checkout: '<root>' }],
+    source: 'a root recorded outside the home directory holds the tool\'s own files, so the approval gate follows it as the session readers do',
+  },
+  {
     tool: 'cursor', scope: 'project', platforms: ['win32'],
     userToolRoots: { 'cursor-data': '~/.cursor-data', 'cursor-config': '~/.config/cursor' },
     writes: [{ at: '<root>/.cursor/mcp.json', key: ['mcpServers'] }],

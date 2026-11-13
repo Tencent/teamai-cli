@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import path from 'node:path';
 
 import { classifyShellCommand } from '../utils/shell-command.js';
-import { getUserHome } from '../utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 import { classifyToolCall } from '../utils/tool-call.js';
 
 const CWD = path.resolve('/w');

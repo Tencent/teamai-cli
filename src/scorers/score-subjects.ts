@@ -5,13 +5,13 @@
  */
 import { calibrationSubjects, type CalibrationSubject } from '../benchmark/calibration.js';
 import { planOfRun } from '../benchmark/run-plan.js';
-import { ATTEMPT_ENV } from '../launch-context.js';
 import { SessionWork } from '../session-flow/session-work.js';
 import type { LocalConfig } from '../types.js';
+import { markedAttempt } from '../workflow/attempt-marker.js';
 import { scoredPasses } from '../workflow/judge-work.js';
 import { findRunConfig } from '../workflow/run-location.js';
 import { stepDefinitions } from '../workflow/scope.js';
-import { installOwner, readRuns, RunIdSchema } from '../workflow/store.js';
+import { installOwner, readRuns } from '../workflow/store.js';
 import type { RunState } from '../workflow/types.js';
 import type { RunSubject } from './label.js';
 import { isEvidenceReady, removeSubjectEvidence, subjectEvidenceDirOf } from './evidence.js';
@@ -28,10 +28,10 @@ import { Subject } from './subject.js';
 
 /** The step path every path of the calling attempt's workflow starts with, when that attempt is a step of run `runId`. */
 function callerPrefix(env: NodeJS.ProcessEnv, run: RunState): string {
-  const [runPart, attempt] = (env[ATTEMPT_ENV] ?? '').split('/');
+  const marked = markedAttempt(env);
 
-  if (RunIdSchema.safeParse(runPart).data !== run.id || attempt === undefined) return '';
-  const leased = run.steps.find((state) => state.status === 'leased' && state.attempt === attempt);
+  if (marked?.run !== run.id) return '';
+  const leased = run.steps.find((state) => state.status === 'leased' && state.attempt === marked.attempt);
   const segments = leased?.id.split('.').slice(0, -1) ?? [];
 
   return segments.length === 0 ? '' : `${segments.join('.')}.`;

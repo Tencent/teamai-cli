@@ -1,4 +1,4 @@
-import fs from 'node:fs';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
 import path from 'node:path';
 import { packageRoot } from './package-info.js';
 import { parseScorer, type ScorerDefinition, type ScorerDiagnostic } from './scorers/definition.js';
@@ -58,7 +58,7 @@ function shipped(name: DefaultScorerName): string {
   const known = shippedTexts.get(name);
 
   if (known !== undefined) return known;
-  const content = fs.readFileSync(path.join(defaultsDir(), `${name}.md`), 'utf8');
+  const content = readRegularFileSync(path.join(defaultsDir(), `${name}.md`), 'utf8');
   shippedTexts.set(name, content);
 
   return content;

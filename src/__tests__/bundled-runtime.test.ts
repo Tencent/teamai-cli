@@ -15,7 +15,7 @@ vi.mock('@teamai/shared/log', () => ({
 }));
 
 import { ensureBundledRuntimeOnPath, resetBundledRuntimeCache, resolveWorkbuddyNode } from '../bundled-runtime.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 /** Lay out a WorkBuddy PortableGit runtime under the test home. */
 function makePortableGit(version: string, dirs = ['cmd', 'usr/bin', 'mingw64/bin'], dataRoot = '.workbuddy'): string {

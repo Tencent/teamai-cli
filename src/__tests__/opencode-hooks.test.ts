@@ -24,7 +24,7 @@ import {
 import { reconcileHooksToAllTools } from '../hooks.js';
 import { loadOpencodePlugin, loadPluginDefinition, loadV2Plugin } from './helpers/opencode-plugin.js';
 import { bridgedTeamHookFile } from '../bridged-team-hooks.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import * as builtinHooks from '../builtin-hooks.js';
 
 describe('resolveOpencodePluginDir', () => {

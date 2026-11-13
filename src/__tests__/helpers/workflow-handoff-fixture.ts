@@ -1,3 +1,4 @@
+import type { JsonValue } from '@teamai/shared/json';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -8,6 +9,7 @@ import { SyncManager, defaultSyncMeta, getRepoIdentity } from '../../session-flo
 import type { LocalConfig } from '../../types.js';
 import { syncScorersThenWorkflows } from '../../scorers/team-sync.js';
 import { leaseNext, reportAttempt, startRun } from '../../workflow/engine.js';
+import { resumeRun } from '../../workflow/handoff.js';
 import { updateRun } from '../../workflow/store.js';
 import type { DriverIdentity, RunState } from '../../workflow/types.js';
 import { ensureWorktree, fetchMissingCommits, headCommit } from '../../workflow/worktree.js';
@@ -257,9 +259,9 @@ export async function settle(member: Member, runId: string): Promise<void> {
 }
 
 /** Starts `workflow` in the member's business checkout, which fixes the run's base. */
-export async function startIn({ config, checkout }: Member, workflow: string): Promise<string> {
+export async function startIn({ config, checkout }: Member, workflow: string, inputs: Record<string, JsonValue> = {}): Promise<string> {
   const base = await headCommit(checkout);
-  const started = await startRun(config, workflow, {}, { secrets: await knownSecrets(config), ...(base ? { base } : {}), checkout });
+  const started = await startRun(config, workflow, inputs, { secrets: await knownSecrets(config), ...(base ? { base } : {}), checkout });
   if ('error' in started) throw new Error(started.error.message);
   return String(started.data.run);
 }
@@ -335,6 +337,15 @@ export async function start({ config }: Member): Promise<string> {
   const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   return String(started.data.run);
+}
+
+/**
+ * Takes the offer of a run `member` published back, as `workflow resume` does before it drives, so the member's own
+ * drivers lease its steps again.
+ */
+export async function takeBack(member: Member, runId: string): Promise<void> {
+  const resumed = await resumeRun(member.config, runId, { claim: false, checkout: member.checkout });
+  if (!resumed.ok) throw new Error(resumed.error.message);
 }
 
 /** Leases the next step to `member` and reports it succeeded; returns its id. */

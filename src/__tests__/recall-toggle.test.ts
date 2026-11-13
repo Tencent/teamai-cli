@@ -125,7 +125,7 @@ describe('recall toggle native agent cleanup', () => {
     await recallDisable({});
     expect(await fse.pathExists(skill)).toBe(false);
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'teamai-share-session', 'SKILL.md'))).toBe(true);
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     expect(vi.mocked(log.warn).mock.calls.flat().join('\n')).not.toContain('teamai-share-learnings');
   });
 

@@ -6,7 +6,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { hasPython, TYPED_TERMINAL } from '../helpers/in-terminal.js';
-import { installFakeCodex, pathWithoutCodex, readFakeCodexState } from '../helpers/fake-codex.js';
+import { signalPid } from '@teamai/shared/process-group';
+import { entriesUnder } from '@teamai/shared/entries-under';
+import { installFakeCodex, pathWithoutCodex, readFakeCodexState } from '@teamai/tool-codex/testing';
 
 /**
  * A team adds its internal Claude build as a tool instance in the team repo: `pull` delivers to its paths, a workflow
@@ -127,7 +129,7 @@ describe.skipIf(process.platform === 'win32')('tool instances through the CLI', 
       ended,
       stop: () => {
         const pid = path.join(dir, 'pid');
-        if (wrapper.exitCode === null && fs.existsSync(pid)) process.kill(Number(fs.readFileSync(pid, 'utf8')), 'SIGKILL');
+        if (wrapper.exitCode === null && fs.existsSync(pid)) signalPid(Number(fs.readFileSync(pid, 'utf8')), 'SIGKILL');
       },
     };
   }
@@ -412,7 +414,7 @@ describe.skipIf(process.platform === 'win32')('a tool instance that moves only i
     }
   };
   const write = (file: string, text: string): void => { fs.mkdirSync(path.dirname(path.join(repo, file)), { recursive: true }); fs.writeFileSync(path.join(repo, file), text); };
-  const filesUnder = (dir: string): string[] => (fs.existsSync(path.join(repo, dir)) ? fs.readdirSync(path.join(repo, dir), { recursive: true, encoding: 'utf8' }).sort() : []);
+  const filesUnder = (dir: string): string[] => (fs.existsSync(path.join(repo, dir)) ? entriesUnder(path.join(repo, dir)).map(({ relative }) => relative).sort() : []);
   const init = (agents: string): void => {
     const initialized = runCLI(['init', '--self', '--agent', agents, '--force']);
     expect(initialized.code, `${initialized.stdout}\n${initialized.stderr}`).toBe(0);

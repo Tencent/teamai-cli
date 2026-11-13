@@ -110,7 +110,7 @@ describe('the scoring of a run\'s passes, through the real CLI', () => {
     fs.writeFileSync(path.join(fixture.bin, 'claude'), CLAUDE.replace("if (process.argv.includes('--json-schema') || process.argv.includes('--version')) {",
       `if (process.argv.includes('--json-schema') && !fs.existsSync(${JSON.stringify(killed)})) {
   fs.writeFileSync(${JSON.stringify(killed)}, '');
-  process.kill(process.ppid, 'SIGKILL');
+  if (process.ppid > 1) process.kill(process.ppid, 'SIGKILL');
   process.exit(0);
 }
 if (process.argv.includes('--json-schema') || process.argv.includes('--version')) {`), { mode: 0o755 });

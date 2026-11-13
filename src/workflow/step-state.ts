@@ -3,9 +3,8 @@ import { AgentObservationSchema, ObservedEffortSchema, ObservedModelSchema, Used
 import { DriverSchema } from '../driver-identity.js';
 import { RunModeSchema } from '../launch-context.js';
 import { WorkOutcomeSchema } from '../outcomes.js';
-import { ACCESS_LEVELS } from '@teamai/tool-core/launch';
-import { CONFINED_LEVELS, ConfinedUsageSchema, CostSchema } from '../tool-launch/confined-level.js';
-import type { TokenUsage } from '../tool-launch/stdout.js';
+import { ACCESS_LEVELS, CONFINED_LEVELS } from '@teamai/tool-core/launch';
+import { ConfinedUsageSchema, CostSchema, type TokenUsage } from '@teamai/tool-core/stdout';
 import { PrUrlSchema, type PrUrl } from './pr-url.js';
 import { LimitSchema, TurnLimitsSchema, UnenforcedSchema } from './requirements.js';
 import type { LeasedConfined, RunState, StepLease, WorkflowFailure } from './types.js';
@@ -56,7 +55,7 @@ const LeasedConfinedSchema = z.object({ level: z.enum(CONFINED_LEVELS), tools: z
 const LeaseSchema: z.ZodType<StepLease> = z.object({
   attempt: z.string(), revision: z.number(), driver: DriverSchema, session: LeaseSessionSchema.optional(),
   unenforced: z.array(UnenforcedSchema).optional(), expiresAt: z.string().optional(), leasedAt: z.string().optional(), runMode: RunModeSchema.optional(),
-  limits: TurnLimitsSchema.optional(),
+  runtime: z.string().optional(), limits: TurnLimitsSchema.optional(),
   confined: LeasedConfinedSchema.optional(),
 });
 
@@ -99,6 +98,8 @@ const report = {
   tool: z.string().optional(),
   model: z.string().optional(),
   session: z.string().optional(),
+  /** The session of the lease the attempt continued, as its driver reported it: absent when it started a new one. */
+  resumed: SessionRefSchema.optional(),
   tokens: TokenUsageSchema.optional(),
   /** Milliseconds around the tool launch only, as the driver measured it. */
   durationMs: z.number().int().nonnegative().optional(),
@@ -119,6 +120,8 @@ const report = {
   unenforced: z.array(UnenforcedSchema).optional(),
   /** The run mode of the attempt's lease. Absent on passes settled before it was recorded, or whose driver sent none. */
   runMode: RunModeSchema.optional(),
+  /** The runtime of the driver definition the attempt ran on, or `host`, its host command slot (`StepLease.runtime`). */
+  runtime: z.string().optional(),
   /** What the attempt's own commands appended to its outcome file, such as a learning `contribute` recorded (#1387). */
   outcomes: z.array(WorkOutcomeSchema).optional().catch(undefined),
   /** The limit that ended the prompt's turn under `on_limit: end_turn`. */

@@ -1,0 +1,11 @@
+{
+  "name": "@teamai/runtime-protocol",
+  "private": true,
+  "type": "module",
+  "description": "Runtime protocol 1: the JSON lines teamai and a step runtime exchange over stdio, as types and zod schemas both sides parse with, the StepRuntime interface teamai drives every runtime through, and where a runtime keeps its state; bundled into teamai-cli and into each runtime's executable.",
+  "exports": {
+    ".": "./src/protocol.ts",
+    "./state-root": "./src/state-root.ts",
+    "./step-runtime": "./src/step-runtime.ts"
+  }
+}

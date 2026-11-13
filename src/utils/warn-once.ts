@@ -1,4 +1,4 @@
-import { log } from './logger.js';
+import { log } from '@teamai/shared/log';
 
 /**
  * Warnings already shown in this run. A pull resolves the manifests and each

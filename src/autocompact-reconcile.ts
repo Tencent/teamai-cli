@@ -2,15 +2,16 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import type { JsonValue, LocalConfig, TeamaiConfig } from './types.js';
+import type { LocalConfig, TeamaiConfig } from './types.js';
+import { type JsonValue, JsonValueSchema } from '@teamai/shared/json';
 import { descriptorOf, hookSyntaxOf, toolInstancesFor } from './tool-registry.js';
 import { TOOL_IDS, type ToolId, type ShippedDescriptor } from './tools.js';
-import { JsonValueSchema, isAgentExcluded, recordedToolRootDir, resolveAutoCompactTokens } from './types.js';
+import { isAgentExcluded, recordedToolRootDir, resolveAutoCompactTokens } from './types.js';
 import { toolHome, toolHomeOf } from './tool-home.js';
 import { withFileLock } from './update.js';
 import { pathExists, readFileSafe, readJsonObject, writeFile, writeJson, writeJsonAtomic, writeJsonKeepingComments } from './utils/fs.js';
 import type { JsonObjectRead } from './utils/fs.js';
-import { getUserHome } from './utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 
 // ─── Auto-compact reconcile engine ───────────────────────────
 //

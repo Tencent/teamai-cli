@@ -75,7 +75,7 @@ vi.mock('../update.js', () => ({
 import { pull } from '../pull.js';
 import { detectProjectConfig, loadLocalConfigForScope, loadStateForScope, loadTeamConfig, saveStateForScope } from '../config.js';
 import { getHeadRev } from '../utils/git.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { renderForTool, serializeAgentYaml, type AgentSpec } from '../resources/agent-format.js';
 import { ModelProfileSchema, resolveProfile, type ModelAgent } from '../models/profile.js';
 import { restoreModelProfiles, switchModelProfile } from '../models/switch.js';

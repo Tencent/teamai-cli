@@ -1,7 +1,8 @@
 import { hookToolPathsForConfig, parseUserStats } from './types.js';
 import os from 'node:os';
 import path from 'node:path';
-import { readFile, realpath, stat } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import { isDeepStrictEqual } from 'node:util';
 import matter from 'gray-matter';
 import { z } from 'zod';
@@ -15,7 +16,7 @@ import { getHeadRev, getHeadCommit, createGit, getDefaultBranch, completeWorktre
 import { publishQueuedLearnings } from './utils/learnings-publish.js';
 import { pendingLearningsDir } from './utils/pending-learnings.js';
 import { indexableLearningsRoots } from './utils/learnings-roots.js';
-import { log, spinner } from './utils/logger.js';
+import { log, spinner } from '@teamai/shared/log';
 import { resolveRunMode } from './launch-context.js';
 import { askQuestion, closePrompt, isInteractive } from './utils/prompt.js';
 import { DetachedRecoveryError, transitionTeamRepo, teamRefBlocker, teamRefNotice, removedTeamResources, type RemovedTeamResources } from './team-ref.js';
@@ -48,7 +49,7 @@ import {
   blockingEntries, deliveredSkillFiles, describeMembersDirLeft, removeDelivered, holdsNonRegular, judgeCopy, judgeRemoval, keepsTrackedCopy, notTeamaisReason, openLedger, recordedUnder, reportKept,
   type DeliveredHashes, type DeliveryLedger,
 } from './resources/delivered-copies.js';
-import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
+import { BUILTIN_SKILL_NAMES } from './cli-skill-names.js';
 import type { AgentModelRecords, CodexBuildSkew, CopyOrigin, GlobalOptions, ResourceType, ResourceItem, TeamaiConfig, LocalConfig, State } from './types.js';
 import {
   getUserLearningsDir,
@@ -89,7 +90,7 @@ import { declaredSecretKeys } from './resources/secrets.js';
 import { envShVariables, keptFromUserScope, resolvesTeamEnv, resolveTeamEnv, variablesKeptWarning, type TeamEnv } from './env-resolution.js';
 import { reservedTeamEnvWarning } from './env-reserved.js';
 import { describeEnvAdvisory, envAdvisories } from './env-advisories.js';
-import { getUserHome } from './utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 import { acquireLock, releaseLock } from './update.js';
 import { mirrorLearnings } from './utils/learnings-mirror.js';
 import { withTimeout } from './utils/async.js';
@@ -296,7 +297,7 @@ async function refreshTeamRepo(
   let submodulesChanged = false;
 
   try {
-    const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+    const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
     if (teamConfig?.submodules) {
       // Capture `git submodule status` before and after the update. The parent
@@ -356,7 +357,7 @@ async function refreshTeamRepo(
 
 /** Opt-out of stat commits: the member's `usageReportEnabled`, else teamai.yaml `usageReport`. */
 async function usageReportDisabled(scope: LocalConfig): Promise<boolean> {
-  return !isUsageReportEnabled(scope, (await loadTeamConfig(scope.repo.localPath)) ?? {});
+  return !isUsageReportEnabled(scope, (await loadTeamConfig(scope.repo.localPath, scope)) ?? {});
 }
 
 // Deployment adds a CONTRIBUTORS file that the team source may not have; ignore it
@@ -1456,7 +1457,7 @@ async function excludeWorkspaceInstructions(localConfig: LocalConfig, options: G
   if (localConfig.scope !== 'project' || !projectRoot) return;
 
   try {
-    const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+    const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
     const folders: string[] = [];
 
     for (const [tool, paths] of Object.entries(teamConfig ? scopedToolPaths(teamConfig, localConfig) : {})) {
@@ -1507,7 +1508,7 @@ async function grantDeliveredFolders(localConfig: LocalConfig, options: GlobalOp
   try {
     const state = await loadStateForScope(localConfig);
     const record = await deliveringCheckoutRecord(localConfig, state);
-    const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+    const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
     if (!record || !teamConfig) return;
     const { DeliveredFolders } = await import('./resources/delivered-folders.js');
@@ -2017,7 +2018,7 @@ async function pullForScope(
 
   // Read teamai.yaml only after the refresh: a clone that lacks it must still
   // be able to fetch it from the remote instead of skipping forever.
-  const freshConfig = await loadTeamConfig(localConfig.repo.localPath);
+  const freshConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
   if (!freshConfig) {
     if (result) { result.resourceSyncFailed = true; result.delivery = 'failed'; }
@@ -3499,7 +3500,7 @@ export async function resolveInstructionBlocks(
   };
 
   try {
-    const cultureContent = await readFile(culturePath, 'utf8');
+    const cultureContent = await readRegularFile(culturePath, 'utf8');
     blocks.culture = compileCulture(cultureContent) ?? undefined;
 
     if (blocks.culture === undefined) {
@@ -3710,7 +3711,7 @@ async function legacyHooksNeedReinject(): Promise<boolean> {
  */
 async function reinjectLegacyHooks(localConfig: LocalConfig): Promise<void> {
   log.debug('Auto-migrating hooks to dispatch format...');
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
   if (!teamConfig) return;
   const { codexTrustPolicy, injectHooksToAllTools } = await import('./hooks.js');
@@ -4477,7 +4478,7 @@ export async function syncDeliveredGitExclude(
   const state = await loadStateForScope(localConfig);
   const record = state.lastPullByWorkspace?.[key];
   const paths = await recorder.merge(record?.gitExcludePaths);
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
   const enabled = resolveGitExclude(localConfig, teamConfig);
   // The docs search whitelist follows the setting; unknown, it stays as it is too.
   const whitelist = enabled === undefined ? null : await keepDocsSearchWhitelist(localConfig, teamConfig, enabled, paths.docs ?? []);
@@ -4532,7 +4533,7 @@ export async function syncDeliveredGitExclude(
 async function reportTeamaiOnlyFiles(
   localConfig: LocalConfig, recorder: DeliveryRecorder, options: Pick<GlobalOptions, 'silent' | 'gitHook' | 'dryRun'>,
 ): Promise<string[]> {
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
   if (!teamConfig || !localConfig.projectRoot) return [];
   let judged: SharedFileJudgement[];
@@ -4596,7 +4597,7 @@ async function previewDeliveredGitExclude(localConfig: LocalConfig, recorder: De
   if (!key || !localConfig.projectRoot) return;
   const state = await loadStateForScope(localConfig);
   const paths = await recorder.merge(state.lastPullByWorkspace?.[key]?.gitExcludePaths);
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
   const enabled = resolveGitExclude(localConfig, teamConfig);
 
   if (enabled === undefined) {
@@ -4797,7 +4798,7 @@ async function reconcileHooksAllScopes(
     const scopeRecorder = localConfig === projectConfig ? recorder : undefined;
 
     try {
-      const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+      const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
       if (!teamConfig) {
         scopeRecorder?.failed('hooks');
@@ -4931,7 +4932,7 @@ async function trustCodexAllScopes(
 
   for (const localConfig of scopes) {
     try {
-      const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+      const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
       if (!teamConfig) continue;
       const { reportCodexTrust, trustCodexForScope } = await import('./hooks.js');
@@ -4968,7 +4969,7 @@ async function reconcileMcpAllScopes(
 
   for (const localConfig of scopes) {
     try {
-      const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+      const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
       if (!teamConfig) {
         errors.push(`[${installScopeName(localConfig.scope)}] MCP: team config could not be loaded`);
@@ -5035,7 +5036,7 @@ async function reportEnvAdvisories(
 
   for (const localConfig of scopes) {
     try {
-      const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+      const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
       const teamEnv = await scopeEnv(localConfig, teamEnvs);
 
       for (const advisory of await envAdvisories(localConfig, teamConfig, teamEnv)) log.warn(describeEnvAdvisory(advisory));
@@ -5095,7 +5096,7 @@ async function reconcileAutoCompact(localConfig: LocalConfig | null, options: Gl
   if (options.dryRun || !localConfig) return;
 
   try {
-    const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+    const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
     if (!teamConfig) return;
     const { reconcileAutoCompactLocked } = await import('./autocompact-reconcile.js');
@@ -5150,7 +5151,7 @@ async function reconcileCoAuthorAllScopes(
     // stands in the preview of the delivered git exclude block (#915).
     if (projectConfig && recorder) {
       try {
-        const teamConfig = await loadTeamConfig(projectConfig.repo.localPath);
+        const teamConfig = await loadTeamConfig(projectConfig.repo.localPath, projectConfig);
         const { coAuthorLocalSettingsFiles } = await import('./coauthor-reconcile.js');
 
         const locals = teamConfig
@@ -5173,7 +5174,7 @@ async function reconcileCoAuthorAllScopes(
     const scopeRecorder = localConfig === projectConfig ? recorder : undefined;
 
     try {
-      const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+      const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
       if (!teamConfig) {
         scopeRecorder?.failed('coauthor');

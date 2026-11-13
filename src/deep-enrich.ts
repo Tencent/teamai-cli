@@ -1,13 +1,14 @@
-import { readFile, writeFile, readdir, mkdir, unlink, lstat, rename } from 'node:fs/promises';
+import { writeFile, readdir, mkdir, unlink, lstat, rename } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import { z } from 'zod';
 
 import { pathExists } from './utils/fs.js';
-import { lenientList } from './utils/json.js';
-import { log } from './utils/logger.js';
+import { lenientList } from '@teamai/shared/json';
+import { log } from '@teamai/shared/log';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 const PROGRESS_PHASES = ['pending', 'components', 'architecture', 'graph', 'ai-graph', 'index-enhance', 'done'] as const;
 
@@ -79,7 +80,7 @@ interface EnrichContext {
 
 async function readFileSafe(filePath: string): Promise<string> {
   try {
-    return await readFile(filePath, 'utf-8');
+    return await readRegularFile(filePath, 'utf-8');
   } catch {
     return '';
   }
@@ -184,7 +185,7 @@ async function loadProgress(evidenceDir: string, project: string, allComponents:
   const p = progressPath(evidenceDir);
 
   try {
-    const raw = await readFile(p, 'utf-8');
+    const raw = await readRegularFile(p, 'utf-8');
     const parsed = ProgressStateSchema.safeParse(JSON.parse(raw)).data;
 
     if (parsed?.project === project) return parsed;

@@ -1,26 +1,27 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { isBareCommandName } from '@teamai/shared/cli-path';
 import { INSTANCE_KEYS, type ToolInstance, type ToolInstanceHome } from '@teamai/tool-core/instance';
-import { isSafeNamespaceSegment } from './manifest-schema.js';
-import { resolveNamespacedItems, type NamespaceCandidate } from './namespace-resolver.js';
+import { FOLDER_MARKERS } from './folder-markers.js';
+import { isSymlink, RESOURCE_LAYOUTS, Resources, type TeamTree } from './resources/resolver.js';
 import { isSessionPlatform } from './session-flow/adapters/platform-facts.js';
 import { instanceHomeAfterInit, instanceHomeDir, isSameDirOn, realHost, toolHome, type Host } from './tool-home.js';
 import { INSTANCE_BASES, isInstanceBase, isToolId, TOOL_ORDER, toolInstancesFor, toolOf, useToolInstances } from './tool-registry.js';
 import type { ToolId } from './tools.js';
 import { DEFAULT_TOOL_PATHS, TOOL_ROOT_FIELDS, getTeamaiHomeDir, getTrustDir, recordedToolRootDir, RELOCATABLE_TOOLS, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type Scope, type TeamaiConfig } from './types.js';
 import { writeJsonAtomic } from './utils/fs.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { errorOnce, warnOnce } from './utils/warn-once.js';
-import { parseYaml } from './utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
+import { readRegularFile, readRegularFileSync } from '@teamai/shared/regular-file';
 
 // ─── Tool instances ──────────────────────────────────────
 //
 //  A team adds a tool as an instance of a shipped one, in tools/<name>.yaml of the team repo (or tools/<namespace>/),
-//  and a member in ~/.teamai/tools/<name>.yaml, which teamai reads and never writes. An instance sets another command,
+//  and a member in ~/.teamai/tools/<name>.yaml, which teamai reads and never writes. Either may keep it as a folder
+//  tools/<name>/TOOL.yaml instead, read the same way. An instance sets another command,
 //  home and paths, and no code: it keeps the formats of the tool it extends. A member's own instance replaces the
 //  team's of the same name. An instance named like a shipped tool adjusts it, and sets only paths.
 //
@@ -42,6 +43,9 @@ interface DeclaredToolFile {
   /** The sha256 of that file: a person accepts a team instance's command at this content. */
   readonly revision: string;
 }
+
+/** The marker of an instance kept as a folder, `tools/<name>/TOOL.yaml`, which takes the folder's name. */
+const TOOL_MARKER = FOLDER_MARKERS.tools.marker;
 
 /** A tool of its own over a shipped one, under a name of its own, with its own command, home or paths. */
 export interface ResolvedToolInstance extends DeclaredToolFile, ToolInstance<ToolId> {
@@ -145,9 +149,9 @@ function parseToolInstance({ file, text, source, location }: { file: string; tex
       : `extends: an instance extends ${INSTANCE_BASES.join(' or ')}; teamai does not support an instance of ${base} or any other tool yet`);
   }
 
-  const stem = path.basename(file, '.yaml');
+  const stem = path.basename(file) === TOOL_MARKER ? path.basename(path.dirname(file)) : path.basename(file, '.yaml');
 
-  if (fields.name !== stem) return refused(file, `its name is "${fields.name}", and an instance is named after its file, "${stem}"`);
+  if (fields.name !== stem) return refused(file, `its name is "${fields.name}", and an instance is named after its file or its folder, "${stem}"`);
   const adjusts = fields.name === base ? (['command', 'home'] as const).find((key) => fields[key] !== undefined) : undefined;
 
   if (adjusts !== undefined) {
@@ -190,89 +194,122 @@ async function readText(file: string): Promise<string | undefined> {
   try {
     const stat = await fs.lstat(file);
 
-    return stat.isFile() ? await fs.readFile(file, 'utf8') : undefined;
+    return stat.isFile() ? await readRegularFile(file, 'utf8') : undefined;
   } catch {
     return undefined;
   }
 }
 
-async function yamlFiles(dir: string): Promise<string[]> {
+/**
+ * The instance files in `dir`: each `<name>.yaml`, and each `<name>/TOOL.yaml`. A name kept both ways is logged and
+ * neither is read.
+ */
+async function instanceFiles(dir: string): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+  const files = new Map(entries.filter((entry) => entry.isFile() && entry.name.endsWith('.yaml')).map((entry) => [entry.name.slice(0, -'.yaml'.length), path.join(dir, entry.name)]));
+  const folders = entries.filter((entry) => entry.isDirectory()).map((entry) => [entry.name, path.join(dir, entry.name, TOOL_MARKER)] as const);
+  const marked = await Promise.all(folders.map(async ([, marker]) => (await fs.lstat(marker).catch(() => undefined))?.isFile() === true));
 
-  return entries.filter((entry) => entry.isFile() && entry.name.endsWith('.yaml')).map((entry) => entry.name).sort();
-}
+  for (const [index, [name, marker]] of folders.entries()) {
+    if (!marked[index]) continue;
+    const file = files.get(name);
 
-async function namespaceDirs(dir: string): Promise<string[]> {
-  const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    if (file === undefined) {
+      files.set(name, marker);
+      continue;
+    }
 
-  return entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith('.') && isSafeNamespaceSegment(entry.name)).map((entry) => entry.name).sort();
+    errorOnce(`Tool instance "${name}" is defined twice in your own tools (${file} and ${marker}), so teamai uses neither. Keep one.`);
+    files.delete(name);
+  }
+
+  return [...files.values()].sort();
 }
 
 /** Each instance in `files`, parsed; one that does not parse is logged and left out. */
-async function readInstances(files: readonly string[], source: InstanceSource, locationOf: (file: string) => string = (file) => file): Promise<DeclaredTool[]> {
+async function readInstances(files: readonly string[], source: InstanceSource): Promise<DeclaredTool[]> {
   const read = await Promise.all(files.map(async (file) => {
     const text = await readText(file);
 
-    return text === undefined ? undefined : parseToolInstance({ file, text, source, location: locationOf(file) });
+    return text === undefined ? undefined : parseToolInstance({ file, text, source, location: file });
   }));
 
-  return read.flatMap((parsed) => {
-    if (parsed === undefined) return [];
+  return read.flatMap(usable);
+}
 
-    if (!parsed.ok) {
-      errorOnce(parsed.problem);
+/** The instance `parsed` gives, or none after logging why it is not used. */
+function usable(parsed: ReturnType<typeof parseToolInstance> | undefined): DeclaredTool[] {
+  if (parsed === undefined) return [];
 
-      return [];
-    }
+  if (!parsed.ok) {
+    errorOnce(parsed.problem);
 
-    return [parsed.instance];
-  });
+    return [];
+  }
+
+  return [parsed.instance];
+}
+
+/** The team's layers a scope reads its instances from, and which scope that is: a workspace's instance replaces the user scope's. */
+export interface TeamToolTree extends TeamTree {
+  readonly scope: Scope | undefined;
+  /** Whether it is read for a member, whose namespaces and scope it has, rather than for a field of teamai.yaml alone. */
+  readonly isForMember: boolean;
 }
 
 /**
- * The instances of the team repo at `repoPath`: `tools/<name>.yaml`, and `tools/<namespace>/<name>.yaml`, which
- * replaces the root one. Two of one name in two namespaces are a conflict, and neither is used.
+ * The instances of the team tree `team`: `tools/<name>.yaml`, and `tools/<namespace>/<name>.yaml` for each namespace
+ * active for the member, which replaces the root one. Two of one name in two active namespaces are a conflict, and
+ * neither is used; an instance an active namespace replaces is not used even when the namespace's does not parse. A
+ * `tools` folder that is a link gives none: what it names is not the team repo's.
  */
-export async function teamToolInstances(repoPath: string): Promise<DeclaredTool[]> {
-  const root = path.join(repoPath, 'tools');
-  const namespaces = await namespaceDirs(root);
-  const places: Array<{ namespace: string | null; dir: string }> = [{ namespace: null, dir: root }, ...namespaces.map((namespace) => ({ namespace, dir: path.join(root, namespace) }))];
+export async function teamToolInstances(team: TeamTree): Promise<DeclaredTool[]> {
+  if (await isSymlink(path.join(team.root, RESOURCE_LAYOUTS.tools.dir))) {
+    errorOnce('tools in the team repo is a link, and teamai reads the team\'s tool instances only from a folder the team repo holds, so it uses none of them. Replace the link with the folder, push it, and run teamai pull.');
 
-  const candidates = (await Promise.all(places.map(async ({ namespace, dir }) => {
-    const instances = await readInstances((await yamlFiles(dir)).map((name) => path.join(dir, name)), 'team', (file) => path.relative(repoPath, file).split(path.sep).join('/'));
+    return [];
+  }
 
-    return instances.map((instance): NamespaceCandidate<DeclaredTool> => ({ name: instance.name, source: path.relative(repoPath, instance.file), namespace, value: instance }));
-  }))).flat();
+  const { resolutions, diagnostics } = await Resources.survey(RESOURCE_LAYOUTS.tools, { team });
 
-  return resolveWithoutConflicts(candidates, namespaces);
+  for (const diagnostic of diagnostics) if (diagnostic.kind === 'invalid') errorOnce(diagnostic.message);
+
+  const read = await Promise.all(resolutions.map(async (resolution) => {
+    if (resolution.kind === 'conflict') {
+      log.error(`Tool instance "${resolution.name}" is defined twice in the team repo (${resolution.first.source.path} and ${resolution.second.source.path}), so teamai uses neither. Keep one, push it, and run teamai pull.`);
+
+      return undefined;
+    }
+
+    const { source } = resolution.item;
+    const [file, location] = source.kind === 'folder' ? [path.join(source.full, TOOL_MARKER), `${source.path}${TOOL_MARKER}`] : [source.full, source.path];
+    const text = await readText(file);
+
+    return text === undefined ? undefined : parseToolInstance({ file, text, source: 'team', location });
+  }));
+
+  return read.flatMap(usable);
 }
 
-/** The items `candidates` resolve to; a name two of them conflict on is logged and left out, and the rest resolve. */
-function resolveWithoutConflicts(candidates: readonly NamespaceCandidate<DeclaredTool>[], namespaces: readonly string[]): DeclaredTool[] {
-  const resolution = resolveNamespacedItems(candidates, namespaces);
-
-  if (resolution.kind === 'resolved') return resolution.items.map((item) => item.value);
-  log.error(`Tool instance "${resolution.name}" is defined twice in the team repo (${resolution.first.source} and ${resolution.second.source}), so teamai uses neither. Keep one, push it, and run teamai pull.`);
-
-  return resolveWithoutConflicts(candidates.filter((candidate) => candidate.name !== resolution.name), namespaces);
-}
+/** The name of the member's own instance directory in `~/.teamai/`. */
+export const PERSONAL_TOOLS_DIR = 'tools';
 
 /** The member's own instance directory, `~/.teamai/tools/`: teamai reads it and never writes it. */
 export function personalToolsDir(): string {
-  return path.join(getTeamaiHomeDir(), 'tools');
+  return path.join(getTeamaiHomeDir(), PERSONAL_TOOLS_DIR);
 }
 
 /** The member's own instances, from `personalToolsDir()`. */
 export async function personalToolInstances(): Promise<DeclaredTool[]> {
   const dir = personalToolsDir();
 
-  return readInstances((await yamlFiles(dir)).map((name) => path.join(dir, name)), 'personal');
+  return readInstances(await instanceFiles(dir), 'personal');
 }
 
 // ─── The instances this process sees ─────────────────────
 
-/** The instances read from each team repo this process loaded, by repo path. */
-const teamByRepo = new Map<string, readonly DeclaredTool[]>();
+/** The instances read from each team repo this process loaded, by the repo's real path, with the scope that repo serves. */
+const teamByRepo = new Map<string, { readonly scope: Scope | undefined; readonly instances: readonly DeclaredTool[]; readonly isForMember: boolean }>();
 let personal: readonly DeclaredTool[] = [];
 let readsPersonal = true;
 
@@ -310,25 +347,34 @@ export function judgeInstanceHomesAsInit(): void {
 }
 
 /**
- * The instances the files declare, the member's own over the team's, before any is refused for its home. One name two
- * team repos define apart is left out.
+ * The instances the files declare, before any is refused for its home: the member's own over the team's, and a
+ * workspace's team instance over the user scope's of the same name, as its driver definitions do. One name two team
+ * repos of one scope define apart is left out.
  */
 function declaredTable(): Map<string, DeclaredTool> {
   const table = new Map<string, DeclaredTool>();
-  const conflicted = new Set<string>();
+  const repos = [...teamByRepo.values()];
 
-  for (const instance of [...teamByRepo.values()].flat()) {
-    const known = table.get(instance.name);
+  for (const scope of ['user', 'project'] as const) {
+    const ofScope = repos.filter((repo) => (repo.scope ?? 'user') === scope).flatMap((repo) => repo.instances);
+    const conflicted = new Set<string>();
+    const own = new Map<string, DeclaredTool>();
 
-    if (known === undefined) table.set(instance.name, instance);
-    else if (known.revision !== instance.revision) conflicted.add(instance.name);
-  }
+    for (const instance of ofScope) {
+      const known = own.get(instance.name);
 
-  for (const name of conflicted) {
-    const files = [...teamByRepo.values()].flat().filter((instance) => instance.name === name).map((instance) => instance.file);
+      if (known === undefined) own.set(instance.name, instance);
+      else if (known.revision !== instance.revision) conflicted.add(instance.name);
+    }
 
-    warnOnce(`Tool instance "${name}" is defined apart in two team repos (${files.join(' and ')}), so teamai uses neither. Make them the same, or rename one.`);
-    table.delete(name);
+    for (const name of conflicted) {
+      const files = ofScope.flatMap((instance) => (instance.name === name ? [instance.file] : []));
+
+      warnOnce(`Tool instance "${name}" is defined apart in two team repos (${files.join(' and ')}), so teamai uses neither. Make them the same, or rename one.`);
+      own.delete(name);
+    }
+
+    for (const [name, instance] of own) table.set(name, instance);
   }
 
   if (readsPersonal) for (const instance of personal) table.set(instance.name, instance);
@@ -506,12 +552,20 @@ export function instanceReadPath(instance: DeclaredTool, { from, relative }: { f
 }
 
 /**
- * `config`, the team config of the repo at `repoPath`, with the instances of that repo and the member's own read,
+ * `config`, the team config of the tree `tree`, with the instances of that tree and the member's own read,
  * every lookup of a tool name seeing them, and their tool paths in `toolPaths`. A member's instance replaces the team's.
  */
-export async function withToolInstances(repoPath: string, config: TeamaiConfig): Promise<TeamaiConfig> {
-  const [team, own] = await Promise.all([teamToolInstances(repoPath), readsPersonal ? personalToolInstances() : []]);
-  teamByRepo.set(repoPath, team);
+export async function withToolInstances(tree: TeamToolTree, config: TeamaiConfig): Promise<TeamaiConfig> {
+  const [team, own, repo] = await Promise.all([
+    teamToolInstances(tree),
+    readsPersonal ? personalToolInstances() : [],
+    // Two spellings of one repo, through a link or /tmp against /private/tmp, are one repo.
+    fs.realpath(tree.root).catch(() => path.resolve(tree.root)),
+  ]);
+
+  // A read for no member never replaces the member's instances, which another loader of this process published.
+  if (tree.isForMember || teamByRepo.get(repo)?.isForMember !== true) teamByRepo.set(repo, { scope: tree.scope, instances: team, isForMember: tree.isForMember });
+
   personal = own;
 
   if ([...team, ...own].some((instance) => instance.home !== undefined)) memberToolRoots = await realHost().userToolRoots();
@@ -535,14 +589,17 @@ export async function withToolInstances(repoPath: string, config: TeamaiConfig):
   return { ...config, toolPaths };
 }
 
-// ─── Accepting a team instance's command ─────────────────
+// ─── Accepting a team file's command ─────────────────────
 //
-//  A team instance that sets `command` runs a program a teammate named on the member's machine. Before its first run
-//  with a given file content, a person accepts that content: an attended run asks, and an unattended one refuses.
-//  A member's own instance, and one that sets only home or paths, need no acceptance.
+//  A team file that names a command, a tool instance's `command` or a step runtime's `entry: { command }`, runs a
+//  program a teammate named on the member's machine. Before its first run with a given file content, a person accepts
+//  that content: an attended run asks, and an unattended one refuses. A member's own file, and an instance that sets
+//  only home or paths, need no acceptance.
 //
 
-const TrustFileSchema = z.object({ accepted: z.array(z.object({ name: z.string(), revision: z.string(), acceptedAt: z.string() })) });
+const TrustFileSchema = z.object({
+  accepted: z.array(z.object({ kind: z.literal('runtime').optional(), name: z.string(), revision: z.string(), acceptedAt: z.string() })),
+});
 
 function trustFile(): string {
   return path.join(getTrustDir(), 'tools.json');
@@ -561,12 +618,99 @@ function trustOf(text: string | undefined): TrustFile {
 
 const TRUST_LOCK_WAIT = { attempts: 50, delayMs: 100 };
 
-async function readTrust(): Promise<TrustFile> {
-  return trustOf(await fs.readFile(trustFile(), 'utf8').catch(() => undefined));
+/**
+ * A command a file of the team repo names, accepted at that file's content (`revision`, its sha256): a tool instance's,
+ * which runs in place of the tool it extends, or a step runtime's. One name of each kind is accepted at one content.
+ */
+export type TeamCommand =
+  | { readonly kind: 'tool'; readonly name: string; readonly command: string; readonly file: string; readonly revision: string; readonly extends: string }
+  | { readonly kind: 'runtime'; readonly name: string; readonly command: string; readonly file: string; readonly revision: string };
+
+/** Why a team file's command did not run: the person said no, closed the question unanswered, or was not there to ask. */
+export interface UnacceptedTeamCommand {
+  readonly ok: false;
+  readonly reason: 'declined' | 'unanswered' | 'unattended';
+  readonly message: string;
 }
 
-function isAccepted(trust: TrustFile, instance: DeclaredTool): boolean {
-  return trust.accepted.some((entry) => entry.name === instance.name && entry.revision === instance.revision);
+function labelOf(subject: TeamCommand): string {
+  switch (subject.kind) {
+    case 'tool':
+      return `Tool "${subject.name}"`;
+    case 'runtime':
+      return `Step runtime "${subject.name}"`;
+    default: {
+      const unhandled: never = subject;
+
+      return unhandled;
+    }
+  }
+}
+
+/** Whether `entry` of the trust file accepts `subject` at its content. */
+function accepts(entry: z.infer<typeof TrustFileSchema>['accepted'][number], subject: TeamCommand): boolean {
+  return (entry.kind ?? 'tool') === subject.kind && entry.name === subject.name;
+}
+
+/**
+ * Whether the command of `subject` may run here: a person must have accepted its file's content on this machine. `ask`,
+ * given when a person at a terminal answers, puts the question to them and returns the line they typed, or nothing once
+ * the run stopped asking; a yes is recorded, and anything else declines. With no one to ask, an unaccepted content is
+ * refused, naming what to run.
+ */
+export async function acceptTeamCommand(
+  subject: TeamCommand,
+  { ask }: { ask: ((question: string) => Promise<string | undefined>) | undefined },
+): Promise<{ ok: true } | UnacceptedTeamCommand> {
+  const trust = await readTrust();
+
+  if (trust.accepted.some((entry) => accepts(entry, subject) && entry.revision === subject.revision)) return { ok: true };
+  const short = subject.revision.slice(0, 12);
+  const label = labelOf(subject);
+
+  if (ask) {
+    const inPlaceOf = subject.kind === 'tool' ? `, in place of ${subject.extends}` : '';
+
+    const question = `${label} comes from the team repo (${subject.file}, content ${short}), which you have not accepted on this machine. `
+      + `It runs ${subject.command} as you, with your files${inPlaceOf}. Review the file before you accept it.\nRun it? [y/N] `;
+
+    const answer = await ask(question);
+
+    if (/^y(es)?$/i.test(answer?.trim() ?? '')) {
+      const entry = { ...(subject.kind === 'runtime' && { kind: subject.kind }), name: subject.name, revision: subject.revision, acceptedAt: new Date().toISOString() };
+      // Read again under the lock: another step may have accepted another command while this one asked. Loaded here,
+      // since update.js reaches config.js, which loads this module on every hook.
+      const { withFileLock } = await import('./update.js');
+
+      const recorded = await withFileLock(`${trustFile()}.lock`, TRUST_LOCK_WAIT, async () => {
+        const current = await readTrust();
+
+        await writeJsonAtomic(trustFile(), { accepted: [...current.accepted.filter((kept) => !accepts(kept, subject)), entry] });
+      });
+
+      if (!recorded.held) log.warn(`${label} runs as you accepted it, but ${trustFile()} stayed locked by another teamai process, so the next run asks again.`);
+
+      return { ok: true };
+    }
+
+    return { ok: false, reason: answer === undefined ? 'unanswered' : 'declined', message: `${label} (content ${short}) was not accepted, so ${subject.command} did not run.` };
+  }
+
+  return {
+    ok: false,
+    reason: 'unattended',
+    message: `${label} comes from the team repo (${subject.file}, content ${short}) and runs ${subject.command}, which no one has accepted on this machine, and an unattended run does not ask. `
+      + 'Run the same command once in a terminal, attended, to review and accept it, then run it unattended again.',
+  };
+}
+
+async function readTrust(): Promise<TrustFile> {
+  return trustOf(await readRegularFile(trustFile(), 'utf8').catch(() => undefined));
+}
+
+/** The `tool` subject of `instance`'s command, which acceptance records by its name and file content. */
+function toolCommandOf(instance: ResolvedToolInstance & { readonly command: string }): TeamCommand {
+  return { kind: 'tool', name: instance.name, command: instance.command, file: instance.file, revision: instance.revision, extends: instance.extends };
 }
 
 /**
@@ -579,12 +723,14 @@ export function acceptedCommandOf(instance: DeclaredTool): string | undefined {
   let text: string | undefined;
 
   try {
-    text = readFileSync(trustFile(), 'utf8');
+    text = readRegularFileSync(trustFile(), 'utf8');
   } catch {
     text = undefined;
   }
 
-  return isAccepted(trustOf(text), instance) ? instance.command : undefined;
+  const subject = toolCommandOf({ ...instance, command: instance.command });
+
+  return trustOf(text).accepted.some((entry) => accepts(entry, subject) && entry.revision === instance.revision) ? instance.command : undefined;
 }
 
 /** Why a team instance's command did not run. */
@@ -607,48 +753,14 @@ export function askingOnce(ask: (question: string) => Promise<string | undefined
 }
 
 /**
- * Whether `instance`'s command may run here. Only a team instance that sets one needs it: a person must have accepted
- * its file's content on this machine. `ask`, given when a person at a terminal answers, puts the question to them and
- * returns the line they typed, or nothing once the run stopped asking; a yes is recorded, and anything else declines.
- * With no one to ask, an unaccepted content is refused, naming what to run.
+ * Whether `instance`'s command may run here (`acceptTeamCommand`). Only a team instance that sets one needs it.
  */
 export async function acceptToolCommand(
   instance: DeclaredTool,
   { ask }: { ask: ((question: string) => Promise<string | undefined>) | undefined },
 ): Promise<{ ok: true } | UnacceptedCommand> {
   if (instance.source !== 'team' || instance.command === undefined) return { ok: true };
-  const trust = await readTrust();
+  const accepted = await acceptTeamCommand(toolCommandOf({ ...instance, command: instance.command }), { ask });
 
-  if (isAccepted(trust, instance)) return { ok: true };
-  const short = instance.revision.slice(0, 12);
-
-  if (ask) {
-    const question = `Tool "${instance.name}" comes from the team repo (${instance.file}, content ${short}), which you have not accepted on this machine. `
-      + `It runs ${instance.command} as you, with your files, in place of ${instance.extends}. Review the file before you accept it.\nRun it? [y/N] `;
-
-    if (/^y(es)?$/i.test((await ask(question))?.trim() ?? '')) {
-      // Read again under the lock: another step may have accepted another instance while this one asked. Loaded here,
-      // since update.js reaches config.js, which loads this module on every hook.
-      const { withFileLock } = await import('./update.js');
-
-      const recorded = await withFileLock(`${trustFile()}.lock`, TRUST_LOCK_WAIT, async () => {
-        const current = await readTrust();
-
-        await writeJsonAtomic(trustFile(), { accepted: [...current.accepted.filter((entry) => entry.name !== instance.name), { name: instance.name, revision: instance.revision, acceptedAt: new Date().toISOString() }] });
-      });
-
-      if (!recorded.held) log.warn(`Tool "${instance.name}" runs as you accepted it, but ${trustFile()} stayed locked by another teamai process, so the next run asks again.`);
-
-      return { ok: true };
-    }
-
-    return { ok: false, code: 'tool_not_accepted', message: `Tool "${instance.name}" (content ${short}) was not accepted, so ${instance.command} did not run.` };
-  }
-
-  return {
-    ok: false,
-    code: 'tool_not_accepted',
-    message: `Tool "${instance.name}" comes from the team repo (${instance.file}, content ${short}) and runs ${instance.command}, which no one has accepted on this machine, and an unattended run does not ask. `
-      + 'Run the same command once in a terminal, attended, to review and accept it, then run it unattended again.',
-  };
+  return accepted.ok ? accepted : { ok: false, code: 'tool_not_accepted', message: accepted.message };
 }

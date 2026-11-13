@@ -4,7 +4,7 @@
  * are the tables under `## The skill driver` in docs/dev/workflow-engine.md, cell by cell.
  */
 import type { RunMode } from '../../../launch-context.js';
-import type { JsonValue } from '../../../types.js';
+import type { JsonValue } from '@teamai/shared/json';
 import type { ScoredLabels } from '../../../scorers/engine-hooks.js';
 import type { Judging, PersonHandoff, RunReadied, RunVersion, StartedRun } from '../../protocol.js';
 import type { ConfinedStepEnd } from '../../confined-step.js';
@@ -14,10 +14,13 @@ import type { StepModel } from '../../step-model.js';
 import type { AttemptId, RunId } from '../../store.js';
 import type { OutputSchema, WorkflowFailure } from '../../types.js';
 import type { ChildResult } from './child-brief.js';
-import type { ConfinedJudge, HostChoice, HostProfile } from './host-profiles.js';
+import type { ConfinedJudge, SessionHostChoice, SessionHostProfile } from './session-host-profiles.js';
 import type { HitlMode, StartAnswer, StartCheck } from './preflight.js';
-import type { AttemptState, Dispatch, Gate, PlaceAsk, ReportBody, SkillState, StopReason, TurnEvent, UnansweredHost } from './skill-state.js';
+import type { AttemptState, Dispatch, Gate, PlaceAsk, ReportBody, SkillState, StopReason, TurnEvent, UnansweredSessionHost } from './skill-state.js';
 import type { Waiting } from './turn.js';
+import type { WhenIdle } from '../../usage-limits.js';
+import type { SessionApp } from '../../session-apps.js';
+import type { HostDriverName } from '../../reserved-drivers.js';
 
 export interface TransitionRow {
   id: string;
@@ -30,45 +33,48 @@ export interface TransitionRow {
 }
 
 export const TRANSITIONS = [
-  { id: 'R1', state: 'none', input: 'describe', guard: '`invoke: deny` and the caller has agent evidence', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with the reason, no literal' },
+  { id: 'R1', state: 'none', input: 'describe', guard: 'run mode `attended`, `invoke: deny` and the caller has agent evidence', effects: 'none', next: 'none', action: 'describe `ask.kind: local` with the reason and the start the person runs: in an app\'s session (`SESSION_APPS`) the `--driver <app driver>` start, from the place the app names, else R2\'s `--driver local` start' },
+  { id: 'R31', state: 'none', input: 'describe', guard: 'run mode `unattended`, `invoke: deny` and the caller has agent evidence', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with the reason, no literal: nobody is there to run it' },
   { id: 'R2', state: 'none', input: 'describe', guard: 'run mode `attended`, and the definition has a local route: a step this driver takes and a later one it is held from for env or tokens work in one workspace copy', effects: 'none', next: 'none', action: 'describe `ask.kind: local` with the reason and the `--driver local` start literal, with `--tools default=<session tool>` when `localPromptTool` names one' },
-  { id: 'R3', state: 'none', input: 'describe', guard: 'R27 does not apply, and something to ask: `invoke: ask`, a required input, width above 1, an optional gate, or judging here or by the session', effects: 'none', next: 'none', action: 'describe `ask.kind: ask`: one question stating every fact, and at most five start literals, the recommended first' },
+  { id: 'R3', state: 'none', input: 'describe', guard: 'R27 does not apply, and something to ask: `invoke: ask`, a required input, width above 1, an optional gate, or judging here or by the session; or R32 or R30 applies with `invoke: ask`, a required input or an optional gate', effects: 'none', next: 'none', action: 'describe `ask.kind: ask`: one question stating every fact, and at most five start literals, the recommended first; under R32 or R30, `background` and each start on that row\'s driver, with `--auto-approve` as the other option when it has an optional gate' },
   { id: 'R4', state: 'none', input: 'describe', guard: 'R27 does not apply, and nothing to ask', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the one start literal, and the facts to tell the person' },
   { id: 'R16', state: 'none', input: 'describe', guard: '`deliveryProblem` answers for the checkout: a `deliver: pr` step the definition cannot deliver (`bad_delivery`), or a detached HEAD (`no_base_branch`)', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with its message, no literal' },
   { id: 'R23', state: 'none', input: 'describe', guard: 'run mode `unattended`, R1 and R16 do not apply, and the definition has a local route, as R2\'s', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with the local route\'s reason, no literal: nobody is there to run the local driver' },
   { id: 'R17', state: 'none', input: 'describe', guard: 'run mode `unattended`, R1, R16 and R23 do not apply, and `attendedReason` names what needs a person before the run starts: `invoke: ask`. A step only a person can take needs none: D30 hands the run to one when it reaches it', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with that reason, no literal' },
   { id: 'R18', state: 'none', input: 'describe', guard: 'run mode `unattended`, and R1, R16, R23, R17 and R27 do not apply', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the start of R3\'s recommended option under `--auto-approve`; `{inputs}` kept and `inputs` listed when the workflow has inputs' },
+  { id: 'R32', state: 'none', input: 'describe', guard: 'run mode `attended`, R1, R16, R2 and R17 do not apply, and the run needs no AI tool (`needsAiTool`): no prompt, interactive, answer or scored step, and no `workflow: { from }` step, whose workflow a step produces, through the workflows its steps run by name', effects: 'none', next: 'none', action: 'describe `ask.kind: background` with the start on the built-in `--driver host`, for the agent to run in the background, when nothing is left to ask: no `invoke: ask`, required input or optional gate; else R3 with each start on `--driver host`. The app check is not asked' },
+  { id: 'R30', state: 'none', input: 'describe', guard: 'run mode `attended`, R1, R16, R2, R17 and R32 do not apply, the caller runs in an app\'s session (`SESSION_APPS`), and a run could start on the app\'s driver now: each of its runtimes answers an `init` in `check` mode, with no credential, so none signs in, writes or starts anything, and one that refuses the mode fails the check. Asked only where R3, R4 or R27 would answer', effects: 'none', next: 'none', action: 'describe `ask.kind: background` with the start on the app\'s driver, for the agent to run in the background, when nothing is left to ask: no `invoke: ask`, required input or optional gate; else R3 with each start on the app\'s driver' },
   { id: 'R27', state: 'none', input: 'describe', guard: 'the session names no tool, the definition has a step whose model or judging needs one (`needsTool`), and R1, R16, R2, R23 and R17 do not apply', effects: 'none', next: 'none', action: 'describe `ask.kind: tool` with the reason, the describe literal with `--tools default=\'{tool}\'` for the agent to fill, and the ids of the tools teamai knows' },
   { id: 'R29', state: 'none', input: 'start `--driver skill`', guard: '`invoke: deny` and the caller has agent evidence, as R1\'s', effects: 'none', next: 'none', action: 'error `invoke_denied` with the reason, next null: no run is created' },
-  { id: 'R8', state: 'none', input: 'start `--driver skill`, or R19\'s input', guard: 'R29 does not apply, and the definition has a local route or a benchmark trial; for R19\'s input, the run\'s own definition, once R20 and R21 do not apply, or, in run mode `unattended`, as the run stands before the claim', effects: 'none', next: 'none', action: 'error `needs_local_driver` with the reason, next null; for R19\'s input it names the person\'s `teamai workflow resume <run>` literal, and the run stays readied here, or, unattended, as it was: nothing is claimed' },
+  { id: 'R8', state: 'any', input: 'start `--driver skill`, or R19\'s input', guard: 'R29 does not apply, and the definition has a local route or a benchmark trial; for R19\'s input, the run\'s own definition, once R20 and R21 do not apply, or, in run mode `unattended`, as the run stands before the claim', effects: 'none', next: 'none', action: 'error `needs_local_driver` with the reason, next null; for R19\'s input it names the person\'s `teamai workflow resume <run>` literal, and the run stays readied here, or, unattended, as it was: nothing is claimed' },
   { id: 'R25', state: 'none', input: 'start `--driver skill`', guard: 'run mode `unattended`, R29 and R8 do not apply, and `attendedReason` names what needs a person, as R17\'s', effects: 'none', next: 'none', action: 'error `unattended_denied` with that reason, next null: no run is created' },
   { id: 'R9', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `confirm-needed`, and R29, R8 and R25 do not apply', effects: 'none', next: 'none', action: 'error `confirm_needed`, next: the describe literal' },
-  { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode, the caller\'s run mode), host `pending` when the definition has a prompt step or the session judges the run, with whether it has a prompt step, owner := the caller\'s session, working in the tool its `--tools default=<tool>` names, else the one its host names; judging on with the session tool when describe judges here, or `sessionJudge` with it when describe judges by the session, and the start has no `--no-judge`', next: 'host when it has a prompt step or the session judges it, else drive', action: 'the turn of a tick' },
+  { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode, the caller\'s run mode), host `pending` when the definition has a prompt step or the session judges the run, with whether it has a prompt step, owner := the caller\'s session, working in the tool its `--tools default=<tool>` names, else the one its session host names; judging on with the session tool when describe judges here, or `sessionJudge` with it when describe judges by the session, and the start has no `--no-judge`', next: 'sessionHost when it has a prompt step or the session judges it, else drive', action: 'the turn of a tick' },
   { id: 'R11', state: 'none', input: 'next, report `--driver skill`', guard: 'this machine has no skill.json for the run', effects: 'none', next: 'none', action: 'error `not_skill_run`, next: the `resume <run> --driver skill` literal, with `--tools default=\'{tool}\'` for a session with no tool to fill' },
   { id: 'R28', state: 'any', input: 'R19\'s input', guard: 'R19 would take the run, R8 and R24 do not apply, and the session names no tool while the run has a step whose model or judging needs one (`needsTool`)', effects: 'remove the skill.json kept here, which the published run the resume installed made stale', next: 'unchanged', action: 'error `tool_needed`, next: the `resume <run> --driver skill --tools default=\'{tool}\'` literal with the options and `--confirmed` of the call, whose slot the agent fills with its tool' },
-  { id: 'R19', state: 'any', input: 'resume `--driver skill`; `next --takeover` with no skill.json here', guard: '`WorkflowClient.resume` readied the run: it took a run this machine lacks, or with `--claim` one another install owns, or found the run here and this install its owner, and released each lease this machine\'s local driver left on it, once the process group that lease\'s setup or command left is stopped, and stopped the group each attempt of that driver the run already stopped left; no skill.json is kept here, or the claim installed the published state; R8, R24 and R28 do not apply', effects: 'write skill.json as R10 does, with the caller\'s run mode and the options of `--parallel`, `--hitl` or `--auto-approve` and `--no-judge`, else a start\'s: one step at a time, HITL mode `person`, or `auto-approve` in an unattended run', next: 'host when the run has a prompt step or the session judges it, else drive', action: 'the turn of a tick' },
+  { id: 'R19', state: 'any', input: 'resume `--driver skill`; `next --takeover` with no skill.json here', guard: '`WorkflowClient.resume` readied the run: it took a run this machine lacks, or with `--claim` one another install owns, or found the run here and this install its owner, and released each lease this machine\'s local driver left on it, once the process group that lease\'s setup or command left is stopped, and stopped the group each attempt of that driver the run already stopped left; no skill.json is kept here, or the claim installed the published state; R8, R24 and R28 do not apply', effects: 'write skill.json as R10 does, with the caller\'s run mode and the options of `--parallel`, `--hitl` or `--auto-approve` and `--no-judge`, else a start\'s: one step at a time, HITL mode `person`, or `auto-approve` in an unattended run', next: 'sessionHost when the run has a prompt step or the session judges it, else drive', action: 'the turn of a tick' },
   { id: 'R20', state: 'any', input: 'R19\'s input', guard: '`WorkflowClient.resume` answers that another install owns the run (a resume without `--claim`, or a takeover), or that this machine lacks it (a takeover)', effects: 'none', next: 'unchanged', action: 'error `not_owner` or `run_not_found`, next: the `resume <run> --driver skill --claim` literal, with the `--tools default=<tool>` the resume declared, run only when the person agrees' },
   { id: 'R21', state: 'any', input: 'R19\'s input', guard: '`WorkflowClient.resume` refuses the run otherwise: teamai-reports does not hold it or moved while it was claimed, its definition cannot be read here, or its copies cannot be brought to the commits it recorded', effects: 'none', next: 'unchanged', action: 'error with the refusal\'s code and message, next null' },
-  { id: 'R22', state: 'any', input: 'resume `--driver skill`, `next --takeover`', guard: 'the caller is not the session skill.json here names as the run\'s owner, and `WorkflowClient.resumeRefusal` refuses it by the `invoke` of the run\'s own definition, as a start is refused: agent evidence (a session variable, or `--driver skill` itself), and `invoke: deny`, or `invoke: ask` without `--confirmed` or in an unattended run', effects: 'none', next: 'unchanged', action: 'error `invoke_denied`, `unattended_denied` or `confirm_needed`; next: for `confirm_needed` the same call with `--confirmed`, run only when the person agrees, else null' },
-  { id: 'R24', state: 'any', input: 'R19\'s input, or `next --takeover` with skill.json here', guard: 'run mode `unattended`, R8 does not apply, and `attendedReason` names what in the run\'s own definition needs a person, as R17\'s, for a run still running (one that ended needs nobody to ready it as it ended); read before the claim or the takeover, from the published run a `--claim` would install, else this machine\'s copy, so R20 and R21 come after it', effects: 'none', next: 'unchanged', action: 'error `unattended_denied` with that reason, next null; the run and its skill state stay as they were: nothing is claimed or taken over' },
+  { id: 'R22', state: 'any', input: 'resume `--driver skill`, `next --takeover`', guard: 'the caller is not the session skill.json here names as the run\'s owner, and `WorkflowClient.resumeRefusal` refuses it: a takeover of a running run nobody offers whose owner wrote it to teamai-reports within the stale window, without `--confirmed` or in an unattended run (`owner_active`); else by the `invoke` of the run\'s own definition, as a start is refused: agent evidence (a session variable, or `--driver skill` itself), and `invoke: deny`, or `invoke: ask` without `--confirmed` or in an unattended run. A `--confirmed` that answered the takeover answers no `invoke: ask`, which is asked once the takeover landed', effects: 'none', next: 'unchanged', action: 'error `owner_active`, `invoke_denied`, `unattended_denied` or `confirm_needed`; next: for `confirm_needed`, and for `owner_active` in an attended run, the same call with `--confirmed`, run only when the person agrees, else null' },
+  { id: 'R24', state: 'any', input: 'R19\'s input, or `next --takeover` with skill.json here', guard: 'run mode `unattended`, R8 does not apply, and `attendedReason` names what in the run\'s own definition needs a person, as R17\'s, for a run still running (one that ended needs nobody to ready it as it ended); read before the claim or the takeover, from the published run a `--claim` would install, else this machine\'s copy, so R20 and R21 come after it; or, in run mode `unattended`, `WorkflowClient.carried` could not read the run before the claim, as it may need either', effects: 'none', next: 'unchanged', action: 'error `unattended_denied` with that reason, or with why the run could not be read, next null; the run and its skill state stay as they were: nothing is claimed or taken over' },
   { id: 'R26', state: 'any', input: 'R24\'s input, with skill.json here that R19 does not replace', guard: 'run mode `unattended`, R8 and R24 do not apply, and the skill.json\'s run mode is `attended`', effects: 'its run mode becomes `unattended`, and its HITL mode that of `--hitl` or `--auto-approve`, else `auto-approve`', next: 'unchanged', action: 'the S row of the call' },
-  { id: 'R12', state: 'host', input: 'tick', guard: '', effects: 'none', next: 'host', action: '`choose about:host decide:agent`' },
-  { id: 'R13', state: 'host', input: 'next `--choice h`', guard: '', effects: 'host := `HOST_PROFILES[h]`, or `none` for a run without a prompt step, which asked it only for its judge; on `h4`, which starts no child agent, `sessionJudge` becomes `judging` at `best-effort` when the session\'s tool runs confined here (`sessionToolJudge`), else is dropped', next: 'drive', action: 'the turn of a tick, with event `judging-off` `no_child_agent` when it dropped `sessionJudge`' },
-  { id: 'R14', state: 'host', input: 'report, next `--ack` or `--adopt`', guard: '', effects: 'none', next: 'host', action: 'error `choice_pending`, next: the next literal' },
+  { id: 'R12', state: 'sessionHost', input: 'tick', guard: '', effects: 'none', next: 'sessionHost', action: '`choose about:host decide:agent`' },
+  { id: 'R13', state: 'sessionHost', input: 'next `--choice h`', guard: '', effects: 'host := `SESSION_HOST_PROFILES[h]`, or `none` for a run without a prompt step, which asked it only for its judge; on `h4`, which starts no child agent, `sessionJudge` becomes `judging` at `best-effort` when the session\'s tool runs confined here (`sessionToolJudge`), else is dropped', next: 'drive', action: 'the turn of a tick, with event `judging-off` `no_child_agent` when it dropped `sessionJudge`' },
+  { id: 'R14', state: 'sessionHost', input: 'report, next `--ack` or `--adopt`', guard: '', effects: 'none', next: 'sessionHost', action: 'error `choice_pending`, next: the next literal' },
   { id: 'R15', state: 'drive, done', input: 'next `--choice h`', guard: '', effects: 'none', next: 'unchanged', action: 'error `unknown_choice`, next: the next literal' },
-  { id: 'S1', state: 'host, drive, done', input: 'an agent call from session s', guard: 'the owner is s, or either session is unknown', effects: '`lastCallAt` := now; the tool := the one the call declares with `--tools`; else owner := s, working in s\'s tool, when unknown; else the tool := s\'s when the run has none and s is its owner or neither is known', next: 'unchanged', action: 'the input\'s row' },
-  { id: 'S2', state: 'host, drive, done', input: 'an agent call from session s without `--takeover`', guard: 'owner o is not s, and both are known, however long o has been idle', effects: 'none', next: 'unchanged', action: 'error `orchestrator_active` with `idleSeconds`, the seconds since o\'s last call, next: the takeover literal' },
-  { id: 'S4', state: 'host, drive, done', input: 'next `--takeover` from session s', guard: '', effects: 'owner := s, working in the tool its host names; `lastCallAt` := now; `seen[s]` := `seen[o]` when that is later; every offered or dispatched attempt becomes offered with `reissued`, except a confined one whose dispatch names another tool than s works in, which write-ahead `released`', next: 'unchanged', action: 'event `takeover`; the turn of a tick' },
+  { id: 'S1', state: 'sessionHost, drive, done', input: 'an agent call from session s', guard: 'the owner is s, or either session is unknown', effects: '`lastCallAt` := now; the tool := the one the call declares with `--tools`; else owner := s, working in s\'s tool, when unknown; else the tool := s\'s when the run has none and s is its owner or neither is known', next: 'unchanged', action: 'the input\'s row' },
+  { id: 'S2', state: 'sessionHost, drive, done', input: 'an agent call from session s without `--takeover`', guard: 'owner o is not s, and both are known, however long o has been idle', effects: 'none', next: 'unchanged', action: 'error `orchestrator_active` with `idleSeconds`, the seconds since o\'s last call, next: the takeover literal' },
+  { id: 'S4', state: 'sessionHost, drive, done', input: 'next `--takeover` from session s', guard: '', effects: 'owner := s, working in the tool its session host names; `lastCallAt` := now; `seen[s]` := `seen[o]` when that is later; every offered or dispatched attempt becomes offered with `reissued`, except a confined one whose dispatch names another tool than s works in, which write-ahead `released`', next: 'unchanged', action: 'event `takeover`; the turn of a tick' },
   { id: 'S5', state: 'any', input: 'a runner call (`report --attempt a` with the marker `<run>/a`)', guard: '', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'C rows' },
-  { id: 'S6', state: 'host, drive, done', input: 'an agent `report --attempt a`, from any session', guard: 'a is settled, or open offered, dispatched, reporting, or stopping by the agent', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'the input\'s row' },
-  { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + canFor(host), the can of the host\'s profile, and h1\'s for a run without prompt steps, with can.confined: the session tool\'s own at the level `judging` keeps while `judging`, else one of the run\'s tool at `best-effort` while `sessionJudge`, else none, running: every open attempt, queued: every queued attempt and each D9 unqueued this tick, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check, autoApprove: true under HITL mode `auto-approve`, runMode: options.mode}`, and in run mode `unattended` `handoff: offers`, so the engine holds a step only a person can take', next: 'drive', action: '' },
+  { id: 'S6', state: 'sessionHost, drive, done', input: 'an agent `report --attempt a`, from any session', guard: 'a is settled, or open offered, dispatched, reporting, or stopping by the agent', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'the input\'s row' },
+  { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + canFor(host), the can of the session host\'s profile, and h1\'s for a run without prompt steps, with can.confined: the session tool\'s own at the level `judging` keeps while `judging`, else one of the run\'s tool at `best-effort` while `sessionJudge`, else none, running: every open attempt, queued: every queued attempt and each D9 unqueued this tick, canTakeLease: fewer open than options.parallel, and than one under a serial session host; false in a runner\'s check, autoApprove: true under HITL mode `auto-approve`, runMode: options.mode}`, and in run mode `unattended` `handoff: offers`, so the engine holds a step only a person can take; while a usage limit kept in `usage` holds a tool, `limitedTools` with it and `toolFor` the children\'s tool, so the engine holds the steps on it', next: 'drive', action: '' },
   { id: 'D2', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a queued or placing', effects: 'drop a', next: 'drive', action: 'event `stopped`' },
   { id: 'D3', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a preparing or running', effects: 'phase stopping by its runner, why `timeout` once its `expiresAt` passed, else `cancelled`', next: 'drive', action: '' },
-  { id: 'D4', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a offered or dispatched', effects: 'phase stopping by the agent, why as D3', next: 'drive', action: '`stop {why, report}` in each foreground turn until reported' },
+  { id: 'D4', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a offered or dispatched', effects: 'phase stopping by the agent, why as D3, with `child` its dispatch\'s `continues` title when it has one', next: 'drive', action: '`stop {why, report}` in each foreground turn until reported, its title the `child` when set' },
   { id: 'D5', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a stopping or reporting', effects: 'none', next: 'drive', action: '' },
   { id: 'D6', state: 'drive', input: 'reply lease', guard: 'executor command', effects: 'phase preparing; spawn runner job `command`', next: 'drive', action: 'event `started`' },
   { id: 'D7', state: 'drive', input: 'reply lease', guard: 'executor prompt, and neither D8 nor D28 applies', effects: 'phase preparing; spawn runner job `prompt`', next: 'drive', action: 'event `started`' },
-  { id: 'D8', state: 'drive', input: 'reply lease', guard: 'executor prompt, workspace `new` or `continue`, and a host that makes places (h3)', effects: 'phase preparing with request `host`; spawn runner job `prompt`', next: 'drive', action: 'event `started`' },
+  { id: 'D8', state: 'drive', input: 'reply lease', guard: 'executor prompt, workspace `new` or `continue`, and a session host that makes places (h3)', effects: 'phase preparing with request `host`; spawn runner job `prompt`', next: 'drive', action: 'event `started`' },
   { id: 'D28', state: 'drive', input: 'reply lease', guard: 'executor prompt, confined to a directory, while `judging`', effects: 'phase preparing, `runs: here`; spawn runner', next: 'drive', action: 'event `started`' },
   { id: 'D33', state: 'drive', input: 'reply `deadlines` holds a', guard: 'a queued or preparing', effects: '`expiresAt` := that deadline', next: 'drive', action: '' },
   { id: 'D9', state: 'drive', input: 'tick', guard: 'a queued attempt whose `behind` is no longer open', effects: 'phase preparing; spawn its job again', next: 'drive', action: '' },
@@ -80,6 +86,9 @@ export const TRANSITIONS = [
   { id: 'D29', state: 'drive', input: 'reply wait, before its row', guard: 'it lists `held`, no attempt is open, and each held step misses only `confined` or `model`, which this driver\'s offers never give for the run', effects: '`WorkflowClient.giveUp` of the held steps, which cancels the nearest step above each that sets `continue_on_failure`; when it cancels, engine `next` again as D1; when it refuses, D14', next: 'drive', action: '' },
   { id: 'D15', state: 'drive', input: 'reply wait', guard: '', effects: 'none', next: 'drive', action: 'waiting' },
   { id: 'D27', state: 'drive', input: 'reply wait, after its row', guard: 'it lists `held`, and no reply of this tick came to a `next` that took no lease', effects: 'engine `next` as D1, with `canTakeLease: false`, since the engine answers a held step before a gate; H5, then D10 to D12 for a gate, take its reply', next: 'drive', action: '' },
+  { id: 'D36', state: 'drive', input: 'reply wait, before D30 and D14', guard: 'no attempt or score run is open, it lists steps held for a `limitedTool`, and the usage limits kept in `usage` wait for that tool\'s reset: within the cap, or attended, past it', effects: 'none', next: 'drive', action: 'waiting with the limit\'s reason; `then: poll`' },
+  { id: 'D37', state: 'drive', input: 'reply wait, before D30 and D14', guard: 'as D36, in run mode `unattended`, past the cap an unattended run waits for the limit', effects: '`WorkflowClient.offer` as D30', next: 'drive', action: 'D31 naming the steps that tool holds, or D38' },
+  { id: 'D38', state: 'drive', input: 'D37\'s offer answered `unoffered`', guard: '', effects: 'none', next: 'drive', action: 'waiting with the limit\'s reason, why the run could not be offered, and that the session continues it once the limit resets; no `then`, so a poll does not offer it again, as the local driver stops there' },
   { id: 'D30', state: 'drive', input: 'reply wait, before D13 to D15', guard: 'run mode `unattended`, it lists steps held for `hitl`, and no attempt or score run is open', effects: '`WorkflowClient.offer`: publish the run on teamai-reports, offered, from the run\'s checkout', next: 'drive', action: 'D31 or D32 by the offer\'s answer' },
   { id: 'D31', state: 'drive', input: 'D30\'s offer answered `offers`', guard: '', effects: 'none', next: 'drive', action: '`person why:offered` naming those steps and the person\'s `teamai workflow resume <run> --claim` literal; waiting held; no `then`' },
   { id: 'D32', state: 'drive', input: 'D30\'s offer answered `unoffered`', guard: '', effects: 'engine `next` as D1, with `handoff: unoffered` and the reason, so each of those steps fails `hitl_required` saying why the run could not be offered', next: 'drive', action: 'the reply\'s row' },
@@ -87,26 +96,27 @@ export const TRANSITIONS = [
   { id: 'D17', state: 'drive', input: 'reply error', guard: '', effects: 'none', next: 'drive', action: 'error with the engine\'s code, next: the next literal' },
   { id: 'D18', state: 'drive', input: 'a foreground call', guard: 'it spawned runners', effects: 'release the lock; wait up to `WAIT_GRACE_MS` for them, re-taking the lock per check', next: 'drive', action: '' },
   { id: 'D19', state: 'any', input: 'a foreground call', guard: 'the lock is not free within `TICK_LOCK_WAIT_MS` (`report`: `WAIT_BOUND_MS`)', effects: 'none', next: 'unchanged', action: 'error `driver_running`, next: the same literal' },
-  { id: 'D20', state: 'host, drive, done', input: 'a foreground call, after its tick', guard: '', effects: '`seen[s]` := seq', next: 'unchanged', action: 'the turn: the host question, or every `stop`, then every unacked dispatch, then every `place`, then the gate\'s `choose` or `person`; events after the old `seen[s]`; `then: poll` until the run is done and no attempt or judge is open' },
-  { id: 'D21', state: 'host, drive, done', input: 'a poll tick', guard: 'the lock was busy, or nothing below applies, and the bound is not reached', effects: 'release; sleep `WAIT_POLL_MS`; tick again', next: 'unchanged', action: '' },
-  { id: 'D22', state: 'host, drive, done', input: 'a poll tick', guard: 'the host question is unanswered, a dispatch is unacked, a place is not adopted, a `stop` is not reported, of this run or, for the dispatch and the `stop`, of a run `scoring` lists, or the gate was journalled after `seen[s]`', effects: 'none', next: 'unchanged', action: '`then: wake` with the next literal, no actions' },
+  { id: 'D20', state: 'sessionHost, drive, done', input: 'a foreground call, after its tick', guard: '', effects: '`seen[s]` := seq', next: 'unchanged', action: 'the turn: the session host question, or every `stop`, then every unacked dispatch, then every `place`, then the gate\'s `choose` or `person`; events after the old `seen[s]`; `then: poll` until the run is done and no attempt or judge is open' },
+  { id: 'D21', state: 'sessionHost, drive, done', input: 'a poll tick', guard: 'the lock was busy, or nothing below applies, and the bound is not reached', effects: 'release; sleep `WAIT_POLL_MS`; tick again', next: 'unchanged', action: '' },
+  { id: 'D22', state: 'sessionHost, drive, done', input: 'a poll tick', guard: 'the session host question is unanswered, a dispatch is unacked, a place is not adopted, a `stop` is not reported, of this run or, for the dispatch and the `stop`, of a run `scoring` lists, or the gate was journalled after `seen[s]`', effects: 'none', next: 'unchanged', action: '`then: wake` with the next literal, no actions' },
   { id: 'D23', state: 'done', input: 'a poll tick', guard: '`seen[s]` is below seq, and no attempt is open', effects: '`seen[s]` := seq', next: 'done', action: '`done` with its events; `then: poll` while a judge is open' },
-  { id: 'D24', state: 'host, drive, done', input: 'a poll tick', guard: 'the bound is reached, and D25 does not apply', effects: 'none', next: 'unchanged', action: '`then: poll`, no actions' },
+  { id: 'D24', state: 'sessionHost, drive, done', input: 'a poll tick', guard: 'the bound is reached, and D25 does not apply', effects: 'none', next: 'unchanged', action: '`then: poll`, no actions' },
   { id: 'D25', state: 'drive, done', input: 'a poll tick', guard: 'a `settled` or `stopped` event came after `seen[s]`, and neither D22 nor D23 applies', effects: '`seen[s]` := seq', next: 'unchanged', action: 'the events after the old `seen[s]`, no actions; `then: poll`' },
-  { id: 'D26', state: 'drive', input: 'a poll tick', guard: 'the tick took D14, and D22 does not apply', effects: 'none', next: 'drive', action: '`then: wake` with the next literal, no actions' },
+  { id: 'D26', state: 'drive', input: 'a poll tick', guard: 'the tick\'s turn ends the loop (D14, D31 or D38), and D22 does not apply', effects: 'none', next: 'drive', action: '`then: wake` with the next literal, no actions' },
   { id: 'C1', state: 'preparing', input: 'runner: prepared', guard: 'job `command`', effects: 'run the command outside the lock with `{...stepEnvironment(env, envScope).env, ...lease.env, TEAMAI_WORKFLOW_ATTEMPT}` (`process.env` for a lease without `envScope`), the running teamai first on PATH, output masked into `output.log`', next: 'running', action: '' },
-  { id: 'C2', state: 'preparing', input: 'runner: prepared', guard: 'job `prompt`', effects: '`pickChildModel`; `writeChildBrief`, which for a confined lease names its directory, the only one the child reads, and marks the dispatch `confined` with the session\'s tool', next: 'offered', action: '`dispatch` in each foreground turn until acked' },
+  { id: 'C2', state: 'preparing', input: 'runner: prepared', guard: 'job `prompt`', effects: '`pickChildModel`; `writeChildBrief`, which for a confined lease names its directory, the only one the child reads, and marks the dispatch `confined` with the session\'s tool; marks it `bySession` when the session works the step itself (a session host that starts no child, or an interactive step), with `resumes`, the session the lease continues; on a session host that starts children, a step that is neither interactive nor confined and goes on in an earlier conversation (`continuedAttempt`: the `session.from` step, and along a chain its first step; with `session: continue`, the step\'s first earlier pass) whose attempt this run settled gets `continues`, that attempt\'s child title, unless an open attempt already went on in that child', next: 'offered', action: '`dispatch` in each foreground turn until acked, with `continue {title}` when it has `continues`' },
   { id: 'C3', state: 'preparing', input: 'runner: prepared', guard: 'job `prompt`; `pickChildModel` fails `model_unavailable`', effects: 'write-ahead `failed` with that failure', next: 'reporting', action: '' },
   { id: 'C4', state: 'preparing', input: 'runner: place busy, behind b', guard: '', effects: '`behind` := b', next: 'queued', action: '' },
   { id: 'C5', state: 'preparing', input: 'runner: needs a place', guard: 'request `host`, and no place an earlier attempt adopted for the branch passes the adopt checks', effects: 'the place to ask for: `name`, `branch`, `start`', next: 'placing', action: '`place` in each foreground turn until adopted' },
   { id: 'C6', state: 'preparing', input: 'runner: adopt refused', guard: 'request `adopt dir`', effects: '`refused` := why; the engine still leases a', next: 'placing', action: '`place` with `refused`' },
   { id: 'C7', state: 'preparing', input: 'runner: prepare or setup failed', guard: '', effects: 'write-ahead `failed` with its failure', next: 'reporting', action: '' },
   { id: 'C8', state: 'running', input: 'runner: the command exited', guard: '', effects: 'write-ahead: `success` on exit 0, else `failed`; outputs, exit code, masked tail', next: 'reporting', action: '' },
-  { id: 'C9', state: 'stopping by its runner', input: 'runner: its check every `RUNNER_POLL_MS` and at `expiresAt`, its setup ending, its command exiting, or its confined run ending', guard: '', effects: 'stop the setup, command or confined run and every process it started (`tool-launch/process-stop.ts`); write-ahead `released`', next: 'reporting', action: '' },
-  { id: 'C10', state: 'preparing, running', input: 'tick: its `runner.lock` is free', guard: 'it was spawned more than `WAIT_GRACE_MS` ago', effects: 'stop the process group its setup or command left; spawn the same job again (prepare is idempotent; a command restarts in its prepared place)', next: 'unchanged', action: 'event `restarted`' },
-  { id: 'C11', state: 'stopping by its runner', input: 'tick: its `runner.lock` is free', guard: 'it was spawned more than `WAIT_GRACE_MS` ago', effects: 'stop the process group its setup or command left; write-ahead `released`', next: 'reporting', action: '' },
+  { id: 'C9', state: 'stopping by its runner', input: 'runner: its check every `RUNNER_POLL_MS` and at `expiresAt`, its setup ending, its command exiting, or its confined run ending', guard: '', effects: 'stop the setup, command or confined run and every process it started (`@teamai/shared/process-group`); write-ahead `released`', next: 'reporting', action: '' },
+  { id: 'C10', state: 'preparing, running', input: 'tick: its `runner.lock` is free', guard: 'it was spawned more than `WAIT_GRACE_MS` ago, and was started again fewer than `MAX_RUNNER_RESTARTS` times', effects: 'stop the process group its setup, command or judge left, then end the login that judge held; spawn the same job again (prepare is idempotent; a command restarts in its prepared place), counted in `restarts`', next: 'unchanged', action: 'event `restarted`' },
+  { id: 'C11', state: 'stopping by its runner', input: 'tick: its `runner.lock` is free', guard: 'it was spawned more than `WAIT_GRACE_MS` ago', effects: 'stop the process group its setup, command or judge left, then end the login that judge held; write-ahead `released`', next: 'reporting', action: '' },
   { id: 'C12', state: 'preparing', input: 'runner: prepared', guard: 'attempt `runs: here`', effects: '`runConfinedStep` outside the lock, on the first of the lease\'s tools that resolves its model, in its directory, with no team env and no session kept', next: 'running', action: '' },
   { id: 'C13', state: 'running', input: 'runner: the confined run ended', guard: '', effects: 'write-ahead: `success` with the reply as outputs and what the run measured, else `failed` with its failure; `released` when no tool of the lease resolves its model here', next: 'reporting', action: '' },
+  { id: 'C14', state: 'preparing, running', input: 'tick: its `runner.lock` is free', guard: 'it was spawned more than `WAIT_GRACE_MS` ago, and C10 already started it again `MAX_RUNNER_RESTARTS` times', effects: 'stop the process group its setup, command or judge left, then end the login that judge held; write-ahead `failed` with `runner_crashed`', next: 'reporting', action: '' },
   { id: 'K1', state: 'drive', input: 'next `--ack dispatch.a`', guard: 'a offered', effects: 'phase dispatched', next: 'drive', action: 'the turn of a tick' },
   { id: 'K2', state: 'drive', input: 'next `--ack dispatch.a`', guard: 'a dispatched', effects: 'none', next: 'drive', action: 'the turn of a tick' },
   { id: 'K3', state: 'drive, done', input: 'next `--ack dispatch.a`', guard: 'a neither offered nor dispatched', effects: 'none', next: 'unchanged', action: 'error `unknown_offer`, next: the next literal' },
@@ -116,7 +126,8 @@ export const TRANSITIONS = [
   { id: 'P2', state: 'drive', input: 'report a', guard: 'a is unknown', effects: 'none', next: 'drive', action: 'error `unknown_attempt`, next: the next literal' },
   { id: 'P3', state: 'drive', input: 'report a', guard: 'a preparing, queued, placing, running, or stopping by its runner', effects: 'none', next: 'drive', action: 'error `not_dispatched`, next: the next literal' },
   { id: 'P4', state: 'drive', input: 'report a `--model-unavailable`', guard: 'a offered or dispatched, its dispatch printed `unavailable`', effects: 'write-ahead `failed` `model_unavailable` naming the model', next: 'reporting', action: 'P7 to P10; after P7 to P9, runner answer `reported`' },
-  { id: 'P5', state: 'drive', input: 'report a', guard: 'a offered or dispatched, otherwise', effects: 'read `result.json`: an output gives `success` with it as outputs, a failure gives `failed` with it, none or an unreadable one gives `failed` `tool_failed`; a confined dispatch adds its confined run: the dispatch\'s tool, else the session\'s, at `best-effort` with `read` access, the model it asked for, and the session; write-ahead', next: 'reporting', action: 'P7 to P10; after P7 to P9, runner answer `reported`' },
+  { id: 'P5', state: 'drive', input: 'report a', guard: 'a offered or dispatched, otherwise', effects: 'read `result.json`: an output gives `success` with it as outputs, a failure gives `failed` with it, none or an unreadable one gives `failed` `tool_failed`; a confined dispatch adds its confined run: the dispatch\'s tool, else the session\'s, at `best-effort` with `read` access, the model it asked for, and the session; any other dispatch marked `bySession`, reported from a known session while the run\'s tool is known, adds that tool and session, and `resumed` with its `resumes` when that is the same tool and session; a child\'s report adds no session; a child on a known tool (the dispatch\'s, else the run\'s, else the session\'s) that spawned after the limit kept for it was hit ends that limit; write-ahead', next: 'reporting', action: 'P7 to P10; after P7 to P9, runner answer `reported`' },
+  { id: 'P12', state: 'drive', input: 'report a', guard: 'a offered or dispatched, its dispatch printed no `unavailable`, and `result.json` is a failure `usage_limited` from a known tool, as P5 knows it', effects: 'keep the tool\'s usage limit in `usage` from what the failure says; write-ahead `released`, launched, so the step is not failed and its place keeps the child\'s work', next: 'reporting', action: 'P7 to P10; after P7 to P9, runner answer `reported`' },
   { id: 'P6', state: 'drive, done', input: 'report a', guard: 'a stopping by the agent', effects: 'write-ahead `released`', next: 'reporting', action: 'P7 to P10; after P7 to P9, runner answer `reported`' },
   { id: 'P7', state: 'reporting', input: 'engine: reported, any status', guard: '', effects: 'drop a; add to settled', next: 'drive', action: 'event `settled`, with the failure the engine recorded, else the body\'s' },
   { id: 'P8', state: 'reporting', input: 'engine: `repeated_report`', guard: '', effects: 'as P7', next: 'drive', action: 'event `settled`' },
@@ -129,7 +140,7 @@ export const TRANSITIONS = [
   { id: 'H4', state: 'drive', input: 'respond `--driver skill`', guard: 'the engine answers another error', effects: 'none', next: 'drive', action: 'error with the engine\'s code, next: the next literal' },
   { id: 'H5', state: 'drive', input: 'reply, before its row', guard: 'a gate is journalled, and the reply is done, a wait that holds nothing, or another gate: the person answered it in their terminal or the dashboard', effects: 'clear the gate', next: 'drive', action: '' },
   { id: 'J7', state: 'drive, done', input: 'a `next` or report answer that lists `started`', guard: 'judging is on, or the session judges', effects: 'add to `scoring` each run it lists that `scoring` lacks', next: 'unchanged', action: 'event `judging` per run added' },
-  { id: 'J8', state: 'drive, done', input: 'a call\'s tick', guard: '`scoring` lists a run', effects: 'tick each run `scoring` lists under its own lock, as a call ticks it, a busy lock skipping it this tick; its first tick writes its skill.json from this one: identity, invocation, options, host, session and judging, with `scores` naming this run, so its turns lead back here', next: 'unchanged', action: 'the dispatches and stops of those runs join this run\'s turn, and a poll wakes for them' },
+  { id: 'J8', state: 'drive, done', input: 'a call\'s tick', guard: '`scoring` lists a run', effects: 'tick each run `scoring` lists under its own lock, as a call ticks it, a busy lock skipping it this tick; its first tick writes its skill.json from this one: identity, invocation, options, session host, session and judging, with `scores` naming this run, so its turns lead back here', next: 'unchanged', action: 'the dispatches and stops of those runs join this run\'s turn, and a poll wakes for them' },
   { id: 'J9', state: 'drive, done', input: 'J8: the tick of a run `scoring` lists', guard: 'that run is done, and no attempt of it is open', effects: 'drop it from `scoring`', next: 'unchanged', action: 'event `judged` per scorer its `done` outputs list, with the label or the code; event `judging-off` with its failure when it did not succeed' },
   { id: 'J10', state: 'drive, done', input: 'J8: the tick of a run `scoring` lists', guard: 'that tick answered an error, or a done whose outputs the scoring module cannot read (`scoredLabels`)', effects: 'drop it from `scoring`', next: 'unchanged', action: 'event `judging-off` with the error' },
   { id: 'X1', state: 'done', input: 'next', guard: 'no attempt is open, and `scoring` lists a run', effects: 'none', next: 'done', action: '`done` with `judging`; `then: poll`' },
@@ -147,10 +158,11 @@ export type ReadLease = { attempt: AttemptId; step: string; revision: number; ex
   | { executor: 'command'; command: string; env: Record<string, string>; envScope?: EnvScope }
   /**
    * `writes`: the step commits to a branch, in a workspace `new` or `continue` or the team workspace. `team`: in the team
-   * workspace, whose clone TeamAI makes, never a host. `interactive`: the person works in the step. `readOnly`: the step
-   * set `workspace: read-only`. `isolation`: the step requires a sandbox, which no skill host enforces.
+   * workspace, whose clone TeamAI makes, never a session host. `interactive`: the person works in the step. `readOnly`: the step
+   * set `workspace: read-only`. `isolation`: the step requires a sandbox, which no session host enforces. `session`: the
+   * session the step continues.
    */
-  | { executor: 'prompt'; prompt: string; place: Dispatch['place']; writes: boolean; team?: true; interactive?: true; readOnly?: true; isolation?: 'sandbox'; agent?: string; model?: string | StepModel; defaultModel?: string; output?: OutputSchema; confined?: ConfinedLease }
+  | { executor: 'prompt'; prompt: string; place: Dispatch['place']; writes: boolean; team?: true; interactive?: true; readOnly?: true; isolation?: 'sandbox'; agent?: string; model?: string | StepModel; defaultModel?: string; output?: OutputSchema; confined?: ConfinedLease; session?: { tool: string; id: string }; folder?: string }
 );
 
 /** A gate as the engine asks it. */
@@ -181,9 +193,16 @@ export type ReportReply = { kind: 'reported'; outcome: Extract<TurnEvent, { kind
  * tool's confined judge or by the session itself, so the person may turn judging off. `undeliverable`: why a start from
  * the checkout would be refused for its delivery. `mode`: the run mode of the caller. `attended`: why a run of the
  * workflow needs a person. `needsTool`: the session names no tool, and the workflow has a step whose model or judging
- * needs one.
+ * needs one. `isAiFree`: a run of it needs no AI tool, so the host slot alone runs it. `app`: the app whose session the
+ * caller runs in, and whether a run could start on its driver now, once asked.
  */
-export interface DescribeInput { needed: StartAnswer[]; denied?: string; undeliverable?: string; local?: string; judged: boolean; mode: RunMode; attended?: string; needsTool: boolean }
+/** Whether a run could start on the driver of the app the session runs in: not asked yet, or asked with this answer. */
+export type AppReadiness = 'unchecked' | 'ready' | 'not-ready';
+
+export interface DescribeInput {
+  needed: StartAnswer[]; denied?: string; undeliverable?: string; local?: string; judged: boolean; mode: RunMode; attended?: string; needsTool: boolean; isAiFree: boolean;
+  app?: { session: SessionApp; readiness: AppReadiness };
+}
 
 /** Who judges a run's scored steps on this machine: the confined judge of `tool` here, or the session itself with `tool`. */
 export type JudgedBy = { kind: 'here'; tool: string } | { kind: 'session'; tool: string };
@@ -223,7 +242,11 @@ export type Effect =
    */
   | { kind: 'send'; attempt: AttemptId; body: ReportBody; changed?: readonly string[] }
   /** Gives up `held`, steps this driver can never take, with what each misses, so the run goes on without them. */
-  | { kind: 'give-up'; held: NonNullable<Waiting['held']> };
+  | { kind: 'give-up'; held: NonNullable<Waiting['held']> }
+  /** Keeps in `usage` that a child on `tool` stopped on its usage limit, saying `said`. */
+  | { kind: 'usage-hit'; tool: string; said: string }
+  /** Keeps in `usage` that a child on `tool`, spawned at `spawnedAt`, ended without its limit, which ends one hit before. */
+  | { kind: 'usage-ran'; tool: string; spawnedAt: number };
 
 /** A call the skill driver refuses, with what its message names. */
 export type Refusal =
@@ -246,14 +269,29 @@ export type Refusal =
   | { code: 'not_dispatched'; run: RunId; attempt: AttemptId; phase: AttemptState['phase'] }
   | { code: 'driver_running'; run: RunId };
 
+/** A driver describe sends a run to in the background: its name, and where the person sees the run's steps. */
+export interface BackgroundDriver { driver: string; steps: string }
+
+/** The built-in `host`, which runs a run that needs no AI tool on the host slot alone. */
+export const HOST_BACKGROUND: BackgroundDriver = { driver: 'host' satisfies HostDriverName, steps: 'Each step runs on this machine in teamai, and no agent runs any of them.' };
+
 /**
  * How describe says to start, and why, for the kinds that start no run here. `unattended`: start with the recommended
- * answers and optional gates auto-approved, since nobody answers a question.
+ * answers and optional gates auto-approved, since nobody answers a question. `background`: start on `on`, the built-in
+ * `host` or the driver of the app the session runs in, in the background, after asking the person first when `hasQuestion`.
  */
-export type DescribeVerdict = { ask: 'start' | 'ask' | 'unattended' | 'tool' } | { ask: 'local' | 'denied'; reason: string };
+export type DescribeVerdict =
+  | { ask: 'start' | 'ask' | 'unattended' | 'tool' }
+  | { ask: 'background'; hasQuestion: boolean; on: BackgroundDriver }
+  /** `app`: the app whose driver the person starts it on, from the place it names; the local driver when absent. */
+  | { ask: 'local'; reason: string; app?: SessionApp }
+  | { ask: 'denied'; reason: string };
 
-/** The run R10 starts: its options, whether it asks the host question first, and who judges it on this machine. */
-export interface StartRun { parallel: number; hitl: HitlMode; host: UnansweredHost; judge?: JudgedBy }
+/** What a start on an app's driver asks the person: the answers that driver takes. */
+export const APP_START_ANSWERS: ReadonlySet<StartAnswer> = new Set(['confirmed', 'inputs', 'hitl']);
+
+/** The run R10 starts: its options, whether it asks the session host question first, and who judges it on this machine. */
+export interface StartRun { parallel: number; hitl: HitlMode; sessionHost: UnansweredSessionHost; judge?: JudgedBy }
 
 /** A refusal of the skill driver; its code decides the literal it names to run instead. */
 type Refused = { kind: 'error'; refusal: Refusal };
@@ -314,12 +352,14 @@ function withAttempt(state: SkillState, attempt: AttemptState): SkillState {
 }
 
 /** The attempt `open` with only what every phase keeps. */
-function baseOf(open: AttemptState): Pick<AttemptState, 'attempt' | 'step' | 'revision' | 'spawnedAt' | 'expiresAt'> {
-  const { attempt, step: id, revision, spawnedAt, expiresAt } = open;
+function baseOf(open: AttemptState): Pick<AttemptState, 'attempt' | 'step' | 'revision' | 'spawnedAt' | 'expiresAt' | 'restarts'> {
+  const { attempt, step: id, revision, spawnedAt, expiresAt, restarts } = open;
 
-  const base: Pick<AttemptState, 'attempt' | 'step' | 'revision' | 'spawnedAt' | 'expiresAt'> = { attempt, step: id, revision, spawnedAt };
+  const base: Pick<AttemptState, 'attempt' | 'step' | 'revision' | 'spawnedAt' | 'expiresAt' | 'restarts'> = { attempt, step: id, revision, spawnedAt };
 
   if (expiresAt !== undefined) base.expiresAt = expiresAt;
+
+  if (restarts !== undefined) base.restarts = restarts;
 
   return base;
 }
@@ -341,7 +381,7 @@ export function reportedByAgent(open: AttemptState): boolean {
   return open.phase === 'offered' || open.phase === 'dispatched' || (open.phase === 'stopping' && open.by === 'agent');
 }
 
-/** Whether something waits for the agent: the host question, a dispatch to ack, a place to adopt, or a child to stop. */
+/** Whether something waits for the agent: the session host question, a dispatch to ack, a place to adopt, or a child to stop. */
 function waitsForAgent(state: SkillState): boolean {
   return state.host.kind === 'pending'
     || state.attempts.some((open) => open.phase === 'offered' || open.phase === 'placing' || (open.phase === 'stopping' && open.by === 'agent'));
@@ -374,17 +414,34 @@ export function unseenEvents(state: SkillState, session: string | undefined): Tu
 }
 
 /** A describe row, with how describe says to start. */
-type DescribeRow = { row: 'R1' | 'R16' | 'R2' | 'R23' | 'R17' | 'R27' | 'R18' | 'R3' | 'R4'; verdict: DescribeVerdict };
+type DescribeRow = { row: 'R1' | 'R31' | 'R16' | 'R2' | 'R23' | 'R17' | 'R32' | 'R30' | 'R27' | 'R18' | 'R3' | 'R4'; verdict: DescribeVerdict };
+
+/** The rows that ask whether a run could start on the driver of the app the session runs in, when it runs in one. */
+export const APP_CHECKED_ROWS: ReadonlySet<DescribeRow['row']> = new Set(['R3', 'R4', 'R27']);
 
 /** The describe row `input` matches, with how describe says to start. */
 export function describeRow(input: DescribeInput): DescribeRow {
-  if (input.denied !== undefined) return { row: 'R1', verdict: { ask: 'denied', reason: input.denied } };
+  if (input.denied !== undefined) {
+    return input.mode === 'unattended' ? { row: 'R31', verdict: { ask: 'denied', reason: input.denied } } : { row: 'R1', verdict: { ask: 'local', reason: input.denied, ...(input.app && { app: input.app.session }) } };
+  }
 
   if (input.undeliverable !== undefined) return { row: 'R16', verdict: { ask: 'denied', reason: input.undeliverable } };
 
   if (input.local !== undefined) return input.mode === 'unattended' ? { row: 'R23', verdict: { ask: 'denied', reason: input.local } } : { row: 'R2', verdict: { ask: 'local', reason: input.local } };
 
   if (input.mode === 'unattended' && input.attended !== undefined) return { row: 'R17', verdict: { ask: 'denied', reason: input.attended } };
+
+  if (input.isAiFree && input.mode === 'attended') {
+    const hasQuestion = input.needed.some((answer) => APP_START_ANSWERS.has(answer));
+
+    return { row: hasQuestion ? 'R3' : 'R32', verdict: { ask: 'background', hasQuestion, on: HOST_BACKGROUND } };
+  }
+
+  if (input.app?.readiness === 'ready' && input.mode === 'attended') {
+    const hasQuestion = input.needed.some((answer) => APP_START_ANSWERS.has(answer));
+
+    return { row: hasQuestion ? 'R3' : 'R30', verdict: { ask: 'background', hasQuestion, on: input.app.session } };
+  }
 
   if (input.needsTool) return { row: 'R27', verdict: { ask: 'tool' } };
 
@@ -415,7 +472,7 @@ export function startRow(input: StartInput): { row: 'R8' | 'R9'; refusal: Refusa
 
   const { parallel, hitl } = input.check;
 
-  const start: StartRun = { parallel, hitl, host: hostOf(input.prompts, input.judge) };
+  const start: StartRun = { parallel, hitl, sessionHost: sessionHostOf(input.prompts, input.judge) };
 
   if (input.judge !== undefined) start.judge = input.judge;
 
@@ -423,10 +480,10 @@ export function startRow(input: StartInput): { row: 'R8' | 'R9'; refusal: Refusa
 }
 
 /**
- * Whether a run asks the host question: it has a prompt step, which a child agent works, or its session judges it in a
- * subagent, which a host that starts no child (`h4`) cannot.
+ * Whether a run asks the session host question: it has a prompt step, which a child agent works, or its session judges
+ * it in a subagent, which a session host that starts no child (`h4`) cannot.
  */
-function hostOf(hasPromptStep: boolean, judge: JudgedBy | undefined): UnansweredHost {
+function sessionHostOf(hasPromptStep: boolean, judge: JudgedBy | undefined): UnansweredSessionHost {
   return hasPromptStep || judge?.kind === 'session' ? { kind: 'pending', hasPromptStep } : { kind: 'none' };
 }
 
@@ -435,11 +492,11 @@ export interface ResumeAnswers { parallel?: number; hitl?: HitlMode; judge?: fal
 
 /**
  * The row of a resume, or of a takeover of a run this machine keeps no skill state of, once `WorkflowClient.resume`
- * answered `readied`: R20 or R21 when it refused the run, R8 for a run with a local route, R24 for an unattended run
- * that needs a person, as `attended` says, else R19 and the run this session drives anew in run mode `mode`. An
- * unattended call first takes R8 or R24 from the run as `WorkflowClient.carried` reads it, before any claim. Undefined
- * for a resume of a run whose skill state is `kept` here, as the claim installed nothing over it: the session rows take
- * the call as a `next`.
+ * answered `readied`: R20 or R21 when it refused the run, R8 for a run with a local route, also one whose skill state is
+ * kept here, R24 for an unattended run that needs a person, as `attended` says, else R19 and the run this session drives
+ * anew in run mode `mode`. An unattended call first takes R8 or R24 from the run as `WorkflowClient.carried` reads it,
+ * before any claim. Undefined for a resume of a run whose skill state is `kept` here, as the claim installed nothing
+ * over it, and R8 does not apply: the session rows take the call as a `next`.
  */
 export function readiedRow(input: { run: RunId; readied: RunReadied; kept: boolean; local?: string; mode: RunMode; attended?: string; needsTool: boolean; answers: ResumeAnswers; confirmed: boolean }):
   | { row: 'R19'; start: StartRun }
@@ -457,10 +514,12 @@ export function readiedRow(input: { run: RunId; readied: RunReadied; kept: boole
     case 'failed':
       return { row: 'R21', answer: { kind: 'engine-error', error: readied.failure, next: null } };
     case 'ready': {
-      if (input.kept && !readied.installed) return undefined;
       const { description, judging } = readied;
 
+      // A run only the local driver may go on in is refused even when this session drives it, so one driver runs it.
       if (input.local !== undefined) return { row: 'R8', answer: { kind: 'error', refusal: { code: 'needs_local_driver', name: description.name, reason: input.local, run } } };
+
+      if (input.kept && !readied.installed) return undefined;
 
       if (unattended && input.attended !== undefined) return { row: 'R24', answer: { kind: 'engine-error', error: { code: 'unattended_denied', message: input.attended }, next: null } };
 
@@ -468,7 +527,7 @@ export function readiedRow(input: { run: RunId; readied: RunReadied; kept: boole
       const judge = answers.judge !== false ? judgedBy(judging) : undefined;
 
       const start: StartRun = {
-        parallel: answers.parallel ?? 1, hitl: answers.hitl ?? (unattended ? 'auto-approve' : 'person'), host: hostOf(description.facts.prompts.length > 0, judge),
+        parallel: answers.parallel ?? 1, hitl: answers.hitl ?? (unattended ? 'auto-approve' : 'person'), sessionHost: sessionHostOf(description.facts.prompts.length > 0, judge),
       };
 
       if (judge !== undefined) start.judge = judge;
@@ -484,6 +543,13 @@ export function readiedRow(input: { run: RunId; readied: RunReadied; kept: boole
   }
 }
 
+/** R24 of an unattended resume or takeover of a run `WorkflowClient.carried` could not read before the claim, for `failure`. */
+export function unreadBeforeClaimRow(run: RunId, failure: WorkflowFailure): Answered<'R24', Relayed> {
+  const message = `Run ${run} could not be read before it is claimed (${failure.message}), so this unattended session does not take it: nobody is there if it needs a person or the local driver. Run the same command again, or continue the run from a session a person attends.`;
+
+  return { row: 'R24', answer: { kind: 'engine-error', error: { code: 'unattended_denied', message }, next: null } };
+}
+
 /**
  * R26: an unattended resume or takeover of the skill state kept here, which R8 and R24 let through, leaves no person
  * in its options. Undefined when they are unattended already.
@@ -495,13 +561,26 @@ export function unattendedRow(state: SkillState, answers: ResumeAnswers): Moved<
 }
 
 /**
- * R22: the refusal `WorkflowClient.resumeRefusal` gave a resume or a takeover, which only the person's yes, carried by
- * `--confirmed`, can lift. Undefined when it gave none.
+ * The refusals of a resume or a takeover whose `next` is the same call with `--confirmed`, by the run mode in which it
+ * is, `any` for every mode. Only the person's yes lifts them, so the workflow skill names each where it tells the agent
+ * which `next` not to run; `node scripts/check-docs.mjs` fails until it does.
  */
-export function invokeRow(refusal: WorkflowFailure | undefined): Answered<'R22', Relayed> | undefined {
-  if (refusal === undefined) return undefined;
+export const CONFIRMABLE_REFUSALS: ReadonlyMap<string, RunMode | 'any'> = new Map<string, RunMode | 'any'>([
+  ['confirm_needed', 'any'],
+  ['owner_active', 'attended'],
+]);
 
-  return { row: 'R22', answer: { kind: 'engine-error', error: refusal, next: refusal.code === 'confirm_needed' ? 'same' : null } };
+/**
+ * R22: the refusal `WorkflowClient.resumeRefusal` gave a resume or a takeover in run mode `mode`, which only the
+ * person's yes, carried by `--confirmed`, can lift: an `invoke: ask`, or, attended, a takeover of a run its owner may
+ * still drive. Undefined when it gave none.
+ */
+export function invokeRow(refusal: WorkflowFailure | undefined, mode: RunMode): Answered<'R22', Relayed> | undefined {
+  if (refusal === undefined) return undefined;
+  const confirmableIn = CONFIRMABLE_REFUSALS.get(refusal.code);
+  const confirmable = confirmableIn === 'any' || confirmableIn === mode;
+
+  return { row: 'R22', answer: { kind: 'engine-error', error: refusal, next: confirmable ? 'same' : null } };
 }
 
 /**
@@ -564,7 +643,7 @@ export function doneRow(state: SkillState): { row: 'X1' | 'X2' | 'X4' } | undefi
   return { row: state.attempts.length > 0 ? 'X4' : state.scoring.length > 0 ? 'X1' : 'X2' };
 }
 
-/** The most attempts `state` keeps open at once: `--parallel`, and one under a serial host. */
+/** The most attempts `state` keeps open at once: `--parallel`, and one under a serial session host. */
 export function childCap(state: SkillState): number {
   return state.host.kind === 'chosen' && state.host.children === 'serial' ? 1 : state.options.parallel;
 }
@@ -602,7 +681,7 @@ export function queuedAttempts(state: SkillState, unqueued: readonly AttemptId[]
 }
 
 /**
- * The engine `next` of a tick (D1), or R12 while the host question waits. Once the run is done, a `next` that takes no
+ * The engine `next` of a tick (D1), or R12 while the session host question waits. Once the run is done, a `next` that takes no
  * lease (X5) asks whether the engine reopened it or another driver ended it again, but only once `version`, what the
  * run file says now, moved from what the end kept (X7). A runner's check (`role: 'runner'`) takes no lease.
  */
@@ -687,18 +766,18 @@ export function scoredRow(state: SkillState, input: { run: RunId; ticked: SkillS
 }
 
 /**
- * R13: the agent's answer to the host question; R15 when the run asks none now. `judge`: the confined judge of the
- * session's tool on this machine, which judges the run in the background on a host that starts no child agent.
+ * R13: the agent's answer to the session host question; R15 when the run asks none now. `judge`: the confined judge of the
+ * session's tool on this machine, which judges the run in the background on a session host that starts no child agent.
  */
-export function chooseRow(state: SkillState, input: { choice: HostChoice; profile: HostProfile; judgeTool?: string; judge?: ConfinedJudge }): Moved<'R13'> | Answered<'R15'> {
+export function chooseRow(state: SkillState, input: { choice: SessionHostChoice; profile: SessionHostProfile; judgeTool?: string; judge?: ConfinedJudge }): Moved<'R13'> | Answered<'R15'> {
   if (state.host.kind !== 'pending') return { row: 'R15', answer: { kind: 'error', refusal: { code: 'unknown_choice', run: state.run } } };
 
-  // A run without a prompt step asked only for its judge, so its commands run as on any host.
+  // A run without a prompt step asked only for its judge, so its commands run as on any session host.
   const chosen: SkillState = {
     ...state, host: state.host.hasPromptStep ? { kind: 'chosen', id: input.choice, children: input.profile.children, places: input.profile.places } : { kind: 'none' },
   };
 
-  // The session judges in a fresh subagent, which a host that starts no child agent cannot give it: the background
+  // The session judges in a fresh subagent, which a session host that starts no child agent cannot give it: the background
   // runner judges instead, at best-effort, when the session's tool runs confined here.
   const tool = input.judgeTool;
 
@@ -706,12 +785,12 @@ export function chooseRow(state: SkillState, input: { choice: HostChoice; profil
   const { sessionJudge: _judge, ...rest } = chosen;
 
   if (input.judge) return { row: 'R13', state: { ...rest, judging: { tool: input.judge.tool, level: 'best-effort' } } };
-  const message = `This host starts no child agent, and ${tool} does not run confined on this machine, so this session does not judge the run: a driver that offers a confined judge, such as the local driver where a judge tool is installed, judges its scored steps.`;
+  const message = `This session host starts no child agent, and ${tool} does not run confined on this machine, so this session does not judge the run: a driver that offers a confined judge, such as the local driver where a judge tool is installed, judges its scored steps.`;
 
   return { row: 'R13', state: withEvent(rest, { kind: 'judging-off', failure: { code: 'no_child_agent', message } }) };
 }
 
-/** K1 to K3: the ack of the dispatch of `attempt`; R14 while the host question waits. */
+/** K1 to K3: the ack of the dispatch of `attempt`; R14 while the session host question waits. */
 export function ackRow(state: SkillState, attempt: AttemptId): Moved<'K1' | 'K2'> | Answered<'K3' | 'R14'> {
   if (state.host.kind === 'pending') return choicePending(state);
   const open = openAttempt(state, attempt);
@@ -729,7 +808,7 @@ export function ackRow(state: SkillState, attempt: AttemptId): Moved<'K1' | 'K2'
 
 /**
  * The row of `next --attempt a --adopt dir`: K4 gives `dir` to a new runner of `a`, an attempt that waits for its
- * place, which prepares it there; K5 refuses any other attempt; R14 waits for the host question.
+ * place, which prepares it there; K5 refuses any other attempt; R14 waits for the session host question.
  */
 export function adoptRow(state: SkillState, input: { attempt: AttemptId; dir: string; at: string }): MovedWithEffects<'K4'> | Answered<'K5' | 'R14'> {
   if (state.host.kind === 'pending') return choicePending(state);
@@ -757,9 +836,10 @@ function choicePending(state: SkillState): Answered<'R14'> {
  * end (D16), or an error (D17). Undefined once the run is done. `waiting` says why the run leases nothing more; `turn`
  * is the turn a row decides for its call.
  */
-export function replyRow(state: SkillState, input: { reply: EngineReply; at: string; version?: RunVersion }):
-  | (MovedWithEffects<'D6' | 'D7' | 'D8' | 'D28' | 'D10' | 'D11' | 'D12' | 'D13' | 'D14' | 'D15' | 'D16'> & TickTurn)
+export function replyRow(state: SkillState, input: { reply: EngineReply; at: string; version?: RunVersion; idle?: WhenIdle }):
+  | (MovedWithEffects<'D6' | 'D7' | 'D8' | 'D28' | 'D10' | 'D11' | 'D12' | 'D13' | 'D14' | 'D15' | 'D16' | 'D36'> & TickTurn)
   | (MovedWithEffects<'D30'> & { waiting: Waiting; offer: string[] })
+  | (MovedWithEffects<'D37'> & { waiting: Waiting; offer: string[]; idle: WhenIdle })
   | Answered<'D17', Relayed>
   | undefined {
   if (state.done) return undefined;
@@ -769,23 +849,32 @@ export function replyRow(state: SkillState, input: { reply: EngineReply; at: str
     case 'lease': {
       const { lease } = engine;
       const { attempt, step: id, revision, expiresAt } = lease;
-      const hosted = lease.executor === 'prompt' && lease.writes && !lease.team && state.host.kind === 'chosen' && state.host.places === 'host';
+      const sessionHostMakesPlace = lease.executor === 'prompt' && lease.writes && !lease.team && state.host.kind === 'chosen' && state.host.places === 'host';
       const runsHere = lease.executor === 'prompt' && lease.confined !== undefined && state.judging !== undefined;
 
       const attemptState: AttemptState = { attempt, step: id, revision, spawnedAt: at, phase: 'preparing' };
 
       if (expiresAt !== undefined) attemptState.expiresAt = expiresAt;
 
-      if (hosted) attemptState.request = { kind: 'host' };
+      if (sessionHostMakesPlace) attemptState.request = { kind: 'host' };
 
       if (runsHere) attemptState.runs = 'here';
       const preparing = withAttempt(state, attemptState);
 
-      return { row: lease.executor === 'command' ? 'D6' : runsHere ? 'D28' : hosted ? 'D8' : 'D7', state: withEvent(preparing, { kind: 'started', step: id, attempt }), effects: [{ kind: 'spawn', attempt, job: { lease: engine.raw } }] };
+      return { row: lease.executor === 'command' ? 'D6' : runsHere ? 'D28' : sessionHostMakesPlace ? 'D8' : 'D7', state: withEvent(preparing, { kind: 'started', step: id, attempt }), effects: [{ kind: 'spawn', attempt, job: { lease: engine.raw } }] };
     }
 
     case 'wait': {
       const people = engine.held.filter(({ missing }) => missing.includes('hitl')).map(({ step }) => step);
+      const { idle } = input;
+
+      if (idle && state.attempts.length === 0 && state.scoring.length === 0) {
+        const limited = engine.held.filter(({ limitedTool }) => limitedTool === idle.tool).map(({ step }) => step);
+
+        if (idle.kind === 'past_cap' && state.options.mode === 'unattended') return { row: 'D37', state, effects: [], waiting: { reason: idle.reason, held: engine.held }, offer: limited, idle };
+
+        return { row: 'D36', state, effects: [], waiting: { reason: idle.reason }, turn: { kind: 'turn', events: 'unseen', after: 'poll', quiet: false } };
+      }
 
       if (state.options.mode === 'unattended' && people.length > 0 && state.attempts.length === 0 && state.scoring.length === 0) {
         return { row: 'D30', state, effects: [], waiting: { reason: engine.reason, held: engine.held }, offer: people };
@@ -842,13 +931,17 @@ export function replyRow(state: SkillState, input: { reply: EngineReply; at: str
  * D31 and D32: what D30's offer of the run to a person at `steps` answered. D31's turn names them and ends the loop;
  * D32 asks the engine again with the reason it could not, which fails each of them.
  */
-export function offeredRow(input: { steps: string[]; offered: PersonHandoff }): { row: 'D31'; turn: TurnAnswer } | { row: 'D32'; handoff: PersonHandoff } {
-  const { steps, offered } = input;
+export function offeredRow(input: { steps: string[]; offered: PersonHandoff; limit?: string }): { row: 'D31'; turn: TurnAnswer } | { row: 'D32'; handoff: PersonHandoff } | { row: 'D38'; waiting: Waiting; turn: TurnAnswer } {
+  const { steps, offered, limit } = input;
 
   switch (offered.kind) {
     case 'offers':
       return { row: 'D31', turn: { kind: 'turn', events: 'unseen', after: 'none', quiet: false, offered: steps } };
     case 'unoffered':
+      // A step a usage limit holds does not fail when the run cannot be offered. The loop ends there, as the local
+      // driver's does, so a poll does not offer the run again and again until the reset.
+      if (limit !== undefined) return { row: 'D38', waiting: { reason: `${limit}, and the run could not be offered on teamai-reports: ${offered.reason}. Once the limit resets, continue it from this session` }, turn: { kind: 'turn', events: 'unseen', after: 'none', quiet: false } };
+
       return { row: 'D32', handoff: offered };
     default: {
       const unhandled: never = offered;
@@ -915,7 +1008,8 @@ export function cancelledRow(state: SkillState, input: { attempt: AttemptId; at:
   const open = state.done ? undefined : openAttempt(state, input.attempt);
 
   if (!open) return undefined;
-  const stopping = (by: 'runner' | 'agent'): AttemptState => ({ ...baseOf(open), phase: 'stopping', by, why: stopReason(open, input.at) });
+  // `child`: the earlier step's child the attempt went on in, which the agent stops.
+  const stopping = (by: 'runner' | 'agent', child?: string): AttemptState => ({ ...baseOf(open), phase: 'stopping', by, why: stopReason(open, input.at), ...(child !== undefined && { child }) });
 
   switch (open.phase) {
     case 'queued':
@@ -930,7 +1024,7 @@ export function cancelledRow(state: SkillState, input: { attempt: AttemptId; at:
       return { row: 'D3', state: withAttempt(state, stopping('runner')) };
     case 'offered':
     case 'dispatched':
-      return { row: 'D4', state: withAttempt(state, stopping('agent')) };
+      return { row: 'D4', state: withAttempt(state, stopping('agent', open.dispatch.continues?.title)) };
     case 'stopping':
     case 'reporting':
       return { row: 'D5', state };
@@ -1076,11 +1170,18 @@ export function exitedRow(state: SkillState, input: { attempt: AttemptId; body: 
 }
 
 /**
- * C10 and C11: the `runner.lock` of `attempt` is free, and its runner was spawned more than `graceMs` before `at`, so it
- * is gone rather than not yet started. It was stopping the attempt, so the attempt is given up (C11), or it prepared or
- * ran it, so it starts again (C10).
+ * How many times C10 starts the runner of one attempt again. A runner a machine's sleep or a killed session took is
+ * back on the first; one its step kills at once would otherwise start again on every tick until the lease expires.
  */
-export function runnerFreeRow(state: SkillState, input: { attempt: AttemptId; at: string; graceMs: number }): MovedWithEffects<'C10' | 'C11'> | undefined {
+export const MAX_RUNNER_RESTARTS = 3;
+
+/**
+ * C10, C11 and C14: the `runner.lock` of `attempt` is free, and its runner was spawned more than `graceMs` before `at`,
+ * so it is gone rather than not yet started. It was stopping the attempt, so the attempt is given up (C11), or it
+ * prepared or ran it, so it starts again (C10), unless it was started again `MAX_RUNNER_RESTARTS` times, so the step
+ * fails (C14).
+ */
+export function runnerFreeRow(state: SkillState, input: { attempt: AttemptId; at: string; graceMs: number }): MovedWithEffects<'C10' | 'C11' | 'C14'> | undefined {
   const open = openAttempt(state, input.attempt);
 
   if (!open || Date.parse(input.at) - Date.parse(open.spawnedAt) <= input.graceMs) return undefined;
@@ -1092,7 +1193,19 @@ export function runnerFreeRow(state: SkillState, input: { attempt: AttemptId; at
   }
 
   if (open.phase !== 'preparing' && open.phase !== 'running') return undefined;
-  const respawned = withAttempt(state, { ...open, spawnedAt: input.at });
+  const restarts = open.restarts ?? 0;
+
+  if (restarts >= MAX_RUNNER_RESTARTS) {
+    const failure = { code: 'runner_crashed', message: `The runner of attempt ${open.attempt} of step "${open.step}" ended without finishing it, and was started again ${restarts} times, so the step failed. Run the step's setup or command by hand to see why it ends, then run teamai workflow retry ${state.run} ${open.step}.` };
+    const body: ReportBody = { attempt: open.attempt, revision: open.revision, driver: state.driver, outcome: 'failed', message: failure.message, failure };
+
+    return {
+      row: 'C14', state: withAttempt(state, { ...baseOf(open), phase: 'reporting', body }),
+      effects: [{ kind: 'stop-left', attempt: open.attempt }, { kind: 'send', attempt: open.attempt, body }],
+    };
+  }
+
+  const respawned = withAttempt(state, { ...open, spawnedAt: input.at, restarts: restarts + 1 });
 
   return {
     row: 'C10', state: withEvent(respawned, { kind: 'restarted', step: open.step, attempt: open.attempt }),
@@ -1159,9 +1272,9 @@ export function resendRow(state: SkillState, attempt: AttemptId): MovedWithEffec
  * P1 to P6, and P11: an agent's `report --attempt`. `result` is what the attempt's child left, read before the row is
  * taken. Undefined once the run is done and the attempt is neither settled nor open.
  */
-export function reportRow(state: SkillState, input: { attempt: AttemptId; modelUnavailable: boolean; result: ChildResult }):
+export function reportRow(state: SkillState, input: { attempt: AttemptId; modelUnavailable: boolean; result: ChildResult; session: string | undefined; tool: string | undefined }):
   | { row: 'P1'; repeated: true }
-  | MovedWithEffects<'P4' | 'P5' | 'P6' | 'P11'>
+  | MovedWithEffects<'P4' | 'P5' | 'P6' | 'P11' | 'P12'>
   | Answered<'P2' | 'P3' | 'R14'>
   | undefined {
   if (state.settled.includes(input.attempt)) return { row: 'P1', repeated: true };
@@ -1186,8 +1299,17 @@ export function reportRow(state: SkillState, input: { attempt: AttemptId; modelU
   const unavailable = input.modelUnavailable && model.by !== 'definition';
 
   const failure = unavailable
-    ? { code: 'model_unavailable', message: `Step "${open.step}" needs model ${model.name}, which the host of this coding session cannot run.` }
+    ? { code: 'model_unavailable', message: `Step "${open.step}" needs model ${model.name}, which the session host of this coding session cannot run.` }
     : input.result.kind === 'failure' ? input.result.failure : undefined;
+
+  const tool = open.dispatch.tool ?? state.orchestrator.tool ?? input.tool;
+
+  if (!unavailable && failure?.code === 'usage_limited' && tool !== undefined) {
+    const body: ReportBody = { ...base, outcome: 'released', launched: true };
+    const reporting: Extract<AttemptState, { phase: 'reporting' }> = { ...baseOf(open), phase: 'reporting', body };
+
+    return { row: 'P12', state: withAttempt(state, reporting), effects: [{ kind: 'usage-hit', tool, said: failure.message }, { kind: 'send', attempt: open.attempt, body }] };
+  }
 
   let body: ReportBody;
 
@@ -1199,10 +1321,30 @@ export function reportRow(state: SkillState, input: { attempt: AttemptId; modelU
   }
 
   if (open.dispatch.confined && !unavailable) body = { ...body, ...childConfinedRun(state, open.dispatch) };
+  else if (!unavailable) body = { ...body, ...sessionRun(state, open.dispatch, input.session) };
 
   const reporting: Extract<AttemptState, { phase: 'reporting' }> = { ...baseOf(open), phase: 'reporting', body, changed: [...input.result.changed] };
 
-  return { row: unavailable ? 'P4' : 'P5', state: withAttempt(state, reporting), effects: [{ kind: 'send', attempt: open.attempt, body, changed: input.result.changed }] };
+  const send: Effect = { kind: 'send', attempt: open.attempt, body, changed: input.result.changed };
+  const spawnedAt = Date.parse(open.spawnedAt);
+
+  if (unavailable) return { row: 'P4', state: withAttempt(state, reporting), effects: [send] };
+
+  return { row: 'P5', state: withAttempt(state, reporting), effects: tool === undefined || Number.isNaN(spawnedAt) ? [send] : [{ kind: 'usage-ran', tool, spawnedAt }, send] };
+}
+
+/**
+ * The session a step the orchestrator worked itself went on in: on a session host that starts no child, or an interactive step,
+ * the session that reports is the step's, with the orchestrator's tool, and it resumed the session its lease continues
+ * when it is that session. A child's report says no session: a child's session host gives it its orchestrator's.
+ */
+function sessionRun(state: SkillState, dispatch: Dispatch, session: string | undefined): Pick<ReportBody, 'tool' | 'session' | 'resumed'> {
+  const tool = state.orchestrator.tool;
+
+  if (!dispatch.bySession || session === undefined || tool === undefined) return {};
+  const { resumes } = dispatch;
+
+  return { tool, session, ...(resumes?.tool === tool && resumes.id === session && { resumed: resumes }) };
 }
 
 /**
@@ -1257,7 +1399,7 @@ function takenOver(state: SkillState, { session, tool, at }: { session: string |
 }
 
 /**
- * The row the runner of `open`, an attempt whose host makes its place, takes when that place is still to make: C6 when
+ * The row the runner of `open`, an attempt whose session host makes its place, takes when that place is still to make: C6 when
  * the place the agent adopted was `refused`, else C5. Either way the attempt waits for the agent to adopt one.
  */
 export function placingRow(state: SkillState, open: Extract<AttemptState, { phase: 'preparing' }>, input: { ask: PlaceAsk; refused?: string }): Moved<'C5' | 'C6'> {

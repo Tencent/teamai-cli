@@ -16,7 +16,7 @@
  */
 import path from 'node:path';
 import YAML from 'yaml';
-import { parseYaml } from './utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { z } from 'zod';
 import {
   BOOTSTRAP_LOCK_FILENAME,
@@ -27,7 +27,7 @@ import {
 } from './types.js';
 import { readFileSafe, pathExists, ensureDir, writeFile } from './utils/fs.js';
 import { getRemoteUrl } from './utils/git.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { acquireLock, releaseLock } from './update.js';
 import { getMemberConfig, mergeMemberConfig } from './members.js';
 
@@ -164,7 +164,7 @@ async function planSelfBootstrap(
   }
 
   const { loadTeamConfig } = await import('./config.js');
-  const teamConfig = await loadTeamConfig(localPath);
+  const teamConfig = await loadTeamConfig(localPath, null);
 
   if (!teamConfig) {
     log.debug('[bootstrap] teamai.yaml not loadable; skipping');

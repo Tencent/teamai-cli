@@ -25,6 +25,7 @@ vi.mock('../utils/git.js', async (importOriginal) => ({
 
 // pull() takes a real ~/.teamai/.sync-lock; parallel workers would race on it.
 vi.mock('../update.js', async (importOriginal) => ({
+  LockDirectoryGoneError: (await importOriginal<typeof import('../update.js')>()).LockDirectoryGoneError,
   acquireLock: vi.fn().mockResolvedValue(true),
   releaseLock: vi.fn().mockResolvedValue(undefined),
   // A pull records a tool's moved home under this lock.
@@ -56,7 +57,7 @@ import { uninstall } from '../uninstall.js';
 import { AgentsHandler } from '../resources/agents.js';
 import { autoDetectInit, loadLocalConfigForScope, loadStateForScope, loadTeamConfig, saveStateForScope } from '../config.js';
 import { TeamaiConfigSchema, type LocalConfig, type State } from '../types.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { resetWarnOnce } from '../utils/warn-once.js';
 
 /** A rule folder whose rule names its support file (#1787). */
@@ -135,7 +136,7 @@ describe('the Claude Code grant of the rule folders a pull delivers (#1787)', ()
 
     await pull({});
     const granted = (await fse.readJson(path.join(root, 'settings.json'))).permissions.additionalDirectories;
-    vi.mocked(autoDetectInit).mockResolvedValue({ localConfig: await loadLocalConfigForScope('user'), teamConfig: await loadTeamConfig(repoPath) } as never);
+    vi.mocked(autoDetectInit).mockResolvedValue({ localConfig: await loadLocalConfigForScope('user'), teamConfig: await loadTeamConfig(repoPath, null) } as never);
     await uninstall({ agent: 'claude', force: true });
 
     expect(granted).toEqual(['/member/dir', path.join(homeDir, '.teamai', 'rules')]);
@@ -149,14 +150,14 @@ describe('the Claude Code grant of the rule folders a pull delivers (#1787)', ()
     await fse.outputJson(path.join(moved, 'settings.json'), { permissions: { additionalDirectories: ['/member/dir'] } });
     await fse.outputFile(path.join(repoPath, 'tools', 'acme-claude.yaml'), 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude, env: ACME_CLAUDE_CONFIG_DIR }\n');
     const { withToolInstances } = await import('../tool-instances.js');
-    vi.mocked(loadTeamConfig).mockImplementation(async () => withToolInstances(repoPath, TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/x/team.git' })));
+    vi.mocked(loadTeamConfig).mockImplementation(async () => withToolInstances({ root: repoPath, scope: 'user', isForMember: true, namespaces: async () => 'legacy' }, TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/x/team.git' })));
     vi.mocked(loadLocalConfigForScope).mockResolvedValue({
       repo: { localPath: repoPath, remote: 'https://example.invalid/x/team.git' }, username: 'u', updatePolicy: 'auto', additionalRoles: [], scope: 'user', enabledAgents: ['claude', 'acme-claude'],
     } as LocalConfig);
 
     await pull({});
     const granted = (await fse.readJson(path.join(moved, 'settings.json'))).permissions.additionalDirectories;
-    vi.mocked(autoDetectInit).mockResolvedValue({ localConfig: await loadLocalConfigForScope('user'), teamConfig: await loadTeamConfig(repoPath) } as never);
+    vi.mocked(autoDetectInit).mockResolvedValue({ localConfig: await loadLocalConfigForScope('user'), teamConfig: await loadTeamConfig(repoPath, null) } as never);
     await uninstall({ agent: 'acme-claude', force: true });
 
     expect(granted).toEqual(['/member/dir', path.join(homeDir, '.teamai', 'rules')]);
@@ -167,13 +168,13 @@ describe('the Claude Code grant of the rule folders a pull delivers (#1787)', ()
   it('keeps the grant in the settings a Claude Code instance shares with Claude Code when only the instance is uninstalled', async () => {
     await fse.outputFile(path.join(repoPath, 'tools', 'acme-claude.yaml'), 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\ncommand: acme-claude\n');
     const { withToolInstances } = await import('../tool-instances.js');
-    vi.mocked(loadTeamConfig).mockImplementation(async () => withToolInstances(repoPath, TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/x/team.git' })));
+    vi.mocked(loadTeamConfig).mockImplementation(async () => withToolInstances({ root: repoPath, scope: 'user', isForMember: true, namespaces: async () => 'legacy' }, TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/x/team.git' })));
     vi.mocked(loadLocalConfigForScope).mockResolvedValue({
       repo: { localPath: repoPath, remote: 'https://example.invalid/x/team.git' }, username: 'u', updatePolicy: 'auto', additionalRoles: [], scope: 'user', enabledAgents: ['claude', 'acme-claude'],
     } as LocalConfig);
 
     await pull({});
-    vi.mocked(autoDetectInit).mockResolvedValue({ localConfig: await loadLocalConfigForScope('user'), teamConfig: await loadTeamConfig(repoPath) } as never);
+    vi.mocked(autoDetectInit).mockResolvedValue({ localConfig: await loadLocalConfigForScope('user'), teamConfig: await loadTeamConfig(repoPath, null) } as never);
     await uninstall({ agent: 'acme-claude', force: true });
 
     expect(await fse.readJson(settingsFile())).toMatchObject({ permissions: { additionalDirectories: ['/member/dir', path.join(homeDir, '.teamai', 'rules')] } });

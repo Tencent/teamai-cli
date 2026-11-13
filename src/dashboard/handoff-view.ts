@@ -2,10 +2,17 @@
  * The Handed-off runs panel (#1390) as browser code: `handoffPanel(rows, local)` renders the `handoffs` that
  * `/api/workflows` answers, with the command that takes each run, where `local` holds the ids of the runs this machine
  * has. `needsPerson(offer)` says whether an offered run waits for a person now; `mayNeed` names the steps a runner may
- * reach that only a person can take, which the run then is offered again for. The dashboard client embeds it, and so
+ * reach that only a person can take, which the run then is offered again for. `takenState(elsewhere)` is the state the
+ * Local runs table shows for a run of this machine another install took. The dashboard client embeds it, and so
  * supplies `e`, `label`, `number` and `when`.
  */
 export const handoffView = `
+const TAKEN_ENDS={succeeded:'Succeeded',failed:'Failed',cancelled:'Cancelled'};
+function takenState(x) {
+ const who='<span data-verbatim>'+e(x.owner.user)+'</span>';
+ return x.kind==='ended'?'<span>'+label(TAKEN_ENDS[x.status])+'</span> · '+label('Ended by')+' '+who
+  :'<span class="amber">'+label('Held by')+' '+who+'</span>'+(x.isOffered?' · <span class="good">'+label('Offered')+'</span>':'');
+}
 function needsPerson(o) { return Boolean(o.refusal)||o.needs.length>0; }
 function command(text) { return '<span class="cmd-line"><code class="cmd" data-verbatim>'+e(text)+'</code><button class="link copy" data-copy="'+e(text)+'" aria-label="'+label('Copy command')+'">'+label('Copy')+'</button></span>'; }
 // What the steps left need of whichever machine takes the run, so the team can set a runner up for it.

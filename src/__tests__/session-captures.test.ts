@@ -11,7 +11,7 @@ import { loadStateForScope, saveStateForScope } from '../config.js';
 import { saveScopeSelection } from '../scope-selection.js';
 import type { LocalConfig } from '../types.js';
 import { withSkillFrontmatter } from '../resources/skills.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { commitFile, fakeClaude, git, initRepo, recordDelivery } from './helpers/delivered-checkout.js';
 import type { HookStdin } from '../hook-dispatch.js';
 

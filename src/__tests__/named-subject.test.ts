@@ -21,8 +21,10 @@ import { NamedSubject } from '../scorers/named-subject.js';
 import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
 import type { Session } from '@teamai/tool-core/sessions/ir';
 import { defaultSyncMeta, getRepoIdentity, SyncManager } from '../session-flow/sync.js';
+import { pushedSession } from '../session-flow/scoring.js';
+import type { ArchivedEvidence } from '../session-flow/session-evidence.js';
 import { getReportsDir, type LocalConfig } from '../types.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
 
@@ -313,5 +315,23 @@ describe('NamedSubject.ofSession of a session a member pushed', () => {
 
     expect(await NamedSubject.ofSession(config, { teamSession: { name }, scorers: ['quality'] })).toMatchObject({ ok: true, subject: { kind: 'team-session', subject: { author: 'alice', name } } });
     expect(printed(info)).toEqual([`Scoring claude-code session ${SESSION} in (directory unknown)`, 'Pushed by alice', 'First prompt: fix the retry loop in sync.ts']);
+  });
+
+  it('reads the evidence its step left beside it, and refuses evidence that does not parse rather than judge without it', async () => {
+    const self = await team(ONE_STEP);
+    const config: LocalConfig = { ...self, repo: { ...self.repo, kind: 'git' } };
+    const session: Session = {
+      sessionId: SESSION, title: 'check the page', cwd: '/home/alice/app', platform: 'claude-code', createdAt: '2026-10-20T10:00:00.000Z', updatedAt: '2026-10-20T11:00:00.000Z',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'check the page' }] }],
+    };
+    const evidence: ArchivedEvidence = { version: 1, files: [{ kind: 'listed', path: 'screen.png', type: 'image/png', size: 4, sha256: 'c'.repeat(64) }] };
+    const meta = defaultSyncMeta({ platform: 'claude-code', author: 'alice', cwd: session.cwd, sessionId: SESSION, repoIdentity: getRepoIdentity(process.cwd()), title: session.title }, session.createdAt);
+    const saved = await new SyncManager(getReportsDir(config)).saveSession(session, meta, { evidence });
+    if (saved.status !== 'written') throw new Error('the archive is busy');
+    const name = path.basename(saved.value, '.jsonl');
+
+    expect(await pushedSession(config, { name })).toMatchObject({ evidence });
+    fs.writeFileSync(path.join(getReportsDir(config), saved.value.replace(/\.jsonl$/, '.evidence.json')), '{"version":1,"files":[{"kind":"other"}]}');
+    expect(await pushedSession(config, { name })).toEqual({ error: { code: 'evidence_unreadable', message: expect.stringContaining(`The evidence pushed with session ${name} could not be read`) } });
   });
 });

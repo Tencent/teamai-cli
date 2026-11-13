@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 
 import { safeIgnore, toPosix } from "../core/wiki-protocol.js";
-import { lenientList } from "../../utils/json.js";
+import { lenientList } from "@teamai/shared/json";
+import { readRegularFile } from "@teamai/shared/regular-file";
 
 const execFileAsync = promisify(execFile);
 
@@ -136,7 +137,7 @@ export async function collectCode(options: CollectCodeOptions): Promise<{ manife
   const files: CodeCollectedFile[] = [];
 
   for (const filePath of limited) {
-    const content = await readFile(filePath, "utf8");
+    const content = await readRegularFile(filePath, "utf8");
     const relativePath = toPosix(path.relative(root, filePath));
     const language = languageFor(filePath);
     files.push({

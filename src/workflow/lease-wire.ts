@@ -1,7 +1,8 @@
 /** The lease `next` answers with, as `leaseData` in `engine.ts` writes it, parsed by every driver with one schema. */
 import { z } from 'zod';
 import { OutputSchemaSchema } from './output.js';
-import { ConfinedLevelSchema, EnvScopeSchema, LeaseSetupSchema, RequirementsSchema, TurnLimitsSchema } from './requirements.js';
+import { ConfinedLevelSchema } from '@teamai/runtime-protocol';
+import { EnvScopeSchema, LeaseSetupSchema, RequirementsSchema, TurnLimitsSchema } from './requirements.js';
 import { StepModelSchema } from './step-model.js';
 import { AttemptIdSchema } from './store.js';
 import { WorkspaceContractSchema, type LeaseSession } from './workspace.js';
@@ -20,13 +21,15 @@ export type ConfinedLease = z.infer<typeof ConfinedLeaseSchema>;
 /** What names a lease, which a driver reports a lease it cannot otherwise read with. */
 export const LeaseIdSchema = z.object({ attempt: AttemptIdSchema, revision: z.number().int() });
 
-/** A leased step: a command or a prompt, never both. An answer step's lease is a prompt. */
+/** A leased step: a command, a prompt, or a whole workflow, exactly one. An answer step's lease is a prompt. */
 export const LeaseWireSchema = LeaseIdSchema.extend({
   /** The step path, such as `check.classify` inside a sub-workflow. */
   step: z.string(),
   command: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(),
   prompt: z.string().optional(),
+  /** A `workflow:` step leased whole, for a driver with `can.workflow`: its runtime runs the sub-graph as one attempt. */
+  workflow: z.literal(true).optional(),
   /** The prompt is an answer step's: the member's AI tool answers it on its one-shot call launch, in the checkout read-only. */
   answer: z.literal(true).optional(),
   /** A command step's paths, relative to the checkout, under which a change it makes is kept rather than failing it `read_only_dirty`. */
@@ -63,6 +66,6 @@ export const LeaseWireSchema = LeaseIdSchema.extend({
   setup: LeaseSetupSchema.optional(),
   /** When the engine cancels the lease. */
   expiresAt: z.string().optional(),
-}).refine((lease) => (lease.command === undefined) !== (lease.prompt === undefined), { message: 'a lease runs a command or a prompt' });
+}).refine((lease) => [lease.command, lease.prompt, lease.workflow].filter((field) => field !== undefined).length === 1, { message: 'a lease runs a command, a prompt or a whole workflow' });
 
 export type LeaseWire = z.infer<typeof LeaseWireSchema>;

@@ -28,6 +28,7 @@ import { repoKeys, repoLabel } from './utils/repo-attribution.js';
 import { emptyTokenUsage } from '@teamai/tool-core/tokens';
 import type { DashboardEvent, SessionMetrics } from './types.js';
 import type { HeadState } from './utils/git.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 /** A folded, human-readable summary of a single session. */
 export interface SessionSummary {
@@ -243,7 +244,7 @@ export async function appendMonthlyLog(
     let existing = '';
 
     try {
-      existing = await fs.promises.readFile(file, 'utf-8');
+      existing = await readRegularFile(file, 'utf-8');
     } catch (error) {
       if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
     }

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { JsonValue } from '../../types.js';
+import type { JsonValue } from '@teamai/shared/json';
 import type { TokenUsage } from '@teamai/tool-core/tokens';
 import type { TokenRequest } from '@teamai/tool-core/tokens';
 

@@ -16,6 +16,8 @@
     "workflows",
     "rules",
     "scorers",
+    "drivers",
+    "runtimes",
     "hooks",
     "README.md",
     "CHANGELOG.md",

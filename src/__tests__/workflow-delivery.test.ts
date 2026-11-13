@@ -16,7 +16,7 @@ import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/loca
 import { acquireLock, releaseLock } from '../update.js';
 import { AGENT_PATHS, DELIVERY_ONLY_PATHS, protectedPaths } from '../workflow/worktree.js';
 import { fakeGh, type FakeGhOptions } from './helpers/fake-gh.js';
-import { deliverPr } from '../workflow/pr-delivery.js';
+import { deliverPr, deliveryFailure } from '../workflow/pr-delivery.js';
 import { buildEndRecord, pendingRecords } from '../workflow/records.js';
 import { projectRun } from '../workflow/snapshot.js';
 import * as worktree from '../workflow/worktree.js';
@@ -903,6 +903,17 @@ describe('protected paths', () => {
     expect(protectedPaths(changed)).toEqual(changed);
     expect(protectedPaths(['src/app.ts', 'docs/agents.mdx', '.claudeignore', '.github/dependabot.yml', '.github/workflows-notes.md', 'packages/web/AGENTS.md', 'Claude.md']))
       .toEqual(['packages/web/AGENTS.md', 'Claude.md']);
+  });
+});
+
+describe('the retry a delivery failure names', () => {
+  it('quotes a step path a shell would split or expand, so the command runs as written', () => {
+    const key = { step: 'items[1].ask me', pass: 1, settledAt: 0, branch: 'teamai/r1/items', head: 'a'.repeat(40) };
+
+    const failure = deliveryFailure({ runId: 'r0123abcd', key, openedBy: 'items[1].open it' }, { kind: 'later_protected_path', files: ['AGENTS.md'] });
+
+    expect(failure.message).toContain("then run: teamai workflow retry r0123abcd 'items[1].ask me'.");
+    expect(failure.message).toContain("run its steps again in a new branch: teamai workflow retry r0123abcd 'items[1].open it'");
   });
 });
 

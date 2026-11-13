@@ -9,10 +9,10 @@ import { commitSkippingHooks, createGit, createGitWithBlockTimeout, unusedBranch
 import { withKnowledgeWorktree } from '../utils/reports-branch.js';
 import { publishLearningsMaintenance } from '../utils/learnings-publish.js';
 import { listLearningFiles } from '../utils/learnings-roots.js';
-import { parseJson } from '../utils/json.js';
+import { parseJson } from '@teamai/shared/json';
 import { createPrWithFallback } from '../push.js';
 import { getProvider } from '../providers/index.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { DefaultFolders } from '../default-folders.js';
 import { resolveMaintenancePaths } from './paths.js';
 import { fetchPromotionRefs, findPromotionCandidates, markPromoted, writePromotion, type PromotionCandidate, type PromotionCategory } from './promote.js';

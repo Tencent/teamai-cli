@@ -14,7 +14,7 @@ import { buildMcpGitExcludeCheck, buildMcpReadFileChecks, mcpTransportNotes } fr
 import type { DoctorContext } from '../doctor.js';
 import { judgeTeamaiOnlyFiles } from '../teamai-only-files.js';
 import { mcpFormatOf } from '../tool-registry.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { judgeTeamaiOnlyMcpConfigs, reconcileMcpForConfig, resolveMcpTargets, shadowedMcpRecords } from '../mcp-reconcile.js';
 import { entryHash, renderCodexBlock, renderJsonEntry } from '../resources/mcp-format.js';
 import { managedMcpManifestKey, TeamaiConfigSchema, type LocalConfig, type McpServerDef, type TeamaiConfig } from '../types.js';
@@ -631,7 +631,7 @@ describe('pull writes MCP servers where each tool reads them (#1221)', () => {
     const { loadTeamConfig } = await import('../config.js');
     const { resetToolInstancesForTests } = await import('../tool-instances.js');
     onTestFinished(resetToolInstancesForTests);
-    const teamConfig = await loadTeamConfig(repo);
+    const teamConfig = await loadTeamConfig(repo, null);
 
     if (!teamConfig) throw new Error('the team config did not load');
     const self: LocalConfig = {

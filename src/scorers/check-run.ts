@@ -17,6 +17,7 @@ import { SANDBOX_WITHHELD_ENV, type EnvScope, type LeaseSetup, type Setup } from
 import { runShellCommand } from '../workflow/shell-command.js';
 import type { WorkflowFailure } from '../workflow/types.js';
 import { untrustedGit, type Git } from '../workflow/worktree.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 /** Setup with only its own keys, as the lease scopes them. */
 async function setupIn(trial: Runner, dir: string, setup: LeaseSetup, expiresAt: string | undefined): Promise<WorkflowFailure | undefined> {
@@ -305,7 +306,7 @@ async function holds(clone: string, entry: StartingEntry): Promise<boolean> {
   const kind = stats.isSymbolicLink() ? '120000' : !stats.isFile() ? undefined : process.platform === 'win32' ? entry.mode : (stats.mode & 0o100) !== 0 ? '100755' : '100644';
 
   if (kind !== entry.mode) return false;
-  const bytes = stats.isSymbolicLink() ? await fs.readlink(at, { encoding: 'buffer' }) : await fs.readFile(at);
+  const bytes = stats.isSymbolicLink() ? await fs.readlink(at, { encoding: 'buffer' }) : await readRegularFile(at);
 
   return createHash(entry.oid.length === 64 ? 'sha256' : 'sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') === entry.oid;
 }

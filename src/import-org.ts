@@ -17,7 +17,7 @@ import fs from 'fs-extra';
 import { importFromRepoList } from './import-repo-list.js';
 import { getProviderFromUrl, getProvider, detectProvider } from './providers/registry.js';
 import type { OrgRepoInfo } from './providers/types.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 // ─── 常量 ────────────────────────────────────────────────
 

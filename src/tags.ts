@@ -9,7 +9,7 @@ import {
 } from './config.js';
 import { buildRolePullContext, resolveDesiredSkills } from './resources/desired.js';
 import { loadTagsConfig, collectTagStats, saveTagsConfig } from './utils/tags.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { GlobalOptions, LocalConfig, TagsConfig } from './types.js';
 import { readWorkspaceChildren } from './workspace-children.js';
 
@@ -307,7 +307,7 @@ export async function tagsRemove(
  * listing that is already on screen.
  */
 async function countUntaggedDeliveredSkills(localConfig: LocalConfig, tagsConfig: TagsConfig): Promise<number | null> {
-    const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+    const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
     if (!teamConfig) return null;
 

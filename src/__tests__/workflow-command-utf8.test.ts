@@ -72,7 +72,7 @@ steps:
   if (typeof state === 'string') throw new Error(`Workflow state is ${state}`);
   const attempts = path.join(config.dataHome!, 'workflows', 'runs', runId, 'attempts');
   const attempt = fs.readdirSync(attempts)[0]!;
-  const result = JSON.parse(fs.readFileSync(path.join(attempts, attempt, 'result.json'), 'utf8'));
+  const result = JSON.parse(fs.readFileSync(path.join(attempts, attempt, 'out', 'result.json'), 'utf8'));
   return { done, state, result };
 }
 

@@ -2,13 +2,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
 import { type ToolId, type ShippedDescriptor } from './tools.js';
 import { type HomeMove } from '@teamai/tool-core/definition';
 import type { ToolInstanceHome } from '@teamai/tool-core/instance';
 import { homeVariables, descriptorOf, TOOL_ORDER, toolInstancesFor, toolOf } from './tool-registry.js';
 import { RELOCATABLE_TOOLS } from './types.js';
 import { pathExists, readFileSafe, readJsonObject, writeJsonAtomic, type JsonObjectRead } from './utils/fs.js';
-import { getUserHome, normalizeHomePath, usesInstallHome } from './utils/home.js';
+import { getUserHome, normalizeHomePath, usesInstallHome } from '@teamai/shared/home';
 
 export type Host = {
   readonly platform: NodeJS.Platform;
@@ -78,13 +79,28 @@ export function realHost(overrides: Partial<Pick<Host, 'env' | 'home'>> = {}): H
     existsNow: (file) => fs.existsSync(file),
     readTextNow: (file) => {
       try {
-        return fs.readFileSync(file, 'utf8');
+        // A tool home is where a step's tool writes, so a FIFO may be left there.
+        return readRegularFileSync(file, 'utf8');
       } catch {
         return null;
       }
     },
     userToolRoots: async () => (await (await import('./config.js')).loadLocalConfig())?.toolRoots,
   };
+}
+
+/**
+ * The one variable that moves `tool`'s whole home, its session store included: the variable `teamai init` records a
+ * relocated root under (Claude Code's `CLAUDE_CONFIG_DIR`, Codex's `CODEX_HOME`), else the tool's own `env` move.
+ * Undefined when no single variable does. A step runtime sets it to the attempt's tool home.
+ */
+export function homeEnvOf(tool: ToolId): string | undefined {
+  const recorded = Object.hasOwn(RELOCATABLE_TOOLS, tool) ? RELOCATABLE_TOOLS[tool]?.envVar : undefined;
+
+  if (recorded) return recorded;
+  const { home }: ShippedDescriptor = descriptorOf(tool);
+
+  return home.moves?.by.find((move) => move.kind === 'env')?.name;
 }
 
 /**
@@ -267,9 +283,16 @@ export function toolHome(tool: ToolId, host: Host = realHost()): string {
   return movedToolHome(tool, host) ?? defaultToolHome(tool, host);
 }
 
-/** Where an instance's own variable moves its home on `host`, read as a shipped tool's own variable is (`envToolHome`); null when it names none, or it is unset or blank. */
+/** Variables that move every XDG tool's home at once, so a member's value of one is never one instance's home. */
+const SHARED_HOME_VARIABLES: ReadonlySet<string> = new Set(['XDG_CONFIG_HOME', 'XDG_DATA_HOME']);
+
+/**
+ * Where an instance's own variable moves its home on `host`, read as a shipped tool's own variable is (`envToolHome`);
+ * null when it names none, or it is unset or blank. An XDG base directory is set for every tool, so its value never
+ * moves one instance's home.
+ */
 export function envInstanceHome(home: ToolInstanceHome, host: Host = realHost()): EnvToolHome | null {
-  const value = home.env === undefined ? undefined : host.env[home.env]?.trim();
+  const value = home.env === undefined || SHARED_HOME_VARIABLES.has(home.env) ? undefined : host.env[home.env]?.trim();
 
   return home.env !== undefined && value ? { dir: absoluteOn(value, host), variable: home.env, kind: 'own' } : null;
 }
@@ -463,7 +486,7 @@ export function reloadToolHomesHistory(): ToolHomesHistory {
   let raw: string;
 
   try {
-    raw = fs.readFileSync(toolHomesHistoryPath(), 'utf8');
+    raw = readRegularFileSync(toolHomesHistoryPath(), 'utf8');
   } catch (e) {
     if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return {};
 
@@ -529,7 +552,7 @@ function parseToolHomes(file: string): ToolHomesRead {
   let raw: string;
 
   try {
-    raw = fs.readFileSync(file, 'utf8');
+    raw = readRegularFileSync(file, 'utf8');
   } catch (e) {
     if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return { kind: 'missing' };
 

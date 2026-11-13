@@ -12,6 +12,10 @@ vi.mock('../config.js', async (importOriginal) => ({
   loadStateForScope: vi.fn().mockResolvedValue({}),
 }));
 
+// These checks are OpenCode V1's, which reads rules through `instructions`. The version comes from whichever
+// `opencode` is first on PATH: a member's V2 there would swap in the V2 plugin check.
+vi.mock('../opencode-version.js', () => ({ opencodeMajorVersion: async () => 1 }));
+
 vi.mock('@teamai/shared/log', () => ({
   log: {
     debug: vi.fn(), error: vi.fn(), info: vi.fn(), success: vi.fn(), warn: vi.fn(), dim: vi.fn(),

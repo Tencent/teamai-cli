@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { trackDetachedProcesses } from './helpers/detached-processes.js';
+import { groupRunning } from './helpers/skill-runners.js';
+import { signalGroup } from '@teamai/shared/process-group';
 
 it('waits for a detached writer after its spawning parent has exited', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-detached-fixture-'));
@@ -43,3 +45,33 @@ it('forgets a pid the runner cannot signal, as macOS answers EPERM for a recycle
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+it.skipIf(process.platform === 'win32')('stops a skill runner it waited on, and the command group the runner started, then fails naming the runner', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-detached-runner-'));
+  const tracker = trackDetachedProcesses(root);
+  const pids = path.join(root, 'pids');
+  // A runner as the CLI starts one: detached by a parent that exits, idling, with its step's command in a group of its own.
+  const command = `require('node:fs').appendFileSync(${JSON.stringify(pids)}, process.pid + '\\n'); setInterval(() => {}, 1000)`;
+  const runner = `require('node:fs').appendFileSync(${JSON.stringify(pids)}, process.pid + '\\n');
+    require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(command)}], { detached: true, stdio: 'ignore' }); setInterval(() => {}, 1000)`;
+  const parent = spawnSync(process.execPath, ['-e', `
+    require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(runner)}, 'workflow', 'report', 'r0123456789abcdef', '--driver', 'skill', '--attempt', 'a00000000'], {
+      detached: true, stdio: 'ignore'
+    }).unref();
+  `], { env: { ...process.env, NODE_OPTIONS: tracker.nodeOptions } });
+  expect(parent.status, parent.stderr.toString()).toBe(0);
+  const started = () => (fs.existsSync(pids) ? fs.readFileSync(pids, 'utf8').trim().split('\n').filter(Boolean).map(Number) : []);
+  const deadline = Date.now() + 10_000;
+  while (started().length < 2 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+  const [left = 0, step = 0] = started();
+  try {
+    await expect(tracker.waitForExit({ runnerExitMs: 200 })).rejects.toThrow(`Skill runners outlived the test and were stopped: ${left}.`);
+    expect(groupRunning(left), 'the runner was stopped').toBe(false);
+    expect(groupRunning(step), 'the command the runner started was stopped').toBe(false);
+  } finally {
+    for (const pid of [left, step]) {
+      signalGroup(pid, 'SIGKILL');
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}, 90_000);

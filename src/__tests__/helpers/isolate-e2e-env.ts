@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll } from 'vitest';
+import { installFakeOpencode } from '@teamai/tool-opencode/testing';
 
 // E2E fixtures run `git`, and the git hooks teamai installs run
 // `PATH="$HOME/.teamai/bin:$PATH" teamai hook-dispatch ...`. With the real HOME
@@ -34,16 +35,37 @@ fs.writeFileSync(path.join(bin, 'teamai'), `#!/bin/sh\nexec "${process.execPath}
 fs.chmodSync(path.join(bin, 'teamai'), 0o755);
 fs.writeFileSync(path.join(bin, 'teamai.cmd'), `@"${process.execPath}" "${cli}" %*\r\n`);
 
+// OpenCode's version decides how teamai delivers to it and launches it, and the first `opencode` on PATH was the
+// machine's, or under `npm run` the opencode-ai devDependency (V1), so a case passed or failed by how the suite was
+// started. Every file meets a stand-in V2 first instead, `opencode v2.0.29` as CI installs, which answers `--version`
+// and the session commands as OpenCode 2 does, and fails any other. A case that means another version, or the real
+// binary, puts its own first.
+const opencode = installFakeOpencode();
+
+// The temporary directory too, as isolate-home gives unit tests theirs: no
+// other file then works in it, so a skill runner left working there fails the
+// test that left it (teardown-writers.ts). Beside the sandbox rather than in
+// it, under a short name: a step runtime's attempt socket sits under it, and
+// macOS holds a unix socket path of at most 103 bytes. A process that must
+// outlive the teardown, as a detached hook pass does on Windows, works in the
+// directory this one sits in (hook-shells-windows.test.ts).
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-'));
+
+const XDG = ['XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME'];
 const saved = Object.fromEntries(
-  ['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME', 'GIT_CONFIG_NOSYSTEM', 'PATH'].map((name) => [name, process.env[name]]),
+  ['HOME', 'USERPROFILE', ...XDG, 'GIT_CONFIG_NOSYSTEM', 'PATH', 'TMPDIR', 'TMP', 'TEMP'].map((name) => [name, process.env[name]]),
 );
 process.env.HOME = home;
 process.env.USERPROFILE = home;
 // Unset rather than pointed into the sandbox: XDG paths then follow HOME, so a
-// test that sets HOME for one spawn gets that home's ~/.config as well.
-delete process.env.XDG_CONFIG_HOME;
+// test that sets HOME for one spawn gets that home's ~/.config as well, and no
+// OpenCode, real or the stand-in, reads or writes the developer's data.
+for (const name of XDG) delete process.env[name];
 process.env.GIT_CONFIG_NOSYSTEM = '1';
-process.env.PATH = `${bin}${path.delimiter}${process.env.PATH ?? ''}`;
+process.env.PATH = [bin, opencode, process.env.PATH ?? ''].join(path.delimiter);
+process.env.TMPDIR = tmp;
+process.env.TMP = tmp;
+process.env.TEMP = tmp;
 
 afterAll(() => {
   for (const [name, value] of Object.entries(saved)) {
@@ -51,4 +73,6 @@ afterAll(() => {
     else process.env[name] = value;
   }
   fs.rmSync(sandbox, { recursive: true, force: true });
+  fs.rmSync(opencode, { recursive: true, force: true });
+  fs.rmSync(tmp, { recursive: true, force: true });
 });

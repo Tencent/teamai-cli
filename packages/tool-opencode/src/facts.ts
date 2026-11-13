@@ -14,7 +14,7 @@ const platformFacts = {
     legacyIdWithoutWorkspace: false,
     sqliteRegistrationOnWindows: false,
     idFormat: 'opencode',
-    instanceSessions: true,
+    instanceSessions: false,
   },
 } as const satisfies Record<string, SessionPlatformFacts>;
 

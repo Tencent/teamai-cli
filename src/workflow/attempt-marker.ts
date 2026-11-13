@@ -1,9 +1,25 @@
-import { ATTEMPT_ENV, EPHEMERAL_CONFIG_ENV, RUN_DIR_ENV, RUN_MODE_ENV, type RunMode } from '../launch-context.js';
+import { RUN_DIR_ENV } from '@teamai/runtime-protocol';
+import { z } from 'zod';
+import { ATTEMPT_ENV, EPHEMERAL_CONFIG_ENV, RUN_MODE_ENV, STEP_COMMAND_ENV, type RunMode } from '../launch-context.js';
 import type { LocalConfig } from '../types.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
-import { isRunId, runScratchDir } from './store.js';
+import { AttemptIdSchema, isRunId, RunIdSchema, runScratchDir } from './store.js';
 import type { WorkflowFailure } from './types.js';
-import { git, worktreeCheckout } from './worktree.js';
+import { git, gitAnswer, worktreeCheckout } from './worktree.js';
+
+/** The attempt marker's value: `<run>/<attempt>`, one run id and one attempt id, and nothing more. */
+const MarkedAttemptSchema = z.string().transform((marker) => marker.split('/')).pipe(z.tuple([RunIdSchema, AttemptIdSchema])).transform(([run, attempt]) => ({ run, attempt }));
+
+/** The run and the attempt of it that an attempt marker names. */
+export type MarkedAttempt = z.output<typeof MarkedAttemptSchema>;
+
+/**
+ * The attempt `env`'s attempt marker names: undefined when the marker is unset, or names anything but exactly one run
+ * and one attempt of it. The one parser of the marker; a caller that needs only the run takes `.run`.
+ */
+export function markedAttempt(env: NodeJS.ProcessEnv): MarkedAttempt | undefined {
+  return MarkedAttemptSchema.safeParse(env[ATTEMPT_ENV]).data;
+}
 
 /**
  * What every process of an attempt of `run` gets: the attempt marker, the run's mode, and the run's directory, and the
@@ -13,6 +29,28 @@ export function attemptEnv(config: LocalConfig, run: string, attempt: string, mo
   const marked = { [ATTEMPT_ENV]: `${run}/${attempt}`, [RUN_MODE_ENV]: mode, [RUN_DIR_ENV]: runScratchDir(config, run) };
 
   return config.ephemeralConfig === undefined ? marked : { ...marked, [EPHEMERAL_CONFIG_ENV]: config.ephemeralConfig };
+}
+
+/**
+ * What the process of a `command` step gets: `attemptEnv`, and the command-step marker naming the same attempt. The local
+ * driver, the skill runner and a fleet member's host command launch a command step with it, and nothing else: a prompt
+ * step's tool, setup, a runtime's command, a `--json` driver's lease or a step kind added later gets `attemptEnv` alone,
+ * so `isCommandStep` holds for none of them. A driver that itself runs inside another attempt, as
+ * the run a step's command started does, gives no marker either: that run is part of the step, one level deep.
+ */
+export function commandStepEnv(config: LocalConfig, run: string, attempt: string, mode: RunMode): ReturnType<typeof attemptEnv> & Partial<Record<typeof STEP_COMMAND_ENV, string>> {
+  const marked = attemptEnv(config, run, attempt, mode);
+  const outer = process.env[ATTEMPT_ENV];
+
+  // A skill driver's runner runs inside the attempt it launches, which is no other one.
+  return outer !== undefined && outer !== '' && outer !== marked[ATTEMPT_ENV] ? marked : { ...marked, [STEP_COMMAND_ENV]: marked[ATTEMPT_ENV] };
+}
+
+/** Whether `env` is the process of a `command` step: its command-step marker names the attempt its attempt marker names. */
+export function isCommandStep(env: NodeJS.ProcessEnv): boolean {
+  const attempt = env[ATTEMPT_ENV];
+
+  return attempt !== undefined && attempt !== '' && env[STEP_COMMAND_ENV] === attempt;
 }
 
 /** Whether `env` marks its process as the runner of `attempt` of `run`. */
@@ -41,11 +79,23 @@ export function agentEvidence(env: NodeJS.ProcessEnv): AgentEvidence {
 }
 
 /**
+ * What a coding session teamai runs inside sets for its own children, and that changes how a tool teamai launches
+ * behaves: Claude Code turns transcript saving off in an interactive session that inherits `CLAUDE_CODE_CHILD_SESSION`,
+ * so teamai would find no session of the step to record, score or resume.
+ */
+const OUTER_SESSION_MARKERS: ReadonlySet<string> = new Set(['CLAUDE_CODE_CHILD_SESSION']);
+
+/** `env` without the markers of a coding session teamai runs inside, for a tool teamai launches (`OUTER_SESSION_MARKERS`). */
+export function withoutOuterSessionMarkers(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([name]) => !OUTER_SESSION_MARKERS.has(name)));
+}
+
+/**
  * `env` without what `agentEvidence` reads, for a process the CLI starts itself to drive a run of its own: the attempt
- * marker and run directory, and every agent session variable, which a hook inherits from the session it runs in.
+ * and command-step markers and run directory, and every agent session variable, which a hook inherits from the session it runs in.
  */
 export function withoutAgentEvidence(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const removed = new Set<string>([ATTEMPT_ENV, RUN_DIR_ENV, ...AGENT_SESSION_ENV]);
+  const removed = new Set<string>([ATTEMPT_ENV, STEP_COMMAND_ENV, RUN_DIR_ENV, ...AGENT_SESSION_ENV]);
 
   return Object.fromEntries(Object.entries(env).filter(([name]) => !removed.has(name)));
 }
@@ -53,7 +103,7 @@ export function withoutAgentEvidence(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv 
 /**
  * Why this process may not start or drive a workflow run: it runs inside a workflow attempt, as the marker says; or, for
  * a start, it works in a workflow's place: a worktree under `.teamai/workflow-worktrees`, or a checkout on a workflow
- * branch, the only trace a place the host made keeps.
+ * branch, the only trace a place the session host made keeps.
  */
 export type Nested =
   | { kind: 'marker'; attempt: string }
@@ -78,7 +128,11 @@ export async function nestedStart(env: NodeJS.ProcessEnv, cwd: string): Promise<
   const checkout = worktreeCheckout(cwd);
 
   if (checkout !== undefined) return { kind: 'worktree-path', dir: cwd, checkout };
-  const branch = (await git(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).stdout.trim();
+  const head = gitAnswer(await git(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD']));
+
+  // A git that did not answer has no workflow branch to refuse, and a start there fails on git with git's own cause.
+  if (head.said !== 'yes') return undefined;
+  const branch = head.result.stdout.trim();
   const [owner, run, ...rest] = branch.split('/');
 
   return owner === 'teamai' && run !== undefined && isRunId(run) && rest.length > 0 ? { kind: 'workflow-branch', dir: cwd, branch } : undefined;

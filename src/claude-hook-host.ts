@@ -12,10 +12,12 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
-import { DEFAULT_CLAUDE_ROOT, JsonValueSchema, type JsonValue, JsonObjectSchema, type Scope } from './types.js';
+import { JsonValueSchema, type JsonValue, JsonObjectSchema } from '@teamai/shared/json';
+import { DEFAULT_CLAUDE_ROOT, type Scope } from './types.js';
 import { defaultPathsOf } from './tool-instances.js';
 import { shellQuoteValue } from './utils/shell-profile.js';
 import { findGitBashWindows } from './bundled-runtime.js';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
 import { toolOf } from './tool-registry.js';
 
 const CURSOR_MARKER = '--tool cursor';
@@ -184,7 +186,7 @@ function homeDir(env: NodeJS.ProcessEnv): string | undefined {
 
 function fileHasMarker(file: string, marker: string): boolean {
   try {
-    return fs.readFileSync(file, 'utf8').includes(marker);
+    return readRegularFileSync(file, 'utf8').includes(marker);
   } catch {
     return false;
   }
@@ -208,7 +210,7 @@ function copilotHooksInstalled(dir: string): boolean {
       if (!name.endsWith('.json')) return false;
 
       try {
-        return copilotRunsEntries(JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')))
+        return copilotRunsEntries(JSON.parse(readRegularFileSync(path.join(dir, name), 'utf8')))
           .some(([, , command]) => command.includes(COPILOT_MARKER));
       } catch {
         return false;

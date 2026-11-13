@@ -9,11 +9,12 @@ import { type LocalConfig } from '../../types.js';
 import path from 'node:path';
 import type { AgentAdapter } from '@teamai/tool-core/sessions/base';
 import { HOST_PROCESSES } from '@teamai/shared/exec';
+import { log } from '@teamai/shared/log';
 import type { ToolFamily } from '@teamai/tool-core/family';
 import { locatesOwnStore, type SessionHost, type StoredPlatformDefinition } from '@teamai/tool-core/sessions/platform';
-import { executablesOf, toolCommandEnv } from '../../tool-launch/tools.js';
+import { executablesOf, toolCommandEnv } from '../../launch-registry.js';
 import { isSessionPlatform, isStoredSessionPlatform, type SessionPlatform, type StoredSessionPlatform } from './platform-facts.js';
-import { sessionStoreDir } from '../../locate.js';
+import { sessionStoreDir, type SessionStoreRoot } from '../../locate.js';
 import { instanceHomeDir } from '../../tool-home.js';
 import { acceptedCommandOf, type DeclaredTool } from '../../tool-instances.js';
 import { instancePlatform, toolInstancesFor } from '../../tool-registry.js';
@@ -24,8 +25,23 @@ import { instancePlatform, toolInstancesFor } from '../../tool-registry.js';
  */
 export type AdapterFactory = (storeDir: string) => AgentAdapter;
 
-/** What every adapter this registry builds starts its processes through, and the executables of each tool installed here. */
-export const SESSION_HOST: SessionHost = { processes: HOST_PROCESSES, executablesOf, homeEnvAt: (tool, dir) => toolCommandEnv(tool, { kind: 'at', dir }) };
+/** The folders of a store this process already warned it skipped, so a command that lists the store again warns once. */
+const warnedFolders = new Set<string>();
+
+/**
+ * What every adapter this registry builds starts its processes through, the executables of each tool installed here,
+ * where it warns of a folder of its store it has no permission to read, and the home variables a tool's command starts
+ * with in a home (`toolCommandEnv`).
+ */
+export const SESSION_HOST: SessionHost = {
+  processes: HOST_PROCESSES, executablesOf,
+  skippedFolder(folder) {
+    if (warnedFolders.has(folder)) return;
+    warnedFolders.add(folder);
+    log.warn(`teamai has no permission to read ${folder}, so it lists none of the sessions in it. Let the user teamai runs as read ${folder} to list them.`);
+  },
+  homeEnvAt: (tool, dir) => toolCommandEnv(tool, { kind: 'at', dir }),
+};
 
 function stored(definition: StoredPlatformDefinition): AdapterFactory {
   return (storeDir) => definition.adapter(storeDir, SESSION_HOST);
@@ -86,7 +102,7 @@ function instanceStore(platform: string) {
   const definition = storedDefinitionOf(hosted.platform);
   const { home } = hosted.instance;
 
-  if (definition?.adapterAs === undefined || home === undefined) return undefined;
+  if (definition?.adapterAs === undefined || definition.store.in !== 'tool-home' || home === undefined) return undefined;
 
   return { store: definition.store, adapterAs: definition.adapterAs, name: hosted.instance.name, home, host: instanceSessionHost(hosted.instance) };
 }
@@ -100,7 +116,7 @@ function instanceSessionHost(instance: DeclaredTool): SessionHost {
   const own = (tool: string): string => tool === instance.extends ? instance.name : tool;
 
   return {
-    processes: SESSION_HOST.processes,
+    ...SESSION_HOST,
     executablesOf: (tool) => {
       const command = tool === instance.extends ? acceptedCommandOf(instance) : undefined;
 
@@ -124,18 +140,18 @@ function instancePlatforms(): string[] {
 }
 
 /**
- * The store directory `platform`'s adapter is built on, which follows the member's recorded `toolRoots`. An instance's
- * store sits in the instance's home. Empty for a platform whose adapter finds its own store, or that teamai has no facts for.
+ * The store directory `platform`'s adapter is built on from `root`: the member's recorded tool roots, or a tool home an
+ * attempt ran in. An instance's store sits in the instance's home, or in the tool home it ran in. Empty for a platform
+ * whose adapter finds its own store, or that teamai has no facts for.
  */
-export function storeDirOf(platform: string, toolRoots: LocalConfig['toolRoots']): string {
-  if (isSessionPlatform(platform)) return isStoredSessionPlatform(platform) ? sessionStoreDir(platform, toolRoots) : '';
+export function storeDirOf(platform: string, root: SessionStoreRoot): string {
+  if (isSessionPlatform(platform)) return isStoredSessionPlatform(platform) ? sessionStoreDir(platform, root) : '';
   const instance = instanceStore(platform);
 
   if (!instance) return '';
   const { store, name, home } = instance;
-  const dir = store.in === 'tool-home' ? store.dir : store.child;
 
-  return path.join(instanceHomeDir({ name, home }), dir);
+  return path.join(root.kind === 'tool-home' ? root.dir : instanceHomeDir({ name, home }), store.dir);
 }
 
 /** `platform`'s adapter on `storeDir`, a store directory the caller already resolved (`storeDirOf`). */
@@ -149,8 +165,13 @@ export function adapterAt({ platform, storeDir }: { platform: string; storeDir: 
   return factory(storeDir);
 }
 
+/** `platform`'s adapter on the store `root` resolves to. */
+export function adapterOn(platform: string, root: SessionStoreRoot): AgentAdapter {
+  return adapterAt({ platform, storeDir: storeDirOf(platform, root) });
+}
+
 export function getAdapter(platform: string, toolRoots?: LocalConfig['toolRoots']): AgentAdapter {
-  return adapterAt({ platform, storeDir: storeDirOf(platform, toolRoots) });
+  return adapterOn(platform, { kind: 'recorded', toolRoots });
 }
 
 export function listAvailablePlatforms(): string[] {
@@ -166,7 +187,7 @@ export function listInstalledPlatforms(toolRoots?: LocalConfig['toolRoots'], pro
     if (!factory) continue;
 
     try {
-      const adapter = factory(storeDirOf(platform, toolRoots));
+      const adapter = factory(storeDirOf(platform, { kind: 'recorded', toolRoots }));
 
       if (adapter.isReady(projectPath)) installed.push(platform);
     } catch {

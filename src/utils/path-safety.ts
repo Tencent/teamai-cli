@@ -1,6 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import { getUserHome } from './home.js';
+import { getUserHome } from '@teamai/shared/home';
 
 /**
  * Assert that a resolved target path is within one of the allowed root directories.

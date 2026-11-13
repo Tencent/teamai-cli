@@ -3,7 +3,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { toolHomeVariableNames } from '../tool-home.js';
-import { homeVariableOf, LAUNCH_ORDER } from '../tool-launch/tools.js';
+import { homeVariableOf, LAUNCH_ORDER } from '../launch-registry.js';
 
 const RULE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../oxlint-plugin-teamai/rules/tool-home-env.js');
 

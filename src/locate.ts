@@ -18,7 +18,7 @@ import { baseToolOf, channelsOf, installGateOf, isToolId, hasDefaultHomeLeftover
 import { instanceReadPath } from './tool-instances.js';
 import {
   CODEX_TOOL_ID, CURSOR_CONFIG_TOOL_ID, CURSOR_DATA_TOOL_ID,
-  DEFAULT_TOOL_PATHS, isAgentExcluded, isGitExcludeEnabled, isSelfMode, recordedToolRootDir, resolveBaseDir, scopedToolPaths, toolGateRoot,
+  DEFAULT_TOOL_PATHS, isAgentExcluded, isGitExcludeEnabled, isSelfMode, recordedToolHomeDir, resolveBaseDir, scopedToolPaths, toolGateRoot,
   workbuddyLaunchedFrom,
   WORKBUDDY_AI_ROOT, WORKBUDDY_LIVE_ROOT_LEAVES, WORKBUDDY_TOOL_ID, WORKBUDDY_TOOL_ROOT,
   type HomePaths, type LocalConfig, type Scope, type TeamaiConfig,
@@ -898,12 +898,12 @@ async function readGatesOf(kinds: readonly ReadGateKind[] | undefined, install: 
       case 'cursor-mcp-approval': {
         // Cursor CLI 2026.10.21 cursor-config paths: a blank variable counts as unset.
         // `init` records both roots, and Cursor's other readers (`sessionStoreDir`,
-        // `cursorConfigDir`) follow the record: a shell that does not export the
-        // variables must not point the gate at another directory.
+        // `cursorConfigDir`) follow the record, outside the home directory too: a shell
+        // that does not export the variables must not point the gate at another directory.
         const home = rootsOf('cursor', user, host).declared('home', '.cursor');
-        const data = recordedToolRootDir(CURSOR_DATA_TOOL_ID, user.toolRoots, host) ?? (host.env.CURSOR_DATA_DIR?.trim() ? host.env.CURSOR_DATA_DIR : home);
+        const data = recordedToolHomeDir(CURSOR_DATA_TOOL_ID, user.toolRoots, host) ?? (host.env.CURSOR_DATA_DIR?.trim() ? host.env.CURSOR_DATA_DIR : home);
         const xdg = host.env.XDG_CONFIG_HOME?.trim() ? host.path.join(host.env.XDG_CONFIG_HOME, 'cursor') : home;
-        const config = recordedToolRootDir(CURSOR_CONFIG_TOOL_ID, user.toolRoots, host) ?? (host.env.CURSOR_CONFIG_DIR?.trim() ? host.env.CURSOR_CONFIG_DIR : xdg);
+        const config = recordedToolHomeDir(CURSOR_CONFIG_TOOL_ID, user.toolRoots, host) ?? (host.env.CURSOR_CONFIG_DIR?.trim() ? host.env.CURSOR_CONFIG_DIR : xdg);
 
         return [{ kind, projects: host.path.join(data, 'projects'), cliConfig: host.path.join(config, 'cli-config.json'), checkout: install.projectRoot }];
       }
@@ -1600,26 +1600,37 @@ async function adapterHooksOf(tool: string, channel: HookAdapter, install: Insta
 const PiSessionDirSchema = z.object({ sessionDir: z.string() });
 
 /**
+ * The home a session store is looked up in: the member's, following the tool roots they `recorded`, or one `tool-home`
+ * a step runtime gave an attempt (`attemptToolHome`), which the tool's home variable pointed at.
+ */
+export type SessionStoreRoot =
+  | { kind: 'recorded'; toolRoots: Readonly<Record<string, string>> | undefined }
+  | { kind: 'tool-home'; dir: string };
+
+/**
  * Where `platform`'s sessions sit on `host`. A `tool-home` store follows the member's recorded
  * root first, then its tool's home, as that tool's other files do. A recorded root is checked
  * against `host.home`, the home `teamai init` accepted it under. A default store sits under
- * `host.profileHome`, where the tools write it.
+ * `host.profileHome`, where the tools write it. With a `tool-home` root, the store is its own
+ * directory inside that home, whatever the host env says.
  */
 export function sessionStoreDir(
   platform: StoredSessionPlatform,
-  toolRoots: Readonly<Record<string, string>> | undefined,
+  root: SessionStoreRoot,
   host: Host = realHost(),
 ): string {
+  const { store } = SESSION_PLATFORM_FACTS[platform];
+  const p = host.path;
+
+  if (root.kind === 'tool-home') return p.join(root.dir, store.in === 'tool-home' ? store.dir : store.child);
+
   if ((platform === 'pi' || platform === 'omp') && host.env.PI_CODING_AGENT_SESSION_DIR) {
     return absoluteOn(host.env.PI_CODING_AGENT_SESSION_DIR, host);
   }
 
-  const { store } = SESSION_PLATFORM_FACTS[platform];
-  const p = host.path;
-
   switch (store.in) {
     case 'tool-home': {
-      const dir = recordedToolRootDir('root' in store ? store.root : store.home, toolRoots, host)
+      const dir = recordedToolHomeDir('root' in store ? store.root : store.home, root.toolRoots, host)
         ?? toolHome(store.home, { ...host, home: host.profileHome });
 
       if (platform === 'pi') {
@@ -1652,7 +1663,7 @@ async function locateSessions(tool: string, install: Install, host: Host): Promi
   if (!(sessions instanceof Object)) return { channel: sessions, retired: [], gates: [] };
   const [platform] = sessions;
   const { toolRoots } = install.scope === 'user' ? install : await userViewOf(install, host);
-  const own: DirPlace = { kind: 'dir', path: sessionStoreDir(platform, toolRoots, host) };
+  const own: DirPlace = { kind: 'dir', path: sessionStoreDir(platform, { kind: 'recorded', toolRoots }, host) };
 
   return { channel: 'files', own, platform, reads: [{ path: own.path, when: 'always' }], readGates: [], retired: [], gates: [] };
 }

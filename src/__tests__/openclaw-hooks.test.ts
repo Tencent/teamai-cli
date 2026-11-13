@@ -12,7 +12,7 @@ import { injectHooksToAllTools, reconcileHooksToAllTools } from '../hooks.js';
 import { openclawWorkspaceDir } from '../locate.js';
 import { bridgedTeamHookFile } from '../bridged-team-hooks.js';
 import type { HookDef } from '../types.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import * as builtinHooks from '../builtin-hooks.js';
 import { OPENCLAW_EVENT_KEYS, openclawEvents, type OpenClawHookEvent } from './fixtures/openclaw/events.js';
 

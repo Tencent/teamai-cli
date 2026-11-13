@@ -1,0 +1,6 @@
+schemaVersion: v1alpha1
+name: teamai-codex
+description: Run every step on this machine, with prompt steps on Codex unless a step or --tools names another tool.
+tool: codex
+runtimes:
+  - use: tools

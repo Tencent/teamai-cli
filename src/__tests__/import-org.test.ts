@@ -23,7 +23,7 @@ import { importFromOrg } from '../import-org.js';
 import { importFromRepoList } from '../import-repo-list.js';
 import { detectProvider, getProvider } from '../providers/registry.js';
 import type { OrgRepoInfo } from '../providers/types.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 // ─── Helpers ────────────────────────────────────────────
 

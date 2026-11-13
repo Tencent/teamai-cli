@@ -14,8 +14,8 @@ import { installationNotes } from './installations.js';
 import { hookSourceMatches } from './utils/hook-source.js';
 import { resolveCliEntry, teamaiWrapperPath, teamaiWrapperSource } from './builtin-hooks.js';
 import { LOGIN_DEFERRED_ENV } from './hook-fast-path.js';
-import { getUserHome } from './utils/home.js';
-import { log, setStderrOnly } from './utils/logger.js';
+import { getUserHome } from '@teamai/shared/home';
+import { log, setStderrOnly } from '@teamai/shared/log';
 import type { GlobalOptions } from './types.js';
 import {
   COPILOT_TOOL_ID,
@@ -25,6 +25,7 @@ import {
   recordedToolRootDir,
   resolveToolRootDir,
   toolRootRejection,
+  toolRootRejectionText,
   resolveHookScope,
   legacyManagedHooksPath,
   resolveBaseDir,
@@ -391,7 +392,7 @@ function buildToolRootChecks(localConfig: LocalConfig, teamConfig: TeamaiConfig 
         applyToolRoots({ [tool]: declared }, localConfig.toolRoots)[tool],
       ),
       fix: rejection
-        ? `${envVar} is ${detected}, which teamai cannot sync to (${rejection}); `
+        ? `${envVar} is ${detected}, which teamai cannot sync to (${toolRootRejectionText(rejection)}); `
           + `this config syncs ${label} to ${effective}. Point ${envVar} at a directory `
           + 'in your home, or anywhere under a `~/.config/<name>`, and re-run `teamai init`.'
         : `${envVar} is ${detected}; this config syncs ${label} to ${effective}`
@@ -791,7 +792,7 @@ export async function resolveDoctorContext(options: { gitContext?: GitContext } 
 
   if (!localConfig) return null;
 
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
   const toolPaths: TeamaiConfig['toolPaths'] = teamConfig
     ? Object.fromEntries(
@@ -927,7 +928,7 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
       name: 'Team config (teamai.yaml) is valid',
       source: 'local',
       check: async () => {
-        const config = await loadTeamConfig(localConfig.repo.localPath);
+        const config = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
         return config !== null;
       },
@@ -995,6 +996,7 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
     ...(stage === 'doctor' ? await buildRulesDeliveryChecks(ctx) : []),
     ...(stage === 'doctor' ? await buildAgentsDeliveryChecks(ctx) : []),
     ...(stage === 'doctor' ? await buildInstructionDeliveryChecks(ctx) : []),
+    ...(stage === 'doctor' ? await (await import('./doctor-sandboxes.js')).buildSandboxProfileChecks(ctx, process.cwd()) : []),
     ...await buildAgentModelChecks(ctx, stage),
     ...await buildMcpDeliveryChecks(ctx),
     ...await buildMcpReadFileChecks(ctx),

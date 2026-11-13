@@ -34,7 +34,7 @@ vi.mock('@teamai/shared/log', () => ({
 
 import { pull } from '../pull.js';
 import { detectProjectConfig, loadLocalConfigForScope, loadStateForScope, loadTeamConfig, saveStateForScope } from '../config.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { LocalConfigSchema, StateSchema, TeamaiConfigSchema, type LocalConfig, type State } from '../types.js';
 import { saveToolHomes } from '../tool-home.js';
 

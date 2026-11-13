@@ -1,10 +1,11 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
 import { z } from 'zod';
 import { HookStdinSchema, stdinString, type HookStdin } from './hook-dispatch.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { deriveSessionId } from './utils/session-id.js';
-import { getUserHome } from './utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 import { DefaultFolders, type DefaultFolder, type TextLanguage } from './default-folders.js';
 
 // ─── TodoWrite hint data flow ───────────────────────────
@@ -54,7 +55,7 @@ function readCache(sessionId: string): TodoWriteHintCache | null {
     const cachePath = getTodoWriteHintCachePath(sessionId);
 
     if (!fs.existsSync(cachePath)) return null;
-    const raw = fs.readFileSync(cachePath, 'utf-8');
+    const raw = readRegularFileSync(cachePath, 'utf-8');
     const cache = TodoWriteHintCacheSchema.safeParse(JSON.parse(raw));
 
     if (!cache.success) return null;

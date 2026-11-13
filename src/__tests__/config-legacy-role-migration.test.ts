@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadLocalConfig, saveLocalConfig } from '../config.js';
 import { activeRoleIds } from '../roles.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 describe('loadLocalConfig: legacy role migration against the team repo roles manifest', () => {
   const originalHome = process.env.HOME;

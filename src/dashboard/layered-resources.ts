@@ -28,7 +28,7 @@ import type { FolderReach } from '@teamai/tool-core/definition';
 import { folderReachOf } from '../tool-registry.js';
 import { getKnowledgeDir, isAgentExcluded, isRecallEnabled, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { pathExists } from '../utils/fs.js';
-import { isSilent, setSilent } from '../utils/logger.js';
+import { isSilent, setSilent } from '@teamai/shared/log';
 import { dropsKeptVersion } from '../workflow/cache.js';
 import { WORKFLOW_MARKER, WorkflowFolder } from '../workflow/folder.js';
 import { formatDiagnostic } from '../workflow/parse.js';

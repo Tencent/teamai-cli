@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { installFakeOpencode } from '@teamai/tool-opencode/testing';
 import { commitTeamRepo } from '../helpers/team-repo-history.js';
+import { buildPluginSource } from '../../opencode-hooks.js';
 import { writeEnvLoader } from '../../resources/env-loader.js';
 import { envLoaderProfiles } from '../../utils/shell-profile.js';
 
@@ -31,11 +33,14 @@ describe('teamai doctor delivery checks (e2e)', () => {
   // Absolute: OpenCode resolves a relative entry from the session's cwd (#946).
   const opencodeUserGlob = (): string => `${path.join(home, '.config', 'opencode', 'rules').split(path.sep).join('/')}/*.md`;
   let repo: string;
+  // The OpenCode doctor meets is the one a case names, never the machine's: V2 unless a case pins V1.
+  let opencodeV2: string;
+  let opencodeV1: string;
 
-  function runDoctor(): DoctorReport {
+  function runDoctor({ opencode = opencodeV2 }: { opencode?: string } = {}): DoctorReport {
     const result = spawnSync(process.execPath, [CLI, 'doctor', '--json'], {
       cwd: home,
-      env: { ...process.env, HOME: home, USERPROFILE: home, SHELL: '/bin/bash', FORCE_COLOR: '0' },
+      env: { ...process.env, HOME: home, USERPROFILE: home, SHELL: '/bin/bash', FORCE_COLOR: '0', PATH: `${opencode}${path.delimiter}${process.env.PATH ?? ''}` },
       encoding: 'utf8',
     });
     return JSON.parse(result.stdout) as DoctorReport;
@@ -58,6 +63,8 @@ describe('teamai doctor delivery checks (e2e)', () => {
     sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-delivery-e2e-'));
     home = path.join(sandbox, 'home');
     repo = path.join(sandbox, 'team-repo');
+    opencodeV2 = installFakeOpencode();
+    opencodeV1 = installFakeOpencode({ version: '1.18.35' });
 
     const toolDirs = [
       '.claude/skills', '.claude/rules', '.claude/agents',
@@ -135,6 +142,7 @@ describe('teamai doctor delivery checks (e2e)', () => {
 
   afterAll(() => {
     fs.rmSync(sandbox, { recursive: true, force: true });
+    for (const dir of [opencodeV2, opencodeV1]) fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it('names every resource that never reached its tool', () => {
@@ -207,6 +215,8 @@ describe('teamai doctor delivery checks (e2e)', () => {
       await writeEnvLoader();
       // Every file a pull puts the block in on this machine, e.g. ~/.zshenv when zsh is installed.
       ({ paths: profiles } = await envLoaderProfiles(undefined, loader));
+      // OpenCode V2 reads no `instructions`: teamai's plugin, as this build writes it, adds the team rules.
+      write(path.join(home, '.config', 'opencode', 'plugin', 'teamai-hooks.ts'), buildPluginSource(undefined, CLI));
     } finally {
       process.env.HOME = realHome;
       process.env.SHELL = realShell;
@@ -311,12 +321,12 @@ describe('teamai doctor delivery checks (e2e)', () => {
     write(mcpYaml, original);
   });
 
-  it('reports rules OpenCode reads none of, though every file is delivered', () => {
+  it('reports rules OpenCode V1 reads none of, though every file is delivered', () => {
     // Drop the glob, leave the files. The per-file check keeps passing: the
-    // failure is that OpenCode does not scan a rules directory.
+    // failure is that OpenCode V1 does not scan a rules directory.
     write(path.join(home, '.config', 'opencode', 'opencode.json'), JSON.stringify({ instructions: [] }));
 
-    const report = runDoctor();
+    const report = runDoctor({ opencode: opencodeV1 });
 
     expect(check(report, 'Rules delivered to opencode').ok).toBe(true);
     const active = check(report, 'Team rules are active in opencode');

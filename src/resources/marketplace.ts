@@ -3,10 +3,9 @@ import path from 'node:path';
 import { z } from 'zod';
 
 import { readFileSafe, writeFile, pathExists, listDirs } from '../utils/fs.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { parseFrontmatter } from '../utils/frontmatter.js';
-import { JsonObjectSchema } from '../types.js';
-import type { JsonValue } from '../types.js';
+import { JsonObjectSchema, type JsonValue } from '@teamai/shared/json';
 
 // ─── Marketplace refresh ────────────────────────────────
 //

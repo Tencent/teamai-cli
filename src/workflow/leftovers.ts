@@ -1,5 +1,6 @@
 /**
- * The git a settled run leaves behind (#1689): its `teamai/<run>/…` branches, in the checkout and on `origin`, the
+ * The git a settled run leaves behind (#1689): its `teamai/<run>/…` branches, and its fleet attempts'
+ * `teamai/attempts/<run>/…` ones, in the checkout and on `origin`, the
  * worktrees teamai made for them, and what readers' copies kept under `refs/teamai/kept/<attempt>`. A run that
  * succeeds deletes, as it settles, every branch whose tip a branch that stays holds: a branch a pull request uses, or
  * the run's final copy. `teamai doctor --fix` tries again a deletion that did not go through, and removes everything
@@ -12,10 +13,11 @@ import { z } from 'zod';
 import { knownSecrets } from '../env-resolution.js';
 import { getReportsDir, REPORTS_BRANCH, usesBranchWorktree, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { errnoCode } from '../utils/fs.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { sanitizeGitUrl } from '@teamai/shared/redact';
 import { listCachedWorkflows } from './cache.js';
 import { WorkflowFolder } from './folder.js';
+import { attemptBranchPrefix, heldFolders } from './fleet/record.js';
 import { publishRunEnd, type HandoffError } from './handoff.js';
 import { pullRequestBranches, RECORDS_DIR, RunRecordFieldsSchema } from './records.js';
 import { ownRunSweptAt, resolveRetention, type ResolvedRetention } from './retention.js';
@@ -23,7 +25,8 @@ import { parseSnapshot, snapshotPath } from './snapshot.js';
 import { AttemptIdSchema, attemptsDir, installOwner, readRun, readRuns, RunIdSchema, updateRun, withCleanupLock } from './store.js';
 import type { KeptBranchReason, RunLeftovers, RunState } from './types.js';
 import { runBranchPrefix, runCopyToMerge } from './workspace.js';
-import { fetchMissingCommits, git, removeWorktree, worktreeCheckout } from './worktree.js';
+import { fetchMissingCommits, forgetUpstream, git, gitAnswer, gitPath, removeWorktree, saidYes, unansweredGit, worktreeCheckout } from './worktree.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 /** Where each branch of a run points: in the checkout, and on `origin`, which is absent when the checkout has none. */
 interface Tips {
@@ -44,19 +47,23 @@ function refsUnder(listed: string, prefix: string): Map<string, string> {
   }));
 }
 
-/** The `teamai/<run>/…` branches of `checkout` and of its `origin`, or why they could not be listed. */
-async function runBranches({ checkout, runId }: { checkout: string; runId: string }): Promise<Tips | { error: string }> {
-  const prefix = `refs/heads/${runBranchPrefix(runId)}`;
-  const local = await git(checkout, ['for-each-ref', '--format=%(objectname) %(refname)', prefix]);
+/**
+ * The `teamai/<run>/…` branches of `checkout` and of its `origin`, with `isWithAttempts` its fleet attempts' too, or why
+ * they could not be listed.
+ */
+async function runBranches({ checkout, runId, isWithAttempts = false }: { checkout: string; runId: string; isWithAttempts?: boolean }): Promise<Tips | { error: string }> {
+  const prefixes = [runBranchPrefix(runId), ...isWithAttempts ? [attemptBranchPrefix(runId)] : []].map((prefix) => `refs/heads/${prefix}`);
+  const local = await git(checkout, ['for-each-ref', '--format=%(objectname) %(refname)', ...prefixes]);
 
   if (local.code !== 0) return { error: local.stderr.trim() || 'git for-each-ref failed' };
+  const under = (listed: string): Map<string, string> => new Map(prefixes.flatMap((prefix) => [...refsUnder(listed, prefix)]));
 
-  if ((await git(checkout, ['remote', 'get-url', 'origin'])).code !== 0) return { local: refsUnder(local.stdout, prefix) };
-  const remote = await git(checkout, ['ls-remote', '--heads', 'origin', `${prefix}*`]);
+  if ((await git(checkout, ['remote', 'get-url', 'origin'])).code !== 0) return { local: under(local.stdout) };
+  const remote = await git(checkout, ['ls-remote', '--heads', 'origin', ...prefixes.map((prefix) => `${prefix}*`)]);
 
   if (remote.code !== 0) return { error: `origin could not be read (${sanitizeGitUrl(remote.stderr.trim()) || 'git ls-remote failed'})` };
 
-  return { local: refsUnder(local.stdout, prefix), origin: refsUnder(remote.stdout, prefix) };
+  return { local: under(local.stdout), origin: under(remote.stdout) };
 }
 
 /** The branches checked out in a worktree of `checkout`'s repository, with the worktree's path, or why they could not be listed. */
@@ -96,7 +103,7 @@ function finalCopy(run: RunState): string | undefined {
 
 async function contains({ checkout, tip, holders }: { checkout: string; tip: string; holders: string[] }): Promise<boolean> {
   for (const holder of holders) {
-    if ((await git(checkout, ['merge-base', '--is-ancestor', tip, holder])).code === 0) return true;
+    if (saidYes(gitAnswer(await git(checkout, ['merge-base', '--is-ancestor', tip, holder])), `whether ${holder} in ${checkout} holds ${tip}`)) return true;
   }
 
   return false;
@@ -105,11 +112,11 @@ async function contains({ checkout, tip, holders }: { checkout: string; tip: str
 /**
  * Deletes `branches` on origin and in the checkout, each only while it is still at the tip `tips` examined: a branch
  * that moved since stays, as a failure `doctor --fix` tries again. A branch checked out in a worktree teamai made goes
- * with that worktree; one checked out where the host put it stays in the checkout, as `hostKept`, and is not a failure.
+ * with that worktree; one checked out where the session host put it stays in the checkout, as `sessionHostKept`, and is not a failure.
  */
 async function deleteBranches(
   { checkout, runId, branches, tips }: { checkout: string; runId: string; branches: string[]; tips: Tips },
-): Promise<Pick<RunLeftovers, 'deleted' | 'failed'> & { hostKept: string[] }> {
+): Promise<Pick<RunLeftovers, 'deleted' | 'failed'> & { sessionHostKept: string[] }> {
   const failed: RunLeftovers['failed'] = [];
 
   const onOrigin = branches.flatMap((branch) => {
@@ -123,7 +130,7 @@ async function deleteBranches(
     const pushed = await git(checkout, ['push', '--quiet', ...leases, 'origin', '--delete', ...onOrigin.map(({ branch }) => `refs/heads/${branch}`)]);
 
     if (pushed.code !== 0) {
-      const left = await runBranches({ checkout, runId });
+      const left = await runBranches({ checkout, runId, isWithAttempts: true });
       const reason = sanitizeGitUrl(pushed.stderr.trim()) || 'git push failed';
 
       for (const { branch } of onOrigin) {
@@ -133,7 +140,7 @@ async function deleteBranches(
   }
 
   const worktrees = await checkedOut(checkout);
-  const hostKept = new Set<string>();
+  const sessionHostKept = new Set<string>();
 
   for (const branch of branches.filter((name) => !failed.some((item) => item.branch === name))) {
     const tip = tips.local.get(branch);
@@ -148,7 +155,7 @@ async function deleteBranches(
     const dir = worktrees.get(branch);
 
     if (dir !== undefined && worktreeCheckout(dir) === undefined) {
-      hostKept.add(branch);
+      sessionHostKept.add(branch);
       continue;
     }
 
@@ -164,9 +171,10 @@ async function deleteBranches(
     const removed = await git(checkout, ['update-ref', '-d', `refs/heads/${branch}`, tip]);
 
     if (removed.code !== 0) failed.push({ branch, reason: `in ${checkout}: ${removed.stderr.trim() || 'git update-ref -d failed'}` });
+    else await forgetUpstream(checkout, branch);
   }
 
-  return { deleted: branches.filter((branch) => !hostKept.has(branch) && !failed.some((item) => item.branch === branch)), failed, hostKept: [...hostKept] };
+  return { deleted: branches.filter((branch) => !sessionHostKept.has(branch) && !failed.some((item) => item.branch === branch)), failed, sessionHostKept: [...sessionHostKept] };
 }
 
 function warnNotCleanedUp(runId: string, reason: string): void {
@@ -222,9 +230,9 @@ async function settleSucceeded(run: RunState, { checkout, now }: { checkout: str
     else kept.push({ branch, why: 'unmerged' });
   }
 
-  const { deleted, failed, hostKept } = await deleteBranches({ checkout, runId: run.id, branches: removable, tips });
+  const { deleted, failed, sessionHostKept } = await deleteBranches({ checkout, runId: run.id, branches: removable, tips });
 
-  for (const branch of hostKept) kept.push({ branch, why: 'host' });
+  for (const branch of sessionHostKept) kept.push({ branch, why: 'host' });
 
   return { by: 'success', at: now, revision: run.revision, kept, deleted, failed };
 }
@@ -468,14 +476,18 @@ async function recordFiles(config: LocalConfig): Promise<{ files: RecordFile[] }
     return { files: await Promise.all(listed.names.filter((name) => name.endsWith('.json')).map(async (name): Promise<RecordFile> => {
       const at = path.join(dir, name);
 
-      return fs.readFile(at, 'utf8').then((text) => ({ at, text }), (cause: unknown) => ({ at, error: causeText(cause) }));
+      return readRegularFile(at, 'utf8').then((text) => ({ at, text }), (cause: unknown) => ({ at, error: causeText(cause) }));
     })) };
   }
 
   const ref = `origin/${REPORTS_BRANCH}`;
 
   // A refresh that found no teamai-reports on origin leaves no tracking ref, and no records.
-  if ((await git(reports, ['rev-parse', '--verify', '--quiet', `refs/remotes/${ref}`])).code !== 0) return { files: [] };
+  const tracked = gitAnswer(await git(reports, ['rev-parse', '--verify', '--quiet', `refs/remotes/${ref}`]));
+
+  if (tracked.said === 'nothing') return { from: ref, error: unansweredGit(`whether ${reports} tracks ${ref}`, tracked.result).message };
+
+  if (tracked.said === 'no') return { files: [] };
   const listed = await git(reports, ['ls-tree', '--name-only', ref, '--', `${RECORDS_DIR}/`]);
 
   if (listed.code !== 0) return { from: `${ref}:${RECORDS_DIR}`, error: listed.stderr.trim() || 'git ls-tree failed' };
@@ -572,16 +584,31 @@ async function keptRefs(checkout: string, attempts: string[]): Promise<{ refs: s
   return listed.code === 0 ? { refs: listed.stdout.split('\n').filter(Boolean) } : { error: `its kept refs could not be listed (${listed.stderr.trim() || 'git for-each-ref failed'})` };
 }
 
+/** Removes `refs/teamai` once no ref is left in it: git deletes a ref's empty parents but never the one right under `refs/`. */
+async function removeEmptyRefsDir(checkout: string): Promise<void> {
+  const dir = await gitPath(checkout, 'refs/teamai');
+
+  if (dir === undefined) return;
+
+  try {
+    await fs.rmdir(dir);
+  } catch (error) {
+    const code = errnoCode(error);
+
+    if (code !== 'ENOENT' && code !== 'ENOTEMPTY' && code !== 'EEXIST') log.warn(`${dir} was not removed (${code ?? String(error)}); it holds no ref of teamai's.`);
+  }
+}
+
 /**
  * Removes what run `runId` left in `checkout` and on its origin: the worktrees teamai made on its branches, the refs of
- * `attempts`, and every branch but `keep`. A worktree that stays is named on the deletion of its branch, or, on a branch
+ * `attempts`, and every branch but `keep`, its fleet attempts' included. A worktree that stays is named on the deletion of its branch, or, on a branch
  * of `keep`, is a warning, as a kept ref that stays is; `complete` is false then. Undefined, with a warning, when its
  * branches, worktrees or kept refs could not be listed.
  */
 async function removeRun(
   { checkout, runId, keep, attempts }: { checkout: string; runId: string; keep: ReadonlySet<string>; attempts: string[] },
 ): Promise<Omit<SweptRun, 'run' | 'from' | 'settledAt'> & { kept: RunLeftovers['kept']; complete: boolean } | undefined> {
-  const tips = await runBranches({ checkout, runId });
+  const tips = await runBranches({ checkout, runId, isWithAttempts: true });
 
   if ('error' in tips) return warnNotRemoved(runId, tips.error);
   const listed = await checkedOut(checkout);
@@ -616,11 +643,13 @@ async function removeRun(
     }
   }
 
+  if (refs.length > 0) await removeEmptyRefsDir(checkout);
+
   const all = namesOf(tips);
-  const { deleted, failed, hostKept } = await deleteBranches({ checkout, runId, branches: all.filter((branch) => !keep.has(branch)), tips });
+  const { deleted, failed, sessionHostKept } = await deleteBranches({ checkout, runId, branches: all.filter((branch) => !keep.has(branch)), tips });
   const keptHere: RunLeftovers['kept'] = all.filter((branch) => keep.has(branch)).map((branch) => ({ branch, why: 'pr' }));
 
-  for (const branch of hostKept) keptHere.push({ branch, why: 'host' });
+  for (const branch of sessionHostKept) keptHere.push({ branch, why: 'host' });
 
   return { branches: deleted, worktrees, refs, failed, kept: keptHere, complete };
 }
@@ -737,12 +766,19 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
     }
   }
 
-  // A stored workflow folder goes once no run of this data home and no workflow this scope has cached uses it. A run swept
-  // past its retention uses none: no retry reopens it, and a claim pins its folders again.
+  // A stored workflow folder goes once no run of this data home, no step this install holds as a fleet member and no
+  // workflow this scope has cached uses it. A run swept past its retention uses none: no retry reopens it, and a claim
+  // pins its folders again.
   const cached = (await listCachedWorkflows(config)).flatMap((workflow) => (workflow.source === 'team' && workflow.files ? [workflow.sourceHash] : []));
   const using = (await readRuns(config)).filter((run) => !cleaned(run, 'retention'));
-  const referenced = new Set([...cached, ...using.flatMap((run) => [...run.folder ? [run.folder] : [], ...Object.values(run.folders ?? {})])]);
-  await WorkflowFolder.prune(config, { referenced, now });
+  const held = await heldFolders(config);
+
+  if (held.ok) {
+    const referenced = new Set([...cached, ...held.folders, ...using.flatMap((run) => [...run.folder ? [run.folder] : [], ...Object.values(run.folders ?? {})])]);
+    await WorkflowFolder.prune(config, { referenced, now });
+  } else {
+    log.warn(`Kept every stored workflow folder: ${held.why}, so which of them a step this machine runs for the fleet reads is unknown. Fix or remove that file, then run teamai doctor --fix again.`);
+  }
 
   return { retention, swept };
 }

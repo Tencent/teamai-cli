@@ -8,10 +8,12 @@
 import path from 'node:path';
 import fs from 'fs-extra';
 import { z } from 'zod';
+import { extractReply } from '@teamai/tool-core/reply';
 
 import type { IWikiDocument } from './utils/iwiki-client.js';
 import { appendPendingReview } from './review-store.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 /** How much of each page the AI tool is shown. */
 const MAX_CONTENT_PER_PAGE = 5000;
@@ -37,26 +39,6 @@ export function buildDualContext(docs: IWikiDocument[]): string {
     return docs
         .map((d) => `=== ${d.docid} ===\n${d.content.slice(0, MAX_CONTENT_PER_PAGE)}`)
         .join('\n\n');
-}
-
-/**
- * 从 AI 输出文本中提取 JSON。
- */
-function extractJson(text: string): string {
-    const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-
-    if (fenceMatch) {
-        return fenceMatch[1].trim();
-    }
-
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-
-    if (start !== -1 && end !== -1 && end > start) {
-        return text.slice(start, end + 1);
-    }
-
-    return text.trim();
 }
 
 /**
@@ -181,12 +163,10 @@ export async function writeSections(flags: SectionsFlags): Promise<Record<string
     }
 
     const requireReview = flags.review === 'true';
-    let aiOutput: z.infer<typeof AiSectionOutputSchema> = {};
+    const aiOutput = extractReply(flags.reply, AiSectionOutputSchema);
 
-    try {
-        aiOutput = AiSectionOutputSchema.safeParse(JSON.parse(extractJson(flags.reply))).data ?? {};
-    } catch (err) {
-        log.warn(`iWiki dual import: AI output is not valid JSON; skipped all sections. Error: ${String(err)}`);
+    if (aiOutput === undefined) {
+        log.warn('iWiki dual import: AI output is not valid JSON or not the sections object; skipped all sections.');
         log.info('iWiki dual-path complete: sections updated []');
 
         return {};
@@ -218,7 +198,7 @@ export async function writeSections(flags: SectionsFlags): Promise<Record<string
     const ts = new Date().toISOString();
     await fs.ensureDir(flags.sectionsDir);
     const exists = await fs.pathExists(filePath);
-    let content = exists ? await fs.readFile(filePath, 'utf8') : buildSkeletonContent();
+    let content = exists ? await readRegularFile(filePath, 'utf8') : buildSkeletonContent();
 
     for (const sectionKey of SECTIONS) {
         const body = aiOutput[sectionKey] ?? '';

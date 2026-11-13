@@ -14,7 +14,7 @@ vi.mock('@teamai/shared/log', () => ({
   },
 }));
 
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { buildIndex, loadIndex, type BuildIndexOptions } from '../utils/search-index.js';
 
 /**

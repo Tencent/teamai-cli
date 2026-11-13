@@ -43,7 +43,7 @@ vi.mock('@teamai/shared/log', () => ({
 
 import { getMemberConfig, listMembers, memberReadRoots, mergeMemberConfig, readMemberConfig } from '../members.js';
 import { requireInit } from '../config.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 function mockRequireInit(tmpDir: string, username = 'alice') {
   vi.mocked(requireInit).mockResolvedValue({

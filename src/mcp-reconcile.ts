@@ -1,9 +1,9 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
-  JsonValue,
   LocalConfig,
   TeamaiConfig,
   McpServerDef,
@@ -23,7 +23,7 @@ import {
   managedMcpManifestKey,
   resolveBaseDir,
 } from './types.js';
-import { parseYaml } from './utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { projectsRootDir } from './utils/partition.js';
 import { z } from 'zod';
 import YAML from 'yaml';
@@ -71,13 +71,14 @@ import {
   readFileSafe,
   readFileIfExists,
   pathExists,
-  expandHome,
 } from './utils/fs.js';
-import { isPlainJson, mapStrings, parseJson, parseJsonAs, type JsonSyntax } from './utils/json.js';
-import { log } from './utils/logger.js';
+import { expandHome } from '@teamai/shared/home';
+import { mapStrings, parseJson, type JsonSyntax, type JsonValue, isJsonObject, type JsonObject, JsonObjectSchema } from '@teamai/shared/json';
+import { isPlainJson, parseJsonAs } from './utils/json.js';
+import { log } from '@teamai/shared/log';
 import { warnOnce } from './utils/warn-once.js';
 import { loadProjectMcpManifest } from './utils/mcp-manifest.js';
-import { isOnPath, SAFE_BIN_RE, type LookPathOptions } from './utils/lookpath.js';
+import { isOnPath, SAFE_BIN_RE, type LookPathOptions } from '@teamai/shared/lookpath';
 import {
   carriesLocalAgentCredential,
   carriesResolvedValue,
@@ -103,7 +104,6 @@ import {
 } from './mcp-resolved-files.js';
 import { hasWorkspaceChildren } from './workspace-children.js';
 import { DeliveredFolders, type PlacedFolders } from './resources/delivered-folders.js';
-import { isJsonObject, type JsonObject } from './types.js';
 
 // ─── Reconcile engine ────────────────────────────────────────
 //
@@ -394,13 +394,13 @@ export async function claudeProjectKey(checkoutRoot: string): Promise<string> {
   const root = await fs.promises.realpath(checkoutRoot).catch(() => path.resolve(checkoutRoot));
 
   try {
-    const dotGit = (await fs.promises.readFile(path.join(root, '.git'), 'utf8')).trim();
+    const dotGit = (await readRegularFile(path.join(root, '.git'), 'utf8')).trim();
 
     if (!dotGit.startsWith('gitdir:')) return root.normalize('NFC');
     const gitDir = path.resolve(root, dotGit.slice('gitdir:'.length).trim());
 
     const common = await fs.promises.realpath(
-      path.resolve(gitDir, (await fs.promises.readFile(path.join(gitDir, 'commondir'), 'utf8')).trim()),
+      path.resolve(gitDir, (await readRegularFile(path.join(gitDir, 'commondir'), 'utf8')).trim()),
     );
 
     return (path.basename(common) === '.git' ? path.dirname(common) : common).normalize('NFC');
@@ -946,15 +946,16 @@ async function readYamlMcpDoc(file: string, keys: readonly string[]): Promise<Js
 
   const doc = YAML.parseDocument(raw);
 
-  if (doc.errors.length > 0) return null;
-  const data: JsonValue = raw.trim() === '' ? {} : doc.toJS();
+  if (doc.errors.length > 0 || (raw.trim() !== '' && !YAML.isMap(doc.contents))) return null;
+  // Only the server map is read as JSON: the member's other values, which JSON may not hold (`.inf`), stay in the
+  // document that is written back.
+  const node: unknown = doc.getIn(keys, true);
+  const read = node === undefined ? undefined : JsonObjectSchema.safeParse(YAML.isNode(node) ? node.toJS(doc) : node);
 
-  if (!isJsonObject(data)) return null;
-  const servers = valueAt(data, keys);
+  if (read !== undefined && !read.success) return null;
+  const servers = read?.data ?? {};
 
-  if (servers !== undefined && !isJsonObject(servers)) return null;
-
-  return { data, servers: { ...servers }, bare: false, raw, storage: { kind: 'yaml-map', doc } };
+  return { data: withValueAt({}, keys, servers), servers: { ...servers }, bare: false, raw, storage: { kind: 'yaml-map', doc } };
 }
 
 /** Read a DSH patch list as the same `servers` view: keyed by each mcp-client instance's `config.serverName`. */
@@ -2782,7 +2783,7 @@ export async function noteManagedMcpHome(dataHome: string): Promise<void> {
 
 /** Whether a `<dataHome>/workspaces/<id>/` names a checkout that no longer exists. One that names none is kept: only git can say. */
 async function workspaceRemoved(dir: string): Promise<boolean> {
-  const root = await fs.promises.readFile(path.join(dir, 'root'), 'utf8').catch(() => null);
+  const root = await readRegularFile(path.join(dir, 'root'), 'utf8').catch(() => null);
 
   if (root === null || root.trim() === '') return false;
 

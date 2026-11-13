@@ -8,11 +8,17 @@ import { answerFromDashboard, listLocalRuns, listReportedRuns, workflowRunDetail
 import { HttpError } from '../dashboard/http.js';
 import { getReportsDir, type LocalConfig } from '../types.js';
 import { leaseNext, startRun } from '../workflow/engine.js';
-import { readRun, runsDir } from '../workflow/store.js';
+import { attemptRun } from '../workflow/runtimes/attempt.js';
+import { writeHeldSteps } from '../workflow/runtimes/held.js';
+import { loginWaitFile } from '../workflow/runtimes/login.js';
+import { stdioStepRuntime } from '../workflow/runtimes/stdio.js';
+import { attemptDir, AttemptIdSchema, readRun, RunIdSchema, runsDir } from '../workflow/store.js';
 import type { RunState } from '../workflow/types.js';
 import { knownSecrets } from '../env-resolution.js';
 import type { BenchmarkRunRecord } from '../benchmark/result.js';
 import { fixRecord } from './helpers/benchmark-fixture.js';
+import { TOY_RUNTIME } from './helpers/toy-runtime.js';
+import { homeEnvOf } from '../workflow/runtimes/sources.js';
 
 const roots: string[] = [];
 const driver = { kind: 'ide', machine: 'host-7f3a', workspace: '/private/work/checkout' };
@@ -78,7 +84,7 @@ describe('dashboard workflow runs', () => {
     const detail = await workflowRunDetail(run.config, 'local', run.id);
     expect(detail?.steps).toEqual([
       { step: 'build', pass: 1, status: 'succeeded', tokens: { input: 120, output: 30 } },
-      { step: 'ship', pass: 1, status: 'waiting', gate: { kind: 'approve', options: ['yes', 'no'], required: true } },
+      { step: 'ship', pass: 1, status: 'waiting', gate: { kind: 'approve', options: ['yes', 'no'], required: true, respond: `teamai workflow respond ${run.id} ship <option> --pass 1` } },
     ]);
     const served = JSON.stringify([row, detail]);
     for (const secret of ['TICKET-SECRET-42', 'build-secret-command', 'prompt-secret-text', 'build-output-secret', 'Ship ', 'host-7f3a', '/private/work', run.config.dataHome ?? 'data']) {
@@ -228,6 +234,73 @@ describe('dashboard workflow runs', () => {
       .toEqual({ status: 400, message: expect.stringContaining('yes, no') });
   });
 
+  it('shows the runtime a running pass is on, what the runtime shows of its place, the login it waits for, and what each runtime holds back', async () => {
+    const config = scope('self');
+    fs.mkdirSync(path.join(config.repo.localPath, 'workflows'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows/pair.yaml'), [
+      'schemaVersion: v1alpha1', 'name: pair', 'description: Two steps.', 'steps:',
+      '  - id: build', '    command: echo build', '  - id: fetch', '    needs: []', '    command: echo fetch',
+    ].join('\n'));
+    expect((await syncScorersThenWorkflows(config)).invalid).toEqual([]);
+    const started = await startRun(config, 'pair', {}, { secrets: await knownSecrets(config) });
+    if ('error' in started) throw new Error(started.error.message);
+    const id = RunIdSchema.parse(started.data.run);
+    const lease = await leaseNext(config, id, driver, {});
+    if ('error' in lease) throw new Error(lease.error.message);
+    const attempt = AttemptIdSchema.parse((lease.data.lease as { attempt: string }).attempt);
+    const display = { label: 'teamai-r7-a1 (sbx)', url: 't3://thread/7', fields: { sandbox: 'teamai-r7-a1' } };
+    const root = config.projectRoot ?? '';
+    const runtime = stdioStepRuntime({ name: 'toy', command: process.execPath, args: [TOY_RUNTIME] });
+    try {
+      expect(await runtime.init({ homeEnv: homeEnvOf([]), options: { state: path.join(root, 'toy-state'), display }, mode: 'unattended' })).toMatchObject({ ok: true });
+      const view = { worktree: root, readonly: [], result: path.join(root, 'out'), runDir: path.join(root, 'scratch'), toolHome: {} };
+      expect(await attemptRun({ config, run: id, attempt, runtime, driver: 'toyd' }).open(view)).toMatchObject({ ok: true });
+    } finally {
+      await runtime.dispose();
+    }
+    fs.writeFileSync(loginWaitFile(attemptDir(config, id, attempt)), JSON.stringify({ tool: 'codex', holder: { run: 'r00000001', attempt: 'a00000001' } }));
+    const reason = 'step "fetch" needs network, which workflows.allow in local config does not allow on this machine';
+    await writeHeldSteps(config, id, { driver: 'toyd', runtimes: [{ runtime: 'toy', held: [{ step: 'fetch', reason }] }] });
+
+    const detail = await workflowRunDetail(config, 'local', id);
+
+    expect(detail?.steps.find((row) => row.step === 'build')).toMatchObject({
+      runtime: { name: 'toy', driver: 'toyd', handle: `toy-${id}-${attempt}`, phase: 'ready', display },
+      loginWait: { tool: 'codex', holder: { run: 'r00000001', attempt: 'a00000001' } },
+    });
+    expect(detail?.held).toEqual({ driver: 'toyd', runtimes: [{ runtime: 'toy', held: [{ step: 'fetch', reason }] }] });
+    expect(JSON.stringify(detail)).not.toContain(config.dataHome ?? 'data');
+  });
+
+  it('shows why the runtime could not close a pass\'s place', async () => {
+    const config = scope('self');
+    fs.mkdirSync(path.join(config.repo.localPath, 'workflows'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows/one.yaml'), ['schemaVersion: v1alpha1', 'name: one', 'description: One step.', 'steps:', '  - id: build', '    command: echo build'].join('\n'));
+    expect((await syncScorersThenWorkflows(config)).invalid).toEqual([]);
+    const started = await startRun(config, 'one', {}, { secrets: await knownSecrets(config) });
+    if ('error' in started) throw new Error(started.error.message);
+    const id = RunIdSchema.parse(started.data.run);
+    const lease = await leaseNext(config, id, driver, {});
+    if ('error' in lease) throw new Error(lease.error.message);
+    const attempt = AttemptIdSchema.parse((lease.data.lease as { attempt: string }).attempt);
+    const root = config.projectRoot ?? '';
+    const runtime = stdioStepRuntime({ name: 'toy', command: process.execPath, args: [TOY_RUNTIME] });
+    try {
+      expect(await runtime.init({ homeEnv: homeEnvOf([]), options: { state: path.join(root, 'toy-state'), close_fails: true }, mode: 'unattended' })).toMatchObject({ ok: true });
+      const placed = attemptRun({ config, run: id, attempt, runtime, driver: 'toyd' });
+      expect(await placed.open({ worktree: root, readonly: [], result: path.join(root, 'out'), runDir: path.join(root, 'scratch'), toolHome: {} })).toMatchObject({ ok: true });
+      expect(await placed.close()).toMatchObject({ code: 'runtime_failed' });
+    } finally {
+      await runtime.dispose();
+    }
+
+    const detail = await workflowRunDetail(config, 'local', id);
+
+    expect(detail?.steps.find((row) => row.step === 'build')).toMatchObject({
+      runtime: { name: 'toy', phase: 'ready', closeFailed: { code: 'close_failed', message: `The toy keeps place toy-${id}-${attempt}: close_fails is set.` } },
+    });
+  });
+
   it("shows a run's benchmark results, usage and task by arm matrix once its report wrote the record, and no table before", async () => {
     const run = await waitingRun();
     expect(await workflowRunDetail(run.config, 'local', run.id)).not.toHaveProperty('benchmark');
@@ -268,6 +341,23 @@ describe('dashboard workflow runs', () => {
       expect(row).not.toHaveProperty('teamRevision');
       expect((await workflowRunDetail(config, 'reported', 'r0000000000000001'))?.steps.map((step) => [step.step, step.status]))
         .toEqual([['build', 'succeeded'], ['skip-me', 'skipped']]);
+    });
+
+    it('leaves out the tokens of a run none of whose passes reported any, rather than showing 0', async () => {
+      const config = scope('http');
+      publish(config, record('r0000000000000001', { steps: [{ step: 'tell', pass: 1, outcome: 'success' }, { step: 'ask', pass: 1, outcome: 'success' }] }));
+      const [row] = await listReportedRuns(config);
+      expect(row).toMatchObject({ source: 'reported', run: 'r0000000000000001' });
+      expect(row).not.toHaveProperty('tokens');
+    });
+
+    it('names a record\'s driver by the driver definition it ran on, and by its kind when it ran on none', async () => {
+      const config = scope('http');
+      publish(config, record('r0000000000000001', { driver: { kind: 'local', definition: 'boxed' } }));
+      publish(config, record('r0000000000000002', { startedAt: '2026-10-01T09:00:00.000Z' }));
+
+      expect((await listReportedRuns(config)).map((row) => [row.run, row.driver])).toEqual([['r0000000000000001', 'boxed'], ['r0000000000000002', 'local']]);
+      expect((await workflowRunDetail(config, 'reported', 'r0000000000000001'))?.run.driver).toBe('boxed');
     });
 
     it('reads where a record\'s definition came from, and drops an origin it cannot read', async () => {

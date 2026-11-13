@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Mock } from 'vitest';
 
-vi.mock('../../src/providers/tgit/gf-cli.js', () => ({
+vi.mock('../../src/providers/tgit/oauth-token.js', () => ({
     gfGetOAuthToken: vi.fn(),
 }));
 
@@ -17,7 +17,7 @@ vi.mock('@teamai/shared/log', () => ({
 }));
 
 import { getTGitToken, tgitAuthHeaders, tgitFetch, tgitGitCloneUrl, tryGetTGitToken } from '../providers/tgit/rest-auth.js';
-import { gfGetOAuthToken } from '../providers/tgit/gf-cli.js';
+import { gfGetOAuthToken } from '../providers/tgit/oauth-token.js';
 
 function makeResponse(status: number): Response {
     return {

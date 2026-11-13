@@ -40,10 +40,11 @@
  * a newer CLI's additions never freeze this one.
  */
 import path from 'node:path';
-import { parseYaml } from '../utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { z } from 'zod';
-import { getTeamaiHomeDir, isJsonObject, JsonValueSchema, type JsonObject, type JsonValue, type LocalConfig, type Scope } from '../types.js';
+import { getTeamaiHomeDir, type LocalConfig, type Scope } from '../types.js';
 import { agentModelToolOf } from '../tool-instances.js';
+import { isJsonObject, JsonValueSchema, type JsonObject, type JsonValue } from '@teamai/shared/json';
 import { activeEntryNamespaces, describeEntryFailure, entryLayout, listEntryFiles, namespaceDir, readEntryFileText, type EntryLayout } from '../namespaced-entries.js';
 import { resolveNamespacedItems, type NamespaceCandidate } from '../namespace-resolver.js';
 import { listDirs } from '../utils/fs.js';

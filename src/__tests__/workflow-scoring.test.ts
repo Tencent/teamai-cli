@@ -16,7 +16,7 @@ import type { StepState } from '../workflow/step-state.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from '../workflow/types.js';
 import { knownSecrets } from '../env-resolution.js';
 import { scoreEvidenceDir, scoreJudgePrompt, scoreWrite } from './helpers/score-run.js';
-import * as cliPaths from '../utils/cli-path.js';
+import * as cliPaths from '@teamai/shared/cli-path';
 
 
 const dirs: string[] = [];

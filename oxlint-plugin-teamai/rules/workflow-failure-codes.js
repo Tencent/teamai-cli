@@ -1,6 +1,6 @@
 /** @import { ESTree } from '@oxlint/plugins' */
 import { defineRule } from '@oxlint/plugins';
-import { KNOWN_FAILURE_CODES } from '../failure-codes.js';
+import { KNOWN_FAILURE_CODES, PROTOCOL_STRING_CONSTANTS } from '../failure-codes.js';
 import { inProductionSource, lintedPath, stringLiteralValue } from '../utils.js';
 
 export default defineRule({
@@ -11,9 +11,29 @@ export default defineRule({
     if (!inProductionSource(context)) return {};
 
     if (!/\/src\/(?:workflow|scorers)\//.test(file) && !/from ['"](?:\.\.?\/)+scorers\/|\bWorkflowEnvelope\b/.test(context.sourceCode.text)) return {};
-    const message = 'Classify this workflow failure code in records.ts or the command-only failure policy before emitting it.';
+    const message = 'List this workflow failure code in FAILURE_CODES (src/workflow/failure-codes.ts) before emitting it, so the run record keeps it.';
+
+    /** @type {Map<string, string>} each local name a constant of `@teamai/runtime-protocol` is imported as, to its name there */
+    const protocolImports = new Map();
 
     return {
+      ImportDeclaration(node) {
+        if (node.source.value !== '@teamai/runtime-protocol' && !node.source.value.startsWith('@teamai/runtime-protocol/')) return;
+
+        for (const specifier of node.specifiers) {
+          if (specifier.type === 'ImportSpecifier' && specifier.imported.type === 'Identifier') protocolImports.set(specifier.local.name, specifier.imported.name);
+        }
+      },
+      // A code a step takes from the protocol's constants reaches the record as its value, which must be listed too.
+      Property(node) {
+        if (node.key.type !== 'Identifier' || node.key.name !== 'code' || node.value.type !== 'Identifier') return;
+        const imported = protocolImports.get(node.value.name);
+
+        if (imported === undefined) return;
+        const value = PROTOCOL_STRING_CONSTANTS.get(imported);
+
+        if (value === undefined || !KNOWN_FAILURE_CODES.has(value)) context.report({ node: node.value, message });
+      },
       Literal(node) {
         const value = stringLiteralValue(node);
 

@@ -48,7 +48,7 @@ vi.mock('@teamai/shared/log', () => ({
 }));
 
 const { remove } = await import('../remove.js');
-const { log } = await import('../utils/logger.js');
+const { log } = await import('@teamai/shared/log');
 
 /**
  * `publishedNameFor` reads the placement records back from disk. When a

@@ -27,7 +27,7 @@ import { autoDetectInit } from '../config.js';
 import { getHandler } from '../resources/index.js';
 import { getSourceManifestPath, getSourcePushQuarantineNames, getSourceSkillOrigins, pullSources, sourceRemove } from '../source.js';
 import { copyDir } from '../utils/fs.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { LocalConfig, SourceInstallManifest, TeamaiConfig } from '../types.js';
 
 describe('repository replacement with unrecorded source destinations', () => {

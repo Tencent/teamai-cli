@@ -1,11 +1,12 @@
 import path from 'node:path';
 import { z } from 'zod';
-import { parseYaml } from '../utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { ResourceHandler } from './base.js';
-import type { HookDef, JsonValue, LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
+import type { HookDef, LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
+import type { JsonValue } from '@teamai/shared/json';
 import { TEAMAI_CUSTOM_HOOK_PREFIX, areTeamHooksDisabled, getHooksSharing, isSelfMode } from '../types.js';
 import { pathExists } from '../utils/fs.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { warnOnce } from '../utils/warn-once.js';
 import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.js';
 import {

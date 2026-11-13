@@ -256,6 +256,18 @@ describe('team secret values', () => {
       }
     });
 
+    // Windows opens no directory as a file, and says EISDIR itself.
+    it.skipIf(process.platform === 'win32')('says what stands at the path when it is not a file', async () => {
+      const file = getTeamSecretsPath(localConfig);
+      await fse.ensureDir(file);
+
+      expect(await readSecretStore(file)).toEqual({
+        ok: false,
+        reason: `Cannot read your secret values at ${file} (a directory, not a regular file). Check that the file is yours and readable (\`ls -l ${file}\`), `
+          + 'or delete it and set the values again with `teamai env set`.',
+      });
+    });
+
     it('rejects an entry that is not exactly one of a value or a variable reference', async () => {
       const file = getTeamSecretsPath(localConfig);
       for (const entry of ['{"value": "ghp_fixture_value", "env": "X"}', '{}', '"ghp_fixture_value"']) {

@@ -15,10 +15,10 @@ const FORMATS = {
   codebuddy: BUILT_IN_TOOLS.codebuddy.tokens.codebuddy,
   'muse-session': BUILT_IN_TOOLS.muse.tokens['muse-session'],
   // agy keeps usage in its store's conversation logs, so the format reads the member's store.
-  'agy-transcript': (source, processes) => BUILT_IN_TOOLS.agy.tokens['agy-transcript']({ ...source, storeDir: sessionStoreDir('agy', undefined) }, processes),
+  'agy-transcript': (source, processes) => BUILT_IN_TOOLS.agy.tokens['agy-transcript']({ ...source, storeDir: sessionStoreDir('agy', { kind: 'recorded', toolRoots: undefined }) }, processes),
   'pi-session': BUILT_IN_TOOLS.pi.tokens['pi-session'],
   // OpenCode keeps usage in its database, so the format reads the member's store.
-  'opencode-db': (source, processes) => BUILT_IN_TOOLS.opencode.tokens['opencode-db']({ ...source, storeDir: sessionStoreDir('opencode', undefined) }, processes),
+  'opencode-db': (source, processes) => BUILT_IN_TOOLS.opencode.tokens['opencode-db']({ ...source, storeDir: sessionStoreDir('opencode', { kind: 'recorded', toolRoots: undefined }) }, processes),
 } satisfies Record<string, TokenFormat>;
 
 /** A transcript format teamai reads token usage from. */

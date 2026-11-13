@@ -10,7 +10,8 @@ import type { LocalConfig, TeamaiConfig } from '../../types.js';
 import { startRun } from '../../workflow/engine.js';
 import { runLocalDriver } from '../../workflow/drivers/local/local-driver.js';
 import { driverIdentity } from '../../driver-identity.js';
-import { createLocalToolAdapter, type ToolSpawn } from '../../workflow/drivers/local/local-tool-adapter.js';
+import { type ToolSpawn } from '@teamai/runtime-tools';
+import { hostLauncher } from '../helpers/host-launcher.js';
 import { pendingRecords } from '../../workflow/records.js';
 import { fakeClaude, recordDelivery } from '../helpers/delivered-checkout.js';
 import { knownSecrets } from '../../env-resolution.js';
@@ -123,7 +124,7 @@ describe('#1083 workflow run records reach the reports branch', () => {
     const done = await runLocalDriver(config, runId, work, {
       tools: { default: 'claude' },
       toolPaths: { claude: { agents: '.claude/agents' } } as TeamaiConfig['toolPaths'],
-      adapter: createLocalToolAdapter(claude, () => process.execPath),
+      adapter: hostLauncher(claude, () => process.execPath),
     }).finally(restorePath);
     expect(done).toMatchObject({ data: { done: { outcome: 'succeeded', record: 'published' } } });
 

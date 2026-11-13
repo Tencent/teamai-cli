@@ -4,7 +4,14 @@ import path from 'node:path';
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs-extra';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import { acquireLock, releaseLock } from '../update.js';
+
+vi.mock('@teamai/shared/regular-file', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@teamai/shared/regular-file')>();
+
+    return { ...actual, readRegularFile: vi.fn(actual.readRegularFile) };
+});
 
 import {
     loadPendingReview,
@@ -53,6 +60,7 @@ describe('review-store', () => {
 
     afterEach(async () => {
         vi.restoreAllMocks();
+        vi.mocked(readRegularFile).mockReset();
         await fs.remove(cwd);
     });
 
@@ -206,7 +214,7 @@ describe('review-store', () => {
         const resume = signal();
         const contended = signal();
         const rename = fs.rename.bind(fs);
-        const readFile = fs.readFile.bind(fs);
+        const { readRegularFile: readFile } = await vi.importActual<typeof import('@teamai/shared/regular-file')>('@teamai/shared/regular-file');
         let held = false;
 
         vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
@@ -217,10 +225,10 @@ describe('review-store', () => {
             }
             return rename(from, to);
         });
-        vi.spyOn(fs, 'readFile').mockImplementation(((...args: Parameters<typeof fs.readFile>) => {
-            if (held && String(args[0]) === `${filePath}.lock`) contended.resolve();
-            return readFile(...args);
-        }) as typeof fs.readFile);
+        vi.mocked(readRegularFile).mockImplementation(async (file, encoding) => {
+            if (held && file === `${filePath}.lock`) contended.resolve();
+            return readFile(file, encoding);
+        });
 
         const removing = removePendingReview(cwd, first.id);
         await paused.promise;

@@ -12,6 +12,7 @@ inputs:
   team_session: string
   author: string
 defaults:
+  requires: { host: true }
   inputs: { team_session: "", author: "" }
 steps:
   - id: draft

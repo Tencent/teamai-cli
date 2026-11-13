@@ -21,7 +21,7 @@ vi.mock('../utils/iwiki-client.js', () => ({
 import { ImportFromIwiki } from '../import-iwiki.js';
 import { writeSections } from '../iwiki-dual.js';
 import { loadPendingReview } from '../review-store.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 const VALID_AI_OUTPUT = JSON.stringify({
     'business-api': '## 业务接口\n接口列表...',

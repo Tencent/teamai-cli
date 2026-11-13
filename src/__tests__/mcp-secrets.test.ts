@@ -28,7 +28,7 @@ import { resolvePlaceholders } from '../resources/mcp-format.js';
 import type { McpServerDef } from '../types.js';
 import { envShMarker } from '../env-sh-exports.js';
 import { getMachineSecretsPath, getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 

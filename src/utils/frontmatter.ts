@@ -1,6 +1,6 @@
 import matter from 'gray-matter';
 import { z } from 'zod';
-import { log } from './logger.js';
+import { log } from '@teamai/shared/log';
 
 /** Unquoted YAML dates are Date objects; keep their time when applying age thresholds. */
 export const FrontmatterDateSchema = z.union([

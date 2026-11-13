@@ -89,12 +89,14 @@ describe('workspace setup', () => {
     expect(Date.now() - startedAt).toBeLessThan(10_000);
   });
 
-  it('stops at the step deadline the git that reads what setup left when a filter setup configured never returns', async () => {
+  it('stops at the step deadline the git that reads what setup left when a filter the member\'s config names never returns', async () => {
     const dir = workspace();
+    const gitconfig = path.join(dir, '.git', 'member.gitconfig');
+    fs.writeFileSync(gitconfig, '[filter "hang"]\n\tclean = sleep 600\n');
     const startedAt = Date.now();
     // Same size, new mtime: git reads the file through the filter to tell whether it changed.
-    const command = 'git config filter.hang.clean "sleep 600" && echo "* filter=hang" > .git/info/attributes && touch tracked.txt';
-    const failure = await runSetup({ command, dir, env: process.env, keys: [], expiresAt: new Date(startedAt + 2000).toISOString() });
+    const command = 'echo "* filter=hang" > .git/info/attributes && touch tracked.txt';
+    const failure = await runSetup({ command, dir, env: { ...process.env, GIT_CONFIG_GLOBAL: gitconfig }, keys: [], expiresAt: new Date(startedAt + 2000).toISOString() });
     expect(failure).toMatchObject({ code: 'setup_failed', message: expect.stringContaining('timeout') });
     expect(Date.now() - startedAt).toBeLessThan(10_000);
   }, 20_000);

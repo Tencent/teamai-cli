@@ -1,7 +1,8 @@
 import type { McpFormat } from '@teamai/tool-core/definition';
 import crypto from 'node:crypto';
 import { z } from 'zod';
-import { isJsonObject, type JsonObject, type JsonValue, type McpServerDef, type McpTransport } from '../types.js';
+import { type McpServerDef, type McpTransport } from '../types.js';
+import { isJsonObject, type JsonObject, type JsonValue } from '@teamai/shared/json';
 import { sameEnvName } from './env-key.js';
 
 // ─── Per-tool rendering ──────────────────────────────────────

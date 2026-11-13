@@ -13,9 +13,9 @@ export const homes = Object.keys(TOOLS);`, (output) => {
 rule.invalid('rejects a type-only import of TOOLS', `import type { TOOLS } from './tools.js';
 export type Shell = (typeof TOOLS)['claude']['hooks']['shell'];`);
 
-rule.invalid('rejects the launch adapter table', `import { LAUNCH_ADAPTERS } from '../tool-launch/adapters.js';
+rule.invalid('rejects the launch adapter table', `import { LAUNCH_ADAPTERS } from '../launch-registry.js';
 export const confined = LAUNCH_ADAPTERS.claude.confined;`, (output) => {
-  expect(output).toContain('LAUNCH_ADAPTERS from src/tool-launch/adapters.ts');
+  expect(output).toContain('LAUNCH_ADAPTERS from src/launch-registry.ts');
 }, { filename: 'src/scorers/new-judge.ts' });
 
 rule.invalid('rejects the session adapter registry', `import { ADAPTER_REGISTRY } from './adapters/index.js';
@@ -27,13 +27,13 @@ export const ids = Object.keys(tools.TOOLS);`);
 rule.invalid('rejects a dynamic import of a table\'s module', `export const load = () => import('./tools.js');`);
 
 rule.invalid('rejects a table taken from a dynamic import', `export async function confined() {
-  const { LAUNCH_ADAPTERS } = await import('../tool-launch/adapters.js');
+  const { LAUNCH_ADAPTERS } = await import('../launch-registry.js');
   return LAUNCH_ADAPTERS.claude.confined;
 }`, undefined, { filename: 'src/scorers/new-judge.ts' });
 
 rule.invalid('rejects a dynamic import whose rest element may take a table', `export async function all() {
-  const { LaunchAdapterId, ...rest } = await import('./tool-launch/adapters.js');
-  return [LaunchAdapterId, rest];
+  const { executablesOf, ...rest } = await import('./launch-registry.js');
+  return [executablesOf, rest];
 }`);
 
 rule.invalid('rejects a script reading TOOLS', `import { TOOLS } from '../src/tools.js';
@@ -63,13 +63,13 @@ export const adapter = ADAPTER_REGISTRY.codex;`, { filename: 'src/session-flow/i
 
 rule.valid('allows types and lookups from the tables\' modules', `import type { ToolId, ToolDescriptor } from './tools.js';
 import { descriptorOf, isToolId } from './tool-registry.js';
-import { opencodeModelArgs } from './tool-launch/tools.js';
+import { opencodeModelArgs } from './launch-registry.js';
 export const shell = (tool: ToolId): ToolDescriptor['hooks']['shell'] | undefined => isToolId(tool) ? descriptorOf(tool).hooks.shell : undefined;
 export const args = opencodeModelArgs(undefined, 2);`);
 
-rule.valid('allows a lookup taken from a dynamic import of a table\'s module', `export async function codexAdapter() {
-  const { getAdapter } = await import('./session-flow/adapters/index.js');
-  return getAdapter('codex');
+rule.valid('allows a lookup taken from a dynamic import of a table\'s module', `export async function codexCommands() {
+  const { executablesOf } = await import('./launch-registry.js');
+  return executablesOf('codex');
 }`);
 
 rule.valid('allows a test to read TOOLS', `import { TOOLS } from '../tools.js';
@@ -81,5 +81,5 @@ export const ids = Object.keys(TOOLS);`, { filename: 'src/tools.test.ts' });
 rule.valid('allows a TOOLS of another module', `import { TOOLS } from './benchmark/tools.js';
 export const ids = Object.keys(TOOLS);`);
 
-rule.valid('allows the registry\'s launch half to read the launch adapter table', `import { LAUNCH_ADAPTERS } from './adapters.js';
-export const claude = LAUNCH_ADAPTERS.claude;`, { filename: 'src/tool-launch/tools.ts' });
+rule.valid('allows the registry\'s launch half to read the families it builds the launch adapter table from', `import { BUILT_IN_TOOLS } from '@teamai/tool-definitions';
+export const LAUNCH_ADAPTERS = { claude: BUILT_IN_TOOLS.claude.launch.claude };`, { filename: 'src/launch-registry.ts' });

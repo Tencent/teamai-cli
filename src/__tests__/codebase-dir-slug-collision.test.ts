@@ -6,7 +6,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { localCheckoutSlug } from '../import-codebase.js';
 import { importCodebase } from './helpers/import-codebase.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 /**
  * A `--dir` checkout without an origin remote is named after its directory, so

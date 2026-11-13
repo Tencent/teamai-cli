@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import { readContributeState } from '../contribute-check.js';
 import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from '../config.js';
-import { ATTEMPT_ENV, RUN_MODES, type RunMode } from '../launch-context.js';
+import { ATTEMPT_ENV, attemptMarker, RUN_MODES, type RunMode } from '../launch-context.js';
 import { pinScorers } from '../scorers/cache.js';
 import { scoringUnavailable } from '../scorers/home.js';
 import { FINISHED_WORKFLOW } from '../scorers/judging-workflows.js';
@@ -19,11 +19,13 @@ import { GeneratedQuestions } from '../scorers/generated-questions.js';
 import { driverIdentity } from '../driver-identity.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { pathExists } from '../utils/fs.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { readWorkspaceChildren } from '../workspace-children.js';
 import { runDeadline } from '../workflow/limits.js';
 import { durationMs } from '../utils/duration.js';
-import { startAsCli, type WorkflowClient } from '../workflow/protocol.js';
+import { startAsCli } from '../workflow/cli-start.js';
+import type { WorkflowClient } from '../workflow/protocol.js';
+import { markedAttempt } from '../workflow/attempt-marker.js';
 import { findRunConfig } from '../workflow/run-location.js';
 import { wasLeased } from '../workflow/step-state.js';
 import { readRuns, RunIdSchema, type RunId } from '../workflow/store.js';
@@ -133,11 +135,13 @@ function requestOf({ idle, publish = 'policy', scorers = '[]' }: ListOptions): R
  * scope of the attempt's run, and only a run a person started may pass anything but `policy` and `[]`.
  */
 async function scopeOf(request: Request, ctx: ListContext): Promise<{ ok: true; config: LocalConfig } | Extract<Listed, { ok: false }>> {
-  const marker = ctx.env[ATTEMPT_ENV];
+  const marker = attemptMarker(ctx.env);
 
   if (!marker) return ctx.current ? { ok: true, config: ctx.current } : { ok: false, code: 'not_initialized', message: 'teamai is not set up in this directory, so it has no sessions to list. Run teamai init.' };
-  const [runId = ''] = marker.split('/');
-  const found = await findRunConfig(runId, ctx.current);
+  const marked = markedAttempt(ctx.env);
+
+  if (!marked) return { ok: false, code: 'invalid_arguments', message: `${ATTEMPT_ENV} is "${marker}", not <run>/<attempt>, so this listing names no run whose scope to read. A workflow step sets it; unset it to list this scope's sessions.` };
+  const found = await findRunConfig(marked.run, ctx.current);
 
   if ('error' in found) return { ok: false, code: found.error.code, message: found.error.message };
   const overrides = request.publish !== 'policy' || request.scorers.length > 0;
@@ -289,7 +293,7 @@ async function wantsOf(config: LocalConfig, request: Request): Promise<Wants | E
 
   if (scoring?.ok === false) return { ok: false, code: 'scoring_settings_invalid', message: scoring.reason };
   const judging = scoring && judgingOf(scoring);
-  const publishing = SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath)).policies;
+  const publishing = SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath, config)).policies;
   const chosen = await candidatesOf(config, { names: request.scorers, judging });
 
   if ('ok' in chosen) return chosen;
@@ -391,7 +395,7 @@ async function worksOnAttended(config: LocalConfig): Promise<boolean> {
   if (scoring?.ok === false) log.warn(`[${config.scope}] Finished sessions are not judged here: ${scoring.reason}`);
 
   return (scoring?.ok === true && scoring.sessions.policies.attended.policy === 'auto')
-    || SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath)).policies.attended.policy === 'auto';
+    || SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath, config)).policies.attended.policy === 'auto';
 }
 
 /** The scopes `cwd` reaches that judge or publish attended sessions automatically, which the session-start hook works on. */

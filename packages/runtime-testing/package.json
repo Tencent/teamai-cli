@@ -1,0 +1,11 @@
+{
+  "name": "@teamai/runtime-testing",
+  "private": true,
+  "type": "module",
+  "description": "Test support every step runtime shares: its executable bundled as it ships, a connection that speaks runtime protocol 1 to it over stdio, and the check that a test left nothing running; test-only, never bundled into teamai-cli.",
+  "exports": {
+    "./bundle": "./src/bundle.ts",
+    "./connect": "./src/connect.ts",
+    "./leaks": "./src/leaks.ts"
+  }
+}

@@ -2,13 +2,13 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import fse from 'fs-extra';
 import YAML from 'yaml';
-import { parseYaml } from './utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { z } from 'zod';
 import { loadTeamConfig, autoDetectInit, loadLocalConfig, detectProjectConfig } from './config.js';
 import { assertAttachedTeamRepo, createGit, DetachedTeamRepoError, pullRepo } from './utils/git.js';
 import { parseFrontmatter } from './utils/frontmatter.js';
 import { detectProvider, getProvider } from './providers/index.js';
-import { log, spinner } from './utils/logger.js';
+import { log, spinner } from '@teamai/shared/log';
 import {
   pathExists,
   readFileSafe,
@@ -37,8 +37,8 @@ import { installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH } from './locate.js'
 import { resolveOpenclawWorkspace } from './openclaw-home.js';
 import { TOOL_ORDER } from './tool-registry.js';
 import { toolHome } from './tool-home.js';
-import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from './builtin-skills.js';
-import { getUserHome } from './utils/home.js';
+import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from './cli-skill-names.js';
+import { getUserHome } from '@teamai/shared/home';
 import { acquireLock, releaseLock } from './update.js';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
 import type {
@@ -48,8 +48,10 @@ import type {
   SourceInstallManifest,
   GlobalOptions,
 } from './types.js';
-import { isAgentExcluded, isJsonObject, resolveBaseDir, scopedToolPaths, SOURCE_PULL_TTL_MS } from './types.js';
+import { isJsonObject } from '@teamai/shared/json';
+import { isAgentExcluded, resolveBaseDir, scopedToolPaths, SOURCE_PULL_TTL_MS } from './types.js';
 import type { DeliveryRecorder } from './git-exclude-delivered.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 // ─── Source repo management ──────────────────────────────
 
@@ -268,7 +270,7 @@ async function readSourceManifest(manifestPath: string): Promise<SourceInstallRe
   let raw: string;
 
   try {
-    raw = await fse.readFile(manifestPath, 'utf8');
+    raw = await readRegularFile(manifestPath, 'utf8');
   } catch (error) {
     if (errnoCode(error) === 'ENOENT') return null;
     throw new Error(`Cannot read source ownership record: ${manifestPath}`, { cause: error });
@@ -451,7 +453,7 @@ export async function sourceAdd(repoUrl: string, options: { name?: string } & Gl
 }
 
 async function sourceAddLocked(repoUrl: string, options: { name?: string } & GlobalOptions, localConfig: LocalConfig, initialTeamConfig: TeamaiConfig): Promise<void> {
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath) ?? initialTeamConfig;
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig) ?? initialTeamConfig;
   const repoPath = localConfig.repo.localPath;
 
   // Derive name from repo URL if not provided
@@ -505,7 +507,7 @@ async function sourceAddLocked(repoUrl: string, options: { name?: string } & Glo
   // source's `publicSkills` declaration, so a repo without a teamai.yaml (or
   // with an empty publicSkills list) syncs 0 skills. Say so here, at add time,
   // instead of letting pull skip it silently later.
-  const sourceConfig = await loadTeamConfig(cloneResult);
+  const sourceConfig = await loadTeamConfig(cloneResult, null);
 
   for (const line of sourceSyncWarnings(name, sourceConfig)) {
     log.warn(line);
@@ -548,7 +550,7 @@ export async function sourceRemove(name: string, options: GlobalOptions): Promis
 }
 
 async function sourceRemoveLocked(name: string, options: GlobalOptions, localConfig: LocalConfig, initialTeamConfig: TeamaiConfig): Promise<void> {
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath) ?? initialTeamConfig;
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig) ?? initialTeamConfig;
   const repoPath = localConfig.repo.localPath;
 
   const existing = teamConfig.sources ?? [];
@@ -809,7 +811,7 @@ export async function sourceBrowse(name: string, options: GlobalOptions): Promis
 }
 
 async function sourceBrowseLocked(name: string, options: GlobalOptions, localConfig: LocalConfig, initialTeamConfig: TeamaiConfig): Promise<void> {
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath) ?? initialTeamConfig;
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig) ?? initialTeamConfig;
   const sources = teamConfig.sources ?? [];
   const source = sources.find((s) => s.name === name);
 
@@ -828,7 +830,7 @@ async function sourceBrowseLocked(name: string, options: GlobalOptions, localCon
     return;
   }
 
-  const sourceTeamConfig = await loadTeamConfig(repoDir);
+  const sourceTeamConfig = await loadTeamConfig(repoDir, null);
 
   if (!sourceTeamConfig) {
     log.warn(`Source "${name}" has no teamai.yaml.`);
@@ -879,7 +881,7 @@ async function sourceBrowseLocked(name: string, options: GlobalOptions, localCon
  * Called from pull() at the top level (not inside pullForScope).
  */
 export async function pullSources(localConfig: LocalConfig, options: GlobalOptions, recorder?: DeliveryRecorder): Promise<void> {
-  if (!(await loadTeamConfig(localConfig.repo.localPath))?.sources?.length) {
+  if (!(await loadTeamConfig(localConfig.repo.localPath, localConfig))?.sources?.length) {
     // No source configured delivers nothing: copies an earlier pull left stay
     // where they are, and are no longer teamai's to keep out of git (#915).
     recorder?.succeeded('sources');
@@ -896,7 +898,7 @@ export async function pullSources(localConfig: LocalConfig, options: GlobalOptio
 }
 
 async function pullSourcesLocked(localConfig: LocalConfig, options: GlobalOptions, recorder?: DeliveryRecorder): Promise<void> {
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
   if (!teamConfig) {
     recorder?.failed('sources');
@@ -941,7 +943,7 @@ async function pullSingleSource(
   if (!repoDir) return false;
 
   // Load source's teamai.yaml
-  const sourceTeamConfig = await loadTeamConfig(repoDir);
+  const sourceTeamConfig = await loadTeamConfig(repoDir, null);
 
   if (!sourceTeamConfig) {
     log.debug(`[source:${source.name}] No teamai.yaml, skipping`);
@@ -1789,7 +1791,7 @@ async function membersFileInTheWay(target: string, sourcePath: string, repoDir: 
     const versions = await historicalVersions(repoDir, `${skillOrigin(repoDir, skillName).pathspec}/${rel}`);
 
     if (versions === null) return null;
-    const blob = await blobIdOf(repoDir, await fse.readFile(dest));
+    const blob = await blobIdOf(repoDir, await readRegularFile(dest));
 
     if (!versions.some((version) => version.blob === blob && version.mode !== '120000')) return rel;
   }
@@ -1838,10 +1840,10 @@ async function legacyCopyKeeper(
 
       // `foreign`: a path of a skill the source has or had, but never this file, which only history can tell.
       const fromSource = async (rel: string): Promise<'today' | 'history' | 'changed' | 'foreign'> => {
-        const bytes = await fse.readFile(path.join(skillDir, rel));
+        const bytes = await readRegularFile(path.join(skillDir, rel));
         const source = sourcePath ? await fse.lstat(path.join(sourcePath, rel)).catch(() => null) : null;
 
-        if (source?.isFile() && bytes.equals(await fse.readFile(path.join(sourcePath!, rel)))) return 'today';
+        if (source?.isFile() && bytes.equals(await readRegularFile(path.join(sourcePath!, rel)))) return 'today';
 
         if (!history) return 'changed';
 

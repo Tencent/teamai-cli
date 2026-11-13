@@ -11,7 +11,7 @@ import path from 'node:path';
 import { isAbsolutePath, isWithin } from './agent-path.js';
 import { listFiles, listFilesRecursive } from './fs.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
-import { log } from './logger.js';
+import { log } from '@teamai/shared/log';
 import { learningsBranch } from './learnings-branch.js';
 import { ForeignCheckoutError } from './branch-worktree.js';
 import type { UnreadableFile } from './search-index.js';

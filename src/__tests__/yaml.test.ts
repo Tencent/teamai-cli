@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { mergeTeamConfig, parseYaml } from '../utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
+import { mergeTeamConfig } from '../utils/yaml.js';
 
 describe('parseYaml', () => {
   afterEach(() => {

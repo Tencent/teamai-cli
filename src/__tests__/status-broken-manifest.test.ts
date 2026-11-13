@@ -31,7 +31,7 @@ vi.mock('../resources/index.js', () => ({
 }));
 
 import { status } from '../status.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 describe('status with a roles manifest that does not parse', () => {
   let out: string[];

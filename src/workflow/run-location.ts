@@ -1,15 +1,16 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { parseYaml } from '../utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { loadLocalConfigForScope, readConfigFrom } from '../config.js';
 import { ATTEMPT_ENV } from '../launch-context.js';
 import { LocalConfigSchema, getDataHome, type LocalConfig } from '../types.js';
-import { readFileSafe } from '../utils/fs.js';
-import { memberHome } from '../utils/home.js';
+import { memberHome } from '@teamai/shared/home';
 import { projectsRootDir } from '../utils/partition.js';
 import type { LeasedStep } from './step-state.js';
+import { markedAttempt } from './attempt-marker.js';
 import { isRunId, readRun } from './store.js';
 import type { RunState, WorkflowFailure } from './types.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 /**
  * Each project partition of this machine, with the config stored in it: enough to read the partition's local state.
@@ -26,7 +27,7 @@ export async function projectPartitions(): Promise<LocalConfig[]> {
   for (const entry of dirs) {
     if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
     const dir = path.join(root, entry.name);
-    const raw = await readFileSafe(path.join(dir, 'config.yaml'));
+    const raw = await readRegularFile(path.join(dir, 'config.yaml'), 'utf8').catch(() => null);
 
     if (!raw) continue;
 
@@ -47,6 +48,17 @@ export async function partitionConfig(partition: LocalConfig, anchor?: string): 
   return readConfigFrom(dir, anchor ?? partition.projectRoot ?? partition.repo.businessRepoRoot ?? dir, undefined, undefined, { dryRun: true, selfHeal: false }).catch(() => null);
 }
 
+/**
+ * The checkout `run` started in, when it is still a directory: the config is read as there. A run whose checkout was
+ * removed since, such as a worktree, is read with its partition's own project root instead, so it can still be found,
+ * cancelled and retried.
+ */
+export async function existingCheckout(run: RunState | 'corrupt'): Promise<string | undefined> {
+  const checkout = run === 'corrupt' ? undefined : run.checkout;
+
+  return checkout !== undefined && (await fs.stat(checkout).catch(() => undefined))?.isDirectory() === true ? checkout : undefined;
+}
+
 /** Run ids address local state across scopes. A duplicate id never picks a project by cwd. */
 export async function findRunConfig(runId: string, current?: LocalConfig): Promise<{ config: LocalConfig; run: RunState } | { error: WorkflowFailure }> {
   if (!isRunId(runId)) return { error: { code: 'invalid_run', message: 'Run id must look like r followed by 8 or 16 hex digits' } };
@@ -59,7 +71,7 @@ export async function findRunConfig(runId: string, current?: LocalConfig): Promi
     const stored = await readRun(partition, runId);
 
     if (stored === 'missing') continue;
-    const config = await partitionConfig(partition, stored === 'corrupt' ? undefined : stored.checkout);
+    const config = await partitionConfig(partition, await existingCheckout(stored));
 
     if (config) candidates.push(config);
   }
@@ -75,8 +87,10 @@ export async function findRunConfig(runId: string, current?: LocalConfig): Promi
     const run = await readRun(config, runId);
 
     if (run !== 'missing') {
-      const anchored = run !== 'corrupt' && run.checkout && config.scope === 'project'
-        ? await readConfigFrom(home, run.checkout, undefined, undefined, { dryRun: true, selfHeal: false }) : null;
+      const checkout = await existingCheckout(run);
+
+      const anchored = checkout !== undefined && config.scope === 'project'
+        ? await readConfigFrom(home, checkout, undefined, undefined, { dryRun: true, selfHeal: false }) : null;
 
       matches.push({ config: anchored ?? config, run });
     }
@@ -96,13 +110,13 @@ export async function findRunConfig(runId: string, current?: LocalConfig): Promi
  * this machine the run is: what a step's own command reads of the run it is part of, from the place the step runs in.
  */
 export async function findAttemptRun(env: NodeJS.ProcessEnv): Promise<{ config: LocalConfig; run: RunState; step: LeasedStep } | { error: WorkflowFailure }> {
-  const marker = env[ATTEMPT_ENV];
-  const [runId, attempt, ...rest] = marker?.split('/') ?? [];
+  const marked = markedAttempt(env);
 
-  if (runId === undefined || attempt === undefined || rest.length > 0) {
+  if (!marked) {
     return { error: { code: 'invalid_arguments', message: `${ATTEMPT_ENV} is not set to <run>/<attempt>, so this command runs as no step of a run. It runs only as a step of a workflow run, which sets it.` } };
   }
 
+  const { run: runId, attempt } = marked;
   const found = await findRunConfig(runId);
 
   if ('error' in found) return found;

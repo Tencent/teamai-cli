@@ -189,6 +189,8 @@ teamai 自身的 AI 调用（enrich、codebase、import、promote）使用 teama
 2. 命令所在的 workspace 或 self 安装的配置 `~/.teamai/projects/<slug>/config.yaml` 中的 `ai.tool`。
 3. `~/.teamai/config.yaml` 中的 `ai.tool`，作用于本机。不在任何安装中运行的命令只读取这一项。
 
+`teamai init --agent <tool>` 会把安装配置中的 `ai.tool` 设为它列出的第一个 teamai 能启动的工具，除非该配置或 `~/.teamai/config.yaml` 已经指定了工具。
+
 本机没有 user scope 安装时，`~/.teamai/config.yaml` 可以只包含这一项设置：
 
 ```yaml
@@ -217,7 +219,7 @@ CURSOR_DATA_DIR=~/.cursor-data teamai init
 CURSOR_CONFIG_DIR=~/.cursor-config teamai init
 ```
 
-目录要在 home 下，或在 `~/.config/` 下面。Copilot 用自己的 `COPILOT_HOME`。工作流步骤启动 Claude Code 或 Codex 时，即使 shell 没有设这个变量，或把它设为另一个目录，也会把它设为记录的目录。记录的目录不存在时，pull 会跳过该工具，工作流步骤不会启动它，`teamai doctor` 会报 `Claude Code root exists` 或 `Codex root exists`。
+目录在 home 下或 `~/.config/` 下面时，teamai 会同步到那里。home 之外的目录也会记下，但只用于该工具的会话：teamai 从那里读会话，其他文件仍同步到工具的默认根目录，`init` 和 `teamai doctor` 会说明这一点。如果配置里已经记下了该工具在 home 下的根目录，`init` 会保留它，并说明怎样切换。Copilot 用自己的 `COPILOT_HOME`。工作流步骤启动 Claude Code 或 Codex 时，即使 shell 没有设这个变量，或把它设为另一个目录，也会把它设为 teamai 同步到的目录。记录的目录不存在时，pull 会跳过该工具，工作流步骤不会启动它，`teamai doctor` 会报 `Claude Code root exists` 或 `Codex root exists`。
 
 Cursor CLI 会搬两个目录：`CURSOR_DATA_DIR` 放会话记录，`CURSOR_CONFIG_DIR` 放写协同署名设置的 `cli-config.json`。用户级 `mcp.json`、`rules/`、`commands/` 不管这两个变量怎么设都留在 `~/.cursor`，所以它们仍然用默认路径。没设 `CURSOR_CONFIG_DIR` 时，配置根目录取 `$XDG_CONFIG_HOME/cursor`（设了该变量的话），否则取 `~/.cursor`。
 
@@ -273,6 +275,8 @@ teamai score --session <id> --source acme-claude --scorer review-quality
 
 步骤运行 `acme-claude`，会话从 `$ACME_CLAUDE_CONFIG_DIR/projects/` 读取，未设置时从 `~/.acme-claude/projects/` 读取；用户级 pull 也写到这个目录。实例的 `env` 移动的主目录，teamai 会像记录工具自己的变量那样记录下来（[记录的工具主目录](#记录的工具主目录teamaitool-homesjson)），所以在没有这个变量的 shell 里运行 pull 或 `uninstall` 也会用它，teamai 启动实例的命令时也会把这个变量设为该主目录。`init` 移动或清除这条记录时，会删除 teamai 留在原主目录里的 hooks，并说明留在那里的技能、规则和 MCP 服务器。记录、续跑和打分都算在 `acme-claude` 名下，不会算成 Claude 的。在项目里，Claude Code 和 Codex 在每个 linked worktree 中都从主 checkout 读取团队 hooks，而实例把它们放在自己的主目录里，只对运行过 pull 的 checkout 生效；所以要在 linked worktree 里用实例的团队 hooks，先在那里运行一次 `teamai pull`。
 
+如果 `env` 是 `XDG_CONFIG_HOME` 或 `XDG_DATA_HOME`，teamai 不使用你给它设置的值。这个值属于所有读取它的工具，所以实例的 home 这时是 `~/<dir>`。
+
 **接受命令。** 设了 `command` 的实例会运行队友指定的程序。第一次运行时在终端里询问：
 
 ```text
@@ -294,7 +298,7 @@ extends: claude
 paths: { skills: .claude/team-skills, rules: .claude/rules }
 ```
 
-`teamai doctor` 会列出这类 `paths` 丢掉的每个键：`paths in tools/claude.yaml replaces claude's default entry whole and drops keys the default provides: settings (.claude/settings.json — hook reconciliation silently skips the tool), …`。
+`teamai doctor` 会列出这类 `paths` 丢掉的每个键：``paths in tools/claude.yaml replaces claude's default entry whole and drops keys the default provides: `settings` (.claude/settings.json — hook reconciliation silently skips the tool), …``。
 
 **自己的版本。** `~/.teamai/tools/<name>.yaml` 放你自己的实例。teamai 只读这个目录，从不写入。这里的实例会替换团队同名实例（只对你生效），不需要接受；`workflow resume --next` 会忽略它，因为接手的是队友的运行，用团队的工具。
 
@@ -314,7 +318,7 @@ export PATH="$HOME/src/acme-claude/bin:$PATH"     # 写在 ~/.zshrc 或 ~/.bashr
 teamai workflow start review --tools default=acme-claude
 ```
 
-**实例从哪里来。** `tools/<name>.yaml`，以及 `tools/<namespace>/<name>.yaml`（替换根目录的同名实例）。两个 namespace 定义同一个名字，或两个团队仓库对同一个名字定义不同，算冲突：两个都不用，并给出提示。文件里出现 `command`、`home`、`paths` 以外的键，或 `command` 是 `./scripts/acme-claude` 这样的路径、含有 `:`、`*` 或 `?`，都会被拒绝，并指出问题：路径上的程序可以在文件不变的情况下被改掉，接受就管不到它。teamai 只在 PATH 的目录里查找 `command`，Windows 上也一样，不在检出目录里查找，所以除非成员的 PATH 含有 `.` 或空条目，检出目录里的同名文件不会代替它运行。
+**实例从哪里来。** `tools/<name>.yaml`，或存放 `TOOL.yaml`（内容相同）的文件夹 `tools/<name>/`，把文件移进去不影响已有的接受；以及你的角色或项目为 workflows 激活的每个 namespace 下的 `tools/<namespace>/<name>.yaml`（替换根目录的同名实例）。两个激活的 namespace 定义同一个名字，或同一 scope 的两个团队仓库对同一个名字定义不同，算冲突：两个都不用，并给出提示。workspace 的实例会替换 user scope 的同名实例，和驱动定义一样。文件里出现 `command`、`home`、`paths` 以外的键，或 `command` 是 `./scripts/acme-claude` 这样的路径、含有 `:`、`*` 或 `?`，都会被拒绝，并指出问题：路径上的程序可以在文件不变的情况下被改掉，接受就管不到它。teamai 只在 PATH 的目录里查找 `command`，Windows 上也一样，不在检出目录里查找，所以除非成员的 PATH 含有 `.` 或空条目，检出目录里的同名文件不会代替它运行。
 
 ```text
 Tool instance …/tools/acme-claude.yaml is not valid: it sets sessions, and an instance sets only command, home and paths. …

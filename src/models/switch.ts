@@ -2,12 +2,13 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
-import { parseJsonAs, type JsonSyntax } from '../utils/json.js';
-import { parseYaml } from '../utils/yaml.js';
+import { type JsonSyntax, isJsonObject, JsonValueSchema, type JsonObject, type JsonValue, JsonObjectSchema } from '@teamai/shared/json';
+import { parseJsonAs } from '../utils/json.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { z } from 'zod';
 import { parse as parseToml, type TomlTable, type TomlValue } from 'smol-toml';
 import { withoutTomlBom } from '../utils/toml.js';
-import { getUserHome } from '../utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 import { agyGatewayOf, agyKeyFilePath, agyKeyFunction } from './agy-gateway.js';
 import { toolHome } from '../tool-home.js';
 import { errnoCode, pathExists, writeFileAtomic, writeJsonAtomic, writeJsonKeepingComments } from '../utils/fs.js';
@@ -16,8 +17,9 @@ import { acquireLock, releaseLock } from '../update.js';
 import { entryHash } from '../resources/mcp-format.js';
 import { detectShellProfile, SHELL_PROFILE_CANDIDATE_NAMES, shellQuoteValue, toGeneratedForm } from '../utils/shell-profile.js';
 import { resolveMemberToolRoots } from '../config.js';
-import { isJsonObject, JsonValueSchema, recordedToolRootDir, RELOCATABLE_TOOLS, type JsonObject, type JsonValue, type LocalConfig, JsonObjectSchema } from '../types.js';
+import { recordedToolRootDir, RELOCATABLE_TOOLS, type LocalConfig } from '../types.js';
 import { ALL_MODEL_AGENTS, ModelAgentSchema, type ModelAgent, type ModelProtocol, type ResolvedModelProfile, sameTeamIdentity } from './profile.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 export { ALL_MODEL_AGENTS } from './profile.js';
 
@@ -227,7 +229,7 @@ function movedSettingsMessage(agent: ModelAgent, state: AgentState, roots: Agent
 
 async function readOptionalFile(file: string): Promise<string | null> {
   try {
-    return await fs.promises.readFile(file, 'utf8');
+    return await readRegularFile(file, 'utf8');
   } catch (error) {
     if (errnoCode(error) === 'ENOENT') return null;
     throw error;

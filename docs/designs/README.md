@@ -17,6 +17,7 @@ One document per feature design, in English. The status column says how far each
 | Implemented, living | [Team secrets](team-secrets.md) — describes only what the current version does | #875, #879 |
 | In progress | [Every AI call through a workflow](ai-through-workflows.md) — generation is a default workflow, judgment is a scorer, only drivers launch tools | #1589, #1391 |
 | In progress | [Multi-project management](multi-project-management.md) — `project` as a dimension orthogonal to `role`; P1/P2 shipped (`--project`, `manifest/projects.yaml`) | #375 |
+| Proposal | [Connected drivers](connected-drivers.md) — named, overridable drivers whose external runtimes run steps in sandboxes, T3 Code, Paseo or other teamai installs of a fleet, while teamai keeps the git, credential and evidence boundary | #1589, #1087 |
 | Proposal | [Management backend](management-backend.md) — a backend for members who do not use Git | #341 |
 | Proposal | [Tool packages](tool-packages.md) — each family of AI coding tools moves into a private workspace package behind one contract and a typed registry; teams and members add a tool as an instance of a shipped one | #1589 |
 | Historical plan | [Git-native memory](git-native-memory.md) — March 2026 planning note; recall and voting have since shipped and are documented in the [Usage Guide](../guide/knowledge.md#knowledge-capture--retrieval) | — |

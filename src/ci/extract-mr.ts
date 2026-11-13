@@ -12,11 +12,12 @@ import { z } from 'zod';
 import { ImportInputError } from '../import-from-repo.js';
 import { ImportLearnings } from '../import-local.js';
 import { getDefaultBranch, pushRepoDirectly } from '../utils/git.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { LearningDraft } from '../types.js';
 import { githubApiUrl, postOrUpdateMrComment, postIndividualComments, postCodebaseGraphComment, parseMrUrl } from './mr-comment.js';
 import { readRejections, shouldWrite } from './read-rejections.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import { getGitHubToken } from '../providers/github/gh-cli.js';
 
 const WORKFLOW = 'teamai-ci-extract-mr';
@@ -49,7 +50,7 @@ async function draftedOf(learnings: string): Promise<{ learning: LearningDraft; 
 
   if (drafted === undefined) throw new ImportInputError(`--learnings holds no learning. Pass what the ${WORKFLOW} step passes.`);
 
-  return { learning: { title: drafted.title, content: await fs.readFile(drafted.file, 'utf-8') }, repoUrl: drafted.repo_url };
+  return { learning: { title: drafted.title, content: await readRegularFile(drafted.file, 'utf-8') }, repoUrl: drafted.repo_url };
 }
 
 // ─── Git user setup ───────────────────────────────────────
@@ -398,7 +399,7 @@ async function start(opts: CiExtractMrOptions): Promise<void> {
   const teamRepo = opts.teamRepo === undefined ? undefined : path.resolve(opts.teamRepo);
   // The team repo's `language: en` makes the learning English (#1187).
   const { loadTeamConfig } = await import('../config.js');
-  const language = (teamRepo === undefined ? undefined : (await loadTeamConfig(teamRepo))?.language) ?? 'zh';
+  const language = (teamRepo === undefined ? undefined : (await loadTeamConfig(teamRepo, null))?.language) ?? 'zh';
   const { runShortcut } = await import('../workflow-commands.js');
 
   await runShortcut({

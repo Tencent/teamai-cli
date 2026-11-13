@@ -4,6 +4,7 @@
  * rejects POSIX-only constructs in these files during lint.
  */
 export const WINDOWS_TESTS = [
+  'packages/shared/src/regular-file-tree.test.ts',
   'src/__tests__/benchmark-check.test.ts',
   'src/__tests__/benchmark-table.test.ts',
   'src/__tests__/benchmark-trials.test.ts',
@@ -47,6 +48,7 @@ export const WINDOWS_TESTS = [
   'src/__tests__/rule-folder-paths.test.ts',
   'src/__tests__/shell-command.test.ts',
   'src/__tests__/skill-use.test.ts',
+  'src/__tests__/tool-launch-windows-argv.test.ts',
   'src/__tests__/tool-roots.test.ts',
   'src/__tests__/tools-channels.test.ts',
   'src/__tests__/tools.test.ts',

@@ -1,9 +1,10 @@
 import path from 'node:path';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { writeFile, mkdir } from 'node:fs/promises';
 
 import { z } from 'zod';
+import { extractReply } from '@teamai/tool-core/reply';
 
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
 import { SourceManifestSchema } from './wiki-engine/code-knowledge/code-collector.js';
 import { loadFactsCache, loadInterfacesCache } from './wiki-engine/code-knowledge/code-incremental.js';
@@ -11,6 +12,7 @@ import { pathExists } from './utils/fs.js';
 import type { CodeFact } from './wiki-engine/adapters/index.js';
 import type { InterfaceInventory } from './wiki-engine/interface-scanner.js';
 import type { CodebaseOutputManifestV2, ManifestComponentV2, ManifestEdgeV2, ManifestEdgeSource } from './wiki-engine/manifest-schema.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 export interface EnrichContext {
   project: string;
@@ -77,18 +79,6 @@ function modulesSummary(moduleResults: Array<{ name: string; result: ModuleAIRes
   return moduleResults.map(m =>
     `${m.name}: domain=${m.result.domain}, layer=${m.result.layer}, summary=${m.result.summary}`
   ).join('\n');
-}
-
-function parseJSON<T>(raw: string, schema: z.ZodType<T>): T | null {
-  const match = raw.match(/\{[\s\S]*\}/);
-
-  if (!match) return null;
-
-  try {
-    return schema.safeParse(JSON.parse(match[0])).data ?? null;
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -357,7 +347,7 @@ async function indicesDirOf(target: CodebaseEnrichTarget): Promise<string | unde
   if (await pathExists(path.join(own, 'facts-cache.json'))) return own;
 
   try {
-    const manifest = SourceManifestSchema.safeParse(JSON.parse(await readFile(path.join(target.wikiRoot, 'source-manifest.json'), 'utf-8')));
+    const manifest = SourceManifestSchema.safeParse(JSON.parse(await readRegularFile(path.join(target.wikiRoot, 'source-manifest.json'), 'utf-8')));
 
     return manifest.data?.project === target.project ? path.join(target.wikiRoot, '.indices') : undefined;
   } catch {
@@ -427,7 +417,7 @@ function answeredModules(replies: ModuleReply[]): Array<{ name: string; result: 
   if (replies.some(reply => reply.failure !== '')) return [];
 
   return replies.flatMap(({ name, text }) => {
-    const result = parseJSON(text, ModuleAIResultSchema);
+    const result = extractReply(text, ModuleAIResultSchema) ?? null;
 
     return result ? [{ name, result }] : [];
   });
@@ -463,7 +453,7 @@ async function write(target: CodebaseEnrichTarget, replies: ModuleReply[], domai
   const ctx = await extractedContext(target);
 
   if (domain.failure !== '') log.debug('enrichWithAI: domain classification failed, continuing without');
-  const result = enrichResultOf(ctx, answered, domain.failure === '' ? parseJSON(domain.text, DomainAIResultSchema) : null);
+  const result = enrichResultOf(ctx, answered, domain.failure === '' ? extractReply(domain.text, DomainAIResultSchema) ?? null : null);
   const evidenceDir = path.join(target.wikiRoot, 'evidence', 'code', target.project);
   assertWithinRoot(target.wikiRoot, evidenceDir);
   const recorded = await writeEnrichResult(result, evidenceDir);

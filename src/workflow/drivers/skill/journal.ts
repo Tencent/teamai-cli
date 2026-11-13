@@ -5,29 +5,28 @@
  * prints it. A describe, a start the protocol refused, and a runner's report have no line: the first two have no run,
  * and a runner is TeamAI's own process, whose work shows as skill.json's events.
  */
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { readFileSafe } from '../../../utils/fs.js';
 import { redactJson } from '@teamai/shared/redact';
 import { AttemptIdSchema, skillStatePath, type RunId } from '../../store.js';
 import type { SkillCall, SkillContext } from './skill-driver.js';
 import { readSkillState } from './skill-state.js';
 import { TICK_LOCK_WAIT_MS } from './tick.js';
 import type { Action, SkillAnswer } from './turn.js';
+import { appendRegularFile, readRegularFile } from '@teamai/shared/regular-file';
 
 const CallLineSchema = z.object({
   at: z.string(),
   kind: z.literal('call'),
   /** The call: `poll` is `next --wait`, `unavailable` is `report --model-unavailable`. */
   call: z.enum(['start', 'resume', 'next', 'poll', 'takeover', 'choose', 'ack', 'adopt', 'respond', 'report', 'unavailable']),
-  /** `orchestrator`: the session that drives the run made it; `session`: another session; `none`: a host that names no session. */
+  /** `orchestrator`: the session that drives the run made it; `session`: another session; `none`: a session host that names no session. */
   by: z.enum(['orchestrator', 'session', 'none']),
   /** Whether it ran from the checkout the run started in, as the orchestrator does: a child that shares its session runs from its own place. */
   inCheckout: z.boolean(),
   attempt: AttemptIdSchema.optional(),
   step: z.string().optional(),
-  /** The host question's option, or the gate's. */
+  /** The session host question's option, or the gate's. */
   choice: z.string().optional(),
   /** The error code; for an ack `acked`, for a report what its runner answer says (`reported`, `repeated`, ...); else `ok`. */
   answer: z.string(),
@@ -125,7 +124,7 @@ function callLine(call: SkillCall, answer: SkillAnswer, input: Pick<CallLine, 'a
 async function askedKeys(file: string): Promise<Set<string>> {
   const keys = new Set<string>();
 
-  for (const text of (await readFileSafe(file))?.split('\n') ?? []) {
+  for (const text of (await readRegularFile(file, 'utf8').catch(() => null))?.split('\n') ?? []) {
     if (text.trim() === '') continue;
 
     try {
@@ -178,14 +177,14 @@ export async function journalCall(context: SkillContext, call: SkillCall, answer
       return [entry];
     });
 
-    await fs.appendFile(file, lines([line, ...fresh], context.env.secrets));
+    await appendRegularFile(file, lines([line, ...fresh], context.env.secrets));
   }, TICK_LOCK_WAIT_MS);
 
   switch (taken.kind) {
     case 'held':
       return;
     case 'busy':
-      await fs.appendFile(file, lines([line], context.env.secrets));
+      await appendRegularFile(file, lines([line], context.env.secrets));
 
       return;
     default: {

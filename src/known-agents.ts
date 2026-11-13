@@ -14,7 +14,7 @@ import { isToolId, descriptorOf, toolOf } from './tool-registry.js';
 import { installOf, isInstalledFor, locate, ownOf, toolPathUnder } from './locate.js';
 import type { LocalConfig, TeamaiConfig, Scope } from './types.js';
 import type { ToolId } from './tools.js';
-import { getUserHome } from './utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 import { realHost, toolHome, type Host } from './tool-home.js';
 
 /**

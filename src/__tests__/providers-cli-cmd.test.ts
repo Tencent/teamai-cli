@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveCliPath } from '../utils/cli-path.js';
+import { resolveCliPath } from '@teamai/shared/cli-path';
 
 /**
  * The `.cmd` sibling is what CreateProcess launches. The other provider PATH

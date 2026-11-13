@@ -1,7 +1,7 @@
 import { withFileLock } from './update.js';
 import { homeVariables, TOOL_ORDER, toolInstancesFor } from './tool-registry.js';
 import { envInstanceHome, envToolHome, isSameDirOn, realHost, type EnvToolHome, recordedHomes, reloadToolHomes, rememberToolHome, saveToolHomes, toolHomesPath, type Host } from './tool-home.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { warnOnce } from './utils/warn-once.js';
 import { errnoCode } from './utils/fs.js';
 

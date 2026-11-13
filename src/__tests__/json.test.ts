@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { editJsonText, parseJson, parseJsonAs } from '../utils/json.js';
+import { parseJson } from '@teamai/shared/json';
+import { editJsonText, parseJsonAs } from '../utils/json.js';
 
 describe('parseJson', () => {
   it('keeps a __proto__ key as the own key the file holds, so a write-back keeps it', () => {

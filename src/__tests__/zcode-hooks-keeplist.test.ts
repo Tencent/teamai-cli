@@ -20,7 +20,7 @@ vi.mock('@teamai/shared/log', () => ({
   })),
 }));
 
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { reconcileHooks } from '../hooks.js';
 
 async function zcodeHome(): Promise<{ home: string; configPath: string }> {

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { z } from 'zod';
-import { getDataHome, managedMcpManifestPath, type JsonValue, type LocalConfig } from './types.js';
+import { getDataHome, managedMcpManifestPath, type LocalConfig } from './types.js';
+import type { JsonValue } from '@teamai/shared/json';
 import { readFileSafe } from './utils/fs.js';
 import { updateFileLocked, type ExcludeUpdate } from './git-exclude.js';
 

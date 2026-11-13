@@ -77,7 +77,7 @@ vi.mock('../update.js', () => ({
 const { pull } = await import('../pull.js');
 const { loadLocalConfigForScope, loadTeamConfig } = await import('../config.js');
 const { publishQueuedLearnings } = await import('../utils/learnings-publish.js');
-const { log } = await import('../utils/logger.js');
+const { log } = await import('@teamai/shared/log');
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
 const business = path.join(testRoot, 'product');

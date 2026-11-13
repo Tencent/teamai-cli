@@ -13,7 +13,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 
 import { spawn } from 'node:child_process';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { getRepoCacheDir } from '../utils/repo-cache.js';
 import { shallowClone, shallowFetch } from '../clone.js';
 

@@ -26,7 +26,7 @@ vi.mock('@teamai/shared/log', () => ({
 // Makes every `git ls-files` spawn fail, as a process table at its limit does.
 const failLsFilesSpawn = vi.hoisted(() => ({ on: false }));
 vi.mock('@teamai/shared/exec', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../utils/exec.js')>();
+  const actual = await importOriginal<typeof import('@teamai/shared/exec')>();
   return {
     ...actual,
     execCommand: (cmd: string, args: string[], opts?: Parameters<typeof actual.execCommand>[2]) =>
@@ -59,7 +59,7 @@ vi.mock('../utils/fs.js', async (importOriginal) => {
 import { _setExcludeLockRetryMs } from '../git-exclude.js';
 import { reconcileMcpForConfig, releaseCleanMcpGitExcludes, resolveMcpTargets, spliceCodexBlock, codexBlockIn, codexServerNames, writeCodexAtomic } from '../mcp-reconcile.js';
 import { acquireLock, releaseLock } from '../update.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { TeamaiConfigSchema, type TeamaiConfig, type LocalConfig } from '../types.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
@@ -382,7 +382,7 @@ servers:
 `;
     await writeMcpYaml(`servers:${temp}`);
     await reconcileMcpForConfig(teamConfig, localConfig);
-    const { log: freshLog } = await import('../utils/logger.js');
+    const { log: freshLog } = await import('@teamai/shared/log');
     vi.mocked(freshLog.warn).mockClear();
 
     await writeMcpYaml(`server:${temp}`);
@@ -501,7 +501,7 @@ servers:
     transport: http
     url: https://example.com/shared
 `);
-      const { log: freshLog } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('@teamai/shared/log');
       vi.mocked(freshLog.warn).mockClear();
 
       await reconcileMcpForConfig(teamConfig, { ...localConfig, primaryRole: 'frontend', additionalRoles: [] });
@@ -581,7 +581,7 @@ servers:
     transport: http
     url: https://billing.example.com/orders
 `);
-      const { log: freshLog } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('@teamai/shared/log');
       vi.mocked(freshLog.warn).mockClear();
       resetWarnOnce();
 
@@ -617,7 +617,7 @@ servers:
     transport: http
     url: https://example.com/shared-again
 `);
-      const { log: freshLog } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('@teamai/shared/log');
       resetWarnOnce();
 
       await reconcileMcpForConfig(teamConfig, { ...localConfig, projects: ['checkout'] });
@@ -657,7 +657,7 @@ servers:
     transport: http
     url: https://example.com/shared
 `);
-      const { log: freshLog } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('@teamai/shared/log');
       resetWarnOnce();
 
       await reconcileMcpForConfig(teamConfig, { ...localConfig, projects: ['billing'] });
@@ -671,7 +671,7 @@ servers:
 
     // A typo of a scoping key (#822) must not widen who gets the server.
     const warningsAbout = async (file: string, server: string): Promise<string[]> => {
-      const { log: freshLog } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('@teamai/shared/log');
       return vi.mocked(freshLog.warn).mock.calls.map(([m]) => String(m))
         .filter((m) => m.includes(file) && m.includes(`"${server}"`));
     };
@@ -687,7 +687,7 @@ servers:
     transport: http
     url: https://example.com/shared
 `);
-      const { log: freshLog } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('@teamai/shared/log');
       vi.mocked(freshLog.warn).mockClear();
       resetWarnOnce();
 
@@ -707,7 +707,7 @@ servers:
     url: https://checkout.example.com/db
     role: [frontend]
 `);
-      const { log: freshLog } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('@teamai/shared/log');
       vi.mocked(freshLog.warn).mockClear();
       resetWarnOnce();
 
@@ -735,7 +735,7 @@ servers:
     tools: [claude]
     roles: [frontend]
 `);
-      const { log: freshLog } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('@teamai/shared/log');
       vi.mocked(freshLog.warn).mockClear();
       resetWarnOnce();
 
@@ -4225,7 +4225,7 @@ servers:
       expect({ changes, wrote, unresolved }).toEqual({ changes: [], wrote: false, unresolved: true });
       expect(await fse.readFile(claudeJson(), 'utf-8')).toBe(jsonBefore);
       expect(await fse.readFile(codexToml(), 'utf-8')).toBe(tomlBefore);
-      const { log: freshLog } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('@teamai/shared/log');
       expect(vi.mocked(freshLog.warn).mock.calls.map(([m]) => String(m)).join('\n')).toContain('env/secrets.yaml');
     });
 

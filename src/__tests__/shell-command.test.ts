@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { runShellCommand } from '../workflow/shell-command.js';
+import { signalPid, stopRecordedGroup } from '@teamai/shared/process-group';
+import { runShellCommand, startGroupedCommand } from '../workflow/shell-command.js';
 
 const dirs: string[] = [];
 const SLEEP = `"${process.execPath}" -e "setTimeout(() => {}, 20000)"`;
@@ -54,4 +55,24 @@ describe('runShellCommand', () => {
     const ran = await runShellCommand({ command: 'echo never', cwd: path.join(workdir(), 'missing'), env: process.env });
     expect(ran.exit).toEqual({ kind: 'spawn_failed', message: expect.stringContaining('ENOENT') });
   });
+});
+
+it.skipIf(process.platform === 'win32')('stops an attached command and what it started once its starter is gone, from the record it left', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-stop-attached-'));
+  const pidFile = path.join(directory, 'sleep.pid');
+  const started = startGroupedCommand({ command: `sleep 60 & echo $! > ${JSON.stringify(pidFile)}; wait`, cwd: directory, env: process.env, detached: false, group: directory });
+  const alive = (pid: number): boolean => signalPid(pid, 0) === 'sent';
+  try {
+    for (let probe = 0; probe < 100 && !(fs.existsSync(pidFile) && fs.readFileSync(pidFile, 'utf8').trim() !== ''); probe += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+    const sleeper = Number(fs.readFileSync(pidFile, 'utf8'));
+
+    // A starter killed now leaves only what it recorded: no handle of this process reaches the command.
+    await stopRecordedGroup(directory);
+
+    expect(alive(sleeper)).toBe(false);
+    expect((await started.exit).exitCode).not.toBe(0);
+  } finally {
+    await started.stop();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });

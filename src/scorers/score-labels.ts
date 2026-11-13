@@ -5,7 +5,7 @@
  */
 import path from 'node:path';
 import { z } from 'zod';
-import { ConfinedUsageSchema, CostSchema, type ConfinedUsage } from '../tool-launch/confined-level.js';
+import { ConfinedUsageSchema, CostSchema, type ConfinedUsage } from '@teamai/tool-core/stdout';
 import { isModelAlias, loadModelAliases } from '../models/aliases.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { writeFileAtomic } from '../utils/fs.js';

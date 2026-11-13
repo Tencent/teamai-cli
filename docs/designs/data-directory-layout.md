@@ -403,17 +403,20 @@ is a P1 concern. This keeps P0 independently reviewable (issue R7).
      temp file and hard-linked to the lock name (`link` fails with `EEXIST` like
      `O_CREAT|O_EXCL`), so the lock never exists without its content (#760); a
      filesystem without hard links falls back to `writeFile(path, payload, { flag: 'wx' })`.
-     Payload is JSON `{ pid, startedAt, owner }` with a random `owner` token.
+     Payload is JSON `{ pid, startedAt, owner }` with a random `owner` token, and on Linux
+     `startTicks`, when the holder started in clock ticks since boot, and `pidNamespace`.
 
 
    - On `EEXIST`, reclaim only a **stale** lock: one whose owner is provably gone
-     (`process.kill(pid,0)` fails with `ESRCH`). The reclaim is **serialized behind an
+     (`process.kill(pid,0)` fails with `ESRCH`), or whose pid a later process now has (its
+     start, from `/proc` or `ps`, is not the recorded `startTicks`, or is after `startedAt`). The reclaim is **serialized behind an
      atomically-created reclaim sentinel** and finished with an atomic rename-into-place,
      so concurrent reclaimers cannot each end up believing they hold the lock; a live
      holder returns "busy". Anything that cannot name a dead owner is held (#760): a
      lock that cannot be read (`EACCES`), an empty or partly written one (the `wx`
-     fallback and older teamai open the file before writing), and a pid owned by another
-     user (`EPERM`). A lock that names no owner, or cannot be read, stays until
+     fallback and older teamai open the file before writing), and a live pid, of this or
+     another user (`EPERM`), whose start cannot be told from the holder's or that another
+     pid namespace wrote, as a container sharing the home does. A lock that names no owner, or cannot be read, stays until
      removed by hand if a crash left it, and a warning names it. 
 
    A lock that vanished before it could be read gets one more

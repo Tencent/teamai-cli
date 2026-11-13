@@ -553,7 +553,7 @@ export async function deliveredIndexSources(
   const hasSkills = await pathExists(path.join(repoPath, 'skills'));
 
   if (!hasRules && !hasSkills) return { docFiles };
-  const teamConfig = await loadTeamConfig(repoPath);
+  const teamConfig = await loadTeamConfig(repoPath, localConfig);
 
   // pull delivers nothing to a scope without teamai.yaml.
   if (!teamConfig) return { docFiles, ruleFiles: [], skills: { kind: 'dirs', dirs: [] } };

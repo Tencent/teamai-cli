@@ -47,6 +47,14 @@ function personal(name: string, text: string): void {
   fs.writeFileSync(path.join(dir, `${name}.yaml`), text);
 }
 
+/** The member's user-scope config, whose team repo is `repo`, with `fields` (`projects: [...]`) set. */
+function memberOf(repo: string, fields: { projects?: string[] }): void {
+  const dir = path.join(home, '.teamai');
+  fs.mkdirSync(dir, { recursive: true });
+  const projects = fields.projects ? `projects: [${fields.projects.join(', ')}]\n` : '';
+  fs.writeFileSync(path.join(dir, 'config.yaml'), `repo:\n  localPath: ${repo}\n  remote: https://example.test/acme/team.git\nusername: tester\nscope: user\n${projects}`);
+}
+
 const ACME_CLAUDE = `schemaVersion: v1alpha1
 name: acme-claude
 extends: claude
@@ -54,12 +62,12 @@ command: acme-claude
 home: { dir: .acme-claude, env: ACME_CLAUDE_CONFIG_DIR }
 `;
 
-async function load(repo: string) {
+async function load(repo: string, member?: LocalConfig) {
   const { loadTeamConfig } = await import('../config.js');
   const registry = await import('../tool-registry.js');
   const { log } = await import('@teamai/shared/log');
   const errors = vi.spyOn(log, 'error').mockImplementation(() => undefined);
-  const config = await loadTeamConfig(repo);
+  const config = await loadTeamConfig(repo, member ?? null);
 
   return { config, registry, errors: errors.mock.calls.map(([message]) => String(message)) };
 }
@@ -301,11 +309,11 @@ describe('team tool instances', () => {
     const shown = () => errors.mock.calls.map(([message]) => String(message));
     const refusal = expect.stringContaining('command: command is the name of one executable on PATH');
 
-    for (let pass = 0; pass < 3; pass++) await loadTeamConfig(repo);
+    for (let pass = 0; pass < 3; pass++) await loadTeamConfig(repo, null);
     expect(shown()).toEqual([refusal]);
 
     resetWarnOnce();
-    await loadTeamConfig(repo);
+    await loadTeamConfig(repo, null);
     expect(shown()).toEqual([refusal, refusal]);
   });
 
@@ -322,9 +330,9 @@ describe('team tool instances', () => {
     const { resetToolInstancesForTests } = await import('../tool-instances.js');
     const registry = await import('../tool-registry.js');
 
-    await loadTeamConfig(repoOf('first', 'acme-claude-1'));
+    await loadTeamConfig(repoOf('first', 'acme-claude-1'), null);
     resetToolInstancesForTests();
-    await loadTeamConfig(repoOf('second', 'acme-claude-2'));
+    await loadTeamConfig(repoOf('second', 'acme-claude-2'), null);
 
     expect(registry.toolOf('acme-claude')?.instance?.command).toBe('acme-claude-2');
   });
@@ -357,7 +365,7 @@ describe('team tool instances', () => {
     }));
 
     expect(errors).toEqual([
-      expect.stringContaining('its name is "acme-claude", and an instance is named after its file, "acme"'),
+      expect.stringContaining('its name is "acme-claude", and an instance is named after its file or its folder, "acme"'),
       expect.stringContaining('"codex" is a tool teamai ships, and an instance named like one adjusts it, so it extends codex'),
     ]);
     expect(registry.toolOf('codex')).toEqual({ name: 'codex', base: 'codex' });
@@ -374,6 +382,131 @@ describe('team tool instances', () => {
     const { registry } = await load(teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE, 'tools/web/acme-claude.yaml': ACME_CLAUDE.replace('command: acme-claude', 'command: acme-claude-web') }));
 
     expect(registry.toolOf('acme-claude')?.instance?.command).toBe('acme-claude-web');
+  });
+
+  it('reads an instance in a namespace only for the member it is given, whose project or role selects it, as drivers and workflows are, until another member is given, under any spelling of the repo', async () => {
+    const repo = teamRepo({
+      'manifest/projects.yaml': 'version: 1\nprojects:\n  - id: checkout\n    resources: { workflows: [web] }\n  - id: billing\n    resources: { workflows: [mobile] }\n',
+      'tools/web/web-claude.yaml': ACME_CLAUDE.replaceAll('acme-claude', 'web-claude'),
+      'tools/mobile/mobile-claude.yaml': ACME_CLAUDE.replaceAll('acme-claude', 'mobile-claude'),
+      'tools/acme-claude.yaml': ACME_CLAUDE,
+    });
+    memberOf(repo, { projects: ['checkout'] });
+    const { loadLocalConfig } = await import('../config.js');
+    // A loader that ran for another member before decides nothing.
+    const checkout = await loadLocalConfig();
+    if (checkout === null) throw new Error('no member config');
+    const { registry, config } = await load(repo, { ...checkout, projects: ['billing'] });
+
+    expect(registry.toolOf('mobile-claude')?.instance?.command).toBe('mobile-claude');
+    expect(registry.toolOf('web-claude')).toBeUndefined();
+    expect(config?.toolPaths['web-claude']).toBeUndefined();
+    // A later load that reads only a field of teamai.yaml, given no member, leaves the member's instances in place.
+    await load(repo);
+    expect(registry.toolOf('mobile-claude')?.instance?.command).toBe('mobile-claude');
+    // So does one through another spelling of the repo, which reads a root instance changed since as another repo's.
+    const linked = path.join(root, 'linked-repo');
+    fs.symlinkSync(repo, linked);
+    fs.writeFileSync(path.join(repo, 'tools', 'acme-claude.yaml'), ACME_CLAUDE.replace('command: acme-claude', 'command: acme-claude-2'));
+    const { errors } = await load(linked);
+    expect([registry.toolOf('mobile-claude')?.instance?.command, registry.toolOf('acme-claude')?.instance?.command, errors]).toEqual(['mobile-claude', 'acme-claude', []]);
+  });
+
+  it('reads only the root instances of a team repo whose manifest selects namespaces, when given no member', async () => {
+    const { registry } = await load(teamRepo({
+      'manifest/projects.yaml': 'version: 1\nprojects:\n  - id: checkout\n    resources: { workflows: [web] }\n',
+      'tools/acme-claude.yaml': ACME_CLAUDE,
+      'tools/web/web-claude.yaml': ACME_CLAUDE.replaceAll('acme-claude', 'web-claude'),
+    }));
+
+    expect(registry.toolOf('acme-claude')?.instance?.source).toBe('team');
+    expect(registry.toolOf('web-claude')).toBeUndefined();
+  });
+});
+
+describe('a linked tools folder', () => {
+  it('reads no instance through a team repo\'s tools folder that is a link, and says why', async () => {
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'acme-claude.yaml'), ACME_CLAUDE);
+    const repo = teamRepo({});
+    fs.symlinkSync(outside, path.join(repo, 'tools'));
+    const { registry, errors } = await load(repo);
+
+    expect(registry.toolOf('acme-claude')).toBeUndefined();
+    expect(errors).toEqual(['tools in the team repo is a link, and teamai reads the team\'s tool instances only from a folder the team repo holds, so it uses none of them. Replace the link with the folder, push it, and run teamai pull.']);
+  });
+});
+
+describe('team instances of two scopes', () => {
+  it('takes the workspace\'s team instance over the user scope\'s of the same name, as a driver definition is', async () => {
+    const userRepo = teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE });
+    const workspaceRepo = path.join(root, 'workspace-repo');
+    fs.mkdirSync(path.join(workspaceRepo, 'tools'), { recursive: true });
+    fs.writeFileSync(path.join(workspaceRepo, 'teamai.yaml'), 'team: acme\nrepo: acme/workspace\n');
+    fs.writeFileSync(path.join(workspaceRepo, 'tools', 'acme-claude.yaml'), ACME_CLAUDE.replace('command: acme-claude', 'command: acme-claude-workspace'));
+    memberOf(userRepo, {});
+    const project = path.join(root, 'project');
+    fs.mkdirSync(path.join(project, '.teamai'), { recursive: true });
+    fs.writeFileSync(path.join(project, '.teamai', 'config.yaml'), `repo:\n  localPath: ${workspaceRepo}\n  remote: https://example.test/acme/workspace.git\nusername: tester\nscope: workspace\n`);
+    const { loadLocalConfig, readConfigFrom } = await import('../config.js');
+    const user = await loadLocalConfig();
+    const workspace = await readConfigFrom(path.join(project, '.teamai'), project);
+    expect(workspace).toMatchObject({ scope: 'project' });
+    const { registry, errors } = await load(workspaceRepo, workspace ?? undefined);
+    await load(userRepo, user ?? undefined);
+
+    expect(registry.toolOf('acme-claude')?.instance?.command).toBe('acme-claude-workspace');
+    expect(errors).toEqual([]);
+  });
+});
+
+describe('a tool instance kept as a folder', () => {
+  it('reads tools/<name>/TOOL.yaml as the instance named after its folder, in the user scope\'s team repo and a workspace\'s', async () => {
+    const userRepo = teamRepo({ 'tools/acme-claude/TOOL.yaml': ACME_CLAUDE });
+    const workspaceRepo = path.join(root, 'workspace-repo');
+    fs.mkdirSync(path.join(workspaceRepo, 'tools', 'ws-claude'), { recursive: true });
+    fs.writeFileSync(path.join(workspaceRepo, 'teamai.yaml'), 'team: acme\nrepo: acme/workspace\n');
+    fs.writeFileSync(path.join(workspaceRepo, 'tools', 'ws-claude', 'TOOL.yaml'), ACME_CLAUDE.replaceAll('acme-claude', 'ws-claude'));
+    const { registry, errors } = await load(userRepo);
+    await load(workspaceRepo);
+
+    expect(registry.toolOf('acme-claude')?.instance).toMatchObject({ command: 'acme-claude', source: 'team', location: 'tools/acme-claude/TOOL.yaml' });
+    expect(registry.toolOf('ws-claude')?.instance).toMatchObject({ command: 'ws-claude', source: 'team' });
+    expect(registry.toolOf('TOOL')).toBeUndefined();
+    expect(errors).toEqual([]);
+  });
+
+  it('runs an instance moved from tools/<name>.yaml into its folder with the acceptance its unchanged content had', async () => {
+    const repo = teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE });
+    const first = await load(repo);
+    const { acceptToolCommand } = await import('../tool-instances.js');
+    const instance = first.registry.toolOf('acme-claude')?.instance;
+    expect(instance && await acceptToolCommand(instance, { ask: async () => 'y' })).toEqual({ ok: true });
+    fs.mkdirSync(path.join(repo, 'tools', 'acme-claude'));
+    fs.renameSync(path.join(repo, 'tools', 'acme-claude.yaml'), path.join(repo, 'tools', 'acme-claude', 'TOOL.yaml'));
+    vi.resetModules();
+    const moved = await load(repo);
+    const { acceptToolCommand: acceptMoved } = await import('../tool-instances.js');
+    const movedInstance = moved.registry.toolOf('acme-claude')?.instance;
+
+    expect(movedInstance?.location).toBe('tools/acme-claude/TOOL.yaml');
+    expect(movedInstance && await acceptMoved(movedInstance, { ask: undefined })).toEqual({ ok: true });
+  });
+
+  it('uses neither of one name kept as a file and a folder in one place, and names both', async () => {
+    const { registry, errors } = await load(teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE, 'tools/acme-claude/TOOL.yaml': ACME_CLAUDE }));
+
+    expect(registry.toolOf('acme-claude')).toBeUndefined();
+    expect(errors).toEqual([expect.stringContaining('"acme-claude" is defined twice in the team repo (tools/acme-claude.yaml and tools/acme-claude/)')]);
+  });
+
+  it('reads the member\'s own ~/.teamai/tools/<name>/TOOL.yaml', async () => {
+    fs.mkdirSync(path.join(home, '.teamai', 'tools', 'mine'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.teamai', 'tools', 'mine', 'TOOL.yaml'), 'schemaVersion: v1alpha1\nname: mine\nextends: codex\n');
+    const { registry } = await load(teamRepo({}));
+
+    expect(registry.toolOf('mine')?.instance).toMatchObject({ source: 'personal', extends: 'codex' });
   });
 });
 
@@ -397,6 +530,22 @@ describe('the sessions of an instance', () => {
 });
 
 describe('the home of an instance', () => {
+  it('stays the instance\'s own directory when its variable is an XDG base directory, which the member set for every tool', async () => {
+    vi.stubEnv('XDG_CONFIG_HOME', path.join(home, 'config'));
+    await load(teamRepo({ 'tools/claude-work.yaml': 'schemaVersion: v1alpha1\nname: claude-work\nextends: claude\nhome: { dir: .claude-work, env: XDG_CONFIG_HOME }\n' }));
+    const { storeDirOf } = await import('../session-flow/adapters/index.js');
+
+    expect(storeDirOf('claude-work', { kind: 'recorded', toolRoots: undefined })).toBe(path.join(home, '.claude-work', 'projects'));
+  });
+
+  it('follows the member\'s value of a variable of the instance\'s own', async () => {
+    vi.stubEnv('ACME_CLAUDE_CONFIG_DIR', path.join(root, 'acme'));
+    await load(teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE }));
+    const { storeDirOf } = await import('../session-flow/adapters/index.js');
+
+    expect(storeDirOf('acme-claude', { kind: 'recorded', toolRoots: undefined })).toBe(path.join(root, 'acme', 'projects'));
+  });
+
   it.each(['project', 'user'] as const)('reads, in %s scope, the rules, instruction blocks and agents teamai writes under its home, as the tool it extends reads its own', async (scope) => {
     const repo = teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE });
     const { config } = await load(repo);
@@ -440,7 +589,7 @@ describe('the home of an instance', () => {
     expect(writesOf(skills).map((place) => place.path)).toEqual([path.join(moved, 'skills')]);
     expect(isInstalledFor(skills)).toBe(true);
     expect(writesOf(await locate('acme-claude', 'mcp', install)).map((place) => place.path)).toEqual([path.join(moved, '.claude.json')]);
-    expect(storeDirOf('acme-claude', undefined)).toBe(path.join(moved, 'projects'));
+    expect(storeDirOf('acme-claude', { kind: 'recorded', toolRoots: undefined })).toBe(path.join(moved, 'projects'));
 
     // What list, status and skill show read: the instance is installed, with its skills in the moved home.
     const { detectInstalledAgents } = await import('../known-agents.js');
@@ -489,7 +638,7 @@ describe('the facts an instance keeps from the tool it extends', () => {
     ['where it reads its skills', 'claude', async (name) => {
       const { installOf, locate } = await import('../locate.js');
       const { loadTeamConfig } = await import('../config.js');
-      const config = await loadTeamConfig(path.join(root, 'repo'));
+      const config = await loadTeamConfig(path.join(root, 'repo'), null);
 
       return (await locate(name, 'skills', installOf(config ?? { toolPaths: {} }, { repo: {}, scope: 'user' }))).reads === 'unknown';
     }],

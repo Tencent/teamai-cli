@@ -3,8 +3,15 @@ import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
 import { DocsHandler } from '../resources/docs.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
+import { copyRegularTree } from '@teamai/shared/regular-file';
+
+vi.mock('@teamai/shared/regular-file', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@teamai/shared/regular-file')>();
+
+  return { ...actual, copyRegularTree: vi.fn(actual.copyRegularTree) };
+});
 import { LocalConfigSchema, TeamaiConfigSchema, type LocalConfig, type TeamaiConfig } from '../types.js';
 
 describe('DocsHandler nested documents', () => {
@@ -168,7 +175,7 @@ describe('DocsHandler pruning (#794)', () => {
     await fse.outputFile(path.join(source, 'api', 'new.md'), 'new directory');
     commitTeamRepo(path.join(root, 'repo'), 'new layout');
     if (failure === 'copy') {
-      vi.spyOn(fse, 'copy').mockRejectedValueOnce(new Error('copy failed'));
+      vi.mocked(copyRegularTree).mockRejectedValueOnce(new Error('copy failed'));
     } else {
       const rename = fse.rename.bind(fse);
       vi.spyOn(fse, 'rename')
@@ -342,7 +349,7 @@ describe('DocsHandler pruning (#794)', () => {
   it('propagates a copy failure without pruning', async () => {
     await fse.outputFile(path.join(source, 'guide.md'), 'new');
     await fse.outputFile(path.join(destination, 'old.md'), 'old');
-    vi.spyOn(fse, 'copy').mockRejectedValueOnce(new Error('copy failed'));
+    vi.mocked(copyRegularTree).mockRejectedValueOnce(new Error('copy failed'));
     await expect(sync()).rejects.toThrow('copy failed');
     expect(await fse.readFile(path.join(destination, 'old.md'), 'utf8')).toBe('old');
   });

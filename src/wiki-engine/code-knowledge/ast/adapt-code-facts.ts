@@ -1,4 +1,5 @@
-import { type CodeFact, mapKindToEvidenceType } from "../code-extractors.js";
+import { mapKindToEvidenceType } from "../code-fact-kind.js";
+import { type CodeFact } from "../code-extractors.js";
 import type { AstImport, StructuralEdge } from "./types.js";
 
 type UnresolvedGap = { kind: string; message: string; sources: string[] };
