@@ -247,6 +247,29 @@ describe('hook runs and the scope they belong to (#748)', () => {
   });
 });
 
+describe('a hook of a tool instance', () => {
+  afterEach(async () => {
+    const { useToolInstances } = await import('../tool-registry.js');
+    useToolInstances(new Map());
+  });
+
+  it.skipIf(process.platform === 'win32')('records what its login environment sees of HTTP enrolment, as the tool it extends does, so its next prompt can take the fast path', async () => {
+    userScope();
+    const teamRepo = path.join(teamaiHome(), 'team-repo');
+    fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), 'team: acme\nrepo: acme/team\n');
+    fs.mkdirSync(path.join(teamRepo, 'tools'));
+    fs.writeFileSync(path.join(teamRepo, 'tools', 'acme-claude.yaml'), 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude }\n');
+    const cwd = gitRepo('project-i');
+
+    const stdinFile = path.join(tmp, 'stdin-instance.json');
+    fs.writeFileSync(stdinFile, JSON.stringify({ session_id: 'sid-i', cwd, hook_event_name: 'UserPromptSubmit', prompt: 'hello' }));
+    // The foreground pass alone: in a host it is a process of its own, and the background pass it starts records nothing.
+    await hookDispatchCli('prompt-submit', 'acme-claude', '*', { stdinFile });
+
+    expect(JSON.parse(fs.readFileSync(path.join(teamaiHome(), 'sessions', 'sid-i.http-enrolment.json'), 'utf8'))).toMatchObject({ cwd });
+  });
+});
+
 describe('skill use through the CLI (#1221)', () => {
   it('counts a Codex `$name` mention and the `cat` of its SKILL.md in one turn once', async () => {
     userScope();
