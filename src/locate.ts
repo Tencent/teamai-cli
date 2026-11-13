@@ -23,7 +23,7 @@ import {
   WORKBUDDY_AI_ROOT, WORKBUDDY_LIVE_ROOT_LEAVES, WORKBUDDY_TOOL_ID, WORKBUDDY_TOOL_ROOT,
   type HomePaths, type LocalConfig, type Scope, type TeamaiConfig,
 } from './types.js';
-import { absoluteOn, defaultToolHome, homeRoot, instanceHomeDir, movedToolHome, realHost, toolHome, type Host } from './tool-home.js';
+import { absoluteOn, defaultToolHome, movedToolHome, realHost, toolHome, toolHomeOf, type Host } from './tool-home.js';
 import { openclawTeamHookPluginIn, resolveOpenclawConfigPath, resolveOpenclawWorkspace, type OpenclawWorkspace } from './openclaw-home.js';
 import { hasWorkspaceChildren } from './workspace-children.js';
 
@@ -565,22 +565,10 @@ type Roots = {
   readonly underHome: (relative: string) => string;
 };
 
-/**
- * `tool`'s home on `host`, and the `$HOME`-relative directory it replaces: a shipped tool's, moved by a record or its
- * variable, or an instance's own, moved by its `home.env`. Undefined for a custom tool and for an instance that keeps
- * the home of the tool it extends.
- */
-function homeOf(tool: string, host: Host): { readonly root: string; readonly dir: string } | undefined {
-  if (isToolId(tool)) return { root: homeRoot(tool), dir: toolHome(tool, host) };
-  const home = toolOf(tool)?.instance?.home;
-
-  return home === undefined ? undefined : { root: home.dir, dir: instanceHomeDir(home, host) };
-}
-
 /** `relative`, a `$HOME`-relative path, re-rooted in `tool`'s home where it falls under the home's root, which a recorded or env move relocates. */
 function underToolHome(tool: string, relative: string, host: Host): string {
   const p = host.path;
-  const home = homeOf(tool, host);
+  const home = toolHomeOf(tool, host);
 
   if (home && (relative === home.root || relative.startsWith(`${home.root}/`))) return p.join(home.dir, ...relative.slice(home.root.length + 1).split('/'));
 
@@ -605,7 +593,7 @@ function rootsOf(tool: string, install: Install, host: Host): Roots {
     : install.toolPaths[tool];
 
   const join = (root: string, relative: string): string => p.join(root, ...relative.split('/'));
-  const home = homeOf(tool, host);
+  const home = toolHomeOf(tool, host);
   const underHome = (relative: string): string => underToolHome(tool, relative, host);
 
   const relocated = (relative: string): string =>
@@ -964,6 +952,9 @@ function samePlaceOn(p: path.PlatformPath, a: Place, b: Place): boolean {
 
 async function locateSkills(tool: string, install: Install, host: Host): Promise<Location<'skills'>> {
   const roots = rootsOf(tool, install, host);
+  // An instance reads its skills where the tool it extends reads its own, under its home (`roots.declared`).
+  const base = toolOf(tool)?.base;
+  const skills: SkillReads | undefined = base === undefined ? undefined : TOOLS[base].skills;
   const configured = roots.configured('skills');
 
   if (configured === null) return { channel: 'files', own: null, shared: null, reads: 'unknown', readGates: [], retired: [], gates: [] };
@@ -1000,19 +991,13 @@ async function locateSkills(tool: string, install: Install, host: Host): Promise
     channel: 'files',
     own: own === null ? null : { kind: 'dir', path: own },
     shared: shared === null ? null : { kind: 'dir', path: shared },
-    reads: await readsOf(isToolId(tool) ? TOOLS[tool].skills[install.scope] : 'unknown', roots, host),
-    readGates: await readGatesOf(skillReadGatesOf(tool), install, host),
+    reads: await readsOf(skills?.[install.scope] ?? 'unknown', roots, host),
+    readGates: await readGatesOf(skills?.readGates, install, host),
     retired: [],
     gates: await gatesOf(tool, install, host, roots, 'skills'),
   };
 }
 
-function skillReadGatesOf(tool: string): readonly ReadGateKind[] | undefined {
-  if (!isToolId(tool)) return undefined;
-  const skills: SkillReads = TOOLS[tool].skills;
-
-  return skills.readGates;
-}
 
 async function locateRules(tool: string, install: Install, host: Host): Promise<Location<'rules'>> {
   const channel = channelsOf(tool).rules[install.scope];

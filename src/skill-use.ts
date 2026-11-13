@@ -26,7 +26,7 @@ import type { SubagentsRead } from '@teamai/tool-core/sessions/base';
 import type { ContentBlock, Message, Session } from '@teamai/tool-core/sessions/ir';
 import { typedText } from '@teamai/tool-core/sessions/title';
 import { type PromptForm, type SkillLoad } from '@teamai/tool-core/definition';
-import { isToolId, descriptorOf } from './tool-registry.js';
+import { baseDescriptorOf } from './tool-registry.js';
 import { SKILL_NAME_CHARS, type LocalConfig } from './types.js';
 import { withFileLock } from './update.js';
 import {
@@ -87,7 +87,7 @@ const ToolEventSchema = z.object({
 const ReadPathSchema = z.object({ path: z.string() });
 
 function skillLoadOf(tool: string): SkillLoad | undefined {
-  return isToolId(tool) ? descriptorOf(tool).skillLoad : undefined;
+  return baseDescriptorOf(tool)?.skillLoad;
 }
 
 function isSkillCall(tool: string, hostName: string): boolean {

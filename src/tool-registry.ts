@@ -56,6 +56,17 @@ export function baseToolOf(name: string): string {
   return toolOf(name)?.base ?? name;
 }
 
+/**
+ * What teamai knows about the tool `name` runs as: a shipped tool's descriptor, or for an instance the descriptor of
+ * the tool it extends, whose formats it keeps. Undefined for a custom tool id. A name read from a config, a hook's
+ * `--tool` or a step may be an instance's, so a format fact of a name is read through this, not `isToolId`.
+ */
+export function baseDescriptorOf(name: string): ShippedDescriptor | undefined {
+  const base = toolOf(name)?.base;
+
+  return base === undefined ? undefined : descriptorOf(base);
+}
+
 /** Whether `name` names a tool a workflow step runs, or an instance of one: its `launch` names a STEP_LAUNCH_ADAPTERS adapter. */
 export function runsSteps(name: string): boolean {
   const base = toolOf(name)?.base;
@@ -114,10 +125,7 @@ export function homeVariables(tool: ToolId): readonly string[] {
 
 /** Whether where `tool` takes skills follows each session's inputs (`ShippedDescriptor.skillsFollowSession`). */
 export function skillsFollowSession(tool: string): boolean {
-  if (!isToolId(tool)) return false;
-  const descriptor: ShippedDescriptor = descriptorOf(tool);
-
-  return descriptor.skillsFollowSession === true;
+  return baseDescriptorOf(tool)?.skillsFollowSession === true;
 }
 
 /** What says `tool` is installed beyond its configured paths, if anything (`InstallGate`). */
@@ -174,16 +182,12 @@ const CUSTOM_TOOL = {
 
 /** How `tool` reads a rule or agent folder's files (`FolderReach`): a custom tool, or one with no cell, gets `copy`. */
 export function folderReachOf(tool: string): FolderReach {
-  const descriptor: ShippedDescriptor | undefined = isToolId(tool) ? descriptorOf(tool) : undefined;
-
-  return descriptor?.folderReach ?? { reach: 'copy' };
+  return baseDescriptorOf(tool)?.folderReach ?? { reach: 'copy' };
 }
 
 /** The channels of `tool`: its descriptor's, the descriptor of the tool an instance extends, or `CUSTOM_TOOL`'s for a custom tool id. */
 export function channelsOf(tool: string): Pick<ShippedDescriptor, 'rules' | 'blocks' | 'agents' | 'mcp' | 'hooks'> {
-  const resolved = toolOf(tool);
-
-  return resolved ? descriptorOf(resolved.base) : CUSTOM_TOOL;
+  return baseDescriptorOf(tool) ?? CUSTOM_TOOL;
 }
 
 /**

@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { type ToolId, type ShippedDescriptor } from './tools.js';
 import { type HomeMove } from '@teamai/tool-core/definition';
 import type { ToolInstanceHome } from '@teamai/tool-core/instance';
-import { homeVariables, descriptorOf, TOOL_ORDER } from './tool-registry.js';
+import { homeVariables, descriptorOf, TOOL_ORDER, toolOf } from './tool-registry.js';
 import { pathExists, readFileSafe, readJsonObject, writeJsonAtomic, type JsonObjectRead } from './utils/fs.js';
 import { getUserHome, normalizeHomePath, usesInstallHome } from './utils/home.js';
 
@@ -257,6 +257,22 @@ export function instanceHomeDir(home: ToolInstanceHome, host: Host = realHost())
   const moved = home.env === undefined ? undefined : host.env[home.env]?.trim();
 
   return moved ? absoluteOn(moved, host) : host.path.join(host.home, ...home.dir.split('/'));
+}
+
+/**
+ * The home of the tool `name` runs as on `host`, and the `$HOME`-relative directory it replaces: a shipped tool's
+ * (`toolHome`), an instance's own (`instanceHomeDir`), or for an instance that sets no home the home of the tool it
+ * extends. Undefined for a custom tool id.
+ */
+export function toolHomeOf(name: string, host: Host = realHost()): { readonly root: string; readonly dir: string } | undefined {
+  const resolved = toolOf(name);
+
+  if (resolved === undefined) return undefined;
+  const home = resolved.instance?.home;
+
+  if (home !== undefined && resolved.instance?.name !== resolved.base) return { root: home.dir, dir: instanceHomeDir(home, host) };
+
+  return { root: homeRoot(resolved.base), dir: toolHome(resolved.base, host) };
 }
 
 /** The recorded home, else the env's, or null when nothing moves `tool`'s home. */

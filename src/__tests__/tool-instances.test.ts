@@ -308,6 +308,49 @@ describe('the OpenCode sessions of an instance', () => {
   });
 });
 
+describe('the facts an instance keeps from the tool it extends', () => {
+  const instanceOf = (base: string): string => `schemaVersion: v1alpha1\nname: acme-${base}\nextends: ${base}\nhome: { dir: .acme-${base} }\n`;
+  const BASES = ['claude', 'cursor', 'agy', 'openclaw'] as const;
+  const workflow = { name: 'review', description: 'Review a change', invoke: 'allow', source: 'team', skill: 'review' } as const;
+
+  /** Each fact as a reader of a tool name sees it. Each row tells the tool it extends apart from a custom tool, which has none of its facts. */
+  const FACTS: ReadonlyArray<readonly [string, (typeof BASES)[number], (name: string) => Promise<unknown>]> = [
+    ['where it reads its skills', 'claude', async (name) => {
+      const { installOf, locate } = await import('../locate.js');
+      const { loadTeamConfig } = await import('../config.js');
+      const config = await loadTeamConfig(path.join(root, 'repo'));
+
+      return (await locate(name, 'skills', installOf(config ?? { toolPaths: {} }, { repo: {}, scope: 'user' }))).reads === 'unknown';
+    }],
+    ['which calls load a skill', 'agy', async (name) => (await import('../skill-use.js')).skillCandidates({ tool_name: 'Skill', tool_input: { skill: 'review' } }, name)],
+    ['whether its search output shows the lines it read', 'cursor', async (name) => (await import('../utils/tool-call.js'))
+      .classifyToolCall({ tool_name: 'Grep', tool_input: { pattern: 'x', path: path.join(root, 'a.md'), output_mode: 'content' }, tool_response: '3:x', cwd: root }, name).paths],
+    ['whether a workflow skill pre-approves teamai', 'claude', async (name) => (await import('../workflow/discovery/render.js')).renderWorkflowSkill(workflow, name).includes('allowed-tools')],
+    ['how it reads a delivered rule folder', 'claude', async (name) => (await import('../tool-registry.js')).folderReachOf(name)],
+    ['whether its skills follow the session', 'openclaw', async (name) => (await import('../tool-registry.js')).skillsFollowSession(name)],
+  ];
+
+  it.each(FACTS)('%s', async (_fact, base, read) => {
+    await load(teamRepo(Object.fromEntries(BASES.map((one) => [`tools/acme-${one}.yaml`, instanceOf(one)]))));
+    fs.mkdirSync(path.join(home, `.acme-${base}`), { recursive: true });
+    const shipped = await read(base);
+
+    expect(await read(`acme-${base}`)).toEqual(shipped);
+    expect(await read('custom-tool')).not.toEqual(shipped);
+  });
+});
+
+describe('the hooks of an instance', () => {
+  it('writes the built-in hooks in its own home as the member\'s, in the form the tool it extends takes in its home', async () => {
+    await load(teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE }));
+    const { builtinHookFormOf } = await import('../hooks.js');
+    const formIn = async (tool: string, dir: string) => (await builtinHookFormOf({ tool, settingsPath: path.join(home, dir, 'settings.json'), from: 'installed' })).loginDeferred;
+
+    expect(await formIn('acme-claude', '.acme-claude')).toBe(await formIn('claude', '.claude'));
+    expect(await formIn('claude', '.claude')).toBe(process.platform !== 'win32');
+  });
+});
+
 describe('the agents of an instance', () => {
   it('gets teamai\'s own agents in the format of the tool it extends, and recall off takes them back', async () => {
     const repo = teamRepo({ 'tools/acme-codex.yaml': 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n' });

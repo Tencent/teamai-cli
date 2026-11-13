@@ -81,8 +81,8 @@ import {
   skillsGuardBase,
 } from './builtin-skills.js';
 import { cleanupOf, hookAdapterDirIn, hookSettingsFile, installOf, isInstalledFor, locate, openclawWorkspaceDir, ownOf, SHARED_AGENT_SKILLS_PATH, workspaceHooksOf, writesOf, type Location } from './locate.js';
-import { toolHome, toolHomesAcrossProfiles } from './tool-home.js';
-import { channelsOf, hookSyntaxOf, isToolId, descriptorOf, toolOf } from './tool-registry.js';
+import { toolHome, toolHomeOf, toolHomesAcrossProfiles } from './tool-home.js';
+import { baseDescriptorOf, channelsOf, hookSyntaxOf, toolOf } from './tool-registry.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import { allowsSkillDirectory, CODEX_TOOL, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, readTeamSkills, skillOrigin } from './resources/skills.js';
 import { describeKeptDir, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir, teamaiSkillFiles } from './resources/delivered-copies.js';
@@ -3656,7 +3656,7 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
     for (const line of [...plan.keptSkillDirs, ...plan.keptFiles]) log.warn(line);
 
     const exclusionOnly = isPlanEmpty(plan) && agentKey && localConfig.scope === 'project'
-      && ((isToolId(agentKey) && descriptorOf(agentKey).projectFromHome) || plan.sharedRetentionOnly);
+      && (baseDescriptorOf(agentKey)?.projectFromHome === true || plan.sharedRetentionOnly);
 
     if (isPlanEmpty(plan) && !exclusionOnly) {
       log.info('Nothing to uninstall');
@@ -3942,7 +3942,8 @@ async function removeConfirmed(
  * file. The settings files it could not edit.
  */
 async function withdrawRuleFolderGrants(localConfig: LocalConfig, tool: string | null | undefined): Promise<string[]> {
-  const only = tool && isToolId(tool) ? path.join(toolHome(tool), 'settings.json') : null;
+  const home = tool ? toolHomeOf(tool)?.dir : undefined;
+  const only = home === undefined ? null : path.join(home, 'settings.json');
 
   if (tool && only === null) return [];
   const left: string[] = [];

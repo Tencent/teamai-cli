@@ -57,10 +57,10 @@ import { codexDispatcherCheckouts, codexDispatcherProjects, dispatchedCodexHooks
 import type { CodexTeamHook } from './codex-team-hooks.js';
 import { TOOL_IDS } from './tools.js';
 import { type HookFormat } from '@teamai/tool-core/definition';
-import { channelsOf, hookFormatOf, hookSettingsFormatOf, hookSyntaxOf, isToolId, selfLocalSettingsOf, descriptorOf, type DescriptorOf } from './tool-registry.js';
+import { channelsOf, hookFormatOf, hookSettingsFormatOf, hookSyntaxOf, selfLocalSettingsOf, descriptorOf, type DescriptorOf } from './tool-registry.js';
 import { BRIDGED_TEAM_HOOK_EVENTS, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
 import { earlierHookAdapterDir, hookSettingsFile, installOf, locate, openclawWorkspaceDir, ownOf, workspaceHooksOf } from './locate.js';
-import { toolHome } from './tool-home.js';
+import { toolHome, toolHomeOf } from './tool-home.js';
 import { isWithin } from './utils/agent-path.js';
 
 export { claudeHookOtherHostSkip };
@@ -347,7 +347,9 @@ function teamDefsForTool(teamDefs: HookDef[], tool: string): HookDef[] {
 
 /** Whether `settingsPath` is `tool`'s hook file in the member's own tool home, or a project file a repository may commit. */
 function hookFileDestination(tool: string, settingsPath: string): 'user' | 'project' {
-  return isToolId(tool) && isWithin(path.resolve(expandHome(settingsPath)), toolHome(tool)) ? 'user' : 'project';
+  const home = toolHomeOf(tool)?.dir;
+
+  return home !== undefined && isWithin(path.resolve(expandHome(settingsPath)), home) ? 'user' : 'project';
 }
 
 /**
