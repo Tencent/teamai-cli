@@ -33,7 +33,7 @@ function views(language: 'en' | 'zh-CN' = 'en'): Views & { keys: string[] } {
 const DEPLOY_TWICE = 'workflows/deploy.yaml:1: field "(root)": Workflow "deploy" is defined twice in one place, as workflows/deploy.yaml and as workflows/deploy/; a workflow defined twice has no runnable version';
 const HTTP_FOLDER = 'mcp/jira-lite/MCP.yaml: transport http is refused in a folder, which holds the files of a server teamai starts (stdio). A URL server carries no files: declare it in mcp.yaml. mcp was not applied this run, so your installed team MCP servers are unchanged. Fix the file in the team repo and push.';
 const IMPORT_BLOCKED = 'teamai\'s default teamai-import-from-repo cannot start: step "enrich" with.wiki_root is not an input workflow "teamai-codebase-enrich" declares';
-const MR_HINT_REFUSED = 'hooks/teamai-mr-hint/ is refused, and teamai\'s default stays in force until it is fixed: HOOK.yaml: with.lookback_days must be a whole number from 1 to 90';
+const MR_HINT_REFUSED = 'hooks/teamai-mr-hint/ is refused, and teamai\'s default stays in force until it is fixed: params.yaml: lookback_days must be a whole number from 1 to 90';
 
 const DATA: Served = {
   configured: true,
@@ -54,6 +54,7 @@ const DATA: Served = {
             files: [{ path: 'WORKFLOW.yaml', bytes: 812, executable: false }, { path: 'plan.sh', bytes: 2048, executable: true }],
             bytes: 2860,
             limit: 1024 * 1024,
+            inherited: null,
             delivered: { path: '/home/m/.teamai/workflows/folders/ab12cd', present: false, by: 'run' },
             runs: null,
             variant: null,
@@ -82,6 +83,7 @@ const DATA: Served = {
           files: [{ path: 'HOOK.yaml', bytes: 120, executable: false }, { path: 'scan.sh', bytes: 7, executable: true }],
           bytes: 127,
           limit: null,
+          inherited: null,
           delivered: { path: '/home/m/.teamai/hooks/block-secrets', present: true, by: 'pull' },
           runs: { command: 'bash "/home/m/.teamai/hooks/block-secrets/scan.sh"', args: [], env: [] },
           variant: null,
@@ -112,7 +114,7 @@ const DATA: Served = {
   defaultHooks: [
     {
       name: 'teamai-friction-reminder',
-      state: { kind: 'replaced', path: 'hooks/teamai-friction-reminder/' },
+      state: { kind: 'replaced', path: 'hooks/teamai-friction-reminder/', inherited: null },
       params: [{ key: 'min_tools', teamai: 15, team: 30 }, { key: 'min_score', teamai: 20, team: null }],
       texts: [{ text: 'task', file: 'task.zh.md', replaced: true }, { text: 'gap', file: 'gap.md', replaced: false }],
       delivered: { path: '/home/m/.teamai/hooks/teamai-friction-reminder', present: true },
@@ -128,7 +130,7 @@ const DATA: Served = {
   ],
 };
 
-const RECALL_REFUSED = 'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: rules/teamai-recall/RULE.md does not contain "Nothing was searched:". Fix the folder in the team repo.';
+const RECALL_REFUSED = 'rules/teamai-recall/ is not used, so teamai\'s recall rule stays in force: RULE.md does not contain "Nothing was searched:". Fix the folder in the team repo.';
 
 /** A rule folder in force, the team's recall folder pull refuses, and teamai's recall rule that stays in force. */
 const RULES: LayeredResourceList = {
@@ -146,6 +148,7 @@ const RULES: LayeredResourceList = {
         files: [{ path: 'RULE.md', bytes: 71, executable: false }, { path: 'RULE.zh.md', bytes: 42, executable: false }, { path: 'checklist.md', bytes: 15, executable: false }],
         bytes: 128,
         limit: null,
+        inherited: null,
         delivered: { path: '/home/m/app/.teamai/delivered/rules/api-style', present: true, by: 'pull' },
         runs: null,
         variant: 'RULE.zh.md',
@@ -159,7 +162,7 @@ const RULES: LayeredResourceList = {
       path: 'rules/teamai-recall/',
       replaces: null,
       state: { kind: 'refused', message: RECALL_REFUSED },
-      folder: { files: [{ path: 'RULE.md', bytes: 33, executable: false }], bytes: 33, limit: null, delivered: null, runs: null, variant: 'RULE.md', reads: null },
+      folder: { files: [{ path: 'RULE.md', bytes: 33, executable: false }], bytes: 33, limit: null, inherited: null, delivered: null, runs: null, variant: 'RULE.md', reads: null },
     },
     {
       name: 'teamai-recall',
@@ -168,7 +171,7 @@ const RULES: LayeredResourceList = {
       path: 'rules/teamai-recall/',
       replaces: null,
       state: { kind: 'in-force' },
-      folder: { files: [{ path: 'RULE.md', bytes: 1200, executable: false }], bytes: 1200, limit: null, delivered: null, runs: null, variant: 'RULE.md', reads: null },
+      folder: { files: [{ path: 'RULE.md', bytes: 1200, executable: false }], bytes: 1200, limit: null, inherited: null, delivered: null, runs: null, variant: 'RULE.md', reads: null },
     },
   ],
   problems: [],
@@ -326,8 +329,8 @@ describe('the resource layers in Chinese (#1787)', () => {
           { ...DEPLOY, name: 'two', state: { kind: 'conflict' as const, reason: 'two-namespaces' as const, message: 'x' } },
           { ...DEPLOY, name: 'replaced', state: { kind: 'replaced' as const, by: 'workflows/payments/replaced.yaml' } },
           { ...DEPLOY, name: 'refused', state: { kind: 'refused' as const, message: 'x' } },
-          { ...DEPLOY, name: 'delivered', form: 'folder' as const, folder: { files: [], bytes: 0, limit: null, delivered: { path: '/x', present: false, by: 'pull' as const }, runs: { command: 'uv', args: ['a b'], env: ['TOKEN'] }, variant: null, reads: null } },
-          { ...DEPLOY, name: 'kept', form: 'folder' as const, folder: { files: [], bytes: 0, limit: null, delivered: { path: '/x', present: true, by: 'run' as const }, runs: null, variant: null, reads: null } },
+          { ...DEPLOY, name: 'delivered', form: 'folder' as const, folder: { files: [], bytes: 0, limit: null, inherited: null, delivered: { path: '/x', present: false, by: 'pull' as const }, runs: { command: 'uv', args: ['a b'], env: ['TOKEN'] }, variant: null, reads: null } },
+          { ...DEPLOY, name: 'kept', form: 'folder' as const, folder: { files: [], bytes: 0, limit: null, inherited: null, delivered: { path: '/x', present: true, by: 'run' as const }, runs: null, variant: null, reads: null } },
           { ...DEPLOY, name: 'teamai-a', layer: { kind: 'teamai' as const }, state: { kind: 'in-force' as const } },
           { ...DEPLOY, name: 'teamai-b', layer: { kind: 'teamai' as const }, state: { kind: 'in-force' as const } },
         ],
@@ -339,7 +342,7 @@ describe('the resource layers in Chinese (#1787)', () => {
           ...RULES.resources,
           { ...DEPLOY, name: 'tagged', state: { kind: 'unsubscribed' as const } },
           { ...DEPLOY, name: 'recall-off', state: { kind: 'off' as const } },
-          { ...RULES.resources[0], name: 'none', folder: { ...RULES.resources[0].folder, files: [], bytes: 0, limit: null, delivered: null, runs: null, variant: null, reads: [{ tool: 'cursor', reach: 'none' as const, path: '/x' }] } },
+          { ...RULES.resources[0], name: 'none', folder: { ...RULES.resources[0].folder, files: [], bytes: 0, limit: null, inherited: null, delivered: null, runs: null, variant: null, reads: [{ tool: 'cursor', reach: 'none' as const, path: '/x' }] } },
         ],
       }],
       defaultHooks: [...DATA.defaultHooks, { ...DATA.defaultHooks[0], name: 'teamai-todowrite-hint', delivered: { path: '/x', present: false } }],

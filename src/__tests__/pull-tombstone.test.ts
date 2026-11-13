@@ -353,6 +353,25 @@ describe('pull role-aware sync and cleanup', () => {
     expect(await fse.pathExists(path.join(homeDir, '.mytool/agents', 'foo.md'))).toBe(false);
   });
 
+  it('removes an unrecorded copy of a tombstoned agent folder that pull rendered, and keeps one the member edited (#993)', async () => {
+    useAgentToolPaths();
+    await fse.outputFile(path.join(repoPath, 'agents', 'reviewer', 'AGENT.md'), 'Apply ${TEAMAI_AGENT_DIR}/rubric.md.\n');
+    await fse.outputFile(path.join(repoPath, 'agents', 'reviewer', 'rubric.md'), '- Name what breaks.\n');
+    commitTeamRepo(repoPath, 'reviewer');
+    await fse.remove(path.join(repoPath, 'agents', 'reviewer'));
+    await fse.writeFile(path.join(repoPath, 'agents', '.removed'), 'reviewer\n');
+    const rendered = `Apply ${path.join(homeDir, '.teamai', 'agents', 'reviewer').split(path.sep).join('/')}/rubric.md.\n`;
+    await fse.outputFile(path.join(homeDir, '.claude/agents', 'reviewer.md'), rendered);
+    await fse.outputFile(path.join(homeDir, '.kiro/agents', 'reviewer.md'), `${rendered}My own step.\n`);
+
+    await pull({});
+
+    expect([
+      await fse.pathExists(path.join(homeDir, '.claude/agents', 'reviewer.md')),
+      await fse.pathExists(path.join(homeDir, '.kiro/agents', 'reviewer.md')),
+    ]).toEqual([false, true]);
+  });
+
   it('should clean up tombstoned agents even when the repo rev is unchanged', async () => {
     // Regression for #576 on the upgrade path: a machine that pulled the
     // tombstone with the older CLI keeps the copies that CLI could not delete,

@@ -99,6 +99,9 @@ describe('the Improvement Center payload', () => {
   it('splits team skills into used and unused, and lists skills several members use outside the team repo', async () => {
     writeSkill('tencent', 'tgit');
     writeSkill('tencent', 'cls-log');
+    // A skill kept as one file is a team skill too.
+    fs.mkdirSync(path.join(root, 'repo', 'skills', 'tencent'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'repo', 'skills', 'tencent', 'brief.md'), '---\nname: brief\ndescription: Brief.\n---\nBe brief.\n');
     writeStats('ana', {
       daily: { '2026-10-22': { sessionsEnded: 1 } },
       skills: {
@@ -123,10 +126,10 @@ describe('the Improvement Center payload', () => {
 
     const data = await buildImprovement(paths(), noMaintenance, 0);
 
-    expect(data.skills.teamTotal).toBe(2);
+    expect(data.skills.teamTotal).toBe(3);
     expect(data.skills.used).toEqual([{ name: 'tgit', namespace: 'tencent', uses: 5, users: 2, lastUsed: '2026-10-22T03:00:00.000Z' }]);
-    // cls-log was last used before the 30-day window.
-    expect(data.skills.unused.map((s) => s.name)).toEqual(['cls-log']);
+    // cls-log was last used before the 30-day window, and no one used brief.
+    expect(data.skills.unused.map((s) => s.name).sort()).toEqual(['brief', 'cls-log']);
     // Not listed: path segments the tracker recorded, the built-in teamai skill, and a one-person skill.
     expect(data.skills.outside.map((s) => s.name)).toEqual(['goal']);
   });

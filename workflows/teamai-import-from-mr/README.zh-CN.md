@@ -65,21 +65,23 @@ flowchart TD
 
 ## 替换它
 
+在团队仓库根目录的 `workflows/teamai-import-from-mr/` 里只放你要改的文件。其他文件（包括 `WORKFLOW.yaml`）仍用 teamai 的，并继续获得 teamai 的更新。要修改提示词，先复制它们：
+
 ```bash
-cp -r "$(npm root -g)/teamai-cli/workflows/teamai-import-from-mr" workflows/
+mkdir -p workflows/teamai-import-from-mr
+cp "$(npm root -g)/teamai-cli/workflows/teamai-import-from-mr/"draft.*.md workflows/teamai-import-from-mr/
 ```
 
-然后编辑提示词，例如在 `draft.en.md` 里加上这一句：
+你写的文件会替换它的所有语言版本，而 `WORKFLOW.yaml` 按名称读取 `draft.zh.md`，所以两个都要保留。然后编辑它们，例如在 `draft.en.md` 里加上这一句：
 
 ```markdown
 Name the service the MR changes in the title, such as "billing: ...".
 ```
 
-推送这个文件夹。下一次 `teamai pull` 会用团队的文件夹整体代替 teamai 的。
+推送这个文件夹。下一次 `teamai pull` 之后，命令都用你的文件运行它。`workflows/teamai-import-from-mr.yaml` 单个文件会整体替换这个文件夹。
 
 | 保留 | 原因 |
 |---|---|
-| `WORKFLOW.yaml` 引用的每个文件 | 团队的文件夹整体替换 teamai 的 |
 | 上面的输入和输出 | 命令会传这些输入、读这些输出 |
 
 ## 依赖

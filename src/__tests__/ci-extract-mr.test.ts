@@ -80,6 +80,8 @@ describe('teamai ci write: the teamwiki update goes through teamai import', () =
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
     await fse.remove(tmpDir);
   });
 
@@ -168,6 +170,30 @@ describe('teamai ci write: the teamwiki update goes through teamai import', () =
   it('refuses learnings that are not what the step passes', async () => {
     await expect(CiExtractMr.write({ ...flags('https://github.com/org/repo/pull/7', tmpDir), learnings: '[]' })).rejects.toThrow('--learnings holds no learning');
   });
+
+  it('configures git user from GitHub /user endpoint using GH_TOKEN when GITHUB_TOKEN is unset', async () => {
+    vi.stubEnv('GITHUB_TOKEN', '');
+    delete process.env.GITHUB_TOKEN;
+    vi.stubEnv('GH_TOKEN', 'alias-token');
+
+    let requestHeaders: Record<string, string> | undefined;
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((_url, init) => {
+      requestHeaders = init?.headers;
+      return Promise.resolve(new Response(JSON.stringify({ login: 'bot-user', email: 'bot@example.com' }), { status: 200 }));
+    }));
+
+    const teamRepo = path.join(tmpDir, 'team-repo');
+    await fse.ensureDir(teamRepo);
+    execFileSync('git', ['init', '-q'], { cwd: teamRepo });
+
+    await CiExtractMr.write(flags('https://github.com/org/repo/pull/7', teamRepo));
+
+    expect(requestHeaders?.Authorization).toBe('Bearer alias-token');
+    const name = execFileSync('git', ['config', 'user.name'], { cwd: teamRepo, encoding: 'utf8' }).trim();
+    const email = execFileSync('git', ['config', 'user.email'], { cwd: teamRepo, encoding: 'utf8' }).trim();
+    expect(name).toBe('bot-user');
+    expect(email).toBe('bot@example.com');
+  });
 });
 
 describe('teamai ci comment and ci artifacts', () => {
@@ -186,6 +212,8 @@ describe('teamai ci comment and ci artifacts', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
     await fse.remove(tmpDir);
   });
 

@@ -1,12 +1,14 @@
 /**
- * A scorer is `scorers/<name>.md`: YAML frontmatter with the labels a judge may give and the score that passes, then
- * the prompt the judge reads. The shape follows Warp's `scorer.md`, so a team can bring its scorers.
+ * A scorer is `scorers/<name>.md`, or `scorers/<name>/SCORER.md` with the files its prompt names beside it: YAML
+ * frontmatter with the labels a judge may give and the score that passes, then the prompt the judge reads. The shape
+ * follows Warp's `scorer.md`, so a team can bring its scorers.
  */
 import path from 'node:path';
 import { z } from 'zod';
 import { CheckRunSchema } from './check.js';
 import { modelValueProblem } from '../models/aliases.js';
 import { splitFrontmatter } from '../utils/frontmatter.js';
+import { ScorerFolder } from './folder.js';
 import type { DefaultScorerCode } from '../default-scorers.js';
 
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -83,7 +85,7 @@ const FrontmatterSchema = z.object({
 export type ScorerLabel = z.infer<typeof LabelSchema>;
 
 export type ScorerDefinition = z.infer<typeof FrontmatterSchema> & {
-  /** The file name without `.md`. */
+  /** The file name without `.md`, or a scorer folder's name. */
   name: string;
   /** The Markdown after the frontmatter, as written. */
   prompt: string;
@@ -121,9 +123,10 @@ function issueMessages(issue: z.ZodIssue): string[] {
 
 export function parseScorer(relativePath: string, content: string): ParsedScorer {
   const fail = (...messages: string[]): ParsedScorer => ({ ok: false, diagnostics: messages.map((message) => ({ file: relativePath, message })) });
-  const name = path.posix.basename(relativePath, '.md');
+  const isFolder = ScorerFolder.marks(relativePath);
+  const name = isFolder ? path.posix.basename(path.posix.dirname(relativePath)) : path.posix.basename(relativePath, '.md');
 
-  if (!TOKEN.test(name)) return fail('the file name must be a token such as review-quality.md');
+  if (!TOKEN.test(name)) return fail(isFolder ? 'the folder name must be a token such as review-quality' : 'the file name must be a token such as review-quality.md');
 
   if (name.endsWith('.md')) return fail('a scorer\'s name cannot end in .md, since teamai score --scorer reads such a value as a scorer file');
   const { data, valid, body, raw } = splitFrontmatter(content);

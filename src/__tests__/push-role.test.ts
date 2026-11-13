@@ -1127,6 +1127,58 @@ describe('push namespace routing for rules and agents', () => {
     });
   });
 
+  it.each([
+    {
+      name: '--role places a new scorer folder whole, and an edit of a team scorer folder goes back to that folder',
+      selected: undefined,
+      exitCode: undefined,
+      pushed: {
+        'fresh/SCORER.md': 'scorers/ops/fresh/SCORER.md',
+        'fresh/rubric.md': 'scorers/ops/fresh/rubric.md',
+        'strict/checklist.md': 'scorers/strict/checklist.md',
+        'strict/notes.md': 'scorers/strict/notes.md',
+      },
+    },
+    { name: 'pushes nothing when only part of a scorer folder is selected', selected: [1, 2, 3], exitCode: 2, pushed: {} },
+  ])('$name', async ({ selected, exitCode, pushed }) => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-push-scorer-folder-'));
+    const scorer = (name: string, status: 'new' | 'modified') => {
+      const sourcePath = path.join(repo, 'scorers', ...name.split('/'));
+      fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+      fs.writeFileSync(sourcePath, `${name}\n`);
+
+      return { name, type: 'scorers', sourcePath, relativePath: `scorers/${name}`, status };
+    };
+    fs.mkdirSync(path.join(repo, 'scorers', 'strict'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'scorers', 'strict', 'SCORER.md'), '# Strict\n');
+    const scanned = [scorer('fresh/SCORER.md', 'new'), scorer('fresh/rubric.md', 'new'), scorer('strict/checklist.md', 'modified'), scorer('strict/notes.md', 'new')];
+    const pushedItems: Array<Record<string, unknown>> = [];
+    mockLoadRolesManifest.mockResolvedValue({
+      version: 1,
+      roles: [{ id: 'ops', description: '', resources: { knowledge: [], skills: [], agents: [], scorers: ['ops'] } }],
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig({ primaryRole: 'ops', repo: { localPath: repo, remote: 'https://git.woa.com/test/repo.git' } }), teamConfig: makeTeamConfig() });
+    mockGetHandler.mockImplementation((type: string) => ({
+      scanLocalForPush: vi.fn().mockResolvedValue(type === 'scorers' ? scanned.map((item) => ({ ...item })) : []),
+      pushItem: vi.fn().mockImplementation(async (item: Record<string, unknown>) => {
+        pushedItems.push(item);
+      }),
+    }));
+    process.exitCode = undefined;
+    const { askSelection } = await import('../utils/prompt.js');
+
+    if (selected) vi.mocked(askSelection).mockResolvedValueOnce(selected);
+
+    try {
+      await push({ all: selected === undefined, role: 'ops' });
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+
+    expect(process.exitCode).toBe(exitCode);
+    expect(Object.fromEntries(pushedItems.map((item) => [item.name, item.relativePath]))).toEqual(pushed);
+  });
+
   it.each(silentPlacementCases)('$name', async ({ resource, setup, expected, error, root }) => {
     const pushedItems: Array<Record<string, unknown>> = [];
     const localConfig = setup();

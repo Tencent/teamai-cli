@@ -220,20 +220,20 @@ For new HTTP local-agent MCP installs, a failed initial ownership-manifest write
 
 ## "<dir>/ is a <type> folder, which this teamai cannot read yet; it was skipped"
 
-`pull`, `status`, `doctor` and `review --branch` print one such line per
-directory that holds a folder marker of a type this release cannot read:
-`SCORER.md` under `scorers/` or `AGENT.md` under `agents/`. Workflow, hook,
-rule, MCP server and suite folders are read. Nothing in the directory is
+An older teamai's `pull`, `status`, `doctor` and `review --branch` print one
+such line per directory that holds a folder marker of a type it cannot read,
+such as `AGENT.md` under `agents/` or `SCORER.md` under `scorers/`. This
+release reads every folder type. Nothing in the directory is
 delivered, run or pushed; the rest of the team repo is. A hook-started pull writes it to
 `~/.teamai/debug.log`.
 
 ```console
 $ teamai pull
-⚠ scorers/strict/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.
+⚠ agents/reviewer/ is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.
 ```
 
 - The team means it as a folder: tell the user to run `teamai update`, then
-  `teamai pull`. Until a release reads that type, the folder stays skipped.
+  `teamai pull`.
 - The file is an old resource that only happens to carry the name: the team
   renames it with `git mv`. Do not rename it for them.
 - Only the exact name counts: `rule.md` or `workflow.yaml` is read as before.
@@ -252,6 +252,19 @@ are never named. `review --branch` names every such file.
   an old `rules/onboarding/RULE.md` that arrived as `onboarding/RULE`: the team
   renames `RULE.md` (`git mv rules/onboarding/RULE.md rules/onboarding/overview.md`)
   or moves the file out of the folder. Do not do it for them.
+
+## "agents/<dir>/ holds AGENT.md, so it is one folder, and <file> in it is one of its files, no longer read on its own"
+
+`pull` prints this once, when the namespace `agents/<dir>/` gains an
+`AGENT.md` and pull removes the copy it delivered before of an agent the
+namespace held. `<dir>` is now one agent, and `<file>` is one of its files. A
+copy the member changed stays, named in its own line.
+
+- The team meant it, such as a `rubric.md` the agent names through
+  `${TEAMAI_AGENT_DIR}`: nothing to do.
+- The namespace's agents should stay agents: the team moves `AGENT.md` into a
+  folder of its own (`git mv agents/<dir>/AGENT.md agents/<dir>/<name>/AGENT.md`).
+  Do not do it for them.
 
 ## "Workspace child <path> is left out" / "<item> differs between ..."
 
@@ -376,7 +389,7 @@ Cursor writes hooks to `~/.cursor/hooks.json` and also runs `~/.claude/settings.
 
 ### Copilot CLI
 
-Built-in hooks use `$COPILOT_HOME/hooks/teamai.json` (default `~/.copilot/hooks/teamai.json`) for normal project installs. Custom team hooks stay in `.github/hooks/teamai.json`; self mode keeps built-ins there too. The next `init`, `pull`, or `hooks inject` migrates each project’s generated built-ins, preserving unrelated hooks. Self sessions skip the global copy. Otherwise each event runs once among the copies a session loaded (global files under any name, or a legacy project command a running host still holds): the first copy claims the event under `~/.teamai/copilot-hook-claims/` and the others exit. A payload without a `timestamp`, or a claim that cannot be written, runs every loaded copy. A cached copy stops once no enabled JSON file Copilot loads holds its built-in: a global copy checks `$COPILOT_HOME/hooks/`, and a legacy project copy checks that directory and its project’s `.github/hooks/`. Hook dispatch uses the working directory’s project config, including its `builtin.disabled`; `builtin.overrides` timeouts do not apply to the shared file. A custom hooks filename keeps its name in `$COPILOT_HOME/hooks/`. Project uninstall preserves the shared global hooks; `hooks remove` removes the built-ins from every JSON file in `$COPILOT_HOME/hooks/`, including filenames other projects configured.
+Built-in hooks use `$COPILOT_HOME/hooks/teamai.json` (default `~/.copilot/hooks/teamai.json`) for normal project installs. Custom team hooks stay in `.github/hooks/teamai.json`; self mode keeps built-ins there too. The next `init`, `pull`, or `hooks inject` migrates each project’s generated built-ins, preserving unrelated hooks. Self sessions skip the global copy. Otherwise each event runs once among the copies a session loaded (global files under any name, or a legacy project command a running host still holds): the first copy claims the event under `~/.teamai/copilot-hook-claims/` and the others exit. A payload without a `timestamp`, or a claim that cannot be written, runs every loaded copy. A cached copy stops once no enabled JSON file Copilot loads holds its built-in: a global copy checks `$COPILOT_HOME/hooks/`, and a legacy project copy checks that directory and its project’s `.github/hooks/`. Hook dispatch uses the working directory’s project config, including its `builtin.disabled`; `builtin.overrides` timeouts do not apply to the shared file. A custom hooks filename keeps its name in `$COPILOT_HOME/hooks/`. Project uninstall keeps the global hooks while another install on the machine may run Copilot, and removes them with the last one; `hooks remove` removes the built-ins from every JSON file in `$COPILOT_HOME/hooks/`, including filenames other projects configured.
 
 Copilot CLI runs a trusted project's `.claude/settings.json` as well as its own `.github/hooks/teamai.json`. `hook-dispatch --tool claude` exits only when `COPILOT_PROJECT_DIR` is set and a valid version-1 hook file without `disableAllHooks`, in the project or global hook directory, has a command containing `--tool copilot`; self mode checks only the project directory. A team hook command written for `claude` exits only when an active version-1 JSON file in `$COPILOT_PROJECT_DIR/.github/hooks/` holds the same command for the same event and matcher, so a hook the project sends only to Claude, or to Copilot for another event or matcher, keeps running. `COPILOT_CLI` is not a signal: Copilot sets it on every subprocess, including a Claude session started from its shell. Copilot does not run `~/.claude/settings.json`. Re-run `teamai pull` or `teamai hooks inject` so an already installed team hook picks up the guard.
 

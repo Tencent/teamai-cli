@@ -104,7 +104,7 @@ unattended:
 
 ### What your sessions delivered
 
-A session of yours is added to `outcomes`, by its run mode and by what it delivered, by the next report once it has been idle for 6 hours. An unattended session is also added by the `teamai score --drain` that ends its job, so an ephemeral runner reports its sessions:
+A session of yours is added to `outcomes`, by its run mode and by what it delivered, by the next report once it has been idle for the [`idle` of `teamai-finished-sessions`](scorers.md#teamai-finished-sessions), 6 hours unless the team changed it. An unattended session is also added by the `teamai score --drain` that ends its job, so an ephemeral runner reports its sessions:
 
 ```yaml
 outcomes:

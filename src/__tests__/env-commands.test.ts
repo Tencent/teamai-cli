@@ -317,7 +317,7 @@ scope: 'user',
 
       await envSet('TEAMAI_WORKFLOW_DIR', { stdin: true });
 
-      expect(log.warn).toHaveBeenCalledWith('TEAMAI_WORKFLOW_DIR is reserved for the folder path teamai gives a workflow step, hook, rule or MCP server; those team env values are ignored.');
+      expect(log.warn).toHaveBeenCalledWith('TEAMAI_WORKFLOW_DIR is reserved for the folder path teamai gives a workflow step, hook, rule, agent or MCP server; those team env values are ignored.');
       expect(process.exitCode).toBeUndefined();
     });
 

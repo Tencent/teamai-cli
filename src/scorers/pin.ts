@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { parseScorer, type ScorerDefinition } from './definition.js';
+import { ScorerFolderFileSchema } from './folder.js';
 
 /**
  * A scorer as a run pinned it when it started: the file's text, so a later pull that edits the rubric does not change
@@ -11,6 +12,8 @@ export const PinnedScorerSchema = z.object({
   /** The file it was read from, such as `scorers/ops/<name>.md`; older runs have none. */
   relativePath: z.string().optional(),
   content: z.string(),
+  /** A scorer folder's support files, which `score evidence` writes where its prompt's `${TEAMAI_SCORER_DIR}` points. */
+  files: z.array(ScorerFolderFileSchema).optional(),
   /** Built by teamai for one run, such as a benchmark task's correctness scorer: no team file has it, and its key names it. */
   generated: z.literal(true).optional(),
   /** The values a generated question's default scorer was filled in with, such as `{ 'doc.id': 'helm-values' }`. */

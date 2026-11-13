@@ -20,6 +20,7 @@ import { answerSchema, rubricPrompt, type Rubrics } from './evidence.js';
 import { requiredIsolation, scorerIsolationSource } from './isolation.js';
 import { RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema, type RunSubject } from './label.js';
 import { pinnedDefinition, PinnedScorerSchema, type PinnedScorer } from './pin.js';
+import { ScorerFolder } from './folder.js';
 import { RunScorers } from './run-scorers.js';
 import { plannedJudgesOf } from '../benchmark/run-plan.js';
 import type { ScoreAttempt } from './score-attempt.js';
@@ -69,9 +70,17 @@ function refused(code: string, message: string): Refusal {
   return { ok: false, code, message };
 }
 
-/** The scorer each pinned scorer of a group is: parseable, since `pinsOf` read it, so a record that does not parse is refused. */
-export function rubricsOf(scorers: GroupRecord['scorers']): Rubrics | undefined {
-  const [first, ...rest] = scorers.map(({ name, pin }) => pinnedDefinition(name, pin));
+/**
+ * The scorer each pinned scorer of a group is: parseable, since `pinsOf` read it, so a record that does not parse is
+ * refused. With the evidence directory `dir`, a scorer folder's prompt names where its files are written in it.
+ */
+export function rubricsOf(scorers: GroupRecord['scorers'], dir?: string): Rubrics | undefined {
+  const [first, ...rest] = scorers.map(({ name, pin }) => {
+    const definition = pinnedDefinition(name, pin);
+
+    return definition && dir !== undefined && pin.files !== undefined ? { ...definition, prompt: ScorerFolder.render(definition.prompt, ScorerFolder.dirIn(dir, name)) } : definition;
+  });
+
   const others = rest.filter((each): each is ScorerDefinition => each !== undefined);
 
   return first && others.length === rest.length ? [first, ...others] : undefined;
@@ -85,8 +94,9 @@ function replySchema(rubrics: Rubrics): JsonValue {
 /**
  * The scorers of the group as `read` pins them for the subject: by its run for a pass; for a session, as teamai pull
  * cached them, and a routing question as the session's captures ask it. `where` says where a missing one was looked for.
+ * A scorer folder's prompt names where `writeRecords` writes its files in the evidence directory `dir`.
  */
-function pinsOf(names: readonly string[], read: { ok: true; pins: Record<string, PinnedScorer> } | { ok: false; reason: string }, where: string): Pinned | Refusal {
+function pinsOf(names: readonly string[], read: { ok: true; pins: Record<string, PinnedScorer> } | { ok: false; reason: string }, where: string, dir: string): Pinned | Refusal {
   if (!read.ok) return refused('scorer_not_found', `${read.reason} No evidence was written.`);
   const scorers = names.map((name) => ({ name, pin: read.pins[name] }));
   const missing = scorers.find(({ name, pin }) => !pin || !pinnedDefinition(name, pin));
@@ -95,7 +105,7 @@ function pinsOf(names: readonly string[], read: { ok: true; pins: Record<string,
   const [first, ...rest] = scorers.flatMap(({ name, pin }) => (pin ? [{ name, pin }] : []));
 
   if (!first) return refused('invalid_arguments', '--scorers names no scorer. Pass the group\'s scorers, as plan printed them.');
-  const rubrics = rubricsOf([first, ...rest]);
+  const rubrics = rubricsOf([first, ...rest], dir);
 
   return rubrics ? { scorers: [first, ...rest], rubrics } : refused('scorer_not_found', `A scorer of ${names.join(', ')} does not parse.`);
 }
@@ -134,12 +144,14 @@ export async function readRecord<T>(file: string, schema: z.ZodType<T>): Promise
   }
 }
 
-/** Writes the group record, and for a judge its `confined.json`, the reply schema it names, and the answer schema. */
+/** Writes the group record, and for a judge its scorer folders' files, its `confined.json`, the reply schema it names, and the answer schema. */
 async function writeRecords(dir: string, group: GroupRecord, judge?: { confined: ConfinedFile; reply: JsonValue; answer: JsonValue }): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
   await writeJson(dir, GROUP, group);
 
   if (!judge) return;
+
+  for (const { name, pin } of group.scorers) if (pin.files !== undefined) await ScorerFolder.write(ScorerFolder.dirIn(dir, name), pin.files);
   await writeJson(dir, CONFINED_FILE, judge.confined);
   await writeJson(dir, REPLY_SCHEMA, judge.reply);
   await writeJson(dir, ANSWER_SCHEMA, judge.answer);
@@ -182,7 +194,7 @@ async function runEvidence(attempt: ScoreAttempt, subject: RunSubject, names: re
   const ran = await judgeablePass(attempt.config, subject);
 
   if (!ran.ok) return ran;
-  const pinned = pinsOf(names, await RunScorers.of(ran.config, ran.run), `a scorer of run ${ran.run.id} at the team revision it started from`);
+  const pinned = pinsOf(names, await RunScorers.of(ran.config, ran.run), `a scorer of run ${ran.run.id} at the team revision it started from`, attempt.dir);
 
   if ('ok' in pinned) return pinned;
   const group: GroupRecord = { subject: Subject.format({ kind: 'run', subject }), judged: { kind: 'run', subject }, scorers: pinned.scorers, delivers: isDelivered(ran.run, subject), hand };
@@ -202,7 +214,7 @@ async function runEvidence(attempt: ScoreAttempt, subject: RunSubject, names: re
 }
 
 async function sessionEvidence(attempt: ScoreAttempt, subject: Exclude<Subject, { kind: 'run' }>, names: readonly string[], hand: boolean): Promise<EvidenceOutput | Refusal> {
-  const pinned = pinsOf(names, { ok: true, pins: await plannedSessionPins(attempt, subject, names) }, 'a scorer teamai pull cached or a routing question of the session');
+  const pinned = pinsOf(names, { ok: true, pins: await plannedSessionPins(attempt, subject, names) }, 'a scorer teamai pull cached or a routing question of the session', attempt.dir);
 
   if ('ok' in pinned) return pinned;
   const read = await sessionRead(attempt, subject);

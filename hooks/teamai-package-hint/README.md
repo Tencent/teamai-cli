@@ -24,9 +24,7 @@ flowchart TD
 
 ## Replace it
 
-```bash
-cp -r "$(npm root -g)/teamai-cli/hooks/teamai-package-hint" hooks/
-```
+Put only the files you change in `hooks/teamai-package-hint/` at the root of the team repo. Every other file, `HOOK.yaml` included, stays teamai's and keeps getting teamai's updates.
 
 `hooks/teamai-package-hint/message.md`:
 
@@ -34,7 +32,7 @@ cp -r "$(npm root -g)/teamai-cli/hooks/teamai-package-hint" hooks/
 The team's packages changed ({{ summary }}). List what `teamai packages` installs, and ask the member before you run it.
 ```
 
-Push the folder. The next `teamai pull` checks it and delivers it. The hint takes no parameters.
+Push the folder. The next `teamai pull` checks your files with teamai's other files and delivers them together. The hint takes no parameters.
 
 ## Texts
 

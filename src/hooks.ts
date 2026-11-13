@@ -2679,14 +2679,16 @@ type CodexHookPlan = Record<string, CodexGroupSlot[] | null>;
  * byte-identical (#993). Codex keys a member's approval of a group by its
  * position (#1250), so a write that moves a kept group in the public Codex's
  * file carries the approvals of the groups that moved to their new keys, unless
- * `codexTrust` is disabled; no other write starts Codex. True when the file was
- * written.
+ * `codexTrust` is disabled. `withdrawsDroppedTrust` also takes the approvals of
+ * the handlers the write drops out of Codex's config; no other write starts
+ * Codex. True when the file was written.
  */
 export async function editCodexHookFile(
   file: string,
   tool: string,
   plan: (hooks: Readonly<Record<string, readonly JsonValue[]>>) => CodexHookPlan,
   codexTrust: CodexTrustPolicy,
+  { withdrawsDroppedTrust = false } = {},
 ): Promise<boolean> {
   const doc = await readHookFile<CodexHooksJson>(file, {}, 'codex', hookSyntaxOf(tool));
   // readHookFile refused a file whose hooks are not an object of lists.
@@ -2737,7 +2739,13 @@ export async function editCodexHookFile(
     await writeHookFile(file, codexFormatDocument(tool, { ...doc, hooks: next }));
   };
 
-  if (codexTrust.kind === 'disabled' || !isCodexTrustGatedTool(tool) || [...retained].every(([to, from]) => to === from)) {
+  const keptFrom = new Set(retained.values());
+
+  const dropsHandlers = Object.entries(hooks).some(([event, groups]) => groups.some((group, index) =>
+    hookFileEntryOf(group)?.hooks?.some((_, handler) => !keptFrom.has(codexHookKey(file, event, index, handler)))));
+
+  if (codexTrust.kind === 'disabled' || !isCodexTrustGatedTool(tool)
+    || ([...retained].every(([to, from]) => to === from) && !(withdrawsDroppedTrust && dropsHandlers))) {
     await write();
 
     return true;
@@ -2828,7 +2836,7 @@ async function reconcileCodexFormat(
       });
 
       return [event, slots];
-    })), opts.codexTrust ?? { kind: 'disabled' });
+    })), opts.codexTrust ?? { kind: 'disabled' }, { withdrawsDroppedTrust: opts.removeAll === true });
 
   if (changed) {
     log.success(`${opts.removeAll ? 'Removed' : 'Updated'} teamai hooks in ${hooksPath}`);

@@ -36,7 +36,7 @@ type PageText = {
   readonly features: string;
   readonly featuresNote: string;
   readonly notes: string;
-  readonly columns: Readonly<Record<'tool' | 'home' | 'skills' | 'rules' | 'ruleFolders' | 'blocks' | 'agents' | 'hooks' | 'mcp' | 'sessions' | (typeof FEATURE_KEYS)[number], string>>;
+  readonly columns: Readonly<Record<'tool' | 'home' | 'skills' | 'rules' | 'folderReach' | 'blocks' | 'agents' | 'hooks' | 'mcp' | 'sessions' | (typeof FEATURE_KEYS)[number], string>>;
 };
 
 const TEXT = {
@@ -52,14 +52,14 @@ const TEXT = {
       'A home moves with the variable after it. A path under `~/<home>` follows the move.',
     ],
     user: '## User scope',
-    userNote: 'Rule folder files: how the tool reads the files a user-scope rule folder names in the data home: `none` with no prompt, `grant` once teamai adds that directory to the setting named, `copy`: it may ask, and pull warns once. In a project every tool reads them in the worktree.',
+    userNote: 'Rule and agent folder files: how the tool reads the files a user-scope rule or agent folder names in the data home: `none` with no prompt, `grant` once teamai adds that directory to the setting named, `copy`: it may ask, and pull warns once. In a project every tool reads them in the worktree.',
     project: '## Project scope',
     projectNote: 'Paths are relative to the project root. `cwd only`: the tool reads it only from a session started at the root. Hooks are the ones self mode writes; `user hooks` means it keeps the user-scope ones.',
     features: '## Run time and teamai\'s own AI',
     featuresNote: 'User scope, from #1221\'s matrix; a fix merged since is marked `t`, with a note. `✓` works. `◐` works by default, and a condition breaks it while doctor still reports it delivered. `✗` broken in the default setup. `+` the tool supports it and teamai does not build it. `—` the tool has no such feature. `?` unknown. The letter after the mark is the evidence, as above.',
     notes: 'Notes:',
     columns: {
-      tool: 'Tool', home: 'Home', skills: 'Skills', rules: 'Rules', ruleFolders: 'Rule folder files', blocks: 'Instruction blocks', agents: 'Agents', hooks: 'Hooks', mcp: 'MCP', sessions: 'Sessions',
+      tool: 'Tool', home: 'Home', skills: 'Skills', rules: 'Rules', folderReach: 'Rule and agent folder files', blocks: 'Instruction blocks', agents: 'Agents', hooks: 'Hooks', mcp: 'MCP', sessions: 'Sessions',
       env: 'Env', workflows: 'Workflows (local driver)', unattended: 'Unattended prompts', recall: 'Recall', stats: 'Stats', tokens: 'Tokens & cost', aiBackend: 'AI backend', sessionJudge: 'Session judge', agentHooks: 'HTTP agent hooks',
     },
   },
@@ -75,14 +75,14 @@ const TEXT = {
       '主目录会随其后列出的变量移动，`~/<主目录>` 下的路径也跟着移动。',
     ],
     user: '## 用户范围',
-    userNote: '规则文件夹的文件：工具如何读取用户范围的规则文件夹在数据目录中引用的文件：`none` 无需确认，`grant` 在 teamai 把该目录加入所列设置后读取，`copy` 可能会先询问，pull 会提示一次。在项目中，所有工具都从工作树读取这些文件。',
+    userNote: '规则与 agent 文件夹的文件：工具如何读取用户范围的规则或 agent 文件夹在数据目录中引用的文件：`none` 无需确认，`grant` 在 teamai 把该目录加入所列设置后读取，`copy` 可能会先询问，pull 会提示一次。在项目中，所有工具都从工作树读取这些文件。',
     project: '## 项目范围',
     projectNote: '路径相对于项目根目录。`cwd only`：只有在根目录启动的会话才会读取。Hooks 一列是 self 模式写入的位置；`user hooks` 表示沿用用户范围的 hooks。',
     features: '## 运行时与 teamai 自身的 AI',
     featuresNote: '用户范围，取自 #1221 的矩阵；之后合入的修复标为 `t` 并附注。`✓` 可用。`◐` 默认可用，但某个条件会让它失效，而 doctor 仍报告已送达。`✗` 默认配置下不可用。`+` 工具支持，teamai 尚未实现。`—` 工具没有此功能。`?` 未知。标记后的字母是依据，含义同上。',
     notes: '注：',
     columns: {
-      tool: '工具', home: '主目录', skills: '技能', rules: '规则', ruleFolders: '规则文件夹的文件', blocks: '指令块', agents: 'Agents', hooks: 'Hooks', mcp: 'MCP', sessions: '会话',
+      tool: '工具', home: '主目录', skills: '技能', rules: '规则', folderReach: '规则与 agent 文件夹的文件', blocks: '指令块', agents: 'Agents', hooks: 'Hooks', mcp: 'MCP', sessions: '会话',
       env: '环境变量', workflows: '工作流（本地驱动）', unattended: '无人值守提示', recall: 'Recall', stats: '统计', tokens: 'Token 与费用', aiBackend: 'AI 后端', sessionJudge: '会话评审', agentHooks: 'HTTP agent hooks',
     },
   },
@@ -180,7 +180,7 @@ function userRow(tool: ToolId, d: ToolDescriptor): string[] {
     home(d),
     reads(d.skills.user),
     channel(d.rules.user, (c) => c.channel === 'inline' ? `in the blocks file (${c.label})` : reads(c.reads)),
-    ruleFolders(d),
+    folderReach(d),
     channel(d.blocks.user, (c) => reads(c.reads)),
     agentsRead(d, 'user'),
     channel(hooks.user, (c) => c.channel === 'settings' ? reads(c.reads) : `${c.adapter} ${EVIDENCE[c.evidence]}`),
@@ -203,8 +203,8 @@ function projectRow(tool: ToolId, d: ToolDescriptor): string[] {
   ];
 }
 
-function ruleFolders(d: ToolDescriptor): string {
-  const cell = d.ruleFolders ?? { reach: 'copy' };
+function folderReach(d: ToolDescriptor): string {
+  const cell = d.folderReach ?? { reach: 'copy' };
 
   switch (cell.reach) {
     case 'none': return `none ${EVIDENCE[cell.evidence]}`;
@@ -244,7 +244,7 @@ export function renderToolSupportPage(lang: ToolSupportLang): string {
     '',
     text.userNote,
     '',
-    ...table([c.tool, c.home, c.skills, c.rules, c.ruleFolders, c.blocks, c.agents, c.hooks, c.mcp, c.sessions], tools.map(([tool, d]) => userRow(tool, d))),
+    ...table([c.tool, c.home, c.skills, c.rules, c.folderReach, c.blocks, c.agents, c.hooks, c.mcp, c.sessions], tools.map(([tool, d]) => userRow(tool, d))),
     '',
     text.project,
     '',

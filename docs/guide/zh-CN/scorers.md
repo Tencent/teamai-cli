@@ -2,7 +2,7 @@
 
 > 本文是 [TeamAI CLI 使用指南](../../usage-guide.zh-CN.md) 的一部分。
 
-评分器（scorer）是评审者用来评判工作流步骤成果或已结束的 agent 会话的评分标准。它是团队仓库里的 Markdown 文件 `scorers/<name>.md`。
+评分器（scorer）是评审者用来评判工作流步骤成果或已结束的 agent 会话的评分标准。它是团队仓库里的 Markdown 文件 `scorers/<name>.md`；评审者需要读取旁边的文件时，也可以是一个[目录](#评分器目录)。
 
 `scorers/review-quality.md`：
 
@@ -33,7 +33,7 @@ Judge whether the change does what the step asked. Read the diff and the session
 | `tool` | 可选。优先使用的评审工具，例如 `codex`。租用评审步骤的驱动提供它时由它评审；否则用被评判工作所用的工具，再否则用驱动的第一个工具。teamai 不认识的名称只给出警告，不会被拒绝。在 [benchmark 运行](benchmarks.md#对所有-arm-用同一个评判)中它是必需的：由该工具（没有时用套件的 `defaults.tool`）评判所有 arm，不会换用其他工具。 |
 | `stages` | 可选。哪些[阶段](#为交付的工作评分)可以在评审者之前为该评分器做出判定：`check`、`ci`、`protected` 中的若干个。默认三个都用。 |
 
-frontmatter 之后的文本是评审者的提示词。`teamai pull` 缓存有效的评分器（`teamai status` 会列出它们），并对其余文件给出警告。`teamai review --branch` 遇到格式错误的评分器、分支的 `models/aliases.yaml` 没有为任何工具映射的模型别名、`scorers/` 里除 `<name>.md`、`<namespace>/<name>.md`、`scoring.yaml` 和 `README.md` 以外的文件、含有它不认识的键或值的 `scoring.yaml`，或其中任何文件含有凭据或内网地址时会失败，与规则的检查相同。
+frontmatter 之后的文本是评审者的提示词。`teamai pull` 缓存有效的评分器（`teamai status` 会列出它们），并对其余文件给出警告。`teamai review --branch` 遇到格式错误的评分器、分支的 `models/aliases.yaml` 没有为任何工具映射的模型别名、`scorers/` 里除 `<name>.md`、`<namespace>/<name>.md`、[评分器目录](#评分器目录)、`scoring.yaml` 和 `README.md` 以外的文件、含有它不认识的键或值的 `scoring.yaml`，或其中任何文件含有凭据或内网地址时会失败，与规则的检查相同。
 
 `scorers/ops/review-quality.md` 属于 `ops` 命名空间。成员的角色或项目列出它时才会拿到：
 
@@ -45,6 +45,32 @@ roles:
 ```
 
 它会替换根目录下同名的评分器。同一个名字出现在两个生效的命名空间里会报错。没有任何角色或项目列出的 `scorers/<dir>/` 是共享的：所有成员都会拿到其中的评分器，与根目录评分器同名时报错。没有角色也没有项目的团队会拿到所有命名空间。
+
+## 评分器目录
+
+评审者需要的不止提示词时，例如一份很长的评分标准或几个示例，可以把评分器写成目录：`scorers/<name>/SCORER.md`，其他文件放在旁边。`SCORER.md` 就是评分器，与 `scorers/<name>.md` 相同，它的提示词通过 `${TEAMAI_SCORER_DIR}` 引用目录里的文件：
+
+```text
+scorers/
+└── style/
+    ├── SCORER.md
+    ├── rubric.md
+    └── examples/good.md
+```
+
+`scorers/style/SCORER.md`：
+
+```markdown
+---
+labels:
+  - { value: good, score: 1, description: The change follows the rubric. }
+  - { value: bad, score: 0, description: The change breaks a rule of the rubric. }
+passingScore: 1
+---
+Judge the change against ${TEAMAI_SCORER_DIR}/rubric.md. ${TEAMAI_SCORER_DIR}/examples/good.md is a change that passes.
+```
+
+评审者只能读取它的证据目录，所以 teamai 把目录里的文件复制到那里，并用该路径替换 `${TEAMAI_SCORER_DIR}`。一次运行始终用它开始时的文件评审；修改目录中任何文件都算新的评分标准，与旧的分开统计。`scorers/<namespace>/<name>/SCORER.md` 属于命名空间，与文件相同。目录只能包含 UTF-8 文本文件，不能有符号链接，总共不超过 1 MB；不符合时 pull 给出警告，并且不缓存其中任何内容。提示词引用 `${TEAMAI_SCORER_DIR}` 的 `scorers/<name>.md` 会被拒绝，因为它没有目录。[默认评分器](#默认评分器)只能用文件替换。
 
 ## 选择评审者的模型
 
@@ -85,7 +111,7 @@ steps:
     scorers: [review-quality]
 ```
 
-没有有效 `scorers/<name>.md` 的名字会让 `teamai review --branch` 失败；`teamai pull` 会警告，步骤照常运行，只是不用这个评分器。旧版 teamai 不认识 `scorers`，所以先更新所有成员和运行器。完整写法见[工作流](workflow.md)。
+没有有效 `scorers/<name>.md` 或[目录](#评分器目录) `scorers/<name>/SCORER.md` 的名字会让 `teamai review --branch` 失败；`teamai pull` 会警告，步骤照常运行，只是不用这个评分器。旧版 teamai 不认识 `scorers`，所以先更新所有成员和运行器。完整写法见[工作流](workflow.md)。
 
 ## 一次运行和它的评审
 
@@ -495,7 +521,7 @@ $ teamai workflow next r9a1… --prepare --json '{"driver":{"kind":"cursor","mac
 $ teamai score --session 7c1e… --scorer ./scorers/review-quality.md
 ```
 
-推送新建或修改过的评分器之前，可以在团队仓库的本地检出中先拿一个会话试一下。`--scorer` 接受路径：含 `/` 或以 `.md` 结尾的值，相对当前目录。文件按 `teamai pull` 的方式校验，无效文件在任何运行开始前以 pull 的提示失败。该命令在 `--driver` 或 `workflows.driver` 指定的 driver 上启动[默认工作流](workflow.md#默认工作流) `teamai-try-scorer`，都未指定时用 local。它用该文件和 `store: false` 运行两次 [`teamai-score`](#teamai-score-工作流)：一次评判会话，一次只评判会话的第一条提示，然后由 `teamai score report` 读取两次结论。评审方式与缓存的评分器相同，也支持 `--batch`：本机没有工具能按文件的 `model` 或 `isolation` 接手的评审，会让运行以 `confined_pending` 停下等待。
+推送新建或修改过的评分器之前，可以在团队仓库的本地检出中先拿一个会话试一下。`--scorer` 接受路径：含 `/` 或以 `.md` 结尾的值，相对当前目录。评分器目录传它的 `SCORER.md`，旁边的文件会一起试用。文件按 `teamai pull` 的方式校验，无效文件在任何运行开始前以 pull 的提示失败。该命令在 `--driver` 或 `workflows.driver` 指定的 driver 上启动[默认工作流](workflow.md#默认工作流) `teamai-try-scorer`，都未指定时用 local。它用该文件和 `store: false` 运行两次 [`teamai-score`](#teamai-score-工作流)：一次评判会话，一次只评判会话的第一条提示，然后由 `teamai score report` 读取两次结论。评审方式与缓存的评分器相同，也支持 `--batch`：本机没有工具能按文件的 `model` 或 `isolation` 接手的评审，会让运行以 `confined_pending` 停下等待。
 
 文件的标签从不保存，因此该命令不接受 `--push`，`--run` 也只接受评分器名称，与文件一起给出的评分器名称会被拒绝：请用单独的命令评判它。输出给出标签及其理由，并带 `"stored": false`。旁边的 `stored` 列出本机为该会话和同名评分器保存的最新标签，每个评分标准一条，便于看出修改是否改变了结论。`control` 是用同一文件只对会话的第一条提示再评审一次的结果。它通过时会附带警告：该评分标准会让 agent 什么都没做的会话通过，可能并未评判 agent 的工作。它只警告、从不失败，因为评分标准可能本就是评判提示本身。
 
@@ -529,7 +555,7 @@ daily_limit: 10                                  # 按数据目录计数：在�
 |---|---|---|
 | `off` | 什么都不做。默认值。 | 什么都不做。 |
 | `ask` | 摩擦提醒提供 [`teamai-share-learnings`](workflow.md#teamai-share-learnings-和-teamai-share-session) 时，它提议抽样选中该会话的评分器，成员确认后由它们评判。 | 等同于 `off`，因为没有人回答。 |
-| `auto` | 会话六小时没有任何活动后，由会话启动时开始的 [`teamai-finished-sessions`](#teamai-finished-sessions) 运行评判。 | 在任务结束前运行 `teamai score --drain` 时评判。默认值。 |
+| `auto` | 会话六小时（或团队设定的 `idle`）没有任何活动后，由会话启动时开始的 [`teamai-finished-sessions`](#teamai-finished-sessions) 运行评判。 | 在任务结束前运行 `teamai score --drain` 时评判。默认值。 |
 
 每种模式单独解析，取下面第一个设置了它的位置：成员 `config.yaml` 中的 `scoring.sessions`、生效命名空间的 `scoring.yaml`、根目录的 `scorers/scoring.yaml`、默认值。两个生效命名空间不一致时，最严格的策略生效（`off`，其次 `ask`，最后 `auto`），`daily_limit` 也取最低值。只写一种模式的映射（例如 `{ attended: ask }`）会把另一种模式留给下一级：
 
@@ -706,7 +732,7 @@ teamai:adoption:b27e04… (retry-policy)          → ignored   judged_count +1
 
 ```text
 teamai-finished-sessions   private, invoke: deny, timeout 30m
-  sessions   teamai session list --finished --idle 6h   the finished sessions to archive or judge here
+  sessions   teamai session list --finished             the finished sessions to archive or judge here
   share      teamai-share-session, for each             its publish step, then its teamai-score step
   lapsed     teamai score subjects --lapsed             passes and sessions whose judging lapsed, and passes no run scored, each with its scorers
   rescore    teamai-score, for each                     starts their judging again with those scorers only
@@ -722,12 +748,12 @@ $ teamai workflow start teamai-finished-sessions --driver local --inputs '{"publ
 
 | 时钟 | 设置位置 | 默认 |
 |---|---|---|
-| 会话算作已结束 | `sessions` 步骤的 `--idle` | 最后一次活动后 6 小时；无人值守的会话在 drain 到达它时 |
+| 会话算作已结束 | 文件夹 `params.yaml` 的 `idle` | 最后一次活动后 6 小时；无人值守的会话在 drain 到达它时 |
 | 运行结束 | 文件的 `timeout` | 30 分钟；它取消的工作会过期，下一次运行会重新开始 |
 | 本机没有 driver 领取的评审 | share-session 的 `score` 步骤的 `timeout` | 30 分钟；会话保持已发布，它的评审过期 |
 | 过期被重新开始 | 评分标记 | 直到第四次过期，且只在运行最后一次变更后的 14 天内；只用标记里的评分器，包括有人点名的那个，不抽样；点名过的不会被 `daily_limit` 拒绝；不加入会话策略此时会选的其他评分器 |
 
-团队在团队仓库的 `workflows/teamai-finished-sessions.yaml` 中修改这些，它会替换默认文件：`--idle 1h` 在会话最后一次活动一小时后就处理它，`timeout` 限定一次运行的时长。也可以在那里添加或调整步骤的顺序。团队不能改变的部分留在 CLI 中：自动启动不传递 agent 证据，只传策略输入。
+团队在团队仓库的 `workflows/teamai-finished-sessions/params.yaml` 中修改空闲时长：写 `idle: 1h` 就在会话最后一次活动一小时后处理它，范围是 `10m` 到 `7d`。dashboard、会话分享的提议和用量报告的产出会在同一时间把会话算作已结束。在这个文件夹里放自己的 `WORKFLOW.yaml` 可以修改步骤和它们的 `timeout`，也可以添加或调整步骤的顺序；文件夹的 [README](https://github.com/Tencent/teamai-cli/blob/main/workflows/teamai-finished-sessions/README.zh-CN.md) 列出了需要保留的部分。团队不能改变的部分留在 CLI 中：自动启动不传递 agent 证据，只传策略输入。
 
 ### 无人值守任务结束前运行 drain
 
@@ -742,7 +768,7 @@ $ teamai score --drain
 
 每个无人值守的 driver 都以 `teamai score --drain` 结束。本地驱动在无人值守运行结束时自动执行它，除非无人值守会话的发布和评判都设为 `off`，或该运行本身是 `teamai-finished-sessions` 运行。skill 驱动、T3、Paseo 和 CI 脚本把它作为最后一步执行。它按以下顺序工作：
 
-1. 在无人值守模式下，本数据目录记录为无人值守的每个已捕获会话都算已结束，包括调用它的会话。有人值守的会话仍按六小时规则。
+1. 在无人值守模式下，本数据目录记录为无人值守的每个已捕获会话都算已结束，包括调用它的会话。有人值守的会话仍按空闲规则，团队未修改时为六小时。
 2. 像会话启动那样在这里启动一次 [`teamai-finished-sessions`](#teamai-finished-sessions) 运行，并用 `workflows.driver` 指定的驱动（未指定则用本地驱动）驱动它。指定的驱动本机不运行时，运行会等待该驱动，drain 会说明如何在本机驱动它。该运行在会话所属模式的 `publish` 为 `auto` 时归档已结束的会话，并在 `daily_limit` 内评判策略允许的抽样会话。它为评审过期的每个 pass 和会话、运行未评分的每个 `start: workflow` pass，以及升级时从评审尝试带过来的未完成 pass 和会话重新启动 `teamai-score`，但运行最后一次变更已超过 14 天的 pass 除外。已在处理该数据目录的运行会被留给它，drain 会说明这一点：等它结束后再运行一次 drain。
 3. 像 `score --push` 一样发布每个待发布的标签，以及 [`deliver: publish`](workflow.md#发布到数据分支) 步骤留在数据分支上待发布的内容，并像 `teamai pull` 一样发布运行当时没能发布的工作流运行记录。
 4. 当前模式的 `publish` 为 `auto` 时，把在这里驱动的运行中尚未归档的步骤会话，脱敏后归档到 `teamai-reports`。无法从这里归档的步骤会话（teamai 读不到其工具的会话，或本机读不到这个会话）只列出一次已跳过及原因，之后不再重试。该运行的其他步骤会话照常归档。[基准测试](benchmarks.md)运行的 trial 会话留在运行它的机器上。

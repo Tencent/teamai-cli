@@ -3,8 +3,8 @@ import { WORKFLOW_DIR_ENV } from './launch-context.js';
 import { PATH_VARIABLES } from './resources/delivered-folders.js';
 
 /**
- * The paths teamai gives a workflow folder's steps, a hook folder's command, a rule folder's text, and an MCP server folder's command, args
- * and env (#1787): a team value would point them at another folder.
+ * The paths teamai gives a workflow folder's steps, a hook folder's command, a rule or agent folder's text, and an MCP server folder's
+ * command, args and env (#1787): a team value would point them at another folder.
  */
 const FOLDER_DIR_NAMES = [WORKFLOW_DIR_ENV, ...Object.values(PATH_VARIABLES)] as const;
 
@@ -44,8 +44,8 @@ export function reservedTeamEnvWarning(keys: Iterable<string>): string | null {
   const sentences = [
     shell.length === 1 ? `${shell.join(', ')} is reserved for TeamAI shell routing; those team env values are ignored.` : null,
     shell.length > 1 ? `${shell.join(', ')} are reserved for TeamAI shell routing; those team env values are ignored.` : null,
-    folder.length === 1 ? `${folder.join(', ')} is reserved for the folder path teamai gives a workflow step, hook, rule or MCP server; those team env values are ignored.` : null,
-    folder.length > 1 ? `${folder.join(', ')} are reserved for the folder path teamai gives a workflow step, hook, rule or MCP server; those team env values are ignored.` : null,
+    folder.length === 1 ? `${folder.join(', ')} is reserved for the folder path teamai gives a workflow step, hook, rule, agent or MCP server; those team env values are ignored.` : null,
+    folder.length > 1 ? `${folder.join(', ')} are reserved for the folder path teamai gives a workflow step, hook, rule, agent or MCP server; those team env values are ignored.` : null,
   ].filter((sentence) => sentence !== null);
 
   return sentences.length === 0 ? null : sentences.join(' ');

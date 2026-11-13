@@ -1,5 +1,5 @@
 /**
- * The scorers a run's passes are judged by: each `scorers/<name>.md` a step of the run lists, read at the team revision
+ * The scorers a run's passes are judged by: each `scorers/<name>.md` or scorer folder a step of the run lists, read at the team revision
  * the run started from, plus its patch, so a rubric edited while the run is open does not change how its passes are
  * judged; and the scorers the run generated, such as a benchmark's `teamai:correctness:<task>`, from the run's own files.
  * A run started before runs pinned a team revision kept its scorers in its file, and is judged by those until it ends.
@@ -15,7 +15,7 @@ import { scoredPasses, type ScorablePass } from '../workflow/judge-work.js';
 import { runsDir } from '../workflow/store.js';
 import { TeamPin, type PinRead } from '../workflow/team-pin.js';
 import { stepWorkflow, type RunState, type WorkflowStep } from '../workflow/types.js';
-import { cachedScorerNames, pinScorers, scorerSourceHash, syncScorerDefinitions } from './cache.js';
+import { cachedScorerNames, pinScorers, scorerSourceHash, scorerSources, syncScorerDefinitions } from './cache.js';
 import { PinnedScorerSchema, type PinnedScorer } from './pin.js';
 
 export type RunScorerPins = { ok: true; pins: Record<string, PinnedScorer> } | { ok: false; reason: string };
@@ -70,7 +70,7 @@ async function teamScorersAt(config: LocalConfig, run: Run): Promise<PinRead<Rec
     const pins: Record<string, PinnedScorer> = {};
 
     for (const [name, { teamRevision: _atClone, ...pin }] of Object.entries(await pinScorers(at, await cachedScorerNames(at)))) {
-      const holds = pin.relativePath !== undefined && await revisionHoldsSources(knowledge, { repositoryRoot, revision: teamPin.revision }, [{ path: pin.relativePath, content: pin.content }]);
+      const holds = pin.relativePath !== undefined && await revisionHoldsSources(knowledge, { repositoryRoot, revision: teamPin.revision }, scorerSources({ relativePath: pin.relativePath, content: pin.content, files: pin.files }));
       pins[name] = holds ? await withoutStaleTeamRevision(config.repo.localPath, { ...pin, teamRevision: teamPin.revision }) ?? pin : pin;
     }
 

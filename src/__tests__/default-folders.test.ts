@@ -8,14 +8,16 @@ vi.mock('../utils/logger.js', async (importOriginal) => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), persist: vi.fn(), dim: vi.fn() },
 }));
 
-import { DefaultHooks } from '../default-hooks.js';
+import { DefaultFolders } from '../default-folders.js';
 import { buildHandlerRegistry } from '../hook-handlers.js';
 import { deliverHookFolders, resolveTeamHooks } from '../resources/hooks.js';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { TeamaiConfigSchema, type LocalConfig } from '../types.js';
+import { resolveStart } from '../workflow/cache.js';
 
 describe('a default hook text', () => {
   it('fills its variables in one pass, so a value that reads like a variable is printed as written', async () => {
-    const mrHint = await DefaultHooks.load('teamai-mr-hint', null);
+    const mrHint = await DefaultFolders.load({ kind: 'hooks', name: 'teamai-mr-hint' }, null);
 
     expect(mrHint.text('offer-command', 'en').render({
       count: '1',
@@ -69,5 +71,71 @@ describe('a team replacement of a default hook', () => {
     const context = typeof output === 'string' ? (JSON.parse(output) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext : output;
 
     expect(context).toBe('[acme] Plan made: read the team runbook before you start.');
+  });
+});
+
+describe('a team\'s params.yaml for a default workflow', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai default workflow params '));
+  });
+
+  afterEach(async () => {
+    await fse.remove(root);
+  });
+
+  function member(): LocalConfig {
+    return {
+      repo: { localPath: path.join(root, 'knowledge'), remote: 'local', kind: 'self' },
+      username: 'tester',
+      scope: 'project',
+      additionalRoles: [],
+      projectRoot: root,
+      dataHome: path.join(root, 'data'),
+    };
+  }
+
+  const PROMOTE = { kind: 'workflows', name: 'teamai-promote-learning' } as const;
+  const TEAMAI = { min_confidence: 0.9, min_upvoted: 5, min_users: 2, min_age_days: 14 };
+
+  async function commit(params: string): Promise<void> {
+    await fse.outputFile(path.join(root, 'knowledge', 'workflows', 'teamai-promote-learning', 'params.yaml'), params);
+  }
+
+  it('sets the keys it holds over teamai\'s, and the workflow keeps teamai\'s steps', async () => {
+    const config = member();
+    await commit('min_users: 1\n');
+
+    await syncScorersThenWorkflows(config);
+
+    expect([(await DefaultFolders.load(PROMOTE, config)).params, (await resolveStart(config, PROMOTE.name)).workflow?.definition.steps[0]?.id])
+      .toEqual([{ ...TEAMAI, min_users: 1 }, 'learning']);
+  });
+
+  it('is refused by pull with the file and the field named, and the version pull last took stays in force', async () => {
+    const config = member();
+    await commit('min_users: 1\n');
+    await syncScorersThenWorkflows(config);
+    await commit('min_confidence: 2\n');
+
+    const { invalid } = await syncScorersThenWorkflows(config);
+
+    expect([invalid.map(({ message }) => message), (await DefaultFolders.load(PROMOTE, config)).params]).toEqual([
+      ['workflows/teamai-promote-learning/params.yaml: min_confidence must be a number from 0 to 1'],
+      { ...TEAMAI, min_users: 1 },
+    ]);
+  });
+
+  it('leaves teamai\'s values in force when pull never took a version', async () => {
+    const config = member();
+    await commit('min_votes: 3\n');
+
+    const { invalid } = await syncScorersThenWorkflows(config);
+
+    expect([invalid.map(({ message }) => message), (await DefaultFolders.load(PROMOTE, config)).params]).toEqual([
+      ['workflows/teamai-promote-learning/params.yaml: min_votes is not a parameter of teamai-promote-learning'],
+      TEAMAI,
+    ]);
   });
 });

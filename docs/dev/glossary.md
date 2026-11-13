@@ -57,7 +57,7 @@ Loading a **resource** in stages. Its **context pointer** is always in context; 
 _Avoid_: lazy loading, on-demand context
 
 **Marker file**:
-The file whose presence makes a directory a **resource folder**: `SKILL.md`, `WORKFLOW.yaml`, `HOOK.yaml`, `RULE.md`, `MCP.yaml`, `SUITE.yaml`.
+The file whose presence makes a directory a **resource folder**: `SKILL.md`, `WORKFLOW.yaml`, `HOOK.yaml`, `RULE.md`, `MCP.yaml`, `SUITE.yaml`, `AGENT.md`, `SCORER.md`.
 _Avoid_: manifest, index file
 
 **Resource folder**:
@@ -77,8 +77,12 @@ Where a definition comes from. Resolution order: `teamai` (**teamai default**), 
 _Avoid_: level, source, scope (that is a **scope**)
 
 **teamai default**:
-A **resource** teamai ships, named `teamai-<name>`. A team replaces it with the same name at the **team root**. Short form: default, as in default workflow or default scorer.
+A **resource** teamai ships, named `teamai-<name>`. A team replaces it, or some of its files, with a folder of the same name at the **team root**. Short form: default, as in default workflow or default scorer.
 _Avoid_: built-in, shipped, preset
+
+**Default parameters**:
+The values of a **teamai default** a team may tune, in `params.yaml` of its **resource folder**. Read the same everywhere the default's code runs, inside a workflow run or outside one, and set for the whole team, unlike a workflow input, which one run sets. A team's `params.yaml` sets only the keys it changes; every other key keeps teamai's value.
+_Avoid_: settings, config, `with:` (a step's inputs to another workflow)
 
 **Team root**:
 The top of the **team repo**, outside any namespace.

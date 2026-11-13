@@ -46,8 +46,9 @@ function layeredState(s) {
  return badge;
 }
 function layeredToggle(key, open, text) { return '<button class="link layered-toggle" data-layered-toggle="'+e(key)+'" aria-expanded="'+(open?'true':'false')+'">'+label(open?'Hide':text)+'</button>'; }
+function layeredInherited(i) { return i?'<p class="folder-inherited">'+label('Over teamai default')+' <code data-verbatim>'+e(i.teamaiVersion)+'</code> · '+number(i.own)+' '+label('own files')+', '+number(i.teamai)+' '+label('inherited')+'</p>':''; }
 function layeredFolder(f) {
- const files='<ul class="folder-files">'+f.files.map(x=>'<li><code data-verbatim>'+e(x.path)+'</code>'+(x.executable?'<span class="tag" title="'+label('Executable')+'">'+label('Executable')+'</span>':'')+'<small>'+layeredSize(x.bytes)+'</small></li>').join('')+'</ul>';
+ const files=layeredInherited(f.inherited)+'<ul class="folder-files">'+f.files.map(x=>'<li><code data-verbatim>'+e(x.path)+'</code>'+(x.executable?'<span class="tag" title="'+label('Executable')+'">'+label('Executable')+'</span>':'')+(x.layer==='teamai'?'<span class="tag">'+label('From teamai')+'</span>':'')+'<small>'+layeredSize(x.bytes)+'</small></li>').join('')+'</ul>';
  const total='<p class="folder-total">'+label('Total')+' <b>'+layeredSize(f.bytes)+'</b>'+(f.limit?' · '+label('Workflow folder limit')+' '+layeredSize(f.limit)+'<span class="meter" aria-hidden="true"><i style="width:'+Math.min(100,Math.max(1,Math.round(f.bytes/f.limit*100)))+'%"></i></span>':'')+'</p>';
  const d=f.delivered;
  const delivered=d?'<p class="folder-at">'+label(d.by==='run'?'Each run keeps this version at':'Pull delivers it to')+' <code data-verbatim>'+e(d.path)+'</code> '+(d.present?'<span class="tag good">'+label(d.by==='run'?'Kept':'Delivered')+'</span>':'<span class="tag amber">'+label(d.by==='run'?'Not kept yet: the next run keeps it':'Not delivered yet: run teamai pull')+'</span>')+'</p>':'';
@@ -81,7 +82,7 @@ function layeredType(list, open) {
 function layeredValue(value) { return value===null?'<span class="muted">—</span>':e(typeof value==='object'?JSON.stringify(value):String(value)); }
 function defaultHookSource(h) {
  if(h.state.kind==='teamai')return layeredLayer({kind:'teamai'});
- if(h.state.kind==='replaced')return layeredLadder({kind:'root'})+label('Team folder')+' <code data-verbatim>'+e(h.state.path)+'</code>';
+ if(h.state.kind==='replaced')return layeredLadder({kind:'root'})+label('Team folder')+' <code data-verbatim>'+e(h.state.path)+'</code>'+layeredInherited(h.state.inherited);
  return '<span class="state s-problem">'+label('Refused')+'</span> <code data-verbatim>'+e(h.state.path)+'</code>'+h.state.messages.map(layeredSays).join('')+'<small class="fix">'+label(layeredFixes.refused)+'</small>';
 }
 function defaultHookRow(h, language, open) {

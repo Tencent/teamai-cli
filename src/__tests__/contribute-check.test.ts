@@ -11,7 +11,7 @@ import {
 } from '../contribute-check.js';
 import { appendEvent } from '../dashboard-collector.js';
 import { CONTRIBUTE_FASTPATH_TTL_MS } from '../types.js';
-import { DefaultHooks } from '../default-hooks.js';
+import { DefaultFolders } from '../default-folders.js';
 import type { ContributeState, DashboardEvent } from '../types.js';
 
 /** min_tools and min_score of hooks/teamai-friction-reminder/HOOK.yaml, teamai's default. */
@@ -19,7 +19,7 @@ const CONTRIBUTE_BASE_THRESHOLD = 15;
 const CONTRIBUTE_SMART_THRESHOLD = 20;
 
 /** teamai's friction reminder parameters. */
-const { params: frictionParams } = await DefaultHooks.load('teamai-friction-reminder', null);
+const { params: frictionParams } = await DefaultFolders.load({ kind: 'hooks', name: 'teamai-friction-reminder' }, null);
 
 // ─── Test helpers ──────────────────────────────────────────
 

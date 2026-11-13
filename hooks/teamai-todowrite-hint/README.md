@@ -28,9 +28,7 @@ flowchart TD
 
 ## Replace it
 
-```bash
-cp -r "$(npm root -g)/teamai-cli/hooks/teamai-todowrite-hint" hooks/
-```
+Put only the files you change in `hooks/teamai-todowrite-hint/` at the root of the team repo. Every other file, `HOOK.yaml` included, stays teamai's and keeps getting teamai's updates.
 
 `hooks/teamai-todowrite-hint/message.md`:
 
@@ -38,7 +36,7 @@ cp -r "$(npm root -g)/teamai-cli/hooks/teamai-todowrite-hint" hooks/
 Call the `teamai-recall` subagent once before the first edit.
 ```
 
-The copy also holds a language variant of `message.md`. Edit the variant too, or delete it, so every `language` prints your text. Push the folder. The next `teamai pull` checks it and delivers it. The hint takes no parameters.
+Your `message.md` replaces every language of the text, so every `language` prints it. Push the folder. The next `teamai pull` checks your files with teamai's other files and delivers them together. The hint takes no parameters.
 
 ## Texts
 

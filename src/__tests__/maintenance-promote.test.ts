@@ -1,12 +1,13 @@
 // -*- coding: utf-8 -*-
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
 import matter from 'gray-matter';
 
-import { chooseCategory, findPromotionCandidates, markPromoted, writePromotion } from '../maintenance/promote.js';
+import { DefaultFolders } from '../default-folders.js';
+import { chooseCategory, findPromotionCandidates, markPromoted, writePromotion, type PromotionThresholds } from '../maintenance/promote.js';
 import type { UserVotesV2 } from '../types.js';
 
 let tmpDir: string;
@@ -43,6 +44,12 @@ function makeHighVotes(votesDir: string, docId: string): void {
 }
 
 describe('findPromotionCandidates', () => {
+  let thresholds: PromotionThresholds;
+
+  beforeAll(async () => {
+    ({ params: thresholds } = await DefaultFolders.load({ kind: 'workflows', name: 'teamai-promote-learning' }, null));
+  });
+
   it.each([
     ['unquoted recent date', '2026-11-06', false],
     ['quoted recent date', '"2026-11-06"', false],
@@ -61,7 +68,7 @@ describe('findPromotionCandidates', () => {
     fs.writeFileSync(path.join(learningsDir, 'dated.md'), `---\ntitle: dated\ndate: ${date}\n---\nLearning content.\n`);
     makeHighVotes(votesDir, 'dated');
 
-    const candidates = await findPromotionCandidates([learningsDir], votesDir);
+    const candidates = await findPromotionCandidates({ learningsDirs: [learningsDir], votesDir, thresholds });
 
     expect(candidates.map((candidate) => candidate.docId)).toEqual(eligible ? ['dated'] : []);
   });
@@ -81,7 +88,7 @@ describe('findPromotionCandidates', () => {
     };
     fs.writeFileSync(path.join(votesDir, 'jeff.yaml'), YAML.stringify(data));
 
-    const candidates = await findPromotionCandidates([learningsDir], votesDir, undefined);
+    const candidates = await findPromotionCandidates({ learningsDirs: [learningsDir], votesDir, thresholds });
     expect(candidates).toHaveLength(0);
   });
 
@@ -94,7 +101,7 @@ describe('findPromotionCandidates', () => {
     makeLearning(learningsDir, 'great-doc');
     makeHighVotes(votesDir, 'great-doc');
 
-    const candidates = await findPromotionCandidates([learningsDir], votesDir, undefined);
+    const candidates = await findPromotionCandidates({ learningsDirs: [learningsDir], votesDir, thresholds });
     expect(candidates.length).toBeGreaterThan(0);
     expect(candidates[0].docId).toBe('great-doc');
     expect(candidates[0].suggestedCategory).toBe('skills');
@@ -113,7 +120,7 @@ describe('findPromotionCandidates', () => {
       fs.writeFileSync(path.join(votesDir, `${user}.yaml`), `version: 2\ndeltas: {}\nvotes:\n  half-adopted:\n    recalled_count: 5\n    upvoted_count: 2\n    judge_upvoted_count: .nan\n    judged_count: .nan\n    last_recalled_at: ${recent}\n    last_upvoted_at: ${recent}\n`);
     }
 
-    expect(await findPromotionCandidates([learningsDir], votesDir, undefined)).toEqual([]);
+    expect(await findPromotionCandidates({ learningsDirs: [learningsDir], votesDir, thresholds })).toEqual([]);
   });
 
   it('suggests the category the learning\'s keywords point to', async () => {
@@ -124,7 +131,7 @@ describe('findPromotionCandidates', () => {
     makeLearning(learningsDir, 'pin-versions', { body: 'Always pin dependency versions; never float them. A team convention.' });
     makeHighVotes(votesDir, 'pin-versions');
 
-    const candidates = await findPromotionCandidates([learningsDir], votesDir, undefined);
+    const candidates = await findPromotionCandidates({ learningsDirs: [learningsDir], votesDir, thresholds });
 
     expect(candidates.map((c) => [c.docId, c.suggestedCategory])).toEqual([['pin-versions', 'rules']]);
   });
@@ -140,7 +147,7 @@ describe('findPromotionCandidates', () => {
     fs.writeFileSync(path.join(learningsDir, 'promoted.md'), content);
     makeHighVotes(votesDir, 'promoted');
 
-    const candidates = await findPromotionCandidates([learningsDir], votesDir, undefined);
+    const candidates = await findPromotionCandidates({ learningsDirs: [learningsDir], votesDir, thresholds });
     expect(candidates.find((c) => c.docId === 'promoted')).toBeUndefined();
   });
 
@@ -155,9 +162,35 @@ describe('findPromotionCandidates', () => {
     makeLearning(learningsDir, 'too-new', { date: recentDate });
     makeHighVotes(votesDir, 'too-new');
 
-    const candidates = await findPromotionCandidates([learningsDir], votesDir, undefined);
+    const candidates = await findPromotionCandidates({ learningsDirs: [learningsDir], votesDir, thresholds });
     expect(candidates.find((c) => c.docId === 'too-new')).toBeUndefined();
   });
+
+  it('applies the thresholds a team tunes, over teamai\'s gates', async () => {
+    const learningsDir = path.join(tmpDir, 'learnings');
+    const votesDir = path.join(tmpDir, 'votes');
+    fs.mkdirSync(learningsDir, { recursive: true });
+    fs.mkdirSync(votesDir, { recursive: true });
+
+    // Adopted and confident, but 3 days old: only the age gate keeps it out under the defaults.
+    const recentDate = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    makeLearning(learningsDir, 'young-star', { date: recentDate });
+    makeHighVotes(votesDir, 'young-star');
+    makeLearning(learningsDir, 'settled');
+    makeHighVotes(votesDir, 'settled');
+
+    // teamai's gates admit the settled learning and keep the young one out.
+    expect((await findPromotionCandidates({ learningsDirs: [learningsDir], votesDir, thresholds })).map((c) => c.docId)).toEqual(['settled']);
+
+    // A team's lower bar admits both.
+    const lower = { ...thresholds, min_age_days: 2 };
+    expect((await findPromotionCandidates({ learningsDirs: [learningsDir], votesDir, thresholds: lower })).map((c) => c.docId).sort()).toEqual(['settled', 'young-star']);
+
+    // A team's higher bar keeps out even the learning teamai's gates admit.
+    const higher = { ...thresholds, min_upvoted: 20 };
+    expect(await findPromotionCandidates({ learningsDirs: [learningsDir], votesDir, thresholds: higher })).toEqual([]);
+  });
+
   it('finds namespaced learnings when active namespaces are provided', async () => {
     const learningsDir = path.join(tmpDir, 'learnings');
     const votesDir = path.join(tmpDir, 'votes');
@@ -173,11 +206,11 @@ describe('findPromotionCandidates', () => {
     makeHighVotes(votesDir, path.join('k8s', 'helm-values'));
 
     // Without namespaces: only root-doc
-    const rootOnly = await findPromotionCandidates([learningsDir], votesDir);
+    const rootOnly = await findPromotionCandidates({ learningsDirs: [learningsDir], votesDir, thresholds });
     expect(rootOnly.map((c) => c.docId)).toEqual(['root-doc']);
 
     // With namespaces: both root-doc and namespaced learning
-    const withNs = await findPromotionCandidates([learningsDir], votesDir, { namespaces: ['k8s'] });
+    const withNs = await findPromotionCandidates({ learningsDirs: [learningsDir], votesDir, namespaces: ['k8s'], thresholds });
     expect(withNs.map((c) => c.docId).sort()).toEqual([path.join('k8s', 'helm-values'), 'root-doc'].sort());
   });
 });

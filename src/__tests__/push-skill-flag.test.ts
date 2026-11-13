@@ -132,6 +132,27 @@ vi.mock('../update.js', () => ({
   releaseLock: vi.fn().mockResolvedValue(undefined),
 }));
 
+/** A team repo on disk holding a skill folder at each of `skills` and an empty directory at each of `dirs`, under `skills/`. */
+function teamRepoWith(skills: readonly string[], dirs: readonly string[] = []): string {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-push-skill-repo-')));
+
+  for (const skill of skills) {
+    fs.mkdirSync(path.join(repo, 'skills', skill), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'skills', skill, 'SKILL.md'), `# ${path.basename(skill)}\n`);
+  }
+
+  for (const dir of dirs) fs.mkdirSync(path.join(repo, 'skills', dir), { recursive: true });
+
+  return repo;
+}
+
+/** The directories `listDirs` gives under `repo`, read from disk; none elsewhere. */
+function listRepoDirs(repo: string, dir: string): string[] {
+  if (!dir.startsWith(repo) || !fs.existsSync(dir)) return [];
+
+  return fs.readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+}
+
 function makeLocalConfig(overrides: Record<string, unknown> = {}) {
   return {
     repo: { localPath: '/tmp/team-repo', remote: 'https://git.woa.com/test/repo.git' },
@@ -255,8 +276,10 @@ describe('push --skill flag', () => {
 
   it('force-constructs ResourceItem when skill path exists but not in scan results', async () => {
     const pushedItems: Array<Record<string, unknown>> = [];
+    // The team repo is read from disk; the member's copy is modelled with mocks.
+    const repo = teamRepoWith(['hai_dev/my-skill']);
     mockAutoDetectInit.mockResolvedValue({
-      localConfig: makeLocalConfig(),
+      localConfig: makeLocalConfig({ repo: { localPath: repo, remote: 'https://git.woa.com/test/repo.git' } }),
       teamConfig: makeTeamConfig(),
     });
     // Scan returns nothing (skill not detected due to name collision)
@@ -272,25 +295,14 @@ describe('push --skill flag', () => {
       return { scanLocalForPush: vi.fn().mockResolvedValue([]), pushItem: vi.fn() };
     });
 
-    // Mock filesystem: skill path exists with SKILL.md, team repo has namespace
+    // The member's skill directory and its SKILL.md exist
     mockPathExists.mockImplementation(async (p: string) => {
       const pathStr = String(p);
-      // The skill directory and SKILL.md exist
       if (pathStr === '/home/user/.claude/skills/hai/my-skill') return true;
       if (pathStr === '/home/user/.claude/skills/hai/my-skill/SKILL.md') return true;
-      // Team repo skills dir exists
-      if (pathStr === '/tmp/team-repo/skills') return true;
-      // Namespace dir hai_dev contains our skill
-      if (pathStr === '/tmp/team-repo/skills/hai_dev/my-skill') return true;
-      if (pathStr === '/tmp/team-repo/skills/hai_dev/my-skill/SKILL.md') return true;
-      // hai_dev is a namespace (no SKILL.md at top level)
-      if (pathStr === '/tmp/team-repo/skills/hai_dev/SKILL.md') return false;
-      return false;
+      return pathStr.startsWith(repo) && fs.existsSync(pathStr);
     });
-    mockListDirs.mockImplementation(async (dir: string) => ({
-      '/tmp/team-repo/skills': ['hai_dev'],
-      '/tmp/team-repo/skills/hai_dev': ['my-skill'],
-    } as Record<string, string[]>)[String(dir)] ?? []);
+    mockListDirs.mockImplementation(async (dir: string) => listRepoDirs(repo, String(dir)));
     mockResolveReal.mockImplementation((p: string) => p);
     // The role is given hai_dev: a copy teamai never delivered is tied by name
     // only to a skill this directory receives.
@@ -352,8 +364,10 @@ describe('push --skill flag', () => {
 
   it('detects modified status for flat layout skill in team repo', async () => {
     const pushedItems: Array<Record<string, unknown>> = [];
+    // The team repo is read from disk; the member's copy is modelled with mocks.
+    const repo = teamRepoWith(['flat-skill'], ['hai_dev']);
     mockAutoDetectInit.mockResolvedValue({
-      localConfig: makeLocalConfig({ primaryRole: undefined }),
+      localConfig: makeLocalConfig({ primaryRole: undefined, repo: { localPath: repo, remote: 'https://git.woa.com/test/repo.git' } }),
       teamConfig: makeTeamConfig(),
     });
     mockGetHandler.mockImplementation((type: string) => {
@@ -368,20 +382,14 @@ describe('push --skill flag', () => {
       return { scanLocalForPush: vi.fn().mockResolvedValue([]), pushItem: vi.fn() };
     });
 
-    // Flat layout: skill exists directly under skills/
+    // Flat layout: the skill exists directly under skills/, in no namespace
     mockPathExists.mockImplementation(async (p: string) => {
       const pathStr = String(p);
       if (pathStr === '/home/user/.claude/skills/flat-skill') return true;
       if (pathStr === '/home/user/.claude/skills/flat-skill/SKILL.md') return true;
-      if (pathStr === '/tmp/team-repo/skills') return true;
-      // Not in any namespace subdir
-      if (pathStr.includes('hai_dev/flat-skill')) return false;
-      // But exists at flat level
-      if (pathStr === '/tmp/team-repo/skills/flat-skill') return true;
-      if (pathStr === '/tmp/team-repo/skills/flat-skill/SKILL.md') return true;
-      return false;
+      return pathStr.startsWith(repo) && fs.existsSync(pathStr);
     });
-    mockListDirs.mockImplementation(async (dir: string) => (String(dir) === '/tmp/team-repo/skills' ? ['hai_dev', 'flat-skill'] : []));
+    mockListDirs.mockImplementation(async (dir: string) => listRepoDirs(repo, String(dir)));
     mockResolveReal.mockImplementation((p: string) => p);
 
     await push({ all: true, skill: '/home/user/.claude/skills/flat-skill' });

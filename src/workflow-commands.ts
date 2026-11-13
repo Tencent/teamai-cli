@@ -27,7 +27,7 @@ import { AttemptIdSchema, installOwner, readRun, RunIdSchema, type RunId } from 
 import { commandExitMessage, inProcessClient, isRefusal, resumeRefusal, startAsCli, workflowNotFound, type InvokeCaller, type NextPrepare, type StartedRun } from './workflow/protocol.js';
 import { parseInputsFlag, parseSkillCall, parseSkillResume, runSkillCall, sessionDrivesRun, skillContext } from './workflow/drivers/skill/skill-driver.js';
 import { loadCachedWorkflow, namespaceConflictOf, resolveStart } from './workflow/cache.js';
-import { durationMs } from './workflow/parse.js';
+import { durationMs } from './utils/duration.js';
 import { findRunConfig } from './workflow/run-location.js';
 import { resolveRunMode } from './launch-context.js';
 import { memberTools } from './tool-launch/member-tools.js';

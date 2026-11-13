@@ -22,9 +22,9 @@ import {
   shouldSkipTodoWriteHint,
   getTodoWriteHintCachePath,
 } from '../todowrite-hint.js';
-import { DefaultHooks } from '../default-hooks.js';
+import { DefaultFolders } from '../default-folders.js';
 
-const todoWriteHint = await DefaultHooks.load('teamai-todowrite-hint', null);
+const todoWriteHint = await DefaultFolders.load({ kind: 'hooks', name: 'teamai-todowrite-hint' }, null);
 
 describe('buildHintMessage', () => {
   it('contains the recall subagent reference and the [teamai:] prefix', () => {

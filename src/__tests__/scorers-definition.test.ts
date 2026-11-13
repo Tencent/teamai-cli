@@ -110,6 +110,16 @@ describe('parseScorer', () => {
     expect(problems('scorers/q.md', content)).toContain(problem);
   });
 
+  it('names a scorer folder after its folder, and a SCORER.md directly in scorers/ after its file', () => {
+    const nameOf = (file: string) => {
+      const parsed = parseScorer(file, VALID);
+
+      return parsed.ok ? parsed.definition.name : parsed.diagnostics;
+    };
+
+    expect([nameOf('scorers/style/SCORER.md'), nameOf('scorers/ops/style/SCORER.md'), nameOf('scorers/SCORER.md'), nameOf('scorers/scorers/SCORER.md')]).toEqual(['style', 'style', 'SCORER', 'scorers']);
+  });
+
   it('rejects a file name that is not a token', () => {
     expect(problems('scorers/.hidden.md', VALID)).toEqual(['scorers/.hidden.md: the file name must be a token such as review-quality.md']);
   });

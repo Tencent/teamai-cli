@@ -25,8 +25,10 @@ import path from 'node:path';
 
 import chalk from 'chalk';
 import fse from 'fs-extra';
-import { findSkippedFolders, isInSkippedFolder, skippedFolderMessage, skippedFoldersIn } from './folder-markers.js';
+import { holdsMarker } from './folder-markers.js';
 import { readTeamRules } from './resources/rules.js';
+import { readTeamSkills } from './resources/skills.js';
+import { TeamSkillSource } from './resources/team-skill-source.js';
 import { RECALL_RULE_NAME, resolveRecall } from './builtin-rules.js';
 import { parseYaml } from './utils/yaml.js';
 import { z } from 'zod';
@@ -57,7 +59,7 @@ import { listRoleIds, loadRolesManifestIfPresent, type RolesManifest } from './r
 import { AGENT_TOOLS } from './tools.js';
 import { LocalConfigSchema, type GlobalOptions, type LocalConfig, type ResourceItem, type TeamaiConfig } from './types.js';
 import { splitFrontmatter, type FrontmatterValue } from './utils/frontmatter.js';
-import { isIgnored, listDirs, listFilesRecursive, pathExists, readFileIfExists, writeFile, ensureDir } from './utils/fs.js';
+import { isIgnored, listDirs, listFilesRecursive, readFileIfExists, writeFile, ensureDir } from './utils/fs.js';
 import { getFileContentAtRev, getHeadCommit, getMergeBase, listTreeAtRev } from './utils/git.js';
 import { isSilent, log, setSilent } from './utils/logger.js';
 import { redact } from './utils/redact.js';
@@ -140,8 +142,8 @@ function parseRelativePath(
 ): PathIdentity {
   const rootSegs = rootSegmentsFor(type);
 
-  // A workflow folder is named as a workflow file in its place would be: workflows/a/release/ as workflows/a/release.yaml.
-  const folder = type === 'workflows' ? markerFolderOf(RESOURCE_LAYOUTS.workflows, relativePath.slice(`${type}/`.length)) : undefined;
+  // A workflow or scorer folder is named as a file in its place would be: workflows/a/release/ as workflows/a/release.yaml.
+  const folder = type === 'workflows' || type === 'scorers' ? markerFolderOf(RESOURCE_LAYOUTS[type], relativePath.slice(`${type}/`.length)) : undefined;
   const all = (folder === undefined ? relativePath : `${type}/${folder}`).split('/');
 
   const rest = all.slice(rootSegs);
@@ -228,16 +230,6 @@ async function relationsFindings(resources: ReviewResource[], readText: (p: stri
   return findings;
 }
 
-/** A folder this release cannot read: every scan below leaves it out, as pull does (#1791). */
-async function skippedFolderFindings(repoDir: string): Promise<Finding[]> {
-  return (await findSkippedFolders(repoDir)).map((folder) => ({
-    level: 'warn',
-    check: 'structure',
-    path: folder.path,
-    message: skippedFolderMessage(folder),
-  }));
-}
-
 /** What a branch is compared with: the rule folders, as `rules/api-style/`, at the commit it forks from the checkout's HEAD. */
 export interface ReviewBase {
   readonly ruleFolders: ReadonlySet<string>;
@@ -253,7 +245,7 @@ async function ruleFindings(repoDir: string, base: ReviewBase | null): Promise<F
   const { problems, folderNotes } = await readTeamRules(repoDir);
   const added = folderNotes.filter((note) => base === null || !base.ruleFolders.has(note.path));
   // The team's rules/teamai-recall/ is read where the recall rule is, not with the other rules.
-  const { team: recall } = await resolveRecall(undefined, repoDir);
+  const { team: recall, strays } = await resolveRecall(undefined, repoDir);
 
   return [
     ...[...added, ...problems].map(({ kind, path: at, message }): Finding => ({
@@ -263,6 +255,22 @@ async function ruleFindings(repoDir: string, base: ReviewBase | null): Promise<F
       message,
     })),
     ...recall?.kind === 'refused' ? [{ level: 'fail', check: 'structure', path: recall.folder.path, message: recall.message } satisfies Finding] : [],
+    ...strays.map((message): Finding => ({ level: 'fail', check: 'structure', path: `rules/${RECALL_RULE_NAME}/`, message })),
+  ];
+}
+
+/** What pull's skills reader says about the branch's skills: a directory in a namespace without SKILL.md, or a skill pull cannot read, fails. */
+async function skillFindings(repoDir: string): Promise<Finding[]> {
+  const { notSkills, diagnostics } = await readTeamSkills(repoDir);
+
+  return [
+    ...notSkills.map((dir): Finding => ({
+      level: 'fail',
+      check: 'structure',
+      path: dir,
+      message: `${dir}/ has no SKILL.md directly inside it; a skill must be skills/<namespace>/<name>/SKILL.md.`,
+    })),
+    ...diagnostics.flatMap(({ kind, path: at, message }): Finding[] => (kind === 'invalid' ? [{ level: 'fail', check: 'structure', path: at, message }] : [])),
   ];
 }
 
@@ -302,7 +310,6 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
     if (isHandlerType(type)) continue;
     const rootRel = repoRootFor(type);
     const root = path.join(repoDir, ...rootRel.split('/'));
-    const skipped = await skippedFoldersIn(repoDir, type);
     const hookFolders = type === 'hooks' ? await hookFolderItems(repoDir) : [];
 
     for (const item of hookFolders) {
@@ -311,15 +318,15 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
     }
 
     const files = await listRepoFilesRecursive(root);
-    // Every other file of a workflow folder is its support file, never a workflow of its own.
-    const folders = type === 'workflows' ? files.flatMap((file) => markerFolderOf(RESOURCE_LAYOUTS.workflows, file) ?? []).map((folder) => `${folder}/`) : [];
+    // Every other file of a workflow or scorer folder is its support file, never a resource of its own.
+    const layout = type === 'workflows' || type === 'scorers' ? RESOURCE_LAYOUTS[type] : undefined;
+    const folders = layout ? files.flatMap((file) => markerFolderOf(layout, file) ?? []).map((folder) => `${folder}/`) : [];
+    const isSupportFile = (file: string): boolean => layout !== undefined && markerFolderOf(layout, file) === undefined && folders.some((folder) => file.startsWith(folder));
 
     for (const file of files) {
-      if (isInSkippedFolder(`${rootRel}/${file}`, skipped)) continue;
+      if (type === 'workflows' && (!file.endsWith('.yaml') || isSupportFile(file))) continue;
 
-      if (type === 'workflows' && (!file.endsWith('.yaml') || (markerFolderOf(RESOURCE_LAYOUTS.workflows, file) === undefined && folders.some((folder) => file.startsWith(folder))))) continue;
-
-      if (type === 'scorers' && path.posix.basename(file) === SCORING_FILE) continue;
+      if (type === 'scorers' && (path.posix.basename(file) === SCORING_FILE || isSupportFile(file))) continue;
 
       // A file of a hook folder is part of the folder, which is one hook.
       if (hookFolders.some((folder) => `${rootRel}/${file}`.startsWith(`${folder.relativePath}/`))) continue;
@@ -371,7 +378,7 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
   }
 
   return items.map(({ type, item }): ReviewResource => {
-    const folder = type === 'skills' || folderPaths.has(item.sourcePath);
+    const folder = (type === 'skills' && !TeamSkillSource.isFile(item.sourcePath)) || folderPaths.has(item.sourcePath);
 
     // Handler-provided names (MCP server names, skill names) are authoritative;
     // parseRelativePath would overwrite them with the filename stem (e.g. 'mcp'
@@ -582,15 +589,6 @@ async function structureFindings(resources: ReviewResource[], index: ManifestInd
   for (const resource of resources) {
     if (skipped.some((folder) => `${resource.relativePath}/`.startsWith(folder))) continue;
 
-    if (resource.type === 'skills' && !await pathExists(path.join(resource.absolutePath, 'SKILL.md'))) {
-      findings.push({
-        level: 'fail',
-        check: 'structure',
-        path: resource.relativePath,
-        message: `${resource.relativePath}/ has no SKILL.md directly inside it; a skill must be skills/<namespace>/<name>/SKILL.md.`,
-      });
-    }
-
     if (resource.namespace) {
       const axis = NAMESPACE_AXIS[resource.type];
 
@@ -667,7 +665,7 @@ const FrontmatterTextSchema = z.string().optional().catch(undefined);
 /** The `name` a resource declares in its frontmatter/YAML, or null when it declares none. */
 async function frontmatterName(resource: ReviewResource, readText: (p: string) => Promise<string | null>): Promise<string | null> {
   if (resource.type === 'skills') {
-    const content = await readText(path.join(resource.absolutePath, 'SKILL.md'));
+    const content = await readText(TeamSkillSource.skillMd(resource.absolutePath));
 
     if (content === null) return null;
     const name = FrontmatterTextSchema.parse(splitFrontmatter(content).data['name']);
@@ -703,9 +701,11 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
 
   for (const resource of resources) {
     if (resource.type === 'skills') {
-      const content = await readText(path.join(resource.absolutePath, 'SKILL.md'));
+      const content = await readText(TeamSkillSource.skillMd(resource.absolutePath));
 
       if (content === null) continue;
+      // The file pull reads: a skill kept as one file is that file.
+      const skillMd = TeamSkillSource.isFile(resource.relativePath) ? resource.relativePath : `${resource.relativePath}/SKILL.md`;
       const { data, valid, raw } = splitFrontmatter(content);
 
       if (raw === '') {
@@ -713,7 +713,7 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
           level: 'fail',
           check: 'format',
           path: resource.relativePath,
-          message: `${resource.relativePath}/SKILL.md has no YAML frontmatter; pull relies on it for the skill's name and description.`,
+          message: `${skillMd} has no YAML frontmatter; pull relies on it for the skill's name and description.`,
         });
         continue;
       }
@@ -723,7 +723,7 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
           level: 'warn',
           check: 'format',
           path: resource.relativePath,
-          message: `${resource.relativePath}/SKILL.md has a frontmatter block that does not parse as a YAML mapping.`,
+          message: `${skillMd} has a frontmatter block that does not parse as a YAML mapping.`,
         });
       }
 
@@ -734,8 +734,9 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
           level: 'warn',
           check: 'format',
           path: resource.relativePath,
-          message: `${resource.relativePath}/SKILL.md has the name "${name}"; the Agent Skills format allows 1 to 64 lowercase letters, `
-            + 'digits and hyphens, with no leading, trailing or doubled hyphen. Rename the skill directory and its name together.',
+          message: `${skillMd} has the name "${name}"; the Agent Skills format allows 1 to 64 lowercase letters, `
+            + 'digits and hyphens, with no leading, trailing or doubled hyphen. '
+            + (TeamSkillSource.isFile(resource.relativePath) ? 'Rename the skill file and its name together.' : 'Rename the skill directory and its name together.'),
         });
       }
 
@@ -747,7 +748,7 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
           level: 'warn',
           check: 'format',
           path: resource.relativePath,
-          message: `${resource.relativePath}/SKILL.md has a "description" of ${descriptionLength} characters; `
+          message: `${skillMd} has a "description" of ${descriptionLength} characters; `
             + `the Agent Skills format allows ${AGENT_SKILLS_DESCRIPTION_MAX}.`,
         });
       }
@@ -757,14 +758,14 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
           level: 'warn',
           check: 'format',
           path: resource.relativePath,
-          message: `${resource.relativePath}/SKILL.md has no frontmatter "description"; say when the skill should be used.`,
+          message: `${skillMd} has no frontmatter "description"; say when the skill should be used.`,
         });
       } else if (description.trim().length < 15) {
         findings.push({
           level: 'warn',
           check: 'format',
           path: resource.relativePath,
-          message: `${resource.relativePath}/SKILL.md has a "description" too short to explain when to use the skill.`,
+          message: `${skillMd} has a "description" too short to explain when to use the skill.`,
         });
       }
     }
@@ -932,8 +933,9 @@ async function scannableSkillFiles(resources: ReviewResource[], readText: (p: st
   for (const skill of resources) {
     if (skill.type !== 'skills') continue;
 
-    const listed = (await filesUnder(skill.relativePath, skill.absolutePath))
-      .sort((a, b) => (a.relativePath < b.relativePath ? -1 : 1));
+    const listed = skill.folder
+      ? (await filesUnder(skill.relativePath, skill.absolutePath)).sort((a, b) => (a.relativePath < b.relativePath ? -1 : 1))
+      : [{ relativePath: skill.relativePath, absolutePath: skill.absolutePath }];
 
     for (const file of listed) {
       const content = await readText(file.absolutePath);
@@ -970,6 +972,13 @@ async function linkTargetState(root: string, segments: string[], mustBeDirectory
   return 'copied';
 }
 
+/** `linkTargetState` in the skill directory pull delivers `skill` as: a skill kept as one file delivers only its SKILL.md. */
+async function skillEntryState(skill: ReviewResource, segments: string[], mustBeDirectory: boolean): Promise<'copied' | 'missing' | 'skipped'> {
+  if (skill.folder) return linkTargetState(skill.absolutePath, segments, mustBeDirectory);
+
+  return segments.length === 0 || (segments.length === 1 && segments[0] === 'SKILL.md' && !mustBeDirectory) ? 'copied' : 'missing';
+}
+
 /**
  * Links between the files of a skill, read where pull delivers it: each skill on
  * its own as `<skills>/<name>/`, namespaces flattened. A link that leaves the
@@ -997,7 +1006,7 @@ async function skillLinkFindings(files: SkillFile[], resources: ReviewResource[]
       const segments = resolved === '.' ? [] : resolved.split('/');
 
       if (segments[0] !== '..') {
-        reportLinkTarget(await linkTargetState(file.skill.absolutePath, segments, mustBeDirectory), ', which is not in the skill.', finding);
+        reportLinkTarget(await skillEntryState(file.skill, segments, mustBeDirectory), ', which is not in the skill.', finding);
         continue;
       }
 
@@ -1010,7 +1019,7 @@ async function skillLinkFindings(files: SkillFile[], resources: ReviewResource[]
         continue;
       }
 
-      const states = await Promise.all(siblings.map((sibling) => linkTargetState(sibling.absolutePath, inSkill, mustBeDirectory)));
+      const states = await Promise.all(siblings.map((sibling) => skillEntryState(sibling, inSkill, mustBeDirectory)));
       const state = states.includes('copied') ? 'copied' : states.includes('skipped') ? 'skipped' : 'missing';
 
       if (state === 'copied' && skillName !== file.skill.name) {
@@ -1382,6 +1391,7 @@ async function workflowFindings(repoDir: string, received: readonly Received[]):
       ...unknownScorers.values(),
       // Every namespace is read here, and a skip depends only on the folder's name, so no selection adds one.
       ...result.skipped.map(({ path: skippedPath, message }): Finding => ({ level: 'warn', check: 'naming', path: skippedPath, message })),
+      ...result.strays.map(({ path: strayPath, message }): Finding => ({ level: 'fail', check: 'structure', path: strayPath, message })),
       // Each still starts by name; the alias starts nothing, or another workflow.
       ...result.aliasConflicts.map((diagnostic): Finding => ({
         level: 'fail',
@@ -1405,10 +1415,9 @@ async function workflowFindings(repoDir: string, received: readonly Received[]):
  */
 async function newerWorkflowKeyFindings(repoDir: string): Promise<Finding[]> {
   const findings: Finding[] = [];
-  const skipped = await skippedFoldersIn(repoDir, 'workflows');
 
   const files = (await listRepoFilesRecursive(path.join(repoDir, 'workflows')))
-    .filter((file) => file.endsWith('.yaml') && !isInSkippedFolder(`workflows/${file}`, skipped)).sort();
+    .filter((file) => file.endsWith('.yaml')).sort();
 
   for (const file of files) {
     const relativePath = `workflows/${file}`;
@@ -1465,11 +1474,12 @@ function stepsWithRole(steps: readonly WorkflowStep[], prefix: string): string[]
 
 /** Every `scorers/scoring.yaml` and `scorers/<dir>/scoring.yaml` of the branch, active for anyone or not: what it cannot parse, a key or value it ignores, and an isolation teamai does not know. */
 async function scoringSettingsFindings(repoDir: string, readText: (p: string) => Promise<string | null>): Promise<Finding[]> {
-  // A scorer folder this release cannot read holds no settings it reads (#1791).
-  const skipped = await skippedFoldersIn(repoDir, 'scorers');
+  const entries = (await fse.readdir(path.join(repoDir, 'scorers'), { withFileTypes: true }).catch(() => [])).filter((entry) => entry.isDirectory());
+  const dirs: string[] = [];
 
-  const dirs = (await fse.readdir(path.join(repoDir, 'scorers'), { withFileTypes: true }).catch(() => []))
-    .filter((entry) => entry.isDirectory() && !isInSkippedFolder(`scorers/${entry.name}/`, skipped)).map((entry) => entry.name).sort();
+  // A scorer folder holds no settings: a scoring.yaml in it is one of its files.
+  for (const { name } of entries) if (!await holdsMarker(path.join(repoDir, 'scorers', name), RESOURCE_LAYOUTS.scorers.marker)) dirs.push(name);
+  dirs.sort();
 
   const findings: Finding[] = [];
 
@@ -1791,8 +1801,8 @@ export async function reviewBranchDir(branch: string, repoDir: string, base: Rev
   const workflows = await workflowFindings(repoDir, [...received.values()]);
 
   const findings: Finding[] = [
-    ...await skippedFolderFindings(repoDir),
     ...await ruleFindings(repoDir, base),
+    ...await skillFindings(repoDir),
     ...await structureFindings(resources, index, [...hooks.skipped, ...mcp.skipped, ...workflows.skipped]),
     ...await namingFindings(resources, readText),
     ...await duplicateFindings(resources, index),

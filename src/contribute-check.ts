@@ -12,7 +12,7 @@ import { resolveHookCwd } from './utils/hook-cwd.js';
 import { redactWithEnv } from './utils/redact.js';
 import type { ContributeState, DashboardEvent, LocalConfig, SessionShareOffered, SessionFriction } from './types.js';
 import { CONTRIBUTE_FASTPATH_TTL_MS, CONTRIBUTE_GIT_COMMIT_DOWNWEIGHT, SessionShareOfferedSchema } from './types.js';
-import { DefaultHooks, type DefaultHook, type DefaultHookParams, type HintLanguage } from './default-hooks.js';
+import { DefaultFolders, type DefaultFolder, type DefaultFolderParams, type TextLanguage } from './default-folders.js';
 import { getUserHome } from './utils/home.js';
 import { HookStdinSchema, stdinString, type HookStdin } from './hook-dispatch.js';
 
@@ -332,7 +332,7 @@ export async function readReminderDecisions(): Promise<Map<string, boolean>> {
 }
 
 /** The thresholds and weights of the friction reminder, from `with:` of hooks/teamai-friction-reminder/HOOK.yaml. */
-export type FrictionReminderParams = DefaultHookParams<'teamai-friction-reminder'>;
+export type FrictionReminderParams = DefaultFolderParams<'hooks', 'teamai-friction-reminder'>;
 
 /** Points from the tool-error retry gradient (the first tier whose min the count reaches wins). */
 function toolErrorPoints(tiers: FrictionReminderParams['tool_error_tiers'], toolError: number): number {
@@ -567,36 +567,32 @@ function extractPromptSummary(events: DashboardEvent[]): string | undefined {
   return normalizePromptSummary(firstPrompt?.promptSummary);
 }
 
-/** Turn non-zero friction signals into concrete, user-facing reasons. */
-function formatTimes(count: number): string {
-  if (count === 1) return 'once';
+/** `count` as the reason texts of `language` write it: `times` such as `twice` or `2 次`, and `tool_calls` such as `1 tool call`. */
+function countWords(count: number, language: NonNullable<TextLanguage> | null) {
+  if (language === 'zh') return { count: String(count), times: `${count} 次`, tool_calls: `${count} 次工具调用` };
 
-  if (count === 2) return 'twice';
-
-  return `${count} times`;
+  return {
+    count: String(count),
+    times: count === 1 ? 'once' : count === 2 ? 'twice' : `${count} times`,
+    tool_calls: count === 1 ? '1 tool call' : `${count} tool calls`,
+  };
 }
 
-function formatFrictionReasons(friction: SessionFriction): string[] {
-  const reasons: string[] = [];
+/** The friction signals of `friction` that happened, each as its reason text, in the language its file is written in. */
+function frictionReasons(friction: SessionFriction, reminder: DefaultFolder<'hooks', 'teamai-friction-reminder'>, language: TextLanguage): string[] {
+  const signals = [
+    ['reason-interrupt', friction.interrupt],
+    ['reason-tool-reject', friction.toolReject],
+    ['reason-correction', friction.correction],
+    ['reason-tool-error', friction.toolError],
+  ] as const;
 
-  if (friction.interrupt > 0) {
-    reasons.push(`you interrupted the AI ${formatTimes(friction.interrupt)}`);
-  }
+  return signals.flatMap(([name, count]) => {
+    if (count <= 0) return [];
+    const text = reminder.text(name, language);
 
-  if (friction.toolReject > 0) {
-    const toolCall = friction.toolReject === 1 ? 'tool call' : 'tool calls';
-    reasons.push(`you rejected ${friction.toolReject} ${toolCall}`);
-  }
-
-  if (friction.correction > 0) {
-    reasons.push(`you corrected the AI ${formatTimes(friction.correction)}`);
-  }
-
-  if (friction.toolError > 0) {
-    reasons.push(`the AI retried failing tools ${formatTimes(friction.toolError)}`);
-  }
-
-  return reasons;
+    return [text.render(countWords(count, text.language))];
+  });
 }
 
 interface HintContext {
@@ -614,8 +610,8 @@ const SHARE_LEARNINGS_DESCRIBE = 'teamai workflow start --describe teamai-share-
  * Build the STDOUT hint from the same context that drove the score, with `reminder`'s texts: the headline, the task
  * when there is one, and the action, separated by a blank line.
  */
-function buildHint({ friction, promptSummary, isKnowledgeGap, offersShareLearnings }: HintContext, reminder: DefaultHook<'teamai-friction-reminder'>, language: HintLanguage): string {
-  const reasons = formatFrictionReasons(friction).join(', ');
+function buildHint({ friction, promptSummary, isKnowledgeGap, offersShareLearnings }: HintContext, reminder: DefaultFolder<'hooks', 'teamai-friction-reminder'>, language: TextLanguage): string {
+  const reasons = frictionReasons(friction, reminder, language).join(language === 'zh' ? '，' : ', ');
 
   const headline = reasons
     ? reminder.text(isKnowledgeGap ? 'gap-reasons' : 'problem-reasons', language).render({ reasons })
@@ -681,7 +677,7 @@ export async function contributeCheckForSession(
     return { hint: null };
   }
 
-  const reminder = await DefaultHooks.load('teamai-friction-reminder', scope);
+  const reminder = await DefaultFolders.load({ kind: 'hooks', name: 'teamai-friction-reminder' }, scope);
   const { params } = reminder;
 
   // Shared debounce for Layer 1 (skip events read) and Layer 2 (reuse cached

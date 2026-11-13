@@ -1,16 +1,16 @@
 /**
- * Folders pull delivers (#1787, common rule 9): hook, rule and MCP server folders, so a command or a rule can name a
- * file the team ships beside it. A folder sits where the configuration that names it is kept, so a pull in one
+ * Folders pull delivers (#1787, common rule 9): hook, rule, agent and MCP server folders, so a command, a rule or an
+ * agent can name a file the team ships beside it. A folder sits where the configuration that names it is kept, so a pull in one
  * worktree never changes what another worktree runs or reads:
  *
  *   user scope                       → ~/.teamai/<type>/[<ns>/]<name>/
- *   workspace, rules and MCP         → <worktree>/.teamai/delivered/<type>/[<ns>/]<name>/ (one per worktree, as each
- *                                      worktree has its own rule copies and MCP configuration)
+ *   workspace, rules, agents and MCP → <worktree>/.teamai/delivered/<type>/[<ns>/]<name>/ (one per worktree, as each
+ *                                      worktree has its own rule and agent copies and MCP configuration)
  *   workspace, remote team's hooks   → ~/.teamai/projects/<slug>/hooks/[<ns>/]<name>/    (shared, as every worktree
  *                                      runs the same entries: the main checkout's files, or HOME's)
  *   workspace, self mode's hooks   → <worktree>/.teamai/delivered/hooks/[<ns>/]<name>/  (each checkout keeps its own)
  *
- * A rule folder's path stays the same across versions, so the text rendered from it does too. A hook or MCP server
+ * A rule or agent folder's path stays the same across versions, so the text rendered from it does too. A hook or MCP server
  * folder sits at `<name>.<version>/` (`versionedPathOf`, `identify`), one per set of files, so each configuration runs
  * the files it was written with. A new version is written to a hidden sibling and renamed into place. Each file is
  * recorded in the delivery ledger, and a folder goes through `removeDelivered` once the team drops it and no
@@ -22,6 +22,7 @@ import path from 'node:path';
 import { contentHash, forgetDelivered, removeDelivered, type DeliveryLedger } from './delivered-copies.js';
 import { FolderFiles, type FolderFile } from './folder-files.js';
 import { FOLDER_MARKERS } from '../folder-markers.js';
+import { folderReachOf } from '../tools.js';
 import { getDataHome, isSelfMode, type LocalConfig } from '../types.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { createGit } from '../utils/git.js';
@@ -30,7 +31,7 @@ import { errnoCode, pathExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 
 /** The folder types pull delivers. */
-export type DeliveredFolderType = 'hooks' | 'rules' | 'mcp';
+export type DeliveredFolderType = 'hooks' | 'rules' | 'agents' | 'mcp';
 
 /** One delivered folder: its type, and where it sits in its type's directory, `[<namespace>/]<name>/`. */
 export interface DeliveredFolderRef {
@@ -43,6 +44,7 @@ export interface DeliveredFolderRef {
 export const PATH_VARIABLES = {
   hooks: 'TEAMAI_HOOK_DIR',
   rules: 'TEAMAI_RULE_DIR',
+  agents: 'TEAMAI_AGENT_DIR',
   mcp: 'TEAMAI_MCP_DIR',
 } as const satisfies Readonly<Record<DeliveredFolderType, string>>;
 
@@ -68,7 +70,7 @@ function checkoutRoot(checkout: string): string {
   return path.join(checkout, '.teamai', DELIVERED_DIR);
 }
 
-/** The absolute path `ref` is delivered at in `localConfig`'s scope: a rule folder's, the same for every version. */
+/** The absolute path `ref` is delivered at in `localConfig`'s scope: a rule or agent folder's, the same for every version. */
 function pathOf(localConfig: LocalConfig, ref: DeliveredFolderRef): string {
   return path.join(root(localConfig, ref.type), ref.type, ...(ref.namespace === null ? [] : [ref.namespace]), ref.name);
 }
@@ -487,6 +489,23 @@ function render(text: string, at: { readonly type: DeliveredFolderType; readonly
   return text.split(placeholder(at.type)).join(value);
 }
 
+/**
+ * `text` with the variable of `ref`'s type naming the folder in `localConfig`'s scope where `tool` reads it: in a
+ * project the worktree's `.teamai/delivered/`, by its path from the project root for a tool that reads nothing outside
+ * the project (`folderReachOf`); in user scope the data home. `tool` null: text teamai injects for a tool without
+ * native rules, none of which reads outside the project.
+ */
+function renderFor(text: string, at: { readonly localConfig: LocalConfig; readonly ref: DeliveredFolderRef; readonly tool: string | null }): string {
+  const dest = pathOf(at.localConfig, at.ref);
+  const { projectRoot } = at.localConfig;
+
+  if (worktreeRoot(at.localConfig) === null || projectRoot === undefined || (at.tool !== null && folderReachOf(at.tool).reach !== 'copy')) {
+    return render(text, { type: at.ref.type, dest });
+  }
+
+  return render(text, { type: at.ref.type, dest: path.relative(projectRoot, dest) });
+}
+
 /** What names one file or directory on disk, however a case-insensitive file system spells its path; null when absent. */
 async function identity(file: string): Promise<string | null> {
   const stat = await fs.stat(file, { bigint: true }).catch(() => null);
@@ -615,4 +634,4 @@ async function excludeWorktreeFolders(localConfig: LocalConfig, type: DeliveredF
   }
 }
 
-export const DeliveredFolders = { root, worktreeRoot, checkoutRoot, pathOf, versionedPathOf, identify, anyVersionPathOf, withoutVersions, namedIn, sync, place, deliver, prune, placeholder, mentions, render } as const;
+export const DeliveredFolders = { root, worktreeRoot, checkoutRoot, pathOf, versionedPathOf, identify, anyVersionPathOf, withoutVersions, namedIn, sync, place, deliver, prune, placeholder, mentions, render, renderFor } as const;

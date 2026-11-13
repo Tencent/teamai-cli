@@ -198,6 +198,77 @@ describe('push carries teamai.yaml (source add regression)', () => {
     }
   });
 
+  it('merges a config edit onto the default branch without --branch', async () => {
+    const teamRepo = await initTeamRepos(tmpDir);
+    const seed = path.join(tmpDir, 'seed');
+    const remote = path.join(tmpDir, 'remote.git');
+    const yamlPath = path.join(teamRepo, 'teamai.yaml');
+    const base = fs.readFileSync(yamlPath, 'utf8');
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: {
+        repo: { localPath: teamRepo, remote },
+        username: 'alice',
+        scope: 'project',
+        projectRoot: teamRepo,
+      },
+      teamConfig: { repo: 'acme/team', toolPaths: {} },
+    });
+
+    // A teammate lands a setting after this clone was made; the push below
+    // refreshes the clone before it restores the member's edit.
+    const seedGit = simpleGit(seed);
+    fs.writeFileSync(path.join(seed, 'teamai.yaml'), `${base}usageReport: false\n`);
+    await seedGit.add('teamai.yaml');
+    await seedGit.commit('teammate setting');
+    await seedGit.push('origin', 'main');
+
+    const { push } = await import('../push.js');
+    fs.writeFileSync(yamlPath, `${base}autoUpdate: false\n`);
+    await push({ all: true });
+
+    const pushed = await committedYamlOnPushedBranch(teamRepo);
+    expect(pushed).toContain('usageReport: false');
+    expect(pushed).toContain('autoUpdate: false');
+  });
+
+  it('refuses a config edit that conflicts with the default branch without --branch', async () => {
+    const teamRepo = await initTeamRepos(tmpDir);
+    const seed = path.join(tmpDir, 'seed');
+    const remote = path.join(tmpDir, 'remote.git');
+    const yamlPath = path.join(teamRepo, 'teamai.yaml');
+    const base = fs.readFileSync(yamlPath, 'utf8');
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: {
+        repo: { localPath: teamRepo, remote },
+        username: 'alice',
+        scope: 'project',
+        projectRoot: teamRepo,
+      },
+      teamConfig: { repo: 'acme/team', toolPaths: {} },
+    });
+
+    const seedGit = simpleGit(seed);
+    fs.writeFileSync(path.join(seed, 'teamai.yaml'), `${base}usageReport: true\n`);
+    await seedGit.add('teamai.yaml');
+    await seedGit.commit('teammate setting');
+    await seedGit.push('origin', 'main');
+
+    const originalExitCode = process.exitCode;
+
+    try {
+      const { push } = await import('../push.js');
+      fs.writeFileSync(yamlPath, `${base}usageReport: false\n`);
+      await push({ all: true });
+
+      expect(process.exitCode).toBe(1);
+      expect(mockCreatePullRequest).not.toHaveBeenCalled();
+      expect((await simpleGit(remote).raw(['for-each-ref', 'refs/heads/teamai/push/'])).trim()).toBe('');
+      expect(fs.readFileSync(yamlPath, 'utf8')).toBe(`${base}usageReport: false\n`);
+    } finally {
+      process.exitCode = originalExitCode;
+    }
+  });
+
   it('rejects invalid package declarations before creating a PR', async () => {
     const teamRepo = await initTeamRepos(tmpDir);
     const yamlPath = path.join(teamRepo, 'teamai.yaml');
