@@ -282,7 +282,7 @@ Run it? [y/N]
 
 The line you type answers this question alone. An approval or choice that waits at the same terminal is asked again once you answer. `teamai workflow cancel` ends the question unanswered, and the command does not run. Ctrl-C stops the run without answering, and `teamai workflow resume` asks again.
 
-An unattended run (`TEAMAI_MODE=unattended`, CI, no terminal) refuses it with `tool_not_accepted` until someone accepts it once in a terminal. The answer is kept in `~/.teamai/trust/tools.json` for that file's content: a commit that leaves the file as it is asks nothing, and an edit asks again. An instance with only `home` or `paths` runs the shipped command and needs no acceptance.
+An unattended run (`TEAMAI_MODE=unattended`, CI, no terminal) refuses it with `tool_not_accepted` until someone accepts it once in a terminal. The answer is kept in `~/.teamai/trust/tools.json` for that file's content: a commit that leaves the file as it is asks nothing, and an edit asks again. An instance with only `home` or `paths` runs the shipped command and needs no acceptance. teamai reads, exports and imports an instance's sessions with its command too once it is accepted, and with the shipped command until then.
 
 **Adjusting a shipped tool.** An instance named like a shipped tool adjusts it. Its `paths` replace that tool's paths whole, as a `toolPaths` entry does, and win over one:
 

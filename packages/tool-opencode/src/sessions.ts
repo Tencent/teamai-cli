@@ -7,7 +7,7 @@ import { facts } from './facts.js';
 export const platforms = {
   'opencode': {
     ...facts.platforms.opencode,
-    adapter: (storeDir, { processes }): AgentAdapter => new OpencodeAdapter(storeDir, processes),
-    adapterAs: (platform, storeDir, { processes }): AgentAdapter => new OpencodeAdapter(storeDir, processes, platform),
+    adapter: (storeDir, host): AgentAdapter => new OpencodeAdapter(storeDir, host),
+    adapterAs: (platform, storeDir, host): AgentAdapter => new OpencodeAdapter(storeDir, host, platform),
   },
 } as const satisfies Record<keyof typeof facts.platforms, SessionPlatformDefinition>;

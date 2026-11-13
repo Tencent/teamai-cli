@@ -256,6 +256,58 @@ describe('the home of an instance', () => {
   });
 });
 
+describe('the OpenCode sessions of an instance', () => {
+  const ACME_OPENCODE = 'schemaVersion: v1alpha1\nname: acme-opencode\nextends: opencode\ncommand: acme-opencode\nhome: { dir: .acme-opencode, env: XDG_DATA_HOME }\n';
+
+  /** A project with one session of the instance in its store, and on PATH only `acme-opencode`, never `opencode`. */
+  async function onlyTheInstanceInstalled(): Promise<{ project: string; sessionId: string }> {
+    const { installFakeOpencode, opencodeExportFixture, plantOpencodeSession } = await import('@teamai/tool-opencode/testing');
+    const bin = installFakeOpencode();
+    fs.renameSync(path.join(bin, 'opencode'), path.join(bin, 'acme-opencode'));
+    fs.rmSync(path.join(bin, 'opencode.cmd'));
+    vi.stubEnv('PATH', bin);
+    vi.stubEnv('XDG_DATA_HOME', '');
+    const project = path.join(root, 'project');
+    fs.mkdirSync(project);
+    const session = opencodeExportFixture();
+    session.info.id = 'ses_ec4a5b73fffeAAAAAAAAAAAAAA';
+    session.info.location.directory = project;
+    fs.mkdirSync(path.join(home, '.acme-opencode', 'opencode'), { recursive: true });
+    plantOpencodeSession(path.join(home, '.acme-opencode'), session);
+
+    return { project, sessionId: session.info.id };
+  }
+
+  it('lists a member\'s own instance with its own command, where the shipped one is not installed', async () => {
+    personal('acme-opencode', ACME_OPENCODE);
+    const { project, sessionId } = await onlyTheInstanceInstalled();
+    await load(teamRepo({}));
+    const { AgentSession } = await import('../session-flow/agent-session.js');
+
+    const listed = await AgentSession.list({ platforms: ['acme-opencode'], cwd: project });
+
+    expect(listed.failures).toEqual([]);
+    expect(listed.sessions.map((one) => ({ platform: one.platform, sessionId: one.sessionId }))).toEqual([{ platform: 'acme-opencode', sessionId }]);
+  });
+
+  it('runs a team instance\'s command only once a person accepted its file, and the shipped one until then', async () => {
+    const { project, sessionId } = await onlyTheInstanceInstalled();
+    await load(teamRepo({ 'tools/acme-opencode.yaml': ACME_OPENCODE }));
+    const { AgentSession } = await import('../session-flow/agent-session.js');
+    const registry = await import('../tool-registry.js');
+    const { acceptToolCommand } = await import('../tool-instances.js');
+    const instance = registry.toolOf('acme-opencode')?.instance;
+
+    expect((await AgentSession.list({ platforms: ['acme-opencode'], cwd: project })).failures)
+      .toEqual([{ platform: 'acme-opencode', code: 'tool_unavailable', message: 'The opencode CLI was not found on PATH. Install OpenCode 2 or later.' }]);
+
+    if (!instance) throw new Error('the team instance did not load');
+    expect(await acceptToolCommand(instance, { ask: async () => 'y' })).toEqual({ ok: true });
+
+    expect((await AgentSession.list({ platforms: ['acme-opencode'], cwd: project })).sessions.map((one) => one.sessionId)).toEqual([sessionId]);
+  });
+});
+
 describe('the agents of an instance', () => {
   it('gets teamai\'s own agents in the format of the tool it extends, and recall off takes them back', async () => {
     const repo = teamRepo({ 'tools/acme-codex.yaml': 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n' });

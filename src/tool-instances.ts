@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
@@ -309,12 +310,41 @@ function trustFile(): string {
   return path.join(getTrustDir(), 'tools.json');
 }
 
-async function readTrust(): Promise<z.infer<typeof TrustFileSchema>> {
+type TrustFile = z.infer<typeof TrustFileSchema>;
+
+/** The acceptances `text`, the trust file's content, records; none for a file that is missing or does not parse. */
+function trustOf(text: string | undefined): TrustFile {
   try {
-    return TrustFileSchema.parse(JSON.parse(await fs.readFile(trustFile(), 'utf8')));
+    return TrustFileSchema.parse(JSON.parse(text ?? ''));
   } catch {
     return { accepted: [] };
   }
+}
+
+async function readTrust(): Promise<TrustFile> {
+  return trustOf(await fs.readFile(trustFile(), 'utf8').catch(() => undefined));
+}
+
+function isAccepted(trust: TrustFile, instance: ResolvedToolInstance): boolean {
+  return trust.accepted.some((entry) => entry.name === instance.name && entry.revision === instance.revision);
+}
+
+/**
+ * The command `instance` sets when it may run here with no one to ask: a member's own instance's, or a team instance's
+ * whose file content a person accepted (`acceptToolCommand`). Undefined for any other, and for one that sets none. Read
+ * where nothing can ask, such as the session adapters, which then run the command of the tool it extends.
+ */
+export function acceptedCommandOf(instance: ResolvedToolInstance): string | undefined {
+  if (instance.source !== 'team' || instance.command === undefined) return instance.command;
+  let text: string | undefined;
+
+  try {
+    text = readFileSync(trustFile(), 'utf8');
+  } catch {
+    text = undefined;
+  }
+
+  return isAccepted(trustOf(text), instance) ? instance.command : undefined;
 }
 
 /** Why a team instance's command did not run. */
@@ -337,7 +367,7 @@ export async function acceptToolCommand(
   if (instance.source !== 'team' || instance.command === undefined) return { ok: true };
   const trust = await readTrust();
 
-  if (trust.accepted.some((entry) => entry.name === instance.name && entry.revision === instance.revision)) return { ok: true };
+  if (isAccepted(trust, instance)) return { ok: true };
   const short = instance.revision.slice(0, 12);
 
   if (ask) {

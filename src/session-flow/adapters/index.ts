@@ -15,6 +15,7 @@ import { executablesOf } from '../../tool-launch/tools.js';
 import { isSessionPlatform, isStoredSessionPlatform, type SessionPlatform, type StoredSessionPlatform } from './platform-facts.js';
 import { sessionStoreDir } from '../../locate.js';
 import { instanceHomeDir } from '../../tool-home.js';
+import { acceptedCommandOf, type ResolvedToolInstance } from '../../tool-instances.js';
 import { instanceNames, instancePlatform } from '../../tool-registry.js';
 
 /**
@@ -87,7 +88,22 @@ function instanceStore(platform: string) {
 
   if (definition?.adapterAs === undefined || home === undefined) return undefined;
 
-  return { store: definition.store, adapterAs: definition.adapterAs, home};
+  return { store: definition.store, adapterAs: definition.adapterAs, home, host: instanceSessionHost(hosted.instance) };
+}
+
+/**
+ * What an instance's adapter runs: the instance's own command first, when it may run with no one to ask
+ * (`acceptedCommandOf`), then the executables of the tool it extends, which read a store of the same format.
+ */
+function instanceSessionHost(instance: ResolvedToolInstance): SessionHost {
+  return {
+    processes: SESSION_HOST.processes,
+    executablesOf: (tool) => {
+      const command = tool === instance.extends ? acceptedCommandOf(instance) : undefined;
+
+      return command === undefined ? executablesOf(tool) : [command, ...executablesOf(tool)];
+    },
+  };
 }
 
 /** The factory of `platform`: a shipped platform's, or an instance's own, in its shipped platform's format. */
@@ -95,7 +111,7 @@ function factoryOf(platform: string): AdapterFactory | undefined {
   if (Object.hasOwn(ADAPTER_REGISTRY, platform)) return ADAPTER_REGISTRY[platform];
   const store = instanceStore(platform);
 
-  return store && ((storeDir) => store.adapterAs(platform, storeDir, SESSION_HOST));
+  return store && ((storeDir) => store.adapterAs(platform, storeDir, store.host));
 }
 
 /** The platforms of the instances this process knows that keep sessions of their own: each one's name. */

@@ -25,6 +25,7 @@ import * as path from 'node:path';
 import { tmpdir } from 'node:os';
 import { z } from 'zod';
 import { AgentAdapter, ToolUnavailableError, type SessionMeta, type SessionReadRef, type Subagent, type SubagentsRead } from '@teamai/tool-core/sessions/base';
+import type { SessionHost } from '@teamai/tool-core/sessions/platform';
 import { imagePlaceholderText, ToolArgumentsSchema, type ContentBlock, type ImageBlock, type Message, type Session, type ToolArguments } from '@teamai/tool-core/sessions/ir';
 import { JsonValueSchema } from '@teamai/shared/json';
 import { resolveRealCwd } from '@teamai/tool-core/sessions/fs';
@@ -74,11 +75,11 @@ type ChildServer =
   | { status: 'ready'; children(parent: string): Promise<string[]>; stop(): Promise<void> }
   | { status: 'unavailable'; reason: string };
 
-async function startChildServer(env: NodeJS.ProcessEnv, processes: Processes): Promise<ChildServer> {
+async function startChildServer(executable: string, env: NodeJS.ProcessEnv, processes: Processes): Promise<ChildServer> {
   const port = await freePort();
   const password = randomBytes(16).toString('hex');
 
-  const child = processes.spawn('opencode', ['serve', '--hostname', '127.0.0.1', '--port', String(port)], {
+  const child = processes.spawn(executable, ['serve', '--hostname', '127.0.0.1', '--port', String(port)], {
     env: { ...env, OPENCODE_SERVER_PASSWORD: password },
     stdio: 'ignore',
     windowsHide: true,
@@ -449,7 +450,7 @@ export class OpencodeAdapter extends AgentAdapter {
    * @param storageRoot OpenCode's data directory (`sessionStoreDir`): `$XDG_DATA_HOME/opencode`, `~/.local/share/opencode` by default.
    * @param platform The session platform this store is: 'opencode', or an instance's own name.
    */
-  constructor(private readonly storageRoot: string, private readonly processes: Processes, private readonly sessionPlatform = 'opencode') {
+  constructor(private readonly storageRoot: string, private readonly host: SessionHost, private readonly sessionPlatform = 'opencode') {
     super();
   }
 
@@ -470,19 +471,30 @@ export class OpencodeAdapter extends AgentAdapter {
     return path.basename(this.storageRoot) === 'opencode' ? { ...process.env, XDG_DATA_HOME: path.dirname(this.storageRoot) } : process.env;
   }
 
-  /** Run an `opencode session` command; throws `ToolUnavailableError` when no OpenCode 2 runs here. */
-  private async session(args: string[], cwd?: string): Promise<ExecResult> {
-    const version = await this.processes.probe('opencode');
+  /**
+   * The first executable the host names for OpenCode that is OpenCode 2 or later: an instance's own command before the
+   * shipped one. Throws `ToolUnavailableError` when none is, naming the version found.
+   */
+  private async cli(): Promise<string> {
+    let found: string | undefined;
 
-    if (!version || opencodeMajorOf(version) < 2) {
-      throw new ToolUnavailableError(
-        version
-          ? `OpenCode ${version} has no \`opencode session export\`. Upgrade OpenCode to version 2 or later.`
-          : 'The opencode CLI was not found on PATH. Install OpenCode 2 or later.',
-      );
+    for (const executable of this.host.executablesOf('opencode')) {
+      const version = await this.host.processes.probe(executable);
+
+      if (version && opencodeMajorOf(version) >= 2) return executable;
+      found ??= version || undefined;
     }
 
-    return this.processes.exec('opencode', ['session', ...args, '--standalone'], { cwd, env: this.storeEnv() });
+    throw new ToolUnavailableError(
+      found
+        ? `OpenCode ${found} has no \`opencode session export\`. Upgrade OpenCode to version 2 or later.`
+        : 'The opencode CLI was not found on PATH. Install OpenCode 2 or later.',
+    );
+  }
+
+  /** Run an `opencode session` command; throws `ToolUnavailableError` when no OpenCode 2 runs here. */
+  private async session(args: string[], cwd?: string): Promise<ExecResult> {
+    return this.host.processes.exec(await this.cli(), ['session', ...args, '--standalone'], { cwd, env: this.storeEnv() });
   }
 
   /**
@@ -533,7 +545,16 @@ export class OpencodeAdapter extends AgentAdapter {
    * reads each child with `session export`, and stops it.
    */
   async readSubagents(session: Session, _ref: SessionReadRef): Promise<SubagentsRead> {
-    const server = await startChildServer(this.storeEnv(), this.processes);
+    let executable: string;
+
+    try {
+      executable = await this.cli();
+    } catch (error) {
+      if (error instanceof ToolUnavailableError) return { status: 'unread', reason: error.message };
+      throw error;
+    }
+
+    const server = await startChildServer(executable, this.storeEnv(), this.host.processes);
 
     if (server.status === 'unavailable') return { status: 'unread', reason: server.reason };
 
