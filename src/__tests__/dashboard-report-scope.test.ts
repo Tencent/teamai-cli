@@ -1473,3 +1473,27 @@ describe('the usage report counts the member\'s own sessions, split by run mode 
     });
   });
 });
+
+describe('the tokens of a tool instance', () => {
+  it('reads a Stop of an instance in the token format of the tool it extends', async () => {
+    const { root, project } = await setup();
+    fs.writeFileSync(path.join(project.repo.localPath, 'teamai.yaml'), 'team: acme\nrepo: acme/team\n');
+    fs.mkdirSync(path.join(project.repo.localPath, 'tools'));
+    fs.writeFileSync(path.join(project.repo.localPath, 'tools', 'acme-codex.yaml'), 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n');
+    // A Codex rollout, trimmed to the lines teamai reads (Codex 0.165).
+    const thread = '01a1910c-010f-7c02-9147-8e051657efb6';
+    const usage = { input_tokens: 26_858, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 132, reasoning_output_tokens: 0, total_tokens: 26_990 };
+    const rollout = path.join(tmp, 'rollout.jsonl');
+    fs.writeFileSync(rollout, [
+      { timestamp: '2026-10-31T08:20:45.000Z', type: 'session_meta', payload: { id: thread, model_provider: 'openai' } },
+      { timestamp: '2026-10-31T08:20:45.800Z', type: 'turn_context', payload: { turn_id: 't1', model: 'gpt-6.1-sol', effort: 'high' } },
+      { timestamp: '2026-10-31T08:20:50.762Z', type: 'token_usage_record', payload: { thread_id: thread, session_id: thread, response_id: 'resp_1', usage, thread_token_usage: usage } },
+    ].map((line) => JSON.stringify(line)).join('\n') + '\n');
+
+    await hook('stop', 'acme-codex', { hook_event_name: 'Stop', session_id: thread, cwd: root, transcript_path: rollout });
+
+    const stops = fs.readFileSync(path.join(teamaiHome(), 'dashboard', 'events.jsonl'), 'utf-8')
+      .split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>).filter((e) => e.type === 'stop');
+    expect(stops.map((e) => ({ tool: e.tool, tokens: e.tokens }))).toEqual([{ tool: 'acme-codex', tokens: { input: 26_858, output: 132, cacheRead: 0, cacheCreation: 0 } }]);
+  });
+});

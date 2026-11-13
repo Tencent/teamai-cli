@@ -22,7 +22,7 @@ import { SessionOutcomeEventSchema, uniqueOutcomes, type SessionOutcomeEvent, ty
 import { readCopilotShutdown } from './token-usage/formats/copilot-shutdown.js';
 import { type TokenRequest } from '@teamai/tool-core/tokens';
 import { priceTokens } from './token-usage/pricing.js';
-import { isToolId, descriptorOf } from './tool-registry.js';
+import { descriptorOf, toolOf } from './tool-registry.js';
 import { HookStdinSchema, type HookStdin } from './hook-dispatch.js';
 import type { ShippedDescriptor } from './tools.js';
 
@@ -186,14 +186,14 @@ type PricedRequestRecord = Extract<LocalRequestRecord, { costMicros: number }>;
 const isPriced = (record: LocalRequestRecord): record is PricedRequestRecord => record.costMicros !== null;
 
 /**
- * Where the dashboard reads `tool`'s token usage: its TOOLS entry's `tokens`.
- * A tool TOOLS does not list is read as a Claude transcript, as every Stop
- * transcript was before tools named their format.
+ * Where the dashboard reads `tool`'s token usage: its TOOLS entry's `tokens`, or for an instance the entry of the tool
+ * it extends. A tool TOOLS does not list is read as a Claude transcript, as every Stop transcript was before tools named
+ * their format.
  */
 function tokenSourceOf(tool: string): ShippedDescriptor['tokens'] {
-  const id = tool.toLowerCase();
+  const base = toolOf(tool.toLowerCase())?.base;
 
-  return isToolId(id) ? descriptorOf(id).tokens : 'claude-jsonl';
+  return base === undefined ? 'claude-jsonl' : descriptorOf(base).tokens;
 }
 
 /** A request's catalog cost with its cache reads billed as input, less its catalog cost. */
