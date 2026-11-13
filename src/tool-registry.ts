@@ -206,6 +206,13 @@ export function isAgentToolId(tool: string): tool is AgentToolId {
   return [agents.user, agents.project].some((channel) => channel !== 'none' && channel !== 'unknown');
 }
 
+/** The tool whose agent format `tool` takes: itself, or the tool an instance extends; undefined when teamai renders it no agents. */
+export function agentFormatOf(tool: string): AgentToolId | undefined {
+  const base = toolOf(tool)?.base;
+
+  return base !== undefined && isAgentToolId(base) ? base : undefined;
+}
+
 /** Every tool teamai renders agents for, in `TOOLS` order. */
 export const AGENT_TOOLS: readonly AgentToolId[] = TOOL_ORDER.filter(isAgentToolId);
 

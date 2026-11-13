@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { LocalConfig } from '../types.js';
 
 /**
  * Tool instances as `loadTeamConfig` reads them: a team's in tools/ of its repo, a member's in ~/.teamai/tools/, and
@@ -252,6 +253,26 @@ describe('the home of an instance', () => {
 
     expect(writesOf(where).map((place) => place.path)).toEqual([path.join(project, '.claude', 'rules')]);
     expect(unreadWrites(where, undefined, { kind: 'within', root: project })).toEqual([]);
+  });
+});
+
+describe('the agents of an instance', () => {
+  it('gets teamai\'s own agents in the format of the tool it extends, and recall off takes them back', async () => {
+    const repo = teamRepo({ 'tools/acme-codex.yaml': 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n' });
+    const { config } = await load(repo);
+    fs.mkdirSync(path.join(home, '.acme-codex'), { recursive: true });
+    const { deployBuiltinAgents } = await import('../builtin-agents.js');
+    const { removeRecallAgentAndRule } = await import('../recall-toggle.js');
+    const local: LocalConfig = { repo: { localPath: repo, remote: 'https://example.com/acme/team.git' }, username: 'member', additionalRoles: [], scope: 'user', enabledAgents: ['acme-codex'] };
+
+    if (!config) throw new Error('the team config did not load');
+    await deployBuiltinAgents(config, local);
+
+    expect(fs.readdirSync(path.join(home, '.acme-codex', 'agents'))).toEqual(['teamai-recall.toml']);
+
+    await removeRecallAgentAndRule(config, local);
+
+    expect(fs.readdirSync(path.join(home, '.acme-codex', 'agents'))).toEqual([]);
   });
 });
 

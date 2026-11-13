@@ -331,7 +331,7 @@ extends: opencode
 home: { dir: .opencode-work, env: XDG_DATA_HOME }
 ```
 
-如果是 `env: OPENCODE_CONFIG_DIR`，实例有自己的设置，会话仍在你的 OpenCode 数据目录中（`$XDG_DATA_HOME/opencode`，否则为 `~/.local/share/opencode`），teamai 把它们当作 OpenCode 的会话读取。teamai 目前还不为实例渲染 agents。实例不会出现在[工具支持](./tool-support.md)页面上。
+如果是 `env: OPENCODE_CONFIG_DIR`，实例有自己的设置，会话仍在你的 OpenCode 数据目录中（`$XDG_DATA_HOME/opencode`，否则为 `~/.local/share/opencode`），teamai 把它们当作 OpenCode 的会话读取。实例会收到 teamai 自带的 agents（如 `teamai-recall`），格式与它扩展的工具相同；团队 `agents/` 目前还不会渲染给实例。实例不会出现在[工具支持](./tool-support.md)页面上。
 
 ---
 

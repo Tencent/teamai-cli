@@ -331,7 +331,7 @@ extends: opencode
 home: { dir: .opencode-work, env: XDG_DATA_HOME }
 ```
 
-With `env: OPENCODE_CONFIG_DIR`, the instance keeps its own settings, and its sessions stay in your OpenCode data home (`$XDG_DATA_HOME/opencode`, else `~/.local/share/opencode`), where teamai reads them as OpenCode's. teamai does not render agents for an instance yet. Instances never appear on the [tool support](./tool-support.md) page.
+With `env: OPENCODE_CONFIG_DIR`, the instance keeps its own settings, and its sessions stay in your OpenCode data home (`$XDG_DATA_HOME/opencode`, else `~/.local/share/opencode`), where teamai reads them as OpenCode's. An instance gets teamai's own agents, such as `teamai-recall`, in the format of the tool it extends, but not the team's `agents/` yet. Instances never appear on the [tool support](./tool-support.md) page.
 
 ---
 
