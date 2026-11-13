@@ -156,6 +156,39 @@ describe('self-mode push from a checkout behind the default branch', () => {
     expect(fs.readFileSync(active('.teamai/docs/README.md'), 'utf8')).toBe(README);
   });
 
+  it('carries the member\'s teamai.yaml edit onto a teammate\'s newer settings', async () => {
+    expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
+    const teammateConfig = `${fs.readFileSync(path.join(teammate, '.teamai/teamai.yaml'), 'utf8')}autoUpdate: false\n`;
+    teammateLandsOnMain({ '.teamai/teamai.yaml': teammateConfig });
+    git(['fetch', '-q', 'origin'], projectRoot);
+    fs.appendFileSync(active('.teamai/teamai.yaml'), 'submodules: false\n');
+
+    const push = await runCLI(['push', '--all'], projectRoot, home);
+
+    expect(push.code, push.output).toBe(1);
+    expect(push.output).toContain('Pushed branch');
+    const branches = pushBranches();
+    expect(branches).toHaveLength(1);
+    const pushed = git(['show', `${branches[0]}:.teamai/teamai.yaml`], remote);
+    expect(pushed).toContain('autoUpdate: false');
+    expect(pushed).toContain('submodules: false');
+  });
+
+  it('refuses to push when the member and a teammate changed the same teamai.yaml setting', async () => {
+    expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
+    const teammateConfig = `${fs.readFileSync(path.join(teammate, '.teamai/teamai.yaml'), 'utf8')}submodules: true\n`;
+    teammateLandsOnMain({ '.teamai/teamai.yaml': teammateConfig });
+    git(['fetch', '-q', 'origin'], projectRoot);
+    fs.appendFileSync(active('.teamai/teamai.yaml'), 'submodules: false\n');
+
+    const push = await runCLI(['push', '--all'], projectRoot, home);
+
+    expect(push.code, push.output).toBe(1);
+    expect(push.output).toContain('Conflicting keys: submodules');
+    expect(pushBranches()).toEqual([]);
+    expect(fs.readFileSync(active('.teamai/teamai.yaml'), 'utf8')).toContain('submodules: false');
+  });
+
   it('refuses with exit 2, pushing nothing, when the member and a teammate both changed a team file', async () => {
     expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
     teammateLandsOnMain({ '.teamai/docs/README.md': TEAMMATE_README });
