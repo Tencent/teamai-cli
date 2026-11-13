@@ -184,6 +184,117 @@ describe('local-agent: buildReportPayload disk scan', () => {
       vi.unstubAllEnvs();
     }
   });
+
+  it('reports rule files, claudemd prompts and agent hooks with their kinds', async () => {
+    await setupConfig();
+    const manifestDir = path.join(tmpDir, '.teamai', 'local-agent');
+    await fse.writeJson(path.join(manifestDir, 'manifest.json'), {
+      scopes: {
+        user: {
+          skills: {},
+          rules: { 'disk-rule': { slug: 'disk-rule', version: '1.2.0', display_name: 'Disk Rule', installed_at: 'x', tools: ['codebuddy'] } },
+          claudemd: { 'prompt-a': { slug: 'prompt-a', version: '3.0.0', display_name: 'Prompt A', installed_at: 'x', tools: ['codebuddy'] } },
+        },
+      },
+    });
+    await fse.writeJson(path.join(manifestDir, 'agent-hooks.json'), {
+      'hook-a': { tool: 'codebuddy', event: 'PreToolUse', command: 'echo hi' },
+    });
+    await writeRule(tmpDir, 'codebuddy', 'disk-rule');
+    // A leftover file of the same name must not turn a prompt or a hook into a rule.
+    await writeRule(tmpDir, 'codebuddy', 'prompt-a');
+    await writeRule(tmpDir, 'codebuddy', 'hook-a');
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = await buildReportPayload(config!, { tool: 'codebuddy' }) as {
+      user_level: { rules?: Array<{ slug: string; rule_type: string; source: string; version?: string }> };
+    };
+
+    expect(payload.user_level.rules).toEqual([
+      { slug: 'disk-rule', version: '1.2.0', display_name: 'Disk Rule', source: 'enterprise', rule_type: 'rule' },
+      { slug: 'hook-a', display_name: 'hook-a', source: 'enterprise', rule_type: 'hook' },
+      { slug: 'prompt-a', version: '3.0.0', display_name: 'Prompt A', source: 'enterprise', rule_type: 'prompt' },
+    ]);
+  });
+
+  it('does not report another tool\'s or another scope\'s rules', async () => {
+    const { execFileSync: gitExecFileSync } = await import('node:child_process');
+    const { realpathSync } = await import('node:fs');
+    const projectDir = path.join(tmpDir, 'project');
+    await fse.ensureDir(projectDir);
+    gitExecFileSync('git', ['init', '-q'], { cwd: projectDir });
+    const projectReal = realpathSync.native(projectDir);
+    await setupConfig(enrolled(projectReal));
+
+    const manifestDir = path.join(tmpDir, '.teamai', 'local-agent');
+    await fse.writeJson(path.join(manifestDir, 'manifest.json'), {
+      scopes: {
+        user: {
+          skills: {},
+          rules: { 'codebuddy-rule': { slug: 'codebuddy-rule', installed_at: 'x', tools: ['codebuddy'] } },
+          claudemd: {
+            'codebuddy-prompt': { slug: 'codebuddy-prompt', installed_at: 'x', tools: ['codebuddy'] },
+            'legacy-prompt': { slug: 'legacy-prompt', installed_at: 'x' },
+          },
+        },
+        [`project:${projectReal}`]: {
+          skills: {},
+          rules: { 'project-rule': { slug: 'project-rule', installed_at: 'x', tools: ['codex'] } },
+          claudemd: { 'project-prompt': { slug: 'project-prompt', installed_at: 'x', tools: ['codex'] } },
+        },
+      },
+    });
+    await fse.writeJson(path.join(manifestDir, 'agent-hooks.json'), {
+      'other-hook': { tool: 'claude', event: 'SessionStart', command: 'echo hi' },
+    });
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = await buildReportPayload(config!, { tool: 'codex', cwd: projectDir }) as {
+      user_level: { rules?: Array<{ slug: string }> };
+      workspaces?: Array<{ path: string; rules?: Array<{ slug: string }> }>;
+    };
+
+    // No user-scope entry reached codex: another tool's rule and prompt, a
+    // legacy prompt with no managed block, and another tool's hook.
+    expect(payload.user_level.rules).toBeUndefined();
+    // The project's own entries stay in the workspace, and the user level's
+    // do not leak into it.
+    const workspace = payload.workspaces?.find((w) => w.path === projectReal);
+    expect(workspace?.rules?.map((rule) => rule.slug).sort()).toEqual(['project-prompt', 'project-rule']);
+  });
+
+  it('omits a version neither the manifest nor the hook records', async () => {
+    await setupConfig();
+    const manifestDir = path.join(tmpDir, '.teamai', 'local-agent');
+    await fse.writeJson(path.join(manifestDir, 'manifest.json'), {
+      scopes: {
+        user: {
+          skills: {},
+          rules: { 'unversioned-rule': { slug: 'unversioned-rule', installed_at: 'x', tools: ['codebuddy'] } },
+          claudemd: { 'unversioned-prompt': { slug: 'unversioned-prompt', installed_at: 'x', tools: ['codebuddy'] } },
+        },
+      },
+    });
+    await fse.writeJson(path.join(manifestDir, 'agent-hooks.json'), {
+      'unversioned-hook': { tool: 'codebuddy', event: 'SessionStart', command: 'echo hi' },
+    });
+    await writeRule(tmpDir, 'codebuddy', 'unversioned-rule');
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = await buildReportPayload(config!, { tool: 'codebuddy' }) as {
+      user_level: { rules?: Array<{ slug: string; version?: string }> };
+    };
+
+    expect(payload.user_level.rules?.map((rule) => rule.slug)).toEqual([
+      'unversioned-hook',
+      'unversioned-prompt',
+      'unversioned-rule',
+    ]);
+    for (const rule of payload.user_level.rules ?? []) expect(rule.version).toBeUndefined();
+  });
 });
 
 describe('local-agent: project MCP report is per-worktree (issue #374 P1-2C)', () => {
