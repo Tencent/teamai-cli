@@ -8,6 +8,8 @@ import { defaultScorerRubric, loadCachedScorer, pinScorers, syncScorerDefinition
 import { formatScorerDiagnostic } from '../scorers/definition.js';
 import { log } from '../utils/logger.js';
 import { routingScorers } from '../scorers/skill-routing.js';
+import { teamToolInstances } from '../tool-instances.js';
+import { useToolInstances } from '../tool-registry.js';
 
 const dirs: string[] = [];
 
@@ -62,6 +64,7 @@ function git(cwd: string, ...args: string[]): string {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  useToolInstances(new Map());
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -77,13 +80,17 @@ describe('scorer cache', () => {
     expect((await loadCachedScorer(config, 'quality'))?.definition).toMatchObject({ name: 'quality', passingScore: 1, prompt: 'Judge the change.\n' });
   });
 
-  it('caches a scorer that prefers a judge tool teamai does not know, and warns that only a driver offering it judges with it', async () => {
+  it('caches a scorer that prefers a judge tool teamai does not know, and warns that only a driver offering it judges with it, but not for a tool instance', async () => {
     const config = testConfig();
     writeScorer(config, 'quality.md', VALID.replace('passingScore: 1\n', 'passingScore: 1\ntool: acme-judge\n'));
     writeScorer(config, 'coverage.md', VALID.replace('passingScore: 1\n', 'passingScore: 1\ntool: codex\n'));
+    writeScorer(config, 'style.md', VALID.replace('passingScore: 1\n', 'passingScore: 1\ntool: acme-codex\n'));
+    fs.mkdirSync(path.join(config.repo.localPath, 'tools'));
+    fs.writeFileSync(path.join(config.repo.localPath, 'tools', 'acme-codex.yaml'), 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\n');
+    useToolInstances(new Map((await teamToolInstances(config.repo.localPath)).map((instance) => [instance.name, instance])));
     const warn = vi.spyOn(log, 'warn');
 
-    expect(await syncScorerDefinitions(config)).toEqual({ cached: ['coverage', 'quality'], invalid: [], verified: [] });
+    expect(await syncScorerDefinitions(config)).toEqual({ cached: ['coverage', 'quality', 'style'], invalid: [], verified: [] });
     expect(warn.mock.calls.map(([message]) => message)).toEqual([
       '[scorers] scorers/quality.md: tool "acme-judge" is no tool this teamai knows. A driver that offers a judge tool of that name judges with it; any other judges with a tool it offers.',
     ]);

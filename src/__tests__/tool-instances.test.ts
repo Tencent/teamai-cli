@@ -338,6 +338,14 @@ describe('the facts an instance keeps from the tool it extends', () => {
     expect(await read(`acme-${base}`)).toEqual(shipped);
     expect(await read('custom-tool')).not.toEqual(shipped);
   });
+
+  it('compares the skills of an instance whose skills follow the session by its own home', async () => {
+    await load(teamRepo({ 'tools/acme-openclaw.yaml': instanceOf('openclaw') }));
+    const { sessionToolHomesOf } = await import('../resources/places.js');
+
+    expect(sessionToolHomesOf({ skills: { 'acme-openclaw': [path.join(home, '.acme-openclaw', 'skills')] } }))
+      .toEqual({ 'acme-openclaw': path.join(home, '.acme-openclaw') });
+  });
 });
 
 describe('the hooks of an instance', () => {
