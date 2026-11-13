@@ -56,7 +56,7 @@ You need the repo URL.
    teamai doctor
    teamai list        # the team's skills, rules, docs, env, agents, hooks and MCP servers
    ```
-3. Open your AI tool in that project.
+3. Open your AI tool in that project or a subdirectory. Session-start sync uses the workspace config and delivers resources at the workspace root. Outside Git, the nearest parent workspace config applies; a nested Git repository does not inherit the outer workspace config.
 
 Day-to-day commands are in the [Member Guide](./member-guide.md). Searching what teammates learned is in [Team Context](./knowledge.md).
 
