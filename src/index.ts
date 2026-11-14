@@ -203,7 +203,8 @@ program
   .option('--http <url>', 'Git-free HTTP team repo (read-only consumer; only needs an API key)')
   .option('--provider <name>', 'Git provider for the team repo on this machine: tgit, github, cnb, gitlab, gitcode, or git. Skips auto-detection. `git` uses your existing Git auth and needs no platform token, but opens no PR/MR.')
   .option('--self', 'Self mode: the current git repo is the team repo (equivalent to `teamai init .`). Knowledge lives on main under .teamai/; reports go to the teamai-reports orphan branch.')
-  .option('--token <key>', 'API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN. With --http and a single --agent, an agent access token (sk-) is kept for that agent only, next to the other agents\' tokens (--force keeps them too); while that agent\'s current token still works it is kept and the new one is not used. Without --agent on a machine where one agent already holds a token, that agent takes it, or — keeping its working one — the new token serves the tools without a token of their own.')
+  .option('--token <key>', 'API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN. With --http and a single --agent, an sk- token is kept for that agent only, next to the other agents\' tokens (--force keeps them too); while that agent\'s current token still works it is kept and the new one is not used unless --replace-token is passed. Without --agent on a machine where one agent already holds a token, that agent takes it, or — keeping its working one — the new token serves the tools without a token of their own.')
+  .option('--replace-token', 'With --http and --token, use the supplied token without checking the old one. Only an sk- token changes: a shared key already replaced the old one, so the option has nothing to do for it. Other agents keep their tokens; the backend may invalidate this agent\'s old token.')
   .option('--scope <scope>', 'Install scope: workspace (default, <cwd>/.teamai + <cwd>/.claude) or user (~/.teamai + ~/.claude); project is the older name for workspace')
   .option('--inherit-user-scope', 'In workspace scope, also sync safe user-scope resources, load its env variables (not its secrets) in the workspace, and search its knowledge')
   .option('--no-inherit-user-scope', 'Disable user-scope inheritance for this workspace')
@@ -233,17 +234,23 @@ program
     + '— skills, knowledge for rules, agents, learnings, docs, env, hooks, mcp, models, and more (from manifest/projects.yaml)')
   .option('--shared', 'Place new resources at the shared root for all roles; cannot combine with --role or --project')
   .option('--branch <name>', 'Push to this destination branch instead of a generated teamai/push branch')
+  .option('--file <local file>', 'Push exactly this local file, byte for byte, to the team path --path names, as a pull request. '
+    + 'No other change in the team clone joins it; requires --path')
+  .option('--path <team path>', 'Where --file goes in the team repo, such as benchmarks/frontend/tasks/pod-startup.yaml or scorers/review.md. '
+    + 'Placed exactly there, never relocated; cannot combine with --skill, --role, --project, --shared, --all or --carried')
   .option('--carried <path@blob>', 'Override the stop for a push that would overwrite or delete a placed agent file a teammate changed. '
     + 'Use it only after carrying that change into your root copy, with the value the stop printed; '
     + 'a later team edit stops the push again. Repeatable', (val: string, acc: string[]) => acc.concat(val), [])
   .action(async (cmdOpts) => {
     const globalOpts = program.opts<GlobalOptions>();
+    // --file and --path name one file and its destination: no scan, no placement.
+    const { isFilePush, pushFile } = await import('./push-file.js');
     const { push } = await import('./push.js');
     // Only notify when a real push actually happened — not on dry-run, cancel,
     // no-change, or a handled failure (#702 follow-up).
     const outcome = { completed: false };
     const options = { ...globalOpts, ...cmdOpts };
-    await reportNotInitialized(() => push(options, outcome));
+    await reportNotInitialized(() => (isFilePush(options) ? pushFile(options, outcome) : push(options, outcome)));
 
     if (outcome.completed) await notifyWebhook('push');
   });
@@ -280,10 +287,11 @@ program
 
 program
   .command('list [type]')
-  .description('List resources (skills|rules|docs|env|agents|hooks|mcp|workflows). For skills, --source local/all also scans installed AI agent skill directories. Workflows show their source: team, teamai\'s default, or not runnable.')
+  .description('List resources (skills|rules|docs|env|agents|hooks|mcp|workflows). For skills, --source local/all also scans installed AI agent skill directories. Workflows show their source: team, teamai\'s default, or not runnable. A team folder over a teamai default shows how many of its files are its own and how many it inherits.')
   .option('--source <src>', 'Where to look for skills: repo | local | all', 'all')
   .option('--agent <name>', 'Filter local agents by id (only applies to skills)')
   .option('--reveal', 'Show env values in plaintext (default: masked)')
+  .option('--json', 'Print the team repo\'s resources as JSON, env left out. Each file of a team folder over a teamai default has the layer it comes from: team or teamai')
   .action(async (type, cmdOpts) => {
     const globalOpts = program.opts<GlobalOptions>();
     const { list } = await import('./status.js');
@@ -682,7 +690,8 @@ sourceCmd
   .command('add-http <endpoint>')
   .description('Add an HTTP source (report/sync/ack) alongside a git main repo')
   .option('--token <key>', 'API token for the HTTP endpoint (stored 0600, never committed)')
-  .option('--agent <name>', 'The AI tool this token is for (e.g. codebuddy, claude); hooks are injected into that tool only. An agent access token (sk-) works for one agent only, so each agent keeps its own; while that agent\'s current token still works it is kept and the new one is not used.')
+  .option('--replace-token', 'Use --token without checking the old token. Only an sk- token changes: a shared key already replaced the old one. Other agents keep their tokens; the backend may invalidate this agent\'s old token.')
+  .option('--agent <name>', 'The AI tool this token is for (e.g. codebuddy, claude); hooks are injected into that tool only. Each agent keeps its own sk- token; a working token is kept unless --replace-token is passed.')
   .option('--force', 'Overwrite an existing HTTP source config')
   .action(async (endpoint: string, cmdOpts) => {
     const globalOpts = program.opts<GlobalOptions>();
@@ -1020,7 +1029,7 @@ benchmarkCmd
 
 const scoreCmd = program
   .command('score')
-  .description('Label a workflow pass or a finished agent session with team scorers (scorers/<name>.md). --run <id>, --session <id> or --team-session <name>, with --scorer, starts the default workflow teamai-score for that subject with demand named (no sampling; a failed or expired judgment opens again), on the driver --driver or workflows.driver names, else local, and prints the labels it wrote. A run for a driver this machine does not run waits for it, and the command says how to drive it here. A person starts it from their own terminal: from an agent session the start answers invoke_denied, and an agent judges its session with /teamai-share-session instead. The pass, session, scorers and --label value are checked before any run starts. When only a judge step no tool here can run is left, it exits 1 with judge_pending and the labels already written; a scorer with no label exits 1 with its code. A scorer file (--scorer ./scorers/x.md) starts the default workflow teamai-try-scorer instead, which judges the session and its first prompt alone and stores no label; from an agent session it answers invoke_denied, and an agent tries a scorer with /teamai-new-scorer. Prints one JSON envelope; --drain prints lines.')
+  .description('Label a workflow pass or a finished agent session with team scorers (scorers/<name>.md or scorers/<name>/SCORER.md). --run <id>, --session <id> or --team-session <name>, with --scorer, starts the default workflow teamai-score for that subject with demand named (no sampling; a failed or expired judgment opens again), on the driver --driver or workflows.driver names, else local, and prints the labels it wrote. A run for a driver this machine does not run waits for it, and the command says how to drive it here. A person starts it from their own terminal: from an agent session the start answers invoke_denied, and an agent judges its session with /teamai-share-session instead. The pass, session, scorers and --label value are checked before any run starts. When only a judge step no tool here can run is left, it exits 1 with judge_pending and the labels already written; a scorer with no label exits 1 with its code. A scorer file (--scorer ./scorers/x.md, or ./scorers/x/SCORER.md for a scorer folder) starts the default workflow teamai-try-scorer instead, which judges the session and its first prompt alone and stores no label; from an agent session it answers invoke_denied, and an agent tries a scorer with /teamai-new-scorer. Prints one JSON envelope; --drain prints lines.')
   .option('--run <id>', 'Label a pass of this run on demand, with --scorer: a scorer a step of the run lists, read at the team revision the run started from. Refused with step_ambiguous, step_not_found or pass_not_found as --step and --pass say, and with evidence_missing, naming each, when a commit or a session the pass recorded is no longer on this machine; no run starts and no label is written.')
   .option('--step <path>', 'With --run: the step path, such as review or check.review; optional when the run lists the scorers on one step only')
   .option('--pass <n>', 'With --run: the pass to judge; default the step\'s latest succeeded pass')
@@ -2356,7 +2365,9 @@ const maintenanceCmd = recallCmd
     if (cmdOpts.updateQuality) {
       // Listing makes no AI call, so a dry run lists here and starts no run.
       const { findStaleEntries, reportStaleEntries } = await import('./maintenance/index.js');
-      reportStaleEntries(await findStaleEntries(votesDir, { docs: `${repoPath}/docs`, rules: `${repoPath}/rules`, skills: `${repoPath}/skills` }));
+      const { DefaultFolders } = await import('./default-folders.js');
+      const { params: gates } = await DefaultFolders.load({ kind: 'workflows', name: 'teamai-draft-learning-updates' }, localConfig);
+      reportStaleEntries(await findStaleEntries(votesDir, { docs: `${repoPath}/docs`, rules: `${repoPath}/rules`, skills: `${repoPath}/skills` }, gates));
 
       return;
     }
@@ -2372,7 +2383,9 @@ maintenanceCmd
 
     if (!paths) return;
     const { DraftLearningUpdates } = await import('./maintenance/index.js');
-    process.stdout.write(`${JSON.stringify(await DraftLearningUpdates.stale(paths.votesDir, paths.repoPath))}\n`);
+    const { DefaultFolders } = await import('./default-folders.js');
+    const { params: gates } = await DefaultFolders.load({ kind: 'workflows', name: 'teamai-draft-learning-updates' }, paths.config);
+    process.stdout.write(`${JSON.stringify(await DraftLearningUpdates.stale(paths.votesDir, paths.repoPath, gates))}\n`);
   });
 
 maintenanceCmd
@@ -2389,7 +2402,9 @@ maintenanceCmd
     const { DraftLearningUpdates } = await import('./maintenance/index.js');
     const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
     const namespaces = await safeDeliveredLearningsNamespaces(paths.config, 'recall maintenance');
-    process.stdout.write(`${JSON.stringify(await DraftLearningUpdates.context({ path: cmdOpts.path, docId: cmdOpts.docId }, paths.votesDir, paths.learningsReadDirs, namespaces))}\n`);
+    const { DefaultFolders } = await import('./default-folders.js');
+    const { params } = await DefaultFolders.load({ kind: 'workflows', name: 'teamai-draft-learning-updates' }, paths.config);
+    process.stdout.write(`${JSON.stringify(await DraftLearningUpdates.context({ path: cmdOpts.path, docId: cmdOpts.docId }, paths.votesDir, paths.learningsReadDirs, { limit: params.max_related, namespaces }))}\n`);
   });
 
 maintenanceCmd
@@ -2602,7 +2617,10 @@ async function promotionListing(localConfig: LocalConfig, options: { dryRun: boo
 
   if (!paths) return undefined;
 
-  return { paths, candidates: await findPromotionCandidates(paths.learningsReadDirs, paths.votesDir, knowledgeCheckout, { namespaces }) };
+  const { DefaultFolders } = await import('./default-folders.js');
+  const { params: thresholds } = await DefaultFolders.load({ kind: 'workflows', name: 'teamai-promote-learning' }, localConfig);
+
+  return { paths, candidates: await findPromotionCandidates({ learningsDirs: paths.learningsReadDirs, votesDir: paths.votesDir, knowledgeCheckout, namespaces, thresholds }) };
 }
 
 /**

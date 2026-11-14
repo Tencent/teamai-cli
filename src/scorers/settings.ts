@@ -26,7 +26,8 @@ import { getKnowledgeDir, type LocalConfig } from '../types.js';
 import { readEntryFileText } from '../namespaced-entries.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { listDirs, pathExists } from '../utils/fs.js';
-import { holdsMarker, unreadMarker } from '../folder-markers.js';
+import { holdsMarker } from '../folder-markers.js';
+import { SCORER_MARKER } from './folder.js';
 import { SCORING_FILE, scorerNamespaces } from './cache.js';
 import type { IsolationSetting } from './isolation.js';
 import { loadMemberSettings } from '../config.js';
@@ -260,8 +261,8 @@ export async function scopeScoring(config: LocalConfig): Promise<ScopeScoring> {
   const dirs: string[] = [];
 
   for (const dir of (await listDirs(root)).filter(isSafeNamespaceSegment).sort()) {
-    // A scorer folder this release cannot read is no namespace (#1791).
-    if (await holdsMarker(path.join(root, dir), unreadMarker('scorers'))) continue;
+    // A scorer folder is no namespace: a scoring.yaml in it is one of its files.
+    if (await holdsMarker(path.join(root, dir), SCORER_MARKER)) continue;
 
     if (await pathExists(path.join(root, dir, SCORING_FILE))) dirs.push(dir);
   }

@@ -38,11 +38,14 @@ pull 会把 CRLF 换成 LF，并去掉末尾的一个换行。这些文件里没
 
 ## 替换它
 
+在团队仓库根目录的 `rules/teamai-recall/` 里只放你要改的文件。其他文件仍用 teamai 的，并继续获得 teamai 的更新：
+
 ```bash
-cp -r "$(npm root -g)/teamai-cli/rules/teamai-recall" rules/
+mkdir -p rules/teamai-recall
+cp "$(npm root -g)/teamai-cli/rules/teamai-recall/RULE.md" rules/teamai-recall/
 ```
 
-然后在每个 `RULE*.md` 里加上你自己的文字，例如一个跳过条件：
+然后在里面加上你自己的文字，例如一个跳过条件：
 
 ```markdown
 ## Skip for generated code
@@ -50,18 +53,20 @@ cp -r "$(npm root -g)/teamai-cli/rules/teamai-recall" rules/
 A change under `gen/` needs no team knowledge.
 ```
 
-推送这个文件夹。下一次 `teamai pull` 会让每个成员拿到团队的文件，而不是 teamai 的。`teamai push` 从不发布这条 rule。
+你的 `RULE.md` 会替换这条 rule 的所有语言版本：设了 `language: en` 时，成员读到的是它，而不是 teamai 的 `RULE.en.md`。想保留自己的英文 rule，把 `RULE.en.md` 也复制过来，并同样修改。
+
+推送这个文件夹。下一次 `teamai pull` 会让每个成员拿到团队的文件，其余文件仍用 teamai 的。`teamai push` 从不发布这条 rule。
 
 ## 替换要保留什么
 
 | 文件 | 必须 | 原因 |
 |---|---|---|
-| `RULE.md`、`block.md`、`block-direct.md` | 存在 | 缺少某个语言文件时，回退到团队自己的基础文件，不会回退到 teamai 的 |
+| `RULE.md`、`block.md`、`block-direct.md` | 目录里有它的某个语言版本时存在 | 你写的语言版本也会替换 teamai 的基础文件；缺少某个语言文件时，回退到团队自己的基础文件，不会回退到 teamai 的 |
 | 每个 `RULE*.md` | 包含 `Nothing was searched:` 和 `Recall skips the older index` | recall 会打印这些行，rule 告诉 agent 遇到它们时该怎么做 |
 | 每个 `block-direct*.md` | 包含 `Nothing was searched:` | 同上 |
 | 每个文件 | 不写 `${TEAMAI_RULE_DIR}` | pull 只以文本形式交付上面这些文件。示例请直接写进文件里 |
 
-替换违反其中任何一条时，pull 会指出是哪个文件，并继续使用 teamai 的文件夹。
+pull 检查你的文件和 teamai 的文件合起来的目录。违反其中任何一条时，pull 会指出是哪个文件，并继续使用 teamai 的文件夹。teamai 目录里没有的文件不替换任何东西：pull 会警告、点出文件名并忽略它，`teamai review --branch` 会把它判为失败。
 
 ## 影响它的设置
 

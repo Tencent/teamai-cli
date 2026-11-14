@@ -52,6 +52,18 @@ function withoutRetiredHooks(value: unknown): unknown {
   return value;
 }
 
+/** Keep the fixture comparison aligned with the Codex statusMessage label (#1848): each built-in entry carries `teamai-<Event>`. */
+function labelCodexHooks(value: unknown): unknown {
+  const config = value as { hooks: Record<string, { hooks: Record<string, unknown>[] }[]> };
+  return {
+    ...config,
+    hooks: Object.fromEntries(Object.entries(config.hooks).map(([event, matchers]) => [
+      event,
+      matchers.map((matcher) => ({ ...matcher, hooks: matcher.hooks.map((hook) => ({ ...hook, statusMessage: `teamai-${event}` })) })),
+    ])),
+  };
+}
+
 /** Keep the fixture comparison aligned with the Codex commandWindows migration. */
 function currentCodexWindows(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(currentCodexWindows);
@@ -87,7 +99,7 @@ describe('reconcile retires the Skill dispatch hook (#1221)', () => {
     const after = fs.readFileSync(settings, 'utf-8');
     // ZCode intentionally upgrades -lc to its clean process runner (#1221).
     if (name !== 'zcode') {
-      const expected = name === 'codex' ? currentCodexWindows(withoutRetiredHooks(JSON.parse(before))) : withoutRetiredHooks(JSON.parse(before));
+      const expected = name === 'codex' ? currentCodexWindows(labelCodexHooks(withoutRetiredHooks(JSON.parse(before)))) : withoutRetiredHooks(JSON.parse(before));
       expect(JSON.parse(after)).toEqual(expected);
     }
     await expect(after).toMatchFileSnapshot(path.join(FIXTURES, `${name}.after.json`));

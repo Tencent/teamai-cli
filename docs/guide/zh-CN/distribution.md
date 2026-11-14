@@ -253,7 +253,20 @@ teamai roles list --json
 
 ## 把技能限定给部分成员
 
-Namespace 只对设置了角色的成员过滤：`primaryRole` 未设置的成员会同步全部技能，因此只有 `manifest/roles.yaml` 并不限定任何人。有了 `manifest/members.yaml` 这个缺口就被补上——未列出的成员只接收共享资源。`teamai init` 会让新成员选择角色；manifest 之前入队的成员需要执行一次 `teamai roles set <role-id>`。之后的 pull 会收回新 namespace 之外、由 teamai 下发的副本（本地改过的保留）。
+默认情况下，Namespace 只对设置了角色的成员过滤：`primaryRole` 未设置的成员会同步全部技能，因此只有 `manifest/roles.yaml` 并不限定任何人。有了 `manifest/members.yaml` 这个缺口就被补上——未列出的成员只接收共享资源。`teamai init` 会让新成员选择角色；manifest 之前入队的成员需要执行一次 `teamai roles set <role-id>`。之后的 pull 会收回新 namespace 之外、由 teamai 下发的副本（本地改过的保留）。
+
+如需成员自行选择角色，同时要求指定技能命名空间必须有角色才能分发，在团队配置中设置：
+
+```yaml
+# teamai.yaml
+sharing:
+  skills:
+    roleRequiredNamespaces: [bus_common, ebao, health]
+```
+
+列出的命名空间只有在有效角色的 `resources.skills` 中声明后才会分发。没有角色时，pull 跳过这些命名空间并提示执行 `teamai roles list`、`teamai roles set developer`，然后 `teamai pull`。角色必须已在 `manifest/roles.yaml` 中定义；teamai 不会替成员选择角色。团队分配的角色仍遵循 `manifest/members.yaml`。工作流副本使用其步骤角色。
+
+标签和项目选择同样受此条件约束。工作区先按各子目录自身的有效角色筛选，再合并其资源。pull 会移除不再符合条件、且未被修改的 teamai 下发副本，并保留本地改动。省略配置或设置为 `[]` 时保持原有行为；未列出的命名空间和其它资源类型沿用现有规则。名称是 `skills/` 下的单层目录名，不是路径或通配符。团队依赖此配置前，所有成员都必须升级到支持它的 CLI。
 
 要提醒一直没设角色的成员，可以用强制规则让 agent 检查 `teamai roles list` 并催促设置——强制规则成员不可删除：
 
@@ -264,7 +277,7 @@ sharing:
     enforced: [set-your-role]
 ```
 
-标签从不做限定：订阅只会额外拉取匹配标签的技能。限定用 namespace + 角色，标签用于自愿加法。
+标签会额外拉取匹配技能，但不能绕过 `roleRequiredNamespaces`。标签用于允许范围内的自愿加法。
 
 ### 根目录和命名空间里有同名技能
 
@@ -285,7 +298,7 @@ skills/legacy/code-review/SKILL.md   旧 monorepo 的清单；没有角色列出
 | 角色 `dev` | `skills/dev/release` | 无 | 无 |
 | 角色 `sre` | 无 | `skills/sre/oncall` | 无 |
 
-有角色的成员拿到角色接收的命名空间；根目录技能只能通过[标签](#标签)到达，且活跃命名空间里的同名副本会取代它。没有角色也没有项目的成员拿到全部技能：根目录那份优先，两个命名空间之间名称排序靠前的优先。每台机器拿到的副本都一样，`pull` 会逐条说明跳过了哪一份：
+有角色的成员拿到角色接收的命名空间；根目录技能只能通过[标签](#标签)到达，且活跃命名空间里的同名副本会取代它。未配置 `roleRequiredNamespaces` 时，没有角色也没有项目的成员拿到全部技能：根目录那份优先，两个命名空间之间名称排序靠前的优先。每台机器拿到的副本都一样，`pull` 会逐条说明跳过了哪一份：
 
 ```text
 $ teamai pull

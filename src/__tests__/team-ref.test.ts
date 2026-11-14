@@ -503,6 +503,12 @@ describe('pushRepoBranch explicit destination', () => {
 
   it('refuses a self-mode destination that holds an unpushed commit', async () => {
     const { localPath, git } = await fixture('explicit-self-refusal');
+    await git.checkoutLocalBranch('feature/pushed');
+    await fs.writeFile(path.join(localPath, 'pushed.txt'), 'pushed\n');
+    await git.add('pushed.txt');
+    await git.commit('pushed');
+    await git.push(['-u', 'origin', 'feature/pushed']);
+    await git.checkout('main');
     await git.checkoutLocalBranch('feature/mine');
     await fs.writeFile(path.join(localPath, 'mine.txt'), 'mine\n');
     await git.add('mine.txt');
@@ -512,6 +518,8 @@ describe('pushRepoBranch explicit destination', () => {
     await expect(explicitBranchRefusal(localPath, 'feature/mine', true))
       .resolves.toContain('1 commit(s) not on origin');
     await expect(explicitBranchRefusal(localPath, 'feature/mine', false)).resolves.toBeNull();
+    await expect(explicitBranchRefusal(localPath, 'feature/pushed', true)).resolves.toBeNull();
+    await expect(explicitBranchRefusal(localPath, 'release/new', true)).resolves.toBeNull();
     await expect(explicitBranchRefusal(localPath, 'main', true)).resolves.toContain('default branch');
   });
 
@@ -620,9 +628,14 @@ it('matches removal names to handler names for flat and namespaced resources', a
   await git.add('.');
   await git.commit('empty team');
   const empty = (await git.revparse(['HEAD'])).trim();
-  for (const file of ['skills/flat/SKILL.md', 'skills/fe/scoped/SKILL.md', 'rules/flat.md', 'rules/fe/scoped.md', 'agents/flat.yaml', 'agents/fe/scoped.md']) {
+  for (const file of [
+    'skills/flat/SKILL.md', 'skills/flat/notes.md', 'skills/fe/scoped/SKILL.md', 'skills/single.md', 'skills/fe/one.md', 'skills/README.md', 'skills/NOTES.md',
+    'rules/flat.md', 'rules/fe/scoped.md', 'rules/style/RULE.md', 'rules/style/checklist.md', 'rules/api/SKILL.md', 'rules/api/style.md',
+    'agents/flat.yaml', 'agents/fe/scoped.md', 'agents/reviewer/AGENT.md', 'agents/reviewer/rubric.md', 'agents/fe/judge/AGENT.md',
+  ]) {
     await fs.mkdir(path.dirname(path.join(repo, file)), { recursive: true });
-    await fs.writeFile(path.join(repo, file), 'fixture\n');
+    // A skill file is a skill by its description; NOTES.md has none, so it stays notes.
+    await fs.writeFile(path.join(repo, file), /^skills\/(?:fe\/)?(?:single|one)\.md$/.test(file) ? '---\ndescription: d\n---\nfixture\n' : 'fixture\n');
   }
   await git.add('.');
   await git.commit('resource names');
@@ -631,7 +644,6 @@ it('matches removal names to handler names for flat and namespaced resources', a
   const team = TeamaiConfigSchema.parse({ team: 'names', repo: local.repo.remote });
   for (const type of ['skills', 'rules', 'agents'] as const) {
     const items = await getHandler(type).scanTeamForPull(team, local);
-    expect(items).toHaveLength(2);
     expect(removed[type]).toEqual(new Set(items.map((item) => item.name)));
   }
 });

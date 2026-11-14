@@ -46,6 +46,9 @@ const RowSchema = z.object({
   otherByCommand: z.record(z.string(), z.object({ waited: z.number().int(), after: z.number().int() })),
   /** Milliseconds the tool waited on the row's commands in this one run; not a count, so never compared. */
   waitedMs: z.number().int().nonnegative(),
+  // A lock wait polls, so these move between runs: shown, never compared. A main measured before them has none.
+  fsWaited: z.number().int().optional(),
+  fsAfter: z.number().int().optional(),
 });
 
 export const AgentWaitBudgetSchema = z.object({
@@ -63,11 +66,15 @@ type Row = z.infer<typeof RowSchema>;
 
 const COUNTS = ['gitWaited', 'gitAfter', 'nodeWaited', 'nodeAfter', 'ghWaited', 'ghAfter', 'otherWaited', 'otherAfter', 'filesWritten'] as const;
 const WAITED = ['gitWaited', 'nodeWaited', 'ghWaited', 'otherWaited'] as const;
+const FILE_SYSTEM = ['fsWaited', 'fsAfter'] as const;
+const COLUMNS = [...COUNTS, ...FILE_SYSTEM] as const;
 const PROCESSES = ['gitWaited', 'gitAfter', 'nodeWaited', 'nodeAfter', 'ghWaited', 'ghAfter', 'otherWaited', 'otherAfter'] as const;
 
 type Count = (typeof COUNTS)[number];
 
-const COUNT_LABELS: Record<Count, string> = {
+type Column = Count | (typeof FILE_SYSTEM)[number];
+
+const COUNT_LABELS: Record<Column, string> = {
   gitWaited: 'git processes',
   gitAfter: 'git processes after',
   nodeWaited: 'Node processes',
@@ -77,6 +84,8 @@ const COUNT_LABELS: Record<Count, string> = {
   otherWaited: 'other processes',
   otherAfter: 'other processes after',
   filesWritten: 'files written',
+  fsWaited: 'file system calls',
+  fsAfter: 'file system calls after',
 };
 
 // ───────────────────────────── instruments ─────────────────────────────
@@ -92,6 +101,7 @@ const Trace2EventSchema = z.union([
 const NodeRecordSchema = z.discriminatedUnion('ev', [
   z.object({ ev: z.literal('start'), pid: z.number().int(), argv: z.array(z.string()), side: z.enum(['waited', 'after']) }),
   z.object({ ev: z.literal('spawn'), pid: z.number().int(), child: z.number().int().nullable(), command: z.array(z.string()), detached: z.boolean() }),
+  z.object({ ev: z.literal('fs'), pid: z.number().int(), calls: z.number().int() }),
 ]);
 
 const readLines = (file: string): string[] => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean) : []);
@@ -113,6 +123,16 @@ function processName(command: readonly string[]): string {
   const script = flag === -1 ? undefined : args[flag + 1];
 
   return script === undefined ? name : `${name} ${args[flag]} ${script.trim().split(/\s+/)[0] ?? ''}`;
+}
+
+/** The file system calls the measured Node processes made, by the side each process ran on. */
+export function fileSystemCalls(records: readonly NodeRecord[]) {
+  const sides = new Map(records.flatMap((record) => (record.ev === 'start' ? [[record.pid, record.side] as const] : [])));
+  const calls = { waited: 0, after: 0 };
+
+  for (const record of records) if (record.ev === 'fs') calls[sides.get(record.pid) ?? 'waited'] += record.calls;
+
+  return calls;
 }
 
 /**
@@ -211,7 +231,7 @@ function waitForBackground(files: readonly string[], logs: { node: string; trace
 
   while (Date.now() < deadline) {
     const pids = new Set([
-      ...nodeRecords(logs.node).flatMap((record) => (record.ev === 'start' ? [record.pid] : record.child === null ? [] : [record.child])),
+      ...nodeRecords(logs.node).flatMap((record) => (record.ev === 'start' ? [record.pid] : record.ev === 'spawn' && record.child !== null ? [record.child] : [])),
       ...gitProcesses(logs.trace2).map((git) => git.pid),
     ]);
 
@@ -440,6 +460,7 @@ function measure(world: World, dir: string, run: Run, failures: string[]): Measu
 
   const remote = new Set(gits.map((git) => subcommand(git.argv)).filter((name) => REMOTE_GIT.has(name)));
   const others = otherProcesses(nodes);
+  const fsCalls = fileSystemCalls(nodes);
 
   if (spawns.some((record) => /(^|\/)npm(\s|$)/.test(record.command[0] ?? ''))) remote.add('npm');
 
@@ -463,6 +484,8 @@ function measure(world: World, dir: string, run: Run, failures: string[]): Measu
       gitByCommand: Object.fromEntries(Object.entries(byCommand).sort(([left], [right]) => left.localeCompare(right))),
       otherByCommand: others.byCommand,
       waitedMs: Math.round(waitedMs),
+      fsWaited: fsCalls.waited,
+      fsAfter: fsCalls.after,
     },
     lines,
     gits,
@@ -797,12 +820,11 @@ export function compareAgentWait(head: AgentWaitBudget, base: AgentWaitBudget) {
     }
   }
 
-  const cell = (was: Row | undefined, now: Row | undefined, count: Count): string => {
-    if (was === undefined) return `none / ${now?.[count] ?? ''}`;
+  const cell = (was: Row | undefined, now: Row | undefined, count: Column): string => {
+    const before = was?.[count] ?? 'none';
+    const after = now?.[count] ?? 'none';
 
-    if (now === undefined) return `${was[count]} / none`;
-
-    return was[count] === now[count] ? String(now[count]) : `${was[count]} / ${now[count]}`;
+    return before === after ? String(after) : `${before} / ${after}`;
   };
 
   const all = [...new Set([...headRows.keys(), ...baseRows.keys()])].map((name) => {
@@ -810,7 +832,7 @@ export function compareAgentWait(head: AgentWaitBudget, base: AgentWaitBudget) {
     const now = headRows.get(name);
     const row = now ?? was;
 
-    return `| ${row?.row ?? ''}, ${row?.run ?? ''} run | ${COUNTS.map((count) => cell(was, now, count)).join(' | ')} | ${was?.waitedMs ?? 'none'} / ${now?.waitedMs ?? 'none'} |`;
+    return `| ${row?.row ?? ''}, ${row?.run ?? ''} run | ${COLUMNS.map((count) => cell(was, now, count)).join(' | ')} | ${was?.waitedMs ?? 'none'} / ${now?.waitedMs ?? 'none'} |`;
   });
 
   const top = changed.length === 0
@@ -822,10 +844,10 @@ export function compareAgentWait(head: AgentWaitBudget, base: AgentWaitBudget) {
     '',
     `<details><summary>Every row, main / this PR</summary>`,
     '',
-    `The budget is the counts of processes and files. The last column is how many milliseconds the tool waited in one run on each side on this machine, for reference: it is not compared. Claude Code ${head.toolVersion}, workspace scope, team repo mode git, ${head.platform}, git ${head.git} (main: git ${base.git}), from the main checkout and linked worktrees. Not measured: ${NOT_MEASURED}.`,
+    `The budget is the counts of processes and files. The file system calls each Node process made into fs are shown, not compared: a lock wait polls. The last column is how many milliseconds the tool waited in one run on each side on this machine, for reference: it is not compared. Claude Code ${head.toolVersion}, workspace scope, team repo mode git, ${head.platform}, git ${head.git} (main: git ${base.git}), from the main checkout and linked worktrees. Not measured: ${NOT_MEASURED}.`,
     '',
-    `| Row | ${COUNTS.map((count) => COUNT_LABELS[count]).join(' | ')} | ms waited, one run |`,
-    `| --- |${COUNTS.map(() => ' ---: |').join('')} ---: |`,
+    `| Row | ${COLUMNS.map((count) => COUNT_LABELS[count]).join(' | ')} | ms waited, one run |`,
+    `| --- |${COLUMNS.map(() => ' ---: |').join('')} ---: |`,
     ...all,
     '',
     '</details>',

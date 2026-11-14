@@ -49,7 +49,7 @@ vi.mock('../utils/logger.js', () => ({
   })),
 }));
 
-import { pull } from '../pull.js';
+import { pull, type CheckoutRecord } from '../pull.js';
 import { log } from '../utils/logger.js';
 import { loadLocalConfigForScope, loadStateForScope, loadTeamConfig, saveStateForScope } from '../config.js';
 import { TeamaiConfigSchema, type LocalConfig, type State } from '../types.js';
@@ -58,11 +58,11 @@ import { TeamaiConfigSchema, type LocalConfig, type State } from '../types.js';
 const AGENT = (name: string): string => `---\nname: ${name}\ndescription: The ${name} agent.\n---\nDo the ${name} work.\n`;
 
 /**
- * A member upgrades while the team revision stays put: the copies an older
- * release delivered from a folder this release skips must go on the first
- * pull, not on the team's next commit (#1791).
+ * A member upgrades from a release that skipped agent folders while the team
+ * revision stays put: the folders it skipped must arrive on the first pull,
+ * not on the team's next commit (#1791, #1787).
  */
-describe('a pull at an unchanged team revision after a folder becomes skipped (#1791)', () => {
+describe('a pull at an unchanged team revision after an older release skipped folders (#1791)', () => {
   let tmpDir: string;
   let homeDir: string;
   let repoPath: string;
@@ -70,13 +70,16 @@ describe('a pull at an unchanged team revision after a folder becomes skipped (#
 
   const agentsDir = () => path.join(homeDir, '.claude', 'agents');
 
+  const records = (): CheckoutRecord[] => Object.values(saved.lastPullByWorkspace ?? {});
+
+  const synced = (): boolean => !vi.mocked(log.success).mock.calls.some(([message]) => String(message).includes('Already synced at abc1234'));
+
   beforeEach(async () => {
     tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-skipped-fast-path-'));
     homeDir = path.join(tmpDir, 'home');
     repoPath = path.join(tmpDir, 'team-repo');
     await fse.ensureDir(path.join(homeDir, '.claude'));
     await fse.outputFile(path.join(repoPath, 'agents', 'style.md'), AGENT('style'));
-    await fse.outputFile(path.join(repoPath, 'agents', 'api-style', 'checklist.md'), AGENT('checklist'));
     vi.stubEnv('HOME', homeDir);
     saved = {} as State;
     vi.mocked(saveStateForScope).mockImplementation(async (state) => {
@@ -95,6 +98,11 @@ describe('a pull at an unchanged team revision after a folder becomes skipped (#
       enabledAgents: ['claude'],
     } as LocalConfig);
     await pull({});
+    // The older release found the folder at this revision, skipped it, and said so in its record.
+    await fse.outputFile(path.join(repoPath, 'agents', 'reviewer', 'AGENT.md'), AGENT('reviewer'));
+    await fse.outputFile(path.join(repoPath, 'agents', 'reviewer', 'rubric.md'), '# Rubric\n');
+    for (const record of records()) record.skippedFolders = ['agents/reviewer/'];
+    vi.mocked(log.success).mockClear();
   });
 
   afterEach(async () => {
@@ -104,29 +112,21 @@ describe('a pull at an unchanged team revision after a folder becomes skipped (#
     await fse.remove(tmpDir);
   });
 
-  it('syncs in full on the first pull, delivering nothing from the folder and the rest as before', async () => {
-    expect(await fse.pathExists(path.join(agentsDir(), 'checklist.md'))).toBe(true);
-    // The folder's marker was there all along; the release that pulled it
-    // read it as an ordinary directory.
-    await fse.outputFile(path.join(repoPath, 'agents', 'api-style', 'AGENT.md'), AGENT('AGENT'));
-    vi.mocked(log.success).mockClear();
-
+  it('syncs in full on the first pull, delivers the folder, and stops recording skipped folders', async () => {
     await pull({});
 
-    const successes = vi.mocked(log.success).mock.calls.map(([message]) => String(message));
-    expect(successes.some((message) => message.includes('Already synced at abc1234'))).toBe(false);
-    expect(await fse.pathExists(path.join(agentsDir(), 'AGENT.md'))).toBe(false);
+    expect(synced()).toBe(true);
     expect(await fse.readFile(path.join(agentsDir(), 'style.md'), 'utf8')).toBe(AGENT('style'));
+    expect(await fse.pathExists(path.join(agentsDir(), 'reviewer.md'))).toBe(true);
+    expect(records().map((record) => record.skippedFolders)).toEqual([undefined]);
   });
 
-  it('takes the fast path again once the folders it skips are on record', async () => {
-    await fse.outputFile(path.join(repoPath, 'agents', 'api-style', 'AGENT.md'), AGENT('AGENT'));
+  it('takes the fast path again on the next pull', async () => {
     await pull({});
     vi.mocked(log.success).mockClear();
 
     await pull({});
 
-    const successes = vi.mocked(log.success).mock.calls.map(([message]) => String(message));
-    expect(successes.some((message) => message.includes('Already synced at abc1234'))).toBe(true);
+    expect(synced()).toBe(false);
   });
 });

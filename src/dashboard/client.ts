@@ -3,7 +3,6 @@ import { scorersClient } from './scorers-client.js';
 import { selfImprovementClient } from './self-improvement-client.js';
 import { improvementClient } from './improvement-client.js';
 import { handoffView } from './handoff-view.js';
-import { skippedFoldersView } from './skipped-folders-view.js';
 import { layeredResourcesView } from './layered-resources-view.js';
 import { agentHarnessView } from './agent-harness-view.js';
 import { chartFitView } from './chart-fit-view.js';
@@ -85,7 +84,7 @@ function overview() {
  const working=sessions.filter(s=>s.status==='running').length;
  const waiting=sessions.filter(s=>s.status==='waiting_for_input').length;
  const maintenance=kb?Object.values(kb.maintenanceCounts).reduce((a,b)=>a+b,0):null;
- return skippedFoldersNotice(rules&&rules.skippedFolders)+layeredResourcesNotice(layered)+'<div class="cards"><article class="card"><div class="cardtop">'+label('Sessions')+icon('execution')+'</div><div class="source">'+label('Local live sessions')+'</div><div class="big summary-value">'+(haveSessions?number(sessions.length):'—')+'<small>'+label('sessions on this machine')+'</small></div><div class="statusline">'+number(working)+' '+label('Working')+' · '+number(waiting)+' '+label('Your turn')+'</div><div class="cardfoot">'+link('execution','View sessions')+'</div></article>'+
+ return layeredResourcesNotice(layered)+'<div class="cards"><article class="card"><div class="cardtop">'+label('Sessions')+icon('execution')+'</div><div class="source">'+label('Local live sessions')+'</div><div class="big summary-value">'+(haveSessions?number(sessions.length):'—')+'<small>'+label('sessions on this machine')+'</small></div><div class="statusline">'+number(working)+' '+label('Working')+' · '+number(waiting)+' '+label('Your turn')+'</div><div class="cardfoot">'+link('execution','View sessions')+'</div></article>'+
  '<article class="card"><div class="cardtop">'+label('Knowledge Base')+'</div>'+source()+'<div class="big summary-value">'+(kb?number(kb.overallCoveragePct)+'%':'—')+'<small>'+label('Knowledge coverage')+'</small></div><div class="statusline">'+(kb?number(kb.totalEntries)+' '+label('Entries')+' · '+number(kb.silentCount)+' '+label('Never recalled'):label(kbError?'Unavailable':'Loading…'))+'</div><div class="cardfoot">'+link('context','View KB Health')+'</div></article>'+
  '<article class="card"><div class="cardtop">'+label('Improvement Center')+'</div><div class="source">'+label('KB Health maintenance candidates')+'</div><div class="big summary-value">'+(maintenance===null?'—':number(maintenance))+'<small>'+label('candidates for review')+'</small></div><div class="statusline">'+(kb?number(kb.maintenanceCounts.promote)+' '+label('Promotion')+' · '+number(kb.maintenanceCounts.prune)+' '+label('Archive')+' · '+number(kb.maintenanceCounts.stale)+' '+label('Stale'):label(kbError?'Unavailable':'Loading…'))+'</div><div class="cardfoot">'+link('improvement','View maintenance')+'</div></article></div>'+
  (kbError?errorPanel('Could not refresh KB Health. Any displayed report is the last successful result.','kb'):'')+sharingSection()+memberSettingsSection()+trendPanel()+outcomePanel()+sessionTable(sessions);
@@ -102,7 +101,7 @@ function outcomePanel() {
  const o=outcomeSummary, head='<h2 class="section-label">'+label('What finished sessions delivered')+' <span class="tag">'+label('Local · last 30 days')+'</span></h2>';
  if(!o) return head+(outcomesError?errorPanel('Could not load session outcomes.','outcomes'):'<div class="empty" role="status">'+label('Loading…')+'</div>');
  const retry=outcomesError?errorPanel('Could not refresh session outcomes. Any displayed values are the last successful result.','outcomes'):'';
- if(!o.sessions) return head+retry+'<section class="panel"><div class="empty"><h2>'+label('No finished session counted yet')+'</h2><p>'+label('The usage report counts a session 6 hours after it goes quiet, when teamai pull reports usage. Its commits, pull requests and learnings then show here.')+'</p></div></section>';
+ if(!o.sessions) return head+retry+'<section class="panel"><div class="empty"><h2>'+label('No finished session counted yet')+'</h2><p>'+label('The usage report counts a session once it has been quiet as long as teamai-finished-sessions waits, 6 hours unless your team changed it, when teamai pull reports usage. Its commits, pull requests and learnings then show here.')+'</p></div></section>';
  const rows=Object.keys(outcomeModes).flatMap(mode=>Object.keys(outcomeKinds).filter(kind=>o.rows[mode]?.[kind]).map(kind=>[mode,kind,o.rows[mode][kind]]));
  const perSession=(r,value)=>value/r.sessions;
  return head+retry+'<div class="outcome-summary"><article class="card"><div class="cardtop">'+label('Delivered')+'</div><div class="source">'+label('Finished sessions with a commit, pull request or learning')+'</div><div class="big summary-value">'+number(Math.round(o.delivered/o.sessions*100))+'%</div><div class="statusline">'+number(o.delivered)+' / '+number(o.sessions)+' '+label('sessions')+'</div></article>'
@@ -177,7 +176,7 @@ function resources() {
  // The two panels load and fail independently: a rules outage must not hide
  // the skills list or block its exclusions, and vice versa.
  if((rules&&rules.configured===false)||(skills&&skills.configured===false))return '<section class="panel"><div class="empty"><h2>'+label('No TeamAI scope in this workspace')+'</h2><p>'+label('Pick a project workspace above, or set one up with teamai init.')+'</p></div></section>';
- return skippedFoldersPanel(rules&&rules.skippedFolders)+layeredSection()+skillsPanel()+rulesPanel();
+ return layeredSection()+skillsPanel()+rulesPanel();
 }
 // Which definition of each resource applies (#1787): loads and fails apart from
 // rules and skills, since it runs pull's definition sync, dry.
@@ -269,7 +268,6 @@ function runTable(rows, local) {
 function handoffsOf() { return workflows&&workflows.reported&&workflows.reported.state==='ok'?workflows.reported.handoffs||[]:[]; }
 function handoffBadge(id) { const h=handoffsOf().find(x=>x.run===id); return !h?'':h.offer?' · <span class="good">'+label('Offered')+'</span>':h.isMine?'':' · <span class="amber">'+label('Held by')+' <span data-verbatim>'+e(h.owner.user)+'</span></span>'; }
 ${handoffView}
-${skippedFoldersView}
 ${layeredResourcesView}
 ${agentHarnessView}
 ${judgingView}
@@ -468,7 +466,7 @@ function showDetails(sessionId) {
  detailSection('Session activity','<p data-verbatim>'+e(s.cwd)+'</p><p>'+label('Started')+': '+e(when(s.startedAt))+'<br>'+label('Last activity')+': '+e(when(s.lastActivity))+'<br>'+label('Duration')+': '+e(duration(s))+' · '+label('Last tool')+': '+e(s.lastTool)+'</p>')+
  detailSection('Human interventions','<p>'+label('Interrupt')+': '+number(iv.interrupt)+' · '+label('Tool reject')+': '+number(iv.toolReject)+' · '+label('Correction')+': '+number(iv.correction)+'</p>')+
  detailSection('Token usage','<p>'+label('Input')+': '+number(usage.input)+' · '+label('Output')+': '+number(usage.output)+'<br>'+label('Cache read')+': '+number(usage.cacheRead)+' · '+label('Cache creation')+': '+number(usage.cacheCreation)+'</p>')+
- detailSection('Outcomes','<p>'+outcomesHtml(s.outcomes)+'</p><p class="label">'+label('A learning shows here once contribute records it. Commits and pull requests are counted 6 hours after the session goes quiet, and show under What finished sessions delivered on the Overview.')+'</p>')+
+ detailSection('Outcomes','<p>'+outcomesHtml(s.outcomes)+'</p><p class="label">'+label('A learning shows here once contribute records it. Commits and pull requests are counted once the session has been quiet as long as teamai-finished-sessions waits, 6 hours unless your team changed it, and show under What finished sessions delivered on the Overview.')+'</p>')+
  detailSection('User prompts','<p>'+number(s.promptCount)+' '+label('Prompt turns')+'</p>'+(s.prompts||[]).map((p,i)=>'<p data-verbatim><b>'+number(i+1)+'.</b> '+e(p)+'</p>').join(''))+
  detailSection('AI output','<div class="md-output" data-verbatim>'+ (s.stoppedOutput?renderMarkdown(s.stoppedOutput):'<p>'+label('No output captured yet.')+'</p>')+'</div>');
  if(!dialog.open)dialog.showModal();

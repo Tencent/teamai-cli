@@ -1,13 +1,14 @@
 /**
  * A finished agent session as judge work (#1178, #1179). One redacted read gives the evidence of every judge call and
  * the context its labels carry. A session captured in a scope is judge work there once it is finished, for each scorer
- * that sets `sessions: true`: an attended one once nothing happened in it for six hours, an unattended one once
+ * that sets `sessions: true`: an attended one once nothing happened in it for the `idle` of teamai-finished-sessions, an unattended one once
  * `teamai score --drain` reached it. teamai-finished-sessions lists it and teamai-score judges it.
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { AgentObservation } from '../agent-observation.js';
+import { DefaultFolders } from '../default-folders.js';
 import { knownSecrets } from '../env-resolution.js';
 import type { RunMode } from '../launch-context.js';
 import { cachedScorerNames, pinScorers, scorerNamespaces } from '../scorers/cache.js';
@@ -241,8 +242,10 @@ export function sessionLabel(verdict: Omit<SessionLabel, 'source' | 'subject' | 
   return sessionLabeled;
 }
 
-/** Nothing happened in an attended session for this long: it is finished, and judge work. */
-export const FINISHED_AFTER_MS = 6 * 60 * 60 * 1000;
+/** How long nothing happens in an attended session before it is finished: the `idle` of teamai-finished-sessions's params.yaml in `config`. */
+async function finishedAfter(config: LocalConfig): Promise<{ text: string; ms: number }> {
+  return (await DefaultFolders.load({ kind: 'workflows', name: 'teamai-finished-sessions' }, config)).params.idle;
+}
 
 function sameSessionKey(label: ScoreLabel, scorer: string, sourceHash: string, subject: SessionSubject): boolean {
   return label.source === 'session' && label.scorer === scorer && label.rubric.sourceHash === sourceHash
@@ -387,11 +390,11 @@ async function isGone(captured: CapturedSession): Promise<boolean> {
 
 /**
  * The sessions of `captured` finished at `now`, oldest activity first, of the run modes `includes` keeps (a capture with
- * no mode counts as attended): an attended session once nothing happened in it for `idleMs`, six hours unless given, an
+ * no mode counts as attended): an attended session once nothing happened in it for `idleMs`, as {@link finishedAfter} gives it, an
  * unattended one once a drain reached it (#1385), each with when something last happened in it. A session whose file
  * is gone is never finished.
  */
-async function finished(captured: readonly CapturedSession[], now: string, includes: (mode: RunMode) => boolean, idleMs = FINISHED_AFTER_MS): Promise<Array<CapturedSession & { activeAt: number }>> {
+async function finished(captured: readonly CapturedSession[], now: string, includes: (mode: RunMode) => boolean, idleMs: number): Promise<Array<CapturedSession & { activeAt: number }>> {
   const events = await lastEvents();
   const found: Array<{ captured: CapturedSession; activeAt: number }> = [];
 
@@ -492,4 +495,4 @@ async function sampledScorers(config: LocalConfig, subject: SessionSubject, fact
   });
 }
 
-export const SessionWork = { finished, read, readPushed, scopeCwd, sampledScorers, samplingScorers, sessionScorers, generatedQuestions, pinsOf, isGone } as const;
+export const SessionWork = { finishedAfter, finished, read, readPushed, scopeCwd, sampledScorers, samplingScorers, sessionScorers, generatedQuestions, pinsOf, isGone } as const;

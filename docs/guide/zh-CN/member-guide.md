@@ -32,6 +32,14 @@ teamai init --http https://your-team-host/api --token <api-key>
 
 Agent 接入凭证（`sk-`）只能给一个 Agent 用。用 `--agent <tool>` 指明是哪个 Agent，每个 Agent 各存各的。某个 Agent 现有的凭证还能用时，再给它新凭证不会启用，已下发的模型继续可用。
 
+需要明确替换仍有效的旧凭证时，在 `init --http` 或 `source add-http` 上使用 `--replace-token --token <new-key>`。`sk-` 仍归属单个 Agent，照旧用 `--agent <tool>` 指明即可；TeamAI 不检查旧凭证是否有效，直接使用新值，同一端点下其他 Agent 的凭证和工作区绑定保持不变。共享 `hk-` 凭证无需该参数即会替换，因此它只对 `sk-` 生效。`--force` 仍只负责允许覆盖已有初始化配置，不负责选择凭证：
+
+```bash
+teamai init --http https://your-team-host/api --agent workbuddy --token <new-key> --force --replace-token
+```
+
+新凭证绑定后，后端可能立即使旧凭证失效。此参数只替换连接凭证，不直接修改现有模型文件里的 key；模型仍需成功执行配置同步。
+
 然后把要同步的工作区纳入管理：在每个工作区里跑一次 `teamai bind-project`。绑定 ClawPro 项目是可选的，不绑定就加 `--skip`（以后不再提示）。同一个仓库的 worktree 会继承主检出的选择。没跑过这条命令的工作区，HTTP Agent 不会上报也不会同步，每个会话会提示一次；已纳管但还没绑定项目的工作区，每个新会话（以及隔了一段时间后）都会再提示，直到绑定或选择不绑定；在脚本等非交互环境里跑 `teamai bind-project` 会直接列出账号下的项目，供脚本执行者展示给用户。
 
 用同一个地址和 key 再运行一次，会保留它们。换到另一个地址或 key 需要 `--force`，不加时什么都不会改：

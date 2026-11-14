@@ -35,8 +35,8 @@ import { isInteractive } from './utils/prompt.js';
 import { getAgentVersion } from './agent-version.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
-import { ruleStemFromFilename } from './resources/rule-format.js';
-import { unreadableConfigOf } from './resources/rules.js';
+import { getsRulesFromExtension, getsRulesFromSessionHook, ruleStemFromFilename } from './resources/rule-format.js';
+import { inlineRulesLocationOf, unreadableConfigOf } from './resources/rules.js';
 import { resolveTeamaiEntryScript } from './builtin-hooks.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import {
@@ -102,6 +102,10 @@ import {
   getTokenPath,
   TEAMAI_CLAUDEMD_START,
   TEAMAI_CLAUDEMD_END,
+  TEAMAI_RULES_START,
+  TEAMAI_RULES_END,
+  TEAMAI_TEAM_RULES_START,
+  TEAMAI_TEAM_RULES_END,
   TeamaiConfigSchema,
   managedMcpManifestPath,
   managedMcpManifestKey,
@@ -129,7 +133,7 @@ import {
 } from './git-exclude-notices.js';
 import { blockingEntries, contentHash, deliveredSkillFiles, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir } from './resources/delivered-copies.js';
 import { skillOrigin, withSkillFrontmatter } from './resources/skills.js';
-import { hookSettingsFile, installOf, locate, ownOf, writable, type FilePlace } from './locate.js';
+import { hookSettingsFile, installOf, locate, ownOf, writable, type FilePlace, type Install } from './locate.js';
 import { DELIVERED_MODEL_TOOLS, mcpFormatOf, mcpScopeFor } from './tools.js';
 import type { DeliveredModelTool } from './tools.js';
 import { acquireLock, releaseLock } from './update.js';
@@ -2151,6 +2155,14 @@ interface ReportedResource {
   source: string;
 }
 
+/** The rule kinds the backend stores: a rules file, an inlined prompt, a runtime hook. */
+type ReportedRuleType = 'rule' | 'prompt' | 'hook';
+
+/** A rule as the report sends it: its inventory entry plus the delivery kind. */
+interface ReportedRule extends ReportedResource {
+  rule_type: ReportedRuleType;
+}
+
 /**
  * Resolve a resource's source by looking it up in the local-agent manifest:
  * slugs recorded there were installed via HTTP distribution (`enterprise`);
@@ -2196,15 +2208,12 @@ async function scanSkillsFromDisk(
  * installed rule; the slug is its path relative to the rules dir without the
  * `.md` extension.
  */
-async function scanRulesFromDisk(
-  rulesDir: string,
-  manifestSlugs: Set<string>,
-): Promise<ReportedResource[]> {
+async function scanRulesFromDisk(rulesDir: string): Promise<ReportedRule[]> {
   if (!(await pathExists(rulesDir))) return [];
   // Cursor stores rules as `.mdc`, every other tool as `.md`; match by stem so
   // a Cursor agent still reports its installed rules.
   const files = await listFilesRecursive(rulesDir);
-  const results: ReportedResource[] = [];
+  const results: ReportedRule[] = [];
   const seen = new Set<string>();
 
   for (const file of files) {
@@ -2221,27 +2230,20 @@ async function scanRulesFromDisk(
     results.push({
       slug,
       display_name: slug,
-      source: resolveSource(slug, manifestSlugs),
+      source: 'local',
+      rule_type: 'rule',
     });
   }
 
   return results.sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
-/** Collect every skill/rule slug recorded across all manifest scopes.
- * For skills, also includes dir_name (the on-disk SKILL.md name) so that
- * scanSkillsFromDisk — which uses SKILL.md name as the reported slug —
- * correctly resolves source as 'enterprise' even when dir_name ≠ slug.
+/** Collect every skill slug recorded across all manifest scopes, dir_name included.
+ * scanSkillsFromDisk uses the SKILL.md name as the reported slug, so the
+ * on-disk dir_name also has to resolve as 'enterprise' when it differs.
  */
-/** The skill and rule slugs a manifest records, skill dir names included. */
-interface ManifestSlugs {
-  skills: Set<string>;
-  rules: Set<string>;
-}
-
-function collectManifestSlugs(manifest: LocalAgentManifest): ManifestSlugs {
+function collectManifestSkillSlugs(manifest: LocalAgentManifest): Set<string> {
   const skills = new Set<string>();
-  const rules = new Set<string>();
 
   for (const scope of Object.values(manifest.scopes)) {
     for (const [slug, entry] of Object.entries(scope.skills ?? {})) {
@@ -2249,11 +2251,124 @@ function collectManifestSlugs(manifest: LocalAgentManifest): ManifestSlugs {
 
       if (entry.dir_name) skills.add(entry.dir_name);
     }
-
-    for (const slug of Object.keys(scope.rules ?? {})) rules.add(slug);
   }
 
-  return { skills, rules };
+  return skills;
+}
+
+/** The manifest scopes whose entries own a report scope; `instance` is the pre-2 user key. */
+function reportManifestScopes(
+  manifest: LocalAgentManifest,
+  scope: LocalAgentScope,
+  workspacePath?: string,
+): ManifestScope[] {
+  const keys = scope === 'project' ? [scopeKey('project', workspacePath)] : ['user', 'instance'];
+
+  return keys.flatMap((key) => manifest.scopes[key] ? [manifest.scopes[key]] : []);
+}
+
+/** Whether a manifest entry names this tool; an older entry records no tools, so its copy on disk decides. */
+function manifestEntryReachesTool(entry: ManifestResource, tool: string): boolean {
+  return entry.tools === undefined || entry.tools.length === 0
+    || entry.tools.some((name) => normalizeAgentType(name) === normalizeAgentType(tool));
+}
+
+async function fileHoldsBlock(file: string | null | undefined, start: string, end: string): Promise<boolean> {
+  if (!file) return false;
+  const content = await readFileSafe(file);
+
+  return content !== null && content.includes(start) && content.includes(end);
+}
+
+/** Whether this tool's user-scope file now holds the team-rules block the rules sync writes. */
+async function holdsInlineRulesBlock(tool: string, install: Install): Promise<boolean> {
+  const location = await inlineRulesLocationOf(tool, install);
+  const own = location === null ? null : ownOf(location);
+  const file = own?.kind === 'file' ? own.path : null;
+
+  // Hermes keeps its block under the legacy `rules` markers; every other
+  // inline tool uses the team-rules pair.
+  return await fileHoldsBlock(file, TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END)
+    || await fileHoldsBlock(file, TEAMAI_RULES_START, TEAMAI_RULES_END);
+}
+
+/** Whether this tool's instruction file now holds the claudemd block the prompt sync writes. */
+async function holdsPromptBlock(tool: string, install: Install): Promise<boolean> {
+  const own = ownOf(await locate(tool, 'blocks', install));
+
+  return await fileHoldsBlock(own?.kind === 'file' ? own.path : null, TEAMAI_CLAUDEMD_START, TEAMAI_CLAUDEMD_END);
+}
+
+async function collectReportedRules(input: {
+  manifest: LocalAgentManifest;
+  scope: LocalAgentScope;
+  workspacePath?: string;
+  tool: string;
+  install: Install;
+  diskRules: ReportedRule[];
+}): Promise<ReportedRule[]> {
+  const scopes = reportManifestScopes(input.manifest, input.scope, input.workspacePath);
+  const entries = new Map<string, ManifestResource>();
+
+  for (const scope of scopes) {
+    for (const [slug, entry] of Object.entries(scope.rules ?? {})) if (!entries.has(slug)) entries.set(slug, entry);
+  }
+
+  const rules = new Map<string, ReportedRule>();
+
+  for (const disk of input.diskRules) {
+    const entry = entries.get(disk.slug);
+    const owned = entry !== undefined && manifestEntryReachesTool(entry, input.tool);
+    rules.set(disk.slug, owned
+      ? { ...disk, version: entry.version, display_name: entry.display_name ?? disk.display_name, source: 'enterprise' }
+      : disk);
+  }
+
+  const inline = input.scope === 'user' && await holdsInlineRulesBlock(input.tool, input.install);
+
+  const runtime = input.scope === 'project'
+    && (getsRulesFromSessionHook(input.tool) || getsRulesFromExtension(input.tool));
+
+  if (inline || runtime) {
+    for (const [slug, entry] of entries) {
+      if (!manifestEntryReachesTool(entry, input.tool)) continue;
+
+      if (rules.has(slug)) continue;
+      rules.set(slug, {
+        slug,
+        version: entry.version,
+        display_name: entry.display_name ?? slug,
+        source: 'enterprise',
+        rule_type: 'rule',
+      });
+    }
+  }
+
+  let promptsHeld: boolean | undefined;
+  const holdsPrompt = async (): Promise<boolean> => (promptsHeld ??= await holdsPromptBlock(input.tool, input.install));
+
+  for (const scope of scopes) {
+    for (const [slug, entry] of Object.entries(scope.claudemd ?? {})) {
+      // A manifest rules entry names this slug's delivery as a rule; a disk file
+      // alone is the leftover a prompt replaces.
+      if (rules.get(slug)?.source === 'enterprise') continue;
+
+      const reached = entry.tools === undefined || entry.tools.length === 0
+        ? await holdsPrompt()
+        : manifestEntryReachesTool(entry, input.tool);
+
+      if (!reached) continue;
+      rules.set(slug, {
+        slug,
+        version: entry.version,
+        display_name: entry.display_name ?? slug,
+        source: 'enterprise',
+        rule_type: 'prompt',
+      });
+    }
+  }
+
+  return [...rules.values()].sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
 /**
@@ -2533,7 +2648,7 @@ export type AgentIdentityPayload = { agent_type: string; local_agent_id: string;
  */
 type ReportedScopeResources = {
   skills?: ReportedResource[];
-  rules?: ReportedResource[];
+  rules?: ReportedRule[];
   mcps?: ReportedResource[];
   models?: ReportedModel[];
 };
@@ -2582,7 +2697,7 @@ export async function buildReportPayload(
   // there are `enterprise`, the rest `local`.
   const tool = context.tool ?? 'workbuddy';
   const teamConfig = createLocalAgentTeamConfig(config.endpoint);
-  const manifestSlugs = collectManifestSlugs(manifest);
+  const manifestSkillSlugs = collectManifestSkillSlugs(manifest);
 
   // Resolve paths through the same user-scope seam the installers use: tools
   // that relocate their user customization root (copilot via $COPILOT_HOME) or
@@ -2590,7 +2705,7 @@ export async function buildReportPayload(
   // block. Reading the raw toolPaths map against $HOME would scan the project
   // layout under the wrong base — e.g. ~/.github/skills for copilot, a path
   // teamai never writes to — and silently report nothing.
-  const scanScope = async (workspacePath?: string): Promise<{ skills: ReportedResource[]; rules: ReportedResource[] }> => {
+  const scanScope = async (workspacePath?: string): Promise<{ skills: ReportedResource[]; rules: ReportedRule[] }> => {
     const scope: LocalAgentScope = workspacePath ? 'project' : 'user';
     const localConfig = await createResourceLocalConfig(config, scope, workspacePath ?? getUserHome(), workspacePath);
     const toolPath = scopedToolPaths(teamConfig, localConfig)[tool];
@@ -2598,9 +2713,18 @@ export async function buildReportPayload(
     if (!toolPath) return { skills: [], rules: [] };
     const install = installOf(teamConfig, localConfig);
     const skillsDir = ownOf(await locate(tool, 'skills', install))?.path ?? null;
-    const skills = skillsDir === null ? [] : await scanSkillsFromDisk(skillsDir, manifestSlugs.skills);
+    const skills = skillsDir === null ? [] : await scanSkillsFromDisk(skillsDir, manifestSkillSlugs);
     const rulesDir = ownOf(await locate(tool, 'rules', install));
-    const rules = rulesDir?.kind === 'dir' ? await scanRulesFromDisk(rulesDir.path, manifestSlugs.rules) : [];
+    const diskRules = rulesDir?.kind === 'dir' ? await scanRulesFromDisk(rulesDir.path) : [];
+
+    const rules = await collectReportedRules({
+      manifest,
+      scope,
+      workspacePath,
+      tool,
+      install,
+      diskRules,
+    });
 
     return { skills, rules };
   };
@@ -2611,7 +2735,23 @@ export async function buildReportPayload(
 
   if (userScope.skills.length > 0) userLevel.skills = userScope.skills;
 
-  if (userScope.rules.length > 0) userLevel.rules = userScope.rules;
+  // Agent hooks live in the tool's user settings, so only the user scope
+  // reports them. The hook record tracks no version, so none is sent.
+  const userRules = new Map(userScope.rules.map((rule) => [rule.slug, rule]));
+
+  for (const [slug, record] of Object.entries(await loadAgentHookManifest())) {
+    // A manifest rule or prompt already names this slug's delivery; the hook
+    // record only replaces a disk file of that name.
+    if (userRules.get(slug)?.source === 'enterprise') continue;
+
+    if (normalizeAgentType(record.tool) !== normalizeAgentType(tool)) continue;
+    userRules.set(slug, { slug, display_name: slug, source: 'enterprise', rule_type: 'hook' });
+  }
+
+  if (userRules.size > 0) {
+    userLevel.rules = [...userRules.values()].sort((a, b) => a.slug.localeCompare(b.slug));
+  }
+
   const userMcps = await scanMcpFromManifest('user', tool);
 
   if (userMcps.length > 0) userLevel.mcps = userMcps;
@@ -6171,6 +6311,16 @@ function legacyTokenAgent(config: LocalAgentConfig): string | undefined {
   return agents.size === 1 ? [...agents][0] : undefined;
 }
 
+/** Explicit replacement must name its new token. */
+export function validateLocalAgentTokenReplacement(options: {
+  token?: string;
+  replaceToken?: boolean;
+}): void {
+  if (options.replaceToken && !options.token?.trim()) {
+    throw new Error('--replace-token requires --token <key>.');
+  }
+}
+
 /**
  * Point the HTTP local agent at `endpoint`. A caller that must not replace
  * another one checks `assertNoLocalAgentReplacement` first; `force` overwrites
@@ -6180,6 +6330,7 @@ export async function initLocalAgentHttp(options: {
   endpoint: string;
   token?: string;
   force?: boolean;
+  replaceToken?: boolean;
   filterAgents?: string[];
 }): Promise<void> {
   const endpoint = normalizeEndpoint(options.endpoint);
@@ -6187,6 +6338,8 @@ export async function initLocalAgentHttp(options: {
   if (!endpoint) {
     throw new Error('HTTP endpoint is required.');
   }
+
+  validateLocalAgentTokenReplacement(options);
 
   // `init --http` writes the user config.yaml and saves the API key before this
   // runs, and a missing config.json is backfilled from them (loadLocalAgentConfig).
@@ -6263,7 +6416,10 @@ export async function initLocalAgentHttp(options: {
     // works the new one is not dropped — the agents with no token of their own
     // report with it. An agent that already owns the shared slot is not replaced.
     const spare = inferred && !sharedToken;
-    const chosen = sameEndpoint ? await chooseAgentToken(existing!, agent!, current, token!, spare) : token!;
+
+    const chosen = sameEndpoint && !options.replaceToken
+      ? await chooseAgentToken(existing!, agent!, current, token!, spare) : token!;
+
     agentTokens[agent!] = chosen;
 
     if (spare && chosen !== token) sharedToken = token;
@@ -6272,7 +6428,7 @@ export async function initLocalAgentHttp(options: {
   // The shared token is what the agents with no entry of their own report with.
   // One the backend rejects keeps them at 401 while this run reports success, so
   // it goes, and the warning names the way to renew them one agent at a time.
-  if (perAgent && sharedToken && sameEndpoint && sharedToken !== token
+  if (!options.replaceToken && perAgent && sharedToken && sameEndpoint && sharedToken !== token
     && await tokenStillWorks(existing!, sharedToken) === false) {
     log.warn('The shared access token on this machine no longer works, so the agents without a token of their own have none now. '
       + 'Re-run with `--agent <tool>` for each of them to install a new one.');

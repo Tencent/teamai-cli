@@ -147,12 +147,12 @@ describe('Codex hook ownership', () => {
     await writeAndTrust(userConfig());
 
     expect((await fse.readJson(file)).hooks.PreToolUse).toEqual([
-      member, { hooks: [{ type: 'command', command: 'npm run lint' }] },
+      member, { hooks: [{ type: 'command', command: 'npm run lint', statusMessage: 'lint' }] },
     ]);
     await writeYaml(LINT_HOOK.replace('npm run lint', 'npm run lint:fix'));
     await writeAndTrust(userConfig());
     expect((await fse.readJson(file)).hooks.PreToolUse).toEqual([
-      member, { hooks: [{ type: 'command', command: 'npm run lint:fix' }] },
+      member, { hooks: [{ type: 'command', command: 'npm run lint:fix', statusMessage: 'lint' }] },
     ]);
     await writeAndTrust(userConfig(), { removeAll: true });
     expect((await fse.readJson(file)).hooks.PreToolUse).toEqual([member]);
@@ -166,6 +166,7 @@ describe('Codex hook ownership', () => {
     // Each shares the team's command but is not its render: an exact render is teamai's (#993).
     const memberGroups = [
       { hooks: [{ type: 'command', command: 'npm run lint', timeout: 5 }] },
+      { hooks: [{ type: 'command', command: 'npm run lint', statusMessage: 'member-label' }] },
       { matcher: 'Bash', hooks: [{ type: 'command', command: 'npm run lint', timeout: 17 }] },
     ];
     try {
@@ -174,12 +175,12 @@ describe('Codex hook ownership', () => {
 
       await writeAndTrust(config);
 
-      expect((await fse.readJson(file)).hooks.PreToolUse.slice(0, 2)).toEqual(memberGroups);
+      expect((await fse.readJson(file)).hooks.PreToolUse.slice(0, memberGroups.length)).toEqual(memberGroups);
       expect((await fse.readJson(file)).hooks.Stop).toEqual([memberGroups[0]]);
       expect(trustedKeys().some((key) => memberKeys.has(key))).toBe(false);
       await writeYaml(LINT_HOOK.replace('npm run lint', 'npm run lint:fix'));
       await writeAndTrust(config);
-      expect((await fse.readJson(file)).hooks.PreToolUse.slice(0, 2)).toEqual(memberGroups);
+      expect((await fse.readJson(file)).hooks.PreToolUse.slice(0, memberGroups.length)).toEqual(memberGroups);
       await writeAndTrust(config, { removeAll: true });
       expect((await fse.readJson(file)).hooks.PreToolUse).toEqual(memberGroups);
       expect((await fse.readJson(file)).hooks.Stop).toEqual([memberGroups[0]]);
@@ -194,6 +195,7 @@ describe('Codex hook ownership', () => {
     // Each shares the team's command but is not its render: an exact render is teamai's (#993).
     const memberGroups = [
       { hooks: [{ type: 'command', command: 'npm run lint', timeout: 5 }] },
+      { hooks: [{ type: 'command', command: 'npm run lint', statusMessage: 'member-label' }] },
       { matcher: 'Bash', hooks: [{ type: 'command', command: 'npm run lint', timeout: 17, additionalContextLimit: 0 }] },
     ];
     await fse.writeJson(file, { hooks: { [event]: memberGroups } });
@@ -203,9 +205,9 @@ describe('Codex hook ownership', () => {
 
     const teamKeys = (await codexEntries(file)).filter((e) => !memberKeys.has(e.key)).map((e) => e.key);
     expect(trustedKeys().sort()).toEqual(teamKeys.sort());
-    expect((await fse.readJson(file)).hooks[event].slice(0, 2)).toEqual(memberGroups);
+    expect((await fse.readJson(file)).hooks[event].slice(0, memberGroups.length)).toEqual(memberGroups);
     await writeAndTrust(userConfig());
-    expect((await fse.readJson(file)).hooks[event].slice(0, 2)).toEqual(memberGroups);
+    expect((await fse.readJson(file)).hooks[event].slice(0, memberGroups.length)).toEqual(memberGroups);
     expect(trustedKeys().some((key) => memberKeys.has(key))).toBe(false);
     await writeAndTrust(userConfig(), { removeAll: true });
     expect((await fse.readJson(file)).hooks[event]).toEqual(memberGroups);
@@ -231,7 +233,7 @@ describe('Codex hook ownership', () => {
     await writeAndTrust(userConfig());
 
     expect((await fse.readJson(file)).hooks.PreToolUse).toEqual([
-      member, { matcher: 'Bash', hooks: [{ type: 'command', command: 'npm run lint', ...desiredOptions }] },
+      member, { matcher: 'Bash', hooks: [{ type: 'command', command: 'npm run lint', statusMessage: 'lint', ...desiredOptions }] },
     ]);
     expect((await fse.readJson(file)).hooks.Stop[0]).toEqual(legacy);
     expect(trustedKeys()).toContain(`${file}:pre_tool_use:1:0`);
@@ -240,7 +242,7 @@ describe('Codex hook ownership', () => {
     await writeYaml(yaml.replace('npm run lint', 'npm run lint:fix'));
     await writeAndTrust(userConfig());
     expect((await fse.readJson(file)).hooks.PreToolUse).toEqual([
-      member, { matcher: 'Bash', hooks: [{ type: 'command', command: 'npm run lint:fix', ...desiredOptions }] },
+      member, { matcher: 'Bash', hooks: [{ type: 'command', command: 'npm run lint:fix', statusMessage: 'lint', ...desiredOptions }] },
     ]);
     await writeAndTrust(userConfig(), { removeAll: true });
     expect((await fse.readJson(file)).hooks.PreToolUse).toEqual([member]);
@@ -281,7 +283,7 @@ describe('Codex hook ownership', () => {
     await writeAndTrust(userConfig());
 
     expect((await fse.readJson(file)).hooks.PreToolUse).toEqual([
-      ...groups, { matcher: 'Bash', hooks: [{ type: 'command', command: 'npm run lint' }] },
+      ...groups, { matcher: 'Bash', hooks: [{ type: 'command', command: 'npm run lint', statusMessage: 'lint' }] },
     ]);
     expect(trustedKeys().some((key) => memberKeys.has(key))).toBe(false);
     await writeAndTrust(userConfig(), { removeAll: true });
@@ -304,19 +306,19 @@ describe('Codex hook ownership', () => {
     expect(trustedKeys()).not.toContain(`${file}:pre_tool_use:1:0`);
   });
 
-  it('takes unrecorded copies of the team render as its own, leaving one entry (#993)', async () => {
+  it.each([undefined, 'lint'])('takes unrecorded copies with label %s as its own, leaving one entry (#993)', async (statusMessage) => {
     await writeYaml(LINT_HOOK);
     const file = path.join(codexHome(), 'hooks.json');
-    const render = { hooks: [{ type: 'command', command: 'npm run lint' }] };
+    const render = { hooks: [{ type: 'command', command: 'npm run lint', ...(statusMessage === undefined ? {} : { statusMessage }) }] };
     await fse.writeJson(file, { hooks: { PreToolUse: [render, render] } });
 
     await writeAndTrust(userConfig());
 
-    expect((await fse.readJson(file)).hooks.PreToolUse).toEqual([render]);
+    expect((await fse.readJson(file)).hooks.PreToolUse).toEqual([{ hooks: [{ type: 'command', command: 'npm run lint', statusMessage: 'lint' }] }]);
     expect(trustedKeys()).toContain(`${file}:pre_tool_use:0:0`);
     await writeYaml(LINT_HOOK.replace('npm run lint', 'npm run lint:fix'));
     await writeAndTrust(userConfig());
-    expect((await fse.readJson(file)).hooks.PreToolUse).toEqual([{ hooks: [{ type: 'command', command: 'npm run lint:fix' }] }]);
+    expect((await fse.readJson(file)).hooks.PreToolUse).toEqual([{ hooks: [{ type: 'command', command: 'npm run lint:fix', statusMessage: 'lint' }] }]);
   });
 
 });
@@ -368,6 +370,18 @@ describe('Codex hook trust — user scope', () => {
     const file = path.join(codexHome(), 'hooks.json');
     const result = await trustCodexHooks({ codexHome: codexHome(), cwd: home, hooks: [{ file, command: 'missing', key: `${file}:stop:0:0` }] });
     expect(result).toEqual({ kind: 'failed', reason: expect.stringMatching(/hooks\/list.*missing.*not loaded.*teamai pull/) });
+  });
+
+  it("takes back the trust of the hooks a removal takes out, and leaves the member's hook", async () => {
+    const file = path.join(codexHome(), 'hooks.json');
+    await fse.writeJson(file, { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo mine' }] }] } });
+    await writeAndTrust(userConfig());
+    expect(trustedKeys()).not.toEqual([]);
+
+    await reconcileHooks(file, CODEX_TOOL_ID, [], { removeAll: true, codexTrust: codexTrustPolicy(userConfig()) });
+
+    expect((await codexEntries(file)).map((e) => e.command)).toEqual(['echo mine']);
+    expect(trustedKeys()).toEqual([]);
   });
 
   it('writes nothing to Codex when every teamai hook is already trusted', async () => {
@@ -868,7 +882,7 @@ describe('Codex hook positions (#1250)', () => {
 
     expect(calls('initialize')).toBe(started);
     expect((await fse.readJson(file)).hooks.PreToolUse).toEqual([
-      { hooks: [{ type: 'command', command: 'npm run lint:fix' }] }, member('after-lint'),
+      { hooks: [{ type: 'command', command: 'npm run lint:fix', statusMessage: 'lint' }] }, member('after-lint'),
     ]);
     expect(await keyOf(file, 'echo after-lint')).toBe(key);
     expect((await trustByCommand(file))['echo after-lint']).toBe('trusted');
@@ -888,9 +902,9 @@ describe('Codex hook positions (#1250)', () => {
 
     expect(calls('initialize')).toBe(started);
     expect((await fse.readJson(file)).hooks.PreToolUse).toEqual([
-      { hooks: [{ type: 'command', command: 'npm run lint' }] },
+      { hooks: [{ type: 'command', command: 'npm run lint', statusMessage: 'lint' }] },
       member('after-lint'),
-      { hooks: [{ type: 'command', command: 'npm test' }] },
+      { hooks: [{ type: 'command', command: 'npm test', statusMessage: 'test' }] },
     ]);
     expect(await keyOf(file, 'echo after-lint')).toBe(key);
     expect((await trustByCommand(file))['echo after-lint']).toBe('trusted');
@@ -1044,7 +1058,7 @@ describe('Codex hook positions (#1250)', () => {
       await applyAgentHook(file, CODEX_TOOL_ID, { ...agent, timeout: 20 }, codexTrust());
 
       expect((await fse.readJson(file)).hooks.Stop).toEqual([
-        { hooks: [{ type: 'command', command: 'echo agent', timeout: 20 }] }, member('after-agent'),
+        { hooks: [{ type: 'command', command: 'echo agent', statusMessage: 'a', timeout: 20 }] }, member('after-agent'),
       ]);
       expect(await keyOf(file, 'echo after-agent')).toBe(key);
       expect(calls('initialize')).toBe(started);
@@ -1088,7 +1102,7 @@ describe('Codex hook positions (#1250)', () => {
       await applyAgentHook(file, CODEX_TOOL_ID, agent, codexTrust());
 
       expect((await fse.readJson(file)).hooks.Stop).toEqual([
-        { hooks: [{ type: 'command', command: 'echo agent' }] }, member('after-copy'),
+        { hooks: [{ type: 'command', command: 'echo agent', statusMessage: 'a' }] }, member('after-copy'),
       ]);
       expect(await trustByCommand(file)).toMatchObject({ 'echo after-copy': 'trusted', 'echo other-event': 'trusted' });
     });

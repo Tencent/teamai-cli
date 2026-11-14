@@ -38,11 +38,14 @@ Pull turns CRLF into LF and drops one trailing newline. The files hold no templa
 
 ## Replace it
 
+Put only the files you change in `rules/teamai-recall/` at the root of the team repo. Every other file stays teamai's and keeps getting teamai's updates:
+
 ```bash
-cp -r "$(npm root -g)/teamai-cli/rules/teamai-recall" rules/
+mkdir -p rules/teamai-recall
+cp "$(npm root -g)/teamai-cli/rules/teamai-recall/RULE.md" rules/teamai-recall/
 ```
 
-Then add your own text to each `RULE*.md`, such as a skip condition:
+Then add your own text to it, such as a skip condition:
 
 ```markdown
 ## Skip for generated code
@@ -50,18 +53,20 @@ Then add your own text to each `RULE*.md`, such as a skip condition:
 A change under `gen/` needs no team knowledge.
 ```
 
-Push the folder. The next `teamai pull` gives every member the team's files instead of teamai's. `teamai push` never publishes the rule.
+Your `RULE.md` replaces every language of the rule: with `language: en`, members read it instead of teamai's `RULE.en.md`. Copy `RULE.en.md` too, and change it the same way, to keep an English rule of your own.
+
+Push the folder. The next `teamai pull` gives every member the team's files over teamai's. `teamai push` never publishes the rule.
 
 ## What a replacement keeps
 
 | File | Must | Why |
 |---|---|---|
-| `RULE.md`, `block.md`, `block-direct.md` | Exist | A missing language file falls back to the team's base file, never to teamai's |
+| `RULE.md`, `block.md`, `block-direct.md` | Exist when the folder has a language of it | A language you write replaces teamai's base file too, and a missing language file falls back to the team's base file, never to teamai's |
 | Every `RULE*.md` | Contain `Nothing was searched:` and `Recall skips the older index` | Recall prints those lines, and the rule tells the agent what to do with them |
 | Every `block-direct*.md` | Contain `Nothing was searched:` | The same |
 | Every file | Name no `${TEAMAI_RULE_DIR}` | Pull delivers only the files above, as text. Put an example in the file itself |
 
-When a replacement breaks one of these, pull names the file and keeps teamai's folder.
+Pull checks the folder your files and teamai's make together. When it breaks one of these, pull names the file and keeps teamai's folder. A file teamai's folder does not have replaces nothing: pull warns, names it, and leaves it out, and `teamai review --branch` fails it.
 
 ## Settings that change it
 

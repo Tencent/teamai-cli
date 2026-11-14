@@ -33,7 +33,7 @@ describe('the stale step of teamai-draft-learning-updates', () => {
     fs.writeFileSync(path.join(repo, 'skills', 'deploy', 'SKILL.md'), '---\nname: deploy\n---\nDeploy it.\n');
     recalledOften('deploy');
 
-    const { entries } = await DraftLearningUpdates.stale(votesDir, repo);
+    const { entries } = await DraftLearningUpdates.stale(votesDir, repo, { min_recalled: 5, max_upvoted: 1, min_users: 2, max_related: 5 });
 
     expect(entries).toEqual([{
       doc_id: 'deploy', path: path.join(repo, 'skills', 'deploy', 'SKILL.md'), type: 'skills', recalled_count: 6, upvoted_count: 0, user_count: 2,

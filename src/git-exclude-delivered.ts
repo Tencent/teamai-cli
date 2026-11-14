@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { loadStateForScope, saveStateForScope } from './config.js';
 import {
-  existingAncestor,
   GitContext,
   gitExcludeFile,
   ignoredByMembersRule,
@@ -19,7 +18,6 @@ import {
 } from './git-exclude.js';
 import { selfLocalSettingsOf, TOOL_IDS } from './tools.js';
 import { getDataHome, isUnmigratedDataHome, type LocalConfig } from './types.js';
-import { pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 
 // ─── What pull delivered into a checkout, kept out of git (#915) ──
@@ -473,9 +471,7 @@ async function byRepository(
   const split: RepositorySplit = { here: [], elsewhere: [], unlocated: [] };
 
   for (const file of paths) {
-    let dir: string | null = await existingAncestor(await realFilePath(file));
-
-    while (dir !== null && !await pathExists(path.join(dir, '.git'))) dir = path.dirname(dir) === dir ? null : path.dirname(dir);
+    const dir = await context.repositoryHolder(await context.existingAncestor(await realFilePath(file)));
     const excludeFile = dir === null ? null : (await gitExcludeFile(dir, context))?.excludeFile ?? null;
     (excludeFile !== null && excludeFile === ownExclude ? split.here : split.elsewhere).push(file);
 

@@ -48,20 +48,25 @@ async function replace(name: string, files: Record<string, string | null>): Prom
   }
 }
 
+/** `hooks/<name>/` at the root of the team repo holding only `files`: every other file comes from teamai's folder. */
+async function own(name: string, files: Record<string, string>): Promise<void> {
+  for (const [file, content] of Object.entries(files)) await fse.outputFile(path.join(repo, 'hooks', name, file), content);
+}
+
 /** teamai's action line when the reminder offers teamai-share-learnings, as it does in a scope that can run it. */
 const SHARE_LEARNINGS = 'Offer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` '
   + 'and start it with the inputs it proposes, once the person confirms them.';
 
 const stdin = { session_id: 'replacement-session', cwd: os.tmpdir() };
 
-/** What the Stop hook prints to Claude Code for a session whose cached friction score is 30 after `toolCount` tool calls. */
-async function stopHint(toolCount: number): Promise<string | null> {
+/** What the Stop hook prints to Claude Code for a session whose cached friction score is 30 after `toolCount` tool calls, with `friction`. */
+async function stopHint(toolCount: number, friction = { interrupt: 0, toolReject: 0, correction: 0, toolError: 0 }): Promise<string | null> {
   await writeContributeState(stdin.session_id, {
     contributed: false,
     smartScore: 30,
     toolCount,
     lastEvaluated: Date.now(),
-    friction: { interrupt: 0, toolReject: 0, correction: 0, toolError: 0 },
+    friction,
   });
   const stop = buildHandlerRegistry().find(({ handler }) => handler.name === 'contribute-check');
   const output = await stop?.handler.execute(stdin, 'claude', member());
@@ -97,8 +102,53 @@ describe('a team replacement of teamai-friction-reminder', () => {
     expect(await stopHint(20)).toBe(`[acme] Worth a write-up? This session hit a snag.\n\n${SHARE_LEARNINGS}`);
   });
 
-  it('reminds after as few tool calls as its min_tools says, the parameters it leaves out keeping teamai\'s values', async () => {
-    await replace('teamai-friction-reminder', { 'HOOK.yaml': 'description: Ask sooner\nwith:\n  min_tools: 3\n' });
+  it('holding only its problem.md, gets teamai\'s other files delivered with it', async () => {
+    await own('teamai-friction-reminder', { 'problem.md': '[acme] Worth a write-up?\n' });
+
+    await reconcileTeamHooksForConfig(teamConfig, member());
+
+    const delivered = path.join(home, '.teamai', 'hooks', 'teamai-friction-reminder');
+    expect({
+      hint: await stopHint(20),
+      problem: await fse.readFile(path.join(delivered, 'problem.md'), 'utf8'),
+      gap: await fse.readFile(path.join(delivered, 'gap.md'), 'utf8'),
+      zh: await fse.pathExists(path.join(delivered, 'problem.zh.md')),
+    }).toEqual({
+      hint: `[acme] Worth a write-up?\n\n${SHARE_LEARNINGS}`,
+      problem: '[acme] Worth a write-up?\n',
+      gap: await fse.readFile(path.join(shipped('teamai-friction-reminder'), 'gap.md'), 'utf8'),
+      zh: false,
+    });
+  });
+
+  it('words a reason with its own reason-tool-reject.md, which may read {{ count }}', async () => {
+    await own('teamai-friction-reminder', { 'reason-tool-reject.md': 'refused {{ count }} calls\n' });
+
+    await reconcileTeamHooksForConfig(teamConfig, member());
+
+    expect(await stopHint(20, { interrupt: 2, toolReject: 3, correction: 0, toolError: 0 }))
+      .toBe(`[teamai] This session may contain a problem worth documenting: you interrupted the AI twice, refused 3 calls.\n\n${SHARE_LEARNINGS}`);
+  });
+
+  it('with a file teamai\'s folder does not have, warns naming it and keeps teamai\'s file in force', async () => {
+    await own('teamai-friction-reminder', { 'problem.md': '[acme] Worth a write-up?\n', 'problems.md': '[acme] A typo\n' });
+
+    await reconcileTeamHooksForConfig(teamConfig, member());
+
+    expect({
+      warned: vi.mocked(log.warn).mock.calls.map(([message]) => message).filter((message) => String(message).includes('teamai-friction-reminder')),
+      stray: await fse.pathExists(path.join(home, '.teamai', 'hooks', 'teamai-friction-reminder', 'problems.md')),
+      hint: await stopHint(20),
+    }).toEqual({
+      warned: ['hooks/teamai-friction-reminder/problems.md replaces no file of teamai\'s default, so it is not used and teamai\'s files stay in force. '
+        + 'Name it after the file it replaces, or replace the folder\'s marker too, so it can name the file.'],
+      stray: false,
+      hint: `[acme] Worth a write-up?\n\n${SHARE_LEARNINGS}`,
+    });
+  });
+
+  it('reminds after as few tool calls as its params.yaml min_tools says, the parameters it leaves out keeping teamai\'s values', async () => {
+    await own('teamai-friction-reminder', { 'params.yaml': 'min_tools: 3\n' });
 
     await reconcileTeamHooksForConfig(teamConfig, member());
 
@@ -119,6 +169,15 @@ describe('a team replacement of teamai-friction-reminder', () => {
       await reconcileTeamHooksForConfig(teamConfig, member());
 
       expect(await stopHint(20)).toBe(`[acme] 这次会话卡住过，要不要写下来？\n\n${SHARE_LEARNINGS_ZH}`);
+    });
+
+    it('words its own reason-interrupt.md, which has no .zh.md, in English beside teamai\'s Chinese reasons', async () => {
+      await own('teamai-friction-reminder', { 'reason-interrupt.md': 'you interrupted the AI {{ times }}\n' });
+
+      await reconcileTeamHooksForConfig(teamConfig, member());
+
+      expect(await stopHint(20, { interrupt: 2, toolReject: 1, correction: 0, toolError: 0 }))
+        .toBe(`[teamai] 这次会话可能有值得记录下来的问题：you interrupted the AI twice，你拒绝了 1 次工具调用。\n\n${SHARE_LEARNINGS_ZH}`);
     });
 
     it('prints its own problem.md when it has no problem.zh.md, never teamai\'s', async () => {
@@ -182,13 +241,18 @@ describe('pull refuses a replacement of a default hook that breaks its contract,
   it.each<{ broken: string; files: Record<string, string | null>; refusal: string }>([
     {
       broken: 'a parameter out of its range',
-      files: { 'HOOK.yaml': 'with:\n  min_tools: 5000\n' },
-      refusal: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed: HOOK.yaml: with.min_tools must be a whole number from 1 to 1000',
+      files: { 'params.yaml': 'min_tools: 5000\n' },
+      refusal: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed: params.yaml: min_tools must be a whole number from 1 to 1000',
     },
     {
       broken: 'a parameter the default does not take',
-      files: { 'HOOK.yaml': 'with:\n  max_tools: 30\n' },
-      refusal: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed: HOOK.yaml: with.max_tools is not a parameter of teamai-friction-reminder',
+      files: { 'params.yaml': 'max_tools: 30\n' },
+      refusal: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed: params.yaml: max_tools is not a parameter of teamai-friction-reminder',
+    },
+    {
+      broken: 'its parameters left in HOOK.yaml',
+      files: { 'HOOK.yaml': 'description: Ask sooner\nwith:\n  min_tools: 3\n' },
+      refusal: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed: HOOK.yaml: with is not a key of a default hook, whose parameters are in params.yaml. Move the keys of with to params.yaml',
     },
     {
       broken: 'a variable its text does not offer',
@@ -203,12 +267,12 @@ describe('pull refuses a replacement of a default hook that breaks its contract,
     {
       broken: 'an event',
       files: { 'HOOK.yaml': 'description: Remind at the end\nevent: Stop\n' },
-      refusal: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed: HOOK.yaml: event is not a key of a default hook, whose HOOK.yaml holds description and with',
+      refusal: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed: HOOK.yaml: event is not a key of a default hook, whose HOOK.yaml holds only description',
     },
     {
-      broken: 'a text left out',
+      broken: 'a text in one language without its base file',
       files: { 'gap.md': null },
-      refusal: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed: gap.md is missing. A replacement holds every text of teamai\'s folder: copy gap.md from it',
+      refusal: 'hooks/teamai-friction-reminder/ is refused, and teamai\'s default stays in force until it is fixed: gap.md is missing: the folder replaces the gap text in another language, which replaces every language of it. Add gap.md',
     },
   ])('$broken', async ({ files, refusal }) => {
     await replace('teamai-friction-reminder', { 'problem.md': TEAM_PROBLEM, ...files });
@@ -237,9 +301,10 @@ describe('pull refuses a replacement of a default hook that breaks its contract,
     });
   });
 
-  it('in a namespace', async () => {
+  it.each([{ holding: 'every file of teamai\'s folder', copied: true }, { holding: 'only the file it changes', copied: false }])('in a namespace, holding $holding', async ({ copied }) => {
     await fse.outputFile(path.join(repo, 'manifest', 'projects.yaml'), 'version: 1\nprojects:\n  - id: checkout\n    resources: { hooks: [payments] }\n');
-    await fse.copy(shipped('teamai-friction-reminder'), path.join(repo, 'hooks', 'payments', 'teamai-friction-reminder'));
+
+    if (copied) await fse.copy(shipped('teamai-friction-reminder'), path.join(repo, 'hooks', 'payments', 'teamai-friction-reminder'));
     await fse.outputFile(path.join(repo, 'hooks', 'payments', 'teamai-friction-reminder', 'problem.md'), TEAM_PROBLEM);
 
     await reconcileTeamHooksForConfig(teamConfig, { ...member(), projects: ['checkout'] });

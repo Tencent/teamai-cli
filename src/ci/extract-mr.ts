@@ -17,6 +17,7 @@ import type { LearningDraft } from '../types.js';
 import { githubApiUrl, postOrUpdateMrComment, postIndividualComments, postCodebaseGraphComment, parseMrUrl } from './mr-comment.js';
 import { readRejections, shouldWrite } from './read-rejections.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
+import { getGitHubToken } from '../providers/github/gh-cli.js';
 
 const WORKFLOW = 'teamai-ci-extract-mr';
 
@@ -60,7 +61,7 @@ const TGitUserSchema = z.object({ username: z.string(), email: z.string() });
  * Sets git user.name and user.email automatically.
  *
  * Looks up the user behind the current token through the provider API:
- * - GitHub: GITHUB_TOKEN → GET /user
+ * - GitHub: GITHUB_TOKEN or GH_TOKEN → GET /user
  * - GitLab: GITLAB_TOKEN → GET /api/v4/user
  * - TGit: TGIT_TOKEN → GET /api/v3/user
  */
@@ -71,7 +72,7 @@ async function configureGitUser(repoPath: string, provider: 'github' | 'tgit' | 
 
   try {
     if (provider === 'github') {
-      const token = process.env['GITHUB_TOKEN'];
+      const token = getGitHubToken();
 
       if (token) {
         const resp = await fetch(`${githubApiUrl()}/user`, {

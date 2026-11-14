@@ -6,7 +6,7 @@ import path from 'node:path';
 
 import { parseRemoteToRepo, buildHintMessage, computeMrHintOutput, stashMrHint, takePendingMrHint } from '../mr-hint.js';
 import type { MRSummary } from '../mr-hint.js';
-import { DefaultHooks } from '../default-hooks.js';
+import { DefaultFolders } from '../default-folders.js';
 import { getRemoteUrl } from '../utils/git.js';
 
 vi.mock('node:child_process', async (importOriginal) => {
@@ -19,7 +19,7 @@ vi.mock('../utils/git.js', async (importOriginal) => {
   return { ...actual, getRemoteUrl: vi.fn(actual.getRemoteUrl) };
 });
 
-const mrHint = await DefaultHooks.load('teamai-mr-hint', null);
+const mrHint = await DefaultFolders.load({ kind: 'hooks', name: 'teamai-mr-hint' }, null);
 
 describe('parseRemoteToRepo', () => {
   it('parses TGit HTTPS URL with simple path', () => {
@@ -162,6 +162,7 @@ describe('a hint the session start leaves for the next prompt', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
     vi.mocked(getRemoteUrl).mockReset();
     vi.mocked(spawnSync).mockReset();
     fs.rmSync(home, { recursive: true, force: true });
@@ -204,5 +205,26 @@ describe('a hint the session start leaves for the next prompt', () => {
     await stashMrHint('en', null, at('s1'));
 
     expect(await takePendingMrHint('s1')).toBeNull();
+  });
+
+  it('honors GH_TOKEN in REST fallback when gh CLI fails', async () => {
+    vi.mocked(spawnSync).mockReturnValue({
+      pid: 0, output: [null, '', 'error'], stdout: '', stderr: 'error', status: 1, signal: null,
+    });
+    vi.stubEnv('GITHUB_TOKEN', '');
+    delete process.env.GITHUB_TOKEN;
+    vi.stubEnv('GH_TOKEN', 'alias-token');
+
+    let requestedHeaders: Record<string, string> | undefined;
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((_url, init) => {
+      requestedHeaders = init?.headers;
+      return Promise.resolve(new Response(JSON.stringify([
+        { number: 7, title: 'Fix the login redirect', html_url: 'https://github.com/acme/shop/pull/7', merged_at: mergedAt },
+      ]), { status: 200 }));
+    }));
+
+    const result = await computeMrHintOutput('en', null, at('s1'));
+    expect(hintIn(result)?.additionalContext).toContain('- Fix the login redirect');
+    expect(requestedHeaders?.Authorization).toBe('Bearer alias-token');
   });
 });

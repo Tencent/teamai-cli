@@ -833,6 +833,42 @@ steps:
     expect(await readRun(bob.config, older)).toBe('missing');
   });
 
+  it('claims a run of a team folder that took files from a default on the same teamai, and refuses one whose files came from another version', async () => {
+    // Every default folder is private, so only a team that replaces its WORKFLOW.yaml can hand a run over; its texts stay teamai's.
+    const shipped = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'workflows', 'teamai-import-from-mr', 'WORKFLOW.yaml'), 'utf8');
+    const acme = team({}, { 'workflows/teamai-import-from-mr/WORKFLOW.yaml': shipped.replace('private: true\n', '') });
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const inputs = { mrs: [], all: true, publish: false, dir: '', output: false, discussions: false, language: 'en' };
+    const startClose = async (): Promise<string> => {
+      const started = await startRun(alice.config, 'teamai-import-from-mr', inputs, { secrets: await knownSecrets(alice.config) });
+      if ('error' in started) throw new Error(started.error.message);
+      const runId = String(started.data.run);
+      await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+      return runId;
+    };
+    const same = await startClose();
+    expect(await readRun(alice.config, same)).toMatchObject({ origin: { source: 'team', teamRevision: expect.stringMatching(/^[0-9a-f]{40}$/), teamaiVersion: PACKAGE_VERSION } });
+    expect(await claimRun(bob.config, same, { checkout: bob.checkout })).toMatchObject({ ok: true });
+
+    const older = await startClose();
+    const editor = path.join(path.dirname(acme.origin), 'editor');
+    git(path.dirname(acme.origin), 'clone', '-q', '--branch', 'teamai-reports', acme.origin, editor);
+    const rel = `workflows/runs/${older}/state.json`;
+    const snapshot: { origin: Record<string, unknown> } & Record<string, unknown> = JSON.parse(fs.readFileSync(path.join(editor, rel), 'utf8'));
+    fs.writeFileSync(path.join(editor, rel), `${JSON.stringify({ ...snapshot, sourceHash: '0'.repeat(64), origin: { ...snapshot.origin, teamaiVersion: '0.0.1' } }, null, 2)}\n`);
+    git(editor, 'commit', '-qam', 'an older teamai');
+    git(editor, 'push', '-q', 'origin', 'teamai-reports');
+
+    expect(await claimRun(bob.config, older, { checkout: bob.checkout })).toMatchObject({
+      ok: false,
+      error: {
+        code: 'definition_mismatch',
+        message: `Run ${older} runs workflow "teamai-import-from-mr", whose folder took files from teamai 0.0.1's default, which differs from teamai ${PACKAGE_VERSION}'s. Continue it on a machine with teamai 0.0.1, or start a new run.`,
+      },
+    });
+  });
+
   it('claims a run of a team that keeps its workflows in the business repository, as the commit it ran at holds them', async () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-handoff-self-')));
     dirs.push(root);

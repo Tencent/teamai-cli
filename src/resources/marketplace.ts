@@ -102,7 +102,9 @@ export async function refreshMarketplace(repoPath: string): Promise<boolean> {
   if (!MarketplaceFileSchema.safeParse(marketplace).success) return false;
 
   // Collect current skill names from skills/ directory (flat layout only,
-  // namespaced skills are not registered in marketplace)
+  // namespaced skills are not registered in marketplace). A skill kept as one
+  // file, skills/<name>.md, gets no entry: a plugin's relative source must be
+  // a directory, and the plugin format reads a skill only from a SKILL.md.
   const skillsDir = path.join(repoPath, 'skills');
   const currentSkills = new Set<string>();
   const dirs = await listDirs(skillsDir);

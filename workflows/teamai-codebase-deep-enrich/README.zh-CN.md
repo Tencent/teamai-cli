@@ -40,6 +40,7 @@ flowchart TD
 | `component.md` | 每个组件设计文档的提示词 |
 | `architecture.md` | 架构总览的提示词 |
 | `scenarios.md` | 场景时序图的提示词 |
+| `params.yaml` | `teamai codebase --deep-enrich` 让运行同时写多少份组件文档 |
 
 提示词读取 `{{ inputs.<name> }}`；在为每个组件运行一次的步骤里读取 `{{ item.<field> }}`；还以 `{{ steps.<id>.outputs.<field> }}` 的形式，读取它依赖的步骤的输出。
 
@@ -50,7 +51,7 @@ flowchart TD
 | `wiki_root` | `string` | teamwiki 目录 |
 | `project` | `string` | 代码库，即它在 `evidence/code/` 下的目录 |
 | `max_modules` | `number` | 为多少个组件写文档。`0` 表示所有组件 |
-| `concurrency` | `number` | 运行同时写多少份组件文档 |
+| `concurrency` | `number` | 运行同时写多少份组件文档。`teamai codebase --deep-enrich` 传入 `params.yaml` 的 `concurrency` |
 | `publish` | `boolean` | 提交文档，并推送到存放 `wiki_root` 的团队仓库 |
 
 ## 输出
@@ -63,24 +64,47 @@ flowchart TD
 | `missing_components` | 没有文档的组件。下一次运行会补写 |
 | `missing_architecture` | 缺少架构总览时为 `true` |
 
+## 参数
+
+| 键 | 范围 | 设置什么 |
+|---|---|---|
+| `concurrency` | 1-20 | `teamai codebase --deep-enrich` 和 `teamai deep-enrich` 让运行同时写多少份组件文档。`teamai-import-from-repo` 传入它自己的值 `5` |
+
 ## 替换它
 
+在团队仓库根目录的 `workflows/teamai-codebase-deep-enrich/` 里只放你要改的文件。其他文件（包括 `WORKFLOW.yaml`）仍用 teamai 的，并继续获得 teamai 的更新。要给每份设计文档加一节，复制它的提示词：
+
 ```bash
-cp -r "$(npm root -g)/teamai-cli/workflows/teamai-codebase-deep-enrich" workflows/
+mkdir -p workflows/teamai-codebase-deep-enrich
+cp "$(npm root -g)/teamai-cli/workflows/teamai-codebase-deep-enrich/component.md" workflows/teamai-codebase-deep-enrich/
 ```
 
-然后编辑提示词，例如在 `component.md` 里加上这一句：
+然后在 `component.md` 里加上这一句：
 
 ```markdown
 End each design doc with a "Failure modes" section that lists what the component does when a dependency is down.
 ```
 
-推送这个文件夹。下一次 `teamai pull` 会用团队的文件夹整体代替 teamai 的。之后 `teamai-import-from-repo` 运行的也是团队的文件夹。
+为了不超出 AI 工具的速率限制，同时少写几份：
+
+```yaml
+# workflows/teamai-codebase-deep-enrich/params.yaml
+concurrency: 2
+```
+
+推送这个文件夹。下一次 `teamai pull` 之后，命令和 `teamai-import-from-repo` 都用你的文件运行它。`workflows/teamai-codebase-deep-enrich.yaml` 单个文件会整体替换这个文件夹，此时用 teamai 的参数。
 
 | 保留 | 原因 |
 |---|---|
-| `WORKFLOW.yaml` 引用的每个文件 | 团队的文件夹整体替换 teamai 的 |
 | 上面的输入和输出 | 调用方会传这些输入、读这些输出 |
+
+## pull 拒绝什么
+
+| 团队文件夹 | pull 的处理 |
+|---|---|
+| 在 `params.yaml` 里设置了超出范围的值，或上表没有列出的键 | 指出文件和字段。pull 上一次接受的版本继续生效，还没接受过时用 teamai 的 |
+
+`teamai review --branch` 会在合并前让这样的文件夹不通过。
 
 ## 依赖
 

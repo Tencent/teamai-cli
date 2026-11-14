@@ -145,9 +145,10 @@ function spawnScript(
   env?: NodeJS.ProcessEnv,
 ): ChildProcess {
   const child = spawn(process.execPath, [scriptPath], {
-    windowsHide: true,
     cwd: repoPath,
     stdio,
+    // Windows opens a console for a child of a process without one (#1805).
+    windowsHide: true,
     env: {
       ...(env ?? process.env),
       TEAMAI_REPO: repoPath,

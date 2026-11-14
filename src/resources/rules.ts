@@ -45,7 +45,7 @@ import {
 } from './rule-format.js';
 import { injectClaudeMdSection, removeClaudeMdSection } from '../utils/claudemd.js';
 import { toolHome } from '../tool-home.js';
-import { cleanupOf, installOf, locate, openclawWorkspaceDir, ownOf, userViewOf, writable, type Gate, type Install, type Location } from '../locate.js';
+import { cleanupOf, installOf, locate, locatingOnce, openclawWorkspaceDir, ownOf, userViewOf, writable, type Gate, type Install, type Location } from '../locate.js';
 import { channelsOf } from '../tools.js';
 
 /** The copies earlier pulls left in one of `LEGACY_RULE_DIRS` (`RulesHandler.legacyRuleCopies`). */
@@ -583,53 +583,56 @@ export class RulesHandler extends ResourceHandler {
     const rewritten = new Set<string>();
     const received = rules.map((rule) => rule.name);
 
-    for (const item of rules) {
-      for (const target of await this.deliveryTargets(teamConfig, localConfig, item, received)) {
-        const { dest, content, movedFrom } = target;
+    // A rewrite changes no rule's place, so one answer per tool serves every rule.
+    await locatingOnce(async () => {
+      for (const item of rules) {
+        for (const target of await this.deliveryTargets(teamConfig, localConfig, item, received)) {
+          const { dest, content, movedFrom } = target;
 
-        // A link at the copy's path is the member's: never written through (#993).
-        if (await isLink(dest)) continue;
-        const recorded = ledger.previous?.[dest];
-        const disk = await fileHash(dest);
+          // A link at the copy's path is the member's: never written through (#993).
+          if (await isLink(dest)) continue;
+          const recorded = ledger.previous?.[dest];
+          const disk = await fileHash(dest);
 
-        // A copy whose file name changed (OMP's flat names): the copy at the
-        // old path says the rule was delivered here, so the new path is
-        // written, and the old copy goes unless the member changed it.
-        if (content !== undefined && disk === null && movedFrom !== undefined && await pathExists(movedFrom)) {
-          await ensureDir(path.dirname(dest));
+          // A copy whose file name changed (OMP's flat names): the copy at the
+          // old path says the rule was delivered here, so the new path is
+          // written, and the old copy goes unless the member changed it.
+          if (content !== undefined && disk === null && movedFrom !== undefined && await pathExists(movedFrom)) {
+            await ensureDir(path.dirname(dest));
+            await writeFile(dest, content);
+            await recordDelivered(ledger.hashes, dest);
+            ledger.recorder?.report('rules', dest);
+            await reclaimMovedCopy({ ...target, movedFrom }, item, ledger, localConfig.repo.localPath);
+            rewritten.add(item.name);
+            continue;
+          }
+
+          if (content === undefined || disk === null || disk === contentHash(content)) continue;
+
+          if (recorded === undefined) {
+            // No record (a CLI from before #822 wrote none): a copy that is the
+            // team rule verbatim is what an older CLI wrote before the tool got
+            // a format of its own, and nobody edited it. Anything else is left.
+            const source = await readFileSafe(item.sourcePath);
+
+            if (source === null || disk !== contentHash(source)) continue;
+          } else if (disk !== recorded) {
+            // Named by the caller's reportKept; a render unchanged since
+            // delivery is the member's plain edit, which needs no word.
+            if (contentHash(content) !== recorded && await keepsEditedCopy(ledger, item, target)) {
+              await warnIfKeptCopyIsInert(target);
+            }
+
+            continue;
+          }
+
           await writeFile(dest, content);
           await recordDelivered(ledger.hashes, dest);
           ledger.recorder?.report('rules', dest);
-          await reclaimMovedCopy({ ...target, movedFrom }, item, ledger, localConfig.repo.localPath);
           rewritten.add(item.name);
-          continue;
         }
-
-        if (content === undefined || disk === null || disk === contentHash(content)) continue;
-
-        if (recorded === undefined) {
-          // No record (a CLI from before #822 wrote none): a copy that is the
-          // team rule verbatim is what an older CLI wrote before the tool got
-          // a format of its own, and nobody edited it. Anything else is left.
-          const source = await readFileSafe(item.sourcePath);
-
-          if (source === null || disk !== contentHash(source)) continue;
-        } else if (disk !== recorded) {
-          // Named by the caller's reportKept; a render unchanged since
-          // delivery is the member's plain edit, which needs no word.
-          if (contentHash(content) !== recorded && await keepsEditedCopy(ledger, item, target)) {
-            await warnIfKeptCopyIsInert(target);
-          }
-
-          continue;
-        }
-
-        await writeFile(dest, content);
-        await recordDelivered(ledger.hashes, dest);
-        ledger.recorder?.report('rules', dest);
-        rewritten.add(item.name);
       }
-    }
+    });
 
     return [...rewritten];
   }

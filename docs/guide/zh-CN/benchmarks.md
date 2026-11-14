@@ -50,7 +50,7 @@ setup:
 | `timeout` | 必填：整个运行的超时。 |
 | `trial` | 可选：每个 trial 的 prompt 的限制。见 [trial 限制](#trial-限制)。 |
 | `setup` | 可选，即[工作流的 `setup`](workflow-advanced.md#要求和限制)。在每个全新克隆中、工具或 check 之前运行。 |
-| `scorers` | 可选，评判每个 trial 的[评分器](scorers.md)；任务可以[再列出更多](#每个任务的评分器)。没有有效 `scorers/<name>.md` 的名字会让 `teamai review --branch` 失败，`teamai pull` 会警告，start 会拒绝该套件。 |
+| `scorers` | 可选，评判每个 trial 的[评分器](scorers.md)；任务可以[再列出更多](#每个任务的评分器)。没有有效 `scorers/<name>.md` 或[评分器目录](scorers.md#评分器目录) `scorers/<name>/SCORER.md` 的名字会让 `teamai review --branch` 失败，`teamai pull` 会警告，start 会拒绝该套件。 |
 | `calibration` | 可选的 `{ rate }`，0 到 100，默认 0：check 失败的 trial 中，也交给正确性评判打标签的百分比，用来衡量这个评判。见[校准评判](#校准评判)。 |
 
 ### 使用其他团队资源的 arm
@@ -319,7 +319,7 @@ scorers: [security-review]
 | session-fixation | review-quality, security-review |
 | expired-token | review-quality |
 
-任务的评分器名字和套件的一样检查：没有有效 `scorers/<name>.md` 的名字会让 `teamai review --branch` 失败，`teamai pull` 会警告，start 会拒绝该套件。带 `:` 的名字（例如 `teamai:correctness:<task>`）会被拒绝，因为没有评分器文件叫这个名字。这个列表是任务文件的一部分，所以改动它会改变任务的 `sourceHash`，[回归门禁](#回归时失败)不会跨这次改动配对它的 trial。start 像固定套件评分器的评判那样[固定每个评分器的评判](#对所有-arm-用同一个评判)，只要有任务列出评分器，就需要评判工具。
+任务的评分器名字和套件的一样检查：没有有效 `scorers/<name>.md` 或[评分器目录](scorers.md#评分器目录) `scorers/<name>/SCORER.md` 的名字会让 `teamai review --branch` 失败，`teamai pull` 会警告，start 会拒绝该套件。带 `:` 的名字（例如 `teamai:correctness:<task>`）会被拒绝，因为没有评分器文件或目录叫这个名字。这个列表是任务文件的一部分，所以改动它会改变任务的 `sourceHash`，[回归门禁](#回归时失败)不会跨这次改动配对它的 trial。start 像固定套件评分器的评判那样[固定每个评分器的评判](#对所有-arm-用同一个评判)，只要有任务列出评分器，就需要评判工具。
 
 ### `protect` 要覆盖什么
 

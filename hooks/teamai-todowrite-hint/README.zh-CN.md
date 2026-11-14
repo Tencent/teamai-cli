@@ -28,9 +28,7 @@ flowchart TD
 
 ## 替换它
 
-```bash
-cp -r "$(npm root -g)/teamai-cli/hooks/teamai-todowrite-hint" hooks/
-```
+在团队仓库根目录的 `hooks/teamai-todowrite-hint/` 里只放你要改的文件。其他文件（包括 `HOOK.yaml`）仍用 teamai 的，并继续获得 teamai 的更新。
 
 `hooks/teamai-todowrite-hint/message.md`：
 
@@ -38,7 +36,7 @@ cp -r "$(npm root -g)/teamai-cli/hooks/teamai-todowrite-hint" hooks/
 Call the `teamai-recall` subagent once before the first edit.
 ```
 
-复制出来的文件夹里还有 `message.md` 的一个语言版本。把这个版本也改掉，或删掉它，每种 `language` 才都会打印你的文案。推送这个文件夹。下一次 `teamai pull` 会检查并交付它。这条提示没有参数。
+你的 `message.md` 会替换这段文案的所有语言版本，所以每种 `language` 都会打印它。推送这个文件夹。下一次 `teamai pull` 会把你的文件和 teamai 的其他文件一起检查并交付。这条提示没有参数。
 
 ## 文案
 

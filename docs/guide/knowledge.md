@@ -195,7 +195,7 @@ teamai recall maintenance --prune --archive
 teamai recall maintenance --update-quality
 ```
 
-`--archive` puts aside learnings whose confidence is below 0.15. `--update-quality` writes a `.draft.md` beside each entry the team recalls often but rarely adopts. Rename it to `.md` when the draft is right; until then `teamai pull` delivers none of it. It runs the default workflow [`teamai-draft-learning-updates`](workflow.md#default-workflows), and exits 1 when an entry could not be drafted.
+`--archive` puts aside learnings whose confidence is below 0.15. `--update-quality` writes a `.draft.md` beside each entry the team recalls often but rarely adopts. Rename it to `.md` when the draft is right; until then `teamai pull` delivers none of it. It runs the default workflow [`teamai-draft-learning-updates`](workflow.md#default-workflows), and exits 1 when an entry could not be drafted. By default an entry is drafted when members recalled it at least 5 times in all, at least 2 of them, and upvoted it at most once; a team changes that in `workflows/teamai-draft-learning-updates/params.yaml`, which its [README](https://github.com/Tencent/teamai-cli/blob/main/workflows/teamai-draft-learning-updates/README.md) describes.
 
 Digest and maintenance commands (`teamai digest`, `teamai recall maintenance`, and `teamai recall promote`) include the active learnings namespaces for the current scope alongside the shared root.
 
@@ -205,7 +205,7 @@ Confidence is an activity score from 0 to 1, not a probability that the knowledg
 
 ### Promoting Learnings
 
-A learning can become a skill, rule, or doc when its confidence is at least 0.90, it has at least 5 upvotes, at least 2 contributors, and it has existed for at least 14 days.
+A learning can become a skill, rule, or doc when its confidence is at least 0.90, it has at least 5 upvotes, at least 2 contributors, and it has existed for at least 14 days. A team changes these in a `params.yaml` of `workflows/teamai-promote-learning/` at the root of its repo, holding only the keys it changes, such as `min_users: 1`; the [workflow's README](https://github.com/Tencent/teamai-cli/blob/main/workflows/teamai-promote-learning/README.md) lists them and their ranges. Members on a teamai older than the one that reads it keep the old gates, so upgrade every member first.
 
 Promoted skills use `skills/<learningId>/SKILL.md`, with missing `name` and `description` frontmatter filled in so tools can discover them. Rules and docs remain Markdown files in their respective directories.
 
@@ -274,7 +274,7 @@ GitHub import reads commit pages of 100 when `gh pr view` reaches its 100-commit
 
 GitLab MR import reads commit pages of 50 instead of using only the first page, up to 100 pages. Each GitLab MR API request has a 30-second deadline, including reading its response body. A metadata timeout fails that MR; a commits, diff or review-threads timeout leaves out that optional data and continues. Each commit or review-thread page gets its own deadline. A later commit-page failure leaves out the whole commit list rather than passing an incomplete history to extraction.
 
-For GitLab `--from-org`, and for GitHub `--from-org` on both the `gh` path and the REST fallback, each page of the group or organization project list has a 30-second deadline, including reading its response body. A timeout on any page fails the import before writing the whitelist or importing repositories, and neither path falls back to `/users/<org>/repos` after a page has timed out.
+For GitLab and GitCode `--from-org`, and for GitHub `--from-org` on both the `gh` path and the REST fallback, each page of the group or organization project list has a 30-second deadline, including reading its response body. A timeout on any page fails the import before writing the whitelist or importing repositories, and neither path falls back to `/users/<org>/repos` after a page has timed out.
 
 The extraction reads the MR's review threads along with its description, commits and diff: GitLab discussions, GitHub review comments, reviews and conversation comments, TGit notes. Each thread goes into the prompt with the file and line it is anchored to, whether it is resolved, and its notes marked as the MR author's or a reviewer's; a decision in a resolved thread outweighs the diff. teamai's own CI comments are skipped. `--no-discussions` leaves the threads out, for `teamai ci extract-mr` too. With `language: en` in `teamai.yaml` the learning is written in English; otherwise in Chinese.
 

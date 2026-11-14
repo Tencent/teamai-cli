@@ -1241,6 +1241,16 @@ export async function definitionsOf(config: LocalConfig, snapshot: RunSnapshot):
   const cached = await loadWorkflowBundle(config, snapshot.name);
 
   if (!('failed' in cached) && same(cached)) return ok(definitionsIn(cached));
+  const inherited = snapshot.origin?.source === 'team' ? snapshot.origin.teamaiVersion : undefined;
+
+  // The team commit holds only the team's files; the others came from the default this teamai version ships.
+  if (inherited !== undefined && inherited !== getCurrentVersion()) {
+    return refused({
+      code: 'definition_mismatch',
+      message: `Run ${snapshot.run} runs workflow "${snapshot.name}", whose folder took files from teamai ${inherited}'s default, which differs from teamai ${getCurrentVersion()}'s. Continue it on a machine with teamai ${inherited}, or start a new run.`,
+    });
+  }
+
   const revision = snapshot.teamRevision;
 
   if (!revision) {

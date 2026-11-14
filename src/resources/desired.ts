@@ -13,10 +13,10 @@ import {
 } from '../namespace-resolver.js';
 import { placedResourcePath } from '../push-namespaces.js';
 import { resolveResourceNamespaces, usesMemberFilters } from '../resource-namespaces.js';
-import { loadRolesManifestIfPresent, type ResourceNamespaces } from '../roles.js';
+import { activeRoleIds, loadRolesManifestIfPresent, type ResourceNamespaces } from '../roles.js';
 import { existingSharedInstructionDirs } from '../shared-instruction-source.js';
 import { isRecallEnabled, type LocalConfig, type ResourceItem, type TeamaiConfig } from '../types.js';
-import { dirContentEqual, fileContentEqual, listDirs, listFiles, pathExists, readFileSafe } from '../utils/fs.js';
+import { fileContentEqual, listDirs, listFiles, pathExists, readFileSafe } from '../utils/fs.js';
 import type { BuildIndexOptions, IndexedSkills } from '../utils/search-index.js';
 import { filterByTags, loadTagsConfig } from '../utils/tags.js';
 import { warnOnce } from '../utils/warn-once.js';
@@ -25,6 +25,8 @@ import { RECALL_AGENT } from '../builtin-agents.js';
 import { resolveAgentsForDirectory } from './agents.js';
 import { resolveDocsForDirectory } from './docs.js';
 import { getHandler } from './index.js';
+import { readTeamSkills, teamSkillItem } from './skills.js';
+import { TeamSkillSource } from './team-skill-source.js';
 
 export interface RolePullContext {
   activeNamespaces: ResourceNamespaces;
@@ -50,30 +52,25 @@ export async function buildRolePullContext(localConfig: LocalConfig): Promise<Ro
   const activeSkillNames = new Set<string>();
   const inactiveSkillNames = new Set<string>();
   const inactiveSkillSources = new Map<string, string>();
+  const { skills } = await readTeamSkills(localConfig.repo.localPath);
+
+  // A declared namespace that is a file cannot be read: listing it throws, and pull stops instead of delivering it as empty.
+  for (const namespace of [...activeNamespaces.skills, ...inactiveSkillNamespaces]) await listDirs(path.join(localConfig.repo.localPath, 'skills', namespace));
 
   for (const namespace of activeNamespaces.skills) {
-    const namespaceDir = path.join(localConfig.repo.localPath, 'skills', namespace);
-    const names = await listDirs(namespaceDir);
-
-    for (const name of names) {
-      activeSkillNames.add(name);
-    }
+    for (const skill of skills) if (skill.namespace === namespace) activeSkillNames.add(skill.name);
   }
 
   for (const namespace of inactiveSkillNamespaces) {
-    const namespaceDir = path.join(localConfig.repo.localPath, 'skills', namespace);
-    const names = await listDirs(namespaceDir);
+    for (const skill of skills) {
+      if (skill.namespace !== namespace) continue;
+      inactiveSkillNames.add(skill.name);
 
-    for (const name of names) {
-      inactiveSkillNames.add(name);
-
-      // Record the source dir so cleanup can verify the deployed copy is
+      // Record the source so cleanup can verify the deployed copy is
       // unmodified before deleting it. (If a name lives in multiple inactive
       // namespaces, keeping the first is fine — cleanup only needs one source to
       // compare against; a mismatch always errs toward keeping the local copy.)
-      if (!inactiveSkillSources.has(name)) {
-        inactiveSkillSources.set(name, path.join(namespaceDir, name));
-      }
+      if (!inactiveSkillSources.has(skill.name)) inactiveSkillSources.set(skill.name, skill.source);
     }
   }
 
@@ -196,46 +193,30 @@ export function filterAgentsByNamespaces(
 }
 
 /**
- * The items that are skills: a directory without SKILL.md is not one, so it
- * neither replaces the root skill of its name nor is installed over it, which
- * would strip the installed copy of its SKILL.md. Each one is named once a run.
+ * The team repo's skills, with each namespace directory that holds no SKILL.md,
+ * and each skill pull cannot read, named once a run: neither replaces the root
+ * skill of its name nor is installed over it.
  */
-async function withSkillMd(items: ResourceItem[]): Promise<ResourceItem[]> {
-  const skills: ResourceItem[] = [];
+async function teamSkills(localConfig: LocalConfig): Promise<ResourceItem[]> {
+  const { skills, notSkills, diagnostics } = await readTeamSkills(localConfig.repo.localPath);
 
-  for (const item of items) {
-    if (await pathExists(path.join(item.sourcePath, 'SKILL.md'))) {
-      skills.push(item);
-    } else {
-      warnOnce(`${item.relativePath} has no SKILL.md, so it is not delivered as a skill. Add SKILL.md to it in the team repo, or remove it.`);
-    }
+  for (const dir of notSkills) {
+    warnOnce(`${dir} has no SKILL.md, so it is not delivered as a skill. Add SKILL.md to it in the team repo, or remove it.`);
   }
 
-  return skills;
+  for (const { message } of diagnostics) warnOnce(message);
+
+  return skills.map(teamSkillItem);
 }
 
 export async function scanRoleAwareSkills(
   localConfig: LocalConfig,
   namespaces: ResourceNamespaces,
+  candidates?: readonly ResourceItem[],
 ): Promise<{ kind: 'resolved'; items: ResourceItem[] } | DeliveryConflict> {
-  const items: ResourceItem[] = [];
-
-  for (const namespace of namespaces.skills) {
-    const namespaceDir = path.join(localConfig.repo.localPath, 'skills', namespace);
-    const dirs = await listDirs(namespaceDir);
-
-    for (const dir of dirs) {
-      items.push({
-        name: dir,
-        type: 'skills',
-        sourcePath: path.join(namespaceDir, dir),
-        relativePath: `skills/${namespace}/${dir}`,
-        namespace,
-      });
-    }
-  }
-
-  const resolution = resolveNamespacedItems((await withSkillMd(items)).map(itemCandidate), namespaces.skills);
+  const skills = candidates ?? await teamSkills(localConfig);
+  const items = namespaces.skills.flatMap((namespace) => skills.filter((item) => item.namespace === namespace));
+  const resolution = resolveNamespacedItems(items.map(itemCandidate), namespaces.skills);
 
   if (resolution.kind === 'conflict') return { kind: 'conflict', type: 'skill', conflict: resolution };
 
@@ -318,6 +299,34 @@ async function sharedFirst(repoPath: string, items: readonly ResourceItem[]): Pr
   return { items: [...kept.values()], shadowed };
 }
 
+async function roleAllowedSkills(teamConfig: TeamaiConfig, localConfig: LocalConfig, items: ResourceItem[]): Promise<ResourceItem[]> {
+  const required = new Set(teamConfig.sharing.skills.roleRequiredNamespaces ?? []);
+
+  if (required.size === 0) return items;
+  const manifest = await loadRolesManifestIfPresent(localConfig.repo.localPath);
+  const ids = localConfig.stepRole !== undefined ? [localConfig.stepRole] : activeRoleIds(localConfig) ?? [];
+  const roles = manifest?.roles.filter((role) => ids.includes(role.id)) ?? [];
+  const allowed = new Set(roles.length === ids.length ? roles.flatMap((role) => role.resources.skills) : []);
+  const skipped = new Set<string>();
+
+  const eligible = items.filter((item) => {
+    if (!item.namespace || !required.has(item.namespace) || allowed.has(item.namespace)) return true;
+    skipped.add(item.namespace);
+
+    return false;
+  });
+
+  if (skipped.size > 0) {
+    const next = localConfig.roleAssignment
+      ? 'Ask the team to update your roles in manifest/members.yaml if you need these skills.'
+      : 'Run `teamai roles list` and `teamai roles set <role>` to select a receiving role, then `teamai pull`.';
+
+    warnOnce(`Skipped role-required skill namespaces: ${[...skipped].sort().join(', ')}. Your effective roles do not receive them. ${next}`);
+  }
+
+  return eligible;
+}
+
 /**
  * Resolve the skills this member should have: role namespaces ∪ subscribed
  * tags − exclusions. Read-only: `pull` calls it to decide what to install, and
@@ -337,24 +346,23 @@ export async function resolveDesiredSkills(
   const members = await deliveredMembers(localConfig);
 
   if (members) return resolveWorkspaceSkills(teamConfig, localConfig, members);
-  const handler = getHandler('skills');
   const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
   const subscribedTags = usesMemberFilters(localConfig) ? localConfig.subscribedTags : undefined;
   const excludedSkills = new Set(usesMemberFilters(localConfig) ? localConfig.excludedSkills ?? [] : []);
 
+  const teamItems = await teamSkills(localConfig);
+  const eligibleItems = await roleAllowedSkills(teamConfig, localConfig, teamItems);
   let directoryItems: ResourceItem[];
   let shadowed: ShadowedSkill[] = [];
 
   if (roleContext) {
-    const scanned = await scanRoleAwareSkills(localConfig, roleContext.activeNamespaces);
+    const scanned = await scanRoleAwareSkills(localConfig, roleContext.activeNamespaces, eligibleItems);
 
     if (scanned.kind === 'conflict') return scanned;
     directoryItems = scanned.items;
   } else {
-    ({ items: directoryItems, shadowed } = await sharedFirst(localConfig.repo.localPath, await withSkillMd(await handler.scanTeamForPull(teamConfig, localConfig))));
+    ({ items: directoryItems, shadowed } = await sharedFirst(localConfig.repo.localPath, eligibleItems));
   }
-
-  const teamItems = await withSkillMd(await handler.scanTeamForPull(teamConfig, localConfig));
 
   // Tag channel: only augment when subscriptions are actually active
   const hasActiveTagSubscriptions = tagsConfig != null
@@ -365,7 +373,7 @@ export async function resolveDesiredSkills(
   let skippedByTags = 0;
 
   if (hasActiveTagSubscriptions) {
-    const tagResult = filterByTags(teamItems, tagsConfig, subscribedTags, 'skills');
+    const tagResult = filterByTags(eligibleItems, tagsConfig, subscribedTags, 'skills');
     const subscribedTagSet = new Set(subscribedTags);
     tagIncluded = tagResult.included.filter((item) => {
       const itemTags = tagsConfig.skills[item.name];
@@ -457,7 +465,7 @@ async function resolveWorkspaceSkills(
   const { items, held } = await unionMemberItems({
     perMember: resolved.map((desired) => desired.items),
     nameOf: (item) => item.name,
-    sameContent: (a, b) => a.sourcePath === b.sourcePath || dirContentEqual(a.sourcePath, b.sourcePath),
+    sameContent: async (a, b) => a.sourcePath === b.sourcePath || await TeamSkillSource.sameFiles(a.sourcePath, b.sourcePath),
   });
 
   const excluded = new Set(usesMemberFilters(localConfig) ? localConfig.excludedSkills ?? [] : []);

@@ -2,7 +2,7 @@
 
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
-A scorer is a rubric a judge applies to a workflow step's work or to a finished agent session. It is a Markdown file at `scorers/<name>.md` in the team repo.
+A scorer is a rubric a judge applies to a workflow step's work or to a finished agent session. It is a Markdown file at `scorers/<name>.md` in the team repo, or a [folder](#a-scorer-folder) when its judge reads files beside it.
 
 `scorers/review-quality.md`:
 
@@ -33,7 +33,7 @@ Judge whether the change does what the step asked. Read the diff and the session
 | `tool` | Optional. The judge tool to prefer, such as `codex`. When the driver that leases the judge offers it, it judges; else the tool the judged work ran in, else the driver's first tool. A name teamai does not know is warned about, not refused. In a [benchmark run](benchmarks.md#one-judge-for-every-arm) it is required: that tool, else the suite's `defaults.tool`, judges every arm, and no other tool does. |
 | `stages` | Optional. Which [stages](#score-what-a-run-delivered) may decide the scorer before its judge: some of `check`, `ci` and `protected`. Default all three. |
 
-The text after the frontmatter is the judge's prompt. `teamai pull` caches valid scorers, which `teamai status` lists, and warns about the rest. `teamai review --branch` fails on a malformed scorer, on a model alias the branch's `models/aliases.yaml` maps for no tool, on any file in `scorers/` other than `<name>.md`, `<namespace>/<name>.md`, `scoring.yaml` and `README.md`, on a `scoring.yaml` with a key or value it does not know, and on a credential or internal address in any file there, as it does for rules.
+The text after the frontmatter is the judge's prompt. `teamai pull` caches valid scorers, which `teamai status` lists, and warns about the rest. `teamai review --branch` fails on a malformed scorer, on a model alias the branch's `models/aliases.yaml` maps for no tool, on any file in `scorers/` other than `<name>.md`, `<namespace>/<name>.md`, a [scorer folder](#a-scorer-folder), `scoring.yaml` and `README.md`, on a `scoring.yaml` with a key or value it does not know, and on a credential or internal address in any file there, as it does for rules.
 
 `scorers/ops/review-quality.md` belongs to the `ops` namespace. Members get it when their role or project lists it:
 
@@ -45,6 +45,32 @@ roles:
 ```
 
 It replaces a root scorer of the same name. One name in two active namespaces is an error. A `scorers/<dir>/` that no role or project lists is shared: every member gets its scorers, and one named like a root scorer is an error. A team without roles or projects gets every namespace.
+
+## A scorer folder
+
+When the judge needs more than its prompt, such as a long rubric or examples, keep the scorer as a folder: `scorers/<name>/SCORER.md` with the files beside it. `SCORER.md` is the scorer, as `scorers/<name>.md` is, and its prompt names the folder's files through `${TEAMAI_SCORER_DIR}`:
+
+```text
+scorers/
+└── style/
+    ├── SCORER.md
+    ├── rubric.md
+    └── examples/good.md
+```
+
+`scorers/style/SCORER.md`:
+
+```markdown
+---
+labels:
+  - { value: good, score: 1, description: The change follows the rubric. }
+  - { value: bad, score: 0, description: The change breaks a rule of the rubric. }
+passingScore: 1
+---
+Judge the change against ${TEAMAI_SCORER_DIR}/rubric.md. ${TEAMAI_SCORER_DIR}/examples/good.md is a change that passes.
+```
+
+The judge reads only its evidence directory, so teamai copies the folder's files there and writes that path in place of `${TEAMAI_SCORER_DIR}`. A run judges with the files it started with, and an edit to any file of the folder is a new rubric, counted apart from the old one. `scorers/<namespace>/<name>/SCORER.md` belongs to a namespace, as a file does. A folder holds UTF-8 text files, no symlink, 1 MB in all; pull warns about one that does not and caches nothing from it. A `scorers/<name>.md` that names `${TEAMAI_SCORER_DIR}` is refused, since it has no folder. A [default scorer](#default-scorers) is replaced by a file only.
 
 ## Choose the judge's model
 
@@ -85,7 +111,7 @@ steps:
     scorers: [review-quality]
 ```
 
-A name with no valid `scorers/<name>.md` fails `teamai review --branch`; `teamai pull` warns and the step runs without it. An older teamai does not know `scorers`, so update every member and runner first. [Workflows](workflow.md) shows the long form.
+A name with no valid `scorers/<name>.md` or [folder](#a-scorer-folder) `scorers/<name>/SCORER.md` fails `teamai review --branch`; `teamai pull` warns and the step runs without it. An older teamai does not know `scorers`, so update every member and runner first. [Workflows](workflow.md) shows the long form.
 
 ## A run and its judge
 
@@ -495,7 +521,7 @@ $ teamai workflow next r9a1… --prepare --json '{"driver":{"kind":"cursor","mac
 $ teamai score --session 7c1e… --scorer ./scorers/review-quality.md
 ```
 
-Before you push a new or edited scorer, try it on a session from your checkout of the team repo. `--scorer` takes a path, a value with a `/` or ending in `.md`, relative to the current directory. The file is checked as `teamai pull` checks it, and an invalid file fails with pull's message before any run starts. The command starts the [default workflow](workflow.md#default-workflows) `teamai-try-scorer` on the driver `--driver` or `workflows.driver` names, else local. It runs [`teamai-score`](#the-teamai-score-workflow) twice with the file and `store: false`, on the session and on its first prompt alone, then `teamai score report` reads both verdicts. The judge runs as it does for a cached scorer, also with `--batch`: a judge no tool here can take for the file's `model` or `isolation` holds the run with `confined_pending`.
+Before you push a new or edited scorer, try it on a session from your checkout of the team repo. `--scorer` takes a path, a value with a `/` or ending in `.md`, relative to the current directory. For a scorer folder, pass its `SCORER.md`: the files beside it are tried with it. The file is checked as `teamai pull` checks it, and an invalid file fails with pull's message before any run starts. The command starts the [default workflow](workflow.md#default-workflows) `teamai-try-scorer` on the driver `--driver` or `workflows.driver` names, else local. It runs [`teamai-score`](#the-teamai-score-workflow) twice with the file and `store: false`, on the session and on its first prompt alone, then `teamai score report` reads both verdicts. The judge runs as it does for a cached scorer, also with `--batch`: a judge no tool here can take for the file's `model` or `isolation` holds the run with `confined_pending`.
 
 The file's label is never stored, so the command takes no `--push`, `--run` takes scorer names only, and a scorer name beside a file is refused: score it in a command of its own. The output prints the label with its reasoning and `"stored": false`. Next to it, `stored` lists the newest label kept on this machine for that session and the scorer of the same name, one per rubric, so you see whether your edit changes the verdict. `control` is the file judged a second time, on the session's first prompt alone. When it passes, it carries a warning: the rubric passes a session where the agent did nothing, so it may not judge the work. It warns and never fails, since a rubric may judge the prompt by design.
 
@@ -529,7 +555,7 @@ daily_limit: 10                                  # per data home: on a fresh CI 
 |---|---|---|
 | `off` | Nothing. The default. | Nothing. |
 | `ask` | When the friction reminder offers [`teamai-share-learnings`](workflow.md#teamai-share-learnings-and-teamai-share-session), it proposes the scorers that sample the session, and they judge it once the person confirms. | Acts as `off`, since nobody is there to answer. |
-| `auto` | A session is judged once nothing has happened in it for six hours, by the [`teamai-finished-sessions`](#teamai-finished-sessions) run a session start begins. | A session is judged when `teamai score --drain` runs, before the job ends. The default. |
+| `auto` | A session is judged once nothing has happened in it for six hours, or the `idle` the team sets, by the [`teamai-finished-sessions`](#teamai-finished-sessions) run a session start begins. | A session is judged when `teamai score --drain` runs, before the job ends. The default. |
 
 Each mode resolves on its own, from the first of these that sets it: a member's `scoring.sessions` in `config.yaml`, the active namespaces' `scoring.yaml` files, the root `scorers/scoring.yaml`, the default. When two active namespaces disagree, the most restrictive policy wins (`off`, then `ask`, then `auto`), and so does the lowest `daily_limit`. A partial mapping such as `{ attended: ask }` leaves the other mode to the next level:
 
@@ -706,7 +732,7 @@ The rubric is the [default scorer](#default-scorers) `scorers/teamai-adoption.md
 
 ```text
 teamai-finished-sessions   private, invoke: deny, timeout 30m
-  sessions   teamai session list --finished --idle 6h   the finished sessions to archive or judge here
+  sessions   teamai session list --finished             the finished sessions to archive or judge here
   share      teamai-share-session, for each             its publish step, then its teamai-score step
   lapsed     teamai score subjects --lapsed             passes and sessions whose judging lapsed, and passes no run scored, each with its scorers
   rescore    teamai-score, for each                     starts their judging again with those scorers only
@@ -722,12 +748,12 @@ $ teamai workflow start teamai-finished-sessions --driver local --inputs '{"publ
 
 | Clock | Set in | Default |
 |---|---|---|
-| A session counts as finished | `--idle` of the `sessions` step | 6 hours after its last activity; an unattended session once a drain reached it |
+| A session counts as finished | `idle` of the folder's `params.yaml` | 6 hours after its last activity; an unattended session once a drain reached it |
 | A run ends | the file's `timeout` | 30 minutes; what it cancels lapses, and the next run starts it again |
 | A judge no driver here takes | the `timeout` of share-session's `score` step | 30 minutes; the session stays published and its judging lapses |
 | A lapse is started again | the scoring marks | until the fourth lapse, and only within 14 days of the run's last change; with the scorers its marks hold, a named one included, unsampled and, once named, never refused by `daily_limit`, and with no scorer the session policy would add now |
 
-A team changes these in `workflows/teamai-finished-sessions.yaml` in its team repo, which replaces the default: `--idle 1h` takes a session one hour after its last activity, and `timeout` bounds a run. Steps can be added or reordered there too. What a team cannot change stays in the CLI: the automatic starts pass no agent evidence and only the policy inputs.
+A team changes the idle time with `workflows/teamai-finished-sessions/params.yaml` in its team repo, holding `idle: 1h` to take a session one hour after its last activity, from `10m` to `7d`. The dashboard, the session sharing proposals and the usage report's outcomes count a session finished at the same time. A `WORKFLOW.yaml` of its own in that folder changes the steps and their `timeout`, and steps can be added or reordered there too; the folder's [README](https://github.com/Tencent/teamai-cli/blob/main/workflows/teamai-finished-sessions/README.md) lists what it keeps. What a team cannot change stays in the CLI: the automatic starts pass no agent evidence and only the policy inputs.
 
 ### Drain before an unattended job ends
 
@@ -742,7 +768,7 @@ $ teamai score --drain
 
 Every unattended driver ends with `teamai score --drain`. The local driver runs it at the end of an unattended run, unless publishing and scoring of unattended sessions are both `off`, or the run is a `teamai-finished-sessions` run. The skill driver, T3, Paseo and a CI script run it as their last step. It works in this order:
 
-1. In unattended mode, every session this data home captured as unattended counts as finished, the calling session included. Attended sessions keep the six-hour rule.
+1. In unattended mode, every session this data home captured as unattended counts as finished, the calling session included. Attended sessions keep the idle rule, six hours unless the team changed it.
 2. It starts a [`teamai-finished-sessions`](#teamai-finished-sessions) run here, as a session start does, and drives it on the driver `workflows.driver` names, else on the local driver. A run for a driver this machine does not run waits for it, and the drain says how to drive it here. The run archives the finished sessions with `publish: auto` for their mode and judges the sampled ones the policies allow, within `daily_limit`. It starts `teamai-score` again for each pass and session whose judging lapsed, for each `start: workflow` pass its run left unscored, and for the open passes and sessions the upgrade carried over from judge attempts, except a pass whose run last changed more than 14 days ago. A run already working on this data home is left to it, and the drain says so: run the drain again once it ends.
 3. It publishes every pending label, and what a [`deliver: publish`](workflow.md#publish-to-a-data-branch) step left pending on a data branch, as `score --push` does, and the workflow run records a run could not publish, as `teamai pull` does.
 4. With `publish: auto` for the current mode, it archives on `teamai-reports`, scrubbed, the step sessions of the runs driven here that are not archived yet. A step session it cannot archive from here, because teamai reads no sessions from its tool or this machine cannot read it, is listed once as skipped with the reason, and never tried again. The other step sessions of that run are still archived. The trial sessions of a [benchmark](benchmarks.md) run stay on the machine that ran it.

@@ -36,9 +36,7 @@ teamai joins the texts it prints with a space, in the order above.
 
 ## Replace it
 
-```bash
-cp -r "$(npm root -g)/teamai-cli/hooks/teamai-env-hint" hooks/
-```
+Put only the files you change in `hooks/teamai-env-hint/` at the root of the team repo. Every other file, `HOOK.yaml` included, stays teamai's and keeps getting teamai's updates.
 
 `hooks/teamai-env-hint/exec.md`:
 
@@ -46,7 +44,7 @@ cp -r "$(npm root -g)/teamai-cli/hooks/teamai-env-hint" hooks/
 Run every `gh`, `kubectl` and `npm publish` through `teamai env exec -- <command>`. Never export a value yourself.
 ```
 
-Push the folder. The next `teamai pull` checks it and delivers it. The hint takes no parameters.
+Push the folder. The next `teamai pull` checks your files with teamai's other files and delivers them together. The hint takes no parameters.
 
 ## Texts
 

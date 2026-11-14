@@ -447,6 +447,6 @@ describe('TEAMAI_RULE_DIR (#1787)', () => {
   it('is a reserved team env name, so no team variable shadows it', async () => {
     const { reservedTeamEnvWarning } = await import('../env-reserved.js');
 
-    expect(reservedTeamEnvWarning(['TEAMAI_RULE_DIR', 'API_URL'])).toBe('TEAMAI_RULE_DIR is reserved for the folder path teamai gives a workflow step, hook, rule or MCP server; those team env values are ignored.');
+    expect(reservedTeamEnvWarning(['TEAMAI_RULE_DIR', 'API_URL'])).toBe('TEAMAI_RULE_DIR is reserved for the folder path teamai gives a workflow step, hook, rule, agent or MCP server; those team env values are ignored.');
   });
 });

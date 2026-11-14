@@ -643,13 +643,13 @@ function refusal(file: string): RefusedPath | null {
 }
 
 /** `file` with its last part spelled as on disk (a case-insensitive or normalization-insensitive filesystem). */
-async function onDiskSpelling(file: string): Promise<string> {
+async function onDiskSpelling(file: string, namesIn: (dir: string) => Promise<string[]>): Promise<string> {
   const stat = await fse.lstat(file).catch(() => null);
 
   if (!stat) return file;
   const dir = path.dirname(file);
   const base = path.basename(file);
-  const names = await fse.readdir(dir).catch((): string[] => []);
+  const names = await namesIn(dir);
 
   if (names.includes(base)) return file;
   const fold = (name: string): string => name.normalize('NFC').toLowerCase();
@@ -673,6 +673,40 @@ export class GitContext {
   private readonly locations = new Map<string, ReturnType<typeof locateExclude>>();
   private readonly precompose = new Map<string, Promise<boolean>>();
   private readonly listings = { tracked: new Map<string, Promise<ExecResult>>(), offered: new Map<string, Promise<ExecResult>>() };
+  // Asked for every delivered file, answered once per directory: a run writes no directory between its asks.
+  private readonly ancestors = new Map<string, Promise<string>>();
+  private readonly holders = new Map<string, Promise<string | null>>();
+  private readonly names = new Map<string, Promise<string[]>>();
+
+  /** {@link existingAncestor} of `file`, for the run. */
+  existingAncestor(file: string): Promise<string> {
+    const dir = path.dirname(path.resolve(file));
+    let found = this.ancestors.get(dir);
+
+    if (!found) this.ancestors.set(dir, found = existingAncestor(file));
+
+    return found;
+  }
+
+  /** The closest directory at or above `dir` that holds `.git`, or null, for the run. */
+  repositoryHolder(dir: string): Promise<string | null> {
+    let found = this.holders.get(dir);
+
+    if (!found) {
+      found = pathExists(path.join(dir, '.git')).then((holds) => (holds ? dir : path.dirname(dir) === dir ? null : this.repositoryHolder(path.dirname(dir))));
+      this.holders.set(dir, found);
+    }
+
+    return found;
+  }
+
+  private namesIn(dir: string): Promise<string[]> {
+    let found = this.names.get(dir);
+
+    if (!found) this.names.set(dir, found = fse.readdir(dir).catch((): string[] => []));
+
+    return found;
+  }
 
   /** `git ls-files` of `rels` in the checkout at `root`: what git tracks, or what it would still offer for a commit. A failed answer is not kept. */
   listFiles(root: string, rels: string[], kind: 'tracked' | 'offered'): Promise<ExecResult> {
@@ -713,9 +747,7 @@ export class GitContext {
    * repository, a directory outside the toplevel git names) asks git from `dir`.
    */
   private async locateOnce(dir: string): Promise<Awaited<ReturnType<typeof locateExclude>>> {
-    let holder: string | null = dir;
-
-    while (holder !== null && !await pathExists(path.join(holder, '.git'))) holder = path.dirname(holder) === holder ? null : path.dirname(holder);
+    const holder = await this.repositoryHolder(dir);
 
     if (holder === null || holder === dir) return locateExclude(dir);
     const location = await this.locate(holder);
@@ -749,8 +781,8 @@ export class GitContext {
     const refused = refusal(file);
 
     if (refused) return { kind: 'refused', refused };
-    const landed = await onDiskSpelling(await realFilePath(file));
-    const dir = await existingAncestor(landed);
+    const landed = await onDiskSpelling(await realFilePath(file), (parent) => this.namesIn(parent));
+    const dir = await this.existingAncestor(landed);
     const location = await this.locate(dir);
 
     if ('error' in location) return await insideRepository(dir) ? { kind: 'gitFailed', error: location.error } : { kind: 'outsideRepo' };

@@ -94,16 +94,18 @@ async function putMarkerAndLowerCase(dir: string, marker: string, content: strin
 const SCORER = '---\nlabels:\n  - { value: good, score: 1, description: Did the work }\n  - { value: bad, score: 0, description: Did not }\npassingScore: 0.5\n---\nJudge the session.\n';
 
 describe('scorers', () => {
-  it('caches no scorer from a scorer folder and reports none of its files', async () => {
+  it('reads a scorer folder as the scorer named after its directory, at the root and in a namespace, and none of its files as a scorer', async () => {
     await put('scorers/quality.md', SCORER);
     await put('scorers/style/SCORER.md', SCORER);
     await put('scorers/style/rubric.md', SCORER);
+    await put('scorers/style/examples/bad.md', 'x\n');
     await put('scorers/team/review/SCORER.md', SCORER);
+    await put('scorers/team/review/notes.txt', 'x\n');
 
     const result = await syncScorerDefinitions({ ...localConfig, dataHome: path.join(repo, '.data') }, { dryRun: true, everyNamespace: true });
 
     expect(result.invalid).toEqual([]);
-    expect(result.cached).toEqual(['quality']);
+    expect(result.cached.sort()).toEqual(['quality', 'review', 'style']);
   });
 
   it('reads no scoring settings from a scorer folder', async () => {
@@ -128,7 +130,7 @@ describe('benchmarks', () => {
 });
 
 describe('agents', () => {
-  it('delivers no agent from an agent folder', async () => {
+  it('reads an agent folder as one agent named by its directory, at the root and in a namespace, and none of its files as an agent', async () => {
     await put('agents/coder.yaml', 'name: coder\n');
     await put('agents/reviewer/AGENT.md', '# Reviewer\n');
     await put('agents/reviewer/checklist.md', '# Checklist\n');
@@ -136,9 +138,14 @@ describe('agents', () => {
     await put('agents/team/planner/AGENT.md', '# Planner\n');
     await put('agents/team/planner/planner.yaml', 'name: planner\n');
 
-    const names = (await new AgentsHandler().scanTeamForPull(teamConfig, localConfig)).map((agent) => agent.name).sort();
+    const agents = await new AgentsHandler().scanTeamForPull(teamConfig, localConfig);
 
-    expect(names).toEqual(['coder', 'helper']);
+    expect(agents.map((agent) => [agent.name, agent.namespace ?? null, agent.relativePath, agent.folder === true]).sort()).toEqual([
+      ['coder', null, 'agents/coder.yaml', false],
+      ['helper', 'team', 'agents/team/helper.yaml', false],
+      ['planner', 'team', 'agents/team/planner/AGENT.md', true],
+      ['reviewer', null, 'agents/reviewer/AGENT.md', true],
+    ]);
   });
 });
 

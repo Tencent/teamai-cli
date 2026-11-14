@@ -60,7 +60,7 @@ A session started in a child must not pick up what the workspace receives:
 
 - `teamai remove` in a workspace removes the item from the team repo, for every member, as it does in any scope.
 - In a plain-folder workspace, a folder without its own config inside it (such as `ws/notes/`) falls to the user scope.
-- A child without a role, in a team with `manifest/roles.yaml`, receives everything unfiltered, and so does the workspace through it.
+- A child without a role, in a team with `manifest/roles.yaml`, receives everything unfiltered, except skill namespaces listed in `sharing.skills.roleRequiredNamespaces`. That skill condition applies per child before the workspace union.
 - The `recall --check` threshold reads the index's term statistics, so a workspace with more content has a stricter threshold.
 - A repo in self mode gets its local config from the session-start bootstrap (`src/bootstrap.ts`) without a command from the member. Cloned into a workspace, it shows up as a child left out on every pull.
 - Children from several team repos, deeper than three levels, or a switch to turn detection off are not supported.

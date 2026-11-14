@@ -382,13 +382,13 @@ export type ToolFeatures = {
 };
 
 /**
- * How the tool reads the support files a user-scope rule folder names through `${TEAMAI_RULE_DIR}` (#1787), in the
- * data home: `none`, without a prompt; `grant`, once teamai adds that directory to `setting` in the tool's user
- * settings; `copy`, not without a prompt, so pull warns once. In a project every tool reads the folder in the worktree,
- * `.teamai/delivered/rules/`, a `copy` tool by its path from the project root. A tool with no cell has no evidence,
- * and gets `copy`.
+ * How the tool reads the support files a user-scope rule or agent folder names through `${TEAMAI_RULE_DIR}` or
+ * `${TEAMAI_AGENT_DIR}` (#1787), in the data home: `none`, without a prompt; `grant`, once teamai adds that directory to
+ * `setting` in the tool's user settings; `copy`, not without a prompt, so pull warns once. In a project every tool reads
+ * the folder in the worktree, `.teamai/delivered/<type>/`, a `copy` tool by its path from the project root. A tool with
+ * no cell has no evidence, and gets `copy`.
  */
-export type RuleFolderReach =
+export type FolderReach =
   | { readonly reach: 'none'; readonly evidence: Evidence }
   | { readonly reach: 'grant'; readonly setting: 'permissions.additionalDirectories'; readonly evidence: Evidence }
   | { readonly reach: 'copy'; readonly evidence?: Evidence };
@@ -410,8 +410,8 @@ export type ToolDescriptor = {
    */
   readonly skillsFollowSession?: true;
   readonly rules: RulesChannels;
-  /** How the tool reads a user-scope rule folder's files; absent: `copy`, with no evidence. */
-  readonly ruleFolders?: RuleFolderReach;
+  /** How the tool reads a user-scope rule or agent folder's files; absent: `copy`, with no evidence. */
+  readonly folderReach?: FolderReach;
   readonly blocks: BlocksChannels;
   readonly agents: AgentsChannels;
   readonly mcp: McpChannels;
@@ -516,7 +516,7 @@ export const TOOLS = {
     },
     // Claude Code 2.1.319: `claude -p` reads a file outside the project with no permission denial once its directory
     // is in `permissions.additionalDirectories` of ~/.claude/settings.json, and is denied the read without it.
-    ruleFolders: { reach: 'grant', setting: 'permissions.additionalDirectories', evidence: 'verified' },
+    folderReach: { reach: 'grant', setting: 'permissions.additionalDirectories', evidence: 'verified' },
     blocks: {
       user: { channel: 'file', file: { in: 'claudemd' }, reads: [{ base: 'home', path: '.claude/CLAUDE.md', evidence: 'verified' }] },
       // CLAUDE.local.md would stop Claude's native AGENTS.md load (#945).
@@ -1883,11 +1883,11 @@ const CUSTOM_TOOL = {
   },
 } as const satisfies Pick<ToolDescriptor, 'rules' | 'blocks' | 'agents' | 'mcp' | 'hooks'>;
 
-/** How `tool` reads a rule folder's files (`RuleFolderReach`): a custom tool, or one with no cell, gets `copy`. */
-export function ruleFolderReachOf(tool: string): RuleFolderReach {
+/** How `tool` reads a rule or agent folder's files (`FolderReach`): a custom tool, or one with no cell, gets `copy`. */
+export function folderReachOf(tool: string): FolderReach {
   const descriptor: ToolDescriptor | undefined = isToolId(tool) ? TOOLS[tool] : undefined;
 
-  return descriptor?.ruleFolders ?? { reach: 'copy' };
+  return descriptor?.folderReach ?? { reach: 'copy' };
 }
 
 /** The channels of `tool`: its descriptor's, or `CUSTOM_TOOL`'s for a custom tool id. */

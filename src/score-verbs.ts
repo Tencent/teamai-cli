@@ -21,7 +21,7 @@ import type { JsonObject, LocalConfig } from './types.js';
 import { isSameRealPath } from './utils/fs.js';
 import { createGit } from './utils/git.js';
 import { log, setStderrOnly } from './utils/logger.js';
-import { durationMs } from './workflow/parse.js';
+import { durationMs } from './utils/duration.js';
 import { isIsolated } from './workflow/workspace.js';
 
 /** Where a verb runs: the process's environment, the scope of its directory, and the time it reads as now. */

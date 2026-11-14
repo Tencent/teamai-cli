@@ -360,7 +360,7 @@ function renderAuthorsSection(authors: AuthorStat[]): string {
 /** Render the promotable learnings maintenance block as an HTML string. */
 function renderPromotionBlock(promote: PromotionCandidate[]): string {
   const intro =
-    '<p class="muted">Learnings with high confidence (&ge;0.90) and adoption across ' +
+    '<p class="muted">Learnings with high confidence and adoption across ' +
     'multiple users — good candidates to promote to formal skills, rules, or docs.</p>';
 
   const guide =

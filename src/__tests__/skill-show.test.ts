@@ -146,6 +146,19 @@ describe('skillShow locator', () => {
     expect(text).toContain('Namespace    : hai_dev');
   });
 
+  it.each([
+    ['at the root', 'skills/file-skill.md', 'Source       : [team]', undefined],
+    ['in a namespace', 'skills/hai_dev/file-skill.md', 'Source       : [team:hai_dev]', 'Namespace    : hai_dev'],
+  ])('finds a skill kept as one file %s, with no installed copy', async (_place, file, source, namespace) => {
+    const skillFile = path.join(fx.repoPath, ...file.split('/'));
+    await fse.outputFile(skillFile, '---\nname: file-skill\ndescription: one-file desc\n---\n\n# file-skill\n');
+    const text = (await runSkillShow('file-skill', fx)).join('\n');
+    expect(text).toContain(source);
+    if (namespace) expect(text).toContain(namespace);
+    expect(text).toContain('Description  : one-file desc');
+    expect(text).toContain(`Repo path    : ${skillFile}\n`);
+  });
+
   it('falls back to installed agent when not in team repo', async () => {
     const claudeSkillsDir = path.join(fx.homeDir, '.claude', 'skills');
     await fse.ensureDir(claudeSkillsDir);
