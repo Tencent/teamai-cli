@@ -361,14 +361,26 @@ describe('the project instructions of an instance', () => {
 });
 
 describe('the co-author setting of an instance', () => {
-  it('lands in the config of its own home', async () => {
+  it.each([
+    ['its own home', false],
+    ['the home its own variable moves', true],
+  ])('lands in the config of %s', async (_where, moved) => {
+    const envOf = (variable: string): string => (moved ? `, env: ${variable}` : '');
     const repo = teamRepo({
-      'tools/acme-codex.yaml': 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n',
-      'tools/acme-claude.yaml': 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude }\n',
+      'tools/acme-codex.yaml': `schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex${envOf('ACME_CODEX_HOME')} }\n`,
+      'tools/acme-claude.yaml': `schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude${envOf('ACME_CLAUDE_CONFIG_DIR')} }\n`,
     });
+    // A moved home is the only one on disk: nothing is left at the default it replaces.
+    const codexHome = moved ? path.join(home, 'moved-codex') : path.join(home, '.acme-codex');
+    const claudeHome = moved ? path.join(home, 'moved-claude') : path.join(home, '.acme-claude');
+
+    if (moved) {
+      vi.stubEnv('ACME_CODEX_HOME', codexHome);
+      vi.stubEnv('ACME_CLAUDE_CONFIG_DIR', claudeHome);
+    }
     fs.appendFileSync(path.join(repo, 'teamai.yaml'), 'sharing:\n  coAuthor: { enabled: false }\n');
     const { config } = await load(repo);
-    for (const dir of ['.acme-codex/skills', '.acme-claude/skills']) fs.mkdirSync(path.join(home, dir), { recursive: true });
+    for (const dir of [codexHome, claudeHome]) fs.mkdirSync(path.join(dir, 'skills'), { recursive: true });
     const { reconcileCoAuthorForConfig } = await import('../coauthor-reconcile.js');
     const { StateSchema } = await import('../types.js');
     const local: LocalConfig = { repo: { localPath: repo, remote: 'https://example.com/acme/team.git' }, username: 'member', additionalRoles: [], scope: 'user', enabledAgents: ['acme-codex', 'acme-claude'] };
@@ -377,8 +389,8 @@ describe('the co-author setting of an instance', () => {
     const { changes } = await reconcileCoAuthorForConfig(config, local, StateSchema.parse({}));
 
     expect(changes.map(({ tool, file }) => ({ tool, file }))).toEqual([
-      { tool: 'acme-claude', file: path.join(home, '.acme-claude', 'settings.json') },
-      { tool: 'acme-codex', file: path.join(home, '.acme-codex', 'config.toml') },
+      { tool: 'acme-claude', file: path.join(claudeHome, 'settings.json') },
+      { tool: 'acme-codex', file: path.join(codexHome, 'config.toml') },
     ]);
   });
 });

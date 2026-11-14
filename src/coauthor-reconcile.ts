@@ -22,6 +22,7 @@ import {
 import { log } from './utils/logger.js';
 import { baseToolOf, hookSyntaxOf } from './tool-registry.js';
 import { toolHomeOf } from './tool-home.js';
+import { toolPathUnder } from './locate.js';
 import type { JsonSyntax } from './utils/json.js';
 
 // ─── Co-author reconcile engine ──────────────────────────────
@@ -137,7 +138,7 @@ async function resolveTargets(
 
     if (!probe) continue;
     const probeDir = path.dirname(probe);
-    const toolRoot = probeDir === '.' ? path.join(baseDir, probe) : path.join(baseDir, probeDir);
+    const toolRoot = toolPathUnder(tool, baseDir, probeDir === '.' ? probe : probeDir);
 
     if (!(await pathExists(toolRoot))) {
       log.debug(`[coauthor] Skipping ${tool}: tool not installed`);
@@ -150,7 +151,7 @@ async function resolveTargets(
       if (!paths.settings) continue;
 
       if (!projectScope) {
-        targets.push({ tool, family, file: path.join(baseDir, paths.settings) });
+        targets.push({ tool, family, file: toolPathUnder(tool, baseDir, paths.settings) });
         continue;
       }
 
