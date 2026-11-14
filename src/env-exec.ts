@@ -86,7 +86,7 @@ export async function terminalReachesCommand(): Promise<boolean> {
   if (process.platform === 'win32') return true;
 
   try {
-    const { stdout } = await promisify(execFile)('ps', ['-o', 'pgid=,tpgid=', '-p', String(process.pid)]);
+    const { stdout } = await promisify(execFile)('ps', ['-o', 'pgid=,tpgid=', '-p', String(process.pid)], { windowsHide: true });
 
     return inTerminalForeground(stdout);
   } catch {

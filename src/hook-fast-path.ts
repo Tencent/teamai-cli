@@ -323,7 +323,7 @@ function hostEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 /** `teamai <argv>` through a login bash, in the foreground: its output is the hook's, and its status is the answer. */
 function runThroughLoginShell({ argv, env, stdin }: { argv: readonly string[]; env: NodeJS.ProcessEnv; stdin: string | null }): Promise<number> {
   return new Promise((resolve) => {
-    const child = spawn('bash', [...LOGIN_SHELL_ARGS, ...argv], { env, stdio: [stdin === null ? 'inherit' : 'pipe', 'inherit', 'inherit'] });
+    const child = spawn('bash', [...LOGIN_SHELL_ARGS, ...argv], { env, windowsHide: true, stdio: [stdin === null ? 'inherit' : 'pipe', 'inherit', 'inherit'] });
 
     child.on('error', () => resolve(127));
     child.on('exit', (code) => resolve(code ?? 1));
@@ -351,7 +351,7 @@ function writePayloadFile(payload: string): string | null {
  */
 async function spawnBackgroundChild(command: string, args: string[], stdin: string, env?: NodeJS.ProcessEnv): Promise<boolean> {
   try {
-    const child = spawn(command, args, { detached: true, stdio: ['pipe', 'ignore', 'ignore'], env });
+    const child = spawn(command, args, { detached: true, windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'], env });
 
     const started = new Promise<boolean>((resolve) => {
       child.once('spawn', () => resolve(true));

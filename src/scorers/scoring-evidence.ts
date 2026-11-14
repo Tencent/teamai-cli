@@ -156,7 +156,7 @@ function timeLeft({ expiresAt }: GitIn) {
 }
 
 async function git(checkout: string, args: string[], gitIn: GitIn): Promise<string> {
-  return (await exec('git', [...gitIn.config, ...args], { cwd: checkout, env: gitIn.env, encoding: 'utf8', maxBuffer: 100 * 1024 * 1024, ...timeLeft(gitIn) })).stdout;
+  return (await exec('git', [...gitIn.config, ...args], { cwd: checkout, env: gitIn.env, encoding: 'utf8', maxBuffer: 100 * 1024 * 1024, ...timeLeft(gitIn), windowsHide: true })).stdout;
 }
 
 const utf8 = new TextDecoder('utf-8', { fatal: true });
@@ -188,7 +188,7 @@ async function exportRepo(checkout: string, gitIn: GitIn, commit: string, dir: s
     const target = path.resolve(dir, name);
 
     if (!target.startsWith(`${dir}${path.sep}`)) throw new Error(`Unsafe tracked path: ${name}`);
-    const blob = await exec('git', [...gitIn.config, 'cat-file', 'blob', oid], { cwd: checkout, env: gitIn.env, encoding: 'buffer', maxBuffer: 100 * 1024 * 1024, ...timeLeft(gitIn) });
+    const blob = await exec('git', [...gitIn.config, 'cat-file', 'blob', oid], { cwd: checkout, env: gitIn.env, encoding: 'buffer', maxBuffer: 100 * 1024 * 1024, ...timeLeft(gitIn), windowsHide: true });
     const text = textOf(blob.stdout);
 
     if (text === undefined) {

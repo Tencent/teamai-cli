@@ -207,7 +207,7 @@ function languageFor(filePath: string): string {
 
 export async function gitCommit(root: string): Promise<string | undefined> {
   try {
-    const { stdout } = await execFileAsync("git", ["-C", root, "rev-parse", "HEAD"], GIT_EXEC_OPTIONS);
+    const { stdout } = await execFileAsync("git", ["-C", root, "rev-parse", "HEAD"], { ...GIT_EXEC_OPTIONS, windowsHide: true });
 
     return stdout.trim() || undefined;
   } catch {
@@ -222,7 +222,7 @@ export async function gitCommit(root: string): Promise<string | undefined> {
  */
 export async function isWorkingTreeClean(root: string): Promise<boolean> {
   try {
-    const { stdout } = await execFileAsync("git", ["-C", root, "status", "--porcelain"], GIT_EXEC_OPTIONS);
+    const { stdout } = await execFileAsync("git", ["-C", root, "status", "--porcelain"], { ...GIT_EXEC_OPTIONS, windowsHide: true });
 
     return stdout.trim().length === 0;
   } catch {
@@ -244,7 +244,7 @@ export async function gitDiffNameStatus(
   newSha: string,
 ): Promise<{ added: string[]; changed: string[]; deleted: string[] } | null> {
   try {
-    const { stdout } = await execFileAsync("git", ["-C", root, "-c", "core.quotePath=false", "diff", "--name-status", "-M", "-C", oldSha, newSha], GIT_EXEC_OPTIONS);
+    const { stdout } = await execFileAsync("git", ["-C", root, "-c", "core.quotePath=false", "diff", "--name-status", "-M", "-C", oldSha, newSha], { ...GIT_EXEC_OPTIONS, windowsHide: true });
     const added: string[] = [];
     const changed: string[] = [];
     const deleted: string[] = [];

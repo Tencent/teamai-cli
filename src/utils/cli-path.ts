@@ -70,6 +70,7 @@ function whereOnWindows(cmd: string): string | null {
 
   try {
     const out = execFileSync('where', [`$PATH:${cmd}`], {
+      windowsHide: true,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       shell: false,
@@ -91,6 +92,7 @@ function whereOnWindows(cmd: string): string | null {
 function whichOnPosix(cmd: string): string | null {
   try {
     const p = execFileSync('which', [cmd], {
+      windowsHide: true,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       shell: false,
@@ -105,6 +107,7 @@ function whichOnPosix(cmd: string): string | null {
   for (const shell of ['bash', 'zsh']) {
     try {
       const p = execFileSync(shell, ['-lc', 'command -v "$1"', 'teamai-cli', cmd], {
+        windowsHide: true,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
         shell: false,

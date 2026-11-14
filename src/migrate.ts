@@ -1207,7 +1207,7 @@ async function verifyStaging(legacyDir: string, staging: string): Promise<void> 
     try {
       const { execFile } = await import('node:child_process');
       const { promisify } = await import('node:util');
-      await promisify(execFile)('git', ['rev-parse', 'HEAD'], { cwd: stagedRepo });
+      await promisify(execFile)('git', ['rev-parse', 'HEAD'], { windowsHide: true, cwd: stagedRepo });
     } catch (e) {
       throw new Error(
         `migration verify: the staged team-repo clone is not a usable git ` +

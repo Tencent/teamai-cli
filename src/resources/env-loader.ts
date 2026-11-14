@@ -561,7 +561,7 @@ export async function directoryEnv(localConfig: LocalConfig, dir: string, shell 
   try {
     const { stdout } = await promisify(execFile)(shell, [
       '-c', '. "$1" >/dev/null 2>&1; printf \'\\n%s%s\' "$2" "${__TEAMAI_ENV_FILES-}"', 'teamai', envLoaderPath(), LOADED_MARK,
-    ], { cwd: dir, env, timeout: 10_000 });
+    ], { windowsHide: true, cwd: dir, env, timeout: 10_000 });
 
     const at = stdout.lastIndexOf(LOADED_MARK);
     loaded = at === -1 ? [] : stdout.slice(at + LOADED_MARK.length).split('\n').filter(Boolean);
