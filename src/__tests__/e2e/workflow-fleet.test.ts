@@ -182,6 +182,9 @@ const TOKEN_FLEET = { schemaVersion: 'v1alpha1', name: 'token-fleet', runtimes: 
 
 const FAN_FLEET = { schemaVersion: 'v1alpha1', name: 'fan-fleet', runtimes: [{ use: 'fleet', options: { max_parallel: 2 } }, { use: 'local' }] };
 
+/** A member's driver whose one runtime is the toy, with the options each member's own config gives it. */
+const TOY_MEMBER = { schemaVersion: 'v1alpha1', name: 'toy-member', runtimes: [{ use: 'toy' }] };
+
 /** Pool `wake`, whose offers the toy wakes a member for; the toy's options come from the owner's own config. */
 const WAKE_FLEET = { schemaVersion: 'v1alpha1', name: 'wake-fleet', runtimes: [{ use: 'fleet', options: { pool: 'wake', wake: { use: 'toy' } } }, { use: 'local' }] };
 
@@ -431,6 +434,7 @@ describe('the fleet', () => {
       'workflows/holdone.yaml': HOLD_ONE,
       'drivers/build-fleet.yaml': stringify(FLEET),
       'drivers/fan-fleet.yaml': stringify(FAN_FLEET),
+      'drivers/toy-member.yaml': stringify(TOY_MEMBER),
       'drivers/wake-fleet.yaml': stringify(WAKE_FLEET),
     };
 
@@ -760,6 +764,55 @@ describe('the fleet', () => {
     expect(finished?.result).toMatchObject({ failure: { code: 'budget_exceeded' }, tokens: { input: 8, output: 4 } });
     const done = await started;
     expect(done.envelope(), said(done)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+  }, 240_000);
+
+  it('runs no whole workflow step again after a restart while the runtime of the nested run the killed member left refuses to stop its step, and keeps the run\'s id', async () => {
+    const config = path.join(dataHomeOf('bob'), 'config.yaml');
+    const kept = fs.readFileSync(config, 'utf8');
+    const toy = path.join(homeOf('bob'), '.teamai', 'runtimes', 'toy');
+    fs.mkdirSync(toy, { recursive: true });
+    installToyRuntime(toy);
+    // Bob's toy refuses every cancel: what it runs goes on.
+    const options = (extra: string): string => `${kept}workflows:\n  drivers:\n    toy-member:\n      runtimes:\n        toy:\n          state: ${path.join(homeOf('bob'), 'toy-state')}\n${extra}`;
+    fs.writeFileSync(config, options('          cancel_fails: { code: cancel_failed, message: The toy refuses to stop it. }\n'));
+    let alicePid = 0;
+    const before = new Set(offeredRuns());
+    const started = teamai('alice', ['workflow', 'start', 'wholehold', '--driver', 'fan-fleet'], (pid) => { alicePid = pid; });
+    const fresh = (): string | undefined => offeredRuns().find((name) => !before.has(name));
+    await waitOn(() => fresh() !== undefined && records(fresh() ?? '').length > 0, 60_000, () => alicePid, started);
+    const run = fresh() ?? '';
+    const pidFile = path.join(homeOf('bob'), 'nested.pid');
+    fs.rmSync(pidFile, { force: true });
+    const bobsBefore = new Set(runsOf('bob'));
+
+    let bobPid = 0;
+    const taking = teamai('bob', ['workflow', 'resume', '--next', '--pool', 'default', '--driver', 'toy-member'], (pid) => { bobPid = pid; });
+    await waitOn(() => fs.existsSync(pidFile), 60_000, () => bobPid, taking);
+    const left = Number(fs.readFileSync(pidFile, 'utf8'));
+    expect(signalPid(bobPid, 'SIGKILL')).toBe('sent');
+    await taking;
+    const nested = path.join(dataHomeOf('bob'), 'workflows', 'runs', run, 'attempts', records(run)[0]?.attempt ?? '', 'nested-run');
+
+    try {
+      const again = await teamai('bob', ['workflow', 'resume', '--next', '--pool', 'default', '--driver', 'toy-member']);
+
+      // The member keeps the claim it cannot finish, and takes no other work: the owner gives it up after stale_after.
+      expect(again.envelope(), said(again)).toMatchObject({ data: { idle: {} } });
+      expect(again.stderr).toContain('which this member claimed before: The nested run');
+      expect(again.stderr).toContain('The toy refuses to stop it.');
+      expect(isAlive(left)).toBe(true);
+      expect(fs.existsSync(nested)).toBe(true);
+      expect(runsOf('bob').filter((id) => !bobsBefore.has(id))).toHaveLength(1);
+    } finally {
+      fs.writeFileSync(config, options(''));
+      if (isAlive(left)) signalPid(left, 'SIGKILL');
+      await teamai('alice', ['workflow', 'cancel', run]);
+      // The owner waits for the member to answer the cancel of a whole step until stale_after: bob, whose toy stops
+      // again, answers it, so neither waits on it in a later test.
+      await teamai('bob', ['workflow', 'resume', '--next', '--pool', 'default', '--driver', 'toy-member']);
+      await started;
+      fs.writeFileSync(config, kept);
+    }
   }, 240_000);
 
   it('runs no whole workflow step again after a restart while the record of the nested run the killed member left cannot be read, and says why', async () => {

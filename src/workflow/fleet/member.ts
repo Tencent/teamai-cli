@@ -938,9 +938,11 @@ async function endNestedRun(config: LocalConfig, nested: RunId, message: string)
 
     // A run that already ended may still have left what a cancelled attempt of it started.
     if ('error' in cancelled && cancelled.error.code !== 'run_settled') return cancelled.error.message;
-    await stopCancelledAttempts(config, lock, { isRunnerHolding: isSkillRunnerHolding });
+    const stopped = await stopCancelledAttempts(config, lock, { isRunnerHolding: isSkillRunnerHolding });
+    // What its steps' runtimes could not stop may still run beside a nested run started again.
+    const left = stopped?.running ?? [];
 
-    return undefined;
+    return left.length === 0 ? undefined : left.map(({ attempt, why }) => `attempt ${attempt} of it may still run: ${why}`).join(' ');
   }, { waitMs: 0 });
 
   return taken.kind === 'busy' ? taken.error.message : taken.value;

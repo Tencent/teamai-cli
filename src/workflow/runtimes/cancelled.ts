@@ -62,13 +62,20 @@ export async function stopCancelledAttempts(config: LocalConfig, lock: RunLock, 
 
   const runnerOwned = new Set<AttemptId>();
   const keptLogins = new Set<AttemptId>();
+  const stopped: StoppedAttempts = { status: state.status, closed: [], released: [], running: [] };
 
   // What a killed driver of this install started for a cancelled attempt, which its record reaches, and the login one
   // in teamai's process held, written back; what one runs on a step runtime, the fleet's member included, its runtime
   // stops below.
   for (const attempt of cancelled) {
     if (!await isRunnerHolding(config, run, attempt)) {
-      if ((await stopLeftInProcess(config, run, attempt)).kind === 'kept') keptLogins.add(attempt);
+      const inProcess = await stopLeftInProcess(config, run, attempt);
+
+      if (inProcess.kind === 'kept') {
+        keptLogins.add(attempt);
+        stopped.running.push({ attempt, why: `teamai could not confirm that process ${inProcess.left.join(', ')}, which a teamai before this one left of it, ended.` });
+      }
+
       continue;
     }
 
@@ -78,7 +85,6 @@ export async function stopCancelledAttempts(config: LocalConfig, lock: RunLock, 
 
   const left = new Set([...cancelled, ...await placesLeftOpen(config, run, leased)].filter((attempt) => !runnerOwned.has(attempt)));
 
-  const stopped: StoppedAttempts = { status: state.status, closed: [], released: [] };
   // Each runtime starts in the run's checkout, or, once that folder is gone, where this cancel runs.
   const checkout = await existingCheckout(state) ?? process.cwd();
 
@@ -88,11 +94,13 @@ export async function stopCancelledAttempts(config: LocalConfig, lock: RunLock, 
   for (const attempt of left) {
     // A step that failed because its stop was not confirmed can run again once it is.
     const lost = state.steps.find((step) => step.status === 'failed' && step.attempt === attempt && (step.failure?.code === 'runtime_lost' || step.failure?.code === CANCEL_FAILED));
-    const { ended, masked } = await stopAttempt(config, run, attempt, { isReleased: attempt === release, checkout, ...(lost && { retry: { run, step: lost.id } }) });
-    Object.assign(masks, masked);
+    const result = await stopAttempt(config, run, attempt, { isReleased: attempt === release, checkout, ...(lost && { retry: { run, step: lost.id } }) });
+    Object.assign(masks, result.masked);
 
-    if (ended === 'running') stillRunning.add(attempt);
-    else if (ended !== 'none') stopped[ended].push(attempt);
+    if (result.ended === 'running') {
+      stillRunning.add(attempt);
+      stopped.running.push({ attempt, why: result.why });
+    } else if (result.ended !== 'none') stopped[result.ended].push(attempt);
   }
 
   await maskAttemptResults(config, run, { ...await knownSecrets(config), ...masks });
@@ -122,11 +130,15 @@ export async function stopCancelledAttempts(config: LocalConfig, lock: RunLock, 
   return stopped;
 }
 
-/** What a cancel stopped of a run: its status, and the attempts whose place it closed, or let go as the person asked. */
+/**
+ * What a cancel stopped of a run: its status, the attempts whose place it closed, or let go as the person asked, and those
+ * whose work may still run, since nothing confirmed it stopped, each with why.
+ */
 export interface StoppedAttempts {
   status: RunStatus;
   closed: AttemptId[];
   released: AttemptId[];
+  running: Array<{ attempt: AttemptId; why: string }>;
 }
 
 /** How a stop of an attempt ended: its place closed or let go, nothing left to stop, or its work may still run. */
