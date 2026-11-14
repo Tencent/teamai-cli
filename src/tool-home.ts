@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { type ToolId, type ShippedDescriptor } from './tools.js';
 import { type HomeMove } from '@teamai/tool-core/definition';
 import type { ToolInstanceHome } from '@teamai/tool-core/instance';
-import { homeVariables, descriptorOf, instanceNames, TOOL_ORDER, toolOf } from './tool-registry.js';
+import { homeVariables, descriptorOf, TOOL_ORDER, toolInstancesFor, toolOf } from './tool-registry.js';
 import { RELOCATABLE_TOOLS } from './types.js';
 import { pathExists, readFileSafe, readJsonObject, writeJsonAtomic, type JsonObjectRead } from './utils/fs.js';
 import { getUserHome, normalizeHomePath, usesInstallHome } from './utils/home.js';
@@ -39,7 +39,7 @@ export type Host = {
 
 /**
  * Every variable that moves a tool's home: a shipped tool's (`homeVariables`, its `Home.rootVariable` and the roots
- * `RELOCATABLE_TOOLS` records) and each published instance's own (`home.env`). `teamai/tool-home-env` keeps a copy of
+ * `RELOCATABLE_TOOLS` records) and each declared instance's own (`home.env`), a refused one's too: a child with another `HOME` cannot judge the refusal again, so the variable must not reach it. `teamai/tool-home-env` keeps a copy of
  * the shipped ones, pinned to this.
  */
 export function toolHomeVariableNames(): ReadonlySet<string> {
@@ -50,7 +50,7 @@ export function toolHomeVariableNames(): ReadonlySet<string> {
       return home.rootVariable === undefined ? homeVariables(tool) : [...homeVariables(tool), home.rootVariable];
     }),
     ...Object.values(RELOCATABLE_TOOLS).map(({ envVar }) => envVar),
-    ...instanceNames().flatMap((name) => toolOf(name)?.instance?.home?.env ?? []),
+    ...toolInstancesFor('guard').flatMap(({ home }) => home?.env ?? []),
   ]);
 }
 

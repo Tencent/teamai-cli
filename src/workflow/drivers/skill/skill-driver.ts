@@ -9,7 +9,7 @@ import { resolveCliEntry } from '../../../builtin-hooks.js';
 import type { WorkflowEnv } from '../../../env-resolution.js';
 import { resolveRunMode, type RunMode } from '../../../launch-context.js';
 import type { CommandExit } from '../../../tool-launch/process-stop.js';
-import { instanceNames, isToolId, TOOL_ORDER, toolOf } from '../../../tool-registry.js';
+import { isToolId, TOOL_ORDER, toolInstancesFor, toolOf } from '../../../tool-registry.js';
 import type { LocalConfig, TeamaiConfig } from '../../../types.js';
 import { agentSessionFromEnv } from '../../../utils/session-id.js';
 import { WorkflowOffers } from '../../../workflow-offers.js';
@@ -188,7 +188,7 @@ const SessionToolSchema = z.string().transform((tools, ctx) => {
 
 /** Why `--tools default=<tool>` is refused: it names neither a tool teamai ships nor an instance this scope defines. */
 function unknownToolMessage(tool: string): string {
-  return `--tools default=${tool} names no tool teamai knows: ${[...new Set([...TOOL_ORDER, ...instanceNames()])].join(', ')}`;
+  return `--tools default=${tool} names no tool teamai knows: ${[...new Set([...TOOL_ORDER, ...toolInstancesFor('use').map(({ name }) => name)])].join(', ')}`;
 }
 
 /** The options of a run that a skill start and a skill resume share. */

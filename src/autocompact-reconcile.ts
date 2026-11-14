@@ -3,7 +3,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
 import type { JsonValue, LocalConfig, TeamaiConfig } from './types.js';
-import { descriptorOf, hookSyntaxOf, instanceNames, toolOf } from './tool-registry.js';
+import { descriptorOf, hookSyntaxOf, toolInstancesFor } from './tool-registry.js';
 import { TOOL_IDS, type ToolId, type ShippedDescriptor } from './tools.js';
 import { JsonValueSchema, isAgentExcluded, recordedToolRootDir, resolveAutoCompactTokens } from './types.js';
 import { toolHome, toolHomeOf } from './tool-home.js';
@@ -143,11 +143,10 @@ async function resolveTargets(localConfig: LocalConfig): Promise<Target[]> {
   const targets: Target[] = [];
 
   // An instance that keeps the home of the tool it extends reads that tool's file, which the tool's own target writes.
-  const ownHomes = instanceNames().flatMap((name) => {
-    const resolved = toolOf(name);
+  const ownHomes = toolInstancesFor('use').flatMap(({ name, extends: base, home: own }) => {
     const home = toolHomeOf(name)?.dir;
 
-    return resolved?.instance?.home === undefined || resolved.instance.name === resolved.base || home === undefined ? [] : [{ tool: name, base: resolved.base, home }];
+    return own === undefined || name === base || home === undefined ? [] : [{ tool: name, base, home }];
   });
 
   // A root the member recorded at init (CODEX_HOME, CLAUDE_CONFIG_DIR) wins,

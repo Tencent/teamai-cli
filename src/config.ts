@@ -38,7 +38,7 @@ import { loadRoleAssignmentsIfPresent, resolveAssignedRoles, ROLE_ASSIGNMENTS_FI
 import { warnOnce } from './utils/warn-once.js';
 import { AllowSchema } from './workflow/requirements.js';
 import { personalToolInstances, teamToolInstances, withToolInstances } from './tool-instances.js';
-import { declaredInstances } from './tool-registry.js';
+import { toolInstancesFor } from './tool-registry.js';
 
 /**
  * Loads that serve a --dry-run write nothing: the legacy role migration, the
@@ -312,7 +312,7 @@ export async function loadTeamConfig(repoPath: string): Promise<TeamaiConfig | n
  * its tools/ instances and the member's own still count.
  */
 export async function teamToolIds(repoPath: string, teamConfig: TeamaiConfig | null): Promise<string[]> {
-  if (teamConfig) return [...new Set([...Object.keys(teamConfig.toolPaths), ...declaredInstances().map(({ name }) => name)])];
+  if (teamConfig) return [...new Set([...Object.keys(teamConfig.toolPaths), ...toolInstancesFor('guard').map(({ name }) => name)])];
 
   const [team, own] = await Promise.all([teamToolInstances(repoPath), personalToolInstances()]);
 

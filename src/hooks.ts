@@ -59,7 +59,7 @@ import { codexDispatcherCheckouts, codexDispatcherProjects, dispatchedCodexHooks
 import type { CodexTeamHook } from './codex-team-hooks.js';
 import { TOOL_IDS } from './tools.js';
 import { type HookFormat } from '@teamai/tool-core/definition';
-import { baseToolOf, channelsOf, hookFormatOf, hookSettingsFormatOf, hookSyntaxOf, instanceNames, selfLocalSettingsOf, descriptorOf, toolOf, type DescriptorOf } from './tool-registry.js';
+import { baseToolOf, channelsOf, hookFormatOf, hookSettingsFormatOf, hookSyntaxOf, selfLocalSettingsOf, toolInstancesFor, descriptorOf, toolOf, type DescriptorOf } from './tool-registry.js';
 import { acceptedCommandOf, acceptToolCommand } from './tool-instances.js';
 import { BRIDGED_TEAM_HOOK_EVENTS, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
 import { earlierHookAdapterDir, hookSettingsFile, installOf, locate, openclawWorkspaceDir, ownOf, toolPathUnder, workspaceHooksOf } from './locate.js';
@@ -4897,7 +4897,7 @@ async function codexTrustTargetsOfScope(
   localConfig: LocalConfig,
   selectedAgents?: string[],
 ): Promise<CodexTrustTargets[]> {
-  const tools = [CODEX_TOOL_ID, ...instanceNames().filter((name) => name !== CODEX_TOOL_ID && baseToolOf(name) === CODEX_TOOL_ID)];
+  const tools = [CODEX_TOOL_ID, ...toolInstancesFor('use').map(({ name }) => name).filter((name) => name !== CODEX_TOOL_ID && baseToolOf(name) === CODEX_TOOL_ID)];
   const targets = await Promise.all(tools.map((tool) => codexTrustTargets(teamConfig, localConfig, selectedAgents, tool)));
 
   return targets.filter((target) => target !== null);
@@ -5588,7 +5588,7 @@ export async function judgeTeamaiOnlyCodexHooks(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
 ): Promise<Array<{ file: string; teamaiOnly: boolean }>> {
-  const tools = [CODEX_TOOL_ID, ...instanceNames().filter((name) => name !== CODEX_TOOL_ID && baseToolOf(name) === CODEX_TOOL_ID)];
+  const tools = [CODEX_TOOL_ID, ...toolInstancesFor('use').map(({ name }) => name).filter((name) => name !== CODEX_TOOL_ID && baseToolOf(name) === CODEX_TOOL_ID)];
   const verdicts = await Promise.all(tools.map((tool) => judgeTeamaiOnlyCodexHooksOf(teamConfig, localConfig, tool)));
 
   return verdicts.filter((verdict) => verdict !== null);

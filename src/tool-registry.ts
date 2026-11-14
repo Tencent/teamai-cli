@@ -45,16 +45,27 @@ export function useToolInstances(instances: ReadonlyMap<string, ResolvedToolInst
 }
 
 /**
- * Each instance the files declare, one refused for where its home resolves included: a refused instance's recorded home
- * must stay replaceable, or nothing could end the refusal.
+ * Why a reader lists the instances, which decides the list. `use`: to deliver to an instance, start it or read its
+ * sessions, so only the instances no refusal holds back. `guard`: to strip their variables, judge whose home a
+ * directory is, remove what they left, or let `init` name them or replace their record, so every instance the files
+ * declare, one refused for where its home resolves included: a refused instance's variable must still be stripped
+ * (a child with another HOME cannot judge the refusal again), and only init can end the refusal.
  */
-export function declaredInstances(): ResolvedToolInstance[] {
-  return [...declaredTable.values()];
-}
+export type InstancePurpose = 'use' | 'guard';
 
-/** The names of the instances this process knows, a member's own included. */
-export function instanceNames(): string[] {
-  return [...instanceTable.keys()];
+/** The instances this process loaded, the member's own over the team's, for `purpose`. */
+export function toolInstancesFor(purpose: InstancePurpose): ResolvedToolInstance[] {
+  switch (purpose) {
+    case 'use':
+      return [...instanceTable.values()];
+    case 'guard':
+      return [...declaredTable.values()];
+    default: {
+      const unhandled: never = purpose;
+
+      return unhandled;
+    }
+  }
 }
 
 /** The tool `name` names here: an instance, with the shipped tool it extends, or a shipped tool; undefined for neither. */

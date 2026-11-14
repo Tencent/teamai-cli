@@ -187,12 +187,19 @@ describe('team tool instances', () => {
       fs.mkdirSync(path.join(home, '.teamai'), { recursive: true });
       fs.writeFileSync(path.join(home, '.teamai', 'config.yaml'), 'repo: { localPath: /x, remote: x }\nusername: u\nscope: user\nadditionalRoles: []\ntoolRoots: { claude: ~/.acme-claude }\n');
     }],
-  ])('does not use an instance whose home resolves to the home of another tool when %s, naming both', async (_, dir, setup) => {
+  ])('does not use an instance whose home resolves to the home of another tool when %s, naming both, and a pull neither records it nor lets its variable through', async (_, dir, setup) => {
     setup();
+    fs.mkdirSync(path.join(home, dir), { recursive: true });
     const { registry, errors } = await load(teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE }));
 
     expect(errors).toEqual([`Tool instance acme-claude (tools/acme-claude.yaml) is not used: its home resolves to ${path.join(home, dir)}, which is also the home of claude, and two tools on one home write over each other's skills, hooks and sessions. Move one of the two homes, then re-run \`teamai init\`: a pull keeps the home it recorded.`]);
     expect(registry.toolOf('acme-claude')).toBeUndefined();
+    const { recordToolHomes } = await import('../tool-home-record.js');
+    const { toolHomeVariableNames } = await import('../tool-home.js');
+    // Only init may record a refused instance's home: a pull would pin the refusal in every shell.
+    expect(await recordToolHomes('pull')).toEqual([]);
+    // A child with another HOME cannot judge the refusal again, so the variable has to be stripped before it starts.
+    expect(toolHomeVariableNames()).toContain('ACME_CLAUDE_CONFIG_DIR');
   });
 
   // init takes a refused instance in --agent and records its home from the files: else no value could ever replace this record.
@@ -209,6 +216,7 @@ describe('team tool instances', () => {
       const repo = teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE });
       const refused = await load(repo);
       expect([refused.registry.toolOf('acme-claude'), refused.errors]).toEqual([undefined, [expect.stringContaining('Tool instance acme-claude (tools/acme-claude.yaml) is not used')]]);
+      if (recorded !== '') expect(refused.errors[0]).toContain('or clear the record with `ACME_CLAUDE_CONFIG_DIR= teamai init`');
       const { teamToolIds } = await import('../config.js');
       expect(await teamToolIds(repo, refused.config)).toContain('acme-claude');
       vi.stubEnv('ACME_CLAUDE_CONFIG_DIR', value === null ? '' : path.join(home, value));

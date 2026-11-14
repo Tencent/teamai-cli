@@ -16,7 +16,7 @@ import { isSessionPlatform, isStoredSessionPlatform, type SessionPlatform, type 
 import { sessionStoreDir } from '../../locate.js';
 import { instanceHomeDir } from '../../tool-home.js';
 import { acceptedCommandOf, type ResolvedToolInstance } from '../../tool-instances.js';
-import { instanceNames, instancePlatform } from '../../tool-registry.js';
+import { instancePlatform, toolInstancesFor } from '../../tool-registry.js';
 
 /**
  * Builds a platform's adapter on its session store directory, which the caller resolved (`storeDirOf`). A platform
@@ -120,7 +120,7 @@ function factoryOf(platform: string): AdapterFactory | undefined {
 
 /** The platforms of the instances this process knows that keep sessions of their own: each one's name. */
 function instancePlatforms(): string[] {
-  return instanceNames().filter((name) => instancePlatform(name) !== undefined);
+  return toolInstancesFor('use').flatMap(({ name }) => instancePlatform(name) === undefined ? [] : [name]);
 }
 
 /**

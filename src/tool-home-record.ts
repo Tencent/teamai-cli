@@ -1,11 +1,10 @@
 import { withFileLock } from './update.js';
-import { declaredInstances, homeVariables, TOOL_ORDER } from './tool-registry.js';
+import { homeVariables, TOOL_ORDER, toolInstancesFor } from './tool-registry.js';
 import { envInstanceHome, envToolHome, isSameDirOn, realHost, type EnvToolHome, recordedHomes, reloadToolHomes, rememberToolHome, saveToolHomes, toolHomesPath, type Host } from './tool-home.js';
 import { log } from './utils/logger.js';
 import { warnOnce } from './utils/warn-once.js';
 import { errnoCode } from './utils/fs.js';
 
-/** A change to the record of a shipped tool or an instance: `dir` null when it was cleared. */
 /** A record init or pull wrote: `dir`, or null for a cleared one, over the home recorded before it, if any. */
 export type ToolHomeChange = { readonly tool: string; readonly variable: string; readonly dir: string | null; readonly previous?: string };
 
@@ -26,9 +25,13 @@ const INIT_RECORDS: Readonly<Record<EnvToolHome['kind'], RecordRule>> = {
 
 const PULL_RECORDS: RecordRule = { replacesRecord: false, needsExistingHome: true };
 
-/** Each shipped tool, and each declared instance that names a variable of its own (a refused one included), with where the host env moves its home and the variables that move it. */
-function envHomes(host: Host): Array<{ readonly tool: string; readonly moved: EnvToolHome | null; readonly variables: readonly string[]; readonly isInstance: boolean }> {
-  const instances = declaredInstances().flatMap(({ name, extends: base, home }) => home?.env === undefined || name === base ? [] : [{ tool: name, moved: envInstanceHome(home, host), variables: [home.env], isInstance: true }]);
+/**
+ * Each shipped tool, and each instance that names a variable of its own, with where the host env moves its home and the
+ * variables that move it. Init sees a refused instance too, so it can replace or clear its record; a pull sees only the
+ * instances in use, since it can do neither and a record it wrote would pin the refusal in every shell.
+ */
+function envHomes(host: Host, by: 'init' | 'pull'): Array<{ readonly tool: string; readonly moved: EnvToolHome | null; readonly variables: readonly string[]; readonly isInstance: boolean }> {
+  const instances = toolInstancesFor(by === 'init' ? 'guard' : 'use').flatMap(({ name, extends: base, home }) => home?.env === undefined || name === base ? [] : [{ tool: name, moved: envInstanceHome(home, host), variables: [home.env], isInstance: true }]);
 
   return [...TOOL_ORDER.map((tool) => ({ tool, moved: envToolHome(tool, host), variables: homeVariables(tool), isInstance: false })), ...instances];
 }
@@ -48,7 +51,7 @@ export async function nextToolHomes(
   const homes = { ...recorded };
   const changes: ToolHomeChange[] = [];
 
-  for (const { tool, moved, variables, isInstance } of envHomes(host)) {
+  for (const { tool, moved, variables, isInstance } of envHomes(host, by)) {
     const blank = by === 'init' && homes[tool] !== undefined && (moved === null || moved.kind === 'platform-default')
       && variables.find((name) => host.env[name] !== undefined && host.env[name]?.trim() === '');
 
@@ -64,7 +67,7 @@ export async function nextToolHomes(
 
     if (current === moved.dir || (current !== undefined && !rule.replacesRecord) || (rule.needsExistingHome && !await host.exists(moved.dir))) continue;
 
-    // The registry refuses such an instance, and a refused one is not in `envHomes`, so this record could never be replaced.
+    // The registry refuses an instance at your home directory, so a record there could never be used.
     if (isInstance && isSameDirOn(host, moved.dir, host.home)) {
       warnOnce(`Did not record ${moved.variable} as the ${tool} home: ${moved.dir} is your home directory itself, where ${tool} would read and write every file in your home as its own. `
         + `Point ${moved.variable} at a directory of its own and re-run \`teamai init\`.`);

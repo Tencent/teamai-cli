@@ -8,8 +8,8 @@ import { INSTANCE_KEYS, type ToolInstance, type ToolInstanceHome } from '@teamai
 import { isSafeNamespaceSegment } from './manifest-schema.js';
 import { resolveNamespacedItems, type NamespaceCandidate } from './namespace-resolver.js';
 import { isSessionPlatform } from './session-flow/adapters/platform-facts.js';
-import { instanceHomeDir, isSameDirOn, realHost, toolHome, type Host } from './tool-home.js';
-import { declaredInstances, INSTANCE_BASES, isInstanceBase, isToolId, TOOL_ORDER, toolOf, useToolInstances } from './tool-registry.js';
+import { instanceHomeDir, isSameDirOn, realHost, recordedHomes, toolHome, type Host } from './tool-home.js';
+import { INSTANCE_BASES, isInstanceBase, isToolId, TOOL_ORDER, toolInstancesFor, toolOf, useToolInstances } from './tool-registry.js';
 import type { ToolId } from './tools.js';
 import { DEFAULT_TOOL_PATHS, getTeamaiHomeDir, getTrustDir, recordedToolRootDir, RELOCATABLE_TOOLS, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type TeamaiConfig } from './types.js';
 import { writeJsonAtomic } from './utils/fs.js';
@@ -326,8 +326,13 @@ function withoutSharedHomes(table: Map<string, ResolvedToolInstance>): Map<strin
     const resolved = homeSharedWith({ name, home, instances, host, toolRoots: memberToolRoots });
 
     if (resolved !== undefined) {
-      errorOnce(`Tool instance ${name} (${instance.location}) is not used: its home resolves to ${own}, which is also the home of ${resolved}, `
-        + 'and two tools on one home write over each other\'s skills, hooks and sessions. Move one of the two homes, then re-run `teamai init`: a pull keeps the home it recorded.');
+      const shared = `Tool instance ${name} (${instance.location}) is not used: its home resolves to ${own}, which is also the home of ${resolved}, `
+        + 'and two tools on one home write over each other\'s skills, hooks and sessions.';
+
+      // Only a blank variable at init clears a record, and nothing else would say so.
+      errorOnce(home.env !== undefined && recordedHomes(host)[name] !== undefined
+        ? `${shared} Move one of the two homes, then re-run \`teamai init\`, or clear the record with \`${home.env}= teamai init\`: a pull keeps the home it recorded.`
+        : `${shared} Move one of the two homes, then re-run \`teamai init\`: a pull keeps the home it recorded.`);
       table.delete(name);
     }
   }
@@ -351,7 +356,7 @@ function publish(): void {
 export function leftInstanceHookFiles({ name, homes, current, toolRoots }: {
   name: string; homes: readonly string[]; current: string | null | 'default'; toolRoots?: Readonly<Record<string, string>>;
 }): Array<{ readonly home: string; readonly file: string }> {
-  const instances = declaredInstances();
+  const instances = toolInstancesFor('guard');
   const instance = instances.find((one) => one.name === name);
 
   if (instance?.home === undefined || instance.paths !== undefined || instance.name === instance.extends) return [];

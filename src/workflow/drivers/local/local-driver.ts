@@ -35,7 +35,7 @@ import { commandEnd, managedReport, StartedRunSchema, unreadablePlace, type Star
 import { memberTools, type MemberTool } from '../../../tool-launch/member-tools.js';
 import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
 import { acceptToolCommand } from '../../../tool-instances.js';
-import { instanceNames, isToolId } from '../../../tool-registry.js';
+import { isToolId, toolInstancesFor } from '../../../tool-registry.js';
 import { launchExecutableOf, LAUNCH_ORDER, LAUNCH_TOOLS, launchAdapterIdOf, launchTargetOf, toolCommandEnv, type LaunchTarget, type LaunchTool } from '../../../tool-launch/tools.js';
 import { confinedOffers, type ConfinedOffer } from '../../../tool-launch/confined.js';
 import { AttemptResult } from '../../attempt-result.js';
@@ -921,7 +921,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
   // step's output may bring a workflow later. It is the run's only driver, so a step whose tool it cannot launch fails
   // rather than waits.
   const named = isStarted ? namedTools(started) : undefined;
-  const tools = [...LAUNCH_TOOLS, ...instanceNames().filter((name) => !isToolId(name))].filter((tool) => (named === undefined || named.has(tool)) && onPath(tool));
+  const tools = [...LAUNCH_TOOLS, ...toolInstancesFor('use').flatMap(({ name }) => isToolId(name) ? [] : [name])].filter((tool) => (named === undefined || named.has(tool)) && onPath(tool));
   const lookup = options.resolveTool ? { resolveTool: options.resolveTool } : {};
   const confined = isStarted && mayConfine(started) ? await confinedOffers(lookup) : [];
   const can = localCan({ strict: localStrictCan(config, options), hitl: canHitl, tools, confined });
