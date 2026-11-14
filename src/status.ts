@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { lstat } from 'node:fs/promises';
 import { parseYaml } from './utils/yaml.js';
 import { autoDetectInit, loadStateForScope } from './config.js';
 import { listCachedWorkflows, resolveStart, startingAlias } from './workflow/cache.js';
@@ -11,7 +12,7 @@ import { readTeamRules } from './resources/rules.js';
 import { getAllHandlers, getHandler } from './resources/index.js';
 import { listDirs, pathExists, readFileSafe } from './utils/fs.js';
 import { SkillsHandler } from './resources/skills.js';
-import { DocsHandler } from './resources/docs.js';
+import { DocsHandler, isLinkedDocsRoot, membersDocs, resolveDocsDestination, resolveDocsForDirectory } from './resources/docs.js';
 import { detectInstalledAgents, type ResolvedAgent } from './known-agents.js';
 import {
   buildClassifyContext,
@@ -216,6 +217,41 @@ export async function status(options: GlobalOptions): Promise<void> {
   if (!anyNew) {
     // A bare "(none)" would read as a clean result for the types it never saw.
     console.log(anyUnscanned ? '  (none in the types that could be scanned)' : '  (none)');
+  }
+
+  try {
+    const mirror = resolveDocsDestination(teamConfig, localConfig);
+
+    if (!await isLinkedDocsRoot(mirror)) {
+      const desired = await resolveDocsForDirectory(localConfig);
+      const kept = new Set(await membersDocs(desired, mirror, repoPath));
+      const edits: string[] = [];
+
+      for (const file of desired.files) {
+        if (!kept.has(file)) continue;
+
+        // A directory or symlink can block delivery without being a file edit.
+        const [local, source] = await Promise.all([
+          lstat(path.join(mirror, file)).catch(() => null),
+          lstat(path.join(desired.sourceDir, file)).catch(() => null),
+        ]);
+
+        if (local?.isFile() && source?.isFile()) edits.push(file);
+      }
+
+      if (edits.length > 0) {
+        console.log('');
+        log.info('Kept docs mirror edits (not scanned by plain push):');
+
+        for (const file of edits.sort()) console.log(`  ${path.join(mirror, file)} (team path: docs/${file})`);
+
+        if (localConfig.repo.kind !== 'http') {
+          console.log('  To propose one edit, use `teamai push --file "<mirror-file>" --path "<team-path>"`.');
+        }
+      }
+    }
+  } catch (e) {
+    log.warn(`Could not inspect the docs mirror: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   console.log('');
