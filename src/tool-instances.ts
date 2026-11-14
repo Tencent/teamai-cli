@@ -481,15 +481,10 @@ export function agentModelToolOf(tool: string, { scope, toolPaths }: DeliveryPla
 }
 
 /**
- * The tool paths teamai delivers `instance` to under the team config's `toolPaths`: the entry `withToolInstances` put
- * there, or for one it left out, a refused one, the paths `instancePaths` gives it.
+ * The tool paths teamai delivers `instance` to under the team config's `toolPaths`, the one value delivery and every
+ * judge read: its own `paths`, else the team's paths of the tool it extends, as an adjustment left them, moved to its home.
  */
 export function effectivePathsOf(instance: DeclaredTool, toolPaths: TeamaiConfig['toolPaths']): z.infer<typeof ToolPathsSchema> | undefined {
-  return toolPaths[instance.name] ?? instancePaths(instance, toolPaths);
-}
-
-/** The tool paths `instance` gives its tool: its own `paths`, else the paths of the tool it extends, moved to its home. */
-function instancePaths(instance: DeclaredTool, toolPaths: TeamaiConfig['toolPaths']): z.infer<typeof ToolPathsSchema> | undefined {
   return instance.paths ?? movedToHome(instance, toolPaths[instance.extends] ?? DEFAULT_TOOL_PATHS[instance.extends]);
 }
 
@@ -537,11 +532,12 @@ export async function withToolInstances(repoPath: string, config: TeamaiConfig):
 
   if (byName.size === 0) return config;
   const toolPaths = { ...config.toolPaths };
+  // One the table leaves out, refused or defined apart, gets no paths either, or it would be delivered to as a tool of its own.
+  const published = [...byName.values()].filter((instance) => toolOf(instance.name)?.instance !== undefined);
 
-  for (const instance of byName.values()) {
-    // One the table leaves out, refused or defined apart, gets no paths either, or it would be delivered to as a tool of its own.
-    if (toolOf(instance.name)?.instance === undefined) continue;
-    const paths = instancePaths(instance, config.toolPaths);
+  // An instance moves the paths of the tool it extends as the team's adjustment of that tool leaves them.
+  for (const instance of [...published.filter((one) => one.kind === 'adjustment'), ...published.filter((one) => one.kind !== 'adjustment')]) {
+    const paths = effectivePathsOf(instance, toolPaths);
 
     if (paths) toolPaths[instance.name] = paths;
   }

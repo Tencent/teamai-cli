@@ -91,6 +91,20 @@ describe('team tool instances', () => {
     expect(registry.sessionPlatformsOf('claude')).toEqual(['claude-code']);
   });
 
+  it('moves the paths of the tool an instance extends as the team adjusted them, the paths judging reads', async () => {
+    const { config } = await load(teamRepo({
+      'tools/codex.yaml': 'schemaVersion: v1alpha1\nname: codex\nextends: codex\npaths: { skills: .codex/team-skills, settings: .codex/hooks.json, agents: .codex/team-agents }\n',
+      'tools/acme-codex.yaml': 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n',
+    }));
+    const { agentModelToolOf } = await import('../tool-instances.js');
+    const toolPaths = config?.toolPaths ?? {};
+
+    expect([toolPaths['acme-codex'], agentModelToolOf('acme-codex', { scope: 'project', toolPaths })]).toEqual([
+      expect.objectContaining({ skills: '.codex/team-skills', agents: '.codex/team-agents', userScope: { skills: '.acme-codex/team-skills', settings: '.acme-codex/hooks.json', agents: '.acme-codex/team-agents' } }),
+      'codex',
+    ]);
+  });
+
   // An adjustment changes where teamai writes for the shipped tool; what runs it and where it lives are an instance's.
   it.each([
     ['codex', 'command: acme-codex\n', 'command'],
