@@ -14,6 +14,7 @@ rule.invalid('rejects an assignment to process.env', 'process.env.CODEX_HOME = d
 rule.invalid('rejects a computed assignment', 'env[instance.home.env] = dir;');
 rule.invalid('rejects it in tool packages', 'const env = { CODEX_HOME: dir };', undefined, { filename: 'packages/tool-core/src/formats/codex.ts' });
 rule.invalid('rejects it in scripts', 'const env = { CODEX_HOME: dir };', undefined, { filename: 'scripts/verify/world.ts' });
+rule.valid('allows a script\'s test', 'const env = { CODEX_HOME: dir };', { filename: 'scripts/check-docs.test.ts' });
 rule.valid('allows the owner', 'const env = { [variable]: dir, CODEX_HOME: dir };', { filename: 'src/tool-launch/tools.ts' });
 rule.valid('allows tests', 'const env = { CODEX_HOME: dir };', { filename: 'src/__tests__/codex-trust.test.ts' });
 rule.valid('allows a test beside its source', 'const env = { CODEX_HOME: dir };', { filename: 'packages/tool-codex/src/session.test.ts' });

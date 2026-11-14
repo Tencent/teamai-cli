@@ -144,7 +144,7 @@ export function workspaceFile(root, specifier) {
 }
 
 /**
- * The linted file's path from its package root, so a checkout cloned under some `src/` directory keeps `scripts/` out.
+ * The linted file's path from its package root, so a checkout cloned under some `src/` directory does not count all its files as `src/`.
  * @param {Context} context
  * @returns {string}
  */
@@ -198,6 +198,16 @@ export function isProductionSource(file) {
   const relative = file.replace(/^packages\/[^/]+\//, '');
 
   return relative.startsWith('src/') && !relative.startsWith('src/__tests__/') && !/\.test\.[cm]?[jt]sx?$/.test(relative);
+}
+
+/**
+ * Whether `file`, from the repository root, is repository tooling under `scripts/`, outside its tests: it runs the
+ * product's own modules (the documentation generator, the verify world), so a rule that holds for production holds there.
+ * @param {string} file
+ * @returns {boolean}
+ */
+export function isScriptSource(file) {
+  return file.startsWith('scripts/') && !/\.test\.[cm]?[jt]sx?$/.test(file);
 }
 
 /**

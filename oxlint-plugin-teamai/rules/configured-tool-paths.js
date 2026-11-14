@@ -1,6 +1,6 @@
 /** @import { ESTree } from '@oxlint/plugins' */
 import { defineRule } from '@oxlint/plugins';
-import { inProductionSource, isOneOf } from '../utils.js';
+import { inProductionSource, isOneOf, isScriptSource, sourcePath } from '../utils.js';
 
 /** The fields of a tool's paths, each relative to a scope's base: joined by hand, a path under $HOME misses a home that moved. */
 /** @type {ReadonlySet<unknown>} */
@@ -37,7 +37,7 @@ function joinOf(/** @type {ESTree.CallExpression} */ call) {
 export default defineRule({
   meta: { type: 'problem', docs: { description: 'Resolve configured tool paths through locate.' } },
   create(context) {
-    if (!inProductionSource(context) || isOneOf(context, ['src/locate.ts'])) return {};
+    if (!(inProductionSource(context) || isScriptSource(sourcePath(context))) || isOneOf(context, ['src/locate.ts'])) return {};
     const reported = new Set();
 
     const report = (/** @type {ESTree.CallExpression} */ call, /** @type {string} */ property) => {

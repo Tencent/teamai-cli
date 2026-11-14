@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { ruleHarness } from '../test/harness.ts';
-import { isProductionSource } from '../utils.js';
+import { isProductionSource, isScriptSource } from '../utils.js';
 import { BASE_ID_COMPARISONS, SHIPPED_ONLY } from './shipped-tool-ids.js';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -24,6 +24,12 @@ rule.invalid('rejects a new folder with no rule edit', `import { isToolId } from
 export const known = (tool: string) => isToolId(tool);`, undefined, { filename: 'src/new-area/reader.ts' });
 
 rule.invalid('rejects a package\'s source with no rule edit', `export const known = (isToolId: (tool: string) => boolean) => isToolId('claude');`, undefined, { filename: 'packages/tool-acme/src/reader.ts' });
+
+rule.invalid('rejects a repository script with no rule edit', `import { isToolId } from '../src/tool-registry.js';
+export const known = (tool: string) => isToolId(tool);`, undefined, { filename: 'scripts/doc-checks/new-check.ts' });
+
+rule.valid('allows a script\'s test', `import { isToolId } from '../src/tool-registry.js';
+export const known = isToolId('claude');`, { filename: 'scripts/check-docs.test.ts' });
 
 rule.invalid('rejects one reference more than a file\'s SHIPPED_ONLY count', `import { isToolId } from './tool-registry.js';
 export const a = isToolId('a');
@@ -84,7 +90,7 @@ describe('in this checkout', () => {
   it('names in SHIPPED_ONLY only production files that exist', () => {
     const entries = [...SHIPPED_ONLY.keys()];
 
-    expect(entries.filter((file) => !fs.existsSync(path.join(REPO, file)) || !isProductionSource(file))).toEqual([]);
+    expect(entries.filter((file) => !fs.existsSync(path.join(REPO, file)) || !(isProductionSource(file) || isScriptSource(file)))).toEqual([]);
     expect([...SHIPPED_ONLY.values()].every(({ count }) => count > 0)).toBe(true);
   });
 
