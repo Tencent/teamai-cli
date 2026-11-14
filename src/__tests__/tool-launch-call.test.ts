@@ -403,7 +403,7 @@ it('fails a call on a tool whose recorded root is gone without starting it, and 
   const codex = await fakeTool('codex', { lastMessage: 'from codex' });
 
   await expect(only('codex', codex.executable).callTool('hi', { launchedBy: 'answer', scope: { ...scope, toolRoots: { codex: gone } } })).rejects.toMatchObject({
-    kind: 'call_failed',
+    kind: 'home_gone',
     message: `The codex home recorded on this machine, ${gone}, does not exist, so teamai did not start codex there. `
       + 'Point CODEX_HOME at the home codex uses and re-run `teamai init`, or clear the record with `CODEX_HOME= teamai init`.',
   });

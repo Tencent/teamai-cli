@@ -759,7 +759,7 @@ $ teamai workflow start classify-learning --driver local --inputs '{"learning":"
 - In a directory that is no git repository, nothing can check an answer, so on the local driver answers there do
   not wait for each other, with or without `workspace: new`.
 - A prompt has no default timeout. Give the step one.
-- It fails `tool_unavailable` when no tool is installed, `tool_unconfigured` when the tool the member names cannot run, `tool_failed` when the call fails, and `invalid_output` when the reply holds no JSON.
+- It fails `tool_unavailable` when no tool is installed or the home recorded for the tool is gone, `tool_unconfigured` when the tool the member names cannot run, `tool_failed` when the call fails, and `invalid_output` when the reply holds no JSON.
 
 Another driver gets an answer step as a prompt lease with `answer: true` and no separate workspace, or with
 `workspace: new` a read-only `workspace` contract on a branch of its own. It prepares the lease, answers in `cwd`, and

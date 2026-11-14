@@ -755,7 +755,7 @@ $ teamai workflow start classify-learning --driver local --inputs '{"learning":"
 - 加上 `workspace: new` 后，它在自己的 worktree 中回答，该 worktree 位于运行开始时的提交，因此 `for_each` 的各项最多按其 `max_parallel` 并排运行。这个 worktree 不含你未提交的改动，也不含 pull 交付给工具的文件。修改它同样会让回答以 `read_only_dirty` 失败。回答成功后 teamai 删除这个 worktree，运行成功后删除它的分支。
 - 在不是 git 仓库的目录中，没有办法检查回答，所以在本地驱动上，那里的回答互不等待，无论有没有 `workspace: new`。
 - 提示词没有默认超时，请给这个步骤设置一个。
-- 没有安装工具时它以 `tool_unavailable` 失败，成员指定的工具无法运行时以 `tool_unconfigured` 失败，调用失败时以 `tool_failed` 失败，回答里没有 JSON 时以 `invalid_output` 失败。
+- 没有安装工具或为该工具记录的主目录已不存在时，它以 `tool_unavailable` 失败，成员指定的工具无法运行时以 `tool_unconfigured` 失败，调用失败时以 `tool_failed` 失败，回答里没有 JSON 时以 `invalid_output` 失败。
 
 其他驱动把 answer 步骤当作带 `answer: true`、没有独立工作区的提示词租约；带 `workspace: new` 时，租约带有一个只读的 `workspace` 合约，指向它自己的分支。驱动准备租约，在 `cwd` 中回答提示词并报告 outputs；准备过程像其他只读步骤一样占用检出目录或那个 worktree，并记录快照。
 

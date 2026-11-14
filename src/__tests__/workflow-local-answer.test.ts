@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { readRun } from '../workflow/store.js';
+import { getUserHome } from '../utils/home.js';
 import { dirs, projectAiTool, workflowFixture } from './helpers/workflow-local-driver-fixture.js';
 
 afterEach(() => {
@@ -121,6 +122,21 @@ outputs: { color: steps.ask.outputs.color }
     expect(await readRun(config, z.string().parse(runId))).toMatchObject({
       steps: [{ id: 'ask', status: 'failed', failure: { code: 'tool_failed', message: 'AI call failed (tool: claude): Authentication failed' } }],
     });
+  });
+
+  it('fails the step tool_unavailable, as a prompt step does, when the root recorded for the tool is gone', async () => {
+    const { config, workspace, runId, bin } = await answering(COLOR);
+    const claude = fakeTool(bin, 'claude', { stdout: claudeReply('blue') });
+    const gone = path.join(getUserHome(), '.claude-gone');
+    config.toolRoots = { claude: gone };
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, z.string().parse(runId))).toMatchObject({
+      steps: [{ id: 'ask', status: 'failed', failure: { code: 'tool_unavailable', message: expect.stringContaining(`The claude home recorded on this machine, ${gone}, does not exist`) } }],
+    });
+    expect(claude).toThrow('ENOENT');
   });
 
   it('fails an answer that modifies the checkout', async () => {

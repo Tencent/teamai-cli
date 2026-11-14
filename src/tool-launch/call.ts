@@ -64,7 +64,7 @@ function callEnv({ launchedBy, tool, toolRoots }: { launchedBy: LaunchedBy; tool
   const { TEAMAI_LAUNCHED_TOOL: _tool, TEAMAI_LAUNCHED_CHECKOUT: _checkout, ...env } = process.env;
   const home = toolCommandEnv(tool, { kind: 'delivered', inherited: env, toolRoots });
 
-  if (home.kind === 'home_gone') throw new CallError('call_failed', home.message);
+  if (home.kind === 'home_gone') throw new CallError('home_gone', home.message);
   const gateway = tool === 'agy' ? agyGatewayEnv(env) : undefined;
 
   // Our own session, not the user's: its hooks would print the share-learnings hint into the answer we read.
