@@ -2,7 +2,7 @@ import { resolveCliPath, resolvePathCommand } from '@teamai/shared/cli-path';
 import { descriptorOf, toolOf, type DescriptorOf } from '../tool-registry.js';
 import type { ResolvedToolInstance } from '../tool-instances.js';
 import type { ToolId } from '../tools.js';
-import { toolHomeOf } from '../tool-home.js';
+import { movedToolHome, realHost, toolHomeOf } from '../tool-home.js';
 import { RELOCATABLE_TOOLS, toolPathRoots } from '../types.js';
 import { LAUNCH_ADAPTERS } from './adapters.js';
 import type { ConfinedLaunch, LaunchAdapter, StepLaunch } from '@teamai/tool-core/launch';
@@ -92,23 +92,32 @@ export function launchTargetOf(name: string): LaunchTarget | undefined {
 }
 
 /**
- * The variable that points `target`'s build at an instance's own home, which teamai delivers to. For an instance that
- * names its own variable, that one, at the home teamai resolved for it: a shell without it leaves it unset while teamai
- * uses the recorded home. For one with only `home` set, the variable that moves the root of the tool it extends
+ * The variable that points `target`'s build at the home teamai delivers to. For an instance that names its own
+ * variable, that one, at the home teamai resolved for it: a shell without it leaves it unset while teamai uses the
+ * recorded home. For one with only `home` set, the variable that moves the root of the tool it extends
  * (`RELOCATABLE_TOOLS`), as the Codex trust gate sets it, since a build such as the shipped command reads that tool's
- * home otherwise. None for a shipped tool, an adjustment, or one whose `paths` hang off another directory too.
+ * home otherwise. None for an instance whose `paths` hang off another directory too. For a shipped tool or an
+ * adjustment, its variable at its recorded home when `inherited` leaves it unset, as a confined run gets it.
  */
-export function launchHomeEnv(target: LaunchTarget): Record<string, string> {
+export function launchHomeEnv(target: LaunchTarget, inherited: Readonly<Record<string, string | undefined>>): Record<string, string> {
   const { instance } = target;
   const variable = RELOCATABLE_TOOLS[target.tool]?.envVar;
 
-  if (instance?.home?.env !== undefined && instance.name !== instance.extends) {
+  if (instance === undefined || instance.name === instance.extends) {
+    const own: LaunchAdapter = launchAdapterOf(target.tool);
+    const shipped = own.confined?.homeEnv;
+    const moved = shipped === undefined || inherited[shipped] !== undefined ? null : movedToolHome(target.tool, realHost({ env: inherited }));
+
+    return shipped === undefined || moved === null ? {} : { [shipped]: moved };
+  }
+
+  if (instance.home?.env !== undefined) {
     const own = toolHomeOf(target.name);
 
     return own === undefined ? {} : { [instance.home.env]: own.dir };
   }
 
-  if (instance?.home === undefined || instance.name === instance.extends || variable === undefined) return {};
+  if (instance.home === undefined || variable === undefined) return {};
   const homeDir = instance.home.dir;
 
   // teamai writes where `paths` say: a build pointed at the home would read none of what lies outside it.

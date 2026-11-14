@@ -587,7 +587,7 @@ async function promptReport(
     resultPath: resultFile,
     secrets,
     // The lease `env` is set over the step's environment, as a command's is.
-    env: { ...lease.processEnv ?? process.env, ...launchHomeEnv(target), ...lease.env, ...attemptEnv(config, lock.run, lease.attempt, mode) },
+    env: { ...lease.processEnv ?? process.env, ...launchHomeEnv(target, lease.processEnv ?? process.env), ...lease.env, ...attemptEnv(config, lock.run, lease.attempt, mode) },
   };
 
   if (lease.output) input.output = lease.output;
