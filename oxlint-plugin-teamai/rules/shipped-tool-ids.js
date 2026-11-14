@@ -22,8 +22,8 @@ export const SHIPPED_ONLY = new Map(Object.entries({
   // A toolPaths entry replaces the default of the shipped tool it names; an instance replaces its own only through its
   // `paths`, read just before.
   'src/doctor-delivery.ts': { count: 1 },
-  // Detects shipped tools before any team config, and so any instance, is loaded.
-  'src/known-agents.ts': { count: 2 },
+  // Detects the shipped tools a developer uses in their home before any team config, and so any instance, is loaded.
+  'src/known-agents.ts': { count: 1 },
   // A shipped tool's install gate and the leftovers of its default home that releases before #1221 wrote; and the
   // sessions channel, typed over the shipped session platforms: an instance's own store is read through `storeDirOf`
   // (src/session-flow/adapters/index.ts).

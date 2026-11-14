@@ -255,6 +255,13 @@ describe('the home of an instance', () => {
     expect(isInstalledFor(skills)).toBe(true);
     expect(writesOf(await locate('acme-claude', 'mcp', install)).map((place) => place.path)).toEqual([path.join(moved, '.claude.json')]);
     expect(storeDirOf('acme-claude', undefined)).toBe(path.join(moved, 'projects'));
+
+    // What list, status and skill show read: the instance is installed, with its skills in the moved home.
+    const { detectInstalledAgents } = await import('../known-agents.js');
+    const local: LocalConfig = { repo: { localPath: root, remote: 'https://example.com/acme/team.git' }, username: 'member', additionalRoles: [], scope: 'user', enabledAgents: ['acme-claude'] };
+    const agents = await detectInstalledAgents(local, config ?? { toolPaths: {} } as never);
+
+    expect(agents.find((agent) => agent.id === 'acme-claude')).toMatchObject({ absoluteSkillsPath: path.join(moved, 'skills'), installed: true });
   });
 
   it('makes, at init in user scope, the folders of the home its variable moves and none in the home it would have', async () => {

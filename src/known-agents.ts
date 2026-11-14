@@ -10,7 +10,7 @@ import {
   toolGateRoot,
   detectToolRoot,
 } from './types.js';
-import { isToolId, descriptorOf } from './tool-registry.js';
+import { isToolId, descriptorOf, toolOf } from './tool-registry.js';
 import { installOf, isInstalledFor, locate, ownOf, toolPathUnder } from './locate.js';
 import type { LocalConfig, TeamaiConfig, Scope } from './types.js';
 import type { ToolId } from './tools.js';
@@ -413,7 +413,8 @@ export async function detectInstalledAgents(localConfig: LocalConfig, teamConfig
   const results: ResolvedAgent[] = [];
 
   for (const agent of agents) {
-    const location = isToolId(agent.id) ? await locate(agent.id, 'skills', install, host) : null;
+    // A tool or an instance of one is located, in the home its variable may move; a toolPaths-only agent is its paths.
+    const location = toolOf(agent.id) === undefined ? null : await locate(agent.id, 'skills', install, host);
     const own = location === null ? null : ownOf(location);
 
     const [absoluteSkillsPath, installed] = location !== null && own !== null
