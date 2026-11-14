@@ -250,7 +250,7 @@ teamai webhook test --dry-run
 
 ### 团队工具（`tools/`）
 
-团队用的是某个已支持工具的内部版本或分支时，可以把它加成内置工具的实例，不用等新版本。实例只改命令、home 和路径，沿用该工具的启动参数，以及会话、token、hook 和 MCP 格式。实例只能扩展 Claude Code（`claude`）或 Codex（`codex`）；扩展其他工具的实例会被拒绝并指出文件，直到 teamai 支持该工具（[工具支持](./tool-support.md#工具实例)）。有自己 home 的实例有自己的会话；沿用该工具 home 的实例写的就是该工具的会话。
+团队用的是某个已支持工具的内部版本或分支时，可以把它加成内置工具的实例，不用等新版本。实例只改命令、home 和路径，沿用该工具的启动参数，以及会话、token、hook 和 MCP 格式。实例只能扩展 Claude Code（`claude`）或 Codex（`codex`）；扩展其他工具的实例会被拒绝并指出文件，直到 teamai 支持该工具（[工具支持](./tool-support.md#工具实例)）。有自己 home 的实例有自己的会话；沿用该工具 home 的实例写的就是该工具的会话，收到的文件也和该工具放在同一处，包括 `init` 为它记录的目录（`toolRoots`）。
 
 ```yaml
 # 团队仓库中的 tools/acme-claude.yaml

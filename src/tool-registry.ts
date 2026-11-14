@@ -57,6 +57,16 @@ export function baseToolOf(name: string): string {
 }
 
 /**
+ * The name the member's `toolRoots` records `name`'s root under: for an instance that keeps the home of the tool it
+ * extends (it sets neither `home` nor `paths`), that tool's, so the two resolve to one directory; else `name`.
+ */
+export function toolRootsKeyOf(name: string): string {
+  const instance = toolOf(name)?.instance;
+
+  return instance !== undefined && instance.name !== instance.extends && instance.home === undefined && instance.paths === undefined ? instance.extends : name;
+}
+
+/**
  * What teamai knows about the tool `name` runs as: a shipped tool's descriptor, or for an instance the descriptor of
  * the tool it extends, whose formats it keeps. Undefined for a custom tool id. A name read from a config, a hook's
  * `--tool` or a step may be an instance's, so a format fact of a name is read through this, not `isToolId`.

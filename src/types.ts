@@ -8,7 +8,7 @@ import { getUserHome, expandHome } from './utils/home.js';
 import { log } from './utils/logger.js';
 import { parseYaml } from './utils/yaml.js';
 import { type ToolId } from './tools.js';
-import { channelsOf } from './tool-registry.js';
+import { channelsOf, toolRootsKeyOf } from './tool-registry.js';
 import type { WorkspaceChildren } from './workspace-children.js';
 import type { HeadState } from './utils/git.js';
 import type { RunMode } from './launch-context.js';
@@ -3268,10 +3268,11 @@ export function toolGateRoot(
   toolRoots?: Readonly<Record<string, string>>,
   at?: HomePaths,
 ): string {
-  const recorded = toolRoots?.[tool];
+  const key = toolRootsKeyOf(tool);
+  const recorded = toolRoots?.[key];
 
   if (recorded) {
-    const segment = toolRootSegment(tool, recorded, at);
+    const segment = toolRootSegment(key, recorded, at);
 
     if (segment && (toolPath === segment || toolPath.startsWith(`${segment}/`))) return segment;
   }
@@ -3399,11 +3400,12 @@ export function applyToolRoots(
   if (!toolRoots || Object.keys(toolRoots).length === 0) return toolPaths;
   let out: Record<string, z.infer<typeof ToolPathsSchema>> | undefined;
 
-  for (const [tool, configured] of Object.entries(toolRoots)) {
-    const paths = toolPaths[tool];
+  for (const [tool, paths] of Object.entries(toolPaths)) {
+    const key = toolRootsKeyOf(tool);
+    const configured = toolRoots[key];
 
-    if (!paths) continue;
-    const newRoot = toolRootSegment(tool, configured, at);
+    if (configured === undefined) continue;
+    const newRoot = toolRootSegment(key, configured, at);
 
     if (!newRoot) continue;
     // Not skipped when the root is unchanged: a bare file name (the MCP
@@ -4004,8 +4006,9 @@ export function recordedToolRootDir(
   toolRoots: Readonly<Record<string, string>> | undefined,
   at: HomePaths = processHomePaths(),
 ): string | null {
-  const configured = toolRoots?.[tool];
-  const segment = configured ? toolRootSegment(tool, configured, at) : null;
+  const key = toolRootsKeyOf(tool);
+  const configured = toolRoots?.[key];
+  const segment = configured ? toolRootSegment(key, configured, at) : null;
 
   return segment === null ? null : at.path.join(at.home, ...segment.split('/'));
 }

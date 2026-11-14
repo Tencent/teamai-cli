@@ -20,7 +20,7 @@ import {
   pathExists,
 } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import { baseToolOf, hookSyntaxOf } from './tool-registry.js';
+import { baseToolOf, hookSyntaxOf, toolOf } from './tool-registry.js';
 import { toolHomeOf } from './tool-home.js';
 import { toolPathUnder } from './locate.js';
 import type { JsonSyntax } from './utils/json.js';
@@ -71,9 +71,9 @@ function familyOf(tool: string): Family {
   return CURSOR_TOOLS.has(baseToolOf(tool)) ? 'cursor' : 'claude';
 }
 
-/** The home of a tool instance, its own or the one it shares with the tool it extends; undefined for a shipped tool. */
+/** The home of a tool instance that has one of its own; undefined for a shipped tool, and for an instance that keeps the home of the tool it extends, which resolves as that tool does. */
 function instanceHome(tool: string): string | undefined {
-  return baseToolOf(tool) === tool ? undefined : toolHomeOf(tool)?.dir;
+  return toolOf(tool)?.instance?.home === undefined || baseToolOf(tool) === tool ? undefined : toolHomeOf(tool)?.dir;
 }
 
 export interface CoAuthorChange {

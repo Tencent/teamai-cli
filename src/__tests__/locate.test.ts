@@ -1,11 +1,11 @@
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { nextToolHomes } from '../tool-home-record.js';
 import { cleanupOf, installOf, locate, locatingOnce, ownOf, unreadWrites, writable, writesOf, type EntryPlace, type FilePlace, type FilesChannel, type Install, type Read } from '../locate.js';
 import { envToolHome, movedToolHome, toolHome, type Host } from '../tool-home.js';
 import { TOOLS } from '../tools.js';
-import { isToolId } from '../tool-registry.js';
+import { isToolId, useToolInstances } from '../tool-registry.js';
 import { samePlaces } from '../resources/places.js';
 import type { ToolId } from '../tools.js';
 import { DEFAULT_TOOL_PATHS } from '../types.js';
@@ -412,5 +412,30 @@ describe('locatingOnce', () => {
     }
 
     expect(changed).toEqual([]);
+  });
+});
+
+describe('an instance of Codex under the Codex root the member recorded (toolRoots.codex)', () => {
+  const host = linuxHost({}, ['/home/m/.codex-work']);
+  const install: Install = { toolPaths: { ...DEFAULT_TOOL_PATHS, 'acme-codex': DEFAULT_TOOL_PATHS.codex }, agents: {}, toolRoots: { codex: '/home/m/.codex-work' }, gitExclude: false, scope: 'user' };
+  const instance = { name: 'acme-codex', extends: 'codex', command: 'acme-codex', source: 'team', file: '/repo/tools/acme-codex.yaml', location: 'tools/acme-codex.yaml', revision: 'r1' } as const;
+  const placeOf = async (tool: string, resource: 'skills' | 'hooks') => ownOf(await locate(tool, resource, install, host))?.path;
+
+  afterEach(() => {
+    useToolInstances(new Map());
+  });
+
+  it('puts an instance that keeps the home of Codex where Codex is', async () => {
+    useToolInstances(new Map([['acme-codex', instance]]));
+
+    expect(await placeOf('acme-codex', 'skills')).toBe('/home/m/.codex-work/skills');
+    expect(await placeOf('acme-codex', 'hooks')).toBe(await placeOf('codex', 'hooks'));
+  });
+
+  it('keeps an instance with a home of its own in that home', async () => {
+    useToolInstances(new Map([['acme-codex', { ...instance, home: { dir: '.acme-codex' } }]]));
+    const own: Install = { ...install, toolPaths: { ...install.toolPaths, 'acme-codex': { ...DEFAULT_TOOL_PATHS.codex, skills: '.acme-codex/skills' } } };
+
+    expect(ownOf(await locate('acme-codex', 'skills', own, host))?.path).toBe('/home/m/.acme-codex/skills');
   });
 });
