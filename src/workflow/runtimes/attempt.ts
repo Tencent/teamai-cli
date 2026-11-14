@@ -714,6 +714,30 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
   let mayRun: RuntimeFailure | undefined;
   // The credentials the place was opened with, in memory only, so what the runtime says of the place is kept masked.
   let openedWith: Record<string, string> = {};
+  // Whether this attempt's runtime answered for its place, as alive: once it did, its stop or close of it is one.
+  let isPlaceKnown = false;
+
+  /**
+   * Why the place `recorded` names, on `handle`, is not taken as gone: an entry reached by its name alone, as it changed
+   * since the attempt ran, may start its runtime elsewhere, where the place is unknown though what ran there runs on.
+   * Undefined once the runtime knows the place, or when the entry is the one that ran the attempt.
+   */
+  const unknownToChangedEntry = async (recorded: AttemptRuntimeRecord, handle: string): Promise<RuntimeFailure | undefined> => {
+    if (isPlaceKnown || !RuntimeEntryIdentity.isByNameOnly(recorded, entry)) return undefined;
+    const seen = await runtime.reattach(handle);
+
+    if (seen.kind === 'failed') return seen.failure;
+
+    if (seen.kind === 'gone') return changedEntryFailure();
+    isPlaceKnown = true;
+
+    return undefined;
+  };
+
+  const changedEntryFailure = (): RuntimeFailure => ({
+    code: 'runtime_gone',
+    message: `the entry of driver "${driver}" that ran it changed since, and the runtime that entry starts now does not know the place of attempt ${attempt}, so teamai cannot tell that what ran there stopped. Put the entry back as it was to stop what ran, or drop the place with teamai workflow cancel ${run} --release ${attempt}.`,
+  });
 
   const save = async (next: AttemptRuntimeRecord): Promise<void> => {
     record = next;
@@ -1116,6 +1140,10 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
         return runtimeFailure(runtime.name, `kept the place of attempt ${attempt} open, since what ran there may still run (${failure.code}): ${failure.message}`);
       }
 
+      // A person who releases the attempt checked that nothing of it runs, so the runtime is told to forget it all the same.
+      const unknown = how?.release ? undefined : await unknownToChangedEntry(before, handle);
+
+      if (unknown) return runtimeFailure(runtime.name, `kept the place of attempt ${attempt} open (${unknown.code}): ${unknown.message}`);
       const closed = await runtime.close(handle, how);
 
       if (!closed.ok) {
@@ -1147,6 +1175,9 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
       const handle = before?.open.handle;
 
       if (!before || before.phase === 'closed' || !isHere(before) || handle === undefined) return undefined;
+      const unknown = await unknownToChangedEntry(before, handle);
+
+      if (unknown) return lostFor({ code: unknown.code, message: `Step runtime "${runtime.name}" kept the place of attempt ${attempt}, whose folder teamai makes again after the setup a teamai before this one cut short, so the step cannot run in it: ${unknown.message}` });
       const closed = await runtime.close(handle);
 
       if (!closed.ok) {
@@ -1168,10 +1199,13 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
       const handle = before?.open.handle;
       const left = before?.exec ?? before?.prompt ?? before?.setup;
 
-      if (!left || handle === undefined) return undefined;
+      if (!before || !left || handle === undefined) return undefined;
       const seen = await runtime.reattach(handle);
 
       if (seen.kind === 'failed') return seen.failure;
+
+      if (seen.kind === 'gone' && RuntimeEntryIdentity.isByNameOnly(before, entry)) return changedEntryFailure();
+      isPlaceKnown ||= seen.kind === 'alive';
 
       // An operation that ended before this cancel needs no stop; closing its place confirms nothing of it still runs.
       if (seen.kind === 'gone' || !isUnstopped(seen.ops.find((retained) => retained.op === left.op))) return undefined;

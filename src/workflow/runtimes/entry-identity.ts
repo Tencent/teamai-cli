@@ -78,6 +78,16 @@ function holds(record: RecordedEntry, entry: RuntimeEntryIdentity): boolean {
 }
 
 /**
+ * Whether `entry` holds the place `record` names by the runtime's name alone, its digest differing from the one recorded:
+ * the entry changed since the attempt ran, so its runtime may run on other options than the one that made the place, and
+ * its answer that it knows no such place proves nothing of that place. A record written before records named the entry
+ * has no digest to differ.
+ */
+function isByNameOnly(record: RecordedEntry, entry: RuntimeEntryIdentity): boolean {
+  return record.entry !== undefined && record.entry !== entry.digest && holds(record, entry);
+}
+
+/**
  * The one of `candidates`, the runtimes driver `driver` opened, that holds the place `record` names, or why none does.
  * None is taken for another of the same name: a stop sent there would find nothing and close nothing it ran.
  */
@@ -97,4 +107,4 @@ function find<TCandidate extends { entry: RuntimeEntryIdentity }>(record: Record
 }
 
 /** Which entry of a driver definition each attempt's place is on, and the one test of whether a runtime holds it. */
-export const RuntimeEntryIdentity = { of, holds, find } as const;
+export const RuntimeEntryIdentity = { of, holds, isByNameOnly, find } as const;
