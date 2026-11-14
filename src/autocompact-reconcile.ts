@@ -142,22 +142,30 @@ export async function reconcileAutoCompactLocked(
 async function resolveTargets(localConfig: LocalConfig): Promise<Target[]> {
   const targets: Target[] = [];
 
-  // An instance that keeps the home of the tool it extends reads that tool's file, which the tool's own target writes.
-  const ownHomes = toolInstancesFor('use').flatMap(({ name, extends: base, home: own }) => {
-    const home = toolHomeOf(name)?.dir;
-
-    return own === undefined || home === undefined ? [] : [{ tool: name, base, home }];
-  });
-
   // A root the member recorded at init (CODEX_HOME, CLAUDE_CONFIG_DIR) wins,
   // so a pull from a shell without the variable still finds it.
-  const shipped = TOOL_IDS.map((tool) => ({ tool, base: tool, home: recordedToolRootDir(tool, localConfig.toolRoots) ?? toolHome(tool) }));
+  const shippedHome = (tool: ToolId) => recordedToolRootDir(tool, localConfig.toolRoots) ?? toolHome(tool);
+  const shipped = TOOL_IDS.map((tool) => ({ tool, base: tool, home: shippedHome(tool) }));
 
-  for (const { tool, base, home } of [...shipped, ...ownHomes]) {
+  // An instance that keeps the home of the tool it extends reads that tool's file: it is written once, for whichever
+  // of them is enabled.
+  const instances = toolInstancesFor('use').flatMap(({ name, extends: base, home: own }) => {
+    const home = own === undefined ? shippedHome(base) : toolHomeOf(name)?.dir;
+
+    return home === undefined ? [] : [{ tool: name, base, home }];
+  });
+
+  const files = new Set<string>();
+
+  for (const { tool, base, home } of [...shipped, ...instances]) {
     const kind = descriptorOf(base).autoCompact;
 
     if (kind === 'none' || isAgentExcluded(localConfig, tool) || !(await pathExists(home))) continue;
-    targets.push({ tool, base, kind, file: path.join(home, FILE_OF[kind]) });
+    const file = path.join(home, FILE_OF[kind]);
+
+    if (files.has(file)) continue;
+    files.add(file);
+    targets.push({ tool, base, kind, file });
   }
 
   return targets;

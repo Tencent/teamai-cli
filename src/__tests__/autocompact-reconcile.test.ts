@@ -229,6 +229,24 @@ describe('auto-compact reconcile', () => {
     expect(await text('.acme-codex/config.toml')).toBe('model = "x"\n');
   });
 
+  it('writes the file an instance shares with the tool it extends once, also when only the instance is enabled', async () => {
+    const { useToolInstances } = await import('../tool-registry.js');
+    useToolInstances(new Map([['acme-codex', {
+      kind: 'instance', name: 'acme-codex', extends: 'codex', source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
+    }]]));
+    onTestFinished(() => useToolInstances(new Map()));
+    await fse.outputFile(path.join(home, '.codex', 'config.toml'), 'model = "x"\n');
+
+    const { changes } = await run(team(400_000), {}, { ...baseLocal, enabledAgents: ['acme-codex'] } as LocalConfig);
+
+    expect(await text('.codex/config.toml')).toBe('model = "x"\nmodel_auto_compact_token_limit = 400000\n');
+    expect(changes.filter((c) => c.file === path.join(home, '.codex', 'config.toml'))).toHaveLength(1);
+
+    const both = await run(team(400_000), {}, { ...baseLocal, enabledAgents: ['codex', 'acme-codex'] } as LocalConfig);
+
+    expect(both.changes.filter((c) => c.file === path.join(home, '.codex', 'config.toml'))).toHaveLength(1);
+  });
+
   it('keeps every project\'s entries when two pulls reconcile at once', async () => {
     const only = (tool: string) => ({ ...baseLocal, enabledAgents: [tool] }) as LocalConfig;
     const [a, b] = await Promise.all([
