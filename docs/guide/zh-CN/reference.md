@@ -271,7 +271,7 @@ teamai workflow start review --tools default=acme-claude
 teamai score --session <id> --source acme-claude --scorer review-quality
 ```
 
-步骤运行 `acme-claude`，会话从 `$ACME_CLAUDE_CONFIG_DIR/projects/` 读取，未设置时从 `~/.acme-claude/projects/` 读取；用户级 pull 也写到这个目录。记录、续跑和打分都算在 `acme-claude` 名下，不会算成 Claude 的。
+步骤运行 `acme-claude`，会话从 `$ACME_CLAUDE_CONFIG_DIR/projects/` 读取，未设置时从 `~/.acme-claude/projects/` 读取；用户级 pull 也写到这个目录。记录、续跑和打分都算在 `acme-claude` 名下，不会算成 Claude 的。在项目里，Claude Code 和 Codex 在每个 linked worktree 中都从主 checkout 读取团队 hooks，而实例把它们放在自己的主目录里，只对运行过 pull 的 checkout 生效；所以要在 linked worktree 里用实例的团队 hooks，先在那里运行一次 `teamai pull`。
 
 **接受命令。** 设了 `command` 的实例会运行队友指定的程序。第一次运行时在终端里询问：
 
