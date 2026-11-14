@@ -13,6 +13,9 @@ export default defineConfig({
       // Applied before setupFiles: clear-agent-session-env.ts must remove each,
       // which workflow-test-env.test.ts checks.
       CLAUDE_CODE_SESSION_ID: 'seeded-by-vitest-config', TEAMAI_WORKFLOW_ATTEMPT: 'seeded-by-vitest-config', TEAMAI_LAUNCHED_BY: 'seeded-by-vitest-config', TEAMAI_MODE: 'unattended', CI: 'seeded-by-vitest-config', BASH_ENV: 'seeded-by-vitest-config',
+      // Every variable that moves a tool's root, so the scrub has one of each to remove. Spelled out
+      // rather than read from TOOLS: this file is loaded before the product modules it would import.
+      CLAUDE_CONFIG_DIR: 'seeded-by-vitest-config', CODEX_HOME: 'seeded-by-vitest-config', CURSOR_DATA_DIR: 'seeded-by-vitest-config', CURSOR_CONFIG_DIR: 'seeded-by-vitest-config',
     },
     // teardown-writers first, so its afterAll runs after the others' and
     // the removals in theirs can still join detached writers.
