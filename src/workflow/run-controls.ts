@@ -20,8 +20,8 @@ import { spentTokens, startLimits } from './limits.js';
 import { publishRunRecords, removeQueuedEndRecord } from './records.js';
 import { resolveRetention, runRetainedUntil, type ResolvedRetention } from './retention.js';
 import { contextOf, localId, locateStep, statesIn, type Scope } from './scope.js';
-import { attemptDir, AttemptIdSchema, readRun, RunIdSchema, runnerAlive, runRemovalRefusal, runScratchDir, takeRunLock, withCleanupLock, type PartOfStep, type RunId, type RunLock } from './store.js';
-import { answerHitl, cancel, cancellable, redeliver, repend, resetIteration, resetPending, settled, start, stopAttempt, stopWhere, stopped, type HitlAnswer, type StepState } from './step-state.js';
+import { attemptDir, AttemptIdSchema, readRun, RunIdSchema, runnerAlive, runRemovalRefusal, runScratchDir, takeRunLock, withCleanupLock, type AttemptId, type PartOfStep, type RunId, type RunLock } from './store.js';
+import { answerHitl, attemptOfStep, cancel, cancellable, redeliver, type Delivery, repend, resetIteration, resetPending, settled, start, stopAttempt, stopWhere, stopped, type HitlAnswer, type StepState } from './step-state.js';
 import { parseTemplate, templatePaths, templatedTexts } from './template.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope, WorkflowFailure } from './types.js';
 import { isIsolated } from './workspace.js';
@@ -409,26 +409,47 @@ async function endRunPartOf(config: LocalConfig, part: RunId, partOf: PartOfStep
 }
 
 /**
- * Whether a retry runs `state`, one of `container`'s states, again: the retried step reaches it, or the end that stopped
- * it is reset.
+ * What a retry of `target` discards from `run`, read before it changes any. `reset` holds each step it runs again: the
+ * target, unless only its failed delivery goes again (`redelivery`), each step of its containers the target reaches or
+ * whose stopping end the retry resets, and each workflow step that runs again around them. `archived` holds every other
+ * state under one of those, which `archiveUnder` moves to the run's archive. The one rule both the stop before a retry
+ * (`prepareRetry`) and the change under the run lock (`retryStep`) go by.
  */
-function runsAgainIn(container: RetryContainer, state: StepState): boolean {
-  return container.cone.has(state) || (container.resetStops && state.status === 'cancelled' && state.failure.code === 'end_reached');
+interface RetryDiscards {
+  reset: ReadonlySet<StepState>;
+  archived: readonly StepState[];
 }
 
-/** Each step a retry of `target` runs again in `containers`, as the retry reads them before it changes any: `target` too. */
-function statesRunAgain(target: StepState, containers: readonly RetryContainer[]): Set<StepState> {
-  const again = new Set<StepState>([target]);
+function retryDiscards(run: RunState, target: StepState, containers: readonly RetryContainer[]): RetryDiscards {
+  const reset = new Set<StepState>(redelivery(target) ? [] : [target]);
 
   for (const container of containers) {
     for (const state of container.states) {
-      if (state !== container.child && runsAgainIn(container, state)) again.add(state);
+      if (state === container.child) continue;
+
+      if (container.cone.has(state) || (container.resetStops && state.status === 'cancelled' && state.failure.code === 'end_reached')) reset.add(state);
     }
 
-    if (container.rerunsChild) again.add(container.child);
+    if (container.rerunsChild) reset.add(container.child);
   }
 
-  return again;
+  const under = [...reset].map((state) => isUnder(state.id));
+
+  return { reset, archived: run.steps.filter((state) => !reset.has(state) && under.some((isIn) => isIn(state.id))) };
+}
+
+/** Each attempt the states a retry discards hold or last ran (`attemptOfStep`), which the retry stops before any runs again. */
+function discardedAttempts({ reset, archived }: RetryDiscards): Array<{ state: StepState; attempt: AttemptId }> {
+  return [...reset, ...archived].flatMap((state) => {
+    const attempt = AttemptIdSchema.safeParse(attemptOfStep(state));
+
+    return attempt.success ? [{ state, attempt: attempt.data }] : [];
+  });
+}
+
+/** The failed step `target` and the delivery a retry of it delivers again, rather than run its agent again; else undefined. */
+function redelivery(target: StepState): { state: Extract<StepState, { status: 'failed' }>; delivery: Delivery } | undefined {
+  return target.status === 'failed' && target.failure?.code === 'delivery_failed' && target.delivery ? { state: target, delivery: target.delivery } : undefined;
 }
 
 interface RetryContainer {
@@ -761,21 +782,22 @@ function retryTarget(config: LocalConfig, run: RunState, step: string): { target
  * Why step `target` of run `run` may not run again yet: what its attempt ran on a step runtime may still run there. The
  * step runs again under a new attempt, whose staging stops only what that one left, so this stops it first, through the
  * driver recorded for it, as a cancel does: under the run's driver lock, taken without waiting. A live driver of the run
- * holds that lock and closes its attempts' places itself; one it has not closed yet may still run.
+ * holds that lock and closes its attempts' places itself: one it has not closed yet may still run, unless it still holds
+ * the lease, whose cancel it stops and waits for before the new pass starts.
  */
-async function stopLeftOnRuntime(config: LocalConfig, state: RunState, run: RunId, target: StepState): Promise<WorkflowEnvelope | undefined> {
-  const attempt = target.status === 'failed' || target.status === 'cancelled' ? AttemptIdSchema.safeParse(target.attempt) : undefined;
-
-  if (!attempt?.success || !isPlaceLeftOpen(await readAttemptPlacement(config, run, attempt.data))) return undefined;
+async function stopLeftOnRuntime(config: LocalConfig, state: RunState, run: RunId, { state: target, attempt }: { state: StepState; attempt: AttemptId }): Promise<WorkflowEnvelope | undefined> {
+  if (!isPlaceLeftOpen(await readAttemptPlacement(config, run, attempt))) return undefined;
   const checkout = await existingCheckout(state) ?? process.cwd();
-  const taken = await takeRunLock(config, run, () => stopLeftAttempt(config, run, attempt.data, checkout), { waitMs: 0 }).catch(runRemovalRefusal);
+  const taken = await takeRunLock(config, run, () => stopLeftAttempt(config, run, attempt, checkout), { waitMs: 0 }).catch(runRemovalRefusal);
 
   if (!('kind' in taken)) return taken;
+
+  if (taken.kind === 'busy' && target.status === 'leased') return undefined;
   const why = taken.kind === 'held' ? taken.value : `the driver that runs run ${run} on this machine has not closed its place yet.`;
 
   if (why === undefined) return undefined;
 
-  return error('not_retryable', `Step "${target.id}" cannot run again yet: what attempt ${attempt.data} ran on its step runtime may still run there: ${why} Once it has stopped, run ${retryCommand({ run, step: target.id })} again, which closes its place first; if it never does, once you checked that nothing of it still runs there, teamai workflow cancel ${run} --release ${attempt.data} lets it go.`);
+  return error('not_retryable', `Step "${target.id}" cannot run again yet: what attempt ${attempt} ran on its step runtime may still run there: ${why} Once it has stopped, run ${retryCommand({ run, step: target.id })} again, which closes its place first; if it never does, once you checked that nothing of it still runs there, teamai workflow cancel ${run} --release ${attempt} lets it go.`);
 }
 
 /**
@@ -785,28 +807,31 @@ async function stopLeftOnRuntime(config: LocalConfig, state: RunState, run: RunI
  * claimed from. Answers why a step does not run again yet, or why the run is not reopened when a branch does not come
  * back. A retry refused anyway does neither: the change under the run lock answers that refusal.
  */
-async function prepareRetry(config: LocalConfig, runId: RunId, step: string, retention: ResolvedRetention): Promise<WorkflowEnvelope | undefined> {
+async function prepareRetry(config: LocalConfig, runId: RunId, step: string, retention: ResolvedRetention): Promise<{ refused: WorkflowEnvelope } | { checked: ReadonlySet<AttemptId> }> {
   const run = await readRun(config, runId);
 
-  if (run === 'missing' || run === 'corrupt' || retryRefusal(run, step, retention, new Date().toISOString())) return undefined;
+  if (run === 'missing' || run === 'corrupt' || retryRefusal(run, step, retention, new Date().toISOString())) return { checked: new Set() };
   const planned = retryTarget(config, run, step);
 
-  if (!('target' in planned)) return undefined;
+  if (!('target' in planned)) return { checked: new Set() };
+  const discarded = discardedAttempts(retryDiscards(run, planned.target, planned.containers));
 
-  for (const state of statesRunAgain(planned.target, planned.containers)) {
-    const left = await stopLeftOnRuntime(config, run, runId, state);
+  for (const left of discarded) {
+    const refused = await stopLeftOnRuntime(config, run, runId, left);
 
-    if (left) return left;
+    if (refused) return { refused };
   }
 
-  if (run.status !== 'succeeded') return undefined;
+  const checked = new Set(discarded.map(({ attempt }) => attempt));
+
+  if (run.status !== 'succeeded') return { checked };
   // A claim keeps no driver, and takes the run into the checkout it names.
   const failed = await restoreRecordedBranches(run, run.driver?.workspace ?? run.checkout ?? process.cwd());
 
-  if (failed.length === 0) return undefined;
+  if (failed.length === 0) return { checked };
   const why = failed.map(({ branch, reason }) => `Branch ${branch} is not back ${reason}.`).join(' ');
 
-  return error('branches_not_restored', `Run ${runId} was not reopened: not every branch the run recorded is back at the commit it recorded. ${why} Try again once that is fixed: ${retryCommand({ run: runId, step })}`);
+  return { refused: error('branches_not_restored', `Run ${runId} was not reopened: not every branch the run recorded is back at the commit it recorded. ${why} Try again once that is fixed: ${retryCommand({ run: runId, step })}`) };
 }
 
 /** What a retry answers under `retried`: the step, the pass it runs again as, and the other steps that run again with it. */
@@ -822,11 +847,20 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
   const retention = await resolveRetention(config, await loadTeamConfig(config.repo.localPath, config));
 
   const parsed = RunIdSchema.safeParse(runId);
+  // The attempts the stop before the change went through: the change discards no state holding another.
+  let checked: ReadonlySet<AttemptId> = new Set();
 
   const reopen = parsed.success
     ? {
       busy: error('busy', `Cleanup of run ${runId} is removing its branches, so it was not reopened. Try again shortly: ${retryCommand({ run: runId, step })}`),
-      prepare: () => prepareRetry(config, parsed.data, step, retention),
+      prepare: async () => {
+        const prepared = await prepareRetry(config, parsed.data, step, retention);
+
+        if ('refused' in prepared) return prepared.refused;
+        checked = prepared.checked;
+
+        return undefined;
+      },
     }
     : undefined;
 
@@ -849,17 +883,32 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
 
     if (!('target' in planned)) return planned;
     const { target, containers } = planned;
-    const id = RunIdSchema.safeParse(runId);
-    const left = id.success ? await leftBeside(config, id.data, target) : undefined;
+    const discards = retryDiscards(run, target, containers);
+    const discarded = discardedAttempts(discards);
+    const unchecked = discarded.find(({ attempt }) => !checked.has(attempt));
 
-    if (left) return left;
+    // The run moved since the stop read it: the retry would replace a state whose attempt nothing stopped.
+    if (unchecked) {
+      return error('not_retryable', `Run ${runId} changed while the retry checked what step "${target.id}" replaces: step "${unchecked.state.id}" now holds attempt ${unchecked.attempt}, which it did not check, so nothing was retried. Run ${retryCommand({ run: runId, step: target.id })} again.`);
+    }
+
+    const id = RunIdSchema.safeParse(runId);
+
+    for (const { state } of discarded) {
+      const left = id.success ? await leftBeside(config, id.data, state) : undefined;
+
+      if (left) return left;
+    }
+
     const reopened = run.status !== 'running';
     const again = new Set<StepState>();
 
     for (const container of containers) {
       if (container.child === target) {
         // A failed delivery delivers the same branch again; the agent's work it delivers does not change.
-        if (target.status === 'failed' && target.failure?.code === 'delivery_failed' && target.delivery) redeliver(target, target.delivery);
+        const delivered = redelivery(target);
+
+        if (delivered) redeliver(delivered.state, delivered.delivery);
         else retryInstance(run, target, now);
         resetIteration(target);
       }
@@ -867,7 +916,7 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
       for (const state of container.states) {
         if (state === container.child) continue;
 
-        if (runsAgainIn(container, state)) {
+        if (discards.reset.has(state)) {
           again.add(state);
           retryInstance(run, state, now);
         } else if (state.status === 'skipped' && !state.answer) resetPending(state);

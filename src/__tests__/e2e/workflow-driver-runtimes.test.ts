@@ -1261,6 +1261,114 @@ steps:
     });
   });
 
+  describe('a step whose earlier attempt may still run on its step runtime', () => {
+    const stuck = { code: 'cancel_failed', message: 'The toy cannot stop that exec now: its provider is down.' };
+    const holding = 'node -e "require(\'fs\').writeFileSync(process.env.HOLD_MARK, String(process.pid)); setTimeout(() => {}, 120000)"';
+
+    /**
+     * Starts `flow` on driver `definition`, a toy that refuses to stop what it runs (it is never asked until the driver
+     * is gone), and kills the driver once the held command writes its pid. Answers the run, and the held command's pid.
+     * `steps` is the flow's steps, or empty for a flow the test wrote itself.
+     */
+    const killedWhileHeld = async (flow: string, definition: string, steps: string): Promise<{ runId: string; held: number; options: Record<string, unknown> }> => {
+      if (steps !== '') writeFlow(flow, steps);
+      expect((await runCLI(['pull'], repo)).code).toBe(0);
+      const options = { state: fs.mkdtempSync(path.join(sandbox, `${definition}-`)) };
+      writeDefinition(definition, [{ use: 'toy', options: { ...options, cancel_fails: stuck } }]);
+      const mark = path.join(sandbox, `${definition}-mark`);
+      const driving = spawn(process.execPath, [CLI, 'workflow', 'start', flow, '--driver', definition], { cwd: repo, env: { ...process.env, ...env({ HOLD_MARK: mark }), FORCE_COLOR: '0' }, stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      driving.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+      const ended = new Promise((resolve) => driving.on('close', resolve));
+      for (const deadline = Date.now() + 30_000; !fs.existsSync(mark) && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(fs.existsSync(mark), stderr).toBe(true);
+      const held = Number(fs.readFileSync(mark, 'utf8'));
+      onTestFinished(() => { signalPid(held, 'SIGKILL'); });
+      driving.kill('SIGKILL');
+      await ended;
+
+      return { runId: /Run (r[0-9a-f]+) started/.exec(stderr)?.[1] ?? '', held, options };
+    };
+
+    it('stops a leased command a killed driver left before the step runs again, and runs nothing again while the runtime refuses', async () => {
+      const { runId, held, options } = await killedWhileHeld('heldleased', 'toyleased', `  - id: hold\n    command: ${holding}`);
+      const [hold] = readRunState(runId).steps;
+      expect(hold).toMatchObject({ id: 'hold', status: 'leased' });
+      const settled = readRunState(runId);
+
+      const refused = await runCLI(['workflow', 'retry', runId, 'hold'], repo, env());
+
+      expect(envelope(refused), refused.stderr).toMatchObject({ error: { code: 'not_retryable', message: expect.stringContaining(`Step "hold" cannot run again yet: what attempt ${attemptOf(hold)} ran on its step runtime may still run there: `) } });
+      expect(readRunState(runId)).toEqual(settled);
+      expect(signalPid(held, 0)).toBe('sent');
+
+      writeDefinition('toyleased', [{ use: 'toy', options }]);
+      const retried = await runCLI(['workflow', 'retry', runId, 'hold'], repo, env());
+
+      expect(envelope(retried), retried.stderr).toMatchObject({ data: { retried: { step: 'hold' } } });
+      expect(retried.stderr).toContain(`Stopped attempt ${attemptOf(hold)} of run ${runId} on step runtime "toy" and closed its place.`);
+      expect(signalPid(held, 0)).toBe('gone');
+    });
+
+    it('runs no workflow step again while a step of the workflow it ran left a command the runtime refuses to stop', async () => {
+      const { runId, held } = await killedWhileHeld('heldnested', 'toynested', `  - id: outer
+    workflow:
+      steps:
+        - id: inner
+          command: ${holding}`);
+      const resumed = await runCLI(['workflow', 'resume', runId, '--driver', 'local'], repo, env());
+      const inner = readRunState(runId).steps.find((step) => step.id === 'outer.inner');
+      expect(inner, resumed.stderr).toMatchObject({ status: 'failed', failure: { code: 'runtime_lost', message: expect.stringContaining(stuck.message) } });
+      expect(readRunState(runId).steps.find((step) => step.id === 'outer')).toMatchObject({ status: 'failed' });
+      const settled = readRunState(runId);
+
+      const refused = await runCLI(['workflow', 'retry', runId, 'outer'], repo, env());
+
+      // Retrying outer replaces the steps of the workflow it ran, inner among them, whose command may still run.
+      expect(envelope(refused), refused.stderr).toMatchObject({ error: { code: 'not_retryable', message: expect.stringContaining(`Step "outer.inner" cannot run again yet: what attempt ${attemptOf(inner)} ran on its step runtime may still run there: `) } });
+      expect(readRunState(runId)).toEqual(settled);
+      expect(signalPid(held, 0)).toBe('sent');
+    });
+
+    it('runs no later pass of a looping workflow\'s step beside an earlier pass a cancel could not stop', async () => {
+      // Holds on its first run; a later run of it only says it ran.
+      const once = 'node -e "const fs = require(\'fs\'); const mark = process.env.HOLD_MARK; if (fs.existsSync(mark)) { fs.writeFileSync(mark + \'.again\', \'\'); process.exit(0); } fs.writeFileSync(mark, String(process.pid)); setTimeout(() => {}, 120000)"';
+      fs.writeFileSync(path.join(repo, '.teamai', 'workflows', 'heldloop.yaml'), `schemaVersion: v1alpha1\nname: heldloop\ndescription: heldloop\nloop: { max_iterations: 2 }\nsteps:\n  - id: hold\n    command: ${once}\n`);
+      const { runId, held } = await killedWhileHeld('heldloop', 'toyloop', '');
+      const [first] = readRunState(runId).steps;
+      const mark = path.join(sandbox, 'toyloop-mark');
+
+      const cancelled = await runCLI(['workflow', 'cancel', runId, 'hold'], repo, env());
+
+      expect(cancelled.stderr).toContain(`Could not stop attempt ${attemptOf(first)} of run ${runId} on step runtime "toy" of driver "toyloop"`);
+      const resumed = await runCLI(['workflow', 'resume', runId, '--driver', 'toyloop'], repo, env({ HOLD_MARK: mark }));
+
+      const [again] = readRunState(runId).steps;
+      expect(again, resumed.stderr).toMatchObject({ id: 'hold', pass: 2, status: 'failed', failure: { code: 'runtime_lost', message: expect.stringContaining(`Step "hold" did not run again beside its earlier attempt ${attemptOf(first)}, whose work on step runtime "toy" of driver "toyloop" may still run there: `) } });
+      expect(fs.existsSync(`${mark}.again`)).toBe(false);
+      expect(signalPid(held, 0)).toBe('sent');
+    });
+
+    it('runs no finally step of a reopened run beside the one its earlier end left and a cancel could not stop', async () => {
+      const once = 'node -e "const fs = require(\'fs\'); const mark = process.env.HOLD_MARK; if (fs.existsSync(mark)) { fs.writeFileSync(mark + \'.again\', \'\'); process.exit(0); } fs.writeFileSync(mark, String(process.pid)); setTimeout(() => {}, 120000)"';
+      fs.writeFileSync(path.join(repo, '.teamai', 'workflows', 'heldfinally.yaml'), `schemaVersion: v1alpha1\nname: heldfinally\ndescription: heldfinally\nsteps:\n  - id: work\n    command: exit 1\nfinally:\n  - id: fin\n    command: ${once}\n`);
+      const { runId, held } = await killedWhileHeld('heldfinally', 'toyfinally', '');
+      const fin = readRunState(runId).steps.find((step) => step.id === 'fin');
+      const mark = path.join(sandbox, 'toyfinally-mark');
+
+      const cancelled = await runCLI(['workflow', 'cancel', runId], repo, env());
+
+      expect(cancelled.stderr).toContain(`Could not stop attempt ${attemptOf(fin)} of run ${runId} on step runtime "toy" of driver "toyfinally"`);
+      expect(envelope(await runCLI(['workflow', 'retry', runId, 'work'], repo, env()))).toMatchObject({ data: { retried: { step: 'work' } } });
+      const resumed = await runCLI(['workflow', 'resume', runId, '--driver', 'toyfinally'], repo, env({ HOLD_MARK: mark }));
+
+      const again = readRunState(runId).steps.find((step) => step.id === 'fin');
+      expect(again, resumed.stderr).toMatchObject({ status: 'failed', failure: { code: 'runtime_lost', message: expect.stringContaining(`Step "fin" did not run again beside its earlier attempt ${attemptOf(fin)}, whose work on step runtime "toy" of driver "toyfinally" may still run there: `) } });
+      expect(fs.existsSync(`${mark}.again`)).toBe(false);
+      expect(signalPid(held, 0)).toBe('sent');
+    });
+  });
+
   describe('a definition that lists the toy twice with other options', () => {
     const first = (): string => path.join(sandbox, 'toy-twice-first');
     const second = (): string => path.join(sandbox, 'toy-twice-second');

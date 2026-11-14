@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { log } from '@teamai/shared/log';
 import { getDataHome, type LocalConfig } from '../types.js';
@@ -17,6 +17,38 @@ import { soleEntry } from './helpers/runtime-entry.js';
 import type { RunState, WorkflowEnvelope } from '../workflow/types.js';
 import { knownSecrets } from '../env-resolution.js';
 import { acquireLock, releaseLock } from '../update.js';
+
+/** A stop of what an attempt left on a step runtime, which a test may answer in place of the runtime's driver. */
+const stopLeft = vi.hoisted(() => ({ instead: undefined as undefined | (() => Promise<string | undefined>) }));
+
+vi.mock('../workflow/runtimes/cancelled.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../workflow/runtimes/cancelled.js')>();
+
+  return { ...actual, stopLeftAttempt: async (...args: Parameters<typeof actual.stopLeftAttempt>) => (stopLeft.instead ? stopLeft.instead() : actual.stopLeftAttempt(...args)) };
+});
+
+/** Opens a place for `attempt` of `run` on a step runtime of driver "remote", as a driver does before the step runs there. */
+async function openOnRemote(config: LocalConfig, run: string, attempt: string): Promise<void> {
+  const runtime: StepRuntime<DriverCan> = {
+    name: 'remote',
+    init: async () => ({ ok: true, can: {}, launchesAgents: false }),
+    open: async (_request, onAccepted) => {
+      await onAccepted('h-1');
+
+      return { kind: 'ready', handle: 'h-1' };
+    },
+    exec: async () => ({ kind: 'exited', code: 1, stdout: '' }),
+    prompt: async () => ({ kind: 'cancelled' }),
+    cancel: async () => {},
+    collect: async () => ({ ok: true }),
+    reattach: async () => ({ kind: 'alive', ops: [] }),
+    close: async () => ({ ok: true }),
+    dispose: async () => {},
+  };
+  const opened = await attemptRun({ config, run: RunIdSchema.parse(run), attempt: AttemptIdSchema.parse(attempt), runtime, entry: soleEntry(runtime), driver: 'remote' }).open({ worktree: '/work', readonly: [], result: '/work/out', runDir: '/work/scratch', toolHome: {} });
+
+  expect(opened).toEqual({ ok: true, handle: 'h-1' });
+}
 
 const roots: string[] = [];
 const driver = { kind: 'test', machine: 'test', workspace: '/work' };
@@ -430,23 +462,7 @@ describe('workflow retry', () => {
     const lease = data(await f.next()).lease;
     const run = RunIdSchema.parse(f.id);
     const attempt = AttemptIdSchema.parse(lease.attempt);
-    const runtime: StepRuntime<DriverCan> = {
-      name: 'remote',
-      init: async () => ({ ok: true, can: {}, launchesAgents: false }),
-      open: async (_request, onAccepted) => {
-        await onAccepted('h-1');
-
-        return { kind: 'ready', handle: 'h-1' };
-      },
-      exec: async () => ({ kind: 'exited', code: 1, stdout: '' }),
-      prompt: async () => ({ kind: 'cancelled' }),
-      cancel: async () => {},
-      collect: async () => ({ ok: true }),
-      reattach: async () => ({ kind: 'alive', ops: [] }),
-      close: async () => ({ ok: true }),
-      dispose: async () => {},
-    };
-    expect(await attemptRun({ config: f.config, run, attempt, runtime, entry: soleEntry(runtime), driver: 'remote' }).open({ worktree: '/work', readonly: [], result: '/work/out', runDir: '/work/scratch', toolHome: {} })).toEqual({ ok: true, handle: 'h-1' });
+    await openOnRemote(f.config, f.id, attempt);
     await f.report(lease, 'failed');
     const before = await f.state();
 
@@ -455,6 +471,26 @@ describe('workflow retry', () => {
 
     expect(retried).toMatchObject({ kind: 'held', value: { error: { code: 'not_retryable', message: expect.stringContaining(`Step "work" cannot run again yet: what attempt ${attempt} ran on its step runtime may still run there: the driver that runs run ${run} on this machine has not closed its place yet.`) } } });
     expect(await f.state()).toEqual(before);
+  });
+
+  it('retries nothing when the run moves while the retry stops what the steps it replaces left on a step runtime', async () => {
+    const f = await fixture("  - id: work\n    command: echo work\n  - id: later\n    needs: [work]\n    if: steps.work.outcome == 'failed'\n    command: echo later");
+    const lease = data(await f.next()).lease;
+    await openOnRemote(f.config, f.id, lease.attempt);
+    await f.report(lease, 'failed');
+    let leased = '';
+    // While the retry stops work's place, a driver leases later, which the retry also replaces.
+    stopLeft.instead = async () => {
+      leased = data(await f.next()).lease.attempt;
+
+      return undefined;
+    };
+    onTestFinished(() => { stopLeft.instead = undefined; });
+
+    const retried = await retryStep(f.config, f.id, await knownSecrets(f.config), 'work');
+
+    expect(retried).toMatchObject({ error: { code: 'not_retryable', message: expect.stringContaining(`step "later" now holds attempt ${leased}, which it did not check, so nothing was retried.`) } });
+    expect((await f.state()).steps).toMatchObject([{ id: 'work', status: 'failed', attempt: lease.attempt }, { id: 'later', status: 'leased', attempt: leased }]);
   });
 
   it('rejects retry beneath an independent standing end without changing passes', async () => {

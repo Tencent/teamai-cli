@@ -402,6 +402,32 @@ export function takeOver(step: StepCheckpoint, mode: WorkspaceMode | undefined):
   }
 }
 
+/**
+ * The attempt step `state` holds or last ran, whose work may have left something running: its lease's, or the one it kept
+ * once it settled. None for a step that ran nothing of its own: pending, waiting, a running workflow step, a skipped one.
+ */
+export function attemptOfStep(state: StepState): string | undefined {
+  switch (state.status) {
+    case 'leased':
+      return state.lease.attempt;
+    case 'delivering':
+    case 'succeeded':
+    case 'failed':
+    case 'cancelled':
+      return state.attempt;
+    case 'pending':
+    case 'waiting':
+    case 'running':
+    case 'skipped':
+      return undefined;
+    default: {
+      const unknown: never = state;
+
+      return unknown;
+    }
+  }
+}
+
 export function lease(state: StepState, held: StepLease): LeasedStep {
   return become<LeasedStep>(state, { status: 'leased', attempt: held.attempt, lease: held });
 }

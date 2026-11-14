@@ -22,11 +22,11 @@ import { isRecord } from '../../expression.js';
 import { toolsStepRuntime, type StepLauncher } from '@teamai/runtime-tools';
 import { failureReport, launchToolFor, promptOfferOf, promptRuntimeOn, runPromptStep, type AskPerson, type StagedLease } from '../../steps/prompt.js';
 import { failedCommand, placeView, runtimeCommand, runtimeSetup, runtimeStepEnv, type StartedCommand } from '../../steps/runtime-steps.js';
-import { attemptRun, credentialSecrets, HeldPlace, isExecRuntimeTool, readAttemptPlacement, recordInProcessAttempt, attemptRuntimePath, maskAttemptResults, type AttemptRun, type AttemptRuntimeRecord, type RuntimeOrigin } from '../../runtimes/attempt.js';
+import { attemptRun, credentialSecrets, HeldPlace, isExecRuntimeTool, isPlaceLeftOpen, readAttemptPlacement, recordInProcessAttempt, attemptRuntimePath, maskAttemptResults, type AttemptRun, type AttemptRuntimeRecord, type RuntimeOrigin } from '../../runtimes/attempt.js';
 import { answerCallTool, hostStepRuntime } from '../../runtimes/host.js';
 import { writeHeldSteps, type HeldSteps } from '../../runtimes/held.js';
 import { RuntimeEntryIdentity } from '../../runtimes/entry-identity.js';
-import { closeAfterSweep, endLeftLogins, releaseHeldPlaces, stopLeftInProcess, stopOnRecordedDriver } from '../../runtimes/cancelled.js';
+import { closeAfterSweep, endLeftLogins, releaseHeldPlaces, stopLeftAttempt, stopLeftInProcess, stopOnRecordedDriver } from '../../runtimes/cancelled.js';
 import { loginHolder } from '../../runtimes/login.js';
 import { homeEnvOf, toolsLaunchDeps, type EngineOptions, type OpenedDriver } from '../../runtimes/sources.js';
 import { newOpId, type ExecAnswer, type ExecQuestion, type StepRuntime } from '@teamai/runtime-protocol/step-runtime';
@@ -306,6 +306,10 @@ async function stageLease(lease: StagedLease, { config, lock, root, env, mode, s
   const moved = await stopLeftElsewhere({ config, run: lock.run, attempt: lease.attempt, runsOn, checkout: root });
 
   if (moved) return moved;
+  // So is what an earlier attempt of the step left, which a loop, a round or a retry replaced with this one.
+  const earlier = await stopLeftByEarlierAttempts({ config, run: lock.run, attempt: lease.attempt, step: lease.step, checkout: root });
+
+  if (earlier) return earlier;
   const leftSetup = (await setUpOn?.stopLeftSetup())?.failure;
 
   if (leftSetup) return { code: 'runtime_lost', message: leftSetup.message };
@@ -370,6 +374,49 @@ async function stopLeftElsewhere({ config, run, attempt, runsOn, checkout }: { c
 
   if (notStopped) return notStopped;
   await fs.rm(attemptRuntimePath(config, run, id.data), { force: true });
+
+  return undefined;
+}
+
+/**
+ * Stops what an earlier attempt of step `step` left that may still run, before attempt `attempt` runs it: an exec or
+ * prompt on a step runtime whose place its record keeps open, through the driver recorded for it, and a process group
+ * here. A loop, a workflow's next round or a retry gives the step a new attempt, and the stops above reach only that
+ * one's. A place held for a conversation runs nothing, and a later step may continue it there. Answers why a stop is not
+ * confirmed: the step does not run beside it.
+ */
+async function stopLeftByEarlierAttempts({ config, run, attempt, step, checkout }: { config: LocalConfig; run: RunId; attempt: string; step: string; checkout: string }): Promise<WorkflowFailure | undefined> {
+  const state = await readRun(config, run);
+
+  if (state === 'missing' || state === 'corrupt') return undefined;
+  const passes = [...state.steps.find((one) => one.id === step)?.passes ?? [], ...(state.archive ?? []).filter((pass) => pass.step === step)];
+
+  for (const earlier of new Set(passes.map((pass) => pass.attempt))) {
+    const id = AttemptIdSchema.safeParse(earlier);
+
+    if (!id.success || id.data === attempt) continue;
+    const placement = await readAttemptPlacement(config, run, id.data);
+
+    if (isPlaceLeftOpen(placement) && placement.record.heldFor === undefined) {
+      const why = await stopLeftAttempt(config, run, id.data, checkout);
+
+      if (why !== undefined) {
+        return {
+          code: 'runtime_lost',
+          message: `Step "${step}" did not run again beside its earlier attempt ${id.data}, whose work on step runtime "${placement.record.runtime}" of driver "${placement.record.driver}" may still run there: ${why} Once it has stopped, run teamai workflow retry ${run} ${step}; once you checked that nothing of it still runs there, teamai workflow cancel ${run} --release ${id.data} lets it go.`,
+        };
+      }
+    }
+
+    const left = await stopRecordedGroup(attemptDir(config, run, id.data));
+
+    if (left.length > 0) {
+      return {
+        code: 'runtime_lost',
+        message: `teamai could not confirm that process ${left.join(', ')}, which earlier attempt ${id.data} of step "${step}" left, ended, so the step did not run again beside it. Once that process has ended, run teamai workflow retry ${run} ${step}.`,
+      };
+    }
+  }
 
   return undefined;
 }
@@ -1550,7 +1597,8 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
             const onRuntime = runOf(lease);
 
             const leftHere = onRuntime ? undefined : await stopLeftHere({ config, run: runId, attempt: lease.attempt, step: lease.step, leftRunning });
-            const moved = leftHere ?? await stopLeftElsewhere({ config, run: runId, attempt: lease.attempt, runsOn: externalOf(lease), checkout: root });
+            const elsewhere = leftHere ?? await stopLeftElsewhere({ config, run: runId, attempt: lease.attempt, runsOn: externalOf(lease), checkout: root });
+            const moved = elsewhere ?? await stopLeftByEarlierAttempts({ config, run: runId, attempt: lease.attempt, step: lease.step, checkout: root });
 
             if (!startable(lease, controller.signal)) return undefined;
 

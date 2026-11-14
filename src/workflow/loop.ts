@@ -261,19 +261,29 @@ export function isUnder(path: string): (id: string) => boolean {
 
 /** Moves the instances under a step, those of the workflow it ran, from the run's steps to its archive, with every pass they had. */
 export function archiveUnder(run: RunState, path: string): void {
-  const under = isUnder(path);
-  const within = { step: path, pass: run.steps.find((state) => state.id === path)?.pass ?? 1 };
+  archiveWhere(run, isUnder(path), { step: path, pass: run.steps.find((state) => state.id === path)?.pass ?? 1 });
+}
 
+/**
+ * Moves the instances whose ids are in `ids` from the run's steps to its archive, with every pass they had, as a run's
+ * next end does with the `finally` steps its earlier end ran: their attempts stay known to what starts the new ones.
+ */
+export function archiveSteps(run: RunState, ids: ReadonlySet<string>): void {
+  archiveWhere(run, (id) => ids.has(id));
+}
+
+/** Moves the instances `isArchived` picks to the run's archive; `within` names the step whose new pass archived them. */
+function archiveWhere(run: RunState, isArchived: (id: string) => boolean, within?: { step: string; pass: number }): void {
   for (const state of run.steps) {
-    if (!under(state.id)) continue;
+    if (!isArchived(state.id)) continue;
     const current = passOf(state);
 
     const item = state.item === undefined ? {} : { item: state.item };
 
-    for (const pass of [...state.passes ?? [], ...(current ? [current] : [])]) (run.archive ??= []).push({ step: state.id, ...pass, within, ...item });
+    for (const pass of [...state.passes ?? [], ...(current ? [current] : [])]) (run.archive ??= []).push({ step: state.id, ...pass, ...(within && { within }), ...item });
   }
 
-  run.steps = run.steps.filter((state) => !under(state.id));
+  run.steps = run.steps.filter((state) => !isArchived(state.id));
 }
 
 /** A pass of the run, current or archived, with the path of the instance it belongs to. */

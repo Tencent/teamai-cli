@@ -40,7 +40,7 @@ import {
 } from './step-state.js';
 import { allowanceInUse, budgetSpent, countLateTokens, expire, itemsSpent, leaseDeadline, ownDeadline, spendAllowances, spentAllowances, startLimits, turnLimits } from './limits.js';
 import { addItems, afterStanding, expandItems, isItem, itemLimit, itemLimitMismatch, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
-import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, isUnder, loopSettled } from './loop.js';
+import { archiveSteps, decideRound, decideStepLoop, exhaustedAtStart, firstPass, isUnder, loopSettled } from './loop.js';
 import { childScope, contextOf, finallyScope, insertChildren, localId, locateStep, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
 import { confinedOf, contractClone, deliverableOf, deliveryTarget, isIsolated, isPublishContract, planWorkspace, plannedBranch, sessionOf, sharedWorkspace, stepRoleOf, workLeftUndelivered, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan, type WorkspaceRequest } from './workspace.js';
 import {
@@ -665,9 +665,9 @@ function enterFinalizing(run: RunState, { outcome, end, failure }: WorkflowResul
 
   if (failure) ending.failure = failure;
   run.finalizing = { ...ending, since: now, until };
-  // A run a retry reopened ran them before; they run again.
-  const own = new Set(steps.map((step) => step.id));
-  run.steps = [...run.steps.filter((state) => !own.has(state.id)), ...steps.map((step): StepState => ({ id: step.id, status: 'pending' }))];
+  // A run a retry reopened ran them before; they run again, and what those ran stays in the archive.
+  archiveSteps(run, new Set(steps.map((step) => step.id)));
+  run.steps = [...run.steps, ...steps.map((step): StepState => ({ id: step.id, status: 'pending' }))];
 
   return true;
 }
