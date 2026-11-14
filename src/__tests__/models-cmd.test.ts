@@ -2,7 +2,7 @@ import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { modelsAdd, modelsConfigure, modelsList, modelsRemove, modelsRestore, modelsSwitch } from '../models-cmd.js';
 import { getLocalValuesPath, loadLocalProfiles, loadModelInputs } from '../models/profile.js';
 import { askQuestion, askSecret, isInteractive } from '../utils/prompt.js';
@@ -166,6 +166,24 @@ describe('models commands', () => {
 
     await captureOutput(() => modelsSwitch('mine', { agent: ['workbuddy'] }));
     expect(process.exitCode).toBe(1);
+  });
+
+  it('refuses a tool instance by name, leaving its home and the tool it extends untouched', async () => {
+    const { useToolInstances } = await import('../tool-registry.js');
+    useToolInstances(new Map([['acme-claude', {
+      name: 'acme-claude', extends: 'claude', home: { dir: '.acme-claude' }, source: 'team', file: '/repo/tools/acme-claude.yaml', location: 'tools/acme-claude.yaml', revision: 'r1',
+    }]]));
+    onTestFinished(() => useToolInstances(new Map()));
+    await fse.outputJson(path.join(home, '.acme-claude', 'settings.json'), {});
+    await fse.outputJson(path.join(home, '.claude', 'settings.json'), {});
+    await addMine();
+
+    for (const run of [() => modelsSwitch('mine', { agent: ['acme-claude'] }), () => modelsRestore({ agent: ['acme-claude'] })]) {
+      await expect(run()).rejects.toThrow('acme-claude is an instance of claude (tools/acme-claude.yaml), and teamai models does not switch or restore the model of an instance yet; set it in the instance\'s own settings');
+    }
+
+    expect(await fse.readJson(path.join(home, '.acme-claude', 'settings.json'))).toEqual({});
+    expect(await fse.readJson(path.join(home, '.claude', 'settings.json'))).toEqual({});
   });
 
   it('asks for a missing key instead of failing only when interactive', async () => {

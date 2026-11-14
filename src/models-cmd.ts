@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
 import { describeEntryFailure, describeOrigin, reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
+import { toolOf } from './tool-registry.js';
 import { pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { askConfirmation, askQuestion, askSecret, isInteractive, parseSelection, readStdin } from './utils/prompt.js';
@@ -218,7 +219,20 @@ function splitList(value: string | undefined): string[] {
 }
 
 function collectAgents(values: string[]): ModelAgent[] {
-  return [...new Set(values.flatMap(splitList).map((value) => ModelAgentSchema.parse(value)))];
+  return [...new Set(values.flatMap(splitList).map(modelAgentOf))];
+}
+
+function modelAgentOf(value: string): ModelAgent {
+  const agent = ModelAgentSchema.safeParse(value);
+
+  if (agent.success) return agent.data;
+  const instance = toolOf(value)?.instance;
+
+  if (instance !== undefined && instance.name !== instance.extends) {
+    throw new Error(`${value} is an instance of ${instance.extends} (${instance.location}), and teamai models does not switch or restore the model of an instance yet; set it in the instance's own settings.`);
+  }
+
+  throw new Error(`Unknown agent ${value}. Use ${ALL_MODEL_AGENTS.join(', ')}.`);
 }
 
 function parseProtocols(value: string | undefined): ModelProtocol[] {
