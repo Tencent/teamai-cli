@@ -341,6 +341,8 @@ function trustOf(text: string | undefined): TrustFile {
   }
 }
 
+const TRUST_LOCK_WAIT = { attempts: 50, delayMs: 100 };
+
 async function readTrust(): Promise<TrustFile> {
   return trustOf(await fs.readFile(trustFile(), 'utf8').catch(() => undefined));
 }
@@ -395,7 +397,17 @@ export async function acceptToolCommand(
       + `It runs ${instance.command} as you, with your files, in place of ${instance.extends}. Review the file before you accept it.\nRun it? [y/N] `;
 
     if (/^y(es)?$/i.test((await ask(question))?.trim() ?? '')) {
-      await writeJsonAtomic(trustFile(), { accepted: [...trust.accepted.filter((entry) => entry.name !== instance.name), { name: instance.name, revision: instance.revision, acceptedAt: new Date().toISOString() }] });
+      // Read again under the lock: another step may have accepted another instance while this one asked. Loaded here,
+      // since update.js reaches config.js, which loads this module on every hook.
+      const { withFileLock } = await import('./update.js');
+
+      const recorded = await withFileLock(`${trustFile()}.lock`, TRUST_LOCK_WAIT, async () => {
+        const current = await readTrust();
+
+        await writeJsonAtomic(trustFile(), { accepted: [...current.accepted.filter((entry) => entry.name !== instance.name), { name: instance.name, revision: instance.revision, acceptedAt: new Date().toISOString() }] });
+      });
+
+      if (!recorded.held) log.warn(`Tool "${instance.name}" runs as you accepted it, but ${trustFile()} stayed locked by another teamai process, so the next run asks again.`);
 
       return { ok: true };
     }

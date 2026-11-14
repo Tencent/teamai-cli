@@ -189,6 +189,20 @@ describe('team tool instances', () => {
     expect(registry.toolOf('acme-claude')?.instance?.command).toBe('acme-claude-2');
   });
 
+  it('keeps both of two acceptances a person gives at once, so neither command asks again', async () => {
+    const { registry } = await load(teamRepo({
+      'tools/acme-claude.yaml': ACME_CLAUDE,
+      'tools/acme-codex.yaml': ACME_CLAUDE.replaceAll('claude', 'codex').replace(/env: \w+/, 'env: ACME_CODEX_HOME'),
+    }));
+    const { acceptToolCommand } = await import('../tool-instances.js');
+    const instances = ['acme-claude', 'acme-codex'].map((name) => registry.toolOf(name)?.instance).filter((instance) => instance !== undefined);
+
+    await Promise.all(instances.map((instance) => acceptToolCommand(instance, { ask: async () => 'y' })));
+
+    expect(instances).toHaveLength(2);
+    expect(await Promise.all(instances.map((instance) => acceptToolCommand(instance, { ask: undefined })))).toEqual([{ ok: true }, { ok: true }]);
+  });
+
   it('accepts an instance whose command is a bare name, looked up on PATH where the tool runs', async () => {
     const { registry, errors } = await load(teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE.replace('command: acme-claude', 'command: acme-claude-2.4') }));
 
