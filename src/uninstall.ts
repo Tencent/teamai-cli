@@ -119,6 +119,7 @@ import {
 interface UninstallOptions extends GlobalOptions {
   force?: boolean;
   agent?: string;
+  keepSharedHooks?: boolean;
 }
 
 interface RemovalPlan {
@@ -238,6 +239,7 @@ interface RemovalPlan {
   scope: Scope;
   /** Whether this removal takes the machine-wide adapters: a user-scope uninstall only. */
   globalAdapters: boolean;
+  keepSharedHooks: boolean;
   /** Machine-wide adapters a project uninstall keeps for other installs; `teamai hooks remove` takes them. */
   keptGlobal: string[];
   /** Skill, rule and agent copies git tracks: never deleted, only named (#915). */
@@ -1113,6 +1115,7 @@ async function buildRemovalPlan(
   teamConfig: TeamaiConfig,
   agentFilter?: string,
   siblingCheckouts = !agentFilter,
+  keepSharedHooks = false,
 ): Promise<RemovalPlan> {
   const baseDir = resolveBaseDir(localConfig);
   const teamaiHome = getDataHome(localConfig);
@@ -1312,7 +1315,7 @@ async function buildRemovalPlan(
   const { loadLocalAgentConfig } = await import('./local-agent.js');
   const httpAgent = !globalAdapters && await loadLocalAgentConfig({ dryRun: true, envFallback: false }) !== null;
   // Another install on this machine runs `tool` from HOME: the user scope, another workspace, or the HTTP agent, which may run any.
-  const othersRun = (tool: string): boolean => httpAgent || otherInstalls.some((other) => runsTool(other, tool));
+  const othersRun = (tool: string): boolean => keepSharedHooks || httpAgent || otherInstalls.some((other) => runsTool(other, tool));
   // A tool's machine-wide hooks go with the last install that runs the tool (#945, #1825). One tool's uninstall leaves the
   // project installed, so they stay.
   const takesMachineWide = (tool: string): boolean => globalAdapters || (agentFilter === undefined && !othersRun(tool));
@@ -1623,6 +1626,7 @@ async function buildRemovalPlan(
       : [],
     scope: localConfig.scope,
     globalAdapters,
+    keepSharedHooks,
     keptGlobal: [],
     keptTracked: [],
     keptUnjudged: [],
@@ -2199,7 +2203,9 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
     console.log('ℹ  Kept for other teamai installs on this machine (user scope, HTTP agent or other projects):');
 
     for (const file of plan.keptGlobal) console.log(`     ${file}`);
-    console.log('   If none of them uses these, cancel and run `teamai hooks remove` here first: it removes them.');
+    console.log(plan.keepSharedHooks
+      ? '   Kept as requested by --keep-shared-hooks.'
+      : '   If none of them uses these, cancel and run `teamai hooks remove` here first: it removes them.');
     console.log('');
   }
 
@@ -3397,7 +3403,7 @@ async function sweepCreatedLeftovers(plan: RemovalPlan, hooksLeft: ReadonlyArray
   // hook it could not remove and another checkout on this machine — which every
   // scope can see, not only the user scope that fills `keptForProjects` in the
   // plan (#1808 review).
-  if (!plan.includeShared || hooksLeft.length > 0) return;
+  if (!plan.includeShared || plan.keepSharedHooks || hooksLeft.length > 0) return;
 
   // Every other install that runs HOME's hooks, the user scope and the HTTP agent included: a
   // workspace uninstall leaves those hooks in place, and they call the wrapper.
@@ -3565,6 +3571,10 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
     log.warn('teamai configuration not found or invalid');
   }
 
+  if (opts.keepSharedHooks && (!teamConfig || localConfig?.scope !== 'project')) {
+    throw new Error('--keep-shared-hooks requires a workspace install. Run uninstall from that workspace.');
+  }
+
   if (localConfig && teamConfig) {
     // Full uninstall with discovery
     let agentKey: string | undefined = opts.agent;
@@ -3585,12 +3595,12 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
 
     // An index an older release left in the tree still owns Copilot's team hooks (#993).
     if (!opts.dryRun) await migrateLegacyManagedHooks(localConfig);
-    let plan = await buildRemovalPlan(localConfig, teamConfig, agentKey);
+    let plan = await buildRemovalPlan(localConfig, teamConfig, agentKey, !agentKey, opts.keepSharedHooks);
 
     // The other checkouts of this identity are touched only with the data they share:
     // a tool-only uninstall acts on this checkout unless it removes that data too.
     if (agentKey && plan.includeShared) {
-      const withSiblings = await buildRemovalPlan(localConfig, teamConfig, agentKey, true);
+      const withSiblings = await buildRemovalPlan(localConfig, teamConfig, agentKey, true, opts.keepSharedHooks);
 
       if (withSiblings.includeShared) plan = withSiblings;
     }
