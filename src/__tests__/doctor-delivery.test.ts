@@ -480,6 +480,27 @@ describe('doctor — skills delivered on disk', () => {
       expect(await check!.check()).toBe(true);
     });
 
+    it('guides publication of a kept docs mirror edit, but not a blocking directory (#1851)', async () => {
+      await writeTeamDoc('guide.md');
+      commitTeamRepo(repoPath, 'add guide');
+      const guide = path.join(homeDir, 'team-docs', 'guide.md');
+      const hint = 'teamai push --file "<mirror-file>" --path "docs/<relative-path>"';
+      await fse.outputFile(guide, '# doc\n');
+      expect((await docsCheck())?.fix).not.toContain(hint);
+
+      const edited = '# Local edit\n';
+      await fse.writeFile(guide, edited);
+      const check = await docsCheck();
+      expect(check?.fix).toContain(`Kept ${guide}`);
+      expect(check?.fix).toContain('docs/guide.md');
+      expect(check?.fix).toContain(hint);
+      expect(await fse.readFile(guide, 'utf8')).toBe(edited);
+
+      await fse.remove(guide);
+      await fse.outputFile(path.join(guide, 'notes.md'), '# Not a file edit\n');
+      expect((await docsCheck())?.fix).not.toContain(hint);
+    });
+
     it('fails and names what is missing from the bundle', async () => {
       await writeTeamDoc('guide.md');
       await writeTeamDoc('api', 'reference.md');
