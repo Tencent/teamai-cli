@@ -123,8 +123,11 @@ describe('doctor — skills delivered on disk', () => {
   it('fails when a file blocks a tool skills directory instead of silently skipping its delivery', async () => {
     teamConfig.toolPaths = { hermes: { skills: '.hermes/skills' } };
     localConfig.enabledAgents = ['hermes'];
-    await fse.ensureDir(path.join(homeDir, '.hermes'));
-    const blocked = path.join(homeDir, '.hermes', 'skills');
+    const hermes = path.join(homeDir, '.hermes');
+    vi.stubEnv('HERMES_HOME', hermes);
+    vi.stubEnv('HERMES_DATA_DIR_SUFFIX', undefined);
+    await fse.ensureDir(hermes);
+    const blocked = path.join(hermes, 'skills');
     await fse.writeFile(blocked, 'member file');
     const ctx = await resolveDoctorContext();
     if (!ctx) throw new Error('expected a resolved doctor context');
@@ -885,11 +888,16 @@ describe('doctor — where a tool takes skills', () => {
   });
 
   it('leaves a recorded Hermes home alone when only active_profile names another', async () => {
-    const recorded = path.join(tempDir, 'recorded', 'hermes');
-    await fse.ensureDir(recorded);
+    const appData = path.join(homeDir, 'local-app-data');
+    vi.stubEnv('LOCALAPPDATA', appData);
+    vi.stubEnv('HERMES_HOME', undefined);
+    vi.stubEnv('HERMES_DATA_DIR_SUFFIX', undefined);
+    // Windows reports the native base as a home selector; match that base so
+    // the only difference from the recorded home is the active profile.
+    const recorded = process.platform === 'win32' ? path.join(appData, 'hermes') : path.join(homeDir, '.hermes');
+    await fse.ensureDir(path.join(recorded, 'profiles', 'work'));
     await saveToolHomes({ hermes: recorded });
-    await fse.ensureDir(path.join(homeDir, '.hermes', 'profiles', 'work'));
-    await fse.writeFile(path.join(homeDir, '.hermes', 'active_profile'), 'work\n');
+    await fse.writeFile(path.join(recorded, 'active_profile'), 'work\n');
 
     expect((await failing()).map((c) => c.name).filter((name) => name.startsWith('hermes home'))).toEqual([]);
   });

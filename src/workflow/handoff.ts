@@ -1281,6 +1281,21 @@ export async function definitionsOf(config: LocalConfig, snapshot: RunSnapshot):
   return ok(definitionsIn(at));
 }
 
+function keepOwnedProgress(local: RunState | 'missing', snapshot: RunSnapshot) {
+  if (local === 'missing') return { value: ok(false) };
+
+  if (local.createdAt !== snapshot.createdAt) return { value: refused(mismatch(snapshot.run, local, snapshot)) };
+  const seen = acknowledged(local, snapshot);
+
+  if (seen > snapshot.stateRevision) return { value: refused(stateConflict(snapshot.run, snapshot.stateRevision, seen)) };
+
+  if (seen < snapshot.stateRevision) return { value: ok(false) };
+
+  if (local.publication?.pending !== snapshot.write) return { value: ok(true) };
+
+  return { value: ok(true), write: published(local, { stateRevision: seen }) };
+}
+
 /**
  * Origin shows this install as the owner. A local run at that state revision, or whose pending write origin shows,
  * keeps its progress; a missing or older one is replaced by the published state.
@@ -1293,20 +1308,7 @@ async function settleOwned(
   snapshot: RunSnapshot,
   secrets: Record<string, string>,
 ): Promise<Result<ClaimReceipt>> {
-  const kept = await updateRun(config, runId, secrets, async (local): Promise<{ value: Result<boolean>; write?: RunState }> => {
-    if (local === 'missing') return { value: ok(false) };
-
-    if (local.createdAt !== snapshot.createdAt) return { value: refused(mismatch(runId, local, snapshot)) };
-    const seen = acknowledged(local, snapshot);
-
-    if (seen > snapshot.stateRevision) return { value: refused(stateConflict(runId, snapshot.stateRevision, seen)) };
-
-    if (seen < snapshot.stateRevision) return { value: ok(false) };
-
-    if (local.publication?.pending !== snapshot.write) return { value: ok(true) };
-
-    return { value: ok(true), write: published(local, { stateRevision: seen }) };
-  });
+  const kept = await updateRun(config, runId, secrets, async (local) => keepOwnedProgress(local, snapshot));
 
   if (kept.status === 'busy') return refused(runBusy(runId));
 
@@ -1339,11 +1341,16 @@ async function install(
   // The run reads its folders from this machine's data home from here on, as the one that started it did.
   await Promise.all([...definitions.folder ? [definitions.folder] : [], ...Object.values(definitions.folders)].map((folder) => WorkflowFolder.pin(config, folder)));
 
-  const installed = await updateRun(config, runId, secrets, async (local) => {
-    if (local !== 'missing' && local.createdAt !== snapshot.createdAt) return { value: refused(mismatch(runId, local, snapshot)) };
+  const installed = await updateRun<Result<ClaimReceipt['ownership']>>(config, runId, secrets, async (local) => {
+    // Another recovery may have installed this snapshot and advanced while its folders were pinned.
+    const kept = keepOwnedProgress(local, snapshot);
+
+    if (!kept.value.ok) return { value: kept.value };
+
+    if (kept.value.value) return { value: ok('already_owned'), write: kept.write };
 
     // The flags this install drove the run with stay its own, so a run it takes back resumes as it did here.
-    return { value: ok(undefined), write: local !== 'missing' && local.driveOptions ? { ...run, driveOptions: local.driveOptions } : run };
+    return { value: ok('claimed'), write: local !== 'missing' && local.driveOptions ? { ...run, driveOptions: local.driveOptions } : run };
   });
 
   if (installed.status === 'busy') return refused(runBusy(runId));
@@ -1352,5 +1359,5 @@ async function install(
 
   if (!installed.value.ok) return installed.value;
 
-  return ok({ run: runId, ownership: 'claimed', owner: snapshot.owner, stateRevision: snapshot.stateRevision });
+  return ok({ run: runId, ownership: installed.value.value, owner: snapshot.owner, stateRevision: snapshot.stateRevision });
 }
