@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import { ruleHarness } from '../test/harness.ts';
 import { isProductionSource } from '../utils.js';
-import { SHIPPED_ONLY } from './shipped-tool-ids.js';
+import { BASE_ID_COMPARISONS, SHIPPED_ONLY } from './shipped-tool-ids.js';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -39,10 +39,31 @@ export const a = isToolId('a');`, (output) => {
 rule.valid('allows a file its SHIPPED_ONLY count', `import { isToolId } from './tool-registry.js';
 export const a = isToolId('a');
 export const b = isToolId('b');
-export const c = isToolId('c');`, { filename: 'src/locate.ts' });
+export const c = isToolId('c');
+export const shared = (tool: string) => tool === 'codex';`, { filename: 'src/locate.ts' });
+
+rule.invalid('rejects a comparison with Codex\'s id as a string', `export const shared = (tool: string) => tool === 'codex';`, (output) => {
+  expect(output).toContain('is false for an instance of that tool');
+}, { filename: 'src/new-area/reader.ts' });
+
+rule.invalid('rejects a comparison with Claude Code\'s id by name', `import { CLAUDE_TOOL_ID } from './types.js';
+export const reads = (tool: string) => tool !== CLAUDE_TOOL_ID;`, undefined, { filename: 'src/new-area/reader.ts' });
+
+rule.invalid('rejects a switch case on Codex\'s id', `export const home = (tool: string) => { switch (tool) { case 'codex': return '.codex'; default: return undefined; } };`, undefined, { filename: 'src/new-area/reader.ts' });
+
+rule.invalid('rejects one comparison more than a file\'s BASE_ID_COMPARISONS count', `export const a = (tool: string) => tool === 'codex' || tool === 'claude';`, undefined, { filename: 'src/workflow/step-model.ts' });
+
+rule.invalid('rejects a BASE_ID_COMPARISONS count above what the file holds', 'export const none = 1;', (output) => {
+  expect(output).toContain('fewer times than BASE_ID_COMPARISONS allows');
+}, { filename: 'src/workflow/step-model.ts' });
+
+rule.valid('allows a file its BASE_ID_COMPARISONS count', `export const a = (tool: string) => tool === 'codex';`, { filename: 'src/workflow/step-model.ts' });
+
+rule.valid('allows a comparison of the tool an instance extends, and of another tool\'s id', `import { baseToolOf } from './tool-registry.js';
+export const a = (tool: string) => baseToolOf(tool) === 'codex' || tool === 'cursor';`, { filename: 'src/new-area/reader.ts' });
 
 rule.valid('allows a name resolved through toolOf', `import { baseDescriptorOf, toolOf } from './tool-registry.js';
-export const shell = (tool: string) => toolOf(tool) === undefined ? undefined : baseDescriptorOf(tool)?.hooks.shell;`);
+export const shell = (tool: string) => toolOf(tool) === undefined ? undefined : baseDescriptorOf(tool)?.hooks.shell;`, { filename: 'src/new-area/reader.ts' });
 
 rule.valid('allows the registry that defines them', `export const isToolId = (value: string) => value in TOOLS;
 export const ids = Object.keys(TOOLS).filter(isToolId);`, { filename: 'src/tool-registry.ts' });
@@ -65,5 +86,10 @@ describe('in this checkout', () => {
 
     expect(entries.filter((file) => !fs.existsSync(path.join(REPO, file)) || !isProductionSource(file))).toEqual([]);
     expect([...SHIPPED_ONLY.values()].every(({ count }) => count > 0)).toBe(true);
+  });
+
+  it('names in BASE_ID_COMPARISONS only production files that exist', () => {
+    expect([...BASE_ID_COMPARISONS.keys()].filter((file) => !fs.existsSync(path.join(REPO, file)) || !isProductionSource(file))).toEqual([]);
+    expect([...BASE_ID_COMPARISONS.values()].every((count) => count > 0)).toBe(true);
   });
 });

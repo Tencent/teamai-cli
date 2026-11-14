@@ -1,7 +1,7 @@
 /** @import { ESTree } from '@oxlint/plugins' */
 import { defineRule } from '@oxlint/plugins';
 
-import { isProductionSource, repositoryPath, scopedFiles } from '../utils.js';
+import { isProductionSource, repositoryPath, scopedFiles, stringLiteralValue } from '../utils.js';
 
 /** The two predicates that hold only for a tool teamai ships, never for a tool instance a team or member defines. */
 const SHIPPED_ONLY_PREDICATES = new Set(['isToolId', 'isAgentToolId']);
@@ -41,6 +41,73 @@ export const SHIPPED_ONLY = new Map(Object.entries({
 
 scopedFiles([...SHIPPED_ONLY.keys()]);
 
+/** The tools an instance extends (`INSTANCE_BASES`), and the names their ids go by in source. */
+const BASE_IDS = new Set(['claude', 'codex']);
+const BASE_ID_NAMES = new Set(['CLAUDE_TOOL_ID', 'CODEX_TOOL_ID', 'CLAUDE_TOOL', 'CODEX_TOOL']);
+
+/**
+ * Files that compare a tool name with Claude Code's or Codex's id (`tool === 'codex'`, `case CODEX_TOOL_ID:`), by count,
+ * from before the rule read that form. None is reviewed yet: each may leave out an instance of the tool. A comparison
+ * that must hold for an instance too resolves the name with baseToolOf; one that must hold only for the shipped tool
+ * raises the file's count with a comment that says why. A count above what the file holds fails until it is lowered.
+ */
+export const BASE_ID_COMPARISONS = new Map(Object.entries({
+  'packages/tool-core/src/formats/codex.ts': 1,
+  'packages/tool-core/src/stdout.ts': 3,
+  'src/autocompact-reconcile.ts': 6,
+  'src/builtin-hooks.ts': 1,
+  'src/claude-hook-host.ts': 1,
+  'src/coauthor-reconcile.ts': 5,
+  'src/dashboard-collector.ts': 2,
+  'src/doctor-delivery.ts': 2,
+  'src/hook-fast-path.ts': 1,
+  'src/hooks.ts': 36,
+  'src/index.ts': 1,
+  'src/init.ts': 1,
+  'src/local-agent.ts': 8,
+  'src/locate.ts': 1,
+  'src/mcp-reconcile.ts': 10,
+  'src/models/aliases.ts': 1,
+  'src/models/profile.ts': 2,
+  'src/models/switch.ts': 18,
+  'src/pkg/commands.ts': 1,
+  'src/pull.ts': 3,
+  'src/resources/agent-format.ts': 7,
+  'src/resources/mcp-format.ts': 3,
+  'src/resources/skills.ts': 1,
+  'src/source.ts': 1,
+  'src/uninstall.ts': 3,
+  'src/utils/tool-names.ts': 1,
+  'src/workflow/discovery/workflow-skills.ts': 1,
+  'src/workflow/drivers/local/local-driver.ts': 4,
+  'src/workflow/drivers/local/local-tool-adapter.ts': 3,
+  'src/workflow/step-model.ts': 1,
+}));
+
+scopedFiles([...BASE_ID_COMPARISONS.keys()]);
+
+/**
+ * Whether `node` is Claude Code's or Codex's tool id, as a string or by one of the names it goes by.
+ * @param {ESTree.Node | null | undefined} node
+ * @returns {boolean}
+ */
+function isBaseId(node) {
+  const literal = stringLiteralValue(node);
+
+  if (literal !== undefined) return BASE_IDS.has(literal);
+
+  return node?.type === 'Identifier' && BASE_ID_NAMES.has(node.name);
+}
+
+/**
+ * Whether `node` is a call of `baseToolOf`, which resolves an instance to the tool it extends.
+ * @param {ESTree.Node} node
+ * @returns {boolean}
+ */
+function isBaseOf(node) {
+  return node.type === 'CallExpression' && node.callee.type === 'Identifier' && node.callee.name === 'baseToolOf';
+}
+
 export default defineRule({
   meta: {
     type: 'problem',
@@ -51,14 +118,35 @@ export default defineRule({
 
     if (!isProductionSource(relative) || DEFINITIONS.has(relative)) return {};
     const allowed = SHIPPED_ONLY.get(relative)?.count ?? 0;
+    const comparable = BASE_ID_COMPARISONS.get(relative) ?? 0;
     /** @type {Array<{ node: ESTree.Node, name: string }>} */
     const references = [];
+    /** @type {ESTree.Node[]} */
+    const comparisons = [];
 
     return {
       Identifier(node) {
         if (SHIPPED_ONLY_PREDICATES.has(node.name) && node.parent?.type !== 'ImportSpecifier') references.push({ node, name: node.name });
       },
+      BinaryExpression(node) {
+        if (!['===', '!==', '==', '!='].includes(node.operator) || isBaseOf(node.left) || isBaseOf(node.right)) return;
+
+        if (isBaseId(node.left) || isBaseId(node.right)) comparisons.push(node);
+      },
+      SwitchCase(node) {
+        if (isBaseId(node.test)) comparisons.push(node);
+      },
       'Program:exit'(node) {
+        if (comparisons.length > comparable) {
+          for (const comparison of comparisons) {
+            context.report({ node: comparison, message: 'A comparison with Claude Code\'s or Codex\'s tool id is false for an instance of that tool, so it gets none of what the comparison decides. Compare baseToolOf(tool); a check that must hold only for the shipped tool raises the file\'s count in BASE_ID_COMPARISONS in oxlint-plugin-teamai/rules/shipped-tool-ids.js, with its reason.' });
+          }
+        }
+
+        if (comparisons.length < comparable) {
+          context.report({ node, message: `${relative} compares a tool name with Claude Code's or Codex's id fewer times than BASE_ID_COMPARISONS allows: lower or remove its entry in oxlint-plugin-teamai/rules/shipped-tool-ids.js.` });
+        }
+
         if (references.length > allowed) {
           for (const { node: reference, name } of references) {
             context.report({ node: reference, message: `${name} is false for a tool instance, so it gets none of the facts of the tool it extends. Resolve the name with toolOf, baseToolOf, baseDescriptorOf, agentFormatOf or toolHomeOf; a check that must hold only for a shipped tool takes a SHIPPED_ONLY entry in oxlint-plugin-teamai/rules/shipped-tool-ids.js, with its reason.` });
