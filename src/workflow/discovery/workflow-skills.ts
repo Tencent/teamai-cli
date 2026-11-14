@@ -6,7 +6,7 @@ import type { DeliveryRecorder } from '../../git-exclude-delivered.js';
 import { SHARED_AGENT_SKILLS_PATH } from '../../locate.js';
 import { keepsTrackedCopy } from '../../resources/delivered-copies.js';
 import {
-  allowsSkillDirectory, CODEX_TOOL, describeSkippedSkillDirectory, findSkillDirectoryBlock, skillTargetsFor,
+  allowsSkillDirectory, describeSkippedSkillDirectory, findSkillDirectoryBlock, readsCodexSharedSkills, skillTargetsFor,
 } from '../../resources/skills.js';
 import { isAgentExcluded, scopedToolPaths, type LocalConfig, type TeamaiConfig } from '../../types.js';
 import { pathExists, readFileSafe, writeFileAtomic } from '../../utils/fs.js';
@@ -111,7 +111,7 @@ async function plan(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise
     const ownsShared = async (dir: string): Promise<boolean> => await allowsSkillDirectory(guardBase, dir)
       && (!await pathExists(dir) || (await generatedSkillAt(dir)).kind === 'ours');
 
-    for (const dir of [target.skillsDir, ...tool === CODEX_TOOL ? [path.join(guardBase, SHARED_AGENT_SKILLS_PATH)] : []]) {
+    for (const dir of [target.skillsDir, ...readsCodexSharedSkills(tool) ? [path.join(guardBase, SHARED_AGENT_SKILLS_PATH)] : []]) {
       if (!roots.has(dir)) roots.set(dir, { dir, guardBase });
     }
 
