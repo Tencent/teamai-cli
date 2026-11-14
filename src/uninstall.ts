@@ -3500,13 +3500,13 @@ const FOLDER_FIELDS: ReadonlySet<string> = new Set(['skills', 'rules', 'agents']
  * The folders under `baseDir` the tool instances among `tools` take teamai's resources in, from their resolved
  * `toolPaths`: each folder a path in the instance's home there names (`.acme-claude`), and those above it up to that home.
  * Init makes them before anything is in them. A path outside that home, and every path of an instance with no home of its
- * own or one named like a shipped tool, is the shipped tool's, whose folders stay.
+ * own, is the shipped tool's, whose folders stay.
  */
 function instanceFoldersOf(tools: readonly string[], toolPaths: ReturnType<typeof scopedToolPaths>, baseDir: string): string[] {
   return [...new Set(tools.flatMap((tool) => {
     const instance = toolOf(tool)?.instance;
 
-    if (instance?.home === undefined || instance.name === instance.extends) return [];
+    if (instance?.home === undefined) return [];
     const home = instance.home.dir.split('/');
     const paths = toolPaths[tool] ?? {};
 

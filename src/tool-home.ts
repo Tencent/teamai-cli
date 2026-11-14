@@ -296,7 +296,7 @@ export function toolHomeOf(name: string, host: Host = realHost()): { readonly ro
   if (resolved === undefined) return undefined;
   const home = resolved.instance?.home;
 
-  if (home !== undefined && resolved.instance?.name !== resolved.base) return { root: home.dir, dir: instanceHomeDir({ name, home }, host) };
+  if (home !== undefined) return { root: home.dir, dir: instanceHomeDir({ name, home }, host) };
 
   return { root: homeRoot(resolved.base), dir: toolHome(resolved.base, host) };
 }

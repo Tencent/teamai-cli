@@ -91,6 +91,19 @@ describe('team tool instances', () => {
     expect(registry.sessionPlatformsOf('claude')).toEqual(['claude-code']);
   });
 
+  // An adjustment changes where teamai writes for the shipped tool; what runs it and where it lives are an instance's.
+  it.each([
+    ['codex', 'command: acme-codex\n', 'command'],
+    ['claude', 'home: { dir: .work-claude }\n', 'home'],
+  ])('refuses a tools/%s.yaml that sets more than paths (%#), naming the file and the instance to write instead', async (tool, extra, key) => {
+    const { config, registry, errors } = await load(teamRepo({ [`tools/${tool}.yaml`]: `schemaVersion: v1alpha1\nname: ${tool}\nextends: ${tool}\npaths: { skills: .${tool}/team-skills }\n${extra}` }));
+
+    expect(errors).toEqual([expect.stringContaining(`${path.join('tools', `${tool}.yaml`)} is not valid: it sets ${key}, and a file named like the tool it adjusts sets only paths; `
+      + `to run another command or keep another home, write an instance of ${tool} instead, such as name: acme-${tool}, extends: ${tool} in tools/acme-${tool}.yaml. Fix the file; until then teamai does not use it.`)]);
+    expect(registry.toolOf(tool)?.instance).toBeUndefined();
+    expect(config?.toolPaths[tool]?.skills).not.toBe(`.${tool}/team-skills`);
+  });
+
   it.each([
     ['a format key', 'sessions: pi\n', /sets sessions, and an instance sets only command, home and paths/],
     ['another key', 'launch: { args: [-p] }\n', /sets launch, and an instance sets only command, home and paths/],

@@ -259,7 +259,7 @@ export function isCodexTrustGatedTool(tool: string): boolean {
 function codexTrustAt(tool: string, codexHome: string, { justAccepted = false } = {}): CodexAt | { kind: 'unavailable'; reason: string } {
   const instance = toolOf(tool)?.instance;
 
-  if (instance === undefined || instance.name === instance.extends) return { codexHome };
+  if (instance === undefined) return { codexHome };
   const home = instance.home === undefined ? codexHome : toolHomeOf(tool)?.dir ?? codexHome;
 
   if (instance.command === undefined) return { codexHome: home };

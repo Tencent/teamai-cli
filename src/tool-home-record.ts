@@ -31,7 +31,7 @@ const PULL_RECORDS: RecordRule = { replacesRecord: false, needsExistingHome: tru
  * instances in use, since it can do neither and a record it wrote would pin the refusal in every shell.
  */
 function envHomes(host: Host, by: 'init' | 'pull'): Array<{ readonly tool: string; readonly moved: EnvToolHome | null; readonly variables: readonly string[]; readonly unmoved?: string }> {
-  const instances = toolInstancesFor(by === 'init' ? 'guard' : 'use').flatMap(({ name, extends: base, home }) => home?.env === undefined || name === base ? [] : [{ tool: name, moved: envInstanceHome(home, host), variables: [home.env], unmoved: host.path.join(host.home, ...home.dir.split('/')) }]);
+  const instances = toolInstancesFor(by === 'init' ? 'guard' : 'use').flatMap(({ name, home }) => home?.env === undefined ? [] : [{ tool: name, moved: envInstanceHome(home, host), variables: [home.env], unmoved: host.path.join(host.home, ...home.dir.split('/')) }]);
 
   return [...TOOL_ORDER.map((tool) => ({ tool, moved: envToolHome(tool, host), variables: homeVariables(tool) })), ...instances];
 }

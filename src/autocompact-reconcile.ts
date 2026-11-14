@@ -146,7 +146,7 @@ async function resolveTargets(localConfig: LocalConfig): Promise<Target[]> {
   const ownHomes = toolInstancesFor('use').flatMap(({ name, extends: base, home: own }) => {
     const home = toolHomeOf(name)?.dir;
 
-    return own === undefined || name === base || home === undefined ? [] : [{ tool: name, base, home }];
+    return own === undefined || home === undefined ? [] : [{ tool: name, base, home }];
   });
 
   // A root the member recorded at init (CODEX_HOME, CLAUDE_CONFIG_DIR) wins,

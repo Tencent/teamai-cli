@@ -628,7 +628,7 @@ function entrySource(aliases: ModelAliases & { ok: true }, alias: string, tool: 
  */
 function switchReaching(aliases: ModelAliases & { ok: true }, tool: string, format: ToolName): LiveModelSwitch | undefined {
   const instance = toolOf(tool)?.instance;
-  const ownHome = instance !== undefined && instance.name !== instance.extends && instance.home !== undefined;
+  const ownHome = instance?.home !== undefined;
 
   return ownHome ? undefined : aliases.switches[format];
 }

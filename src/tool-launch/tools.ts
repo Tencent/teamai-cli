@@ -144,7 +144,7 @@ export function toolCommandEnv(name: string, home: Extract<ToolCommandHome, { ki
 export function toolCommandEnv(name: string, home: Extract<ToolCommandHome, { kind: 'delivered' }>): DeliveredToolCommandEnv;
 export function toolCommandEnv(name: string, home: ToolCommandHome): ToolCommandEnv | DeliveredToolCommandEnv {
   const resolved = toolOf(name);
-  const instance = resolved?.instance?.name === resolved?.instance?.extends ? undefined : resolved?.instance;
+  const instance = resolved?.instance;
   const variable = resolved === undefined ? undefined : homeVariableOf(resolved.base);
 
   switch (home.kind) {
