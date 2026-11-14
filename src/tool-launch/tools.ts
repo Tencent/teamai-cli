@@ -92,17 +92,23 @@ export function launchTargetOf(name: string): LaunchTarget | undefined {
 }
 
 /**
- * The variable that points `target`'s tool at an instance's own home, which teamai delivers to: a build run with only
- * `home` set, such as the shipped command, reads the home of the tool it extends otherwise. The variable is the one
- * that moves that tool's root (`RELOCATABLE_TOOLS`), as the Codex trust gate sets it. None for a shipped tool, an
- * adjustment, an instance that names its own variable, which the member's environment sets as the build reads it, or
- * one whose `paths` hang off another directory too.
+ * The variable that points `target`'s build at an instance's own home, which teamai delivers to. For an instance that
+ * names its own variable, that one, at the home teamai resolved for it: a shell without it leaves it unset while teamai
+ * uses the recorded home. For one with only `home` set, the variable that moves the root of the tool it extends
+ * (`RELOCATABLE_TOOLS`), as the Codex trust gate sets it, since a build such as the shipped command reads that tool's
+ * home otherwise. None for a shipped tool, an adjustment, or one whose `paths` hang off another directory too.
  */
 export function launchHomeEnv(target: LaunchTarget): Record<string, string> {
   const { instance } = target;
   const variable = RELOCATABLE_TOOLS[target.tool]?.envVar;
 
-  if (instance?.home === undefined || instance.home.env !== undefined || instance.name === instance.extends || variable === undefined) return {};
+  if (instance?.home?.env !== undefined && instance.name !== instance.extends) {
+    const own = toolHomeOf(target.name);
+
+    return own === undefined ? {} : { [instance.home.env]: own.dir };
+  }
+
+  if (instance?.home === undefined || instance.name === instance.extends || variable === undefined) return {};
   const homeDir = instance.home.dir;
 
   // teamai writes where `paths` say: a build pointed at the home would read none of what lies outside it.

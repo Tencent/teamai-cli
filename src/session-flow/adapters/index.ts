@@ -5,10 +5,10 @@
  */
 
 import { BUILT_IN_TOOLS } from '@teamai/tool-definitions';
-import type { LocalConfig } from '../../types.js';
+import { RELOCATABLE_TOOLS, type LocalConfig } from '../../types.js';
 import path from 'node:path';
 import type { AgentAdapter } from '@teamai/tool-core/sessions/base';
-import { HOST_PROCESSES } from '@teamai/shared/exec';
+import { HOST_PROCESSES, type Processes } from '@teamai/shared/exec';
 import type { ToolFamily } from '@teamai/tool-core/family';
 import { locatesOwnStore, type SessionHost, type StoredPlatformDefinition } from '@teamai/tool-core/sessions/platform';
 import { executablesOf } from '../../tool-launch/tools.js';
@@ -97,12 +97,37 @@ function instanceStore(platform: string) {
  */
 function instanceSessionHost(instance: ResolvedToolInstance): SessionHost {
   return {
-    processes: SESSION_HOST.processes,
+    processes: withOwnHomeVariable(instance),
     executablesOf: (tool) => {
       const command = tool === instance.extends ? acceptedCommandOf(instance) : undefined;
 
       return command === undefined ? executablesOf(tool) : [command, ...executablesOf(tool)];
     },
+  };
+}
+
+/**
+ * The processes an instance's adapter starts: where it points the home variable of the tool the instance extends at
+ * the store, the instance's own variable (`home.env`) too, since its build reads only that one.
+ */
+function withOwnHomeVariable(instance: ResolvedToolInstance): Processes {
+  const own = instance.home?.env;
+  const base = RELOCATABLE_TOOLS[instance.extends]?.envVar;
+  const processes = SESSION_HOST.processes;
+
+  if (own === undefined || base === undefined) return processes;
+
+  const follow = <O extends { env?: NodeJS.ProcessEnv }>(options: O): O => {
+    const home = options.env?.[base];
+
+    return home === undefined ? options : { ...options, env: { ...options.env, [own]: home } };
+  };
+
+  return {
+    ...processes,
+    exec: (command, args, options) => processes.exec(command, args, options && follow(options)),
+    spawn: (executable, args, options) => processes.spawn(executable, args, follow(options)),
+    spawnSync: (executable, args, options) => processes.spawnSync(executable, args, follow(options)),
   };
 }
 

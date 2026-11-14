@@ -30,6 +30,7 @@ import { log } from '../utils/logger.js';
 import { CODEX_TOOL_ID } from '../types.js';
 import type { HookDef, LocalConfig, TeamaiConfig } from '../types.js';
 import { fakeCodexVersionRuns, installFakeCodex, readFakeCodexState, writeFakeCodexOptions } from './helpers/fake-codex.js';
+import { saveToolHomes } from '../tool-home.js';
 
 let home: string;
 let repo: string;
@@ -499,9 +500,11 @@ describe('Codex hook trust — an instance', () => {
   const ACME_CODEX = 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\ncommand: acme-codex\nhome: { dir: .acme-codex }\n';
 
   /** The team config with `acme-codex`, a member's own instance or the team's, and a fake Codex on PATH as `acme-codex` beside the shipped one. */
-  async function withInstance(source: 'personal' | 'team', { moved = false, keepsCodexHome = false }: { moved?: boolean; keepsCodexHome?: boolean } = {}): Promise<{ config: TeamaiConfig; acmeHome: string; acmeBuild: string }> {
+  async function withInstance(source: 'personal' | 'team', { moved = false, keepsCodexHome = false, recorded = false }: { moved?: boolean; keepsCodexHome?: boolean; recorded?: boolean } = {}): Promise<{ config: TeamaiConfig; acmeHome: string; acmeBuild: string }> {
     const acmeBin = installFakeCodex();
     for (const name of ['codex', 'codex.cmd']) await fse.move(path.join(acmeBin, name), path.join(acmeBin, `acme-${name}`));
+    // A build that, as the team's does, reads its home from its own variable only, never from CODEX_HOME.
+    if (recorded) await fse.writeFile(path.join(acmeBin, 'acme-codex'), `#!/bin/sh\nCODEX_HOME="\${ACME_CODEX_HOME:-$HOME/.acme-codex}" exec ${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(acmeBin, 'fake-codex.cjs'))} "$@"\n`, { mode: 0o755 });
     vi.stubEnv('PATH', `${acmeBin}${path.delimiter}${process.env.PATH ?? ''}`);
     onTestFinished(() => fse.remove(acmeBin));
     await fse.outputFile(path.join(repo, 'teamai.yaml'), 'team: acme\nrepo: acme/team\n');
@@ -512,7 +515,9 @@ describe('Codex hook trust — an instance', () => {
     await fse.outputFile(source === 'team' ? path.join(repo, 'tools', 'acme-codex.yaml') : path.join(home, '.teamai', 'tools', 'acme-codex.yaml'), text);
     const acmeHome = moved ? path.join(home, 'acme-moved') : path.join(home, keepsCodexHome ? '.codex-work' : '.acme-codex');
 
-    if (moved) vi.stubEnv('ACME_CODEX_HOME', acmeHome);
+    // A recorded home is the one an earlier init or pull saw the variable name, in a shell that set it; this one does not.
+    if (moved && recorded) await saveToolHomes({ 'acme-codex': acmeHome });
+    else if (moved) vi.stubEnv('ACME_CODEX_HOME', acmeHome);
     await fse.ensureDir(acmeHome);
     const { loadTeamConfig } = await import('../config.js');
     const config = await loadTeamConfig(repo);
@@ -548,6 +553,21 @@ describe('Codex hook trust — an instance', () => {
     // Doctor's check that the instance's session hooks carry the team's instructions reads the same file.
     const { channelReadiness } = await import('../instruction-targets.js');
     expect((await channelReadiness('acme-codex', 'codex-hooks', { teamConfig: config, localConfig: local })).ready).toBe(true);
+  });
+
+  it.skipIf(process.platform === 'win32')('trusts through its own command in the home recorded for its variable, from a shell without the variable', async () => {
+    const { config, acmeHome, acmeBuild } = await withInstance('personal', { moved: true, recorded: true });
+    await writeYaml(LINT_HOOK);
+    const local = userConfig({ enabledAgents: ['acme-codex'] });
+
+    await reconcileTeamHooksForConfig(config, local);
+    const trust = await trustCodexForScope(config, local);
+
+    const entries = await codexEntries(path.join(acmeHome, 'hooks.json'));
+    expect(trust).toEqual({ kind: 'trusted', hooks: entries.length });
+    expect(trustedKeys(acmeHome).sort()).toEqual(entries.map((e) => e.key).sort());
+    expect(new Set(readFakeCodexState(acmeHome).calls.map((c) => c.codex))).toEqual(new Set([acmeBuild]));
+    expect(await fse.pathExists(path.join(home, '.acme-codex'))).toBe(false);
   });
 
   it('trusts the hooks of an instance that keeps the home of Codex in the Codex home the member recorded', async () => {

@@ -56,6 +56,8 @@ export interface CodexAt {
   codexHome: string;
   /** A Codex instance's own accepted command, which hashes the hooks as that build does. */
   commands?: readonly string[];
+  /** The variable a Codex instance's own build reads its home from (`home.env`), set to `codexHome` beside `CODEX_HOME`. */
+  homeVariable?: string;
 }
 
 export interface CodexHookTrustRequest extends CodexAt {
@@ -241,7 +243,7 @@ async function compareCodexBuilds(
 
   const compared = await Promise.all(versions.others.map(async (other) => ({
     codex: { path: other.path, version: other.version },
-    theirs: await withCodexBuild(req.codexHome, other.command, async (server) => hashes(await listHooks(server, req.cwd))),
+    theirs: await withCodexBuild({ codexHome: req.codexHome, command: other.command }, async (server) => hashes(await listHooks(server, req.cwd))),
   })));
 
   const others = compared.flatMap(({ codex, theirs }) =>
@@ -293,9 +295,13 @@ class AppServerError extends Error {
   }
 }
 
-async function openAppServer(codexHome: string, command: string): Promise<AppServer> {
+async function openAppServer(codexHome: string, command: string, homeVariable: string | undefined): Promise<AppServer> {
+  const env: NodeJS.ProcessEnv = { ...process.env, [CODEX_HOME_VARIABLE]: codexHome };
+
+  if (homeVariable !== undefined) env[homeVariable] = codexHome;
+
   const child = crossSpawn(command, ['app-server'], {
-    env: { ...process.env, [CODEX_HOME_VARIABLE]: codexHome },
+    env,
     stdio: ['pipe', 'pipe', 'ignore'],
     windowsHide: true,
   });
@@ -397,7 +403,7 @@ async function openAppServer(codexHome: string, command: string): Promise<AppSer
 type AppServerFailure = { kind: 'unavailable'; reason: string } | { kind: 'failed'; reason: string };
 
 async function withAppServer<T>(
-  { codexHome, commands }: CodexAt,
+  { codexHome, commands, homeVariable }: CodexAt,
   run: (server: AppServer, build: ResolvedCodexBuild) => Promise<T>,
 ): Promise<T | AppServerFailure> {
   const build = await resolveCodexBuild(commands);
@@ -406,18 +412,17 @@ async function withAppServer<T>(
     return { kind: 'unavailable', reason: commands === undefined ? 'codex is not on PATH and no Codex desktop app is installed' : `${commands.join(', ') || 'no command'} is not on PATH` };
   }
 
-  return withCodexBuild(codexHome, build.command, (server) => run(server, build));
+  return withCodexBuild({ codexHome, command: build.command, homeVariable }, (server) => run(server, build));
 }
 
 async function withCodexBuild<T>(
-  codexHome: string,
-  command: string,
+  { codexHome, command, homeVariable }: { codexHome: string; command: string; homeVariable?: string },
   run: (server: AppServer) => Promise<T>,
 ): Promise<T | AppServerFailure> {
   let server: AppServer | null = null;
 
   try {
-    server = await openAppServer(codexHome, command);
+    server = await openAppServer(codexHome, command, homeVariable);
 
     return await run(server);
   } catch (e) {

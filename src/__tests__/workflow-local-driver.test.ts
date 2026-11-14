@@ -9,6 +9,7 @@ import { checkoutRecordKey, type CheckoutRecord } from '../pull.js';
 import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
 import { type LocalConfig, type TeamaiConfig } from '../types.js';
 import { log } from '../utils/logger.js';
+import { saveToolHomes } from '../tool-home.js';
 import { getUserHome } from '../utils/home.js';
 import { INSTANCE_BASES, useToolInstances } from '../tool-registry.js';
 import { createLocalToolAdapter, type LocalToolAdapter, type LocalToolResult, type LocalToolRun, type ToolSpawn } from '../workflow/drivers/local/local-tool-adapter.js';
@@ -128,13 +129,16 @@ describe('local workflow prompt driver', () => {
   });
 
   it.each([
-    { case: 'names its own', own: { home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' } } },
+    { case: 'names its own, as the member set it', own: { home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' } }, shell: true, acme: 'acme-moved' },
+    // A pull recorded the home the variable named, and teamai delivers there from a shell without it, so the build reads it too.
+    { case: 'names its own, at the home recorded for it from a shell without it', own: { home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' } }, shell: false, acme: 'acme-recorded' },
     // teamai writes where paths say, so a build pointed at the home would read none of it.
-    { case: 'sets paths outside its home', own: { home: { dir: '.acme-codex' }, paths: { skills: '.codex/skills', settings: '.codex/hooks.json' } } },
-  ])('leaves the home variable as the member set it for an instance that $case', async ({ own }) => {
-    vi.stubEnv('ACME_CODEX_HOME', path.join(os.tmpdir(), 'acme-moved'));
+    { case: 'sets paths outside its home, as the member set it', own: { home: { dir: '.acme-codex' }, paths: { skills: '.codex/skills', settings: '.codex/hooks.json' } }, shell: true, acme: 'acme-moved' },
+  ])('starts an instance that $case, and CODEX_HOME as the member set it', async ({ own, shell, acme }) => {
+    if (shell) vi.stubEnv('ACME_CODEX_HOME', path.join(os.tmpdir(), 'acme-moved'));
+    else await saveToolHomes({ 'acme-codex': path.join(os.tmpdir(), 'acme-recorded') });
     vi.stubEnv('CODEX_HOME', path.join(os.tmpdir(), 'member-codex'));
-    onTestFinished(() => { vi.unstubAllEnvs(); });
+    onTestFinished(async () => { vi.unstubAllEnvs(); await saveToolHomes({}); });
     const { config, workspace, runId } = await fixture();
     useToolInstances(new Map([['acme-codex', {
       name: 'acme-codex', extends: 'codex', ...own,
@@ -149,7 +153,7 @@ describe('local workflow prompt driver', () => {
 
     await runLocalDriver(config, runId, workspace, { adapter, toolPaths, tools: { default: 'acme-codex' } });
 
-    expect(input?.env?.ACME_CODEX_HOME).toBe(path.join(os.tmpdir(), 'acme-moved'));
+    expect(input?.env?.ACME_CODEX_HOME).toBe(path.join(os.tmpdir(), acme));
     expect(input?.env?.CODEX_HOME).toBe(path.join(os.tmpdir(), 'member-codex'));
   });
 
