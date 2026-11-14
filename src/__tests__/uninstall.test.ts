@@ -1267,8 +1267,14 @@ describe('uninstall', () => {
     expect(await fse.pathExists(agentHook)).toBe(true);
   });
 
-  it.each(['codex', 'codex-internal', 'tcodex'].flatMap((tool) => [[tool, false], [tool, true]] as const))(
+  it.each(['codex', 'codex-internal', 'tcodex', 'acme-codex'].flatMap((tool) => [[tool, false], [tool, true]] as const))(
     'preserves global %s hooks while excluding only the targeted project, legacy copy: %s', async (tool, legacy) => {
+    const { useToolInstances } = await import('../tool-registry.js');
+    useToolInstances(new Map([['acme-codex', {
+      name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex' },
+      source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
+    }]]));
+    onTestFinished(() => { useToolInstances(new Map()); });
     const homeDir = path.join(tmpDir, 'home');
     const projectRoot = path.join(tmpDir, 'project');
     const repoPath = path.join(projectRoot, '.teamai/team-repo');
@@ -1280,7 +1286,10 @@ describe('uninstall', () => {
     const before = await fse.readFile(globalHooks, 'utf8');
     const localConfig = makeLocalConfig(homeDir, repoPath, { scope: 'project', projectRoot, enabledAgents: [tool] });
     await fse.outputFile(path.join(projectRoot, '.teamai/config.yaml'), 'scope: project\n');
-    const teamConfig = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git' });
+    const parsed = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git' });
+    const teamConfig = tool === 'acme-codex'
+      ? { ...parsed, toolPaths: { ...parsed.toolPaths, [tool]: { ...parsed.toolPaths.codex, settings: '.acme-codex/hooks.json', skills: '.acme-codex/skills' } } }
+      : parsed;
     mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
     const projectHooks = path.join(projectRoot, `.${tool}/hooks.json`);
     if (legacy) await actualHooks.reconcileHooks(projectHooks, tool, [], { manifestPath: path.join(projectRoot, '.teamai/managed-hooks.json') });

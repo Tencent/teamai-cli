@@ -83,7 +83,7 @@ import {
 import { cleanupOf, hookAdapterDirIn, hookSettingsFile, installOf, isInstalledFor, locate, openclawWorkspaceDir, ownOf, SHARED_AGENT_SKILLS_PATH, toolPathUnder, workspaceHooksOf, writesOf, type Location } from './locate.js';
 import { toolHome, toolHomeOf, toolHomesAcrossProfiles } from './tool-home.js';
 import { baseDescriptorOf, channelsOf, hookSyntaxOf, toolOf } from './tool-registry.js';
-import { CODEX_TOOL_IDS } from './utils/tool-names.js';
+import { isCodexTool } from './utils/tool-names.js';
 import { allowsSkillDirectory, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, readsCodexSharedSkills, readTeamSkills, skillOrigin } from './resources/skills.js';
 import { describeKeptDir, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir, teamaiSkillFiles } from './resources/delivered-copies.js';
 import { generatedSkillAt } from './workflow/discovery/generated-marker.js';
@@ -706,7 +706,7 @@ async function discoverToolResources(
         if (!teamOnly && mainFiles.has(await canonical(settingsPath))) continue;
 
         // Other installs use Codex's user hooks as their instruction channel.
-        if (!globalAdapters && atHome && CODEX_TOOL_IDS.some((id) => id === tool)) {
+        if (!globalAdapters && atHome && isCodexTool(tool)) {
           if (await pathExists(settingsPath) && await hasTeamaiHooks(settingsPath, tool, manifestPath)) res.keptGlobal.push(settingsPath);
           continue;
         }
@@ -1558,7 +1558,7 @@ async function buildRemovalPlan(
     includeShared = targetHasResources && !othersHaveResources;
 
     // Keep this project's config so the global hook can read its exclusion.
-    if (!globalAdapters && (CODEX_TOOL_IDS.some((id) => id === agentFilter) || agentFilter === 'zcode')) includeShared = false;
+    if (!globalAdapters && (isCodexTool(agentFilter) || agentFilter === 'zcode')) includeShared = false;
   } else {
     toolsToMerge = [...perTool.keys()];
     includeShared = true;
