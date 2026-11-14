@@ -933,7 +933,8 @@ function nestedRunPath(config: LocalConfig, run: RunId, attempt: AttemptId): str
  */
 async function endNestedRun(config: LocalConfig, nested: RunId, message: string): Promise<string | undefined> {
   const taken = await takeRunLock(config, nested, async (lock) => {
-    const cancelled = await cancelRun(config, nested, await knownSecrets(config), undefined, { code: 'cancelled', message });
+    // Under its lock no loop drives it, so its `finally` steps, which nothing would lease, end with it.
+    const cancelled = await cancelRun(config, nested, await knownSecrets(config), undefined, { code: 'cancelled', message }, { heldLock: lock });
 
     // A run that already ended may still have left what a cancelled attempt of it started.
     if ('error' in cancelled && cancelled.error.code !== 'run_settled') return cancelled.error.message;

@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { leaseNext, startRun } from '../workflow/engine.js';
+import { createRun, leaseNext, startRun } from '../workflow/engine.js';
+import { parseWorkflow } from '../workflow/parse.js';
+import { driverIdentity } from '../driver-identity.js';
 import { answerCancel, answerQuestion, cancelAttempt, claimAttempt, expireClaim, finishAttempt, lastGoneWork, leaveOffer, leaseEnv, leaseValues, listOpenAttempts, listRecords, markOffered, offerAttempt, offersAmong, readAttemptRecord, readOfferedMarker, recordProgress, woken, type FleetRecord, type HeldAttempt } from '../workflow/fleet/record.js';
 import { startGroupedCommand } from '../workflow/shell-command.js';
 import { publishRun } from '../workflow/handoff.js';
@@ -1219,6 +1221,27 @@ describe('a restarted member', () => {
     } finally {
       await left.stop();
     }
+  }, 60_000);
+
+  it('ends the nested run its killed run left with finally steps no driver runs, rather than leave it running', async () => {
+    const { bob, run, offered } = await offerSlow(60_000, { definition: AGAIN.replace('test -f left.txt && echo again > again.txt', 'echo again > again.txt'), command: 'echo again > again.txt' });
+    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config));
+    if (!claimed.ok) throw new Error(claimed.error.message);
+    const parsed = parseWorkflow('workflows/pair.yaml', 'schemaVersion: v1alpha1\nname: pair\ndescription: Pairs.\nsteps:\n  - id: work\n    command: sleep 60\nfinally:\n  - id: tidy\n    command: echo tidy\n');
+    if (!parsed.ok) throw new Error(JSON.stringify(parsed.diagnostics));
+    const created = await createRun(bob.config, { name: 'pair', sourceHash: 'pair', definition: { ...parsed.definition, private: true }, workflows: {}, origin: { source: 'team' }, secrets: {}, nestedIn: run });
+    if (!('data' in created)) throw new Error(created.error.message);
+    const nested = RunIdSchema.parse(String(created.data.run));
+    // What a member killed during a whole workflow leaves: the nested run's step leased by its local loop here, which held
+    // the nested run's lock, and the nested run's id beside the attempt.
+    expect(await takeRunLock(bob.config, nested, (lock) => leaseNext(bob.config, nested, driverIdentity('local', process.cwd()), { drivesUnder: lock }), { waitMs: 0 })).toMatchObject({ value: { data: { lease: { step: 'work' } } } });
+    fs.mkdirSync(attemptDir(bob.config, run, ATTEMPT), { recursive: true });
+    fs.writeFileSync(path.join(attemptDir(bob.config, run, ATTEMPT), 'nested-run'), nested);
+    await readableReportsWorktree(bob.config);
+
+    await takeFleetAttempt(bob.config, { pool: 'default', repository: 'github.com/acme/business', root: bob.checkout, member: await installOwner(bob.config), secrets: {}, place: HERE });
+
+    expect(await readRun(bob.config, nested)).toMatchObject({ status: 'cancelled' });
   }, 60_000);
 
   it('leaves an offer of a run whose record its own data home holds, and what the owner keeps of the attempt', async () => {
