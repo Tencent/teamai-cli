@@ -14,6 +14,7 @@ import type { RunMode } from '../../launch-context.js';
 import { isSymlink, RESOURCE_LAYOUTS } from '../../resources/resolver.js';
 import { acceptTeamCommand } from '../../tool-instances.js';
 import { getDataHome, getTrustDir, type LocalConfig } from '../../types.js';
+import { canonicalJson } from '../../utils/canonical-json.js';
 import { writeJsonAtomic } from '../../utils/fs.js';
 import type { WorkflowFailure } from '../types.js';
 import type { ResolvedDriver } from './definitions.js';
@@ -75,6 +76,13 @@ export interface ExternalRuntime {
   readonly exec?: boolean;
   /** The sha256 of the file form's content, or the folder's revision (`folderRevision`). */
   readonly revision: string;
+  /**
+   * The sha256 of what decides what it launches, which the identity of each entry that names it covers
+   * (`RuntimeEntryIdentity`): a file's text; a folder's marker and the file its entry names; for teamai's own, only the
+   * `bin` name of its program, so a teamai upgrade, after which its runtimes keep their places where they kept them,
+   * does not change it.
+   */
+  readonly launches: string;
   readonly trust: RuntimeTrust;
   /** The runtime of teamai's own this one of the member or the team stands in for, by the name `use` would find it. */
   readonly replaces?: string;
@@ -156,7 +164,7 @@ async function readDefinition(driver: ResolvedDriver, use: string, definition: L
   const marker = parsed.data;
 
   if (marker.protocol !== RUNTIME_PROTOCOL) return badMarker(`it declares protocol ${marker.protocol}, and this teamai speaks protocol ${RUNTIME_PROTOCOL}`);
-  const launched = await launchOf(definition, marker.entry);
+  const launched = await launchOf(definition, marker.entry, text);
 
   if (!launched.ok) return unusable(launched.reason);
   let revision: string;
@@ -171,7 +179,7 @@ async function readDefinition(driver: ResolvedDriver, use: string, definition: L
     kind: 'found',
     source: {
       kind: 'external', name: use, resource: definition.resource, layer: definition.layer, marker: markerFile, location: definition.location,
-      launch: launched.launch, ...(marker.exec !== undefined && { exec: marker.exec }), revision, trust: launched.trust,
+      launch: launched.launch, ...(marker.exec !== undefined && { exec: marker.exec }), revision, launches: launched.launches, trust: launched.trust,
     },
   };
 }
@@ -179,8 +187,11 @@ async function readDefinition(driver: ResolvedDriver, use: string, definition: L
 /** What a marker's `entry` names: a file inside its folder, an executable on PATH, or a program of teamai's own package. */
 type RuntimeEntry = z.infer<typeof RuntimeMarkerSchema>['entry'];
 
-/** How `definition`'s `entry` starts it, and what a person accepts first, or why it cannot: each form and layer takes one kind of entry. */
-async function launchOf(definition: LayerItem, entry: RuntimeEntry): Promise<{ ok: true; launch: RuntimeLaunch; trust: RuntimeTrust } | { ok: false; reason: string }> {
+/**
+ * How `definition`'s `entry` starts it, what a person accepts first, and what decides what it launches
+ * (`ExternalRuntime.launches`) from its marker's `text`, or why it cannot: each form and layer takes one kind of entry.
+ */
+async function launchOf(definition: LayerItem, entry: RuntimeEntry, text: string): Promise<{ ok: true; launch: RuntimeLaunch; trust: RuntimeTrust; launches: string } | { ok: false; reason: string }> {
   const isTeam = definition.layer === 'team';
 
   switch (entry.kind) {
@@ -193,15 +204,24 @@ async function launchOf(definition: LayerItem, entry: RuntimeEntry): Promise<{ o
       const stat = await fs.lstat(executable).catch(() => undefined);
 
       if (stat?.isFile() !== true) return { ok: false, reason: `entry: ${entry.file} names a file the folder does not hold` };
+      let code: Buffer;
 
-      return { ok: true, launch: { kind: 'executable', executable }, trust: isTeam ? { kind: 'folder', dir: definition.at } : { kind: 'none' } };
+      try {
+        code = await readRegularFileNoLink(executable);
+      } catch (error) {
+        return { ok: false, reason: `entry: ${entry.file} cannot be read (${error instanceof Error ? error.message : String(error)})` };
+      }
+
+      const launches = sha256(canonicalJson({ marker: text, entry: createHash('sha256').update(code).digest('hex') }));
+
+      return { ok: true, launch: { kind: 'executable', executable }, trust: isTeam ? { kind: 'folder', dir: definition.at } : { kind: 'none' }, launches };
     }
 
     case 'bin': {
       if (definition.layer !== 'teamai') return { ok: false, reason: `entry: { bin: ${entry.bin} } names a program of teamai's own package, which only teamai's runtimes use; name an executable on PATH with entry: { command: <name> }, or keep the code in a folder runtimes/<name>/${RUNTIME_MARKER}` };
       const file = teamaiBin(entry.bin);
 
-      return file === undefined ? { ok: false, reason: `entry: { bin: ${entry.bin} } names no program teamai's package holds` } : { ok: true, launch: { kind: 'node', file }, trust: { kind: 'none' } };
+      return file === undefined ? { ok: false, reason: `entry: { bin: ${entry.bin} } names no program teamai's package holds` } : { ok: true, launch: { kind: 'node', file }, trust: { kind: 'none' }, launches: sha256(canonicalJson({ bin: entry.bin })) };
     }
 
     case 'command': {
@@ -212,7 +232,7 @@ async function launchOf(definition: LayerItem, entry: RuntimeEntry): Promise<{ o
 
       if (executable === null) return { ok: false, reason: `entry: { command: ${entry.command} } names no executable on PATH, as a bare name such as acme-runtime` };
 
-      return { ok: true, launch: { kind: 'executable', executable }, trust: isTeam ? { kind: 'command', command: entry.command } : { kind: 'none' } };
+      return { ok: true, launch: { kind: 'executable', executable }, trust: isTeam ? { kind: 'command', command: entry.command } : { kind: 'none' }, launches: sha256(text) };
     }
 
     default: {

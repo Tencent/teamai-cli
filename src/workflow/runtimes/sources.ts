@@ -18,7 +18,7 @@ import { instanceHomeDir } from '../../tool-home.js';
 import { baseToolOf, toolInstancesFor } from '../../tool-registry.js';
 import { type StepRuntime } from '@teamai/runtime-protocol/step-runtime';
 import { composedOffer, composedStepRuntime, nestedOptions } from './composed.js';
-import { composedName, RuntimeEntryIdentity } from './entry-identity.js';
+import { composedName, RuntimeEntryIdentity, type RuntimeResourcePart } from './entry-identity.js';
 import { credentialSecrets, isExecRuntimeTool, type ExecRuntimeTool, type RuntimeOrigin } from './attempt.js';
 import { LOGIN_TOOLS, type LoginTool } from './login.js';
 import type { SignInVariables } from '@teamai/tool-core/launch';
@@ -190,13 +190,14 @@ export type OpenedRuntime =
    * `keepsConversations`: its init said a prompt's conversation outlives the prompt in its place, so teamai may hold the place for a later step.
    * `runsOnToolHome`: its init said it runs each prompt's tool in the attempt's tool home, which teamai seeds, copies a login into and reads sessions in.
    * `sources`: where the runtimes it runs on came from, which each attempt on it records; none for the built-in `fleet`.
+   * `resources`: what decides what each of those runtimes launches, which the entry's identity covers.
    * `entry`: which entry of the definition it is, which each attempt on it records, so a later teamai stops and closes
    * the attempt's place on that entry and no other of the same name (`RuntimeEntryIdentity`).
    */
   | (OpenedExternal & { entry: RuntimeEntryIdentity })
 ;
 
-type OpenedExternal = { kind: 'external'; use: string; runtime: StepRuntime<DriverCan>; can: DriverCan; launchesAgents: boolean; engine: EngineOptions; credentials: Record<string, string>; found: string[]; masks: Record<string, string>; optionsFrom: string; unavailable?: Record<string, string>; isThrough?: true; wakes?: true; keepsConversations?: true; runsOnToolHome?: true; sources?: RuntimeOrigin[] };
+type OpenedExternal = { kind: 'external'; use: string; runtime: StepRuntime<DriverCan>; can: DriverCan; launchesAgents: boolean; engine: EngineOptions; credentials: Record<string, string>; found: string[]; masks: Record<string, string>; optionsFrom: string; unavailable?: Record<string, string>; isThrough?: true; wakes?: true; keepsConversations?: true; runsOnToolHome?: true; sources?: RuntimeOrigin[]; resources?: RuntimeResourcePart[] };
 
 /** A runtime opened for an entry, before `openDriver` gives it the entry's identity. */
 type OpenedPart = Extract<OpenedRuntime, { kind: 'tools' }> | OpenedExternal;
@@ -393,6 +394,7 @@ async function openRuntime(driver: ResolvedDriver, { use, options, sandbox }: { 
   const initOptions = built?.options ?? (profiled?.ok === true ? profiled.options : split.runtime);
   const profile = built?.profile ?? (profiled?.ok === true ? profiled.profile : undefined);
   const origin: RuntimeOrigin = { runtime: source.resource, layer: source.layer, location: source.location, revision: runs.revision };
+  const resources: RuntimeResourcePart[] = [{ runtime: use, layer: source.layer, definition: source.location, launches: source.launches }];
 
   // A runtime of the member or the team in place of teamai's own is never taken silently.
   if (purpose === 'run' && source.replaces !== undefined) {
@@ -436,7 +438,7 @@ async function openRuntime(driver: ResolvedDriver, { use, options, sandbox }: { 
     const recovered = await recovering.init({ options: initOptions, mode: 'recover', homeEnv: homeEnvOf([]), checkout });
 
     // It offers nothing in this mode: it is asked only to stop, collect and close what it ran.
-    if (recovered.ok) return { ok: true, opened: { kind: 'external', use, runtime: removingCopy(recovering), can: recovered.can, launchesAgents: recovered.launchesAgents, ...(recovered.keepsConversations && { keepsConversations: true }), ...(recovered.runsOnToolHome && { runsOnToolHome: true }), engine: split.engine, credentials: {}, found: [], masks, optionsFrom: optionsSource(driver, use), sources: [origin] } };
+    if (recovered.ok) return { ok: true, opened: { kind: 'external', use, runtime: removingCopy(recovering), can: recovered.can, launchesAgents: recovered.launchesAgents, ...(recovered.keepsConversations && { keepsConversations: true }), ...(recovered.runsOnToolHome && { runsOnToolHome: true }), engine: split.engine, credentials: {}, found: [], masks, optionsFrom: optionsSource(driver, use), sources: [origin], resources } };
     await recovering.dispose();
     notRecovered = recovered.failure;
   }
@@ -502,7 +504,7 @@ async function openRuntime(driver: ResolvedDriver, { use, options, sandbox }: { 
     const declared = isMemberRoute ? notOwnLogin(values.values) : values.values;
     const given = isKeepingFound ? { ...declared, ...foundHere } : declared;
 
-    return { ok: true, opened: { kind: 'external', use, runtime, can: ready.can, launchesAgents: ready.launchesAgents, engine, credentials: given, found: isKeepingFound ? Object.keys(foundHere) : [], masks, optionsFrom: optionsSource(driver, use), sources: [profile ? { ...origin, sandbox: sandboxRecord(profile, ready.can) } : origin], ...(ready.unavailable && { unavailable: ready.unavailable }), ...(ready.wakes && { wakes: true }), ...(ready.keepsConversations && { keepsConversations: true }), ...(ready.runsOnToolHome && { runsOnToolHome: true }) } };
+    return { ok: true, opened: { kind: 'external', use, runtime, can: ready.can, launchesAgents: ready.launchesAgents, engine, credentials: given, found: isKeepingFound ? Object.keys(foundHere) : [], masks, optionsFrom: optionsSource(driver, use), sources: [profile ? { ...origin, sandbox: sandboxRecord(profile, ready.can) } : origin], resources, ...(ready.unavailable && { unavailable: ready.unavailable }), ...(ready.wakes && { wakes: true }), ...(ready.keepsConversations && { keepsConversations: true }), ...(ready.runsOnToolHome && { runsOnToolHome: true }) } };
   }
 
   await runtime.dispose();
@@ -575,7 +577,7 @@ async function openComposed(driver: ResolvedDriver, { names, options, sandbox }:
     opened: {
       kind: 'external', use: name, runtime: composedStepRuntime({ outer: outerOpened.runtime, inner: innerOpened.runtime, innerCredentials: innerOpened.credentials }),
       can: offer.can, launchesAgents: offer.launchesAgents, engine, credentials: outerOpened.credentials, found: outerOpened.found, masks: { ...outerOpened.masks, ...innerOpened.masks }, optionsFrom: innerOpened.optionsFrom,
-      isThrough: true, sources: [...innerOpened.sources ?? [], ...outerOpened.sources ?? []], ...(offer.unavailable && { unavailable: offer.unavailable }),
+      isThrough: true, sources: [...innerOpened.sources ?? [], ...outerOpened.sources ?? []], resources: [...innerOpened.resources ?? [], ...outerOpened.resources ?? []], ...(offer.unavailable && { unavailable: offer.unavailable }),
     },
   };
 }
@@ -639,7 +641,7 @@ export async function openDriver(
       return one;
     }
 
-    opened.push(one.opened.kind === 'external' ? { ...one.opened, entry: RuntimeEntryIdentity.of(driver, entry) } : one.opened);
+    opened.push(one.opened.kind === 'external' ? { ...one.opened, entry: RuntimeEntryIdentity.of(driver, entry, one.opened.resources ?? []) } : one.opened);
   }
 
   return { ok: true, opened: { driver, asked: name, runtimes: opened } };

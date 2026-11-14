@@ -2677,7 +2677,7 @@ describe('StepRuntime scenarios: fleet with two installs', () => {
     await owner.record();
     await readableReportsWorktree(owner.bob.config);
     const take = async (place: MemberPlace) => takeFleetAttempt(owner.bob.config, { pool: 'default', repository: getRepoIdentity(owner.bob.checkout) ?? '', root: owner.bob.checkout, member: await installOwner(owner.bob.config), secrets: {}, place });
-    const elsewhere = { kind: 'runtime' as const, driver: 'teamai-docker', use: 'docker', runtime: fleetStepRuntime({ config: owner.bob.config, masks: {} }), entry: { name: 'docker', digest: 'docker', sameName: { at: 1, of: 1 } } };
+    const elsewhere = { kind: 'runtime' as const, driver: 'teamai-docker', use: 'docker', runtime: fleetStepRuntime({ config: owner.bob.config, masks: {} }), entry: { name: 'docker', digest: 'docker', resource: 'docker', sameName: { at: 1, of: 1 } } };
 
     expect(await take({ command: { kind: 'here' } })).toEqual({ data: { idle: { offered: 0 } } });
     owner.bob.config.workflows = { tools: {}, labels: ['gpu'] };

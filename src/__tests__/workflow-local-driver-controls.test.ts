@@ -1585,7 +1585,7 @@ steps:
     const engine = { logins: [] };
 
     const done = await runLocalDriver(config, runId, workspace, {
-      runtimes: { driver: 'whole', asked: 'whole', runtimes: [{ kind: 'external', use: 'whole', runtime, can: { workflow: true, tokens: true, workspace: ['new', 'continue'] }, launchesAgents: false, engine, credentials: {}, found: [], masks: {}, optionsFrom: 'test', entry: { name: 'whole', digest: 'whole', sameName: { at: 1, of: 1 } } }] },
+      runtimes: { driver: 'whole', asked: 'whole', runtimes: [{ kind: 'external', use: 'whole', runtime, can: { workflow: true, tokens: true, workspace: ['new', 'continue'] }, launchesAgents: false, engine, credentials: {}, found: [], masks: {}, optionsFrom: 'test', entry: { name: 'whole', digest: 'whole', resource: 'whole', sameName: { at: 1, of: 1 } } }] },
     });
 
     expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
@@ -1612,7 +1612,7 @@ steps:
     };
 
     const done = await runLocalDriver(config, runId, workspace, {
-      runtimes: { driver: 'whole', asked: 'whole', runtimes: [{ kind: 'external', use: 'whole', runtime, can: { workflow: true, tokens: true, workspace: ['new', 'continue'] }, launchesAgents: false, engine: { logins: [] }, credentials: {}, found: [], masks: {}, optionsFrom: 'test', entry: { name: 'whole', digest: 'whole', sameName: { at: 1, of: 1 } } }] },
+      runtimes: { driver: 'whole', asked: 'whole', runtimes: [{ kind: 'external', use: 'whole', runtime, can: { workflow: true, tokens: true, workspace: ['new', 'continue'] }, launchesAgents: false, engine: { logins: [] }, credentials: {}, found: [], masks: {}, optionsFrom: 'test', entry: { name: 'whole', digest: 'whole', resource: 'whole', sameName: { at: 1, of: 1 } } }] },
     });
 
     expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
@@ -1642,7 +1642,7 @@ steps:
     };
 
     const done = await runLocalDriver(config, runId, workspace, {
-      runtimes: { driver: 'whole', asked: 'whole', runtimes: [{ kind: 'external', use: 'whole', runtime, can: { workflow: true, tokens: true, workspace: ['new', 'continue'] }, launchesAgents: false, engine: { logins: [] }, credentials: {}, found: [], masks: {}, optionsFrom: 'test', entry: { name: 'whole', digest: 'whole', sameName: { at: 1, of: 1 } } }] },
+      runtimes: { driver: 'whole', asked: 'whole', runtimes: [{ kind: 'external', use: 'whole', runtime, can: { workflow: true, tokens: true, workspace: ['new', 'continue'] }, launchesAgents: false, engine: { logins: [] }, credentials: {}, found: [], masks: {}, optionsFrom: 'test', entry: { name: 'whole', digest: 'whole', resource: 'whole', sameName: { at: 1, of: 1 } } }] },
     });
 
     expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });

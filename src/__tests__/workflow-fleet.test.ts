@@ -495,7 +495,7 @@ describe('a member taking a prompt attempt', () => {
     if (!ready.ok) throw new Error(ready.failure.message);
     const opened: OpenedDriver = {
       driver: { name: 'bobs', definition: { schemaVersion: 'v1alpha1', name: 'bobs', runtimes: [] }, source: 'personal', location: 'bobs.yaml', config: (await team().member('bob')).config }, asked: 'bobs',
-      runtimes: [{ kind: 'external', use: 'toy', runtime, can: ready.can, launchesAgents: true, ...(ready.runsOnToolHome && { runsOnToolHome: true }), engine: { logins: [] }, credentials: {}, found: [], masks: {}, optionsFrom: 'test', entry: { name: 'toy', digest: 'toy', sameName: { at: 1, of: 1 } } }],
+      runtimes: [{ kind: 'external', use: 'toy', runtime, can: ready.can, launchesAgents: true, ...(ready.runsOnToolHome && { runsOnToolHome: true }), engine: { logins: [] }, credentials: {}, found: [], masks: {}, optionsFrom: 'test', entry: { name: 'toy', digest: 'toy', resource: 'toy', sameName: { at: 1, of: 1 } } }],
     };
     const place = memberPlace(opened);
     if ('refused' in place) throw new Error(place.refused);
@@ -1641,7 +1641,7 @@ describe('where a member runs an attempt', () => {
     const runtime = hostStepRuntime({ config });
     const runtimes = cans.map((entry): OpenedRuntime => (entry === 'local'
       ? { kind: 'tools', use: 'tools', engine: { logins: [] } }
-      : { kind: 'external', use: entry.use, runtime, can: entry.can, launchesAgents: false, engine: { logins: [] }, credentials: {}, found: [], masks: {}, optionsFrom: 'test', entry: { name: entry.use, digest: entry.use, sameName: { at: 1, of: 1 } } }));
+      : { kind: 'external', use: entry.use, runtime, can: entry.can, launchesAgents: false, engine: { logins: [] }, credentials: {}, found: [], masks: {}, optionsFrom: 'test', entry: { name: entry.use, digest: entry.use, resource: entry.use, sameName: { at: 1, of: 1 } } }));
     const [first, ...rest] = runtimes;
     if (!first) throw new Error('no runtime');
 

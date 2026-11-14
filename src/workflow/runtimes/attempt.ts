@@ -90,6 +90,12 @@ const AttemptRuntimeRecordSchema = z.object({
    */
   entry: z.string().optional(),
   /**
+   * The digest of the runtime resources that entry resolved to (`RuntimeEntryIdentity`), written with `entry`: a later
+   * teamai whose runtime definition launches another program reaches the place only once that runtime finds it. A
+   * record written before has none, and matches by `entry` alone.
+   */
+  resource: z.string().optional(),
+  /**
    * Where that entry stood among the definition's entries of its runtime name, written with `entry`: a later teamai
    * reaches the place by the name alone only when no other entry had it then. A record written before has none.
    */
@@ -718,25 +724,27 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
   let isPlaceKnown = false;
 
   /**
-   * Why the place `recorded` names, on `handle`, is not taken as gone: an entry reached by its name alone, as it changed
-   * since the attempt ran, may start its runtime elsewhere, where the place is unknown though what ran there runs on.
-   * Undefined once the runtime knows the place, or when the entry is the one that ran the attempt.
+   * Why the place `recorded` names, on `handle`, is not taken as gone: an entry that changed since the attempt ran, or
+   * whose runtime definition did, may start its runtime elsewhere, where the place is unknown though what ran there runs
+   * on. Undefined once the runtime knows the place, or when the entry is the one that ran the attempt, as it ran.
    */
   const unknownToChangedEntry = async (recorded: AttemptRuntimeRecord, handle: string): Promise<RuntimeFailure | undefined> => {
-    if (isPlaceKnown || !RuntimeEntryIdentity.isByNameOnly(recorded, entry)) return undefined;
+    if (isPlaceKnown || !RuntimeEntryIdentity.isChangedSince(recorded, entry)) return undefined;
     const seen = await runtime.reattach(handle);
 
     if (seen.kind === 'failed') return seen.failure;
 
-    if (seen.kind === 'gone') return changedEntryFailure();
+    if (seen.kind === 'gone') return changedEntryFailure(recorded);
     isPlaceKnown = true;
 
     return undefined;
   };
 
-  const changedEntryFailure = (): RuntimeFailure => ({
+  const changedEntryFailure = (recorded: AttemptRuntimeRecord): RuntimeFailure => ({
     code: 'runtime_gone',
-    message: `the entry of driver "${driver}" that ran it changed since, and the runtime that entry starts now does not know the place of attempt ${attempt}, so teamai cannot tell that what ran there stopped. Put the entry back as it was to stop what ran, or drop the place with teamai workflow cancel ${run} --release ${attempt}.`,
+    message: recorded.entry === entry.digest
+      ? `the definition of step runtime "${runtime.name}" that driver "${driver}" ran it on changed since, and the runtime it launches now does not know the place of attempt ${attempt}, so teamai cannot tell that what ran there stopped. Put the runtime's definition back as it was to stop what ran, or drop the place with teamai workflow cancel ${run} --release ${attempt}.`
+      : `the entry of driver "${driver}" that ran it changed since, and the runtime that entry starts now does not know the place of attempt ${attempt}, so teamai cannot tell that what ran there stopped. Put the entry back as it was to stop what ran, or drop the place with teamai workflow cancel ${run} --release ${attempt}.`,
   });
 
   const save = async (next: AttemptRuntimeRecord): Promise<void> => {
@@ -888,20 +896,20 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
 
       if (before?.openFailed && before.phase !== 'closed') return { ok: false, failure: runtimeFailure(runtime.name, `could not open attempt ${attempt} (${before.openFailed.code}): ${before.openFailed.message}`) };
 
-      // An entry reached by its name alone changed since the attempt ran, so its runtime may run elsewhere: the place the
-      // record names is confirmed there before the record names this entry, or a place opens through it. One with no
-      // handle cannot be asked about. Unconfirmed, what ran there may still run, as a lost exec's may, so the step fails
-      // `runtime_lost` and is not run again beside it; the record stays as it was, and a close keeps the place on its own.
+      // An entry, or its runtime's definition, that changed since the attempt ran may start its runtime elsewhere: the
+      // place the record names is confirmed there before the record names this entry, or a place opens through it. One
+      // with no handle cannot be asked about. Unconfirmed, what ran there may still run, as a lost exec's may, so the step
+      // fails `runtime_lost` and is not run again beside it; the record stays as it was, and a close keeps the place.
       if (before && before.phase !== 'closed') {
         const handle = before.open.handle;
-        const unknown = handle === undefined ? (RuntimeEntryIdentity.isByNameOnly(before, entry) ? changedEntryFailure() : undefined) : await unknownToChangedEntry(before, handle);
+        const unknown = handle === undefined ? (RuntimeEntryIdentity.isChangedSince(before, entry) ? changedEntryFailure(before) : undefined) : await unknownToChangedEntry(before, handle);
 
         if (unknown) return { ok: false, failure: { code: 'runtime_lost', message: `Step runtime "${runtime.name}" cannot continue attempt ${attempt} (${unknown.code}): ${masked(unknown).message}` } };
       }
 
       const op = before?.open.op ?? newOpId();
       const toolHome = home ?? before?.toolHome;
-      const opening: AttemptRuntimeRecord = { runtime: runtime.name, entry: entry.digest, sameName: entry.sameName, driver, phase: before?.phase ?? 'opening', open: { op } };
+      const opening: AttemptRuntimeRecord = { runtime: runtime.name, entry: entry.digest, resource: entry.resource, sameName: entry.sameName, driver, phase: before?.phase ?? 'opening', open: { op } };
       const from = sources ?? before?.sources;
 
       if (from) opening.sources = [...from];
@@ -1216,7 +1224,7 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
 
       if (seen.kind === 'failed') return seen.failure;
 
-      if (seen.kind === 'gone' && RuntimeEntryIdentity.isByNameOnly(before, entry)) return changedEntryFailure();
+      if (seen.kind === 'gone' && RuntimeEntryIdentity.isChangedSince(before, entry)) return changedEntryFailure(before);
       isPlaceKnown ||= seen.kind === 'alive';
 
       // An operation that ended before this cancel needs no stop; closing its place confirms nothing of it still runs.

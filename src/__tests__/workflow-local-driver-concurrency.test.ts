@@ -646,7 +646,7 @@ steps:
 
     const runtime = hostStepRuntime({ config });
     await runLocalDriver(config, runId, workspace, isOnRuntime ? {
-      runtimes: { driver: 'step-runtime', asked: 'step-runtime', runtimes: [{ kind: 'external', use: 'step-runtime', runtime, can: { workspace: ['read-only', 'new', 'continue'] }, launchesAgents: false, engine: { logins: [] }, credentials: {}, found: [], masks: {}, optionsFrom: 'test', entry: { name: 'step-runtime', digest: 'step-runtime', sameName: { at: 1, of: 1 } } }] },
+      runtimes: { driver: 'step-runtime', asked: 'step-runtime', runtimes: [{ kind: 'external', use: 'step-runtime', runtime, can: { workspace: ['read-only', 'new', 'continue'] }, launchesAgents: false, engine: { logins: [] }, credentials: {}, found: [], masks: {}, optionsFrom: 'test', entry: { name: 'step-runtime', digest: 'step-runtime', resource: 'step-runtime', sameName: { at: 1, of: 1 } } }] },
     } : {});
 
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(`Kept the codex login attempt ${attempt} of run ${run} holds: teamai could not confirm that process 424242, which that attempt left, ended`));
