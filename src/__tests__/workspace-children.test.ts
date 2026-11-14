@@ -654,7 +654,7 @@ describe('syncWorkspaceInstructionExcludes', () => {
     fs.mkdirSync(path.dirname(settings));
     fs.writeFileSync(settings, JSON.stringify({ permissions: { allow: ['Bash(ls)'] }, claudeMdExcludes: ['/elsewhere/CLAUDE.md'] }));
 
-    const written = await syncWorkspaceInstructionExcludes({ projectRoot: child, settingsFile: settings, previous: [] });
+    const written = await syncWorkspaceInstructionExcludes({ projectRoot: child, settingsFiles: [settings], previous: [] });
 
     const ours = [`${ws}/CLAUDE.md`, `${ws}/.claude/CLAUDE.md`, `${ws}/AGENTS.md`, `${ws}/.claude/rules/**`];
     expect(written).toEqual(ours);
@@ -664,7 +664,7 @@ describe('syncWorkspaceInstructionExcludes', () => {
     });
 
     fs.rmSync(path.join(ws, '.teamai'), { recursive: true });
-    expect(await syncWorkspaceInstructionExcludes({ projectRoot: child, settingsFile: settings, previous: written })).toEqual([]);
+    expect(await syncWorkspaceInstructionExcludes({ projectRoot: child, settingsFiles: [settings], previous: written })).toEqual([]);
     expect(JSON.parse(fs.readFileSync(settings, 'utf8')).claudeMdExcludes).toEqual(['/elsewhere/CLAUDE.md']);
   });
 
@@ -676,11 +676,11 @@ describe('syncWorkspaceInstructionExcludes', () => {
     const owned = [`${ws}/CLAUDE.md`, `${ws}/AGENTS.md`];
     fs.writeFileSync(settings, JSON.stringify({ claudeMdExcludes: ['/elsewhere/CLAUDE.md', ...owned] }));
 
-    expect(await syncWorkspaceInstructionExcludes({ projectRoot: child, settingsFile: settings, previous: owned, withdraw: true })).toEqual([]);
+    expect(await syncWorkspaceInstructionExcludes({ projectRoot: child, settingsFiles: [settings], previous: owned, withdraw: true })).toEqual([]);
     expect(JSON.parse(fs.readFileSync(settings, 'utf8')).claudeMdExcludes).toEqual(['/elsewhere/CLAUDE.md']);
 
     fs.writeFileSync(settings, '{ not json');
-    expect(await syncWorkspaceInstructionExcludes({ projectRoot: child, settingsFile: settings, previous: owned, withdraw: true })).toEqual(owned);
+    expect(await syncWorkspaceInstructionExcludes({ projectRoot: child, settingsFiles: [settings], previous: owned, withdraw: true })).toEqual(owned);
   });
 
   it('does not take ownership of an exclude the member already had, so withdrawing keeps it', async () => {
@@ -690,12 +690,27 @@ describe('syncWorkspaceInstructionExcludes', () => {
     fs.mkdirSync(path.dirname(settings));
     fs.writeFileSync(settings, JSON.stringify({ claudeMdExcludes: [`${ws}/CLAUDE.md`] }));
 
-    const owned = await syncWorkspaceInstructionExcludes({ projectRoot: child, settingsFile: settings, previous: [] });
+    const owned = await syncWorkspaceInstructionExcludes({ projectRoot: child, settingsFiles: [settings], previous: [] });
 
     expect(owned).toEqual([`${ws}/.claude/CLAUDE.md`, `${ws}/AGENTS.md`, `${ws}/.claude/rules/**`]);
-    expect(await syncWorkspaceInstructionExcludes({ projectRoot: child, settingsFile: settings, previous: owned })).toEqual(owned);
-    await syncWorkspaceInstructionExcludes({ projectRoot: child, settingsFile: settings, previous: owned, withdraw: true });
+    expect(await syncWorkspaceInstructionExcludes({ projectRoot: child, settingsFiles: [settings], previous: owned })).toEqual(owned);
+    await syncWorkspaceInstructionExcludes({ projectRoot: child, settingsFiles: [settings], previous: owned, withdraw: true });
     expect(JSON.parse(fs.readFileSync(settings, 'utf8')).claudeMdExcludes).toEqual([`${ws}/CLAUDE.md`]);
+  });
+
+  it('excludes them from each Claude-format tool, a Claude instance by the folder of its own settings', async () => {
+    const child = path.join(ws, 'svc-a');
+    repoChild(child);
+    const files = ['.claude', '.acme-claude'].map((dir) => path.join(child, dir, 'settings.local.json'));
+
+    const owned = await syncWorkspaceInstructionExcludes({ projectRoot: child, settingsFiles: files, previous: [] });
+
+    const ofFolder = (dir: string) => [`${ws}/CLAUDE.md`, `${ws}/${dir}/CLAUDE.md`, `${ws}/AGENTS.md`, `${ws}/${dir}/rules/**`];
+    expect(files.map((file) => JSON.parse(fs.readFileSync(file, 'utf8')).claudeMdExcludes)).toEqual([ofFolder('.claude'), ofFolder('.acme-claude')]);
+    expect(owned).toEqual([...new Set([...ofFolder('.claude'), ...ofFolder('.acme-claude')])]);
+
+    await syncWorkspaceInstructionExcludes({ projectRoot: child, settingsFiles: files, previous: owned, withdraw: true });
+    expect(files.map((file) => JSON.parse(fs.readFileSync(file, 'utf8')).claudeMdExcludes)).toEqual([undefined, undefined]);
   });
 
   it('writes nothing in a repo that is not inside a workspace', async () => {
@@ -703,7 +718,7 @@ describe('syncWorkspaceInstructionExcludes', () => {
     repoChild(lone);
     const settings = path.join(lone, '.claude', 'settings.local.json');
 
-    expect(await syncWorkspaceInstructionExcludes({ projectRoot: lone, settingsFile: settings, previous: [] })).toEqual([]);
+    expect(await syncWorkspaceInstructionExcludes({ projectRoot: lone, settingsFiles: [settings], previous: [] })).toEqual([]);
     expect(fs.existsSync(settings)).toBe(false);
   });
 });

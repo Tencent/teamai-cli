@@ -37,7 +37,7 @@ import { installOf, locate, locatingOnce, ownOf, SHARED_AGENT_SKILLS_PATH, writa
 import { isWithin } from './utils/agent-path.js';
 import { describeToolHomeChange, recordToolHomes } from './tool-home-record.js';
 import { describeInvalidToolHomes, realHost, toolHomeOf } from './tool-home.js';
-import { folderReachOf } from './tool-registry.js';
+import { baseToolOf, folderReachOf } from './tool-registry.js';
 import { placesOf, placesRecordOf, placesUnmoved, recordPlaces, type PlacesRecord, type SessionToolHomes } from './resources/places.js';
 import { flatStemsOfRemoved, ruleFileExtensionForTool, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
 import { AGENT_FILE_EXTENSIONS } from './resources/agent-format.js';
@@ -1450,27 +1450,32 @@ export async function recordedAgentModels(localConfig: LocalConfig, state?: Stat
 async function excludeWorkspaceInstructions(localConfig: LocalConfig, options: GlobalOptions): Promise<void> {
   const { projectRoot } = localConfig;
 
-  if (localConfig.scope !== 'project' || !projectRoot || isAgentExcluded(localConfig, 'claude')) return;
+  if (localConfig.scope !== 'project' || !projectRoot) return;
 
   try {
     const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
-    const settings = teamConfig ? scopedToolPaths(teamConfig, localConfig).claude?.settings : undefined;
+    const settingsFiles: string[] = [];
 
-    if (!settings || !await pathExists(path.join(projectRoot, path.dirname(settings)))) return;
+    for (const [tool, paths] of Object.entries(teamConfig ? scopedToolPaths(teamConfig, localConfig) : {})) {
+      if (baseToolOf(tool) !== 'claude' || isAgentExcluded(localConfig, tool) || !paths?.settings) continue;
+
+      if (await pathExists(path.join(projectRoot, path.dirname(paths.settings)))) settingsFiles.push(path.join(projectRoot, path.dirname(paths.settings), 'settings.local.json'));
+    }
+
+    if (settingsFiles.length === 0) return;
     const key = await checkoutKey(projectRoot);
     const state = await loadStateForScope(localConfig);
     const record = state.lastPullByWorkspace?.[key];
 
     if (!record) return;
     const previous = record.claudeMdExcludes ?? [];
-    const settingsFile = path.join(projectRoot, path.dirname(settings), 'settings.local.json');
-    const written = await syncWorkspaceInstructionExcludes({ projectRoot, settingsFile, previous, dryRun: options.dryRun });
+    const written = await syncWorkspaceInstructionExcludes({ projectRoot, settingsFiles, previous, dryRun: options.dryRun });
 
     if (JSON.stringify(written) === JSON.stringify(previous)) return;
     const added = written.filter((entry) => !previous.includes(entry));
 
     if (added.length > 0) {
-      log.info(`[${installScopeName(localConfig.scope)}] ${options.dryRun ? 'Would exclude' : 'Excluded'} the instructions of the workspace above this repo from Claude Code sessions here (claudeMdExcludes in ${settingsFile})`);
+      log.info(`[${installScopeName(localConfig.scope)}] ${options.dryRun ? 'Would exclude' : 'Excluded'} the instructions of the workspace above this repo from Claude Code sessions here (claudeMdExcludes in ${settingsFiles.join(', ')})`);
     }
 
     if (options.dryRun) return;

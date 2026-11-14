@@ -82,7 +82,7 @@ import {
 } from './builtin-skills.js';
 import { cleanupOf, hookAdapterDirIn, hookSettingsFile, installOf, isInstalledFor, locate, openclawWorkspaceDir, ownOf, SHARED_AGENT_SKILLS_PATH, workspaceHooksOf, writesOf, type Location } from './locate.js';
 import { toolHome, toolHomeOf, toolHomesAcrossProfiles } from './tool-home.js';
-import { baseDescriptorOf, channelsOf, hookSyntaxOf, toolOf } from './tool-registry.js';
+import { baseDescriptorOf, baseToolOf, channelsOf, hookSyntaxOf, toolOf } from './tool-registry.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import { allowsSkillDirectory, CODEX_TOOL, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, readTeamSkills, skillOrigin } from './resources/skills.js';
 import { describeKeptDir, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir, teamaiSkillFiles } from './resources/delivered-copies.js';
@@ -3970,23 +3970,24 @@ async function withdrawRuleFolderGrants(localConfig: LocalConfig, tool: string |
  * member's own. The settings files it could not edit, whose records then stay.
  */
 async function withdrawWorkspaceInstructionExcludes(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string[]> {
-  const settings = scopedToolPaths(teamConfig, localConfig).claude?.settings;
+  const folders = Object.entries(scopedToolPaths(teamConfig, localConfig))
+    .flatMap(([tool, paths]) => (baseToolOf(tool) === 'claude' && paths?.settings ? [path.dirname(paths.settings)] : []));
 
-  if (localConfig.scope !== 'project' || !settings) return [];
+  if (localConfig.scope !== 'project' || folders.length === 0) return [];
   const { syncWorkspaceInstructionExcludes } = await import('./workspace-children.js');
   const left: string[] = [];
 
   for (const { root, claudeMdExcludes } of Object.values((await loadStateForScope(localConfig)).lastPullByWorkspace ?? {})) {
     if (!root || !claudeMdExcludes?.length) continue;
-    const settingsFile = path.join(root, path.dirname(settings), 'settings.local.json');
+    const settingsFiles = folders.map((folder) => path.join(root, folder, 'settings.local.json'));
 
     try {
-      const kept = await syncWorkspaceInstructionExcludes({ projectRoot: root, settingsFile, previous: claudeMdExcludes, withdraw: true });
+      const kept = await syncWorkspaceInstructionExcludes({ projectRoot: root, settingsFiles, previous: claudeMdExcludes, withdraw: true });
 
-      if (kept.length > 0) left.push(settingsFile);
+      if (kept.length > 0) left.push(...settingsFiles);
     } catch (e) {
-      log.warn(`Could not take the workspace instruction excludes out of ${settingsFile}: ${e instanceof Error ? e.message : String(e)}`);
-      left.push(settingsFile);
+      log.warn(`Could not take the workspace instruction excludes out of ${settingsFiles.join(', ')}: ${e instanceof Error ? e.message : String(e)}`);
+      left.push(...settingsFiles);
     }
   }
 
