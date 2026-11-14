@@ -613,6 +613,48 @@ describe('the fleet', () => {
     expect(runStateOf('alice', run).steps[0]?.failure?.code).toBe('fleet_member_gone');
   }, 180_000);
 
+  it('stops a killed member\'s exec on its step runtime before stale_after passes, though the member never comes back', async () => {
+    const config = path.join(dataHomeOf('bob'), 'config.yaml');
+    const kept = fs.readFileSync(config, 'utf8');
+    const toy = path.join(homeOf('bob'), '.teamai', 'runtimes', 'toy');
+    fs.mkdirSync(toy, { recursive: true });
+    installToyRuntime(toy);
+    fs.writeFileSync(config, `${kept}workflows:\n  drivers:\n    toy-member:\n      runtimes:\n        toy:\n          state: ${path.join(homeOf('bob'), 'toy-state')}\n`);
+    const pidFile = path.join(homeOf('bob'), 'fenced.pid');
+    fs.rmSync(pidFile, { force: true });
+    let command = 0;
+
+    try {
+      let alicePid = 0;
+      const started = teamai('alice', ['workflow', 'start', 'fenced', '--driver', 'build-fleet'], (pid) => { alicePid = pid; });
+      const before = new Set(offeredRuns());
+      const fresh = (): string | undefined => offeredRuns().find((name) => !before.has(name));
+      await waitOn(() => fresh() !== undefined, 60_000, () => alicePid, started);
+      const run = fresh() ?? '';
+
+      let bobPid = 0;
+      const taking = teamai('bob', ['workflow', 'resume', '--next', '--pool', 'build', '--driver', 'toy-member'], (pid) => { bobPid = pid; });
+      await waitOn(() => fs.existsSync(pidFile) && records(run).some((record) => record.state === 'claimed'), 60_000, () => bobPid, taking);
+      command = Number(fs.readFileSync(pidFile, 'utf8'));
+      expect(signalPid(bobPid, 'SIGKILL')).toBe('sent');
+      await taking;
+      // The owner may give the claim up once stale_after passed since the member began its last write that landed.
+      const [claimed] = records(run);
+      const givenUpFrom = Date.parse(claimed?.progressAt ?? '') + 26_000;
+
+      expect(isAlive(command)).toBe(true);
+      expect(await until(() => !isAlive(command), givenUpFrom - Date.now())).toBe(true);
+      expect(Date.now()).toBeLessThan(givenUpFrom);
+
+      const failed = await started;
+      expect(failed.envelope(), said(failed)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+      expect(runStateOf('alice', run).steps[0]?.failure?.code).toBe('fleet_member_gone');
+    } finally {
+      if (command > 0 && isAlive(command)) signalPid(command, 'SIGKILL');
+      fs.writeFileSync(config, kept);
+    }
+  }, 180_000);
+
   it('gives an attempt to one of two members that try at once, and the other takes none', async () => {
     let alicePid = 0;
     const started = teamai('alice', ['workflow', 'start', 'one', '--driver', 'build-fleet'], (pid) => { alicePid = pid; });

@@ -58,7 +58,7 @@ import { AgentSession } from '../../session-flow/agent-session.js';
 import { JsonValueSchema, type JsonValue, isJsonObject } from '@teamai/shared/json';
 import { git, gitAnswer, hostGitEnv, keptOriginUrl, pushTargets, readMemberConfig, remoteGit, untrustedGit, type MemberConfig } from '../worktree.js';
 import { readRegularFile, writeRegularFile } from '@teamai/shared/regular-file';
-import { fenceCommand, type CommandFence } from './fence.js';
+import { endLeftFences, fenceStep, type StepFence } from './fence.js';
 import { FLEET_STOP_BUDGET_MS, fleetBeats } from './beats.js';
 
 /** How often a member reads its claim's record for a cancel, when its beats come less often than that. */
@@ -357,32 +357,13 @@ async function finishLeftClaims(config: LocalConfig, records: FleetRecord[], { r
 
   for (const record of await memberRecordsAmong(config, records, { member, repository })) {
     const held = await takeRunLock(config, record.run, async (lock): Promise<WorkflowEnvelope | undefined> => {
-      // A member killed mid-step leaves its command's process group running, or its exec on a step runtime: nothing
-      // else stops either. One that may still run keeps the claim, so no second copy of the step runs beside it. What ran
-      // in its own process, such as a Codex judge, also left its login held: that is written back and released.
-      const stopped = await stopLeftInProcess(config, record.run, record.attempt);
-      // A run its killed step's process started and drove is part of that attempt, which ended with that process. One whose
-      // runtime could not stop what it ran may still run: the claim is kept, so the step does not run again beside it.
-      const leftParts = await endRunsPartOf(config, { run: record.run, attempt: record.attempt });
-
-      if (leftParts.length > 0) return { error: { code: 'runtime_lost', message: `A run that its killed run of step "${record.lease.step}" started may still run: ${leftParts.join(' ')}` } };
       const isEnded = !isHeld(record) && record.state !== 'cancelling';
-      const isLeftRunning = stopped.kind !== 'ended' && stopped.left.length > 0;
+      const left = await stopLeftOfClaim(config, { claim: record, root, isEnded });
 
-      // An attempt whose record ended runs nothing of its step again, so only a claim still held waits on what it left.
-      if (!isEnded && isLeftRunning) {
-        return { error: { code: 'runtime_lost', message: `teamai could not confirm that process ${stopped.left.join(', ')}, which its killed run of step "${record.lease.step}" started, ended, so the claim is kept and the step does not run again beside it. Once that process has ended, run teamai workflow resume --next --pool ${record.pool} again.` } };
-      }
+      await endLeftFences(attemptDir(config, record.run, record.attempt));
 
-      // A whole workflow's nested run leaves its steps' commands under attempts of its own, and its state running.
-      const nestedRun = await endLeftNestedRun(config, record.run, record.attempt);
-
-      if (nestedRun.kind === 'running') return { error: { code: 'runtime_lost', message: nestedRun.message } };
-      const stillRuns = await stopLeftAttempt(config, record.run, record.attempt, root);
-
-      if (stillRuns !== undefined) return { error: { code: 'runtime_lost', message: `The step it ran on a step runtime may still run there: ${stillRuns}` } };
-      // Its place there is closed: a run of the attempt starts again with a place and an exec of its own.
-      await fs.rm(attemptRuntimePath(config, record.run, record.attempt), { force: true });
+      if (left.kind === 'left') return { error: { code: 'runtime_lost', message: left.message } };
+      const { nestedRun, isLeftRunning } = left;
 
       // What the member kept of an ended attempt, such as the log a failure named, goes with its claim marker once nothing
       // it left may still run and `workflows.retention` passed since it ended, as what a run leaves does.
@@ -423,6 +404,44 @@ async function finishLeftClaims(config: LocalConfig, records: FleetRecord[], { r
   }
 
   return undefined;
+}
+
+/**
+ * Stops what a killed run of claim `claim` left on this machine, under the run's lock its caller holds: the processes
+ * it ran here, a run its step's process started, a whole workflow's nested run, and its exec on a step runtime, whose
+ * place is then closed. A restarted member does this before it finishes the claim, and the claim's guardian once its
+ * fence passed with the member gone (`guardian-stop.ts`). Answers what may still run, which keeps the claim and its
+ * place, or, for a claim whose record ended (`isEnded`), a process it could not confirm ended (`isLeftRunning`).
+ */
+export async function stopLeftOfClaim(config: LocalConfig, { claim, root, isEnded }: { claim: Pick<FleetRecord, 'run' | 'attempt' | 'pool'> & { lease: Pick<FleetLease, 'step'> }; root: string; isEnded: boolean }): Promise<{ kind: 'left'; message: string } | { kind: 'stopped'; nestedRun: Exclude<LeftNestedRun, { kind: 'running' }>; isLeftRunning: boolean }> {
+  const { run, attempt, pool, lease } = claim;
+  // A member killed mid-step leaves its command's process group running, or its exec on a step runtime: nothing else
+  // stops either. One that may still run keeps the claim, so no second copy of the step runs beside it. What ran in its
+  // own process, such as a Codex judge, also left its login held: that is written back and released.
+  const stopped = await stopLeftInProcess(config, run, attempt);
+  // A run its killed step's process started and drove is part of that attempt, which ended with that process. One whose
+  // runtime could not stop what it ran may still run: the claim is kept, so the step does not run again beside it.
+  const leftParts = await endRunsPartOf(config, { run, attempt });
+
+  if (leftParts.length > 0) return { kind: 'left', message: `A run that its killed run of step "${lease.step}" started may still run: ${leftParts.join(' ')}` };
+  const isLeftRunning = stopped.kind !== 'ended' && stopped.left.length > 0;
+
+  // An attempt whose record ended runs nothing of its step again, so only a claim still held waits on what it left.
+  if (!isEnded && isLeftRunning) {
+    return { kind: 'left', message: `teamai could not confirm that process ${stopped.left.join(', ')}, which its killed run of step "${lease.step}" started, ended, so the claim is kept and the step does not run again beside it. Once that process has ended, run teamai workflow resume --next --pool ${pool} again.` };
+  }
+
+  // A whole workflow's nested run leaves its steps' commands under attempts of its own, and its state running.
+  const nestedRun = await endLeftNestedRun(config, run, attempt);
+
+  if (nestedRun.kind === 'running') return { kind: 'left', message: nestedRun.message };
+  const stillRuns = await stopLeftAttempt(config, run, attempt, root);
+
+  if (stillRuns !== undefined) return { kind: 'left', message: `The step it ran on a step runtime may still run there: ${stillRuns}` };
+  // Its place there is closed: a run of the attempt starts again with a place and an exec of its own.
+  await fs.rm(attemptRuntimePath(config, run, attempt), { force: true });
+
+  return { kind: 'stopped', nestedRun, isLeftRunning };
 }
 
 /** When the record of an attempt that ended says it ended. */
@@ -595,9 +614,9 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
     await Promise.race([stopCommand(), unstopped]);
   };
 
-  // The fence of a command the member runs on this machine: its guardian stops the command at the cut-off point, should
-  // the member be gone by then. The point moves each time `latest` does.
-  let fence: CommandFence | undefined;
+  // The fence of the step (`fence.ts`): at the cut-off point its guardian stops the step's command on this machine, and
+  // what the claim left once the member is gone. The point moves each time `latest` does.
+  let fence: StepFence | undefined;
 
   const moveFence = (): void => {
     const since = Date.parse(latest.progressAt);
@@ -735,19 +754,20 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
 
     stopCommand = command.stop;
 
-    if (command.group !== undefined) {
-      const since = Date.parse(latest.progressAt);
-      const fenced = await fenceCommand({ dir, group: command.group, at: Number.isNaN(since) ? Date.now() : since + cutOffMs });
+    // Every step carries a fence: a command here, and what the claim left anywhere else, such as an exec on the member's
+    // step runtime, a prompt's tool or a whole workflow's nested run.
+    const since = Date.parse(latest.progressAt);
+    const fencedCommand = command.group !== undefined ? { kind: 'group' as const, id: command.group } : command.tree === undefined ? undefined : { kind: 'tree' as const, pid: command.tree };
+    const fenced = await fenceStep({ dir, ...(fencedCommand && { command: fencedCommand }), at: Number.isNaN(since) ? Date.now() : since + cutOffMs, claim: { root, run, attempt, pool: claim.pool, step: lease.step } });
 
-      if (!fenced.ok) {
-        await stopCommand();
-        await command.exit.catch(() => undefined);
+    if (!fenced.ok) {
+      await stopCommand();
+      await command.exit.catch(() => undefined);
 
-        return finish({ exitCode: 1, stderr: `The member ran nothing of step "${lease.step}": ${fenced.reason}, and without it a member killed mid-step would leave the step running beside the one its owner offers again.` });
-      }
-
-      fence = fenced.fence;
+      return finish({ exitCode: 1, stderr: `The member ran nothing of step "${lease.step}": ${fenced.reason}, and without it a member killed mid-step would leave the step running beside the one its owner offers again.` });
     }
+
+    fence = fenced.fence;
 
     let watch: NodeJS.Timeout | undefined;
 
@@ -822,7 +842,7 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
 
     // A command that ended past the cut-off point was stopped by its guardian, or ended as the member stopped it: either
     // way the member gives the attempt up, as its own cut-off does.
-    if (cutOff === undefined && gone === undefined && cancelling === undefined && fence !== undefined && cutOffIn() <= 0) cutOff = cutOffWhy(cutOffIn());
+    if (cutOff === undefined && gone === undefined && cancelling === undefined && fencedCommand !== undefined && cutOffIn() <= 0) cutOff = cutOffWhy(cutOffIn());
 
     if (cutOff !== undefined) {
       const saved = await save(`[teamai] ${lease.step} so far (run ${run}, attempt ${attempt})`);
@@ -849,8 +869,8 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
   }
 }
 
-/** A step the member runs: how it ended, as the record writes it, how to stop it, and the process group it leads here. */
-type StepRun = { exit: Promise<FleetResult>; stop: () => Promise<void>; group?: number };
+/** A step the member runs: how it ended, as the record writes it, how to stop it, and the process group it leads here, or on Windows its process tree. */
+type StepRun = { exit: Promise<FleetResult>; stop: () => Promise<void>; group?: number; tree?: number };
 
 /**
  * A command the member runs, ending as the local loop reports a command: its exit code, the JSON its stdout held, and
@@ -873,6 +893,7 @@ function commandRun(config: LocalConfig, { run, attempt, step, secrets }: { run:
       await command.stop();
     },
     ...(command.group !== undefined && { group: command.group }),
+    ...(command.tree !== undefined && { tree: command.tree }),
   };
 }
 

@@ -102,6 +102,8 @@ export interface GroupedCommand {
   stop: (signal?: NodeJS.Signals) => Promise<GroupedCommandExit>;
   /** The id of the process group it leads on this machine: set once a detached command spawned, never for one elsewhere. */
   group?: number;
+  /** The pid of an attached command on this machine, which leads no group, so a stop ends its process tree (Windows). */
+  tree?: number;
 }
 
 /**
@@ -126,5 +128,5 @@ export function startGroupedCommand(input: { command: string; cwd: string; env: 
     child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr, output }));
   });
 
-  return { exit, stop: stopProcess(child, exit, detached), ...(detached && child.pid !== undefined && { group: child.pid }) };
+  return { exit, stop: stopProcess(child, exit, detached), ...(child.pid !== undefined && (detached ? { group: child.pid } : { tree: child.pid })) };
 }

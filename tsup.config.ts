@@ -57,6 +57,8 @@ export default defineConfig({
     // The T3 Code step runtime's own executable.
     'runtime-t3': 'packages/runtime-t3/src/main.ts',
     'runtime-paseo': 'packages/runtime-paseo/src/main.ts',
+    // What a fleet member's guardian imports to stop what a killed member left (src/workflow/fleet/fence.ts).
+    'fleet-guardian': 'src/workflow/fleet/guardian-stop.ts',
   },
   format: ['esm'],
   target: 'node20',
