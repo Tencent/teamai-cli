@@ -61,8 +61,8 @@ import { type HookFormat } from '@teamai/tool-core/definition';
 import { baseToolOf, channelsOf, hookFormatOf, hookSettingsFormatOf, hookSyntaxOf, instanceNames, selfLocalSettingsOf, descriptorOf, toolOf, type DescriptorOf } from './tool-registry.js';
 import { acceptedCommandOf, acceptToolCommand } from './tool-instances.js';
 import { BRIDGED_TEAM_HOOK_EVENTS, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
-import { earlierHookAdapterDir, hookSettingsFile, installOf, locate, openclawWorkspaceDir, ownOf, workspaceHooksOf } from './locate.js';
-import { toolHome, toolHomeOf } from './tool-home.js';
+import { earlierHookAdapterDir, hookSettingsFile, installOf, locate, openclawWorkspaceDir, ownOf, toolPathUnder, workspaceHooksOf } from './locate.js';
+import { realHost, toolHome, toolHomeOf } from './tool-home.js';
 import { isWithin } from './utils/agent-path.js';
 
 export { claudeHookOtherHostSkip };
@@ -1549,12 +1549,12 @@ export async function codexTeamHookCheckout(localConfig: LocalConfig): Promise<s
   return canonicalProjectRoot(anchors?.workspaceRoot ?? localConfig.projectRoot);
 }
 
-/** `~/.codex/hooks.json` as this scope resolves Codex's user hook file, or null. */
+/** Codex's user hook file, `~/.codex/hooks.json` in the Codex home the member recorded, or null. */
 function codexHomeHooksFile(teamConfig: TeamaiConfig, localConfig: LocalConfig): string | null {
   const settings = scopedToolPaths(teamConfig, { ...localConfig, scope: 'user' })[CODEX_TOOL_ID]?.settings;
+  const home = canonicalProjectRoot(getUserHome());
 
-  // oxlint-disable-next-line teamai/configured-tool-paths -- Codex's user hook file in the default home, where the dispatchers have always gone; a moved CODEX_HOME is not followed here yet
-  return settings ? path.join(canonicalProjectRoot(getUserHome()), settings) : null;
+  return settings ? toolPathUnder(CODEX_TOOL_ID, home, settings, realHost({ home })) : null;
 }
 
 /**

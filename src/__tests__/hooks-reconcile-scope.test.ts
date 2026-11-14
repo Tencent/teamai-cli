@@ -734,6 +734,28 @@ hooks:
     await reconcileTeamHooksForConfig(team(false), withChild);
     expect(await inFile('echo a')).toBe(true);
   });
+
+  it('writes the Codex team-hook dispatchers into the Codex home the member recorded', async () => {
+    const codexHome = path.join(home, '.codex-work');
+    await fse.ensureDir(codexHome);
+    await fse.ensureDir(path.join(project, '.codex'));
+    await writeYaml('hooks:\n  - id: held\n    description: held\n    event: Stop\n    command: echo held\n    tools: [codex]\n');
+    const selfConfig = {
+      repo: { localPath: repo, remote: 'https://git.example.com/team.git', kind: 'self', businessRepoRoot: project },
+      username: 'u',
+      scope: 'project',
+      projectRoot: project,
+      additionalRoles: [],
+      enabledAgents: ['codex'],
+      toolRoots: { codex: codexHome },
+    } as unknown as LocalConfig;
+    const dispatchersIn = async (dir: string): Promise<boolean> => /hook-dispatch [A-Za-z]+ --tool codex --team-hooks/.test(await fse.readFile(path.join(dir, 'hooks.json'), 'utf8').catch(() => ''));
+
+    await reconcileTeamHooksForConfig({ ...teamConfig, sharing: { gitExclude: { enabled: true } } } as unknown as TeamaiConfig, selfConfig);
+
+    expect(await dispatchersIn(codexHome)).toBe(true);
+    expect(await dispatchersIn(path.join(home, '.codex'))).toBe(false);
+  });
 });
 
 // ── Legacy <projectRoot> sweep (#370 follow-up) ──────────────
