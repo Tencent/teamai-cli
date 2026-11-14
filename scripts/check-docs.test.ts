@@ -30,6 +30,19 @@ function run(root: string, ...args: string[]) {
   return { status: child.status, output: child.stdout + child.stderr };
 }
 
+it.each(['LF', 'CRLF'])('checks generated text and skill headings with %s Markdown', (eol) => {
+  const root = checkout();
+  for (const entry of fs.readdirSync(root, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+    const target = path.join(entry.parentPath, entry.name);
+    const text = fs.readFileSync(target, 'utf8').replace(/\r?\n/g, eol === 'CRLF' ? '\r\n' : '\n');
+    fs.writeFileSync(target, text);
+  }
+
+  const checked = run(root, '--only=skill-content');
+  expect(checked.status, checked.output).toBe(0);
+});
+
 it('check refuses a stale command reference without rewriting it', () => {
   const root = checkout();
   const reference = path.join(root, 'skill-data/core/references/commands.md');

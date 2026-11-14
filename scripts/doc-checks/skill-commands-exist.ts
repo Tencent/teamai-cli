@@ -1,3 +1,4 @@
+import { readMarkdown } from './read-markdown.js';
 import assert from 'node:assert/strict';
 import { check } from '../doc-check.js';
 import fs from 'node:fs';
@@ -34,7 +35,7 @@ function collectInvocations(): Invocation[] {
 
   for (const file of [...markdownFiles(SKILL_DATA), DEPLOYED_STUB]) {
     const relative = path.relative(ROOT, file);
-    const lines = fs.readFileSync(file, 'utf8').split('\n');
+    const lines = readMarkdown(file).split('\n');
 
     // A description sentence naming the CLI is prose, not an invocation.
     let start = 0;

@@ -1,3 +1,4 @@
+import { readMarkdown } from './read-markdown.js';
 import assert from 'node:assert/strict';
 import { check } from '../doc-check.js';
 import fs from 'node:fs';
@@ -32,32 +33,32 @@ await check('ships the packaged skill files', () => {
 
 await check('tells Phase 0 to run teamai import --dir', () => {
   for (const file of PHASE0_FILES) {
-    const text = fs.readFileSync(file, 'utf8');
+    const text = readMarkdown(file);
     assert.ok(text.includes('teamai import --dir'), file);
   }
 });
 
 await check('no longer points at the removed teamai codebase --extract', () => {
   for (const file of SKILL_FILES) {
-    assert.ok(!fs.readFileSync(file, 'utf8').includes('codebase --extract'), file);
+    assert.ok(!readMarkdown(file).includes('codebase --extract'), file);
   }
 });
 
 await check('tells agents to run teamai codebase --deep-enrich', () => {
-  const skill = fs.readFileSync(path.join(SKILL_DIR, 'SKILL.md'), 'utf8');
+  const skill = readMarkdown(path.join(SKILL_DIR, 'SKILL.md'));
   assert.match(skill, /`teamai codebase --deep-enrich --project <slug>`/);
 });
 
 await check('does not point at GRAPH-CAPABILITIES.md', () => {
   for (const file of SKILL_FILES) {
-    const text = fs.readFileSync(file, 'utf8');
+    const text = readMarkdown(file);
     assert.ok(!text.includes('GRAPH-CAPABILITIES.md'), file);
   }
 });
 
 await check('does not require standalone team-wiki CLI commands', () => {
   for (const file of SKILL_FILES) {
-    const text = fs.readFileSync(file, 'utf8');
+    const text = readMarkdown(file);
 
     for (const cmd of FORBIDDEN_REQUIRED_COMMANDS) {
       assert.ok(!text.includes(cmd), `${file} must not require ${cmd}`);
