@@ -46,6 +46,31 @@ const HOLD = flow('hold', `  - id: hold
     command: node -e "require('fs').writeFileSync(require('os').homedir() + '/hold.pid', String(process.pid)); setInterval(() => {}, 1000)"
 `);
 
+/**
+ * A command step whose process starts and drives a run of its own on the local driver, which is then part of the step's
+ * attempt: the team's teamai-self-improvement, which `teamai self-improvement run` starts there.
+ */
+const PARTLY = flow('partly', `  - id: outer
+    workspace: new
+    command: node "${CLI}" self-improvement run held --suite held
+`);
+
+/**
+ * The team's teamai-self-improvement: one prompt, which the member's own local driver may give a step runtime that runs
+ * prompts, as teamai's own command steps it keeps in its process.
+ */
+const HELD_PART = `schemaVersion: v1alpha1
+name: teamai-self-improvement
+description: Holds.
+inputs: { scorer: string, suite: string }
+steps:
+  - id: hold
+    tool: claude
+    prompt: Hold until released.
+    output:
+      ok: boolean
+`;
+
 /** One command step. */
 const ONE = flow('one', `  - id: build
     workspace: new
@@ -393,12 +418,12 @@ function isAlive(pid: number): boolean {
   return signalPid(pid, 0) === 'sent';
 }
 
-async function join(member: string): Promise<void> {
+async function join(member: string, scope: 'workspace' | 'user' = 'workspace'): Promise<void> {
   fs.mkdirSync(binOf(member), { recursive: true });
   fs.writeFileSync(path.join(binOf(member), 'claude'), fakeTool({ tool: 'claude', version: '2.1.0 (Claude Code)', homeVariable: 'CLAUDE_CONFIG_DIR', sessions: CLAUDE_SESSIONS }), { mode: 0o755 });
   fs.writeFileSync(path.join(homeOf(member), '.gitconfig'), ['[user]', `\tname = ${member}`, `\temail = ${member}@example.com`, `[url "file://${origin}"]`, `\tinsteadOf = ${URL}`, ''].join('\n'));
   git(sandbox, ['clone', '-q', URL, workOf(member)], envOf(member));
-  const init = await teamai(member, ['init', URL, '--provider', 'git', '--agent', 'claude', '--scope', 'workspace', '--force']);
+  const init = await teamai(member, ['init', URL, '--provider', 'git', '--agent', 'claude', '--scope', scope, '--force']);
   expect(init.code, said(init)).toBe(0);
   const pulled = await teamai(member, ['pull']);
   expect(pulled.code, said(pulled)).toBe(0);
@@ -435,6 +460,8 @@ describe('the fleet', () => {
       'drivers/build-fleet.yaml': stringify(FLEET),
       'drivers/fan-fleet.yaml': stringify(FAN_FLEET),
       'drivers/toy-member.yaml': stringify(TOY_MEMBER),
+      'workflows/partly.yaml': PARTLY,
+      'workflows/teamai-self-improvement.yaml': HELD_PART,
       'drivers/wake-fleet.yaml': stringify(WAKE_FLEET),
     };
 
@@ -812,6 +839,60 @@ describe('the fleet', () => {
       await teamai('bob', ['workflow', 'resume', '--next', '--pool', 'default', '--driver', 'toy-member']);
       await started;
       fs.writeFileSync(config, kept);
+    }
+  }, 240_000);
+
+  // A command run in the member's clone of the step finds the member's install there only in user scope.
+  // A command run in the member's clone of the step finds the member's install there only in user scope.
+  it('runs no step again after a restart while the runtime of a run its killed command started refuses to stop that run\'s step', async () => {
+    await join('dave', 'user');
+    const runs = (): string[] => {
+      const dir = path.join(homeOf('dave'), '.teamai', 'workflows', 'runs');
+
+      return fs.existsSync(dir) ? fs.readdirSync(dir).filter((name) => name.endsWith('.json')).map((name) => name.slice(0, -'.json'.length)) : [];
+    };
+    const toy = path.join(homeOf('dave'), '.teamai', 'runtimes', 'toy');
+    fs.mkdirSync(toy, { recursive: true });
+    installToyRuntime(toy);
+    const state = path.join(homeOf('dave'), 'toy-state');
+    const release = path.join(homeOf('dave'), 'release');
+    // Dave's own local driver gives its prompts to a toy that holds each until released and refuses every cancel.
+    const local = path.join(homeOf('dave'), '.teamai', 'drivers', 'teamai-local.yaml');
+    const definition = (options: Record<string, unknown>): string => stringify({ schemaVersion: 'v1alpha1', name: 'teamai-local', runtimes: [{ use: 'toy', options: { state, agent: { output: { ok: true }, release }, can: { tools: ['claude'] }, ...options } }] });
+    fs.mkdirSync(path.dirname(local), { recursive: true });
+    fs.writeFileSync(local, definition({ cancel_fails: { code: 'cancel_failed', message: 'The toy refuses to stop it.' } }));
+    const prompting = (): boolean => fs.existsSync(path.join(state, 'ops')) && fs.readdirSync(path.join(state, 'ops')).some((name) => fs.readFileSync(path.join(state, 'ops', name), 'utf8').includes('"kind":"prompt"'));
+    let alicePid = 0;
+    const before = new Set(offeredRuns());
+    const started = teamai('alice', ['workflow', 'start', 'partly', '--driver', 'fan-fleet'], (pid) => { alicePid = pid; });
+    const fresh = (): string | undefined => offeredRuns().find((name) => !before.has(name));
+    await waitOn(() => fresh() !== undefined && records(fresh() ?? '').length > 0, 60_000, () => alicePid, started);
+    const run = fresh() ?? '';
+    const davesBefore = new Set(runs());
+
+    let davePid = 0;
+    const taking = teamai('dave', ['workflow', 'resume', '--next', '--pool', 'default'], (pid) => { davePid = pid; });
+    await waitOn(prompting, 60_000, () => davePid, taking);
+    expect(signalPid(davePid, 'SIGKILL')).toBe('sent');
+    await taking;
+
+    try {
+      const again = await teamai('dave', ['workflow', 'resume', '--next', '--pool', 'default']);
+
+      // The member keeps the claim it cannot finish, and takes no other work: the owner gives it up after stale_after.
+      expect(again.envelope(), said(again)).toMatchObject({ data: { idle: {} } });
+      expect(again.stderr).toContain('which this member claimed before:');
+      expect(again.stderr).toContain('The toy refuses to stop it.');
+      // No second run of the step started another run beside the one left.
+      expect(runs().filter((id) => !davesBefore.has(id))).toHaveLength(1);
+    } finally {
+      fs.writeFileSync(local, definition({}));
+      fs.writeFileSync(release, '');
+      await teamai('alice', ['workflow', 'cancel', run]);
+      // The owner waits for the member to answer the cancel until stale_after: dave, whose toy stops again, answers it.
+      await teamai('dave', ['workflow', 'resume', '--next', '--pool', 'default']);
+      await started;
+      fs.rmSync(local, { force: true });
     }
   }, 240_000);
 

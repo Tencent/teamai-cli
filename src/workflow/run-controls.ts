@@ -348,26 +348,38 @@ export async function cancelRun(
  * each that still runs is cancelled under its lock, named for the step the attempt ran. With no live driver of it here,
  * as when the attempt's own process drove it and is gone, what its attempts left is stopped too, their process groups
  * first, as `teamai workflow cancel` stops them; a live driver of it stops its own attempts once it sees the cancel.
- * Never throws: a run it cannot end it names in a warning, so the stop of the attempt goes on.
+ * Never throws: a run it cannot end it names in a warning, so the stop of the attempt goes on. Answers why each run part
+ * of it may still run, none when nothing of them does, for a caller that would run the step again beside them.
  */
-export async function endRunsPartOf(config: LocalConfig, partOf: PartOfStep): Promise<void> {
-  const parts = await partsOf(config, partOf).catch((cause: unknown) => {
-    log.warn(`The runs part of attempt ${partOf.attempt} of run ${partOf.run} could not be listed, so none was ended (${cause instanceof Error ? cause.message : String(cause)}). Cancel each with teamai workflow cancel <run>.`);
+export async function endRunsPartOf(config: LocalConfig, partOf: PartOfStep): Promise<string[]> {
+  const listed = await partsOf(config, partOf).then((parts) => ({ parts }), (cause: unknown) => ({ unlisted: cause instanceof Error ? cause.message : String(cause) }));
 
-    return [];
-  });
+  if ('unlisted' in listed) {
+    log.warn(`The runs part of attempt ${partOf.attempt} of run ${partOf.run} could not be listed, so none was ended (${listed.unlisted}). Cancel each with teamai workflow cancel <run>.`);
 
-  for (const part of parts) {
-    await endRunPartOf(config, part, partOf).catch((cause: unknown) => {
-      log.warn(`Run ${part}, part of attempt ${partOf.attempt} of run ${partOf.run}, was not ended (${cause instanceof Error ? cause.message : String(cause)}). End it with: teamai workflow cancel ${part}`);
-    });
+    return [`the runs part of attempt ${partOf.attempt} of run ${partOf.run} could not be listed (${listed.unlisted}), so any of them may still run.`];
   }
+
+  const left: string[] = [];
+
+  for (const part of listed.parts) {
+    try {
+      left.push(...await endRunPartOf(config, part, partOf));
+    } catch (cause) {
+      const why = cause instanceof Error ? cause.message : String(cause);
+      log.warn(`Run ${part}, part of attempt ${partOf.attempt} of run ${partOf.run}, was not ended (${why}). End it with: teamai workflow cancel ${part}`);
+      left.push(`run ${part}, part of attempt ${partOf.attempt}, was not ended (${why}).`);
+    }
+  }
+
+  return left;
 }
 
-async function endRunPartOf(config: LocalConfig, part: RunId, partOf: PartOfStep): Promise<void> {
+/** Ends run `part` of attempt `partOf`, as `endRunsPartOf` does, and answers why it may still run. */
+async function endRunPartOf(config: LocalConfig, part: RunId, partOf: PartOfStep): Promise<string[]> {
   const state = await readRun(config, part);
 
-  if (state === 'missing' || state === 'corrupt' || !isPartOf(state.partOf, partOf)) return;
+  if (state === 'missing' || state === 'corrupt' || !isPartOf(state.partOf, partOf)) return [];
 
   // One that settled is stopped again, as teamai workflow cancel stops one: its driver may have been killed first.
   const ending = state.status === 'running'
@@ -376,7 +388,8 @@ async function endRunPartOf(config: LocalConfig, part: RunId, partOf: PartOfStep
 
   const taken = await takeRunLock(config, part, async (lock) => {
     if (ending) await cancelRun(config, part, ending.secrets, undefined, ending.failure, { heldLock: lock });
-    await stopCancelledAttempts(config, lock, { isRunnerHolding: runnerAlive });
+
+    return stopCancelledAttempts(config, lock, { isRunnerHolding: runnerAlive });
   }, { waitMs: 0 }).catch(runRemovalRefusal);
 
   const isHeld = 'kind' in taken && taken.kind === 'held';
@@ -384,6 +397,13 @@ async function endRunPartOf(config: LocalConfig, part: RunId, partOf: PartOfStep
 
   // Its lock busy, or refused while runs are removed: cancelled without it, as teamai workflow cancel does.
   if (ending && !isHeld && !isRemoved) await cancelRun(config, part, ending.secrets, undefined, ending.failure);
+
+  if (isRemoved) return [];
+
+  // A driver that still holds its lock still runs it, and stops its attempts itself once it reads the cancel.
+  if (!isHeld) return [`run ${part}, part of attempt ${partOf.attempt}, is still driven by a teamai that holds its lock.`];
+
+  return (taken.value?.running ?? []).map(({ attempt, why }) => `attempt ${attempt} of run ${part}, part of attempt ${partOf.attempt}, may still run: ${why}`);
 }
 
 interface RetryContainer {

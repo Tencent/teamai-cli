@@ -359,8 +359,11 @@ async function finishLeftClaims(config: LocalConfig, records: FleetRecord[], { r
       // else stops either. One that may still run keeps the claim, so no second copy of the step runs beside it. What ran
       // in its own process, such as a Codex judge, also left its login held: that is written back and released.
       const stopped = await stopLeftInProcess(config, record.run, record.attempt);
-      // A run its killed step's process started and drove is part of that attempt, which ended with that process.
-      await endRunsPartOf(config, { run: record.run, attempt: record.attempt });
+      // A run its killed step's process started and drove is part of that attempt, which ended with that process. One whose
+      // runtime could not stop what it ran may still run: the claim is kept, so the step does not run again beside it.
+      const leftParts = await endRunsPartOf(config, { run: record.run, attempt: record.attempt });
+
+      if (leftParts.length > 0) return { error: { code: 'runtime_lost', message: `A run that its killed run of step "${record.lease.step}" started may still run: ${leftParts.join(' ')}` } };
       const isEnded = !isHeld(record) && record.state !== 'cancelling';
       const isLeftRunning = stopped.kind !== 'ended' && stopped.left.length > 0;
 
