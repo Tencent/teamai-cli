@@ -4833,6 +4833,7 @@ async function codexTrustTargets(
   localConfig: LocalConfig,
   selectedAgents: string[] | undefined,
   tool: string,
+  codexTools: readonly string[],
 ): Promise<CodexTrustTargets | null> {
   const { baseDir, manifestPath, scope: hookScope } = resolveHookScope(localConfig);
   const paths = scopedToolPaths(teamConfig, { ...localConfig, scope: hookScope })[tool];
@@ -4874,7 +4875,9 @@ async function codexTrustTargets(
     if (isSelfMode(localConfig) && home && !sources.some((s) => s.file === home)) sources.push({ file: home, manifestPath });
   }
 
-  const hooks = (await Promise.all(sources.map((s) => teamaiCodexHooks(s.file, s.manifestPath, tool)))).flat();
+  // A project's hooks file an instance shares with Codex holds the hooks of one of them, and the Codex of each runs them all.
+  const found = (await Promise.all(sources.flatMap((s) => codexTools.map((writer) => teamaiCodexHooks(s.file, s.manifestPath, writer))))).flat();
+  const hooks = [...new Map(found.map((hook) => [hook.key, hook])).values()];
 
   const mcpRecords = localConfig.scope === 'project'
     ? (await readJson<ManagedMcpManifest>(expandHome(managedMcpManifestPath(getDataHome(localConfig), localConfig.projectRoot))))
@@ -4906,7 +4909,7 @@ async function codexTrustTargetsOfScope(
   selectedAgents?: string[],
 ): Promise<CodexTrustTargets[]> {
   const tools = [CODEX_TOOL_ID, ...toolInstancesFor('use').flatMap(({ kind, name }) => kind === 'instance' && baseToolOf(name) === CODEX_TOOL_ID ? [name] : [])];
-  const targets = await Promise.all(tools.map((tool) => codexTrustTargets(teamConfig, localConfig, selectedAgents, tool)));
+  const targets = await Promise.all(tools.map((tool) => codexTrustTargets(teamConfig, localConfig, selectedAgents, tool, tools)));
 
   return targets.filter((target) => target !== null);
 }

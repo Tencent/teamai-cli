@@ -5,7 +5,7 @@ import { autoDetectInit, loadLocalConfig, loadStateForScope, readConfigFrom, res
 import { createDeliveryRecorder, deliveredOwner, deliveredOwnerElsewhere } from './git-exclude-delivered.js';
 import { gitExcludeFile, gitTracks, gitUntracked, MCP_EXCLUDE_OWNER, realFilePath, remove as removeGitExclude, stateHomeRecord, type GitExcludeFileRemoval } from './git-exclude.js';
 import {
-  codexTrustPolicy, migrateLegacyManagedHooks, OPENCLAW_TOOLS, reconcileHooks, reconcileTeamHooksForConfig, hasTeamaiHooks, hasUnrecordedTeamHooks, mainCheckoutHookFile, resolveMainCheckoutHooks, selfLocalTeamHookFile,
+  codexTrustPolicy, migrateLegacyManagedHooks, OPENCLAW_TOOLS, reconcileHooks, reconcileTeamHooksForConfig, reportCodexTrust, trustCodexForScope, hasTeamaiHooks, hasUnrecordedTeamHooks, mainCheckoutHookFile, resolveMainCheckoutHooks, selfLocalTeamHookFile,
   stopCodexTeamHookDispatch, teamHookHistory, canonicalProjectRoot, getToolCheckouts, unregisterCheckoutFromSharedManifest,
   type CodexTrustPolicy, type MainCheckoutHooks, type ReconcileHooksOptions, type SharedHooksManifest, type TeamHookHistory,
 } from './hooks.js';
@@ -3966,6 +3966,8 @@ async function removeConfirmed(
 
     try {
       unwritten = (await reconcileTeamHooksForConfig(teamConfig, localConfig, { filterAgents: plan.hookHandovers, silent: true })).unwritten ?? [];
+      // The hooks handed over are new commands to Codex, which runs them only once trusted in the home of the tool they now name.
+      reportCodexTrust(await trustCodexForScope(teamConfig, localConfig, { filterAgents: plan.hookHandovers }), 'problems');
     } catch (e) {
       log.warn(`Could not deliver the hooks of ${plan.hookHandovers.join(', ')} again: ${e instanceof Error ? e.message : String(e)}`);
     }

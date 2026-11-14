@@ -1,10 +1,12 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { hasPython, TYPED_TERMINAL } from '../helpers/in-terminal.js';
+import { installFakeCodex, pathWithoutCodex, readFakeCodexState } from '../helpers/fake-codex.js';
 
 /**
  * A team adds its internal Claude build as a tool instance in the team repo: `pull` delivers to its paths, a workflow
@@ -478,5 +480,81 @@ describe.skipIf(process.platform === 'win32')('a tool instance that moves only i
     expect(filesUnder('.claude/agents')).toEqual(['reviewer.md']);
     expect(filesUnder('.claude/rules')).toEqual(['house-style.md']);
     expect(sessionStartTools()).toEqual(['home-claude']);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('a Codex instance that moves only its home', () => {
+  let root: string;
+  let repo: string;
+  let home: string;
+  let codexBin: string;
+
+  const env = (): NodeJS.ProcessEnv => {
+    const out: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, FORCE_COLOR: '0', PATH: `${codexBin}${path.delimiter}${pathWithoutCodex()}` };
+    delete out.CODEX_HOME;
+    return out;
+  };
+  const runCLI = (args: string[]): Ran => {
+    const r = spawnSync(process.execPath, [CLI, ...args], { cwd: repo, env: env(), encoding: 'utf8', input: '' });
+    return { code: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+  };
+  const ok = (args: string[]): void => {
+    const ran = runCLI(args);
+    expect(ran.code, `${args.join(' ')}\n${ran.stdout}\n${ran.stderr}`).toBe(0);
+  };
+  const hooksFile = (): string => path.join(repo, '.codex', 'hooks.json');
+  const sessionStartTools = (): string[] => [...new Set([...fs.readFileSync(hooksFile(), 'utf8').matchAll(/hook-dispatch session-start --tool ([a-z-]+)/g)].map(([, tool]) => tool!))];
+  /** The handlers of the project's hooks file a Codex on `codexHome` runs: the project trusted there, and each handler at its current hash, as Codex keys it. */
+  const runsIn = (dir: string): { project: boolean; untrusted: string[]; trusted: number } => {
+    const state = readFakeCodexState(path.join(home, dir));
+    const hooks: Record<string, Array<{ hooks?: unknown[] }>> = JSON.parse(fs.readFileSync(hooksFile(), 'utf8')).hooks;
+    const keys = Object.entries(hooks).flatMap(([event, groups]) => groups.flatMap((group, index) => (group.hooks ?? []).map((handler, at) => ({
+      key: `${hooksFile()}:${event.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase()}:${index}:${at}`,
+      hash: `sha256:${createHash('sha256').update(JSON.stringify(handler)).digest('hex')}`,
+    }))));
+    return {
+      project: state.projects[repo]?.trust_level === 'trusted',
+      untrusted: keys.flatMap(({ key, hash }) => (state.hooksState[key]?.trusted_hash === hash ? [] : [key])),
+      trusted: Object.values(state.hooksState).filter((entry) => entry.trusted_hash).length,
+    };
+  };
+  const uninstall = (tool: string): void => ok(['uninstall', '--agent', tool, '--force']);
+
+  beforeAll(() => {
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-home-codex-e2e-')));
+    repo = path.join(root, 'repo');
+    home = path.join(root, 'home');
+    for (const dir of [repo, path.join(home, '.codex'), path.join(home, '.home-codex')]) fs.mkdirSync(dir, { recursive: true });
+    codexBin = installFakeCodex({ dir: path.join(root, 'bin') });
+    fs.writeFileSync(path.join(home, '.gitconfig'), '[user]\n\tname = Test\n\temail = test@example.com\n[gc]\n\tauto = 0\n');
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo });
+    fs.mkdirSync(path.join(repo, '.teamai', 'tools'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'README.md'), '# fixture\n');
+    fs.writeFileSync(path.join(repo, '.teamai', 'tools', 'home-codex.yaml'), 'schemaVersion: v1alpha1\nname: home-codex\nextends: codex\nhome: { dir: .home-codex }\n');
+    execFileSync('git', ['add', '-A'], { cwd: repo });
+    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repo, env: env() });
+    execFileSync('git', ['remote', 'add', 'origin', 'http://127.0.0.1:9/team/app.git'], { cwd: repo });
+  });
+
+  afterAll(() => {
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('shares the project\'s hooks file with Codex under one identity, trusts it in both homes, and hands it over on uninstall', () => {
+    ok(['init', '--self', '--agent', 'codex,home-codex', '--force']);
+    expect(sessionStartTools()).toEqual(['codex']);
+    expect(runsIn('.codex')).toMatchObject({ project: true, untrusted: [] });
+    expect(runsIn('.home-codex')).toMatchObject({ project: true, untrusted: [] });
+
+    uninstall('home-codex');
+    expect(sessionStartTools()).toEqual(['codex']);
+    expect(runsIn('.codex')).toMatchObject({ project: true, untrusted: [] });
+    expect(runsIn('.home-codex')).toMatchObject({ trusted: 0 });
+
+    ok(['init', '--self', '--agent', 'codex,home-codex', '--force']);
+    uninstall('codex');
+    expect(sessionStartTools()).toEqual(['home-codex']);
+    expect(runsIn('.home-codex')).toMatchObject({ project: true, untrusted: [] });
+    expect(runsIn('.codex')).toMatchObject({ trusted: 0 });
   });
 });
