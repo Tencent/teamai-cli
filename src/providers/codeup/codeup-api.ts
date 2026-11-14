@@ -8,18 +8,19 @@ import { getUserHome, legacyUserHome } from '../../utils/home.js';
 import { sanitizeGitUrl } from '../../utils/redact.js';
 
 /**
- * Codeup (阿里云云效代码管理, codeup.aliyun.com) OpenAPI client.
+ * Codeup (Aliyun Yunxiao code management, codeup.aliyun.com) OpenAPI client.
  *
- * Codeup is served by the Yunxiao (云效) OpenAPI — NOT GitLab-style — so this
+ * Codeup is served by the Yunxiao OpenAPI — NOT GitLab-style — so this
  * provider is modelled on gitcode/ structurally but differs in every dialect
  * detail. The request/response shapes follow the official OpenAPI reference
  * and the alibabacloud-devops-mcp-server reference implementation:
  *
- *   - API base is a SEPARATE host: https://openapi-rdc.aliyuncs.com (中心版).
- *     A Region 版 deployment drops the organizations/{organizationId} prefix;
- *     set CODEUP_API_BASE_URL (and YUNXIAO_EDITION=region) to target it.
+ *   - API base is a SEPARATE host: https://openapi-rdc.aliyuncs.com (the
+ *     central edition). A Region-edition deployment drops the
+ *     organizations/{organizationId} prefix; set CODEUP_API_BASE_URL (and
+ *     YUNXIAO_EDITION=region) to target it.
  *   - A Personal Access Token authenticates every REST call via the
- *     `x-yunxiao-token` header (云效个人访问令牌, format `pt-…`).
+ *     `x-yunxiao-token` header (format `pt-…`).
  *   - whoami is `GET /oapi/v1/platform/user` and returns `username` plus
  *     `lastOrganization`, which doubles as the organizationId fallback.
  *   - Repos are addressed by a numeric ID, resolved from the
@@ -36,10 +37,11 @@ import { sanitizeGitUrl } from '../../utils/redact.js';
  *
  * Git transport follows the URL the member typed (see codeupCloneTransport):
  * an https:// URL clones over HTTPS, an SSH URL or the bare `org/group/repo`
- * form over SSH, and CODEUP_TRANSPORT=https|ssh overrides. An HTTPS clone
- * embeds the PAT as the Basic password when its username is known too (the
- * interactive `init` flow persists both); otherwise the member's own git
- * credential setup authenticates, exactly as the generic git provider's.
+ * form over SSH, and CODEUP_TRANSPORT=https|ssh overrides. The PAT never
+ * enters the clone URL: an HTTPS clone injects it per-run as an
+ * http.extraHeader Basic credential (see codeupCloneArgs), so nothing
+ * persists to the clone's .git/config; without a token the member's own git
+ * credential setup authenticates.
  */
 
 // ─── Config ──────────────────────────────────────────────
@@ -52,7 +54,7 @@ export function codeupApiBase(): string {
   return override || CODEUP_API_BASE;
 }
 
-/** True when targeting a Region 版 Yunxiao OpenAPI (no organization path segment). */
+/** True when targeting a Region-edition Yunxiao OpenAPI (no organization path segment). */
 export function isRegionEdition(): boolean {
   const explicit = process.env.YUNXIAO_EDITION?.trim().toLowerCase();
 
@@ -82,9 +84,9 @@ function requireToken(): string {
   if (!token) {
     throw new Error(
       'Codeup authentication unavailable. Set CODEUP_TOKEN (a Yunxiao/Codeup '
-        + 'Personal Access Token, created at codeup.aliyun.com → 个人设置 → '
-        + '个人访问令牌), or run `teamai init` to paste one interactively. '
-        + 'YUNXIAO_TOKEN is accepted as an alias.',
+        + 'Personal Access Token, created at codeup.aliyun.com under Personal '
+        + 'Settings → Access Tokens), or run `teamai init` to paste one '
+        + 'interactively. YUNXIAO_TOKEN is accepted as an alias.',
     );
   }
 
@@ -148,7 +150,7 @@ function findNetrcEntry(tokens: string[]): NetrcEntry | null {
     for (let j = i + 2; j < tokens.length - 1 && tokens[j] !== 'machine'; j += 2) {
       if (tokens[j] === 'login') entry.login = tokens[j + 1] ?? null;
       else if (tokens[j] === 'password') entry.password = tokens[j + 1] ?? null;
-      else break;
+      else if (tokens[j] !== 'account') break; // `account <value>` is valid netrc; anything else ends the entry
     }
 
     return entry;
@@ -357,8 +359,9 @@ export async function resolveCodeupOrganizationId(): Promise<string> {
 
   throw new Error(
     'Could not resolve the Codeup organizationId. Set CODEUP_ORG_ID (the '
-      + 'numeric 企业标识 from 云效 组织管理 → 基本信息), or let `teamai init` save '
-      + 'it to ~/.teamai/codeup.json interactively.',
+      + 'numeric organization ID from the Yunxiao console under Organization '
+      + 'Management → Basic Information), or let `teamai init` save it to '
+      + '~/.teamai/codeup.json interactively.',
   );
 }
 
@@ -482,40 +485,41 @@ export function codeupCloneTransport(inputTransport: CodeupTransport | null): Co
 }
 
 /**
- * Build the clone URL for the resolved transport. An HTTPS clone embeds the
- * PAT as the Basic password only when the username is known too (the
- * interactive init flow persists both, and CODEUP_USERNAME /
- * ~/.teamai/codeup.json / ~/.netrc carry them later); with either unknown the
- * URL stays plain and the member's git credential setup authenticates, exactly
- * as the generic git provider's HTTPS clone does. PAT-as-git-password is not a
- * verified path on every deployment, so CODEUP_TRANSPORT=ssh opts back out.
+ * The git clone arguments for `repo`. The URL stays credential-free — a token
+ * in the URL would persist to the clone's `.git/config` (0644) and outlive its
+ * rotation, and Codeup's own authentication guide says not to encode it in the
+ * URL. A known PAT is instead injected per-run as an `http.extraHeader` Basic
+ * credential, the pattern clone.ts uses for GitLab/GitCode. The Basic username
+ * is fixed to `oauth2`: Codeup checks only the token — any username with a
+ * valid PAT clones (live-verified) — so no username lookup is needed here.
+ * Without a token the plain URL goes through the member's git credential setup.
  */
-function cloneUrl(repo: string, transport: CodeupTransport, username: string | null, token: string | null): string {
-  if (transport === 'https') {
-    return token && username
-      ? `https://${encodeURIComponent(username)}:${encodeURIComponent(token)}@${CODEUP_HOST}/${repo}.git`
-      : `https://${CODEUP_HOST}/${repo}.git`;
+export function codeupCloneArgs(repo: string, inputTransport: CodeupTransport | null = null): string[] {
+  if (codeupCloneTransport(inputTransport) === 'ssh') {
+    return ['clone', `git@${CODEUP_HOST}:${repo}.git`];
   }
 
-  return `git@${CODEUP_HOST}:${repo}.git`;
-}
-
-/** The URL `codeupRepoClone` clones: transport from the input scheme and env, credentials when both are known. */
-export function codeupCloneUrl(repo: string, inputTransport: CodeupTransport | null = null): string {
+  const url = `https://${CODEUP_HOST}/${repo}.git`;
   const token = getCodeupToken();
-  const username = token ? configuredUsername() ?? readNetrcUsername() : null;
 
-  return cloneUrl(repo, codeupCloneTransport(inputTransport), username, token);
+  if (!token) return ['clone', url];
+
+  const basic = Buffer.from(`oauth2:${token}`).toString('base64');
+
+  return ['-c', `http.extraHeader=Authorization: Basic ${basic}`, 'clone', url];
 }
 
-/** Redact an embedded username:token credential from git output before throwing. */
+/** Redact a credential — an embedded pair or the Basic header — from git output before throwing. */
 function redactCloneOutput(output: string): string {
-  return sanitizeGitUrl(output.replace(/:\/\/[^@\s/]+@/, '://***@')).trim();
+  return sanitizeGitUrl(output
+    .replace(/:\/\/[^@\s/]+@/, '://***@')
+    .replace(/Authorization: Basic \S+/gi, 'Authorization: Basic ***'))
+    .trim();
 }
 
-/** Clone a Codeup repo to localPath. See codeupCloneUrl for the transport choice. */
+/** Clone a Codeup repo to localPath. See codeupCloneArgs for the transport choice. */
 export function codeupRepoClone(repo: string, localPath: string, inputTransport: CodeupTransport | null = null): void {
-  const result = spawnSync('git', ['clone', codeupCloneUrl(repo, inputTransport), localPath], {
+  const result = spawnSync('git', [...codeupCloneArgs(repo, inputTransport), localPath], {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
     timeout: 120_000,
@@ -647,7 +651,7 @@ const ListedMrSchema = z.object({
 
 type ListedMr = z.infer<typeof ListedMrSchema>;
 
-/** The change request list endpoint: org-scoped in the central edition, flat in a Region 版. */
+/** The change request list endpoint: org-scoped in the central edition, flat in the Region edition. */
 function mrListBase(orgId: string): string {
   return isRegionEdition()
     ? `${codeupApiBase()}/oapi/v1/codeup/changeRequests`

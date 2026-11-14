@@ -10,7 +10,7 @@ import {
   codeupMrCreate,
   codeupFindOpenMr,
   codeupMrHistory,
-  codeupCloneUrl,
+  codeupCloneArgs,
   readNetrcUsername,
   writeNetrcToken,
 } from '../providers/codeup/codeup-api.js';
@@ -66,16 +66,17 @@ describe('Codeup repo-url parsing', () => {
     expect(info.repo).toBe('group/repo');
   });
 
-  it('ignores trailing web-route segments (/changeRequest/list)', () => {
-    const info = parseCodeupRepoInput('https://codeup.aliyun.com/org/group/repo/changeRequest/list');
-    expect(info.owner).toBe('org');
-    expect(info.repo).toBe('group/repo');
+  it('refuses a browser URL whose web-route suffix has no .git marker, naming both readings', () => {
+    const parse = () => parseCodeupRepoInput('https://codeup.aliyun.com/org/group/repo/tree/main');
+
+    expect(parse).toThrow(/Ambiguous Codeup URL/);
+    expect(parse).toThrow(/codeup\.aliyun\.com\/org\/group\/repo\.git/);
+    expect(parse).toThrow(/codeup\.aliyun\.com\/org\/group\/repo\/tree\/main\.git/);
   });
 
-  it('ignores file-browser web-route segments (/tree/main)', () => {
-    const info = parseCodeupRepoInput('https://codeup.aliyun.com/org/group/repo/tree/main');
-    expect(info.owner).toBe('org');
-    expect(info.repo).toBe('group/repo');
+  it('refuses a browser URL with any other web-route suffix the same way', () => {
+    expect(() => parseCodeupRepoInput('https://codeup.aliyun.com/org/group/repo/changeRequest/list'))
+      .toThrow(/Ambiguous Codeup URL/);
   });
 
   it('strips .git before a web-route suffix', () => {
@@ -196,6 +197,15 @@ describe('Codeup token resolution', () => {
     expect(readNetrcUsername()).toBe('zhangsan');
   });
 
+  it('reads credentials past an account keyword in a netrc entry', () => {
+    fs.writeFileSync(
+      path.join(tmpHome, '.netrc'),
+      'machine codeup.aliyun.com login alice account example password pt-token\n',
+    );
+    expect(getCodeupToken()).toBe('pt-token');
+    expect(readNetrcUsername()).toBe('alice');
+  });
+
   it('writeNetrcToken replaces a multiline entry without orphaning its credential lines', () => {
     fs.writeFileSync(
       path.join(tmpHome, '.netrc'),
@@ -234,36 +244,42 @@ describe('Codeup clone transport', () => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
   });
 
-  it('clones an https input as a plain https URL when no credentials are configured', () => {
-    expect(codeupCloneUrl('org/group/repo', 'https')).toBe('https://codeup.aliyun.com/org/group/repo.git');
+  it('clones an https input as a credential-free https URL when no token is configured', () => {
+    expect(codeupCloneArgs('org/group/repo', 'https')).toEqual(['clone', 'https://codeup.aliyun.com/org/group/repo.git']);
   });
 
   it('clones an ssh or bare input over ssh', () => {
-    expect(codeupCloneUrl('org/group/repo', 'ssh')).toBe('git@codeup.aliyun.com:org/group/repo.git');
-    expect(codeupCloneUrl('org/group/repo', null)).toBe('git@codeup.aliyun.com:org/group/repo.git');
+    expect(codeupCloneArgs('org/group/repo', 'ssh')).toEqual(['clone', 'git@codeup.aliyun.com:org/group/repo.git']);
+    expect(codeupCloneArgs('org/group/repo', null)).toEqual(['clone', 'git@codeup.aliyun.com:org/group/repo.git']);
   });
 
-  it('embeds the PAT in an https clone once token and username are known', () => {
+  it('injects a known PAT as an oauth2 Basic header, keeping the URL credential-free', () => {
     process.env.CODEUP_TOKEN = 'pt-token';
-    process.env.CODEUP_USERNAME = 'zhangsan';
+    const basic = Buffer.from('oauth2:pt-token').toString('base64');
 
-    expect(codeupCloneUrl('org/repo', 'https')).toBe('https://zhangsan:pt-token@codeup.aliyun.com/org/repo.git');
+    expect(codeupCloneArgs('org/repo', 'https')).toEqual([
+      '-c', `http.extraHeader=Authorization: Basic ${basic}`,
+      'clone', 'https://codeup.aliyun.com/org/repo.git',
+    ]);
   });
 
-  it('reads the username from ~/.netrc when CODEUP_USERNAME is unset', () => {
+  it('takes the token from ~/.netrc when no env token is set', () => {
     fs.writeFileSync(path.join(tmpHome, '.netrc'), 'machine codeup.aliyun.com login lisi password netrc-tok\n');
+    const basic = Buffer.from('oauth2:netrc-tok').toString('base64');
 
-    expect(codeupCloneUrl('org/repo', 'https')).toBe('https://lisi:netrc-tok@codeup.aliyun.com/org/repo.git');
+    expect(codeupCloneArgs('org/repo', 'https')).toEqual([
+      '-c', `http.extraHeader=Authorization: Basic ${basic}`,
+      'clone', 'https://codeup.aliyun.com/org/repo.git',
+    ]);
   });
 
   it('lets CODEUP_TRANSPORT override the input scheme', () => {
     process.env.CODEUP_TRANSPORT = 'https';
-    expect(codeupCloneUrl('org/repo', null)).toBe('https://codeup.aliyun.com/org/repo.git');
+    expect(codeupCloneArgs('org/repo', null)).toEqual(['clone', 'https://codeup.aliyun.com/org/repo.git']);
 
     process.env.CODEUP_TRANSPORT = 'ssh';
     process.env.CODEUP_TOKEN = 'pt-token';
-    process.env.CODEUP_USERNAME = 'zhangsan';
-    expect(codeupCloneUrl('org/repo', 'https')).toBe('git@codeup.aliyun.com:org/repo.git');
+    expect(codeupCloneArgs('org/repo', 'https')).toEqual(['clone', 'git@codeup.aliyun.com:org/repo.git']);
   });
 });
 
@@ -768,5 +784,22 @@ describe('Codeup authenticate (codeup-scope PAT fallback)', () => {
 
     expect(saved.organizationId).toBe('64700f00f1234');
     expect(questionAnswers).toHaveLength(0);
+  });
+
+  it('does not persist a prompted organizationId the probe rejects', async () => {
+    mockScopeLimitedFetch(404);
+    process.env.CODEUP_USERNAME = 'zhangsan';
+    questionAnswers = ['64700f00f9999'];
+    const originalIsTTY = process.stdin.isTTY;
+
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+
+    try {
+      await expect(new CodeupProvider().authenticate()).rejects.toThrow(/CODEUP_ORG_ID/);
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: originalIsTTY, configurable: true });
+    }
+
+    expect(fs.existsSync(path.join(tmpHome, '.teamai', 'codeup.json'))).toBe(false);
   });
 });

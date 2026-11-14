@@ -6,6 +6,7 @@ import fs from 'fs-extra';
 import { getGitHubToken } from './providers/github/gh-cli.js';
 import { getGitLabToken } from './providers/gitlab/gitlab-api.js';
 import { getGitCodeToken } from './providers/gitcode/gitcode-api.js';
+import { getCodeupToken } from './providers/codeup/codeup-api.js';
 import { tgitGitCloneUrl } from './providers/tgit/rest-auth.js';
 import { log } from './utils/logger.js';
 import { sanitizeGitUrl } from './utils/redact.js';
@@ -236,6 +237,22 @@ function resolveCloneAuth(
             cloneMethod = 'https-anonymous';
             log.debug('shallowClone: no GITCODE_TOKEN; trying anonymous HTTPS');
         }
+    } else if (provider === 'codeup') {
+        // Codeup: the PAT goes over HTTP Basic, injected with http.extraHeader so
+        // it never enters the URL or .git/config. The service checks only the
+        // token — any username with a valid PAT clones (verified live) — so the
+        // username is fixed to oauth2, the GitLab/GitCode convention.
+        const token = getCodeupToken();
+        cloneUrl = url.replace(/^http:\/\//, 'https://');
+
+        if (token) {
+            extraAuthHeader = buildAuthHeader(token, 'oauth2');
+            cloneMethod = 'https-token';
+            log.debug('shallowClone: cloning Codeup repository over HTTPS with token');
+        } else {
+            cloneMethod = 'https-anonymous';
+            log.debug('shallowClone: no CODEUP_TOKEN; trying anonymous HTTPS');
+        }
     } else {
         // 其他 provider 依赖 Git 自身的 credential helper / ~/.netrc。
         cloneUrl = url.replace(/^http:\/\//, 'https://');
@@ -359,6 +376,12 @@ function fetchAuthHeader(provider?: string): string | null {
         return token ? buildAuthHeader(token, 'oauth2') : null;
     }
 
+    if (provider === 'codeup') {
+        const token = getCodeupToken();
+
+        return token ? buildAuthHeader(token, 'oauth2') : null;
+    }
+
     return null;
 }
 
@@ -366,7 +389,7 @@ function fetchAuthHeader(provider?: string): string | null {
  * 在已有 clone 目录上执行 git fetch 并 reset 到最新 HEAD（用于 P5.3 增量；P5.1 暂不调用）。
  *
  * @param localPath  本地 clone 目录
- * @param opts       选项。传入 `provider` 时，token 类 provider（github/gitlab/gitcode）
+ * @param opts       选项。传入 `provider` 时，token 类 provider（github/gitlab/gitcode/codeup）
  *                   会用 `http.extraHeader` 复用认证——私有仓无需 credential helper 即可 fetch，
  *                   且 token 不进 URL / .git/config。
  */

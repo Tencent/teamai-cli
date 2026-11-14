@@ -1,7 +1,7 @@
 import type { RepoInfo } from '../types.js';
 
 /**
- * Git host for Codeup (阿里云云效代码管理) repos. Fixed to the public platform
+ * Git host for Codeup (Aliyun Yunxiao code management) repos. Fixed to the public platform
  * codeup.aliyun.com — this provider does not support private deployments. The
  * OpenAPI lives on a separate host (openapi-rdc.aliyuncs.com), handled in
  * codeup-api.ts.
@@ -11,10 +11,11 @@ export const CODEUP_HOST = 'codeup.aliyun.com';
 /**
  * Path segments that start a web route rather than the repo path proper —
  * the browser's URLs for a repo's merge requests, file browser, commits and
- * settings append them after the repo path, so everything from the first
- * match onward is dropped — but only in a pasted browser URL, and only when
- * the segment carries a sub-path (see parseCodeupRepoInput). Only consulted
- * once at least two path segments (a usable `owner/repo`) have been collected.
+ * settings append them after the repo path. A browser URL carrying one with a
+ * sub-path after it is ambiguous — a route suffix or a nested group of that
+ * name — and parseCodeupRepoInput refuses it rather than guessing. Only
+ * consulted once at least two path segments (a usable `owner/repo`) have been
+ * collected, and never for the last segment.
  */
 const WEB_ROUTE_SEGMENTS = new Set([
   'change',
@@ -75,9 +76,10 @@ function urlHost(input: string): string | null {
  *   - Short format:  `org/group/repo` (Codeup namespaces nest under an
  *                    organization, so at least `owner/repo` and commonly
  *                    `org/team/repo` — the path is kept whole)
- *   - HTTPS URL:     `https://codeup.aliyun.com/org/group/repo(.git)`,
- *                    tolerating trailing web-route segments
- *                    (`/changeRequest/list`, `/tree/master`, …)
+ *   - HTTPS URL:     `https://codeup.aliyun.com/org/group/repo(.git)`; a
+ *                    mid-path `.git` ends the repo path
+ *                    (`…/repo.git/tree/main`), while a route-like segment
+ *                    without any `.git` marker is refused as ambiguous
  *   - SSH URL:       `git@codeup.aliyun.com:org/group/repo(.git)`
  *
  * Codeup repo paths are multi-level (organization → optional nested groups →
@@ -112,20 +114,43 @@ export function parseCodeupRepoInput(input: string): RepoInfo {
   const allSegs = withoutPrefix.split('/').filter(Boolean);
   const browserUrl = /^https?:\/\//i.test(trimmed);
 
-  // Only a pasted browser URL carries web-route suffixes; a clone URL (any SSH
-  // form, or a path ending in `.git`) and the bare short form never do — there
-  // a route-like segment is a genuine nested group (`org/team/files/repo`).
-  // Even in a browser URL, strip only from a route segment with a sub-path
-  // after it (`/tree/master`, `/changeRequest/list`): a route-named last
-  // segment is more often a repo of that name, and cutting a real path short
-  // silently resolves a different repo instead of failing.
-  const stripsRoutes = browserUrl && !/\.git\/?$/i.test(withoutPrefix);
+  // A `.git`-suffixed segment in a browser URL ends the repo path
+  // unambiguously — no repo path segment carries `.git` — so
+  // `org/repo.git/tree/main` reads as the repo `org/repo` plus a route suffix.
+  const gitSeg = browserUrl ? allSegs.findIndex((seg) => /\.git$/i.test(seg)) : -1;
+  const endsInGit = gitSeg !== -1 && gitSeg === allSegs.length - 1;
 
-  const cut = stripsRoutes
-    ? allSegs.findIndex((seg, i) => i >= 2 && i < allSegs.length - 1 && WEB_ROUTE_SEGMENTS.has(seg))
-    : -1;
+  let segs: string[];
 
-  const segs = cut === -1 ? allSegs : allSegs.slice(0, cut);
+  if (gitSeg !== -1 && !endsInGit) {
+    segs = allSegs.slice(0, gitSeg + 1);
+  } else if (browserUrl && !endsInGit) {
+    // No `.git` marker: a route-named segment carrying a sub-path leaves two
+    // honest readings — the repo before it browsed at that route, or a nested
+    // group of that name. Refuse and name both: silently picking one can
+    // resolve a different real repo, which is harder to notice than an error.
+    const cut = allSegs.findIndex((seg, i) => i >= 2 && i < allSegs.length - 1 && WEB_ROUTE_SEGMENTS.has(seg));
+
+    if (cut !== -1) {
+      const asRoute = allSegs.slice(0, cut).join('/');
+      const asPath = allSegs.join('/');
+
+      throw new Error(
+        `Ambiguous Codeup URL: "${trimmed}"\n` +
+          `  "/${allSegs.slice(cut).join('/')}" reads either as a web-route suffix of the repo "${asRoute}",\n` +
+          `  or as part of the repo path "${asPath}". Pass one of:\n` +
+          `    https://${CODEUP_HOST}/${asRoute}.git\n` +
+          `    https://${CODEUP_HOST}/${asPath}.git`,
+      );
+    }
+
+    segs = allSegs;
+  } else {
+    // Clone URLs (any SSH form, or a path ending in `.git`) and the bare short
+    // form never carry web routes: every segment there is repo path, so a
+    // route-like name is a genuine nested group (`org/team/files/repo`).
+    segs = allSegs;
+  }
 
   if (segs.length >= 2) {
     const owner = segs[0];

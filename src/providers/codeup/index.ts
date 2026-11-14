@@ -21,19 +21,19 @@ import { parseCodeupRepoInput, codeupInputTransport, type CodeupTransport, CODEU
 import { log } from '../../utils/logger.js';
 import { askQuestion, isInteractive } from '../../utils/prompt.js';
 
-const ORG_ID_QUESTION = 'Your Codeup organizationId (企业标识, from 云效 组织管理 → 基本信息): ';
-const USERNAME_QUESTION = 'Your Codeup username (登录名): ';
+const ORG_ID_QUESTION = 'Your Codeup organizationId (the numeric organization ID from the Yunxiao console, Organization Management → Basic Information): ';
+const USERNAME_QUESTION = 'Your Codeup username (login name): ';
 
 /** The error an unreachable OpenAPI answers with — a network failure is not a rejected token. */
 function apiUnreachableError(retryHint: string): Error {
   return new Error(
     `Could not reach the Codeup API at ${codeupApiBase()}. Check the network connection${retryHint}, `
-      + 'or CODEUP_API_BASE_URL / YUNXIAO_EDITION if this deployment is a Region 版 Yunxiao.',
+      + 'or CODEUP_API_BASE_URL / YUNXIAO_EDITION if this deployment is a Region-edition Yunxiao.',
   );
 }
 
 /**
- * Codeup (阿里云云效代码管理, codeup.aliyun.com) provider.
+ * Codeup (Aliyun Yunxiao code management, codeup.aliyun.com) provider.
  *
  * Uses the Yunxiao OpenAPI directly — no external CLI is required, only a
  * Personal Access Token. See codeup-api.ts for the token resolution order
@@ -41,12 +41,11 @@ function apiUnreachableError(retryHint: string): Error {
  * distinguish it from the GitLab provider it is structurally modelled on.
  *
  * Git transport follows the URL the member typed: an https:// URL clones over
- * HTTPS (the member's git credentials, or the PAT as the Basic password when
- * its username is known too), an SSH URL or the bare `org/group/repo` form
- * clones over SSH — the SSH key on the machine authenticates, exactly as the
- * generic `git` provider does. The PAT is otherwise only needed for OpenAPI
- * calls such as merge request creation. CODEUP_TRANSPORT=https|ssh overrides
- * (see codeup-api.ts codeupCloneTransport).
+ * HTTPS — the PAT injected per-run as an http.extraHeader Basic credential,
+ * never into the URL or the clone's .git/config — and an SSH URL or the bare
+ * `org/group/repo` form clones over SSH, the SSH key on the machine
+ * authenticating exactly as the generic `git` provider does.
+ * CODEUP_TRANSPORT=https|ssh overrides (see codeup-api.ts codeupCloneArgs).
  */
 export class CodeupProvider implements GitProvider {
   readonly name = 'codeup';
@@ -78,7 +77,7 @@ export class CodeupProvider implements GitProvider {
    * platform endpoint answers 403 for it) cannot: the token is then validated
    * with a codeup-scoped probe (the org repository list), and the username
    * comes from CODEUP_USERNAME or ~/.teamai/codeup.json. Interactive init
-   * asks for the missing pieces and persists them; a Region 版 deployment
+   * asks for the missing pieces and persists them; a Region-edition deployment
    * needs no organizationId at all.
    */
   async authenticate(): Promise<string> {
@@ -93,9 +92,11 @@ export class CodeupProvider implements GitProvider {
     // 3. A configured token without platform scope: validate it with a
     //    codeup-scoped probe and take the username from the configuration.
     let orgId = configuredOrganizationId();
+    let promptedOrgId: string | null = null;
 
     if (!orgId && !isRegionEdition()) {
-      orgId = await this.askOrganizationId();
+      promptedOrgId = await this.askOrganizationId();
+      orgId = promptedOrgId;
     }
 
     const probe = await probeCodeupToken(orgId ?? '');
@@ -105,13 +106,18 @@ export class CodeupProvider implements GitProvider {
 
       throw new Error(
         `Codeup token is set but was rejected by the API (HTTP ${probe.status}). Check `
-          + 'CODEUP_TOKEN / YUNXIAO_TOKEN, or generate a new Personal Access Token at '
-          + `https://${CODEUP_HOST} → 个人设置 / Personal Settings → 个人访问令牌 / Access Tokens.`,
+          + 'CODEUP_TOKEN / YUNXIAO_TOKEN and CODEUP_ORG_ID — a wrong organization id '
+          + 'answers the same way — or generate a new Personal Access Token at '
+          + `https://${CODEUP_HOST} (Personal Settings → Access Tokens).`,
       );
     }
 
-    // The netrc login doubles as the git-over-HTTPS username, so it names the
-    // member here too — the same fallback codeupCloneUrl uses.
+    // Persist a prompted id only after the probe accepted it: a mistyped id
+    // must not stay saved and silence the next prompt.
+    if (promptedOrgId) saveCodeupSettings({ organizationId: promptedOrgId });
+
+    // The netrc login is the member's Codeup account name, so it identifies
+    // the member here too when nothing else carries the name.
     const configuredName = configuredUsername() ?? readNetrcUsername();
 
     if (configuredName) return configuredName;
@@ -135,13 +141,14 @@ export class CodeupProvider implements GitProvider {
     return username;
   }
 
-  /** The organizationId a codeup-scope-only PAT cannot discover: asked and persisted interactively, an error headless. */
+  /** The organizationId a codeup-scope-only PAT cannot discover: asked interactively, an error headless. The caller saves it once the probe accepts it. */
   private async askOrganizationId(): Promise<string> {
     if (!isInteractive()) {
       throw new Error(
         'Codeup token is set, but the organizationId is not. A PAT with only codeup '
-          + 'scope cannot discover it. Set CODEUP_ORG_ID (the numeric 企业标识 from '
-          + '云效 组织管理 → 基本信息), or run `teamai init` interactively to save it.',
+          + 'scope cannot discover it. Set CODEUP_ORG_ID (the numeric organization ID '
+          + 'from the Yunxiao console under Organization Management → Basic Information), '
+          + 'or run `teamai init` interactively to save it.',
       );
     }
 
@@ -150,8 +157,6 @@ export class CodeupProvider implements GitProvider {
     if (!orgId) {
       throw new Error('No organizationId provided. Codeup authentication cancelled.');
     }
-
-    saveCodeupSettings({ organizationId: orgId });
 
     return orgId;
   }
@@ -166,8 +171,8 @@ export class CodeupProvider implements GitProvider {
     }
 
     log.info(
-      `Not logged in to Codeup. Create a Personal Access Token at https://${CODEUP_HOST} → ` +
-        '个人设置 / Personal Settings → 个人访问令牌 / Access Tokens, then paste it below.',
+      `Not logged in to Codeup. Create a Personal Access Token at https://${CODEUP_HOST} ` +
+        '(Personal Settings → Access Tokens), then paste it below.',
     );
     const token = (await askQuestion('Paste your Codeup Personal Access Token: ')).trim();
 
@@ -188,8 +193,8 @@ export class CodeupProvider implements GitProvider {
       return pastedName;
     }
 
-    // The token has no platform scope: ask for the org id (a Region 版 needs
-    // none) and the username, then validate with the codeup-scoped probe
+    // The token has no platform scope: ask for the org id (the Region edition
+    // needs none) and the username, then validate with the codeup-scoped probe
     // before persisting.
     let orgId = configuredOrganizationId();
 
@@ -209,7 +214,7 @@ export class CodeupProvider implements GitProvider {
 
       if (probe.status === undefined) throw apiUnreachableError(' and try again');
 
-      throw new Error('Codeup authentication failed: the pasted token was rejected. Please try again.');
+      throw new Error('Codeup authentication failed: the pasted token or the organizationId was rejected. Please try again.');
     }
 
     let username = configuredUsername();
