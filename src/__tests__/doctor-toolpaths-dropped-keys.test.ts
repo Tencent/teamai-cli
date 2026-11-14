@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { loadTeamConfig } from '../config.js';
 import { toolPathsDroppedKeyNotes } from '../doctor-delivery.js';
+import { resetToolInstancesForTests } from '../tool-instances.js';
 import type { DoctorContext } from '../doctor.js';
 import { TeamaiConfigSchema, scopedToolPaths, type LocalConfig, type TeamaiConfig } from '../types.js';
 
@@ -87,6 +88,8 @@ describe('doctor notes — toolPaths entries that drop a default-provided key (#
 });
 
 describe('doctor notes — a team tool instance whose paths drop a key', () => {
+  afterEach(resetToolInstancesForTests);
+
   const contextOf = async (files: Record<string, string>): Promise<DoctorContext> => {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-instance-doctor-'));
     fs.writeFileSync(path.join(repo, 'teamai.yaml'), 'team: t\nrepo: owner/repo\n');

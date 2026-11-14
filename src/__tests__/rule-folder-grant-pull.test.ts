@@ -96,6 +96,8 @@ describe('the Claude Code grant of the rule folders a pull delivers (#1787)', ()
   });
 
   afterEach(async () => {
+    const { resetToolInstancesForTests } = await import('../tool-instances.js');
+    resetToolInstancesForTests();
     vi.mocked(saveStateForScope).mockReset();
     vi.mocked(loadStateForScope).mockImplementation(async () => ({}) as never);
     vi.unstubAllEnvs();

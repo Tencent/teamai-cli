@@ -249,8 +249,8 @@ describe('hook runs and the scope they belong to (#748)', () => {
 
 describe('a hook of a tool instance', () => {
   afterEach(async () => {
-    const { useToolInstances } = await import('../tool-registry.js');
-    useToolInstances(new Map());
+    const { resetToolInstancesForTests } = await import('../tool-instances.js');
+    resetToolInstancesForTests();
   });
 
   it.skipIf(process.platform === 'win32')('records what its login environment sees of HTTP enrolment, as the tool it extends does, so its next prompt can take the fast path', async () => {

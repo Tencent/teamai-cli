@@ -4269,6 +4269,11 @@ describe('uninstall', () => {
   describe('a team tool instance in a workspace', () => {
     const ACME_CLAUDE = 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude }\n';
 
+    afterEach(async () => {
+      const { resetToolInstancesForTests } = await import('../tool-instances.js');
+      resetToolInstancesForTests();
+    });
+
     /** A workspace whose team repo adds acme-claude, set up as init leaves it: its rules and agents folders made before anything is in them. */
     async function setupInstance(): Promise<{ projectRoot: string; folder: string }> {
       const { homeDir, repoPath } = await setupFixture(tmpDir);

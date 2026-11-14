@@ -629,8 +629,8 @@ describe('pull writes MCP servers where each tool reads them (#1221)', () => {
     }
 
     const { loadTeamConfig } = await import('../config.js');
-    const { useToolInstances } = await import('../tool-registry.js');
-    onTestFinished(() => useToolInstances(new Map()));
+    const { resetToolInstancesForTests } = await import('../tool-instances.js');
+    onTestFinished(resetToolInstancesForTests);
     const teamConfig = await loadTeamConfig(repo);
 
     if (!teamConfig) throw new Error('the team config did not load');

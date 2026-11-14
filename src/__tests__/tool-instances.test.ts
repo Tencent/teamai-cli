@@ -169,6 +169,26 @@ describe('team tool instances', () => {
     expect(shown()).toEqual([refusal, refusal]);
   });
 
+  it('forgets the team repos it loaded once reset, so a repo loaded after defines a name anew', async () => {
+    const repoOf = (dir: string, command: string): string => {
+      const repo = path.join(root, dir);
+      fs.mkdirSync(path.join(repo, 'tools'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'teamai.yaml'), 'team: acme\nrepo: acme/team\n');
+      fs.writeFileSync(path.join(repo, 'tools', 'acme-claude.yaml'), ACME_CLAUDE.replace('command: acme-claude', `command: ${command}`));
+
+      return repo;
+    };
+    const { loadTeamConfig } = await import('../config.js');
+    const { resetToolInstancesForTests } = await import('../tool-instances.js');
+    const registry = await import('../tool-registry.js');
+
+    await loadTeamConfig(repoOf('first', 'acme-claude-1'));
+    resetToolInstancesForTests();
+    await loadTeamConfig(repoOf('second', 'acme-claude-2'));
+
+    expect(registry.toolOf('acme-claude')?.instance?.command).toBe('acme-claude-2');
+  });
+
   it('accepts an instance whose command is a bare name, looked up on PATH where the tool runs', async () => {
     const { registry, errors } = await load(teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE.replace('command: acme-claude', 'command: acme-claude-2.4') }));
 
