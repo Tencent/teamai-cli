@@ -7,6 +7,7 @@ import { GitCodeProvider } from './gitcode/index.js';
 import { GenericGitProvider } from './git/index.js';
 import { getCurrentPackageName } from '../package-info.js';
 import { probeSelfHostedGitLab } from './gitlab/probe.js';
+import { makeProviderRegistry, type ProviderDefinition } from '@teamai/provider-core/registry';
 
 // ─── Provider Detection ──────────────────────────────────
 //
@@ -29,17 +30,16 @@ import { probeSelfHostedGitLab } from './gitlab/probe.js';
 // tests or special environments.
 //
 
-/** Known host → provider name mapping. */
-const HOST_MAP = new Map([
-  ['github.com', 'github'],
-  ['git.woa.com', 'tgit'],
-  ['cnb.cool', 'cnb'],
-  ['gitlab.com', 'gitlab'],
-  ['gitcode.com', 'gitcode'],
-]);
+const DEFINITIONS = [
+  { name: 'tgit', hosts: ['git.woa.com'], defaultEligible: true, create: () => new TGitProvider() },
+  { name: 'github', hosts: ['github.com'], defaultEligible: true, create: () => new GitHubProvider() },
+  { name: 'cnb', hosts: ['cnb.cool'], defaultEligible: true, create: () => new CNBProvider() },
+  { name: 'gitlab', hosts: ['gitlab.com'], defaultEligible: true, create: () => new GitLabProvider() },
+  { name: 'gitcode', hosts: ['gitcode.com'], defaultEligible: true, create: () => new GitCodeProvider() },
+  { name: 'git', hosts: [], defaultEligible: false, create: () => new GenericGitProvider() },
+] as const satisfies readonly ProviderDefinition<string, GitProvider>[];
 
-/** Providers we are willing to accept as a default override. */
-const KNOWN_PROVIDERS = new Set(['github', 'tgit', 'cnb', 'gitlab', 'gitcode']);
+const REGISTRY = makeProviderRegistry(DEFINITIONS);
 
 /**
  * Decide the fallback provider used when the input URL host is unknown or
@@ -53,7 +53,7 @@ const KNOWN_PROVIDERS = new Set(['github', 'tgit', 'cnb', 'gitlab', 'gitcode']);
 export function getDefaultProvider(): string {
   const override = process.env.TEAMAI_DEFAULT_PROVIDER?.trim();
 
-  if (override && KNOWN_PROVIDERS.has(override)) return override;
+  if (override && REGISTRY.isProviderId(override) && REGISTRY.defaultIds.has(override)) return override;
 
   try {
     const pkgName = getCurrentPackageName();
@@ -145,7 +145,7 @@ export async function detectProviderForInit(input: string): Promise<string> {
  * provider for arbitrary hosts.
  */
 function resolveHostProvider(host: string): string {
-  return HOST_MAP.get(host) ?? detectSelfHostedGitLabHost(host) ?? 'git';
+  return REGISTRY.nameForHost(host) ?? detectSelfHostedGitLabHost(host) ?? 'git';
 }
 
 /**
@@ -197,31 +197,21 @@ function configuredGitLabHosts(): string[] {
 
 // ─── Provider Factory ────────────────────────────────────
 
-/** Registry of available providers. */
-const PROVIDERS = new Map<string, () => GitProvider>([
-  ['tgit', () => new TGitProvider()],
-  ['github', () => new GitHubProvider()],
-  ['cnb', () => new CNBProvider()],
-  ['gitlab', () => new GitLabProvider()],
-  ['gitcode', () => new GitCodeProvider()],
-  ['git', () => new GenericGitProvider()],
-]);
-
 /**
  * Get a provider instance by name.
  * Defaults to the distribution-based default provider when no name is given.
  */
 export function getProvider(providerName?: string): GitProvider {
   const name = providerName ?? getDefaultProvider();
-  const factory = PROVIDERS.get(name);
+  const provider = REGISTRY.create(name);
 
-  if (!factory) {
+  if (!provider) {
     throw new Error(
-      `Unknown git provider: "${name}". Available: ${[...PROVIDERS.keys()].join(', ')}`,
+      `Unknown git provider: "${name}". Available: ${REGISTRY.ids.join(', ')}`,
     );
   }
 
-  return factory();
+  return provider;
 }
 
 /**
