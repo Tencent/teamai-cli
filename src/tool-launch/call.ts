@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveConfigForDir } from '../config.js';
+import { resolveConfigForDir, resolveMemberToolRoots } from '../config.js';
 import { LAUNCHED_BY_ENV, resolveRunMode, RUN_MODE_ENV, type LaunchedBy } from '../launch-context.js';
 import type { LocalConfig } from '../types.js';
 import { resolveCliPath } from '../utils/cli-path.js';
@@ -9,7 +9,7 @@ import { log } from '../utils/logger.js';
 import { CallError, memberTools, type MemberTool } from './member-tools.js';
 import { runTool } from './run.js';
 import type { TokenUsage } from './stdout.js';
-import { executableOf, LAUNCH_ORDER, launchAdapterIdOf, launchAdapterOf, type LaunchOrderTool } from './tools.js';
+import { executableOf, LAUNCH_ORDER, launchAdapterIdOf, launchAdapterOf, toolCommandEnv, type LaunchOrderTool } from './tools.js';
 import { agyGatewayEnv } from '../models/agy-gateway.js';
 
 const DEFAULT_TIMEOUT_MS = 600_000;
@@ -56,14 +56,19 @@ async function scopeHere(): Promise<LocalConfig | undefined> {
 
 type Picked = { tool: LaunchOrderTool; executable: string };
 
-/** The environment a call's tool runs in: the member's own, marked as teamai's launch, without an outer launch's checkout. */
-function callEnv(launchedBy: LaunchedBy, tool: string): NodeJS.ProcessEnv {
+/**
+ * The environment a call's tool runs in: the member's own at the home teamai delivered the tool to, marked as teamai's
+ * launch, without an outer launch's checkout. A recorded home that is gone fails the call, as it skips delivery.
+ */
+function callEnv({ launchedBy, tool, toolRoots }: { launchedBy: LaunchedBy; tool: string; toolRoots: LocalConfig['toolRoots'] }): NodeJS.ProcessEnv {
   const { TEAMAI_LAUNCHED_TOOL: _tool, TEAMAI_LAUNCHED_CHECKOUT: _checkout, ...env } = process.env;
+  const home = toolCommandEnv(tool, { kind: 'delivered', inherited: env, toolRoots });
 
+  if (home.kind === 'home_gone') throw new CallError('call_failed', home.message);
   const gateway = tool === 'agy' ? agyGatewayEnv(env) : undefined;
 
   // Our own session, not the user's: its hooks would print the share-learnings hint into the answer we read.
-  return { ...env, ...gateway, TEAMAI_CONTRIBUTE_HINT_DISABLED: '1', [LAUNCHED_BY_ENV]: launchedBy, [RUN_MODE_ENV]: resolveRunMode(process.env) };
+  return { ...env, ...home.env, ...gateway, TEAMAI_CONTRIBUTE_HINT_DISABLED: '1', [LAUNCHED_BY_ENV]: launchedBy, [RUN_MODE_ENV]: resolveRunMode(process.env) };
 }
 
 /** A caller that resolves its tool once per scope and reuses it for every call there. */
@@ -110,7 +115,7 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
   const picked = new Map<string, Promise<Picked>>();
 
   const pick = async (scope: LocalConfig | undefined): Promise<Picked> => {
-    const [first] = await memberTools(scope ?? await resolveScope());
+    const [first] = await memberTools(scope);
     const key = first?.tool ?? '';
     const cached = picked.get(key);
 
@@ -122,7 +127,9 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
   };
 
   const callTool: ToolCaller['callTool'] = async (prompt, { launchedBy, timeout = DEFAULT_TIMEOUT_MS, scope, cwd = process.cwd(), signal }) => {
-      const { tool, executable } = await pick(scope);
+      const here = scope ?? await resolveScope();
+      const { tool, executable } = await pick(here);
+      const env = callEnv({ launchedBy, tool, toolRoots: here?.toolRoots ?? await resolveMemberToolRoots(cwd) });
       const { call } = launchAdapterOf(tool);
       log.debug(`[tool-launch] ${launchedBy} → ${tool}, timeout=${Math.round(timeout / 1000)}s`);
       const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-call-'));
@@ -135,7 +142,7 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
         // The OpenCode major on PATH decides how an effort is passed; its module loads only for an OpenCode call.
         const opencodeMajor = launchAdapterIdOf(tool) === 'opencode' ? await (await import('../opencode-hooks.js')).opencodeMajorVersion(executable) : 1;
         const args = call.args({ prompt, promptFile, lastMessageFile, opencodeMajor });
-        const run = await runTool({ executable, args, cwd, env: callEnv(launchedBy, tool), stdin: call.prompt !== 'stdin' ? '' : 'stdinOf' in call ? call.stdinOf(prompt) : prompt, timeoutMs: timeout, detached: false, signal });
+        const run = await runTool({ executable, args, cwd, env, stdin: call.prompt !== 'stdin' ? '' : 'stdinOf' in call ? call.stdinOf(prompt) : prompt, timeoutMs: timeout, detached: false, signal });
 
         if (run.timedOut) throw new CallError('call_failed', `AI call timed out after ${Math.round(timeout / 1000)}s (tool: ${tool})`);
         const lastMessage = await fs.readFile(lastMessageFile, 'utf8').catch(() => undefined);

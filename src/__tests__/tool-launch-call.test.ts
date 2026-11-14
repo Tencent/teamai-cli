@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { readConfigFrom } from '../config.js';
 import { createToolCaller } from '../tool-launch/call.js';
 import { getDataHome, getUserConfigPath, type LocalConfig } from '../types.js';
+import { getUserHome } from '../utils/home.js';
 import { log } from '../utils/logger.js';
 
 let root = '';
@@ -379,6 +380,34 @@ it.each([
 
   expect(answer).toMatchObject({ tool, text: `from ${tool}` });
   expect(debug.mock.calls.flat()).toContainEqual(expect.stringMatching(new RegExp(`using ${tool} \\(.*\\), from ${source.replace(/[()]/g, '\\$&')}$`)));
+});
+
+it('runs Codex at the root init recorded for it, from a shell without CODEX_HOME', async () => {
+  vi.stubEnv('TEAMAI_AI_TOOL', 'codex');
+  vi.stubEnv('CODEX_HOME', undefined);
+  const { scope } = await aiToolFiles({});
+  const recorded = path.join(getUserHome(), '.codex-work');
+  await fs.mkdir(recorded, { recursive: true });
+  onTestFinished(() => fs.rm(recorded, { recursive: true, force: true }));
+  const codex = await fakeTool('codex', { lastMessage: 'from codex' });
+
+  await only('codex', codex.executable).callTool('hi', { launchedBy: 'answer', scope: { ...scope, toolRoots: { codex: recorded } } });
+
+  expect((await codex.invocation()).env.CODEX_HOME).toBe(recorded);
+});
+
+it('fails a call on a tool whose recorded root is gone without starting it, and says how to fix the record', async () => {
+  vi.stubEnv('TEAMAI_AI_TOOL', 'codex');
+  const { scope } = await aiToolFiles({});
+  const gone = path.join(getUserHome(), '.codex-gone');
+  const codex = await fakeTool('codex', { lastMessage: 'from codex' });
+
+  await expect(only('codex', codex.executable).callTool('hi', { launchedBy: 'answer', scope: { ...scope, toolRoots: { codex: gone } } })).rejects.toMatchObject({
+    kind: 'call_failed',
+    message: `The codex home recorded on this machine, ${gone}, does not exist, so teamai did not start codex there. `
+      + 'Point CODEX_HOME at the home codex uses and re-run `teamai init`, or clear the record with `CODEX_HOME= teamai init`.',
+  });
+  await expect(codex.invocation()).rejects.toThrow('ENOENT');
 });
 
 it('takes only the machine\'s ai.tool for a call with no scope', async () => {
