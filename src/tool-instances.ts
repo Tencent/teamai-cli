@@ -11,7 +11,8 @@ import { isSessionPlatform } from './session-flow/adapters/platform-facts.js';
 import { instanceHomeAfterInit, instanceHomeDir, isSameDirOn, realHost, toolHome, type Host } from './tool-home.js';
 import { INSTANCE_BASES, isInstanceBase, isToolId, TOOL_ORDER, toolInstancesFor, toolOf, useToolInstances } from './tool-registry.js';
 import type { ToolId } from './tools.js';
-import { DEFAULT_TOOL_PATHS, TOOL_ROOT_FIELDS, getTeamaiHomeDir, relativeInside, getTrustDir, recordedToolRootDir, RELOCATABLE_TOOLS, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type Scope, type TeamaiConfig } from './types.js';
+import type { DeliveryPlace } from './locate.js';
+import { DEFAULT_TOOL_PATHS, TOOL_ROOT_FIELDS, getTeamaiHomeDir, relativeInside, getTrustDir, recordedToolRootDir, RELOCATABLE_TOOLS, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type TeamaiConfig } from './types.js';
 import { writeJsonAtomic } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { errorOnce, warnOnce } from './utils/warn-once.js';
@@ -421,16 +422,16 @@ function publish(): void {
  * another tool resolves to now, whose hooks are that tool's, and every home of an instance with no home or whose
  * `paths` put its hooks file outside its home.
  */
-export function leftInstanceHookFiles({ name, homes, current, toolRoots }: {
-  name: string; homes: readonly string[]; current: string | null | 'default'; toolRoots?: Readonly<Record<string, string>>;
+export function leftInstanceHookFiles({ name, homes, current, toolRoots, toolPaths }: {
+  name: string; homes: readonly string[]; current: string | null | 'default'; toolRoots?: Readonly<Record<string, string>>; toolPaths: TeamaiConfig['toolPaths'];
 }): Array<{ readonly home: string; readonly file: string }> {
   const instances = toolInstancesFor('guard');
   const instance = instances.find((one) => one.name === name);
 
   if (instance?.home === undefined) return [];
   const { dir } = instance.home;
-  const paths = instance.paths ?? defaultPathsOf(instance);
-  const configured = paths.userScope?.settings ?? paths.settings;
+  const paths = effectivePathsOf(instance, toolPaths);
+  const configured = paths?.userScope?.settings ?? paths?.settings;
   // A hooks file outside the home stays where it is when the home moves: it is the one delivery writes now, in no earlier home.
   const settings = configured === undefined ? undefined : relativeInside(configured, dir);
 
@@ -466,23 +467,25 @@ function movedToHome(instance: DeclaredTool, paths: z.infer<typeof ToolPathsSche
   return { ...paths, mcp: moved.mcp, userScope };
 }
 
-/** Where agent files are rendered: the scope, and the team config's tool paths, which say where each tool's agents go. */
-export interface AgentRenderPlace {
-  readonly scope: Scope;
-  readonly toolPaths: TeamaiConfig['toolPaths'];
-}
-
 /**
  * The tool whose model aliases render `tool`'s agent files at `place`. In a project an instance whose agents directory
  * is the one of the tool it extends writes that tool's files, so each renders as that tool's from either pass.
  */
-export function agentModelToolOf(tool: string, { scope, toolPaths }: AgentRenderPlace): string {
+export function agentModelToolOf(tool: string, { scope, toolPaths }: DeliveryPlace): string {
   const instance = toolOf(tool)?.instance;
 
   if (instance?.kind !== 'instance' || scope === 'user') return tool;
   const shared = (toolPaths[instance.extends] ?? DEFAULT_TOOL_PATHS[instance.extends]).agents;
 
-  return instancePaths(instance, toolPaths)?.agents === shared ? instance.extends : tool;
+  return effectivePathsOf(instance, toolPaths)?.agents === shared ? instance.extends : tool;
+}
+
+/**
+ * The tool paths teamai delivers `instance` to under the team config's `toolPaths`: the entry `withToolInstances` put
+ * there, or for one it left out, a refused one, the paths `instancePaths` gives it.
+ */
+export function effectivePathsOf(instance: DeclaredTool, toolPaths: TeamaiConfig['toolPaths']): z.infer<typeof ToolPathsSchema> | undefined {
+  return toolPaths[instance.name] ?? instancePaths(instance, toolPaths);
 }
 
 /** The tool paths `instance` gives its tool: its own `paths`, else the paths of the tool it extends, moved to its home. */
@@ -490,9 +493,14 @@ function instancePaths(instance: DeclaredTool, toolPaths: TeamaiConfig['toolPath
   return instance.paths ?? movedToHome(instance, toolPaths[instance.extends] ?? DEFAULT_TOOL_PATHS[instance.extends]);
 }
 
-/** The paths `instance` replaces with its own: those of the tool it adjusts, or of the tool it extends, moved to its home. */
-export function defaultPathsOf(instance: DeclaredTool): z.infer<typeof ToolPathsSchema> {
-  return movedToHome(instance, DEFAULT_TOOL_PATHS[instance.extends]);
+/**
+ * The paths `instance` replaces with its own: the defaults of the tool it adjusts, whose `toolPaths` entry its own paths
+ * took, or those `toolPaths` give the tool it extends, moved to its home.
+ */
+export function defaultPathsOf(instance: DeclaredTool, toolPaths: TeamaiConfig['toolPaths']): z.infer<typeof ToolPathsSchema> {
+  const team = instance.kind === 'adjustment' ? undefined : toolPaths[instance.extends];
+
+  return movedToHome(instance, team ?? DEFAULT_TOOL_PATHS[instance.extends]);
 }
 
 /**

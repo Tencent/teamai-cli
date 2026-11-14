@@ -1801,7 +1801,7 @@ async function buildRemovalPlan(
     const homes = [recorded[name], ...history[name] ?? []].filter((home): home is string => home !== undefined);
     const current = toolOf(name) === undefined ? null : toolHomeOf(name)?.dir ?? null;
 
-    for (const { file } of leftInstanceHookFiles({ name, homes, current, toolRoots: localConfig.toolRoots })) {
+    for (const { file } of leftInstanceHookFiles({ name, homes, current, toolRoots: localConfig.toolRoots, toolPaths: teamConfig.toolPaths })) {
       if (plan.hookFiles.some((entry) => entry.path === file) || !await pathExists(file) || !await hasTeamaiHooks(file, name, plan.hookManifestPath)) continue;
       plan.hookFiles.unshift({ path: file, tool: name, manifestPath: plan.hookManifestPath, keepRecords: plan.hookFiles.some((entry) => entry.tool === name) });
     }

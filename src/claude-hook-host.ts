@@ -12,8 +12,9 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
-import { DEFAULT_CLAUDE_ROOT, JsonValueSchema, type JsonValue, JsonObjectSchema, type Scope } from './types.js';
-import { defaultPathsOf } from './tool-instances.js';
+import { DEFAULT_CLAUDE_ROOT, JsonValueSchema, type JsonValue, JsonObjectSchema } from './types.js';
+import { effectivePathsOf } from './tool-instances.js';
+import type { DeliveryPlace } from './locate.js';
 import { shellQuoteValue } from './utils/shell-profile.js';
 import { findGitBashWindows } from './bundled-runtime.js';
 import { toolOf } from './tool-registry.js';
@@ -238,10 +239,10 @@ function loadedAsClaudeSettings(file: string): boolean {
 /**
  * Whether `tool`'s hooks in `where` sit in a Claude Code settings file, which Cursor and Copilot load too: always for
  * Claude and an instance on Claude's home; for an instance with a home or a settings path of its own, `where.file`, or
- * else the file it writes in `where.scope` (a project's `.claude/settings.json` for one on Claude's command, its own
- * home's in user scope). With no scope known yet, such an instance's hooks are not in one.
+ * else the file it writes at `where.place` under the team's tool paths (a project's `.claude/settings.json` for one on
+ * Claude's command, its own home's in user scope). With no place known yet, such an instance's hooks are not in one.
  */
-export function readsClaudeSettings(tool: string, where: { readonly file: string } | { readonly scope: Scope | undefined }): boolean {
+export function readsClaudeSettings(tool: string, where: { readonly file: string } | { readonly place: DeliveryPlace | undefined }): boolean {
   const resolved = toolOf(tool);
   const instance = resolved?.instance;
 
@@ -251,16 +252,16 @@ export function readsClaudeSettings(tool: string, where: { readonly file: string
 
   if ('file' in where) return loadedAsClaudeSettings(where.file);
 
-  if (where.scope === undefined) return false;
-  const paths = instance.paths ?? defaultPathsOf(instance);
-  const settings = where.scope === 'user' ? paths.userScope?.settings ?? paths.settings : paths.settings;
+  if (where.place === undefined) return false;
+  const paths = effectivePathsOf(instance, where.place.toolPaths);
+  const settings = where.place.scope === 'user' ? paths?.userScope?.settings ?? paths?.settings : paths?.settings;
 
   return settings !== undefined && loadedAsClaudeSettings(settings);
 }
 
-/** Whether Cursor or Copilot, with teamai hooks of its own, runs the `tool` hook this process dispatches, read from `scope`. */
-export function claudeHookRunsInAnotherHost(tool: string, env: NodeJS.ProcessEnv = process.env, includeGlobalCopilot = true, scope?: Scope): boolean {
-  if (!readsClaudeSettings(tool, { scope })) return false;
+/** Whether Cursor or Copilot, with teamai hooks of its own, runs the `tool` hook this process dispatches, delivered at `place`. */
+export function claudeHookRunsInAnotherHost(tool: string, env: NodeJS.ProcessEnv = process.env, includeGlobalCopilot = true, place?: DeliveryPlace): boolean {
+  if (!readsClaudeSettings(tool, { place })) return false;
 
   if (env.CURSOR_VERSION && cursorCopyInstalled(env)) return true;
 

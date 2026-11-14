@@ -386,14 +386,14 @@ async function releasePreviousToolRoots(
  * and each earlier one init replaced, as an earlier home's copy does (#1221), except where `leftInstanceHookFiles` says
  * they are another tool's; the records stay for the pull that delivers to the new home.
  */
-async function releasePreviousInstanceHomes(changes: readonly ToolHomeChange[], next: LocalConfig): Promise<void> {
+async function releasePreviousInstanceHomes(changes: readonly ToolHomeChange[], next: LocalConfig, teamConfig: TeamaiConfig | null): Promise<void> {
   const hookScope = resolveHookScope(next);
   const history = reloadToolHomesHistory();
 
   for (const { tool, dir, previous } of changes) {
     if (previous === undefined) continue;
 
-    for (const { home, file } of leftInstanceHookFiles({ name: tool, homes: [previous, ...history[tool] ?? []], current: dir ?? 'default', toolRoots: next.toolRoots })) {
+    for (const { home, file } of leftInstanceHookFiles({ name: tool, homes: [previous, ...history[tool] ?? []], current: dir ?? 'default', toolRoots: next.toolRoots, toolPaths: teamConfig?.toolPaths ?? {} })) {
       if (await pathExists(file) && await hasTeamaiHooks(file, tool, hookScope.manifestPath)) {
         await reconcileHooks(file, tool, [], { removeAll: true, keepRecords: true, manifestPath: hookScope.manifestPath, codexTrust: { kind: 'disabled' } });
       }
@@ -1065,7 +1065,7 @@ export async function initHttp(
   const homeChanges = await recordToolHomes('init');
 
   for (const change of homeChanges) log.info(describeToolHomeChange(change));
-  await releasePreviousInstanceHomes(homeChanges, localConfig);
+  await releasePreviousInstanceHomes(homeChanges, localConfig, teamConfig);
   await releasePreviousToolRoots(teamConfig, existingLocalConfig, localConfig);
 
   await ensureDir(teamaiHome);
@@ -1785,7 +1785,7 @@ export async function initSelfMode(options: GlobalOptions & {
   const homeChanges = await recordToolHomes('init');
 
   for (const change of homeChanges) log.info(describeToolHomeChange(change));
-  await releasePreviousInstanceHomes(homeChanges, localConfig);
+  await releasePreviousInstanceHomes(homeChanges, localConfig, teamConfig);
 
   // Step 5: write local config (into the partition via dataHome) + self-mode
   // gitignore. ensureDir both the knowledge dir (class B, in the repo) and the
@@ -2883,7 +2883,7 @@ export async function init(options: GlobalOptions & {
   const homeChanges = await recordToolHomes('init');
 
   for (const change of homeChanges) log.info(describeToolHomeChange(change));
-  await releasePreviousInstanceHomes(homeChanges, localConfig);
+  await releasePreviousInstanceHomes(homeChanges, localConfig, currentConfig);
   await releasePreviousToolRoots(currentConfig, carriedConfig, localConfig);
 
   await ensureDir(teamaiHome);

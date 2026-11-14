@@ -298,12 +298,16 @@ describe('a hook of a tool instance', () => {
     expect(usage.includes('skill-g')).toBe(runs);
   });
 
-  it('inside Cursor while Cursor has teamai hooks of its own, a project\'s Claude instance with a home of its own, whose hooks sit in the project\'s .claude/settings.json Cursor loads, runs no handler', async () => {
+  it.each([
+    { file: 'the project\'s .claude/settings.json Cursor loads', toolPaths: '', runs: false },
+    // The team's paths of Claude put the instance's project settings where Cursor reads none.
+    { file: 'the settings file the team names for Claude, which Cursor does not load', toolPaths: 'toolPaths:\n  claude: { skills: .claude/skills, settings: .claude-team/settings.json }\n', runs: true },
+  ])('inside Cursor while Cursor has teamai hooks of its own, a project\'s Claude instance with a home of its own, whose hooks sit in $file, runs its handler: $runs', async ({ toolPaths, runs }) => {
     const root = gitRepo('project-c');
     const dataHome = await resolveProjectDataHome(root);
     const teamRepo = path.join(dataHome, 'team-repo');
     fs.mkdirSync(path.join(teamRepo, 'tools'), { recursive: true });
-    fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), 'team: acme\nrepo: acme/team\n');
+    fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), `team: acme\nrepo: acme/team\n${toolPaths}`);
     fs.writeFileSync(path.join(teamRepo, 'tools', 'acme-claude.yaml'), 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude }\n');
     await saveLocalConfigForScope({
       repo: { localPath: teamRepo, remote: 'https://example.test/acme/team.git' },
@@ -323,8 +327,7 @@ describe('a hook of a tool instance', () => {
     }
 
     const usage = fs.readFileSync(path.join(dataHome, 'usage.jsonl'), 'utf-8');
-    expect(usage).toContain('skill-a');
-    expect(usage).not.toContain('skill-g');
+    expect([usage.includes('skill-a'), usage.includes('skill-g')]).toEqual([true, runs]);
   });
 });
 

@@ -53,6 +53,9 @@ export type Install = {
   }
 );
 
+/** Where teamai delivers: the scope, and the team config's tool paths, its instances' included (`withToolInstances`). */
+export type DeliveryPlace = Pick<Install, 'scope' | 'toolPaths'>;
+
 /** The one parse of the config shapes into an `Install`; a project config without its root throws `resolveBaseDir`'s error. */
 export function installOf(
   team: Pick<TeamaiConfig, 'toolPaths'> & Parameters<typeof isGitExcludeEnabled>[1],

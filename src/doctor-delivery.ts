@@ -330,7 +330,7 @@ export function toolPathsDroppedKeyNotes(ctx: DoctorContext): string[] {
     if (toolPaths[tool] === undefined) continue; // not enabled or excluded here.
     // An instance's own `paths` replace what it would get without them; a toolPaths entry, the tool's default.
     const instance = toolOf(tool)?.instance;
-    const replaced = instance?.paths ? defaultPathsOf(instance) : isToolId(tool) ? DEFAULT_TOOL_PATHS[tool] : undefined;
+    const replaced = instance?.paths ? defaultPathsOf(instance, teamConfig.toolPaths) : isToolId(tool) ? DEFAULT_TOOL_PATHS[tool] : undefined;
 
     if (replaced === undefined) continue; // a custom tool: no default entry to drop keys from.
     const kept = new Map(Object.entries(entry));

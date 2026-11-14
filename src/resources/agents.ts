@@ -14,8 +14,7 @@ import { log } from '../utils/logger.js';
 import { installScopeName, isAgentExcluded, isSelfMode } from '../types.js';
 import { BUILTIN_AGENT_NAMES, builtinAgentsReplacedByTeam, shippedAgentRender } from '../builtin-agents.js';
 import { agentFormatOf, descriptorOf } from '../tool-registry.js';
-import type { AgentRenderPlace } from '../tool-instances.js';
-import { cleanupOf, installOf, locate, ownOf, writable, type SidecarFile } from '../locate.js';
+import { cleanupOf, installOf, locate, ownOf, writable, type DeliveryPlace, type SidecarFile } from '../locate.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { assertWithinRoot } from '../utils/path-safety.js';
@@ -1654,7 +1653,7 @@ export class AgentsHandler extends ResourceHandler {
   }
 
   /** Whether `tool` would receive `item` but for a model that cannot be resolved. */
-  private async heldForTool(item: AgentResourceItem, target: AgentTool, aliases: ModelAliases, place: AgentRenderPlace): Promise<boolean> {
+  private async heldForTool(item: AgentResourceItem, target: AgentTool, aliases: ModelAliases, place: DeliveryPlace): Promise<boolean> {
     if (isLegacyAgent(item)) return false;
     const content = await readFileSafe(item.sourcePath);
     const parsed = content === null ? null : parseAgentYaml(content, `${item.name}.yaml`);
@@ -2060,7 +2059,7 @@ function copyRootField(target: AgentSpec, source: AgentSpec, field: (typeof ROOT
 interface PushModelContext {
   aliases: ModelAliases;
   /** Where the copies were pulled to: the scope, which Trae's render depends on, and the team's tool paths. */
-  place: AgentRenderPlace;
+  place: DeliveryPlace;
   /** What the last pull recorded for this agent's copies, by tool. */
   recorded: Readonly<Record<string, RecordedAgentModel>> | undefined;
   /** Each edited tool's deployed file. */
@@ -2423,7 +2422,7 @@ function renderResolved(
   spec: AgentSpec,
   target: AgentTool,
   aliases: ModelAliases,
-  place: AgentRenderPlace,
+  place: DeliveryPlace,
 ): { ok: true; render: AgentRender } | { ok: false; reason: string } {
   const { scope } = place;
   const resolution = resolveAgentModel(aliases, spec, target.tool, place);

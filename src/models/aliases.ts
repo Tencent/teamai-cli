@@ -43,7 +43,8 @@ import path from 'node:path';
 import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 import { getTeamaiHomeDir, isJsonObject, JsonValueSchema, type JsonObject, type JsonValue, type LocalConfig } from '../types.js';
-import { agentModelToolOf, type AgentRenderPlace } from '../tool-instances.js';
+import { agentModelToolOf } from '../tool-instances.js';
+import type { DeliveryPlace } from '../locate.js';
 import { activeEntryNamespaces, describeEntryFailure, entryLayout, listEntryFiles, namespaceDir, readEntryFileText, type EntryLayout } from '../namespaced-entries.js';
 import { resolveNamespacedItems, type NamespaceCandidate } from '../namespace-resolver.js';
 import { listDirs } from '../utils/fs.js';
@@ -574,7 +575,7 @@ export function isModelAlias(aliases: ModelAliases, model: string): boolean {
  * written. Pull prints only these, so a member hears of an entry only when an
  * agent they receive uses it; doctor lists them all.
  */
-export function aliasWarningsFor(aliases: ModelAliases, spec: AgentSpec, receiver: string, place: AgentRenderPlace): string[] {
+export function aliasWarningsFor(aliases: ModelAliases, spec: AgentSpec, receiver: string, place: DeliveryPlace): string[] {
   const tool = agentModelToolOf(receiver, place);
   const format = agentFormatOf(tool);
 
@@ -636,7 +637,7 @@ function switchReaching(aliases: ModelAliases & { ok: true }, tool: string, form
 }
 
 /** What `receiver`'s agent file at `place` holds for `spec`'s model. */
-export function resolveAgentModel(aliases: ModelAliases, spec: AgentSpec, receiver: string, place: AgentRenderPlace): ModelResolution {
+export function resolveAgentModel(aliases: ModelAliases, spec: AgentSpec, receiver: string, place: DeliveryPlace): ModelResolution {
   const tool = agentModelToolOf(receiver, place);
   const format = agentFormatOf(tool);
   const extras = format === undefined ? undefined : toolExtrasFor(spec, format);

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { AgentModelRecords, RecordedAgentModel, ResourceItem } from './types.js';
-import type { AgentRenderPlace } from './tool-instances.js';
+import type { DeliveryPlace } from './locate.js';
 import type { AgentSpec } from './resources/agent-format.js';
 import type { AgentTool } from './resources/agents.js';
 import type { ModelAliases, ModelResolution } from './models/aliases.js';
@@ -24,7 +24,7 @@ interface AgentModelView {
   /** The installed tools that receive agents. */
   tools: AgentTool[];
   records: AgentModelRecords;
-  place: AgentRenderPlace;
+  place: DeliveryPlace;
 }
 
 const CHECK_NAME = 'Agent model aliases can be resolved';

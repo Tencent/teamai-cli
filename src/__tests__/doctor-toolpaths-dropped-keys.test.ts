@@ -119,4 +119,13 @@ describe('doctor notes — a team tool instance whose paths drop a key', () => {
 
     expect(notes).toEqual([expect.stringMatching(/^paths in tools\/acme-claude\.yaml replaces acme-claude's default entry whole .*`agents` \(\.acme-claude\/agents — no agents are delivered to it\)/)]);
   });
+
+  it('measures an instance\'s paths against the team\'s paths of the tool it extends, which it would get without them', async () => {
+    const notes = toolPathsDroppedKeyNotes(await contextOf({
+      'teamai.yaml': 'team: t\nrepo: owner/repo\ntoolPaths:\n  claude: { skills: .claude/skills, settings: .claude/settings.json }\n',
+      'tools/acme-claude.yaml': 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\ncommand: acme-claude\nhome: { dir: .acme-claude }\npaths: { skills: .acme-claude/skills, settings: .acme-claude/settings.json }\n',
+    }));
+
+    expect(notes.filter((line) => line.startsWith('paths in tools/acme-claude.yaml'))).toEqual([]);
+  });
 });

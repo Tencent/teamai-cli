@@ -1558,12 +1558,21 @@ describe('init', () => {
       });
 
       it.each([
-        { change: 'moves', dir: path.join(HOME, 'work', 'acme-new'), now: path.join(HOME, 'work', 'acme-new'), file: 'its default hooks file', paths: undefined },
-        { change: 'clears', dir: null, now: 'its default home', file: 'its default hooks file', paths: undefined },
+        { change: 'moves', dir: path.join(HOME, 'work', 'acme-new'), now: path.join(HOME, 'work', 'acme-new'), file: 'its default hooks file', paths: undefined, codex: undefined, hooks: 'hooks.json' },
+        { change: 'clears', dir: null, now: 'its default home', file: 'its default hooks file', paths: undefined, codex: undefined, hooks: 'hooks.json' },
         // A hooks file its paths keep in its home moves with the home, as the default one does.
-        { change: 'moves', dir: path.join(HOME, 'work', 'acme-new'), now: path.join(HOME, 'work', 'acme-new'), file: 'the hooks file its paths keep in its home', paths: { skills: '.acme-codex/skills', settings: '.acme-codex/hooks.json' } },
-      ])('removes the hooks left in $file in an instance\'s previous home when init $change its record', async ({ dir, now, paths }) => {
+        { change: 'moves', dir: path.join(HOME, 'work', 'acme-new'), now: path.join(HOME, 'work', 'acme-new'), file: 'the hooks file its paths keep in its home', paths: { skills: '.acme-codex/skills', settings: '.acme-codex/hooks.json' }, codex: undefined, hooks: 'hooks.json' },
+        // With no paths of its own it gets the team's paths of Codex, moved to its home.
+        { change: 'moves', dir: path.join(HOME, 'work', 'acme-new'), now: path.join(HOME, 'work', 'acme-new'), file: 'the hooks file the team names for Codex', paths: undefined, codex: { skills: '.codex/skills', settings: '.codex/team-hooks.json' }, hooks: 'team-hooks.json' },
+      ])('removes the hooks left in $file in an instance\'s previous home when init $change its record', async ({ dir, now, paths, codex, hooks }) => {
         vi.mocked(loadLocalConfigForScope).mockResolvedValue(previousConfig());
+
+        if (codex !== undefined) {
+          const { loadTeamConfig } = await import('../config.js');
+          const { TeamaiConfigSchema } = await import('../types.js');
+          vi.mocked(loadTeamConfig).mockResolvedValue(TeamaiConfigSchema.parse({ team: 'test', repo: 'https://git.woa.com/HyperAI/teamai-test.git', toolPaths: { codex } }));
+          onTestFinished(() => { vi.mocked(loadTeamConfig).mockResolvedValue(null); });
+        }
         useToolInstances(new Map([['acme-codex', {
           kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' }, paths,
           source: 'team', file: '/r/tools/acme-codex.yaml', location: 'tools/acme-codex.yaml', revision: 'r1',
@@ -1571,7 +1580,7 @@ describe('init', () => {
         onTestFinished(() => { useToolInstances(new Map()); });
         const previous = path.join(HOME, 'work', 'acme-old');
         vi.mocked(recordToolHomes).mockResolvedValueOnce([{ tool: 'acme-codex', variable: 'ACME_CODEX_HOME', dir, previous }]);
-        const oldHooks = path.join(previous, 'hooks.json');
+        const oldHooks = path.join(previous, hooks);
         settingsExistsAt(oldHooks);
 
         await savedConfig();

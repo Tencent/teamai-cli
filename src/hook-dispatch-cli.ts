@@ -551,8 +551,9 @@ async function runHookDispatch(
     const { resolveHookScopeFor } = await import('./dashboard-collector.js');
     const { config: localConfig, dir: scopeDir } = await resolveHookScopeFor(stdin, tool);
 
-    // A tool instance is known by its name only once its scope's team config is read.
-    if (localConfig && !fromGit && toolOf(tool) === undefined) await (await import('./config.js')).loadTeamConfig(localConfig.repo.localPath);
+    // A tool instance is known by its name only once its scope's team config is read, and its paths are that config's.
+    const known = toolOf(tool);
+    const teamConfig = localConfig && !fromGit && (known === undefined || known.instance !== undefined) ? await (await import('./config.js')).loadTeamConfig(localConfig.repo.localPath) : null;
 
     // This pass runs inside the login environment: it tells a later prompt whose command deferred that environment
     // whether the machine syncs over HTTP (hook-fast-path.ts runLoginDeferredHook).
@@ -598,7 +599,10 @@ async function runHookDispatch(
       .then(({ canonicalProjectRoot }) => canonicalProjectRoot(copilotProject) === canonicalProjectRoot(selfRoot)));
 
     // Where the global copy steps aside, it is no replacement for the local Claude copy.
-    if (claudeHookRunsInAnotherHost(tool, process.env, !selfCopilotCopyLoaded, localConfig?.scope)) return;
+    // A shipped tool needs no tool paths here, so the shipped ones stand in where no team config was read.
+    const place = localConfig === null ? undefined : { scope: localConfig.scope, toolPaths: teamConfig?.toolPaths ?? {} };
+
+    if (claudeHookRunsInAnotherHost(tool, process.env, !selfCopilotCopyLoaded, place)) return;
 
     if (!bgOnly && tool === 'copilot') {
       if (options.copilotGlobal && selfCopilotCopyLoaded) return;
