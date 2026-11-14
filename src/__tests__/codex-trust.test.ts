@@ -912,7 +912,7 @@ describe('Codex trust — project scopes', () => {
 
   it('judges a Codex instance\'s hooks file in self mode as it judges Codex\'s', async () => {
     await fse.outputFile(path.join(repo, 'teamai.yaml'), 'team: acme\nrepo: acme/team\n');
-    await fse.outputFile(path.join(home, '.teamai', 'tools', 'acme-codex.yaml'), 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n');
+    await fse.outputFile(path.join(home, '.teamai', 'tools', 'acme-codex.yaml'), 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\ncommand: acme-codex\nhome: { dir: .acme-codex }\n');
     const { loadTeamConfig } = await import('../config.js');
     const { resetToolInstancesForTests } = await import('../tool-instances.js');
     onTestFinished(resetToolInstancesForTests);

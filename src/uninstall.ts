@@ -5,7 +5,7 @@ import { autoDetectInit, loadLocalConfig, loadStateForScope, readConfigFrom, res
 import { createDeliveryRecorder, deliveredOwner, deliveredOwnerElsewhere } from './git-exclude-delivered.js';
 import { gitExcludeFile, gitTracks, gitUntracked, MCP_EXCLUDE_OWNER, realFilePath, remove as removeGitExclude, stateHomeRecord, type GitExcludeFileRemoval } from './git-exclude.js';
 import {
-  codexTrustPolicy, migrateLegacyManagedHooks, OPENCLAW_TOOLS, reconcileHooks, hasTeamaiHooks, hasUnrecordedTeamHooks, mainCheckoutHookFile, resolveMainCheckoutHooks, selfLocalTeamHookFile,
+  codexTrustPolicy, migrateLegacyManagedHooks, OPENCLAW_TOOLS, reconcileHooks, reconcileTeamHooksForConfig, hasTeamaiHooks, hasUnrecordedTeamHooks, mainCheckoutHookFile, resolveMainCheckoutHooks, selfLocalTeamHookFile,
   stopCodexTeamHookDispatch, teamHookHistory, canonicalProjectRoot, getToolCheckouts, unregisterCheckoutFromSharedManifest,
   type CodexTrustPolicy, type MainCheckoutHooks, type ReconcileHooksOptions, type SharedHooksManifest, type TeamHookHistory,
 } from './hooks.js';
@@ -265,6 +265,11 @@ interface RemovalPlan {
    * so the exclusion is still recorded (see `uninstall`).
    */
   sharedRetentionOnly: boolean;
+  /**
+   * The enabled, installed tools that write a hook file this targeted uninstall empties. The file carries one tool's
+   * dispatch identity, so it is emptied with the uninstalled tool's hooks and delivered again for these.
+   */
+  hookHandovers: string[];
 }
 
 /** Per-tool findings collected during discovery (tool-specific resources only). */
@@ -1573,6 +1578,7 @@ async function buildRemovalPlan(
 
   const plan: RemovalPlan = {
     sharedRetentionOnly: false,
+    hookHandovers: [],
     hookFiles: [],
     openclawHookDirs: [],
     opencodePluginDirs: [],
@@ -1686,6 +1692,15 @@ async function buildRemovalPlan(
     for (const file of resources.agentFiles) retainedAgentFiles.add(file);
   }
 
+  // A hook file another enabled, installed tool writes too: Qoder CN's project file is Qoder's, and an instance on Claude's command writes a project's `.claude/settings.json`.
+  const hookFileWriters = new Map<string, string[]>();
+
+  for (const [tool, resources] of perTool) {
+    if (toolsToMerge.includes(tool) || !activeTools.has(tool)) continue;
+
+    for (const { path: file } of resources.hookFiles) hookFileWriters.set(file, [...hookFileWriters.get(file) ?? [], tool]);
+  }
+
   // Merge tool-specific resources for selected tools. Entries a sibling
   // keeps are counted: they say an empty plan is retention, not absence.
   let retainedSharedEntries = 0;
@@ -1695,6 +1710,7 @@ async function buildRemovalPlan(
 
     if (!res) continue;
     plan.hookFiles.push(...res.hookFiles);
+    plan.hookHandovers = [...new Set([...plan.hookHandovers, ...res.hookFiles.flatMap(({ path: file }) => hookFileWriters.get(file) ?? [])])];
     plan.openclawHookDirs.push(...res.openclawHookDirs);
     plan.opencodePluginDirs.push(...res.opencodePluginDirs);
     plan.ompHookFiles.push(...res.ompHookFiles);
@@ -3943,6 +3959,21 @@ async function removeConfirmed(
   // and a hook of an excluded tool syncs nothing, until the uninstall is retried (#993).
   for (const tool of new Set(hooksLeft.map((hook) => hook.tool))) {
     if (tool !== agentKey) await excludeUninstalledAgent(localConfig, tool);
+  }
+
+  if (agentKey && plan.hookHandovers.length > 0 && hooksLeft.length === 0) {
+    let unwritten = plan.hookHandovers;
+
+    try {
+      unwritten = (await reconcileTeamHooksForConfig(teamConfig, localConfig, { filterAgents: plan.hookHandovers, silent: true })).unwritten ?? [];
+    } catch (e) {
+      log.warn(`Could not deliver the hooks of ${plan.hookHandovers.join(', ')} again: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    if (unwritten.length > 0) {
+      log.warn(`Removed ${agentKey}'s hooks from a hook file ${unwritten.join(', ')} also write, but not their own back. Run \`teamai pull\` to deliver them.`);
+      process.exitCode = 1;
+    }
   }
 
   if (incomplete) {

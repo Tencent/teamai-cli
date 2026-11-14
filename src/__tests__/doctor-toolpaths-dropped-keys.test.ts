@@ -115,7 +115,7 @@ describe('doctor notes — a team tool instance whose paths drop a key', () => {
   });
 
   it('names the keys an instance of another name drops from the paths of the tool it extends, moved to its home', async () => {
-    const notes = toolPathsDroppedKeyNotes(await contextOf({ 'tools/acme-claude.yaml': 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude }\npaths: { skills: .acme-claude/skills }\n' }));
+    const notes = toolPathsDroppedKeyNotes(await contextOf({ 'tools/acme-claude.yaml': 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\ncommand: acme-claude\nhome: { dir: .acme-claude }\npaths: { skills: .acme-claude/skills }\n' }));
 
     expect(notes).toEqual([expect.stringMatching(/^paths in tools\/acme-claude\.yaml replaces acme-claude's default entry whole .*`agents` \(\.acme-claude\/agents — no agents are delivered to it\)/)]);
   });

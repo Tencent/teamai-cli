@@ -403,7 +403,8 @@ export function leftInstanceHookFiles({ name, homes, current, toolRoots }: {
 
   if (instance?.home === undefined || instance.paths !== undefined) return [];
   const { dir } = instance.home;
-  const settings = defaultPathsOf(instance).settings;
+  const moved = defaultPathsOf(instance);
+  const settings = moved.userScope?.settings ?? moved.settings;
 
   if (settings === undefined) return [];
   const host = realHost();
@@ -413,29 +414,49 @@ export function leftInstanceHookFiles({ name, homes, current, toolRoots }: {
     || toolHomedAt({ name, dir: home, instances, host, toolRoots }) !== undefined ? [] : [{ home, file: path.join(home, path.relative(dir, settings)) }]);
 }
 
+/** Whether `instance` reads a project under its home's folder: only its own build may; the shipped command reads a project where the tool it extends does. */
+function movesProjectPaths(instance: DeclaredTool): boolean {
+  return instance.command !== undefined;
+}
+
+/**
+ * `paths`, those of the tool `instance` extends, moved to its home: every one for an instance with its own build, the
+ * user-scope ones alone (`userScope`) for one on the shipped command, whose project paths stay the tool's.
+ */
+function movedToHome(instance: DeclaredTool, paths: z.infer<typeof ToolPathsSchema>): z.infer<typeof ToolPathsSchema> {
+  if (!instance.home) return paths;
+  const moved = rerootToolPaths(paths, instance.home.dir);
+
+  if (movesProjectPaths(instance)) return moved;
+
+  const userScope = Object.fromEntries(ToolPathsSchema.shape.userScope.unwrap().keyof().options.flatMap((field) => {
+    const value = moved.userScope?.[field] === undefined ? moved[field] : moved.userScope[field];
+
+    return value === undefined ? [] : [[field, value]];
+  }));
+
+  return { ...paths, mcp: moved.mcp, userScope };
+}
+
 /** The tool paths `instance` gives its tool: its own `paths`, else the paths of the tool it extends, moved to its home. */
 function instancePaths(instance: DeclaredTool, toolPaths: TeamaiConfig['toolPaths']): z.infer<typeof ToolPathsSchema> | undefined {
-  if (instance.paths) return instance.paths;
-  const extended = toolPaths[instance.extends] ?? DEFAULT_TOOL_PATHS[instance.extends];
-
-  return instance.home ? rerootToolPaths(extended, instance.home.dir) : extended;
+  return instance.paths ?? movedToHome(instance, toolPaths[instance.extends] ?? DEFAULT_TOOL_PATHS[instance.extends]);
 }
 
 /** The paths `instance` replaces with its own: those of the tool it adjusts, or of the tool it extends, moved to its home. */
 export function defaultPathsOf(instance: DeclaredTool): z.infer<typeof ToolPathsSchema> {
-  const shipped = DEFAULT_TOOL_PATHS[instance.extends];
-
-  return instance.home ? rerootToolPaths(shipped, instance.home.dir) : shipped;
+  return movedToHome(instance, DEFAULT_TOOL_PATHS[instance.extends]);
 }
 
 /**
  * Where `instance` reads a file the tool it extends reads at `relative`, under the home or the project (`from`): under
  * its own home when it has one, moved as its tool paths are (`instancePaths`), so what teamai writes there is judged
- * read. A path outside that tool's roots, and a file at the project's root, stay as they are, and so does every path
- * of an instance that sets its own paths, which teamai writes to as they are.
+ * read. A path outside that tool's roots, a file at the project's root, and a project path of an instance on the
+ * shipped command stay as they are, and so does every path of an instance that sets its own paths, which teamai
+ * writes to as they are.
  */
 export function instanceReadPath(instance: DeclaredTool, { from, relative }: { from: 'home' | 'project'; relative: string }): string {
-  if (!instance.home || instance.paths) return relative;
+  if (!instance.home || instance.paths || (from === 'project' && !movesProjectPaths(instance))) return relative;
 
   // A bare file beside the tool's home (Claude Code's .claude.json) is inside a home that moved, as the instance's is.
   if (!relative.includes('/')) return from === 'home' ? `${instance.home.dir}/${relative}` : relative;

@@ -32,6 +32,11 @@ function fakeClaude(name: string): string {
 const fs = require('node:fs'), path = require('node:path');
 if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); process.exit(); }
 fs.appendFileSync(path.join(process.env.HOME, 'launches.log'), ${JSON.stringify(name)} + '\\n');
+const home = ${name === 'claude' ? "process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME, '.claude')" : "process.env.ACME_CLAUDE_CONFIG_DIR || path.join(process.env.HOME, '.acme-claude')"};
+const agentAt = process.argv.indexOf('--agent');
+if (agentAt >= 0 && ![path.join(process.cwd(), ${JSON.stringify(name === 'claude' ? '.claude' : '.acme-claude')}), home].some((dir) => fs.existsSync(path.join(dir, 'agents', process.argv[agentAt + 1] + '.md')))) {
+  console.error('Agent not found: ' + process.argv[agentAt + 1]); process.exit(1);
+}
 const resumeAt = process.argv.indexOf('--resume');
 fs.appendFileSync(path.join(process.env.HOME, 'resumes.log'), (resumeAt >= 0 ? process.argv[resumeAt + 1] : '-') + '\\n');
 const judging = process.argv.includes('--json-schema');
@@ -43,7 +48,6 @@ if (judging) {
     console.log(JSON.stringify({ type: 'result', structured_output: schema.properties.answer ? { answer } : answer }));
   });
 } else {
-  const home = ${name === 'claude' ? "process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME, '.claude')" : "process.env.ACME_CLAUDE_CONFIG_DIR || path.join(process.env.HOME, '.acme-claude')"};
   const id = ${JSON.stringify(name === 'claude' ? '99999999-2222-4333-8444-555555555555' : SESSION)};
   const dir = path.join(home, 'projects', process.cwd().replace(/[^a-zA-Z0-9]/g, '-'));
   const at = new Date().toISOString();
@@ -387,5 +391,92 @@ describe.skipIf(process.platform === 'win32')('tool instances through the CLI', 
     } finally {
       fs.rmSync(own);
     }
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('a tool instance that moves only its home', () => {
+  let root: string;
+  let repo: string;
+  let bin: string;
+  let home: string;
+
+  const env = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({ ...process.env, HOME: home, USERPROFILE: home, FORCE_COLOR: '0', PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`, ...extra });
+  const runCLI = (args: string[], extra: NodeJS.ProcessEnv = {}): Ran => {
+    try {
+      return { code: 0, stdout: execFileSync(process.execPath, [CLI, ...args], { cwd: repo, env: env(extra), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }), stderr: '' };
+    } catch (error) {
+      const failed = error as { status: number | null; stdout: string; stderr: string };
+      return { code: failed.status, stdout: failed.stdout, stderr: failed.stderr };
+    }
+  };
+  const write = (file: string, text: string): void => { fs.mkdirSync(path.dirname(path.join(repo, file)), { recursive: true }); fs.writeFileSync(path.join(repo, file), text); };
+  const filesUnder = (dir: string): string[] => (fs.existsSync(path.join(repo, dir)) ? fs.readdirSync(path.join(repo, dir), { recursive: true, encoding: 'utf8' }).sort() : []);
+  const init = (agents: string): void => {
+    const initialized = runCLI(['init', '--self', '--agent', agents, '--force']);
+    expect(initialized.code, `${initialized.stdout}\n${initialized.stderr}`).toBe(0);
+    const pulled = runCLI(['pull']);
+    expect(pulled.code, `${pulled.stdout}\n${pulled.stderr}`).toBe(0);
+  };
+
+  beforeAll(() => {
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-home-instance-e2e-')));
+    repo = path.join(root, 'repo');
+    bin = path.join(root, 'bin');
+    home = path.join(root, 'home');
+    for (const dir of [repo, bin, home]) fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(home, '.gitconfig'), '[user]\n\tname = Test\n\temail = test@example.com\n[gc]\n\tauto = 0\n');
+    fs.writeFileSync(path.join(bin, 'claude'), fakeClaude('claude'));
+    fs.chmodSync(path.join(bin, 'claude'), 0o755);
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo });
+    write('README.md', '# fixture\n');
+    write('.teamai/tools/home-claude.yaml', 'schemaVersion: v1alpha1\nname: home-claude\nextends: claude\nhome: { dir: .home-claude }\n');
+    write('.teamai/agents/reviewer.yaml', 'name: reviewer\ndescription: Reviews a change\ninstructions: Review it.\n');
+    write('.teamai/rules/house-style.md', 'Keep functions short.\n');
+    write('.teamai/workflows/reviewed.yaml', 'schemaVersion: v1alpha1\nname: reviewed\ndescription: A review by the reviewer agent.\nsteps:\n  - id: review\n    agent: reviewer\n    prompt: Review the repository without changing it.\n    output:\n      ok: boolean\n');
+    execFileSync('git', ['add', '-A'], { cwd: repo });
+    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repo, env: env() });
+    execFileSync('git', ['remote', 'add', 'origin', 'http://127.0.0.1:9/team/app.git'], { cwd: repo });
+  });
+
+  afterAll(() => {
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('delivers project rules and agents where the shipped command reads them, so a step finds its agent', () => {
+    init('home-claude');
+
+    expect(filesUnder('.claude/rules')).toEqual(expect.arrayContaining([expect.stringContaining('house-style')]));
+    expect(filesUnder('.claude/agents')).toContain('reviewer.md');
+    expect(fs.existsSync(path.join(repo, '.home-claude'))).toBe(false);
+
+    fs.rmSync(path.join(home, 'launches.log'), { force: true });
+    const started = runCLI(['workflow', 'start', 'reviewed', '--driver', 'local', '--tools', 'default=home-claude'], { TEAMAI_MODE: 'unattended' });
+
+    expect(envelope(started.stdout), `${started.stdout}\n${started.stderr}`).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(fs.readFileSync(path.join(home, 'launches.log'), 'utf8').trim().split('\n')).toEqual(['claude']);
+  });
+
+  it('delivers once beside the tool it extends, and uninstalling either keeps what the other still reads', () => {
+    const sessionStartTools = (): string[] => [...fs.readFileSync(path.join(repo, '.claude', 'settings.json'), 'utf8').matchAll(/hook-dispatch session-start --tool ([a-z-]+)/g)].map(([, tool]) => tool!);
+    const uninstall = (tool: string): void => {
+      const removed = runCLI(['uninstall', '--agent', tool, '--force']);
+      expect(removed.code, `${removed.stdout}\n${removed.stderr}`).toBe(0);
+    };
+
+    init('claude,home-claude');
+    expect(filesUnder('.claude/agents')).toEqual(['reviewer.md']);
+    expect(fs.existsSync(path.join(repo, '.home-claude'))).toBe(false);
+    expect(sessionStartTools()).toEqual(['claude']);
+
+    uninstall('home-claude');
+    expect(filesUnder('.claude/agents')).toEqual(['reviewer.md']);
+    expect(filesUnder('.claude/rules')).toEqual(['house-style.md']);
+    expect(sessionStartTools()).toEqual(['claude']);
+
+    init('claude,home-claude');
+    uninstall('claude');
+    expect(filesUnder('.claude/agents')).toEqual(['reviewer.md']);
+    expect(filesUnder('.claude/rules')).toEqual(['house-style.md']);
+    expect(sessionStartTools()).toEqual(['home-claude']);
   });
 });

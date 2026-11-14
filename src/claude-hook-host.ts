@@ -231,7 +231,8 @@ function copilotCopyInstalled(env: NodeJS.ProcessEnv, includeGlobal: boolean): b
 
 /**
  * Whether `tool` reads Claude Code's own settings files, which Cursor and Copilot load too: Claude, or an instance of it
- * whose settings file is under `.claude`, where its `paths` put it, else its home, else Claude's.
+ * whose settings file is under `.claude`, where its `paths` put it, else, for its own build, its home. An instance on
+ * Claude's command reads a project's `.claude/settings.json`.
  */
 export function readsClaudeSettings(tool: string): boolean {
   const resolved = toolOf(tool);
@@ -242,7 +243,9 @@ export function readsClaudeSettings(tool: string): boolean {
   if (instance === undefined || instance.kind === 'adjustment') return true;
   const settings = instance.paths?.settings;
 
-  return (settings === undefined ? instance.home?.dir ?? DEFAULT_CLAUDE_ROOT : toolInstallRoot(settings)) === DEFAULT_CLAUDE_ROOT;
+  if (settings !== undefined) return toolInstallRoot(settings) === DEFAULT_CLAUDE_ROOT;
+
+  return instance.command === undefined || (instance.home?.dir ?? DEFAULT_CLAUDE_ROOT) === DEFAULT_CLAUDE_ROOT;
 }
 
 export function claudeHookRunsInAnotherHost(tool: string, env: NodeJS.ProcessEnv = process.env, includeGlobalCopilot = true): boolean {
