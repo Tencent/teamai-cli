@@ -4299,6 +4299,24 @@ describe('uninstall', () => {
       expect([await fse.pathExists(path.join(folder, 'agents')), await fse.pathExists(path.join(folder, 'rules'))]).toEqual([false, false]);
     });
 
+    it('removes the folders it set up in the home the instance\'s own variable moves', async () => {
+      const { homeDir, repoPath } = await setupFixture(tmpDir);
+      vi.stubEnv('HOME', homeDir);
+      vi.stubEnv('SHELL', '/bin/zsh');
+      const moved = path.join(homeDir, 'work', 'acme-moved');
+      vi.stubEnv('ACME_CLAUDE_CONFIG_DIR', moved);
+      await fse.outputFile(path.join(repoPath, 'teamai.yaml'), YAML.stringify(makeTeamConfig()));
+      await fse.outputFile(path.join(repoPath, 'tools', 'acme-claude.yaml'), ACME_CLAUDE.replace('home: { dir: .acme-claude }', 'home: { dir: .acme-claude, env: ACME_CLAUDE_CONFIG_DIR }'));
+      for (const dir of ['agents', 'rules']) await fse.ensureDir(path.join(moved, dir));
+      const localConfig = makeLocalConfig(homeDir, repoPath, { enabledAgents: ['claude', 'acme-claude'] });
+      const { loadTeamConfig } = await import('../config.js');
+      mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: await loadTeamConfig(repoPath) });
+
+      await uninstall({ force: true });
+
+      expect([await fse.pathExists(path.join(moved, 'agents')), await fse.pathExists(path.join(moved, 'rules'))]).toEqual([false, false]);
+    });
+
     it('removes the instance\'s home folder in the workspace when nothing of the member\'s is in it, and keeps it with what is', async () => {
       const { folder } = await setupInstance();
 
