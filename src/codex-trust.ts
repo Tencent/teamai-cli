@@ -6,7 +6,7 @@ import crossSpawn from 'cross-spawn';
 import semver from 'semver';
 import { z } from 'zod';
 import { getCurrentVersion } from './package-info.js';
-import { CODEX_TOOL_ID, RELOCATABLE_TOOLS, type CodexBuild, type CodexBuildSkew } from './types.js';
+import { CODEX_TOOL_ID, type CodexBuild, type CodexBuildSkew } from './types.js';
 import { execCommand, probeBinary } from '@teamai/shared/exec';
 import { lenientList, type JsonValue, JsonValueSchema, JsonObjectSchema } from '@teamai/shared/json';
 import { log } from '@teamai/shared/log';
@@ -56,8 +56,8 @@ export interface CodexAt {
   codexHome: string;
   /** A Codex instance's own accepted command, which hashes the hooks as that build does. */
   commands?: readonly string[];
-  /** The variable a Codex instance's own build reads its home from (`home.env`), set to `codexHome` beside `CODEX_HOME`. */
-  homeVariable?: string;
+  /** The Codex instance whose own command runs, which starts in `codexHome` through its own variable too; Codex's builds when absent. */
+  tool?: string;
 }
 
 export interface CodexHookTrustRequest extends CodexAt {
@@ -145,15 +145,14 @@ export async function codexBuildsIdentity(commands?: readonly string[]): Promise
   return (await codexBuildCandidates(commands)).map((c) => c.identity).join('\0\0');
 }
 
-/** The variable Codex reads its home from, which a step on a Codex instance sets too (`launchHomeEnv`). */
-const CODEX_HOME_VARIABLE = RELOCATABLE_TOOLS[CODEX_TOOL_ID].envVar;
-
 async function probeCodexVersion(command: string): Promise<string | null> {
   // `codex --version` first sets up its arg0 helpers under $CODEX_HOME/tmp; a throwaway home keeps the member's as it was.
   const codexHome = await mkdtemp(path.join(os.tmpdir(), 'teamai-codex-version-'));
+  const { toolCommandEnv } = await import('./tool-launch/tools.js');
+  const env = { ...process.env, ...toolCommandEnv(CODEX_TOOL_ID, { kind: 'at', dir: codexHome }) };
 
   try {
-    const printed = /codex-cli\s+(\S+)/.exec(await probeBinary(command, ['--version'], (binary, args, options) => execCommand(binary, args, { ...options, env: { ...process.env, [CODEX_HOME_VARIABLE]: codexHome } })))?.[1];
+    const printed = /codex-cli\s+(\S+)/.exec(await probeBinary(command, ['--version'], (binary, args, options) => execCommand(binary, args, { ...options, env })))?.[1];
 
     return printed ? semver.valid(printed) : null;
   } finally {
@@ -295,13 +294,11 @@ class AppServerError extends Error {
   }
 }
 
-async function openAppServer(codexHome: string, command: string, homeVariable: string | undefined): Promise<AppServer> {
-  const env: NodeJS.ProcessEnv = { ...process.env, [CODEX_HOME_VARIABLE]: codexHome };
-
-  if (homeVariable !== undefined) env[homeVariable] = codexHome;
+async function openAppServer(codexHome: string, command: string, tool: string): Promise<AppServer> {
+  const { toolCommandEnv } = await import('./tool-launch/tools.js');
 
   const child = crossSpawn(command, ['app-server'], {
-    env,
+    env: { ...process.env, ...toolCommandEnv(tool, { kind: 'at', dir: codexHome }) },
     stdio: ['pipe', 'pipe', 'ignore'],
     windowsHide: true,
   });
@@ -403,7 +400,7 @@ async function openAppServer(codexHome: string, command: string, homeVariable: s
 type AppServerFailure = { kind: 'unavailable'; reason: string } | { kind: 'failed'; reason: string };
 
 async function withAppServer<T>(
-  { codexHome, commands, homeVariable }: CodexAt,
+  { codexHome, commands, tool }: CodexAt,
   run: (server: AppServer, build: ResolvedCodexBuild) => Promise<T>,
 ): Promise<T | AppServerFailure> {
   const build = await resolveCodexBuild(commands);
@@ -412,17 +409,17 @@ async function withAppServer<T>(
     return { kind: 'unavailable', reason: commands === undefined ? 'codex is not on PATH and no Codex desktop app is installed' : `${commands.join(', ') || 'no command'} is not on PATH` };
   }
 
-  return withCodexBuild({ codexHome, command: build.command, homeVariable }, (server) => run(server, build));
+  return withCodexBuild({ codexHome, command: build.command, tool }, (server) => run(server, build));
 }
 
 async function withCodexBuild<T>(
-  { codexHome, command, homeVariable }: { codexHome: string; command: string; homeVariable?: string },
+  { codexHome, command, tool = CODEX_TOOL_ID }: { codexHome: string; command: string; tool?: string },
   run: (server: AppServer) => Promise<T>,
 ): Promise<T | AppServerFailure> {
   let server: AppServer | null = null;
 
   try {
-    server = await openAppServer(codexHome, command, homeVariable);
+    server = await openAppServer(codexHome, command, tool);
 
     return await run(server);
   } catch (e) {

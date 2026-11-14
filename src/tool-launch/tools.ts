@@ -92,39 +92,75 @@ export function launchTargetOf(name: string): LaunchTarget | undefined {
 }
 
 /**
- * The variable that points `target`'s build at the home teamai delivers to. For an instance that names its own
- * variable, that one, at the home teamai resolved for it: a shell without it leaves it unset while teamai uses the
- * recorded home. For one with only `home` set, the variable that moves the root of the tool it extends
- * (`RELOCATABLE_TOOLS`), as the Codex trust gate sets it, since a build such as the shipped command reads that tool's
- * home otherwise. None for an instance whose `paths` hang off another directory too. For a shipped tool or an
- * adjustment, its variable at its recorded home when `inherited` leaves it unset, as a confined run gets it.
+ * The variable `tool`'s command reads its home from, or undefined: a tool an instance may extend names it in
+ * `RELOCATABLE_TOOLS`, which also refuses it as an instance's `home.env`; any other in its launch profile (`ConfinedLaunch.homeEnv`).
  */
-export function launchHomeEnv(target: LaunchTarget, inherited: Readonly<Record<string, string | undefined>>): Record<string, string> {
-  const { instance } = target;
-  const variable = RELOCATABLE_TOOLS[target.tool]?.envVar;
+export function homeVariableOf(tool: string): string | undefined {
+  if (Object.hasOwn(RELOCATABLE_TOOLS, tool)) return RELOCATABLE_TOOLS[tool]?.envVar;
+  const launched = LAUNCH_ORDER.find((one) => one === tool);
 
-  if (instance === undefined || instance.name === instance.extends) {
-    const own: LaunchAdapter = launchAdapterOf(target.tool);
-    const shipped = own.confined?.homeEnv;
-    const moved = shipped === undefined || inherited[shipped] !== undefined ? null : movedToolHome(target.tool, realHost({ env: inherited }));
+  if (launched === undefined) return undefined;
+  const adapter: LaunchAdapter = launchAdapterOf(launched);
 
-    return shipped === undefined || moved === null ? {} : { [shipped]: moved };
+  return adapter.confined?.homeEnv;
+}
+
+/** The home variables teamai sets on a tool's command, by name. */
+export type ToolCommandEnv = Readonly<Record<string, string>>;
+
+/**
+ * The home a tool's command starts in: `delivered`, the one teamai delivers the tool to, from the member's environment
+ * `inherited`; `at`, one home teamai chose for this run, such as an app-server's, a session store's or a throwaway one.
+ */
+export type ToolCommandHome =
+  | { readonly kind: 'delivered'; readonly inherited: Readonly<Record<string, string | undefined>> }
+  | { readonly kind: 'at'; readonly dir: string };
+
+/**
+ * The home variables teamai sets when it starts the command of the tool `name`, the one place that decides them. At a
+ * chosen home: every variable the command reads its home from, the tool's and an instance's own (`home.env`). At the
+ * delivered home: an instance's own variable at the home its record or variable gives (`toolHomeOf`); for an instance
+ * with only `home`, the variable of the tool it extends, unless its `paths` put files outside that home; for a shipped
+ * tool or an adjustment, its variable at its recorded home when `inherited` leaves it unset (`movedToolHome`).
+ */
+export function toolCommandEnv(name: string, home: ToolCommandHome): ToolCommandEnv {
+  const resolved = toolOf(name);
+
+  if (resolved === undefined) return {};
+  const instance = resolved.instance?.name === resolved.instance?.extends ? undefined : resolved.instance;
+  const variable = homeVariableOf(resolved.base);
+
+  switch (home.kind) {
+    case 'at':
+      return Object.fromEntries([variable, instance?.home?.env].flatMap((one) => one === undefined ? [] : [[one, home.dir]]));
+    case 'delivered':
+      return instance === undefined ? recordedHomeEnv(resolved.base, variable, home.inherited) : instanceHomeEnv(instance, variable);
+    default: {
+      const unhandled: never = home;
+
+      return unhandled;
+    }
   }
+}
 
-  if (instance.home?.env !== undefined) {
-    const own = toolHomeOf(target.name);
+function recordedHomeEnv(tool: ToolId, variable: string | undefined, inherited: Readonly<Record<string, string | undefined>>): ToolCommandEnv {
+  if (variable === undefined || inherited[variable] !== undefined) return {};
+  const moved = movedToolHome(tool, realHost({ env: inherited }));
 
-    return own === undefined ? {} : { [instance.home.env]: own.dir };
-  }
+  return moved === null ? {} : { [variable]: moved };
+}
 
-  if (instance.home === undefined || variable === undefined) return {};
-  const homeDir = instance.home.dir;
+function instanceHomeEnv(instance: ResolvedToolInstance, variable: string | undefined) {
+  const dir = toolHomeOf(instance.name)?.dir;
+
+  if (dir === undefined || instance.home === undefined) return {};
+
+  if (instance.home.env !== undefined) return { [instance.home.env]: dir };
 
   // teamai writes where `paths` say: a build pointed at the home would read none of what lies outside it.
-  if (instance.paths !== undefined && [...toolPathRoots(instance.paths)].some((root) => root !== homeDir)) return {};
-  const home = toolHomeOf(target.name);
+  if (variable === undefined || (instance.paths !== undefined && [...toolPathRoots(instance.paths)].some((root) => root !== instance.home?.dir))) return {};
 
-  return home === undefined ? {} : { [variable]: home.dir };
+  return { [variable]: dir };
 }
 
 /** Where the command that starts `target` is installed, or null. An instance's comes from a config file, so only PATH counts. */

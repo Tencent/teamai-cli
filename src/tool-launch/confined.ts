@@ -11,8 +11,8 @@ import { withoutTomlBom } from '../utils/toml.js';
 import { observedEffort, observedModel, type ObservedEffort, type ObservedModel } from '../agent-observation.js';
 import { LAUNCHED_BY_ENV, resolveRunMode, RUN_MODE_ENV } from '../launch-context.js';
 import { opencodeMajorVersion } from '../opencode-hooks.js';
-import { movedToolHome, realHost, toolHome } from '../tool-home.js';
-import { isToolId, mcpSyntaxOf } from '../tool-registry.js';
+import { toolHome } from '../tool-home.js';
+import { mcpSyntaxOf } from '../tool-registry.js';
 import { parseJsonAs } from '../utils/json.js';
 import { resolveCliPath } from '../utils/cli-path.js';
 import { execCommand, probeBinary } from '../utils/exec.js';
@@ -22,7 +22,7 @@ import type { ConfinedLevel, ConfinedUsage } from './confined-level.js';
 import type { CallLaunch, ConfinedAccess, ConfinedLaunch } from '@teamai/tool-core/launch';
 import { runTool, type ToolRun } from './run.js';
 import { toolStdout, type TokenUsage } from './stdout.js';
-import { CONFINED_TOOLS, executableOf, launchAdapterIdOf, launchAdapterOf, opencodeModelArgs, type ConfinedTool } from './tools.js';
+import { CONFINED_TOOLS, executableOf, launchAdapterIdOf, launchAdapterOf, opencodeModelArgs, toolCommandEnv, type ConfinedTool } from './tools.js';
 
 /** A JSON line a tool prints; a field of the wrong type reads as absent. */
 const RecordSchema = z.looseObject({
@@ -162,12 +162,11 @@ function memberEnv(): NodeJS.ProcessEnv {
 
 function confinedEnv(tool: ConfinedTool): NodeJS.ProcessEnv {
   const restored = memberEnv();
-  const { env: toolEnv, homeEnv: variable } = profileOf(tool);
-  const moved = variable !== undefined && restored[variable] === undefined && isToolId(tool) ? movedToolHome(tool, realHost({ env: restored })) : null;
 
-  const env: NodeJS.ProcessEnv = Object.fromEntries([...COMMON_ENV, ...toolEnv].flatMap((key) => restored[key] === undefined ? [] : [[key, restored[key]]]));
-
-  if (variable !== undefined && moved !== null) env[variable] = moved;
+  const env: NodeJS.ProcessEnv = {
+    ...Object.fromEntries([...COMMON_ENV, ...profileOf(tool).env].flatMap((key) => restored[key] === undefined ? [] : [[key, restored[key]]])),
+    ...toolCommandEnv(tool, { kind: 'delivered', inherited: restored }),
+  };
 
   if (tool === 'agy') Object.assign(env, agyGatewayEnv(restored));
   env[LAUNCHED_BY_ENV] = 'confined';
@@ -402,11 +401,12 @@ const LAUNCHES = {
     const { input, env, tmp, dir } = context;
     const settings = await codexSettings(input.tool, env);
     const auth = await optionalFile(path.join(env.CODEX_HOME || toolHome(input.tool), 'auth.json'));
-    env.CODEX_HOME = path.join(tmp, 'codex');
-    await fs.mkdir(env.CODEX_HOME);
+    const codexHome = path.join(tmp, 'codex');
+    Object.assign(env, toolCommandEnv(input.tool, { kind: 'at', dir: codexHome }));
+    await fs.mkdir(codexHome);
 
-    if (auth !== undefined) await fs.writeFile(path.join(env.CODEX_HOME, 'auth.json'), auth, { mode: 0o600 });
-    await fs.writeFile(path.join(env.CODEX_HOME, 'config.toml'), codexProfile(dir));
+    if (auth !== undefined) await fs.writeFile(path.join(codexHome, 'auth.json'), auth, { mode: 0o600 });
+    await fs.writeFile(path.join(codexHome, 'config.toml'), codexProfile(dir));
     const schema = path.join(tmp, 'schema.json');
 
     if (input.schema !== undefined) await fs.writeFile(schema, JSON.stringify(input.schema));

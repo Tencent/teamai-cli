@@ -23,7 +23,8 @@ vi.mock('@teamai/tool-core/sessions/sqlite', async (importOriginal) => {
 import { CodexAdapter } from '@teamai/tool-core/formats/codex';
 import { findSqlite3 } from '@teamai/tool-core/sessions/sqlite';
 import type { Session } from '@teamai/tool-core/sessions/ir';
-import { SESSION_HOST } from '../session-flow/adapters/index.js';
+import { adapterAt, SESSION_HOST } from '../session-flow/adapters/index.js';
+import { useToolInstances } from '../tool-registry.js';
 
 let home = '';
 
@@ -115,6 +116,30 @@ describe('Codex CLI', () => {
     expect(calls.filter((c) => c === migrate)).toHaveLength(2);
     expect(calls).toContain('app-server');
     expect(codex.consumeWriteNotice()).toBeUndefined();
+  });
+});
+
+describe('Codex CLI of a tool instance', () => {
+  afterEach(() => { useToolInstances(new Map()); });
+
+  // The session adapter sets CODEX_HOME to the store's home; a build that reads only its own variable needs that one too.
+  it.skipIf(process.platform === 'win32')('starts the instance\'s own build with its own variable at the home of the store it writes', async () => {
+    const bin = installFakeCodex();
+    fs.writeFileSync(path.join(bin, 'acme-codex'), `#!/bin/sh\necho "$*" >> "$ACME_CODEX_HOME/acme-calls.log"\nexec ${JSON.stringify(path.join(bin, 'codex'))} "$@"\n`, { mode: 0o755 });
+    vi.stubEnv('PATH', bin);
+    useToolInstances(new Map([['acme-codex', {
+      name: 'acme-codex', extends: 'codex', command: 'acme-codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+      source: 'personal', file: path.join(home, 'acme-codex.yaml'), location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
+    }]]));
+    const acmeHome = path.join(home, 'acme-moved');
+    fs.mkdirSync(path.join(acmeHome, 'sessions'), { recursive: true });
+    const cwd = path.join(home, 'ws');
+
+    const id = await adapterAt({ platform: 'acme-codex', storeDir: path.join(acmeHome, 'sessions') }).writeSession(mkSession(cwd), cwd);
+
+    const calls = fs.readFileSync(path.join(acmeHome, 'acme-calls.log'), 'utf-8').split('\n');
+    expect(calls).toContain(`migrate-rollouts --apply --thread ${id} --json`);
+    expect(calls).toContain('app-server');
   });
 });
 

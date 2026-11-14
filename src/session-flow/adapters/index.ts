@@ -5,13 +5,13 @@
  */
 
 import { BUILT_IN_TOOLS } from '@teamai/tool-definitions';
-import { RELOCATABLE_TOOLS, type LocalConfig } from '../../types.js';
+import { type LocalConfig } from '../../types.js';
 import path from 'node:path';
 import type { AgentAdapter } from '@teamai/tool-core/sessions/base';
 import { HOST_PROCESSES, type Processes } from '@teamai/shared/exec';
 import type { ToolFamily } from '@teamai/tool-core/family';
 import { locatesOwnStore, type SessionHost, type StoredPlatformDefinition } from '@teamai/tool-core/sessions/platform';
-import { executablesOf } from '../../tool-launch/tools.js';
+import { executablesOf, homeVariableOf, toolCommandEnv } from '../../tool-launch/tools.js';
 import { isSessionPlatform, isStoredSessionPlatform, type SessionPlatform, type StoredSessionPlatform } from './platform-facts.js';
 import { sessionStoreDir } from '../../locate.js';
 import { instanceHomeDir } from '../../tool-home.js';
@@ -97,7 +97,7 @@ function instanceStore(platform: string) {
  */
 function instanceSessionHost(instance: ResolvedToolInstance): SessionHost {
   return {
-    processes: withOwnHomeVariable(instance),
+    processes: withStoreHome(instance),
     executablesOf: (tool) => {
       const command = tool === instance.extends ? acceptedCommandOf(instance) : undefined;
 
@@ -108,19 +108,18 @@ function instanceSessionHost(instance: ResolvedToolInstance): SessionHost {
 
 /**
  * The processes an instance's adapter starts: where it points the home variable of the tool the instance extends at
- * the store, the instance's own variable (`home.env`) too, since its build reads only that one.
+ * the store, every home variable the instance's command reads is set to that home (`toolCommandEnv`).
  */
-function withOwnHomeVariable(instance: ResolvedToolInstance): Processes {
-  const own = instance.home?.env;
-  const base = RELOCATABLE_TOOLS[instance.extends]?.envVar;
+function withStoreHome(instance: ResolvedToolInstance): Processes {
+  const variable = homeVariableOf(instance.extends);
   const processes = SESSION_HOST.processes;
 
-  if (own === undefined || base === undefined) return processes;
+  if (variable === undefined) return processes;
 
   const follow = <O extends { env?: NodeJS.ProcessEnv }>(options: O): O => {
-    const home = options.env?.[base];
+    const dir = options.env?.[variable];
 
-    return home === undefined ? options : { ...options, env: { ...options.env, [own]: home } };
+    return dir === undefined ? options : { ...options, env: { ...options.env, ...toolCommandEnv(instance.name, { kind: 'at', dir }) } };
   };
 
   return {

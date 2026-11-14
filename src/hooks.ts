@@ -268,12 +268,7 @@ function codexTrustAt(tool: string, codexHome: string): CodexAt | { kind: 'unava
     return { kind: 'unavailable', reason: `${tool}: its command is not accepted on this machine yet, so no Codex build of it runs; run teamai pull in a terminal to review and accept it` };
   }
 
-  const at: CodexAt = { codexHome: home, commands: [accepted] };
-
-  // Its build reads its home from its own variable, which a shell without it leaves unset while teamai uses the recorded home.
-  if (instance.home?.env !== undefined) at.homeVariable = instance.home.env;
-
-  return at;
+  return { codexHome: home, commands: [accepted], tool };
 }
 
 /**
