@@ -562,17 +562,46 @@ describe('Codex hook trust — an instance', () => {
     expect(readFakeCodexState(codexHome()).calls).toEqual([]);
   });
 
-  it('runs no Codex for a team instance whose command no one accepted, and says how to accept it', async () => {
+  it.each([
+    ['no one to ask', undefined],
+    ['a person who answers n', 'n'],
+  ])('runs no Codex for a team instance whose command no one accepted, with %s', async (_, answer) => {
     const { config, acmeHome } = await withInstance('team');
     await writeYaml(LINT_HOOK);
     const local = userConfig({ enabledAgents: ['acme-codex'] });
+    const asked: string[] = [];
+    const ask = answer === undefined ? undefined : async (question: string) => { asked.push(question); return answer; };
 
     await reconcileTeamHooksForConfig(config, local);
-    const trust = await trustCodexForScope(config, local);
 
-    expect(trust).toEqual({ kind: 'unavailable', reason: 'acme-codex: its command is not accepted on this machine yet, so no Codex build of it runs; start a workflow step on acme-codex once in a terminal to accept it' });
+    expect(await trustCodexForScope(config, local, { ask })).toEqual({ kind: 'unaccepted', tool: 'acme-codex' });
+    expect(asked).toHaveLength(answer === undefined ? 0 : 1);
+    expect(await trustCodexForScope(config, local)).toEqual({ kind: 'unaccepted', tool: 'acme-codex' });
     expect(readFakeCodexState(acmeHome).calls).toEqual([]);
     expect(readFakeCodexState(codexHome()).calls).toEqual([]);
+  });
+
+  it('asks a person the acceptance question of a team instance\'s command, and trusts its hooks through it once accepted', async () => {
+    const { config, acmeHome, acmeBuild } = await withInstance('team');
+    await writeYaml(LINT_HOOK);
+    const local = userConfig({ enabledAgents: ['acme-codex'] });
+    const asked: string[] = [];
+    await reconcileTeamHooksForConfig(config, local);
+
+    const trust = await trustCodexForScope(config, local, { ask: async (question) => { asked.push(question); return 'y'; } });
+
+    const entries = await codexEntries(path.join(acmeHome, 'hooks.json'));
+    expect(asked).toEqual([expect.stringMatching(/^Tool "acme-codex" comes from the team repo \(.*acme-codex\.yaml, content [0-9a-f]{12}\), which you have not accepted on this machine\. It runs acme-codex as you, .*\nRun it\? \[y\/N\] $/s)]);
+    expect(trust).toEqual({ kind: 'trusted', hooks: entries.length });
+    expect(trustedKeys(acmeHome).sort()).toEqual(entries.map((e) => e.key).sort());
+    expect(new Set(readFakeCodexState(acmeHome).calls.map((c) => c.codex))).toEqual(new Set([acmeBuild]));
+    // The answer is the one a workflow step records: the next step on the instance asks nothing.
+    const { acceptToolCommand } = await import('../tool-instances.js');
+    const { toolOf } = await import('../tool-registry.js');
+    const instance = toolOf('acme-codex')?.instance;
+
+    if (!instance) throw new Error('acme-codex is not loaded');
+    expect(await acceptToolCommand(instance, { ask: undefined })).toEqual({ ok: true });
   });
 });
 
@@ -587,6 +616,16 @@ describe('reportCodexTrust', () => {
     expect(log.warn).not.toHaveBeenCalled();
     reportCodexTrust({ kind: 'unavailable', reason: 'codex is not on PATH' }, 'all');
     expect(vi.mocked(log.warn).mock.calls[0]?.[0]).toMatch(/open \/hooks/);
+  });
+
+  it.each(['all', 'problems'] as const)('says which instance\'s hooks it left untrusted, and the step that trusts them (%s)', async (mode) => {
+    const { resetWarnOnce } = await import('../utils/warn-once.js');
+    resetWarnOnce();
+    reportCodexTrust({ kind: 'unaccepted', tool: 'acme-codex' }, mode);
+    expect(vi.mocked(log.warn).mock.calls).toEqual([[
+      'Did not trust the teamai hooks of acme-codex in Codex: only its own command trusts them, and no one has accepted that command on this machine. '
+        + 'Run `teamai pull` in a terminal to review and accept it; until then Codex may skip those hooks.',
+    ]]);
   });
 
   it('gives the cause of a failure, also during a pull', () => {

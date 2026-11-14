@@ -16,6 +16,8 @@ import { publishQueuedLearnings } from './utils/learnings-publish.js';
 import { pendingLearningsDir } from './utils/pending-learnings.js';
 import { indexableLearningsRoots } from './utils/learnings-roots.js';
 import { log, spinner } from './utils/logger.js';
+import { resolveRunMode } from './launch-context.js';
+import { askQuestion, closePrompt, isInteractive } from './utils/prompt.js';
 import { DetachedRecoveryError, transitionTeamRepo, teamRefBlocker, teamRefNotice, removedTeamResources, type RemovedTeamResources } from './team-ref.js';
 import { pathExists, readJson, writeJson, listFiles, listDirs, listFilesRecursive, readFileSafe, hasVcsMetadataRecursive } from './utils/fs.js';
 import { reconcilePlacementRecords } from './utils/pending-push.js';
@@ -4899,6 +4901,22 @@ async function reconcileHooksAllScopes(
   return { errors, unwritten };
 }
 
+/**
+ * The person at this terminal, who answers the question that accepts a team instance's command a trust pass runs; none
+ * in a silent pull (a hook's), an unattended one, or without a terminal.
+ */
+function terminalPerson(options: GlobalOptions): ((question: string) => Promise<string | undefined>) | undefined {
+  if (options.silent || resolveRunMode(process.env) !== 'attended' || !isInteractive() || !process.stderr.isTTY) return undefined;
+
+  return async (question) => {
+    try {
+      return await askQuestion(question);
+    } finally {
+      closePrompt();
+    }
+  };
+}
+
 /** Trust Codex hooks and projects after both hooks and MCP reconciliation. */
 async function trustCodexAllScopes(
   userConfig: LocalConfig | null,
@@ -4915,7 +4933,7 @@ async function trustCodexAllScopes(
 
       if (!teamConfig) continue;
       const { reportCodexTrust, trustCodexForScope } = await import('./hooks.js');
-      const trust = await trustCodexForScope(teamConfig, localConfig);
+      const trust = await trustCodexForScope(teamConfig, localConfig, { ask: terminalPerson(options) });
       const skewAlreadyWarned = trust?.skew !== undefined && isDeepStrictEqual(trust.skew, warnedSkew);
 
       if (trust?.skew) warnedSkew = trust.skew;

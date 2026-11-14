@@ -32,6 +32,8 @@ export type CodexTrust = (
   | { kind: 'disabled' }
   /** No Codex build: no `codex` on PATH and no desktop app. */
   | { kind: 'unavailable'; reason: string }
+  /** A team instance of Codex whose command no one accepted here: only that command trusts its hooks, so none ran. */
+  | { kind: 'unaccepted'; tool: string }
   /** The app-server failed, timed out, or did not load a requested hook. */
   | { kind: 'failed'; reason: string }
 ) & CodexBuildComparison;

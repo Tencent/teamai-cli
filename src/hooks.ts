@@ -49,6 +49,7 @@ import { getUserHome, expandHome } from '@teamai/shared/home';
 import { LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP, claudeHookOtherHostSkip, claudeHookUsesPowerShell, copilotRunsEntries, readsClaudeSettings } from './claude-hook-host.js';
 import { gitCommonDir, listWorktrees, resolveAnchors } from './utils/git.js';
 import { staleWorkspaces } from './utils/partition.js';
+import { warnOnce } from './utils/warn-once.js';
 import {
   codexBuildSkewMessage, codexBuildsIdentity, keepCodexHookTrust, readCodexHookTrust, removeOwnedCodexProjectTrust, trustCodexHooks,
   type CodexAt, type CodexHookTrustReport, type CodexTrust,
@@ -58,7 +59,7 @@ import type { CodexTeamHook } from './codex-team-hooks.js';
 import { TOOL_IDS } from './tools.js';
 import { type HookFormat } from '@teamai/tool-core/definition';
 import { baseToolOf, channelsOf, hookFormatOf, hookSettingsFormatOf, hookSyntaxOf, instanceNames, selfLocalSettingsOf, descriptorOf, toolOf, type DescriptorOf } from './tool-registry.js';
-import { acceptedCommandOf } from './tool-instances.js';
+import { acceptedCommandOf, acceptToolCommand } from './tool-instances.js';
 import { BRIDGED_TEAM_HOOK_EVENTS, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
 import { earlierHookAdapterDir, hookSettingsFile, installOf, locate, openclawWorkspaceDir, ownOf, workspaceHooksOf } from './locate.js';
 import { toolHome, toolHomeOf } from './tool-home.js';
@@ -264,7 +265,7 @@ function codexTrustAt(tool: string, codexHome: string): CodexAt | { kind: 'unava
   const accepted = acceptedCommandOf(instance);
 
   return accepted === undefined
-    ? { kind: 'unavailable', reason: `${tool}: its command is not accepted on this machine yet, so no Codex build of it runs; start a workflow step on ${tool} once in a terminal to accept it` }
+    ? { kind: 'unavailable', reason: `${tool}: its command is not accepted on this machine yet, so no Codex build of it runs; run teamai pull in a terminal to review and accept it` }
     : { codexHome: home, commands: [accepted] };
 }
 
@@ -312,6 +313,11 @@ export function reportCodexTrust(trust: CodexTrust | undefined, mode: 'all' | 'p
     case 'project-untrusted':
       log.warn(`Codex marks ${trust.project} as untrusted, so it does not load teamai's project hooks or MCP configuration. `
         + 'teamai leaves that choice to you: trust the project in Codex to load its configuration.');
+
+      return;
+    case 'unaccepted':
+      warnOnce(`Did not trust the teamai hooks of ${trust.tool} in Codex: only its own command trusts them, and no one has accepted that command on this machine. `
+        + 'Run `teamai pull` in a terminal to review and accept it; until then Codex may skip those hooks.');
 
       return;
     case 'disabled':
@@ -4892,7 +4898,7 @@ function combinedCodexTrust(passes: ReadonlyArray<{ tool: string; trust: CodexTr
     (trust.kind === 'failed' || trust.kind === 'unavailable') && tool !== CODEX_TOOL_ID && !trust.reason.startsWith(`${tool}: `)
       ? { ...trust, reason: `${tool}: ${trust.reason}` } : trust;
 
-  for (const kind of ['failed', 'unavailable', 'project-untrusted'] as const) {
+  for (const kind of ['failed', 'unavailable', 'unaccepted', 'project-untrusted'] as const) {
     const pass = passes.find(({ trust }) => trust.kind === kind);
 
     if (pass) return named(pass);
@@ -4946,7 +4952,7 @@ async function codexTrustFingerprint(targets: readonly CodexTrustTargets[]): Pro
 export async function trustCodexForScope(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
-  opts: { filterAgents?: string[]; force?: boolean } = {},
+  opts: { filterAgents?: string[]; force?: boolean; ask?: (question: string) => Promise<string | undefined> } = {},
 ): Promise<CodexTrust | undefined> {
   const targets = await codexTrustTargetsOfScope(teamConfig, localConfig, opts.filterAgents);
 
@@ -4969,8 +4975,11 @@ export async function trustCodexForScope(
 
   const passes: Array<{ tool: string; trust: CodexTrust }> = [];
 
-  for (const target of targets) {
-    const trust: CodexTrust = target.unaccepted !== undefined ? { kind: 'unavailable', reason: target.unaccepted } : await trustCodexHooks({ ...target, onProjectTrusted: async (project) => {
+  for (const listed of targets) {
+    // A person at a terminal answers the question a workflow step asks; once they accept, the instance's command trusts.
+    const target = listed.unaccepted !== undefined && opts.ask ? await acceptedCodexTarget(teamConfig, localConfig, listed, opts) : listed;
+
+    const trust: CodexTrust = target.unaccepted !== undefined ? { kind: 'unaccepted', tool: target.tool } : await trustCodexHooks({ ...target, onProjectTrusted: async (project) => {
       const state = await loadStateForScope(localConfig);
       state.codexProjectTrust = [...state.codexProjectTrust ?? []];
 
@@ -5000,6 +5009,20 @@ export async function trustCodexForScope(
   }
 
   return trust;
+}
+
+/** `listed` once `ask` accepts its instance's command, read again so it trusts in the instance's home through it; else `listed`. */
+async function acceptedCodexTarget(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  listed: CodexTrustTargets,
+  opts: { filterAgents?: string[]; ask?: (question: string) => Promise<string | undefined> },
+): Promise<CodexTrustTargets> {
+  const instance = toolOf(listed.tool)?.instance;
+
+  if (instance === undefined || !(await acceptToolCommand(instance, { ask: opts.ask })).ok) return listed;
+
+  return await codexTrustTargets(teamConfig, localConfig, opts.filterAgents, listed.tool) ?? listed;
 }
 
 /**
