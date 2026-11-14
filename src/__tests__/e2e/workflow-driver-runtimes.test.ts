@@ -1927,6 +1927,38 @@ steps:
       expect(endings()).toEqual([[sent?.op, 'finished']]);
     });
 
+    it('does not retry a step while a step its retry runs again left a prompt the runtime refuses to stop', async () => {
+      // The toy refuses to stop the prompt only once something stops it: the killed driver never does.
+      const stuck = { code: 'cancel_failed', message: 'The toy cannot stop that prompt now: its provider is down.' };
+      writeDefinition('agentcone', [{ use: 'toy', options: { state, agent: { release: path.join(state, 'release-cone-never'), output: { ok: true } }, cancel_fails: stuck } }]);
+      writeFlow('conedflow', `  - id: prep
+    command: exit 1
+  - id: review
+    needs: [prep]
+    if: steps.prep.outcome == 'failed'
+    prompt: Review what prep left.
+    output:
+      ok: boolean`);
+      expect((await runCLI(['pull'], repo)).code).toBe(0);
+      const before = runIds();
+      const first = await startKilled(['workflow', 'start', 'conedflow', '--driver', 'agentcone']);
+      await until(() => sends().length === 1);
+      first.child.kill('SIGKILL');
+      expect((await first.ended).signal).toBe('SIGKILL');
+      const runId = String([...runIds()].find((id) => !before.has(id)));
+      const resumed = await runCLI(['workflow', 'resume', runId, '--driver', 'local'], repo, env());
+      const review = readRunState(runId).steps.find((step) => step.id === 'review');
+      expect(review, resumed.stderr).toMatchObject({ status: 'failed', failure: { code: 'runtime_lost', message: expect.stringContaining(stuck.message) } });
+      const settled = readRunState(runId);
+
+      const retried = await runCLI(['workflow', 'retry', runId, 'prep'], repo, env());
+
+      // The retry of prep runs review again, whose prompt may still run on the toy: nothing runs again beside it.
+      expect(envelope(retried), retried.stderr).toMatchObject({ error: { code: 'not_retryable', message: expect.stringContaining(`Step "review" cannot run again yet: what attempt ${attemptOf(review)} ran on its step runtime may still run there: `) } });
+      expect(readRunState(runId)).toEqual(settled);
+      expect(runtimeRecord(runId, attemptOf(review))).toMatchObject({ driver: 'agentcone', phase: 'running' });
+    });
+
     it('stops, through the driver recorded for it, a prompt a killed teamai left running when the run resumes on a driver without that runtime, then runs the step there', async () => {
       const release = path.join(state, 'release-never');
       writeDefinition('agentmoved', [{ use: 'toy', options: { state, agent: { release, output: { ok: true } } } }]);

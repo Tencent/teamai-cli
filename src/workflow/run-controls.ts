@@ -408,6 +408,29 @@ async function endRunPartOf(config: LocalConfig, part: RunId, partOf: PartOfStep
   return (taken.value?.running ?? []).map(({ attempt, why }) => `attempt ${attempt} of run ${part}, part of attempt ${partOf.attempt}, may still run: ${why}`);
 }
 
+/**
+ * Whether a retry runs `state`, one of `container`'s states, again: the retried step reaches it, or the end that stopped
+ * it is reset.
+ */
+function runsAgainIn(container: RetryContainer, state: StepState): boolean {
+  return container.cone.has(state) || (container.resetStops && state.status === 'cancelled' && state.failure.code === 'end_reached');
+}
+
+/** Each step a retry of `target` runs again in `containers`, as the retry reads them before it changes any: `target` too. */
+function statesRunAgain(target: StepState, containers: readonly RetryContainer[]): Set<StepState> {
+  const again = new Set<StepState>([target]);
+
+  for (const container of containers) {
+    for (const state of container.states) {
+      if (state !== container.child && runsAgainIn(container, state)) again.add(state);
+    }
+
+    if (container.rerunsChild) again.add(container.child);
+  }
+
+  return again;
+}
+
 interface RetryContainer {
   child: StepState;
   states: StepState[];
@@ -757,10 +780,10 @@ async function stopLeftOnRuntime(config: LocalConfig, state: RunState, run: RunI
 
 /**
  * What a retry of step `step` of run `runId` does before it changes the run, outside the run lock, since both reach the
- * network: stops what the step's attempt left on a step runtime (`stopLeftOnRuntime`), then brings back, before it
- * reopens a succeeded run, the branches it recorded that a cleanup deleted, here or on the install it was claimed from.
- * Answers why the step does not run again yet, or why the run is not reopened when a branch does not come back. A retry
- * refused anyway does neither: the change under the run lock answers that refusal.
+ * network: stops what the attempt of each step it runs again left on a step runtime (`stopLeftOnRuntime`), then brings
+ * back, before it reopens a succeeded run, the branches it recorded that a cleanup deleted, here or on the install it was
+ * claimed from. Answers why a step does not run again yet, or why the run is not reopened when a branch does not come
+ * back. A retry refused anyway does neither: the change under the run lock answers that refusal.
  */
 async function prepareRetry(config: LocalConfig, runId: RunId, step: string, retention: ResolvedRetention): Promise<WorkflowEnvelope | undefined> {
   const run = await readRun(config, runId);
@@ -769,9 +792,14 @@ async function prepareRetry(config: LocalConfig, runId: RunId, step: string, ret
   const planned = retryTarget(config, run, step);
 
   if (!('target' in planned)) return undefined;
-  const left = await stopLeftOnRuntime(config, run, runId, planned.target);
 
-  if (left || run.status !== 'succeeded') return left;
+  for (const state of statesRunAgain(planned.target, planned.containers)) {
+    const left = await stopLeftOnRuntime(config, run, runId, state);
+
+    if (left) return left;
+  }
+
+  if (run.status !== 'succeeded') return undefined;
   // A claim keeps no driver, and takes the run into the checkout it names.
   const failed = await restoreRecordedBranches(run, run.driver?.workspace ?? run.checkout ?? process.cwd());
 
@@ -839,7 +867,7 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
       for (const state of container.states) {
         if (state === container.child) continue;
 
-        if (container.cone.has(state) || (container.resetStops && state.status === 'cancelled' && state.failure.code === 'end_reached')) {
+        if (runsAgainIn(container, state)) {
           again.add(state);
           retryInstance(run, state, now);
         } else if (state.status === 'skipped' && !state.answer) resetPending(state);
