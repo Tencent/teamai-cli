@@ -1,5 +1,5 @@
+import { readMarkdown } from './read-markdown.js';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import path from 'node:path';
 import { check } from '../doc-check.js';
 import { listServableSkills } from '../../src/skill-content.js';
@@ -15,7 +15,7 @@ await check('names every skill after its directory, and promises no permissions 
     deployRoot: path.join(ROOT, 'skills'),
     dataRoot: path.join(ROOT, 'skill-data'),
   })) {
-    const text = fs.readFileSync(path.join(skill.dir, 'SKILL.md'), 'utf8');
+    const text = readMarkdown(path.join(skill.dir, 'SKILL.md'));
     // A frontmatter name that disagrees with the directory makes the skill
     // undiscoverable for the agent and unresolvable for `skill get`.
     assert.match(text, new RegExp(`^name: ${skill.name}$`, 'm'));
@@ -27,7 +27,7 @@ await check('names every skill after its directory, and promises no permissions 
 });
 
 await check('keeps the deployed stub declaring its own name and tools', () => {
-  const stub = fs.readFileSync(path.join(ROOT, 'skills/teamai/SKILL.md'), 'utf8');
+  const stub = readMarkdown(path.join(ROOT, 'skills/teamai/SKILL.md'));
   assert.match(stub, /^name: teamai$/m);
   // The stub is the always-loaded unit, so it pre-approves only the read-only
   // `teamai skill …` commands it asks for and the skill driver's calls that
@@ -54,7 +54,7 @@ await check('quotes {SKILL_DIR} and $(teamai skill path …) in every command it
 
     for (const relative of files) {
       if (!relative.endsWith('.md')) continue;
-      const text = fs.readFileSync(path.join(skill.dir, relative), 'utf8');
+      const text = readMarkdown(path.join(skill.dir, relative));
       text.split('\n').forEach((line, i) => {
         // A command word followed by the bare placeholder: `python3 {SKILL_DIR}/…`.
         // Prose and reference tables name the path without running it, and a
@@ -82,7 +82,7 @@ await check('ships no Chinese text in the deployed stub or the served content', 
 
   for (const root of ['skills', 'skill-data']) {
     for (const relative of await listFilesRecursive(path.join(ROOT, root))) {
-      const text = fs.readFileSync(path.join(ROOT, root, relative), 'utf8');
+      const text = readMarkdown(path.join(ROOT, root, relative));
       text.split('\n').forEach((line, i) => {
         if (/[\u3000-\u303f\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]/.test(line))
           offenders.push(`${root}/${relative}:${i + 1}`);
@@ -102,7 +102,7 @@ await check('keeps the stub description within the 1024-character budget agents 
 });
 
 await check('pre-approves only read-only skill and workflow calls', () => {
-  const stub = fs.readFileSync(path.join(ROOT, 'skills/teamai/SKILL.md'), 'utf8');
+  const stub = readMarkdown(path.join(ROOT, 'skills/teamai/SKILL.md'));
   const patterns = (stub.match(/^allowed-tools: (.*)$/m)?.[1] ?? '').split(', ');
   const calls = ['skill', 'workflow start --describe', 'workflow next', 'workflow report', 'workflow respond'];
   assert.deepEqual(
@@ -127,7 +127,7 @@ await check('pre-approves only read-only skill and workflow calls', () => {
 });
 
 await check('workflow guide starts with the describe literal', () => {
-  const guide = fs.readFileSync(path.join(ROOT, 'skill-data/workflow/SKILL.md'), 'utf8');
+  const guide = readMarkdown(path.join(ROOT, 'skill-data/workflow/SKILL.md'));
   assert.ok(guide.includes('`' + describeLiteral('teamai', '<name>') + '`'));
 });
 
@@ -139,7 +139,7 @@ function render(row: TransitionRow): string {
 
 /** Every table row under `## The skill driver` in the engine notes. */
 function documentedRows(): TransitionRow[] {
-  const doc = fs.readFileSync(path.join(ROOT, 'docs/dev/workflow-engine.md'), 'utf8');
+  const doc = readMarkdown(path.join(ROOT, 'docs/dev/workflow-engine.md'));
   const section = doc.split(/^## /m).find((part) => part.startsWith('The skill driver\n'));
 
   if (!section) throw new Error('docs/dev/workflow-engine.md has no "## The skill driver" section');
