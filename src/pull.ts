@@ -33,7 +33,7 @@ import {
 import { ResourceHandler } from './resources/base.js';
 import { CODEX_TOOL, codexSkillsSplit, mayDeleteSkillCopy, skillOrigin } from './resources/skills.js';
 import { TeamSkillSource } from './resources/team-skill-source.js';
-import { installOf, locate, locatingOnce, ownOf, SHARED_AGENT_SKILLS_PATH, writable, writesOf, type Install } from './locate.js';
+import { installOf, locate, locatingOnce, ownOf, SHARED_AGENT_SKILLS_PATH, toolPathUnder, writable, writesOf, type Install } from './locate.js';
 import { isWithin } from './utils/agent-path.js';
 import { describeToolHomeChange, recordToolHomes } from './tool-home-record.js';
 import { describeInvalidToolHomes, realHost, toolHomeOf } from './tool-home.js';
@@ -1459,7 +1459,9 @@ async function excludeWorkspaceInstructions(localConfig: LocalConfig, options: G
     for (const [tool, paths] of Object.entries(teamConfig ? scopedToolPaths(teamConfig, localConfig) : {})) {
       if (baseToolOf(tool) !== 'claude' || isAgentExcluded(localConfig, tool) || !paths?.settings) continue;
 
-      if (await pathExists(path.join(projectRoot, path.dirname(paths.settings)))) settingsFiles.push(path.join(projectRoot, path.dirname(paths.settings), 'settings.local.json'));
+      const folder = path.posix.dirname(paths.settings);
+
+      if (await pathExists(toolPathUnder(tool, projectRoot, folder))) settingsFiles.push(toolPathUnder(tool, projectRoot, `${folder}/settings.local.json`));
     }
 
     if (settingsFiles.length === 0) return;

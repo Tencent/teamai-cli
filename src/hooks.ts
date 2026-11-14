@@ -3862,6 +3862,7 @@ async function clearEarlierHomeHooks(target: {
   baseDir: string; settings: string; current: string; tool: string; manifestPath: string;
   teamHookProjectRoot?: string; teamHookHistory?: TeamHookHistory;
 }): Promise<void> {
+  // oxlint-disable-next-line teamai/configured-tool-paths -- the unmoved default home earlier releases wrote, on purpose
   const earlier = path.join(target.baseDir, target.settings);
 
   if (earlier === target.current || path.resolve(target.baseDir) !== path.resolve(getUserHome()) || !await pathExists(earlier)) return;
@@ -4415,6 +4416,7 @@ export async function reconcileHooksToAllTools(
     // relocated. Do not recreate the missing HOME root just to remove them.
     if (!installed && !(opts.removeAll && mainFile)) continue;
     // A legacy-project sweep deliberately edits the old project file.
+    // oxlint-disable-next-line teamai/configured-tool-paths -- settingsOnly sweeps the legacy <projectRoot> copy, a project path
     const settingsPath = opts.settingsOnly ? path.join(baseDir, paths.settings) : hookSettingsFile(tool, baseDir, paths.settings);
     // A project install of a tool that keeps its user hooks (ZCode) shares the HOME file: it owns only its gated team hooks.
     const homeHooks = channelsOf(tool).hooks.self === 'user' && opts.scope === 'project';
@@ -4812,10 +4814,11 @@ async function codexTrustTargets(
 
   // The file the hook pass wrote: in user scope in the tool's home, which an instance's own variable may move elsewhere.
   const written = hookSettingsFile(tool, baseDir, paths.settings);
+  const underBase = path.relative(baseDir, written);
 
-  const primary = written === path.join(baseDir, paths.settings)
-    ? path.join(canonicalProjectRoot(baseDir), paths.settings)
-    : path.join(canonicalProjectRoot(path.dirname(written)), path.basename(written));
+  const primary = underBase.startsWith('..') || path.isAbsolute(underBase)
+    ? path.join(canonicalProjectRoot(path.dirname(written)), path.basename(written))
+    : path.join(canonicalProjectRoot(baseDir), underBase);
 
   const sources = [{ file: primary, manifestPath }];
   let anchor: string | undefined;
@@ -4828,8 +4831,10 @@ async function codexTrustTargets(
 
     if (mainCheckout && mainFile) {
       sources.push({ file: mainFile, manifestPath: mainCheckout.manifestPath });
+    // oxlint-disable-next-line teamai/configured-tool-paths -- the main checkout's project file, never under a tool home
     } else if (isSelfMode(localConfig) && path.join(anchor, paths.settings) !== primary) {
       // A linked worktree of a repo in self mode: Codex reads the main checkout's file.
+      // oxlint-disable-next-line teamai/configured-tool-paths -- the main checkout's project file, never under a tool home
       sources[0] = { file: path.join(anchor, paths.settings), manifestPath };
     }
 
@@ -5064,6 +5069,7 @@ export async function sweepLegacyProjectHooks(
   for (const [tool, paths] of Object.entries(toolPaths)) {
     const mainFile = mainCheckoutHookFile(mainCheckout, tool);
 
+    // oxlint-disable-next-line teamai/configured-tool-paths -- the legacy <projectRoot> copy, a project path
     if (mainFile && paths.settings && path.join(canonicalProjectRoot(legacy.baseDir), paths.settings) === mainFile) {
       if (!reconciledMainTools.has(tool) && await pathExists(mainFile)) {
         await reconcileHooks(mainFile, tool, [], { removeAll: true, teamOnly: true, manifestPath: legacy.manifestPath, codexTrust });

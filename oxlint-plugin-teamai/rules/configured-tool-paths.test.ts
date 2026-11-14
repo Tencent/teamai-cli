@@ -1,3 +1,4 @@
+import { expect } from 'vitest';
 import { ruleHarness } from '../test/harness.ts';
 
 const rule = ruleHarness('teamai/configured-tool-paths', { filename: 'src/pull.ts' });
@@ -5,6 +6,11 @@ rule.invalid('rejects configured skill joins outside locate', `import path from 
 rule.valid('allows strings that merely mention configured fields', `const root = path.join(base, 'example.skills');`);
 rule.invalid('rejects named joins and optional nested configured rules', `import { join } from 'node:path'; const root = join(resolve(base), tool?.rules);`);
 rule.invalid('rejects configured claudemd and computed fields', `const root = path.resolve(base, tool['claudemd']);`);
+rule.invalid('rejects a settings file joined to a home by hand', `import path from 'node:path'; const file = path.join(baseDir, paths.settings);`, (output) => {
+  expect(output).toContain('toolPathUnder');
+});
+rule.invalid('rejects agents, hooks and mcp joins through a host path module', `const dir = host.path.join(base, paths.agents); const file = at.path.resolve(base, paths.hooks, paths.mcp);`);
+rule.valid('allows a path the one resolver gives', `const file = toolPathUnder(tool, baseDir, paths.settings);`);
 rule.valid('allows the locate owner', `const root = path.join(base, tool.skills);`, { filename: 'src/locate.ts' });
 rule.valid('allows literal directory names', `const root = path.join(base, 'skills');`);
 rule.valid('allows test fixtures', `const root = path.join(base, tool.skills);`, { filename: 'src/__tests__/locate.test.ts' });

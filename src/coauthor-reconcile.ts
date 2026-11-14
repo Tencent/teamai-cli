@@ -165,7 +165,7 @@ async function resolveTargets(
         continue;
       }
 
-      targets.push({ tool, family, file: path.join(baseDir, path.dirname(paths.settings), 'settings.local.json') });
+      targets.push({ tool, family, file: toolPathUnder(tool, baseDir, `${path.posix.dirname(paths.settings)}/settings.local.json`) });
     } else if (family === 'codex') {
       // User scope only: Codex reads commit_attribution from $CODEX_HOME/config.toml.
       if (projectScope) {
@@ -210,6 +210,7 @@ function preFixSharedTargets(teamConfig: TeamaiConfig, localConfig: LocalConfig)
 
   for (const [tool, paths] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (familyOf(tool) !== 'claude' || !paths.settings) continue;
+    // oxlint-disable-next-line teamai/configured-tool-paths -- the project files releases before #993 wrote, as they named them
     const file = path.join(baseDir, paths.settings);
 
     if (!files.has(file)) files.set(file, tool);
@@ -507,7 +508,7 @@ export async function coAuthorLocalSettingsFiles(
 
   for (const [tool, paths] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (baseToolOf(tool) !== 'claude' || !paths?.settings) continue;
-    const file = path.join(resolveBaseDir(localConfig), path.dirname(paths.settings), 'settings.local.json');
+    const file = toolPathUnder(tool, resolveBaseDir(localConfig), `${path.posix.dirname(paths.settings)}/settings.local.json`);
 
     if (managed[file] ?? true) continue;
     const read = await readJsonObject(file);

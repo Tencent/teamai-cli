@@ -28,7 +28,7 @@ import {
   SHELL_PROFILE_CANDIDATE_NAMES,
 } from './utils/shell-profile.js';
 import { getUserHome } from './utils/home.js';
-import { installOf, isInstalledFor, locate, locatingOnce, ownOf, unreadWrites, workspaceHooksOf, writable, writesOf, type DirPlace, type FilesChannel, type Install, type Location, type ReadGate, type Session, type Unread } from './locate.js';
+import { hookSettingsFile, installOf, isInstalledFor, locate, locatingOnce, ownOf, unreadWrites, workspaceHooksOf, writable, writesOf, type DirPlace, type FilesChannel, type Install, type Location, type ReadGate, type Session, type Unread } from './locate.js';
 import { readGateCheckName, readGateVerdict, type Held } from './read-gates.js';
 import { amongPlaces, placesRecordOf, samePlaces } from './resources/places.js';
 import { realHost, toolHome } from './tool-home.js';
@@ -1044,7 +1044,7 @@ async function buildCursorUserRulesHookChecks(ctx: DoctorContext): Promise<Check
   const { readBuiltinOverride } = await import('./resources/hooks.js');
   const builtin = await readBuiltinOverride(localConfig);
   const disabledByTeam = builtin.known && (builtin.override?.disabled ?? []).includes('Hook dispatch session-start');
-  const file = path.join(resolveBaseDir(localConfig), toolPath.settings);
+  const file = hookSettingsFile('cursor', resolveBaseDir(localConfig), toolPath.settings);
   const syntax = hookSyntaxOf('cursor');
   const read = await readJsonObject(file, syntax);
   const hooks = read.kind === 'ok' ? CursorHooksSchema.parse(read.value).hooks : undefined;
