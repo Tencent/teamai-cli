@@ -1,10 +1,10 @@
 import { resolveCliPath, resolvePathCommand } from '@teamai/shared/cli-path';
 import { descriptorOf, toolOf, type DescriptorOf } from '../tool-registry.js';
-import type { DeclaredTool } from '../tool-instances.js';
+import { userPathOutsideHome, type DeclaredTool } from '../tool-instances.js';
 import type { ToolInstanceHome } from '@teamai/tool-core/instance';
 import type { ShippedDescriptor, ToolId } from '../tools.js';
 import { movedToolHome, realHost, recordedHomes, toolHomeOf, type Host } from '../tool-home.js';
-import { RELOCATABLE_TOOLS, recordedToolRootDir, toolPathRoots, type LocalConfig } from '../types.js';
+import { RELOCATABLE_TOOLS, recordedToolRootDir, type LocalConfig } from '../types.js';
 import { LAUNCH_ADAPTERS } from './adapters.js';
 import type { ConfinedLaunch, LaunchAdapter, StepLaunch } from '@teamai/tool-core/launch';
 
@@ -211,7 +211,7 @@ function instanceHomeOf(input: { instance: DeclaredTool; own: ToolInstanceHome; 
   if (dir === undefined) return null;
   // teamai writes where `paths` say: a build of its own pointed at the home would read none of what lies outside it. One
   // on the shipped command has its user paths in its home, or it is refused at load.
-  const base = instance.command !== undefined && instance.paths !== undefined && [...toolPathRoots(instance.paths)].some((root) => root !== own.dir) ? undefined : variable;
+  const base = instance.command !== undefined && instance.paths !== undefined && userPathOutsideHome(instance.paths, own.dir) !== undefined ? undefined : variable;
 
   // The tool it extends reads only its own variable, and runs whenever the instance names no command teamai accepted.
   if (own.env !== undefined) return { variable: own.env, also: base === undefined ? [] : [base], dir, recorded: dir === recordedHomes(host)[instance.name] };

@@ -135,6 +135,8 @@ describe('local workflow prompt driver', () => {
     { case: 'names its own, at the home recorded for it from a shell without it', own: { home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' } }, shell: false, acme: 'acme-recorded', codex: 'acme-recorded' },
     // Its project paths are Codex's, which stock Codex reads in a project whatever its home; its user paths are in its home.
     { case: 'keeps the project paths of Codex and its user paths in its home', own: { home: { dir: '.acme-codex' }, paths: { skills: '.codex/skills', userScope: { skills: '.acme-codex/skills' } } }, shell: true, acme: 'acme-moved', codex: '~/.acme-codex' },
+    // A build of its own reads its user files from the home it is started at, nested or not.
+    { case: 'runs a build of its own whose paths stay in its nested home', own: { command: 'acme-codex', home: { dir: 'work/.acme-codex' }, paths: { skills: 'work/.acme-codex/skills', settings: 'work/.acme-codex/hooks.json' } }, shell: true, acme: 'acme-moved', codex: '~/work/.acme-codex' },
   ])('starts an instance that $case, with CODEX_HOME at $codex', async ({ own, shell, acme, codex }) => {
     const { config, workspace, runId } = await fixture();
     const recorded = path.join(getUserHome(), 'acme-recorded');

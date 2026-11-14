@@ -90,8 +90,11 @@ function refused(file: string, reason: string): RefusedInstance {
   return { ok: false, problem: `Tool instance ${file} is not valid: ${reason}. Fix the file; until then teamai does not use it.` };
 }
 
-/** The first user-scope path of `paths` outside `dir`, a `$HOME`-relative directory, by the key that sets it. */
-function userPathOutside(paths: z.infer<typeof ToolPathsSchema>, dir: string): { key: string; value: string } | undefined {
+/**
+ * The first user-scope path of `paths` outside the instance home `dir`, a `$HOME`-relative directory, by the key that
+ * sets it: what a tool started at that home would not read there. Decided by containment, since a home may be nested.
+ */
+export function userPathOutsideHome(paths: z.infer<typeof ToolPathsSchema>, dir: string): { key: string; value: string } | undefined {
   const posix = (value: string): string => path.posix.normalize(value.replaceAll('\\', '/')).replace(/\/+$/, '');
   const home = posix(dir);
 
@@ -168,7 +171,7 @@ function parseToolInstance({ file, text, source, location }: { file: string; tex
 
   if (!isToolId(fields.name) && isSessionPlatform(fields.name)) return refused(file, `"${fields.name}" is the name of a session platform teamai ships`);
   const shippedAt = fields.command === undefined ? fields.home : undefined;
-  const outside = shippedAt && fields.paths && userPathOutside(fields.paths, shippedAt.dir);
+  const outside = shippedAt && fields.paths && userPathOutsideHome(fields.paths, shippedAt.dir);
 
   // teamai starts the shipped command at the instance's home, the only place it reads user files from.
   if (shippedAt && outside) {
