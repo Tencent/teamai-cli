@@ -5,7 +5,8 @@ import { z } from 'zod';
 import { type ToolId, type ShippedDescriptor } from './tools.js';
 import { type HomeMove } from '@teamai/tool-core/definition';
 import type { ToolInstanceHome } from '@teamai/tool-core/instance';
-import { homeVariables, descriptorOf, TOOL_ORDER, toolOf } from './tool-registry.js';
+import { homeVariables, descriptorOf, instanceNames, TOOL_ORDER, toolOf } from './tool-registry.js';
+import { RELOCATABLE_TOOLS } from './types.js';
 import { pathExists, readFileSafe, readJsonObject, writeJsonAtomic, type JsonObjectRead } from './utils/fs.js';
 import { getUserHome, normalizeHomePath, usesInstallHome } from './utils/home.js';
 
@@ -36,9 +37,26 @@ export type Host = {
   userToolRoots(): Promise<Readonly<Record<string, string>> | undefined>;
 };
 
+/**
+ * Every variable that moves a tool's home: a shipped tool's (`homeVariables`, its `Home.rootVariable` and the roots
+ * `RELOCATABLE_TOOLS` records) and each published instance's own (`home.env`). `teamai/tool-home-env` keeps a copy of
+ * the shipped ones, pinned to this.
+ */
+export function toolHomeVariableNames(): ReadonlySet<string> {
+  return new Set([
+    ...TOOL_ORDER.flatMap((tool) => {
+      const { home }: ShippedDescriptor = descriptorOf(tool);
+
+      return home.rootVariable === undefined ? homeVariables(tool) : [...homeVariables(tool), home.rootVariable];
+    }),
+    ...Object.values(RELOCATABLE_TOOLS).map(({ envVar }) => envVar),
+    ...instanceNames().flatMap((name) => toolOf(name)?.instance?.home?.env ?? []),
+  ]);
+}
+
 /** `env` without any variable that moves a tool's home: under an install's home, each tool's home is the install's. */
 function withoutToolHomeVariables(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const names = new Set(TOOL_ORDER.flatMap(homeVariables));
+  const names = toolHomeVariableNames();
 
   return Object.fromEntries(Object.entries(env).filter(([name]) => !names.has(name)));
 }

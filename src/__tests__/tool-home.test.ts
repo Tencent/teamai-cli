@@ -137,6 +137,30 @@ describe('Hermes\'s active profile', () => {
   });
 });
 
+describe('the real host under an install\'s home', () => {
+  afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); });
+
+  it('drops every variable that would move a tool\'s home back to the member\'s, an instance\'s own included', async () => {
+    // A fresh module graph: the install home a process takes has no way back.
+    vi.resetModules();
+    const [{ useInstallHome }, { useToolInstances }, fresh] = await Promise.all([import('@teamai/shared/home'), import('../tool-registry.js'), import('../tool-home.js')]);
+    const member = (name: string): string => path.join(os.tmpdir(), 'member', name);
+    const moving = ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'CODEBUDDY_CONFIG_DIR', 'CURSOR_DATA_DIR', 'ACME_CODEX_HOME'];
+    for (const name of moving) vi.stubEnv(name, member(name));
+    vi.stubEnv('PATH', member('bin'));
+    useToolInstances(new Map([['acme-codex', {
+      name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+      source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
+    }]]));
+    useInstallHome(path.join(os.tmpdir(), 'clone', 'h'));
+
+    const { env } = fresh.realHost();
+
+    expect(moving.filter((name) => env[name] !== undefined)).toEqual([]);
+    expect(env.PATH).toBe(member('bin'));
+  });
+});
+
 describe('the real host\'s reads for a checkout key', () => {
   it('resolves a path through its links and reads a small text file, and answers for a missing one', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-host-reads-'));
