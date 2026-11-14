@@ -27,5 +27,5 @@ describeFamily('tool-codex', family, {
     'codex-rollout': { text: fixture('codex-rollout.jsonl'), tokens: { input: 3000, output: 180, cacheRead: 9000, cacheCreation: 0 } },
   },
   // codex-cli 0.167.0, 2026-11-11.
-  versions: { codex: { command: 'codex', stdout: 'codex-cli 0.167.0\n', version: '0.167.0' } },
+  versions: {},
 });

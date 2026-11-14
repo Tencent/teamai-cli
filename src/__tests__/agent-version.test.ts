@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getAgentVersion, clearVersionCache, _readPlistVersion } from '../agent-version.js';
@@ -128,6 +129,31 @@ describe.each([
 
   it(`reads the release version from \`${tool} --version\``, async () => {
     expect(await getAgentVersion(tool)).toBe(version);
+  });
+});
+
+// `codex --version` sets up its helpers in the default Codex home when CODEX_HOME is unset, and every step and session
+// report asks for the version: teamai reads none for Codex, so it starts no Codex for it.
+describe.skipIf(process.platform === 'win32')('getAgentVersion for codex', () => {
+  let binDir: string;
+  let savedPath: string | undefined;
+
+  beforeEach(async () => {
+    binDir = await mkdtemp(path.join(os.tmpdir(), 'teamai-agent-version-codex-'));
+    savedPath = process.env.PATH;
+    const script = path.join(binDir, 'codex');
+    await writeFile(script, `#!/bin/sh\necho "$@" >> '${path.join(binDir, 'started')}'\necho 'codex-cli 0.169.0'\n`);
+    await chmod(script, 0o755);
+    process.env.PATH = `${binDir}${path.delimiter}${savedPath ?? ''}`;
+  });
+
+  afterEach(async () => {
+    process.env.PATH = savedPath;
+    await rm(binDir, { recursive: true, force: true });
+  });
+
+  it('reads none, and starts no codex for it', async () => {
+    expect([await getAgentVersion('codex'), existsSync(path.join(binDir, 'started'))]).toEqual(['', false]);
   });
 });
 

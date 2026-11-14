@@ -1,6 +1,5 @@
 import type { ToolFamilyFacts } from '@teamai/tool-core/family';
 import type { SessionPlatformFacts } from '@teamai/tool-core/sessions/platform';
-import { detect } from './detect.js';
 import { tools } from './definitions.js';
 
 /** Each Codex build keeps Codex rollouts in its own home, so its sessions stay its own. */
@@ -37,5 +36,8 @@ const platformFacts = {
   },
 } as const satisfies Record<string, SessionPlatformFacts>;
 
-/** What every command may load of this family: its tools, its session platforms' facts and its version detectors. */
-export const facts = { tools, platforms: platformFacts, detect } as const satisfies ToolFamilyFacts;
+/**
+ * What every command may load of this family: its tools and its session platforms' facts. It has no version detector:
+ * `codex --version` sets up helpers in the default Codex home when CODEX_HOME is unset, and every step asks for a version.
+ */
+export const facts = { tools, platforms: platformFacts, detect: {} } as const satisfies ToolFamilyFacts;
