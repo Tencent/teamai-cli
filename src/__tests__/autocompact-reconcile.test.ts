@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
@@ -206,6 +206,27 @@ describe('auto-compact reconcile', () => {
     await run(team(400_000), {}, local);
     expect(await text('.codex-work/config.toml')).toBe('model = "x"\nmodel_auto_compact_token_limit = 400000\n');
     expect(await text('.codex/config.toml')).not.toContain('model_auto_compact_token_limit');
+  });
+
+  it('writes into the home of an instance that has one, as the tool it extends takes it, and takes it back with the policy', async () => {
+    const { useToolInstances } = await import('../tool-registry.js');
+    const instance = (name: string, base: 'claude' | 'codex') => [name, {
+      name, extends: base, home: { dir: `.${name}` }, source: 'personal', file: `/home/.teamai/tools/${name}.yaml`, location: `~/.teamai/tools/${name}.yaml`, revision: 'r1',
+    }] as const;
+    useToolInstances(new Map([instance('acme-claude', 'claude'), instance('acme-codex', 'codex')]));
+    onTestFinished(() => useToolInstances(new Map()));
+    await fse.outputFile(path.join(home, '.acme-codex', 'config.toml'), 'model = "x"\n');
+    await fse.ensureDir(path.join(home, '.acme-claude'));
+
+    const { managed } = await run(team(400_000), {});
+
+    expect((await json('.acme-claude/settings.json')).autoCompactWindow).toBe(433_000);
+    expect(await text('.acme-codex/config.toml')).toBe('model = "x"\nmodel_auto_compact_token_limit = 400000\n');
+
+    await run(team(), managed);
+
+    expect((await json('.acme-claude/settings.json')).autoCompactWindow).toBeUndefined();
+    expect(await text('.acme-codex/config.toml')).toBe('model = "x"\n');
   });
 
   it('keeps every project\'s entries when two pulls reconcile at once', async () => {

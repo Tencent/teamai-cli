@@ -3,10 +3,10 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
 import type { JsonValue, LocalConfig, TeamaiConfig } from './types.js';
-import { descriptorOf, hookSyntaxOf } from './tool-registry.js';
+import { descriptorOf, hookSyntaxOf, instanceNames, toolOf } from './tool-registry.js';
 import { TOOL_IDS, type ToolId, type ShippedDescriptor } from './tools.js';
 import { JsonValueSchema, isAgentExcluded, recordedToolRootDir, resolveAutoCompactTokens } from './types.js';
-import { toolHome } from './tool-home.js';
+import { toolHome, toolHomeOf } from './tool-home.js';
 import { withFileLock } from './update.js';
 import { pathExists, readFileSafe, readJsonObject, writeFile, writeJson, writeJsonAtomic, writeJsonKeepingComments } from './utils/fs.js';
 import type { JsonObjectRead } from './utils/fs.js';
@@ -86,7 +86,10 @@ export interface AutoCompactReconcileResult {
 }
 
 interface Target {
-  tool: ToolId;
+  /** A shipped tool, or an instance with a home of its own. */
+  tool: string;
+  /** The tool whose formats `tool` keeps. */
+  base: ToolId;
   kind: Kind;
   file: string;
 }
@@ -139,16 +142,23 @@ export async function reconcileAutoCompactLocked(
 async function resolveTargets(localConfig: LocalConfig): Promise<Target[]> {
   const targets: Target[] = [];
 
-  for (const tool of TOOL_IDS) {
-    const kind = descriptorOf(tool).autoCompact;
+  // An instance that keeps the home of the tool it extends reads that tool's file, which the tool's own target writes.
+  const ownHomes = instanceNames().flatMap((name) => {
+    const resolved = toolOf(name);
+    const home = toolHomeOf(name)?.dir;
 
-    if (kind === 'none' || isAgentExcluded(localConfig, tool)) continue;
-    // A root the member recorded at init (CODEX_HOME, CLAUDE_CONFIG_DIR) wins,
-    // so a pull from a shell without the variable still finds it.
-    const home = recordedToolRootDir(tool, localConfig.toolRoots) ?? toolHome(tool);
+    return resolved?.instance?.home === undefined || resolved.instance.name === resolved.base || home === undefined ? [] : [{ tool: name, base: resolved.base, home }];
+  });
 
-    if (!(await pathExists(home))) continue;
-    targets.push({ tool, kind, file: path.join(home, FILE_OF[kind]) });
+  // A root the member recorded at init (CODEX_HOME, CLAUDE_CONFIG_DIR) wins,
+  // so a pull from a shell without the variable still finds it.
+  const shipped = TOOL_IDS.map((tool) => ({ tool, base: tool, home: recordedToolRootDir(tool, localConfig.toolRoots) ?? toolHome(tool) }));
+
+  for (const { tool, base, home } of [...shipped, ...ownHomes]) {
+    const kind = descriptorOf(base).autoCompact;
+
+    if (kind === 'none' || isAgentExcluded(localConfig, tool) || !(await pathExists(home))) continue;
+    targets.push({ tool, base, kind, file: path.join(home, FILE_OF[kind]) });
   }
 
   return targets;
@@ -452,7 +462,7 @@ export function spliceCodexAutoCompact(source: string, value: number | null): st
 async function readCurrent(t: Target): Promise<{ current: string | undefined; doc?: SettingsDoc } | 'unreadable'> {
   if (t.kind === 'claude' || t.kind === 'buddy') {
     // The settings.json the tool's hooks go to too.
-    const read = await readJsonObject(t.file, hookSyntaxOf(t.tool));
+    const read = await readJsonObject(t.file, hookSyntaxOf(t.base));
 
     if (read.kind === 'invalid') return 'unreadable';
     const doc = read.kind === 'ok' ? read.value : {};
@@ -544,7 +554,7 @@ export async function reconcileAutoCompactForConfig(
         const home = path.dirname(t.file);
 
         if (t.kind === 'claude') desired = claudeValue(tokens, read.doc ?? {});
-        else if (t.kind === 'buddy') desired = await buddyValue(tokens, t.tool, home);
+        else if (t.kind === 'buddy') desired = await buddyValue(tokens, t.base, home);
         else if (t.kind === 'codex') desired = { value: tokens };
         else desired = await dshValue(tokens, home);
       }
