@@ -8,7 +8,7 @@ import { getUserHome, expandHome } from './utils/home.js';
 import { log } from './utils/logger.js';
 import { parseYaml } from './utils/yaml.js';
 import { type ToolId } from './tools.js';
-import { channelsOf, descriptorOf, toolRootsKeyOf } from './tool-registry.js';
+import { channelsOf, descriptorOf, toolOf, toolRootsKeyOf } from './tool-registry.js';
 import type { WorkspaceChildren } from './workspace-children.js';
 import type { HeadState } from './utils/git.js';
 import type { RunMode } from './launch-context.js';
@@ -3246,8 +3246,22 @@ export function toolInstallRoot(toolPath: string): string {
 }
 
 /**
- * The directory the installed-tool gate reads for `tool`: the recorded root
- * when one is in play, and the path-derived one otherwise.
+ * `value`, a relative path, relative to the directory `dir` it lies in, '' for `dir` itself, or undefined when it lies
+ * outside `dir`. Decided by containment, so a nested `dir` such as `work/.acme-codex` holds what is under it.
+ */
+export function relativeInside(value: string, dir: string): string | undefined {
+  const posix = (one: string): string => path.posix.normalize(one.replaceAll('\\', '/')).replace(/\/+$/, '');
+  const [inner, at] = [posix(dir), posix(value)];
+
+  if (at === inner) return '';
+
+  return at.startsWith(`${inner}/`) ? at.slice(inner.length + 1) : undefined;
+}
+
+/**
+ * The directory the installed-tool gate reads for `tool`: an instance's home
+ * for a path in it, the recorded root when one is in play, and the
+ * path-derived one otherwise.
  *
  * `toolInstallRoot` answers from the path's shape, which is what relocation
  * needs. The gate needs the directory the tool actually keeps its config in,
@@ -3269,6 +3283,10 @@ export function toolGateRoot(
   toolRoots?: Readonly<Record<string, string>>,
   at?: HomePaths,
 ): string {
+  const home = toolOf(tool)?.instance?.home;
+
+  // An instance's home may be nested (`work/.acme-codex`): a path in it is gated on the home, not on its first segment.
+  if (home !== undefined && relativeInside(toolPath, home.dir) !== undefined) return home.dir;
   const key = toolRootsKeyOf(tool);
   const recorded = toolRoots?.[key];
 

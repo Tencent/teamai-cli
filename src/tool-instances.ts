@@ -11,7 +11,7 @@ import { isSessionPlatform } from './session-flow/adapters/platform-facts.js';
 import { instanceHomeAfterInit, instanceHomeDir, isSameDirOn, realHost, toolHome, type Host } from './tool-home.js';
 import { INSTANCE_BASES, isInstanceBase, isToolId, TOOL_ORDER, toolInstancesFor, toolOf, useToolInstances } from './tool-registry.js';
 import type { ToolId } from './tools.js';
-import { DEFAULT_TOOL_PATHS, TOOL_ROOT_FIELDS, getTeamaiHomeDir, getTrustDir, recordedToolRootDir, RELOCATABLE_TOOLS, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type Scope, type TeamaiConfig } from './types.js';
+import { DEFAULT_TOOL_PATHS, TOOL_ROOT_FIELDS, getTeamaiHomeDir, relativeInside, getTrustDir, recordedToolRootDir, RELOCATABLE_TOOLS, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type Scope, type TeamaiConfig } from './types.js';
 import { writeJsonAtomic } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { errorOnce, warnOnce } from './utils/warn-once.js';
@@ -99,22 +99,12 @@ export function userPathOutsideHome(paths: z.infer<typeof ToolPathsSchema>, dir:
     const own = field === 'mcp' ? undefined : paths.userScope?.[field];
     const value = own === undefined ? paths[field] : own;
 
-    if (value !== undefined && value !== null && homeRelativeOf(value, dir) === undefined) {
+    if (value !== undefined && value !== null && relativeInside(value, dir) === undefined) {
       return { key: own === undefined ? `paths.${field}` : `paths.userScope.${field}`, value };
     }
   }
 
   return undefined;
-}
-
-/** `value`, a `$HOME`-relative path, relative to the instance home `dir` it lies in, or undefined when it lies outside it. */
-function homeRelativeOf(value: string, dir: string): string | undefined {
-  const posix = (one: string): string => path.posix.normalize(one.replaceAll('\\', '/')).replace(/\/+$/, '');
-  const [home, at] = [posix(dir), posix(value)];
-
-  if (at === home) return '';
-
-  return at.startsWith(`${home}/`) ? at.slice(home.length + 1) : undefined;
 }
 
 function sha256(text: string): string {
@@ -442,7 +432,7 @@ export function leftInstanceHookFiles({ name, homes, current, toolRoots }: {
   const paths = instance.paths ?? defaultPathsOf(instance);
   const configured = paths.userScope?.settings ?? paths.settings;
   // A hooks file outside the home stays where it is when the home moves: it is the one delivery writes now, in no earlier home.
-  const settings = configured === undefined ? undefined : homeRelativeOf(configured, dir);
+  const settings = configured === undefined ? undefined : relativeInside(configured, dir);
 
   if (settings === undefined) return [];
   const host = realHost();

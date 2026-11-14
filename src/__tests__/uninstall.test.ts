@@ -358,6 +358,48 @@ describe('uninstall', () => {
     expect(Object.keys((await loadStateForScope(localConfig)).lastPullByWorkspace?.[key]?.delivered ?? {})).toEqual([]);
   });
 
+  it('keeps the records of another instance\'s copies beside a nested home when it uninstalls the instance there', async () => {
+    const { useToolInstances } = await import('../tool-registry.js');
+    const instance = (name: string, extended: 'codex' | 'claude') => [name, {
+      kind: 'instance', name, extends: extended, home: { dir: `work/.${name}` },
+      source: 'personal', file: `/home/.teamai/tools/${name}.yaml`, location: `~/.teamai/tools/${name}.yaml`, revision: 'r1',
+    }] as const;
+    useToolInstances(new Map([instance('acme-codex', 'codex'), instance('acme-claude', 'claude')]));
+    onTestFinished(() => { useToolInstances(new Map()); });
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const defaults = TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/test.git' }).toolPaths;
+    const real = await fse.realpath(homeDir);
+    const { recordDelivered } = await import('../resources/delivered-copies.js');
+    const delivered: Record<string, string> = {};
+    // acme-claude is disabled here, and the copy it left was deleted since; only its record is left, for its own uninstall.
+    const other = path.join(real, 'work', '.acme-claude', 'skills', 'team-skill', 'SKILL.md');
+    await fse.outputFile(other, 'Team.\n');
+    await recordDelivered(delivered, other);
+    await fse.remove(path.dirname(other));
+    await fse.outputFile(path.join(repoPath, 'skills', 'team-skill', 'SKILL.md'), '---\nname: team-skill\ndescription: d\n---\nTeam.\n');
+    const own = path.join(real, 'work', '.acme-codex', 'skills', 'team-skill', 'SKILL.md');
+    await fse.copy(path.join(repoPath, 'skills', 'team-skill', 'SKILL.md'), own);
+    await recordDelivered(delivered, own);
+    const localConfig = makeLocalConfig(homeDir, repoPath, { enabledAgents: ['acme-codex', 'claude'], disabledAgents: ['acme-claude'] });
+    const teamConfig = makeTeamConfig({ toolPaths: {
+      claude: defaults.claude,
+      'acme-codex': { ...defaults.codex, skills: 'work/.acme-codex/skills', settings: 'work/.acme-codex/hooks.json' },
+      'acme-claude': { ...defaults.claude, skills: 'work/.acme-claude/skills' },
+    } });
+    const state = await loadStateForScope(localConfig);
+    const key = await checkoutKey(homeDir);
+    state.lastPullByWorkspace = { [key]: { rev: 'r1', targets: [], delivered } };
+    await saveStateForScope(state, localConfig);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+    commitTeamRepo(repoPath);
+
+    await uninstall({ force: true, agent: 'acme-codex' });
+
+    expect(Object.keys((await loadStateForScope(localConfig)).lastPullByWorkspace?.[key]?.delivered ?? {})).toEqual([other]);
+  });
+
   it('removes a JoyCode custom-agent index entry on uninstall', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);

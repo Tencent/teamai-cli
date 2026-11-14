@@ -440,6 +440,18 @@ describe('an instance of Codex under the Codex root the member recorded (toolRoo
     expect(ownOf(skills)?.path).toBe('/home/m/.acme-codex/skills');
     expect(skills.shared?.path).toBe('/home/m/.agents/skills');
   });
+
+  it.each(['user', 'project'] as const)('takes an instance as installed in %s scope by its nested home, not by the directory that holds it', async (scope) => {
+    useToolInstances(new Map([['acme-codex', { ...instance, home: { dir: 'work/.acme-codex' } }]]));
+    const paths = { ...DEFAULT_TOOL_PATHS.codex, skills: 'work/.acme-codex/skills', settings: 'work/.acme-codex/hooks.json' };
+    const own: Install = scope === 'user'
+      ? { ...install, toolPaths: { ...install.toolPaths, 'acme-codex': paths } }
+      : { ...install, toolPaths: { ...install.toolPaths, 'acme-codex': paths }, scope, projectRoot: '/p', repo: 'team', workspaceChildren: false, keepsKnowledgeInside: false };
+    const base = scope === 'user' ? '/home/m' : '/p';
+    const skills = await locate('acme-codex', 'skills', own, linuxHost({}, [`${base}/work`]));
+
+    expect(skills.gates).toContainEqual({ kind: 'installed', probe: `${base}/work/.acme-codex`, met: false });
+  });
 });
 
 describe('the home an instance\'s own variable moves', () => {
