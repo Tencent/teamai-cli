@@ -583,6 +583,9 @@ async function promptReport(
 
   const inherited = lease.processEnv ?? process.env;
   const toolRoots = stepConfig.toolRoots ?? await resolveMemberToolRoots(cwd);
+  const homeEnv = toolCommandEnv(target.name, { kind: 'delivered', inherited, toolRoots });
+
+  if (homeEnv.kind === 'home_gone') return giveUp({ code: 'tool_unavailable', message: homeEnv.message }, launched);
 
   const input: LocalToolRun = {
     prompt: lease.prompt!,
@@ -590,7 +593,7 @@ async function promptReport(
     resultPath: resultFile,
     secrets,
     // The lease `env` is set over the step's environment, as a command's is.
-    env: { ...inherited, ...toolCommandEnv(target.name, { kind: 'delivered', inherited, toolRoots }), ...lease.env, ...attemptEnv(config, lock.run, lease.attempt, mode) },
+    env: { ...inherited, ...homeEnv.env, ...lease.env, ...attemptEnv(config, lock.run, lease.attempt, mode) },
   };
 
   if (lease.output) input.output = lease.output;

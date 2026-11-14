@@ -3,7 +3,7 @@ import { descriptorOf, toolOf, type DescriptorOf } from '../tool-registry.js';
 import type { ResolvedToolInstance } from '../tool-instances.js';
 import type { ToolInstanceHome } from '@teamai/tool-core/instance';
 import type { ShippedDescriptor, ToolId } from '../tools.js';
-import { movedToolHome, realHost, toolHomeOf } from '../tool-home.js';
+import { movedToolHome, realHost, recordedHomes, toolHomeOf, type Host } from '../tool-home.js';
 import { RELOCATABLE_TOOLS, recordedToolRootDir, toolPathRoots, type LocalConfig } from '../types.js';
 import { LAUNCH_ADAPTERS } from './adapters.js';
 import type { ConfinedLaunch, LaunchAdapter, StepLaunch } from '@teamai/tool-core/launch';
@@ -136,22 +136,40 @@ export type ToolCommandHome =
  * an instance's own variable at the home its record or variable gives (`toolHomeOf`); for an instance with only `home`,
  * the variable of the tool it extends, unless its `paths` put files outside that home; for a shipped tool, an
  * adjustment or an instance that keeps the home of the tool it extends, its variable at the root `toolRoots` records,
- * else at its moved home (`movedToolHome`). With none of those, the shell's variable stays as it is.
+ * else at its moved home (`movedToolHome`). With none of those, the shell's variable stays as it is. A home a record
+ * names wins even once its directory is gone, as delivery's does, and delivery then skips the tool: the command is not
+ * started there, and `home_gone` says how to fix the record.
  */
-export function toolCommandEnv(name: string, home: ToolCommandHome): ToolCommandEnv {
+export function toolCommandEnv(name: string, home: Extract<ToolCommandHome, { kind: 'at' }>): ToolCommandEnv;
+export function toolCommandEnv(name: string, home: Extract<ToolCommandHome, { kind: 'delivered' }>): DeliveredToolCommandEnv;
+export function toolCommandEnv(name: string, home: ToolCommandHome): ToolCommandEnv | DeliveredToolCommandEnv {
   const resolved = toolOf(name);
-
-  if (resolved === undefined) return {};
-  const instance = resolved.instance?.name === resolved.instance?.extends ? undefined : resolved.instance;
-  const variable = homeVariableOf(resolved.base);
+  const instance = resolved?.instance?.name === resolved?.instance?.extends ? undefined : resolved?.instance;
+  const variable = resolved === undefined ? undefined : homeVariableOf(resolved.base);
 
   switch (home.kind) {
     case 'at':
       return Object.fromEntries([variable, instance?.home?.env].flatMap((one) => one === undefined ? [] : [[one, home.dir]]));
     case 'delivered': {
+      if (resolved === undefined) return { kind: 'ready', env: {} };
       const own = instance?.home;
+      const host = realHost({ env: home.inherited });
 
-      return instance === undefined || own === undefined ? deliveredHomeEnv({ name, tool: resolved.base, home }) : instanceHomeEnv({ instance, own, variable });
+      const at = instance === undefined || own === undefined
+        ? deliveredHomeOf({ name, tool: resolved.base, home, host })
+        : instanceHomeOf({ instance, own, variable });
+
+      if (at === null) return { kind: 'ready', env: {} };
+
+      if (at.recorded && !host.existsNow(at.dir)) {
+        return {
+          kind: 'home_gone',
+          message: `The ${name} home recorded on this machine, ${at.dir}, does not exist, so teamai did not start ${name} there. `
+            + `Point ${at.variable} at the home ${name} uses and re-run \`teamai init\`, or clear the record with \`${at.variable}= teamai init\`.`,
+        };
+      }
+
+      return { kind: 'ready', env: { [at.variable]: at.dir } };
     }
 
     default: {
@@ -162,29 +180,39 @@ export function toolCommandEnv(name: string, home: ToolCommandHome): ToolCommand
   }
 }
 
+/** The home variables of a command at the home teamai delivered its tool to, or the recorded home that is gone. */
+export type DeliveredToolCommandEnv =
+  | { readonly kind: 'ready'; readonly env: ToolCommandEnv }
+  | { readonly kind: 'home_gone'; readonly message: string };
+
+/** The variable a delivered command starts with, the directory it names, and whether a record named it. */
+type DeliveredHome = { readonly variable: string; readonly dir: string; readonly recorded: boolean };
+
 // Claude Code reads `.claude.json` inside CLAUDE_CONFIG_DIR whenever it is set, so the variable is set only to a home delivery moved.
-function deliveredHomeEnv(input: { name: string; tool: ToolId; home: Extract<ToolCommandHome, { kind: 'delivered' }> }): ToolCommandEnv {
-  const { name, tool, home } = input;
+function deliveredHomeOf(input: { name: string; tool: ToolId; home: Extract<ToolCommandHome, { kind: 'delivered' }>; host: Host }): DeliveredHome | null {
+  const { name, tool, home, host } = input;
   const variable = deliveredHomeVariableOf(tool);
 
-  if (variable === undefined) return {};
-  const moved = recordedToolRootDir(name, home.toolRoots) ?? movedToolHome(tool, realHost({ env: home.inherited }));
+  if (variable === undefined) return null;
+  const root = recordedToolRootDir(name, home.toolRoots);
+  const dir = root ?? movedToolHome(tool, host);
 
-  return moved === null ? {} : { [variable]: moved };
+  return dir === null ? null : { variable, dir, recorded: root !== null || dir === recordedHomes(host)[tool] };
 }
 
-function instanceHomeEnv(input: { instance: ResolvedToolInstance; own: ToolInstanceHome; variable: string | undefined }) {
+function instanceHomeOf(input: { instance: ResolvedToolInstance; own: ToolInstanceHome; variable: string | undefined }): DeliveredHome | null {
   const { instance, own, variable } = input;
-  const dir = toolHomeOf(instance.name)?.dir;
+  const host = realHost();
+  const dir = toolHomeOf(instance.name, host)?.dir;
 
-  if (dir === undefined) return {};
+  if (dir === undefined) return null;
 
-  if (own.env !== undefined) return { [own.env]: dir };
+  if (own.env !== undefined) return { variable: own.env, dir, recorded: dir === recordedHomes(host)[instance.name] };
 
   // teamai writes where `paths` say: a build pointed at the home would read none of what lies outside it.
-  if (variable === undefined || (instance.paths !== undefined && [...toolPathRoots(instance.paths)].some((root) => root !== own.dir))) return {};
+  if (variable === undefined || (instance.paths !== undefined && [...toolPathRoots(instance.paths)].some((root) => root !== own.dir))) return null;
 
-  return { [variable]: dir };
+  return { variable, dir, recorded: false };
 }
 
 /** Where the command that starts `target` is installed, or null. An instance's comes from a config file, so only PATH counts. */

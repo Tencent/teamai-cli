@@ -71,14 +71,17 @@ export interface ConfinedToolLevel {
   isolation: ConfinedLevel;
 }
 
-/** The version of `tool` and the level its confined profile reaches on this machine; undefined when it is not on PATH. */
+/** The version of `tool` and the level its confined profile reaches on this machine; undefined when it is not on PATH or its recorded home is gone. */
 export async function confinedToolLevel(tool: ConfinedTool, { resolveTool = resolveCliPath }: ToolLookup = {}): Promise<ConfinedToolLevel | undefined> {
   const executable = resolveTool(executableOf(tool));
 
   if (executable === null) return undefined;
+  const confined = confinedEnv(tool, await resolveMemberToolRoots());
+
+  // Delivery skips a tool whose recorded home is gone, and so does what this machine offers.
+  if (confined.kind === 'home_gone') return undefined;
   const tmp = await fs.realpath(os.tmpdir());
-  const env = confinedEnv(tool, await resolveMemberToolRoots());
-  const version = await probeBinary(executable, ['--version'], (command, args, options) => execCommand(command, args, { ...options, env, cwd: tmp }));
+  const version = await probeBinary(executable, ['--version'], (command, args, options) => execCommand(command, args, { ...options, env: confined.env, cwd: tmp }));
 
   return { tool, version, isolation: profileIsolation(tool, version, launchAdapterIdOf(tool) === 'opencode' && await insideCheckout(tmp)) };
 }
@@ -162,19 +165,23 @@ function memberEnv(): NodeJS.ProcessEnv {
   return restored;
 }
 
-function confinedEnv(tool: ConfinedTool, toolRoots: LocalConfig['toolRoots']): NodeJS.ProcessEnv {
+/** The env a confined run of `tool` starts with, or why it cannot start: the home a record names is gone. */
+function confinedEnv(tool: ConfinedTool, toolRoots: LocalConfig['toolRoots']): { readonly kind: 'ready'; readonly env: NodeJS.ProcessEnv } | { readonly kind: 'home_gone'; readonly message: string } {
   const restored = memberEnv();
+  const home = toolCommandEnv(tool, { kind: 'delivered', inherited: restored, toolRoots });
+
+  if (home.kind === 'home_gone') return home;
 
   const env: NodeJS.ProcessEnv = {
     ...Object.fromEntries([...COMMON_ENV, ...profileOf(tool).env].flatMap((key) => restored[key] === undefined ? [] : [[key, restored[key]]])),
-    ...toolCommandEnv(tool, { kind: 'delivered', inherited: restored, toolRoots }),
+    ...home.env,
   };
 
   if (tool === 'agy') Object.assign(env, agyGatewayEnv(restored));
   env[LAUNCHED_BY_ENV] = 'confined';
   env[RUN_MODE_ENV] = resolveRunMode(process.env);
 
-  return env;
+  return { kind: 'ready', env };
 }
 
 async function optionalFile(file: string): Promise<string | undefined> {
@@ -564,13 +571,16 @@ export async function runConfined(input: ConfinedInput, { resolveTool = resolveC
   const executable = resolveTool(executableOf(input.tool));
 
   if (!executable) return { ok: false, code: 'confined_tool_unavailable', message: `The ${input.tool} executable is not available on PATH. Install it, or use another tool or driver.` };
+  const confined = confinedEnv(input.tool, await resolveMemberToolRoots());
+
+  if (confined.kind === 'home_gone') return { ok: false, code: 'confined_tool_unavailable', message: confined.message };
   const tmp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-confined-')));
 
   try {
     const dir = await fs.realpath(input.dir);
     const family = launchAdapterIdOf(input.tool);
     // OpenCode reads a copy, so a checkout above the directory is checked where the copy goes.
-    const context: LaunchContext = { input, executable, dir, cwd: family === 'opencode' ? path.join(tmp, 'dir') : dir, tmp, env: confinedEnv(input.tool, await resolveMemberToolRoots()) };
+    const context: LaunchContext = { input, executable, dir, cwd: family === 'opencode' ? path.join(tmp, 'dir') : dir, tmp, env: confined.env };
     const level = await levelReached(context);
 
     if (!level.ok) return level;
