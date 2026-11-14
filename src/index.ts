@@ -749,6 +749,7 @@ program
   .command('uninstall')
   .description('Remove all teamai-managed resources and hooks from this machine')
   .option('--force', 'Skip confirmation prompt')
+  .option('--keep-shared-hooks', 'Keep machine-wide hooks during workspace uninstall, for legacy workspaces not registered in this home')
   .option('--agent <name>', 'Only uninstall this agent\'s resources in this checkout; shared resources, and the project\'s other checkouts, go only if it is the last tool')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts<GlobalOptions>();

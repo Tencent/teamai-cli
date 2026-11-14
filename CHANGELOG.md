@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. See [standa
 
 ## [Unreleased]
 
+- Use `teamai uninstall --keep-shared-hooks` from a workspace if a pre-partition install (with its own `.teamai/config.yaml`) still needs the machine-wide hooks. Such installs are not registered in the partition directory, so uninstall cannot discover them automatically ([#1825](https://github.com/Tencent/teamai-cli/issues/1825)).
+
 ### ✨ Features
 
 - Teams can require an effective role for selected skill namespaces with `sharing.skills.roleRequiredNamespaces`. Tags and projects cannot bypass the condition, and each workspace child is filtered before aggregation. Members still choose their own role; omitted or empty configuration keeps existing delivery.
