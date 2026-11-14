@@ -2,6 +2,7 @@ import { withFileLock } from './update.js';
 import { homeVariables, instanceNames, TOOL_ORDER, toolOf } from './tool-registry.js';
 import { envInstanceHome, envToolHome, realHost, type EnvToolHome, recordedHomes, reloadToolHomes, rememberToolHome, saveToolHomes, toolHomesPath, type Host } from './tool-home.js';
 import { log } from './utils/logger.js';
+import { errnoCode } from './utils/fs.js';
 
 /** A change to the record of a shipped tool or an instance: `dir` null when it was cleared. */
 export type ToolHomeChange = { readonly tool: string; readonly variable: string; readonly dir: string | null };
@@ -73,35 +74,56 @@ export async function nextToolHomes(
 
 const TOOL_HOMES_LOCK_WAIT = { attempts: 20, delayMs: 100 };
 
-/** Record what `nextToolHomes` says for this machine, under the record's lock, and return what changed. */
+/** Under the record's lock: write what `nextToolHomes` says over the record as it is now, and return what changed. */
+async function writeToolHomes(file: string, by: 'init' | 'pull', host: Host): Promise<readonly ToolHomeChange[]> {
+  const read = reloadToolHomes();
+
+  if (read.kind === 'invalid') {
+    log.warn(`Did not record the tool homes this shell moves: ${file} is not a tool-homes record (${read.error}). Fix or delete it.`);
+
+    return [];
+  }
+
+  const before = read.kind === 'ok' ? read.homes : {};
+  const next = await nextToolHomes(before, host, by);
+
+  if (next.changes.length > 0) {
+    for (const change of next.changes) {
+      const previous = before[change.tool];
+
+      if (previous !== undefined && previous !== change.dir) await rememberToolHome(change.tool, previous);
+    }
+
+    await saveToolHomes(next.homes);
+  }
+
+  return next.changes;
+}
+
+/** Whether `error` is the file system refusing a write, on its own or as the cause of a lock failure. */
+function isWriteFailure(error: unknown): error is Error {
+  return error instanceof Error && (errnoCode(error) !== undefined || isWriteFailure(error.cause));
+}
+
+/**
+ * Record what `nextToolHomes` says for this machine, under the record's lock, and return what changed. A record it
+ * cannot write is reported, not thrown: the caller's delivery goes on, to the homes the shell names.
+ */
 export async function recordToolHomes(by: 'init' | 'pull', host: Host = realHost()): Promise<readonly ToolHomeChange[]> {
   if ((await nextToolHomes(recordedHomes(host), host, by)).changes.length === 0) return [];
   const file = toolHomesPath();
+  let recorded: Awaited<ReturnType<typeof withFileLock<readonly ToolHomeChange[]>>>;
 
-  const recorded = await withFileLock(`${file}.lock`, TOOL_HOMES_LOCK_WAIT, async () => {
-    const read = reloadToolHomes();
+  try {
+    recorded = await withFileLock(`${file}.lock`, TOOL_HOMES_LOCK_WAIT, () => writeToolHomes(file, by, host));
+  } catch (error) {
+    if (!isWriteFailure(error)) throw error;
+    log.warn(`Did not record the tool homes this shell moves: could not write ${file} (${error.message}). `
+      + 'Until it is recorded, teamai syncs those tools to their default homes from a shell without their variable. '
+      + `Fix the cause and ${by === 'init' ? 're-run `teamai init`' : 'run `teamai pull` again'}.`);
 
-    if (read.kind === 'invalid') {
-      log.warn(`Did not record the tool homes this shell moves: ${file} is not a tool-homes record (${read.error}). Fix or delete it.`);
-
-      return [];
-    }
-
-    const before = read.kind === 'ok' ? read.homes : {};
-    const next = await nextToolHomes(before, host, by);
-
-    if (next.changes.length > 0) {
-      for (const change of next.changes) {
-        const previous = before[change.tool];
-
-        if (previous !== undefined && previous !== change.dir) await rememberToolHome(change.tool, previous);
-      }
-
-      await saveToolHomes(next.homes);
-    }
-
-    return next.changes;
-  });
+    return [];
+  }
 
   if (recorded.held) return recorded.value;
   log.warn(`Did not record the tool homes this shell moves: another teamai process holds ${file}.lock. ${by === 'init' ? 'Re-run `teamai init`' : 'The next pull records them'}.`);

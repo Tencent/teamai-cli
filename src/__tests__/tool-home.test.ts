@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { log } from '@teamai/shared/log';
 import { resolveOpenclawStateDir } from '../openclaw-home.js';
 import type { LocalConfig } from '../types.js';
 import { skillRoots } from '../usage-tracker.js';
@@ -92,6 +93,24 @@ describe('a home recorded on this machine', () => {
     await recordToolHomes('init');
     expect(reloadToolHomesHistory()).toEqual({ opencode: [oldHome] });
   });
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('is reported, not thrown, when it cannot be written', async () => {
+    const moved = path.join(tmp, 'hermes-moved');
+    fs.mkdirSync(moved, { recursive: true });
+    vi.stubEnv('HERMES_HOME', moved);
+    const teamai = path.dirname(toolHomesPath());
+    fs.mkdirSync(teamai, { recursive: true });
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => undefined);
+    onTestFinished(() => { warn.mockRestore(); });
+    fs.chmodSync(teamai, 0o500);
+    const recorded = await recordToolHomes('pull').finally(() => { fs.chmodSync(teamai, 0o700); });
+
+    expect(recorded).toEqual([]);
+    expect(warn.mock.calls.map(([line]) => String(line).replace(/ \(.*\)\. /, ' (<cause>). '))).toEqual([
+      `Did not record the tool homes this shell moves: could not write ${toolHomesPath()} (<cause>). `
+        + 'Until it is recorded, teamai syncs those tools to their default homes from a shell without their variable. Fix the cause and run `teamai pull` again.',
+    ]);
+  });
+
   it('is the one a pull read under the lock, even when the file kept its size and time', async () => {
     const winner = path.join(tmp, 'hermes-b'); const loser = path.join(tmp, 'hermes-a');
     fs.mkdirSync(loser, { recursive: true });
