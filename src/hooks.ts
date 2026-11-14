@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { lstat, readdir, realpath, rm } from 'node:fs/promises';
 import { z } from 'zod';
 import { readJson, readJsonObject, writeJson, writeJsonKeepingComments, readFileSafe, writeFile, ensureDir, pathExists } from './utils/fs.js';
@@ -2823,14 +2823,33 @@ export async function editCodexHookFile(
   }
 
   const dir = path.dirname(file);
-  const cwd = canonicalProjectRoot(dir) === canonicalProjectRoot(at.codexHome) ? getUserHome() : path.dirname(dir);
-  const trust = await keepCodexHookTrust({ ...at, cwd, file }, retained, write);
+  const inHome = canonicalProjectRoot(dir) === canonicalProjectRoot(at.codexHome);
+  const cwd = inHome ? getUserHome() : path.dirname(dir);
 
-  if (trust.kind === 'failed') {
-    log.warn(`Codex may skip the hooks that moved in ${file} until you approve them in /hooks: ${trust.reason}`);
-  }
+  // A project's file is read by Codex at the home of each tool that trusts the project, so each keeps its approvals. A
+  // home that does not exist holds none, and Codex started there would make it.
+  const homes = inHome ? [at] : [...new Map([at, ...codexTrustTools().flatMap((other) => {
+    const reads = codexTrustAt(other, codexTrust.codexHome);
+
+    return 'kind' in reads || !existsSync(reads.codexHome) ? [] : [reads];
+  })].map((one) => [canonicalProjectRoot(one.codexHome), one])).values()];
+
+  const kept = homes.reduceRight<() => Promise<void>>((inner, home) => async () => {
+    const trust = await keepCodexHookTrust({ ...home, cwd, file }, retained, inner);
+
+    if (trust.kind === 'failed') {
+      log.warn(`Codex may skip the hooks that moved in ${file} until you approve them in /hooks: ${trust.reason}`);
+    }
+  }, write);
+
+  await kept();
 
   return true;
+}
+
+/** Codex and each instance of it this process knows: the tools whose homes a Codex trust pass covers. */
+function codexTrustTools(): string[] {
+  return [CODEX_TOOL_ID, ...toolInstancesFor('use').flatMap(({ kind, name }) => kind === 'instance' && baseToolOf(name) === CODEX_TOOL_ID ? [name] : [])];
 }
 
 async function reconcileCodexFormat(
@@ -4908,7 +4927,7 @@ async function codexTrustTargetsOfScope(
   localConfig: LocalConfig,
   selectedAgents?: string[],
 ): Promise<CodexTrustTargets[]> {
-  const tools = [CODEX_TOOL_ID, ...toolInstancesFor('use').flatMap(({ kind, name }) => kind === 'instance' && baseToolOf(name) === CODEX_TOOL_ID ? [name] : [])];
+  const tools = codexTrustTools();
   const targets = await Promise.all(tools.map((tool) => codexTrustTargets(teamConfig, localConfig, selectedAgents, tool, tools)));
 
   return targets.filter((target) => target !== null);

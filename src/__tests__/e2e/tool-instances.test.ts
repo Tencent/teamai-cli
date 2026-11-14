@@ -505,17 +505,22 @@ describe.skipIf(process.platform === 'win32')('a Codex instance that moves only 
   const hooksFile = (): string => path.join(repo, '.codex', 'hooks.json');
   const sessionStartTools = (): string[] => [...new Set([...fs.readFileSync(hooksFile(), 'utf8').matchAll(/hook-dispatch session-start --tool ([a-z-]+)/g)].map(([, tool]) => tool!))];
   /** The handlers of the project's hooks file a Codex on `codexHome` runs: the project trusted there, and each handler at its current hash, as Codex keys it. */
-  const runsIn = (dir: string): { project: boolean; untrusted: string[]; trusted: number } => {
-    const state = readFakeCodexState(path.join(home, dir));
+  /** Each handler of the project's hooks file, by the key Codex gives it, at its current hash. */
+  const handlers = (): Array<{ key: string; hash: string }> => {
     const hooks: Record<string, Array<{ hooks?: unknown[] }>> = JSON.parse(fs.readFileSync(hooksFile(), 'utf8')).hooks;
-    const keys = Object.entries(hooks).flatMap(([event, groups]) => groups.flatMap((group, index) => (group.hooks ?? []).map((handler, at) => ({
+    return Object.entries(hooks).flatMap(([event, groups]) => groups.flatMap((group, index) => (group.hooks ?? []).map((handler, at) => ({
       key: `${hooksFile()}:${event.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase()}:${index}:${at}`,
       hash: `sha256:${createHash('sha256').update(JSON.stringify(handler)).digest('hex')}`,
     }))));
+  };
+  const handlerKeys = (): string[] => handlers().map(({ key }) => key);
+  const runsIn = (dir: string): { project: boolean; untrusted: string[]; trusted: number } => {
+    const state = readFakeCodexState(path.join(home, dir));
+    const keys = handlers();
     return {
       project: state.projects[repo]?.trust_level === 'trusted',
       untrusted: keys.flatMap(({ key, hash }) => (state.hooksState[key]?.trusted_hash === hash ? [] : [key])),
-      trusted: Object.values(state.hooksState).filter((entry) => entry.trusted_hash).length,
+      trusted: Object.entries(state.hooksState).filter(([key, entry]) => key.startsWith(hooksFile()) && entry.trusted_hash).length,
     };
   };
   const uninstall = (tool: string): void => ok(['uninstall', '--agent', tool, '--force']);
@@ -531,6 +536,8 @@ describe.skipIf(process.platform === 'win32')('a Codex instance that moves only 
     fs.mkdirSync(path.join(repo, '.teamai', 'tools'), { recursive: true });
     fs.writeFileSync(path.join(repo, 'README.md'), '# fixture\n');
     fs.writeFileSync(path.join(repo, '.teamai', 'tools', 'home-codex.yaml'), 'schemaVersion: v1alpha1\nname: home-codex\nextends: codex\nhome: { dir: .home-codex }\n');
+    fs.mkdirSync(path.join(repo, '.teamai', 'hooks'));
+    fs.writeFileSync(path.join(repo, '.teamai', 'hooks', 'hooks.yaml'), 'hooks:\n  - id: team-note\n    description: A note after each tool use\n    event: PostToolUse\n    command: echo team-note\n    timeout: 5\n');
     execFileSync('git', ['add', '-A'], { cwd: repo });
     execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repo, env: env() });
     execFileSync('git', ['remote', 'add', 'origin', 'http://127.0.0.1:9/team/app.git'], { cwd: repo });
@@ -556,5 +563,10 @@ describe.skipIf(process.platform === 'win32')('a Codex instance that moves only 
     expect(sessionStartTools()).toEqual(['home-codex']);
     expect(runsIn('.home-codex')).toMatchObject({ project: true, untrusted: [] });
     expect(runsIn('.codex')).toMatchObject({ trusted: 0 });
+
+    ok(['init', '--self', '--agent', 'codex,home-codex', '--force']);
+    const removed = handlerKeys();
+    ok(['uninstall', '--force']);
+    expect(['.codex', '.home-codex'].flatMap((dir) => removed.filter((key) => readFakeCodexState(path.join(home, dir)).hooksState[key]?.trusted_hash))).toEqual([]);
   });
 });
