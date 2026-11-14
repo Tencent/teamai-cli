@@ -3,9 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, vi } from 'vitest';
 import { ATTEMPT_ENV, LAUNCHED_BY_ENV, RUN_MODE_ENV } from '../../launch-context.js';
-import { homeVariables, isToolId, TOOLS } from '../../tools.js';
 import { GIT_REPOSITORY_ENV } from '../../utils/git-env.js';
 import { AGENT_SESSION_ENV } from '../../utils/session-id.js';
+import { toolRootVariables } from './tool-root-vars.js';
 
 // Tests run inside an agent's shell (Claude Code sets CLAUDE_CODE_SESSION_ID),
 // and recall, contribute and session save read that id through
@@ -23,11 +23,13 @@ for (const name of [...AGENT_SESSION_ENV, ATTEMPT_ENV, LAUNCHED_BY_ENV, RUN_MODE
   delete process.env[name];
 }
 
-// The same shell may relocate an agent's root (CLAUDE_CONFIG_DIR, and every
-// home `TOOLS[tool].home.moves` names), which teamai honors, so a test that
-// stubs only HOME would still read, write or remove the developer's real tool
-// files. A test that needs one sets it.
-for (const name of ['CLAUDE_CONFIG_DIR', ...Object.keys(TOOLS).filter(isToolId).flatMap(homeVariables)]) {
+// The same shell may relocate an agent's root, which teamai honors, so a test
+// that stubs only HOME would still read, write or remove the developer's real
+// tool files. Two mechanisms move a root: `TOOLS[tool].home.moves`, and the
+// roots `init` records in `toolRoots` (`RELOCATABLE_TOOLS`, which is how Codex
+// and Cursor move and `home.moves` does not name them). A test that needs one
+// sets it.
+for (const name of toolRootVariables()) {
   delete process.env[name];
 }
 
