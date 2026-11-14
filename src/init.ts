@@ -230,9 +230,10 @@ import {
   SELF_MODE_AGENT_CHOICES,
   KNOWN_AGENTS,
 } from './known-agents.js';
-import { descriptorOf, TOOL_ORDER, toolOf } from './tool-registry.js';
+import { descriptorOf, TOOL_ORDER } from './tool-registry.js';
+import { reloadToolHomesHistory } from './tool-home.js';
 import { describeToolHomeChange, recordToolHomes, type ToolHomeChange } from './tool-home-record.js';
-import { defaultPathsOf } from './tool-instances.js';
+import { leftInstanceHookFiles } from './tool-instances.js';
 
 function validAgentIds(teamTools: readonly string[]): string[] {
   return [...new Set([
@@ -380,28 +381,27 @@ async function releasePreviousToolRoots(
 }
 
 /**
- * The same for an instance whose own variable this init moved or cleared: the hooks teamai delivered into its previous
- * home keep firing in a shell that still exports the old value. They go, as an earlier home's copy does (#1221); the
- * records stay for the pull that delivers to the new home. An instance this init refuses, and one with paths of its
- * own, which teamai writes as they are, are left alone.
+ * The same for an instance whose own variable this init moved or cleared, a refused one included: the hooks teamai
+ * delivered into a home it left keep firing in a shell that still exports the old value. They go from the previous home
+ * and each earlier one init replaced, as an earlier home's copy does (#1221), except where `leftInstanceHookFiles` says
+ * they are another tool's; the records stay for the pull that delivers to the new home.
  */
 async function releasePreviousInstanceHomes(changes: readonly ToolHomeChange[], next: LocalConfig): Promise<void> {
   const hookScope = resolveHookScope(next);
+  const history = reloadToolHomesHistory();
 
   for (const { tool, dir, previous } of changes) {
-    const instance = toolOf(tool)?.instance;
+    if (previous === undefined) continue;
 
-    if (previous === undefined || instance?.home === undefined || instance.paths !== undefined || instance.name === instance.extends) continue;
-    const settings = defaultPathsOf(instance).settings;
-    const oldSettings = settings === undefined ? undefined : path.join(previous, path.relative(instance.home.dir, settings));
+    for (const { home, file } of leftInstanceHookFiles({ name: tool, homes: [previous, ...history[tool] ?? []], current: dir ?? 'default', toolRoots: next.toolRoots })) {
+      if (await pathExists(file) && await hasTeamaiHooks(file, tool, hookScope.manifestPath)) {
+        await reconcileHooks(file, tool, [], { removeAll: true, keepRecords: true, manifestPath: hookScope.manifestPath, codexTrust: { kind: 'disabled' } });
+      }
 
-    if (oldSettings !== undefined && await pathExists(oldSettings) && await hasTeamaiHooks(oldSettings, tool, hookScope.manifestPath)) {
-      await reconcileHooks(oldSettings, tool, [], { removeAll: true, keepRecords: true, manifestPath: hookScope.manifestPath, codexTrust: { kind: 'disabled' } });
+      if (!await pathExists(home)) continue;
+      log.warn(`${tool} now syncs to ${dir ?? 'its default home'}; skills, rules, instruction files and MCP servers `
+        + `that teamai wrote under ${home} were left in place.`);
     }
-
-    if (!await pathExists(previous)) continue;
-    log.warn(`${tool} now syncs to ${dir ?? 'its default home'}; skills, rules, instruction files and MCP servers `
-      + `that teamai wrote under ${previous} were left in place.`);
   }
 }
 

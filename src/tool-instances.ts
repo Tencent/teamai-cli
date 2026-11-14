@@ -9,7 +9,7 @@ import { isSafeNamespaceSegment } from './manifest-schema.js';
 import { resolveNamespacedItems, type NamespaceCandidate } from './namespace-resolver.js';
 import { isSessionPlatform } from './session-flow/adapters/platform-facts.js';
 import { instanceHomeDir, isSameDirOn, realHost, toolHome, type Host } from './tool-home.js';
-import { INSTANCE_BASES, isInstanceBase, isToolId, TOOL_ORDER, toolOf, useToolInstances } from './tool-registry.js';
+import { declaredInstances, INSTANCE_BASES, isInstanceBase, isToolId, TOOL_ORDER, toolOf, useToolInstances } from './tool-registry.js';
 import type { ToolId } from './tools.js';
 import { DEFAULT_TOOL_PATHS, getTeamaiHomeDir, getTrustDir, recordedToolRootDir, RELOCATABLE_TOOLS, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type TeamaiConfig } from './types.js';
 import { writeJsonAtomic } from './utils/fs.js';
@@ -277,7 +277,13 @@ function declaredTable(): Map<string, ResolvedToolInstance> {
 function homeSharedWith({ name, home, instances, host, toolRoots }: {
   name: string; home: ToolInstanceHome; instances: readonly ResolvedToolInstance[]; host: Host; toolRoots?: Readonly<Record<string, string>>;
 }): string | undefined {
-  const own = instanceHomeDir({ name, home }, host);
+  return toolHomedAt({ name, dir: instanceHomeDir({ name, home }, host), instances, host, toolRoots });
+}
+
+/** The tool other than `name` whose home resolves to `dir`: a shipped tool's, a root `toolRoots` records, or another instance's. */
+function toolHomedAt({ name, dir: own, instances, host, toolRoots }: {
+  name: string; dir: string; instances: readonly ResolvedToolInstance[]; host: Host; toolRoots?: Readonly<Record<string, string>>;
+}): string | undefined {
   const at = { home: host.home, path: host.path, readTextNow: (file: string) => host.readTextNow(file), existsNow: (file: string) => host.existsNow(file) };
   const same = (dir: string | null): boolean => dir !== null && isSameDirOn(host, own, dir);
 
@@ -333,6 +339,31 @@ function publish(): void {
   const declared = declaredTable();
 
   useToolInstances(withoutSharedHomes(new Map(declared)), declared);
+}
+
+/**
+ * The hook files teamai may have left for the declared instance `name`, a refused one included, in `homes` it no longer
+ * delivers to. `current` is the home it delivers to now, null for none, or `default` for the directory `home.dir` names.
+ * Left out: `current`, your home directory, where nothing is recorded, a home
+ * another tool resolves to now, whose hooks are that tool's, and every home of an instance with no home or with paths
+ * of its own.
+ */
+export function leftInstanceHookFiles({ name, homes, current, toolRoots }: {
+  name: string; homes: readonly string[]; current: string | null | 'default'; toolRoots?: Readonly<Record<string, string>>;
+}): Array<{ readonly home: string; readonly file: string }> {
+  const instances = declaredInstances();
+  const instance = instances.find((one) => one.name === name);
+
+  if (instance?.home === undefined || instance.paths !== undefined || instance.name === instance.extends) return [];
+  const { dir } = instance.home;
+  const settings = defaultPathsOf(instance).settings;
+
+  if (settings === undefined) return [];
+  const host = realHost();
+  const now = current === 'default' ? path.join(host.home, ...dir.split('/')) : current;
+
+  return [...new Set(homes)].flatMap((home) => (now !== null && isSameDirOn(host, home, now)) || isSameDirOn(host, home, host.home)
+    || toolHomedAt({ name, dir: home, instances, host, toolRoots }) !== undefined ? [] : [{ home, file: path.join(home, path.relative(dir, settings)) }]);
 }
 
 /** The tool paths `instance` gives its tool: its own `paths`, else the paths of the tool it extends, moved to its home. */

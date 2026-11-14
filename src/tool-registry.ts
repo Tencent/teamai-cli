@@ -275,9 +275,19 @@ export function runTimeRulesOf(tool: string): RunTimeVia | null {
   }
 }
 
+/**
+ * The hook channels of `tool`, as `channelsOf` gives them, and for an instance refused for its home those of the tool it
+ * extends: no lookup sees it and nothing is delivered for it, but init and uninstall must still read the hooks it left.
+ */
+function hookChannelsOf(tool: string): ShippedDescriptor['hooks'] {
+  const refused = toolOf(tool) === undefined ? declaredTable.get(tool) : undefined;
+
+  return (refused === undefined ? channelsOf(tool) : descriptorOf(refused.extends)).hooks;
+}
+
 /** The format of `tool`'s hook settings file in either scope; null when it reads none (an adapter, `none` or `unknown`). A custom tool reads Claude's. */
 export function hookSettingsFormatOf(tool: string): HookFormat | null {
-  const { hooks } = channelsOf(tool);
+  const hooks = hookChannelsOf(tool);
 
   for (const channel of [hooks.user, hooks.self]) if (channel instanceof Object && channel.channel === 'settings') return channel.format;
 
@@ -286,7 +296,7 @@ export function hookSettingsFormatOf(tool: string): HookFormat | null {
 
 /** How `tool` parses its hook settings file: the syntax of its settings channel, else strict JSON. */
 export function hookSyntaxOf(tool: string): JsonSyntax {
-  const { hooks } = channelsOf(tool);
+  const hooks = hookChannelsOf(tool);
 
   for (const channel of [hooks.user, hooks.self]) if (channel instanceof Object && channel.channel === 'settings') return channel.syntax ?? 'json';
 

@@ -81,8 +81,9 @@ import {
   skillsGuardBase,
 } from './builtin-skills.js';
 import { cleanupOf, hookAdapterDirIn, hookSettingsFile, installOf, isInstalledFor, locate, openclawWorkspaceDir, ownOf, SHARED_AGENT_SKILLS_PATH, toolPathUnder, workspaceHooksOf, writesOf, type Location } from './locate.js';
-import { toolHome, toolHomesAcrossProfiles } from './tool-home.js';
-import { baseDescriptorOf, channelsOf, hookSyntaxOf, toolOf } from './tool-registry.js';
+import { recordedHomes, realHost, reloadToolHomesHistory, toolHome, toolHomeOf, toolHomesAcrossProfiles } from './tool-home.js';
+import { baseDescriptorOf, channelsOf, declaredInstances, hookSyntaxOf, toolOf } from './tool-registry.js';
+import { leftInstanceHookFiles } from './tool-instances.js';
 import { isCodexTool } from './utils/tool-names.js';
 import { allowsSkillDirectory, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, readsCodexSharedSkills, readTeamSkills, skillOrigin } from './resources/skills.js';
 import { describeKeptDir, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir, teamaiSkillFiles } from './resources/delivered-copies.js';
@@ -1762,6 +1763,23 @@ async function buildRemovalPlan(
   }
 
   plan.sharedRetentionOnly = agentFilter !== undefined && retainedSharedEntries > 0;
+
+  // An instance's earlier homes, and a refused instance's recorded one, which no tool path names. Their hooks go first,
+  // keeping the records the pass over the instance's current home still reads.
+  const recorded = recordedHomes(realHost());
+  const history = reloadToolHomesHistory();
+
+  for (const { name } of declaredInstances()) {
+    if (agentFilter !== undefined && agentFilter !== name) continue;
+    const homes = [recorded[name], ...history[name] ?? []].filter((home): home is string => home !== undefined);
+    const current = toolOf(name) === undefined ? null : toolHomeOf(name)?.dir ?? null;
+
+    for (const { file } of leftInstanceHookFiles({ name, homes, current, toolRoots: localConfig.toolRoots })) {
+      if (plan.hookFiles.some((entry) => entry.path === file) || !await pathExists(file) || !await hasTeamaiHooks(file, name, plan.hookManifestPath)) continue;
+      plan.hookFiles.unshift({ path: file, tool: name, manifestPath: plan.hookManifestPath, keepRecords: plan.hookFiles.some((entry) => entry.tool === name) });
+    }
+  }
+
   // The active home's SOUL.md is an instruction file already, which loses the block with the others.
   plan.hermesSouls = plan.hermesSouls.filter((file) => !plan.claudeMdFiles.some((entry) => entry.path === file));
 

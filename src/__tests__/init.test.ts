@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished, type MockInstance } from 'vitest';
+import fs from 'node:fs';
 import path from 'node:path';
 
 // ── Mocks ────────────────────────────────────────────────
@@ -1580,6 +1581,30 @@ describe('init', () => {
         const warned = vi.mocked(log.warn).mock.calls.map(([m]) => String(m)).join('\n');
         expect(warned).toContain(`acme-codex now syncs to ${now}`);
         expect(warned).toContain(`under ${previous} were left in place`);
+      });
+
+      it('releases the earlier home of an instance refused for its record, and leaves the home of the tool it was refused for', async () => {
+        vi.mocked(loadLocalConfigForScope).mockResolvedValue(previousConfig());
+        // Refused: no lookup sees it, and only init's release reads it.
+        useToolInstances(new Map(), new Map([['acme-codex', {
+          name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+          source: 'team', file: '/r/tools/acme-codex.yaml', location: 'tools/acme-codex.yaml', revision: 'r1',
+        }]]));
+        onTestFinished(() => { useToolInstances(new Map()); });
+        const earlier = path.join(HOME, 'work', 'acme-a');
+        const codexHome = path.join(HOME, '.codex');
+        const history = path.join(HOME, '.teamai', 'tool-homes-history.json');
+        fs.mkdirSync(path.dirname(history), { recursive: true });
+        fs.writeFileSync(history, JSON.stringify({ 'acme-codex': [earlier, codexHome] }));
+        onTestFinished(() => { fs.rmSync(history, { force: true }); });
+        vi.mocked(recordToolHomes).mockResolvedValueOnce([{ tool: 'acme-codex', variable: 'ACME_CODEX_HOME', dir: path.join(HOME, 'work', 'acme-c'), previous: codexHome }]);
+        settingsExistsAt(path.join(earlier, 'hooks.json'));
+        settingsExistsAt(path.join(codexHome, 'hooks.json'));
+
+        await savedConfig();
+
+        const { reconcileHooks } = await import('../hooks.js');
+        expect(vi.mocked(reconcileHooks).mock.calls.filter(([, tool]) => tool === 'acme-codex').map(([file]) => file)).toEqual([path.join(earlier, 'hooks.json')]);
       });
 
       it('leaves the previous root alone when the root did not move', async () => {
