@@ -78,10 +78,13 @@ export type HomeMove =
  * extension, Muse's and CodeBuddy's settings.json hooks) and MCP servers under
  * the default home when the home moved, so uninstall and MCP ownership look there too.
  * `stateFiles`: files beside `dir`, relative to `$HOME`, the tool writes its own state into, which stay after
- * `teamai uninstall` once teamai's part is out of them.
+ * `teamai uninstall` once teamai's part is out of them. `rootVariable`: the variable that moves the tool's whole root,
+ * which `teamai init` records as `toolRoots` instead of following it live, and which teamai sets to start the tool in
+ * a home (its launch profile's `homeEnv`).
  */
 export type Home = {
   readonly dir: string;
+  readonly rootVariable?: string;
   readonly stateFiles?: readonly string[];
   readonly moves?: { readonly root?: string; readonly by: readonly HomeMove[]; readonly defaultHomeLeftovers?: true };
 };

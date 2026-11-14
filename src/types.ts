@@ -8,7 +8,7 @@ import { getUserHome, expandHome } from './utils/home.js';
 import { log } from './utils/logger.js';
 import { parseYaml } from './utils/yaml.js';
 import { type ToolId } from './tools.js';
-import { channelsOf, toolRootsKeyOf } from './tool-registry.js';
+import { channelsOf, descriptorOf, toolRootsKeyOf } from './tool-registry.js';
 import type { WorkspaceChildren } from './workspace-children.js';
 import type { HeadState } from './utils/git.js';
 import type { RunMode } from './launch-context.js';
@@ -3118,8 +3118,8 @@ export interface RelocatableToolTable {
 }
 
 export const RELOCATABLE_TOOLS: RelocatableToolTable = {
-  [CLAUDE_TOOL_ID]: { label: 'Claude Code', envVar: 'CLAUDE_CONFIG_DIR', defaultRoot: DEFAULT_CLAUDE_ROOT },
-  [CODEX_TOOL_ID]: { label: 'Codex', envVar: 'CODEX_HOME', defaultRoot: DEFAULT_CODEX_ROOT },
+  [CLAUDE_TOOL_ID]: { label: 'Claude Code', envVar: descriptorOf(CLAUDE_TOOL_ID).home.rootVariable, defaultRoot: DEFAULT_CLAUDE_ROOT },
+  [CODEX_TOOL_ID]: { label: 'Codex', envVar: descriptorOf(CODEX_TOOL_ID).home.rootVariable, defaultRoot: DEFAULT_CODEX_ROOT },
   [CURSOR_DATA_TOOL_ID]: { label: 'Cursor transcripts', envVar: 'CURSOR_DATA_DIR', defaultRoot: DEFAULT_CURSOR_ROOT },
   [CURSOR_CONFIG_TOOL_ID]: { label: 'Cursor config', envVar: 'CURSOR_CONFIG_DIR', defaultRoot: DEFAULT_CURSOR_ROOT },
 };

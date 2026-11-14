@@ -1,4 +1,7 @@
 import { readClaudeResult, resultDirRule, type LaunchAdapter, type StepArgsHow, type StepArgsInput } from '@teamai/tool-core/launch';
+import { tools } from './definitions.js';
+
+const HOME_VARIABLE = tools.claude.home.rootVariable;
 
 const UNATTENDED = ['--permission-mode', 'bypassPermissions'] as const;
 
@@ -37,8 +40,8 @@ export const launch = {
     step: { evidence: 'verified', unattended: { args: UNATTENDED, evidence: 'verified' }, args: stepArgs },
     confined: {
       evidence: 'verified',
-      env: ['CLAUDE_CONFIG_DIR', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY'],
-      homeEnv: 'CLAUDE_CONFIG_DIR',
+      env: [HOME_VARIABLE, 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY'],
+      homeEnv: HOME_VARIABLE,
       verified: /^2\.1\.308 \(Claude Code\)$/,
       access: 'read',
     },

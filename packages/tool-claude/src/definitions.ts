@@ -5,7 +5,7 @@ export const tools = {
   claude: {
     instances: true,
     // Claude Code keeps its sign-in, its settings and each project's state in ~/.claude.json.
-    home: { dir: '.claude', stateFiles: ['.claude.json'] },
+    home: { dir: '.claude', rootVariable: 'CLAUDE_CONFIG_DIR', stateFiles: ['.claude.json'] },
     skillLoad: { calls: [{ name: 'Skill', evidence: 'verified' }] },
     skills: { user: [{ base: 'home', path: '.claude/skills', evidence: 'docs' }], project: 'unknown' },
     rules: {

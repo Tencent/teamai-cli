@@ -2,6 +2,9 @@ import { z } from 'zod';
 import { answered, failed, jsonLines, type CallOutput, type CallReading, type LaunchAdapter, type StepArgsHow, type StepArgsInput } from '@teamai/tool-core/launch';
 import { readToolMetadata } from '@teamai/tool-core/stdout';
 import { desktopCodexBinaries } from './codex-desktop.js';
+import { tools } from './definitions.js';
+
+const HOME_VARIABLE = tools.codex.home.rootVariable;
 
 const CodexError = z.union([
   z.object({ type: z.literal('error'), message: z.string() }),
@@ -53,6 +56,6 @@ export const launch = {
     // `codex exec --help` of codex-cli 0.165.0: "Intended solely for running in environments that are externally sandboxed".
     step: { evidence: 'verified', unattended: { args: UNATTENDED, evidence: 'docs' }, args: stepArgs, agentInPrompt: () => true },
     // Codex also signs in with CODEX_API_KEY ("run codex login or set CODEX_API_KEY").
-    confined: { evidence: 'verified', env: ['CODEX_HOME', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CODEX_API_KEY'], homeEnv: 'CODEX_HOME', verified: /^codex-cli 0\.163\.0$/, access: 'read' },
+    confined: { evidence: 'verified', env: [HOME_VARIABLE, 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CODEX_API_KEY'], homeEnv: HOME_VARIABLE, verified: /^codex-cli 0\.163\.0$/, access: 'read' },
   },
 } as const satisfies Record<string, LaunchAdapter>;

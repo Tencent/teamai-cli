@@ -4,7 +4,7 @@ import { UNKNOWN, UNKNOWN_READS, type ToolDescriptor } from '@teamai/tool-core/d
 export const tools = {
   codex: {
     instances: true,
-    home: { dir: '.codex' },
+    home: { dir: '.codex', rootVariable: 'CODEX_HOME' },
     skillLoad: { calls: [], promptForm: '$name' },
     // Codex 0.163.0 runs read $CODEX_HOME/skills and ~/.agents/skills.
     skills: {
