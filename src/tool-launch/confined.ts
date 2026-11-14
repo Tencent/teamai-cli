@@ -17,7 +17,8 @@ import { parseJsonAs } from '../utils/json.js';
 import { resolveCliPath } from '../utils/cli-path.js';
 import { execCommand, probeBinary } from '../utils/exec.js';
 import { agyGatewayEnv } from '../models/agy-gateway.js';
-import { JsonValueSchema, type JsonValue } from '../types.js';
+import { resolveMemberToolRoots } from '../config.js';
+import { JsonValueSchema, type JsonValue, type LocalConfig } from '../types.js';
 import type { ConfinedLevel, ConfinedUsage } from './confined-level.js';
 import type { CallLaunch, ConfinedAccess, ConfinedLaunch } from '@teamai/tool-core/launch';
 import { runTool, type ToolRun } from './run.js';
@@ -76,7 +77,8 @@ export async function confinedToolLevel(tool: ConfinedTool, { resolveTool = reso
 
   if (executable === null) return undefined;
   const tmp = await fs.realpath(os.tmpdir());
-  const version = await probeBinary(executable, ['--version'], (command, args, options) => execCommand(command, args, { ...options, env: confinedEnv(tool), cwd: tmp }));
+  const env = confinedEnv(tool, await resolveMemberToolRoots());
+  const version = await probeBinary(executable, ['--version'], (command, args, options) => execCommand(command, args, { ...options, env, cwd: tmp }));
 
   return { tool, version, isolation: profileIsolation(tool, version, launchAdapterIdOf(tool) === 'opencode' && await insideCheckout(tmp)) };
 }
@@ -160,12 +162,12 @@ function memberEnv(): NodeJS.ProcessEnv {
   return restored;
 }
 
-function confinedEnv(tool: ConfinedTool): NodeJS.ProcessEnv {
+function confinedEnv(tool: ConfinedTool, toolRoots: LocalConfig['toolRoots']): NodeJS.ProcessEnv {
   const restored = memberEnv();
 
   const env: NodeJS.ProcessEnv = {
     ...Object.fromEntries([...COMMON_ENV, ...profileOf(tool).env].flatMap((key) => restored[key] === undefined ? [] : [[key, restored[key]]])),
-    ...toolCommandEnv(tool, { kind: 'delivered', inherited: restored }),
+    ...toolCommandEnv(tool, { kind: 'delivered', inherited: restored, toolRoots }),
   };
 
   if (tool === 'agy') Object.assign(env, agyGatewayEnv(restored));
@@ -567,7 +569,7 @@ export async function runConfined(input: ConfinedInput, { resolveTool = resolveC
     const dir = await fs.realpath(input.dir);
     const family = launchAdapterIdOf(input.tool);
     // OpenCode reads a copy, so a checkout above the directory is checked where the copy goes.
-    const context: LaunchContext = { input, executable, dir, cwd: family === 'opencode' ? path.join(tmp, 'dir') : dir, tmp, env: confinedEnv(input.tool) };
+    const context: LaunchContext = { input, executable, dir, cwd: family === 'opencode' ? path.join(tmp, 'dir') : dir, tmp, env: confinedEnv(input.tool, await resolveMemberToolRoots()) };
     const level = await levelReached(context);
 
     if (!level.ok) return level;

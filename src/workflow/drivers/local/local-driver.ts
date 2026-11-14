@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline/promises';
 import { z } from 'zod';
 import { toolExtrasFor, type AgentSpec } from '../../../resources/agent-format.js';
 import { observeLaunch, type ToolLaunch, type Used } from '../../../agent-observation.js';
-import { detectProjectConfig } from '../../../config.js';
+import { detectProjectConfig, resolveMemberToolRoots } from '../../../config.js';
 import { driverIdentity } from '../../../driver-identity.js';
 import { commandSignalPolicy, exitLike, stepEnvironment, terminalReachesCommand, withRunningCli } from '../../../env-exec.js';
 import { knownSecrets, resolveWorkflowEnv, type WorkflowEnv } from '../../../env-resolution.js';
@@ -581,13 +581,16 @@ async function promptReport(
 
   if (lease.interactive) log.info(`Step "${lease.step}" opens ${launched} here for interactive work.`);
 
+  const inherited = lease.processEnv ?? process.env;
+  const toolRoots = stepConfig.toolRoots ?? await resolveMemberToolRoots(cwd);
+
   const input: LocalToolRun = {
     prompt: lease.prompt!,
     cwd,
     resultPath: resultFile,
     secrets,
     // The lease `env` is set over the step's environment, as a command's is.
-    env: { ...lease.processEnv ?? process.env, ...toolCommandEnv(target.name, { kind: 'delivered', inherited: lease.processEnv ?? process.env }), ...lease.env, ...attemptEnv(config, lock.run, lease.attempt, mode) },
+    env: { ...inherited, ...toolCommandEnv(target.name, { kind: 'delivered', inherited, toolRoots }), ...lease.env, ...attemptEnv(config, lock.run, lease.attempt, mode) },
   };
 
   if (lease.output) input.output = lease.output;

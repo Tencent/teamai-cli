@@ -160,9 +160,11 @@ describe('local workflow prompt driver', () => {
   it.each([
     // A pull recorded the home the variable named, and teamai delivers there from a shell without it, as a confined run reads it.
     { case: 'at the home recorded for it from a shell without its variable', shell: undefined, home: 'codebuddy-recorded' },
-    { case: 'at the home its variable names in the shell', shell: 'codebuddy-shell', home: 'codebuddy-shell' },
-  ])('starts a shipped tool $case', async ({ shell, home }) => {
-    await saveToolHomes({ codebuddy: path.join(os.tmpdir(), 'codebuddy-recorded') });
+    // Delivery puts the recorded home first, so the step reads where teamai delivered and doctor names the shell's.
+    { case: 'at the home recorded for it, over the variable of the shell, as delivery', shell: 'codebuddy-shell', home: 'codebuddy-recorded' },
+    { case: 'at the home its variable names in a shell with no home recorded', shell: 'codebuddy-shell', home: 'codebuddy-shell', unrecorded: true },
+  ])('starts a shipped tool $case', async ({ shell, home, unrecorded }) => {
+    await saveToolHomes(unrecorded ? {} : { codebuddy: path.join(os.tmpdir(), 'codebuddy-recorded') });
     vi.stubEnv('CODEBUDDY_CONFIG_DIR', shell === undefined ? undefined : path.join(os.tmpdir(), shell));
     onTestFinished(async () => { vi.unstubAllEnvs(); await saveToolHomes({}); });
     const { config, workspace, runId } = await fixture();
@@ -175,6 +177,33 @@ describe('local workflow prompt driver', () => {
     await runLocalDriver(config, runId, workspace, { adapter, toolPaths, tools: { default: 'codebuddy' } });
 
     expect({ ...process.env, ...input?.env }.CODEBUDDY_CONFIG_DIR).toBe(path.join(os.tmpdir(), home));
+  });
+
+  it.each([
+    // init recorded CODEX_HOME as the Codex root, and teamai delivers and trusts there from any shell.
+    { case: 'Codex at the root init recorded, from a shell without CODEX_HOME', tool: 'codex', shell: undefined },
+    { case: 'Codex at the root init recorded, over the CODEX_HOME of the shell, as delivery', tool: 'codex', shell: 'codex-shell' },
+    { case: 'an instance that keeps the home of Codex at the root init recorded for Codex', tool: 'acme-codex', shell: undefined },
+  ])('starts $case', async ({ tool, shell }) => {
+    const recorded = path.join(getUserHome(), '.codex-work');
+    vi.stubEnv('CODEX_HOME', shell === undefined ? undefined : path.join(getUserHome(), shell));
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const { config, workspace, runId } = await fixture();
+    config.toolRoots = { codex: recorded };
+    useToolInstances(new Map([['acme-codex', {
+      name: 'acme-codex', extends: 'codex',
+      source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
+    }]]));
+    onTestFinished(() => { useToolInstances(new Map()); });
+    let input: LocalToolRun | undefined;
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn(async (_tool, value) => {
+      input = value;
+      return { started: true as const, exitCode: 0 };
+    }) };
+
+    await runLocalDriver(config, runId, workspace, { adapter, toolPaths, tools: { default: tool } });
+
+    expect({ ...process.env, ...input?.env }.CODEX_HOME).toBe(recorded);
   });
 
   it.each<{ case: string; flags: Record<string, string>; configured: Record<string, string>; env: string; project?: string; machine?: string; ran: string }>([
