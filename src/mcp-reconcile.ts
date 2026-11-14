@@ -57,7 +57,7 @@ import { isEnvShMarker } from './env-sh-exports.js';
 import { memberEnvironmentWithoutScope } from './member-env.js';
 import { cleanupOf, installOf, locate, ownOf, userViewOf, writable, type EntryPlace, type Install } from './locate.js';
 import { type McpProject } from '@teamai/tool-core/definition';
-import { channelsOf, isToolId, mcpFormatOf, mcpScopeFor, mcpSyntaxOf, hasDefaultHomeLeftovers, TOOL_ORDER } from './tool-registry.js';
+import { baseToolOf, channelsOf, isToolId, mcpFormatOf, mcpScopeFor, mcpSyntaxOf, hasDefaultHomeLeftovers, TOOL_ORDER } from './tool-registry.js';
 import { realHost, type Host } from './tool-home.js';
 import { KNOWN_AGENTS } from './known-agents.js';
 import { entryLayout, reportEntryResolution, type ResolvedEntry } from './namespaced-entries.js';
@@ -1900,13 +1900,13 @@ export async function unclaimedMcpServers(target: McpTarget, claimed: readonly s
 
 /**
  * Whether `tool`'s project MCP config is never judged teamai-only (#915, its
- * `judgedTeamaiOnly`). In a team in self mode Claude keeps `.mcp.json`
- * (`mcpRelocated`), and it is judged.
+ * `judgedTeamaiOnly`). In a team in self mode Claude, and an instance of it,
+ * keeps `.mcp.json` (`mcpRelocated`), and it is judged.
  */
 function neverJudgedTeamaiOnly(tool: string, localConfig: LocalConfig): boolean {
   const project = channelsOf(tool).mcp.project;
 
-  return project !== 'none' && project !== 'unknown' && !project.judgedTeamaiOnly && !(tool === 'claude' && isSelfMode(localConfig));
+  return project !== 'none' && project !== 'unknown' && !project.judgedTeamaiOnly && !(baseToolOf(tool) === 'claude' && isSelfMode(localConfig));
 }
 
 /**

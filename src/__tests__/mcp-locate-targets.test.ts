@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -617,6 +617,31 @@ describe('pull writes MCP servers where each tool reads them (#1221)', () => {
       expect(alone).toEqual([{ file, teamaiOnly: true }]);
       expect(await judgeTeamaiOnlyMcpConfigs(team(), local)).toEqual([{ file, teamaiOnly: false }]);
     });
+  });
+
+  it('judges the .mcp.json Claude keeps in self mode while a Claude instance writes it too', async () => {
+    await fse.outputFile(path.join(repo, 'teamai.yaml'), 'team: fixture\nrepo: fixture\n');
+    await fse.outputFile(path.join(repo, 'tools', 'acme-claude.yaml'), 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude }\n');
+    execFileSync('git', ['init', '-q', repo]);
+    for (const dir of ['.claude', '.acme-claude']) {
+      await fse.ensureDir(path.join(home, dir));
+      await fse.ensureDir(path.join(repo, dir));
+    }
+
+    const { loadTeamConfig } = await import('../config.js');
+    const { useToolInstances } = await import('../tool-registry.js');
+    onTestFinished(() => useToolInstances(new Map()));
+    const teamConfig = await loadTeamConfig(repo);
+
+    if (!teamConfig) throw new Error('the team config did not load');
+    const self: LocalConfig = {
+      repo: { localPath: repo, remote: 'fixture', kind: 'self' }, username: 'tester', scope: 'project', projectRoot: repo,
+      dataHome: path.join(root, 'data'), enabledAgents: ['claude', 'acme-claude'], additionalRoles: [],
+    };
+
+    await reconcileMcpForConfig(teamConfig, self);
+
+    expect(await judgeTeamaiOnlyMcpConfigs(teamConfig, self)).toEqual([{ file: path.join(repo, '.mcp.json'), teamaiOnly: true }]);
   });
 
   it('reads a recorded ZCode config through its nested key after the team changes its mapping', async () => {
