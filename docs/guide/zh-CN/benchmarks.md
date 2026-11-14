@@ -208,7 +208,7 @@ repetitions: 3
 timeout: 45m
 ```
 
-两个 arm 都开着 recall，唯一的差别就是那条关联：第二个 arm 运行时没有声明它的规则。套件要求各 arm 在某个 `defaults` 键上不同——`recall` 不算，因为它是测量的对照条件而不是页面要对比的值——所以两个 arm 改的是 `team`。
+两个 arm 都开着 recall。这个示例移除整条规则，而不仅仅是关联。要单独测量声明式关联，请保留规则正文，并像[声明式关联试验](../../../examples/related-recall/README.md)一样为两组固定不同的团队提交。套件要求各 arm 在某个 `defaults` 键上不同——`recall` 不算，因为它是测量的对照条件而不是页面要对比的值——所以两个 arm 改的是 `team`。
 
 `recall` 从不算作一个被更改的 `defaults` 键，matrix 也不能交叉它。不写它时，该 arm 和每个 workflow 克隆一样在没有 recall 下运行。
 

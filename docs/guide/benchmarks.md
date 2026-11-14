@@ -208,7 +208,7 @@ repetitions: 3
 timeout: 45m
 ```
 
-Both arms run with recall, so the only thing between them is the relation: the second runs without the rule that declares it. A suite needs its arms to differ in a `defaults` key — `recall` is not one, since it is a measurement's control rather than a value the page compares — so the arms differ in their `team` instead.
+Both arms run with recall. This example removes the whole rule, not just the relation. To isolate the declared relation, keep the rule and its body in both arms and use two pinned team commits as in the [declared-relations pilot](../../examples/related-recall/README.md). A suite needs its arms to differ in a `defaults` key — `recall` is not one, since it is a measurement's control rather than a value the page compares — so the arms differ in their `team` instead.
 
 `recall` never counts as a changed `defaults` key, and the matrix cannot cross it. Leave it out and the arm runs as every workflow clone does, without recall.
 
