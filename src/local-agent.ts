@@ -6310,6 +6310,16 @@ function legacyTokenAgent(config: LocalAgentConfig): string | undefined {
   return agents.size === 1 ? [...agents][0] : undefined;
 }
 
+/** Explicit replacement must name its new token. */
+export function validateLocalAgentTokenReplacement(options: {
+  token?: string;
+  replaceToken?: boolean;
+}): void {
+  if (options.replaceToken && !options.token?.trim()) {
+    throw new Error('--replace-token requires --token <key>.');
+  }
+}
+
 /**
  * Point the HTTP local agent at `endpoint`. A caller that must not replace
  * another one checks `assertNoLocalAgentReplacement` first; `force` overwrites
@@ -6319,6 +6329,7 @@ export async function initLocalAgentHttp(options: {
   endpoint: string;
   token?: string;
   force?: boolean;
+  replaceToken?: boolean;
   filterAgents?: string[];
 }): Promise<void> {
   const endpoint = normalizeEndpoint(options.endpoint);
@@ -6326,6 +6337,8 @@ export async function initLocalAgentHttp(options: {
   if (!endpoint) {
     throw new Error('HTTP endpoint is required.');
   }
+
+  validateLocalAgentTokenReplacement(options);
 
   // `init --http` writes the user config.yaml and saves the API key before this
   // runs, and a missing config.json is backfilled from them (loadLocalAgentConfig).
@@ -6402,7 +6415,10 @@ export async function initLocalAgentHttp(options: {
     // works the new one is not dropped — the agents with no token of their own
     // report with it. An agent that already owns the shared slot is not replaced.
     const spare = inferred && !sharedToken;
-    const chosen = sameEndpoint ? await chooseAgentToken(existing!, agent!, current, token!, spare) : token!;
+
+    const chosen = sameEndpoint && !options.replaceToken
+      ? await chooseAgentToken(existing!, agent!, current, token!, spare) : token!;
+
     agentTokens[agent!] = chosen;
 
     if (spare && chosen !== token) sharedToken = token;
@@ -6411,7 +6427,7 @@ export async function initLocalAgentHttp(options: {
   // The shared token is what the agents with no entry of their own report with.
   // One the backend rejects keeps them at 401 while this run reports success, so
   // it goes, and the warning names the way to renew them one agent at a time.
-  if (perAgent && sharedToken && sameEndpoint && sharedToken !== token
+  if (!options.replaceToken && perAgent && sharedToken && sameEndpoint && sharedToken !== token
     && await tokenStillWorks(existing!, sharedToken) === false) {
     log.warn('The shared access token on this machine no longer works, so the agents without a token of their own have none now. '
       + 'Re-run with `--agent <tool>` for each of them to install a new one.');

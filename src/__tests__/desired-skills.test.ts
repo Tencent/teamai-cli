@@ -11,7 +11,7 @@ function resolved(result: Awaited<ReturnType<typeof resolveDesiredSkills>>): Des
   return result;
 }
 import type { RolePullContext } from '../resources/desired.js';
-import type { LocalConfig, TeamaiConfig } from '../types.js';
+import { SharingConfigSchema, type LocalConfig, type TeamaiConfig } from '../types.js';
 
 /**
  * The desired set is what `pull` installs and what `doctor` checks landed. Both
@@ -75,6 +75,72 @@ describe('resolveDesiredSkills', () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await fse.remove(tempDir);
+  });
+
+  describe('role-required skill namespaces', () => {
+    beforeEach(async () => {
+      teamConfig.sharing = SharingConfigSchema.parse({ skills: { roleRequiredNamespaces: ['common', 'backend'] } });
+      await fse.outputFile(path.join(repoPath, 'manifest', 'roles.yaml'), [
+        'version: 1', 'roles:',
+        '  - id: developer', '    resources: { knowledge: [], skills: [common] }',
+        '  - id: backend', '    resources: { knowledge: [], skills: [common, backend] }',
+        '  - id: frontend', '    resources: { knowledge: [], skills: [frontend] }',
+      ].join('\n'));
+    });
+
+    it.each([
+      { role: undefined, additional: [], namespaces: undefined, expected: ['frontend-skill'] },
+      { role: 'developer', additional: [], namespaces: ['common'], expected: ['shared-skill'] },
+      { role: 'backend', additional: [], namespaces: ['common', 'backend'], expected: ['backend-skill', 'shared-skill'] },
+      { role: 'developer', additional: ['backend'], namespaces: ['common', 'backend'], expected: ['backend-skill', 'shared-skill'] },
+      { role: 'unknown', additional: [], namespaces: undefined, expected: ['frontend-skill'] },
+      { role: 'developer', additional: ['unknown'], namespaces: undefined, expected: ['frontend-skill'] },
+    ])('requires a resolved role mapping: $role + $additional', async ({ role, additional, namespaces, expected }) => {
+      localConfig.primaryRole = role;
+      localConfig.additionalRoles = additional;
+      const result = resolved(await resolveDesiredSkills(teamConfig, localConfig, namespaces ? rolesOver(namespaces) : null));
+      expect(result.items.map((item) => item.name).sort()).toEqual(expected);
+      expect(result.teamItems).toHaveLength(3);
+    });
+
+    it('does not let projects or tag subscriptions activate a role-required namespace', async () => {
+      localConfig.projects = ['server'];
+      localConfig.subscribedTags = ['server'];
+      const result = resolved(await resolveDesiredSkills(teamConfig, localConfig, rolesOver(['backend', 'frontend'])));
+      expect(result.items.map((item) => item.name)).toEqual(['frontend-skill']);
+    });
+
+    it('filters before namespace conflicts and shared-name selection', async () => {
+      await writeSkill('backend', 'release');
+      await writeSkill('frontend', 'release');
+      const result = resolved(await resolveDesiredSkills(teamConfig, localConfig, rolesOver(['backend', 'frontend'])));
+      expect(result.items.find((item) => item.name === 'release')?.namespace).toBe('frontend');
+      const unfiltered = resolved(await resolveDesiredSkills(teamConfig, localConfig, null));
+      expect(unfiltered.items.find((item) => item.name === 'release')?.namespace).toBe('frontend');
+    });
+
+    it('uses assigned roles and workflow step roles without changing the member selection', async () => {
+      localConfig.primaryRole = 'developer';
+      localConfig.roleAssignment = { source: 'assigned', local: { additionalRoles: [] } };
+      localConfig.subscribedTags = ['server'];
+      expect(resolved(await resolveDesiredSkills(teamConfig, localConfig, rolesOver(['common']))).items.map((item) => item.name)).toEqual(['shared-skill']);
+      localConfig.stepRole = 'backend';
+      expect(resolved(await resolveDesiredSkills(teamConfig, localConfig, rolesOver(['common', 'backend']))).items.map((item) => item.name).sort()).toEqual(['backend-skill', 'shared-skill']);
+      expect(localConfig.primaryRole).toBe('developer');
+    });
+
+    it('keeps legacy delivery when the configuration is empty', async () => {
+      teamConfig.sharing = SharingConfigSchema.parse({ skills: { roleRequiredNamespaces: [] } });
+      expect(resolved(await resolveDesiredSkills(teamConfig, localConfig, null)).items).toHaveLength(3);
+    });
+
+    it('holds required namespaces when the manifest is absent, and reports malformed manifests', async () => {
+      await fse.remove(path.join(repoPath, 'manifest', 'roles.yaml'));
+      localConfig.primaryRole = 'backend';
+      expect(resolved(await resolveDesiredSkills(teamConfig, localConfig, null)).items.map((item) => item.name)).toEqual(['frontend-skill']);
+      await fse.outputFile(path.join(repoPath, 'manifest', 'roles.yaml'), 'roles: broken');
+      await expect(resolveDesiredSkills(teamConfig, localConfig, null)).rejects.toThrow('Invalid roles manifest');
+    });
   });
 
   /** Make the filesystem list every directory in the given order (#1577). */

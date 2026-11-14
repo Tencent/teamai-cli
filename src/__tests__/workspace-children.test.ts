@@ -325,6 +325,25 @@ describe('delivered selection of a workspace with children', () => {
     expect(desired.kind === 'resolved' && desired.items.map((item) => item.name).sort()).toEqual(['a-tool', 'b-tool', 'tagged']);
   });
 
+  it('applies role-required skills to each child before an unfiltered workspace unions them', async () => {
+    fs.rmSync(path.join(repo, 'manifest', 'projects.yaml'));
+    fs.writeFileSync(path.join(repo, 'manifest', 'roles.yaml'), YAML.stringify({
+      version: 1,
+      roles: [{ id: 'developer', resources: { knowledge: [], skills: ['svc-a'] } }],
+    }));
+    skill(repo, 'svc-a', 'a-tool');
+    skill(repo, 'svc-b', 'b-tool');
+    skill(repo, null, 'public-tool');
+    repoChild(path.join(ws, 'svc-a'), { primaryRole: 'developer' });
+    repoChild(path.join(ws, 'svc-b'));
+    const config = TeamaiConfigSchema.parse({ ...teamConfig, sharing: { skills: { roleRequiredNamespaces: ['svc-a', 'svc-b'] } } });
+    const delivered = await readWorkspaceChildren(workspace);
+    const desired = await resolveDesiredSkills(config, delivered, await buildRolePullContext(delivered));
+
+    expect(desired.kind === 'resolved' && desired.items.map((item) => item.name).sort()).toEqual(['a-tool', 'public-tool']);
+    expect([...(await deliveredSkillSources(config, delivered)) ?? []].map((source) => path.basename(source)).sort()).toEqual(['a-tool', 'public-tool']);
+  });
+
   it("delivers the skills of a role copy's role that the workspace or a child excludes, as the role defines them", async () => {
     fs.writeFileSync(path.join(repo, 'manifest', 'roles.yaml'), YAML.stringify({ version: 1, roles: [{ id: 'review', resources: { skills: ['review'], knowledge: ['review'] } }] }));
     skill(repo, 'review', 'rv-tool');

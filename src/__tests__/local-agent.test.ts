@@ -1234,6 +1234,66 @@ describe('local-agent: one access token per agent', () => {
     expect((await fse.readFile(path.join(tmpDir, '.teamai', 'token'), 'utf8')).trim()).toBe('sk-old');
   });
 
+  it.each(['init', 'source add-http'] as const)('uses the supplied token on %s with replace-token without probing old credentials', async (entry) => {
+    const workspace = path.join(tmpDir, 'workspace');
+    await fse.ensureDir(workspace);
+    const bindings = { [workspace]: { projectId: 42, projectName: 'Project', boundAt: 'x', ideType: 'codebuddy' } };
+    await setupConfig(bindings);
+    const stored = await fse.readJson(configFile());
+    stored.token = 'hk-shared';
+    stored.agentTokens = { codebuddy: 'sk-old', claude: 'sk-claude' };
+    await fse.writeJson(configFile(), stored);
+    const calls = backend(['sk-old', 'sk-claude', 'hk-shared']);
+
+    if (entry === 'init') {
+      const { init: initCommand } = await import('../init.js');
+      await initCommand({
+        http: ENDPOINT, token: 'sk-new', agent: ['codebuddy'],
+        scope: 'user', force: true, replaceToken: true,
+      });
+    } else {
+      const { sourceAddHttp } = await import('../source.js');
+      await sourceAddHttp(ENDPOINT, { token: 'sk-new', agent: 'codebuddy', replaceToken: true });
+    }
+
+    const after = await fse.readJson(configFile());
+    expect(after.agentTokens).toEqual({ codebuddy: 'sk-new', claude: 'sk-claude' });
+    expect(after.token).toBe('hk-shared');
+    expect(after.workspaceBindings).toEqual(bindings);
+    expect((await fse.readFile(path.join(tmpDir, '.teamai', 'token'), 'utf8')).trim()).toBe('sk-new');
+    expect(calls.filter((call) => ['sk-old', 'sk-claude', 'hk-shared'].includes(call.token))).toEqual([]);
+
+    const reportCalls = backend(['sk-new', 'sk-claude']);
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ cwd: workspace, tool: 'codebuddy', status: 'running' });
+    expect(reportCalls.filter((call) => call.route.endsWith('/report')).map((call) => call.token)).toEqual(['sk-new']);
+  });
+
+  it.each([undefined, '  '])('refuses a replacement with no token before changing config: %j', async (token) => {
+    backend([]);
+    await init('codebuddy', 'sk-old');
+    const before = await fse.readFile(configFile(), 'utf8');
+    const tokenPath = path.join(tmpDir, '.teamai', 'token');
+    const beforeToken = await fse.readFile(tokenPath, 'utf8');
+    const { initLocalAgentHttp } = await import('../local-agent.js');
+
+    await expect(initLocalAgentHttp({ endpoint: ENDPOINT, force: true, replaceToken: true, token }))
+      .rejects.toThrow('--replace-token');
+
+    expect(await fse.readFile(configFile(), 'utf8')).toBe(before);
+    expect(await fse.readFile(tokenPath, 'utf8')).toBe(beforeToken);
+  });
+
+  it('replaces the only agent\'s token without --agent', async () => {
+    backend([]);
+    await init('codebuddy', 'sk-old');
+    const { initLocalAgentHttp } = await import('../local-agent.js');
+
+    await initLocalAgentHttp({ endpoint: ENDPOINT, force: true, replaceToken: true, token: 'sk-new' });
+
+    expect((await fse.readJson(configFile())).agentTokens).toEqual({ codebuddy: 'sk-new' });
+  });
+
   it('replaces an agent\'s token the backend rejects', async () => {
     backend([]);
     await init('codebuddy', 'sk-old');
