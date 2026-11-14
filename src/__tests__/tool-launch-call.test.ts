@@ -5,6 +5,7 @@ import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 import { readConfigFrom } from '../config.js';
 import { createToolCaller } from '../tool-launch/call.js';
+import { useToolInstances } from '../tool-registry.js';
 import { getDataHome, getUserConfigPath, type LocalConfig } from '../types.js';
 import { getUserHome } from '../utils/home.js';
 import { log } from '../utils/logger.js';
@@ -394,6 +395,39 @@ it('runs Codex at the root init recorded for it, from a shell without CODEX_HOME
   await only('codex', codex.executable).callTool('hi', { launchedBy: 'answer', scope: { ...scope, toolRoots: { codex: recorded } } });
 
   expect((await codex.invocation()).env.CODEX_HOME).toBe(recorded);
+});
+
+it.each([
+  { name: 'home-codex', command: undefined, runs: true },
+  { name: 'acme-codex', command: 'acme-codex', runs: false },
+])('runs the Codex instance $name TEAMAI_AI_TOOL names as the step it extends runs it, its own command only once accepted', async ({ name, command, runs }) => {
+  vi.stubEnv('TEAMAI_AI_TOOL', name);
+  vi.stubEnv('CODEX_HOME', undefined);
+  const { scope } = await aiToolFiles({});
+  useToolInstances(new Map([[name, {
+    kind: 'instance', name, extends: 'codex', home: { dir: `.${name}` }, ...(command ? { command } : {}),
+    source: 'team', file: path.join(root, 'tools', `${name}.yaml`), location: `tools/${name}.yaml`, revision: 'r1',
+  }]]));
+  onTestFinished(() => useToolInstances(new Map()));
+  const codex = await fakeTool('codex', { lastMessage: 'from codex' });
+  const own = command ? await fakeTool(command, { lastMessage: `from ${command}` }) : undefined;
+  vi.stubEnv('PATH', `${root}${path.delimiter}${process.env.PATH ?? ''}`);
+  const call = only('codex', codex.executable).callTool('hi', { launchedBy: 'answer', scope });
+
+  if (runs) {
+    await expect(call).resolves.toMatchObject({ text: 'from codex', tool: name });
+    expect((await codex.invocation()).env.CODEX_HOME).toBe(path.join(getUserHome(), `.${name}`));
+  } else {
+    await expect(call).rejects.toMatchObject({ kind: 'tool_not_accepted', message: expect.stringContaining(`runs ${command}, which no one has accepted on this machine`) });
+    await expect(own?.invocation()).rejects.toThrow('ENOENT');
+  }
+});
+
+it('fails a call on a tool TEAMAI_AI_TOOL names that is neither a tool teamai launches nor an instance of one', async () => {
+  vi.stubEnv('TEAMAI_AI_TOOL', 'no-such-tool');
+  const codex = await fakeTool('codex', { lastMessage: 'from codex' });
+
+  await expect(only('codex', codex.executable).callTool('hi', { launchedBy: 'answer' })).rejects.toMatchObject({ kind: 'override_invalid', message: expect.stringContaining('TEAMAI_AI_TOOL is "no-such-tool", which is not a tool teamai launches') });
 });
 
 it('fails a call on a tool whose recorded root is gone without starting it, and says how to fix the record', async () => {

@@ -219,7 +219,7 @@ function instanceHomeOf(input: { instance: DeclaredTool; own: ToolInstanceHome; 
 }
 
 /** Where the command that starts `target` is installed, or null. An instance's comes from a config file, so only PATH counts. */
-export function launchExecutableOf(target: LaunchTarget): string | null {
+export function launchExecutableOf(target: Pick<LaunchTarget, 'instance'> & { readonly tool: LaunchOrderTool }): string | null {
   const command = target.instance?.command;
 
   return command === undefined ? resolveCliPath(executableOf(target.tool)) : resolvePathCommand(command);
