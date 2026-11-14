@@ -75,12 +75,14 @@ export const BASE_ID_COMPARISONS = new Map(Object.entries({
   // The main checkout's team hooks, Codex's team-hook dispatcher and the entry-index ownership it records are Claude
   // Code's and Codex's: an instance keeps its team hooks in its own home for each checkout (docs/guide/reference.md),
   // recorded and matched by command at both ends. The legacy manifests and host guard predate instances, and the Codex
-  // trust pass lists Codex apart from its instances.
-  'src/hooks.ts': 16,
+  // trust pass lists Codex apart from its instances. `--agent codex` alone reconciles Codex's team-hook dispatchers.
+  'src/hooks.ts': 17,
   // `--team-hooks --tool codex` runs Codex's team-hook dispatcher, which an instance does not have (see src/hooks.ts).
   'src/index.ts': 1,
   // Iterates RELOCATABLE_TOOLS (src/types.ts), which holds only the shipped tools.
   'src/init.ts': 1,
+  // OpenCode V1 reads Claude Code's own ~/.claude/CLAUDE.md, never an instance's file.
+  'src/instruction-targets.ts': 1,
   // The local agent delivers models to the closed `ModelAgentKind` union; an instance gets no kind and no model.
   'src/local-agent.ts': 4,
   // tclaude and Muse Code read the project file the shipped claude target writes; an instance's target is another writer.
@@ -108,6 +110,9 @@ function isBaseId(node) {
 
   return node?.type === 'Identifier' && BASE_ID_NAMES.has(node.name);
 }
+
+/** String and array methods that compare their receiver, or each of its items, with their argument. */
+const SEARCHES = new Set(['includes', 'startsWith', 'endsWith']);
 
 /** Calls that answer for the tool an instance extends: its id, or the format or family it shares with that tool. */
 const RESOLVERS = new Set(['baseToolOf', 'agentFormatOf', 'hookFormatOf', 'mcpFormatOf', 'launchAdapterIdOf', 'familyOf']);
@@ -203,6 +208,14 @@ export default defineRule({
         const other = isBaseId(node.left) ? node.right : isBaseId(node.right) ? node.left : undefined;
 
         if (other !== undefined && !isResolved(context.sourceCode, other)) comparisons.push(node);
+      },
+      // `tool.includes('codex')` and `tools.includes(CLAUDE_TOOL_ID)` compare a name, or each name in a list, as `===` does.
+      CallExpression(node) {
+        const { callee } = node;
+
+        if (callee.type !== 'MemberExpression' || callee.computed || callee.property.type !== 'Identifier' || !SEARCHES.has(callee.property.name)) return;
+
+        if (isBaseId(node.arguments[0]) && !isResolved(context.sourceCode, callee.object)) comparisons.push(node);
       },
       SwitchCase(node) {
         if (isBaseId(node.test) && node.parent?.type === 'SwitchStatement' && !isResolved(context.sourceCode, node.parent.discriminant)) comparisons.push(node);

@@ -85,6 +85,16 @@ export const codex = (tool: string) => CODEX_TOOL_IDS.some((id) => id === tool);
   expect(output).toContain('isCodexTool(tool)');
 }, { filename: 'src/new-area/reader.ts' });
 
+rule.invalid('rejects a substring test for Codex\'s id', `export const codex = (tool: string) => tool.toLowerCase().includes('codex');`, (output) => {
+  expect(output).toContain('is false for an instance of that tool');
+}, { filename: 'src/new-area/reader.ts' });
+
+rule.invalid('rejects a lookup of Claude Code\'s id in a list of tool names', `import { CLAUDE_TOOL_ID } from './types.js';
+export const delivers = (tools: string[]) => tools.includes(CLAUDE_TOOL_ID) || tools[0]?.startsWith('claude') === true;`, undefined, { filename: 'src/new-area/reader.ts' });
+
+rule.valid('allows a lookup of another tool\'s id, and of the tool an instance extends', `import { baseToolOf } from './tool-registry.js';
+export const a = (tools: string[]) => tools.includes('opencode') || baseToolOf(tools[0] ?? '').startsWith('codex');`, { filename: 'src/new-area/reader.ts' });
+
 rule.valid('allows a name resolved through toolOf', `import { baseDescriptorOf, toolOf } from './tool-registry.js';
 export const shell = (tool: string) => toolOf(tool) === undefined ? undefined : baseDescriptorOf(tool)?.hooks.shell;`, { filename: 'src/new-area/reader.ts' });
 
