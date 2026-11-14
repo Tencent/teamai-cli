@@ -95,19 +95,26 @@ function refused(file: string, reason: string): RefusedInstance {
  * sets it: what a tool started at that home would not read there. Decided by containment, since a home may be nested.
  */
 export function userPathOutsideHome(paths: z.infer<typeof ToolPathsSchema>, dir: string): { key: string; value: string } | undefined {
-  const posix = (value: string): string => path.posix.normalize(value.replaceAll('\\', '/')).replace(/\/+$/, '');
-  const home = posix(dir);
-
   for (const field of TOOL_ROOT_FIELDS) {
     const own = field === 'mcp' ? undefined : paths.userScope?.[field];
     const value = own === undefined ? paths[field] : own;
 
-    if (value !== undefined && value !== null && posix(value) !== home && !posix(value).startsWith(`${home}/`)) {
+    if (value !== undefined && value !== null && homeRelativeOf(value, dir) === undefined) {
       return { key: own === undefined ? `paths.${field}` : `paths.userScope.${field}`, value };
     }
   }
 
   return undefined;
+}
+
+/** `value`, a `$HOME`-relative path, relative to the instance home `dir` it lies in, or undefined when it lies outside it. */
+function homeRelativeOf(value: string, dir: string): string | undefined {
+  const posix = (one: string): string => path.posix.normalize(one.replaceAll('\\', '/')).replace(/\/+$/, '');
+  const [home, at] = [posix(dir), posix(value)];
+
+  if (at === home) return '';
+
+  return at.startsWith(`${home}/`) ? at.slice(home.length + 1) : undefined;
 }
 
 function sha256(text: string): string {
@@ -421,8 +428,8 @@ function publish(): void {
  * The hook files teamai may have left for the declared instance `name`, a refused one included, in `homes` it no longer
  * delivers to. `current` is the home it delivers to now, null for none, or `default` for the directory `home.dir` names.
  * Left out: `current`, your home directory, where nothing is recorded, a home
- * another tool resolves to now, whose hooks are that tool's, and every home of an instance with no home or with paths
- * of its own.
+ * another tool resolves to now, whose hooks are that tool's, and every home of an instance with no home or whose
+ * `paths` put its hooks file outside its home.
  */
 export function leftInstanceHookFiles({ name, homes, current, toolRoots }: {
   name: string; homes: readonly string[]; current: string | null | 'default'; toolRoots?: Readonly<Record<string, string>>;
@@ -430,17 +437,19 @@ export function leftInstanceHookFiles({ name, homes, current, toolRoots }: {
   const instances = toolInstancesFor('guard');
   const instance = instances.find((one) => one.name === name);
 
-  if (instance?.home === undefined || instance.paths !== undefined) return [];
+  if (instance?.home === undefined) return [];
   const { dir } = instance.home;
-  const moved = defaultPathsOf(instance);
-  const settings = moved.userScope?.settings ?? moved.settings;
+  const paths = instance.paths ?? defaultPathsOf(instance);
+  const configured = paths.userScope?.settings ?? paths.settings;
+  // A hooks file outside the home stays where it is when the home moves: it is the one delivery writes now, in no earlier home.
+  const settings = configured === undefined ? undefined : homeRelativeOf(configured, dir);
 
   if (settings === undefined) return [];
   const host = realHost();
   const now = current === 'default' ? path.join(host.home, ...dir.split('/')) : current;
 
   return [...new Set(homes)].flatMap((home) => (now !== null && isSameDirOn(host, home, now)) || isSameDirOn(host, home, host.home)
-    || toolHomedAt({ name, dir: home, instances, host, toolRoots }) !== undefined ? [] : [{ home, file: path.join(home, path.relative(dir, settings)) }]);
+    || toolHomedAt({ name, dir: home, instances, host, toolRoots }) !== undefined ? [] : [{ home, file: path.join(home, ...settings.split('/')) }]);
 }
 
 /** Whether `instance` reads a project under its home's folder: only its own build may; the shipped command reads a project where the tool it extends does. */

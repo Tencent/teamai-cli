@@ -1558,12 +1558,14 @@ describe('init', () => {
       });
 
       it.each([
-        { change: 'moves', dir: path.join(HOME, 'work', 'acme-new'), now: path.join(HOME, 'work', 'acme-new') },
-        { change: 'clears', dir: null, now: 'its default home' },
-      ])('removes the hooks left in an instance\'s previous home when init $change its record', async ({ dir, now }) => {
+        { change: 'moves', dir: path.join(HOME, 'work', 'acme-new'), now: path.join(HOME, 'work', 'acme-new'), file: 'its default hooks file', paths: undefined },
+        { change: 'clears', dir: null, now: 'its default home', file: 'its default hooks file', paths: undefined },
+        // A hooks file its paths keep in its home moves with the home, as the default one does.
+        { change: 'moves', dir: path.join(HOME, 'work', 'acme-new'), now: path.join(HOME, 'work', 'acme-new'), file: 'the hooks file its paths keep in its home', paths: { skills: '.acme-codex/skills', settings: '.acme-codex/hooks.json' } },
+      ])('removes the hooks left in $file in an instance\'s previous home when init $change its record', async ({ dir, now, paths }) => {
         vi.mocked(loadLocalConfigForScope).mockResolvedValue(previousConfig());
         useToolInstances(new Map([['acme-codex', {
-          kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+          kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' }, paths,
           source: 'team', file: '/r/tools/acme-codex.yaml', location: 'tools/acme-codex.yaml', revision: 'r1',
         }]]));
         onTestFinished(() => { useToolInstances(new Map()); });
