@@ -302,7 +302,7 @@ describe('co-author reconcile', () => {
     it('writes a Claude instance\'s choice into the settings.local.json beside its own settings, which pull keeps out of git', async () => {
       const { useToolInstances } = await import('../tool-registry.js');
       useToolInstances(new Map([['acme-claude', {
-        name: 'acme-claude', extends: 'claude', home: { dir: '.acme-claude' },
+        kind: 'instance', name: 'acme-claude', extends: 'claude', home: { dir: '.acme-claude' },
         source: 'personal', file: path.join(homeDir, '.teamai', 'tools', 'acme-claude.yaml'), location: '~/.teamai/tools/acme-claude.yaml', revision: 'r1',
       }]]));
       onTestFinished(() => useToolInstances(new Map()));

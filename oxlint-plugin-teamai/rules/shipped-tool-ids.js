@@ -31,8 +31,6 @@ export const SHIPPED_ONLY = new Map(Object.entries({
   // Refuses an instance's `extends` that names no shipped tool, before the gate on the tools instances extend, and a
   // name that takes a shipped tool's.
   'src/tool-instances.ts': { count: 3 },
-  // The instances to list beside the shipped tools: one named like a shipped tool adjusts it and is listed already.
-  'src/workflow/drivers/local/local-driver.ts': { count: 1 },
   // An aliases file maps the tools teamai ships; an instance takes the entry of the tool it extends.
   'src/models/aliases.ts': { count: 1 },
   // A session variable names the shipped tool that sets it; an instance runs that tool and sets the same variable.
@@ -75,9 +73,9 @@ export const BASE_ID_COMPARISONS = new Map(Object.entries({
   'src/hook-fast-path.ts': 1,
   // The main checkout's team hooks, Codex's team-hook dispatcher and the entry-index ownership it records are Claude
   // Code's and Codex's: an instance keeps its team hooks in its own home for each checkout (docs/guide/reference.md),
-  // recorded and matched by command at both ends. The legacy manifests and host guard predate instances, and the Codex
-  // trust pass lists Codex apart from its instances. `--agent codex` alone reconciles Codex's team-hook dispatchers.
-  'src/hooks.ts': 17,
+  // recorded and matched by command at both ends. The legacy manifests and host guard predate instances.
+  // `--agent codex` alone reconciles Codex's team-hook dispatchers.
+  'src/hooks.ts': 15,
   // `--team-hooks --tool codex` runs Codex's team-hook dispatcher, which an instance does not have (see src/hooks.ts).
   'src/index.ts': 1,
   // Iterates RELOCATABLE_TOOLS (src/types.ts), which holds only the shipped tools.

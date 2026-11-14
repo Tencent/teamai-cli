@@ -239,7 +239,7 @@ export function readsClaudeSettings(tool: string): boolean {
 
   if (resolved?.base !== 'claude') return false;
 
-  if (instance === undefined || instance.name === resolved.base) return true;
+  if (instance === undefined || instance.kind === 'adjustment') return true;
   const settings = instance.paths?.settings;
 
   return (settings === undefined ? instance.home?.dir ?? DEFAULT_CLAUDE_ROOT : toolInstallRoot(settings)) === DEFAULT_CLAUDE_ROOT;

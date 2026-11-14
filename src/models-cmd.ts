@@ -228,7 +228,7 @@ function modelAgentOf(value: string): ModelAgent {
   if (agent.success) return agent.data;
   const instance = toolOf(value)?.instance;
 
-  if (instance !== undefined && instance.name !== instance.extends) {
+  if (instance?.kind === 'instance') {
     throw new Error(`${value} is an instance of ${instance.extends} (${instance.location}), and teamai models does not switch or restore the model of an instance yet; set it in the instance's own settings.`);
   }
 

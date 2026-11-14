@@ -2200,7 +2200,7 @@ describe('reconcileHooksToAllTools — an instance sharing its base\'s hook file
   ])('dispatches every event for one tool only, $base when both are enabled', async ({ base, settings }) => {
     const instance = `acme-${base}`;
     useToolInstances(new Map([[instance, {
-      name: instance, extends: base, command: instance,
+      kind: 'instance', name: instance, extends: base, command: instance,
       source: 'team', file: '/r/tools/acme.yaml', location: 'tools/acme.yaml', revision: 'r1',
     }]]));
     onTestFinished(() => { useToolInstances(new Map()); });

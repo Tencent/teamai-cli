@@ -123,7 +123,7 @@ describe('a home recorded on this machine', () => {
     const recorded = Object.fromEntries(Object.keys(before).map((tool) => [tool, moved]));
     await saveToolHomes(recorded);
     useInstances(new Map([['acme-codex', {
-      name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+      kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
       source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
     }]]));
     onTestFinished(() => { useInstances(new Map()); });
@@ -196,7 +196,7 @@ describe('the real host under an install\'s home', () => {
     for (const name of moving) vi.stubEnv(name, member(name));
     vi.stubEnv('PATH', member('bin'));
     useToolInstances(new Map([['acme-codex', {
-      name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+      kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
       source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
     }]]));
     useInstallHome(path.join(os.tmpdir(), 'clone', 'h'));

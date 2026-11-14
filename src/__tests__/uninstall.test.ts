@@ -324,7 +324,7 @@ describe('uninstall', () => {
   ])('takes the record of $tool\'s copy deleted from the shared .agents/skills off the delivery record when it uninstalls that tool', async ({ tool, home: toolHome }) => {
     const { useToolInstances } = await import('../tool-registry.js');
     useToolInstances(new Map([['acme-codex', {
-      name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex' },
+      kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex' },
       source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
     }]]));
     onTestFinished(() => { useToolInstances(new Map()); });
@@ -1271,7 +1271,7 @@ describe('uninstall', () => {
     'preserves global %s hooks while excluding only the targeted project, legacy copy: %s', async (tool, legacy) => {
     const { useToolInstances } = await import('../tool-registry.js');
     useToolInstances(new Map([['acme-codex', {
-      name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex' },
+      kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex' },
       source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
     }]]));
     onTestFinished(() => { useToolInstances(new Map()); });

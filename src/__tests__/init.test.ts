@@ -1563,7 +1563,7 @@ describe('init', () => {
       ])('removes the hooks left in an instance\'s previous home when init $change its record', async ({ dir, now }) => {
         vi.mocked(loadLocalConfigForScope).mockResolvedValue(previousConfig());
         useToolInstances(new Map([['acme-codex', {
-          name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+          kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
           source: 'team', file: '/r/tools/acme-codex.yaml', location: 'tools/acme-codex.yaml', revision: 'r1',
         }]]));
         onTestFinished(() => { useToolInstances(new Map()); });
@@ -1587,7 +1587,7 @@ describe('init', () => {
         vi.mocked(loadLocalConfigForScope).mockResolvedValue(previousConfig());
         // Refused: no lookup sees it, and only init's release reads it.
         useToolInstances(new Map(), new Map([['acme-codex', {
-          name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+          kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
           source: 'team', file: '/r/tools/acme-codex.yaml', location: 'tools/acme-codex.yaml', revision: 'r1',
         }]]));
         onTestFinished(() => { useToolInstances(new Map()); });

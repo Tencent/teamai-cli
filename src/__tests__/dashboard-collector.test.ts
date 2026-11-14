@@ -118,7 +118,7 @@ afterEach(() => {
 
 /** A Codex instance whose name does not say codex, and a Claude Code instance whose name does. */
 function useInstances(): void {
-  const instance = (name: string, base: 'claude' | 'codex') => ({ name, extends: base, source: 'team', file: `/repo/tools/${name}.yaml`, location: `tools/${name}.yaml`, revision: 'r1' } as const);
+  const instance = (name: string, base: 'claude' | 'codex') => ({ kind: 'instance', name, extends: base, source: 'team', file: `/repo/tools/${name}.yaml`, location: `tools/${name}.yaml`, revision: 'r1' } as const);
 
   useToolInstances(new Map([['acme-agent', instance('acme-agent', 'codex')], ['codex-review', instance('codex-review', 'claude')]]));
 }

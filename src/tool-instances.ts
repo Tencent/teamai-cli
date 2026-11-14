@@ -28,8 +28,10 @@ import { parseYaml } from './utils/yaml.js';
 /** Where an instance was read: the team repo, which a teammate pushes to, or the member's own directory. */
 export type InstanceSource = 'team' | 'personal';
 
-/** An instance as a file defines it, with where it came from and the hash of that file. */
-export interface ResolvedToolInstance extends ToolInstance<ToolId> {
+/** What every tools/ file declares, with where it came from and the hash of that file. */
+interface DeclaredToolFile {
+  readonly name: string;
+  readonly extends: ToolId;
   /** The tool paths it sets, which replace the paths of the tool it extends whole, as a `toolPaths` entry does. */
   readonly paths?: z.infer<typeof ToolPathsSchema>;
   readonly source: InstanceSource;
@@ -40,6 +42,21 @@ export interface ResolvedToolInstance extends ToolInstance<ToolId> {
   /** The sha256 of that file: a person accepts a team instance's command at this content. */
   readonly revision: string;
 }
+
+/** A tool of its own over a shipped one, under a name of its own, with its own command, home or paths. */
+export interface ResolvedToolInstance extends DeclaredToolFile, ToolInstance<ToolId> {
+  readonly kind: 'instance';
+}
+
+/** A file named like the shipped tool it extends: it replaces that tool's paths, and runs or lives nowhere else. */
+export interface ResolvedToolAdjustment extends DeclaredToolFile {
+  readonly kind: 'adjustment';
+  readonly command?: never;
+  readonly home?: never;
+}
+
+/** What a tools/ file declares: an instance, or an adjustment of the shipped tool it is named after. */
+export type DeclaredTool = ResolvedToolInstance | ResolvedToolAdjustment;
 
 const NAME = /^[a-z0-9][a-z0-9._-]*$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -78,7 +95,7 @@ function sha256(text: string): string {
 }
 
 /** Parses the instance `text` of `file`, which is named after it, or says why teamai does not use it. */
-function parseToolInstance({ file, text, source, location }: { file: string; text: string; source: InstanceSource; location: string }): { ok: true; instance: ResolvedToolInstance } | RefusedInstance {
+function parseToolInstance({ file, text, source, location }: { file: string; text: string; source: InstanceSource; location: string }): { ok: true; instance: DeclaredTool } | RefusedInstance {
   let raw: unknown;
 
   try {
@@ -134,7 +151,14 @@ function parseToolInstance({ file, text, source, location }: { file: string; tex
 
   if (!isToolId(fields.name) && isSessionPlatform(fields.name)) return refused(file, `"${fields.name}" is the name of a session platform teamai ships`);
 
-  return { ok: true, instance: { ...fields, extends: base, source, file, location, revision: sha256(text) } };
+  const declared = { source, file, location, revision: sha256(text) };
+
+  return {
+    ok: true,
+    instance: fields.name === base
+      ? { kind: 'adjustment', name: fields.name, extends: base, paths: fields.paths, ...declared }
+      : { kind: 'instance', ...fields, extends: base, ...declared },
+  };
 }
 
 async function readText(file: string): Promise<string | undefined> {
@@ -160,7 +184,7 @@ async function namespaceDirs(dir: string): Promise<string[]> {
 }
 
 /** Each instance in `files`, parsed; one that does not parse is logged and left out. */
-async function readInstances(files: readonly string[], source: InstanceSource, locationOf: (file: string) => string = (file) => file): Promise<ResolvedToolInstance[]> {
+async function readInstances(files: readonly string[], source: InstanceSource, locationOf: (file: string) => string = (file) => file): Promise<DeclaredTool[]> {
   const read = await Promise.all(files.map(async (file) => {
     const text = await readText(file);
 
@@ -184,7 +208,7 @@ async function readInstances(files: readonly string[], source: InstanceSource, l
  * The instances of the team repo at `repoPath`: `tools/<name>.yaml`, and `tools/<namespace>/<name>.yaml`, which
  * replaces the root one. Two of one name in two namespaces are a conflict, and neither is used.
  */
-export async function teamToolInstances(repoPath: string): Promise<ResolvedToolInstance[]> {
+export async function teamToolInstances(repoPath: string): Promise<DeclaredTool[]> {
   const root = path.join(repoPath, 'tools');
   const namespaces = await namespaceDirs(root);
   const places: Array<{ namespace: string | null; dir: string }> = [{ namespace: null, dir: root }, ...namespaces.map((namespace) => ({ namespace, dir: path.join(root, namespace) }))];
@@ -192,14 +216,14 @@ export async function teamToolInstances(repoPath: string): Promise<ResolvedToolI
   const candidates = (await Promise.all(places.map(async ({ namespace, dir }) => {
     const instances = await readInstances((await yamlFiles(dir)).map((name) => path.join(dir, name)), 'team', (file) => path.relative(repoPath, file).split(path.sep).join('/'));
 
-    return instances.map((instance): NamespaceCandidate<ResolvedToolInstance> => ({ name: instance.name, source: path.relative(repoPath, instance.file), namespace, value: instance }));
+    return instances.map((instance): NamespaceCandidate<DeclaredTool> => ({ name: instance.name, source: path.relative(repoPath, instance.file), namespace, value: instance }));
   }))).flat();
 
   return resolveWithoutConflicts(candidates, namespaces);
 }
 
 /** The items `candidates` resolve to; a name two of them conflict on is logged and left out, and the rest resolve. */
-function resolveWithoutConflicts(candidates: readonly NamespaceCandidate<ResolvedToolInstance>[], namespaces: readonly string[]): ResolvedToolInstance[] {
+function resolveWithoutConflicts(candidates: readonly NamespaceCandidate<DeclaredTool>[], namespaces: readonly string[]): DeclaredTool[] {
   const resolution = resolveNamespacedItems(candidates, namespaces);
 
   if (resolution.kind === 'resolved') return resolution.items.map((item) => item.value);
@@ -214,7 +238,7 @@ export function personalToolsDir(): string {
 }
 
 /** The member's own instances, from `personalToolsDir()`. */
-export async function personalToolInstances(): Promise<ResolvedToolInstance[]> {
+export async function personalToolInstances(): Promise<DeclaredTool[]> {
   const dir = personalToolsDir();
 
   return readInstances((await yamlFiles(dir)).map((name) => path.join(dir, name)), 'personal');
@@ -223,8 +247,8 @@ export async function personalToolInstances(): Promise<ResolvedToolInstance[]> {
 // ─── The instances this process sees ─────────────────────
 
 /** The instances read from each team repo this process loaded, by repo path. */
-const teamByRepo = new Map<string, readonly ResolvedToolInstance[]>();
-let personal: readonly ResolvedToolInstance[] = [];
+const teamByRepo = new Map<string, readonly DeclaredTool[]>();
+let personal: readonly DeclaredTool[] = [];
 let readsPersonal = true;
 
 /** The roots the member recorded for the shipped tools (`toolRoots`), read with the instances, for `homeSharedWith`. */
@@ -264,8 +288,8 @@ export function judgeInstanceHomesAsInit(): void {
  * The instances the files declare, the member's own over the team's, before any is refused for its home. One name two
  * team repos define apart is left out.
  */
-function declaredTable(): Map<string, ResolvedToolInstance> {
-  const table = new Map<string, ResolvedToolInstance>();
+function declaredTable(): Map<string, DeclaredTool> {
+  const table = new Map<string, DeclaredTool>();
   const conflicted = new Set<string>();
 
   for (const instance of [...teamByRepo.values()].flat()) {
@@ -293,14 +317,14 @@ function declaredTable(): Map<string, ResolvedToolInstance> {
  * and the check of where it resolves both ask this, on a host with no variable or record and on the real one.
  */
 function homeSharedWith({ name, home, instances, host, toolRoots }: {
-  name: string; home: ToolInstanceHome; instances: readonly ResolvedToolInstance[]; host: Host; toolRoots?: Readonly<Record<string, string>>;
+  name: string; home: ToolInstanceHome; instances: readonly DeclaredTool[]; host: Host; toolRoots?: Readonly<Record<string, string>>;
 }): string | undefined {
   return toolHomedAt({ name, dir: homeOf({ name, home }, host), instances, host, toolRoots });
 }
 
 /** The tool other than `name` whose home resolves to `dir`: a shipped tool's, a root `toolRoots` records, or another instance's. */
 function toolHomedAt({ name, dir: own, instances, host, toolRoots }: {
-  name: string; dir: string; instances: readonly ResolvedToolInstance[]; host: Host; toolRoots?: Readonly<Record<string, string>>;
+  name: string; dir: string; instances: readonly DeclaredTool[]; host: Host; toolRoots?: Readonly<Record<string, string>>;
 }): string | undefined {
   const at = { home: host.home, path: host.path, readTextNow: (file: string) => host.readTextNow(file), existsNow: (file: string) => host.existsNow(file) };
   const same = (dir: string | null): boolean => dir !== null && isSameDirOn(host, own, dir);
@@ -314,7 +338,7 @@ function toolHomedAt({ name, dir: own, instances, host, toolRoots }: {
  * hooks and sessions, and credit one's sessions to the other. A `home.dir` that names one is a fault of the file; a
  * home that only resolves to one, through its variable or the member's `toolRoots`, is named with both tools.
  */
-function withoutSharedHomes(table: Map<string, ResolvedToolInstance>): Map<string, ResolvedToolInstance> {
+function withoutSharedHomes(table: Map<string, DeclaredTool>): Map<string, DeclaredTool> {
   const instances = [...table.values()];
   const host = realHost();
   const unmoved: Host = { ...host, env: {}, toolHomes: { kind: 'missing' } };
@@ -390,7 +414,7 @@ export function leftInstanceHookFiles({ name, homes, current, toolRoots }: {
 }
 
 /** The tool paths `instance` gives its tool: its own `paths`, else the paths of the tool it extends, moved to its home. */
-function instancePaths(instance: ResolvedToolInstance, toolPaths: TeamaiConfig['toolPaths']): z.infer<typeof ToolPathsSchema> | undefined {
+function instancePaths(instance: DeclaredTool, toolPaths: TeamaiConfig['toolPaths']): z.infer<typeof ToolPathsSchema> | undefined {
   if (instance.paths) return instance.paths;
   const extended = toolPaths[instance.extends] ?? DEFAULT_TOOL_PATHS[instance.extends];
 
@@ -398,7 +422,7 @@ function instancePaths(instance: ResolvedToolInstance, toolPaths: TeamaiConfig['
 }
 
 /** The paths `instance` replaces with its own: those of the tool it adjusts, or of the tool it extends, moved to its home. */
-export function defaultPathsOf(instance: ResolvedToolInstance): z.infer<typeof ToolPathsSchema> {
+export function defaultPathsOf(instance: DeclaredTool): z.infer<typeof ToolPathsSchema> {
   const shipped = DEFAULT_TOOL_PATHS[instance.extends];
 
   return instance.home ? rerootToolPaths(shipped, instance.home.dir) : shipped;
@@ -410,7 +434,7 @@ export function defaultPathsOf(instance: ResolvedToolInstance): z.infer<typeof T
  * read. A path outside that tool's roots, and a file at the project's root, stay as they are, and so does every path
  * of an instance that sets its own paths, which teamai writes to as they are.
  */
-export function instanceReadPath(instance: ResolvedToolInstance, { from, relative }: { from: 'home' | 'project'; relative: string }): string {
+export function instanceReadPath(instance: DeclaredTool, { from, relative }: { from: 'home' | 'project'; relative: string }): string {
   if (!instance.home || instance.paths) return relative;
 
   // A bare file beside the tool's home (Claude Code's .claude.json) is inside a home that moved, as the instance's is.
@@ -480,7 +504,7 @@ async function readTrust(): Promise<TrustFile> {
   return trustOf(await fs.readFile(trustFile(), 'utf8').catch(() => undefined));
 }
 
-function isAccepted(trust: TrustFile, instance: ResolvedToolInstance): boolean {
+function isAccepted(trust: TrustFile, instance: DeclaredTool): boolean {
   return trust.accepted.some((entry) => entry.name === instance.name && entry.revision === instance.revision);
 }
 
@@ -489,7 +513,7 @@ function isAccepted(trust: TrustFile, instance: ResolvedToolInstance): boolean {
  * whose file content a person accepted (`acceptToolCommand`). Undefined for any other, and for one that sets none. Read
  * where nothing can ask, such as the session adapters, which then run the command of the tool it extends.
  */
-export function acceptedCommandOf(instance: ResolvedToolInstance): string | undefined {
+export function acceptedCommandOf(instance: DeclaredTool): string | undefined {
   if (instance.source !== 'team' || instance.command === undefined) return instance.command;
   let text: string | undefined;
 
@@ -528,7 +552,7 @@ export function askingOnce(ask: (question: string) => Promise<string | undefined
  * With no one to ask, an unaccepted content is refused, naming what to run.
  */
 export async function acceptToolCommand(
-  instance: ResolvedToolInstance,
+  instance: DeclaredTool,
   { ask }: { ask: ((question: string) => Promise<string | undefined>) | undefined },
 ): Promise<{ ok: true } | UnacceptedCommand> {
   if (instance.source !== 'team' || instance.command === undefined) return { ok: true };

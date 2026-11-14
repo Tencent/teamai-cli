@@ -128,7 +128,7 @@ describe('Codex CLI of a tool instance', () => {
     fs.writeFileSync(path.join(bin, 'acme-codex'), `#!/bin/sh\necho "$*" >> "$ACME_CODEX_HOME/acme-calls.log"\nexec ${JSON.stringify(path.join(bin, 'codex'))} "$@"\n`, { mode: 0o755 });
     vi.stubEnv('PATH', bin);
     useToolInstances(new Map([['acme-codex', {
-      name: 'acme-codex', extends: 'codex', command: 'acme-codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+      kind: 'instance', name: 'acme-codex', extends: 'codex', command: 'acme-codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
       source: 'personal', file: path.join(home, 'acme-codex.yaml'), location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
     }]]));
     const acmeHome = path.join(home, 'acme-moved');

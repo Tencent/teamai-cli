@@ -127,7 +127,7 @@ describe('fidelityFromSession — 真实统计', () => {
 
   /** A Claude Code instance with a home of its own, whose sessions are a platform of their own. */
   const useAcmeClaude = (): void => useToolInstances(new Map([['acme-claude', {
-    name: 'acme-claude', extends: 'claude', home: { dir: '.acme-claude' }, source: 'team', file: '/repo/tools/acme-claude.yaml', location: 'tools/acme-claude.yaml', revision: 'r1',
+    kind: 'instance', name: 'acme-claude', extends: 'claude', home: { dir: '.acme-claude' }, source: 'team', file: '/repo/tools/acme-claude.yaml', location: 'tools/acme-claude.yaml', revision: 'r1',
   }]]));
 
   it('未知工具计 degraded，保真度回落', () => {

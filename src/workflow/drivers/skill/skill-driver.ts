@@ -188,7 +188,7 @@ const SessionToolSchema = z.string().transform((tools, ctx) => {
 
 /** Why `--tools default=<tool>` is refused: it names neither a tool teamai ships nor an instance this scope defines. */
 function unknownToolMessage(tool: string): string {
-  return `--tools default=${tool} names no tool teamai knows: ${[...new Set([...TOOL_ORDER, ...toolInstancesFor('use').map(({ name }) => name)])].join(', ')}`;
+  return `--tools default=${tool} names no tool teamai knows: ${[...TOOL_ORDER, ...toolInstancesFor('use').flatMap(({ kind, name }) => kind === 'instance' ? [name] : [])].join(', ')}`;
 }
 
 /** The options of a run that a skill start and a skill resume share. */

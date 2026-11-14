@@ -61,17 +61,17 @@ describe('reconcileHooks — team (B) hooks', () => {
     // An instance of Claude Code, as a member's ~/.teamai/tools/acme-claude.yaml defines it.
     // One that shares Claude's home, and one with a home of its own, which Cursor and Copilot never load.
     useToolInstances(new Map([['acme-claude', {
-      name: 'acme-claude', extends: 'claude',
+      kind: 'instance', name: 'acme-claude', extends: 'claude',
       source: 'personal', file: '/home/.teamai/tools/acme-claude.yaml', location: '~/.teamai/tools/acme-claude.yaml', revision: 'r1',
     }], ['own-claude', {
-      name: 'own-claude', extends: 'claude', home: { dir: '.own-claude' },
+      kind: 'instance', name: 'own-claude', extends: 'claude', home: { dir: '.own-claude' },
       source: 'personal', file: '/home/.teamai/tools/own-claude.yaml', location: '~/.teamai/tools/own-claude.yaml', revision: 'r1',
     }], ['paths-claude', {
       // Its settings file is where its paths put it, which neither loads; and one whose paths keep Claude's file, which both do.
-      name: 'paths-claude', extends: 'claude', paths: { skills: '.paths-claude/skills', settings: '.paths-claude/settings.json' },
+      kind: 'instance', name: 'paths-claude', extends: 'claude', paths: { skills: '.paths-claude/skills', settings: '.paths-claude/settings.json' },
       source: 'personal', file: '/home/.teamai/tools/paths-claude.yaml', location: '~/.teamai/tools/paths-claude.yaml', revision: 'r1',
     }], ['kept-claude', {
-      name: 'kept-claude', extends: 'claude', home: { dir: '.kept-claude' }, paths: { skills: '.kept-claude/skills', settings: '.claude/settings.json' },
+      kind: 'instance', name: 'kept-claude', extends: 'claude', home: { dir: '.kept-claude' }, paths: { skills: '.kept-claude/skills', settings: '.claude/settings.json' },
       source: 'personal', file: '/home/.teamai/tools/kept-claude.yaml', location: '~/.teamai/tools/kept-claude.yaml', revision: 'r1',
     }]]));
   });

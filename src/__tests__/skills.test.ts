@@ -1707,7 +1707,7 @@ describe('SkillsHandler.pullItem Codex shared skills', () => {
     { tool: 'acme-codex', home: '.acme-codex' },
   ])('updates an existing .agents skill and removes an identical TeamAI $home copy of $tool', async ({ tool, home }) => {
     useToolInstances(new Map([['acme-codex', {
-      name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex' },
+      kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex' },
       source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
     }]]));
     onTestFinished(() => { useToolInstances(new Map()); });
@@ -1758,7 +1758,7 @@ describe('SkillsHandler.pullItem Codex shared skills', () => {
 
   it('puts a skill of an instance in the home its own variable moved, not under the home it declares', async () => {
     useToolInstances(new Map([['acme-codex', {
-      name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+      kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
       source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
     }]]));
     onTestFinished(() => { useToolInstances(new Map()); });

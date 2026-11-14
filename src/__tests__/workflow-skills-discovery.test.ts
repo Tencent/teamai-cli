@@ -177,7 +177,7 @@ describe('generated workflow skills', () => {
     { tool: 'acme-codex', home: '.acme-codex' },
   ])('removes the generated skill of a removed workflow from the shared root when only $tool takes skills', async ({ tool, home: toolHome }) => {
     useToolInstances(new Map([['acme-codex', {
-      name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex' },
+      kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex' },
       source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
     }]]));
     onTestFinished(() => { useToolInstances(new Map()); });

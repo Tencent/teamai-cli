@@ -460,7 +460,7 @@ function buildToolHomeChecks(localConfig: LocalConfig): Check[] {
 
     // A shipped tool's variables, or an instance's own, which its record follows (`instanceHomeDir`).
     const liveHome = resolved === undefined ? undefined
-      : resolved.name === resolved.base ? () => envToolHome(resolved.base, host)
+      : resolved.instance?.kind !== 'instance' ? () => envToolHome(resolved.base, host)
         : own?.env === undefined ? undefined : () => envInstanceHome(own, host);
 
     if (liveHome === undefined || isAgentExcluded(localConfig, tool)) continue;

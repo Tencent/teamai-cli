@@ -111,7 +111,7 @@ describe('local workflow prompt driver', () => {
     onTestFinished(() => { vi.unstubAllEnvs(); });
     const { config, workspace, runId } = await fixture();
     useToolInstances(new Map([[name, {
-      name, extends: base, home: { dir: `.${name}` },
+      kind: 'instance', name, extends: base, home: { dir: `.${name}` },
       source: 'personal', file: `/home/.teamai/tools/${name}.yaml`, location: `~/.teamai/tools/${name}.yaml`, revision: 'r1',
     }]]));
     onTestFinished(() => { useToolInstances(new Map()); });
@@ -144,7 +144,7 @@ describe('local workflow prompt driver', () => {
     vi.stubEnv('CODEX_HOME', path.join(os.tmpdir(), 'member-codex'));
     onTestFinished(async () => { vi.unstubAllEnvs(); await saveToolHomes({}); });
     useToolInstances(new Map([['acme-codex', {
-      name: 'acme-codex', extends: 'codex', ...own,
+      kind: 'instance', name: 'acme-codex', extends: 'codex', ...own,
       source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
     }]]));
     onTestFinished(() => { useToolInstances(new Map()); });
@@ -199,7 +199,7 @@ describe('local workflow prompt driver', () => {
     fs.mkdirSync(recorded, { recursive: true });
     config.toolRoots = { codex: recorded };
     useToolInstances(new Map([['acme-codex', {
-      name: 'acme-codex', extends: 'codex',
+      kind: 'instance', name: 'acme-codex', extends: 'codex',
       source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
     }]]));
     onTestFinished(() => { useToolInstances(new Map()); });
@@ -225,7 +225,7 @@ describe('local workflow prompt driver', () => {
     if (tool === 'codex') config.toolRoots = { codex: dir };
     else await saveToolHomes({ [tool]: dir });
     useToolInstances(new Map([['acme-codex', {
-      name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+      kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
       source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
     }]]));
     onTestFinished(async () => { useToolInstances(new Map()); await saveToolHomes({}); });

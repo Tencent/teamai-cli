@@ -1,6 +1,6 @@
 import { resolveCliPath, resolvePathCommand } from '@teamai/shared/cli-path';
 import { descriptorOf, toolOf, type DescriptorOf } from '../tool-registry.js';
-import type { ResolvedToolInstance } from '../tool-instances.js';
+import type { DeclaredTool } from '../tool-instances.js';
 import type { ToolInstanceHome } from '@teamai/tool-core/instance';
 import type { ShippedDescriptor, ToolId } from '../tools.js';
 import { movedToolHome, realHost, recordedHomes, toolHomeOf, type Host } from '../tool-home.js';
@@ -80,7 +80,7 @@ export function isLaunchTool(value: string): value is LaunchTool {
 export interface LaunchTarget {
   readonly name: string;
   readonly tool: LaunchTool;
-  readonly instance?: ResolvedToolInstance;
+  readonly instance?: DeclaredTool;
 }
 
 /** The launch `name` names, or undefined when it names no tool, or one that runs no workflow step. */
@@ -203,7 +203,7 @@ function deliveredHomeOf(input: { name: string; tool: ToolId; home: Extract<Tool
   return dir === null ? null : { variable, also: [], dir, recorded: root !== null || dir === recordedHomes(host)[tool] };
 }
 
-function instanceHomeOf(input: { instance: ResolvedToolInstance; own: ToolInstanceHome; variable: string | undefined }): DeliveredHome | null {
+function instanceHomeOf(input: { instance: DeclaredTool; own: ToolInstanceHome; variable: string | undefined }): DeliveredHome | null {
   const { instance, own, variable } = input;
   const host = realHost();
   const dir = toolHomeOf(instance.name, host)?.dir;

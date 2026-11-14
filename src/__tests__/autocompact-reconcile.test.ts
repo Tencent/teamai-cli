@@ -211,7 +211,7 @@ describe('auto-compact reconcile', () => {
   it('writes into the home of an instance that has one, as the tool it extends takes it, and takes it back with the policy', async () => {
     const { useToolInstances } = await import('../tool-registry.js');
     const instance = (name: string, base: 'claude' | 'codex') => [name, {
-      name, extends: base, home: { dir: `.${name}` }, source: 'personal', file: `/home/.teamai/tools/${name}.yaml`, location: `~/.teamai/tools/${name}.yaml`, revision: 'r1',
+      kind: 'instance', name, extends: base, home: { dir: `.${name}` }, source: 'personal', file: `/home/.teamai/tools/${name}.yaml`, location: `~/.teamai/tools/${name}.yaml`, revision: 'r1',
     }] as const;
     useToolInstances(new Map([instance('acme-claude', 'claude'), instance('acme-codex', 'codex')]));
     onTestFinished(() => useToolInstances(new Map()));

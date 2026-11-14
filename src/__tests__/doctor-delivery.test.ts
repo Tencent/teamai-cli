@@ -845,7 +845,7 @@ describe('doctor — where a tool takes skills', () => {
     { tool: 'acme-codex', variable: 'ACME_CODEX_HOME', value: (dir: string) => dir },
   ])('fails when the shell moves the $tool home away from the one recorded, and passes when they agree', async ({ tool, variable, value }) => {
     useToolInstances(new Map([['acme-codex', {
-      name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+      kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
       source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
     }]]));
     onTestFinished(() => { useToolInstances(new Map()); });

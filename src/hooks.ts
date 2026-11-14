@@ -4897,7 +4897,7 @@ async function codexTrustTargetsOfScope(
   localConfig: LocalConfig,
   selectedAgents?: string[],
 ): Promise<CodexTrustTargets[]> {
-  const tools = [CODEX_TOOL_ID, ...toolInstancesFor('use').map(({ name }) => name).filter((name) => name !== CODEX_TOOL_ID && baseToolOf(name) === CODEX_TOOL_ID)];
+  const tools = [CODEX_TOOL_ID, ...toolInstancesFor('use').flatMap(({ kind, name }) => kind === 'instance' && baseToolOf(name) === CODEX_TOOL_ID ? [name] : [])];
   const targets = await Promise.all(tools.map((tool) => codexTrustTargets(teamConfig, localConfig, selectedAgents, tool)));
 
   return targets.filter((target) => target !== null);
@@ -5588,7 +5588,7 @@ export async function judgeTeamaiOnlyCodexHooks(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
 ): Promise<Array<{ file: string; teamaiOnly: boolean }>> {
-  const tools = [CODEX_TOOL_ID, ...toolInstancesFor('use').map(({ name }) => name).filter((name) => name !== CODEX_TOOL_ID && baseToolOf(name) === CODEX_TOOL_ID)];
+  const tools = [CODEX_TOOL_ID, ...toolInstancesFor('use').flatMap(({ kind, name }) => kind === 'instance' && baseToolOf(name) === CODEX_TOOL_ID ? [name] : [])];
   const verdicts = await Promise.all(tools.map((tool) => judgeTeamaiOnlyCodexHooksOf(teamConfig, localConfig, tool)));
 
   return verdicts.filter((verdict) => verdict !== null);

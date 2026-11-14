@@ -418,7 +418,7 @@ describe('locatingOnce', () => {
 describe('an instance of Codex under the Codex root the member recorded (toolRoots.codex)', () => {
   const host = linuxHost({}, ['/home/m/.codex-work']);
   const install: Install = { toolPaths: { ...DEFAULT_TOOL_PATHS, 'acme-codex': DEFAULT_TOOL_PATHS.codex }, agents: {}, toolRoots: { codex: '/home/m/.codex-work' }, gitExclude: false, scope: 'user' };
-  const instance = { name: 'acme-codex', extends: 'codex', command: 'acme-codex', source: 'team', file: '/repo/tools/acme-codex.yaml', location: 'tools/acme-codex.yaml', revision: 'r1' } as const;
+  const instance = { kind: 'instance', name: 'acme-codex', extends: 'codex', command: 'acme-codex', source: 'team', file: '/repo/tools/acme-codex.yaml', location: 'tools/acme-codex.yaml', revision: 'r1' } as const;
   const placeOf = async (tool: string, resource: 'skills' | 'hooks') => ownOf(await locate(tool, resource, install, host))?.path;
 
   afterEach(() => {
@@ -443,7 +443,7 @@ describe('an instance of Codex under the Codex root the member recorded (toolRoo
 });
 
 describe('the home an instance\'s own variable moves', () => {
-  const instance = { name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' }, source: 'team', file: '/repo/tools/acme-codex.yaml', location: 'tools/acme-codex.yaml', revision: 'r1' } as const;
+  const instance = { kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' }, source: 'team', file: '/repo/tools/acme-codex.yaml', location: 'tools/acme-codex.yaml', revision: 'r1' } as const;
   const recorded = (homes: Record<string, string>, env: Record<string, string> = {}): Host => ({ ...linuxHost(env, ['/x/acme']), toolHomes: { kind: 'ok', homes } });
 
   afterEach(() => {
