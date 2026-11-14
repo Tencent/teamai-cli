@@ -170,7 +170,16 @@ function readNetrcEntry(): NetrcEntry | null {
       continue; // Missing or unreadable here — try the next location.
     }
 
-    const entry = findNetrcEntry(content.split(/\s+/).filter(Boolean));
+    // A `#` comment runs to the end of its line; one inside an entry must not
+    // end the credential run.
+    const tokens = content
+      .split('\n')
+      .map((line) => line.replace(/(^|\s)#.*$/, ''))
+      .join('\n')
+      .split(/\s+/)
+      .filter(Boolean);
+
+    const entry = findNetrcEntry(tokens);
 
     // A machine line with no credential is not the entry — keep looking, so a
     // legacy home's complete entry still answers.
@@ -191,6 +200,28 @@ export function readNetrcUsername(): string | null {
 }
 
 /**
+ * Cut every codeup.aliyun.com machine entry out of netrc content by token
+ * span — from its `machine` keyword to the next `machine`/`default` keyword —
+ * so an entry sharing its line with another host's survives.
+ */
+function removeCodeupEntries(content: string): string {
+  const codeupMachine = new RegExp(`\\bmachine\\s+${CODEUP_HOST.replaceAll('.', '\\.')}($|\\s)`);
+  let out = content;
+
+  for (;;) {
+    const match = codeupMachine.exec(out);
+
+    if (!match) return out;
+
+    const afterKeyword = match.index + match[0].length;
+    const nextAt = out.slice(afterKeyword).search(/\b(machine|default)\b/);
+    const end = nextAt === -1 ? out.length : afterKeyword + nextAt;
+
+    out = out.slice(0, match.index) + out.slice(end);
+  }
+}
+
+/**
  * Persist the token to ~/.netrc (mode 0600). Replaces any existing
  * codeup.aliyun.com entry — written on one line or many — so re-authenticating
  * overwrites rather than duplicates or orphans its credential lines.
@@ -205,26 +236,8 @@ export function writeNetrcToken(token: string, username: string): void {
     // no existing file — start fresh
   }
 
-  const codeupMachine = new RegExp(`^machine\\s+${CODEUP_HOST.replaceAll('.', '\\.')}($|\\s)`);
-  const kept: string[] = [];
-  let inEntry = false;
-
-  for (const line of existing.split('\n')) {
-    const trimmed = line.trim();
-
-    if (/^machine\s/.test(trimmed) || trimmed === 'default') {
-      inEntry = codeupMachine.test(trimmed);
-
-      if (inEntry) continue;
-    } else if (inEntry && trimmed !== '') {
-      continue; // A login/password/account continuation line of the entry.
-    }
-
-    kept.push(line);
-  }
-
   const entry = `machine ${CODEUP_HOST} login ${username} password ${token}`;
-  const filtered = kept.join('\n').replace(/\n+$/, '');
+  const filtered = removeCodeupEntries(existing).replace(/\s+$/, '');
   const next = filtered ? `${filtered}\n${entry}\n` : `${entry}\n`;
 
   fs.writeFileSync(file, next, { mode: 0o600 });

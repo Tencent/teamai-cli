@@ -206,6 +206,15 @@ describe('Codeup token resolution', () => {
     expect(readNetrcUsername()).toBe('alice');
   });
 
+  it('reads credentials past a comment line inside a netrc entry', () => {
+    fs.writeFileSync(
+      path.join(tmpHome, '.netrc'),
+      'machine codeup.aliyun.com\nlogin alice\n# rotated on 2026-11-14\npassword pt-token\n',
+    );
+    expect(getCodeupToken()).toBe('pt-token');
+    expect(readNetrcUsername()).toBe('alice');
+  });
+
   it('writeNetrcToken replaces a multiline entry without orphaning its credential lines', () => {
     fs.writeFileSync(
       path.join(tmpHome, '.netrc'),
@@ -219,6 +228,20 @@ describe('Codeup token resolution', () => {
     expect(content).not.toContain('old-token');
     expect(content).not.toContain('old-user');
     expect(content.endsWith('machine codeup.aliyun.com login zhangsan password new-token\n')).toBe(true);
+  });
+
+  it('writeNetrcToken keeps another machine entry that shares the line', () => {
+    fs.writeFileSync(
+      path.join(tmpHome, '.netrc'),
+      'machine codeup.aliyun.com login alice password old-token machine other.host login bob password secret\n',
+    );
+
+    writeNetrcToken('new-token', 'alice');
+    const content = fs.readFileSync(path.join(tmpHome, '.netrc'), 'utf-8');
+
+    expect(content).not.toContain('old-token');
+    expect(content).toContain('machine other.host login bob password secret');
+    expect(content).toContain('machine codeup.aliyun.com login alice password new-token');
   });
 });
 
