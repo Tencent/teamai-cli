@@ -12,8 +12,9 @@ export const CODEUP_HOST = 'codeup.aliyun.com';
  * Path segments that start a web route rather than the repo path proper —
  * the browser's URLs for a repo's merge requests, file browser, commits and
  * settings append them after the repo path, so everything from the first
- * match onward is dropped. Only consulted once at least two path segments
- * (a usable `owner/repo`) have been collected.
+ * match onward is dropped — but only in a pasted browser URL, and only when
+ * the segment carries a sub-path (see parseCodeupRepoInput). Only consulted
+ * once at least two path segments (a usable `owner/repo`) have been collected.
  */
 const WEB_ROUTE_SEGMENTS = new Set([
   'change',
@@ -38,6 +39,35 @@ const WEB_ROUTE_SEGMENTS = new Set([
   'pulls',
 ]);
 
+/** The git transport a URL form asks for: its scheme, or null for the bare `org/group/repo` form. */
+export type CodeupTransport = 'https' | 'ssh';
+
+/**
+ * The transport of the input as typed: https for an http(s) URL, ssh for an
+ * ssh:// or scp-style URL, null for the bare path form, whose transport
+ * codeupCloneTransport defaults.
+ */
+export function codeupInputTransport(input: string): CodeupTransport | null {
+  const trimmed = input.trim();
+
+  if (/^https?:\/\//i.test(trimmed)) return 'https';
+
+  if (/^ssh:\/\//i.test(trimmed) || /^[^@\s]+@[^:\s]+:/i.test(trimmed)) return 'ssh';
+
+  return null;
+}
+
+/** The host an explicit URL form names (https, ssh:// or scp-style), or null for the bare path form. */
+function urlHost(input: string): string | null {
+  const url = /^(?:ssh|https?):\/\/(?:[^@/\s]+@)?([^:/\s]+)/i.exec(input);
+
+  if (url) return url[1].toLowerCase();
+
+  const scp = /^[^@\s]+@([^:\s]+):/i.exec(input);
+
+  return scp ? scp[1].toLowerCase() : null;
+}
+
 /**
  * Parse user input into a standardized RepoInfo structure for Codeup.
  *
@@ -59,6 +89,16 @@ const WEB_ROUTE_SEGMENTS = new Set([
 export function parseCodeupRepoInput(input: string): RepoInfo {
   const trimmed = input.trim();
 
+  // `--provider codeup` with another platform's URL must not send the Codeup
+  // token to that host's API nor parse its path as a Codeup repo.
+  const host = urlHost(trimmed);
+
+  if (host !== null && host !== CODEUP_HOST) {
+    throw new Error(
+      `Refusing to parse a repo URL on "${host}" as Codeup: only ${CODEUP_HOST} is supported.`,
+    );
+  }
+
   // Strip a leading scheme+host prefix, then split into path segments:
   //   - `ssh://[user@]host[:port]/…`  → drop through the first slash after host
   //   - `https?://host/…`             → drop scheme+host
@@ -70,10 +110,21 @@ export function parseCodeupRepoInput(input: string): RepoInfo {
     .replace(/^\/+/, '');
 
   const allSegs = withoutPrefix.split('/').filter(Boolean);
+  const browserUrl = /^https?:\/\//i.test(trimmed);
 
-  // Cut at the first web-route segment, but never before owner/repo (two
-  // segments) are collected — a group may legitimately share a web-route name.
-  const cut = allSegs.findIndex((seg, i) => i >= 2 && WEB_ROUTE_SEGMENTS.has(seg));
+  // Only a pasted browser URL carries web-route suffixes; a clone URL (any SSH
+  // form, or a path ending in `.git`) and the bare short form never do — there
+  // a route-like segment is a genuine nested group (`org/team/files/repo`).
+  // Even in a browser URL, strip only from a route segment with a sub-path
+  // after it (`/tree/master`, `/changeRequest/list`): a route-named last
+  // segment is more often a repo of that name, and cutting a real path short
+  // silently resolves a different repo instead of failing.
+  const stripsRoutes = browserUrl && !/\.git\/?$/i.test(withoutPrefix);
+
+  const cut = stripsRoutes
+    ? allSegs.findIndex((seg, i) => i >= 2 && i < allSegs.length - 1 && WEB_ROUTE_SEGMENTS.has(seg))
+    : -1;
+
   const segs = cut === -1 ? allSegs : allSegs.slice(0, cut);
 
   if (segs.length >= 2) {

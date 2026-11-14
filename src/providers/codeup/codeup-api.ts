@@ -2,8 +2,8 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { endedRequest, type PullRequestRecord, type PullRequestRef } from '../types.js';
-import { CODEUP_HOST } from './repo-url.js';
+import { endedRequest, mergedAs, type PullRequestRecord, type PullRequestRef } from '../types.js';
+import { CODEUP_HOST, type CodeupTransport } from './repo-url.js';
 import { getUserHome, legacyUserHome } from '../../utils/home.js';
 import { sanitizeGitUrl } from '../../utils/redact.js';
 
@@ -34,11 +34,12 @@ import { sanitizeGitUrl } from '../../utils/redact.js';
  *   2. `YUNXIAO_TOKEN` env var (alias — matches the Yunxiao CLI convention)
  *   3. `~/.netrc` entry `machine codeup.aliyun.com … password <token>`
  *
- * Git transport: the token is an OpenAPI credential, NOT a git-over-HTTPS
- * one by default — `cloneRepo` clones over SSH (`git@codeup.aliyun.com:…`),
- * so an SSH key on the machine is the normal auth. When the token was
- * persisted to ~/.netrc with the account username (interactive `init` flow),
- * HTTPS Basic auth is used instead.
+ * Git transport follows the URL the member typed (see codeupCloneTransport):
+ * an https:// URL clones over HTTPS, an SSH URL or the bare `org/group/repo`
+ * form over SSH, and CODEUP_TRANSPORT=https|ssh overrides. An HTTPS clone
+ * embeds the PAT as the Basic password when its username is known too (the
+ * interactive `init` flow persists both); otherwise the member's own git
+ * credential setup authenticates, exactly as the generic git provider's.
  */
 
 // ─── Config ──────────────────────────────────────────────
@@ -52,10 +53,11 @@ export function codeupApiBase(): string {
 }
 
 /** True when targeting a Region 版 Yunxiao OpenAPI (no organization path segment). */
-function isRegionEdition(): boolean {
+export function isRegionEdition(): boolean {
   const explicit = process.env.YUNXIAO_EDITION?.trim().toLowerCase();
 
   if (explicit === 'central') return false;
+
   if (explicit === 'region') return true;
 
   return !codeupApiBase().includes('openapi-rdc.aliyuncs.com');
@@ -126,48 +128,70 @@ function netrcReadPaths(): string[] {
   return paths;
 }
 
-/** Read the codeup.aliyun.com token from ~/.netrc, or null when absent/unreadable. */
-export function readNetrcToken(): string | null {
-  const pattern = new RegExp(
-    `machine\\s+${CODEUP_HOST.replace('.', '\\.')}\\s+.*?password\\s+(\\S+)`,
-  );
+/** The credentials of the codeup entry of a netrc file, either part absent when not stated. */
+interface NetrcEntry {
+  login: string | null;
+  password: string | null;
+}
 
-  for (const file of netrcReadPaths()) {
-    try {
-      const match = fs.readFileSync(file, 'utf-8').match(pattern);
+/**
+ * The codeup.aliyun.com entry of a tokenized netrc file: `machine
+ * codeup.aliyun.com` followed by keyword/value pairs (`login`, `password`,
+ * `account`) in any order, on one line or many, up to the next `machine`.
+ */
+function findNetrcEntry(tokens: string[]): NetrcEntry | null {
+  for (let i = 0; i < tokens.length - 1; i++) {
+    if (tokens[i] !== 'machine' || tokens[i + 1] !== CODEUP_HOST) continue;
 
-      if (match?.[1]) return match[1];
-    } catch {
-      // Missing or unreadable here — try the next location.
+    const entry: NetrcEntry = { login: null, password: null };
+
+    for (let j = i + 2; j < tokens.length - 1 && tokens[j] !== 'machine'; j += 2) {
+      if (tokens[j] === 'login') entry.login = tokens[j + 1] ?? null;
+      else if (tokens[j] === 'password') entry.password = tokens[j + 1] ?? null;
+      else break;
     }
+
+    return entry;
   }
 
   return null;
+}
+
+/** The codeup entry of the first netrc file that has one, or null. */
+function readNetrcEntry(): NetrcEntry | null {
+  for (const file of netrcReadPaths()) {
+    let content: string;
+
+    try {
+      content = fs.readFileSync(file, 'utf-8');
+    } catch {
+      continue; // Missing or unreadable here — try the next location.
+    }
+
+    const entry = findNetrcEntry(content.split(/\s+/).filter(Boolean));
+
+    // A machine line with no credential is not the entry — keep looking, so a
+    // legacy home's complete entry still answers.
+    if (entry && (entry.login || entry.password)) return entry;
+  }
+
+  return null;
+}
+
+/** Read the codeup.aliyun.com token from ~/.netrc, or null when absent/unreadable. */
+export function readNetrcToken(): string | null {
+  return readNetrcEntry()?.password ?? null;
 }
 
 /** The username stored alongside the token in ~/.netrc, or null. */
 export function readNetrcUsername(): string | null {
-  const pattern = new RegExp(
-    `machine\\s+${CODEUP_HOST.replace('.', '\\.')}\\s+login\\s+(\\S+)`,
-  );
-
-  for (const file of netrcReadPaths()) {
-    try {
-      const match = fs.readFileSync(file, 'utf-8').match(pattern);
-
-      if (match?.[1]) return match[1];
-    } catch {
-      // Missing or unreadable here — try the next location.
-    }
-  }
-
-  return null;
+  return readNetrcEntry()?.login ?? null;
 }
 
 /**
  * Persist the token to ~/.netrc (mode 0600). Replaces any existing
- * codeup.aliyun.com entry so re-authenticating overwrites rather than
- * duplicates.
+ * codeup.aliyun.com entry — written on one line or many — so re-authenticating
+ * overwrites rather than duplicates or orphans its credential lines.
  */
 export function writeNetrcToken(token: string, username: string): void {
   const file = netrcPath();
@@ -179,14 +203,28 @@ export function writeNetrcToken(token: string, username: string): void {
     // no existing file — start fresh
   }
 
-  const filtered = existing
-    .split('\n')
-    .filter((line) => !new RegExp(`^machine\\s+${CODEUP_HOST.replace('.', '\\.')}\\b`).test(line.trim()))
-    .join('\n')
-    .replace(/\n+$/, '');
+  const codeupMachine = new RegExp(`^machine\\s+${CODEUP_HOST.replaceAll('.', '\\.')}($|\\s)`);
+  const kept: string[] = [];
+  let inEntry = false;
+
+  for (const line of existing.split('\n')) {
+    const trimmed = line.trim();
+
+    if (/^machine\s/.test(trimmed) || trimmed === 'default') {
+      inEntry = codeupMachine.test(trimmed);
+
+      if (inEntry) continue;
+    } else if (inEntry && trimmed !== '') {
+      continue; // A login/password/account continuation line of the entry.
+    }
+
+    kept.push(line);
+  }
 
   const entry = `machine ${CODEUP_HOST} login ${username} password ${token}`;
+  const filtered = kept.join('\n').replace(/\n+$/, '');
   const next = filtered ? `${filtered}\n${entry}\n` : `${entry}\n`;
+
   fs.writeFileSync(file, next, { mode: 0o600 });
 
   try {
@@ -239,10 +277,12 @@ export async function codeupWhoami(): Promise<{ username: string | null; lastOrg
 // (a PAT without platform scope answers no user endpoint — verified live).
 // The environment variables CODEUP_ORG_ID / CODEUP_USERNAME take precedence.
 
-interface CodeupConfig {
-  organizationId?: string;
-  username?: string;
-}
+const CodeupConfigSchema = z.object({
+  organizationId: z.string().optional(),
+  username: z.string().optional(),
+}).catch({});
+
+type CodeupConfig = z.infer<typeof CodeupConfigSchema>;
 
 function codeupConfigPath(): string {
   return path.join(getUserHome(), '.teamai', 'codeup.json');
@@ -250,10 +290,7 @@ function codeupConfigPath(): string {
 
 function loadCodeupConfig(): CodeupConfig {
   try {
-    const raw = fs.readFileSync(codeupConfigPath(), 'utf-8');
-    const parsed = JSON.parse(raw);
-
-    return typeof parsed === 'object' && parsed !== null ? parsed as CodeupConfig : {};
+    return CodeupConfigSchema.parse(JSON.parse(fs.readFileSync(codeupConfigPath(), 'utf-8')));
   } catch {
     return {};
   }
@@ -359,6 +396,7 @@ export async function getRepositoryNumericId(repo: string): Promise<number> {
   const token = requireToken();
   const orgId = await resolveCodeupOrganizationId();
   const encoded = encodeURIComponent(repo);
+
   const base = isRegionEdition()
     ? `${codeupApiBase()}/oapi/v1/codeup/repositories/${encoded}`
     : `${codeupApiBase()}/oapi/v1/codeup/organizations/${orgId}/repositories/${encoded}`;
@@ -407,6 +445,7 @@ export interface CodeupTokenProbe {
  */
 export async function probeCodeupToken(orgId: string): Promise<CodeupTokenProbe> {
   const token = requireToken();
+
   const base = isRegionEdition()
     ? `${codeupApiBase()}/oapi/v1/codeup/repositories`
     : `${codeupApiBase()}/oapi/v1/codeup/organizations/${orgId}/repositories`;
@@ -427,20 +466,46 @@ export async function probeCodeupToken(orgId: string): Promise<CodeupTokenProbe>
 // ─── Repo operations ─────────────────────────────────────
 
 /**
- * Build the clone URL. SSH is the default and verified transport — an SSH key
- * on the machine is the normal Codeup auth. HTTPS Basic (PAT as the git
- * password, with the netrc username) is used only when the token AND username
- * are known AND `CODEUP_TRANSPORT=https` opts in, because PAT-as-git-password
- * is not a verified path on every deployment.
+ * The transport to clone with: `CODEUP_TRANSPORT` overrides, then the scheme
+ * of the URL the member typed (parseRepoInput records it on the provider),
+ * then SSH for the bare `org/group/repo` form — an SSH key on the machine is
+ * the normal Codeup git auth, as it is for the generic git provider's SSH
+ * URLs. An HTTPS URL never becomes an SSH clone: a member with HTTPS git
+ * sign-in and no SSH key is exactly whom the typed scheme speaks for.
  */
-function cloneUrl(repo: string, username: string | null, token: string | null): string {
-  const httpsWanted = process.env.CODEUP_TRANSPORT?.trim().toLowerCase() === 'https';
+export function codeupCloneTransport(inputTransport: CodeupTransport | null): CodeupTransport {
+  const override = process.env.CODEUP_TRANSPORT?.trim().toLowerCase();
 
-  if (httpsWanted && token && username) {
-    return `https://${encodeURIComponent(username)}:${encodeURIComponent(token)}@${CODEUP_HOST}/${repo}.git`;
+  if (override === 'https' || override === 'ssh') return override;
+
+  return inputTransport ?? 'ssh';
+}
+
+/**
+ * Build the clone URL for the resolved transport. An HTTPS clone embeds the
+ * PAT as the Basic password only when the username is known too (the
+ * interactive init flow persists both, and CODEUP_USERNAME /
+ * ~/.teamai/codeup.json / ~/.netrc carry them later); with either unknown the
+ * URL stays plain and the member's git credential setup authenticates, exactly
+ * as the generic git provider's HTTPS clone does. PAT-as-git-password is not a
+ * verified path on every deployment, so CODEUP_TRANSPORT=ssh opts back out.
+ */
+function cloneUrl(repo: string, transport: CodeupTransport, username: string | null, token: string | null): string {
+  if (transport === 'https') {
+    return token && username
+      ? `https://${encodeURIComponent(username)}:${encodeURIComponent(token)}@${CODEUP_HOST}/${repo}.git`
+      : `https://${CODEUP_HOST}/${repo}.git`;
   }
 
   return `git@${CODEUP_HOST}:${repo}.git`;
+}
+
+/** The URL `codeupRepoClone` clones: transport from the input scheme and env, credentials when both are known. */
+export function codeupCloneUrl(repo: string, inputTransport: CodeupTransport | null = null): string {
+  const token = getCodeupToken();
+  const username = token ? configuredUsername() ?? readNetrcUsername() : null;
+
+  return cloneUrl(repo, codeupCloneTransport(inputTransport), username, token);
 }
 
 /** Redact an embedded username:token credential from git output before throwing. */
@@ -448,12 +513,9 @@ function redactCloneOutput(output: string): string {
   return sanitizeGitUrl(output.replace(/:\/\/[^@\s/]+@/, '://***@')).trim();
 }
 
-/** Clone a Codeup repo to localPath. See cloneUrl for the transport choice. */
-export function codeupRepoClone(repo: string, localPath: string): void {
-  const token = getCodeupToken();
-  const username = token ? readNetrcUsername() : null;
-
-  const result = spawnSync('git', ['clone', cloneUrl(repo, username, token), localPath], {
+/** Clone a Codeup repo to localPath. See codeupCloneUrl for the transport choice. */
+export function codeupRepoClone(repo: string, localPath: string, inputTransport: CodeupTransport | null = null): void {
+  const result = spawnSync('git', ['clone', codeupCloneUrl(repo, inputTransport), localPath], {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
     timeout: 120_000,
@@ -513,23 +575,23 @@ export async function codeupMrCreate(opts: CodeupMrCreateOptions): Promise<strin
   const orgId = await resolveCodeupOrganizationId();
   const numericId = await getRepositoryNumericId(opts.repo);
 
-  const body: Record<string, unknown> = {
+  const body = {
     title: opts.title,
     sourceBranch: opts.source,
     targetBranch: opts.target,
     sourceProjectId: String(numericId),
     targetProjectId: String(numericId),
     createFrom: 'WEB',
+    // JSON.stringify drops the key when description is absent.
+    description: opts.description,
   };
-
-  if (opts.description) body.description = opts.description;
 
   const resp = await fetch(`${repoScopedBase(orgId, String(numericId))}/changeRequests`, {
     method: 'POST',
     headers: authHeaders(token),
     body: JSON.stringify(body),
     redirect: 'manual',
-    signal: opts.spawnTimeoutMs ? AbortSignal.timeout(opts.spawnTimeoutMs) : undefined,
+    signal: AbortSignal.timeout(opts.spawnTimeoutMs ?? 30_000),
   });
 
   if (!resp.ok) {
@@ -552,6 +614,9 @@ export async function codeupMrCreate(opts: CodeupMrCreateOptions): Promise<strin
 // ─── Open MR lookup ──────────────────────────────────────
 
 const LOOKUP_PAGE = 50;
+
+/** Hard cap on pages read per state, so a lookup stays bounded on a busy repo. */
+const LOOKUP_MAX_PAGES = 10;
 
 /**
  * A listed change request, as the live API answers it. The state field is
@@ -576,7 +641,40 @@ const ListedMrSchema = z.object({
   mergedRevision: z.string().nullish(),
   sourceCommitId: z.string().nullish(),
   mergeCommitId: z.string().nullish(),
-}).catch({});
+});
+
+type ListedMr = z.infer<typeof ListedMrSchema>;
+
+/** The change request list endpoint: org-scoped in the central edition, flat in a Region 版. */
+function mrListBase(orgId: string): string {
+  return isRegionEdition()
+    ? `${codeupApiBase()}/oapi/v1/codeup/changeRequests`
+    : `${codeupApiBase()}/oapi/v1/codeup/organizations/${orgId}/changeRequests`;
+}
+
+/**
+ * One page of the change request list, parsed strictly: a body that is not a
+ * list of requests throws — an unreadable answer is never "no requests".
+ */
+async function fetchMrPage(lookup: string, base: string, query: URLSearchParams, token: string, timeoutMs: number): Promise<ListedMr[]> {
+  const resp = await fetch(`${base}?${query}`, {
+    headers: authHeaders(token),
+    redirect: 'manual',
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+
+  if (!resp.ok) {
+    throw new Error(`Codeup answered the ${lookup} with HTTP ${resp.status}. Check CODEUP_TOKEN and its access to the repository.`);
+  }
+
+  const mrs = z.array(ListedMrSchema).safeParse(await resp.json().catch(() => undefined));
+
+  if (!mrs.success) {
+    throw new Error(`Codeup answered the ${lookup} with data TeamAI cannot read.`);
+  }
+
+  return mrs.data;
+}
 
 function mrWebUrl(repo: string, localId: string | number | null | undefined): string | null {
   if (localId === null || localId === undefined) return null;
@@ -605,57 +703,51 @@ function mrStatusState(status: string | null | undefined): 'open' | 'merged' | '
 
 /**
  * The open change request from `source` into `target` in `repo`, asked of the
- * Yunxiao OpenAPI with the token `getCodeupToken` resolves. Never prompts, and
- * throws, rather than answering none, when Codeup cannot be asked.
+ * Yunxiao OpenAPI with the token `getCodeupToken` resolves. The list endpoint
+ * filters by repo but not by branch, so pages are read until the list is
+ * exhausted or the cap is hit. Never prompts, and throws, rather than
+ * answering none, when Codeup cannot be asked or answers what this cannot read.
  */
 export async function codeupFindOpenMr({ repo, source, target, timeoutMs }: PullRequestRef): Promise<string | undefined> {
   const token = requireToken();
   const orgId = await resolveCodeupOrganizationId();
   const numericId = await getRepositoryNumericId(repo);
+  const base = mrListBase(orgId);
 
-  const query = new URLSearchParams({
-    projectIds: String(numericId),
-    state: 'opened',
-    perPage: String(LOOKUP_PAGE),
-    orderBy: 'created_at',
-    sort: 'desc',
-  });
+  for (let page = 1; page <= LOOKUP_MAX_PAGES; page++) {
+    const query = new URLSearchParams({
+      projectIds: String(numericId),
+      state: 'opened',
+      perPage: String(LOOKUP_PAGE),
+      page: String(page),
+      orderBy: 'created_at',
+      sort: 'desc',
+    });
 
-  const base = isRegionEdition()
-    ? `${codeupApiBase()}/oapi/v1/codeup/changeRequests`
-    : `${codeupApiBase()}/oapi/v1/codeup/organizations/${orgId}/changeRequests`;
+    const mrs = await fetchMrPage('open merge request lookup', base, query, token, timeoutMs);
 
-  const resp = await fetch(`${base}?${query}`, {
-    headers: authHeaders(token),
-    redirect: 'manual',
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+    for (const mr of mrs) {
+      if (mr.sourceBranch !== source || mr.targetBranch !== target) continue;
 
-  if (!resp.ok) {
-    throw new Error(`Codeup answered the open merge request lookup with HTTP ${resp.status}. Check CODEUP_TOKEN and its access to the repository.`);
+      const state = mrStatusState(mr.state ?? mr.status);
+
+      if (state === null) throw new Error('Codeup listed a merge request for this branch with a state TeamAI cannot read.');
+
+      if (state !== 'open') continue;
+
+      const url = mr.detailUrl ?? mrWebUrl(repo, mr.localId);
+
+      if (!url) throw new Error('Codeup answered the open merge request lookup without a request URL.');
+
+      if (!url.startsWith(`https://${CODEUP_HOST}/`)) throw new Error('Codeup answered the open merge request lookup with a URL on another host.');
+
+      return url;
+    }
+
+    if (mrs.length < LOOKUP_PAGE) return undefined;
   }
 
-  const mrs = z.array(ListedMrSchema).catch([]).parse(await resp.json().catch(() => undefined));
-
-  for (const mr of mrs) {
-    const state = mrStatusState(mr.state ?? mr.status);
-
-    if (state !== 'open') continue;
-    if (mr.sourceBranch !== source || mr.targetBranch !== target) continue;
-
-    const url = mr.detailUrl ?? mrWebUrl(repo, mr.localId);
-
-    if (!url) throw new Error('Codeup answered the open merge request lookup without a request URL.');
-    if (!url.startsWith(`https://${CODEUP_HOST}/`)) throw new Error('Codeup answered the open merge request lookup with a URL on another host.');
-
-    return url;
-  }
-
-  if (mrs.length >= LOOKUP_PAGE) {
-    throw new Error('Codeup listed more open merge requests than one page, so TeamAI cannot tell whether this branch has one.');
-  }
-
-  return undefined;
+  throw new Error('Codeup listed more open merge requests than TeamAI reads, so it cannot tell whether this branch has one.');
 }
 
 /**
@@ -671,64 +763,54 @@ export async function codeupMrHistory({ repo, source, target, timeoutMs }: PullR
   // No single "state: all" is documented for the list endpoint, so open,
   // merged and closed are asked separately and combined.
   const states = ['opened', 'merged', 'closed'];
-  const base = isRegionEdition()
-    ? `${codeupApiBase()}/oapi/v1/codeup/changeRequests`
-    : `${codeupApiBase()}/oapi/v1/codeup/organizations/${orgId}/changeRequests`;
-
+  const base = mrListBase(orgId);
   const records: PullRequestRecord[] = [];
 
   for (const state of states) {
-    const query = new URLSearchParams({
-      projectIds: String(numericId),
-      state,
-      perPage: String(LOOKUP_PAGE),
-      orderBy: 'created_at',
-      sort: 'desc',
-    });
+    for (let page = 1; page <= LOOKUP_MAX_PAGES; page++) {
+      const query = new URLSearchParams({
+        projectIds: String(numericId),
+        state,
+        perPage: String(LOOKUP_PAGE),
+        page: String(page),
+        orderBy: 'created_at',
+        sort: 'desc',
+      });
 
-    const resp = await fetch(`${base}?${query}`, {
-      headers: authHeaders(token),
-      redirect: 'manual',
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+      const mrs = await fetchMrPage('merge request history lookup', base, query, token, timeoutMs);
 
-    if (!resp.ok) {
-      throw new Error(`Codeup answered the merge request history lookup with HTTP ${resp.status}. Check CODEUP_TOKEN and its access to the repository.`);
-    }
+      for (const mr of mrs) {
+        if (mr.sourceBranch !== source || mr.targetBranch !== target) continue;
 
-    const mrs = z.array(ListedMrSchema).catch([]).parse(await resp.json().catch(() => undefined));
+        const mapped = mrStatusState(mr.state ?? mr.status);
 
-    if (mrs.length >= LOOKUP_PAGE) {
-      throw new Error('Codeup listed more merge requests than one page, so TeamAI cannot tell how this branch\'s requests ended.');
-    }
+        if (mapped === null) throw new Error('Codeup answered the merge request history lookup with a state TeamAI cannot read.');
 
-    for (const mr of mrs) {
-      if (mr.sourceBranch !== source || mr.targetBranch !== target) continue;
+        const url = mr.detailUrl ?? mrWebUrl(repo, mr.localId);
 
-      const mapped = mrStatusState(mr.state ?? mr.status);
+        if (!url) throw new Error('Codeup answered the merge request history lookup without a request URL.');
 
-      if (mapped === null) throw new Error('Codeup answered the merge request history lookup with a state TeamAI cannot read.');
-      const url = mr.detailUrl ?? mrWebUrl(repo, mr.localId);
+        if (!url.startsWith(`https://${CODEUP_HOST}/`)) throw new Error('Codeup answered the merge request history lookup with a URL on another host.');
 
-      if (!url) throw new Error('Codeup answered the merge request history lookup without a request URL.');
-      if (!url.startsWith(`https://${CODEUP_HOST}/`)) throw new Error('Codeup answered the merge request history lookup with a URL on another host.');
+        const openedAt = mr.createdAt ?? mr.createTime ?? '';
+        const closedAt = mr.updatedAt ?? mr.updateTime ?? openedAt;
 
-      const openedAt = mr.createdAt ?? mr.createTime ?? '';
-      const closedAt = mr.updatedAt ?? mr.updateTime ?? openedAt;
-      const merge = mr.sourceCommitId && (mr.mergedRevision ?? mr.mergeCommitId)
-        ? { head: mr.sourceCommitId, commit: mr.mergedRevision ?? mr.mergeCommitId! }
-        : undefined;
+        records.push(endedRequest({
+          url,
+          title: mr.title ?? '',
+          openedAt,
+          state: mapped,
+          closedAt,
+          merge: mergedAs({ head: mr.sourceCommitId, commit: mr.mergedRevision ?? mr.mergeCommitId }),
+        }));
+      }
 
-      records.push(endedRequest({
-        url,
-        title: mr.title ?? '',
-        openedAt,
-        state: mapped,
-        closedAt,
-        merge,
-      }));
+      if (mrs.length < LOOKUP_PAGE) break;
+
+      if (page === LOOKUP_MAX_PAGES) throw new Error('Codeup listed more merge requests than TeamAI reads, so it cannot tell how this branch\'s requests ended.');
     }
   }
 
-  return records;
+  // Each state's pages arrive newest first; the combined history must be too.
+  return records.sort((a, b) => b.openedAt.localeCompare(a.openedAt));
 }
