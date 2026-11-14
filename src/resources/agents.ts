@@ -913,7 +913,7 @@ export class AgentsHandler extends ResourceHandler {
     // receive reads it; each is said once per pull, however many agents do.
     if (spec) {
       for (const { tool, format } of renders) {
-        for (const warning of aliasWarningsFor(aliases, spec, tool)) warnOnce(`[agents] ${warning}`);
+        for (const warning of aliasWarningsFor(aliases, spec, tool, localConfig.scope)) warnOnce(`[agents] ${warning}`);
 
         if (format === 'muse') {
           const drops = museAgentDrops(spec);
@@ -1002,7 +1002,7 @@ export class AgentsHandler extends ResourceHandler {
     item: AgentResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig, aliases: ModelAliases, ledger: DeliveryLedger,
   ): Promise<void> {
     for (const { tool, format, dir } of await this.agentToolDirs(teamConfig, localConfig)) {
-      if (!await this.heldForTool(item, { tool, format }, aliases)) continue;
+      if (!await this.heldForTool(item, { tool, format }, aliases, localConfig.scope)) continue;
 
       for (const file of await listFiles(dir)) {
         const copy = path.join(dir, file);
@@ -1325,7 +1325,7 @@ export class AgentsHandler extends ResourceHandler {
         const rendered = await this.renderedForTool(item, target, aliases, localConfig);
 
         if (rendered) activeDestinations.add(`${item.name}${rendered.ext}`);
-        else if (await this.heldForTool(item, target, aliases)) held.add(item.name);
+        else if (await this.heldForTool(item, target, aliases, localConfig.scope)) held.add(item.name);
       }
 
       for (const item of inactive) {
@@ -1629,7 +1629,7 @@ export class AgentsHandler extends ResourceHandler {
     for (const { tool, format } of await this.agentToolDirs(teamConfig, localConfig)) {
       if (!targetsTool(spec, { tool, format })) continue;
       targeted += 1;
-      const resolution = resolveAgentModel(aliases, spec, tool);
+      const resolution = resolveAgentModel(aliases, spec, tool, localConfig.scope);
 
       if (!resolution.ok) heldTools.set(resolution.reason, [...heldTools.get(resolution.reason) ?? [], tool]);
     }
@@ -1652,14 +1652,14 @@ export class AgentsHandler extends ResourceHandler {
   }
 
   /** Whether `tool` would receive `item` but for a model that cannot be resolved. */
-  private async heldForTool(item: AgentResourceItem, target: AgentTool, aliases: ModelAliases): Promise<boolean> {
+  private async heldForTool(item: AgentResourceItem, target: AgentTool, aliases: ModelAliases, scope: Scope): Promise<boolean> {
     if (isLegacyAgent(item)) return false;
     const content = await readFileSafe(item.sourcePath);
     const parsed = content === null ? null : parseAgentYaml(content, `${item.name}.yaml`);
 
     if (!parsed?.ok || !targetsTool(parsed.spec, target)) return false;
 
-    return !resolveAgentModel(aliases, parsed.spec, target.tool).ok;
+    return !resolveAgentModel(aliases, parsed.spec, target.tool, scope).ok;
   }
 
   // ─── Private helpers ──────────────────────────────────────────────────────
@@ -2422,7 +2422,7 @@ function renderResolved(
   aliases: ModelAliases,
   scope: Scope,
 ): { ok: true; render: AgentRender } | { ok: false; reason: string } {
-  const resolution = resolveAgentModel(aliases, spec, target.tool);
+  const resolution = resolveAgentModel(aliases, spec, target.tool, scope);
 
   if (!resolution.ok) return resolution;
   const { ok: _ok, ...resolved } = resolution;

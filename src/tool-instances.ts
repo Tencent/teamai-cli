@@ -11,7 +11,7 @@ import { isSessionPlatform } from './session-flow/adapters/platform-facts.js';
 import { instanceHomeAfterInit, instanceHomeDir, isSameDirOn, realHost, toolHome, type Host } from './tool-home.js';
 import { INSTANCE_BASES, isInstanceBase, isToolId, TOOL_ORDER, toolInstancesFor, toolOf, useToolInstances } from './tool-registry.js';
 import type { ToolId } from './tools.js';
-import { DEFAULT_TOOL_PATHS, getTeamaiHomeDir, getTrustDir, recordedToolRootDir, RELOCATABLE_TOOLS, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type TeamaiConfig } from './types.js';
+import { DEFAULT_TOOL_PATHS, getTeamaiHomeDir, getTrustDir, recordedToolRootDir, RELOCATABLE_TOOLS, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type Scope, type TeamaiConfig } from './types.js';
 import { writeJsonAtomic } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { errorOnce, warnOnce } from './utils/warn-once.js';
@@ -437,6 +437,20 @@ function movedToHome(instance: DeclaredTool, paths: z.infer<typeof ToolPathsSche
   }));
 
   return { ...paths, mcp: moved.mcp, userScope };
+}
+
+/**
+ * The tool whose model aliases render `tool`'s agent files in `scope`. In a project an instance on the shipped command
+ * writes the agents directory of the tool it extends, so that one file renders as that tool's from either pass.
+ */
+export function agentModelToolOf(tool: string, scope: Scope): string {
+  const instance = toolOf(tool)?.instance;
+
+  if (instance?.kind !== 'instance' || scope === 'user' || movesProjectPaths(instance)) return tool;
+
+  const shipped: z.infer<typeof ToolPathsSchema> = DEFAULT_TOOL_PATHS[instance.extends];
+
+  return instance.paths === undefined || instance.paths.agents === shipped.agents ? instance.extends : tool;
 }
 
 /** The tool paths `instance` gives its tool: its own `paths`, else the paths of the tool it extends, moved to its home. */

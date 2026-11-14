@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { AgentModelRecords, RecordedAgentModel, ResourceItem } from './types.js';
+import type { AgentModelRecords, RecordedAgentModel, ResourceItem, Scope } from './types.js';
 import type { AgentSpec } from './resources/agent-format.js';
 import type { AgentTool } from './resources/agents.js';
 import type { ModelAliases, ModelResolution } from './models/aliases.js';
@@ -23,6 +23,7 @@ interface AgentModelView {
   /** The installed tools that receive agents. */
   tools: AgentTool[];
   records: AgentModelRecords;
+  scope: Scope;
 }
 
 const CHECK_NAME = 'Agent model aliases can be resolved';
@@ -73,10 +74,10 @@ async function readView(ctx: DoctorContext): Promise<AgentModelView | null> {
     if (parsed?.ok && parsed.spec.model !== undefined) agents.push({ name: item.name, spec: parsed.spec });
   }
 
-  if (agents.length === 0) return { aliases, agents, tools: [], records: {} };
+  if (agents.length === 0) return { aliases, agents, tools: [], records: {}, scope: localConfig.scope };
   const tools = (await new AgentsHandler().agentToolDirs(teamConfig, localConfig)).map(({ tool, format }) => ({ tool, format }));
 
-  return { aliases, agents, tools, records: await recordedAgentModels(localConfig) };
+  return { aliases, agents, tools, records: await recordedAgentModels(localConfig), scope: localConfig.scope };
 }
 
 /** Each installed tool `spec` targets, with what it receives for `spec`'s model. */
@@ -86,7 +87,7 @@ async function resolutions(view: AgentModelView, spec: AgentSpec): Promise<(Agen
 
   return view.tools
     .filter((target) => targetsTool(spec, target))
-    .map((target) => ({ ...target, resolution: resolveAgentModel(view.aliases, spec, target.tool) }));
+    .map((target) => ({ ...target, resolution: resolveAgentModel(view.aliases, spec, target.tool, view.scope) }));
 }
 
 /** The received agents pull holds in at least one tool, because their model cannot be resolved there. */
