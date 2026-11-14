@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
@@ -315,6 +315,47 @@ describe('uninstall', () => {
     expect((await fse.readJson(indexPath)).agents).toEqual([
       { agentId: 'member-agent', name: 'Member', source: 'project', contentPath: 'agents/member.md', isActive: false },
     ]);
+  });
+
+  // Every Codex build reads the shared .agents/skills, so uninstalling one takes its copies there off the record too.
+  it.each([
+    { tool: 'codex', home: '.codex' },
+    { tool: 'acme-codex', home: '.acme-codex' },
+  ])('takes the record of $tool\'s copy deleted from the shared .agents/skills off the delivery record when it uninstalls that tool', async ({ tool, home: toolHome }) => {
+    const { useToolInstances } = await import('../tool-registry.js');
+    useToolInstances(new Map([['acme-codex', {
+      name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex' },
+      source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
+    }]]));
+    onTestFinished(() => { useToolInstances(new Map()); });
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const defaults = TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/test.git' }).toolPaths;
+    await fse.outputFile(path.join(repoPath, 'skills', 'team-skill', 'SKILL.md'), '---\nname: team-skill\ndescription: d\n---\nTeam.\n');
+    const shared = path.join(await fse.realpath(homeDir), '.agents', 'skills', 'team-skill', 'SKILL.md');
+    await fse.copy(path.join(repoPath, 'skills', 'team-skill', 'SKILL.md'), shared);
+    const own = path.join(await fse.realpath(homeDir), toolHome, 'skills', 'team-skill', 'SKILL.md');
+    await fse.copy(path.join(repoPath, 'skills', 'team-skill', 'SKILL.md'), own);
+    const { recordDelivered } = await import('../resources/delivered-copies.js');
+    const delivered: Record<string, string> = {};
+    await recordDelivered(delivered, shared);
+    await recordDelivered(delivered, own);
+    // The member deleted the copy since the last pull; only its record is left.
+    await fse.remove(path.dirname(shared));
+    // Claude Code stays in use, so this uninstall leaves what the tools share.
+    const localConfig = makeLocalConfig(homeDir, repoPath, { enabledAgents: [tool, 'claude'] });
+    const teamConfig = makeTeamConfig({ toolPaths: { claude: defaults.claude, [tool]: { ...defaults.codex, skills: `${toolHome}/skills` } } });
+    const state = await loadStateForScope(localConfig);
+    const key = await checkoutKey(homeDir);
+    state.lastPullByWorkspace = { [key]: { rev: 'r1', targets: [], delivered } };
+    await saveStateForScope(state, localConfig);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+    commitTeamRepo(repoPath);
+
+    await uninstall({ force: true, agent: tool });
+
+    expect(Object.keys((await loadStateForScope(localConfig)).lastPullByWorkspace?.[key]?.delivered ?? {})).toEqual([]);
   });
 
   it('removes a JoyCode custom-agent index entry on uninstall', async () => {

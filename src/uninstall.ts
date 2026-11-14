@@ -84,7 +84,7 @@ import { cleanupOf, hookAdapterDirIn, hookSettingsFile, installOf, isInstalledFo
 import { toolHome, toolHomeOf, toolHomesAcrossProfiles } from './tool-home.js';
 import { baseDescriptorOf, channelsOf, hookSyntaxOf, toolOf } from './tool-registry.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
-import { allowsSkillDirectory, CODEX_TOOL, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, readTeamSkills, skillOrigin } from './resources/skills.js';
+import { allowsSkillDirectory, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, readsCodexSharedSkills, readTeamSkills, skillOrigin } from './resources/skills.js';
 import { describeKeptDir, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir, teamaiSkillFiles } from './resources/delivered-copies.js';
 import { generatedSkillAt } from './workflow/discovery/generated-marker.js';
 import { mayBeGeneratedSkill } from './workflow/discovery/workflow-skills.js';
@@ -2711,7 +2711,7 @@ async function forgetUninstalledToolPaths(
     return fields.filter((p): p is string => p !== undefined && p !== '');
   };
 
-  const codexShared = (id: string): string[] => id === CODEX_TOOL ? [SHARED_AGENT_SKILLS_PATH] : [];
+  const codexShared = (id: string): string[] => readsCodexSharedSkills(id) ? [SHARED_AGENT_SKILLS_PATH] : [];
   // The tool's roots (`.claude`, `.github`), less what another tool in use reads there (WorkBuddy's `.codebuddy/rules`).
   const roots = [...new Set([...pathsOf(tool).map(toolInstallRoot), ...codexShared(tool)])];
 
