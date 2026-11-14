@@ -1,3 +1,4 @@
+import { readMarkdown } from './doc-checks/read-markdown.js';
 import fs from 'node:fs';
 import { setSilent } from '../src/utils/logger.js';
 import { loadCommandTable } from './command-table.js';
@@ -39,7 +40,7 @@ for (const output of generated) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, content);
   }
-  else if (!fs.existsSync(file) || fs.readFileSync(file, 'utf8') !== content) {
+  else if (!fs.existsSync(file) || readMarkdown(file) !== content) {
     console.error(`Generated documentation is stale: ${output.file}. Run node scripts/check-docs.mjs --write.`);
     process.exitCode = 1;
   }

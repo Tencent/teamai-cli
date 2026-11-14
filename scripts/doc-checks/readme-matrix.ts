@@ -1,6 +1,7 @@
+import fs from 'node:fs';
+import { readMarkdown } from './read-markdown.js';
 import assert from 'node:assert/strict';
 import { check } from '../doc-check.js';
-import fs from 'node:fs';
 import path from 'node:path';
 
 import { ALL_MODEL_AGENTS } from '../../src/models/profile.js';
@@ -66,7 +67,7 @@ const LABELS: ReadonlyMap<string, ToolId> = new Map(Object.entries({
 const UNLISTED: ReadonlySet<ToolId> = new Set(['claude-internal', 'codex-internal', 'tclaude', 'tcodex']);
 
 function rows(file: string): Map<string, readonly string[]> {
-  const text = fs.readFileSync(path.join(ROOT, file), 'utf8');
+  const text = readMarkdown(path.join(ROOT, file));
 
   return new Map(
     [...text.matchAll(/<tr><td>([^<]+)<\/td>(.*?)<\/tr>/g)].map(([, label, cells]) => {

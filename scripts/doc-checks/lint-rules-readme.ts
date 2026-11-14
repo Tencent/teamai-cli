@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import path from 'node:path';
 import { check } from '../doc-check.js';
+import { readMarkdown } from './read-markdown.js';
 
 const ROOT = process.cwd();
 const PLUGIN = 'oxlint-plugin-teamai/index.js';
@@ -17,7 +17,7 @@ const ROW = /^\| `teamai\/([a-z][a-z-]*)` \|/gmu;
 
 /** The rules `index.js` registers itself, by name. */
 function registeredRules(): string[] {
-  const block = RULES_BLOCK.exec(fs.readFileSync(path.join(ROOT, PLUGIN), 'utf8'))?.[1];
+  const block = RULES_BLOCK.exec(readMarkdown(path.join(ROOT, PLUGIN)))?.[1];
   assert.ok(block !== undefined, `${PLUGIN}: no \`  rules: { ... },\` block`);
 
   return block.split('\n').filter((line) => line !== '' && line !== ANTI_SLOP_SPREAD).map((line) => {
@@ -30,7 +30,7 @@ function registeredRules(): string[] {
 
 await check(`${README} has a row for every rule index.js registers, and none for another`, () => {
   const rules = new Set(registeredRules());
-  const rows = new Set([...fs.readFileSync(path.join(ROOT, README), 'utf8').matchAll(ROW)].map(([, name]) => `teamai/${name}`));
+  const rows = new Set([...readMarkdown(path.join(ROOT, README)).matchAll(ROW)].map(([, name]) => `teamai/${name}`));
   const unlisted = [...rules].filter((rule) => !rows.has(rule)).sort();
   const unregistered = [...rows].filter((row) => !rules.has(row)).sort();
 

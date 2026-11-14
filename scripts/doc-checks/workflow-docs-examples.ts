@@ -1,3 +1,4 @@
+import { readMarkdown } from './read-markdown.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -50,7 +51,7 @@ interface Example {
 }
 
 function examplesOf(page: string): Example[] {
-  const text = fs.readFileSync(path.join(ROOT, page), 'utf8');
+  const text = readMarkdown(path.join(ROOT, page));
 
   return [...text.matchAll(/^```yaml( fragment)?\n([\s\S]*?)^```/gm)].map((match) => {
     const line = text.slice(0, match.index).split('\n').length + 1;
@@ -118,7 +119,7 @@ interface Start {
 
 /** Each `teamai workflow start <name> … --inputs '<json>'` on `page`, and each `--inputs` with a value it could not read as one. */
 function startsOf(page: string) {
-  const text = fs.readFileSync(path.join(ROOT, page), 'utf8');
+  const text = readMarkdown(path.join(ROOT, page));
   const lineOf = (index: number): number => text.slice(0, index).split('\n').length;
 
   const starts = [
@@ -147,7 +148,7 @@ function startsOf(page: string) {
 
 /** Each scorer file a page shows: a `scorers/<name>.md` line, then the file in a markdown fence. */
 function scorerExamplesOf(page: string): Array<{ label: string; file: string; source: string }> {
-  const text = fs.readFileSync(path.join(ROOT, page), 'utf8');
+  const text = readMarkdown(path.join(ROOT, page));
 
   return [...text.matchAll(/^`(scorers\/[^`\n]+\.md)`[:：]\n\n```markdown\n([\s\S]*?)^```/gm)].map((match) => ({
     label: `${page}:${text.slice(0, match.index).split('\n').length}`,
@@ -241,7 +242,7 @@ const ExampleEnvelopeSchema = z.object({ data: JsonObjectSchema });
 
 /** Each first group of `pattern` on `page`, parsed as JSON. */
 function jsonOn(page: string, pattern: RegExp): JsonValue[] {
-  return [...fs.readFileSync(path.join(ROOT, page), 'utf8').matchAll(pattern)].map((match) =>
+  return [...readMarkdown(path.join(ROOT, page)).matchAll(pattern)].map((match) =>
     JSON.parse(match[1] ?? ''),
   );
 }
@@ -342,7 +343,7 @@ for (const page of [...PAGES, ...SCORER_PAGES, ...OTHER_PAGES]) {
 
       // An example may be invalid only to show a failure: the page prints its exact diagnostic as review output.
       const shown = new Set(
-        [...fs.readFileSync(path.join(ROOT, page), 'utf8').matchAll(/^\s*✖ \[workflows\] (.+)$/gm)].map(
+        [...readMarkdown(path.join(ROOT, page)).matchAll(/^\s*✖ \[workflows\] (.+)$/gm)].map(
           (match) => match[1] ?? '',
         ),
       );
@@ -487,8 +488,7 @@ for (const page of ADVANCED) {
       const { config, runId } = await startExample(page, 'checks');
 
       const rows = [
-        ...fs
-          .readFileSync(path.join(ROOT, page), 'utf8')
+        ...readMarkdown(path.join(ROOT, page))
           .matchAll(/^\| (.*) \| `(\{"data":\{"(?:lease|wait)".*\})` \|$/gm),
       ];
 
@@ -603,7 +603,7 @@ for (const page of [...PAGES, ...SCORER_PAGES, ...BENCHMARK_PAGES]) {
   await check(
     `${page}: every relative link to a .md file resolves`,
     () => {
-      const text = fs.readFileSync(path.join(ROOT, page), 'utf8');
+      const text = readMarkdown(path.join(ROOT, page));
 
       const missing = [...text.matchAll(/\]\(([^)#\s:]+\.md)(?:#[^)]*)?\)/g)]
         .flatMap((match) => match[1] ?? [])
