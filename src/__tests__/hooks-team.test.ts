@@ -66,6 +66,13 @@ describe('reconcileHooks — team (B) hooks', () => {
     }], ['own-claude', {
       name: 'own-claude', extends: 'claude', home: { dir: '.own-claude' },
       source: 'personal', file: '/home/.teamai/tools/own-claude.yaml', location: '~/.teamai/tools/own-claude.yaml', revision: 'r1',
+    }], ['paths-claude', {
+      // Its settings file is where its paths put it, which neither loads; and one whose paths keep Claude's file, which both do.
+      name: 'paths-claude', extends: 'claude', paths: { skills: '.paths-claude/skills', settings: '.paths-claude/settings.json' },
+      source: 'personal', file: '/home/.teamai/tools/paths-claude.yaml', location: '~/.teamai/tools/paths-claude.yaml', revision: 'r1',
+    }], ['kept-claude', {
+      name: 'kept-claude', extends: 'claude', home: { dir: '.kept-claude' }, paths: { skills: '.kept-claude/skills', settings: '.claude/settings.json' },
+      source: 'personal', file: '/home/.teamai/tools/kept-claude.yaml', location: '~/.teamai/tools/kept-claude.yaml', revision: 'r1',
     }]]));
   });
 
@@ -75,7 +82,7 @@ describe('reconcileHooks — team (B) hooks', () => {
   });
 
   describe('Claude format', () => {
-    it.each([['claude', true], ['acme-claude', true], ['own-claude', false]])('injects a team hook after the built-in hooks in its event, for %s, guarded against Cursor and Copilot: %s', async (tool, guarded) => {
+    it.each([['claude', true], ['acme-claude', true], ['own-claude', false], ['paths-claude', false], ['kept-claude', true]])('injects a team hook after the built-in hooks in its event, for %s, guarded against Cursor and Copilot: %s', async (tool, guarded) => {
       await reconcileHooks(SETTINGS, tool, [teamDef()], { manifestPath: MANIFEST });
 
       const postToolUse = claudeHooks().PostToolUse;

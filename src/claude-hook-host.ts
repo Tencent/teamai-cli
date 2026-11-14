@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
-import { JsonValueSchema, type JsonValue, JsonObjectSchema } from './types.js';
+import { DEFAULT_CLAUDE_ROOT, JsonValueSchema, type JsonValue, JsonObjectSchema, toolInstallRoot } from './types.js';
 import { shellQuoteValue } from './utils/shell-profile.js';
 import { findGitBashWindows } from './bundled-runtime.js';
 import { toolOf } from './tool-registry.js';
@@ -231,12 +231,18 @@ function copilotCopyInstalled(env: NodeJS.ProcessEnv, includeGlobal: boolean): b
 
 /**
  * Whether `tool` reads Claude Code's own settings files, which Cursor and Copilot load too: Claude, or an instance of it
- * with no home of its own. An instance with a home reads `.acme-claude/`, which neither loads.
+ * whose settings file is under `.claude`, where its `paths` put it, else its home, else Claude's.
  */
 export function readsClaudeSettings(tool: string): boolean {
   const resolved = toolOf(tool);
+  const instance = resolved?.instance;
 
-  return resolved?.base === 'claude' && (resolved.instance?.home === undefined || resolved.instance.name === resolved.base);
+  if (resolved?.base !== 'claude') return false;
+
+  if (instance === undefined || instance.name === resolved.base) return true;
+  const settings = instance.paths?.settings;
+
+  return (settings === undefined ? instance.home?.dir ?? DEFAULT_CLAUDE_ROOT : toolInstallRoot(settings)) === DEFAULT_CLAUDE_ROOT;
 }
 
 export function claudeHookRunsInAnotherHost(tool: string, env: NodeJS.ProcessEnv = process.env, includeGlobalCopilot = true): boolean {
