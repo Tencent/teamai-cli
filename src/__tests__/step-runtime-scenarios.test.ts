@@ -3161,8 +3161,8 @@ done`);
     const owner = await ownerOf({ workflow: WHOLE, workflows: { pair: PAIR }, inputs: { mark: 'made.txt' }, isWhole: true });
     const place = path.join(path.dirname(owner.alice.checkout), 'alice-place');
     git(owner.alice.checkout, 'worktree', 'add', '-q', '--detach', place, 'HEAD');
-    // Bob reads the record for a cancel every 4 s, a third of stale_after.
-    const { runtime, exec } = await owner.open(place, { stale_after: '12s' });
+    // Bob reads the record for a cancel every 4 s, a third of what stale_after holds past a member's stop.
+    const { runtime, exec } = await owner.open(place, { stale_after: '32s' });
     const op = newOpId();
     const ended = exec(op, 'workflow');
     await eventually(async () => ((await owner.record())?.state === 'offered' ? true : undefined));
@@ -3220,8 +3220,8 @@ done`);
     owner.bob.config.workflows = { tools: { default: 'claude' } };
     const place = path.join(path.dirname(owner.alice.checkout), 'alice-place');
     git(owner.alice.checkout, 'worktree', 'add', '-q', '--detach', place, 'HEAD');
-    // Bob reads the record for a cancel every 4 s, a third of stale_after.
-    const { runtime, handle, exec } = await owner.open(place, { stale_after: '12s' });
+    // Bob reads the record for a cancel every 4 s, a third of what stale_after holds past a member's stop.
+    const { runtime, handle, exec } = await owner.open(place, { stale_after: '32s' });
     const op = newOpId();
 
     try {
@@ -3241,7 +3241,7 @@ done`);
       // A teamai that restarted reads the end from the record as the live one gave it.
       const restarted = fleetStepRuntime({ config: owner.alice.config, masks: {} });
       fleetRuntimes.push(restarted);
-      expect(await restarted.init({ homeEnv: homeEnvOf([]), options: { stale_after: '12s' }, mode: 'unattended', checkout: owner.alice.checkout })).toMatchObject({ ok: true });
+      expect(await restarted.init({ homeEnv: homeEnvOf([]), options: { stale_after: '32s' }, mode: 'unattended', checkout: owner.alice.checkout })).toMatchObject({ ok: true });
       expect(await restarted.reattach(handle)).toMatchObject({ kind: 'alive', ops: [{ op, state: 'cancelled', stdout: end.kind === 'cancelled' ? end.stdout : '' }] });
     } finally {
       vi.unstubAllEnvs();
@@ -3555,7 +3555,7 @@ done`);
     const op = newOpId();
     // What a teamai killed between noting the offer and writing it left.
     await markOffered(owner.alice.config, owner.run, owner.attempt, 'gpu', { op, staleAfterMs: 120_000 });
-    const second = await owner.open(owner.alice.checkout, { pool: 'default', stale_after: '1s' });
+    const second = await owner.open(owner.alice.checkout, { pool: 'default', stale_after: '23s' });
 
     const reconnected = second.exec(op);
 
@@ -3575,14 +3575,14 @@ done`);
     await first.runtime.dispose();
     await left;
 
-    const second = await owner.open(owner.alice.checkout, { pool: 'gpu', stale_after: '1s' });
+    const second = await owner.open(owner.alice.checkout, { pool: 'gpu', stale_after: '23s' });
     await second.runtime.reattach(second.handle);
     const reconnected = second.exec(op);
-    await new Promise((resolve) => setTimeout(resolve, 4_000));
+    await new Promise((resolve) => setTimeout(resolve, 24_000));
     await second.runtime.dispose();
 
     expect(await reconnected).toMatchObject({ kind: 'failed', failure: { code: 'runtime_interrupted' } });
     expect(await owner.record()).toMatchObject({ state: 'claimed', pool: 'default', staleAfterMs: 60_000 });
-  }, 30_000);
+  }, 60_000);
 });
 

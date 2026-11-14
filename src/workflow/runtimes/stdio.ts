@@ -24,7 +24,7 @@ const EXITED_DRAIN_MS = 1000;
  * `open`, an `exec` or a `prompt`, and for the outcome of an `exec` or `prompt` it cancelled, before it fails that
  * request `runtime_unanswered`.
  */
-const ANSWER_WITHIN_MS = 15_000;
+export const ANSWER_WITHIN_MS = 15_000;
 
 // The most of a runtime's notice teamai shows.
 const NOTICE_SHOWN = 2000;

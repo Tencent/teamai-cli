@@ -1755,7 +1755,7 @@ runtimes:
   - use: fleet
     options:
       pool: build          # optional; default
-      stale_after: 30m     # optional; 30m
+      stale_after: 30m     # optional; 30m, at least 23s
       max_parallel: 4      # at most 4 attempts out at once
   - use: tools
 ```
@@ -1805,7 +1805,7 @@ Each fleet entry offers in its own `pool`, and the first entry whose `can` fits 
 
 You need not stay up. Stop your driver once it offered the attempt, and run `teamai workflow resume <run>` later: it reads the attempt's record, takes the member's work when it finished, and waits otherwise. Steps that do not need the attempt keep running here while it is out.
 
-A member that took an attempt writes that it is still there, with the work it pushed so far, three times per `stale_after`. When your driver sees no word from it for longer than `stale_after`, the attempt fails `fleet_member_gone`. A member none of whose writes reached origin for two thirds of `stale_after`, such as one cut off from the network, stops the step itself before then, pushes its work if it can, and ends with `fleet_member_gone`, so it no longer runs when the step is offered again. A command step the member runs on its own machine is stopped at that point even if the member was killed, by a small process teamai starts beside the command; a step the member runs on a step runtime is left to that runtime. Its work up to the last push stays in the step's place, and `teamai workflow retry <run> <step>` offers the step again from there.
+A member that took an attempt writes that it is still there, with the work it pushed so far, three times per `stale_after`. When your driver sees no word from it for longer than `stale_after`, the attempt fails `fleet_member_gone`. A member none of whose writes reached origin for a while, such as one cut off from the network, stops the step itself early enough that the stop ends before then: it leaves 20 seconds for the stop, so `stale_after` is at least 23s. It pushes its work if it can and ends with `fleet_member_gone`, so it no longer runs when the step is offered again. A step that does not stop within those 20 seconds, such as one on a step runtime that does not confirm the stop, is given up: the member writes nothing more of it, and it may still run there. A command step the member runs on its own machine is stopped at that point even if the member was killed, by a small process teamai starts beside the command; a step the member runs on a step runtime is left to that runtime. Its work up to the last push stays in the step's place, and `teamai workflow retry <run> <step>` offers the step again from there.
 
 Each attempt's branch `teamai/attempts/<run>/<attempt>` stays on origin until `teamai doctor --fix` removes the run's branches, once `workflows.retention` has passed ([The branches a run leaves](workflow.md#the-branches-a-run-leaves)). A member keeps what it kept of an attempt, such as its log, until `workflows.retention` has passed since the attempt's record ended, and removes it at its next `teamai workflow resume --next --pool` after that.
 

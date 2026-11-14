@@ -34,6 +34,7 @@ import { newOpId, type ExecAnswer, type ExecEnd, type ExecEvents, type ExecQuest
 import type { DriverCan } from '../requirements.js';
 import { LAUNCH_TOOLS } from '../../launch-registry.js';
 import { DRIVER_ENV_REACH, DriverEnvSchema, LabelSchema } from '../requirements.js';
+import { FLEET_STOP_BUDGET_MS, MIN_STALE_AFTER_MS } from './beats.js';
 
 /** How often the owner reads the attempt's record while a member runs it. */
 const RECORD_POLL_MS = 1_000;
@@ -368,6 +369,13 @@ export function fleetStepRuntime({ config, masks, openWake }: { config: LocalCon
       // a confined one: its directory lives under this machine's $TEAMAI_RUN_DIR, which no commit a member fetches
       // carries, so the fleet answers no confined prompt and, like a runtime that says so, offers no `confined`.
       const { pool, stale_after: staleAfterMs, can: { hitl: _hitl, confined: _unreachable, ...can } = {}, labels, wake } = parsed.value;
+
+      // A member writes progress three times per stale_after, and stops a step within FLEET_STOP_BUDGET_MS, both before
+      // its owner may give the claim up (fleetBeats). Opened only to stop what an attempt ran, the runtime offers nothing.
+      if (mode !== 'recover' && staleAfterMs < MIN_STALE_AFTER_MS) {
+        return { ok: false, failure: { code: 'bad_option', key: 'stale_after', message: `must be at least ${MIN_STALE_AFTER_MS / 1_000}s: a member writes progress three times per stale_after, at least a second apart, and takes up to ${FLEET_STOP_BUDGET_MS / 1_000} s to stop a step, both before its owner gives the claim up` } };
+      }
+
       // Opened only to stop and close what it ran, it offers nothing, so it wakes no one.
       const waking = wake === undefined || mode === 'recover' ? undefined : await openWaker(wake, openWake);
 

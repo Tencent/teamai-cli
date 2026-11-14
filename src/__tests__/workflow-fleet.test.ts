@@ -944,10 +944,11 @@ steps:
  * answers both members, the run and the offer.
  */
 /**
- * A stale_after for a member that runs a step: beats 3 s apart leave each write a full interval to land under load, as
- * the member's cut-off assumes, past which it stops a step none of whose progress landed.
+ * A stale_after for a member that runs a step: beats 3 s apart, a third of what it holds past a member's stop, leave
+ * each write a full interval to land under load, as the member's cut-off assumes, past which it stops a step none of
+ * whose progress landed.
  */
-const MEMBER_STALE_MS = 9_000;
+const MEMBER_STALE_MS = 29_000;
 
 async function offerSlow(staleAfterMs: number, { definition = SLOW, command = 'echo begun > begun.txt; sleep 60' } = {}) {
   const acme = team({ slow: definition });
@@ -1025,7 +1026,7 @@ describe('cancelling an attempt through its record', () => {
   }, 60_000);
 
   it('stops its step before its owner can give it up once none of its progress lands, and answers that the attempt is gone', async () => {
-    const staleAfterMs = 6_000;
+    const staleAfterMs = 26_000;
     const { alice, bob, run, startCommit } = await offerSlow(staleAfterMs);
     const taking = takeFleetAttempt(bob.config, { pool: 'default', repository: 'github.com/acme/business', root: bob.checkout, member: await installOwner(bob.config), secrets: {}, place: HERE });
     await eventually(async () => {
@@ -1047,10 +1048,79 @@ describe('cancelling an attempt through its record', () => {
     expect(answeredAt).toBeLessThan(Date.parse(last?.state === 'claimed' ? last.progressAt : '') + staleAfterMs);
   }, 60_000);
 
+  it('ends its stop of a step on its step runtime before its owner can give it up, though the runtime takes ten seconds to confirm the stop', async () => {
+    const staleAfterMs = 24_000;
+    const { alice, bob, run, startCommit } = await offerSlow(staleAfterMs);
+    const local = scratchHostRuntime();
+    let stoppedAt: number | undefined;
+    const runtime: StepRuntime<DriverCan> = {
+      ...local,
+      exec: async (request, events, kind) => {
+        const end = await local.exec(request, events, kind);
+        stoppedAt = Date.now();
+
+        return end;
+      },
+      // A runtime that asks its provider to stop, which takes ten seconds to.
+      cancel: async (op) => {
+        await sleep(10_000);
+
+        return local.cancel(op);
+      },
+    };
+    const taking = takeFleetAttempt(bob.config, { pool: 'default', repository: 'github.com/acme/business', root: bob.checkout, member: await installOwner(bob.config), secrets: {}, place: { command: { kind: 'runtime', driver: 'bobs', use: 'box', runtime, entry: soleEntry(runtime) } } });
+    await eventually(async () => {
+      const record = await recordOf(alice, run);
+
+      return record?.state === 'claimed' && record.pushed !== startCommit ? record : undefined;
+    });
+    // No progress of the member lands from now on, as when its machine is cut off.
+    for (const repo of [alice.config.repo.localPath, alice.checkout]) receiveHook(git(repo, 'remote', 'get-url', 'origin'), 'exit 1');
+
+    const answer = await Promise.race([taking, sleep(45_000).then(() => 'still running' as const)]);
+    const answeredAt = Date.now();
+    const last = await recordOf(alice, run);
+    // The owner's clock starts once it read the member's last write, which the member began at progressAt.
+    const givenUpFrom = Date.parse(last?.state === 'claimed' ? last.progressAt : '') + staleAfterMs;
+
+    expect(answer).toMatchObject({ error: { code: 'fleet_member_gone' } });
+    expect(stoppedAt).toBeLessThan(givenUpFrom);
+    expect(answeredAt).toBeLessThan(givenUpFrom);
+  }, 90_000);
+
+  it('gives up the stop of a cancelled step its step runtime never confirms, without answering the cancel', async () => {
+    const { alice, bob, run } = await offerSlow(24_000);
+    const local = scratchHostRuntime();
+    const ops: OpId[] = [];
+    const runtime: StepRuntime<DriverCan> = {
+      ...local,
+      exec: async (request, events, kind) => {
+        ops.push(request.op);
+
+        return local.exec(request, events, kind);
+      },
+      // A runtime whose provider never confirms a stop.
+      cancel: async () => new Promise<void>(() => {}),
+    };
+    onTestFinished(async () => { await Promise.all(ops.map(async (op) => local.cancel(op))); });
+    const taking = takeFleetAttempt(bob.config, { pool: 'default', repository: 'github.com/acme/business', root: bob.checkout, member: await installOwner(bob.config), secrets: {}, place: { command: { kind: 'runtime', driver: 'bobs', use: 'box', runtime, entry: soleEntry(runtime) } } });
+    const claimed = await eventually(async () => {
+      const record = await recordOf(alice, run);
+
+      return record?.state === 'claimed' && ops.length > 0 ? record : undefined;
+    });
+
+    expect(await cancelAttempt(alice.config, claimed)).toMatchObject({ ok: true, value: { state: 'cancelling' } });
+    const answer = await Promise.race([taking, sleep(45_000).then(() => 'still running' as const)]);
+
+    expect(answer).toMatchObject({ error: { code: 'fleet_member_gone', message: expect.stringContaining('did not stop within 20 s') } });
+    expect(await recordOf(alice, run)).toMatchObject({ state: 'cancelling' });
+  }, 90_000);
+
   it('goes on with its step when teamai-reports cannot be read for a moment after another write landed over its own', async () => {
-    // A stale_after whose cut-off, two thirds of it, past which a member stops a step none of whose progress landed,
-    // the moment below stays well inside.
-    const { alice, bob, run, startCommit } = await offerSlow(12_000, { definition: SLOW.replace('sleep 60', 'sleep 12'), command: 'echo begun > begun.txt; sleep 12' });
+    // A stale_after whose cut-off, 8 s, past which a member stops a step none of whose progress landed, the moment
+    // below stays well inside.
+    const { alice, bob, run, startCommit } = await offerSlow(32_000, { definition: SLOW.replace('sleep 60', 'sleep 12'), command: 'echo begun > begun.txt; sleep 12' });
     // A git on PATH that, while `cut` exists, fails each read of teamai-reports from the team clone, as a moment
     // origin cannot be reached does; the member's writes go through its reports checkout and still land.
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-fleet-git-'));
@@ -1122,8 +1192,8 @@ describe('cancelling an attempt through its record', () => {
     });
 
     expect(await cancelAttempt(alice.config, claimed)).toMatchObject({ ok: true, value: { state: 'cancelling' } });
-    // The member reads the cancel within a beat, a third of stale_after, and stops the step while its place opens.
-    await new Promise((resolve) => setTimeout(resolve, MEMBER_STALE_MS / 3 + 2_000));
+    // The member reads the cancel within a beat, 3 s, and stops the step while its place opens.
+    await new Promise((resolve) => setTimeout(resolve, 3_000 + 2_000));
     open();
 
     expect(await taking).toEqual({ data: { cancelled: { run, attempt: ATTEMPT, step: 'work' } } });
@@ -1808,8 +1878,21 @@ describe('a cancel the owner cannot write into the attempt\'s record at once', (
     expect(await recordIn(alice, run, attempt, 'claimed')).toMatchObject({ member: { user: 'bob' } });
   }, 60_000);
 
+  it('refuses a pool whose stale_after cannot hold three progress writes and a member\'s stop, naming the shortest it takes, and still stops what it ran', async () => {
+    const alice = await team({ slow: SLOW }).member('alice');
+    const init = async (mode: 'unattended' | 'recover') => {
+      const runtime = fleetStepRuntime({ config: alice.config, masks: {} });
+      opened.push(runtime);
+
+      return runtime.init({ homeEnv: homeEnvOf([]), options: { stale_after: '22s' }, mode, checkout: alice.checkout });
+    };
+
+    expect(await init('unattended')).toMatchObject({ ok: false, failure: { code: 'bad_option', key: 'stale_after', message: expect.stringContaining('at least 23s') } });
+    expect(await init('recover')).toMatchObject({ ok: true });
+  });
+
   it('ends the owner\'s cancel cancel_failed at the deadline, not at a shorter stale_after, when origin cannot be read after a cancel write failed', async () => {
-    const { bob, run, attempt, open, origin } = await ownerOffering(opened, undefined, { staleAfter: '20s' });
+    const { bob, run, attempt, open, origin } = await ownerOffering(opened, undefined, { staleAfter: '30s' });
     const { runtime, exec } = await open();
     const op = newOpId();
     const ended = exec(op);
@@ -1826,7 +1909,7 @@ describe('a cancel the owner cannot write into the attempt\'s record at once', (
 
     expect(await within(ended, 3_000)).toBe('waiting');
     // Past stale_after, short of the deadline: the cancel still waits for its record.
-    vi.setSystemTime(Date.now() + 21_000);
+    vi.setSystemTime(Date.now() + 31_000);
     expect(await within(ended, 3_000)).toBe('waiting');
     passTheDeadline();
     expect(await within(ended, 15_000)).toMatchObject({ kind: 'failed', failure: { code: 'cancel_failed', message: expect.stringMatching(/teamai-reports could not be read .* Run teamai workflow cancel r[0-9a-f]+ again\.$/) } });
@@ -1843,7 +1926,7 @@ describe('a cancel the owner cannot write into the attempt\'s record at once', (
   };
 
   it('ends the owner\'s cancel cancelled at the withdraw it wrote, when origin cannot be read after it', async () => {
-    const { bob, run, attempt, open, origin } = await ownerOffering(opened, undefined, { staleAfter: '20s' });
+    const { bob, run, attempt, open, origin } = await ownerOffering(opened, undefined, { staleAfter: '30s' });
     const { runtime, exec } = await open();
     const op = newOpId();
     const ended = exec(op);
@@ -1857,7 +1940,7 @@ describe('a cancel the owner cannot write into the attempt\'s record at once', (
   }, 60_000);
 
   it('ends the owner\'s cancel cancel_failed past stale_after, naming the record, when origin cannot be read after the cancel of a claim landed', async () => {
-    const { bob, run, attempt, open, origin } = await ownerOffering(opened, undefined, { staleAfter: '20s' });
+    const { bob, run, attempt, open, origin } = await ownerOffering(opened, undefined, { staleAfter: '30s' });
     const { runtime, exec } = await open();
     const op = newOpId();
     const ended = exec(op);
@@ -1872,13 +1955,13 @@ describe('a cancel the owner cannot write into the attempt\'s record at once', (
     await eventually(async () => (fs.existsSync(origin) ? undefined : true));
 
     expect(await within(ended, 3_000)).toBe('waiting');
-    vi.setSystemTime(Date.now() + 21_000);
-    expect(await within(ended, 15_000)).toMatchObject({ kind: 'failed', failure: { code: 'cancel_failed', message: expect.stringMatching(new RegExp(`its member bob was asked to stop it, and the record of attempt ${attempt} on teamai-reports could not be read for 20 s since, so whether the member stopped is not known\\. .* The attempt's place and records are kept\\. Once origin can be read, run teamai workflow cancel ${run} again\\.$`)) } });
+    vi.setSystemTime(Date.now() + 31_000);
+    expect(await within(ended, 15_000)).toMatchObject({ kind: 'failed', failure: { code: 'cancel_failed', message: expect.stringMatching(new RegExp(`its member bob was asked to stop it, and the record of attempt ${attempt} on teamai-reports could not be read for 30 s since, so whether the member stopped is not known\\. .* The attempt's place and records are kept\\. Once origin can be read, run teamai workflow cancel ${run} again\\.$`)) } });
     await cancelled;
   }, 60_000);
 
   it('ends the owner\'s cancel cancel_failed past stale_after, naming the record, when the record is no longer on teamai-reports after the cancel of a claim landed', async () => {
-    const { bob, run, attempt, open, origin } = await ownerOffering(opened, undefined, { staleAfter: '20s' });
+    const { bob, run, attempt, open, origin } = await ownerOffering(opened, undefined, { staleAfter: '30s' });
     const { runtime, exec } = await open();
     const op = newOpId();
     const ended = exec(op);
@@ -1894,13 +1977,13 @@ describe('a cancel the owner cannot write into the attempt\'s record at once', (
     await eventually(async () => (git(origin, 'branch', '--list', 'teamai-reports') === '' ? true : undefined));
 
     expect(await within(ended, 3_000)).toBe('waiting');
-    vi.setSystemTime(Date.now() + 21_000);
+    vi.setSystemTime(Date.now() + 31_000);
     expect(await within(ended, 15_000)).toMatchObject({ kind: 'failed', failure: { code: 'cancel_failed', message: expect.stringMatching(new RegExp(`its member bob was asked to stop it, and the record of attempt ${attempt} is no longer on teamai-reports, so whether the member stopped is not known\\. The attempt's place and records are kept\\.`)) } });
     await cancelled;
   }, 60_000);
 
   it('ends the owner\'s cancel cancel_failed past stale_after, keeping the place, when origin cannot be read before any cancel write', async () => {
-    const { bob, run, attempt, open, origin } = await ownerOffering(opened, undefined, { staleAfter: '20s' });
+    const { bob, run, attempt, open, origin } = await ownerOffering(opened, undefined, { staleAfter: '30s' });
     const { runtime, exec } = await open();
     const op = newOpId();
     const ended = exec(op);
@@ -1913,8 +1996,8 @@ describe('a cancel the owner cannot write into the attempt\'s record at once', (
     const cancelled = runtime.cancel(op);
 
     expect(await within(ended, 3_000)).toBe('waiting');
-    vi.setSystemTime(Date.now() + 21_000);
-    expect(await within(ended, 15_000)).toMatchObject({ kind: 'failed', failure: { code: 'cancel_failed', message: expect.stringMatching(/could not be read for 20 s, so no member was asked to stop it, and a member may still take its offer\. .* The attempt's place and records are kept\. Run teamai workflow cancel r[0-9a-f]+ again\.$/) } });
+    vi.setSystemTime(Date.now() + 31_000);
+    expect(await within(ended, 15_000)).toMatchObject({ kind: 'failed', failure: { code: 'cancel_failed', message: expect.stringMatching(/could not be read for 30 s, so no member was asked to stop it, and a member may still take its offer\. .* The attempt's place and records are kept\. Run teamai workflow cancel r[0-9a-f]+ again\.$/) } });
     await cancelled;
   }, 60_000);
 

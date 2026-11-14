@@ -5,15 +5,16 @@ import { writeJsonAtomic } from '../../utils/fs.js';
 
 // ─── The fence a member's command carries ────────────────
 //
-//  A member stops its step itself once none of its progress landed for its cut-off (member.ts fleetBeats), a full
-//  progress interval before its owner may give the claim up and offer the step again. A member killed mid-step stops
-//  nothing: the process group of its command runs on until the member restarts, and one that never restarts leaves it
-//  running beside the step the owner offered again. So beside each command it runs on this machine, the member starts a
-//  guardian: a Node process in a group of its own, which reads the fence, the member's cut-off point, that the member
-//  rewrites each time it learns a progress write landed. Once the fence passes, the guardian stops the command's group
-//  as the member's cut-off does, SIGTERM and, five seconds later, SIGKILL until none of it is left, whether or not the
-//  member still lives: at that point a member that lives stops the step itself. The guardian ends once the group is gone,
-//  or once the member removed the fence, as it does when the step ended, and it never signals a group id below 2.
+//  A member stops its step itself once none of its progress landed for its cut-off (beats.ts fleetBeats), a full
+//  progress interval and a whole stop budget before its owner may give the claim up and offer the step again. A member
+//  killed mid-step stops nothing: the process group of its command runs on until the member restarts, and one that
+//  never restarts leaves it running beside the step the owner offered again. So beside each command it runs on this
+//  machine, the member starts a guardian: a Node process in a group of its own, which reads the fence, the member's
+//  cut-off point, that the member rewrites each time it learns a progress write landed. Once the fence passes, the
+//  guardian stops the command's group as the member's cut-off does, SIGTERM and, five seconds later, SIGKILL until none
+//  of it is left, whether or not the member still lives: at that point a member that lives stops the step itself. The
+//  guardian ends once the group is gone, or once the member removed the fence, as it does when the step ended, and it
+//  never signals a group id below 2.
 //
 
 /** The fence of one command: the cut-off point the member moves, and its end once the step ended. */

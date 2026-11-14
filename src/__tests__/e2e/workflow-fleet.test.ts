@@ -205,7 +205,7 @@ const SPEND_HOLD = flow('spendhold', `  - id: review
     command: node -e "const fs = require('fs'); const pid = require('os').homedir() + '/nested.pid'; if (fs.existsSync(pid)) process.exit(0); fs.writeFileSync(pid, String(process.pid)); setInterval(() => {}, 1000)"
 `);
 
-const FLEET = { schemaVersion: 'v1alpha1', name: 'build-fleet', tool: 'claude', runtimes: [{ use: 'fleet', options: { pool: 'build', stale_after: '6s', max_parallel: 1, can: { tools: [] } } }, { use: 'local' }] };
+const FLEET = { schemaVersion: 'v1alpha1', name: 'build-fleet', tool: 'claude', runtimes: [{ use: 'fleet', options: { pool: 'build', stale_after: '26s', max_parallel: 1, can: { tools: [] } } }, { use: 'local' }] };
 
 /** The default pool, two attempts out at once. */
 /** The default pool, whose members run claude and report the tokens it spent. */
@@ -602,7 +602,7 @@ describe('the fleet', () => {
     await taking;
     // The owner may give the claim up once stale_after passed since the member began its last write that landed.
     const [claimed] = records(run);
-    const givenUpFrom = Date.parse(claimed?.progressAt ?? '') + 6_000;
+    const givenUpFrom = Date.parse(claimed?.progressAt ?? '') + 26_000;
 
     expect(isAlive(command)).toBe(true);
     expect(await until(() => !isAlive(command), givenUpFrom - Date.now())).toBe(true);

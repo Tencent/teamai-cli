@@ -59,32 +59,13 @@ import { JsonValueSchema, type JsonValue, isJsonObject } from '@teamai/shared/js
 import { git, gitAnswer, hostGitEnv, keptOriginUrl, pushTargets, readMemberConfig, remoteGit, untrustedGit, type MemberConfig } from '../worktree.js';
 import { readRegularFile, writeRegularFile } from '@teamai/shared/regular-file';
 import { fenceCommand, type CommandFence } from './fence.js';
+import { FLEET_STOP_BUDGET_MS, fleetBeats } from './beats.js';
 
 /** How often a member reads its claim's record for a cancel, when its beats come less often than that. */
 const CANCEL_READ_MS = 30_000;
 
 /** How often a member whose whole workflow waits at a gate reads its claim's record for the owner's answer. */
 const ANSWER_READ_MS = 1_000;
-
-/**
- * How often a member writes progress, and how long it runs a step none of whose progress landed. Its owner gives the
- * claim up once it read no new write for `stale_after` on its own clock, which starts no earlier than that write
- * landed, and the member began its last write that landed at the record's `progressAt`, before it landed. With
- * `beatMs` a third of `stale_after`:
- *
- *   progressAt + cutOffMs + beatMs = progressAt + staleAfterMs <= landed + staleAfterMs <= the owner's earliest give-up
- *
- * So the member begins to stop the step a full progress interval before its owner may give the claim up and offer the
- * step again, and that stop must end within the interval: a command here gets SIGKILL five seconds after SIGTERM,
- * within it from a `stale_after` of 15 s. The next write, begun one interval after `progressAt`, has a full interval to
- * land before the cut-off. Below 3 s, where beats come a second apart, the cut-off keeps that interval for the next
- * write, and the slack shrinks to none.
- */
-function fleetBeats(staleAfterMs: number) {
-  const beatMs = Math.max(1_000, Math.floor(staleAfterMs / 3));
-
-  return { beatMs, cutOffMs: Math.max(staleAfterMs - beatMs, 2 * beatMs) };
-}
 
 /** The last characters of a step's stderr a member keeps. */
 const STDERR_KEPT = 4_000;
@@ -600,6 +581,20 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
   let beating: Promise<void> | undefined;
   let stopCommand = async (): Promise<void> => {};
 
+  // The member's stop of the step, for a cancel, a claim given up or its cut-off, ends within FLEET_STOP_BUDGET_MS of
+  // when it began, or the member gives it up: `unstopped` settles then, and the member writes nothing more of the claim.
+  let stopBudget: NodeJS.Timeout | undefined;
+  let giveUpStop = (): void => {};
+
+  const unstopped = new Promise<'unstopped'>((resolve) => {
+    giveUpStop = () => { resolve('unstopped'); };
+  });
+
+  const stopStep = async (): Promise<void> => {
+    stopBudget ??= setTimeout(giveUpStop, FLEET_STOP_BUDGET_MS);
+    await Promise.race([stopCommand(), unstopped]);
+  };
+
   // The fence of a command the member runs on this machine: its guardian stops the command at the cut-off point, should
   // the member be gone by then. The point moves each time `latest` does.
   let fence: CommandFence | undefined;
@@ -643,7 +638,7 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
 
     if (record?.state === 'cancelling') cancelling = record;
     else gone = error.message;
-    await stopCommand();
+    await stopStep();
   };
 
   // Reads the record for a cancel, or the owner's answer, unless it is the member's own last write.
@@ -768,7 +763,7 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
       }
 
       cutOff = cutOffWhy(left);
-      void stopCommand();
+      void stopStep();
     };
 
     watchProgress();
@@ -796,20 +791,29 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
       });
     }, tickMs);
 
-    let ran: FleetResult;
+    let ran: FleetResult | 'unstopped';
 
     // A step that fails instead of ending still ends its claim, so its owner need not wait out stale_after to retry it.
     try {
-      ran = await command.exit;
+      ran = await Promise.race([command.exit, unstopped]);
     } catch (error) {
       const cause = (error instanceof Error ? error.message : String(error)).slice(0, 300).replace(/[.\s]*$/, '.');
       ran = { exitCode: 1, stderr: `The member's run of step "${lease.step}" failed before the step ended: ${cause} ${retryCommand({ run, step: lease.step })} offers it again.` };
     } finally {
       clearInterval(beat);
       clearTimeout(watch);
+      clearTimeout(stopBudget);
     }
 
     await beating;
+
+    // A stop that did not end within its budget may leave the step running where it ran, past the point its owner may
+    // offer it again: the member answers nothing of it, not even a cancel, and its owner gives the claim up.
+    if (ran === 'unstopped') {
+      const why = cutOff ?? (cancelling !== undefined ? `The owner of run ${run} cancelled attempt ${attempt} of step "${lease.step}".` : `The owner of run ${run} gave up attempt ${attempt} of step "${lease.step}" while this member ran it. ${gone ?? ''}`);
+
+      return { error: { code: 'fleet_member_gone', message: `${why} The step did not stop within ${FLEET_STOP_BUDGET_MS / 1_000} s of when this member began to stop it, so it may still run where it ran, and this member wrote nothing more of the attempt.` } };
+    }
 
     // A command that ended past the cut-off point was stopped by its guardian, or ended as the member stopped it: either
     // way the member gives the attempt up, as its own cut-off does.
