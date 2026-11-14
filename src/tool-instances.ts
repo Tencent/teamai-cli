@@ -44,8 +44,12 @@ export interface ResolvedToolInstance extends ToolInstance<ToolId> {
 const NAME = /^[a-z0-9][a-z0-9._-]*$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/** A `$HOME`-relative directory that stays under `$HOME`. */
-const HomeDir = z.string().min(1).refine((dir) => !path.isAbsolute(dir) && !dir.split(/[\\/]/).includes('..'), 'home.dir is a directory under your home, such as .acme-claude, with no ..');
+/** A `$HOME`-relative directory under `$HOME`, never `$HOME` itself. */
+const HomeDir = z.string().min(1).refine((dir) => {
+  const segments = dir.split(/[\\/]/);
+
+  return !path.isAbsolute(dir) && !segments.includes('..') && segments.some((segment) => segment !== '' && segment !== '.');
+}, 'home.dir is a directory under your home, such as .acme-claude, not your home itself, with no ..');
 
 const InstanceFileSchema = z.object({
   schemaVersion: z.literal('v1alpha1'),
@@ -272,7 +276,9 @@ function homeSharedWith({ name, home, instances, host, toolRoots }: {
 }): string | undefined {
   const own = instanceHomeDir({ name, home }, host);
   const at = { home: host.home, path: host.path, readTextNow: (file: string) => host.readTextNow(file), existsNow: (file: string) => host.existsNow(file) };
-  const same = (dir: string | null): boolean => dir !== null && host.path.relative(own, dir) === '';
+  // macOS's default volume ignores letter case, and so does Windows: `.Claude` is Claude Code's `.claude` there.
+  const folded = (dir: string): string => host.platform === 'darwin' || host.platform === 'win32' ? dir.toLowerCase() : dir;
+  const same = (dir: string | null): boolean => dir !== null && host.path.relative(folded(own), folded(dir)) === '';
 
   return TOOL_ORDER.find((tool) => same(toolHome(tool, host)) || same(recordedToolRootDir(tool, toolRoots, at)))
     ?? instances.find((other) => other.name !== name && other.name !== other.extends && other.home !== undefined && same(instanceHomeDir({ name: other.name, home: other.home }, host)))?.name;

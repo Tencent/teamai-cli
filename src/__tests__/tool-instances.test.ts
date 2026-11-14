@@ -151,6 +151,24 @@ describe('team tool instances', () => {
     expect(config?.toolPaths[stem]).toBeUndefined();
   });
 
+  // macOS's default volume ignores case, so .Claude is the directory Claude Code reads; Windows's path.relative ignores it too.
+  it.each(['darwin', 'win32'] as const)('refuses an instance whose home.dir is the home of another tool in another letter case, on %s', async (platform) => {
+    const original = process.platform;
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+    onTestFinished(() => { Object.defineProperty(process, 'platform', { value: original, configurable: true }); });
+    const { registry, errors } = await load(teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE.replace('dir: .acme-claude', 'dir: .Claude') }));
+
+    expect(errors).toEqual([expect.stringContaining(`${path.join('tools', 'acme-claude.yaml')} is not valid: home.dir: .Claude is the home of claude too`)]);
+    expect(registry.toolOf('acme-claude')).toBeUndefined();
+  });
+
+  it.each(['.', './', './/.'])('refuses an instance whose home.dir %s is the home itself, where Claude Code would read ~/CLAUDE.md for every project', async (dir) => {
+    const { registry, errors } = await load(teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE.replace('dir: .acme-claude', `dir: '${dir}'`) }));
+
+    expect(errors).toEqual([expect.stringContaining(`${path.join('tools', 'acme-claude.yaml')} is not valid: home.dir: home.dir is a directory under your home, such as .acme-claude, not your home itself, with no ..`)]);
+    expect(registry.toolOf('acme-claude')).toBeUndefined();
+  });
+
   it('refuses two instances on one home.dir, each naming the other', async () => {
     const codex = 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-claude }\n';
     const { registry, errors } = await load(teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE, 'tools/acme-codex.yaml': codex }));
