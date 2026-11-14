@@ -3370,7 +3370,7 @@ interface LoopLease {
 async function driveLoop(
   config: LocalConfig,
   runId: string,
-  answer: (lease: LoopLease, earlier: number) => { outcome?: 'success' | 'failed'; outputs?: unknown } = () => ({}),
+  answer: (lease: LoopLease, earlier: number) => { outcome?: 'success' | 'failed'; outputs?: unknown; failure?: { code: string; message: string } } = () => ({}),
 ): Promise<{ leased: string[]; done: unknown }> {
   const leased: string[] = [];
   const counts = new Map<string, number>();
@@ -3382,8 +3382,8 @@ async function driveLoop(
     leased.push(`${lease.step}#${lease.pass}`);
     const earlier = counts.get(lease.step) ?? 0;
     counts.set(lease.step, earlier + 1);
-    const { outcome = 'success', outputs } = answer(lease, earlier);
-    const reported = await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome, outputs, driver: driverA });
+    const { outcome = 'success', outputs, failure } = answer(lease, earlier);
+    const reported = await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome, outputs, driver: driverA, ...(failure && { failure }) });
     if ('error' in reported) throw new Error(reported.error.message);
   }
 }
@@ -3727,6 +3727,19 @@ describe('workflow loops', () => {
       outcome: 'failed',
       failure: { code: 'loop_exhausted', message: 'Loop of workflow "rounds" is exhausted: it ran 3 rounds, its max_iterations' },
     });
+  });
+
+  it('ends the loop with the failure of a step whose work may still run, rather than run a round beside it until max_iterations', async () => {
+    const spin = workflow('spin', `  - id: work
+    command: node work.js
+`, 'loop: { max_iterations: 3 }\n');
+    const { config, runId } = await startTree({ spin }, 'spin');
+    const lost = { code: 'runtime_lost', message: 'Step "work" did not run again beside its earlier attempt a1b2c3d4e, whose work may still run there.' };
+
+    const { leased, done } = await driveLoop(config, runId, () => ({ outcome: 'failed', failure: lost }));
+
+    expect(leased).toEqual(['work#1']);
+    expect(done).toMatchObject({ outcome: 'failed', failure: { code: 'runtime_lost', message: `Loop of workflow "spin" ran no round again after round 1: ${lost.message}` } });
   });
 
   it('publishes the code of the run failure in the end record, without its message', async () => {

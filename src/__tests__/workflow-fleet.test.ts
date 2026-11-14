@@ -943,6 +943,12 @@ steps:
  * Alice starts workflow `slow`, defined as `definition` with command `command`, and offers its step with `staleAfterMs`;
  * answers both members, the run and the offer.
  */
+/**
+ * A stale_after for a member that runs a step: beats 3 s apart leave each write a full interval to land under load, as
+ * the member's cut-off assumes, past which it stops a step none of whose progress landed.
+ */
+const MEMBER_STALE_MS = 9_000;
+
 async function offerSlow(staleAfterMs: number, { definition = SLOW, command = 'echo begun > begun.txt; sleep 60' } = {}) {
   const acme = team({ slow: definition });
   const [alice, bob] = [await acme.member('alice'), await acme.member('bob')];
@@ -997,7 +1003,7 @@ describe('cancelling an attempt through its record', () => {
   });
 
   it('stops the member\'s step, which pushes its work and answers cancelled', async () => {
-    const { alice, bob, run, startCommit } = await offerSlow(3_000);
+    const { alice, bob, run, startCommit } = await offerSlow(MEMBER_STALE_MS);
     const taking = takeFleetAttempt(bob.config, { pool: 'default', repository: 'github.com/acme/business', root: bob.checkout, member: await installOwner(bob.config), secrets: {}, place: HERE });
     // The member's first beat pushed the file the step wrote.
     const running = await eventually(async () => {
@@ -1018,8 +1024,33 @@ describe('cancelling an attempt through its record', () => {
     expect(await lastGoneWork(alice.config, { run, step: 'work' })).toEqual({ attempt: ATTEMPT, pushed: cancelled.pushed });
   }, 60_000);
 
+  it('stops its step before its owner can give it up once none of its progress lands, and answers that the attempt is gone', async () => {
+    const staleAfterMs = 6_000;
+    const { alice, bob, run, startCommit } = await offerSlow(staleAfterMs);
+    const taking = takeFleetAttempt(bob.config, { pool: 'default', repository: 'github.com/acme/business', root: bob.checkout, member: await installOwner(bob.config), secrets: {}, place: HERE });
+    await eventually(async () => {
+      const record = await recordOf(alice, run);
+
+      return record?.state === 'claimed' && record.pushed !== startCommit ? record : undefined;
+    });
+    // Neither origin takes a push from now on, the team's for teamai-reports and the business one for the attempt's
+    // ref: no progress of the member lands, as when its machine is cut off.
+    for (const repo of [alice.config.repo.localPath, alice.checkout]) receiveHook(git(repo, 'remote', 'get-url', 'origin'), 'exit 1');
+
+    const answer = await Promise.race([taking, sleep(15_000).then(() => 'still running' as const)]);
+    const answeredAt = Date.now();
+    const last = await recordOf(alice, run);
+
+    expect(answer).toMatchObject({ error: { code: 'fleet_member_gone', message: expect.stringContaining(`stopped step "work" of attempt ${ATTEMPT}`) } });
+    // The owner's clock starts once it read the member's last write, which the member began at progressAt.
+    expect(last).toMatchObject({ state: 'claimed' });
+    expect(answeredAt).toBeLessThan(Date.parse(last?.state === 'claimed' ? last.progressAt : '') + staleAfterMs);
+  }, 60_000);
+
   it('goes on with its step when teamai-reports cannot be read for a moment after another write landed over its own', async () => {
-    const { alice, bob, run, startCommit } = await offerSlow(3_000, { definition: SLOW.replace('sleep 60', 'sleep 6'), command: 'echo begun > begun.txt; sleep 6' });
+    // A stale_after whose cut-off, two thirds of it, past which a member stops a step none of whose progress landed,
+    // the moment below stays well inside.
+    const { alice, bob, run, startCommit } = await offerSlow(12_000, { definition: SLOW.replace('sleep 60', 'sleep 12'), command: 'echo begun > begun.txt; sleep 12' });
     // A git on PATH that, while `cut` exists, fails each read of teamai-reports from the team clone, as a moment
     // origin cannot be reached does; the member's writes go through its reports checkout and still land.
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-fleet-git-'));
@@ -1047,7 +1078,7 @@ describe('cancelling an attempt through its record', () => {
   }, 60_000);
 
   it('stops its step when its record on teamai-reports is one a newer teamai wrote, which no later read of it parses', async () => {
-    const { alice, bob, run, startCommit } = await offerSlow(3_000, { definition: SLOW.replace('sleep 60', 'sleep 20'), command: 'echo begun > begun.txt; sleep 20' });
+    const { alice, bob, run, startCommit } = await offerSlow(MEMBER_STALE_MS, { definition: SLOW.replace('sleep 60', 'sleep 20'), command: 'echo begun > begun.txt; sleep 20' });
     const taking = takeFleetAttempt(bob.config, { pool: 'default', repository: 'github.com/acme/business', root: bob.checkout, member: await installOwner(bob.config), secrets: {}, place: HERE });
     const running = await eventually(async () => {
       const record = await recordOf(alice, run);
@@ -1065,7 +1096,7 @@ describe('cancelling an attempt through its record', () => {
   }, 60_000);
 
   it('runs nothing on the member\'s step runtime when the cancel comes while its place there opens', async () => {
-    const { alice, bob, run } = await offerSlow(3_000);
+    const { alice, bob, run } = await offerSlow(MEMBER_STALE_MS);
     let execs = 0;
     let open = (): void => {};
     const opening = new Promise<void>((resolve) => { open = resolve; });
@@ -1091,8 +1122,8 @@ describe('cancelling an attempt through its record', () => {
     });
 
     expect(await cancelAttempt(alice.config, claimed)).toMatchObject({ ok: true, value: { state: 'cancelling' } });
-    // The member reads the cancel within a beat, a second at this stale_after, and stops the step while its place opens.
-    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    // The member reads the cancel within a beat, a third of stale_after, and stops the step while its place opens.
+    await new Promise((resolve) => setTimeout(resolve, MEMBER_STALE_MS / 3 + 2_000));
     open();
 
     expect(await taking).toEqual({ data: { cancelled: { run, attempt: ATTEMPT, step: 'work' } } });
@@ -1415,7 +1446,7 @@ const OTHER = AttemptIdSchema.parse('a4567cdef');
 
 describe('a member\'s claim among writes it did not see land', () => {
   it('goes on running when a write of its own claim landed though it could not tell', async () => {
-    const { alice, bob, run, startCommit } = await offerSlow(3_000, { definition: BRIEF, command: BRIEF_COMMAND });
+    const { alice, bob, run, startCommit } = await offerSlow(MEMBER_STALE_MS, { definition: BRIEF, command: BRIEF_COMMAND });
     const taking = takeFleetAttempt(bob.config, { pool: 'default', repository: 'github.com/acme/business', root: bob.checkout, member: await installOwner(bob.config), secrets: {}, place: HERE });
 
     try {
@@ -1436,7 +1467,7 @@ describe('a member\'s claim among writes it did not see land', () => {
 
   it('saves again once a push to one of its push URLs failed, from the work the others took', async () => {
     let mirror = '';
-    const { alice, bob, run } = await offerSlow(3_000, { definition: BRIEF, command: BRIEF_COMMAND });
+    const { alice, bob, run } = await offerSlow(MEMBER_STALE_MS, { definition: BRIEF, command: BRIEF_COMMAND });
     const origin = git(bob.checkout, 'remote', 'get-url', 'origin');
     mirror = path.join(path.dirname(origin), 'mirror.git');
     git(path.dirname(origin), 'init', '-q', '--bare', mirror);

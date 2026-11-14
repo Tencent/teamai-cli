@@ -655,8 +655,9 @@ describe('the fleet', () => {
 
     expect(failed.envelope(), said(failed)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     expect(runStateOf('alice', run).steps[0]?.failure?.code).toBe('fleet_member_gone');
+    // Awake again past its cut-off, the member stops its step on its own and says it gave the attempt up.
     const late = await taking;
-    expect(late.envelope(), said(late)).toMatchObject({ error: { code: 'state_moved' } });
+    expect(late.envelope(), said(late)).toMatchObject({ error: { code: 'fleet_member_gone' } });
     expect(records(run)).toEqual([expect.objectContaining({ state: 'expired' })]);
   }, 180_000);
 

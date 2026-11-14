@@ -65,6 +65,26 @@ const CANCEL_READ_MS = 30_000;
 /** How often a member whose whole workflow waits at a gate reads its claim's record for the owner's answer. */
 const ANSWER_READ_MS = 1_000;
 
+/**
+ * How often a member writes progress, and how long it runs a step none of whose progress landed. Its owner gives the
+ * claim up once it read no new write for `stale_after` on its own clock, which starts no earlier than that write
+ * landed, and the member began its last write that landed at the record's `progressAt`, before it landed. With
+ * `beatMs` a third of `stale_after`:
+ *
+ *   progressAt + cutOffMs + beatMs = progressAt + staleAfterMs <= landed + staleAfterMs <= the owner's earliest give-up
+ *
+ * So the member begins to stop the step a full progress interval before its owner may give the claim up and offer the
+ * step again, and that stop must end within the interval: a command here gets SIGKILL five seconds after SIGTERM,
+ * within it from a `stale_after` of 15 s. The next write, begun one interval after `progressAt`, has a full interval to
+ * land before the cut-off. Below 3 s, where beats come a second apart, the cut-off keeps that interval for the next
+ * write, and the slack shrinks to none.
+ */
+function fleetBeats(staleAfterMs: number) {
+  const beatMs = Math.max(1_000, Math.floor(staleAfterMs / 3));
+
+  return { beatMs, cutOffMs: Math.max(staleAfterMs - beatMs, 2 * beatMs) };
+}
+
 /** The last characters of a step's stderr a member keeps. */
 const STDERR_KEPT = 4_000;
 
@@ -571,6 +591,11 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
 
   let gone: string | undefined;
   let cancelling: Cancelling | undefined;
+  // Why the member stopped the step on its own: none of its progress landed for `cutOffMs`.
+  let cutOff: string | undefined;
+  // A beat whose progress did not land: the next tick writes it again rather than wait a whole interval.
+  let unlanded = false;
+  const { beatMs, cutOffMs } = fleetBeats(claim.staleAfterMs);
   let beating: Promise<void> | undefined;
   let stopCommand = async (): Promise<void> => {};
 
@@ -580,7 +605,7 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
   // origin took the push and its answer was lost: only the claim's member writes one over a claim. An answered one is
   // the owner's answer to the gate it asks, which only the owner writes over its question.
   const moved = async (error: FleetError): Promise<void> => {
-    if (gone !== undefined || cancelling !== undefined) return;
+    if (gone !== undefined || cancelling !== undefined || cutOff !== undefined) return;
     const now = await readAttemptRecord(config, run, attempt);
 
     // A read that could not reach teamai-reports shows nothing of what landed: the next beat reads again. A record this
@@ -615,14 +640,23 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
     if (now.ok && now.value !== 'absent' && now.value.write !== latest.write) await moved({ code: 'state_moved', message: `Attempt ${attempt} of run ${run} changed on teamai-reports meanwhile.` });
   };
 
-  // Writes progress naming `pushed`, with the question the member asks while it waits for the owner's answer.
-  const progress = async (pushed: string): Promise<void> => {
+  // Writes progress naming `pushed`, with the question the member asks while it waits for the owner's answer. A write
+  // refused over a write of its own that landed unseen, which it adopts, goes again at once: the adopted one is older,
+  // and the cut-off counts from it.
+  const progress = async (pushed: string, again = true): Promise<void> => {
     const question = gates.asking;
+    const held = latest;
     const progressed = await recordProgress(config, latest, pushed, question && { question, secrets });
+
+    unlanded = !progressed.ok && (progressed.error.code === 'reports_failed' || progressed.error.code === 'reports_unreachable');
 
     if (progressed.ok) latest = progressed.value;
     // A record it cannot parse is one another teamai wrote over its own, as a moved one is.
-    else if (progressed.error.code === 'state_moved' || progressed.error.code === 'fleet_record_newer' || progressed.error.code === 'fleet_record_unreadable') await moved(progressed.error);
+    else if (progressed.error.code === 'state_moved' || progressed.error.code === 'fleet_record_newer' || progressed.error.code === 'fleet_record_unreadable') {
+      await moved(progressed.error);
+
+      if (again && latest !== held && gone === undefined && cancelling === undefined && cutOff === undefined) await progress(pushed, false);
+    }
     // A question the record cannot carry reaches nobody: the gate fails with why, and progress goes on without it.
     else if (progressed.error.code === 'fleet_unpublishable' && question !== undefined) gates.refuse(progressed.error.message);
   };
@@ -649,6 +683,7 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
       // A question that ends unanswered is no longer written with the claim's progress.
       if (signal.aborted) gates.refuse('The question closed before the owner answered it.');
       else if (gone !== undefined || cancelling !== undefined) gates.refuse('The owner stopped the attempt before it answered.');
+      else if (cutOff !== undefined) gates.refuse('The member stopped the attempt before the owner answered.');
       else if (beating === undefined) await inTurn(readRecord);
     }
   };
@@ -657,6 +692,24 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
   // attempt's own: the run's folder on this home may be its owner's, holding what earlier steps left for later ones.
   const runDir = path.join(attemptDir(config, run, attempt), 'run');
   const marked = ready.kind === 'command' ? { ...attemptEnv(config, run, attempt, resolveRunMode(process.env)), [RUN_DIR_ENV]: runDir } : {};
+
+  // Cut off: once none of its progress landed for cutOffMs, the member stops the step, as a cancel would, before its
+  // owner can give the claim up and offer the step again (fleetBeats), and writes nothing more.
+  const cutOffIn = (): number => {
+    const since = Date.parse(latest.progressAt);
+
+    return Number.isNaN(since) ? 0 : since + cutOffMs - Date.now();
+  };
+
+  const cutOffWhy = (left: number): string => `This member stopped step "${lease.step}" of attempt ${attempt} of run ${run}: none of its progress landed on teamai-reports for ${Math.round((cutOffMs - left) / 1_000)} s, and its owner gives an attempt up after ${claim.staleAfterMs / 1_000} s without word, then offers the step again.`;
+  // A restarted member whose last progress landed that long ago may be given up already: it runs nothing.
+  const lateBy = cutOffIn();
+
+  if (lateBy <= 0) {
+    await fs.rm(work, { recursive: true, force: true });
+
+    return { error: { code: 'fleet_member_gone', message: `${cutOffWhy(lateBy)} It ran nothing of it again.` } };
+  }
 
   if (ready.kind === 'command') await fs.mkdir(runDir, { recursive: true });
 
@@ -671,18 +724,36 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
 
     stopCommand = command.stop;
 
+    let watch: NodeJS.Timeout | undefined;
+
+    const watchProgress = (): void => {
+      // A cancel or a claim given up stops the step already, and the member answers it as it does.
+      if (gone !== undefined || cancelling !== undefined) return;
+      const left = cutOffIn();
+
+      if (left > 0) {
+        watch = setTimeout(watchProgress, left);
+
+        return;
+      }
+
+      cutOff = cutOffWhy(left);
+      void stopCommand();
+    };
+
+    watchProgress();
+
     // Progress comes three times per `stale_after`, so one late write does not make the member look gone. A beat still
     // writing skips the next, and the result waits for it, so each write replaces the one before. Between beats further
     // apart than CANCEL_READ_MS, the member reads the record for a cancel.
-    const beatMs = Math.max(1_000, Math.floor(claim.staleAfterMs / 3));
     // Ticks divide a beat evenly, so beats come every beatMs, not at the next whole tick after it.
     const tickMs = Math.ceil(beatMs / Math.ceil(beatMs / CANCEL_READ_MS));
     let sinceBeat = 0;
 
     const beat = setInterval(() => {
-      if (beating) return;
+      if (beating || cutOff !== undefined) return;
       sinceBeat += tickMs;
-      const isBeat = sinceBeat >= beatMs;
+      const isBeat = sinceBeat >= beatMs || unlanded;
 
       if (isBeat) sinceBeat = 0;
       beating = (async () => {
@@ -705,9 +776,17 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
       ran = { exitCode: 1, stderr: `The member's run of step "${lease.step}" failed before the step ended: ${cause} ${retryCommand({ run, step: lease.step })} offers it again.` };
     } finally {
       clearInterval(beat);
+      clearTimeout(watch);
     }
 
     await beating;
+
+    if (cutOff !== undefined) {
+      const saved = await save(`[teamai] ${lease.step} so far (run ${run}, attempt ${attempt})`);
+      const kept = 'to' in saved ? `Its work so far is on ${ref}.` : `Its work since its last push is not on ${ref}: ${saved.error}`;
+
+      return { error: { code: 'fleet_member_gone', message: `${cutOff} ${kept}` } };
+    }
 
     if (gone !== undefined) return { error: { code: 'state_moved', message: `The owner of run ${run} gave up attempt ${attempt} of step "${lease.step}" while this member ran it, so its result was not written. ${gone}` } };
     const saved = await save(`[teamai] ${lease.step} (run ${run}, attempt ${attempt})`);

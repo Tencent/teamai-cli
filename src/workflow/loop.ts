@@ -185,21 +185,37 @@ export function loopSettled(owner: StepState | undefined): boolean {
   return owner.status === 'skipped' || owner.status === 'failed' || owner.status === 'cancelled';
 }
 
+/**
+ * The step among `states` that failed `runtime_lost`: what it ran may still run, so a next pass of it would not start
+ * beside it (staging refuses that pass as well), and the loop ends with it rather than spend every pass left.
+ */
+function leftRunning(states: readonly StepState[]): WorkflowFailure | undefined {
+  for (const state of states) {
+    if (state.status === 'failed' && state.failure?.code === 'runtime_lost') return state.failure;
+  }
+
+  return undefined;
+}
+
 function exhausted(owner: StepState, loop: StepLoop): WorkflowFailure {
   return { code: 'loop_exhausted', message: `Loop of step "${owner.id}" is exhausted: it ran ${loop.maxIterations} times, its max_iterations` };
 }
 
 /**
  * Decides, once per run of a succeeded loop owner, what follows it. `holds` is its `while`, or true when it has none.
- * The loop ends when `while` is false. While it holds, the range runs again, unless the owner has already run
+ * The loop ends when `while` is false. While it holds, the range runs again, unless a step of it failed
+ * `runtime_lost` (`leftRunning`), whose failure the owner then fails with, or the owner has already run
  * `max_iterations` times: then it fails `loop_exhausted` and keeps its outputs. A loop without `while` always runs
  * again, and `exhaustedAtStart` stops the run that would go past the limit.
  */
 export function decideStepLoop(run: RunState, owner: Extract<StepState, { status: 'succeeded' }>, loop: StepLoop, holds: boolean, range: StepState[]): void {
   const runs = (owner.iteration ?? 0) + 1;
+  const lost = leftRunning(range);
 
   if (!holds) {
     endLoop(owner, runs);
+  } else if (lost) {
+    exhaust(owner, { code: 'runtime_lost', message: `Loop of step "${owner.id}" ran no pass again after pass ${runs}: ${lost.message}` }, owner.settledAt, runs);
   } else if (loop.while !== undefined && runs >= loop.maxIterations) {
     exhaust(owner, exhausted(owner, loop), owner.settledAt, runs);
   } else {
@@ -224,8 +240,9 @@ export function exhaustedAtStart(owner: Extract<StepState, { status: 'pending' }
 /**
  * Decides what follows a round of a looping workflow that reached no end and no break. `holds` is its `while`, or true
  * when it has none. The workflow ends when `while` is false. While it holds, every step of the workflow runs again in
- * the next round, kept on `runner`, the step that runs the workflow, or on the run at the top. After `max_iterations`
- * rounds, the workflow fails `loop_exhausted` instead, with what its last round returned.
+ * the next round, kept on `runner`, the step that runs the workflow, or on the run at the top. A step of the round that
+ * failed `runtime_lost` ends the workflow with that failure (`leftRunning`). After `max_iterations` rounds, the
+ * workflow fails `loop_exhausted` instead, with what its last round returned.
  */
 export function decideRound(
   run: RunState,
@@ -238,6 +255,9 @@ export function decideRound(
   const round = (runner ? runner.round : run.round) ?? 1;
 
   if (!holds) return 'ended';
+  const lost = leftRunning(states);
+
+  if (lost) return { code: 'runtime_lost', message: `Loop of ${label} ran no round again after round ${round}: ${lost.message}` };
 
   if (round >= loop.maxIterations) {
     return { code: 'loop_exhausted', message: `Loop of ${label} is exhausted: it ran ${loop.maxIterations} rounds, its max_iterations` };

@@ -668,6 +668,33 @@ steps:
     expect({ daily: JSON.parse(fs.readFileSync(path.join(daily, 'auth.json'), 'utf8')).tokens.refresh_token, holder: await loginHolder('codex') }).toEqual({ daily: 'refresh-2', holder: undefined });
   });
 
+  it('retries no step beside a process a killed driver left of its attempt that no stop confirms ended, though that attempt holds no login', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: A step whose earlier driver was killed while its command ran.
+steps:
+  - id: check
+    command: "touch ran"
+`);
+    const leased = await leaseNext(config, runId, driverIdentity('local', workspace));
+    if (!('data' in leased)) throw new Error(leased.error.message);
+    const run = RunIdSchema.parse(runId);
+    const attempt = LeaseIdSchema.parse(leased.data.lease).attempt;
+    // A group another pid namespace started, which no stop here can reach or tell ended.
+    fs.mkdirSync(attemptDir(config, run, attempt), { recursive: true });
+    fs.writeFileSync(path.join(attemptDir(config, run, attempt), 'group-424242.json'), JSON.stringify({ pid: 424242, spawnedAt: Date.now(), pidNamespace: 'pid:[1]' }));
+    vi.spyOn(log, 'warn').mockImplementation(() => undefined);
+    await runLocalDriver(config, runId, workspace);
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'check', status: 'failed', failure: { code: 'runtime_lost' } }] });
+
+    expect(await retryStep(config, runId, {}, 'check')).toMatchObject({
+      error: { code: 'not_retryable', message: `Step "check" cannot run again yet: teamai could not confirm that process 424242, which attempt ${attempt} left, ended. Once it has ended, run teamai workflow retry ${run} check again.` },
+    });
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'check', status: 'failed', failure: { code: 'runtime_lost' } }] });
+    fs.rmSync(path.join(attemptDir(config, run, attempt), 'group-424242.json'));
+    expect(await retryStep(config, runId, {}, 'check')).not.toHaveProperty('error');
+  });
+
   it('answers that cancel --release of a failed run released the login its attempt kept, and does not say there was nothing to release', async () => {
     const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
 name: build
