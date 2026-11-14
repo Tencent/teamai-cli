@@ -234,22 +234,23 @@ export async function codexSkillsSplit(
 
 /**
  * Where Codex's copy of `skillName` goes: the shared `.agents/skills/<name>`
- * when a copy there is teamai's (`ownsShared`), else the configured directory.
- * Other tools get the configured directory.
+ * when a copy there is teamai's (`ownsShared`), else the tool's own directory.
+ * Other tools get their own directory. `dirs.own` is `locate`'s, which a moved
+ * home relocates; `configuredSkillsPath` only names it in a warning.
  */
 export async function resolveSkillDestination(
   tool: string,
   configuredSkillsPath: string,
-  baseDir: string,
+  dirs: { readonly own: string; readonly shared: string },
   skillName: string,
   ownsShared: SharedSkillOwnership,
   sourcePath?: string,
   ledger?: DeliveryLedger,
 ): Promise<string> {
-  const configuredDestination = path.join(baseDir, configuredSkillsPath, skillName);
+  const configuredDestination = path.join(dirs.own, skillName);
 
   if (readsCodexSharedSkills(tool)) {
-    const sharedDestination = path.join(baseDir, SHARED_AGENT_SKILLS_PATH, skillName);
+    const sharedDestination = path.join(dirs.shared, skillName);
 
     if (!await pathExists(sharedDestination)) return configuredDestination;
 
@@ -360,8 +361,7 @@ export function skillTargetsFor(
       return sharedDestination;
     }
 
-    // Codex's directories are `locate`'s writes: it has no home moves, so they hang off the scope's base.
-    return resolveSkillDestination(tool, configuredSkillsPath, resolveBaseDir(localConfig), skillName, ownsShared, sourcePath, ledger);
+    return resolveSkillDestination(tool, configuredSkillsPath, { own: skillsDir, shared: sharedDir }, skillName, ownsShared, sourcePath, ledger);
   };
 }
 

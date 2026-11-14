@@ -33,7 +33,7 @@ import {
 } from './resources/delivered-copies.js';
 import { warnOnce } from './utils/warn-once.js';
 import { blobIdOf, historicalVersions } from './utils/team-history.js';
-import { installOf, locate, ownOf } from './locate.js';
+import { installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH } from './locate.js';
 import { resolveOpenclawWorkspace } from './openclaw-home.js';
 import { TOOL_ORDER } from './tool-registry.js';
 import { toolHome } from './tool-home.js';
@@ -1228,7 +1228,7 @@ async function pullSingleSource(
 
       // The existing resolver alone decides whether both copies and the
       // incoming source match. Different local drafts are never removed.
-      await resolveSkillDestination(CODEX_TOOL, skillsPath, baseDir, skill.name, (dir) => isSourcesCopy(dir, skill), skill.sourcePath);
+      await resolveSkillDestination(CODEX_TOOL, skillsPath, { own: path.join(baseDir, skillsPath), shared: path.join(baseDir, SHARED_AGENT_SKILLS_PATH) }, skill.name, (dir) => isSourcesCopy(dir, skill), skill.sourcePath);
     }
   }
 

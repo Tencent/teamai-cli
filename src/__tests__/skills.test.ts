@@ -1756,6 +1756,34 @@ describe('SkillsHandler.pullItem Codex shared skills', () => {
     expect(await fse.pathExists(sharedSkillPath)).toBe(false);
   });
 
+  it('puts a skill of an instance in the home its own variable moved, not under the home it declares', async () => {
+    useToolInstances(new Map([['acme-codex', {
+      name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+      source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
+    }]]));
+    onTestFinished(() => { useToolInstances(new Map()); });
+    const homeDir = path.join(tmpDir, 'home');
+    const moved = path.join(tmpDir, 'work', 'acme-moved');
+    await fse.ensureDir(moved);
+    vi.stubEnv('ACME_CODEX_HOME', moved);
+    const sourcePath = path.join(tmpDir, 'team-repo', 'skills', 'team-skill');
+    await fse.outputFile(path.join(sourcePath, 'SKILL.md'), '---\nname: team-skill\ndescription: Team\n---\n');
+    commitTeamRepo(path.join(tmpDir, 'team-repo'));
+    const teamConfig = {
+      team: 'test', description: '', repo: 'https://example.test/team.git', provider: 'git' as const, reviewers: [],
+      sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: true } },
+      toolPaths: { 'acme-codex': { skills: '.acme-codex/skills' } },
+    };
+    const localConfig = {
+      repo: { localPath: path.join(tmpDir, 'team-repo'), remote: 'https://example.test/team.git' },
+      username: 'testuser', updatePolicy: 'auto' as const, additionalRoles: [], scope: 'user' as const,
+    };
+
+    await new SkillsHandler().pullItem({ name: 'team-skill', type: 'skills', sourcePath, relativePath: 'skills/team-skill' }, teamConfig, localConfig);
+
+    expect([await fse.pathExists(path.join(moved, 'skills', 'team-skill', 'SKILL.md')), await fse.pathExists(path.join(homeDir, '.acme-codex'))]).toEqual([true, false]);
+  });
+
   it('preserves and reports a different .codex copy beside teamai\'s shared copy', async () => {
     const homeDir = path.join(tmpDir, 'home');
     const sourcePath = path.join(tmpDir, 'team-repo', 'skills', 'team-skill');
