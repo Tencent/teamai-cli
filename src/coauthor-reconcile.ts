@@ -542,6 +542,7 @@ export async function reconcileCoAuthorForConfig(
 
   const intent = resolveCoAuthor(localConfig, teamConfig);
   const claudeSettings = scopedToolPaths(teamConfig, localConfig).claude?.settings;
+  // oxlint-disable-next-line teamai/configured-tool-paths -- the shared project file releases before #993 wrote, as preFixSharedTargets names it
   const claudeShared = claudeSettings ? path.join(resolveBaseDir(localConfig), claudeSettings) : undefined;
 
   // Settle each shared project file an earlier release wrote into: remove the

@@ -1546,6 +1546,7 @@ export async function codexTeamHookCheckout(localConfig: LocalConfig): Promise<s
 function codexHomeHooksFile(teamConfig: TeamaiConfig, localConfig: LocalConfig): string | null {
   const settings = scopedToolPaths(teamConfig, { ...localConfig, scope: 'user' })[CODEX_TOOL_ID]?.settings;
 
+  // oxlint-disable-next-line teamai/configured-tool-paths -- Codex's user hook file in the default home, where the dispatchers have always gone; a moved CODEX_HOME is not followed here yet
   return settings ? path.join(canonicalProjectRoot(getUserHome()), settings) : null;
 }
 
@@ -5326,6 +5327,7 @@ export async function reconcileTeamHooksForConfig(
 
   if (isSelfMode(localConfig) && !builtinsOnly && oldZcodeSettings
     && (!filterAgents || filterAgents.includes('zcode'))) {
+    // oxlint-disable-next-line teamai/configured-tool-paths -- the unread self-scope copy earlier releases wrote, compared with the one hookSettingsFile gives
     const legacyFile = path.join(baseDir, oldZcodeSettings);
     const homeSettings = hookToolPaths.zcode?.settings;
 
@@ -5589,6 +5591,7 @@ async function judgeTeamaiOnlyCodexHooksOf(
 
   if (isSelfMode(localConfig)) {
     const settings = scopedToolPaths(teamConfig, localConfig)[tool]?.settings;
+    // oxlint-disable-next-line teamai/configured-tool-paths -- the self-mode project file, never under a tool home
     file = settings ? path.join(resolveHookScope(localConfig).baseDir, settings) : null;
     manifestPath = getManagedHooksPath(localConfig);
   } else {

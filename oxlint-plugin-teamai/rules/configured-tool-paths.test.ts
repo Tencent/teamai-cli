@@ -10,6 +10,12 @@ rule.invalid('rejects a settings file joined to a home by hand', `import path fr
   expect(output).toContain('toolPathUnder');
 });
 rule.invalid('rejects agents, hooks and mcp joins through a host path module', `const dir = host.path.join(base, paths.agents); const file = at.path.resolve(base, paths.hooks, paths.mcp);`);
+rule.invalid('rejects a configured path first read into a variable', `import path from 'node:path'; function f(paths) { const settings = paths.settings; return path.join(baseDir, settings); }`, (output) => {
+  expect(output).toContain('settings path');
+});
+rule.invalid('rejects a configured path destructured before the join', `import path from 'node:path'; const { skills } = toolPaths.claude; const dir = path.join(home, skills);`);
+rule.valid('allows a variable that holds no configured path', `import path from 'node:path'; const name = paths.label; const file = path.join(base, name);`);
+rule.valid('allows a variable reassigned after a configured path, which the rule cannot follow', `import path from 'node:path'; let file = paths.settings; file = 'settings.local.json'; const at = path.join(base, file);`);
 rule.valid('allows a path the one resolver gives', `const file = toolPathUnder(tool, baseDir, paths.settings);`);
 rule.valid('allows the locate owner', `const root = path.join(base, tool.skills);`, { filename: 'src/locate.ts' });
 rule.valid('allows literal directory names', `const root = path.join(base, 'skills');`);

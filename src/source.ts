@@ -1814,6 +1814,7 @@ async function legacyCopyKeeper(
     const configured = toolPaths[tool]?.skills;
 
     if (!configured) continue;
+    // oxlint-disable-next-line teamai/configured-tool-paths -- the scope-root copy releases before #993 wrote, compared with the one locate gives
     const legacy = path.join(baseDir, configured);
 
     if (legacy !== ownOf(await locate(tool, 'skills', install))?.path) legacyRoots.push(legacy);

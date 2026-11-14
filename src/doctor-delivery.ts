@@ -1219,6 +1219,7 @@ async function buildProjectRulesHookChecks(ctx: DoctorContext): Promise<Check[]>
   const zcodeSettings = scopedToolPaths(teamConfig, { ...localConfig, scope: 'user' }).zcode?.settings;
 
   if (zcodeSettings && !isAgentExcluded(localConfig, 'zcode') && await pathExists(path.join(home, '.zcode'))) {
+    // oxlint-disable-next-line teamai/configured-tool-paths -- ZCode's user settings in the default home, as this check has always read them; a moved home is not followed here yet
     const file = path.join(home, zcodeSettings);
     const read = await readJsonObject(file);
     const hooks = read.kind === 'ok' ? ZcodeHooksSchema.parse(read.value).hooks : undefined;
