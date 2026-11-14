@@ -5523,29 +5523,42 @@ async function projectHookFiles(
 }
 
 /**
- * The project's `.codex/hooks.json`, when it exists and holds anything, and
- * whether it holds only teamai's team hooks (#915): no top-level key but
- * `hooks`, and every handler one that teamai's hook manifest for that file
- * records (the main checkout's `managed-main-checkout-hooks.json`, or this
- * checkout's `managed-hooks.json` in self mode), at least one. Run after the
- * reconcile, which records the unrecorded entries that equal a team render
- * (#993). A symlink is the member's and is not judged. Read-only.
+ * The project's `.codex/hooks.json`, and each Codex instance's hooks file in its
+ * folder, when it exists and holds anything, and whether it holds only teamai's
+ * team hooks (#915): no top-level key but `hooks`, and every handler one that
+ * teamai's hook manifest for that file records (the main checkout's
+ * `managed-main-checkout-hooks.json`, or this checkout's `managed-hooks.json` in
+ * self mode), at least one. Run after the reconcile, which records the
+ * unrecorded entries that equal a team render (#993). A symlink is the member's
+ * and is not judged. Read-only.
  */
 export async function judgeTeamaiOnlyCodexHooks(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
+): Promise<Array<{ file: string; teamaiOnly: boolean }>> {
+  const tools = [CODEX_TOOL_ID, ...instanceNames().filter((name) => name !== CODEX_TOOL_ID && baseToolOf(name) === CODEX_TOOL_ID)];
+  const verdicts = await Promise.all(tools.map((tool) => judgeTeamaiOnlyCodexHooksOf(teamConfig, localConfig, tool)));
+
+  return verdicts.filter((verdict) => verdict !== null);
+}
+
+/** `judgeTeamaiOnlyCodexHooks` for one Codex-format tool's file. */
+async function judgeTeamaiOnlyCodexHooksOf(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  tool: string,
 ): Promise<{ file: string; teamaiOnly: boolean } | null> {
   if (localConfig.scope !== 'project' || !localConfig.projectRoot) return null;
   let file: string | null;
   let manifestPath: string;
 
   if (isSelfMode(localConfig)) {
-    const settings = scopedToolPaths(teamConfig, localConfig)[CODEX_TOOL_ID]?.settings;
+    const settings = scopedToolPaths(teamConfig, localConfig)[tool]?.settings;
     file = settings ? path.join(resolveHookScope(localConfig).baseDir, settings) : null;
     manifestPath = getManagedHooksPath(localConfig);
   } else {
     const main = await resolveMainCheckoutHooks(localConfig, teamConfig.toolPaths);
-    file = mainCheckoutHookFile(main, CODEX_TOOL_ID);
+    file = mainCheckoutHookFile(main, tool);
     manifestPath = main?.manifestPath ?? '';
   }
 
@@ -5567,7 +5580,7 @@ export async function judgeTeamaiOnlyCodexHooks(
   const { hooks, ...others } = json;
 
   if (Object.keys(others).length > 0 || !isJsonObject(hooks)) return { file, teamaiOnly: false };
-  const records = (await readManifest(manifestPath))[CODEX_TOOL_ID] ?? [];
+  const records = (await readManifest(manifestPath))[tool] ?? [];
   let owned = 0;
 
   for (const [event, entries] of Object.entries(hooks)) {

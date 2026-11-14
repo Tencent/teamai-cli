@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi, onTestFinished } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
@@ -22,6 +23,7 @@ import fc from 'fast-check';
 import { applyAgentHook, codexTrustPolicy, readCodexHookTrustForScope, reconcileHooks, reconcileTeamHooksForConfig, removeAgentHook, reportCodexTrust, trustCodexAgentHook, trustCodexForScope, type CodexTrustPolicy } from '../hooks.js';
 import { oldestCodexBuildVersion, readCodexHookTrust, removeOwnedCodexProjectTrust, trustCodexHooks, trustCodexProject } from '../codex-trust.js';
 import { reconcileCodexDispatchers, setCodexDispatcherHooks } from '../codex-team-hooks.js';
+import { judgeTeamaiOnlyFiles } from '../teamai-only-files.js';
 import crossSpawn from 'cross-spawn';
 import { resolveAnchors, listWorktrees } from '../utils/git.js';
 import { log } from '../utils/logger.js';
@@ -798,6 +800,27 @@ describe('Codex trust — project scopes', () => {
     expect(entries.some((e) => e.command === 'npm run lint')).toBe(true);
     expect(trustedKeys().sort()).toEqual(entries.map((e) => e.key).sort());
     expect(result.codexTrust).toEqual({ kind: 'trusted', hooks: entries.length, project });
+  });
+
+  it('judges a Codex instance\'s hooks file in self mode as it judges Codex\'s', async () => {
+    await fse.outputFile(path.join(repo, 'teamai.yaml'), 'team: acme\nrepo: acme/team\n');
+    await fse.outputFile(path.join(home, '.teamai', 'tools', 'acme-codex.yaml'), 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n');
+    const { loadTeamConfig } = await import('../config.js');
+    const { useToolInstances } = await import('../tool-registry.js');
+    onTestFinished(() => useToolInstances(new Map()));
+    const config = await loadTeamConfig(repo);
+
+    if (!config) throw new Error('the team config did not load');
+    execFileSync('git', ['init', '-q', project]);
+    for (const dir of ['.codex', '.acme-codex']) await fse.ensureDir(path.join(project, dir));
+    await fse.outputFile(path.join(project, '.teamai', 'hooks', 'hooks.yaml'), LINT_HOOK);
+    const local = { ...selfConfig(), enabledAgents: ['codex', 'acme-codex'], codexTrustEnabled: false };
+
+    await reconcileTeamHooksForConfig(config, local);
+
+    expect((await codexEntries(path.join(project, '.acme-codex', 'hooks.json'))).some((e) => e.command === 'npm run lint')).toBe(true);
+    const judged = (await judgeTeamaiOnlyFiles(config, local)).map(({ file, state }) => [path.relative(project, file), state]);
+    expect(judged).toEqual([[path.join('.codex', 'hooks.json'), 'mixed'], [path.join('.acme-codex', 'hooks.json'), 'mixed']]);
   });
 
   it('a self worktree trusts the main checkout\'s hooks, which Codex reads there', async () => {
