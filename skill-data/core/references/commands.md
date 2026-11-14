@@ -22,7 +22,8 @@ Generated: do not edit by hand. Regenerate with
   - `--http <url>` — Git-free HTTP team repo (read-only consumer; only needs an API key)
   - `--provider <name>` — Git provider for the team repo on this machine: tgit, github, cnb, gitlab, gitcode, or git. Skips auto-detection. `git` uses your existing Git auth and needs no platform token, but opens no PR/MR.
   - `--self` — Self mode: the current git repo is the team repo (equivalent to `teamai init .`). Knowledge lives on main under .teamai/; reports go to the teamai-reports orphan branch.
-  - `--token <key>` — API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN. With --http and a single --agent, an agent access token (sk-) is kept for that agent only, next to the other agents' tokens (--force keeps them too); while that agent's current token still works it is kept and the new one is not used. Without --agent on a machine where one agent already holds a token, that agent takes it, or — keeping its working one — the new token serves the tools without a token of their own.
+  - `--token <key>` — API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN. With --http and a single --agent, an sk- token is kept for that agent only, next to the other agents' tokens (--force keeps them too); while that agent's current token still works it is kept and the new one is not used unless --replace-token is passed. Without --agent on a machine where one agent already holds a token, that agent takes it, or — keeping its working one — the new token serves the tools without a token of their own.
+  - `--replace-token` — With --http and --token, use the supplied token without checking the old one. Only an sk- token changes: a shared key already replaced the old one, so the option has nothing to do for it. Other agents keep their tokens; the backend may invalidate this agent's old token.
   - `--scope <scope>` — Install scope: workspace (default, <cwd>/.teamai + <cwd>/.claude) or user (~/.teamai + ~/.claude); project is the older name for workspace
   - `--inherit-user-scope` — In workspace scope, also sync safe user-scope resources, load its env variables (not its secrets) in the workspace, and search its knowledge
   - `--no-inherit-user-scope` — Disable user-scope inheritance for this workspace
@@ -40,6 +41,8 @@ Generated: do not edit by hand. Regenerate with
   - `--project <id>` — Target a project: each new resource goes to that project's namespace for its own type — skills, knowledge for rules, agents, learnings, docs, env, hooks, mcp, models, and more (from manifest/projects.yaml)
   - `--shared` — Place new resources at the shared root for all roles; cannot combine with --role or --project
   - `--branch <name>` — Push to this destination branch instead of a generated teamai/push branch
+  - `--file <local file>` — Push exactly this local file, byte for byte, to the team path --path names, as a pull request. No other change in the team clone joins it; requires --path
+  - `--path <team path>` — Where --file goes in the team repo, such as benchmarks/frontend/tasks/pod-startup.yaml or scorers/review.md. Placed exactly there, never relocated; cannot combine with --skill, --role, --project, --shared, --all or --carried
   - `--carried <path@blob>` — Override the stop for a push that would overwrite or delete a placed agent file a teammate changed. Use it only after carrying that change into your root copy, with the value the stop printed; a later team edit stops the push again. Repeatable
 
 ## pull
@@ -177,7 +180,8 @@ Generated: do not edit by hand. Regenerate with
   - `teamai source remove <name>` — Remove a source and clean up its skills
   - `teamai source add-http <endpoint>` — Add an HTTP source (report/sync/ack) alongside a git main repo
     - `--token <key>` — API token for the HTTP endpoint (stored 0600, never committed)
-    - `--agent <name>` — The AI tool this token is for (e.g. codebuddy, claude); hooks are injected into that tool only. An agent access token (sk-) works for one agent only, so each agent keeps its own; while that agent's current token still works it is kept and the new one is not used.
+    - `--replace-token` — Use --token without checking the old token. Only an sk- token changes: a shared key already replaced the old one. Other agents keep their tokens; the backend may invalidate this agent's old token.
+    - `--agent <name>` — The AI tool this token is for (e.g. codebuddy, claude); hooks are injected into that tool only. Each agent keeps its own sk- token; a working token is kept unless --replace-token is passed.
     - `--force` — Overwrite an existing HTTP source config
   - `teamai source remove-http` — Remove the HTTP source and clean up its resources
   - `teamai source list` — List all configured sources

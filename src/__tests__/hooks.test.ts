@@ -108,12 +108,15 @@ describe('hooks', () => {
     it('Codex format: injects PascalCase events into hooks.json', async () => {
       await injectHooks('/test/codex-hooks.json', 'codex');
 
-      const result = mockFiles['/test/codex-hooks.json'] as { hooks: Record<string, Array<{ matcher?: string; description?: string; hooks: Array<{ command: string }> }>> };
+      const result = mockFiles['/test/codex-hooks.json'] as { hooks: Record<string, Array<{ matcher?: string; description?: string; hooks: Array<{ command: string; statusMessage?: string }> }>> };
       expect(result.hooks).toBeDefined();
       expect(Object.keys(result.hooks)).toEqual(['SessionStart', 'Stop', 'PostToolUse', 'UserPromptSubmit', 'SubagentStop', 'SubagentStart']);
       expect(result.hooks.PostToolUse).toHaveLength(1);
       expect(result.hooks.SessionStart[0].hooks[0].command).toContain('--tool codex');
       expect(result.hooks.SessionStart[0].description).toBeUndefined();
+      for (const [event, entries] of Object.entries(result.hooks)) {
+        expect(entries[0].hooks[0].statusMessage).toBe(`teamai-${event}`);
+      }
     });
 
     it('Codex format: writes additionalContextLimit 0 on the session-start entry only (#938)', async () => {
@@ -723,6 +726,7 @@ describe('hooks', () => {
       const e = s.hooks.PreToolUse.find((x: any) => x.hooks[0].command === 'echo cx');
       expect(e).toBeDefined();
       expect(e.description).toBeUndefined();
+      expect(e.hooks[0].statusMessage).toBe('s4');
     });
 
     it('removeAgentHook (claude): removes by slug, drops empty event key', async () => {

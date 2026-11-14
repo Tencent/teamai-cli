@@ -31,6 +31,10 @@ succeeded run that could not delete one. `teamai doctor --fix` removes them once
 `workflows.retention` (default `14d`) has passed since the run settled, and keeps
 pull request branches. Do not delete them by hand while the run may be retried.
 
+## "Skipped role-required skill namespaces"
+
+The team lists these namespaces in `sharing.skills.roleRequiredNamespaces`, and the effective roles do not receive them. Run `teamai roles list`, select a role with `teamai roles set <role>`, then `teamai pull`. When the team assigns roles through `manifest/members.yaml`, ask the team to change that assignment instead. Tags and projects do not bypass the condition. Do not select a role for the member without their choice.
+
 ## "My skills / rules aren't showing up"
 
 This is the #1 onboarding issue. In order:
@@ -358,6 +362,9 @@ session.
 
 
 ### Codex
+
+Codex's `/hooks` list labels team hooks by ID, HTTP agent hooks by slug, built-ins as
+`teamai-<Event>`, and shared team-hook dispatchers as `teamai-team-<Event>`.
 
 Codex runs a non-managed hook only once it is **trusted**. `teamai init`, `pull`
 and `teamai hooks inject` trust the hooks they write (and, in a project, the main

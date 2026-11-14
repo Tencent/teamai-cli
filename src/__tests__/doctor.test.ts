@@ -119,6 +119,7 @@ const mockTeamConfig = {
     toolPaths: {
         claude: { settings: '.claude/settings.json', skills: '.claude/skills' },
     },
+    sharing: { skills: {} },
 };
 
 // Build a settings content that contains all subcommands
@@ -173,7 +174,7 @@ describe('doctor — hook checks', () => {
     it('should pass when all subcommands are present in settings', async () => {
         mockedLoadTeamConfig.mockResolvedValue({
             ...mockTeamConfig,
-            sharing: { env: { injectShellProfile: false } },
+            sharing: { env: { injectShellProfile: false }, skills: {} },
         });
         const allPassed = await doctor({});
 
@@ -286,7 +287,7 @@ describe('doctor — hook checks', () => {
         });
         mockedLoadTeamConfig.mockResolvedValue({
             ...mockTeamConfig,
-            sharing: { env: { injectShellProfile: false } },
+            sharing: { env: { injectShellProfile: false }, skills: {} },
             toolPaths: {
                 copilot: {
                     hooks: '.github/hooks/teamai.json',
@@ -325,7 +326,7 @@ describe('doctor — hook checks', () => {
         });
         mockedLoadTeamConfig.mockResolvedValue({
             ...mockTeamConfig,
-            sharing: { env: { injectShellProfile: false } },
+            sharing: { env: { injectShellProfile: false }, skills: {} },
             toolPaths: {
                 copilot: { hooks: '.github/hooks/teamai.json', userScope: { hooks: 'hooks/teamai.json' } },
             },
@@ -354,7 +355,7 @@ describe('doctor — hook checks', () => {
         });
         mockedLoadTeamConfig.mockResolvedValue({
             ...mockTeamConfig,
-            sharing: { env: { injectShellProfile: false } },
+            sharing: { env: { injectShellProfile: false }, skills: {} },
             toolPaths: {
                 copilot: {
                     hooks: '.github/hooks/teamai.json',
@@ -390,7 +391,7 @@ describe('doctor — hook checks', () => {
         });
         mockedLoadTeamConfig.mockResolvedValue({
             ...mockTeamConfig,
-            sharing: { env: { injectShellProfile: false } },
+            sharing: { env: { injectShellProfile: false }, skills: {} },
             toolPaths: {
                 copilot: { hooks: '.github/hooks/teamai.json' },
             },
@@ -423,7 +424,7 @@ describe('doctor — hook checks', () => {
         });
         mockedLoadTeamConfig.mockResolvedValue({
             ...mockTeamConfig,
-            sharing: { env: { injectShellProfile: false } },
+            sharing: { env: { injectShellProfile: false }, skills: {} },
             toolPaths: {
                 codex: { skills: '.codex/skills' },
             },
@@ -456,7 +457,7 @@ describe('doctor — hook checks', () => {
     it('should pass env check when injectShellProfile is false', async () => {
         mockedLoadTeamConfig.mockResolvedValue({
             ...mockTeamConfig,
-            sharing: { env: { injectShellProfile: false } },
+            sharing: { env: { injectShellProfile: false }, skills: {} },
         });
         mockedPathExists.mockImplementation(async (filePath: string) => {
             if (filePath.includes('env.sh')) return false;
@@ -639,7 +640,7 @@ describe('doctor — hook checks', () => {
         });
         mockedLoadTeamConfig.mockResolvedValue({
             ...mockTeamConfig,
-            sharing: { env: { injectShellProfile: false } },
+            sharing: { env: { injectShellProfile: false }, skills: {} },
             toolPaths: {
                 claude: { settings: '.claude/settings.json', skills: '.claude/skills' },
                 codex: { settings: '.codex/hooks.json', skills: '.codex/skills' },
@@ -668,7 +669,7 @@ describe('doctor — JSON report', () => {
     it('emits a single JSON object carrying every check', async () => {
         mockedLoadTeamConfig.mockResolvedValue({
             ...mockTeamConfig,
-            sharing: { env: { injectShellProfile: false } },
+            sharing: { env: { injectShellProfile: false }, skills: {} },
         });
 
         const allPassed = await doctor({ json: true });
@@ -1319,7 +1320,7 @@ describe('buildChecks — a tool enabled but not installed', () => {
         mockedLoadTeamConfig.mockResolvedValue({
             ...mockTeamConfig,
             toolPaths: twoToolPaths,
-            sharing: { env: { injectShellProfile: false } },
+            sharing: { env: { injectShellProfile: false }, skills: {} },
         });
         onlyCodexMissing();
 

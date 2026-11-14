@@ -739,7 +739,7 @@ export async function sourceList(): Promise<void> {
  */
 export async function sourceAddHttp(
   endpoint: string,
-  options: { token?: string; force?: boolean; agent?: string } & GlobalOptions,
+  options: { token?: string; force?: boolean; agent?: string; replaceToken?: boolean } & GlobalOptions,
 ): Promise<void> {
   const trimmed = endpoint.trim();
 
@@ -773,7 +773,7 @@ export async function sourceAddHttp(
   // filterAgents stays undefined without --agent: hooks go to every tool, as before.
   // --agent may name several tools, as it does on init.
   const agents = normalizeAgentList(options.agent);
-  await initLocalAgentHttp({ endpoint: trimmed, token: options.token, force: true, filterAgents: agents.length > 0 ? agents : undefined });
+  await initLocalAgentHttp({ endpoint: trimmed, token: options.token, force: true, replaceToken: options.replaceToken, filterAgents: agents.length > 0 ? agents : undefined });
   log.success(`HTTP source added (${trimmed}).`);
   log.info('It will report/sync on the next AI session in each workspace where `teamai bind-project` ran once (via the hook-dispatch hook already installed).');
 }

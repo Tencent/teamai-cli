@@ -109,14 +109,23 @@ describe('reconcileCodexDispatchers — the Windows override keeps the block con
     // and stderr natively, so exit 2 (block) passes through with nothing
     // redirected — no tail needed, no junk arguments (#1215).
     expect(entry.commandWindows).toBe('teamai hook-dispatch Stop --tool codex --team-hooks');
+    expect(entry.statusMessage).toBe('teamai-team-Stop');
   });
 
   it('reconciles idempotently: a second run writes the same bytes', async () => {
     seed({ hooks: [{ id: 'team', event: 'Stop', command: 'echo a' }] });
     const hooksFile = path.join(root, 'hooks.json');
-    fs.writeFileSync(hooksFile, JSON.stringify({ hooks: {} }));
+    const member = { hooks: [{ type: 'command', command: 'echo member', statusMessage: 'member-hook' }] };
+    fs.writeFileSync(hooksFile, JSON.stringify({ hooks: { Stop: [member] } }));
     await reconcileCodexDispatchers(hooksFile, { kind: 'disabled' });
     const first = fs.readFileSync(hooksFile, 'utf-8');
+    const legacy = JSON.parse(first);
+    expect(legacy.hooks.Stop[0]).toEqual(member);
+    expect(legacy.hooks.Stop[1].hooks[0].statusMessage).toBe('teamai-team-Stop');
+    delete legacy.hooks.Stop[1].hooks[0].statusMessage;
+    fs.writeFileSync(hooksFile, JSON.stringify(legacy));
+    await reconcileCodexDispatchers(hooksFile, { kind: 'disabled' });
+    expect(fs.readFileSync(hooksFile, 'utf-8')).toBe(first);
     await reconcileCodexDispatchers(hooksFile, { kind: 'disabled' });
     expect(fs.readFileSync(hooksFile, 'utf-8')).toBe(first);
   });

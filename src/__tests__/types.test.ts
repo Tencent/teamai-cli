@@ -253,6 +253,18 @@ describe('TeamaiConfigSchema reviewers', () => {
   });
 });
 
+describe('SharingConfigSchema role-required skills', () => {
+  it('keeps the optional namespace list without changing the default', () => {
+    expect(SharingConfigSchema.parse({}).skills).toEqual({});
+    expect(SharingConfigSchema.parse({ skills: { roleRequiredNamespaces: ['bus_common', 'ebao', 'health'] } }).skills)
+      .toEqual({ roleRequiredNamespaces: ['bus_common', 'ebao', 'health'] });
+  });
+
+  it.each(['../ebao', '/ebao', 'ebao/health', 'C:ebao', '..', 'CON', 'health.', 42])('rejects invalid namespace %s', (namespace) => {
+    expect(SharingConfigSchema.safeParse({ skills: { roleRequiredNamespaces: [namespace] } }).success).toBe(false);
+  });
+});
+
 describe('SharingConfigSchema env', () => {
   it('should default env.injectShellProfile to true', () => {
     const result = SharingConfigSchema.parse({});

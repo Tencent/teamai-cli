@@ -11,6 +11,7 @@ import type { HeadState } from './utils/git.js';
 import type { RunMode } from './launch-context.js';
 import type { OutcomeKind, SessionUsage, WorkOutcome } from './outcomes.js';
 import { AllowSchema } from './workflow/requirements.js';
+import { NamespaceSegmentSchema } from './manifest-schema.js';
 
 /** Any value JSON (or YAML read as JSON) can hold: what arbitrary parsed input is before a domain schema narrows it. */
 export const JsonValueSchema = z.json();
@@ -123,7 +124,9 @@ export function installScopeName(scope: Scope): 'user' | 'workspace' {
 // ─── Team config (teamai.yaml) ───────────────────────────
 
 export const SharingConfigSchema = z.object({
-  skills: z.object({}).default({}),
+  skills: z.object({
+    roleRequiredNamespaces: z.array(NamespaceSegmentSchema).optional(),
+  }).default({}),
   rules: z.object({
     enforced: z.array(z.string()).default([]),
   }).prefault({}),

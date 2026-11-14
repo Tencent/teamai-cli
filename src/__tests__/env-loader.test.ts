@@ -159,6 +159,73 @@ describe('team env by directory (#1018)', () => {
     });
   });
 
+  describe.each(['bash', 'zsh'].filter(hasShell))('%s non-git parent scope boundaries', (shell) => {
+    it.each(['registered', 'unregistered', 'broken-config', 'nested-git', 'broken-git'])('resolves the nearest %s workspace without leaking the outer env', async (kind) => {
+      vi.stubEnv('SHELL', `/bin/${shell}`);
+      const outer = path.join(tmpDir, 'work', 'outer');
+      const inner = path.join(outer, 'inner');
+      const sub = path.join(inner, 'packages', 'src');
+      const base = {
+        repo: { localPath: path.join(tmpDir, 'team-repo'), remote: teamConfig.repo },
+        username: 'member', additionalRoles: [],
+      };
+      const user = { ...base, scope: 'user' } as LocalConfig;
+      const outerConfig = { ...base, scope: 'project', projectRoot: outer } as LocalConfig;
+      const innerConfig = { ...base, scope: 'project', projectRoot: inner } as LocalConfig;
+      await fse.ensureDir(sub);
+      for (const config of [user, outerConfig]) {
+        await saveLocalConfigForScope(config);
+        await handler.writeResolvedEnv([{ key: 'TOKEN', value: getDataHome(config) }], teamConfig, config);
+      }
+      if (kind === 'nested-git') execFileSync('git', ['init', '-q', inner]);
+      else if (kind === 'broken-git') await fse.writeFile(path.join(inner, '.git'), 'gitdir: /nonexistent/teamai-env-git');
+      else {
+        await saveLocalConfigForScope(innerConfig);
+        if (kind === 'registered') await handler.writeResolvedEnv([{ key: 'TOKEN', value: getDataHome(innerConfig) }], teamConfig, innerConfig);
+        if (kind === 'broken-config') await fse.writeFile(path.join(inner, '.teamai', 'config.yaml'), 'repo: [');
+      }
+
+      expect(shellSees(shell, sub, 'TOKEN')).toBe(kind === 'registered' ? getDataHome(innerConfig) : kind === 'nested-git' ? getDataHome(user) : '');
+    });
+
+    // The registry stamp holds, so only the nearer marker says the outer route is stale.
+    it('routes again once an unregistered workspace appears inside the registered one', async () => {
+      vi.stubEnv('SHELL', `/bin/${shell}`);
+      const outer = path.join(tmpDir, 'work', 'outer');
+      const inner = path.join(outer, 'inner');
+      const sub = path.join(inner, 'src');
+      const base = {
+        repo: { localPath: path.join(tmpDir, 'team-repo'), remote: teamConfig.repo },
+        username: 'member', additionalRoles: [],
+      };
+      const outerConfig = { ...base, scope: 'project', projectRoot: outer } as LocalConfig;
+      await fse.ensureDir(sub);
+      for (const config of [{ ...base, scope: 'user' } as LocalConfig, outerConfig]) {
+        await saveLocalConfigForScope(config);
+        await handler.writeResolvedEnv([{ key: 'TOKEN', value: getDataHome(config) }], teamConfig, config);
+      }
+      const registry = await fse.readFile(path.join(homeDir, '.teamai', 'env-scopes'), 'utf-8');
+      const loader = path.join(homeDir, '.teamai', 'env-loader.sh');
+      const marker = path.join(inner, '.teamai', 'config.yaml');
+      const env = { HOME: homeDir, PATH: process.env.PATH, SHELL: `/bin/${shell}`, BASH_ENV: loader };
+      const parent = JSON.parse(spawnSync(shell, ['-c', `'${process.execPath}' -e 'process.stdout.write(JSON.stringify(process.env))'`], {
+        cwd: sub, env, encoding: 'utf-8',
+      }).stdout) as NodeJS.ProcessEnv;
+      expect(parent.TOKEN).toBe(getDataHome(outerConfig));
+
+      await fse.outputFile(marker, 'scope: project\n');
+      expect(await fse.readFile(path.join(homeDir, '.teamai', 'env-scopes'), 'utf-8')).toBe(registry);
+      expect(shellSees(shell, sub, 'TOKEN', parent)).toBe('');
+
+      if (shell !== 'bash') return;
+      await fse.remove(path.dirname(marker));
+      const passes = spawnSync('bash', ['-c', 'printf "%s\\n" "${TOKEN-}"; mkdir -p "${1%/*}" && : > "$1"; . "$BASH_ENV"; printf "%s\\n" "${TOKEN-}"', 'bash', marker], {
+        cwd: sub, env, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      expect(passes.stdout).toBe(`${getDataHome(outerConfig)}\n\n`);
+    });
+  });
+
   describe('restores the member environment exactly', () => {
     const shells = ['bash', 'zsh'].filter(hasShell);
     const states = [
@@ -715,7 +782,6 @@ describe('team env by directory (#1018)', () => {
       await fse.ensureDir(path.join(root, 'src'));
       if (git) execFileSync('git', ['init', '-q', root]);
       if (registered) await handler.writeResolvedEnv([{ key: 'TOKEN', value: 'project-secret' }], teamConfig, await project('unregistered'));
-      if (change === 'git init') await fse.outputFile(path.join(root, '.teamai', 'config.yaml'), 'scope: project\n');
       const dir = path.join(root, sub);
       const loader = path.join(homeDir, '.teamai', 'env-loader.sh');
       const parent = JSON.parse(spawnSync(shell, ['-c', `'${process.execPath}' -e 'process.stdout.write(JSON.stringify(process.env))'`], {
@@ -723,7 +789,10 @@ describe('team env by directory (#1018)', () => {
       }).stdout) as NodeJS.ProcessEnv;
       expect(parent.TOKEN).toBe(registered ? 'project-secret' : 'user-secret');
 
-      if (change === 'git init') execFileSync('git', ['init', '-q', root]);
+      if (change === 'git init') {
+        await fse.outputFile(path.join(root, '.teamai', 'config.yaml'), 'scope: project\n');
+        execFileSync('git', ['init', '-q', root]);
+      }
       else if (change === 'unreadable registry') await fse.outputFile(registry, '', { mode: 0o000 });
       else if (change === 'broken gitdir') {
         await fse.remove(path.join(root, '.git'));

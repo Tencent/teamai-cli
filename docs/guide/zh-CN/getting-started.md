@@ -56,7 +56,7 @@
    teamai doctor
    teamai list        # 团队的 skills、rules、docs、env、agents、hooks 和 MCP server
    ```
-3. 在这个项目里打开 AI 工具。
+3. 在这个项目或子目录里打开 AI 工具。会话启动同步会使用工作区配置，把资源同步到工作区根目录。非 Git 目录使用最近的上层工作区配置；嵌套 Git 仓库不会继承外层工作区配置。
 
 日常命令见[成员使用](./member-guide.md)。检索同事记下的经验，看[团队上下文](./knowledge.md)。
 

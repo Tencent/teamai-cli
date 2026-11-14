@@ -1112,9 +1112,23 @@ async function findProjectConfig(
     return readConfigFrom(legacyDir, anchors.workspaceRoot, undefined, onUnreadable);
   }
 
-  // Not a git repo: fall back to a legacy `.teamai` directly at `dir` (also runs
-  // the self-heal bootstrap for a freshly-cloned self-mode project).
-  return readConfigFrom(path.join(dir, '.teamai'), dir, dir, onUnreadable, options);
+  // An unreadable repository is not permission to inherit another workspace.
+  if (await nearestGitEntry(dir)) return readConfigFrom(path.join(dir, '.teamai'), dir, dir, onUnreadable, options);
+
+  // A non-git workspace can also be opened from a subdirectory. Use its nearest
+  // config, keeping all delivery anchored to the directory that owns it.
+  for (let root = path.resolve(dir); ; root = path.dirname(root)) {
+    let unreadable = false;
+
+    const config = await readConfigFrom(path.join(root, '.teamai'), root, root, (configPath, error) => {
+      unreadable = true;
+      onUnreadable?.(configPath, error);
+    }, options);
+
+    if (config || unreadable) return config;
+
+    if (path.dirname(root) === root) return null;
+  }
 }
 
 /**
