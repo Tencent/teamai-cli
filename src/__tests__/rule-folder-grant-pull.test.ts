@@ -164,6 +164,21 @@ describe('the Claude Code grant of the rule folders a pull delivers (#1787)', ()
     expect(await fse.readJson(settingsFile())).toMatchObject({ permissions: { additionalDirectories: ['/member/dir', path.join(homeDir, '.teamai', 'rules')] } });
   });
 
+  it('keeps the grant in the settings a Claude Code instance shares with Claude Code when only the instance is uninstalled', async () => {
+    await fse.outputFile(path.join(repoPath, 'tools', 'acme-claude.yaml'), 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\ncommand: acme-claude\n');
+    const { withToolInstances } = await import('../tool-instances.js');
+    vi.mocked(loadTeamConfig).mockImplementation(async () => withToolInstances(repoPath, TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/x/team.git' })));
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue({
+      repo: { localPath: repoPath, remote: 'https://example.invalid/x/team.git' }, username: 'u', updatePolicy: 'auto', additionalRoles: [], scope: 'user', enabledAgents: ['claude', 'acme-claude'],
+    } as LocalConfig);
+
+    await pull({});
+    vi.mocked(autoDetectInit).mockResolvedValue({ localConfig: await loadLocalConfigForScope('user'), teamConfig: await loadTeamConfig(repoPath) } as never);
+    await uninstall({ agent: 'acme-claude', force: true });
+
+    expect(await fse.readJson(settingsFile())).toMatchObject({ permissions: { additionalDirectories: ['/member/dir', path.join(homeDir, '.teamai', 'rules')] } });
+  });
+
   describe('with an agent folder', () => {
     const agentFolder = () => path.join(homeDir, '.teamai', 'agents', 'reviewer');
     const agentCopy = () => path.join(homeDir, '.claude', 'agents', 'reviewer.md');
