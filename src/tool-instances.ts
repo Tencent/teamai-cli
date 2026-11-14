@@ -4,13 +4,14 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { isBareCommandName } from '@teamai/shared/cli-path';
-import { INSTANCE_KEYS, type ToolInstance } from '@teamai/tool-core/instance';
+import { INSTANCE_KEYS, type ToolInstance, type ToolInstanceHome } from '@teamai/tool-core/instance';
 import { isSafeNamespaceSegment } from './manifest-schema.js';
 import { resolveNamespacedItems, type NamespaceCandidate } from './namespace-resolver.js';
 import { isSessionPlatform } from './session-flow/adapters/platform-facts.js';
-import { INSTANCE_BASES, isInstanceBase, isToolId, useToolInstances } from './tool-registry.js';
+import { instanceHomeDir, realHost, toolHome, type Host } from './tool-home.js';
+import { INSTANCE_BASES, isInstanceBase, isToolId, TOOL_ORDER, toolOf, useToolInstances } from './tool-registry.js';
 import type { ToolId } from './tools.js';
-import { DEFAULT_TOOL_PATHS, getTeamaiHomeDir, getTrustDir, RELOCATABLE_TOOLS, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type TeamaiConfig } from './types.js';
+import { DEFAULT_TOOL_PATHS, getTeamaiHomeDir, getTrustDir, recordedToolRootDir, RELOCATABLE_TOOLS, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type TeamaiConfig } from './types.js';
 import { writeJsonAtomic } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { errorOnce, warnOnce } from './utils/warn-once.js';
@@ -215,6 +216,9 @@ const teamByRepo = new Map<string, readonly ResolvedToolInstance[]>();
 let personal: readonly ResolvedToolInstance[] = [];
 let readsPersonal = true;
 
+/** The roots the member recorded for the shipped tools (`toolRoots`), read with the instances, for `homeSharedWith`. */
+let memberToolRoots: Readonly<Record<string, string>> | undefined;
+
 /**
  * Leaves the member's own instances out of every lookup from now on, for a run handed over from another member
  * (`resume --next`), whose tools are the team's.
@@ -228,6 +232,7 @@ export function ignorePersonalToolInstances(): void {
 export function resetToolInstancesForTests(): void {
   teamByRepo.clear();
   personal = [];
+  memberToolRoots = undefined;
   readsPersonal = true;
   publish();
 }
@@ -252,6 +257,56 @@ function effectiveInstances(): Map<string, ResolvedToolInstance> {
   }
 
   if (readsPersonal) for (const instance of personal) table.set(instance.name, instance);
+
+  return withoutSharedHomes(table);
+}
+
+/**
+ * The tool other than `name` whose home `home` resolves to on `host`: a shipped tool's (`toolHome`, or the root the
+ * member recorded for it in `toolRoots`) or that of another of `instances`; undefined for none. The check of a file
+ * and the check of where it resolves both ask this, on a host with no variable or record and on the real one.
+ */
+function homeSharedWith({ name, home, instances, host, toolRoots }: {
+  name: string; home: ToolInstanceHome; instances: readonly ResolvedToolInstance[]; host: Host; toolRoots?: Readonly<Record<string, string>>;
+}): string | undefined {
+  const own = instanceHomeDir({ name, home }, host);
+  const at = { home: host.home, path: host.path, readTextNow: (file: string) => host.readTextNow(file), existsNow: (file: string) => host.existsNow(file) };
+  const same = (dir: string | null): boolean => dir !== null && host.path.relative(own, dir) === '';
+
+  return TOOL_ORDER.find((tool) => same(toolHome(tool, host)) || same(recordedToolRootDir(tool, toolRoots, at)))
+    ?? instances.find((other) => other.name !== name && other.name !== other.extends && other.home !== undefined && same(instanceHomeDir({ name: other.name, home: other.home }, host)))?.name;
+}
+
+/**
+ * `table` without an instance whose home is another tool's: two tools on one home write over each other's skills,
+ * hooks and sessions, and credit one's sessions to the other. A `home.dir` that names one is a fault of the file; a
+ * home that only resolves to one, through its variable or the member's `toolRoots`, is named with both tools.
+ */
+function withoutSharedHomes(table: Map<string, ResolvedToolInstance>): Map<string, ResolvedToolInstance> {
+  const instances = [...table.values()];
+  const host = realHost();
+  const unmoved: Host = { ...host, env: {}, toolHomes: { kind: 'missing' } };
+
+  for (const instance of instances) {
+    const { name, home } = instance;
+
+    if (home === undefined || name === instance.extends) continue;
+    const declared = homeSharedWith({ name, home, instances, host: unmoved });
+
+    if (declared !== undefined) {
+      errorOnce(refused(instance.file, `home.dir: ${home.dir} is the home of ${declared} too, and two tools on one home write over each other's skills, hooks and sessions; give it a directory of its own`).problem);
+      table.delete(name);
+      continue;
+    }
+
+    const resolved = homeSharedWith({ name, home, instances, host, toolRoots: memberToolRoots });
+
+    if (resolved !== undefined) {
+      errorOnce(`Tool instance ${name} (${instance.location}) is not used: its home resolves to ${instanceHomeDir({ name, home }, host)}, which is also the home of ${resolved}, `
+        + 'and two tools on one home write over each other\'s skills, hooks and sessions. Move one of the two homes, then run `teamai pull`.');
+      table.delete(name);
+    }
+  }
 
   return table;
 }
@@ -299,6 +354,8 @@ export async function withToolInstances(repoPath: string, config: TeamaiConfig):
   const [team, own] = await Promise.all([teamToolInstances(repoPath), readsPersonal ? personalToolInstances() : []]);
   teamByRepo.set(repoPath, team);
   personal = own;
+
+  if ([...team, ...own].some((instance) => instance.home !== undefined)) memberToolRoots = await realHost().userToolRoots();
   publish();
 
   const byName = new Map(team.map((instance) => [instance.name, instance]));
@@ -309,6 +366,8 @@ export async function withToolInstances(repoPath: string, config: TeamaiConfig):
   const toolPaths = { ...config.toolPaths };
 
   for (const instance of byName.values()) {
+    // One the table leaves out, refused or defined apart, gets no paths either, or it would be delivered to as a tool of its own.
+    if (toolOf(instance.name)?.instance === undefined) continue;
     const paths = instancePaths(instance, config.toolPaths);
 
     if (paths) toolPaths[instance.name] = paths;

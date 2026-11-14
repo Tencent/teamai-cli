@@ -131,6 +131,46 @@ describe('team tool instances', () => {
     expect(registry.toolOf(stem)).toBeUndefined();
   });
 
+  it.each([
+    ['claude', '.claude', 'claude'],
+    ['codex', '.codex', 'codex'],
+    ['claude', '.codex', 'codex'],
+  ])('refuses an instance of %s whose home.dir is %s, the home of %s, naming the file', async (base, dir, other) => {
+    const stem = `acme-${base}`;
+    const text = ACME_CLAUDE.replaceAll('claude', base).replace(`dir: .acme-${base}`, `dir: ${dir}`);
+    const { config, registry, errors } = await load(teamRepo({ [`tools/${stem}.yaml`]: text }));
+
+    expect(errors).toEqual([expect.stringContaining(`${path.join('tools', `${stem}.yaml`)} is not valid: home.dir: ${dir} is the home of ${other} too`)]);
+    expect(registry.toolOf(stem)).toBeUndefined();
+    expect(config?.toolPaths[stem]).toBeUndefined();
+  });
+
+  it('refuses two instances on one home.dir, each naming the other', async () => {
+    const codex = 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-claude }\n';
+    const { registry, errors } = await load(teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE, 'tools/acme-codex.yaml': codex }));
+
+    expect(errors.sort()).toEqual([
+      expect.stringContaining(`${path.join('tools', 'acme-claude.yaml')} is not valid: home.dir: .acme-claude is the home of acme-codex too`),
+      expect.stringContaining(`${path.join('tools', 'acme-codex.yaml')} is not valid: home.dir: .acme-claude is the home of acme-claude too`),
+    ]);
+    expect(registry.toolOf('acme-claude')).toBeUndefined();
+    expect(registry.toolOf('acme-codex')).toBeUndefined();
+  });
+
+  it.each([
+    ['its own variable names the home of Claude Code', '.claude', () => vi.stubEnv('ACME_CLAUDE_CONFIG_DIR', path.join(home, '.claude'))],
+    ['the member recorded the Claude Code home there (toolRoots.claude)', '.acme-claude', () => {
+      fs.mkdirSync(path.join(home, '.teamai'), { recursive: true });
+      fs.writeFileSync(path.join(home, '.teamai', 'config.yaml'), 'repo: { localPath: /x, remote: x }\nusername: u\nscope: user\nadditionalRoles: []\ntoolRoots: { claude: ~/.acme-claude }\n');
+    }],
+  ])('does not use an instance whose home resolves to the home of another tool when %s, naming both', async (_, dir, setup) => {
+    setup();
+    const { registry, errors } = await load(teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE }));
+
+    expect(errors).toEqual([`Tool instance acme-claude (tools/acme-claude.yaml) is not used: its home resolves to ${path.join(home, dir)}, which is also the home of claude, and two tools on one home write over each other's skills, hooks and sessions. Move one of the two homes, then run \`teamai pull\`.`]);
+    expect(registry.toolOf('acme-claude')).toBeUndefined();
+  });
+
   it.each(['./scripts/acme-claude', 'bin/acme-claude', '/opt/acme/bin/acme-claude', String.raw`tools\acme-claude.exe`])(
     'refuses an instance whose command is the path %s, since what runs at a path is not the file a person accepted',
     async (command) => {
