@@ -734,7 +734,7 @@ async function codexHookTrust(ctx: DoctorContext): Promise<{ checks: Check[]; no
     : [];
 
   if (report.kind !== 'listed') {
-    const reason = report.kind === 'failed' ? ` (could not ask Codex: ${report.reason})` : '';
+    const reason = report.kind === 'failed' ? ` (could not ask Codex: ${report.reason})` : ` (${report.reason})`;
 
     return { checks: builds, notes: [`${codexTrustReminder()}${reason}`] };
   }
