@@ -598,7 +598,7 @@ async function runHookDispatch(
       .then(({ canonicalProjectRoot }) => canonicalProjectRoot(copilotProject) === canonicalProjectRoot(selfRoot)));
 
     // Where the global copy steps aside, it is no replacement for the local Claude copy.
-    if (claudeHookRunsInAnotherHost(tool, process.env, !selfCopilotCopyLoaded)) return;
+    if (claudeHookRunsInAnotherHost(tool, process.env, !selfCopilotCopyLoaded, localConfig?.scope)) return;
 
     if (!bgOnly && tool === 'copilot') {
       if (options.copilotGlobal && selfCopilotCopyLoaded) return;

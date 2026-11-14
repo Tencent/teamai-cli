@@ -44,8 +44,8 @@ function teamDef(over: Partial<HookDef> = {}): HookDef {
   };
 }
 
-function claudeHooks(): Record<string, Array<{ matcher?: string; description?: string; hooks: Array<{ command: string }> }>> {
-  return (mockFiles[SETTINGS] as { hooks: Record<string, never> }).hooks as never;
+function claudeHooks(file = SETTINGS): Record<string, Array<{ matcher?: string; description?: string; hooks: Array<{ command: string }> }>> {
+  return (mockFiles[file] as { hooks: Record<string, never> }).hooks as never;
 }
 function cursorHooks(): Record<string, Array<{ command: string; matcher?: string; timeout?: number }>> {
   return (mockFiles[CURSOR] as { hooks: Record<string, never> }).hooks as never;
@@ -59,8 +59,9 @@ describe('reconcileHooks — team (B) hooks', () => {
     mockFiles = {};
     vi.clearAllMocks();
     // An instance of Claude Code, as a member's ~/.teamai/tools/acme-claude.yaml defines it.
-    // One that shares Claude's home; one with a home of its own on Claude's command, whose project hooks are in the
-    // `.claude/settings.json` Cursor and Copilot load; and one with its own build too, which they never load.
+    // One that shares Claude's home; one with a home of its own on Claude's command, whose hooks are in a project's
+    // `.claude/settings.json`, which Cursor and Copilot load, and in its own home in user scope, which they never load;
+    // and one with its own build too.
     useToolInstances(new Map([['acme-claude', {
       kind: 'instance', name: 'acme-claude', extends: 'claude',
       source: 'personal', file: '/home/.teamai/tools/acme-claude.yaml', location: '~/.teamai/tools/acme-claude.yaml', revision: 'r1',
@@ -86,10 +87,14 @@ describe('reconcileHooks — team (B) hooks', () => {
   });
 
   describe('Claude format', () => {
-    it.each([['claude', true], ['acme-claude', true], ['own-claude', true], ['built-claude', false], ['paths-claude', false], ['kept-claude', true]])('injects a team hook after the built-in hooks in its event, for %s, guarded against Cursor and Copilot: %s', async (tool, guarded) => {
-      await reconcileHooks(SETTINGS, tool, [teamDef()], { manifestPath: MANIFEST });
+    it.each([
+      ['claude', SETTINGS, true], ['acme-claude', SETTINGS, true], ['own-claude', '/project/.claude/settings.json', true],
+      ['own-claude', '/home/.own-claude/settings.json', false], ['built-claude', '/project/.built-claude/settings.json', false],
+      ['paths-claude', '/home/.paths-claude/settings.json', false], ['kept-claude', '/home/.claude/settings.json', true],
+    ])('injects a team hook after the built-in hooks in its event, for %s into %s, guarded against Cursor and Copilot: %s', async (tool, file, guarded) => {
+      await reconcileHooks(file, tool, [teamDef()], { manifestPath: MANIFEST });
 
-      const postToolUse = claudeHooks().PostToolUse;
+      const postToolUse = claudeHooks(file).PostToolUse;
       expect(postToolUse).toHaveLength(2); // 1 built-in + 1 team
       const team = postToolUse[postToolUse.length - 1];
       expect(team.description).toBe('[teamai:hook:block-secret] scan secrets before bash');
@@ -97,12 +102,15 @@ describe('reconcileHooks — team (B) hooks', () => {
       expect(team.hooks[0].command).toBe(`${guarded ? claudeHookOtherHostSkip('PostToolUse', 'Bash', teamDef().command) : ''}${teamDef().command}`);
     });
 
-    it.each([['claude', true], ['acme-claude', true], ['own-claude', true], ['built-claude', false]])('writes a PowerShell team command with an explicit shell on Windows, for %s, guarded: %s', async (tool, guarded) => {
+    it.each([
+      ['claude', SETTINGS, true], ['acme-claude', SETTINGS, true], ['own-claude', '/project/.claude/settings.json', true],
+      ['own-claude', '/home/.own-claude/settings.json', false], ['built-claude', '/project/.built-claude/settings.json', false],
+    ])('writes a PowerShell team command with an explicit shell on Windows, for %s into %s, guarded: %s', async (tool, file, guarded) => {
       vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
       vi.spyOn(bundledRuntime, 'findGitBashWindows').mockReturnValue(null);
-      await reconcileHooks(SETTINGS, tool, [teamDef()], { manifestPath: MANIFEST });
+      await reconcileHooks(file, tool, [teamDef()], { manifestPath: MANIFEST });
 
-      const hook = claudeHooks().PostToolUse.at(-1)!.hooks[0] as { command: string; shell?: string };
+      const hook = claudeHooks(file).PostToolUse.at(-1)!.hooks[0] as { command: string; shell?: string };
       expect(hook.shell).toBe('powershell');
       expect(hook.command.includes('$env:CURSOR_VERSION')).toBe(guarded);
       expect(hook.command).not.toContain('grep -q');

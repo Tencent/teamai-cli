@@ -669,10 +669,10 @@ async function judgeUnrecordedTeamEntries(
   const loadRenders = async () => {
     if (renders) return renders;
     const history = await opts.teamHookHistory!();
-    const historicalDefs = scopedTeamDefs(history, opts.teamHookProjectRoot, tool, false, opts.teamHookChildRoots);
+    const historicalDefs = scopedTeamDefs(history, opts.teamHookProjectRoot, { tool, file }, false, opts.teamHookChildRoots);
 
     // A render under the previous host guard still proves ownership.
-    if (format === 'claude' && tool === 'claude') historicalDefs.push(...scopedTeamDefs(history, opts.teamHookProjectRoot, tool, true, opts.teamHookChildRoots));
+    if (format === 'claude' && tool === 'claude') historicalDefs.push(...scopedTeamDefs(history, opts.teamHookProjectRoot, { tool, file }, true, opts.teamHookChildRoots));
 
     return renders = [...teamDefsForTool(scopedDefs, tool), ...teamDefsForTool(historicalDefs, tool)]
       .flatMap((def) => {
@@ -1239,10 +1239,12 @@ function isProjectGatedCommand(command: string): boolean {
  * `tool` here keys the cursor/copilot wrapper, which is orthogonal to the
  * project gate: the gate lost its per-tool form once every render became POSIX
  * (CodeBuddy's Windows hooks run through Git Bash), but this wrapper still
- * needs to know which tool it is rendering for.
+ * needs to know which tool it is rendering for, and `file` which file it
+ * renders into: an instance's hooks are in a Claude settings file in a project
+ * and in a home of its own in user scope.
  */
-function skipWhenAnotherHostLoadsClaudeSettings(def: HookDef, tool: string, legacyGuard = false): string {
-  if (!readsClaudeSettings(tool)) return def.command;
+function skipWhenAnotherHostLoadsClaudeSettings(def: HookDef, { tool, file }: HookFileTarget, legacyGuard = false): string {
+  if (!readsClaudeSettings(tool, { file })) return def.command;
 
   const guard = legacyGuard ? LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP
     : claudeHookOtherHostSkip(CLAUDE_TO_COPILOT_EVENTS[def.event], toCopilotEntry(def).matcher, def.command);
@@ -1988,10 +1990,16 @@ function projectFolderCommand(def: HookDef, tool: string, powershell: boolean): 
   });
 }
 
+/** The tool a team hook is rendered for, and the settings file it is rendered into. */
+interface HookFileTarget {
+  readonly tool: string;
+  readonly file: string;
+}
+
 function scopedTeamDefs(
   teamDefs: HookDef[],
   projectRoot: string | undefined,
-  tool: string,
+  { tool, file }: HookFileTarget,
   legacyGuard = false,
   childRoots: readonly string[] = [],
   codebuddyDualRunner = false,
@@ -2001,7 +2009,7 @@ function scopedTeamDefs(
       && claudeHookUsesPowerShell();
 
     const rendered: HookDef = { ...def, command: projectFolderCommand(def, tool, powershell) };
-    const next: HookDef = { ...rendered, command: skipWhenAnotherHostLoadsClaudeSettings(rendered, tool, legacyGuard) };
+    const next: HookDef = { ...rendered, command: skipWhenAnotherHostLoadsClaudeSettings(rendered, { tool, file }, legacyGuard) };
 
     if (powershell) next.shell = 'powershell';
 
@@ -2030,7 +2038,7 @@ function scopedTeamDefs(
 
 function manifestRecordsForTool(
   teamDefs: HookDef[],
-  tool: string,
+  { tool, file }: HookFileTarget,
   removeAll: boolean,
   projectRoot?: string,
   childRoots: readonly string[] = [],
@@ -2039,7 +2047,7 @@ function manifestRecordsForTool(
   if (removeAll) return [];
 
   // The command as the file holds it, the children's gate included (#913).
-  return teamDefsForTool(scopedTeamDefs(teamDefs, projectRoot, tool, false, childRoots, codebuddyDualRunner), tool).map((d) => (
+  return teamDefsForTool(scopedTeamDefs(teamDefs, projectRoot, { tool, file }, false, childRoots, codebuddyDualRunner), tool).map((d) => (
     d.matcher && d.matcher !== '*'
       ? { id: d.key, event: d.event, matcher: d.matcher, command: d.command }
       : { id: d.key, event: d.event, command: d.command }
@@ -3510,7 +3518,7 @@ export async function reconcileHooks(
 
   const allPriorRecords = manifest?.[tool] ?? [];
   const renderCodebuddyWindows = tool === 'codebuddy' && process.platform === 'win32' && opts.codebuddyDualRunner === true;
-  const scopedDefs = scopedTeamDefs(teamDefs, opts.teamHookProjectRoot, tool, false, opts.teamHookChildRoots, renderCodebuddyWindows);
+  const scopedDefs = scopedTeamDefs(teamDefs, opts.teamHookProjectRoot, { tool, file: settingsPath }, false, opts.teamHookChildRoots, renderCodebuddyWindows);
 
   const projectRecords = opts.teamHookProjectRoot
     ? allPriorRecords.filter((r) => isGatedForProject(r.command, opts.teamHookProjectRoot!))
@@ -3571,7 +3579,7 @@ export async function reconcileHooks(
     };
 
     const records = [
-      ...codex?.records ?? manifestRecordsForTool(teamDefs, tool, !!opts.removeAll, opts.teamHookProjectRoot, opts.teamHookChildRoots, renderCodebuddyWindows),
+      ...codex?.records ?? manifestRecordsForTool(teamDefs, { tool, file: settingsPath }, !!opts.removeAll, opts.teamHookProjectRoot, opts.teamHookChildRoots, renderCodebuddyWindows),
       ...heldRecords.filter((r) => keptHeld.has(r)).map((r) => followCodexMove({ ...r, command: keptHeld.get(r)! })),
     ];
 
