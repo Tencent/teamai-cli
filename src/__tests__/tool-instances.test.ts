@@ -195,6 +195,29 @@ describe('team tool instances', () => {
     expect(registry.toolOf('acme-claude')).toBeUndefined();
   });
 
+  // init lists the instances it records from the files, a refused one included: else no value could ever replace this record.
+  it.each([
+    { refusal: 'the home of Claude Code', recorded: '.claude', toolRoots: '' },
+    { refusal: 'the root recorded for Claude Code', recorded: '.claude-work', toolRoots: 'toolRoots: { claude: ~/.claude-work }\n' },
+    { refusal: 'your home directory itself', recorded: '', toolRoots: '' },
+  ].flatMap((row) => [{ ...row, action: 'replace', value: '.acme-good' }, { ...row, action: 'clear', value: null }]))(
+    'lets init $action the record that put an instance at $refusal, after which the instance is used',
+    async ({ recorded, toolRoots, value }) => {
+      fs.mkdirSync(path.join(home, '.teamai'), { recursive: true });
+      fs.writeFileSync(path.join(home, '.teamai', 'tool-homes.json'), JSON.stringify({ 'acme-claude': path.join(home, recorded) }));
+      if (toolRoots) fs.writeFileSync(path.join(home, '.teamai', 'config.yaml'), `repo: { localPath: /x, remote: x }\nusername: u\nscope: user\nadditionalRoles: []\n${toolRoots}`);
+      const repo = teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE });
+      const refused = await load(repo);
+      expect([refused.registry.toolOf('acme-claude'), refused.errors]).toEqual([undefined, [expect.stringContaining('Tool instance acme-claude (tools/acme-claude.yaml) is not used')]]);
+      vi.stubEnv('ACME_CLAUDE_CONFIG_DIR', value === null ? '' : path.join(home, value));
+      const { recordToolHomes } = await import('../tool-home-record.js');
+
+      expect(await recordToolHomes('init')).toEqual([{ tool: 'acme-claude', variable: 'ACME_CLAUDE_CONFIG_DIR', dir: value === null ? null : path.join(home, value) }]);
+      vi.stubEnv('ACME_CLAUDE_CONFIG_DIR', undefined);
+      expect((await load(repo)).registry.toolOf('acme-claude')).toMatchObject({ name: 'acme-claude' });
+    },
+  );
+
   it.each([
     ['your home directory', ''],
     ['your home directory with a trailing separator', path.sep],

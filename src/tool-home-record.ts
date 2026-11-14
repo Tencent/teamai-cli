@@ -1,5 +1,5 @@
 import { withFileLock } from './update.js';
-import { homeVariables, instanceNames, TOOL_ORDER, toolOf } from './tool-registry.js';
+import { declaredInstances, homeVariables, TOOL_ORDER } from './tool-registry.js';
 import { envInstanceHome, envToolHome, isSameDirOn, realHost, type EnvToolHome, recordedHomes, reloadToolHomes, rememberToolHome, saveToolHomes, toolHomesPath, type Host } from './tool-home.js';
 import { log } from './utils/logger.js';
 import { warnOnce } from './utils/warn-once.js';
@@ -25,13 +25,9 @@ const INIT_RECORDS: Readonly<Record<EnvToolHome['kind'], RecordRule>> = {
 
 const PULL_RECORDS: RecordRule = { replacesRecord: false, needsExistingHome: true };
 
-/** Each shipped tool, and each instance that names a variable of its own, with where the host env moves its home and the variables that move it. */
+/** Each shipped tool, and each declared instance that names a variable of its own (a refused one included), with where the host env moves its home and the variables that move it. */
 function envHomes(host: Host): Array<{ readonly tool: string; readonly moved: EnvToolHome | null; readonly variables: readonly string[]; readonly isInstance: boolean }> {
-  const instances = instanceNames().flatMap((name) => {
-    const instance = toolOf(name)?.instance;
-
-    return instance?.home?.env === undefined || instance.name === instance.extends ? [] : [{ tool: name, moved: envInstanceHome(instance.home, host), variables: [instance.home.env], isInstance: true }];
-  });
+  const instances = declaredInstances().flatMap(({ name, extends: base, home }) => home?.env === undefined || name === base ? [] : [{ tool: name, moved: envInstanceHome(home, host), variables: [home.env], isInstance: true }]);
 
   return [...TOOL_ORDER.map((tool) => ({ tool, moved: envToolHome(tool, host), variables: homeVariables(tool), isInstance: false })), ...instances];
 }

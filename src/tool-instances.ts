@@ -242,8 +242,11 @@ export function resetToolInstancesForTests(): void {
   publish();
 }
 
-/** The instances a lookup sees: the member's own first, then the team's. One name two team repos define apart is left out. */
-function effectiveInstances(): Map<string, ResolvedToolInstance> {
+/**
+ * The instances the files declare, the member's own over the team's, before any is refused for its home. One name two
+ * team repos define apart is left out.
+ */
+function declaredTable(): Map<string, ResolvedToolInstance> {
   const table = new Map<string, ResolvedToolInstance>();
   const conflicted = new Set<string>();
 
@@ -263,7 +266,7 @@ function effectiveInstances(): Map<string, ResolvedToolInstance> {
 
   if (readsPersonal) for (const instance of personal) table.set(instance.name, instance);
 
-  return withoutSharedHomes(table);
+  return table;
 }
 
 /**
@@ -327,7 +330,9 @@ function withoutSharedHomes(table: Map<string, ResolvedToolInstance>): Map<strin
 }
 
 function publish(): void {
-  useToolInstances(effectiveInstances());
+  const declared = declaredTable();
+
+  useToolInstances(withoutSharedHomes(new Map(declared)), declared);
 }
 
 /** The tool paths `instance` gives its tool: its own `paths`, else the paths of the tool it extends, moved to its home. */

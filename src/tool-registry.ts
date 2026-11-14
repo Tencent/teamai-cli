@@ -31,12 +31,25 @@ function hostsInstances(platform: SessionPlatform, instance: ResolvedToolInstanc
 /** The instances of every team repo and member's directory loaded in this process, by name. */
 let instanceTable: ReadonlyMap<string, ResolvedToolInstance> = new Map();
 
+/** The same, before any was refused for where its home resolves: what init records and clears homes for. */
+let declaredTable: ReadonlyMap<string, ResolvedToolInstance> = new Map();
+
 /**
  * Makes `instances` the instances every lookup of a tool name sees: the ones this process resolved from the team
- * repos and the member's directory it loaded (`tool-instances.ts`, the one writer).
+ * repos and the member's directory it loaded (`tool-instances.ts`, the one writer). `declared` adds the ones refused
+ * for their home, which no lookup sees.
  */
-export function useToolInstances(instances: ReadonlyMap<string, ResolvedToolInstance>): void {
+export function useToolInstances(instances: ReadonlyMap<string, ResolvedToolInstance>, declared: ReadonlyMap<string, ResolvedToolInstance> = instances): void {
   instanceTable = instances;
+  declaredTable = declared;
+}
+
+/**
+ * Each instance the files declare, one refused for where its home resolves included: a refused instance's recorded home
+ * must stay replaceable, or nothing could end the refusal.
+ */
+export function declaredInstances(): ResolvedToolInstance[] {
+  return [...declaredTable.values()];
 }
 
 /** The names of the instances this process knows, a member's own included. */
