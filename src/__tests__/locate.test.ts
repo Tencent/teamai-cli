@@ -23,7 +23,7 @@ describe('nextToolHomes', () => {
     const { homes, changes } = await nextToolHomes({ hermes: '/old/hermes' }, linuxHost({ HERMES_HOME: '/new/hermes' }), 'init');
 
     expect(homes).toEqual({ hermes: '/new/hermes' });
-    expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: '/new/hermes' }]);
+    expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: '/new/hermes', previous: '/old/hermes' }]);
   });
 
   it('keeps a record from a shell without the variable, and clears it when the variable is set but blank', async () => {
@@ -32,7 +32,7 @@ describe('nextToolHomes', () => {
     const cleared = await nextToolHomes({ opencode: '/x/opencode' }, linuxHost({ XDG_CONFIG_HOME: '' }), 'init');
 
     expect(cleared.homes).toEqual({});
-    expect(cleared.changes).toEqual([{ tool: 'opencode', variable: 'XDG_CONFIG_HOME', dir: null }]);
+    expect(cleared.changes).toEqual([{ tool: 'opencode', variable: 'XDG_CONFIG_HOME', dir: null, previous: '/x/opencode' }]);
   });
 
   it('never changes an existing record on a pull', async () => {
@@ -46,7 +46,7 @@ describe('nextToolHomes', () => {
     const { homes, changes } = await nextToolHomes({ hermes: '/old/hermes' }, linuxHost({ HERMES_HOME: '/later/hermes' }), 'init');
 
     expect(homes).toEqual({ hermes: '/later/hermes' });
-    expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: '/later/hermes' }]);
+    expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: '/later/hermes', previous: '/old/hermes' }]);
   });
 
   it('lets init record a home a tool\'s own variable names before it exists', async () => {
@@ -105,7 +105,7 @@ describe('nextToolHomes and Hermes\'s active_profile', () => {
     const { homes, changes } = await nextToolHomes({ hermes: '/srv/hermes' }, { ...sticky, env: { HERMES_HOME: '' } }, 'init');
 
     expect(homes).toEqual({});
-    expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: null }]);
+    expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: null, previous: '/srv/hermes' }]);
   });
 });
 
@@ -128,7 +128,7 @@ describe('nextToolHomes on Windows', () => {
     const { homes, changes } = await nextToolHomes({ hermes: 'D:\\hermes-moved' }, windowsHost({ HERMES_HOME: '', LOCALAPPDATA: appData }, ['D:\\hermes-moved', `${appData}\\hermes`]), 'init');
 
     expect(homes).toEqual({});
-    expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: null }]);
+    expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: null, previous: 'D:\\hermes-moved' }]);
   });
 
   it('follows active_profile inside the Windows default a pull recorded', async () => {
@@ -456,7 +456,7 @@ describe('the home an instance\'s own variable moves', () => {
     expect(await nextToolHomes({}, linuxHost({ ACME_CODEX_HOME: '/x/acme' }, ['/x/acme']), 'pull')).toEqual({ homes: { 'acme-codex': '/x/acme' }, changes: [{ tool: 'acme-codex', variable: 'ACME_CODEX_HOME', dir: '/x/acme' }] });
     expect((await nextToolHomes({ 'acme-codex': '/x/acme' }, linuxHost({ ACME_CODEX_HOME: '/y/acme' }, ['/y/acme']), 'pull')).homes).toEqual({ 'acme-codex': '/x/acme' });
     expect((await nextToolHomes({ 'acme-codex': '/x/acme' }, linuxHost({ ACME_CODEX_HOME: '/y/acme' }), 'init')).homes).toEqual({ 'acme-codex': '/y/acme' });
-    expect(await nextToolHomes({ 'acme-codex': '/x/acme' }, linuxHost({ ACME_CODEX_HOME: '' }), 'init')).toEqual({ homes: {}, changes: [{ tool: 'acme-codex', variable: 'ACME_CODEX_HOME', dir: null }] });
+    expect(await nextToolHomes({ 'acme-codex': '/x/acme' }, linuxHost({ ACME_CODEX_HOME: '' }), 'init')).toEqual({ homes: {}, changes: [{ tool: 'acme-codex', variable: 'ACME_CODEX_HOME', dir: null, previous: '/x/acme' }] });
   });
 
   it('is read from the record in a shell without the variable, and the record wins over another value, as for a shipped tool', () => {

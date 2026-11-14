@@ -229,8 +229,9 @@ import {
   SELF_MODE_AGENT_CHOICES,
   KNOWN_AGENTS,
 } from './known-agents.js';
-import { descriptorOf, TOOL_ORDER } from './tool-registry.js';
-import { describeToolHomeChange, recordToolHomes } from './tool-home-record.js';
+import { descriptorOf, TOOL_ORDER, toolOf } from './tool-registry.js';
+import { describeToolHomeChange, recordToolHomes, type ToolHomeChange } from './tool-home-record.js';
+import { defaultPathsOf } from './tool-instances.js';
 
 function validAgentIds(teamTools: readonly string[]): string[] {
   return [...new Set([
@@ -374,6 +375,32 @@ async function releasePreviousToolRoots(
       `${label} now syncs to ${next.toolRoots?.[tool] ?? 'the default root'}; skills, rules and instruction files `
       + `that teamai wrote under ${path.dirname(oldSettings)} were left in place.`,
     );
+  }
+}
+
+/**
+ * The same for an instance whose own variable this init moved or cleared: the hooks teamai delivered into its previous
+ * home keep firing in a shell that still exports the old value. They go, as an earlier home's copy does (#1221); the
+ * records stay for the pull that delivers to the new home. An instance this init refuses, and one with paths of its
+ * own, which teamai writes as they are, are left alone.
+ */
+async function releasePreviousInstanceHomes(changes: readonly ToolHomeChange[], next: LocalConfig): Promise<void> {
+  const hookScope = resolveHookScope(next);
+
+  for (const { tool, dir, previous } of changes) {
+    const instance = toolOf(tool)?.instance;
+
+    if (previous === undefined || instance?.home === undefined || instance.paths !== undefined || instance.name === instance.extends) continue;
+    const settings = defaultPathsOf(instance).settings;
+    const oldSettings = settings === undefined ? undefined : path.join(previous, path.relative(instance.home.dir, settings));
+
+    if (oldSettings !== undefined && await pathExists(oldSettings) && await hasTeamaiHooks(oldSettings, tool, hookScope.manifestPath)) {
+      await reconcileHooks(oldSettings, tool, [], { removeAll: true, keepRecords: true, manifestPath: hookScope.manifestPath, codexTrust: { kind: 'disabled' } });
+    }
+
+    if (!await pathExists(previous)) continue;
+    log.warn(`${tool} now syncs to ${dir ?? 'its default home'}; skills, rules, instruction files and MCP servers `
+      + `that teamai wrote under ${previous} were left in place.`);
   }
 }
 
@@ -1032,7 +1059,10 @@ export async function initHttp(
   if (carriedToolRoots) localConfig.toolRoots = { ...carriedToolRoots };
   recordToolRoots(localConfig);
 
-  for (const change of await recordToolHomes('init')) log.info(describeToolHomeChange(change));
+  const homeChanges = await recordToolHomes('init');
+
+  for (const change of homeChanges) log.info(describeToolHomeChange(change));
+  await releasePreviousInstanceHomes(homeChanges, localConfig);
   await releasePreviousToolRoots(teamConfig, existingLocalConfig, localConfig);
 
   await ensureDir(teamaiHome);
@@ -1749,7 +1779,10 @@ export async function initSelfMode(options: GlobalOptions & {
   if (preInitConfig?.toolRoots) localConfig.toolRoots = { ...preInitConfig.toolRoots };
   recordToolRoots(localConfig);
 
-  for (const change of await recordToolHomes('init')) log.info(describeToolHomeChange(change));
+  const homeChanges = await recordToolHomes('init');
+
+  for (const change of homeChanges) log.info(describeToolHomeChange(change));
+  await releasePreviousInstanceHomes(homeChanges, localConfig);
 
   // Step 5: write local config (into the partition via dataHome) + self-mode
   // gitignore. ensureDir both the knowledge dir (class B, in the repo) and the
@@ -2837,7 +2870,10 @@ export async function init(options: GlobalOptions & {
   if (carriedToolRoots) localConfig.toolRoots = { ...carriedToolRoots };
   recordToolRoots(localConfig);
 
-  for (const change of await recordToolHomes('init')) log.info(describeToolHomeChange(change));
+  const homeChanges = await recordToolHomes('init');
+
+  for (const change of homeChanges) log.info(describeToolHomeChange(change));
+  await releasePreviousInstanceHomes(homeChanges, localConfig);
   await releasePreviousToolRoots(currentConfig, carriedConfig, localConfig);
 
   await ensureDir(teamaiHome);

@@ -212,7 +212,7 @@ describe('team tool instances', () => {
       vi.stubEnv('ACME_CLAUDE_CONFIG_DIR', value === null ? '' : path.join(home, value));
       const { recordToolHomes } = await import('../tool-home-record.js');
 
-      expect(await recordToolHomes('init')).toEqual([{ tool: 'acme-claude', variable: 'ACME_CLAUDE_CONFIG_DIR', dir: value === null ? null : path.join(home, value) }]);
+      expect(await recordToolHomes('init')).toEqual([{ tool: 'acme-claude', variable: 'ACME_CLAUDE_CONFIG_DIR', dir: value === null ? null : path.join(home, value), previous: path.join(home, recorded) }]);
       vi.stubEnv('ACME_CLAUDE_CONFIG_DIR', undefined);
       expect((await load(repo)).registry.toolOf('acme-claude')).toMatchObject({ name: 'acme-claude' });
     },

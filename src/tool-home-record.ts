@@ -6,7 +6,8 @@ import { warnOnce } from './utils/warn-once.js';
 import { errnoCode } from './utils/fs.js';
 
 /** A change to the record of a shipped tool or an instance: `dir` null when it was cleared. */
-export type ToolHomeChange = { readonly tool: string; readonly variable: string; readonly dir: string | null };
+/** A record init or pull wrote: `dir`, or null for a cleared one, over the home recorded before it, if any. */
+export type ToolHomeChange = { readonly tool: string; readonly variable: string; readonly dir: string | null; readonly previous?: string };
 
 type RecordRule = { readonly replacesRecord: boolean; readonly needsExistingHome: boolean };
 
@@ -52,8 +53,8 @@ export async function nextToolHomes(
       && variables.find((name) => host.env[name] !== undefined && host.env[name]?.trim() === '');
 
     if (blank) {
+      changes.push({ tool, variable: blank, dir: null, previous: homes[tool] });
       delete homes[tool];
-      changes.push({ tool, variable: blank, dir: null });
       continue;
     }
 
@@ -71,7 +72,7 @@ export async function nextToolHomes(
     }
 
     homes[tool] = moved.dir;
-    changes.push({ tool, variable: moved.variable, dir: moved.dir });
+    changes.push(current === undefined ? { tool, variable: moved.variable, dir: moved.dir } : { tool, variable: moved.variable, dir: moved.dir, previous: current });
   }
 
   return { homes, changes };

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished, type MockInstance } from 'vitest';
 import path from 'node:path';
 
 // ── Mocks ────────────────────────────────────────────────
@@ -234,6 +234,12 @@ vi.mock('../types.js', async (importOriginal) => {
 
 // Mock prompt to auto-answer prompts
 let questionAnswers: string[] = [];
+vi.mock('../tool-home-record.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../tool-home-record.js')>();
+
+  return { ...original, recordToolHomes: vi.fn(original.recordToolHomes) };
+});
+
 vi.mock('../utils/prompt.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/prompt.js')>()),
   // Mirror the real predicate's TTY leg so tests that force `isTTY` keep
@@ -263,6 +269,8 @@ import { GitLabProvider } from '../providers/gitlab/index.js';
 import { RepoNotFoundError, RepoCreatePermissionError } from '../providers/types.js';
 import { CnbRepoNotFoundError } from '../providers/cnb/cnb-cli.js';
 import { saveLocalConfig, loadLocalConfigForScope } from '../config.js';
+import { recordToolHomes } from '../tool-home-record.js';
+import { useToolInstances } from '../tool-registry.js';
 import fse from 'fs-extra';
 import { readFileSafe } from '../utils/fs.js';
 import type { PublishResult } from '../utils/branch-worktree.js';
@@ -1546,6 +1554,32 @@ describe('init', () => {
 
         expect(await savedConfig()).toMatchObject({ toolRoots: { claude: relocated } });
         expect(await removedHooksFrom()).toEqual([oldSettings]);
+      });
+
+      it.each([
+        { change: 'moves', dir: path.join(HOME, 'work', 'acme-new'), now: path.join(HOME, 'work', 'acme-new') },
+        { change: 'clears', dir: null, now: 'its default home' },
+      ])('removes the hooks left in an instance\'s previous home when init $change its record', async ({ dir, now }) => {
+        vi.mocked(loadLocalConfigForScope).mockResolvedValue(previousConfig());
+        useToolInstances(new Map([['acme-codex', {
+          name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+          source: 'team', file: '/r/tools/acme-codex.yaml', location: 'tools/acme-codex.yaml', revision: 'r1',
+        }]]));
+        onTestFinished(() => { useToolInstances(new Map()); });
+        const previous = path.join(HOME, 'work', 'acme-old');
+        vi.mocked(recordToolHomes).mockResolvedValueOnce([{ tool: 'acme-codex', variable: 'ACME_CODEX_HOME', dir, previous }]);
+        const oldHooks = path.join(previous, 'hooks.json');
+        settingsExistsAt(oldHooks);
+
+        await savedConfig();
+
+        const { reconcileHooks } = await import('../hooks.js');
+        expect(vi.mocked(reconcileHooks).mock.calls.filter(([, tool]) => tool === 'acme-codex').map(([file, , , options]) => [file, options]))
+          .toEqual([[oldHooks, expect.objectContaining({ removeAll: true, keepRecords: true, manifestPath: expect.stringContaining('managed-hooks') })]]);
+        const { log } = await import('../utils/logger.js');
+        const warned = vi.mocked(log.warn).mock.calls.map(([m]) => String(m)).join('\n');
+        expect(warned).toContain(`acme-codex now syncs to ${now}`);
+        expect(warned).toContain(`under ${previous} were left in place`);
       });
 
       it('leaves the previous root alone when the root did not move', async () => {
