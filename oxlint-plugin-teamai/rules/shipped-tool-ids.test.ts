@@ -45,8 +45,7 @@ export const a = isToolId('a');`, (output) => {
 rule.valid('allows a file its SHIPPED_ONLY count', `import { isToolId } from './tool-registry.js';
 export const a = isToolId('a');
 export const b = isToolId('b');
-export const c = isToolId('c');
-export const shared = (tool: string) => tool === 'codex';`, { filename: 'src/locate.ts' });
+export const c = isToolId('c');`, { filename: 'src/locate.ts' });
 
 rule.invalid('rejects a comparison with Codex\'s id as a string', `export const shared = (tool: string) => tool === 'codex';`, (output) => {
   expect(output).toContain('is false for an instance of that tool');
@@ -57,16 +56,32 @@ export const reads = (tool: string) => tool !== CLAUDE_TOOL_ID;`, undefined, { f
 
 rule.invalid('rejects a switch case on Codex\'s id', `export const home = (tool: string) => { switch (tool) { case 'codex': return '.codex'; default: return undefined; } };`, undefined, { filename: 'src/new-area/reader.ts' });
 
-rule.invalid('rejects one comparison more than a file\'s BASE_ID_COMPARISONS count', `export const a = (tool: string) => tool === 'codex' || tool === 'claude';`, undefined, { filename: 'src/workflow/step-model.ts' });
+rule.invalid('rejects one comparison more than a file\'s BASE_ID_COMPARISONS count', `export const a = (tool: string) => tool === 'codex' || tool === 'claude';`, undefined, { filename: 'src/init.ts' });
 
 rule.invalid('rejects a BASE_ID_COMPARISONS count above what the file holds', 'export const none = 1;', (output) => {
   expect(output).toContain('fewer times than BASE_ID_COMPARISONS allows');
-}, { filename: 'src/workflow/step-model.ts' });
+}, { filename: 'src/init.ts' });
 
-rule.valid('allows a file its BASE_ID_COMPARISONS count', `export const a = (tool: string) => tool === 'codex';`, { filename: 'src/workflow/step-model.ts' });
+rule.valid('allows a file its BASE_ID_COMPARISONS count', `export const a = (tool: string) => tool === 'codex';`, { filename: 'src/init.ts' });
 
 rule.valid('allows a comparison of the tool an instance extends, and of another tool\'s id', `import { baseToolOf } from './tool-registry.js';
 export const a = (tool: string) => baseToolOf(tool) === 'codex' || tool === 'cursor';`, { filename: 'src/new-area/reader.ts' });
+
+rule.valid('allows a comparison of a format, a family or the tool an instance extends, however it is held', `import { hookFormatOf, launchAdapterIdOf, toolOf } from './tool-registry.js';
+import type { McpFormat, ModelAgent } from './types.js';
+export const a = (tool: string) => toolOf(tool)?.base === 'claude' || hookFormatOf(tool) === 'codex';
+export const b = (tool: string, launched: boolean) => { const family = launched ? launchAdapterIdOf(tool) : undefined; return family === 'codex'; };
+export const c = (target: { format: McpFormat }) => target.format === 'codex';
+export const d = (agent: ModelAgent) => { switch (agent) { case 'claude': return 1; default: return 0; } };
+export const e = (format: Exclude<McpFormat, 'json'>) => format === 'claude';`, { filename: 'src/new-area/reader.ts' });
+
+rule.invalid('rejects a local that held a resolved name until a tool\'s own name replaced it', `import { baseToolOf } from './tool-registry.js';
+export const a = (tool: string) => { let family = baseToolOf(tool); family = tool; return family === 'codex'; };`, undefined, { filename: 'src/new-area/reader.ts' });
+
+rule.invalid('rejects a lookup in the list of Codex\'s shipped ids', `import { CODEX_TOOL_IDS } from './utils/tool-names.js';
+export const codex = (tool: string) => CODEX_TOOL_IDS.some((id) => id === tool);`, (output) => {
+  expect(output).toContain('isCodexTool(tool)');
+}, { filename: 'src/new-area/reader.ts' });
 
 rule.valid('allows a name resolved through toolOf', `import { baseDescriptorOf, toolOf } from './tool-registry.js';
 export const shell = (tool: string) => toolOf(tool) === undefined ? undefined : baseDescriptorOf(tool)?.hooks.shell;`, { filename: 'src/new-area/reader.ts' });

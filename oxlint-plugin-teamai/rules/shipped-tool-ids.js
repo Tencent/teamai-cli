@@ -1,7 +1,7 @@
 /** @import { ESTree } from '@oxlint/plugins' */
 import { defineRule } from '@oxlint/plugins';
 
-import { isProductionSource, isScriptSource, repositoryPath, scopedFiles, stringLiteralValue } from '../utils.js';
+import { isProductionSource, isScriptSource, repositoryPath, scopedFiles, stringLiteralValue, variableOf } from '../utils.js';
 
 /** The two predicates that hold only for a tool teamai ships, never for a tool instance a team or member defines. */
 const SHIPPED_ONLY_PREDICATES = new Set(['isToolId', 'isAgentToolId']);
@@ -45,44 +45,53 @@ export const SHIPPED_ONLY = new Map(Object.entries({
 
 scopedFiles([...SHIPPED_ONLY.keys()]);
 
+/** The list of Codex's shipped ids, which `isCodexTool` compares with the tool an instance extends, where it is defined. */
+const CODEX_ID_LIST = 'CODEX_TOOL_IDS';
+const CODEX_ID_LIST_DEFINITION = new Set(scopedFiles(['src/utils/tool-names.ts']));
+
 /** The tools an instance extends (`INSTANCE_BASES`), and the names their ids go by in source. */
 const BASE_IDS = new Set(['claude', 'codex']);
 const BASE_ID_NAMES = new Set(['CLAUDE_TOOL_ID', 'CODEX_TOOL_ID', 'CLAUDE_TOOL', 'CODEX_TOOL']);
 
 /**
  * Files that compare a tool name with Claude Code's or Codex's id (`tool === 'codex'`, `case CODEX_TOOL_ID:`), by count,
- * from before the rule read that form. None is reviewed yet: each may leave out an instance of the tool. A comparison
- * that must hold for an instance too resolves the name with baseToolOf; one that must hold only for the shipped tool
- * raises the file's count with a comment that says why. A count above what the file holds fails until it is lowered.
+ * each with why the comparison is meant to be false for an instance of that tool, or why the name it compares can never
+ * be one. A comparison of what `isResolved` recognizes (the tool an instance extends, a format, a family) is not counted.
+ * A new comparison fails; a count above what the file holds fails until it is lowered.
  */
 export const BASE_ID_COMPARISONS = new Map(Object.entries({
+  // The session store is ready when Codex's own executable is on PATH; an instance runs a command of its own.
   'packages/tool-core/src/formats/codex.ts': 1,
+  // Every caller passes `launchAdapterIdOf(tool)`, the adapter an instance shares with its tool; the package cannot
+  // import the type that says so.
   'packages/tool-core/src/stdout.ts': 3,
-  'src/autocompact-reconcile.ts': 6,
-  'src/builtin-hooks.ts': 1,
-  'src/claude-hook-host.ts': 1,
-  'src/coauthor-reconcile.ts': 5,
+  // `claude` is the default of `hook --tool` (src/index.ts), which a named host replaces; an instance is never that default.
   'src/dashboard-collector.ts': 2,
-  'src/doctor-delivery.ts': 2,
+  // Names the Codex build in a check's title unless it is Codex itself; an instance is named.
+  'src/doctor-delivery.ts': 1,
+  // The fast path runs before any instance is loaded, so it reads only the shipped name; an instance's hook takes the full
+  // dispatch under Cursor or Copilot (hook-fast-path.test.ts).
   'src/hook-fast-path.ts': 1,
-  'src/hooks.ts': 36,
+  // The main checkout's team hooks, Codex's team-hook dispatcher and the entry-index ownership it records are Claude
+  // Code's and Codex's: an instance keeps its team hooks in its own home for each checkout (docs/guide/reference.md),
+  // recorded and matched by command at both ends. The legacy manifests and host guard predate instances, and the Codex
+  // trust pass lists Codex apart from its instances.
+  'src/hooks.ts': 16,
+  // `--team-hooks --tool codex` runs Codex's team-hook dispatcher, which an instance does not have (see src/hooks.ts).
   'src/index.ts': 1,
+  // Iterates RELOCATABLE_TOOLS (src/types.ts), which holds only the shipped tools.
   'src/init.ts': 1,
-  'src/local-agent.ts': 8,
-  'src/locate.ts': 1,
-  'src/mcp-reconcile.ts': 10,
-  'src/models/aliases.ts': 1,
+  // The local agent delivers models to the closed `ModelAgentKind` union; an instance gets no kind and no model.
+  'src/local-agent.ts': 4,
+  // tclaude and Muse Code read the project file the shipped claude target writes; an instance's target is another writer.
+  'src/mcp-reconcile.ts': 1,
+  // A model profile routes the `ModelAgent` tools, a closed list of shipped tools (src/models/profile.ts).
   'src/models/profile.ts': 2,
-  'src/models/switch.ts': 18,
-  'src/pkg/commands.ts': 1,
-  'src/resources/agent-format.ts': 7,
-  'src/resources/mcp-format.ts': 3,
+  'src/models/switch.ts': 4,
+  // Asks whether a tool besides Codex writes into .agents/skills; a Codex instance pointed there is such a writer.
   'src/resources/skills.ts': 1,
+  // Codex's team-hook dispatcher, which an instance does not have (see src/hooks.ts).
   'src/uninstall.ts': 2,
-  'src/utils/tool-names.ts': 1,
-  'src/workflow/drivers/local/local-driver.ts': 4,
-  'src/workflow/drivers/local/local-tool-adapter.ts': 3,
-  'src/workflow/step-model.ts': 1,
 }));
 
 scopedFiles([...BASE_ID_COMPARISONS.keys()]);
@@ -100,13 +109,70 @@ function isBaseId(node) {
   return node?.type === 'Identifier' && BASE_ID_NAMES.has(node.name);
 }
 
+/** Calls that answer for the tool an instance extends: its id, or the format or family it shares with that tool. */
+const RESOLVERS = new Set(['baseToolOf', 'agentFormatOf', 'hookFormatOf', 'mcpFormatOf', 'launchAdapterIdOf', 'familyOf']);
+
+/** Fields that hold such an answer, never a tool's own name: `toolOf(tool).base`, an MCP target's `format`, a descriptor's `launch`. */
+const RESOLVED_FIELDS = new Set(['base', 'format', 'family', 'kind', 'launch', 'ecosystem']);
+
+/** Types that admit only the ids teamai ships or a format, so no instance name reaches a comparison of one. */
+const RESOLVED_TYPES = new Set(['ToolName', 'AgentToolId', 'ModelAgent', 'McpFormat', 'HookFormat']);
+
 /**
- * Whether `node` is a call of `baseToolOf`, which resolves an instance to the tool it extends.
+ * Whether `node` holds the tool an instance extends, or a format or family, rather than a tool's own name: a resolver's
+ * call, a resolved field, or a local that is never reassigned and was set from one, or a parameter typed as one.
+ * @param {import('@oxlint/plugins').Context['sourceCode']} sourceCode
+ * @param {ESTree.Node | null | undefined} node
+ * @param {number} [depth]
+ * @returns {boolean}
+ */
+function isResolved(sourceCode, node, depth = 0) {
+  if (!node || depth > 3) return false;
+
+  if (node.type === 'CallExpression') return node.callee.type === 'Identifier' && RESOLVERS.has(node.callee.name);
+
+  if (node.type === 'ChainExpression') return isResolved(sourceCode, node.expression, depth);
+
+  if (node.type === 'ConditionalExpression') return [node.consequent, node.alternate].every((branch) => isNothing(branch) || isResolved(sourceCode, branch, depth));
+
+  if (node.type === 'MemberExpression') return !node.computed && node.property.type === 'Identifier' && RESOLVED_FIELDS.has(node.property.name);
+
+  if (node.type !== 'Identifier') return false;
+  const variable = variableOf(sourceCode, node, node.name);
+
+  if (!variable || variable.defs.length !== 1 || variable.references.some((reference) => reference.isWrite() && !reference.init)) return false;
+  const [definition] = variable.defs;
+
+  if (definition?.type === 'Variable' && definition.node.type === 'VariableDeclarator' && definition.node.id.type === 'Identifier') {
+    return isResolved(sourceCode, definition.node.init, depth + 1);
+  }
+
+  if (definition?.type !== 'Parameter' || definition.name.type !== 'Identifier') return false;
+  const annotation = definition.name.typeAnnotation?.typeAnnotation;
+
+  return isResolvedType(annotation);
+}
+
+/**
+ * Whether `type` is one of `RESOLVED_TYPES`, or a part of one picked with `Exclude` or `Extract`.
+ * @param {ESTree.Node | null | undefined} type
+ * @returns {boolean}
+ */
+function isResolvedType(type) {
+  if (type?.type !== 'TSTypeReference' || type.typeName.type !== 'Identifier') return false;
+
+  if (RESOLVED_TYPES.has(type.typeName.name)) return true;
+
+  return ['Exclude', 'Extract'].includes(type.typeName.name) && isResolvedType(type.typeArguments?.params[0]);
+}
+
+/**
+ * Whether `node` is `undefined` or `null`: the branch that holds no tool at all.
  * @param {ESTree.Node} node
  * @returns {boolean}
  */
-function isBaseOf(node) {
-  return node.type === 'CallExpression' && node.callee.type === 'Identifier' && node.callee.name === 'baseToolOf';
+function isNothing(node) {
+  return (node.type === 'Identifier' && node.name === 'undefined') || (node.type === 'Literal' && node.value === null);
 }
 
 export default defineRule({
@@ -128,19 +194,23 @@ export default defineRule({
     return {
       Identifier(node) {
         if (SHIPPED_ONLY_PREDICATES.has(node.name) && node.parent?.type !== 'ImportSpecifier') references.push({ node, name: node.name });
+
+        // `CODEX_TOOL_IDS.some((id) => id === tool)` is a comparison with Codex's ids by another name: use isCodexTool.
+        if (node.name === CODEX_ID_LIST && node.parent?.type !== 'ImportSpecifier' && !CODEX_ID_LIST_DEFINITION.has(relative)) comparisons.push(node);
       },
       BinaryExpression(node) {
-        if (!['===', '!==', '==', '!='].includes(node.operator) || isBaseOf(node.left) || isBaseOf(node.right)) return;
+        if (!['===', '!==', '==', '!='].includes(node.operator)) return;
+        const other = isBaseId(node.left) ? node.right : isBaseId(node.right) ? node.left : undefined;
 
-        if (isBaseId(node.left) || isBaseId(node.right)) comparisons.push(node);
+        if (other !== undefined && !isResolved(context.sourceCode, other)) comparisons.push(node);
       },
       SwitchCase(node) {
-        if (isBaseId(node.test)) comparisons.push(node);
+        if (isBaseId(node.test) && node.parent?.type === 'SwitchStatement' && !isResolved(context.sourceCode, node.parent.discriminant)) comparisons.push(node);
       },
       'Program:exit'(node) {
         if (comparisons.length > comparable) {
           for (const comparison of comparisons) {
-            context.report({ node: comparison, message: 'A comparison with Claude Code\'s or Codex\'s tool id is false for an instance of that tool, so it gets none of what the comparison decides. Compare baseToolOf(tool); a check that must hold only for the shipped tool raises the file\'s count in BASE_ID_COMPARISONS in oxlint-plugin-teamai/rules/shipped-tool-ids.js, with its reason.' });
+            context.report({ node: comparison, message: 'A comparison with Claude Code\'s or Codex\'s tool id is false for an instance of that tool, so it gets none of what the comparison decides. Compare baseToolOf(tool), or ask isCodexTool(tool); a check that must hold only for the shipped tool raises the file\'s count in BASE_ID_COMPARISONS in oxlint-plugin-teamai/rules/shipped-tool-ids.js, with its reason.' });
           }
         }
 
