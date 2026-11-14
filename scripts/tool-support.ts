@@ -3,6 +3,7 @@ import { type ToolId, type ShippedDescriptor } from '../src/tools.js';
 import { type CodebuddyConfigFile, type Evidence, type FirstExistingRead, type HomeMove, type HomeRead, type ProjectRead, type RunTime, type Support, type ToolFeatures } from '@teamai/tool-core/definition';
 import { isToolId, descriptorOf, INSTANCE_BASES } from '../src/tool-registry.js';
 import { DEFAULT_TOOL_PATHS } from '../src/types.js';
+import { deliveredHomeVariableOf } from '../src/tool-launch/tools.js';
 
 // ─── Generated support page ──────────────────────────────
 //
@@ -36,6 +37,8 @@ type PageText = {
   readonly notes: string;
   readonly instances: string;
   readonly instancesNote: string;
+  readonly stepHomes: string;
+  readonly stepHomesNote: string;
   readonly columns: Readonly<Record<'tool' | 'home' | 'skills' | 'rules' | 'folderReach' | 'blocks' | 'agents' | 'hooks' | 'mcp' | 'sessions' | (typeof FEATURE_KEYS)[number], string>>;
 };
 
@@ -60,6 +63,8 @@ const TEXT = {
     notes: 'Notes:',
     instances: '## Tool instances',
     instancesNote: 'A team or a member adds an [instance](./reference.md#team-tools-tools) of these tools only, and teamai refuses an instance of any other tool:',
+    stepHomes: '## Workflow steps at a moved home',
+    stepHomesNote: 'A workflow step on one of these tools starts it with the variable after it set to the home teamai delivered to, the root `init` recorded (`toolRoots`) or the [recorded home](./reference.md#recorded-tool-homes-teamaitool-homesjson), even from a shell without that variable. Any other tool starts with the shell\'s variables, so start its run from a shell that sets them:',
     columns: {
       tool: 'Tool', home: 'Home', skills: 'Skills', rules: 'Rules', folderReach: 'Rule and agent folder files', blocks: 'Instruction blocks', agents: 'Agents', hooks: 'Hooks', mcp: 'MCP', sessions: 'Sessions',
       env: 'Env', workflows: 'Workflows (local driver)', unattended: 'Unattended prompts', recall: 'Recall', stats: 'Stats', tokens: 'Tokens & cost', aiBackend: 'AI backend', sessionJudge: 'Session judge', agentHooks: 'HTTP agent hooks',
@@ -85,6 +90,8 @@ const TEXT = {
     notes: '注：',
     instances: '## 工具实例',
     instancesNote: '团队或成员只能为以下工具添加[实例](./reference.md#团队工具tools)，teamai 拒绝其他任何工具的实例：',
+    stepHomes: '## 在迁移后的主目录启动的工作流步骤',
+    stepHomesNote: '工作流步骤在以下工具上启动时，即使 shell 没有设其后列出的变量，也会把它设为 teamai 写入的主目录：`init` 记录的根目录（`toolRoots`），或[记录的主目录](./reference.md#记录的工具主目录teamaitool-homesjson)。其他工具沿用 shell 的变量，所以请在设了这些变量的 shell 里启动运行：',
     columns: {
       tool: '工具', home: '主目录', skills: '技能', rules: '规则', folderReach: '规则与 agent 文件夹的文件', blocks: '指令块', agents: 'Agents', hooks: 'Hooks', mcp: 'MCP', sessions: '会话',
       env: '环境变量', workflows: '工作流（本地驱动）', unattended: '无人值守提示', recall: 'Recall', stats: '统计', tokens: 'Token 与费用', aiBackend: 'AI 后端', sessionJudge: '会话评审', agentHooks: 'HTTP agent hooks',
@@ -271,6 +278,16 @@ export function renderToolSupportPage(lang: ToolSupportLang): string {
     text.instancesNote,
     '',
     ...INSTANCE_BASES.map((tool) => `- ${name(tool)} (\`${tool}\`)`),
+    '',
+    text.stepHomes,
+    '',
+    text.stepHomesNote,
+    '',
+    ...tools.flatMap(([tool]) => {
+      const variable = deliveredHomeVariableOf(tool);
+
+      return variable === undefined ? [] : [`- ${name(tool)} (\`${tool}\`): \`${variable}\``];
+    }),
     '',
   ].join('\n');
 }

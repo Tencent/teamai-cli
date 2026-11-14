@@ -2,7 +2,7 @@ import { resolveCliPath, resolvePathCommand } from '@teamai/shared/cli-path';
 import { descriptorOf, toolOf, type DescriptorOf } from '../tool-registry.js';
 import type { ResolvedToolInstance } from '../tool-instances.js';
 import type { ToolInstanceHome } from '@teamai/tool-core/instance';
-import type { ToolId } from '../tools.js';
+import type { ShippedDescriptor, ToolId } from '../tools.js';
 import { movedToolHome, realHost, toolHomeOf } from '../tool-home.js';
 import { RELOCATABLE_TOOLS, recordedToolRootDir, toolPathRoots, type LocalConfig } from '../types.js';
 import { LAUNCH_ADAPTERS } from './adapters.js';
@@ -106,6 +106,17 @@ export function homeVariableOf(tool: string): string | undefined {
   return adapter.confined?.homeEnv;
 }
 
+/**
+ * The variable a command of `tool` starts with at the home teamai delivered it to when that home moved: its launch
+ * variable (`homeVariableOf`) when `toolRoots` records its root or `Home.moves` moves its home; else undefined, and its
+ * command keeps the shell's variables. The tool support page lists these tools.
+ */
+export function deliveredHomeVariableOf(tool: ToolId): string | undefined {
+  const { home }: ShippedDescriptor = descriptorOf(tool);
+
+  return Object.hasOwn(RELOCATABLE_TOOLS, tool) || home.moves !== undefined ? homeVariableOf(tool) : undefined;
+}
+
 /** The home variables teamai sets on a tool's command, by name. */
 export type ToolCommandEnv = Readonly<Record<string, string>>;
 
@@ -140,7 +151,7 @@ export function toolCommandEnv(name: string, home: ToolCommandHome): ToolCommand
     case 'delivered': {
       const own = instance?.home;
 
-      return instance === undefined || own === undefined ? deliveredHomeEnv({ name, tool: resolved.base, variable, home }) : instanceHomeEnv({ instance, own, variable });
+      return instance === undefined || own === undefined ? deliveredHomeEnv({ name, tool: resolved.base, home }) : instanceHomeEnv({ instance, own, variable });
     }
 
     default: {
@@ -152,8 +163,9 @@ export function toolCommandEnv(name: string, home: ToolCommandHome): ToolCommand
 }
 
 // Claude Code reads `.claude.json` inside CLAUDE_CONFIG_DIR whenever it is set, so the variable is set only to a home delivery moved.
-function deliveredHomeEnv(input: { name: string; tool: ToolId; variable: string | undefined; home: Extract<ToolCommandHome, { kind: 'delivered' }> }): ToolCommandEnv {
-  const { name, tool, variable, home } = input;
+function deliveredHomeEnv(input: { name: string; tool: ToolId; home: Extract<ToolCommandHome, { kind: 'delivered' }> }): ToolCommandEnv {
+  const { name, tool, home } = input;
+  const variable = deliveredHomeVariableOf(tool);
 
   if (variable === undefined) return {};
   const moved = recordedToolRootDir(name, home.toolRoots) ?? movedToolHome(tool, realHost({ env: home.inherited }));

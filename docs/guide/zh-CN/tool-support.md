@@ -148,3 +148,12 @@ teamai 为每个工具把每类 Agent 资源写到哪里，以及工具读取哪
 
 - Claude Code (`claude`)
 - Codex CLI (`codex`)
+
+## 在迁移后的主目录启动的工作流步骤
+
+工作流步骤在以下工具上启动时，即使 shell 没有设其后列出的变量，也会把它设为 teamai 写入的主目录：`init` 记录的根目录（`toolRoots`），或[记录的主目录](./reference.md#记录的工具主目录teamaitool-homesjson)。其他工具沿用 shell 的变量，所以请在设了这些变量的 shell 里启动运行：
+
+- Claude Code (`claude`): `CLAUDE_CONFIG_DIR`
+- Codex CLI (`codex`): `CODEX_HOME`
+- Pi Coding Agent (`pi`): `PI_CODING_AGENT_DIR`
+- CodeBuddy (`codebuddy`): `CODEBUDDY_CONFIG_DIR`

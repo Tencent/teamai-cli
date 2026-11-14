@@ -148,3 +148,12 @@ A team or a member adds an [instance](./reference.md#team-tools-tools) of these 
 
 - Claude Code (`claude`)
 - Codex CLI (`codex`)
+
+## Workflow steps at a moved home
+
+A workflow step on one of these tools starts it with the variable after it set to the home teamai delivered to, the root `init` recorded (`toolRoots`) or the [recorded home](./reference.md#recorded-tool-homes-teamaitool-homesjson), even from a shell without that variable. Any other tool starts with the shell's variables, so start its run from a shell that sets them:
+
+- Claude Code (`claude`): `CLAUDE_CONFIG_DIR`
+- Codex CLI (`codex`): `CODEX_HOME`
+- Pi Coding Agent (`pi`): `PI_CODING_AGENT_DIR`
+- CodeBuddy (`codebuddy`): `CODEBUDDY_CONFIG_DIR`
