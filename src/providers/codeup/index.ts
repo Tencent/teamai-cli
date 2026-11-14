@@ -9,6 +9,7 @@ import {
   codeupFindOpenMr,
   codeupMrHistory,
   writeNetrcToken,
+  readNetrcUsername,
   probeCodeupToken,
   isRegionEdition,
   configuredOrganizationId,
@@ -109,7 +110,9 @@ export class CodeupProvider implements GitProvider {
       );
     }
 
-    const configuredName = configuredUsername();
+    // The netrc login doubles as the git-over-HTTPS username, so it names the
+    // member here too — the same fallback codeupCloneUrl uses.
+    const configuredName = configuredUsername() ?? readNetrcUsername();
 
     if (configuredName) return configuredName;
 

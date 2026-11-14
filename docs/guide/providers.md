@@ -279,7 +279,7 @@ Merge request web URLs follow `https://codeup.aliyun.com/<org/group/repo>/change
 
 ### Namespaces
 
-Codeup repo paths are multi-level (organization → optional nested groups → repo), so addresses look like `org/repo` or `org/group/subgroup/repo`; the full path is preserved. Only the public cloud `codeup.aliyun.com` is supported. Automatic repository creation is not supported; create the repo on the web first.
+Codeup repo paths are multi-level (organization → optional nested groups → repo), so addresses look like `org/repo` or `org/group/subgroup/repo`; the full path is preserved. A pasted browser URL has its web-route suffix (`/tree/master`, `/changeRequest/list`, …) stripped; an extensionless browser URL is inherently ambiguous, so when a nested group is named like a web route (`org/group/tree/repo`), pass the `.git` clone URL or the bare short form — both keep every segment. Only the public cloud `codeup.aliyun.com` is supported. Automatic repository creation is not supported; create the repo on the web first.
 
 ### Reviewers
 

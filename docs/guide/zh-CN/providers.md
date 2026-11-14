@@ -282,7 +282,7 @@ export CODEUP_ORG_ID=64700f00f1234
 
 ### 命名空间
 
-Codeup 仓库路径为多级（组织 → 可选嵌套群组 → 仓库），地址形如 `org/repo` 或 `org/group/subgroup/repo`，完整路径会被保留。仅支持公有云 `codeup.aliyun.com`。不支持自动创建仓库，请先在网页上创建。
+Codeup 仓库路径为多级（组织 → 可选嵌套群组 → 仓库），地址形如 `org/repo` 或 `org/group/subgroup/repo`，完整路径会被保留。粘贴的浏览器地址会剥掉 web 路由后缀（`/tree/master`、`/changeRequest/list` 等）；不带 `.git` 的浏览器地址存在固有歧义，若嵌套群组名恰好像 web 路由（如 `org/group/tree/repo`），请传 `.git` 克隆地址或短格式 —— 这两种形式会保留每一段。仅支持公有云 `codeup.aliyun.com`。不支持自动创建仓库，请先在网页上创建。
 
 ### 评审人
 

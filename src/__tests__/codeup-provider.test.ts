@@ -481,6 +481,25 @@ describe('Codeup REST calls', () => {
     ).rejects.toThrow(/cannot read/);
   });
 
+  it('findOpenMr throws on a record whose branch fields cannot be read', async () => {
+    mockFetch([
+      {
+        match: (url, method) => method === 'GET' && url.endsWith('/repositories/org%2Frepo-f'),
+        status: 200,
+        body: { id: 77 },
+      },
+      {
+        match: (url, method) => method === 'GET' && /\/changeRequests\?/.test(url),
+        status: 200,
+        body: [{ localId: 1, state: 'UNDER_REVIEW' }],
+      },
+    ]);
+
+    await expect(
+      codeupFindOpenMr({ repo: 'org/repo-f', source: 'f', target: 'master', timeoutMs: 5_000 }),
+    ).rejects.toThrow(/cannot read/);
+  });
+
   it('findOpenMr reads the next page when the first page is full', async () => {
     const fullPage = Array.from({ length: 50 }, (_, i) => ({
       localId: i,
@@ -693,6 +712,14 @@ describe('Codeup authenticate (codeup-scope PAT fallback)', () => {
     process.env.CODEUP_ORG_ID = '64700f00f1234';
 
     await expect(new CodeupProvider().authenticate()).rejects.toThrow(/CODEUP_USERNAME/);
+  });
+
+  it('takes the username from ~/.netrc when no other source has it', async () => {
+    mockScopeLimitedFetch(200);
+    process.env.CODEUP_ORG_ID = '64700f00f1234';
+    fs.writeFileSync(path.join(tmpHome, '.netrc'), 'machine codeup.aliyun.com login wangwu password netrc-tok\n');
+
+    expect(await new CodeupProvider().authenticate()).toBe('wangwu');
   });
 
   it('reports an unreachable API as unreachable, not as a rejected token', async () => {

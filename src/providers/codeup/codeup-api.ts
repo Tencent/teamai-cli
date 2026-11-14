@@ -632,8 +632,10 @@ const ListedMrSchema = z.object({
   detailUrl: z.string().nullish(),
   state: z.string().nullish(),
   status: z.string().nullish(),
-  sourceBranch: z.string().nullish(),
-  targetBranch: z.string().nullish(),
+  // Required: a record whose branch fields cannot be read is one this cannot
+  // place, and skipping it would answer "no request" it cannot know.
+  sourceBranch: z.string(),
+  targetBranch: z.string(),
   createdAt: z.string().nullish(),
   updatedAt: z.string().nullish(),
   createTime: z.string().nullish(),
