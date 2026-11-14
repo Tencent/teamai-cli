@@ -1200,6 +1200,49 @@ steps:
       expect(signalPid(held, 0)).toBe('gone');
       expect(runtimeRecord(runId, attempt)).toMatchObject({ phase: 'closed' });
     });
+
+    it('resumes nothing, and keeps the place and its record, when the only entry changed to a runtime that does not know it', async () => {
+      const ran = path.join(sandbox, 'toy-resume-ran');
+      const elsewhere = path.join(sandbox, 'toy-resume-elsewhere');
+      fs.rmSync(ran, { recursive: true, force: true });
+      fs.rmSync(elsewhere, { recursive: true, force: true });
+      writeFlow('heldresume', `  - id: hold
+    command: node -e "require('fs').writeFileSync(process.env.HOLD_MARK, String(process.pid)); setTimeout(() => {}, 120000)"`);
+      expect((await runCLI(['pull'], repo)).code).toBe(0);
+      writeDefinition('toyresume', [{ use: 'toy', options: { state: ran } }]);
+      const mark = path.join(sandbox, 'toyresume-mark');
+      const driving = spawn(process.execPath, [CLI, 'workflow', 'start', 'heldresume', '--driver', 'toyresume'], { cwd: repo, env: { ...process.env, ...env({ HOLD_MARK: mark }), FORCE_COLOR: '0' }, stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      driving.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+      const ended = new Promise((resolve) => driving.on('close', resolve));
+      for (const deadline = Date.now() + 30_000; !fs.existsSync(mark) && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(fs.existsSync(mark), stderr).toBe(true);
+      const held = Number(fs.readFileSync(mark, 'utf8'));
+      onTestFinished(() => { signalPid(held, 'SIGKILL'); });
+      driving.kill('SIGKILL');
+      await ended;
+      const runId = /Run (r[0-9a-f]+) started/.exec(stderr)?.[1] ?? '';
+      const [attempt = ''] = fs.readdirSync(path.join(dataHome, 'workflows', 'runs', runId, 'attempts'));
+      const before = runtimeRecord(runId, attempt);
+      // The only entry now starts the toy on another state, which knows no place of this attempt.
+      writeDefinition('toyresume', [{ use: 'toy', options: { state: elsewhere } }]);
+
+      const resumed = await runCLI(['workflow', 'resume', runId, '--driver', 'toyresume'], repo, env({ HOLD_MARK: mark }));
+
+      expect(resumed.stderr).toContain('the entry of driver "toyresume" that ran it changed since');
+      expect(resumed.stderr).toContain(`teamai workflow cancel ${runId} --release ${attempt}`);
+      expect(signalPid(held, 0)).toBe('sent');
+      // Nothing ran again: the command's mark still names the first one, and the toy on the other state opened no place.
+      expect(Number(fs.readFileSync(mark, 'utf8'))).toBe(held);
+      expect(fs.existsSync(path.join(elsewhere, 'handles.json')) ? JSON.parse(fs.readFileSync(path.join(elsewhere, 'handles.json'), 'utf8')) : {}).toEqual({});
+      expect(runtimeRecord(runId, attempt)).toEqual(before);
+
+      writeDefinition('toyresume', [{ use: 'toy', options: { state: ran } }]);
+      const stopped = await runCLI(['workflow', 'cancel', runId], repo, env());
+
+      expect(stopped.stderr).toContain(`Stopped attempt ${attempt} of run ${runId} on step runtime "toy" and closed its place.`);
+      expect(signalPid(held, 0)).toBe('gone');
+    });
   });
 
   describe('a definition that lists the toy twice with other options', () => {

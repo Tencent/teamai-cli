@@ -887,6 +887,17 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
       }
 
       if (before?.openFailed && before.phase !== 'closed') return { ok: false, failure: runtimeFailure(runtime.name, `could not open attempt ${attempt} (${before.openFailed.code}): ${before.openFailed.message}`) };
+
+      // An entry reached by its name alone changed since the attempt ran, so its runtime may run elsewhere: the place the
+      // record names is confirmed there before the record names this entry, or a place opens through it. One with no
+      // handle cannot be asked about.
+      if (before && before.phase !== 'closed') {
+        const handle = before.open.handle;
+        const unknown = handle === undefined ? (RuntimeEntryIdentity.isByNameOnly(before, entry) ? changedEntryFailure() : undefined) : await unknownToChangedEntry(before, handle);
+
+        if (unknown) return { ok: false, failure: runtimeFailure(runtime.name, `cannot continue attempt ${attempt} (${unknown.code}): ${unknown.message}`) };
+      }
+
       const op = before?.open.op ?? newOpId();
       const toolHome = home ?? before?.toolHome;
       const opening: AttemptRuntimeRecord = { runtime: runtime.name, entry: entry.digest, sameName: entry.sameName, driver, phase: before?.phase ?? 'opening', open: { op } };
