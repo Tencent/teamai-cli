@@ -43,8 +43,8 @@ import path from 'node:path';
 import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 import { getTeamaiHomeDir, isJsonObject, JsonValueSchema, type JsonObject, type JsonValue, type LocalConfig } from '../types.js';
-import { agentModelToolOf } from '../tool-instances.js';
-import type { DeliveryPlace } from '../locate.js';
+import { effectivePathsOf } from '../tool-instances.js';
+import { agentsDirAt, type DeliveryPlace } from '../locate.js';
 import { activeEntryNamespaces, describeEntryFailure, entryLayout, listEntryFiles, namespaceDir, readEntryFileText, type EntryLayout } from '../namespaced-entries.js';
 import { resolveNamespacedItems, type NamespaceCandidate } from '../namespace-resolver.js';
 import { listDirs } from '../utils/fs.js';
@@ -634,6 +634,21 @@ function switchReaching(aliases: ModelAliases & { ok: true }, tool: string, form
   const ownHome = instance?.home !== undefined;
 
   return ownHome ? undefined : aliases.switches[format];
+}
+
+/**
+ * The tool whose model aliases render `receiver`'s agent files at `place`. An instance whose agent files land in the
+ * directory of the tool it extends writes that tool's files, so each renders as that tool's from either pass.
+ */
+export function agentModelToolOf(receiver: string, place: DeliveryPlace): string {
+  const instance = toolOf(receiver)?.instance;
+  const own = instance?.kind === 'instance' ? effectivePathsOf(instance, place.toolPaths) : undefined;
+
+  if (instance === undefined || own === undefined) return receiver;
+  const effective = { ...place, toolPaths: { ...place.toolPaths, [receiver]: own } };
+  const shared = agentsDirAt(instance.extends, effective);
+
+  return shared !== null && agentsDirAt(receiver, effective) === shared ? instance.extends : receiver;
 }
 
 /** What `receiver`'s agent file at `place` holds for `spec`'s model. */

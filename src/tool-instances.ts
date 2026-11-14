@@ -11,7 +11,6 @@ import { isSessionPlatform } from './session-flow/adapters/platform-facts.js';
 import { instanceHomeAfterInit, instanceHomeDir, isSameDirOn, realHost, toolHome, type Host } from './tool-home.js';
 import { INSTANCE_BASES, isInstanceBase, isToolId, TOOL_ORDER, toolInstancesFor, toolOf, useToolInstances } from './tool-registry.js';
 import type { ToolId } from './tools.js';
-import type { DeliveryPlace } from './locate.js';
 import { DEFAULT_TOOL_PATHS, TOOL_ROOT_FIELDS, getTeamaiHomeDir, relativeInside, getTrustDir, recordedToolRootDir, RELOCATABLE_TOOLS, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type TeamaiConfig } from './types.js';
 import { writeJsonAtomic } from './utils/fs.js';
 import { log } from './utils/logger.js';
@@ -465,19 +464,6 @@ function movedToHome(instance: DeclaredTool, paths: z.infer<typeof ToolPathsSche
   }));
 
   return { ...paths, mcp: moved.mcp, userScope };
-}
-
-/**
- * The tool whose model aliases render `tool`'s agent files at `place`. In a project an instance whose agents directory
- * is the one of the tool it extends writes that tool's files, so each renders as that tool's from either pass.
- */
-export function agentModelToolOf(tool: string, { scope, toolPaths }: DeliveryPlace): string {
-  const instance = toolOf(tool)?.instance;
-
-  if (instance?.kind !== 'instance' || scope === 'user') return tool;
-  const shared = (toolPaths[instance.extends] ?? DEFAULT_TOOL_PATHS[instance.extends]).agents;
-
-  return effectivePathsOf(instance, toolPaths)?.agents === shared ? instance.extends : tool;
 }
 
 /**

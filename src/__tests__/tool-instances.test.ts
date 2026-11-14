@@ -96,10 +96,10 @@ describe('team tool instances', () => {
       'tools/codex.yaml': 'schemaVersion: v1alpha1\nname: codex\nextends: codex\npaths: { skills: .codex/team-skills, settings: .codex/hooks.json, agents: .codex/team-agents }\n',
       'tools/acme-codex.yaml': 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n',
     }));
-    const { agentModelToolOf } = await import('../tool-instances.js');
+    const { agentModelToolOf } = await import('../models/aliases.js');
     const toolPaths = config?.toolPaths ?? {};
 
-    expect([toolPaths['acme-codex'], agentModelToolOf('acme-codex', { scope: 'project', toolPaths })]).toEqual([
+    expect([toolPaths['acme-codex'], agentModelToolOf('acme-codex', { scope: 'project', toolPaths, toolRoots: {} })]).toEqual([
       expect.objectContaining({ skills: '.codex/team-skills', agents: '.codex/team-agents', userScope: { skills: '.acme-codex/team-skills', settings: '.acme-codex/hooks.json', agents: '.acme-codex/team-agents' } }),
       'codex',
     ]);

@@ -551,26 +551,30 @@ describe('AgentsHandler pull: model aliases', () => {
     });
 
     it.each([
-      { agents: '.claude/agents', paths: undefined },
+      { scope: 'project', agents: '.claude/agents', command: undefined, paths: undefined },
       // The team moved Claude's agents, and the instance's paths name the same directory.
-      { agents: '.claude/custom-agents', paths: { agents: '.claude/custom-agents', userScope: { agents: '.home-claude/agents' } } },
-    ])('renders a project agent file in $agents an instance on Claude\'s command shares with Claude once, as Claude\'s, pull after pull', async ({ agents, paths }) => {
+      { scope: 'project', agents: '.claude/custom-agents', command: undefined, paths: { agents: '.claude/custom-agents', userScope: { agents: '.home-claude/agents' } } },
+      // An instance with a build of its own whose member agents directory is Claude's, outside its home.
+      { scope: 'user', agents: '.claude/agents', command: 'home-claude', paths: { agents: '.claude/agents' } },
+    ] as const)('renders a $scope agent file in $agents an instance shares with Claude once, as Claude\'s, pull after pull', async ({ scope, agents, command, paths }) => {
       await writeAliases(EVERY_TOOL_STRONG);
       await switchTo(['claude']);
       useToolInstances(new Map([['home-claude', {
-        kind: 'instance', name: 'home-claude', extends: 'claude', home: { dir: '.home-claude' }, paths,
+        kind: 'instance', name: 'home-claude', extends: 'claude', command, home: { dir: '.home-claude' }, paths,
         source: 'team', file: path.join(repoPath, 'tools', 'home-claude.yaml'), location: 'tools/home-claude.yaml', revision: 'r1',
       }]]));
       onTestFinished(() => useToolInstances(new Map()));
       const project = path.join(tmpDir, 'project');
-      await fse.ensureDir(path.join(project, '.claude'));
+      const root = scope === 'user' ? homeDir : project;
+      await fse.ensureDir(path.join(root, '.claude'));
+      await fse.ensureDir(path.join(root, '.home-claude'));
       const spec = makeSpec({ model: 'strong' });
       const yamlPath = path.join(repoPath, 'agents', `${spec.name}.yaml`);
       await fse.writeFile(yamlPath, serializeAgentYaml(spec));
       const config = { ...teamConfigFor(['claude']), toolPaths: { claude: { agents }, 'home-claude': { agents } } } as TeamaiConfig;
-      const projectConfig: LocalConfig = { ...localConfig, scope: 'project', projectRoot: project };
-      const file = path.join(project, ...agents.split('/'), `${spec.name}.md`);
-      const pull = () => handler.pullItem({ name: spec.name, type: 'agents', sourcePath: yamlPath, relativePath: `agents/${spec.name}.yaml` }, config, projectConfig);
+      const placeConfig: LocalConfig = scope === 'user' ? localConfig : { ...localConfig, scope, projectRoot: project };
+      const file = path.join(root, ...agents.split('/'), `${spec.name}.md`);
+      const pull = () => handler.pullItem({ name: spec.name, type: 'agents', sourcePath: yamlPath, relativePath: `agents/${spec.name}.yaml` }, config, placeConfig);
 
       await pull();
       const first = await fse.readFile(file, 'utf-8');

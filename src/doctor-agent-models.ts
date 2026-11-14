@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { AgentModelRecords, RecordedAgentModel, ResourceItem } from './types.js';
-import type { DeliveryPlace } from './locate.js';
+import { deliveryPlaceOf, type DeliveryPlace } from './locate.js';
 import type { AgentSpec } from './resources/agent-format.js';
 import type { AgentTool } from './resources/agents.js';
 import type { ModelAliases, ModelResolution } from './models/aliases.js';
@@ -75,10 +75,10 @@ async function readView(ctx: DoctorContext): Promise<AgentModelView | null> {
     if (parsed?.ok && parsed.spec.model !== undefined) agents.push({ name: item.name, spec: parsed.spec });
   }
 
-  if (agents.length === 0) return { aliases, agents, tools: [], records: {}, place: { scope: localConfig.scope, toolPaths: teamConfig.toolPaths } };
+  if (agents.length === 0) return { aliases, agents, tools: [], records: {}, place: deliveryPlaceOf(teamConfig, localConfig) };
   const tools = (await new AgentsHandler().agentToolDirs(teamConfig, localConfig)).map(({ tool, format }) => ({ tool, format }));
 
-  return { aliases, agents, tools, records: await recordedAgentModels(localConfig), place: { scope: localConfig.scope, toolPaths: teamConfig.toolPaths } };
+  return { aliases, agents, tools, records: await recordedAgentModels(localConfig), place: deliveryPlaceOf(teamConfig, localConfig) };
 }
 
 /** Each installed tool `spec` targets, with what it receives for `spec`'s model. */

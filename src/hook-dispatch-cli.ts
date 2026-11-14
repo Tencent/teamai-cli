@@ -600,7 +600,7 @@ async function runHookDispatch(
 
     // Where the global copy steps aside, it is no replacement for the local Claude copy.
     // A shipped tool needs no tool paths here, so the shipped ones stand in where no team config was read.
-    const place = localConfig === null ? undefined : { scope: localConfig.scope, toolPaths: teamConfig?.toolPaths ?? {} };
+    const place = localConfig === null ? undefined : { scope: localConfig.scope, toolPaths: teamConfig?.toolPaths ?? {}, toolRoots: localConfig.toolRoots ?? {} };
 
     if (claudeHookRunsInAnotherHost(tool, process.env, !selfCopilotCopyLoaded, place)) return;
 

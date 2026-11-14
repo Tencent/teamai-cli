@@ -1661,8 +1661,8 @@ function valueCause(aliases: ModelAliases, model: string, tools?: readonly ToolN
 /** Why `spec` gives none of its target tools a model, as pull resolves it: a tool's extras model first. */
 function agentCause(aliases: ModelAliases, spec: AgentSpec, scope: Scope): string | undefined {
   const tools = spec.targets ?? AGENT_TOOLS;
-  // The review reads no team config, so the shipped paths stand in for the team's.
-  const resolutions = tools.map((tool) => resolveAgentModel(aliases, spec, tool, { scope, toolPaths: DEFAULT_TOOL_PATHS }));
+  // The review reads no team or member config, so the shipped paths and no tool roots stand in for theirs.
+  const resolutions = tools.map((tool) => resolveAgentModel(aliases, spec, tool, { scope, toolPaths: DEFAULT_TOOL_PATHS, toolRoots: {} }));
 
   if (resolutions.some((resolution) => resolution.ok && resolution.model !== undefined)) return undefined;
 

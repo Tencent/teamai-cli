@@ -14,7 +14,7 @@ import { log } from '../utils/logger.js';
 import { installScopeName, isAgentExcluded, isSelfMode } from '../types.js';
 import { BUILTIN_AGENT_NAMES, builtinAgentsReplacedByTeam, shippedAgentRender } from '../builtin-agents.js';
 import { agentFormatOf, descriptorOf } from '../tool-registry.js';
-import { cleanupOf, installOf, locate, ownOf, writable, type DeliveryPlace, type SidecarFile } from '../locate.js';
+import { cleanupOf, deliveryPlaceOf, installOf, locate, ownOf, writable, type DeliveryPlace, type SidecarFile } from '../locate.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { assertWithinRoot } from '../utils/path-safety.js';
@@ -558,7 +558,7 @@ export class AgentsHandler extends ResourceHandler {
             continue;
           }
 
-          const expected = renderResolved(canonicalSpec, { tool, format }, aliases, { scope: localConfig.scope, toolPaths: teamConfig.toolPaths });
+          const expected = renderResolved(canonicalSpec, { tool, format }, aliases, deliveryPlaceOf(teamConfig, localConfig));
 
           if (!expected.ok) {
             unresolved = expected.reason;
@@ -671,7 +671,7 @@ export class AgentsHandler extends ResourceHandler {
         const relPath = `${teamDir}/${stem}.yaml`;
 
         const { merge: mergeResult, drift } = canonicalSpec
-          ? mergeCanonicalEdits(canonicalSpec, edits, { aliases, place: { scope: localConfig.scope, toolPaths: teamConfig.toolPaths }, recorded: modelRecords[stem], files: toolFiles, relPath })
+          ? mergeCanonicalEdits(canonicalSpec, edits, { aliases, place: deliveryPlaceOf(teamConfig, localConfig), recorded: modelRecords[stem], files: toolFiles, relPath })
           : { merge: mergeReverseResults(Object.fromEntries(edits.map(({ tool, spec }) => [tool, spec]))), drift: [] };
 
         if (!mergeResult.ok) {
@@ -913,7 +913,7 @@ export class AgentsHandler extends ResourceHandler {
     // receive reads it; each is said once per pull, however many agents do.
     if (spec) {
       for (const { tool, format } of renders) {
-        for (const warning of aliasWarningsFor(aliases, spec, tool, { scope: localConfig.scope, toolPaths: teamConfig.toolPaths })) warnOnce(`[agents] ${warning}`);
+        for (const warning of aliasWarningsFor(aliases, spec, tool, deliveryPlaceOf(teamConfig, localConfig))) warnOnce(`[agents] ${warning}`);
 
         if (format === 'muse') {
           const drops = museAgentDrops(spec);
@@ -1002,7 +1002,7 @@ export class AgentsHandler extends ResourceHandler {
     item: AgentResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig, aliases: ModelAliases, ledger: DeliveryLedger,
   ): Promise<void> {
     for (const { tool, format, dir } of await this.agentToolDirs(teamConfig, localConfig)) {
-      if (!await this.heldForTool(item, { tool, format }, aliases, { scope: localConfig.scope, toolPaths: teamConfig.toolPaths })) continue;
+      if (!await this.heldForTool(item, { tool, format }, aliases, deliveryPlaceOf(teamConfig, localConfig))) continue;
 
       for (const file of await listFiles(dir)) {
         const copy = path.join(dir, file);
@@ -1325,7 +1325,7 @@ export class AgentsHandler extends ResourceHandler {
         const rendered = await this.renderedForTool(item, target, aliases, teamConfig, localConfig);
 
         if (rendered) activeDestinations.add(`${item.name}${rendered.ext}`);
-        else if (await this.heldForTool(item, target, aliases, { scope: localConfig.scope, toolPaths: teamConfig.toolPaths })) held.add(item.name);
+        else if (await this.heldForTool(item, target, aliases, deliveryPlaceOf(teamConfig, localConfig))) held.add(item.name);
       }
 
       for (const item of inactive) {
@@ -1607,7 +1607,7 @@ export class AgentsHandler extends ResourceHandler {
     if (!targetsTool(parsed.spec, target)) return null;
 
     if (recorded) return renderWithModel(parsed.spec, target.format, recorded, scope);
-    const resolved = renderResolved(parsed.spec, target, aliases, { scope, toolPaths: teamConfig.toolPaths });
+    const resolved = renderResolved(parsed.spec, target, aliases, deliveryPlaceOf(teamConfig, localConfig));
 
     return resolved.ok ? resolved.render : null;
   }
@@ -1630,7 +1630,7 @@ export class AgentsHandler extends ResourceHandler {
     for (const { tool, format } of await this.agentToolDirs(teamConfig, localConfig)) {
       if (!targetsTool(spec, { tool, format })) continue;
       targeted += 1;
-      const resolution = resolveAgentModel(aliases, spec, tool, { scope: localConfig.scope, toolPaths: teamConfig.toolPaths });
+      const resolution = resolveAgentModel(aliases, spec, tool, deliveryPlaceOf(teamConfig, localConfig));
 
       if (!resolution.ok) heldTools.set(resolution.reason, [...heldTools.get(resolution.reason) ?? [], tool]);
     }
@@ -2358,7 +2358,7 @@ export function agentOrigin(teamConfig: Pick<TeamaiConfig, 'toolPaths'>, localCo
     renders: [
       (content, version) => {
         const spec = specOf(content, version);
-        const resolved = spec && renderResolved(spec, target, aliases, { scope, toolPaths: teamConfig.toolPaths });
+        const resolved = spec && renderResolved(spec, target, aliases, deliveryPlaceOf(teamConfig, localConfig));
 
         return resolved?.ok ? resolved.render.content : null;
       },

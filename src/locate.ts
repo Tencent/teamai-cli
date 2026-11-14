@@ -53,8 +53,13 @@ export type Install = {
   }
 );
 
-/** Where teamai delivers: the scope, and the team config's tool paths, its instances' included (`withToolInstances`). */
-export type DeliveryPlace = Pick<Install, 'scope' | 'toolPaths'>;
+/** Where teamai delivers: the scope, the team config's tool paths, its instances' included (`withToolInstances`), and the member's tool roots. */
+export type DeliveryPlace = Pick<Install, 'scope' | 'toolPaths' | 'toolRoots'>;
+
+/** The `DeliveryPlace` of the member's config `local` under the team config `team`. */
+export function deliveryPlaceOf(team: Pick<TeamaiConfig, 'toolPaths'>, local: Pick<LocalConfig, 'scope' | 'toolRoots'>): DeliveryPlace {
+  return { scope: local.scope, toolPaths: team.toolPaths, toolRoots: local.toolRoots ?? {} };
+}
 
 /** The one parse of the config shapes into an `Install`; a project config without its root throws `resolveBaseDir`'s error. */
 export function installOf(
@@ -576,6 +581,17 @@ function underToolHome(tool: string, relative: string, host: Host): string {
   if (home && (relative === home.root || relative.startsWith(`${home.root}/`))) return p.join(home.dir, ...relative.slice(home.root.length + 1).split('/'));
 
   return p.join(host.home, ...relative.split('/'));
+}
+
+/**
+ * The agents directory teamai writes `tool`'s files to at `place`, as `locate` gives it: in a project the tool's agents
+ * path, every tool's joined to the one project root, and for the member that path under the tool's home.
+ */
+export function agentsDirAt(tool: string, place: DeliveryPlace, host: Host = realHost()): string | null {
+  if (place.scope === 'project') return place.toolPaths[tool]?.agents ?? null;
+
+  // Which tools are selected and whether git excludes the copies take no part in where they land.
+  return rootsOf(tool, { ...place, scope: 'user', agents: {}, gitExclude: false }, host).configured('agents');
 }
 
 function rootsOf(tool: string, install: Install, host: Host): Roots {
