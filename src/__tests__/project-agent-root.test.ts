@@ -151,6 +151,18 @@ describe('createProjectToolRoots', () => {
     expect(dotEntries(projectRoot)).toEqual(['.claude', '.codex', '.teamai']);
   });
 
+  // An instance with a command of its own keeps its project paths in its home, which the install gate then reads.
+  it('creates the nested home of an instance with its own command, the root its gate reads', async () => {
+    const projectRoot = writeProjectConfig({ enabledAgents: ['acme-codex'], teamYaml: 'team: t\nrepo: https://example.com/team.git\n' });
+    const tools = path.join(projectRoot, '.teamai', 'team-repo', 'tools');
+    fs.mkdirSync(tools, { recursive: true });
+    fs.writeFileSync(path.join(tools, 'acme-codex.yaml'), 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\ncommand: acme-codex\nhome: { dir: work/.acme-codex }\n');
+
+    await createProjectToolRoots({ cwd: projectRoot });
+
+    expect([fs.existsSync(path.join(projectRoot, 'work', '.acme-codex')), dotEntries(projectRoot)]).toEqual([true, ['.teamai']]);
+  });
+
   it('does not create the checkout again when it is removed before its roots are', async () => {
     const projectRoot = writeProjectConfig({ projectRoot: path.join(tmpDir, 'wt'), enabledAgents: ['claude'] });
     const { loadTeamConfig: read } = await vi.importActual<typeof import('../config.js')>('../config.js');
