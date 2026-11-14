@@ -34,7 +34,7 @@ vi.mock('../resources/hooks.js', () => ({
     resolveTeamHookEntries: vi.fn(),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
     log: {
         info: vi.fn(),
         success: vi.fn(),

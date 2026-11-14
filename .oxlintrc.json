@@ -102,9 +102,22 @@
     "teamai/rules-locate": "error",
     "teamai/workflow-failure-codes": "error",
     "teamai/tool-facts": "error",
+    // packages/* never imports src/, src/ never imports a runtime package, and a package is reached only by its name.
+    "teamai/package-boundaries": "error",
+    // TOOLS, LAUNCH_ADAPTERS and ADAPTER_REGISTRY are read only through src/tool-registry.ts.
+    "teamai/tool-registry": "error",
+    // A test mocks a module where it is defined: a mock of a re-export misses package code that imports the module itself.
+    "teamai/mock-source": "error",
+    // Linux answers from /proc the process reads macOS runs ps for, and the agent wait budget counts only what it is told on Linux.
+    "teamai/process-reads": "error",
     // parseYaml returns JSON values; yaml's own parse can return a Set, Buffer or Date.
     "teamai/yaml-parse": "error",
     "teamai/uncached-entry": "error",
+    // Startup and the facts modules load a tool family's facts only; its adapters, launch profiles and schemas load on first use.
+    "teamai/family-facts": "error",
+    "teamai/shipped-tool-ids": "error",
+    // toolCommandEnv decides which variables start a tool's command in which home; a variable set elsewhere skips an instance's own or its recorded home.
+    "teamai/tool-home-env": "error",
     // A reducer that copies its accumulator each step is quadratic.
     "oxc/no-accumulating-spread": "error",
     // The generic rules of anti-slop (#828), vendored in

@@ -1,13 +1,15 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { log } from '@teamai/shared/log';
 import { resolveOpenclawStateDir } from '../openclaw-home.js';
 import type { LocalConfig } from '../types.js';
 import { skillRoots } from '../usage-tracker.js';
 import { getUserHome } from '../utils/home.js';
 import { realHost, reloadToolHomesHistory, saveToolHomes, toolHome, toolHomesHistoryPath, toolHomesPath } from '../tool-home.js';
 import { recordToolHomes } from '../tool-home-record.js';
+import { useToolInstances as useInstances } from '../tool-registry.js';
 
 describe('tool homes from a session whose directory was removed (#810)', () => {
   let cwd: string;
@@ -92,6 +94,51 @@ describe('a home recorded on this machine', () => {
     await recordToolHomes('init');
     expect(reloadToolHomesHistory()).toEqual({ opencode: [oldHome] });
   });
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('is reported, not thrown, when it cannot be written', async () => {
+    const moved = path.join(tmp, 'hermes-moved');
+    fs.mkdirSync(moved, { recursive: true });
+    vi.stubEnv('HERMES_HOME', moved);
+    const teamai = path.dirname(toolHomesPath());
+    fs.mkdirSync(teamai, { recursive: true });
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => undefined);
+    onTestFinished(() => { warn.mockRestore(); });
+    fs.chmodSync(teamai, 0o500);
+    const recorded = await recordToolHomes('pull').finally(() => { fs.chmodSync(teamai, 0o700); });
+
+    expect(recorded).toEqual([]);
+    expect(warn.mock.calls.map(([line]) => String(line).replace(/ \(.*\)\. /, ' (<cause>). '))).toEqual([
+      `Did not record the tool homes this shell moves: could not write ${toolHomesPath()} (<cause>). `
+        + 'Until it is recorded, teamai syncs those tools to their default homes from a shell without their variable. Fix the cause and run `teamai pull` again.',
+    ]);
+  });
+
+  // An instance on the home directory itself is refused, and init lists only the instances in use: such a record could never be replaced.
+  it.each([
+    { by: 'init' as const, before: { 'acme-codex': 'moved' } },
+    { by: 'pull' as const, before: {} },
+  ])('is never the home directory itself for an instance, on $by, and says so', async ({ by, before }) => {
+    const home = path.join(tmp, 'home');
+    const moved = path.join(tmp, 'acme-moved');
+    fs.mkdirSync(home, { recursive: true });
+    const recorded = Object.fromEntries(Object.keys(before).map((tool) => [tool, moved]));
+    await saveToolHomes(recorded);
+    useInstances(new Map([['acme-codex', {
+      kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+      source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
+    }]]));
+    onTestFinished(() => { useInstances(new Map()); });
+    vi.stubEnv('ACME_CODEX_HOME', home);
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => undefined);
+    onTestFinished(() => { warn.mockRestore(); });
+
+    expect(await recordToolHomes(by)).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(toolHomesPath(), 'utf8'))).toEqual(recorded);
+    expect(warn.mock.calls.map(([line]) => String(line))).toEqual([
+      `Did not record ACME_CODEX_HOME as the acme-codex home: ${home} is your home directory itself, where acme-codex would read and write every file in your home as its own. `
+        + 'Point ACME_CODEX_HOME at a directory of its own and re-run `teamai init`.',
+    ]);
+  });
+
   it('is the one a pull read under the lock, even when the file kept its size and time', async () => {
     const winner = path.join(tmp, 'hermes-b'); const loser = path.join(tmp, 'hermes-a');
     fs.mkdirSync(loser, { recursive: true });
@@ -134,6 +181,30 @@ describe('Hermes\'s active profile', () => {
     fs.writeFileSync(path.join(native, 'active_profile'), 'default\n');
 
     expect(toolHome('hermes')).toBe(native);
+  });
+});
+
+describe('the real host under an install\'s home', () => {
+  afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); });
+
+  it('drops every variable that would move a tool\'s home back to the member\'s, an instance\'s own included', async () => {
+    // A fresh module graph: the install home a process takes has no way back.
+    vi.resetModules();
+    const [{ useInstallHome }, { useToolInstances }, fresh] = await Promise.all([import('@teamai/shared/home'), import('../tool-registry.js'), import('../tool-home.js')]);
+    const member = (name: string): string => path.join(os.tmpdir(), 'member', name);
+    const moving = ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'CODEBUDDY_CONFIG_DIR', 'CURSOR_DATA_DIR', 'ACME_CODEX_HOME'];
+    for (const name of moving) vi.stubEnv(name, member(name));
+    vi.stubEnv('PATH', member('bin'));
+    useToolInstances(new Map([['acme-codex', {
+      kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+      source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
+    }]]));
+    useInstallHome(path.join(os.tmpdir(), 'clone', 'h'));
+
+    const { env } = fresh.realHost();
+
+    expect(moving.filter((name) => env[name] !== undefined)).toEqual([]);
+    expect(env.PATH).toBe(member('bin'));
   });
 });
 

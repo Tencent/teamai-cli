@@ -16,8 +16,9 @@ vi.mock('node:os', async (importOriginal) => {
   return patched;
 });
 
-import { ClaudeCodeAdapter } from '../session-flow/adapters/claude-code.js';
-import { encodeCwdClaude } from '../session-flow/fs.js';
+import { ClaudeCodeAdapter } from '@teamai/tool-core/formats/claude-code';
+import { sessionStoreDir } from '../locate.js';
+import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
 
 const SID = 'c0ffee00-0000-4000-8000-000000000001';
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]).toString('base64');
@@ -63,7 +64,7 @@ describe('claude-code tool_result images', () => {
     fs.mkdirSync(cwd, { recursive: true });
     writeFixture(cwd);
 
-    const session = await new ClaudeCodeAdapter().readSession({ sessionId: SID, projectPath: cwd });
+    const session = await new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', undefined)).readSession({ sessionId: SID, projectPath: cwd });
     expect(session.messages.map((m) => [m.role, m.content.map((b) => b.type)])).toEqual([
       ['user', ['text']],
       ['assistant', ['tool_call']],
@@ -93,7 +94,7 @@ describe('claude-code tool_result images', () => {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, `${SID}.jsonl`), records.map((r) => JSON.stringify(r)).join('\n') + '\n');
 
-    const session = await new ClaudeCodeAdapter().readSession({ sessionId: SID, projectPath: cwd });
+    const session = await new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', undefined)).readSession({ sessionId: SID, projectPath: cwd });
     expect(session.messages.map((m) => [m.role, m.content.map((b) => b.type)])).toEqual([
       ['user', ['text']],
       ['assistant', ['tool_call']],
@@ -110,7 +111,7 @@ describe('claude-code tool_result images', () => {
     fs.mkdirSync(cwd, { recursive: true });
     writeFixture(cwd);
 
-    const adapter = new ClaudeCodeAdapter();
+    const adapter = new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', undefined));
     const session = await adapter.readSession({ sessionId: SID, projectPath: cwd });
     const target = path.join(mocks.home, 'work2');
     const id = await adapter.writeSession(session, target);

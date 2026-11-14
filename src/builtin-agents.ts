@@ -9,7 +9,8 @@ import {
   contentHash, forgetDelivered, keepsTrackedCopy, type DeliveredHashes, type DeliveryLedger,
 } from './resources/delivered-copies.js';
 import { agentStemFromFilename, renderForTool, reverseFromClaude, type RenderResult } from './resources/agent-format.js';
-import { isAgentToolId, type AgentToolId } from './tools.js';
+import type { AgentToolId } from './tools.js';
+import { agentFormatOf } from './tool-registry.js';
 import { installOf, locate, writable } from './locate.js';
 import type { DeliveryRecorder } from './git-exclude-delivered.js';
 
@@ -264,7 +265,9 @@ export async function deployBuiltinAgents(
       continue;
     }
 
-    if (!isAgentToolId(tool)) {
+    const format = agentFormatOf(tool);
+
+    if (format === undefined) {
       if (install.toolPaths[tool]?.agents) {
         log.warn(
           `Skipping built-in agent deployment for ${tool}: unsupported agent format; ` +
@@ -297,7 +300,7 @@ export async function deployBuiltinAgents(
 
       try {
         const stem = path.basename(file, '.md');
-        const rendered = shippedAgentRender(stem, tool, localConfig.scope);
+        const rendered = shippedAgentRender(stem, format, localConfig.scope);
 
         if (rendered === undefined) throw new Error(`cannot read ${src}`);
 

@@ -25,10 +25,11 @@ for (const name of [...AGENT_SESSION_ENV, ATTEMPT_ENV, LAUNCHED_BY_ENV, RUN_MODE
 
 // The same shell may relocate an agent's root, which teamai honors, so a test
 // that stubs only HOME would still read, write or remove the developer's real
-// tool files. Two mechanisms move a root: `TOOLS[tool].home.moves`, and the
-// roots `init` records in `toolRoots` (`RELOCATABLE_TOOLS`, which is how Codex
-// and Cursor move and `home.moves` does not name them). A test that needs one
-// sets it.
+// tool files. The scrub reads the list teamai itself reads (`toolHomeVariableNames`):
+// every home `TOOLS[tool].home.moves` names, each `Home.rootVariable`, and the
+// roots `init` records in `toolRoots` (`RELOCATABLE_TOOLS`). No instance is loaded
+// yet, so an instance's own variable is the test's to set or clear. A test that
+// needs one sets it.
 for (const name of toolRootVariables()) {
   delete process.env[name];
 }

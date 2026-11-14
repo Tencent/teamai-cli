@@ -3,7 +3,6 @@ import { hookToolPathsForConfig } from './types.js';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { detectProjectConfig, loadLocalConfig, loadTeamConfig, ownMemberSettings } from './config.js';
-import { AgentSession } from './session-flow/agent-session.js';
 import { SessionPolicy, type SessionPolicy as Policy } from './session-flow/session-policy.js';
 import { explainRunMode, RUN_MODES, type ExplainedRunMode } from './launch-context.js';
 import { scoringUnavailable } from './scorers/home.js';
@@ -23,6 +22,7 @@ import {
   RELOCATABLE_TOOLS,
   applyToolRoots,
   detectToolRoot,
+  recordedToolRootDir,
   resolveToolRootDir,
   toolRootRejection,
   resolveHookScope,
@@ -40,8 +40,8 @@ import {
 } from './types.js';
 import { hookSettingsFile, installOf, isInstalledFor, locate, ownOf, writable, type Gate, type Install } from './locate.js';
 import { samePlace } from './resources/places.js';
-import { describeInvalidToolHomes, envToolHome, ompProfile, realHost, reloadToolHomes, toolHomesPath } from './tool-home.js';
-import { hookFormatOf, hookSyntaxOf, isToolId } from './tools.js';
+import { describeInvalidToolHomes, envInstanceHome, envToolHome, ompProfile, realHost, reloadToolHomes, toolHomesPath } from './tool-home.js';
+import { hookFormatOf, hookSyntaxOf, toolOf, toolsWithoutSessions } from './tool-registry.js';
 import { isCodexTool } from './utils/tool-names.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder, keptTeamHookEntries, readCodexHookTrustForScope, readHookFile, releaseRemovedCheckoutHooks } from './hooks.js';
 import { codexBuildSkewMessage } from './codex-trust.js';
@@ -355,6 +355,19 @@ function buildToolRootChecks(localConfig: LocalConfig, teamConfig: TeamaiConfig 
     const declared = teamConfig?.toolPaths[tool];
 
     if (!declared || isAgentExcluded(localConfig, tool)) continue;
+    const recordedRoot = recordedToolRootDir(tool, localConfig.toolRoots);
+
+    // Whether or not the shell sets the variable: the record wins, and delivery and launch skip the tool while it is gone.
+    if (recordedRoot !== null) {
+      checks.push({
+        name: `${label} root exists`,
+        source: 'local',
+        check: async () => pathExists(recordedRoot),
+        fix: `The ${label} root recorded on this machine, ${recordedRoot}, does not exist, so teamai skips ${label}. `
+          + `Point ${envVar} at the root ${label} uses and re-run \`teamai init\`, or clear the record with \`${envVar}= teamai init\`.`,
+      });
+    }
+
     const detected = detectToolRoot(tool);
 
     if (!detected) continue;
@@ -410,6 +423,7 @@ function buildOhMyPiPiHomeCheck(localConfig: LocalConfig, teamConfig: TeamaiConf
     check: async () => false,
     fix: `PI_CODING_AGENT_DIR is ${piHome}; Oh My Pi also reads that directory for its default profile, but it belongs to Pi. `
       + 'teamai keeps Oh My Pi files under its own OMP home to avoid overwriting Pi files. '
+      // oxlint-disable-next-line teamai/tool-home-env -- names the variable the member sets, in a fix message
       + `Set ${selector ?? 'OMP_PROFILE'} to a named profile, or run \`teamai uninstall --agent omp\` to stop syncing Oh My Pi in this install.`,
   }];
 }
@@ -441,7 +455,15 @@ function buildToolHomeChecks(localConfig: LocalConfig): Check[] {
   const checks: Check[] = [];
 
   for (const [tool, recorded] of Object.entries(read.homes)) {
-    if (!isToolId(tool) || isAgentExcluded(localConfig, tool)) continue;
+    const resolved = toolOf(tool);
+    const own = resolved?.instance?.home;
+
+    // A shipped tool's variables, or an instance's own, which its record follows (`instanceHomeDir`).
+    const liveHome = resolved === undefined ? undefined
+      : resolved.instance?.kind !== 'instance' ? () => envToolHome(resolved.base, host)
+        : own?.env === undefined ? undefined : () => envInstanceHome(own, host);
+
+    if (liveHome === undefined || isAgentExcluded(localConfig, tool)) continue;
     checks.push({
       name: `${tool} home exists`,
       source: 'local',
@@ -449,7 +471,7 @@ function buildToolHomeChecks(localConfig: LocalConfig): Check[] {
       fix: `The ${tool} home recorded on this machine, ${recorded}, does not exist, so teamai skips ${tool}. `
         + `Re-run \`teamai init\` from a shell that sets the home ${tool} uses, or remove "${tool}" from ${file}.`,
     });
-    const live = envToolHome(tool, host);
+    const live = liveHome();
 
     if (live === null) continue;
     checks.push({
@@ -696,7 +718,7 @@ async function machineUnreadKeyNotes(): Promise<string[]> {
  * (#1385): such a tool's sessions are never captured, so they are neither published nor judged.
  */
 async function unreadSessionToolNotes({ localConfig, teamConfig, toolPaths }: DoctorContext): Promise<string[]> {
-  const tools = AgentSession.toolsWithoutSessions(Object.keys(toolPaths));
+  const tools = toolsWithoutSessions(Object.keys(toolPaths));
 
   if (tools.length === 0) return [];
   const publish = SessionPolicy.publish(localConfig, teamConfig).policies;
@@ -735,7 +757,7 @@ async function codexHookTrust(ctx: DoctorContext): Promise<{ checks: Check[]; no
     : [];
 
   if (report.kind !== 'listed') {
-    const reason = report.kind === 'failed' ? ` (could not ask Codex: ${report.reason})` : '';
+    const reason = report.kind === 'failed' ? ` (could not ask Codex: ${report.reason})` : ` (${report.reason})`;
 
     return { checks: builds, notes: [`${codexTrustReminder()}${reason}`] };
   }

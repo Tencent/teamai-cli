@@ -1,5 +1,5 @@
 import { isModelAlias, noModelCause, noModelReason, resolveModelValue, type ModelAliases, type ModelResolution, type NoModel } from '../models/aliases.js';
-import { isAgentToolId } from '../tools.js';
+import { agentFormatOf } from '../tool-registry.js';
 import type { ScorerDefinition } from './definition.js';
 
 /** The model a judge launches with, and how it was chosen: the scorer's, or the tool's own default in its place. */
@@ -47,7 +47,9 @@ export function chooseJudgeModel<Tool extends string>(aliases: ModelAliases, sco
   for (const tool of tools) {
     if (model === undefined) return { ok: true, choice: { tool, by: 'tool_default' } };
 
-    if (!isAgentToolId(tool)) {
+    const format = agentFormatOf(tool);
+
+    if (format === undefined) {
       unmapped.push(tool);
       continue;
     }
@@ -55,7 +57,7 @@ export function chooseJudgeModel<Tool extends string>(aliases: ModelAliases, sco
     const resolved = resolveModelValue(aliases, model, tool);
 
     if (resolved.ok && resolved.model !== undefined) {
-      const effort = resolved.effort !== undefined && !NO_EFFORT.has(tool) ? { effort: resolved.effort } : {};
+      const effort = resolved.effort !== undefined && !NO_EFFORT.has(format) ? { effort: resolved.effort } : {};
 
       return { ok: true, choice: { tool, by: 'scorer', model: { name: resolved.model, ...effort }, ...alias } };
     }

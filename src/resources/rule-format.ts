@@ -1,3 +1,4 @@
+import type { RuleFormatId } from '@teamai/tool-core/definition';
 /**
  * Per-tool on-disk format for rule files.
  *
@@ -19,7 +20,7 @@
  * (`TOOLS[tool].rules`, tools.ts), which says which tools take it.
  */
 
-import { ruleFormatIdOf, runTimeRulesOf } from '../tools.js';
+import { baseToolOf, ruleFormatIdOf, runTimeRulesOf } from '../tool-registry.js';
 import type { Scope } from '../types.js';
 import { AGY_RULE_FORMAT } from './agy-rule.js';
 import { CODEBUDDY_RULE_FORMAT } from './codebuddy-rule.js';
@@ -59,7 +60,6 @@ export interface RuleFormat {
  * body only, and a file teamai did not deliver is the member's own rule in the
  * tool's format, never a new team rule.
  */
-// oxlint-disable-next-line teamai/tool-facts -- keyed by rule format id, which this table defines; a tool picks one in TOOLS.rules
 const RULE_FORMATS = {
   'cursor-mdc': CURSOR_MDC_FORMAT,
   joycode: JOYCODE_RULE_FORMAT,
@@ -70,9 +70,7 @@ const RULE_FORMATS = {
   codebuddy: CODEBUDDY_RULE_FORMAT,
   omp: OMP_RULE_FORMAT,
   agy: AGY_RULE_FORMAT,
-} as const satisfies Readonly<Record<string, RuleFormat>>;
-
-export type RuleFormatId = keyof typeof RULE_FORMATS;
+} as const satisfies Readonly<Record<RuleFormatId, RuleFormat>>;
 
 export function ruleFormatById(id: RuleFormatId): RuleFormat {
   return RULE_FORMATS[id];
@@ -180,9 +178,11 @@ export function flatStemsOfRemoved(tool: string, removed: Iterable<string>, team
  * `.cursor/rules`), plus Pi.
  */
 export function sharesRulesDirWithMember(tool: string): boolean {
-  if (tool === 'cursor') return false;
+  const base = baseToolOf(tool);
 
-  return ruleFormatForTool(tool) !== undefined || tool === 'pi';
+  if (base === 'cursor') return false;
+
+  return ruleFormatForTool(tool) !== undefined || base === 'pi';
 }
 
 /** Extension teamai writes rules with for a given tool. */

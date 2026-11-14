@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { homeVariables, isToolId, TOOLS } from '../tools.js';
+import { TOOLS } from '../tools.js';
+import { homeVariables, isToolId } from '../tool-registry.js';
 import { RELOCATABLE_TOOLS } from '../types.js';
 import { toolRootVariables } from './helpers/tool-root-vars.js';
 

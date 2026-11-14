@@ -18,12 +18,13 @@ vi.mock('../utils/fs.js', () => ({
   readFileSafe: vi.fn(async () => null),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
 import { claudeHookOtherHostSkip, reconcileHooks } from '../hooks.js';
 import * as bundledRuntime from '../bundled-runtime.js';
+import { useToolInstances } from '../tool-registry.js';
 import type { HookDef } from '../types.js';
 
 const SETTINGS = '/test/settings.json';
@@ -43,8 +44,8 @@ function teamDef(over: Partial<HookDef> = {}): HookDef {
   };
 }
 
-function claudeHooks(): Record<string, Array<{ matcher?: string; description?: string; hooks: Array<{ command: string }> }>> {
-  return (mockFiles[SETTINGS] as { hooks: Record<string, never> }).hooks as never;
+function claudeHooks(file = SETTINGS): Record<string, Array<{ matcher?: string; description?: string; hooks: Array<{ command: string }> }>> {
+  return (mockFiles[file] as { hooks: Record<string, never> }).hooks as never;
 }
 function cursorHooks(): Record<string, Array<{ command: string; matcher?: string; timeout?: number }>> {
   return (mockFiles[CURSOR] as { hooks: Record<string, never> }).hooks as never;
@@ -57,32 +58,61 @@ describe('reconcileHooks — team (B) hooks', () => {
   beforeEach(() => {
     mockFiles = {};
     vi.clearAllMocks();
+    // An instance of Claude Code, as a member's ~/.teamai/tools/acme-claude.yaml defines it.
+    // One that shares Claude's home; one with a home of its own on Claude's command, whose hooks are in a project's
+    // `.claude/settings.json`, which Cursor and Copilot load, and in its own home in user scope, which they never load;
+    // and one with its own build too.
+    useToolInstances(new Map([['acme-claude', {
+      kind: 'instance', name: 'acme-claude', extends: 'claude',
+      source: 'personal', file: '/home/.teamai/tools/acme-claude.yaml', location: '~/.teamai/tools/acme-claude.yaml', revision: 'r1',
+    }], ['own-claude', {
+      kind: 'instance', name: 'own-claude', extends: 'claude', home: { dir: '.own-claude' },
+      source: 'personal', file: '/home/.teamai/tools/own-claude.yaml', location: '~/.teamai/tools/own-claude.yaml', revision: 'r1',
+    }], ['built-claude', {
+      kind: 'instance', name: 'built-claude', extends: 'claude', command: 'built-claude', home: { dir: '.built-claude' },
+      source: 'personal', file: '/home/.teamai/tools/built-claude.yaml', location: '~/.teamai/tools/built-claude.yaml', revision: 'r1',
+    }], ['paths-claude', {
+      // Its settings file is where its paths put it, which neither loads; and one whose paths keep Claude's file, which both do.
+      kind: 'instance', name: 'paths-claude', extends: 'claude', paths: { skills: '.paths-claude/skills', settings: '.paths-claude/settings.json' },
+      source: 'personal', file: '/home/.teamai/tools/paths-claude.yaml', location: '~/.teamai/tools/paths-claude.yaml', revision: 'r1',
+    }], ['kept-claude', {
+      kind: 'instance', name: 'kept-claude', extends: 'claude', home: { dir: '.kept-claude' }, paths: { skills: '.kept-claude/skills', settings: '.claude/settings.json' },
+      source: 'personal', file: '/home/.teamai/tools/kept-claude.yaml', location: '~/.teamai/tools/kept-claude.yaml', revision: 'r1',
+    }]]));
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    useToolInstances(new Map());
   });
 
   describe('Claude format', () => {
-    it('injects a team hook after the built-in hooks in its event', async () => {
-      await reconcileHooks(SETTINGS, 'claude', [teamDef()], { manifestPath: MANIFEST });
+    it.each([
+      ['claude', SETTINGS, true], ['acme-claude', SETTINGS, true], ['own-claude', '/project/.claude/settings.json', true],
+      ['own-claude', '/home/.own-claude/settings.json', false], ['built-claude', '/project/.built-claude/settings.json', false],
+      ['paths-claude', '/home/.paths-claude/settings.json', false], ['kept-claude', '/home/.claude/settings.json', true],
+    ])('injects a team hook after the built-in hooks in its event, for %s into %s, guarded against Cursor and Copilot: %s', async (tool, file, guarded) => {
+      await reconcileHooks(file, tool, [teamDef()], { manifestPath: MANIFEST });
 
-      const postToolUse = claudeHooks().PostToolUse;
+      const postToolUse = claudeHooks(file).PostToolUse;
       expect(postToolUse).toHaveLength(2); // 1 built-in + 1 team
       const team = postToolUse[postToolUse.length - 1];
       expect(team.description).toBe('[teamai:hook:block-secret] scan secrets before bash');
       expect(team.matcher).toBe('Bash');
-      expect(team.hooks[0].command).toBe(`${claudeHookOtherHostSkip('PostToolUse', 'Bash', teamDef().command)}${teamDef().command}`);
+      expect(team.hooks[0].command).toBe(`${guarded ? claudeHookOtherHostSkip('PostToolUse', 'Bash', teamDef().command) : ''}${teamDef().command}`);
     });
 
-    it('writes a PowerShell team guard with an explicit shell on Windows', async () => {
+    it.each([
+      ['claude', SETTINGS, true], ['acme-claude', SETTINGS, true], ['own-claude', '/project/.claude/settings.json', true],
+      ['own-claude', '/home/.own-claude/settings.json', false], ['built-claude', '/project/.built-claude/settings.json', false],
+    ])('writes a PowerShell team command with an explicit shell on Windows, for %s into %s, guarded: %s', async (tool, file, guarded) => {
       vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
       vi.spyOn(bundledRuntime, 'findGitBashWindows').mockReturnValue(null);
-      await reconcileHooks(SETTINGS, 'claude', [teamDef()], { manifestPath: MANIFEST });
+      await reconcileHooks(file, tool, [teamDef()], { manifestPath: MANIFEST });
 
-      const hook = claudeHooks().PostToolUse.at(-1)!.hooks[0] as { command: string; shell?: string };
+      const hook = claudeHooks(file).PostToolUse.at(-1)!.hooks[0] as { command: string; shell?: string };
       expect(hook.shell).toBe('powershell');
-      expect(hook.command).toContain('$env:CURSOR_VERSION');
+      expect(hook.command.includes('$env:CURSOR_VERSION')).toBe(guarded);
       expect(hook.command).not.toContain('grep -q');
     });
 

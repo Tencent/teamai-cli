@@ -16,6 +16,8 @@ import { publishQueuedLearnings } from './utils/learnings-publish.js';
 import { pendingLearningsDir } from './utils/pending-learnings.js';
 import { indexableLearningsRoots } from './utils/learnings-roots.js';
 import { log, spinner } from './utils/logger.js';
+import { resolveRunMode } from './launch-context.js';
+import { askQuestion, closePrompt, isInteractive } from './utils/prompt.js';
 import { DetachedRecoveryError, transitionTeamRepo, teamRefBlocker, teamRefNotice, removedTeamResources, type RemovedTeamResources } from './team-ref.js';
 import { pathExists, readJson, writeJson, listFiles, listDirs, listFilesRecursive, readFileSafe, hasVcsMetadataRecursive } from './utils/fs.js';
 import { reconcilePlacementRecords } from './utils/pending-push.js';
@@ -31,13 +33,14 @@ import {
   resolveDesiredDocs, resolveDocsDestination,
 } from './resources/docs.js';
 import { ResourceHandler } from './resources/base.js';
-import { CODEX_TOOL, codexSkillsSplit, mayDeleteSkillCopy, skillOrigin } from './resources/skills.js';
+import { codexSkillsSplit, mayDeleteSkillCopy, readsCodexSharedSkills, skillOrigin } from './resources/skills.js';
 import { TeamSkillSource } from './resources/team-skill-source.js';
-import { installOf, locate, locatingOnce, ownOf, SHARED_AGENT_SKILLS_PATH, writable, writesOf, type Install } from './locate.js';
+import { installOf, locate, locatingOnce, ownOf, SHARED_AGENT_SKILLS_PATH, toolPathUnder, writable, writesOf, type Install } from './locate.js';
 import { isWithin } from './utils/agent-path.js';
 import { describeToolHomeChange, recordToolHomes } from './tool-home-record.js';
-import { describeInvalidToolHomes, realHost, toolHome } from './tool-home.js';
-import { isToolId, folderReachOf } from './tools.js';
+import { describeInvalidToolHomes, realHost } from './tool-home.js';
+import { baseToolOf, folderReachOf } from './tool-registry.js';
+import { askingOnce } from './tool-instances.js';
 import { placesOf, placesRecordOf, placesUnmoved, recordPlaces, type PlacesRecord, type SessionToolHomes } from './resources/places.js';
 import { flatStemsOfRemoved, ruleFileExtensionForTool, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
 import { AGENT_FILE_EXTENSIONS } from './resources/agent-format.js';
@@ -92,7 +95,7 @@ import { mirrorLearnings } from './utils/learnings-mirror.js';
 import { withTimeout } from './utils/async.js';
 import { runDeclaredPostPull } from './post-pull.js';
 import { runTeamScript } from './team-scripts.js';
-import { describeWorkspaceChildren, readWorkspaceChildren, syncWorkspaceInstructionExcludes } from './workspace-children.js';
+import { describeWorkspaceChildren, ownedInstructionExcludesOf, readWorkspaceChildren, syncWorkspaceInstructionExcludes } from './workspace-children.js';
 import {
   applyDeliveredGitExclude, createDeliveryRecorder, deliveredUnion, describeForeign, describeUnreadableGitExcludeSetting,
   type DeliveryRecorder, type GitExcludePaths, type ListedCheckout, type WriterId,
@@ -426,7 +429,7 @@ export async function cleanupInactiveNamespaceSkills(
 
     if (skillsDir === null) continue;
 
-    if (tool === CODEX_TOOL) {
+    if (readsCodexSharedSkills(tool)) {
       const swept = (name: string): boolean => !retainedSkillNames.has(name) && inactiveSkillNames.has(name);
 
       for (const name of await sweepSharedSkillCopies(localConfig, swept, ledger, installScopeName(localConfig.scope))) removed.add(name);
@@ -851,7 +854,7 @@ async function cleanupTombstonedResources(
 
           // With no record, a copy goes only on proof that it is teamai's (#993).
           const origin = type === 'rules' ? ruleOrigin(tool, localConfig.repo.localPath, `rules/${name}.md`)
-            : type === 'agents' ? await removedAgentOrigin(localConfig, name, tool)
+            : type === 'agents' ? await removedAgentOrigin(freshConfig, localConfig, name, tool)
               : type === 'skills' ? skillOrigin(localConfig.repo.localPath, name)
                 : undefined;
 
@@ -881,7 +884,7 @@ async function cleanupTombstonedResources(
         }
       }
 
-      if (type === 'skills' && tool === CODEX_TOOL) {
+      if (type === 'skills' && readsCodexSharedSkills(tool)) {
         await sweepSharedSkillCopies(localConfig, (name) => tombstones.has(name), ledger, scopeLabel);
       }
     }
@@ -1450,32 +1453,40 @@ export async function recordedAgentModels(localConfig: LocalConfig, state?: Stat
 async function excludeWorkspaceInstructions(localConfig: LocalConfig, options: GlobalOptions): Promise<void> {
   const { projectRoot } = localConfig;
 
-  if (localConfig.scope !== 'project' || !projectRoot || isAgentExcluded(localConfig, 'claude')) return;
+  if (localConfig.scope !== 'project' || !projectRoot) return;
 
   try {
     const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
-    const settings = teamConfig ? scopedToolPaths(teamConfig, localConfig).claude?.settings : undefined;
+    const folders: string[] = [];
 
-    if (!settings || !await pathExists(path.join(projectRoot, path.dirname(settings)))) return;
+    for (const [tool, paths] of Object.entries(teamConfig ? scopedToolPaths(teamConfig, localConfig) : {})) {
+      if (baseToolOf(tool) !== 'claude' || isAgentExcluded(localConfig, tool) || !paths?.settings) continue;
+      const folder = path.posix.dirname(paths.settings);
+
+      if (!folders.includes(folder) && await pathExists(toolPathUnder(tool, projectRoot, folder))) folders.push(folder);
+    }
+
+    if (folders.length === 0) return;
     const key = await checkoutKey(projectRoot);
     const state = await loadStateForScope(localConfig);
     const record = state.lastPullByWorkspace?.[key];
 
     if (!record) return;
-    const previous = record.claudeMdExcludes ?? [];
-    const settingsFile = path.join(projectRoot, path.dirname(settings), 'settings.local.json');
-    const written = await syncWorkspaceInstructionExcludes({ projectRoot, settingsFile, previous, dryRun: options.dryRun });
+    // A folder this pull skips, such as that of a tool the member stopped syncing, keeps its entries on the record.
+    const previous = ownedInstructionExcludesOf(record.claudeMdExcludes, teamConfig ? scopedToolPaths(teamConfig, localConfig).claude?.settings : undefined);
+    const written = await syncWorkspaceInstructionExcludes({ projectRoot, folders, previous, dryRun: options.dryRun });
 
     if (JSON.stringify(written) === JSON.stringify(previous)) return;
-    const added = written.filter((entry) => !previous.includes(entry));
+    const added = Object.entries(written).some(([folder, entries]) => entries.some((entry) => !(previous[folder] ?? []).includes(entry)));
 
-    if (added.length > 0) {
-      log.info(`[${installScopeName(localConfig.scope)}] ${options.dryRun ? 'Would exclude' : 'Excluded'} the instructions of the workspace above this repo from Claude Code sessions here (claudeMdExcludes in ${settingsFile})`);
+    if (added) {
+      const files = folders.map((folder) => path.join(projectRoot, folder, 'settings.local.json'));
+      log.info(`[${installScopeName(localConfig.scope)}] ${options.dryRun ? 'Would exclude' : 'Excluded'} the instructions of the workspace above this repo from Claude Code sessions here (claudeMdExcludes in ${files.join(', ')})`);
     }
 
     if (options.dryRun) return;
 
-    if (written.length > 0) record.claudeMdExcludes = written;
+    if (Object.keys(written).length > 0) record.claudeMdExcludes = written;
     else delete record.claudeMdExcludes;
     await saveStateForScope(state, localConfig);
   } catch (e) {
@@ -1510,7 +1521,7 @@ async function grantDeliveredFolders(localConfig: LocalConfig, options: GlobalOp
       const settingsFiles = delivers
         ? receiving
           .filter((tool) => !isAgentExcluded(localConfig, tool) && folderReachOf(tool).reach === 'grant')
-          .flatMap((tool) => (isToolId(tool) ? [path.join(toolHome(tool), 'settings.json')] : []))
+          .flatMap((tool) => RuleFolders.grantSettingsFile({ tool, teamConfig, localConfig }) ?? [])
         : [];
 
       return { dir, settingsFiles };
@@ -2948,7 +2959,7 @@ async function pullForScope(
       const isOtherTeamsSkill = (name: string, dir: string): boolean =>
         alone && !removedByTeam.has(name) && recordedUnder(ledger.previous ?? {}, dir).length > 0;
 
-      if (tool === CODEX_TOOL) {
+      if (readsCodexSharedSkills(tool)) {
         const swept = (name: string, dir: string): boolean =>
           !desiredSkillNames.has(name) && (knownRepoSkillNames.has(name) || isOtherTeamsSkill(name, dir));
 
@@ -4890,6 +4901,22 @@ async function reconcileHooksAllScopes(
   return { errors, unwritten };
 }
 
+/**
+ * The person at this terminal, who answers the question that accepts a team instance's command a trust pass runs; none
+ * in a silent pull (a hook's), an unattended one, or without a terminal.
+ */
+function terminalPerson(options: GlobalOptions): ((question: string) => Promise<string | undefined>) | undefined {
+  if (options.silent || resolveRunMode(process.env) !== 'attended' || !isInteractive() || !process.stderr.isTTY) return undefined;
+
+  return async (question) => {
+    try {
+      return await askQuestion(question);
+    } finally {
+      closePrompt();
+    }
+  };
+}
+
 /** Trust Codex hooks and projects after both hooks and MCP reconciliation. */
 async function trustCodexAllScopes(
   userConfig: LocalConfig | null,
@@ -4899,6 +4926,8 @@ async function trustCodexAllScopes(
   if (options.dryRun) return;
   const scopes = [userConfig, projectConfig].filter((c): c is LocalConfig => !!c);
   let warnedSkew: CodexBuildSkew | undefined;
+  const person = terminalPerson(options);
+  const ask = person && askingOnce(person);
 
   for (const localConfig of scopes) {
     try {
@@ -4906,7 +4935,7 @@ async function trustCodexAllScopes(
 
       if (!teamConfig) continue;
       const { reportCodexTrust, trustCodexForScope } = await import('./hooks.js');
-      const trust = await trustCodexForScope(teamConfig, localConfig);
+      const trust = await trustCodexForScope(teamConfig, localConfig, { ask });
       const skewAlreadyWarned = trust?.skew !== undefined && isDeepStrictEqual(trust.skew, warnedSkew);
 
       if (trust?.skew) warnedSkew = trust.skew;
@@ -5122,13 +5151,13 @@ async function reconcileCoAuthorAllScopes(
     if (projectConfig && recorder) {
       try {
         const teamConfig = await loadTeamConfig(projectConfig.repo.localPath);
-        const { coAuthorLocalSettingsFile } = await import('./coauthor-reconcile.js');
+        const { coAuthorLocalSettingsFiles } = await import('./coauthor-reconcile.js');
 
-        const local = teamConfig
-          ? await coAuthorLocalSettingsFile(teamConfig, projectConfig, (await loadStateForScope(projectConfig)).coAuthorManaged ?? {})
-          : undefined;
+        const locals = teamConfig
+          ? await coAuthorLocalSettingsFiles(teamConfig, projectConfig, (await loadStateForScope(projectConfig)).coAuthorManaged ?? {})
+          : [];
 
-        if (local?.kind === 'holds') recorder.report('coauthor', local.file);
+        for (const local of locals) if (local.kind === 'holds') recorder.report('coauthor', local.file);
       } catch (e) {
         log.debug(`[dry-run] co-author preview skipped: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -5151,18 +5180,19 @@ async function reconcileCoAuthorAllScopes(
         continue;
       }
 
-      const { coAuthorLocalSettingsFile, reconcileCoAuthorForConfig } = await import('./coauthor-reconcile.js');
+      const { coAuthorLocalSettingsFiles, reconcileCoAuthorForConfig } = await import('./coauthor-reconcile.js');
       const state = await loadStateForScope(localConfig);
       const { changes, managed } = await reconcileCoAuthorForConfig(teamConfig, localConfig, state);
 
       if (scopeRecorder) {
         // Read back from the file: the "already applied" skip does not read it.
-        const local = await coAuthorLocalSettingsFile(teamConfig, localConfig, managed);
+        for (const local of await coAuthorLocalSettingsFiles(teamConfig, localConfig, managed)) {
+          if (local.kind === 'holds') scopeRecorder.report('coauthor', local.file);
 
-        if (local.kind === 'holds') scopeRecorder.report('coauthor', local.file);
+          // One that does not parse may still hold it: its line stays while it is on disk.
+          if (local.kind === 'unreadable') scopeRecorder.failed('coauthor');
+        }
 
-        // One that does not parse may still hold it: its line stays while it is on disk.
-        if (local.kind === 'unreadable') scopeRecorder.failed('coauthor');
         scopeRecorder.succeeded('coauthor');
       }
 

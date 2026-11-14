@@ -20,9 +20,10 @@ vi.mock('node:os', async (importOriginal) => {
   return patched;
 });
 
-import { ClaudeCodeAdapter } from '../session-flow/adapters/claude-code.js';
-import { CursorAdapter } from '../session-flow/adapters/cursor.js';
-import type { Session } from '../session-flow/ir.js';
+import { ClaudeCodeAdapter } from '@teamai/tool-core/formats/claude-code';
+import { sessionStoreDir } from '../locate.js';
+import { getAdapter } from '../session-flow/adapters/index.js';
+import type { Session } from '@teamai/tool-core/sessions/ir';
 
 function mkSession(imageFilePath: string): Session {
   return {
@@ -74,7 +75,7 @@ describe('migrating an image that only has a local filePath', () => {
     const expected = fs.readFileSync(pic).toString('base64');
 
     fs.mkdirSync(path.join(mocks.home, '.claude', 'projects'), { recursive: true });
-    const target = new ClaudeCodeAdapter();
+    const target = new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', undefined));
     const cwd = path.join(mocks.home, 'work');
 
     const id = await target.writeSession(mkSession(pic), cwd);
@@ -91,7 +92,7 @@ describe('migrating an image that only has a local filePath', () => {
     const session = mkSession(pic);
     session.metadata = { untrusted: true };
 
-    const target = new ClaudeCodeAdapter();
+    const target = new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', undefined));
     const cwd = path.join(mocks.home, 'work');
     const id = await target.writeSession(session, cwd);
     const text = fs.readFileSync(await findWritten(target, cwd, id), 'utf-8');
@@ -102,7 +103,7 @@ describe('migrating an image that only has a local filePath', () => {
 describe('cursor composerId derivation', () => {
   it('gives one id to the two spellings of one workspace', async () => {
     fs.mkdirSync(path.join(mocks.home, '.cursor', 'projects'), { recursive: true });
-    const adapter = new CursorAdapter();
+    const adapter = getAdapter('cursor');
     const real = path.join(fs.realpathSync(os.tmpdir()), 'teamai-cursor-cwd');
     fs.mkdirSync(real, { recursive: true });
     // /tmp is a symlink to /private/tmp on macOS: the unresolved spelling is

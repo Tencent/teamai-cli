@@ -1,0 +1,162 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+/**
+ * A stand-in `codex` whose `app-server` speaks the JSON-RPC subset teamai uses
+ * (initialize, hooks/list, config/read, config/batchWrite), with its state in
+ * `$CODEX_HOME/fake-state.json`. Hooks are listed from `$CODEX_HOME/hooks.json`
+ * (the user layer) and from `<project>/.codex/hooks.json` for each trusted
+ * project that is the cwd or one of its parents, or that `$CODEX_HOME/fake.json`
+ * maps the cwd to (`projectLayers`, how Codex reads a linked worktree from its
+ * main checkout). A hook's hash is its handler's JSON, so editing it reads as
+ * `modified`, as in Codex; `hashIgnores` drops fields from it, as codex-cli
+ * 0.142.5 ignores `additionalContextLimit`. `--version` prints
+ * `codex-cli <version>`, or nothing for a null version (`fakeCodexVersionRuns` counts them), after making
+ * `$CODEX_HOME/tmp/arg0/` as codex does; each recorded call names the install that answered
+ * it (`codex`). `fake.json` can also make one method fail (`failMethod`; with
+ * `failCodex`, only for the install at that path, so the chosen build still
+ * answers), the process exit at once (`exit`), or the listing name a hook by
+ * its `commandWindows` where it has one (`windowsCommands`), as Codex on
+ * Windows does.
+ */
+const SERVER = String.raw`
+if (process.argv[2] === '--version') {
+  require('node:fs').appendFileSync(BUILD.codex + '.version-runs', '.');
+  // As codex does before it parses its arguments: its arg0 helpers under $CODEX_HOME/tmp.
+  require('node:fs').mkdirSync(require('node:path').join(process.env.CODEX_HOME || require('node:path').join(require('node:os').homedir(), '.codex'), 'tmp', 'arg0', 'codex-arg0fake'), { recursive: true });
+  if (BUILD.version !== null) process.stdout.write('codex-cli ' + BUILD.version + '\n');
+  process.exit(0);
+}
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const home = process.env.CODEX_HOME;
+const read = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return d; } };
+const opts = read(path.join(home, 'fake.json'), {});
+if (opts.exit) process.exit(1);
+const statePath = path.join(home, 'fake-state.json');
+const state = () => read(statePath, { projects: {}, hooksState: {}, calls: [] });
+const save = (s) => fs.writeFileSync(statePath, JSON.stringify(s, null, 2));
+const real = (p) => { try { return fs.realpathSync.native(p); } catch { return path.resolve(p); } };
+const snake = (e) => e.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase();
+function layer(file, source, s, out) {
+  const json = read(file, null);
+  if (!json || !json.hooks) return;
+  const src = real(file);
+  for (const [event, groups] of Object.entries(json.hooks)) {
+    (groups || []).forEach((g, gi) => (g.hooks || []).forEach((h, hi) => {
+      if ((opts.omitCommands || []).includes(h.command)) return;
+      const key = src + ':' + snake(event) + ':' + gi + ':' + hi;
+      const hashed = { ...h };
+      for (const field of BUILD.hashIgnores) delete hashed[field];
+      const currentHash = 'sha256:' + crypto.createHash('sha256').update(JSON.stringify(hashed)).digest('hex');
+      const trusted = s.hooksState[key] && s.hooksState[key].trusted_hash;
+      const trustStatus = !trusted ? 'untrusted' : trusted === currentHash ? 'trusted' : 'modified';
+      const command = opts.windowsCommands && h.commandWindows ? h.commandWindows : h.command;
+      out.push({ key, command, sourcePath: src, source, currentHash, trustStatus });
+    }));
+  }
+}
+function list(cwd, s) {
+  const out = [];
+  layer(path.join(home, 'hooks.json'), 'user', s, out);
+  const c = real(cwd);
+  const mapped = (opts.projectLayers || {})[c];
+  const projects = mapped ? (fs.existsSync(path.join(c, '.codex')) ? [real(mapped)] : []) : Object.keys(s.projects).filter((p) => c === p || c.startsWith(p + path.sep));
+  for (const p of projects) {
+    if ((s.projects[p] || {}).trust_level !== 'trusted') continue;
+    layer(path.join(p, '.codex', 'hooks.json'), 'project', s, out);
+  }
+  return out;
+}
+let buf = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  buf += chunk;
+  let i;
+  while ((i = buf.indexOf('\n')) >= 0) {
+    const line = buf.slice(0, i); buf = buf.slice(i + 1);
+    if (!line.trim()) continue;
+    const m = JSON.parse(line);
+    const s = state();
+    s.pid = process.pid;
+    s.calls.push({ method: m.method, params: m.params, codex: BUILD.codex });
+    save(s);
+    if (m.id === undefined) continue;
+    const reply = (body) => process.stdout.write(JSON.stringify({ id: m.id, ...body }) + '\n');
+    if (opts.failMethod === m.method && (!opts.failCodex || opts.failCodex === BUILD.codex)) { reply({ error: { code: -32000, message: 'fake failure' } }); continue; }
+    if (m.method === 'initialize') reply({ result: { userAgent: 'fake' } });
+    else if (m.method === 'hooks/list') reply({ result: { data: m.params.cwds.map((cwd) => ({ cwd, hooks: opts.listErrors ? [] : list(cwd, s), errors: opts.listErrors ? [{ path: cwd, message: opts.listErrors }] : [], warnings: [] })) } });
+    else if (m.method === 'config/read') reply({ result: { config: { projects: s.projects } } });
+    else if (m.method === 'config/batchWrite') {
+      for (const e of m.params.edits) {
+        if (e.keyPath === 'projects') Object.assign(s.projects, e.value);
+        else if (e.keyPath.startsWith('projects.') && e.value === null) delete s.projects[JSON.parse(e.keyPath.slice('projects.'.length))];
+        else if (e.keyPath === 'hooks.state') for (const [k, v] of Object.entries(e.value)) s.hooksState[k] = { ...(s.hooksState[k] || {}), ...v };
+        else if (e.keyPath.startsWith('hooks.state.') && e.value === null) delete s.hooksState[JSON.parse(e.keyPath.slice('hooks.state.'.length))];
+      }
+      save(s);
+      reply({ result: { status: 'ok' } });
+    } else reply({ error: { code: -32600, message: 'unknown method ' + m.method } });
+  }
+});
+`;
+
+export interface FakeCodexState {
+  pid?: number;
+  projects: Record<string, { trust_level?: string }>;
+  hooksState: Record<string, { trusted_hash?: string }>;
+  calls: Array<{ method: string; params: unknown; codex: string }>;
+}
+
+/**
+ * Write the fake `codex` into `dir` (by default a new directory, to prepend to
+ * PATH) and return the directory.
+ */
+export function installFakeCodex(options: { version?: string | null; hashIgnores?: string[]; dir?: string } = {}): string {
+  const dir = options.dir ?? fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-fake-codex-')));
+  fs.mkdirSync(dir, { recursive: true });
+  const script = path.join(dir, 'fake-codex.cjs');
+  const build = { codex: path.join(dir, 'codex'), version: options.version === undefined ? '0.163.0' : options.version, hashIgnores: options.hashIgnores ?? [] };
+  fs.writeFileSync(script, `const BUILD = ${JSON.stringify(build)};\n${SERVER}`);
+  const node = JSON.stringify(process.execPath);
+  fs.writeFileSync(path.join(dir, 'codex'), `#!/bin/sh\nexec ${node} ${JSON.stringify(script)} "$@"\n`);
+  fs.chmodSync(path.join(dir, 'codex'), 0o755);
+  fs.writeFileSync(path.join(dir, 'codex.cmd'), `@"${process.execPath}" "${script}" %*\r\n`);
+
+  return dir;
+}
+
+/** How many times the fake `codex` installed in `dir` answered `--version`. */
+export function fakeCodexVersionRuns(dir: string): number {
+  try {
+    return fs.readFileSync(path.join(dir, 'codex.version-runs'), 'utf8').length;
+  } catch {
+    return 0;
+  }
+}
+
+/** The current PATH without each directory that holds a `codex`, so a test sees only the Codex builds it installs. */
+export function pathWithoutCodex(): string {
+  return (process.env.PATH ?? '').split(path.delimiter)
+    .filter((dir) => dir !== '' && !['codex', 'codex.cmd', 'codex.exe'].some((name) => fs.existsSync(path.join(dir, name))))
+    .join(path.delimiter);
+}
+
+export function readFakeCodexState(codexHome: string): FakeCodexState {
+  try {
+    // SAFETY: only the fake above writes fake-state.json, and always in the FakeCodexState shape.
+    return JSON.parse(fs.readFileSync(path.join(codexHome, 'fake-state.json'), 'utf8')) as FakeCodexState;
+  } catch {
+    return { projects: {}, hooksState: {}, calls: [] };
+  }
+}
+
+export function writeFakeCodexOptions(
+  codexHome: string,
+  options: { listErrors?: string; failMethod?: string; failCodex?: string; exit?: boolean; omitCommands?: string[]; projectLayers?: Record<string, string>; windowsCommands?: boolean },
+): void {
+  fs.mkdirSync(codexHome, { recursive: true });
+  fs.writeFileSync(path.join(codexHome, 'fake.json'), JSON.stringify(options));
+}

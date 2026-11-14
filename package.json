@@ -21,6 +21,9 @@
     "CHANGELOG.md",
     "LICENSE"
   ],
+  "workspaces": [
+    "packages/*"
+  ],
   "publishConfig": {
     "access": "public"
   },

@@ -77,7 +77,13 @@ src/
   resources/         # per-resource-type handlers (skills, rules, docs, env, ...)
   utils/             # shared helpers (git, fs, logger, prompt, ...)
   *.ts               # top-level command entry points (init, push, pull, ...)
+packages/            # private npm workspace packages, bundled into teamai-cli by tsup
+  <name>/
+    package.json     # "name": "@teamai/<name>", "private": true, "exports": { ".": "./src/index.ts" }
+    src/             # source, with each test beside its file (index.ts, index.test.ts)
 ```
+
+`src/` imports a package by its name (`import { ... } from '@teamai/<name>'`), never by a relative path, and never imports a `runtime-*` package; a package never imports `src/`. `teamai/package-boundaries` checks this. A package is not listed in the root `dependencies`: npm links it through `workspaces`, and tsup bundles it.
 
 See [docs/dev/adding-a-provider.md](../docs/dev/adding-a-provider.md) for how to add a new git provider.
 
@@ -121,7 +127,7 @@ What `npm run lint` reports, and the fix:
 | `path.join(process.env.HOME ?? '', '.teamai')` in `src/sync-cache.ts` | `teamai(home-env): Read the user home through getUserHome() in src/utils/home.ts so USERPROFILE and platform fallbacks remain supported.` | `path.join(getUserHome(), '.teamai')` |
 | `execFileSync('gh', ['pr', 'merge', String(pr), '--auto'])` in `src/providers/github/` | `teamai(no-provider-merge): Providers and workflow delivery must not merge, accept or enable auto-merge on pull requests.` | Leave merging to a maintainer; providers only find and create requests. |
 | `import { startRun } from '../../engine.js'` in `src/workflow/drivers/skill/report.ts` | `teamai(workflow-boundaries): Workflow module boundary forbids src/workflow/drivers/skill/report.ts -> src/workflow/engine.ts.` | Import from `protocol.ts`, which the skill driver may use. |
-| `const team = YAML.parse(text)` in `src/config.ts` | `teamai(yaml-parse): Parse YAML with parseYaml() from src/utils/yaml.ts: it returns JSON values, where yaml's parse turns !!set, !!binary and !!timestamp into a Set, Buffer or Date.` | `const team = parseYaml(text)`, then a zod schema. |
+| `const team = YAML.parse(text)` in `src/config.ts` | `teamai(yaml-parse): Parse YAML with parseYaml() from @teamai/tool-core/yaml: it returns JSON values, where yaml's parse turns !!set, !!binary and !!timestamp into a Set, Buffer or Date.` | `const team = parseYaml(text)`, then a zod schema. |
 | `` `push failed: ${(e as Error).message}` `` | `` teamai(require-safety-comment-for-type-assertion): This type assertion has no `SAFETY:` justification. `` | `` `push failed: ${e instanceof Error ? e.message : String(e)}` `` |
 | `typeof lock.pid === 'number' ? lock.pid : undefined` on a parsed lock file | `` teamai(no-runtime-typeof): A `typeof` check narrows a representation without establishing its contract. `` | Parse the file once: `LockSchema.safeParse(parseYaml(text))`, with `pid: z.number().optional()`. |
 
@@ -149,7 +155,7 @@ npx vitest run src/__tests__/delivered-copies.test.ts
 
 It does not need a new E2E file for every command. Keep E2Es for real CLI behavior such as persisted state, providers, hooks, and worktree isolation.
 
-Documentation generators and Markdown checks live in `scripts/`. Check mode runs in `npm run lint`. After changing CLI help or `src/tools.ts`, regenerate the command reference and both tool-support pages:
+Documentation generators and Markdown checks live in `scripts/`. Check mode runs in `npm run lint`. After changing CLI help or `src/tools.ts`, regenerate the command reference, both tool-support pages and the tool ids `teamai/tool-facts` reads (`oxlint-plugin-teamai/tool-ids.generated.json`):
 
 ```bash
 node scripts/check-docs.mjs --write

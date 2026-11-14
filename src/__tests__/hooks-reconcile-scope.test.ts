@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
@@ -10,7 +10,7 @@ vi.mock('../utils/git.js', async (importOriginal) => ({
   listWorktrees: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), persist: vi.fn() },
 }));
 
@@ -25,9 +25,11 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { claudeHookOtherHostSkip, getHookStatus, reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig } from '../hooks.js';
 import * as gitHook from '../git-hook.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
+import { useToolInstances } from '../tool-registry.js';
 import { dispatchedCodexHooks } from '../codex-team-hooks.js';
 import { channelReadiness } from '../instruction-targets.js';
 import type { HookDef, LocalConfig, TeamaiConfig } from '../types.js';
+import type { ToolId } from '../tools.js';
 import { fakeCodexVersionRuns, installFakeCodex, pathWithoutCodex } from './helpers/fake-codex.js';
 
 let project: string;
@@ -734,6 +736,28 @@ hooks:
     await reconcileTeamHooksForConfig(team(false), withChild);
     expect(await inFile('echo a')).toBe(true);
   });
+
+  it('writes the Codex team-hook dispatchers into the Codex home the member recorded', async () => {
+    const codexHome = path.join(home, '.codex-work');
+    await fse.ensureDir(codexHome);
+    await fse.ensureDir(path.join(project, '.codex'));
+    await writeYaml('hooks:\n  - id: held\n    description: held\n    event: Stop\n    command: echo held\n    tools: [codex]\n');
+    const selfConfig = {
+      repo: { localPath: repo, remote: 'https://git.example.com/team.git', kind: 'self', businessRepoRoot: project },
+      username: 'u',
+      scope: 'project',
+      projectRoot: project,
+      additionalRoles: [],
+      enabledAgents: ['codex'],
+      toolRoots: { codex: codexHome },
+    } as unknown as LocalConfig;
+    const dispatchersIn = async (dir: string): Promise<boolean> => /hook-dispatch [A-Za-z]+ --tool codex --team-hooks/.test(await fse.readFile(path.join(dir, 'hooks.json'), 'utf8').catch(() => ''));
+
+    await reconcileTeamHooksForConfig({ ...teamConfig, sharing: { gitExclude: { enabled: true } } } as unknown as TeamaiConfig, selfConfig);
+
+    expect(await dispatchersIn(codexHome)).toBe(true);
+    expect(await dispatchersIn(path.join(home, '.codex'))).toBe(false);
+  });
 });
 
 // ── Legacy <projectRoot> sweep (#370 follow-up) ──────────────
@@ -1221,6 +1245,16 @@ describe('reconcileTeamHooksForConfig — the form of Claude Code\'s PostToolUse
 
     expect(await postToolUse()).toEqual(UNWAITED);
     expect(await userPromptSubmit()).toEqual(PROMPT_LOGIN_DEFERRED);
+  });
+
+  it('writes the unwaited form in the settings of the root CLAUDE_CONFIG_DIR moved, which is the member\'s own file', async () => {
+    const root = path.join(home, '.claude-work');
+    await fse.outputJson(path.join(root, 'settings.json'), {});
+    vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
+
+    await reconcileTeamHooksForConfig(teamConfig, { ...localConfig(), toolRoots: { claude: '~/.claude-work' } });
+
+    expect(await postToolUse(path.join(root, 'settings.json'))).toEqual(UNWAITED);
   });
 
   it.each(['2.1.118', '', 'not a version'])('goes back to a single waited entry, which defers its login shell, when the version reads %j', async (version) => {
@@ -2153,6 +2187,33 @@ describe('reconcileHooks — an unrecorded team hook entry, judged by the team\'
     expect(updated).toHaveLength(installed.length);
     for (const command of updated) expect(command).toContain(`echo ${tool}-stop-v2`);
     expect(vi.mocked(log.warn).mock.calls.flat().filter((line) => String(line).startsWith('Kept the'))).toEqual([]);
+  });
+});
+
+// An instance that keeps its base's home shares its hook file. One file carries one dispatch identity: each pass rewrites
+// every teamai entry in it, so the tools sharing it never run each event twice.
+describe('reconcileHooksToAllTools — an instance sharing its base\'s hook file', () => {
+  it.each<{ base: ToolId; settings: string }>([
+    { base: 'codex', settings: '.codex/hooks.json' },
+    { base: 'claude', settings: '.claude/settings.json' },
+    { base: 'cursor', settings: '.cursor/hooks.json' },
+  ])('dispatches every event for one tool only, $base when both are enabled', async ({ base, settings }) => {
+    const instance = `acme-${base}`;
+    useToolInstances(new Map([[instance, {
+      kind: 'instance', name: instance, extends: base, command: instance,
+      source: 'team', file: '/r/tools/acme.yaml', location: 'tools/acme.yaml', revision: 'r1',
+    }]]));
+    onTestFinished(() => { useToolInstances(new Map()); });
+    const toolPaths = { [base]: { settings }, [instance]: { settings } };
+    const manifestPath = path.join(home, '.teamai', 'managed-hooks.json');
+    const dispatchedFor = async (): Promise<string[]> => [...new Set([...(await fse.readFile(path.join(home, settings), 'utf8')).matchAll(/--tool ([\w-]+)/g)].map((match) => match[1]))];
+    const options = { codexTrust: { kind: 'disabled' } } as const;
+
+    await reconcileHooksToAllTools(toolPaths, home, [], manifestPath, { ...options, filterAgents: [instance] });
+    expect(await dispatchedFor()).toEqual([instance]);
+
+    await reconcileHooksToAllTools(toolPaths, home, [], manifestPath, options);
+    expect(await dispatchedFor()).toEqual([base]);
   });
 });
 

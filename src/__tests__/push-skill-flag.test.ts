@@ -76,7 +76,7 @@ vi.mock('../resources/index.js', () => ({
   getHandler: (...args: unknown[]) => mockGetHandler(...args),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),

@@ -24,12 +24,14 @@ vi.mock('../utils/git.js', async (importOriginal) => ({
 }));
 
 // pull() takes a real ~/.teamai/.sync-lock; parallel workers would race on it.
-vi.mock('../update.js', () => ({
+vi.mock('../update.js', async (importOriginal) => ({
   acquireLock: vi.fn().mockResolvedValue(true),
   releaseLock: vi.fn().mockResolvedValue(undefined),
+  // A pull records a tool's moved home under this lock.
+  withFileLock: (await importOriginal<typeof import('../update.js')>()).withFileLock,
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     persist: vi.fn(),
     info: vi.fn(),
@@ -50,8 +52,9 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { pull } from '../pull.js';
+import { uninstall } from '../uninstall.js';
 import { AgentsHandler } from '../resources/agents.js';
-import { loadLocalConfigForScope, loadStateForScope, loadTeamConfig, saveStateForScope } from '../config.js';
+import { autoDetectInit, loadLocalConfigForScope, loadStateForScope, loadTeamConfig, saveStateForScope } from '../config.js';
 import { TeamaiConfigSchema, type LocalConfig, type State } from '../types.js';
 import { log } from '../utils/logger.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
@@ -95,6 +98,8 @@ describe('the Claude Code grant of the rule folders a pull delivers (#1787)', ()
   });
 
   afterEach(async () => {
+    const { resetToolInstancesForTests } = await import('../tool-instances.js');
+    resetToolInstancesForTests();
     vi.mocked(saveStateForScope).mockReset();
     vi.mocked(loadStateForScope).mockImplementation(async () => ({}) as never);
     vi.unstubAllEnvs();
@@ -118,6 +123,60 @@ describe('the Claude Code grant of the rule folders a pull delivers (#1787)', ()
     await pull({ force: true });
 
     expect(await fse.readJson(settingsFile())).toMatchObject({ permissions: { additionalDirectories: ['/member/dir'] } });
+  });
+
+  it('grants Claude Code the folders in the settings of the root its variable moved, and uninstall takes them back there', async () => {
+    const root = path.join(homeDir, '.claude-work');
+    await fse.outputJson(path.join(root, 'settings.json'), { permissions: { additionalDirectories: ['/member/dir'] } });
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue({
+      repo: { localPath: repoPath, remote: 'https://example.invalid/x/team.git' }, username: 'u', updatePolicy: 'auto', additionalRoles: [], scope: 'user',
+      enabledAgents: ['claude'], toolRoots: { claude: '~/.claude-work' },
+    } as LocalConfig);
+
+    await pull({});
+    const granted = (await fse.readJson(path.join(root, 'settings.json'))).permissions.additionalDirectories;
+    vi.mocked(autoDetectInit).mockResolvedValue({ localConfig: await loadLocalConfigForScope('user'), teamConfig: await loadTeamConfig(repoPath) } as never);
+    await uninstall({ agent: 'claude', force: true });
+
+    expect(granted).toEqual(['/member/dir', path.join(homeDir, '.teamai', 'rules')]);
+    expect(await fse.readJson(path.join(root, 'settings.json'))).toMatchObject({ permissions: { additionalDirectories: ['/member/dir'] } });
+    expect(await fse.readJson(settingsFile())).toEqual({ permissions: { additionalDirectories: ['/member/dir'] } });
+  });
+
+  it('grants a Claude Code instance the folders in the settings of its own home, where its variable moves it, and its own uninstall takes them back there only', async () => {
+    const moved = path.join(tmpDir, 'acme');
+    vi.stubEnv('ACME_CLAUDE_CONFIG_DIR', moved);
+    await fse.outputJson(path.join(moved, 'settings.json'), { permissions: { additionalDirectories: ['/member/dir'] } });
+    await fse.outputFile(path.join(repoPath, 'tools', 'acme-claude.yaml'), 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude, env: ACME_CLAUDE_CONFIG_DIR }\n');
+    const { withToolInstances } = await import('../tool-instances.js');
+    vi.mocked(loadTeamConfig).mockImplementation(async () => withToolInstances(repoPath, TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/x/team.git' })));
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue({
+      repo: { localPath: repoPath, remote: 'https://example.invalid/x/team.git' }, username: 'u', updatePolicy: 'auto', additionalRoles: [], scope: 'user', enabledAgents: ['claude', 'acme-claude'],
+    } as LocalConfig);
+
+    await pull({});
+    const granted = (await fse.readJson(path.join(moved, 'settings.json'))).permissions.additionalDirectories;
+    vi.mocked(autoDetectInit).mockResolvedValue({ localConfig: await loadLocalConfigForScope('user'), teamConfig: await loadTeamConfig(repoPath) } as never);
+    await uninstall({ agent: 'acme-claude', force: true });
+
+    expect(granted).toEqual(['/member/dir', path.join(homeDir, '.teamai', 'rules')]);
+    expect(await fse.readJson(path.join(moved, 'settings.json'))).toMatchObject({ permissions: { additionalDirectories: ['/member/dir'] } });
+    expect(await fse.readJson(settingsFile())).toMatchObject({ permissions: { additionalDirectories: ['/member/dir', path.join(homeDir, '.teamai', 'rules')] } });
+  });
+
+  it('keeps the grant in the settings a Claude Code instance shares with Claude Code when only the instance is uninstalled', async () => {
+    await fse.outputFile(path.join(repoPath, 'tools', 'acme-claude.yaml'), 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\ncommand: acme-claude\n');
+    const { withToolInstances } = await import('../tool-instances.js');
+    vi.mocked(loadTeamConfig).mockImplementation(async () => withToolInstances(repoPath, TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/x/team.git' })));
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue({
+      repo: { localPath: repoPath, remote: 'https://example.invalid/x/team.git' }, username: 'u', updatePolicy: 'auto', additionalRoles: [], scope: 'user', enabledAgents: ['claude', 'acme-claude'],
+    } as LocalConfig);
+
+    await pull({});
+    vi.mocked(autoDetectInit).mockResolvedValue({ localConfig: await loadLocalConfigForScope('user'), teamConfig: await loadTeamConfig(repoPath) } as never);
+    await uninstall({ agent: 'acme-claude', force: true });
+
+    expect(await fse.readJson(settingsFile())).toMatchObject({ permissions: { additionalDirectories: ['/member/dir', path.join(homeDir, '.teamai', 'rules')] } });
   });
 
   describe('with an agent folder', () => {

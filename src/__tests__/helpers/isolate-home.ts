@@ -30,12 +30,12 @@ process.env.TMP = tmp;
 process.env.TEMP = tmp;
 // This machine's own LOCALAPPDATA is left out so its Codex app never answers for the fake (#1244); a stubbed one is kept.
 const machineLocalAppData = process.env.LOCALAPPDATA;
-vi.mock('../../codex-desktop.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../codex-desktop.js')>();
+vi.mock('../../tool-launch/tools.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../tool-launch/tools.js')>();
   const under = (dir: string | undefined, binary: string): boolean => !!dir && binary.startsWith(`${dir}${path.sep}`);
-  const isTestOwnedDesktopBinary = (binary: string): boolean => under(process.env.HOME, binary)
+  const isTestOwned = (binary: string): boolean => !path.isAbsolute(binary) || under(process.env.HOME, binary)
     || (process.env.LOCALAPPDATA !== machineLocalAppData && under(process.env.LOCALAPPDATA, binary));
-  return { ...actual, desktopCodexBinaries: () => actual.desktopCodexBinaries().filter(isTestOwnedDesktopBinary) };
+  return { ...actual, executablesOf: (tool: string) => actual.executablesOf(tool).filter(isTestOwned) };
 });
 
 afterAll(() => {

@@ -12,17 +12,19 @@ import path from 'node:path';
 
 const mocks = vi.hoisted(() => ({ hasSqlite3: true }));
 
-vi.mock('../session-flow/sqlite.js', async (importOriginal) => {
-  const actual = (await importOriginal()) as typeof import('../session-flow/sqlite.js');
+vi.mock('@teamai/tool-core/sessions/sqlite', async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import('@teamai/tool-core/sessions/sqlite');
   return {
     ...actual,
     findSqlite3: (...args: Parameters<typeof actual.findSqlite3>) => (mocks.hasSqlite3 ? actual.findSqlite3(...args) : null),
   };
 });
 
-import { CodexAdapter } from '../session-flow/adapters/codex.js';
-import { findSqlite3 } from '../session-flow/sqlite.js';
-import type { Session } from '../session-flow/ir.js';
+import { CodexAdapter } from '@teamai/tool-core/formats/codex';
+import { findSqlite3 } from '@teamai/tool-core/sessions/sqlite';
+import type { Session } from '@teamai/tool-core/sessions/ir';
+import { adapterAt, SESSION_HOST } from '../session-flow/adapters/index.js';
+import { useToolInstances } from '../tool-registry.js';
 
 let home = '';
 
@@ -104,7 +106,7 @@ function installFakeCodex(): string {
 describe('Codex CLI', () => {
   it.skipIf(process.platform === 'win32')('indexes a fresh copy with the codex found on PATH', async () => {
     vi.stubEnv('PATH', installFakeCodex());
-    const codex = new CodexAdapter('codex', path.join(home, '.codex', 'sessions'));
+    const codex = new CodexAdapter('codex', path.join(home, '.codex', 'sessions'), SESSION_HOST);
     const cwd = path.join(home, 'ws');
 
     const id = await codex.writeSession(mkSession(cwd), cwd);
@@ -117,9 +119,34 @@ describe('Codex CLI', () => {
   });
 });
 
+describe('Codex CLI of a tool instance', () => {
+  afterEach(() => { useToolInstances(new Map()); });
+
+  // The session adapter probes and runs the build at the store's home; a build that reads only its own variable needs that one too.
+  it.skipIf(process.platform === 'win32')('starts the instance\'s own build with its own variable at the home of the store it writes', async () => {
+    const bin = installFakeCodex();
+    fs.writeFileSync(path.join(bin, 'acme-codex'), `#!/bin/sh\necho "$*" >> "$ACME_CODEX_HOME/acme-calls.log"\nexec ${JSON.stringify(path.join(bin, 'codex'))} "$@"\n`, { mode: 0o755 });
+    vi.stubEnv('PATH', bin);
+    useToolInstances(new Map([['acme-codex', {
+      kind: 'instance', name: 'acme-codex', extends: 'codex', command: 'acme-codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+      source: 'personal', file: path.join(home, 'acme-codex.yaml'), location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
+    }]]));
+    const acmeHome = path.join(home, 'acme-moved');
+    fs.mkdirSync(path.join(acmeHome, 'sessions'), { recursive: true });
+    const cwd = path.join(home, 'ws');
+
+    const id = await adapterAt({ platform: 'acme-codex', storeDir: path.join(acmeHome, 'sessions') }).writeSession(mkSession(cwd), cwd);
+
+    const calls = fs.readFileSync(path.join(acmeHome, 'acme-calls.log'), 'utf-8').split('\n');
+    expect(calls).toContain('--version');
+    expect(calls).toContain(`migrate-rollouts --apply --thread ${id} --json`);
+    expect(calls).toContain('app-server');
+  });
+});
+
 describe('Codex rollback', () => {
   it.runIf(HAS_SQLITE3)('removes the thread row Codex lists, then the rollout', async () => {
-    const codex = new CodexAdapter('codex', path.join(home, '.codex', 'sessions'));
+    const codex = new CodexAdapter('codex', path.join(home, '.codex', 'sessions'), SESSION_HOST);
     const cwd = path.join(home, 'ws');
     const id = await codex.writeSession(mkSession(cwd), cwd);
     const db = path.join(home, '.codex', 'state_5.sqlite');
@@ -132,7 +159,7 @@ describe('Codex rollback', () => {
   });
 
   it('reports that it could not unregister the thread when sqlite3 is missing, and keeps the rollout for a retry', async () => {
-    const codex = new CodexAdapter('codex', path.join(home, '.codex', 'sessions'));
+    const codex = new CodexAdapter('codex', path.join(home, '.codex', 'sessions'), SESSION_HOST);
     const cwd = path.join(home, 'ws');
     const id = await codex.writeSession(mkSession(cwd), cwd);
     // Codex lists threads from this database; the copy may be registered there.

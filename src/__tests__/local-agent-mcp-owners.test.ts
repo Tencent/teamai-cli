@@ -7,7 +7,7 @@ import { reportAndSyncLocalAgent } from '../local-agent.js';
 import { reconcileMcpForConfig } from '../mcp-reconcile.js';
 import { LocalConfigSchema, TeamaiConfigSchema, type LocalConfig } from '../types.js';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), persist: vi.fn() },
 }));
 

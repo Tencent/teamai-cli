@@ -6,7 +6,6 @@
 import type { RunMode } from '../../../launch-context.js';
 import type { JsonValue } from '../../../types.js';
 import type { ScoredLabels } from '../../../scorers/engine-hooks.js';
-import type { ToolId } from '../../../tools.js';
 import type { Judging, PersonHandoff, RunReadied, RunVersion, StartedRun } from '../../protocol.js';
 import type { ConfinedStepEnd } from '../../confined-step.js';
 import type { ConfinedLease } from '../../lease-wire.js';
@@ -509,7 +508,7 @@ export function invokeRow(refusal: WorkflowFailure | undefined): Answered<'R22',
  * The session row of an agent call from `input.session` (S1, S2, S4), or R11 when this machine keeps no skill state of
  * the run. `takeover`: the call is `next --takeover`. `declared`: the tool the call names with `--tools default=<tool>`.
  */
-export function callRow(state: SkillState | undefined, input: { run: RunId; session: string | undefined; tool: ToolId | undefined; declared?: ToolId; at: string; takeover: boolean }): Moved<'S1' | 'S4'> | Answered<'R11' | 'S2'> {
+export function callRow(state: SkillState | undefined, input: { run: RunId; session: string | undefined; tool: string | undefined; declared?: string; at: string; takeover: boolean }): Moved<'S1' | 'S4'> | Answered<'R11' | 'S2'> {
   if (!state) return { row: 'R11', answer: { kind: 'error', refusal: { code: 'not_skill_run', run: input.run, toolNamed: input.tool !== undefined } } };
 
   if (input.takeover) return { row: 'S4', state: takenOver(state, input) };
@@ -1231,7 +1230,7 @@ function childConfinedRun(state: SkillState, dispatch: Dispatch): Pick<ReportBod
  * another tool: its lease names that tool, so it is released, and the next `next` leases it again under `tool`. The new
  * session is told only what the earlier one was not.
  */
-function takenOver(state: SkillState, { session, tool, at }: { session: string | undefined; tool: ToolId | undefined; at: string }): SkillState {
+function takenOver(state: SkillState, { session, tool, at }: { session: string | undefined; tool: string | undefined; at: string }): SkillState {
   const attempts = state.attempts.map((open): AttemptState => {
     if (open.phase !== 'offered' && open.phase !== 'dispatched') return open;
 

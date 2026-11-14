@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
@@ -27,7 +27,7 @@ vi.mock('../update.js', () => ({
   releaseLock: vi.fn().mockResolvedValue(undefined),
   withFileLock: async <T>(_lock: string, _wait: unknown, body: () => Promise<T>) => ({ held: true, value: await body() }),
 }));
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { persist: vi.fn(), info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
   spinner: vi.fn(() => ({ start: vi.fn().mockReturnThis(), succeed: vi.fn().mockReturnThis(), fail: vi.fn().mockReturnThis(), warn: vi.fn().mockReturnThis(), info: vi.fn().mockReturnThis(), stop: vi.fn().mockReturnThis() })),
 }));
@@ -53,6 +53,7 @@ import { detectProjectConfig, loadLocalConfigForScope, loadStateForScope, loadTe
 import { log } from '../utils/logger.js';
 import { DEFAULT_TOOL_PATHS, TeamaiConfigSchema, type LocalConfig, type State } from '../types.js';
 import { realHost, recordedHomes, saveToolHomes, toolHomesPath } from '../tool-home.js';
+import { commitTeamRepo } from './helpers/team-repo-history.js';
 
 describe('a pull and the homes the env moves', () => {
   let tmp: string; let home: string; let repo: string; let saved: State; let config: LocalConfig;
@@ -661,6 +662,30 @@ describe('a pull and the homes the env moves', () => {
       await pull({ force: true });
 
       expect(await fse.pathExists(path.join(hermes, 'skills', 'deploy'))).toBe(false);
+    });
+
+    // A Codex build reads the shared .agents/skills wherever its home is, so an instance's copy there goes with the skill.
+    it.each([
+      { tool: 'codex', home: '.codex', instance: undefined },
+      { tool: 'acme-codex', home: '.acme-codex', instance: 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n' },
+    ])('cleans a skill the team removed out of the shared .agents/skills when only $tool takes skills', async ({ tool, home: toolHome, instance }) => {
+      const { resetToolInstancesForTests, withToolInstances } = await import('../tool-instances.js');
+      onTestFinished(() => { resetToolInstancesForTests(); });
+      await fse.ensureDir(path.join(home, toolHome));
+      if (instance !== undefined) await fse.outputFile(path.join(repo, 'tools', 'acme-codex.yaml'), instance);
+      vi.mocked(loadTeamConfig).mockImplementation(async () => withToolInstances(repo, team()));
+      config.enabledAgents = [tool];
+      const shared = path.join(home, '.agents', 'skills', 'deploy');
+      await fse.copy(path.join(repo, 'skills', 'deploy'), shared);
+      commitTeamRepo(repo);
+      await pull({});
+      expect(await fse.pathExists(path.join(shared, 'SKILL.md'))).toBe(true);
+      await fse.remove(path.join(repo, 'skills', 'deploy'));
+      await fse.outputFile(path.join(repo, 'skills', '.removed'), 'deploy\n');
+
+      await pull({ force: true });
+
+      expect(await fse.pathExists(shared)).toBe(false);
     });
 
     it('removes a skill no longer delivered from the OpenClaw workspace', async () => {

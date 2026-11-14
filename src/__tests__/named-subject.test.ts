@@ -18,8 +18,8 @@ vi.mock('../utils/reports-branch.js', async (importOriginal) => {
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { knownSecrets } from '../env-resolution.js';
 import { NamedSubject } from '../scorers/named-subject.js';
-import { encodeCwdClaude } from '../session-flow/fs.js';
-import type { Session } from '../session-flow/ir.js';
+import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
+import type { Session } from '@teamai/tool-core/sessions/ir';
 import { defaultSyncMeta, getRepoIdentity, SyncManager } from '../session-flow/sync.js';
 import { getReportsDir, type LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';

@@ -56,13 +56,13 @@ import { markerFolderOf, RESOURCE_LAYOUTS, Resources } from './resources/resolve
 import { isNamespaceDir, resolveResourceNamespaces } from './resource-namespaces.js';
 import { loadRoleAssignmentsIfPresent } from './role-assignments.js';
 import { listRoleIds, loadRolesManifestIfPresent, type RolesManifest } from './roles.js';
-import { AGENT_TOOLS } from './tools.js';
-import { LocalConfigSchema, type GlobalOptions, type LocalConfig, type ResourceItem, type TeamaiConfig } from './types.js';
+import { AGENT_TOOLS } from './tool-registry.js';
+import { DEFAULT_TOOL_PATHS, LocalConfigSchema, type GlobalOptions, type LocalConfig, type ResourceItem, type Scope, type TeamaiConfig } from './types.js';
 import { splitFrontmatter, type FrontmatterValue } from './utils/frontmatter.js';
 import { isIgnored, listDirs, listFilesRecursive, readFileIfExists, writeFile, ensureDir } from './utils/fs.js';
 import { getFileContentAtRev, getHeadCommit, getMergeBase, listTreeAtRev } from './utils/git.js';
 import { isSilent, log, setSilent } from './utils/logger.js';
-import { redact } from './utils/redact.js';
+import { redact } from '@teamai/shared/redact';
 import { syncTeamDefinitions } from './benchmark/suite-cache.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './workflow/cache.js';
 import { formatDiagnostic, INVOKE_ALIAS_SINCE, parseWorkflow, STEP_ROLE_SINCE } from './workflow/parse.js';
@@ -1659,9 +1659,10 @@ function valueCause(aliases: ModelAliases, model: string, tools?: readonly ToolN
 }
 
 /** Why `spec` gives none of its target tools a model, as pull resolves it: a tool's extras model first. */
-function agentCause(aliases: ModelAliases, spec: AgentSpec): string | undefined {
+function agentCause(aliases: ModelAliases, spec: AgentSpec, scope: Scope): string | undefined {
   const tools = spec.targets ?? AGENT_TOOLS;
-  const resolutions = tools.map((tool) => resolveAgentModel(aliases, spec, tool));
+  // The review reads no team or member config, so the shipped paths and no tool roots stand in for theirs.
+  const resolutions = tools.map((tool) => resolveAgentModel(aliases, spec, tool, { scope, toolPaths: DEFAULT_TOOL_PATHS, toolRoots: {} }));
 
   if (resolutions.some((resolution) => resolution.ok && resolution.model !== undefined)) return undefined;
 
@@ -1721,7 +1722,7 @@ async function modelFindings(resources: ReviewResource[], readText: (p: string) 
 
   for (const { resource, spec } of agents) {
     if (spec.model === undefined) continue;
-    const cause = unmapped(readable.filter((context) => receives(context, resource.namespace)), (context) => agentCause(context.aliases, spec));
+    const cause = unmapped(readable.filter((context) => receives(context, resource.namespace)), (context) => agentCause(context.aliases, spec, context.config.scope));
 
     if (cause) fail(resource.relativePath, `Agent "${spec.name}" asks for model alias "${spec.model}", which ${cause}. Add one, or remove model from the agent.`);
   }

@@ -5,12 +5,12 @@ import path from 'node:path';
 
 // Isolate getUserHome() so the bundled-runtime lookups see a per-test home.
 const homeState = vi.hoisted(() => ({ home: '' }));
-vi.mock('../utils/home.js', () => ({
+vi.mock('@teamai/shared/home', () => ({
   getUserHome: () => homeState.home,
 }));
 
 // Mock the logger so the module's debug traces do not reach the real log file.
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 

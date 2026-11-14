@@ -7,7 +7,9 @@ import path from 'node:path';
 import { ALL_MODEL_AGENTS } from '../../src/models/profile.js';
 import { runsTeamHookOn } from '../../src/hooks.js';
 import { isLaunchTool } from '../../src/tool-launch/tools.js';
-import { isToolId, TOOLS, type Support, type ToolId } from '../../src/tools.js';
+import { type ToolId } from '../../src/tools.js';
+import { type Support } from '@teamai/tool-core/definition';
+import { isToolId, descriptorOf } from '../../src/tool-registry.js';
 import { DEFAULT_TOOL_PATHS } from '../../src/types.js';
 
 const ROOT = process.cwd();
@@ -110,7 +112,7 @@ for (const [label, row] of matrix) {
   await check(`${label} agrees with the tool descriptor`, () => {
     const tool = LABELS.get(label);
     assert.ok(tool, `${label} is not a README label`);
-    const d = TOOLS[tool];
+    const d = descriptorOf(tool);
     const blocks = d.blocks.user instanceof Object || d.blocks.project instanceof Object;
 
     if (d.rules.user instanceof Object && d.rules.user.channel === 'inline') assert.equal(cell(row, 'rules'), '✓¹');

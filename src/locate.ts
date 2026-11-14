@@ -12,20 +12,18 @@ import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { MCP_SERVER_KEY } from './resources/mcp-format.js';
 import { SESSION_PLATFORM_FACTS, type SessionPlatform, type StoredSessionPlatform } from './session-flow/adapters/platform-facts.js';
+import { TOOLS, type ToolId } from './tools.js';
+import { type Activation, type BlocksFile, type BlocksHeader, type ChannelProbe, type FirstExistingRead, type HomeRead, type HookAdapter, type HookAdapterId, type HookFormat, type HookSettings, type McpProject, type McpUser, type ProjectRead, type ReadGateKind, type RunTime, type SkillReads, type RunTimeVia } from '@teamai/tool-core/definition';
+import { baseToolOf, channelsOf, installGateOf, isToolId, hasDefaultHomeLeftovers, mcpScopeFor, toolOf } from './tool-registry.js';
+import { instanceReadPath } from './tool-instances.js';
 import {
-  channelsOf, installGateOf, isToolId, hasDefaultHomeLeftovers, mcpScopeFor, TOOLS,
-  type Activation, type BlocksFile, type BlocksHeader, type ChannelProbe, type FirstExistingRead, type HomeRead, type HookAdapter,
-  type HookAdapterId, type HookFormat, type HookSettings, type McpProject, type McpUser, type ProjectRead, type ReadGateKind, type RunTime, type SkillReads,
-  type RunTimeVia, type ToolId,
-} from './tools.js';
-import {
-  CURSOR_CONFIG_TOOL_ID, CURSOR_DATA_TOOL_ID,
+  CODEX_TOOL_ID, CURSOR_CONFIG_TOOL_ID, CURSOR_DATA_TOOL_ID,
   DEFAULT_TOOL_PATHS, isAgentExcluded, isGitExcludeEnabled, isSelfMode, recordedToolRootDir, resolveBaseDir, scopedToolPaths, toolGateRoot,
   workbuddyLaunchedFrom,
   WORKBUDDY_AI_ROOT, WORKBUDDY_LIVE_ROOT_LEAVES, WORKBUDDY_TOOL_ID, WORKBUDDY_TOOL_ROOT,
   type HomePaths, type LocalConfig, type Scope, type TeamaiConfig,
 } from './types.js';
-import { absoluteOn, defaultToolHome, homeRoot, movedToolHome, realHost, toolHome, type Host } from './tool-home.js';
+import { absoluteOn, defaultToolHome, movedToolHome, realHost, toolHome, toolHomeOf, type Host } from './tool-home.js';
 import { openclawTeamHookPluginIn, resolveOpenclawConfigPath, resolveOpenclawWorkspace, type OpenclawWorkspace } from './openclaw-home.js';
 import { hasWorkspaceChildren } from './workspace-children.js';
 
@@ -54,6 +52,14 @@ export type Install = {
     readonly keepsKnowledgeInside: boolean;
   }
 );
+
+/** Where teamai delivers: the scope, the team config's tool paths, its instances' included (`withToolInstances`), and the member's tool roots. */
+export type DeliveryPlace = Pick<Install, 'scope' | 'toolPaths' | 'toolRoots'>;
+
+/** The `DeliveryPlace` of the member's config `local` under the team config `team`. */
+export function deliveryPlaceOf(team: Pick<TeamaiConfig, 'toolPaths'>, local: Pick<LocalConfig, 'scope' | 'toolRoots'>): DeliveryPlace {
+  return { scope: local.scope, toolPaths: team.toolPaths, toolRoots: local.toolRoots ?? {} };
+}
 
 /** The one parse of the config shapes into an `Install`; a project config without its root throws `resolveBaseDir`'s error. */
 export function installOf(
@@ -570,14 +576,22 @@ type Roots = {
 /** `relative`, a `$HOME`-relative path, re-rooted in `tool`'s home where it falls under the home's root, which a recorded or env move relocates. */
 function underToolHome(tool: string, relative: string, host: Host): string {
   const p = host.path;
+  const home = toolHomeOf(tool, host);
 
-  if (isToolId(tool)) {
-    const root = homeRoot(tool);
-
-    if (relative === root || relative.startsWith(`${root}/`)) return p.join(toolHome(tool, host), ...relative.slice(root.length + 1).split('/'));
-  }
+  if (home && (relative === home.root || relative.startsWith(`${home.root}/`))) return p.join(home.dir, ...relative.slice(home.root.length + 1).split('/'));
 
   return p.join(host.home, ...relative.split('/'));
+}
+
+/**
+ * The agents directory teamai writes `tool`'s files to at `place`, as `locate` gives it: in a project the tool's agents
+ * path, every tool's joined to the one project root, and for the member that path under the tool's home.
+ */
+export function agentsDirAt(tool: string, place: DeliveryPlace, host: Host = realHost()): string | null {
+  if (place.scope === 'project') return place.toolPaths[tool]?.agents ?? null;
+
+  // Which tools are selected and whether git excludes the copies take no part in where they land.
+  return rootsOf(tool, { ...place, scope: 'user', agents: {}, gitExclude: false }, host).configured('agents');
 }
 
 function rootsOf(tool: string, install: Install, host: Host): Roots {
@@ -590,7 +604,7 @@ function rootsOf(tool: string, install: Install, host: Host): Roots {
     existsNow: (file) => host.existsNow(file),
   };
 
-  const known = isToolId(tool) ? tool : undefined;
+  const instance = toolOf(tool)?.instance;
   const base = install.scope === 'user' ? host.home : install.projectRoot;
 
   const paths = install.scope === 'user'
@@ -598,7 +612,7 @@ function rootsOf(tool: string, install: Install, host: Host): Roots {
     : install.toolPaths[tool];
 
   const join = (root: string, relative: string): string => p.join(root, ...relative.split('/'));
-  const home = known === undefined ? undefined : { root: homeRoot(known), dir: toolHome(known, host) };
+  const home = toolHomeOf(tool, host);
   const underHome = (relative: string): string => underToolHome(tool, relative, host);
 
   const relocated = (relative: string): string =>
@@ -609,7 +623,7 @@ function rootsOf(tool: string, install: Install, host: Host): Roots {
   // applies the same rule for pull and push; this is its read-only twin for the
   // user-scope leaves (#1273). Project scope keeps the default root — the swap
   // there is a project path, not the member's data root.
-  const liveRoot = known === WORKBUDDY_TOOL_ID && install.scope === 'user' ? liveWorkbuddyRoot(base, host) : null;
+  const liveRoot = tool === WORKBUDDY_TOOL_ID && install.scope === 'user' ? liveWorkbuddyRoot(base, host) : null;
 
   // A path that still spells one of the leaves the swap moves follows it to the
   // live root. Everything else keeps what it says: `settings.json` because hooks
@@ -641,7 +655,9 @@ function rootsOf(tool: string, install: Install, host: Host): Roots {
       // User-scope Copilot paths are relative to its home.
       return tool === 'copilot' && home ? join(home.dir, relative) : underHome(relative);
     },
-    declared: (from, relative) => {
+    declared: (from, declared) => {
+      const relative = instance === undefined ? declared : instanceReadPath(instance, { from, relative: declared });
+
       if (from === 'project') return join(base, relative);
 
       const live = install.scope === 'user' ? liveRelative(relative) : null;
@@ -955,6 +971,9 @@ function samePlaceOn(p: path.PlatformPath, a: Place, b: Place): boolean {
 
 async function locateSkills(tool: string, install: Install, host: Host): Promise<Location<'skills'>> {
   const roots = rootsOf(tool, install, host);
+  // An instance reads its skills where the tool it extends reads its own, under its home (`roots.declared`).
+  const base = toolOf(tool)?.base;
+  const skills: SkillReads | undefined = base === undefined ? undefined : TOOLS[base].skills;
   const configured = roots.configured('skills');
 
   if (configured === null) return { channel: 'files', own: null, shared: null, reads: 'unknown', readGates: [], retired: [], gates: [] };
@@ -983,7 +1002,8 @@ async function locateSkills(tool: string, install: Install, host: Host): Promise
     own = dir === null ? null : host.path.join(dir, 'skills');
   } else if (tool === 'hermes' && roots.home) {
     own = host.path.join(roots.home.dir, 'skills');
-  } else if (tool === 'codex') {
+  } else if (baseToolOf(tool) === CODEX_TOOL_ID) {
+    // A Codex build reads the shared directory whatever home it runs in, an instance's included.
     shared = roots.join(roots.base, SHARED_AGENT_SKILLS_PATH);
   }
 
@@ -991,19 +1011,13 @@ async function locateSkills(tool: string, install: Install, host: Host): Promise
     channel: 'files',
     own: own === null ? null : { kind: 'dir', path: own },
     shared: shared === null ? null : { kind: 'dir', path: shared },
-    reads: await readsOf(isToolId(tool) ? TOOLS[tool].skills[install.scope] : 'unknown', roots, host),
-    readGates: await readGatesOf(skillReadGatesOf(tool), install, host),
+    reads: await readsOf(skills?.[install.scope] ?? 'unknown', roots, host),
+    readGates: await readGatesOf(skills?.readGates, install, host),
     retired: [],
     gates: await gatesOf(tool, install, host, roots, 'skills'),
   };
 }
 
-function skillReadGatesOf(tool: string): readonly ReadGateKind[] | undefined {
-  if (!isToolId(tool)) return undefined;
-  const skills: SkillReads = TOOLS[tool].skills;
-
-  return skills.readGates;
-}
 
 async function locateRules(tool: string, install: Install, host: Host): Promise<Location<'rules'>> {
   const channel = channelsOf(tool).rules[install.scope];
@@ -1232,7 +1246,7 @@ function mcpKeyOf(channel: Pick<McpUser, 'format' | 'key'>): readonly [string, .
 }
 
 async function mcpFileOf(
-  channel: McpUser | McpProject, scope: Scope, roots: Roots, host: Host,
+  channel: McpUser | McpProject<ToolId>, scope: Scope, roots: Roots, host: Host,
 ): Promise<{ readonly file: string | null; readonly lookup: McpLookup | null }> {
   if (scope === 'user' && channel.format === 'openclaw' && host.env.OPENCLAW_CONFIG_PATH?.trim()) {
     return { file: resolveOpenclawConfigPath(host, openclawStateDir(roots, host)), lookup: null };
@@ -1402,7 +1416,7 @@ async function mcpGatesOf(tool: string, gates: readonly Gate[], own: EntryPlace 
 }
 
 async function mcpFilesOf(
-  channel: McpUser | McpProject, earlierFiles: readonly string[] | undefined, scope: Scope, roots: Roots, host: Host,
+  channel: McpUser | McpProject<ToolId>, earlierFiles: readonly string[] | undefined, scope: Scope, roots: Roots, host: Host,
 ): Promise<{
   readonly key: readonly [string, ...string[]];
   readonly tree: EntryPlace | null;
@@ -1443,11 +1457,12 @@ const HOOK_LIST_KEY = ['hooks'] as const;
  * self mode too (ZCode's CLI) gets them there whatever `baseDir` says.
  */
 export function hookSettingsFile(tool: string, baseDir: string, relative: string, host: Host = realHost()): string {
-  const p = host.path;
+  return channelsOf(tool).hooks.self === 'user' ? underToolHome(tool, relative, host) : toolPathUnder(tool, baseDir, relative, host);
+}
 
-  if (channelsOf(tool).hooks.self !== 'user' && !samePathOn(p, baseDir, host.home)) return p.join(baseDir, ...relative.split('/'));
-
-  return underToolHome(tool, relative, host);
+/** `relative`, a path of `tool`'s under `baseDir`: under a project as it is, under `$HOME` in the tool's home, which a recorded or env move relocates. */
+export function toolPathUnder(tool: string, baseDir: string, relative: string, host: Host = realHost()): string {
+  return samePathOn(host.path, baseDir, host.home) ? underToolHome(tool, relative, host) : host.path.join(baseDir, ...relative.split('/'));
 }
 
 /** The directory `adapter` writes teamai's hook file into: in its tool's home, which a recorded or env move relocates, on `host`. */

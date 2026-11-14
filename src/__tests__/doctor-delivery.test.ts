@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,7 +10,7 @@ vi.mock('../config.js', async (importOriginal) => ({
   loadTeamConfig: vi.fn(),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     debug: vi.fn(), error: vi.fn(), info: vi.fn(), success: vi.fn(), warn: vi.fn(), dim: vi.fn(),
   },
@@ -33,6 +33,7 @@ import { checkoutKey } from '../pull.js';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 import { saveToolHomes, toolHomesPath } from '../tool-home.js';
+import { useToolInstances } from '../tool-registry.js';
 import { packagedSkillRoots } from '../skill-content.js';
 
 /**
@@ -862,18 +863,28 @@ describe('doctor — where a tool takes skills', () => {
     });
   });
 
-  it('fails when the shell moves a tool\'s home away from the one recorded, and passes when they agree', async () => {
-    const recorded = path.join(tempDir, 'recorded', 'opencode');
-    await saveToolHomes({ opencode: recorded });
-    vi.stubEnv('XDG_CONFIG_HOME', path.join(tempDir, 'other'));
+  it.each([
+    { tool: 'opencode', variable: 'XDG_CONFIG_HOME', value: (dir: string) => path.dirname(dir) },
+    // An instance's own variable moves its home as a shipped tool's does, and its record is read the same way.
+    { tool: 'acme-codex', variable: 'ACME_CODEX_HOME', value: (dir: string) => dir },
+  ])('fails when the shell moves the $tool home away from the one recorded, and passes when they agree', async ({ tool, variable, value }) => {
+    useToolInstances(new Map([['acme-codex', {
+      kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+      source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
+    }]]));
+    onTestFinished(() => { useToolInstances(new Map()); });
+    const recorded = path.join(tempDir, 'recorded', tool);
+    const other = path.join(tempDir, 'other', tool);
+    await saveToolHomes({ [tool]: recorded });
+    vi.stubEnv(variable, value(other));
 
-    const mismatch = (await failing()).find((c) => c.name === 'opencode home matches XDG_CONFIG_HOME');
+    const mismatch = (await failing()).find((c) => c.name === `${tool} home matches ${variable}`);
 
-    expect(mismatch?.fix).toBe(`XDG_CONFIG_HOME puts the opencode home at ${path.join(tempDir, 'other', 'opencode')}; this machine syncs opencode to ${recorded}. Re-run \`teamai init\` to record it.`);
+    expect(mismatch?.fix).toBe(`${variable} puts the ${tool} home at ${other}; this machine syncs ${tool} to ${recorded}. Re-run \`teamai init\` to record it.`);
 
-    vi.stubEnv('XDG_CONFIG_HOME', path.join(tempDir, 'recorded'));
+    vi.stubEnv(variable, value(recorded));
 
-    expect((await failing()).map((c) => c.name)).not.toContain('opencode home matches XDG_CONFIG_HOME');
+    expect((await failing()).map((c) => c.name)).not.toContain(`${tool} home matches ${variable}`);
   });
 
   it('leaves a recorded Hermes home alone when only active_profile names another', async () => {
@@ -903,6 +914,22 @@ describe('doctor — where a tool takes skills', () => {
     await fse.ensureDir(recorded);
 
     expect((await failing()).map((c) => c.name)).not.toContain('opencode home exists');
+  });
+
+  it('fails when the root recorded for Codex is gone, though CODEX_HOME is unset', async () => {
+    const gone = path.join(homeDir, '.codex-gone');
+    teamConfig.toolPaths = { codex: { skills: '.codex/skills' } };
+    localConfig.toolRoots = { codex: gone };
+    vi.stubEnv('CODEX_HOME', undefined);
+
+    const check = (await failing()).find((c) => c.name === 'Codex root exists');
+
+    expect(check?.fix).toBe(`The Codex root recorded on this machine, ${gone}, does not exist, so teamai skips Codex. `
+      + 'Point CODEX_HOME at the root Codex uses and re-run `teamai init`, or clear the record with `CODEX_HOME= teamai init`.');
+
+    await fse.ensureDir(gone);
+
+    expect((await failing()).map((c) => c.name)).not.toContain('Codex root exists');
   });
 
   it('fails when the tool-homes record is not one, since teamai then ignores it', async () => {

@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { useToolInstances } from '../tool-registry.js';
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 import { deployWorkflowSkills, shadowedWorkflowSkills } from '../workflow/discovery/workflow-skills.js';
@@ -168,6 +169,29 @@ describe('generated workflow skills', () => {
     fs.cpSync(own, shared, { recursive: true });
     await deploy();
     expect([fs.existsSync(shared), fs.existsSync(own)]).toEqual([true, false]);
+  });
+
+  // Every Codex build reads the shared root, so the generated skill of a removed workflow goes from there too.
+  it.each([
+    { tool: 'codex', home: '.codex' },
+    { tool: 'acme-codex', home: '.acme-codex' },
+  ])('removes the generated skill of a removed workflow from the shared root when only $tool takes skills', async ({ tool, home: toolHome }) => {
+    useToolInstances(new Map([['acme-codex', {
+      kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex' },
+      source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
+    }]]));
+    onTestFinished(() => { useToolInstances(new Map()); });
+    const { deploy, home, put } = await team({ check: workflow('check', 'allow') }, { [tool]: { skills: `${toolHome}/skills` } });
+    await deploy();
+    const shared = path.join(home, '.agents', 'skills', 'workflow-check');
+    fs.cpSync(path.join(home, toolHome, 'skills', 'workflow-check'), shared, { recursive: true });
+    await deploy();
+    expect(fs.existsSync(shared)).toBe(true);
+    await put('check', null);
+
+    await deploy();
+
+    expect(fs.existsSync(shared)).toBe(false);
   });
 
   it('reports each skill it wrote or confirmed, so a prune drops its git exclude line', async () => {

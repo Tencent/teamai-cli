@@ -10,8 +10,10 @@ import { z } from 'zod';
 import { readEvents, dataHomeKey, isHumanPromptEntry, TranscriptEntrySchema, type TranscriptEntry } from './dashboard-collector.js';
 import { readFileSafe, ensureDir, pathExists, readJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import type { RequestCostMetrics, TokenUsage } from './types.js';
-import { getDataHome, getTeamaiHomeDir, emptyTokenUsage, JsonObjectSchema } from './types.js';
+import type { RequestCostMetrics } from './types.js';
+import type { TokenUsage } from '@teamai/tool-core/tokens';
+import { getDataHome, getTeamaiHomeDir, JsonObjectSchema } from './types.js';
+import { emptyTokenUsage } from '@teamai/tool-core/tokens';
 import { projectsRootDir } from './utils/partition.js';
 import { parseDailySnapshot, SnapshotCountSchema, type DailySessionSnapshot, type ReportedDailySessions } from './session-trends.js';
 

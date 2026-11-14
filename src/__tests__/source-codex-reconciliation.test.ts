@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import fse from 'fs-extra';
 import YAML from 'yaml';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
   spinner: vi.fn(() => ({ start: vi.fn().mockReturnThis(), succeed: vi.fn(), fail: vi.fn() })),
 }));
@@ -26,6 +26,7 @@ vi.mock('../config.js', async (importOriginal) => ({
 import { autoDetectInit } from '../config.js';
 import { getHandler } from '../resources/index.js';
 import { getSourceManifestPath, pullSources, sourceRemove } from '../source.js';
+import { useToolInstances } from '../tool-registry.js';
 import { copyDir } from '../utils/fs.js';
 import type { LocalConfig, SourceInstallManifest, TeamaiConfig } from '../types.js';
 
@@ -101,13 +102,21 @@ describe('source Codex duplicate reconciliation', () => {
     return getHandler('skills').scanLocalForPush(team, config);
   }
 
-  it('removes only the verified configured duplicate and leaves no source push candidate', async () => {
+  it.each([
+    { tool: 'codex', own: '.codex' },
+    { tool: 'acme-codex', own: '.acme-codex' },
+  ])('removes only the verified configured duplicate $tool kept and leaves no source push candidate', async ({ tool, own }) => {
+    await fse.outputFile(path.join(home, '.teamai', 'tools', 'acme-codex.yaml'), 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n');
+    onTestFinished(() => { useToolInstances(new Map()); });
+    team.toolPaths = { [tool]: { skills: `${own}/skills` } };
+    await saveTeam();
     await publish();
-    await duplicate();
+    await skill('.agents/skills/foo');
+    await skill(`${own}/skills/foo`);
 
     await pullSources(config, { force: true });
 
-    expect(await fse.pathExists(path.join(home, '.codex/skills/foo'))).toBe(false);
+    expect(await fse.pathExists(path.join(home, own, 'skills/foo'))).toBe(false);
     expect(await fse.readFile(path.join(home, '.agents/skills/foo/SKILL.md'), 'utf8')).toBe('# Source skill\n');
     expect((await fse.readJson(getSourceManifestPath('shared', config))).installedPaths).toEqual({ foo: ['.agents/skills/foo'] });
     expect(await candidates()).toEqual([]);

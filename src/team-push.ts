@@ -13,10 +13,10 @@ import { addOutcomeStats } from './outcomes.js';
 import { SessionOutcomes, type FoldInput } from './session-outcomes.js';
 import { writeFile, readFileSafe, ensureDir, pathExists, readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import type {
-  UserStats, UserModeStats, UserInterventionStats, SessionMetrics, TokenUsage, DashboardEvent, LocalConfig, RequestCostMetrics, UserVotesV2,
-} from './types.js';
-import { getVotesDir, getDataHome, getReportsDir, emptyTokenUsage, addTokenUsage, usesBranchWorktree, JsonValueSchema, parseUserStats, JsonObjectSchema } from './types.js';
+import type { UserStats, UserModeStats, UserInterventionStats, SessionMetrics, DashboardEvent, LocalConfig, RequestCostMetrics, UserVotesV2 } from './types.js';
+import type { TokenUsage } from '@teamai/tool-core/tokens';
+import { getVotesDir, getDataHome, getReportsDir, usesBranchWorktree, JsonValueSchema, parseUserStats, JsonObjectSchema } from './types.js';
+import { emptyTokenUsage, addTokenUsage } from '@teamai/tool-core/tokens';
 import { filterEventsByScope, runsOfLog } from './dashboard-scope.js';
 import {
   creditedPrompts, interventionsEntry, promptTokensEntry, readOwnerCredits, recordSessionOwners, reportedBeyondShared, reportedSize,

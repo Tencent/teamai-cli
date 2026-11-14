@@ -1,3 +1,4 @@
+import { ignorePersonalToolInstances } from './tool-instances.js';
 import path from 'node:path';
 import { z } from 'zod';
 import { autoDetectInit, isUninitialized, loadTeamConfig, machineWorkflowAllowProblem } from './config.js';
@@ -7,7 +8,7 @@ import { FINISHED_WORKFLOW } from './scorers/judging-workflows.js';
 import { PassScoring } from './scorers/pass-scoring.js';
 import { Subject } from './scorers/subject.js';
 import { log, PROGRESS_STREAMS_ENV, setStderrOnly, writeInfoLine } from './utils/logger.js';
-import { collectEnvSecrets, redact, redactJson } from './utils/redact.js';
+import { collectEnvSecrets, redact, redactJson } from '@teamai/shared/redact';
 import { parseNextPayload, parseReport, parseResponsePayload, resumableSessions, retryCommand, withIgnored, type ParsedResponsePayload } from './workflow/engine.js';
 import { claimOffered, publishRun, resumeRun } from './workflow/handoff.js';
 import { PublishedRuns, type Lack, type PublishedRun, type ResumableRun, type Taker } from './workflow-published-runs.js';
@@ -1214,6 +1215,8 @@ export async function workflowResume(runId: string | undefined, options: ResumeO
   if (refusedNested(nestedCall(process.env), asks(asked, 'skill'))) return;
 
   if (options.next || runId === undefined) {
+    // A run another member handed over runs on the team's tools, never on this member's own instances.
+    if (options.next) ignorePersonalToolInstances();
     await resumeOffered(runId, options, asked);
 
     return;

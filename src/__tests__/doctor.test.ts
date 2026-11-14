@@ -38,7 +38,7 @@ vi.mock('../utils/fs.js', async (importOriginal) => ({
     symlinkTarget: vi.fn(async (p: string) => p),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
     log: {
         info: vi.fn(),
         success: vi.fn(),
@@ -536,12 +536,15 @@ describe('doctor — hook checks', () => {
             expect(mockedLog.info.mock.calls.some(([message]) => String(message).includes('hooks/list: boom'))).toBe(true);
         });
 
-        it('keeps the trust note when Codex cannot be asked', async () => {
-            mockedReadCodexHookTrust.mockResolvedValueOnce({ kind: 'unavailable', reason: 'codex not found on PATH' });
+        it.each([
+            'codex not found on PATH',
+            'acme-codex: its command is not accepted on this machine yet, so no Codex build of it runs; run teamai pull in a terminal to review and accept it',
+        ])('keeps the trust note, with why, when Codex cannot be asked: %s', async (reason) => {
+            mockedReadCodexHookTrust.mockResolvedValueOnce({ kind: 'unavailable', reason });
             await doctor({});
             expect(trustCheck()).toEqual([]);
             const infoLines = mockedLog.info.mock.calls.map((c) => String(c[0]));
-            expect(infoLines.some((msg) => msg.includes('review/trust') && msg.includes('Codex'))).toBe(true);
+            expect(infoLines.some((msg) => msg.includes('review/trust') && msg.includes('Codex') && msg.includes(reason))).toBe(true);
         });
 
         it('says nothing about Codex trust when teamai wrote no Codex hook', async () => {

@@ -5,7 +5,7 @@ import path from 'node:path';
 import fse from 'fs-extra';
 import { spawnSync } from 'node:child_process';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),

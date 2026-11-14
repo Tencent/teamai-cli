@@ -8,7 +8,7 @@ import { resolveTeamHookEntries } from './resources/hooks.js';
 import { describeEntryFailure, describeOrigin, reportUndeliveredEntryNotices } from './namespaced-entries.js';
 import { log } from './utils/logger.js';
 import type { GlobalOptions, HookDef } from './types.js';
-import type { HookAdapterId } from './tools.js';
+import type { HookAdapterId } from '@teamai/tool-core/definition';
 import {
     COPILOT_TOOL_ID,
     getManagedHooksPath,
@@ -286,7 +286,7 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
 
         rows.push({
             tool,
-            status: await getHookStatus(hookPath, { tool, from: 'version', builtinOverride }),
+            status: await getHookStatus(hookPath, { tool, from: 'version', builtinOverride, toolRoots: localConfig.toolRoots }),
             settingsPath: formatDisplayPath(hookPath),
             // The override is applied to the settings-driven defs only: the
             // standalone adapters generate a fixed handler and ignore it, so

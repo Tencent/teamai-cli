@@ -15,7 +15,7 @@ import {
   withSessionIndexLock,
   withSessionPublicationLock,
 } from '../session-flow/sync.js';
-import type { Session } from '../session-flow/ir.js';
+import type { Session } from '@teamai/tool-core/sessions/ir';
 
 function written<T>(result: ArchiveWriteResult<T>): T {
   expect(result.status).toBe('written');

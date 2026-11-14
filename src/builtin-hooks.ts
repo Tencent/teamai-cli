@@ -5,7 +5,8 @@ import semver from 'semver';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX } from './types.js';
 import { isCodexTool } from './utils/tool-names.js';
 import type { HookDef } from './types.js';
-import { channelsOf, hookFormatOf, type HookAdapterId, type HooksChannels } from './tools.js';
+import { type HookAdapterId, type HooksChannels } from '@teamai/tool-core/definition';
+import { baseToolOf, channelsOf, hookFormatOf } from './tool-registry.js';
 import { LOGIN_DEFERRED_ENV } from './hook-fast-path.js';
 import { getUserHome } from './utils/home.js';
 import { log } from './utils/logger.js';
@@ -238,7 +239,7 @@ export function skipToolsWithoutShell(tools: string[]): Set<string> {
 
   // Non-login POSIX dispatch must not rely on a project git hook creating this; a login-deferred entry runs it too.
   const nonLoginWrapper = process.platform !== 'win32'
-    && tools.some(tool => tool === 'zcode' || tool === 'dsh' || channelsOf(tool).hooks.loginDeferrable === true) && hasShell();
+    && tools.some(tool => baseToolOf(tool) === 'zcode' || baseToolOf(tool) === 'dsh' || channelsOf(tool).hooks.loginDeferrable === true) && hasShell();
 
   if (withShell || nonLoginWrapper) ensureTeamaiWrapper();
 
@@ -328,7 +329,7 @@ const WINDOWS_PWSH_TOOLS = new Set(['dsh']);
  * platform-gated: POSIX hosts use their shell and TeamAI's PATH wrapper.
  */
 export function toolUsesPwshShell(tool: string): boolean {
-  return process.platform === 'win32' && WINDOWS_PWSH_TOOLS.has(tool);
+  return process.platform === 'win32' && WINDOWS_PWSH_TOOLS.has(baseToolOf(tool));
 }
 
 /**
@@ -403,7 +404,7 @@ export function getRawDispatchCommand(event: string, tool: string, matcher?: str
 function getWrapperDispatchCommand(event: string, tool: string, matcher?: string): string {
   const matcherArg = matcher && matcher !== '*' ? ` --matcher ${matcher}` : '';
 
-  if (tool === 'codebuddy' && process.platform === 'win32') {
+  if (baseToolOf(tool) === 'codebuddy' && process.platform === 'win32') {
     const wrapper = path.join(getUserHome(), TEAMAI_BIN_DIR, CODEBUDDY_HOOK_WRAPPER).split(path.sep).join('/');
 
     return `${getHookShellCommand()} "${wrapper}" hook-dispatch ${event} --tool ${tool}${matcherArg} || exit 0`;
@@ -525,7 +526,7 @@ const SUBAGENT_START_SPEC: BuiltinHookSpec = {
 export function builtinHookDefs(tool: string, form: BuiltinHookForm = WAITED_LOGIN_FORM): HookDef[] {
   return renderBuiltinDefs(tool, [
     ...BUILTIN_HOOK_SPECS,
-    ...(tool === 'copilot' ? [COPILOT_SESSION_END_SPEC] : []),
+    ...(baseToolOf(tool) === 'copilot' ? [COPILOT_SESSION_END_SPEC] : []),
     ...(channelsOf(tool).hooks.subagentStop ? [SUBAGENT_STOP_SPEC] : []),
     ...(isCodexTool(tool) ? [SUBAGENT_START_SPEC] : []),
   ], form);
@@ -599,15 +600,17 @@ export function recognisedBuiltinHookDefs(tool: string): HookDef[] {
 }
 
 function renderBuiltinDefs(tool: string, specs: BuiltinHookSpec[], form: BuiltinHookForm): HookDef[] {
+  // An instance's entries take the form of the tool it extends; their command names the instance.
+  const base = baseToolOf(tool);
   // ZCode renders per-event timeouts from the ZCODE_TIMEOUT_MS table in its own
   // writer (toZcodeEntry), so def.timeout stays unset for it.
-  const withTimeout = tool === 'cursor' || tool === 'copilot' || tool === 'workbuddy' || tool === 'codebuddy' || tool === 'joycode' || isCodexTool(tool);
+  const withTimeout = base === 'cursor' || base === 'copilot' || base === 'workbuddy' || base === 'codebuddy' || base === 'joycode' || isCodexTool(tool);
 
-  const buildCommand = tool === 'zcode'
+  const buildCommand = base === 'zcode'
     ? getRawDispatchCommand
     : toolUsesPwshShell(tool)
       ? getPwshDispatchCommand
-      : isShellDependentTool(tool) || tool === 'dsh'
+      : isShellDependentTool(tool) || base === 'dsh'
         ? getWrapperDispatchCommand
         : getDispatchCommand;
 
@@ -617,7 +620,7 @@ function renderBuiltinDefs(tool: string, specs: BuiltinHookSpec[], form: Builtin
       key: spec.key,
       event: spec.event,
       matcher: spec.matcher,
-      command: (tool === 'zcode' && process.platform !== 'win32' ? `PATH="$HOME/${TEAMAI_BIN_DIR}:$PATH" ` : '')
+      command: (base === 'zcode' && process.platform !== 'win32' ? `PATH="$HOME/${TEAMAI_BIN_DIR}:$PATH" ` : '')
         + buildCommand(spec.dispatchEvent, tool, spec.matcher),
       timeout: withTimeout ? spec.timeoutSec : undefined,
     };

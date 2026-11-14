@@ -169,6 +169,18 @@ describe('local tool adapter', () => {
     });
   });
 
+  it('starts a tool instance\'s own command where the PATH-only lookup finds it, never where the tool lookup does', async () => {
+    const resultPath = path.join(os.tmpdir(), `teamai-workflow-instance-${Date.now()}.json`);
+    files.push(resultPath);
+    const spawnTool = vi.fn(() => child(claudeStream('claude-sonnet', { result: '{}' }))) as unknown as ToolSpawn;
+    // On Windows the tool lookup searches the checkout first, where a step may have written acme-claude.cmd.
+    const adapter = createLocalToolAdapter(spawnTool, (command) => `C:\\checkout\\${command}.cmd`, (command) => (command === 'acme-claude' ? 'C:\\Tools\\acme\\acme-claude.cmd' : null));
+
+    await adapter.run('claude', { prompt: 'Review.', cwd: os.tmpdir(), resultPath, secrets: {}, command: 'acme-claude' });
+
+    expect(spawnTool).toHaveBeenCalledWith('C:\\Tools\\acme\\acme-claude.cmd', expect.any(Array), expect.anything());
+  });
+
   // OpenCode works in PWD rather than its cwd, so a trial launched with the caller's PWD edits the caller's checkout.
   it('tells the tool its working directory through PWD as well as its cwd', async () => {
     const cwd = path.join(os.tmpdir(), 'teamai-trial-clone');

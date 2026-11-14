@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), success: vi.fn(), warn: vi.fn(), dim: vi.fn() },
 }));
 
@@ -12,7 +12,7 @@ vi.mock('../utils/logger.js', () => ({
 const failCheckIgnore = vi.hoisted(() => ({ on: false }));
 const failLsFiles = vi.hoisted(() => ({ on: false }));
 const failVerboseCheckIgnore = vi.hoisted(() => ({ on: false }));
-vi.mock('../utils/exec.js', async (importOriginal) => {
+vi.mock('@teamai/shared/exec', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../utils/exec.js')>();
   return {
     ...actual,

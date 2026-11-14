@@ -24,7 +24,7 @@ import { scoreCommand, type ScoreOptions } from '../score-commands.js';
 import { Drain } from '../score-drain.js';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { encodeCwdClaude } from '../session-flow/fs.js';
+import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
 import { getReportsDir, REPORTS_LOCK_FILENAME, type LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { log } from '../utils/logger.js';

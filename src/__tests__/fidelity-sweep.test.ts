@@ -23,18 +23,15 @@ vi.mock('node:os', async (importOriginal) => {
   return patched;
 });
 
-import { ClaudeCodeAdapter } from '../session-flow/adapters/claude-code.js';
-import { CodeBuddyAdapter } from '../session-flow/adapters/codebuddy.js';
-import { CodeBuddyIdeAdapter } from '../session-flow/adapters/codebuddy-ide.js';
-import { CodexAdapter } from '../session-flow/adapters/codex.js';
-import { CursorAdapter } from '../session-flow/adapters/cursor.js';
-import { WorkBuddyAdapter } from '../session-flow/adapters/workbuddy.js';
+import { ClaudeCodeAdapter } from '@teamai/tool-core/formats/claude-code';
+import { sessionStoreDir } from '../locate.js';
+import { getAdapter, SESSION_HOST } from '../session-flow/adapters/index.js';
+import { CodexAdapter } from '@teamai/tool-core/formats/codex';
 import * as crypto from 'node:crypto';
 import { degradeThinkingBlocks, fidelityFromSession } from '../session-flow/migrate.js';
-import type { Session, Message } from '../session-flow/ir.js';
-import type { AgentAdapter } from '../session-flow/adapters/base.js';
-import { encodeCwdClaude } from '../session-flow/fs.js';
-import { getUserDataBase } from '../session-flow/ide-history.js';
+import type { Session, Message } from '@teamai/tool-core/sessions/ir';
+import type { AgentAdapter } from '@teamai/tool-core/sessions/base';
+import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
 
 // ---------------------------------------------------------------------------
 // 报告容器
@@ -291,8 +288,8 @@ function clearIdeData(): void {
 }
 
 function ideHistoryRoot(): string {
-  const base = getUserDataBase();
-  if (!base) throw new Error('CodeBuddy IDE data dir is unavailable');
+  const base = process.env.TEAMAI_CODEBUDDY_IDE_DATA;
+  if (!base) throw new Error('TEAMAI_CODEBUDDY_IDE_DATA is not set for the CodeBuddy IDE fixtures');
   const root = path.join(base, 'ext-x', 'CodeBuddyIDE', 'ext-x', 'history');
   fs.mkdirSync(root, { recursive: true });
   return root;
@@ -301,17 +298,17 @@ function ideHistoryRoot(): string {
 function makeAdapter(platform: string): AgentAdapter {
   switch (platform) {
     case 'claude-code':
-      return new ClaudeCodeAdapter('claude-code');
+      return new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', undefined));
     case 'codebuddy':
-      return new CodeBuddyAdapter();
+      return getAdapter('codebuddy');
     case 'codebuddy-ide':
-      return new CodeBuddyIdeAdapter();
+      return getAdapter('codebuddy-ide');
     case 'codex':
-      return new CodexAdapter('codex');
+      return new CodexAdapter('codex', sessionStoreDir('codex', undefined), SESSION_HOST);
     case 'cursor':
-      return new CursorAdapter();
+      return getAdapter('cursor');
     case 'workbuddy':
-      return new WorkBuddyAdapter();
+      return getAdapter('workbuddy');
     default:
       throw new Error(`unknown platform ${platform}`);
   }
@@ -408,7 +405,7 @@ describe('fidelity sweep (QA, writes report to /tmp/session-fidelity-report.json
         // 孤儿节点：parentUuid 指向不存在记录
         rec('orphan', 'ghost-uuid', 'ORPHAN-Q'),
       ];
-      const adapter = new ClaudeCodeAdapter('claude-code');
+      const adapter = new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', undefined));
       // 直接写入编码目录（必须复用适配器编码逻辑：macOS /var → /private/var realpath）
       const dir = path.join(tmpHome, '.claude', 'projects', encodeCwdClaude(cwd));
       fs.mkdirSync(dir, { recursive: true });
@@ -456,7 +453,7 @@ describe('fidelity sweep (QA, writes report to /tmp/session-fidelity-report.json
         });
 
       // F1: IDE 侧图片块（IR 无对应类型）被静默丢弃 → score 仍 1.0
-      const ide = new CodeBuddyIdeAdapter();
+      const ide = getAdapter('codebuddy-ide');
       const cwd = newWorkspace('f1-proj');
       const root = ideHistoryRoot();
       const convId = 'f1111111111111111111111111111111';
@@ -479,8 +476,8 @@ describe('fidelity sweep (QA, writes report to /tmp/session-fidelity-report.json
 
       // F2: 空 content 消息被多平台写入端静默丢弃（score 按 block 计，看不见消息级丢失）
       const fixtureEmpty = buildFixture();
-      const cursor = new CursorAdapter();
-      const claude = new ClaudeCodeAdapter('claude-code');
+      const cursor = getAdapter('cursor');
+      const claude = new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', undefined));
       const fidEmpty = fidelityFromSession(fixtureEmpty, 'cursor');
       audit.push({ case: 'F2 fixture(empty msg) fidelity→cursor', score: Number(fidEmpty.score.toFixed(4)), note: '空消息 0 block，不扣分；但 cursor.writeSession 会静默丢弃该消息' });
 
@@ -537,7 +534,7 @@ describe('fidelity sweep (QA, writes report to /tmp/session-fidelity-report.json
       };
 
       const mem0 = process.memoryUsage();
-      const claude = new ClaudeCodeAdapter('claude-code');
+      const claude = new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', undefined));
       let t0 = Date.now();
       const claudeSid = await claude.writeSession(session, cwd);
       const claudeWriteMs = Date.now() - t0;
@@ -547,7 +544,7 @@ describe('fidelity sweep (QA, writes report to /tmp/session-fidelity-report.json
       const back = (await claude.readSession({ sessionId: claudeSid, projectPath: cwd })) as Session;
       const claudeReadMs = Date.now() - t0;
 
-      const codex = new CodexAdapter('codex');
+      const codex = new CodexAdapter('codex', sessionStoreDir('codex', undefined), SESSION_HOST);
       t0 = Date.now();
       // Every write derives its id, so read back by the id the write returned.
       const stressSid = (await codex.writeSession(session, cwd)) as string;

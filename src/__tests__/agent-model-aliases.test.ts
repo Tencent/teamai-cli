@@ -4,7 +4,7 @@
  * `models/aliases.yaml`, and no model field where the team maps none.
  * Asserted through the agents handler, on the files it leaves in tool dirs.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import matter from 'gray-matter';
 import path from 'node:path';
@@ -13,7 +13,7 @@ import crypto from 'node:crypto';
 import fse from 'fs-extra';
 import YAML from 'yaml';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -37,6 +37,7 @@ import { resetWarnOnce } from '../utils/warn-once.js';
 import { openLedger } from '../resources/delivered-copies.js';
 import { loadStateForScope, saveStateForScope } from '../config.js';
 import { checkoutKey } from '../pull.js';
+import { useToolInstances } from '../tool-registry.js';
 import { ModelProfileSchema, resolveProfile, type ModelAgent } from '../models/profile.js';
 import { switchModelProfile } from '../models/switch.js';
 import type { AgentModelRecords, LocalConfig, TeamaiConfig } from '../types.js';
@@ -547,6 +548,43 @@ describe('AgentsHandler pull: model aliases', () => {
         model: 'strong', tool_extras: { codex: { model: 'gpt-pinned', model_reasoning_effort: 'xhigh' } },
       })))['codex'];
       expect(pinned).toMatchObject({ model: 'gpt-pinned', model_reasoning_effort: 'xhigh' });
+    });
+
+    it.each([
+      { scope: 'project', agents: '.claude/agents', command: undefined, paths: undefined },
+      // The team moved Claude's agents, and the instance's paths name the same directory.
+      { scope: 'project', agents: '.claude/custom-agents', command: undefined, paths: { agents: '.claude/custom-agents', userScope: { agents: '.home-claude/agents' } } },
+      // An instance with a build of its own whose member agents directory is Claude's, outside its home.
+      { scope: 'user', agents: '.claude/agents', command: 'home-claude', paths: { agents: '.claude/agents' } },
+    ] as const)('renders a $scope agent file in $agents an instance shares with Claude once, as Claude\'s, pull after pull', async ({ scope, agents, command, paths }) => {
+      await writeAliases(EVERY_TOOL_STRONG);
+      await switchTo(['claude']);
+      useToolInstances(new Map([['home-claude', {
+        kind: 'instance', name: 'home-claude', extends: 'claude', command, home: { dir: '.home-claude' }, paths,
+        source: 'team', file: path.join(repoPath, 'tools', 'home-claude.yaml'), location: 'tools/home-claude.yaml', revision: 'r1',
+      }]]));
+      onTestFinished(() => useToolInstances(new Map()));
+      const project = path.join(tmpDir, 'project');
+      const root = scope === 'user' ? homeDir : project;
+      await fse.ensureDir(path.join(root, '.claude'));
+      await fse.ensureDir(path.join(root, '.home-claude'));
+      const spec = makeSpec({ model: 'strong' });
+      const yamlPath = path.join(repoPath, 'agents', `${spec.name}.yaml`);
+      await fse.writeFile(yamlPath, serializeAgentYaml(spec));
+      const config = { ...teamConfigFor(['claude']), toolPaths: { claude: { agents }, 'home-claude': { agents } } } as TeamaiConfig;
+      const placeConfig: LocalConfig = scope === 'user' ? localConfig : { ...localConfig, scope, projectRoot: project };
+      const file = path.join(root, ...agents.split('/'), `${spec.name}.md`);
+      const pull = () => handler.pullItem({ name: spec.name, type: 'agents', sourcePath: yamlPath, relativePath: `agents/${spec.name}.yaml` }, config, placeConfig);
+
+      await pull();
+      const first = await fse.readFile(file, 'utf-8');
+      const written = (await fse.stat(file)).ino;
+      await pull();
+
+      // Claude is switched to a profile, so its copy keeps the routed opus and no effort; the instance's pass writes the same bytes.
+      expect(matter(first).data).toMatchObject({ model: 'opus' });
+      expect(matter(first).data).not.toHaveProperty('effort');
+      expect([await fse.readFile(file, 'utf-8'), (await fse.stat(file)).ino]).toEqual([first, written]);
     });
 
     it('never treats a variant as switched', async () => {

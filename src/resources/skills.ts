@@ -14,6 +14,7 @@ import { getFileContentWhenAdded, isPastVersionOf, resolveAnchors } from '../uti
 import { isCliOwnedSkillName, ownedSkillFiles, prunedWhole, removeOwnedFiles, skillsGuardBase } from '../builtin-skills.js';
 import { generatedSkillAt } from '../workflow/discovery/generated-marker.js';
 import { installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH, writable, writesOf, type Install } from '../locate.js';
+import { baseToolOf } from '../tool-registry.js';
 import {
   loadRolesManifest, resolveRoleResourceNamespaces, RolesManifestNotFoundError, type RolesManifest,
 } from '../roles.js';
@@ -34,6 +35,11 @@ import {
 const CONTRIBUTORS_FILE = 'CONTRIBUTORS';
 const SKILL_MD = 'SKILL.md';
 export const CODEX_TOOL = 'codex';
+
+/** Whether `tool` runs a Codex build, which reads the shared `.agents/skills` as Codex does: Codex, or an instance of it. */
+export function readsCodexSharedSkills(tool: string): boolean {
+  return baseToolOf(tool) === CODEX_TOOL;
+}
 
 /** Why delivery may not write a skill directory: the path itself, or a link on the way to it. */
 export type SkillDirectoryBlock =
@@ -228,22 +234,23 @@ export async function codexSkillsSplit(
 
 /**
  * Where Codex's copy of `skillName` goes: the shared `.agents/skills/<name>`
- * when a copy there is teamai's (`ownsShared`), else the configured directory.
- * Other tools get the configured directory.
+ * when a copy there is teamai's (`ownsShared`), else the tool's own directory.
+ * Other tools get their own directory. `dirs.own` is `locate`'s, which a moved
+ * home relocates; `configuredSkillsPath` only names it in a warning.
  */
 export async function resolveSkillDestination(
   tool: string,
   configuredSkillsPath: string,
-  baseDir: string,
+  dirs: { readonly own: string; readonly shared: string },
   skillName: string,
   ownsShared: SharedSkillOwnership,
   sourcePath?: string,
   ledger?: DeliveryLedger,
 ): Promise<string> {
-  const configuredDestination = path.join(baseDir, configuredSkillsPath, skillName);
+  const configuredDestination = path.join(dirs.own, skillName);
 
-  if (tool === CODEX_TOOL) {
-    const sharedDestination = path.join(baseDir, SHARED_AGENT_SKILLS_PATH, skillName);
+  if (readsCodexSharedSkills(tool)) {
+    const sharedDestination = path.join(dirs.shared, skillName);
 
     if (!await pathExists(sharedDestination)) return configuredDestination;
 
@@ -326,7 +333,7 @@ export function skillTargetsFor(
     if (skillsDir === null || configuredSkillsPath === undefined) return null;
     const sharedDir = where.shared?.path ?? null;
 
-    if (tool !== CODEX_TOOL || sharedDir === null) return path.join(skillsDir, skillName);
+    if (!readsCodexSharedSkills(tool) || sharedDir === null) return path.join(skillsDir, skillName);
 
     // Codex alone can redirect a skill to the shared `.agents/skills`
     // directory: for a skill whose copy there is teamai's, or for any skill
@@ -354,8 +361,7 @@ export function skillTargetsFor(
       return sharedDestination;
     }
 
-    // Codex's directories are `locate`'s writes: it has no home moves, so they hang off the scope's base.
-    return resolveSkillDestination(tool, configuredSkillsPath, resolveBaseDir(localConfig), skillName, ownsShared, sourcePath, ledger);
+    return resolveSkillDestination(tool, configuredSkillsPath, { own: skillsDir, shared: sharedDir }, skillName, ownsShared, sourcePath, ledger);
   };
 }
 

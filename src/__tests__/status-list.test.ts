@@ -15,7 +15,7 @@ vi.mock('../utils/git.js', () => ({
   getRepoStatus: vi.fn(async () => ({ ahead: 0, behind: 0, modified: [] })),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),

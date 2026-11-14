@@ -8,7 +8,7 @@ import YAML from 'yaml';
 // switches the install's kind must not hand the old install's learnings to the
 // new one's repository.
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));
 

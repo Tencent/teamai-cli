@@ -11,8 +11,10 @@ import { DeliveredFolders, type DeliveredFolderRef, type FolderDelivery } from '
 import { FolderFiles, type FolderFile } from './folder-files.js';
 import { isLanguageVariant, RESOURCE_LAYOUTS, type ResourceDiagnostic } from './resolver.js';
 import { splitRuleFrontmatter } from './team-rule.js';
-import { folderReachOf } from '../tools.js';
-import type { LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
+import { toolPathUnder } from '../locate.js';
+import { realHost } from '../tool-home.js';
+import { folderReachOf } from '../tool-registry.js';
+import { scopedToolPaths, type LocalConfig, type ResourceItem, type TeamaiConfig } from '../types.js';
 import { pathExists, readJsonObject, writeJson } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { warnOnce } from '../utils/warn-once.js';
@@ -173,6 +175,18 @@ async function deliveredNames(localConfig: LocalConfig): Promise<string[]> {
   return names;
 }
 
+/**
+ * The user settings file of `tool` that `grant` edits: its configured settings path under the home, where the root
+ * `toolRoots` records (Claude Code's `CLAUDE_CONFIG_DIR`) or an instance's home moves it, as its hooks find it.
+ */
+function grantSettingsFile(input: { tool: string; teamConfig: Pick<TeamaiConfig, 'toolPaths'>; localConfig: LocalConfig }): string | null {
+  const { tool, teamConfig, localConfig } = input;
+  const settings = scopedToolPaths(teamConfig, { ...localConfig, scope: 'user' })[tool]?.settings;
+  const host = realHost();
+
+  return settings ? toolPathUnder(tool, host.home, settings, host) : null;
+}
+
 /** A JSON object in a tool's settings file, as far as teamai reads it. */
 const SettingsObjectSchema = z.record(z.string(), z.unknown());
 
@@ -223,4 +237,4 @@ async function grant(input: {
   return owned;
 }
 
-export const RuleFolders = { isFolder, pathOf, isDelivered, deliveredNames, languageFile, readTextFile, text, composeText, variantNotes, render, sync, grant } as const;
+export const RuleFolders = { isFolder, pathOf, isDelivered, deliveredNames, languageFile, readTextFile, text, composeText, variantNotes, render, sync, grant, grantSettingsFile } as const;

@@ -1,0 +1,4 @@
+{"type":"agent_start"}
+{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"Reply with the name of the test runner."}]}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"It uses Vitest."}],"usage":{"input":1200,"output":8,"cacheRead":6400,"cacheWrite":0},"stopReason":"stop"}}
+{"type":"agent_end"}

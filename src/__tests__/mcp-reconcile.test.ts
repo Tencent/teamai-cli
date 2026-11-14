@@ -6,7 +6,7 @@ import fse from 'fs-extra';
 import { execFileSync } from 'node:child_process';
 import { parse as parseToml } from 'smol-toml';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -25,7 +25,7 @@ vi.mock('../utils/logger.js', () => ({
 
 // Makes every `git ls-files` spawn fail, as a process table at its limit does.
 const failLsFilesSpawn = vi.hoisted(() => ({ on: false }));
-vi.mock('../utils/exec.js', async (importOriginal) => {
+vi.mock('@teamai/shared/exec', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../utils/exec.js')>();
   return {
     ...actual,
@@ -66,7 +66,7 @@ import { readWorkspaceChildren } from '../workspace-children.js';
 import { projectDataHome } from '../utils/partition.js';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
 import { folderVersion } from './helpers/folder-version.js';
-import { installFakeOpencode } from './helpers/fake-opencode.js';
+import { installFakeOpencode } from '@teamai/tool-opencode/testing';
 import { buildPluginSource, OPENCODE_HOOK_FILE, resolveOpencodePluginDir } from '../opencode-hooks.js';
 import YAML from 'yaml';
 

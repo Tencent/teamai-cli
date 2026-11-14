@@ -11,7 +11,7 @@ const { status, list, push, logError, logDebug } = vi.hoisted(() => ({
 vi.mock('../status.js', () => ({ status, list }));
 vi.mock('../push.js', () => ({ push }));
 vi.mock('../migrate.js', () => ({ maybeMigrate: vi.fn(async () => undefined), queueKeptInCheckout: vi.fn() }));
-vi.mock('../utils/logger.js', async (importOriginal) => {
+vi.mock('@teamai/shared/log', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../utils/logger.js')>();
   return { ...actual, log: { ...actual.log, error: logError, debug: logDebug } };
 });

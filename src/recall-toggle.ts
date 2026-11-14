@@ -5,7 +5,7 @@ import { remove, pathExists } from './utils/fs.js';
 import { keepsTrackedCopy } from './resources/delivered-copies.js';
 import { applyInstructionPlan, planInstructionFiles, registerOpencodeContext, resolveInstructionTargets } from './instruction-targets.js';
 import { agentFileExtensionForTool } from './resources/agent-format.js';
-import { isAgentToolId } from './tools.js';
+import { agentFormatOf } from './tool-registry.js';
 import { cleanupOf, installOf, locate, ownOf } from './locate.js';
 import { ruleFileExtensionForTool } from './resources/rule-format.js';
 import { LEGACY_RECALL_SKILL_NAMES, builtinSkillsTarget, pruneLegacyBuiltinSkills } from './builtin-skills.js';
@@ -53,9 +53,9 @@ export async function removeRecallAgentAndRule(teamConfig: TeamaiConfig, localCo
     for (const { path: agentsDir } of cleanupOf(await locate(tool, 'agents', install))) {
       const extensions = new Set<string>(['.md']);
 
-      if (isAgentToolId(tool)) {
-        extensions.add(agentFileExtensionForTool(tool));
-      }
+      const format = agentFormatOf(tool);
+
+      if (format !== undefined) extensions.add(agentFileExtensionForTool(format));
 
       for (const extension of extensions) {
         const agentFile = path.join(agentsDir, `teamai-recall${extension}`);

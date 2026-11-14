@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     clearMocks: true,
     globalSetup: ['src/__tests__/helpers/assert-safe-tmpdir.ts'],
-    include: ['src/__tests__/**/*.test.ts', 'oxlint-plugin-teamai/**/*.test.ts', 'scripts/**/*.test.ts'],
+    include: ['src/__tests__/**/*.test.ts', 'packages/*/src/**/*.test.ts', 'oxlint-plugin-teamai/**/*.test.ts', 'scripts/**/*.test.ts'],
     // The vendored anti-slop tests run through oxlint-plugin-teamai/anti-slop.test.ts.
     exclude: ['src/__tests__/e2e/**', 'src/__tests__/*-e2e.test.ts', 'oxlint-plugin-teamai/anti-slop/**'],
     env: {
@@ -36,8 +36,8 @@ export default defineConfig({
     retry: process.env.CI ? 1 : 0,
     coverage: {
       provider: 'v8',
-      include: ['src/**/*.ts'],
-      exclude: ['src/__tests__/**'],
+      include: ['src/**/*.ts', 'packages/*/src/**/*.ts'],
+      exclude: ['src/__tests__/**', 'packages/*/src/**/*.test.ts'],
       reporter: ['cobertura', 'text'],
       reportsDirectory: 'coverage',
     },

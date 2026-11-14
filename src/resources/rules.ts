@@ -46,7 +46,7 @@ import {
 import { injectClaudeMdSection, removeClaudeMdSection } from '../utils/claudemd.js';
 import { toolHome } from '../tool-home.js';
 import { cleanupOf, installOf, locate, locatingOnce, openclawWorkspaceDir, ownOf, userViewOf, writable, type Gate, type Install, type Location } from '../locate.js';
-import { channelsOf } from '../tools.js';
+import { channelsOf } from '../tool-registry.js';
 
 /** The copies earlier pulls left in one of `LEGACY_RULE_DIRS` (`RulesHandler.legacyRuleCopies`). */
 export interface LegacyRuleCopies {
@@ -230,7 +230,7 @@ export class RulesHandler extends ResourceHandler {
           // Native rule directories can contain personal rules created by the
           // target tool, in its own format. Keep unknown files in a tool with a
           // rules format, and in Pi's rule directory, local.
-          if (format || tool === 'pi') continue;
+          if (format || sharesRulesDirWithMember(tool)) continue;
           const existing = candidates.get(name);
 
           if (!existing) {

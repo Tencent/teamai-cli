@@ -43,12 +43,14 @@ import path from 'node:path';
 import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 import { getTeamaiHomeDir, isJsonObject, JsonValueSchema, type JsonObject, type JsonValue, type LocalConfig } from '../types.js';
+import { effectivePathsOf } from '../tool-instances.js';
+import { agentsDirAt, type DeliveryPlace } from '../locate.js';
 import { activeEntryNamespaces, describeEntryFailure, entryLayout, listEntryFiles, namespaceDir, readEntryFileText, type EntryLayout } from '../namespaced-entries.js';
 import { resolveNamespacedItems, type NamespaceCandidate } from '../namespace-resolver.js';
 import { listDirs } from '../utils/fs.js';
 import { liveModelSwitches, type LiveModelSwitch } from './switch.js';
 import { agentEffortField, toolExtrasFor, type AgentSpec, type ToolName } from '../resources/agent-format.js';
-import { AGENT_TOOLS, isAgentToolId } from '../tools.js';
+import { AGENT_TOOLS, agentFormatOf, isAgentToolId, toolOf } from '../tool-registry.js';
 
 /**
  * Alias names every team has, whether or not it maps them. A team maps one
@@ -487,9 +489,13 @@ function dropUnknownEntries(document: JsonValue, file: string): KnownEntries {
     for (const [tool, entry] of Object.entries(value)) {
       if (tool === 'gateways') continue;
 
+      // An aliases file maps the tools teamai ships: an instance takes the entry of the tool it extends.
       if (!isAgentToolId(tool)) {
-        warnings.push({ alias, file, message: `${file}: alias "${alias}" maps "${tool}", which is not a tool teamai knows, so that entry `
-          + 'is ignored. Fix the tool id, or update teamai if a newer version added that tool.' });
+        const extended = toolOf(tool)?.instance?.extends;
+
+        warnings.push({ alias, file, message: extended === undefined
+          ? `${file}: alias "${alias}" maps "${tool}", which is not a tool teamai knows, so that entry is ignored. Fix the tool id, or update teamai if a newer version added that tool.`
+          : `${file}: alias "${alias}" maps "${tool}", a tool instance, so that entry is ignored: an instance takes the entry of the tool it extends. Map ${extended} instead.` });
         continue;
       }
 
@@ -569,13 +575,16 @@ export function isModelAlias(aliases: ModelAliases, model: string): boolean {
  * written. Pull prints only these, so a member hears of an entry only when an
  * agent they receive uses it; doctor lists them all.
  */
-export function aliasWarningsFor(aliases: ModelAliases, spec: AgentSpec, tool: ToolName): string[] {
-  if (!aliases.ok || spec.model === undefined) return [];
+export function aliasWarningsFor(aliases: ModelAliases, spec: AgentSpec, receiver: string, place: DeliveryPlace): string[] {
+  const tool = agentModelToolOf(receiver, place);
+  const format = agentFormatOf(tool);
+
+  if (!aliases.ok || format === undefined || spec.model === undefined) return [];
   const alias = spec.model;
-  const extrasModel = toolExtrasFor(spec, tool)?.['model'] !== undefined;
-  const switched = aliases.switches[tool];
+  const extrasModel = toolExtrasFor(spec, format)?.['model'] !== undefined;
+  const switched = switchReaching(aliases, tool, format);
   const readsEntry = !extrasModel && !(switched?.ok === true && switched.switched);
-  const entry = entrySource(aliases, alias, tool);
+  const entry = entrySource(aliases, alias, format);
   const source = readsEntry ? entry : undefined;
   // No active file defines the alias and no local entry maps this tool: its model is gone.
   const inactiveOnly = !extrasModel && entry === undefined && !aliases.team.has(alias) ? aliases.inactive.get(alias) : undefined;
@@ -616,9 +625,37 @@ function entrySource(aliases: ModelAliases & { ok: true }, alias: string, tool: 
   return team !== undefined && key !== undefined ? { file: team.source, key } : undefined;
 }
 
-/** What `tool` receives for `spec`'s model. */
-export function resolveAgentModel(aliases: ModelAliases, spec: AgentSpec, tool: ToolName): ModelResolution {
-  const extras = toolExtrasFor(spec, tool);
+/**
+ * The model switch that reaches `tool`, which reads the entries of `format`: an instance takes the switch of the tool
+ * it extends only when it reads that tool's home, the one `models switch` writes.
+ */
+function switchReaching(aliases: ModelAliases & { ok: true }, tool: string, format: ToolName): LiveModelSwitch | undefined {
+  const instance = toolOf(tool)?.instance;
+  const ownHome = instance?.home !== undefined;
+
+  return ownHome ? undefined : aliases.switches[format];
+}
+
+/**
+ * The tool whose model aliases render `receiver`'s agent files at `place`. An instance whose agent files land in the
+ * directory of the tool it extends writes that tool's files, so each renders as that tool's from either pass.
+ */
+export function agentModelToolOf(receiver: string, place: DeliveryPlace): string {
+  const instance = toolOf(receiver)?.instance;
+  const own = instance?.kind === 'instance' ? effectivePathsOf(instance, place.toolPaths) : undefined;
+
+  if (instance === undefined || own === undefined) return receiver;
+  const effective = { ...place, toolPaths: { ...place.toolPaths, [receiver]: own } };
+  const shared = agentsDirAt(instance.extends, effective);
+
+  return shared !== null && agentsDirAt(receiver, effective) === shared ? instance.extends : receiver;
+}
+
+/** What `receiver`'s agent file at `place` holds for `spec`'s model. */
+export function resolveAgentModel(aliases: ModelAliases, spec: AgentSpec, receiver: string, place: DeliveryPlace): ModelResolution {
+  const tool = agentModelToolOf(receiver, place);
+  const format = agentFormatOf(tool);
+  const extras = format === undefined ? undefined : toolExtrasFor(spec, format);
   const extrasModel = extras?.['model'];
 
   if (extrasModel !== undefined) {
@@ -637,23 +674,27 @@ export function resolveAgentModel(aliases: ModelAliases, spec: AgentSpec, tool: 
  * are the tool extras of the agent that names it: an effort they set wins
  * over the alias's.
  */
-export function resolveModelValue(aliases: ModelAliases, model: string, tool: ToolName, extras?: ToolExtras): ModelResolution {
+export function resolveModelValue(aliases: ModelAliases, model: string, tool: string, extras?: ToolExtras): ModelResolution {
+  const format = agentFormatOf(tool);
+
+  // An alias maps only the tools teamai renders agents for, so it gives any other tool no model.
+  if (format === undefined) return isModelAlias(aliases, model) ? { ok: true, step: 'default' } : { ok: true, step: 'literal', model };
+
   // An unreadable team file may define any name, so no model can be told literal.
   if (!aliases.ok) return aliases;
 
   if (!aliases.names.has(model)) return { ok: true, step: 'literal', model };
 
   if (aliases.localFailure !== undefined) return { ok: false, reason: aliases.localFailure };
-
-  const switched = aliases.switches[tool];
+  const switched = switchReaching(aliases, tool, format);
 
   if (switched?.ok === false) {
     return { ok: false, reason: `Cannot tell whether a tool is switched to a model profile: ${switched.reason}` };
   }
 
-  const resolution = fromEntries(aliases, model, tool, extras);
+  const resolution = fromEntries(aliases, model, format, extras);
 
-  return switched?.switched ? throughSwitch(resolution, tool, extras) : resolution;
+  return switched?.switched ? throughSwitch(resolution, format, extras) : resolution;
 }
 
 /** What the member's local entry, else the team entry, gives `tool` for `alias`. */

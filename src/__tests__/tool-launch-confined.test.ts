@@ -2,9 +2,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { parse as parseToml } from 'smol-toml';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 import { confinedOffers, installedConfinedTools, runConfined } from '../tool-launch/confined.js';
+import { saveToolHomes } from '../tool-home.js';
+import { getUserHome } from '../utils/home.js';
 
 let root = '';
 beforeEach(async () => { root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-confined-'))); });
@@ -306,6 +308,23 @@ it('fails a tool that is not on PATH without creating anything', async () => {
   expect(await runConfined({ tool: 'claude', dir, prompt: 'Say whether the fix landed.', level: 'best-effort', timeoutMs: 60_000 }, { resolveTool: machineWith({}) })).toEqual({
     ok: false, code: 'confined_tool_unavailable', message: 'The claude executable is not available on PATH. Install it, or use another tool or driver.',
   });
+  expect(await listing()).toEqual(['transcript.md']);
+});
+
+it('fails a tool whose recorded home is gone without starting it, and says how to fix the record', async () => {
+  const { dir, listing } = await evidenceDir();
+  const gone = path.join(getUserHome(), '.codebuddy-gone');
+  await saveToolHomes({ codebuddy: gone });
+  onTestFinished(async () => { await saveToolHomes({}); });
+  const started = path.join(root, 'started');
+  const codebuddy = await fakeTool('codebuddy', '2.176.0', `fs.writeFileSync(${JSON.stringify(started)}, '');`);
+
+  expect(await runConfined({ tool: 'codebuddy', dir, prompt: 'Say whether the fix landed.', level: 'best-effort', timeoutMs: 60_000 }, { resolveTool: machineWith({ codebuddy }) })).toEqual({
+    ok: false, code: 'confined_tool_unavailable',
+    message: `The codebuddy home recorded on this machine, ${gone}, does not exist, so teamai did not start codebuddy there. `
+      + 'Point CODEBUDDY_CONFIG_DIR at the home codebuddy uses and re-run `teamai init`, or clear the record with `CODEBUDDY_CONFIG_DIR= teamai init`.',
+  });
+  expect(await fs.access(started).then(() => true, () => false)).toBe(false);
   expect(await listing()).toEqual(['transcript.md']);
 });
 

@@ -3,11 +3,10 @@ import fs from 'node:fs/promises';
 import { z } from 'zod';
 import { DriverSchema } from '../../../driver-identity.js';
 import { RunModeSchema } from '../../../launch-context.js';
-import { isToolId } from '../../../tools.js';
+import { toolOf } from '../../../tool-registry.js';
 import type { LocalConfig } from '../../../types.js';
-import type { ToolId } from '../../../tools.js';
 import { readFileSafe, writeJsonAtomic } from '../../../utils/fs.js';
-import { redactJson } from '../../../utils/redact.js';
+import { redactJson } from '@teamai/shared/redact';
 import type { HostPlaceRequest, RunVersion } from '../../protocol.js';
 import { ConfinedRunReportSchema, FailureSchema, TokenUsageSchema } from '../../step-state.js';
 import { AttemptIdSchema, RunIdSchema, skillStatePath, type RunId, type RunLock } from '../../store.js';
@@ -193,7 +192,7 @@ const SkillStateSchema = z.object({
    * works in, which `--tools default=<tool>` names or its host does, so a runner resolves its children's models for it;
    * dropped when this teamai knows no such tool.
    */
-  orchestrator: z.object({ session: z.string().optional(), tool: z.string().refine(isToolId).optional().catch(undefined), lastCallAt: z.string() }),
+  orchestrator: z.object({ session: z.string().optional(), tool: z.string().refine((tool) => toolOf(tool) !== undefined).optional().catch(undefined), lastCallAt: z.string() }),
   attempts: z.array(AttemptStateSchema),
   /**
    * Present while this driver judges the run's scored steps with the confined judge of `tool`, which the background
@@ -239,7 +238,7 @@ export type UnansweredHost = Exclude<SkillState['host'], { kind: 'chosen' }>;
  * shown yet, and `judge`, who judges its scored steps on this machine, when anyone does.
  */
 export function newSkillState(input: {
-  run: RunId; driver: SkillState['driver']; invocation: SkillState['invocation']; options: SkillState['options']; host: UnansweredHost; session: string | undefined; tool: ToolId | undefined; at: string; judge?: JudgedBy;
+  run: RunId; driver: SkillState['driver']; invocation: SkillState['invocation']; options: SkillState['options']; host: UnansweredHost; session: string | undefined; tool: string | undefined; at: string; judge?: JudgedBy;
 }): SkillState {
   const { run, driver, invocation, options, host, session, tool, at, judge } = input;
 

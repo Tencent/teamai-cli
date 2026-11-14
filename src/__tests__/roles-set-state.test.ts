@@ -30,7 +30,7 @@ vi.mock('../roles.js', () => ({
     listRoleIds: vi.fn().mockReturnValue(['hai', 'pm']),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
     log: {
         info: vi.fn(),
         success: vi.fn(),

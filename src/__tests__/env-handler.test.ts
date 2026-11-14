@@ -10,7 +10,7 @@ import { TEAMAI_ENV_START, TEAMAI_ENV_END } from '../types.js';
 import { memberEnvironment } from '../member-env.js';
 import type { TeamaiConfig, LocalConfig, ResourceItem } from '../types.js';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),

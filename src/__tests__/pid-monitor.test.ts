@@ -1,4 +1,6 @@
+import diagnostics from 'node:diagnostics_channel';
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { PROCESS_READ_CHANNEL } from '@teamai/shared/process-group';
 import {
   isProcessAlive,
   getProcessComm,
@@ -232,5 +234,24 @@ describe('the process table', () => {
         expect(macResolveMonitorPid(400)).toBe(400);
         expect(macGetParentPid(400)).toBeUndefined();
         expect(execFileSync).toHaveBeenCalledTimes(1);
+    });
+
+    it('on Linux tells its /proc reads once, as the one ps table macOS reads, so a Linux runner counts that wait too', async () => {
+        const reads: unknown[] = [];
+        const tell = (read: unknown) => reads.push(read);
+        diagnostics.subscribe(PROCESS_READ_CHANNEL, tell);
+        const { resolveMonitorPid: linuxResolveMonitorPid, getParentPid: linuxGetParentPid, getProcessComm: linuxGetProcessComm } = await loadOn('linux');
+
+        try {
+            linuxResolveMonitorPid(process.pid);
+            linuxResolveMonitorPid(process.pid);
+            linuxGetParentPid(process.pid);
+            linuxGetProcessComm(process.pid);
+        } finally {
+            diagnostics.unsubscribe(PROCESS_READ_CHANNEL, tell);
+        }
+
+        expect(reads).toEqual([{ ps: ['-A', '-o', 'pid=,ppid=,comm='], spawned: false }]);
+        expect(execFileSync).not.toHaveBeenCalled();
     });
 });

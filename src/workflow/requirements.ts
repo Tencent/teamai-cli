@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ENV_KEY_RE, sameEnvName } from '../resources/env-key.js';
-import { ACCESS_LEVELS, CONFINED_LEVELS } from '../tool-launch/confined-level.js';
+import { ACCESS_LEVELS } from '@teamai/tool-core/launch';
+import { CONFINED_LEVELS } from '../tool-launch/confined-level.js';
 import { stepWorkflow, WORKSPACE_MODES, type WorkflowDefaults, type WorkflowFailure, type WorkflowStep } from './types.js';
 import type { WorkspaceMode } from './workspace.js';
 

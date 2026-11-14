@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
 import { describeEntryFailure, describeOrigin, reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
+import { toolOf } from './tool-registry.js';
 import { pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { askConfirmation, askQuestion, askSecret, isInteractive, parseSelection, readStdin } from './utils/prompt.js';
@@ -218,7 +219,20 @@ function splitList(value: string | undefined): string[] {
 }
 
 function collectAgents(values: string[]): ModelAgent[] {
-  return [...new Set(values.flatMap(splitList).map((value) => ModelAgentSchema.parse(value)))];
+  return [...new Set(values.flatMap(splitList).map(modelAgentOf))];
+}
+
+function modelAgentOf(value: string): ModelAgent {
+  const agent = ModelAgentSchema.safeParse(value);
+
+  if (agent.success) return agent.data;
+  const instance = toolOf(value)?.instance;
+
+  if (instance?.kind === 'instance') {
+    throw new Error(`${value} is an instance of ${instance.extends} (${instance.location}), and teamai models does not switch or restore the model of an instance yet; set it in the instance's own settings.`);
+  }
+
+  throw new Error(`Unknown agent ${value}. Use ${ALL_MODEL_AGENTS.join(', ')}.`);
 }
 
 function parseProtocols(value: string | undefined): ModelProtocol[] {
@@ -670,6 +684,8 @@ export async function modelsSwitch(reference: string | undefined, options: Switc
 }
 
 export async function modelsRestore(options: SwitchOptions): Promise<void> {
+  // A name no shipped agent has may be a tool instance, which only the team config, loaded here, defines.
+  if ((options.agent ?? []).flatMap(splitList).some((value) => !ModelAgentSchema.safeParse(value).success)) await autoDetectInit(undefined, { dryRun: options.dryRun }).catch(() => undefined);
   const explicit = collectAgents(options.agent ?? []);
   const results = await restoreModelProfiles(explicit.length > 0 ? explicit : ALL_MODEL_AGENTS, { dryRun: options.dryRun });
   const shown = explicit.length > 0 ? results : results.filter((result) => result.status !== 'unchanged');

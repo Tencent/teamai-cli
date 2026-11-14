@@ -11,7 +11,7 @@ import fse from 'fs-extra';
 // Capture status --all output. Every line log.info/log.warn emits is collected
 // so the orphan/unknown verdict can be asserted.
 const logLines: string[] = [];
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: (m: string) => { logLines.push(m); },
     warn: (m: string) => { logLines.push(m); },

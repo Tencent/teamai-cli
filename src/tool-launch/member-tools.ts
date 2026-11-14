@@ -33,9 +33,10 @@ export async function memberTools(scope: LocalConfig | undefined): Promise<Membe
 
 /**
  * Why a call did not answer: no tool to run it, an override that names a tool teamai cannot run or sits in a scope
- * config here that cannot be read, or the tool failed.
+ * config here that cannot be read, a team instance's command no one accepted here, a recorded home of the tool that is
+ * gone, or the tool failed.
  */
-export type CallErrorKind = 'no_tool' | 'override_invalid' | 'call_failed';
+export type CallErrorKind = 'no_tool' | 'override_invalid' | 'tool_not_accepted' | 'home_gone' | 'call_failed';
 
 export class CallError extends Error {
   constructor(readonly kind: CallErrorKind, message: string) {

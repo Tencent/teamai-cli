@@ -3,9 +3,10 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
 import type { JsonValue, LocalConfig, TeamaiConfig } from './types.js';
-import { hookSyntaxOf, TOOL_IDS, TOOLS, type ToolDescriptor, type ToolId } from './tools.js';
+import { descriptorOf, hookSyntaxOf, toolInstancesFor } from './tool-registry.js';
+import { TOOL_IDS, type ToolId, type ShippedDescriptor } from './tools.js';
 import { JsonValueSchema, isAgentExcluded, recordedToolRootDir, resolveAutoCompactTokens } from './types.js';
-import { toolHome } from './tool-home.js';
+import { toolHome, toolHomeOf } from './tool-home.js';
 import { withFileLock } from './update.js';
 import { pathExists, readFileSafe, readJsonObject, writeFile, writeJson, writeJsonAtomic, writeJsonKeepingComments } from './utils/fs.js';
 import type { JsonObjectRead } from './utils/fs.js';
@@ -48,7 +49,7 @@ import { getUserHome } from './utils/home.js';
 //  teamai removes its value if the file still holds exactly that. A record is
 //  kept while its tool is excluded or missing, so the value stays teamai's.
 
-type Kind = Exclude<ToolDescriptor['autoCompact'], 'none'>;
+type Kind = Exclude<ShippedDescriptor['autoCompact'], 'none'>;
 
 /** The file under the tool's home that holds the threshold, per settings format. */
 const FILE_OF: Record<Kind, string> = { claude: 'settings.json', buddy: 'settings.json', codex: 'config.toml', dsh: 'cordis.patch.yml' };
@@ -85,7 +86,10 @@ export interface AutoCompactReconcileResult {
 }
 
 interface Target {
-  tool: ToolId;
+  /** A shipped tool, or an instance with a home of its own. */
+  tool: string;
+  /** The tool whose formats `tool` keeps. */
+  base: ToolId;
   kind: Kind;
   file: string;
 }
@@ -138,16 +142,30 @@ export async function reconcileAutoCompactLocked(
 async function resolveTargets(localConfig: LocalConfig): Promise<Target[]> {
   const targets: Target[] = [];
 
-  for (const tool of TOOL_IDS) {
-    const kind = TOOLS[tool].autoCompact;
+  // A root the member recorded at init (CODEX_HOME, CLAUDE_CONFIG_DIR) wins,
+  // so a pull from a shell without the variable still finds it.
+  const shippedHome = (tool: ToolId) => recordedToolRootDir(tool, localConfig.toolRoots) ?? toolHome(tool);
+  const shipped = TOOL_IDS.map((tool) => ({ tool, base: tool, home: shippedHome(tool) }));
 
-    if (kind === 'none' || isAgentExcluded(localConfig, tool)) continue;
-    // A root the member recorded at init (CODEX_HOME, CLAUDE_CONFIG_DIR) wins,
-    // so a pull from a shell without the variable still finds it.
-    const home = recordedToolRootDir(tool, localConfig.toolRoots) ?? toolHome(tool);
+  // An instance that keeps the home of the tool it extends reads that tool's file: it is written once, for whichever
+  // of them is enabled.
+  const instances = toolInstancesFor('use').flatMap(({ name, extends: base, home: own }) => {
+    const home = own === undefined ? shippedHome(base) : toolHomeOf(name)?.dir;
 
-    if (!(await pathExists(home))) continue;
-    targets.push({ tool, kind, file: path.join(home, FILE_OF[kind]) });
+    return home === undefined ? [] : [{ tool: name, base, home }];
+  });
+
+  const files = new Set<string>();
+
+  for (const { tool, base, home } of [...shipped, ...instances]) {
+    const kind = descriptorOf(base).autoCompact;
+
+    if (kind === 'none' || isAgentExcluded(localConfig, tool) || !(await pathExists(home))) continue;
+    const file = path.join(home, FILE_OF[kind]);
+
+    if (files.has(file)) continue;
+    files.add(file);
+    targets.push({ tool, base, kind, file });
   }
 
   return targets;
@@ -451,7 +469,7 @@ export function spliceCodexAutoCompact(source: string, value: number | null): st
 async function readCurrent(t: Target): Promise<{ current: string | undefined; doc?: SettingsDoc } | 'unreadable'> {
   if (t.kind === 'claude' || t.kind === 'buddy') {
     // The settings.json the tool's hooks go to too.
-    const read = await readJsonObject(t.file, hookSyntaxOf(t.tool));
+    const read = await readJsonObject(t.file, hookSyntaxOf(t.base));
 
     if (read.kind === 'invalid') return 'unreadable';
     const doc = read.kind === 'ok' ? read.value : {};
@@ -543,7 +561,7 @@ export async function reconcileAutoCompactForConfig(
         const home = path.dirname(t.file);
 
         if (t.kind === 'claude') desired = claudeValue(tokens, read.doc ?? {});
-        else if (t.kind === 'buddy') desired = await buddyValue(tokens, t.tool, home);
+        else if (t.kind === 'buddy') desired = await buddyValue(tokens, t.base, home);
         else if (t.kind === 'codex') desired = { value: tokens };
         else desired = await dshValue(tokens, home);
       }

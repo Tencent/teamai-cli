@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import { isConfinedTool, runConfined, type ConfinedResult, type ConfinedRun } from '../tool-launch/confined.js';
 import type { ConfinedTool } from '../tool-launch/tools.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
-import { isAgentToolId } from '../tools.js';
+import { agentFormatOf } from '../tool-registry.js';
 import { JsonValueSchema, type JsonValue, type LocalConfig } from '../types.js';
 import { AttemptResult } from './attempt-result.js';
 import type { ReportInput } from './engine.js';
@@ -53,7 +53,7 @@ async function firstResolving({ config, lease }: Pick<ConfinedStepInput, 'config
 
     if (!asks) return { tool };
 
-    if (!isAgentToolId(tool)) {
+    if (agentFormatOf(tool) === undefined) {
       reasons.push(`${tool} takes no model teamai resolves.`);
       continue;
     }

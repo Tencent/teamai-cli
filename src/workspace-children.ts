@@ -26,7 +26,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { findProject, loadProjectsManifest, resolveActiveLearningsNamespaces } from './projects.js';
-import type { JsonValue, LocalConfig } from './types.js';
+import type { JsonValue, LocalConfig, State } from './types.js';
 import { readFileSafe, readJsonObject, writeJson } from './utils/fs.js';
 import { remotesMatch } from './utils/git.js';
 import { log } from './utils/logger.js';
@@ -355,40 +355,77 @@ export async function findAncestorWorkspaces(childRoot: string): Promise<string[
   return [...new Set(found)];
 }
 
+/** The `claudeMdExcludes` entries teamai owns in a checkout, by the folder of the settings file that holds them. */
+export type OwnedInstructionExcludes = Readonly<Record<string, readonly string[]>>;
+
 /**
- * Keep a child's Claude Code settings from loading the instructions of the
- * workspaces above it (#913): Claude Code reads every CLAUDE.md, AGENTS.md
- * and rules folder up the tree, so a session in a child would also get what
- * its workspace delivers for every other child. Adds `claudeMdExcludes`
- * entries for each workspace's CLAUDE.md, `.claude/CLAUDE.md` (where a pull
- * writes the team instructions), AGENTS.md and `.claude/rules/**` to
- * `settingsFile` (the child's `.claude/settings.local.json`), takes back the
- * ones `previous` names that no longer apply, and leaves every other entry
- * as it is. Returns the entries it owns now, for the next run's `previous`.
- * `withdraw` takes back every entry `previous` names, for uninstall. Writes
- * nothing outside a workspace or under `dryRun`; a file that is not a JSON
- * object is left alone, and the previous entries stay owned.
+ * The entries a checkout record owns, by folder. A list an older release kept is the folder's of `claudeSettings`, the
+ * configured Claude settings path it wrote beside, `.claude` when there is none.
+ */
+export function ownedInstructionExcludesOf(recorded: NonNullable<State['lastPullByWorkspace']>[string]['claudeMdExcludes'], claudeSettings: string | undefined): OwnedInstructionExcludes {
+  if (recorded === undefined) return {};
+
+  return Array.isArray(recorded) ? { [path.posix.dirname(claudeSettings ?? '.claude/settings.json')]: recorded } : recorded;
+}
+
+/**
+ * Keep a child's Claude Code settings, and each Claude instance's, from loading
+ * the instructions of the workspaces above it (#913): Claude Code reads every
+ * CLAUDE.md, AGENTS.md and rules folder up the tree, so a session in a child
+ * would also get what its workspace delivers for every other child. Adds
+ * `claudeMdExcludes` entries for each workspace's CLAUDE.md, `<folder>/CLAUDE.md`
+ * (where a pull writes the team instructions), AGENTS.md and `<folder>/rules/**`
+ * to `<folder>/settings.local.json` of each of `folders` (`.claude`, or an
+ * instance's `.acme-claude`), takes back the ones `previous` names for that
+ * folder that no longer apply, and leaves every other entry as it is. Returns
+ * the entries it owns now, by folder, with `previous`'s for a folder it did not
+ * edit, so a later run, or uninstall, still takes them back. `withdraw` takes
+ * back every entry `previous` names in `folders`, for uninstall. Writes nothing
+ * outside a workspace or under `dryRun`; a file that is not a JSON object is
+ * left alone, and its previous entries stay owned.
  */
 export async function syncWorkspaceInstructionExcludes(input: {
   readonly projectRoot: string;
-  readonly settingsFile: string;
-  readonly previous: readonly string[];
+  readonly folders: readonly string[];
+  readonly previous: OwnedInstructionExcludes;
   readonly dryRun?: boolean;
   readonly withdraw?: boolean;
-}): Promise<string[]> {
-  const desired = input.withdraw ? [] : (await findAncestorWorkspaces(input.projectRoot))
-    .flatMap((workspace) => [
+}): Promise<Record<string, string[]>> {
+  const owned: Record<string, string[]> = Object.fromEntries(Object.entries(input.previous)
+    .flatMap(([folder, entries]) => (input.folders.includes(folder) || entries.length === 0 ? [] : [[folder, [...entries]]])));
+
+  const workspaces = input.withdraw ? [] : await findAncestorWorkspaces(input.projectRoot);
+
+  for (const folder of input.folders) {
+    const previous = input.previous[folder] ?? [];
+
+    if (workspaces.length === 0 && previous.length === 0) continue;
+
+    const desired = workspaces.flatMap((workspace) => [
       path.join(workspace, 'CLAUDE.md'),
-      path.join(workspace, '.claude', 'CLAUDE.md'),
+      path.join(workspace, folder, 'CLAUDE.md'),
       path.join(workspace, 'AGENTS.md'),
-      path.join(workspace, '.claude', 'rules', '**'),
+      path.join(workspace, folder, 'rules', '**'),
     ]);
 
-  if (desired.length === 0 && input.previous.length === 0) return [];
-  const read = await readJsonObject(input.settingsFile);
+    const kept = await syncExcludesIn(path.join(input.projectRoot, folder, 'settings.local.json'), desired, { ...input, previous });
+
+    if (kept.length > 0) owned[folder] = kept;
+  }
+
+  return owned;
+}
+
+/** `syncWorkspaceInstructionExcludes` for one settings file, whose excludes are `desired`. */
+async function syncExcludesIn(
+  settingsFile: string,
+  desired: readonly string[],
+  input: { readonly previous: readonly string[]; readonly dryRun?: boolean; readonly withdraw?: boolean },
+): Promise<string[]> {
+  const read = await readJsonObject(settingsFile);
 
   if (read.kind === 'invalid') {
-    if (!input.withdraw) log.warn(`${input.settingsFile} is not valid JSON (${read.error}), so this workspace's instructions were not excluded there. Fix the file, then run \`teamai pull\`.`);
+    if (!input.withdraw) log.warn(`${settingsFile} is not valid JSON (${read.error}), so this workspace's instructions were not excluded there. Fix the file, then run \`teamai pull\`.`);
 
     return [...input.previous];
   }
@@ -404,7 +441,7 @@ export async function syncWorkspaceInstructionExcludes(input: {
 
   if (input.dryRun || JSON.stringify(next) === JSON.stringify(current)) return owned;
   const { claudeMdExcludes: _old, ...rest } = settings;
-  await writeJson(input.settingsFile, next.length > 0 ? { ...rest, claudeMdExcludes: next } : rest);
+  await writeJson(settingsFile, next.length > 0 ? { ...rest, claudeMdExcludes: next } : rest);
 
   return owned;
 }

@@ -11,18 +11,19 @@ import { withoutTomlBom } from '../utils/toml.js';
 import { observedEffort, observedModel, type ObservedEffort, type ObservedModel } from '../agent-observation.js';
 import { LAUNCHED_BY_ENV, resolveRunMode, RUN_MODE_ENV } from '../launch-context.js';
 import { opencodeMajorVersion } from '../opencode-hooks.js';
-import { movedToolHome, realHost, toolHome } from '../tool-home.js';
-import { isToolId, mcpSyntaxOf } from '../tools.js';
+import { toolHome } from '../tool-home.js';
+import { mcpSyntaxOf } from '../tool-registry.js';
 import { parseJsonAs } from '../utils/json.js';
 import { resolveCliPath } from '../utils/cli-path.js';
 import { execCommand, probeBinary } from '../utils/exec.js';
 import { agyGatewayEnv } from '../models/agy-gateway.js';
-import { JsonValueSchema, type JsonValue } from '../types.js';
-import type { ConfinedLevel, ConfinedAccess, ConfinedUsage } from './confined-level.js';
-import { LAUNCH_ADAPTERS, type CallLaunch, type ConfinedLaunch } from './adapters.js';
+import { resolveMemberToolRoots } from '../config.js';
+import { JsonValueSchema, type JsonValue, type LocalConfig } from '../types.js';
+import type { ConfinedLevel, ConfinedUsage } from './confined-level.js';
+import type { CallLaunch, ConfinedAccess, ConfinedLaunch } from '@teamai/tool-core/launch';
 import { runTool, type ToolRun } from './run.js';
 import { toolStdout, type TokenUsage } from './stdout.js';
-import { CONFINED_TOOLS, executableOf, launchAdapterIdOf, opencodeModelArgs, type ConfinedTool } from './tools.js';
+import { CONFINED_TOOLS, executableOf, launchAdapterIdOf, launchAdapterOf, opencodeModelArgs, toolCommandEnv, type ConfinedTool } from './tools.js';
 
 /** A JSON line a tool prints; a field of the wrong type reads as absent. */
 const RecordSchema = z.looseObject({
@@ -52,7 +53,7 @@ export function installedConfinedTools(preferred: readonly string[], { resolveTo
 }
 
 function profileOf(tool: ConfinedTool): ConfinedLaunch {
-  return LAUNCH_ADAPTERS[launchAdapterIdOf(tool)].confined;
+  return launchAdapterOf(tool).confined;
 }
 
 /** What `tool`, run confined, can do beyond answering, by its adapter's profile. */
@@ -70,13 +71,17 @@ export interface ConfinedToolLevel {
   isolation: ConfinedLevel;
 }
 
-/** The version of `tool` and the level its confined profile reaches on this machine; undefined when it is not on PATH. */
+/** The version of `tool` and the level its confined profile reaches on this machine; undefined when it is not on PATH or its recorded home is gone. */
 export async function confinedToolLevel(tool: ConfinedTool, { resolveTool = resolveCliPath }: ToolLookup = {}): Promise<ConfinedToolLevel | undefined> {
   const executable = resolveTool(executableOf(tool));
 
   if (executable === null) return undefined;
+  const confined = confinedEnv(tool, await resolveMemberToolRoots());
+
+  // Delivery skips a tool whose recorded home is gone, and so does what this machine offers.
+  if (confined.kind === 'home_gone') return undefined;
   const tmp = await fs.realpath(os.tmpdir());
-  const version = await probeBinary(executable, ['--version'], (command, args, options) => execCommand(command, args, { ...options, env: confinedEnv(tool), cwd: tmp }));
+  const version = await probeBinary(executable, ['--version'], (command, args, options) => execCommand(command, args, { ...options, env: confined.env, cwd: tmp }));
 
   return { tool, version, isolation: profileIsolation(tool, version, launchAdapterIdOf(tool) === 'opencode' && await insideCheckout(tmp)) };
 }
@@ -160,20 +165,23 @@ function memberEnv(): NodeJS.ProcessEnv {
   return restored;
 }
 
-function confinedEnv(tool: ConfinedTool): NodeJS.ProcessEnv {
+/** The env a confined run of `tool` starts with, or why it cannot start: the home a record names is gone. */
+function confinedEnv(tool: ConfinedTool, toolRoots: LocalConfig['toolRoots']): { readonly kind: 'ready'; readonly env: NodeJS.ProcessEnv } | { readonly kind: 'home_gone'; readonly message: string } {
   const restored = memberEnv();
-  const { env: toolEnv, homeEnv: variable } = profileOf(tool);
-  const moved = variable !== undefined && restored[variable] === undefined && isToolId(tool) ? movedToolHome(tool, realHost({ env: restored })) : null;
+  const home = toolCommandEnv(tool, { kind: 'delivered', inherited: restored, toolRoots });
 
-  const env: NodeJS.ProcessEnv = Object.fromEntries([...COMMON_ENV, ...toolEnv].flatMap((key) => restored[key] === undefined ? [] : [[key, restored[key]]]));
+  if (home.kind === 'home_gone') return home;
 
-  if (variable !== undefined && moved !== null) env[variable] = moved;
+  const env: NodeJS.ProcessEnv = {
+    ...Object.fromEntries([...COMMON_ENV, ...profileOf(tool).env].flatMap((key) => restored[key] === undefined ? [] : [[key, restored[key]]])),
+    ...home.env,
+  };
 
   if (tool === 'agy') Object.assign(env, agyGatewayEnv(restored));
   env[LAUNCHED_BY_ENV] = 'confined';
   env[RUN_MODE_ENV] = resolveRunMode(process.env);
 
-  return env;
+  return { kind: 'ready', env };
 }
 
 async function optionalFile(file: string): Promise<string | undefined> {
@@ -260,6 +268,7 @@ async function openCodeSettings(env: NodeJS.ProcessEnv, tmp: string): Promise<st
 
   const auth = await optionalFile(path.join(env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'opencode', 'auth.json'));
 
+  // oxlint-disable-next-line teamai/tool-home-env -- the judge's throwaway XDG homes, as OPENCODE_CONFIG_DIR below; OpenCode's launch profile names no homeEnv (packages/tool-opencode/src/launch.ts), so toolCommandEnv gives it no variable
   for (const [key, dir] of [['XDG_DATA_HOME', 'data'], ['XDG_CACHE_HOME', 'cache'], ['XDG_STATE_HOME', 'state'], ['XDG_CONFIG_HOME', 'xdg-config']] as const) {
     env[key] = path.join(tmp, dir);
     await fs.mkdir(path.join(tmp, dir), { recursive: true });
@@ -278,6 +287,7 @@ async function openCodeSettings(env: NodeJS.ProcessEnv, tmp: string): Promise<st
   await fs.writeFile(path.join(config, 'opencode.json'), JSON.stringify({ ...settings,
     permission: { '*': 'deny', read: 'allow', grep: 'allow', glob: 'allow', list: 'allow', external_directory: 'deny', bash: 'deny', edit: 'deny', webfetch: 'deny', websearch: 'deny', task: 'deny', skill: 'deny' }, plugin: [], mcp: {},
   }), { mode: 0o600 });
+  // oxlint-disable-next-line teamai/tool-home-env -- the judge's throwaway config home, as Codex's tmp/codex below; OpenCode's launch profile names no homeEnv (packages/tool-opencode/src/launch.ts), so toolCommandEnv gives it no variable
   env.OPENCODE_CONFIG_DIR = config;
 
   return settings.model;
@@ -334,14 +344,14 @@ interface Spend {
   usage?: ConfinedUsage;
 }
 
-function tokensOf(family: ReturnType<typeof launchAdapterIdOf<ConfinedTool>>, stdout: string): TokenUsage | undefined {
-  const reading = LAUNCH_ADAPTERS[family].call.read({ stdout, lastMessage: undefined });
+function tokensOf(tool: ConfinedTool, stdout: string): TokenUsage | undefined {
+  const reading = launchAdapterOf(tool).call.read({ stdout, lastMessage: undefined });
 
-  return toolStdout(family, stdout)?.tokens ?? (reading.ok ? reading.tokens : undefined);
+  return toolStdout(launchAdapterIdOf(tool), stdout)?.tokens ?? (reading.ok ? reading.tokens : undefined);
 }
 
-function spendOf(family: ReturnType<typeof launchAdapterIdOf<ConfinedTool>>, stdout: string): Spend {
-  const tokens = tokensOf(family, stdout);
+function spendOf(tool: ConfinedTool, stdout: string): Spend {
+  const tokens = tokensOf(tool, stdout);
   const cost = records(stdout).findLast((record) => record.total_cost_usd !== undefined)?.total_cost_usd;
 
   if (!tokens && cost === undefined) return {};
@@ -402,11 +412,12 @@ const LAUNCHES = {
     const { input, env, tmp, dir } = context;
     const settings = await codexSettings(input.tool, env);
     const auth = await optionalFile(path.join(env.CODEX_HOME || toolHome(input.tool), 'auth.json'));
-    env.CODEX_HOME = path.join(tmp, 'codex');
-    await fs.mkdir(env.CODEX_HOME);
+    const codexHome = path.join(tmp, 'codex');
+    Object.assign(env, toolCommandEnv(input.tool, { kind: 'at', dir: codexHome }));
+    await fs.mkdir(codexHome);
 
-    if (auth !== undefined) await fs.writeFile(path.join(env.CODEX_HOME, 'auth.json'), auth, { mode: 0o600 });
-    await fs.writeFile(path.join(env.CODEX_HOME, 'config.toml'), codexProfile(dir));
+    if (auth !== undefined) await fs.writeFile(path.join(codexHome, 'auth.json'), auth, { mode: 0o600 });
+    await fs.writeFile(path.join(codexHome, 'config.toml'), codexProfile(dir));
     const schema = path.join(tmp, 'schema.json');
 
     if (input.schema !== undefined) await fs.writeFile(schema, JSON.stringify(input.schema));
@@ -472,8 +483,8 @@ async function resultRecordReply(stdout: string): Promise<JsonValue | undefined>
   return last?.structured_output ?? parseReply(last?.result ?? '');
 }
 
-async function adapterReply(family: 'pi' | 'agy', stdout: string): Promise<JsonValue | undefined> {
-  const reading = LAUNCH_ADAPTERS[family].call.read({ stdout, lastMessage: undefined });
+async function adapterReply(tool: ConfinedTool, stdout: string): Promise<JsonValue | undefined> {
+  const reading = launchAdapterOf(tool).call.read({ stdout, lastMessage: undefined });
 
   return reading.ok ? parseReply(reading.text) : undefined;
 }
@@ -492,9 +503,9 @@ const REPLIES = {
 
     return parsed.success ? [parsed.data.part.text] : [];
   }).join('\n')),
-  pi: async (stdout) => adapterReply('pi', stdout),
-  agy: async (stdout) => adapterReply('agy', stdout),
-} satisfies { [F in Family]: (stdout: string, tmp: string) => Promise<JsonValue | undefined> };
+  pi: async (stdout, _tmp, tool) => adapterReply(tool, stdout),
+  agy: async (stdout, _tmp, tool) => adapterReply(tool, stdout),
+} satisfies { [F in Family]: (stdout: string, tmp: string, tool: ConfinedTool) => Promise<JsonValue | undefined> };
 
 /** The level `context`'s tool reaches here, or why it does not reach `context.input.level`. */
 async function levelReached({ input, executable, dir, cwd, env, tmp }: LaunchContext): Promise<{ ok: true; isolation: ConfinedLevel } | ConfinedFailure> {
@@ -510,8 +521,9 @@ async function levelReached({ input, executable, dir, cwd, env, tmp }: LaunchCon
 }
 
 /** The error the tool reported, or '' when it reported none. */
-function reportedError(family: Family, run: ToolRun): string {
-  const reading = LAUNCH_ADAPTERS[family].call.read({ stdout: run.stdout, lastMessage: undefined });
+function reportedError(tool: ConfinedTool, run: ToolRun): string {
+  const family = launchAdapterIdOf(tool);
+  const reading = launchAdapterOf(tool).call.read({ stdout: run.stdout, lastMessage: undefined });
 
   if (!reading.ok && reading.message) return reading.message;
 
@@ -531,18 +543,18 @@ function ranOn(input: ConfinedInput, launch: Launch, run: ToolRun, isolation: Co
 async function outcomeOf({ input, tmp }: LaunchContext, launch: Launch, run: ToolRun, isolation: ConfinedLevel): Promise<ConfinedResult> {
   const family = launchAdapterIdOf(input.tool);
   const raw = rawOf(run);
-  const spent = spendOf(family, run.stdout);
+  const spent = spendOf(input.tool, run.stdout);
   const failure = await launch.failureOf?.(run, spent);
 
   if (failure) return failure;
-  const reported = reportedError(family, run);
+  const reported = reportedError(input.tool, run);
 
   const toolError: ConfinedFailure | undefined = reported
     ? { ok: false, code: 'confined_failed', message: `${input.tool} reported an error: ${reported.replace(/\.?$/, '.')} Fix that, then retry or use another tool or driver.`, raw, reported, ...spent }
     : undefined;
 
   if (run.code !== 0) return toolError ?? { ok: false, code: 'confined_failed', message: `${input.tool} exited with code ${run.code}${run.timedOut ? ` after its ${input.timeoutMs} ms limit` : ''}. See the saved output, then retry or use another tool or driver.`, raw, ...spent };
-  const reply = await REPLIES[family](run.stdout, tmp);
+  const reply = await REPLIES[family](run.stdout, tmp, input.tool);
 
   // pi exits 0 on a provider error, which its reply carries.
   if (reply === undefined) return toolError ?? { ok: false, code: 'confined_reply_invalid', message: `${input.tool} did not reply with JSON. See the saved output, then retry.`, raw, ...spent };
@@ -559,18 +571,21 @@ export async function runConfined(input: ConfinedInput, { resolveTool = resolveC
   const executable = resolveTool(executableOf(input.tool));
 
   if (!executable) return { ok: false, code: 'confined_tool_unavailable', message: `The ${input.tool} executable is not available on PATH. Install it, or use another tool or driver.` };
+  const confined = confinedEnv(input.tool, await resolveMemberToolRoots());
+
+  if (confined.kind === 'home_gone') return { ok: false, code: 'confined_tool_unavailable', message: confined.message };
   const tmp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-confined-')));
 
   try {
     const dir = await fs.realpath(input.dir);
     const family = launchAdapterIdOf(input.tool);
     // OpenCode reads a copy, so a checkout above the directory is checked where the copy goes.
-    const context: LaunchContext = { input, executable, dir, cwd: family === 'opencode' ? path.join(tmp, 'dir') : dir, tmp, env: confinedEnv(input.tool) };
+    const context: LaunchContext = { input, executable, dir, cwd: family === 'opencode' ? path.join(tmp, 'dir') : dir, tmp, env: confined.env };
     const level = await levelReached(context);
 
     if (!level.ok) return level;
     const launch = await LAUNCHES[family](context);
-    const { stdinOf }: CallLaunch = LAUNCH_ADAPTERS[family].call;
+    const { stdinOf }: CallLaunch = launchAdapterOf(input.tool).call;
     const run = await runTool({ executable, args: launch.args, cwd: context.cwd, env: context.env, stdin: stdinOf ? stdinOf(launch.stdin) : launch.stdin, timeoutMs: input.timeoutMs, detached: true, group: input.group, signal: input.signal });
 
     return await outcomeOf(context, launch, run, level.isolation);

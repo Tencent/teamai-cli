@@ -22,7 +22,7 @@ import { resolveAnchors } from './utils/git.js';
 import { log } from './utils/logger.js';
 import { assertSafePath } from './utils/path-safety.js';
 import { closePrompt } from './utils/prompt.js';
-import { redactWithEnv } from './utils/redact.js';
+import { redactWithEnv } from '@teamai/shared/redact';
 
 /** Output kept from a failed budgeted script, for its log line. */
 const TAIL_CHARS = 400;

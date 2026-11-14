@@ -25,7 +25,7 @@ import {
 } from './utils/fs.js';
 import { getHandler } from './resources/index.js';
 import {
-  CODEX_TOOL, codexSkillConflictLine, resolveSkillDestination, skillOrigin, skillTargetsFor,
+  CODEX_TOOL, codexSkillConflictLine, readsCodexSharedSkills, resolveSkillDestination, skillOrigin, skillTargetsFor,
 } from './resources/skills.js';
 import {
   deliveredSkillFiles, describeKeptEntry, describeMembersLink, describeSkippedLink, holdsGitDir, holdsNonRegular, isLink, isTeamaiSkillCopy,
@@ -33,9 +33,9 @@ import {
 } from './resources/delivered-copies.js';
 import { warnOnce } from './utils/warn-once.js';
 import { blobIdOf, historicalVersions } from './utils/team-history.js';
-import { installOf, locate, ownOf } from './locate.js';
+import { installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH } from './locate.js';
 import { resolveOpenclawWorkspace } from './openclaw-home.js';
-import { isToolId, TOOLS } from './tools.js';
+import { TOOL_ORDER } from './tool-registry.js';
 import { toolHome } from './tool-home.js';
 import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import { getUserHome } from './utils/home.js';
@@ -169,7 +169,7 @@ function isCanonicalSkillName(value: string): boolean {
  * destination recorded as an absolute path must lie inside one.
  */
 async function externalToolHomes(): Promise<string[]> {
-  const homes = Object.keys(TOOLS).filter(isToolId).map((tool) => toolHome(tool));
+  const homes = TOOL_ORDER.map((tool) => toolHome(tool));
   // The workspace OpenClaw is configured to read, even once its directory is gone:
   // a record of a copy there stays valid, so pull and `source remove` keep working.
   const workspace = await resolveOpenclawWorkspace();
@@ -1034,7 +1034,7 @@ async function pullSingleSource(
       .map((relative) => ({ path: getSourcePhysicalPin(oldManifest!, baseDir, relative), relative, skillName: skill })));
 
   const plannedTargets: Array<{ path: string; skillName: string; lexicalPath: string; replacesSymlink: boolean }> = [];
-  const plans: Array<{ skill: (typeof skillsToDeploy)[number]; targets: string[]; retained: string[]; codexSkillsPath?: string; conflictingPath?: string; conflictingRecord?: string }> = [];
+  const plans: Array<{ skill: (typeof skillsToDeploy)[number]; targets: string[]; retained: string[]; codexSkillsPaths: string[]; conflictingPath?: string; conflictingRecord?: string }> = [];
   // The source manifest is the delivery record (#993). A destination this
   // installation, or another one of the same repository, records for the skill
   // is the source's. Any other existing copy is the source's only on proof
@@ -1076,7 +1076,7 @@ async function pullSingleSource(
     const targets: string[] = [];
     // Recorded copies holding a file of the member's where the source now has one: kept on record, not copied.
     const retainedTargets: string[] = [];
-    let codexSkillsPath: string | undefined;
+    const codexSkillsPaths: string[] = [];
     let conflictingPath: string | undefined;
     let conflictingRecord: string | undefined;
     const toolPaths = scopedToolPaths(teamConfig, localConfig);
@@ -1140,11 +1140,11 @@ async function pullSingleSource(
       }
 
       // oxlint-disable-next-line teamai/configured-tool-paths -- compare Codex own directory with the shared destination
-      if (tool === CODEX_TOOL && target !== path.join(baseDir, toolPath.skills, skill.name)) codexSkillsPath = toolPath.skills;
+      if (readsCodexSharedSkills(tool) && target !== path.join(baseDir, toolPath.skills, skill.name)) codexSkillsPaths.push(toolPath.skills);
       targets.push(target);
     }
 
-    if (targets.length > 0 || retainedTargets.length > 0) plans.push({ skill, targets, retained: retainedTargets, codexSkillsPath, conflictingPath, conflictingRecord });
+    if (targets.length > 0 || retainedTargets.length > 0) plans.push({ skill, targets, retained: retainedTargets, codexSkillsPaths, conflictingPath, conflictingRecord });
   }
 
   // Directory copies merge content. Crossing an existing parent/child boundary
@@ -1194,9 +1194,11 @@ async function pullSingleSource(
   // cleanup, and planned destinations (including physical aliases) must survive.
   const reconciliations: Array<{ skill: (typeof skillsToDeploy)[number]; skillsPath: string; target: string; physical: string }> = [];
 
-  for (const { skill, codexSkillsPath, conflictingPath } of plans) {
-    if (!codexSkillsPath || conflictingPath) continue;
-    const target = path.join(baseDir, codexSkillsPath, skill.name);
+  const codexDuplicates = plans.flatMap(({ skill, codexSkillsPaths, conflictingPath }) =>
+    conflictingPath ? [] : codexSkillsPaths.map((skillsPath) => ({ skill, skillsPath })));
+
+  for (const { skill, skillsPath } of codexDuplicates) {
+    const target = path.join(baseDir, skillsPath, skill.name);
     assertWithinRoot(baseDir, target);
 
     if (!isRelativeDescendant(path.relative(baseDir, target))) throw new Error('Refusing to reconcile a source destination root');
@@ -1217,7 +1219,7 @@ async function pullSingleSource(
     if ([...otherOwners, ...previousTargets, ...plannedTargets].some((owner) => pathsOverlap(owner.path, physical))
       || previousTargets.some((owner) => pathsOverlap(path.resolve(baseDir, owner.relative), target))
       || plannedTargets.some((planned) => pathsOverlap(planned.lexicalPath, target))) continue;
-    reconciliations.push({ skill, skillsPath: codexSkillsPath, target, physical });
+    reconciliations.push({ skill, skillsPath, target, physical });
   }
 
   if (!options.dryRun) {
@@ -1228,7 +1230,7 @@ async function pullSingleSource(
 
       // The existing resolver alone decides whether both copies and the
       // incoming source match. Different local drafts are never removed.
-      await resolveSkillDestination(CODEX_TOOL, skillsPath, baseDir, skill.name, (dir) => isSourcesCopy(dir, skill), skill.sourcePath);
+      await resolveSkillDestination(CODEX_TOOL, skillsPath, { own: path.join(baseDir, skillsPath), shared: path.join(baseDir, SHARED_AGENT_SKILLS_PATH) }, skill.name, (dir) => isSourcesCopy(dir, skill), skill.sourcePath);
     }
   }
 
@@ -1814,6 +1816,7 @@ async function legacyCopyKeeper(
     const configured = toolPaths[tool]?.skills;
 
     if (!configured) continue;
+    // oxlint-disable-next-line teamai/configured-tool-paths -- the scope-root copy releases before #993 wrote, compared with the one locate gives
     const legacy = path.join(baseDir, configured);
 
     if (legacy !== ownOf(await locate(tool, 'skills', install))?.path) legacyRoots.push(legacy);

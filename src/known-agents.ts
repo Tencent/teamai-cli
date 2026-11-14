@@ -10,8 +10,8 @@ import {
   toolGateRoot,
   detectToolRoot,
 } from './types.js';
-import { isToolId, TOOLS } from './tools.js';
-import { installOf, isInstalledFor, locate, ownOf } from './locate.js';
+import { isToolId, descriptorOf, toolOf } from './tool-registry.js';
+import { installOf, isInstalledFor, locate, ownOf, toolPathUnder } from './locate.js';
 import type { LocalConfig, TeamaiConfig, Scope } from './types.js';
 import type { ToolId } from './tools.js';
 import { getUserHome } from './utils/home.js';
@@ -257,7 +257,7 @@ async function seedToolRoots(
   const dirPaths = [paths?.skills, paths?.rules].filter((p): p is string => !!p);
 
   if (dirPaths.length === 0 && agentsDir === null && fallbackSkills) dirPaths.push(fallbackSkills);
-  const dirs = [...dirPaths.map((dirPath) => path.join(baseDir, dirPath)), ...agentsDir === null ? [] : [agentsDir]];
+  const dirs = [...dirPaths.map((dirPath) => toolPathUnder(tool, baseDir, dirPath)), ...agentsDir === null ? [] : [agentsDir]];
 
   for (const dir of dirs) await ensureDir(dir);
 
@@ -268,7 +268,7 @@ async function seedToolRoots(
     const claudemdRoot = toolGateRoot(tool, claudemd, toolRoots);
 
     if (claudemdRoot !== claudemd) {
-      await ensureDir(path.join(baseDir, claudemdRoot));
+      await ensureDir(toolPathUnder(tool, baseDir, claudemdRoot));
       ensuredAnything = true;
     }
   }
@@ -300,9 +300,9 @@ async function seedHookInstallRoot(
     const root = toolGateRoot(tool, filePath, toolRoots);
 
     if (root !== filePath) {
-      await ensureDir(path.join(baseDir, root));
+      await ensureDir(toolPathUnder(tool, baseDir, root));
     } else {
-      const full = path.join(baseDir, filePath);
+      const full = toolPathUnder(tool, baseDir, filePath);
 
       if (!await pathExists(full)) await writeJson(full, {});
     }
@@ -343,7 +343,7 @@ export async function detectHomeInstalledAgents(
     if (!skillsPath) continue;
     // The tool's own dir, e.g. ".claude" or ".config/muse" — never a shared
     // parent like ".config" that exists on most machines.
-    const rootSegment = isToolId(id) ? TOOLS[id].home.dir : path.posix.dirname(skillsPath);
+    const rootSegment = isToolId(id) ? descriptorOf(id).home.dir : path.posix.dirname(skillsPath);
     // A Claude Code relocated with CLAUDE_CONFIG_DIR (or a Codex with
     // CODEX_HOME) may have no default root at all; the developer still uses
     // it. This runs before any config exists, so the variable is the only signal.
@@ -413,7 +413,8 @@ export async function detectInstalledAgents(localConfig: LocalConfig, teamConfig
   const results: ResolvedAgent[] = [];
 
   for (const agent of agents) {
-    const location = isToolId(agent.id) ? await locate(agent.id, 'skills', install, host) : null;
+    // A tool or an instance of one is located, in the home its variable may move; a toolPaths-only agent is its paths.
+    const location = toolOf(agent.id) === undefined ? null : await locate(agent.id, 'skills', install, host);
     const own = location === null ? null : ownOf(location);
 
     const [absoluteSkillsPath, installed] = location !== null && own !== null

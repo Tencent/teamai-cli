@@ -20,7 +20,9 @@ import {
   pathExists,
 } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import { hookSyntaxOf } from './tools.js';
+import { baseToolOf, hookSyntaxOf, toolOf } from './tool-registry.js';
+import { toolHomeOf } from './tool-home.js';
+import { toolPathUnder } from './locate.js';
 import type { JsonSyntax } from './utils/json.js';
 
 // ─── Co-author reconcile engine ──────────────────────────────
@@ -66,7 +68,12 @@ type Family = 'claude' | 'codex' | 'cursor';
 function familyOf(tool: string): Family {
   if (isCodexTool(tool)) return 'codex';
 
-  return CURSOR_TOOLS.has(tool) ? 'cursor' : 'claude';
+  return CURSOR_TOOLS.has(baseToolOf(tool)) ? 'cursor' : 'claude';
+}
+
+/** The home of a tool instance that has one of its own; undefined for a shipped tool, and for an instance that keeps the home of the tool it extends, which resolves as that tool does. */
+function instanceHome(tool: string): string | undefined {
+  return toolOf(tool)?.instance?.home === undefined || baseToolOf(tool) === tool ? undefined : toolHomeOf(tool)?.dir;
 }
 
 export interface CoAuthorChange {
@@ -120,7 +127,9 @@ async function resolveTargets(
     // ZCode, Muse Code and Antigravity CLI expose no documented attribution
     // setting — writing one into their shared config file would be an unknown
     // key the tool never reads.
-    if (tool === 'zcode' || tool === 'muse' || tool === 'agy') continue;
+    const base = baseToolOf(tool);
+
+    if (base === 'zcode' || base === 'muse' || base === 'agy') continue;
     const family = familyOf(tool);
 
     // Installation probe: the tool's root dir (parent of its resource dir), same
@@ -129,7 +138,7 @@ async function resolveTargets(
 
     if (!probe) continue;
     const probeDir = path.dirname(probe);
-    const toolRoot = probeDir === '.' ? path.join(baseDir, probe) : path.join(baseDir, probeDir);
+    const toolRoot = toolPathUnder(tool, baseDir, probeDir === '.' ? probe : probeDir);
 
     if (!(await pathExists(toolRoot))) {
       log.debug(`[coauthor] Skipping ${tool}: tool not installed`);
@@ -142,20 +151,21 @@ async function resolveTargets(
       if (!paths.settings) continue;
 
       if (!projectScope) {
-        targets.push({ tool, family, file: path.join(baseDir, paths.settings) });
+        targets.push({ tool, family, file: toolPathUnder(tool, baseDir, paths.settings) });
         continue;
       }
 
       // Project scope: the choice is the member's, and the project's
-      // settings.json is often tracked (#993). Claude Code has a personal layer
-      // beside it, settings.local.json (as team hooks use, #955); the rest of
-      // the family has none we can rely on, so they are user-scope only here.
-      if (tool !== 'claude') {
+      // settings.json is often tracked (#993). Claude Code, and an instance of
+      // it, has a personal layer beside it, settings.local.json (as team hooks
+      // use, #955); the rest of the family has none we can rely on, so they are
+      // user-scope only here.
+      if (baseToolOf(tool) !== 'claude') {
         log.debug(`[coauthor] Skipping ${tool}: no member-local project settings file`);
         continue;
       }
 
-      targets.push({ tool, family, file: path.join(baseDir, path.dirname(paths.settings), 'settings.local.json') });
+      targets.push({ tool, family, file: toolPathUnder(tool, baseDir, `${path.posix.dirname(paths.settings)}/settings.local.json`) });
     } else if (family === 'codex') {
       // User scope only: Codex reads commit_attribution from $CODEX_HOME/config.toml.
       if (projectScope) {
@@ -170,7 +180,7 @@ async function resolveTargets(
       targets.push({
         tool,
         family,
-        file: path.join(resolveToolRootDir(tool, defaultRoot, localConfig.toolRoots), 'config.toml'),
+        file: path.join(instanceHome(tool) ?? resolveToolRootDir(tool, defaultRoot, localConfig.toolRoots), 'config.toml'),
       });
     } else {
       // Cursor: user scope only. The CLI reads cli-config.json from its config root, not from the
@@ -180,7 +190,7 @@ async function resolveTargets(
         continue;
       }
 
-      targets.push({ tool, family, file: path.join(cursorConfigDir(localConfig.toolRoots), 'cli-config.json') });
+      targets.push({ tool, family, file: path.join(instanceHome(tool) ?? cursorConfigDir(localConfig.toolRoots), 'cli-config.json') });
     }
   }
 
@@ -200,6 +210,7 @@ function preFixSharedTargets(teamConfig: TeamaiConfig, localConfig: LocalConfig)
 
   for (const [tool, paths] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (familyOf(tool) !== 'claude' || !paths.settings) continue;
+    // oxlint-disable-next-line teamai/configured-tool-paths -- the scope check above makes baseDir the project root: the project files releases before #993 wrote
     const file = path.join(baseDir, paths.settings);
 
     if (!files.has(file)) files.set(file, tool);
@@ -480,29 +491,39 @@ async function applyCursor(file: string, enabled: boolean): Promise<boolean> {
 }
 
 /**
- * The project's `.claude/settings.local.json` and teamai's entry there (#915).
- * `holds`: the record says teamai wrote "strip" (`managed` false) and the file
- * still holds an empty trailer. teamai owns `attribution` only then; the file
- * may hold anything else too. `unreadable`: the record says so but the file
- * does not parse, so whether the entry is still there is unknown.
+ * The project's `.claude/settings.local.json`, and the one beside each Claude
+ * instance's settings, that hold teamai's entry (#915). `holds`: the record says
+ * teamai wrote "strip" (`managed` false) and the file still holds an empty
+ * trailer. teamai owns `attribution` only then; the file may hold anything else
+ * too. `unreadable`: the record says so but the file does not parse, so whether
+ * the entry is still there is unknown.
  */
-export async function coAuthorLocalSettingsFile(
+export async function coAuthorLocalSettingsFiles(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
   managed: Readonly<Record<string, boolean>>,
-): Promise<{ kind: 'holds' | 'unreadable'; file: string } | { kind: 'none' }> {
-  const settings = scopedToolPaths(teamConfig, localConfig).claude?.settings;
+): Promise<Array<{ kind: 'holds' | 'unreadable'; file: string }>> {
+  if (localConfig.scope !== 'project') return [];
+  const found: Array<{ kind: 'holds' | 'unreadable'; file: string }> = [];
 
-  if (localConfig.scope !== 'project' || !settings) return { kind: 'none' };
-  const file = path.join(resolveBaseDir(localConfig), path.dirname(settings), 'settings.local.json');
+  for (const [tool, paths] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    if (baseToolOf(tool) !== 'claude' || !paths?.settings) continue;
+    const file = toolPathUnder(tool, resolveBaseDir(localConfig), `${path.posix.dirname(paths.settings)}/settings.local.json`);
 
-  if (managed[file] ?? true) return { kind: 'none' };
-  const read = await readJsonObject(file);
+    if (managed[file] ?? true) continue;
+    const read = await readJsonObject(file);
 
-  if (read.kind === 'invalid') return { kind: 'unreadable', file };
-  const attribution = read.kind === 'ok' ? read.value.attribution : undefined;
+    if (read.kind === 'invalid') {
+      found.push({ kind: 'unreadable', file });
+      continue;
+    }
 
-  return EmptyTrailerSchema.safeParse(attribution).success ? { kind: 'holds', file } : { kind: 'none' };
+    const attribution = read.kind === 'ok' ? read.value.attribution : undefined;
+
+    if (EmptyTrailerSchema.safeParse(attribution).success) found.push({ kind: 'holds', file });
+  }
+
+  return found;
 }
 
 // ─── Main entry ──────────────────────────────────────────────
@@ -521,6 +542,7 @@ export async function reconcileCoAuthorForConfig(
 
   const intent = resolveCoAuthor(localConfig, teamConfig);
   const claudeSettings = scopedToolPaths(teamConfig, localConfig).claude?.settings;
+  // oxlint-disable-next-line teamai/configured-tool-paths -- compared only with preFixSharedTargets, which is empty outside project scope, so this is a project file
   const claudeShared = claudeSettings ? path.join(resolveBaseDir(localConfig), claudeSettings) : undefined;
 
   // Settle each shared project file an earlier release wrote into: remove the

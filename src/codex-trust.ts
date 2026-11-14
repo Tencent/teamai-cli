@@ -5,14 +5,13 @@ import path from 'node:path';
 import crossSpawn from 'cross-spawn';
 import semver from 'semver';
 import { z } from 'zod';
-import { desktopCodexBinaries } from './codex-desktop.js';
 import { getCurrentVersion } from './package-info.js';
-import type { CodexBuild, CodexBuildSkew, JsonValue } from './types.js';
-import { JsonValueSchema, JsonObjectSchema } from './types.js';
-import { execCommand, probeBinary } from './utils/exec.js';
-import { lenientList } from './utils/json.js';
-import { log } from './utils/logger.js';
-import { findOnPath } from './utils/lookpath.js';
+import { CODEX_TOOL_ID, type CodexBuild, type CodexBuildSkew } from './types.js';
+import { execCommand, probeBinary } from '@teamai/shared/exec';
+import { lenientList, type JsonValue, JsonValueSchema, JsonObjectSchema } from '@teamai/shared/json';
+import { log } from '@teamai/shared/log';
+import { findOnPath } from '@teamai/shared/lookpath';
+import { isBareCommandName } from '@teamai/shared/cli-path';
 
 /**
  * Trusting what teamai writes into Codex (#955).
@@ -33,6 +32,8 @@ export type CodexTrust = (
   | { kind: 'disabled' }
   /** No Codex build: no `codex` on PATH and no desktop app. */
   | { kind: 'unavailable'; reason: string }
+  /** A team instance of Codex whose command no one accepted here: only that command trusts its hooks, so none ran. */
+  | { kind: 'unaccepted'; tool: string }
   /** The app-server failed, timed out, or did not load a requested hook. */
   | { kind: 'failed'; reason: string }
 ) & CodexBuildComparison;
@@ -47,9 +48,19 @@ interface CodexBuildComparison {
   uncompared?: CodexBuild[];
 }
 
-export interface CodexHookTrustRequest {
-  /** The Codex home teamai wrote to (`CODEX_HOME` for the app-server). */
+/**
+ * The Codex an app-server call starts: in `codexHome` (its `CODEX_HOME`), the first of `commands` that is on PATH, or
+ * without `commands` the newest of Codex's own builds (`codex` on PATH, then the desktop apps).
+ */
+export interface CodexAt {
   codexHome: string;
+  /** A Codex instance's own accepted command, which hashes the hooks as that build does. */
+  commands?: readonly string[];
+  /** The Codex instance whose own command runs, which starts in `codexHome` through its own variable too; Codex's builds when absent. */
+  tool?: string;
+}
+
+export interface CodexHookTrustRequest extends CodexAt {
   /** Directory whose hook layers are listed. */
   cwd: string;
   /** Exact generated entries, with Codex's file/event/position key; Codex on Windows lists an entry by its `commandWindows`. */
@@ -96,14 +107,17 @@ interface CodexCandidate {
   identity: string;
 }
 
-/** `codex` on PATH first (it wins a version tie), then the desktop builds. Stat only, no spawn. */
-function codexBuildCandidates(): CodexCandidate[] {
-  const onPath = findOnPath('codex');
+/** `commands`, else `codex` on PATH first (it wins a version tie), then the desktop builds. Stat only, no spawn. */
+async function codexBuildCandidates(commands?: readonly string[]): Promise<CodexCandidate[]> {
+  // The launch registry loads every family's launch profiles: here, where first used, not in every command that imports this module.
+  const { executablesOf } = await import('./tool-launch/tools.js');
 
-  const found = [
-    ...(onPath ? [{ command: 'codex', path: onPath }] : []),
-    ...desktopCodexBinaries().map((binary) => ({ command: binary, path: binary })),
-  ];
+  const found = (commands ?? executablesOf('codex')).flatMap((command) => {
+    if (!isBareCommandName(command)) return [{ command, path: command }];
+    const onPath = findOnPath(command);
+
+    return onPath ? [{ command, path: onPath }] : [];
+  });
 
   const seen = new Set<string>();
 
@@ -127,16 +141,18 @@ function codexBuildCandidates(): CodexCandidate[] {
  * fingerprint: an added, removed, or updated build can change which one
  * answers and how it hashes a hook. Stat only, so a cached pull runs no binary.
  */
-export function codexBuildsIdentity(): string {
-  return codexBuildCandidates().map((c) => c.identity).join('\0\0');
+export async function codexBuildsIdentity(commands?: readonly string[]): Promise<string> {
+  return (await codexBuildCandidates(commands)).map((c) => c.identity).join('\0\0');
 }
 
 async function probeCodexVersion(command: string): Promise<string | null> {
   // `codex --version` first sets up its arg0 helpers under $CODEX_HOME/tmp; a throwaway home keeps the member's as it was.
   const codexHome = await mkdtemp(path.join(os.tmpdir(), 'teamai-codex-version-'));
+  const { toolCommandEnv } = await import('./tool-launch/tools.js');
+  const env = { ...process.env, ...toolCommandEnv(CODEX_TOOL_ID, { kind: 'at', dir: codexHome }) };
 
   try {
-    const printed = /codex-cli\s+(\S+)/.exec(await probeBinary(command, ['--version'], (binary, args, options) => execCommand(binary, args, { ...options, env: { ...process.env, CODEX_HOME: codexHome } })))?.[1];
+    const printed = /codex-cli\s+(\S+)/.exec(await probeBinary(command, ['--version'], (binary, args, options) => execCommand(binary, args, { ...options, env })))?.[1];
 
     return printed ? semver.valid(printed) : null;
   } finally {
@@ -164,7 +180,7 @@ function codexVersionOf(candidate: CodexCandidate): Promise<string | null> {
  * gating on a floor never guesses for an unknown build.
  */
 export async function oldestCodexBuildVersion(): Promise<string | null> {
-  const builds = await Promise.all(codexBuildCandidates().map(async (c) => ({ path: c.path, version: await codexVersionOf(c) })));
+  const builds = await Promise.all((await codexBuildCandidates()).map(async (c) => ({ path: c.path, version: await codexVersionOf(c) })));
 
   log.debug(`Codex builds for the hook form: ${builds.map((b) => `${b.path} → "${b.version ?? ''}"`).join(', ') || 'none'}`);
   const known = builds.flatMap((b) => (b.version === null ? [] : [b.version]));
@@ -186,8 +202,8 @@ let resolved: { identity: string; build: Promise<ResolvedCodexBuild | null> } | 
  * unparseable version ranking lowest and a tie keeping candidate order. A lone
  * candidate is used without a probe. Memoized while the candidates are unchanged.
  */
-function resolveCodexBuild(): Promise<ResolvedCodexBuild | null> {
-  const candidates = codexBuildCandidates();
+async function resolveCodexBuild(commands?: readonly string[]): Promise<ResolvedCodexBuild | null> {
+  const candidates = await codexBuildCandidates(commands);
   const identity = candidates.map((c) => c.identity).join('\0\0');
 
   if (resolved?.identity !== identity) resolved = { identity, build: pickCodexBuild(candidates) };
@@ -226,7 +242,7 @@ async function compareCodexBuilds(
 
   const compared = await Promise.all(versions.others.map(async (other) => ({
     codex: { path: other.path, version: other.version },
-    theirs: await withCodexBuild(req.codexHome, other.command, async (server) => hashes(await listHooks(server, req.cwd))),
+    theirs: await withCodexBuild({ codexHome: req.codexHome, command: other.command }, async (server) => hashes(await listHooks(server, req.cwd))),
   })));
 
   const others = compared.flatMap(({ codex, theirs }) =>
@@ -278,9 +294,11 @@ class AppServerError extends Error {
   }
 }
 
-async function openAppServer(codexHome: string, command: string): Promise<AppServer> {
+async function openAppServer(codexHome: string, command: string, tool: string): Promise<AppServer> {
+  const { toolCommandEnv } = await import('./tool-launch/tools.js');
+
   const child = crossSpawn(command, ['app-server'], {
-    env: { ...process.env, CODEX_HOME: codexHome },
+    env: { ...process.env, ...toolCommandEnv(tool, { kind: 'at', dir: codexHome }) },
     stdio: ['pipe', 'pipe', 'ignore'],
     windowsHide: true,
   });
@@ -382,25 +400,26 @@ async function openAppServer(codexHome: string, command: string): Promise<AppSer
 type AppServerFailure = { kind: 'unavailable'; reason: string } | { kind: 'failed'; reason: string };
 
 async function withAppServer<T>(
-  codexHome: string,
+  { codexHome, commands, tool }: CodexAt,
   run: (server: AppServer, build: ResolvedCodexBuild) => Promise<T>,
 ): Promise<T | AppServerFailure> {
-  const build = await resolveCodexBuild();
+  const build = await resolveCodexBuild(commands);
 
-  if (!build) return { kind: 'unavailable', reason: 'codex is not on PATH and no Codex desktop app is installed' };
+  if (!build) {
+    return { kind: 'unavailable', reason: commands === undefined ? 'codex is not on PATH and no Codex desktop app is installed' : `${commands.join(', ') || 'no command'} is not on PATH` };
+  }
 
-  return withCodexBuild(codexHome, build.command, (server) => run(server, build));
+  return withCodexBuild({ codexHome, command: build.command, tool }, (server) => run(server, build));
 }
 
 async function withCodexBuild<T>(
-  codexHome: string,
-  command: string,
+  { codexHome, command, tool = CODEX_TOOL_ID }: { codexHome: string; command: string; tool?: string },
   run: (server: AppServer) => Promise<T>,
 ): Promise<T | AppServerFailure> {
   let server: AppServer | null = null;
 
   try {
-    server = await openAppServer(codexHome, command);
+    server = await openAppServer(codexHome, command, tool);
 
     return await run(server);
   } catch (e) {
@@ -462,10 +481,10 @@ async function ensureProjectTrusted(server: AppServer, project: string, onWritte
  * Codex reads its `.codex/` layer (hooks, MCP servers). A project the member
  * marked untrusted is left as it is.
  */
-export async function trustCodexProject(req: { codexHome: string; project: string }): Promise<CodexTrust> {
+export async function trustCodexProject(req: CodexAt & { project: string }): Promise<CodexTrust> {
   const project = canonical(req.project);
 
-  return withAppServer(req.codexHome, async (server): Promise<CodexTrust> => {
+  return withAppServer(req, async (server): Promise<CodexTrust> => {
     const level = await ensureProjectTrusted(server, project);
 
     return level === 'trusted'
@@ -475,12 +494,12 @@ export async function trustCodexProject(req: { codexHome: string; project: strin
 }
 
 /** Remove a recorded trust grant only while it still contains exactly what teamai wrote. */
-export async function removeOwnedCodexProjectTrust(req: { codexHome: string; project: string }): Promise<
+export async function removeOwnedCodexProjectTrust(req: CodexAt & { project: string }): Promise<
   { kind: 'removed' | 'kept' } | AppServerFailure
 > {
   const project = canonical(req.project);
 
-  return withAppServer(req.codexHome, async (server) => {
+  return withAppServer(req, async (server) => {
     const projects = ProjectsReadSchema.parse(await server.request('config/read', {}));
 
     if (!OwnedProjectTrustSchema.safeParse(projects[project]).success) return { kind: 'kept' as const };
@@ -549,7 +568,7 @@ export async function trustCodexHooks(req: CodexHookTrustRequest): Promise<Codex
   const wanted = new Set(req.hooks.flatMap(hookIds));
   const project = req.project ? canonical(req.project) : undefined;
 
-  return withAppServer(req.codexHome, async (server, build): Promise<CodexTrust> => {
+  return withAppServer(req, async (server, build): Promise<CodexTrust> => {
     const level = project ? await ensureProjectTrusted(server, project, req.onProjectTrusted) : undefined;
     const listed = await listHooks(server, req.cwd);
     const builds = await compareCodexBuilds(req, listed, build);
@@ -601,19 +620,19 @@ function hasApprovalState(hook: HookInfo): boolean {
  * `write` runs even when Codex cannot be asked.
  */
 export async function keepCodexHookTrust(
-  req: { codexHome: string; cwd: string; file: string },
+  req: CodexAt & { cwd: string; file: string },
   retained: ReadonlyMap<string, string>,
   write: () => Promise<void>,
 ): Promise<CodexTrust> {
   const file = canonical(req.file);
-  const before = await withAppServer(req.codexHome, async (server) => hooksByKey(await listHooks(server, req.cwd), file));
+  const before = await withAppServer(req, async (server) => hooksByKey(await listHooks(server, req.cwd), file));
   await write();
 
   if (!(before instanceof Map)) return before;
 
   if (![...before.values()].some(hasApprovalState)) return { kind: 'trusted', hooks: 0 };
 
-  return withAppServer(req.codexHome, async (server): Promise<CodexTrust> => {
+  return withAppServer(req, async (server): Promise<CodexTrust> => {
     const toTrust: HookInfo[] = [];
     const edits: Array<{ keyPath: string; value: JsonValue; mergeStrategy: 'upsert' | 'replace' }> = [];
     const after = hooksByKey(await listHooks(server, req.cwd), file);
@@ -674,7 +693,7 @@ export async function keepCodexHookTrust(
  * a worktree whose `.codex/` does not exist yet). Writes nothing.
  */
 export async function readCodexHookTrust(req: Omit<CodexHookTrustRequest, 'project'>): Promise<CodexHookTrustReport> {
-  return withAppServer(req.codexHome, async (server, build): Promise<CodexHookTrustReport> => {
+  return withAppServer(req, async (server, build): Promise<CodexHookTrustReport> => {
     const listed = await listHooks(server, req.cwd);
     const statuses = new Map(listed.map((h) => [hookId(h.sourcePath, h.command, h.key), h.trustStatus]));
 

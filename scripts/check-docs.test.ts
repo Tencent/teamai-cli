@@ -15,11 +15,17 @@ afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: 
 // concurrently on a CI runner busy with the full suite, they split the same cores and every full run passed 30 s.
 const RUN_MS = 30_000;
 vi.setConfig({ testTimeout: RUN_MS });
+/** The shipped tool ids check-docs generates for teamai/tool-facts. */
+const TOOL_IDS = 'oxlint-plugin-teamai/tool-ids.generated.json';
+/** The lint plugin's rule registry, and the README whose table lists each of its rules. */
+const LINT_RULES = 'oxlint-plugin-teamai/index.js';
+const LINT_README = 'oxlint-plugin-teamai/README.md';
 
 function checkout(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-docs-command-'));
   dirs.push(root);
-  for (const name of ['docs', 'skill-data', 'skills', 'AGENTS.md', '.github', ...fs.readdirSync(ROOT).filter((file) => /^README.*\.md$/.test(file))]) {
+  // The lint README is checked against each rule index.js registers.
+  for (const name of ['docs', 'skill-data', 'skills', 'AGENTS.md', '.github', TOOL_IDS, LINT_RULES, LINT_README, ...fs.readdirSync(ROOT).filter((file) => /^README.*\.md$/.test(file))]) {
     fs.cpSync(path.join(ROOT, name), path.join(root, name), { recursive: true });
   }
   const example = 'examples/related-recall/README.md';
@@ -87,6 +93,16 @@ it('check rejects a README matrix that disagrees with the tool descriptor', () =
   expect(checked.status).toBe(1);
   expect(checked.output).toContain('Documentation check failed: lists every tool but the internal builds');
 });
+it('check rejects a lint rule with no row in the plugin README, and a row with no rule', () => {
+  const root = checkout();
+  const readme = path.join(root, LINT_README);
+  fs.writeFileSync(readme, fs.readFileSync(readme, 'utf8').replace(/^\| `teamai\/home-env` \|.*$/mu, '| `teamai/invented-rule` | Nothing. |'));
+  const checked = run(root, '--only=lint-rules-readme');
+  expect(checked.status).toBe(1);
+  expect(checked.output).toContain('Documentation check failed: oxlint-plugin-teamai/README.md has a row for every rule index.js registers, and none for another');
+  expect(checked.output).toMatch(/no row: teamai\/home-env\b[\s\S]*no rule: teamai\/invented-rule\b/u);
+});
+
 it('check rejects an invented command in served skills', () => {
   const root = checkout();
   fs.appendFileSync(path.join(root, 'skill-data/core/SKILL.md'), '\n`teamai extract graph`\n');
@@ -132,13 +148,13 @@ it.each([
   expect(checked.output).toContain(diagnostic);
 });
 
-it('write changes only its three generated files', () => {
+it('write changes only its generated files', () => {
   const root = checkout();
   const files = fs.readdirSync(root, { recursive: true, encoding: 'utf8' })
     .filter((file) => fs.statSync(path.join(root, file)).isFile());
   const before = new Map(files.map((file) => [file, fs.readFileSync(path.join(root, file), 'utf8')]));
   expect(run(root, '--write').status).toBe(0);
-  const generated = new Set(['skill-data/core/references/commands.md', 'docs/guide/tool-support.md', 'docs/guide/zh-CN/tool-support.md']);
+  const generated = new Set(['skill-data/core/references/commands.md', 'docs/guide/tool-support.md', 'docs/guide/zh-CN/tool-support.md', TOOL_IDS]);
   for (const file of files.filter((name) => !generated.has(name.split(path.sep).join('/')))) {
     expect(fs.readFileSync(path.join(root, file), 'utf8'), file).toBe(before.get(file));
   }

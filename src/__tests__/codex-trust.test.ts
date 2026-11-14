@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, onTestFinished } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
@@ -14,7 +15,7 @@ vi.mock('cross-spawn', async (importOriginal) => {
   return { ...actual, default: vi.fn(actual.default) };
 });
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), persist: vi.fn() },
 }));
 
@@ -22,12 +23,14 @@ import fc from 'fast-check';
 import { applyAgentHook, codexTrustPolicy, readCodexHookTrustForScope, reconcileHooks, reconcileTeamHooksForConfig, removeAgentHook, reportCodexTrust, trustCodexAgentHook, trustCodexForScope, type CodexTrustPolicy } from '../hooks.js';
 import { oldestCodexBuildVersion, readCodexHookTrust, removeOwnedCodexProjectTrust, trustCodexHooks, trustCodexProject } from '../codex-trust.js';
 import { reconcileCodexDispatchers, setCodexDispatcherHooks } from '../codex-team-hooks.js';
+import { judgeTeamaiOnlyFiles } from '../teamai-only-files.js';
 import crossSpawn from 'cross-spawn';
 import { resolveAnchors, listWorktrees } from '../utils/git.js';
 import { log } from '../utils/logger.js';
 import { CODEX_TOOL_ID } from '../types.js';
 import type { HookDef, LocalConfig, TeamaiConfig } from '../types.js';
 import { fakeCodexVersionRuns, installFakeCodex, readFakeCodexState, writeFakeCodexOptions } from './helpers/fake-codex.js';
+import { saveToolHomes } from '../tool-home.js';
 
 let home: string;
 let repo: string;
@@ -493,6 +496,174 @@ describe('Codex hook trust — user scope', () => {
   });
 });
 
+describe('Codex hook trust — an instance', () => {
+  const ACME_CODEX = 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\ncommand: acme-codex\nhome: { dir: .acme-codex }\n';
+
+  /** The team config with `acme-codex`, a member's own instance or the team's, and a fake Codex on PATH as `acme-codex` beside the shipped one. */
+  async function withInstance(source: 'personal' | 'team', { moved = false, keepsCodexHome = false, recorded = false }: { moved?: boolean; keepsCodexHome?: boolean; recorded?: boolean } = {}): Promise<{ config: TeamaiConfig; acmeHome: string; acmeBuild: string }> {
+    const acmeBin = installFakeCodex();
+    for (const name of ['codex', 'codex.cmd']) await fse.move(path.join(acmeBin, name), path.join(acmeBin, `acme-${name}`));
+    // A build that, as the team's does, reads its home from its own variable only, never from CODEX_HOME.
+    if (recorded) await fse.writeFile(path.join(acmeBin, 'acme-codex'), `#!/bin/sh\nCODEX_HOME="\${ACME_CODEX_HOME:-$HOME/.acme-codex}" exec ${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(acmeBin, 'fake-codex.cjs'))} "$@"\n`, { mode: 0o755 });
+    vi.stubEnv('PATH', `${acmeBin}${path.delimiter}${process.env.PATH ?? ''}`);
+    onTestFinished(() => fse.remove(acmeBin));
+    await fse.outputFile(path.join(repo, 'teamai.yaml'), 'team: acme\nrepo: acme/team\n');
+    // A moved home: the instance names its own variable, which the member exports to a directory of their choosing.
+    // One that keeps the home of Codex sets none, and the member recorded that home at ~/.codex-work (toolRoots.codex).
+    const text = moved ? ACME_CODEX.replace('home: { dir: .acme-codex }', 'home: { dir: .acme-codex, env: ACME_CODEX_HOME }')
+      : keepsCodexHome ? ACME_CODEX.replace('home: { dir: .acme-codex }\n', '') : ACME_CODEX;
+    await fse.outputFile(source === 'team' ? path.join(repo, 'tools', 'acme-codex.yaml') : path.join(home, '.teamai', 'tools', 'acme-codex.yaml'), text);
+    const acmeHome = moved ? path.join(home, 'acme-moved') : path.join(home, keepsCodexHome ? '.codex-work' : '.acme-codex');
+
+    // A recorded home is the one an earlier init or pull saw the variable name, in a shell that set it; this one does not.
+    if (moved && recorded) await saveToolHomes({ 'acme-codex': acmeHome });
+    else if (moved) vi.stubEnv('ACME_CODEX_HOME', acmeHome);
+    await fse.ensureDir(acmeHome);
+    const { loadTeamConfig } = await import('../config.js');
+    const config = await loadTeamConfig(repo);
+
+    if (!config) throw new Error('the team config did not load');
+
+    return { config, acmeHome, acmeBuild: path.join(acmeBin, 'codex') };
+  }
+
+  afterEach(async () => {
+    const { resetToolInstancesForTests } = await import('../tool-instances.js');
+    resetToolInstancesForTests();
+  });
+
+  it.each([
+    ['its own home', false],
+    ['the home its own variable moves', true],
+  ])('trusts the hooks teamai wrote for an instance in %s, through its own command', async (_where, moved) => {
+    const { config, acmeHome, acmeBuild } = await withInstance('personal', { moved });
+    await writeYaml(LINT_HOOK);
+    const local = userConfig({ enabledAgents: ['acme-codex'] });
+
+    await reconcileTeamHooksForConfig(config, local);
+    const trust = await trustCodexForScope(config, local);
+
+    const entries = await codexEntries(path.join(acmeHome, 'hooks.json'));
+    expect(entries.some((e) => e.command === 'npm run lint')).toBe(true);
+    expect(trust).toEqual({ kind: 'trusted', hooks: entries.length });
+    expect(trustedKeys(acmeHome).sort()).toEqual(entries.map((e) => e.key).sort());
+    expect(new Set(readFakeCodexState(acmeHome).calls.map((c) => c.codex))).toEqual(new Set([acmeBuild]));
+    expect(readFakeCodexState(codexHome()).calls).toEqual([]);
+    expect(await readCodexHookTrustForScope(config, local)).toEqual({ kind: 'listed', notTrusted: [] });
+    // Doctor's check that the instance's session hooks carry the team's instructions reads the same file.
+    const { channelReadiness } = await import('../instruction-targets.js');
+    expect((await channelReadiness('acme-codex', 'codex-hooks', { teamConfig: config, localConfig: local })).ready).toBe(true);
+  });
+
+  it.skipIf(process.platform === 'win32')('trusts through its own command in the home recorded for its variable, from a shell without the variable', async () => {
+    const { config, acmeHome, acmeBuild } = await withInstance('personal', { moved: true, recorded: true });
+    await writeYaml(LINT_HOOK);
+    const local = userConfig({ enabledAgents: ['acme-codex'] });
+
+    await reconcileTeamHooksForConfig(config, local);
+    const trust = await trustCodexForScope(config, local);
+
+    const entries = await codexEntries(path.join(acmeHome, 'hooks.json'));
+    expect(trust).toEqual({ kind: 'trusted', hooks: entries.length });
+    expect(trustedKeys(acmeHome).sort()).toEqual(entries.map((e) => e.key).sort());
+    expect(new Set(readFakeCodexState(acmeHome).calls.map((c) => c.codex))).toEqual(new Set([acmeBuild]));
+    expect(await fse.pathExists(path.join(home, '.acme-codex'))).toBe(false);
+  });
+
+  it('trusts the hooks of an instance that keeps the home of Codex in the Codex home the member recorded', async () => {
+    const { config, acmeHome, acmeBuild } = await withInstance('personal', { keepsCodexHome: true });
+    await writeYaml(LINT_HOOK);
+    const local = userConfig({ enabledAgents: ['acme-codex'], toolRoots: { codex: '~/.codex-work' } });
+
+    await reconcileTeamHooksForConfig(config, local);
+    const trust = await trustCodexForScope(config, local);
+
+    const entries = await codexEntries(path.join(acmeHome, 'hooks.json'));
+    expect(entries.some((e) => e.command === 'npm run lint')).toBe(true);
+    expect(trust).toEqual({ kind: 'trusted', hooks: entries.length });
+    expect(trustedKeys(acmeHome).sort()).toEqual(entries.map((e) => e.key).sort());
+    expect(new Set(readFakeCodexState(acmeHome).calls.map((c) => c.codex))).toEqual(new Set([acmeBuild]));
+    expect(await fse.pathExists(path.join(codexHome(), 'hooks.json'))).toBe(false);
+  });
+
+  it('takes back, through its own command, the trust of the hooks a removal takes out of an instance', async () => {
+    const { config, acmeHome, acmeBuild } = await withInstance('personal');
+    const local = userConfig({ enabledAgents: ['acme-codex'] });
+    await reconcileTeamHooksForConfig(config, local);
+    await trustCodexForScope(config, local);
+    expect(trustedKeys(acmeHome)).not.toEqual([]);
+
+    await reconcileHooks(path.join(acmeHome, 'hooks.json'), 'acme-codex', [], { removeAll: true, codexTrust: codexTrustPolicy(local) });
+
+    expect(trustedKeys(acmeHome)).toEqual([]);
+    expect(new Set(readFakeCodexState(acmeHome).calls.map((c) => c.codex))).toEqual(new Set([acmeBuild]));
+    expect(readFakeCodexState(codexHome()).calls).toEqual([]);
+  });
+
+  it.each([
+    ['no one to ask', undefined],
+    ['a person who answers n', 'n'],
+  ])('runs no Codex for a team instance whose command no one accepted, with %s', async (_, answer) => {
+    const { config, acmeHome } = await withInstance('team');
+    await writeYaml(LINT_HOOK);
+    const local = userConfig({ enabledAgents: ['acme-codex'] });
+    const asked: string[] = [];
+    const ask = answer === undefined ? undefined : async (question: string) => { asked.push(question); return answer; };
+
+    await reconcileTeamHooksForConfig(config, local);
+
+    expect(await trustCodexForScope(config, local, { ask })).toEqual({ kind: 'unaccepted', tool: 'acme-codex' });
+    expect(asked).toHaveLength(answer === undefined ? 0 : 1);
+    expect(await trustCodexForScope(config, local)).toEqual({ kind: 'unaccepted', tool: 'acme-codex' });
+    expect(readFakeCodexState(acmeHome).calls).toEqual([]);
+    expect(readFakeCodexState(codexHome()).calls).toEqual([]);
+  });
+
+  it.each([
+    { case: '' },
+    // The yes holds for this run when the trust file stays locked and is not recorded: the pull still trusts the hooks.
+    { case: ', also while another process holds the trust file', busy: true },
+  ])('asks a person the acceptance question of a team instance\'s command, and trusts its hooks through it once accepted$case', async ({ busy }) => {
+    const { config, acmeHome, acmeBuild } = await withInstance('team');
+    await writeYaml(LINT_HOOK);
+    const local = userConfig({ enabledAgents: ['acme-codex'] });
+    const asked: string[] = [];
+    await reconcileTeamHooksForConfig(config, local);
+    if (busy) await fse.outputFile(path.join(home, '.teamai', 'trust', 'tools.json.lock'), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), owner: 'another-process' }));
+
+    const trust = await trustCodexForScope(config, local, { ask: async (question) => { asked.push(question); return 'y'; } });
+
+    const entries = await codexEntries(path.join(acmeHome, 'hooks.json'));
+    expect(asked).toEqual([expect.stringMatching(/^Tool "acme-codex" comes from the team repo \(.*acme-codex\.yaml, content [0-9a-f]{12}\), which you have not accepted on this machine\. It runs acme-codex as you, .*\nRun it\? \[y\/N\] $/s)]);
+    expect(trust).toEqual({ kind: 'trusted', hooks: entries.length });
+    expect(trustedKeys(acmeHome).sort()).toEqual(entries.map((e) => e.key).sort());
+    expect(new Set(readFakeCodexState(acmeHome).calls.map((c) => c.codex))).toEqual(new Set([acmeBuild]));
+    if (busy) return;
+    // The answer is the one a workflow step records: the next step on the instance asks nothing.
+    const { acceptToolCommand } = await import('../tool-instances.js');
+    const { toolOf } = await import('../tool-registry.js');
+    const instance = toolOf('acme-codex')?.instance;
+
+    if (!instance) throw new Error('acme-codex is not loaded');
+    expect(await acceptToolCommand(instance, { ask: undefined })).toEqual({ ok: true });
+  });
+
+  it('asks the acceptance question once for every scope a pull passes, and keeps the hooks untrusted after a no', async () => {
+    const { askingOnce } = await import('../tool-instances.js');
+    const { config } = await withInstance('team');
+    await writeYaml(LINT_HOOK);
+    const local = userConfig({ enabledAgents: ['acme-codex'] });
+    await reconcileTeamHooksForConfig(config, local);
+    const asked: string[] = [];
+    const ask = askingOnce(async (question) => { asked.push(question); return 'n'; });
+
+    const passes = [await trustCodexForScope(config, local, { ask }), await trustCodexForScope(config, local, { ask })];
+
+    expect(asked).toHaveLength(1);
+    expect(passes).toEqual([{ kind: 'unaccepted', tool: 'acme-codex' }, { kind: 'unaccepted', tool: 'acme-codex' }]);
+  });
+});
+
 describe('reportCodexTrust', () => {
   it('names how many hooks it trusted', () => {
     reportCodexTrust({ kind: 'trusted', hooks: 3 }, 'all');
@@ -504,6 +675,16 @@ describe('reportCodexTrust', () => {
     expect(log.warn).not.toHaveBeenCalled();
     reportCodexTrust({ kind: 'unavailable', reason: 'codex is not on PATH' }, 'all');
     expect(vi.mocked(log.warn).mock.calls[0]?.[0]).toMatch(/open \/hooks/);
+  });
+
+  it.each(['all', 'problems'] as const)('says which instance\'s hooks it left untrusted, and the step that trusts them (%s)', async (mode) => {
+    const { resetWarnOnce } = await import('../utils/warn-once.js');
+    resetWarnOnce();
+    reportCodexTrust({ kind: 'unaccepted', tool: 'acme-codex' }, mode);
+    expect(vi.mocked(log.warn).mock.calls).toEqual([[
+      'Did not trust the teamai hooks of acme-codex in Codex: only its own command trusts them, and no one has accepted that command on this machine. '
+        + 'Run `teamai pull` in a terminal to review and accept it; until then Codex may skip those hooks.',
+    ]]);
   });
 
   it('gives the cause of a failure, also during a pull', () => {
@@ -727,6 +908,27 @@ describe('Codex trust — project scopes', () => {
     expect(entries.some((e) => e.command === 'npm run lint')).toBe(true);
     expect(trustedKeys().sort()).toEqual(entries.map((e) => e.key).sort());
     expect(result.codexTrust).toEqual({ kind: 'trusted', hooks: entries.length, project });
+  });
+
+  it('judges a Codex instance\'s hooks file in self mode as it judges Codex\'s', async () => {
+    await fse.outputFile(path.join(repo, 'teamai.yaml'), 'team: acme\nrepo: acme/team\n');
+    await fse.outputFile(path.join(home, '.teamai', 'tools', 'acme-codex.yaml'), 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\ncommand: acme-codex\nhome: { dir: .acme-codex }\n');
+    const { loadTeamConfig } = await import('../config.js');
+    const { resetToolInstancesForTests } = await import('../tool-instances.js');
+    onTestFinished(resetToolInstancesForTests);
+    const config = await loadTeamConfig(repo);
+
+    if (!config) throw new Error('the team config did not load');
+    execFileSync('git', ['init', '-q', project]);
+    for (const dir of ['.codex', '.acme-codex']) await fse.ensureDir(path.join(project, dir));
+    await fse.outputFile(path.join(project, '.teamai', 'hooks', 'hooks.yaml'), LINT_HOOK);
+    const local = { ...selfConfig(), enabledAgents: ['codex', 'acme-codex'], codexTrustEnabled: false };
+
+    await reconcileTeamHooksForConfig(config, local);
+
+    expect((await codexEntries(path.join(project, '.acme-codex', 'hooks.json'))).some((e) => e.command === 'npm run lint')).toBe(true);
+    const judged = (await judgeTeamaiOnlyFiles(config, local)).map(({ file, state }) => [path.relative(project, file), state]);
+    expect(judged).toEqual([[path.join('.codex', 'hooks.json'), 'mixed'], [path.join('.acme-codex', 'hooks.json'), 'mixed']]);
   });
 
   it('a self worktree trusts the main checkout\'s hooks, which Codex reads there', async () => {

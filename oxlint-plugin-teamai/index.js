@@ -18,7 +18,14 @@ import toolFacts from './rules/tool-facts.js';
 import noLowValueComments from './rules/no-low-value-comments.js';
 import suppressionReason from './rules/suppression-reason.js';
 import yamlParse from './rules/yaml-parse.js';
+import packageBoundaries from './rules/package-boundaries.js';
+import toolRegistry from './rules/tool-registry.js';
+import mockSource from './rules/mock-source.js';
+import processReads from './rules/process-reads.js';
 import uncachedEntry from './rules/uncached-entry.js';
+import familyFacts from './rules/family-facts.js';
+import shippedToolIds from './rules/shipped-tool-ids.js';
+import toolHomeEnv from './rules/tool-home-env.js';
 
 // The anti-slop rules are vendored TypeScript. oxlint imports plugins with plain
 // Node, and `npm run lint` runs on Node 20 in CI, which can't import TypeScript:
@@ -47,7 +54,14 @@ export default definePlugin({
     'no-low-value-comments': noLowValueComments,
     'suppression-reason': suppressionReason,
     'yaml-parse': yamlParse,
+    'package-boundaries': packageBoundaries,
+    'tool-registry': toolRegistry,
+    'mock-source': mockSource,
+    'process-reads': processReads,
     'uncached-entry': uncachedEntry,
+    'family-facts': familyFacts,
+    'shipped-tool-ids': shippedToolIds,
+    'tool-home-env': toolHomeEnv,
     ...antiSlopRules,
   },
 });

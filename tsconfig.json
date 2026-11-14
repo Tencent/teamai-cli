@@ -12,5 +12,5 @@
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*", "scripts/**/*.ts"]
+  "include": ["src/**/*", "packages/*/src/**/*", "scripts/**/*.ts"]
 }

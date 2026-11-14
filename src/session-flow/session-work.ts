@@ -8,7 +8,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { AgentObservation } from '../agent-observation.js';
-import { DefaultFolders } from '../default-folders.js';
 import { knownSecrets } from '../env-resolution.js';
 import type { RunMode } from '../launch-context.js';
 import { cachedScorerNames, pinScorers, scorerNamespaces } from '../scorers/cache.js';
@@ -28,11 +27,11 @@ import { typedIn, usedSkills } from '../skill-use.js';
 import { getDataHome, isJsonObject, JsonValueSchema, type JsonValue, type LocalConfig } from '../types.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
 import { mapStrings } from '../utils/json.js';
-import { redact } from '../utils/redact.js';
+import { redact } from '@teamai/shared/redact';
 import { AgentSession, sessionKey } from './agent-session.js';
-import type { SubagentsRead } from './adapters/base.js';
+import type { SubagentsRead } from '@teamai/tool-core/sessions/base';
 import { SessionCaptures, type CapturedSession, type SessionCapture } from './captures.js';
-import type { Session } from './ir.js';
+import type { Session } from '@teamai/tool-core/sessions/ir';
 import { pushedSession, type TeamSession } from './scoring.js';
 
 /** `value` with `mask` applied to each string in it, object keys included. */
@@ -242,11 +241,6 @@ export function sessionLabel(verdict: Omit<SessionLabel, 'source' | 'subject' | 
   return sessionLabeled;
 }
 
-/** How long nothing happens in an attended session before it is finished: the `idle` of teamai-finished-sessions's params.yaml in `config`. */
-async function finishedAfter(config: LocalConfig): Promise<{ text: string; ms: number }> {
-  return (await DefaultFolders.load({ kind: 'workflows', name: 'teamai-finished-sessions' }, config)).params.idle;
-}
-
 function sameSessionKey(label: ScoreLabel, scorer: string, sourceHash: string, subject: SessionSubject): boolean {
   return label.source === 'session' && label.scorer === scorer && label.rubric.sourceHash === sourceHash
     && label.subject.platform === subject.platform && label.subject.sessionId === subject.sessionId;
@@ -390,7 +384,7 @@ async function isGone(captured: CapturedSession): Promise<boolean> {
 
 /**
  * The sessions of `captured` finished at `now`, oldest activity first, of the run modes `includes` keeps (a capture with
- * no mode counts as attended): an attended session once nothing happened in it for `idleMs`, as {@link finishedAfter} gives it, an
+ * no mode counts as attended): an attended session once nothing happened in it for `idleMs`, as {@link SessionCaptures.finishedAfter} gives it, an
  * unattended one once a drain reached it (#1385), each with when something last happened in it. A session whose file
  * is gone is never finished.
  */
@@ -495,4 +489,4 @@ async function sampledScorers(config: LocalConfig, subject: SessionSubject, fact
   });
 }
 
-export const SessionWork = { finishedAfter, finished, read, readPushed, scopeCwd, sampledScorers, samplingScorers, sessionScorers, generatedQuestions, pinsOf, isGone } as const;
+export const SessionWork = { finished, read, readPushed, scopeCwd, sampledScorers, samplingScorers, sessionScorers, generatedQuestions, pinsOf, isGone } as const;

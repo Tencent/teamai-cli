@@ -141,3 +141,19 @@ Notes:
 33. agy 1.4.10 session read 2026-10-31; it names no model, so its tokens show unpriced
 34. invoke_subagent starts a fresh conversation that gets only its prompt (agy 1.4.8); no session variable, so the session names its tool with --tools; not run
 35. runs from teamai's team-hook bridge, which can block a tool call; the dispatcher hands it a Claude payload
+
+## Tool instances
+
+A team or a member adds an [instance](./reference.md#team-tools-tools) of these tools only, and teamai refuses an instance of any other tool:
+
+- Claude Code (`claude`)
+- Codex CLI (`codex`)
+
+## Workflow steps at a moved home
+
+A workflow step on one of these tools starts it with the variable after it set to the home teamai delivered to, the root `init` recorded (`toolRoots`) or the [recorded home](./reference.md#recorded-tool-homes-teamaitool-homesjson), even from a shell without that variable or one that names another directory. When a recorded directory is gone, the step does not start the tool and its failure says how to fix the record. Any other tool starts with the shell's variables, so start its run from a shell that sets them:
+
+- Claude Code (`claude`): `CLAUDE_CONFIG_DIR`
+- Codex CLI (`codex`): `CODEX_HOME`
+- Pi Coding Agent (`pi`): `PI_CODING_AGENT_DIR`
+- CodeBuddy (`codebuddy`): `CODEBUDDY_CONFIG_DIR`

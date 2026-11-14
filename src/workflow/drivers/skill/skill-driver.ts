@@ -9,9 +9,8 @@ import { resolveCliEntry } from '../../../builtin-hooks.js';
 import type { WorkflowEnv } from '../../../env-resolution.js';
 import { resolveRunMode, type RunMode } from '../../../launch-context.js';
 import type { CommandExit } from '../../../tool-launch/process-stop.js';
-import { isToolId, TOOLS } from '../../../tools.js';
+import { isToolId, TOOL_ORDER, toolInstancesFor, toolOf } from '../../../tool-registry.js';
 import type { LocalConfig, TeamaiConfig } from '../../../types.js';
-import type { ToolId } from '../../../tools.js';
 import { agentSessionFromEnv } from '../../../utils/session-id.js';
 import { WorkflowOffers } from '../../../workflow-offers.js';
 import { agentEvidence, isAttemptRunner, type AgentEvidence } from '../../attempt-marker.js';
@@ -35,18 +34,18 @@ export { ceilingOf, isLeft, listOf, localReason, personClauses } from './preflig
 
 /** `tool`: `--tools default=<tool>`, the tool of the calling session, which its host may not name. */
 export type SkillCall =
-  | { kind: 'describe'; name: string; tool?: ToolId }
+  | { kind: 'describe'; name: string; tool?: string }
   /**
    * `judge: false`: `--no-judge`, which leaves the scored steps unjudged here. `hitl`: `--hitl`, or `--auto-approve`.
    * `timeoutMs`: `--timeout`, which bounds the run as the workflow's own timeout does.
    */
-  | { kind: 'start'; name: string; answers: { parallel?: number; confirmed: boolean; hitl?: HitlMode; judge?: false }; inputs: unknown; tool?: ToolId; timeoutMs?: number }
+  | { kind: 'start'; name: string; answers: { parallel?: number; confirmed: boolean; hitl?: HitlMode; judge?: false }; inputs: unknown; tool?: string; timeoutMs?: number }
   /**
    * `resume --driver skill`: this session drives a run another machine published; `claim` which runs it takes from
    * teamai-reports, `any` with `--claim`, `offered` for the run `--next` picked. `confirmed`: `--confirmed`, the agent's
    * word that the person agreed to continue a run of an `invoke: ask` workflow.
    */
-  | { kind: 'resume'; run: RunId; claim: ResumeClaim; confirmed: boolean; answers: ResumeAnswers; tool?: ToolId }
+  | { kind: 'resume'; run: RunId; claim: ResumeClaim; confirmed: boolean; answers: ResumeAnswers; tool?: string }
   | { kind: 'next'; run: RunId; wait: boolean }
   /** `next --takeover`: this session drives the run from now on, as the person agreed; `confirmed` as a resume's. */
   | { kind: 'takeover'; run: RunId; confirmed: boolean }
@@ -103,7 +102,7 @@ export interface SkillContext {
   /** The run mode of the calling process, which describe answers for and a start keeps for the run. */
   mode: RunMode;
   /** The tool of that session, which a child's model is resolved for; undefined when its host names none. */
-  tool: ToolId | undefined;
+  tool: string | undefined;
   /** The tools the member names for `config`'s scope, the most specific first: TEAMAI_AI_TOOL, then `ai.tool`. */
   aiTools: readonly string[];
   invocation: Invocation;
@@ -177,14 +176,20 @@ const SessionToolSchema = z.string().transform((tools, ctx) => {
     return z.NEVER;
   }
 
-  if (!isToolId(tool)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `--tools default=${tool} names no tool teamai knows: ${Object.keys(TOOLS).join(', ')}` });
+  // A tool instance is known only once the scope's config is read, so `answerOf` checks the name.
+  if (!NAME.test(tool)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: unknownToolMessage(tool) });
 
     return z.NEVER;
   }
 
   return tool;
 });
+
+/** Why `--tools default=<tool>` is refused: it names neither a tool teamai ships nor an instance this scope defines. */
+function unknownToolMessage(tool: string): string {
+  return `--tools default=${tool} names no tool teamai knows: ${[...TOOL_ORDER, ...toolInstancesFor('use').flatMap(({ kind, name }) => kind === 'instance' ? [name] : [])].join(', ')}`;
+}
 
 /** The options of a run that a skill start and a skill resume share. */
 const RunOptionsSchema = z.object({
@@ -418,6 +423,10 @@ export async function runSkillCall(call: SkillCall, context: SkillContext): Prom
 async function answerOf(call: SkillCall, caller: SkillContext): Promise<SkillAnswer> {
   // The tool a session declares is the one it works in, whatever its host names, as a host may pass its env on to another tool.
   const context = 'tool' in call && call.tool !== undefined ? { ...caller, tool: call.tool } : caller;
+
+  if ('tool' in call && call.tool !== undefined && toolOf(call.tool) === undefined) {
+    return { error: { code: 'invalid_arguments', message: unknownToolMessage(call.tool), next: null } };
+  }
 
   switch (call.kind) {
     case 'describe':

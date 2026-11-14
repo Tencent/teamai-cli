@@ -6,7 +6,7 @@ import path from 'node:path';
 
 const logWarn = vi.fn();
 const logInfo = vi.fn();
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: (...a: unknown[]) => logInfo(...a), success: vi.fn(), warn: (...a: unknown[]) => logWarn(...a), error: vi.fn(), debug: vi.fn(), persist: vi.fn(), dim: vi.fn() },
 }));
 

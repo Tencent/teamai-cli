@@ -28,6 +28,9 @@ import type { CachedWorkflow, ResolvedWorkflow, WorkflowDefinition, WorkflowDiag
 /** Every default's name starts with this, so its generated skill, named after it, is one prune and uninstall look at. */
 const PREFIX = 'teamai-';
 
+/** The default that shares what a session taught, then the session: the one the friction reminder offers. */
+const SHARE_LEARNINGS = 'teamai-share-learnings';
+
 const parsedDefaults = new Map<string, CachedWorkflow>();
 
 /**
@@ -153,4 +156,4 @@ function callerWarnings(file: string, definition: WorkflowDefinition): string[] 
   return [...CONTRACTS.values()].flatMap((contract) => contract.callerWarnings(file, definition));
 }
 
-export const DefaultWorkflows = { PREFIX, layer, originOf, sourceOfRun, overrideProblems, callerWarnings, isGuarded } as const;
+export const DefaultWorkflows = { PREFIX, SHARE_LEARNINGS, layer, originOf, sourceOfRun, overrideProblems, callerWarnings, isGuarded } as const;

@@ -25,7 +25,7 @@ import { loadTeamConfig, refreshRoleAssignment, saveLocalConfigForScope } from '
 import { stepEnvironment } from '../../env-exec.js';
 import { removeGitHook } from '../../git-hook.js';
 import { createProjectToolRoots } from '../../project-agent-root.js';
-import { homeVariables, isToolId, TOOLS } from '../../tools.js';
+import { toolHomeVariableNames } from '../../tool-home.js';
 import { roleDeclaration } from '../../roles.js';
 import { getDataHome, LocalConfigSchema, type LocalConfig } from '../../types.js';
 import { execCommand } from '../../utils/exec.js';
@@ -499,9 +499,6 @@ export function scratchCloneRoot(): string {
 /** The directory of a clone's root holding the agent files its install delivered. */
 const DELIVERED = 'delivered';
 
-/** The env variables that move a tool's home away from HOME, which the clone's own pull must not follow. */
-const TOOL_HOME_VARIABLES = [...new Set(Object.keys(TOOLS).filter(isToolId).flatMap(homeVariables))];
-
 /** How long the clone's own `teamai pull` may take: it fetches only from the clone's root. */
 const PULL_TIMEOUT_MS = 10 * 60_000;
 
@@ -661,7 +658,8 @@ async function installTeam(input: {
   if (!entry) return failed('The teamai CLI that runs this workflow could not be found, so the clone\'s own teamai pull could not run.');
   const env: NodeJS.ProcessEnv = { ...input.env, HOME: home, USERPROFILE: home };
 
-  for (const name of TOOL_HOME_VARIABLES) delete env[name];
+  // The clone's own pull must not follow a variable that moves a tool's home away from HOME.
+  for (const name of toolHomeVariableNames()) delete env[name];
   // The lease's deadline bounds the pull too, so a slow one does not hold the run past its timeout.
   const timeoutMs = lease.expiresAt === undefined ? PULL_TIMEOUT_MS : Math.max(0, Math.min(PULL_TIMEOUT_MS, Date.parse(lease.expiresAt) - Date.now()));
 

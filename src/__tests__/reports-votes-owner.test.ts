@@ -8,7 +8,7 @@ import path from 'node:path';
 // same partition path, so after a mode switch it may be another repository's.
 // Its votes are that team's: nothing that ranks or downvotes may read them.
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
   isSilent: () => false,
 }));

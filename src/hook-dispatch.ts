@@ -15,6 +15,7 @@
 import { z } from 'zod';
 import { JsonObjectSchema } from './types.js';
 import type { LocalConfig } from './types.js';
+import { baseToolOf } from './tool-registry.js';
 import { log } from './utils/logger.js';
 
 // ─── Public types ───────────────────────────────────────
@@ -290,7 +291,7 @@ export function createDispatcher(config: DispatcherConfig): Dispatcher {
       let output = mergeHookOutputs(outputs.map(({ value }) => value));
       const length = contextLength(output);
 
-      if (tool === 'cursor' && length > CURSOR_HOOK_CONTEXT_LIMIT && outputs.some(({ reg }) => reg.yieldsToContextLimit)) {
+      if (baseToolOf(tool) === 'cursor' && length > CURSOR_HOOK_CONTEXT_LIMIT && outputs.some(({ reg }) => reg.yieldsToContextLimit)) {
         const rest = mergeHookOutputs(outputs.flatMap(({ reg, value }) => (reg.yieldsToContextLimit ? [] : [value])));
         const yielded = outputs.flatMap(({ reg }) => (reg.yieldsToContextLimit ? [reg.handler.name] : [])).join(', ');
 

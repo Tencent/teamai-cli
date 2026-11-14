@@ -11,6 +11,7 @@ import * as launchContext from '../launch-context.js';
 import { deriveSessionId } from '../utils/session-id.js';
 import { GIT_HOOK_TOOL } from '../git-hook.js';
 import { TOOL_IDS, TOOLS } from '../tools.js';
+import { INSTANCE_BASES } from '../tool-registry.js';
 
 const READ = ['hook-dispatch', 'post-tool-use', '--tool', 'claude'];
 const PAYLOAD = { kind: 'payload', hook: { event: 'post-tool-use', tool: 'claude', matcher: '*' } };
@@ -63,6 +64,18 @@ describe('argvVerdict', () => {
     for (const event of ['post-tool-use', 'prompt-submit']) {
       expect(argvVerdict(['hook-dispatch', event, '--tool', tool], {}, 'darwin').kind).toBe(TOOLS[tool].hooks.needsBundle ? 'full' : 'payload');
     }
+  });
+
+  // The fast path runs before any team config is read, so an instance's name is one it does not know.
+  it.each(INSTANCE_BASES)('reads the payload of an instance of %s, a name it does not know, as it reads that tool\'s', (base) => {
+    for (const event of ['post-tool-use', 'prompt-submit'] as const) {
+      expect(argvVerdict(['hook-dispatch', event, '--tool', base], {}, 'darwin').kind).toBe('payload');
+      expect(argvVerdict(['hook-dispatch', event, '--tool', `acme-${base}`], {}, 'darwin')).toEqual({ kind: 'payload', hook: { event, tool: `acme-${base}`, matcher: '*' } });
+    }
+  });
+
+  it('reads the payload of a Claude instance with CURSOR_VERSION set, leaving Cursor\'s copy to the background pass, which skips it as the full dispatch skips Claude\'s', () => {
+    expect(argvVerdict(['hook-dispatch', 'post-tool-use', '--tool', 'acme-claude'], { CURSOR_VERSION: '1.2.3' }, 'darwin').kind).toBe('payload');
   });
 
   it('runs the full dispatch for git, whose hook runs its handlers inline', () => {

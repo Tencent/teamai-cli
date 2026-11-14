@@ -132,7 +132,7 @@ For a built-in tool, `init` without `--agent` and a non-interactive terminal doe
 
 **Q: A `toolPaths` entry in `teamai.yaml` — what happens to the keys it does not name?**
 
-The entry replaces that tool's default whole: keys you omit are *gone*, not inherited. An entry that customizes `skills` but omits `settings` leaves the tool with no settings file, so hook reconciliation silently skips it; omitting `skills` or `rules` disables that delivery on purpose. `teamai doctor` names every key a custom entry dropped that the default table provides, with the value to add back.
+The entry replaces that tool's default whole: keys you omit are *gone*, not inherited. An entry that customizes `skills` but omits `settings` leaves the tool with no settings file, so hook reconciliation silently skips it; omitting `skills` or `rules` disables that delivery on purpose. `teamai doctor` names every key a custom entry dropped that the default table provides, with the value to add back. A team [tool instance](./reference.md#team-tools-tools) named like the tool (`tools/claude.yaml` with `paths`) replaces the entry the same way, and `doctor` names the file.
 
 **Q: Hooks aren't firing automatically?**
 

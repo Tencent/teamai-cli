@@ -1,0 +1,10 @@
+{
+  "name": "@teamai/tool-cursor",
+  "private": true,
+  "type": "module",
+  "description": "Cursor: its descriptor, launch profile, session platform and version detector; bundled into teamai-cli.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./facts": "./src/facts.ts"
+  }
+}

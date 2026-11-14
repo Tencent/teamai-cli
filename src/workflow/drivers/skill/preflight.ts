@@ -1,8 +1,7 @@
 /** Before a run: what describe asks the person, and whether a start carries every answer it needs. */
-import { isLaunchTool, LAUNCH_ORDER, type LaunchTool } from '../../../tool-launch/tools.js';
-import { TOOLS } from '../../../tools.js';
+import { isLaunchTool, LAUNCH_ORDER } from '../../../tool-launch/tools.js';
+import { baseToolOf, TOOL_ORDER } from '../../../tool-registry.js';
 import type { LocalConfig } from '../../../types.js';
-import type { ToolId } from '../../../tools.js';
 import type { GateGuards, WorkflowDescription } from '../../describe.js';
 import { INVOKE_ASK_NEED, unattendedReason, verifiedLeftOpen, type Judging } from '../../protocol.js';
 import { onlyPersonAnswers } from '../../types.js';
@@ -22,7 +21,7 @@ export type StartAnswer = 'confirmed' | 'inputs' | 'parallel' | 'hitl' | 'tool';
  * Whether a session working in `tool` must name it before it runs `description`: it names none, and a step's model
  * needs one, or a scored step does when the run is `judged`.
  */
-export function needsTool(description: WorkflowDescription, input: { tool: ToolId | undefined; judged: boolean }): boolean {
+export function needsTool(description: WorkflowDescription, input: { tool: string | undefined; judged: boolean }): boolean {
   return input.tool === undefined && (description.facts.modeled.length > 0 || (input.judged && description.facts.scored.length > 0));
 }
 
@@ -113,7 +112,7 @@ export function checkStartAnswers(input: {
   answers: { parallel?: number; confirmed: boolean; hitl?: HitlMode; judge?: false };
   inputs: unknown;
   ceiling: number;
-  tool: ToolId | undefined;
+  tool: string | undefined;
 }): StartCheck {
   const { description, answers, inputs, ceiling } = input;
 
@@ -311,7 +310,7 @@ function factsOf(description: WorkflowDescription, judging: Judging, answering: 
  * The starts the question offers: the recommended one, which runs at the full width with the agent deciding optional
  * gates and judging on, then the same start with one answer changed. At most five, whatever the workflow.
  */
-function optionsOf(description: WorkflowDescription, judging: Judging, invocation: Invocation, tool: ToolId | undefined): Array<{ label: string; start: Literal }> {
+function optionsOf(description: WorkflowDescription, judging: Judging, invocation: Invocation, tool: string | undefined): Array<{ label: string; start: Literal }> {
   const { name, facts } = description;
   const flags = { ...startFlags(description), tool };
   const noun = gatesNoun(facts.gates.filter((gate) => !gate.required), true);
@@ -379,11 +378,11 @@ export type Proposed = Readonly<Record<string, { value?: unknown; why: string }>
  * `aiTools`, the tools the member names, unless it names a tool teamai calls but runs no steps on, which the step passes
  * over. Undefined when one of those picks a tool, or when no tool the local driver launches is known.
  */
-export function localPromptTool({ config, tool, aiTools }: { config: LocalConfig; tool: ToolId | undefined; aiTools: readonly string[] }): LaunchTool | undefined {
+export function localPromptTool({ config, tool, aiTools }: { config: LocalConfig; tool: string | undefined; aiTools: readonly string[] }): string | undefined {
   const picks = (named: string) => isLaunchTool(named) || !LAUNCH_ORDER.some((launched) => launched === named);
   const picked = !!config.workflows?.tools.default || aiTools.some(picks);
 
-  return !picked && tool !== undefined && isLaunchTool(tool) ? tool : undefined;
+  return !picked && tool !== undefined && isLaunchTool(baseToolOf(tool)) ? tool : undefined;
 }
 
 /**
@@ -391,7 +390,7 @@ export function localPromptTool({ config, tool, aiTools }: { config: LocalConfig
  * `tools.session`: the tool the session declared, which every skill start it offers keeps. `proposed`: the value and why
  * describe proposes for each input it has one for.
  */
-export function askFor(verdict: DescribeVerdict, description: WorkflowDescription, invocation: Invocation, judging: Judging, tools: { local?: string; session?: ToolId }, proposed: Proposed): DescribeAsk {
+export function askFor(verdict: DescribeVerdict, description: WorkflowDescription, invocation: Invocation, judging: Judging, tools: { local?: string; session?: string }, proposed: Proposed): DescribeAsk {
   const { name } = description;
   const session = tools.session !== undefined ? { tool: tools.session } : {};
   const facts = factsOf(description, judging, verdict.ask === 'unattended' ? 'auto-approve' : 'picked').map((fact) => `- ${fact}`);
@@ -408,7 +407,7 @@ export function askFor(verdict: DescribeVerdict, description: WorkflowDescriptio
 
     case 'tool':
       return {
-        kind: 'tool', reason: 'This coding session names no tool, which the run needs for the models of its steps or its judging.', describe: describeLiteral(invocation, name, { tool: '{tool}' }), tools: Object.keys(TOOLS),
+        kind: 'tool', reason: 'This coding session names no tool, which the run needs for the models of its steps or its judging.', describe: describeLiteral(invocation, name, { tool: '{tool}' }), tools: [...TOOL_ORDER],
       };
     case 'local':
     case 'denied':

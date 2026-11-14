@@ -72,14 +72,14 @@ function member(name: string, machineSettings?: Record<string, unknown>) {
   delete env.GIT_CONFIG_GLOBAL;
   delete env.CLAUDE_CONFIG_DIR;
   git(['config', '--global', `url.${remote}.insteadOf`, TEAM_URL], home, env);
-  const init = () => {
-    const r = spawnSync(process.execPath, [CLI, 'init', TEAM_URL, '--provider', 'git', '--agent', 'codex', '--scope', 'user'], {
-      cwd: home, env, encoding: 'utf8', input: '',
+  const init = ({ agents = 'codex', extra = {}, force = false }: { agents?: string; extra?: NodeJS.ProcessEnv; force?: boolean } = {}) => {
+    const r = spawnSync(process.execPath, [CLI, 'init', TEAM_URL, '--provider', 'git', '--agent', agents, '--scope', 'user', ...(force ? ['--force'] : [])], {
+      cwd: home, env: { ...env, ...extra }, encoding: 'utf8', input: '',
     });
     return { code: r.status, output: `${r.stdout ?? ''}${r.stderr ?? ''}` };
   };
   const trustedHooks = () => Object.values(readFakeCodexState(codexHome).hooksState).filter((s) => s.trusted_hash).length;
-  return { init, config, trustedHooks };
+  return { home, codexHome, init, config, trustedHooks };
 }
 
 describe('init --scope user honours a settings-only machine file (#1484)', () => {
@@ -107,5 +107,35 @@ describe('init --scope user honours a settings-only machine file (#1484)', () =>
     expect(run.code, run.output).toBe(0);
     expect(run.output).toMatch(/Trusted \d+ teamai hook\(s\) in Codex/);
     expect(m.trustedHooks()).toBeGreaterThan(0);
+  }, 120_000);
+});
+
+describe('init that replaces the record a Codex instance was refused for', () => {
+  it('names no refusal for the record it replaces, and names one for a value it would record on Codex\'s home', () => {
+    const m = member('refused-record');
+    const tools = path.join(m.home, '.teamai', 'tools');
+    fs.mkdirSync(tools, { recursive: true });
+    fs.writeFileSync(path.join(tools, 'acme-codex.yaml'), 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex, env: ACME_CODEX_HOME }\n');
+    fs.writeFileSync(path.join(m.home, '.teamai', 'tool-homes.json'), JSON.stringify({ 'acme-codex': m.codexHome }));
+    const good = path.join(m.home, 'work', 'acme');
+
+    const run = m.init({ agents: 'codex,acme-codex', extra: { ACME_CODEX_HOME: good } });
+
+    expect(run.code, run.output).toBe(0);
+    expect(run.output).not.toContain('Tool instance acme-codex');
+    expect(JSON.parse(fs.readFileSync(path.join(m.home, '.teamai', 'tool-homes.json'), 'utf8'))).toEqual({ 'acme-codex': good });
+
+    const shared = m.init({ agents: 'codex,acme-codex', extra: { ACME_CODEX_HOME: m.codexHome }, force: true });
+
+    expect(shared.output).toContain(`its home resolves to ${m.codexHome}, which is also the home of codex`);
+
+    // The first init to record it judges the instance before and after it writes the record, and names it once.
+    const first = member('refused-first');
+    fs.mkdirSync(path.join(first.home, '.teamai', 'tools'), { recursive: true });
+    fs.writeFileSync(path.join(first.home, '.teamai', 'tools', 'acme-codex.yaml'), fs.readFileSync(path.join(tools, 'acme-codex.yaml')));
+    const refused = first.init({ agents: 'codex,acme-codex', extra: { ACME_CODEX_HOME: first.codexHome } });
+
+    expect(refused.output.split('Tool instance acme-codex').length - 1, refused.output).toBe(1);
+    expect(refused.output).toContain('or clear the record with `ACME_CODEX_HOME= teamai init`');
   }, 120_000);
 });

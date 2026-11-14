@@ -13,8 +13,8 @@ import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileConte
 import { log } from '../utils/logger.js';
 import { installScopeName, isAgentExcluded, isSelfMode } from '../types.js';
 import { BUILTIN_AGENT_NAMES, builtinAgentsReplacedByTeam, shippedAgentRender } from '../builtin-agents.js';
-import { isAgentToolId, isToolId, TOOLS } from '../tools.js';
-import { cleanupOf, installOf, locate, ownOf, writable, type SidecarFile } from '../locate.js';
+import { agentFormatOf, descriptorOf } from '../tool-registry.js';
+import { cleanupOf, deliveryPlaceOf, installOf, locate, ownOf, writable, type DeliveryPlace, type SidecarFile } from '../locate.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { assertWithinRoot } from '../utils/path-safety.js';
@@ -413,7 +413,8 @@ export class AgentsHandler extends ResourceHandler {
           const copy = path.join(agentsDir, file);
 
           if (!replacedBuiltins.get(stem)?.has(copy) || delivered?.[copy] === undefined) continue;
-          const shipped = isAgentToolId(tool) ? shippedAgentRender(stem, tool, localConfig.scope) : undefined;
+          const format = agentFormatOf(tool);
+          const shipped = format === undefined ? undefined : shippedAgentRender(stem, format, localConfig.scope);
 
           // The built-in written while the team's copy was missing, over its record.
           if (shipped && await fileContentEqualToBuffer(copy, Buffer.from(shipped.content))) continue;
@@ -550,13 +551,14 @@ export class AgentsHandler extends ResourceHandler {
         let unresolved: string | undefined;
 
         for (const [tool, filePath] of toolFiles) {
-          if (!isAgentToolId(tool)
-            || (canonicalSpec.targets && !canonicalSpec.targets.includes(tool))) {
+          const format = agentFormatOf(tool);
+
+          if (format === undefined || !targetsTool(canonicalSpec, { tool, format })) {
             toolFiles.delete(tool);
             continue;
           }
 
-          const expected = renderResolved(canonicalSpec, tool, aliases, localConfig.scope);
+          const expected = renderResolved(canonicalSpec, { tool, format }, aliases, deliveryPlaceOf(teamConfig, localConfig));
 
           if (!expected.ok) {
             unresolved = expected.reason;
@@ -567,7 +569,7 @@ export class AgentsHandler extends ResourceHandler {
           const recordedModel = modelRecords[stem]?.[tool];
 
           if (content === expected.render.content
-            || (recordedModel !== undefined && content === renderWithModel(canonicalSpec, tool, recordedModel, localConfig.scope).content)
+            || (recordedModel !== undefined && content === renderWithModel(canonicalSpec, format, recordedModel, localConfig.scope).content)
             || (delivered?.[filePath] !== undefined && delivered[filePath] === await fileHash(filePath))) {
             toolFiles.delete(tool);
           }
@@ -639,11 +641,13 @@ export class AgentsHandler extends ResourceHandler {
       }
 
       // Attempt reverse + merge for new YAML format push
-      const perToolSpecs: Partial<Record<ToolName, AgentSpec>> = {};
+      const edits: (AgentTool & { spec: AgentSpec })[] = [];
       let skipReason: string | undefined;
 
       for (const [tool, filePath] of toolFiles) {
-        if (!isAgentToolId(tool)) continue;
+        const format = agentFormatOf(tool);
+
+        if (format === undefined) continue;
         const content = await readFileSafe(filePath);
 
         if (!content) {
@@ -651,24 +655,24 @@ export class AgentsHandler extends ResourceHandler {
           continue;
         }
 
-        const result = reverseByTool(tool, filePath, content);
+        const result = reverseByTool(format, filePath, content);
 
         if (result.ok) {
-          perToolSpecs[tool] = result.spec;
+          edits.push({ tool, format, spec: result.spec });
         } else {
           if (canonicalSpec) skipReason = `cannot parse edited agent file for ${tool}: ${result.reason}`;
           log.debug(`Reverse failed for ${stem} from ${tool}: ${result.reason}`);
         }
       }
 
-      if (!skipReason && Object.keys(perToolSpecs).length === 0) {
+      if (!skipReason && edits.length === 0) {
         skipReason = `could not reverse-parse any tool's agent file for ${stem}`;
       } else if (!skipReason) {
         const relPath = `${teamDir}/${stem}.yaml`;
 
         const { merge: mergeResult, drift } = canonicalSpec
-          ? mergeCanonicalEdits(canonicalSpec, perToolSpecs, { aliases, scope: localConfig.scope, recorded: modelRecords[stem], files: toolFiles, relPath })
-          : { merge: mergeReverseResults(perToolSpecs), drift: [] };
+          ? mergeCanonicalEdits(canonicalSpec, edits, { aliases, place: deliveryPlaceOf(teamConfig, localConfig), recorded: modelRecords[stem], files: toolFiles, relPath })
+          : { merge: mergeReverseResults(Object.fromEntries(edits.map(({ tool, spec }) => [tool, spec]))), drift: [] };
 
         if (!mergeResult.ok) {
           const conflictSummary = mergeResult.conflicts
@@ -908,10 +912,10 @@ export class AgentsHandler extends ResourceHandler {
     // A dropped aliases entry concerns this member only where an agent they
     // receive reads it; each is said once per pull, however many agents do.
     if (spec) {
-      for (const { tool } of renders) {
-        for (const warning of aliasWarningsFor(aliases, spec, tool)) warnOnce(`[agents] ${warning}`);
+      for (const { tool, format } of renders) {
+        for (const warning of aliasWarningsFor(aliases, spec, tool, deliveryPlaceOf(teamConfig, localConfig))) warnOnce(`[agents] ${warning}`);
 
-        if (tool === 'muse') {
+        if (format === 'muse') {
           const drops = museAgentDrops(spec);
 
           for (const name of drops.tools) {
@@ -997,8 +1001,8 @@ export class AgentsHandler extends ResourceHandler {
   private async reportHeldCopies(
     item: AgentResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig, aliases: ModelAliases, ledger: DeliveryLedger,
   ): Promise<void> {
-    for (const { tool, dir } of await this.agentToolDirs(teamConfig, localConfig)) {
-      if (!await this.heldForTool(item, tool, aliases)) continue;
+    for (const { tool, format, dir } of await this.agentToolDirs(teamConfig, localConfig)) {
+      if (!await this.heldForTool(item, { tool, format }, aliases, deliveryPlaceOf(teamConfig, localConfig))) continue;
 
       for (const file of await listFiles(dir)) {
         const copy = path.join(dir, file);
@@ -1141,7 +1145,7 @@ export class AgentsHandler extends ResourceHandler {
 
             // The author's root copy is this agent's by the placement record, which proves it here.
             if (localName === name && await pathExists(filePath)
-              && !await ownsAgentCopy(localConfig, filePath, stem, tool, previous)) {
+              && !await ownsAgentCopy(teamConfig, localConfig, filePath, stem, tool, previous)) {
               log.warn(describeMembersDirLeft(filePath, resource, 'remove'));
               continue;
             }
@@ -1310,24 +1314,25 @@ export class AgentsHandler extends ResourceHandler {
     const { recordedAgentModels } = await import('../pull.js');
     const records = await recordedAgentModels(localConfig);
 
-    for (const { tool, dir: destDir, sidecar } of await this.agentToolDirs(teamConfig, localConfig)) {
+    for (const { tool, format, dir: destDir, sidecar } of await this.agentToolDirs(teamConfig, localConfig)) {
+      const target = { tool, format };
       const activeDestinations = new Set<string>();
       // Held while its model cannot be resolved: the copy on disk may be its
       // own, and a root agent it replaces stays until it can be delivered.
       const held = new Set<string>();
 
       for (const item of active) {
-        const rendered = await this.renderedForTool(item, tool, aliases, localConfig);
+        const rendered = await this.renderedForTool(item, target, aliases, teamConfig, localConfig);
 
         if (rendered) activeDestinations.add(`${item.name}${rendered.ext}`);
-        else if (await this.heldForTool(item, tool, aliases)) held.add(item.name);
+        else if (await this.heldForTool(item, target, aliases, deliveryPlaceOf(teamConfig, localConfig))) held.add(item.name);
       }
 
       for (const item of inactive) {
         if (item.namespace === undefined && unusable.has(item.name)) continue;
 
         if (held.has(item.name)) continue;
-        const expected = await this.renderedForTool(item, tool, aliases, localConfig);
+        const expected = await this.renderedForTool(item, target, aliases, teamConfig, localConfig);
 
         if (!expected || activeDestinations.has(`${item.name}${expected.ext}`)) continue;
         const deployed = path.join(destDir, `${item.name}${expected.ext}`);
@@ -1338,7 +1343,7 @@ export class AgentsHandler extends ResourceHandler {
 
         if (current === null) continue;
         const recorded = records[item.name]?.[tool];
-        const recordedRender = recorded ? await this.renderedForTool(item, tool, aliases, localConfig, recorded) : null;
+        const recordedRender = recorded ? await this.renderedForTool(item, target, aliases, teamConfig, localConfig, recorded) : null;
 
         if (current !== expected.content && current !== recordedRender?.content) {
           log.warn(`[${installScopeName(localConfig.scope)}] Kept agent "${item.name}" (${tool}): it differs from the team source ${item.relativePath}. Back it up, then delete it manually.`);
@@ -1413,22 +1418,22 @@ export class AgentsHandler extends ResourceHandler {
     item: ResourceItem,
     aliases?: ModelAliases,
     recorded?: Readonly<Record<string, RecordedAgentModel>>,
-  ): Promise<{ tool: ToolName; dest: string; render: AgentRender; origin: CopyOrigin; sidecar: SidecarFile | null }[]> {
+  ): Promise<(AgentTool & { dest: string; render: AgentRender; origin: CopyOrigin; sidecar: SidecarFile | null })[]> {
     const agentItem: AgentResourceItem = item;
-    const renders: { tool: ToolName; dest: string; render: AgentRender; origin: CopyOrigin; sidecar: SidecarFile | null }[] = [];
+    const renders: (AgentTool & { dest: string; render: AgentRender; origin: CopyOrigin; sidecar: SidecarFile | null })[] = [];
     const modelAliases = aliases ?? await loadModelAliases(localConfig);
     const spec = await this.parsedSpec(agentItem);
 
-    for (const { tool, dir } of await this.agentToolDirs(teamConfig, localConfig)) {
-      if (spec && agentRejection({ tool, name: spec.name, spec, scope: localConfig.scope }) !== null) continue;
-      const render = await this.renderedForTool(agentItem, tool, modelAliases, localConfig, recorded?.[tool]);
+    for (const { tool, format, dir } of await this.agentToolDirs(teamConfig, localConfig)) {
+      if (spec && agentRejection({ tool: format, name: spec.name, spec, scope: localConfig.scope }) !== null) continue;
+      const render = await this.renderedForTool(agentItem, { tool, format }, modelAliases, teamConfig, localConfig, recorded?.[tool]);
 
       if (!render) continue;
 
-      const origin = agentOrigin(localConfig, item.name, tool, modelAliases);
+      const origin = agentOrigin(teamConfig, localConfig, item.name, { tool, format }, modelAliases);
       const location = await locate(tool, 'agents', installOf(teamConfig, localConfig));
       const sidecar = location.channel === 'files' && 'sidecar' in location ? location.sidecar : null;
-      renders.push({ tool, dest: path.join(dir, `${item.name}${render.ext}`), render, origin, sidecar });
+      renders.push({ tool, format, dest: path.join(dir, `${item.name}${render.ext}`), render, origin, sidecar });
     }
 
     return renders;
@@ -1446,12 +1451,14 @@ export class AgentsHandler extends ResourceHandler {
   async agentToolDirs(
     teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
-  ): Promise<{ tool: ToolName; dir: string; sidecar: SidecarFile | null }[]> {
-    const dirs: { tool: ToolName; dir: string; sidecar: SidecarFile | null }[] = [];
+  ): Promise<(AgentTool & { dir: string; sidecar: SidecarFile | null })[]> {
+    const dirs: (AgentTool & { dir: string; sidecar: SidecarFile | null })[] = [];
     const install = installOf(teamConfig, localConfig);
 
     for (const tool of Object.keys(install.toolPaths)) {
-      if (!isAgentToolId(tool)) continue;
+      const format = agentFormatOf(tool);
+
+      if (format === undefined) continue;
       const where = await locate(tool, 'agents', install);
       const dir = writable(where)?.path ?? null;
 
@@ -1461,7 +1468,7 @@ export class AgentsHandler extends ResourceHandler {
       }
 
       const sidecar = where.channel === 'files' && 'sidecar' in where ? where.sidecar : null;
-      dirs.push({ tool, dir, sidecar });
+      dirs.push({ tool, format, dir, sidecar });
     }
 
     return dirs;
@@ -1497,15 +1504,15 @@ export class AgentsHandler extends ResourceHandler {
    * The installed tools `item` targets that would not load it as teamai
    * renders it, and why (`agentRejection`). They get no copy.
    */
-  async rejectedTools(teamConfig: TeamaiConfig, localConfig: LocalConfig, item: ResourceItem): Promise<{ tool: ToolName; reason: string }[]> {
+  async rejectedTools(teamConfig: TeamaiConfig, localConfig: LocalConfig, item: ResourceItem): Promise<{ tool: string; reason: string }[]> {
     const spec = await this.parsedSpec(item);
 
     if (!spec) return [];
-    const rejected: { tool: ToolName; reason: string }[] = [];
+    const rejected: { tool: string; reason: string }[] = [];
 
-    for (const { tool } of await this.agentToolDirs(teamConfig, localConfig)) {
-      if (spec.targets && !spec.targets.includes(tool)) continue;
-      const reason = agentRejection({ tool, name: spec.name, spec, scope: localConfig.scope });
+    for (const { tool, format } of await this.agentToolDirs(teamConfig, localConfig)) {
+      if (!targetsTool(spec, { tool, format })) continue;
+      const reason = agentRejection({ tool: format, name: spec.name, spec, scope: localConfig.scope });
 
       if (reason !== null) rejected.push({ tool, reason });
     }
@@ -1576,8 +1583,9 @@ export class AgentsHandler extends ResourceHandler {
    */
   private async renderedForTool(
     item: AgentResourceItem,
-    tool: ToolName,
+    target: AgentTool,
     aliases: ModelAliases,
+    teamConfig: Pick<TeamaiConfig, 'toolPaths'>,
     localConfig: LocalConfig,
     recorded?: RecordedAgentModel,
   ): Promise<AgentRender | null> {
@@ -1587,19 +1595,19 @@ export class AgentsHandler extends ResourceHandler {
     if (content === null) return null;
 
     if (isLegacyAgent(item)) {
-      if (!isToolId(tool) || !TOOLS[tool].legacyAgentMd) return null;
+      if (!descriptorOf(target.format).legacyAgentMd) return null;
 
-      return { ext: '.md', content: AgentFolders.isFolder(item) ? AgentFolders.render(content, { localConfig, agent: item, tool }) : content };
+      return { ext: '.md', content: AgentFolders.isFolder(item) ? AgentFolders.render(content, { localConfig, agent: item, tool: target.tool }) : content };
     }
 
     const parsed = parseAgentYaml(content, `${item.name}.yaml`);
 
     if (!parsed.ok) return null;
 
-    if (parsed.spec.targets && !parsed.spec.targets.includes(tool)) return null;
+    if (!targetsTool(parsed.spec, target)) return null;
 
-    if (recorded) return renderWithModel(parsed.spec, tool, recorded, scope);
-    const resolved = renderResolved(parsed.spec, tool, aliases, scope);
+    if (recorded) return renderWithModel(parsed.spec, target.format, recorded, scope);
+    const resolved = renderResolved(parsed.spec, target, aliases, deliveryPlaceOf(teamConfig, localConfig));
 
     return resolved.ok ? resolved.render : null;
   }
@@ -1616,13 +1624,13 @@ export class AgentsHandler extends ResourceHandler {
     localConfig: LocalConfig,
     aliases: ModelAliases,
   ): Promise<DeliveryLedger['held']> {
-    const heldTools = new Map<string, ToolName[]>();
+    const heldTools = new Map<string, string[]>();
     let targeted = 0;
 
-    for (const { tool } of await this.agentToolDirs(teamConfig, localConfig)) {
-      if (spec.targets && !spec.targets.includes(tool)) continue;
+    for (const { tool, format } of await this.agentToolDirs(teamConfig, localConfig)) {
+      if (!targetsTool(spec, { tool, format })) continue;
       targeted += 1;
-      const resolution = resolveAgentModel(aliases, spec, tool);
+      const resolution = resolveAgentModel(aliases, spec, tool, deliveryPlaceOf(teamConfig, localConfig));
 
       if (!resolution.ok) heldTools.set(resolution.reason, [...heldTools.get(resolution.reason) ?? [], tool]);
     }
@@ -1645,14 +1653,14 @@ export class AgentsHandler extends ResourceHandler {
   }
 
   /** Whether `tool` would receive `item` but for a model that cannot be resolved. */
-  private async heldForTool(item: AgentResourceItem, tool: ToolName, aliases: ModelAliases): Promise<boolean> {
+  private async heldForTool(item: AgentResourceItem, target: AgentTool, aliases: ModelAliases, place: DeliveryPlace): Promise<boolean> {
     if (isLegacyAgent(item)) return false;
     const content = await readFileSafe(item.sourcePath);
     const parsed = content === null ? null : parseAgentYaml(content, `${item.name}.yaml`);
 
-    if (!parsed?.ok || (parsed.spec.targets && !parsed.spec.targets.includes(tool))) return false;
+    if (!parsed?.ok || !targetsTool(parsed.spec, target)) return false;
 
-    return !resolveAgentModel(aliases, parsed.spec, tool).ok;
+    return !resolveAgentModel(aliases, parsed.spec, target.tool, place).ok;
   }
 
   // ─── Private helpers ──────────────────────────────────────────────────────
@@ -2050,8 +2058,8 @@ function copyRootField(target: AgentSpec, source: AgentSpec, field: (typeof ROOT
 /** What push needs to tell a deployed alias model from a member's edit. */
 interface PushModelContext {
   aliases: ModelAliases;
-  /** The scope the copies were pulled into, which Trae's render depends on. */
-  scope: Scope;
+  /** Where the copies were pulled to: the scope, which Trae's render depends on, and the team's tool paths. */
+  place: DeliveryPlace;
   /** What the last pull recorded for this agent's copies, by tool. */
   recorded: Readonly<Record<string, RecordedAgentModel>> | undefined;
   /** Each edited tool's deployed file. */
@@ -2078,10 +2086,11 @@ interface CanonicalMerge {
 
 function mergeCanonicalEdits(
   canonical: AgentSpec,
-  perTool: Partial<Record<ToolName, AgentSpec>>,
+  perTool: readonly (AgentTool & { spec: AgentSpec })[],
   context: PushModelContext,
 ): CanonicalMerge {
-  const { aliases, scope } = context;
+  const { aliases, place } = context;
+  const { scope } = place;
   const canonicalAlias = canonical.model !== undefined && isModelAlias(aliases, canonical.model);
   const drift: string[] = [];
   const merged = { ...canonical };
@@ -2099,21 +2108,21 @@ function mergeCanonicalEdits(
     }
   };
 
-  // SAFETY: perTool is keyed by ToolName, and push sets a key only to a reversed spec, so each entry is a [ToolName, AgentSpec] pair.
-  for (const [tool, edited] of Object.entries(perTool) as Array<[ToolName, AgentSpec]>) {
+  // A copy is read in its format, and its edits land in that format's extras: an instance's in those of the tool it extends.
+  for (const { tool, format, spec: edited } of perTool) {
     // The baseline is what pull deployed, so a resolved alias is not an edit.
-    const resolved = renderResolved(canonical, tool, aliases, scope);
+    const resolved = renderResolved(canonical, { tool, format }, aliases, place);
 
     if (!resolved.ok) return { merge: { ok: false, conflicts: [{ field: tool, values: { error: resolved.reason } }] }, drift };
     const rendered = resolved.render;
-    const baseline = reverseByTool(tool, `${canonical.name}${rendered.ext}`, rendered.content);
+    const baseline = reverseByTool(format, `${canonical.name}${rendered.ext}`, rendered.content);
 
     if (!baseline.ok) return { merge: { ok: false, conflicts: [{ field: tool, values: { error: baseline.reason } }] }, drift };
     const before: ParsedFields = { ...Object.values(baseline.spec.tool_extras ?? {})[0] };
     const after: ParsedFields = { ...Object.values(edited.tool_extras ?? {})[0] };
     // tclaude and tcodex also render what `claude` and `codex` carry, and a
     // project's Trae copy what the other edition carries.
-    const inheritance = inheritedExtras(canonical, tool, scope);
+    const inheritance = inheritedExtras(canonical, format, scope);
     const base = inheritance?.from;
     const inherited: ParsedFields = inheritance?.extras ?? {};
     // A model pin, the tool's own or inherited, reaches the copy as its native
@@ -2122,7 +2131,7 @@ function mergeCanonicalEdits(
     // base tool's pin are kept. A pin the copy does not carry (a Trae
     // project file) is not compared, so it is kept.
     const baselineModel = baseline.spec.model;
-    const modelPin = !canonicalAlias && toolExtrasFor(canonical, tool)?.['model'] !== undefined && baselineModel !== undefined;
+    const modelPin = !canonicalAlias && toolExtrasFor(canonical, format)?.['model'] !== undefined && baselineModel !== undefined;
 
     if (modelPin) {
       before['model'] = baselineModel;
@@ -2137,7 +2146,7 @@ function mergeCanonicalEdits(
 
     if (!canonicalAlias && recorded !== undefined && !KEEPS_SPEC_MODEL.has(recorded.step)) {
       aliasWroteModel = edited.model === recorded.model;
-      const field = agentEffortField(tool);
+      const field = agentEffortField(format);
 
       if (field !== undefined && recorded.effort !== undefined && after[field] === recorded.effort) {
         if (field in before) after[field] = before[field];
@@ -2149,9 +2158,9 @@ function mergeCanonicalEdits(
       const expected = rendered.model!.recorded;
       // The effort field is the alias's unless an extras model skips the
       // alias or the extras set that field themselves.
-      const field = agentEffortField(tool);
+      const field = agentEffortField(format);
 
-      const effortField = expected.step !== 'extras' && field !== undefined && toolExtrasFor(canonical, tool)?.[field] === undefined
+      const effortField = expected.step !== 'extras' && field !== undefined && toolExtrasFor(canonical, format)?.[field] === undefined
         ? field
         : undefined;
 
@@ -2179,7 +2188,7 @@ function mergeCanonicalEdits(
         }
       } else {
         drift.push(modelDrift({
-          tool, file: context.files.get(tool) ?? tool, alias: canonical.model!, relPath: context.relPath,
+          tool, format, file: context.files.get(tool) ?? tool, alias: canonical.model!, relPath: context.relPath,
           deployed, expected, effortField,
         }));
       }
@@ -2203,20 +2212,20 @@ function mergeCanonicalEdits(
         .filter((key) => !(key in after) && (!ROOT_AGENT_FIELDS.some((field) => field === key) || (key === 'model' && modelPin)));
 
       if (base && removed.length) {
-        conflicts.push({ field: `tool_extras.${tool}`, values: { inheritedFrom: `tool_extras.${base}`, removed } });
+        conflicts.push({ field: `tool_extras.${format}`, values: { inheritedFrom: `tool_extras.${base}`, removed } });
         continue;
       }
 
-      const ownBefore = canonical.tool_extras?.[tool] ?? {};
+      const ownBefore = canonical.tool_extras?.[format] ?? {};
 
       const own = Object.fromEntries(Object.entries(after).filter(([key, value]) =>
         !isDeepStrictEqual(inherited[key], value) || (key in ownBefore && isDeepStrictEqual(before[key], value))));
 
       // A model pin the copy does not carry (a Trae project file) cannot have been edited there.
       if (baseline.spec.model === undefined && ownBefore['model'] !== undefined) own['model'] = ownBefore['model'];
-      propose(`tool_extras.${tool}`, own, () => {
-        if (Object.keys(own).length) extras[tool] = own;
-        else delete extras[tool];
+      propose(`tool_extras.${format}`, own, () => {
+        if (Object.keys(own).length) extras[format] = own;
+        else delete extras[format];
       });
     }
   }
@@ -2241,8 +2250,7 @@ function mergeCanonicalEdits(
  * Why a copy's model or effort is not pushed, and where the member can make
  * that change instead: the step that produced the model decides.
  */
-function modelDrift({ tool, file, alias, relPath, deployed, expected, effortField }: {
-  tool: ToolName;
+function modelDrift({ tool, format, file, alias, relPath, deployed, expected, effortField }: AgentTool & {
   file: string;
   alias: string;
   relPath: string;
@@ -2258,17 +2266,18 @@ function modelDrift({ tool, file, alias, relPath, deployed, expected, effortFiel
 
   const local = localAliasesPath();
   const team = expected.source ?? TEAM_ALIASES_FILE;
-  const entry = `${alias}.${tool}`;
+  // An instance takes the aliases entry, the model switch and the extras of the tool it extends.
+  const entry = `${alias}.${format}`;
 
   const [source, hint] = ((): [string, string] => {
     switch (expected.step) {
       case 'switched':
-        return [`, because ${tool} is switched to a model profile`,
-          `Run \`teamai models restore --agent ${tool}\` to take ${tool} off the profile, or switch it to another one.`];
+        return [`, because ${format} is switched to a model profile`,
+          `Run \`teamai models restore --agent ${format}\` to take ${format} off the profile, or switch it to another one.`];
       case 'local':
         return [` from your ${local}`, `To use it, change ${entry} in ${local}.`];
       case 'extras':
-        return [` from tool_extras.${tool}.model in ${relPath}`, `To pin another model, change tool_extras.${tool}.model in ${relPath}.`];
+        return [` from tool_extras.${format}.model in ${relPath}`, `To pin another model, change tool_extras.${format}.model in ${relPath}.`];
       case 'team':
         return [` from the team's ${team}`,
           `To use it on this machine, map ${entry} in ${local}; for the whole team, change ${entry} in ${team}.`];
@@ -2280,6 +2289,17 @@ function modelDrift({ tool, file, alias, relPath, deployed, expected, effortFiel
 
   return `its ${tool} copy (${file}) sets ${describe(deployed)}, but model: ${alias} gives ${tool} ${describe(expected)}${source}. `
     + `Push never writes a concrete model over a model alias, so this change stays on this machine. ${hint}`;
+}
+
+/** A tool that receives agents: its name, and the format it takes, an instance's the format of the tool it extends. */
+export interface AgentTool {
+  readonly tool: string;
+  readonly format: ToolName;
+}
+
+/** Whether `spec` reaches `target`: no `targets`, or a list that names it or the tool it extends. */
+export function targetsTool(spec: AgentSpec, { tool, format }: AgentTool): boolean {
+  return spec.targets === undefined || spec.targets.some((name) => name === tool || name === format);
 }
 
 /** A copy the "Already synced" pull writes, and why: see `AgentsHandler.agentsToRedeploy`. */
@@ -2314,8 +2334,9 @@ const PRE_830_EXTRAS_TOOL: Readonly<Partial<Record<ToolName, ToolName>>> = {
  * as an older CLI rendered it: the spec's `model` as written (before aliases),
  * and before #830 another tool's extras (`PRE_830_EXTRAS_TOOL`).
  */
-export function agentOrigin(localConfig: LocalConfig, stem: string, tool: ToolName, aliases: ModelAliases): CopyOrigin {
+export function agentOrigin(teamConfig: Pick<TeamaiConfig, 'toolPaths'>, localConfig: LocalConfig, stem: string, target: AgentTool, aliases: ModelAliases): CopyOrigin {
   const { scope } = localConfig;
+  const { tool, format } = target;
 
   const specOf = (content: Buffer, version: { path: string }): AgentSpec | null => {
     const file = path.posix.basename(version.path);
@@ -2323,12 +2344,12 @@ export function agentOrigin(localConfig: LocalConfig, stem: string, tool: ToolNa
     if (file !== `${stem}.yaml`) return null;
     const parsed = parseAgentYaml(content.toString('utf-8'), file);
 
-    if (!parsed.ok || (parsed.spec.targets && !parsed.spec.targets.includes(tool))) return null;
+    if (!parsed.ok || !targetsTool(parsed.spec, target)) return null;
 
     return parsed.spec;
   };
 
-  const extrasTool = PRE_830_EXTRAS_TOOL[tool];
+  const extrasTool = PRE_830_EXTRAS_TOOL[format];
 
   const origin: CopyOrigin = {
     repoPath: localConfig.repo.localPath,
@@ -2337,14 +2358,14 @@ export function agentOrigin(localConfig: LocalConfig, stem: string, tool: ToolNa
     renders: [
       (content, version) => {
         const spec = specOf(content, version);
-        const resolved = spec && renderResolved(spec, tool, aliases, scope);
+        const resolved = spec && renderResolved(spec, target, aliases, deliveryPlaceOf(teamConfig, localConfig));
 
         return resolved?.ok ? resolved.render.content : null;
       },
       (content, version) => {
         const spec = specOf(content, version);
 
-        return spec && renderForTool(spec, tool, undefined, scope).content;
+        return spec && renderForTool(spec, format, undefined, scope).content;
       },
       ...extrasTool ? [(content: Buffer, version: { path: string }) => {
         const spec = specOf(content, version);
@@ -2356,7 +2377,7 @@ export function agentOrigin(localConfig: LocalConfig, stem: string, tool: ToolNa
 
   if (BUILTIN_AGENT_NAMES.has(stem)) {
     origin.builtin = true;
-    const shipped = shippedAgentRender(stem, tool, scope);
+    const shipped = shippedAgentRender(stem, format, scope);
 
     if (shipped) origin.shipped = shipped.content;
   }
@@ -2365,11 +2386,13 @@ export function agentOrigin(localConfig: LocalConfig, stem: string, tool: ToolNa
 }
 
 /** `agentOrigin` for a copy of a removed agent; for a tool teamai renders no agents for, the team agents verbatim. */
-export async function removedAgentOrigin(localConfig: LocalConfig, stem: string, tool: string): Promise<CopyOrigin> {
+export async function removedAgentOrigin(teamConfig: Pick<TeamaiConfig, 'toolPaths'>, localConfig: LocalConfig, stem: string, tool: string): Promise<CopyOrigin> {
   // A tool teamai renders no agents for still gets a proof: the team agents' own bytes, verbatim (#993).
-  if (!isAgentToolId(tool)) return { repoPath: localConfig.repo.localPath, pathspec: `:(glob)agents/**/${stem}.*`, alternatives: [AgentFolders.origin(localConfig, stem, tool)] };
+  const format = agentFormatOf(tool);
 
-  return agentOrigin(localConfig, stem, tool, await loadModelAliases(localConfig));
+  if (format === undefined) return { repoPath: localConfig.repo.localPath, pathspec: `:(glob)agents/**/${stem}.*`, alternatives: [AgentFolders.origin(localConfig, stem, tool)] };
+
+  return agentOrigin(teamConfig, localConfig, stem, { tool, format }, await loadModelAliases(localConfig));
 }
 
 /**
@@ -2381,13 +2404,13 @@ export async function removedAgentOrigin(localConfig: LocalConfig, stem: string,
  * folder's `AGENT.md` included. Read-only.
  */
 export async function ownsAgentCopy(
-  localConfig: LocalConfig, file: string, stem: string, tool: string, previous: DeliveredHashes | undefined,
+  teamConfig: Pick<TeamaiConfig, 'toolPaths'>, localConfig: LocalConfig, file: string, stem: string, tool: string, previous: DeliveredHashes | undefined,
 ): Promise<boolean> {
   if (await isLink(file)) return false;
 
   if (BUILTIN_AGENT_NAMES.has(stem) || previous?.[file] !== undefined) return true;
 
-  return isTeamaiCopy(file, await removedAgentOrigin(localConfig, stem, tool));
+  return isTeamaiCopy(file, await removedAgentOrigin(teamConfig, localConfig, stem, tool));
 }
 
 /**
@@ -2397,16 +2420,17 @@ export async function ownsAgentCopy(
  */
 function renderResolved(
   spec: AgentSpec,
-  tool: ToolName,
+  target: AgentTool,
   aliases: ModelAliases,
-  scope: Scope,
+  place: DeliveryPlace,
 ): { ok: true; render: AgentRender } | { ok: false; reason: string } {
-  const resolution = resolveAgentModel(aliases, spec, tool);
+  const { scope } = place;
+  const resolution = resolveAgentModel(aliases, spec, target.tool, place);
 
   if (!resolution.ok) return resolution;
   const { ok: _ok, ...resolved } = resolution;
 
-  return { ok: true, render: renderWithModel(spec, tool, resolved, scope) };
+  return { ok: true, render: renderWithModel(spec, target.format, resolved, scope) };
 }
 
 /**
@@ -2466,7 +2490,7 @@ async function deliveredAndOutdated(ledger: DeliveryLedger, dest: string, conten
  * Record what `tool`'s copy of `stem` received. A legacy `.md` carries no
  * resolved model, so writing one over a YAML agent's copy drops that record.
  */
-function recordAgentModel(records: AgentModelRecords, stem: string, tool: ToolName, recorded: RecordedAgentModel | undefined): void {
+function recordAgentModel(records: AgentModelRecords, stem: string, tool: string, recorded: RecordedAgentModel | undefined): void {
   if (recorded) {
     records[stem] = { ...records[stem], [tool]: recorded };
 
@@ -2489,7 +2513,7 @@ function recordAgentModel(records: AgentModelRecords, stem: string, tool: ToolNa
 function warnAliasGone(
   item: ResourceItem,
   specModel: string,
-  renders: readonly { tool: ToolName; render: AgentRender }[],
+  renders: readonly { tool: string; render: AgentRender }[],
   records: Record<string, RecordedAgentModel> | undefined,
 ): void {
   if (!records) return;
@@ -2577,7 +2601,9 @@ function isLegacyAgent(item: AgentResourceItem): boolean {
  * different on-disk format (TOML), making a raw byte comparison always differ.
  */
 async function agentContentEqual(tool: string, localPath: string, teamPath: string, scope: Scope): Promise<boolean> {
-  if (!teamPath.endsWith('.yaml') || !isAgentToolId(tool)) {
+  const format = agentFormatOf(tool);
+
+  if (!teamPath.endsWith('.yaml') || format === undefined) {
     return fileContentEqual(localPath, teamPath);
   }
 
@@ -2590,6 +2616,6 @@ async function agentContentEqual(tool: string, localPath: string, teamPath: stri
 
   if (!parsed.ok) return false;
 
-  return localContent === renderForTool(parsed.spec, tool, undefined, scope).content;
+  return localContent === renderForTool(parsed.spec, format, undefined, scope).content;
 }
 

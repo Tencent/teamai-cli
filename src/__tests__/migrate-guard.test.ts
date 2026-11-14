@@ -7,13 +7,14 @@
  * 3. 图片块按目标能力分别计 preserved / degraded
  */
 
-import { describe, expect, it, beforeAll, afterAll } from 'vitest';
+import { describe, expect, it, beforeAll, afterAll, afterEach } from 'vitest';
 import os from 'node:os';
-import type { AgentAdapter, SessionMeta } from '../session-flow/adapters/base.js';
+import type { AgentAdapter, SessionMeta } from '@teamai/tool-core/sessions/base';
 import { ADAPTER_REGISTRY, type AdapterFactory } from '../session-flow/adapters/index.js';
 import { fidelityFromSession, previewMigration } from '../session-flow/migrate.js';
 import { AgentSession } from '../session-flow/agent-session.js';
-import type { Session } from '../session-flow/ir.js';
+import type { Session } from '@teamai/tool-core/sessions/ir';
+import { useToolInstances } from '../tool-registry.js';
 
 function makeSession(overrides: Partial<Session> = {}): Session {
   return {
@@ -122,6 +123,13 @@ describe('AgentSession.copy — 写入路径', () => {
 });
 
 describe('fidelityFromSession — 真实统计', () => {
+  afterEach(() => useToolInstances(new Map()));
+
+  /** A Claude Code instance with a home of its own, whose sessions are a platform of their own. */
+  const useAcmeClaude = (): void => useToolInstances(new Map([['acme-claude', {
+    kind: 'instance', name: 'acme-claude', extends: 'claude', home: { dir: '.acme-claude' }, source: 'team', file: '/repo/tools/acme-claude.yaml', location: 'tools/acme-claude.yaml', revision: 'r1',
+  }]]));
+
   it('未知工具计 degraded，保真度回落', () => {
     const session = makeSession({
       messages: [
@@ -135,11 +143,15 @@ describe('fidelityFromSession — 真实统计', () => {
         },
       ],
     });
-    const report = fidelityFromSession(session, 'claude-code');
-    expect(report.totalBlocks).toBe(2);
-    expect(report.degradedBlocks).toBe(1);
-    expect(report.warnings.some((w) => w.includes('totally_unknown_tool'))).toBe(true);
-    expect(report.score).toBeLessThan(1);
+    useAcmeClaude();
+
+    for (const target of ['claude-code', 'acme-claude']) {
+      const report = fidelityFromSession(session, target);
+      expect(report.totalBlocks, target).toBe(2);
+      expect(report.degradedBlocks, target).toBe(1);
+      expect(report.warnings.some((w) => w.includes('totally_unknown_tool')), target).toBe(true);
+      expect(report.score, target).toBeLessThan(1);
+    }
   });
 
   it('已登记工具计 preserved', () => {
@@ -180,6 +192,9 @@ describe('fidelityFromSession — 真实统计', () => {
 
     const toCodex = fidelityFromSession(session, 'codex');
     expect(toCodex.preservedBlocks).toBe(1);
+
+    useAcmeClaude();
+    expect(fidelityFromSession(session, 'acme-claude')).toMatchObject({ preservedBlocks: 1, degradations: [], score: 1 });
 
     const toCursor = fidelityFromSession(session, 'cursor');
     expect(toCursor.degradedBlocks).toBe(1);

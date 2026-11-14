@@ -42,7 +42,7 @@ const handler = {
 };
 vi.mock('../resources/index.js', () => ({ getHandler: () => handler }));
 const spinMocks = vi.hoisted(() => ({ succeed: vi.fn(), fail: vi.fn() }));
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
   spinner: vi.fn(() => ({ start: vi.fn().mockReturnThis(), succeed: spinMocks.succeed, fail: spinMocks.fail })),
 }));

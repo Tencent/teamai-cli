@@ -6,7 +6,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { isAgentToolId } from '../tools.js';
+import { agentFormatOf } from '../tool-registry.js';
 import type { LocalConfig } from '../types.js';
 import { errnoCode } from '../utils/fs.js';
 import type { ConfinedLease } from './lease-wire.js';
@@ -171,7 +171,7 @@ export interface ConfinedRequest {
 /** The hold of `step` when none of `tools` resolves its model on this machine, with the first tool's reason. */
 async function modelHold(input: Pick<ConfinedRequest, 'step' | 'model' | 'defaultModel' | 'config'> & { tools: string[] }): Promise<Held | undefined> {
   const { step, tools, model, defaultModel, config } = input;
-  const choices = await Promise.all(tools.map((tool) => (isAgentToolId(tool) ? chooseStepModel({ step, tool, model, defaultModel, config }) : undefined)));
+  const choices = await Promise.all(tools.map((tool) => (agentFormatOf(tool) === undefined ? undefined : chooseStepModel({ step, tool, model, defaultModel, config }))));
 
   if (choices.some((choice) => choice?.ok)) return undefined;
   const why = choices.find((choice) => choice?.ok === false)?.failure.message;

@@ -27,8 +27,9 @@ import {
 } from '../dashboard-collector.js';
 import { collectSession } from '../session-collector.js';
 import type { DashboardEvent } from '../types.js';
+import { useToolInstances } from '../tool-registry.js';
 import * as pidMonitor from '../pid-monitor.js';
-import { _resetState as resetLogger, _setLogFilePath } from '../utils/debug-log.js';
+import { _resetState as resetLogger, _setLogFilePath } from '@teamai/shared/debug-log';
 
 // ─── Transcript fixtures for intervention scanning ──────
 const INTERRUPT_LINE = JSON.stringify({
@@ -109,10 +110,18 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  useToolInstances(new Map());
   process.env.HOME = originalHome;
   resetLogger();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
+
+/** A Codex instance whose name does not say codex, and a Claude Code instance whose name does. */
+function useInstances(): void {
+  const instance = (name: string, base: 'claude' | 'codex') => ({ kind: 'instance', name, extends: base, source: 'team', file: `/repo/tools/${name}.yaml`, location: `tools/${name}.yaml`, revision: 'r1' } as const);
+
+  useToolInstances(new Map([['acme-agent', instance('acme-agent', 'codex')], ['codex-review', instance('codex-review', 'claude')]]));
+}
 
 // ─── parseHookEvent ─────────────────────────────────────
 
@@ -1194,7 +1203,8 @@ describe('parseHookEvent', () => {
     expect(event?.correction).toBe(false);
   });
 
-  it.each(['tcodex', 'codex-internal'])('extracts Codex answers for %s', async (tool) => {
+  it.each(['tcodex', 'codex-internal', 'acme-agent'])('extracts Codex answers for %s', async (tool) => {
+    useInstances();
     const prompt = '<send_user_message_question_reply>[{"questionItemId":"q1","answer":"Use the web interface."}]</send_user_message_question_reply>';
     const event = await parseHookEvent(JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt }), tool);
     expect(event?.promptSummary).toBe('Use the web interface.');
@@ -1217,8 +1227,9 @@ describe('parseHookEvent', () => {
   });
 
   it('preserves ordinary prompts and wrappers from other tools', async () => {
+    useInstances();
     const wrapper = '<send_user_message_question_reply>[{"answer":"Yes"}]</send_user_message_question_reply>';
-    for (const [tool, prompt] of [['claude', wrapper], ['codex', 'Explain ' + wrapper], ['codex', 'A normal prompt']]) {
+    for (const [tool, prompt] of [['claude', wrapper], ['codex-review', wrapper], ['codex', 'Explain ' + wrapper], ['codex', 'A normal prompt']]) {
       const event = await parseHookEvent(JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt }), tool);
       expect(event?.promptSummary).toBe(prompt);
     }

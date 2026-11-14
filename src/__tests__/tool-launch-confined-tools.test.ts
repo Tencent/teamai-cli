@@ -64,6 +64,7 @@ it.each(['codex-cli 0.163.0', '', 'codex-cli 9.9.9'])('confines Codex %s to the 
   await fs.writeFile(path.join(home, 'AGENTS.md'), 'MUST NOT LOAD');
   await fs.writeFile(path.join(evidence, 'prompt.md'), 'CODEX-INLINE-PROMPT');
   vi.stubEnv('CODEX_HOME', home);
+  vi.stubEnv('CODEX_API_KEY', 'codex-key');
   vi.stubEnv('BASH_ENV', '/must-not-run');
   const record = path.join(root, 'invocation.json');
   const executable = path.join(root, 'codex-fake');
@@ -99,6 +100,8 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:7,output_t
   expect(invocation.args.join(' ')).not.toContain('CODEX-INLINE-PROMPT');
   expect(invocation.args).toContain('model_provider="teamai"');
   expect(invocation.env.TEAMAI_JUDGE_API_KEY).toBe('gateway-credential');
+  // A fresh Codex home signs in with CODEX_API_KEY, so the judge passes it on.
+  expect(invocation.env.CODEX_API_KEY).toBe('codex-key');
   expect(invocation.env).not.toHaveProperty('JUDGE_GATEWAY_TOKEN');
   expect(invocation.env).not.toHaveProperty('BASH_ENV');
   expect(invocation.env.TEAMAI_LAUNCHED_BY).toBe('confined');

@@ -12,7 +12,7 @@ vi.mock('../contribute.js', () => ({ contribute: vi.fn(async () => {}) }));
 vi.mock('../import.js', () => ({ importCmd: vi.fn(async () => {}) }));
 vi.mock('../init.js', () => ({ init: vi.fn(async () => {}) }));
 vi.mock('../roles-cmd.js', () => ({ rolesInit: vi.fn(async () => {}) }));
-vi.mock('../utils/logger.js', async (importOriginal) => ({
+vi.mock('@teamai/shared/log', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/logger.js')>()),
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));

@@ -7,7 +7,7 @@ import { stringify } from 'yaml';
 import { z } from 'zod';
 import { secretKey } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
-import { redactJson } from '../utils/redact.js';
+import { redactJson } from '@teamai/shared/redact';
 import { workflowsRunBy } from './cache.js';
 import { BundleSchema } from './output.js';
 import { formatDiagnostic, parseWorkflow } from './parse.js';

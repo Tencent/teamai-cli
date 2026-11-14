@@ -28,6 +28,8 @@ function promptOf(prompt: string, output: OutputSchema | undefined): string {
 const FAILURE_OF = {
   no_tool: 'tool_unavailable',
   override_invalid: 'tool_unconfigured',
+  tool_not_accepted: 'tool_not_accepted',
+  home_gone: 'tool_unavailable',
   call_failed: 'tool_failed',
 } as const satisfies Record<CallErrorKind, WorkflowFailure['code']>;
 

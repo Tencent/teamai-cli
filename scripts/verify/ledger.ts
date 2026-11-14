@@ -7,7 +7,8 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { TOOL_IDS, TOOLS, type ToolId } from '../../src/tools.js';
+import { descriptorOf, TOOL_ORDER } from '../../src/tool-registry.js';
+import type { ToolId } from '../../src/tools.js';
 import { z } from 'zod';
 import { defaultToolHome, envToolHome, toolHome } from '../../src/tool-home.js';
 import { detectToolRoot, RELOCATABLE_TOOLS, TeamaiConfigBaseSchema } from '../../src/types.js';
@@ -124,7 +125,7 @@ function hostFiles(world: World): Section {
   const realHome = os.homedir();
   const since = Date.parse(world.createdAt);
   // Every tool home TOOLS knows: default, recorded, and moved by this shell's env (also a relocated tool root), so a new tool is checked without editing this list.
-  const homes = [...new Set([path.join(realHome, '.teamai'), ...TOOL_IDS.flatMap((tool) => [defaultToolHome(tool, { home: realHome, path }), toolHome(tool), envToolHome(tool)?.dir ?? []].flat()), ...Object.keys(RELOCATABLE_TOOLS).flatMap((tool) => detectToolRoot(tool) ?? [])])];
+  const homes = [...new Set([path.join(realHome, '.teamai'), ...TOOL_ORDER.flatMap((tool) => [defaultToolHome(tool, { home: realHome, path }), toolHome(tool), envToolHome(tool)?.dir ?? []].flat()), ...Object.keys(RELOCATABLE_TOOLS).flatMap((tool) => detectToolRoot(tool) ?? [])])];
   const found: string[] = [];
   const unreadable: string[] = [];
 
@@ -157,7 +158,7 @@ const KNOWN_LEFTOVERS_ISSUE = 'https://github.com/Tencent/teamai-cli/issues/1808
 
 /** Each tool's home under HOME, its parents included, and the top directory of each project path teamai writes for a tool. */
 const TOOL_DIRS = [
-  ...TOOL_IDS.flatMap((tool) => TOOLS[tool].home.dir.split('/').map((_, i, parts) => `home/${parts.slice(0, i + 1).join('/')}`)),
+  ...TOOL_ORDER.flatMap((tool) => descriptorOf(tool).home.dir.split('/').map((_, i, parts) => `home/${parts.slice(0, i + 1).join('/')}`)),
   ...Object.values(TeamaiConfigBaseSchema.shape.toolPaths.parse(undefined)).flatMap((paths) =>
     [paths.skills, paths.rules, paths.settings, paths.agents, paths.mcpProject].flatMap((dir) => (dir?.includes('/') ? [`project/${dir.split('/')[0]}`] : []))),
 ];
@@ -199,7 +200,7 @@ const Read = z.union([
 function toolReads(tool: ToolId): string[] {
   const paths: string[] = [];
 
-  JSON.stringify(TOOLS[tool], (_key, value) => {
+  JSON.stringify(descriptorOf(tool), (_key, value) => {
     const read = Read.safeParse(value);
 
     if (read.success) paths.push(...read.data);
@@ -210,12 +211,12 @@ function toolReads(tool: ToolId): string[] {
   return paths;
 }
 
-const TOOL_READS = [...new Set(TOOL_IDS.flatMap(toolReads))];
+const TOOL_READS = [...new Set(TOOL_ORDER.flatMap(toolReads))];
 
 const TEAMAI_HOME_WRITES = TOOL_READS.filter((read) => read.startsWith('home/'));
 
 /** A tool's home under HOME holds the tool's own state (sessions, caches, the runtime of a Codex teamai starts to trust its hooks) beside what teamai writes there. */
-const TOOL_HOMES = [...new Set(TOOL_IDS.map((tool) => `home/${TOOLS[tool].home.dir}`))];
+const TOOL_HOMES = [...new Set(TOOL_ORDER.map((tool) => `home/${descriptorOf(tool).home.dir}`))];
 
 /** A run's branch, which a run that succeeded keeps as its result (docs/guide/workflow.md, The branches a run leaves). */
 const RUN_BRANCH = /^project\/\.git\/refs\/heads\/teamai(\/r[0-9a-f]{16}(\/[^/]+(\/p\d+)?)?)?$/;

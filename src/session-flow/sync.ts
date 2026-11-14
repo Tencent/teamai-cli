@@ -37,11 +37,11 @@ import { acquireLock, releaseLock } from '../update.js';
 import { resolveAnchors } from '../utils/git.js';
 import { z } from 'zod';
 import { AgentObservationSchema, CommitStateSchema, type AgentObservation } from '../agent-observation.js';
-import type { Session } from './ir.js';
-import { OptionalString } from './fs.js';
+import type { Session } from '@teamai/tool-core/sessions/ir';
+import { OptionalString } from '@teamai/tool-core/sessions/fs';
 import { JsonValueSchema, isJsonObject } from '../types.js';
 import { titleSpellsLocalPath, type LocalPathRoots } from './scrub.js';
-import { messageToDict, messageFromDict } from './ir.js';
+import { messageToDict, messageFromDict } from '@teamai/tool-core/sessions/ir';
 import { parseJson } from '../utils/json.js';
 
 // ---------------------------------------------------------------------------

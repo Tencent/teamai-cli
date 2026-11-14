@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import fse from 'fs-extra';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn(), persist: vi.fn() },
   spinner: vi.fn(() => ({ start: vi.fn().mockReturnThis(), succeed: vi.fn().mockReturnThis(), fail: vi.fn().mockReturnThis() })),
 }));
@@ -13,7 +13,7 @@ vi.mock('../utils/logger.js', () => ({
 import { buildMcpGitExcludeCheck, buildMcpReadFileChecks, mcpTransportNotes } from '../doctor-delivery.js';
 import type { DoctorContext } from '../doctor.js';
 import { judgeTeamaiOnlyFiles } from '../teamai-only-files.js';
-import { mcpFormatOf } from '../tools.js';
+import { mcpFormatOf } from '../tool-registry.js';
 import { log } from '../utils/logger.js';
 import { judgeTeamaiOnlyMcpConfigs, reconcileMcpForConfig, resolveMcpTargets, shadowedMcpRecords } from '../mcp-reconcile.js';
 import { entryHash, renderCodexBlock, renderJsonEntry } from '../resources/mcp-format.js';
@@ -617,6 +617,31 @@ describe('pull writes MCP servers where each tool reads them (#1221)', () => {
       expect(alone).toEqual([{ file, teamaiOnly: true }]);
       expect(await judgeTeamaiOnlyMcpConfigs(team(), local)).toEqual([{ file, teamaiOnly: false }]);
     });
+  });
+
+  it('judges the .mcp.json Claude keeps in self mode while a Claude instance writes it too', async () => {
+    await fse.outputFile(path.join(repo, 'teamai.yaml'), 'team: fixture\nrepo: fixture\n');
+    await fse.outputFile(path.join(repo, 'tools', 'acme-claude.yaml'), 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude }\n');
+    execFileSync('git', ['init', '-q', repo]);
+    for (const dir of ['.claude', '.acme-claude']) {
+      await fse.ensureDir(path.join(home, dir));
+      await fse.ensureDir(path.join(repo, dir));
+    }
+
+    const { loadTeamConfig } = await import('../config.js');
+    const { resetToolInstancesForTests } = await import('../tool-instances.js');
+    onTestFinished(resetToolInstancesForTests);
+    const teamConfig = await loadTeamConfig(repo);
+
+    if (!teamConfig) throw new Error('the team config did not load');
+    const self: LocalConfig = {
+      repo: { localPath: repo, remote: 'fixture', kind: 'self' }, username: 'tester', scope: 'project', projectRoot: repo,
+      dataHome: path.join(root, 'data'), enabledAgents: ['claude', 'acme-claude'], additionalRoles: [],
+    };
+
+    await reconcileMcpForConfig(teamConfig, self);
+
+    expect(await judgeTeamaiOnlyMcpConfigs(teamConfig, self)).toEqual([{ file: path.join(repo, '.mcp.json'), teamaiOnly: true }]);
   });
 
   it('reads a recorded ZCode config through its nested key after the team changes its mapping', async () => {

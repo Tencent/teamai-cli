@@ -15,7 +15,6 @@ import { RunScorers } from '../scorers/run-scorers.js';
 import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
 import { resolveTeamRef, TeamRefError } from '../team-ref.js';
 import { roleDeclaration, type RoleDeclaration } from '../roles.js';
-import { isAgentToolId } from '../tools.js';
 import type { LocalConfig } from '../types.js';
 import { definedFields } from '../utils/defined-fields.js';
 import { withTeamRevision } from '../workflow/cache.js';
@@ -507,8 +506,7 @@ async function resolveArm({ name, tool, model, role, recall }: Arm, team: ArmTea
   if (model === undefined) return { ok: true, arm: { name, tool, source: 'team', team, ...roleField, ...recallField } };
   const loaded = await aliases();
   const alias = isModelAlias(loaded, model);
-  // An alias maps only the tools teamai knows, so it gives any other tool no model; a model name passes as written.
-  const resolution: ModelResolution = isAgentToolId(tool) ? resolveModelValue(loaded, model, tool) : alias ? { ok: true, step: 'default' } : { ok: true, step: 'literal', model };
+  const resolution: ModelResolution = resolveModelValue(loaded, model, tool);
 
   if (!resolution.ok || resolution.model === undefined) {
     return { ok: false, message: `Arm "${name}" uses ${alias ? `model alias "${model}"` : `model "${model}"`}, which ${noModelCause(resolution, tool)}. ${NO_MODEL_FIX[noModelReason(resolution)]}` };

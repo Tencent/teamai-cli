@@ -9,7 +9,8 @@ import { OMP_RULE_FORMAT } from '../resources/omp-rule.js';
 import { QODER_RULE_FORMAT } from '../resources/qoder-rule.js';
 import { getsRulesFromExtension, getsRulesFromSessionHook, ruleFormatById, ruleFormatForTool, type RuleFormat } from '../resources/rule-format.js';
 import { TRAE_RULE_FORMAT } from '../resources/trae-rule.js';
-import { AGENT_TOOLS, hookFormatOf, isToolId, ruleFormatIdOf, runTimeRulesOf, hasDefaultHomeLeftovers, type HookFormat } from '../tools.js';
+import { type HookFormat } from '@teamai/tool-core/definition';
+import { AGENT_TOOLS, hookFormatOf, isToolId, ruleFormatIdOf, runTimeRulesOf, hasDefaultHomeLeftovers } from '../tool-registry.js';
 import { DEFAULT_TOOL_PATHS } from '../types.js';
 
 const TOOL_IDS = Object.keys(DEFAULT_TOOL_PATHS).filter(isToolId);

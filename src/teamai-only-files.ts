@@ -20,8 +20,8 @@ import { readFileSafe } from './utils/fs.js';
 //  teamai owns. While git does not track it, pull lists it in teamai's
 //  `delivered` git exclude block; once it holds anything else, it is the
 //  member's too, and git sees it again. Files: the project MCP configs with no
-//  per-member alternative (judgeTeamaiOnlyMcpConfigs), `.codex/hooks.json`
-//  (judgeTeamaiOnlyCodexHooks), internal Claude instruction files, and OpenCode's
+//  per-member alternative (judgeTeamaiOnlyMcpConfigs), `.codex/hooks.json` and
+//  a Codex instance's (judgeTeamaiOnlyCodexHooks), internal Claude instruction files, and OpenCode's
 //  `.opencode/opencode.json`.
 
 /**
@@ -54,8 +54,8 @@ export async function judgeTeamaiOnlyFiles(teamConfig: TeamaiConfig, localConfig
   const verdicts = [
     ...await judgeTeamaiOnlyMcpConfigs(teamConfig, localConfig),
     ...await judgeInternalClaudeInstructions(teamConfig, localConfig),
-    ...[await judgeTeamaiOnlyCodexHooks(teamConfig, localConfig), await judgeOpencodeInstructions(teamConfig, localConfig)]
-      .filter((verdict) => verdict !== null),
+    ...await judgeTeamaiOnlyCodexHooks(teamConfig, localConfig),
+    ...[await judgeOpencodeInstructions(teamConfig, localConfig)].filter((verdict) => verdict !== null),
   ];
 
   // One file judged twice (a team mapping two writers to it) is teamai-only only if both say so.

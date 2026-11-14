@@ -1,7 +1,8 @@
 import { z } from 'zod';
 
-import type { JsonValue, TokenUsage } from '../../types.js';
-import type { TokenRequest } from '../index.js';
+import type { JsonValue } from '../../types.js';
+import type { TokenUsage } from '@teamai/tool-core/tokens';
+import type { TokenRequest } from '@teamai/tool-core/tokens';
 
 const Count = z.number().finite().nonnegative().optional().catch(undefined);
 const Bucket = z.object({ tokenCount: Count }).optional().catch(undefined);

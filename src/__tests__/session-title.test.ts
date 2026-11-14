@@ -2,10 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ClaudeCodeAdapter } from '../session-flow/adapters/claude-code.js';
-import { WorkBuddyAdapter } from '../session-flow/adapters/workbuddy.js';
+import { ClaudeCodeAdapter } from '@teamai/tool-core/formats/claude-code';
+import { sessionStoreDir } from '../locate.js';
+import { getAdapter } from '../session-flow/adapters/index.js';
 import { scrubSession } from '../session-flow/scrub.js';
-import { cleanTitleText, fallbackTitle, isInjectedText, titleFromCandidates } from '../session-flow/title.js';
+import { cleanTitleText, fallbackTitle, isInjectedText, titleFromCandidates } from '@teamai/tool-core/sessions/title';
 
 describe('session title cleaning', () => {
   it('detects platform-injected message heads', () => {
@@ -54,7 +55,7 @@ describe('a WorkBuddy session title', () => {
     const file = path.join(dir, `${sessionId}.jsonl`);
     fs.writeFileSync(file, `${JSON.stringify({ type: 'ai-title', aiTitle: `${'Deploy the staging build '.repeat(3)}now with token ${token}` })}\n`);
     try {
-      const { session } = scrubSession(await new WorkBuddyAdapter().readSession({ sessionId, filePath: file }));
+      const { session } = scrubSession(await getAdapter('workbuddy').readSession({ sessionId, filePath: file }));
 
       expect(session.title).not.toContain(token.slice(0, 8));
     } finally {
@@ -69,7 +70,7 @@ describe('a WorkBuddy session title', () => {
     const start = `${'Load the warehouse '.repeat(4)}from `;
     fs.writeFileSync(file, `${JSON.stringify({ type: 'ai-title', aiTitle: `${start}mysql-prod-7Hq2xVb9Lk tonight` })}\n`);
     try {
-      const { session } = scrubSession(await new WorkBuddyAdapter().readSession({ sessionId, filePath: file }), { secrets: { WAREHOUSE_DSN: 'mysql-prod-7Hq2xVb9Lk' } });
+      const { session } = scrubSession(await getAdapter('workbuddy').readSession({ sessionId, filePath: file }), { secrets: { WAREHOUSE_DSN: 'mysql-prod-7Hq2xVb9Lk' } });
 
       expect(session.title).toBe(`${start}<REDACTED:WAREHOUSE`);
     } finally {
@@ -86,7 +87,7 @@ describe('a Claude Code session title', () => {
     const prompt = 'Use mysql-prod-7Hq2xVb9Lk and compare with mysql-prod-7Hq2xVb9Lk';
     fs.writeFileSync(file, `${JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: null, cwd: dir, sessionId, timestamp: '2026-10-20T10:00:00.000Z', message: { role: 'user', content: prompt } })}\n`);
     try {
-      const { session } = scrubSession(await new ClaudeCodeAdapter().readSession({ sessionId, filePath: file }), { secrets: { DSN: 'mysql-prod-7Hq2xVb9Lk' } });
+      const { session } = scrubSession(await new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', undefined)).readSession({ sessionId, filePath: file }), { secrets: { DSN: 'mysql-prod-7Hq2xVb9Lk' } });
 
       expect(session.title).toBe('Use <REDACTED:DSN> and compare with <REDACTED:DSN>');
     } finally {

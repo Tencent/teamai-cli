@@ -9,8 +9,8 @@ vi.mock('../utils/git.js', async (importOriginal) => ({
   listWorktrees: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock('../utils/logger.js', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../utils/logger.js')>(),
+vi.mock('@teamai/shared/log', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@teamai/shared/log')>(),
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), persist: vi.fn(), dim: vi.fn() },
 }));
 
@@ -18,7 +18,7 @@ import { writeContributeState } from '../contribute-check.js';
 import { buildHandlerRegistry } from '../hook-handlers.js';
 import { reconcileTeamHooksForConfig } from '../hooks.js';
 import { computePackageHintOutput } from '../pkg/pkg-hint.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { TeamaiConfigSchema, type LocalConfig } from '../types.js';
 

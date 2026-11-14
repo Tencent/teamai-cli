@@ -1,7 +1,7 @@
 /**
  * scrub.ts -- redact a session before migration.
  *
- * `session migrate --scrub` passes the whole IR through `utils/redact`:
+ * `session migrate --scrub` passes the whole IR through `@teamai/shared/redact`:
  * text, thinking, tool-call arguments and tool results are all covered.
  * Secret-shaped values -- and values matching secrets found in the current
  * environment -- are replaced with `<REDACTED:...>` placeholders.
@@ -11,7 +11,7 @@
  * team-readable repo via `session push`. Redacting at migration time keeps
  * sensitive values from travelling with the session.
  *
- * `utils/redact` is reused (the same engine `session save` uses) so the rules
+ * `@teamai/shared/redact` is reused (the same engine `session save` uses) so the rules
  * stay consistent instead of forking a second set of patterns.
  *
  * Note: redact() is best-effort (pattern matching, not a guarantee). Review
@@ -19,11 +19,11 @@
  */
 
 import { z } from 'zod';
-import type { Session, Message, ContentBlock, MessageMetadata, ToolArguments } from './ir.js';
-import { collectEnvSecrets, redact, redactJson } from '../utils/redact.js';
-import { imagePlaceholderText, ToolArgumentsSchema } from './ir.js';
+import type { Session, Message, ContentBlock, MessageMetadata, ToolArguments } from '@teamai/tool-core/sessions/ir';
+import { collectEnvSecrets, redact, redactJson } from '@teamai/shared/redact';
+import { imagePlaceholderText, ToolArgumentsSchema } from '@teamai/tool-core/sessions/ir';
 import { JsonValueSchema } from '../types.js';
-import { maskCutSecret } from './title.js';
+import { maskCutSecret } from '@teamai/tool-core/sessions/title';
 import { mapStrings } from '../utils/json.js';
 
 export interface ScrubResult {

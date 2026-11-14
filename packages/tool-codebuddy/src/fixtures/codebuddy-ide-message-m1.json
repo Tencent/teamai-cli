@@ -1,0 +1,7 @@
+{
+  "role": "user",
+  "message": "{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"Which test runner does this repo use?\"}]}",
+  "id": "m1",
+  "extra": "{\"modelName\": \"claude-sonnet-4.5\"}",
+  "createdAt": "2026-10-30T09:15:02.306Z"
+}

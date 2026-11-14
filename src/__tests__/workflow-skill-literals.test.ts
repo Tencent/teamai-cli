@@ -128,12 +128,11 @@ describe('--tools of the skill driver', () => {
     expect(skillCall(describeLiteral('teamai', 'check', { tool: '{tool}' }).replace("'{tool}'", 'omp'), 'teamai')).toEqual({ kind: 'describe', name: 'check', tool: 'omp' });
   });
 
-  it('refuses a role map or a tool teamai does not know', () => {
+  it('refuses a role map or what can name no tool, and leaves a name to the scope whose tool instances it may name', () => {
     for (const tools of ['implementer=codex', 'default=claude,implementer=codex', 'default=']) {
       expect(parseSkillCall({ kind: 'start', name: 'check', options: { tools } }, {}), tools).toEqual({ error: { code: 'invalid_arguments', message: ONE_TOOL, next: null } });
     }
-    expect(parseSkillCall({ kind: 'start', name: 'check', options: { tools: 'default=vim' } }, {}))
-      .toEqual({ error: { code: 'invalid_arguments', message: expect.stringMatching(/^--tools default=vim names no tool teamai knows: claude, .*hermes/), next: null } });
+    expect(parseSkillCall({ kind: 'start', name: 'check', options: { tools: 'default=acme-claude' } }, {})).toMatchObject({ kind: 'start', tool: 'acme-claude' });
     expect(parseSkillCall({ kind: 'start', name: 'check', options: { describe: true, tools: 'default={tool}' } }, {}))
       .toEqual({ error: { code: 'invalid_arguments', message: expect.stringMatching(/^--tools default=\{tool\} names no tool teamai knows: claude, /), next: null } });
   });

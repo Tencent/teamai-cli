@@ -2,7 +2,7 @@
  * Skill use (#1221): which skill a hook event shows the agent loaded, credited
  * to the calling tool once per session turn.
  *
- *   post-tool-use  the tool's skill tool (TOOLS[tool].skillLoad.calls) by name,
+ *   post-tool-use  the tool's skill tool (descriptorOf(tool).skillLoad.calls) by name,
  *                  or a read of a SKILL.md under a skill root (classifyToolCall),
  *                  also by any reader a longer shell command names (namedReads)
  *                  when the output shows that skill (showsSkill),
@@ -22,10 +22,11 @@ import { z } from 'zod';
 import { sanitizeSessionId } from './contribute-check.js';
 import { resolveMemberToolRoots } from './config.js';
 import { isRecordedFromTeamSkill, recordedUnchanged, type DeliveredHashes } from './resources/delivered-copies.js';
-import type { SubagentsRead } from './session-flow/adapters/base.js';
-import type { ContentBlock, Message, Session } from './session-flow/ir.js';
-import { typedText } from './session-flow/title.js';
-import { isToolId, TOOLS, type PromptForm, type SkillLoad } from './tools.js';
+import type { SubagentsRead } from '@teamai/tool-core/sessions/base';
+import type { ContentBlock, Message, Session } from '@teamai/tool-core/sessions/ir';
+import { typedText } from '@teamai/tool-core/sessions/title';
+import { type PromptForm, type SkillLoad } from '@teamai/tool-core/definition';
+import { baseDescriptorOf } from './tool-registry.js';
 import { SKILL_NAME_CHARS, type LocalConfig } from './types.js';
 import { withFileLock } from './update.js';
 import {
@@ -86,7 +87,7 @@ const ToolEventSchema = z.object({
 const ReadPathSchema = z.object({ path: z.string() });
 
 function skillLoadOf(tool: string): SkillLoad | undefined {
-  return isToolId(tool) ? TOOLS[tool].skillLoad : undefined;
+  return baseDescriptorOf(tool)?.skillLoad;
 }
 
 function isSkillCall(tool: string, hostName: string): boolean {

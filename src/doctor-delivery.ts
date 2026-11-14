@@ -4,7 +4,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { spawnSync } from 'node:child_process';
 import semver from 'semver';
 import { z } from 'zod';
-import { hookSyntaxOf, isToolId } from './tools.js';
+import { hookSyntaxOf, isToolId, toolOf } from './tool-registry.js';
+import { defaultPathsOf } from './tool-instances.js';
 import { existingSharedInstructionDirs, shadowedSharedInstructionFiles } from './shared-instruction-source.js';
 import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
@@ -27,7 +28,7 @@ import {
   SHELL_PROFILE_CANDIDATE_NAMES,
 } from './utils/shell-profile.js';
 import { getUserHome } from './utils/home.js';
-import { installOf, isInstalledFor, locate, locatingOnce, ownOf, unreadWrites, workspaceHooksOf, writable, writesOf, type DirPlace, type FilesChannel, type Install, type Location, type ReadGate, type Session, type Unread } from './locate.js';
+import { hookSettingsFile, installOf, isInstalledFor, locate, locatingOnce, ownOf, unreadWrites, workspaceHooksOf, writable, writesOf, type DirPlace, type FilesChannel, type Install, type Location, type ReadGate, type Session, type Unread } from './locate.js';
 import { readGateCheckName, readGateVerdict, type Held } from './read-gates.js';
 import { amongPlaces, placesRecordOf, samePlaces } from './resources/places.js';
 import { realHost, toolHome } from './tool-home.js';
@@ -327,18 +328,21 @@ export function toolPathsDroppedKeyNotes(ctx: DoctorContext): string[] {
   // default and drops nothing. The enabled filter still comes from `toolPaths`.
   for (const [tool, entry] of Object.entries(teamConfig.toolPaths)) {
     if (toolPaths[tool] === undefined) continue; // not enabled or excluded here.
+    // An instance's own `paths` replace what it would get without them; a toolPaths entry, the tool's default.
+    const instance = toolOf(tool)?.instance;
+    const replaced = instance?.paths ? defaultPathsOf(instance, teamConfig.toolPaths) : isToolId(tool) ? DEFAULT_TOOL_PATHS[tool] : undefined;
 
-    if (!isToolId(tool)) continue; // a custom tool: no default entry to drop keys from.
+    if (replaced === undefined) continue; // a custom tool: no default entry to drop keys from.
     const kept = new Map(Object.entries(entry));
 
-    const dropped = Object.entries(DEFAULT_TOOL_PATHS[tool]).flatMap(([key, value]) => {
+    const dropped = Object.entries(replaced).flatMap(([key, value]) => {
       const consequence = CONSEQUENCES.get(key);
 
       return key !== 'userScope' && kept.get(key) === undefined && consequence !== undefined ? [`\`${key}\` (${String(value)} — ${consequence})`] : [];
     });
 
     if (dropped.length === 0) continue;
-    notes.push(`toolPaths.${tool} replaces the tool's default entry whole and drops keys the default provides: `
+    notes.push(`${instance?.paths ? `paths in ${instance.location} replaces ${tool}'s` : `toolPaths.${tool} replaces the tool's`} default entry whole and drops keys the default provides: `
       + `${dropped.join(', ')}. Add a key back to restore its surface, or leave it out on purpose.`);
   }
 
@@ -1040,7 +1044,7 @@ async function buildCursorUserRulesHookChecks(ctx: DoctorContext): Promise<Check
   const { readBuiltinOverride } = await import('./resources/hooks.js');
   const builtin = await readBuiltinOverride(localConfig);
   const disabledByTeam = builtin.known && (builtin.override?.disabled ?? []).includes('Hook dispatch session-start');
-  const file = path.join(resolveBaseDir(localConfig), toolPath.settings);
+  const file = hookSettingsFile('cursor', resolveBaseDir(localConfig), toolPath.settings);
   const syntax = hookSyntaxOf('cursor');
   const read = await readJsonObject(file, syntax);
   const hooks = read.kind === 'ok' ? CursorHooksSchema.parse(read.value).hooks : undefined;
@@ -1215,6 +1219,7 @@ async function buildProjectRulesHookChecks(ctx: DoctorContext): Promise<Check[]>
   const zcodeSettings = scopedToolPaths(teamConfig, { ...localConfig, scope: 'user' }).zcode?.settings;
 
   if (zcodeSettings && !isAgentExcluded(localConfig, 'zcode') && await pathExists(path.join(home, '.zcode'))) {
+    // oxlint-disable-next-line teamai/configured-tool-paths -- ZCode's user settings in the default home, as this check has always read them; a moved home is not followed here yet
     const file = path.join(home, zcodeSettings);
     const read = await readJsonObject(file);
     const hooks = read.kind === 'ok' ? ZcodeHooksSchema.parse(read.value).hooks : undefined;

@@ -1,0 +1,198 @@
+{
+  "info": {
+    "id": "{{sessionId}}",
+    "projectID": "7883f3f5983e1b9b30f1ea21b21f5915eba4f81a",
+    "model": {
+      "id": "big-pickle",
+      "providerID": "opencode",
+      "variant": "default"
+    },
+    "cost": 0,
+    "tokens": {
+      "input": 3781,
+      "output": 153,
+      "reasoning": 66,
+      "cache": {
+        "read": 7040,
+        "write": 0
+      }
+    },
+    "outcome": "succeeded",
+    "time": {
+      "created": 1791997135138,
+      "updated": 1791997140333,
+      "idle": 1791997140335
+    },
+    "title": "tool probe",
+    "location": {
+      "directory": "{{cwd}}"
+    }
+  },
+  "messages": [
+    {
+      "id": "msg_13b5a492d001em1q4zqR8KFUq2",
+      "time": {
+        "created": 1791997135197
+      },
+      "text": "\"Use the read tool to read notes.txt, then use the bash tool to run 'ls'. Then reply with one short sentence describing the attached image.\"",
+      "files": [
+        {
+          "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+          "mime": "image/png",
+          "source": {
+            "type": "inline"
+          },
+          "name": "dot.png"
+        }
+      ],
+      "type": "user"
+    },
+    {
+      "id": "msg_13b5a4961001wc6A6Eiyac9B9I",
+      "time": {
+        "created": 1791997135206,
+        "streamed": 1791997138725,
+        "completed": 1791997138759
+      },
+      "type": "assistant",
+      "agent": "build",
+      "model": {
+        "id": "big-pickle",
+        "providerID": "opencode",
+        "variant": "default"
+      },
+      "content": [
+        {
+          "type": "reasoning",
+          "text": "The user wants me to read notes.txt, run ls, and describe an image. But there's an error: the image can't be read. I should do the reads and inform the user about the image.\n\nLet me first check the directory.",
+          "state": {
+            "reasoningField": "reasoning_content"
+          },
+          "time": {
+            "created": 1791997137945,
+            "completed": 1791997138717
+          }
+        },
+        {
+          "type": "tool",
+          "id": "call_00_q74ylt4yvqpms9j096k4iuys",
+          "name": "read",
+          "executed": false,
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/private/tmp/oc-iso/proj/notes.txt"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Read file /private/tmp/oc-iso/proj/notes.txt, lines 1-1\n1: hello from fixture"
+              }
+            ],
+            "metadata": {
+              "truncated": false
+            }
+          },
+          "time": {
+            "created": 1791997138336,
+            "ran": 1791997138722,
+            "completed": 1791997138739
+          }
+        },
+        {
+          "type": "tool",
+          "id": "call_01_jd59tpf23t1tr03psnwyln88",
+          "name": "shell",
+          "executed": false,
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "ls",
+              "workdir": "/private/tmp/oc-iso/proj"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "dot.png\nnotes.txt\n"
+              }
+            ],
+            "metadata": {
+              "status": "completed",
+              "truncated": false,
+              "exit": 0
+            }
+          },
+          "time": {
+            "created": 1791997138523,
+            "ran": 1791997138724,
+            "completed": 1791997138758
+          }
+        }
+      ],
+      "finish": "tool-calls",
+      "rawFinish": "tool_calls",
+      "cost": 0,
+      "tokens": {
+        "input": 3516,
+        "output": 102,
+        "reasoning": 50,
+        "cache": {
+          "read": 1792,
+          "write": 0
+        }
+      }
+    },
+    {
+      "id": "msg_13b5a574c001HH34Jyo0qbsVBe",
+      "time": {
+        "created": 1791997138769,
+        "streamed": 1791997140333,
+        "completed": 1791997140333
+      },
+      "type": "assistant",
+      "agent": "build",
+      "model": {
+        "id": "big-pickle",
+        "providerID": "opencode",
+        "variant": "default"
+      },
+      "content": [
+        {
+          "type": "reasoning",
+          "text": "Now the image: I need to inform the user I cannot read the image.",
+          "state": {
+            "reasoningField": "reasoning_content"
+          },
+          "time": {
+            "created": 1791997139883,
+            "completed": 1791997140329
+          }
+        },
+        {
+          "type": "text",
+          "text": "notes.txt contains \"hello from fixture\", and `ls` shows `dot.png` and `notes.txt`.\n\nI'm unable to describe the attached image (`dot.png`) because this model doesn't support image input, so I can't read it."
+        }
+      ],
+      "finish": "stop",
+      "rawFinish": "stop",
+      "cost": 0,
+      "tokens": {
+        "input": 265,
+        "output": 51,
+        "reasoning": 16,
+        "cache": {
+          "read": 5248,
+          "write": 0
+        }
+      }
+    },
+    {
+      "id": "msg_13b5a5d6f001f5QzGTjOAxPHk9",
+      "time": {
+        "created": 1791997140335
+      },
+      "type": "idle",
+      "outcome": "succeeded"
+    }
+  ]
+}

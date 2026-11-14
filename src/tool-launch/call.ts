@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveConfigForDir } from '../config.js';
+import { resolveConfigForDir, resolveMemberToolRoots } from '../config.js';
 import { LAUNCHED_BY_ENV, resolveRunMode, RUN_MODE_ENV, type LaunchedBy } from '../launch-context.js';
 import type { LocalConfig } from '../types.js';
 import { resolveCliPath } from '../utils/cli-path.js';
@@ -9,13 +9,15 @@ import { log } from '../utils/logger.js';
 import { CallError, memberTools, type MemberTool } from './member-tools.js';
 import { runTool } from './run.js';
 import type { TokenUsage } from './stdout.js';
-import { executableOf, LAUNCH_ORDER, launchAdapterOf, type LaunchOrderTool } from './tools.js';
+import { executableOf, LAUNCH_ORDER, launchAdapterIdOf, launchAdapterOf, launchExecutableOf, toolCommandEnv, type LaunchOrderTool } from './tools.js';
+import { acceptToolCommand } from '../tool-instances.js';
+import { toolOf } from '../tool-registry.js';
 import { agyGatewayEnv } from '../models/agy-gateway.js';
 
 const DEFAULT_TIMEOUT_MS = 600_000;
 
-/** An AI call's answer, and the tool that gave it. */
-export type CallResult = { text: string; tool: LaunchOrderTool; tokens?: TokenUsage };
+/** An AI call's answer, and the tool that gave it, by the name the member gave it: an instance's own. */
+export type CallResult = { text: string; tool: string; tokens?: TokenUsage };
 
 export interface CallOptions {
   /** Who in teamai makes the call, which the launched session carries as `LAUNCHED_BY_ENV`. */
@@ -54,38 +56,57 @@ async function scopeHere(): Promise<LocalConfig | undefined> {
   return scope ?? undefined;
 }
 
-type Picked = { tool: LaunchOrderTool; executable: string };
+/** The tool a call runs: its name, an instance's own, the shipped tool whose flags it runs with, and its executable. */
+type Picked = { name: string; tool: LaunchOrderTool; executable: string };
 
-/** The environment a call's tool runs in: the member's own, marked as teamai's launch, without an outer launch's checkout. */
-function callEnv(launchedBy: LaunchedBy, tool: string): NodeJS.ProcessEnv {
+/**
+ * The environment a call's tool runs in: the member's own at the home teamai delivered the tool to, marked as teamai's
+ * launch, without an outer launch's checkout. A recorded home that is gone fails the call, as it skips delivery.
+ */
+function callEnv({ launchedBy, name, tool, toolRoots }: { launchedBy: LaunchedBy; name: string; tool: LaunchOrderTool; toolRoots: LocalConfig['toolRoots'] }): NodeJS.ProcessEnv {
   const { TEAMAI_LAUNCHED_TOOL: _tool, TEAMAI_LAUNCHED_CHECKOUT: _checkout, ...env } = process.env;
+  const home = toolCommandEnv(name, { kind: 'delivered', inherited: env, toolRoots });
 
+  if (home.kind === 'home_gone') throw new CallError('home_gone', home.message);
   const gateway = tool === 'agy' ? agyGatewayEnv(env) : undefined;
 
   // Our own session, not the user's: its hooks would print the share-learnings hint into the answer we read.
-  return { ...env, ...gateway, TEAMAI_CONTRIBUTE_HINT_DISABLED: '1', [LAUNCHED_BY_ENV]: launchedBy, [RUN_MODE_ENV]: resolveRunMode(process.env) };
+  return { ...env, ...home.env, ...gateway, TEAMAI_CONTRIBUTE_HINT_DISABLED: '1', [LAUNCHED_BY_ENV]: launchedBy, [RUN_MODE_ENV]: resolveRunMode(process.env) };
 }
 
 /** A caller that resolves its tool once per scope and reuses it for every call there. */
 export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = scopeHere }: ToolCallerDeps = {}): ToolCaller {
-  /** The tool the member names. A member who names a tool means it, so one teamai cannot run fails the call. */
-  const named = ({ source, tool: value, setting }: MemberTool): Picked => {
+  /**
+   * The tool the member names, or an instance of one, run as a workflow step runs it. A member who names a tool means
+   * it, so one teamai cannot run fails the call, and so does a team instance's command no one accepted here: a call
+   * asks no one.
+   */
+  const named = async ({ source, tool: value, setting }: MemberTool): Promise<Picked> => {
     const env = source === 'TEAMAI_AI_TOOL';
-    const tool = LAUNCH_ORDER.find((candidate) => candidate === value);
+    const resolved = toolOf(value);
+    const tool = LAUNCH_ORDER.find((candidate) => candidate === resolved?.base);
 
-    if (tool === undefined) {
+    if (resolved === undefined || tool === undefined) {
       throw new CallError('override_invalid', `${setting} is "${value}", which is not a tool teamai launches. Set it to one of: ${LAUNCH_ORDER.join(', ')}. Or ${env ? 'unset' : 'remove'} it.`);
     }
 
-    const executable = resolveTool(executableOf(tool));
+    const { instance } = resolved;
+    const command = instance?.command;
+    const executable = command === undefined ? resolveTool(executableOf(tool)) : launchExecutableOf({ tool, instance });
 
     if (executable === null) {
-      throw new CallError('override_invalid', `${setting} is "${tool}", which is not on PATH. Install ${tool}, or ${env ? 'unset TEAMAI_AI_TOOL' : 'remove it'} to use the next setting or the first installed tool.`);
+      throw new CallError('override_invalid', `${setting} is "${value}", which is not on PATH. Install ${command ?? tool}, or ${env ? 'unset TEAMAI_AI_TOOL' : 'remove it'} to use the next setting or the first installed tool.`);
     }
 
-    log.debug(`[tool-launch] using ${tool} (${executable}), from ${source}`);
+    if (instance !== undefined) {
+      const accepted = await acceptToolCommand(instance, { ask: undefined });
 
-    return { tool, executable };
+      if (!accepted.ok) throw new CallError(accepted.code, accepted.message);
+    }
+
+    log.debug(`[tool-launch] using ${value} (${executable}), from ${source}`);
+
+    return { name: value, tool, executable };
   };
 
   const resolve = async (first: MemberTool | undefined): Promise<Picked> => {
@@ -97,7 +118,7 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
       if (executable !== null) {
         log.debug(`[tool-launch] using ${tool} (${executable}), from LAUNCH_ORDER`);
 
-        return { tool, executable };
+        return { name: tool, tool, executable };
       }
     }
 
@@ -110,7 +131,7 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
   const picked = new Map<string, Promise<Picked>>();
 
   const pick = async (scope: LocalConfig | undefined): Promise<Picked> => {
-    const [first] = await memberTools(scope ?? await resolveScope());
+    const [first] = await memberTools(scope);
     const key = first?.tool ?? '';
     const cached = picked.get(key);
 
@@ -122,9 +143,11 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
   };
 
   const callTool: ToolCaller['callTool'] = async (prompt, { launchedBy, timeout = DEFAULT_TIMEOUT_MS, scope, cwd = process.cwd(), signal }) => {
-      const { tool, executable } = await pick(scope);
+      const here = scope ?? await resolveScope();
+      const { name, tool, executable } = await pick(here);
+      const env = callEnv({ launchedBy, name, tool, toolRoots: here?.toolRoots ?? await resolveMemberToolRoots(cwd) });
       const { call } = launchAdapterOf(tool);
-      log.debug(`[tool-launch] ${launchedBy} → ${tool}, timeout=${Math.round(timeout / 1000)}s`);
+      log.debug(`[tool-launch] ${launchedBy} → ${name}, timeout=${Math.round(timeout / 1000)}s`);
       const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-call-'));
 
       try {
@@ -132,19 +155,21 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
         const promptFile = path.join(scratch, 'prompt.md');
 
         if (call.prompt === 'file') await fs.writeFile(promptFile, prompt);
-        const args = call.args({ prompt, promptFile, lastMessageFile });
-        const run = await runTool({ executable, args, cwd, env: callEnv(launchedBy, tool), stdin: call.prompt !== 'stdin' ? '' : 'stdinOf' in call ? call.stdinOf(prompt) : prompt, timeoutMs: timeout, detached: false, signal });
+        // The OpenCode major on PATH decides how an effort is passed; its module loads only for an OpenCode call.
+        const opencodeMajor = launchAdapterIdOf(tool) === 'opencode' ? await (await import('../opencode-hooks.js')).opencodeMajorVersion(executable) : 1;
+        const args = call.args({ prompt, promptFile, lastMessageFile, opencodeMajor });
+        const run = await runTool({ executable, args, cwd, env, stdin: call.prompt !== 'stdin' ? '' : 'stdinOf' in call ? call.stdinOf(prompt) : prompt, timeoutMs: timeout, detached: false, signal });
 
-        if (run.timedOut) throw new CallError('call_failed', `AI call timed out after ${Math.round(timeout / 1000)}s (tool: ${tool})`);
+        if (run.timedOut) throw new CallError('call_failed', `AI call timed out after ${Math.round(timeout / 1000)}s (tool: ${name})`);
         const lastMessage = await fs.readFile(lastMessageFile, 'utf8').catch(() => undefined);
         const reading = call.read({ stdout: run.stdout, lastMessage });
 
         if (run.code !== 0 || !reading.ok) {
           const reason = (reading.ok ? undefined : reading.message) || run.stderr.trim() || run.stdout.trim() || `exit code ${run.code}`;
-          throw new CallError('call_failed', `AI call failed (tool: ${tool}): ${reason}`);
+          throw new CallError('call_failed', `AI call failed (tool: ${name}): ${reason}`);
         }
 
-        const result: CallResult = { text: reading.text, tool };
+        const result: CallResult = { text: reading.text, tool: name };
 
         if (reading.tokens) result.tokens = reading.tokens;
 

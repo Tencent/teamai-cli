@@ -2,13 +2,13 @@ import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { modelsAdd, modelsConfigure, modelsList, modelsRemove, modelsRestore, modelsSwitch } from '../models-cmd.js';
 import { getLocalValuesPath, loadLocalProfiles, loadModelInputs } from '../models/profile.js';
 import { askQuestion, askSecret, isInteractive } from '../utils/prompt.js';
 import { log } from '../utils/logger.js';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
@@ -166,6 +166,27 @@ describe('models commands', () => {
 
     await captureOutput(() => modelsSwitch('mine', { agent: ['workbuddy'] }));
     expect(process.exitCode).toBe(1);
+  });
+
+  it('refuses a tool instance by name, leaving its home and the tool it extends untouched', async () => {
+    // The instance comes from the team repo the member joined, as each command loads it.
+    const repo = path.join(home, 'team');
+    await fse.outputFile(path.join(repo, 'teamai.yaml'), 'team: acme\nrepo: acme/team\n');
+    await fse.outputFile(path.join(repo, 'tools', 'acme-claude.yaml'), 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude }\n');
+    await fse.outputFile(path.join(home, '.teamai', 'config.yaml'), `repo: { localPath: ${JSON.stringify(repo)}, remote: x }\nusername: u\nscope: user\nadditionalRoles: []\n`);
+    const { resetToolInstancesForTests } = await import('../tool-instances.js');
+    onTestFinished(() => resetToolInstancesForTests());
+    await fse.outputJson(path.join(home, '.acme-claude', 'settings.json'), {});
+    await fse.outputJson(path.join(home, '.claude', 'settings.json'), {});
+    const refusal = 'acme-claude is an instance of claude (tools/acme-claude.yaml), and teamai models does not switch or restore the model of an instance yet; set it in the instance\'s own settings';
+
+    // Restore first: nothing before it in this process has loaded the team config.
+    await expect(modelsRestore({ agent: ['acme-claude'] })).rejects.toThrow(refusal);
+    await addMine();
+    await expect(modelsSwitch('mine', { agent: ['acme-claude'] })).rejects.toThrow(refusal);
+
+    expect(await fse.readJson(path.join(home, '.acme-claude', 'settings.json'))).toEqual({});
+    expect(await fse.readJson(path.join(home, '.claude', 'settings.json'))).toEqual({});
   });
 
   it('asks for a missing key instead of failing only when interactive', async () => {

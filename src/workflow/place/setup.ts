@@ -8,7 +8,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { commandShell } from '../../command-shell.js';
 import { recordGroup, stopProcess } from '../../tool-launch/process-stop.js';
-import { redact } from '../../utils/redact.js';
+import { redact } from '@teamai/shared/redact';
 import type { WorkflowFailure } from '../types.js';
 import { untrustedGit } from '../worktree.js';
 import { changedPaths, snapshotWorktree } from './worktree-snapshot.js';

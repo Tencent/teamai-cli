@@ -7,7 +7,7 @@ import { parseFrontmatter } from '../utils/frontmatter.js';
 import { getDataHome } from '../types.js';
 import { runsDir } from '../workflow/store.js';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn(),
   },

@@ -18,7 +18,7 @@ import { RunModeSchema } from './launch-context.js';
 import { appendEvent, dataHomeKey, readSessionOutcomes, SESSION_OUTCOME_RETENTION_MS, sessionRuns } from './dashboard-collector.js';
 import { addCounts, uniqueOutcomes, type SessionOutcomeEvent, type SessionUsage, type WorkOutcome } from './outcomes.js';
 import { interventionsEntry, promptTokensEntry, snapshotPathIn, type ReportedInterventions, type ReportedPromptTokens } from './session-owners.js';
-import { SessionWork } from './session-flow/session-work.js';
+import { SessionCaptures } from './session-flow/captures.js';
 import { getDataHome, type DashboardEvent, type LocalConfig, type UserOutcomeStats } from './types.js';
 import { pathExists, readJson, writeJson } from './utils/fs.js';
 import { checkoutForRepoAnchor, getCurrentBranch, getDefaultBranch, getHeadCommit } from './utils/git.js';
@@ -273,7 +273,7 @@ async function lookUpPr({ cwd, branch, commits }: { cwd: string; branch: string;
 async function fold(input: FoldInput): Promise<OutcomeFold> {
   const outcomes = await scopeOutcomes(input);
   const kept = await readBaseline(input.config);
-  const { ms: idleMs } = await SessionWork.finishedAfter(input.config);
+  const { ms: idleMs } = await SessionCaptures.finishedAfter(input.config);
   const baseline = kept ?? {};
   // Written on the first report even with no session, so a later one never takes its sessions for an earlier release's.
   let changed = kept === undefined;

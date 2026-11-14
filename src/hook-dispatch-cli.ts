@@ -32,7 +32,7 @@ import { claudeHookRunsInAnotherHost } from './claude-hook-host.js';
 import { claimCopilotHookEvent } from './copilot-hook-claim.js';
 import { launchedBy, LAUNCH_PAYLOAD_KEY, launchEnv, readLaunch, SESSION_RUN_PAYLOAD_KEY, sessionRun } from './launch-context.js';
 import { isHttpEnrolled, recordLoginEnrolment } from './hook-fast-path.js';
-import { channelsOf } from './tools.js';
+import { channelsOf, toolOf } from './tool-registry.js';
 import { readStdin, takeHandedOffHookStdin } from './utils/hook-stdin.js';
 import { isSelfMode } from './types.js';
 
@@ -513,10 +513,6 @@ async function runHookDispatch(
         : takeHandedOffHookStdin() ?? await readStdin();
 
     const parsed = parseStdin(raw, event);
-
-    // This pass runs inside the login environment: it tells a later prompt whose command deferred that environment
-    // whether the machine syncs over HTTP (hook-fast-path.ts runLoginDeferredHook).
-    if (process.platform !== 'win32' && channelsOf(tool).hooks.loginDeferrable) recordLoginEnrolment(raw, process.env);
     // Antigravity CLI speaks its own hook payload; the detached child gets it already translated.
     const agy = tool === 'agy' && !stdinFile ? await import('./agy-hook-io.js') : undefined;
     const stdin = agy ? agy.agyHookPayload(event, parsed) : parsed;
@@ -554,6 +550,14 @@ async function runHookDispatch(
     // payload keeps the scope its own directory holds.
     const { resolveHookScopeFor } = await import('./dashboard-collector.js');
     const { config: localConfig, dir: scopeDir } = await resolveHookScopeFor(stdin, tool);
+
+    // A tool instance is known by its name only once its scope's team config is read, and its paths are that config's.
+    const known = toolOf(tool);
+    const teamConfig = localConfig && !fromGit && (known === undefined || known.instance !== undefined) ? await (await import('./config.js')).loadTeamConfig(localConfig.repo.localPath) : null;
+
+    // This pass runs inside the login environment: it tells a later prompt whose command deferred that environment
+    // whether the machine syncs over HTTP (hook-fast-path.ts runLoginDeferredHook).
+    if (process.platform !== 'win32' && channelsOf(tool).hooks.loginDeferrable) recordLoginEnrolment(raw, process.env);
 
     // The workspace the session recorded is the directory the handlers work in,
     // so the payload's own is replaced when it named no scope.
@@ -595,7 +599,10 @@ async function runHookDispatch(
       .then(({ canonicalProjectRoot }) => canonicalProjectRoot(copilotProject) === canonicalProjectRoot(selfRoot)));
 
     // Where the global copy steps aside, it is no replacement for the local Claude copy.
-    if (claudeHookRunsInAnotherHost(tool, process.env, !selfCopilotCopyLoaded)) return;
+    // A shipped tool needs no tool paths here, so the shipped ones stand in where no team config was read.
+    const place = localConfig === null ? undefined : { scope: localConfig.scope, toolPaths: teamConfig?.toolPaths ?? {}, toolRoots: localConfig.toolRoots ?? {} };
+
+    if (claudeHookRunsInAnotherHost(tool, process.env, !selfCopilotCopyLoaded, place)) return;
 
     if (!bgOnly && tool === 'copilot') {
       if (options.copilotGlobal && selfCopilotCopyLoaded) return;

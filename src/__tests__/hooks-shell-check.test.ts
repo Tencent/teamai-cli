@@ -4,7 +4,7 @@ import path from 'node:path';
 import fse from 'fs-extra';
 
 // Mock logger before any imports that use it.
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
@@ -45,7 +45,7 @@ import { log } from '../utils/logger.js';
 // Isolate getUserHome() so ensureTeamaiWrapper / bundled-shell detection read
 // a per-test home directory instead of the real one.
 const homeState = vi.hoisted(() => ({ home: '' }));
-vi.mock('../utils/home.js', async (importOriginal) => ({
+vi.mock('@teamai/shared/home', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/home.js')>()),
   getUserHome: () => homeState.home,
 }));

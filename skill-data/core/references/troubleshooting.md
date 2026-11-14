@@ -93,7 +93,10 @@ This is the #1 onboarding issue. In order:
    `teamai init` from a shell that has the variable exported; it records the root
    and moves the install. If the check says the value cannot be synced to (outside
    your home, or neither a plain directory in it nor one under `.config/`), fix the
-   variable first. `<tool> home matches <variable>` (`XDG_CONFIG_HOME`,
+   variable first. `Claude Code root exists` / `Codex root exists` fails when the
+   recorded root is gone; pull skips the tool and a workflow step does not start it
+   until you re-run `teamai init` with the variable set to the root it uses, or blank
+   to clear the record. `<tool> home matches <variable>` (`XDG_CONFIG_HOME`,
    `HERMES_HOME`, `COPILOT_HOME`, ...) is the same check for the homes recorded in
    `~/.teamai/tool-homes.json`, and `<tool> home exists` fails when a recorded home
    is gone; re-run `teamai init` from the shell with the variable you want.
@@ -282,6 +285,10 @@ copy the member changed stays, named in its own line.
   name with different content, so the workspace holds it: what teamai
   installed for it before stays, in the place the workspace's rules give it. Tell the user to make the two copies equal in the team repo or
   rename one. Each repo still receives its own copy.
+
+## `tool_not_accepted`: a team tool's command did not run
+
+The step's tool is a team instance (`tools/<name>.yaml` in the team repo) that sets `command`, and no one accepted that file on this machine. An agent cannot accept it: tell the person to run the same `teamai workflow start …` once in their own terminal, read the file it names, and answer `y`. An edit to the file asks again.
 
 ## Permission / access denied
 

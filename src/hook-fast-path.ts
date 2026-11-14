@@ -19,9 +19,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
-import { writeToFile } from './utils/debug-log.js';
+import { writeToFile } from '@teamai/shared/debug-log';
 import { handOffHookStdin, readStdin } from './utils/hook-stdin.js';
-import { getUserHome } from './utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 
 /** launch-context.ts `LAUNCHED_BY_ENV`. */
 // oxlint-disable-next-line teamai/launch-env -- a copy: launch-context.ts loads zod, which this module runs before; hook-fast-path.test.ts keeps it equal

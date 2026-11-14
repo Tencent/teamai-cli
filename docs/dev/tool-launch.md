@@ -51,11 +51,8 @@ teamai(launch-through-workflows): Only a workflow driver launches an AI tool. Ru
   (`no_tool` → `tool_unavailable`, `override_invalid` → `tool_unconfigured`, `call_failed` → `tool_failed`). A
   workflow's fallback reads `steps.<id>.failure.code` and ends the run on `tool_unconfigured`, so a wrong setting is
   never hidden.
-- **A tool launches through its adapter.** `launch` on the tool's descriptor in `src/tools.ts` names an entry of
-  `LAUNCH_ADAPTERS` in `adapters.ts`, or `none`. The adapter holds the profiles teamai builds for it: `call` always,
-  `step` and `confined` when the tool can run them. `LAUNCH_ORDER` in `tools.ts` is the order an answer step tries
-  installed tools in; the step tools (`LAUNCH_TOOLS`) and confined tools (`CONFINED_TOOLS`) are the tools of that order
-  whose adapter has the profile. To add a tool, add or reuse an adapter, set `launch`, and place it in `LAUNCH_ORDER`.
+- **A tool launches through its adapter.** `launch` on the tool's descriptor (`packages/tool-<family>/src/definitions.ts`) names an entry of `LAUNCH_ADAPTERS` in `adapters.ts`, or `none`. The adapter holds the profiles teamai builds for it, declared in the family's `launch.ts`: `call` always, `step` and `confined` when the tool can run them. Code in `src/` reads an adapter with `launchAdapterOf(tool)` (`tools.ts`), never `LAUNCH_ADAPTERS` itself (lint rule `teamai/tool-registry`). `LAUNCH_ORDER` in `tools.ts` is the order an answer step tries installed tools in; the step tools (`LAUNCH_TOOLS`) and confined tools (`CONFINED_TOOLS`) are the tools of that order whose adapter has the profile. To add a tool, add or reuse a profile in its family's `launch.ts`, add the adapter's row to `LAUNCH_ADAPTERS`, set `launch`, and place the tool in `LAUNCH_ORDER`.
+- **A tool instance launches on its own command, once accepted.** A step whose tool is an instance (`tools/<name>.yaml` in the team repo, or `~/.teamai/tools/`) runs through the adapter of the tool it extends: `launchTargetOf` in `tool-launch/tools.ts` resolves the name, and `LocalToolRun.command` in `local-tool-adapter.ts` carries the instance's `command`, which is looked up with `resolvePathCommand` (`@teamai/tool-core/cli-path`) in the PATH directories alone: on Windows `where $PATH:<name>`, since a bare `where` searches the current directory, the checkout, first. Before a team instance's command runs, the local driver calls `acceptToolCommand` in `tool-instances.ts`, which asks a person attended, through the driver's one terminal reader (it closes an open HITL question until answered, the step's abort ends it, and Ctrl-C stops the run as `interrupted`), and refuses unattended with `tool_not_accepted` until that file content is accepted. Answer steps and judges do not launch instances.
 - **A launched session says who launched it.** Answer steps, prompt steps and judges set `LAUNCHED_BY_ENV`
   (`launch-context.ts`). `hook-dispatch-cli.ts` skips every hook of a session teamai launched, except a workflow
   step's, so the member's hooks neither capture nor judge an answer. `hook-fast-path.ts` makes the same check before
@@ -63,6 +60,4 @@ teamai(launch-through-workflows): Only a workflow driver launches an AI tool. Ru
 - **The support page follows the adapters.** The `workflows` and `aiBackend` cells in `src/tools.ts` stay hand-written,
   for their evidence and notes, and `tools.test.ts` fails when a cell marks a feature built that the adapter has no
   profile for, or the reverse.
-- **Steps and judges still switch on the adapter.** `invocation` in `drivers/local/local-tool-adapter.ts` ends in a `never` check,
-  and `LAUNCHES` in `tool-launch/confined.ts`, which launches every judge step, `satisfies` a launch per family, so a new
-  adapter with a `step` or `judge` profile fails the type check until both handle it.
+- **Steps and judges still switch on the adapter.** `invocation` in `drivers/local/local-tool-adapter.ts` ends in a `never` check, and the confined argv and reply tables in `tool-launch/confined.ts` (`LAUNCHES`, which launches every judge step, and `REPLIES`) need an entry per adapter with a `confined` profile, so a new adapter with a `step` or `confined` profile fails the type check until both handle it.

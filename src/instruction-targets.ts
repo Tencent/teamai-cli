@@ -4,9 +4,10 @@ import { hookSourceMatches } from './utils/hook-source.js';
 import { getsRulesFromExtension } from './resources/rule-format.js';
 import { pathExists, readFileSafe, readJsonObject, remove, writeFile } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
-import { CODEX_TOOL_IDS } from './utils/tool-names.js';
-import { channelsOf, TOOLS, type BlocksHeader, type ChannelProbe, type RunTime } from './tools.js';
-import { hookAdapterDir, installOf, locate, ownOf, writable, type FilePlace, type Gate, type Install } from './locate.js';
+import { isCodexTool } from './utils/tool-names.js';
+import { type BlocksHeader, type ChannelProbe, type RunTime } from '@teamai/tool-core/definition';
+import { channelsOf, TOOL_ORDER } from './tool-registry.js';
+import { hookAdapterDir, hookSettingsFile, installOf, locate, ownOf, writable, type FilePlace, type Gate, type Install } from './locate.js';
 import {
   opencodeContextReference, opencodeV1ClaudeFile, readOpencodeInstructionList, reconcileOpencodeInstructions,
 } from './resources/opencode-config.js';
@@ -160,7 +161,7 @@ export function instructionHookText(blocks: InstructionBlocks, recall: boolean):
 
 /** The native project context, including legacy blocks that migration could not yet retire. */
 export async function nativeProjectInstructions(tool: string, projectRoot: string): Promise<string> {
-  const preferred = CODEX_TOOL_IDS.some((id) => id === tool) ? 'AGENTS.override.md'
+  const preferred = isCodexTool(tool) ? 'AGENTS.override.md'
     : tool === 'omp' ? '.omp/AGENTS.md' : undefined;
 
   return (preferred ? await readFileSafe(path.join(projectRoot, preferred)) : null)
@@ -257,7 +258,7 @@ export async function channelReadiness(
       const file = hooksFileOf(tool, context);
 
       return {
-        ready: file !== undefined && await hooksInstalled(file, tool),
+        ready: file !== undefined && await hooksInstalled(file, tool, context),
         fix: `${file ?? `${tool}'s hooks file`} is missing or out of date, so ${tool} sessions get no team instructions. ${rerun}`,
       };
     }
@@ -266,7 +267,7 @@ export async function channelReadiness(
       const file = hooksFileOf(tool, context);
 
       return {
-        ready: file !== undefined && await hooksInstalled(file, tool),
+        ready: file !== undefined && await hooksInstalled(file, tool, context),
         fix: `${file ?? `${tool}'s hooks file`} registers no current teamai SessionStart hook, so Muse Code sessions in this project `
           + `get none of the team rules or instructions. ${rerun}`,
       };
@@ -275,7 +276,7 @@ export async function channelReadiness(
     case 'zcode-session-start': {
       const file = hooksFileOf(tool, context);
 
-      if (file === undefined || !await hooksInstalled(file, tool)) {
+      if (file === undefined || !await hooksInstalled(file, tool, context)) {
         return {
           ready: false,
           fix: `${file ?? `${tool}'s hooks file`} registers no current teamai SessionStart hook, so ZCode sessions in this project `
@@ -298,7 +299,7 @@ export async function channelReadiness(
 
       const broken = [
         ...await isDshHooksMounted(configPath) ? [] : [resolveDshHomePatchPath()],
-        ...await hooksInstalled(configPath, tool) ? [] : [configPath],
+        ...await hooksInstalled(configPath, tool, context) ? [] : [configPath],
       ];
 
       return {
@@ -322,14 +323,14 @@ function hooksFileOf(tool: string, context: { teamConfig: TeamaiConfig; localCon
   const hookScope = resolveHookScope(context.localConfig);
   const settings = scopedToolPaths(context.teamConfig, { ...context.localConfig, scope: hookScope.scope })[tool]?.settings;
 
-  return settings === undefined ? undefined : path.resolve(hookScope.baseDir, settings);
+  return settings === undefined ? undefined : hookSettingsFile(tool, path.resolve(hookScope.baseDir), settings);
 }
 
 // Whether the hooks that deliver the instructions are there, which no form changes: the file's own form, no version.
-async function hooksInstalled(file: string, tool: string): Promise<boolean> {
+async function hooksInstalled(file: string, tool: string, context: { localConfig: LocalConfig } | undefined): Promise<boolean> {
   const { getHookStatus } = await import('./hooks.js');
 
-  return await getHookStatus(file, { tool, from: 'installed' }) === 'installed';
+  return await getHookStatus(file, { tool, from: 'installed', toolRoots: context?.localConfig.toolRoots }) === 'installed';
 }
 
 /**
@@ -428,7 +429,7 @@ export async function resolveInstructionTargets(
   const hooks: InstructionHook[] = [];
 
   // A tool the team does not map still names the files earlier releases wrote its blocks to.
-  for (const tool of new Set([...Object.keys(TOOLS), ...Object.keys(install.toolPaths)])) {
+  for (const tool of new Set([...TOOL_ORDER, ...Object.keys(install.toolPaths)])) {
     const location = await locate(tool, 'blocks', install);
 
     // A retired file is cleaned as the member's: one git tracks stays, emptied.

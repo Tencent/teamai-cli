@@ -216,7 +216,7 @@ async function shareable({ within = SHARE_WITHIN, suite, sizes, ...options }: Sh
 
   if (!scope.ok) return scope;
   const since = Date.parse(ctx.now) - withinMs;
-  const finished = (await SessionWork.finished(await SessionCaptures.list(scope.config), ctx.now, () => true, request.idleMs ?? (await SessionWork.finishedAfter(scope.config)).ms)).filter((session) => session.activeAt >= since);
+  const finished = (await SessionWork.finished(await SessionCaptures.list(scope.config), ctx.now, () => true, request.idleMs ?? (await SessionCaptures.finishedAfter(scope.config)).ms)).filter((session) => session.activeAt >= since);
 
   if (suite !== undefined) return candidates(scope.config, finished, { dir: suite, sizes: parsedSizes?.sizes });
   const found: ShareableSession[] = [];
@@ -351,7 +351,7 @@ async function listIn(config: LocalConfig, request: Request, now: string): Promi
 
   if (!RUN_MODES.some(wanted)) return { ok: true, list: listed };
 
-  for (const session of await SessionWork.finished(await SessionCaptures.list(config), now, wanted, request.idleMs ?? (await SessionWork.finishedAfter(config)).ms)) {
+  for (const session of await SessionWork.finished(await SessionCaptures.list(config), now, wanted, request.idleMs ?? (await SessionCaptures.finishedAfter(config)).ms)) {
     const item = await itemOf(config, { wants, session, now });
 
     if (item) listed.push(item);

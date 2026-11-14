@@ -78,7 +78,7 @@ vi.mock('../utils/git.js', () => ({
   unusedBranchName: vi.fn().mockResolvedValue('teamai/push/test/20260305-120000'),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),

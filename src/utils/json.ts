@@ -2,15 +2,9 @@ import { isDeepStrictEqual } from 'node:util';
 import { applyEdits, createScanner, findNodeAtLocation, modify, parseTree, printParseErrorCode, type FormattingOptions, type JSONPath, type Node, type ParseError, SyntaxKind } from 'jsonc-parser';
 import JSON5 from 'json5';
 import { z } from 'zod';
-import { isJsonObject, JsonValueSchema, type JsonObject, type JsonValue } from '../types.js';
+import { isJsonObject, JsonValueSchema, parseJson, type JsonObject, type JsonSyntax, type JsonValue } from '@teamai/shared/json';
 
-/**
- * A JSON document's value, as JSON.parse builds it: no copy, so a `__proto__` key stays the own key the file holds
- * and a file written back keeps it. A schema copy (`JsonValueSchema.parse`) drops it.
- */
-export function parseJson(text: string): JsonValue {
-  return JSON.parse(text);
-}
+export * from '@teamai/shared/json';
 
 /** Whether `text` is blank or plain JSON, which teamai writes back as JSON.stringify writes it: no comment to keep. */
 export function isPlainJson(text: string): boolean {
@@ -24,17 +18,6 @@ export function isPlainJson(text: string): boolean {
     return false;
   }
 }
-
-/**
- * How a tool parses one of its JSON config files: `json` strictly, `jsonc`
- * with comments and trailing commas (jsonc-parser with `allowTrailingComma`),
- * `json-comments` with comments but no trailing commas (comments stripped,
- * then JSON.parse), `json5` as OpenClaw 2026.10.9's `parseConfigJson5` does:
- * JSON.parse, then the `json5` package (unquoted keys too). teamai edits a
- * `jsonc` or `json-comments` file keeping its comments (`editJsonText`), and
- * rewrites a `json5` one only while it is plain JSON.
- */
-export type JsonSyntax = 'json' | 'jsonc' | 'json-comments' | 'json5';
 
 /** `text` as the tool that takes `syntax` reads it. Throws, naming the offset, on text that does not parse that way. */
 export function parseJsonAs(text: string, syntax: JsonSyntax): JsonValue {
@@ -286,19 +269,4 @@ function formattingOf(text: string): FormattingOptions {
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
 
   return indent.startsWith('\t') ? { insertSpaces: false, tabSize: 1, eol } : { insertSpaces: true, tabSize: indent.length, eol };
-}
-
-/** `value` with each string in it, at any depth, replaced by `rewrite`'s result; keys and every other value stay. */
-export function mapStrings(value: JsonValue, rewrite: (text: string) => string): JsonValue {
-  const text = z.string().safeParse(value);
-
-  return text.success ? rewrite(text.data)
-    : Array.isArray(value) ? value.map((item) => mapStrings(item, rewrite))
-      : isJsonObject(value) ? Object.fromEntries(Object.entries(value).map(([key, field]) => [key, mapStrings(field, rewrite)]))
-        : value;
-}
-
-/** A list whose malformed elements are skipped, so one bad entry does not cost the others. */
-export function lenientList<T>(element: z.ZodType<T>) {
-  return z.array(element.nullable().catch(null)).transform((list) => list.flatMap((entry) => (entry === null ? [] : [entry])));
 }

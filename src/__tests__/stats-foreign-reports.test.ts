@@ -10,7 +10,7 @@ import YAML from 'yaml';
 // another repository. `teamai stats` must read neither that team's totals nor
 // its stats file's mtime, which would date this scope's last report.
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));
 

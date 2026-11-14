@@ -37,7 +37,7 @@ const SKILL_IMPORTS = {
   'src/workflow/step-model.ts': {},
   'src/env-resolution.ts': {},
   'src/env-exec.ts': { names: ['stepEnvironment', 'withRunningCli'] },
-  'src/utils/redact.ts': {},
+  '@teamai/shared/redact': {},
   'src/utils/session-id.ts': {},
   // Equal values as equal text, so a kept end is compared with the engine's latest one.
   'src/utils/canonical-json.ts': {},
@@ -46,13 +46,13 @@ const SKILL_IMPORTS = {
   // Whether the local driver launches the session's tool, so a local start or resume can name it.
   'src/tool-launch/tools.ts': { names: ['isLaunchTool', 'LAUNCH_ORDER', 'LaunchTool'] },
   'src/builtin-hooks.ts': { names: ['resolveCliEntry'] },
-  // The tools (`ToolId`) a session may name with `--tools default=<tool>`, which of them a child's model resolves for, and the
-  // skill-data root the host question's reference is under.
-  'src/tools.ts': { names: ['isToolId', 'TOOLS', 'isAgentToolId', 'ToolId'] },
+  // The tools a session may name with `--tools default=<tool>`, a shipped tool or an instance of one, which of them a
+  // child's model resolves for and a local run launches, and the skill-data root the host question's reference is under.
+  'src/tool-registry.ts': { names: ['isToolId', 'TOOL_ORDER', 'toolOf', 'toolInstancesFor', 'agentFormatOf', 'baseToolOf'] },
   'src/skill-content.ts': { names: ['packagedSkillRoots'] },
   // The confined tools of this machine, what each can do there, and the level the session's tool reaches here.
   'src/tool-launch/confined.ts': { names: ['isConfinedTool', 'confinedAccess', 'confinedToolLevel'] },
-  // The level a confined run reaches and what its tool can do there.
+  // The level a confined run reaches.
   'src/tool-launch/confined-level.ts': { typeOnly: true },
   // What describe proposes for the inputs of a workflow, for the calling session, without the driver naming one.
   'src/workflow-offers.ts': { names: ['WorkflowOffers'] },

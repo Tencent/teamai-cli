@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished, type MockInstance } from 'vitest';
+import fs from 'node:fs';
 import path from 'node:path';
 
 // ── Mocks ────────────────────────────────────────────────
@@ -44,7 +45,7 @@ vi.mock('fs-extra', () => ({
   },
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -234,6 +235,12 @@ vi.mock('../types.js', async (importOriginal) => {
 
 // Mock prompt to auto-answer prompts
 let questionAnswers: string[] = [];
+vi.mock('../tool-home-record.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../tool-home-record.js')>();
+
+  return { ...original, recordToolHomes: vi.fn(original.recordToolHomes) };
+});
+
 vi.mock('../utils/prompt.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/prompt.js')>()),
   // Mirror the real predicate's TTY leg so tests that force `isTTY` keep
@@ -263,6 +270,8 @@ import { GitLabProvider } from '../providers/gitlab/index.js';
 import { RepoNotFoundError, RepoCreatePermissionError } from '../providers/types.js';
 import { CnbRepoNotFoundError } from '../providers/cnb/cnb-cli.js';
 import { saveLocalConfig, loadLocalConfigForScope } from '../config.js';
+import { recordToolHomes } from '../tool-home-record.js';
+import { useToolInstances } from '../tool-registry.js';
 import fse from 'fs-extra';
 import { readFileSafe } from '../utils/fs.js';
 import type { PublishResult } from '../utils/branch-worktree.js';
@@ -1546,6 +1555,67 @@ describe('init', () => {
 
         expect(await savedConfig()).toMatchObject({ toolRoots: { claude: relocated } });
         expect(await removedHooksFrom()).toEqual([oldSettings]);
+      });
+
+      it.each([
+        { change: 'moves', dir: path.join(HOME, 'work', 'acme-new'), now: path.join(HOME, 'work', 'acme-new'), file: 'its default hooks file', paths: undefined, codex: undefined, hooks: 'hooks.json' },
+        { change: 'clears', dir: null, now: 'its default home', file: 'its default hooks file', paths: undefined, codex: undefined, hooks: 'hooks.json' },
+        // A hooks file its paths keep in its home moves with the home, as the default one does.
+        { change: 'moves', dir: path.join(HOME, 'work', 'acme-new'), now: path.join(HOME, 'work', 'acme-new'), file: 'the hooks file its paths keep in its home', paths: { skills: '.acme-codex/skills', settings: '.acme-codex/hooks.json' }, codex: undefined, hooks: 'hooks.json' },
+        // With no paths of its own it gets the team's paths of Codex, moved to its home.
+        { change: 'moves', dir: path.join(HOME, 'work', 'acme-new'), now: path.join(HOME, 'work', 'acme-new'), file: 'the hooks file the team names for Codex', paths: undefined, codex: { skills: '.codex/skills', settings: '.codex/team-hooks.json' }, hooks: 'team-hooks.json' },
+      ])('removes the hooks left in $file in an instance\'s previous home when init $change its record', async ({ dir, now, paths, codex, hooks }) => {
+        vi.mocked(loadLocalConfigForScope).mockResolvedValue(previousConfig());
+
+        if (codex !== undefined) {
+          const { loadTeamConfig } = await import('../config.js');
+          const { TeamaiConfigSchema } = await import('../types.js');
+          vi.mocked(loadTeamConfig).mockResolvedValue(TeamaiConfigSchema.parse({ team: 'test', repo: 'https://git.woa.com/HyperAI/teamai-test.git', toolPaths: { codex } }));
+          onTestFinished(() => { vi.mocked(loadTeamConfig).mockResolvedValue(null); });
+        }
+        useToolInstances(new Map([['acme-codex', {
+          kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' }, paths,
+          source: 'team', file: '/r/tools/acme-codex.yaml', location: 'tools/acme-codex.yaml', revision: 'r1',
+        }]]));
+        onTestFinished(() => { useToolInstances(new Map()); });
+        const previous = path.join(HOME, 'work', 'acme-old');
+        vi.mocked(recordToolHomes).mockResolvedValueOnce([{ tool: 'acme-codex', variable: 'ACME_CODEX_HOME', dir, previous }]);
+        const oldHooks = path.join(previous, hooks);
+        settingsExistsAt(oldHooks);
+
+        await savedConfig();
+
+        const { reconcileHooks } = await import('../hooks.js');
+        expect(vi.mocked(reconcileHooks).mock.calls.filter(([, tool]) => tool === 'acme-codex').map(([file, , , options]) => [file, options]))
+          .toEqual([[oldHooks, expect.objectContaining({ removeAll: true, keepRecords: true, manifestPath: expect.stringContaining('managed-hooks') })]]);
+        const { log } = await import('../utils/logger.js');
+        const warned = vi.mocked(log.warn).mock.calls.map(([m]) => String(m)).join('\n');
+        expect(warned).toContain(`acme-codex now syncs to ${now}`);
+        expect(warned).toContain(`under ${previous} were left in place`);
+      });
+
+      it('releases the earlier home of an instance refused for its record, and leaves the home of the tool it was refused for', async () => {
+        vi.mocked(loadLocalConfigForScope).mockResolvedValue(previousConfig());
+        // Refused: no lookup sees it, and only init's release reads it.
+        useToolInstances(new Map(), new Map([['acme-codex', {
+          kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+          source: 'team', file: '/r/tools/acme-codex.yaml', location: 'tools/acme-codex.yaml', revision: 'r1',
+        }]]));
+        onTestFinished(() => { useToolInstances(new Map()); });
+        const earlier = path.join(HOME, 'work', 'acme-a');
+        const codexHome = path.join(HOME, '.codex');
+        const history = path.join(HOME, '.teamai', 'tool-homes-history.json');
+        fs.mkdirSync(path.dirname(history), { recursive: true });
+        fs.writeFileSync(history, JSON.stringify({ 'acme-codex': [earlier, codexHome] }));
+        onTestFinished(() => { fs.rmSync(history, { force: true }); });
+        vi.mocked(recordToolHomes).mockResolvedValueOnce([{ tool: 'acme-codex', variable: 'ACME_CODEX_HOME', dir: path.join(HOME, 'work', 'acme-c'), previous: codexHome }]);
+        settingsExistsAt(path.join(earlier, 'hooks.json'));
+        settingsExistsAt(path.join(codexHome, 'hooks.json'));
+
+        await savedConfig();
+
+        const { reconcileHooks } = await import('../hooks.js');
+        expect(vi.mocked(reconcileHooks).mock.calls.filter(([, tool]) => tool === 'acme-codex').map(([file]) => file)).toEqual([path.join(earlier, 'hooks.json')]);
       });
 
       it('leaves the previous root alone when the root did not move', async () => {

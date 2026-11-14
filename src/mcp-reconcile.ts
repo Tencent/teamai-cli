@@ -43,8 +43,8 @@ import {
   UntypedStdioEntrySchema,
   DSH_MCP_PLUGIN,
   serverNameProblem,
-  type McpFormat,
 } from './resources/mcp-format.js';
+import { type McpFormat } from '@teamai/tool-core/definition';
 import { deliverMcpFolders, historicalFolderMcpServer, pruneMcpFolders, TEAM_MCP_ENTRIES, parseTeamMcpServers, teamMcpDef, teamMcpToDef, type TeamMcpDefinition } from './resources/mcp.js';
 import { historicalContents } from './utils/team-history.js';
 import { describeMembersFile, keepsTrackedCopy } from './resources/delivered-copies.js';
@@ -56,7 +56,8 @@ import { readEnvBackup } from './resources/env.js';
 import { isEnvShMarker } from './env-sh-exports.js';
 import { memberEnvironmentWithoutScope } from './member-env.js';
 import { cleanupOf, installOf, locate, ownOf, userViewOf, writable, type EntryPlace, type Install } from './locate.js';
-import { channelsOf, isToolId, mcpFormatOf, mcpScopeFor, mcpSyntaxOf, hasDefaultHomeLeftovers, TOOLS, type McpProject } from './tools.js';
+import { type McpProject } from '@teamai/tool-core/definition';
+import { baseToolOf, channelsOf, isToolId, mcpFormatOf, mcpScopeFor, mcpSyntaxOf, hasDefaultHomeLeftovers, TOOL_ORDER } from './tool-registry.js';
 import { realHost, type Host } from './tool-home.js';
 import { KNOWN_AGENTS } from './known-agents.js';
 import { entryLayout, reportEntryResolution, type ResolvedEntry } from './namespaced-entries.js';
@@ -539,7 +540,7 @@ export async function mcpRelocated(teamConfig: TeamaiConfig, localConfig: LocalC
 async function mcpFileReaders(writer: string, file: string, install: Install, host: Host): Promise<string[]> {
   const readers: string[] = [];
 
-  for (const reader of Object.keys(TOOLS)) {
+  for (const reader of TOOL_ORDER) {
     const { project } = channelsOf(reader).mcp;
 
     if (project === 'none' || project === 'unknown' || project.writtenBy !== writer || install.toolPaths[reader] === undefined) continue;
@@ -946,7 +947,7 @@ async function readYamlMcpDoc(file: string, keys: readonly string[]): Promise<Js
   const doc = YAML.parseDocument(raw);
 
   if (doc.errors.length > 0) return null;
-  const data: unknown = raw.trim() === '' ? {} : doc.toJS();
+  const data: JsonValue = raw.trim() === '' ? {} : doc.toJS();
 
   if (!isJsonObject(data)) return null;
   const servers = valueAt(data, keys);
@@ -1747,7 +1748,7 @@ async function localMcpKeyOf(localConfig: LocalConfig): Promise<(key: string) =>
   if (localConfig.scope !== 'project' || !localConfig.projectRoot) return () => false;
   const keys = new Set<string>();
 
-  for (const tool of Object.keys(TOOLS)) {
+  for (const tool of TOOL_ORDER) {
     const scope = localMcpScopeOf(tool);
 
     if (scope === undefined) continue;
@@ -1899,13 +1900,13 @@ export async function unclaimedMcpServers(target: McpTarget, claimed: readonly s
 
 /**
  * Whether `tool`'s project MCP config is never judged teamai-only (#915, its
- * `judgedTeamaiOnly`). In a team in self mode Claude keeps `.mcp.json`
- * (`mcpRelocated`), and it is judged.
+ * `judgedTeamaiOnly`). In a team in self mode Claude, and an instance of it,
+ * keeps `.mcp.json` (`mcpRelocated`), and it is judged.
  */
 function neverJudgedTeamaiOnly(tool: string, localConfig: LocalConfig): boolean {
   const project = channelsOf(tool).mcp.project;
 
-  return project !== 'none' && project !== 'unknown' && !project.judgedTeamaiOnly && !(tool === 'claude' && isSelfMode(localConfig));
+  return project !== 'none' && project !== 'unknown' && !project.judgedTeamaiOnly && !(baseToolOf(tool) === 'claude' && isSelfMode(localConfig));
 }
 
 /**
@@ -2247,6 +2248,7 @@ export async function earlierMappedMcpTargets(
       const format = mcpFormatOf(tool);
 
       if (rel === undefined || !format) continue;
+      // oxlint-disable-next-line teamai/configured-tool-paths -- mcpProject, which an earlier teamai.yaml mapped; a file outside the project root is skipped just below
       const file = path.resolve(resolveBaseDir(cfg), rel);
       const key = `${tool}\0${file}`;
 

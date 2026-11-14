@@ -4,11 +4,13 @@ import { readUsageEvents } from './usage-tracker.js';
 import { readFileSafe } from './utils/fs.js';
 import { resolveConfigForDir } from './config.js';
 import { readEvents, aggregateSessionMetrics, memberEvents } from './dashboard-collector.js';
-import { totalTokens, addTokenUsage, emptyTokenUsage, parseUserStats } from './types.js';
+import { parseUserStats } from './types.js';
+import { totalTokens, addTokenUsage, emptyTokenUsage } from '@teamai/tool-core/tokens';
 import { attributeByRepo, timeAnalytics, renderHourSparkline } from './session-analytics.js';
 import { formatTokenCount } from './digest.js';
 import { log } from './utils/logger.js';
-import type { UsageEvent, UserStats, TokenUsage, SessionMetrics, LocalConfig, DashboardEvent } from './types.js';
+import type { UsageEvent, UserStats, SessionMetrics, LocalConfig, DashboardEvent } from './types.js';
+import type { TokenUsage } from '@teamai/tool-core/tokens';
 
 interface SkillStats {
   name: string;
