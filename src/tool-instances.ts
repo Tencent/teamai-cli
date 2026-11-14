@@ -276,12 +276,18 @@ function homeSharedWith({ name, home, instances, host, toolRoots }: {
 }): string | undefined {
   const own = instanceHomeDir({ name, home }, host);
   const at = { home: host.home, path: host.path, readTextNow: (file: string) => host.readTextNow(file), existsNow: (file: string) => host.existsNow(file) };
-  // macOS's default volume ignores letter case, and so does Windows: `.Claude` is Claude Code's `.claude` there.
-  const folded = (dir: string): string => host.platform === 'darwin' || host.platform === 'win32' ? dir.toLowerCase() : dir;
-  const same = (dir: string | null): boolean => dir !== null && host.path.relative(folded(own), folded(dir)) === '';
+  const same = (dir: string | null): boolean => dir !== null && isSameDirOn(host, own, dir);
 
   return TOOL_ORDER.find((tool) => same(toolHome(tool, host)) || same(recordedToolRootDir(tool, toolRoots, at)))
     ?? instances.find((other) => other.name !== name && other.name !== other.extends && other.home !== undefined && same(instanceHomeDir({ name: other.name, home: other.home }, host)))?.name;
+}
+
+/** Whether `one` and `other` name one directory on `host`. */
+function isSameDirOn(host: Host, one: string, other: string): boolean {
+  // macOS's default volume ignores letter case, and so does Windows: `.Claude` is Claude Code's `.claude` there.
+  const folded = (dir: string): string => host.platform === 'darwin' || host.platform === 'win32' ? dir.toLowerCase() : dir;
+
+  return host.path.relative(folded(one), folded(other)) === '';
 }
 
 /**
@@ -306,10 +312,20 @@ function withoutSharedHomes(table: Map<string, ResolvedToolInstance>): Map<strin
       continue;
     }
 
+    const own = instanceHomeDir({ name, home }, host);
+
+    // home.dir cannot name the home itself; only the instance's variable, or the record init made of it, can.
+    if (home.env !== undefined && isSameDirOn(host, own, host.home)) {
+      errorOnce(`Tool instance ${name} (${instance.location}) is not used: its home resolves to your home directory itself, ${own}, `
+        + `where it would read and write every file in your home as its own. Point ${home.env} at a directory of its own and re-run \`teamai init\`.`);
+      table.delete(name);
+      continue;
+    }
+
     const resolved = homeSharedWith({ name, home, instances, host, toolRoots: memberToolRoots });
 
     if (resolved !== undefined) {
-      errorOnce(`Tool instance ${name} (${instance.location}) is not used: its home resolves to ${instanceHomeDir({ name, home }, host)}, which is also the home of ${resolved}, `
+      errorOnce(`Tool instance ${name} (${instance.location}) is not used: its home resolves to ${own}, which is also the home of ${resolved}, `
         + 'and two tools on one home write over each other\'s skills, hooks and sessions. Move one of the two homes, then run `teamai pull`.');
       table.delete(name);
     }

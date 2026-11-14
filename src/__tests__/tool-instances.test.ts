@@ -195,6 +195,18 @@ describe('team tool instances', () => {
     expect(registry.toolOf('acme-claude')).toBeUndefined();
   });
 
+  it.each([
+    ['your home directory', ''],
+    ['your home directory with a trailing separator', path.sep],
+  ])('does not use an instance whose own variable names %s, as the home it would treat as its own', async (_, trailing) => {
+    vi.stubEnv('ACME_CLAUDE_CONFIG_DIR', `${home}${trailing}`);
+    const { registry, errors } = await load(teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE }));
+
+    expect(errors).toEqual([`Tool instance acme-claude (tools/acme-claude.yaml) is not used: its home resolves to your home directory itself, ${home}, `
+      + 'where it would read and write every file in your home as its own. Point ACME_CLAUDE_CONFIG_DIR at a directory of its own and re-run `teamai init`.']);
+    expect(registry.toolOf('acme-claude')).toBeUndefined();
+  });
+
   it.each(['./scripts/acme-claude', 'bin/acme-claude', '/opt/acme/bin/acme-claude', String.raw`tools\acme-claude.exe`])(
     'refuses an instance whose command is the path %s, since what runs at a path is not the file a person accepted',
     async (command) => {
