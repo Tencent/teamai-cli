@@ -127,13 +127,17 @@ describe('local workflow prompt driver', () => {
     expect(launched?.input.env?.[variable!]).toBe(path.join(getUserHome(), `.${name}`));
   });
 
-  it('leaves the home variable as the member set it for an instance that names its own', async () => {
+  it.each([
+    { case: 'names its own', own: { home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' } } },
+    // teamai writes where paths say, so a build pointed at the home would read none of it.
+    { case: 'sets paths outside its home', own: { home: { dir: '.acme-codex' }, paths: { skills: '.codex/skills', settings: '.codex/hooks.json' } } },
+  ])('leaves the home variable as the member set it for an instance that $case', async ({ own }) => {
     vi.stubEnv('ACME_CODEX_HOME', path.join(os.tmpdir(), 'acme-moved'));
     vi.stubEnv('CODEX_HOME', path.join(os.tmpdir(), 'member-codex'));
     onTestFinished(() => { vi.unstubAllEnvs(); });
     const { config, workspace, runId } = await fixture();
     useToolInstances(new Map([['acme-codex', {
-      name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+      name: 'acme-codex', extends: 'codex', ...own,
       source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
     }]]));
     onTestFinished(() => { useToolInstances(new Map()); });

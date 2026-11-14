@@ -3,7 +3,7 @@ import { descriptorOf, toolOf, type DescriptorOf } from '../tool-registry.js';
 import type { ResolvedToolInstance } from '../tool-instances.js';
 import type { ToolId } from '../tools.js';
 import { toolHomeOf } from '../tool-home.js';
-import { RELOCATABLE_TOOLS } from '../types.js';
+import { RELOCATABLE_TOOLS, toolPathRoots } from '../types.js';
 import { LAUNCH_ADAPTERS } from './adapters.js';
 import type { ConfinedLaunch, LaunchAdapter, StepLaunch } from '@teamai/tool-core/launch';
 
@@ -95,13 +95,18 @@ export function launchTargetOf(name: string): LaunchTarget | undefined {
  * The variable that points `target`'s tool at an instance's own home, which teamai delivers to: a build run with only
  * `home` set, such as the shipped command, reads the home of the tool it extends otherwise. The variable is the one
  * that moves that tool's root (`RELOCATABLE_TOOLS`), as the Codex trust gate sets it. None for a shipped tool, an
- * adjustment, or an instance that names its own variable, which the member's environment sets as the build reads it.
+ * adjustment, an instance that names its own variable, which the member's environment sets as the build reads it, or
+ * one whose `paths` hang off another directory too.
  */
 export function launchHomeEnv(target: LaunchTarget): Record<string, string> {
   const { instance } = target;
   const variable = RELOCATABLE_TOOLS[target.tool]?.envVar;
 
   if (instance?.home === undefined || instance.home.env !== undefined || instance.name === instance.extends || variable === undefined) return {};
+  const homeDir = instance.home.dir;
+
+  // teamai writes where `paths` say: a build pointed at the home would read none of what lies outside it.
+  if (instance.paths !== undefined && [...toolPathRoots(instance.paths)].some((root) => root !== homeDir)) return {};
   const home = toolHomeOf(target.name);
 
   return home === undefined ? {} : { [variable]: home.dir };
