@@ -355,6 +355,9 @@ export async function findAncestorWorkspaces(childRoot: string): Promise<string[
   return [...new Set(found)];
 }
 
+/** The `claudeMdExcludes` entries teamai owns in a checkout, by the folder of the settings file that holds them. */
+export type OwnedInstructionExcludes = Readonly<Record<string, readonly string[]>>;
+
 /**
  * Keep a child's Claude Code settings, and each Claude instance's, from loading
  * the instructions of the workspaces above it (#913): Claude Code reads every
@@ -362,28 +365,31 @@ export async function findAncestorWorkspaces(childRoot: string): Promise<string[
  * would also get what its workspace delivers for every other child. Adds
  * `claudeMdExcludes` entries for each workspace's CLAUDE.md, `<folder>/CLAUDE.md`
  * (where a pull writes the team instructions), AGENTS.md and `<folder>/rules/**`
- * to each of `settingsFiles` (the child's `<folder>/settings.local.json`, such as
- * `.claude/` or an instance's `.acme-claude/`), takes back the ones `previous`
- * names that no longer apply, and leaves every other entry as it is. Returns the
- * entries it owns now in any of them, for the next run's `previous`. `withdraw`
- * takes back every entry `previous` names, for uninstall. Writes nothing outside
- * a workspace or under `dryRun`; a file that is not a JSON object is left alone,
- * and the previous entries stay owned.
+ * to `<folder>/settings.local.json` of each of `folders` (`.claude`, or an
+ * instance's `.acme-claude`), takes back the ones `previous` names for that
+ * folder that no longer apply, and leaves every other entry as it is. Returns
+ * the entries it owns now, by folder, with `previous`'s for a folder it did not
+ * edit, so a later run, or uninstall, still takes them back. `withdraw` takes
+ * back every entry `previous` names in `folders`, for uninstall. Writes nothing
+ * outside a workspace or under `dryRun`; a file that is not a JSON object is
+ * left alone, and its previous entries stay owned.
  */
 export async function syncWorkspaceInstructionExcludes(input: {
   readonly projectRoot: string;
-  readonly settingsFiles: readonly string[];
-  readonly previous: readonly string[];
+  readonly folders: readonly string[];
+  readonly previous: OwnedInstructionExcludes;
   readonly dryRun?: boolean;
   readonly withdraw?: boolean;
-}): Promise<string[]> {
+}): Promise<Record<string, string[]>> {
+  const owned: Record<string, string[]> = Object.fromEntries(Object.entries(input.previous)
+    .flatMap(([folder, entries]) => (input.folders.includes(folder) || entries.length === 0 ? [] : [[folder, [...entries]]])));
+
   const workspaces = input.withdraw ? [] : await findAncestorWorkspaces(input.projectRoot);
 
-  if (workspaces.length === 0 && input.previous.length === 0) return [];
-  const owned: string[] = [];
+  for (const folder of input.folders) {
+    const previous = input.previous[folder] ?? [];
 
-  for (const settingsFile of input.settingsFiles) {
-    const folder = path.basename(path.dirname(settingsFile));
+    if (workspaces.length === 0 && previous.length === 0) continue;
 
     const desired = workspaces.flatMap((workspace) => [
       path.join(workspace, 'CLAUDE.md'),
@@ -392,7 +398,9 @@ export async function syncWorkspaceInstructionExcludes(input: {
       path.join(workspace, folder, 'rules', '**'),
     ]);
 
-    for (const entry of await syncExcludesIn(settingsFile, desired, input)) if (!owned.includes(entry)) owned.push(entry);
+    const kept = await syncExcludesIn(path.join(input.projectRoot, folder, 'settings.local.json'), desired, { ...input, previous });
+
+    if (kept.length > 0) owned[folder] = kept;
   }
 
   return owned;

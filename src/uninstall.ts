@@ -82,7 +82,7 @@ import {
 } from './builtin-skills.js';
 import { cleanupOf, hookAdapterDirIn, hookSettingsFile, installOf, isInstalledFor, locate, openclawWorkspaceDir, ownOf, SHARED_AGENT_SKILLS_PATH, workspaceHooksOf, writesOf, type Location } from './locate.js';
 import { toolHome, toolHomeOf, toolHomesAcrossProfiles } from './tool-home.js';
-import { baseDescriptorOf, baseToolOf, channelsOf, hookSyntaxOf, toolOf } from './tool-registry.js';
+import { baseDescriptorOf, channelsOf, hookSyntaxOf, toolOf } from './tool-registry.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import { allowsSkillDirectory, CODEX_TOOL, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, readTeamSkills, skillOrigin } from './resources/skills.js';
 import { describeKeptDir, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir, teamaiSkillFiles } from './resources/delivered-copies.js';
@@ -3880,7 +3880,7 @@ async function removeConfirmed(
     : null;
 
   // The workspace instruction excludes a pull wrote (#913), before the records that own them go.
-  const excludesLeft = plan.includeShared ? await withdrawWorkspaceInstructionExcludes(teamConfig, localConfig) : [];
+  const excludesLeft = plan.includeShared ? await withdrawWorkspaceInstructionExcludes(localConfig) : [];
   // The rule folder grants a pull added to a tool's user settings (#1787), for every tool or the one uninstalled.
   const grantsLeft = plan.includeShared || agentKey ? await withdrawRuleFolderGrants(localConfig, plan.includeShared ? null : agentKey) : [];
 
@@ -3969,22 +3969,23 @@ async function withdrawRuleFolderGrants(localConfig: LocalConfig, tool: string |
  * Claude settings for the workspaces above it (#913) back out, leaving the
  * member's own. The settings files it could not edit, whose records then stay.
  */
-async function withdrawWorkspaceInstructionExcludes(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string[]> {
-  const folders = Object.entries(scopedToolPaths(teamConfig, localConfig))
-    .flatMap(([tool, paths]) => (baseToolOf(tool) === 'claude' && paths?.settings ? [path.dirname(paths.settings)] : []));
-
-  if (localConfig.scope !== 'project' || folders.length === 0) return [];
+async function withdrawWorkspaceInstructionExcludes(localConfig: LocalConfig): Promise<string[]> {
+  if (localConfig.scope !== 'project') return [];
   const { syncWorkspaceInstructionExcludes } = await import('./workspace-children.js');
   const left: string[] = [];
 
   for (const { root, claudeMdExcludes } of Object.values((await loadStateForScope(localConfig)).lastPullByWorkspace ?? {})) {
-    if (!root || !claudeMdExcludes?.length) continue;
+    if (!root || !claudeMdExcludes) continue;
+    // Every folder the record names, a tool's the member stopped syncing included.
+    const folders = Object.keys(claudeMdExcludes);
     const settingsFiles = folders.map((folder) => path.join(root, folder, 'settings.local.json'));
 
-    try {
-      const kept = await syncWorkspaceInstructionExcludes({ projectRoot: root, settingsFiles, previous: claudeMdExcludes, withdraw: true });
+    if (folders.length === 0) continue;
 
-      if (kept.length > 0) left.push(...settingsFiles);
+    try {
+      const kept = await syncWorkspaceInstructionExcludes({ projectRoot: root, folders, previous: claudeMdExcludes, withdraw: true });
+
+      left.push(...Object.keys(kept).map((folder) => path.join(root, folder, 'settings.local.json')));
     } catch (e) {
       log.warn(`Could not take the workspace instruction excludes out of ${settingsFiles.join(', ')}: ${e instanceof Error ? e.message : String(e)}`);
       left.push(...settingsFiles);

@@ -1454,35 +1454,36 @@ async function excludeWorkspaceInstructions(localConfig: LocalConfig, options: G
 
   try {
     const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
-    const settingsFiles: string[] = [];
+    const folders: string[] = [];
 
     for (const [tool, paths] of Object.entries(teamConfig ? scopedToolPaths(teamConfig, localConfig) : {})) {
       if (baseToolOf(tool) !== 'claude' || isAgentExcluded(localConfig, tool) || !paths?.settings) continue;
-
       const folder = path.posix.dirname(paths.settings);
 
-      if (await pathExists(toolPathUnder(tool, projectRoot, folder))) settingsFiles.push(toolPathUnder(tool, projectRoot, `${folder}/settings.local.json`));
+      if (!folders.includes(folder) && await pathExists(toolPathUnder(tool, projectRoot, folder))) folders.push(folder);
     }
 
-    if (settingsFiles.length === 0) return;
+    if (folders.length === 0) return;
     const key = await checkoutKey(projectRoot);
     const state = await loadStateForScope(localConfig);
     const record = state.lastPullByWorkspace?.[key];
 
     if (!record) return;
-    const previous = record.claudeMdExcludes ?? [];
-    const written = await syncWorkspaceInstructionExcludes({ projectRoot, settingsFiles, previous, dryRun: options.dryRun });
+    // A folder this pull skips, such as that of a tool the member stopped syncing, keeps its entries on the record.
+    const previous = record.claudeMdExcludes ?? {};
+    const written = await syncWorkspaceInstructionExcludes({ projectRoot, folders, previous, dryRun: options.dryRun });
 
     if (JSON.stringify(written) === JSON.stringify(previous)) return;
-    const added = written.filter((entry) => !previous.includes(entry));
+    const added = Object.entries(written).some(([folder, entries]) => entries.some((entry) => !(previous[folder] ?? []).includes(entry)));
 
-    if (added.length > 0) {
-      log.info(`[${installScopeName(localConfig.scope)}] ${options.dryRun ? 'Would exclude' : 'Excluded'} the instructions of the workspace above this repo from Claude Code sessions here (claudeMdExcludes in ${settingsFiles.join(', ')})`);
+    if (added) {
+      const files = folders.map((folder) => path.join(projectRoot, folder, 'settings.local.json'));
+      log.info(`[${installScopeName(localConfig.scope)}] ${options.dryRun ? 'Would exclude' : 'Excluded'} the instructions of the workspace above this repo from Claude Code sessions here (claudeMdExcludes in ${files.join(', ')})`);
     }
 
     if (options.dryRun) return;
 
-    if (written.length > 0) record.claudeMdExcludes = written;
+    if (Object.keys(written).length > 0) record.claudeMdExcludes = written;
     else delete record.claudeMdExcludes;
     await saveStateForScope(state, localConfig);
   } catch (e) {

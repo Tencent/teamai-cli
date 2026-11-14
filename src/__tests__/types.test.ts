@@ -314,6 +314,13 @@ describe('StateSchema pushedEnvVars', () => {
   });
 });
 
+describe('StateSchema claudeMdExcludes', () => {
+  it('reads the one list an older release kept as the entries of .claude/settings.local.json', () => {
+    const result = StateSchema.parse({ lastPullByWorkspace: { key: { rev: 'r1', targets: ['claude'], claudeMdExcludes: ['/ws/CLAUDE.md'] } } });
+    expect(result.lastPullByWorkspace?.key?.claudeMdExcludes).toEqual({ '.claude': ['/ws/CLAUDE.md'] });
+  });
+});
+
 describe('StateSchema update fields', () => {
   it('should default lastUpdateCheck to null', () => {
     const result = StateSchema.parse({});

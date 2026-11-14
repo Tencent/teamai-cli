@@ -1353,10 +1353,14 @@ export const StateSchema = z.object({
     /** The folders an older release left out of the last full pull (#1791), by path: pull syncs in full while it is set, and never writes it. */
     skippedFolders: z.array(z.string()).optional(),
     /**
-     * The `claudeMdExcludes` entries teamai wrote into this checkout's
-     * `.claude/settings.local.json` for the workspaces above it (#913).
+     * The `claudeMdExcludes` entries teamai wrote for the workspaces above this checkout (#913), by the folder of the
+     * `settings.local.json` that holds them (`.claude`, a Claude instance's `.acme-claude`). An older release kept one
+     * list, which it wrote only into `.claude/settings.local.json`.
      */
-    claudeMdExcludes: z.array(z.string()).optional(),
+    claudeMdExcludes: z.preprocess(
+      (value) => (Array.isArray(value) ? { '.claude': value } : value),
+      z.record(z.string(), z.array(z.string())),
+    ).optional(),
     /**
      * The `permissions.additionalDirectories` entries teamai added to a tool's user settings so the tool reads the
      * rule and agent folders this scope delivers (#1787), by settings file.
