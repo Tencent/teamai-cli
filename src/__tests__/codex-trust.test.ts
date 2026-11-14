@@ -543,6 +543,9 @@ describe('Codex hook trust — an instance', () => {
     expect(new Set(readFakeCodexState(acmeHome).calls.map((c) => c.codex))).toEqual(new Set([acmeBuild]));
     expect(readFakeCodexState(codexHome()).calls).toEqual([]);
     expect(await readCodexHookTrustForScope(config, local)).toEqual({ kind: 'listed', notTrusted: [] });
+    // Doctor's check that the instance's session hooks carry the team's instructions reads the same file.
+    const { channelReadiness } = await import('../instruction-targets.js');
+    expect((await channelReadiness('acme-codex', 'codex-hooks', { teamConfig: config, localConfig: local })).ready).toBe(true);
   });
 
   it('takes back, through its own command, the trust of the hooks a removal takes out of an instance', async () => {

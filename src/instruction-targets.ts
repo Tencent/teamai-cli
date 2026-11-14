@@ -7,7 +7,7 @@ import { getUserHome } from './utils/home.js';
 import { isCodexTool } from './utils/tool-names.js';
 import { type BlocksHeader, type ChannelProbe, type RunTime } from '@teamai/tool-core/definition';
 import { channelsOf, TOOL_ORDER } from './tool-registry.js';
-import { hookAdapterDir, installOf, locate, ownOf, writable, type FilePlace, type Gate, type Install } from './locate.js';
+import { hookAdapterDir, hookSettingsFile, installOf, locate, ownOf, writable, type FilePlace, type Gate, type Install } from './locate.js';
 import {
   opencodeContextReference, opencodeV1ClaudeFile, readOpencodeInstructionList, reconcileOpencodeInstructions,
 } from './resources/opencode-config.js';
@@ -323,7 +323,7 @@ function hooksFileOf(tool: string, context: { teamConfig: TeamaiConfig; localCon
   const hookScope = resolveHookScope(context.localConfig);
   const settings = scopedToolPaths(context.teamConfig, { ...context.localConfig, scope: hookScope.scope })[tool]?.settings;
 
-  return settings === undefined ? undefined : path.resolve(hookScope.baseDir, settings);
+  return settings === undefined ? undefined : hookSettingsFile(tool, path.resolve(hookScope.baseDir), settings);
 }
 
 // Whether the hooks that deliver the instructions are there, which no form changes: the file's own form, no version.
