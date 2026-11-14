@@ -169,18 +169,21 @@ describe('models commands', () => {
   });
 
   it('refuses a tool instance by name, leaving its home and the tool it extends untouched', async () => {
-    const { useToolInstances } = await import('../tool-registry.js');
-    useToolInstances(new Map([['acme-claude', {
-      name: 'acme-claude', extends: 'claude', home: { dir: '.acme-claude' }, source: 'team', file: '/repo/tools/acme-claude.yaml', location: 'tools/acme-claude.yaml', revision: 'r1',
-    }]]));
-    onTestFinished(() => useToolInstances(new Map()));
+    // The instance comes from the team repo the member joined, as each command loads it.
+    const repo = path.join(home, 'team');
+    await fse.outputFile(path.join(repo, 'teamai.yaml'), 'team: acme\nrepo: acme/team\n');
+    await fse.outputFile(path.join(repo, 'tools', 'acme-claude.yaml'), 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude }\n');
+    await fse.outputFile(path.join(home, '.teamai', 'config.yaml'), `repo: { localPath: ${JSON.stringify(repo)}, remote: x }\nusername: u\nscope: user\nadditionalRoles: []\n`);
+    const { resetToolInstancesForTests } = await import('../tool-instances.js');
+    onTestFinished(() => resetToolInstancesForTests());
     await fse.outputJson(path.join(home, '.acme-claude', 'settings.json'), {});
     await fse.outputJson(path.join(home, '.claude', 'settings.json'), {});
-    await addMine();
+    const refusal = 'acme-claude is an instance of claude (tools/acme-claude.yaml), and teamai models does not switch or restore the model of an instance yet; set it in the instance\'s own settings';
 
-    for (const run of [() => modelsSwitch('mine', { agent: ['acme-claude'] }), () => modelsRestore({ agent: ['acme-claude'] })]) {
-      await expect(run()).rejects.toThrow('acme-claude is an instance of claude (tools/acme-claude.yaml), and teamai models does not switch or restore the model of an instance yet; set it in the instance\'s own settings');
-    }
+    // Restore first: nothing before it in this process has loaded the team config.
+    await expect(modelsRestore({ agent: ['acme-claude'] })).rejects.toThrow(refusal);
+    await addMine();
+    await expect(modelsSwitch('mine', { agent: ['acme-claude'] })).rejects.toThrow(refusal);
 
     expect(await fse.readJson(path.join(home, '.acme-claude', 'settings.json'))).toEqual({});
     expect(await fse.readJson(path.join(home, '.claude', 'settings.json'))).toEqual({});

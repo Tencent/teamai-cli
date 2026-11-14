@@ -684,6 +684,8 @@ export async function modelsSwitch(reference: string | undefined, options: Switc
 }
 
 export async function modelsRestore(options: SwitchOptions): Promise<void> {
+  // A name no shipped agent has may be a tool instance, which only the team config, loaded here, defines.
+  if ((options.agent ?? []).flatMap(splitList).some((value) => !ModelAgentSchema.safeParse(value).success)) await autoDetectInit(undefined, { dryRun: options.dryRun }).catch(() => undefined);
   const explicit = collectAgents(options.agent ?? []);
   const results = await restoreModelProfiles(explicit.length > 0 ? explicit : ALL_MODEL_AGENTS, { dryRun: options.dryRun });
   const shown = explicit.length > 0 ? results : results.filter((result) => result.status !== 'unchanged');
