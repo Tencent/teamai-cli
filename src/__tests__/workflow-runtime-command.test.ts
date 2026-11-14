@@ -334,6 +334,32 @@ describe('an attempt\'s operations on a step runtime', () => {
     expect(fs.existsSync(record)).toBe(true);
   });
 
+  it('fails lost, opening nothing, an attempt whose place on another driver\'s step runtime is still open', async () => {
+    const { run: first, config, done } = counted();
+    onTestFinished(done);
+    const view = { worktree: '/work', readonly: [], result: '/work/out', runDir: '/work/scratch', toolHome: {} };
+    expect(await first.open(view)).toEqual({ ok: true, handle: 'h-1' });
+    const opens = vi.fn(async () => ({ kind: 'ready' as const, handle: 'h-2' }));
+    const elsewhere: StepRuntime<DriverCan> = {
+      name: 'elsewhere',
+      init: async () => ({ ok: true, can: {}, launchesAgents: false }),
+      open: opens,
+      exec: async () => ({ kind: 'exited', code: 0, stdout: '' }),
+      prompt: async () => ({ kind: 'cancelled' }),
+      cancel: async () => {},
+      collect: async () => ({ ok: true }),
+      reattach: async () => ({ kind: 'gone' }),
+      close: async () => ({ ok: true }),
+      dispose: async () => {},
+    };
+
+    const moved = attemptRun({ config, run: RunIdSchema.parse('r0123abcd'), attempt: AttemptIdSchema.parse('a00000001'), runtime: elsewhere, entry: soleEntry(elsewhere), driver: 'other' });
+
+    // What ran there may still run, so the step is not run again beside it, by a retry either.
+    expect(await moved.open(view)).toMatchObject({ ok: false, failure: { code: 'runtime_lost', message: expect.stringContaining('whose place on step runtime "counted" of driver "counted" is still open') } });
+    expect(opens).not.toHaveBeenCalled();
+  });
+
   it('records no place for a run an uninstall removed while the open waited on the places lock, and opens none', async () => {
     const { run, config, done } = counted();
     onTestFinished(done);

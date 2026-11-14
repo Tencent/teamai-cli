@@ -881,9 +881,9 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
       const before = found && !(found.phase === 'closed' && (!isHere(found) || found.open.handle === undefined)) ? found : undefined;
 
       // A record of another runtime is one whose place there is still open: what ran there was not stopped
-      // (`stopOnRecordedDriver`), so the attempt does not move while it may still run.
+      // (`stopOnRecordedDriver`), so the attempt does not move while it may still run, and the step fails `runtime_lost`.
       if (before && !isHere(before) && before.phase !== 'closed') {
-        return { ok: false, failure: runtimeFailure(runtime.name, `cannot continue attempt ${attempt}, whose place on step runtime "${before.runtime}" of driver "${before.driver}" is still open, so what ran there may still run. Resume the run with --driver ${before.driver}.`) };
+        return { ok: false, failure: { code: 'runtime_lost', message: `Step runtime "${runtime.name}" cannot continue attempt ${attempt}, whose place on step runtime "${before.runtime}" of driver "${before.driver}" is still open, so what ran there may still run. Resume the run with --driver ${before.driver}.` } };
       }
 
       if (before?.openFailed && before.phase !== 'closed') return { ok: false, failure: runtimeFailure(runtime.name, `could not open attempt ${attempt} (${before.openFailed.code}): ${before.openFailed.message}`) };
