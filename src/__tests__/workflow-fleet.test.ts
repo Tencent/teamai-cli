@@ -1417,14 +1417,19 @@ describe('a member\'s claim among writes it did not see land', () => {
   it('goes on running when a write of its own claim landed though it could not tell', async () => {
     const { alice, bob, run, startCommit } = await offerSlow(3_000, { definition: BRIEF, command: BRIEF_COMMAND });
     const taking = takeFleetAttempt(bob.config, { pool: 'default', repository: 'github.com/acme/business', root: bob.checkout, member: await installOwner(bob.config), secrets: {}, place: HERE });
-    const claimed = await eventually(async () => {
-      const record = await recordOf(alice, run);
 
-      return record?.state === 'claimed' ? record : undefined;
-    });
+    try {
+      // The member's own progress write, which landed while the member read that it failed. The member writes progress
+      // of its own meanwhile, so the write goes on the claim as it is when it lands.
+      await eventually(async () => {
+        const record = await recordOf(alice, run);
 
-    // The member's own progress write, which landed while the member read that it failed.
-    expect(await recordProgress(bob.config, claimed, startCommit)).toMatchObject({ ok: true });
+        return record?.state === 'claimed' && (await recordProgress(bob.config, record, startCommit)).ok ? true : undefined;
+      });
+    } finally {
+      // The take outlives a failed expectation otherwise, and writes into a checkout the test already removed.
+      await taking.catch(() => undefined);
+    }
 
     expect(await taking).toEqual({ data: { ran: { run, attempt: ATTEMPT, step: 'work', exit_code: 0 } } });
   }, 60_000);
