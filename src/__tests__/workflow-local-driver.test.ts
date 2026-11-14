@@ -133,8 +133,8 @@ describe('local workflow prompt driver', () => {
     { case: 'names its own, as the member set it', own: { home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' } }, shell: true, acme: 'acme-moved', codex: 'acme-moved' },
     // A pull recorded the home the variable named, and teamai delivers there from a shell without it, so the build reads it too.
     { case: 'names its own, at the home recorded for it from a shell without it', own: { home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' } }, shell: false, acme: 'acme-recorded', codex: 'acme-recorded' },
-    // teamai writes where paths say, so a build pointed at the home would read none of it.
-    { case: 'sets paths outside its home, as the member set it', own: { home: { dir: '.acme-codex' }, paths: { skills: '.codex/skills', settings: '.codex/hooks.json' } }, shell: true, acme: 'acme-moved', codex: 'member-codex' },
+    // Its project paths are Codex's, which stock Codex reads in a project whatever its home; its user paths are in its home.
+    { case: 'keeps the project paths of Codex and its user paths in its home', own: { home: { dir: '.acme-codex' }, paths: { skills: '.codex/skills', userScope: { skills: '.acme-codex/skills' } } }, shell: true, acme: 'acme-moved', codex: '~/.acme-codex' },
   ])('starts an instance that $case, with CODEX_HOME at $codex', async ({ own, shell, acme, codex }) => {
     const { config, workspace, runId } = await fixture();
     const recorded = path.join(getUserHome(), 'acme-recorded');
@@ -156,7 +156,7 @@ describe('local workflow prompt driver', () => {
 
     await runLocalDriver(config, runId, workspace, { adapter, toolPaths, tools: { default: 'acme-codex' } });
 
-    const at = (dir: string): string => dir === 'acme-recorded' ? path.join(getUserHome(), dir) : path.join(os.tmpdir(), dir);
+    const at = (dir: string): string => dir === 'acme-recorded' ? path.join(getUserHome(), dir) : dir.startsWith('~/') ? path.join(getUserHome(), dir.slice(2)) : path.join(os.tmpdir(), dir);
 
     expect(input?.env?.ACME_CODEX_HOME).toBe(at(acme));
     expect({ ...process.env, ...input?.env }.CODEX_HOME).toBe(at(codex));

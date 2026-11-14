@@ -11,7 +11,7 @@ import { isSessionPlatform } from './session-flow/adapters/platform-facts.js';
 import { instanceHomeAfterInit, instanceHomeDir, isSameDirOn, realHost, toolHome, type Host } from './tool-home.js';
 import { INSTANCE_BASES, isInstanceBase, isToolId, TOOL_ORDER, toolInstancesFor, toolOf, useToolInstances } from './tool-registry.js';
 import type { ToolId } from './tools.js';
-import { DEFAULT_TOOL_PATHS, getTeamaiHomeDir, getTrustDir, recordedToolRootDir, RELOCATABLE_TOOLS, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type Scope, type TeamaiConfig } from './types.js';
+import { DEFAULT_TOOL_PATHS, TOOL_ROOT_FIELDS, getTeamaiHomeDir, getTrustDir, recordedToolRootDir, RELOCATABLE_TOOLS, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type Scope, type TeamaiConfig } from './types.js';
 import { writeJsonAtomic } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { errorOnce, warnOnce } from './utils/warn-once.js';
@@ -90,6 +90,23 @@ function refused(file: string, reason: string): RefusedInstance {
   return { ok: false, problem: `Tool instance ${file} is not valid: ${reason}. Fix the file; until then teamai does not use it.` };
 }
 
+/** The first user-scope path of `paths` outside `dir`, a `$HOME`-relative directory, by the key that sets it. */
+function userPathOutside(paths: z.infer<typeof ToolPathsSchema>, dir: string): { key: string; value: string } | undefined {
+  const posix = (value: string): string => path.posix.normalize(value.replaceAll('\\', '/')).replace(/\/+$/, '');
+  const home = posix(dir);
+
+  for (const field of TOOL_ROOT_FIELDS) {
+    const own = field === 'mcp' ? undefined : paths.userScope?.[field];
+    const value = own === undefined ? paths[field] : own;
+
+    if (value !== undefined && value !== null && posix(value) !== home && !posix(value).startsWith(`${home}/`)) {
+      return { key: own === undefined ? `paths.${field}` : `paths.userScope.${field}`, value };
+    }
+  }
+
+  return undefined;
+}
+
 function sha256(text: string): string {
   return createHash('sha256').update(text).digest('hex');
 }
@@ -150,6 +167,14 @@ function parseToolInstance({ file, text, source, location }: { file: string; tex
   }
 
   if (!isToolId(fields.name) && isSessionPlatform(fields.name)) return refused(file, `"${fields.name}" is the name of a session platform teamai ships`);
+  const shippedAt = fields.command === undefined ? fields.home : undefined;
+  const outside = shippedAt && fields.paths && userPathOutside(fields.paths, shippedAt.dir);
+
+  // teamai starts the shipped command at the instance's home, the only place it reads user files from.
+  if (shippedAt && outside) {
+    return refused(file, `${outside.key}: ${outside.value} is outside its home, and with no command it runs ${base} at that home, which reads none of it there. `
+      + `Leave home out to keep the home of ${base}, or point every user-scope path inside ${shippedAt.dir}`);
+  }
 
   const declared = { source, file, location, revision: sha256(text) };
 

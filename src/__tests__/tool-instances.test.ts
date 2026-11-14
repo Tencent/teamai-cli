@@ -253,6 +253,24 @@ describe('team tool instances', () => {
     expect(registry.toolOf('acme-claude')).toBeUndefined();
   });
 
+  // The shipped command reads its user files only from the home teamai starts it at, so a user path outside it is read by nothing.
+  it.each([
+    { case: 'refuses one with no command whose paths leave its home', file: 'home: { dir: .acme-codex }\npaths: { skills: .codex/skills, settings: .codex/hooks.json }\n', refused: 'paths.skills: .codex/skills', dir: '.acme-codex' },
+    { case: 'refuses one with no command whose user-scope paths leave its nested home', file: 'home: { dir: work/.acme-codex }\npaths: { skills: work/.acme-codex/skills, userScope: { agents: .codex/agents } }\n', refused: 'paths.userScope.agents: .codex/agents', dir: 'work/.acme-codex' },
+    { case: 'uses one with no command whose project paths are the tool\'s and whose user paths are in its home', file: 'home: { dir: work/.acme-codex }\npaths: { skills: .codex/skills, userScope: { skills: work/.acme-codex/skills } }\n', refused: undefined },
+    { case: 'uses one with a command of its own whose paths leave its home', file: 'command: acme-codex\nhome: { dir: .acme-codex }\npaths: { skills: .codex/skills }\n', refused: undefined },
+  ])('$case', async ({ file, refused, dir }) => {
+    const { registry, errors } = await load(teamRepo({ 'tools/acme-codex.yaml': `schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\n${file}` }));
+
+    if (refused === undefined) {
+      expect([errors, registry.toolOf('acme-codex')?.name]).toEqual([[], 'acme-codex']);
+    } else {
+      expect(errors).toEqual([expect.stringContaining(`${path.join('tools', 'acme-codex.yaml')} is not valid: ${refused} is outside its home, and with no command it runs codex at that home, which reads none of it there. `
+        + `Leave home out to keep the home of codex, or point every user-scope path inside ${dir}. Fix the file`)]);
+      expect(registry.toolOf('acme-codex')).toBeUndefined();
+    }
+  });
+
   it.each(['./scripts/acme-claude', 'bin/acme-claude', '/opt/acme/bin/acme-claude', String.raw`tools\acme-claude.exe`])(
     'refuses an instance whose command is the path %s, since what runs at a path is not the file a person accepted',
     async (command) => {
