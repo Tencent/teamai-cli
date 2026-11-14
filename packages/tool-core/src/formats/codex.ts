@@ -47,6 +47,7 @@ import { typedTitle, visibleUserText } from '../sessions/title.js';
 import { assertSafeSessionFileId, deriveTargetSessionId } from '../sessions/ids.js';
 import { findSqlite3 } from '../sessions/sqlite.js';
 import type { SessionHost } from '../sessions/platform.js';
+import type { CommandExecutor } from '@teamai/shared/exec';
 import { log } from '@teamai/shared/log';
 import { isOnPath } from '@teamai/shared/lookpath';
 import {
@@ -317,9 +318,12 @@ function pushItemCompleted(records: CodexWrittenLine[], args: ItemCompletedArgs)
  * Probed and later started through the host's processes, which resolve the npm `codex.cmd` shim on Windows that a
  * plain PATH join and `spawn` miss.
  */
-async function findCodexCli(host: SessionHost): Promise<string | null> {
+async function findCodexCli(host: SessionHost, env: NodeJS.ProcessEnv): Promise<string | null> {
+  // Probed in the home it then runs in: `--version` sets up its helpers under that home.
+  const inHome: CommandExecutor = (command, args, options) => host.processes.exec(command, args, { ...options, env });
+
   for (const candidate of host.executablesOf('codex')) {
-    if (await host.processes.probe(candidate)) return candidate;
+    if (await host.processes.probe(candidate, ['--version'], inHome)) return candidate;
   }
 
   return null;
@@ -1109,7 +1113,8 @@ export class CodexAdapter extends AgentAdapter {
    * then retry. Everything is best-effort: keep the legacy rollout as-is when the CLI
    */
   private async paginateRollout(sessionId: string, codexHome: string): Promise<void> {
-    const bin = await findCodexCli(this.host);
+    const env = { ...process.env, ...this.host.homeEnvAt('codex', codexHome) };
+    const bin = await findCodexCli(this.host, env);
 
     if (!bin) {
       this.noteWrite(
@@ -1119,7 +1124,7 @@ export class CodexAdapter extends AgentAdapter {
       return;
     }
 
-    const opts = { env: { ...process.env, ...this.host.homeEnvAt('codex', codexHome) }, timeoutMs: 120_000 };
+    const opts = { env, timeoutMs: 120_000 };
 
     const runApply = async (): Promise<string | undefined> => {
       let stdout = '';
@@ -1157,7 +1162,7 @@ export class CodexAdapter extends AgentAdapter {
       return;
     }
 
-    await this.indexThreadViaAppServer(bin, codexHome);
+    await this.indexThreadViaAppServer(bin, env);
     status = await runApply();
 
     if (status !== 'migrated' && status !== 'already_paginated') {
@@ -1174,13 +1179,13 @@ export class CodexAdapter extends AgentAdapter {
    * indexing path: it scans the sessions dir, upserts the new rollout into
    * state_5.threads and computes title/preview), then exits after the response.
    */
-  private indexThreadViaAppServer(bin: string, codexHome: string): Promise<void> {
+  private indexThreadViaAppServer(bin: string, env: NodeJS.ProcessEnv): Promise<void> {
     return new Promise((resolve) => {
       let child: ChildProcess;
 
       try {
         child = this.host.processes.spawn(bin, ['app-server'], {
-          env: { ...process.env, ...this.host.homeEnvAt('codex', codexHome), RUST_LOG: 'error' },
+          env: { ...env, RUST_LOG: 'error' },
           stdio: ['pipe', 'pipe', 'ignore'],
           windowsHide: true,
         });

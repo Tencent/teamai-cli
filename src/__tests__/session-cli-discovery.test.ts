@@ -122,7 +122,7 @@ describe('Codex CLI', () => {
 describe('Codex CLI of a tool instance', () => {
   afterEach(() => { useToolInstances(new Map()); });
 
-  // The session adapter sets CODEX_HOME to the store's home; a build that reads only its own variable needs that one too.
+  // The session adapter probes and runs the build at the store's home; a build that reads only its own variable needs that one too.
   it.skipIf(process.platform === 'win32')('starts the instance\'s own build with its own variable at the home of the store it writes', async () => {
     const bin = installFakeCodex();
     fs.writeFileSync(path.join(bin, 'acme-codex'), `#!/bin/sh\necho "$*" >> "$ACME_CODEX_HOME/acme-calls.log"\nexec ${JSON.stringify(path.join(bin, 'codex'))} "$@"\n`, { mode: 0o755 });
@@ -138,6 +138,7 @@ describe('Codex CLI of a tool instance', () => {
     const id = await adapterAt({ platform: 'acme-codex', storeDir: path.join(acmeHome, 'sessions') }).writeSession(mkSession(cwd), cwd);
 
     const calls = fs.readFileSync(path.join(acmeHome, 'acme-calls.log'), 'utf-8').split('\n');
+    expect(calls).toContain('--version');
     expect(calls).toContain(`migrate-rollouts --apply --thread ${id} --json`);
     expect(calls).toContain('app-server');
   });
