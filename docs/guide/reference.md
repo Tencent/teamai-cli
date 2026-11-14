@@ -322,7 +322,7 @@ Tool instance …/tools/acme-claude.yaml is not valid: command: command is the n
 Tool instance …/tools/acme-kiro.yaml is not valid: extends: an instance extends claude or codex; teamai does not support an instance of kiro or any other tool yet. …
 ```
 
-An instance gets teamai's own agents, such as `teamai-recall`, and the team's `agents/` in the format of the tool it extends, with that tool's model aliases and `tool_extras`, and `teamai push` takes an edit to its copy. In a project, an instance with no `command` reads that tool's agent files, which are rendered as that tool's, after its `teamai models switch` too. An agent whose `targets` names that tool reaches its instances too; name the instance to reach it alone. The [tool support](./tool-support.md) page lists the tools an instance extends, never the instances themselves.
+An instance gets teamai's own agents, such as `teamai-recall`, and the team's `agents/` in the format of the tool it extends, with that tool's model aliases and `tool_extras`, and `teamai push` takes an edit to its copy. In a project, an instance whose agents directory is that tool's, as with no `command` or with `paths` that name it, reads that tool's agent files, which are rendered as that tool's, after its `teamai models switch` too. An agent whose `targets` names that tool reaches its instances too; name the instance to reach it alone. The [tool support](./tool-support.md) page lists the tools an instance extends, never the instances themselves.
 
 ---
 

@@ -57,7 +57,7 @@ import { isNamespaceDir, resolveResourceNamespaces } from './resource-namespaces
 import { loadRoleAssignmentsIfPresent } from './role-assignments.js';
 import { listRoleIds, loadRolesManifestIfPresent, type RolesManifest } from './roles.js';
 import { AGENT_TOOLS } from './tool-registry.js';
-import { LocalConfigSchema, type GlobalOptions, type LocalConfig, type ResourceItem, type Scope, type TeamaiConfig } from './types.js';
+import { DEFAULT_TOOL_PATHS, LocalConfigSchema, type GlobalOptions, type LocalConfig, type ResourceItem, type Scope, type TeamaiConfig } from './types.js';
 import { splitFrontmatter, type FrontmatterValue } from './utils/frontmatter.js';
 import { isIgnored, listDirs, listFilesRecursive, readFileIfExists, writeFile, ensureDir } from './utils/fs.js';
 import { getFileContentAtRev, getHeadCommit, getMergeBase, listTreeAtRev } from './utils/git.js';
@@ -1661,7 +1661,8 @@ function valueCause(aliases: ModelAliases, model: string, tools?: readonly ToolN
 /** Why `spec` gives none of its target tools a model, as pull resolves it: a tool's extras model first. */
 function agentCause(aliases: ModelAliases, spec: AgentSpec, scope: Scope): string | undefined {
   const tools = spec.targets ?? AGENT_TOOLS;
-  const resolutions = tools.map((tool) => resolveAgentModel(aliases, spec, tool, scope));
+  // The review reads no team config, so the shipped paths stand in for the team's.
+  const resolutions = tools.map((tool) => resolveAgentModel(aliases, spec, tool, { scope, toolPaths: DEFAULT_TOOL_PATHS }));
 
   if (resolutions.some((resolution) => resolution.ok && resolution.model !== undefined)) return undefined;
 

@@ -1428,7 +1428,7 @@ async function buildRemovalPlan(
     for (const file of res.agentFiles) {
       const stem = agentStemFromFilename(path.basename(file)) ?? path.basename(file);
 
-      if (await ownsAgentCopy(localConfig, file, stem, tool, previous)) ownedAgents.push(file);
+      if (await ownsAgentCopy(teamConfig, localConfig, file, stem, tool, previous)) ownedAgents.push(file);
       else res.keptFiles.push(describeMembersDirLeft(file, teamAgentNames.get(stem) ?? `agents/${stem}.yaml`, 'uninstall'));
     }
 

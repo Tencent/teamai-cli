@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import type { AgentModelRecords, RecordedAgentModel, ResourceItem, Scope } from './types.js';
+import type { AgentModelRecords, RecordedAgentModel, ResourceItem } from './types.js';
+import type { AgentRenderPlace } from './tool-instances.js';
 import type { AgentSpec } from './resources/agent-format.js';
 import type { AgentTool } from './resources/agents.js';
 import type { ModelAliases, ModelResolution } from './models/aliases.js';
@@ -23,7 +24,7 @@ interface AgentModelView {
   /** The installed tools that receive agents. */
   tools: AgentTool[];
   records: AgentModelRecords;
-  scope: Scope;
+  place: AgentRenderPlace;
 }
 
 const CHECK_NAME = 'Agent model aliases can be resolved';
@@ -74,10 +75,10 @@ async function readView(ctx: DoctorContext): Promise<AgentModelView | null> {
     if (parsed?.ok && parsed.spec.model !== undefined) agents.push({ name: item.name, spec: parsed.spec });
   }
 
-  if (agents.length === 0) return { aliases, agents, tools: [], records: {}, scope: localConfig.scope };
+  if (agents.length === 0) return { aliases, agents, tools: [], records: {}, place: { scope: localConfig.scope, toolPaths: teamConfig.toolPaths } };
   const tools = (await new AgentsHandler().agentToolDirs(teamConfig, localConfig)).map(({ tool, format }) => ({ tool, format }));
 
-  return { aliases, agents, tools, records: await recordedAgentModels(localConfig), scope: localConfig.scope };
+  return { aliases, agents, tools, records: await recordedAgentModels(localConfig), place: { scope: localConfig.scope, toolPaths: teamConfig.toolPaths } };
 }
 
 /** Each installed tool `spec` targets, with what it receives for `spec`'s model. */
@@ -87,7 +88,7 @@ async function resolutions(view: AgentModelView, spec: AgentSpec): Promise<(Agen
 
   return view.tools
     .filter((target) => targetsTool(spec, target))
-    .map((target) => ({ ...target, resolution: resolveAgentModel(view.aliases, spec, target.tool, view.scope) }));
+    .map((target) => ({ ...target, resolution: resolveAgentModel(view.aliases, spec, target.tool, view.place) }));
 }
 
 /** The received agents pull holds in at least one tool, because their model cannot be resolved there. */

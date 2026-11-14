@@ -322,7 +322,7 @@ Tool instance …/tools/acme-claude.yaml is not valid: command: command is the n
 Tool instance …/tools/acme-kiro.yaml is not valid: extends: an instance extends claude or codex; teamai does not support an instance of kiro or any other tool yet. …
 ```
 
-实例会收到 teamai 自带的 agents（如 `teamai-recall`）和团队的 `agents/`，格式与它扩展的工具相同，并使用该工具的模型别名和 `tool_extras`；`teamai push` 会带上对实例副本的修改。在项目里，没设 `command` 的实例读取该工具的 agent 文件，这些文件按该工具来渲染，该工具用 `teamai models switch` 切换后也一样。`targets` 写了该工具的 agent 也会发给它的实例；只想发给某个实例时，写实例的名字。[工具支持](./tool-support.md)页面只列出实例可以扩展的工具，不列出实例本身。
+实例会收到 teamai 自带的 agents（如 `teamai-recall`）和团队的 `agents/`，格式与它扩展的工具相同，并使用该工具的模型别名和 `tool_extras`；`teamai push` 会带上对实例副本的修改。在项目里，agent 目录就是该工具目录的实例（没设 `command`，或 `paths` 指向该目录）读取该工具的 agent 文件，这些文件按该工具来渲染，该工具用 `teamai models switch` 切换后也一样。`targets` 写了该工具的 agent 也会发给它的实例；只想发给某个实例时，写实例的名字。[工具支持](./tool-support.md)页面只列出实例可以扩展的工具，不列出实例本身。
 
 ---
 

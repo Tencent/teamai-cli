@@ -476,18 +476,23 @@ function movedToHome(instance: DeclaredTool, paths: z.infer<typeof ToolPathsSche
   return { ...paths, mcp: moved.mcp, userScope };
 }
 
+/** Where agent files are rendered: the scope, and the team config's tool paths, which say where each tool's agents go. */
+export interface AgentRenderPlace {
+  readonly scope: Scope;
+  readonly toolPaths: TeamaiConfig['toolPaths'];
+}
+
 /**
- * The tool whose model aliases render `tool`'s agent files in `scope`. In a project an instance on the shipped command
- * writes the agents directory of the tool it extends, so that one file renders as that tool's from either pass.
+ * The tool whose model aliases render `tool`'s agent files at `place`. In a project an instance whose agents directory
+ * is the one of the tool it extends writes that tool's files, so each renders as that tool's from either pass.
  */
-export function agentModelToolOf(tool: string, scope: Scope): string {
+export function agentModelToolOf(tool: string, { scope, toolPaths }: AgentRenderPlace): string {
   const instance = toolOf(tool)?.instance;
 
-  if (instance?.kind !== 'instance' || scope === 'user' || movesProjectPaths(instance)) return tool;
+  if (instance?.kind !== 'instance' || scope === 'user') return tool;
+  const shared = (toolPaths[instance.extends] ?? DEFAULT_TOOL_PATHS[instance.extends]).agents;
 
-  const shipped: z.infer<typeof ToolPathsSchema> = DEFAULT_TOOL_PATHS[instance.extends];
-
-  return instance.paths === undefined || instance.paths.agents === shipped.agents ? instance.extends : tool;
+  return instancePaths(instance, toolPaths)?.agents === shared ? instance.extends : tool;
 }
 
 /** The tool paths `instance` gives its tool: its own `paths`, else the paths of the tool it extends, moved to its home. */

@@ -550,11 +550,15 @@ describe('AgentsHandler pull: model aliases', () => {
       expect(pinned).toMatchObject({ model: 'gpt-pinned', model_reasoning_effort: 'xhigh' });
     });
 
-    it('renders a project agent file an instance on Claude\'s command shares with Claude once, as Claude\'s, pull after pull', async () => {
+    it.each([
+      { agents: '.claude/agents', paths: undefined },
+      // The team moved Claude's agents, and the instance's paths name the same directory.
+      { agents: '.claude/custom-agents', paths: { agents: '.claude/custom-agents', userScope: { agents: '.home-claude/agents' } } },
+    ])('renders a project agent file in $agents an instance on Claude\'s command shares with Claude once, as Claude\'s, pull after pull', async ({ agents, paths }) => {
       await writeAliases(EVERY_TOOL_STRONG);
       await switchTo(['claude']);
       useToolInstances(new Map([['home-claude', {
-        kind: 'instance', name: 'home-claude', extends: 'claude', home: { dir: '.home-claude' },
+        kind: 'instance', name: 'home-claude', extends: 'claude', home: { dir: '.home-claude' }, paths,
         source: 'team', file: path.join(repoPath, 'tools', 'home-claude.yaml'), location: 'tools/home-claude.yaml', revision: 'r1',
       }]]));
       onTestFinished(() => useToolInstances(new Map()));
@@ -563,9 +567,9 @@ describe('AgentsHandler pull: model aliases', () => {
       const spec = makeSpec({ model: 'strong' });
       const yamlPath = path.join(repoPath, 'agents', `${spec.name}.yaml`);
       await fse.writeFile(yamlPath, serializeAgentYaml(spec));
-      const config = { ...teamConfigFor(['claude']), toolPaths: { claude: { agents: '.claude/agents' }, 'home-claude': { agents: '.claude/agents' } } } as TeamaiConfig;
+      const config = { ...teamConfigFor(['claude']), toolPaths: { claude: { agents }, 'home-claude': { agents } } } as TeamaiConfig;
       const projectConfig: LocalConfig = { ...localConfig, scope: 'project', projectRoot: project };
-      const file = path.join(project, '.claude', 'agents', `${spec.name}.md`);
+      const file = path.join(project, ...agents.split('/'), `${spec.name}.md`);
       const pull = () => handler.pullItem({ name: spec.name, type: 'agents', sourcePath: yamlPath, relativePath: `agents/${spec.name}.yaml` }, config, projectConfig);
 
       await pull();

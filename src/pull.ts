@@ -854,7 +854,7 @@ async function cleanupTombstonedResources(
 
           // With no record, a copy goes only on proof that it is teamai's (#993).
           const origin = type === 'rules' ? ruleOrigin(tool, localConfig.repo.localPath, `rules/${name}.md`)
-            : type === 'agents' ? await removedAgentOrigin(localConfig, name, tool)
+            : type === 'agents' ? await removedAgentOrigin(freshConfig, localConfig, name, tool)
               : type === 'skills' ? skillOrigin(localConfig.repo.localPath, name)
                 : undefined;
 
