@@ -432,13 +432,15 @@ describe('an instance of Codex under the Codex root the member recorded (toolRoo
     expect(await placeOf('acme-codex', 'hooks')).toBe(await placeOf('codex', 'hooks'));
   });
 
-  it('keeps an instance with a home of its own in that home, and gives it the shared skills directory a Codex build reads', async () => {
-    useToolInstances(new Map([['acme-codex', { ...instance, home: { dir: '.acme-codex' } }]]));
+  it.each([
+    { set: 'moved from Codex\'s', paths: undefined },
+    { set: 'of its own', paths: { skills: '.acme-codex/skills' } },
+  ])('keeps an instance with a home of its own and paths $set in that home, reads it there, and gives it the shared skills directory a Codex build reads', async ({ paths }) => {
+    useToolInstances(new Map([['acme-codex', { ...instance, home: { dir: '.acme-codex' }, ...(paths === undefined ? {} : { paths }) }]]));
     const own: Install = { ...install, toolPaths: { ...install.toolPaths, 'acme-codex': { ...DEFAULT_TOOL_PATHS.codex, skills: '.acme-codex/skills' } } };
     const skills = await locate('acme-codex', 'skills', own, host);
 
-    expect(ownOf(skills)?.path).toBe('/home/m/.acme-codex/skills');
-    expect(skills.shared?.path).toBe('/home/m/.agents/skills');
+    expect([ownOf(skills)?.path, skills.shared?.path, unreadWrites(skills, host)]).toEqual(['/home/m/.acme-codex/skills', '/home/m/.agents/skills', []]);
   });
 
   it.each(['user', 'project'] as const)('takes an instance as installed in %s scope by its nested home, not by the directory that holds it', async (scope) => {

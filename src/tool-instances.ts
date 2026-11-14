@@ -505,13 +505,12 @@ export function defaultPathsOf(instance: DeclaredTool, toolPaths: TeamaiConfig['
 
 /**
  * Where `instance` reads a file the tool it extends reads at `relative`, under the home or the project (`from`): under
- * its own home when it has one, moved as its tool paths are (`instancePaths`), so what teamai writes there is judged
- * read. A path outside that tool's roots, a file at the project's root, and a project path of an instance on the
- * shipped command stay as they are, and so does every path of an instance that sets its own paths, which teamai
- * writes to as they are.
+ * its own home when it has one, whatever paths it sets, since the home is where its build runs from. A path outside
+ * that tool's roots, a file at the project's root, and a project path of an instance on the shipped command or with
+ * paths of its own, which name where its build reads in a project, stay as they are.
  */
 export function instanceReadPath(instance: DeclaredTool, { from, relative }: { from: 'home' | 'project'; relative: string }): string {
-  if (!instance.home || instance.paths || (from === 'project' && !movesProjectPaths(instance))) return relative;
+  if (!instance.home || (from === 'project' && (instance.paths !== undefined || !movesProjectPaths(instance)))) return relative;
 
   // A bare file beside the tool's home (Claude Code's .claude.json) is inside a home that moved, as the instance's is.
   if (!relative.includes('/')) return from === 'home' ? `${instance.home.dir}/${relative}` : relative;
