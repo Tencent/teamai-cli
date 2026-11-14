@@ -36,7 +36,7 @@ import { memberTools, type MemberTool } from '../../../tool-launch/member-tools.
 import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
 import { acceptToolCommand } from '../../../tool-instances.js';
 import { instanceNames, isToolId } from '../../../tool-registry.js';
-import { launchExecutableOf, LAUNCH_ORDER, LAUNCH_TOOLS, launchAdapterIdOf, launchTargetOf, type LaunchTarget, type LaunchTool } from '../../../tool-launch/tools.js';
+import { launchExecutableOf, LAUNCH_ORDER, LAUNCH_TOOLS, launchAdapterIdOf, launchHomeEnv, launchTargetOf, type LaunchTarget, type LaunchTool } from '../../../tool-launch/tools.js';
 import { confinedOffers, type ConfinedOffer } from '../../../tool-launch/confined.js';
 import { AttemptResult } from '../../attempt-result.js';
 import { runConfinedStep } from '../../confined-step.js';
@@ -587,7 +587,7 @@ async function promptReport(
     resultPath: resultFile,
     secrets,
     // The lease `env` is set over the step's environment, as a command's is.
-    env: { ...lease.processEnv ?? process.env, ...lease.env, ...attemptEnv(config, lock.run, lease.attempt, mode) },
+    env: { ...lease.processEnv ?? process.env, ...launchHomeEnv(target), ...lease.env, ...attemptEnv(config, lock.run, lease.attempt, mode) },
   };
 
   if (lease.output) input.output = lease.output;

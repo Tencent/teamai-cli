@@ -9,6 +9,8 @@ import { checkoutRecordKey, type CheckoutRecord } from '../pull.js';
 import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
 import { type LocalConfig, type TeamaiConfig } from '../types.js';
 import { log } from '../utils/logger.js';
+import { getUserHome } from '../utils/home.js';
+import { INSTANCE_BASES, useToolInstances } from '../tool-registry.js';
 import { createLocalToolAdapter, type LocalToolAdapter, type LocalToolResult, type LocalToolRun, type ToolSpawn } from '../workflow/drivers/local/local-tool-adapter.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { type WorkflowRunRecord } from '../workflow/records.js';
@@ -98,6 +100,53 @@ describe('local workflow prompt driver', () => {
     // What the launched session's hook records (#1384), and the pass's own record of the mode it ran in.
     expect(sessionRun({ ...input?.env, ...(input?.launch ? launchEnv(input.launch) : {}) })).toEqual({ runMode: mode, launchedBy: 'workflow' });
     expect(await readRun(config, runId)).toMatchObject({ steps: [{ runMode: mode }] });
+  });
+
+  // Every tool an instance may extend: one added without the variable its own launch reads its home from fails here.
+  it.each(INSTANCE_BASES.map((base) => ({ base, name: `acme-${base}`, variable: ({ claude: 'CLAUDE_CONFIG_DIR', codex: 'CODEX_HOME' } as Record<string, string>)[base] })))(
+    'launches $name, an instance of $base with only a home of its own, with $variable at that home', async ({ base, name, variable }) => {
+    expect(variable).toBeDefined();
+    vi.stubEnv(variable!, path.join(os.tmpdir(), 'member-moved-home'));
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const { config, workspace, runId } = await fixture();
+    useToolInstances(new Map([[name, {
+      name, extends: base, home: { dir: `.${name}` },
+      source: 'personal', file: `/home/.teamai/tools/${name}.yaml`, location: `~/.teamai/tools/${name}.yaml`, revision: 'r1',
+    }]]));
+    onTestFinished(() => { useToolInstances(new Map()); });
+    let launched: { tool: string; input: LocalToolRun } | undefined;
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn(async (tool: string, input: LocalToolRun) => {
+      launched = { tool, input };
+      return { started: true as const, exitCode: 0 };
+    }) };
+
+    await runLocalDriver(config, runId, workspace, { adapter, toolPaths, tools: { default: name } });
+
+    expect(launched?.tool).toBe(base);
+    expect(launched?.input.command).toBeUndefined();
+    expect(launched?.input.env?.[variable!]).toBe(path.join(getUserHome(), `.${name}`));
+  });
+
+  it('leaves the home variable as the member set it for an instance that names its own', async () => {
+    vi.stubEnv('ACME_CODEX_HOME', path.join(os.tmpdir(), 'acme-moved'));
+    vi.stubEnv('CODEX_HOME', path.join(os.tmpdir(), 'member-codex'));
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const { config, workspace, runId } = await fixture();
+    useToolInstances(new Map([['acme-codex', {
+      name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+      source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
+    }]]));
+    onTestFinished(() => { useToolInstances(new Map()); });
+    let input: LocalToolRun | undefined;
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn(async (_tool, value) => {
+      input = value;
+      return { started: true as const, exitCode: 0 };
+    }) };
+
+    await runLocalDriver(config, runId, workspace, { adapter, toolPaths, tools: { default: 'acme-codex' } });
+
+    expect(input?.env?.ACME_CODEX_HOME).toBe(path.join(os.tmpdir(), 'acme-moved'));
+    expect(input?.env?.CODEX_HOME).toBe(path.join(os.tmpdir(), 'member-codex'));
   });
 
   it.each<{ case: string; flags: Record<string, string>; configured: Record<string, string>; env: string; project?: string; machine?: string; ran: string }>([

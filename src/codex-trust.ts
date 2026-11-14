@@ -6,7 +6,7 @@ import crossSpawn from 'cross-spawn';
 import semver from 'semver';
 import { z } from 'zod';
 import { getCurrentVersion } from './package-info.js';
-import type { CodexBuild, CodexBuildSkew } from './types.js';
+import { CODEX_TOOL_ID, RELOCATABLE_TOOLS, type CodexBuild, type CodexBuildSkew } from './types.js';
 import { execCommand, probeBinary } from '@teamai/shared/exec';
 import { lenientList, type JsonValue, JsonValueSchema, JsonObjectSchema } from '@teamai/shared/json';
 import { log } from '@teamai/shared/log';
@@ -141,12 +141,15 @@ export async function codexBuildsIdentity(commands?: readonly string[]): Promise
   return (await codexBuildCandidates(commands)).map((c) => c.identity).join('\0\0');
 }
 
+/** The variable Codex reads its home from, which a step on a Codex instance sets too (`launchHomeEnv`). */
+const CODEX_HOME_VARIABLE = RELOCATABLE_TOOLS[CODEX_TOOL_ID].envVar;
+
 async function probeCodexVersion(command: string): Promise<string | null> {
   // `codex --version` first sets up its arg0 helpers under $CODEX_HOME/tmp; a throwaway home keeps the member's as it was.
   const codexHome = await mkdtemp(path.join(os.tmpdir(), 'teamai-codex-version-'));
 
   try {
-    const printed = /codex-cli\s+(\S+)/.exec(await probeBinary(command, ['--version'], (binary, args, options) => execCommand(binary, args, { ...options, env: { ...process.env, CODEX_HOME: codexHome } })))?.[1];
+    const printed = /codex-cli\s+(\S+)/.exec(await probeBinary(command, ['--version'], (binary, args, options) => execCommand(binary, args, { ...options, env: { ...process.env, [CODEX_HOME_VARIABLE]: codexHome } })))?.[1];
 
     return printed ? semver.valid(printed) : null;
   } finally {
@@ -290,7 +293,7 @@ class AppServerError extends Error {
 
 async function openAppServer(codexHome: string, command: string): Promise<AppServer> {
   const child = crossSpawn(command, ['app-server'], {
-    env: { ...process.env, CODEX_HOME: codexHome },
+    env: { ...process.env, [CODEX_HOME_VARIABLE]: codexHome },
     stdio: ['pipe', 'pipe', 'ignore'],
     windowsHide: true,
   });
