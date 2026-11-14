@@ -39,8 +39,8 @@ import {
 } from './types.js';
 import { hookSettingsFile, installOf, isInstalledFor, locate, ownOf, writable, type Gate, type Install } from './locate.js';
 import { samePlace } from './resources/places.js';
-import { describeInvalidToolHomes, envToolHome, ompProfile, realHost, reloadToolHomes, toolHomesPath } from './tool-home.js';
-import { hookFormatOf, hookSyntaxOf, isToolId, toolsWithoutSessions } from './tool-registry.js';
+import { describeInvalidToolHomes, envInstanceHome, envToolHome, ompProfile, realHost, reloadToolHomes, toolHomesPath } from './tool-home.js';
+import { hookFormatOf, hookSyntaxOf, toolOf, toolsWithoutSessions } from './tool-registry.js';
 import { isCodexTool } from './utils/tool-names.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder, keptTeamHookEntries, readCodexHookTrustForScope, readHookFile, releaseRemovedCheckoutHooks } from './hooks.js';
 import { codexBuildSkewMessage } from './codex-trust.js';
@@ -440,7 +440,15 @@ function buildToolHomeChecks(localConfig: LocalConfig): Check[] {
   const checks: Check[] = [];
 
   for (const [tool, recorded] of Object.entries(read.homes)) {
-    if (!isToolId(tool) || isAgentExcluded(localConfig, tool)) continue;
+    const resolved = toolOf(tool);
+    const own = resolved?.instance?.home;
+
+    // A shipped tool's variables, or an instance's own, which its record follows (`instanceHomeDir`).
+    const liveHome = resolved === undefined ? undefined
+      : resolved.name === resolved.base ? () => envToolHome(resolved.base, host)
+        : own?.env === undefined ? undefined : () => envInstanceHome(own, host);
+
+    if (liveHome === undefined || isAgentExcluded(localConfig, tool)) continue;
     checks.push({
       name: `${tool} home exists`,
       source: 'local',
@@ -448,7 +456,7 @@ function buildToolHomeChecks(localConfig: LocalConfig): Check[] {
       fix: `The ${tool} home recorded on this machine, ${recorded}, does not exist, so teamai skips ${tool}. `
         + `Re-run \`teamai init\` from a shell that sets the home ${tool} uses, or remove "${tool}" from ${file}.`,
     });
-    const live = envToolHome(tool, host);
+    const live = liveHome();
 
     if (live === null) continue;
     checks.push({

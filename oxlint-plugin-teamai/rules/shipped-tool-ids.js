@@ -17,8 +17,6 @@ export const SHIPPED_ONLY = new Map(Object.entries({
   // A version detector runs the shipped tool's own executable; an instance may run another build, so its version is
   // unknown and its hooks stay waited.
   'src/agent-version.ts': { count: 1 },
-  // The homes `teamai init` recorded, which it records only for shipped tools.
-  'src/doctor.ts': { count: 1 },
   // A toolPaths entry replaces the default of the shipped tool it names; an instance replaces its own only through its
   // `paths`, read just before.
   'src/doctor-delivery.ts': { count: 1 },

@@ -271,7 +271,7 @@ teamai workflow start review --tools default=acme-claude
 teamai score --session <id> --source acme-claude --scorer review-quality
 ```
 
-The step runs `acme-claude`, and its session is read from `$ACME_CLAUDE_CONFIG_DIR/projects/`, else `~/.acme-claude/projects/`, and a user-scope pull writes to that same home. It is recorded, resumed and scored as `acme-claude`'s, never as Claude's. In a project, Claude Code and Codex read the team hooks from the main checkout in every linked worktree, but an instance keeps them in its own home for each checkout a pull ran in, so run `teamai pull` once in a linked worktree before you use the instance's team hooks there.
+The step runs `acme-claude`, and its session is read from `$ACME_CLAUDE_CONFIG_DIR/projects/`, else `~/.acme-claude/projects/`, and a user-scope pull writes to that same home. teamai records a home an instance's `env` moves as it records a tool's own variable ([recorded tool homes](#recorded-tool-homes-teamaitool-homesjson)), so a pull or `uninstall` from a shell without the variable still uses it. It is recorded, resumed and scored as `acme-claude`'s, never as Claude's. In a project, Claude Code and Codex read the team hooks from the main checkout in every linked worktree, but an instance keeps them in its own home for each checkout a pull ran in, so run `teamai pull` once in a linked worktree before you use the instance's team hooks there.
 
 **Accepting the command.** An instance that sets `command` runs a program a teammate named. Its first run asks in a terminal:
 

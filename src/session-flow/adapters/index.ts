@@ -88,7 +88,7 @@ function instanceStore(platform: string) {
 
   if (definition?.adapterAs === undefined || home === undefined) return undefined;
 
-  return { store: definition.store, adapterAs: definition.adapterAs, home, host: instanceSessionHost(hosted.instance) };
+  return { store: definition.store, adapterAs: definition.adapterAs, name: hosted.instance.name, home, host: instanceSessionHost(hosted.instance) };
 }
 
 /**
@@ -128,10 +128,10 @@ export function storeDirOf(platform: string, toolRoots: LocalConfig['toolRoots']
   const instance = instanceStore(platform);
 
   if (!instance) return '';
-  const { store, home } = instance;
+  const { store, name, home } = instance;
   const dir = store.in === 'tool-home' ? store.dir : store.child;
 
-  return path.join(instanceHomeDir(home), dir);
+  return path.join(instanceHomeDir({ name, home }), dir);
 }
 
 /** `platform`'s adapter on `storeDir`, a store directory the caller already resolved (`storeDirOf`). */

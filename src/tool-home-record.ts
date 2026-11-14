@@ -1,11 +1,10 @@
 import { withFileLock } from './update.js';
-import { homeVariables, TOOL_ORDER } from './tool-registry.js';
-import { envToolHome, realHost, type EnvToolHome, recordedHomes, reloadToolHomes, rememberToolHome, saveToolHomes, toolHomesPath, type Host } from './tool-home.js';
-import type { ToolId } from './tools.js';
+import { homeVariables, instanceNames, TOOL_ORDER, toolOf } from './tool-registry.js';
+import { envInstanceHome, envToolHome, realHost, type EnvToolHome, recordedHomes, reloadToolHomes, rememberToolHome, saveToolHomes, toolHomesPath, type Host } from './tool-home.js';
 import { log } from './utils/logger.js';
 
-/** A change to the record: `dir` null when it was cleared. */
-export type ToolHomeChange = { readonly tool: ToolId; readonly variable: string; readonly dir: string | null };
+/** A change to the record of a shipped tool or an instance: `dir` null when it was cleared. */
+export type ToolHomeChange = { readonly tool: string; readonly variable: string; readonly dir: string | null };
 
 type RecordRule = { readonly replacesRecord: boolean; readonly needsExistingHome: boolean };
 
@@ -24,8 +23,20 @@ const INIT_RECORDS: Readonly<Record<EnvToolHome['kind'], RecordRule>> = {
 
 const PULL_RECORDS: RecordRule = { replacesRecord: false, needsExistingHome: true };
 
+/** Each shipped tool, and each instance that names a variable of its own, with where the host env moves its home and the variables that move it. */
+function envHomes(host: Host): Array<{ readonly tool: string; readonly moved: EnvToolHome | null; readonly variables: readonly string[] }> {
+  const instances = instanceNames().flatMap((name) => {
+    const instance = toolOf(name)?.instance;
+
+    return instance?.home?.env === undefined || instance.name === instance.extends ? [] : [{ tool: name, moved: envInstanceHome(instance.home, host), variables: [instance.home.env] }];
+  });
+
+  return [...TOOL_ORDER.map((tool) => ({ tool, moved: envToolHome(tool, host), variables: homeVariables(tool) })), ...instances];
+}
+
 /**
- * The record after reading the host env (`INIT_RECORDS`, `PULL_RECORDS`).
+ * The record after reading the host env (`INIT_RECORDS`, `PULL_RECORDS`), for
+ * shipped tools and the instances their own variable moves alike.
  * Init also clears a record when one of the tool's variables is set but
  * blank, the explicit way to end a move, which the Windows default does not
  * override.
@@ -38,11 +49,9 @@ export async function nextToolHomes(
   const homes = { ...recorded };
   const changes: ToolHomeChange[] = [];
 
-  for (const tool of TOOL_ORDER) {
-    const moved = envToolHome(tool, host);
-
+  for (const { tool, moved, variables } of envHomes(host)) {
     const blank = by === 'init' && homes[tool] !== undefined && (moved === null || moved.kind === 'platform-default')
-      && homeVariables(tool).find((name) => host.env[name] !== undefined && host.env[name]?.trim() === '');
+      && variables.find((name) => host.env[name] !== undefined && host.env[name]?.trim() === '');
 
     if (blank) {
       delete homes[tool];

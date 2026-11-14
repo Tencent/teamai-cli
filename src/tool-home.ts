@@ -249,14 +249,22 @@ export function toolHome(tool: ToolId, host: Host = realHost()): string {
   return movedToolHome(tool, host) ?? defaultToolHome(tool, host);
 }
 
-/**
- * Where an instance's own home sits on `host`: its variable's value when set, resolved as a shipped tool's own variable
- * is (`envToolHome`), else its directory under `$HOME`. Delivery and its sessions both read it, so the two never part.
- */
-export function instanceHomeDir(home: ToolInstanceHome, host: Host = realHost()): string {
-  const moved = home.env === undefined ? undefined : host.env[home.env]?.trim();
+/** Where an instance's own variable moves its home on `host`, read as a shipped tool's own variable is (`envToolHome`); null when it names none, or it is unset or blank. */
+export function envInstanceHome(home: ToolInstanceHome, host: Host = realHost()): EnvToolHome | null {
+  const value = home.env === undefined ? undefined : host.env[home.env]?.trim();
 
-  return moved ? absoluteOn(moved, host) : host.path.join(host.home, ...home.dir.split('/'));
+  return home.env !== undefined && value ? { dir: absoluteOn(value, host), variable: home.env, kind: 'own' } : null;
+}
+
+/**
+ * Where the instance `name`'s own home sits on `host`: for one its variable moves, the recorded home, else the
+ * variable's (`envInstanceHome`), as `movedToolHome` reads a shipped tool's; else its directory under `$HOME`. Delivery
+ * and its sessions both read it, so the two never part.
+ */
+export function instanceHomeDir({ name, home }: { readonly name: string; readonly home: ToolInstanceHome }, host: Host = realHost()): string {
+  const moved = home.env === undefined ? undefined : recordedHomes(host)[name] ?? envInstanceHome(home, host)?.dir;
+
+  return moved ?? host.path.join(host.home, ...home.dir.split('/'));
 }
 
 /**
@@ -270,7 +278,7 @@ export function toolHomeOf(name: string, host: Host = realHost()): { readonly ro
   if (resolved === undefined) return undefined;
   const home = resolved.instance?.home;
 
-  if (home !== undefined && resolved.instance?.name !== resolved.base) return { root: home.dir, dir: instanceHomeDir(home, host) };
+  if (home !== undefined && resolved.instance?.name !== resolved.base) return { root: home.dir, dir: instanceHomeDir({ name, home }, host) };
 
   return { root: homeRoot(resolved.base), dir: toolHome(resolved.base, host) };
 }
