@@ -8,7 +8,7 @@ import type { RunMode } from '../launch-context.js';
 import type { TeamPin } from './team-pin.js';
 import type { DeliveryReceipt, UnresolvedCreate } from './delivery-schema.js';
 import type { ArchivedPass, LimitsFrom, ReleasedTokens, SessionContinuation, StepState, StoppedAttempt } from './step-state.js';
-import type { OnLimit, Requirements, Setup, TurnLimits, Unenforced } from './requirements.js';
+import type { OnLimit, Requirements, RequirementsLevel, Setup, TurnLimits, Unenforced } from './requirements.js';
 import type { LeaseSession } from './workspace.js';
 import type { ConfinedLease } from './lease-wire.js';
 import type { StepModel } from './step-model.js';
@@ -317,8 +317,11 @@ export interface WorkflowDefaults {
   model?: string;
   /** Whether a step's scorers share one judge call when the step does not say. */
   scorers?: { batch: boolean };
-  /** Requirements as if written on every step of the file. */
-  requires?: Requirements;
+  /**
+   * Requirements as if written on every step of the file. A fleet member's nested run holds there the requirements in
+   * effect around the step it runs, `floor` included (`wholeFit`), so its steps run under them.
+   */
+  requires?: RequirementsLevel;
   /** The role of a step of the file that names none and runs inside no `workflow` step that names one. */
   role?: string;
   /** The value of each input it names when a start or a step's `with` leaves that input out; of the input's type. */

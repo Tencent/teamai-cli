@@ -2935,6 +2935,44 @@ steps:
     expect(infos).toHaveBeenCalledWith(`Left attempt ${owner.attempt} of run ${owner.run} for another member: its step "write" requires env DEPLOY_URL, which workflows.allow.env on this machine does not allow.`);
   }, 60_000);
 
+  it('runs the prompts of a whole workflow step that requires a strict sandbox on the member\'s runtime that gives one, not on its tools listed first', async () => {
+    const owner = await ownerOf({ workflow: BUDGETED.replace('    budget: { tokens: 1 }\n', '    requires: { isolation: sandbox, strict: true }\n'), workflows: { reviews: REVIEWS }, tools: ['claude'], isWhole: true, isSandbox: true });
+    const box = path.dirname(owner.bob.checkout);
+    const bin = path.join(box, 'bin');
+    const claude = fakeAgent(claudeFake, { bin, answer: '{"ok":true}' });
+    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+    vi.stubEnv('HOME', path.join(box, 'bob-home'));
+    owner.bob.config.workflows = { tools: { default: 'claude' } };
+    const runtime = stdioStepRuntime({ name: 'toy', command: process.execPath, args: [TOY_RUNTIME] });
+    onTestFinished(() => runtime.dispose());
+    const ready = await runtime.init({ homeEnv: homeEnvOf([]), options: { state: path.join(box, 'toy-state'), agent: { output: { ok: true }, home: path.join(box, 'toy-claude') }, can: { isolation: 'sandbox', env: true, tools: ['claude'] } }, mode: 'unattended' });
+    if (!ready.ok) throw new Error(ready.failure.message);
+    // The member's driver lists its tools first, which launch claude on this machine, then a runtime that gives a sandbox.
+    const place: MemberPlace = { workflow: { kind: 'driver', runtimes: { driver: 'bobs', asked: 'bobs', runtimes: [
+      { kind: 'tools', use: 'tools', engine: { logins: [] } },
+      { kind: 'external', use: 'toy', runtime, can: ready.can, launchesAgents: true, engine: { logins: [] }, credentials: {}, found: [], masks: {}, optionsFrom: 'test', entry: soleEntry(runtime) },
+    ] } } };
+    const alicePlace = path.join(path.dirname(owner.alice.checkout), 'alice-place');
+    git(owner.alice.checkout, 'worktree', 'add', '-q', '--detach', alicePlace, 'HEAD');
+    const { exec } = await owner.open(alicePlace);
+
+    try {
+      const ended = exec(newOpId(), 'workflow');
+      await eventually(async () => ((await owner.record())?.state === 'offered' ? true : undefined));
+      await readableReportsWorktree(owner.bob.config);
+
+      expect(await takeFleetAttempt(owner.bob.config, { pool: 'default', repository: getRepoIdentity(owner.bob.checkout) ?? '', root: owner.bob.checkout, member: await installOwner(owner.bob.config), secrets: {}, place }))
+        .toMatchObject({ data: { ran: { run: owner.run, attempt: owner.attempt, exit_code: 0 } } });
+      await ended;
+      const [nested] = await runsOf(owner.bob.config);
+      expect(nested).toMatchObject({ steps: [{ id: 'first', status: 'succeeded', runtime: 'toy' }, { id: 'second', status: 'succeeded', runtime: 'toy' }] });
+      expect(claude.calls()).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+      expect(await claude.stopLeft(), 'fake agents left running').toEqual([]);
+    }
+  }, 90_000);
+
   it('leases a whole workflow step with a gate inside to a runtime that runs whole workflows', async () => {
     const whole = await ownerOf({ workflow: WHOLE, workflows: { pair: GATED }, inputs: { mark: 'made.txt' }, isWhole: true });
 

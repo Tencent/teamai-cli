@@ -18,7 +18,8 @@ export type WholeRun = { step: WorkflowStep; executor: 'command' | 'prompt'; req
 
 /**
  * Whether workflow step `step` of workflow file `around`, which runs workflow `child` with `requires` in effect, goes
- * whole: why not, or its workflow and the steps of it that run something, each with the `requires` in effect for it.
+ * whole: why not, or its workflow, whose `defaults.requires` then holds what is in effect around the step, and the steps
+ * of it that run something, each with the `requires` in effect for it.
  * An inline workflow is given as a workflow file named after the step. The one fit rule: the owner's engine leaves only
  * such a step unexpanded and judges a runtime's offer on these steps, and a fleet member judges whether it can run them
  * before it claims the step.
@@ -30,8 +31,11 @@ export function wholeFit(
   const unfit = notWhole(step, child);
 
   if (unfit !== undefined) return { unfit };
-  const file = isWorkflowFile(child) ? child : inlineFile(step, child);
-  const inEffect = (inner: WorkflowStep): InEffect => mergeRequirements(requires, file.defaults?.requires, inner.requires);
+  const written = isWorkflowFile(child) ? child : inlineFile(step, child);
+  // What is in effect around the step, then the workflow's own defaults: the file a member runs holds them as its
+  // defaults, so its nested run's steps, `finally` included, run under what is judged here.
+  const file: WorkflowDefinition = { ...written, defaults: { ...written.defaults, requires: mergeRequirements(requires, written.defaults?.requires) } };
+  const inEffect = (inner: WorkflowStep): InEffect => mergeRequirements(file.defaults?.requires, inner.requires);
 
   // A gate step runs nothing: the member asks its question through the attempt's record. The workflow's `finally` steps
   // run there too, as the nested run's own, so they are judged as its steps are.

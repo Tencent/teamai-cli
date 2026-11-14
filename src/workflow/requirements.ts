@@ -83,6 +83,12 @@ export type Floor = Pick<Requirements, 'isolation' | 'network'>;
 export type InEffect = Omit<Requirements, 'strict'> & { floor?: Floor };
 
 /**
+ * One level `mergeRequirements` takes: requirements as written, or those already in effect, whose `floor` holds as a strict
+ * level's does. A nested run's `defaults.requires` is the second: what was in effect around the step it runs.
+ */
+export type RequirementsLevel = Requirements & Pick<InEffect, 'floor'>;
+
+/**
  * The names a strict `isolation: sandbox` keeps from every process teamai starts for the step, setup and the clone's
  * git included: what the step could push, publish or authenticate with. They win over any `requires.env`.
  */
@@ -298,7 +304,7 @@ export type LeaseSetup = z.infer<typeof LeaseSetupSchema>;
  * `host` holds once any level sets it. The
  * `isolation` and `network` of a strict level, or of a level's `floor`, join the floor, and a value below it is raised.
  */
-export function mergeRequirements(...levels: ReadonlyArray<(Requirements & Pick<InEffect, 'floor'>) | undefined>): InEffect {
+export function mergeRequirements(...levels: ReadonlyArray<RequirementsLevel | undefined>): InEffect {
   const given = levels.filter((level) => level !== undefined);
   const merged: InEffect = {};
   let floor: Floor = {};
