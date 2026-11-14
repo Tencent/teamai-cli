@@ -370,7 +370,7 @@ async function listGitHubMergedMRs(
         '--limit', String(limit),
         '--json', 'number,title,url,mergedAt',
       ],
-      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 8000 },
+      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 8000, windowsHide: true },
     );
 
     if (result.status === 0 && result.stdout.trim()) {

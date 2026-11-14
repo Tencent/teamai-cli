@@ -66,6 +66,7 @@ export function detectMachineId(platform: NodeJS.Platform = process.platform): s
 
 function readDarwinMachineId(): string {
   const out = execFileSync('ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice'], {
+    windowsHide: true,
     encoding: 'utf-8',
     timeout: 3000,
   });
@@ -80,7 +81,7 @@ function readWindowsMachineId(): string {
   const out = execFileSync(
     'reg',
     ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid'],
-    { encoding: 'utf-8', timeout: 3000 },
+    { windowsHide: true, encoding: 'utf-8', timeout: 3000 },
   );
 
   const match = out.match(/MachineGuid\s+REG_SZ\s+([^\s]+)/i);

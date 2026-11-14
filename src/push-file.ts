@@ -258,7 +258,7 @@ async function proposeFile({ source, isExecutable, destination, teamRoot, branch
     const env = { ...withoutGitRepositoryEnv(), GIT_INDEX_FILE: path.join(index, 'index') };
 
     const indexed = (args: string[]): Promise<string> => new Promise((resolve, reject) => {
-      execFile('git', args, { cwd: top, env }, (error, stdout) => (error ? reject(error) : resolve(stdout.trim())));
+      execFile('git', args, { windowsHide: true, cwd: top, env }, (error, stdout) => (error ? reject(error) : resolve(stdout.trim())));
     });
 
     await indexed(['read-tree', base]);

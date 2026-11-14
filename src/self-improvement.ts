@@ -121,7 +121,7 @@ async function commitsIn(cwd: string, commits: Iterable<string>): Promise<Set<st
   if (wanted.length === 0) return new Set();
 
   const answer = await new Promise<string>((resolve, reject) => {
-    const child = execFile('git', ['cat-file', '--batch-check=%(objecttype)'], { cwd, maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => (error ? reject(error) : resolve(stdout)));
+    const child = execFile('git', ['cat-file', '--batch-check=%(objecttype)'], { windowsHide: true, cwd, maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => (error ? reject(error) : resolve(stdout)));
     child.stdin?.end(wanted.map((commit) => `${commit}^{commit}\n`).join(''));
   }).catch(() => '');
 
@@ -131,7 +131,7 @@ async function commitsIn(cwd: string, commits: Iterable<string>): Promise<Set<st
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {
-  return (await run('git', args, { cwd, maxBuffer: 16 * 1024 * 1024 })).stdout.trim();
+  return (await run('git', args, { windowsHide: true, cwd, maxBuffer: 16 * 1024 * 1024 })).stdout.trim();
 }
 
 /** A regression task file of any suite, as a path in the team repo. */

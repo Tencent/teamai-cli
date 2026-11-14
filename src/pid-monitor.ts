@@ -74,6 +74,7 @@ function readProcessTable(): Map<number, ProcessEntry> | undefined {
 function queryPsProcessTable(): Map<number, ProcessEntry> | undefined {
     try {
         const out = execFileSync('ps', ['-A', '-o', 'pid=,ppid=,comm='], {
+            windowsHide: true,
             encoding: 'utf-8',
             timeout: 2000,
             maxBuffer: 16 * 1024 * 1024,

@@ -61,7 +61,7 @@ async function spawnBackground(
   await spawnPlainDetached(process.execPath, args, raw, cwd);
 }
 
-/** Hidden child (a separate process group on POSIX), awaiting the STDIN flush before exit. */
+/** Detached child, awaiting the STDIN flush before the caller may exit. */
 async function spawnPlainDetached(
   command: string,
   args: string[],
@@ -70,8 +70,11 @@ async function spawnPlainDetached(
 ): Promise<void> {
   try {
     const child = spawn(command, args, {
-      // DETACHED_PROCESS overrides CREATE_NO_WINDOW on Windows.
-      detached: process.platform !== 'win32',
+      // Not detached, a Windows child joins a kill-on-close job this process
+      // holds and ends with it. DETACHED_PROCESS also cancels CREATE_NO_WINDOW,
+      // so a console program the child starts may show a window: the child
+      // finishing comes first.
+      detached: true,
       windowsHide: true,
       stdio: ['pipe', 'ignore', 'ignore'],
       // A cwd that no longer exists (a deleted worktree) fails the spawn, so the
