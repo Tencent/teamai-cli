@@ -62,6 +62,14 @@ describe('driveByDefault', () => {
     expect(await driveByDefault(config)).toEqual({ kind: 'drive', driver: 'local' });
   });
 
+  it('drives here on a team driver whose runtimes are the built-in fleet and local, which no runtime resource defines', async () => {
+    const config = await workspace('', 'workflows: { driver: build-fleet }\n');
+    fs.mkdirSync(path.join(config.repo.localPath, 'drivers'));
+    fs.writeFileSync(path.join(config.repo.localPath, 'drivers', 'build-fleet.yaml'), 'schemaVersion: v1alpha1\nname: build-fleet\nruntimes:\n  - use: fleet\n    options: { pool: build }\n  - use: local\n');
+
+    expect(await driveByDefault(config)).toEqual({ kind: 'drive', driver: 'build-fleet' });
+  });
+
   it('awaits the driver the team sets, which this machine does not run', async () => {
     const config = await workspace('', 'workflows: { driver: acme-sandbox }\n');
 

@@ -88,8 +88,24 @@ export interface ExternalRuntime {
   readonly replaces?: string;
 }
 
-/** Where a runtime was found: the built-in `tools`, or an external one. */
-export type RuntimeSource = { readonly kind: 'builtin'; readonly name: 'tools' } | ExternalRuntime;
+/**
+ * The runtimes teamai builds in, by each name `use` gives them, which no runtime resource defines: `tools` (`local` is
+ * the name it had while it ran on the host beside the commands) and `fleet`, which offers each step to a pool's members.
+ */
+const BUILT_IN_RUNTIMES = { tools: 'tools', local: 'tools', fleet: 'fleet' } as const;
+
+/** A runtime teamai builds in, by the name it gives it. */
+export type BuiltInRuntime = (typeof BUILT_IN_RUNTIMES)[keyof typeof BUILT_IN_RUNTIMES];
+
+const isBuiltInName = (use: string): use is keyof typeof BUILT_IN_RUNTIMES => Object.hasOwn(BUILT_IN_RUNTIMES, use);
+
+/** The runtime teamai builds in that `use` names, or undefined for one a resource defines. */
+export function builtInRuntime(use: string): BuiltInRuntime | undefined {
+  return isBuiltInName(use) ? BUILT_IN_RUNTIMES[use] : undefined;
+}
+
+/** Where a runtime was found: one teamai builds in, or an external one. */
+export type RuntimeSource = { readonly kind: 'builtin'; readonly name: BuiltInRuntime } | ExternalRuntime;
 
 /** The runtime a definition declares, or why its marker or entry cannot run, which fails the run. */
 type DefinitionRead = { readonly kind: 'found'; readonly source: ExternalRuntime } | { readonly kind: 'unusable'; readonly failure: WorkflowFailure };
@@ -279,8 +295,9 @@ function refusalOf(driver: ResolvedDriver, use: string, found: Extract<LayerFind
 
 /** The runtime `use` names for `driver`, or why there is none. */
 export async function locateRuntime(driver: ResolvedDriver, use: string): Promise<{ ok: true; source: RuntimeSource } | { ok: false; failure: WorkflowFailure }> {
-  // `local` is the name `tools` had while it ran on the host beside the commands.
-  if (use === 'tools' || use === 'local') return { ok: true, source: { kind: 'builtin', name: 'tools' } };
+  const builtIn = builtInRuntime(use);
+
+  if (builtIn !== undefined) return { ok: true, source: { kind: 'builtin', name: builtIn } };
 
   if (use === 'skill') {
     return { ok: false, failure: { code: 'runtime_not_found', message: `Driver "${driver.name}" uses runtime "${use}", which this version of teamai does not run from a definition. Use tools, or a runtime of your own or of the team.` } };

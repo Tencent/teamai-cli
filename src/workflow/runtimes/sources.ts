@@ -5,7 +5,7 @@ import { type LocalConfig } from '../../types.js';
 import type { DriverCan } from '../requirements.js';
 import type { WorkflowFailure } from '../types.js';
 import { resolveDriver, SANDBOX_RUNTIME, type DriverDefinition, type ResolvedDriver } from './definitions.js';
-import { acceptRuntime, fixOf, isRuntimeAccepted, locateRuntime, pinRuntime } from './locate.js';
+import { acceptRuntime, builtInRuntime, fixOf, isRuntimeAccepted, locateRuntime, pinRuntime } from './locate.js';
 import { DEFAULT_PROFILE, locateSandboxProfile, pinSandboxProfile, sandboxOptions, type SandboxProfile } from './sandbox-profiles.js';
 import { LOCAL_DRIVER } from '../driver-name.js';
 import { fleetStepRuntime, shadowedFleetEntries, type OpenWake } from '../fleet/owner.js';
@@ -338,7 +338,7 @@ async function openRuntime(driver: ResolvedDriver, { use, options, sandbox }: { 
 
   if (!split.ok) return { ok: false, failure: badOption(driver, use, split.key, split.message) };
 
-  if (use === 'fleet') return fleetRuntime(driver, split, { mode, canAsk, purpose, checkout });
+  if (builtInRuntime(use) === 'fleet') return fleetRuntime(driver, split, { mode, canAsk, purpose, checkout });
   // The sandbox runtime takes its provider's options from the sandbox profile the entry names, checked before its
   // program is found: a misplaced option is the member's to fix wherever the program is. A stop of what an attempt
   // started on options given inline, by a teamai that took them, reaches its sandbox on those options. A stop needs no
