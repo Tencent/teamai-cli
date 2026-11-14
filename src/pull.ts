@@ -95,7 +95,7 @@ import { mirrorLearnings } from './utils/learnings-mirror.js';
 import { withTimeout } from './utils/async.js';
 import { runDeclaredPostPull } from './post-pull.js';
 import { runTeamScript } from './team-scripts.js';
-import { describeWorkspaceChildren, readWorkspaceChildren, syncWorkspaceInstructionExcludes } from './workspace-children.js';
+import { describeWorkspaceChildren, ownedInstructionExcludesOf, readWorkspaceChildren, syncWorkspaceInstructionExcludes } from './workspace-children.js';
 import {
   applyDeliveredGitExclude, createDeliveryRecorder, deliveredUnion, describeForeign, describeUnreadableGitExcludeSetting,
   type DeliveryRecorder, type GitExcludePaths, type ListedCheckout, type WriterId,
@@ -1473,7 +1473,7 @@ async function excludeWorkspaceInstructions(localConfig: LocalConfig, options: G
 
     if (!record) return;
     // A folder this pull skips, such as that of a tool the member stopped syncing, keeps its entries on the record.
-    const previous = record.claudeMdExcludes ?? {};
+    const previous = ownedInstructionExcludesOf(record.claudeMdExcludes, teamConfig ? scopedToolPaths(teamConfig, localConfig).claude?.settings : undefined);
     const written = await syncWorkspaceInstructionExcludes({ projectRoot, folders, previous, dryRun: options.dryRun });
 
     if (JSON.stringify(written) === JSON.stringify(previous)) return;

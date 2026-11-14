@@ -1358,12 +1358,10 @@ export const StateSchema = z.object({
     /**
      * The `claudeMdExcludes` entries teamai wrote for the workspaces above this checkout (#913), by the folder of the
      * `settings.local.json` that holds them (`.claude`, a Claude instance's `.acme-claude`). An older release kept one
-     * list, which it wrote only into `.claude/settings.local.json`.
+     * list, written beside the configured Claude settings file, which only the team config places
+     * (`ownedInstructionExcludesOf`).
      */
-    claudeMdExcludes: z.preprocess(
-      (value) => (Array.isArray(value) ? { '.claude': value } : value),
-      z.record(z.string(), z.array(z.string())),
-    ).optional(),
+    claudeMdExcludes: z.union([z.array(z.string()), z.record(z.string(), z.array(z.string()))]).optional(),
     /**
      * The `permissions.additionalDirectories` entries teamai added to a tool's user settings so the tool reads the
      * rule and agent folders this scope delivers (#1787), by settings file.

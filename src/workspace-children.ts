@@ -26,7 +26,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { findProject, loadProjectsManifest, resolveActiveLearningsNamespaces } from './projects.js';
-import type { JsonValue, LocalConfig } from './types.js';
+import type { JsonValue, LocalConfig, State } from './types.js';
 import { readFileSafe, readJsonObject, writeJson } from './utils/fs.js';
 import { remotesMatch } from './utils/git.js';
 import { log } from './utils/logger.js';
@@ -357,6 +357,16 @@ export async function findAncestorWorkspaces(childRoot: string): Promise<string[
 
 /** The `claudeMdExcludes` entries teamai owns in a checkout, by the folder of the settings file that holds them. */
 export type OwnedInstructionExcludes = Readonly<Record<string, readonly string[]>>;
+
+/**
+ * The entries a checkout record owns, by folder. A list an older release kept is the folder's of `claudeSettings`, the
+ * configured Claude settings path it wrote beside, `.claude` when there is none.
+ */
+export function ownedInstructionExcludesOf(recorded: NonNullable<State['lastPullByWorkspace']>[string]['claudeMdExcludes'], claudeSettings: string | undefined): OwnedInstructionExcludes {
+  if (recorded === undefined) return {};
+
+  return Array.isArray(recorded) ? { [path.posix.dirname(claudeSettings ?? '.claude/settings.json')]: recorded } : recorded;
+}
 
 /**
  * Keep a child's Claude Code settings, and each Claude instance's, from loading

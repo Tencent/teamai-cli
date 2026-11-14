@@ -3898,7 +3898,7 @@ async function removeConfirmed(
     : null;
 
   // The workspace instruction excludes a pull wrote (#913), before the records that own them go.
-  const excludesLeft = plan.includeShared ? await withdrawWorkspaceInstructionExcludes(localConfig) : [];
+  const excludesLeft = plan.includeShared ? await withdrawWorkspaceInstructionExcludes(teamConfig, localConfig) : [];
   // The rule folder grants a pull added to a tool's user settings (#1787), for every tool or the one uninstalled.
   const grantsLeft = plan.includeShared || agentKey ? await withdrawRuleFolderGrants(localConfig, teamConfig, plan.includeShared ? null : agentKey) : [];
 
@@ -3986,13 +3986,15 @@ async function withdrawRuleFolderGrants(localConfig: LocalConfig, teamConfig: Te
  * Claude settings for the workspaces above it (#913) back out, leaving the
  * member's own. The settings files it could not edit, whose records then stay.
  */
-async function withdrawWorkspaceInstructionExcludes(localConfig: LocalConfig): Promise<string[]> {
+async function withdrawWorkspaceInstructionExcludes(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string[]> {
   if (localConfig.scope !== 'project') return [];
-  const { syncWorkspaceInstructionExcludes } = await import('./workspace-children.js');
+  const { ownedInstructionExcludesOf, syncWorkspaceInstructionExcludes } = await import('./workspace-children.js');
   const left: string[] = [];
+  const claudeSettings = scopedToolPaths(teamConfig, localConfig).claude?.settings;
 
-  for (const { root, claudeMdExcludes } of Object.values((await loadStateForScope(localConfig)).lastPullByWorkspace ?? {})) {
-    if (!root || !claudeMdExcludes) continue;
+  for (const { root, claudeMdExcludes: recorded } of Object.values((await loadStateForScope(localConfig)).lastPullByWorkspace ?? {})) {
+    if (!root || !recorded) continue;
+    const claudeMdExcludes = ownedInstructionExcludesOf(recorded, claudeSettings);
     // Every folder the record names, a tool's the member stopped syncing included.
     const folders = Object.keys(claudeMdExcludes);
     const settingsFiles = folders.map((folder) => path.join(root, folder, 'settings.local.json'));
