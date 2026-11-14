@@ -16,8 +16,18 @@ export const HOME_VARIABLES = new Set([
   'PI_CONFIG_DIR', 'PI_PROFILE', 'QODERCN_CLI_HOME', 'QODERCN_CONFIG_DIR', 'QODER_CLI_HOME', 'QODER_CONFIG_DIR', 'XDG_CONFIG_HOME',
 ]);
 
-/** The fields that hold a home variable's name: a relocatable spec's, a launch profile's, a descriptor home's. */
-const VARIABLE_FIELDS = new Set(['envVar', 'homeEnv', 'rootVariable']);
+/** The fields that hold a home variable's name: a relocatable spec's, a launch profile's, a descriptor home's, an instance home's. */
+const VARIABLE_FIELDS = new Set(['envVar', 'homeEnv', 'rootVariable', 'env']);
+
+/** The calls that answer with a home variable's name. */
+const VARIABLE_CALLS = new Set(['homeVariableOf', 'deliveredHomeVariableOf']);
+
+/**
+ * Files that spell a home variable as data, never to set it: the descriptors and launch profiles that declare each
+ * tool's, the registry and `RELOCATABLE_TOOLS` that list them, and `tool-home.ts`, which reads them and names the one
+ * that moved a home. A write there is still caught by its form.
+ */
+const NAMING_FILES = /^(packages\/tool-[a-z-]+\/src\/(definitions|launch)\.ts|src\/(tool-registry|tool-home|types)\.ts)$/;
 
 /**
  * The name `node`, a member's property, spells when it is not computed.
@@ -41,14 +51,14 @@ function namesHomeVariable(node) {
 
   if (node.type === 'ChainExpression') return namesHomeVariable(node.expression);
 
-  if (node.type === 'CallExpression') return node.callee.type === 'Identifier' && node.callee.name === 'homeVariableOf';
+  if (node.type === 'TSNonNullExpression') return namesHomeVariable(node.expression);
+
+  if (node.type === 'CallExpression') return node.callee.type === 'Identifier' && VARIABLE_CALLS.has(node.callee.name);
 
   if (node.type !== 'MemberExpression' || node.computed) return false;
   const field = propertyName(node.property);
 
-  if (field !== undefined && VARIABLE_FIELDS.has(field)) return true;
-
-  return field === 'env' && node.object.type === 'MemberExpression' && !node.object.computed && propertyName(node.object.property) === 'home';
+  return field !== undefined && VARIABLE_FIELDS.has(field);
 }
 
 /**
@@ -76,8 +86,22 @@ export default defineRule({
 
     if (!inScope || isOneOf(context, [OWNER])) return {};
     const message = 'Take a tool\'s home variables from toolCommandEnv in src/tool-launch/tools.ts, the one place that decides which variables start a tool\'s command in which home, instead of setting one here.';
+    const namingFile = NAMING_FILES.test(repositoryPath(context).relative);
 
     return {
+      // A spelling outside the files that name these variables: whatever form writes it (a tuple loop, Object.assign,
+      // Reflect.set) starts from this literal. A computed member's key is a read, or a write the assignment check reports.
+      Literal(node) {
+        const value = stringLiteralValue(node);
+
+        if (namingFile || value === undefined || !HOME_VARIABLES.has(value)) return;
+        const { parent } = node;
+
+        if ((parent?.type === 'Property' && parent.key === node) || parent?.type === 'TSLiteralType') return;
+
+        if (parent?.type === 'MemberExpression' && parent.computed && parent.property === node) return;
+        context.report({ node, message: `${value} is spelled here, where nothing should set it: ${message} A read of the variable takes \`env.${value}\`.` });
+      },
       Property(node) {
         if (node.parent.type === 'ObjectExpression' && isHomeVariableKey(node.key, node.computed)) context.report({ node: node.key, message });
       },

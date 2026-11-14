@@ -12,6 +12,11 @@ rule.invalid('rejects a key from homeVariableOf', 'const env = { [homeVariableOf
 rule.invalid('rejects an assignment to a home variable', 'env.OPENCODE_CONFIG_DIR = dir;');
 rule.invalid('rejects an assignment to process.env', 'process.env.CODEX_HOME = dir;');
 rule.invalid('rejects a computed assignment', 'env[instance.home.env] = dir;');
+rule.invalid('rejects a home variable set from a tuple loop', `for (const [key, dir] of [['XDG_CONFIG_HOME', 'xdg-config']] as const) env[key] = dir;`);
+rule.invalid('rejects a key from deliveredHomeVariableOf', 'env[deliveredHomeVariableOf(tool)!] = dir;');
+rule.invalid('rejects a key from an instance home held in a local', 'env[own.env] = dir;');
+rule.invalid('rejects a home variable set through Object.assign', `Object.assign(env, Object.fromEntries([['CLAUDE_CONFIG_DIR', dir]]));`);
+rule.invalid('rejects a home variable set through Reflect.set', `Reflect.set(env, 'CODEX_HOME', dir);`);
 rule.invalid('rejects it in tool packages', 'const env = { CODEX_HOME: dir };', undefined, { filename: 'packages/tool-core/src/formats/codex.ts' });
 rule.invalid('rejects it in scripts', 'const env = { CODEX_HOME: dir };', undefined, { filename: 'scripts/verify/world.ts' });
 rule.valid('allows a script\'s test', 'const env = { CODEX_HOME: dir };', { filename: 'scripts/check-docs.test.ts' });
@@ -23,4 +28,8 @@ rule.valid('allows test support', 'const env = { CODEX_HOME: dir };', { filename
 rule.valid('allows reading a home variable', 'const home = env.CODEX_HOME || fallback; const moved = env[spec.envVar];');
 rule.valid('allows removing a home variable', 'delete env.CODEX_HOME; const { CODEX_HOME, ...rest } = env;');
 rule.valid('allows other variables', `const env = { ...process.env, RUST_LOG: 'error', [name]: dir }; env.PATH = dir;`);
+rule.valid('allows a file that names the variables as data', `export const moves = (tool: string) => tool === 'qoder' ? ['QODER_CONFIG_DIR', 'QODER_CLI_HOME'] : [];`, { filename: 'src/tool-registry.ts' });
+rule.valid('allows a launch profile', `export const launch = { confined: { env: ['PI_CODING_AGENT_DIR'], homeEnv: 'PI_CODING_AGENT_DIR' } };`, { filename: 'packages/tool-pi/src/launch.ts' });
+rule.valid('allows a type that names a variable', `type Profile = 'OMP_PROFILE' | 'PI_PROFILE';`);
+rule.valid('allows reading a home variable by a literal key', `const home = env['CODEX_HOME'];`);
 rule.valid('allows the env toolCommandEnv returns', `const env = { ...process.env, ...toolCommandEnv(name, { kind: 'at', dir }) };`);

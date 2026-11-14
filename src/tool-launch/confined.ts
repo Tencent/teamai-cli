@@ -261,6 +261,7 @@ async function openCodeSettings(env: NodeJS.ProcessEnv, tmp: string): Promise<st
 
   const auth = await optionalFile(path.join(env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'opencode', 'auth.json'));
 
+  // oxlint-disable-next-line teamai/tool-home-env -- the judge's throwaway XDG homes, as OPENCODE_CONFIG_DIR below; OpenCode's launch profile names no homeEnv (packages/tool-opencode/src/launch.ts), so toolCommandEnv gives it no variable
   for (const [key, dir] of [['XDG_DATA_HOME', 'data'], ['XDG_CACHE_HOME', 'cache'], ['XDG_STATE_HOME', 'state'], ['XDG_CONFIG_HOME', 'xdg-config']] as const) {
     env[key] = path.join(tmp, dir);
     await fs.mkdir(path.join(tmp, dir), { recursive: true });

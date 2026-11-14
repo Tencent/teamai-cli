@@ -409,6 +409,7 @@ function buildOhMyPiPiHomeCheck(localConfig: LocalConfig, teamConfig: TeamaiConf
     check: async () => false,
     fix: `PI_CODING_AGENT_DIR is ${piHome}; Oh My Pi also reads that directory for its default profile, but it belongs to Pi. `
       + 'teamai keeps Oh My Pi files under its own OMP home to avoid overwriting Pi files. '
+      // oxlint-disable-next-line teamai/tool-home-env -- names the variable the member sets, in a fix message
       + `Set ${selector ?? 'OMP_PROFILE'} to a named profile, or run \`teamai uninstall --agent omp\` to stop syncing Oh My Pi in this install.`,
   }];
 }
