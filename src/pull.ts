@@ -38,7 +38,7 @@ import { TeamSkillSource } from './resources/team-skill-source.js';
 import { installOf, locate, locatingOnce, ownOf, SHARED_AGENT_SKILLS_PATH, toolPathUnder, writable, writesOf, type Install } from './locate.js';
 import { isWithin } from './utils/agent-path.js';
 import { describeToolHomeChange, recordToolHomes } from './tool-home-record.js';
-import { describeInvalidToolHomes, realHost, toolHomeOf } from './tool-home.js';
+import { describeInvalidToolHomes, realHost } from './tool-home.js';
 import { baseToolOf, folderReachOf } from './tool-registry.js';
 import { askingOnce } from './tool-instances.js';
 import { placesOf, placesRecordOf, placesUnmoved, recordPlaces, type PlacesRecord, type SessionToolHomes } from './resources/places.js';
@@ -1521,8 +1521,7 @@ async function grantDeliveredFolders(localConfig: LocalConfig, options: GlobalOp
       const settingsFiles = delivers
         ? receiving
           .filter((tool) => !isAgentExcluded(localConfig, tool) && folderReachOf(tool).reach === 'grant')
-          .flatMap((tool) => toolHomeOf(tool)?.dir ?? [])
-          .map((home) => path.join(home, 'settings.json'))
+          .flatMap((tool) => RuleFolders.grantSettingsFile({ tool, teamConfig, localConfig }) ?? [])
         : [];
 
       return { dir, settingsFiles };

@@ -81,7 +81,7 @@ import {
   skillsGuardBase,
 } from './builtin-skills.js';
 import { cleanupOf, hookAdapterDirIn, hookSettingsFile, installOf, isInstalledFor, locate, openclawWorkspaceDir, ownOf, SHARED_AGENT_SKILLS_PATH, toolPathUnder, workspaceHooksOf, writesOf, type Location } from './locate.js';
-import { toolHome, toolHomeOf, toolHomesAcrossProfiles } from './tool-home.js';
+import { toolHome, toolHomesAcrossProfiles } from './tool-home.js';
 import { baseDescriptorOf, channelsOf, hookSyntaxOf, toolOf } from './tool-registry.js';
 import { isCodexTool } from './utils/tool-names.js';
 import { allowsSkillDirectory, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, readsCodexSharedSkills, readTeamSkills, skillOrigin } from './resources/skills.js';
@@ -3882,7 +3882,7 @@ async function removeConfirmed(
   // The workspace instruction excludes a pull wrote (#913), before the records that own them go.
   const excludesLeft = plan.includeShared ? await withdrawWorkspaceInstructionExcludes(localConfig) : [];
   // The rule folder grants a pull added to a tool's user settings (#1787), for every tool or the one uninstalled.
-  const grantsLeft = plan.includeShared || agentKey ? await withdrawRuleFolderGrants(localConfig, plan.includeShared ? null : agentKey) : [];
+  const grantsLeft = plan.includeShared || agentKey ? await withdrawRuleFolderGrants(localConfig, teamConfig, plan.includeShared ? null : agentKey) : [];
 
   const { pendingOpencode, hooksLeft, blocksLeft, filesLeft } = await executeRemoval(plan, heldMcp, {
     hooks: dispatchLeft ? [{ what: `the Codex team-hook dispatchers in ${dispatchLeft}`, tool: 'codex' }] : [],
@@ -3941,9 +3941,8 @@ async function removeConfirmed(
  * rule folders it delivers (#1787) back out, leaving the member's own: every tool's, or with `tool` only its settings
  * file. The settings files it could not edit.
  */
-async function withdrawRuleFolderGrants(localConfig: LocalConfig, tool: string | null | undefined): Promise<string[]> {
-  const home = tool ? toolHomeOf(tool)?.dir : undefined;
-  const only = home === undefined ? null : path.join(home, 'settings.json');
+async function withdrawRuleFolderGrants(localConfig: LocalConfig, teamConfig: TeamaiConfig, tool: string | null | undefined): Promise<string[]> {
+  const only = tool ? RuleFolders.grantSettingsFile({ tool, teamConfig, localConfig }) : null;
 
   if (tool && only === null) return [];
   const left: string[] = [];

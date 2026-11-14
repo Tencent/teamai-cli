@@ -125,6 +125,24 @@ describe('the Claude Code grant of the rule folders a pull delivers (#1787)', ()
     expect(await fse.readJson(settingsFile())).toMatchObject({ permissions: { additionalDirectories: ['/member/dir'] } });
   });
 
+  it('grants Claude Code the folders in the settings of the root its variable moved, and uninstall takes them back there', async () => {
+    const root = path.join(homeDir, '.claude-work');
+    await fse.outputJson(path.join(root, 'settings.json'), { permissions: { additionalDirectories: ['/member/dir'] } });
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue({
+      repo: { localPath: repoPath, remote: 'https://example.invalid/x/team.git' }, username: 'u', updatePolicy: 'auto', additionalRoles: [], scope: 'user',
+      enabledAgents: ['claude'], toolRoots: { claude: '~/.claude-work' },
+    } as LocalConfig);
+
+    await pull({});
+    const granted = (await fse.readJson(path.join(root, 'settings.json'))).permissions.additionalDirectories;
+    vi.mocked(autoDetectInit).mockResolvedValue({ localConfig: await loadLocalConfigForScope('user'), teamConfig: await loadTeamConfig(repoPath) } as never);
+    await uninstall({ agent: 'claude', force: true });
+
+    expect(granted).toEqual(['/member/dir', path.join(homeDir, '.teamai', 'rules')]);
+    expect(await fse.readJson(path.join(root, 'settings.json'))).toMatchObject({ permissions: { additionalDirectories: ['/member/dir'] } });
+    expect(await fse.readJson(settingsFile())).toEqual({ permissions: { additionalDirectories: ['/member/dir'] } });
+  });
+
   it('grants a Claude Code instance the folders in the settings of its own home, where its variable moves it, and its own uninstall takes them back there only', async () => {
     const moved = path.join(tmpDir, 'acme');
     vi.stubEnv('ACME_CLAUDE_CONFIG_DIR', moved);
