@@ -9,10 +9,12 @@ import * as reportsBranch from '../utils/reports-branch.js';
 import { updateReports } from '../utils/reports-branch.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { claimRun, publishRun, resumeRun } from '../workflow/handoff.js';
+import { WorkflowFolder } from '../workflow/folder.js';
+import { cancelRun } from '../workflow/run-controls.js';
 import { pendingRecords, queueRunRecord } from '../workflow/records.js';
 import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import type { StepPass, StepState } from '../workflow/step-state.js';
-import { readRun, updateRun } from '../workflow/store.js';
+import { readRun, runFilePath, updateRun } from '../workflow/store.js';
 import type { RunState } from '../workflow/types.js';
 import { knownSecrets } from '../env-resolution.js';
 import { BUILD, dirs, editRun, git, originFile, originRef, receiveHook, reportsHead, runStep, settle, SHIP, start, startIn, team, work } from './helpers/workflow-handoff-fixture.js';
@@ -127,6 +129,48 @@ describe('workflow handoff through teamai-reports', () => {
     const kept = await readRun(bob.config, runId);
     expect(typeof kept === 'object' && kept.steps.find((step) => step.id === 'one')?.status).toBe('leased');
   });
+
+  // Two members publish and recover through real git, which takes longer on Windows and loaded runners.
+  it.each((['first claim', 'recovery'] as const).flatMap((stage) => (['lease', 'cancel', 'publish'] as const).map((operation) => ({ stage, operation }))))(
+    'keeps a concurrent $operation while a $stage was pinning the workflow folder', { timeout: 120_000 }, async ({ stage, operation }) => {
+      const acme = team({}, { 'workflows/build/WORKFLOW.yaml': BUILD, 'workflows/build/context.md': 'Workflow context.' });
+      const alice = await acme.member('alice');
+      const bob = await acme.member('bob');
+      const runId = await start(alice);
+      expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true });
+      if (stage === 'recovery') {
+        expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true });
+        fs.rmSync(runFilePath(bob.config, runId));
+      }
+
+      let entered!: () => void;
+      let release!: () => void;
+      const pinning = new Promise<void>((resolve) => { entered = resolve; });
+      const resume = new Promise<void>((resolve) => { release = resolve; });
+      const pin = WorkflowFolder.pin;
+      vi.spyOn(WorkflowFolder, 'pin').mockImplementation(pin).mockImplementationOnce(async () => { entered(); await resume; });
+      const recovering = claimRun(bob.config, runId, { checkout: bob.checkout });
+
+      try {
+        await pinning;
+        expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true });
+        expect(await runStep(bob, runId)).toBe('one');
+        expect(await leaseNext(bob.config, runId, bob.driver)).toMatchObject({ data: { lease: { step: 'two' } } });
+        if (operation === 'cancel') expect(await cancelRun(bob.config, runId, {})).toMatchObject({ data: { run: { status: 'cancelled' } } });
+        if (operation === 'publish') expect(await publishRun(bob.config, runId, { env: {}, checkout: bob.checkout })).toMatchObject({ ok: true });
+        const advanced = await readRun(bob.config, runId);
+        release();
+        const recovered = await recovering;
+        expect(await readRun(bob.config, runId)).toEqual(advanced);
+        expect(recovered).toMatchObject(operation === 'lease'
+          ? { ok: true, value: { ownership: 'already_owned' } }
+          : { ok: false, error: { code: 'state_conflict' } });
+      } finally {
+        release();
+        await recovering;
+      }
+    },
+  );
 
   it('resumes a run this machine never published without reaching teamai-reports', async () => {
     const acme = team();
