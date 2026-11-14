@@ -5123,13 +5123,13 @@ async function reconcileCoAuthorAllScopes(
     if (projectConfig && recorder) {
       try {
         const teamConfig = await loadTeamConfig(projectConfig.repo.localPath);
-        const { coAuthorLocalSettingsFile } = await import('./coauthor-reconcile.js');
+        const { coAuthorLocalSettingsFiles } = await import('./coauthor-reconcile.js');
 
-        const local = teamConfig
-          ? await coAuthorLocalSettingsFile(teamConfig, projectConfig, (await loadStateForScope(projectConfig)).coAuthorManaged ?? {})
-          : undefined;
+        const locals = teamConfig
+          ? await coAuthorLocalSettingsFiles(teamConfig, projectConfig, (await loadStateForScope(projectConfig)).coAuthorManaged ?? {})
+          : [];
 
-        if (local?.kind === 'holds') recorder.report('coauthor', local.file);
+        for (const local of locals) if (local.kind === 'holds') recorder.report('coauthor', local.file);
       } catch (e) {
         log.debug(`[dry-run] co-author preview skipped: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -5152,18 +5152,19 @@ async function reconcileCoAuthorAllScopes(
         continue;
       }
 
-      const { coAuthorLocalSettingsFile, reconcileCoAuthorForConfig } = await import('./coauthor-reconcile.js');
+      const { coAuthorLocalSettingsFiles, reconcileCoAuthorForConfig } = await import('./coauthor-reconcile.js');
       const state = await loadStateForScope(localConfig);
       const { changes, managed } = await reconcileCoAuthorForConfig(teamConfig, localConfig, state);
 
       if (scopeRecorder) {
         // Read back from the file: the "already applied" skip does not read it.
-        const local = await coAuthorLocalSettingsFile(teamConfig, localConfig, managed);
+        for (const local of await coAuthorLocalSettingsFiles(teamConfig, localConfig, managed)) {
+          if (local.kind === 'holds') scopeRecorder.report('coauthor', local.file);
 
-        if (local.kind === 'holds') scopeRecorder.report('coauthor', local.file);
+          // One that does not parse may still hold it: its line stays while it is on disk.
+          if (local.kind === 'unreadable') scopeRecorder.failed('coauthor');
+        }
 
-        // One that does not parse may still hold it: its line stays while it is on disk.
-        if (local.kind === 'unreadable') scopeRecorder.failed('coauthor');
         scopeRecorder.succeeded('coauthor');
       }
 

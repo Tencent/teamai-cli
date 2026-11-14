@@ -155,10 +155,11 @@ async function resolveTargets(
       }
 
       // Project scope: the choice is the member's, and the project's
-      // settings.json is often tracked (#993). Claude Code has a personal layer
-      // beside it, settings.local.json (as team hooks use, #955); the rest of
-      // the family has none we can rely on, so they are user-scope only here.
-      if (tool !== 'claude') {
+      // settings.json is often tracked (#993). Claude Code, and an instance of
+      // it, has a personal layer beside it, settings.local.json (as team hooks
+      // use, #955); the rest of the family has none we can rely on, so they are
+      // user-scope only here.
+      if (baseToolOf(tool) !== 'claude') {
         log.debug(`[coauthor] Skipping ${tool}: no member-local project settings file`);
         continue;
       }
@@ -488,29 +489,39 @@ async function applyCursor(file: string, enabled: boolean): Promise<boolean> {
 }
 
 /**
- * The project's `.claude/settings.local.json` and teamai's entry there (#915).
- * `holds`: the record says teamai wrote "strip" (`managed` false) and the file
- * still holds an empty trailer. teamai owns `attribution` only then; the file
- * may hold anything else too. `unreadable`: the record says so but the file
- * does not parse, so whether the entry is still there is unknown.
+ * The project's `.claude/settings.local.json`, and the one beside each Claude
+ * instance's settings, that hold teamai's entry (#915). `holds`: the record says
+ * teamai wrote "strip" (`managed` false) and the file still holds an empty
+ * trailer. teamai owns `attribution` only then; the file may hold anything else
+ * too. `unreadable`: the record says so but the file does not parse, so whether
+ * the entry is still there is unknown.
  */
-export async function coAuthorLocalSettingsFile(
+export async function coAuthorLocalSettingsFiles(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
   managed: Readonly<Record<string, boolean>>,
-): Promise<{ kind: 'holds' | 'unreadable'; file: string } | { kind: 'none' }> {
-  const settings = scopedToolPaths(teamConfig, localConfig).claude?.settings;
+): Promise<Array<{ kind: 'holds' | 'unreadable'; file: string }>> {
+  if (localConfig.scope !== 'project') return [];
+  const found: Array<{ kind: 'holds' | 'unreadable'; file: string }> = [];
 
-  if (localConfig.scope !== 'project' || !settings) return { kind: 'none' };
-  const file = path.join(resolveBaseDir(localConfig), path.dirname(settings), 'settings.local.json');
+  for (const [tool, paths] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    if (baseToolOf(tool) !== 'claude' || !paths?.settings) continue;
+    const file = path.join(resolveBaseDir(localConfig), path.dirname(paths.settings), 'settings.local.json');
 
-  if (managed[file] ?? true) return { kind: 'none' };
-  const read = await readJsonObject(file);
+    if (managed[file] ?? true) continue;
+    const read = await readJsonObject(file);
 
-  if (read.kind === 'invalid') return { kind: 'unreadable', file };
-  const attribution = read.kind === 'ok' ? read.value.attribution : undefined;
+    if (read.kind === 'invalid') {
+      found.push({ kind: 'unreadable', file });
+      continue;
+    }
 
-  return EmptyTrailerSchema.safeParse(attribution).success ? { kind: 'holds', file } : { kind: 'none' };
+    const attribution = read.kind === 'ok' ? read.value.attribution : undefined;
+
+    if (EmptyTrailerSchema.safeParse(attribution).success) found.push({ kind: 'holds', file });
+  }
+
+  return found;
 }
 
 // ─── Main entry ──────────────────────────────────────────────
