@@ -117,8 +117,9 @@ function parseToolInstance({ file, text, source, location }: { file: string; tex
 
   const homeVariable = RELOCATABLE_TOOLS[base]?.envVar;
 
-  if (fields.name !== base && homeVariable !== undefined && fields.home?.env === homeVariable) {
-    return refused(file, `home.env: ${homeVariable} is the variable ${base} reads its home from, and teamai sets it to this instance's home when it starts it; leave env out`);
+  // Windows reads a variable's name in any case, and a team file reaches every member's platform.
+  if (fields.name !== base && homeVariable !== undefined && fields.home?.env?.toUpperCase() === homeVariable.toUpperCase()) {
+    return refused(file, `home.env: ${fields.home.env} names ${homeVariable}, the variable ${base} reads its home from in any letter case, and teamai sets it to this instance's home when it starts it; leave env out`);
   }
 
   if (!isToolId(fields.name) && isSessionPlatform(fields.name)) return refused(file, `"${fields.name}" is the name of a session platform teamai ships`);

@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { LocalConfig } from '../types.js';
 
 /**
@@ -120,14 +120,20 @@ describe('team tool instances', () => {
   });
 
   it.each([
-    ['claude', 'CLAUDE_CONFIG_DIR'],
-    ['codex', 'CODEX_HOME'],
-  ])('refuses an instance of %s whose home.env is %s, which teamai sets to the instance home itself', async (base, variable) => {
+    ['claude', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CONFIG_DIR', process.platform],
+    ['codex', 'CODEX_HOME', 'CODEX_HOME', process.platform],
+    // Windows reads a variable's name in any case, and a team file reaches every member's platform.
+    ['codex', 'Codex_Home', 'CODEX_HOME', 'win32'],
+    ['codex', 'Codex_Home', 'CODEX_HOME', 'linux'],
+  ] as const)('refuses an instance of %s whose home.env is %s, which teamai sets to the instance home itself (%s, on %s)', async (base, spelled, variable, platform) => {
+    const original = process.platform;
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+    onTestFinished(() => { Object.defineProperty(process, 'platform', { value: original, configurable: true }); });
     const stem = `acme-${base}`;
-    const text = ACME_CLAUDE.replaceAll('claude', base).replace(/env: \w+/, `env: ${variable}`);
+    const text = ACME_CLAUDE.replaceAll('claude', base).replace(/env: \w+/, `env: ${spelled}`);
     const { registry, errors } = await load(teamRepo({ [`tools/${stem}.yaml`]: text }));
 
-    expect(errors).toEqual([expect.stringContaining(`${path.join('tools', `${stem}.yaml`)} is not valid: home.env: ${variable} is the variable ${base} reads its home from, and teamai sets it to this instance's home when it starts it; leave env out`)]);
+    expect(errors).toEqual([expect.stringContaining(`${path.join('tools', `${stem}.yaml`)} is not valid: home.env: ${spelled} names ${variable}, the variable ${base} reads its home from in any letter case, and teamai sets it to this instance's home when it starts it; leave env out`)]);
     expect(registry.toolOf(stem)).toBeUndefined();
   });
 
