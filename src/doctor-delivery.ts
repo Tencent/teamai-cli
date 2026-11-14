@@ -2739,6 +2739,18 @@ export async function buildDocsCheck(ctx: DoctorContext): Promise<Check[]> {
   const { describeKeptEntry } = await import('./resources/delivered-copies.js');
   const memberLines = await Promise.all(members.map((file) => describeKeptEntry(path.join(dest, file), `docs/${file}`)));
 
+  // A kept entry can also be a directory or a link blocking delivery, not an edit to propose.
+  const canPropose = localConfig.repo.kind !== 'http' && (await Promise.all(
+    members.filter((file) => teamFiles.includes(file) && localFiles.includes(file)).map(async (file) => {
+      const [local, source] = await Promise.all([
+        fs.promises.lstat(path.join(dest, file)).catch(() => null),
+        fs.promises.lstat(path.join(desired.sourceDir, file)).catch(() => null),
+      ]);
+
+      return local?.isFile() && source?.isFile();
+    }),
+  )).some(Boolean);
+
   return [{
     name: 'Team docs delivered',
     source: 'local',
@@ -2750,6 +2762,9 @@ export async function buildDocsCheck(ctx: DoctorContext): Promise<Check[]> {
         ? ['Run `teamai pull --force` to restore the docs mirror; a plain pull skips an already-synced revision.']
         : []),
       ...memberLines,
+      ...(canPropose
+        ? ['Plain `teamai push` does not scan this mirror. To propose a kept edit to a delivered file, use `teamai push --file "<mirror-file>" --path "docs/<relative-path>"` with the mirror file and its team path shown above.']
+        : []),
     ].join(' '),
   }];
 }
