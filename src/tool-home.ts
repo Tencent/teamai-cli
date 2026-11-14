@@ -286,6 +286,20 @@ export function instanceHomeDir({ name, home }: { readonly name: string; readonl
 }
 
 /**
+ * Where the instance `name`'s home sits once `teamai init` has read `host`'s env: init records the instance's own
+ * variable over any record, and a blank one clears it (`INIT_RECORDS.own` in tool-home-record.ts); it never records
+ * your home directory itself. Else `instanceHomeDir`.
+ */
+export function instanceHomeAfterInit({ name, home }: { readonly name: string; readonly home: ToolInstanceHome }, host: Host = realHost()): string {
+  const unmoved = host.path.join(host.home, ...home.dir.split('/'));
+
+  if (home.env !== undefined && host.env[home.env]?.trim() === '') return unmoved;
+  const moved = envInstanceHome(home, host)?.dir;
+
+  return moved !== undefined && !isSameDirOn(host, moved, host.home) ? moved : instanceHomeDir({ name, home }, host);
+}
+
+/**
  * The home of the tool `name` runs as on `host`, and the `$HOME`-relative directory it replaces: a shipped tool's
  * (`toolHome`), an instance's own (`instanceHomeDir`), or for an instance that sets no home the home of the tool it
  * extends. Undefined for a custom tool id.
