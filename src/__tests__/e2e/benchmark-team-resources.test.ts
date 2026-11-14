@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { waitForDetachedChildren } from '../helpers/detached-processes.js';
-import { benchmarkFixture, envelope, fixTask, PRODUCT_URL, runFixBenchmark, said, startFixBenchmark, type BenchmarkFixture } from '../helpers/benchmark-fixture.js';
+import { benchmarkFixture, commandLeaseReport, envelope, fixTask, PRODUCT_URL, runFixBenchmark, said, startFixBenchmark, type BenchmarkFixture } from '../helpers/benchmark-fixture.js';
 
 const TWO_REPETITIONS = `schemaVersion: v1alpha1
 name: fix
@@ -79,16 +79,13 @@ function withheld(env: NodeJS.ProcessEnv, withhold: readonly string[], given: Re
 }
 
 /**
- * Runs a command lease in its place with the attempt marker every driver gives a step's processes, and reports its exit
- * and, for a step with output, its stdout JSON.
+ * Runs a command lease in its place with the attempt marker every driver gives a step's processes, and reports it as
+ * `commandLeaseReport` says.
  */
 async function runCommand(fixture: BenchmarkFixture, runId: string, lease: z.infer<typeof LeaseSchema> & { command: string }): Promise<void> {
   const ran = await promisify(execFile)('sh', ['-c', lease.command], { cwd: lease.cwd ?? fixture.work, env: withheld(fixture.env, lease.envScope?.withhold ?? [], { ...lease.env, TEAMAI_WORKFLOW_ATTEMPT: `${runId}/${lease.attempt}` }) })
     .then(({ stdout }) => ({ code: 0, stdout }), (failed: unknown) => ExitSchema.parse(failed));
-  const outputs: unknown = ran.code === 0 && lease.output !== undefined && ran.stdout !== undefined ? JSON.parse(ran.stdout) : undefined;
-  await report(fixture, runId, {
-    attempt: lease.attempt, revision: lease.revision, outcome: ran.code === 0 ? 'success' : 'failed', exitCode: ran.code, ...(outputs !== undefined ? { outputs } : {}),
-  });
+  await report(fixture, runId, { attempt: lease.attempt, revision: lease.revision, ...commandLeaseReport({ code: ran.code, stdout: ran.stdout ?? '' }) });
 }
 
 /** Launches a prompt lease's tool in its prepared clone, without the names it withholds and with the attempt marker, and reports it. */

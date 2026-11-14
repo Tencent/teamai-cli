@@ -15,7 +15,7 @@ import { gitcodeListOrgRepos } from './org.js';
 import { fetchGitCodeMR } from './mr-fetch.js';
 import { parseGitCodeRepoInput, GITCODE_HOST } from './repo-url.js';
 import type { MRData } from '../../types.js';
-import { log } from '../../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { askQuestion, isInteractive } from '../../utils/prompt.js';
 
 /**

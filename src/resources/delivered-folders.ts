@@ -22,13 +22,13 @@ import path from 'node:path';
 import { contentHash, forgetDelivered, removeDelivered, type DeliveryLedger } from './delivered-copies.js';
 import { FolderFiles, type FolderFile } from './folder-files.js';
 import { FOLDER_MARKERS } from '../folder-markers.js';
-import { folderReachOf } from '../tools.js';
+import { folderReachOf } from '../tool-registry.js';
 import { getDataHome, isSelfMode, type LocalConfig } from '../types.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { createGit } from '../utils/git.js';
 import { gitFindsNoRepository } from '../utils/git-discovery.js';
 import { errnoCode, pathExists } from '../utils/fs.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 /** The folder types pull delivers. */
 export type DeliveredFolderType = 'hooks' | 'rules' | 'agents' | 'mcp';

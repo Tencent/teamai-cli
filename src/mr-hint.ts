@@ -1,17 +1,18 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
 import path from 'node:path';
 
 import { z } from 'zod';
 
 import { getTGitToken, tgitFetch } from './providers/tgit/rest-auth.js';
 import { getGitHubToken } from './providers/github/gh-cli.js';
-import { log } from './utils/logger.js';
-import { lenientList } from './utils/json.js';
-import { getUserHome } from './utils/home.js';
+import { log } from '@teamai/shared/log';
+import { lenientList, JsonObjectSchema } from '@teamai/shared/json';
+import { getUserHome } from '@teamai/shared/home';
 import { getRemoteUrl } from './utils/git.js';
 import { readJson, writeJsonAtomic } from './utils/fs.js';
-import { type LocalConfig, JsonObjectSchema } from './types.js';
+import { type LocalConfig } from './types.js';
 import type { SessionRun } from './launch-context.js';
 import { WorkflowOffers, type Proposal } from './workflow-offers.js';
 import type { OutputSchema } from './workflow/types.js';
@@ -107,7 +108,7 @@ function getCachePath(owner: string, repo: string): string {
  */
 function loadCache(owner: string, repo: string): HintCache {
   try {
-    const raw = fs.readFileSync(getCachePath(owner, repo), 'utf-8');
+    const raw = readRegularFileSync(getCachePath(owner, repo), 'utf-8');
     const parsed = HintCacheSchema.parse(JSON.parse(raw));
     const age = Date.now() - new Date(parsed.updatedAt).getTime();
 
@@ -457,7 +458,7 @@ async function mrHintAllowed(localConfig?: LocalConfig | null): Promise<boolean>
   let teamConfig: Awaited<ReturnType<typeof loadTeamConfig>> = null;
 
   try {
-    teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+    teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
   } catch {
     // An unreadable teamai.yaml is not an instruction to stop; a team with no
     // opinion leaves the hint on, which is what isMrHintEnabled defaults to.
@@ -687,7 +688,7 @@ async function proposals(
   if (matching.length === 0) return {};
 
   const { loadTeamConfig } = await import('./config.js');
-  const team = await loadTeamConfig(config.repo.localPath);
+  const team = await loadTeamConfig(config.repo.localPath, config);
 
   const proposed: Record<keyof typeof CONTRACT, Proposal> = {
     mrs: await mrsProposal(caller.cwd, caller.session),

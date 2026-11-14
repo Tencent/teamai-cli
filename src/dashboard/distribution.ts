@@ -12,7 +12,7 @@ import { loadRolesManifestIfPresent, type RolesManifest } from '../roles.js';
 import { loadProjectsManifest, type ProjectsManifest } from '../projects.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
 import { saveScopeSelection } from '../scope-selection.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { LocalConfig } from '../types.js';
 import { diffDelivery, pickNamespaces, resolveDelivery, type Delivery } from './delivery.js';
 import { HttpError, type JsonBody } from './http.js';

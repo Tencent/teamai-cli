@@ -5,7 +5,7 @@ import path from 'node:path';
 import fse from 'fs-extra';
 import YAML from 'yaml';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
   spinner: vi.fn(() => ({ start: vi.fn().mockReturnThis(), succeed: vi.fn(), fail: vi.fn() })),
 }));
@@ -27,7 +27,7 @@ import { autoDetectInit } from '../config.js';
 import { getHandler } from '../resources/index.js';
 import { getSourceManifestPath, getSourcePushQuarantineNames, getSourceSkillOrigins, pullSources, sourceRemove } from '../source.js';
 import { copyDir } from '../utils/fs.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { LocalConfig, SourceInstallManifest, TeamaiConfig } from '../types.js';
 
 describe('repository replacement with unrecorded source destinations', () => {

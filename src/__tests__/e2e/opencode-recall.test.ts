@@ -121,7 +121,8 @@ describe('OpenCode recall startup (#332)', () => {
   });
 
   it('rejects the old artifact, then starts with every generated agent', async () => {
-    const env = { HOME: homeDir };
+    // teamai delivers for the OpenCode on PATH: the one this case checks, not the E2E stand-in.
+    const env = { HOME: homeDir, PATH: `${path.dirname(OPENCODE_CLI)}${path.delimiter}${process.env.PATH ?? ''}` };
     const agentsDir = path.join(projectRoot, '.opencode', 'agents');
 
     fs.mkdirSync(agentsDir, { recursive: true });

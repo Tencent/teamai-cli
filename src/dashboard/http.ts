@@ -6,7 +6,7 @@
 import type http from 'node:http';
 import { z } from 'zod';
 
-import { type JsonValue, JsonObjectSchema } from '../types.js';
+import { type JsonValue, JsonObjectSchema } from '@teamai/shared/json';
 
 /** A request the dashboard answers with a client error, not a 500. */
 export class HttpError extends Error {

@@ -13,7 +13,7 @@ vi.mock('../config.js', async (importOriginal) => ({
   saveStateForScope: vi.fn(),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     dim: vi.fn(),
     error: vi.fn(),
@@ -32,7 +32,7 @@ import {
   saveStateForScope,
 } from '../config.js';
 import { tagsList, tagsSubscribe, tagsUnsubscribe } from '../tags.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { LocalConfig } from '../types.js';
 
 const userConfig: LocalConfig = {

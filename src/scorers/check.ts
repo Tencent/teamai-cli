@@ -1,8 +1,8 @@
 /**
- * What a check is, written in a benchmark task or a scorer, and how it ended, classified once, by `teamai benchmark check`
- * (benchmark/trial.ts), which prints the result as its step's output, and by a scorer's check (scoring-stages.ts). Pure.
+ * What a check is, written in a benchmark task or a scorer, and how it ended, classified once, by a benchmark check step's
+ * report (benchmark/trial.ts), which makes the result its step's output, and by a scorer's check (scoring-stages.ts). Pure.
  * benchmark/result.ts maps the output its step stored: nothing classifies a check a second time, and no result is read
- * back from a failure code.
+ * back from a failure code, only the cause of a check step that failed before its command ran to an exit.
  */
 import { z } from 'zod';
 import { CommitSchema } from '../workflow/clone.js';
@@ -10,7 +10,8 @@ import type { CommandExit } from '../workflow/shell-command.js';
 
 /**
  * Why a check could not run: it could not start, was killed, or ran out of time; for a benchmark trial's check also
- * `prepare_failed`, when restoring `protect` or writing `check.add` failed before it ran.
+ * `prepare_failed`, when restoring `protect` or writing `check.add` failed before it ran. A benchmark check step outputs
+ * the first three; its record reads `timeout` and `prepare_failed` from the step that failed for them.
  */
 export const CHECK_CAUSES = ['not_found', 'not_executable', 'signal', 'timeout', 'spawn_failed', 'prepare_failed'] as const;
 
@@ -28,7 +29,7 @@ export type CheckVerdict =
 export const CHECK_RESULTS = ['passed', 'failed', 'could_not_run'] as const satisfies ReadonlyArray<CheckVerdict['verdict']>;
 
 /**
- * What `teamai benchmark check` outputs: the result; `cause`, why it could not run; and `label`, the version of the
+ * What a benchmark check step outputs: the result; `cause`, why it could not run; and `label`, the version of the
  * correctness label a trial's check stored, as `teamai score write` answers it. A field with no value is '', since the
  * step's output declares strings.
  */

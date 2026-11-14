@@ -6,10 +6,11 @@ import { ScoreAnswer } from './scorers/score-answer.js';
 import { Subject } from './scorers/subject.js';
 import type { SessionDemand } from './session-flow/scoring.js';
 import { TryScorer, type TryInputs } from './scorers/try-scorer.js';
-import { JsonObjectSchema, type LocalConfig } from './types.js';
+import { type LocalConfig } from './types.js';
+import { JsonObjectSchema } from '@teamai/shared/json';
 import { LabelStore } from './scorers/label-store.js';
 import { DataBranches } from './utils/data-branches.js';
-import { log, setStderrOnly } from './utils/logger.js';
+import { log, setStderrOnly } from '@teamai/shared/log';
 import { shellQuoteValue } from './utils/shell-profile.js';
 import type { WorkflowEnvelope } from './workflow/types.js';
 import { shortcutDriver, startWorkflow } from './workflow-commands.js';
@@ -310,11 +311,15 @@ function insteadOf(start: ScoreStart, driver: string | undefined): string {
 async function startScore(start: ScoreStart, driver: string | undefined): Promise<void> {
   const { named } = start;
   const inputs = { subject: Subject.format(named.subject), scorers: start.scorers, label: start.label ?? '', batch: start.batch, demand: 'named' };
-  const { driver: chosen, byDefault } = await shortcutDriver(named.config, driver);
+  const decided = await shortcutDriver(named.config, driver);
+
+  if (!decided) return;
+  const { driver: chosen, byDefault } = decided;
 
   await startWorkflow(SCORE_WORKFLOW, { driver: chosen === 'none' ? undefined : chosen, inputs: JSON.stringify(inputs) }, {
     scope: named.config,
     byDefault,
+    startsAs: 'step-command',
     instead: insteadOf(start, driver),
     answer: async (config, runId, driven) => {
       const answered = await ScoreAnswer.of(config, runId, driven, start.scorers);
@@ -337,12 +342,16 @@ const TriedSchema = z.object({ data: z.object({ done: z.object({ outputs: z.obje
  * answer is the envelope its report gave, with each file's lines on stderr; a run that did not end says why it stopped.
  */
 async function startTry(start: TryStart, driver: string | undefined): Promise<void> {
-  const { driver: chosen, byDefault } = await shortcutDriver(start.config, driver);
+  const decided = await shortcutDriver(start.config, driver);
+
+  if (!decided) return;
+  const { driver: chosen, byDefault } = decided;
   const words = ['teamai', 'score', ...subjectWords(start.subject), ...start.files.flatMap((file) => ['--scorer', file]), ...(start.inputs.batch ? ['--batch'] : [])];
 
   await startWorkflow(TRY_SCORER_WORKFLOW, { driver: chosen === 'none' ? undefined : chosen, inputs: JSON.stringify(start.inputs) }, {
     scope: start.config,
     byDefault,
+    startsAs: 'step-command',
     instead: `The person runs ${words.map(shellWord).join(' ')} in their own terminal, and the agent drafts and tries a scorer with /teamai-new-scorer.`,
     answer: async (_config, _runId, driven) => {
       const tried = TriedSchema.safeParse(driven);

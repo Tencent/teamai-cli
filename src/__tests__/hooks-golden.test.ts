@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
@@ -13,8 +13,9 @@ import { injectHooks } from '../hooks.js';
 import { _resetShellCache } from '../builtin-hooks.js';
 import { getAgentVersion } from '../agent-version.js';
 import { toolHome } from '../tool-home.js';
-import { TOOLS, hookFormatOf, type ToolId } from '../tools.js';
-import { installFakeCodex, pathWithoutCodex } from './helpers/fake-codex.js';
+import { TOOLS, type ToolId } from '../tools.js';
+import { hookFormatOf } from '../tool-registry.js';
+import { installFakeCodex, pathWithoutCodex } from '@teamai/tool-codex/testing';
 
 // Byte-equality anchor for the built-in (A) hooks (issue #19 §8 "兼容锚点").
 // fixtures/hooks/<tool>.json were captured from the pre-refactor injector.

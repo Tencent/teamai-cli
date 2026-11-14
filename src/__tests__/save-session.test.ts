@@ -12,7 +12,7 @@ const spin = vi.hoisted(() => ({
   stop: vi.fn().mockReturnThis(),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn(),
   },
@@ -20,7 +20,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 const { saveSession } = await import('../save-session.js');
-const { log } = await import('../utils/logger.js');
+const { log } = await import('@teamai/shared/log');
 
 let home: string;
 

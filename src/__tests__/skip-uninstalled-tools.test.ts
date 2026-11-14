@@ -78,7 +78,7 @@ vi.mock('../utils/git.js', () => ({
   unusedBranchName: vi.fn().mockResolvedValue('teamai/push/test/20260305-120000'),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -996,7 +996,7 @@ describe('deployBuiltinSkills — skip uninstalled tools', () => {
   it('reports a legacy directory it emptied but could not remove, instead of calling it removed', async () => {
     if (process.getuid?.() === 0) return; // root ignores directory permissions
     const { deployBuiltinSkills } = await import('../builtin-skills.js');
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
 
     // A locked skills root: the files inside the legacy directory can go, the
     // directory itself cannot. The stub directory already exists, so the stub

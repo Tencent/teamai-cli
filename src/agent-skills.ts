@@ -2,12 +2,11 @@ import path from 'node:path';
 import { z } from 'zod';
 import { listDirs, pathExists, readFileSafe } from './utils/fs.js';
 import { detectInstalledAgents, type ResolvedAgent } from './known-agents.js';
-import { isCliOwnedSkillName } from './builtin-skills.js';
+import { isCliOwnedSkillName } from './cli-skill-names.js';
 import { generatedSkillAt } from './workflow/discovery/generated-marker.js';
-import { readTeamSkills } from './resources/skills.js';
 import type { LocalConfig, TeamaiConfig } from './types.js';
 import { parseFrontmatter } from './utils/frontmatter.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { resolveReal } from './utils/path-safety.js';
 
 // ─── Local agent skill scanning ─────────────────────────
@@ -96,6 +95,8 @@ export async function buildClassifyContext(localConfig: LocalConfig): Promise<Cl
  */
 export async function collectTeamRepoSkills(repoPath: string): Promise<Map<string, { namespace?: string }>> {
   const result = new Map<string, { namespace?: string }>();
+
+  const { readTeamSkills } = await import('./resources/skills.js');
 
   for (const { name, namespace } of (await readTeamSkills(repoPath)).skills) {
     if (!result.has(name)) result.set(name, namespace === undefined ? {} : { namespace });

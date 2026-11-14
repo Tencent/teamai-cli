@@ -1,9 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { expandHome } from './utils/fs.js';
+import { expandHome } from '@teamai/shared/home';
 import { z } from 'zod';
-import type { JsonValue } from './types.js';
+import type { JsonValue } from '@teamai/shared/json';
 import { warnOnce } from './utils/warn-once.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 /**
  * What `manifest/projects.yaml` and `manifest/roles.yaml` share: the spelling of
@@ -238,7 +239,7 @@ export async function readManifestFile(manifestPath: string, kind: ManifestKind)
   let content: string;
 
   try {
-    content = await fs.readFile(resolvedPath, 'utf-8');
+    content = await readRegularFile(resolvedPath, 'utf-8');
   } catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
       const dangling = await danglingLinkOnPath(resolvedPath);

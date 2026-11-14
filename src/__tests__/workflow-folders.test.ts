@@ -10,15 +10,17 @@ import { DefaultWorkflows } from '../default-workflows.js';
 import { getHandler } from '../resources/index.js';
 import { RESOURCE_LAYOUTS, Resources } from '../resources/resolver.js';
 import { getDataHome } from '../types.js';
+import { log } from '@teamai/shared/log';
 import { getCurrentVersion } from '../package-info.js';
-import { log } from '../utils/logger.js';
 import { folderOf, loadCachedWorkflow, namespaceConflictOf } from '../workflow/cache.js';
-import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
+import { _setDriverPollMs, runLocalDriver, type DriverRuntimes } from '../workflow/drivers/local/local-driver.js';
+import { hostStepRuntime } from '../workflow/runtimes/host.js';
+import type { PlaceView } from '@teamai/runtime-protocol';
 import { startRun } from '../workflow/engine.js';
 import { WorkflowFolder } from '../workflow/folder.js';
 import { claimRun, publishRun } from '../workflow/handoff.js';
 import { sweepLeftovers } from '../workflow/leftovers.js';
-import { readRun } from '../workflow/store.js';
+import { readRun, RunIdSchema } from '../workflow/store.js';
 import { skillHarness } from './helpers/skill-harness.js';
 import { dirs as handoffDirs, pull, team as handoffTeam } from './helpers/workflow-handoff-fixture.js';
 
@@ -302,12 +304,12 @@ async function runScope(files: Record<string, string>): Promise<{ config: LocalC
 }
 
 /** Starts `name` and drives it with the local driver to its end, returning each step's outputs by id. */
-async function runToEnd(config: LocalConfig, workspace: string, name: string): Promise<Record<string, unknown>> {
+async function runToEnd(config: LocalConfig, workspace: string, name: string, runtimes?: DriverRuntimes): Promise<Record<string, unknown>> {
   const started = await startRun(config, name, {}, { secrets: await knownSecrets(config) });
 
   if ('error' in started) throw new Error(started.error.message);
   const runId = String(started.data.run);
-  expect(await runLocalDriver(config, runId, workspace, {})).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  expect(await runLocalDriver(config, runId, workspace, { ...(runtimes && { runtimes }) })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
   const run = await readRun(config, runId);
 
   if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
@@ -326,6 +328,46 @@ describe('running a workflow folder', () => {
     const outputs = await runToEnd(config, workspace, 'release');
 
     expect(outputs.plan).toEqual({ dir: path.join(getDataHome(config), 'workflows', 'folders', cached?.sourceHash ?? ''), text: 'version 1.2.0\n' });
+  });
+
+  // A runtime that runs the step elsewhere, such as a sandbox, makes only what the place names reachable there.
+  it('names the folder among the read-only paths of a step runtime\'s place, so the step reads it where it runs', async () => {
+    const { config, workspace } = await runScope({
+      'workflows/release/WORKFLOW.yaml': `schemaVersion: v1alpha1\nname: release\ndescription: Release.\nsteps:\n  - id: plan\n    command: ${printsFolder('plan.txt')}\n    output: { dir: string, text: string }\n`,
+      'workflows/release/plan.txt': 'version 1.2.0\n',
+    });
+    const host = hostStepRuntime({ config });
+    const views: PlaceView[] = [];
+    const runtime: typeof host = { ...host, open: (request, events) => {
+      if (request.view) views.push(request.view);
+
+      return host.open(request, events);
+    } };
+    const runtimes: DriverRuntimes = { driver: 'box', asked: 'box', runtimes: [{ kind: 'external', use: 'box', runtime, can: {}, launchesAgents: false, engine: { logins: [] }, credentials: {}, found: [], masks: {}, optionsFrom: 'test' }] };
+
+    const outputs = await runToEnd(config, workspace, 'release', runtimes);
+
+    expect(outputs.plan).toMatchObject({ text: 'version 1.2.0\n' });
+    expect(views.map((view) => view.readonly)).toEqual([expect.arrayContaining([path.join(getDataHome(config), 'workflows', 'folders', (await loadCachedWorkflow(config, 'release'))?.sourceHash ?? '')])]);
+  });
+
+  it('lists no path a step\'s own env names as its workflow folder among a step runtime\'s read-only paths', async () => {
+    const { config, workspace } = await runScope({
+      'workflows/plain.yaml': `schemaVersion: v1alpha1\nname: plain\ndescription: Plain.\nsteps:\n  - id: alone\n    env: { TEAMAI_WORKFLOW_DIR: ${JSON.stringify(os.homedir())} }\n    command: echo '{}'\n    output: json\n`,
+    });
+    const host = hostStepRuntime({ config });
+    const views: PlaceView[] = [];
+    const runtime: typeof host = { ...host, open: (request, events) => {
+      if (request.view) views.push(request.view);
+
+      return host.open(request, events);
+    } };
+    const runtimes: DriverRuntimes = { driver: 'box', asked: 'box', runtimes: [{ kind: 'external', use: 'box', runtime, can: {}, launchesAgents: false, engine: { logins: [] }, credentials: {}, found: [], masks: {}, optionsFrom: 'test' }] };
+
+    await runToEnd(config, workspace, 'plain', runtimes);
+
+    expect(views).toHaveLength(1);
+    expect(views[0]?.readonly).not.toContain(path.resolve(os.homedir()));
   });
 
   it('gives each step of a nested workflow the folder of the file that defines it, and none to a single file', async () => {
@@ -410,11 +452,15 @@ describe('running a workflow folder', () => {
     await WorkflowFolder.pin(config, cachedFolder);
     const old = await pinned('no longer used', 2 * 60 * 60 * 1000);
     const fresh = await pinned('a run is starting', 0);
+    // A run pins the folders it reads before its record names them.
+    const retaken = await pinned('a member takes a step of it', 2 * 60 * 60 * 1000);
+    const retakenFiles = [{ path: 'plan.txt', executable: false, content: 'a member takes a step of it' }];
+    await WorkflowFolder.pin(config, { sourceHash: WorkflowFolder.hash(retakenFiles), files: retakenFiles });
 
     await sweepLeftovers(config, null, { now: Date.now(), checkout: workspace });
 
     expect(fs.readdirSync(path.join(getDataHome(config), 'workflows', 'folders')).sort()).toEqual(
-      [ran?.sourceHash, cached?.sourceHash, path.basename(fresh)].sort(),
+      [ran?.sourceHash, cached?.sourceHash, path.basename(fresh), path.basename(retaken)].sort(),
     );
     expect(fs.existsSync(old)).toBe(false);
   });
@@ -463,6 +509,27 @@ describe('a workflow folder under the skill driver', () => {
       status: 'succeeded',
       steps: [{ id: 'plan', outputs: { dir: path.join(getDataHome(made.config), 'workflows', 'folders', sourceHash), text: 'from the folder' } }],
     });
+  });
+});
+
+describe('a workflow folder\'s prompt step under the skill driver', () => {
+  it('names the folder in the brief the agent works from, since the agent\'s shell is the session\'s', async () => {
+    const made = await skillHarness({}, { teamFiles: {
+      'workflows/release/WORKFLOW.yaml': 'schemaVersion: v1alpha1\nname: release\ndescription: Release.\ninvoke: allow\nsteps:\n  - id: plan\n    prompt: Read $TEAMAI_WORKFLOW_DIR/plan.txt and follow it.\n',
+      'workflows/release/plan.txt': 'from the folder',
+    } });
+    dirs.push(made.root);
+    await syncScorersThenWorkflows(made.config);
+    const sourceHash = (await loadCachedWorkflow(made.config, 'release'))?.sourceHash ?? '';
+
+    const start = await made.call({ kind: 'start', name: 'release', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in start) || !('turn' in start.data)) throw new Error(JSON.stringify(start));
+    const chosen = await made.call({ kind: 'choose', run: RunIdSchema.parse(start.data.turn.run), choice: 'h1' });
+    if (!('data' in chosen) || !('turn' in chosen.data)) throw new Error(JSON.stringify(chosen));
+    const [dispatch] = chosen.data.turn.actions.flatMap((action) => (action.kind === 'dispatch' ? [action] : []));
+    if (!dispatch) throw new Error(JSON.stringify(chosen));
+
+    expect(fs.readFileSync(dispatch.brief, 'utf8')).toContain(`the workflow's folder \`${path.join(getDataHome(made.config), 'workflows', 'folders', sourceHash).split(path.sep).join('/')}\``);
   });
 });
 

@@ -132,7 +132,7 @@ describe('package manifest and lockfile', () => {
       },
     }));
 
-    expect(await loadTeamConfig(dir)).not.toBeNull();
+    expect(await loadTeamConfig(dir, null)).not.toBeNull();
     await expect(loadPackageManifest(dir)).rejects.toThrow('valid http(s) URL');
   });
 

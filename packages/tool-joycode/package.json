@@ -1,0 +1,10 @@
+{
+  "name": "@teamai/tool-joycode",
+  "private": true,
+  "type": "module",
+  "description": "JoyCode: its descriptor and session platform; bundled into teamai-cli.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./facts": "./src/facts.ts"
+  }
+}

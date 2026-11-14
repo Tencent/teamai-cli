@@ -4,14 +4,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ensureDir } from '../../utils/fs.js';
-import { getUserHome, legacyUserHome } from '../../utils/home.js';
-import { log, spinner } from '../../utils/logger.js';
+import { log, spinner } from '@teamai/shared/log';
 import { isInteractive } from '../../utils/prompt.js';
 import { getTeamaiHomeDir } from '../../types.js';
 import { z } from 'zod';
 import { endedRequest, type PullRequestRecord, type PullRequestRef } from '../types.js';
 import { tgitFetch, tgitGitCloneUrl } from './rest-auth.js';
 import { TGIT_HOST } from './repo-url.js';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
 
 /** Path where gf CLI is installed */
 function gfInstallDir(): string {
@@ -230,7 +230,7 @@ export async function ensureGfInstalled(): Promise<void> {
     // addressed redirect target, or the x-checksum-sha256 header). Fail closed:
     // if we cannot obtain an expected digest, we cannot vouch for the binary —
     // abort rather than extract and execute an unverified archive.
-    const expected = parseExpectedSha256(fs.readFileSync(headerPath, 'utf-8'));
+    const expected = parseExpectedSha256(readRegularFileSync(headerPath, 'utf-8'));
 
     if (!expected) {
       throw new Error(
@@ -239,7 +239,7 @@ export async function ensureGfInstalled(): Promise<void> {
     }
 
     const actual = createHash('sha256')
-      .update(fs.readFileSync(tarballPath))
+      .update(readRegularFileSync(tarballPath))
       .digest('hex');
 
     if (actual !== expected) {
@@ -378,57 +378,6 @@ export function ensureAuthenticated(): string {
 }
 
 // ─── Repo operations ─────────────────────────────────────
-
-/**
- * Retrieve the OAuth token that gf stored in ~/.netrc.
- *
- * gf CLI uses the netrc-parser library to persist tokens.  The entry
- * for git.woa.com looks like:
- *   machine git.woa.com login <user> password <token> ...
- *
- * We parse the file directly instead of relying on `git credential fill`,
- * which depends on a working git credential helper and may trigger
- * interactive password prompts.
- *
- * Returns null if no credential is found.
- */
-export function gfGetOAuthToken(): string | null {
-  // `gf` wrote this file when `~` still resolved to `os.homedir()`, so a user
-  // whose HOME points elsewhere keeps working after the upgrade: read the
-  // current location first, then the legacy one.
-  let candidates: string[];
-
-  try {
-    candidates = [path.join(getUserHome(), '.netrc')];
-    const legacy = legacyUserHome();
-
-    if (legacy) candidates.push(path.join(legacy, '.netrc'));
-  } catch {
-    return null;
-  }
-
-  for (const netrcPath of candidates) {
-    try {
-      // `existsSync` first, as this reader has always done: it keeps the
-      // "no ~/.netrc" case a cheap no-op rather than a thrown ENOENT. A file
-      // that exists but cannot be read still falls through to the next
-      // candidate via the `catch`.
-      if (!fs.existsSync(netrcPath)) continue;
-      const content = fs.readFileSync(netrcPath, 'utf-8');
-
-      // Match: machine git.woa.com ... password <TOKEN>
-      const match = content.match(
-        /machine\s+git\.woa\.com\s+.*?password\s+(\S+)/,
-      );
-
-      if (match?.[1]) return match[1];
-    } catch {
-      // Missing or unreadable here — try the next location.
-    }
-  }
-
-  return null;
-}
 
 /** The body of TGit's create-project request. */
 interface TGitCreateProjectBody {

@@ -14,10 +14,11 @@ import { readFileSafe } from '../utils/fs.js';
 import { runPasses, type RunPass } from '../workflow/loop.js';
 import { privateSteps } from '../workflow/scope.js';
 import { settledHere } from '../workflow/judge-work.js';
-import { installOwner, readRuns } from '../workflow/store.js';
+import { AttemptIdSchema, attemptOutDir, installOwner, readRuns, RunIdSchema } from '../workflow/store.js';
 import type { RunState } from '../workflow/types.js';
 import { isIsolated } from '../workflow/workspace.js';
 import { AgentSession, recordedToolRoots, sessionKey, type AgentSessionFailure, type ToolRootsLookup } from './agent-session.js';
+import { attemptSessionStore } from '../workflow/runtimes/attempt.js';
 import { archiveSessions, type ArchiveSessionRef } from './archive.js';
 import { SessionWork } from './session-work.js';
 
@@ -99,13 +100,16 @@ export interface StepSessionsPublished {
 /** Why step session `key` cannot be read here: teamai reads no sessions of its tool, or its platform failed to read it. */
 type ReadFailure = { kind: 'tool'; tool: string } | { kind: 'platform'; platform: string; failure: AgentSessionFailure };
 
-/** What keeps this machine from reading step session `key`, or undefined when it reads it. */
-async function readFailure(key: PublishedKey, toolRootsFor: ToolRootsLookup): Promise<ReadFailure | undefined> {
+/**
+ * What keeps this machine from reading step session `key`, or undefined when it reads it. `storeDir` is the store of the
+ * tool home its attempt ran in, when it ran on a step runtime.
+ */
+async function readFailure(key: PublishedKey, toolRootsFor: ToolRootsLookup, storeDir: string | undefined): Promise<ReadFailure | undefined> {
   switch (key.kind) {
     case 'tool':
       return { kind: 'tool', tool: key.tool };
     case 'platform': {
-      const found = await AgentSession.find({ platform: key.platform, sessionId: key.sessionId }, { scrub: false, toolRootsFor });
+      const found = await AgentSession.find(storeDir === undefined ? { platform: key.platform, sessionId: key.sessionId } : { platform: key.platform, sessionId: key.sessionId, storeDir }, { scrub: false, toolRootsFor });
 
       return found.status === 'done' ? undefined : { kind: 'platform', platform: key.platform, failure: found.failure };
     }
@@ -172,7 +176,16 @@ function skippedReason(failures: readonly ReadFailure[]): string {
   return `these sessions could not be read here (${[...causes].map(([source, said]) => `${source}: ${[...said].join(', ')}`).join('; ')}), so they stay unarchived`;
 }
 
-type UnrecordedPass = { pass: RunPass; key: PublishedKey };
+/** The `out/` directory of a pass's attempt, where its step left the evidence archived beside its session; none for ids that do not parse. */
+function passOutDir(config: LocalConfig, run: string, attempt: string | undefined): string | undefined {
+  const runId = RunIdSchema.safeParse(run);
+  const attemptId = AttemptIdSchema.safeParse(attempt);
+
+  return runId.success && attemptId.success ? attemptOutDir(config, runId.data, attemptId.data) : undefined;
+}
+
+/** A pass whose session is not recorded yet; `storeDir` is its attempt's tool home store, when it ran on a step runtime. */
+type UnrecordedPass = { pass: RunPass; key: PublishedKey; storeDir: string | undefined };
 
 /**
  * Each run of this data home that ended in `mode` (a run with no mode counts as attended), with the step sessions a
@@ -197,7 +210,7 @@ async function unrecordedSteps(config: LocalConfig, mode: RunMode): Promise<Arra
       const platform = AgentSession.platformForTool(pass.tool);
       const key: PublishedKey = platform ? { kind: 'platform', platform, sessionId: pass.session } : { kind: 'tool', tool: pass.tool, sessionId: pass.session };
 
-      if (!await hasRecord(config, key)) passes.push({ pass, key });
+      if (!await hasRecord(config, key)) passes.push({ pass, key, storeDir: await attemptSessionStore(config, run.id, pass.attempt) });
     }
 
     runs.push({ run, passes });
@@ -223,13 +236,22 @@ async function steps(config: LocalConfig, mode: RunMode, now: string): Promise<S
     const checkout = run.checkout ?? SessionWork.scopeCwd(config);
     const toolRoots = recordedToolRoots(checkout);
     const refs = new Map<string, ArchiveSessionRef>();
+    // When a loop ran a session again, its latest pass's out/ goes with it: the passes come oldest first.
     const unread: Array<UnrecordedPass & { failure: ReadFailure }> = [];
 
-    for (const { pass, key } of passes) {
-      const failure = await readFailure(key, () => toolRoots);
+    for (const { pass, key, storeDir } of passes) {
+      const failure = await readFailure(key, () => toolRoots, storeDir);
 
-      if (failure !== undefined) unread.push({ pass, key, failure });
-      else if (key.kind === 'platform') refs.set(sessionKey(key), { platform: key.platform, sessionId: key.sessionId });
+      if (failure !== undefined) unread.push({ pass, key, storeDir, failure });
+      else if (key.kind === 'platform') {
+        const ref: ArchiveSessionRef = { platform: key.platform, sessionId: key.sessionId };
+        const evidenceDir = passOutDir(config, run.id, pass.attempt);
+
+        if (evidenceDir !== undefined) ref.evidenceDir = evidenceDir;
+
+        if (storeDir !== undefined) ref.storeDir = storeDir;
+        refs.set(sessionKey(key), ref);
+      }
     }
 
     const reason = skippedReason(unread.map(({ failure }) => failure));

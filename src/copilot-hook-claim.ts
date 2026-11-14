@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { getTeamaiHomeDir } from './types.js';
-import type { JsonValue } from './types.js';
+import type { JsonValue } from '@teamai/shared/json';
 
 const CLAIMS_DIR = 'copilot-hook-claims';
 

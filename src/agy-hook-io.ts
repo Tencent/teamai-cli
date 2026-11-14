@@ -11,7 +11,7 @@
  */
 
 import { z } from 'zod';
-import { type JsonValue, JsonObjectSchema } from './types.js';
+import { type JsonValue, JsonObjectSchema } from '@teamai/shared/json';
 import type { HookStdin } from './hook-dispatch.js';
 
 /** teamai's dispatch events and the Claude Code event each one carries. */

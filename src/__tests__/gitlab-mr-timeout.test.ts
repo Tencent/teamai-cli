@@ -2,7 +2,7 @@ import http from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { warn: vi.fn(), debug: vi.fn() },
 }));
 

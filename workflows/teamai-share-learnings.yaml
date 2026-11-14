@@ -16,6 +16,7 @@ steps:
     needs: [learning, approve]
     if: steps.approve.outcome == 'success'
     for_each: steps.learning.outputs.learnings
+    requires: { host: true }
     command: teamai contribute --file "$FILE" --title "$TITLE" --namespace "$NS" --session-id "$SESSION"
     env: { FILE: "{{ item.file }}", TITLE: "{{ item.title }}", NS: "{{ item.namespace }}", SESSION: "{{ inputs.session }}" }
   - id: share-session

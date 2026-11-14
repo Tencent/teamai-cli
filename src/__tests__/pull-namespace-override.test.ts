@@ -28,7 +28,7 @@ vi.mock('../utils/git.js', async (importOriginal) => ({
   pullRepo: vi.fn().mockResolvedValue('Already up to date.'),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -58,7 +58,7 @@ vi.mock('../update.js', () => ({
 import crypto from 'node:crypto';
 import { checkoutKey, pull } from '../pull.js';
 import { loadLocalConfigForScope, loadTeamConfig, detectProjectConfig, loadStateForScope, saveStateForScope } from '../config.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { StateSchema, type TeamaiConfig, type LocalConfig } from '../types.js';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
 
@@ -273,7 +273,7 @@ describe('pull: an active namespace item replaces the root item of the same name
     });
 
     it('withdraws the replaced root rule from rule dirs shared with the member\'s own rules, unless it was edited', async () => {
-      const base = await loadTeamConfig(repoPath);
+      const base = await loadTeamConfig(repoPath, null);
       if (!base) throw new Error('no team config');
       vi.mocked(loadTeamConfig).mockResolvedValue({
         ...base,
@@ -306,7 +306,7 @@ describe('pull: an active namespace item replaces the root item of the same name
     // Before #946 JoyCode got Cursor's render: that copy is what teamai
     // delivered, not a member edit, so it goes without a warning.
     it('forgets the replaced root rule\'s copy in the delivery record once it withdraws it from a rule dir shared with the member', async () => {
-      const base = await loadTeamConfig(repoPath);
+      const base = await loadTeamConfig(repoPath, null);
       if (!base) throw new Error('no team config');
       vi.mocked(loadTeamConfig).mockResolvedValue({
         ...base,
@@ -329,7 +329,7 @@ describe('pull: an active namespace item replaces the root item of the same name
     });
 
     it('withdraws a replaced root rule\'s copy still in the render an older teamai wrote for the tool (#946)', async () => {
-      const base = await loadTeamConfig(repoPath);
+      const base = await loadTeamConfig(repoPath, null);
       if (!base) throw new Error('no team config');
       vi.mocked(loadTeamConfig).mockResolvedValue({
         ...base,
@@ -361,7 +361,7 @@ describe('pull: an active namespace item replaces the root item of the same name
       ['the last pull', (rev: string) => ({ lastPullRev: rev })],
       ['an inherited pull', (rev: string) => ({ lastPullRev: null, lastInheritedPullRev: rev })],
     ])('withdraws the replaced root rule\'s copy when the root rule changed in the same push since %s, and names an edited one', async (_case, delivered) => {
-      const base = await loadTeamConfig(repoPath);
+      const base = await loadTeamConfig(repoPath, null);
       if (!base) throw new Error('no team config');
       vi.mocked(loadTeamConfig).mockResolvedValue({
         ...base,
@@ -775,7 +775,7 @@ describe('pull: an active namespace item replaces the root item of the same name
 
   describe('env and hooks', () => {
     beforeEach(async () => {
-      const base = await loadTeamConfig(repoPath);
+      const base = await loadTeamConfig(repoPath, null);
       if (!base) throw new Error('no team config');
       const claude = base.toolPaths.claude;
       vi.mocked(loadTeamConfig).mockResolvedValue({

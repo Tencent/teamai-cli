@@ -87,7 +87,7 @@ const { acquireLock, releaseLock } = await import('../update.js');
 const { loadOpencodePlugin } = await import('./helpers/opencode-plugin.js');
 const { loadOmpExtension, loadPiExtension } = await import('./helpers/pi-extensions.js');
 const { showStats } = await import('../stats.js');
-const { setStderrOnly } = await import('../utils/logger.js');
+const { setStderrOnly } = await import('@teamai/shared/log');
 const { reconcileHooks } = await import('../hooks.js');
 
 const SESSION = 'sess-main';

@@ -6,14 +6,14 @@ vi.mock('node:child_process', () => ({
   spawnSync: vi.fn(),
 }));
 
-// gh-cli resolves the CLI through utils/cli-path.js. Tests used to fake "gh not
+// gh-cli resolves the CLI through @teamai/shared/cli-path. Tests used to fake "gh not
 // installed" by making execSync('which gh') throw; the seam is now the resolver,
 // so drive that instead (default: not installed, see beforeEach blocks).
-vi.mock('../utils/cli-path.js', () => ({
+vi.mock('@teamai/shared/cli-path', () => ({
   resolveCliPath: vi.fn(),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -46,7 +46,7 @@ import {
   ensureGhAuthenticated,
   RepoNotFoundError,
 } from '../providers/github/gh-cli.js';
-import { resolveCliPath } from '../utils/cli-path.js';
+import { resolveCliPath } from '@teamai/shared/cli-path';
 import { detectProvider, getProvider } from '../providers/registry.js';
 import { GitHubProvider } from '../providers/github/index.js';
 

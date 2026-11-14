@@ -1,4 +1,5 @@
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import path from 'node:path';
 
 import chalk from 'chalk';
@@ -80,7 +81,7 @@ export async function lintTeamwiki(opts: {
     });
   } else {
     try {
-      const raw = await readFile(graphPath, 'utf-8');
+      const raw = await readRegularFile(graphPath, 'utf-8');
       graph = LintedGraphSchema.parse(JSON.parse(raw));
     } catch {
       addIssue({
@@ -163,7 +164,7 @@ export async function lintTeamwiki(opts: {
     });
   } else {
     try {
-      const raw = await readFile(manifestPath, 'utf-8');
+      const raw = await readRegularFile(manifestPath, 'utf-8');
       const manifest = JSON.parse(raw);
 
       if (manifest.lastScan) {

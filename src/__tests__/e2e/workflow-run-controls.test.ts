@@ -9,9 +9,9 @@ import type { RunState, WorkflowEnvelope } from '../../workflow/types.js';
 
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../dist/index.js');
 interface Result { code: number | null; stdout: string; stderr: string }
-function runCLI(args: string[], cwd: string): Promise<Result> {
+function runCLI(args: string[], cwd: string, env: NodeJS.ProcessEnv = {}): Promise<Result> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [CLI, ...args], { cwd, env: { ...process.env, FORCE_COLOR: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [CLI, ...args], { cwd, env: { ...process.env, FORCE_COLOR: '0', ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
@@ -157,6 +157,29 @@ describe('workflow manual controls through the CLI', () => {
     expect((await runCLI(['workflow', 'resume', id], sub)).code).toBe(0);
     expect(fs.existsSync(path.join(repo, 'in-workspace'))).toBe(true);
     expect(fs.existsSync(path.join(sub, 'in-workspace'))).toBe(false);
+  });
+
+  it('records the repository as the checkout of a run started in a subdirectory, which stays cancellable once that folder is gone', async () => {
+    await define('  - id: ask\n    approve: Continue?\n    command: echo ran');
+    const sub = path.join(repo, 'packages', 'web');
+    fs.mkdirSync(sub, { recursive: true });
+    const id = String(data(await runCLI(['workflow', 'start', 'build'], sub)).run);
+    expect(state(id).checkout).toBe(repo);
+
+    fs.rmSync(path.join(repo, 'packages'), { recursive: true, force: true });
+    const cancelled = await runCLI(['workflow', 'cancel', id], repo);
+
+    expect(data(cancelled), cancelled.stderr).toMatchObject({ run: { id, status: 'cancelled' } });
+  });
+
+  it('records the repository as the checkout of a run started in a subdirectory with GIT_DIR and GIT_WORK_TREE set', async () => {
+    await define('  - id: ask\n    approve: Continue?\n    command: echo ran');
+    const sub = path.join(repo, 'packages', 'web');
+    fs.mkdirSync(sub, { recursive: true });
+
+    const started = await runCLI(['workflow', 'start', 'build'], sub, { GIT_DIR: path.join(repo, '.git'), GIT_WORK_TREE: repo });
+
+    expect(state(String(data(started).run)).checkout, started.stderr).toBe(repo);
   });
 
   it.each(['start', 'resume'])('supports process-only auto approval on %s', async (command) => {

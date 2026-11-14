@@ -5,7 +5,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { findGitBashWindows } from '../../bundled-runtime.js';
 import { builtinHookDefs } from '../../builtin-hooks.js';
-import { getUserHome } from '../../utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 
 /** The SessionStart command teamai writes for `tool` on this machine. */
 function sessionStartCommand(tool: string): string {
@@ -26,9 +26,11 @@ function dispatched(tool: string): boolean {
  * dispatch arguments intact; not which field a tool reads from the reply.
  */
 describe.runIf(process.platform === 'win32')('hook shells on Windows: session-start', () => {
-  // The detached background pass starts in the payload's cwd, and Windows cannot
-  // remove a process's cwd: the temp dir outlives the sandbox HOME.
-  const input = JSON.stringify({ cwd: os.tmpdir(), session_id: 'hook-shells-windows' });
+  // The detached background pass starts in the payload's cwd and outlives the
+  // test, and Windows cannot remove a process's cwd. The E2E setup removes this
+  // file's sandbox HOME and its own temporary directory, so the payload names
+  // the directory that one sits in, which no teardown removes.
+  const input = JSON.stringify({ cwd: path.dirname(os.tmpdir()), session_id: 'hook-shells-windows' });
 
   it('Git Bash runs the bash form, as Claude Code does', () => {
     const gitBash = findGitBashWindows();

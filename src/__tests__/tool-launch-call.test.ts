@@ -4,9 +4,11 @@ import path from 'node:path';
 import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 import { readConfigFrom } from '../config.js';
-import { createToolCaller } from '../tool-launch/call.js';
+import { createToolCaller } from '../workflow/runtimes/tool-caller.js';
+import { useToolInstances } from '../tool-registry.js';
 import { getDataHome, getUserConfigPath, type LocalConfig } from '../types.js';
-import { log } from '../utils/logger.js';
+import { getUserHome } from '@teamai/shared/home';
+import { log } from '@teamai/shared/log';
 
 let root = '';
 afterEach(async () => { vi.unstubAllEnvs(); if (root) await fs.rm(root, { recursive: true, force: true }); root = ''; });
@@ -15,14 +17,17 @@ const Invocation = z.object({ args: z.array(z.string()), env: z.record(z.string(
 
 /**
  * A fake tool on disk: it records how it was launched, with the file after `--prompt-file`, prints `stdout` and
- * `stderr`, and writes `lastMessage` to the file after `-o`, as Codex does.
+ * `stderr`, and writes `lastMessage` to the file after `-o`, as Codex does. With `version`, `--version` prints only
+ * that, unrecorded.
  */
-async function fakeTool(name: string, { stdout = '', stderr = '', exitCode = 0, lastMessage }: { stdout?: string; stderr?: string; exitCode?: number; lastMessage?: string }): Promise<{ executable: string; invocation: () => Promise<z.infer<typeof Invocation>> }> {
+async function fakeTool(name: string, { stdout = '', stderr = '', exitCode = 0, lastMessage, version }: { stdout?: string; stderr?: string; exitCode?: number; lastMessage?: string; version?: string }): Promise<{ executable: string; invocation: () => Promise<z.infer<typeof Invocation>> }> {
   root ||= await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-call-'));
   const executable = path.join(root, name);
   const record = path.join(root, `${name}.json`);
   await fs.writeFile(executable, `#!${process.execPath}
 const fs = require('fs');
+const version = ${JSON.stringify(version ?? null)};
+if (version !== null && process.argv[2] === '--version') { process.stdout.write(version + '\\n'); process.exit(0); }
 let stdin = ''; process.stdin.on('data', (d) => stdin += d); process.stdin.on('end', () => {
   const args = process.argv.slice(2);
   const promptFile = args.includes('--prompt-file') ? fs.readFileSync(args[args.indexOf('--prompt-file') + 1], 'utf8') : null;
@@ -124,6 +129,7 @@ it('runs Codex with the prompt on stdin, reads its last message from the -o file
 
 it('runs OpenCode with the prompt on stdin and joins the text parts it prints, with the step tokens', async () => {
   const opencode = await fakeTool('opencode', {
+    version: 'opencode v2.0.29',
     stdout: [
       JSON.stringify({ type: 'step_start', part: { type: 'step-start' } }),
       JSON.stringify({ type: 'text', part: { type: 'text', text: 'first line' } }),
@@ -136,8 +142,18 @@ it('runs OpenCode with the prompt on stdin and joins the text parts it prints, w
 
   expect(answer).toEqual({ text: 'first line\nsecond line', tool: 'opencode', tokens: { input: 30, output: 6, cachedInput: 7 } });
   const { args, stdin } = await opencode.invocation();
-  expect(args).toEqual(['run', '--format', 'json']);
+  // OpenCode V2 runs the call on its own server.
+  expect(args).toEqual(['run', '--standalone', '--format', 'json']);
   expect(stdin).toBe('Summarize');
+});
+
+it.each([
+  ['fails usage_limited on an OpenCode error whose type is a usage limit, whatever its message says', 'provider.rate-limit', 'Too many requests', 'usage_limited'],
+  ['fails call_failed on an OpenCode error whose type is no usage limit, though its message reads like one', 'provider.no-route', 'Rate limit reached for anthropic/claude-nonexistent-9 on no route', 'call_failed'],
+])('%s', async (_, type, message, kind) => {
+  const opencode = await fakeTool('opencode', { stdout: JSON.stringify({ type: 'error', sessionID: 'ses_1', error: { type, message } }), exitCode: 1 });
+
+  await expect(only('opencode', opencode.executable).callTool('Summarize', { launchedBy: 'answer' })).rejects.toMatchObject({ kind });
 });
 
 it('runs WorkBuddy through the CodeBuddy adapter, which prints Claude\'s result record', async () => {
@@ -379,6 +395,67 @@ it.each([
 
   expect(answer).toMatchObject({ tool, text: `from ${tool}` });
   expect(debug.mock.calls.flat()).toContainEqual(expect.stringMatching(new RegExp(`using ${tool} \\(.*\\), from ${source.replace(/[()]/g, '\\$&')}$`)));
+});
+
+it('runs Codex at the root init recorded for it, from a shell without CODEX_HOME', async () => {
+  vi.stubEnv('TEAMAI_AI_TOOL', 'codex');
+  vi.stubEnv('CODEX_HOME', undefined);
+  const { scope } = await aiToolFiles({});
+  const recorded = path.join(getUserHome(), '.codex-work');
+  await fs.mkdir(recorded, { recursive: true });
+  onTestFinished(() => fs.rm(recorded, { recursive: true, force: true }));
+  const codex = await fakeTool('codex', { lastMessage: 'from codex' });
+
+  await only('codex', codex.executable).callTool('hi', { launchedBy: 'answer', scope: { ...scope, toolRoots: { codex: recorded } } });
+
+  expect((await codex.invocation()).env.CODEX_HOME).toBe(recorded);
+});
+
+it.each([
+  { name: 'home-codex', command: undefined, runs: true },
+  { name: 'acme-codex', command: 'acme-codex', runs: false },
+])('runs the Codex instance $name TEAMAI_AI_TOOL names as the step it extends runs it, its own command only once accepted', async ({ name, command, runs }) => {
+  vi.stubEnv('TEAMAI_AI_TOOL', name);
+  vi.stubEnv('CODEX_HOME', undefined);
+  const { scope } = await aiToolFiles({});
+  useToolInstances(new Map([[name, {
+    kind: 'instance', name, extends: 'codex', home: { dir: `.${name}` }, ...(command ? { command } : {}),
+    source: 'team', file: path.join(root, 'tools', `${name}.yaml`), location: `tools/${name}.yaml`, revision: 'r1',
+  }]]));
+  onTestFinished(() => useToolInstances(new Map()));
+  const codex = await fakeTool('codex', { lastMessage: 'from codex' });
+  const own = command ? await fakeTool(command, { lastMessage: `from ${command}` }) : undefined;
+  vi.stubEnv('PATH', `${root}${path.delimiter}${process.env.PATH ?? ''}`);
+  const call = only('codex', codex.executable).callTool('hi', { launchedBy: 'answer', scope });
+
+  if (runs) {
+    await expect(call).resolves.toMatchObject({ text: 'from codex', tool: name });
+    expect((await codex.invocation()).env.CODEX_HOME).toBe(path.join(getUserHome(), `.${name}`));
+  } else {
+    await expect(call).rejects.toMatchObject({ kind: 'tool_not_accepted', message: expect.stringContaining(`runs ${command}, which no one has accepted on this machine`) });
+    await expect(own?.invocation()).rejects.toThrow('ENOENT');
+  }
+});
+
+it('fails a call on a tool TEAMAI_AI_TOOL names that is neither a tool teamai launches nor an instance of one', async () => {
+  vi.stubEnv('TEAMAI_AI_TOOL', 'no-such-tool');
+  const codex = await fakeTool('codex', { lastMessage: 'from codex' });
+
+  await expect(only('codex', codex.executable).callTool('hi', { launchedBy: 'answer' })).rejects.toMatchObject({ kind: 'override_invalid', message: expect.stringContaining('TEAMAI_AI_TOOL is "no-such-tool", which is not a tool teamai launches') });
+});
+
+it('fails a call on a tool whose recorded root is gone without starting it, and says how to fix the record', async () => {
+  vi.stubEnv('TEAMAI_AI_TOOL', 'codex');
+  const { scope } = await aiToolFiles({});
+  const gone = path.join(getUserHome(), '.codex-gone');
+  const codex = await fakeTool('codex', { lastMessage: 'from codex' });
+
+  await expect(only('codex', codex.executable).callTool('hi', { launchedBy: 'answer', scope: { ...scope, toolRoots: { codex: gone } } })).rejects.toMatchObject({
+    kind: 'home_gone',
+    message: `The codex home recorded on this machine, ${gone}, does not exist, so teamai did not start codex there. `
+      + 'Point CODEX_HOME at the home codex uses and re-run `teamai init`, or clear the record with `CODEX_HOME= teamai init`.',
+  });
+  await expect(codex.invocation()).rejects.toThrow('ENOENT');
 });
 
 it('takes only the machine\'s ai.tool for a call with no scope', async () => {

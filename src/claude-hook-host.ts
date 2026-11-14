@@ -12,9 +12,13 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
-import { JsonValueSchema, type JsonValue, JsonObjectSchema } from './types.js';
+import { JsonValueSchema, type JsonValue, JsonObjectSchema } from '@teamai/shared/json';
+import { DEFAULT_CLAUDE_ROOT, type Scope } from './types.js';
+import { defaultPathsOf } from './tool-instances.js';
 import { shellQuoteValue } from './utils/shell-profile.js';
 import { findGitBashWindows } from './bundled-runtime.js';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
+import { toolOf } from './tool-registry.js';
 
 const CURSOR_MARKER = '--tool cursor';
 const COPILOT_MARKER = '--tool copilot';
@@ -182,7 +186,7 @@ function homeDir(env: NodeJS.ProcessEnv): string | undefined {
 
 function fileHasMarker(file: string, marker: string): boolean {
   try {
-    return fs.readFileSync(file, 'utf8').includes(marker);
+    return readRegularFileSync(file, 'utf8').includes(marker);
   } catch {
     return false;
   }
@@ -206,7 +210,7 @@ function copilotHooksInstalled(dir: string): boolean {
       if (!name.endsWith('.json')) return false;
 
       try {
-        return copilotRunsEntries(JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')))
+        return copilotRunsEntries(JSON.parse(readRegularFileSync(path.join(dir, name), 'utf8')))
           .some(([, , command]) => command.includes(COPILOT_MARKER));
       } catch {
         return false;
@@ -228,8 +232,37 @@ function copilotCopyInstalled(env: NodeJS.ProcessEnv, includeGlobal: boolean): b
     || copilotHooksInstalled(path.join(project, '.github', 'hooks'));
 }
 
-export function claudeHookRunsInAnotherHost(tool: string, env: NodeJS.ProcessEnv = process.env, includeGlobalCopilot = true): boolean {
-  if (tool !== 'claude') return false;
+/** Whether Cursor and Copilot load `file`: a settings file in a `.claude` folder, a project's or your home's. */
+function loadedAsClaudeSettings(file: string): boolean {
+  return path.basename(path.dirname(file)) === DEFAULT_CLAUDE_ROOT;
+}
+
+/**
+ * Whether `tool`'s hooks in `where` sit in a Claude Code settings file, which Cursor and Copilot load too: always for
+ * Claude and an instance on Claude's home; for an instance with a home or a settings path of its own, `where.file`, or
+ * else the file it writes in `where.scope` (a project's `.claude/settings.json` for one on Claude's command, its own
+ * home's in user scope). With no scope known yet, such an instance's hooks are not in one.
+ */
+export function readsClaudeSettings(tool: string, where: { readonly file: string } | { readonly scope: Scope | undefined }): boolean {
+  const resolved = toolOf(tool);
+  const instance = resolved?.instance;
+
+  if (resolved?.base !== 'claude') return false;
+
+  if (instance === undefined || instance.kind === 'adjustment' || (instance.home === undefined && instance.paths?.settings === undefined)) return true;
+
+  if ('file' in where) return loadedAsClaudeSettings(where.file);
+
+  if (where.scope === undefined) return false;
+  const paths = instance.paths ?? defaultPathsOf(instance);
+  const settings = where.scope === 'user' ? paths.userScope?.settings ?? paths.settings : paths.settings;
+
+  return settings !== undefined && loadedAsClaudeSettings(settings);
+}
+
+/** Whether Cursor or Copilot, with teamai hooks of its own, runs the `tool` hook this process dispatches, read from `scope`. */
+export function claudeHookRunsInAnotherHost(tool: string, env: NodeJS.ProcessEnv = process.env, includeGlobalCopilot = true, scope?: Scope): boolean {
+  if (!readsClaudeSettings(tool, { scope })) return false;
 
   if (env.CURSOR_VERSION && cursorCopyInstalled(env)) return true;
 

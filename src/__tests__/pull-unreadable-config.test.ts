@@ -15,7 +15,7 @@ vi.mock('../utils/git.js', async (importOriginal) => ({
   pullRepo: vi.fn().mockResolvedValue('already up to date'),
   getHeadRev: vi.fn().mockResolvedValue('abc1234'),
 }));
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn(), persist: vi.fn() },
   spinner: vi.fn(() => ({
     start: vi.fn().mockReturnThis(),
@@ -47,7 +47,7 @@ const { pull } = await import('../pull.js');
 const { resolveProjectDataHome, saveLocalConfigForScope } = await import('../config.js');
 const { pullRepo } = await import('../utils/git.js');
 const { reportUsage } = await import('../team-push.js');
-const { log } = await import('../utils/logger.js');
+const { log } = await import('@teamai/shared/log');
 
 let tmp: string;
 let originalHome: string | undefined;

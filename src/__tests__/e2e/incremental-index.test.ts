@@ -46,8 +46,9 @@ describe('incremental index through pull (real CLI)', () => {
       await fs.writeFile(probe, `import fs from 'node:fs';
 import promises from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
-const original = promises.readFile;
-promises.readFile = function(file, ...args) {
+// Reads open through @teamai/shared/regular-file, which opens the file before it reads the handle.
+const original = promises.open;
+promises.open = function(file, ...args) {
  if (String(file).includes('/learnings/') && new Error().stack.includes('entryFromMdFile')) fs.appendFileSync(${JSON.stringify(reads)}, JSON.stringify(String(file)) + '\\n');
  return original.call(this, file, ...args);
 };

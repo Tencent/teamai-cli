@@ -5,12 +5,14 @@
  */
 import path from 'node:path';
 import { z } from 'zod';
-import { ATTEMPT_ENV, RUN_DIR_ENV } from '../launch-context.js';
+import { RUN_DIR_ENV } from '@teamai/runtime-protocol';
+import { ATTEMPT_ENV } from '../launch-context.js';
 import type { LocalConfig } from '../types.js';
 import { isSameRealPath } from '../utils/fs.js';
 import { findRunConfig } from '../workflow/run-location.js';
 import { parseStepPath } from '../workflow/step-path.js';
-import { AttemptIdSchema, RunIdSchema, runScratchDir } from '../workflow/store.js';
+import { markedAttempt } from '../workflow/attempt-marker.js';
+import { runScratchDir } from '../workflow/store.js';
 import { SCORE_WORKFLOW } from './judging-workflows.js';
 import { isWorkflowFile, workflowRunBy, type InlineWorkflow, type RunState, type WorkflowDefinition, type WorkflowStep } from '../workflow/types.js';
 
@@ -61,23 +63,21 @@ type Leased = Omit<ScoreAttempt, 'instance' | 'hand' | 'files' | 'storesLabels' 
 
 /** The attempt `env` names, when `$TEAMAI_RUN_DIR` is its run's directory and it holds a lease of that run; else why not. */
 async function leasedAttempt(env: NodeJS.ProcessEnv, current: LocalConfig | undefined): Promise<{ ok: true; leased: Leased } | { ok: false; why: string }> {
-  const [runPart, attemptPart, ...rest] = (env[ATTEMPT_ENV] ?? '').split('/');
-  const runId = RunIdSchema.safeParse(runPart);
-  const attemptId = AttemptIdSchema.safeParse(attemptPart);
+  const marked = markedAttempt(env);
   const runDir = env[RUN_DIR_ENV];
 
-  if (!runId.success || !attemptId.success || rest.length > 0 || !runDir) return { ok: false, why: `${ATTEMPT_ENV} and ${RUN_DIR_ENV} name no workflow attempt` };
-  const found = await findRunConfig(runId.data, current);
+  if (!marked || !runDir) return { ok: false, why: `${ATTEMPT_ENV} and ${RUN_DIR_ENV} name no workflow attempt` };
+  const found = await findRunConfig(marked.run, current);
 
-  if ('error' in found) return { ok: false, why: `run ${runId.data} is not on this machine (${found.error.code}: ${found.error.message})` };
+  if ('error' in found) return { ok: false, why: `run ${marked.run} is not on this machine (${found.error.code}: ${found.error.message})` };
   const { config, run } = found;
 
   if (!await isSameRealPath(runScratchDir(config, run.id), runDir)) return { ok: false, why: `${RUN_DIR_ENV} is not the directory of run ${run.id}` };
-  const leased = run.steps.find((state) => state.status === 'leased' && state.attempt === attemptId.data);
+  const leased = run.steps.find((state) => state.status === 'leased' && state.attempt === marked.attempt);
 
-  if (!leased) return { ok: false, why: `attempt ${attemptId.data} holds no lease of run ${run.id}` };
+  if (!leased) return { ok: false, why: `attempt ${marked.attempt} holds no lease of run ${run.id}` };
 
-  return { ok: true, leased: { config, run, attempt: attemptId.data, step: leased.id, dir: path.join(runDir, attemptId.data) } };
+  return { ok: true, leased: { config, run, attempt: marked.attempt, step: leased.id, dir: path.join(runDir, marked.attempt) } };
 }
 
 /** The innermost `teamai-score` workflow file the step at `stepPath` is in, with the path its steps start with. */

@@ -14,13 +14,12 @@ vi.mock('../utils/fs.js', () => ({
   writeJson: vi.fn(async (filePath: string, data: unknown) => {
     mockFiles[filePath] = JSON.parse(JSON.stringify(data));
   }),
-  expandHome: (p: string) => p,
   ensureDir: vi.fn(),
   pathExists: vi.fn(async () => true),
   readFileSafe: vi.fn(async () => null),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),

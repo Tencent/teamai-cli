@@ -18,6 +18,8 @@ export interface Scope {
   /** What every step path inside it starts with: '' at the top, `<workflow step path>.` inside a sub-workflow. */
   prefix: string;
   definition: WorkflowDefinition | InlineWorkflow;
+  /** The name of the workflow file its steps belong to: its own, or for an inline workflow the enclosing file's. */
+  workflow: string;
   inputs: RunState['inputs'] | undefined;
   /** For an inline workflow: the enclosing workflows' steps, by id, which its own steps hide. */
   outer?: Record<string, ExpressionStep>;
@@ -66,7 +68,7 @@ function allowancesOf(scope: Scope, state: StepState, step: WorkflowStep): Pick<
 
 export function topScope(run: RunState): Scope {
   return {
-    runId: run.id, prefix: '', definition: run.definition, inputs: run.inputs, loops: stepLoops(run.definition.steps), defaultModel: run.definition.defaults?.model,
+    runId: run.nestedIn ?? run.id, prefix: '', definition: run.definition, workflow: run.definition.name, inputs: run.inputs, loops: stepLoops(run.definition.steps), defaultModel: run.definition.defaults?.model,
     requires: mergeRequirements(run.definition.defaults?.requires),
     ...budgetOf(false, run.definition.budget), ...setupOf(run.definition.setup), allowances: [], ...folderOf(run.folder),
   };
@@ -85,7 +87,7 @@ export function finallyScope(run: RunState): Scope {
   const steps = run.definition.finally ?? [];
 
   return {
-    runId: run.id, prefix: '', definition: { steps }, inputs: run.inputs, outer: expressionSteps(top, statesIn(run, top)), loops: stepLoops(steps),
+    runId: run.nestedIn ?? run.id, prefix: '', definition: { steps }, workflow: top.workflow, inputs: run.inputs, outer: expressionSteps(top, statesIn(run, top)), loops: stepLoops(steps),
     requires: top.requires, budgeted: false, allowances: [], ...folderOf(top.folder),
   };
 }
@@ -117,7 +119,7 @@ export function childScope(run: RunState, scope: Scope, states: StepState[], sta
 
   if (runs?.kind === 'inline') {
     return {
-      runId: scope.runId, prefix: `${state.id}.`, definition: runs.workflow, inputs: scope.inputs, outer: expressionSteps(scope, states, state),
+      runId: scope.runId, prefix: `${state.id}.`, definition: runs.workflow, workflow: scope.workflow, inputs: scope.inputs, outer: expressionSteps(scope, states, state),
       loops: stepLoops(runs.workflow.steps), runner: state, ...itemOf(scope, state), defaultModel: scope.defaultModel,
       requires: mergeRequirements(scope.requires, step.requires),
       ...budgetOf(scope.budgeted || step.budget !== undefined, ownBudget(step)), ...setupOf(scope.setup), ...allowancesOf(scope, state, step),
@@ -128,7 +130,7 @@ export function childScope(run: RunState, scope: Scope, states: StepState[], sta
   const definition = workflowRunBy(run, step, scope.prefix);
 
   return definition && isWorkflowFile(definition) ? {
-    runId: scope.runId, prefix: `${state.id}.`, definition, inputs: state.inputs, loops: stepLoops(definition.steps), runner: state,
+    runId: scope.runId, prefix: `${state.id}.`, definition, workflow: definition.name, inputs: state.inputs, loops: stepLoops(definition.steps), runner: state,
     defaultModel: definition.defaults?.model ?? scope.defaultModel,
     requires: mergeRequirements(scope.requires, step.requires, definition.defaults?.requires),
     ...budgetOf(scope.budgeted || step.budget !== undefined, ownBudget(step), definition.budget), ...setupOf(definition.setup ?? scope.setup),
@@ -323,4 +325,36 @@ function currentStep(step: StepState): ExpressionStep {
   current.passes = passesOf(step);
 
   return current;
+}
+
+/** The scope and definition of the step instance at `path`, or undefined when the run file does not describe it. */
+export function locateStep(run: RunState, path: string): { scope: Scope; step: WorkflowStep } | undefined {
+  const segments = parseStepPath(path);
+  let scope = run.definition.finally?.some((step) => step.id === segments[0]?.id) ? finallyScope(run) : topScope(run);
+
+  for (const [index, segment] of segments.entries()) {
+    const step = scope.definition.steps.find((item) => item.id === segment.id);
+
+    if (!step) return undefined;
+
+    if (index === segments.length - 1) return { scope, step };
+    const instance = `${scope.prefix}${segment.id}${segment.index === undefined ? '' : `[${segment.index}]`}`;
+    const states = statesIn(run, scope);
+    // statesIn holds no for_each item.
+    const state = (segment.index === undefined ? states : run.steps).find((item) => item.id === instance);
+    const child = state && childScope(run, scope, states, state, step);
+
+    if (!child) return undefined;
+    scope = child;
+  }
+
+  return undefined;
+}
+
+/** The step instance at `path` and what its lease's templates read, or undefined when the run holds no such instance. */
+export function leaseContext(run: RunState, path: string): { step: WorkflowStep; context: TemplateContext; requires: InEffect } | undefined {
+  const located = locateStep(run, path);
+  const state = run.steps.find((item) => item.id === path);
+
+  return located && state ? { step: located.step, context: contextOf(located.scope, statesIn(run, located.scope), state), requires: mergeRequirements(located.scope.requires, located.step.requires) } : undefined;
 }

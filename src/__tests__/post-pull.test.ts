@@ -30,7 +30,7 @@ const { runPostPull, runDeclaredPostPull, POST_PULL_BUDGET_SEC, COLD_PULL_WORST_
   await import('../post-pull.js');
 const { trySymlink } = await import('./helpers/symlink.js');
 const { PULL_TIMEOUT_MS } = await import('../hook-handlers.js');
-const { log } = await import('../utils/logger.js');
+const { log } = await import('@teamai/shared/log');
 
 let dir: string;
 let debugSpy: ReturnType<typeof vi.spyOn>;

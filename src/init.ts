@@ -1,23 +1,42 @@
 import YAML from 'yaml';
-import { parseYaml } from './utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { z, type ZodTypeAny } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
 import { readWorkspaceChildren } from './workspace-children.js';
 import { readSelfModeMarker } from './bootstrap.js';
-import { hasUserScopeInstall, saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, refreshRoleAssignment, saveStateForScope, resolveProjectDataHome } from './config.js';
+import { hasUserScopeInstall, loadMemberSettings, markMemberSettingsWritten, saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, refreshRoleAssignment, saveStateForScope, resolveProjectDataHome, teamToolIds } from './config.js';
 import { codexTrustPolicy, deliveredHookFiles, describeUnappliedTeamHooks, hasTeamaiHooks, reconcileHooks, reconcileTeamHooksForConfig, reportCodexTrust, trustCodexForScope } from './hooks.js';
 import { configureGitUser, resolveAnchors, initRepo, isGitRepo, getRemoteUrl, getConfiguredRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward, DetachedTeamRepoError, pushRepoDirectly, autoPushViaMR, gitBlockTimeoutMs, createGitWithBlockTimeout } from './utils/git.js';
 import { withTimeout } from './utils/async.js';
 import { getProvider, detectProvider, detectProviderForInit, RepoNotFoundError, OrganizationNotFoundError, RepoCreatePermissionError } from './providers/index.js';
 import { parseGenericGitExistingRemote } from './providers/git/repo-url.js';
 import { probeSelfHostedGitLab } from './providers/gitlab/probe.js';
-import { ensureDir, writeFile, writeFileAtomic, pathExists, expandHome, readFileSafe, remove } from './utils/fs.js';
+import { ensureDir, writeFile, writeFileAtomic, pathExists, readFileSafe, remove } from './utils/fs.js';
 import { queueOwner, sameQueueOwner, setAsideQueueOnModeSwitch } from './utils/pending-learnings.js';
 import { dropAllSearchIndexes } from './utils/search-index.js';
 import { reportsBranch } from './utils/reports-branch.js';
 import { learningsBranch } from './utils/learnings-branch.js';
 import { validateLocalAgentTokenReplacement } from './local-agent.js';
+
+/**
+ * The member's AI tool, which an answer step, a prompt step and teamai's own AI calls run on: the first of `agents`,
+ * as `--agent` named them, that teamai launches becomes `ai.tool` in this install's config. A tool the install's
+ * config or ~/.teamai/config.yaml already names stays the member's choice.
+ */
+async function adoptAgentTool(localConfig: LocalConfig, agents: readonly string[]): Promise<void> {
+  const { launchTargetOf } = await import('./launch-registry.js');
+  const tool = agents.find((agent) => launchTargetOf(agent) !== undefined);
+
+  if (tool === undefined || localConfig.ai?.tool !== undefined) return;
+  const ownConfig = localConfig.scope === 'user' ? getUserConfigPath() : path.join(getDataHome(localConfig), 'config.yaml');
+  const [own, machine] = await Promise.all([loadMemberSettings(expandHome(ownConfig)), loadMemberSettings()]);
+
+  if (own.ai?.tool !== undefined || machine.ai?.tool !== undefined) return;
+  // Marked as written, so the save keeps it in the install's own file.
+  Object.assign(localConfig, markMemberSettingsWritten(localConfig, { ai: { tool } }));
+  log.info(`AI tool: ${tool}, from --agent (ai.tool in ${expandHome(ownConfig)}).`);
+}
 
 /**
  * A re-init that changes the install's kind or team repository keeps the data
@@ -44,6 +63,28 @@ async function settleModeSwitch(previous: LocalConfig | null, next: LocalConfig,
     );
     process.exit(1);
   }
+}
+
+/**
+ * Whether a re-init may rewrite the existing config: `--force` says yes, and a person at a terminal answers `question`.
+ * With no one to ask, the install stays as it is, which a script that re-runs init relies on, and the warning names --force.
+ */
+async function mayRewriteConfig(force: boolean | undefined, question: string): Promise<boolean> {
+  if (force) return true;
+
+  if (!isInteractive()) {
+    log.warn(
+      'No one is at a terminal to confirm rewriting the existing config, so init changed nothing. Run the same command with --force ' +
+        'to rewrite it: it keeps the settings init does not set.',
+    );
+
+    return false;
+  }
+
+  if (await askConfirmation(question)) return true;
+  log.info('Aborted. Existing config is unchanged.');
+
+  return false;
 }
 
 /** Whether `scope`'s config file holds an install. ~/.teamai/config.yaml may hold only the member's own settings. */
@@ -169,7 +210,7 @@ function settingsReinitKeeps(file: LocalConfig | null, remote: string) {
   return remotesMatch(repo.remote, remote) ? settings : anyTeamSettings;
 }
 
-import { log, spinner } from './utils/logger.js';
+import { log, spinner } from '@teamai/shared/log';
 import {
   CLAUDE_TOOL_ID,
   detectToolRoot,
@@ -178,6 +219,8 @@ import {
   resolveHookScope,
   scopedToolPaths,
   toolRootRejection,
+  toolRootRejectionText,
+  warnSessionsOnlyToolRoot,
   type TeamaiConfig,
   getTeamaiHomeDir,
   REPORTS_BRANCH,
@@ -192,10 +235,11 @@ import {
   getTeamaiHome,
   getConfigPath,
   getDataHome,
+  getUserConfigPath,
   installScopeName,
   selfModeGitignorePath,
 } from './types.js';
-import { getUserHome } from './utils/home.js';
+import { getUserHome, expandHome } from '@teamai/shared/home';
 import { describeRoles, listRoleIds, loadRolesManifest, RolesManifestNotFoundError } from './roles.js';
 import { loadRoleAssignmentsIfPresent, resolveAssignedRoles, ROLE_ASSIGNMENTS_FILE } from './role-assignments.js';
 import { loadProjectsManifest, listProjectIds, type ProjectsManifest } from './projects.js';
@@ -208,44 +252,47 @@ import {
   SELF_MODE_AGENT_CHOICES,
   KNOWN_AGENTS,
 } from './known-agents.js';
-import { TOOLS } from './tools.js';
-import { describeToolHomeChange, recordToolHomes } from './tool-home-record.js';
+import { descriptorOf, TOOL_ORDER } from './tool-registry.js';
+import { reloadToolHomesHistory } from './tool-home.js';
+import { describeToolHomeChange, recordToolHomes, type ToolHomeChange } from './tool-home-record.js';
+import { judgeInstanceHomesAsInit, leftInstanceHookFiles } from './tool-instances.js';
 
-function validAgentIds(teamConfig?: TeamaiConfig | null): string[] {
+function validAgentIds(teamTools: readonly string[]): string[] {
   return [...new Set([
-    ...Object.keys(TOOLS),
+    ...TOOL_ORDER,
     ...KNOWN_AGENTS.map((agent) => agent.id),
-    ...Object.keys(teamConfig?.toolPaths ?? {}),
+    ...teamTools,
   ])].sort();
 }
 
-function unknownAgentIds(agentIds: string[], teamConfig?: TeamaiConfig | null): string[] {
-  const known = new Set(validAgentIds(teamConfig));
+function unknownAgentIds(agentIds: string[], teamTools: readonly string[]): string[] {
+  const known = new Set(validAgentIds(teamTools));
 
   return agentIds.filter((id) => !known.has(id));
 }
 
-function validateGitInitAgentIds(agentIds: string[], teamConfig?: TeamaiConfig | null): boolean {
-  const unknown = unknownAgentIds(agentIds, teamConfig);
+/** Whether every id of `agentIds` is a tool teamai ships or one of `teamTools`, those the team repo adds (`teamToolIds`); logs the others when not. */
+function validateGitInitAgentIds(agentIds: string[], teamTools: readonly string[]): boolean {
+  const unknown = unknownAgentIds(agentIds, teamTools);
 
   if (unknown.length === 0) return true;
 
   const subject = unknown.map((id) => '"' + id + '"').join(', ');
 
   const explanation = unknown.length === 1
-    ? subject + ' is neither a built-in agent nor a key in the team\'s toolPaths in teamai.yaml.'
-    : subject + ' are neither built-in agents nor keys in the team\'s toolPaths in teamai.yaml.';
+    ? subject + ' is neither a tool teamai ships nor one the team repo adds in tools/ or in teamai.yaml\'s toolPaths.'
+    : subject + ' are neither tools teamai ships nor ones the team repo adds in tools/ or in teamai.yaml\'s toolPaths.';
 
   log.error(
     'Unknown --agent id' + (unknown.length === 1 ? '' : 's') + ': ' + explanation +
-    ' Valid ids: ' + validAgentIds(teamConfig).join(', ') + '.',
+    ' Valid ids: ' + validAgentIds(teamTools).join(', ') + '.',
   );
 
   return false;
 }
 
 function warnAboutUncheckedHttpAgentIds(agentIds: string[]): void {
-  const unknown = unknownAgentIds(agentIds);
+  const unknown = unknownAgentIds(agentIds, []);
 
   if (unknown.length === 0) return;
   log.warn(
@@ -282,8 +329,24 @@ function recordToolRoots(localConfig: LocalConfig): void {
     if (!root) continue;
     const rejection = toolRootRejection(root);
 
+    // Session lookups read a root anywhere; the sync addresses only roots in the home directory.
+    if (rejection?.kind === 'outside_home') {
+      const kept = localConfig.toolRoots?.[tool];
+
+      // A recorded root the sync writes to is not given up for one that only holds sessions.
+      if (kept !== undefined && kept !== root && toolRootRejection(kept) === null) {
+        log.warn(`${envVar} (${root}) is outside the home directory, so teamai kept toolRoots.${tool} (${kept}), which it syncs ${label} to. To read ${label} sessions at ${root} instead, remove toolRoots.${tool} from the config and re-run teamai init.`);
+        continue;
+      }
+
+      localConfig.toolRoots = { ...localConfig.toolRoots, [tool]: root };
+      log.info(`Recorded ${envVar} as the ${label} root: ${root}`);
+      warnSessionsOnlyToolRoot(tool, root);
+      continue;
+    }
+
     if (rejection) {
-      log.warn(`${envVar} (${root}) was not recorded: ${rejection}.`);
+      log.warn(`${envVar} (${root}) was not recorded: ${toolRootRejectionText(rejection)}.`);
       continue;
     }
 
@@ -352,6 +415,31 @@ async function releasePreviousToolRoots(
       `${label} now syncs to ${next.toolRoots?.[tool] ?? 'the default root'}; skills, rules and instruction files `
       + `that teamai wrote under ${path.dirname(oldSettings)} were left in place.`,
     );
+  }
+}
+
+/**
+ * The same for an instance whose own variable this init moved or cleared, a refused one included: the hooks teamai
+ * delivered into a home it left keep firing in a shell that still exports the old value. They go from the previous home
+ * and each earlier one init replaced, as an earlier home's copy does (#1221), except where `leftInstanceHookFiles` says
+ * they are another tool's; the records stay for the pull that delivers to the new home.
+ */
+async function releasePreviousInstanceHomes(changes: readonly ToolHomeChange[], next: LocalConfig): Promise<void> {
+  const hookScope = resolveHookScope(next);
+  const history = reloadToolHomesHistory();
+
+  for (const { tool, dir, previous } of changes) {
+    if (previous === undefined) continue;
+
+    for (const { home, file } of leftInstanceHookFiles({ name: tool, homes: [previous, ...history[tool] ?? []], current: dir ?? 'default', toolRoots: next.toolRoots })) {
+      if (await pathExists(file) && await hasTeamaiHooks(file, tool, hookScope.manifestPath)) {
+        await reconcileHooks(file, tool, [], { removeAll: true, keepRecords: true, manifestPath: hookScope.manifestPath, codexTrust: { kind: 'disabled' } });
+      }
+
+      if (!await pathExists(home)) continue;
+      log.warn(`${tool} now syncs to ${dir ?? 'its default home'}; skills, rules, instruction files and MCP servers `
+        + `that teamai wrote under ${home} were left in place.`);
+    }
   }
 }
 
@@ -914,14 +1002,8 @@ export async function initHttp(
   // Re-init guard
   const existingConfigPath = path.join(teamaiHome, 'config.yaml');
 
-  if (await holdsInstallFor(scope, existingConfigPath) && !options.force) {
-    const confirmed = await askConfirmation(`teamai already initialized at ${existingConfigPath}. Overwrite? [y/N] `);
-
-    if (!confirmed) {
-      log.info('Aborted. Existing config is unchanged.');
-
-      return;
-    }
+  if (await holdsInstallFor(scope, existingConfigPath) && !await mayRewriteConfig(options.force, `teamai already initialized at ${existingConfigPath}. Overwrite? [y/N] `)) {
+    return;
   }
 
   const replacedFile = existingLocalConfig && await readConfigFile(existingConfigPath);
@@ -951,7 +1033,7 @@ export async function initHttp(
     await writeFile(stubPath, YAML.stringify({ team: 'http-reporting', repo: url, sharing: {} }));
   }
 
-  const teamConfig = await loadTeamConfig(localPath);
+  const teamConfig = await loadTeamConfig(localPath, null);
 
   if (!teamConfig) {
     log.error('Failed to write a valid teamai.yaml stub. Check filesystem permissions.');
@@ -1018,10 +1100,14 @@ export async function initHttp(
   if (carriedToolRoots) localConfig.toolRoots = { ...carriedToolRoots };
   recordToolRoots(localConfig);
 
-  for (const change of await recordToolHomes('init')) log.info(describeToolHomeChange(change));
+  const homeChanges = await recordToolHomes('init');
+
+  for (const change of homeChanges) log.info(describeToolHomeChange(change));
+  await releasePreviousInstanceHomes(homeChanges, localConfig);
   await releasePreviousToolRoots(teamConfig, existingLocalConfig, localConfig);
 
   await ensureDir(teamaiHome);
+  await adoptAgentTool(localConfig, requestedAgents);
   await settleModeSwitch(existingLocalConfig, localConfig, async () => {
     if (scope === 'project') {
       await saveLocalConfigForScope(localConfig, scope, projectRoot);
@@ -1407,7 +1493,7 @@ export async function promptForSelfModeAgents(options: {
   const tools = SELF_MODE_AGENT_CHOICES.map((id) => {
     const meta = KNOWN_AGENTS.find((a) => a.id === id);
 
-    return { id, label: meta?.displayName ?? id, root: TOOLS[id].home.dir };
+    return { id, label: meta?.displayName ?? id, root: descriptorOf(id).home.dir };
   });
 
   const detectedLabels = detected
@@ -1549,17 +1635,9 @@ export async function initSelfMode(options: GlobalOptions & {
   if ((await pathExists(existingConfigPath)) || (await pathExists(legacyConfigPath))) {
     log.warn(`teamai is already initialized (workspace scope) at ${existingConfigPath}`);
 
-    if (options.force) {
-      log.info('Overwriting existing config (--force)');
-    } else {
-      const confirmed = await askConfirmation('Overwrite existing config? [y/N] ');
+    if (options.force) log.info('Overwriting existing config (--force)');
 
-      if (!confirmed) {
-        log.info('Aborted. Existing config is unchanged.');
-
-        return;
-      }
-    }
+    if (!await mayRewriteConfig(options.force, 'Overwrite existing config? [y/N] ')) return;
   }
 
   // Step 1: derive provider + remote from the business repo's origin.
@@ -1664,7 +1742,7 @@ export async function initSelfMode(options: GlobalOptions & {
     log.success('Created .teamai/teamai.yaml (mode: self)');
   }
 
-  const teamConfig = await loadTeamConfig(localPath);
+  const teamConfig = await loadTeamConfig(localPath, null);
 
   if (!teamConfig) {
     log.error('Failed to write a valid .teamai/teamai.yaml. Check filesystem permissions.');
@@ -1673,7 +1751,7 @@ export async function initSelfMode(options: GlobalOptions & {
     return;
   }
 
-  if (!validateGitInitAgentIds(normalizeAgentList(options.agent), teamConfig)) {
+  if (!validateGitInitAgentIds(normalizeAgentList(options.agent), await teamToolIds(localPath, teamConfig))) {
     process.exit(1);
 
     return;
@@ -1743,7 +1821,10 @@ export async function initSelfMode(options: GlobalOptions & {
   if (preInitConfig?.toolRoots) localConfig.toolRoots = { ...preInitConfig.toolRoots };
   recordToolRoots(localConfig);
 
-  for (const change of await recordToolHomes('init')) log.info(describeToolHomeChange(change));
+  const homeChanges = await recordToolHomes('init');
+
+  for (const change of homeChanges) log.info(describeToolHomeChange(change));
+  await releasePreviousInstanceHomes(homeChanges, localConfig);
 
   // Step 5: write local config (into the partition via dataHome) + self-mode
   // gitignore. ensureDir both the knowledge dir (class B, in the repo) and the
@@ -1751,6 +1832,7 @@ export async function initSelfMode(options: GlobalOptions & {
   // getDataHome, which now resolves to the partition.
   await ensureDir(teamaiHome);
   await ensureDir(partitionHome);
+  await adoptAgentTool(localConfig, normalizeAgentList(options.agent));
   await settleModeSwitch(preInitConfig, localConfig, () =>
     saveLocalConfigForScope(localConfig, 'project', businessRepoRoot));
   log.success(`Local config saved to ${partitionHome}/config.yaml`);
@@ -1988,6 +2070,8 @@ export async function init(options: GlobalOptions & {
 }): Promise<void> {
   let forcedProvider: ProviderName | undefined;
 
+  judgeInstanceHomesAsInit();
+
   try {
     forcedProvider = resolveInitProvider(options.provider);
 
@@ -2079,17 +2163,9 @@ export async function init(options: GlobalOptions & {
   if (await holdsInstallFor(scope, existingConfigPath)) {
     log.warn(`teamai is already initialized for ${installScopeName(scope)} scope at ${existingConfigPath}`);
 
-    if (options.force) {
-      log.info('Overwriting existing config (--force)');
-    } else {
-      const confirmed = await askConfirmation('Overwrite existing config? [y/N] ');
+    if (options.force) log.info('Overwriting existing config (--force)');
 
-      if (!confirmed) {
-        log.info('Aborted. Existing config is unchanged.');
-
-        return;
-      }
-    }
+    if (!await mayRewriteConfig(options.force, 'Overwrite existing config? [y/N] ')) return;
   }
 
   // Step 1: Get repo input (positional or --repo alias; prompt if neither)
@@ -2498,9 +2574,9 @@ export async function init(options: GlobalOptions & {
   // Step 4: Load team config
   // Remote teamai.yaml.scope (if present) is ignored — local install location
   // is decided only by --scope / default (issue #250).
-  const teamConfig = await loadTeamConfig(localPath);
+  const teamConfig = await loadTeamConfig(localPath, null);
 
-  if (!validateGitInitAgentIds(requestedAgents, teamConfig)) {
+  if (!validateGitInitAgentIds(requestedAgents, await teamToolIds(localPath, teamConfig))) {
     process.exit(1);
 
     return;
@@ -2692,7 +2768,7 @@ export async function init(options: GlobalOptions & {
 
   // Step 5.5: Configure default MR reviewers (only for fresh setup with no reviewers yet).
   // --force implies non-interactive: skip reviewer prompts entirely (can be configured later).
-  const currentConfig = await loadTeamConfig(localPath);
+  const currentConfig = await loadTeamConfig(localPath, null);
   const hasReviewers = currentConfig?.reviewers && currentConfig.reviewers.length > 0;
 
   if (isNewMember && !hasReviewers && !options.force) {
@@ -2726,7 +2802,7 @@ export async function init(options: GlobalOptions & {
               // createGitWithBlockTimeout (spawn-level timeout); the provider's
               // pr-create spawnSync also carries the init-push timeout so a
               // stalled gh/gf process cannot block the event loop past it.
-              const mrTeamConfig = await loadTeamConfig(localPath);
+              const mrTeamConfig = await loadTeamConfig(localPath, null);
 
               const mrLocalConfig: Pick<LocalConfig, 'repo' | 'username' | 'provider'> = {
                 repo: { remote: repoInfo.httpsUrl, localPath },
@@ -2844,12 +2920,16 @@ export async function init(options: GlobalOptions & {
   if (carriedToolRoots) localConfig.toolRoots = { ...carriedToolRoots };
   recordToolRoots(localConfig);
 
-  for (const change of await recordToolHomes('init')) log.info(describeToolHomeChange(change));
+  const homeChanges = await recordToolHomes('init');
+
+  for (const change of homeChanges) log.info(describeToolHomeChange(change));
+  await releasePreviousInstanceHomes(homeChanges, localConfig);
   await releasePreviousToolRoots(currentConfig, carriedConfig, localConfig);
 
   await ensureDir(teamaiHome);
 
   if (scope !== 'project') await ensureDir(getTeamaiHomeDir());
+  await adoptAgentTool(localConfig, normalizeAgentList(options.agent));
   await settleModeSwitch(existingLocalConfig ?? sameTeamSalvage, localConfig, () =>
     scope === 'project' ? saveLocalConfigForScope(localConfig, scope, projectRoot) : saveLocalConfig(localConfig));
 
@@ -2889,7 +2969,7 @@ export async function init(options: GlobalOptions & {
   }
 
   // Step 7: Inject built-in + team hooks into AI tools
-  const reloadedTeamConfig = await loadTeamConfig(localPath);
+  const reloadedTeamConfig = await loadTeamConfig(localPath, localConfig);
   // Only a stub that actually landed is announced as ready in the IDE.
   let stubDeployed = 0;
 

@@ -11,8 +11,8 @@ import { z } from 'zod';
 
 import type { TeamwikiTarget } from './utils/teamwiki-root.js';
 import type { ShortcutEnd } from './workflow-commands.js';
-import { RUN_DIR_ENV } from './launch-context.js';
-import { log } from './utils/logger.js';
+import { RUN_DIR_ENV } from '@teamai/runtime-protocol';
+import { log } from '@teamai/shared/log';
 
 const WORKFLOW = 'teamai-import-from-repo';
 
@@ -126,7 +126,7 @@ async function start({ mode, items, settings, target, skipped = 0, concurrency =
 }): Promise<ShortcutEnd | undefined> {
   const { lockTeamwiki } = await import('./utils/teamwiki-root.js');
   const { runShortcut } = await import('./workflow-commands.js');
-  const { setStderrOnly } = await import('./utils/logger.js');
+  const { setStderrOnly } = await import('@teamai/shared/log');
   const releaseLock = await lockTeamwiki(target);
   const stderrOnly = setStderrOnly(false);
   setStderrOnly(stderrOnly);

@@ -628,6 +628,38 @@ describe('a workspace delivers what the repos inside it select (#913)', () => {
     expect(runIn(ws)).toContain('ws-hook-ran');
     expect(runIn(late)).toBe('');
   });
+
+  // An older release kept one list, written beside the configured Claude settings file, with `.claude` in its entries.
+  it('keeps owning the excludes an older release recorded in a Claude settings folder of the team\'s, and uninstall takes them back', async () => {
+    publish('a Claude settings folder of its own', (seed) => {
+      fs.writeFileSync(path.join(seed, 'teamai.yaml'), `${fs.readFileSync(path.join(seed, 'teamai.yaml'), 'utf8')}toolPaths:\n  claude:\n    settings: .claude-custom/settings.json\n`);
+    });
+    const svcB = path.join(ws, 'backend', 'svc-b');
+    const settings = path.join(svcB, '.claude-custom', 'settings.local.json');
+    fs.mkdirSync(path.dirname(settings), { recursive: true });
+    expect((await run(['pull'], svcB)).code).toBe(0);
+    const stateFile = fs.readdirSync(path.join(home, '.teamai', 'projects'))
+      .map((slug) => path.join(home, '.teamai', 'projects', slug, 'state.json'))
+      .find((file) => fs.existsSync(file) && Object.values(JSON.parse(fs.readFileSync(file, 'utf8')).lastPullByWorkspace ?? {}).some((record) => (record as { root?: string }).root === svcB))!;
+    const legacy = [path.join(ws, 'CLAUDE.md'), path.join(ws, '.claude', 'CLAUDE.md'), path.join(ws, 'AGENTS.md'), path.join(ws, '.claude', 'rules', '**')];
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    for (const record of Object.values(state.lastPullByWorkspace) as Array<{ root?: string; claudeMdExcludes?: unknown }>) {
+      if (record.root === svcB) record.claudeMdExcludes = legacy;
+    }
+    fs.writeFileSync(stateFile, JSON.stringify(state));
+    fs.writeFileSync(settings, JSON.stringify({ claudeMdExcludes: ['/elsewhere/CLAUDE.md', ...legacy] }));
+
+    const pull = await run(['pull', '--force'], svcB);
+
+    expect(pull.code, pull.output).toBe(0);
+    const owned = [path.join(ws, 'CLAUDE.md'), path.join(ws, 'AGENTS.md'), path.join(ws, '.claude-custom', 'CLAUDE.md'), path.join(ws, '.claude-custom', 'rules', '**')];
+    expect(JSON.parse(fs.readFileSync(settings, 'utf8')).claudeMdExcludes).toEqual(['/elsewhere/CLAUDE.md', ...owned]);
+
+    const uninstall = await run(['uninstall', '--force'], svcB);
+
+    expect(uninstall.code, uninstall.output).toBe(0);
+    expect(JSON.parse(fs.readFileSync(settings, 'utf8')).claudeMdExcludes).toEqual(['/elsewhere/CLAUDE.md']);
+  });
 });
 
 

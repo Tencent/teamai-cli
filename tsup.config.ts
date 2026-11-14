@@ -48,7 +48,16 @@ const asciiOutput: NonNullable<Options['plugins']>[number] = {
 export default defineConfig({
   // `index` is the executable: it turns on Node's compile cache, then loads
   // `cli`, the CLI itself, which the cache can only cover as a separate file.
-  entry: { index: 'src/bin.ts', cli: 'src/index.ts' },
+  // One entry per line, so each shipped runtime adds its own line.
+  entry: {
+    index: 'src/bin.ts',
+    cli: 'src/index.ts',
+    // The sandbox step runtime's own executable.
+    'runtime-sandbox': 'packages/runtime-sandbox/src/main.ts',
+    // The T3 Code step runtime's own executable.
+    'runtime-t3': 'packages/runtime-t3/src/main.ts',
+    'runtime-paseo': 'packages/runtime-paseo/src/main.ts',
+  },
   format: ['esm'],
   target: 'node20',
   outDir: 'dist',

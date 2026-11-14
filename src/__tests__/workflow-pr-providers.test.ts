@@ -11,6 +11,7 @@ import { GenericGitProvider } from '../providers/git/index.js';
 import { providerForRemote } from '../providers/registry.js';
 import type { CommitRef, GitProvider, PullRequestLookup, PullRequestRef } from '../providers/types.js';
 import { fakeGh, resolveGh } from './helpers/fake-gh.js';
+import { signalPid } from '@teamai/shared/process-group';
 
 const ref: PullRequestRef = { repo: 'acme/app', source: 'teamai/run/work/p1', target: 'main', timeoutMs: 3000 };
 const pull = (head: string, repo = 'acme/app', number = 7) => ({
@@ -95,7 +96,7 @@ setInterval(() => {}, 1000);
       expect(result).toBe('failed');
     } finally {
       clearTimeout(deadline);
-      if (holder !== undefined) process.kill(holder, 'SIGKILL');
+      if (holder !== undefined) signalPid(holder, 'SIGKILL');
       await answer;
     }
   });

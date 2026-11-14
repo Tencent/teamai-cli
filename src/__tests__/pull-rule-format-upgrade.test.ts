@@ -30,7 +30,7 @@ vi.mock('../update.js', () => ({
   releaseLock: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     persist: vi.fn(),
     info: vi.fn(),
@@ -59,7 +59,7 @@ vi.mock('../utils/tags.js', async (importOriginal) => {
 
 import { pull } from '../pull.js';
 import { filterByTags } from '../utils/tags.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { loadLocalConfigForScope, loadStateForScope, loadTeamConfig, saveStateForScope } from '../config.js';
 import { TeamaiConfigSchema, type LocalConfig, type State } from '../types.js';
 

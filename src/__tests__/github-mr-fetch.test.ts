@@ -10,10 +10,10 @@ vi.mock('../providers/github/gh-cli.js', async (importOriginal) => ({
   ghExec: vi.fn(() => { throw new Error('gh unavailable'); }),
 }));
 import { ghExec } from '../providers/github/gh-cli.js';
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 const PR = '/repos/team/repo/pulls/42';
 const METADATA = { title: 'Fix retries', body: null, user: { login: 'dev' }, merged_at: null };

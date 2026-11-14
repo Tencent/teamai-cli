@@ -8,7 +8,7 @@ import { contentHash, openLedger } from '../resources/delivered-copies.js';
 import { DeliveredFolders } from '../resources/delivered-folders.js';
 import { FolderFiles, type FolderFile } from '../resources/folder-files.js';
 import type { LocalConfig } from '../types.js';
-import { log as logger } from '../utils/logger.js';
+import { log as logger } from '@teamai/shared/log';
 
 /** Whether the temp directory's file system takes two names that differ only in case for one. */
 const TMP_IGNORES_CASE = fs.existsSync(fs.realpathSync.native(os.tmpdir()).toUpperCase());
@@ -380,7 +380,7 @@ describe('DeliveredFolders.deliver', () => {
     const rm = fs.promises.rm.bind(fs.promises);
     const denied = Object.assign(new Error('EACCES: permission denied, rmdir'), { code: 'EACCES' });
     vi.spyOn(fs.promises, 'rm').mockImplementation(async (target, options) => (String(target).includes('.block-secrets.old-') ? Promise.reject(denied) : rm(target, options)));
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     const warn = vi.spyOn(log, 'warn').mockImplementation(() => undefined);
     const ledger = openLedger({});
 
@@ -472,7 +472,7 @@ describe('DeliveredFolders.sync', () => {
     await DeliveredFolders.sync({ localConfig, type: 'hooks', ledger: undefined, prune: true, folders: [{ dest: at('old'), earlierFiles: 'keep', files: [file('HOOK.yaml', 'v1\n')] }] });
     const busy = Object.assign(new Error(`EBUSY: resource busy or locked, rmdir '${at('old')}'`), { code: 'EBUSY' });
     vi.spyOn(fse, 'remove').mockRejectedValueOnce(busy);
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     const warn = vi.spyOn(log, 'warn').mockImplementation(() => undefined);
 
     await DeliveredFolders.sync({ localConfig, type: 'hooks', ledger: undefined, prune: true, folders: [{ dest: at('lint'), earlierFiles: 'keep', files: [file('HOOK.yaml', 'v1\n')] }] });

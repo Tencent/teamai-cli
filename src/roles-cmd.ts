@@ -6,7 +6,7 @@ import { loadRolesManifest, saveRolesManifest, findRole, listRoleIds } from './r
 import type { RolesManifest, TeamRole } from './roles.js';
 import { ROLE_ASSIGNMENTS_FILE, type RoleSource } from './role-assignments.js';
 import { pathExists } from './utils/fs.js';
-import { log, setStderrOnly } from './utils/logger.js';
+import { log, setStderrOnly } from '@teamai/shared/log';
 import { pullLatest, runManifestEdit, pushManifestChange } from './manifest-edit.js';
 import type { GlobalOptions, LocalConfig, TeamaiConfig } from './types.js';
 import { askQuestion, askConfirmation } from './utils/prompt.js';

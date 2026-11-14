@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { commandShell } from '../command-shell.js';
-import { stopProcess } from '../tool-launch/process-stop.js';
+import { recordGroup, stopProcess } from '@teamai/shared/process-group';
+import { MAX_TIMER_MS } from '@teamai/shared/timer';
 
 /** How a shell command this process ran ended. */
 export type CommandExit =
@@ -14,8 +15,13 @@ export type CommandExit =
 /** The last characters of a command's output it keeps. */
 const OUTPUT_KEPT = 800;
 
-/** The longest delay `setTimeout` honours. */
-export const MAX_TIMER_DELAY = 2 ** 31 - 1;
+/** The exit code a shell gives a command it stopped on SIGINT, which a step stopped before its end reports. */
+export const STOPPED_EXIT_CODE = 130;
+
+/** The argv a command step runs as: its command in the shell, as the local loop runs one. */
+export function shellArgv(command: string): string[] {
+  return process.platform === 'win32' ? ['cmd.exe', '/d', '/s', '/c', command] : ['/bin/sh', '-c', command];
+}
 
 /**
  * Runs `command` through the platform shell in a process group of its own, so a stop reaches everything it started.
@@ -63,7 +69,7 @@ export async function runShellCommand({ command, cwd, env, signal, expiresAt, st
   let timedOut = false;
 
   // A longer delay fires at once, so a deadline that far away is left to the caller's own deadline handling.
-  const timer = remaining === undefined || remaining > MAX_TIMER_DELAY
+  const timer = remaining === undefined || remaining > MAX_TIMER_MS
     ? undefined
     : setTimeout(() => { timedOut = true; void stop(); }, remaining);
 
@@ -78,4 +84,45 @@ export async function runShellCommand({ command, cwd, env, signal, expiresAt, st
     clearTimeout(timer);
     signal?.removeEventListener('abort', onAbort);
   }
+}
+
+/** What a command `startGroupedCommand` ran left: its status, its stdout and stderr, and both together as they came. */
+export interface GroupedCommandExit {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  output: string;
+}
+
+/** A shell command a driver started. */
+export interface GroupedCommand {
+  /** Settles once the command exited and closed its output. */
+  exit: Promise<GroupedCommandExit>;
+  /** Stops the command and what it started, then settles once they are gone. A second call changes nothing. */
+  stop: (signal?: NodeJS.Signals) => Promise<GroupedCommandExit>;
+}
+
+/**
+ * Starts shell `command` with its stdin closed. A `detached` command leads a process group of its own; an attached one
+ * shares its starter's. Either is recorded in `group` for `stopRecordedGroup`, so a stop reaches everything it started
+ * even after its starter died. A command that cannot be spawned exits 127, the shell's status for a command it cannot
+ * run, with the error at the end of its stderr.
+ */
+export function startGroupedCommand(input: { command: string; cwd: string; env: NodeJS.ProcessEnv; detached: boolean; group: string; onStderr?: (chunk: string) => void }): GroupedCommand {
+  const { command, cwd, env, detached, group, onStderr } = input;
+  const child = spawn(command, { ...commandShell(env), cwd, detached, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+
+  recordGroup(child, group, { isAttached: !detached });
+
+  const exit = new Promise<GroupedCommandExit>((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let output = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; output += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; output += chunk; onStderr?.(chunk); });
+    child.on('error', (error) => resolve({ exitCode: 127, stdout, stderr: `${stderr}${error.message}`, output }));
+    child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr, output }));
+  });
+
+  return { exit, stop: stopProcess(child, exit, detached) };
 }

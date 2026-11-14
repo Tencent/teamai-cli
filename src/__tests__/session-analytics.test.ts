@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { canonicalRepo, attributeRepo, repoKeys, repoLabel, repoName } from '../utils/repo-attribution.js';
 import { attributeByRepo, timeAnalytics, renderHourSparkline } from '../session-analytics.js';
-import type { DashboardEvent, TokenUsage } from '../types.js';
+import type { DashboardEvent } from '../types.js';
+import type { TokenUsage } from '@teamai/tool-core/tokens';
 
 function ev(p: Partial<DashboardEvent> & { type: DashboardEvent['type']; timestamp: string; sessionId: string }): DashboardEvent {
   return { tool: 'claude', ...p } as DashboardEvent;

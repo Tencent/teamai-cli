@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { GIT_REPOSITORY_ENV } from './git-env.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 const exists = (p: string): Promise<boolean> => fs.promises.lstat(p).then(() => true, () => false);
 
@@ -81,13 +82,13 @@ export async function repositoryStamp(dir: string): Promise<{ stamp: string; git
   let link = '';
 
   if (path.basename(entry.file) === '.git') {
-    link = entry.stat.isFile() ? await fs.promises.readFile(entry.file, 'utf8').catch(() => '') : '';
+    link = entry.stat.isFile() ? await readRegularFile(entry.file, 'utf8').catch(() => '') : '';
     const named = /^gitdir: (.+)$/m.exec(link)?.[1]?.trim();
     gitDir = named ? path.resolve(path.dirname(entry.file), named) : entry.file;
   }
 
   const stat = (file: string): Promise<fs.Stats | null> => fs.promises.stat(file).catch(() => null);
-  const commonDirFile = (await fs.promises.readFile(path.join(gitDir, 'commondir'), 'utf8').catch(() => '')).trim();
+  const commonDirFile = (await readRegularFile(path.join(gitDir, 'commondir'), 'utf8').catch(() => '')).trim();
   const configFiles = [path.join(gitDir, 'config'), path.join(gitDir, 'config.worktree'), path.join(path.resolve(gitDir, commonDirFile), 'config')];
 
   const [gitDirStat, head, config, worktreeConfig, commonConfig] = await Promise.all([
@@ -116,7 +117,7 @@ export async function repositoryStamp(dir: string): Promise<{ stamp: string; git
  * escaped, commented or does not resolve: the stamp could not follow it.
  */
 async function configuredWorkTrees(gitDir: string, configFiles: readonly string[]): Promise<string[] | null> {
-  const texts = await Promise.all(configFiles.map((file) => fs.promises.readFile(file, 'utf8').catch(() => '')));
+  const texts = await Promise.all(configFiles.map((file) => readRegularFile(file, 'utf8').catch(() => '')));
   const values: string[] = [];
   const key = /^\s*(?:\[[^\]]*\]\s*)*worktree\s*(?:=|$)/i;
 
@@ -158,7 +159,7 @@ export async function linkedWorktreesStamp(commonDir: string): Promise<string | 
 
   const entries = await Promise.all(names.map(async (name) => {
     const dir = path.join(admin, name);
-    const gitdir = (await fs.promises.readFile(path.join(dir, 'gitdir'), 'utf8').catch(() => '')).trim();
+    const gitdir = (await readRegularFile(path.join(dir, 'gitdir'), 'utf8').catch(() => '')).trim();
 
     const [live, locked, worktreeConfig] = await Promise.all([
       gitdir !== '' && fs.promises.stat(path.resolve(dir, gitdir)).then(() => true, () => false),
@@ -182,7 +183,7 @@ export async function linkedWorktreesStamp(commonDir: string): Promise<string | 
 async function configStamp(files: readonly string[]): Promise<Array<number[] | null> | null> {
   const read = await Promise.all(files.map(async (file) => {
     const [stat, text] = await Promise.all([
-      fs.promises.stat(file).catch(() => null), fs.promises.readFile(file, 'utf8').catch(() => ''),
+      fs.promises.stat(file).catch(() => null), readRegularFile(file, 'utf8').catch(() => ''),
     ]);
 
     return { id: identity(stat), text };

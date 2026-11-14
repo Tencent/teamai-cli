@@ -4,7 +4,14 @@
   "description": "TeamAI — Make Every Team AI Native (skill sync + shared knowledge base, powered by Git)",
   "type": "module",
   "bin": {
-    "teamai": "dist/index.js"
+    "teamai": "dist/index.js",
+    "teamai-runtime-sandbox": "dist/runtime-sandbox.js",
+    "teamai-sandbox-claude": "dist/runtime-sandbox.js",
+    "teamai-sandbox-codex": "dist/runtime-sandbox.js",
+    "teamai-sandbox-codebuddy": "dist/runtime-sandbox.js",
+    "teamai-sandbox-opencode": "dist/runtime-sandbox.js",
+    "teamai-runtime-t3": "dist/runtime-t3.js",
+    "teamai-runtime-paseo": "dist/runtime-paseo.js"
   },
   "files": [
     "dist/**/*.js",
@@ -16,10 +23,16 @@
     "workflows",
     "rules",
     "scorers",
+    "drivers",
+    "runtimes",
+    "sandboxes",
     "hooks",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
+  ],
+  "workspaces": [
+    "packages/*"
   ],
   "publishConfig": {
     "access": "public"
@@ -57,6 +70,7 @@
   "author": "jeffyxu <jeffyxu@tencent.com>",
   "license": "MIT",
   "dependencies": {
+    "@vercel/sandbox": "^3.9.1",
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
     "cross-spawn": "^7.0.6",

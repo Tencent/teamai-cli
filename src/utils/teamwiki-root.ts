@@ -1,6 +1,7 @@
 import path from 'node:path';
 
-import { EPHEMERAL_CONFIG_ENV, RUN_DIR_ENV } from '../launch-context.js';
+import { RUN_DIR_ENV } from '@teamai/runtime-protocol';
+import { EPHEMERAL_CONFIG_ENV } from '../launch-context.js';
 import { assertAttachedTeamRepo, createGit } from './git.js';
 
 import type { TeamaiInit } from '../config.js';

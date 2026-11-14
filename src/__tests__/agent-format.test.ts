@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -41,7 +41,7 @@ import type { AgentSpec, ToolName, ParseResult } from '../resources/agent-format
 import { AgentsHandler } from '../resources/agents.js';
 import type { AgentResourceItem } from '../resources/agents.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
-import { AGENT_TOOLS } from '../tools.js';
+import { AGENT_TOOLS } from '../tool-registry.js';
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -711,7 +711,7 @@ describe('AgentsHandler.pushItem — skipReason path', () => {
   });
 
   it('skips writing to team repo when skipReason is set', async () => {
-    const { log: mockLog } = await import('../utils/logger.js');
+    const { log: mockLog } = await import('@teamai/shared/log');
 
     await handler.pushItem(
       {

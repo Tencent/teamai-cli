@@ -19,9 +19,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
-import { writeToFile } from './utils/debug-log.js';
+import { writeToFile } from '@teamai/shared/debug-log';
 import { handOffHookStdin, readStdin } from './utils/hook-stdin.js';
-import { getUserHome } from './utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 
 /** launch-context.ts `LAUNCHED_BY_ENV`. */
 // oxlint-disable-next-line teamai/launch-env -- a copy: launch-context.ts loads zod, which this module runs before; hook-fast-path.test.ts keeps it equal
@@ -191,12 +191,27 @@ export function promptAnswersInForeground(sessionId: string, env: NodeJS.Process
     || isHttpEnrolled(env);
 }
 
-/** A file's text, or null when it cannot be read. */
+/**
+ * A regular file's text, or null when it cannot be read or is anything else. A copy of @teamai/shared/regular-file's
+ * check, which the fast path cannot load: opened without blocking, so a FIFO a step left here does not hold the hook.
+ */
 function readTextFile(file: string): string | null {
+  let fd: number;
+
   try {
-    return fs.readFileSync(file, 'utf8');
+    // oxlint-disable-next-line teamai/regular-file-reads -- the fast path's own nonblocking open, since it loads only node: modules (teamai/uncached-entry)
+    fd = fs.openSync(file, process.platform === 'win32' ? fs.constants.O_RDONLY : fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
   } catch {
     return null;
+  }
+
+  try {
+    // oxlint-disable-next-line teamai/regular-file-reads -- reads the descriptor just checked as a regular file, not a path
+    return fs.fstatSync(fd).isFile() ? fs.readFileSync(fd, 'utf8') : null;
+  } catch {
+    return null;
+  } finally {
+    fs.closeSync(fd);
   }
 }
 

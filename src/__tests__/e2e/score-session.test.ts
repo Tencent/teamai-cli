@@ -9,8 +9,10 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { encodeCwdClaude } from '../../session-flow/fs.js';
-import { executableOf, LAUNCH_ORDER } from '../../tool-launch/tools.js';
+import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
+import { executableOf, LAUNCH_ORDER } from '../../launch-registry.js';
+import { installToyRuntime } from '../helpers/toy-runtime.js';
+import { entriesUnder } from '@teamai/shared/entries-under';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const CLI = path.join(ROOT, 'dist', 'index.js');
@@ -392,5 +394,91 @@ console.log(JSON.stringify({ type: 'result', structured_output: given?.propertie
     const { steps } = z.object({ steps: z.array(z.object({ id: z.string(), status: z.string() })) })
       .parse(JSON.parse(fs.readFileSync(path.join(dataHome, 'workflows', 'runs', `${run}.json`), 'utf8')));
     expect(steps.filter((step) => step.id.endsWith('.judge'))).toEqual([{ id: 'score[0].judge', status: 'succeeded' }, { id: 'score[1].judge', status: 'pending' }]);
+  });
+
+  it('shares and labels a session under a definition whose only runtime is the toy, on a host with no agent CLI', async () => {
+    const home = env.HOME ?? '';
+    const state = path.join(root, 'toy-state-share');
+    // The member's own toy, which runs without acceptance, and answers the judge itself.
+    fs.mkdirSync(path.join(home, '.teamai', 'runtimes', 'toy'), { recursive: true });
+    installToyRuntime(path.join(home, '.teamai', 'runtimes', 'toy'));
+    fs.mkdirSync(path.join(home, '.teamai', 'drivers'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.teamai', 'drivers', 'toyshare.yaml'), [
+      'schemaVersion: v1alpha1', 'name: toyshare', 'tool: claude', 'runtimes:', '  - use: toy', '    options:',
+      `      state: ${JSON.stringify(state)}`, '      judge: { reply: { answer: { label: thorough, reasoning: "Ran the tests." } } }', '',
+    ].join('\n'));
+    // teamai, node and git only: no agent CLI.
+    const hostBin = path.join(root, 'host-bin');
+    fs.rmSync(hostBin, { recursive: true, force: true });
+    fs.mkdirSync(hostBin);
+    fs.symlinkSync(process.execPath, path.join(hostBin, 'node'));
+    for (const tool of ['git', 'teamai']) fs.symlinkSync(execFileSync('which', [tool], { encoding: 'utf8', env }).trim(), path.join(hostBin, tool));
+    const inputs = { session: SESSION, source: 'claude-code', publish: false, scorers: ['review-quality'], demand: 'named' };
+
+    // The member's home is reached through a link, so its spelling is not its real path, as /tmp is not on macOS.
+    const linkedHome = path.join(root, 'home-link');
+    fs.rmSync(linkedHome, { force: true });
+    fs.symlinkSync(home, linkedHome);
+
+    const shared = await runCLI(['workflow', 'start', 'teamai-share-session', '--inputs', JSON.stringify(inputs), '--driver', 'toyshare'], app, { ...env, HOME: linkedHome, USERPROFILE: linkedHome, PATH: [hostBin, '/usr/bin', '/bin'].join(path.delimiter) });
+
+    expect(envelope(shared.stdout), shared.stderr).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const run = z.object({ done: z.object({ run: z.string() }) }).parse(envelope(shared.stdout).data).done.run;
+    const runFile = entriesUnder(home).map(({ relative }) => path.join(home, relative)).find((file) => file.endsWith(path.join('workflows', 'runs', `${run}.json`)));
+    const { steps } = z.object({ steps: z.array(z.object({ id: z.string(), status: z.string(), attempt: z.string().optional(), outputs: z.unknown().optional() })) })
+      .parse(JSON.parse(fs.readFileSync(String(runFile), 'utf8')));
+    expect(steps.find((step) => step.id.endsWith('.label'))).toMatchObject({ status: 'succeeded', outputs: { labels: [{ scorer: 'review-quality', label: 'thorough' }] } });
+    // The judge ran on the toy; teamai's own steps ran on the host, so the toy ran no command.
+    const runtimeOf = (attempt: string | undefined): unknown => {
+      const file = path.join(path.dirname(String(runFile)), run, 'attempts', String(attempt), 'runtime.json');
+      return fs.existsSync(file) ? (JSON.parse(fs.readFileSync(file, 'utf8')) as { runtime: string }).runtime : 'host';
+    };
+    const ranOn = Object.fromEntries(steps.filter((step) => step.attempt !== undefined).map((step) => [step.id, runtimeOf(step.attempt)]));
+    expect(Object.entries(ranOn).filter(([, runtime]) => runtime !== 'host')).toEqual([[expect.stringMatching(/\.judge$/), 'toy']]);
+    expect(ranOn).toMatchObject({ 'score.plan': 'host', 'score.score[0].evidence': 'host', 'score.score[0].label': 'host' });
+    // The toy was sent one prompt, the judge's, confined to the evidence directory.
+    const sent = fs.readFileSync(path.join(state, 'prompts.jsonl'), 'utf8').trim().split('\n').map((text) => JSON.parse(text) as { sent?: { prompt: string }; confined?: { level: string; dir: string } });
+    expect(sent).toEqual([expect.objectContaining({ confined: expect.objectContaining({ level: 'best-effort' }) })]);
+    // The prompt names the evidence directory exactly as confined.dir does, so a runtime that mounts it elsewhere can rewrite it.
+    // Both use the run's one spelling, its real path, never the linked one this process was given.
+    const [judged] = sent;
+    const dir = String(judged?.confined?.dir);
+    const realHome = fs.realpathSync(home);
+    expect(dir.startsWith(realHome)).toBe(true);
+    expect(judged?.sent?.prompt).toContain(dir);
+    expect(judged?.sent?.prompt).not.toContain(path.join(linkedHome, path.relative(realHome, dir)));
+  });
+
+  it('runs teamai-share-learnings\' command steps on the host, its own and those of the teamai-share-session it runs, beside a runtime that runs commands', async () => {
+    const home = env.HOME ?? '';
+    const state = path.join(root, 'toy-state-learnings');
+    const learning = path.join(root, 'learning-retries.md');
+    fs.writeFileSync(learning, '# Retry flaky fetches\n\nWrap network calls in the retry helper.\n');
+    fs.mkdirSync(path.join(home, '.teamai', 'runtimes', 'toy'), { recursive: true });
+    installToyRuntime(path.join(home, '.teamai', 'runtimes', 'toy'));
+    fs.mkdirSync(path.join(home, '.teamai', 'drivers'), { recursive: true });
+    // A toy that runs commands, takes the interactive learning prompt, and answers the judge.
+    const agent = { output: { learnings: [{ title: 'Retry flaky fetches', file: learning, namespace: '' }] } };
+    fs.writeFileSync(path.join(home, '.teamai', 'drivers', 'toylearn.yaml'), [
+      'schemaVersion: v1alpha1', 'name: toylearn', 'tool: claude', 'runtimes:', '  - use: toy', '    options:',
+      `      state: ${JSON.stringify(state)}`, `      agent: ${JSON.stringify(agent)}`, '      can: { hitl: true }',
+      '      judge: { reply: { answer: { label: thorough, reasoning: "Ran the tests." } } }', '',
+    ].join('\n'));
+    const inputs = { session: SESSION, source: 'claude-code', publish: false, scorers: ['review-quality'] };
+
+    const shared = await runCLI(['workflow', 'start', 'teamai-share-learnings', '--inputs', JSON.stringify(inputs), '--driver', 'toylearn', '--auto-approve'], app, env);
+
+    const run = z.object({ run: z.string() }).parse(z.object({ done: z.unknown() }).passthrough().parse(envelope(shared.stdout).data ?? {}).done).run;
+    const runFile = entriesUnder(home).map(({ relative }) => path.join(home, relative)).find((file) => file.endsWith(path.join('workflows', 'runs', `${run}.json`)));
+    const { steps } = z.object({ steps: z.array(z.object({ id: z.string(), status: z.string(), attempt: z.string().optional() })) })
+      .parse(JSON.parse(fs.readFileSync(String(runFile), 'utf8')));
+    const runtimeOf = (attempt: string | undefined): unknown => {
+      const file = path.join(path.dirname(String(runFile)), run, 'attempts', String(attempt), 'runtime.json');
+      return fs.existsSync(file) ? (JSON.parse(fs.readFileSync(file, 'utf8')) as { runtime: string }).runtime : 'host';
+    };
+    const ranOn = Object.fromEntries(steps.filter((step) => step.attempt !== undefined).map((step) => [step.id, runtimeOf(step.attempt)]));
+    // Only the prompts ran on the toy: the learning step, and the judge of the session teamai-share-session scores.
+    expect(Object.entries(ranOn).filter(([, runtime]) => runtime !== 'host').map(([id]) => id).sort(), shared.stderr).toEqual(['learning', expect.stringMatching(/^share-session\..*\.judge$/)]);
+    expect(ranOn, shared.stderr).toMatchObject({ 'contribute[0]': 'host' });
   });
 });

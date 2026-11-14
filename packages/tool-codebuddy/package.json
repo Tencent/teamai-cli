@@ -1,0 +1,10 @@
+{
+  "name": "@teamai/tool-codebuddy",
+  "private": true,
+  "type": "module",
+  "description": "CodeBuddy and WorkBuddy: their descriptors, launch profile, session platforms (the CLI, the IDE and WorkBuddy), token format and version detectors; bundled into teamai-cli.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./facts": "./src/facts.ts"
+  }
+}

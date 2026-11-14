@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 import { realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import fse from 'fs-extra';
 import YAML from 'yaml';
 import {
@@ -120,6 +121,56 @@ describe('projectSlug / projectDataHome (issue #374 partition identity)', () => 
   });
 });
 
+/** Whether the volume holding `dir` folds case, told by writing a name in one case and reading it in the other. */
+function foldsCase(dir: string): boolean {
+  const probe = fs.mkdtempSync(path.join(dir, 'oracle-'));
+  fs.writeFileSync(path.join(probe, 'Mixed'), '');
+  const folds = fs.existsSync(path.join(probe, 'mIXED'));
+  fs.rmSync(probe, { recursive: true, force: true });
+  return folds;
+}
+
+// A sandbox (Codex workspace-write or read-only) refuses writes to the checkout's parent; the probe must answer there
+// as it does where it can write, or the anchor is folded differently and teamai finds another partition.
+describe('isCaseInsensitiveFs in a folder it may not write', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-probe-')));
+  });
+
+  afterEach(() => {
+    fs.chmodSync(root, 0o755);
+    for (const entry of fs.readdirSync(root)) fs.chmodSync(path.join(root, entry), 0o755);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0).each(['Checkout', 'Проект', '研发'])('answers in a folder that refuses writes, holding "%s", as on a writable folder of its volume', (checkout) => {
+    const parent = path.join(root, 'parent');
+    fs.mkdirSync(path.join(parent, checkout), { recursive: true });
+    fs.chmodSync(parent, 0o555);
+
+    expect(isCaseInsensitiveFs(parent)).toBe(foldsCase(root));
+  });
+
+  it('writes nothing in a folder that holds a name with a letter', () => {
+    fs.mkdirSync(path.join(root, 'Checkout'));
+    const before = fs.statSync(root).mtimeMs;
+
+    expect(isCaseInsensitiveFs(root)).toBe(foldsCase(os.tmpdir()));
+    expect(fs.statSync(root).mtimeMs).toBe(before);
+    expect(fs.readdirSync(root)).toEqual(['Checkout']);
+  });
+
+  it('tells two names that differ only in case apart on a volume that keeps case', (ctx) => {
+    if (foldsCase(root)) ctx.skip();
+    fs.mkdirSync(path.join(root, 'Checkout'));
+    fs.mkdirSync(path.join(root, 'checkout'));
+
+    expect(isCaseInsensitiveFs(root)).toBe(false);
+  });
+});
+
 describe('legacyProjectSlug (pre-#546 partition naming)', () => {
   it('keeps the old <basename>-<hash> format and shares the hash with the current slug', () => {
     resetCaseProbeCache();
@@ -162,6 +213,21 @@ describe('resolvePartitionDir (legacy partition adoption)', () => {
 
   afterEach(() => {
     fs.rmSync(base, { recursive: true, force: true });
+  });
+
+  // An earlier teamai that could not write the anchor's parent read the volume as case-sensitive, and kept the case.
+  it.runIf(process.platform === 'darwin')('adopts the partition named with the anchor\'s case kept on a case-insensitive volume', async () => {
+    anchor = path.join(base, 'Project');
+    fs.mkdirSync(anchor, { recursive: true });
+    const caseKept = path.join(projectsRoot(), `${anchor.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')}-${createHash('sha256').update(anchor).digest('hex').slice(0, 16)}`);
+    expect(caseKept).not.toBe(canonical());
+    fs.mkdirSync(caseKept, { recursive: true });
+    fs.writeFileSync(path.join(caseKept, 'config.yaml'), 'repo: {}\n');
+
+    const dir = await resolvePartitionDir(anchor);
+
+    expect(dir).toBe(canonical());
+    expect(fs.readFileSync(path.join(dir, 'config.yaml'), 'utf-8')).toBe('repo: {}\n');
   });
 
   it('returns the canonical path for a fresh install (pure resolution, no mkdir)', async () => {

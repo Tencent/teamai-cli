@@ -5,18 +5,19 @@
  */
 
 import path from 'node:path';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 
 import { z } from 'zod';
 
 import { ImportLearnings, type Candidate, type LearningsImport } from './import-local.js';
 import { buildDualContext } from './iwiki-dual.js';
-import { RUN_DIR_ENV } from './launch-context.js';
+import { RUN_DIR_ENV } from '@teamai/runtime-protocol';
 import { IWikiClient } from './utils/iwiki-client.js';
 import type { IWikiDocument, IWikiPage } from './utils/iwiki-client.js';
-import { log, spinner } from './utils/logger.js';
+import { log, spinner } from '@teamai/shared/log';
 import { pathExists } from './utils/fs.js';
 import type { ShortcutEnd } from './workflow-commands.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 const WORKFLOW = 'teamai-import-from-iwiki';
 
@@ -176,7 +177,7 @@ async function publish(flags: { kept: string; written: string; target: string; b
     return {};
   }
 
-  const documents = ImportLearnings.parseFlag(DocumentsSchema, '--documents', await readFile(flags.documents, 'utf-8'), WORKFLOW);
+  const documents = ImportLearnings.parseFlag(DocumentsSchema, '--documents', await readRegularFile(flags.documents, 'utf-8'), WORKFLOW);
   const teamwikiRoot = path.join(flags.target, 'teamwiki');
 
   if (await pathExists(path.join(teamwikiRoot, '.indices', 'graph-index.json'))) {
@@ -254,7 +255,7 @@ export async function reconcileIwikiWithCodebase(
   teamwikiRoot: string,
 ): Promise<MapsToEdge[]> {
   const graphPath = path.join(teamwikiRoot, '.indices', 'graph-index.json');
-  const graphRaw = await readFile(graphPath, 'utf-8');
+  const graphRaw = await readRegularFile(graphPath, 'utf-8');
   const graph = JSON.parse(graphRaw);
 
   // 收集代码节点的标签用于匹配 — 连同该节点此刻的 origin 一并记录：
@@ -290,7 +291,7 @@ export async function reconcileIwikiWithCodebase(
 
       for (const file of files) {
         if (!file.endsWith('.md')) continue;
-        const content = await readFile(path.join(projectDir, file), 'utf-8').catch(() => '');
+        const content = await readRegularFile(path.join(projectDir, file), 'utf-8').catch(() => '');
         codePageContents.set(`evidence/code/${project}/${file}`, content);
       }
     }

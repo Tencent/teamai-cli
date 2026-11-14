@@ -20,7 +20,7 @@ vi.mock('../utils/git.js', async (importOriginal) => ({
   remotesMatch: (await importOriginal<typeof import('../utils/git.js')>()).remotesMatch,
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     debug: vi.fn(), error: vi.fn(), info: vi.fn(), success: vi.fn(), warn: vi.fn(), dim: vi.fn(),
   },
@@ -66,7 +66,7 @@ vi.mock('../doctor.js', async (importOriginal) => ({
 import { detectProjectConfig, loadLocalConfigForScope, loadTeamConfig } from '../config.js';
 import { acquireLock } from '../update.js';
 import { buildChecks, resolveDoctorContext, type Check, type DoctorContext } from '../doctor.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { pull } from '../pull.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 import { writeInstallConfig } from './helpers/install-config.js';

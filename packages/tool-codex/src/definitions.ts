@@ -1,0 +1,155 @@
+import { UNKNOWN, UNKNOWN_READS, type ToolDescriptor } from '@teamai/tool-core/definition';
+
+/** Codex and the two internal builds of it, which keep their own home, command and sessions. */
+export const tools = {
+  codex: {
+    instances: true,
+    home: { dir: '.codex', rootVariable: 'CODEX_HOME' },
+    skillLoad: { calls: [], promptForm: '$name' },
+    // Codex 0.163.0 runs read $CODEX_HOME/skills and ~/.agents/skills.
+    skills: {
+      user: [{ base: 'home', path: '.codex/skills', evidence: 'verified' }, { base: 'home', path: '.agents/skills', evidence: 'verified' }],
+      project: 'unknown',
+    },
+    rules: {
+      user: { channel: 'inline', label: 'Codex AGENTS.md' },
+      project: { channel: 'session-hook', probe: 'codex-hooks', evidence: 'verified' },
+    },
+    blocks: {
+      user: { channel: 'file', file: { in: 'claudemd' }, reads: [{ base: 'home', path: '.codex/AGENTS.md', evidence: 'verified' }] },
+      project: { channel: 'session-hook', probe: 'codex-hooks', evidence: 'verified' },
+      retired: { project: ['AGENTS.md'] },
+    },
+    agents: {
+      user: { reads: [{ base: 'home', path: '.codex/agents', evidence: 'verified' }] },
+      project: { reads: [{ base: 'project', path: '.codex/agents', when: 'workspaceUnder', evidence: 'verified' }], readGates: ['codex-project-trust'] },
+    },
+    mcp: {
+      user: { format: 'codex', reads: [{ base: 'home', path: '.codex/config.toml', evidence: 'verified' }] },
+      project: { judgedTeamaiOnly: true, format: 'codex', reads: [{ base: 'project', path: '.codex/config.toml', when: 'workspaceUnder', evidence: 'verified' }], readGates: ['codex-project-trust'] },
+    },
+    hooks: {
+      user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex/hooks.json', evidence: 'verified' }] },
+      self: { channel: 'settings', format: 'codex', reads: [{ base: 'project', path: '.codex/hooks.json', when: 'workspaceUnder', evidence: 'verified' }] },
+      subagentStop: true,
+      stopReply: false,
+      shell: 'system',
+      teamHooks: 'main-checkout',
+      needsBundle: false,
+      // `async` on a command handler is documented; the source at 0.148.0 to 0.167.0 runs it in the background
+      // (codex-rs/hooks/src/engine/discovery.rs), and 0.134.0 to 0.147.0 skip such a handler. Run on 0.167.0 for
+      // UserPromptSubmit and SessionStart; PostToolUse not run.
+      unwaitedSince: '0.148.0',
+      unwaitedVersionOf: 'codex-builds',
+      // The account's zsh, bash or sh with `-c`, never `-lc`, and one of those three for any other account shell:
+      // source at 0.134.0 to 0.167.0 (shell_detect.rs, derive_exec_args). Run on 0.167.0, macOS: `/bin/zsh -c`, no
+      // login flag, parent the codex binary. teamai's own entry in this form not run.
+      loginDeferrable: true,
+    },
+    sessions: ['codex'],
+    launch: 'codex',
+    autoCompact: 'codex',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: true,
+    legacyAgentMd: false,
+    tokens: 'codex-rollout',
+    features: {
+      env: '✓t',
+      workflows: '✓t',
+      unattended: '✓d',
+      recall: '✓v',
+      stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
+      tokens: '✓v',
+      aiBackend: '✓v',
+      sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
+      agentHooks: { cell: '✓t', note: '#1224 runs the Codex trust pass; not rerun' },
+    },
+  },
+  'codex-internal': {
+    home: { dir: '.codex-internal' },
+    skillLoad: { calls: [], promptForm: '$name' },
+    skills: UNKNOWN_READS,
+    rules: { user: { channel: 'inline', label: 'Codex AGENTS.md' }, project: { channel: 'session-hook', probe: 'codex-hooks', evidence: 'assumed' } },
+    blocks: {
+      user: { channel: 'file', file: { in: 'claudemd' }, reads: 'unknown' },
+      project: { channel: 'session-hook', probe: 'codex-hooks', evidence: 'assumed' },
+      retired: { project: ['AGENTS.md'] },
+    },
+    agents: { user: { reads: 'unknown' }, project: { reads: 'unknown' } },
+    mcp: UNKNOWN,
+    hooks: {
+      user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex-internal/hooks.json', evidence: 'assumed' }] },
+      self: { channel: 'settings', format: 'codex', reads: 'unknown' },
+      subagentStop: true,
+      stopReply: false,
+      shell: 'system',
+      teamHooks: 'home',
+      needsBundle: false,
+      // Assumed to run a hook as Codex (`codex`) does: not run, no public source.
+      loginDeferrable: true,
+    },
+    sessions: ['codex-internal'],
+    launch: 'codex',
+    autoCompact: 'codex',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: true,
+    legacyAgentMd: false,
+    tokens: 'codex-rollout',
+    features: {
+      env: '?',
+      workflows: '✓t',
+      unattended: '✓t',
+      recall: '?',
+      stats: '?',
+      tokens: '✓t',
+      aiBackend: '✓t',
+      sessionJudge: '?',
+      agentHooks: '?',
+    },
+  },
+  tcodex: {
+    home: { dir: '.tcodex' },
+    skillLoad: { calls: [], promptForm: '$name' },
+    skills: UNKNOWN_READS,
+    rules: { user: { channel: 'inline', label: 'Codex AGENTS.md' }, project: { channel: 'session-hook', probe: 'codex-hooks', evidence: 'assumed' } },
+    blocks: {
+      user: { channel: 'file', file: { in: 'claudemd' }, reads: 'unknown' },
+      project: { channel: 'session-hook', probe: 'codex-hooks', evidence: 'assumed' },
+      retired: { project: ['AGENTS.md'] },
+    },
+    agents: { user: { reads: 'unknown' }, project: { reads: 'unknown' } },
+    mcp: UNKNOWN,
+    hooks: {
+      user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.tcodex/hooks.json', evidence: 'assumed' }] },
+      self: { channel: 'settings', format: 'codex', reads: 'unknown' },
+      subagentStop: true,
+      stopReply: false,
+      shell: 'system',
+      teamHooks: 'home',
+      needsBundle: false,
+      // Assumed to run a hook as Codex (`codex`) does: not run, no public source.
+      loginDeferrable: true,
+    },
+    sessions: ['tcodex'],
+    launch: 'codex',
+    autoCompact: 'codex',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: true,
+    legacyAgentMd: false,
+    tokens: 'codex-rollout',
+    features: {
+      env: '?',
+      workflows: '✓t',
+      unattended: '✓t',
+      recall: '?',
+      stats: '?',
+      tokens: '✓t',
+      aiBackend: '✓t',
+      sessionJudge: '?',
+      agentHooks: '?',
+    },
+  },
+} as const satisfies Record<string, ToolDescriptor>;

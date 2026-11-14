@@ -29,7 +29,7 @@ vi.mock('../utils/git.js', async (importOriginal) => ({
   getHeadRev: vi.fn().mockResolvedValue(HEAD_REV),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -204,7 +204,7 @@ describe('pull role-aware sync and cleanup', () => {
   it('removes a verbatim tombstoned rule from a project directory a none-channel tool no longer writes, and keeps a member edit of another there (#993)', async () => {
     const projectRoot = path.join(tmpDir, 'proj');
     const user = await loadLocalConfigForScope('user');
-    const teamConfig = await loadTeamConfig(repoPath);
+    const teamConfig = await loadTeamConfig(repoPath, null);
     if (user === null || teamConfig === null) throw new Error('fixture config is missing');
     vi.mocked(detectProjectConfig).mockResolvedValue({ ...user, scope: 'project', projectRoot });
     vi.mocked(loadTeamConfig).mockResolvedValue({
@@ -232,7 +232,7 @@ describe('pull role-aware sync and cleanup', () => {
 
   it("cleans up a tombstoned rule's flat OMP copy on record, not a member's file of that name or a live root rule (#946)", async () => {
     // The beforeEach config, mocked; OMP added.
-    const teamConfig = (await loadTeamConfig(repoPath))!;
+    const teamConfig = (await loadTeamConfig(repoPath, null))!;
     vi.mocked(loadTeamConfig).mockResolvedValue({
       ...teamConfig,
       toolPaths: { ...teamConfig.toolPaths, omp: { rules: '.omp/rules', userScope: { rules: '.omp/agent/rules' } } },
@@ -339,7 +339,7 @@ describe('pull role-aware sync and cleanup', () => {
 
   it('keeps a member\'s file of a tombstoned agent in a team-defined tool, and removes teamai\'s verbatim copy (#993)', async () => {
     useAgentToolPaths();
-    const base = (await loadTeamConfig(repoPath))!;
+    const base = (await loadTeamConfig(repoPath, null))!;
     vi.mocked(loadTeamConfig).mockResolvedValue({ ...base, toolPaths: { ...base.toolPaths, mytool: { agents: '.mytool/agents' } } });
     await seedTombstonedAgent();
     await fse.ensureDir(path.join(homeDir, '.mytool/agents'));
@@ -390,7 +390,7 @@ describe('pull role-aware sync and cleanup', () => {
   });
 
   it('keeps teamai\'s instruction file when the team tombstoned a rule named teamai-context (#945)', async () => {
-    const base = (await loadTeamConfig(repoPath))!;
+    const base = (await loadTeamConfig(repoPath, null))!;
     vi.mocked(loadTeamConfig).mockResolvedValue({ ...base, toolPaths: { cursor: { skills: '.cursor/skills', rules: '.cursor/rules' } } });
     await fse.ensureDir(path.join(homeDir, '.cursor', 'skills'));
     await fse.writeFile(path.join(repoPath, 'culture.md'), 'Be kind.\n');
@@ -410,7 +410,7 @@ describe('pull role-aware sync and cleanup', () => {
   });
 
   it('reclaims an earlier release\'s teamai-context rule copy when the revision is unchanged (#945)', async () => {
-    const base = (await loadTeamConfig(repoPath))!;
+    const base = (await loadTeamConfig(repoPath, null))!;
     vi.mocked(loadTeamConfig).mockResolvedValue({ ...base, toolPaths: { claude: { skills: '.claude/skills', rules: '.claude/rules' } } });
     await fse.writeFile(path.join(repoPath, 'culture.md'), 'Be kind.\n');
     await fse.writeFile(path.join(repoPath, 'rules', 'teamai-context.md'), '# Old team rule\n');
@@ -428,8 +428,8 @@ describe('pull role-aware sync and cleanup', () => {
   });
 
   it('reports no synced culture when every instruction target was left alone (#945)', async () => {
-    const { log } = await import('../utils/logger.js');
-    const base = (await loadTeamConfig(repoPath))!;
+    const { log } = await import('@teamai/shared/log');
+    const base = (await loadTeamConfig(repoPath, null))!;
     vi.mocked(loadTeamConfig).mockResolvedValue({ ...base, toolPaths: { cursor: { skills: '.cursor/skills', rules: '.cursor/rules' } } });
     await fse.ensureDir(path.join(homeDir, '.cursor', 'skills'));
     await fse.writeFile(path.join(repoPath, 'culture.md'), 'Be kind.\n');
@@ -524,7 +524,7 @@ describe('pull role-aware sync and cleanup', () => {
       scope: 'user',
       subscribedTags: ['wanted'],
     });
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     vi.mocked(log.dim).mockClear();
 
     await pull({ force: true });
@@ -563,7 +563,7 @@ describe('pull role-aware sync and cleanup', () => {
     await fse.writeFile(path.join(homeDir, '.claude/skills', 'pm-skill', 'SKILL.md'), '# PM');
     await fse.ensureDir(path.join(repoPath, 'skills', 'pm', 'pm-skill'));
     await fse.writeFile(path.join(repoPath, 'skills', 'pm', 'pm-skill', 'SKILL.md'), '# PM');
-    const teamConfig = (await loadTeamConfig(repoPath))!;
+    const teamConfig = (await loadTeamConfig(repoPath, null))!;
     const localConfig = {
       repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
       username: 'testuser',
@@ -592,7 +592,7 @@ describe('pull role-aware sync and cleanup', () => {
     await fse.writeFile(path.join(homeDir, '.claude/skills', 'pm-skill', 'unpublished.py'), 'print("wip")');
     await fse.ensureDir(path.join(repoPath, 'skills', 'pm', 'pm-skill'));
     await fse.writeFile(path.join(repoPath, 'skills', 'pm', 'pm-skill', 'SKILL.md'), '# PM');
-    const teamConfig = (await loadTeamConfig(repoPath))!;
+    const teamConfig = (await loadTeamConfig(repoPath, null))!;
     const localConfig = {
       repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
       username: 'testuser', updatePolicy: 'auto' as const,
@@ -614,7 +614,7 @@ describe('pull role-aware sync and cleanup', () => {
   it('KEEPS a stale skill when its team-repo source is gone (cannot verify → no delete)', async () => {
     await fse.ensureDir(path.join(homeDir, '.claude/skills', 'orphan-skill'));
     await fse.writeFile(path.join(homeDir, '.claude/skills', 'orphan-skill', 'SKILL.md'), '# orphan');
-    const teamConfig = (await loadTeamConfig(repoPath))!;
+    const teamConfig = (await loadTeamConfig(repoPath, null))!;
     const localConfig = {
       repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
       username: 'testuser', updatePolicy: 'auto' as const,
@@ -641,7 +641,7 @@ describe('pull role-aware sync and cleanup', () => {
     await fse.writeFile(path.join(homeDir, '.claude/skills', 'vcs-skill', '.git', 'HEAD'), 'ref: refs/heads/main\n');
     await fse.ensureDir(path.join(repoPath, 'skills', 'pm', 'vcs-skill'));
     await fse.writeFile(path.join(repoPath, 'skills', 'pm', 'vcs-skill', 'SKILL.md'), '# VCS');
-    const teamConfig = (await loadTeamConfig(repoPath))!;
+    const teamConfig = (await loadTeamConfig(repoPath, null))!;
     const localConfig = {
       repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
       username: 'testuser', updatePolicy: 'auto' as const,
@@ -673,7 +673,7 @@ describe('pull role-aware sync and cleanup', () => {
     await fse.ensureDir(path.join(src, 'scripts'));
     await fse.writeFile(path.join(src, 'SKILL.md'), '# Nested');
     await fse.writeFile(path.join(src, 'scripts', 'runner.py'), 'print("run")');
-    const teamConfig = (await loadTeamConfig(repoPath))!;
+    const teamConfig = (await loadTeamConfig(repoPath, null))!;
     const localConfig = {
       repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
       username: 'testuser', updatePolicy: 'auto' as const,
@@ -699,7 +699,7 @@ describe('pull role-aware sync and cleanup', () => {
 
     await pull({});
 
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Roles manifest not found'));
   });
 
@@ -715,7 +715,7 @@ describe('pull role-aware sync and cleanup', () => {
 
     // pull logs the manifest error and returns before any resource is written,
     // which is what an invalid projects manifest already does.
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Invalid roles manifest'));
   });
 

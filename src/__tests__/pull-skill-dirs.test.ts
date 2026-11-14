@@ -1,8 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
@@ -27,7 +27,7 @@ vi.mock('../update.js', () => ({
   releaseLock: vi.fn().mockResolvedValue(undefined),
   withFileLock: async <T>(_lock: string, _wait: unknown, body: () => Promise<T>) => ({ held: true, value: await body() }),
 }));
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { persist: vi.fn(), info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
   spinner: vi.fn(() => ({ start: vi.fn().mockReturnThis(), succeed: vi.fn().mockReturnThis(), fail: vi.fn().mockReturnThis(), warn: vi.fn().mockReturnThis(), info: vi.fn().mockReturnThis(), stop: vi.fn().mockReturnThis() })),
 }));
@@ -45,14 +45,17 @@ vi.mock('../skill-content.js', async (importOriginal) => {
 });
 
 import { pull } from '../pull.js';
+import { syncFolders } from '../utils/fs.js';
 import { resolveDesiredSkills } from '../resources/desired.js';
 import { deployBuiltinSkills } from '../builtin-skills.js';
 import { packagedSkillRoots } from '../skill-content.js';
 import { getHandler } from '../resources/index.js';
 import { detectProjectConfig, loadLocalConfigForScope, loadStateForScope, loadTeamConfig, saveStateForScope } from '../config.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
+import { identityOf } from '@teamai/shared/process-group';
 import { DEFAULT_TOOL_PATHS, TeamaiConfigSchema, type LocalConfig, type State } from '../types.js';
 import { realHost, recordedHomes, saveToolHomes, toolHomesPath } from '../tool-home.js';
+import { commitTeamRepo } from './helpers/team-repo-history.js';
 
 describe('a pull and the homes the env moves', () => {
   let tmp: string; let home: string; let repo: string; let saved: State; let config: LocalConfig;
@@ -91,6 +94,92 @@ describe('a pull and the homes the env moves', () => {
     await fse.remove(blocked);
     await pull({});
     expect(await fse.pathExists(path.join(blocked, 'deploy', 'SKILL.md'))).toBe(true);
+  });
+
+  it.skipIf(process.platform === 'win32')('leaves a team skill with a FIFO in it as an earlier pull delivered it, or not there at all, and names the skill and the file', async () => {
+    await fse.ensureDir(path.join(home, '.config', 'opencode'));
+    await fse.ensureDir(path.join(home, '.hermes'));
+    await pull({});
+    const skillsDirs = [path.join(home, '.config', 'opencode', 'skills'), path.join(home, '.hermes', 'skills')];
+    for (const dir of skillsDirs) expect(await fse.readFile(path.join(dir, 'deploy', 'SKILL.md'), 'utf8')).toContain('Deploy.');
+    for (const skill of ['deploy', 'fresh']) {
+      await fse.outputFile(path.join(repo, 'skills', skill, 'SKILL.md'), `---\nname: ${skill}\ndescription: d\n---\nVersion two.\n`);
+      for (const name of ['a.md', 'b.md', 'c.md']) await fse.outputFile(path.join(repo, 'skills', skill, name), `${name}\n`);
+      execFileSync('mkfifo', [path.join(repo, 'skills', skill, 'notes.md')]);
+      for (const name of ['x.md', 'y.md']) await fse.outputFile(path.join(repo, 'skills', skill, name), `${name}\n`);
+    }
+
+    await pull({ force: true });
+
+    for (const dir of skillsDirs) {
+      expect(await fse.readdir(path.join(dir, 'deploy'))).toEqual(['SKILL.md']);
+      expect(await fse.readFile(path.join(dir, 'deploy', 'SKILL.md'), 'utf8')).toContain('Deploy.');
+      expect((await fse.readdir(dir)).filter((name) => name.includes('deploy') || name.includes('fresh'))).toEqual(['deploy']);
+    }
+    const warned = vi.mocked(log.warn).mock.calls.flat().join('\n');
+    for (const skill of ['deploy', 'fresh']) {
+      expect(warned).toContain(`Skipped skill ${skill} for opencode`);
+      expect(warned).toContain(`${path.join(repo, 'skills', skill, 'notes.md')} is a pipe, not a regular file`);
+    }
+  });
+
+  it('delivers no staging folder a copy cut short left in the team checkout, as a skill of its own', async () => {
+    await fse.ensureDir(path.join(home, '.config', 'opencode'));
+    await fse.outputFile(path.join(repo, 'skills', '.deploy.1a2b3c4d.staging', 'SKILL.md'), '---\nname: deploy\ndescription: d\n---\nHalf copied.\n');
+
+    await pull({});
+
+    expect(await fse.readdir(path.join(home, '.config', 'opencode', 'skills'))).not.toContainEqual(expect.stringContaining('staging'));
+    expect(await fse.readFile(path.join(home, '.config', 'opencode', 'skills', 'deploy', 'SKILL.md'), 'utf8')).toContain('Deploy.');
+  });
+
+  it('delivers none of the folders a pre-push sync cut short leaves beside a skill, as a skill of its own', async () => {
+    await fse.ensureDir(path.join(home, '.config', 'opencode'));
+    for (const left of Object.values(syncFolders(path.join(repo, 'skills', 'deploy')))) {
+      await fse.outputFile(path.join(left, 'SKILL.md'), '---\nname: deploy\ndescription: d\n---\nHalf synced.\n');
+    }
+
+    await pull({});
+
+    expect(await fse.readdir(path.join(home, '.config', 'opencode', 'skills'))).not.toContainEqual(expect.stringMatching(/\.teamai-(?:sync|prev)$/));
+    expect(await fse.readFile(path.join(home, '.config', 'opencode', 'skills', 'deploy', 'SKILL.md'), 'utf8')).toContain('Deploy.');
+  });
+
+  it('removes a staging folder a copy cut short left beside a skill, at once when its copy\'s process is gone, else an hour on, and keeps one its copy is still writing', async () => {
+    const skills = path.join(home, '.config', 'opencode', 'skills');
+    const [stale, fresh, orphaned, writing, own, contained] = ['.deploy.1a2b3c4d.staging', '.deploy.5e6f7a8b.staging', '.review.9c0d1e2f.staging', '.review.3a4b5c6d.staging', '.review.7e8f9a0b.staging', '.review.1f2e3d4c.staging']
+      .map((name) => path.join(skills, name));
+    for (const left of [stale, fresh]) await fse.outputFile(path.join(left, 'SKILL.md'), 'Half copied.\n');
+    const twoHoursAgo = new Date(Date.now() - 2 * 3_600_000);
+    await fse.utimes(stale, twoHoursAgo, twoHoursAgo);
+    // What a copy writes beside what it copies: the process copying, and the copy in a folder below.
+    const gone = await new Promise<number>((resolve) => { const child = spawn(process.execPath, ['-e', '']); child.on('exit', () => resolve(child.pid!)); });
+    // Another process still copying: a live one, not this one, whose own leftover the next row is.
+    const copier = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    onTestFinished(() => { copier.kill('SIGKILL'); });
+    await new Promise((resolve) => { copier.once('spawn', resolve); });
+    for (const [left, pid] of [[orphaned, gone], [writing, copier.pid!]] as const) {
+      await fse.outputJson(path.join(left, 'owner.json'), { pid, startedAt: new Date().toISOString(), host: os.hostname() });
+      await fse.outputFile(path.join(left, 'copy', 'SKILL.md'), 'Half copied.\n');
+    }
+    // A copy still running is kept however long it has run.
+    await fse.utimes(writing, twoHoursAgo, twoHoursAgo);
+    // One this process copied into and could not remove, as on a Windows EBUSY: no copy of it writes there any more.
+    await fse.outputJson(path.join(own, 'owner.json'), { ...await identityOf(process.pid), host: os.hostname() });
+    await fse.outputFile(path.join(own, 'copy', 'SKILL.md'), 'Half copied.\n');
+    // This process's pid in another pid namespace, as a container on the host's network with this home writes it: another copy.
+    await fse.outputJson(path.join(contained, 'owner.json'), { pid: process.pid, pidNamespace: 'pid:[4026532999]', startedAt: new Date().toISOString(), host: os.hostname() });
+    await fse.outputFile(path.join(contained, 'copy', 'SKILL.md'), 'Half copied.\n');
+
+    await pull({});
+
+    expect(await fse.pathExists(stale)).toBe(false);
+    expect(await fse.pathExists(fresh)).toBe(true);
+    expect(await fse.pathExists(orphaned)).toBe(false);
+    expect(await fse.pathExists(writing)).toBe(true);
+    expect(await fse.pathExists(own)).toBe(false);
+    expect(await fse.pathExists(contained)).toBe(true);
+    expect(await fse.readFile(path.join(skills, 'deploy', 'SKILL.md'), 'utf8')).toContain('Deploy.');
   });
 
   it('records an env-moved home that exists on the first pull that sees it, and keeps an existing record', async () => {
@@ -661,6 +750,30 @@ describe('a pull and the homes the env moves', () => {
       await pull({ force: true });
 
       expect(await fse.pathExists(path.join(hermes, 'skills', 'deploy'))).toBe(false);
+    });
+
+    // A Codex build reads the shared .agents/skills wherever its home is, so an instance's copy there goes with the skill.
+    it.each([
+      { tool: 'codex', home: '.codex', instance: undefined },
+      { tool: 'acme-codex', home: '.acme-codex', instance: 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n' },
+    ])('cleans a skill the team removed out of the shared .agents/skills when only $tool takes skills', async ({ tool, home: toolHome, instance }) => {
+      const { resetToolInstancesForTests, withToolInstances } = await import('../tool-instances.js');
+      onTestFinished(() => { resetToolInstancesForTests(); });
+      await fse.ensureDir(path.join(home, toolHome));
+      if (instance !== undefined) await fse.outputFile(path.join(repo, 'tools', 'acme-codex.yaml'), instance);
+      vi.mocked(loadTeamConfig).mockImplementation(async () => withToolInstances({ root: repo, scope: 'user', isForMember: true, namespaces: async () => 'legacy' }, team()));
+      config.enabledAgents = [tool];
+      const shared = path.join(home, '.agents', 'skills', 'deploy');
+      await fse.copy(path.join(repo, 'skills', 'deploy'), shared);
+      commitTeamRepo(repo);
+      await pull({});
+      expect(await fse.pathExists(path.join(shared, 'SKILL.md'))).toBe(true);
+      await fse.remove(path.join(repo, 'skills', 'deploy'));
+      await fse.outputFile(path.join(repo, 'skills', '.removed'), 'deploy\n');
+
+      await pull({ force: true });
+
+      expect(await fse.pathExists(shared)).toBe(false);
     });
 
     it('removes a skill no longer delivered from the OpenClaw workspace', async () => {

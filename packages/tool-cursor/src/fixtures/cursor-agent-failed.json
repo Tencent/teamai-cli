@@ -1,0 +1,1 @@
+{"type": "result", "subtype": "error", "is_error": true, "duration_ms": 640, "result": "Authentication required. Run `cursor-agent login` or set CURSOR_API_KEY.", "session_id": "0b6f2a52-5d7e-4c7e-9a43-6a1b2c3d4e62"}

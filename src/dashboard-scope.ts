@@ -2,14 +2,14 @@
  * The dashboard events each scope reports (#785): the log split into runs, and
  * each run given, whole, to the scope it started in.
  */
-import fs from 'node:fs';
+import { openRegularFile } from '@teamai/shared/regular-file';
 import path from 'node:path';
 import { z } from 'zod';
 import { dataHomeKey, resolveCopilotUsageTranscript } from './dashboard-collector.js';
 import { pathExists } from './utils/fs.js';
 import type { DashboardEvent, LocalConfig } from './types.js';
 import { getDataHome } from './types.js';
-import { getUserHome } from './utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 import { readSessionOwners, readSnapshotsIn } from './session-owners.js';
 
 /** The fields of a logged event that split the log into runs. The log is hand-editable: a field of the wrong type reads as absent. */
@@ -168,7 +168,7 @@ async function transcriptOrigin(transcript: string): Promise<string | undefined>
   let head: string;
 
   try {
-    const fh = await fs.promises.open(transcript, 'r');
+    const fh = await openRegularFile(transcript);
 
     try {
       const buffer = Buffer.alloc(64 * 1024);

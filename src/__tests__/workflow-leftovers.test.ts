@@ -8,13 +8,13 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { readRun } from '../workflow/store.js';
-import { claimRun, publishRun } from '../workflow/handoff.js';
+import { claimRun, publishRun, resumeRun } from '../workflow/handoff.js';
 import { retryStep } from '../workflow/run-controls.js';
 import { sweepLeftovers } from '../workflow/leftovers.js';
 import { runCopyToMerge } from '../workflow/workspace.js';
 import { getReportsDir, REPORTS_LOCK_FILENAME } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { fakeGh } from './helpers/fake-gh.js';
 import type { LocalConfig } from '../types.js';
 import type { RunState } from '../workflow/types.js';
@@ -165,6 +165,9 @@ describe('the branches of a run that succeeded', () => {
       by: 'success', kept: [{ branch: `teamai/${runId}/change/p1`, why: 'pr' }],
       deleted: [`teamai/${runId}/build-0/p1`, `teamai/${runId}/build-1/p1`], failed: [],
     });
+    // The upstream each push recorded goes with the branch it deleted; the one it kept keeps its own.
+    expect(git(cwd, ['config', '--local', '--get-regexp', String.raw`^branch\.teamai/`]).split('\n').map((line) => line.split(' ')[0]).sort())
+      .toEqual([`branch.teamai/${runId}/change/p1.merge`, `branch.teamai/${runId}/change/p1.remote`]);
   });
 
   it('deletes the branches answers read in worktrees of their own', async () => {
@@ -404,6 +407,10 @@ describe('doctor --fix past workflows.retention', () => {
     const attempt = run.steps.flatMap((step) => ('attempt' in step && step.attempt ? [step.attempt] : []))[0] ?? '';
     git(cwd, ['update-ref', `refs/teamai/kept/${attempt}`, 'HEAD']);
     git(cwd, ['push', '-q', 'origin', `HEAD:refs/heads/teamai/${runId}/base`]);
+    // The branch a fleet attempt of the run pushed its work to.
+    const fleetBranch = `teamai/attempts/${runId}/${attempt}`;
+    git(cwd, ['push', '-q', 'origin', `HEAD:refs/heads/${fleetBranch}`]);
+    const onOrigin = () => git(origin, ['for-each-ref', '--format=%(refname)', `refs/heads/${fleetBranch}`]);
     const worktrees = () => git(cwd, ['worktree', 'list', '--porcelain']).split('\n').filter((line) => line.startsWith('worktree ')).length;
     expect(branches(origin, runId)).toEqual(['base', 'broken/p1', 'change/p1', 'docs/p1']);
     expect(worktrees()).toBe(2);
@@ -411,16 +418,19 @@ describe('doctor --fix past workflows.retention', () => {
 
     expect(await sweepLeftovers(config, null, { now: settled + 13 * DAY, checkout: cwd })).toMatchObject({ swept: [] });
     expect(branches(origin, runId)).toEqual(['base', 'broken/p1', 'change/p1', 'docs/p1']);
+    expect(onOrigin()).toBe(`refs/heads/${fleetBranch}`);
 
     const swept = await sweepLeftovers(config, null, { now: settled + 14 * DAY, checkout: cwd });
 
     expect(swept.swept).toEqual([expect.objectContaining({
-      run: runId, branches: [`teamai/${runId}/base`, `teamai/${runId}/broken/p1`, `teamai/${runId}/docs/p1`], refs: [`refs/teamai/kept/${attempt}`], failed: [],
+      run: runId, branches: [fleetBranch, `teamai/${runId}/base`, `teamai/${runId}/broken/p1`, `teamai/${runId}/docs/p1`], refs: [`refs/teamai/kept/${attempt}`], failed: [],
     })]);
+    expect(onOrigin()).toBe('');
     expect(branches(origin, runId)).toEqual(['change/p1']);
     expect(branches(cwd, runId)).toEqual(['change/p1']);
     expect(worktrees()).toBe(1);
     expect(git(cwd, ['for-each-ref', 'refs/teamai/'])).toBe('');
+    expect(fs.existsSync(path.join(cwd, '.git', 'refs', 'teamai'))).toBe(false);
     expect(await sweepLeftovers(config, null, { now: settled + 15 * DAY, checkout: cwd })).toMatchObject({ swept: [] });
   });
 
@@ -470,6 +480,7 @@ describe('doctor --fix past workflows.retention', () => {
     const { config, cwd, root, origin, runId } = await fixture(FAILS_LAST);
     shareTeam(config, root);
     expect(await publishRun(config, runId, { checkout: cwd, env: {} })).toMatchObject({ ok: true });
+    expect(await resumeRun(config, runId, { claim: false, checkout: cwd })).toMatchObject({ ok: true });
     expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     const ended = await state(config, runId);
     const other = await otherInstall(config, root, origin);
@@ -490,6 +501,7 @@ describe('doctor --fix past workflows.retention', () => {
     shareTeam(config, root);
     fakeGh(path.join(root, 'gh'));
     expect(await publishRun(config, runId, { checkout: cwd, env: {} })).toMatchObject({ ok: true });
+    expect(await resumeRun(config, runId, { claim: false, checkout: cwd })).toMatchObject({ ok: true });
     expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     const ended = await state(config, runId);
     const other = await otherInstall(config, root, origin);
@@ -533,6 +545,7 @@ describe('doctor --fix past workflows.retention', () => {
     const { config, cwd, root, origin, runId } = await fixture(FAILS_LAST);
     shareTeam(config, root);
     expect(await publishRun(config, runId, { checkout: cwd, env: {} })).toMatchObject({ ok: true });
+    expect(await resumeRun(config, runId, { claim: false, checkout: cwd })).toMatchObject({ ok: true });
     expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     const ended = await state(config, runId);
     const other = await otherInstall(config, root, origin);
@@ -568,6 +581,7 @@ describe('doctor --fix past workflows.retention', () => {
     const { config, cwd, root, origin, runId } = await fixture(FAILS_LAST);
     shareTeam(config, root);
     expect(await publishRun(config, runId, { checkout: cwd, env: {} })).toMatchObject({ ok: true });
+    expect(await resumeRun(config, runId, { claim: false, checkout: cwd })).toMatchObject({ ok: true });
     expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     const ended = await state(config, runId);
     const before = branches(origin, runId);
@@ -624,6 +638,46 @@ describe('doctor --fix past workflows.retention', () => {
       run: runId, worktrees: [], failed: [{ branch: `teamai/${runId}/join/p1`, reason: expect.stringContaining(`worktree ${dir} was not removed`) }],
     })]);
     expect(fs.existsSync(dir)).toBe(true);
+  });
+
+  it('keeps a worktree that holds the worktree of a run started inside it, naming both, and removes it once that one is gone', async () => {
+    const { config, cwd, runId } = await fixture(NO_DELIVERY.replace("writeFileSync('join.txt', 'J')", "writeFileSync('join.txt', 'J'); process.exit(1)"));
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const outer = git(cwd, ['worktree', 'list', '--porcelain']).split('\n').filter((line) => line.startsWith('worktree ')).map((line) => line.slice('worktree '.length)).find((at) => at !== cwd) ?? '';
+    // Where a run started in the outer worktree puts its own, hidden from the outer one's status.
+    const inner = path.join(outer, '.teamai', 'workflow-worktrees', 'teamai-rinner-step-p1-0123456789ab');
+    git(outer, ['worktree', 'add', '-q', '-b', 'teamai/rinner/step/p1', inner]);
+    fs.writeFileSync(path.join(inner, 'unsaved.txt'), 'work no commit holds');
+    vi.spyOn(log, 'warn');
+    const settled = Date.parse((await state(config, runId)).updatedAt);
+
+    const swept = await sweepLeftovers(config, null, { now: settled + 14 * DAY, checkout: cwd });
+
+    expect(fs.readFileSync(path.join(inner, 'unsaved.txt'), 'utf8')).toBe('work no commit holds');
+    expect(swept.swept).toEqual([expect.objectContaining({
+      run: runId, worktrees: [], failed: [{ branch: `teamai/${runId}/join/p1`, reason: expect.stringContaining(`worktree ${outer} was not removed (it holds the worktree ${inner}`) }],
+    })]);
+    git(cwd, ['worktree', 'remove', '--force', inner]);
+
+    expect((await sweepLeftovers(config, null, { now: settled + 15 * DAY, checkout: cwd })).swept).toEqual([expect.objectContaining({ run: runId, worktrees: [outer] })]);
+    expect(fs.existsSync(outer)).toBe(false);
+  });
+
+  it('runs no program a step planted in the config of a worktree it removes', async () => {
+    const { config, cwd, root, runId } = await fixture(NO_DELIVERY.replace("writeFileSync('join.txt', 'J')", "writeFileSync('join.txt', 'J'); process.exit(1)"));
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const dir = git(cwd, ['worktree', 'list', '--porcelain']).split('\n').filter((line) => line.startsWith('worktree ')).map((line) => line.slice('worktree '.length)).find((at) => at !== cwd) ?? '';
+    const ran = path.join(root, 'planted-ran');
+    const program = path.join(root, 'planted.sh');
+    fs.writeFileSync(program, `#!/bin/sh\ntouch '${ran}'\n`, { mode: 0o755 });
+    git(cwd, ['config', 'extensions.worktreeConfig', 'true']);
+    git(dir, ['config', '--worktree', 'core.fsmonitor', program]);
+    vi.spyOn(log, 'warn');
+
+    const swept = await sweepLeftovers(config, null, { now: Date.parse((await state(config, runId)).updatedAt) + 14 * DAY, checkout: cwd });
+
+    expect([fs.existsSync(ran), fs.existsSync(dir)]).toEqual([false, false]);
+    expect(swept.swept).toEqual([expect.objectContaining({ run: runId, worktrees: [dir], failed: [] })]);
   });
 
   it('deletes again what a succeeded run could not delete as it settled', async () => {
@@ -773,6 +827,7 @@ describe('a run that settled longer ago than workflows.retention', () => {
     const { config, cwd, root, origin, runId } = await fixture(FAILS_LAST);
     shareTeam(config, root);
     expect(await publishRun(config, runId, { checkout: cwd, env: {} })).toMatchObject({ ok: true });
+    expect(await resumeRun(config, runId, { claim: false, checkout: cwd })).toMatchObject({ ok: true });
     expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed', record: 'published' } } });
     const until = Date.parse((await state(config, runId)).retainedUntil ?? '');
     // A snapshot an older teamai wrote as it settled the run again, which publishes no retainedUntil.
@@ -903,6 +958,7 @@ describe('a retry of a run that succeeded', () => {
     const { config, cwd, root, origin, runId } = await fixture(CHOOSES);
     shareTeam(config, root);
     expect(await publishRun(config, runId, { checkout: cwd, env: {} })).toMatchObject({ ok: true });
+    expect(await resumeRun(config, runId, { claim: false, checkout: cwd })).toMatchObject({ ok: true });
     expect(await runLocalDriver(config, runId, cwd, { autoApprove: true })).toMatchObject({ data: { done: { outcome: 'succeeded', record: 'published' } } });
     const change = `teamai/${runId}/change/p1`;
     const tip = (await state(config, runId)).copies?.[change]?.commit;

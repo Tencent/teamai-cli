@@ -1,0 +1,10 @@
+{
+  "name": "@teamai/tool-kiro",
+  "private": true,
+  "type": "module",
+  "description": "Kiro CLI: its descriptor and launch profile; bundled into teamai-cli.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./facts": "./src/facts.ts"
+  }
+}

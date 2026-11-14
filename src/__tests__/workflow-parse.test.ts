@@ -854,7 +854,8 @@ describe('for_each', () => {
   });
 
   it.each([
-    ['a list', '[a, b]', 'steps[0].for_each', 'step "build" for_each must be an expression, or a map of items and max_parallel'],
+    ['a list', '[a, b]', 'steps[0].for_each', 'step "build" for_each is a YAML list, and it takes an expression that gives the list, or a map of items and max_parallel. Declare the list as an input, give it its value in defaults.inputs, and write for_each: inputs.<name>'],
+    ['a map whose items is a list', '{ items: [a, b], max_parallel: 2 }', 'steps[0].for_each.items', 'step "build" for_each.items is a YAML list, and it takes an expression that gives the list. Declare the list as an input, give it its value in defaults.inputs, and write items: inputs.<name>'],
     ['a map without items', '{ max_parallel: 2 }', 'steps[0].for_each.items', 'step "build" for_each.items must be an expression'],
     ['max_parallel 0', '{ items: inputs.targets, max_parallel: 0 }', 'steps[0].for_each.max_parallel', 'step "build" for_each.max_parallel must be a whole number from 1'],
   ])('rejects a for_each that is %s, so a kept copy cannot run the step once', (_what, value, field, message) => {
@@ -1554,7 +1555,7 @@ ends: { shipped: succeeded }
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.diagnostics.map(formatDiagnostic)).toEqual(expect.arrayContaining([
-      'workflows/build.yaml:5: field "defaults.requires": defaults.requires must map network, isolation, env, strict to values',
+      'workflows/build.yaml:5: field "defaults.requires": defaults.requires must map network, isolation, env, labels, strict, host to values',
       expect.stringMatching(/^workflows\/build\.yaml:9: field "steps\[0\]\.requires\.network": steps\[0\]\.requires\.network: .*boolean.*string$/),
       expect.stringMatching(/field "steps\[0\]\.requires\.isolation": steps\[0\]\.requires\.isolation: .*"none".*"worktree".*"sandbox"/),
       expect.stringContaining('field "steps[1].requires": step "done" has no action'),
@@ -2782,8 +2783,8 @@ finally:
     command: git push
     workspace: new
 `)).toEqual([
-      'workflows/build.yaml:9: field "finally[0].prompt": a finally step runs a read-only command, so it carries only id, needs, if, command, env, output, timeout',
-      'workflows/build.yaml:13: field "finally[1].workspace": a finally step runs a read-only command, so it carries only id, needs, if, command, env, output, timeout',
+      'workflows/build.yaml:9: field "finally[0].prompt": a finally step runs a read-only command, so it carries only id, needs, if, command, env, output, timeout, requires',
+      'workflows/build.yaml:13: field "finally[1].workspace": a finally step runs a read-only command, so it carries only id, needs, if, command, env, output, timeout, requires',
     ]);
   });
 

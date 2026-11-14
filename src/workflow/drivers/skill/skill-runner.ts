@@ -8,18 +8,19 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { resolveCliEntry } from '../../../builtin-hooks.js';
 import { stepEnvironment, withRunningCli } from '../../../env-exec.js';
-import { startGroupedCommand, stopRecordedGroup, type CommandExit } from '../../../tool-launch/process-stop.js';
+import { startGroupedCommand, type GroupedCommandExit } from '../../shell-command.js';
 import type { RunMode } from '../../../launch-context.js';
 import type { LocalConfig } from '../../../types.js';
 import { writeFileAtomic } from '../../../utils/fs.js';
-import { redact } from '../../../utils/redact.js';
-import { attemptEnv } from '../../attempt-marker.js';
+import { redact } from '@teamai/shared/redact';
+import { attemptEnv, commandStepEnv } from '../../attempt-marker.js';
 import { runConfinedStep, type ConfinedStepEnd, type ConfinedStepLease } from '../../confined-step.js';
-import { commandEnd, refuseDirtyAdoptedCommand, type WorkflowClient } from '../../protocol.js';
+import { STALE_WINDOW_MS } from '../../handoff.js';
+import { commandEnd, continuedAttempt, refuseDirtyAdoptedCommand, type WorkflowClient } from '../../protocol.js';
 import { attemptDir, runnerAlive, withRunnerLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
-import { HOST_PROFILES } from './host-profiles.js';
-import { writeSkillState, readSkillState, type AttemptState, type Dispatch, type ReportBody, type SkillState } from './skill-state.js';
+import { SESSION_HOST_PROFILES } from './session-host-profiles.js';
+import { childTitle, writeSkillState, readSkillState, type AttemptState, type Dispatch, type ReportBody, type SkillState } from './skill-state.js';
 import { pickChildModel } from './child-model.js';
 import { writeChildBrief } from './child-brief.js';
 import { reportLiteral, runnerArgs } from './literals.js';
@@ -30,6 +31,9 @@ import {
 } from './transitions.js';
 import type { Runners, SkillContext } from './skill-driver.js';
 import type { SkillAnswer } from './turn.js';
+import { retryCommand } from '../../runtimes/retry-command.js';
+import { stopLeftInProcess } from '../../runtimes/cancelled.js';
+import { endRunsPartOf } from '../../run-controls.js';
 
 /** Runners as detached teamai processes, alive while they hold their runner lock. */
 export function detachedRunners(config: LocalConfig): Runners {
@@ -56,7 +60,8 @@ export function detachedRunners(config: LocalConfig): Runners {
     alive: (run, attempt) => runnerAlive(config, run, attempt),
     // A process group of its own, so a stop reaches every process the command started.
     command: ({ run, attempt, command, cwd, env }) => startGroupedCommand({ command, cwd, env, detached: process.platform !== 'win32', group: attemptDir(config, run, attempt) }),
-    stopLeft: (run, attempt) => stopRecordedGroup(attemptDir(config, run, attempt)),
+    // Its runner is gone, so nothing else ends the login a Codex judge it ran held.
+    stopLeft: async (run, attempt) => { await stopLeftInProcess(config, run, attempt); },
     sleep: (ms, signal) => new Promise((resolve) => {
       const timer = setTimeout(resolve, ms);
       signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
@@ -101,6 +106,13 @@ async function runAttempt(context: SkillContext, run: RunId, attempt: AttemptId)
     if (prepared.kind === 'prepared') {
       const failure = await setUp(context, run, attempt, prepared);
       const stage = await locked(context, run, (lock) => (failure ? setupFailed(context, lock, attempt, failure) : begin(context, lock, attempt, prepared)));
+
+      // The agent's child works the prompt now, and only this runner calls while it does: it checks the run until the
+      // attempt is reported or stopped, and each check renews this install's hold on the run, so nobody takes over a run
+      // whose step runs here.
+      if (stage.kind === 'gone' && stage.status === 'offered') {
+        await whileOpen(context, run, attempt, { work: new Promise<never>(() => {}), stop: async () => {}, phases: ['offered', 'dispatched'], owned: true });
+      }
 
       if (stage.kind === 'gone') return { data: { runner: { attempt, status: stage.status } } };
 
@@ -190,6 +202,23 @@ async function fail(context: SkillContext, lock: RunLock, input: { state: SkillS
   return send(context, lock, prepareFailedRow(state, { attempt, body: failedBody(state, attempt, revision, failure), cause, changed }), attempt);
 }
 
+/**
+ * The child of the earlier step whose conversation `step` goes on in (`session.from`), on a session host that starts children:
+ * the one this run dispatched that step's settled attempt to. The run records no session of such a child, whose session
+ * is its orchestrator's, so the earlier step's attempt names it. None while an open attempt already went on in that
+ * child: a conversation takes one step at a time, as a runtime starts a new one for a turn it cannot take.
+ */
+async function continuedChild(config: LocalConfig, state: SkillState, step: string): Promise<{ title: string } | undefined> {
+  if (state.host.kind !== 'chosen' || !SESSION_HOST_PROFILES[state.host.id].startsChildAgent) return undefined;
+  const earlier = await continuedAttempt(config, state.run, step);
+
+  if (!earlier || !state.settled.includes(earlier.attempt)) return undefined;
+  const title = childTitle(earlier.step, earlier.attempt);
+  const isBusy = state.attempts.some((open) => ('dispatch' in open && open.dispatch.continues?.title === title) || (open.phase === 'stopping' && open.child === title));
+
+  return isBusy ? undefined : { title };
+}
+
 /** Under the lock: prepares the attempt's place (C4 to C7), or sends the report it already has. */
 async function prepare(context: SkillContext, lock: RunLock, attempt: AttemptId): Promise<Stage> {
   const state = await readState(context, lock);
@@ -206,11 +235,11 @@ async function prepare(context: SkillContext, lock: RunLock, attempt: AttemptId)
   const job = await readJob(context.config, lock.run, attempt);
 
   if (!job) {
-    return failed({ code: 'run_unreadable', message: `The lease of attempt ${attempt} was not saved where its runner reads it, so the step did not run. Retry it with teamai workflow retry ${lock.run} ${open.step}.` });
+    return failed({ code: 'run_unreadable', message: `The lease of attempt ${attempt} was not saved where its runner reads it, so the step did not run. Retry it with ${retryCommand({ run: lock.run, step: open.step })}.` });
   }
 
   const placed = async (prepared: Awaited<ReturnType<WorkflowClient['prepare']>>): Promise<Stage> => {
-    // Only a place the host made is refused, and prepareHostPlace answers that as a place to make.
+    // Only a place the session host made is refused, and prepareSessionHostPlace answers that as a place to make.
     if (prepared.kind === 'failed' || prepared.kind === 'refused') return failed(prepared.failure);
 
     if (prepared.kind === 'busy') {
@@ -231,10 +260,10 @@ async function prepare(context: SkillContext, lock: RunLock, attempt: AttemptId)
   };
 
   if (open.phase !== 'preparing' || !open.request) return placed(await context.client.prepare(lock, job.raw));
-  const hosted = await context.client.prepareHostPlace(lock, job.raw, open.request);
+  const sessionHostPlace = await context.client.prepareSessionHostPlace(lock, job.raw, open.request);
 
-  if (hosted.kind !== 'needs-place') return placed(hosted);
-  const { name, branch, start, refused } = hosted;
+  if (sessionHostPlace.kind !== 'needs-place') return placed(sessionHostPlace);
+  const { name, branch, start, refused } = sessionHostPlace;
   const placing = traced(context, placingRow(state, open, { ask: { name, branch, start }, refused }));
   await writeSkillState(context.config, lock, placing.state, context.env.secrets);
 
@@ -259,14 +288,14 @@ async function setupFailed(context: SkillContext, lock: RunLock, attempt: Attemp
  * ran reached only the engine, and an attempt stopped meanwhile is given up before either starts (C9).
  */
 async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, prepared: Extract<Stage, { kind: 'prepared' }>): Promise<Stage> {
-  const state = await ticked(context, lock);
+  const state = (await ticked(context, lock))?.state;
   const open = state && openAttempt(state, attempt);
 
   if (state && open?.phase === 'stopping') return stopped(context, lock, state, attempt);
 
   if (!state || (open?.phase !== 'preparing' && open?.phase !== 'running')) return { kind: 'gone', status: 'gone' };
   const { dir, job: { lease } } = prepared;
-  // The step has not run. An empty list keeps a host file written after adopt out of the commit, and the failure stays the one that stopped the step.
+  // The step has not run. An empty list keeps a session host file written after adopt out of the commit, and the failure stays the one that stopped the step.
   const failed = (failure: WorkflowFailure, cause: 'place' | 'model'): Promise<Stage> => fail(context, lock, { state, attempt, revision: open.revision, failure, cause, changed: [] });
 
   if (lease.executor === 'command') {
@@ -284,7 +313,7 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
     return stage;
   }
 
-  const { agent, model, defaultModel, output, place, writes, interactive, readOnly, isolation, confined } = lease;
+  const { agent, model, defaultModel, output, place, writes, interactive, readOnly, isolation, confined, session } = lease;
 
   // D28 leased the step to this machine's confined tool, which runs it here, as the local driver does (C12).
   if (open.runs === 'here' && confined) {
@@ -309,12 +338,14 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
 
   // A child of a confined step works in its directory, which holds everything it may read.
   const workDir = confined ? confined.dir : dir;
+  const by = interactive ? 'person' : state.host.kind === 'chosen' && !SESSION_HOST_PROFILES[state.host.id].startsChildAgent ? 'self' : 'child';
 
   const brief = await writeChildBrief({
     config: context.config, run: lock.run, attempt, step: open.step, dir: workDir, prompt: prepared.prompt ?? lease.prompt,
     changes: confined ? 'confined' : writes ? 'commit' : interactive && place === 'checkout' && !readOnly ? 'keep' : 'none',
-    by: interactive ? 'person' : state.host.kind === 'chosen' && !HOST_PROFILES[state.host.id].startsChildAgent ? 'self' : 'child',
+    by,
     output, report: reportLiteral(state.invocation, lock.run, attempt), secrets: context.env.secrets,
+    ...(lease.folder !== undefined && { folder: lease.folder }),
   });
 
   const dispatch: Dispatch = { place, dir: workDir, brief, model: picked.model };
@@ -328,6 +359,13 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
   if (isolation) dispatch.isolation = isolation;
 
   if (agent !== undefined) dispatch.agent = agent;
+
+  if (by !== 'child') dispatch.bySession = true;
+
+  if (session) dispatch.resumes = session;
+  const continues = interactive || confined ? undefined : await continuedChild(context.config, state, open.step);
+
+  if (continues) dispatch.continues = continues;
   const offered = traced(context, offerRow(state, { attempt, dispatch }));
 
   if (offered) await writeSkillState(context.config, lock, offered.state, context.env.secrets);
@@ -344,31 +382,40 @@ function checkIn(context: SkillContext, expiresAt: string | undefined): number {
 
 /**
  * Under the lock: a tick of the run as its driver, which takes no lease (D1), so the runner learns what the engine
- * cancelled while no agent calls. The state it saved.
+ * cancelled while no agent calls. The state it saved, and `lost` when the tick found another install owns the run
+ * (`not_owner`).
  */
-async function ticked(context: SkillContext, lock: RunLock): Promise<SkillState | undefined> {
+async function ticked(context: SkillContext, lock: RunLock): Promise<{ state: SkillState; lost: boolean } | undefined> {
   const state = await readState(context, lock);
 
   if (!state) return undefined;
-  const after = (await runTick(context, lock, state, 'runner')).state;
-  await writeSkillState(context.config, lock, after, context.env.secrets);
+  const after = await runTick(context, lock, state, 'runner');
+  await writeSkillState(context.config, lock, after.state, context.env.secrets);
 
-  return after;
+  return { state: after.state, lost: after.error?.code === 'not_owner' };
 }
 
-/** Under the lock: whether the attempt is still in one of `phases`, once the run is ticked. */
-async function check(context: SkillContext, lock: RunLock, attempt: AttemptId, phases: readonly AttemptState['phase'][]): Promise<{ open: boolean }> {
-  const state = await ticked(context, lock);
-  const phase = state && openAttempt(state, attempt)?.phase;
+/**
+ * Under the lock: whether the attempt is still in one of `phases`, once the run is ticked; with `owned`, also whether
+ * this install still drives the run, which another install took over (`not_owner`) drives there now, and whether the
+ * session called within the stale window: a session that called nothing for that long has likely ended, and a runner
+ * that kept ticking, which renews the run, would hold it here and on teamai-reports for good.
+ */
+async function check(context: SkillContext, lock: RunLock, attempt: AttemptId, { phases, owned }: { phases: readonly AttemptState['phase'][]; owned: boolean }): Promise<{ open: boolean }> {
+  const run = await ticked(context, lock);
+  const silent = run !== undefined && context.now().getTime() - Date.parse(run.state.orchestrator.lastCallAt) >= STALE_WINDOW_MS;
+  const phase = run && !(owned && (run.lost || silent)) ? openAttempt(run.state, attempt)?.phase : undefined;
 
   return { open: phase !== undefined && phases.includes(phase) };
 }
 
 /**
  * Waits for `work`, which runs outside the run lock, checking the run every `RUNNER_POLL_MS` and at `expiresAt`, since
- * a cancel or a deadline reaches only the engine. Undefined once a check finds the attempt out of `phases`: stopped.
+ * a cancel or a deadline reaches only the engine. Undefined once a check finds the attempt out of `phases`: stopped; with
+ * `owned`, also once another install took the run over or the session called nothing for the stale window. A check that
+ * throws, as one of a run an uninstall removes does, stops `work` with `stop` first, so nothing it started is left running.
  */
-async function whileOpen<T>(context: SkillContext, run: RunId, attempt: AttemptId, input: { work: Promise<T>; phases: readonly AttemptState['phase'][]; expiresAt?: string }): Promise<T | undefined> {
+async function whileOpen<T>(context: SkillContext, run: RunId, attempt: AttemptId, input: { work: Promise<T>; stop: () => Promise<void>; phases: readonly AttemptState['phase'][]; owned?: boolean; expiresAt?: string }): Promise<T | undefined> {
   for (;;) {
     const checking = new AbortController();
     const ended = await Promise.race([input.work.then((value) => ({ value })), context.runners.sleep(checkIn(context, input.expiresAt), checking.signal).then(() => undefined)]);
@@ -376,7 +423,12 @@ async function whileOpen<T>(context: SkillContext, run: RunId, attempt: AttemptI
 
     if (ended) return ended.value;
 
-    if (!(await locked(context, run, (lock) => check(context, lock, attempt, input.phases))).open) return undefined;
+    const checked = await locked(context, run, (lock) => check(context, lock, attempt, { phases: input.phases, owned: input.owned === true })).catch(async (cause: unknown) => {
+      await input.stop();
+      throw cause;
+    });
+
+    if (!checked.open) return undefined;
   }
 }
 
@@ -387,21 +439,27 @@ async function whileOpen<T>(context: SkillContext, run: RunId, attempt: AttemptI
 async function setUp(context: SkillContext, run: RunId, attempt: AttemptId, prepared: Extract<Stage, { kind: 'prepared' }>): Promise<WorkflowFailure | undefined> {
   const stop = new AbortController();
   const setup = context.client.setup(run, attempt, prepared.mode, stop.signal);
-  const ended = await whileOpen(context, run, attempt, { work: setup.then((failure) => ({ failure })), phases: ['preparing', 'running'], expiresAt: prepared.expiresAt });
 
-  if (ended) return ended.failure;
-  stop.abort();
+  const stopSetup = async (): Promise<WorkflowFailure | undefined> => {
+    stop.abort();
 
-  return setup;
+    return await setup;
+  };
+
+  const ended = await whileOpen(context, run, attempt, { work: setup.then((failure) => ({ failure })), stop: async () => { await stopSetup(); }, phases: ['preparing', 'running'], expiresAt: prepared.expiresAt });
+
+  return ended ? ended.failure : await stopSetup();
 }
 
 /**
  * Runs the job's command in `dir`, outside the run lock, until it exits or a check finds its attempt stopped, which
  * stops it. Keeps its masked output in `output.log`, and answers with that masked `output`.
  */
-async function runCommand(context: SkillContext, run: RunId, attempt: AttemptId, stage: Extract<Stage, { kind: 'run' }>): Promise<CommandExit> {
-  const command = context.runners.command({ run, attempt, command: stage.command, cwd: stage.dir, env: { ...stage.env, ...attemptEnv(context.config, run, attempt, stage.mode) } });
-  const exited = (await whileOpen(context, run, attempt, { work: command.exit, phases: ['running'], expiresAt: stage.expiresAt })) ?? (await command.stop());
+async function runCommand(context: SkillContext, run: RunId, attempt: AttemptId, stage: Extract<Stage, { kind: 'run' }>): Promise<GroupedCommandExit> {
+  const command = context.runners.command({ run, attempt, command: stage.command, cwd: stage.dir, env: { ...stage.env, ...commandStepEnv(context.config, run, attempt, stage.mode) } });
+  const exited = (await whileOpen(context, run, attempt, { work: command.exit, stop: async () => { await command.stop(); }, phases: ['running'], expiresAt: stage.expiresAt })) ?? (await command.stop());
+  // However the command ended, a run its process started and drove is part of the attempt, and ends with it.
+  await endRunsPartOf(context.config, { run, attempt });
   const output = redact(exited.output, { envSecrets: context.env.secrets, patterns: false });
   await writeFileAtomic(path.join(attemptDir(context.config, run, attempt), 'output.log'), output);
 
@@ -415,12 +473,16 @@ async function runCommand(context: SkillContext, run: RunId, attempt: AttemptId,
 async function runConfinedHere(context: SkillContext, run: RunId, attempt: AttemptId, stage: Extract<Stage, { kind: 'confined' }>): Promise<ConfinedStepEnd> {
   const stop = new AbortController();
   const work = runConfinedStep({ config: context.config, run, lease: stage.lease, signal: stop.signal, secrets: context.env.secrets });
-  const ended = await whileOpen(context, run, attempt, { work, phases: ['running'], expiresAt: stage.expiresAt });
 
-  if (ended) return ended;
-  stop.abort();
+  const stopStep = async (): Promise<ConfinedStepEnd> => {
+    stop.abort();
 
-  return work;
+    return await work;
+  };
+
+  const ended = await whileOpen(context, run, attempt, { work, stop: async () => { await stopStep(); }, phases: ['running'], expiresAt: stage.expiresAt });
+
+  return ended ?? await stopStep();
 }
 
 /** Under the lock: stores the report of the confined run (C13), or gives up a stopped attempt (C9), then sends it. */
@@ -435,7 +497,7 @@ async function confinedReport(context: SkillContext, lock: RunLock, attempt: Att
 }
 
 /** Under the lock: stores the report of the exited command (C8), or gives up a stopped attempt (C9), then sends it. */
-async function report(context: SkillContext, lock: RunLock, attempt: AttemptId, exited: CommandExit): Promise<Stage> {
+async function report(context: SkillContext, lock: RunLock, attempt: AttemptId, exited: GroupedCommandExit): Promise<Stage> {
   const state = await readState(context, lock);
   const open = state && openAttempt(state, attempt);
 

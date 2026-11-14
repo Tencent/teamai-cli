@@ -185,9 +185,10 @@ describe('recall maintenance --update-quality', () => {
     child.kill('SIGINT');
 
     expect(await exited).toBe('SIGINT');
-    const hint = /^ℹ Run (r[0-9a-f]{16}) is still open\. Continue it with: teamai workflow resume (r[0-9a-f]{16})$/m.exec(stderr);
+    const hint = /^ℹ Run (r[0-9a-f]{16}) is still open\. Continue it here with: teamai workflow resume (r[0-9a-f]{16}), or hand it to another machine with: teamai workflow publish (r[0-9a-f]{16})$/m.exec(stderr);
     expect(hint, stderr).not.toBeNull();
     expect(hint?.[2]).toBe(hint?.[1]);
+    expect(hint?.[3]).toBe(hint?.[1]);
     const runFile = path.join(home, '.teamai', 'workflows', 'runs', `${hint?.[1]}.json`);
     const stopped = JSON.parse(fs.readFileSync(runFile, 'utf8')) as { status: string };
     expect(stopped.status).toBe('running');

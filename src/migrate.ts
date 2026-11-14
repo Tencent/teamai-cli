@@ -1,18 +1,19 @@
 import path from 'node:path';
 import fse from 'fs-extra';
 import YAML from 'yaml';
-import { parseYaml } from './utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { z } from 'zod';
 import { isSelfMode, LocalConfigSchema, SYNC_LOCK_FILENAME, WORKTREE_DIRNAMES, type LocalConfig } from './types.js';
 import { getRemoteUrl, resolveAnchors } from './utils/git.js';
 import { resolvePartitionDir, writeAnchorFile } from './utils/partition.js';
 import { realpath } from 'node:fs/promises';
-import { expandHome, listFilesRecursive, pathExists, readFileIfExists, readFileSafe, remove, writeFile } from './utils/fs.js';
+import { listFilesRecursive, pathExists, readFileIfExists, readFileSafe, remove, writeFile } from './utils/fs.js';
 import { acquireLock, releaseLock } from './update.js';
 import { detectProjectConfig, readConfigFrom } from './config.js';
-import { getUserHome } from './utils/home.js';
-import { log } from './utils/logger.js';
+import { getUserHome, expandHome } from '@teamai/shared/home';
+import { log } from '@teamai/shared/log';
 import { acquireQueueLock, countQueued, pendingLearningsDir, queueOwner, sameQueueOwner, setAsideCheckoutQueue, withQueueLock, type QueueOwner } from './utils/pending-learnings.js';
+import { copyRegularTree, moveRegularTree } from '@teamai/shared/regular-file';
 
 /**
  * P1-3 automatic migration (issue #374).
@@ -508,13 +509,12 @@ export async function runMigration(
     }
 
     // 1. Copy into a sibling staging dir (NOT the partition itself) so an
-    //    interrupted copy never looks like a built partition. Use raw fse.copy
+    //    interrupted copy never looks like a built partition. Use copyRegularTree
     //    (NOT copyDir): copyDir filters out `.git`, which would corrupt the
     //    team-repo clone. Skip disposable worktrees and lock files.
     await remove(staging);
     await fse.ensureDir(path.dirname(partitionDir));
-    await fse.copy(legacyDir, staging, {
-      overwrite: true,
+    await copyRegularTree(legacyDir, staging, {
       filter: (src) => {
         const rel = path.relative(legacyDir, src);
 
@@ -852,7 +852,7 @@ async function retireSupersededInstall(legacyDir: string, partitionDir: string, 
     await writeFile(path.join(backup, '.gitignore'), BACKUP_GITIGNORE);
   }
 
-  const move = (name: string) => fse.move(path.join(legacyDir, name), path.join(backup, name));
+  const move = (name: string) => moveRegularTree(path.join(legacyDir, name), path.join(backup, name));
 
   for (const name of present) if (name !== 'config.yaml') await move(name);
 
@@ -913,7 +913,7 @@ async function holdsSelfKnowledge(dir: string): Promise<boolean> {
  * NOT a direct copy onto `dest`. A concurrent self pull/push does NOT take the
  * partition `.sync-lock` (lockScope skips non-git kinds), so it can read
  * `<partition>/env.local` while we relocate: the atomic rename guarantees it sees
- * either the complete file or nothing, never a half-written one. Uses raw fse.copy
+ * either the complete file or nothing, never a half-written one. Uses copyRegularTree
  * (NOT copyDir) so a nested `.git` under workspaces/ survives.
  *
  * False, relocating nothing, when learnings are still queued in the checkout
@@ -960,7 +960,7 @@ async function migrateSelfA1(legacyDir: string, partitionDir: string, legacyOwne
     // source. A leftover .tmp from an earlier crash is cleared first.
     const tmp = `${dest}.${process.pid}.tmp`;
     await remove(tmp);
-    await fse.copy(src, tmp, { overwrite: true });
+    await copyRegularTree(src, tmp);
     await fse.rename(tmp, dest);
 
     if (!(await pathExists(dest))) {
@@ -1157,7 +1157,7 @@ async function mergeDirIntoPartition(src: string, dest: string): Promise<void> {
     const childSrc = path.join(src, child);
     const tmp = `${childDest}.${process.pid}.tmp`;
     await remove(tmp);
-    await fse.copy(childSrc, tmp, { overwrite: true });
+    await copyRegularTree(childSrc, tmp);
     await fse.rename(tmp, childDest);
   }
 }
@@ -1174,7 +1174,7 @@ async function listMigratableEntries(legacyDir: string): Promise<string[]> {
  *  - config.yaml parses as a LocalConfig,
  *  - if the source has a team-repo git clone, the staged copy has its `.git`
  *    AND `git rev-parse HEAD` works on it (proves the copy did NOT drop `.git`
- *    — the copyDir-vs-fse.copy trap — and the clone is actually usable, not just
+ *    — the copyDir-vs-copyRegularTree trap — and the clone is actually usable, not just
  *    present-but-corrupt),
  *  - every migratable top-level entry made it across.
  * Runs on the STAGING copy, before the atomic rename, so any shortfall aborts

@@ -1,12 +1,12 @@
 import path from 'node:path';
-import { parseYaml } from './utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { autoDetectInit, loadStateForScope } from './config.js';
 import { listCachedWorkflows, resolveStart, startingAlias } from './workflow/cache.js';
 import { summarizeWorkspaceChildren } from './workspace-children.js';
 import { teamRefNotice } from './team-ref.js';
 import { getDefaultBranch, getHeadRev, getRepoStatus } from './utils/git.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { readTeamRules } from './resources/rules.js';
 import { getAllHandlers, getHandler } from './resources/index.js';
 import { listDirs, pathExists, readFileSafe } from './utils/fs.js';
@@ -21,7 +21,7 @@ import {
   type AgentSkillsView,
 } from './agent-skills.js';
 import { RESOURCE_TYPES, LocalConfigSchema, getDataHome, installScopeName, type GlobalOptions, type ResourceType } from './types.js';
-import { projectsRootDir, readAnchorFile, projectSlug, legacyProjectSlug } from './utils/partition.js';
+import { projectsRootDir, readAnchorFile, projectSlug, earlierProjectSlugs } from './utils/partition.js';
 import { checkoutForRepoAnchor } from './utils/git.js';
 import { TEAM_MCP_ENTRIES, teamMcpDef } from './resources/mcp.js';
 import { LayeredEntries } from './resources/layered-entries.js';
@@ -240,7 +240,7 @@ export async function status(options: GlobalOptions): Promise<void> {
  *               format — data is fine, the name just predates the widening;
  *               the next command that resolves the project adopts it
  *   - corrupt : the dir name matches neither slug(anchor) nor
- *               legacyProjectSlug(anchor) → tampered/half-written
+ *               earlierProjectSlugs(anchor) → tampered/half-written
  */
 async function statusAll(): Promise<void> {
   const root = projectsRootDir();
@@ -298,9 +298,9 @@ async function statusAll(): Promise<void> {
       orphanCount++;
     } else if (projectSlug(anchor) === slug) {
       state = 'active';
-    } else if (legacyProjectSlug(anchor) === slug) {
-      // Pre-#546 naming (`<basename>-<hash>`): the data is fine, the name is
-      // just the older format. status --all never renames anything, so report
+    } else if (earlierProjectSlugs(anchor).includes(slug)) {
+      // A name an earlier teamai gave (pre-#546 `<basename>-<hash>`, or the
+      // anchor's case kept): the data is fine, the name is just older. status --all never renames anything, so report
       // it as active with a hint — the next command that resolves this
       // project's partition adopts it under the current name automatically.
       state = 'active (legacy name; renamed automatically on next command)';

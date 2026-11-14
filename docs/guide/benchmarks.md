@@ -393,7 +393,9 @@ check:
 
 ### Baselines
 
-Before the first trial of a task with a `check`, with `successCriteria` or without, teamai runs setup, writes the task's `check.add` files and runs the check once, on a fresh clone of the starting commit. A task with only `successCriteria` has no baseline.
+Before the first trial of a task with a `check`, with `successCriteria` or without, teamai writes the task's `check.add` files, runs setup and runs the check once, on a fresh clone of the starting commit. A task with only `successCriteria` has no baseline.
+
+The check runs where the trials run, such as in a sandbox, so whatever `check.run` calls must be there; teamai need not be. teamai writes `check.add`, and for a trial puts `protect` back, in the clone on your machine before the check runs, and reads its exit code after. A baseline's setup runs after `check.add` is written, since in a sandbox setup runs there: a setup that removes untracked files, such as `git clean -fdx`, removes them too.
 
 | The check at the starting commit | The task |
 | --- | --- |
@@ -406,9 +408,16 @@ Before the first trial of a task with a `check`, with `successCriteria` or witho
 | it exits 127 | `not_found` |
 | it exits 126 | `not_executable` |
 | it exits 129 to 192, outside Windows | `signal`: a shell reports a killed command as 128 plus the signal. Do not use these as your check's own failure code. |
-| it runs past the timeout | `timeout` |
 
-After a prompt, a check that cannot run gives the trial `error`, not `failed`.
+A check that runs past the step's timeout, or whose `check.add` or `protect` teamai could not put in place, fails its step: the baseline cannot run, and a trial is `error`. After a prompt, a check that cannot run gives the trial `error`, not `failed`.
+
+A check that cannot run measures nothing, so the run does not pass for it. The results name each such baseline and trial with why, and tell you to give the place the trials run in what `check.run` calls, or to fix the cause named. Then the `checks` step fails, and `benchmark run` exits 1:
+
+```text
+These checks could not run, so the run measured nothing for them:
+  Baseline expired-token: not_found
+A check runs where the trials run, such as in a sandbox: give that place what check.run calls, or fix the cause named, then run teamai benchmark run fix-auth again.
+```
 
 ### Trial limits
 
@@ -707,7 +716,7 @@ $ teamai benchmark run fix-auth --sandbox
 ℹ Suite fix-auth: 54 trials (3 arms × 6 tasks × 3 repetitions), 36 judge calls, 4 calibration judge calls.
 ℹ Estimated 49.4–68.7 USD, incomplete (agents 41.4–56.7, judges 8–12), from run r1c0d9e2f4a7b3c51.
   claude 0.82 · codex unknown (no cost stated) · strong 1.95 USD per trial
-ℹ Run r38302f8e6a18c377 started. If it stops before it ends, continue it with: teamai workflow resume r38302f8e6a18c377
+ℹ Run r38302f8e6a18c377 started. If it stops before it ends, continue it here with: teamai workflow resume r38302f8e6a18c377, or hand it to another machine with: teamai workflow publish r38302f8e6a18c377
 ```
 
 `benchmark run` plans the suite first, so a suite that cannot run leaves no run. It then starts the workflow `teamai-benchmark` with the suite's `timeout`, on the driver `--driver` names, else the one [`workflows.driver`](reference.md#member-settings) names, else the local driver, which drives it here.
@@ -733,10 +742,19 @@ Each trial prompt runs with [`permissions: unattended`](workflow-advanced.md#una
 
 | `benchmark run` exits | When |
 | --- | --- |
-| 0 | The run succeeded and its report was written, whatever the trials' results. |
-| 1 | The suite or the start was refused, the run timed out or was cancelled, or a `finally` step failed or was cancelled: the report, or the `regression` gate when `--fail-on-regression` found a drop. |
+| 0 | The run succeeded, its report was written, and no gate below failed. |
+| 1 | The suite or the start was refused, the run timed out or was cancelled, or a `finally` step failed or was cancelled: the report, the `checks` gate when a check could not run, the `results` gate when no trial produced a result and a trial ended in an error, or the `regression` gate when `--fail-on-regression` found a drop. |
 
 A record still waiting for publication never changes the exit code.
+
+When no trial produced a result and a trial ended in an error, such as when no trial could open its sandbox, the run measured nothing. The results name each trial that ended in an error, with why. A trial that a cancel or the run's timeout stopped did not end in an error of its own and is not named: the cancelled or timed out run already exits 1. Then the `results` step fails, and `benchmark run` exits 1:
+
+```text
+No trial produced a result, so the run measured nothing. These trials ended with an error:
+  Trial 1/2 expired-token claude: runtime_failed: Step runtime "sandbox" could not open attempt a8089166b (sandbox_failed): <why the sandbox did not open>
+  Trial 2/2 expired-token codex: runtime_failed: Step runtime "sandbox" could not open attempt a51c0e2d7 (sandbox_failed): <why the sandbox did not open>
+Fix the cause named, then run teamai benchmark run fix-auth again.
+```
 
 | A trial gets | |
 | --- | --- |
@@ -754,7 +772,7 @@ The local driver runs each trial as fresh clone, team resources, setup, the arm'
 - **A hung trial**: Without [`trial.timeout`](#trial-limits), a tool that never returns runs until the suite's timeout, and every trial after it settles `not_run`.
 - **Judges**: A task with `successCriteria`, and the suite's scorers, are judged by the run's own `score` step, after the trials and before `report`, each scorer by [one judge for every arm](#one-judge-for-every-arm). Start refuses a suite that needs a judge on a machine where a scorer's judge tool is not installed, or does not run its model at the isolation it asks for.
 - **Control commands**: A trial's steps exist only once the run's `plan` step reported. Until then, `teamai workflow cancel <run> <step>` on a trial step answers `step_not_found`. A benchmark run is [isolated](workflow-advanced.md#isolated-runs): `workflow retry`, `publish` and `--claim` refuse it, `publish` and `--claim` with `isolated_run`, and retry names `teamai benchmark run <suite>`.
-- **Stopped**: `teamai workflow resume <run>` continues it, with the `--sandbox` the run started with. A run that a teamai before an upgrade started, whose plan has another version, cannot go on: `workflow resume` refuses it, naming `teamai benchmark run <suite>`.
+- **Stopped**: `teamai workflow resume <run>` continues it, with the `--sandbox` the run started with. A run that a teamai before an upgrade started, whose plan has another version, cannot go on: `workflow resume` and every driver's `next` refuse it with `benchmark_plan_outdated`, naming `teamai benchmark run <suite>`, and none of its remaining steps runs, its `finally` steps included. It still ends at its timeout, and `teamai workflow cancel <run>` ends it at once.
 
 A start that cannot run refuses with a message that says what to do, and makes no run. When your user-scope teamai install also reaches the team, or the team is served over HTTP, the run cannot pin the team a trial gets, and refuses with `team_ref_blocked`, saying what to change.
 
@@ -836,7 +854,21 @@ finally:
   - id: report
     command: teamai benchmark report
     env: { COMPARE: "{{ inputs.fail_on_regression }}" }
-    output: { text: string, table: json, regression: dropped | held | no_comparable | off }
+    output: { text: string, table: json, regression: dropped | held | no_comparable | off, unchecked: string, unmeasured: string }
+  # Fails when a baseline's or a trial's check could not run, naming each as report's text does: the run measured
+  # nothing for them. Drop it to report them without failing.
+  - id: checks
+    needs: [report]
+    if: steps.report.outputs.unchecked != ''
+    command: node -e "process.stderr.write(process.env.UNCHECKED + '\n'); process.exit(1)"
+    env: { UNCHECKED: "{{ steps.report.outputs.unchecked }}" }
+  # Fails when no trial produced a result and a trial ended in an error, naming each such trial as report's text does:
+  # the run measured nothing. Drop it to report such a run without failing.
+  - id: results
+    needs: [report]
+    if: steps.report.outputs.unmeasured != ''
+    command: node -e "process.stderr.write(process.env.UNMEASURED + '\n'); process.exit(1)"
+    env: { UNMEASURED: "{{ steps.report.outputs.unmeasured }}" }
   - id: regression
     needs: [report]
     if: steps.report.outputs.regression == 'dropped'
@@ -847,7 +879,7 @@ outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 | Command | Runs as | Does |
 | --- | --- | --- |
 | `teamai benchmark plan <suite>` | The `plan` step | Freezes the team revision you pulled, fetches every commit a trial reads, and prints the trials as a workflow, with one clone per baseline and trial. |
-| `teamai benchmark check --baseline\|--trial` | A step in each clone | Writes `check.add`, puts `protect` back for a trial, runs the task's check, and prints `{ result, cause, label }`. A trial's check also stores the trial's correctness label, as [Who decides a trial](#who-decides-a-trial) says. |
+| The task's `check.run` | A step in each clone, where the trials run | Runs the task's check. Before it, teamai writes `check.add` and puts `protect` back for a trial; after it, teamai makes its exit code the step's output, `{ result, cause, label }`. A trial's check also stores the trial's correctness label, as [Who decides a trial](#who-decides-a-trial) says. |
 | `teamai score subjects --run <run> --step trials` | The `subjects` step | Lists the trials' scored passes that settled on this machine. |
 | [`teamai-score`](scorers.md#the-teamai-score-workflow) | The `score` step, once per subject | Judges the trial with the scorers as of the run's start. |
 | `teamai score subjects --calibration --run <run> --step trials` | The `calibration-subjects` step | Lists the trials to [calibrate a judge](#calibrate-a-judge) on, each with its correctness scorer. |
@@ -876,7 +908,7 @@ steps:
     requires: { isolation: sandbox, strict: true }
   # no subjects, score, calibration-subjects or calibrate step
 finally:
-  # report and regression, as teamai's
+  # report, checks, results and regression, as teamai's
 ```
 
 ## Results
@@ -960,7 +992,7 @@ Only a trial's `teamai:correctness:<task>` label decides `passed`, `failed` or `
 | exits non-zero | the lowest-scoring label | `failed` |
 | cannot run | none | `error`, `failure: { cause }` |
 
-`cause` is one of `not_found`, `not_executable`, `signal`, `timeout`, `spawn_failed`, `prepare_failed` (restoring `protect` or writing `check.add` failed).
+`cause` is one of `not_found`, `not_executable`, `signal`, `timeout` (the check ran past its step's or the run's timeout), `prepare_failed` (restoring `protect` or writing `check.add` failed). A record an older teamai wrote may also carry `spawn_failed`.
 
 Each recorded trial carries its verdicts:
 
@@ -1222,7 +1254,7 @@ The gate is the team's to change. To warn of a drop instead of failing the job, 
 ```yaml
 # workflows/teamai-benchmark.yaml: a drop warns in the CI log, and the job still passes
 finally:
-  # report, as teamai's
+  # report, checks and results, as teamai's
   - id: regression
     needs: [report]
     if: steps.report.outputs.regression == 'dropped'
@@ -1290,14 +1322,14 @@ A benchmark run is an ordinary workflow run, so any driver runs it through `work
 ```text
 teamai workflow start teamai-benchmark --inputs '{"suite":"fix-auth","aliases":"team","tasks":[],"arms":[],"fail_on_regression":false}' --timeout 45m
 teamai workflow next <run> --prepare --json '{"driver":{..., "can":{"workspace":["read-only","new","continue","clone"],"isolation":"sandbox","env":true,"setup":true,"tools":["claude"],"unattended":true,"end_turn":true}}}'
-  -> a command lease (plan, check, report): run lease.command in lease.cwd, or in your checkout without one, with TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>
+  -> a command lease (plan, check, report): run lease.command in lease.cwd, or in your checkout without one, with TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>, and report its exitCode
   -> a prompt lease: launch lease.tool in lease.cwd on lease.prompt, with lease.model, in its unattended mode for lease.permissions, held to lease.limits
 teamai workflow report <run> --json '{..., "tool":"claude", "durationMs":84000, "cost":{"amount":0.31,"unit":"USD"}}'
 ```
 
 - **`driver.can`**: On every `next`: `clone` in `workspace`, `isolation: "sandbox"`, `env: true`, `setup: true`, the arms' tools in `tools`, `unattended: true`, and `end_turn: true` when it ends a turn at the lease's limits. A trial is held for a driver that lacks one of them, and `wait.held[].missing` names it.
 - **`--prepare`**: teamai makes each clone on this machine, installs its team resources and runs setup, then answers the lease with `cwd`.
-- **Every process**: Runs without the names in `lease.envScope.withhold`, with `lease.env`, and with `TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>`, so a `teamai` call from it changes no run. A command step prints its outputs as JSON on stdout; report them as `outputs`.
+- **Every process**: Runs without the names in `lease.envScope.withhold`, with `lease.env`, and with `TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>`, so a `teamai` call from it changes no run. When a command step prints JSON on stdout, report it as `outputs`; always report its exit status as `exitCode`. A check step runs the task's own check, which needs no `teamai`: teamai decides its output from `exitCode`, and a check reported without one fails `invalid_report`.
 - **`report`**: For a prompt: `tool`, `durationMs` measured around the tool launch, and `cost` only when the tool stated one.
 - **Limits**: Hold the tool to `lease.limits`. When one stopped it, report `outcome: "success"` with `limit`: `timeout`, `budget` or `max_turns`, and list in `unenforced` a `budget` or `max_turns` you could not hold it to.
 - **Timeout**: `benchmark run` passes the suite's `timeout` as `--timeout`; a direct `workflow start teamai-benchmark` must pass it too, or `plan` fails.

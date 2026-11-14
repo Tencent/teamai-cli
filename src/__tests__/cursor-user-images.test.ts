@@ -18,9 +18,9 @@ vi.mock('node:os', async (importOriginal) => {
   return patched;
 });
 
-import { CursorAdapter } from '../session-flow/adapters/cursor.js';
+import { getAdapter } from '../session-flow/adapters/index.js';
 import { fidelityFromSession } from '../session-flow/migrate.js';
-import type { Session } from '../session-flow/ir.js';
+import type { Session } from '@teamai/tool-core/sessions/ir';
 
 // 4 base64 chars -> 3 bytes -> rounds to 0KB.
 const PLACEHOLDER = '[image: pic.png, 0KB]';
@@ -115,7 +115,7 @@ afterEach(() => {
 
 describe('migrating user images to Cursor', () => {
   it('writes a placeholder for each user image in the transcript', async () => {
-    const adapter = new CursorAdapter();
+    const adapter = getAdapter('cursor');
     const cwd = path.join(mocks.home, 'work');
     const id = await adapter.writeSession(sessionWithUserImages(), cwd);
 
@@ -141,7 +141,7 @@ describe('migrating user images to Cursor', () => {
     const cwd = path.join(mocks.home, 'work');
     const db = createCursorStore(cwd);
 
-    await new CursorAdapter().writeSession(sessionWithUserImages(), cwd);
+    await getAdapter('cursor').writeSession(sessionWithUserImages(), cwd);
 
     const bubbles = readBubbles(db);
     expect(bubbles.filter((b) => b.type === 1).map((b) => b.text)).toEqual([
@@ -173,7 +173,7 @@ describe('writing reasoning to Cursor', () => {
   it.skipIf(process.platform === 'win32')('keeps a raw reasoning block as <thinking> text in the transcript, not in the bubbles', async () => {
     const cwd = path.join(mocks.home, 'work');
     const db = createCursorStore(cwd);
-    const adapter = new CursorAdapter();
+    const adapter = getAdapter('cursor');
 
     const id = await adapter.writeSession(withReasoning, cwd);
 

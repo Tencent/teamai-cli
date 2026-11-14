@@ -7,12 +7,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));
 
 import { fetchGitLabMR } from '../providers/gitlab/mr-fetch.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 const URL = 'https://gitlab.com/group/repo/-/merge_requests/7';
 const API = 'https://gitlab.com/api/v4/projects/group%2Frepo/merge_requests/7';

@@ -4,7 +4,7 @@
  * step's result; the engine settles and leases the items.
  */
 import { z } from 'zod';
-import type { JsonValue } from '../types.js';
+import type { JsonValue } from '@teamai/shared/json';
 import { isRecord, jsonType } from './expression.js';
 import { firstCycle, firstPass } from './loop.js';
 import { parseStepPath } from './step-path.js';

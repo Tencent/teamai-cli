@@ -2,11 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { loadTeamConfig } from '../config.js';
-import { isJsonObject, type JsonValue, type LocalConfig } from '../types.js';
+import { type LocalConfig } from '../types.js';
+import { isJsonObject, type JsonValue } from '@teamai/shared/json';
+import { log } from '@teamai/shared/log';
 import { shellQuoteValue } from '../utils/shell-profile.js';
 import { agentEvidence, type AgentEvidence } from './attempt-marker.js';
 import {
-  error, finishRun, locateStep, ok, parseReads, reconcileRun, respondCommand, restartQueued, retryCommand, runData, withRun, workflowLabel,
+  error, finishRun, ok, parseReads, reconcileRun, respondCommand, restartQueued, runData, withRun, workflowLabel,
   type RunReads, type WorkflowResult,
 } from './engine.js';
 import { evaluateExpression, isRecord, isTruthy, pathValue } from './expression.js';
@@ -17,12 +19,19 @@ import { archiveUnder, isUnder } from './loop.js';
 import { spentTokens, startLimits } from './limits.js';
 import { publishRunRecords, removeQueuedEndRecord } from './records.js';
 import { resolveRetention, runRetainedUntil, type ResolvedRetention } from './retention.js';
-import { contextOf, localId, statesIn, type Scope } from './scope.js';
-import { isRunId, readRun, runScratchDir, withCleanupLock } from './store.js';
+import { contextOf, localId, locateStep, statesIn, type Scope } from './scope.js';
+import { attemptDir, AttemptIdSchema, isRunId, readRun, RunIdSchema, runnerAlive, runRemovalRefusal, runScratchDir, takeRunLock, withCleanupLock, type PartOfStep, type RunId, type RunLock } from './store.js';
 import { answerHitl, cancel, cancellable, redeliver, repend, resetIteration, resetPending, settled, start, stopAttempt, stopWhere, stopped, type HitlAnswer, type StepState } from './step-state.js';
 import { parseTemplate, templatePaths, templatedTexts } from './template.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope, WorkflowFailure } from './types.js';
 import { isIsolated } from './workspace.js';
+import { driverIdentity } from '../driver-identity.js';
+import { retryCommand } from './runtimes/retry-command.js';
+import { stopCancelledAttempts, stopLeftInProcess } from './runtimes/cancelled.js';
+import { isPartOf, partsOf, stoppedFailure } from './part-of-step.js';
+import { knownSecrets } from '../env-resolution.js';
+import { LOGIN_TOOLS, loginHolder } from './runtimes/login.js';
+import { stopRecordedGroup } from '@teamai/shared/process-group';
 
 async function controlRun(
   config: LocalConfig,
@@ -262,8 +271,27 @@ export async function respondToHitl(config: LocalConfig, runId: string, secrets:
   });
 }
 
-/** Stops a whole run or one open step and invalidates the attempts it cancelled. */
-export async function cancelRun(config: LocalConfig, runId: string, secrets: Record<string, string>, step?: string, failure: WorkflowFailure = { code: 'cancelled', message: 'Cancelled by teamai workflow cancel' }): Promise<WorkflowEnvelope> {
+/**
+ * Whether no driver will lease the `finally` steps of `run` once a cancel holds its driver lock on this machine: no driver
+ * took a step of it, or the last one held that lock for its whole drive here (`isLeasedUnderLock`), and so is gone.
+ */
+function isUndriven(run: RunState): boolean {
+  return run.driver === undefined || (run.isLeasedUnderLock === true && run.driver.machine === driverIdentity(run.driver.kind, run.driver.workspace).machine);
+}
+
+/**
+ * Stops a whole run or one open step and invalidates the attempts it cancelled. A whole run whose driver lock the caller
+ * holds (`heldLock`) and that no driver drives ends at once: its `finally` steps are cancelled too, since nothing would
+ * lease them and it would stay `running`.
+ */
+export async function cancelRun(
+  config: LocalConfig,
+  runId: string,
+  secrets: Record<string, string>,
+  step?: string,
+  failure: WorkflowFailure = { code: 'cancelled', message: 'Cancelled by teamai workflow cancel' },
+  { heldLock }: { heldLock?: RunLock } = {},
+): Promise<WorkflowEnvelope> {
   return controlRun(config, runId, secrets, async (run, now, finish) => {
     if (run.status !== 'running') return settledRunError(run);
 
@@ -285,6 +313,11 @@ export async function cancelRun(config: LocalConfig, runId: string, secrets: Rec
     if (step === undefined) {
       changed = stopWhere(run, () => true, failure, run.revision, now);
       await finish({ outcome: 'cancelled', settledAt: run.revision });
+
+      if (run.finalizing && heldLock?.run === run.id && isUndriven(run)) {
+        changed.push(...stopWhere(run, () => true, { code: 'cancelled', message: `Not run: no driver was driving run ${run.id} when teamai workflow cancel ended it` }, run.revision, now));
+        await finish({ outcome: 'cancelled', settledAt: run.revision });
+      }
     } else {
       const state = run.steps.find((s) => s.id === step);
 
@@ -308,6 +341,49 @@ export async function cancelRun(config: LocalConfig, runId: string, secrets: Rec
 
     return ok({ cancelled: { steps: changed, attempts: run.cancelledAttempts?.slice(attemptsBefore) ?? [] }, run: runData(run) });
   });
+}
+
+/**
+ * Ends each run part of attempt `partOf`, which a driver calls once it stopped that attempt, however the attempt ended:
+ * each that still runs is cancelled under its lock, named for the step the attempt ran. With no live driver of it here,
+ * as when the attempt's own process drove it and is gone, what its attempts left is stopped too, their process groups
+ * first, as `teamai workflow cancel` stops them; a live driver of it stops its own attempts once it sees the cancel.
+ * Never throws: a run it cannot end it names in a warning, so the stop of the attempt goes on.
+ */
+export async function endRunsPartOf(config: LocalConfig, partOf: PartOfStep): Promise<void> {
+  const parts = await partsOf(config, partOf).catch((cause: unknown) => {
+    log.warn(`The runs part of attempt ${partOf.attempt} of run ${partOf.run} could not be listed, so none was ended (${cause instanceof Error ? cause.message : String(cause)}). Cancel each with teamai workflow cancel <run>.`);
+
+    return [];
+  });
+
+  for (const part of parts) {
+    await endRunPartOf(config, part, partOf).catch((cause: unknown) => {
+      log.warn(`Run ${part}, part of attempt ${partOf.attempt} of run ${partOf.run}, was not ended (${cause instanceof Error ? cause.message : String(cause)}). End it with: teamai workflow cancel ${part}`);
+    });
+  }
+}
+
+async function endRunPartOf(config: LocalConfig, part: RunId, partOf: PartOfStep): Promise<void> {
+  const state = await readRun(config, part);
+
+  if (state === 'missing' || state === 'corrupt' || !isPartOf(state.partOf, partOf)) return;
+
+  // One that settled is stopped again, as teamai workflow cancel stops one: its driver may have been killed first.
+  const ending = state.status === 'running'
+    ? await Promise.all([stoppedFailure(config, partOf, new Date().toISOString()), knownSecrets(config)]).then(([failure, secrets]) => ({ failure, secrets }))
+    : undefined;
+
+  const taken = await takeRunLock(config, part, async (lock) => {
+    if (ending) await cancelRun(config, part, ending.secrets, undefined, ending.failure, { heldLock: lock });
+    await stopCancelledAttempts(config, lock, { isRunnerHolding: runnerAlive });
+  }, { waitMs: 0 }).catch(runRemovalRefusal);
+
+  const isHeld = 'kind' in taken && taken.kind === 'held';
+  const isRemoved = 'error' in taken && taken.error.code === 'run_not_found';
+
+  // Its lock busy, or refused while runs are removed: cancelled without it, as teamai workflow cancel does.
+  if (ending && !isHeld && !isRemoved) await cancelRun(config, part, ending.secrets, undefined, ending.failure);
 }
 
 interface RetryContainer {
@@ -583,6 +659,31 @@ function retryRefusal(run: RunState, step: string, retention: ResolvedRetention,
 }
 
 /** The step a retry runs again and the workflows it runs again in, or why it cannot. */
+/**
+ * Why step `target` may not run again yet: it failed rather than run again beside a process a killed driver left of its
+ * attempt, which no stop confirms ended and which may still use the login that attempt holds. Once one confirms it, the
+ * attempt lets its login go.
+ */
+async function leftBeside(config: LocalConfig, run: RunId, target: StepState): Promise<WorkflowEnvelope | undefined> {
+  const attempt = target.status === 'failed' && target.failure?.code === 'runtime_lost' ? AttemptIdSchema.safeParse(target.attempt) : undefined;
+
+  if (!attempt?.success) return undefined;
+  const left = await stopRecordedGroup(attemptDir(config, run, attempt.data));
+
+  if (left.length === 0) {
+    await stopLeftInProcess(config, run, attempt.data);
+
+    return undefined;
+  }
+
+  const holders = await Promise.all(LOGIN_TOOLS.map((tool) => loginHolder(tool)));
+  const held = LOGIN_TOOLS.filter((_, index) => holders[index]?.run === run && holders[index]?.attempt === attempt.data);
+
+  if (held.length === 0) return undefined;
+
+  return error('not_retryable', `Step "${target.id}" cannot run again yet: teamai could not confirm that process ${left.join(', ')}, which attempt ${attempt.data} left, ended, and it may still use the ${held.join(' and ')} login that attempt holds. Once it has ended, run ${retryCommand({ run, step: target.id })} again; if teamai still cannot tell, teamai workflow cancel ${run} --release ${attempt.data} lets the login go.`);
+}
+
 function retryTarget(config: LocalConfig, run: RunState, step: string): { target: StepState; containers: RetryContainer[] } | WorkflowEnvelope {
   const target = run.steps.find((state) => state.id === step);
 
@@ -628,7 +729,7 @@ async function restoreForRetry(config: LocalConfig, runId: string, step: string,
   if (failed.length === 0) return undefined;
   const why = failed.map(({ branch, reason }) => `Branch ${branch} is not back ${reason}.`).join(' ');
 
-  return error('branches_not_restored', `Run ${runId} was not reopened: not every branch the run recorded is back at the commit it recorded. ${why} Try again once that is fixed: ${retryCommand(runId, step)}`);
+  return error('branches_not_restored', `Run ${runId} was not reopened: not every branch the run recorded is back at the commit it recorded. ${why} Try again once that is fixed: ${retryCommand({ run: runId, step })}`);
 }
 
 /** What a retry answers under `retried`: the step, the pass it runs again as, and the other steps that run again with it. */
@@ -641,11 +742,11 @@ export function retriedRunsAgain(answer: WorkflowEnvelope): string[] {
 
 /** Retries a step and its dependency cone, retaining pass history and reopening a settled run. */
 export async function retryStep(config: LocalConfig, runId: string, secrets: Record<string, string>, step: string): Promise<WorkflowEnvelope> {
-  const retention = await resolveRetention(config, await loadTeamConfig(config.repo.localPath));
+  const retention = await resolveRetention(config, await loadTeamConfig(config.repo.localPath, config));
 
   const reopen = isRunId(runId)
     ? {
-      busy: error('busy', `Cleanup of run ${runId} is removing its branches, so it was not reopened. Try again shortly: ${retryCommand(runId, step)}`),
+      busy: error('busy', `Cleanup of run ${runId} is removing its branches, so it was not reopened. Try again shortly: ${retryCommand({ run: runId, step })}`),
       prepare: () => restoreForRetry(config, runId, step, retention),
     }
     : undefined;
@@ -669,6 +770,10 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
 
     if (!('target' in planned)) return planned;
     const { target, containers } = planned;
+    const id = RunIdSchema.safeParse(runId);
+    const left = id.success ? await leftBeside(config, id.data, target) : undefined;
+
+    if (left) return left;
     const reopened = run.status !== 'running';
     const again = new Set<StepState>();
 
@@ -702,6 +807,8 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
     }
 
     if (ended) run.limitsFrom = { at: now, tokens: spentTokens(run, () => true) };
+    // A person's retry runs it on its own: no longer part of the step that started it, which may have ended.
+    delete run.partOf;
 
     if (reopened) {
       run.status = 'running';

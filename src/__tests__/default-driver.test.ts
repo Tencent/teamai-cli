@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { refreshRoleAssignment } from '../config.js';
 import { driveByDefault } from '../default-driver.js';
 import { getUserConfigPath, LocalConfigSchema, type LocalConfig } from '../types.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 const dirs: string[] = [];
 const machineFile = getUserConfigPath;
@@ -53,6 +53,14 @@ describe('driveByDefault', () => {
     expect(await driveByDefault(config)).toEqual({ kind: 'drive', driver: 'local' });
   });
 
+  it('drives here on a team teamai-local this machine cannot open, so the drive says why rather than the run waiting for local', async () => {
+    const config = await workspace('');
+    fs.mkdirSync(path.join(config.repo.localPath, 'drivers'));
+    fs.writeFileSync(path.join(config.repo.localPath, 'drivers', 'teamai-local.yaml'), 'schemaVersion: v1alpha1\nname: teamai-local\nruntimes:\n  - use: acme-missing\n');
+
+    expect(await driveByDefault(config)).toEqual({ kind: 'drive', driver: 'local' });
+  });
+
   it('awaits the driver the team sets, which this machine does not run', async () => {
     const config = await workspace('', 'workflows: { driver: acme-sandbox }\n');
 
@@ -79,6 +87,7 @@ describe('driveByDefault', () => {
     ['a value that is no text', '[acme]', '["acme"] is not a driver name: letters, digits, dot, underscore and hyphen, starting with a letter or digit'],
     ['fleet', 'fleet', 'fleet is a driver name teamai reserves, and no driver of it exists yet'],
     ['skill', 'skill', 'the skill driver needs a coding session, so it drives only a run started with --driver skill'],
+    ['host', 'host', 'the host driver launches no AI tool, which the runs this setting starts use, so it drives only a run started with --driver host'],
   ])('skips %s with a warning naming its file, and the next level decides', async (_case, value, why) => {
     onMachine(`workflows: { driver: ${value} }\n`);
     const config = await workspace('', 'workflows: { driver: gamma }\n');
@@ -87,5 +96,13 @@ describe('driveByDefault', () => {
 
     expect(decided).toEqual({ kind: 'awaits', driver: 'gamma' });
     expect(warnings).toEqual([`Ignoring workflows.driver in ${machineFile()}: ${why}.`]);
+  });
+});
+
+describe('workflows.idle_timeout on this machine', () => {
+  it('reaches a workspace as written, for the prompt step that reads it to check', async () => {
+    onMachine('workflows:\n  idle_timeout: 2m\n');
+
+    expect((await workspace('')).workflows?.idle_timeout).toBe('2m');
   });
 });

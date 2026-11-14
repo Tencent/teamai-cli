@@ -81,16 +81,23 @@ export function resolveRunMode(env: NodeJS.ProcessEnv): RunMode {
 export const ATTEMPT_ENV = 'TEAMAI_WORKFLOW_ATTEMPT';
 
 /**
- * The variable every process of a step gets: a directory of the root run under the data home, which its steps share,
- * sub-workflows included, and which the engine removes when the run ends.
+ * The attempt marker `env` carries as it is set, parsed or not, for a presence check or a message; undefined when unset
+ * or empty. `markedAttempt` in `workflow/attempt-marker.ts` parses it. Here, so the CLI entry checks it without loading
+ * the workflow store.
  */
-export const RUN_DIR_ENV = 'TEAMAI_RUN_DIR';
+export function attemptMarker(env: NodeJS.ProcessEnv): string | undefined {
+  return env[ATTEMPT_ENV] || undefined;
+}
 
 /**
- * The variable every process of a step of a workflow written as a folder gets: the run's copy of the folder that defines
- * the step, under the data home. Unset for a step of a workflow written as a single file.
+ * The variable set only in the process of a `command` step that the local driver, a skill driver's runner or a fleet
+ * member runs on its own machine (`commandStepEnv`), to the same `<run>/<attempt>` as {@link ATTEMPT_ENV}: the one
+ * process of an attempt whose shortcut command may run its own run as part of the step.
  */
-export const WORKFLOW_DIR_ENV = 'TEAMAI_WORKFLOW_DIR';
+export const STEP_COMMAND_ENV = 'TEAMAI_WORKFLOW_STEP_COMMAND';
+
+// The runtime protocol owns it, so a runtime's agent gets it as it gets RUN_DIR_ENV.
+export { WORKFLOW_DIR_ENV } from '@teamai/runtime-protocol';
 
 /**
  * The variable every process of a run with no `teamai init` gets: the config file the run built for itself, which

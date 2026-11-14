@@ -5,19 +5,18 @@ import { builtinSkillsTarget } from '../../builtin-skills.js';
 import type { DeliveryRecorder } from '../../git-exclude-delivered.js';
 import { SHARED_AGENT_SKILLS_PATH } from '../../locate.js';
 import { keepsTrackedCopy } from '../../resources/delivered-copies.js';
-import {
-  allowsSkillDirectory, CODEX_TOOL, describeSkippedSkillDirectory, findSkillDirectoryBlock, skillTargetsFor,
-} from '../../resources/skills.js';
+import { readsCodexSharedSkills, skillTargetsFor } from '../../resources/skills.js';
+import { allowsSkillDirectory, describeSkippedSkillDirectory, findSkillDirectoryBlock } from '../../skill-directory.js';
 import { isAgentExcluded, scopedToolPaths, type LocalConfig, type TeamaiConfig } from '../../types.js';
-import { pathExists, readFileSafe, writeFileAtomic } from '../../utils/fs.js';
+import { pathExists, writeFileAtomic } from '../../utils/fs.js';
 import { warnOnce } from '../../utils/warn-once.js';
 import { DefaultWorkflows } from '../../default-workflows.js';
 import { RESOURCE_LAYOUTS, Resources } from '../../resources/resolver.js';
-import { SessionShare } from '../../session-share.js';
 import { shareBlock } from '../../skill-content.js';
 import { listCachedWorkflows, loadWorkflowTree, startingAlias } from '../cache.js';
 import { generatedSkillAt, readGenerated } from './generated-marker.js';
 import { renderWorkflowSkill, type AdvertisedWorkflow } from './render.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 /**
  * Every runnable `invoke: allow` or `ask` workflow, a cached team file or teamai's default, each with its alias only when
@@ -36,12 +35,12 @@ async function advertisedWorkflows(teamConfig: TeamaiConfig, localConfig: LocalC
     if (invoke !== 'allow' && invoke !== 'ask') continue;
     const alias = await startingAlias(localConfig, definition);
 
-    if (!sharing && (name === SessionShare.SHARE_LEARNINGS || alias === SessionShare.SHARE_LEARNINGS)) continue;
+    if (!sharing && (name === DefaultWorkflows.SHARE_LEARNINGS || alias === DefaultWorkflows.SHARE_LEARNINGS)) continue;
 
     const tree = await loadWorkflowTree(localConfig, cached);
 
     // No skill for a workflow `start` refuses: a workflow it runs is missing, runs in a cycle, or does not take its inputs.
-    if ('failed' in tree || (!sharing && Object.hasOwn(tree.workflows, SessionShare.SHARE_LEARNINGS))) continue;
+    if ('failed' in tree || (!sharing && Object.hasOwn(tree.workflows, DefaultWorkflows.SHARE_LEARNINGS))) continue;
     const workflow: AdvertisedWorkflow = { name, description, invoke, source, skill: await skillName(name, alias) };
 
     if (alias !== undefined) workflow.alias = alias;
@@ -112,7 +111,7 @@ async function plan(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise
     const ownsShared = async (dir: string): Promise<boolean> => await allowsSkillDirectory(guardBase, dir)
       && (!await pathExists(dir) || (await generatedSkillAt(dir)).kind === 'ours');
 
-    for (const dir of [target.skillsDir, ...tool === CODEX_TOOL ? [path.join(guardBase, SHARED_AGENT_SKILLS_PATH)] : []]) {
+    for (const dir of [target.skillsDir, ...readsCodexSharedSkills(tool) ? [path.join(guardBase, SHARED_AGENT_SKILLS_PATH)] : []]) {
       if (!roots.has(dir)) roots.set(dir, { dir, guardBase });
     }
 
@@ -151,7 +150,7 @@ async function place({ tool, workflow, skill, dir, guardBase, content }: Placeme
   }
 
   const file = path.join(dir, 'SKILL.md');
-  const existing = await readFileSafe(file);
+  const existing = await readRegularFile(file, 'utf8').catch(() => null);
   const generated = existing === null ? null : readGenerated(existing);
 
   if (generated?.kind === 'theirs' || (generated === null && await pathExists(dir))) {

@@ -1,9 +1,9 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -15,6 +15,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import {
+  coAuthorLocalSettingsFiles,
   reconcileCoAuthorForConfig,
   spliceCodexAttribution,
 } from '../coauthor-reconcile.js';
@@ -296,6 +297,27 @@ describe('co-author reconcile', () => {
       const { changes } = await reconcileCoAuthorForConfig(withCodebuddy, local, freshState());
       expect(changes.map((c) => c.tool)).toEqual(['claude']);
       expect(await fse.pathExists(path.join(projRoot, '.codebuddy', 'settings.json'))).toBe(false);
+    });
+
+    it('writes a Claude instance\'s choice into the settings.local.json beside its own settings, which pull keeps out of git', async () => {
+      const { useToolInstances } = await import('../tool-registry.js');
+      useToolInstances(new Map([['acme-claude', {
+        kind: 'instance', name: 'acme-claude', extends: 'claude', home: { dir: '.acme-claude' },
+        source: 'personal', file: path.join(homeDir, '.teamai', 'tools', 'acme-claude.yaml'), location: '~/.teamai/tools/acme-claude.yaml', revision: 'r1',
+      }]]));
+      onTestFinished(() => useToolInstances(new Map()));
+      await fse.ensureDir(path.join(projRoot, '.acme-claude', 'skills'));
+      const withInstance = {
+        ...team({ enabled: false }),
+        toolPaths: { ...TOOL_PATHS, 'acme-claude': { skills: '.acme-claude/skills', settings: '.acme-claude/settings.json' } },
+      } as TeamaiConfig;
+
+      const { changes, managed } = await reconcileCoAuthorForConfig(withInstance, local, freshState());
+
+      const instanceLocal = path.join(projRoot, '.acme-claude', 'settings.local.json');
+      expect(changes.map((c) => [c.tool, c.file])).toEqual([['claude', path.join(projRoot, '.claude', 'settings.local.json')], ['acme-claude', instanceLocal]]);
+      expect((await fse.readJson(instanceLocal)).attribution).toEqual({ commit: '', pr: '' });
+      expect(await coAuthorLocalSettingsFiles(withInstance, local, managed)).toEqual([path.join(projRoot, '.claude', 'settings.local.json'), instanceLocal].map((file) => ({ kind: 'holds', file })));
     });
 
     it.each([

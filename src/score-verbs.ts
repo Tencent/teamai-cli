@@ -4,7 +4,7 @@
  */
 import path from 'node:path';
 import { z } from 'zod';
-import { autoDetectInit, NotInitializedError } from './config.js';
+import { autoDetectInit, NotInitializedError, TeamConfigNotFoundError } from './config.js';
 import { STAGES } from './scorers/definition.js';
 import { EvidenceDir, type GroupRecord } from './scorers/evidence-dir.js';
 import { DEMANDS } from './scorers/marks.js';
@@ -17,10 +17,11 @@ import { ScoreStage } from './scorers/score-stage.js';
 import { Subject } from './scorers/subject.js';
 import { TRY_SCORER_WORKFLOW } from './scorers/judging-workflows.js';
 import { TryScorer } from './scorers/try-scorer.js';
-import type { JsonObject, LocalConfig } from './types.js';
+import type { LocalConfig } from './types.js';
+import type { JsonObject } from '@teamai/shared/json';
 import { isSameRealPath } from './utils/fs.js';
 import { createGit } from './utils/git.js';
-import { log, setStderrOnly } from './utils/logger.js';
+import { log, setStderrOnly } from '@teamai/shared/log';
 import { durationMs } from './utils/duration.js';
 import { isIsolated } from './workflow/workspace.js';
 
@@ -28,6 +29,8 @@ import { isIsolated } from './workflow/workspace.js';
 export interface ScoreVerbContext {
   env: NodeJS.ProcessEnv;
   current: LocalConfig | undefined;
+  /** Why the scope of the directory did not load, when it did not. A verb of an attempt reads its run's own config instead. */
+  unloaded?: string;
   now: string;
   /** The directory the verb runs in: publish stages there. */
   cwd?: string;
@@ -238,7 +241,7 @@ async function subjects(options: SubjectsOptions, ctx: ScoreVerbContext): Promis
   if (options.lapsed) {
     if (options.run !== undefined || options.step !== undefined) return refused('invalid_arguments', '--lapsed lists this machine\'s subjects and takes no --run or --step.');
 
-    if (!ctx.current) return refused('not_initialized', 'teamai is not set up in this directory, so it has no marks to read. Run teamai init.');
+    if (!ctx.current) return refused('not_initialized', ctx.unloaded ?? 'teamai is not set up in this directory, so it has no marks to read. Run teamai init.');
 
     return { ok: true, output: { list: await ScoreSubjects.lapsed(ctx.current, ctx.now) } };
   }
@@ -267,13 +270,21 @@ async function report(options: ReportOptions, ctx: ScoreVerbContext): Promise<Sc
 
 export const ScoreVerbs = { plan, evidence, stage, label, write, publish, settle, subjects, report } as const;
 
-/** The scope of this directory: none where teamai is not set up, and a refusal with why when its config does not load. */
-async function currentConfig(): Promise<{ ok: true; config: LocalConfig | undefined } | Refused> {
+/**
+ * The scope of this directory: none where teamai is not set up, and none, with why, where its config names a team repo
+ * without teamai.yaml, as publish runs in a checkout of teamai-reports, which the config of a team in self mode does not
+ * resolve from. A config that exists and does not load refuses, so no verb goes on without the team's policy.
+ */
+async function currentConfig(): Promise<{ ok: true; context: Pick<ScoreVerbContext, 'current' | 'unloaded'> } | Refused> {
   try {
     // oxlint-disable-next-line teamai/config-load-options -- a verb runs in a step's process, which has no preview mode
-    return { ok: true, config: (await autoDetectInit()).localConfig };
+    return { ok: true, context: { current: (await autoDetectInit()).localConfig } };
   } catch (e) {
-    return e instanceof NotInitializedError ? { ok: true, config: undefined } : refused('not_initialized', e instanceof Error ? e.message : String(e));
+    if (e instanceof NotInitializedError) return { ok: true, context: { current: undefined } };
+
+    if (e instanceof TeamConfigNotFoundError) return { ok: true, context: { current: undefined, unloaded: e.message } };
+
+    return refused('not_initialized', e instanceof Error ? e.message : String(e));
   }
 }
 
@@ -281,7 +292,7 @@ async function currentConfig(): Promise<{ ok: true; config: LocalConfig | undefi
 export async function scoreVerbCommand(verb: (ctx: ScoreVerbContext) => Promise<ScoreVerbAnswer>): Promise<void> {
   setStderrOnly(true);
   const current = await currentConfig();
-  const answer = current.ok ? await verb({ env: process.env, current: current.config, now: new Date().toISOString(), cwd: process.cwd() }) : current;
+  const answer = current.ok ? await verb({ env: process.env, ...current.context, now: new Date().toISOString(), cwd: process.cwd() }) : current;
 
   if (answer.ok) {
     process.stdout.write(`${JSON.stringify(answer.output)}\n`);

@@ -8,7 +8,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { AgentObservation } from '../agent-observation.js';
-import { DefaultFolders } from '../default-folders.js';
 import { knownSecrets } from '../env-resolution.js';
 import type { RunMode } from '../launch-context.js';
 import { cachedScorerNames, pinScorers, scorerNamespaces } from '../scorers/cache.js';
@@ -25,14 +24,15 @@ import { GeneratedQuestions, type QuestionSession, type QuestionSwitches } from 
 import { skillsEvidence, type SkillsEvidence } from '../scorers/skill-evidence.js';
 import type { Subject } from '../scorers/subject.js';
 import { typedIn, usedSkills } from '../skill-use.js';
-import { getDataHome, isJsonObject, JsonValueSchema, type JsonValue, type LocalConfig } from '../types.js';
+import { getDataHome, type LocalConfig } from '../types.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
-import { mapStrings } from '../utils/json.js';
-import { redact } from '../utils/redact.js';
+import { mapStrings, isJsonObject, JsonValueSchema, type JsonValue } from '@teamai/shared/json';
+import { redact } from '@teamai/shared/redact';
 import { AgentSession, sessionKey } from './agent-session.js';
-import type { SubagentsRead } from './adapters/base.js';
+import type { SubagentsRead } from '@teamai/tool-core/sessions/base';
 import { SessionCaptures, type CapturedSession, type SessionCapture } from './captures.js';
-import type { Session } from './ir.js';
+import type { ArchivedEvidence, EvidenceFile } from './session-evidence.js';
+import type { Session } from '@teamai/tool-core/sessions/ir';
 import { pushedSession, type TeamSession } from './scoring.js';
 
 /** `value` with `mask` applied to each string in it, object keys included. */
@@ -149,12 +149,20 @@ export function firstPromptOnly(found: { session: Session }): PromptOnlyRead {
   return { session: { ...session, messages: first && typed ? [{ ...first, content: typed }] : [] }, subagents: { status: 'read', agents: [] } };
 }
 
+/**
+ * A file of the evidence the session's step left, as `evidence.json` lists it: a text file by its path in the evidence
+ * directory, a listed one, whose content never left the machine that ran the step, by its path there.
+ */
+export type StepEvidenceListing = Omit<Extract<EvidenceFile, { kind: 'text' }>, 'text'> | Extract<EvidenceFile, { kind: 'listed' }>;
+
 /** A session as one read gives it to a judge. In memory only: its body is the session's redacted text. */
 export interface JudgedSession {
   subject: SessionSubject;
   /** The redacted transcript and its subagents', kept to the evidence cap with the evidence framing. */
   body: string;
-  manifest: { subject: SessionSubject; kind: 'session'; gaps: EvidenceGap[]; skills?: SkillsEvidence };
+  /** The text files of the evidence its step left, masked, by their path in the evidence directory. */
+  stepEvidence: Array<{ path: string; text: string }>;
+  manifest: { subject: SessionSubject; kind: 'session'; gaps: EvidenceGap[]; skills?: SkillsEvidence; evidence?: StepEvidenceListing[]; evidenceLeftOut?: number };
   context: SessionLabelContext;
   /** The owning scope's mask: the rubric prompt goes through it too, since a scorer may quote a team secret. */
   mask: (text: string) => string;
@@ -164,13 +172,15 @@ export interface JudgedSession {
  * Reads `found` for a judge once: its transcript with its subagents', its first prompt, the agent its captures agree on
  * with the one model its messages name, and the team skills it used, all redacted with `mask`.
  */
-export function judgeSession({ platform, found, captures, mask, agent: archived }: {
+export function judgeSession({ platform, found, captures, mask, agent: archived, evidence }: {
   platform: string;
   found: { session: Session; subagents?: SubagentsRead };
   captures: readonly SessionCapture[];
   mask: (text: string) => string;
   /** What a pushed session ran as, as its archive records it: it has no captures here. */
   agent?: AgentObservation;
+  /** The evidence its step left, as the archive keeps it beside a pushed session. */
+  evidence?: ArchivedEvidence;
 }): JudgedSession {
   const { session } = found;
   const transcript = judgedTranscript(found, { session: Number.POSITIVE_INFINITY, subagent: Number.POSITIVE_INFINITY }, mask);
@@ -184,8 +194,15 @@ export function judgeSession({ platform, found, captures, mask, agent: archived 
   };
 
   if ('skills' in skills) manifest.skills = skills.skills;
+  const step = stepEvidenceOf(evidence, mask);
 
-  const framing = `## evidence.json\n\n${JSON.stringify(manifest)}\n\n## transcripts/session.md\n\n`.length;
+  if (evidence) manifest.evidence = step.listing;
+
+  if (evidence?.leftOut !== undefined) manifest.evidenceLeftOut = evidence.leftOut;
+
+  const framing = `## evidence.json\n\n${JSON.stringify(manifest)}\n\n## transcripts/session.md\n\n`.length
+    + stepPromptSections(step.files).reduce((sum, section) => sum + `\n\n## ${section.title}\n\n`.length + section.body.length, 0);
+
   const agent = archived ?? SessionCaptures.agentOf(captures, SessionCaptures.reportedModelOf(session));
   const runMode = SessionCaptures.runModeOf(captures);
   const context: SessionLabelContext = { used: { skills: used }, prompt: mask(firstPrompt(session)) };
@@ -197,19 +214,97 @@ export function judgeSession({ platform, found, captures, mask, agent: archived 
   return {
     subject,
     body: keepEnds(mask(transcript.body), EVIDENCE_MAX_CHARS - framing),
+    stepEvidence: step.files,
     manifest,
     context,
     mask,
   };
 }
 
+/** The most of the prompt the text files of a step's evidence take, so the transcript keeps the rest. */
+const STEP_EVIDENCE_PROMPT_MAX_CHARS = 50_000;
+
+/** The text files of a step's evidence as the prompt carries them: each cut at its ends to an even share of the step's. */
+function stepPromptSections(files: JudgedSession['stepEvidence']): Array<{ title: string; body: string }> {
+  const share = Math.floor(STEP_EVIDENCE_PROMPT_MAX_CHARS / Math.max(1, files.length));
+
+  return files.map((file) => ({ title: file.path, body: keepEnds(file.text, share) }));
+}
+
+/** What a file name may not hold on Windows: control characters, and what a masked name's placeholders (`<REDACTED:…>`, `<repo>`) carry. */
+const UNWRITABLE_NAME_CHARS = /[<>:"|?*\\\p{Cc}]/gu;
+
+/** A name Windows opens as a device, with any extension: `nul.txt` is NUL ("Naming Files, Paths, and Namespaces"). */
+const WINDOWS_DEVICE_NAME = /^(?:con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(?:\..*)?$/iu;
+
+/** One segment of a judge's path as Windows writes it: without what it refuses, never a device, and with nothing it strips at the end. */
+function writableSegment(segment: string): string {
+  const named = segment.replace(UNWRITABLE_NAME_CHARS, '_').replace(/[. ]+$/u, (stripped) => '_'.repeat(stripped.length)) || '_';
+
+  return WINDOWS_DEVICE_NAME.test(named) ? `_${named}` : named;
+}
+
+/**
+ * Where masked path `masked` goes in the judge's directory so every platform can write it: each segment as Windows
+ * writes it (`writableSegment`), and, when that path or a directory on it is taken by an earlier file, as one numbered
+ * name.
+ */
+function judgeDirPath(masked: string, taken: { files: Set<string>; dirs: Set<string> }): string {
+  const segments = masked.split('/').map(writableSegment);
+  const dirsOf = (parts: readonly string[]): string[] => parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join('/'));
+  const isFree = (parts: readonly string[]): boolean => !taken.files.has(parts.join('/')) && !taken.dirs.has(parts.join('/')) && dirsOf(parts).every((dir) => !taken.files.has(dir));
+  let chosen = segments;
+
+  for (let number = 2; !isFree(chosen); number++) chosen = [`${segments.join('_')}~${number}`];
+  taken.files.add(chosen.join('/'));
+
+  for (const dir of dirsOf(chosen)) taken.dirs.add(dir);
+
+  return chosen.join('/');
+}
+
+/**
+ * `evidence` as a judge reads it, each text and path masked with `mask`: its text files under `evidence/`, each at a
+ * path every platform can write, and every file listed for `evidence.json`.
+ */
+function stepEvidenceOf(evidence: ArchivedEvidence | undefined, mask: (text: string) => string) {
+  const files: JudgedSession['stepEvidence'] = [];
+  const listing: StepEvidenceListing[] = [];
+  const taken = { files: new Set<string>(), dirs: new Set<string>() };
+
+  for (const file of evidence?.files ?? []) {
+    switch (file.kind) {
+      case 'text': {
+        const at = `evidence/${judgeDirPath(mask(file.path), taken)}`;
+        files.push({ path: at, text: mask(file.text) });
+        listing.push({ kind: 'text', path: at, type: file.type, size: file.size, cut: file.cut });
+        break;
+      }
+
+      case 'listed':
+        listing.push({ kind: 'listed', path: mask(file.path), type: file.type, size: file.size, sha256: file.sha256 });
+        break;
+      default: {
+        const unhandled: never = file;
+
+        return unhandled;
+      }
+    }
+  }
+
+  return { files, listing };
+}
+
 /**
  * Writes the evidence of one judge call of `rubrics` on `judged` into `dir`, `.ready` last, with `files`, which its
- * questions pinned to be read beside the transcript, by their path in `dir`, masked as the transcript is.
+ * questions pinned to be read beside the transcript, by their path in `dir`, masked as the transcript is, and the text
+ * files of the evidence its step left.
  */
 export async function writeSessionEvidence(dir: string, judged: JudgedSession, rubrics: Rubrics, files: Readonly<Record<string, string>> = {}): Promise<void> {
-  const { body, manifest, mask } = judged;
-  const pinned = Object.entries(files).map(([file, text]) => ({ title: file, body: mask(text) }));
+  const { body, manifest, mask, stepEvidence } = judged;
+  const asked = Object.entries(files).map(([file, text]) => ({ title: file, body: mask(text) }));
+  const pinned = [...asked, ...stepEvidence.map((file) => ({ title: file.path, body: file.text }))];
+  const prompted = [...asked, ...stepPromptSections(stepEvidence)];
 
   await writeEvidence(dir, async (tmp) => {
     await fs.mkdir(path.join(tmp, 'transcripts'));
@@ -224,7 +319,7 @@ export async function writeSessionEvidence(dir: string, judged: JudgedSession, r
     await fs.writeFile(path.join(tmp, 'prompt.md'), mask(rubricPrompt(rubrics)) + fencedEvidence([
       { title: 'evidence.json', body: JSON.stringify(manifest) },
       { title: 'transcripts/session.md', body },
-      ...pinned,
+      ...prompted,
     ], [['transcripts/session.md', ...pinned.map(({ title }) => title)].join(', '), 'evidence.json'].join(' and ')));
   });
 }
@@ -240,11 +335,6 @@ export function sessionLabel(verdict: Omit<SessionLabel, 'source' | 'subject' | 
   if (context.runMode) sessionLabeled.runMode = context.runMode;
 
   return sessionLabeled;
-}
-
-/** How long nothing happens in an attended session before it is finished: the `idle` of teamai-finished-sessions's params.yaml in `config`. */
-async function finishedAfter(config: LocalConfig): Promise<{ text: string; ms: number }> {
-  return (await DefaultFolders.load({ kind: 'workflows', name: 'teamai-finished-sessions' }, config)).params.idle;
 }
 
 function sameSessionKey(label: ScoreLabel, scorer: string, sourceHash: string, subject: SessionSubject): boolean {
@@ -390,7 +480,7 @@ async function isGone(captured: CapturedSession): Promise<boolean> {
 
 /**
  * The sessions of `captured` finished at `now`, oldest activity first, of the run modes `includes` keeps (a capture with
- * no mode counts as attended): an attended session once nothing happened in it for `idleMs`, as {@link finishedAfter} gives it, an
+ * no mode counts as attended): an attended session once nothing happened in it for `idleMs`, as {@link SessionCaptures.finishedAfter} gives it, an
  * unattended one once a drain reached it (#1385), each with when something last happened in it. A session whose file
  * is gone is never finished.
  */
@@ -495,4 +585,4 @@ async function sampledScorers(config: LocalConfig, subject: SessionSubject, fact
   });
 }
 
-export const SessionWork = { finishedAfter, finished, read, readPushed, scopeCwd, sampledScorers, samplingScorers, sessionScorers, generatedQuestions, pinsOf, isGone } as const;
+export const SessionWork = { finished, read, readPushed, scopeCwd, sampledScorers, samplingScorers, sessionScorers, generatedQuestions, pinsOf, isGone } as const;

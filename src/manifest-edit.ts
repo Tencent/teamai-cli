@@ -1,5 +1,5 @@
 import { DetachedTeamRepoError, pullRepo, pushRepoBranch, checkoutMaster, unusedBranchName } from './utils/git.js';
-import { log, spinner } from './utils/logger.js';
+import { log, spinner } from '@teamai/shared/log';
 import { createPrWithFallback, providerOpensPullRequests } from './push.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
 

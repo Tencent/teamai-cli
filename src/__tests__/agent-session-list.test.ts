@@ -21,8 +21,8 @@ vi.mock('node:os', async (importOriginal) => {
 
 // One id in two workspaces only happens with copies an older TeamAI wrote; writing through the
 // adapters under a fixed id plants them.
-vi.mock('../session-flow/ids.js', async (importOriginal) => {
-  const actual = (await importOriginal()) as typeof import('../session-flow/ids.js');
+vi.mock('@teamai/tool-core/sessions/ids', async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import('@teamai/tool-core/sessions/ids');
   return {
     ...actual,
     deriveTargetSessionId: (target: Parameters<typeof actual.deriveTargetSessionId>[0]) =>
@@ -32,8 +32,8 @@ vi.mock('../session-flow/ids.js', async (importOriginal) => {
 
 import { AgentSession } from '../session-flow/agent-session.js';
 import { getAdapter } from '../session-flow/adapters/index.js';
-import type { Session } from '../session-flow/ir.js';
-import { installFakeOpencode, opencodeExportFixture, plantOpencodeSession } from './helpers/fake-opencode.js';
+import type { Session } from '@teamai/tool-core/sessions/ir';
+import { installFakeOpencode, opencodeExportFixture, plantOpencodeSession } from '@teamai/tool-opencode/testing';
 
 function mkSession(cwd: string, text: string, updatedAt: string): Session {
   return {

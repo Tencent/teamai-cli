@@ -14,7 +14,7 @@ import { readNetrcToken, writeNetrcToken } from '../providers/gitcode/gitcode-ap
 import { getRepoCacheDir } from '../utils/repo-cache.js';
 import { getCacheRoot } from '../utils/cache-index.js';
 import { defaultAllowedRoots } from '../utils/path-safety.js';
-import { getUserHome } from '../utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 
 const GITCODE_HOST = 'gitcode.com';
 

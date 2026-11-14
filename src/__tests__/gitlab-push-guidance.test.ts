@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPrWithFallback } from '../push.js';
 import { getDefaultBranch } from '../utils/git.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 const { fail, succeed } = vi.hoisted(() => ({ fail: vi.fn(), succeed: vi.fn() }));
 
@@ -10,7 +10,7 @@ vi.mock('../utils/git.js', async (importOriginal) => ({
   getDefaultBranch: vi.fn().mockResolvedValue('main'),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn(),
   },

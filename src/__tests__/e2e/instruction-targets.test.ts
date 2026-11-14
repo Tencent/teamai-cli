@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { installFakeOpencode } from '@teamai/tool-opencode/testing';
 import { loadV2Plugin } from '../helpers/opencode-plugin.js';
 
 // Real-CLI coverage for #945: a pull writes the instruction blocks (culture,
@@ -507,10 +508,14 @@ describe('instruction block targets on real CLI pull (#945)', () => {
     const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-e2e-')));
     sandboxes.push(sandbox);
     const member = makeProjectMember(sandbox, makeTeamAndProject(sandbox), 'dev', 'developer', ['.opencode/skills']);
-    const pulled = await pullAs(member);
+    // OpenCode V1, which reads the `instructions` this case breaks; V2 is the plugin case below.
+    const opencodeV1 = installFakeOpencode({ version: '1.18.35' });
+    sandboxes.push(opencodeV1);
+    const env = { HOME: member.home, PATH: `${opencodeV1}${path.delimiter}${process.env.PATH ?? ''}` };
+    const pulled = await pullAs(member, [], env);
     expect(pulled.code, pulled.output).toBe(0);
     const doctor = async (): Promise<Map<string, { ok: boolean; fix?: string }>> => {
-      const run = await runCLI(['doctor', '--json'], { HOME: member.home }, member.projectRoot);
+      const run = await runCLI(['doctor', '--json'], env, member.projectRoot);
       const report = JSON.parse(run.stdout) as { checks: Array<{ name: string; ok: boolean; fix?: string }> };
       return new Map(report.checks.map((c) => [c.name, c]));
     };
@@ -709,11 +714,14 @@ describe('instruction block targets on real CLI pull (#945)', () => {
       `const workers = ${JSON.stringify(workers)};`,
       'const spawn = cp.spawn;',
       'cp.spawn = (command, args, options) => {',
+      // teamai's detached workers run node, as this process does; a tool it starts in a group of its own, such as
+      // `codex app-server`, is not one, keeps its own pipes, and never loads this file to write its `.done`.
+      '  const isWorker = options?.detached && command === process.execPath;',
       // Keep the fixture's output pipes open until detached workers exit, so
       // runCLI's close event joins them before server/filesystem teardown.
-      "  if (options?.detached) options = { ...options, stdio: [Array.isArray(options.stdio) ? options.stdio[0] : 'ignore', 'inherit', 'inherit'] };",
+      "  if (isWorker) options = { ...options, stdio: [Array.isArray(options.stdio) ? options.stdio[0] : 'ignore', 'inherit', 'inherit'] };",
       '  const child = spawn(command, args, options);',
-      "  if (options?.detached && child.pid) fs.writeFileSync(workers + '/' + child.pid + '.started', '');",
+      "  if (isWorker && child.pid) fs.writeFileSync(workers + '/' + child.pid + '.started', '');",
       '  return child;',
       '};',
       "require('node:module').syncBuiltinESMExports();",

@@ -4,6 +4,9 @@ rule.invalid('rejects a failure code records cannot classify', `const failure = 
 rule.invalid('rejects unclassified wrapper failures', `return error('new_unclassified_failure', 'failed');`);
 rule.invalid('rejects unknown code unions', `type Answer = { code: 'tool_failed' | 'new_unclassified_failure' };`);
 rule.invalid('requires an explanation for forwarded codes', `return failure(answer.code, answer.message);`);
+rule.invalid('rejects a protocol constant no record classifies', `import { NEW_FAILURE } from '@teamai/runtime-protocol';\nconst failure = { code: NEW_FAILURE, message: 'failed' };`);
+rule.invalid('rejects a protocol constant renamed on import that no record classifies', `import { NEW_FAILURE as GONE } from '@teamai/runtime-protocol';\nreturn failed({ code: GONE, message: 'failed' });`);
+rule.valid('allows a protocol constant the record classifies', `import { CANCEL_FAILED } from '@teamai/runtime-protocol';\nreturn failed({ code: CANCEL_FAILED, message: 'failed' });`);
 rule.valid('allows a recorded failure', `return error('tool_failed', 'failed');`);
 rule.valid('allows command-only failures', `return error('invalid_arguments', 'bad arguments');`);
 rule.valid('allows explicitly explained forwarding', `// oxlint-disable-next-line teamai/workflow-failure-codes -- producer already classified

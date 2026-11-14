@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs-extra';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
     log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), success: vi.fn() },
     spinner: vi.fn(async () => ({ succeed: vi.fn(), fail: vi.fn() })),
 }));
@@ -21,7 +21,7 @@ vi.mock('../utils/iwiki-client.js', () => ({
 import { ImportFromIwiki } from '../import-iwiki.js';
 import { writeSections } from '../iwiki-dual.js';
 import { loadPendingReview } from '../review-store.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 const VALID_AI_OUTPUT = JSON.stringify({
     'business-api': '## 业务接口\n接口列表...',

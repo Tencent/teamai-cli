@@ -35,7 +35,7 @@ vi.mock('../config.js', async (importOriginal) => ({
 const IMPORTED = /^learnings\/mr-note-\d{4}-\d{2}-\d{2}-[a-z0-9]+\.md$/;
 const URL = 'https://github.com/o/r/pull/1';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
   setSilent: vi.fn(),
   spinner: vi.fn(() => ({

@@ -1,9 +1,9 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
-  JsonValue,
   LocalConfig,
   TeamaiConfig,
   McpServerDef,
@@ -23,7 +23,7 @@ import {
   managedMcpManifestKey,
   resolveBaseDir,
 } from './types.js';
-import { parseYaml } from './utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { projectsRootDir } from './utils/partition.js';
 import { z } from 'zod';
 import YAML from 'yaml';
@@ -43,8 +43,8 @@ import {
   UntypedStdioEntrySchema,
   DSH_MCP_PLUGIN,
   serverNameProblem,
-  type McpFormat,
 } from './resources/mcp-format.js';
+import { type McpFormat } from '@teamai/tool-core/definition';
 import { deliverMcpFolders, historicalFolderMcpServer, pruneMcpFolders, TEAM_MCP_ENTRIES, parseTeamMcpServers, teamMcpDef, teamMcpToDef, type TeamMcpDefinition } from './resources/mcp.js';
 import { historicalContents } from './utils/team-history.js';
 import { describeMembersFile, keepsTrackedCopy } from './resources/delivered-copies.js';
@@ -56,7 +56,8 @@ import { readEnvBackup } from './resources/env.js';
 import { isEnvShMarker } from './env-sh-exports.js';
 import { memberEnvironmentWithoutScope } from './member-env.js';
 import { cleanupOf, installOf, locate, ownOf, userViewOf, writable, type EntryPlace, type Install } from './locate.js';
-import { channelsOf, isToolId, mcpFormatOf, mcpScopeFor, mcpSyntaxOf, hasDefaultHomeLeftovers, TOOLS, type McpProject } from './tools.js';
+import { type McpProject } from '@teamai/tool-core/definition';
+import { baseToolOf, channelsOf, isToolId, mcpFormatOf, mcpScopeFor, mcpSyntaxOf, hasDefaultHomeLeftovers, TOOL_ORDER } from './tool-registry.js';
 import { realHost, type Host } from './tool-home.js';
 import { KNOWN_AGENTS } from './known-agents.js';
 import { entryLayout, reportEntryResolution, type ResolvedEntry } from './namespaced-entries.js';
@@ -70,13 +71,14 @@ import {
   readFileSafe,
   readFileIfExists,
   pathExists,
-  expandHome,
 } from './utils/fs.js';
-import { isPlainJson, mapStrings, parseJson, parseJsonAs, type JsonSyntax } from './utils/json.js';
-import { log } from './utils/logger.js';
+import { expandHome } from '@teamai/shared/home';
+import { mapStrings, parseJson, type JsonSyntax, type JsonValue, isJsonObject, type JsonObject, JsonObjectSchema } from '@teamai/shared/json';
+import { isPlainJson, parseJsonAs } from './utils/json.js';
+import { log } from '@teamai/shared/log';
 import { warnOnce } from './utils/warn-once.js';
 import { loadProjectMcpManifest } from './utils/mcp-manifest.js';
-import { isOnPath, SAFE_BIN_RE, type LookPathOptions } from './utils/lookpath.js';
+import { isOnPath, SAFE_BIN_RE, type LookPathOptions } from '@teamai/shared/lookpath';
 import {
   carriesLocalAgentCredential,
   carriesResolvedValue,
@@ -102,7 +104,6 @@ import {
 } from './mcp-resolved-files.js';
 import { hasWorkspaceChildren } from './workspace-children.js';
 import { DeliveredFolders, type PlacedFolders } from './resources/delivered-folders.js';
-import { isJsonObject, type JsonObject } from './types.js';
 
 // ─── Reconcile engine ────────────────────────────────────────
 //
@@ -393,13 +394,13 @@ export async function claudeProjectKey(checkoutRoot: string): Promise<string> {
   const root = await fs.promises.realpath(checkoutRoot).catch(() => path.resolve(checkoutRoot));
 
   try {
-    const dotGit = (await fs.promises.readFile(path.join(root, '.git'), 'utf8')).trim();
+    const dotGit = (await readRegularFile(path.join(root, '.git'), 'utf8')).trim();
 
     if (!dotGit.startsWith('gitdir:')) return root.normalize('NFC');
     const gitDir = path.resolve(root, dotGit.slice('gitdir:'.length).trim());
 
     const common = await fs.promises.realpath(
-      path.resolve(gitDir, (await fs.promises.readFile(path.join(gitDir, 'commondir'), 'utf8')).trim()),
+      path.resolve(gitDir, (await readRegularFile(path.join(gitDir, 'commondir'), 'utf8')).trim()),
     );
 
     return (path.basename(common) === '.git' ? path.dirname(common) : common).normalize('NFC');
@@ -539,7 +540,7 @@ export async function mcpRelocated(teamConfig: TeamaiConfig, localConfig: LocalC
 async function mcpFileReaders(writer: string, file: string, install: Install, host: Host): Promise<string[]> {
   const readers: string[] = [];
 
-  for (const reader of Object.keys(TOOLS)) {
+  for (const reader of TOOL_ORDER) {
     const { project } = channelsOf(reader).mcp;
 
     if (project === 'none' || project === 'unknown' || project.writtenBy !== writer || install.toolPaths[reader] === undefined) continue;
@@ -945,15 +946,16 @@ async function readYamlMcpDoc(file: string, keys: readonly string[]): Promise<Js
 
   const doc = YAML.parseDocument(raw);
 
-  if (doc.errors.length > 0) return null;
-  const data: unknown = raw.trim() === '' ? {} : doc.toJS();
+  if (doc.errors.length > 0 || (raw.trim() !== '' && !YAML.isMap(doc.contents))) return null;
+  // Only the server map is read as JSON: the member's other values, which JSON may not hold (`.inf`), stay in the
+  // document that is written back.
+  const node: unknown = doc.getIn(keys, true);
+  const read = node === undefined ? undefined : JsonObjectSchema.safeParse(YAML.isNode(node) ? node.toJS(doc) : node);
 
-  if (!isJsonObject(data)) return null;
-  const servers = valueAt(data, keys);
+  if (read !== undefined && !read.success) return null;
+  const servers = read?.data ?? {};
 
-  if (servers !== undefined && !isJsonObject(servers)) return null;
-
-  return { data, servers: { ...servers }, bare: false, raw, storage: { kind: 'yaml-map', doc } };
+  return { data: withValueAt({}, keys, servers), servers: { ...servers }, bare: false, raw, storage: { kind: 'yaml-map', doc } };
 }
 
 /** Read a DSH patch list as the same `servers` view: keyed by each mcp-client instance's `config.serverName`. */
@@ -1747,7 +1749,7 @@ async function localMcpKeyOf(localConfig: LocalConfig): Promise<(key: string) =>
   if (localConfig.scope !== 'project' || !localConfig.projectRoot) return () => false;
   const keys = new Set<string>();
 
-  for (const tool of Object.keys(TOOLS)) {
+  for (const tool of TOOL_ORDER) {
     const scope = localMcpScopeOf(tool);
 
     if (scope === undefined) continue;
@@ -1899,13 +1901,13 @@ export async function unclaimedMcpServers(target: McpTarget, claimed: readonly s
 
 /**
  * Whether `tool`'s project MCP config is never judged teamai-only (#915, its
- * `judgedTeamaiOnly`). In a team in self mode Claude keeps `.mcp.json`
- * (`mcpRelocated`), and it is judged.
+ * `judgedTeamaiOnly`). In a team in self mode Claude, and an instance of it,
+ * keeps `.mcp.json` (`mcpRelocated`), and it is judged.
  */
 function neverJudgedTeamaiOnly(tool: string, localConfig: LocalConfig): boolean {
   const project = channelsOf(tool).mcp.project;
 
-  return project !== 'none' && project !== 'unknown' && !project.judgedTeamaiOnly && !(tool === 'claude' && isSelfMode(localConfig));
+  return project !== 'none' && project !== 'unknown' && !project.judgedTeamaiOnly && !(baseToolOf(tool) === 'claude' && isSelfMode(localConfig));
 }
 
 /**
@@ -2247,6 +2249,7 @@ export async function earlierMappedMcpTargets(
       const format = mcpFormatOf(tool);
 
       if (rel === undefined || !format) continue;
+      // oxlint-disable-next-line teamai/configured-tool-paths -- mcpProject, which an earlier teamai.yaml mapped; a file outside the project root is skipped just below
       const file = path.resolve(resolveBaseDir(cfg), rel);
       const key = `${tool}\0${file}`;
 
@@ -2780,7 +2783,7 @@ export async function noteManagedMcpHome(dataHome: string): Promise<void> {
 
 /** Whether a `<dataHome>/workspaces/<id>/` names a checkout that no longer exists. One that names none is kept: only git can say. */
 async function workspaceRemoved(dir: string): Promise<boolean> {
-  const root = await fs.promises.readFile(path.join(dir, 'root'), 'utf8').catch(() => null);
+  const root = await readRegularFile(path.join(dir, 'root'), 'utf8').catch(() => null);
 
   if (root === null || root.trim() === '') return false;
 

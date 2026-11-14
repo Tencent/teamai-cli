@@ -16,7 +16,7 @@ import { unzipSync } from 'fflate';
 import { z } from 'zod';
 import { ensureDir, remove, writeFile, pathExists, readFileSafe, readJson, writeJson } from './utils/fs.js';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { parseFrontmatter } from './utils/frontmatter.js';
 
 /** Command types in the iWiki/clawpro contract. */

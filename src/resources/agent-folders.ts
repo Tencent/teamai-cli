@@ -8,7 +8,7 @@ import type { DeliveryLedger } from './delivered-copies.js';
 import { DeliveredFolders, type DeliveredFolderRef } from './delivered-folders.js';
 import { FolderFiles } from './folder-files.js';
 import { FOLDER_MARKERS } from '../folder-markers.js';
-import { folderReachOf, isToolId, TOOLS } from '../tools.js';
+import { baseDescriptorOf, folderReachOf } from '../tool-registry.js';
 import type { CopyOrigin, LocalConfig, ResourceItem } from '../types.js';
 import { listDirs, listFiles, pathExists, readFileSafe } from '../utils/fs.js';
 import { warnOnce } from '../utils/warn-once.js';
@@ -114,7 +114,7 @@ function origin(localConfig: LocalConfig, stem: string, tool: string): CopyOrigi
     repoPath: localConfig.repo.localPath,
     pathspec: `:(glob)agents/**/${stem}/${marker}`,
     renders: [(content, version) => {
-      if (!isToolId(tool) || !TOOLS[tool].legacyAgentMd) return null;
+      if (baseDescriptorOf(tool)?.legacyAgentMd !== true) return null;
       const namespace = path.posix.dirname(path.posix.dirname(version.path)).slice('agents/'.length);
       const ref: DeliveredFolderRef = { type: 'agents', namespace: namespace === '' ? null : namespace, name: stem };
 

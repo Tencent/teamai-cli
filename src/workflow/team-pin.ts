@@ -9,12 +9,13 @@ import os from 'node:os';
 import path from 'node:path';
 import type { z } from 'zod';
 import { getBusinessRoot, getKnowledgeDir, isSelfMode, type LocalConfig } from '../types.js';
-import { isSameRealPath, readFileSafe, writeFileAtomic } from '../utils/fs.js';
-import { log } from '../utils/logger.js';
+import { isSameRealPath, writeFileAtomic } from '../utils/fs.js';
+import { log } from '@teamai/shared/log';
 import { withTeamRevision } from './cache.js';
 import { runsDir, TeamPinSchema } from './store.js';
 import type { RunState } from './types.js';
-import { boundedGit, git } from './worktree.js';
+import { boundedGit, git, gitAnswer } from './worktree.js';
+import { readRegularFile, writeRegularFile } from '@teamai/shared/regular-file';
 
 export type TeamPin = z.infer<typeof TeamPinSchema>;
 
@@ -55,7 +56,7 @@ async function changesPast(root: string, spec: string, revision: string): Promis
   try {
     const index = path.join(dir, 'index');
     const own = await git(root, ['rev-parse', '--path-format=absolute', '--git-path', 'index']);
-    const copied = own.code === 0 && await fs.copyFile(own.stdout.trim(), index).then(() => true, () => false);
+    const copied = own.code === 0 && await readRegularFile(own.stdout.trim()).then((bytes) => writeRegularFile(index, bytes)).then(() => true, () => false);
     const withIndex = boundedGit(undefined, { ...process.env, GIT_INDEX_FILE: index });
 
     for (const args of [...copied ? [] : [['read-tree', 'HEAD']], ['add', '-A', '--', spec]]) {
@@ -83,12 +84,12 @@ export const TeamPin = {
    */
   async capture(config: LocalConfig): Promise<{ pin: TeamPin; patch?: string } | undefined> {
     const root = repositoryRoot(config);
-    const [top, head] = await Promise.all([git(root, ['rev-parse', '--show-toplevel']), git(root, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'])]);
+    const [top, head] = await Promise.all([git(root, ['rev-parse', '--show-toplevel']), git(root, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']).then(gitAnswer)]);
     const spec = teamPathspec(config);
 
     // A clone at the revision reads the team files where the checkout does only when this is the repository's top.
-    if (top.code !== 0 || head.code !== 0 || spec.startsWith('..') || !await isSameRealPath(top.stdout.trim(), root)) return undefined;
-    const revision = await pushedRevision(root, head.stdout.trim());
+    if (top.code !== 0 || head.said !== 'yes' || spec.startsWith('..') || !await isSameRealPath(top.stdout.trim(), root)) return undefined;
+    const revision = await pushedRevision(root, head.result.stdout.trim());
     const changes = await changesPast(root, spec, revision);
 
     if ('failed' in changes) log.warn(`The run reads team commit ${revision.slice(0, 7)} without the edits past it: ${changes.failed}`);
@@ -111,7 +112,7 @@ export const TeamPin = {
     const { teamPin } = run;
 
     if (teamPin === undefined) return { ok: true, value: await use(config) };
-    const patch = teamPin.patch === undefined ? undefined : await readFileSafe(patchPath(config, run.id)) ?? '';
+    const patch = teamPin.patch === undefined ? undefined : await readRegularFile(patchPath(config, run.id), 'utf8').catch(() => null) ?? '';
 
     if (patch !== undefined && sha256(patch) !== teamPin.patch) {
       return { ok: false, failed: `the changes run ${run.id} started from beyond team commit ${teamPin.revision.slice(0, 7)} are not on this machine` };

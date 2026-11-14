@@ -4,12 +4,12 @@
  * for the selected workspace.
  */
 import path from 'node:path';
-import { parseYaml } from './utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { z } from 'zod';
 import { hasUserScopeInstall, loadLocalConfig, loadMemberSettings, loadTeamConfig } from './config.js';
 import { RUN_MODES, type RunMode } from './launch-context.js';
 import { SessionPolicy } from './session-flow/session-policy.js';
-import { memberTools } from './tool-launch/member-tools.js';
+import { memberTools } from './workflow/member-tools.js';
 import { resolveDefaultDriver } from './default-driver.js';
 import { DEFAULT_RETENTION, resolveRetention } from './workflow/retention.js';
 import {
@@ -22,13 +22,11 @@ import {
   MemberSettingsSchema,
   resolveAutoCompactTokens,
   resolveCoAuthor,
-  type JsonValue,
   type LocalConfig,
   type TeamaiConfig,
-  JsonObjectSchema,
 } from './types.js';
 import { readFileSafe } from './utils/fs.js';
-import { parseJson } from './utils/json.js';
+import { parseJson, type JsonValue, JsonObjectSchema } from '@teamai/shared/json';
 
 /** `http-team`: an HTTP team repo, which keeps no session archive, so it turns session publishing off whatever a level sets. */
 export type MemberSettingLevel = 'environment' | 'scope' | 'machine' | 'team' | 'http-team' | 'default';
@@ -251,7 +249,7 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
   // exists, it decides these values even while doctor is inspecting a project.
   // Load the same team file that pull/update use for that deciding install.
   const decidingTeam = userConfig?.scope === 'user'
-    ? await loadTeamConfig(userConfig.repo.localPath)
+    ? await loadTeamConfig(userConfig.repo.localPath, userConfig)
     : ctx.teamConfig;
 
   const reportKeys = new Set<string>(MEMBER_SETTING_REPORT_KEYS);

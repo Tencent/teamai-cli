@@ -4,7 +4,7 @@ import path from 'node:path';
 import fse from 'fs-extra';
 
 // Mock logger before any imports that use it.
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
@@ -40,13 +40,13 @@ vi.mock('node:child_process', async () => {
 
 import { hasShell, _resetShellCache, getDispatchCommand, retiredBuiltinHookDefs } from '../builtin-hooks.js';
 import { injectHooksToAllTools } from '../hooks.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 // Isolate getUserHome() so ensureTeamaiWrapper / bundled-shell detection read
 // a per-test home directory instead of the real one.
 const homeState = vi.hoisted(() => ({ home: '' }));
-vi.mock('../utils/home.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../utils/home.js')>()),
+vi.mock('@teamai/shared/home', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@teamai/shared/home')>()),
   getUserHome: () => homeState.home,
 }));
 

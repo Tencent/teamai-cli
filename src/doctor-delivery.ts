@@ -4,9 +4,10 @@ import { isDeepStrictEqual } from 'node:util';
 import { spawnSync } from 'node:child_process';
 import semver from 'semver';
 import { z } from 'zod';
-import { hookSyntaxOf, isToolId } from './tools.js';
+import { hookSyntaxOf, isToolId, toolOf } from './tool-registry.js';
+import { defaultPathsOf } from './tool-instances.js';
 import { existingSharedInstructionDirs, shadowedSharedInstructionFiles } from './shared-instruction-source.js';
-import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
+import { listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
   DEFAULT_TOOL_PATHS, getDataHome, getMcpSharing, getTeamaiHome, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey, MUSE_TOOL_ID,
   resolveBaseDir, scopedToolPaths,
@@ -26,16 +27,16 @@ import {
   sameFile,
   SHELL_PROFILE_CANDIDATE_NAMES,
 } from './utils/shell-profile.js';
-import { getUserHome } from './utils/home.js';
-import { installOf, isInstalledFor, locate, locatingOnce, ownOf, unreadWrites, workspaceHooksOf, writable, writesOf, type DirPlace, type FilesChannel, type Install, type Location, type ReadGate, type Session, type Unread } from './locate.js';
+import { getUserHome, expandHome } from '@teamai/shared/home';
+import { hookSettingsFile, installOf, isInstalledFor, locate, locatingOnce, ownOf, unreadWrites, workspaceHooksOf, writable, writesOf, type DirPlace, type FilesChannel, type Install, type Location, type ReadGate, type Session, type Unread } from './locate.js';
 import { readGateCheckName, readGateVerdict, type Held } from './read-gates.js';
 import { amongPlaces, placesRecordOf, samePlaces } from './resources/places.js';
 import { realHost, toolHome } from './tool-home.js';
 import { getsRulesFromExtension, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
 import { declaredSecretKeys } from './resources/secrets.js';
 import { isReservedTeamEnvKey } from './env-reserved.js';
-import { skillsGuardBase } from './builtin-skills.js';
-import { findSkillDirectoryBlock, describeSkippedSkillDirectory } from './resources/skills.js';
+import { skillsGuardBase } from './skill-owned-files.js';
+import { findSkillDirectoryBlock, describeSkippedSkillDirectory } from './skill-directory.js';
 
 /**
  * The checks that verify the payload rather than the plumbing: what each tool
@@ -327,18 +328,21 @@ export function toolPathsDroppedKeyNotes(ctx: DoctorContext): string[] {
   // default and drops nothing. The enabled filter still comes from `toolPaths`.
   for (const [tool, entry] of Object.entries(teamConfig.toolPaths)) {
     if (toolPaths[tool] === undefined) continue; // not enabled or excluded here.
+    // An instance's own `paths` replace what it would get without them; a toolPaths entry, the tool's default.
+    const instance = toolOf(tool)?.instance;
+    const replaced = instance?.paths ? defaultPathsOf(instance) : isToolId(tool) ? DEFAULT_TOOL_PATHS[tool] : undefined;
 
-    if (!isToolId(tool)) continue; // a custom tool: no default entry to drop keys from.
+    if (replaced === undefined) continue; // a custom tool: no default entry to drop keys from.
     const kept = new Map(Object.entries(entry));
 
-    const dropped = Object.entries(DEFAULT_TOOL_PATHS[tool]).flatMap(([key, value]) => {
+    const dropped = Object.entries(replaced).flatMap(([key, value]) => {
       const consequence = CONSEQUENCES.get(key);
 
       return key !== 'userScope' && kept.get(key) === undefined && consequence !== undefined ? [`\`${key}\` (${String(value)} — ${consequence})`] : [];
     });
 
     if (dropped.length === 0) continue;
-    notes.push(`toolPaths.${tool} replaces the tool's default entry whole and drops keys the default provides: `
+    notes.push(`${instance?.paths ? `paths in ${instance.location} replaces ${tool}'s` : `toolPaths.${tool} replaces the tool's`} default entry whole and drops keys the default provides: `
       + `${dropped.join(', ')}. Add a key back to restore its surface, or leave it out on purpose.`);
   }
 
@@ -533,7 +537,7 @@ async function moveFix({ tool, own, writes, wrote, members, workspaceHeld }: {
       + (members.length > 0 ? members.join(' ') : 'Run `teamai pull` to sync them there.');
   }
 
-  const { BUILTIN_SKILL_NAMES } = await import('./builtin-skills.js');
+  const { BUILTIN_SKILL_NAMES } = await import('./cli-skill-names.js');
   const reasons = [...members];
 
   if (workspaceHeld.length > 0) reasons.push(`This workspace holds back ${workspaceHeld.join(', ')}: its members deliver different copies. Make the copies equal in the team repo, or rename one.`);
@@ -558,7 +562,7 @@ async function moveHolds(
   located: readonly { readonly tool: string; readonly where: Location<'skills'> }[],
 ): Promise<{ readonly members: Map<string, string[]>; readonly workspaceHeld: readonly string[] }> {
   const members = new Map<string, string[]>();
-  const { keptStubLine, BUILTIN_SKILL_NAMES } = await import('./builtin-skills.js');
+  const [{ keptStubLine }, { BUILTIN_SKILL_NAMES }] = await Promise.all([import('./builtin-skills.js'), import('./cli-skill-names.js')]);
 
   for (const { tool, where } of located) {
     for (const dir of writesOf(where).map((place) => place.path)) {
@@ -889,7 +893,8 @@ function olderRuleCopyMeaning(tool: string): string {
  * build writes it; its context hook is what adds `what`. Null on V1.
  */
 async function opencodeV2PluginCheck(ctx: DoctorContext, name: string, what: string): Promise<Check | null> {
-  const { opencodeContextPlugin, opencodeMajorVersion } = await import('./opencode-hooks.js');
+  const { opencodeContextPlugin } = await import('./opencode-hooks.js');
+  const { opencodeMajorVersion } = await import('./opencode-version.js');
 
   if (await opencodeMajorVersion() < 2) return null;
   const { file, ready } = await opencodeContextPlugin();
@@ -1040,7 +1045,7 @@ async function buildCursorUserRulesHookChecks(ctx: DoctorContext): Promise<Check
   const { readBuiltinOverride } = await import('./resources/hooks.js');
   const builtin = await readBuiltinOverride(localConfig);
   const disabledByTeam = builtin.known && (builtin.override?.disabled ?? []).includes('Hook dispatch session-start');
-  const file = path.join(resolveBaseDir(localConfig), toolPath.settings);
+  const file = hookSettingsFile('cursor', resolveBaseDir(localConfig), toolPath.settings);
   const syntax = hookSyntaxOf('cursor');
   const read = await readJsonObject(file, syntax);
   const hooks = read.kind === 'ok' ? CursorHooksSchema.parse(read.value).hooks : undefined;
@@ -1215,6 +1220,7 @@ async function buildProjectRulesHookChecks(ctx: DoctorContext): Promise<Check[]>
   const zcodeSettings = scopedToolPaths(teamConfig, { ...localConfig, scope: 'user' }).zcode?.settings;
 
   if (zcodeSettings && !isAgentExcluded(localConfig, 'zcode') && await pathExists(path.join(home, '.zcode'))) {
+    // oxlint-disable-next-line teamai/configured-tool-paths -- ZCode's user settings in the default home, as this check has always read them; a moved home is not followed here yet
     const file = path.join(home, zcodeSettings);
     const read = await readJsonObject(file);
     const hooks = read.kind === 'ok' ? ZcodeHooksSchema.parse(read.value).hooks : undefined;

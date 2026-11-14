@@ -19,7 +19,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 const { runTeamScript, POST_DEPLOY_BUDGET_SEC } = await import('../team-scripts.js');
 const { trySymlink } = await import('./helpers/symlink.js');
-const { log } = await import('../utils/logger.js');
+const { log } = await import('@teamai/shared/log');
 
 let dir: string;
 let infoSpy: ReturnType<typeof vi.spyOn>;

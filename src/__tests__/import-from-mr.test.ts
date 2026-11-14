@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
   spinner: vi.fn(() => ({
     start: vi.fn().mockReturnThis(),
@@ -47,7 +47,7 @@ vi.mock('../providers/github/mr-fetch.js', () => ({
 
 import { ImportFromMr } from '../import-from-mr.js';
 import { fetchGitHubPR } from '../providers/github/mr-fetch.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 const DRAFT_BODY = 'gateway retry budget exhausted under burst traffic backoff jitter';
 const URLS = ['https://github.com/o/r/pull/1', 'https://github.com/o/r/pull/2'];

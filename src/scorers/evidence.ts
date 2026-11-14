@@ -4,7 +4,7 @@ import path from 'node:path';
 import { canonicalJson } from '../utils/canonical-json.js';
 import type { ScorerDefinition } from './definition.js';
 import type { RunSubject } from './label.js';
-import type { JsonValue } from '../types.js';
+import type { JsonValue } from '@teamai/shared/json';
 
 /** What the evidence could not hold, and says so instead of guessing. */
 export const EVIDENCE_GAPS = [

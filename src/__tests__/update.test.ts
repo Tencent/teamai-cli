@@ -29,7 +29,6 @@ vi.mock('node:url', async (importOriginal) => {
 vi.mock('fs-extra', () => ({
   default: {
     pathExists: vi.fn(),
-    readFile: vi.fn(),
     writeFile: vi.fn(),
     remove: vi.fn(),
     ensureDir: vi.fn(),
@@ -37,6 +36,12 @@ vi.mock('fs-extra', () => ({
     link: vi.fn(),
   },
 }));
+
+vi.mock('@teamai/shared/regular-file', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@teamai/shared/regular-file')>();
+
+  return { ...actual, readRegularFile: vi.fn(), readRegularFileSync: vi.fn(actual.readRegularFileSync) };
+});
 
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
@@ -47,7 +52,7 @@ vi.mock('../config.js', async (importOriginal) => ({
   resolveConfigForDir: vi.fn(),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -113,11 +118,12 @@ vi.mock('../utils/prompt.js', () => ({
 // ─── Imports (after mocks) ──────────────────────────────
 
 import fse from 'fs-extra';
+import { readRegularFile, readRegularFileSync } from '@teamai/shared/regular-file';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { loadState, saveState, loadLocalConfig, loadTeamConfig, resolveConfigForDir } from '../config.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { askConfirmation } from '../utils/prompt.js';
 
 import {
@@ -146,9 +152,9 @@ const mockedLoadState = loadState as Mock;
 const mockedSaveState = saveState as Mock;
 const mockedLoadLocalConfig = loadLocalConfig as Mock;
 const mockedLoadTeamConfig = loadTeamConfig as Mock;
+const mockedReadRegularFile = vi.mocked(readRegularFile);
 const mockedFse = fse as unknown as {
   pathExists: Mock;
-  readFile: Mock;
   writeFile: Mock;
   remove: Mock;
   ensureDir: Mock;
@@ -227,7 +233,7 @@ beforeEach(() => {
   mockedLoadTeamConfig.mockResolvedValue(null);
   vi.mocked(resolveConfigForDir).mockResolvedValue(null);
   mockedFse.pathExists.mockResolvedValue(false);
-  mockedFse.readFile.mockResolvedValue('');
+  mockedReadRegularFile.mockResolvedValue('');
   mockedFse.writeFile.mockResolvedValue(undefined);
   mockedFse.link.mockResolvedValue(undefined);
   mockedFse.remove.mockResolvedValue(undefined);
@@ -661,7 +667,7 @@ describe('doUpdate', () => {
     const eexistError = new Error('EEXIST') as NodeJS.ErrnoException;
     eexistError.code = 'EEXIST';
     mockedFse.link.mockRejectedValue(eexistError);
-    mockedFse.readFile.mockResolvedValue(
+    mockedReadRegularFile.mockResolvedValue(
       JSON.stringify({ pid: process.pid, owner: 'held', startedAt: 'x' }),
     );
 
@@ -1155,7 +1161,7 @@ describe('acquireLock', () => {
     // for real in lock-atomic.test.ts.)
     mockedFse.link.mockImplementation((_tmp: string, target: string) =>
       target === '/tmp/test-lock' ? Promise.reject(eexist()) : Promise.resolve(undefined));
-    mockedFse.readFile.mockResolvedValue('99999999'); // dead pid → stale
+    mockedReadRegularFile.mockResolvedValue('99999999'); // dead pid → stale
     mockedFse.rename.mockResolvedValue(undefined);
 
     const result = await acquireLock('/tmp/test-lock');
@@ -1168,7 +1174,7 @@ describe('acquireLock', () => {
     mockedFse.link.mockImplementation((_tmp: string, target: string) =>
       target === '/tmp/test-lock' ? Promise.reject(eexist()) : Promise.resolve(undefined));
     // Our own PID is alive → process.kill(pid, 0) succeeds → not stale.
-    mockedFse.readFile.mockResolvedValue(JSON.stringify({ pid: process.pid, owner: 'x' }));
+    mockedReadRegularFile.mockResolvedValue(JSON.stringify({ pid: process.pid, owner: 'x' }));
 
     const result = await acquireLock('/tmp/test-lock');
 
@@ -1183,7 +1189,7 @@ describe('releaseLock', () => {
     mockedFse.writeFile.mockResolvedValue(undefined);
     await acquireLock('/tmp/owned-lock');
     const owner = JSON.parse(mockedFse.writeFile.mock.calls[0][1] as string).owner;
-    mockedFse.readFile.mockResolvedValue(JSON.stringify({ pid: process.pid, owner }));
+    mockedReadRegularFile.mockResolvedValue(JSON.stringify({ pid: process.pid, owner }));
 
     await releaseLock('/tmp/owned-lock');
 
@@ -1195,7 +1201,7 @@ describe('releaseLock', () => {
     await acquireLock('/tmp/taken-lock');
     // On disk the owner token differs → another process reclaimed it after ours
     // went stale. We must leave it alone.
-    mockedFse.readFile.mockResolvedValue(JSON.stringify({ pid: 12345, owner: 'someone-else' }));
+    mockedReadRegularFile.mockResolvedValue(JSON.stringify({ pid: 12345, owner: 'someone-else' }));
 
     await releaseLock('/tmp/taken-lock');
 
@@ -1205,7 +1211,7 @@ describe('releaseLock', () => {
   it('does NOT delete a lock this process never acquired (no owner token)', async () => {
     // Owner-verified release: with no recorded owner for this path, releaseLock
     // must not touch the file even if one exists on disk.
-    mockedFse.readFile.mockResolvedValue(JSON.stringify({ pid: process.pid, owner: 'other' }));
+    mockedReadRegularFile.mockResolvedValue(JSON.stringify({ pid: process.pid, owner: 'other' }));
 
     await releaseLock('/tmp/never-acquired-by-us');
 
@@ -1370,22 +1376,22 @@ describe('self-update install-target safety', () => {
   const FLAT_ENTRY = path.join('/home', 'u', '.teamai', 'node_modules', 'teamai-cli', 'dist', 'update.js');
   const mockedEntry = resolveTeamaiEntryScript as Mock;
   let existsSpy: MockInstance<typeof fs.existsSync>;
-  let readSpy: MockInstance<typeof fs.readFileSync>;
+  const readSpy = vi.mocked(readRegularFileSync);
   let restorePlatform: () => void;
 
   beforeEach(() => {
     existsSpy = vi.spyOn(fs, 'existsSync').mockReturnValue(true);
-    readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation(((p: fs.PathLike) => {
-      if (String(p).endsWith('package.json')) {
+    readSpy.mockImplementation((file: string) => {
+      if (file.endsWith('package.json')) {
         return JSON.stringify({ version: '99.0.0' });
       }
-      throw new Error(`unexpected read: ${String(p)}`);
-    }) as unknown as typeof fs.readFileSync);
+      throw new Error(`unexpected read: ${file}`);
+    });
   });
   afterEach(() => {
     restorePlatform?.();
     existsSpy.mockRestore();
-    readSpy.mockRestore();
+    readSpy.mockReset();
     fileURLToPathMock.mockImplementation((p: string | URL) => actualFileURLToPath.fn!(p));
   });
 
@@ -1485,10 +1491,10 @@ describe('self-update install-target safety', () => {
     restorePlatform = stubPlatform('win32');
     fileURLToPathMock.mockReturnValue(FLAT_ENTRY);
     mockedEntry.mockReturnValue(FLAT_ENTRY);
-    readSpy.mockImplementation(((p: fs.PathLike) => {
-      if (String(p).endsWith('package.json')) return JSON.stringify({ version: '0.0.9' });
-      throw new Error(`unexpected read: ${String(p)}`);
-    }) as unknown as typeof fs.readFileSync);
+    readSpy.mockImplementation((file: string) => {
+      if (file.endsWith('package.json')) return JSON.stringify({ version: '0.0.9' });
+      throw new Error(`unexpected read: ${file}`);
+    });
     mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
 
     await expect(doUpdate(null)).resolves.toBe('failed');

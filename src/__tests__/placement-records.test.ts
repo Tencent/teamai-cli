@@ -4,7 +4,7 @@ import os from 'node:os';
 import fse from 'fs-extra';
 
 const mockWarn = vi.fn();
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { debug: vi.fn(), info: vi.fn(), warn: (...args: unknown[]) => mockWarn(...args), error: vi.fn(), success: vi.fn() },
 }));
 const mockRemoteBranchExists = vi.fn();

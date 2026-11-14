@@ -1,0 +1,3 @@
+{"payload_type":"run.started","payload":{"run_id":"run_01"}}
+{"payload_type":"run.usage","payload":{"models":[{"model_id":"muse-spark-1.2","input_tokens":12000,"cached_tokens":10000,"output_tokens":40}]}}
+{"payload_type":"run.terminal.completed","payload":{"terminal":"completed","text":"It uses Vitest.","reason":null}}

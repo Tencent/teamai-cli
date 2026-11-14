@@ -2,7 +2,7 @@ import chalk from 'chalk';
 
 import type { GlobalOptions } from './types.js';
 import { getCacheStatus, gcCache, parsePositiveInteger, type GcOptions } from './utils/cache-index.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 // ─── Types ───────────────────────────────────────────────
 

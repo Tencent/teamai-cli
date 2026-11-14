@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
 
-vi.mock('../../src/providers/tgit/gf-cli.js', () => ({
+vi.mock('../../src/providers/tgit/oauth-token.js', () => ({
     gfGetOAuthToken: vi.fn(),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
     log: {
         info: vi.fn(),
         success: vi.fn(),
@@ -17,7 +17,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { gfListOrgRepos } from '../providers/tgit/gf-org.js';
-import { gfGetOAuthToken } from '../providers/tgit/gf-cli.js';
+import { gfGetOAuthToken } from '../providers/tgit/oauth-token.js';
 
 function makeProject(overrides: Record<string, unknown> = {}) {
     return {

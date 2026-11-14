@@ -189,6 +189,8 @@ teamai 自身的 AI 调用（enrich、codebase、import、promote）使用 teama
 2. 命令所在的 workspace 或 self 安装的配置 `~/.teamai/projects/<slug>/config.yaml` 中的 `ai.tool`。
 3. `~/.teamai/config.yaml` 中的 `ai.tool`，作用于本机。不在任何安装中运行的命令只读取这一项。
 
+`teamai init --agent <tool>` 会把安装配置中的 `ai.tool` 设为它列出的第一个 teamai 能启动的工具，除非该配置或 `~/.teamai/config.yaml` 已经指定了工具。
+
 本机没有 user scope 安装时，`~/.teamai/config.yaml` 可以只包含这一项设置：
 
 ```yaml
@@ -217,7 +219,7 @@ CURSOR_DATA_DIR=~/.cursor-data teamai init
 CURSOR_CONFIG_DIR=~/.cursor-config teamai init
 ```
 
-目录要在 home 下，或在 `~/.config/` 下面。Copilot 用自己的 `COPILOT_HOME`。
+目录在 home 下或 `~/.config/` 下面时，teamai 会同步到那里。home 之外的目录也会记下，但只用于该工具的会话：teamai 从那里读会话，其他文件仍同步到工具的默认根目录，`init` 和 `teamai doctor` 会说明这一点。如果配置里已经记下了该工具在 home 下的根目录，`init` 会保留它，并说明怎样切换。Copilot 用自己的 `COPILOT_HOME`。工作流步骤启动 Claude Code 或 Codex 时，即使 shell 没有设这个变量，或把它设为另一个目录，也会把它设为 teamai 同步到的目录。记录的目录不存在时，pull 会跳过该工具，工作流步骤不会启动它，`teamai doctor` 会报 `Claude Code root exists` 或 `Codex root exists`。
 
 Cursor CLI 会搬两个目录：`CURSOR_DATA_DIR` 放会话记录，`CURSOR_CONFIG_DIR` 放写协同署名设置的 `cli-config.json`。用户级 `mcp.json`、`rules/`、`commands/` 不管这两个变量怎么设都留在 `~/.cursor`，所以它们仍然用默认路径。没设 `CURSOR_CONFIG_DIR` 时，配置根目录取 `$XDG_CONFIG_HOME/cursor`（设了该变量的话），否则取 `~/.cursor`。
 
@@ -225,7 +227,7 @@ Cursor CLI 会搬两个目录：`CURSOR_DATA_DIR` 放会话记录，`CURSOR_CONF
 
 有些工具会按变量搬家：`XDG_CONFIG_HOME`（OpenCode、Muse）、`OPENCODE_CONFIG_DIR`、`HERMES_HOME`、`HERMES_DATA_DIR_SUFFIX`、`PI_CODING_AGENT_DIR`（Pi）、`OMP_PROFILE`、`PI_PROFILE` 和 `PI_CONFIG_DIR`（Oh My Pi）、`CODEBUDDY_CONFIG_DIR`、`COPILOT_HOME`、`DSH_HOME`、`JOYCODE_HOME`、`OPENCLAW_STATE_DIR`、`OPENCLAW_HOME` 和 `OPENCLAW_PROFILE`。Hermes 还会搬到它的 `active_profile` 文件指定的 profile。teamai 每次运行都在已记录或搬过去的 Hermes 主目录里读这个文件，从不记录 profile，所以 `hermes profile use` 在下一次 pull 就生效。Oh My Pi 也会读 `PI_CODING_AGENT_DIR`，但 teamai 不把 Oh My Pi 的文件写到那里，因为那是 Pi 的目录。`pull` 和 `teamai hooks remove` 只改当前的 Hermes 或 Oh My Pi profile，因为各个 profile 并行使用。`teamai uninstall` 会从默认主目录、已记录或搬过去的主目录，以及它们下面的每个 profile 里，删除 teamai 的 Hermes hook 脚本、指令插件、它们在 `config.yaml` 里的条目和授权、SOUL.md 块，以及 teamai 的 Oh My Pi 扩展。在 Windows 上，Hermes 在 `%LOCALAPPDATA%\hermes`。工具自己的变量是相对路径时，和工具一样按运行 teamai 的目录解析；`XDG_CONFIG_HOME` 或 `%LOCALAPPDATA%` 是相对路径时会被忽略。teamai 会同步到搬过去的主目录。`teamai skill list`、`teamai skill show` 和 `teamai list skills --source local` 读取那里的技能，`teamai doctor` 也在那里检查工具是否已安装。设了 `XDG_CONFIG_HOME=/x` 时，OpenCode 的技能、agents、位于 `/x/opencode/rules` 的规则、位于 `/x/opencode/teamai-context.md` 的指令块、hook 插件，以及 MCP 和 `teamai models switch` 写的 `opencode.json` 都放到 `/x/opencode`。Muse 的技能、agents、MCP 配置、模型设置和 hooks 放到 `/x/muse`，它的用户规则和指令块是 `/x/muse/AGENTS.md`。设了 `PI_CODING_AGENT_DIR=/x` 时，Pi 的技能、MCP 配置、`models.json` 和扩展放到 `/x`，它的用户规则和指令块是 `/x/AGENTS.md`。设了 `CODEBUDDY_CONFIG_DIR=/x` 时，CodeBuddy 的技能、规则、agents、hooks、`CODEBUDDY.md` 和 MCP 文件（包括 `.codebuddy.json`）放到 `/x`。以前的版本把这四个工具的 hooks 写在默认主目录下。`pull`、`teamai hooks remove` 和 `teamai uninstall` 会删除这份副本：OpenCode 1.x 也会加载那里的插件，而留在那里的团队 hook 之后无法再识别并删除。[工具支持](tool-support.md)列出每个工具的主目录、移动它的变量，以及 teamai 把每类资源写到哪里。
 
-第一次看到该变量的 `pull` 会在该目录存在时把主目录记到 `~/.teamai/tool-homes.json`，整台机器共用这一份记录；pull 不会替换已有的记录。`teamai init` 也会记录，并且会替换已有的记录：工具自己的变量（`HERMES_HOME`、`OPENCLAW_PROFILE` 等）在目录还不存在时也记，`XDG_CONFIG_HOME` 要等目录存在才记。Hermes 在 Windows 上的默认目录只会补上缺的记录。所以请在你的工具运行的 shell 里运行 `init`。之后即使在没设该变量的 shell 里 pull，各个 scope 也仍然同步到那里。要换主目录，带着新值运行 `teamai init`。要清掉记录，把变量设为空再运行一次。记录的目录不存在时，`teamai doctor` 会报 `<tool> home exists`；shell 里的变量指向别的目录时，会报 `<tool> home matches <variable>`。
+第一次看到该变量的 `pull` 会在该目录存在时把主目录记到 `~/.teamai/tool-homes.json`，整台机器共用这一份记录；pull 不会替换已有的记录。`teamai init` 也会记录，并且会替换已有的记录：工具自己的变量（`HERMES_HOME`、`OPENCLAW_PROFILE` 等）在目录还不存在时也记，`XDG_CONFIG_HOME` 要等目录存在才记。Hermes 在 Windows 上的默认目录只会补上缺的记录。所以请在你的工具运行的 shell 里运行 `init`。之后即使在没设该变量的 shell 里 pull，各个 scope 也仍然同步到那里；工作流步骤启动[工具支持](./tool-support.md#在迁移后的主目录启动的工作流步骤)列出的工具时，也会把它的变量设为这个主目录。要换主目录，带着新值运行 `teamai init`。要清掉记录，把变量设为空再运行一次。记录的目录不存在时，`teamai doctor` 会报 `<tool> home exists`；shell 里的变量指向别的目录时，会报 `<tool> home matches <variable>`。
 
 工具的技能目录、agents 目录、规则目录或指令块文件变了之后，teamai 在旧位置放的副本会留下。别的 shell、别的项目或别的工具可能还在读那个位置，teamai 无法判断。`places` 会记下 agents 目录、规则目录和指令块文件。第一次把它们送到新位置的 pull 会点名旧位置，之后 teamai 不再更新那里的副本。确认没有工具再读那个位置后，自己删掉即可。
 
@@ -247,6 +249,84 @@ teamai webhook list
 teamai webhook test
 teamai webhook test --dry-run
 ```
+
+### 团队工具（`tools/`）
+
+团队用的是某个已支持工具的内部版本或分支时，可以把它加成内置工具的实例，不用等新版本。实例只改命令、home 和路径，沿用该工具的启动参数，以及会话、token、hook 和 MCP 格式。实例只能扩展 Claude Code（`claude`）或 Codex（`codex`）；扩展其他工具的实例会被拒绝并指出文件，直到 teamai 支持该工具（[工具支持](./tool-support.md#工具实例)）。有自己 home 的实例有自己的会话；沿用该工具 home 的实例写的就是该工具的会话，收到的文件也和该工具放在同一处，包括 `init` 为它记录的目录（`toolRoots`）。
+
+```yaml
+# 团队仓库中的 tools/acme-claude.yaml
+schemaVersion: v1alpha1
+name: acme-claude                  # 与文件名相同
+extends: claude                    # 它是哪个内置工具的实例
+command: acme-claude               # PATH 上可执行文件的名字，不能是路径
+home: { dir: .acme-claude, env: ACME_CLAUDE_CONFIG_DIR }
+# paths: { skills: .acme-claude/skills }   # 可选；不写时用 claude 的路径，放到 .acme-claude/ 下；设了 command，项目里也是这样
+```
+
+成员像启用其他工具一样启用它：
+
+```bash
+teamai init --agent claude,acme-claude
+teamai pull                                        # skills、rules、hooks 和 MCP 写到 .acme-claude/
+teamai workflow start review --tools default=acme-claude
+teamai score --session <id> --source acme-claude --scorer review-quality
+```
+
+步骤运行 `acme-claude`，会话从 `$ACME_CLAUDE_CONFIG_DIR/projects/` 读取，未设置时从 `~/.acme-claude/projects/` 读取；用户级 pull 也写到这个目录。实例的 `env` 移动的主目录，teamai 会像记录工具自己的变量那样记录下来（[记录的工具主目录](#记录的工具主目录teamaitool-homesjson)），所以在没有这个变量的 shell 里运行 pull 或 `uninstall` 也会用它，teamai 启动实例的命令时也会把这个变量设为该主目录。`init` 移动或清除这条记录时，会删除 teamai 留在原主目录里的 hooks，并说明留在那里的技能、规则和 MCP 服务器。记录、续跑和打分都算在 `acme-claude` 名下，不会算成 Claude 的。在项目里，Claude Code 和 Codex 在每个 linked worktree 中都从主 checkout 读取团队 hooks，而实例把它们放在自己的主目录里，只对运行过 pull 的 checkout 生效；所以要在 linked worktree 里用实例的团队 hooks，先在那里运行一次 `teamai pull`。
+
+如果 `env` 是 `XDG_CONFIG_HOME` 或 `XDG_DATA_HOME`，teamai 不使用你给它设置的值。这个值属于所有读取它的工具，所以实例的 home 这时是 `~/<dir>`。
+
+**接受命令。** 设了 `command` 的实例会运行队友指定的程序。第一次运行时在终端里询问：
+
+```text
+Tool "acme-claude" comes from the team repo (…/tools/acme-claude.yaml, content 3f9a1c0e7b2d), which you have not accepted on this machine. It runs acme-claude as you, with your files, in place of claude. Review the file before you accept it.
+Run it? [y/N]
+```
+
+你输入的一行只回答这个问题。同一终端上正在等待的审批或选择，会在你回答后重新询问。`teamai workflow cancel` 会让这个问题不经回答直接结束，命令不会运行。按 Ctrl-C 会停止运行而不作回答，`teamai workflow resume` 会再问一次。
+
+无人值守的运行（`TEAMAI_MODE=unattended`、CI、没有终端）会以 `tool_not_accepted` 拒绝，直到有人在终端里接受一次。Codex 实例的 hooks 也要靠它的命令来信任，所以在终端里运行 `teamai pull` 需要这个命令时会问同一个问题；无人值守的 pull，或者回答否，会让这些 hooks 保持未信任，并给出提示。接受结果按文件内容记在 `~/.teamai/trust/tools.json`：不改这个文件的提交不会再问，改了文件会再问。只设 `home` 或 `paths` 的实例运行内置命令，不需要接受。设了 `home` 而没设 `command` 的实例只移动用户主目录：在项目里，它用所扩展工具的路径（`.claude/` 或 `.codex/`），也就是内置命令读取的位置；同时启用了该工具时，两者读同一份副本，对其中任一个运行 `teamai uninstall --agent` 都会把它留给另一个。设了 `command` 的实例在项目里也把这些路径放到自己的主目录下，因为它自己的构建可能读取项目里它自己的目录。`paths` 会替换这两种路径。设了 `home` 时，命令运行时会把工具的主目录变量（`CLAUDE_CONFIG_DIR`、`CODEX_HOME`）设为这个主目录，所以它读到的就是 teamai 写到那里的内容（设了 `command` 的实例用 `paths` 把文件放到这个主目录之外时除外）。没设 `command` 的实例，如果用户级的 `paths` 落在主目录之外，会被拒绝，因为内置命令一个也读不到：去掉 `home`，或者把这些 `paths` 指到主目录里面；`env` 写的是实例自己的变量，teamai 也会把它设为同一个主目录，写成该工具的主目录变量时 teamai 会拒绝。实例的主目录如果是另一个工具的（内置工具或另一个实例），不论是 `home.dir` 直接写成那个目录，还是实例的变量或 `toolRoots` 让它解析到那里，teamai 都会拒绝，因为两个工具共用一个主目录会互相覆盖文件；实例的变量指向你的 home 目录本身时也会拒绝。要解除这两种拒绝，把变量指向一个独立的目录，再重新运行 `teamai init`：它的 `--agent` 接受被拒绝的实例，并替换那条记录；pull 不会改动已记录的主目录。实例被接受后，teamai 读取、导出和导入它的会话时也用它的命令；接受之前用内置命令。
+
+**调整内置工具。** 与内置工具同名的实例用来调整它。它的 `paths` 整体替换该工具的路径，和 `toolPaths` 条目一样，并且优先于 `toolPaths`。它只能设 `paths`：设了 `command` 或 `home` 的会被 teamai 拒绝，这两项属于有自己名字的实例，比如 `name: acme-codex` 加 `extends: codex`。只有 Claude Code 和 Codex 能这样调整；其他工具的 `tools/<tool>.yaml` 会被拒绝，改用 `teamai.yaml` 里的 `toolPaths.<tool>` 条目移动它的路径：
+
+```yaml
+# tools/claude.yaml
+schemaVersion: v1alpha1
+name: claude
+extends: claude
+paths: { skills: .claude/team-skills, rules: .claude/rules }
+```
+
+`teamai doctor` 会列出这类 `paths` 丢掉的每个键：``paths in tools/claude.yaml replaces claude's default entry whole and drops keys the default provides: `settings` (.claude/settings.json — hook reconciliation silently skips the tool), …``。
+
+**自己的版本。** `~/.teamai/tools/<name>.yaml` 放你自己的实例。teamai 只读这个目录，从不写入。这里的实例会替换团队同名实例（只对你生效），不需要接受；`workflow resume --next` 会忽略它，因为接手的是队友的运行，用团队的工具。
+
+它的 `command` 同样是 PATH 上的一个命令名。要运行你自己编译的版本，把它所在的目录加到 PATH，再写可执行文件的名字：
+
+```yaml
+# ~/.teamai/tools/acme-claude.yaml
+schemaVersion: v1alpha1
+name: acme-claude
+extends: claude
+command: acme-claude-dev           # 在 ~/src/acme-claude/bin 里找到；写成 ~/src/acme-claude/bin/acme-claude-dev 会被拒绝
+home: { dir: .acme-claude, env: ACME_CLAUDE_CONFIG_DIR }
+```
+
+```bash
+export PATH="$HOME/src/acme-claude/bin:$PATH"     # 写在 ~/.zshrc 或 ~/.bashrc 里
+teamai workflow start review --tools default=acme-claude
+```
+
+**实例从哪里来。** `tools/<name>.yaml`，或存放 `TOOL.yaml`（内容相同）的文件夹 `tools/<name>/`，把文件移进去不影响已有的接受；以及你的角色或项目为 workflows 激活的每个 namespace 下的 `tools/<namespace>/<name>.yaml`（替换根目录的同名实例）。两个激活的 namespace 定义同一个名字，或同一 scope 的两个团队仓库对同一个名字定义不同，算冲突：两个都不用，并给出提示。workspace 的实例会替换 user scope 的同名实例，和驱动定义一样。文件里出现 `command`、`home`、`paths` 以外的键，或 `command` 是 `./scripts/acme-claude` 这样的路径、含有 `:`、`*` 或 `?`，都会被拒绝，并指出问题：路径上的程序可以在文件不变的情况下被改掉，接受就管不到它。teamai 只在 PATH 的目录里查找 `command`，Windows 上也一样，不在检出目录里查找，所以除非成员的 PATH 含有 `.` 或空条目，检出目录里的同名文件不会代替它运行。
+
+```text
+Tool instance …/tools/acme-claude.yaml is not valid: it sets sessions, and an instance sets only command, home and paths. …
+Tool instance …/tools/acme-claude.yaml is not valid: command: command is the name of one executable on PATH, with no path, spaces or arguments, such as acme-claude. …
+Tool instance …/tools/acme-kiro.yaml is not valid: extends: an instance extends claude or codex; teamai does not support an instance of kiro or any other tool yet. …
+```
+
+实例会收到 teamai 自带的 agents（如 `teamai-recall`）和团队的 `agents/`，格式与它扩展的工具相同，并使用该工具的模型别名和 `tool_extras`；`teamai push` 会带上对实例副本的修改。在项目里，没设 `command` 的实例读取该工具的 agent 文件，这些文件按该工具来渲染，该工具用 `teamai models switch` 切换后也一样。`targets` 写了该工具的 agent 也会发给它的实例；只想发给某个实例时，写实例的名字。[工具支持](./tool-support.md)页面只列出实例可以扩展的工具，不列出实例本身。
 
 ---
 

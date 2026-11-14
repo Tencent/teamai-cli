@@ -1,7 +1,8 @@
 import { createRequire } from 'node:module';
 import { format } from 'node:util';
 import { Command, Option } from 'commander';
-import { setVerbose, setSilent, setStderrOnly, log, writeInfoLine } from './utils/logger.js';
+import { setVerbose, setSilent, setStderrOnly, log, writeInfoLine } from '@teamai/shared/log';
+import { ignoreTypeOfServiceRefusal } from '@teamai/shared/type-of-service';
 import { applyNonInteractiveGitEnv } from './utils/git-env.js';
 import { ensureBundledRuntimeOnPath } from './bundled-runtime.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
@@ -10,8 +11,8 @@ import type { PromotionCandidate } from './maintenance/promote.js';
 import type { ScoreOptions } from './score-commands.js';
 import type { EvidenceOptions, LabelOptions, PlanOptions, ReportOptions, StageOptions, SubjectsOptions, WriteOptions } from './score-verbs.js';
 import { GLOBAL_OPTIONS } from './global-options.js';
-import { ATTEMPT_ENV } from './launch-context.js';
-import { useInstallHome } from './utils/home.js';
+import { attemptMarker } from './launch-context.js';
+import { useInstallHome } from '@teamai/shared/home';
 import { TEAMAI_HOOK_SUBCOMMANDS } from './hooks.js';
 import { dryRunRefusal } from './dry-run-guard.js';
 import { parseIntOption } from './cli-int.js';
@@ -116,6 +117,9 @@ async function notifyWebhook(event: 'push' | 'pull'): Promise<void> {
 // for why ssh's own questions are left to the repository's configuration.
 applyNonInteractiveGitEnv();
 
+// A fetch to a server that resets its connection fails that request, never the CLI.
+ignoreTypeOfServiceRefusal();
+
 const program = new Command();
 
 program
@@ -129,7 +133,7 @@ program
   .hook('preAction', async (thisCommand, actionCommand) => {
     // A command a step starts in its clone reads and writes under that clone's own install, as the install's pull did,
     // so nothing it writes reaches the member's home. First, so every path resolved below is the install's.
-    if (process.env[ATTEMPT_ENV] !== undefined) {
+    if (attemptMarker(process.env) !== undefined) {
       const { attemptCloneHome } = await import('./workflow/place/place.js');
       const home = await attemptCloneHome(process.cwd(), process.env);
 
@@ -214,7 +218,7 @@ program
   // comma-separated (`--agent a,b`, split later by normalizeAgentList) both work,
   // WITHOUT the greedy `<name...>` variadic that would swallow the `[repo]`
   // positional (e.g. `init --agent claude .` must keep `.` as the repo arg).
-  .option('--agent <name>', 'AI tools to set up (e.g. claude, codex, cursor, codebuddy, workbuddy, dsh). Repeatable or comma-separated. In self mode, selects which tool dirs to create; a custom agent defined only in teamai.yaml\'s toolPaths also gets its root created here (git-backed init only — an HTTP init has no local teamai.yaml to read custom paths from). Omit for an interactive picker. Additive on repeated runs.', (val: string, acc: string[]) => acc.concat(val), [])
+  .option('--agent <name>', 'AI tools to set up (e.g. claude, codex, cursor, codebuddy, workbuddy, dsh). Repeatable or comma-separated. In self mode, selects which tool dirs to create; a custom agent defined only in teamai.yaml\'s toolPaths also gets its root created here (git-backed init only — an HTTP init has no local teamai.yaml to read custom paths from). The first one teamai launches becomes ai.tool, the AI tool teamai runs, unless a config already names one. Omit for an interactive picker. Additive on repeated runs, which ask before they rewrite the config; --force rewrites it without asking.', (val: string, acc: string[]) => acc.concat(val), [])
   .option('--force', 'Rewrite the existing config without confirmation, keeping the settings init does not set')
   .action(async (repoArg, cmdOpts) => {
     const globalOpts = program.opts<GlobalOptions>();
@@ -855,7 +859,7 @@ workflowCmd
   .command('start <name>')
   .description('Create a run. With --driver skill, the current coding session drives it; with --driver local, this process runs it headless, and in unattended mode (TEAMAI_MODE=unattended or CI) runs teamai score --drain once the run settles, before it exits, unless sessions.publish and session scoring are both off for unattended.')
   .option('--describe', 'Show workflow metadata and required input schemas without creating a run. With --driver skill, also say how to start it: the start command, a question for the person, or the local driver.')
-  .option('--driver <kind>', 'Select skill for the current coding session, which then runs the commands each reply prints, or local for headless execution in this process.')
+  .option('--driver <kind>', 'Select skill for the current coding session, which then runs the commands each reply prints, local for headless execution in this process, host for a run whose steps need no AI tool (commands, gates and workflows of them; a prompt, interactive, answer or scored step is refused), or the name of a driver definition (drivers/<name>.yaml or drivers/<name>/DRIVER.yaml in the team repo or ~/.teamai/drivers/, or a shipped teamai-<name>), which runs it headless here on the step runtime it names. A team runtime runs only at a revision accepted on this machine: an attended run asks, an unattended one fails runtime_not_accepted.')
   .option('--parallel <n>', 'With --driver skill: the most steps that run at once, as the describe reply offered')
   .option('--confirmed', 'The person agreed to start this run, as the describe reply asked. From an agent session, an invoke: ask workflow starts only with it, with any driver; teamai takes the agent\'s word for it. In an unattended run (TEAMAI_MODE=unattended or CI) an agent cannot start an invoke: ask workflow, with or without it')
   .option('--hitl <mode>', 'With --driver skill: who answers optional approvals and choices, as the describe reply offered: person (the agent asks the person; refused in an unattended run) or recommend (the agent answers). A required approval always goes to the person')
@@ -875,13 +879,13 @@ workflowCmd
   .description('Get a lease, hitl, wait, or done JSON envelope. Show hitl.message and hitl.respond to a person, who replaces <option> with a choice.')
   .option('--prepare', 'Prepare the leased workspace in its original checkout; report commits and pushes it automatically. A step in a clone workspace, such as a benchmark trial, is leased only with --prepare: teamai makes the clone on this machine, installs its team resources and runs setup, and answers the lease with cwd, where the driver runs the step. So is a step that runs with a team role (role on its lease): teamai delivers the role into its copy. A step that requires strict sandbox isolation goes only to a driver that declares driver.can.isolation sandbox and driver.can.env true.')
   .option('--attempt <attempt>', 'With --prepare: prepare this attempt, which an earlier next leased this driver, instead of taking a new lease. wrong_attempt when the run no longer leases it to the driver. With --driver skill: the attempt of a place action, with --adopt')
-  .option('--adopt <dir>', 'With --prepare --attempt: prepare the attempt in <dir>, a place the host made: a clean worktree of this repository on the lease\'s workspace branch, or detached at its start. A place that does not fit answers adopt_mismatch and leaves the attempt leased. TeamAI never removes an adopted place. With --driver skill --attempt: adopt <dir> as the place action of that attempt asked, as its adopt prints it')
-  .option('--json <payload>', 'Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), queued, those of them it has not started, whose own timeout then counts from this call (the answer gives their deadlines in deadlines), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can, what the driver can do on this request: hitl (a person can answer HITL requests and work interactively), workspace, env (true, or "commands" when the driver scopes team env for command steps and setup only), setup, tokens, max_turns, network, isolation, tools (the tools it launches a prompt step that names its tool on), end_turn (it ends a prompt\'s turn at the lease limits), role (it runs a step whose lease has role, the team role its copy runs with, on what teamai delivered there, with --prepare). An omitted key is not offered, so a step that needs it waits, and wait.held names what it lacks. Send driver.can on every next request, including busy polls. claim, true to take a run another install published from teamai-reports before leasing; a run this install owns stays as it is. Every answer lists in cancelled the running attempts whose tools the driver must stop.')
+  .option('--adopt <dir>', 'With --prepare --attempt: prepare the attempt in <dir>, a place the session host made: a clean worktree of this repository on the lease\'s workspace branch, or detached at its start. A place that does not fit answers adopt_mismatch and leaves the attempt leased. TeamAI never removes an adopted place. With --driver skill --attempt: adopt <dir> as the place action of that attempt asked, as its adopt prints it')
+  .option('--json <payload>', 'Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), queued, those of them it has not started, whose own timeout then counts from this call (the answer gives their deadlines in deadlines), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can, what the driver can do on this request: hitl (a person can answer HITL requests and work interactively), workspace, env (true, or "commands" when the driver scopes team env for command steps and setup only), setup, tokens, max_turns, network, isolation, tools (the tools it launches a prompt step that names its tool on), end_turn (it ends a prompt\'s turn at the lease limits), role (it runs a step whose lease has role, the team role its copy runs with, on what teamai delivered there, with --prepare), exec (false when it runs no command: command steps and setup go elsewhere; omitted means it runs them). Any other omitted key is not offered, so a step that needs it waits, and wait.held names what it lacks. Send driver.can on every next request, including busy polls. claim, true to take a run another install published from teamai-reports before leasing; a run this install owns stays as it is. Every answer lists in cancelled the running attempts whose tools the driver must stop.')
   .option('--driver <kind>', 'skill: advance a run the current coding session drives, and print its turn: the actions to carry out and the command to run next')
   .option('--wait', 'With --driver skill: wait until the run has something to show, up to 100 s. Run it in the background.')
   .option('--takeover', 'With --driver skill: drive the run from this coding session instead of the one that drives it. Run it only when the person agrees, after an orchestrator_active answer')
   .option('--confirmed', 'With --driver skill --takeover: the person agreed to take this run over, as the confirm_needed answer asked. From an agent session, a run of an invoke: ask workflow is taken over only with it; teamai takes the agent\'s word for it. In an unattended run (TEAMAI_MODE=unattended or CI) an agent cannot take over a run of an invoke: ask workflow, with or without it')
-  .option('--choice <id>', 'With --driver skill: answer the host question with the id of one of its options, as its run prints it')
+  .option('--choice <id>', 'With --driver skill: answer the session host question with the id of one of its options, as its run prints it')
   .option('--ack <offer>', 'With --driver skill: acknowledge that the child of a dispatch started, as its ack prints it, so later turns stop offering it')
   .action(async (run: string, cmdOpts: { json?: string; prepare?: boolean; attempt?: string; adopt?: string; driver?: string; wait?: boolean; takeover?: boolean; confirmed?: boolean; choice?: string; ack?: string }) => {
     const { workflowNext } = await import('./workflow-commands.js');
@@ -891,10 +895,10 @@ workflowCmd
 workflowCmd
   .command('report <run>')
   .description('Report the outcome of a leased step. Prints a JSON envelope.')
-  .option('--json <payload>', 'attempt, revision, outcome (success, failed, or released), and driver. A prompt step\'s report also sends tool, the tool the driver launched, and durationMs (milliseconds around the tool launch) and cost ({"amount":0.12,"unit":"USD"}, only as the tool stated it) when known, and limit (timeout, budget or max_turns) when a limit in its lease\'s limits stopped the tool. queued, as on next: the attempts of its other open leases it has not started, whose own timeout then counts from this report.')
+  .option('--json <payload>', 'attempt, revision, outcome (success, failed, or released), and driver. A prompt step\'s report also sends tool, the tool the driver launched, and durationMs (milliseconds around the tool launch) and cost ({"amount":0.12,"unit":"USD"}, only as the tool stated it) when known, and limit (timeout, budget or max_turns) when a limit in its lease\'s limits stopped the tool. A command step\'s report also sends exitCode, the command\'s exit status: teamai decides a benchmark check step\'s output from it, and fails one whose command ran but whose report has none invalid_report. queued, as on next: the attempts of its other open leases it has not started, whose own timeout then counts from this report.')
   .option('--driver <kind>', 'skill: report an attempt of a run the current coding session drives, as its turn printed the command')
   .option('--attempt <id>', 'With --driver skill: the attempt to report')
-  .option('--model-unavailable', 'With --driver skill and --attempt: the host cannot run the model the dispatch names, so the step fails model_unavailable')
+  .option('--model-unavailable', 'With --driver skill and --attempt: the session host cannot run the model the dispatch names, so the step fails model_unavailable')
   .action(async (run: string, cmdOpts: { json?: string; driver?: string; attempt?: string; modelUnavailable?: boolean }) => {
     const { workflowReport } = await import('./workflow-commands.js');
     await workflowReport(run, cmdOpts);
@@ -922,9 +926,10 @@ workflowCmd
 
 workflowCmd
   .command('resume [run]')
-  .description("Continue a run with the local driver after retry, respond, or a stopped driver (Ctrl-C or closed terminal), with the --tools, --auto-approve and --sandbox this install last drove it with, unless a flag overrides one. Uses this machine's open local lease workspace, then the latest local driver's workspace on this machine, then cwd. Another live local driver returns driver_running. A settled run returns done. A run this machine does not have is taken from teamai-reports, where workflow publish put it; a published run continues only while this install owns it, else not_owner names the owner. With --driver skill, the current coding session continues the run instead, as after a skill start, and the reply is its first turn. In unattended mode, the local driver runs teamai score --drain once the run settles, as start does. Without a run id, fetches teamai-reports as pull does and lists the runs this checkout can resume: the runs teamai-reports offers for its business repository (origin), each with what holds it back, and this machine's running runs, each with the command to resume it.")
+  .description("Continue a run with the local driver after retry, respond, or a stopped driver (Ctrl-C or closed terminal), with the driver definition, --tools, --auto-approve and --sandbox this install last drove it with, unless a flag overrides one. Uses this machine's open local lease workspace, then the latest local driver's workspace on this machine, then cwd. Another live local driver returns driver_running. A settled run returns done. A run this machine does not have is taken from teamai-reports, where workflow publish put it; a published run continues only while this install owns it, else not_owner names the owner. With --driver skill, the current coding session continues the run instead, as after a skill start, and the reply is its first turn. In unattended mode, the local driver runs teamai score --drain once the run settles, as start does. Without a run id, fetches teamai-reports as pull does and lists the runs this checkout can resume: the runs teamai-reports offers for its business repository (origin), each with what holds it back, and this machine's running runs, each with the command to resume it; then the attempts out on a fleet for that repository, each with its pool, state, the member that claimed it, its last progress and, on the install that offered it, where its fleet entry's wake launched a member.")
   .option('--next', 'Instead of a run id: take the oldest run teamai-reports offers for this checkout\'s business repository (origin) that nothing refuses this caller, claim it, and drive it as resume <run> does; a workflow publish offers a running run until someone claims it. When nobody here would answer (an unattended run, TEAMAI_MODE=unattended or CI, or the local driver with no terminal) it skips a run whose ready steps need a person now: a required approval, an interactive step, or a choice with no default (or any choice, without --auto-approve). A run whose person step is only possible later is taken; when it reaches one, the runner offers it back for a person and exits, and resume lists it as may need a person at <step>. It skips a run whose steps left require env with no value here and, with the local driver, one whose prompt steps left have no tool to run on here: none configured, or not on PATH, or that need a sandbox this machine does not declare (--sandbox or workflows.sandbox); resume without --next lists each as cannot run here, with what gives it, and --next says on stderr why it left each run. With --driver skill it also skips a run that needs the local driver. Prints {"data":{"idle":{"offered":N}}} when it takes none, N being the offered runs it left')
-  .option('--driver <kind>', 'local, the default, to drive the run in this process, or skill for the current coding session, which then runs the commands each reply prints. An agent runs it only when the person agrees')
+  .option('--pool [name]', 'With --next: take the oldest attempt a fleet pool offers for this checkout\'s business repository instead of a run: the pool named, or default when given no name. The step runs in a clone of this checkout, here or, with --driver, on the first runtime of that driver that runs its kind of step: commands, or prompts on this machine\'s own tool, model and login; its work goes to the attempt\'s branch on origin, and the run\'s owner takes it from there. It first stops what an earlier --pool run killed here left, and finishes the attempt that run still holds. Prints {"data":{"ran":{"run","attempt","step","exit_code"}}}, {"data":{"cancelled":{"run","attempt","step"}}} when the owner cancelled the attempt meanwhile (workflow cancel), or {"data":{"idle":{"offered":N}}} when it took none. Without --pool, --next takes only published runs')
+  .option('--driver <kind>', 'local, the default, to drive the run in this process, skill for the current coding session, which then runs the commands each reply prints, or a driver definition name, as workflow start takes it. Left out, a run last driven here on a definition resumes on it, and fails driver_not_found when it no longer resolves; with --next, only the team\'s and shipped definitions count, never ~/.teamai/drivers/. An agent runs it only when the person agrees')
   .option('--parallel <n>', 'With --driver skill: the most steps that run at once; 1 when left out')
   .option('--hitl <mode>', 'With --driver skill: who answers optional approvals and choices: person (the agent asks the person; the default, refused in an unattended run) or recommend (the agent answers). A required approval always goes to the person')
   .option('--no-judge', 'With --driver skill: leave the scored steps unjudged on this machine')
@@ -932,7 +937,7 @@ workflowCmd
   .option('--auto-approve', 'Answer optional approve HITL requests yes and choose requests with their default: with --driver local the run remembers it on this install, with --driver skill for this run. A required approval still goes to the person')
   .option('--no-auto-approve', 'With --driver local: stop answering optional HITL requests by auto-approve, though the run was started or last resumed with --auto-approve. The run remembers it')
   .option('--claim', 'Take the published run over from the install that owns it, replacing this machine\'s copy and releasing its leases')
-  .option('--confirmed', 'The person agreed to continue this run, as the confirm_needed answer asked. From an agent session, a run of an invoke: ask workflow continues only with it, with any driver; teamai takes the agent\'s word for it. In an unattended run (TEAMAI_MODE=unattended or CI) an agent cannot continue a run of an invoke: ask workflow, with or without it')
+  .option('--confirmed', 'The person agreed to continue this run, as the confirm_needed answer asked. From an agent session, a run of an invoke: ask workflow continues only with it, with any driver; teamai takes the agent\'s word for it. In an unattended run (TEAMAI_MODE=unattended or CI) an agent cannot continue a run of an invoke: ask workflow, with or without it. With --claim, or on a machine without the run: the person agreed to take over a run whose owner may still drive it, as the owner_active answer asked, once that owner stopped; an unattended run is refused either way. That yes answers only the takeover: a run of an invoke: ask workflow then answers confirm_needed, and the same command with --confirmed continues it')
   .option('--sandbox', 'Declare this machine a sandbox for this run: a disposable host such as a CI runner or container, where benchmark trials and steps that need sandbox isolation may run. A run started or resumed with it on this install keeps it; a run claimed from another machine needs it again. workflows.sandbox in config declares it for every process.')
   .action(async (run: string | undefined, options: { driver?: string; parallel?: string; hitl?: string; judge?: boolean; tools?: string; autoApprove?: boolean; claim?: boolean; confirmed?: boolean; next?: boolean; sandbox?: boolean }) => {
     const { workflowResume } = await import('./workflow-commands.js');
@@ -950,10 +955,11 @@ workflowCmd
 
 workflowCmd
   .command('cancel <run> [step]')
-  .description('Cancel a whole run, or a pending, waiting, leased, running, or delivering step and its open descendants. Invalidates leases; drivers stop tools listed in next.cancelled. Prints one JSON envelope.')
-  .action(async (run: string, step?: string) => {
+  .description('Cancel a whole run, or a pending, waiting, leased, running, or delivering step and its open descendants. Invalidates leases; drivers stop tools listed in next.cancelled. An attempt out on a fleet pool is withdrawn, or the member running it stops and pushes its work so far. Prints one JSON envelope.')
+  .option('--release <attempt>', 'Let an attempt go whose step runtime cannot confirm its stop or close, once you checked that nothing of it still runs there: teamai tries them once more, then writes its login back and frees it, whatever the runtime answers')
+  .action(async (run: string, step: string | undefined, cmdOpts: { release?: string }) => {
     const { workflowCancel } = await import('./workflow-commands.js');
-    await workflowCancel(run, step);
+    await workflowCancel(run, step, cmdOpts);
   });
 
 const selfImprovementCmd = program
@@ -974,11 +980,11 @@ selfImprovementCmd
 
 const benchmarkCmd = program
   .command('benchmark')
-  .description('Run a benchmark suite, and the commands its run\'s steps run. run starts the workflow teamai-benchmark, teamai\'s default or the team\'s file of that name, whose plan, check and report steps run the other commands; try needs no run.');
+  .description('Run a benchmark suite, and the commands its run\'s steps run. run starts the workflow teamai-benchmark, teamai\'s default or the team\'s file of that name, whose plan and report steps run the other commands, and whose check steps run each task\'s own check; try needs no run.');
 
 benchmarkCmd
   .command('run <suite>')
-  .description('Plan benchmark suite <suite> without a run first, so a suite that cannot run leaves none, then start the workflow teamai-benchmark with --inputs {"suite":"<suite>","aliases":"team","tasks":[],"arms":[],"fail_on_regression":false} ("member" with --member-aliases; the ids --task and --arm name; true with --fail-on-regression) and the suite\'s timeout as --timeout, and drive it. A team\'s workflows/teamai-benchmark.yaml replaces teamai\'s default, and must take input suite; it gets aliases, tasks, arms and fail_on_regression only when it declares them. Prints the run\'s done envelope and, on stderr, the results. Exits 1 when the run failed or was cancelled, or a finally step, its report or its regression gate, failed or was cancelled; a record still pending publication never changes the exit code.')
+  .description('Plan benchmark suite <suite> without a run first, so a suite that cannot run leaves none, then start the workflow teamai-benchmark with --inputs {"suite":"<suite>","aliases":"team","tasks":[],"arms":[],"fail_on_regression":false} ("member" with --member-aliases; the ids --task and --arm name; true with --fail-on-regression) and the suite\'s timeout as --timeout, and drive it. A team\'s workflows/teamai-benchmark.yaml replaces teamai\'s default, and must take input suite; it gets aliases, tasks, arms and fail_on_regression only when it declares them. Prints the run\'s done envelope and, on stderr, the results. Exits 1 when the run failed or was cancelled, or a finally step, its report, its checks gate (a baseline or trial check that could not run), its results gate (no trial produced a result and a trial ended in an error) or its regression gate, failed or was cancelled; a record still pending publication never changes the exit code.')
   .option('--driver <kind>', 'The driver that runs it: local, or skill. Without it, workflows.driver decides, else local')
   .option('--sandbox', 'With --driver local, declare this machine a sandbox for this run, where the trials, which need strict sandbox isolation, may run. The run remembers it on this install, so workflow resume keeps it. workflows.sandbox in config declares it for every process.')
   .option('--member-aliases', 'Resolve each arm\'s model alias with your own ~/.teamai/models/aliases.yaml over the team\'s models/aliases.yaml, which alone resolves them otherwise: starts the workflow with input aliases member instead of team. The results table and the record show member as the source of a model your file decided.')
@@ -1011,20 +1017,10 @@ benchmarkCmd
 
 benchmarkCmd
   .command('report')
-  .description('The finally step of a benchmark run: classify the trials of the plan the run measured, write the run\'s benchmark record into its run directory and, when usage reporting allows, publish it to teamai-reports, and print {"text","table","regression"}. The text says record: pending while the record waits for publication. With COMPARE=true in its environment, it compares the record with the newest earlier succeeded one of the suite on teamai-reports with the same arms, adds what it found to the text, each arm\'s compared and excluded pairs first, and sets regression to dropped, held or no_comparable; otherwise regression is off. Refuses a run whose plan this teamai cannot read.')
+  .description('The finally step of a benchmark run: classify the trials of the plan the run measured, write the run\'s benchmark record into its run directory and, when usage reporting allows, publish it to teamai-reports, and print {"text","table","regression","unchecked","unmeasured"}. The text says record: pending while the record waits for publication, and names each baseline and trial whose check could not run, with why; unchecked lists them one per line, \'\' when every check ran. When no trial produced a result (passed, failed or unscored), the text names each trial whose work ended in an error, with why, but not one a cancel or the run\'s timeout stopped; unmeasured lists them one per line, \'\' otherwise. With COMPARE=true in its environment, it compares the record with the newest earlier succeeded one of the suite on teamai-reports with the same arms, adds what it found to the text, each arm\'s compared and excluded pairs first, and sets regression to dropped, held or no_comparable; otherwise regression is off. Refuses a run whose plan this teamai cannot read.')
   .action(async () => {
     const { benchmarkReport } = await import('./workflow-commands.js');
     await benchmarkReport();
-  });
-
-benchmarkCmd
-  .command('check')
-  .description('Run the check of the benchmark step this process runs as, in its clone: the files check.add names, then the task\'s check. A trial\'s check stores the trial\'s correctness label, decided by the check: the highest-scoring label when it passes, the lowest when it fails. On a task with successCriteria too, a passing check stores none, and the judge decides. Prints {"result":"passed"|"failed"|"could_not_run","cause","label"}: cause, when it could not run, is not_found, not_executable, signal, timeout, spawn_failed or prepare_failed (putting back the protected paths or writing check.add failed); label is the version of the label it stored; each is \'\' when it has none. Exits 0 once it decided; exits 1 when it could not check at all. Refuses a run whose plan this teamai cannot read.')
-  .option('--baseline', 'The check of a task\'s baseline, on its starting commit')
-  .option('--trial', 'The check of a trial, after its prompt, with the protected paths put back as the starting commit has them first')
-  .action(async (cmdOpts: { baseline?: boolean; trial?: boolean }) => {
-    const { benchmarkCheck } = await import('./workflow-commands.js');
-    await benchmarkCheck(cmdOpts);
   });
 
 const scoreCmd = program

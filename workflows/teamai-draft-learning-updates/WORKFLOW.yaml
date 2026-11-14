@@ -5,6 +5,8 @@ invoke: deny
 private: true
 # knowledge_root is the checkout holding the entries, the team repo or a project's .teamai/; the drafts land under it.
 inputs: { knowledge_root: string }
+defaults:
+  requires: { host: true }
 steps:
   - id: stale
     command: teamai recall maintenance stale

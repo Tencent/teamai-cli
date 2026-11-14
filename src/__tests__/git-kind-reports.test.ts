@@ -3,6 +3,7 @@
  * No mocks of the units under test.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -10,7 +11,7 @@ import path from 'node:path';
 import { simpleGit } from 'simple-git';
 
 import { getDataHome, getReportsDir, getVotesDir, REPORTS_WORKTREE_DIRNAME, type LocalConfig } from '../types.js';
-import { commitAndPushReports, ensureReportsWorktree, fetchReportsOriginFile, readReportsOriginFiles, refreshReportsWorktree, updateReports } from '../utils/reports-branch.js';
+import { commitAndPushReports, ensureReportsWorktree, fetchReportsOriginFile, readableReportsWorktree, readReportsOriginFiles, refreshReportsWorktree, reportsRefusedMessage, updateReports } from '../utils/reports-branch.js';
 import { isPublished } from '../utils/branch-worktree.js';
 import { pushRepoDirectly } from '../utils/git.js';
 import { reportUsage } from '../team-push.js';
@@ -19,7 +20,10 @@ import { listMembers } from '../members.js';
 import { resolveProjectDataHome, saveLocalConfigForScope } from '../config.js';
 import { buildHandlerRegistry } from '../hook-handlers.js';
 import YAML from 'yaml';
-import { getUserHome } from '../utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
+
+// A git with no German, or a system without that locale, speaks English, where the cases in another language prove nothing.
+const gitSpeaksGerman = spawnSync('git', ['-C', path.join(os.tmpdir(), 'teamai-no-such-folder'), 'status'], { env: { ...process.env, LC_ALL: 'de_DE.UTF-8', LANGUAGE: 'de' }, encoding: 'utf8' }).stderr.startsWith('Schwerwiegend:');
 
 let tmp: string;
 let originalHome: string;
@@ -416,6 +420,141 @@ describe('git-kind reports: reading what origin holds', () => {
 
     expect(await simpleGit(clone).raw(['rev-parse', '--verify', '--quiet', 'refs/remotes/origin/teamai-reports'])).not.toBe('');
     expect(result.value).toEqual({ status: 'absent' });
+  });
+});
+
+// A sandbox that lets git reach origin but refuses writes to the team clone fails the fetch on its refs, which no
+// connection check mends.
+describe('git-kind reports: a team clone that refuses writes', () => {
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('reads origin as refused, naming the folder git may not write in', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const alice = gitConfig(clone, origin);
+    expect(await publish(alice, 'members/alice.yaml', 'username: alice\n')).toBe(true);
+    const bob = await cloneCheckout(origin, 'bob', 'bob');
+    const gitDir = path.join(bob.repo.localPath, '.git');
+    fs.chmodSync(gitDir, 0o555);
+
+    try {
+      expect(await fetchReportsOriginFile(bob.repo.localPath, 'members/alice.yaml')).toEqual({
+        status: 'refused',
+        message: `teamai-reports could not be read on this machine: teamai may not write in ${gitDir} (EACCES). Give this process write access to that folder, or run the command outside its sandbox.`,
+      });
+    } finally {
+      fs.chmodSync(gitDir, 0o755);
+    }
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0 || !gitSpeaksGerman)('reads origin as refused for a member whose git speaks another language', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const alice = gitConfig(clone, origin);
+    expect(await publish(alice, 'members/alice.yaml', 'username: alice\n')).toBe(true);
+    const bob = await cloneCheckout(origin, 'bob', 'bob');
+    const gitDir = path.join(bob.repo.localPath, '.git');
+    fs.chmodSync(gitDir, 0o555);
+    vi.stubEnv('LC_ALL', 'de_DE.UTF-8');
+    vi.stubEnv('LANGUAGE', 'de');
+
+    try {
+      expect(await fetchReportsOriginFile(bob.repo.localPath, 'members/alice.yaml')).toEqual({
+        status: 'refused',
+        message: `teamai-reports could not be read on this machine: teamai may not write in ${fs.realpathSync(gitDir)} (EACCES). Give this process write access to that folder, or run the command outside its sandbox.`,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      fs.chmodSync(gitDir, 0o755);
+    }
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0 || !gitSpeaksGerman).each([
+    // FETCH_HEAD goes into the worktree's own git folder.
+    { refusing: 'FETCH_HEAD', folderOf: (gitDir: string) => gitDir, isRecursive: false },
+    // The objects fetched go into the git folder the worktree shares with its checkout.
+    { refusing: 'the shared objects', folderOf: (gitDir: string) => path.join(path.dirname(path.dirname(gitDir)), 'objects'), isRecursive: true },
+  ])('refuses to read the reports checkout whose refresh may not write $refusing for a member whose git speaks another language', async ({ folderOf, isRecursive }) => {
+    const { origin, clone } = await seedBareOrigin();
+    const alice = gitConfig(clone, origin);
+    expect(await publish(alice, 'members/alice.yaml', 'username: alice\n')).toBe(true);
+    const bob = await cloneCheckout(origin, 'bob', 'bob');
+    const wt = await ensureReportsWorktree(bob, READ_ONLY);
+    expect(await publish(alice, 'members/carol.yaml', 'username: carol\n')).toBe(true);
+    const gitDir = /^gitdir: (.+)$/m.exec(fs.readFileSync(path.join(wt, '.git'), 'utf8'))?.[1] ?? '';
+    const folder = folderOf(gitDir);
+    fs.rmSync(path.join(gitDir, 'FETCH_HEAD'), { force: true });
+    execFileSync('chmod', [...(isRecursive ? ['-R'] : []), 'a-w', folder]);
+    vi.stubEnv('LC_ALL', 'de_DE.UTF-8');
+    vi.stubEnv('LANGUAGE', 'de');
+
+    try {
+      const read = await readableReportsWorktree(bob).then(() => 'read', (error: unknown) => reportsRefusedMessage(error));
+
+      expect(read).toBe(`teamai-reports could not be read on this machine: teamai may not write in ${folder} (EACCES). Give this process write access to that folder, or run the command outside its sandbox.`);
+    } finally {
+      vi.unstubAllEnvs();
+      execFileSync('chmod', [...(isRecursive ? ['-R'] : []), 'u+w', folder]);
+    }
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('refuses to read the reports checkout whose refresh may not write FETCH_HEAD, naming the folder', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const alice = gitConfig(clone, origin);
+    expect(await publish(alice, 'members/alice.yaml', 'username: alice\n')).toBe(true);
+    const bob = await cloneCheckout(origin, 'bob', 'bob');
+    const wt = await ensureReportsWorktree(bob, READ_ONLY);
+    expect(await publish(alice, 'members/carol.yaml', 'username: carol\n')).toBe(true);
+    // git keeps a worktree's FETCH_HEAD in that worktree's own git dir.
+    const gitDir = /^gitdir: (.+)$/m.exec(fs.readFileSync(path.join(wt, '.git'), 'utf8'))?.[1] ?? '';
+    fs.rmSync(path.join(gitDir, 'FETCH_HEAD'), { force: true });
+    fs.chmodSync(gitDir, 0o555);
+
+    try {
+      const read = await readableReportsWorktree(bob).then(() => 'read', (error: unknown) => reportsRefusedMessage(error));
+
+      expect(read).toBe(`teamai-reports could not be read on this machine: teamai may not write in ${gitDir} (EACCES). Give this process write access to that folder, or run the command outside its sandbox.`);
+    } finally {
+      fs.chmodSync(gitDir, 0o755);
+    }
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('refuses a reports write whose sync may not write FETCH_HEAD before it writes, naming the folder', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const alice = gitConfig(clone, origin);
+    expect(await publish(alice, 'members/alice.yaml', 'username: alice\n')).toBe(true);
+    const bob = await cloneCheckout(origin, 'bob', 'bob');
+    const wt = await ensureReportsWorktree(bob, READ_ONLY);
+    expect(await publish(alice, 'members/carol.yaml', 'username: carol\n')).toBe(true);
+    const gitDir = /^gitdir: (.+)$/m.exec(fs.readFileSync(path.join(wt, '.git'), 'utf8'))?.[1] ?? '';
+    fs.rmSync(path.join(gitDir, 'FETCH_HEAD'), { force: true });
+    fs.chmodSync(gitDir, 0o555);
+    let wrote = false;
+
+    try {
+      const result = await updateReports(bob, async (worktree) => {
+        wrote = true;
+        fs.writeFileSync(path.join(worktree, 'members', 'bob.yaml'), 'username: bob\n');
+
+        return { files: ['members/bob.yaml'], message: '[teamai] Register member: bob' };
+      });
+
+      expect({ result, wrote }).toEqual({
+        result: { status: 'failed', reason: `teamai may not write in ${gitDir} (EACCES). Give this process write access to that folder, or run the command outside its sandbox.` },
+        wrote: false,
+      });
+    } finally {
+      fs.chmodSync(gitDir, 0o755);
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('reads origin as unreachable when a sandbox refuses the ssh connection, which no folder access mends', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const alice = gitConfig(clone, origin);
+    expect(await publish(alice, 'members/alice.yaml', 'username: alice\n')).toBe(true);
+    const bob = await cloneCheckout(origin, 'bob', 'bob');
+    const ssh = path.join(tmp, 'refused-ssh');
+    fs.writeFileSync(ssh, '#!/bin/sh\necho "ssh: connect to host github.com port 22: Operation not permitted" >&2\nexit 255\n', { mode: 0o755 });
+    await simpleGit(bob.repo.localPath).remote(['set-url', 'origin', 'git@github.com:team/repo.git']);
+    fs.appendFileSync(path.join(bob.repo.localPath, '.git', 'config'), `[core]\n\tsshCommand = ${ssh}\n`);
+
+    expect(await fetchReportsOriginFile(bob.repo.localPath, 'members/alice.yaml')).toMatchObject({ status: 'unreachable' });
   });
 });
 

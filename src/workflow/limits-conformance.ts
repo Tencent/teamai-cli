@@ -1,5 +1,15 @@
 /** Conformance scenarios for what a step requires, its env and secrets, its setup, and the run's deadlines and budgets. */
-import { PARALLEL_ROOTS, controlsYaml, bothSkillProfiles, type ConformanceScenario } from './conformance-interpreter.js';
+import { DRIVER_PROFILES, PROFILES_UNDER_TEST, PARALLEL_ROOTS, controlsYaml, bothSkillProfiles, type ConformanceRefusal, type ConformanceScenario, type DriverProfile } from './conformance-interpreter.js';
+import type { DriverCan } from './requirements.js';
+
+/** The same refusal from each profile under test that reports no tokens, so a budget holds its prompts from them. */
+function tokenless(refusal: ConformanceRefusal): Partial<Record<DriverProfile, ConformanceRefusal>> {
+  return Object.fromEntries(PROFILES_UNDER_TEST.flatMap((profile) => {
+    const can: DriverCan = DRIVER_PROFILES[profile].can;
+
+    return can.tokens === true ? [] : [[profile, refusal]];
+  }));
+}
 
 export const limitsConformanceScenarios: ConformanceScenario[] = [];
 
@@ -331,7 +341,7 @@ limitsConformanceScenarios.push(
     ],
     expectState: { status: 'failed', steps: [{ id: 'a', status: 'succeeded' }, { id: 'b', status: 'cancelled', failure: { code: 'budget_exceeded' } }] },
     expectRecord: { failure: { code: 'budget_exceeded' } },
-    refusedBy: bothSkillProfiles({ at: 'a', expect: { data: { wait: { held: [{ step: 'a', missing: ['tokens'] }, { step: 'b', missing: ['tokens'] }] } } } }),
+    refusedBy: tokenless({ at: 'a', expect: { data: { wait: { held: [{ step: 'a', missing: ['tokens'] }, { step: 'b', missing: ['tokens'] }] } } } }),
   },
 );
 

@@ -79,7 +79,7 @@ steps:
       { status: 'succeeded', outputs: { seen: text } },
     ]);
     const attempts = path.join(runsDir, runId, 'attempts');
-    const results = fs.readdirSync(attempts).map((attempt) => JSON.parse(fs.readFileSync(path.join(attempts, attempt, 'result.json'), 'utf8')));
+    const results = fs.readdirSync(attempts).map((attempt) => JSON.parse(fs.readFileSync(path.join(attempts, attempt, 'out', 'result.json'), 'utf8')));
     expect(results).toContainEqual({ output: { summary: text } });
     expect(results).toContainEqual({ output: { seen: text } });
   } else {

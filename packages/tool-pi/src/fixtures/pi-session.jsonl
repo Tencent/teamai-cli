@@ -1,0 +1,4 @@
+{"type":"session","version":3,"id":"{{sessionId}}","timestamp":"2026-10-30T09:15:02.118Z","cwd":"{{cwd}}"}
+{"type":"model_change","id":"m0","parentId":null,"timestamp":"2026-10-30T09:15:02.120Z","provider":"anthropic","modelId":"claude-sonnet-4-5"}
+{"type":"message","id":"u1","parentId":"m0","timestamp":"2026-10-30T09:15:02.306Z","message":{"role":"user","content":[{"type":"text","text":"Which test runner does this repo use?"}],"timestamp":1793352902306}}
+{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-10-30T09:15:05.912Z","message":{"role":"assistant","content":[{"type":"text","text":"It uses Vitest: package.json runs `vitest run`."}],"api":"anthropic-messages","provider":"anthropic","model":"claude-sonnet-4-5","usage":{"input":1200,"output":80,"cacheRead":6400,"cacheWrite":512,"totalTokens":8192,"cost":{"input":0.0036,"output":0.0012,"cacheRead":0.00192,"cacheWrite":0.00192,"total":0.00864}},"stopReason":"stop","timestamp":1793352905912}}

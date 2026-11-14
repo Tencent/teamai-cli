@@ -9,7 +9,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { listCachedWorkflows } from '../workflow/cache.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 
@@ -68,7 +68,7 @@ describe('a team teamai-score.yaml', () => {
     ['runs a verb with other arguments', shippedWith('--wait 2h', '--wait 0s'), 'score_override_command'],
     ['gives a verb other env', shippedWith('env: { DIR: "{{ steps.evidence.outputs.dir }}" }\n          output: { decided: boolean }\n        - id: ci', 'env: { DIR: "{{ steps.evidence.outputs.dir }}", EXTRA: "1" }\n          output: { decided: boolean }\n        - id: ci'), 'score_override_command'],
     ['drops settle', SHIPPED.slice(0, SHIPPED.indexOf('        - id: settle')) + 'outputs: { labels: steps.score.results }\n', 'score_override_step_missing'],
-    ['drops publish', shippedWith('        - id: publish\n          needs: [write]\n          if: inputs.store\n          workspace: { team: { branch: teamai-reports } }\n          command: teamai score publish\n          deliver: publish\n', ''), 'score_override_step_missing'],
+    ['drops publish', shippedWith('        - id: publish\n          needs: [write]\n          if: inputs.store\n          workspace: { team: { branch: teamai-reports } }\n          requires: { host: true }\n          command: teamai score publish\n          deliver: publish\n', ''), 'score_override_step_missing'],
     ['publishes to another data branch', shippedWith('workspace: { team: { branch: teamai-reports } }', 'workspace: { team: { branch: teamai-learnings } }'), 'score_override_publish'],
     ['publishes the labels without deliver: publish', shippedWith('          command: teamai score publish\n          deliver: publish\n', '          command: teamai score publish\n'), 'score_override_publish'],
     ['lets the judge read the checkout', shippedWith('          workspace: { confined: "{{ steps.evidence.outputs.dir }}" }\n', ''), 'score_override_prompt'],

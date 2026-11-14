@@ -4,7 +4,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import fse from 'fs-extra';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -19,7 +19,7 @@ import { deployBuiltinAgents, BUILTIN_AGENT_NAMES, builtinAgentsReplacedByTeam }
 import { contentHash, openLedger } from '../resources/delivered-copies.js';
 import { recordDelivery } from './helpers/delivered-checkout.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 function buildTeamConfig(toolPaths: TeamaiConfig['toolPaths']): TeamaiConfig {
   return {

@@ -501,6 +501,35 @@ describe('pushRepoBranch explicit destination', () => {
     expect(await fs.readlink(link)).toBe('missing-target');
   });
 
+  it.skipIf(process.platform === 'win32')('carries a link and an edit to a new self-mode destination with their times', async () => {
+    const { localPath } = await fixture('explicit-carry-times');
+    const link = path.join(localPath, 'dangling');
+    const edited = path.join(localPath, 'teamai.yaml');
+    const editedAt = new Date('2026-01-02T03:04:05Z');
+    await fs.symlink('missing-target', link);
+    await fs.writeFile(edited, 'team: test\nnote: pending\n');
+    await fs.utimes(edited, editedAt, editedAt);
+
+    await expect(explicitBranchRefusal(localPath, 'feature/new', true)).resolves.toBeNull();
+    await prepareExplicitBranch(localPath, 'feature/new');
+
+    expect(await fs.readlink(link)).toBe('missing-target');
+    expect(await fs.readFile(edited, 'utf8')).toBe('team: test\nnote: pending\n');
+    expect((await fs.stat(edited)).mtime).toEqual(editedAt);
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses to carry a pipe, naming it, and leaves the tree as it was', async () => {
+    const { localPath } = await fixture('explicit-carry-fifo');
+    const pipe = path.join(localPath, 'teamai.yaml');
+    await fs.rm(pipe);
+    execFileSync('mkfifo', [pipe]);
+
+    await expect(prepareExplicitBranch(localPath, 'feature/new')).rejects.toThrow(`${pipe} is a pipe`);
+
+    expect((await fs.lstat(pipe)).isFIFO()).toBe(true);
+    expect((await createGit(localPath).branchLocal()).current).toBe('main');
+  });
+
   it('refuses a self-mode destination that holds an unpushed commit', async () => {
     const { localPath, git } = await fixture('explicit-self-refusal');
     await git.checkoutLocalBranch('feature/pushed');
@@ -521,6 +550,17 @@ describe('pushRepoBranch explicit destination', () => {
     await expect(explicitBranchRefusal(localPath, 'feature/pushed', true)).resolves.toBeNull();
     await expect(explicitBranchRefusal(localPath, 'release/new', true)).resolves.toBeNull();
     await expect(explicitBranchRefusal(localPath, 'main', true)).resolves.toContain('default branch');
+    await expect(explicitBranchRefusal(localPath, 'feature/new', true)).resolves.toBeNull();
+    // git cannot answer outside a repository, so whether the destination holds the member's commits is unknown.
+    await expect(explicitBranchRefusal(await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-no-repo-')), 'feature/new', true))
+      .resolves.toContain('could not tell whether it exists');
+    // A git that did not start is no reason to pick another branch.
+    vi.stubEnv('PATH', localPath);
+    try {
+      await expect(explicitBranchRefusal(localPath, 'feature/new', true)).resolves.toContain('check that git is installed and on PATH');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('publishes a destination commit an earlier push could not send', async () => {
@@ -651,7 +691,7 @@ it('matches removal names to handler names for flat and namespaced resources', a
 it('reports a detached-clone refusal when upgrading a wiki', async () => {
   const upgrade = await import('../codebase-upgrade-wiki.js');
   const { codebaseCmd } = await import('../codebase-cmd.js');
-  const { log } = await import('../utils/logger.js');
+  const { log } = await import('@teamai/shared/log');
   const refusal = new gitModule.DetachedTeamRepoError('main');
   vi.spyOn(upgrade, 'upgradeCodebaseWiki').mockRejectedValueOnce(refusal);
   const errorLog = vi.spyOn(log, 'error').mockImplementation(() => {});

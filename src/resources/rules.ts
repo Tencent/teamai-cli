@@ -2,11 +2,11 @@ import path from 'node:path';
 import { ResourceHandler, type PlacementRecords } from './base.js';
 import type { CopyOrigin, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { isDraft, listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, listDirs, readFileSafe, writeFile, pruneEmptyDirs, fileHash } from '../utils/fs.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { RESOURCE_LAYOUTS, Resources, type ResourceDiagnostic } from './resolver.js';
 import { RuleFolders } from './rule-folders.js';
 import { FolderFiles } from './folder-files.js';
-import { getUserHome } from '../utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 import { debugOnce, warnOnce } from '../utils/warn-once.js';
 import { TEAMAI_RULES_START, TEAMAI_RULES_END, TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, resolveBaseDir, resolveToolRootDir, isAgentExcluded, SELF_KNOWLEDGE_SCAN_KEY, installScopeName } from '../types.js';
 import { EXCLUDED_RULE_NAMES, isDeployedRecallRule, RECALL_RULE_NAME, TEAMAI_CONTEXT_RULE_NAME } from '../builtin-rules.js';
@@ -46,7 +46,7 @@ import {
 import { injectClaudeMdSection, removeClaudeMdSection } from '../utils/claudemd.js';
 import { toolHome } from '../tool-home.js';
 import { cleanupOf, installOf, locate, locatingOnce, openclawWorkspaceDir, ownOf, userViewOf, writable, type Gate, type Install, type Location } from '../locate.js';
-import { channelsOf } from '../tools.js';
+import { channelsOf } from '../tool-registry.js';
 
 /** The copies earlier pulls left in one of `LEGACY_RULE_DIRS` (`RulesHandler.legacyRuleCopies`). */
 export interface LegacyRuleCopies {
@@ -230,7 +230,7 @@ export class RulesHandler extends ResourceHandler {
           // Native rule directories can contain personal rules created by the
           // target tool, in its own format. Keep unknown files in a tool with a
           // rules format, and in Pi's rule directory, local.
-          if (format || tool === 'pi') continue;
+          if (format || sharesRulesDirWithMember(tool)) continue;
           const existing = candidates.get(name);
 
           if (!existing) {

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveCliPath } from '../../utils/cli-path.js';
+import { resolveCliPath } from '@teamai/shared/cli-path';
 import { ghExec, isGhInstalled } from '../../providers/github/gh-cli.js';
 import { cnbExec, isCnbInstalled } from '../../providers/cnb/cnb-cli.js';
 

@@ -10,8 +10,8 @@ vi.mock('chalk', () => ({
   default: { blue: (s: string) => s, green: (s: string) => s, yellow: (s: string) => s, red: (s: string) => s, gray: (s: string) => s, dim: (s: string) => s },
 }));
 
-import { log, setVerbose, setSilent, setStderrOnly } from '../utils/logger.js';
-import { _setLogFilePath, _resetState } from '../utils/debug-log.js';
+import { log, setVerbose, setSilent, setStderrOnly } from '@teamai/shared/log';
+import { _setLogFilePath, _resetState } from '@teamai/shared/debug-log';
 
 let tmpDir: string;
 let logFile: string;

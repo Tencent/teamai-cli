@@ -1,0 +1,4 @@
+# A Vercel Sandbox per attempt, hosted, signed in with VERCEL_TOKEN, VERCEL_TEAM_ID and VERCEL_PROJECT_ID from your
+# environment. Name it on a driver's entry with sandbox: vercel.
+provider: vercel
+# timeout: 2h                # optional: its lifetime, 1m to 5h

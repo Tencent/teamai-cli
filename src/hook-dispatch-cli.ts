@@ -16,23 +16,24 @@
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
 import os from 'node:os';
 import path from 'node:path';
 
 import { resolveCliEntry } from './builtin-hooks.js';
-import { captureTail } from './utils/exec.js';
+import { captureTail } from '@teamai/shared/exec';
 import { createDispatcher, HookStdinSchema, stdinString, type Dispatcher, type HookStdin } from './hook-dispatch.js';
 import { buildHandlerRegistry, filterHandlersForConfig } from './hook-handlers.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { windowsPowerShell } from './utils/powershell.js';
-import { log, setSilent, setStderrOnly } from './utils/logger.js';
+import { log, setSilent, setStderrOnly } from '@teamai/shared/log';
 import { clearGitHookRepositoryEnv, GIT_HOOK_TOOL } from './git-hook.js';
 import { deriveDispatchSessionId } from './utils/session-id.js';
 import { claudeHookRunsInAnotherHost } from './claude-hook-host.js';
 import { claimCopilotHookEvent } from './copilot-hook-claim.js';
 import { launchedBy, LAUNCH_PAYLOAD_KEY, launchEnv, readLaunch, SESSION_RUN_PAYLOAD_KEY, sessionRun } from './launch-context.js';
 import { isHttpEnrolled, recordLoginEnrolment } from './hook-fast-path.js';
-import { channelsOf } from './tools.js';
+import { channelsOf, toolOf } from './tool-registry.js';
 import { readStdin, takeHandedOffHookStdin } from './utils/hook-stdin.js';
 import { isSelfMode } from './types.js';
 
@@ -312,7 +313,7 @@ function quoteWindowsArg(arg: string): string {
  */
 function readStdinFile(file: string): string {
   try {
-    return fs.readFileSync(file, 'utf8');
+    return readRegularFileSync(file, 'utf8');
   } catch (e) {
     log.debug(`hook-dispatch: could not read STDIN file ${file}: ${e instanceof Error ? e.message : String(e)}`);
 
@@ -513,10 +514,6 @@ async function runHookDispatch(
         : takeHandedOffHookStdin() ?? await readStdin();
 
     const parsed = parseStdin(raw, event);
-
-    // This pass runs inside the login environment: it tells a later prompt whose command deferred that environment
-    // whether the machine syncs over HTTP (hook-fast-path.ts runLoginDeferredHook).
-    if (process.platform !== 'win32' && channelsOf(tool).hooks.loginDeferrable) recordLoginEnrolment(raw, process.env);
     // Antigravity CLI speaks its own hook payload; the detached child gets it already translated.
     const agy = tool === 'agy' && !stdinFile ? await import('./agy-hook-io.js') : undefined;
     const stdin = agy ? agy.agyHookPayload(event, parsed) : parsed;
@@ -554,6 +551,13 @@ async function runHookDispatch(
     // payload keeps the scope its own directory holds.
     const { resolveHookScopeFor } = await import('./dashboard-collector.js');
     const { config: localConfig, dir: scopeDir } = await resolveHookScopeFor(stdin, tool);
+
+    // A tool instance is known by its name only once its scope's team config is read.
+    if (localConfig && !fromGit && toolOf(tool) === undefined) await (await import('./config.js')).loadTeamConfig(localConfig.repo.localPath, localConfig);
+
+    // This pass runs inside the login environment: it tells a later prompt whose command deferred that environment
+    // whether the machine syncs over HTTP (hook-fast-path.ts runLoginDeferredHook).
+    if (process.platform !== 'win32' && channelsOf(tool).hooks.loginDeferrable) recordLoginEnrolment(raw, process.env);
 
     // The workspace the session recorded is the directory the handlers work in,
     // so the payload's own is replaced when it named no scope.
@@ -595,7 +599,7 @@ async function runHookDispatch(
       .then(({ canonicalProjectRoot }) => canonicalProjectRoot(copilotProject) === canonicalProjectRoot(selfRoot)));
 
     // Where the global copy steps aside, it is no replacement for the local Claude copy.
-    if (claudeHookRunsInAnotherHost(tool, process.env, !selfCopilotCopyLoaded)) return;
+    if (claudeHookRunsInAnotherHost(tool, process.env, !selfCopilotCopyLoaded, localConfig?.scope)) return;
 
     if (!bgOnly && tool === 'copilot') {
       if (options.copilotGlobal && selfCopilotCopyLoaded) return;

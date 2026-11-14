@@ -9,6 +9,7 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import type { SimpleGit } from 'simple-git';
 import { z } from 'zod';
 
@@ -17,7 +18,7 @@ import { parseFrontmatter, type FrontmatterData } from './frontmatter.js';
 import { createGitWithBlockTimeout } from './git.js';
 import { learningsBranch } from './learnings-branch.js';
 import { CheckoutRefusedError, failureReason, fetchTrackingRef, type PublishResult } from './branch-worktree.js';
-import { log } from './logger.js';
+import { log } from '@teamai/shared/log';
 import {
   dropPendingLearning,
   listPendingForInstall,
@@ -236,7 +237,7 @@ async function queueImportRemnants(localConfig: LocalConfig): Promise<void> {
       const file = path.join(checkout, rel);
 
       // One that cannot be read, such as a dangling link, must not hold back the rest on every run.
-      const content = await fs.promises.readFile(file, 'utf-8').catch((cause: unknown) => {
+      const content = await readRegularFile(file, 'utf-8').catch((cause: unknown) => {
         log.debug(`[learnings] cannot read ${file}: ${failureReason(cause)}`);
 
         return null;
@@ -440,7 +441,7 @@ async function hasUncommittedChange(checkout: string, rel: string): Promise<bool
 async function contentDigest(file: string): Promise<string | null> {
   if (!fs.existsSync(file)) return null;
 
-  return createHash('sha256').update(await fs.promises.readFile(file)).digest('hex');
+  return createHash('sha256').update(await readRegularFile(file)).digest('hex');
 }
 
 /**
@@ -476,7 +477,7 @@ async function publishRecordedMaintenance(localConfig: LocalConfig): Promise<Pub
       let text: string;
 
       try {
-        text = await fs.promises.readFile(file, 'utf-8');
+        text = await readRegularFile(file, 'utf-8');
       } catch (e) {
         // A failed read says nothing about the record: keep it for a later publish.
         log.warn(`Cannot read maintenance record ${file} (${failureReason(e)}); it stays for the next publish.`);

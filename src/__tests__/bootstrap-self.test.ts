@@ -12,11 +12,11 @@ vi.mock('../providers/index.js', async (importOriginal) => ({
   })),
 }));
 
-import { installFakeCodex, readFakeCodexState } from './helpers/fake-codex.js';
+import { installFakeCodex, readFakeCodexState } from '@teamai/tool-codex/testing';
 import { bootstrapSelfMode } from '../bootstrap.js';
 import { detectProjectConfig } from '../config.js';
 import * as gitHook from '../git-hook.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 let tmpDir: string;
 

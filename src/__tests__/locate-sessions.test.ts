@@ -21,6 +21,7 @@ const store = (tool: string, at: Spot, rest: Omit<Partial<FilesRow>, 'tool' | 'w
 const ROWS: readonly (FilesRow | OtherRow)[] = [
   store('claude', '~/.claude/projects'),
   store('claude', '~/.claude-work/projects', { toolRoots: { claude: '~/.claude-work' }, source: 'CLAUDE_CONFIG_DIR recorded by teamai init (RELOCATABLE_TOOLS)' }),
+  store('claude', '/opt/claude-config/projects', { toolRoots: { claude: '/opt/claude-config' }, source: 'CLAUDE_CONFIG_DIR outside HOME, recorded by teamai init: Claude Code keeps its sessions in the projects directory of its config dir wherever that is' }),
   store('claude', '~/.claude-work/projects', { scope: 'project', userToolRoots: { claude: '~/.claude-work' }, source: 'a project config that records no toolRoots follows the user config (resolveMemberToolRoots)' }),
   store('claude-internal', '~/.claude-internal/projects'),
   store('claude-internal', '~/.claude-internal/projects', { toolRoots: { 'claude-internal': '~/.ci-work' }, source: IGNORED_ROOT }),
@@ -47,7 +48,7 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
   store('qoder-cn', '/qodercn-cli/.qoder-cn/projects', { env: { QODERCN_CLI_HOME: '/qodercn-cli' }, source: 'Qoder CN: QODERCN_CLI_HOME supplies the parent of .qoder-cn' }),
   store('qoder-cn', '/qodercn/projects', { scope: 'project', env: { QODERCN_CONFIG_DIR: '/qodercn' }, source: 'Qoder CN: project sessions use the user-view store' }),
   store('qoder-cn', '/qodercn-cli/.qoder-cn/projects', { scope: 'project', env: { QODERCN_CLI_HOME: '/qodercn-cli' }, source: 'Qoder CN: project sessions use the user-view store under QODERCN_CLI_HOME/.qoder-cn' }),
-  store('workbuddy', '~/.workbuddy/projects', { source: 'WorkBuddy: <uuid>.jsonl and <uuid>.meta.json under ~/.workbuddy/projects (session-flow/adapters/workbuddy.ts)' }),
+  store('workbuddy', '~/.workbuddy/projects', { source: 'WorkBuddy: <uuid>.jsonl and <uuid>.meta.json under ~/.workbuddy/projects (packages/tool-codebuddy/src/workbuddy-adapter.ts)' }),
   store('opencode', '~/.local/share/opencode', { source: OPENCODE_SOURCE }),
   store('opencode', '/data/opencode', { env: { XDG_DATA_HOME: '/data' }, source: OPENCODE_SOURCE }),
   store('opencode', '~/.local/share/opencode', { env: { XDG_CONFIG_HOME: '/xdg' }, source: `${OPENCODE_SOURCE}: the config home does not move the data directory` }),
@@ -80,7 +81,7 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
   store('hermes', '$LOCALAPPDATA/hermes-moved', { scope: 'project', platforms: ['win32'], envLiterals: { HERMES_DATA_DIR_SUFFIX: '-moved' }, source: `${HERMES_SOURCE}; project sessions use the user-view store` }),
   store('hermes', '/moved/hermes', { platforms: ['win32'], env: { LOCALAPPDATA: '/moved' }, source: HERMES_SOURCE }),
   store('hermes', '/moved/hermes', { scope: 'project', platforms: ['win32'], env: { LOCALAPPDATA: '/moved' }, source: `${HERMES_SOURCE}; project sessions use the user-view store` }),
-  store('joycode', '~/.joycode/sessions', { source: 'JoyCode: rollout JSONL under ~/.joycode/sessions (session-flow/adapters/codex.ts)' }),
+  store('joycode', '~/.joycode/sessions', { source: 'JoyCode: rollout JSONL under ~/.joycode/sessions (packages/tool-core/src/formats/codex.ts)' }),
   store('joycode', '/joycode/sessions', { env: { JOYCODE_HOME: '/joycode' }, source: 'JoyCode Desktop: JOYCODE_HOME moves the rollout store' }),
   store('joycode', '/joycode/sessions', { scope: 'project', env: { JOYCODE_HOME: '/joycode' }, source: 'JoyCode Desktop: project sessions use the user-view store under JOYCODE_HOME' }),
   { tool: 'my-tool', scope: 'user', channel: 'unknown', existingDirs: [], installed: null, gates: 'none', source: 'a custom tool id has no descriptor' },
@@ -100,7 +101,7 @@ describe('a session store on Windows when HOME is not the profile home', () => {
     const located = await locate('cursor', 'sessions', at({}), host);
 
     expect(located.channel === 'files' && located.own?.path).toBe('C:\\Users\\member\\.cursor\\projects');
-    expect(sessionStoreDir('cursor', {}, host)).toBe('C:\\Users\\member\\.cursor\\projects');
+    expect(sessionStoreDir('cursor', { kind: 'recorded', toolRoots: {} }, host)).toBe('C:\\Users\\member\\.cursor\\projects');
   });
 
   it('keeps a recorded root, which teamai init accepted under HOME', async () => {

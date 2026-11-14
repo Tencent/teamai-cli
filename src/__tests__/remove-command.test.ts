@@ -42,13 +42,13 @@ const handler = {
 };
 vi.mock('../resources/index.js', () => ({ getHandler: () => handler }));
 const spinMocks = vi.hoisted(() => ({ succeed: vi.fn(), fail: vi.fn() }));
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
   spinner: vi.fn(() => ({ start: vi.fn().mockReturnThis(), succeed: spinMocks.succeed, fail: spinMocks.fail })),
 }));
 
 const { remove } = await import('../remove.js');
-const { log } = await import('../utils/logger.js');
+const { log } = await import('@teamai/shared/log');
 
 /**
  * `publishedNameFor` reads the placement records back from disk. When a

@@ -6,8 +6,11 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { afterAll } from 'vitest';
+import { afterAll, beforeEach } from 'vitest';
 import { trackDetachedProcesses } from './detached-processes.js';
+import { stopLeftChildren } from './left-children.js';
+import { leftSkillRunners, RUNNER_EXIT_MS, stopLeftSkillRunners } from './skill-runners.js';
+import { signalPid } from '@teamai/shared/process-group';
 
 // A recursive removal fails with ENOTEMPTY when something keeps writing into
 // the directory while it is removed. teamai's own detached work is such a
@@ -18,6 +21,9 @@ import { trackDetachedProcesses } from './detached-processes.js';
 // waits for those children and tries once more. One that still fails reports
 // what reappeared and which processes are still running in or on the
 // directory.
+// This worker's home and temporary directory before any other setup file isolates them.
+const startHome = process.env.HOME;
+const startTmp = os.tmpdir();
 const trackerRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-detached-'));
 const tracker = trackDetachedProcesses(trackerRoot);
 // Where waitForDetachedChildren finds this tracker.
@@ -26,13 +32,16 @@ process.env.NODE_OPTIONS = withTracker(process.env.NODE_OPTIONS);
 createRequire(import.meta.url)(tracker.preload);
 // A test that hands a child an environment of its own, NODE_OPTIONS included,
 // would otherwise start it untracked.
+// Each child the running test starts is recorded too, so one it leaves running
+// fails it, below.
+let testChildren: Map<number, string> | undefined;
 for (const name of ['spawn', 'spawnSync', 'execFile', 'execFileSync', 'exec', 'execSync', 'fork'] as const) {
   const start = childProcess[name];
-  const tracked = (...args: unknown[]): unknown => Reflect.apply(start, childProcess, args.map(withTrackedEnv));
+  const tracked = (...args: unknown[]): unknown => recordChild(Reflect.apply(start, childProcess, args.map(withTrackedEnv)), args);
   // promisify(execFile) and promisify(exec) resolve to { stdout, stderr } only through their own promisified form.
   const promised: unknown = Reflect.get(start, promisify.custom);
   if (typeof promised === 'function') {
-    Object.assign(tracked, { [promisify.custom]: (...args: unknown[]): unknown => Reflect.apply(promised, childProcess, args.map(withTrackedEnv)) });
+    Object.assign(tracked, { [promisify.custom]: (...args: unknown[]): unknown => recordChild(Reflect.apply(promised, childProcess, args.map(withTrackedEnv)), args) });
   }
   Object.assign(childProcess, { [name]: tracked });
 }
@@ -43,8 +52,28 @@ const POLL_MS = 25;
 // Clocks a test's fake timers cannot freeze, or the join would never time out.
 const now = performance.now.bind(performance);
 
+// A skill runner whose attempt a test left open polls its run for good, and
+// one whose run a removal deletes ends unseen and may write the run back. A
+// removal of a directory first stops each runner working in it, whatever
+// started it; the test that left it then fails, below.
+const stoppedRunners: number[] = [];
+function stopRunnersIn(target: fs.PathLike): void {
+  const dir = target instanceof URL ? fileURLToPath(target) : target.toString();
+  if (!isDirectory(dir)) return;
+  stoppedRunners.push(...stopLeftSkillRunners(tracker.running, { workingIn: dir }));
+}
+
+function isDirectory(target: string): boolean {
+  try {
+    return fs.lstatSync(target).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 const rmSync = fs.rmSync;
 fs.rmSync = function rmSyncJoiningWriters(target, options) {
+  stopRunnersIn(target);
   try {
     rmSync(target, options);
     return;
@@ -61,6 +90,7 @@ fs.rmSync = function rmSyncJoiningWriters(target, options) {
 };
 const rm = fs.promises.rm;
 fs.promises.rm = async function rmJoiningWriters(target, options) {
+  stopRunnersIn(target);
   try {
     await rm(target, options);
     return;
@@ -76,6 +106,58 @@ fs.promises.rm = async function rmJoiningWriters(target, options) {
 };
 syncBuiltinESMExports();
 
+// Every config loads this setup file, so each test that leaves a runner fails,
+// in whichever file. It runs after the file's own afterEach hooks, even one
+// that threw, and stops the runners still left: the tracked ones, and any
+// working under this file's own home or temporary directory, as one a confined
+// tool started without the tracker.
+beforeEach(({ onTestFinished, task }) => {
+  onTestFinished(() => failOnLeftRunners(stopLeftSkillRunners(tracker.running, { alsoWorkingIn: ownDirectories() })), RUNNER_EXIT_MS + 10_000);
+  // A child the test left running, as a CLI a timed-out test never saw end, is
+  // stopped with what it started, and the test fails naming it. Concurrent
+  // tests share the record, so neither is checked.
+  if (task.concurrent) return;
+  const children = new Map<number, string>();
+  testChildren = children;
+  onTestFinished(async () => {
+    if (testChildren === children) testChildren = undefined;
+    const left = await stopLeftChildren(() => [...children].filter(([pid]) => isRunning(pid)).map(([pid, command]) => ({ pid, command })));
+    if (left.length > 0) throw new Error(`Processes the test started outlived it and were stopped, with the processes under them:\n${left.join('\n')}\nWait for each process a test starts to end, or stop it, before the test ends.`);
+  }, 10_000);
+});
+
+/** `started`, recorded as a child of the running test when it is a process that is not detached: the tracker joins those. */
+function recordChild(started: unknown, args: readonly unknown[]): unknown {
+  const children = testChildren;
+  const child = started instanceof childProcess.ChildProcess ? started : started instanceof Promise && 'child' in started && started.child instanceof childProcess.ChildProcess ? started.child : undefined;
+  if (children === undefined || child?.pid === undefined || args.some(isDetached)) return started;
+  const { pid } = child;
+  children.set(pid, child.spawnargs.join(' '));
+  child.once('exit', () => children.delete(pid));
+  return started;
+}
+
+/**
+ * The home and temporary directory isolate-home or isolate-e2e-env gave this file, which no other file's runner works
+ * in: none that is still the one this worker started with, which every file shares.
+ */
+function ownDirectories(): string[] {
+  return [[process.env.HOME, startHome], [os.tmpdir(), startTmp]].flatMap(([dir, start]) => (dir !== undefined && dir !== start && isDirectory(dir) ? [dir] : []));
+}
+
+function isDetached(arg: unknown): boolean {
+  return typeof arg === 'object' && arg !== null && 'detached' in arg && arg.detached === true;
+}
+
+function isRunning(pid: number): boolean {
+  return signalPid(pid, 0) === 'sent';
+}
+
+function failOnLeftRunners(left: readonly number[]): void {
+  const all = [...stoppedRunners.splice(0), ...left];
+  if (all.length > 0) throw new Error(leftSkillRunners(all));
+}
+
 // Every config loads this setup file first, so this runs after every other
 // teardown, each removal of which could still need the tracker. A child still
 // running would fail to record its own children once the tracker is gone, so
@@ -83,6 +165,8 @@ syncBuiltinESMExports();
 afterAll(async () => {
   await joinWriters();
   if (tracker.running().length === 0) fs.rmSync(trackerRoot, { recursive: true, force: true });
+  // A removal in another afterAll may have stopped a runner after the last test.
+  failOnLeftRunners([]);
 });
 
 async function joinWriters(): Promise<void> {

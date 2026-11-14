@@ -1,6 +1,6 @@
 import { REQUEST_LOG_RETENTION_DAYS, type LocalRequestRecord } from '../dashboard-collector.js';
 import { PRICE_CATALOG_VERSION } from '../token-usage/pricing.js';
-import { emptyTokenUsage, totalTokens, type TokenUsage } from '../types.js';
+import { emptyTokenUsage, totalTokens, type TokenUsage } from '@teamai/tool-core/tokens';
 
 const DAY_MS = 86_400_000;
 const TOP_SESSIONS = 10;

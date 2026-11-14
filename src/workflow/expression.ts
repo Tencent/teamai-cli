@@ -4,7 +4,7 @@
  * `filter`, whose predicate reads each element of the list as `.`. Its evaluation never throws.
  */
 import { z } from 'zod';
-import { isJsonObject, type JsonValue } from '../types.js';
+import { isJsonObject, type JsonValue } from '@teamai/shared/json';
 import type { VisibleOutcome } from './step-state.js';
 import { INDEX } from './step-path.js';
 import type { OutputSchema } from './types.js';

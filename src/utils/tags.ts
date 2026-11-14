@@ -1,10 +1,10 @@
 import path from 'node:path';
 import YAML from 'yaml';
-import { parseYaml } from './yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { z } from 'zod';
 import type { TagsConfig, ResourceItem } from '../types.js';
 import { readFileSafe, writeFile } from './fs.js';
-import { log } from './logger.js';
+import { log } from '@teamai/shared/log';
 
 const TAGS_FILE = 'tags.yaml';
 

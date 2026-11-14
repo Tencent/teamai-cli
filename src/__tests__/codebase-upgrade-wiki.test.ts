@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { upgradeCodebaseWiki } from '../codebase-upgrade-wiki.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 const roots: string[] = [];
 const CJK = /[\u3400-\u9fff]/u;

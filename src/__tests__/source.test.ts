@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import os from 'node:os';
 import fse from 'fs-extra';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -370,7 +370,7 @@ describe('source', () => {
       expect(await fse.readFile(manifestPath, 'utf8')).toBe(previousManifest);
       expect(await fse.pathExists(path.join(homeDir, '.claude/skills', newName, 'incoming.txt'))).toBe(false);
       expect(await fse.pathExists(path.join(homeDir, '.claude/skills/free-skill'))).toBe(false);
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
       expect(log.warn).toHaveBeenCalledWith(expect.stringMatching(/overlap.*Manual review/));
       const { getHandler } = await import('../resources/index.js');
       expect((await getHandler('skills').scanLocalForPush(teamConfig, localConfig)).some((item) => item.name === oldName || item.name === oldName.split('/').at(-1))).toBe(false);

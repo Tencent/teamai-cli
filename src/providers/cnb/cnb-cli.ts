@@ -1,7 +1,7 @@
 import { execSync, spawnSync, type SpawnSyncOptions, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
-import crossSpawn from 'cross-spawn';
-import { log, spinner } from '../../utils/logger.js';
-import { resolveCliPath } from '../../utils/cli-path.js';
+import { spawnCommandSync } from '@teamai/shared/exec';
+import { log, spinner } from '@teamai/shared/log';
+import { resolveCliPath } from '@teamai/shared/cli-path';
 import { isInteractive } from '../../utils/prompt.js';
 import type { RepoInfo } from '../types.js';
 import { OrganizationNotFoundError, RepoCreatePermissionError } from '../types.js';
@@ -19,7 +19,7 @@ import { OrganizationNotFoundError, RepoCreatePermissionError } from '../types.j
  *   - a bare `cnb` therefore fails with ENOENT, and handing the resolved
  *     `cnb.cmd` to `child_process.spawnSync` fails with EINVAL.
  *
- * `cross-spawn` handles both cases (same reason `tool-launch/run.ts` uses it),
+ * `spawnCommandSync` handles both cases (as `runTool` does with `spawnCommand`),
  * while `resolveCliPath` keeps "is it installed?" and "can we run it?" based on
  * the same answer.
  *
@@ -52,7 +52,7 @@ export function cnbExec(
   args: string[],
   options?: { inheritStdio?: boolean; cwd?: string; timeoutMs?: number },
 ): CnbExecResult {
-  // Resolve the executable first, then launch it through cross-spawn: on
+  // Resolve the executable first, then launch it through spawnCommandSync: on
   // Windows the npm-installed CLI is only a `.cmd` shim, which neither a bare
   // name (ENOENT) nor a direct child_process.spawnSync (EINVAL) can start. That
   // used to come back as status 1 with an empty stderr, so cnbIsAuthenticated()
@@ -71,7 +71,7 @@ export function cnbExec(
     const inherited: SpawnSyncOptions = { stdio: 'inherit', env: { ...process.env }, cwd: options.cwd };
 
     if (options.timeoutMs) inherited.timeout = options.timeoutMs;
-    const r = crossSpawn.sync(cnbPath, args, inherited);
+    const r = spawnCommandSync(cnbPath, args, inherited);
 
     return { stdout: '', stderr: '', status: r.status ?? 1 };
   }
@@ -84,7 +84,7 @@ export function cnbExec(
   };
 
   if (options?.timeoutMs) captured.timeout = options.timeoutMs;
-  const r = crossSpawn.sync(cnbPath, args, captured);
+  const r = spawnCommandSync(cnbPath, args, captured);
 
   return {
     stdout: (r.stdout ?? '').toString().trim(),

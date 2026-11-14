@@ -1,0 +1,2 @@
+{"event":"init","conversation_id":"c2","init":{"model":"gemini-3.8-flash-low","cwd":"/work"}}
+{"event":"result","result":{"conversation_id":"c2","duration_seconds":0.4,"num_turns":0,"status":"ERROR","error":"You have reached your quota for gemini-3-pro. Try again later."}}

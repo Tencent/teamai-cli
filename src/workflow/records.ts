@@ -18,12 +18,12 @@ import { z } from 'zod';
 import { isRecordableName, type RecordedAgent } from '../agent-observation.js';
 import { loadTeamConfig } from '../config.js';
 import type { LocalConfig } from '../types.js';
-import { getDataHome, isJsonObject, isUsageReportEnabled, type JsonValue } from '../types.js';
-import { parseJson } from '../utils/json.js';
-import { log } from '../utils/logger.js';
-import { redactJson } from '../utils/redact.js';
+import { getDataHome, isUsageReportEnabled } from '../types.js';
+import { parseJson, isJsonObject, type JsonValue } from '@teamai/shared/json';
+import { log } from '@teamai/shared/log';
+import { redactJson } from '@teamai/shared/redact';
 import { acquireLock, releaseLock } from '../update.js';
-import { isLaunchTool } from '../tool-launch/tools.js';
+import { runsSteps } from '../tool-registry.js';
 import type { RunMode } from '../launch-context.js';
 import type { RunOrigin } from '../default-workflows.js';
 import { uniqueOutcomes, type WorkOutcome } from '../outcomes.js';
@@ -32,31 +32,17 @@ import { isIsolated, runBranchPrefix } from './workspace.js';
 import { snapshotPath } from './snapshot.js';
 import { installOwner, isRunId, runLockPath } from './store.js';
 import { settled, visibleOutcome, type StepPass, type StepState, type VisibleOutcome } from './step-state.js';
-import type { TokenUsage } from '../tool-launch/stdout.js';
-import { LIMIT_FAILURES, type Unenforced } from './requirements.js';
+import type { TokenUsage } from '@teamai/tool-core/stdout';
+import type { Unenforced } from './requirements.js';
+import { isFailureCode, type FailureCode } from './failure-codes.js';
 import type { DriverIdentity, RunState, RunStatus, WorkflowFailure } from './types.js';
 import { definedFields } from '../utils/defined-fields.js';
-import { parseYaml } from '../utils/yaml.js';
+import { RESERVED_DRIVERS } from './reserved-drivers.js';
+import { parseYaml } from '@teamai/shared/yaml';
+import { readRegularFile, writeRegularFile } from '@teamai/shared/regular-file';
 
-/**
- * The failure codes the engine writes, then those the local driver sets. A code a model writes into its result, or
- * another driver reports, can be any text, so a record carries only these.
- */
-const RECORDED_FAILURES = [
-  'cancelled', 'hitl_required',
-  'loop_exhausted', 'invalid_output', 'invalid_template', 'invalid_inputs', 'invalid_items', 'item_cycle', 'input_rejected', 'command_failed',
-  'tool_failed', 'tool_unavailable', 'agent_unavailable', 'model_unavailable', 'read_only_dirty', 'unreported_changes', 'tool_unconfigured', 'tool_unsupported',
-  'merge_conflict', 'base_config', 'push_failed', 'workspace_base', 'bad_session',
-  ...LIMIT_FAILURES,
-  'delivery_failed', 'protected_path',
-  'trial_prepare_failed', 'clone_prepare_failed', 'role_unavailable',
-  'confined_invalid', 'confined_tool_unavailable', 'confined_failed', 'confined_reply_invalid', 'confined_report_mismatch', 'confined_unoffered',
-] as const;
-
-type RecordedFailure = (typeof RECORDED_FAILURES)[number];
-
-function isRecordedFailure(failure: WorkflowFailure | undefined): failure is WorkflowFailure & { code: RecordedFailure } {
-  return failure !== undefined && RECORDED_FAILURES.some((code) => code === failure.code);
+function hasTeamaiCode(failure: WorkflowFailure | undefined): failure is WorkflowFailure & { code: FailureCode } {
+  return failure !== undefined && isFailureCode(failure.code);
 }
 
 /** The record's schema tag; see #1083 for the field contract. */
@@ -78,15 +64,15 @@ export type WorkflowRunRecord = {
   /** Whether the run executed the team's workflow or teamai's default, with its version. Absent on runs started before it was recorded. */
   origin?: RunOrigin;
   /**
-   * Driver kind only. The workspace is a local path (banned, #1083) and the
-   * hostname is machine-identifying (#1126 review) — neither is published.
+   * Driver kind, and the driver definition the run was driven with by its canonical name, absent for plain `local`. The
+   * workspace is a local path (banned, #1083) and the hostname is machine-identifying (#1126 review): neither is published.
    */
-  driver?: { kind: string };
+  driver?: { kind: string; definition?: string };
   status: RunStatus;
   /** The named end the run reached, when it reached one. */
   end?: string;
   /** Why a run that reached no end failed, such as `loop_exhausted`. Code only: the message is free text. */
-  failure?: { code: RecordedFailure };
+  failure?: { code: FailureCode };
   startedAt: string;
   endedAt?: string;
   /**
@@ -181,8 +167,8 @@ export function buildStartRecord(
   now: Date = new Date(),
 ): CurrentWorkflowRunRecord {
   // A start record may have no driver yet (a remote driver leases later); the end record always carries the driver
-  // that completed the run. Kind only: the workspace is a banned local path and the hostname is machine-identifying
-  // (#1126 review).
+  // that completed the run. Kind and definition only: the workspace is a banned local path and the hostname is
+  // machine-identifying (#1126 review).
   return definedFields<CurrentWorkflowRunRecord>({
     schemaVersion: 'v1alpha1',
     run: run.id,
@@ -194,7 +180,8 @@ export function buildStartRecord(
     runMode: run.runMode || undefined,
     origin: run.origin || undefined,
     isolated: isIsolated(run) ? true : undefined,
-    driver: driver ? { kind: driver.kind } : undefined,
+    // Only the local driver runs a definition, so another kind's record names none the run kept from a local drive.
+    driver: driver ? { kind: driver.kind, ...(driver.kind === RESERVED_DRIVERS.local && run.driveOptions?.driver !== undefined && { definition: run.driveOptions.driver }) } : undefined,
     status: 'running',
     startedAt: run.createdAt,
     username,
@@ -206,10 +193,10 @@ export function buildStartRecord(
  * Why a run that reached no end failed, as the first failure with a code teamai sets: the run's own, from a looping
  * workflow that ran out, else that of the top-level step that failed first, else the first one under that step.
  */
-function failureOf(run: RunState): RecordedFailure | undefined {
+function failureOf(run: RunState): FailureCode | undefined {
   if (run.status !== 'failed' || run.end !== undefined) return undefined;
 
-  if (isRecordedFailure(run.failure)) return run.failure.code;
+  if (hasTeamaiCode(run.failure)) return run.failure.code;
 
   const failed = run.steps
     .filter((step): step is Extract<StepState, { status: 'failed' | 'cancelled' }> => step.status === 'failed' || step.status === 'cancelled')
@@ -221,7 +208,7 @@ function failureOf(run: RunState): RecordedFailure | undefined {
   if (!first) return undefined;
   const under = (step: StepState): boolean => step.id.startsWith(`${first.id}.`) || step.id.startsWith(`${first.id}[`);
 
-  return [first, ...failed.filter(under)].map((step) => step.failure).find(isRecordedFailure)?.code;
+  return [first, ...failed.filter(under)].map((step) => step.failure).find(hasTeamaiCode)?.code;
 }
 
 /**
@@ -258,7 +245,7 @@ export function buildEndRecord(
       answer: reported?.answer ? { choice: reported.answer.choice, channel: reported.answer.channel, agent: reported.answer.agent } : undefined,
       pass: pass ?? 1,
       agent,
-      tool: reported?.tool && isLaunchTool(reported.tool) ? reported.tool : undefined,
+      tool: reported?.tool && runsSteps(reported.tool) ? reported.tool : undefined,
       model: reported?.model && isRecordableName(reported.model) ? reported.model : undefined,
       outcome: outcome || undefined,
       tokens: reported?.tokens || undefined,
@@ -355,7 +342,7 @@ export type RecordState = 'published' | 'pending';
 
 /** The opt-out `pull` applies to stat commits covers run records too: the member's `usageReportEnabled`, else teamai.yaml `usageReport`. */
 async function isRecordingEnabled(config: LocalConfig): Promise<boolean> {
-  return isUsageReportEnabled(config, (await loadTeamConfig(config.repo.localPath)) ?? {});
+  return isUsageReportEnabled(config, (await loadTeamConfig(config.repo.localPath, config)) ?? {});
 }
 
 /**
@@ -453,7 +440,7 @@ export async function queueBenchmarkRecord(config: LocalConfig, record: QueuedBe
   const dir = pendingBenchmarksDir(config);
   await fs.mkdir(dir, { recursive: true });
   const target = path.join(dir, `${record.run}.json`);
-  await fs.writeFile(`${target}.tmp`, `${JSON.stringify(redactJson(record, secrets), null, 2)}\n`, 'utf-8');
+  await writeRegularFile(`${target}.tmp`, `${JSON.stringify(redactJson(record, secrets), null, 2)}\n`);
   await fs.rename(`${target}.tmp`, target);
 
   return true;
@@ -470,7 +457,7 @@ async function pendingBenchmarks(config: LocalConfig): Promise<Array<{ file: str
   const files = (await fs.readdir(dir).catch((): string[] => [])).filter((file) => file.endsWith('.json')).sort();
 
   const read = await Promise.all(files.map(async (file) => {
-    const text = await fs.readFile(path.join(dir, file), 'utf-8').catch(() => undefined);
+    const text = await readRegularFile(path.join(dir, file), 'utf-8').catch(() => undefined);
     const parsed = text === undefined ? undefined : QueuedBenchmarkSchema.safeParse(jsonOrUndefined(text));
 
     return text !== undefined && parsed?.success ? [{ file: path.join(dir, file), text, record: parsed.data }] : [];
@@ -494,7 +481,7 @@ export async function enqueueRecord(config: LocalConfig, record: CurrentWorkflow
   await fs.mkdir(dir, { recursive: true });
   const target = pendingPath(config, record);
   const tmp = `${target}.tmp`;
-  await fs.writeFile(tmp, `${JSON.stringify(redactJson(record, secrets), null, 2)}\n`, 'utf-8');
+  await writeRegularFile(tmp, `${JSON.stringify(redactJson(record, secrets), null, 2)}\n`);
   await fs.rename(tmp, target);
 }
 
@@ -521,7 +508,7 @@ export async function pendingRecords(config: LocalConfig): Promise<WorkflowRunRe
 
     try {
       // SAFETY: only enqueueRecord writes this directory, and it writes each file from a WorkflowRunRecord.
-      records.push(JSON.parse(await fs.readFile(path.join(dir, file), 'utf-8')) as WorkflowRunRecord);
+      records.push(JSON.parse(await readRegularFile(path.join(dir, file), 'utf-8')) as WorkflowRunRecord);
     } catch {
       // A corrupt queue entry must not wedge the whole queue: the next enqueue
       // of the same run+phase overwrites it.
@@ -542,7 +529,7 @@ async function dequeue(config: LocalConfig, record: WorkflowRunRecord): Promise<
 
     try {
       // SAFETY: only enqueueRecord writes the queue, and it writes each file from a WorkflowRunRecord.
-      current = JSON.parse(await fs.readFile(target, 'utf-8')) as WorkflowRunRecord;
+      current = JSON.parse(await readRegularFile(target, 'utf-8')) as WorkflowRunRecord;
     } catch {
       return;
     }
@@ -555,7 +542,7 @@ async function dequeue(config: LocalConfig, record: WorkflowRunRecord): Promise<
 
 /** Removes a delivered benchmark record from the queue, unless it was queued again with other content meanwhile. */
 async function dequeueBenchmark({ file, text }: { file: string; text: string }): Promise<void> {
-  if (await fs.readFile(file, 'utf-8').catch(() => undefined) === text) await fs.rm(file, { force: true });
+  if (await readRegularFile(file, 'utf-8').catch(() => undefined) === text) await fs.rm(file, { force: true });
 }
 
 /** Whether a drain delivered the records it took, and when it did not, why they are still queued. */
@@ -621,7 +608,7 @@ export async function publishPendingRecords(config: LocalConfig, options: { run?
       }
 
       await fs.mkdir(path.join(worktree, path.dirname(rel)), { recursive: true });
-      await fs.writeFile(path.join(worktree, rel), `${JSON.stringify(merged, null, 2)}\n`, 'utf-8');
+      await writeRegularFile(path.join(worktree, rel), `${JSON.stringify(merged, null, 2)}\n`);
       files.push(rel);
       delivered.push(...records);
     }
@@ -660,7 +647,7 @@ export async function publishPendingRecords(config: LocalConfig, options: { run?
 
       const mergedStats = mergeWorkflowStats(ensureDigestFields(existingStats, username), username, delta, originByRun);
       await fs.mkdir(path.join(worktree, 'stats'), { recursive: true });
-      await fs.writeFile(path.join(worktree, statsRel), YAML.stringify(mergedStats), 'utf-8');
+      await writeRegularFile(path.join(worktree, statsRel), YAML.stringify(mergedStats));
       files.push(statsRel);
     }
 
@@ -668,7 +655,7 @@ export async function publishPendingRecords(config: LocalConfig, options: { run?
     for (const { record, text } of benchmarks) {
       const rel = benchmarkRecordPath(record.run);
       await fs.mkdir(path.join(worktree, path.dirname(rel)), { recursive: true });
-      await fs.writeFile(path.join(worktree, rel), text, 'utf-8');
+      await writeRegularFile(path.join(worktree, rel), text);
       files.push(rel);
     }
 

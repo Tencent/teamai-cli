@@ -217,7 +217,7 @@ describe('restoreProtected', () => {
     expect(read(clone, TEST)).toBe(STARTING_TEST);
   });
 
-  it('fails when a filter of the agent writes a file under a protected path while the restore runs, and adds it to the index git gave it', async () => {
+  it('runs no filter the agent planted while the restore runs, so it writes nothing under a protected path', async () => {
     const { repo, start } = startingRepo();
     const clone = trialClone(repo, start);
     git(clone, ['config', 'filter.agent.smudge', 'cat; echo helper > test/pass.setup.js; git update-index --add test/pass.setup.js']);
@@ -226,7 +226,9 @@ describe('restoreProtected', () => {
 
     const failure = await restoreClone(clone, repo, start);
 
-    expect(failure).toMatchObject({ code: 'trial_prepare_failed', message: expect.stringContaining('test/pass.setup.js') });
+    expect(failure).toBeUndefined();
+    expect(read(clone, TEST)).toBe(STARTING_TEST);
+    expect(fs.existsSync(path.join(clone, 'test', 'pass.setup.js'))).toBe(false);
   });
 
   it.each<[string, (clone: string, start: string) => void]>([

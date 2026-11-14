@@ -16,7 +16,7 @@ import path from 'node:path';
 import { pathExists } from './fs.js';
 import { remoteBranchExists, hashObject, blobInHistory, pathAddedSince, pathDeletedSince, getHeadCommit, getFileContentAtRev } from './git.js';
 import { placedResourcePath } from '../push-namespaces.js';
-import { log } from './logger.js';
+import { log } from '@teamai/shared/log';
 import type { PendingPush, PendingPushItem, ResourceItem, State } from '../types.js';
 
 /** Type and name: the identity a record is kept by while anything of that name is still scanned. */

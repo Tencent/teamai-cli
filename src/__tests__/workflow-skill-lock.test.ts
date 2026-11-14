@@ -1,11 +1,16 @@
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocalConfig } from '../types.js';
 import type { WorkflowClient } from '../workflow/protocol.js';
 import type { Runners, SkillContext } from '../workflow/drivers/skill/skill-driver.js';
 import { withDriverLock } from '../workflow/drivers/local/local-driver.js';
-import { skillStatePath, takeRunLock } from '../workflow/store.js';
+import { RunIdSchema, runsRemovalLockIn, skillStatePath, takeRunLock, withRunLock } from '../workflow/store.js';
+import { acquireLock, releaseLock } from '../update.js';
 import { skillHarness } from './helpers/skill-harness.js';
 
 const PAIR = `schemaVersion: v1alpha1
@@ -80,7 +85,7 @@ function turnOf(answer: Awaited<ReturnType<Made['call']>>) {
   return answer.data.turn;
 }
 
-/** Starts PAIR, answers the host question, and acks both dispatches, so nothing is left for a poll to show: the dispatches. */
+/** Starts PAIR, answers the session host question, and acks both dispatches, so nothing is left for a poll to show: the dispatches. */
 async function dispatched(made: Made) {
   const { run } = turnOf(await made.call({ kind: 'start', name: 'pair', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
   const turn = turnOf(await made.call({ kind: 'choose', run, choice: 'h1' }));
@@ -176,4 +181,113 @@ describe('the run lock of a skill run', () => {
     expect(await driving).toEqual({ data: {} });
     expect(fs.readFileSync(skillStatePath(made.config, run), 'utf8')).toBe(before);
   });
+});
+
+// A teamai from before runs were spelled by their real path takes the driver lock at HOME as it is spelled. While both
+// are installed, either may drive a run: the two spellings must name one lock.
+describe('the driver lock of a run whose data home is reached through a symlink', () => {
+  function linkedHome(): { config: LocalConfig; spelled: (run: string) => string } {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-linked-home-')));
+    roots.push(root);
+    fs.mkdirSync(path.join(root, 'real'));
+    fs.symlinkSync(path.join(root, 'real'), path.join(root, 'link'));
+    const dataHome = path.join(root, 'link', 'data');
+    fs.mkdirSync(dataHome);
+    const config: LocalConfig = { repo: { kind: 'self', localPath: path.join(root, 'knowledge'), remote: 'local' }, username: 'test', scope: 'project', additionalRoles: [], projectRoot: root, dataHome };
+    return { config, spelled: (run) => path.join(dataHome, 'workflows', 'runs', run, 'driver.lock') };
+  }
+
+  it('is busy for this teamai while an older teamai holds it at the spelled path', async () => {
+    const { config, spelled } = linkedHome();
+    const run = RunIdSchema.parse('r0123456789abcdef');
+    const older = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], { stdio: 'ignore' });
+    try {
+      fs.mkdirSync(path.dirname(spelled(run)), { recursive: true });
+      fs.writeFileSync(spelled(run), JSON.stringify({ pid: older.pid, startedAt: new Date().toISOString(), owner: randomUUID() }));
+      const body = vi.fn(async () => 'drove');
+
+      const taken = await takeRunLock(config, run, body, { waitMs: 0 });
+
+      expect(taken).toMatchObject({ kind: 'busy', error: { code: 'driver_running', message: expect.stringContaining(`process ${older.pid}`) } });
+      expect(body).not.toHaveBeenCalled();
+    } finally {
+      older.kill();
+    }
+  });
+
+  it('is held from an older teamai at the spelled path while this teamai holds it', async () => {
+    const { config, spelled } = linkedHome();
+    const run = RunIdSchema.parse('r0123456789abcdef');
+
+    const taken = await takeRunLock(config, run, async () => acquireLock(spelled(run)), { waitMs: 0 });
+
+    expect(taken).toEqual({ kind: 'held', value: false });
+    expect(await acquireLock(spelled(run))).toBe(true);
+    await releaseLock(spelled(run));
+  });
+});
+
+describe('the driver lock of a run whose data home is not there', () => {
+  it('drives nothing and makes no data home, as after an uninstall of the scope', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-no-home-')));
+    roots.push(root);
+    const dataHome = path.join(root, 'data');
+    const config: LocalConfig = { repo: { kind: 'self', localPath: path.join(root, 'knowledge'), remote: 'local' }, username: 'test', scope: 'project', additionalRoles: [], projectRoot: root, dataHome };
+    const run = RunIdSchema.parse('r0123456789abcdef');
+    const body = vi.fn(async () => 'drove');
+
+    await expect(takeRunLock(config, run, body, { waitMs: 0 })).rejects.toThrow(`Run ${run} is not on this machine: its data home ${dataHome} is not there`);
+
+    expect(body).not.toHaveBeenCalled();
+    expect(fs.existsSync(dataHome)).toBe(false);
+  });
+
+  // A fleet member holds a claimed run's attempts, and no record of the run: its owner's machine has that.
+  it("drives nothing of a fleet member's run an uninstall removed while it waited, and makes none of it again", async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-member-home-')));
+    roots.push(root);
+    const dataHome = path.join(root, 'data');
+    const config: LocalConfig = { repo: { kind: 'self', localPath: path.join(root, 'knowledge'), remote: 'local' }, username: 'test', scope: 'project', additionalRoles: [], projectRoot: root, dataHome };
+    const run = RunIdSchema.parse('r0123456789abcdef');
+    const runDir = path.join(dataHome, 'workflows', 'runs', run);
+    fs.mkdirSync(path.join(runDir, 'attempts', 'a01234567'), { recursive: true });
+    const removal = runsRemovalLockIn(dataHome);
+    expect(await acquireLock(removal)).toBe(true);
+    const body = vi.fn(async () => 'drove');
+
+    const driving = takeRunLock(config, run, body, { waitMs: 0 });
+    await new Promise((resolve) => { setTimeout(resolve, 50); });
+    fs.rmSync(runDir, { recursive: true });
+    await releaseLock(removal);
+
+    await expect(driving).rejects.toThrow(`Run ${run} was removed from this machine while teamai waited to drive it`);
+    expect(body).not.toHaveBeenCalled();
+    expect(fs.existsSync(runDir)).toBe(false);
+  });
+
+  // A taken removal lock is no driver of the run: a cancel that read it as one would cancel without the lock.
+  it.each([
+    { state: 'its data home removed', isTaken: false, code: 'run_not_found', says: 'is not on this machine' },
+    { state: "its data home's removal lock taken", isTaken: true, code: 'busy', says: `stays taken by process ${process.pid}, as an uninstall of this scope` },
+  ])('answers a body that answers an envelope with $code, with $state', async ({ isTaken, code, says }) => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-no-home-')));
+    roots.push(root);
+    const dataHome = path.join(root, 'data');
+    const config: LocalConfig = { repo: { kind: 'self', localPath: path.join(root, 'knowledge'), remote: 'local' }, username: 'test', scope: 'project', additionalRoles: [], projectRoot: root, dataHome };
+    const run = RunIdSchema.parse('r0123456789abcdef');
+    const body = vi.fn(async () => ({ data: {} }));
+
+    if (isTaken) {
+      fs.mkdirSync(dataHome);
+      expect(await acquireLock(runsRemovalLockIn(dataHome))).toBe(true);
+    }
+
+    try {
+      expect(await withRunLock(config, run, body, { waitMs: 0 })).toEqual({ error: { code, message: expect.stringContaining(says) } });
+    } finally {
+      if (isTaken) await releaseLock(runsRemovalLockIn(dataHome));
+    }
+
+    expect(body).not.toHaveBeenCalled();
+  }, 30_000);
 });

@@ -8,10 +8,11 @@ description: >-
   analysis, architecture reverse-engineering, code-to-knowledge, team-wiki-codebase, architecture wiki),
   and to share what a session taught you back to the team (share session learnings, contribute a
   learning, share what I learned with my team), including
-  after a friction reminder. Triggers include "set up teamai", "join the team repo", "sync team
-  skills", "team wiki", "share what I learned", and running /teamai. Talking about a team needs no
+  after a friction reminder, and to run a team workflow. Triggers include "set up teamai", "join the
+  team repo", "sync team skills", "team wiki", "share what I learned", "run a team workflow", "which
+  workflows does the team have", "start <workflow>", and running /teamai. Talking about a team needs no
   skill; operating on what the team shares does.
-allowed-tools: Bash(teamai skill:*), Bash(npx teamai-cli skill:*), Bash(teamai workflow start --describe:*), Bash(teamai workflow next:*), Bash(teamai workflow report:*), Bash(teamai workflow respond:*), Bash(npx teamai-cli workflow start --describe:*), Bash(npx teamai-cli workflow next:*), Bash(npx teamai-cli workflow report:*), Bash(npx teamai-cli workflow respond:*)
+allowed-tools: Bash(teamai skill:*), Bash(npx teamai-cli skill:*), Bash(teamai list workflows:*), Bash(npx teamai-cli list workflows:*), Bash(teamai workflow start --describe:*), Bash(teamai workflow next:*), Bash(teamai workflow report:*), Bash(teamai workflow respond:*), Bash(npx teamai-cli workflow start --describe:*), Bash(npx teamai-cli workflow next:*), Bash(npx teamai-cli workflow report:*), Bash(npx teamai-cli workflow respond:*)
 ---
 
 # teamai

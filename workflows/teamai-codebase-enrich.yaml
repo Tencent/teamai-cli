@@ -6,6 +6,8 @@ private: true
 # wiki_root is the teamwiki the codebase was just extracted into, whose .indices/ caches hold its facts; project is its directory under evidence/code/.
 inputs: { wiki_root: string, project: string }
 ends: { unconfigured-tool: failed }
+defaults:
+  requires: { host: true }
 steps:
   - id: plan
     command: teamai codebase enrich-plan --wiki-root "$WIKI_ROOT" --codebase "$PROJECT"

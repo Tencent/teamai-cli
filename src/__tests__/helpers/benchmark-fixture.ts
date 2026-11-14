@@ -57,9 +57,10 @@ export const PRODUCT_URL = 'https://github.com/fixture/app.git';
  * test/auth/refresh.test.js that always passes, and no fix. `hangs` never exits; `fixes-and-hangs` makes the check pass,
  * takes git's index, HEAD and branch locks in the clone as a commit does, and never exits. `corrupts-git-and-hangs` leaves
  * the clone's index unreadable, so nothing can commit its work, and never exits. `fixes-behind-a-hanging-filter` makes the
- * check pass and exits, leaving a git clean filter on every file of the clone that never returns.
- * `fixes-behind-a-hanging-smudge` makes the check pass and exits, leaving a git smudge filter on the protected test.js
- * that never returns, in the clone's own .git/info/attributes. Each such filter logs its pid, read by `filterPids`.
+ * check pass and exits, routing every file of the clone through the member's clean filter `hangclean`, which never
+ * returns. `fixes-behind-a-hanging-smudge` makes the check pass and exits, routing the protected test.js through the
+ * member's smudge filter `hangsmudge`, which never returns, in the clone's own .git/info/attributes. Both filters are in
+ * the member's own git config, as git runs no filter a step's copy names. Each logs its pid, read by `filterPids`.
  * `fixes-and-runs-out-of-turns` makes the check
  * pass, then, when launched with --max-turns, ends as Claude does at that cap: an `error_max_turns` result and exit 1.
  * `fixes-slowly` makes the check pass and exits after three seconds.
@@ -198,8 +199,23 @@ const CommandLeaseSchema = z.object({
 }).passthrough();
 
 /**
+ * What an external driver reports of a command lease whose process exited `code` (null when a signal ended it) after
+ * printing `stdout`: its outcome and exit code, and its stdout as outputs when that is JSON. A benchmark check runs the
+ * task's own check, which prints no outputs: teamai decides them from the exit code.
+ */
+export function commandLeaseReport({ code, stdout }: { code: number | null; stdout: string }): { outcome: 'success' | 'failed'; exitCode?: number; outputs?: unknown } {
+  const settled = { outcome: code === 0 ? 'success' as const : 'failed' as const, ...(code === null ? {} : { exitCode: code }) };
+  if (stdout.trim() === '') return settled;
+  try {
+    return { ...settled, outputs: JSON.parse(stdout) };
+  } catch {
+    return settled;
+  }
+}
+
+/**
  * Answers `next --prepare` for the driver `payload` names until it gets something other than a command lease, running
- * each command lease as an external driver does: in the lease's cwd, as its attempt, reporting its stdout as outputs.
+ * each command lease as an external driver does: in the lease's cwd, as its attempt, reporting it as `commandLeaseReport` says.
  */
 export async function driveCommands(fixture: BenchmarkFixture, run: string, payload: { driver: Record<string, unknown> }): Promise<Envelope> {
   for (;;) {
@@ -208,9 +224,8 @@ export async function driveCommands(fixture: BenchmarkFixture, run: string, payl
     if (!lease.success || lease.data.command === undefined) return answer;
     const { attempt, revision, command, env, cwd } = lease.data;
     const ran = spawnSync('sh', ['-c', command], { cwd: cwd ?? fixture.work, env: { ...fixture.env, ...env, TEAMAI_WORKFLOW_ATTEMPT: `${run}/${attempt}` }, encoding: 'utf8' });
-    const outputs: unknown = ran.status === 0 ? JSON.parse(ran.stdout) : undefined;
     const reported = envelope(await fixture.teamai(['workflow', 'report', run, '--json', JSON.stringify({
-      attempt, revision, outcome: ran.status === 0 ? 'success' : 'failed', driver: payload.driver, ...(outputs === undefined ? {} : { outputs }),
+      attempt, revision, driver: payload.driver, ...commandLeaseReport({ code: ran.status, stdout: ran.stdout }),
     })]));
     if (reported.error) throw new Error(`report of ${lease.data.step} refused: ${JSON.stringify(reported)}`);
   }
@@ -258,11 +273,9 @@ for (const name of ['index', 'HEAD', ...(ref ? [ref[1]] : [])]) {
 setInterval(() => {}, 60_000);`,
   'corrupts-git-and-hangs': `fs.writeFileSync('.git/index', 'not an index');
 setInterval(() => {}, 60_000);`,
-  'fixes-behind-a-hanging-filter': `${FIX} fs.writeFileSync('.gitattributes', '* filter=hang\\n');
-fs.appendFileSync('.git/config', '[filter "hang"]\\n\\tclean = "echo $$ >> ' + filterPids + '; exec sleep 600"\\n');`,
+  'fixes-behind-a-hanging-filter': `${FIX} fs.writeFileSync('.gitattributes', '* filter=hangclean\\n');`,
   'fixes-behind-a-hanging-smudge': `${FIX} fs.mkdirSync('.git/info', { recursive: true });
-fs.writeFileSync('.git/info/attributes', 'test.js filter=hang\\n');
-fs.appendFileSync('.git/config', '[filter "hang"]\\n\\tsmudge = "echo $$ >> ' + filterPids + '; exec sleep 600"\\n');`,
+fs.writeFileSync('.git/info/attributes', 'test.js filter=hangsmudge\\n');`,
   'fixes-and-spends': `${FIX} if (path.basename(process.argv[1]) === 'claude') {
   for (const id of ['m1', 'm2']) {
     process.stdout.write(JSON.stringify({ type: 'stream_event', event: { type: 'message_start', message: { id, usage: { input_tokens: 40, output_tokens: 1 } } } }) + '\\n');
@@ -415,7 +428,7 @@ export async function benchmarkFixture(options: BenchmarkFixtureOptions): Promis
   fs.mkdirSync(path.join(hookHome, '.teamai', 'bin'), { recursive: true });
   fs.writeFileSync(path.join(hookHome, '.teamai', 'bin', 'teamai'), `#!/bin/sh\necho "$*" >> '${hookMarker}'\n`);
   fs.chmodSync(path.join(hookHome, '.teamai', 'bin', 'teamai'), 0o755);
-  // The check steps run `teamai benchmark check`, which resolves on PATH to the CLI under test.
+  // The host steps (plan, score, report) run `teamai`, which resolves on PATH to the CLI under test.
   fs.writeFileSync(path.join(bin, 'teamai'), `#!/bin/sh\nexec "${process.execPath}" "${CLI}" "$@"\n`, { mode: 0o755 });
   const firstLaunch: Record<FirstLaunch, string> = {
     'pulls-a-team-change': `if (first) {
@@ -432,7 +445,7 @@ export async function benchmarkFixture(options: BenchmarkFixtureOptions): Promis
   if (pulled.status !== 0) throw new Error('teamai pull failed: ' + pulled.stderr);
 }`,
     'kills-its-driver': `if (first) {
-  process.kill(process.ppid, 'SIGKILL');
+  if (process.ppid > 1) process.kill(process.ppid, 'SIGKILL');
   process.exit(0);
 }`,
   };
@@ -444,10 +457,10 @@ export async function benchmarkFixture(options: BenchmarkFixtureOptions): Promis
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
-${tool === 'claude' ? judgeMode(judgeLog, path.join(tmp, 'teamai-clones'), options.judge ?? 'first-label') : CODEX_VERSION}
+${tool === 'claude' ? judgeMode(judgeLog, path.join(tmp, 'teamai-clones'), options.judge ?? 'first-label') : ''}
+${tool === 'codex' ? CODEX_VERSION_ANSWER : ''}
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
 const first = !fs.existsSync(${JSON.stringify(toolLog)});
-const filterPids = ${JSON.stringify(filterPidLog)};
 const files = (dir) => fs.readdirSync(dir, { withFileTypes: true }).filter((entry) => !(dir === '.' && entry.name === '.git'))
   .flatMap((entry) => (entry.isDirectory() ? files(path.join(dir, entry.name)) : [path.join(dir, entry.name).split(path.sep).join('/')]));
 const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null);
@@ -482,7 +495,9 @@ process.stdout.write(JSON.stringify({ type: 'result', session_id: 'fake-session'
   fs.writeFileSync(path.join(home, '.gitconfig'), [
     '[user]', '\tname = member', '\temail = member@example.com',
     `[url "file://${teamOrigin}"]`, `\tinsteadOf = ${TEAM_URL}`,
-    `[url "file://${productOrigin}"]`, `\tinsteadOf = ${PRODUCT_URL}`, '',
+    `[url "file://${productOrigin}"]`, `\tinsteadOf = ${PRODUCT_URL}`,
+    '[filter "hangclean"]', `\tclean = "echo $$ >> ${filterPidLog}; exec sleep 600"`,
+    '[filter "hangsmudge"]', `\tsmudge = "echo $$ >> ${filterPidLog}; exec sleep 600"`, '',
   ].join('\n'));
 
   const env: NodeJS.ProcessEnv = {
@@ -523,7 +538,11 @@ process.stdout.write(JSON.stringify({ type: 'result', session_id: 'fake-session'
   const configPath = path.join(dataHome(), 'config.yaml');
   const config: unknown = YAML.parse(fs.readFileSync(configPath, 'utf8'));
   const parsed = z.object({ repo: z.object({ localPath: z.string() }).passthrough(), workflows: z.record(z.string(), z.unknown()).optional() }).passthrough().parse(config);
-  fs.writeFileSync(configPath, YAML.stringify({ ...parsed, workflows: { ...parsed.workflows, sandbox: options.sandbox, ...(options.maxParallel !== undefined ? { max_parallel: options.maxParallel } : {}) } }));
+  // init --agent claude names the member's AI tool too, which the driver offers without looking it up: a member whose
+  // machine has no claude names none.
+  const { ai: _named, ...member } = parsed;
+  const kept = (options.tools ?? ['claude']).includes('claude') ? parsed : member;
+  fs.writeFileSync(configPath, YAML.stringify({ ...kept, workflows: { ...parsed.workflows, sandbox: options.sandbox, ...(options.maxParallel !== undefined ? { max_parallel: options.maxParallel } : {}) } }));
 
   return {
     root, home, work, bin, env, teamOrigin, productOrigin, tmp, teamClone: parsed.repo.localPath, startingCommit, teamai, dataHome,
@@ -576,9 +595,9 @@ process.stdout.write(JSON.stringify({ type: 'result', session_id: 'fake-session'
   };
 }
 
-/** The start of the fake `codex`: its version, as Codex prints it, which is no launch and logs nothing. */
-const CODEX_VERSION = `if (process.argv.includes('--version')) {
-  console.log('codex-cli 0.163.0');
+/** The start of the fake `codex`: its version, as codex-cli 0.167.0 prints it, which teamai reads before a launch. */
+const CODEX_VERSION_ANSWER = `if (process.argv.includes('--version')) {
+  console.log('codex-cli 0.167.0');
   process.exit(0);
 }`;
 
@@ -733,7 +752,7 @@ export function fixRecord(run: string, { startedAt, username, result = 'passed',
 }
 
 /**
- * What `teamai benchmark check --trial` outputs as check step `checkStep` of run `runId` made in process, once its check
+ * What teamai decides a trial's check step outputs, as check step `checkStep` of run `runId` made in process, once its check
  * said `result`: for a check that ran, the version of the trial's correctness label it stored, decided by the check.
  */
 export async function trialCheckOutput(config: LocalConfig, runId: string, { checkStep, result }: { checkStep: string; result: 'passed' | 'failed' | 'could_not_run' }): Promise<Record<string, string>> {
@@ -760,7 +779,7 @@ export async function trialCheckOutput(config: LocalConfig, runId: string, { che
 const BaselineLeaseSchema = z.object({ data: z.object({ lease: z.object({ step: z.string().startsWith('trials.baselines.'), attempt: z.string(), revision: z.number() }) }) });
 
 /**
- * Settles each baseline of a run made in process as `teamai benchmark check --baseline` settles one: by its task in
+ * Settles each baseline of a run made in process as teamai decides one from its check's exit code: by its task in
  * `baselines`, with the result it outputs, and `failed` by default, as a check that fails on its starting commit, so
  * that task's trials run.
  */

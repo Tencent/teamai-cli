@@ -2,9 +2,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
-import { homeVariables, isToolId, TOOLS, type HomeMove, type ToolDescriptor, type ToolId } from './tools.js';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
+import { type ToolId, type ShippedDescriptor } from './tools.js';
+import { type HomeMove } from '@teamai/tool-core/definition';
+import type { ToolInstanceHome } from '@teamai/tool-core/instance';
+import { homeVariables, descriptorOf, TOOL_ORDER, toolInstancesFor, toolOf } from './tool-registry.js';
+import { RELOCATABLE_TOOLS } from './types.js';
 import { pathExists, readFileSafe, readJsonObject, writeJsonAtomic, type JsonObjectRead } from './utils/fs.js';
-import { getUserHome, normalizeHomePath, usesInstallHome } from './utils/home.js';
+import { getUserHome, normalizeHomePath, usesInstallHome } from '@teamai/shared/home';
 
 export type Host = {
   readonly platform: NodeJS.Platform;
@@ -33,9 +38,26 @@ export type Host = {
   userToolRoots(): Promise<Readonly<Record<string, string>> | undefined>;
 };
 
+/**
+ * Every variable that moves a tool's home: a shipped tool's (`homeVariables`, its `Home.rootVariable` and the roots
+ * `RELOCATABLE_TOOLS` records) and each declared instance's own (`home.env`), a refused one's too: a child with another `HOME` cannot judge the refusal again, so the variable must not reach it. `teamai/tool-home-env` keeps a copy of
+ * the shipped ones, pinned to this.
+ */
+export function toolHomeVariableNames(): ReadonlySet<string> {
+  return new Set([
+    ...TOOL_ORDER.flatMap((tool) => {
+      const { home }: ShippedDescriptor = descriptorOf(tool);
+
+      return home.rootVariable === undefined ? homeVariables(tool) : [...homeVariables(tool), home.rootVariable];
+    }),
+    ...Object.values(RELOCATABLE_TOOLS).map(({ envVar }) => envVar),
+    ...toolInstancesFor('guard').flatMap(({ home }) => home?.env ?? []),
+  ]);
+}
+
 /** `env` without any variable that moves a tool's home: under an install's home, each tool's home is the install's. */
 function withoutToolHomeVariables(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const names = new Set(Object.keys(TOOLS).filter(isToolId).flatMap(homeVariables));
+  const names = toolHomeVariableNames();
 
   return Object.fromEntries(Object.entries(env).filter(([name]) => !names.has(name)));
 }
@@ -57,13 +79,28 @@ export function realHost(overrides: Partial<Pick<Host, 'env' | 'home'>> = {}): H
     existsNow: (file) => fs.existsSync(file),
     readTextNow: (file) => {
       try {
-        return fs.readFileSync(file, 'utf8');
+        // A tool home is where a step's tool writes, so a FIFO may be left there.
+        return readRegularFileSync(file, 'utf8');
       } catch {
         return null;
       }
     },
     userToolRoots: async () => (await (await import('./config.js')).loadLocalConfig())?.toolRoots,
   };
+}
+
+/**
+ * The one variable that moves `tool`'s whole home, its session store included: the variable `teamai init` records a
+ * relocated root under (Claude Code's `CLAUDE_CONFIG_DIR`, Codex's `CODEX_HOME`), else the tool's own `env` move.
+ * Undefined when no single variable does. A step runtime sets it to the attempt's tool home.
+ */
+export function homeEnvOf(tool: ToolId): string | undefined {
+  const recorded = Object.hasOwn(RELOCATABLE_TOOLS, tool) ? RELOCATABLE_TOOLS[tool]?.envVar : undefined;
+
+  if (recorded) return recorded;
+  const { home }: ShippedDescriptor = descriptorOf(tool);
+
+  return home.moves?.by.find((move) => move.kind === 'env')?.name;
 }
 
 /**
@@ -76,14 +113,14 @@ export type EnvToolHome = { readonly dir: string; readonly variable: string; rea
 
 /**
  * Where the host env moves `tool`'s home (the first of
- * `TOOLS[tool].home.moves` that applies), or null when none does. Blank
+ * `descriptorOf(tool).home.moves` that applies), or null when none does. Blank
  * values count as unset. A tool's own variable resolves as the tool resolves
  * it: `~` expanded, a relative value against the session's directory.
  * `XDG_CONFIG_HOME` and `LOCALAPPDATA` count only when absolute, as the XDG
  * spec has it. An explicit default profile moves the home to the default one.
  */
 export function envToolHome(tool: ToolId, host: Host = realHost()): EnvToolHome | null {
-  const { home } = TOOLS[tool];
+  const { home } = descriptorOf(tool);
 
   if (!('moves' in home)) return null;
 
@@ -246,6 +283,61 @@ export function toolHome(tool: ToolId, host: Host = realHost()): string {
   return movedToolHome(tool, host) ?? defaultToolHome(tool, host);
 }
 
+/** Variables that move every XDG tool's home at once, so a member's value of one is never one instance's home. */
+const SHARED_HOME_VARIABLES: ReadonlySet<string> = new Set(['XDG_CONFIG_HOME', 'XDG_DATA_HOME']);
+
+/**
+ * Where an instance's own variable moves its home on `host`, read as a shipped tool's own variable is (`envToolHome`);
+ * null when it names none, or it is unset or blank. An XDG base directory is set for every tool, so its value never
+ * moves one instance's home.
+ */
+export function envInstanceHome(home: ToolInstanceHome, host: Host = realHost()): EnvToolHome | null {
+  const value = home.env === undefined || SHARED_HOME_VARIABLES.has(home.env) ? undefined : host.env[home.env]?.trim();
+
+  return home.env !== undefined && value ? { dir: absoluteOn(value, host), variable: home.env, kind: 'own' } : null;
+}
+
+/**
+ * Where the instance `name`'s own home sits on `host`: for one its variable moves, the recorded home, else the
+ * variable's (`envInstanceHome`), as `movedToolHome` reads a shipped tool's; else its directory under `$HOME`. Delivery
+ * and its sessions both read it, so the two never part.
+ */
+export function instanceHomeDir({ name, home }: { readonly name: string; readonly home: ToolInstanceHome }, host: Host = realHost()): string {
+  const moved = home.env === undefined ? undefined : recordedHomes(host)[name] ?? envInstanceHome(home, host)?.dir;
+
+  return moved ?? host.path.join(host.home, ...home.dir.split('/'));
+}
+
+/**
+ * Where the instance `name`'s home sits once `teamai init` has read `host`'s env: init records the instance's own
+ * variable over any record, and a blank one clears it (`INIT_RECORDS.own` in tool-home-record.ts); it never records
+ * your home directory itself. Else `instanceHomeDir`.
+ */
+export function instanceHomeAfterInit({ name, home }: { readonly name: string; readonly home: ToolInstanceHome }, host: Host = realHost()): string {
+  const unmoved = host.path.join(host.home, ...home.dir.split('/'));
+
+  if (home.env !== undefined && host.env[home.env]?.trim() === '') return unmoved;
+  const moved = envInstanceHome(home, host)?.dir;
+
+  return moved !== undefined && !isSameDirOn(host, moved, host.home) ? moved : instanceHomeDir({ name, home }, host);
+}
+
+/**
+ * The home of the tool `name` runs as on `host`, and the `$HOME`-relative directory it replaces: a shipped tool's
+ * (`toolHome`), an instance's own (`instanceHomeDir`), or for an instance that sets no home the home of the tool it
+ * extends. Undefined for a custom tool id.
+ */
+export function toolHomeOf(name: string, host: Host = realHost()): { readonly root: string; readonly dir: string } | undefined {
+  const resolved = toolOf(name);
+
+  if (resolved === undefined) return undefined;
+  const home = resolved.instance?.home;
+
+  if (home !== undefined) return { root: home.dir, dir: instanceHomeDir({ name, home }, host) };
+
+  return { root: homeRoot(resolved.base), dir: toolHome(resolved.base, host) };
+}
+
 /** The recorded home, else the env's, or null when nothing moves `tool`'s home. */
 export function movedToolHome(tool: ToolId, host: Host = realHost()): string | null {
   const moved = recordedHomes(host)[tool] ?? envToolHome(tool, host)?.dir ?? null;
@@ -258,7 +350,7 @@ export function movedToolHome(tool: ToolId, host: Host = realHost()): string | n
 }
 
 function followsActiveProfile(tool: ToolId): boolean {
-  const { home }: ToolDescriptor = TOOLS[tool];
+  const { home }: ShippedDescriptor = descriptorOf(tool);
 
   return home.moves?.by.some((move) => move.kind === 'hermes-home') ?? false;
 }
@@ -341,9 +433,17 @@ export function defaultToolHome(tool: ToolId, host: Pick<Host, 'home' | 'path'>)
 
 /** The `$HOME`-relative directory a home move replaces: `moves.root`, else `home.dir`. */
 export function homeRoot(tool: ToolId): string {
-  const { home } = TOOLS[tool];
+  const { home } = descriptorOf(tool);
 
   return 'moves' in home && 'root' in home.moves ? home.moves.root : home.dir;
+}
+
+/** Whether `one` and `other` name one directory on `host`. */
+export function isSameDirOn(host: Pick<Host, 'platform' | 'path'>, one: string, other: string): boolean {
+  // macOS's default volume ignores letter case, and so does Windows: `.Claude` is Claude Code's `.claude` there.
+  const folded = (dir: string): string => host.platform === 'darwin' || host.platform === 'win32' ? dir.toLowerCase() : dir;
+
+  return host.path.relative(folded(one), folded(other)) === '';
 }
 
 /** `value`, `~` expanded, as an absolute path: a relative one resolves against the session's directory. */
@@ -386,7 +486,7 @@ export function reloadToolHomesHistory(): ToolHomesHistory {
   let raw: string;
 
   try {
-    raw = fs.readFileSync(toolHomesHistoryPath(), 'utf8');
+    raw = readRegularFileSync(toolHomesHistoryPath(), 'utf8');
   } catch (e) {
     if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return {};
 
@@ -448,11 +548,12 @@ export function reloadToolHomes(): ToolHomesRead {
   return read;
 }
 
-function parseToolHomes(file: string): ToolHomesRead {
+/** The tool-homes record at `file`, as `reloadToolHomes` reads this machine's: the verify harness reads a world's with it. */
+export function parseToolHomes(file: string): ToolHomesRead {
   let raw: string;
 
   try {
-    raw = fs.readFileSync(file, 'utf8');
+    raw = readRegularFileSync(file, 'utf8');
   } catch (e) {
     if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return { kind: 'missing' };
 

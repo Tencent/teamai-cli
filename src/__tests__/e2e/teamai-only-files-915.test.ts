@@ -16,7 +16,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { installFakeCodex } from '../helpers/fake-codex.js';
+import { installFakeCodex } from '@teamai/tool-codex/testing';
+import { installFakeOpencode } from '@teamai/tool-opencode/testing';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -33,6 +34,8 @@ interface Run { code: number | null; output: string }
 
 let sandbox: string;
 let fakeCodexDir: string;
+// Each machine meets the OpenCode its case names, never the one installed here.
+const fakeOpencodeDirs = { V1: '', V2: '' };
 
 function writeFile(file: string, content: string): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -77,6 +80,8 @@ interface MachineOptions {
   homeDirs?: string[];
   /** Directories under the project that make a project-scoped tool look installed. */
   projectDirs?: string[];
+  /** The OpenCode major `opencode --version` reports; V2 unless the case is about V1. */
+  opencode?: keyof typeof fakeOpencodeDirs;
 }
 
 function machine(base: string, opts: MachineOptions): Machine {
@@ -93,7 +98,7 @@ function machine(base: string, opts: MachineOptions): Machine {
     XDG_CONFIG_HOME: path.join(home, '.config'),
     GIT_CONFIG_NOSYSTEM: '1',
     CODEX_HOME: path.join(home, '.codex'),
-    PATH: `${fakeCodexDir}${path.delimiter}${process.env.PATH ?? ''}`,
+    PATH: [fakeCodexDir, fakeOpencodeDirs[opts.opencode ?? 'V2'], process.env.PATH ?? ''].join(path.delimiter),
     FORCE_COLOR: '0',
   };
   delete env.CLAUDE_CONFIG_DIR;
@@ -173,11 +178,14 @@ beforeAll(() => {
   if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
   sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-only-e2e-')));
   fakeCodexDir = installFakeCodex({ version: '9999.0.0' });
+  fakeOpencodeDirs.V1 = installFakeOpencode({ version: '1.18.35' });
+  fakeOpencodeDirs.V2 = installFakeOpencode();
 });
 
 afterAll(() => {
   if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
   if (fakeCodexDir) fs.rmSync(fakeCodexDir, { recursive: true, force: true });
+  for (const dir of Object.values(fakeOpencodeDirs)) if (dir) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 describe('a teamai-only MCP config', () => {
@@ -215,16 +223,18 @@ function addMemberServer(file: string, teamServer = 'plain-api'): void {
   writeJson(file, data);
 }
 
+// OpenCode V1 reads the project's servers from opencode.json; V2 gets them from
+// teamai's own .opencode/teamai-mcp.json, which holds no member server.
 describe.each([
-  ['copilot', '.github/mcp.json', []],
-  ['codex', '.codex/config.toml', []],
-  ['kiro', '.kiro/settings/mcp.json', ['.kiro']],
-  ['omp', '.omp/mcp.json', ['.omp']],
-  ['pi', '.pi/mcp.json', ['.pi']],
-  ['opencode', 'opencode.json', ['.config/opencode']],
-])('%s: the teamai-only %s', (agent, rel, homeDirs) => {
+  ['copilot', '.github/mcp.json', [], undefined],
+  ['codex', '.codex/config.toml', [], undefined],
+  ['kiro', '.kiro/settings/mcp.json', ['.kiro'], undefined],
+  ['omp', '.omp/mcp.json', ['.omp'], undefined],
+  ['pi', '.pi/mcp.json', ['.pi'], undefined],
+  ['opencode', 'opencode.json', ['.config/opencode'], 'V1'],
+] as const)('%s: the teamai-only %s', (agent, rel, homeDirs, opencode) => {
   it('is listed, and leaves the block with a notice once the member adds a server', () => {
-    const m = machine(`mcp-${agent}`, { agents: agent, homeDirs, files: { 'mcp/mcp.yaml': mcpYaml(['plain-api', 'https://api.example.com/mcp']) } });
+    const m = machine(`mcp-${agent}`, { agents: agent, homeDirs: [...homeDirs], opencode, files: { 'mcp/mcp.yaml': mcpYaml(['plain-api', 'https://api.example.com/mcp']) } });
     const file = path.join(m.dir, rel);
     expect(read(file)).toContain('plain-api');
     expect(m.deliveredLines()).toContain(`/${rel}`);
@@ -525,6 +535,7 @@ describe('a teamai-only .opencode/opencode.json (OpenCode V1)', () => {
   it('is listed while its instructions are only teamai\'s, and leaves the block once the member adds one', () => {
     const m = machine('opencode-instructions', {
       agents: 'opencode',
+      opencode: 'V1',
       homeDirs: ['.config/opencode'],
       files: { 'rules/team-style.md': '# Team style\n\nUse tabs.\n' },
     });

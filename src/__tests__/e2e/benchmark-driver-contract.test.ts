@@ -1,9 +1,9 @@
 /**
  * Real CLI: the benchmark workflow driven from outside, as a driver that knows only the CLI JSON protocol runs it. The
  * driver starts `benchmark`, asks `workflow next --prepare`, runs each command lease (the plan, the baselines, the
- * checks and the report) and its setup in the lease's cwd with the attempt marker every driver sets, and launches each
- * prompt lease's tool there with the lease's model and limits. Every process it starts goes without the names the lease
- * withholds.
+ * checks and the report) and its setup in the lease's cwd with the attempt marker every driver sets, and reports its
+ * exit code, and launches each prompt lease's tool there with the lease's model and limits. Every process it starts goes
+ * without the names the lease withholds.
  */
 import { execFile, execFileSync } from 'node:child_process';
 import path from 'node:path';
@@ -117,7 +117,9 @@ async function drive(fixture: BenchmarkFixture, input: { run: string; can: Recor
     if (setup && setup.code !== 0) settled = { outcome: 'failed' };
     else if (lease.command !== undefined) {
       const ran = await spawned('/bin/sh', ['-c', lease.command], { cwd, env });
-      settled = ran.code === 0 ? { outcome: 'success', ...(lease.output !== undefined ? { outputs: JSON.parse(ran.stdout) } : {}) } : { outcome: 'failed' };
+      // A check prints no outputs: teamai decides them from its exit code.
+      const outputs = ran.code === 0 && ran.stdout.trim().startsWith('{') ? { outputs: JSON.parse(ran.stdout) } : {};
+      settled = { outcome: ran.code === 0 ? 'success' : 'failed', exitCode: ran.code, ...outputs };
     } else {
       const tool = lease.tool === undefined ? undefined : tools[lease.tool];
       if (tool === undefined || lease.prompt === undefined) throw new Error(`leased a prompt this driver cannot launch: ${JSON.stringify(lease)}`);

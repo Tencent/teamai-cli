@@ -8,13 +8,13 @@ import YAML from 'yaml';
 // switches the install's kind must not hand the old install's learnings to the
 // new one's repository.
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));
 
 const { listPendingForInstall, queueLockPath, savePendingLearning, setAsideQueueOnModeSwitch } = await import('../utils/pending-learnings.js');
 const { acquireLock, releaseLock } = await import('../update.js');
-const { log } = await import('../utils/logger.js');
+const { log } = await import('@teamai/shared/log');
 
 const noSave = async (): Promise<void> => {};
 function switched(result: Awaited<ReturnType<typeof setAsideQueueOnModeSwitch>>): { aside: string | null } {

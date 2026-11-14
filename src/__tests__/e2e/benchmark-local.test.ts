@@ -166,6 +166,23 @@ describe('benchmark on the local driver', () => {
     expect(fixture.status()).toBe(before);
   }, 120_000);
 
+  it('a run whose every trial ended in an error names each, and exits 1 at its results gate', async () => {
+    const fixture = await benchmarkFixture({ tool: 'fails-first', sandbox: true });
+    fixtures.push(fixture);
+
+    const ran = await fixture.teamai(['benchmark', 'run', 'fix']);
+    const done = DoneSchema.parse(envelope(ran).data?.done);
+    const finallySteps = z.array(z.object({ id: z.string(), failure: z.object({ message: z.string() }).partial().optional() }).passthrough()).optional().parse(done.finally);
+    const [trial] = z.array(z.object({ result: z.string() }).passthrough()).parse(RecordSchema.parse(fixture.benchmarkRecord(done.run)).trials);
+
+    expect(ran.code, said(ran)).toBe(1);
+    expect(done.outcome).toBe('succeeded');
+    expect(trial?.result).toBe('error');
+    expect(done.outputs.text).toContain('No trial produced a result, so the run measured nothing. These trials ended with an error:\n  Trial 1/1 fix claude: ');
+    expect(done.outputs.text).toContain('Fix the cause named, then run teamai benchmark run fix again.');
+    expect(finallySteps).toEqual([expect.objectContaining({ id: 'results', failure: expect.objectContaining({ message: expect.stringContaining('Trial 1/1 fix claude: ') }) })]);
+  }, 120_000);
+
   it('estimates a second run from the first before it starts, and shows the estimate beside the cost at the end', async () => {
     const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true });
     fixtures.push(fixture);

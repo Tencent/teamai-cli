@@ -9,7 +9,7 @@
  */
 
 import { AgentSession } from './agent-session.js';
-import type { Session } from './ir.js';
+import type { Session } from '@teamai/tool-core/sessions/ir';
 
 // ---------------------------------------------------------------------------
 // Data structures

@@ -1,6 +1,6 @@
 import { loadRepoList } from './repo-list/store.js';
 import { isOrgEntry, type RepoListEntry } from './repo-list/schema.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { ImportItem, ImportSettings } from './import-from-repo.js';
 import type { ShortcutEnd } from './workflow-commands.js';
 

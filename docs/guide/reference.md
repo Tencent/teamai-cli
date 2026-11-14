@@ -189,6 +189,8 @@ teamai's own AI calls (enrich, codebase, import, promote) run on the first insta
 2. `ai.tool` in the config of the workspace or self install the command runs in, `~/.teamai/projects/<slug>/config.yaml`.
 3. `ai.tool` in `~/.teamai/config.yaml`, for this machine. A command outside any install reads only this one.
 
+`teamai init --agent <tool>` sets `ai.tool` in the install's config to the first tool it names that teamai launches, unless that config or `~/.teamai/config.yaml` already names one.
+
 `~/.teamai/config.yaml` can hold only this setting on a machine with no user-scope install:
 
 ```yaml
@@ -217,7 +219,7 @@ CURSOR_DATA_DIR=~/.cursor-data teamai init
 CURSOR_CONFIG_DIR=~/.cursor-config teamai init
 ```
 
-The directory has to sit in your home or under `~/.config/`. Copilot uses its own `COPILOT_HOME`.
+teamai syncs to the directory when it sits in your home or under `~/.config/`. A directory outside your home is recorded too, but only for the tool's sessions: teamai reads the sessions there and keeps syncing the tool's other files to its default root, and `init` and `teamai doctor` say so. When the config already records a root in your home for the tool, `init` keeps it and says how to switch. Copilot uses its own `COPILOT_HOME`. A workflow step on Claude Code or Codex starts it with its variable set to the directory teamai syncs to, even from a shell without that variable or one that names another directory. While the recorded directory is gone, pull skips the tool, a workflow step does not start it, and `teamai doctor` reports `Claude Code root exists` or `Codex root exists`.
 
 Cursor CLI moves two directories: `CURSOR_DATA_DIR` holds the transcripts, `CURSOR_CONFIG_DIR` the `cli-config.json` the co-author setting goes into. Its user `mcp.json`, `rules/` and `commands/` stay in `~/.cursor` whatever the two variables say, so those keep their default paths. With `CURSOR_CONFIG_DIR` unset the config root is `$XDG_CONFIG_HOME/cursor` when that variable is set, `~/.cursor` otherwise.
 
@@ -225,7 +227,7 @@ Cursor CLI moves two directories: `CURSOR_DATA_DIR` holds the transcripts, `CURS
 
 Some tools move their home with a variable: `XDG_CONFIG_HOME` (OpenCode, Muse), `OPENCODE_CONFIG_DIR`, `HERMES_HOME`, `HERMES_DATA_DIR_SUFFIX`, `PI_CODING_AGENT_DIR` (Pi), `OMP_PROFILE`, `PI_PROFILE` and `PI_CONFIG_DIR` (Oh My Pi), `CODEBUDDY_CONFIG_DIR`, `COPILOT_HOME`, `DSH_HOME`, `JOYCODE_HOME`, `OPENCLAW_STATE_DIR`, `OPENCLAW_HOME` and `OPENCLAW_PROFILE`. Hermes also moves to the profile its `active_profile` file names. teamai reads that file on every run, inside the recorded or moved Hermes home, and never records the profile, so `hermes profile use` takes effect at the next pull. Oh My Pi also reads `PI_CODING_AGENT_DIR`, but teamai keeps Oh My Pi's files out of it, because that directory is Pi's. `pull` and `teamai hooks remove` change only the active Hermes or Oh My Pi profile, since profiles run side by side. `teamai uninstall` removes teamai's Hermes hook script, instructions plugin, their `config.yaml` entries and approval, and SOUL.md block, and its Oh My Pi extension, from the default home, the recorded or moved home, and every profile under them. On Windows, Hermes lives in `%LOCALAPPDATA%\hermes`. A relative value of a tool's own variable resolves against the directory you run teamai from, as the tool resolves it; a relative `XDG_CONFIG_HOME` or `%LOCALAPPDATA%` is ignored. teamai syncs to the moved home. `teamai skill list`, `teamai skill show` and `teamai list skills --source local` read the skills there, and `teamai doctor` checks that the tool is installed there. With `XDG_CONFIG_HOME=/x`, OpenCode's skills, agents, rules at `/x/opencode/rules`, instruction blocks at `/x/opencode/teamai-context.md`, hook plugin, and the `opencode.json` that MCP and `teamai models switch` write go to `/x/opencode`. Muse's skills, agents, MCP config, model settings and hooks go to `/x/muse`, and its user rules and instruction blocks are `/x/muse/AGENTS.md`. With `PI_CODING_AGENT_DIR=/x`, Pi's skills, MCP config, `models.json` and extension go to `/x`, and its user rules and instruction blocks are `/x/AGENTS.md`. With `CODEBUDDY_CONFIG_DIR=/x`, CodeBuddy's skills, rules, agents, hooks, `CODEBUDDY.md` and MCP files go to `/x`, `.codebuddy.json` included. Earlier releases wrote the hooks of these four tools under the default home. `pull`, `teamai hooks remove` and `teamai uninstall` remove that copy: OpenCode 1.x also loads the plugins there, and a team hook left there could no longer be named for removal. [Tool support](tool-support.md) lists each tool's home, the variables that move it, and where teamai writes each resource.
 
-The first `pull` that sees the variable records the home for the whole machine in `~/.teamai/tool-homes.json` when the directory exists, and never replaces a record. `teamai init` records it too and replaces an earlier record: for a tool's own variable (`HERMES_HOME`, `OPENCLAW_PROFILE`, ...) even before the directory exists, for `XDG_CONFIG_HOME` only once it does. Hermes' Windows default only fills a missing record. So run `init` from a shell your tools run in. After that, a pull from a shell without the variable still syncs there, in every scope. To move the home, run `teamai init` with the new value. To clear the record, run it with the variable set but blank. `teamai doctor` reports `<tool> home exists` when the recorded directory is gone, and `<tool> home matches <variable>` when the shell names another directory.
+The first `pull` that sees the variable records the home for the whole machine in `~/.teamai/tool-homes.json` when the directory exists, and never replaces a record. `teamai init` records it too and replaces an earlier record: for a tool's own variable (`HERMES_HOME`, `OPENCLAW_PROFILE`, ...) even before the directory exists, for `XDG_CONFIG_HOME` only once it does. Hermes' Windows default only fills a missing record. So run `init` from a shell your tools run in. After that, a pull from a shell without the variable still syncs there, in every scope, and a workflow step on one of the tools [Tool support](tool-support.md#workflow-steps-at-a-moved-home) lists starts it with its variable set to that home. To move the home, run `teamai init` with the new value. To clear the record, run it with the variable set but blank. `teamai doctor` reports `<tool> home exists` when the recorded directory is gone, and `<tool> home matches <variable>` when the shell names another directory.
 
 When a tool's skills directory, agents directory, rules directory, or instruction-block file moves, teamai's copies at the old place stay. Another shell, another project or another tool may still read that place, and teamai cannot tell. `places` records the agents directory, the rules directory, and the instruction-block file. The first pull that delivers them to the new place names the old one, and teamai no longer updates the copies there. Delete them once no tool reads that place.
 
@@ -247,6 +249,84 @@ teamai webhook list
 teamai webhook test
 teamai webhook test --dry-run
 ```
+
+### Team tools (`tools/`)
+
+A team on an internal build or a fork of a supported tool adds it as an instance of the shipped tool, with no release. An instance sets another command, home and paths. It keeps the tool's launch flags and session, token, hook and MCP formats. An instance extends Claude Code (`claude`) or Codex (`codex`); teamai refuses one that extends any other tool, naming the file, until it supports that tool ([tool support](./tool-support.md#tool-instances)). An instance with a home of its own keeps sessions of its own; one that keeps the tool's home writes that tool's sessions and receives its files where that tool does, in the root `init` recorded for it (`toolRoots`) too.
+
+```yaml
+# tools/acme-claude.yaml in the team repo
+schemaVersion: v1alpha1
+name: acme-claude                  # the file's name
+extends: claude                    # the shipped tool it is an instance of
+command: acme-claude               # the name of an executable on PATH, never a path
+home: { dir: .acme-claude, env: ACME_CLAUDE_CONFIG_DIR }
+# paths: { skills: .acme-claude/skills }   # optional; without it, claude's paths under .acme-claude/, in a project too because it sets command
+```
+
+A member enables it like any tool:
+
+```bash
+teamai init --agent claude,acme-claude
+teamai pull                                        # skills, rules, hooks and MCP go to .acme-claude/
+teamai workflow start review --tools default=acme-claude
+teamai score --session <id> --source acme-claude --scorer review-quality
+```
+
+The step runs `acme-claude`, and its session is read from `$ACME_CLAUDE_CONFIG_DIR/projects/`, else `~/.acme-claude/projects/`, and a user-scope pull writes to that same home. teamai records a home an instance's `env` moves as it records a tool's own variable ([recorded tool homes](#recorded-tool-homes-teamaitool-homesjson)), so a pull or `uninstall` from a shell without the variable still uses it, and teamai starts the instance's command with the variable set to that home. When `init` moves or clears that record, it removes teamai's hooks from the previous home and names the skills, rules and MCP servers it leaves there. It is recorded, resumed and scored as `acme-claude`'s, never as Claude's. In a project, Claude Code and Codex read the team hooks from the main checkout in every linked worktree, but an instance keeps them in its own home for each checkout a pull ran in, so run `teamai pull` once in a linked worktree before you use the instance's team hooks there.
+
+teamai ignores your value of `env` when it is `XDG_CONFIG_HOME` or `XDG_DATA_HOME`. That value belongs to every tool that reads it, so the instance's home is then `~/<dir>`.
+
+**Accepting the command.** An instance that sets `command` runs a program a teammate named. Its first run asks in a terminal:
+
+```text
+Tool "acme-claude" comes from the team repo (…/tools/acme-claude.yaml, content 3f9a1c0e7b2d), which you have not accepted on this machine. It runs acme-claude as you, with your files, in place of claude. Review the file before you accept it.
+Run it? [y/N]
+```
+
+The line you type answers this question alone. An approval or choice that waits at the same terminal is asked again once you answer. `teamai workflow cancel` ends the question unanswered, and the command does not run. Ctrl-C stops the run without answering, and `teamai workflow resume` asks again.
+
+An unattended run (`TEAMAI_MODE=unattended`, CI, no terminal) refuses it with `tool_not_accepted` until someone accepts it once in a terminal. A Codex instance's command is also what trusts its hooks, so `teamai pull` in a terminal asks the same question when it needs the command for that; an unattended pull, or an answer of no, leaves those hooks untrusted and says so. The answer is kept in `~/.teamai/trust/tools.json` for that file's content: a commit that leaves the file as it is asks nothing, and an edit asks again. An instance with only `home` or `paths` runs the shipped command and needs no acceptance. An instance with `home` and no `command` moves only its user home: in a project it gets the paths of the tool it extends, `.claude/` or `.codex/`, where the shipped command reads them, and when that tool is enabled too both read one copy, which `teamai uninstall --agent` of either leaves for the other. An instance with `command` gets those paths under its home in a project too, since its own build may read its own folder there. `paths` replaces both. With a `home`, the command runs with the tool's home variable (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) set to that home, so it reads what teamai delivers there, unless the instance has a `command` and its `paths` put files outside that home. One with no `command` whose user-scope `paths` leave its home is refused, since the shipped command would read none of those files: leave `home` out, or point those `paths` inside it; `env` names a variable of the instance's own, which teamai sets to the same home, and teamai refuses that tool's home variable there. teamai also refuses an instance whose home is another tool's, a shipped tool's or another instance's, whether `home.dir` names it or the instance's variable or `toolRoots` makes it resolve there, since two tools on one home write over each other's files, and one whose variable names your home directory itself. To end either refusal, point the variable at a directory of its own and re-run `teamai init`, which takes the refused instance in `--agent` and replaces the record; a pull keeps the home it recorded. teamai reads, exports and imports an instance's sessions with its command too once it is accepted, and with the shipped command until then.
+
+**Adjusting a shipped tool.** An instance named like a shipped tool adjusts it. Its `paths` replace that tool's paths whole, as a `toolPaths` entry does, and win over one. It sets only `paths`: teamai refuses one that sets `command` or `home`, which belong to an instance with a name of its own, such as `name: acme-codex` with `extends: codex`. Only Claude Code and Codex are adjusted this way; for any other tool teamai refuses `tools/<tool>.yaml`, and a `toolPaths.<tool>` entry in `teamai.yaml` moves its paths instead:
+
+```yaml
+# tools/claude.yaml
+schemaVersion: v1alpha1
+name: claude
+extends: claude
+paths: { skills: .claude/team-skills, rules: .claude/rules }
+```
+
+`teamai doctor` names each key such `paths` drop: ``paths in tools/claude.yaml replaces claude's default entry whole and drops keys the default provides: `settings` (.claude/settings.json — hook reconciliation silently skips the tool), …``.
+
+**Your own build.** `~/.teamai/tools/<name>.yaml` holds your own instances. teamai reads that directory and never writes it. One there replaces the team's of the same name for you, needs no acceptance, and is ignored by `workflow resume --next`, which runs a teammate's run on the team's tools.
+
+Its `command` is a bare name on PATH too. To run a build you compiled, put its directory on PATH and name the executable:
+
+```yaml
+# ~/.teamai/tools/acme-claude.yaml
+schemaVersion: v1alpha1
+name: acme-claude
+extends: claude
+command: acme-claude-dev           # found in ~/src/acme-claude/bin; ~/src/acme-claude/bin/acme-claude-dev is refused
+home: { dir: .acme-claude, env: ACME_CLAUDE_CONFIG_DIR }
+```
+
+```bash
+export PATH="$HOME/src/acme-claude/bin:$PATH"     # in ~/.zshrc or ~/.bashrc
+teamai workflow start review --tools default=acme-claude
+```
+
+**Where instances come from.** `tools/<name>.yaml`, or a folder `tools/<name>/` holding `TOOL.yaml` with the same content, whose acceptance moving the file there keeps; and `tools/<namespace>/<name>.yaml` for each namespace your roles or projects activate for workflows, which replaces the root one. Two active namespaces that define one name, or two team repos of one scope that define it differently, are a conflict: teamai uses neither and says so. A workspace's instance replaces the user scope's of the same name, as its driver definitions do. A file is refused, naming the problem, when it sets anything but `command`, `home` and `paths`, or when `command` is a path such as `./scripts/acme-claude`, or holds `:`, `*` or `?`: the program at a path can change without the file changing, so acceptance would not cover it. teamai looks `command` up in the PATH directories alone, on Windows too, not in the checkout, so a file of that name in the checkout does not run in its place unless the member's PATH holds `.` or an empty entry.
+
+```text
+Tool instance …/tools/acme-claude.yaml is not valid: it sets sessions, and an instance sets only command, home and paths. …
+Tool instance …/tools/acme-claude.yaml is not valid: command: command is the name of one executable on PATH, with no path, spaces or arguments, such as acme-claude. …
+Tool instance …/tools/acme-kiro.yaml is not valid: extends: an instance extends claude or codex; teamai does not support an instance of kiro or any other tool yet. …
+```
+
+An instance gets teamai's own agents, such as `teamai-recall`, and the team's `agents/` in the format of the tool it extends, with that tool's model aliases and `tool_extras`, and `teamai push` takes an edit to its copy. In a project, an instance with no `command` reads that tool's agent files, which are rendered as that tool's, after its `teamai models switch` too. An agent whose `targets` names that tool reaches its instances too; name the instance to reach it alone. The [tool support](./tool-support.md) page lists the tools an instance extends, never the instances themselves.
 
 ---
 

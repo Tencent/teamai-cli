@@ -1,0 +1,10 @@
+{
+  "name": "@teamai/tool-pi",
+  "private": true,
+  "type": "module",
+  "description": "Pi Coding Agent and its fork omp: their descriptors, launch profiles, session platforms and token format; bundled into teamai-cli.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./facts": "./src/facts.ts"
+  }
+}

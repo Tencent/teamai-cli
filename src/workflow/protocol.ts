@@ -6,29 +6,30 @@ import type { ReportedAgent } from '../agent-observation.js';
 import { DefaultWorkflows } from '../default-workflows.js';
 import { driverIdentity, sameDriver } from '../driver-identity.js';
 import type { WorkflowEnv } from '../env-resolution.js';
-import { scoringUnavailable, startedByPasses, verifiedScorers } from '../scorers/engine-hooks.js';
+import { decideCheckReport, prepareCheckPlace, scoringUnavailable, startedByPasses, verifiedScorers } from '../scorers/engine-hooks.js';
 import { resolveRunMode, type RunMode } from '../launch-context.js';
-import { stopRecordedGroup } from '../tool-launch/process-stop.js';
-import type { JsonValue, LocalConfig } from '../types.js';
+import { stopLeftInProcess } from './runtimes/cancelled.js';
+import type { LocalConfig } from '../types.js';
+import type { JsonValue } from '@teamai/shared/json';
 import { attemptEnv, nestedWorkflowError, type AgentEvidence } from './attempt-marker.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
 import { describeWorkflow, type WorkflowDescription } from './describe.js';
 import { ConfinedLeaseSchema, LeaseIdSchema, LeaseWireSchema } from './lease-wire.js';
-import { carriedRun, claimOffered, offerToPerson, reconcileTakenCopies, resumeRun, settledSteps } from './handoff.js';
-import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportable, reportAttempt, startRun, withIgnored, type NextOptions, type PersonHandoff, type ReportInput } from './engine.js';
+import { carriedRun, claimOffered, leaseRefusal, offerToPerson, reconcileTakenCopies, resumeRun, settledSteps, takeoverFor, takeoverRefusal, type Takeover } from './handoff.js';
+import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportable, reportAttempt, startRun, withIgnored, type NextOptions, type PersonHandoff, type ReportInput, type SoleDriver } from './engine.js';
 import {
-  abandonPlace, adoptedPlaceOf, finishPlace, placeHeldBy, placeLeaseOf, placeOf, placeRecorded, preparedClone, preparedCopyTeam, preparePlace, refuseDirtyAdoptedCommand, releasePlace, runPlaceSetup, stagePassEvidence, sweepClones, type PlaceLease,
+  abandonPlace, adoptedPlaceOf, finishPlace, keepPlace, releaseUnlaunchedPlace, placeHeldBy, placeLeaseOf, placeOf, placeRecorded, preparedClone, preparedCopyTeam, preparePlace, refuseDirtyAdoptedCommand, releasePlace, runPlaceSetup, stagePassEvidence, sweepClones, type PlaceLease,
   type PlacePrepared,
   type StepEnd,
 } from './place/place.js';
 import { cancelRun, respondProvenance, respondToHitl, retryStep, type CallerProvenance, type Via } from './run-controls.js';
 import { isUnder } from './loop.js';
-import { stepDefinitions } from './scope.js';
+import { locateStep, stepDefinitions } from './scope.js';
 import { StepModelSchema } from './step-model.js';
-import { attemptDir, AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
+import { AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
 import type { DriverCan } from './requirements.js';
 import { isWorkflowError, type DriverIdentity, type RunState, type RunStatus, type WorkflowDefinition, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
-import { cloneBranchOf, confinedOf, deliveryProblem, runCopyToMerge, stepRoleOf } from './workspace.js';
+import { cloneBranchOf, confinedOf, deliveryProblem, runCopyToMerge, sessionSource, stepRoleOf } from './workspace.js';
 import { headCommit } from './worktree.js';
 
 export type { PersonHandoff };
@@ -80,18 +81,18 @@ export interface WorkflowClient {
   describe: (name: string, options: { ceiling: number; can: DriverCan; checkout?: string; tool?: string }) => Promise<DescribedWorkflow | { error: WorkflowFailure }>;
   /**
    * Prepares the place of `lease`, the lease `next` answered with, in the checkout the run started from, or in the place
-   * the host made for its branch, while that passes the adopt checks. `busy` when another attempt the run leased holds
+   * the session host made for its branch, while that passes the adopt checks. `busy` when another attempt the run leased holds
    * that place.
    */
   // oxlint-disable-next-line teamai/no-unknown-parameters -- the skill driver passes the lease of an envelope it has not parsed; LeaseWireSchema parses it here
   prepare(lock: RunLock, lease: unknown): Promise<PlacePrepared | PlaceBusy>;
   /**
-   * Prepares the place of `lease` in a place its host made, when the lease commits to a branch, and as `prepare` does
+   * Prepares the place of `lease` in a place its session host made, when the lease commits to a branch, and as `prepare` does
    * when it does not. `host` asks for the place the last attempt to finish on the branch was prepared in, while it
    * passes the adopt checks, and is `busy` while another open attempt holds it. `adopt` asks for the place at `dir`.
    */
   // oxlint-disable-next-line teamai/no-unknown-parameters -- the skill driver passes the lease of an envelope it has not parsed; LeaseWireSchema parses it here
-  prepareHostPlace(lock: RunLock, lease: unknown, request: HostPlaceRequest): Promise<HostPlacePrepared>;
+  prepareSessionHostPlace(lock: RunLock, lease: unknown, request: SessionHostPlaceRequest): Promise<SessionHostPlacePrepared>;
   /**
    * Runs the setup of the place `prepare` made for `attempt`, outside the run lock, in the run's `mode`, until it ends
    * or `signal` stops it. Nothing for a place without setup.
@@ -100,19 +101,21 @@ export interface WorkflowClient {
   /**
    * Starts `name` with `inputs`, from `checkout` when given: the run's workspaces start from its HEAD. A `caller`
    * inside a workflow attempt starts none, `nested_workflow`, and an agent one only a workflow whose `invoke` lets it:
-   * `invoke_denied` for `deny`, and `confirm_needed` for `ask` without `confirmed`. `alone`: what the local driver,
-   * the run's only driver, gives strict requirements; a step it could never take refuses the start, `requirement_unmet`.
-   * The run records an agent as its starter when `caller` has agent evidence, else `startedBy`: `cli` for one of the
-   * CLI's own automatic starts, `person` for a start a person asked for. `driver`: the driver the run is recorded for
-   * from its start. `awaits`: the driver `workflows.driver` names, which this machine does not run.
+   * `invoke_denied` for `deny`, and `confirm_needed` for `ask` without `confirmed`. `alone`: the local loop, the
+   * run's only driver, with what each of its runtimes gives strict requirements; a step none of them could ever take
+   * refuses the start, `requirement_unmet`. The run records an agent as its starter when `caller` has agent evidence,
+   * else `startedBy`: `cli` for one of the CLI's own automatic starts, `person` for a start a person asked for.
+   * `driver`: the driver the run is recorded for from its start. `awaits`: the driver `workflows.driver` names, which
+   * this machine does not run. `partOf`: the attempt of a command step whose process starts and drives the run, which
+   * it ends with (`commandStepPart`).
    */
-  start(name: string, options: { inputs?: unknown; checkout?: string; caller: InvokeCaller; timeout?: number; alone?: DriverCan; startedBy: 'person' | 'cli'; driver?: DriverIdentity; awaits?: RunState['awaits']; instead?: string }): Promise<WorkflowEnvelope>;
+  start(name: string, options: { inputs?: unknown; checkout?: string; caller: InvokeCaller; timeout?: number; alone?: SoleDriver; startedBy: 'person' | 'cli'; driver?: DriverIdentity; awaits?: RunState['awaits']; instead?: string; partOf?: RunState['partOf'] }): Promise<WorkflowEnvelope>;
   /**
    * Asks the run what to do. With `prepare`, a lease comes with `cwd`, its place in the checkout the run started from,
    * made under the run's lock, and a prepare that fails settles the attempt `failed` with its own code.
    */
   // oxlint-disable-next-line teamai/no-unknown-parameters -- the payload as a driver sent it; parseNextPayload in engine.ts parses it, and the skill driver passes typed requests
-  next(runId: string, body: unknown, options?: { prepare?: NextPrepare; handoff?: PersonHandoff }): Promise<WorkflowEnvelope>;
+  next(runId: string, body: unknown, options?: { prepare?: NextPrepare; handoff?: PersonHandoff } & Pick<NextOptions, 'limitedTools' | 'toolFor'>): Promise<WorkflowEnvelope>;
   /**
    * Offers run `runId` on teamai-reports, published from `checkout`, for a person to claim, as a driver nobody attends
    * hands a step only a person can take to one: `offers`, or `unoffered` with why it could not.
@@ -126,7 +129,7 @@ export interface WorkflowClient {
    * commits an adopted writer's tree as it stands.
    */
   // oxlint-disable-next-line teamai/no-unknown-parameters -- the payload as a driver sent it; parseReport in engine.ts parses it, and the skill driver's tick.ts passes typed reports
-  report(runId: string, body: unknown, options?: { lock?: RunLock; changed?: readonly string[] }): Promise<WorkflowEnvelope>;
+  report(runId: string, body: unknown, options?: { lock?: RunLock; changed?: readonly string[]; launched?: true }): Promise<WorkflowEnvelope>;
   /** Records an answer, with the provenance decided from the process or driver `via` names. A process inside a workflow attempt answers none: `nested_workflow`. */
   respond(runId: string, step: string, choice: string, options: { note?: string; pass?: number; via: RespondVia }): Promise<WorkflowEnvelope>;
   /** Reopens the target step's dependency cone. */
@@ -146,16 +149,18 @@ export interface WorkflowClient {
    * the branches of a run taken over to the commits it recorded. `claim` says which runs it takes from teamai-reports,
    * as {@link ResumeClaim} reads, or `none`, no run. A lease this machine's
    * local driver still holds is released, as that driver would on its way out: it drives only while it holds the run
-   * lock, so it is gone. Describes the run's own definition as `describe` does.
+   * lock, so it is gone. Describes the run's own definition as `describe` does. `takeover` is the caller's run mode and
+   * whether the person confirmed, which decide a takeover of a run its owner may still drive.
    */
-  resume(runId: RunId, options: { lock: RunLock; claim: 'none' | ResumeClaim; checkout: string; ceiling: number; can: DriverCan; tool?: string }): Promise<RunReadied>;
+  resume(runId: RunId, options: { lock: RunLock; claim: 'none' | ResumeClaim; takeover: Pick<InvokeCaller, 'mode' | 'confirmed'>; checkout: string; ceiling: number; can: DriverCan; tool?: string }): Promise<RunReadied>;
   /**
    * Run `runId` as it stands before `resume` changes anything, as `resumeRefusal` reads it: its own definition described
-   * as `describe` does, and its status. Undefined when this machine cannot read it.
+   * as `describe` does, and its status; `absent` when neither this machine nor, when `published`, teamai-reports holds
+   * it; or why it could not be read.
    */
-  carried(runId: RunId, options: { published: boolean; claim: boolean; ceiling: number; can: DriverCan }): Promise<{ description: WorkflowDescription; status: RunStatus } | undefined>;
+  carried(runId: RunId, options: { published: boolean; claim: boolean; ceiling: number; can: DriverCan }): Promise<CarriedRunView>;
   /** Why `caller` may not continue run `runId`, by a resume or a takeover, as `resumeRefusal` decides it. */
-  resumeRefusal(runId: RunId, options: { caller: InvokeCaller; published: boolean }): Promise<WorkflowFailure | undefined>;
+  resumeRefusal(runId: RunId, options: { caller: InvokeCaller; published: boolean; claim?: boolean }): Promise<WorkflowFailure | undefined>;
 }
 
 /**
@@ -165,15 +170,15 @@ export interface WorkflowClient {
 export type ResumeClaim = 'lacking' | 'any' | 'offered';
 
 /** Readies run `runId` here as `claim` says: claimed only while offered, claimed whoever owns it, or resumed as it is. */
-function readiedHere(config: LocalConfig, runId: RunId, claim: 'none' | ResumeClaim, checkout: string): ReturnType<typeof resumeRun> {
+function readiedHere(config: LocalConfig, runId: RunId, { claim, takeover, checkout }: { claim: 'none' | ResumeClaim; takeover: Takeover; checkout: string }): ReturnType<typeof resumeRun> {
   switch (claim) {
     case 'offered':
       return claimOffered(config, runId, { checkout });
     case 'any':
-      return resumeRun(config, runId, { claim: true, checkout });
+      return resumeRun(config, runId, { claim: true, checkout, takeover });
     case 'lacking':
     case 'none':
-      return resumeRun(config, runId, { claim: false, checkout });
+      return resumeRun(config, runId, { claim: false, checkout, takeover });
     default: {
       const unhandled: never = claim;
 
@@ -182,13 +187,19 @@ function readiedHere(config: LocalConfig, runId: RunId, claim: 'none' | ResumeCl
   }
 }
 
+/** Run a resume would take, as it stands before the claim, as `WorkflowClient.carried` reads it. */
+export type CarriedRunView =
+  | { kind: 'carried'; description: WorkflowDescription; status: RunStatus }
+  | { kind: 'absent' }
+  | { kind: 'failed'; failure: WorkflowFailure };
+
 /**
  * What `resume` made of a run: ready to drive here, with `installed` true when the published state replaced this
- * machine's; not on this machine, when nothing was to be claimed; owned by `owner`, another install, since `since`; or
- * refused for `failure`.
+ * machine's and `tookOverActive` when that took the run over from an owner who may still drive it; not on this machine,
+ * when nothing was to be claimed; owned by `owner`, another install, since `since`; or refused for `failure`.
  */
 export type RunReadied =
-  | { kind: 'ready'; installed: boolean; description: WorkflowDescription; status: RunStatus; judging: Judging }
+  | { kind: 'ready'; installed: boolean; tookOverActive?: true; description: WorkflowDescription; status: RunStatus; judging: Judging }
   | { kind: 'not-here' }
   | { kind: 'not-owner'; owner: string; since: string }
   | { kind: 'failed'; failure: WorkflowFailure };
@@ -207,9 +218,10 @@ export interface InvokeCaller {
 /**
  * What a caller asks of a workflow: to start a run; to continue run `run`, by `workflow resume` or a takeover; or to
  * claim it with a `next` payload, which has no field for the person's yes. A start a shortcut command makes may say, in
- * `instead`, what the person and the agent run in its place, for an `invoke: deny` refusal.
+ * `instead`, what the person and the agent run in its place, for an `invoke: deny` refusal; a start from an app's
+ * session names in `from` where the person starts it and on which driver, else their own terminal and `local`.
  */
-export type InvokeAct = { kind: 'start'; instead?: string } | { kind: 'continue'; run: RunId } | { kind: 'claim'; run: RunId };
+export type InvokeAct = { kind: 'start'; instead?: string; from?: { place: string; driver: string } } | { kind: 'continue'; run: RunId } | { kind: 'claim'; run: RunId };
 
 /** What shows an agent runs the calling process, as the clause the `invoke` refusals end their first sentence with. */
 function agentClause(evidence: Exclude<AgentEvidence, { kind: 'none' }>): string {
@@ -233,7 +245,7 @@ export function invokeDeniedMessage(name: string, evidence: Exclude<AgentEvidenc
   switch (act.kind) {
     case 'start':
       return `Workflow "${name}" has invoke: deny, so no coding agent starts it, with any driver, and ${agentClause(evidence)}. ${act.instead
-        ?? `The person can start it from their own terminal with teamai workflow start ${name} --driver local. To let agents start it, the team sets invoke: allow, or invoke: ask for a start after the person agrees, in workflows/${name}.yaml or workflows/${name}/WORKFLOW.yaml.`}`;
+        ?? `The person can start it from ${act.from?.place ?? 'their own terminal'} with teamai workflow start ${name} --driver ${act.from?.driver ?? 'local'}. To let agents start it, the team sets invoke: allow, or invoke: ask for a start after the person agrees, in workflows/${name}.yaml or workflows/${name}/WORKFLOW.yaml.`}`;
     case 'continue':
     case 'claim':
       return `Workflow "${name}" has invoke: deny, so no coding agent continues it, with any driver, and ${agentClause(evidence)}. The person can continue it from their own terminal with teamai workflow resume ${act.run}. To let agents continue it, the team sets invoke: allow, or invoke: ask for a resume after the person agrees, in workflows/${name}.yaml or workflows/${name}/WORKFLOW.yaml.`;
@@ -321,25 +333,61 @@ export async function resumeRefusal(
   config: LocalConfig,
   runId: RunId,
   caller: InvokeCaller,
-  { published, act = 'continue' }: { published: boolean; act?: 'continue' | 'claim' },
+  { published, act = 'continue', claim = false }: { published: boolean; act?: 'continue' | 'claim'; claim?: boolean },
 ): Promise<WorkflowFailure | undefined> {
   if (caller.evidence.kind === 'none') return undefined;
-  const carried = await carriedRun(config, runId, { published });
+  const carried = await carriedRun(config, runId, { published, claim });
 
   if (!carried.ok) return { code: carried.error.code, message: carried.error.message };
+  // A takeover asks before the run's invoke does, so the yes the invoke asks for is never also a yes to a takeover.
+  const active = carried.value?.snapshot ? await takeoverRefusal(config, carried.value.snapshot, takeoverFor(caller)) : undefined;
+
+  if (active) return { code: active.code, message: active.message };
 
   return invokeRefusal(carried.value?.definition, caller, { kind: act, run: runId });
 }
 
-/** The failure a call answers when the cache holds no unambiguous runnable version of workflow or alias `name`. */
 /**
- * Starts `name` as one of the CLI's own automatic starts, in run mode `mode`: with no agent evidence, so no agent gave its
- * inputs, and recorded as started by `cli`, which hand labels and policy overrides never trust as a person.
+ * The settled attempt of the step that started the conversation step `step` of run `run` goes on in: with
+ * `session: continue`, its own first earlier pass; else its `session.from` step, or, along a chain where C goes on from
+ * B and B from A, the first step A, as a lease's `continue` names it. For a driver whose report records no session of
+ * it, as the skill driver records none of a child's.
  */
-export function startAsCli(client: Pick<WorkflowClient, 'start'>, name: string, { mode, ...options }: Omit<Parameters<WorkflowClient['start']>[1], 'caller' | 'startedBy' | 'instead'> & { mode: RunMode }): Promise<WorkflowEnvelope> {
-  return client.start(name, { ...options, caller: { evidence: { kind: 'none' }, confirmed: false, mode }, startedBy: 'cli' });
+export async function continuedAttempt(config: LocalConfig, run: RunId, step: string): Promise<{ step: string; attempt: AttemptId } | undefined> {
+  const state = await readRun(config, run);
+
+  if (state === 'missing' || state === 'corrupt') return undefined;
+  const ownSession = locateStep(state, step)?.step.session;
+
+  if (ownSession && 'continue' in ownSession) {
+    // Each pass went on in the conversation of the one before it, so the first pass started it.
+    const current = state.steps.find((item) => item.id === step);
+    const passes = [...(state.archive ?? []).filter((entry) => entry.step === step), ...current?.passes ?? []].toSorted((one, other) => one.pass - other.pass);
+    const attempt = passes.map((pass) => AttemptIdSchema.safeParse(pass.attempt)).find((parsed) => parsed.success)?.data;
+
+    return attempt && { step, attempt };
+  }
+
+  let first: { step: string; attempt: AttemptId } | undefined;
+  const seen = new Set<string>();
+
+  for (let located = locateStep(state, step); located?.step.session && 'from' in located.step.session;) {
+    // The step the engine resumes the session of, found as its lease's session is.
+    const earlier = sessionSource(state, located.scope, located.step.session.from)?.state;
+
+    if (!earlier || seen.has(earlier.id)) break;
+    seen.add(earlier.id);
+    const attempt = AttemptIdSchema.safeParse('attempt' in earlier ? earlier.attempt : undefined);
+
+    if (!attempt.success) break;
+    first = { step: earlier.id, attempt: attempt.data };
+    located = locateStep(state, earlier.id);
+  }
+
+  return first;
 }
 
+/** The failure a call answers when the cache holds no unambiguous runnable version of workflow or alias `name`. */
 export function workflowNotFound(name: string): WorkflowFailure {
   return { code: 'workflow_not_found', message: `Workflow or alias ${name} has no unambiguous runnable version` };
 }
@@ -403,17 +451,20 @@ export function verifiedLeftOpen(scorers: readonly string[]): string {
   return `${named} ${many ? 'need' : 'needs'} a verified judge, which this session's driver does not offer; ${many ? 'their' : 'its'} runs stay open for a driver that does.`;
 }
 
-/** Where the host made the place of a lease: `host`, the place an earlier attempt adopted for its branch; `adopt`, `dir`. */
-export type HostPlaceRequest = { kind: 'host' } | { kind: 'adopt'; dir: string };
+/**
+ * Where the session host made the place of a lease: `host`, the place an earlier attempt adopted for its branch; `adopt`,
+ * `dir`. The kind `host` names the session host; a stored skill state keeps that spelling.
+ */
+export type SessionHostPlaceRequest = { kind: 'host' } | { kind: 'adopt'; dir: string };
 
 /** Another open attempt of the run holds the place a lease would get: `behind` is that attempt, and `dir` the place. */
 type PlaceBusy = { kind: 'busy'; behind: AttemptId; dir: string };
 
 /**
- * `needs-place` when the host must make the place: a worktree of the checkout's repository named `name`, on `branch`
+ * `needs-place` when the session host must make the place: a worktree of the checkout's repository named `name`, on `branch`
  * from commit `start`. `refused` says why the place the request named was not prepared.
  */
-export type HostPlacePrepared =
+export type SessionHostPlacePrepared =
   | Exclude<PlacePrepared, { kind: 'refused' }>
   | PlaceBusy
   | { kind: 'needs-place'; name: string; branch: string; start: string; refused?: string };
@@ -524,7 +575,7 @@ async function leasedPlace(config: LocalConfig, lock: RunLock, raw: unknown): Pr
 }
 
 /**
- * Prepares the place of `leased`, in the place the host made at `adopt` when given, unless another open attempt of the
+ * Prepares the place of `leased`, in the place the session host made at `adopt` when given, unless another open attempt of the
  * run holds it (`placeHeldBy`). Every prepare of a lease goes through here.
  */
 async function placeLeased(config: LocalConfig, lock: RunLock, leased: Leased, adopt?: string): Promise<PlacePrepared | PlaceBusy> {
@@ -534,7 +585,30 @@ async function placeLeased(config: LocalConfig, lock: RunLock, leased: Leased, a
 
   if (held) return { kind: 'busy', ...held };
 
-  return preparePlace({ config, lock, root, lease, adopt });
+  return preparedPlace({ config, lock, root, lease, adopt });
+}
+
+/**
+ * Prepares the place of `lease` (`preparePlace`), then does what a benchmark check step needs there on this machine
+ * before its command runs where its runtime runs it (`prepareCheckPlace`). Every prepare of a lease goes through here, so
+ * a check step's command never runs in a place its check was not prepared in; one that could not be is left as prepare
+ * found it, and its step fails with why.
+ */
+export async function preparedPlace(input: Parameters<typeof preparePlace>[0]): Promise<PlacePrepared> {
+  const prepared = await preparePlace(input);
+
+  if (prepared.kind !== 'prepared') return prepared;
+  const { config, lock, lease } = input;
+  const run = await readRun(config, lock.run);
+
+  const failure = run === 'missing' || run === 'corrupt'
+    ? { code: 'run_unreadable', message: `Run ${lock.run} cannot be read, so attempt ${lease.attempt} has no place to run in` } satisfies WorkflowFailure
+    : await prepareCheckPlace({ config, run, attempt: lease.attempt, dir: prepared.dir });
+
+  if (!failure) return prepared;
+  const unrestored = await abandonPlace({ config, lock, attempt: lease.attempt });
+
+  return { kind: 'failed', failure: unrestored ? { ...failure, message: `${failure.message} ${unrestored}` } : failure };
 }
 
 /**
@@ -560,7 +634,7 @@ function heldPlaceRefusal(input: { dir: string; behind: AttemptId; run: RunId; a
 
 /**
  * What `next` prepares: with `true`, the lease it answers with; else `attempt`, which the run already leased to the
- * caller, in a place TeamAI creates, or in the one the host made at `adopt`.
+ * caller, in a place TeamAI creates, or in the one the session host made at `adopt`.
  */
 export type NextPrepare = true | { attempt: AttemptId; adopt?: string };
 
@@ -607,14 +681,14 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
 
       return leased.kind === 'leased' ? placeLeased(config, lock, leased) : leased;
     },
-    prepareHostPlace: async (lock, raw, request) => {
+    prepareSessionHostPlace: async (lock, raw, request) => {
       const leased = await leasedPlace(config, lock, raw);
 
       if (leased.kind === 'failed') return leased;
       const { lease, root } = leased;
       const { workspace } = lease;
 
-      // A clone is teamai's to make, never the host's.
+      // A clone is teamai's to make, never the session host's.
       if ((workspace?.mode !== 'new' && workspace?.mode !== 'continue') || workspace.clone !== undefined) {
         const placed = await placeLeased(config, lock, leased);
 
@@ -631,7 +705,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
 
       if (placed.kind !== 'refused') return placed;
 
-      // The place an earlier attempt adopted no longer passes the checks, so the host makes another.
+      // The place an earlier attempt adopted no longer passes the checks, so the session host makes another.
       return request.kind === 'adopt' ? { ...ask, refused: placed.failure.message } : ask;
     },
     setup: (run, attempt, mode, signal) => runPlaceSetup({ config, run, attempt, mode, env, signal }),
@@ -648,7 +722,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       return version;
     },
     offer: async (runId, checkout) => {
-      const unoffered = await offerToPerson(config, runId, checkout);
+      const unoffered = await offerToPerson(config, runId, { checkout });
 
       return unoffered === undefined ? { kind: 'offers' } : { kind: 'unoffered', reason: unoffered };
     },
@@ -657,7 +731,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
 
       if (isRefusal(parsed)) return { error: { code: 'invalid_json', message: parsed } };
       const { driver, ...request } = parsed.request;
-      const next = options?.handoff === undefined ? request : { ...request, handoff: options.handoff };
+      const next = { ...request, ...(options?.handoff !== undefined && { handoff: options.handoff }), ...(options?.limitedTools !== undefined && { limitedTools: options.limitedTools, toolFor: options.toolFor }) };
       const lease = (): Promise<WorkflowEnvelope> => leaseNext(config, runId, driver, { ...next, env });
       const run = RunIdSchema.safeParse(runId);
       const prepare = options?.prepare;
@@ -681,7 +755,8 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
 
       if (isRefusal(parsed)) return { error: { code: 'invalid_report', message: parsed } };
       const run = RunIdSchema.safeParse(runId);
-      const report = run.success ? await withPreparedCopy(config, run.data, parsed.report) : parsed.report;
+      const sent = options?.launched === true ? { ...parsed.report, launched: true as const } : parsed.report;
+      const report = run.success ? await withPreparedCopy(config, run.data, sent) : sent;
 
       return withIgnored(await managedReport({ config, runId, report, secrets: env.secrets, lock: options?.lock, changed: options?.changed }), parsed.ignored);
     },
@@ -734,9 +809,9 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
 
       return { data: { cancelled } };
     },
-    resume: async (runId, { lock, claim, checkout, ceiling, can, tool }) => {
+    resume: async (runId, { lock, claim, takeover, checkout, ceiling, can, tool }) => {
       if (claim === 'none' && await readRun(config, runId) === 'missing') return { kind: 'not-here' };
-      const resumed = await readiedHere(config, runId, claim, checkout);
+      const resumed = await readiedHere(config, runId, { claim, takeover: takeoverFor(takeover), checkout });
 
       if (!resumed.ok) {
         const { error } = resumed;
@@ -758,7 +833,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
         // again. An attempt id no lease could carry has no group recorded.
         const left = AttemptIdSchema.safeParse(attempt);
 
-        if (left.success) await stopRecordedGroup(attemptDir(config, runId, left.data));
+        if (left.success) await stopLeftInProcess(config, runId, left.data);
         const released = await managedReport({ config, runId, report: { attempt, revision, outcome: 'released', driver }, secrets: env.secrets, lock });
 
         if (isWorkflowError(released)) return { kind: 'failed', failure: released.error };
@@ -770,7 +845,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
         if (stopped.driver.kind !== 'local' || stopped.driver.machine !== machine) continue;
         const left = AttemptIdSchema.safeParse(stopped.attempt);
 
-        if (left.success) await stopRecordedGroup(attemptDir(config, runId, left.data));
+        if (left.success) await stopLeftInProcess(config, runId, left.data);
       }
 
       const unreconciled = await reconcileTakenCopies(config, runId, run.checkout ?? checkout);
@@ -781,17 +856,19 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
         definition: run.definition, source: DefaultWorkflows.sourceOfRun(run), workflows: run.workflows ?? {}, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts,
       });
 
-      return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, settled: settledSteps(run), status: run.status, judging: await judgingOf(config, description, { tool, offers: can.confined ?? [] }, run) };
+      return { kind: 'ready', installed: resumed.value !== null && resumed.value.ownership !== 'already_owned', tookOverActive: resumed.value?.ownership === 'took_over' || undefined, description, settled: settledSteps(run), status: run.status, judging: await judgingOf(config, description, { tool, offers: can.confined ?? [] }, run) };
     },
     carried: async (runId, { published, claim, ceiling, can }) => {
       const carried = await carriedRun(config, runId, { published, claim });
 
-      if (!carried.ok || carried.value === undefined) return undefined;
+      if (!carried.ok) return { kind: 'failed', failure: { code: carried.error.code, message: carried.error.message } };
+
+      if (carried.value === undefined) return { kind: 'absent' };
       const { definition, workflows, source, status } = carried.value;
 
-      return { description: describeWorkflow({ definition, source, workflows, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts }), status };
+      return { kind: 'carried', description: describeWorkflow({ definition, source, workflows, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts }), status };
     },
-    resumeRefusal: (runId, { caller, published }) => resumeRefusal(config, runId, caller, { published }),
+    resumeRefusal: (runId, { caller, published, claim }) => resumeRefusal(config, runId, caller, { published, claim }),
   };
 }
 
@@ -817,7 +894,7 @@ function noCheckout(run: string, attempt: string): WorkflowFailure {
 
 /**
  * Prepares `attempt`, which the run already leased to `driver`, holding the run's lock, as `prepareLeased` prepares a
- * new lease, in the place the host made at `adopt` when given. Every other lease of the run is listed as running, so
+ * new lease, in the place the session host made at `adopt` when given. Every other lease of the run is listed as running, so
  * the engine hands this one back and leases nothing new. `wrong_attempt` when the run no longer leases it to `driver`,
  * or released it just now for a `can` that no longer covers its step.
  */
@@ -851,7 +928,7 @@ async function prepareAttempt(input: {
 
 /**
  * Prepares the place of the lease `answer` carries, holding the run's lock, and runs its setup: a lease with a
- * workspace contract gets its worktree set up, or adopts the place the host made at `adopt`. A prepare that fails
+ * workspace contract gets its worktree set up, or adopts the place the session host made at `adopt`. A prepare that fails
  * reports the attempt `failed` with its own code, and answers with that failure; an adopt the place does not pass, or
  * another open attempt holds, answers `adopt_mismatch`, and any other place that one holds answers `busy`, and the
  * attempt stays leased.
@@ -903,7 +980,7 @@ async function prepareLeased(input: { config: LocalConfig; lock: RunLock; driver
 
 /** `WorkflowClient.start`: starts workflow `name` when its `invoke` lets `caller` start it. */
 async function startNamed({ config, secrets }: { config: LocalConfig; secrets: Record<string, string> }, name: string, options: Parameters<WorkflowClient['start']>[1]): Promise<WorkflowEnvelope> {
-  const { inputs, checkout, caller, timeout, alone, startedBy, driver, awaits, instead } = options;
+  const { inputs, checkout, caller, timeout, alone, startedBy, driver, awaits, instead, partOf } = options;
   const cached = await loadCachedWorkflow(config, name);
   const refused = invokeRefusal(cached?.definition, caller, { kind: 'start', instead });
 
@@ -911,7 +988,7 @@ async function startNamed({ config, secrets }: { config: LocalConfig; secrets: R
   const base = checkout === undefined ? undefined : await headCommit(checkout);
 
   return startRun(config, name, inputs ?? {}, {
-    secrets, runMode: caller.mode, startedBy: caller.evidence.kind === 'none' ? startedBy : 'agent', awaits, driver, checkout, base, timeout, alone,
+    secrets, runMode: caller.mode, startedBy: caller.evidence.kind === 'none' ? startedBy : 'agent', awaits, driver, checkout, base, timeout, alone, partOf,
   });
 }
 
@@ -943,6 +1020,15 @@ async function withStarted({ config, runId, secrets }: { config: LocalConfig; ru
  */
 async function placedReport(input: { config: LocalConfig; runId: string; report: ReportInput; secrets: Record<string, string>; lock: RunLock | undefined; changed?: readonly string[] }): Promise<WorkflowEnvelope> {
   const { config, runId, report, secrets, lock } = input;
+
+  // A run another install took over is driven there now: this machine's attempt is not committed, pushed or recorded,
+  // and the driver stops. A release pushes nothing, and frees the lease the takeover already let go.
+  if (report.outcome !== 'released') {
+    const lost = await leaseRefusal(config, runId, { throttled: false });
+
+    if (lost?.code === 'not_owner') return { error: lost };
+  }
+
   const attempt = AttemptIdSchema.safeParse(report.attempt);
   const run = RunIdSchema.safeParse(runId);
 
@@ -972,19 +1058,25 @@ async function settleManaged(input: { config: LocalConfig; lock: RunLock; attemp
   if (report.changes || report.read) return { error: { code: 'invalid_report', message: 'Prepared workspace reports fill changes/read automatically; omit those fields' } };
 
   if (report.outcome === 'released') {
-    await abandonPlace({ config, lock, attempt });
+    // A lease handed back before its tool started leaves the place as prepare found it, unless an earlier attempt's work
+    // is there; one whose tool ran keeps its work.
+    await (report.launched === true ? keepPlace : releaseUnlaunchedPlace)({ config, lock, attempt });
 
     return reportAttempt(config, lock.run, report, secrets);
   }
 
-  const end: StepEnd = { outcome: report.outcome };
+  const run = await readRun(config, lock.run);
+  const ended = { ...report, outcome: report.outcome };
+  // A benchmark check step's output is decided here, from its exit code, before its place is finished with it.
+  const decided = run === 'missing' || run === 'corrupt' ? ended : await decideCheckReport({ config, run, report: ended });
+  const end: StepEnd = { outcome: decided.outcome };
 
-  if (report.message !== undefined) end.message = report.message;
+  if (decided.message !== undefined) end.message = decided.message;
 
-  if (report.failure) end.failure = report.failure;
+  if (decided.failure) end.failure = decided.failure;
   const finished = await finishPlace({ config, lock, attempt, end, secrets, changed: input.changed });
   // A limit goes only with a step that succeeded: a failure to keep its work replaces both.
-  const { limit, ...unlimited } = report;
+  const { limit, ...unlimited } = decided;
   const body: ReportInput = { ...unlimited, ...finished };
 
   if (limit !== undefined && finished.outcome === 'success') body.limit = limit;

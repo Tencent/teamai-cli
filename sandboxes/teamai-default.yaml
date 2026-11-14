@@ -1,0 +1,4 @@
+# The sandbox a driver's `use: sandbox` runs when its entry names no profile: a Docker Sandboxes (sbx) microVM per
+# attempt, from the template of the step's tool, signed in on the login sbx keeps. A team replaces it with
+# sandboxes/default.yaml, and a member with ~/.teamai/sandboxes/default.yaml.
+provider: sbx

@@ -5,7 +5,7 @@ import path from 'node:path';
 import fse from 'fs-extra';
 import YAML from 'yaml';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
   spinner: vi.fn(() => ({ start: vi.fn().mockReturnThis(), succeed: vi.fn(), fail: vi.fn() })),
 }));
@@ -80,14 +80,14 @@ describe('nested source ownership boundaries', () => {
   }
 
   async function removeSource(alias: string, local: LocalConfig): Promise<void> {
-    const currentTeam = await loadTeamConfig(local.repo.localPath);
+    const currentTeam = await loadTeamConfig(local.repo.localPath, null);
     expect(currentTeam).not.toBeNull();
     vi.mocked(autoDetectInit).mockResolvedValue({ localConfig: local, teamConfig: currentTeam! });
     await sourceRemove(alias, {});
   }
 
   async function pushCandidates(local: LocalConfig): Promise<string[]> {
-    const currentTeam = await loadTeamConfig(local.repo.localPath);
+    const currentTeam = await loadTeamConfig(local.repo.localPath, null);
     return (await getHandler('skills').scanLocalForPush(currentTeam!, local)).map((item) => item.name);
   }
 

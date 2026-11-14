@@ -6,8 +6,8 @@ import { z } from 'zod';
 import { detectProjectConfig, loadLocalConfig, loadTeamAgentLanguage } from '../config.js';
 import { DefaultFolders, type DefaultFolder, type TextLanguage } from '../default-folders.js';
 import { ensureDir, readJson, writeJsonAtomic } from '../utils/fs.js';
-import { getUserHome } from '../utils/home.js';
-import { log } from '../utils/logger.js';
+import { getUserHome } from '@teamai/shared/home';
+import { log } from '@teamai/shared/log';
 import {
   hasPackageDeclarations,
   loadPackageLock,

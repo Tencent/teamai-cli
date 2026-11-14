@@ -171,20 +171,25 @@ describe('appendMonthlyLog / pruneMonthlyLogs', () => {
   it('keeps both sessions when one writer pauses after reading the monthly log', async () => {
     const file = path.join(dir, '2026-03.md');
     fs.writeFileSync(file, '# Session log — 2026-03\n\n');
-    const readFile = fs.promises.readFile;
+    const open = fs.promises.open;
     let release!: () => void;
     let readStarted!: () => void;
     const paused = new Promise<void>((resolve) => { release = resolve; });
     const started = new Promise<void>((resolve) => { readStarted = resolve; });
     let first = true;
-    vi.spyOn(fs.promises, 'readFile').mockImplementation(async (...args) => {
-      const content = await readFile(...args);
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      const handle = await open(...args);
       if (args[0] === file && first) {
         first = false;
-        readStarted();
-        await paused;
+        const read = handle.readFile.bind(handle);
+        vi.spyOn(handle, 'readFile').mockImplementation(async (options) => {
+          const content = await read(options);
+          readStarted();
+          await paused;
+          return content;
+        });
       }
-      return content;
+      return handle;
     });
     const a = collectSession(SID, sampleEvents())!;
     const b = { ...a, sessionId: 'other-session' };
@@ -215,12 +220,16 @@ describe('appendMonthlyLog / pruneMonthlyLogs', () => {
     const original = '# Session log — 2026-03\n\nexisting session\n';
     fs.writeFileSync(file, original);
     const failure = Object.assign(new Error('read failed'), { code: 'EIO' });
-    const read = vi.spyOn(fs.promises, 'readFile').mockRejectedValue(failure);
+    const open = fs.promises.open;
+    const opened = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      if (args[0] === file) throw failure;
+      return open(...args);
+    });
     const s = collectSession(SID, sampleEvents())!;
     await expect(appendMonthlyLog(dir, s)).rejects.toMatchObject({ code: 'EIO' });
     expect(fs.readFileSync(file, 'utf8')).toBe(original);
     expect(fs.readdirSync(dir)).toEqual(['2026-03.md']);
-    read.mockRestore();
+    opened.mockRestore();
     expect(await appendMonthlyLog(dir, s)).toBe(file);
   });
 

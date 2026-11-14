@@ -24,12 +24,13 @@ vi.mock('../utils/git.js', async (importOriginal) => ({
 }));
 
 // pull() takes a real ~/.teamai/.sync-lock; parallel workers would race on it.
-vi.mock('../update.js', () => ({
+vi.mock('../update.js', async (importOriginal) => ({
+  LockDirectoryGoneError: (await importOriginal<typeof import('../update.js')>()).LockDirectoryGoneError,
   acquireLock: vi.fn().mockResolvedValue(true),
   releaseLock: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     persist: vi.fn(),
     info: vi.fn(),
@@ -51,7 +52,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { RulesHandler } from '../resources/rules.js';
 import { pull } from '../pull.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { uninstall } from '../uninstall.js';
 import { autoDetectInit, detectProjectConfig, loadLocalConfigForScope, loadStateForScope, loadTeamConfig, saveStateForScope } from '../config.js';
 import {

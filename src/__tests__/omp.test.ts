@@ -11,13 +11,13 @@ import { ruleFileExtensionForTool, usesMdcRules } from '../resources/rule-format
 import { RulesHandler } from '../resources/rules.js';
 import { checkoutKey } from '../pull.js';
 import { contentHash, openLedger, recordDelivered, type DeliveredHashes } from '../resources/delivered-copies.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { loadStateForScope, saveStateForScope } from '../config.js';
 import { TeamaiConfigSchema, scopedToolPaths } from '../types.js';
 import type { LocalConfig, ResourceItem } from '../types.js';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
-import { AGENT_TOOLS } from '../tools.js';
+import { AGENT_TOOLS } from '../tool-registry.js';
 
 describe('OMP (Oh My Pi) support', () => {
   afterEach(() => vi.unstubAllEnvs());

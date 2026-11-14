@@ -1,6 +1,12 @@
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { PROCESS_READ_CHANNEL } from '@teamai/shared/process-group';
 
-import { type AgentWaitBudget, compareAgentWait, fileSystemCalls, otherProcesses } from './agent-wait-budget.js';
+import { type AgentWaitBudget, compareAgentWait, fileSystemCalls, otherProcesses, readLines } from './agent-wait-budget.js';
 
 type Row = AgentWaitBudget['rows'][number];
 
@@ -126,6 +132,52 @@ describe('otherProcesses', () => {
       spawn(1, ['/opt/node/bin/node', 'index.js'], 6),
       spawn(1, ['/home/m/.teamai/bin/teamai', 'hook-dispatch'], 5, true),
     ])).toEqual({ waited: 0, after: 0, byCommand: {} });
+  });
+});
+
+describe('readLines', () => {
+  it('leaves out a last line a writer still appends to, and keeps every finished one', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-wait-lines-'));
+    const file = path.join(dir, 'trace2.json');
+
+    try {
+      fs.writeFileSync(file, '{"event":"start","sid":"a"}\n{"event":"exit","sid":"a"}\n{"event":"region_enter","sid":"b","time":"2026-11-12T03:20:12.024204Z"');
+
+      expect(readLines(file)).toEqual(['{"event":"start","sid":"a"}', '{"event":"exit","sid":"a"}']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('agent-wait-preload.cjs', () => {
+  const preload = path.join(path.dirname(fileURLToPath(import.meta.url)), 'agent-wait-preload.cjs');
+
+  /** The records the preload logs for a Node process that tells `reads` on the process read channel. */
+  function recordsOf(reads: Array<{ ps: string[]; spawned: boolean }>) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-wait-preload-'));
+    const log = path.join(dir, 'node.jsonl');
+
+    try {
+      const script = `const channel = require('node:diagnostics_channel').channel(${JSON.stringify(PROCESS_READ_CHANNEL)}); for (const read of ${JSON.stringify(reads)}) channel.publish(read);`;
+      const ran = spawnSync(process.execPath, ['--require', preload, '-e', script], { env: { ...process.env, AGENT_WAIT_NODE_LOG: log }, encoding: 'utf8' });
+      expect(ran.status, ran.stderr).toBe(0);
+
+      return fs.readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('counts a process read Linux answers from /proc as the ps macOS runs for it, so CI sees a wait only macOS has', () => {
+    const records = recordsOf([{ ps: ['-o', 'lstart=', '-p', '42'], spawned: false }]);
+
+    expect(records.filter((record) => record.ev === 'spawn')).toEqual([expect.objectContaining({ command: ['ps', '-o', 'lstart=', '-p', '42'], child: null, detached: false })]);
+    expect(otherProcesses(records)).toMatchObject({ waited: 1, after: 0, byCommand: { ps: { waited: 1, after: 0 } } });
+  });
+
+  it('counts a read that ran ps once, by its spawn alone', () => {
+    expect(recordsOf([{ ps: ['-o', 'lstart=', '-p', '42'], spawned: true }]).filter((record) => record.ev === 'spawn')).toEqual([]);
   });
 });
 

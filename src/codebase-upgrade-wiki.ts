@@ -1,4 +1,4 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 
 import chalk from 'chalk';
@@ -7,8 +7,9 @@ import matter from 'gray-matter';
 import { autoDetectInit } from './config.js';
 import { publishTeamwikiViaMR, refreshTeamwikiIndexes } from './import-codebase.js';
 import { DetachedTeamRepoError } from './utils/git.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { pathExists } from './utils/fs.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 export interface UpgradeCodebaseWikiOptions {
   cwd: string;
@@ -60,7 +61,7 @@ export async function upgradeCodebaseWiki(opts: UpgradeCodebaseWikiOptions): Pro
     const filePath = path.join(teamCodebaseDir, file);
 
     try {
-      const content = await readFile(filePath, 'utf-8');
+      const content = await readRegularFile(filePath, 'utf-8');
       const parsed = matter(content);
       const source = parsed.data['source'] ?? parsed.data['repo_url'];
 

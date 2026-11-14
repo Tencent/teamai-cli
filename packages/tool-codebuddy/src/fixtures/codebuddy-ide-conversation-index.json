@@ -1,0 +1,15 @@
+{
+  "messages": [
+    {
+      "id": "m1",
+      "role": "user",
+      "isComplete": true
+    },
+    {
+      "id": "m2",
+      "role": "assistant",
+      "isComplete": true
+    }
+  ],
+  "requests": []
+}

@@ -24,10 +24,10 @@ import { spawn, type ChildProcess, type StdioOptions } from 'node:child_process'
 
 import { loadTeamConfig } from './config.js';
 import { withTimeout } from './utils/async.js';
-import { log } from './utils/logger.js';
-import { captureTail, detachChild } from './utils/exec.js';
+import { log } from '@teamai/shared/log';
+import { captureTail, detachChild } from '@teamai/shared/exec';
 import { assertSafePath } from './utils/path-safety.js';
-import { redactWithEnv } from './utils/redact.js';
+import { redactWithEnv } from '@teamai/shared/redact';
 import type { LocalConfig, TeamaiConfig } from './types.js';
 
 /** Output kept from a failed script, for its log line. */
@@ -79,7 +79,7 @@ export async function runDeclaredPostPull(
   }: { interactive?: boolean; localConfig?: LocalConfig } = {},
 ): Promise<void> {
   try {
-    const teamConfig = await loadTeamConfig(repoPath);
+    const teamConfig = await loadTeamConfig(repoPath, localConfig ?? null);
 
     if (!teamConfig) return;
     const scriptPath = resolvePostPullScript(teamConfig, repoPath);

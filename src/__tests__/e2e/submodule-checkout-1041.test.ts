@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { installFakeCodex, readFakeCodexState } from '../helpers/fake-codex.js';
+import { installFakeCodex, readFakeCodexState } from '@teamai/tool-codex/testing';
 import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 const CLI = fileURLToPath(new URL('../../../dist/index.js', import.meta.url));

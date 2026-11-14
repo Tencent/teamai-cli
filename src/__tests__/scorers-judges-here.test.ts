@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { judgeUnavailable, verifiedScorers } from '../scorers/judges-here.js';
 import type { PinnedScorer } from '../scorers/pin.js';
 import type { LocalConfig } from '../types.js';
-import * as cliPaths from '../utils/cli-path.js';
+import * as cliPaths from '@teamai/shared/cli-path';
 
 const scorer = (frontmatter = ''): string => `---
 labels:

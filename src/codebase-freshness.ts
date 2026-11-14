@@ -4,7 +4,7 @@
  * against a verified local Git checkout, including symlink resolution.
  */
 import { createHash } from 'node:crypto';
-import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises';
+import { lstat, readdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import { errnoCode } from './utils/fs.js';
@@ -12,6 +12,7 @@ import { createGit, repoIdentity } from './utils/git.js';
 import type { SourceAnchor } from './code-knowledge-recall.js';
 import { isCodeFile, SourceManifestSchema, type SourceManifest } from './wiki-engine/code-knowledge/code-collector.js';
 import { safeIgnore } from './wiki-engine/core/wiki-protocol.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 export type SourceFreshness = 'current' | 'stale' | 'missing' | 'unknown';
 
@@ -108,7 +109,7 @@ async function readManifest(
       return { state: 'invalid' };
     }
 
-    const parsed = SourceManifestSchema.safeParse(JSON.parse(await readFile(actualPath, 'utf8')));
+    const parsed = SourceManifestSchema.safeParse(JSON.parse(await readRegularFile(actualPath, 'utf8')));
 
     // A manifest without a file list holds no baseline.
     if (!parsed.success || parsed.data.files === undefined) return { state: 'invalid' };
@@ -325,7 +326,7 @@ async function checkOneSource(
   try {
     // Match code-collector's semantics: it hashes the UTF-8 decoded text, not
     // the raw bytes, so malformed UTF-8 does not appear stale just by decoding.
-    const content = await readFile(actualPath, 'utf8');
+    const content = await readRegularFile(actualPath, 'utf8');
     const actualHash = createHash('sha256').update(content).digest('hex');
 
     return withFreshness(actualHash === expectedHash ? 'current' : 'stale');

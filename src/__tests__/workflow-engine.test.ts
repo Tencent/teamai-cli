@@ -2,22 +2,25 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describeWorkflow } from '../workflow/describe.js';
+import { parseWorkflow } from '../workflow/parse.js';
 import { z } from 'zod';
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
 import * as update from '../update.js';
 import { acquireLock, releaseLock } from '../update.js';
-import { log } from '../utils/logger.js';
-import { leaseNext, parseNextPayload, parseReport, reportable, reportAttempt, resumableSessions, SETTLED_ATTEMPTS_LIMIT, startRun, type ReportInput } from '../workflow/engine.js';
+import { log } from '@teamai/shared/log';
+import { leaseNext, parseNextPayload, parseReport, reportable, reportAttempt, resumableSessions, SETTLED_ATTEMPTS_LIMIT, startRun, type ReportInput, type SoleDriver } from '../workflow/engine.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { getCurrentVersion } from '../package-info.js';
 import { expectedOutput, outputMismatch, OutputSchemaSchema } from '../workflow/output.js';
-import { CAN_KEYS, type DriverCan } from '../workflow/requirements.js';
+import { CAN_KEYS, mergeRequirements, type DriverCan } from '../workflow/requirements.js';
+import { wholeFit } from '../workflow/whole-workflow.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
 import { cancelRun, respondProvenance, respondToHitl, retryStep } from '../workflow/run-controls.js';
 import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
-import { readRun, runFilePath, runLockPath, runsDir, updateRun } from '../workflow/store.js';
-import type { TokenUsage } from '../tool-launch/stdout.js';
+import { attemptDir, AttemptIdSchema, readRun, RunIdSchema, runFilePath, runLockPath, runScratchDir, runsDir, updateRun } from '../workflow/store.js';
+import type { TokenUsage } from '@teamai/tool-core/stdout';
 import type { DriverIdentity, OutputSchema, RunState } from '../workflow/types.js';
 import { knownSecrets } from '../env-resolution.js';
 
@@ -2782,6 +2785,18 @@ describe('held-back steps', () => {
     expect(taken).toMatchObject({ data: { lease: { step: 'a', workspace: { branch: expect.stringMatching(/a/) } } } });
   });
 
+  it('holds a step whose requires.labels a driver does not declare every one of, and leases it to a driver that does', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: e2e
+    requires: { labels: [computer-use] }
+    command: node e2e.js
+`));
+
+    expect(await leaseNext(config, runId, driverA, { can: { workspace: [...allModes], labels: ['gpu'] }, base })).toMatchObject({
+      data: { wait: { held: [{ step: 'e2e', missing: ['labels'] }] } },
+    });
+    expect(await leaseNext(config, runId, driverB, { can: { workspace: [...allModes], labels: ['gpu', 'computer-use'] }, base })).toMatchObject({ data: { lease: { step: 'e2e' } } });
+  });
+
   it('holds a requires.env prompt step and leases a requires.env command step for can.env commands', async () => {
     vi.stubEnv('DEPLOY_TOKEN', 'deploy-value');
     const { config, runId } = await startBuild(graph(`  - id: notify
@@ -4683,13 +4698,152 @@ describe('the tool a prompt step names', () => {
   it('fails it tool_unavailable in a run its only driver drives, when that driver cannot run the tool, and runs the other steps', async () => {
     const { config, runId } = await startBuild(REVIEW_AND_LINT);
 
-    const lint = await leaseNext(config, runId, driverA, { can: { tools: ['claude'] }, alone: true });
+    const lint = await leaseNext(config, runId, driverA, { can: { tools: ['claude'] }, alone: { driver: 'local', offers: [{ runtime: 'local', can: { tools: ['claude'] } }] } });
 
     expect(lint).toMatchObject({ data: { lease: { step: 'lint' } } });
     expect(await readRun(config, runId)).toMatchObject({ steps: [
       { id: 'review', status: 'failed', failure: { code: 'tool_unavailable', message: 'Step "review" runs on codex, which the driver of this run cannot launch here. Install codex where the run is driven, or remove tool from the step.' } },
       { id: 'lint', status: 'leased' },
     ] });
+  });
+});
+
+describe('the tool a driver picks for a prompt step that names none', () => {
+  const REVIEW = graph(`  - id: review
+    prompt: Review it.
+`);
+  const toCodex = (): string => 'codex';
+
+  it('leases it only to a driver that lists that tool in can.tools, and leaves the tool off the lease', async () => {
+    const { config, runId } = await startBuild(REVIEW);
+
+    const held = await leaseNext(config, runId, driverA, { can: { tools: ['claude'] }, toolFor: toCodex });
+    const review = await leaseNext(config, runId, driverB, { can: { tools: ['codex'] }, toolFor: toCodex });
+
+    expect(held).toMatchObject({ data: { wait: { held: [{ step: 'review', missing: ['tools'] }] } } });
+    expect(review).toMatchObject({ data: { lease: { step: 'review' } } });
+    expect(review).not.toHaveProperty('data.lease.tool');
+  });
+
+  it('fails it tool_unavailable in a run its only driver drives, when no runtime offers that tool', async () => {
+    const { config, runId } = await startBuild(REVIEW);
+    const alone: SoleDriver = { driver: 'pair', offers: [{ runtime: 'toy', can: { tools: ['claude'] } }, { runtime: 'host', can: { tools: [], prompt: false } }] };
+
+    await leaseNext(config, runId, driverA, { can: { tools: ['claude'] }, alone, toolFor: toCodex });
+
+    expect(await readRun(config, runId)).toMatchObject({ steps: [
+      { id: 'review', status: 'failed', failure: { code: 'tool_unavailable', message: 'Step "review" names no tool and runs on codex, which the driver of this run cannot launch here. Install codex where the run is driven, or pick a tool it launches with --tools default=<tool>.' } },
+    ] });
+  });
+
+  it('leaves a confined step to the tools of can.confined, which a judge runs on', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: judge
+    workspace: { confined: evidence }
+    prompt: Judge the evidence.
+    output:
+      verdict: pass | fail
+`));
+    const dir = path.join(runScratchDir(config, runId), 'evidence');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'confined.json'), '{"level":"verified"}');
+
+    const judge = await leaseNext(config, runId, driverA, { can: { tools: [], confined: [{ level: 'verified', access: 'read', tools: ['claude'] }] }, toolFor: toCodex });
+
+    expect(judge).toMatchObject({ data: { lease: { step: 'judge', confined: { tools: ['claude'] } } } });
+  });
+});
+
+describe('a command step of a workflow under the name of one teamai ships', () => {
+  // A team file under a default's name replaces it, and is pinned as the default is.
+  it.each(['teamai-import-rules', 'teamai-promote-learning'])('holds %s\'s command step from a runtime off this host, and leases it on the host', async (name) => {
+    const { config } = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', `${name}.yaml`), `schemaVersion: v1alpha1
+name: ${name}
+description: Bookkeeping on this host.
+steps:
+  - id: record
+    command: node record.js
+`);
+    await syncScorersThenWorkflows(config);
+    const started = await startRun(config, name, {}, { secrets: await knownSecrets(config) });
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+
+    const remote = await leaseNext(config, runId, driverB, { can: { remote: true } });
+    const host = await leaseNext(config, runId, driverA, {});
+
+    expect(remote).toMatchObject({ data: { wait: { held: [{ step: 'record', missing: ['host'] }] } } });
+    expect(host).toMatchObject({ data: { lease: { step: 'record' } } });
+  });
+
+  it('is held from a runtime off this host by describe too, as next holds it', () => {
+    const parsed = parseWorkflow('teamai-import-rules.yaml', `schemaVersion: v1alpha1
+name: teamai-import-rules
+description: Bookkeeping on this host.
+steps:
+  - id: record
+    command: node record.js
+`);
+    if (!parsed.ok) throw new Error('the workflow does not parse');
+    const none = new Set<string>();
+
+    const { facts } = describeWorkflow({ definition: parsed.definition, source: 'team', workflows: {}, ceiling: 1, can: { remote: true }, allow: {}, env: { declared: none, secrets: none, present: none } });
+
+    expect(facts.held).toEqual([expect.objectContaining({ step: 'record', missing: ['host'] })]);
+  });
+
+  it('keeps a workflow step whole on no member when its child has an answer step, which runs only on this machine', () => {
+    const outer = parseWorkflow('outer.yaml', `schemaVersion: v1alpha1
+name: outer
+description: Runs ask.
+steps:
+  - id: pair
+    workflow: ask
+`);
+    const child = parseWorkflow('ask.yaml', `schemaVersion: v1alpha1
+name: ask
+description: Asks the member's tool.
+steps:
+  - id: ask
+    answer: Is the change done?
+    output: { text: string }
+`);
+    if (!outer.ok || !child.ok) throw new Error(JSON.stringify([outer, child].flatMap((parsed) => (parsed.ok ? [] : parsed.diagnostics.map((diagnostic) => diagnostic.message)))));
+    const [step] = outer.definition.steps;
+    if (step === undefined) throw new Error('no step');
+
+    expect(wholeFit(step, child.definition, { requires: mergeRequirements(), around: 'outer' })).toEqual({ unfit: 'step "ask" runs only on this machine' });
+  });
+});
+
+describe('a step that publishes to a teamai data branch', () => {
+  it.each([
+    { offered: 'the team workspace', workspace: ['new', 'continue', 'read-only', 'team'] as const },
+    { offered: 'no team workspace', workspace: ['new', 'continue', 'read-only'] as const },
+  ])('is held from a runtime off this host that offers $offered, as describe holds it', async ({ workspace }) => {
+    const { config } = testConfig();
+    const yaml = `schemaVersion: v1alpha1
+name: publisher
+description: Publish to a data branch.
+steps:
+  - id: publish
+    workspace: { team: { branch: teamai-reports } }
+    command: node publish.js
+    deliver: publish
+`;
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'publisher.yaml'), yaml);
+    await syncScorersThenWorkflows(config);
+    const started = await startRun(config, 'publisher', {}, { secrets: await knownSecrets(config) });
+    if ('error' in started) throw new Error(started.error.message);
+    const parsed = parseWorkflow('publisher.yaml', yaml);
+    if (!parsed.ok) throw new Error('the workflow does not parse');
+    const none = new Set<string>();
+
+    const remote = await leaseNext(config, String(started.data.run), driverB, { can: { remote: true, workspace: [...workspace] } });
+    const { facts } = describeWorkflow({ definition: parsed.definition, source: 'team', workflows: {}, ceiling: 1, can: { remote: true, workspace: [...workspace] }, allow: {}, env: { declared: none, secrets: none, present: none } });
+
+    expect(remote).toMatchObject({ data: { wait: { held: [{ step: 'publish', missing: expect.arrayContaining(['host']) }] } } });
+    expect(facts.held).toEqual([expect.objectContaining({ step: 'publish', missing: expect.arrayContaining(['host']) })]);
   });
 });
 
@@ -4722,7 +4876,7 @@ describe('a prompt step with permissions: unattended', () => {
   it('fails it tool_unavailable in a run whose only driver cannot run it unattended, and runs the other steps', async () => {
     const { config, runId } = await startBuild(FIX_AND_LINT);
 
-    const lint = await leaseNext(config, runId, driverA, { can: sandbox, alone: true });
+    const lint = await leaseNext(config, runId, driverA, { can: sandbox, alone: { driver: 'local', offers: [{ runtime: 'local', can: sandbox }] } });
 
     expect(lint).toMatchObject({ data: { lease: { step: 'lint' } } });
     expect(await readRun(config, runId)).toMatchObject({ steps: [
@@ -5559,6 +5713,21 @@ describe('token budgets', () => {
     expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'work', status: 'failed', failure: { code: 'loop_exhausted' } }] });
   });
 
+  it('fails a budgeted prompt whose driver offers tokens and read none for it, with the driver\'s reason rather than a call for another driver', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: plan
+    prompt: Plan it.
+`, 'budget: { tokens: 100 }\n'));
+    const plan = leaseIn(await leaseNext(config, runId, driverA, reports));
+    const why = { cause: 'teamai cannot read /home/al/.codex/sessions/2026/11/13 because it has no permission to read it.', next: 'Let the user teamai runs as read it, then retry the step.' };
+
+    await reportAttempt(config, runId, { attempt: plan.attempt, revision: plan.revision, outcome: 'success', driver: driverA, unmeasured: why });
+
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'plan', status: 'failed', failure: {
+      code: 'budget_unmeasured',
+      message: `Step "plan" runs under a token budget, and its driver, which reports tokens, read none for it, so the budget cannot count what it spent: ${why.cause} ${why.next}`,
+    } }] });
+  });
+
   it('gives a budgeted interactive prompt to a driver that cannot meter it, and records its spend as not counted', async () => {
     const { config, runId } = await startBuild(graph(`  - id: pair
     interactive: true
@@ -5946,6 +6115,27 @@ describe('strict requirements', () => {
     expect(leased).not.toHaveProperty('data.lease.envScope');
   });
 
+  it('starts a run whose strict steps each have a runtime of the only driver, though every runtime holds one of them back', async () => {
+    const { config } = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'build.yaml'), graph(`  - id: boxed
+    requires: { isolation: sandbox, strict: true }
+    command: node boxed.js
+  - id: offline
+    needs: [boxed]
+    requires: { network: false, strict: true }
+    command: node offline.js
+`));
+    await syncScorersThenWorkflows(config);
+    const secrets = await knownSecrets(config);
+
+    const started = await startRun(config, 'build', {}, { secrets, alone: { driver: 'split', offers: [
+      { runtime: 'box', can: { isolation: 'sandbox', network: false, env: true } },
+      { runtime: 'air', can: { isolation: 'none', network: true, env: true } },
+    ] } });
+
+    expect(started).toMatchObject({ data: { status: 'running' } });
+  });
+
   it('refuses a start whose only driver could never take a step for its strict requirements, and creates no run', async () => {
     const { config } = testConfig();
     fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'build.yaml'), graph(`  - id: fetch
@@ -5958,12 +6148,25 @@ describe('strict requirements', () => {
     await syncScorersThenWorkflows(config);
     const secrets = await knownSecrets(config);
 
-    const refused = await startRun(config, 'build', {}, { secrets, alone: { isolation: 'sandbox', network: false, env: true } });
-    const started = await startRun(config, 'build', {}, { secrets, alone: { isolation: 'none', network: true, env: true } });
+    const refused = await startRun(config, 'build', {}, { secrets, alone: { driver: 'local', offers: [{ runtime: 'local', can: { isolation: 'sandbox', network: false, env: true } }] } });
+    const started = await startRun(config, 'build', {}, { secrets, alone: { driver: 'local', offers: [{ runtime: 'local', can: { isolation: 'none', network: true, env: true } }] } });
 
     expect(refused).toEqual({ error: { code: 'requirement_unmet', message: 'Step "offline" strictly requires no network, which the local driver cannot deny. Run it with a driver that declares can.network.' } });
     expect(started).toMatchObject({ data: { status: 'running' } });
     expect(fs.readdirSync(runsDir(config))).toHaveLength(1);
+  });
+
+  it('refuses a strict sandbox step on a driver whose runtimes keep less, saying the isolation each keeps', async () => {
+    const { config } = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'build.yaml'), graph(`  - id: sealed
+    requires: { isolation: sandbox, strict: true }
+    command: node sealed.js
+`));
+    await syncScorersThenWorkflows(config);
+    // A bwrap sandbox keeps each step in a worktree of its own; the host slot keeps none.
+    const alone: SoleDriver = { driver: 'bw', offers: [{ runtime: 'sandbox', can: { isolation: 'worktree', env: true } }, { runtime: 'host', inProcess: true, can: { isolation: 'none', env: true } }] };
+
+    expect(await startRun(config, 'build', {}, { secrets: await knownSecrets(config), alone })).toEqual({ error: { code: 'requirement_unmet', message: 'Step "sealed" requires strict isolation, and no runtime of driver "bw" is a sandbox (sandbox: isolation worktree, host: isolation none). Run sandbox on a provider that is a sandbox here, or run the workflow in CI or a container with --sandbox.' } });
   });
 
   it('starts an unattended prompt only under a strict sandbox: its own, an enclosing step, defaults, or the step that runs its workflow', async () => {
@@ -6009,5 +6212,311 @@ describe('strict requirements', () => {
     expect(await start('loose')).toEqual({ error: { code: 'unattended_unsandboxed', message: `Step "run.work" ${needs}` } });
     for (const name of ['ci', 'own', 'outer', 'sealed']) expect(await start(name)).toMatchObject({ data: { status: 'running' } });
     expect(fs.readdirSync(runsDir(config))).toHaveLength(4);
+  });
+});
+
+describe('a required HITL request in a run whose only driver has several runtimes', () => {
+  const GATED = `schemaVersion: v1alpha1
+name: build
+description: Ship once a person approves.
+steps:
+  - id: ship
+    approve: { message: Ship it?, required: true }
+    command: node ship.js
+`;
+  const alone = { driver: 'showcase', offers: [{ runtime: 'toy', can: { hitl: false } }, { runtime: 'local', can: { hitl: true } }] } satisfies SoleDriver;
+
+  it('waits while a runtime that cannot ask is offered, and is asked once the runtime that can is offered', async () => {
+    const { config, runId } = await startBuild(GATED);
+
+    const onToy = await leaseNext(config, runId, driverA, { can: { hitl: false }, alone });
+    const onLocal = await leaseNext(config, runId, driverA, { can: { hitl: true }, alone });
+
+    expect(onToy).toMatchObject({ data: { wait: {} } });
+    expect(onLocal).toMatchObject({ data: { hitl: { step: 'ship', pass: 1 } } });
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'ship', status: 'waiting' }] });
+  });
+
+  it('still fails it hitl_required when no runtime of the driver can ask', async () => {
+    const { config, runId } = await startBuild(GATED);
+    const none = { driver: 'showcase', offers: [{ runtime: 'toy', can: { hitl: false } }, { runtime: 'local', can: { hitl: false } }] } satisfies SoleDriver;
+
+    await leaseNext(config, runId, driverA, { can: { hitl: false }, alone: none });
+
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'ship', status: 'failed', failure: { code: 'hitl_required' } }] });
+  });
+});
+
+describe('an interactive step in a run whose only driver has several runtimes, none of which can ask', () => {
+  const REVIEW = graph(`  - id: review
+    workspace: new
+    interactive: true
+    tool: claude
+    prompt: Review the repository with a person.
+`);
+  const base = { commit: 'b'.repeat(40) };
+  const local: DriverCan = { workspace: ['read-only', 'new', 'continue'], tools: ['claude'], hitl: false };
+  const toy: DriverCan = { workspace: [], tools: ['claude'], hitl: false };
+  const alone = { driver: 'mixed', offers: [{ runtime: 'local', can: local }, { runtime: 'toy', can: toy }] } satisfies SoleDriver;
+
+  it('holds it for a person on each runtime, also on the one that lacks its workspace, so the driver can hand it to one', async () => {
+    const { config, runId } = await startBuild(REVIEW);
+
+    const onLocal = await leaseNext(config, runId, driverA, { can: local, alone, base });
+    const onToy = await leaseNext(config, runId, driverA, { can: toy, alone, base });
+
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'review', status: 'pending' }] });
+    expect(onLocal).toMatchObject({ data: { wait: { held: [{ step: 'review', missing: ['hitl'] }] } } });
+    expect(onToy).toMatchObject({ data: { wait: { held: [{ step: 'review', missing: ['workspace.new', 'hitl'] }] } } });
+  });
+
+  it('fails it tool_unavailable, before a person is asked, when no runtime launches its tool and one of them lacks its workspace', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: review
+    workspace: new
+    interactive: true
+    tool: codex
+    prompt: Review the repository with a person.
+`));
+    const bare: DriverCan = { workspace: [], tools: [], hitl: false };
+    const toolless = { driver: 'toolgap', offers: [{ runtime: 'local', can: local }, { runtime: 'toy', can: bare }] } satisfies SoleDriver;
+
+    const onToy = await leaseNext(config, runId, driverA, { can: bare, alone: toolless, base });
+    await leaseNext(config, runId, driverA, { can: local, alone: toolless, base });
+
+    expect(onToy).toMatchObject({ data: { wait: { held: [{ step: 'review', missing: ['workspace.new', 'tools', 'hitl'] }] } } });
+    expect(await readRun(config, runId)).toMatchObject({ steps: [
+      { id: 'review', status: 'failed', failure: { code: 'tool_unavailable', message: 'Step "review" runs on codex, which the driver of this run cannot launch here. Install codex where the run is driven, or remove tool from the step.' } },
+    ] });
+  });
+});
+
+// A runtime whose plan defers a step on its workspace is judged as if it had that workspace, so adding one to a driver
+// leaves the outcome of every requirement other than the workspace as it was without it.
+describe('a step in a run whose only driver has a runtime that lacks its workspace', () => {
+  const base = { commit: 'b'.repeat(40) };
+  const placeless = (can: DriverCan): DriverCan => ({ ...can, workspace: [] });
+
+  it('holds an interactive step the member\'s policy refuses for that policy on each runtime, never for a person', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: review
+    workspace: new
+    interactive: true
+    tool: claude
+    requires: { network: true }
+    prompt: Review the repository with a person.
+`));
+    const refusing: LocalConfig = { ...config, workflows: { tools: {}, allow: { network: false } } };
+    const local: DriverCan = { workspace: ['read-only', 'new', 'continue'], tools: ['claude'], hitl: false };
+    const alone = { driver: 'mixed', offers: [{ runtime: 'local', can: local }, { runtime: 'toy', can: placeless(local) }] } satisfies SoleDriver;
+
+    const onLocal = await leaseNext(refusing, runId, driverA, { can: local, alone, base });
+    const onToy = await leaseNext(refusing, runId, driverA, { can: placeless(local), alone, base });
+
+    expect(onLocal).toMatchObject({ data: { wait: { held: [{ step: 'review', missing: ['policy.network'] }] } } });
+    expect(onToy).toMatchObject({ data: { wait: { held: [{ step: 'review', missing: ['workspace.new', 'policy.network'] }] } } });
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'review', status: 'pending' }] });
+  });
+
+  it.each([
+    ['both runtimes give its workspace', false, false],
+    ['the second runtime lacks its workspace', false, true],
+    ['the first runtime lacks its workspace', true, false],
+  ])('leaves a step with a role pending, when no runtime gives a role, as when %s', async (_, firstPlaceless, secondPlaceless) => {
+    const fixture = testConfig();
+    fs.mkdirSync(path.join(fixture.config.repo.localPath, 'manifest'), { recursive: true });
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: review\n    resources: { knowledge: [], skills: [review] }\n');
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph(`  - id: check
+    workspace: new
+    tool: claude
+    role: review
+    prompt: Review.
+`));
+    await syncScorersThenWorkflows(fixture.config);
+    const started = await startRun(fixture.config, 'build', {}, { secrets: await knownSecrets(fixture.config) });
+    if ('error' in started) throw new Error(started.error.message);
+    const { config } = fixture;
+    const runId = String(started.data.run);
+    const roleless: DriverCan = { workspace: ['read-only', 'new', 'continue'], tools: ['claude'], role: false };
+    const first = firstPlaceless ? placeless(roleless) : roleless;
+    const second = secondPlaceless ? placeless(roleless) : roleless;
+    const alone = { driver: 'mixed', offers: [{ runtime: 'local', can: first }, { runtime: 'toy', can: second }] } satisfies SoleDriver;
+
+    await leaseNext(config, runId, driverA, { can: first, alone, base, prepare: true });
+    await leaseNext(config, runId, driverA, { can: second, alone, base, prepare: true });
+
+    expect(await readRun(config, runId)).toMatchObject({ status: 'running', steps: [{ id: 'check', status: 'pending' }] });
+  });
+
+  it.each([
+    ['both runtimes give its workspace', false, false],
+    ['the second runtime lacks its workspace', false, true],
+    ['the first runtime lacks its workspace', true, false],
+  ])('fails an unattended interactive step tool_unavailable, when no runtime runs it unattended, as when %s', async (_, firstPlaceless, secondPlaceless) => {
+    const { config, runId } = await startBuild(graph(`  - id: fix
+    workspace: new
+    interactive: true
+    tool: claude
+    permissions: unattended
+    requires: { isolation: sandbox, strict: true }
+    prompt: Fix it with a person.
+`));
+    const sandbox: DriverCan = { workspace: ['read-only', 'new', 'continue'], isolation: 'sandbox', env: true, tools: ['claude'], hitl: false, unattended: false };
+    const first = firstPlaceless ? placeless(sandbox) : sandbox;
+    const second = secondPlaceless ? placeless(sandbox) : sandbox;
+    const alone = { driver: 'sandboxes', offers: [{ runtime: 'one', can: first }, { runtime: 'two', can: second }] } satisfies SoleDriver;
+
+    await leaseNext(config, runId, driverA, { can: first, alone, base });
+    await leaseNext(config, runId, driverA, { can: second, alone, base });
+
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'fix', status: 'failed', failure: {
+      code: 'tool_unavailable', message: 'Step "fix" sets permissions: unattended on claude, which the driver of this run cannot run unattended. Run it with a driver that declares can.unattended, or remove permissions from the step.',
+    } }] });
+  });
+});
+
+describe('a workflow step leased whole', () => {
+  // A check that ends rejected, which its workflow maps to failed, with the verdict it read as the workflow's output.
+  const files = {
+    check: workflow('check', `  - id: look
+    command: node look.js
+    end: rejected
+    output:
+      verdict: string
+`, 'ends:\n  rejected: failed\noutputs:\n  verdict: steps.look.outputs.verdict\n'),
+    ship: workflow('ship', `  - id: check
+    workflow: check
+`),
+  };
+
+  const settledCheck = async (config: LocalConfig, runId: string) => {
+    const run = await readRun(config, runId as RunState['id']);
+    if (run === 'missing' || run === 'corrupt') throw new Error(`run ${runId} is ${run}`);
+    const check = run.steps.find((step) => step.id === 'check');
+    if (check?.status !== 'failed') return { status: check?.status };
+    return { status: check.status, end: check.end, outputs: check.outputs };
+  };
+
+  it('settles as the same step does when its workflow runs here, outputs of a failed end included', async () => {
+    const here = await startTree(files, 'ship');
+    await driveWith(here.config, here.runId, { 'check.look': { outputs: { verdict: 'no' } } });
+    const expanded = await settledCheck(here.config, here.runId);
+    expect(expanded).toEqual({ status: 'failed', end: 'rejected', outputs: { verdict: 'no' } });
+
+    const whole = await startTree(files, 'ship');
+    const lease = leaseIn(await leaseNext(whole.config, whole.runId, driverA, { can: { workflow: true } }));
+    expect(lease.step).toBe('check');
+    // What the local driver reports from the whole workflow a member ran: the nested run's end and outputs.
+    const reported = await reportAttempt(whole.config, whole.runId, {
+      attempt: lease.attempt, revision: lease.revision, driver: driverA, outcome: 'failed', exitCode: 1, end: 'rejected', outputs: { verdict: 'no' },
+    });
+    if ('error' in reported) throw new Error(reported.error.message);
+
+    expect(await settledCheck(whole.config, whole.runId)).toEqual(expanded);
+  });
+
+  it('expands a workflow whose command step requires the host, so it never runs whole on another machine', async () => {
+    const pinned = {
+      check: workflow('check', `  - id: look
+    requires: { host: true }
+    command: node look.js
+`),
+      ship: workflow('ship', `  - id: check
+    workflow: check
+`),
+    };
+    const run = await startTree(pinned, 'ship');
+
+    const lease = leaseIn(await leaseNext(run.config, run.runId, driverA, { can: { workflow: true } }));
+
+    expect(lease.step).toBe('check.look');
+  });
+});
+
+describe('a run whose only driver runs nothing but the host slot, as the built-in host does', () => {
+  const HOST: SoleDriver = { driver: 'host', offers: [{ runtime: 'host', inProcess: true, can: { tools: [], prompt: false, answer: false } }] };
+  const refusal = (step: string, what: string): unknown => ({ error: { code: 'requirement_unmet', message: `Step "${step}" ${what}, and driver "host" launches no AI tool: it runs only commands, gates and workflows whose steps need none. Run the workflow with --driver local.` } });
+
+  it.each([
+    { kind: 'a prompt step', steps: '  - id: review\n    prompt: Review it.\n', step: 'review', what: 'runs a prompt' },
+    { kind: 'an interactive step', steps: '  - id: pair\n    prompt: Pair on it.\n    interactive: true\n', step: 'pair', what: 'runs a prompt' },
+    { kind: 'an answer step', steps: '  - id: ask\n    answer: Name one color.\n    output: { color: string }\n', step: 'ask', what: 'is an answer step, which asks your AI tool' },
+    { kind: 'a prompt step of a workflow it runs', steps: '  - id: fix\n    workflow: fix\n', step: 'fix.work', what: 'runs a prompt' },
+  ])('refuses a start with $kind, naming it and --driver local, and creates no run', async ({ steps, step, what }) => {
+    const { config } = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'build.yaml'), graph(steps));
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'fix.yaml'), workflow('fix', '  - id: work\n    prompt: Fix it.\n'));
+    await syncScorersThenWorkflows(config);
+
+    expect(await startRun(config, 'build', {}, { secrets: await knownSecrets(config), alone: HOST })).toEqual(refusal(step, what));
+    expect(fs.existsSync(runsDir(config)) ? fs.readdirSync(runsDir(config)) : []).toHaveLength(0);
+  });
+
+  it('refuses a start with a scored step whose own steps are commands, since its judge is an AI tool, and creates no run', async () => {
+    const { config } = testConfig();
+    fs.mkdirSync(path.join(config.repo.localPath, 'scorers'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'quality.md'), '---\nlabels:\n  - { value: good, score: 1, description: Did the work }\n  - { value: bad, score: 0, description: Did not }\npassingScore: 1\nsamplingRate: 100\n---\nJudge the work.\n');
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'build.yaml'), graph('  - id: tidy\n    workflow: tidy\n    scorers: [quality]\n'));
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'tidy.yaml'), workflow('tidy', '  - id: lint\n    command: node -e "0"\n'));
+    await syncScorersThenWorkflows(config);
+
+    expect(await startRun(config, 'build', {}, { secrets: await knownSecrets(config), alone: HOST })).toEqual({ error: { code: 'requirement_unmet', message: 'Step "tidy" is scored, and its judge runs on an AI tool, which driver "host" does not launch: it runs only commands, gates and workflows whose steps need none. Run the workflow with --driver local.' } });
+    expect(fs.existsSync(runsDir(config)) ? fs.readdirSync(runsDir(config)) : []).toHaveLength(0);
+  });
+
+  it('starts a run of commands and a gate', async () => {
+    const { config } = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'build.yaml'), graph('  - id: build\n    command: node -e "0"\n  - id: ship\n    needs: [build]\n    approve: { message: Ship it? }\n    command: node -e "0"\n'));
+    await syncScorersThenWorkflows(config);
+
+    expect(await startRun(config, 'build', {}, { secrets: await knownSecrets(config), alone: HOST })).toMatchObject({ data: { status: 'running' } });
+  });
+
+  it('fails a prompt step it meets later, as of a workflow a step produces, rather than leave it waiting', async () => {
+    const { config, runId } = await startBuild(graph('  - id: review\n    prompt: Review it.\n'));
+
+    await leaseNext(config, runId, driverA, { can: HOST.offers[0].can, alone: HOST });
+
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'review', status: 'failed', failure: (refusal('review', 'runs a prompt') as { error: object }).error }] });
+  });
+});
+
+describe('a run part of a step its run another machine keeps', () => {
+  const partOf = { run: RunIdSchema.parse('r0123456789abcdef'), attempt: AttemptIdSchema.parse('a01234567') };
+
+  it('runs while a fleet member keeps that attempt\'s directory here, and is cancelled at the first next once it is gone', async () => {
+    const { config } = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'build.yaml'), TWO_STEPS);
+    await syncScorersThenWorkflows(config);
+    fs.mkdirSync(attemptDir(config, partOf.run, partOf.attempt), { recursive: true });
+    const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config), partOf });
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+
+    expect(await leaseNext(config, runId, driverA)).toMatchObject({ data: { lease: { step: 'one' } } });
+    fs.rmSync(attemptDir(config, partOf.run, partOf.attempt), { recursive: true });
+
+    expect(await leaseNext(config, runId, driverA)).toMatchObject({ data: { done: { run: runId, outcome: 'cancelled' } } });
+    const ended = await readRun(config, runId);
+    expect(ended !== 'missing' && ended !== 'corrupt' ? ended.steps.map((step) => [step.id, step.status, 'failure' in step ? step.failure?.message : undefined]) : ended).toEqual([
+      ['one', 'cancelled', `Ended: attempt ${partOf.attempt} of run ${partOf.run} stopped (its run is gone)`],
+      ['two', 'skipped', undefined],
+    ]);
+  });
+
+  it('runs again once a person retries it after its step ended, out of that step', async () => {
+    const { config } = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'build.yaml'), TWO_STEPS);
+    await syncScorersThenWorkflows(config);
+    const secrets = await knownSecrets(config);
+    fs.mkdirSync(attemptDir(config, partOf.run, partOf.attempt), { recursive: true });
+    const started = await startRun(config, 'build', {}, { secrets, partOf });
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    await leaseNext(config, runId, driverA);
+    fs.rmSync(attemptDir(config, partOf.run, partOf.attempt), { recursive: true });
+    expect(await leaseNext(config, runId, driverA)).toMatchObject({ data: { done: { outcome: 'cancelled' } } });
+
+    expect(await retryStep(config, runId, secrets, 'one')).not.toHaveProperty('error');
+
+    expect(await leaseNext(config, runId, driverA)).toMatchObject({ data: { lease: { step: 'one' } } });
   });
 });

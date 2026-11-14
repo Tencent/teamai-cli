@@ -6,7 +6,7 @@ import {
   clearGitExcludeFailure, localAgentGitExcludeNotices, readGitExcludeNotices, recordGitExcludeFailure, sayGitExcludeNotices,
 } from '../git-exclude-notices.js';
 import type { LocalConfig } from '../types.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 describe('git exclude notices kept per owner (#915)', () => {
   let home: string;

@@ -4,6 +4,7 @@
  * tool reads the folder's files, and delivers the folder there (`DeliveredFolders`, common rule 9).
  */
 import fs from 'node:fs/promises';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import path from 'node:path';
 import { z } from 'zod';
 import type { DeliveryLedger } from './delivered-copies.js';
@@ -11,10 +12,12 @@ import { DeliveredFolders, type DeliveredFolderRef, type FolderDelivery } from '
 import { FolderFiles, type FolderFile } from './folder-files.js';
 import { isLanguageVariant, RESOURCE_LAYOUTS, type ResourceDiagnostic } from './resolver.js';
 import { splitRuleFrontmatter } from './team-rule.js';
-import { folderReachOf } from '../tools.js';
-import type { LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
+import { toolPathUnder } from '../locate.js';
+import { realHost } from '../tool-home.js';
+import { folderReachOf } from '../tool-registry.js';
+import { scopedToolPaths, type LocalConfig, type ResourceItem, type TeamaiConfig } from '../types.js';
 import { pathExists, readJsonObject, writeJson } from '../utils/fs.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { warnOnce } from '../utils/warn-once.js';
 
 /** The marker and base text of a rule folder. */
@@ -47,7 +50,7 @@ async function isDelivered(localConfig: LocalConfig, name: string): Promise<bool
 
 /** A text file of a rule folder, read as common rule 12 says; null when it cannot be read. */
 async function readTextFile(file: string): Promise<string | null> {
-  const raw = await fs.readFile(file, 'utf8').catch(() => null);
+  const raw = await readRegularFile(file, 'utf8').catch(() => null);
 
   return raw === null ? null : FolderFiles.text(raw);
 }
@@ -173,6 +176,18 @@ async function deliveredNames(localConfig: LocalConfig): Promise<string[]> {
   return names;
 }
 
+/**
+ * The user settings file of `tool` that `grant` edits: its configured settings path under the home, where the root
+ * `toolRoots` records (Claude Code's `CLAUDE_CONFIG_DIR`) or an instance's home moves it, as its hooks find it.
+ */
+function grantSettingsFile(input: { tool: string; teamConfig: Pick<TeamaiConfig, 'toolPaths'>; localConfig: LocalConfig }): string | null {
+  const { tool, teamConfig, localConfig } = input;
+  const settings = scopedToolPaths(teamConfig, { ...localConfig, scope: 'user' })[tool]?.settings;
+  const host = realHost();
+
+  return settings ? toolPathUnder(tool, host.home, settings, host) : null;
+}
+
 /** A JSON object in a tool's settings file, as far as teamai reads it. */
 const SettingsObjectSchema = z.record(z.string(), z.unknown());
 
@@ -223,4 +238,4 @@ async function grant(input: {
   return owned;
 }
 
-export const RuleFolders = { isFolder, pathOf, isDelivered, deliveredNames, languageFile, readTextFile, text, composeText, variantNotes, render, sync, grant } as const;
+export const RuleFolders = { isFolder, pathOf, isDelivered, deliveredNames, languageFile, readTextFile, text, composeText, variantNotes, render, sync, grant, grantSettingsFile } as const;

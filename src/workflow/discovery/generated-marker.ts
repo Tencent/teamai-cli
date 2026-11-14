@@ -7,7 +7,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { readFileSafe } from '../../utils/fs.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 const MARKER = /^( {2}teamai-generated: )(.*)$/m;
 const VALUE = /^workflow\/([A-Za-z0-9][A-Za-z0-9._-]*) sha256:([0-9a-f]{64})$/;
@@ -41,7 +41,7 @@ export function readGenerated(content: string): Generated {
 
 /** `readGenerated` of the SKILL.md in `skillDir`; one that cannot be read is theirs. */
 export async function generatedSkillAt(skillDir: string): Promise<Generated> {
-  const content = await readFileSafe(path.join(skillDir, 'SKILL.md'));
+  const content = await readRegularFile(path.join(skillDir, 'SKILL.md'), 'utf8').catch(() => null);
 
   return content === null ? { kind: 'theirs' } : readGenerated(content);
 }

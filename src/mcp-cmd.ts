@@ -21,9 +21,9 @@ import { placeholderValue, referencedVars } from './resources/mcp-format.js';
 import { reportMissingSecrets } from './env-advisories.js';
 import { resolvesTeamEnv, resolveTeamEnv } from './env-resolution.js';
 import { carriesResolvedValue, ensureExcludedFromGit } from './mcp-git-exclude.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { GlobalOptions } from './types.js';
-import { getUserHome } from './utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 
 function displayPath(p: string): string {
   const home = getUserHome();

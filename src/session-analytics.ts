@@ -9,9 +9,10 @@
  */
 
 import { aggregateSessionMetrics } from './dashboard-collector.js';
-import { emptyTokenUsage, addTokenUsage, totalTokens } from './types.js';
+import { emptyTokenUsage, addTokenUsage, totalTokens } from '@teamai/tool-core/tokens';
 import { repoKeys, repoLabel } from './utils/repo-attribution.js';
-import type { DashboardEvent, TokenUsage } from './types.js';
+import type { DashboardEvent } from './types.js';
+import type { TokenUsage } from '@teamai/tool-core/tokens';
 
 export interface RepoStat {
   repo: string;

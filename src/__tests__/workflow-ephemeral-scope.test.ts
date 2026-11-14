@@ -44,7 +44,8 @@ describe('a run with no teamai init', () => {
     const file = scope.config.ephemeralConfig;
     expect(file).toBeDefined();
     expect(lease).toMatchObject({ step: 'plan', env: { TEAMAI_EPHEMERAL_CONFIG: file } });
-    expect(lease.env.TEAMAI_RUN_DIR?.startsWith(getDataHome(scope.config))).toBe(true);
+    // The run's directory is spelled by its real path, as /tmp is /private/tmp on macOS.
+    expect(lease.env.TEAMAI_RUN_DIR?.startsWith(fs.realpathSync(getDataHome(scope.config)))).toBe(true);
 
     vi.stubEnv('TEAMAI_EPHEMERAL_CONFIG', lease.env.TEAMAI_EPHEMERAL_CONFIG);
     const elsewhere = checkout();

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 import chalk from 'chalk';
 import { z } from 'zod';
@@ -9,7 +9,7 @@ import type { WikiLintSeverity } from './codebase-wiki-lint.js';
 import type { TeamwikiTarget } from './utils/teamwiki-root.js';
 import type { ShortcutEnd } from './workflow-commands.js';
 import { DetachedTeamRepoError } from './utils/git.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 /** The component list of an evidence `_manifest.json`, which deep enrichment needs at least one of. */
 const EvidenceComponentsSchema = z.object({ components: z.array(z.unknown()).optional().catch(undefined) });
@@ -213,7 +213,7 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
         let componentCount = 0;
 
         try {
-            const manifest = EvidenceComponentsSchema.parse(JSON.parse(await readFile(path.join(evidenceDir, '_manifest.json'), 'utf-8')));
+            const manifest = EvidenceComponentsSchema.parse(JSON.parse(await readRegularFile(path.join(evidenceDir, '_manifest.json'), 'utf-8')));
 
             componentCount = manifest.components?.length ?? 0;
         } catch {
@@ -385,7 +385,7 @@ async function printCodebaseStatus(opts: CodebaseCmdOptions): Promise<void> {
     };
 
     try {
-        manifest = JSON.parse(await readFile(manifestPath, 'utf-8'));
+        manifest = JSON.parse(await readRegularFile(manifestPath, 'utf-8'));
     } catch {
         if (opts.json) {
             console.log(JSON.stringify({ error: 'no-manifest', manifestPath }));

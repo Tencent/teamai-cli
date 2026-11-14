@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { sameEnvName } from '../resources/env-key.js';
-import { mergeRequirements, negotiate, requiredEnvKeys, type Allow, type DriverCan, type EnvFacts, type InEffect, type Missing, type Setup } from './requirements.js';
+import { DefaultWorkflows } from '../default-workflows.js';
+import { isPinnedToHost, mergeRequirements, negotiate, requiredEnvKeys, type Allow, type DriverCan, type EnvFacts, type InEffect, type Missing, type Setup } from './requirements.js';
 import { stepWorkflow, workflowRunBy, type Invoke, type OutputSchema, type WorkflowDefinition, type WorkflowSource, type WorkflowStep } from './types.js';
 import { confinedOf, copyOf, isRunLevel, levelsInside, opensCopy, roleLevelOf, runLevels, runsInCheckout, writesBranch, writtenRole, type RoleLevel } from './workspace.js';
 
@@ -49,6 +50,22 @@ function guardsOf(step: WorkflowStep, steps: WorkflowStep[], prefix: string): Ga
   return { kind: 'none', waiting: steps.flatMap((other) => (other.needs?.includes(step.id) ? [`${prefix}${other.id}`] : [])) };
 }
 
+/**
+ * Whether a run described by `facts` needs an AI tool: a prompt, interactive or answer step, a scored step, or a step
+ * that runs a workflow another step produces, which may hold any of them. One that needs none runs on the host slot
+ * alone, as the built-in `host` driver does.
+ */
+export function needsAiTool(facts: Pick<WorkflowDescription['facts'], 'prompts' | 'scored' | 'produced'>): boolean {
+  return facts.prompts.length > 0 || facts.scored.length > 0 || facts.produced.length > 0;
+}
+
+/** Whether a run of `definition`, which runs the workflows in `workflows` by name, needs an AI tool, as `needsAiTool` says. */
+export function definitionNeedsAiTool(definition: WorkflowDefinition, workflows: Record<string, WorkflowDefinition>): boolean {
+  const none = new Set<string>();
+
+  return needsAiTool(describeWorkflow({ definition, source: 'team', workflows, ceiling: 1, can: {}, allow: {}, env: { declared: none, secrets: none, present: none } }).facts);
+}
+
 /** What a workflow will do, read from its definition before any run, as far as choosing how to start it needs. */
 export interface WorkflowDescription {
   name: string;
@@ -79,6 +96,8 @@ export interface WorkflowDescription {
     scored: Array<{ step: string; scorers: string[] }>;
     /** Prompt steps confined to a directory, by path, which only a confined tool or a fresh child answers. */
     confined: string[];
+    /** `workflow: { from }` steps, by path: each runs a workflow an earlier step produces, whose steps nobody sees before the run. */
+    produced: string[];
     /**
      * Steps that open a pull request once they succeed, by path. `onto`: the delivering step whose branch the step's
      * own starts from, whose pull request it targets; without it, the pull request targets `base`.
@@ -94,10 +113,11 @@ export interface WorkflowDescription {
     budgets: Array<{ step?: string; tokens: number }>;
     /**
      * Each step that runs a command or a prompt, by path, with what the machine that runs it needs: the `requires.env`
-     * keys of the step and its setup, and the agent and `tool` of a prompt step, from which the driver picks its tool.
+     * keys of the step and its setup, its `requires.labels`, and the agent and `tool` of a prompt step, from which the
+     * driver picks its tool. `answer`: the step is an answer step, which the local driver runs on the member's AI tool.
+     * `host`: the step runs only on this machine (`isPinnedToHost`), as its `requires.host` or teamai's own pins keep it.
      */
-    /** `answer`: the step is an answer step, which the local driver runs on the member's AI tool rather than a workflow tool. */
-    runs: Array<{ step: string; executor: 'command' | 'prompt'; env: string[]; agent?: string; tool?: string; answer?: true }>;
+    runs: Array<{ step: string; executor: 'command' | 'prompt'; env: string[]; labels?: string[]; agent?: string; tool?: string; answer?: true; host?: true }>;
     /** Steps the describing driver is held from, by path, with what it lacks, and the `requires.env` keys they need. */
     held: Array<{ step: string; missing: Missing[]; env: string[] }>;
     localRoute?: LocalRoute;
@@ -111,6 +131,8 @@ type Gate = Facts['gates'][number];
 /** What the steps of one workflow in the tree run under, as the engine's scopes give it. */
 interface Scope {
   prefix: string;
+  /** The workflow its steps belong to, as the engine's scope names it: an inline workflow's is the one around it. */
+  workflow: string;
   requires: InEffect;
   budgeted: boolean;
   setup?: Setup;
@@ -147,7 +169,7 @@ export function describeWorkflow(input: {
   if (definition.timeout !== undefined) limit.timeout = definition.timeout;
 
   const facts: Facts = {
-    prompts: [], interactive: [], modeled: [], width: 0, gates: [], inWorkspace: [], scored: [], confined: [], deliver: [], ...branch,
+    prompts: [], interactive: [], modeled: [], width: 0, gates: [], inWorkspace: [], scored: [], confined: [], produced: [], deliver: [], ...branch,
     requiresEnv: {
       keys: [...runEnvKeys],
       missingHere: [...runEnvKeys].filter((key) => sameEnvName(env.present, key) === undefined),
@@ -178,11 +200,16 @@ export function describeWorkflow(input: {
     const setupEnv = hasContract ? scope.setup?.requires?.env ?? [] : [];
     const run: Facts['runs'][number] = { step: path, executor, env: [...new Set([...requires.env ?? [], ...setupEnv])] };
 
+    if (requires.labels !== undefined) run.labels = requires.labels;
+
     if (executor === 'prompt' && step.agent !== undefined) run.agent = step.agent;
 
     if (executor === 'prompt' && step.tool !== undefined) run.tool = step.tool;
 
     if (step.answer !== undefined) run.answer = true;
+    const pinned = isPinnedToHost({ step, executor, inShippedWorkflow: DefaultWorkflows.isShipped(scope.workflow), requires });
+
+    if (pinned) run.host = true;
     facts.runs.push(run);
 
     const negotiation = negotiate({
@@ -193,6 +220,8 @@ export function describeWorkflow(input: {
       maxTurns: step.maxTurns, setup: hasContract ? scope.setup : undefined,
       tool: step.tool,
       unattended: step.permissions === 'unattended',
+      answer: step.answer !== undefined,
+      pinned,
     }, can, allow, env);
 
     if (negotiation.kind === 'hold') facts.held.push({ step: path, missing: negotiation.missing, env: requires.env ?? [] });
@@ -286,6 +315,7 @@ export function describeWorkflow(input: {
         const placed = around.at(-1)?.step;
         own = visit(child.steps, {
           prefix: `${path}.`,
+          workflow: named?.name ?? scope.workflow,
           requires: mergeRequirements(scope.requires, step.requires, named?.defaults?.requires),
           budgeted: scope.budgeted || step.budget !== undefined || named?.budget !== undefined,
           setup,
@@ -298,6 +328,7 @@ export function describeWorkflow(input: {
         own = 1;
         offer(step, path, scope);
       } else if (stepWorkflow(step)?.kind === 'from') {
+        facts.produced.push(path);
         // Its workflow does not exist yet, but every step of it inherits what this one requires: a driver that lacks
         // that is held from the step itself, as from a step that runs in a copy of its own.
         const requires = mergeRequirements(scope.requires, step.requires);
@@ -321,7 +352,7 @@ export function describeWorkflow(input: {
   };
 
   const top: Scope = {
-    prefix: '', requires: mergeRequirements(definition.defaults?.requires), budgeted: definition.budget !== undefined,
+    prefix: '', workflow: definition.name, requires: mergeRequirements(definition.defaults?.requires), budgeted: definition.budget !== undefined,
     setup: definition.setup,
     defaultModel: definition.defaults?.model,
     around: runLevels(definition).map((step) => roleLevelOf(step, definition.defaults?.role)),

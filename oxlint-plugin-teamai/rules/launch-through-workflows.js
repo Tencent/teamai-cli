@@ -1,20 +1,39 @@
 import { defineRule } from '@oxlint/plugins';
 import path from 'node:path';
 import { importVisitors } from '../imports.js';
-import { sourcePath, stringLiteralValue } from '../utils.js';
+import { lintedPath, sourcePath, stringLiteralValue, workspaceRoot } from '../utils.js';
 
-/** The folders that may launch a tool: the workflow drivers, and the launcher itself. */
-const ALLOWED = ['src/workflow/', 'src/tool-launch/'];
+/** The folders that may launch a tool: the workflow drivers, and the runtimes that launch tools for them. */
+export const ALLOWED = ['src/workflow/', 'packages/runtime-tools/', 'packages/runtime-sandbox/'];
 
-/** The modules that launch a tool, and the names that do; `undefined` is every name. */
+/**
+ * The modules that launch a tool, by repository path or by package, and the names that do; `undefined` is every name.
+ * A package's entry covers every subpath of it.
+ */
 /** @type {Record<string, string[] | undefined>} */
-const LAUNCHERS = {
-  'src/tool-launch/call.ts': undefined,
-  'src/tool-launch/run.ts': undefined,
-  'src/tool-launch/confined.ts': ['runConfined', '*'],
+export const LAUNCHERS = {
+  'src/workflow/runtimes/tool-caller.ts': undefined,
+  'src/workflow/confined-launch.ts': ['runConfined', '*'],
+  '@teamai/runtime-tools': undefined,
+  '@teamai/tool-launch': undefined,
 };
 
-/** The executable of every tool teamai launches, as `executableOf` in src/tool-launch/tools.ts names it; a test keeps the two equal. */
+/**
+ * The entry of LAUNCHERS an import of `specifier` from `from` reaches: the repository path of a relative one, or the
+ * package of an `@teamai/` one, any subpath of it.
+ * @param {string} from
+ * @param {string} specifier
+ */
+function launcherOf(from, specifier) {
+  if (specifier.startsWith('.')) return path.posix.normalize(path.posix.join(path.posix.dirname(from), specifier)).replace(/\.js$/, '.ts');
+
+  if (!specifier.startsWith('@teamai/')) return undefined;
+  const [scope, name] = specifier.split('/');
+
+  return `${scope}/${name}`;
+}
+
+/** The executable of every tool teamai launches, as `executableOf` in src/launch-registry.ts names it; a test keeps the two equal. */
 export const TOOL_EXECUTABLES = new Set([
   'claude', 'claude-internal', 'tclaude', 'codex', 'codex-internal', 'tcodex', 'opencode', 'codebuddy', 'workbuddy', 'openclaw',
   'cursor-agent', 'copilot', 'qodercli', 'kiro-cli', 'pi', 'omp', 'muse', 'hermes', 'agy',
@@ -46,16 +65,18 @@ function literalText(node) {
 export default defineRule({
   meta: { type: 'problem', docs: { description: 'Launch AI tools only from workflow drivers.' } },
   create(context) {
-    const from = sourcePath(context);
+    // From the workspace root, so a package's own folder is told apart from src/: `packages/runtime-tools/src/x.ts`.
+    const file = lintedPath(context);
+    const root = workspaceRoot(path.posix.dirname(file));
+    const from = root === undefined ? sourcePath(context) : path.posix.relative(root, file);
 
     if (ALLOWED.some((folder) => from.startsWith(folder)) || from.startsWith('src/__tests__/') || from.endsWith('.test.ts')) return {};
 
     return {
       ...importVisitors(({ node, specifier, typeOnly, names }) => {
-        if (typeOnly || !specifier.startsWith('.')) return;
-        const to = path.posix.normalize(path.posix.join(path.posix.dirname(from), specifier)).replace(/\.js$/, '.ts');
+        const to = typeOnly ? undefined : launcherOf(from, specifier);
 
-        if (!(to in LAUNCHERS)) return;
+        if (to === undefined || !(to in LAUNCHERS)) return;
         const launching = LAUNCHERS[to];
 
         if (launching !== undefined && !names.some((name) => launching.includes(name))) return;

@@ -3,15 +3,16 @@ import os from 'node:os';
 import path from 'node:path';
 import fse from 'fs-extra';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn(), persist: vi.fn() },
   spinner: vi.fn(() => ({ start: vi.fn().mockReturnThis(), succeed: vi.fn().mockReturnThis(), fail: vi.fn().mockReturnThis() })),
 }));
 
 import { reconcileMcpForConfig } from '../mcp-reconcile.js';
 import { DEFAULT_TOOL_PATHS, type LocalConfig, type TeamaiConfig, TeamaiConfigSchema } from '../types.js';
-import { log } from '../utils/logger.js';
-import { parseJsonAs, type JsonSyntax } from '../utils/json.js';
+import { log } from '@teamai/shared/log';
+import { type JsonSyntax } from '@teamai/shared/json';
+import { parseJsonAs } from '../utils/json.js';
 
 /**
  * A tool that reads its MCP file with comments takes the team's servers when

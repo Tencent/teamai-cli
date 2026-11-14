@@ -1,0 +1,1 @@
+{"type":"result","subtype":"success","is_error":false,"duration_ms":5321,"num_turns":1,"result":"It uses Vitest.","session_id":"0b9c2a44-6f0e-4d39-9a2d-1f6e2c7a9b10","total_cost_usd":0.0123,"usage":{"input_tokens":12,"output_tokens":3,"cache_read_input_tokens":5}}

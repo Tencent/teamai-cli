@@ -40,6 +40,9 @@ describe('OpenCode loads delivered agents', () => {
       GIT_AUTHOR_NAME: 'loader', GIT_AUTHOR_EMAIL: 'loader@teamai.test',
       GIT_COMMITTER_NAME: 'loader', GIT_COMMITTER_EMAIL: 'loader@teamai.test',
       TEAMAI_NONINTERACTIVE: '1', FORCE_COLOR: '0',
+      // teamai delivers for the OpenCode on PATH: the one this case loads agents with (node_modules/.bin links it), not
+      // the E2E stand-in.
+      PATH: `${path.join(ROOT, 'node_modules', '.bin')}${path.delimiter}${process.env.PATH ?? ''}`,
     };
     const git = (args: string[], cwd = sandbox!) => execFileSync('git', args, {
       cwd, env, encoding: 'utf8', stdio: 'pipe', timeout: 30_000, windowsHide: true,

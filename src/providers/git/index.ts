@@ -2,7 +2,7 @@ import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 
 import type { GitProvider, PrCreateOptions, RepoInfo } from '../types.js';
-import { sanitizeGitUrl } from '../../utils/redact.js';
+import { sanitizeGitUrl } from '@teamai/shared/redact';
 import { parseGenericGitRepoInput } from './repo-url.js';
 
 const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;

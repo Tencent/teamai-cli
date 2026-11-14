@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fse from 'fs-extra';
 import { z } from 'zod';
+import { copyRegularFile } from '@teamai/shared/regular-file';
 import { copyDir, dirContentEqual, dirTeamSubsetEqual, fileContentEqual, isDraft, listFilesRecursive, pathExists, readFileSafe } from '../utils/fs.js';
 import { splitFrontmatter } from '../utils/frontmatter.js';
 
@@ -47,7 +48,7 @@ async function copyTo(source: TeamSkillSource, dest: string, onLink?: (relativeP
 
   if (isDraft(source) || skip.includes(SKILL_MD)) return;
   await fse.ensureDir(dest);
-  await fse.copyFile(source, path.join(dest, SKILL_MD));
+  await copyRegularFile(source, path.join(dest, SKILL_MD));
 }
 
 /** Whether the skill directory `copy` holds exactly the team skill at `source`, as `dirContentEqual` compares two folders. */

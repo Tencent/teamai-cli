@@ -1,8 +1,9 @@
-import { readFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
 import { toPosix } from "../../core/wiki-protocol.js";
+import { readRegularFile } from "@teamai/shared/regular-file";
 
 const EXTENSIONS_TS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
 const INDEX_SUFFIXES_TS = ["/index.ts", "/index.tsx", "/index.js", "/index.jsx"];
@@ -51,7 +52,7 @@ export async function loadTsconfigPaths(
     const configPath = path.join(dir, "tsconfig.json");
 
     try {
-      const raw = TsconfigSchema.parse(JSON.parse(await readFile(configPath, "utf8")));
+      const raw = TsconfigSchema.parse(JSON.parse(await readRegularFile(configPath, "utf8")));
 
       const configDir = path.dirname(configPath);
       const baseUrl = raw.compilerOptions?.baseUrl ?? ".";

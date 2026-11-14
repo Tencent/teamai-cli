@@ -6,7 +6,7 @@ import { KNOWN_AGENTS } from './known-agents.js';
 import { isAgentDisabled, resolveBaseDir, scopedToolPaths, toolInstallRoot, type LocalConfig } from './types.js';
 import { ensureDir, pathExists } from './utils/fs.js';
 import { checkoutForRepoAnchor, resolveAnchors } from './utils/git.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 /**
  * Relative agent-root paths we are willing to mkdir under projectRoot.
@@ -68,7 +68,7 @@ export async function createProjectToolRoots(options: {
   if (!projectConfig) return;
 
   const enabled = projectConfig.enabledAgents ?? [];
-  const teamConfig = await loadTeamConfig(projectConfig.repo.localPath);
+  const teamConfig = await loadTeamConfig(projectConfig.repo.localPath, projectConfig);
   const baseDir = resolveBaseDir(projectConfig);
 
   const rootOf = (id: string): string | undefined => {

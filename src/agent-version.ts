@@ -7,114 +7,28 @@
  *  - Fallback: return '' when detection fails (best-effort, never throws).
  */
 
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
-import { log } from './utils/logger.js';
-import { probeBinary } from './utils/exec.js';
-import { isToolId, type ToolId } from './tools.js';
+import { log } from '@teamai/shared/log';
+import { BUILT_IN_FACTS } from '@teamai/tool-definitions/facts';
+import { probeBinary } from '@teamai/shared/exec';
+import { readPlistVersion, readVersion, type VersionDetector } from '@teamai/tool-core/detect';
+import { type ToolId } from './tools.js';
+import { isToolId } from './tool-registry.js';
 
 const VERSION_CACHE = new Map<string, string>();
 
-// Launch through cross-spawn (probeBinary): on Windows npm installs these CLIs
-// as `<name>.cmd` shims, which the native execFile cannot find or start.
-async function execVersion(bin: string, args: string[] = ['--version']): Promise<string> {
-  return probeBinary(bin, args);
-}
-
-async function readPlistVersion(appPath: string): Promise<string> {
-  const plistPath = path.join(appPath, 'Contents', 'Info.plist');
-
-  try {
-    const content = await readFile(plistPath, 'utf-8');
-
-    const match = content.match(
-      /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/,
-    );
-
-    return match?.[1] ?? '';
-  } catch {
-    return '';
-  }
-}
-
 // ─── Per-agent detection ────────────────────────────────
-
-async function detectClaudeVersion(): Promise<string> {
-  const raw = await execVersion('claude');
-  // "2.1.199 (Claude Code)" → "2.1.199"
-  const match = raw.match(/^([\d.]+)/);
-
-  return match?.[1] ?? raw;
-}
-
-async function detectCursorVersion(): Promise<string> {
-  // cursor --version outputs multiple lines; version is on the first line
-  const raw = await execVersion('cursor');
-
-  return raw.split('\n')[0]?.trim() ?? '';
-}
-
-async function detectCodebuddyCliVersion(): Promise<string> {
-  return execVersion('codebuddy');
-}
-
-const CODEBUDDY_IDE_PATHS = [
-  '/Applications/CodeBuddy.app',
-  '/Applications/CodeBuddy CN.app',
-];
-
-async function detectCodebuddyIdeVersion(): Promise<string> {
-  for (const appPath of CODEBUDDY_IDE_PATHS) {
-    const ver = await readPlistVersion(appPath);
-
-    if (ver) return ver;
-  }
-
-  return '';
-}
-
-const WORKBUDDY_APP_PATHS = [
-  '/Applications/WorkBuddy.app',
-];
-
-async function detectWorkbuddyVersion(): Promise<string> {
-  for (const appPath of WORKBUDDY_APP_PATHS) {
-    const ver = await readPlistVersion(appPath);
-
-    if (ver) return ver;
-  }
-
-  return '';
-}
-
-async function detectHermesVersion(): Promise<string> {
-  const raw = await execVersion('hermes');
-  // hermes --version may output "(2026.8.7)\nProject: ..." — extract from parens or leading digits.
-  const match = raw.match(/^\(?(\d+(?:\.\d+)*)\)?/);
-
-  return match?.[1] ?? '';
-}
-
-async function detectOpenclawVersion(): Promise<string> {
-  const raw = await execVersion('openclaw');
-  const match = raw.match(/^([\d.]+)/);
-
-  return match?.[1] ?? '';
-}
 
 // ─── Registry ───────────────────────────────────────────
 
-type VersionDetector = () => Promise<string>;
-
 /** How teamai reads each tool's version, or null when it reads none. */
 const DETECTORS: Record<ToolId, VersionDetector | null> = {
-  claude: detectClaudeVersion,
+  claude: BUILT_IN_FACTS.claude.detect.claude,
   codex: null,
   'codex-internal': null,
   'claude-internal': null,
   tclaude: null,
   tcodex: null,
-  cursor: detectCursorVersion,
+  cursor: BUILT_IN_FACTS.cursor.detect.cursor,
   copilot: null,
   joycode: null,
   qoder: null,
@@ -124,52 +38,22 @@ const DETECTORS: Record<ToolId, VersionDetector | null> = {
   'trae-cn': null,
   zcode: null,
   omp: null,
-  pi: detectPiVersion,
-  codebuddy: detectCodebuddyCliVersion,
-  openclaw: detectOpenclawVersion,
-  hermes: detectHermesVersion,
-  // DeepSeek Harness: `dsh --version` prints e.g. "0.1.1" (optionally with a
-  // leading "v" or trailing commit info). Extract leading semver-ish digits.
-  dsh: detectDshVersion,
-  workbuddy: detectWorkbuddyVersion,
+  pi: BUILT_IN_FACTS.pi.detect.pi,
+  codebuddy: BUILT_IN_FACTS.codebuddy.detect.codebuddy,
+  openclaw: BUILT_IN_FACTS.openclaw.detect.openclaw,
+  hermes: BUILT_IN_FACTS.hermes.detect.hermes,
+  dsh: BUILT_IN_FACTS.dsh.detect.dsh,
+  workbuddy: BUILT_IN_FACTS.codebuddy.detect.workbuddy,
   opencode: null,
-  muse: detectMuseVersion,
-  agy: detectAgyVersion,
+  muse: BUILT_IN_FACTS.muse.detect.muse,
+  agy: BUILT_IN_FACTS.agy.detect.agy,
 };
 
 /** The detector for `agentType`: a tool's, or the CodeBuddy IDE's (`codebuddy-ide`). */
 function detectorOf(agentType: string): VersionDetector | null {
-  if (agentType === 'codebuddy-ide') return detectCodebuddyIdeVersion;
+  if (agentType === 'codebuddy-ide') return BUILT_IN_FACTS.codebuddy.detect['codebuddy-ide'];
 
   return isToolId(agentType) ? DETECTORS[agentType] : null;
-}
-
-async function detectPiVersion(): Promise<string> {
-  // Pi Coding Agent: "1.4.0"
-  const raw = await execVersion('pi');
-
-  return raw.match(/\d+\.\d+\.\d+/)?.[0] ?? '';
-}
-
-async function detectDshVersion(): Promise<string> {
-  const raw = await execVersion('dsh');
-  const match = raw.match(/v?(\d+(?:\.\d+)*)/);
-
-  return match?.[1] ?? '';
-}
-
-async function detectMuseVersion(): Promise<string> {
-  // "Muse Code 1.4.6 (1.4.6-R6000.1)" → "1.4.6"
-  const raw = await execVersion('muse');
-
-  return raw.match(/\d+\.\d+\.\d+/)?.[0] ?? '';
-}
-
-async function detectAgyVersion(): Promise<string> {
-  // Antigravity CLI: "1.4.10"
-  const raw = await execVersion('agy');
-
-  return raw.match(/\d+\.\d+\.\d+/)?.[0] ?? '';
 }
 
 /**
@@ -184,7 +68,7 @@ export async function getAgentVersion(agentType: string): Promise<string> {
 
   if (detector) {
     try {
-      version = await detector();
+      version = await readVersion(detector, probeBinary);
     } catch {
       // best-effort
     }
