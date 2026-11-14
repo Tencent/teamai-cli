@@ -157,7 +157,7 @@ export function toolCommandEnv(name: string, home: ToolCommandHome): ToolCommand
 
       const at = instance === undefined || own === undefined
         ? deliveredHomeOf({ name, tool: resolved.base, home, host })
-        : instanceHomeOf({ instance, own, variable });
+        : instanceHomeOf({ instance, own, variable, host });
 
       if (at === null) return { kind: 'ready', env: {} };
 
@@ -203,9 +203,8 @@ function deliveredHomeOf(input: { name: string; tool: ToolId; home: Extract<Tool
   return dir === null ? null : { variable, also: [], dir, recorded: root !== null || dir === recordedHomes(host)[tool] };
 }
 
-function instanceHomeOf(input: { instance: DeclaredTool; own: ToolInstanceHome; variable: string | undefined }): DeliveredHome | null {
-  const { instance, own, variable } = input;
-  const host = realHost();
+function instanceHomeOf(input: { instance: DeclaredTool; own: ToolInstanceHome; variable: string | undefined; host: Host }): DeliveredHome | null {
+  const { instance, own, variable, host } = input;
   const dir = toolHomeOf(instance.name, host)?.dir;
 
   if (dir === undefined) return null;

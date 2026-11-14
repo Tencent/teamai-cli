@@ -5,6 +5,7 @@ import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 import { readConfigFrom } from '../config.js';
 import { createToolCaller } from '../tool-launch/call.js';
+import { toolCommandEnv } from '../tool-launch/tools.js';
 import { useToolInstances } from '../tool-registry.js';
 import { getDataHome, getUserConfigPath, type LocalConfig } from '../types.js';
 import { getUserHome } from '../utils/home.js';
@@ -421,6 +422,21 @@ it.each([
     await expect(call).rejects.toMatchObject({ kind: 'tool_not_accepted', message: expect.stringContaining(`runs ${command}, which no one has accepted on this machine`) });
     await expect(own?.invocation()).rejects.toThrow('ENOENT');
   }
+});
+
+it('starts an instance at the home its variable names in the environment the caller passes, not in teamai\'s own', async () => {
+  vi.stubEnv('ACME_CODEX_HOME', undefined);
+  await aiToolFiles({});
+  useToolInstances(new Map([['acme-codex', {
+    kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+    source: 'team', file: path.join(root, 'tools', 'acme-codex.yaml'), location: 'tools/acme-codex.yaml', revision: 'r1',
+  }]]));
+  onTestFinished(() => useToolInstances(new Map()));
+  const moved = path.join(getUserHome(), '.acme-codex-moved');
+
+  expect(toolCommandEnv('acme-codex', { kind: 'delivered', inherited: { ...process.env, ACME_CODEX_HOME: moved }, toolRoots: {} })).toEqual({
+    kind: 'ready', env: { ACME_CODEX_HOME: moved, CODEX_HOME: moved },
+  });
 });
 
 it('fails a call on a tool TEAMAI_AI_TOOL names that is neither a tool teamai launches nor an instance of one', async () => {
