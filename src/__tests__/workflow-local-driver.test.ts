@@ -128,13 +128,14 @@ describe('local workflow prompt driver', () => {
     expect(launched?.input.env?.[variable!]).toBe(path.join(getUserHome(), `.${name}`));
   });
 
+  // With no command of its own the instance runs stock Codex, which reads only CODEX_HOME, so that is set to its home too.
   it.each([
-    { case: 'names its own, as the member set it', own: { home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' } }, shell: true, acme: 'acme-moved' },
+    { case: 'names its own, as the member set it', own: { home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' } }, shell: true, acme: 'acme-moved', codex: 'acme-moved' },
     // A pull recorded the home the variable named, and teamai delivers there from a shell without it, so the build reads it too.
-    { case: 'names its own, at the home recorded for it from a shell without it', own: { home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' } }, shell: false, acme: 'acme-recorded' },
+    { case: 'names its own, at the home recorded for it from a shell without it', own: { home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' } }, shell: false, acme: 'acme-recorded', codex: 'acme-recorded' },
     // teamai writes where paths say, so a build pointed at the home would read none of it.
-    { case: 'sets paths outside its home, as the member set it', own: { home: { dir: '.acme-codex' }, paths: { skills: '.codex/skills', settings: '.codex/hooks.json' } }, shell: true, acme: 'acme-moved' },
-  ])('starts an instance that $case, and CODEX_HOME as the member set it', async ({ own, shell, acme }) => {
+    { case: 'sets paths outside its home, as the member set it', own: { home: { dir: '.acme-codex' }, paths: { skills: '.codex/skills', settings: '.codex/hooks.json' } }, shell: true, acme: 'acme-moved', codex: 'member-codex' },
+  ])('starts an instance that $case, with CODEX_HOME at $codex', async ({ own, shell, acme, codex }) => {
     const { config, workspace, runId } = await fixture();
     const recorded = path.join(getUserHome(), 'acme-recorded');
     if (shell) vi.stubEnv('ACME_CODEX_HOME', path.join(os.tmpdir(), 'acme-moved'));
@@ -155,8 +156,10 @@ describe('local workflow prompt driver', () => {
 
     await runLocalDriver(config, runId, workspace, { adapter, toolPaths, tools: { default: 'acme-codex' } });
 
-    expect(input?.env?.ACME_CODEX_HOME).toBe(acme === 'acme-recorded' ? path.join(getUserHome(), acme) : path.join(os.tmpdir(), acme));
-    expect(input?.env?.CODEX_HOME).toBe(path.join(os.tmpdir(), 'member-codex'));
+    const at = (dir: string): string => dir === 'acme-recorded' ? path.join(getUserHome(), dir) : path.join(os.tmpdir(), dir);
+
+    expect(input?.env?.ACME_CODEX_HOME).toBe(at(acme));
+    expect({ ...process.env, ...input?.env }.CODEX_HOME).toBe(at(codex));
   });
 
   it.each([
