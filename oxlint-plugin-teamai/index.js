@@ -25,6 +25,7 @@ import processReads from './rules/process-reads.js';
 import uncachedEntry from './rules/uncached-entry.js';
 import familyFacts from './rules/family-facts.js';
 import shippedToolIds from './rules/shipped-tool-ids.js';
+import toolHomeEnv from './rules/tool-home-env.js';
 
 // The anti-slop rules are vendored TypeScript. oxlint imports plugins with plain
 // Node, and `npm run lint` runs on Node 20 in CI, which can't import TypeScript:
@@ -60,6 +61,7 @@ export default definePlugin({
     'uncached-entry': uncachedEntry,
     'family-facts': familyFacts,
     'shipped-tool-ids': shippedToolIds,
+    'tool-home-env': toolHomeEnv,
     ...antiSlopRules,
   },
 });

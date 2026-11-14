@@ -1,0 +1,87 @@
+import { defineRule } from '@oxlint/plugins';
+import { inProductionSource, inTestSupport, isOneOf, sourcePath, stringLiteralValue } from '../utils.js';
+
+/** @typedef {import('@oxlint/plugins').ESTree.Node} Node */
+
+/** The one module that decides which home variables start a tool's command (`toolCommandEnv`). */
+const OWNER = 'src/tool-launch/tools.ts';
+
+/**
+ * Every variable that moves a shipped tool's home, as `toolHomeVariableNames` in `src/tool-home.ts` lists them, which
+ * covers each launch profile's `homeEnv`. `src/__tests__/tool-home-env-variables.test.ts` pins the two together.
+ */
+export const HOME_VARIABLES = new Set([
+  'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CODEBUDDY_CONFIG_DIR', 'COPILOT_HOME', 'CURSOR_CONFIG_DIR', 'CURSOR_DATA_DIR', 'DSH_HOME', 'HERMES_DATA_DIR_SUFFIX', 'HERMES_HOME',
+  'JOYCODE_HOME', 'OMP_PROFILE', 'OPENCLAW_HOME', 'OPENCLAW_PROFILE', 'OPENCLAW_STATE_DIR', 'OPENCODE_CONFIG_DIR', 'PI_CODING_AGENT_DIR',
+  'PI_CONFIG_DIR', 'PI_PROFILE', 'QODERCN_CLI_HOME', 'QODERCN_CONFIG_DIR', 'QODER_CLI_HOME', 'QODER_CONFIG_DIR', 'XDG_CONFIG_HOME',
+]);
+
+/** The fields that hold a home variable's name: a relocatable spec's, a launch profile's, a descriptor home's. */
+const VARIABLE_FIELDS = new Set(['envVar', 'homeEnv', 'rootVariable']);
+
+/**
+ * The name `node`, a member's property, spells when it is not computed.
+ * @param {Node} node
+ * @returns {string | undefined}
+ */
+function propertyName(node) {
+  return node.type === 'Identifier' ? node.name : undefined;
+}
+
+/**
+ * Whether the computed key `node` evaluates to a tool's home variable: a literal one, a field that holds one
+ * (`spec.envVar`, `instance.home.env`, `profile.homeEnv`, `home.rootVariable`), or `homeVariableOf(...)`.
+ * @param {Node} node
+ * @returns {boolean}
+ */
+function namesHomeVariable(node) {
+  const literal = stringLiteralValue(node);
+
+  if (literal !== undefined) return HOME_VARIABLES.has(literal);
+
+  if (node.type === 'ChainExpression') return namesHomeVariable(node.expression);
+
+  if (node.type === 'CallExpression') return node.callee.type === 'Identifier' && node.callee.name === 'homeVariableOf';
+
+  if (node.type !== 'MemberExpression' || node.computed) return false;
+  const field = propertyName(node.property);
+
+  if (field !== undefined && VARIABLE_FIELDS.has(field)) return true;
+
+  return field === 'env' && node.object.type === 'MemberExpression' && !node.object.computed && propertyName(node.object.property) === 'home';
+}
+
+/**
+ * Whether the key of a property or member, `computed` or not, is a tool's home variable.
+ * @param {Node} key
+ * @param {boolean} computed
+ * @returns {boolean}
+ */
+function isHomeVariableKey(key, computed) {
+  if (computed) return namesHomeVariable(key);
+  const name = propertyName(key) ?? stringLiteralValue(key);
+
+  return name !== undefined && HOME_VARIABLES.has(name);
+}
+
+export default defineRule({
+  meta: {
+    type: 'problem',
+    docs: { description: 'Set a tool\'s home variable on a command only through toolCommandEnv.' },
+  },
+  create(context) {
+    const inScope = (inProductionSource(context) && !inTestSupport(context)) || sourcePath(context).startsWith('scripts/');
+
+    if (!inScope || isOneOf(context, [OWNER])) return {};
+    const message = 'Take a tool\'s home variables from toolCommandEnv in src/tool-launch/tools.ts, the one place that decides which variables start a tool\'s command in which home, instead of setting one here.';
+
+    return {
+      Property(node) {
+        if (node.parent.type === 'ObjectExpression' && isHomeVariableKey(node.key, node.computed)) context.report({ node: node.key, message });
+      },
+      AssignmentExpression(node) {
+        if (node.left.type === 'MemberExpression' && isHomeVariableKey(node.left.property, node.left.computed)) context.report({ node: node.left, message });
+      },
+    };
+  },
+});

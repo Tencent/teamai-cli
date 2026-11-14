@@ -1119,6 +1119,7 @@ export class CodexAdapter extends AgentAdapter {
       return;
     }
 
+    // oxlint-disable-next-line teamai/tool-home-env -- tool-core cannot import src/ (teamai/package-boundaries); codexHome is the store this writer reads, and for an instance withStoreHome in src/session-flow/adapters/index.ts sets the instance's variables from it through toolCommandEnv
     const opts = { env: { ...process.env, CODEX_HOME: codexHome }, timeoutMs: 120_000 };
 
     const runApply = async (): Promise<string | undefined> => {
@@ -1180,6 +1181,7 @@ export class CodexAdapter extends AgentAdapter {
 
       try {
         child = this.host.processes.spawn(bin, ['app-server'], {
+          // oxlint-disable-next-line teamai/tool-home-env -- tool-core cannot import src/ (teamai/package-boundaries); codexHome is the store this writer reads, and for an instance withStoreHome in src/session-flow/adapters/index.ts sets the instance's variables from it through toolCommandEnv
           env: { ...process.env, CODEX_HOME: codexHome, RUST_LOG: 'error' },
           stdio: ['pipe', 'pipe', 'ignore'],
           windowsHide: true,

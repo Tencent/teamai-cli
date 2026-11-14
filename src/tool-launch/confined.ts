@@ -277,6 +277,7 @@ async function openCodeSettings(env: NodeJS.ProcessEnv, tmp: string): Promise<st
   await fs.writeFile(path.join(config, 'opencode.json'), JSON.stringify({ ...settings,
     permission: { '*': 'deny', read: 'allow', grep: 'allow', glob: 'allow', list: 'allow', external_directory: 'deny', bash: 'deny', edit: 'deny', webfetch: 'deny', websearch: 'deny', task: 'deny', skill: 'deny' }, plugin: [], mcp: {},
   }), { mode: 0o600 });
+  // oxlint-disable-next-line teamai/tool-home-env -- the judge's throwaway config home, as Codex's tmp/codex below; OpenCode's launch profile names no homeEnv (packages/tool-opencode/src/launch.ts), so toolCommandEnv gives it no variable
   env.OPENCODE_CONFIG_DIR = config;
 
   return settings.model;
