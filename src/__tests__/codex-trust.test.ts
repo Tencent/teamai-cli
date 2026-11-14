@@ -619,12 +619,17 @@ describe('Codex hook trust — an instance', () => {
     expect(readFakeCodexState(codexHome()).calls).toEqual([]);
   });
 
-  it('asks a person the acceptance question of a team instance\'s command, and trusts its hooks through it once accepted', async () => {
+  it.each([
+    { case: '' },
+    // The yes holds for this run when the trust file stays locked and is not recorded: the pull still trusts the hooks.
+    { case: ', also while another process holds the trust file', busy: true },
+  ])('asks a person the acceptance question of a team instance\'s command, and trusts its hooks through it once accepted$case', async ({ busy }) => {
     const { config, acmeHome, acmeBuild } = await withInstance('team');
     await writeYaml(LINT_HOOK);
     const local = userConfig({ enabledAgents: ['acme-codex'] });
     const asked: string[] = [];
     await reconcileTeamHooksForConfig(config, local);
+    if (busy) await fse.outputFile(path.join(home, '.teamai', 'trust', 'tools.json.lock'), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), owner: 'another-process' }));
 
     const trust = await trustCodexForScope(config, local, { ask: async (question) => { asked.push(question); return 'y'; } });
 
@@ -633,6 +638,7 @@ describe('Codex hook trust — an instance', () => {
     expect(trust).toEqual({ kind: 'trusted', hooks: entries.length });
     expect(trustedKeys(acmeHome).sort()).toEqual(entries.map((e) => e.key).sort());
     expect(new Set(readFakeCodexState(acmeHome).calls.map((c) => c.codex))).toEqual(new Set([acmeBuild]));
+    if (busy) return;
     // The answer is the one a workflow step records: the next step on the instance asks nothing.
     const { acceptToolCommand } = await import('../tool-instances.js');
     const { toolOf } = await import('../tool-registry.js');

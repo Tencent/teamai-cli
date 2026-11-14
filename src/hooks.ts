@@ -255,14 +255,15 @@ export function isCodexTrustGatedTool(tool: string): boolean {
  * command once accepted, which hashes the hooks as that build does; else Codex's own builds in `codexHome`. A team
  * instance's command no one accepted runs no build, so nothing trusts its hooks yet.
  */
-function codexTrustAt(tool: string, codexHome: string): CodexAt | { kind: 'unavailable'; reason: string } {
+function codexTrustAt(tool: string, codexHome: string, { justAccepted = false } = {}): CodexAt | { kind: 'unavailable'; reason: string } {
   const instance = toolOf(tool)?.instance;
 
   if (instance === undefined || instance.name === instance.extends) return { codexHome };
   const home = instance.home === undefined ? codexHome : toolHomeOf(tool)?.dir ?? codexHome;
 
   if (instance.command === undefined) return { codexHome: home };
-  const accepted = acceptedCommandOf(instance);
+  // A yes this run gave holds even when the trust file stayed locked and did not record it.
+  const accepted = justAccepted ? instance.command : acceptedCommandOf(instance);
 
   if (accepted === undefined) {
     return { kind: 'unavailable', reason: `${tool}: its command is not accepted on this machine yet, so no Codex build of it runs; run teamai pull in a terminal to review and accept it` };
@@ -4980,7 +4981,7 @@ export async function trustCodexForScope(
 
   for (const listed of targets) {
     // A person at a terminal answers the question a workflow step asks; once they accept, the instance's command trusts.
-    const target = listed.unaccepted !== undefined && opts.ask ? await acceptedCodexTarget(teamConfig, localConfig, listed, opts) : listed;
+    const target = listed.unaccepted !== undefined && opts.ask ? await acceptedCodexTarget(listed, opts.ask) : listed;
 
     const trust: CodexTrust = target.unaccepted !== undefined ? { kind: 'unaccepted', tool: target.tool } : await trustCodexHooks({ ...target, onProjectTrusted: async (project) => {
       const state = await loadStateForScope(localConfig);
@@ -5014,18 +5015,18 @@ export async function trustCodexForScope(
   return trust;
 }
 
-/** `listed` once `ask` accepts its instance's command, read again so it trusts in the instance's home through it; else `listed`. */
-async function acceptedCodexTarget(
-  teamConfig: TeamaiConfig,
-  localConfig: LocalConfig,
-  listed: CodexTrustTargets,
-  opts: { filterAgents?: string[]; ask?: (question: string) => Promise<string | undefined> },
-): Promise<CodexTrustTargets> {
+/** `listed` once `ask` accepts its instance's command, trusting in the instance's home through that command; else `listed`. */
+async function acceptedCodexTarget(listed: CodexTrustTargets, ask: (question: string) => Promise<string | undefined>): Promise<CodexTrustTargets> {
   const instance = toolOf(listed.tool)?.instance;
 
-  if (instance === undefined || !(await acceptToolCommand(instance, { ask: opts.ask })).ok) return listed;
+  if (instance === undefined || !(await acceptToolCommand(instance, { ask })).ok) return listed;
+  const at = codexTrustAt(listed.tool, listed.codexHome, { justAccepted: true });
 
-  return await codexTrustTargets(teamConfig, localConfig, opts.filterAgents, listed.tool) ?? listed;
+  if ('kind' in at) return listed;
+  const { unaccepted: _, ...target } = listed;
+  const config = path.join(listed.codexHome, 'config.toml');
+
+  return { ...target, ...at, inputs: listed.inputs.map((file) => file === config ? path.join(at.codexHome, 'config.toml') : file) };
 }
 
 /**
