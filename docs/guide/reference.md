@@ -250,7 +250,7 @@ teamai webhook test --dry-run
 
 ### Team tools (`tools/`)
 
-A team on an internal build or a fork of a supported tool adds it as an instance of the shipped tool, with no release. An instance sets another command, home and paths. It keeps the tool's launch flags and session, token, hook and MCP formats. teamai writes no hooks for an instance of Kiro, Antigravity, Pi, OpenClaw, Hermes, OpenCode or OMP yet, as it installs those tools' hooks in the tool's own home, and Codex may skip the hooks of a Codex instance until you approve them in its `/hooks`. An instance with a home of its own keeps sessions of its own; one that keeps the tool's home writes that tool's sessions.
+A team on an internal build or a fork of a supported tool adds it as an instance of the shipped tool, with no release. An instance sets another command, home and paths. It keeps the tool's launch flags and session, token, hook and MCP formats. An instance extends Claude Code (`claude`) or Codex (`codex`); teamai refuses one that extends any other tool, naming the file, until it supports that tool ([tool support](./tool-support.md#tool-instances)). An instance with a home of its own keeps sessions of its own; one that keeps the tool's home writes that tool's sessions.
 
 ```yaml
 # tools/acme-claude.yaml in the team repo
@@ -319,19 +319,10 @@ teamai workflow start review --tools default=acme-claude
 ```text
 Tool instance …/tools/acme-claude.yaml is not valid: it sets sessions, and an instance sets only command, home and paths. …
 Tool instance …/tools/acme-claude.yaml is not valid: command: command is the name of one executable on PATH, with no path, spaces or arguments, such as acme-claude. …
+Tool instance …/tools/acme-kiro.yaml is not valid: extends: an instance extends claude or codex; teamai does not support an instance of kiro or any other tool yet. …
 ```
 
-Its own sessions need a tool whose format carries another platform id: Claude Code, Qoder, Codex, JoyCode, Cursor and OpenCode. An instance of another tool launches and receives files, and teamai reads no sessions of it. OpenCode keeps its sessions under its data home, not its config directory, so where teamai reads an OpenCode instance's sessions depends on the variable its `home` moves:
-
-```yaml
-# tools/opencode-work.yaml: sessions in ~/.opencode-work/opencode
-schemaVersion: v1alpha1
-name: opencode-work
-extends: opencode
-home: { dir: .opencode-work, env: XDG_DATA_HOME }
-```
-
-With `env: OPENCODE_CONFIG_DIR`, the instance keeps its own settings, and its sessions stay in your OpenCode data home (`$XDG_DATA_HOME/opencode`, else `~/.local/share/opencode`), where teamai reads them as OpenCode's. An instance gets teamai's own agents, such as `teamai-recall`, and the team's `agents/` in the format of the tool it extends, with that tool's model aliases and `tool_extras`, and `teamai push` takes an edit to its copy. An agent whose `targets` names that tool reaches its instances too; name the instance to reach it alone. Instances never appear on the [tool support](./tool-support.md) page.
+An instance gets teamai's own agents, such as `teamai-recall`, and the team's `agents/` in the format of the tool it extends, with that tool's model aliases and `tool_extras`, and `teamai push` takes an edit to its copy. An agent whose `targets` names that tool reaches its instances too; name the instance to reach it alone. The [tool support](./tool-support.md) page lists the tools an instance extends, never the instances themselves.
 
 ---
 

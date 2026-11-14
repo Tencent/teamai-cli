@@ -300,6 +300,15 @@ function receivesDeliveredModels(tool: ToolId): tool is DeliveredModelTool {
 
 export const DELIVERED_MODEL_TOOLS: readonly DeliveredModelTool[] = TOOL_ORDER.filter(receivesDeliveredModels);
 
+/** Tools an instance may extend (`instances` on the descriptor): every other tool is refused as `extends:`. */
+export type InstanceBase = { [T in ToolId]: DescriptorOf<T> extends { readonly instances: true } ? T : never }[ToolId];
+
+export function isInstanceBase(tool: string): tool is InstanceBase {
+  return isToolId(tool) && 'instances' in descriptorOf(tool);
+}
+
+export const INSTANCE_BASES: readonly InstanceBase[] = TOOL_ORDER.filter(isInstanceBase);
+
 /**
  * The scope `tool` takes an MCP server in when the install is `scope`. A tool
  * whose descriptor names no project MCP file writes its user config instead of

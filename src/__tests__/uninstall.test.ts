@@ -4311,7 +4311,7 @@ describe('uninstall', () => {
 
     it.each([
       { instance: 'with no home of its own, which takes the paths of the tool it extends', file: 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\n', root: '.claude' },
-      { instance: 'whose project MCP file is in the root of the tool it extends', file: 'schemaVersion: v1alpha1\nname: acme-cursor\nextends: cursor\nhome: { dir: .acme-cursor }\n', root: '.cursor' },
+      { instance: 'whose project MCP file is in the root of the tool it extends', file: 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n', root: '.codex' },
     ])('keeps the shipped tool\'s folders an instance $instance shares', async ({ file, root }) => {
       const { homeDir, repoPath } = await setupFixture(tmpDir);
       vi.stubEnv('HOME', homeDir);

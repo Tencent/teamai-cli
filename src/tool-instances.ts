@@ -8,7 +8,7 @@ import { INSTANCE_KEYS, type ToolInstance } from '@teamai/tool-core/instance';
 import { isSafeNamespaceSegment } from './manifest-schema.js';
 import { resolveNamespacedItems, type NamespaceCandidate } from './namespace-resolver.js';
 import { isSessionPlatform } from './session-flow/adapters/platform-facts.js';
-import { isToolId, TOOL_ORDER, useToolInstances } from './tool-registry.js';
+import { INSTANCE_BASES, isInstanceBase, isToolId, useToolInstances } from './tool-registry.js';
 import type { ToolId } from './tools.js';
 import { DEFAULT_TOOL_PATHS, getTeamaiHomeDir, getTrustDir, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type TeamaiConfig } from './types.js';
 import { writeJsonAtomic } from './utils/fs.js';
@@ -49,7 +49,9 @@ const HomeDir = z.string().min(1).refine((dir) => !path.isAbsolute(dir) && !dir.
 const InstanceFileSchema = z.object({
   schemaVersion: z.literal('v1alpha1'),
   name: z.string().regex(NAME, 'A tool name starts with a lowercase letter or digit and holds only lowercase letters, digits, dots, dashes and underscores'),
-  extends: z.string().refine(isToolId, { error: (issue) => `${String(issue.input)} is not a tool teamai ships. Extend one of: ${TOOL_ORDER.join(', ')}` }),
+  extends: z.string()
+    .refine(isToolId, { error: (issue) => `${String(issue.input)} is not a tool teamai ships. Extend one of: ${INSTANCE_BASES.join(', ')}`, abort: true })
+    .refine(isInstanceBase, { error: (issue) => `an instance extends ${INSTANCE_BASES.join(' or ')}; teamai does not support an instance of ${String(issue.input)} or any other tool yet` }),
   // A path is refused: what runs there, maybe in the step's own checkout, is not the file a person accepted.
   command: z.string().refine(isBareCommandName, 'command is the name of one executable on PATH, with no path, spaces or arguments, such as acme-claude').optional(),
   home: z.object({ dir: HomeDir, env: z.string().regex(ENV_NAME, 'home.env is the name of an environment variable').optional() }).strict().optional(),
@@ -99,7 +101,7 @@ function parseToolInstance({ file, text, source, location }: { file: string; tex
 
   const { schemaVersion: _version, extends: base, ...fields } = parsed.data;
 
-  if (!isToolId(base)) return refused(file, `${base} is not a tool teamai ships`);
+  if (!isInstanceBase(base)) return refused(file, `${base} is not a tool an instance extends`);
   const stem = path.basename(file, '.yaml');
 
   if (fields.name !== stem) return refused(file, `its name is "${fields.name}", and an instance is named after its file, "${stem}"`);

@@ -30,8 +30,9 @@ export const SHIPPED_ONLY = new Map(Object.entries({
   'src/locate.ts': { count: 3 },
   // The leftovers of a shipped tool's default home that releases before #1221 wrote.
   'src/mcp-reconcile.ts': { count: 1 },
-  // Parses an instance's `extends`, which must name a shipped tool, and refuses a name that takes a shipped one.
-  'src/tool-instances.ts': { count: 4 },
+  // Refuses an instance's `extends` that names no shipped tool, before the gate on the tools instances extend, and a
+  // name that takes a shipped tool's.
+  'src/tool-instances.ts': { count: 3 },
   // A confined launch runs a shipped tool's own adapter; the local driver passes it the base of an instance.
   'src/tool-launch/confined.ts': { count: 1 },
   // The instances to list beside the shipped tools: one named like a shipped tool adjusts it and is listed already.

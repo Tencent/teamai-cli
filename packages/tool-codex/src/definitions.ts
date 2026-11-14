@@ -3,6 +3,7 @@ import { UNKNOWN, UNKNOWN_READS, type ToolDescriptor } from '@teamai/tool-core/d
 /** Codex and the two internal builds of it, which keep their own home, command and sessions. */
 export const tools = {
   codex: {
+    instances: true,
     home: { dir: '.codex' },
     skillLoad: { calls: [], promptForm: '$name' },
     // Codex 0.163.0 runs read $CODEX_HOME/skills and ~/.agents/skills.

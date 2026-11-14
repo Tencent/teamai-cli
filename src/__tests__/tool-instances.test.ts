@@ -105,6 +105,20 @@ describe('team tool instances', () => {
     expect(config?.toolPaths['acme-claude']).toBeUndefined();
   });
 
+  it.each([
+    ['kiro', 'name: acme-kiro'],
+    ['claude-internal', 'name: acme-claude'],
+    ['cursor', 'name: cursor'],
+  ])('refuses an instance of %s, which no instance extends yet, naming the file and the tools one extends', async (base, name) => {
+    const stem = name.slice('name: '.length);
+    const text = ACME_CLAUDE.replace('extends: claude', `extends: ${base}`).replace('name: acme-claude', name);
+    const { config, registry, errors } = await load(teamRepo({ [`tools/${stem}.yaml`]: text }));
+
+    expect(errors).toEqual([expect.stringContaining(`${path.join('tools', `${stem}.yaml`)} is not valid: extends: an instance extends claude or codex; teamai does not support an instance of ${base} or any other tool yet`)]);
+    expect(registry.toolOf(stem)?.instance).toBeUndefined();
+    expect(config?.toolPaths[stem]).toEqual(stem === 'cursor' ? expect.objectContaining({ skills: '.cursor/skills' }) : undefined);
+  });
+
   it.each(['./scripts/acme-claude', 'bin/acme-claude', '/opt/acme/bin/acme-claude', String.raw`tools\acme-claude.exe`])(
     'refuses an instance whose command is the path %s, since what runs at a path is not the file a person accepted',
     async (command) => {
@@ -272,61 +286,9 @@ describe('the home of an instance', () => {
   });
 });
 
-describe('the OpenCode sessions of an instance', () => {
-  const ACME_OPENCODE = 'schemaVersion: v1alpha1\nname: acme-opencode\nextends: opencode\ncommand: acme-opencode\nhome: { dir: .acme-opencode, env: XDG_DATA_HOME }\n';
-
-  /** A project with one session of the instance in its store, and on PATH only `acme-opencode`, never `opencode`. */
-  async function onlyTheInstanceInstalled(): Promise<{ project: string; sessionId: string }> {
-    const { installFakeOpencode, opencodeExportFixture, plantOpencodeSession } = await import('@teamai/tool-opencode/testing');
-    const bin = installFakeOpencode();
-    fs.renameSync(path.join(bin, 'opencode'), path.join(bin, 'acme-opencode'));
-    fs.rmSync(path.join(bin, 'opencode.cmd'));
-    vi.stubEnv('PATH', bin);
-    vi.stubEnv('XDG_DATA_HOME', '');
-    const project = path.join(root, 'project');
-    fs.mkdirSync(project);
-    const session = opencodeExportFixture();
-    session.info.id = 'ses_ec4a5b73fffeAAAAAAAAAAAAAA';
-    session.info.location.directory = project;
-    fs.mkdirSync(path.join(home, '.acme-opencode', 'opencode'), { recursive: true });
-    plantOpencodeSession(path.join(home, '.acme-opencode'), session);
-
-    return { project, sessionId: session.info.id };
-  }
-
-  it('lists a member\'s own instance with its own command, where the shipped one is not installed', async () => {
-    personal('acme-opencode', ACME_OPENCODE);
-    const { project, sessionId } = await onlyTheInstanceInstalled();
-    await load(teamRepo({}));
-    const { AgentSession } = await import('../session-flow/agent-session.js');
-
-    const listed = await AgentSession.list({ platforms: ['acme-opencode'], cwd: project });
-
-    expect(listed.failures).toEqual([]);
-    expect(listed.sessions.map((one) => ({ platform: one.platform, sessionId: one.sessionId }))).toEqual([{ platform: 'acme-opencode', sessionId }]);
-  });
-
-  it('runs a team instance\'s command only once a person accepted its file, and the shipped one until then', async () => {
-    const { project, sessionId } = await onlyTheInstanceInstalled();
-    await load(teamRepo({ 'tools/acme-opencode.yaml': ACME_OPENCODE }));
-    const { AgentSession } = await import('../session-flow/agent-session.js');
-    const registry = await import('../tool-registry.js');
-    const { acceptToolCommand } = await import('../tool-instances.js');
-    const instance = registry.toolOf('acme-opencode')?.instance;
-
-    expect((await AgentSession.list({ platforms: ['acme-opencode'], cwd: project })).failures)
-      .toEqual([{ platform: 'acme-opencode', code: 'tool_unavailable', message: 'The opencode CLI was not found on PATH. Install OpenCode 2 or later.' }]);
-
-    if (!instance) throw new Error('the team instance did not load');
-    expect(await acceptToolCommand(instance, { ask: async () => 'y' })).toEqual({ ok: true });
-
-    expect((await AgentSession.list({ platforms: ['acme-opencode'], cwd: project })).sessions.map((one) => one.sessionId)).toEqual([sessionId]);
-  });
-});
-
 describe('the facts an instance keeps from the tool it extends', () => {
   const instanceOf = (base: string): string => `schemaVersion: v1alpha1\nname: acme-${base}\nextends: ${base}\nhome: { dir: .acme-${base} }\n`;
-  const BASES = ['claude', 'cursor', 'agy', 'openclaw'] as const;
+  const BASES = ['claude', 'codex'] as const;
   const workflow = { name: 'review', description: 'Review a change', invoke: 'allow', source: 'team', skill: 'review' } as const;
 
   /** Each fact as a reader of a tool name sees it. Each row tells the tool it extends apart from a custom tool, which has none of its facts. */
@@ -338,12 +300,8 @@ describe('the facts an instance keeps from the tool it extends', () => {
 
       return (await locate(name, 'skills', installOf(config ?? { toolPaths: {} }, { repo: {}, scope: 'user' }))).reads === 'unknown';
     }],
-    ['which calls load a skill', 'agy', async (name) => (await import('../skill-use.js')).skillCandidates({ tool_name: 'Skill', tool_input: { skill: 'review' } }, name)],
-    ['whether its search output shows the lines it read', 'cursor', async (name) => (await import('../utils/tool-call.js'))
-      .classifyToolCall({ tool_name: 'Grep', tool_input: { pattern: 'x', path: path.join(root, 'a.md'), output_mode: 'content' }, tool_response: '3:x', cwd: root }, name).paths],
     ['whether a workflow skill pre-approves teamai', 'claude', async (name) => (await import('../workflow/discovery/render.js')).renderWorkflowSkill(workflow, name).includes('allowed-tools')],
     ['how it reads a delivered rule folder', 'claude', async (name) => (await import('../tool-registry.js')).folderReachOf(name)],
-    ['whether its skills follow the session', 'openclaw', async (name) => (await import('../tool-registry.js')).skillsFollowSession(name)],
   ];
 
   it.each(FACTS)('%s', async (_fact, base, read) => {
@@ -353,14 +311,6 @@ describe('the facts an instance keeps from the tool it extends', () => {
 
     expect(await read(`acme-${base}`)).toEqual(shipped);
     expect(await read('custom-tool')).not.toEqual(shipped);
-  });
-
-  it('compares the skills of an instance whose skills follow the session by its own home', async () => {
-    await load(teamRepo({ 'tools/acme-openclaw.yaml': instanceOf('openclaw') }));
-    const { sessionToolHomesOf } = await import('../resources/places.js');
-
-    expect(sessionToolHomesOf({ skills: { 'acme-openclaw': [path.join(home, '.acme-openclaw', 'skills')] } }))
-      .toEqual({ 'acme-openclaw': path.join(home, '.acme-openclaw') });
   });
 });
 
@@ -377,23 +327,23 @@ describe('the hooks of an instance', () => {
 
 describe('the built-in hooks of an instance', () => {
   it('takes the hook entries of the tool it extends, each naming the instance', async () => {
-    const { TOOL_ORDER } = await import('../tool-registry.js');
-    await load(teamRepo(Object.fromEntries(TOOL_ORDER.map((tool) => [`tools/acme-${tool}.yaml`, `schemaVersion: v1alpha1\nname: acme-${tool}\nextends: ${tool}\nhome: { dir: .acme-${tool} }\n`]))));
+    const { INSTANCE_BASES } = await import('../tool-registry.js');
+    await load(teamRepo(Object.fromEntries(INSTANCE_BASES.map((tool) => [`tools/acme-${tool}.yaml`, `schemaVersion: v1alpha1\nname: acme-${tool}\nextends: ${tool}\nhome: { dir: .acme-${tool} }\n`]))));
     const { builtinHookDefs } = await import('../builtin-hooks.js');
     const entries = (tool: string, named = tool) => JSON.parse(JSON.stringify(builtinHookDefs(tool)).replaceAll(`--tool ${tool}`, `--tool ${named}`));
 
-    expect(Object.fromEntries(TOOL_ORDER.map((tool) => [tool, entries(`acme-${tool}`, tool)]))).toEqual(Object.fromEntries(TOOL_ORDER.map((tool) => [tool, entries(tool)])));
+    expect(Object.fromEntries(INSTANCE_BASES.map((tool) => [tool, entries(`acme-${tool}`, tool)]))).toEqual(Object.fromEntries(INSTANCE_BASES.map((tool) => [tool, entries(tool)])));
   });
 });
 
 describe('the rules of an instance', () => {
   it('shares its rules directory with the member as the tool it extends does', async () => {
-    const { TOOL_ORDER } = await import('../tool-registry.js');
-    await load(teamRepo(Object.fromEntries(TOOL_ORDER.map((tool) => [`tools/acme-${tool}.yaml`, `schemaVersion: v1alpha1\nname: acme-${tool}\nextends: ${tool}\nhome: { dir: .acme-${tool} }\n`]))));
+    const { INSTANCE_BASES } = await import('../tool-registry.js');
+    await load(teamRepo(Object.fromEntries(INSTANCE_BASES.map((tool) => [`tools/acme-${tool}.yaml`, `schemaVersion: v1alpha1\nname: acme-${tool}\nextends: ${tool}\nhome: { dir: .acme-${tool} }\n`]))));
     const { sharesRulesDirWithMember } = await import('../resources/rule-format.js');
 
-    expect(Object.fromEntries(TOOL_ORDER.map((tool) => [tool, sharesRulesDirWithMember(`acme-${tool}`)])))
-      .toEqual(Object.fromEntries(TOOL_ORDER.map((tool) => [tool, sharesRulesDirWithMember(tool)])));
+    expect(Object.fromEntries(INSTANCE_BASES.map((tool) => [tool, sharesRulesDirWithMember(`acme-${tool}`)])))
+      .toEqual(Object.fromEntries(INSTANCE_BASES.map((tool) => [tool, sharesRulesDirWithMember(tool)])));
   });
 });
 
@@ -410,56 +360,38 @@ describe('the project instructions of an instance', () => {
   });
 });
 
-describe('the hook replies of an instance', () => {
-  it('takes the reply shape and the context limit of the host it extends', async () => {
-    await load(teamRepo({ 'tools/acme-cursor.yaml': 'schemaVersion: v1alpha1\nname: acme-cursor\nextends: cursor\nhome: { dir: .acme-cursor }\n' }));
-    const { formatStopHookOutput, relayWhenHidden } = await import('../utils/hook-output.js');
-    const { createDispatcher } = await import('../hook-dispatch.js');
-    const context = (name: string, text: string) => ({ name, execute: async () => JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } }) });
-    const dispatcher = createDispatcher({ localConfig: null, handlers: [
-      { event: 'session-start', matcher: '*', handler: context('cursor-user-rules', 'R'.repeat(10_000)), yieldsToContextLimit: true },
-      { event: 'session-start', matcher: '*', handler: context('team-env-hint', 'ENV') },
-    ] });
-    const replies = async (tool: string) => ({ stop: formatStopHookOutput(relayWhenHidden('Pushed.', tool), tool), start: (await dispatcher.dispatch('session-start', '*', {}, tool)).output });
-
-    expect(await replies('acme-cursor')).toEqual(await replies('cursor'));
-  });
-});
-
 describe('the co-author setting of an instance', () => {
-  it('lands in the config of its own home, and never in a tool that reads none', async () => {
+  it('lands in the config of its own home', async () => {
     const repo = teamRepo({
       'tools/acme-codex.yaml': 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex }\n',
-      'tools/acme-zcode.yaml': 'schemaVersion: v1alpha1\nname: acme-zcode\nextends: zcode\nhome: { dir: .acme-zcode }\n',
-      'tools/acme-cursor.yaml': 'schemaVersion: v1alpha1\nname: acme-cursor\nextends: cursor\nhome: { dir: .acme-cursor }\n',
+      'tools/acme-claude.yaml': 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude }\n',
     });
     fs.appendFileSync(path.join(repo, 'teamai.yaml'), 'sharing:\n  coAuthor: { enabled: false }\n');
     const { config } = await load(repo);
-    for (const dir of ['.acme-codex/skills', '.acme-zcode/cli', '.acme-cursor/skills']) fs.mkdirSync(path.join(home, dir), { recursive: true });
+    for (const dir of ['.acme-codex/skills', '.acme-claude/skills']) fs.mkdirSync(path.join(home, dir), { recursive: true });
     const { reconcileCoAuthorForConfig } = await import('../coauthor-reconcile.js');
     const { StateSchema } = await import('../types.js');
-    const local: LocalConfig = { repo: { localPath: repo, remote: 'https://example.com/acme/team.git' }, username: 'member', additionalRoles: [], scope: 'user', enabledAgents: ['acme-codex', 'acme-zcode', 'acme-cursor'] };
+    const local: LocalConfig = { repo: { localPath: repo, remote: 'https://example.com/acme/team.git' }, username: 'member', additionalRoles: [], scope: 'user', enabledAgents: ['acme-codex', 'acme-claude'] };
 
     if (!config) throw new Error('the team config did not load');
     const { changes } = await reconcileCoAuthorForConfig(config, local, StateSchema.parse({}));
 
     expect(changes.map(({ tool, file }) => ({ tool, file }))).toEqual([
+      { tool: 'acme-claude', file: path.join(home, '.acme-claude', 'settings.json') },
       { tool: 'acme-codex', file: path.join(home, '.acme-codex', 'config.toml') },
-      { tool: 'acme-cursor', file: path.join(home, '.acme-cursor', 'cli-config.json') },
     ]);
   });
 });
 
 describe('the model aliases of an instance', () => {
   const instance = (name: string, base: string, ownHome = `home: { dir: .${name} }\n`) => `schemaVersion: v1alpha1\nname: ${name}\nextends: ${base}\n${ownHome}`;
-  const strong = new Map([['strong', { source: 'models/aliases.yaml', entries: { codex: { model: 'gpt-6', effort: 'high' }, codebuddy: { model: 'glm-5', effort: 'high' } } }]]);
+  const strong = new Map([['strong', { source: 'models/aliases.yaml', entries: { codex: { model: 'gpt-6', effort: 'high' } } }]]);
   const aliases = { ok: true, names: new Set(['strong']), team: strong, local: new Map(), inactive: new Map(), warnings: [], switches: { codex: { ok: true, switched: true } } } as const;
 
   beforeEach(async () => {
     await load(teamRepo({
       'tools/acme-codex.yaml': instance('acme-codex', 'codex'),
       'tools/twin-codex.yaml': instance('twin-codex', 'codex', ''),
-      'tools/acme-buddy.yaml': instance('acme-buddy', 'codebuddy'),
     }));
   });
 
@@ -483,13 +415,11 @@ describe('the model aliases of an instance', () => {
     ]);
   });
 
-  it('judges with the model the tool it extends gets, and with no effort where that tool\'s launch passes none', async () => {
+  it('judges with the model the tool it extends gets', async () => {
     const { chooseJudgeModel } = await import('../scorers/judge-model.js');
 
     expect(chooseJudgeModel(aliases, { name: 'quality', model: 'strong' }, ['acme-codex']))
       .toMatchObject({ ok: true, choice: { tool: 'acme-codex', by: 'scorer', model: { name: 'gpt-6' }, alias: 'strong' } });
-    expect(chooseJudgeModel(aliases, { name: 'quality', model: 'strong' }, ['acme-buddy']))
-      .toEqual({ ok: true, choice: { tool: 'acme-buddy', by: 'scorer', model: { name: 'glm-5' }, alias: 'strong' } });
   });
 });
 

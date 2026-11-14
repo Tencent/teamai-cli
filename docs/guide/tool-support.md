@@ -141,3 +141,10 @@ Notes:
 33. agy 1.4.10 session read 2026-10-31; it names no model, so its tokens show unpriced
 34. invoke_subagent starts a fresh conversation that gets only its prompt (agy 1.4.8); no session variable, so the session names its tool with --tools; not run
 35. runs from teamai's team-hook bridge, which can block a tool call; the dispatcher hands it a Claude payload
+
+## Tool instances
+
+A team or a member adds an [instance](./reference.md#team-tools-tools) of these tools only, and teamai refuses an instance of any other tool:
+
+- Claude Code (`claude`)
+- Codex CLI (`codex`)

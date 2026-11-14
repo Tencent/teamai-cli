@@ -250,7 +250,7 @@ teamai webhook test --dry-run
 
 ### 团队工具（`tools/`）
 
-团队用的是某个已支持工具的内部版本或分支时，可以把它加成内置工具的实例，不用等新版本。实例只改命令、home 和路径，沿用该工具的启动参数，以及会话、token、hook 和 MCP 格式。Kiro、Antigravity、Pi、OpenClaw、Hermes、OpenCode 和 OMP 的实例目前还不会装上 teamai 的 hook，因为这些工具的 hook 装在工具自己的 home 里；Codex 实例的 hook 在你于它的 `/hooks` 里批准之前，Codex 可能会跳过。有自己 home 的实例有自己的会话；沿用该工具 home 的实例写的就是该工具的会话。
+团队用的是某个已支持工具的内部版本或分支时，可以把它加成内置工具的实例，不用等新版本。实例只改命令、home 和路径，沿用该工具的启动参数，以及会话、token、hook 和 MCP 格式。实例只能扩展 Claude Code（`claude`）或 Codex（`codex`）；扩展其他工具的实例会被拒绝并指出文件，直到 teamai 支持该工具（[工具支持](./tool-support.md#工具实例)）。有自己 home 的实例有自己的会话；沿用该工具 home 的实例写的就是该工具的会话。
 
 ```yaml
 # 团队仓库中的 tools/acme-claude.yaml
@@ -319,19 +319,10 @@ teamai workflow start review --tools default=acme-claude
 ```text
 Tool instance …/tools/acme-claude.yaml is not valid: it sets sessions, and an instance sets only command, home and paths. …
 Tool instance …/tools/acme-claude.yaml is not valid: command: command is the name of one executable on PATH, with no path, spaces or arguments, such as acme-claude. …
+Tool instance …/tools/acme-kiro.yaml is not valid: extends: an instance extends claude or codex; teamai does not support an instance of kiro or any other tool yet. …
 ```
 
-实例要有自己的会话，被扩展的工具的格式必须能带另一个平台 id：Claude Code、Qoder、Codex、JoyCode、Cursor 和 OpenCode。其他工具的实例可以启动、接收文件，但 teamai 不读取它的会话。OpenCode 把会话放在它的数据目录下，而不是配置目录下，所以 teamai 在哪里读取 OpenCode 实例的会话，取决于它的 `home` 移动的是哪个变量：
-
-```yaml
-# tools/opencode-work.yaml：会话在 ~/.opencode-work/opencode
-schemaVersion: v1alpha1
-name: opencode-work
-extends: opencode
-home: { dir: .opencode-work, env: XDG_DATA_HOME }
-```
-
-如果是 `env: OPENCODE_CONFIG_DIR`，实例有自己的设置，会话仍在你的 OpenCode 数据目录中（`$XDG_DATA_HOME/opencode`，否则为 `~/.local/share/opencode`），teamai 把它们当作 OpenCode 的会话读取。实例会收到 teamai 自带的 agents（如 `teamai-recall`）和团队的 `agents/`，格式与它扩展的工具相同，并使用该工具的模型别名和 `tool_extras`；`teamai push` 会带上对实例副本的修改。`targets` 写了该工具的 agent 也会发给它的实例；只想发给某个实例时，写实例的名字。实例不会出现在[工具支持](./tool-support.md)页面上。
+实例会收到 teamai 自带的 agents（如 `teamai-recall`）和团队的 `agents/`，格式与它扩展的工具相同，并使用该工具的模型别名和 `tool_extras`；`teamai push` 会带上对实例副本的修改。`targets` 写了该工具的 agent 也会发给它的实例；只想发给某个实例时，写实例的名字。[工具支持](./tool-support.md)页面只列出实例可以扩展的工具，不列出实例本身。
 
 ---
 

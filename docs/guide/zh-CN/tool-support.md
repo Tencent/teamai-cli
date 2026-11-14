@@ -141,3 +141,10 @@ teamai 为每个工具把每类 Agent 资源写到哪里，以及工具读取哪
 33. agy 1.4.10 session read 2026-10-31; it names no model, so its tokens show unpriced
 34. invoke_subagent starts a fresh conversation that gets only its prompt (agy 1.4.8); no session variable, so the session names its tool with --tools; not run
 35. runs from teamai's team-hook bridge, which can block a tool call; the dispatcher hands it a Claude payload
+
+## 工具实例
+
+团队或成员只能为以下工具添加[实例](./reference.md#团队工具tools)，teamai 拒绝其他任何工具的实例：
+
+- Claude Code (`claude`)
+- Codex CLI (`codex`)

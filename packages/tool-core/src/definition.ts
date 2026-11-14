@@ -418,6 +418,11 @@ export type ToolDescriptor<TIds extends DescriptorIds = DescriptorIds> = {
   /** HTTP delivery adds models to this tool's own model settings; it reads them like any member entry. */
   readonly receivesDeliveredModels?: true;
   /**
+   * A team or member may add an instance of the tool (`tools/<name>.yaml` with `extends:` naming it): every path
+   * teamai takes for the tool reaches an instance of it too. Any other tool is refused as `extends:`.
+   */
+  readonly instances?: true;
+  /**
    * Where teamai writes the tool's skills follows inputs of each session that
    * nothing records: OpenClaw's workspace follows `OPENCLAW_WORKSPACE_DIR`,
    * `OPENCLAW_CONFIG_PATH` and the directory a relative workspace resolves
