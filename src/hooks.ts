@@ -3876,7 +3876,7 @@ async function clearEarlierHomeHooks(target: {
   baseDir: string; settings: string; current: string; tool: string; manifestPath: string;
   teamHookProjectRoot?: string; teamHookHistory?: TeamHookHistory;
 }): Promise<void> {
-  // oxlint-disable-next-line teamai/configured-tool-paths -- the unmoved default home earlier releases wrote, on purpose
+  // oxlint-disable-next-line teamai/configured-tool-paths -- the copy earlier releases wrote under the default home (#1221); the guard below runs only when baseDir is the user home and the file is not `current`
   const earlier = path.join(target.baseDir, target.settings);
 
   if (earlier === target.current || path.resolve(target.baseDir) !== path.resolve(getUserHome()) || !await pathExists(earlier)) return;
@@ -4430,7 +4430,7 @@ export async function reconcileHooksToAllTools(
     // relocated. Do not recreate the missing HOME root just to remove them.
     if (!installed && !(opts.removeAll && mainFile)) continue;
     // A legacy-project sweep deliberately edits the old project file.
-    // oxlint-disable-next-line teamai/configured-tool-paths -- settingsOnly sweeps the legacy <projectRoot> copy, a project path
+    // oxlint-disable-next-line teamai/configured-tool-paths -- settingsOnly comes only from the legacy sweep, whose baseDir is resolveLegacyProjectHookScope's projectRoot, never the user home
     const settingsPath = opts.settingsOnly ? path.join(baseDir, paths.settings) : hookSettingsFile(tool, baseDir, paths.settings);
     // A project install of a tool that keeps its user hooks (ZCode) shares the HOME file: it owns only its gated team hooks.
     const homeHooks = channelsOf(tool).hooks.self === 'user' && opts.scope === 'project';
@@ -4845,10 +4845,10 @@ async function codexTrustTargets(
 
     if (mainCheckout && mainFile) {
       sources.push({ file: mainFile, manifestPath: mainCheckout.manifestPath });
-    // oxlint-disable-next-line teamai/configured-tool-paths -- the main checkout's project file, never under a tool home
+    // oxlint-disable-next-line teamai/configured-tool-paths -- anchor is the main checkout of a project-scope config (the scope check above), never the user home
     } else if (isSelfMode(localConfig) && path.join(anchor, paths.settings) !== primary) {
       // A linked worktree of a repo in self mode: Codex reads the main checkout's file.
-      // oxlint-disable-next-line teamai/configured-tool-paths -- the main checkout's project file, never under a tool home
+      // oxlint-disable-next-line teamai/configured-tool-paths -- anchor is the main checkout of a project-scope config (the scope check above), never the user home
       sources[0] = { file: path.join(anchor, paths.settings), manifestPath };
     }
 
@@ -5100,7 +5100,7 @@ export async function sweepLegacyProjectHooks(
   for (const [tool, paths] of Object.entries(toolPaths)) {
     const mainFile = mainCheckoutHookFile(mainCheckout, tool);
 
-    // oxlint-disable-next-line teamai/configured-tool-paths -- the legacy <projectRoot> copy, a project path
+    // oxlint-disable-next-line teamai/configured-tool-paths -- legacy.baseDir is resolveLegacyProjectHookScope's projectRoot, never the user home
     if (mainFile && paths.settings && path.join(canonicalProjectRoot(legacy.baseDir), paths.settings) === mainFile) {
       if (!reconciledMainTools.has(tool) && await pathExists(mainFile)) {
         await reconcileHooks(mainFile, tool, [], { removeAll: true, teamOnly: true, manifestPath: legacy.manifestPath, codexTrust });
@@ -5598,7 +5598,7 @@ async function judgeTeamaiOnlyCodexHooksOf(
 
   if (isSelfMode(localConfig)) {
     const settings = scopedToolPaths(teamConfig, localConfig)[tool]?.settings;
-    // oxlint-disable-next-line teamai/configured-tool-paths -- the self-mode project file, never under a tool home
+    // oxlint-disable-next-line teamai/configured-tool-paths -- in self mode resolveHookScope's baseDir is the project root, never the user home
     file = settings ? path.join(resolveHookScope(localConfig).baseDir, settings) : null;
     manifestPath = getManagedHooksPath(localConfig);
   } else {

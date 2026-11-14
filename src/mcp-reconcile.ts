@@ -2248,7 +2248,7 @@ export async function earlierMappedMcpTargets(
       const format = mcpFormatOf(tool);
 
       if (rel === undefined || !format) continue;
-      // oxlint-disable-next-line teamai/configured-tool-paths -- a project file an earlier teamai.yaml mapped, never under a tool home
+      // oxlint-disable-next-line teamai/configured-tool-paths -- mcpProject, which an earlier teamai.yaml mapped; a file outside the project root is skipped just below
       const file = path.resolve(resolveBaseDir(cfg), rel);
       const key = `${tool}\0${file}`;
 

@@ -210,7 +210,7 @@ function preFixSharedTargets(teamConfig: TeamaiConfig, localConfig: LocalConfig)
 
   for (const [tool, paths] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (familyOf(tool) !== 'claude' || !paths.settings) continue;
-    // oxlint-disable-next-line teamai/configured-tool-paths -- the project files releases before #993 wrote, as they named them
+    // oxlint-disable-next-line teamai/configured-tool-paths -- the scope check above makes baseDir the project root: the project files releases before #993 wrote
     const file = path.join(baseDir, paths.settings);
 
     if (!files.has(file)) files.set(file, tool);
@@ -542,7 +542,7 @@ export async function reconcileCoAuthorForConfig(
 
   const intent = resolveCoAuthor(localConfig, teamConfig);
   const claudeSettings = scopedToolPaths(teamConfig, localConfig).claude?.settings;
-  // oxlint-disable-next-line teamai/configured-tool-paths -- the shared project file releases before #993 wrote, as preFixSharedTargets names it
+  // oxlint-disable-next-line teamai/configured-tool-paths -- compared only with preFixSharedTargets, which is empty outside project scope, so this is a project file
   const claudeShared = claudeSettings ? path.join(resolveBaseDir(localConfig), claudeSettings) : undefined;
 
   // Settle each shared project file an earlier release wrote into: remove the
