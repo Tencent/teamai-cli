@@ -75,7 +75,6 @@ export const BASE_ID_COMPARISONS = new Map(Object.entries({
   'src/models/profile.ts': 2,
   'src/models/switch.ts': 18,
   'src/pkg/commands.ts': 1,
-  'src/pull.ts': 3,
   'src/resources/agent-format.ts': 7,
   'src/resources/mcp-format.ts': 3,
   'src/resources/skills.ts': 1,

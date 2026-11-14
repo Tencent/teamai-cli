@@ -33,7 +33,7 @@ import {
   resolveDesiredDocs, resolveDocsDestination,
 } from './resources/docs.js';
 import { ResourceHandler } from './resources/base.js';
-import { CODEX_TOOL, codexSkillsSplit, mayDeleteSkillCopy, skillOrigin } from './resources/skills.js';
+import { codexSkillsSplit, mayDeleteSkillCopy, readsCodexSharedSkills, skillOrigin } from './resources/skills.js';
 import { TeamSkillSource } from './resources/team-skill-source.js';
 import { installOf, locate, locatingOnce, ownOf, SHARED_AGENT_SKILLS_PATH, toolPathUnder, writable, writesOf, type Install } from './locate.js';
 import { isWithin } from './utils/agent-path.js';
@@ -429,7 +429,7 @@ export async function cleanupInactiveNamespaceSkills(
 
     if (skillsDir === null) continue;
 
-    if (tool === CODEX_TOOL) {
+    if (readsCodexSharedSkills(tool)) {
       const swept = (name: string): boolean => !retainedSkillNames.has(name) && inactiveSkillNames.has(name);
 
       for (const name of await sweepSharedSkillCopies(localConfig, swept, ledger, installScopeName(localConfig.scope))) removed.add(name);
@@ -884,7 +884,7 @@ async function cleanupTombstonedResources(
         }
       }
 
-      if (type === 'skills' && tool === CODEX_TOOL) {
+      if (type === 'skills' && readsCodexSharedSkills(tool)) {
         await sweepSharedSkillCopies(localConfig, (name) => tombstones.has(name), ledger, scopeLabel);
       }
     }
@@ -2960,7 +2960,7 @@ async function pullForScope(
       const isOtherTeamsSkill = (name: string, dir: string): boolean =>
         alone && !removedByTeam.has(name) && recordedUnder(ledger.previous ?? {}, dir).length > 0;
 
-      if (tool === CODEX_TOOL) {
+      if (readsCodexSharedSkills(tool)) {
         const swept = (name: string, dir: string): boolean =>
           !desiredSkillNames.has(name) && (knownRepoSkillNames.has(name) || isOtherTeamsSkill(name, dir));
 
