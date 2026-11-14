@@ -890,12 +890,13 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
 
       // An entry reached by its name alone changed since the attempt ran, so its runtime may run elsewhere: the place the
       // record names is confirmed there before the record names this entry, or a place opens through it. One with no
-      // handle cannot be asked about.
+      // handle cannot be asked about. Unconfirmed, what ran there may still run, as a lost exec's may, so the step fails
+      // `runtime_lost` and is not run again beside it; the record stays as it was, and a close keeps the place on its own.
       if (before && before.phase !== 'closed') {
         const handle = before.open.handle;
         const unknown = handle === undefined ? (RuntimeEntryIdentity.isByNameOnly(before, entry) ? changedEntryFailure() : undefined) : await unknownToChangedEntry(before, handle);
 
-        if (unknown) return { ok: false, failure: runtimeFailure(runtime.name, `cannot continue attempt ${attempt} (${unknown.code}): ${unknown.message}`) };
+        if (unknown) return { ok: false, failure: { code: 'runtime_lost', message: `Step runtime "${runtime.name}" cannot continue attempt ${attempt} (${unknown.code}): ${masked(unknown).message}` } };
       }
 
       const op = before?.open.op ?? newOpId();

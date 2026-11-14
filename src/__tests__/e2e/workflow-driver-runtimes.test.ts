@@ -1236,6 +1236,8 @@ steps:
       expect(Number(fs.readFileSync(mark, 'utf8'))).toBe(held);
       expect(fs.existsSync(path.join(elsewhere, 'handles.json')) ? JSON.parse(fs.readFileSync(path.join(elsewhere, 'handles.json'), 'utf8')) : {}).toEqual({});
       expect(runtimeRecord(runId, attempt)).toEqual(before);
+      // What ran may still run, so the step is not run again beside it, by a retry either.
+      expect(readRunState(runId).steps[0]).toMatchObject({ id: 'hold', status: 'failed', failure: { code: 'runtime_lost' } });
 
       writeDefinition('toyresume', [{ use: 'toy', options: { state: ran } }]);
       const stopped = await runCLI(['workflow', 'cancel', runId], repo, env());
