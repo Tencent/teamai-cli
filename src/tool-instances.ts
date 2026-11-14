@@ -462,7 +462,11 @@ function movedToHome(instance: DeclaredTool, paths: z.infer<typeof ToolPathsSche
     return value === undefined ? [] : [[field, value]];
   }));
 
-  return { ...paths, mcp: moved.mcp, userScope };
+  const result: z.infer<typeof ToolPathsSchema> = { ...paths, userScope };
+
+  if (moved.mcp !== undefined) result.mcp = moved.mcp;
+
+  return result;
 }
 
 /**
