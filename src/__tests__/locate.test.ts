@@ -459,6 +459,13 @@ describe('the home an instance\'s own variable moves', () => {
     expect(await nextToolHomes({ 'acme-codex': '/x/acme' }, linuxHost({ ACME_CODEX_HOME: '' }), 'init')).toEqual({ homes: {}, changes: [{ tool: 'acme-codex', variable: 'ACME_CODEX_HOME', dir: null, previous: '/x/acme' }] });
   });
 
+  it('names the default home an instance leaves on its first move, so init can release it', async () => {
+    useToolInstances(new Map([['acme-codex', instance]]));
+
+    expect((await nextToolHomes({}, linuxHost({ ACME_CODEX_HOME: '/x/acme' }), 'init')).changes).toEqual([{ tool: 'acme-codex', variable: 'ACME_CODEX_HOME', dir: '/x/acme', previous: '/home/m/.acme-codex' }]);
+    expect((await nextToolHomes({}, linuxHost({ ACME_CODEX_HOME: '/home/m/.acme-codex' }), 'init')).changes).toEqual([{ tool: 'acme-codex', variable: 'ACME_CODEX_HOME', dir: '/home/m/.acme-codex' }]);
+  });
+
   it('is read from the record in a shell without the variable, and the record wins over another value, as for a shipped tool', () => {
     useToolInstances(new Map([['acme-codex', instance]]));
 
