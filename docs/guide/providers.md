@@ -246,7 +246,7 @@ Codeup (阿里云云效代码管理, codeup.aliyun.com) uses the Yunxiao (云效
 
 Git transport and API calls use separate credentials:
 
-- **Git transport (clone/push)**: follows the URL you typed — an `https://codeup.aliyun.com/...` URL clones over HTTPS; an SSH URL or the bare `org/group/repo` form clones over SSH (`git@codeup.aliyun.com:org/group/repo.git`), authenticated by the SSH key on your machine, exactly as the generic `git` provider works. An HTTPS clone embeds the PAT as the Basic password when its username is known too (`CODEUP_USERNAME`, `~/.teamai/codeup.json`, or the `~/.netrc` entry the interactive init persists); otherwise your own git credential setup authenticates. `CODEUP_TRANSPORT=https` or `CODEUP_TRANSPORT=ssh` overrides the choice — PAT-as-git-password is not a verified path on every deployment, so `CODEUP_TRANSPORT=ssh` opts back out of HTTPS.
+- **Git transport (clone/push)**: follows the URL you typed — an `https://codeup.aliyun.com/...` URL clones over HTTPS; an SSH URL or the bare `org/group/repo` form clones over SSH (`git@codeup.aliyun.com:org/group/repo.git`), authenticated by the SSH key on your machine, exactly as the generic `git` provider works. The PAT never enters the clone URL: when a token is configured, an HTTPS clone injects it per-run as an `http.extraHeader` Basic credential (username fixed to `oauth2` — Codeup checks only the token), so nothing persists into the clone's `.git/config`; without a token, your own git credential setup authenticates. `CODEUP_TRANSPORT=https` or `CODEUP_TRANSPORT=ssh` overrides the choice.
 - **OpenAPI (merge request creation)**: a Yunxiao Personal Access Token, resolved in this order:
 
 1. `CODEUP_TOKEN` (primary)
@@ -279,7 +279,7 @@ Merge request web URLs follow `https://codeup.aliyun.com/<org/group/repo>/change
 
 ### Namespaces
 
-Codeup repo paths are multi-level (organization → optional nested groups → repo), so addresses look like `org/repo` or `org/group/subgroup/repo`; the full path is preserved. A pasted browser URL has its web-route suffix (`/tree/master`, `/changeRequest/list`, …) stripped; an extensionless browser URL is inherently ambiguous, so when a nested group is named like a web route (`org/group/tree/repo`), pass the `.git` clone URL or the bare short form — both keep every segment. Only the public cloud `codeup.aliyun.com` is supported. Automatic repository creation is not supported; create the repo on the web first.
+Codeup repo paths are multi-level (organization → optional nested groups → repo), so addresses look like `org/repo` or `org/group/subgroup/repo`; the full path is preserved. Browser URLs with a `.git` marker are unambiguous (`…/repo.git/tree/main` is the repo `…/repo` browsed at a route). A browser URL without `.git` whose route-like segment carries a sub-path (`.../repo/tree/main`) reads both as a route suffix and as a nested group — it is refused with both readings named, so pass the `.git` clone URL or the bare short form to say which. Clone URLs (any SSH form, or a `.git` path) and the short form keep every segment. Only the public cloud `codeup.aliyun.com` is supported. Automatic repository creation is not supported; create the repo on the web first.
 
 ### Reviewers
 

@@ -249,7 +249,7 @@ Codeup（阿里云云效代码管理，codeup.aliyun.com）使用云效 OpenAPI�
 
 Git 传输与 API 调用使用各自的凭据：
 
-- **Git 传输（clone/push）**：跟随你输入的 URL —— `https://codeup.aliyun.com/...` 走 HTTPS；SSH URL 或 `org/group/repo` 短格式走 SSH（`git@codeup.aliyun.com:org/group/repo.git`），由本机 SSH Key 认证，与通用 `git` provider 一致。HTTPS clone 在同时知道用户名时（`CODEUP_USERNAME`、`~/.teamai/codeup.json`，或交互式 init 写入的 `~/.netrc` 条目）会把 PAT 作为 Basic 密码嵌入 URL；否则由你本机的 git 凭据配置认证。`CODEUP_TRANSPORT=https` 或 `CODEUP_TRANSPORT=ssh` 可强制指定 —— PAT 作为 git 密码并非在所有部署上都验证过，`CODEUP_TRANSPORT=ssh` 可以退回 SSH。
+- **Git 传输（clone/push）**：跟随你输入的 URL —— `https://codeup.aliyun.com/...` 走 HTTPS；SSH URL 或 `org/group/repo` 短格式走 SSH（`git@codeup.aliyun.com:org/group/repo.git`），由本机 SSH Key 认证，与通用 `git` provider 一致。PAT 不会进入克隆 URL：配置了 token 时，HTTPS 克隆会在每次运行时以 `http.extraHeader` 注入 Basic 凭据（用户名固定为 `oauth2` —— Codeup 只校验令牌），凭据不会落进克隆目录的 `.git/config`；没有 token 时由你本机的 git 凭据配置认证。`CODEUP_TRANSPORT=https` 或 `CODEUP_TRANSPORT=ssh` 可强制指定。
 - **OpenAPI（创建合并请求）**：云效个人访问令牌，按以下顺序解析：
 
 1. `CODEUP_TOKEN`（主）
@@ -282,7 +282,7 @@ export CODEUP_ORG_ID=64700f00f1234
 
 ### 命名空间
 
-Codeup 仓库路径为多级（组织 → 可选嵌套群组 → 仓库），地址形如 `org/repo` 或 `org/group/subgroup/repo`，完整路径会被保留。粘贴的浏览器地址会剥掉 web 路由后缀（`/tree/master`、`/changeRequest/list` 等）；不带 `.git` 的浏览器地址存在固有歧义，若嵌套群组名恰好像 web 路由（如 `org/group/tree/repo`），请传 `.git` 克隆地址或短格式 —— 这两种形式会保留每一段。仅支持公有云 `codeup.aliyun.com`。不支持自动创建仓库，请先在网页上创建。
+Codeup 仓库路径为多级（组织 → 可选嵌套群组 → 仓库），地址形如 `org/repo` 或 `org/group/subgroup/repo`，完整路径会被保留。带 `.git` 标记的浏览器地址没有歧义（`…/repo.git/tree/main` 即仓库 `…/repo` 的浏览路由）；不带 `.git` 且「路由名段后还有子路径」的浏览器地址（如 `.../repo/tree/main`）既可读作路由后缀也可读作嵌套群组，会直接报错并列出两种解读 —— 请改用 `.git` 克隆地址或短格式来明确指定。克隆地址（任何 SSH 形式或带 `.git` 的路径）与短格式会保留每一段。仅支持公有云 `codeup.aliyun.com`。不支持自动创建仓库，请先在网页上创建。
 
 ### 评审人
 
