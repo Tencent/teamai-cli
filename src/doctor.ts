@@ -22,6 +22,7 @@ import {
   RELOCATABLE_TOOLS,
   applyToolRoots,
   detectToolRoot,
+  recordedToolRootDir,
   resolveToolRootDir,
   toolRootRejection,
   resolveHookScope,
@@ -354,6 +355,19 @@ function buildToolRootChecks(localConfig: LocalConfig, teamConfig: TeamaiConfig 
     const declared = teamConfig?.toolPaths[tool];
 
     if (!declared || isAgentExcluded(localConfig, tool)) continue;
+    const recordedRoot = recordedToolRootDir(tool, localConfig.toolRoots);
+
+    // Whether or not the shell sets the variable: the record wins, and delivery and launch skip the tool while it is gone.
+    if (recordedRoot !== null) {
+      checks.push({
+        name: `${label} root exists`,
+        source: 'local',
+        check: async () => pathExists(recordedRoot),
+        fix: `The ${label} root recorded on this machine, ${recordedRoot}, does not exist, so teamai skips ${label}. `
+          + `Point ${envVar} at the root ${label} uses and re-run \`teamai init\`, or clear the record with \`${envVar}= teamai init\`.`,
+      });
+    }
+
     const detected = detectToolRoot(tool);
 
     if (!detected) continue;

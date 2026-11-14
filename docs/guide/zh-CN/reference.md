@@ -217,7 +217,7 @@ CURSOR_DATA_DIR=~/.cursor-data teamai init
 CURSOR_CONFIG_DIR=~/.cursor-config teamai init
 ```
 
-目录要在 home 下，或在 `~/.config/` 下面。Copilot 用自己的 `COPILOT_HOME`。工作流步骤启动 Claude Code 或 Codex 时，即使 shell 没有设这个变量，也会把它设为记录的目录。
+目录要在 home 下，或在 `~/.config/` 下面。Copilot 用自己的 `COPILOT_HOME`。工作流步骤启动 Claude Code 或 Codex 时，即使 shell 没有设这个变量，也会把它设为记录的目录。记录的目录不存在时，pull 会跳过该工具，工作流步骤不会启动它，`teamai doctor` 会报 `Claude Code root exists` 或 `Codex root exists`。
 
 Cursor CLI 会搬两个目录：`CURSOR_DATA_DIR` 放会话记录，`CURSOR_CONFIG_DIR` 放写协同署名设置的 `cli-config.json`。用户级 `mcp.json`、`rules/`、`commands/` 不管这两个变量怎么设都留在 `~/.cursor`，所以它们仍然用默认路径。没设 `CURSOR_CONFIG_DIR` 时，配置根目录取 `$XDG_CONFIG_HOME/cursor`（设了该变量的话），否则取 `~/.cursor`。
 

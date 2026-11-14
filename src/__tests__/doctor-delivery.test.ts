@@ -887,6 +887,22 @@ describe('doctor — where a tool takes skills', () => {
     expect((await failing()).map((c) => c.name)).not.toContain('opencode home exists');
   });
 
+  it('fails when the root recorded for Codex is gone, though CODEX_HOME is unset', async () => {
+    const gone = path.join(homeDir, '.codex-gone');
+    teamConfig.toolPaths = { codex: { skills: '.codex/skills' } };
+    localConfig.toolRoots = { codex: gone };
+    vi.stubEnv('CODEX_HOME', undefined);
+
+    const check = (await failing()).find((c) => c.name === 'Codex root exists');
+
+    expect(check?.fix).toBe(`The Codex root recorded on this machine, ${gone}, does not exist, so teamai skips Codex. `
+      + 'Point CODEX_HOME at the root Codex uses and re-run `teamai init`, or clear the record with `CODEX_HOME= teamai init`.');
+
+    await fse.ensureDir(gone);
+
+    expect((await failing()).map((c) => c.name)).not.toContain('Codex root exists');
+  });
+
   it('fails when the tool-homes record is not one, since teamai then ignores it', async () => {
     await fse.outputFile(toolHomesPath(), JSON.stringify({ opencode: 'relative/opencode' }));
 

@@ -217,7 +217,7 @@ CURSOR_DATA_DIR=~/.cursor-data teamai init
 CURSOR_CONFIG_DIR=~/.cursor-config teamai init
 ```
 
-The directory has to sit in your home or under `~/.config/`. Copilot uses its own `COPILOT_HOME`. A workflow step on Claude Code or Codex starts it with its variable set to the recorded directory, even from a shell without that variable.
+The directory has to sit in your home or under `~/.config/`. Copilot uses its own `COPILOT_HOME`. A workflow step on Claude Code or Codex starts it with its variable set to the recorded directory, even from a shell without that variable. While the recorded directory is gone, pull skips the tool, a workflow step does not start it, and `teamai doctor` reports `Claude Code root exists` or `Codex root exists`.
 
 Cursor CLI moves two directories: `CURSOR_DATA_DIR` holds the transcripts, `CURSOR_CONFIG_DIR` the `cli-config.json` the co-author setting goes into. Its user `mcp.json`, `rules/` and `commands/` stay in `~/.cursor` whatever the two variables say, so those keep their default paths. With `CURSOR_CONFIG_DIR` unset the config root is `$XDG_CONFIG_HOME/cursor` when that variable is set, `~/.cursor` otherwise.
 

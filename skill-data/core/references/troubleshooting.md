@@ -89,7 +89,10 @@ This is the #1 onboarding issue. In order:
    `teamai init` from a shell that has the variable exported; it records the root
    and moves the install. If the check says the value cannot be synced to (outside
    your home, or neither a plain directory in it nor one under `.config/`), fix the
-   variable first. `<tool> home matches <variable>` (`XDG_CONFIG_HOME`,
+   variable first. `Claude Code root exists` / `Codex root exists` fails when the
+   recorded root is gone; pull skips the tool and a workflow step does not start it
+   until you re-run `teamai init` with the variable set to the root it uses, or blank
+   to clear the record. `<tool> home matches <variable>` (`XDG_CONFIG_HOME`,
    `HERMES_HOME`, `COPILOT_HOME`, ...) is the same check for the homes recorded in
    `~/.teamai/tool-homes.json`, and `<tool> home exists` fails when a recorded home
    is gone; re-run `teamai init` from the shell with the variable you want.
