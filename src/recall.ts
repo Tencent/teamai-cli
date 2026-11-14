@@ -23,7 +23,7 @@ import type { ResourceRelationType, RelationVia } from './resource-relations.js'
 import { caseFoldKey } from './manifest-schema.js';
 import type { RelatedRef } from './recall-log.js';
 import type { SearchIndexEntry } from './types.js';
-import { expandBraces, rulePaths } from './resources/team-rule.js';
+import { expandBraces, rulePaths, teamRuleData } from './resources/team-rule.js';
 import { matchGlob } from './utils/glob.js';
 
 /** Relevance threshold for codebase graph hits.
@@ -431,10 +431,10 @@ function entryRuleGlobs(entry: SearchIndexEntry): string[] {
   if (!entry.path || !existsSync(entry.path)) return [];
 
   try {
-    // Braces expand here, the same pass the rule renderers run
-    // (rulePaths(...).flatMap(expandBraces), src/resources/team-rule.ts), so
-    // paths: ["src/{pay,other}/**"] derives edges exactly as the rule applies.
-    return rulePaths(matter(readFileSync(entry.path, 'utf-8')).data).flatMap(expandBraces);
+    // The same pass the rule renderers run (rulePaths(teamRuleData(...)).flatMap(expandBraces),
+    // src/resources/team-rule.ts), so paths: ["src/{pay,other}/**"] and an unquoted
+    // paths: **/*.ts derive edges exactly as the rule applies.
+    return rulePaths(teamRuleData(readFileSync(entry.path, 'utf-8'))).flatMap(expandBraces);
   } catch {
     return [];
   }

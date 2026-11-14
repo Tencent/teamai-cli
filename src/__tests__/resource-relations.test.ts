@@ -722,7 +722,7 @@ describe('computeDerivedRelations — rule paths to code page sources', () => {
     }
   });
 
-  it('brace globs expand where the rule renderers expand them (#1636 review)', async () => {
+  it('reads rule globs as the rule renderers do: braces expand (#1636 review) and an unquoted glob counts', async () => {
     const tmp = makeTmpDir();
     try {
       const a = codePage(tmp, 'pay/modules/ledger.md', ['src/pay/receipts.ts']);
@@ -730,13 +730,20 @@ describe('computeDerivedRelations — rule paths to code page sources', () => {
       const ruleAbs = path.join(tmp, 'rules/payments.md');
       fs.mkdirSync(path.dirname(ruleAbs), { recursive: true });
       fs.writeFileSync(ruleAbs, ['---', 'title: r', 'paths:', '  - src/{pay,shop}/**', '---', '', '# R', ''].join('\n'));
+      // An unquoted `**` is not strict YAML; teamRuleData retries it quoted (#946).
+      const unquotedAbs = path.join(tmp, 'rules/shop.md');
+      fs.writeFileSync(unquotedAbs, ['---', 'paths: **/shop/**', '---', '', '# S', ''].join('\n'));
       const index = {
         version: 1,
-        entries: [entry({ filename: 'payments.md', treePath: 'rules/payments.md', path: ruleAbs })],
+        entries: [
+          entry({ filename: 'payments.md', treePath: 'rules/payments.md', path: ruleAbs }),
+          entry({ filename: 'shop.md', treePath: 'rules/shop.md', path: unquotedAbs }),
+        ],
       } as unknown as SearchIndex;
       const context = await buildRelationContext({ index, config: { repo: { localPath: tmp } } as never });
       const derived = computeDerivedRelations(new Map([['project', context]])).get('project');
       expect([...derived!.out.get('rules/payments.md') ?? []].sort()).toEqual([a.treePath, b.treePath]);
+      expect([...derived!.out.get('rules/shop.md') ?? []]).toEqual([b.treePath]);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
