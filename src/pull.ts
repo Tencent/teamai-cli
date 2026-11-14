@@ -40,6 +40,7 @@ import { isWithin } from './utils/agent-path.js';
 import { describeToolHomeChange, recordToolHomes } from './tool-home-record.js';
 import { describeInvalidToolHomes, realHost, toolHomeOf } from './tool-home.js';
 import { baseToolOf, folderReachOf } from './tool-registry.js';
+import { askingOnce } from './tool-instances.js';
 import { placesOf, placesRecordOf, placesUnmoved, recordPlaces, type PlacesRecord, type SessionToolHomes } from './resources/places.js';
 import { flatStemsOfRemoved, ruleFileExtensionForTool, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
 import { AGENT_FILE_EXTENSIONS } from './resources/agent-format.js';
@@ -4926,6 +4927,8 @@ async function trustCodexAllScopes(
   if (options.dryRun) return;
   const scopes = [userConfig, projectConfig].filter((c): c is LocalConfig => !!c);
   let warnedSkew: CodexBuildSkew | undefined;
+  const person = terminalPerson(options);
+  const ask = person && askingOnce(person);
 
   for (const localConfig of scopes) {
     try {
@@ -4933,7 +4936,7 @@ async function trustCodexAllScopes(
 
       if (!teamConfig) continue;
       const { reportCodexTrust, trustCodexForScope } = await import('./hooks.js');
-      const trust = await trustCodexForScope(teamConfig, localConfig, { ask: terminalPerson(options) });
+      const trust = await trustCodexForScope(teamConfig, localConfig, { ask });
       const skewAlreadyWarned = trust?.skew !== undefined && isDeepStrictEqual(trust.skew, warnedSkew);
 
       if (trust?.skew) warnedSkew = trust.skew;

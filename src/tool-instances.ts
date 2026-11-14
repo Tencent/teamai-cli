@@ -442,6 +442,18 @@ export interface UnacceptedCommand {
   readonly message: string;
 }
 
+/** `ask`, answering a question it put before with that first answer: a pull that passes several scopes asks once. */
+export function askingOnce(ask: (question: string) => Promise<string | undefined>): (question: string) => Promise<string | undefined> {
+  const answers = new Map<string, Promise<string | undefined>>();
+
+  return async (question) => {
+    const answer = answers.get(question) ?? ask(question);
+    answers.set(question, answer);
+
+    return answer;
+  };
+}
+
 /**
  * Whether `instance`'s command may run here. Only a team instance that sets one needs it: a person must have accepted
  * its file's content on this machine. `ask`, given when a person at a terminal answers, puts the question to them and

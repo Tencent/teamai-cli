@@ -647,6 +647,21 @@ describe('Codex hook trust — an instance', () => {
     if (!instance) throw new Error('acme-codex is not loaded');
     expect(await acceptToolCommand(instance, { ask: undefined })).toEqual({ ok: true });
   });
+
+  it('asks the acceptance question once for every scope a pull passes, and keeps the hooks untrusted after a no', async () => {
+    const { askingOnce } = await import('../tool-instances.js');
+    const { config } = await withInstance('team');
+    await writeYaml(LINT_HOOK);
+    const local = userConfig({ enabledAgents: ['acme-codex'] });
+    await reconcileTeamHooksForConfig(config, local);
+    const asked: string[] = [];
+    const ask = askingOnce(async (question) => { asked.push(question); return 'n'; });
+
+    const passes = [await trustCodexForScope(config, local, { ask }), await trustCodexForScope(config, local, { ask })];
+
+    expect(asked).toHaveLength(1);
+    expect(passes).toEqual([{ kind: 'unaccepted', tool: 'acme-codex' }, { kind: 'unaccepted', tool: 'acme-codex' }]);
+  });
 });
 
 describe('reportCodexTrust', () => {
