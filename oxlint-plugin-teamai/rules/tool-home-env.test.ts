@@ -17,7 +17,8 @@ rule.invalid('rejects it in scripts', 'const env = { CODEX_HOME: dir };', undefi
 rule.valid('allows the owner', 'const env = { [variable]: dir, CODEX_HOME: dir };', { filename: 'src/tool-launch/tools.ts' });
 rule.valid('allows tests', 'const env = { CODEX_HOME: dir };', { filename: 'src/__tests__/codex-trust.test.ts' });
 rule.valid('allows a test beside its source', 'const env = { CODEX_HOME: dir };', { filename: 'packages/tool-codex/src/session.test.ts' });
-rule.valid('allows test support', 'const env = { CODEX_HOME: dir };', { filename: 'packages/tool-testing/src/testing/fake-codex.ts' });
+rule.valid('allows the test-only tool-testing package', 'const host = { homeEnvAt: (tool, dir) => ({ CODEX_HOME: dir }) };', { filename: 'packages/tool-testing/src/conformance.ts' });
+rule.valid('allows test support', 'const env = { CODEX_HOME: dir };', { filename: 'packages/tool-codex/src/testing/fake-codex.ts' });
 rule.valid('allows reading a home variable', 'const home = env.CODEX_HOME || fallback; const moved = env[spec.envVar];');
 rule.valid('allows removing a home variable', 'delete env.CODEX_HOME; const { CODEX_HOME, ...rest } = env;');
 rule.valid('allows other variables', `const env = { ...process.env, RUST_LOG: 'error', [name]: dir }; env.PATH = dir;`);

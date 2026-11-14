@@ -185,7 +185,7 @@ import { HOST_PROCESSES } from '@teamai/shared/exec';
 import type { SessionHost } from '@teamai/tool-core/sessions/platform';
 
 // The registry is mocked here, so the adapters these tests read through get a host of their own.
-const READ_HOST: SessionHost = { processes: HOST_PROCESSES, executablesOf: (tool) => [tool] };
+const READ_HOST: SessionHost = { processes: HOST_PROCESSES, executablesOf: (tool) => [tool], homeEnvAt: (_tool, dir) => ({ CODEX_HOME: dir }) };
 
 let repoRoot: string;
 /** console.log + process.stdout.write 的合并捕获（ask 的提示走 stdout.write） */

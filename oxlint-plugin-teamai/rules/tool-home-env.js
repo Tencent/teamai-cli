@@ -1,5 +1,5 @@
 import { defineRule } from '@oxlint/plugins';
-import { inProductionSource, inTestSupport, isOneOf, sourcePath, stringLiteralValue } from '../utils.js';
+import { inProductionSource, inTestSupport, isOneOf, repositoryPath, sourcePath, stringLiteralValue } from '../utils.js';
 
 /** @typedef {import('@oxlint/plugins').ESTree.Node} Node */
 
@@ -70,7 +70,9 @@ export default defineRule({
     docs: { description: 'Set a tool\'s home variable on a command only through toolCommandEnv.' },
   },
   create(context) {
-    const inScope = (inProductionSource(context) && !inTestSupport(context)) || sourcePath(context).startsWith('scripts/');
+    // `@teamai/tool-testing` is test-only and never bundled (its package.json): it stands in for teamai's toolCommandEnv.
+    const testOnly = repositoryPath(context).relative.startsWith('packages/tool-testing/');
+    const inScope = (inProductionSource(context) && !inTestSupport(context) && !testOnly) || sourcePath(context).startsWith('scripts/');
 
     if (!inScope || isOneOf(context, [OWNER])) return {};
     const message = 'Take a tool\'s home variables from toolCommandEnv in src/tool-launch/tools.ts, the one place that decides which variables start a tool\'s command in which home, instead of setting one here.';
