@@ -4814,6 +4814,35 @@ steps:
 
     expect(wholeFit(step, child.definition, { requires: mergeRequirements(), around: 'outer' })).toEqual({ unfit: 'step "ask" runs only on this machine' });
   });
+
+  it('keeps a workflow step whole on no member when its child pins a finally step to this machine, and counts a finally step\'s requirements', () => {
+    const outer = parseWorkflow('outer.yaml', `schemaVersion: v1alpha1
+name: outer
+description: Runs build.
+steps:
+  - id: pair
+    workflow: build
+`);
+    const child = (requires: string) => parseWorkflow('build.yaml', `schemaVersion: v1alpha1
+name: build
+description: Builds, then cleans up.
+steps:
+  - id: build
+    command: node -e "process.stdout.write('built')"
+finally:
+  - id: cleanup
+    command: node -e "process.stdout.write('cleaned')"
+    requires: ${requires}
+`);
+    const pinned = child('{ host: true }');
+    const labelled = child('{ labels: [gpu] }');
+    if (!outer.ok || !pinned.ok || !labelled.ok) throw new Error(JSON.stringify([outer, pinned, labelled].flatMap((parsed) => (parsed.ok ? [] : parsed.diagnostics.map((diagnostic) => diagnostic.message)))));
+    const [step] = outer.definition.steps;
+    if (step === undefined) throw new Error('no step');
+
+    expect(wholeFit(step, pinned.definition, { requires: mergeRequirements(), around: 'outer' })).toEqual({ unfit: 'step "cleanup" runs only on this machine' });
+    expect(wholeFit(step, labelled.definition, { requires: mergeRequirements(), around: 'outer' })).toMatchObject({ runs: [{ step: { id: 'build' } }, { step: { id: 'cleanup' }, executor: 'command', requires: { labels: ['gpu'] } }] });
+  });
 });
 
 describe('a step that publishes to a teamai data branch', () => {

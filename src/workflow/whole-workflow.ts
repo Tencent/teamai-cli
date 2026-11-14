@@ -33,8 +33,9 @@ export function wholeFit(
   const file = isWorkflowFile(child) ? child : inlineFile(step, child);
   const inEffect = (inner: WorkflowStep): InEffect => mergeRequirements(requires, file.defaults?.requires, inner.requires);
 
-  // A gate step runs nothing: the member asks its question through the attempt's record.
-  const runs = file.steps.flatMap((inner): WholeRun[] => {
+  // A gate step runs nothing: the member asks its question through the attempt's record. The workflow's `finally` steps
+  // run there too, as the nested run's own, so they are judged as its steps are.
+  const runs = [...file.steps, ...(file.finally ?? [])].flatMap((inner): WholeRun[] => {
     if (inner.command !== undefined) return [{ step: inner, executor: 'command', requires: inEffect(inner) }];
 
     // An answer is a prompt the member's tool answers on this host, so the pin below holds it here.
