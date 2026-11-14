@@ -15,7 +15,7 @@ import { z } from 'zod';
 import { JsonValueSchema, type JsonValue, JsonObjectSchema } from './types.js';
 import { shellQuoteValue } from './utils/shell-profile.js';
 import { findGitBashWindows } from './bundled-runtime.js';
-import { baseToolOf } from './tool-registry.js';
+import { toolOf } from './tool-registry.js';
 
 const CURSOR_MARKER = '--tool cursor';
 const COPILOT_MARKER = '--tool copilot';
@@ -229,8 +229,18 @@ function copilotCopyInstalled(env: NodeJS.ProcessEnv, includeGlobal: boolean): b
     || copilotHooksInstalled(path.join(project, '.github', 'hooks'));
 }
 
+/**
+ * Whether `tool` reads Claude Code's own settings files, which Cursor and Copilot load too: Claude, or an instance of it
+ * with no home of its own. An instance with a home reads `.acme-claude/`, which neither loads.
+ */
+export function readsClaudeSettings(tool: string): boolean {
+  const resolved = toolOf(tool);
+
+  return resolved?.base === 'claude' && (resolved.instance?.home === undefined || resolved.instance.name === resolved.base);
+}
+
 export function claudeHookRunsInAnotherHost(tool: string, env: NodeJS.ProcessEnv = process.env, includeGlobalCopilot = true): boolean {
-  if (baseToolOf(tool) !== 'claude') return false;
+  if (!readsClaudeSettings(tool)) return false;
 
   if (env.CURSOR_VERSION && cursorCopyInstalled(env)) return true;
 

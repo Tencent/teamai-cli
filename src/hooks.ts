@@ -46,7 +46,7 @@ import { deliverHookFolders, historicalFolderHookDef, pruneHookFolders, parseTea
 import { entryLayout } from './namespaced-entries.js';
 import { historicalContents } from './utils/team-history.js';
 import { getUserHome, expandHome } from '@teamai/shared/home';
-import { LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP, claudeHookOtherHostSkip, claudeHookUsesPowerShell, copilotRunsEntries } from './claude-hook-host.js';
+import { LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP, claudeHookOtherHostSkip, claudeHookUsesPowerShell, copilotRunsEntries, readsClaudeSettings } from './claude-hook-host.js';
 import { gitCommonDir, listWorktrees, resolveAnchors } from './utils/git.js';
 import { staleWorkspaces } from './utils/partition.js';
 import {
@@ -1226,7 +1226,7 @@ function isProjectGatedCommand(command: string): boolean {
  * needs to know which tool it is rendering for.
  */
 function skipWhenAnotherHostLoadsClaudeSettings(def: HookDef, tool: string, legacyGuard = false): string {
-  if (baseToolOf(tool) !== 'claude') return def.command;
+  if (!readsClaudeSettings(tool)) return def.command;
 
   const guard = legacyGuard ? LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP
     : claudeHookOtherHostSkip(CLAUDE_TO_COPILOT_EVENTS[def.event], toCopilotEntry(def).matcher, def.command);

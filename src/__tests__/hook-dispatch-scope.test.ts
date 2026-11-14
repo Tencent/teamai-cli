@@ -269,12 +269,15 @@ describe('a hook of a tool instance', () => {
     expect(JSON.parse(fs.readFileSync(path.join(teamaiHome(), 'sessions', 'sid-i.http-enrolment.json'), 'utf8'))).toMatchObject({ cwd });
   });
 
-  it('runs no handler inside Cursor while Cursor has teamai hooks of its own, as for Claude', async () => {
+  it.each([
+    ['that shares Claude\'s home runs no handler', '', false],
+    ['with a home of its own, which Cursor never loads, runs its handlers', 'home: { dir: .acme-claude }\n', true],
+  ])('inside Cursor while Cursor has teamai hooks of its own, a Claude instance %s', async (_, home, runs) => {
     userScope();
     const teamRepo = path.join(teamaiHome(), 'team-repo');
     fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), 'team: acme\nrepo: acme/team\n');
     fs.mkdirSync(path.join(teamRepo, 'tools'));
-    fs.writeFileSync(path.join(teamRepo, 'tools', 'acme-claude.yaml'), 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude }\n');
+    fs.writeFileSync(path.join(teamRepo, 'tools', 'acme-claude.yaml'), `schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\n${home}`);
     for (const skill of ['skill-a', 'skill-g']) fs.cpSync(path.join(tmp, 'home', '.claude', 'skills', skill), path.join(tmp, 'home', '.acme-claude', 'skills', skill), { recursive: true });
     fs.mkdirSync(path.join(tmp, 'home', '.cursor'));
     fs.writeFileSync(path.join(tmp, 'home', '.cursor', 'hooks.json'), JSON.stringify({ hooks: { postToolUse: [{ command: 'teamai hook-dispatch post-tool-use --tool cursor' }] } }));
@@ -292,7 +295,7 @@ describe('a hook of a tool instance', () => {
     const usage = fs.readFileSync(path.join(teamaiHome(), 'user-usage.jsonl'), 'utf-8');
     expect(usage).toContain('skill-a');
     expect(usage).not.toContain('skill-b');
-    expect(usage).not.toContain('skill-g');
+    expect(usage.includes('skill-g')).toBe(runs);
   });
 });
 
