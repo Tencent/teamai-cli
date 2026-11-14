@@ -4,7 +4,7 @@
 
 ---
 
-TeamAI CLI 通过 provider 抽象层支持多个 Git 托管平台。当前实现了六个：
+TeamAI CLI 通过 provider 抽象层支持多个 Git 托管平台。当前实现了七个：
 
 | Provider | Host            | 认证方式                            | 建议场景              |
 |----------|-----------------|--------------------------------------|----------------------|
@@ -12,6 +12,7 @@ TeamAI CLI 通过 provider 抽象层支持多个 Git 托管平台。当前实现
 | `cnb`    | cnb.cool        | `cnb login` 或 `CNB_TOKEN` 环境变量  | CNB（云原生构建）用户 |
 | `gitlab` | gitlab.com 或自托管实例 | `GITLAB_TOKEN` 环境变量              | GitLab / 企业自托管   |
 | `gitcode`| gitcode.com     | `GITCODE_TOKEN` 环境变量或 init 交互粘贴 | GitCode（CSDN）用户 |
+| `codeup` | codeup.aliyun.com | git 走 SSH Key，OpenAPI 走 `CODEUP_TOKEN`，或 init 交互粘贴 | 阿里云云效 Codeup 用户 |
 | `git`    | 任意 Git host   | 系统 Git Credential Helper 或 SSH Key | 自建 Gitea 等其他平台 |
 | `tgit`   | git.woa.com     | `gf` CLI（自动下载）+ `~/.netrc`     | 腾讯内部团队          |
 
@@ -31,6 +32,8 @@ https://gitlab.com/org/repo(.git)       → gitlab
 git@gitlab.com:org/repo.git             → gitlab
 https://gitcode.com/org/repo(.git)      → gitcode
 git@gitcode.com:org/repo.git            → gitcode
+https://codeup.aliyun.com/org/group/repo(.git) → codeup
+git@codeup.aliyun.com:org/group/repo.git → codeup
 https://git.example.com/group/repo.git  → git
 git@git.example.com:group/repo.git      → git
 ```
@@ -43,7 +46,7 @@ git@git.example.com:group/repo.git      → git
 teamai init https://gitlab.example.com/group/repo --provider git
 ```
 
-取值：`tgit`、`github`、`cnb`、`gitlab`、`gitcode`、`git`。`git` 不需要平台 token，用已有的 Git 凭据；PR/MR 需要自己到 Git 平台上创建。该选择只影响本机。自建 GitLab 用 `--provider gitlab` 时仍需设置 `GITLAB_URL` 和 `GITLAB_TOKEN`。
+取值：`tgit`、`github`、`cnb`、`gitlab`、`gitcode`、`codeup`、`git`。`git` 不需要平台 token，用已有的 Git 凭据；PR/MR 需要自己到 Git 平台上创建。该选择只影响本机。自建 GitLab 用 `--provider gitlab` 时仍需设置 `GITLAB_URL` 和 `GITLAB_TOKEN`。
 
 ## 通用 Git Provider（自建/私有仓库）
 
@@ -238,9 +241,60 @@ GitCode 命名空间为单层（用户或组织），仓库地址形如 `owner/r
 
 GitCode 不设默认 email 域，使用用户的 git 全局配置。
 
+## Codeup Provider（codeup.aliyun.com）
+
+Codeup（阿里云云效代码管理，codeup.aliyun.com）使用云效 OpenAPI（`https://openapi-rdc.aliyuncs.com`），不需要任何外部 CLI，只依赖一个个人访问令牌。结构上参照 GitCode Provider，但 API 方言完全不同：独立 API 域名、`x-yunxiao-token` 认证、合并请求以「变更请求（changeRequest）」形式通过 `sourceBranch`/`targetBranch`/`sourceProjectId`/`targetProjectId` 创建、whoami 用 `username`。
+
+### 认证
+
+Git 传输与 API 调用使用各自的凭据：
+
+- **Git 传输（clone/push）**：跟随你输入的 URL —— `https://codeup.aliyun.com/...` 走 HTTPS；SSH URL 或 `org/group/repo` 短格式走 SSH（`git@codeup.aliyun.com:org/group/repo.git`），由本机 SSH Key 认证，与通用 `git` provider 一致。HTTPS clone 在同时知道用户名时（`CODEUP_USERNAME`、`~/.teamai/codeup.json`，或交互式 init 写入的 `~/.netrc` 条目）会把 PAT 作为 Basic 密码嵌入 URL；否则由你本机的 git 凭据配置认证。`CODEUP_TRANSPORT=https` 或 `CODEUP_TRANSPORT=ssh` 可强制指定 —— PAT 作为 git 密码并非在所有部署上都验证过，`CODEUP_TRANSPORT=ssh` 可以退回 SSH。
+- **OpenAPI（创建合并请求）**：云效个人访问令牌，按以下顺序解析：
+
+1. `CODEUP_TOKEN`（主）
+2. `YUNXIAO_TOKEN`（别名，兼容云效 CLI 用户的习惯）
+3. `~/.netrc` 中的 `machine codeup.aliyun.com` 条目
+
+```bash
+export CODEUP_TOKEN=pt-xxxxxxxxxxxx
+```
+
+在 Codeup → 个人设置 / Personal Settings → 个人访问令牌 / Access Tokens 生成 PAT。
+
+**交互式登录**：首次 `teamai init` 若未配置 token，会提示粘贴一次 PAT，验证通过后写入 `~/.netrc`（权限 `0600`）供后续命令使用。CI / 无头环境请直接配置 `CODEUP_TOKEN`，不会触发交互。
+
+### 组织与仓库寻址
+
+OpenAPI 路径需要数字形式的 `organizationId` 和 `repositoryId`：
+
+- `organizationId`（中心版实际必需）：云效 组织管理 → 基本信息 中的数字企业标识。设置 `CODEUP_ORG_ID` 环境变量 —— 只有 codeup 权限范围的 PAT（常见情况）无法从用户接口解析它，URL 第一段组织*路径*也不被仓库级 API 接受。有平台权限范围的 PAT 会自动解析用户的 `lastOrganization`。交互式 `teamai init` 会询问缺失的企业标识并保存到 `~/.teamai/codeup.json`；Region 版部署不需要它。
+- `repositoryId`：从 `org/group/repo` 路径自动解析。
+
+设置 `CODEUP_API_BASE_URL`（可选配合 `YUNXIAO_EDITION=region`）可指向 Region 版云效部署；默认为中心版 `https://openapi-rdc.aliyuncs.com`。
+
+```bash
+export CODEUP_TOKEN=pt-xxxxxxxxxxxx
+export CODEUP_ORG_ID=64700f00f1234
+```
+
+合并请求的 web URL 形如 `https://codeup.aliyun.com/<org/group/repo>/change/<id>`。同一对分支重复创建未合并的 MR 会返回 HTTP 409 并附带已有 MR 的链接。
+
+### 命名空间
+
+Codeup 仓库路径为多级（组织 → 可选嵌套群组 → 仓库），地址形如 `org/repo` 或 `org/group/subgroup/repo`，完整路径会被保留。粘贴的浏览器地址会剥掉 web 路由后缀（`/tree/master`、`/changeRequest/list` 等）；不带 `.git` 的浏览器地址存在固有歧义，若嵌套群组名恰好像 web 路由（如 `org/group/tree/repo`），请传 `.git` 克隆地址或短格式 —— 这两种形式会保留每一段。仅支持公有云 `codeup.aliyun.com`。不支持自动创建仓库，请先在网页上创建。
+
+### 评审人
+
+`teamai.yaml` 的 reviewers 不会翻译为 Codeup 的评审人指派：OpenAPI 需要数字形式的 `reviewerUserIds`，TeamAI 不解析它。MR 标题/描述中仍会列出评审人。
+
+### 默认 email 域
+
+Codeup 不设默认 email 域，使用用户的 git 全局配置。
+
 ## 在 `teamai.yaml` 中指定 Provider
 
-除了 URL 自动检测，也可以在 team 仓库的 `teamai.yaml` 中显式写 `provider: github`、`provider: tgit`、`provider: cnb`、`provider: gitlab`、`provider: gitcode` 或 `provider: git` 强制切换。一个典型的 `teamai.yaml`：
+除了 URL 自动检测，也可以在 team 仓库的 `teamai.yaml` 中显式写 `provider: github`、`provider: tgit`、`provider: cnb`、`provider: gitlab`、`provider: gitcode`、`provider: codeup` 或 `provider: git` 强制切换。一个典型的 `teamai.yaml`：
 
 ```yaml
 team: my-team

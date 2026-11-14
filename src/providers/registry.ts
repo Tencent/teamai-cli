@@ -4,6 +4,7 @@ import { GitHubProvider } from './github/index.js';
 import { CNBProvider } from './cnb/index.js';
 import { GitLabProvider } from './gitlab/index.js';
 import { GitCodeProvider } from './gitcode/index.js';
+import { CodeupProvider } from './codeup/index.js';
 import { GenericGitProvider } from './git/index.js';
 import { getCurrentPackageName } from '../package-info.js';
 import { probeSelfHostedGitLab } from './gitlab/probe.js';
@@ -36,10 +37,11 @@ const HOST_MAP = new Map([
   ['cnb.cool', 'cnb'],
   ['gitlab.com', 'gitlab'],
   ['gitcode.com', 'gitcode'],
+  ['codeup.aliyun.com', 'codeup'],
 ]);
 
 /** Providers we are willing to accept as a default override. */
-const KNOWN_PROVIDERS = new Set(['github', 'tgit', 'cnb', 'gitlab', 'gitcode']);
+const KNOWN_PROVIDERS = new Set(['github', 'tgit', 'cnb', 'gitlab', 'gitcode', 'codeup']);
 
 /**
  * Decide the fallback provider used when the input URL host is unknown or
@@ -204,6 +206,7 @@ const PROVIDERS = new Map<string, () => GitProvider>([
   ['cnb', () => new CNBProvider()],
   ['gitlab', () => new GitLabProvider()],
   ['gitcode', () => new GitCodeProvider()],
+  ['codeup', () => new CodeupProvider()],
   ['git', () => new GenericGitProvider()],
 ]);
 

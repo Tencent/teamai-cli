@@ -4,7 +4,7 @@
 
 ---
 
-TeamAI CLI talks to Git hosting platforms through a provider layer. Six providers are implemented:
+TeamAI CLI talks to Git hosting platforms through a provider layer. Seven providers are implemented:
 
 | Provider | Host | Authentication | Suggested for |
 |----------|------|----------------|---------------|
@@ -12,6 +12,7 @@ TeamAI CLI talks to Git hosting platforms through a provider layer. Six provider
 | `cnb` | cnb.cool | `cnb login` or the `CNB_TOKEN` environment variable | CNB (Cloud Native Build) users |
 | `gitlab` | gitlab.com or a self-hosted instance | `GITLAB_TOKEN` environment variable | GitLab, including enterprise self-hosted |
 | `gitcode` | gitcode.com | `GITCODE_TOKEN` environment variable, or paste a token during init | GitCode (CSDN) users |
+| `codeup` | codeup.aliyun.com | SSH key for git, `CODEUP_TOKEN` for the OpenAPI, or paste a token during init | Aliyun Yunxiao (云效) Codeup users |
 | `git` | any Git host | The system Git credential helper or an SSH key | Self-hosted Gitea and other platforms |
 | `tgit` | git.woa.com | `gf` CLI (downloaded automatically) + `~/.netrc` | Tencent internal teams |
 
@@ -31,6 +32,8 @@ https://gitlab.com/org/repo(.git)       → gitlab
 git@gitlab.com:org/repo.git             → gitlab
 https://gitcode.com/org/repo(.git)      → gitcode
 git@gitcode.com:org/repo.git            → gitcode
+https://codeup.aliyun.com/org/group/repo(.git) → codeup
+git@codeup.aliyun.com:org/group/repo.git → codeup
 https://git.example.com/group/repo.git  → git
 git@git.example.com:group/repo.git      → git
 ```
@@ -43,7 +46,7 @@ After a successful init the provider is written to the `provider` field of the t
 teamai init https://gitlab.example.com/group/repo --provider git
 ```
 
-Values: `tgit`, `github`, `cnb`, `gitlab`, `gitcode`, `git`. `git` needs no platform token and uses your existing Git credentials; open PRs/MRs on the Git host yourself. The choice only affects your machine. A self-hosted GitLab with `--provider gitlab` still needs `GITLAB_URL` and `GITLAB_TOKEN`.
+Values: `tgit`, `github`, `cnb`, `gitlab`, `gitcode`, `codeup`, `git`. `git` needs no platform token and uses your existing Git credentials; open PRs/MRs on the Git host yourself. The choice only affects your machine. A self-hosted GitLab with `--provider gitlab` still needs `GITLAB_URL` and `GITLAB_TOKEN`.
 
 ## Generic Git provider (self-hosted and private repos)
 
@@ -235,9 +238,60 @@ GitCode namespaces are single-level (a user or an organization); repo addresses 
 
 GitCode sets no default email domain and uses the user's global git configuration.
 
+## Codeup provider (codeup.aliyun.com)
+
+Codeup (阿里云云效代码管理, codeup.aliyun.com) uses the Yunxiao (云效) OpenAPI (`https://openapi-rdc.aliyuncs.com`), needs no external CLI, and relies on a single personal access token. The provider is modeled on the GitCode one structurally, but the API dialect is entirely different: a separate API domain, the `x-yunxiao-token` header, merge requests created as "change requests" with `sourceBranch`/`targetBranch`/`sourceProjectId`/`targetProjectId`, whoami in `username`.
+
+### Authentication
+
+Git transport and API calls use separate credentials:
+
+- **Git transport (clone/push)**: follows the URL you typed — an `https://codeup.aliyun.com/...` URL clones over HTTPS; an SSH URL or the bare `org/group/repo` form clones over SSH (`git@codeup.aliyun.com:org/group/repo.git`), authenticated by the SSH key on your machine, exactly as the generic `git` provider works. An HTTPS clone embeds the PAT as the Basic password when its username is known too (`CODEUP_USERNAME`, `~/.teamai/codeup.json`, or the `~/.netrc` entry the interactive init persists); otherwise your own git credential setup authenticates. `CODEUP_TRANSPORT=https` or `CODEUP_TRANSPORT=ssh` overrides the choice — PAT-as-git-password is not a verified path on every deployment, so `CODEUP_TRANSPORT=ssh` opts back out of HTTPS.
+- **OpenAPI (merge request creation)**: a Yunxiao Personal Access Token, resolved in this order:
+
+1. `CODEUP_TOKEN` (primary)
+2. `YUNXIAO_TOKEN` (alias, matching the Yunxiao CLI convention)
+3. the `machine codeup.aliyun.com` entry in `~/.netrc`
+
+```bash
+export CODEUP_TOKEN=pt-xxxxxxxxxxxx
+```
+
+Generate the PAT under Codeup → 个人设置 / Personal Settings → 个人访问令牌 / Access Tokens.
+
+**Interactive login**: on the first `teamai init` without a configured token, you are asked to paste a PAT once; after verification it is written to `~/.netrc` (mode `0600`) for later commands. In CI and headless environments set `CODEUP_TOKEN` directly; no prompt appears.
+
+### Organization and repository addressing
+
+The OpenAPI paths need a numeric `organizationId` and `repositoryId`:
+
+- `organizationId` (required in practice on the central edition): the numeric 企业标识 from 云效 组织管理 → 基本信息. Set the `CODEUP_ORG_ID` environment variable — a PAT with only codeup scope (the common case) cannot resolve it from the user endpoint, and the organization *path* (the first URL segment) is not accepted by the repo-scoped API paths. A PAT with platform scope resolves the user's `lastOrganization` automatically. An interactive `teamai init` asks for a missing ID and saves it to `~/.teamai/codeup.json`; a Region 版 deployment needs none.
+- `repositoryId`: resolved automatically from the `org/group/repo` path.
+
+A Region 版 Yunxiao deployment is targeted by setting `CODEUP_API_BASE_URL` (and optionally `YUNXIAO_EDITION=region`); the default is the central edition `https://openapi-rdc.aliyuncs.com`.
+
+```bash
+export CODEUP_TOKEN=pt-xxxxxxxxxxxx
+export CODEUP_ORG_ID=64700f00f1234
+```
+
+Merge request web URLs follow `https://codeup.aliyun.com/<org/group/repo>/change/<id>`. Creating a second open MR for the same branch pair answers HTTP 409 with a link to the existing one.
+
+### Namespaces
+
+Codeup repo paths are multi-level (organization → optional nested groups → repo), so addresses look like `org/repo` or `org/group/subgroup/repo`; the full path is preserved. A pasted browser URL has its web-route suffix (`/tree/master`, `/changeRequest/list`, …) stripped; an extensionless browser URL is inherently ambiguous, so when a nested group is named like a web route (`org/group/tree/repo`), pass the `.git` clone URL or the bare short form — both keep every segment. Only the public cloud `codeup.aliyun.com` is supported. Automatic repository creation is not supported; create the repo on the web first.
+
+### Reviewers
+
+`teamai.yaml` reviewers are not translated to Codeup reviewer assignments: the OpenAPI wants numeric `reviewerUserIds`, which TeamAI does not resolve. The merge request title/description still names them.
+
+### Default email domain
+
+Codeup sets no default email domain and uses the user's global git configuration.
+
 ## Setting the provider in `teamai.yaml`
 
-Besides URL auto-detection, the team repo's `teamai.yaml` can name the provider explicitly with `provider: github`, `provider: tgit`, `provider: cnb`, `provider: gitlab`, `provider: gitcode` or `provider: git`. A typical `teamai.yaml`:
+Besides URL auto-detection, the team repo's `teamai.yaml` can name the provider explicitly with `provider: github`, `provider: tgit`, `provider: cnb`, `provider: gitlab`, `provider: gitcode`, `provider: codeup` or `provider: git`. A typical `teamai.yaml`:
 
 ```yaml
 team: my-team

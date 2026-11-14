@@ -23,6 +23,6 @@
 - [诊断与维护](guide/zh-CN/diagnostics.md) — `doctor`、统计、更新及相关命令
 - [参考](guide/zh-CN/reference.md) — 命令参考、配置文件参考、模型配置
 - [Windows](guide/zh-CN/windows.md) — 让 Agent 钩子在 Windows 上生效
-- [Git Provider](guide/zh-CN/providers.md) — GitHub、GitLab、GitCode、CNB、工蜂与通用 Git：检测与认证
+- [Git Provider](guide/zh-CN/providers.md) — GitHub、GitLab、GitCode、Codeup、CNB、工蜂与通用 Git：检测与认证
 - [卸载与常见问题](guide/zh-CN/faq.md) — 卸载 TeamAI 与常见问题
 - [ClawPro HTTP 后端](guide/zh-CN/http-contract.md) — `init --http` 使用的接口
