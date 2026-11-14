@@ -9,6 +9,7 @@ import { skillRoots } from '../usage-tracker.js';
 import { getUserHome } from '../utils/home.js';
 import { realHost, reloadToolHomesHistory, saveToolHomes, toolHome, toolHomesHistoryPath, toolHomesPath } from '../tool-home.js';
 import { recordToolHomes } from '../tool-home-record.js';
+import { useToolInstances as useInstances } from '../tool-registry.js';
 
 describe('tool homes from a session whose directory was removed (#810)', () => {
   let cwd: string;
@@ -108,6 +109,33 @@ describe('a home recorded on this machine', () => {
     expect(warn.mock.calls.map(([line]) => String(line).replace(/ \(.*\)\. /, ' (<cause>). '))).toEqual([
       `Did not record the tool homes this shell moves: could not write ${toolHomesPath()} (<cause>). `
         + 'Until it is recorded, teamai syncs those tools to their default homes from a shell without their variable. Fix the cause and run `teamai pull` again.',
+    ]);
+  });
+
+  // An instance on the home directory itself is refused, and init lists only the instances in use: such a record could never be replaced.
+  it.each([
+    { by: 'init' as const, before: { 'acme-codex': 'moved' } },
+    { by: 'pull' as const, before: {} },
+  ])('is never the home directory itself for an instance, on $by, and says so', async ({ by, before }) => {
+    const home = path.join(tmp, 'home');
+    const moved = path.join(tmp, 'acme-moved');
+    fs.mkdirSync(home, { recursive: true });
+    const recorded = Object.fromEntries(Object.keys(before).map((tool) => [tool, moved]));
+    await saveToolHomes(recorded);
+    useInstances(new Map([['acme-codex', {
+      name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' },
+      source: 'personal', file: '/home/.teamai/tools/acme-codex.yaml', location: '~/.teamai/tools/acme-codex.yaml', revision: 'r1',
+    }]]));
+    onTestFinished(() => { useInstances(new Map()); });
+    vi.stubEnv('ACME_CODEX_HOME', home);
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => undefined);
+    onTestFinished(() => { warn.mockRestore(); });
+
+    expect(await recordToolHomes(by)).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(toolHomesPath(), 'utf8'))).toEqual(recorded);
+    expect(warn.mock.calls.map(([line]) => String(line))).toEqual([
+      `Did not record ACME_CODEX_HOME as the acme-codex home: ${home} is your home directory itself, where acme-codex would read and write every file in your home as its own. `
+        + 'Point ACME_CODEX_HOME at a directory of its own and re-run `teamai init`.',
     ]);
   });
 

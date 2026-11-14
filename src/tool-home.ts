@@ -401,6 +401,14 @@ export function homeRoot(tool: ToolId): string {
   return 'moves' in home && 'root' in home.moves ? home.moves.root : home.dir;
 }
 
+/** Whether `one` and `other` name one directory on `host`. */
+export function isSameDirOn(host: Pick<Host, 'platform' | 'path'>, one: string, other: string): boolean {
+  // macOS's default volume ignores letter case, and so does Windows: `.Claude` is Claude Code's `.claude` there.
+  const folded = (dir: string): string => host.platform === 'darwin' || host.platform === 'win32' ? dir.toLowerCase() : dir;
+
+  return host.path.relative(folded(one), folded(other)) === '';
+}
+
 /** `value`, `~` expanded, as an absolute path: a relative one resolves against the session's directory. */
 export function absoluteOn(value: string, host: Host): string {
   const expanded = expandHomeOn(value, host);

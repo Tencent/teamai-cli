@@ -1,7 +1,8 @@
 import { withFileLock } from './update.js';
 import { homeVariables, instanceNames, TOOL_ORDER, toolOf } from './tool-registry.js';
-import { envInstanceHome, envToolHome, realHost, type EnvToolHome, recordedHomes, reloadToolHomes, rememberToolHome, saveToolHomes, toolHomesPath, type Host } from './tool-home.js';
+import { envInstanceHome, envToolHome, isSameDirOn, realHost, type EnvToolHome, recordedHomes, reloadToolHomes, rememberToolHome, saveToolHomes, toolHomesPath, type Host } from './tool-home.js';
 import { log } from './utils/logger.js';
+import { warnOnce } from './utils/warn-once.js';
 import { errnoCode } from './utils/fs.js';
 
 /** A change to the record of a shipped tool or an instance: `dir` null when it was cleared. */
@@ -25,14 +26,14 @@ const INIT_RECORDS: Readonly<Record<EnvToolHome['kind'], RecordRule>> = {
 const PULL_RECORDS: RecordRule = { replacesRecord: false, needsExistingHome: true };
 
 /** Each shipped tool, and each instance that names a variable of its own, with where the host env moves its home and the variables that move it. */
-function envHomes(host: Host): Array<{ readonly tool: string; readonly moved: EnvToolHome | null; readonly variables: readonly string[] }> {
+function envHomes(host: Host): Array<{ readonly tool: string; readonly moved: EnvToolHome | null; readonly variables: readonly string[]; readonly isInstance: boolean }> {
   const instances = instanceNames().flatMap((name) => {
     const instance = toolOf(name)?.instance;
 
-    return instance?.home?.env === undefined || instance.name === instance.extends ? [] : [{ tool: name, moved: envInstanceHome(instance.home, host), variables: [instance.home.env] }];
+    return instance?.home?.env === undefined || instance.name === instance.extends ? [] : [{ tool: name, moved: envInstanceHome(instance.home, host), variables: [instance.home.env], isInstance: true }];
   });
 
-  return [...TOOL_ORDER.map((tool) => ({ tool, moved: envToolHome(tool, host), variables: homeVariables(tool) })), ...instances];
+  return [...TOOL_ORDER.map((tool) => ({ tool, moved: envToolHome(tool, host), variables: homeVariables(tool), isInstance: false })), ...instances];
 }
 
 /**
@@ -50,7 +51,7 @@ export async function nextToolHomes(
   const homes = { ...recorded };
   const changes: ToolHomeChange[] = [];
 
-  for (const { tool, moved, variables } of envHomes(host)) {
+  for (const { tool, moved, variables, isInstance } of envHomes(host)) {
     const blank = by === 'init' && homes[tool] !== undefined && (moved === null || moved.kind === 'platform-default')
       && variables.find((name) => host.env[name] !== undefined && host.env[name]?.trim() === '');
 
@@ -65,6 +66,14 @@ export async function nextToolHomes(
     const rule = by === 'pull' ? PULL_RECORDS : INIT_RECORDS[moved.kind];
 
     if (current === moved.dir || (current !== undefined && !rule.replacesRecord) || (rule.needsExistingHome && !await host.exists(moved.dir))) continue;
+
+    // The registry refuses such an instance, and a refused one is not in `envHomes`, so this record could never be replaced.
+    if (isInstance && isSameDirOn(host, moved.dir, host.home)) {
+      warnOnce(`Did not record ${moved.variable} as the ${tool} home: ${moved.dir} is your home directory itself, where ${tool} would read and write every file in your home as its own. `
+        + `Point ${moved.variable} at a directory of its own and re-run \`teamai init\`.`);
+      continue;
+    }
+
     homes[tool] = moved.dir;
     changes.push({ tool, variable: moved.variable, dir: moved.dir });
   }

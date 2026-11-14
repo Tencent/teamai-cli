@@ -8,7 +8,7 @@ import { INSTANCE_KEYS, type ToolInstance, type ToolInstanceHome } from '@teamai
 import { isSafeNamespaceSegment } from './manifest-schema.js';
 import { resolveNamespacedItems, type NamespaceCandidate } from './namespace-resolver.js';
 import { isSessionPlatform } from './session-flow/adapters/platform-facts.js';
-import { instanceHomeDir, realHost, toolHome, type Host } from './tool-home.js';
+import { instanceHomeDir, isSameDirOn, realHost, toolHome, type Host } from './tool-home.js';
 import { INSTANCE_BASES, isInstanceBase, isToolId, TOOL_ORDER, toolOf, useToolInstances } from './tool-registry.js';
 import type { ToolId } from './tools.js';
 import { DEFAULT_TOOL_PATHS, getTeamaiHomeDir, getTrustDir, recordedToolRootDir, RELOCATABLE_TOOLS, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type TeamaiConfig } from './types.js';
@@ -280,14 +280,6 @@ function homeSharedWith({ name, home, instances, host, toolRoots }: {
 
   return TOOL_ORDER.find((tool) => same(toolHome(tool, host)) || same(recordedToolRootDir(tool, toolRoots, at)))
     ?? instances.find((other) => other.name !== name && other.name !== other.extends && other.home !== undefined && same(instanceHomeDir({ name: other.name, home: other.home }, host)))?.name;
-}
-
-/** Whether `one` and `other` name one directory on `host`. */
-function isSameDirOn(host: Host, one: string, other: string): boolean {
-  // macOS's default volume ignores letter case, and so does Windows: `.Claude` is Claude Code's `.claude` there.
-  const folded = (dir: string): string => host.platform === 'darwin' || host.platform === 'win32' ? dir.toLowerCase() : dir;
-
-  return host.path.relative(folded(one), folded(other)) === '';
 }
 
 /**
