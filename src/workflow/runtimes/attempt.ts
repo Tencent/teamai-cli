@@ -743,7 +743,7 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
   const changedEntryFailure = (recorded: AttemptRuntimeRecord): RuntimeFailure => ({
     code: 'runtime_gone',
     message: recorded.entry === entry.digest
-      ? `the definition of step runtime "${runtime.name}" that driver "${driver}" ran it on changed since, and the runtime it launches now does not know the place of attempt ${attempt}, so teamai cannot tell that what ran there stopped. Put the runtime's definition back as it was to stop what ran, or drop the place with teamai workflow cancel ${run} --release ${attempt}.`
+      ? `the definition of step runtime "${runtime.name}" that driver "${driver}" ran it on, or the program it launches, changed since, and the runtime it launches now does not know the place of attempt ${attempt}, so teamai cannot tell that what ran there stopped. Put the runtime's definition, or the PATH that found its program, back as it was to stop what ran, or drop the place with teamai workflow cancel ${run} --release ${attempt}.`
       : `the entry of driver "${driver}" that ran it changed since, and the runtime that entry starts now does not know the place of attempt ${attempt}, so teamai cannot tell that what ran there stopped. Put the entry back as it was to stop what ran, or drop the place with teamai workflow cancel ${run} --release ${attempt}.`,
   });
 

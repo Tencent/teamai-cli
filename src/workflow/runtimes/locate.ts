@@ -78,7 +78,7 @@ export interface ExternalRuntime {
   readonly revision: string;
   /**
    * The sha256 of what decides what it launches, which the identity of each entry that names it covers
-   * (`RuntimeEntryIdentity`): a file's text; a folder's marker and the file its entry names; for teamai's own, only the
+   * (`RuntimeEntryIdentity`): a file's text and the executable its command resolves to on PATH; a folder's marker and the file its entry names; for teamai's own, only the
    * `bin` name of its program, so a teamai upgrade, after which its runtimes keep their places where they kept them,
    * does not change it.
    */
@@ -232,7 +232,7 @@ async function launchOf(definition: LayerItem, entry: RuntimeEntry, text: string
 
       if (executable === null) return { ok: false, reason: `entry: { command: ${entry.command} } names no executable on PATH, as a bare name such as acme-runtime` };
 
-      return { ok: true, launch: { kind: 'executable', executable }, trust: isTeam ? { kind: 'command', command: entry.command } : { kind: 'none' }, launches: sha256(text) };
+      return { ok: true, launch: { kind: 'executable', executable }, trust: isTeam ? { kind: 'command', command: entry.command } : { kind: 'none' }, launches: sha256(canonicalJson({ text, executable })) };
     }
 
     default: {

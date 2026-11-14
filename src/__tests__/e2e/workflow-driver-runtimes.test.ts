@@ -1296,7 +1296,7 @@ steps:
       const kept = await runCLI(['workflow', 'cancel', runId], repo, env());
 
       expect(kept.stderr).toContain(`Could not stop attempt ${attempt} of run ${runId} on step runtime "toyfile" of driver "toyfile"`);
-      expect(kept.stderr).toContain('the definition of step runtime "toyfile" that driver "toyfile" ran it on changed since');
+      expect(kept.stderr).toContain('the definition of step runtime "toyfile" that driver "toyfile" ran it on, or the program it launches, changed since');
       expect(kept.stderr).toContain(`teamai workflow cancel ${runId} --release ${attempt}`);
       expect(signalPid(held, 0)).toBe('sent');
       expect(runtimeRecord(runId, attempt)).toMatchObject({ phase: 'running' });
@@ -1305,6 +1305,53 @@ steps:
       const stopped = await runCLI(['workflow', 'cancel', runId], repo, env());
 
       expect(stopped.stderr).toContain(`Stopped attempt ${attempt} of run ${runId} on step runtime "toyfile" and closed its place.`);
+      expect(signalPid(held, 0)).toBe('gone');
+      expect(runtimeRecord(runId, attempt)).toMatchObject({ phase: 'closed' });
+    });
+
+    it('keeps the place, and says why, when the command of the member\'s runtime file now resolves on PATH to another program with its own state, the file unchanged, until it is back', async () => {
+      // Two programs of one name, each in a folder of its own on PATH, each starting the toy in a folder of its own.
+      const dirs = { a: path.join(sandbox, 'toypath-a'), b: path.join(sandbox, 'toypath-b') };
+      for (const dir of Object.values(dirs)) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        fs.mkdirSync(path.join(dir, 'bin'), { recursive: true });
+        fs.writeFileSync(path.join(dir, 'bin', 'toypath'), `#!/bin/sh\ncd '${dir}' && exec '${process.execPath}' '${TOY_RUNTIME}' "$@"\n`, { mode: 0o755 });
+      }
+      const onPath = (name: 'a' | 'b'): NodeJS.ProcessEnv => ({ PATH: `${path.join(dirs[name], 'bin')}${path.delimiter}${bin}${path.delimiter}${process.env.PATH ?? ''}` });
+      const definition = path.join(os.homedir(), '.teamai', 'runtimes', 'toypath.yaml');
+      fs.writeFileSync(definition, 'protocol: 1\nentry: { command: toypath }\n');
+      onTestFinished(() => { fs.rmSync(definition, { force: true }); });
+      writeFlow('heldpath', `  - id: hold
+    command: node -e "require('fs').writeFileSync(process.env.HOLD_MARK, String(process.pid)); setTimeout(() => {}, 120000)"`);
+      expect((await runCLI(['pull'], repo)).code).toBe(0);
+      writeDefinition('toypath', [{ use: 'toypath', options: { state: 'journal' } }]);
+      const mark = path.join(sandbox, 'toypath-mark');
+      const driving = spawn(process.execPath, [CLI, 'workflow', 'start', 'heldpath', '--driver', 'toypath'], { cwd: repo, env: { ...process.env, ...env({ HOLD_MARK: mark, ...onPath('a') }), FORCE_COLOR: '0' }, stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      driving.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+      const ended = new Promise((resolve) => driving.on('close', resolve));
+      for (const deadline = Date.now() + 30_000; !fs.existsSync(mark) && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(fs.existsSync(mark), stderr).toBe(true);
+      const held = Number(fs.readFileSync(mark, 'utf8'));
+      onTestFinished(() => { signalPid(held, 'SIGKILL'); });
+      driving.kill('SIGKILL');
+      await ended;
+      const runId = /Run (r[0-9a-f]+) started/.exec(stderr)?.[1] ?? '';
+      const [attempt = ''] = fs.readdirSync(path.join(dataHome, 'workflows', 'runs', runId, 'attempts'));
+      expect(fs.existsSync(path.join(dirs.a, 'journal'))).toBe(true);
+
+      // The same file, and PATH now finds the other program, whose journal knows no place of this attempt.
+      const kept = await runCLI(['workflow', 'cancel', runId], repo, env(onPath('b')));
+
+      expect(kept.stderr).toContain(`Could not stop attempt ${attempt} of run ${runId} on step runtime "toypath" of driver "toypath"`);
+      expect(kept.stderr).toContain('the definition of step runtime "toypath" that driver "toypath" ran it on, or the program it launches, changed since');
+      expect(kept.stderr).toContain(`teamai workflow cancel ${runId} --release ${attempt}`);
+      expect(signalPid(held, 0)).toBe('sent');
+      expect(runtimeRecord(runId, attempt)).toMatchObject({ phase: 'running' });
+
+      const stopped = await runCLI(['workflow', 'cancel', runId], repo, env(onPath('a')));
+
+      expect(stopped.stderr).toContain(`Stopped attempt ${attempt} of run ${runId} on step runtime "toypath" and closed its place.`);
       expect(signalPid(held, 0)).toBe('gone');
       expect(runtimeRecord(runId, attempt)).toMatchObject({ phase: 'closed' });
     });
