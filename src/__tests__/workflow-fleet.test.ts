@@ -1088,7 +1088,7 @@ describe('cancelling an attempt through its record', () => {
     expect(answeredAt).toBeLessThan(givenUpFrom);
   }, 90_000);
 
-  it('gives up the stop of a cancelled step its step runtime never confirms, without answering the cancel', async () => {
+  it('gives up the stop of a cancelled step its step runtime never confirms, and answers the cancel that the step did not stop', async () => {
     const { alice, bob, run } = await offerSlow(24_000);
     const local = scratchHostRuntime();
     const ops: OpId[] = [];
@@ -1114,7 +1114,7 @@ describe('cancelling an attempt through its record', () => {
     const answer = await Promise.race([taking, sleep(45_000).then(() => 'still running' as const)]);
 
     expect(answer).toMatchObject({ error: { code: 'fleet_member_gone', message: expect.stringContaining('did not stop within 20 s') } });
-    expect(await recordOf(alice, run)).toMatchObject({ state: 'cancelling' });
+    expect(await recordOf(alice, run)).toMatchObject({ state: 'cancelled', stopped: false });
   }, 90_000);
 
   it('goes on with its step when teamai-reports cannot be read for a moment after another write landed over its own', async () => {
@@ -1604,7 +1604,7 @@ describe('the gone work a retry goes on from', () => {
     // The member's clock runs a year ahead when it answers.
     vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 365 * 24 * 3600_000 });
     try {
-      expect(await answerCancel(bob.config, cancelling.value, 'd'.repeat(40))).toMatchObject({ ok: true });
+      expect(await answerCancel(bob.config, cancelling.value, { pushed: 'd'.repeat(40) })).toMatchObject({ ok: true });
     } finally {
       vi.useRealTimers();
     }
@@ -2131,6 +2131,47 @@ describe('the reasons members give for leaving an offer', () => {
     await ended;
     warned.mockRestore();
   });
+});
+
+describe('a cancel whose member cannot confirm that the step stopped', () => {
+  const opened: StepRuntime<DriverCan>[] = [];
+
+  afterEach(async () => {
+    await Promise.all(opened.splice(0).map(async (runtime) => runtime.dispose()));
+  });
+
+  it('ends the owner\'s cancel cancel_failed, keeping the attempt, when the member\'s step runtime never confirms the stop', async () => {
+    const { bob, run, attempt, open } = await ownerOffering(opened, undefined, { staleAfter: '26s' });
+    const { runtime, exec } = await open();
+    const op = newOpId();
+    const ended = exec(op);
+    const local = scratchHostRuntime();
+    const ops: OpId[] = [];
+    const box: StepRuntime<DriverCan> = {
+      ...local,
+      exec: async (request, events, kind) => {
+        ops.push(request.op);
+
+        return local.exec(request, events, kind);
+      },
+      // A runtime whose provider never confirms a stop.
+      cancel: async () => new Promise<void>(() => {}),
+    };
+    onTestFinished(async () => { await Promise.all(ops.map(async (one) => local.cancel(one))); });
+    await eventually(async () => {
+      await readableReportsWorktree(bob.config);
+      const read = await readAttemptRecord(bob.config, run, attempt);
+
+      return read.ok && read.value !== 'absent' && read.value.state === 'offered' ? true : undefined;
+    });
+    const taking = takeFleetAttempt(bob.config, { pool: 'gpu', repository: getRepoIdentity(bob.checkout) ?? '', root: bob.checkout, member: await installOwner(bob.config), secrets: {}, place: { command: { kind: 'runtime', driver: 'bobs', use: 'box', runtime: box, entry: soleEntry(box) } } });
+    await eventually(async () => (ops.length > 0 ? true : undefined), 60_000);
+    const cancelled = runtime.cancel(op);
+
+    expect(await taking).toMatchObject({ error: { code: 'fleet_member_gone' } });
+    expect(await ended).toMatchObject({ kind: 'failed', failure: { code: 'cancel_failed', message: expect.stringContaining(`teamai workflow cancel ${run} --release ${attempt}`) } });
+    await cancelled;
+  }, 120_000);
 });
 
 describe('waking a fleet member for an offer no member claimed', () => {

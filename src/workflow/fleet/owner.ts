@@ -174,7 +174,8 @@ function placeOf(handle: string): FleetPlace | undefined {
 function hasWorkToTake(record: FleetRecord): boolean {
   switch (record.state) {
     case 'finished': return record.result.to !== undefined;
-    case 'cancelled':
+    // A stop the member could not confirm keeps the attempt: its work is not taken.
+    case 'cancelled': return record.stopped !== false && record.pushed !== record.start;
     case 'expired': return record.pushed !== record.start;
     case 'offered':
     case 'claimed':
@@ -209,6 +210,8 @@ function recordState(op: OpId, record: FleetRecord | 'absent', { isTaking }: { i
       return { op, state: 'cancelled' };
     // A whole workflow ends with what its steps spent before it stopped, as the live end gives it.
     case 'cancelled':
+      if (record.stopped === false) return { op, state: 'failed', failure: unstoppedFailure(record) };
+
       return record.lease.kind === 'workflow' && record.tokens ? { op, state: 'cancelled', stdout: cancelledWholeStdout(cancelledMessage(record), record.tokens) } : { op, state: 'cancelled' };
     case 'finished':
       return finishedState(op, record);
@@ -221,6 +224,14 @@ function recordState(op: OpId, record: FleetRecord | 'absent', { isTaking }: { i
       return unhandled;
     }
   }
+}
+
+/**
+ * Why the cancel of an attempt whose member could not confirm that its step stopped keeps the attempt: `cancel_failed`,
+ * a stop not confirmed, which leaves the place for the person to check.
+ */
+function unstoppedFailure(record: Extract<FleetRecord, { state: 'cancelled' }>): WorkflowFailure {
+  return { code: CANCEL_FAILED, message: `Step "${record.lease.step}" was cancelled, and the fleet member ${record.member.user} that ran it could not confirm within ${FLEET_STOP_BUDGET_MS / 1_000} s that it stopped, so it may still run on that member's machine. The attempt's place and records are kept. Once you checked that nothing of it still runs there, teamai workflow cancel ${record.run} --release ${record.attempt} lets it go.` };
 }
 
 /** What a cancelled record says the member did, for the person. */
@@ -680,6 +691,7 @@ async function waitOnOffer(input: WaitInput, { cancel, leave }: { cancel: AbortS
     if (record?.state === 'withdrawn') return withdrawn;
 
     if (record?.state === 'cancelled') {
+      if (record.stopped === false) return failed(unstoppedFailure(record));
       const taken = record.pushed === record.start ? undefined : await takeWork({ config, run, root, dir, ref, to: record.pushed, step });
 
       if (taken) return failed(taken);

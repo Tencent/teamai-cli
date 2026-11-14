@@ -478,7 +478,7 @@ async function removeEndedAttempt(config: LocalConfig, run: RunId, attempt: Atte
 
 /** Answers the cancel of claim `cancelling` with the work up to `pushed`: the step stopped. */
 async function answered(config: LocalConfig, cancelling: Cancelling, pushed: string, tokens?: TokenUsage): Promise<WorkflowEnvelope> {
-  const written = await answerCancel(config, cancelling, pushed, tokens);
+  const written = await answerCancel(config, cancelling, { pushed, ...(tokens && { tokens }) });
   const { run, attempt, lease } = cancelling;
 
   if (!written.ok) return { error: fleetFailure(written.error) };
@@ -808,11 +808,16 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
     await beating;
 
     // A stop that did not end within its budget may leave the step running where it ran, past the point its owner may
-    // offer it again: the member answers nothing of it, not even a cancel, and its owner gives the claim up.
+    // offer it again: the member writes nothing of its work. A cancel is answered that the step did not stop, so the
+    // owner keeps the attempt (a write refused over another lands nothing); otherwise its owner gives the claim up.
     if (ran === 'unstopped') {
+      if (cancelling !== undefined) await answerCancel(config, cancelling, { pushed: latest.pushed, stopped: false });
+
       const why = cutOff ?? (cancelling !== undefined ? `The owner of run ${run} cancelled attempt ${attempt} of step "${lease.step}".` : `The owner of run ${run} gave up attempt ${attempt} of step "${lease.step}" while this member ran it. ${gone ?? ''}`);
 
-      return { error: { code: 'fleet_member_gone', message: `${why} The step did not stop within ${FLEET_STOP_BUDGET_MS / 1_000} s of when this member began to stop it, so it may still run where it ran, and this member wrote nothing more of the attempt.` } };
+      const left = cancelling !== undefined ? 'this member answered the cancel that the step did not stop.' : 'this member wrote nothing more of the attempt.';
+
+      return { error: { code: 'fleet_member_gone', message: `${why} The step did not stop within ${FLEET_STOP_BUDGET_MS / 1_000} s of when this member began to stop it, so it may still run where it ran, and ${left}` } };
     }
 
     // A command that ended past the cut-off point was stopped by its guardian, or ended as the member stopped it: either

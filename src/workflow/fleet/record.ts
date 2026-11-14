@@ -229,9 +229,12 @@ const CancellingSchema = ClaimedSchema.extend({ state: z.literal('cancelling'), 
 
 /**
  * A cancelled claim: the member stopped its step and pushed its work up to `pushed`, which a retry goes on from, and
- * `tokens`, what its step spent before it stopped, which the budgets around the step count.
+ * `tokens`, what its step spent before it stopped, which the budgets around the step count. `stopped: false`: the
+ * member could not confirm within its stop budget that the step stopped, so it may still run on the member's machine,
+ * and the owner keeps the attempt. A record without it is a stop the member confirmed. A writer of it names it in
+ * `critical`, so a teamai that does not know it refuses the record rather than read a stop that did not happen.
  */
-const CancelledSchema = CancellingSchema.extend({ state: z.literal('cancelled'), cancelledAt: z.string(), tokens: TokenUsageSchema.optional() });
+const CancelledSchema = CancellingSchema.extend({ state: z.literal('cancelled'), cancelledAt: z.string(), tokens: TokenUsageSchema.optional(), stopped: z.literal(false).optional() });
 
 export const FleetRecordSchema = z.discriminatedUnion('state', [OfferedSchema, ClaimedSchema, AskingSchema, AnsweredSchema, FinishedSchema, ExpiredSchema, WithdrawnSchema, CancellingSchema, CancelledSchema]);
 
@@ -618,8 +621,12 @@ export async function answerQuestion(config: LocalConfig, asking: Asking, answer
 }
 
 /** Answers the cancel of claim `cancelling`: its member stopped the step, whose work up to `pushed` is on the attempt's ref. */
-export async function answerCancel(config: LocalConfig, cancelling: Cancelling, pushed: string, tokens?: TokenUsage): Promise<Written<Extract<FleetRecord, { state: 'cancelled' }>>> {
-  const cancelled: Extract<FleetRecord, { state: 'cancelled' }> = { ...cancelling, write: randomUUID(), state: 'cancelled', cancelledAt: new Date().toISOString(), pushed, ...(tokens && { tokens }) };
+export async function answerCancel(config: LocalConfig, cancelling: Cancelling, { pushed, tokens, stopped }: { pushed: string; tokens?: TokenUsage; stopped?: false }): Promise<Written<Extract<FleetRecord, { state: 'cancelled' }>>> {
+  const cancelled: Extract<FleetRecord, { state: 'cancelled' }> = {
+    ...cancelling, write: randomUUID(), state: 'cancelled', cancelledAt: new Date().toISOString(), pushed, ...(tokens && { tokens }),
+    ...(stopped === false && { stopped, critical: [...new Set([...(cancelling.critical ?? []), 'stopped'])] }),
+  };
+
   const written = await writeRecord(config, cancelled, { replaces: cancelling.write, message: `[teamai] Cancelled attempt ${cancelling.attempt} of run ${cancelling.run}` });
 
   return written.ok ? { ok: true, value: cancelled } : written;
