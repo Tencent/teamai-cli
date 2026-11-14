@@ -78,9 +78,9 @@ export interface ExternalRuntime {
   readonly revision: string;
   /**
    * The sha256 of what decides what it launches, which the identity of each entry that names it covers
-   * (`RuntimeEntryIdentity`): a file's text and the executable its command resolves to on PATH; a folder's marker and the file its entry names; for teamai's own, only the
-   * `bin` name of its program, so a teamai upgrade, after which its runtimes keep their places where they kept them,
-   * does not change it.
+   * (`RuntimeEntryIdentity`): a file's text and the executable its command resolves to on PATH; a folder's revision,
+   * every file it holds (`folderRevision`), as a person accepts it; for teamai's own, only the `bin` name of its program,
+   * so a teamai upgrade, after which its runtimes keep their places where they kept them, does not change it.
    */
   readonly launches: string;
   readonly trust: RuntimeTrust;
@@ -183,13 +183,8 @@ async function readDefinition(driver: ResolvedDriver, use: string, definition: L
   const launched = await launchOf(definition, marker.entry, text);
 
   if (!launched.ok) return unusable(launched.reason);
-  let revision: string;
-
-  try {
-    revision = definition.form === 'folder' ? await folderRevision(definition.at) : sha256(text);
-  } catch (error) {
-    return unusable(`its folder cannot be read (${error instanceof Error ? error.message : String(error)})`);
-  }
+  // A folder's revision is what it launches (`folderRevision`), read once.
+  const revision = definition.form === 'folder' ? launched.launches : sha256(text);
 
   return {
     kind: 'found',
@@ -220,15 +215,14 @@ async function launchOf(definition: LayerItem, entry: RuntimeEntry, text: string
       const stat = await fs.lstat(executable).catch(() => undefined);
 
       if (stat?.isFile() !== true) return { ok: false, reason: `entry: ${entry.file} names a file the folder does not hold` };
-      let code: Buffer;
+      let launches: string;
 
+      // What a folder launches is all it holds, as a person accepts it: its entry, and every helper or setting it reads.
       try {
-        code = await readRegularFileNoLink(executable);
+        launches = await folderRevision(definition.at);
       } catch (error) {
-        return { ok: false, reason: `entry: ${entry.file} cannot be read (${error instanceof Error ? error.message : String(error)})` };
+        return { ok: false, reason: `its folder cannot be read (${error instanceof Error ? error.message : String(error)})` };
       }
-
-      const launches = sha256(canonicalJson({ marker: text, entry: createHash('sha256').update(code).digest('hex') }));
 
       return { ok: true, launch: { kind: 'executable', executable }, trust: isTeam ? { kind: 'folder', dir: definition.at } : { kind: 'none' }, launches };
     }

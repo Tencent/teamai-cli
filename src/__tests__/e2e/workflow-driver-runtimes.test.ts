@@ -1355,6 +1355,58 @@ steps:
       expect(signalPid(held, 0)).toBe('gone');
       expect(runtimeRecord(runId, attempt)).toMatchObject({ phase: 'closed' });
     });
+
+    it('keeps the place, and says why, when a helper of the member\'s runtime folder now selects another state, its marker and entry unchanged, until it is back', async () => {
+      // The folder's entry sources helper.sh, which names the folder the toy starts in, and so the toy's journal.
+      const states = { a: path.join(sandbox, 'toyhelper-a'), b: path.join(sandbox, 'toyhelper-b') };
+      for (const dir of Object.values(states)) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      const folder = path.join(os.homedir(), '.teamai', 'runtimes', 'toyhelper');
+      fs.rmSync(folder, { recursive: true, force: true });
+      fs.mkdirSync(folder, { recursive: true });
+      onTestFinished(() => { fs.rmSync(folder, { recursive: true, force: true }); });
+      fs.writeFileSync(path.join(folder, 'RUNTIME.yaml'), TOY_RUNTIME_MARKER);
+      fs.writeFileSync(path.join(folder, 'runtime'), `#!/bin/sh\n. "$(dirname "$0")/helper.sh"\ncd "$TOY_HOME" && exec '${process.execPath}' '${TOY_RUNTIME}' "$@"\n`, { mode: 0o755 });
+      const selecting = (name: 'a' | 'b'): void => { fs.writeFileSync(path.join(folder, 'helper.sh'), `TOY_HOME='${states[name]}'\n`); };
+      selecting('a');
+      writeFlow('heldhelper', `  - id: hold
+    command: node -e "require('fs').writeFileSync(process.env.HOLD_MARK, String(process.pid)); setTimeout(() => {}, 120000)"`);
+      expect((await runCLI(['pull'], repo)).code).toBe(0);
+      writeDefinition('toyhelper', [{ use: 'toyhelper', options: { state: 'journal' } }]);
+      const mark = path.join(sandbox, 'toyhelper-mark');
+      const driving = spawn(process.execPath, [CLI, 'workflow', 'start', 'heldhelper', '--driver', 'toyhelper'], { cwd: repo, env: { ...process.env, ...env({ HOLD_MARK: mark }), FORCE_COLOR: '0' }, stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      driving.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+      const ended = new Promise((resolve) => driving.on('close', resolve));
+      for (const deadline = Date.now() + 30_000; !fs.existsSync(mark) && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(fs.existsSync(mark), stderr).toBe(true);
+      const held = Number(fs.readFileSync(mark, 'utf8'));
+      onTestFinished(() => { signalPid(held, 'SIGKILL'); });
+      driving.kill('SIGKILL');
+      await ended;
+      const runId = /Run (r[0-9a-f]+) started/.exec(stderr)?.[1] ?? '';
+      const [attempt = ''] = fs.readdirSync(path.join(dataHome, 'workflows', 'runs', runId, 'attempts'));
+      expect(fs.existsSync(path.join(states.a, 'journal'))).toBe(true);
+      // Only the helper changed: the toy now starts on the other journal, which knows no place of this attempt.
+      selecting('b');
+
+      const kept = await runCLI(['workflow', 'cancel', runId], repo, env());
+
+      expect(kept.stderr).toContain(`Could not stop attempt ${attempt} of run ${runId} on step runtime "toyhelper" of driver "toyhelper"`);
+      expect(kept.stderr).toContain('the definition of step runtime "toyhelper" that driver "toyhelper" ran it on, or the program it launches, changed since');
+      expect(kept.stderr).toContain(`teamai workflow cancel ${runId} --release ${attempt}`);
+      expect(signalPid(held, 0)).toBe('sent');
+      expect(runtimeRecord(runId, attempt)).toMatchObject({ phase: 'running' });
+
+      selecting('a');
+      const stopped = await runCLI(['workflow', 'cancel', runId], repo, env());
+
+      expect(stopped.stderr).toContain(`Stopped attempt ${attempt} of run ${runId} on step runtime "toyhelper" and closed its place.`);
+      expect(signalPid(held, 0)).toBe('gone');
+      expect(runtimeRecord(runId, attempt)).toMatchObject({ phase: 'closed' });
+    });
   });
 
   describe('a step whose earlier attempt may still run on its step runtime', () => {
