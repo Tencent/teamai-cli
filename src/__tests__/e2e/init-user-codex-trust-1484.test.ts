@@ -128,5 +128,14 @@ describe('init that replaces the record a Codex instance was refused for', () =>
     const shared = m.init({ agents: 'codex,acme-codex', extra: { ACME_CODEX_HOME: m.codexHome }, force: true });
 
     expect(shared.output).toContain(`its home resolves to ${m.codexHome}, which is also the home of codex`);
+
+    // The first init to record it judges the instance before and after it writes the record, and names it once.
+    const first = member('refused-first');
+    fs.mkdirSync(path.join(first.home, '.teamai', 'tools'), { recursive: true });
+    fs.writeFileSync(path.join(first.home, '.teamai', 'tools', 'acme-codex.yaml'), fs.readFileSync(path.join(tools, 'acme-codex.yaml')));
+    const refused = first.init({ agents: 'codex,acme-codex', extra: { ACME_CODEX_HOME: first.codexHome } });
+
+    expect(refused.output.split('Tool instance acme-codex').length - 1, refused.output).toBe(1);
+    expect(refused.output).toContain('or clear the record with `ACME_CODEX_HOME= teamai init`');
   }, 120_000);
 });

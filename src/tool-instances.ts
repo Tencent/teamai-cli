@@ -8,7 +8,7 @@ import { INSTANCE_KEYS, type ToolInstance, type ToolInstanceHome } from '@teamai
 import { isSafeNamespaceSegment } from './manifest-schema.js';
 import { resolveNamespacedItems, type NamespaceCandidate } from './namespace-resolver.js';
 import { isSessionPlatform } from './session-flow/adapters/platform-facts.js';
-import { instanceHomeAfterInit, instanceHomeDir, isSameDirOn, realHost, recordedHomes, toolHome, type Host } from './tool-home.js';
+import { instanceHomeAfterInit, instanceHomeDir, isSameDirOn, realHost, toolHome, type Host } from './tool-home.js';
 import { INSTANCE_BASES, isInstanceBase, isToolId, TOOL_ORDER, toolInstancesFor, toolOf, useToolInstances } from './tool-registry.js';
 import type { ToolId } from './tools.js';
 import { DEFAULT_TOOL_PATHS, getTeamaiHomeDir, getTrustDir, recordedToolRootDir, RELOCATABLE_TOOLS, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type TeamaiConfig } from './types.js';
@@ -371,10 +371,11 @@ function withoutSharedHomes(table: Map<string, DeclaredTool>): Map<string, Decla
       const shared = `Tool instance ${name} (${instance.location}) is not used: its home resolves to ${own}, which is also the home of ${resolved}, `
         + 'and two tools on one home write over each other\'s skills, hooks and sessions.';
 
-      // Only a blank variable at init clears a record, and nothing else would say so.
-      errorOnce(home.env !== undefined && recordedHomes(host)[name] !== undefined
-        ? `${shared} Move one of the two homes, then re-run \`teamai init\`, or clear the record with \`${home.env}= teamai init\`: a pull keeps the home it recorded.`
-        : `${shared} Move one of the two homes, then re-run \`teamai init\`: a pull keeps the home it recorded.`);
+      // Only a blank variable at init clears a record, and nothing else would say so. One text whether or not a record
+      // exists yet, since init judges before and after it writes one.
+      errorOnce(home.env === undefined
+        ? `${shared} Move one of the two homes, then re-run \`teamai init\`: a pull keeps the home it recorded.`
+        : `${shared} Move one of the two homes, then re-run \`teamai init\`, or clear the record with \`${home.env}= teamai init\`: a pull keeps the home it recorded.`);
       table.delete(name);
     }
   }

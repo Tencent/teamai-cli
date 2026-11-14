@@ -205,7 +205,7 @@ describe('team tool instances', () => {
     fs.mkdirSync(path.join(home, dir), { recursive: true });
     const { registry, errors } = await load(teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE }));
 
-    expect(errors).toEqual([`Tool instance acme-claude (tools/acme-claude.yaml) is not used: its home resolves to ${path.join(home, dir)}, which is also the home of claude, and two tools on one home write over each other's skills, hooks and sessions. Move one of the two homes, then re-run \`teamai init\`: a pull keeps the home it recorded.`]);
+    expect(errors).toEqual([`Tool instance acme-claude (tools/acme-claude.yaml) is not used: its home resolves to ${path.join(home, dir)}, which is also the home of claude, and two tools on one home write over each other's skills, hooks and sessions. Move one of the two homes, then re-run \`teamai init\`, or clear the record with \`ACME_CLAUDE_CONFIG_DIR= teamai init\`: a pull keeps the home it recorded.`]);
     expect(registry.toolOf('acme-claude')).toBeUndefined();
     const { recordToolHomes } = await import('../tool-home-record.js');
     const { toolHomeVariableNames } = await import('../tool-home.js');
