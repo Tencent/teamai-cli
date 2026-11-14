@@ -465,6 +465,20 @@ steps:
       const place = JSON.parse(fs.readFileSync(path.join(attemptDir(runId, attemptOf(review)), 'place.json'), 'utf8')) as { phase: string; dir: string };
       expect(place.phase).toBe('setting-up');
       expect(fs.existsSync(place.dir)).toBe(true);
+
+      // A retry does not start the step again beside what may still run there, and stops it first once the runtime can.
+      const refused = await runCLI(['workflow', 'retry', runId, 'review'], repo, env());
+
+      expect(envelope(refused), refused.stderr).toMatchObject({ error: { code: 'not_retryable', message: expect.stringContaining(`Step "review" cannot run again yet: what attempt ${attemptOf(review)} ran on its step runtime may still run there: `) } });
+      expect(readRunState(runId).steps[0]).toMatchObject({ status: 'failed', attempt: attemptOf(review) });
+      expect(runtimeRecord(runId, attemptOf(review))).toMatchObject({ driver: 'toystuckmoved', phase: 'running' });
+
+      writeDefinition('toystuckmoved', [{ use: 'toy', options }]);
+      const retried = await runCLI(['workflow', 'retry', runId, 'review'], repo, env());
+
+      expect(envelope(retried), retried.stderr).toMatchObject({ data: { retried: { step: 'review' } } });
+      expect(retried.stderr).toContain(`Stopped attempt ${attemptOf(review)} of run ${runId} on step runtime "toy" and closed its place.`);
+      expect(runtimeRecord(runId, attemptOf(review))).toMatchObject({ phase: 'closed' });
     });
 
     it('keeps the failure a runtime opens the place with when setup never ran there, and gives up the worktree', async () => {
