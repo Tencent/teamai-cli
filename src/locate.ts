@@ -14,10 +14,10 @@ import { MCP_SERVER_KEY } from './resources/mcp-format.js';
 import { SESSION_PLATFORM_FACTS, type SessionPlatform, type StoredSessionPlatform } from './session-flow/adapters/platform-facts.js';
 import { TOOLS, type ToolId } from './tools.js';
 import { type Activation, type BlocksFile, type BlocksHeader, type ChannelProbe, type FirstExistingRead, type HomeRead, type HookAdapter, type HookAdapterId, type HookFormat, type HookSettings, type McpProject, type McpUser, type ProjectRead, type ReadGateKind, type RunTime, type SkillReads, type RunTimeVia } from '@teamai/tool-core/definition';
-import { channelsOf, installGateOf, isToolId, hasDefaultHomeLeftovers, mcpScopeFor, toolOf } from './tool-registry.js';
+import { baseToolOf, channelsOf, installGateOf, isToolId, hasDefaultHomeLeftovers, mcpScopeFor, toolOf } from './tool-registry.js';
 import { instanceReadPath } from './tool-instances.js';
 import {
-  CURSOR_CONFIG_TOOL_ID, CURSOR_DATA_TOOL_ID,
+  CODEX_TOOL_ID, CURSOR_CONFIG_TOOL_ID, CURSOR_DATA_TOOL_ID,
   DEFAULT_TOOL_PATHS, isAgentExcluded, isGitExcludeEnabled, isSelfMode, recordedToolRootDir, resolveBaseDir, scopedToolPaths, toolGateRoot,
   workbuddyLaunchedFrom,
   WORKBUDDY_AI_ROOT, WORKBUDDY_LIVE_ROOT_LEAVES, WORKBUDDY_TOOL_ID, WORKBUDDY_TOOL_ROOT,
@@ -983,7 +983,8 @@ async function locateSkills(tool: string, install: Install, host: Host): Promise
     own = dir === null ? null : host.path.join(dir, 'skills');
   } else if (tool === 'hermes' && roots.home) {
     own = host.path.join(roots.home.dir, 'skills');
-  } else if (tool === 'codex') {
+  } else if (baseToolOf(tool) === CODEX_TOOL_ID) {
+    // A Codex build reads the shared directory whatever home it runs in, an instance's included.
     shared = roots.join(roots.base, SHARED_AGENT_SKILLS_PATH);
   }
 

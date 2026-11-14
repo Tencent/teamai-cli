@@ -432,11 +432,13 @@ describe('an instance of Codex under the Codex root the member recorded (toolRoo
     expect(await placeOf('acme-codex', 'hooks')).toBe(await placeOf('codex', 'hooks'));
   });
 
-  it('keeps an instance with a home of its own in that home', async () => {
+  it('keeps an instance with a home of its own in that home, and gives it the shared skills directory a Codex build reads', async () => {
     useToolInstances(new Map([['acme-codex', { ...instance, home: { dir: '.acme-codex' } }]]));
     const own: Install = { ...install, toolPaths: { ...install.toolPaths, 'acme-codex': { ...DEFAULT_TOOL_PATHS.codex, skills: '.acme-codex/skills' } } };
+    const skills = await locate('acme-codex', 'skills', own, host);
 
-    expect(ownOf(await locate('acme-codex', 'skills', own, host))?.path).toBe('/home/m/.acme-codex/skills');
+    expect(ownOf(skills)?.path).toBe('/home/m/.acme-codex/skills');
+    expect(skills.shared?.path).toBe('/home/m/.agents/skills');
   });
 });
 
