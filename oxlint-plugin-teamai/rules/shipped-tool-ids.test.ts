@@ -56,6 +56,8 @@ export const reads = (tool: string) => tool !== CLAUDE_TOOL_ID;`, undefined, { f
 
 rule.invalid('rejects a switch case on Codex\'s id', `export const home = (tool: string) => { switch (tool) { case 'codex': return '.codex'; default: return undefined; } };`, undefined, { filename: 'src/new-area/reader.ts' });
 
+rule.invalid('rejects a comparison with Codex\'s id in a repository script', `export const shared = (tool: string) => tool === 'codex';`, undefined, { filename: 'scripts/doc-checks/new-check.ts' });
+
 rule.invalid('rejects one comparison more than a file\'s BASE_ID_COMPARISONS count', `export const a = (tool: string) => tool === 'codex' || tool === 'claude';`, undefined, { filename: 'src/init.ts' });
 
 rule.invalid('rejects a BASE_ID_COMPARISONS count above what the file holds', 'export const none = 1;', (output) => {
@@ -109,8 +111,8 @@ describe('in this checkout', () => {
     expect([...SHIPPED_ONLY.values()].every(({ count }) => count > 0)).toBe(true);
   });
 
-  it('names in BASE_ID_COMPARISONS only production files that exist', () => {
-    expect([...BASE_ID_COMPARISONS.keys()].filter((file) => !fs.existsSync(path.join(REPO, file)) || !isProductionSource(file))).toEqual([]);
+  it('names in BASE_ID_COMPARISONS only production or script files that exist', () => {
+    expect([...BASE_ID_COMPARISONS.keys()].filter((file) => !fs.existsSync(path.join(REPO, file)) || !(isProductionSource(file) || isScriptSource(file)))).toEqual([]);
     expect([...BASE_ID_COMPARISONS.values()].every((count) => count > 0)).toBe(true);
   });
 });
