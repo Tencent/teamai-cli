@@ -50,8 +50,7 @@ const InstanceFileSchema = z.object({
   schemaVersion: z.literal('v1alpha1'),
   name: z.string().regex(NAME, 'A tool name starts with a lowercase letter or digit and holds only lowercase letters, digits, dots, dashes and underscores'),
   extends: z.string()
-    .refine(isToolId, { error: (issue) => `${String(issue.input)} is not a tool teamai ships. Extend one of: ${INSTANCE_BASES.join(', ')}`, abort: true })
-    .refine(isInstanceBase, { error: (issue) => `an instance extends ${INSTANCE_BASES.join(' or ')}; teamai does not support an instance of ${String(issue.input)} or any other tool yet` }),
+    .refine(isToolId, { error: (issue) => `${String(issue.input)} is not a tool teamai ships. Extend one of: ${INSTANCE_BASES.join(', ')}` }),
   // A path is refused: what runs there, maybe in the step's own checkout, is not the file a person accepted.
   command: z.string().refine(isBareCommandName, 'command is the name of one executable on PATH, with no path, spaces or arguments, such as acme-claude').optional(),
   home: z.object({ dir: HomeDir, env: z.string().regex(ENV_NAME, 'home.env is the name of an environment variable').optional() }).strict().optional(),
@@ -101,7 +100,12 @@ function parseToolInstance({ file, text, source, location }: { file: string; tex
 
   const { schemaVersion: _version, extends: base, ...fields } = parsed.data;
 
-  if (!isInstanceBase(base)) return refused(file, `${base} is not a tool an instance extends`);
+  if (!isInstanceBase(base)) {
+    return refused(file, fields.name === base
+      ? `extends: teamai does not adjust ${base} with a tools/ file yet; move its paths with a toolPaths.${base} entry in teamai.yaml`
+      : `extends: an instance extends ${INSTANCE_BASES.join(' or ')}; teamai does not support an instance of ${base} or any other tool yet`);
+  }
+
   const stem = path.basename(file, '.yaml');
 
   if (fields.name !== stem) return refused(file, `its name is "${fields.name}", and an instance is named after its file, "${stem}"`);

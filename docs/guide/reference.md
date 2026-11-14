@@ -284,7 +284,7 @@ The line you type answers this question alone. An approval or choice that waits 
 
 An unattended run (`TEAMAI_MODE=unattended`, CI, no terminal) refuses it with `tool_not_accepted` until someone accepts it once in a terminal. The answer is kept in `~/.teamai/trust/tools.json` for that file's content: a commit that leaves the file as it is asks nothing, and an edit asks again. An instance with only `home` or `paths` runs the shipped command and needs no acceptance. With a `home` and no `env` of its own, the command runs with the tool's home variable (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) set to that home, so it reads what teamai delivers there. teamai reads, exports and imports an instance's sessions with its command too once it is accepted, and with the shipped command until then.
 
-**Adjusting a shipped tool.** An instance named like a shipped tool adjusts it. Its `paths` replace that tool's paths whole, as a `toolPaths` entry does, and win over one:
+**Adjusting a shipped tool.** An instance named like a shipped tool adjusts it. Its `paths` replace that tool's paths whole, as a `toolPaths` entry does, and win over one. Only Claude Code and Codex are adjusted this way; for any other tool teamai refuses `tools/<tool>.yaml`, and a `toolPaths.<tool>` entry in `teamai.yaml` moves its paths instead:
 
 ```yaml
 # tools/claude.yaml

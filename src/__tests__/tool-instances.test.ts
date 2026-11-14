@@ -106,15 +106,15 @@ describe('team tool instances', () => {
   });
 
   it.each([
-    ['kiro', 'name: acme-kiro'],
-    ['claude-internal', 'name: acme-claude'],
-    ['cursor', 'name: cursor'],
-  ])('refuses an instance of %s, which no instance extends yet, naming the file and the tools one extends', async (base, name) => {
+    ['kiro', 'name: acme-kiro', 'an instance extends claude or codex; teamai does not support an instance of kiro or any other tool yet'],
+    ['claude-internal', 'name: acme-claude', 'an instance extends claude or codex; teamai does not support an instance of claude-internal or any other tool yet'],
+    ['cursor', 'name: cursor', 'teamai does not adjust cursor with a tools/ file yet; move its paths with a toolPaths.cursor entry in teamai.yaml'],
+  ])('refuses an instance of %s, which no instance extends yet, naming the file and what to do instead', async (base, name, reason) => {
     const stem = name.slice('name: '.length);
     const text = ACME_CLAUDE.replace('extends: claude', `extends: ${base}`).replace('name: acme-claude', name);
     const { config, registry, errors } = await load(teamRepo({ [`tools/${stem}.yaml`]: text }));
 
-    expect(errors).toEqual([expect.stringContaining(`${path.join('tools', `${stem}.yaml`)} is not valid: extends: an instance extends claude or codex; teamai does not support an instance of ${base} or any other tool yet`)]);
+    expect(errors).toEqual([expect.stringContaining(`${path.join('tools', `${stem}.yaml`)} is not valid: extends: ${reason}`)]);
     expect(registry.toolOf(stem)?.instance).toBeUndefined();
     expect(config?.toolPaths[stem]).toEqual(stem === 'cursor' ? expect.objectContaining({ skills: '.cursor/skills' }) : undefined);
   });
