@@ -1226,7 +1226,7 @@ function isProjectGatedCommand(command: string): boolean {
  * needs to know which tool it is rendering for.
  */
 function skipWhenAnotherHostLoadsClaudeSettings(def: HookDef, tool: string, legacyGuard = false): string {
-  if (tool !== 'claude') return def.command;
+  if (baseToolOf(tool) !== 'claude') return def.command;
 
   const guard = legacyGuard ? LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP
     : claudeHookOtherHostSkip(CLAUDE_TO_COPILOT_EVENTS[def.event], toCopilotEntry(def).matcher, def.command);
@@ -1980,7 +1980,7 @@ function scopedTeamDefs(
   codebuddyDualRunner = false,
 ): HookDef[] {
   const prepared = teamDefs.map((def) => {
-    const powershell = tool === 'claude' && def.source === 'team' && process.platform === 'win32' && !legacyGuard
+    const powershell = baseToolOf(tool) === 'claude' && def.source === 'team' && process.platform === 'win32' && !legacyGuard
       && claudeHookUsesPowerShell();
 
     const rendered: HookDef = { ...def, command: projectFolderCommand(def, tool, powershell) };

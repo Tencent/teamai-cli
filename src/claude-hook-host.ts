@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { JsonValueSchema, type JsonValue, JsonObjectSchema } from './types.js';
 import { shellQuoteValue } from './utils/shell-profile.js';
 import { findGitBashWindows } from './bundled-runtime.js';
+import { baseToolOf } from './tool-registry.js';
 
 const CURSOR_MARKER = '--tool cursor';
 const COPILOT_MARKER = '--tool copilot';
@@ -229,7 +230,7 @@ function copilotCopyInstalled(env: NodeJS.ProcessEnv, includeGlobal: boolean): b
 }
 
 export function claudeHookRunsInAnotherHost(tool: string, env: NodeJS.ProcessEnv = process.env, includeGlobalCopilot = true): boolean {
-  if (tool !== 'claude') return false;
+  if (baseToolOf(tool) !== 'claude') return false;
 
   if (env.CURSOR_VERSION && cursorCopyInstalled(env)) return true;
 

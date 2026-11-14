@@ -268,6 +268,32 @@ describe('a hook of a tool instance', () => {
 
     expect(JSON.parse(fs.readFileSync(path.join(teamaiHome(), 'sessions', 'sid-i.http-enrolment.json'), 'utf8'))).toMatchObject({ cwd });
   });
+
+  it('runs no handler inside Cursor while Cursor has teamai hooks of its own, as for Claude', async () => {
+    userScope();
+    const teamRepo = path.join(teamaiHome(), 'team-repo');
+    fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), 'team: acme\nrepo: acme/team\n');
+    fs.mkdirSync(path.join(teamRepo, 'tools'));
+    fs.writeFileSync(path.join(teamRepo, 'tools', 'acme-claude.yaml'), 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude }\n');
+    for (const skill of ['skill-a', 'skill-g']) fs.cpSync(path.join(tmp, 'home', '.claude', 'skills', skill), path.join(tmp, 'home', '.acme-claude', 'skills', skill), { recursive: true });
+    fs.mkdirSync(path.join(tmp, 'home', '.cursor'));
+    fs.writeFileSync(path.join(tmp, 'home', '.cursor', 'hooks.json'), JSON.stringify({ hooks: { postToolUse: [{ command: 'teamai hook-dispatch post-tool-use --tool cursor' }] } }));
+    const used = (skill: string) => ({ session_id: `sid-${skill}`, cwd: tmp, hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill } });
+
+    await hook('post-tool-use', '*', used('skill-a'), 'acme-claude');
+    vi.stubEnv('CURSOR_VERSION', '1.2.3');
+    try {
+      await hook('post-tool-use', '*', used('skill-b'), 'claude');
+      await hook('post-tool-use', '*', used('skill-g'), 'acme-claude');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    const usage = fs.readFileSync(path.join(teamaiHome(), 'user-usage.jsonl'), 'utf-8');
+    expect(usage).toContain('skill-a');
+    expect(usage).not.toContain('skill-b');
+    expect(usage).not.toContain('skill-g');
+  });
 });
 
 describe('skill use through the CLI (#1221)', () => {

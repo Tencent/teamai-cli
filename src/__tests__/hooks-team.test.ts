@@ -24,6 +24,7 @@ vi.mock('@teamai/shared/log', () => ({
 
 import { claudeHookOtherHostSkip, reconcileHooks } from '../hooks.js';
 import * as bundledRuntime from '../bundled-runtime.js';
+import { useToolInstances } from '../tool-registry.js';
 import type { HookDef } from '../types.js';
 
 const SETTINGS = '/test/settings.json';
@@ -57,15 +58,21 @@ describe('reconcileHooks — team (B) hooks', () => {
   beforeEach(() => {
     mockFiles = {};
     vi.clearAllMocks();
+    // An instance of Claude Code, as a member's ~/.teamai/tools/acme-claude.yaml defines it.
+    useToolInstances(new Map([['acme-claude', {
+      name: 'acme-claude', extends: 'claude', home: { dir: '.acme-claude' },
+      source: 'personal', file: '/home/.teamai/tools/acme-claude.yaml', location: '~/.teamai/tools/acme-claude.yaml', revision: 'r1',
+    }]]));
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    useToolInstances(new Map());
   });
 
   describe('Claude format', () => {
-    it('injects a team hook after the built-in hooks in its event', async () => {
-      await reconcileHooks(SETTINGS, 'claude', [teamDef()], { manifestPath: MANIFEST });
+    it.each(['claude', 'acme-claude'])('injects a team hook after the built-in hooks in its event, for %s', async (tool) => {
+      await reconcileHooks(SETTINGS, tool, [teamDef()], { manifestPath: MANIFEST });
 
       const postToolUse = claudeHooks().PostToolUse;
       expect(postToolUse).toHaveLength(2); // 1 built-in + 1 team
@@ -75,10 +82,10 @@ describe('reconcileHooks — team (B) hooks', () => {
       expect(team.hooks[0].command).toBe(`${claudeHookOtherHostSkip('PostToolUse', 'Bash', teamDef().command)}${teamDef().command}`);
     });
 
-    it('writes a PowerShell team guard with an explicit shell on Windows', async () => {
+    it.each(['claude', 'acme-claude'])('writes a PowerShell team guard with an explicit shell on Windows, for %s', async (tool) => {
       vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
       vi.spyOn(bundledRuntime, 'findGitBashWindows').mockReturnValue(null);
-      await reconcileHooks(SETTINGS, 'claude', [teamDef()], { manifestPath: MANIFEST });
+      await reconcileHooks(SETTINGS, tool, [teamDef()], { manifestPath: MANIFEST });
 
       const hook = claudeHooks().PostToolUse.at(-1)!.hooks[0] as { command: string; shell?: string };
       expect(hook.shell).toBe('powershell');
