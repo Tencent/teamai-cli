@@ -31,7 +31,6 @@ export const SHIPPED_ONLY = new Map(Object.entries({
   // Refuses an instance's `extends` that names no shipped tool, before the gate on the tools instances extend, and a
   // name that takes a shipped tool's.
   'src/tool-instances.ts': { count: 3 },
-  // A confined launch runs a shipped tool's own adapter; the local driver passes it the base of an instance.
   // The instances to list beside the shipped tools: one named like a shipped tool adjusts it and is listed already.
   'src/workflow/drivers/local/local-driver.ts': { count: 1 },
   // An aliases file maps the tools teamai ships; an instance takes the entry of the tool it extends.
