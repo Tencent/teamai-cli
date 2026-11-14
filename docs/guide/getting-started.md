@@ -10,7 +10,7 @@
 
 ### Set up a team
 
-1. Create an empty repository on GitHub, GitLab, GitCode, CNB, TGit, or a private Git host. `<team-name>-teamai` is a clear name. Give teammates permission to push branches, and leave the default branch protected. No repo yet? Fork one from [teamai-hub](https://github.com/teamai-hub).
+1. Create an empty repository on GitHub, GitLab, GitCode, Codeup, CNB, TGit, or a private Git host. `<team-name>-teamai` is a clear name. Give teammates permission to push branches, and leave the default branch protected. No repo yet? Fork one from [teamai-hub](https://github.com/teamai-hub).
 2. Initialize in the project where you use your AI tool.
 
    In your AI tool:

@@ -23,6 +23,6 @@ Start with [Getting Started](guide/getting-started.md): set up a team, join one,
 - [Diagnostics and maintenance](guide/diagnostics.md) — `doctor`, stats, updates, and related commands
 - [Reference](guide/reference.md) — Command reference, configuration reference, model profiles
 - [Windows](guide/windows.md) — Getting agent hooks to fire on Windows
-- [Git Providers](guide/providers.md) — GitHub, GitLab, GitCode, CNB, TGit and generic Git: detection and authentication
+- [Git Providers](guide/providers.md) — GitHub, GitLab, GitCode, Codeup, CNB, TGit and generic Git: detection and authentication
 - [Uninstall & FAQ](guide/faq.md) — Removing TeamAI and frequently asked questions
 - [ClawPro HTTP backend](guide/http-contract.md) — APIs used by `init --http`

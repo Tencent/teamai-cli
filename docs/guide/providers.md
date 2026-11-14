@@ -246,7 +246,7 @@ Codeup (阿里云云效代码管理, codeup.aliyun.com) uses the Yunxiao (云效
 
 Git transport and API calls use separate credentials:
 
-- **Git transport (clone/push)**: SSH by default — `git@codeup.aliyun.com:org/group/repo.git`, authenticated by the SSH key on your machine, exactly as the generic `git` provider works. When a token was persisted to `~/.netrc` together with the account username, HTTPS Basic auth is used instead.
+- **Git transport (clone/push)**: follows the URL you typed — an `https://codeup.aliyun.com/...` URL clones over HTTPS; an SSH URL or the bare `org/group/repo` form clones over SSH (`git@codeup.aliyun.com:org/group/repo.git`), authenticated by the SSH key on your machine, exactly as the generic `git` provider works. An HTTPS clone embeds the PAT as the Basic password when its username is known too (`CODEUP_USERNAME`, `~/.teamai/codeup.json`, or the `~/.netrc` entry the interactive init persists); otherwise your own git credential setup authenticates. `CODEUP_TRANSPORT=https` or `CODEUP_TRANSPORT=ssh` overrides the choice — PAT-as-git-password is not a verified path on every deployment, so `CODEUP_TRANSPORT=ssh` opts back out of HTTPS.
 - **OpenAPI (merge request creation)**: a Yunxiao Personal Access Token, resolved in this order:
 
 1. `CODEUP_TOKEN` (primary)
@@ -265,7 +265,7 @@ Generate the PAT under Codeup → 个人设置 / Personal Settings → 个人访
 
 The OpenAPI paths need a numeric `organizationId` and `repositoryId`:
 
-- `organizationId` (required in practice): the numeric 企业标识 from 云效 组织管理 → 基本信息. Set the `CODEUP_ORG_ID` environment variable — a PAT with only codeup scope (the common case) cannot resolve it from the user endpoint, and the organization *path* (the first URL segment) is not accepted by the repo-scoped API paths. A PAT with platform scope resolves the user's `lastOrganization` automatically.
+- `organizationId` (required in practice on the central edition): the numeric 企业标识 from 云效 组织管理 → 基本信息. Set the `CODEUP_ORG_ID` environment variable — a PAT with only codeup scope (the common case) cannot resolve it from the user endpoint, and the organization *path* (the first URL segment) is not accepted by the repo-scoped API paths. A PAT with platform scope resolves the user's `lastOrganization` automatically. An interactive `teamai init` asks for a missing ID and saves it to `~/.teamai/codeup.json`; a Region 版 deployment needs none.
 - `repositoryId`: resolved automatically from the `org/group/repo` path.
 
 A Region 版 Yunxiao deployment is targeted by setting `CODEUP_API_BASE_URL` (and optionally `YUNXIAO_EDITION=region`); the default is the central edition `https://openapi-rdc.aliyuncs.com`.

@@ -99,7 +99,7 @@ The git repo that holds the team's **resources**.
 _Avoid_: team clone (that is the local copy), source repo
 
 **Repo provider**:
-Where the **team repo** is hosted, as `teamai init --provider` names it: `github`, `gitlab`, `tgit`, `cnb`, `gitcode`, or plain `git`.
+Where the **team repo** is hosted, as `teamai init --provider` names it: `github`, `gitlab`, `tgit`, `cnb`, `gitcode`, `codeup`, or plain `git`.
 _Avoid_: bare provider where a **model provider** could be meant, host
 
 **Team repo mode**:
