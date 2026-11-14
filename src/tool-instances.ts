@@ -321,7 +321,7 @@ function withoutSharedHomes(table: Map<string, ResolvedToolInstance>): Map<strin
 
     if (resolved !== undefined) {
       errorOnce(`Tool instance ${name} (${instance.location}) is not used: its home resolves to ${own}, which is also the home of ${resolved}, `
-        + 'and two tools on one home write over each other\'s skills, hooks and sessions. Move one of the two homes, then run `teamai pull`.');
+        + 'and two tools on one home write over each other\'s skills, hooks and sessions. Move one of the two homes, then re-run `teamai init`: a pull keeps the home it recorded.');
       table.delete(name);
     }
   }

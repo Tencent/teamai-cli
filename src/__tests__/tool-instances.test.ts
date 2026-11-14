@@ -191,17 +191,17 @@ describe('team tool instances', () => {
     setup();
     const { registry, errors } = await load(teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE }));
 
-    expect(errors).toEqual([`Tool instance acme-claude (tools/acme-claude.yaml) is not used: its home resolves to ${path.join(home, dir)}, which is also the home of claude, and two tools on one home write over each other's skills, hooks and sessions. Move one of the two homes, then run \`teamai pull\`.`]);
+    expect(errors).toEqual([`Tool instance acme-claude (tools/acme-claude.yaml) is not used: its home resolves to ${path.join(home, dir)}, which is also the home of claude, and two tools on one home write over each other's skills, hooks and sessions. Move one of the two homes, then re-run \`teamai init\`: a pull keeps the home it recorded.`]);
     expect(registry.toolOf('acme-claude')).toBeUndefined();
   });
 
-  // init lists the instances it records from the files, a refused one included: else no value could ever replace this record.
+  // init takes a refused instance in --agent and records its home from the files: else no value could ever replace this record.
   it.each([
     { refusal: 'the home of Claude Code', recorded: '.claude', toolRoots: '' },
     { refusal: 'the root recorded for Claude Code', recorded: '.claude-work', toolRoots: 'toolRoots: { claude: ~/.claude-work }\n' },
     { refusal: 'your home directory itself', recorded: '', toolRoots: '' },
   ].flatMap((row) => [{ ...row, action: 'replace', value: '.acme-good' }, { ...row, action: 'clear', value: null }]))(
-    'lets init $action the record that put an instance at $refusal, after which the instance is used',
+    'lets init, given the instance in --agent, $action the record that put it at $refusal, after which the instance is used',
     async ({ recorded, toolRoots, value }) => {
       fs.mkdirSync(path.join(home, '.teamai'), { recursive: true });
       fs.writeFileSync(path.join(home, '.teamai', 'tool-homes.json'), JSON.stringify({ 'acme-claude': path.join(home, recorded) }));
@@ -209,6 +209,8 @@ describe('team tool instances', () => {
       const repo = teamRepo({ 'tools/acme-claude.yaml': ACME_CLAUDE });
       const refused = await load(repo);
       expect([refused.registry.toolOf('acme-claude'), refused.errors]).toEqual([undefined, [expect.stringContaining('Tool instance acme-claude (tools/acme-claude.yaml) is not used')]]);
+      const { teamToolIds } = await import('../config.js');
+      expect(await teamToolIds(repo, refused.config)).toContain('acme-claude');
       vi.stubEnv('ACME_CLAUDE_CONFIG_DIR', value === null ? '' : path.join(home, value));
       const { recordToolHomes } = await import('../tool-home-record.js');
 

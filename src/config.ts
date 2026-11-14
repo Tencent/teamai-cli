@@ -38,6 +38,7 @@ import { loadRoleAssignmentsIfPresent, resolveAssignedRoles, ROLE_ASSIGNMENTS_FI
 import { warnOnce } from './utils/warn-once.js';
 import { AllowSchema } from './workflow/requirements.js';
 import { personalToolInstances, teamToolInstances, withToolInstances } from './tool-instances.js';
+import { declaredInstances } from './tool-registry.js';
 
 /**
  * Loads that serve a --dry-run write nothing: the legacy role migration, the
@@ -306,11 +307,12 @@ export async function loadTeamConfig(repoPath: string): Promise<TeamaiConfig | n
 
 /**
  * The tools the team repo at `repoPath` adds to those teamai ships, for no member: the keys of `teamConfig`, its
- * teamai.yaml as `loadTeamConfig(repoPath)` read it, which hold its tool instances. With no teamai.yaml yet, as
- * on the first init of a new team repo, its tools/ instances and the member's own still count.
+ * teamai.yaml as `loadTeamConfig(repoPath)` read it, which hold its tool instances, and each instance refused for its
+ * home, which only the init that names it can move. With no teamai.yaml yet, as on the first init of a new team repo,
+ * its tools/ instances and the member's own still count.
  */
 export async function teamToolIds(repoPath: string, teamConfig: TeamaiConfig | null): Promise<string[]> {
-  if (teamConfig) return Object.keys(teamConfig.toolPaths);
+  if (teamConfig) return [...new Set([...Object.keys(teamConfig.toolPaths), ...declaredInstances().map(({ name }) => name)])];
 
   const [team, own] = await Promise.all([teamToolInstances(repoPath), personalToolInstances()]);
 
