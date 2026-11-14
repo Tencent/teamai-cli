@@ -4810,7 +4810,13 @@ async function codexTrustTargets(
 
   if (agents && !agents.includes(tool)) return null;
 
-  const primary = path.join(canonicalProjectRoot(baseDir), paths.settings);
+  // The file the hook pass wrote: in user scope in the tool's home, which an instance's own variable may move elsewhere.
+  const written = hookSettingsFile(tool, baseDir, paths.settings);
+
+  const primary = written === path.join(baseDir, paths.settings)
+    ? path.join(canonicalProjectRoot(baseDir), paths.settings)
+    : path.join(canonicalProjectRoot(path.dirname(written)), path.basename(written));
+
   const sources = [{ file: primary, manifestPath }];
   let anchor: string | undefined;
   let mainFile: string | null = null;

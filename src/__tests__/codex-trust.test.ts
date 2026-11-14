@@ -499,14 +499,18 @@ describe('Codex hook trust — an instance', () => {
   const ACME_CODEX = 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\ncommand: acme-codex\nhome: { dir: .acme-codex }\n';
 
   /** The team config with `acme-codex`, a member's own instance or the team's, and a fake Codex on PATH as `acme-codex` beside the shipped one. */
-  async function withInstance(source: 'personal' | 'team'): Promise<{ config: TeamaiConfig; acmeHome: string; acmeBuild: string }> {
+  async function withInstance(source: 'personal' | 'team', { moved = false }: { moved?: boolean } = {}): Promise<{ config: TeamaiConfig; acmeHome: string; acmeBuild: string }> {
     const acmeBin = installFakeCodex();
     for (const name of ['codex', 'codex.cmd']) await fse.move(path.join(acmeBin, name), path.join(acmeBin, `acme-${name}`));
     vi.stubEnv('PATH', `${acmeBin}${path.delimiter}${process.env.PATH ?? ''}`);
     onTestFinished(() => fse.remove(acmeBin));
     await fse.outputFile(path.join(repo, 'teamai.yaml'), 'team: acme\nrepo: acme/team\n');
-    await fse.outputFile(source === 'team' ? path.join(repo, 'tools', 'acme-codex.yaml') : path.join(home, '.teamai', 'tools', 'acme-codex.yaml'), ACME_CODEX);
-    const acmeHome = path.join(home, '.acme-codex');
+    // A moved home: the instance names its own variable, which the member exports to a directory of their choosing.
+    const text = moved ? ACME_CODEX.replace('home: { dir: .acme-codex }', 'home: { dir: .acme-codex, env: ACME_CODEX_HOME }') : ACME_CODEX;
+    await fse.outputFile(source === 'team' ? path.join(repo, 'tools', 'acme-codex.yaml') : path.join(home, '.teamai', 'tools', 'acme-codex.yaml'), text);
+    const acmeHome = moved ? path.join(home, 'acme-moved') : path.join(home, '.acme-codex');
+
+    if (moved) vi.stubEnv('ACME_CODEX_HOME', acmeHome);
     await fse.ensureDir(acmeHome);
     const { loadTeamConfig } = await import('../config.js');
     const config = await loadTeamConfig(repo);
@@ -521,8 +525,11 @@ describe('Codex hook trust — an instance', () => {
     useToolInstances(new Map());
   });
 
-  it('trusts the hooks teamai wrote for an instance in its own home, through its own command', async () => {
-    const { config, acmeHome, acmeBuild } = await withInstance('personal');
+  it.each([
+    ['its own home', false],
+    ['the home its own variable moves', true],
+  ])('trusts the hooks teamai wrote for an instance in %s, through its own command', async (_where, moved) => {
+    const { config, acmeHome, acmeBuild } = await withInstance('personal', { moved });
     await writeYaml(LINT_HOOK);
     const local = userConfig({ enabledAgents: ['acme-codex'] });
 
