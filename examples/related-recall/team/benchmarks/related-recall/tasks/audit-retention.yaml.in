@@ -1,0 +1,11 @@
+schemaVersion: v1alpha1
+title: Restore audit log retention
+prompt: Set `auditRetentionDays()` in limits.cjs to the value specified by team policy.
+startingCommit: PROJECT_COMMIT
+covers: [rules/audit-retention.md, docs/audit-retention.md]
+check:
+  run: node .related-recall-check.cjs
+  protect: ['.related-recall-check.cjs']
+  add:
+    - from: check-files/audit-retention.cjs
+      to: .related-recall-check.cjs
