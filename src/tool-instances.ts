@@ -94,7 +94,7 @@ function refused(file: string, reason: string): RefusedInstance {
  * The first user-scope path of `paths` outside the instance home `dir`, a `$HOME`-relative directory, by the key that
  * sets it: what a tool started at that home would not read there. Decided by containment, since a home may be nested.
  */
-export function userPathOutsideHome(paths: z.infer<typeof ToolPathsSchema>, dir: string): { key: string; value: string } | undefined {
+function userPathOutsideHome(paths: z.infer<typeof ToolPathsSchema>, dir: string): { key: string; value: string } | undefined {
   for (const field of TOOL_ROOT_FIELDS) {
     const own = field === 'mcp' ? undefined : paths.userScope?.[field];
     const value = own === undefined ? paths[field] : own;
@@ -167,13 +167,12 @@ function parseToolInstance({ file, text, source, location }: { file: string; tex
   }
 
   if (!isToolId(fields.name) && isSessionPlatform(fields.name)) return refused(file, `"${fields.name}" is the name of a session platform teamai ships`);
-  const shippedAt = fields.command === undefined ? fields.home : undefined;
-  const outside = shippedAt && fields.paths && userPathOutsideHome(fields.paths, shippedAt.dir);
+  const outside = fields.home && fields.paths && userPathOutsideHome(fields.paths, fields.home.dir);
 
-  // teamai starts the shipped command at the instance's home, the only place it reads user files from.
-  if (shippedAt && outside) {
-    return refused(file, `${outside.key}: ${outside.value} is outside its home, and with no command it runs ${base} at that home, which reads none of it there. `
-      + `Leave home out to keep the home of ${base}, or point every user-scope path inside ${shippedAt.dir}`);
+  // An instance with a home starts with the variables of its home at it, whatever runs it, so its home is where it lives.
+  if (fields.home && outside) {
+    return refused(file, `${outside.key}: ${outside.value} is outside home.dir ${fields.home.dir}, and teamai starts ${fields.name} with its home at ${fields.home.dir}, `
+      + `the one place it reads user files from, so it would read none of it. Point every user-scope path inside ${fields.home.dir}, or leave home out to keep the home of ${base}`);
   }
 
   const declared = { source, file, location, revision: sha256(text) };

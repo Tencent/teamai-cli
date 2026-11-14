@@ -1,6 +1,6 @@
 import { resolveCliPath, resolvePathCommand } from '@teamai/shared/cli-path';
 import { descriptorOf, toolOf, type DescriptorOf } from '../tool-registry.js';
-import { userPathOutsideHome, type DeclaredTool } from '../tool-instances.js';
+import type { DeclaredTool } from '../tool-instances.js';
 import type { ToolInstanceHome } from '@teamai/tool-core/instance';
 import type { ShippedDescriptor, ToolId } from '../tools.js';
 import { movedToolHome, realHost, recordedHomes, toolHomeOf, type Host } from '../tool-home.js';
@@ -133,8 +133,8 @@ export type ToolCommandHome =
  * The home variables teamai sets when it starts the command of the tool `name`, the one place that decides them. At a
  * chosen home: every variable the command reads its home from, the tool's and an instance's own (`home.env`). At the
  * delivered home, the command reads where delivery wrote, so a home delivery resolved wins over the shell's variable:
- * for an instance with a home of its own, the variable of the tool it extends at that home, unless its `paths` put files
- * outside it, and its own variable, if it names one, at the home its record or variable gives (`toolHomeOf`); for a shipped tool, an
+ * for an instance with a home of its own, the variable of the tool it extends and its own, if it names one, at the home
+ * its record or variable gives (`toolHomeOf`), as at a chosen home; for a shipped tool, an
  * adjustment or an instance that keeps the home of the tool it extends, its variable at the root `toolRoots` records,
  * else at its moved home (`movedToolHome`). With none of those, the shell's variable stays as it is. A home a record
  * names wins even once its directory is gone, as delivery's does, and delivery then skips the tool: the command is not
@@ -209,14 +209,11 @@ function instanceHomeOf(input: { instance: DeclaredTool; own: ToolInstanceHome; 
   const dir = toolHomeOf(instance.name, host)?.dir;
 
   if (dir === undefined) return null;
-  // teamai writes where `paths` say: a build of its own pointed at the home would read none of what lies outside it. One
-  // on the shipped command has its user paths in its home, or it is refused at load.
-  const base = instance.command !== undefined && instance.paths !== undefined && userPathOutsideHome(instance.paths, own.dir) !== undefined ? undefined : variable;
 
   // The tool it extends reads only its own variable, and runs whenever the instance names no command teamai accepted.
-  if (own.env !== undefined) return { variable: own.env, also: base === undefined ? [] : [base], dir, recorded: dir === recordedHomes(host)[instance.name] };
+  if (own.env !== undefined) return { variable: own.env, also: variable === undefined ? [] : [variable], dir, recorded: dir === recordedHomes(host)[instance.name] };
 
-  return base === undefined ? null : { variable: base, also: [], dir, recorded: false };
+  return variable === undefined ? null : { variable, also: [], dir, recorded: false };
 }
 
 /** Where the command that starts `target` is installed, or null. An instance's comes from a config file, so only PATH counts. */
