@@ -56,7 +56,8 @@ const BASE_ID_NAMES = new Set(['CLAUDE_TOOL_ID', 'CODEX_TOOL_ID', 'CLAUDE_TOOL',
 /**
  * Files that compare a tool name with Claude Code's or Codex's id (`tool === 'codex'`, `case CODEX_TOOL_ID:`), by count,
  * each with why the comparison is meant to be false for an instance of that tool, or why the name it compares can never
- * be one. A comparison of what `isResolved` recognizes (the tool an instance extends, a format, a family) is not counted.
+ * be one. A comparison of what `isResolved` recognizes (the tool an instance extends, a format, a family), or a case of a
+ * switch `isExhaustive` finds over a closed union, is not counted.
  * A new comparison fails; a count above what the file holds fails until it is lowered.
  */
 export const BASE_ID_COMPARISONS = new Map(Object.entries({
@@ -159,16 +160,40 @@ function isResolved(sourceCode, node, depth = 0) {
 }
 
 /**
- * Whether `type` is one of `RESOLVED_TYPES`, or a part of one picked with `Exclude` or `Extract`.
+ * Whether `type` is one of `RESOLVED_TYPES`, a part of one picked with `Exclude` or `Extract`, or the type of a resolved
+ * field (`AgentTool['format']`).
  * @param {ESTree.Node | null | undefined} type
  * @returns {boolean}
  */
 function isResolvedType(type) {
+  if (type?.type === 'TSIndexedAccessType') {
+    const field = type.indexType.type === 'TSLiteralType' ? stringLiteralValue(type.indexType.literal) : undefined;
+
+    return field !== undefined && RESOLVED_FIELDS.has(field);
+  }
+
   if (type?.type !== 'TSTypeReference' || type.typeName.type !== 'Identifier') return false;
 
   if (RESOLVED_TYPES.has(type.typeName.name)) return true;
 
   return ['Exclude', 'Extract'].includes(type.typeName.name) && isResolvedType(type.typeArguments?.params[0]);
+}
+
+/**
+ * Whether `statement` switches over a closed union: its `default` assigns the discriminant to `never`
+ * (`const unhandled: never = tool;`), which the type check holds only when every member has a case, so no instance's
+ * name reaches one.
+ * @param {import('@oxlint/plugins').Context['sourceCode']} sourceCode
+ * @param {ESTree.SwitchStatement} statement
+ * @returns {boolean}
+ */
+function isExhaustive(sourceCode, statement) {
+  const fallback = statement.cases.find((one) => one.test === null);
+  const body = fallback?.consequent.flatMap((one) => (one.type === 'BlockStatement' ? one.body : [one])) ?? [];
+  const discriminant = sourceCode.getText(statement.discriminant);
+
+  return body.some((one) => one.type === 'VariableDeclaration' && one.declarations.some((declarator) => declarator.id.type === 'Identifier'
+    && declarator.id.typeAnnotation?.typeAnnotation.type === 'TSNeverKeyword' && declarator.init != null && sourceCode.getText(declarator.init) === discriminant));
 }
 
 /**
@@ -218,7 +243,9 @@ export default defineRule({
         if (isBaseId(node.arguments[0]) && !isResolved(context.sourceCode, callee.object)) comparisons.push(node);
       },
       SwitchCase(node) {
-        if (isBaseId(node.test) && node.parent?.type === 'SwitchStatement' && !isResolved(context.sourceCode, node.parent.discriminant)) comparisons.push(node);
+        if (isBaseId(node.test) && node.parent?.type === 'SwitchStatement' && !isResolved(context.sourceCode, node.parent.discriminant) && !isExhaustive(context.sourceCode, node.parent)) {
+          comparisons.push(node);
+        }
       },
       'Program:exit'(node) {
         if (comparisons.length > comparable) {

@@ -77,6 +77,14 @@ export const c = (target: { format: McpFormat }) => target.format === 'codex';
 export const d = (agent: ModelAgent) => { switch (agent) { case 'claude': return 1; default: return 0; } };
 export const e = (format: Exclude<McpFormat, 'json'>) => format === 'claude';`, { filename: 'src/new-area/reader.ts' });
 
+rule.valid('allows a comparison of a closed union of shipped ids: a resolved field\'s type, or a switch whose default holds what it switches over as never', `import type { AgentTool } from './types.js';
+export const b = (format: AgentTool['format']) => format === 'claude';
+export const c = (target: { tool: 'claude' | 'codex' }) => { switch (target.tool) { case 'claude': return 1; case 'codex': return 2; default: { const unhandled: never = target.tool; return unhandled; } } };`, { filename: 'src/new-area/reader.ts' });
+
+rule.invalid('rejects a switch whose default holds another value as never', `export const a = (tool: string, other: never) => { switch (tool) { case 'codex': return 1; default: { const unhandled: never = other; return unhandled; } } };`, undefined, { filename: 'src/new-area/reader.ts' });
+
+rule.invalid('rejects a comparison of a field that holds a tool\'s own name', `export const a = (tool: { name: string }['name']) => tool === 'codex';`, undefined, { filename: 'src/new-area/reader.ts' });
+
 rule.invalid('rejects a local that held a resolved name until a tool\'s own name replaced it', `import { baseToolOf } from './tool-registry.js';
 export const a = (tool: string) => { let family = baseToolOf(tool); family = tool; return family === 'codex'; };`, undefined, { filename: 'src/new-area/reader.ts' });
 
