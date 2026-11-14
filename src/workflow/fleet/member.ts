@@ -58,6 +58,7 @@ import { AgentSession } from '../../session-flow/agent-session.js';
 import { JsonValueSchema, type JsonValue, isJsonObject } from '@teamai/shared/json';
 import { git, gitAnswer, hostGitEnv, keptOriginUrl, pushTargets, readMemberConfig, remoteGit, untrustedGit, type MemberConfig } from '../worktree.js';
 import { readRegularFile, writeRegularFile } from '@teamai/shared/regular-file';
+import { fenceCommand, type CommandFence } from './fence.js';
 
 /** How often a member reads its claim's record for a cancel, when its beats come less often than that. */
 const CANCEL_READ_MS = 30_000;
@@ -599,6 +600,16 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
   let beating: Promise<void> | undefined;
   let stopCommand = async (): Promise<void> => {};
 
+  // The fence of a command the member runs on this machine: its guardian stops the command at the cut-off point, should
+  // the member be gone by then. The point moves each time `latest` does.
+  let fence: CommandFence | undefined;
+
+  const moveFence = (): void => {
+    const since = Date.parse(latest.progressAt);
+
+    fence?.move(Number.isNaN(since) ? Date.now() : since + cutOffMs);
+  };
+
   // A write of the claim that answered state_moved: the owner cancelled it, which the member answers once the step
   // stopped, or gave it up, after which nothing the member does counts. Either way the step stops.
   // A claimed or asking record naming this member is a write of its own that landed though it could not tell, as when
@@ -615,6 +626,7 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
 
     if (record?.state === 'claimed' || record?.state === 'asking') {
       latest = record;
+      moveFence();
 
       return;
     }
@@ -623,6 +635,7 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
       // The owner's answer to a question of this member's, which only the owner writes over it, so the next progress
       // goes over it. It is handed once, and only to the question it answers.
       latest = record;
+      moveFence();
       gates.take(record);
 
       return;
@@ -650,7 +663,10 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
 
     unlanded = !progressed.ok && (progressed.error.code === 'reports_failed' || progressed.error.code === 'reports_unreachable');
 
-    if (progressed.ok) latest = progressed.value;
+    if (progressed.ok) {
+      latest = progressed.value;
+      moveFence();
+    }
     // A record it cannot parse is one another teamai wrote over its own, as a moved one is.
     else if (progressed.error.code === 'state_moved' || progressed.error.code === 'fleet_record_newer' || progressed.error.code === 'fleet_record_unreadable') {
       await moved(progressed.error);
@@ -724,6 +740,20 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
 
     stopCommand = command.stop;
 
+    if (command.group !== undefined) {
+      const since = Date.parse(latest.progressAt);
+      const fenced = await fenceCommand({ dir, group: command.group, at: Number.isNaN(since) ? Date.now() : since + cutOffMs });
+
+      if (!fenced.ok) {
+        await stopCommand();
+        await command.exit.catch(() => undefined);
+
+        return finish({ exitCode: 1, stderr: `The member ran nothing of step "${lease.step}": ${fenced.reason}, and without it a member killed mid-step would leave the step running beside the one its owner offers again.` });
+      }
+
+      fence = fenced.fence;
+    }
+
     let watch: NodeJS.Timeout | undefined;
 
     const watchProgress = (): void => {
@@ -781,6 +811,10 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
 
     await beating;
 
+    // A command that ended past the cut-off point was stopped by its guardian, or ended as the member stopped it: either
+    // way the member gives the attempt up, as its own cut-off does.
+    if (cutOff === undefined && gone === undefined && cancelling === undefined && fence !== undefined && cutOffIn() <= 0) cutOff = cutOffWhy(cutOffIn());
+
     if (cutOff !== undefined) {
       const saved = await save(`[teamai] ${lease.step} so far (run ${run}, attempt ${attempt})`);
       const kept = 'to' in saved ? `Its work so far is on ${ref}.` : `Its work since its last push is not on ${ref}: ${saved.error}`;
@@ -799,14 +833,15 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
     // A restarted member goes on from work its killed run pushed, which is the step's work even when this run adds none.
     return finish(saved.to === claim.start ? ran : { ...ran, to: saved.to });
   } finally {
+    await fence?.end();
     // However the step ended, a run its command's process started and drove ends with it.
     await endRunsPartOf(config, { run, attempt });
     await Promise.all([fs.rm(work, { recursive: true, force: true }), fs.rm(runDir, { recursive: true, force: true })]);
   }
 }
 
-/** A step the member runs: how it ended, as the record writes it, and how to stop it. */
-type StepRun = { exit: Promise<FleetResult>; stop: () => Promise<void> };
+/** A step the member runs: how it ended, as the record writes it, how to stop it, and the process group it leads here. */
+type StepRun = { exit: Promise<FleetResult>; stop: () => Promise<void>; group?: number };
 
 /**
  * A command the member runs, ending as the local loop reports a command: its exit code, the JSON its stdout held, and
@@ -828,6 +863,7 @@ function commandRun(config: LocalConfig, { run, attempt, step, secrets }: { run:
     stop: async () => {
       await command.stop();
     },
+    ...(command.group !== undefined && { group: command.group }),
   };
 }
 

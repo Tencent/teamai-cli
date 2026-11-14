@@ -1799,7 +1799,7 @@ runtimes:
 
 你不必一直在线。驱动发出尝试后就可以停掉，之后运行 `teamai workflow resume <run>`：它读取尝试的记录，成员完成时取回产出，没完成就继续等。尝试在外期间，不依赖它的步骤照常在本机运行。
 
-领取尝试的成员每个 `stale_after` 内会写三次自己仍在运行，并附上到目前为止推送的产出。你的驱动超过 `stale_after` 没有收到它的消息时，尝试以 `fleet_member_gone` 失败。成员的写入在 `stale_after` 的三分之二时间内都没有到达 origin 时（例如它断网了），它会在此之前自行停止步骤，尽量推送产出，并以 `fleet_member_gone` 结束，因此步骤再次发布时它已不在运行。它最后一次推送之前的产出留在步骤的位置里，`teamai workflow retry <run> <step>` 会从那里再次发布这个步骤。
+领取尝试的成员每个 `stale_after` 内会写三次自己仍在运行，并附上到目前为止推送的产出。你的驱动超过 `stale_after` 没有收到它的消息时，尝试以 `fleet_member_gone` 失败。成员的写入在 `stale_after` 的三分之二时间内都没有到达 origin 时（例如它断网了），它会在此之前自行停止步骤，尽量推送产出，并以 `fleet_member_gone` 结束，因此步骤再次发布时它已不在运行。成员在自己机器上运行的命令步骤，即使成员被杀掉，也会在那个时间点由 teamai 在命令旁启动的一个小进程停止；成员在步骤运行时上运行的步骤则交给那个运行时。它最后一次推送之前的产出留在步骤的位置里，`teamai workflow retry <run> <step>` 会从那里再次发布这个步骤。
 
 每个尝试的分支 `teamai/attempts/<run>/<attempt>` 会留在 origin 上，直到 `workflows.retention` 过去后 `teamai doctor --fix` 删除这个运行的分支（[运行留下的分支](workflow.md#运行留下的分支)）。成员为某个尝试保留的内容（例如它的日志）会一直留到该尝试的记录结束后 `workflows.retention` 过去，之后在下一次 `teamai workflow resume --next --pool` 时删除。
 

@@ -14,8 +14,9 @@ export const OWNER = scopedFiles(['packages/shared/src/process-group.ts']);
 export const RUN_AS_IS = scopedFiles(['packages/runtime-sandbox/src/testing/fake-engine.mjs']);
 
 /**
- * Files whose string literals hold the source of a program a test runs, which signals its own process or the one that
- * started it, or lints: the text is that program's, which lint does not read as code.
+ * Files whose string literals hold the source of a program teamai or a test runs, which signals its own process, the one
+ * that started it, or a group it watches, or lints: the text is that program's, which lint does not read as code. A
+ * program teamai runs keeps the owner's check inline: no signal to a pid below 2.
  */
 export const SCRIPT_TEXT = scopedFiles([
   'oxlint-plugin-teamai/rules/signal-owner.test.ts',
@@ -24,6 +25,7 @@ export const SCRIPT_TEXT = scopedFiles([
   'src/__tests__/e2e/workflow-pass-scoring.test.ts',
   'src/__tests__/env-exec.test.ts',
   'src/__tests__/helpers/benchmark-fixture.ts',
+  'src/workflow/fleet/fence.ts',
 ]);
 
 /**

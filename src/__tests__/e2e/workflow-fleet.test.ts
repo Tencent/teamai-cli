@@ -41,6 +41,12 @@ const SLOW = flow('slow', `  - id: long
     command: node -e "const fs = require('fs'); if (fs.existsSync('partial.txt')) { fs.writeFileSync('done.txt', 'D'); process.exit(0); } fs.writeFileSync('partial.txt', 'P'); setInterval(() => {}, 1000)"
 `);
 
+/** A command a member runs until stopped, writing its pid where the test reads it. */
+const FENCED = flow('fenced', `  - id: long
+    workspace: new
+    command: node -e "require('fs').writeFileSync(require('os').homedir() + '/fenced.pid', String(process.pid)); setInterval(() => {}, 1000)"
+`);
+
 /** A command on the owner's own machine that runs until stopped, writing its pid where the test reads it. */
 const HOLD = flow('hold', `  - id: hold
     command: node -e "require('fs').writeFileSync(require('os').homedir() + '/hold.pid', String(process.pid)); setInterval(() => {}, 1000)"
@@ -286,7 +292,7 @@ function teamai(member: string, args: string[], started?: (pid: number) => void,
 const said = (result: RunResult): string => `exit ${result.code}\n${result.stdout}\n${result.stderr}`;
 
 /** The record of each attempt of `run` as origin holds it. */
-function records(run: string): Array<{ attempt: string; state: string; start: string; pushed?: string; lease: { step: string }; result?: { exitCode: number; to?: string } }> {
+function records(run: string): Array<{ attempt: string; state: string; start: string; pushed?: string; progressAt?: string; lease: { step: string }; result?: { exitCode: number; to?: string } }> {
   const listed = originGit('ls-tree', '--name-only', `teamai-reports:workflows/attempts/${run}/`);
 
   return listed.split('\n').filter(Boolean).map((file) => JSON.parse(originGit('show', `teamai-reports:workflows/attempts/${run}/${path.basename(file)}`)) as ReturnType<typeof records>[number]);
@@ -442,6 +448,7 @@ describe('the fleet', () => {
       'teamai.yaml': `team: acme\nrepo: ${URL}\nprovider: github\n`,
       'workflows/split.yaml': SPLIT,
       'workflows/slow.yaml': SLOW,
+      'workflows/fenced.yaml': FENCED,
       'workflows/one.yaml': ONE,
       'workflows/hold.yaml': HOLD,
       'workflows/look.yaml': LOOK,
@@ -576,6 +583,35 @@ describe('the fleet', () => {
     // The expired claim stays as it was.
     expect(records(run).find((record) => record.attempt === claimed?.attempt)).toMatchObject({ state: 'expired' });
   }, 300_000);
+
+  it('stops the command of a member killed mid-step before stale_after passes, though the member never comes back', async () => {
+    let alicePid = 0;
+    const started = teamai('alice', ['workflow', 'start', 'fenced', '--driver', 'build-fleet'], (pid) => { alicePid = pid; });
+    const before = new Set(offeredRuns());
+    const fresh = (): string | undefined => offeredRuns().find((name) => !before.has(name));
+    await waitOn(() => fresh() !== undefined, 60_000, () => alicePid, started);
+    const run = fresh() ?? '';
+    const pidFile = path.join(homeOf('bob'), 'fenced.pid');
+    fs.rmSync(pidFile, { force: true });
+
+    let bobPid = 0;
+    const taking = teamai('bob', ['workflow', 'resume', '--next', '--pool', 'build'], (pid) => { bobPid = pid; });
+    await waitOn(() => fs.existsSync(pidFile) && records(run).some((record) => record.state === 'claimed'), 60_000, () => bobPid, taking);
+    const command = Number(fs.readFileSync(pidFile, 'utf8'));
+    expect(signalPid(bobPid, 'SIGKILL')).toBe('sent');
+    await taking;
+    // The owner may give the claim up once stale_after passed since the member began its last write that landed.
+    const [claimed] = records(run);
+    const givenUpFrom = Date.parse(claimed?.progressAt ?? '') + 6_000;
+
+    expect(isAlive(command)).toBe(true);
+    expect(await until(() => !isAlive(command), givenUpFrom - Date.now())).toBe(true);
+    expect(Date.now()).toBeLessThan(givenUpFrom);
+
+    const failed = await started;
+    expect(failed.envelope(), said(failed)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(runStateOf('alice', run).steps[0]?.failure?.code).toBe('fleet_member_gone');
+  }, 180_000);
 
   it('gives an attempt to one of two members that try at once, and the other takes none', async () => {
     let alicePid = 0;

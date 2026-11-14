@@ -100,6 +100,8 @@ export interface GroupedCommand {
   exit: Promise<GroupedCommandExit>;
   /** Stops the command and what it started, then settles once they are gone. A second call changes nothing. */
   stop: (signal?: NodeJS.Signals) => Promise<GroupedCommandExit>;
+  /** The id of the process group it leads on this machine: set once a detached command spawned, never for one elsewhere. */
+  group?: number;
 }
 
 /**
@@ -124,5 +126,5 @@ export function startGroupedCommand(input: { command: string; cwd: string; env: 
     child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr, output }));
   });
 
-  return { exit, stop: stopProcess(child, exit, detached) };
+  return { exit, stop: stopProcess(child, exit, detached), ...(detached && child.pid !== undefined && { group: child.pid }) };
 }
