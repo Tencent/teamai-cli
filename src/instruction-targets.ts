@@ -258,7 +258,7 @@ export async function channelReadiness(
       const file = hooksFileOf(tool, context);
 
       return {
-        ready: file !== undefined && await hooksInstalled(file, tool),
+        ready: file !== undefined && await hooksInstalled(file, tool, context),
         fix: `${file ?? `${tool}'s hooks file`} is missing or out of date, so ${tool} sessions get no team instructions. ${rerun}`,
       };
     }
@@ -267,7 +267,7 @@ export async function channelReadiness(
       const file = hooksFileOf(tool, context);
 
       return {
-        ready: file !== undefined && await hooksInstalled(file, tool),
+        ready: file !== undefined && await hooksInstalled(file, tool, context),
         fix: `${file ?? `${tool}'s hooks file`} registers no current teamai SessionStart hook, so Muse Code sessions in this project `
           + `get none of the team rules or instructions. ${rerun}`,
       };
@@ -276,7 +276,7 @@ export async function channelReadiness(
     case 'zcode-session-start': {
       const file = hooksFileOf(tool, context);
 
-      if (file === undefined || !await hooksInstalled(file, tool)) {
+      if (file === undefined || !await hooksInstalled(file, tool, context)) {
         return {
           ready: false,
           fix: `${file ?? `${tool}'s hooks file`} registers no current teamai SessionStart hook, so ZCode sessions in this project `
@@ -299,7 +299,7 @@ export async function channelReadiness(
 
       const broken = [
         ...await isDshHooksMounted(configPath) ? [] : [resolveDshHomePatchPath()],
-        ...await hooksInstalled(configPath, tool) ? [] : [configPath],
+        ...await hooksInstalled(configPath, tool, context) ? [] : [configPath],
       ];
 
       return {
@@ -327,10 +327,10 @@ function hooksFileOf(tool: string, context: { teamConfig: TeamaiConfig; localCon
 }
 
 // Whether the hooks that deliver the instructions are there, which no form changes: the file's own form, no version.
-async function hooksInstalled(file: string, tool: string): Promise<boolean> {
+async function hooksInstalled(file: string, tool: string, context: { localConfig: LocalConfig } | undefined): Promise<boolean> {
   const { getHookStatus } = await import('./hooks.js');
 
-  return await getHookStatus(file, { tool, from: 'installed' }) === 'installed';
+  return await getHookStatus(file, { tool, from: 'installed', toolRoots: context?.localConfig.toolRoots }) === 'installed';
 }
 
 /**

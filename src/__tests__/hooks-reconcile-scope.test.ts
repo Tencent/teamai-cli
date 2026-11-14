@@ -1245,6 +1245,16 @@ describe('reconcileTeamHooksForConfig — the form of Claude Code\'s PostToolUse
     expect(await userPromptSubmit()).toEqual(PROMPT_LOGIN_DEFERRED);
   });
 
+  it('writes the unwaited form in the settings of the root CLAUDE_CONFIG_DIR moved, which is the member\'s own file', async () => {
+    const root = path.join(home, '.claude-work');
+    await fse.outputJson(path.join(root, 'settings.json'), {});
+    vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
+
+    await reconcileTeamHooksForConfig(teamConfig, { ...localConfig(), toolRoots: { claude: '~/.claude-work' } });
+
+    expect(await postToolUse(path.join(root, 'settings.json'))).toEqual(UNWAITED);
+  });
+
   it.each(['2.1.118', '', 'not a version'])('goes back to a single waited entry, which defers its login shell, when the version reads %j', async (version) => {
     vi.mocked(getAgentVersion).mockResolvedValue('2.1.322');
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
