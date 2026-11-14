@@ -136,10 +136,10 @@ paths: { skills: .acme-claude/skills }   # the toolPaths keys
 ```
 
 - **Shipped tools** are the definitions of the family packages. They keep their ids (`claude`, `codex`, …) and platform ids (`claude-code`, …), because session records, configs, `--tools` and `init --agent` already store them.
-- **Instances.** A team or personal tool is an instance of a shipped definition.
+- **Instances.** A team or personal tool is an instance of a shipped definition that sets `instances: true` (`INSTANCE_BASES`: Claude Code and Codex today). A definition sets it only once every path teamai reads or writes for it resolves through the instance's home, `home.env` included. teamai refuses an instance of any other definition, so a family whose code still joins its own home by hand cannot receive one.
   - It may set `command`, `home` and `paths`, and nothing else. Its formats are the definition's, so one team cannot break session capture for every member.
   - Its session identity is its own name.
-  - An instance named like a shipped tool adjusts that tool. `paths` replaces the shipped paths whole, as `toolPaths` does today, and `doctor` names every key it dropped. A `toolPaths.<tool>` entry reads as that instance's `paths`.
+  - An instance named like a shipped tool adjusts that tool, again only for an `INSTANCE_BASES` definition; any other tool moves its paths with `toolPaths`. `paths` replaces the shipped paths whole, as `toolPaths` does today, and `doctor` names every key it dropped. A `toolPaths.<tool>` entry reads as that instance's `paths`.
 - **Resolution** follows connected drivers D4:
   - first the member's own `~/.teamai/tools/<name>.yaml`;
   - then the project's team definition, with namespaces;
