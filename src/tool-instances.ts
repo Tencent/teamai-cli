@@ -10,7 +10,7 @@ import { resolveNamespacedItems, type NamespaceCandidate } from './namespace-res
 import { isSessionPlatform } from './session-flow/adapters/platform-facts.js';
 import { INSTANCE_BASES, isInstanceBase, isToolId, useToolInstances } from './tool-registry.js';
 import type { ToolId } from './tools.js';
-import { DEFAULT_TOOL_PATHS, getTeamaiHomeDir, getTrustDir, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type TeamaiConfig } from './types.js';
+import { DEFAULT_TOOL_PATHS, getTeamaiHomeDir, getTrustDir, RELOCATABLE_TOOLS, rerootToolPaths, toolInstallRoot, toolPathRoots, ToolPathsSchema, type TeamaiConfig } from './types.js';
 import { writeJsonAtomic } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { errorOnce, warnOnce } from './utils/warn-once.js';
@@ -112,6 +112,12 @@ function parseToolInstance({ file, text, source, location }: { file: string; tex
 
   if (isToolId(fields.name) && fields.name !== base) {
     return refused(file, `"${fields.name}" is a tool teamai ships, and an instance named like one adjusts it, so it extends ${fields.name}`);
+  }
+
+  const homeVariable = RELOCATABLE_TOOLS[base]?.envVar;
+
+  if (fields.name !== base && homeVariable !== undefined && fields.home?.env === homeVariable) {
+    return refused(file, `home.env: ${homeVariable} is the variable ${base} reads its home from, and teamai sets it to this instance's home when it starts it; leave env out`);
   }
 
   if (!isToolId(fields.name) && isSessionPlatform(fields.name)) return refused(file, `"${fields.name}" is the name of a session platform teamai ships`);

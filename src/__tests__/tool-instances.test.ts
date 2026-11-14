@@ -119,6 +119,18 @@ describe('team tool instances', () => {
     expect(config?.toolPaths[stem]).toEqual(stem === 'cursor' ? expect.objectContaining({ skills: '.cursor/skills' }) : undefined);
   });
 
+  it.each([
+    ['claude', 'CLAUDE_CONFIG_DIR'],
+    ['codex', 'CODEX_HOME'],
+  ])('refuses an instance of %s whose home.env is %s, which teamai sets to the instance home itself', async (base, variable) => {
+    const stem = `acme-${base}`;
+    const text = ACME_CLAUDE.replaceAll('claude', base).replace(/env: \w+/, `env: ${variable}`);
+    const { registry, errors } = await load(teamRepo({ [`tools/${stem}.yaml`]: text }));
+
+    expect(errors).toEqual([expect.stringContaining(`${path.join('tools', `${stem}.yaml`)} is not valid: home.env: ${variable} is the variable ${base} reads its home from, and teamai sets it to this instance's home when it starts it; leave env out`)]);
+    expect(registry.toolOf(stem)).toBeUndefined();
+  });
+
   it.each(['./scripts/acme-claude', 'bin/acme-claude', '/opt/acme/bin/acme-claude', String.raw`tools\acme-claude.exe`])(
     'refuses an instance whose command is the path %s, since what runs at a path is not the file a person accepted',
     async (command) => {
