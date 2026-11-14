@@ -51,13 +51,14 @@ import { gitCommonDir, listWorktrees, resolveAnchors } from './utils/git.js';
 import { staleWorkspaces } from './utils/partition.js';
 import {
   codexBuildSkewMessage, codexBuildsIdentity, keepCodexHookTrust, readCodexHookTrust, removeOwnedCodexProjectTrust, trustCodexHooks,
-  type CodexHookTrustReport, type CodexTrust,
+  type CodexAt, type CodexHookTrustReport, type CodexTrust,
 } from './codex-trust.js';
 import { codexDispatcherCheckouts, codexDispatcherProjects, dispatchedCodexHooks, isCodexTeamHookDispatcher, reconcileCodexDispatchers, runsFromCodexDispatcher, setCodexDispatcherHooks } from './codex-team-hooks.js';
 import type { CodexTeamHook } from './codex-team-hooks.js';
 import { TOOL_IDS } from './tools.js';
 import { type HookFormat } from '@teamai/tool-core/definition';
-import { channelsOf, hookFormatOf, hookSettingsFormatOf, hookSyntaxOf, selfLocalSettingsOf, descriptorOf, type DescriptorOf } from './tool-registry.js';
+import { baseToolOf, channelsOf, hookFormatOf, hookSettingsFormatOf, hookSyntaxOf, instanceNames, selfLocalSettingsOf, descriptorOf, toolOf, type DescriptorOf } from './tool-registry.js';
+import { acceptedCommandOf } from './tool-instances.js';
 import { BRIDGED_TEAM_HOOK_EVENTS, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
 import { earlierHookAdapterDir, hookSettingsFile, installOf, locate, openclawWorkspaceDir, ownOf, workspaceHooksOf } from './locate.js';
 import { toolHome, toolHomeOf } from './tool-home.js';
@@ -242,10 +243,29 @@ const CODEX_TRUST_GATE_TOOLS = new Set(['codex']);
 
 /**
  * True for a tool that gates hooks behind an explicit user trust step (only the
- * public `codex`). Exported so `hooks inject` / `doctor` can surface it.
+ * public `codex`, and an instance of it). Exported so `hooks inject` / `doctor` can surface it.
  */
 export function isCodexTrustGatedTool(tool: string): boolean {
-  return CODEX_TRUST_GATE_TOOLS.has(tool);
+  return CODEX_TRUST_GATE_TOOLS.has(baseToolOf(tool));
+}
+
+/**
+ * The Codex that trusts what teamai writes for `tool`: for an instance, its own home and, when it sets one, its own
+ * command once accepted, which hashes the hooks as that build does; else Codex's own builds in `codexHome`. A team
+ * instance's command no one accepted runs no build, so nothing trusts its hooks yet.
+ */
+function codexTrustAt(tool: string, codexHome: string): CodexAt | { kind: 'unavailable'; reason: string } {
+  const instance = toolOf(tool)?.instance;
+
+  if (instance === undefined || instance.name === instance.extends) return { codexHome };
+  const home = instance.home === undefined ? codexHome : toolHomeOf(tool)?.dir ?? codexHome;
+
+  if (instance.command === undefined) return { codexHome: home };
+  const accepted = acceptedCommandOf(instance);
+
+  return accepted === undefined
+    ? { kind: 'unavailable', reason: `${tool}: its command is not accepted on this machine yet, so no Codex build of it runs; start a workflow step on ${tool} once in a terminal to accept it` }
+    : { codexHome: home, commands: [accepted] };
 }
 
 /**
@@ -2768,9 +2788,18 @@ export async function editCodexHookFile(
     return true;
   }
 
+  const at = codexTrustAt(tool, codexTrust.codexHome);
+
+  if ('kind' in at) {
+    await write();
+    log.warn(`Codex may skip the hooks that moved in ${file} until you approve them in /hooks: ${at.reason}`);
+
+    return true;
+  }
+
   const dir = path.dirname(file);
-  const cwd = canonicalProjectRoot(dir) === canonicalProjectRoot(codexTrust.codexHome) ? getUserHome() : path.dirname(dir);
-  const trust = await keepCodexHookTrust({ codexHome: codexTrust.codexHome, cwd, file }, retained, write);
+  const cwd = canonicalProjectRoot(dir) === canonicalProjectRoot(at.codexHome) ? getUserHome() : path.dirname(dir);
+  const trust = await keepCodexHookTrust({ ...at, cwd, file }, retained, write);
 
   if (trust.kind === 'failed') {
     log.warn(`Codex may skip the hooks that moved in ${file} until you approve them in /hooks: ${trust.reason}`);
@@ -4678,10 +4707,15 @@ async function removeCheckoutTeamHooks(
   }
 }
 
-/** What a Codex trust pass for one scope works on. */
+/** What a Codex trust pass for one tool in one scope works on: Codex, or an instance of it. */
 interface CodexTrustTargets {
-  /** The Codex home teamai writes to (the member's `toolRoots.codex`, else `~/.codex`). */
+  tool: string;
+  /** The Codex home teamai writes to (the member's `toolRoots.codex`, else `~/.codex`, or an instance's own). */
   codexHome: string;
+  /** An instance's accepted command (`codexTrustAt`). */
+  commands?: readonly string[];
+  /** Why no build trusts this instance's hooks yet: its command is not accepted. */
+  unaccepted?: string;
   /** The checkout whose hook layers are listed (HOME in user scope). */
   cwd: string;
   /** Exact generated Codex entries, including Codex's file/event/position key. */
@@ -4695,12 +4729,12 @@ interface CodexTrustTargets {
 }
 
 /** Select recorded team entries, not every occurrence of a managed command. */
-async function teamaiCodexHooks(file: string, manifestPath: string): Promise<CodexTrustTargets['hooks']> {
+async function teamaiCodexHooks(file: string, manifestPath: string, tool: string): Promise<CodexTrustTargets['hooks']> {
   const events = hookEventsOf(await readJson<JsonValue>(file), 'codex');
 
   if (!events) return [];
-  const records = (await readManifest(manifestPath))[CODEX_TOOL_ID] ?? [];
-  const builtins = recognisedBuiltinHookDefs(CODEX_TOOL_ID);
+  const records = (await readManifest(manifestPath))[tool] ?? [];
+  const builtins = recognisedBuiltinHookDefs(tool);
 
   return [...events].flatMap(([event, groups]) => groups.flatMap((entry, index) => {
     // The file is the member's: an entry that is not an object, or a command that is not a string, is no hook of teamai's.
@@ -4765,15 +4799,16 @@ export async function trustCodexAgentHook(settingsPath: string, event: string, c
 async function codexTrustTargets(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
-  selectedAgents?: string[],
+  selectedAgents: string[] | undefined,
+  tool: string,
 ): Promise<CodexTrustTargets | null> {
   const { baseDir, manifestPath, scope: hookScope } = resolveHookScope(localConfig);
-  const paths = scopedToolPaths(teamConfig, { ...localConfig, scope: hookScope })[CODEX_TOOL_ID];
+  const paths = scopedToolPaths(teamConfig, { ...localConfig, scope: hookScope })[tool];
 
   if (!paths?.settings) return null;
   const agents = hookFilterAgents(teamConfig, localConfig, selectedAgents);
 
-  if (agents && !agents.includes(CODEX_TOOL_ID)) return null;
+  if (agents && !agents.includes(tool)) return null;
 
   const primary = path.join(canonicalProjectRoot(baseDir), paths.settings);
   const sources = [{ file: primary, manifestPath }];
@@ -4783,7 +4818,7 @@ async function codexTrustTargets(
   if (localConfig.scope === 'project' && localConfig.projectRoot) {
     anchor = (await mainCheckoutOf(localConfig.projectRoot)).root;
     const mainCheckout = await resolveMainCheckoutHooks(localConfig, teamConfig.toolPaths);
-    mainFile = mainCheckoutHookFile(mainCheckout, CODEX_TOOL_ID);
+    mainFile = mainCheckoutHookFile(mainCheckout, tool);
 
     if (mainCheckout && mainFile) {
       sources.push({ file: mainFile, manifestPath: mainCheckout.manifestPath });
@@ -4792,17 +4827,17 @@ async function codexTrustTargets(
       sources[0] = { file: path.join(anchor, paths.settings), manifestPath };
     }
 
-    // Self mode: the team-hook dispatchers live in HOME, beside the project's file.
-    const home = codexHomeHooksFile(teamConfig, localConfig);
+    // Self mode: Codex's team-hook dispatchers live in HOME, beside the project's file.
+    const home = tool === CODEX_TOOL_ID ? codexHomeHooksFile(teamConfig, localConfig) : null;
 
     if (isSelfMode(localConfig) && home && !sources.some((s) => s.file === home)) sources.push({ file: home, manifestPath });
   }
 
-  const hooks = (await Promise.all(sources.map((s) => teamaiCodexHooks(s.file, s.manifestPath)))).flat();
+  const hooks = (await Promise.all(sources.map((s) => teamaiCodexHooks(s.file, s.manifestPath, tool)))).flat();
 
   const mcpRecords = localConfig.scope === 'project'
     ? (await readJson<ManagedMcpManifest>(expandHome(managedMcpManifestPath(getDataHome(localConfig), localConfig.projectRoot))))
-      ?.[managedMcpManifestKey(CODEX_TOOL_ID, true)] ?? []
+      ?.[managedMcpManifestKey(tool, true)] ?? []
     : [];
 
   if (hooks.length === 0 && mcpRecords.length === 0) return null;
@@ -4811,15 +4846,60 @@ async function codexTrustTargets(
     || hooks.some((h) => h.file === mainFile)
     || mcpRecords.length > 0;
 
-  const codexHome = resolveToolRootDir(CODEX_TOOL_ID, DEFAULT_CODEX_ROOT, localConfig.toolRoots);
+  const at = codexTrustAt(tool, resolveToolRootDir(CODEX_TOOL_ID, DEFAULT_CODEX_ROOT, localConfig.toolRoots));
+  const build = 'kind' in at ? { codexHome: resolveToolRootDir(CODEX_TOOL_ID, DEFAULT_CODEX_ROOT, localConfig.toolRoots), unaccepted: at.reason } : at;
 
   const cwd = anchor ?? baseDir;
-  const inputs = [...sources.map((s) => s.file), path.join(codexHome, 'config.toml')];
+  const inputs = [...sources.map((s) => s.file), path.join(build.codexHome, 'config.toml')];
 
   // The key order is part of the trust fingerprint.
   return anchor && projectLayer
-    ? { codexHome, cwd, hooks, project: anchor, inputs, mcpRecords }
-    : { codexHome, cwd, hooks, inputs, mcpRecords };
+    ? { tool, ...build, cwd, hooks, project: anchor, inputs, mcpRecords }
+    : { tool, ...build, cwd, hooks, inputs, mcpRecords };
+}
+
+/** What a trust pass of this scope covers, for Codex and each instance of it this process knows; empty when teamai wrote nothing for them. */
+async function codexTrustTargetsOfScope(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  selectedAgents?: string[],
+): Promise<CodexTrustTargets[]> {
+  const tools = [CODEX_TOOL_ID, ...instanceNames().filter((name) => name !== CODEX_TOOL_ID && baseToolOf(name) === CODEX_TOOL_ID)];
+  const targets = await Promise.all(tools.map((tool) => codexTrustTargets(teamConfig, localConfig, selectedAgents, tool)));
+
+  return targets.filter((target) => target !== null);
+}
+
+/**
+ * One outcome for the passes of several tools: the first that failed, else the first Codex could not run for, else a
+ * project the member keeps untrusted, else every hook trusted. A reason names the instance it is about.
+ */
+function combinedCodexTrust(passes: ReadonlyArray<{ tool: string; trust: CodexTrust }>): CodexTrust | undefined {
+  if (passes.length <= 1) return passes[0]?.trust;
+
+  const named = ({ tool, trust }: { tool: string; trust: CodexTrust }): CodexTrust =>
+    (trust.kind === 'failed' || trust.kind === 'unavailable') && tool !== CODEX_TOOL_ID && !trust.reason.startsWith(`${tool}: `)
+      ? { ...trust, reason: `${tool}: ${trust.reason}` } : trust;
+
+  for (const kind of ['failed', 'unavailable', 'project-untrusted'] as const) {
+    const pass = passes.find(({ trust }) => trust.kind === kind);
+
+    if (pass) return named(pass);
+  }
+
+  const trusted = passes.flatMap(({ trust }) => (trust.kind === 'trusted' ? [trust] : []));
+  const combined: CodexTrust = { kind: 'trusted', hooks: trusted.reduce((sum, trust) => sum + trust.hooks, 0) };
+  const project = trusted.find((trust) => trust.project !== undefined)?.project;
+  const skew = trusted.find((trust) => trust.skew !== undefined)?.skew;
+  const uncompared = trusted.flatMap((trust) => trust.uncompared ?? []);
+
+  if (project !== undefined) combined.project = project;
+
+  if (skew !== undefined) combined.skew = skew;
+
+  if (uncompared.length > 0) combined.uncompared = uncompared;
+
+  return combined;
 }
 
 /**
@@ -4827,11 +4907,13 @@ async function codexTrustTargets(
  * the hook files and of Codex's `config.toml`, and which Codex builds exist —
  * an upgrade can change how Codex hashes a hook without touching any file here.
  */
-async function codexTrustFingerprint(targets: CodexTrustTargets): Promise<string> {
-  const hash = createHash('sha256').update(JSON.stringify({ ...targets, inputs: undefined }));
+async function codexTrustFingerprint(targets: readonly CodexTrustTargets[]): Promise<string> {
+  const hash = createHash('sha256').update(JSON.stringify(targets.map((target) => ({ ...target, inputs: undefined }))));
 
-  for (const file of targets.inputs) hash.update(`\0${file}\0${await readFileSafe(file) ?? ''}`);
-  hash.update(`\0${await codexBuildsIdentity()}`);
+  for (const target of targets) {
+    for (const file of target.inputs) hash.update(`\0${file}\0${await readFileSafe(file) ?? ''}`);
+    hash.update(`\0${await codexBuildsIdentity(target.commands)}`);
+  }
 
   return hash.digest('hex');
 }
@@ -4855,9 +4937,9 @@ export async function trustCodexForScope(
   localConfig: LocalConfig,
   opts: { filterAgents?: string[]; force?: boolean } = {},
 ): Promise<CodexTrust | undefined> {
-  const targets = await codexTrustTargets(teamConfig, localConfig, opts.filterAgents);
+  const targets = await codexTrustTargetsOfScope(teamConfig, localConfig, opts.filterAgents);
 
-  if (!targets) return undefined;
+  if (targets.length === 0) return undefined;
 
   if (localConfig.codexTrustEnabled === false) return { kind: 'disabled' };
   const { loadStateForScope, saveStateForScope } = await import('./config.js');
@@ -4865,23 +4947,32 @@ export async function trustCodexForScope(
 
   if (!opts.force && last.codexTrustFingerprint === await codexTrustFingerprint(targets)) {
     const trusted: CodexTrust = { kind: 'trusted', hooks: 0 };
+    const project = targets.find((target) => target.project !== undefined)?.project;
 
-    if (targets.project) trusted.project = targets.project;
+    if (project !== undefined) trusted.project = project;
 
     if (last.codexBuildSkew) trusted.skew = last.codexBuildSkew;
 
     return trusted;
   }
 
-  const trust = await trustCodexHooks({ ...targets, onProjectTrusted: async (project) => {
-    const state = await loadStateForScope(localConfig);
-    state.codexProjectTrust = [...state.codexProjectTrust ?? []];
+  const passes: Array<{ tool: string; trust: CodexTrust }> = [];
 
-    if (!state.codexProjectTrust.some((entry) => entry.home === targets.codexHome && entry.project === project)) {
-      state.codexProjectTrust.push({ home: targets.codexHome, project });
-      await saveStateForScope(state, localConfig);
-    }
-  } });
+  for (const target of targets) {
+    const trust: CodexTrust = target.unaccepted !== undefined ? { kind: 'unavailable', reason: target.unaccepted } : await trustCodexHooks({ ...target, onProjectTrusted: async (project) => {
+      const state = await loadStateForScope(localConfig);
+      state.codexProjectTrust = [...state.codexProjectTrust ?? []];
+
+      if (!state.codexProjectTrust.some((entry) => entry.home === target.codexHome && entry.project === project)) {
+        state.codexProjectTrust.push({ home: target.codexHome, project });
+        await saveStateForScope(state, localConfig);
+      }
+    } });
+
+    passes.push({ tool: target.tool, trust });
+  }
+
+  const trust = combinedCodexTrust(passes) ?? { kind: 'trusted', hooks: 0 };
 
   const cacheable = trust.kind === 'trusted' && (!trust.uncompared || isDeepStrictEqual(trust.uncompared, last.codexBuildUncompared));
   const fingerprint = cacheable ? await codexTrustFingerprint(targets) : undefined;
@@ -4908,11 +4999,24 @@ export async function readCodexHookTrustForScope(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
 ): Promise<CodexHookTrustReport | null> {
-  const targets = await codexTrustTargets(teamConfig, localConfig);
+  const targets = (await codexTrustTargetsOfScope(teamConfig, localConfig)).filter((target) => target.hooks.length > 0);
+  const reports: CodexHookTrustReport[] = [];
 
-  if (!targets || targets.hooks.length === 0) return null;
+  for (const target of targets) {
+    reports.push(target.unaccepted !== undefined
+      ? { kind: 'unavailable', reason: target.unaccepted }
+      : await readCodexHookTrust({ ...target, cwd: localConfig.projectRoot ?? target.cwd }));
+  }
 
-  return readCodexHookTrust({ ...targets, cwd: localConfig.projectRoot ?? targets.cwd });
+  const unlisted = reports.find((report) => report.kind !== 'listed');
+
+  if (reports.length <= 1 || unlisted) return unlisted ?? reports[0] ?? null;
+  const report: CodexHookTrustReport = { kind: 'listed', notTrusted: reports.flatMap((one) => (one.kind === 'listed' ? one.notTrusted : [])) };
+  const skew = reports.find((one) => one.skew !== undefined)?.skew;
+
+  if (skew !== undefined) report.skew = skew;
+
+  return report;
 }
 
 /**
