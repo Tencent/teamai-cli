@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { signalPid } from '@teamai/shared/process-group';
-import { fenceStep, sayGuardianReady, type FencedCommand, type GuardianFs } from '../workflow/fleet/fence.js';
+import { endLeftFence, fenceStep, sayGuardianReady, type FencedCommand } from '../workflow/fleet/fence.js';
 import { startGroupedCommand, type GroupedCommand } from '../workflow/shell-command.js';
 import { AttemptIdSchema, RunIdSchema } from '../workflow/store.js';
 
@@ -44,6 +44,8 @@ describe('the fence of a fleet member step', () => {
       expect(await first.fence.end()).toBe('exited');
       expect(await second.fence.end()).toBe('exited');
       expect(alive(again.pid)).toBe(true);
+      // Each end took its own token's ready marker with it, and the last its fence.
+      expect(fs.readdirSync(dir).filter((name) => name.startsWith('fence.json'))).toEqual([]);
     } finally {
       await Promise.all([left.command.stop(), again.command.stop()]);
       await Promise.all([left.command.exit.catch(() => undefined), again.command.exit.catch(() => undefined)]);
@@ -51,23 +53,78 @@ describe('the fence of a fleet member step', () => {
     }
   }, 30_000);
 
-  it('writes no ready over a fence a restarted member wrote between the guardian\'s read and its write, and retires the guardian', () => {
-    const first = JSON.stringify({ at: 1, owner: 'killed-run' });
-    const again = JSON.stringify({ at: 2, owner: 'restarted-run' });
-    // The fence the killed run wrote, then, once the guardian has read it, the one its restarted run wrote.
-    const reads = [first, again];
-    const renamed: string[] = [];
-    const removed: string[] = [];
-    const files: GuardianFs = {
-      readFileSync: () => reads.shift() ?? again,
-      writeFileSync: () => {},
-      renameSync: (from) => { renamed.push(String(from)); },
-      rmSync: (at) => { removed.push(String(at)); },
+  it('leaves the fence a restarted member wrote intact, whichever of the guardian\'s calls it lands before as the guardian says it is ready', () => {
+    const killed = JSON.stringify({ at: 1, owner: 'killed-run' });
+    const restarted = JSON.stringify({ at: 2, owner: 'restarted-run' });
+
+    // The attempt's folder in memory, as node:fs answers each call that reads or writes it; the restarted run's fence
+    // lands just before the guardian's call number `landsAt`.
+    const sayReady = (landsAt: number) => {
+      const folder = new Map<string | undefined, string>([['fence.json', killed]]);
+      let calls = 0;
+
+      const land = (): void => {
+        if (calls === landsAt) folder.set('fence.json', restarted);
+        calls += 1;
+      };
+
+      const failure = (code: string, file: string | undefined): Error => Object.assign(new Error(`${code}: ${String(file)}`), { code });
+
+      const files = {
+        readFileSync: (file: string): string => {
+          land();
+          const text = folder.get(file);
+
+          if (text === undefined) throw failure('ENOENT', file);
+
+          return text;
+        },
+        writeFileSync: (file: string, data: string, options?: { flag?: string }): void => {
+          land();
+
+          if (options?.flag === 'wx' && folder.has(file)) throw failure('EEXIST', file);
+          folder.set(file, data);
+        },
+        renameSync: (from: string, to: string): void => {
+          land();
+          const text = folder.get(from);
+
+          if (text === undefined) throw failure('ENOENT', from);
+          folder.delete(from);
+          folder.set(to, text);
+        },
+        rmSync: (file: string): void => {
+          land();
+          folder.delete(file);
+        },
+      };
+
+      sayGuardianReady(files, { file: 'fence.json', owner: 'killed-run', marker: 'fence.json.killed-run.ready' });
+
+      return { folder, calls };
     };
 
-    expect(sayGuardianReady(files, { file: 'fence.json', owner: 'killed-run', temp: 'fence.json.1.ready' })).toBe('retired');
-    expect(renamed).toEqual([]);
-    expect(removed).toEqual(['fence.json.1.ready']);
+    const { calls } = sayReady(-1);
+
+    expect(calls).toBeGreaterThan(0);
+
+    for (let landsAt = 0; landsAt < calls; landsAt += 1) expect(sayReady(landsAt).folder.get('fence.json'), `the restarted run's fence, landed before call ${landsAt}`).toBe(restarted);
+  });
+
+  it('removes the fence a killed run left and every ready marker of the attempt\'s guardians once its restarted member\'s recovery ends it', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-fleet-fence-'));
+
+    try {
+      fs.writeFileSync(path.join(dir, 'fence.json'), JSON.stringify({ at: 1, owner: 'killed-run' }));
+      fs.writeFileSync(path.join(dir, 'fence.json.killed-run.ready'), '');
+      fs.writeFileSync(path.join(dir, 'fence.json.earlier-run.ready'), '');
+      fs.writeFileSync(path.join(dir, 'stdout.log'), 'kept');
+      await endLeftFence(dir);
+
+      expect(fs.readdirSync(dir)).toEqual(['stdout.log']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   // A member on Windows runs its command attached, so the command leads no process group its guardian could signal.

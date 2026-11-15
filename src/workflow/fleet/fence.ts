@@ -21,9 +21,10 @@ import type { GuardianInput, GuardianStop } from './guardian-stop.js';
 //  whole workflow's nested run goes on, beside the step the owner offered again. So beside each step it runs, the member
 //  starts a guardian: a Node process in a group of its own, working in the member's home, which outlives every folder
 //  teamai removes. It reads the fence, the attempt folder's FENCE_FILE: the member's cut-off point, which the member
-//  rewrites each time it learns a progress write landed, and the owner token of the guardian it started. Once it read
-//  the fence holding its token, the guardian says it is ready there; a member whose guardian does not within
-//  GUARDIAN_READY_MS stops the step's command and runs nothing more of the step, as when the guardian cannot start. Once the fence
+//  rewrites each time it learns a progress write landed, and the owner token of the guardian it started: the member is
+//  its only writer. Once it read the fence holding its token, the guardian says it is ready in a marker of that token
+//  beside it (`readyMarkerOf`), never in the fence; a member whose guardian does not within GUARDIAN_READY_MS stops the
+//  step's command and runs nothing more of the step, as when the guardian cannot start. Once the fence
 //  passes, the guardian stops what the step runs, whether or not the member still lives: a command here as the member's
 //  cut-off does, SIGTERM and, STOP_GRACE_MS later, SIGKILL to its group until none of it is left (on Windows, where it
 //  has no group, `taskkill` of its process tree). Then it loads teamai's CLI bundle in its guardian mode
@@ -51,8 +52,12 @@ export type FencedCommand = { kind: 'group'; id: number } | { kind: 'tree'; pid:
 /** The fence of an attempt's step, in the attempt's folder: one at a time, that of the member run that fenced it last. */
 const FENCE_FILE = 'fence.json';
 
-/** A fence: its cut-off point, the token of the guardian the member started, and `ready` once that guardian read it. */
-const FenceSchema = z.object({ at: z.number(), owner: z.string(), ready: z.literal(true).optional() });
+/**
+ * A fence: its cut-off point, and the token of the guardian the member started. Only the member writes it; that
+ * guardian's ready is its token's marker (`readyMarkerOf`). A `ready` an earlier teamai's guardian wrote into it is
+ * not read.
+ */
+const FenceSchema = z.object({ at: z.number(), owner: z.string() });
 
 /** How long a guardian goes without reading its fence: it exits at most that long after its token left it. */
 const READ_MS = 1_000;
@@ -66,58 +71,44 @@ const READY_READ_MS = 50;
 /** How long a step's end waits for its guardian to exit, before the member removes the attempt's folder. */
 const FENCE_END_WAIT_MS = 3 * READ_MS;
 
-/** The node:fs calls the guardian's ready write makes, so a test can stand in for each. */
+/**
+ * The marker that says the guardian with token `owner` read fence `file` holding that token: a file of its own beside
+ * the fence, so no write of a guardian replaces the fence. The guardian runs its source (`GUARDIAN`).
+ */
+export function readyMarkerOf(file: string, owner: string): string {
+  return `${file}.${owner}.ready`;
+}
+
+/** The node:fs calls the guardian's ready makes, so a test can stand in for each. */
 export type GuardianFs = {
   readFileSync(file: string, encoding: 'utf8'): string;
-  writeFileSync(file: string, data: string): void;
-  renameSync(from: string, to: string): void;
-  rmSync(file: string, options: { force: true }): void;
+  writeFileSync(file: string, data: string, options: { flag: 'wx' }): void;
 };
 
 /**
- * Says in fence `file` that the guardian with token `owner` read it (`ready`): it writes `temp`, reads the fence again,
- * and renames `temp` over it only when the fence is still the one it read, so a fence a restarted member wrote meanwhile
- * is not replaced. `retired` once the fence no longer holds that token, and `unwritten` when a write failed or the fence
- * changed under the same token, to try again at its next read. A write that lands between that second read and the
- * rename is still replaced: a rename replaces whatever is there. The guardian runs its source (`GUARDIAN`), so it uses
- * nothing but its arguments.
+ * Says that the guardian with token `owner` read fence `file` (`ready`), once it read it holding that token: it
+ * creates `marker`, its token's (`readyMarkerOf`), and writes nothing else, so a fence a restarted member wrote
+ * meanwhile stays as it is. `retired` once the fence no longer holds that token, and `unwritten` when the marker could
+ * not be created, to try again at its next read. The guardian runs its source (`GUARDIAN`), so it uses nothing but its
+ * arguments.
  */
-export function sayGuardianReady(files: GuardianFs, { file, owner, temp }: { file: string; owner: string; temp: string }): 'ready' | 'retired' | 'unwritten' {
-  // The cut-off point of fence text `text` while it holds the guardian's token, else undefined.
-  const heldAt = (text: string): { at: unknown } | undefined => {
-    const fence: unknown = JSON.parse(text);
+export function sayGuardianReady(files: GuardianFs, { file, owner, marker }: { file: string; owner: string; marker: string }): 'ready' | 'retired' | 'unwritten' {
+  try {
+    const fence: unknown = JSON.parse(files.readFileSync(file, 'utf8'));
 
     // oxlint-disable-next-line teamai/no-runtime-typeof -- the fence's parse itself: the guardian runs this function's source alone (`GUARDIAN`), where no schema loads
-    return fence !== null && typeof fence === 'object' && 'owner' in fence && fence.owner === owner && 'at' in fence ? { at: fence.at } : undefined;
-  };
+    if (fence === null || typeof fence !== 'object' || !('owner' in fence) || fence.owner !== owner) return 'retired';
+  } catch (error) {
+    return error instanceof Error && 'code' in error && error.code === 'ENOENT' ? 'retired' : 'unwritten';
+  }
 
   try {
-    const read = files.readFileSync(file, 'utf8');
-    const held = heldAt(read);
-
-    if (held === undefined) return 'retired';
-    files.writeFileSync(temp, JSON.stringify({ at: held.at, owner, ready: true }));
-
-    const now = files.readFileSync(file, 'utf8');
-
-    // The fence changed since it was read: put nothing over it, and try again at the next read if it still holds the token.
-    if (now !== read) {
-      files.rmSync(temp, { force: true });
-
-      return heldAt(now) === undefined ? 'retired' : 'unwritten';
-    }
-
-    files.renameSync(temp, file);
+    files.writeFileSync(marker, '', { flag: 'wx' });
 
     return 'ready';
   } catch (error) {
-    try {
-      files.rmSync(temp, { force: true });
-    } catch {
-      // Left for the attempt folder's removal.
-    }
-
-    return error instanceof Error && 'code' in error && error.code === 'ENOENT' ? 'retired' : 'unwritten';
+    // Created already, by an earlier read of this guardian whose answer was lost.
+    return error instanceof Error && 'code' in error && error.code === 'EEXIST' ? 'ready' : 'unwritten';
   }
 }
 
@@ -160,6 +151,7 @@ const fenceAt = () => {
     return error && error.code === 'ENOENT' ? undefined : null;
   }
 };
+const readyMarkerOf = ${readyMarkerOf.toString()};
 const sayGuardianReady = ${sayGuardianReady.toString()};
 const stopCommand = async () => {
   if (isGone()) return;
@@ -183,7 +175,7 @@ const stopCommand = async () => {
     if (read !== null) {
       at = read;
       if (!isReady) {
-        const said = sayGuardianReady(fs, { file, owner, temp: file + '.' + String(process.pid) + '.ready' });
+        const said = sayGuardianReady(fs, { file, owner, marker: readyMarkerOf(file, owner) });
         if (said === 'retired') return;
         isReady = said === 'ready';
       }
@@ -233,15 +225,27 @@ export async function isFenceHeld(file: string, owner: string): Promise<boolean>
   return !fence.success || fence.data.owner === owner;
 }
 
-/** Whether fence `file` says that the guardian with token `owner` read it: not while it cannot be read. */
+/**
+ * Whether the guardian with token `owner` said it read fence `file`: the fence holds that token, and the token's marker
+ * is there (`readyMarkerOf`). Not while either cannot be read.
+ */
 async function isGuardianReady(file: string, owner: string): Promise<boolean> {
   try {
     const fence = FenceSchema.safeParse(parseJson(await readRegularFile(file, 'utf8')));
 
-    return fence.success && fence.data.owner === owner && fence.data.ready === true;
+    if (!fence.success || fence.data.owner !== owner) return false;
+    await fs.access(readyMarkerOf(file, owner));
+
+    return true;
   } catch {
     return false;
   }
+}
+
+/** Removes the fence `file` while it still holds token `owner`, and that token's marker, which only its own guardian made. */
+async function removeFenceOf(file: string, owner: string): Promise<void> {
+  if (await isFenceHeld(file, owner)) await fs.rm(file, { force: true });
+  await fs.rm(readyMarkerOf(file, owner), { force: true });
 }
 
 /**
@@ -293,8 +297,7 @@ export async function fenceStep({ dir, command, at, claim }: { dir: string; comm
 
   if (!isReady) {
     signalChild(guardian, 'SIGKILL');
-
-    if (await isFenceHeld(file, owner)) await fs.rm(file, { force: true });
+    await removeFenceOf(file, owner);
 
     return { ok: false, reason: ended.isExited ? 'its guardian exited before it said it was ready' : `its guardian did not say it was ready within ${GUARDIAN_READY_MS / 1_000} s` };
   }
@@ -310,14 +313,14 @@ export async function fenceStep({ dir, command, at, claim }: { dir: string; comm
         if (isEnded || next === written) return;
         written = next;
         // A write that fails leaves the cut-off it replaced, which is earlier: the guardian stops the step no later.
-        writing = writing.then(() => writeJsonAtomic(file, { at: next, owner, ready: true }, { compact: true })).catch(() => undefined);
+        writing = writing.then(() => writeJsonAtomic(file, { at: next, owner }, { compact: true })).catch(() => undefined);
       },
       end: async () => {
         isEnded = true;
         await writing;
 
         // A restarted member's fence of the attempt stays: it retired this one's guardian.
-        if (await isFenceHeld(file, owner)) await fs.rm(file, { force: true });
+        await removeFenceOf(file, owner);
         let timer: NodeJS.Timeout | undefined;
         const waited = await Promise.race([exited, new Promise<'running'>((resolve) => { timer = setTimeout(() => resolve('running'), FENCE_END_WAIT_MS); })]);
         clearTimeout(timer);
@@ -329,10 +332,15 @@ export async function fenceStep({ dir, command, at, claim }: { dir: string; comm
 }
 
 /**
- * Removes the fence a killed run of the member left in attempt folder `dir`, once its restarted run's recovery stopped
- * what the claim left under the run's lock, or could not: the recovery owns that stop from then on, and the guardian
- * ends within READ_MS.
+ * Removes the fence a killed run of the member left in attempt folder `dir`, and the ready markers of the guardians its
+ * earlier runs started, once its restarted run's recovery stopped what the claim left under the run's lock, or could
+ * not: the recovery owns that stop from then on, and the guardian ends within READ_MS.
  */
 export async function endLeftFence(dir: string): Promise<void> {
+  const left = await fs.readdir(dir).catch((): string[] => []);
+
+  // The markers as readyMarkerOf names them, whatever their token.
+
+  await Promise.all(left.filter((name) => name.startsWith(`${FENCE_FILE}.`) && name.endsWith('.ready')).map(async (name) => fs.rm(path.join(dir, name), { force: true })));
   await fs.rm(path.join(dir, FENCE_FILE), { force: true });
 }
