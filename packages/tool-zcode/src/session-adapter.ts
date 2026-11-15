@@ -19,7 +19,7 @@ const StoredImageSource = z.object({
 }).passthrough();
 
 const StoredImageSourceValue = z.union([
-  z.string().transform((source) => ({ path: source })),
+  z.string().transform((source) => ({ path: source, placeholder: undefined, uri: undefined })),
   StoredImageSource,
 ]);
 
