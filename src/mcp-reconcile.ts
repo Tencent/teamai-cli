@@ -1770,9 +1770,14 @@ async function localMcpKeyOf(localConfig: LocalConfig): Promise<(key: string) =>
 export async function saveMcpManifest(localConfig: LocalConfig, manifestPath: string, manifest: ManagedMcpManifest): Promise<void> {
   const ours = await localMcpKeyOf(localConfig);
   const local = (key: string): boolean => key.includes(LOCAL_KEY_INFIX);
-  await writeJsonAtomic(manifestPath, Object.fromEntries(Object.entries(manifest).filter(([key]) => !local(key))));
+  const own = Object.fromEntries(Object.entries(manifest).filter(([key]) => !local(key)));
 
-  if (localConfig.scope !== 'project') return;
+  if (localConfig.scope !== 'project') {
+    await writeJsonAtomic(manifestPath, own);
+
+    return;
+  }
+
   const file = localMcpManifestPath(localConfig);
   const shared = await readManifest(file);
   const before = JSON.stringify(shared);
@@ -1781,7 +1786,25 @@ export async function saveMcpManifest(localConfig: LocalConfig, manifestPath: st
 
   for (const [key, records] of Object.entries(manifest)) if (local(key) && records.length > 0) shared[key] = records;
 
-  if (JSON.stringify(shared) !== before) await writeJsonAtomic(file, shared);
+  const previous = await readFileIfExists(manifestPath);
+  await writeJsonAtomic(manifestPath, own);
+
+  try {
+    if (JSON.stringify(shared) !== before) await writeJsonAtomic(file, shared);
+  } catch (error) {
+    try {
+      await restoreMcpDoc(manifestPath, { raw: previous });
+    } catch (restoreError) {
+      throw new Error(
+        `MCP ownership write failed (${error instanceof Error ? error.message : String(error)}), and restoring ${manifestPath} failed `
+        + `(${restoreError instanceof Error ? restoreError.message : String(restoreError)}). Repair the ownership records before retrying.`,
+        { cause: restoreError },
+      );
+    }
+
+    throw error;
+  }
+
   // A data home outside the projects root reaches another scope's reader only through this entry.
   await noteManagedMcpHome(getDataHome(localConfig));
 }

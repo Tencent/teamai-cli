@@ -3988,6 +3988,62 @@ servers:
     expect(shared['claude:project']).toBeUndefined();
   });
 
+  it.each([
+    ['install', false], ['update', false], ['remove', false], ['update', true],
+  ] as const)('restores both MCP manifests when the local-scope write fails during %s, restore fails=%s', async (operation, restoreFails) => {
+    const { managedMcpManifestPath } = await import('../types.js');
+    const projectRoot = path.join(tmpDir, 'transaction-project');
+    for (const tool of ['.claude', '.cursor']) await fse.ensureDir(path.join(projectRoot, tool, 'skills'));
+    const dataHome = path.join(tmpDir, 'transaction-data');
+    const cfg = { ...localConfig, scope: 'project', projectRoot, dataHome, enabledAgents: ['claude', 'cursor'] } as LocalConfig;
+    const team = { ...teamConfig, sharing: { ...teamConfig.sharing, gitExclude: { enabled: true } } };
+    const definition = (version: number) => `servers:\n  - name: shared\n    transport: http\n    url: https://team.example/v${version}\n`;
+    await writeMcpYaml(definition(1));
+    if (operation !== 'install') await reconcileMcpForConfig(team, cfg);
+    const own = managedMcpManifestPath(dataHome, projectRoot);
+    const local = path.join(dataHome, 'managed-local-mcp.json');
+    const files = [own, local, path.join(homeDir, '.claude.json'), path.join(projectRoot, '.cursor', 'mcp.json')];
+    const read = () => Promise.all(files.map((file) => fse.readFile(file, 'utf8').catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    })));
+    const before = await read();
+    if (operation === 'update') await writeMcpYaml(definition(2));
+    const options = { removeAll: operation === 'remove' };
+    const fileIo = await import('../utils/fs.js');
+    const writeAtomic = fileIo.writeFileAtomic;
+    const restore = restoreFails ? vi.spyOn(fileIo, 'writeFileAtomic').mockImplementation(async (...args) => {
+      if (args[0] === own) throw new Error('ownership restore denied');
+      return writeAtomic(...args);
+    }) : undefined;
+    beforeJsonWrite.run = async (file) => {
+      if (file === local) {
+        beforeJsonWrite.run = null;
+        throw new Error('local ownership write failed');
+      }
+    };
+    try {
+      await expect(reconcileMcpForConfig(team, cfg, options)).rejects.toThrow(restoreFails
+        ? /local ownership write failed.*ownership restore denied.*Repair the ownership records/
+        : 'local ownership write failed');
+    } finally {
+      beforeJsonWrite.run = null;
+      restore?.mockRestore();
+    }
+    if (restoreFails) {
+      expect((await read()).slice(1)).toEqual(before.slice(1));
+      return;
+    }
+    expect(await read()).toEqual(before);
+    await reconcileMcpForConfig(team, cfg, options);
+    if (operation !== 'remove') {
+      expect((await fse.readJson(files[3])).mcpServers.shared.url).toBe(`https://team.example/v${operation === 'update' ? 2 : 1}`);
+      await reconcileMcpForConfig(team, cfg, { removeAll: true });
+    }
+    expect((await fse.readJson(files[3])).mcpServers.shared).toBeUndefined();
+    expect((await fse.readJson(files[2])).projects?.[fs.realpathSync(projectRoot)]?.mcpServers?.shared).toBeUndefined();
+  });
+
   it('concurrent reconcile of two worktrees keeps BOTH ownership records (no lost update)', async () => {
     const { managedMcpManifestPath } = await import('../types.js');
     // Two worktrees sharing one partition data home — the exact concurrency the
