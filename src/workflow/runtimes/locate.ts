@@ -78,7 +78,7 @@ export interface ExternalRuntime {
   readonly revision: string;
   /**
    * The sha256 of what decides what it launches, which the identity of each entry that names it covers
-   * (`RuntimeEntryIdentity`): a file's text and the executable its command resolves to on PATH; a folder's revision,
+   * (`RuntimeEntryIdentity`): a file's text, the executable its command resolves to on PATH and that executable's content; a folder's revision,
    * every file it holds (`folderRevision`), as a person accepts it; for teamai's own, only the `bin` name of its program,
    * so a teamai upgrade, after which its runtimes keep their places where they kept them, does not change it.
    */
@@ -242,7 +242,16 @@ async function launchOf(definition: LayerItem, entry: RuntimeEntry, text: string
 
       if (executable === null) return { ok: false, reason: `entry: { command: ${entry.command} } names no executable on PATH, as a bare name such as acme-runtime` };
 
-      return { ok: true, launch: { kind: 'executable', executable }, trust: isTeam ? { kind: 'command', command: entry.command } : { kind: 'none' }, launches: sha256(canonicalJson({ text, executable })) };
+      let content: string;
+
+      // What a command launches is the program it resolves to, so an edit of it in place is a change, as a folder's is.
+      try {
+        content = createHash('sha256').update(await readRegularFile(executable)).digest('hex');
+      } catch (error) {
+        return { ok: false, reason: `entry: { command: ${entry.command} } resolves to ${executable}, which cannot be read (${error instanceof Error ? error.message : String(error)})` };
+      }
+
+      return { ok: true, launch: { kind: 'executable', executable }, trust: isTeam ? { kind: 'command', command: entry.command } : { kind: 'none' }, launches: sha256(canonicalJson({ text, executable, content })) };
     }
 
     default: {

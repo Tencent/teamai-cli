@@ -1309,6 +1309,56 @@ steps:
       expect(runtimeRecord(runId, attempt)).toMatchObject({ phase: 'closed' });
     });
 
+    it('keeps the place, and says why, when the program the command of the member\'s runtime file names is edited in place to start another runtime with its own state, until it is back', async () => {
+      // One program on PATH, which starts the toy in folder a or b, so the entry's relative state is a journal of each.
+      const toys = { a: path.join(sandbox, 'toyedit-a'), b: path.join(sandbox, 'toyedit-b') };
+      const program = path.join(bin, 'toyedit');
+      const launching = (name: 'a' | 'b'): void => { fs.writeFileSync(program, `#!/bin/sh\ncd '${toys[name]}' && exec '${process.execPath}' '${TOY_RUNTIME}' "$@"\n`, { mode: 0o755 }); };
+      for (const dir of Object.values(toys)) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      const definition = path.join(os.homedir(), '.teamai', 'runtimes', 'toyedit.yaml');
+      fs.writeFileSync(definition, 'protocol: 1\nentry: { command: toyedit }\n');
+      onTestFinished(() => { fs.rmSync(definition, { force: true }); fs.rmSync(program, { force: true }); });
+      launching('a');
+      writeFlow('heldedit', `  - id: hold
+    command: node -e "require('fs').writeFileSync(process.env.HOLD_MARK, String(process.pid)); setTimeout(() => {}, 120000)"`);
+      expect((await runCLI(['pull'], repo)).code).toBe(0);
+      writeDefinition('toyedit', [{ use: 'toyedit', options: { state: 'journal' } }]);
+      const mark = path.join(sandbox, 'toyedit-mark');
+      const driving = spawn(process.execPath, [CLI, 'workflow', 'start', 'heldedit', '--driver', 'toyedit'], { cwd: repo, env: { ...process.env, ...env({ HOLD_MARK: mark }), FORCE_COLOR: '0' }, stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      driving.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+      const ended = new Promise((resolve) => driving.on('close', resolve));
+      for (const deadline = Date.now() + 30_000; !fs.existsSync(mark) && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(fs.existsSync(mark), stderr).toBe(true);
+      const held = Number(fs.readFileSync(mark, 'utf8'));
+      onTestFinished(() => { signalPid(held, 'SIGKILL'); });
+      driving.kill('SIGKILL');
+      await ended;
+      const runId = /Run (r[0-9a-f]+) started/.exec(stderr)?.[1] ?? '';
+      const [attempt = ''] = fs.readdirSync(path.join(dataHome, 'workflows', 'runs', runId, 'attempts'));
+      expect(fs.existsSync(path.join(toys.a, 'journal'))).toBe(true);
+      // The same file and the same path, and the program there now starts the other toy, whose journal knows no place of this attempt.
+      launching('b');
+
+      const kept = await runCLI(['workflow', 'cancel', runId], repo, env());
+
+      expect(kept.stderr).toContain(`Could not stop attempt ${attempt} of run ${runId} on step runtime "toyedit" of driver "toyedit"`);
+      expect(kept.stderr).toContain('the definition of step runtime "toyedit" that driver "toyedit" ran it on, or the program it launches, changed since');
+      expect(kept.stderr).toContain(`teamai workflow cancel ${runId} --release ${attempt}`);
+      expect(signalPid(held, 0)).toBe('sent');
+      expect(runtimeRecord(runId, attempt)).toMatchObject({ phase: 'running' });
+
+      launching('a');
+      const stopped = await runCLI(['workflow', 'cancel', runId], repo, env());
+
+      expect(stopped.stderr).toContain(`Stopped attempt ${attempt} of run ${runId} on step runtime "toyedit" and closed its place.`);
+      expect(signalPid(held, 0)).toBe('gone');
+      expect(runtimeRecord(runId, attempt)).toMatchObject({ phase: 'closed' });
+    });
+
     it('keeps the place, and says why, when the command of the member\'s runtime file now resolves on PATH to another program with its own state, the file unchanged, until it is back', async () => {
       // Two programs of one name, each in a folder of its own on PATH, each starting the toy in a folder of its own.
       const dirs = { a: path.join(sandbox, 'toypath-a'), b: path.join(sandbox, 'toypath-b') };

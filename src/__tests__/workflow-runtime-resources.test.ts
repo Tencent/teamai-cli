@@ -101,6 +101,25 @@ describe('which runtime a name finds', () => {
     expect(await located(team, 'mine')).toMatchObject({ layer: 'personal', resource: 'mine', form: 'folder', accepted: true });
   });
 
+  it('takes an edit in place of the executable a command entry names as a change of what it launches', async () => {
+    const executable = onPath('acme-runtime');
+    personal({ 'runtimes/acme.yaml': COMMAND_RUNTIME });
+    const team = teamWith({});
+    const { locateRuntime } = await import('../workflow/runtimes/locate.js');
+    const launches = async (): Promise<string | undefined> => {
+      const resolved = await resolveDriver(team, 'acme', { personal: true });
+      if (!resolved.ok) throw new Error(resolved.failure.message);
+      const found = await locateRuntime(resolved.driver, 'acme');
+
+      return found.ok && found.source.kind !== 'builtin' ? found.source.launches : undefined;
+    };
+    const before = await launches();
+    fs.writeFileSync(executable, '#!/bin/sh\nexec acme-journal-b "$@"\n');
+
+    expect(before).toEqual(expect.any(String));
+    expect(await launches()).not.toBe(before);
+  });
+
   it('reads a team folder runtimes/<name>/RUNTIME.yaml, and runs it once its revision is accepted', async () => {
     const team = teamWith({ 'runtimes/acme/RUNTIME.yaml': 'protocol: 1\nentry: ./bin/start\n', 'runtimes/acme/bin/start': '#!/bin/sh\n' });
 
