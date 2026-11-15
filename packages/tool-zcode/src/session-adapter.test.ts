@@ -117,6 +117,37 @@ describe('ZCode model-I/O parser', () => {
     expect(parsed.messages[0]!.content).toContainEqual({ type: 'image', mimeType: 'image/png', data: 'YQ==' });
   });
 
+  it('keeps every request in an agentic turn and accepts object image sources', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-zcode-agentic-'));
+    roots.push(root);
+    const id = '00000000-0000-0000-0000-000000000000';
+    const file = path.join(root, `model-io-sess_${id}.jsonl`);
+    const common = {
+      type: 'model_io', sessionId: `sess_${id}`, turnId: 'shared-turn', attempt: 1,
+      model: { modelId: 'model', providerId: 'provider' },
+    };
+    const lines = [
+      { ...common, requestId: 'request-1', startedAt: '2026-11-15T10:00:01.000Z', completedAt: '2026-11-15T10:00:01.500Z',
+        request: { messagesKind: 'full', messageOffset: 0, messages: [{ role: 'user', content: [{ type: 'image',
+          dataUrl: '[dataUrl omitted from model-io: image/jpeg, 789479 chars]', mediaType: 'image/jpeg',
+          source: { path: 'C:\\cache\\shot.jpg', placeholder: 'Screenshot.jpg', uri: 'zcode-artifact://session/shot' } }] }] },
+        response: { text: 'first response', reasoningText: '', toolCalls: [], modelId: 'model' } },
+      { ...common, requestId: 'request-2', startedAt: '2026-11-15T10:00:02.000Z', completedAt: '2026-11-15T10:00:02.500Z',
+        request: { messagesKind: 'delta', messageOffset: 1, messages: [
+          { role: 'assistant', content: 'first response' }, { role: 'user', content: 'continue' },
+        ] }, response: { text: 'second response', reasoningText: '', toolCalls: [], modelId: 'model' } },
+    ];
+    fs.writeFileSync(file, lines.map((line) => JSON.stringify(line)).join('\n'));
+
+    const parsed = parseZCodeFile(file)!;
+
+    expect(parsed.messages.map(({ role }) => role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    expect(parsed.messages[0]!.content).toEqual([{ type: 'image', mimeType: 'image/jpeg', data: undefined,
+      filePath: 'C:\\cache\\shot.jpg', label: 'Screenshot.jpg' }]);
+    expect(parsed.messages.flatMap(({ content }) => content.flatMap((block) => block.type === 'text' ? [block.text] : [])))
+      .toEqual(['first response', 'continue', 'second response']);
+  });
+
   it('ignores non-session files and mismatched session ids', () => {
     expect(parseZCodeFile(fixture)).toBeUndefined();
   });

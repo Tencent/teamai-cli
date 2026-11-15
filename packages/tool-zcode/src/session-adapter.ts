@@ -12,12 +12,23 @@ import { findSqlite3, snapshotSqlite } from '@teamai/tool-core/sessions/sqlite';
 
 const SESSION_FILE = /^model-io-sess_([0-9a-f-]{36})\.jsonl$/i;
 
+const StoredImageSource = z.object({
+  path: z.string().optional(),
+  placeholder: z.string().optional(),
+  uri: z.string().optional(),
+}).passthrough();
+
+const StoredImageSourceValue = z.union([
+  z.string().transform((source) => ({ path: source })),
+  StoredImageSource,
+]);
+
 const StoredBlock = z.object({
   type: z.string(),
   text: z.string().optional(),
   dataUrl: z.string().optional(),
   mediaType: z.string().optional(),
-  source: z.string().optional(),
+  source: StoredImageSourceValue.optional(),
 }).passthrough();
 
 const StoredToolCall = z.object({
@@ -77,9 +88,10 @@ export interface ParsedZCode {
 function imageBlock(block: z.infer<typeof StoredBlock>): ContentBlock | undefined {
   if (block.type !== 'image' || !block.dataUrl) return undefined;
   const data = /^data:[^;,]+;base64,(.*)$/s.exec(block.dataUrl)?.[1];
+  const labelSource = block.source?.placeholder ?? block.source?.path;
 
   return { type: 'image', mimeType: block.mediaType ?? 'image/png', data,
-    filePath: block.source, label: block.source?.split(/[\\/]/).at(-1) };
+    filePath: block.source?.path, label: labelSource?.split(/[\\/]/).at(-1) };
 }
 
 function contentBlocks(content: StoredMessage['content']): ContentBlock[] {
@@ -201,9 +213,9 @@ export function parseZCodeFile(filePath: string): ParsedZCode | undefined {
     const parsed = ModelIo.safeParse(stored);
 
     if (!parsed.success || parsed.data.sessionId !== `sess_${sessionId}`) continue;
-    const previous = selected.get(parsed.data.turnId);
+    const previous = selected.get(parsed.data.requestId);
 
-    if (!previous || parsed.data.attempt >= previous.record.attempt) selected.set(parsed.data.turnId, { index, record: parsed.data });
+    if (!previous || parsed.data.attempt >= previous.record.attempt) selected.set(parsed.data.requestId, { index, record: parsed.data });
     index++;
   }
 
