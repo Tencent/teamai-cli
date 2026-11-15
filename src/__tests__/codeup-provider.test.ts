@@ -243,6 +243,34 @@ describe('Codeup token resolution', () => {
     expect(content).toContain('machine other.host login bob password secret');
     expect(content).toContain('machine codeup.aliyun.com login alice password new-token');
   });
+
+  it('writeNetrcToken leaves a commented-out codeup entry and the next host alone', () => {
+    fs.writeFileSync(
+      path.join(tmpHome, '.netrc'),
+      '# machine codeup.aliyun.com login example password example\nmachine other.host login bob password secret\n',
+    );
+
+    writeNetrcToken('new-token', 'alice');
+    const content = fs.readFileSync(path.join(tmpHome, '.netrc'), 'utf-8');
+
+    expect(content).toContain('# machine codeup.aliyun.com login example password example');
+    expect(content).toContain('\nmachine other.host login bob password secret');
+    expect(content).toContain('machine codeup.aliyun.com login alice password new-token');
+  });
+
+  it('writeNetrcToken does not uncomment a comment that mentions machine', () => {
+    fs.writeFileSync(
+      path.join(tmpHome, '.netrc'),
+      'machine codeup.aliyun.com login alice password old-token\n# machine placeholder note\nmachine other.host login bob password secret\n',
+    );
+
+    writeNetrcToken('new-token', 'alice');
+    const content = fs.readFileSync(path.join(tmpHome, '.netrc'), 'utf-8');
+
+    expect(content).not.toContain('old-token');
+    expect(content).toContain('machine other.host login bob password secret');
+    expect(content).not.toMatch(/^machine placeholder/m);
+  });
 });
 
 describe('Codeup clone transport', () => {

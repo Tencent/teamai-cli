@@ -199,13 +199,23 @@ export function readNetrcUsername(): string | null {
   return readNetrcEntry()?.login ?? null;
 }
 
+/** True when a `#` earlier on the same line comments out the position. */
+function isCommented(text: string, index: number): boolean {
+  const lineStart = text.lastIndexOf('\n', index - 1) + 1;
+
+  return /(^|\s)#/.test(text.slice(lineStart, index));
+}
+
 /**
  * Cut every codeup.aliyun.com machine entry out of netrc content by token
  * span — from its `machine` keyword to the next `machine`/`default` keyword —
- * so an entry sharing its line with another host's survives.
+ * so an entry sharing its line with another host's survives. Commented-out
+ * text is not an entry: a match after a `#` on its line is skipped at both
+ * ends of the span, so a commented codeup line never swallows the next host.
  */
 function removeCodeupEntries(content: string): string {
-  const codeupMachine = new RegExp(`\\bmachine\\s+${CODEUP_HOST.replaceAll('.', '\\.')}($|\\s)`);
+  const codeupMachine = new RegExp(`\\bmachine\\s+${CODEUP_HOST.replaceAll('.', '\\.')}($|\\s)`, 'g');
+  const nextKeyword = /\b(machine|default)\b/g;
   let out = content;
 
   for (;;) {
@@ -213,11 +223,27 @@ function removeCodeupEntries(content: string): string {
 
     if (!match) return out;
 
+    if (isCommented(out, match.index)) continue;
+
     const afterKeyword = match.index + match[0].length;
-    const nextAt = out.slice(afterKeyword).search(/\b(machine|default)\b/);
-    const end = nextAt === -1 ? out.length : afterKeyword + nextAt;
+
+    nextKeyword.lastIndex = afterKeyword;
+
+    let end = out.length;
+
+    for (;;) {
+      const next = nextKeyword.exec(out);
+
+      if (!next) break;
+
+      if (!isCommented(out, next.index)) {
+        end = next.index;
+        break;
+      }
+    }
 
     out = out.slice(0, match.index) + out.slice(end);
+    codeupMachine.lastIndex = 0;
   }
 }
 
