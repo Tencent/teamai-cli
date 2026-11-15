@@ -759,7 +759,7 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
 
   // A restarted member may run the step elsewhere than the claim says, as on another driver: a claim that says its
   // guardian ends it by kill says otherwise before any of it starts, or the member runs nothing of it.
-  if (latest.killBounded === true && !(ready.kind === 'command' && place.command?.kind === 'here')) {
+  if (latest.killBounded && !(ready.kind === 'command' && place.command?.kind === 'here')) {
     const said = await recordProgress(config, { ...latest, killBounded: false }, latest.pushed);
 
     if (!said.ok) return { error: fleetFailure(said.error) };
@@ -771,7 +771,7 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
   // Once the owner gave the claim up or the member cut its step off, past the claim's cut-off point: whether nothing of
   // a step its guardian does not end by kill still runs here, which the record then says (`sayStopped`).
   const sayStepStopped = async (): Promise<void> => {
-    if (latest.killBounded === true) return;
+    if (latest.killBounded) return;
     const left = await stopLeftOfClaim(config, { claim, root, isEnded: true });
 
     if (left.kind === 'stopped' && !left.isLeftRunning) await sayStopped(config, { run, attempt, member });

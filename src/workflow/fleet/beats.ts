@@ -33,3 +33,16 @@ export function fleetBeats(staleAfterMs: number) {
 
   return { beatMs, cutOffMs: Math.max(staleAfterMs - beatMs - FLEET_STOP_BUDGET_MS, 2 * beatMs) };
 }
+
+/**
+ * When, on the clock of the owner that wrote a cancel at `cancelAt`, a step its guardian ends by kill (`killBounded`)
+ * has ended though its member never answered the cancel. The cancel replaced the member's last progress, so that
+ * progress landed before the owner read the record to write the cancel, and the member writes no progress over a
+ * cancel: its guardian kills the step at the cut-off point that progress set, whatever the member does. For any
+ * `stale_after` a pool takes:
+ *
+ *   progressAt + cutOffMs + FLEET_STOP_BUDGET_MS = progressAt + staleAfterMs - beatMs <= landed + staleAfterMs - beatMs < cancelAt + staleAfterMs + beatMs
+ */
+export function killBoundedCancelEnd({ cancelAt, staleAfterMs }: { cancelAt: number; staleAfterMs: number }): number {
+  return cancelAt + staleAfterMs + fleetBeats(staleAfterMs).beatMs;
+}
