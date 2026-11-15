@@ -641,20 +641,71 @@ interface SendAfterStop {
 export type AttemptSends = ReturnType<typeof attemptSends>;
 
 /**
- * The one way an attempt sends an operation to its runtime. It owns how the step was stopped and what runs now, so a
- * stop that found nothing running is read by every send: one sent after it is not sent, or, when it reconnects to one
- * already running there, is passed the stop once it is sent. `runtime` is the rest of the step runtime, with no send.
+ * What an attempt has sent its runtime now, which says what a stop does (`attemptSends`): nothing, while it reads or
+ * writes its record, between operations and after the last; an open, from its send until the place is ready or the
+ * open failed, accepted or not; or an exec or prompt, until it ended.
+ */
+type Sent =
+  | { kind: 'nothing' }
+  | { kind: 'open'; op: OpId; isCancelSent: boolean; startAnswerBound: () => void }
+  | { kind: 'operation'; op: OpId; leave?: () => void; cancelling?: Promise<void> };
+
+/**
+ * The one way an attempt sends an operation to its runtime. It owns how the step was stopped and what is sent now, so
+ * a stop is taken in whatever phase the attempt is in (`stopIn`), and a stop that found nothing sent is read by every
+ * send: one sent after it is not sent, or, when it reconnects to one already running there, is passed the stop once it
+ * is sent. `runtime` is the rest of the step runtime, with no send.
  */
 function attemptSends(full: StepRuntime<DriverCan>) {
-  // How the step was stopped while nothing it sent was running.
+  // How the step was stopped, whatever was sent then: a cancel of the step, or a stop of the driver.
   let stopped: 'stop' | 'cancel' | undefined;
-  let running: { op: OpId } | undefined;
-  // Ends the exec running now as `left`, while one that its runtime goes on with runs.
-  let leave: (() => void) | undefined;
-  // The cancel the run asked of the operation running now: a stop after it waits for it, since leaving would drop it.
-  let cancelling: { op: OpId; landed: Promise<void> } | undefined;
-  // The open sent now, until its place is ready or it failed, and how a cancel of it starts the wait for its answer.
-  let opening: { op: OpId; isCancelled: boolean; cancelled: () => void } | undefined;
+  let sent: Sent = { kind: 'nothing' };
+
+  /**
+   * What a stop does in the phase the attempt is in. Nothing sent: nothing to pass on, and the next send reads
+   * `stopped`. An open: the runtime is asked once to cancel it, and ANSWER_WITHIN_MS bounds its answer (`open`). An
+   * exec or prompt: a cancel is passed on; a driver's stop leaves an exec its runtime goes on with, waits for a cancel
+   * already passed on, since leaving would drop it, and passes on a cancel otherwise.
+   */
+  const stopIn = async (how: 'stop' | 'cancel'): Promise<void> => {
+    const now = sent;
+
+    switch (now.kind) {
+      case 'nothing':
+        return;
+      case 'open':
+        if (now.isCancelSent) return;
+        now.isCancelSent = true;
+        now.startAnswerBound();
+        await full.cancel(now.op);
+
+        return;
+      case 'operation':
+        if (how === 'cancel') {
+          now.cancelling = full.cancel(now.op);
+          await now.cancelling;
+
+          return;
+        }
+
+        if (now.cancelling) return now.cancelling;
+
+        if (now.leave) {
+          now.leave();
+
+          return;
+        }
+
+        await full.cancel(now.op);
+
+        return;
+      default: {
+        const unhandled: never = now;
+
+        return unhandled;
+      }
+    }
+  };
 
   /**
    * Sends `op` through `send`, unless a stop came first and it cannot already run there. An exec its runtime goes on
@@ -663,19 +714,20 @@ function attemptSends(full: StepRuntime<DriverCan>) {
   const through = async <TEnd extends AttemptExecEnd | PromptEnd>(op: OpId, send: (leaving: Promise<{ kind: 'left' }>) => Promise<TEnd>, { reconnects, kept }: SendAfterStop, isLeavable: boolean): Promise<TEnd | { kind: 'cancelled' }> => {
     if (stopped && !reconnects) return { kind: 'cancelled' };
 
-    running = { op };
+    const operation: Extract<Sent, { kind: 'operation' }> = { kind: 'operation', op };
+    sent = operation;
 
     const leaving = isLeavable && stopped === 'stop' ? Promise.resolve({ kind: 'left' } as const)
-      : new Promise<{ kind: 'left' }>((resolve) => { leave = isLeavable ? () => resolve({ kind: 'left' }) : undefined; });
+      : new Promise<{ kind: 'left' }>((resolve) => { if (isLeavable) operation.leave = () => resolve({ kind: 'left' }); });
 
-    const sent = send(leaving);
+    const ending = send(leaving);
     const passedOn = stopped === 'cancel' || (stopped === 'stop' && !isLeavable) ? full.cancel(op) : undefined;
 
-    if (passedOn) cancelling = { op, landed: passedOn };
-    const [end] = await Promise.all([sent, passedOn]);
-    leave = undefined;
+    if (passedOn) operation.cancelling = passedOn;
+    const [end] = await Promise.all([ending, passedOn]);
+    delete operation.leave;
     await kept();
-    running = undefined;
+    sent = { kind: 'nothing' };
 
     return end;
   };
@@ -685,19 +737,24 @@ function attemptSends(full: StepRuntime<DriverCan>) {
   return {
     runtime,
 
+    /** Whether the step was stopped: an attempt that has not sent its open yet sends none. */
+    isStopped: (): boolean => stopped !== undefined,
+
     /**
-     * Sends open `request`. A cancel while it is out is passed on to the runtime, which answers it with the open's end;
-     * one that gives none within ANSWER_WITHIN_MS, as a runtime that accepted the place and never reports it ready,
-     * ends it `runtime_lost`, the place it accepted kept for a later close.
+     * Sends open `request`, unless the step was stopped: then nothing is sent. A stop while it is out is passed on to
+     * the runtime, which answers it with the open's end; one that gives none within ANSWER_WITHIN_MS, as a runtime that
+     * accepted the place and never reports it ready, ends it `runtime_lost`, the place it accepted kept for a later close.
      */
-    open: async (request: OpenRequest, onAccepted: (handle: string) => Promise<void>): Promise<Opened> => {
+    open: async (request: OpenRequest, onAccepted: (handle: string) => Promise<void>): Promise<Opened | { kind: 'cancelled' }> => {
+      if (stopped) return { kind: 'cancelled' };
       let timer: NodeJS.Timeout | undefined;
 
       const unanswered = new Promise<Opened>((resolve) => {
-        opening = {
+        sent = {
+          kind: 'open',
           op: request.op,
-          isCancelled: false,
-          cancelled: () => {
+          isCancelSent: false,
+          startAnswerBound: () => {
             timer ??= setTimeout(() => resolve({ kind: 'failed', failure: { code: 'runtime_lost', message: `Step runtime "${full.name}" did not answer the cancel of open ${request.op} within ${ANSWER_WITHIN_MS / 1000} s, so the place it accepted may still be in the making, and is kept for a later close.` } }), ANSWER_WITHIN_MS);
           },
         };
@@ -707,7 +764,7 @@ function attemptSends(full: StepRuntime<DriverCan>) {
         return await Promise.race([full.open(request, onAccepted), unanswered]);
       } finally {
         clearTimeout(timer);
-        opening = undefined;
+        sent = { kind: 'nothing' };
       }
     },
 
@@ -716,32 +773,12 @@ function attemptSends(full: StepRuntime<DriverCan>) {
 
     async stop(): Promise<void> {
       stopped ??= 'stop';
-
-      if (running && cancelling?.op === running.op) return cancelling.landed;
-
-      if (leave) {
-        leave();
-
-        return;
-      }
-
-      if (running) await full.cancel(running.op);
+      await stopIn('stop');
     },
 
     async cancel(): Promise<void> {
       stopped = 'cancel';
-
-      if (opening && !opening.isCancelled) {
-        opening.isCancelled = true;
-        opening.cancelled();
-        await full.cancel(opening.op);
-
-        return;
-      }
-
-      if (!running) return;
-      cancelling = { op: running.op, landed: full.cancel(running.op) };
-      await cancelling.landed;
+      await stopIn('cancel');
     },
   };
 }
@@ -920,8 +957,15 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
 
   return {
     async open(view, { tool, toolHome: home, credentials = {}, unset } = {}) {
+      // A stop that came before the open was sent, read again after each wait that comes before the send: nothing is
+      // asked of the runtime, so it makes no place.
+      const unsent = { ok: false as const, failure: { code: 'cancelled', message: `teamai sent no open of attempt ${attempt} to step runtime "${runtime.name}": the step was stopped first.` } };
+
+      if (sends.isStopped()) return unsent;
       openedWith = credentials;
       const found = await current();
+
+      if (sends.isStopped()) return unsent;
       // A place closed on another runtime, or an open the runtime refused before it made a place, holds nothing of this
       // one: the attempt starts again here.
       const before = found && !(found.phase === 'closed' && (!isHere(found) || found.open.handle === undefined)) ? found : undefined;
@@ -943,6 +987,8 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
         const unknown = handle === undefined ? (RuntimeEntryIdentity.isChangedSince(before, entry) ? changedEntryFailure(before) : undefined) : await unknownToChangedEntry(before, handle);
 
         if (unknown) return { ok: false, failure: { code: 'runtime_lost', message: `Step runtime "${runtime.name}" cannot continue attempt ${attempt} (${unknown.code}): ${masked(unknown).message}` } };
+
+        if (sends.isStopped()) return unsent;
       }
 
       const op = before?.open.op ?? newOpId();
@@ -970,6 +1016,8 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
       const lock = runsRemovalLockIn(getDataHome(config));
       const wasRunRecorded = await isRunHere(config, run);
 
+      if (sends.isStopped()) return unsent;
+
       // An uninstall holds this lock from its check that no place is open until it has removed the runs, so a run it
       // removed meanwhile is gone once this takes it, and a place recorded there would have no run to close it. A data
       // home it removed whole is not made again: only a run never recorded before needs it made.
@@ -989,21 +1037,44 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
       const opened = await sends.open({ op, run, attempt, credentials, ...(tool !== undefined && { tool }), ...(deadline !== undefined && { deadline }), ...(view && { view }), ...(unset && { unset }) }, async (handle) => {
         const now = await current();
 
-        if (now) await save({ ...now, open: { op, handle: before?.open.handle ?? handle }, phase: now.phase === 'opening' ? 'ready' : now.phase });
+        if (!now) return;
+
+        // A handle accepted once the place was closed, as once the open failed and the run closed what it had: the
+        // place it names is closed too, not written into the closed record, which names it only when that close fails.
+        if (now.phase === 'closed' && opening.phase !== 'closed') {
+          const closed = await runtime.close(handle);
+
+          if (!closed.ok) await save({ ...now, phase: 'ready', open: { op, handle }, closeFailed: masked(closed.failure) });
+
+          return;
+        }
+
+        await save({ ...now, open: { op, handle: before?.open.handle ?? handle }, phase: now.phase === 'opening' ? 'ready' : now.phase });
       });
+
+      // Stopped once the record named the open, before it was sent: the record is put back as it was.
+      if (opened.kind === 'cancelled') {
+        await save(found ?? closedRecord(opening));
+
+        return unsent;
+      }
 
       if (opened.kind !== 'ready') {
         const now = await current();
-        // A cancel the runtime did not answer (`sends.open`): the place may still be in the making.
+        // A cancel the runtime did not answer (`sends.open`), or answered that it could not stop the open, as an exec's
+        // refused stop ends it `lost` (`ended`): the place may still be in the making.
         const isLost = opened.failure.code === 'runtime_lost';
+        const isStopUnconfirmed = isLost || isStopRefused(opened.failure);
 
         if (now?.open.handle !== undefined) await save({ ...now, openFailed: opened.failure });
         // The runtime answered the first open of this op with a failure before it accepted a place, so it holds none.
         // One that did not answer, or an op a killed teamai sent before, may hold a place no handle names: the record
         // stays open, so a close says so.
-        else if (now && !before && !isLost && !isUnansweredFailure(opened.failure)) await save(closedRecord(now));
+        else if (now && !before && !isStopUnconfirmed && !isUnansweredFailure(opened.failure)) await save(closedRecord(now));
 
         if (isLost) return { ok: false, failure: opened.failure };
+
+        if (isStopUnconfirmed) return { ok: false, failure: { code: 'runtime_lost', message: `Step runtime "${runtime.name}" did not confirm that the open of attempt ${attempt} stopped, so the place it may still be making is kept (${opened.failure.code}): ${opened.failure.message}` } };
 
         return { ok: false, failure: runtimeFailure(runtime.name, `could not open attempt ${attempt} (${opened.failure.code}): ${opened.failure.message}`) };
       }

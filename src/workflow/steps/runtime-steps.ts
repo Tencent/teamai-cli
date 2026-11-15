@@ -364,12 +364,33 @@ export function runtimePrompter(run: AttemptRun, { view, runId, step, tool, prov
 
   // `extended` is the shipped tool `tool` is, or extends; a runtime may report the session under either name.
   const launch = async (extended: string, input: StepRun, signal: AbortSignal | undefined, interactive: boolean): Promise<StepRunResult> => {
+    let accepted = false;
+    let timedOut = false;
+    // A stop before a new prompt is sent ends it unsent; one while a restart reattaches is kept and sent once the
+    // runtime accepts it. The attempt takes a stop in whatever it has sent by then: nothing yet, the open, or setup.
+    let stopped = false;
+
+    const stop = (): void => {
+      stopped = true;
+      void run.cancel();
+    };
+
+    signal?.addEventListener('abort', stop, { once: true });
+
+    if (signal?.aborted) stop();
+
+    const unstarted = (failure: WorkflowFailure): StepRunResult => {
+      signal?.removeEventListener('abort', stop);
+
+      return { started: false, exitCode: 1, failure };
+    };
+
     const opened = await run.open(view, { tool, credentials: given, ...(isThroughOuter && { unset }), ...(toolHome && { toolHome }) });
 
-    if (!opened.ok) return { started: false, exitCode: 1, failure: opened.failure };
-    const unready = await setUp(undefined);
+    if (!opened.ok) return unstarted(opened.failure);
+    const unready = await setUp(signal);
 
-    if (unready) return { started: false, exitCode: 1, failure: unready };
+    if (unready) return unstarted(unready);
     const lease: PromptLease = { step, tool, prompt: stepPrompt(input, { inPrompt: true }), result: input.resultPath, permissions: input.unattended ? 'unattended' : 'approval-required', interactive };
 
     if (input.model) lease.model = input.model.effort ? { name: input.model.name, effort: input.model.effort } : { name: input.model.name };
@@ -393,16 +414,6 @@ export function runtimePrompter(run: AttemptRun, { view, runId, step, tool, prov
 
     if (input.launchEnv) Object.assign(env, input.launchEnv);
     env.TEAMAI_WORKFLOW_RESULT = input.resultPath;
-    let accepted = false;
-    let timedOut = false;
-    // A stop before a new prompt is sent ends it unsent; one while a restart reattaches is kept and sent once the
-    // runtime accepts it.
-    let stopped = false;
-
-    const stop = (): void => {
-      stopped = true;
-      void run.cancel();
-    };
 
     // A runtime that runs the tool on the attempt's tool home stops it at the lease's timeout itself and ends the prompt
     // with its session, so teamai's own cancel waits a grace past it, for a runtime that missed it.
@@ -412,10 +423,6 @@ export function runtimePrompter(run: AttemptRun, { view, runId, step, tool, prov
       timedOut = true;
       stop();
     }, timeoutMs);
-
-    signal?.addEventListener('abort', stop, { once: true });
-
-    if (signal?.aborted) stop();
 
     const end = await run.prompt({ lease, env, provided, unset, credentials: given, cwd: input.cwd }, {
       onAccepted: () => {

@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LocalConfig } from '../types.js';
 import { runConfinedStep, runConfinedStepOnRuntime, type ConfinedStepLease } from '../workflow/confined-step.js';
 import type { AttemptRun } from '../workflow/runtimes/attempt.js';
@@ -194,6 +194,29 @@ describe('runConfinedStepOnRuntime', () => {
     const ended = await runConfinedStepOnRuntime({ config, run, secrets: {}, lease, signal: controller.signal, runtime: 'toy', attemptRun, offers: [{ level: 'best-effort', access: 'read', tools: ['claude'] }], credentials: {} });
 
     expect(ended).toMatchObject({ kind: 'ran', report: { outcome: 'failed', failure: { code: 'confined_failed', message: 'The confined claude prompt on step runtime "toy" was stopped before it replied.' } } });
+    expect(prompts()).toBe(0);
+  });
+
+  it('passes the run\'s stop on to an open whose runtime never reports the place ready, and sends no prompt', async () => {
+    const dir = await dirWith(root, 'evidence', { 'diff.txt': '+ a line\n' });
+    const controller = new AbortController();
+    let endOpen: ((opened: Awaited<ReturnType<AttemptRun['open']>>) => void) | undefined;
+    const { attemptRun: judging, prompts } = judgeRun(() => undefined);
+    const attemptRun: AttemptRun = {
+      ...judging,
+      // As an attempt ends an open once its runtime answers the cancel of it, and not before.
+      open: async () => new Promise((resolve) => { endOpen = resolve; }),
+      cancel: async () => {
+        endOpen?.({ ok: false, failure: { code: 'runtime_lost', message: 'Step runtime "toy" did not answer the cancel of the open within 15 s.' } });
+      },
+    };
+    const lease = { ...leaseIn(dir), confined: { dir, level: 'best-effort' as const, tools: ['claude'] } };
+
+    const running = runConfinedStepOnRuntime({ config, run, secrets: {}, lease, signal: controller.signal, runtime: 'toy', attemptRun, offers: [{ level: 'best-effort', access: 'read', tools: ['claude'] }], credentials: {} });
+    await vi.waitFor(() => { expect(endOpen).toBeDefined(); });
+    controller.abort();
+
+    expect(await Promise.race([running, new Promise<'still opening'>((resolve) => { setTimeout(() => resolve('still opening'), 5_000); })])).toMatchObject({ kind: 'ran', report: { outcome: 'failed', failure: { code: 'runtime_lost' } } });
     expect(prompts()).toBe(0);
   });
 

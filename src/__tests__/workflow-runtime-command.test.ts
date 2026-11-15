@@ -12,7 +12,7 @@ import type { DriverCan } from '../workflow/requirements.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { AttemptIdSchema, attemptResultPath, attemptsDir, RunIdSchema, runsRemovalLockIn } from '../workflow/store.js';
 import type { StepRuntime } from '@teamai/runtime-protocol/step-runtime';
-import type { OpId } from '@teamai/runtime-protocol';
+import { CANCEL_FAILED, type OpId } from '@teamai/runtime-protocol';
 import { soleEntry } from './helpers/runtime-entry.js';
 import { log } from '@teamai/shared/log';
 
@@ -317,7 +317,8 @@ describe('an attempt\'s operations on a step runtime', () => {
     return { run, config, execs: () => execs, done: () => fs.rmSync(root, { recursive: true, force: true }) };
   }
 
-  it('ends an open its runtime accepted and never reports ready once the step is cancelled, within the answer bound, keeping the place recorded', async () => {
+  // A cancel of the step, and a stop of the driver, as Ctrl-C or a signal sends it.
+  it.each(['cancel', 'stop'] as const)('ends an open its runtime accepted and never reports ready on a %s, within the answer bound, keeping the place recorded', async (how) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-attempt-open-'));
     onTestFinished(() => fs.rmSync(root, { recursive: true, force: true }));
     const config: LocalConfig = { repo: { localPath: root, remote: 'local', kind: 'self' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data') };
@@ -347,7 +348,7 @@ describe('an attempt\'s operations on a step runtime', () => {
     const opened = placed.open({ worktree: '/work', readonly: [], result: '/work/out', runDir: '/work/scratch', toolHome: {} });
     await vi.waitFor(() => { expect(isAccepted).toBe(true); });
     const asked = Date.now();
-    await placed.cancel();
+    await placed[how]();
     const ended = await Promise.race([opened, new Promise<'still opening'>((resolve) => { setTimeout(() => resolve('still opening'), 20_000); })]);
 
     expect(ended).toMatchObject({ ok: false, failure: { code: 'runtime_lost' } });
@@ -357,6 +358,118 @@ describe('an attempt\'s operations on a step runtime', () => {
     expect(record.phase).not.toBe('closed');
     expect(cancelled).toEqual([record.open.op]);
   }, 30_000);
+
+  it('sends no open once the step was cancelled while the attempt still read its record, and ends it cancelled', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-attempt-open-'));
+    onTestFinished(() => fs.rmSync(root, { recursive: true, force: true }));
+    const config: LocalConfig = { repo: { localPath: root, remote: 'local', kind: 'self' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data') };
+    let opens = 0;
+    const runtime: StepRuntime<DriverCan> = {
+      name: 'stalled',
+      init: async () => ({ ok: true, can: {}, launchesAgents: false }),
+      // Accepts the place, then never reports it ready, nor answers a cancel.
+      open: async (_request, onAccepted) => {
+        opens += 1;
+        await onAccepted('h-1');
+
+        return new Promise(() => {});
+      },
+      exec: async () => ({ kind: 'exited', code: 0, stdout: '' }),
+      prompt: async () => ({ kind: 'cancelled' }),
+      cancel: async () => {},
+      collect: async () => ({ ok: true }),
+      reattach: async () => ({ kind: 'gone' }),
+      close: async () => ({ ok: true }),
+      dispose: async () => {},
+    };
+    const [run, attempt] = [RunIdSchema.parse('r0123abcd'), AttemptIdSchema.parse('a00000001')];
+    const placed = attemptRun({ config, run, attempt, runtime, entry: soleEntry(runtime), driver: 'stalled' });
+
+    const opened = placed.open({ worktree: '/work', readonly: [], result: '/work/out', runDir: '/work/scratch', toolHome: {} });
+    await placed.cancel();
+
+    expect(await Promise.race([opened, new Promise<'still opening'>((resolve) => { setTimeout(() => resolve('still opening'), 5_000); })])).toMatchObject({ ok: false, failure: { code: 'cancelled' } });
+    expect(opens).toBe(0);
+    // Nothing was asked of the runtime, so no place is left for a close to look for.
+    expect(await placed.close()).toBeUndefined();
+  });
+
+  it('ends a cancelled open whose runtime answers that it could not stop it as a lost exec ends, keeping the place recorded', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-attempt-open-'));
+    onTestFinished(() => fs.rmSync(root, { recursive: true, force: true }));
+    const config: LocalConfig = { repo: { localPath: root, remote: 'local', kind: 'self' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data') };
+    let endOpen: ((opened: Awaited<ReturnType<StepRuntime<DriverCan>['open']>>) => void) | undefined;
+    const runtime: StepRuntime<DriverCan> = {
+      name: 'stubborn',
+      init: async () => ({ ok: true, can: {}, launchesAgents: false }),
+      open: async (_request, onAccepted) => {
+        await onAccepted('h-1');
+
+        return new Promise((resolve) => { endOpen = resolve; });
+      },
+      exec: async () => ({ kind: 'exited', code: 0, stdout: '' }),
+      prompt: async () => ({ kind: 'cancelled' }),
+      // As a runtime answers a cancel it could not carry out.
+      cancel: async () => { endOpen?.({ kind: 'failed', failure: { code: CANCEL_FAILED, message: 'the box would not stop making the place' } }); },
+      collect: async () => ({ ok: true }),
+      reattach: async () => ({ kind: 'gone' }),
+      close: async () => ({ ok: true }),
+      dispose: async () => {},
+    };
+    const [run, attempt] = [RunIdSchema.parse('r0123abcd'), AttemptIdSchema.parse('a00000001')];
+    const placed = attemptRun({ config, run, attempt, runtime, entry: soleEntry(runtime), driver: 'stubborn' });
+
+    const opened = placed.open({ worktree: '/work', readonly: [], result: '/work/out', runDir: '/work/scratch', toolHome: {} });
+    await vi.waitFor(() => { expect(endOpen).toBeDefined(); });
+    await placed.cancel();
+
+    expect(await opened).toMatchObject({ ok: false, failure: { code: 'runtime_lost', message: expect.stringContaining('(cancel_failed): the box would not stop making the place') } });
+    const record = JSON.parse(fs.readFileSync(attemptRuntimePath(config, run, attempt), 'utf8')) as { open: { handle?: string }; phase: string };
+    expect(record.open.handle).toBe('h-1');
+    expect(record.phase).not.toBe('closed');
+  });
+
+  it('closes the place a runtime accepts after the attempt\'s place was closed, and leaves the closed record as it was', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-attempt-open-'));
+    onTestFinished(() => fs.rmSync(root, { recursive: true, force: true }));
+    const config: LocalConfig = { repo: { localPath: root, remote: 'local', kind: 'self' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data') };
+    const closed: string[] = [];
+    let acceptLate: ((handle: string) => Promise<void>) | undefined;
+    const runtime: StepRuntime<DriverCan> = {
+      name: 'stepwise',
+      init: async () => ({ ok: true, can: {}, launchesAgents: false }),
+      // Accepts part of the place, then fails the open; the rest of the place is accepted later, once the test says.
+      open: async (_request, onAccepted) => {
+        acceptLate = onAccepted;
+        await onAccepted('h-1');
+
+        return { kind: 'failed', failure: { code: 'runtime_failed', message: 'the inner box did not come up' } };
+      },
+      exec: async () => ({ kind: 'exited', code: 0, stdout: '' }),
+      prompt: async () => ({ kind: 'cancelled' }),
+      cancel: async () => {},
+      collect: async () => ({ ok: true }),
+      reattach: async () => ({ kind: 'gone' }),
+      close: async (handle) => {
+        closed.push(handle);
+
+        return { ok: true };
+      },
+      dispose: async () => {},
+    };
+    const [run, attempt] = [RunIdSchema.parse('r0123abcd'), AttemptIdSchema.parse('a00000001')];
+    const placed = attemptRun({ config, run, attempt, runtime, entry: soleEntry(runtime), driver: 'stepwise' });
+
+    expect(await placed.open({ worktree: '/work', readonly: [], result: '/work/out', runDir: '/work/scratch', toolHome: {} })).toMatchObject({ ok: false });
+    expect(await placed.close()).toBeUndefined();
+    const closedRecord: unknown = JSON.parse(fs.readFileSync(attemptRuntimePath(config, run, attempt), 'utf8'));
+    expect(closedRecord).toMatchObject({ phase: 'closed', open: { handle: 'h-1' } });
+
+    await acceptLate?.('h-1/inner');
+
+    expect(closed).toEqual(['h-1', 'h-1/inner']);
+    expect(JSON.parse(fs.readFileSync(attemptRuntimePath(config, run, attempt), 'utf8'))).toEqual(closedRecord);
+  });
 
   it('records the place it opens only once an uninstall beside it lets go of the places lock', async () => {
     const { run, config, done } = counted();

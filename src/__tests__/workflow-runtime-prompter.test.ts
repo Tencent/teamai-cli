@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runtimePrompter } from '../workflow/steps/runtime-steps.js';
 import type { AttemptRun } from '../workflow/runtimes/attempt.js';
 import { RunIdSchema } from '../workflow/store.js';
@@ -69,6 +69,36 @@ describe('a prompt step on a runtime that launches agents its own way', () => {
 
     expect(ran).toMatchObject({ exitCode: 143, failure: { code: 'tool_failed' } });
     expect(cancels()).toBe(1);
+  });
+
+  it('passes the driver\'s abort on to an open whose runtime never reports the place ready, and ends unsent', async () => {
+    const controller = new AbortController();
+    let isOpening = false;
+    let endOpen: ((opened: Awaited<ReturnType<AttemptRun['open']>>) => void) | undefined;
+    let isPromptSent = false;
+    const run: AttemptRun = {
+      ...promptOnlyRun().run,
+      // As an attempt ends an open once its runtime answers the cancel of it, and not before.
+      open: async () => new Promise((resolve) => {
+        endOpen = resolve;
+        isOpening = true;
+      }),
+      cancel: async () => {
+        endOpen?.({ ok: false, failure: { code: 'runtime_lost', message: 'Step runtime "box" did not answer the cancel of the open within 15 s.' } });
+      },
+      prompt: async () => {
+        isPromptSent = true;
+
+        return { kind: 'cancelled' };
+      },
+    };
+
+    const running = runtimePrompter(run, { view, runId: RunIdSchema.parse('r0123abcd'), step: 'review', tool: 'claude', provided: [], unset: [], credentials: {}, setUp: async () => undefined }).run('claude', { prompt: 'Review.', expected: undefined, cwd: dir, resultPath: path.join(dir, 'result.json'), secrets: {} }, controller.signal);
+    await vi.waitFor(() => { expect(isOpening).toBe(true); });
+    controller.abort();
+
+    expect(await Promise.race([running, new Promise<'still opening'>((resolve) => { setTimeout(() => resolve('still opening'), 5_000); })])).toMatchObject({ started: false, failure: { code: 'runtime_lost' } });
+    expect(isPromptSent).toBe(false);
   });
 
   it('stops at its timeout when the timeout passes before the prompt is sent', async () => {

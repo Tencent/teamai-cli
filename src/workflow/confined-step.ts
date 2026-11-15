@@ -225,10 +225,8 @@ export async function runConfinedStepOnRuntime(input: RuntimeConfinedInput): Pro
   const reads = confinedEnvNames(tool);
   const given = Object.fromEntries(Object.entries(credentials).filter(([name]) => reads.includes(name)));
   const startedAt = Date.now();
-  const opened = await attemptRun.open(undefined, { tool, credentials: given });
-
-  if (!opened.ok) return { kind: 'ran', report: { outcome: 'failed', tool, message: opened.failure.message, failure: opened.failure } };
-  // A stop while the place opened, or before the prompt is sent, ends it unsent.
+  // A stop while the place opens, or before the prompt is sent, ends it unsent: the attempt takes it in whatever it has
+  // sent by then, nothing yet or the open.
   let stopped = false;
 
   const stop = (): void => {
@@ -236,10 +234,18 @@ export async function runConfinedStepOnRuntime(input: RuntimeConfinedInput): Pro
     void attemptRun.cancel();
   };
 
-  const timer = setTimeout(stop, timeoutOf(lease));
   signal?.addEventListener('abort', stop, { once: true });
 
   if (signal?.aborted) stop();
+  const opened = await attemptRun.open(undefined, { tool, credentials: given });
+
+  if (!opened.ok) {
+    signal?.removeEventListener('abort', stop);
+
+    return { kind: 'ran', report: { outcome: 'failed', tool, message: opened.failure.message, failure: opened.failure } };
+  }
+
+  const timer = setTimeout(stop, timeoutOf(lease));
 
   // Stopped while the place opened: no operation runs there yet, so the prompt is not sent at all.
   const end: PromptEnd = stopped ? { kind: 'cancelled' } : await attemptRun.prompt({
