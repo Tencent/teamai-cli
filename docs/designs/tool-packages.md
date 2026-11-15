@@ -1,8 +1,8 @@
 # Tool packages
 
-> Status: Proposal — each family of AI coding tools moves into its own private workspace package; every tool definition implements one contract from `tool-core` and is read through one typed registry; the packages ship inside `teamai-cli`, and a team or a member adds a tool as an instance of a shipped one without a release.
+> Status: Implemented — each family of AI coding tools moves into its own private workspace package; every tool definition implements one contract from `tool-core` and is read through one typed registry; the packages ship inside `teamai-cli`, and a team or a member adds a tool as an instance of a shipped one without a release.
 
-Tracking: workflow-first (#1589), connected drivers (`docs/designs/connected-drivers.md`, proposed separately).
+Tracking: tool packages (#1715), workflow-first (#1589), connected drivers (`docs/designs/connected-drivers.md`).
 
 ## Problem
 
