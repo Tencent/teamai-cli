@@ -1,11 +1,12 @@
-import { readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { readdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { z } from 'zod';
 import { pathExists } from './utils/fs.js';
-import { lenientList } from './utils/json.js';
-import { log } from './utils/logger.js';
+import { lenientList } from '@teamai/shared/json';
+import { log } from '@teamai/shared/log';
 import { HOT_TEMPLATE } from './wiki-engine/adapters/templates.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 /** The parts of an evidence `_manifest.json` the index reads. */
 const IndexedManifestSchema = z.object({
@@ -58,7 +59,7 @@ export async function rebuildWikiIndex(teamwikiRoot: string): Promise<void> {
     const overviewPath = path.join(dirPath, 'overview.md');
 
     if (await pathExists(overviewPath)) {
-      const content = await readFile(overviewPath, 'utf-8');
+      const content = await readRegularFile(overviewPath, 'utf-8');
       const bodyStart = content.indexOf('\n\n', content.indexOf('---', 3));
 
       if (bodyStart > 0) {
@@ -76,7 +77,7 @@ export async function rebuildWikiIndex(teamwikiRoot: string): Promise<void> {
     const projectIndex = path.join(dirPath, 'index.md');
 
     if (await pathExists(projectIndex)) {
-      const content = await readFile(projectIndex, 'utf-8');
+      const content = await readRegularFile(projectIndex, 'utf-8');
       const factsMatch = content.match(/Facts:\s*(\d+)/);
 
       if (factsMatch) info.facts = parseInt(factsMatch[1], 10);
@@ -92,7 +93,7 @@ export async function rebuildWikiIndex(teamwikiRoot: string): Promise<void> {
 
     if (await pathExists(manifestPath)) {
       try {
-        const raw = await readFile(manifestPath, 'utf-8');
+        const raw = await readRegularFile(manifestPath, 'utf-8');
         const manifest = IndexedManifestSchema.parse(JSON.parse(raw));
 
         for (const comp of manifest.components) {
@@ -107,7 +108,7 @@ export async function rebuildWikiIndex(teamwikiRoot: string): Promise<void> {
 
     if (await pathExists(domainsPath)) {
       try {
-        const raw = await readFile(domainsPath, 'utf-8');
+        const raw = await readRegularFile(domainsPath, 'utf-8');
         const domainMeta = DomainMetaSchema.parse(JSON.parse(raw));
 
         if (domainMeta.domain) {
@@ -128,7 +129,7 @@ export async function rebuildWikiIndex(teamwikiRoot: string): Promise<void> {
     const chainsPath = path.join(dirPath, 'dependency-paths.md');
 
     if (await pathExists(chainsPath)) {
-      const content = await readFile(chainsPath, 'utf-8');
+      const content = await readRegularFile(chainsPath, 'utf-8');
       const chainMatch = content.match(/(\d+)\s*call chain/);
 
       if (chainMatch) info.callChains = parseInt(chainMatch[1], 10);
@@ -153,7 +154,7 @@ export async function rebuildWikiIndex(teamwikiRoot: string): Promise<void> {
 
   if (await pathExists(graphPath)) {
     try {
-      const raw = await readFile(graphPath, 'utf-8');
+      const raw = await readRegularFile(graphPath, 'utf-8');
       const graph = JSON.parse(raw);
       totalNodes = Array.isArray(graph.nodes) ? graph.nodes.length : 0;
       totalEdges = Array.isArray(graph.edges) ? graph.edges.length : 0;

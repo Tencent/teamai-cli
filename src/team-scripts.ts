@@ -17,9 +17,9 @@ import { loadTeamConfig } from './config.js';
 import { POST_PULL_BUDGET_SEC } from './post-pull.js';
 import type { LocalConfig, TeamaiConfig } from './types.js';
 import { withTimeout } from './utils/async.js';
-import { captureTail, detachChild } from './utils/exec.js';
+import { captureTail, detachChild } from '@teamai/shared/exec';
 import { resolveAnchors } from './utils/git.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { assertSafePath } from './utils/path-safety.js';
 import { closePrompt } from './utils/prompt.js';
 import { redactWithEnv } from '@teamai/shared/redact';
@@ -175,7 +175,7 @@ export async function runTeamScript(
  * does not pull team resources before it exits.
  */
 export async function syncMcpAfterPostInit(localConfig: LocalConfig): Promise<void> {
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
   if (!teamConfig) return;
 
@@ -210,7 +210,7 @@ async function resolveScript(
   repoPath: string,
   event: TeamScriptEvent,
 ): Promise<string | 'absent' | 'unsafe'> {
-  const teamConfig = await loadTeamConfig(repoPath);
+  const teamConfig = await loadTeamConfig(repoPath, null);
   const declared = teamConfig ? scriptPathOf(teamConfig, event) : undefined;
 
   if (!declared) return 'absent';

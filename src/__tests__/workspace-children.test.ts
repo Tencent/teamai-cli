@@ -5,7 +5,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TeamaiConfigSchema, type LocalConfig } from '../types.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { legacyProjectSlug, projectDataHome, projectsRootDir } from '../utils/partition.js';
 import { LayeredEntries } from '../resources/layered-entries.js';

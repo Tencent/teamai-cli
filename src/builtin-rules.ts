@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { ensureDir, writeFile, pathExists } from './utils/fs.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { getCurrentVersion, packageRoot } from './package-info.js';
 import { renderRuleForTool, ruleFileExtensionForTool } from './resources/rule-format.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';

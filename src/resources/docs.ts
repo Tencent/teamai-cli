@@ -1,17 +1,20 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import fse from 'fs-extra';
+import { copyRegularTree, readRegularFile } from '@teamai/shared/regular-file';
 import { ResourceHandler } from './base.js';
 import { installScopeName, isSelfMode, resolveBaseDir, type ResourceItem, type TeamaiConfig, type LocalConfig } from '../types.js';
-import { expandHome, isDraft, listDirs, pruneEmptyDirs } from '../utils/fs.js';
-import { log } from '../utils/logger.js';
+import { isDraft, listDirs, pruneEmptyDirs } from '../utils/fs.js';
+import { expandHome } from '@teamai/shared/home';
+import { log } from '@teamai/shared/log';
 import { caseFoldKey } from '../manifest-schema.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { describeKeptEntry, describeMembersDirLeft, isLink, isTeamaiCopy, isTeamaiSkillCopy } from './delivered-copies.js';
 import { blobIdOf, historicalVersions, type HistoricalVersion } from '../utils/team-history.js';
+import { createGitWithBlockTimeout } from '../utils/git.js';
 import { gitTracks, realFilePath, updateFileLocked, withOwnerLines } from '../git-exclude.js';
 import type { DeliveryRecorder } from '../git-exclude-delivered.js';
-import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.js';
+import { listRepoFilesRecursive, pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.js';
 
 /**
  * The single directory the team docs bundle is copied into. In project scope a
@@ -117,7 +120,7 @@ async function editDocsSearchWhitelist(
 ): Promise<{ change: 'write' | 'remove' | null; teamaiOnly: boolean }> {
   const lines = wanted ? WHITELIST : [];
 
-  const content = await fs.readFile(file, 'utf8').catch((e: NodeJS.ErrnoException) => {
+  const content = await readRegularFile(file, 'utf8').catch((e: NodeJS.ErrnoException) => {
     if (e.code === 'ENOENT') return null;
     throw e;
   });
@@ -495,12 +498,11 @@ async function copyDocs(
     // Prepare replacements while the old entries are still in place. A copy
     // failure must not remove the directory/file it was meant to replace.
     for (const [index, conflict] of conflicts.entries()) {
-      await fse.copy(conflict.source, path.join(staging!, `new-${index}`), { filter: visible });
+      await copyRegularTree(conflict.source, path.join(staging!, `new-${index}`), { filter: visible });
     }
 
     const replacedSources = new Set(conflicts.map(conflict => conflict.source));
-    await fse.copy(source, destination, {
-      overwrite: true,
+    await copyRegularTree(source, destination, {
       filter: src => delivered(src) && !replacedSources.has(src),
     });
 
@@ -669,7 +671,7 @@ async function passesThroughLink(root: string, rel: string): Promise<boolean> {
 /** The file's bytes, or null when it is not a file this process can read. */
 async function readBytes(filePath: string): Promise<Buffer | null> {
   try {
-    return await fs.readFile(filePath);
+    return await readRegularFile(filePath);
   } catch {
     return null;
   }
@@ -727,8 +729,61 @@ async function withdrawInactiveNamespaces(desired: DesiredDocs, localDocsDir: st
 export class DocsHandler extends ResourceHandler {
   readonly type = 'docs' as const;
 
+  /**
+   * The team's `docs/` in the clone, plus the member's edits to those docs in
+   * the docs mirror (`sharing.docs.localDir`), so `status` and `push` see an
+   * edit where the member reads it (#1851). Only a doc the team already has is
+   * an edit of ours: the user-scope mirror is machine-wide and can hold other
+   * teams' docs, and a new doc is authored in the team repo. A mirror file that
+   * is a version of `docs/<rel>` in the team history is a copy, not an edit, so
+   * a stale copy never proposes to overwrite the team's newer file. An edit of
+   * `docs/<rel>` in the clone itself wins over the mirror's copy, since both
+   * name the same team file.
+   */
   async scanLocalForPush(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
-    return scanRepoResourceForPush('docs', 'docs', teamConfig, localConfig);
+    const items = await scanRepoResourceForPush('docs', 'docs', teamConfig, localConfig);
+
+    // A config built without the schema defaults names no mirror; nothing says
+    // where the member reads docs, so only the clone is scanned.
+    if (!teamConfig.sharing?.docs?.localDir) return items;
+
+    const mirror = resolveDocsDestination(teamConfig, localConfig);
+    const repoDocs = path.join(localConfig.repo.localPath, 'docs');
+
+    // Self mode's `.teamai/docs` is the team's own tree, scanned above.
+    if (isSelfMode(localConfig) || path.resolve(mirror) === path.resolve(repoDocs)) return items;
+
+    if (await isLinkedDocsRoot(mirror)) {
+      log.debug(`[${installScopeName(localConfig.scope)}] Not reading ${mirror} for push: it is a link of yours`);
+
+      return items;
+    }
+
+    const seen = new Set(items.map((item) => item.relativePath));
+    const repoPath = localConfig.repo.localPath;
+    // The mirror is machine-wide in user scope, so it also holds docs of other
+    // teams. Only a doc this team has is an edit of ours; a new doc is authored
+    // in the team repo, not swept from whatever the member's mirror holds.
+
+    const tracked = new Set(
+      (await createGitWithBlockTimeout(repoPath).raw(['--literal-pathspecs', 'ls-files', '-z', '--', 'docs']))
+        .split('\0')
+        .filter(Boolean),
+    );
+
+    for (const rel of await listRepoFilesRecursive(mirror)) {
+      const relativePath = `docs/${rel}`;
+
+      if (seen.has(relativePath) || !tracked.has(relativePath)) continue;
+
+      const localFile = path.join(mirror, ...rel.split('/'));
+
+      if (await isTeamaiCopy(localFile, { repoPath, pathspec: relativePath })) continue;
+
+      items.push({ name: rel, type: 'docs', sourcePath: localFile, relativePath, status: 'modified' });
+    }
+
+    return items;
   }
 
   async scanTeamForPull(_teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {

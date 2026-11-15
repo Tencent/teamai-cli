@@ -9,9 +9,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
-import { stopProcess } from '../tool-launch/process-stop.js';
+import { stopProcess } from '@teamai/shared/process-group';
 import { TeamaiConfigBaseSchema } from '../types.js';
-import { pathExists, writeJsonAtomic } from '../utils/fs.js';
+import { pathExists, symlinkTarget, writeJsonAtomic } from '../utils/fs.js';
+import { MAX_TIMER_MS } from '@teamai/shared/timer';
+import { appendRegularFile, readRegularFile, writeRegularFile } from '@teamai/shared/regular-file';
 
 /** Agent configuration a workspace step reads from the run's base rather than from its branch. */
 export const AGENT_PATHS: readonly string[] = agentConfigPaths();
@@ -66,9 +68,78 @@ export interface GitResult {
   stderr: string;
 }
 
+/**
+ * The exit code of a git that did not start (not installed, not executable), as a shell reports a command it cannot run.
+ * No git command exits with it, so it is never read as the 0 or the 1 a git question answers with.
+ */
+export const GIT_NOT_STARTED = 127;
+
+/** The exit code of a git stopped before it exited, at its deadline or by a signal, as `timeout(1)` reports one. */
+export const GIT_STOPPED = 124;
+
+/**
+ * What git said to a question it answers with its exit code (`merge-base --is-ancestor`, `cat-file -e`, `diff --quiet`,
+ * `show-ref --quiet`, `check-ignore -q`, `rev-parse --verify --quiet`, `symbolic-ref --quiet`): yes at exit 0, with what
+ * it printed; no at any other exit of a git that ran, whose code tells a plain no (1) from a git that failed (128); and
+ * nothing when git did not start, or the macOS stub ran in its place, which is no answer, never a no.
+ */
+export type GitAnswer = { readonly said: 'yes' | 'no' | 'nothing'; readonly result: GitResult };
+
+/**
+ * What a git whose process could not start returns, by `error`, the spawn's: in a `cwd` that is not a directory, the
+ * failure `git -C` exits 128 with, since Node reports it as a missing git; otherwise GIT_NOT_STARTED.
+ */
+export function unstartedGit({ cwd, error, isCwdThere }: { cwd: string; error: Error; isCwdThere: boolean }): GitResult {
+  if (!isCwdThere) return { code: 128, stdout: '', stderr: `fatal: cannot change to '${cwd}': No such directory` };
+
+  const missing = 'code' in error && error.code === 'ENOENT' ? '; check that git is installed and on PATH' : '';
+
+  return { code: GIT_NOT_STARTED, stdout: '', stderr: `git did not start: ${error.message}${missing}` };
+}
+
+/** What a git stopped before it exited returns, `why` naming what stopped it, with whatever it printed by then. */
+export function stoppedGit(why: string, stderr: string): GitResult {
+  return { code: GIT_STOPPED, stdout: '', stderr: `git was stopped before it answered: ${why}.${stderr.trim() ? ` ${stderr.trim()}` : ''}` };
+}
+
+// On macOS without the Command Line Tools, /usr/bin/git is a stub that runs no git: it says why on stderr and exits 1.
+const GIT_STUB_REFUSAL = /^(xcode-select: note: |xcrun: error: )/m;
+
+/** Reads `result`, git's exit to a question it answers with its exit code, as its answer (`GitAnswer`). */
+export function gitAnswer(result: GitResult): GitAnswer {
+  if (result.code === 0) return { said: 'yes', result };
+  const isUnanswered = result.code === GIT_NOT_STARTED || result.code === GIT_STOPPED || GIT_STUB_REFUSAL.test(result.stderr);
+
+  return { said: isUnanswered ? 'nothing' : 'no', result };
+}
+
+/** The error a caller raises when git did not answer `question`, with the cause git gave. */
+export function unansweredGit(question: string, result: GitResult): Error {
+  return new Error(`Could not tell ${question}: ${result.stderr.trim()}. Then try again.`);
+}
+
+/** Whether git said yes to `question`. Throws when git did not start, which is neither a yes nor a no. */
+export function saidYes(answer: GitAnswer, question: string): boolean {
+  if (answer.said === 'nothing') throw unansweredGit(question, answer.result);
+
+  return answer.said === 'yes';
+}
+
+/** What git printed with its yes to `question`, trimmed; '' for a no. Throws when git did not start. */
+export function yesOutput(answer: GitAnswer, question: string): string {
+  if (answer.said === 'nothing') throw unansweredGit(question, answer.result);
+
+  return answer.said === 'yes' ? answer.result.stdout.trim() : '';
+}
+
 type GitOptions = { input: string; timeoutMs?: number } | { timeoutMs: number; env?: NodeJS.ProcessEnv };
 
 export type Git = (cwd: string, args: string[], options?: GitOptions) => Promise<GitResult>;
+
+const UNTRUSTED = Symbol('untrusted git');
+
+/** git that runs nothing the config of the checkout it runs in names: only `untrustedGit` makes one. */
+export type UntrustedGit = Git & { readonly [UNTRUSTED]: true };
 
 // `git worktree add` writes a new worktree's entry under `.git/worktrees/` one file at a time and takes no lock, so a
 // command that reads every worktree (`fetch`, `branch`, `worktree add`, `worktree list`) dies on an entry it finds half
@@ -106,23 +177,127 @@ export function boundedGit(expiresAt: string | undefined, env: NodeJS.ProcessEnv
 
 /**
  * The settings git starts with in a checkout another process controls. `-c` outranks every config file that process can
- * edit, so no hook and no fsmonitor it names runs, and an object id means that object, never a replacement it set.
+ * edit, so no hook and no fsmonitor it names runs, an object id means that object, never a replacement it set, and no
+ * fetch or push reaches a submodule's remote, which its config names.
  */
-export const UNTRUSTED_CONFIG: readonly string[] = ['-c', `core.hooksPath=${os.devNull}`, '-c', 'core.fsmonitor=false', '-c', 'core.useReplaceRefs=false'];
+export const UNTRUSTED_CONFIG: readonly string[] = [
+  '-c', `core.hooksPath=${os.devNull}`, '-c', 'core.fsmonitor=false', '-c', 'core.useReplaceRefs=false',
+  '-c', 'submodule.recurse=false', '-c', 'fetch.recurseSubmodules=false', '-c', 'push.recurseSubmodules=no',
+];
 
 /**
  * git in a checkout another process controls, such as a benchmark trial's clone after its tool ran: `UNTRUSTED_CONFIG`
- * first, then every hook its config names turned off, and `env` instead of this process's environment, for git and for
- * whatever its config still starts, such as a filter. Past `expiresAt`, each git it started is stopped, so a filter
- * that never returns holds its caller no longer than that.
+ * first, then every program its config names turned off or replaced by the member's own (`plantedOff`), and `env`
+ * instead of this process's environment, for git and for whatever the member's config starts, such as a filter, `kept`
+ * among it. Past `expiresAt`, each git it started is stopped, so a filter that never returns holds its caller no longer
+ * than that.
  */
-export function untrustedGit(env: NodeJS.ProcessEnv, expiresAt?: string): Git {
-  return async (cwd, args, options) => {
-    const off = await hooksOff(cwd, env, expiresAt);
+export function untrustedGit(env: NodeJS.ProcessEnv, expiresAt?: string, kept: MemberConfig = NO_MEMBER_CONFIG): UntrustedGit {
+  const run: Git = async (cwd, args, options) => {
+    // Read before every call, never once for several: a process a step left running can write the copy's config between two calls.
+    const off = await plantedOff({ cwd, env, expiresAt, kept });
 
-    return 'error' in off ? off.error : spawnGit(cwd, [...UNTRUSTED_CONFIG, ...off.args, ...args], boundedBy(options, expiresAt), { ...env, [HOOK_OFF]: 'false' });
+    if ('error' in off) return off.error;
+
+    return spawnGit(cwd, [...UNTRUSTED_CONFIG, ...off.args, ...withPackPrograms(args, off.hasPackPrograms)], boundedBy(options, expiresAt), { ...env, ...off.env, [HOOK_OFF]: 'false' });
   };
+
+  return Object.assign(run, { [UNTRUSTED]: true as const });
 }
+
+/**
+ * The program keys a checkout's local and worktree config named before any step of a run could write it, each as
+ * `key LF value`: the member's own setup, such as a git-crypt filter or a per-repository `core.sshCommand`, which
+ * `untrustedGit` keeps as the member's system and global config. A worktree shares its local config with the checkout
+ * it was made from, so the member's own git runs these there anyway.
+ */
+export type MemberConfig = ReadonlySet<string>;
+
+const NO_MEMBER_CONFIG: MemberConfig = new Set();
+
+/**
+ * Where a copy's remote work goes, as the member's checkout said before a run's first step: what it kept
+ * (`readMemberConfig`), origin's URL among it, and the environment git runs with there.
+ */
+export interface MemberRemote {
+  kept: MemberConfig;
+  env: NodeJS.ProcessEnv;
+}
+
+/** Every value `kept` holds for config key `key`, in the order git lists them. */
+function keptValues(kept: MemberConfig, key: string): string[] {
+  return [...kept].flatMap((entry) => (entry.startsWith(`${key}\n`) ? [entry.slice(key.length + 1)] : []));
+}
+
+/** The URL `kept` names for fetching from origin, as `git remote get-url origin` answers in the checkout. */
+export function keptOriginUrl(kept: MemberConfig): string | undefined {
+  return keptValues(kept, 'remote.origin.url')[0];
+}
+
+/**
+ * Where `git push origin` pushes in a checkout whose kept config is `kept`, each with the kept config to push with:
+ * every push URL it names, none of them rewritten by a `pushInsteadOf`, or else origin's URL, which one rewrites. None
+ * when it names no origin.
+ */
+export function pushTargets(kept: MemberConfig): { url: string; kept: MemberConfig }[] {
+  const pushUrls = keptValues(kept, 'remote.origin.pushurl');
+
+  if (pushUrls.length > 0) {
+    const unrewritten: MemberConfig = new Set([...kept].filter((entry) => !/^url\..*\.pushinsteadof\n/.test(entry)));
+
+    return pushUrls.map((url) => ({ url, kept: unrewritten }));
+  }
+
+  const url = keptOriginUrl(kept);
+
+  return url === undefined ? [] : [{ url, kept }];
+}
+
+/** Reads `MemberConfig` in checkout `dir`, for a run to keep before its first step. */
+export async function readMemberConfig(dir: string): Promise<string[] | { error: string }> {
+  const listed = await spawnGit(dir, ['config', '--null', '--show-scope', '--get-regexp', KEPT], undefined, hostGitEnv());
+
+  if (listed.code === 1) return [];
+
+  if (listed.code !== 0) return { error: listed.stderr.trim() || `git config exited with ${listed.code}` };
+
+  return configEntries(listed.stdout).filter((entry) => !TRUSTED_SCOPES.has(entry.scope)).map((entry) => `${entry.key}\n${entry.value}`);
+}
+
+type ConfigEntry = { scope: string; key: string; value: string };
+
+/** The entries of `git config --null --show-scope`, which writes each as scope NUL key LF value NUL. */
+function configEntries(stdout: string): ConfigEntry[] {
+  const fields = stdout.split('\0');
+  const entries: ConfigEntry[] = [];
+
+  for (let at = 0; at + 1 < fields.length; at += 2) {
+    const entry = fields[at + 1] ?? '';
+    const newline = entry.indexOf('\n');
+    entries.push({ scope: fields[at] ?? '', key: newline === -1 ? entry : entry.slice(0, newline), value: newline === -1 ? '' : entry.slice(newline + 1) });
+  }
+
+  return entries;
+}
+
+/**
+ * The variables of this process that git and the member's own git setup need: where git and its config are, the
+ * locale, the SSH agent and askpass a push signs in through, proxies and certificates. Nothing else, so a program the
+ * member's own config starts in a copy, such as a filter, reads no token or key of the host.
+ */
+export function hostGitEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([name]) => HOST_GIT_ENV.has(name) || HOST_GIT_ENV.has(name.toUpperCase()) || /^LC_[A-Z]+$/.test(name)));
+}
+
+const HOST_GIT_ENV: ReadonlySet<string> = new Set([
+  'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LANGUAGE', 'TZ', 'TERM',
+  'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'HOMEDRIVE', 'HOMEPATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT',
+  // oxlint-disable-next-line teamai/tool-home-env -- the host variables a git command keeps, where git finds its own config; it starts no tool
+  'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_RUNTIME_DIR',
+  'GIT_EXEC_PATH', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM', 'GIT_TERMINAL_PROMPT',
+  'GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_SSH_VARIANT', 'GIT_PROXY_COMMAND', 'GIT_ASKPASS', 'SSH_ASKPASS', 'SSH_AUTH_SOCK', 'GIT_SSL_CAINFO', 'GIT_SSL_CAPATH',
+  'HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY', 'NO_PROXY', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
+]);
 
 /** `options` with its timeout cut to the time left before `expiresAt`, at least 1 ms: a timeout of 0 never stops git. */
 function boundedBy(options: GitOptions | undefined, expiresAt: string | undefined): GitOptions | undefined {
@@ -136,22 +311,202 @@ function boundedBy(options: GitOptions | undefined, expiresAt: string | undefine
 /** What each `--config-env` that turns a configured hook off reads. */
 const HOOK_OFF = 'TEAMAI_GIT_HOOK_ENABLED';
 
+/** The config scopes a step cannot write: the member's own files, and what this process sets for git. */
+const TRUSTED_SCOPES = new Set(['system', 'global', 'command']);
+
+/** What each `--config-env` that gives a key the member's own value, or a neutral one, reads: one variable per value, numbered. */
+const TRUSTED_VALUE = 'TEAMAI_GIT_TRUSTED_VALUE_';
+
 /**
- * The options that turn off each hook the config in `cwd` names, `hook.<name>.command` (Git 2.54 and later), which runs
- * beside the script hooks `core.hooksPath` turns off. `--config-env` reads the key up to its last `=`, which `-c` does
- * not, so a hook whose name holds one is turned off too.
+ * The keys whose value git runs as a program, as `git config --show-scope` spells them (section and name lower case),
+ * each with what git gets in its place when only a config a step could write sets it: an empty filter is off, and an
+ * empty diff or merge driver, editor or askpass makes git fail or go on without running anything.
  */
-async function hooksOff(cwd: string, env: NodeJS.ProcessEnv, expiresAt: string | undefined): Promise<{ args: string[] } | { error: GitResult }> {
+const PROGRAM_KEYS: ReadonlyArray<{ key: RegExp; neutral: (env: NodeJS.ProcessEnv) => string }> = [
+  { key: /^gpg\.(?:openpgp\.)?program$/, neutral: () => 'gpg' },
+  { key: /^gpg\.x509\.program$/, neutral: () => 'gpgsm' },
+  { key: /^gpg\.ssh\.program$/, neutral: () => 'ssh-keygen' },
+  { key: /^gpg\.ssh\.defaultkeycommand$/, neutral: () => '' },
+  // GIT_SSH_COMMAND outranks the key; GIT_SSH runs only where the key is unset, so it takes the key's place.
+  { key: /^core\.sshcommand$/, neutral: (env) => (env.GIT_SSH ? `'${env.GIT_SSH.replaceAll("'", `'\\''`)}'` : 'ssh') },
+  { key: /^core\.askpass$/, neutral: () => '' },
+  { key: /^core\.editor$|^sequence\.editor$/, neutral: () => ':' },
+  { key: /^core\.pager$/, neutral: () => 'cat' },
+  { key: /^pager\..+$/, neutral: () => 'false' },
+  { key: /^filter\..+\.(?:clean|smudge|process)$/, neutral: () => '' },
+  { key: /^diff\.external$|^diff\..+\.(?:command|textconv)$/, neutral: () => '' },
+  { key: /^merge\..+\.driver$/, neutral: () => '' },
+  // `protocol.allow` lets in `ext::`, whose URL is a command, unless `protocol.ext.allow` says otherwise; never is git's default.
+  { key: /^protocol\.ext\.allow$/, neutral: () => 'never' },
+];
+
+/** A remote's `uploadpack` and `receivepack` add a value per `-c`, so only the command's own option replaces them. */
+const PACK_PROGRAM = /^remote\..+\.(uploadpack|receivepack)$/;
+
+/** The keys `plantedOff` reads, as one `git config --get-regexp` pattern. */
+const PLANTABLE = '^hook\\..*\\.|^credential\\..*helper$|^gpg\\.|^core\\.(sshcommand|askpass|editor|pager|gitproxy)$|^sequence\\.editor$|^pager\\.|^filter\\.|^diff\\.|^merge\\..*\\.driver$|^protocol\\.|^remote\\..*\\.(uploadpack|receivepack)$';
+
+/** What `readMemberConfig` keeps besides `PLANTABLE`: where origin is, and the URL rewrites, which `remoteGit` takes from it. */
+const KEPT = `${PLANTABLE}|^remote\\.origin\\.(url|pushurl)$|^url\\..*\\.(insteadof|pushinsteadof)$`;
+
+/** The kept keys `remoteGit` gives the git it runs: how the member signs in and reaches a host, never a hook or a filter. */
+const REMOTE_KEYS = /^credential\.|^core\.(sshcommand|askpass|gitproxy)$|^url\..*\.(insteadof|pushinsteadof)$|^protocol\./;
+
+/**
+ * Runs git `args`, which reach a remote by its URL, from a bare repository of teamai's own that reads the objects of
+ * checkout `dir` through its alternates. Nothing the config of `dir` names takes part, as a step in `dir` could have
+ * written it: no remote, so a URL that names one is still that URL, no URL rewrite, no hook and no program. Only the
+ * member's system and global config, and `member.kept`'s keys for signing in and reaching a host, apply.
+ */
+export async function remoteGit(dir: string, member: MemberRemote, args: string[], runGit: Git, options?: GitOptions): Promise<GitResult> {
+  const common = await runGit(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+
+  if (common.code !== 0) return common;
+  const neutral = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-remote-'));
+
+  try {
+    const made = await spawnGit(neutral, ['init', '-q', '--bare', '--template=', neutral], undefined, member.env);
+
+    if (made.code !== 0) return made;
+    await writeRegularFile(path.join(neutral, 'objects', 'info', 'alternates'), `${path.join(common.stdout.trim(), 'objects')}\n`);
+    const values: Record<string, string> = {};
+
+    const given = [...member.kept].flatMap((entry) => {
+      const key = entry.slice(0, entry.indexOf('\n'));
+
+      if (!REMOTE_KEYS.test(key)) return [];
+      const name = `${TRUSTED_VALUE}${Object.keys(values).length}`;
+      values[name] = entry.slice(key.length + 1);
+
+      return [`--config-env=${key}=${name}`];
+    });
+
+    return await spawnGit(neutral, ['--git-dir', neutral, ...UNTRUSTED_CONFIG, ...given, ...args], options, { ...member.env, ...values });
+  } finally {
+    await fs.rm(neutral, { recursive: true, force: true });
+  }
+}
+
+/**
+ * The options that keep what the config in `cwd` and its submodules names from running (`plantableIn`):
+ * - each hook it names, `hook.<name>.command` (Git 2.54 and later), which runs beside the script hooks
+ *   `core.hooksPath` turns off. `--config-env` reads the key up to its last `=`, which `-c` does not, so a hook whose
+ *   name holds one is turned off too;
+ * - a credential helper the checkout's own config names (`credential.helper` and `credential.<url>.helper` in its local
+ *   or worktree file, which a step could write), while every helper the member's system and global config name still
+ *   runs, in their order: each such key is reset, then given again the member's own values. A push that needs
+ *   credentials then asks the member's helpers only;
+ * - each `PROGRAM_KEYS` key such a file sets, given the member's own value last, else its neutral one. `protocol.allow`
+ *   set there gives `protocol.ext.allow` the same treatment;
+ * - `hasPackPrograms` when such a file sets a remote's `uploadpack` or `receivepack`, for `withPackPrograms`;
+ * - `GIT_PROXY_COMMAND`, the member's own or empty, when such a file sets `core.gitProxy`.
+ *
+ * An entry `kept` holds counts as the member's own, as one in their global config does; a hook it names is still off.
+ */
+async function plantedOff(input: { cwd: string; env: NodeJS.ProcessEnv; expiresAt: string | undefined; kept: MemberConfig }): Promise<{ args: string[]; env: Record<string, string>; hasPackPrograms: boolean } | { error: GitResult }> {
+  const { cwd, env, expiresAt, kept } = input;
   // Bounded too: a config can include a file that never ends, such as a pipe no one writes.
-  const listed = await spawnGit(cwd, ['config', '--null', '--get-regexp', '^hook\\..*\\.'], boundedBy(undefined, expiresAt), env);
+  const listed = await plantableIn({ cwd, env, expiresAt });
+
+  if ('error' in listed) return listed;
+  const hooks = new Set<string>();
+  const helpers = new Map<string, Array<{ trusted: boolean; value: string }>>();
+  const programs = new Map<string, Array<{ trusted: boolean; value: string }>>();
+  let hasPackPrograms = false;
+  let gitProxy = false;
+
+  for (const { scope, key, value } of listed.entries) {
+    const trusted = TRUSTED_SCOPES.has(scope) || kept.has(`${key}\n${value}`);
+    const hook = /^hook\.(.+)\.[^.]+$/.exec(key)?.[1];
+
+    if (key === 'core.gitproxy') gitProxy ||= !trusted;
+    else if (key.startsWith('hook.')) {
+      if (hook !== undefined) hooks.add(hook);
+    } else if (key.startsWith('credential.')) helpers.set(key, [...helpers.get(key) ?? [], { trusted, value }]);
+    else if (PACK_PROGRAM.test(key)) hasPackPrograms ||= !trusted;
+    else {
+      const program = key === 'protocol.allow' ? 'protocol.ext.allow' : key;
+
+      if (PROGRAM_KEYS.some((known) => known.key.test(program))) programs.set(program, [...programs.get(program) ?? [], { trusted: trusted && key === program, value }]);
+    }
+  }
+
+  const args = [...hooks].map((name) => `--config-env=hook.${name}.enabled=${HOOK_OFF}`);
+  const values: Record<string, string> = {};
+
+  const give = (key: string, value: string): void => {
+    const name = `${TRUSTED_VALUE}${Object.keys(values).length}`;
+    values[name] = value;
+    args.push(`--config-env=${key}=${name}`);
+  };
+
+  for (const [key, entries] of helpers) {
+    if (entries.every((entry) => entry.trusted)) continue;
+
+    for (const value of ['', ...entries.filter((entry) => entry.trusted).map((entry) => entry.value)]) give(key, value);
+  }
+
+  for (const [key, entries] of programs) {
+    if (entries.every((entry) => entry.trusted)) continue;
+    const own = entries.findLast((entry) => entry.trusted);
+    give(key, own?.value ?? PROGRAM_KEYS.find((known) => known.key.test(key))?.neutral(env) ?? '');
+  }
+
+  // The first `core.gitProxy` that matches a host wins, so no `-c` replaces one; the variable outranks every one.
+  if (gitProxy) values.GIT_PROXY_COMMAND = env.GIT_PROXY_COMMAND ?? '';
+
+  return { args, env: values, hasPackPrograms };
+}
+
+/**
+ * The `PLANTABLE` entries of the config in `cwd`, then the local and worktree ones of each submodule checked out
+ * under it, at any depth: git runs in a submodule for a command such as `status`, with what `-c` gives the
+ * superproject, so the keys a submodule's config sets are turned off there too.
+ */
+async function plantableIn(input: { cwd: string; env: NodeJS.ProcessEnv; expiresAt: string | undefined; nested?: true }): Promise<{ entries: ConfigEntry[] } | { error: GitResult }> {
+  const { cwd, env, expiresAt, nested } = input;
+  // Bounded too: a config can include a file that never ends, such as a pipe no one writes.
+  const listed = await spawnGit(cwd, ['config', '--null', '--show-scope', '--get-regexp', PLANTABLE], boundedBy(undefined, expiresAt), env);
 
   // git config exits 1 when no key matches.
-  if (listed.code === 1) return { args: [] };
+  if (listed.code !== 0 && listed.code !== 1) return { error: listed };
+  const own = configEntries(listed.stdout).filter((entry) => !nested || !TRUSTED_SCOPES.has(entry.scope));
+  // Reading the index starts the fsmonitor its config names.
+  const staged = await spawnGit(cwd, [...UNTRUSTED_CONFIG, 'ls-files', '--stage', '-z'], boundedBy(undefined, expiresAt), env);
 
-  if (listed.code !== 0) return { error: listed };
-  const names = new Set(listed.stdout.split('\0').flatMap((entry) => /^hook\.(.+)\.[^.]+$/.exec(entry.split('\n')[0] ?? '')?.[1] ?? []));
+  // An index git cannot read lists no submodule, and fails the command itself where it would reach one: that command
+  // says what is wrong with it.
+  if (staged.code !== 0) return { entries: own };
+  const entries = [own];
 
-  return { args: [...names].map((name) => `--config-env=hook.${name}.enabled=${HOOK_OFF}`) };
+  for (const line of gitlinkLines(staged.stdout)) {
+    const sub = path.join(cwd, line.slice(line.indexOf('\t') + 1));
+
+    if (!(await fs.stat(path.join(sub, '.git')).then(() => true, () => false))) continue;
+    const inner = await plantableIn({ cwd: sub, env, expiresAt, nested: true });
+
+    if ('error' in inner) return inner;
+    entries.push(inner.entries);
+  }
+
+  return { entries: entries.flat() };
+}
+
+/** The subcommands that start a remote's `upload-pack` or `receive-pack`, with the option that names it. */
+const PACK_OPTIONS = new Map([
+  ['push', '--receive-pack=git-receive-pack'], ['fetch', '--upload-pack=git-upload-pack'], ['pull', '--upload-pack=git-upload-pack'], ['ls-remote', '--upload-pack=git-upload-pack'],
+]);
+
+/** `args` with git's own pack program named after its subcommand, when the copy's config names another. */
+function withPackPrograms(args: string[], hasPackPrograms: boolean): string[] {
+  if (!hasPackPrograms) return args;
+  let at = 0;
+
+  // Global options before the subcommand; `-c` and `-C` take the next argument.
+  while (at < args.length && (args[at] ?? '').startsWith('-')) at += args[at] === '-c' || args[at] === '-C' ? 2 : 1;
+  const option = PACK_OPTIONS.get(args[at] ?? '');
+
+  return option === undefined ? args : [...args.slice(0, at + 1), option, ...args.slice(at + 1)];
 }
 
 /**
@@ -166,11 +521,29 @@ function settleOnSignal(child: ChildProcess): void {
   });
 }
 
+function isDirectory(dir: string): Promise<boolean> {
+  return fs.stat(dir).then((stats) => stats.isDirectory(), () => false);
+}
+
 function spawnGit(cwd: string, args: string[], options: GitOptions | undefined, base: NodeJS.ProcessEnv): Promise<GitResult> {
   if (options === undefined) {
     return new Promise((resolve) => {
-      execFile('git', args, { cwd, env: base, windowsHide: true }, (error, stdout, stderr) => {
+      const child = execFile('git', args, { cwd, env: base, windowsHide: true }, (error, stdout, stderr) => {
         const exit = z.number().safeParse(error?.code);
+
+        // A git with no pid never started (ENOENT, EACCES), so it answered nothing.
+        if (error && child.pid === undefined) {
+          resolve(isDirectory(cwd).then((isCwdThere) => unstartedGit({ cwd, error, isCwdThere })));
+
+          return;
+        }
+
+        if (error?.signal) {
+          resolve(stoppedGit(`it got ${error.signal}`, String(stderr)));
+
+          return;
+        }
+
         const code = exit.success ? exit.data : error ? 1 : 0;
         resolve({ code, stdout: String(stdout), stderr: String(stderr) });
       });
@@ -181,25 +554,43 @@ function spawnGit(cwd: string, args: string[], options: GitOptions | undefined, 
   settleOnSignal(child);
   let stdout = '';
   let stderr = '';
+  let notStarted: Error | undefined;
   child.stdout.setEncoding('utf8');
   child.stderr.setEncoding('utf8');
   child.stdout.on('data', (chunk: string) => { stdout += chunk; });
   child.stderr.on('data', (chunk: string) => { stderr += chunk; });
 
+  let stoppedBy: string | undefined;
+
   const exited = new Promise<number>((resolve) => {
-    child.on('error', () => resolve(1));
-    child.on('close', (code) => resolve(code ?? 1));
+    child.on('error', (error) => {
+      // A git with no pid never started (ENOENT, EACCES), so it answered nothing.
+      if (child.pid === undefined) notStarted = error;
+      resolve(notStarted === undefined ? 1 : GIT_NOT_STARTED);
+    });
+    child.on('close', (code, signal) => {
+      if (code === null) stoppedBy ??= `it got ${signal ?? 'a signal'}`;
+      resolve(code ?? GIT_STOPPED);
+    });
   });
 
-  // At its timeout git stops with every process it started, such as a filter that never returns.
-  const timer = options.timeoutMs === undefined ? undefined : setTimeout(() => { void stopProcess(child, exited, false)(); }, options.timeoutMs);
+  // At its timeout git stops with every process it started, such as a filter that never returns. A timeout longer than a
+  // timer can wait is none: Node would fire the timer at once.
+  const timer = options.timeoutMs === undefined || options.timeoutMs > MAX_TIMER_MS ? undefined : setTimeout(() => {
+    stoppedBy = `its deadline passed after ${options.timeoutMs} ms`;
+    void stopProcess(child, exited, false)();
+  }, options.timeoutMs);
+
   child.stdin.on('error', () => {});
   child.stdin.end('input' in options ? options.input : undefined);
 
-  return exited.then((code) => {
+  return exited.then(async (code) => {
     clearTimeout(timer);
 
-    return { code, stdout, stderr };
+    if (notStarted !== undefined) return unstartedGit({ cwd, error: notStarted, isCwdThere: await isDirectory(cwd) });
+
+    // A git that exited 0 as its deadline passed answered before it was stopped.
+    return stoppedBy === undefined || code === 0 ? { code, stdout, stderr } : stoppedGit(stoppedBy, stderr);
   });
 }
 
@@ -225,8 +616,8 @@ export function worktreeCheckout(dir: string): string | undefined {
 }
 
 /** A path git keeps for this checkout. A linked worktree's `.git` is a file, so the path is not `<checkout>/.git`. */
-export async function gitPath(cwd: string, name: string): Promise<string | undefined> {
-  const result = await git(cwd, ['rev-parse', '--git-path', name]);
+export async function gitPath(cwd: string, name: string, runGit: Git = git): Promise<string | undefined> {
+  const result = await runGit(cwd, ['rev-parse', '--git-path', name]);
   const printed = result.code === 0 ? result.stdout.trim() : '';
 
   return printed === '' ? undefined : path.resolve(cwd, printed);
@@ -237,52 +628,66 @@ const EXCLUDE_BLOCK = `${EXCLUDE_MARKER}\n.teamai/workflow-worktrees/\n.teamai/w
 
 /** Keeps TeamAI worktrees out of `git status` in the active checkout. */
 async function hideTeamaiWorktrees(main: string): Promise<void> {
-  const exclude = await gitPath(main, 'info/exclude');
+  const excludePath = await gitPath(main, 'info/exclude');
 
-  if (!exclude) return;
-  const current = await fs.readFile(exclude, 'utf8').catch(() => '');
+  if (!excludePath) return;
+  // The member's own file, which a dotfile manager may link: edit the file it leads to, as `writeFileAtomic` does.
+  const exclude = await symlinkTarget(excludePath);
+  const current = await readRegularFile(exclude, 'utf8').catch(() => '');
 
   if (current.includes(EXCLUDE_MARKER)) return;
   await fs.mkdir(path.dirname(exclude), { recursive: true });
-  await fs.appendFile(exclude, `${current.endsWith('\n') || current === '' ? '' : '\n'}${EXCLUDE_BLOCK}`);
+  await appendRegularFile(exclude, `${current.endsWith('\n') || current === '' ? '' : '\n'}${EXCLUDE_BLOCK}`);
 }
 
-async function removeEmptyDir(dir: string, dryRun: boolean): Promise<boolean> {
+/** Removes `dir` when empty; a dry run counts it empty when it holds only the worktrees in `gone`, which go first. */
+async function removeEmptyDir(dir: string, dryRun: boolean, gone: readonly string[] = []): Promise<boolean> {
   const entries = await fs.readdir(dir).catch(() => null);
 
-  if (entries === null || entries.length > 0) return false;
+  if (entries === null || entries.some((name) => !(dryRun && gone.includes(path.join(dir, name))))) return false;
 
   if (!dryRun) await fs.rmdir(dir);
 
   return true;
 }
 
+/** Marks `extensions.worktreeConfig` as one teamai turned on, holding the member's value before (`unset` when none). */
+const WORKTREE_CONFIG_OWNED = 'teamai.worktreeconfig';
+
 /**
  * Undoes in `checkout` what its workflow worktrees set up: the directories that held them, the exclude block that hid
  * them, and `extensions.worktreeConfig` when teamai turned it on and no worktree has a configuration of its own. Nothing while a TeamAI worktree
  * of the repository is left, since it still needs them. Returns what it removed, or with `dryRun` what it would.
  */
-/** Marks `extensions.worktreeConfig` as one teamai turned on, holding the member's value before (`unset` when none). */
-const WORKTREE_CONFIG_OWNED = 'teamai.worktreeconfig';
-
-export async function removeWorktreeSetup(checkout: string, { dryRun = false } = {}): Promise<string[]> {
+export async function removeWorktreeSetup(checkout: string, { dryRun = false, gone = [] }: { dryRun?: boolean; gone?: readonly string[] } = {}): Promise<string[]> {
   const listed = await git(checkout, ['worktree', 'list', '--porcelain']);
 
   if (listed.code !== 0) return [];
-  const worktrees = listed.stdout.split('\n').flatMap((line) => (line.startsWith('worktree ') ? [line.slice('worktree '.length)] : []));
+  // `gone`: the worktrees a dry run counts as removed already, as the removal before it will have removed them.
+  const worktrees = listed.stdout.split('\n').flatMap((line) => (line.startsWith('worktree ') ? [line.slice('worktree '.length)] : [])).filter((dir) => !gone.includes(dir));
 
   if (worktrees.some((dir) => worktreeCheckout(dir) !== undefined)) return [];
+
+  // git's records of gone worktrees go with the setup: Docker makes a missing bind mount source, such as a sandbox's
+  // mount of a step worktree's git directory, as an empty directory when a container starts after the worktree went.
+  if (!dryRun) {
+    const forgot = await forgetGoneWorktrees(checkout);
+
+    if (!forgot.ok) throw new Error(forgot.reason);
+  }
+
   const removed: string[] = [];
 
   for (const dir of [path.join(checkout, '.teamai', 'workflow-worktrees'), hooksPath(checkout)]) {
-    if (await removeEmptyDir(dir, dryRun)) removed.push(dir);
+    if (await removeEmptyDir(dir, dryRun, gone)) removed.push(dir);
   }
 
-  const exclude = await gitPath(checkout, 'info/exclude');
-  const current = exclude === undefined ? '' : await fs.readFile(exclude, 'utf8').catch(() => '');
+  const excludePath = await gitPath(checkout, 'info/exclude');
+  const exclude = excludePath === undefined ? undefined : await symlinkTarget(excludePath);
+  const current = exclude === undefined ? '' : await readRegularFile(exclude, 'utf8').catch(() => '');
 
   if (exclude !== undefined && current.includes(EXCLUDE_BLOCK)) {
-    if (!dryRun) await fs.writeFile(exclude, current.replace(EXCLUDE_BLOCK, ''));
+    if (!dryRun) await writeRegularFile(exclude, current.replace(EXCLUDE_BLOCK, ''));
     removed.push(`${exclude} (${EXCLUDE_MARKER.slice(2)})`);
   }
 
@@ -306,9 +711,156 @@ export async function removeWorktreeSetup(checkout: string, { dryRun = false } =
     removed.push(ownConfigs.includes(true) ? `${WORKTREE_CONFIG_OWNED} in the git config` : 'extensions.worktreeConfig in the git config');
   }
 
+  // The upstream each run branch's push recorded, which the branch, the member's to keep, no longer needs teamai for.
+  const upstreams = await git(checkout, ['config', '--local', '--name-only', '--get-regexp', String.raw`^branch\.teamai/.*\.remote$`]);
+
+  for (const key of upstreams.code === 0 ? upstreams.stdout.split('\n').filter(Boolean) : []) {
+    const branch = key.slice('branch.'.length, -'.remote'.length);
+
+    if (await isRunBranch(branch)) removed.push(...(await forgetUpstream(checkout, branch, { dryRun })).map((name) => `${name} in the git config`));
+  }
+
   if (removed.length > 0) await removeEmptyDir(path.join(checkout, '.teamai'), dryRun);
 
   return removed;
+}
+
+/**
+ * A worktree teamai made for a workflow run (see `worktreePath`), as an uninstall finds it: `removable` when nothing in it
+ * is lost with it (its commits are on `branch`, which stays, or git's record outlived the directory), else `kept` with why.
+ */
+export type RunWorktree =
+  | { kind: 'removable'; dir: string; branch?: string }
+  | { kind: 'kept'; dir: string; why: string; isLocked: boolean };
+
+/** Every worktree of the repository of `checkout`, each with the lines `git worktree list --porcelain` gave it. */
+async function listedWorktrees(checkout: string): Promise<{ dir: string; lines: string[] }[] | { error: string }> {
+  const listed = await git(checkout, ['worktree', 'list', '--porcelain']);
+
+  if (listed.code !== 0) return { error: listed.stderr.trim() || 'git worktree list failed' };
+
+  return listed.stdout.split('\n\n').flatMap((entry) => {
+    const lines = entry.split('\n');
+    const dir = lines.find((line) => line.startsWith('worktree '))?.slice('worktree '.length);
+
+    return dir === undefined ? [] : [{ dir, lines }];
+  });
+}
+
+/** Whether `other` is a worktree inside `dir`, which removing `dir` deletes with it. git spells a path with `/` on Windows too. */
+function holds(dir: string, other: string): boolean {
+  return path.resolve(other).startsWith(path.resolve(dir) + path.sep);
+}
+
+/**
+ * The first of the `listed` worktrees inside `dir`, which removing `dir` deletes with it; links resolved on both sides,
+ * since git records a worktree by its real path and a caller may name it through a link, such as macOS's `/var`.
+ */
+async function worktreeInside(dir: string, listed: ReadonlyArray<{ dir: string }>): Promise<string | undefined> {
+  const real = (at: string): Promise<string> => fs.realpath(at).catch(() => path.resolve(at));
+  const [outer, others] = await Promise.all([real(dir), Promise.all(listed.map((other) => real(other.dir)))]);
+  const at = others.findIndex((other) => holds(outer, other));
+
+  return at === -1 ? undefined : listed[at]?.dir;
+}
+
+/**
+ * Each worktree teamai made for a workflow run in the repositories of `checkouts`, each with the first of them in its
+ * repository and innermost first, the order they can be removed in; and each checkout whose worktrees git could not list.
+ * A repository is read once, however many of its checkouts are named. One holding a worktree that stays stays too: a
+ * run started in a run's worktree puts its own inside, where teamai's exclude block hides it from the outer one's status.
+ */
+export async function runWorktreesOf(checkouts: readonly string[]): Promise<{ worktrees: Array<{ checkout: string; worktree: RunWorktree }>; unread: Array<{ checkout: string; error: string }> }> {
+  const worktrees: Array<{ checkout: string; worktree: RunWorktree }> = [];
+  const unread: Array<{ checkout: string; error: string }> = [];
+  const read = new Set<string>();
+
+  for (const checkout of checkouts) {
+    const common = await git(checkout, ['rev-parse', '--git-common-dir']);
+    const repository = common.code === 0 ? path.resolve(checkout, common.stdout.trim()) : checkout;
+
+    if (read.has(repository)) continue;
+    read.add(repository);
+    const listed = await listedWorktrees(checkout);
+
+    if ('error' in listed) {
+      unread.push({ checkout, error: listed.error });
+      continue;
+    }
+
+    const sorted: RunWorktree[] = [];
+
+    for (const { dir, lines } of [...listed].sort((a, b) => b.dir.length - a.dir.length)) {
+      if (worktreeCheckout(dir) === undefined) continue;
+      const found = await runWorktreeAt(dir, lines);
+      // Innermost first, so each worktree inside this one is already sorted; one that is no run worktree stays.
+      const staying = listed.find((other) => holds(dir, other.dir) && !sorted.some((done) => done.dir === other.dir && done.kind === 'removable'));
+
+      if (found.kind === 'removable' && staying !== undefined) {
+        const why = sorted.find((done) => done.dir === staying.dir && done.kind === 'kept');
+        sorted.push({ kind: 'kept', dir, why: `it holds the worktree ${staying.dir}, which stays${why?.kind === 'kept' ? ` (${why.why})` : ''}`, isLocked: false });
+      } else sorted.push(found);
+    }
+
+    worktrees.push(...sorted.map((worktree) => ({ checkout, worktree })));
+  }
+
+  return { worktrees, unread };
+}
+
+/** Whether removing the run worktree `dir`, which `git worktree list --porcelain` described with `lines`, loses anything. */
+async function runWorktreeAt(dir: string, lines: readonly string[]): Promise<RunWorktree> {
+  const branch = lines.find((line) => line.startsWith('branch refs/heads/'))?.slice('branch refs/heads/'.length);
+
+  const locked = lines.find((line) => line === 'locked' || line.startsWith('locked '));
+
+  // Before the directory: git keeps a locked one's record whose directory is gone, such as one on a disk not plugged in.
+  if (locked !== undefined) return { kind: 'kept', dir, why: `git keeps it locked${locked === 'locked' ? '' : ` (${locked.slice('locked '.length)})`}`, isLocked: true };
+
+  if (!await pathExists(dir)) return { kind: 'removable', dir, ...branch !== undefined && { branch } };
+  const kept = (why: string): RunWorktree => ({ kind: 'kept', dir, why, isLocked: false });
+
+  if (branch === undefined) return kept('its HEAD is detached, so no branch holds its commits');
+  // A step may have planted a program in its worktree's config: read it as `unrestoredCopy` does.
+  const runGit = untrustedGit(hostGitEnv());
+  const status = await copyStatus(dir, runGit);
+
+  if ('error' in status) return kept(`git could not tell what changed in it (${status.error})`);
+
+  if (status.lines.length > 0) return kept(`it has changes no commit holds: ${listedPaths(status.lines)}`);
+  // Files git ignores are in no commit either, such as an .env the member copied in. `traditional` names an ignored
+  // directory once, rather than each file in a node_modules. teamai's own .teamai/ in it is not the member's.
+  const ignored = await runGit(dir, ['status', '--porcelain', '--ignored=traditional', '--untracked-files=normal', '--ignore-submodules=none']);
+
+  if (ignored.code !== 0) return kept(`git could not tell which files it ignores in it (${ignored.stderr.trim() || 'git status failed'})`);
+  const theirs = ignored.stdout.split('\n').filter((line) => line.startsWith('!! ') && !line.startsWith('!! .teamai/'));
+
+  if (theirs.length > 0) return kept(`it holds files git ignores, which no commit holds: ${listedPaths(theirs)}`);
+
+  return { kind: 'removable', dir, branch };
+}
+
+/** The first five of `git status --porcelain` `lines`, for a message. */
+function listedPaths(lines: readonly string[]): string {
+  return `${lines.slice(0, 5).map((line) => line.trim()).join(', ')}${lines.length > 5 ? `, and ${lines.length - 5} more` : ''}`;
+}
+
+/**
+ * Removes the run worktree `worktree` of `checkout`'s repository with git's own records of it, once it is read again as
+ * `runWorktreesOf` reads it: one that gained a change since stays, with why, and so does one holding another worktree
+ * (`removeWorktree`). One whose directory is gone loses only git's record. Forced, since git's own check would run a status in the worktree, and with it a program a step planted
+ * in the worktree's config; the read before it is the check, through untrusted git.
+ */
+export async function removeRunWorktree(checkout: string, worktree: Extract<RunWorktree, { kind: 'removable' }>): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const listed = await listedWorktrees(checkout);
+
+  if ('error' in listed) return { ok: false, reason: `git could not list the worktrees (${listed.error})` };
+  const entry = listed.find(({ dir }) => dir === worktree.dir);
+  const now = entry === undefined ? undefined : await runWorktreeAt(entry.dir, entry.lines);
+
+  if (now?.kind === 'kept') return { ok: false, reason: now.why };
+
+  return now !== undefined && await pathExists(worktree.dir) ? removeWorktree(checkout, worktree.dir) : forgetGoneWorktrees(checkout);
 }
 
 export function hooksPath(main: string): string {
@@ -323,7 +875,11 @@ export async function headCommit(cwd: string): Promise<{ ref?: string; commit: s
   const commit = result.stdout.trim();
 
   if (!commit) return undefined;
-  const ref = (await git(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).stdout.trim();
+  const head = gitAnswer(await git(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD']));
+
+  // A git that did not answer leaves HEAD unread, as one that could not read the commit does.
+  if (head.said === 'nothing') return undefined;
+  const ref = head.said === 'yes' ? head.result.stdout.trim() : '';
 
   return ref ? { ref, commit } : { commit };
 }
@@ -340,7 +896,7 @@ export async function ensureWorktree(main: string, branch: string, start: string
   const present = await fs.stat(dir).then((stats) => stats.isDirectory(), () => false);
 
   // A deleted worktree stays registered, and `worktree add` refuses its path until it is pruned.
-  if (!present) await git(main, ['worktree', 'prune']);
+  if (!present) await forgetGoneWorktrees(main);
 
   if (present) {
     const prefix = await git(dir, ['rev-parse', '--show-prefix']);
@@ -359,10 +915,12 @@ export async function ensureWorktree(main: string, branch: string, start: string
 
   await fs.mkdir(path.dirname(dir), { recursive: true });
   const config = ['-c', `core.hooksPath=${hooks}`];
-  const exists = await git(main, ['rev-parse', '--verify', '--quiet', branch]);
+  const exists = gitAnswer(await git(main, ['rev-parse', '--verify', '--quiet', branch]));
+
+  if (exists.said === 'nothing') return { error: unansweredGit(`whether branch ${branch} exists in ${main}`, exists.result).message };
   // Not `worktree add -b`: it makes the branch before it reads the worktrees, so when git runs it again after a half
   // written entry (see `git`), it finds the branch it made.
-  const branched = exists.code === 0 ? exists : await git(main, [...config, 'branch', branch, start]);
+  const branched = exists.said === 'yes' ? exists.result : await git(main, [...config, 'branch', branch, start]);
   const created = branched.code === 0 ? await git(main, [...config, 'worktree', 'add', dir, branch]) : branched;
 
   if (created.code !== 0) return { error: created.stderr.trim() || created.stdout.trim() || 'git worktree add failed' };
@@ -385,17 +943,24 @@ export async function markSetup(dir: string, state: 'unfinished' | 'finished'): 
 
   if (!marker) return;
 
-  if (state === 'unfinished') await fs.writeFile(marker, '');
+  if (state === 'unfinished') await writeRegularFile(marker, '');
   else await fs.rm(marker, { force: true });
 }
 
-/** Where HEAD is, such as `on refs/heads/other` or `detached at <commit>`, when it is not on `branch`. Undefined when it is. */
-export async function offBranch(dir: string, branch: string): Promise<string | undefined> {
-  const head = (await git(dir, ['symbolic-ref', '--quiet', 'HEAD'])).stdout.trim();
+/**
+ * Where HEAD is, such as `on refs/heads/other` or `detached at <commit>`, when it is not on `branch`. Undefined when it
+ * is. `runGit` runs each git call.
+ */
+export async function offBranch(dir: string, branch: string, runGit: Git = git): Promise<string | undefined> {
+  const onBranch = gitAnswer(await runGit(dir, ['symbolic-ref', '--quiet', 'HEAD']));
+
+  // A git that did not answer is never on the branch, so every caller refuses the checkout with git's cause.
+  if (onBranch.said === 'nothing') return `where git cannot tell (${onBranch.result.stderr.trim()})`;
+  const head = onBranch.said === 'yes' ? onBranch.result.stdout.trim() : '';
 
   if (head === `refs/heads/${branch}`) return undefined;
 
-  return head ? `on ${head}` : `detached at ${(await git(dir, ['rev-parse', 'HEAD'])).stdout.trim()}`;
+  return head ? `on ${head}` : `detached at ${(await runGit(dir, ['rev-parse', 'HEAD'])).stdout.trim()}`;
 }
 
 /**
@@ -406,19 +971,27 @@ export async function offBranch(dir: string, branch: string): Promise<string | u
  */
 export async function reconcileCopy(main: string, branch: string, expected: string): Promise<{ error: string } | undefined> {
   const ref = `refs/heads/${branch}`;
-  const local = await git(main, ['rev-parse', '--verify', '--quiet', ref]);
+  const local = gitAnswer(await git(main, ['rev-parse', '--verify', '--quiet', ref]));
 
-  if (local.code !== 0) return undefined;
-  const tip = local.stdout.trim();
+  if (local.said === 'nothing') return { error: unansweredGit(`whether branch ${branch} is here`, local.result).message };
 
-  if (tip !== expected && (await git(main, ['merge-base', '--is-ancestor', tip, expected])).code !== 0) {
+  if (local.said === 'no') return undefined;
+  const tip = local.result.stdout.trim();
+
+  const behind = tip === expected ? undefined : gitAnswer(await git(main, ['merge-base', '--is-ancestor', tip, expected]));
+
+  if (behind?.said === 'nothing') return { error: unansweredGit(`whether branch ${branch} here at ${tip} is behind ${expected}`, behind.result).message };
+
+  if (behind?.said === 'no') {
     return { error: `Branch ${branch} here is at ${tip}, which is not behind ${expected}, the commit the run recorded for it, so it holds work the run does not know about. teamai moves neither: keep that work elsewhere, delete or reset ${branch}, then resume the run.` };
   }
 
   const own = worktreePath(main, branch);
+  // An earlier step ran in the branch's copy, so its config may start anything.
+  const copyGit = untrustedGit(hostGitEnv());
 
   if (await fs.stat(own).then((stats) => stats.isDirectory(), () => false)) {
-    const on = await offBranch(own, branch);
+    const on = await offBranch(own, branch, copyGit);
 
     if (on) return { error: `Workspace ${own} is ${on}, not on branch ${branch}, so the run does not continue there. Check out ${branch} in ${own}, then resume the run.` };
   }
@@ -433,7 +1006,7 @@ export async function reconcileCopy(main: string, branch: string, expected: stri
       return { error: `Workspace ${dir} was left by a reader and is not back, so the run does not continue there. Put it back as the step found it, then resume the run.` };
     }
 
-    const status = await copyStatus(dir);
+    const status = await copyStatus(dir, copyGit);
 
     if ('error' in status) return status;
 
@@ -450,7 +1023,7 @@ export async function reconcileCopy(main: string, branch: string, expected: stri
     return moved.code === 0 ? undefined : { error: `Branch ${branch} could not be moved from ${tip} to ${expected}: ${moved.stderr.trim()}` };
   }
 
-  const merged = await git(dir, ['merge', '--ff-only', '--quiet', expected]);
+  const merged = await copyGit(dir, ['merge', '--ff-only', '--quiet', expected]);
 
   return merged.code === 0 ? undefined : { error: `Workspace ${dir} could not be moved to ${expected}: ${merged.stderr.trim()}` };
 }
@@ -502,7 +1075,8 @@ async function lackedCommits(dir: string, commits: string[]): Promise<string[]> 
   const lacking: string[] = [];
 
   for (const commit of new Set(commits)) {
-    if ((await git(dir, ['cat-file', '-e', `${commit}^{commit}`])).code !== 0) lacking.push(commit);
+    // Lacking unless git says it has it: the fetch that follows says why when git did not answer.
+    if (gitAnswer(await git(dir, ['cat-file', '-e', `${commit}^{commit}`])).said !== 'yes') lacking.push(commit);
   }
 
   return lacking;
@@ -513,26 +1087,30 @@ async function lackedCommits(dir: string, commits: string[]): Promise<string[]> 
  * with no unmerged file and no merge in progress, such as unrelated histories or an untracked file in the way, is
  * `failed` with git's message.
  */
-export async function mergeBranch(dir: string, commit: string): Promise<
+export async function mergeBranch(dir: string, commit: string, runGit: Git): Promise<
   { state: 'merged' } | { state: 'conflict'; files: string[] } | { state: 'failed'; error: string }
 > {
-  const contained = await git(dir, ['merge-base', '--is-ancestor', commit, 'HEAD']);
+  const contained = gitAnswer(await runGit(dir, ['merge-base', '--is-ancestor', commit, 'HEAD']));
 
-  if (contained.code === 0) return { state: 'merged' };
+  if (contained.said === 'yes') return { state: 'merged' };
 
-  const merged = await git(dir, [
+  if (contained.said === 'nothing') return { state: 'failed', error: unansweredGit(`whether ${dir} already holds ${commit}`, contained.result).message };
+
+  const merged = await runGit(dir, [
     '-c', 'user.name=TeamAI', '-c', 'user.email=teamai@localhost',
     'merge', '--no-ff', '--no-edit', commit,
   ]);
 
   if (merged.code === 0) return { state: 'merged' };
-  const unmerged = await gitPaths(dir, ['diff', '--name-only', '--diff-filter=U']);
+  const unmerged = await gitPaths(dir, ['diff', '--name-only', '--diff-filter=U'], runGit);
 
   if (unmerged.code !== 0) return { state: 'failed', error: unmerged.stderr.trim() || 'git diff failed' };
   // An earlier attempt that left its merge unfinished resolves it as a conflict, even with every file staged.
-  const unfinished = (await git(dir, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'])).code === 0;
+  const unfinished = gitAnswer(await runGit(dir, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD']));
 
-  if (unmerged.paths.length > 0 || unfinished) return { state: 'conflict', files: unmerged.paths };
+  if (unfinished.said === 'nothing') return { state: 'failed', error: unansweredGit(`whether a merge is in progress in ${dir}`, unfinished.result).message };
+
+  if (unmerged.paths.length > 0 || unfinished.said === 'yes') return { state: 'conflict', files: unmerged.paths };
 
   return { state: 'failed', error: (merged.stderr || merged.stdout).trim() || 'git merge failed' };
 }
@@ -544,31 +1122,32 @@ export async function mergeBranch(dir: string, commit: string): Promise<
  * With `resume`, a `saved` an interrupted run of this left is the branch's copy, and the rest is done again over it.
  */
 export async function applyBaseConfig(
-  dir: string, commit: string, hooks: string, saved: string, options: { resume?: true; paths?: readonly string[] } = {},
+  dir: string, commit: string, hooks: string, saved: string, options: { run: Git; resume?: true; paths?: readonly string[] },
 ): Promise<{ ok: true; saved: string } | { ok: false; message: string }> {
-  await git(dir, ['config', '--worktree', 'core.hooksPath', hooks]);
+  await options.run(dir, ['config', '--worktree', 'core.hooksPath', hooks]);
   const linked = await symlinkedParent(dir);
 
   if (linked) {
     // Every run branch starts from the base, so no step can fix a symlink the base has.
-    const inBase = (await git(dir, ['ls-tree', commit, '--', linked.parent])).stdout.startsWith('120000 ');
+    const inBase = (await options.run(dir, ['ls-tree', commit, '--', linked.parent])).stdout.startsWith('120000 ');
 
     if (inBase) {
       return { ok: false, message: `Agent configuration ${linked.relative} is under the symlink ${linked.parent} in the run's base commit ${commit}, so it was not reset. Commit ${linked.parent} as a directory on the base branch, then start a new run.` };
     }
 
-    const branch = (await git(dir, ['symbolic-ref', '--quiet', 'HEAD'])).stdout.trim().replace(/^refs\/heads\//, '');
+    const head = gitAnswer(await options.run(dir, ['symbolic-ref', '--quiet', 'HEAD']));
+    const branch = head.said === 'yes' ? head.result.stdout.trim().replace(/^refs\/heads\//, '') : 'HEAD';
 
     return { ok: false, message: `Agent configuration ${linked.relative} is under the symlink ${linked.parent} on branch ${branch}, so it was not reset. Commit ${linked.parent} as a directory on branch ${branch} in ${dir}, then retry the step.` };
   }
 
   // Listed before anything is removed, so a base git cannot read leaves the branch's agent files in place.
-  const present = await gitPaths(dir, ['ls-tree', '--name-only', commit, '--', ...AGENT_PATHS]);
+  const present = await gitPaths(dir, ['ls-tree', '--name-only', commit, '--', ...AGENT_PATHS], options.run);
 
   if (present.code !== 0) return { ok: false, message: unreadBase(dir, commit, present.stderr) };
   // A failed checkout still stages the base copy, so the index is put back with the files.
-  const indexFile = await gitPath(dir, 'index');
-  const index = indexFile === undefined ? undefined : await fs.readFile(indexFile).catch(() => undefined);
+  const indexFile = await gitPath(dir, 'index', options.run);
+  const index = indexFile === undefined ? undefined : await readRegularFile(indexFile).catch(() => undefined);
 
   if (indexFile === undefined || index === undefined) {
     return { ok: false, message: `Agent configuration in ${dir} could not be reset to the run's base commit ${commit}, because its git index could not be read, so the step did not run. Check that git status works in ${dir}, then retry the step.` };
@@ -587,16 +1166,16 @@ export async function applyBaseConfig(
 
   if (!kept) {
     await fs.mkdir(copying);
-    await fs.writeFile(path.join(copying, '_conflicts'), (await git(dir, ['ls-files', '-u', '-z', '--', ...AGENT_PATHS])).stdout);
+    await writeRegularFile(path.join(copying, '_conflicts'), (await options.run(dir, ['ls-files', '-u', '-z', '--', ...AGENT_PATHS])).stdout);
     await saveConfig(dir, copying, options.paths);
     await fs.rename(copying, saved);
   }
 
   // Read back, so a resumed prepare puts back the conflicts the branch had, which the base checkout cleared.
-  const conflicts = await fs.readFile(path.join(saved, '_conflicts'), 'utf8');
+  const conflicts = await readRegularFile(path.join(saved, '_conflicts'), 'utf8');
 
   for (const relative of AGENT_PATHS) await fs.rm(path.join(dir, relative), { recursive: true, force: true });
-  const refused = await checkoutBaseConfig(dir, commit, present.paths);
+  const refused = await checkoutBaseConfig(dir, commit, present.paths, options.run);
 
   if (refused) {
     await putBackBranchConfig(dir, saved, { indexFile, index });
@@ -620,16 +1199,16 @@ export async function applyBaseConfig(
 }
 
 /** Checks out the base's agent paths `paths` over the removed branch copy. Why the step cannot run, when it cannot. */
-async function checkoutBaseConfig(dir: string, commit: string, paths: string[]): Promise<string | undefined> {
+async function checkoutBaseConfig(dir: string, commit: string, paths: string[], runGit: Git): Promise<string | undefined> {
   if (paths.length > 0) {
-    const restored = await git(dir, ['checkout', commit, '--', ...paths]);
+    const restored = await runGit(dir, ['checkout', commit, '--', ...paths]);
 
     if (restored.code !== 0) {
       return `Agent configuration in ${dir} could not be checked out from the run's base commit ${commit}, so the step did not run and the branch's agent files were left as they were. Git said: ${restored.stderr.trim() || 'no message'}. Fix what git reported, then retry the step.`;
     }
   }
 
-  const extra = await gitPaths(dir, ['diff', '--name-only', commit, '--', ...AGENT_PATHS]);
+  const extra = await gitPaths(dir, ['diff', '--name-only', commit, '--', ...AGENT_PATHS], runGit);
 
   if (extra.code !== 0) return unreadBase(dir, commit, extra.stderr);
 
@@ -651,7 +1230,7 @@ async function putBackBranchConfig(dir: string, saved: string, { indexFile, inde
   }
 
   // Renamed over the index, so git never reads it half written.
-  await fs.writeFile(`${indexFile}.teamai`, index);
+  await writeRegularFile(`${indexFile}.teamai`, index);
   await fs.rename(`${indexFile}.teamai`, indexFile);
   await fs.rm(saved, { recursive: true, force: true });
 }
@@ -684,11 +1263,11 @@ async function linkedParent(dir: string, relative: string): Promise<string | und
 }
 
 /** Puts saved conflict stages back after the base checkout cleared them, before the step runs. */
-export async function reopenConfigConflicts(dir: string, saved: string): Promise<void> {
-  const conflicts = await fs.readFile(path.join(saved, '_conflicts'), 'utf8').catch(() => '');
+export async function reopenConfigConflicts(dir: string, saved: string, runGit: Git): Promise<void> {
+  const conflicts = await readRegularFile(path.join(saved, '_conflicts'), 'utf8').catch(() => '');
   const paths = conflictPaths(conflicts);
 
-  if (paths.length > 0) await restoreConflictStages(dir, conflicts, paths);
+  if (paths.length > 0) await restoreConflictStages(dir, conflicts, paths, runGit);
 }
 
 /** Where a copy saved with paths beyond AGENT_PATHS lists them, so every later step on it covers the same paths. */
@@ -696,7 +1275,7 @@ const SAVED_PATHS = '_paths.json';
 
 /** The paths `saved` holds the agent configuration of: AGENT_PATHS, unless `saveConfig` was given others. */
 export async function savedConfigPaths(saved: string): Promise<readonly string[]> {
-  const listed = z.array(z.string().min(1)).safeParse(JSON.parse(await fs.readFile(path.join(saved, SAVED_PATHS), 'utf8').catch(() => 'null')));
+  const listed = z.array(z.string().min(1)).safeParse(JSON.parse(await readRegularFile(path.join(saved, SAVED_PATHS), 'utf8').catch(() => 'null')));
 
   return listed.success ? listed.data : AGENT_PATHS;
 }
@@ -706,7 +1285,7 @@ export async function savedConfigPaths(saved: string): Promise<readonly string[]
  * to `dir`, are AGENT_PATHS unless a copy's install delivers elsewhere in it too; `saved` then lists them.
  */
 export async function saveConfig(dir: string, saved: string, paths: readonly string[] = AGENT_PATHS): Promise<void> {
-  if (paths !== AGENT_PATHS) await fs.writeFile(path.join(saved, SAVED_PATHS), JSON.stringify(paths));
+  if (paths !== AGENT_PATHS) await writeRegularFile(path.join(saved, SAVED_PATHS), JSON.stringify(paths));
 
   for (const relative of paths) {
     try {
@@ -734,8 +1313,8 @@ export async function replaceConfig(dir: string, from: string): Promise<void> {
  * The commit `git add` would record for the gitlink at `relative`, or undefined when that path is not a gitlink.
  * A checkout inside the submodule is that commit. The index commit is the fallback when the checkout cannot be read.
  */
-async function gitlinkCommit(dir: string, relative: string): Promise<string | undefined> {
-  const listed = await git(dir, ['--literal-pathspecs', 'ls-files', '-s', '-z', '--', relative]);
+async function gitlinkCommit(dir: string, relative: string, run: Git): Promise<string | undefined> {
+  const listed = await run(dir, ['--literal-pathspecs', 'ls-files', '-s', '-z', '--', relative]);
 
   if (listed.code !== 0) return undefined;
 
@@ -750,15 +1329,18 @@ async function gitlinkCommit(dir: string, relative: string): Promise<string | un
 
   if (staged === undefined) return undefined;
   const indexSha = staged.slice(0, staged.indexOf('\t')).split(' ')[1] ?? '';
-  const head = await git(path.join(dir, relative), ['rev-parse', '--verify', '--quiet', 'HEAD']);
-  const checked = head.code === 0 ? head.stdout.trim() : '';
+  const head = gitAnswer(await run(path.join(dir, relative), ['rev-parse', '--verify', '--quiet', 'HEAD']));
+  const checked = head.said === 'yes' ? head.result.stdout.trim() : '';
 
   return /^[0-9a-f]{40}$/i.test(checked) ? checked : indexSha;
 }
 
-/** The content key of `relative` in `dir`, or `absent` when that path is not there. A gitlink is `gitlink:<commit>`, the commit checked out in it. */
-export async function worktreeContentKey(dir: string, relative: string): Promise<string> {
-  const gitlink = await gitlinkCommit(dir, relative);
+/**
+ * The content key of `relative` in `dir`, or `absent` when that path is not there. A gitlink is `gitlink:<commit>`, the
+ * commit checked out in it. `run` is the git it runs, required so a caller in a place a step controls passes `untrustedGit`.
+ */
+export async function worktreeContentKey(dir: string, relative: string, run: Git): Promise<string> {
+  const gitlink = await gitlinkCommit(dir, relative, run);
 
   if (gitlink !== undefined && gitlink !== '') return `gitlink:${gitlink}`;
   const files = await fileManifest(dir, [relative]);
@@ -769,8 +1351,8 @@ export async function worktreeContentKey(dir: string, relative: string): Promise
 /** Records the agent files present after team delivery, so that delivery is not a step edit. */
 export async function recordConfigOverlay(dir: string, saved: string): Promise<void> {
   const paths = await savedConfigPaths(saved);
-  await fs.writeFile(path.join(saved, '_overlay.json'), JSON.stringify(await fileManifest(dir, paths)));
-  await fs.writeFile(path.join(saved, '_dirs.json'), JSON.stringify(await agentDirs(dir, paths)));
+  await writeRegularFile(path.join(saved, '_overlay.json'), JSON.stringify(await fileManifest(dir, paths)));
+  await writeRegularFile(path.join(saved, '_dirs.json'), JSON.stringify(await agentDirs(dir, paths)));
 }
 
 /**
@@ -786,7 +1368,7 @@ export async function unchangedOverlayPaths(dir: string, saved: string, dirty: r
   let raw: unknown;
 
   try {
-    raw = JSON.parse(await fs.readFile(file, 'utf8'));
+    raw = JSON.parse(await readRegularFile(file, 'utf8'));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
 
@@ -813,7 +1395,7 @@ export async function unchangedOverlayPaths(dir: string, saved: string, dirty: r
  * worktree's files, nothing is put back, `saved` is kept, and the reason is returned as a clause. `runGit` runs every
  * git call.
  */
-export async function restoreUneditedConfig(dir: string, _commit: string, saved: string, runGit: Git = git): Promise<string | undefined> {
+export async function restoreUneditedConfig(dir: string, _commit: string, saved: string, runGit: Git): Promise<string | undefined> {
   // Listed before anything changes. The index stays as it is until the files are back.
   const paths = await savedConfigPaths(saved);
   const unmergedListed = await gitPaths(dir, ['diff', '--name-only', '--diff-filter=U'], runGit);
@@ -824,11 +1406,11 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
     return `git could not list the files in ${dir} (${unlisted.stderr.trim() || 'no message'}); the branch's agent files are still in ${saved}`;
   }
 
-  const overlay = z.record(z.string(), z.string()).parse(JSON.parse(await fs.readFile(path.join(saved, '_overlay.json'), 'utf8')));
+  const overlay = z.record(z.string(), z.string()).parse(JSON.parse(await readRegularFile(path.join(saved, '_overlay.json'), 'utf8')));
   const current = await fileManifest(dir, paths);
   const branch = await fileManifest(saved, paths);
-  const conflicts = await fs.readFile(path.join(saved, '_conflicts'), 'utf8').catch(() => '');
-  const dirs = z.array(z.string()).parse(JSON.parse(await fs.readFile(path.join(saved, '_dirs.json'), 'utf8').catch(() => '[]')));
+  const conflicts = await readRegularFile(path.join(saved, '_conflicts'), 'utf8').catch(() => '');
+  const dirs = z.array(z.string()).parse(JSON.parse(await readRegularFile(path.join(saved, '_dirs.json'), 'utf8').catch(() => '[]')));
   const marked = await markedConflicts(dir, conflictPaths(conflicts));
   // Staging a conflict without leaving markers is a resolution, even when the text matches the overlay.
   // An unstaged file that still matches the overlay is not.
@@ -985,7 +1567,7 @@ async function fileManifest(root: string, paths: readonly string[]): Promise<Rec
       return;
     }
 
-    if (stats.isFile()) files[relative] = `file:${(stats.mode & 0o777).toString(8)}:${(await fs.readFile(current)).toString('base64')}`;
+    if (stats.isFile()) files[relative] = `file:${(stats.mode & 0o777).toString(8)}:${(await readRegularFile(current)).toString('base64')}`;
   };
 
   for (const relative of paths) await walk(relative);
@@ -1034,23 +1616,27 @@ async function stagePaths(dir: string, paths: readonly string[], runGit: Git): P
 }
 
 /**
- * Commits changes in `dir`, with `runGit` running every git call.
+ * Commits changes in `dir`, with `runGit` running every git call: a step ran there, so `untrustedGit`.
  * `paths` stages only those paths. Absent, every change is staged. An empty list stages nothing.
  */
 export async function commitWork(
-  dir: string, message: string, fromCommit?: string, runGit: Git = git, paths?: readonly string[],
+  dir: string, message: string, fromCommit: string | undefined, runGit: UntrustedGit, paths?: readonly string[],
 ): Promise<{ from: string; to: string; commits: string[] } | { error: string }> {
   const before = fromCommit === undefined ? await runGit(dir, ['rev-parse', 'HEAD']) : { code: 0, stdout: fromCommit, stderr: '' };
 
   if (before.code !== 0) return { error: before.stderr.trim() || 'HEAD could not be read' };
   const from = before.stdout.trim();
-  const merging = (await runGit(dir, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'])).code === 0;
+  const merging = gitAnswer(await runGit(dir, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD']));
+
+  if (merging.said === 'nothing') return { error: unansweredGit(`whether a merge is in progress in ${dir}`, merging.result).message };
   const added = paths === undefined ? await stageAll(dir, runGit) : await stagePaths(dir, paths, runGit);
 
   if (added.code !== 0) return { error: added.stderr.trim() || 'git add failed' };
-  const staged = await runGit(dir, ['diff', '--cached', '--quiet', '--ignore-submodules=none', '--no-ext-diff']);
+  const staged = gitAnswer(await runGit(dir, ['diff', '--cached', '--quiet', '--ignore-submodules=none', '--no-ext-diff']));
 
-  if (staged.code !== 0 || merging) {
+  if (staged.said === 'nothing') return { error: unansweredGit(`whether anything is staged in ${dir}`, staged.result).message };
+
+  if (staged.said === 'no' || merging.said === 'yes') {
     // Older Git also applies diff.ignoreSubmodules to commit's staged-change check.
     // We deliberately staged these gitlinks, so do not hide them again here.
     const committed = await runGit(dir, ['-c', 'user.name=TeamAI', '-c', 'user.email=teamai@localhost', '-c', 'diff.ignoreSubmodules=none', 'commit', '-m', message]);
@@ -1066,20 +1652,73 @@ export async function commitWork(
 }
 
 /**
- * Pushes when `origin` exists and the branch is ahead of the copy `origin` has.
+ * Pushes when the member's checkout named an origin before the run, and the branch is ahead of the copy `origin` has.
+ * It pushes where `git push origin` did there (`pushTargets`, through `remoteGit`), never to one the copy's config
+ * names now, and records what `push -u origin` would: the remote-tracking ref and the branch's upstream.
  * A retry that adds no commit still pushes when an earlier attempt left commits unpublished,
  * including a first push that never created the remote branch.
- * No origin is not a failure.
+ * No origin is not a failure. `runGit` runs each git call: a step ran in `dir`, so `untrustedGit`.
  */
-export async function pushIfOrigin(dir: string, branch: string, commits: string[]): Promise<'pushed' | 'no-origin' | 'unchanged' | { error: string }> {
-  const origin = await git(dir, ['remote', 'get-url', 'origin']);
+export async function pushIfOrigin(dir: string, branch: string, commits: string[], runGit: UntrustedGit, member: MemberRemote): Promise<'pushed' | 'no-origin' | 'unchanged' | { error: string }> {
+  const targets = pushTargets(member.kept);
 
-  if (origin.code !== 0) return commits.length === 0 ? 'unchanged' : 'no-origin';
+  if (targets.length === 0) {
+    const origin = await runGit(dir, ['remote', 'get-url', 'origin']);
 
-  if (commits.length === 0 && !await branchNeedsPush(dir, branch)) return 'unchanged';
-  const pushed = await git(dir, ['push', '-u', 'origin', `${branch}:${branch}`]);
+    if (origin.code !== 0) return commits.length === 0 ? 'unchanged' : 'no-origin';
 
-  return pushed.code === 0 ? 'pushed' : { error: (pushed.stderr || pushed.stdout).trim() || 'git push failed' };
+    return { error: `teamai kept no origin of the checkout this copy was made from before the run's first step (it named none, or an older teamai started the run), so teamai does not push to the one the copy names now. Push ${branch} yourself, or start the run again` };
+  }
+
+  if (commits.length === 0 && !await branchNeedsPush(dir, branch, runGit)) return 'unchanged';
+  const tip = await runGit(dir, ['rev-parse', '--verify', `refs/heads/${branch}^{commit}`]);
+
+  if (tip.code !== 0) return { error: tip.stderr.trim() || `${branch} has no commit` };
+  const commit = tip.stdout.trim();
+
+  for (const target of targets) {
+    const pushed = await remoteGit(dir, { ...member, kept: target.kept }, ['push', '--quiet', target.url, `${commit}:refs/heads/${branch}`], runGit);
+
+    if (pushed.code !== 0) return { error: (pushed.stderr || pushed.stdout).trim() || 'git push failed' };
+  }
+
+  await runGit(dir, ['update-ref', `refs/remotes/origin/${branch}`, commit]);
+
+  for (const [key, value] of upstreamOf(branch)) await runGit(dir, ['config', key, value]);
+
+  return 'pushed';
+}
+
+/** The upstream `pushIfOrigin` records of a branch it pushed, as `git push -u origin` would: each config key and its value. */
+function upstreamOf(branch: string): Array<[key: string, value: string]> {
+  return [[`branch.${branch}.remote`, 'origin'], [`branch.${branch}.merge`, `refs/heads/${branch}`]];
+}
+
+/**
+ * Removes from `checkout`'s git config the upstream `pushIfOrigin` recorded for run branch `branch`, each key only while
+ * it still says what teamai wrote: one the member changed stays. Answers the keys removed, or with `dryRun` those it would.
+ */
+export async function forgetUpstream(checkout: string, branch: string, { dryRun = false } = {}): Promise<string[]> {
+  const removed: string[] = [];
+
+  for (const [key, value] of upstreamOf(branch)) {
+    if ((await git(checkout, ['config', '--local', '--get', key])).stdout.trim() !== value) continue;
+
+    if (!dryRun && (await git(checkout, ['config', '--local', '--unset', key])).code !== 0) continue;
+    removed.push(key);
+  }
+
+  return removed;
+}
+
+/** Whether `branch` is one a run made: `teamai/<run>/…`, or a fleet attempt's `teamai/attempts/<run>/…`. */
+async function isRunBranch(branch: string): Promise<boolean> {
+  // Imported at call time: a static import of store.js here changes the order its importers' modules load in, and one
+  // then reads a schema before it is made.
+  const { isRunId } = await import('./store.js');
+  const [namespace, first = '', second = ''] = branch.split('/');
+
+  return namespace === 'teamai' && isRunId(first === 'attempts' ? second : first);
 }
 
 /**
@@ -1088,31 +1727,34 @@ export async function pushIfOrigin(dir: string, branch: string, commits: string[
  * With no tracking refs at all, push when the tip is not already on another local branch:
  * a first push that never landed leaves commits only on this branch.
  */
-async function branchNeedsPush(dir: string, branch: string): Promise<boolean> {
-  const local = await git(dir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+async function branchNeedsPush(dir: string, branch: string, runGit: Git): Promise<boolean> {
+  // A git that did not answer needs the push: the push says why when git still cannot run.
+  const local = gitAnswer(await runGit(dir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]));
 
-  if (local.code !== 0) return false;
-  const tip = local.stdout.trim();
+  if (local.said === 'nothing') return true;
+
+  if (local.said === 'no') return false;
+  const tip = local.result.stdout.trim();
   const remote = `refs/remotes/origin/${branch}`;
-  const known = await git(dir, ['rev-parse', '--verify', '--quiet', remote]);
+  const known = gitAnswer(await runGit(dir, ['rev-parse', '--verify', '--quiet', remote]));
 
-  if (known.code === 0) {
-    const contained = await git(dir, ['merge-base', '--is-ancestor', tip, remote]);
+  if (known.said === 'nothing') return true;
 
-    return contained.code !== 0;
+  if (known.said === 'yes') {
+    return gitAnswer(await runGit(dir, ['merge-base', '--is-ancestor', tip, remote])).said !== 'yes';
   }
 
-  const listed = await git(dir, ['for-each-ref', '--format=%(refname)', 'refs/remotes/origin']);
+  const listed = await runGit(dir, ['for-each-ref', '--format=%(refname)', 'refs/remotes/origin']);
 
-  if (listed.stdout.trim() === '') return tipIsOnlyOn(dir, branch, tip);
-  const published = await git(dir, ['branch', '-r', '--contains', tip]);
+  if (listed.stdout.trim() === '') return tipIsOnlyOn(dir, branch, tip, runGit);
+  const published = await runGit(dir, ['branch', '-r', '--contains', tip]);
 
   return published.code === 0 && published.stdout.trim() === '';
 }
 
 /** True when no other local branch already contains this tip. */
-async function tipIsOnlyOn(dir: string, branch: string, tip: string): Promise<boolean> {
-  const holders = await git(dir, ['branch', '--no-color', '--contains', tip]);
+async function tipIsOnlyOn(dir: string, branch: string, tip: string, runGit: Git): Promise<boolean> {
+  const holders = await runGit(dir, ['branch', '--no-color', '--contains', tip]);
 
   if (holders.code !== 0) return true;
   const names = holders.stdout.split('\n').map((line) => line.trim().replace(/^[*+] /, '')).filter((name) => name !== '');
@@ -1130,7 +1772,10 @@ function descendantEdited(current: Record<string, string>, overlay: Record<strin
   return false;
 }
 
-/** Copies a file, directory, or symlink without rewriting the link or dropping its mode. */
+/**
+ * Copies a file, directory, or symlink without rewriting the link or dropping its mode. Anything else, such as a FIFO a
+ * step left in its copy, which git ignores too, is not copied: copying one would wait until a writer opens it.
+ */
 async function copyEntry(from: string, to: string): Promise<void> {
   const stats = await fs.lstat(from);
   // A nested agent path such as .github/copilot-instructions.md has no parent in a fresh copy.
@@ -1151,7 +1796,8 @@ async function copyEntry(from: string, to: string): Promise<void> {
     return;
   }
 
-  await fs.copyFile(from, to);
+  if (!stats.isFile()) return;
+  await writeRegularFile(to, await readRegularFile(from));
   await fs.chmod(to, stats.mode);
 }
 
@@ -1179,7 +1825,7 @@ async function markedConflicts(dir: string, paths: string[]): Promise<string[]> 
 
   for (const relative of paths) {
     try {
-      if ((await fs.readFile(path.join(dir, relative), 'utf8')).includes('<<<<<<<')) marked.push(relative);
+      if ((await readRegularFile(path.join(dir, relative), 'utf8')).includes('<<<<<<<')) marked.push(relative);
     } catch {
       // The step removed the conflicted file.
     }
@@ -1254,13 +1900,33 @@ async function removeBlockingSymlink(dir: string, relative: string): Promise<voi
   }
 }
 
-/** Removes worktree `dir` of `main`'s repository, or says why `git worktree remove` left it. */
+/**
+ * Removes worktree `dir` of `main`'s repository, or says why it stays. One holding another worktree stays: git would
+ * delete that one with it, uncommitted changes and all, such as the worktree of a run started inside `dir`, which
+ * teamai's exclude block hides from this one's status.
+ */
 export async function removeWorktree(main: string, dir: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+  // A record whose directory is gone holds nothing.
+  await forgetGoneWorktrees(main);
+  const listed = await listedWorktrees(main);
+
+  if ('error' in listed) return { ok: false, reason: `git could not list the worktrees (${listed.error})` };
+  const inside = await worktreeInside(dir, listed);
+
+  if (inside !== undefined) return { ok: false, reason: `it holds the worktree ${inside}, which removing it would delete; finish or remove that one first` };
   const removed = await git(main, ['worktree', 'remove', '--force', dir]);
 
-  await git(main, ['worktree', 'prune']);
+  await forgetGoneWorktrees(main);
 
   return removed.code === 0 ? { ok: true } : { ok: false, reason: removed.stderr.trim() || 'git worktree remove failed' };
+}
+
+/** Forgets git's record of each worktree of `main`'s repository whose directory is gone; a locked one stays. */
+export async function forgetGoneWorktrees(main: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const pruned = await git(main, ['worktree', 'prune']);
+
+  // prune exits 0 on a record it could not delete, and says so only on stderr.
+  return pruned.code === 0 && pruned.stderr.trim() === '' ? { ok: true } : { ok: false, reason: `git did not forget the worktrees whose directory is gone (${pruned.stderr.trim() || 'git worktree prune failed'})` };
 }
 
 const UnrestoredMarker = z.object({ branch: z.string(), commit: z.string(), step: z.string(), reason: z.string(), found: z.array(z.string()) });
@@ -1271,8 +1937,8 @@ export type UnrestoredMarker = z.infer<typeof UnrestoredMarker>;
 const UNRESTORED_MARKER = 'teamai-unrestored';
 
 /** A copy's status, with every untracked file and submodule change whatever the user's status config hides. */
-async function copyStatus(dir: string): Promise<{ lines: string[] } | { error: string }> {
-  const status = await git(dir, ['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none']);
+async function copyStatus(dir: string, runGit: Git): Promise<{ lines: string[] } | { error: string }> {
+  const status = await runGit(dir, ['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none']);
 
   if (status.code !== 0) return { error: status.stderr.trim() || 'git status failed' };
 
@@ -1280,14 +1946,17 @@ async function copyStatus(dir: string): Promise<{ lines: string[] } | { error: s
 }
 
 /** Why `dir` is not on `branch` at `commit` with the status `found`, submodules included. Undefined when it is. */
-async function copyLeftOver(dir: string, { branch, commit, found }: { branch: string; commit: string; found: string[] }): Promise<string | undefined> {
-  const head = (await git(dir, ['symbolic-ref', '--quiet', 'HEAD'])).stdout.trim();
+async function copyLeftOver(dir: string, { branch, commit, found }: { branch: string; commit: string; found: string[] }, runGit: Git): Promise<string | undefined> {
+  const onBranch = gitAnswer(await runGit(dir, ['symbolic-ref', '--quiet', 'HEAD']));
+
+  if (onBranch.said === 'nothing') return unansweredGit(`the branch ${dir} is on`, onBranch.result).message;
+  const head = onBranch.said === 'yes' ? onBranch.result.stdout.trim() : '';
 
   if (head !== `refs/heads/${branch}`) return head ? `HEAD is on ${head}` : 'HEAD is detached';
-  const at = (await git(dir, ['rev-parse', 'HEAD'])).stdout.trim();
+  const at = (await runGit(dir, ['rev-parse', 'HEAD'])).stdout.trim();
 
   if (at !== commit) return `HEAD is at ${at}`;
-  const status = await copyStatus(dir);
+  const status = await copyStatus(dir, runGit);
 
   if ('error' in status) return status.error;
   const was = new Set(found);
@@ -1303,12 +1972,12 @@ async function copyLeftOver(dir: string, { branch, commit, found }: { branch: st
  * Marks `dir` as left by a reader before the reader changes anything, with the status it has now. Putting the copy back
  * removes the mark, so a driver killed before that leaves the copy refused to later steps until it is back.
  */
-export async function markReadCopy(dir: string, { branch, step }: { branch: string; step: string }): Promise<{ found: string[] } | { error: string }> {
-  const status = await copyStatus(dir);
+export async function markReadCopy(dir: string, { branch, step }: { branch: string; step: string }, runGit: Git): Promise<{ found: string[] } | { error: string }> {
+  const status = await copyStatus(dir, runGit);
 
   if ('error' in status) return status;
-  const head = await git(dir, ['rev-parse', 'HEAD']);
-  const marker = await gitPath(dir, UNRESTORED_MARKER);
+  const head = await runGit(dir, ['rev-parse', 'HEAD']);
+  const marker = await gitPath(dir, UNRESTORED_MARKER, runGit);
 
   if (head.code !== 0 || !marker) return { error: head.stderr.trim() || 'its git directory could not be found' };
   const record: UnrestoredMarker = { branch, commit: head.stdout.trim(), step, reason: 'the reader did not finish', found: status.lines };
@@ -1327,8 +1996,8 @@ export async function releaseReadCopy(dir: string): Promise<void> {
   await clearReadCopyMark(dir);
 }
 
-async function clearReadCopyMark(dir: string): Promise<void> {
-  const marker = await gitPath(dir, UNRESTORED_MARKER);
+async function clearReadCopyMark(dir: string, runGit: Git = git): Promise<void> {
+  const marker = await gitPath(dir, UNRESTORED_MARKER, runGit);
 
   if (marker) await fs.rm(marker, { force: true });
 }
@@ -1346,7 +2015,7 @@ export async function unrestoredCopy(dir: string): Promise<
   let raw: unknown;
 
   try {
-    raw = JSON.parse(await fs.readFile(file, 'utf8'));
+    raw = JSON.parse(await readRegularFile(file, 'utf8'));
   } catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined;
 
@@ -1362,7 +2031,7 @@ export async function unrestoredCopy(dir: string): Promise<
     return { state: 'unrestored', dir, marker: parsed.data, left: `it had changes when the step started, so teamai cannot tell when it is back; delete ${file} once it is` };
   }
 
-  const left = await copyLeftOver(dir, parsed.data);
+  const left = await copyLeftOver(dir, parsed.data, untrustedGit(hostGitEnv()));
 
   if (left) return { state: 'unrestored', dir, marker: parsed.data, left };
   await fs.rm(file, { force: true });
@@ -1375,8 +2044,8 @@ function gitlinkLines(listed: string): string[] {
 }
 
 /** Each submodule path `commit` records, with the commit it records there. */
-async function treeGitlinks(dir: string, commit: string): Promise<Map<string, string> | { error: string }> {
-  const listed = await git(dir, ['ls-tree', '-r', '-z', commit]);
+async function treeGitlinks(dir: string, commit: string, runGit: Git): Promise<Map<string, string> | { error: string }> {
+  const listed = await runGit(dir, ['ls-tree', '-r', '-z', commit]);
 
   if (listed.code !== 0) return { error: listed.stderr.trim() || `git ls-tree ${commit} failed` };
 
@@ -1388,9 +2057,9 @@ async function treeGitlinks(dir: string, commit: string): Promise<Map<string, st
 }
 
 /** Submodule paths whose commit `to` records and `from` does not, at any depth below `prefix`. */
-async function movedModules(dir: string, from: string | undefined, to: string, prefix: string): Promise<{ path: string; dir: string; commit: string }[] | { error: string }> {
-  const before = from ? await treeGitlinks(dir, from) : new Map<string, string>();
-  const after = await treeGitlinks(dir, to);
+async function movedModules(dir: string, from: string | undefined, to: string, prefix: string, runGit: Git): Promise<{ path: string; dir: string; commit: string }[] | { error: string }> {
+  const before = from ? await treeGitlinks(dir, from, runGit) : new Map<string, string>();
+  const after = await treeGitlinks(dir, to, runGit);
 
   if ('error' in before) return before;
 
@@ -1403,7 +2072,7 @@ async function movedModules(dir: string, from: string | undefined, to: string, p
     if (was === commit) continue;
     const sub = path.join(dir, relative);
     moved.push({ path: `${prefix}${relative}`, dir: sub, commit });
-    const nested = await movedModules(sub, was, commit, `${prefix}${relative}/`);
+    const nested = await movedModules(sub, was, commit, `${prefix}${relative}/`, runGit);
 
     if ('error' in nested) return nested;
     moved.push(...nested);
@@ -1416,13 +2085,13 @@ async function movedModules(dir: string, from: string | undefined, to: string, p
  * Copies each submodule commit `to` records and `from` does not, at any depth, into this repository's own store. A gitlink
  * does not keep its commit reachable, and removing the copy deletes the submodule's store with it.
  */
-async function keepModuleCommits(dir: string, { from, to, attempt }: { from: string; to: string; attempt: string }): Promise<{ modules?: string } | { error: string }> {
-  const moved = await movedModules(dir, from, to, '');
+async function keepModuleCommits(dir: string, { from, to, attempt }: { from: string; to: string; attempt: string }, runGit: Git): Promise<{ modules?: string } | { error: string }> {
+  const moved = await movedModules(dir, from, to, '', runGit);
 
   if ('error' in moved) return moved;
 
   if (moved.length === 0) return {};
-  const common = await git(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  const common = await runGit(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
 
   if (common.code !== 0) return { error: common.stderr.trim() || 'the git directory could not be found' };
   const modules = `refs/teamai/kept-modules/${attempt}/`;
@@ -1430,7 +2099,7 @@ async function keepModuleCommits(dir: string, { from, to, attempt }: { from: str
   for (const module of moved) {
     // Named by commit: a path need not be a valid ref name, and vendor would clash with vendor/inner. This copy stays
     // local, so the user's push policy and hooks do not apply.
-    const pushed = await git(module.dir, ['push', '-q', '--no-verify', '--no-recurse-submodules', common.stdout.trim(), `${module.commit}:${modules}${module.commit}`]);
+    const pushed = await runGit(module.dir, ['push', '-q', '--no-verify', '--no-recurse-submodules', common.stdout.trim(), `${module.commit}:${modules}${module.commit}`]);
 
     if (pushed.code !== 0) return { error: pushed.stderr.trim() || `the commit in ${module.path} could not be kept` };
   }
@@ -1443,9 +2112,9 @@ async function keepModuleCommits(dir: string, { from, to, attempt }: { from: str
  * or untracked files, or a nested submodule's commit its parent has not recorded. A submodule with no checkout left counts
  * too, since its files may have gone with it.
  */
-async function unkeptRepositories(dir: string, { paths, commit }: { paths: string[]; commit: string }): Promise<{ paths: string[] } | { error: string }> {
-  const recorded = await treeGitlinks(dir, commit);
-  const staged = await git(dir, ['ls-files', '-s', '-z']);
+async function unkeptRepositories(dir: string, { paths, commit }: { paths: string[]; commit: string }, runGit: Git): Promise<{ paths: string[] } | { error: string }> {
+  const recorded = await treeGitlinks(dir, commit, runGit);
+  const staged = await runGit(dir, ['ls-files', '-s', '-z']);
 
   if ('error' in recorded || staged.code !== 0) return { error: 'error' in recorded ? recorded.error : staged.stderr.trim() || 'git ls-files failed' };
   const gitlinks = new Set([...recorded.keys(), ...gitlinkLines(staged.stdout).map((line) => line.slice(line.indexOf('\t') + 1))]);
@@ -1459,7 +2128,7 @@ async function unkeptRepositories(dir: string, { paths, commit }: { paths: strin
 
     if (!gitlinks.has(name) && name === relative) continue;
     const repo = path.join(dir, name);
-    const top = await git(repo, ['rev-parse', '--show-prefix']);
+    const top = await runGit(repo, ['rev-parse', '--show-prefix']);
 
     if (top.code !== 0 || top.stdout.trim() !== '') {
       if (gitlinks.has(name)) unkept.push(name);
@@ -1467,7 +2136,7 @@ async function unkeptRepositories(dir: string, { paths, commit }: { paths: strin
     }
 
     for (const args of [status, ['submodule', '--quiet', 'foreach', '--recursive', `test -z "$(git ${status.join(' ')})" || echo "$displaypath"`]]) {
-      const listed = await git(repo, args);
+      const listed = await runGit(repo, args);
 
       if (listed.code !== 0) return { error: listed.stderr.trim() || `git ${args[0]} failed in ${name}` };
 
@@ -1494,19 +2163,19 @@ export function keptSentence(kept: KeptChanges): string {
  * keeping what it changed on `refs/teamai/kept/<attempt>`. A copy it cannot put back keeps its mark with the reason, so
  * later steps there are refused until it is.
  */
-export async function putBackCopy({ dir, branch, commit, found, changed, attempt, step }: {
-  dir: string; branch: string; commit: string; found: string[]; changed: string[]; attempt: string; step: string;
+export async function putBackCopy({ dir, branch, commit, found, changed, attempt, step, run }: {
+  dir: string; branch: string; commit: string; found: string[]; changed: string[]; attempt: string; step: string; run: Git;
 }): Promise<
   { state: 'untouched' } | { state: 'restored'; kept: KeptChanges } | { state: 'unrestored'; reason: string; kept?: KeptChanges }
 > {
   if (changed.length === 0) {
-    await clearReadCopyMark(dir);
+    await clearReadCopyMark(dir, run);
 
     return { state: 'untouched' };
   }
 
   const unrestored = async (reason: string, kept?: KeptChanges): Promise<{ state: 'unrestored'; reason: string; kept?: KeptChanges }> => {
-    const marker = await gitPath(dir, UNRESTORED_MARKER);
+    const marker = await gitPath(dir, UNRESTORED_MARKER, run);
     const record: UnrestoredMarker = { branch, commit, step, reason, found };
 
     if (marker) await writeJsonAtomic(marker, record);
@@ -1515,25 +2184,25 @@ export async function putBackCopy({ dir, branch, commit, found, changed, attempt
   };
 
   // The keep below records a submodule only as its commit, so a submodule update would destroy its files.
-  const dirty = await unkeptRepositories(dir, { paths: changed, commit });
+  const dirty = await unkeptRepositories(dir, { paths: changed, commit }, run);
 
   if ('error' in dirty) return unrestored(dirty.error);
 
   if (dirty.paths.length > 0) return unrestored(`submodules have uncommitted or untracked files: ${dirty.paths.join(', ')}`);
   // A commit of the whole tree, not `git stash`: the stash list is shared by every worktree, and a stash leaves out a submodule's commit.
   const ref = `refs/teamai/kept/${attempt}`;
-  const added = await stageAll(dir);
-  const tree = added.code === 0 ? await git(dir, ['write-tree']) : added;
+  const added = await stageAll(dir, run);
+  const tree = added.code === 0 ? await run(dir, ['write-tree']) : added;
 
   const committed = tree.code === 0
-    ? await git(dir, ['-c', 'user.name=TeamAI', '-c', 'user.email=teamai@localhost', 'commit-tree', tree.stdout.trim(), '-p', 'HEAD', '-m', `teamai: kept ${step}`])
+    ? await run(dir, ['-c', 'user.name=TeamAI', '-c', 'user.email=teamai@localhost', 'commit-tree', tree.stdout.trim(), '-p', 'HEAD', '-m', `teamai: kept ${step}`])
     : tree;
 
   if (committed.code !== 0) return unrestored(committed.stderr.trim() || 'its changes could not be kept');
-  const modules = await keepModuleCommits(dir, { from: commit, to: committed.stdout.trim(), attempt });
+  const modules = await keepModuleCommits(dir, { from: commit, to: committed.stdout.trim(), attempt }, run);
 
   if ('error' in modules) return unrestored(modules.error);
-  const recorded = await git(dir, ['update-ref', ref, committed.stdout.trim()]);
+  const recorded = await run(dir, ['update-ref', ref, committed.stdout.trim()]);
 
   // Without the ref, a reset would lose the changes.
   if (recorded.code !== 0) return unrestored(recorded.stderr.trim() || 'its changes could not be kept');
@@ -1542,7 +2211,7 @@ export async function putBackCopy({ dir, branch, commit, found, changed, attempt
   // A superproject reset leaves initialized submodules where the step moved them. It must not recurse into a submodule an
   // earlier step left dirty.
   const noRecurse = ['-c', 'submodule.recurse=false'];
-  const gitlinks = await treeGitlinks(dir, commit);
+  const gitlinks = await treeGitlinks(dir, commit, run);
 
   if ('error' in gitlinks) return unrestored(gitlinks.error, kept);
   // Only the submodules the step changed: an update of any other would undo what an earlier step left there.
@@ -1550,16 +2219,16 @@ export async function putBackCopy({ dir, branch, commit, found, changed, attempt
   const update = touched.length > 0 ? [['submodule', '--quiet', 'update', '--checkout', '--recursive', '--', ...touched]] : [];
 
   for (const args of [[...noRecurse, 'checkout', '-q', '-f', branch], [...noRecurse, 'reset', '-q', '--hard', commit], ['clean', '-q', '-fd'], ...update]) {
-    const restored = await git(dir, args);
+    const restored = await run(dir, args);
 
     if (restored.code !== 0) return unrestored(restored.stderr.trim() || `git ${args.join(' ')} failed`, kept);
   }
 
   // Exit codes are not enough: git clean skips a repository the step created, and a later git add -A commits it.
-  const left = await copyLeftOver(dir, { branch, commit, found });
+  const left = await copyLeftOver(dir, { branch, commit, found }, run);
 
   if (left) return unrestored(left, kept);
-  await clearReadCopyMark(dir);
+  await clearReadCopyMark(dir, run);
 
   return { state: 'restored', kept };
 }

@@ -26,10 +26,11 @@ import { reconcileCodexDispatchers, setCodexDispatcherHooks } from '../codex-tea
 import { judgeTeamaiOnlyFiles } from '../teamai-only-files.js';
 import crossSpawn from 'cross-spawn';
 import { resolveAnchors, listWorktrees } from '../utils/git.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { CODEX_TOOL_ID } from '../types.js';
 import type { HookDef, LocalConfig, TeamaiConfig } from '../types.js';
-import { fakeCodexVersionRuns, installFakeCodex, readFakeCodexState, writeFakeCodexOptions } from './helpers/fake-codex.js';
+import { fakeCodexVersionRuns, installFakeCodex, readFakeCodexState, writeFakeCodexOptions } from '@teamai/tool-codex/testing';
+import { signalPid } from '@teamai/shared/process-group';
 import { saveToolHomes } from '../tool-home.js';
 
 let home: string;
@@ -443,12 +444,30 @@ describe('Codex hook trust — user scope', () => {
     expect(result.codexTrust).toEqual({ kind: 'failed', reason: 'initialize: fake failure' });
     const pid = readFakeCodexState(codexHome()).pid!;
     const running = () => {
-      try { process.kill(pid, 0); return true; } catch { return false; }
+      return signalPid(pid, 0) === 'sent';
     };
     try {
       await expect.poll(running, { timeout: 1000 }).toBe(false);
     } finally {
-      if (running()) process.kill(pid);
+      if (running()) signalPid(pid, 'SIGTERM');
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('stops the processes the app-server started when it closes it', async () => {
+    // As Codex's app-server starts a plugin fetch (`git ls-remote`) that is still running when teamai is done with it.
+    const shim = path.join(fakeBin, 'codex');
+    const fetchPid = path.join(home, 'fetch.pid');
+    const server = (await fse.readFile(shim, 'utf8')).split('\n').find((line) => line.startsWith('exec '));
+    await fse.writeFile(shim, `#!/bin/sh\nif [ "$1" = app-server ]; then sleep 600 </dev/null >/dev/null 2>&1 & echo $! > ${JSON.stringify(fetchPid)}; fi\n${server}\n`);
+
+    expect((await trustCodexHooks({ codexHome: codexHome(), cwd: home, hooks: [] })).kind).toBe('trusted');
+
+    const pid = Number(await fse.readFile(fetchPid, 'utf8'));
+    const running = () => signalPid(pid, 0) === 'sent';
+    try {
+      await expect.poll(running, { timeout: 2000 }).toBe(false);
+    } finally {
+      if (running()) signalPid(pid, 'SIGKILL');
     }
   });
 
@@ -520,7 +539,7 @@ describe('Codex hook trust — an instance', () => {
     else if (moved) vi.stubEnv('ACME_CODEX_HOME', acmeHome);
     await fse.ensureDir(acmeHome);
     const { loadTeamConfig } = await import('../config.js');
-    const config = await loadTeamConfig(repo);
+    const config = await loadTeamConfig(repo, null);
 
     if (!config) throw new Error('the team config did not load');
 
@@ -916,7 +935,7 @@ describe('Codex trust — project scopes', () => {
     const { loadTeamConfig } = await import('../config.js');
     const { resetToolInstancesForTests } = await import('../tool-instances.js');
     onTestFinished(resetToolInstancesForTests);
-    const config = await loadTeamConfig(repo);
+    const config = await loadTeamConfig(repo, null);
 
     if (!config) throw new Error('the team config did not load');
     execFileSync('git', ['init', '-q', project]);

@@ -8,7 +8,7 @@ import { parseUserStats } from './types.js';
 import { totalTokens, addTokenUsage, emptyTokenUsage } from '@teamai/tool-core/tokens';
 import { attributeByRepo, timeAnalytics, renderHourSparkline } from './session-analytics.js';
 import { formatTokenCount } from './digest.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { UsageEvent, UserStats, SessionMetrics, LocalConfig, DashboardEvent } from './types.js';
 import type { TokenUsage } from '@teamai/tool-core/tokens';
 

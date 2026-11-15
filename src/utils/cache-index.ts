@@ -4,8 +4,9 @@ import fs from 'fs-extra';
 import { z } from 'zod';
 
 import { errnoCode } from './fs.js';
-import { getUserHome } from './home.js';
-import { log } from './logger.js';
+import { getUserHome } from '@teamai/shared/home';
+import { log } from '@teamai/shared/log';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 // ─── Constants ───────────────────────────────────────────
 
@@ -131,7 +132,7 @@ export async function loadCacheIndex(): Promise<CacheIndex> {
             throw new Error(`${indexPath} exceeds max allowed size 10MB`);
         }
 
-        const raw = await fs.readFile(indexPath, 'utf8');
+        const raw = await readRegularFile(indexPath, 'utf8');
         const parsed = CacheIndexFileSchema.safeParse(JSON.parse(raw));
 
         if (!parsed.success) {

@@ -1,7 +1,7 @@
 /** Every command line the skill driver prints, and the permission patterns that pre-approve them. */
 import { z } from 'zod';
 import type { AttemptId, RunId } from '../../store.js';
-import type { HostChoice } from './host-profiles.js';
+import type { SessionHostChoice } from './session-host-profiles.js';
 import type { HitlMode } from './preflight.js';
 
 const LiteralSchema = z.string().brand<'Literal'>();
@@ -27,7 +27,7 @@ export function generatedStartPatterns(name: string, alias?: string): string[] {
   return INVOCATIONS.flatMap((invocation) => [name, ...(alias ? [alias] : [])].map((start) => `Bash(${invocation} workflow start ${start} --driver skill:*)`));
 }
 
-/** Describes `name` for the skill driver. `tool` names the tool of a session whose host names none. */
+/** Describes `name` for the skill driver. `tool` names the tool of a session whose session host names none. */
 export function describeLiteral(invocation: Invocation, name: string, options: { tool?: string } = {}): Literal {
   return LiteralSchema.parse([`${invocation} workflow start --describe ${name} --driver skill`, ...toolsWords(options.tool)].join(' '));
 }
@@ -49,7 +49,7 @@ function runOptionWords(options: { parallel?: number; hitl?: HitlMode; noJudge?:
 /**
  * Starts `name` for the skill driver. `inputs` leaves the `{inputs}` slot the agent fills with the person's answers;
  * `hitl` is how optional gates are answered; `noJudge` leaves the scored steps unjudged here; `tool` names the tool of a
- * session whose host names none.
+ * session whose session host names none.
  */
 export function startLiteral(invocation: Invocation, name: string, options: { parallel?: number; confirmed?: boolean; hitl?: HitlMode; inputs?: boolean; noJudge?: boolean; tool?: string } = {}): Literal {
   return LiteralSchema.parse([
@@ -70,6 +70,19 @@ function toolsWords(tool: string | undefined): string[] {
 /** Starts `name` with the local driver: shown to the person, never run by the agent. `tool`: its prompt tool. */
 export function localStartLiteral(invocation: Invocation, name: string, options: { tool?: string } = {}): Literal {
   return LiteralSchema.parse([`${invocation} workflow start ${name} --driver local`, ...toolsWords(options.tool)].join(' '));
+}
+
+/**
+ * Starts `name` on `driver`, the driver of the app the session runs in. The agent runs it in the background; for a
+ * workflow no agent may start, the person runs it. It names no prompt tool, so the app's own default comes first.
+ */
+export function appStartLiteral(invocation: Invocation, name: string, driver: string, options: { confirmed?: boolean; autoApprove?: boolean; inputs?: boolean } = {}): Literal {
+  return LiteralSchema.parse([
+    `${invocation} workflow start ${name} --driver ${shellWord(driver)}`,
+    ...(options.confirmed ? ['--confirmed'] : []),
+    ...(options.autoApprove ? ['--auto-approve'] : []),
+    ...(options.inputs ? ["--inputs '{inputs}'"] : []),
+  ].join(' '));
 }
 
 /** Continues `run` with the local driver: shown to the person for their own terminal, never run by the agent. `tool`: its prompt tool; `claim`: take it from the install that owns it. */
@@ -118,8 +131,8 @@ export function pollLiteral(invocation: Invocation, run: RunId): Literal {
   return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --wait`);
 }
 
-/** Answers the host question with profile `choice`. */
-export function chooseHostLiteral(invocation: Invocation, run: RunId, choice: HostChoice): Literal {
+/** Answers the session host question with profile `choice`. */
+export function chooseSessionHostLiteral(invocation: Invocation, run: RunId, choice: SessionHostChoice): Literal {
   return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --choice ${choice}`);
 }
 
@@ -143,14 +156,14 @@ export function reportLiteral(invocation: Invocation, run: RunId, attempt: Attem
 }
 
 /**
- * Adopts `dir`, the place the host made for `attempt`, as its turn printed it. Without `dir`, the agent fills the
+ * Adopts `dir`, the place the session host made for `attempt`, as its turn printed it. Without `dir`, the agent fills the
  * `{dir}` slot with that directory.
  */
 export function adoptLiteral(invocation: Invocation, run: RunId, attempt: AttemptId, dir?: string): Literal {
   return LiteralSchema.parse(`${invocation} workflow next ${run} --driver skill --attempt ${attempt} --adopt ${dir === undefined ? "'{dir}'" : shellWord(dir)}`);
 }
 
-/** Reports that the host cannot run the model the dispatch of `attempt` names. */
+/** Reports that the session host cannot run the model the dispatch of `attempt` names. */
 export function unavailableLiteral(invocation: Invocation, run: RunId, attempt: AttemptId): Literal {
   return LiteralSchema.parse([invocation, ...runnerArgs(run, attempt), '--model-unavailable'].join(' '));
 }

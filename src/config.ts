@@ -1,8 +1,9 @@
 import YAML from 'yaml';
-import { parseYaml } from './utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { ZodError, z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   TeamaiConfigSchema,
   LocalConfigSchema,
@@ -20,24 +21,27 @@ import {
   getDataHome,
   MemberSettingsSchema,
   MemberWorkflowSettingsSchema,
+  DriverTuningSchema,
+  type DriverTuning,
   WorkflowToolSchema,
   type MemberSettings,
   type MemberWorkflowSettings,
   type RoleAssignment,
-  type JsonValue,
   SELF_BRANCH_HOME_DIRNAME,
 } from './types.js';
-import { readFileIfExists, readFileSafe, readJson, writeFileAtomic, writeJsonAtomic, expandHome, pathExists } from './utils/fs.js';
+import type { JsonValue } from '@teamai/shared/json';
+import { readFileIfExists, readFileSafe, readJson, writeFileAtomic, writeJsonAtomic, pathExists } from './utils/fs.js';
 import { nearestGitEntry, resolveAnchors } from './utils/git.js';
-import { getUserHome } from './utils/home.js';
+import { getUserHome, expandHome } from '@teamai/shared/home';
 import { EPHEMERAL_CONFIG_ENV } from './launch-context.js';
 import { resolvePartitionDir, writeAnchorFile } from './utils/partition.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { listRoleIds, loadRolesManifest, RolesManifestNotFoundError } from './roles.js';
 import { loadRoleAssignmentsIfPresent, resolveAssignedRoles, ROLE_ASSIGNMENTS_FILE } from './role-assignments.js';
 import { warnOnce } from './utils/warn-once.js';
 import { AllowSchema } from './workflow/requirements.js';
 import { personalToolInstances, teamToolInstances, withToolInstances } from './tool-instances.js';
+import { workflowNamespacesOf } from './resource-namespaces.js';
 import { toolInstancesFor } from './tool-registry.js';
 
 /**
@@ -211,6 +215,7 @@ function withLocalRoles(config: LocalConfig): LocalConfig {
 /** `config` with its own settings restored before a fresh machine overlay is applied. */
 function withLocalMemberSettings(config: LocalConfig): LocalConfig {
   if (!config.memberSettingsOverlay) return config;
+  refuseUnmarkedSettings(config);
   const { memberSettingsOverlay, ...rest } = config;
 
   for (const key of MEMBER_SETTING_KEYS) delete rest[key];
@@ -283,9 +288,25 @@ function withAssignedRoles(config: LocalConfig, roles: string[], source: 'assign
 }
 
 /**
- * Load the team config (teamai.yaml) from the team repo
+ * The namespaces `member` receives tool instances from in the team repo at `repoPath` (`workflowNamespacesOf`). With no
+ * member, only a repo with no manifest to filter by reads its namespaces.
  */
-export async function loadTeamConfig(repoPath: string): Promise<TeamaiConfig | null> {
+async function memberNamespaces(repoPath: string, member: LocalConfig | null): Promise<readonly string[] | 'legacy'> {
+  if (member === null) {
+    const manifests = await Promise.all(['roles.yaml', 'projects.yaml'].map((file) => pathExists(path.join(repoPath, 'manifest', file))));
+
+    return manifests.some(Boolean) ? [] : 'legacy';
+  }
+
+  return workflowNamespacesOf(member);
+}
+
+/**
+ * Load the team config (teamai.yaml) from the team repo, with the tool instances of `member`: the namespaces their roles
+ * and projects select, and their scope over another's instance of one name. `null` reads it for no member, as for a
+ * team repo teamai only inspects: the team root's instances, or every namespace's in a repo with no manifest.
+ */
+export async function loadTeamConfig(repoPath: string, member: LocalConfig | null): Promise<TeamaiConfig | null> {
   const content = await readFileSafe(path.join(repoPath, 'teamai.yaml'));
 
   if (!content) {
@@ -297,7 +318,7 @@ export async function loadTeamConfig(repoPath: string): Promise<TeamaiConfig | n
   try {
     const raw = parseYaml(content);
 
-    return await withToolInstances(repoPath, TeamaiConfigSchema.parse(raw));
+    return await withToolInstances({ root: repoPath, scope: member?.scope, isForMember: member !== null, namespaces: () => memberNamespaces(repoPath, member) }, TeamaiConfigSchema.parse(raw));
   } catch (e) {
     log.error(`Invalid teamai.yaml: ${describeConfigError(e)}`);
 
@@ -307,14 +328,17 @@ export async function loadTeamConfig(repoPath: string): Promise<TeamaiConfig | n
 
 /**
  * The tools the team repo at `repoPath` adds to those teamai ships, for no member: the keys of `teamConfig`, its
- * teamai.yaml as `loadTeamConfig(repoPath)` read it, which hold its tool instances, and each instance refused for its
+ * teamai.yaml as `loadTeamConfig(repoPath, null)` read it, which hold its tool instances, and each instance refused for its
  * home, which only the init that names it can move. With no teamai.yaml yet, as on the first init of a new team repo,
  * its tools/ instances and the member's own still count.
  */
 export async function teamToolIds(repoPath: string, teamConfig: TeamaiConfig | null): Promise<string[]> {
   if (teamConfig) return [...new Set([...Object.keys(teamConfig.toolPaths), ...toolInstancesFor('guard').map(({ name }) => name)])];
 
-  const [team, own] = await Promise.all([teamToolInstances(repoPath), personalToolInstances()]);
+  const [team, own] = await Promise.all([
+    teamToolInstances({ root: repoPath, namespaces: () => memberNamespaces(repoPath, null) }),
+    personalToolInstances(),
+  ]);
 
   return [...team, ...own].map((instance) => instance.name);
 }
@@ -329,7 +353,7 @@ export async function loadTeamAgentLanguage(
 ): Promise<'en' | 'zh' | undefined> {
   if (!config) return undefined;
 
-  return (await loadTeamConfig(config.repo.localPath))?.language;
+  return (await loadTeamConfig(config.repo.localPath, null))?.language;
 }
 
 /** A YAML mapping read from a machine file, its values not validated yet. */
@@ -382,14 +406,16 @@ function readMachineWorkflowSettings(raw: RawMapping, configPath: string): Membe
 
   const settings: RawMapping = {};
 
-  for (const key of ['max_parallel', 'auto_approve', 'sandbox'] as const) {
-    const value = memberSettingAt(workflow, key, MemberWorkflowSettingsSchema.shape[key], configPath);
+  // Every key is read through its schema unless it is read entry by entry below, so a key added to the schema works
+  // here without a change. A key the schema keeps as written (`retention`, `driver`, `idle_timeout`) is warned about
+  // by the code that reads it, and the next level decides.
+  for (const [key, schema] of Object.entries(MemberWorkflowSettingsSchema.shape)) {
+    if (key === 'tools' || key === 'drivers' || key === 'allow') continue;
+    const value = memberSettingAt(workflow, key, schema, configPath);
 
     if (value !== undefined) settings[key] = value;
   }
 
-  // Kept as written: resolveRetention and driveByDefault skip a wrong value with a warning, and the next level decides.
-  for (const key of ['retention', 'driver'] as const) if (Object.prototype.hasOwnProperty.call(workflow, key)) settings[key] = workflow[key];
   const tools = OptionalMappingSchema.parse(workflow.tools);
 
   if (tools) {
@@ -405,6 +431,23 @@ function readMachineWorkflowSettings(raw: RawMapping, configPath: string): Membe
     if (Object.keys(accepted).length > 0) settings.tools = accepted;
   } else if (Object.prototype.hasOwnProperty.call(workflow, 'tools')) {
     warnOnce(`Ignoring workflows.tools in ${configPath}: expected an object.`);
+  }
+
+  const drivers = OptionalMappingSchema.parse(workflow.drivers);
+
+  if (drivers) {
+    const accepted: Record<string, DriverTuning> = {};
+
+    for (const [name, value] of Object.entries(drivers)) {
+      const parsed = DriverTuningSchema.safeParse(value);
+
+      if (parsed.success) accepted[name] = parsed.data;
+      else warnOnce(`Ignoring workflows.drivers.${name} in ${configPath}: ${describeConfigError(parsed.error)}.`);
+    }
+
+    if (Object.keys(accepted).length > 0) settings.drivers = accepted;
+  } else if (Object.prototype.hasOwnProperty.call(workflow, 'drivers')) {
+    warnOnce(`Ignoring workflows.drivers in ${configPath}: expected an object.`);
   }
 
   const allow = OptionalMappingSchema.parse(workflow.allow);
@@ -428,6 +471,26 @@ function readMachineWorkflowSettings(raw: RawMapping, configPath: string): Membe
   }
 
   return Object.keys(settings).length > 0 ? MemberWorkflowSettingsSchema.parse(settings) : undefined;
+}
+
+/**
+ * `workflows.drivers` of the machine file under the workspace's, merged by driver, then by runtime, then by option key,
+ * so a member who tunes one option of one runtime keeps every other option the machine file sets.
+ */
+function mergeDriverTuning(machine: Record<string, DriverTuning> | undefined, local: Record<string, DriverTuning> | undefined): Record<string, DriverTuning> | undefined {
+  if (!machine && !local) return undefined;
+  const merged: Record<string, DriverTuning> = {};
+
+  for (const name of new Set([...Object.keys(machine ?? {}), ...Object.keys(local ?? {})])) {
+    const below = machine?.[name]?.runtimes ?? {};
+    const above = local?.[name]?.runtimes ?? {};
+    const runtimes: DriverTuning['runtimes'] = {};
+
+    for (const use of new Set([...Object.keys(below), ...Object.keys(above)])) runtimes[use] = { ...below[use], ...above[use] };
+    merged[name] = { runtimes };
+  }
+
+  return merged;
 }
 
 /** Read valid member settings from a machine file, whether or not it is a user-scope install. */
@@ -515,6 +578,7 @@ function applyMachineSettings(config: LocalConfig, machine: MemberSettings): Loc
         ...local.workflows,
         tools: { ...machine.workflows?.tools, ...local.workflows?.tools },
         allow: { ...machine.workflows?.allow, ...local.workflows?.allow },
+        drivers: mergeDriverTuning(machine.workflows?.drivers, local.workflows?.drivers),
       }
     : undefined;
 
@@ -532,7 +596,14 @@ function applyMachineSettings(config: LocalConfig, machine: MemberSettings): Loc
     ...(modelAliases ? { modelAliases } : { modelAliases: undefined }),
   };
 
-  return { ...config, ...effective, memberSettingsOverlay: { local } };
+  const overlaid: LocalConfig = { ...config, ...effective };
+
+  return { ...overlaid, memberSettingsOverlay: { local, applied: appliedSettings(overlaid) } };
+}
+
+/** A copy of each member setting `config` holds, which a save compares with what it holds then. */
+function appliedSettings(config: LocalConfig): MemberSettings {
+  return structuredClone(Object.fromEntries(MEMBER_SETTING_KEYS.flatMap((key) => (config[key] === undefined ? [] : [[key, config[key]]]))));
 }
 
 /** Apply the machine settings after the role overlay, at every existing config-load seam. */
@@ -552,8 +623,22 @@ export function ownMemberSettings(config: LocalConfig): MemberSettings {
   return config.memberSettingsOverlay?.local ?? config;
 }
 
+/**
+ * Refuses `config` when a member setting changed on it, not through markMemberSettingsWritten: that change is not in its
+ * overlay's own settings, so a save or a later mark would drop it.
+ */
+function refuseUnmarkedSettings(config: LocalConfig): void {
+  const overlay = config.memberSettingsOverlay;
+  const unmarked = overlay ? MEMBER_SETTING_KEYS.filter((key) => !isDeepStrictEqual(config[key], overlay.applied[key])) : [];
+
+  if (unmarked.length > 0) {
+    throw new Error(`teamai changed the member settings ${unmarked.join(', ')} of this config without marking them written (markMemberSettingsWritten), so saving it would drop them. The config file is unchanged. This is a bug in teamai: please report it with the command you ran.`);
+  }
+}
+
 /** Mark settings a command deliberately wrote, so a later save keeps them even when they equal a machine value. */
 export function markMemberSettingsWritten(config: LocalConfig, written: MemberSettings): LocalConfig {
+  refuseUnmarkedSettings(config);
   const local = config.memberSettingsOverlay?.local ?? MemberSettingsSchema.parse(config);
 
   const workflows = local.workflows || written.workflows
@@ -566,14 +651,14 @@ export function markMemberSettingsWritten(config: LocalConfig, written: MemberSe
     : undefined;
 
   const overlaid: MemberSettings = { ...local, ...written };
-  const marked: LocalConfig = { ...config, ...written, memberSettingsOverlay: { local: overlaid } };
+  const marked: LocalConfig = { ...config, ...written };
 
   if (workflows) {
     marked.workflows = { ...workflows, tools: workflows.tools ?? {} };
     overlaid.workflows = workflows;
   }
 
-  return marked;
+  return { ...marked, memberSettingsOverlay: { local: overlaid, applied: appliedSettings(marked) } };
 }
 
 /** Whether `configPath` holds an install. A file that cannot be read or parsed counts as one, so its install is kept. */
@@ -661,6 +746,7 @@ function serializeLocalConfig(config: LocalConfig, carriedSettings?: MemberSetti
   // The overlaid roles are the team's, read fresh on every load. Writing them
   // would leave a stale copy behind once the assignment changes or the file
   // goes, and a stale copy is exactly what a member must not be able to keep.
+  refuseUnmarkedSettings(config);
   const { dataHome: _dataHome, branchHome: _branchHome, roleUnresolved: _roleUnresolved, children: _children, roleAssignment: _assignment, memberSettingsOverlay: overlay, stepRole: _stepRole, ephemeralConfig: _ephemeralConfig, ...persisted } = withLocalRoles(config);
   const localSettings = overlay?.local ?? MemberSettingsSchema.parse(persisted);
 
@@ -695,14 +781,20 @@ async function readSettingsOnlyConfig(configPath: string): Promise<MemberSetting
 export async function saveLocalConfig(config: LocalConfig): Promise<void> {
   const configPath = expandHome(getUserConfigPath());
   const carriedSettings = await readSettingsOnlyConfig(configPath);
-  const ai = config.ai ?? await readAiSetting(configPath);
-  await writeFileAtomic(configPath, serializeLocalConfig(ai ? { ...config, ai } : config, carriedSettings));
+  await writeFileAtomic(configPath, serializeLocalConfig(await withKeptAiSetting(config, configPath), carriedSettings));
 }
 
 /** Writes a project/local config; its own file remains an install record. */
 async function writeLocalConfig(configPath: string, config: LocalConfig): Promise<void> {
-  const ai = config.ai ?? await readAiSetting(configPath);
-  await writeFileAtomic(configPath, serializeLocalConfig(ai ? { ...config, ai } : config));
+  await writeFileAtomic(configPath, serializeLocalConfig(await withKeptAiSetting(config, configPath)));
+}
+
+/** `config`, keeping the `ai` its file `configPath` sets when it holds none itself. */
+async function withKeptAiSetting(config: LocalConfig, configPath: string): Promise<LocalConfig> {
+  if (config.ai) return config;
+  const ai = await readAiSetting(configPath);
+
+  return ai ? markMemberSettingsWritten(config, { ai }) : config;
 }
 
 /**
@@ -734,6 +826,11 @@ export async function saveState(state: State): Promise<void> {
  */
 export class NotInitializedError extends Error {
   readonly name = 'NotInitializedError';
+}
+
+/** The local config names a team repo that has no teamai.yaml: the config loads, its team does not. */
+export class TeamConfigNotFoundError extends Error {
+  readonly name = 'TeamConfigNotFoundError';
 }
 
 /** The local config and the team config it points at, as the init checks return them. */
@@ -779,7 +876,7 @@ export async function requireInit(options: LoadOptions = {}): Promise<TeamaiInit
   const localConfig = await loadLocalConfig(options);
 
   if (!localConfig) return throwMissingOrInvalid(expandHome(getUserConfigPath()));
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
   if (!teamConfig) return throwTeamConfigMissingOrInvalid(localConfig.repo.localPath);
 
@@ -817,7 +914,7 @@ async function throwTeamConfigMissingOrInvalid(repoPath: string): Promise<never>
   const teamConfigPath = path.join(repoPath, 'teamai.yaml');
 
   if (!(await pathExists(teamConfigPath))) {
-    throw new Error('Team config (teamai.yaml) not found. Check your repo path.');
+    throw new TeamConfigNotFoundError('Team config (teamai.yaml) not found. Check your repo path.');
   }
 
   const content = await readFileSafe(teamConfigPath);
@@ -827,6 +924,18 @@ async function throwTeamConfigMissingOrInvalid(repoPath: string): Promise<never>
     : 'it is not a valid team config (the error is printed above)';
 
   throw new Error(`The team config at ${teamConfigPath} could not be read: ${why}. Fix it in the team repo, or ask a team admin to.`);
+}
+
+/**
+ * The team config (teamai.yaml) in `repoPath`, with `member`'s tool instances as `loadTeamConfig` reads them, or null
+ * when the team has none; one that cannot be used throws, naming it.
+ */
+export async function loadTeamConfigIfPresent(repoPath: string, member: LocalConfig | null): Promise<TeamaiConfig | null> {
+  const teamConfig = await loadTeamConfig(repoPath, member);
+
+  if (teamConfig || !(await pathExists(path.join(repoPath, 'teamai.yaml')))) return teamConfig;
+
+  return throwTeamConfigMissingOrInvalid(repoPath);
 }
 
 // ─── Scope-aware config loading ─────────────────────────
@@ -1406,7 +1515,7 @@ export async function requireInitForScope(
     return throwMissingOrInvalid(expandHome(getConfigPath(scope, projectRoot)));
   }
 
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
   if (!teamConfig) return throwTeamConfigMissingOrInvalid(localConfig.repo.localPath);
 
@@ -1433,7 +1542,7 @@ export async function autoDetectInit(cwd?: string, options: LoadOptions & { chil
   if (unreadable) throw new UnreadableProjectConfigError(unreadable);
 
   if (projectConfig) {
-    const teamConfig = await loadTeamConfig(projectConfig.repo.localPath);
+    const teamConfig = await loadTeamConfig(projectConfig.repo.localPath, projectConfig);
 
     if (!teamConfig) return throwTeamConfigMissingOrInvalid(projectConfig.repo.localPath);
 

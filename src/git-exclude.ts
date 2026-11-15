@@ -2,14 +2,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import fse from 'fs-extra';
-import { execCommand, type ExecResult } from './utils/exec.js';
+import { execCommand, type ExecResult } from '@teamai/shared/exec';
 import { pathExists, readFileIfExists, readFileSafe, symlinkTarget, writeFileAtomic } from './utils/fs.js';
 import { gitFindsNoRepository } from './utils/git-discovery.js';
 import { checkoutLocation } from './utils/git.js';
 import { withoutGitRepositoryEnv } from './utils/git-env.js';
-import { getUserHome } from './utils/home.js';
+import { gitAnswer } from './workflow/worktree.js';
+import { getUserHome } from '@teamai/shared/home';
 import { z } from 'zod';
-import { isJsonObject, type JsonObject, type JsonValue } from './types.js';
+import { isJsonObject, type JsonObject, type JsonValue } from '@teamai/shared/json';
 
 // ─── Git exclude blocks ──────────────────────────────────────
 //
@@ -339,13 +340,15 @@ export async function gitTracking(file: string): Promise<GitTracking> {
   const dir = await existingAncestor(file);
 
   if (await gitFindsNoRepository(dir)) return { kind: 'outside-repo' };
-  const result = await runGit(['check-ignore', '-q', '--', path.relative(dir, file)], dir);
+  const ignored = gitAnswer(await runGit(['check-ignore', '-q', '--', path.relative(dir, file)], dir));
 
-  if (result.code === 0) return { kind: 'ignored' };
+  if (ignored.said === 'yes') return { kind: 'ignored' };
 
-  if (result.code === 1) return { kind: 'would-commit' };
+  if (ignored.said === 'no' && ignored.result.code === 1) return { kind: 'would-commit' };
 
-  // Anything else is no repository at all, or git failing inside one.
+  // Anything else is no repository at all, git failing inside one, or a git that did not answer.
+  const { result } = ignored;
+
   if (await insideRepository(dir)) return { kind: 'unknown', error: result.stderr.trim() || `git exited with ${result.code}` };
 
   return { kind: 'outside-repo' };

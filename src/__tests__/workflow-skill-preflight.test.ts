@@ -236,15 +236,15 @@ describe('skill driver preflight', () => {
     expect(runCount(made)).toBe(before);
   });
 
-  it('starts a workflow with nothing to ask at once, and gives the facts to tell the person first', async () => {
+  it('starts a workflow with nothing to ask at once, on the host driver when it needs no AI tool, and gives the facts to tell the person first', async () => {
     const made = await harness({ lint: LINT });
     expect(await made.call({ kind: 'describe', name: 'lint' })).toMatchObject({ data: { describe: { ask: {
-      kind: 'start',
+      kind: 'background',
       say: [
         '- LINT_TOKEN has no value on this machine: set LINT_TOKEN in the environment, or declare it in the team repo with teamai env add LINT_TOKEN --secret and give it a value with teamai env set LINT_TOKEN before the steps that require it run, or those steps fail.',
         '- It stops after 30m.',
       ].join('\n'),
-      start: 'teamai workflow start lint --driver skill',
+      start: 'teamai workflow start lint --driver host',
     } } } });
   });
 
@@ -252,7 +252,8 @@ describe('skill driver preflight', () => {
     const made = await harness({ cleaned: CLEANED });
     expect(await made.call({ kind: 'describe', name: 'cleaned' })).toMatchObject({ data: { describe: {
       workflow: { facts: { width: 2, runs: ['lint', 'report', 'clean'].map((step) => ({ step, executor: 'command', env: [] })) } },
-      ask: { kind: 'ask', question: { text: expect.stringContaining('- It can run up to 2 steps at once.') } },
+      // On the host driver, how many run at once is this machine's own setting, so describe asks nothing.
+      ask: { kind: 'background', start: 'teamai workflow start cleaned --driver host', say: expect.stringContaining('- It can run up to 2 steps at once.') },
     } } });
     expect(await made.call({ kind: 'start', name: 'cleaned', answers: { confirmed: false }, inputs: undefined }))
       .toMatchObject({ error: { code: 'confirm_needed' } });
@@ -355,6 +356,8 @@ describe('skill driver preflight of optional gates', () => {
   /** A workflow named `gates`, invoke: allow, whose steps are `steps`, with the top-level fields `head` before them. */
   const gates = (steps: string, head = '') => `schemaVersion: v1alpha1\nname: gates\ndescription: Gate some steps\ninvoke: allow\n${head}steps:\n${steps}`;
   const approvalsAnswer = '- The recommended start lets this session\'s agent answer optional approvals and say why; "answer optional approvals automatically" answers each approval yes.';
+  // A workflow of commands and gates alone goes to the host driver, where this session's agent asks the person at each.
+  const hostApprovalsAnswer = '- This session\'s agent asks you at optional approvals as the run reaches them; "answer optional approvals automatically" answers each approval yes.';
   const questionOf = async (workflows: Record<string, string>, name = 'gates') => {
     const made = await harness(workflows);
     return made.call({ kind: 'describe', name });
@@ -374,7 +377,7 @@ describe('skill driver preflight of optional gates', () => {
 `) })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: [
       '- Optional approval at build: before `npm run build`.',
       '- Optional approval at share: before `teamai contribute --file "$FILE" --title "$TITLE" --namespace "$NS" --session-id…`.',
-      approvalsAnswer,
+      hostApprovalsAnswer,
       'How should it run?',
     ].join('\n') } } } } });
   });
@@ -412,7 +415,7 @@ describe('skill driver preflight of optional gates', () => {
 `) })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: [
       '- Optional approval at announce: before workflow announce.',
       '- Optional approval at tidy: before an inline workflow.',
-      approvalsAnswer,
+      hostApprovalsAnswer,
       'How should it run?',
     ].join('\n') } } } } });
   });
@@ -432,7 +435,7 @@ describe('skill driver preflight of optional gates', () => {
 `, 'ends: { shipped: succeeded }\n') })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: [
       '- Optional approval at wrap.close: before wrap ends wrapped.',
       '- Optional approval at done: before the run ends shipped.',
-      approvalsAnswer,
+      hostApprovalsAnswer,
       'How should it run?',
     ].join('\n') } } } } });
   });
@@ -453,7 +456,7 @@ describe('skill driver preflight of optional gates', () => {
       '- It can run up to 2 steps at once.',
       '- Optional approval at ship-ok: no action; deploy and notify wait for it.',
       '- Optional approval at wrap-ok: no action; no step waits for it.',
-      approvalsAnswer,
+      hostApprovalsAnswer,
       'How should it run?',
     ].join('\n') } } } } });
   });
@@ -467,11 +470,11 @@ describe('skill driver preflight of optional gates', () => {
   - id: ship-ok
     needs: [region]
     approve: Ship it?
-    command: echo shipped
+    prompt: Ship it.
 `) })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: [
       '- Optional choice at target: one of staging, prod; "answer automatically" picks staging.',
       '- Optional choice at region: one of eu, us; no default, so "answer automatically" leaves it to you.',
-      '- Optional approval at ship-ok: before `echo shipped`.',
+      '- Optional approval at ship-ok: before a prompt step, which a child agent works.',
       '- The recommended start lets this session\'s agent answer optional approvals and choices and say why; "answer optional approvals and choices automatically" answers each approval yes and each choice with its default, if it has one.',
       'How should it run?',
     ].join('\n') } } } } });
@@ -503,7 +506,7 @@ describe('skill driver preflight of optional gates', () => {
 `, 'inputs: { items: [string] }\n') })).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: [
       '- gates needs the input items (list of string).',
       '- Optional approval at each.check: before `echo "$ITEM"`.',
-      approvalsAnswer,
+      hostApprovalsAnswer,
       'How should it run?',
     ].join('\n') } } } } });
   });

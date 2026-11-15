@@ -16,7 +16,7 @@ import { runsDir } from '../workflow/store.js';
 import type { LocalConfig } from '../types.js';
 import type { RunState, WorkflowFailure } from '../workflow/types.js';
 import { formatRegression, regressionOf, runComparisons, type ArmComparison, type BenchmarkRunInput, type Regression } from './history.js';
-import { BENCHMARK_RECORD_SCHEMA_VERSION, benchmarkRecord, benchmarkRecordFile, unlaunchedTrial, type BenchmarkRunRecord } from './result.js';
+import { BENCHMARK_RECORD_SCHEMA_VERSION, benchmarkRecord, benchmarkRecordFile, uncheckedChecks, unlaunchedTrial, unmeasuredTrials, type BenchmarkRunRecord } from './result.js';
 import { planOfRun, trialsUnattended, type RunPlan } from './run-plan.js';
 import { benchmarkTable, formatBenchmarkTable, type ResourceEffect, type BenchmarkTable } from './table.js';
 import { toolUnavailableNotice } from './trial.js';
@@ -24,8 +24,8 @@ import { TrialVerdicts, type EntryVerdict } from './verdicts.js';
 
 /**
  * What `report` prints: the results as text, after a line when the trials ran with their tools' own permission settings
- * and a line for each arm whose tool the run's driver could not launch, followed by `record: pending` while the
- * record waits and by what the comparison found; as a table, with how each scorer of each trial ended; and the
+ * and a line for each arm whose tool the run's driver could not launch, followed by the checks that could not run, the
+ * trials that ended in an error when no trial produced a result, `record: pending` while the record waits and by what the comparison found; as a table, with how each scorer of each trial ended; and the
  * comparison's finding.
  */
 export interface BenchmarkReport {
@@ -33,6 +33,10 @@ export interface BenchmarkReport {
   table: BenchmarkTable & { pairs: ArmComparison[]; verdicts: EntryVerdict[]; resources: ResourceEffect[] };
   /** Against the newest earlier comparable record on teamai-reports; `off` when `COMPARE` did not ask for the comparison. */
   regression: Regression['kind'] | 'off';
+  /** A line for each baseline and trial whose check could not run (`uncheckedChecks`); '' when every check ran. */
+  unchecked: string;
+  /** A line for each trial whose work ended in an error when no trial produced a result (`unmeasuredTrials`); '' otherwise. */
+  unmeasured: string;
 }
 
 /** `COMPARE`, as `{{ inputs.fail_on_regression }}` renders it; unset compares nothing. */
@@ -88,12 +92,16 @@ export async function reportBenchmark(env: NodeJS.ProcessEnv, secrets: Record<st
   const current: BenchmarkRunInput = { run: run.id, source: 'local', startedAt: run.createdAt, outcome: record.outcome, schemaVersion: record.schemaVersion, benchmark: record };
   const regression = compare.data === 'true' ? await regressionAgainstPublished(config, current) : undefined;
 
+  const unchecked = uncheckedChecks(run, planned.found);
+  const unmeasured = unmeasuredTrials(run, record.trials);
+
   const text = [
-    ...asked, ...unlaunchedArms(run, planned.found), formatBenchmarkTable(table), ...(pending ? ['record: pending'] : []),
+    ...asked, ...unlaunchedArms(run, planned.found), formatBenchmarkTable(table), ...(unchecked.length > 0 ? [uncheckedNotice(unchecked, record.suite.name)] : []),
+    ...(unmeasured.length > 0 ? [unmeasuredNotice(unmeasured, record.suite.name)] : []), ...(pending ? ['record: pending'] : []),
     ...(regression === undefined ? [] : [formatRegression(regression, record.suite.name).join('\n')]),
   ].join('\n\n');
 
-  return { report: { text, table: { ...table, pairs: runComparisons(current), verdicts }, regression: regression?.kind ?? 'off' } };
+  return { report: { text, table: { ...table, pairs: runComparisons(current), verdicts }, regression: regression?.kind ?? 'off', unchecked: unchecked.join('\n'), unmeasured: unmeasured.join('\n') } };
 }
 
 /**
@@ -107,6 +115,24 @@ async function regressionAgainstPublished(config: LocalConfig, current: Benchmar
 }
 
 const ASKED_NOTICE = 'Each trial ran with its tool\'s own permission settings, since the step that runs the plan is not a strict sandbox: a tool that may not edit failed its trials. To run them with permissions: unattended, keep requires: { isolation: sandbox, strict: true } on that step.';
+
+/** What the report says of the checks that could not run, `unchecked`, and how to make them run. */
+function uncheckedNotice(unchecked: readonly string[], suite: string): string {
+  return [
+    'These checks could not run, so the run measured nothing for them:',
+    ...unchecked.map((line) => `  ${line}`),
+    `A check runs where the trials run, such as in a sandbox: give that place what check.run calls, or fix the cause named, then run teamai benchmark run ${suite} again.`,
+  ].join('\n');
+}
+
+/** What the report says when no trial produced a result: each trial that ended in an error, `unmeasured`, and what to do. */
+function unmeasuredNotice(unmeasured: readonly string[], suite: string): string {
+  return [
+    'No trial produced a result, so the run measured nothing. These trials ended with an error:',
+    ...unmeasured.map((line) => `  ${line}`),
+    `Fix the cause named, then run teamai benchmark run ${suite} again.`,
+  ].join('\n');
+}
 
 /** A line for each arm with a prompt that failed `tool_unavailable` before any lease: the driver could not launch its tool. */
 function unlaunchedArms(run: RunState, { plan, prefix }: RunPlan): string[] {

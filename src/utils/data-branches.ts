@@ -14,6 +14,7 @@ import { failureReason, isDelivered, type BranchWorktree, type PublishResult } f
 import { commitSkippingHooks, createGit, isGitRepo } from './git.js';
 import { learningsBranch } from './learnings-branch.js';
 import { reportsBranch } from './reports-branch.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 const CHECKOUTS: Record<DataBranch, BranchWorktree> = { 'teamai-reports': reportsBranch, 'teamai-learnings': learningsBranch };
 
@@ -72,7 +73,7 @@ async function appendAgain(worktree: string, patch: string): Promise<(() => Prom
   const before = new Map<string, string | undefined>();
 
   for (const file of appended.keys()) {
-    const text = await fs.readFile(path.join(worktree, file), 'utf8').catch(() => undefined);
+    const text = await readRegularFile(path.join(worktree, file), 'utf8').catch(() => undefined);
 
     if (text !== undefined && text !== '' && !text.endsWith('\n')) return undefined;
     before.set(file, text);
@@ -119,7 +120,7 @@ async function commitKept(input: { worktree: string; branch: DataBranch; files: 
     } catch (e) {
       // Its reverse applies only where every line it adds sits in its own context and every line it removes is gone.
       const isOnBranch = await repo.raw(['apply', '--check', '--reverse', '--binary', file]).then(() => true, () => false);
-      const appended = isOnBranch ? undefined : await appendAgain(worktree, await fs.readFile(file, 'utf8'));
+      const appended = isOnBranch ? undefined : await appendAgain(worktree, await readRegularFile(file, 'utf8'));
 
       if (isOnBranch) await fs.rm(file, { force: true });
       else if (appended === undefined) stuck.push({ file, error: failureReason(e) });

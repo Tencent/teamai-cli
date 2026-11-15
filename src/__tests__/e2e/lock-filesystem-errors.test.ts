@@ -39,8 +39,7 @@ describe('real CLI lock filesystem errors (#999)', () => {
     const output = `${result.stdout}${result.stderr}`;
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(1);
-    expect(output).toContain(`Cannot acquire lock ${lock}:`);
-    expect(output).toContain('EISDIR');
+    expect(output).toContain(`Cannot acquire lock ${lock}: ${lock} is a directory, not a lock file. Remove it, then run the command again.`);
     expect(output).not.toContain('Another teamai pull/push');
     expect(fs.readdirSync(lock)).toEqual(['keep']);
     expect(fs.readFileSync(path.join(lock, 'keep'), 'utf8')).toBe('keep');

@@ -3,8 +3,15 @@ import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
 import { DocsHandler } from '../resources/docs.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
+import { copyRegularTree } from '@teamai/shared/regular-file';
+
+vi.mock('@teamai/shared/regular-file', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@teamai/shared/regular-file')>();
+
+  return { ...actual, copyRegularTree: vi.fn(actual.copyRegularTree) };
+});
 import { LocalConfigSchema, TeamaiConfigSchema, type LocalConfig, type TeamaiConfig } from '../types.js';
 
 describe('DocsHandler nested documents', () => {
@@ -168,7 +175,7 @@ describe('DocsHandler pruning (#794)', () => {
     await fse.outputFile(path.join(source, 'api', 'new.md'), 'new directory');
     commitTeamRepo(path.join(root, 'repo'), 'new layout');
     if (failure === 'copy') {
-      vi.spyOn(fse, 'copy').mockRejectedValueOnce(new Error('copy failed'));
+      vi.mocked(copyRegularTree).mockRejectedValueOnce(new Error('copy failed'));
     } else {
       const rename = fse.rename.bind(fse);
       vi.spyOn(fse, 'rename')
@@ -342,7 +349,7 @@ describe('DocsHandler pruning (#794)', () => {
   it('propagates a copy failure without pruning', async () => {
     await fse.outputFile(path.join(source, 'guide.md'), 'new');
     await fse.outputFile(path.join(destination, 'old.md'), 'old');
-    vi.spyOn(fse, 'copy').mockRejectedValueOnce(new Error('copy failed'));
+    vi.mocked(copyRegularTree).mockRejectedValueOnce(new Error('copy failed'));
     await expect(sync()).rejects.toThrow('copy failed');
     expect(await fse.readFile(path.join(destination, 'old.md'), 'utf8')).toBe('old');
   });
@@ -366,5 +373,87 @@ describe('DocsHandler pruning (#794)', () => {
     await fse.outputFile(path.join(source, 'guide.md'), 'team');
     await expect(sync()).rejects.toThrow('dedicated localDir');
     expect(await fse.readFile(path.join(source, 'guide.md'), 'utf8')).toBe('team');
+  });
+});
+
+describe('DocsHandler push scan of the docs mirror (#1851)', () => {
+  const handler = new DocsHandler();
+  let tmpDir: string;
+  let repoDocs: string;
+  let mirror: string;
+  let localConfig: LocalConfig;
+  let teamConfig: TeamaiConfig;
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-docs-push-'));
+    vi.stubEnv('HOME', tmpDir);
+    const repoPath = path.join(tmpDir, 'repo');
+    repoDocs = path.join(repoPath, 'docs');
+    await fse.outputFile(path.join(repoDocs, 'team.md'), 'Team doc\n');
+    commitTeamRepo(repoPath, 'team docs');
+    localConfig = LocalConfigSchema.parse({
+      repo: { localPath: repoPath, remote: 'local/docs-test' },
+      username: 'test',
+      scope: 'project',
+      projectRoot: path.join(tmpDir, 'project'),
+      dataHome: path.join(tmpDir, 'data'),
+    });
+    teamConfig = TeamaiConfigSchema.parse({
+      team: 'test', repo: 'local/docs-test', provider: 'git',
+      sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: './knowledge-base' } },
+    });
+    mirror = path.join(tmpDir, 'project', 'knowledge-base');
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(tmpDir);
+  });
+
+  it('offers an edited delivered doc, from the mirror', async () => {
+    await fse.outputFile(path.join(mirror, 'team.md'), 'Team doc\nMember line\n');
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ relativePath: 'docs/team.md', status: 'modified' });
+    expect(items[0].sourcePath).toBe(path.join(mirror, 'team.md'));
+  });
+
+  it('does not offer a copy of a team version, current or stale', async () => {
+    await fse.outputFile(path.join(mirror, 'team.md'), 'Team doc\n');
+    expect(await handler.scanLocalForPush(teamConfig, localConfig)).toEqual([]);
+
+    // A teammate pushes a newer version; the member's mirror still holds the old one.
+    await fse.outputFile(path.join(repoDocs, 'team.md'), 'Team doc v2\n');
+    commitTeamRepo(localConfig.repo.localPath, 'team docs v2');
+    expect(await handler.scanLocalForPush(teamConfig, localConfig)).toEqual([]);
+  });
+
+  it('leaves a mirror file the team does not have to the team repo', async () => {
+    // The user-scope mirror is machine-wide, so it can hold other teams' docs;
+    // a new doc is authored in the team repo, not swept from that mirror.
+    await fse.outputFile(path.join(mirror, 'notes', 'mine.md'), 'Mine\n');
+    expect(await handler.scanLocalForPush(teamConfig, localConfig)).toEqual([]);
+  });
+
+  it('offers a clone edit once, not also the mirror copy of that path', async () => {
+    await fse.outputFile(path.join(repoDocs, 'team.md'), 'Clone edit\n');
+    await fse.outputFile(path.join(mirror, 'team.md'), 'Mirror edit\n');
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    expect(items).toHaveLength(1);
+    expect(items[0].sourcePath).toBe(path.join(repoDocs, 'team.md'));
+  });
+
+  it('reads no mirror when it is a link', async () => {
+    await fse.outputFile(path.join(mirror, 'team.md'), 'Member line\n');
+    const real = path.join(tmpDir, 'elsewhere');
+    await fse.move(mirror, real);
+    await fse.symlink(real, mirror, 'dir');
+    expect(await handler.scanLocalForPush(teamConfig, localConfig)).toEqual([]);
+  });
+
+  it('stays out of self mode, whose .teamai/docs is the team tree', async () => {
+    localConfig = { ...localConfig, repo: { ...localConfig.repo, kind: 'self' } };
+    await fse.outputFile(path.join(mirror, 'team.md'), 'Member line\n');
+    expect(await handler.scanLocalForPush(teamConfig, localConfig)).toEqual([]);
   });
 });

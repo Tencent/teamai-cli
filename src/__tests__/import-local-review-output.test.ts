@@ -8,7 +8,7 @@ vi.mock('@teamai/shared/log', () => ({
 }));
 
 import { ImportLearnings } from '../import-local.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 const TODAY = new Date().toISOString().slice(0, 10);
 

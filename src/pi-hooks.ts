@@ -25,7 +25,7 @@
 import path from 'node:path';
 import { generatedFileState, writeIfChanged, remove } from './utils/fs.js';
 import { earlierHookAdapterDir, hookAdapterDir } from './locate.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { resolveCliEntry } from './builtin-hooks.js';
 import { bridgedTeamHookFile } from './bridged-team-hooks.js';
 
@@ -111,7 +111,7 @@ export default function teamaiHooks(pi) {
           resolve(undefined);
         };
         const timer = setTimeout(() => {
-          try { child.kill(); } catch {}
+          try { if (child.pid !== undefined) child.kill(); } catch {}
           finish();
         }, 15000);
         child.once("close", finish);
@@ -145,7 +145,7 @@ export default function teamaiHooks(pi) {
         }
       };
       const timer = setTimeout(() => {
-        try { child.kill(); } catch {}
+        try { if (child.pid !== undefined) child.kill(); } catch {}
         out = "";
         finish();
       }, 15000);
@@ -189,7 +189,7 @@ export default function teamaiHooks(pi) {
         }
       };
       const timer = setTimeout(() => {
-        try { child.kill(); } catch {}
+        try { if (child.pid !== undefined) child.kill(); } catch {}
         out = "";
         finish();
       }, TEAM_HOOKS_TIMEOUT_MS);

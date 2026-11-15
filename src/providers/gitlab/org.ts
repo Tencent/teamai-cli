@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { JsonValue } from '../../types.js';
+import type { JsonValue } from '@teamai/shared/json';
 import type { OrgRepoInfo } from '../types.js';
 import { getGitLabToken, gitlabApiBase } from './gitlab-api.js';
 

@@ -10,7 +10,7 @@ import { workflowGitConformanceScenarios, type GitConformanceName } from '../wor
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { claimRun, publishRun } from '../workflow/handoff.js';
 import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
-import type { LocalToolAdapter } from '../workflow/drivers/local/local-tool-adapter.js';
+import { type StepLauncher } from '@teamai/runtime-tools';
 import { inProcessClient } from '../workflow/protocol.js';
 import type { StepState } from '../workflow/step-state.js';
 import { readRun } from '../workflow/store.js';
@@ -46,7 +46,7 @@ function valueOf(run: RunState, name: GitConformanceName): string {
 }
 
 /** The scenario's agent: it runs a prompt as a shell command in the step's place. */
-const promptAsCommand: LocalToolAdapter = {
+const promptAsCommand: StepLauncher = {
   run: async (_tool, input) => {
     const ran = spawnSync(input.prompt, { shell: true, cwd: input.cwd });
     return { started: true, exitCode: ran.status ?? 1 };

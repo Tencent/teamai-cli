@@ -54,6 +54,7 @@ export async function openRegularFile(file: string): Promise<FileHandle> {
 }
 
 async function openRegularFileWith(file: string, flags: number): Promise<FileHandle> {
+  // oxlint-disable-next-line teamai/regular-file-reads, teamai/step-path-writes -- the helper's own open: nonblocking, and its handle is checked before a byte is read
   const handle = await fs.promises.open(file, flags);
 
   try {
@@ -113,6 +114,7 @@ export async function readRegularFileNoLink(file: string, encoding?: BufferEncod
  * `openRegularFile`. Reading a regular file ends at its end, so only the open could block, and it does not here.
  */
 export function openRegularFileSync(file: string): number {
+  // oxlint-disable-next-line teamai/regular-file-reads, teamai/step-path-writes -- the helper's own open: nonblocking, and its descriptor is checked before a byte is read
   const fd = fs.openSync(file, NONBLOCKING_READ);
 
   try {
@@ -134,6 +136,7 @@ export function readRegularFileSync(file: string, encoding?: BufferEncoding): st
   const fd = openRegularFileSync(file);
 
   try {
+    // oxlint-disable-next-line teamai/regular-file-reads -- reads the descriptor openRegularFileSync checked, not a path
     return encoding === undefined ? fs.readFileSync(fd) : fs.readFileSync(fd, encoding);
   } finally {
     fs.closeSync(fd);
@@ -159,6 +162,7 @@ export async function openRegularFileForWrite(file: string, { append, mode, read
   let handle: FileHandle;
 
   try {
+    // oxlint-disable-next-line teamai/regular-file-reads, teamai/step-path-writes -- the helper's own open: nonblocking, and its handle is checked before a byte is read or written
     handle = await fs.promises.open(file, NONBLOCKING_CREATE | (read ? fs.constants.O_RDWR : fs.constants.O_WRONLY) | (append ? fs.constants.O_APPEND : fs.constants.O_TRUNC), mode);
   } catch (error) {
     // A FIFO no process reads, or a device with nothing behind it.
@@ -207,6 +211,7 @@ export function writeRegularFileSync(file: string, data: string | Uint8Array, { 
   let fd: number;
 
   try {
+    // oxlint-disable-next-line teamai/regular-file-reads, teamai/step-path-writes -- the helper's own open: nonblocking, and its descriptor is checked before a byte is written
     fd = fs.openSync(file, NONBLOCKING_CREATE | fs.constants.O_WRONLY | fs.constants.O_TRUNC, mode);
   } catch (error) {
     // A FIFO no process reads, or a device with nothing behind it.
@@ -220,6 +225,7 @@ export function writeRegularFileSync(file: string, data: string | Uint8Array, { 
     const stats = fs.fstatSync(fd);
 
     if (!stats.isFile()) throw new NotRegularFileError(file, stats, 'write');
+    // oxlint-disable-next-line teamai/step-path-writes -- writes the descriptor checked above, not a path
     fs.writeFileSync(fd, data);
   } finally {
     fs.closeSync(fd);

@@ -75,7 +75,7 @@ describe('migrating an image that only has a local filePath', () => {
     const expected = fs.readFileSync(pic).toString('base64');
 
     fs.mkdirSync(path.join(mocks.home, '.claude', 'projects'), { recursive: true });
-    const target = new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', undefined));
+    const target = new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', { kind: 'recorded', toolRoots: undefined }));
     const cwd = path.join(mocks.home, 'work');
 
     const id = await target.writeSession(mkSession(pic), cwd);
@@ -92,7 +92,7 @@ describe('migrating an image that only has a local filePath', () => {
     const session = mkSession(pic);
     session.metadata = { untrusted: true };
 
-    const target = new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', undefined));
+    const target = new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', { kind: 'recorded', toolRoots: undefined }));
     const cwd = path.join(mocks.home, 'work');
     const id = await target.writeSession(session, cwd);
     const text = fs.readFileSync(await findWritten(target, cwd, id), 'utf-8');

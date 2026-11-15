@@ -1,9 +1,10 @@
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
-import type { JsonValue } from "../../types.js";
+import type { JsonValue } from '@teamai/shared/json';
 import { CONFIDENCE_SCORE_DEFAULTS, WIKI_CATEGORIES, type WikiCategory, type WikiConfidence, type WikiEvidence } from "./wiki-protocol.js";
+import { readRegularFile } from "@teamai/shared/regular-file";
 
 /**
  * Graph Index Schema — team-wiki.graph-index.v1
@@ -562,7 +563,7 @@ export async function loadGraphIndex(wikiRoot: string): Promise<GraphIndex | nul
   const graphPath = path.join(wikiRoot, ".indices", "graph-index.json");
 
   try {
-    const raw = await readFile(graphPath, "utf8");
+    const raw = await readRegularFile(graphPath, "utf8");
     const parsed = JSON.parse(raw);
 
     return parseGraphIndex(parsed);

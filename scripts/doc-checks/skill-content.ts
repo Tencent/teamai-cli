@@ -6,7 +6,7 @@ import { listServableSkills } from '../../src/skill-content.js';
 import { readSkillDescription } from '../../src/agent-skills.js';
 import { listFilesRecursive } from '../../src/utils/fs.js';
 import { describeLiteral, INVOCATIONS, startLiteral } from '../../src/workflow/drivers/skill/literals.js';
-import { TRANSITIONS, type TransitionRow } from '../../src/workflow/drivers/skill/transitions.js';
+import { CONFIRMABLE_REFUSALS, TRANSITIONS, type TransitionRow } from '../../src/workflow/drivers/skill/transitions.js';
 
 const ROOT = process.cwd();
 
@@ -104,7 +104,7 @@ await check('keeps the stub description within the 1024-character budget agents 
 await check('pre-approves only read-only skill and workflow calls', () => {
   const stub = readMarkdown(path.join(ROOT, 'skills/teamai/SKILL.md'));
   const patterns = (stub.match(/^allowed-tools: (.*)$/m)?.[1] ?? '').split(', ');
-  const calls = ['skill', 'workflow start --describe', 'workflow next', 'workflow report', 'workflow respond'];
+  const calls = ['skill', 'list workflows', 'workflow start --describe', 'workflow next', 'workflow report', 'workflow respond'];
   assert.deepEqual(
     [...patterns].sort(),
     INVOCATIONS.flatMap((invocation) => calls.map((call) => `Bash(${invocation} ${call}:*)`)).sort(),
@@ -129,6 +129,14 @@ await check('pre-approves only read-only skill and workflow calls', () => {
 await check('workflow guide starts with the describe literal', () => {
   const guide = readMarkdown(path.join(ROOT, 'skill-data/workflow/SKILL.md'));
   assert.ok(guide.includes('`' + describeLiteral('teamai', '<name>') + '`'));
+});
+
+await check('workflow guide keeps the agent from running a --confirmed next only the person may answer', () => {
+  const guide = readMarkdown(path.join(ROOT, 'skill-data/workflow/SKILL.md'));
+  const rule = /When `next` is a literal, run it, except for ([^\n]*?`--confirmed`)\./.exec(guide)?.[1];
+  assert.ok(rule, 'skill-data/workflow/SKILL.md has no "When `next` is a literal, run it, except for …" rule');
+  const unnamed = [...CONFIRMABLE_REFUSALS.keys()].filter((code) => !rule.includes(`\`${code}\``));
+  assert.deepEqual(unnamed, [], `Name these refusals, whose next carries --confirmed, in the "run it, except for" rule of skill-data/workflow/SKILL.md: ${unnamed.join(', ')}`);
 });
 
 const COLUMNS = ['id', 'state', 'input', 'guard', 'effects', 'next', 'action'] as const;

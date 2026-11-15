@@ -16,6 +16,7 @@ import {
   withSessionPublicationLock,
 } from '../session-flow/sync.js';
 import type { Session } from '@teamai/tool-core/sessions/ir';
+import type { ArchivedEvidence } from '../session-flow/session-evidence.js';
 
 function written<T>(result: ArchiveWriteResult<T>): T {
   expect(result.status).toBe('written');
@@ -371,6 +372,19 @@ describe('saveSession dedup (origin sessionId + author)', () => {
     expect(readRepoIndex('github.com/org/alpha').sessions).toHaveLength(2);
   });
 
+  it('gives a new session another name than the evidence an older CLI left behind without its session', async () => {
+    const base = generateSessionName('claude-code', 'fix payment', '2026-01-02T03:04:05.000Z');
+    const authorDir = path.join(repoDirOf('github.com/org/alpha'), 'alice');
+    fs.mkdirSync(authorDir, { recursive: true });
+    fs.writeFileSync(path.join(authorDir, `${base}.evidence.json`), JSON.stringify({ version: 1, files: [{ kind: 'listed', path: 'old.png', type: 'image/png', size: 1, sha256: 'a'.repeat(64) }] }));
+
+    const mgr = new SyncManager(repoRoot);
+    await mgr.saveSession(mkSession({ sessionId: 'new-1' }), mkMeta({ sessionId: 'new-1' }));
+
+    expect(fs.existsSync(path.join(authorDir, `${base}_1.jsonl`))).toBe(true);
+    expect(mgr.loadEvidence('github.com/org/alpha', `${base}_1`, 'alice')).toBeUndefined();
+  });
+
   it('rebuilds a missing index before dedup so a re-push keeps the other sessions', async () => {
     const mgr = new SyncManager(repoRoot);
     await mgr.saveSession(mkSession({ sessionId: 's-1', title: 'fix payment' }), mkMeta({ sessionId: 's-1' }));
@@ -386,6 +400,65 @@ describe('saveSession dedup (origin sessionId + author)', () => {
     expect(sessions).toHaveLength(2);
     expect(sessions.find((s) => s.sessionId === 's-1')).toMatchObject({ title: 'fix payment v2' });
     expect(sessions.find((s) => s.sessionId === 's-2')).toBeTruthy();
+  });
+});
+
+describe('evidence archived beside a session', () => {
+  const identity = 'github.com/org/alpha';
+  const evidence = (text: string): ArchivedEvidence => ({ version: 1, files: [{ kind: 'text', path: 'run.log', type: 'text/plain', size: text.length, text, cut: false }] });
+  const named = (relative: string): string => path.basename(relative, '.jsonl');
+
+  it('is read back with its session, and a push of that session without evidence keeps it', async () => {
+    const mgr = new SyncManager(repoRoot);
+    const name = named(written(await mgr.saveSession(mkSession(), mkMeta(), { evidence: evidence('first') })));
+
+    expect(mgr.loadEvidence(identity, name, 'alice')).toEqual(evidence('first'));
+    await mgr.saveSession(mkSession({ title: 'fix payment v2' }), mkMeta());
+    expect(mgr.loadEvidence(identity, name, 'alice')).toEqual(evidence('first'));
+    await mgr.saveSession(mkSession(), mkMeta(), { evidence: evidence('second') });
+    expect(mgr.loadEvidence(identity, name, 'alice')).toEqual(evidence('second'));
+    expect(mgr.writtenFiles()).toContain(`sessions/repos/${encodeRepoIdentity(identity)}/alice/${name}.evidence.json`);
+  });
+
+  it('drops the evidence a session kept when a later step of it left none', async () => {
+    const mgr = new SyncManager(repoRoot);
+    const name = named(written(await mgr.saveSession(mkSession(), mkMeta(), { evidence: evidence('first') })));
+
+    await mgr.saveSession(mkSession(), mkMeta(), { evidence: 'none' });
+
+    expect(mgr.loadEvidence(identity, name, 'alice')).toBeUndefined();
+    expect(fs.readdirSync(path.join(repoDirOf(identity), 'alice')).filter((file) => file.endsWith('.evidence.json'))).toEqual([]);
+  });
+
+  it('moves with a session renamed off a local path, and goes with a deleted one', async () => {
+    const mgr = new SyncManager(repoRoot);
+    const leaked = `fix ${path.join(os.homedir(), 'app/src/retry.ts')}`;
+    const before = named(written(await mgr.saveSession(mkSession({ title: leaked }), mkMeta({ title: leaked }), { evidence: evidence('kept') })));
+
+    const after = named(written(await mgr.saveSession(mkSession({ title: 'fix ~/app/src/retry.ts' }), mkMeta({ title: 'fix ~/app/src/retry.ts' }), { pathsRewritten: true })));
+
+    expect(mgr.loadEvidence(identity, after, 'alice')).toEqual(evidence('kept'));
+    expect(fs.existsSync(path.join(repoDirOf(identity), 'alice', `${before}.evidence.json`))).toBe(false);
+    await mgr.deleteSession(identity, after, 'alice');
+    expect(fs.readdirSync(path.join(repoDirOf(identity), 'alice'))).toEqual([]);
+  });
+
+  it('refuses archived evidence whose file path leaves the directory it is written to', async () => {
+    const mgr = new SyncManager(repoRoot);
+    const name = named(written(await mgr.saveSession(mkSession(), mkMeta(), { evidence: evidence('first') })));
+    const file = path.join(repoDirOf(identity), 'alice', `${name}.evidence.json`);
+
+    for (const escaping of ['../../outside.log', '/etc/outside.log', 'logs/../../outside.log', 'logs\\..\\outside.log']) {
+      fs.writeFileSync(file, JSON.stringify({ version: 1, files: [{ kind: 'text', path: escaping, type: 'text/plain', size: 1, text: 'x', cut: false }] }));
+      expect(() => mgr.loadEvidence(identity, name, 'alice'), escaping).toThrow(/does not hold evidence teamai archived/);
+    }
+  });
+
+  it('holds none for a session pushed without evidence', async () => {
+    const mgr = new SyncManager(repoRoot);
+    const name = named(written(await mgr.saveSession(mkSession(), mkMeta())));
+
+    expect(mgr.loadEvidence(identity, name, 'alice')).toBeUndefined();
   });
 });
 
@@ -691,6 +764,31 @@ describe('session pull (gitPull + rebuildIndex) on a team checkout', () => {
     expect(committed.filter((p) => p.endsWith('.jsonl'))).toHaveLength(4);
     expect(git(alice, 'status', '--porcelain')).toBe('');
     expect(new SyncManager(alice).listSessions(identity).map((s) => s.sessionId).sort()).toEqual(['s-1', 's-2', 's-3', 's-4']);
+  });
+
+  it('folds the evidence of a session pushed under the %-escaped name along with it', async () => {
+    const alice = path.join(repoRoot, 'alice');
+    git(repoRoot, 'init', '-q', '-b', 'main', alice);
+    initCheckout(alice, 'alice');
+    const first = new SyncManager(alice);
+    await first.saveSession(mkSession(), mkMeta());
+    expect(first.gitCommit('push').status).toBe('committed');
+    const older = path.join(repoRoot, 'older');
+    const evidence: ArchivedEvidence = { version: 1, files: [{ kind: 'listed', path: 'shot.png', type: 'image/png', size: 3, sha256: 'a'.repeat(64) }] };
+    await new SyncManager(older).saveSession(mkSession({ sessionId: 's-3', title: 'add invoices' }), mkMeta({ sessionId: 's-3' }), { evidence });
+    fs.cpSync(path.join(older, 'sessions', 'repos', encodeRepoIdentity(identity)), path.join(alice, 'sessions', 'repos', 'github.com%2Forg%2Falpha'), { recursive: true });
+    git(alice, 'add', '-A');
+    git(alice, 'commit', '-qm', 'push under the escaped name');
+
+    const mgr = new SyncManager(alice);
+    await mgr.saveSession(mkSession({ sessionId: 's-2', title: 'add refunds' }), mkMeta({ sessionId: 's-2' }));
+    expect(mgr.gitCommit('push').status).toBe('committed');
+
+    const committed = git(alice, 'ls-tree', '-r', '--name-only', 'HEAD', 'sessions/repos').split('\n');
+    expect(committed.filter((p) => p.includes('%'))).toEqual([]);
+    expect(committed.filter((p) => p.endsWith('.evidence.json'))).toEqual([`sessions/repos/${encodeRepoIdentity(identity)}/alice/claude-code_add-invoices_20260102.evidence.json`]);
+    expect(git(alice, 'status', '--porcelain')).toBe('');
+    expect(new SyncManager(alice).loadEvidence(identity, 'claude-code_add-invoices_20260102', 'alice')).toEqual(evidence);
   });
 
   it('restores the percent-escaped directory when a rejected fold had only untracked files under the current name', async () => {

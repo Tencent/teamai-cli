@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { canonicalJson } from '../utils/canonical-json.js';
-import type { JsonObject } from '../types.js';
+import type { JsonObject } from '@teamai/shared/json';
 import type { RunSubject, SessionSubject } from './label.js';
 
 /**

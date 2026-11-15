@@ -28,21 +28,23 @@
  */
 
 import * as fs from 'node:fs';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { getTeamaiHomeDir } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { resolveAnchors } from '../utils/git.js';
+import { gitAnswer, stoppedGit, unstartedGit, type GitResult } from '../workflow/worktree.js';
 import { z } from 'zod';
 import { AgentObservationSchema, CommitStateSchema, type AgentObservation } from '../agent-observation.js';
 import type { Session } from '@teamai/tool-core/sessions/ir';
 import { OptionalString } from '@teamai/tool-core/sessions/fs';
-import { JsonValueSchema, isJsonObject } from '../types.js';
 import { titleSpellsLocalPath, type LocalPathRoots } from './scrub.js';
+import { ArchivedEvidenceSchema, type ArchivedEvidence } from './session-evidence.js';
 import { messageToDict, messageFromDict } from '@teamai/tool-core/sessions/ir';
-import { parseJson } from '../utils/json.js';
+import { parseJson, JsonValueSchema, isJsonObject } from '@teamai/shared/json';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -417,7 +419,7 @@ const SyncPushedAtSchema = z.object({ sync: z.object({ pushedAt: z.string().null
 
 /** A meta.json as read from the archive: an `agent` that is not an observation is left out, as if absent. */
 function readSyncMeta(file: string): SessionSyncMeta {
-  const { agent, commits, ...rest } = SessionSyncMetaSchema.parse(JSON.parse(fs.readFileSync(file, 'utf-8')));
+  const { agent, commits, ...rest } = SessionSyncMetaSchema.parse(JSON.parse(readRegularFileSync(file, 'utf-8')));
   const meta: SessionSyncMeta = rest;
 
   if (agent !== undefined) meta.agent = agent;
@@ -738,8 +740,10 @@ export class SyncManager {
   /**
    * Save through the archive lock, including deduplication and index repair. `pathsRewritten` says the caller rewrote
    * this machine's paths (`--scrub`): a session pushed before under a title that spelled one then moves to its new name.
+   * `evidence`, already masked, is kept beside the session and replaces what it had; `none` drops what it had, and
+   * without it, what it had stays.
    */
-  async saveSession(session: Session, meta: SessionSyncMeta, opts: { pathsRewritten?: boolean } = {}): Promise<ArchiveWriteResult<string>> {
+  async saveSession(session: Session, meta: SessionSyncMeta, opts: { pathsRewritten?: boolean; evidence?: ArchivedEvidence | 'none' } = {}): Promise<ArchiveWriteResult<string>> {
     const archivedCwdValue = await archivedCwd(meta.origin.cwd);
 
     const archivedMeta: SessionSyncMeta = {
@@ -754,6 +758,7 @@ export class SyncManager {
       { ...session, cwd: archivedCwdValue },
       archivedMeta,
       spellsLocalPath,
+      opts.evidence,
     ));
   }
 
@@ -898,7 +903,7 @@ export class SyncManager {
 
     const pushedAt = (metaPath: string): string => {
       try {
-        return SyncPushedAtSchema.parse(JSON.parse(fs.readFileSync(metaPath, 'utf-8'))).sync.pushedAt ?? '';
+        return SyncPushedAtSchema.parse(JSON.parse(readRegularFileSync(metaPath, 'utf-8'))).sync.pushedAt ?? '';
       } catch {
         return ''; // unreadable: the folded copy replaces it
       }
@@ -912,7 +917,7 @@ export class SyncManager {
       for (const file of fs.readdirSync(authorDir)) {
         if (!file.endsWith('.meta.json')) continue;
         const sessionName = file.slice(0, -'.meta.json'.length);
-        const source = { jsonl: path.join(authorDir, `${sessionName}.jsonl`), meta: path.join(authorDir, file) };
+        const source = { jsonl: path.join(authorDir, `${sessionName}.jsonl`), meta: path.join(authorDir, file), evidence: path.join(authorDir, `${sessionName}.evidence.json`) };
 
         if (!committed.has(relative(source.meta))) continue; // never committed: not part of the move
         let meta: SessionSyncMeta;
@@ -933,8 +938,8 @@ export class SyncManager {
         );
 
         if (existing && ![target.jsonl, target.meta].every((f) => committedTo.has(relative(f)))) continue;
-        // Only committed files take part: a local-only sibling stays where it is.
-        const kinds = (['jsonl', 'meta'] as const).filter((kind) => committed.has(relative(source[kind])));
+        // Only committed files take part: a local-only sibling stays where it is. The evidence goes with its session.
+        const kinds = (['jsonl', 'meta', 'evidence'] as const).filter((kind) => committed.has(relative(source[kind])));
 
         if (existing && (meta.sync.pushedAt ?? '') <= pushedAt(target.meta)) {
           for (const kind of kinds) fs.rmSync(source[kind], { force: true });
@@ -974,6 +979,7 @@ export class SyncManager {
     return {
       jsonl: path.join(dir, `${sessionName}.jsonl`),
       meta: path.join(dir, `${sessionName}.meta.json`),
+      evidence: path.join(dir, `${sessionName}.evidence.json`),
     };
   }
 
@@ -988,7 +994,7 @@ export class SyncManager {
   private readIndexFile(p: string, repoIdentity: string | null): RepoIndex {
     try {
       if (fs.existsSync(p)) {
-        return RepoIndexSchema.parse(JSON.parse(fs.readFileSync(p, 'utf-8')));
+        return RepoIndexSchema.parse(JSON.parse(readRegularFileSync(p, 'utf-8')));
       }
     } catch {
       // A silent rebuild of a corrupt index (parse failure) drops the dedup key, so pushing the same session again
@@ -1019,7 +1025,7 @@ export class SyncManager {
     // `session pull` kept the team checkout modified, and the next pull that
     // brought index changes then refused to merge.
     try {
-      const previous = fs.readFileSync(target, 'utf-8');
+      const previous = readRegularFileSync(target, 'utf-8');
       const { updatedAt } = z.object({ updatedAt: JsonValueSchema.optional() }).parse(JSON.parse(previous));
 
       if (JSON.stringify({ ...index, updatedAt }, null, 2) === previous) return;
@@ -1067,7 +1073,7 @@ export class SyncManager {
         this.rebuildIndexLocked(repoIdentity);
 
         if (fs.existsSync(p)) {
-          return RepoIndexSchema.parse(JSON.parse(fs.readFileSync(p, 'utf-8')));
+          return RepoIndexSchema.parse(JSON.parse(readRegularFileSync(p, 'utf-8')));
         }
       }
 
@@ -1075,12 +1081,12 @@ export class SyncManager {
     }
 
     try {
-      return RepoIndexSchema.parse(JSON.parse(fs.readFileSync(p, 'utf-8')));
+      return RepoIndexSchema.parse(JSON.parse(readRegularFileSync(p, 'utf-8')));
     } catch {
       this.rebuildIndexLocked(repoIdentity);
 
       try {
-        return RepoIndexSchema.parse(JSON.parse(fs.readFileSync(p, 'utf-8')));
+        return RepoIndexSchema.parse(JSON.parse(readRegularFileSync(p, 'utf-8')));
       } catch {
         throw new Error(
           `corrupted session index at ${p}; run 'teamai session pull --all --repo-root <repo-root>' to rebuild it`,
@@ -1116,16 +1122,19 @@ export class SyncManager {
   // Name-conflict handling
   // ------------------------------------------------------------------
 
+  /**
+   * `baseName`, or the first `<baseName>_<n>` none of whose files is there: a session's evidence or meta an older CLI
+   * left behind without its transcript takes the name too, so a new session never inherits it.
+   */
   private resolveNameConflict(repoIdentity: string | null, author: string, baseName: string): string {
-    const { jsonl } = this.sessionPaths(repoIdentity, author, baseName);
+    const isTaken = (name: string): boolean => Object.values(this.sessionPaths(repoIdentity, author, name)).some((file) => fs.existsSync(file));
 
-    if (!fs.existsSync(jsonl)) return baseName;
+    if (!isTaken(baseName)) return baseName;
 
     for (let i = 1; ; i++) {
       const candidate = `${baseName}_${i}`;
-      const { jsonl: cJsonl } = this.sessionPaths(repoIdentity, author, candidate);
 
-      if (!fs.existsSync(cJsonl)) return candidate;
+      if (!isTaken(candidate)) return candidate;
     }
   }
 
@@ -1178,7 +1187,7 @@ export class SyncManager {
    * @param meta Sync metadata
    * @returns Path of the written jsonl file (relative to repoRoot)
    */
-  private saveSessionLocked(session: Session, meta: SessionSyncMeta, spellsLocalPath: (title: string) => boolean): string {
+  private saveSessionLocked(session: Session, meta: SessionSyncMeta, spellsLocalPath: (title: string) => boolean, evidence: ArchivedEvidence | 'none' | undefined): string {
     const repoId = meta.origin.repoIdentity;
     const author = meta.origin.author;
     this.moveRepoDirToCurrentName(repoId);
@@ -1198,7 +1207,16 @@ export class SyncManager {
     const paths = this.sessionPaths(repoId, author, sessionName);
     const retiredPaths = retired ? this.sessionPaths(repoId, author, retired) : undefined;
 
-    for (const file of [paths.jsonl, paths.meta, retiredPaths?.jsonl, retiredPaths?.meta]) if (file) this.guardWrite(file);
+    // Evidence the session keeps: the new one, none when its latest step left none, else what it had under its retired
+    // name; a rename carries it along.
+    const keptEvidence = evidence === 'none' ? undefined
+      : evidence ? `${JSON.stringify(evidence, null, 2)}\n`
+        : retiredPaths && fs.existsSync(retiredPaths.evidence) ? readRegularFileSync(retiredPaths.evidence, 'utf-8') : undefined;
+
+    const droppedEvidence = evidence === 'none' && fs.existsSync(paths.evidence);
+    const evidenceFiles = [...(keptEvidence !== undefined || droppedEvidence ? [paths.evidence] : []), ...(retiredPaths && fs.existsSync(retiredPaths.evidence) ? [retiredPaths.evidence] : [])];
+
+    for (const file of [paths.jsonl, paths.meta, retiredPaths?.jsonl, retiredPaths?.meta, ...evidenceFiles]) if (file) this.guardWrite(file);
 
     // Resolve/repair the index before installing the pair: a rebuild must
     // never adopt half of this transaction as an existing archive.
@@ -1210,8 +1228,9 @@ export class SyncManager {
     const files = [
       { file: paths.jsonl, content: session.messages.map((m) => JSON.stringify(messageToDict(m))).join('\n') + '\n' },
       { file: paths.meta, content: JSON.stringify(meta, null, 2) },
-      // A retired pair has no content: it is backed up like a replaced file, then dropped on commit.
-      ...(retiredPaths ? [{ file: retiredPaths.jsonl }, { file: retiredPaths.meta }] : []),
+      ...(keptEvidence !== undefined ? [{ file: paths.evidence, content: keptEvidence }] : droppedEvidence ? [{ file: paths.evidence }] : []),
+      // A retired pair, and dropped evidence, have no content: each is backed up like a replaced file, then dropped on commit.
+      ...(retiredPaths ? [{ file: retiredPaths.jsonl }, { file: retiredPaths.meta }, ...(fs.existsSync(retiredPaths.evidence) ? [{ file: retiredPaths.evidence }] : [])] : []),
     ].map((file: { file: string; content?: string }) => ({ ...file, temp: `${file.file}.${token}.tmp`, backup: `${file.file}.${token}.bak`, backedUp: false, installed: false }));
 
     let committed = false;
@@ -1304,7 +1323,7 @@ export class SyncManager {
     const meta = readSyncMeta(paths.meta);
 
     // Read JSONL → rebuild Session
-    const content = fs.readFileSync(paths.jsonl, 'utf-8');
+    const content = readRegularFileSync(paths.jsonl, 'utf-8');
 
     const messages = content
       .split('\n')
@@ -1336,6 +1355,22 @@ export class SyncManager {
     };
 
     return { session, meta };
+  }
+
+  /**
+   * The evidence the step of an archived session left, as it was pushed with the session, or undefined when it has
+   * none. Throws when the file is there but does not parse, as `loadSession` throws for its session.
+   */
+  loadEvidence(repoIdentity: string | null, sessionName: string, author?: string): ArchivedEvidence | undefined {
+    if (sessionName !== path.basename(sessionName) || /^\.\.?$/.test(sessionName)) throw new Error(`Invalid session name: ${sessionName}`);
+    const { evidence } = this.sessionPaths(repoIdentity, author ?? this.findAuthor(repoIdentity, sessionName), sessionName);
+
+    if (!fs.existsSync(evidence)) return undefined;
+    const parsed = ArchivedEvidenceSchema.safeParse(parseJson(readRegularFileSync(evidence, 'utf-8')));
+
+    if (!parsed.success) throw new Error(`Evidence file ${evidence} does not hold evidence teamai archived: ${parsed.error.issues[0]?.message ?? 'invalid'}`);
+
+    return parsed.data;
   }
 
   /** Search the repo directory for which author owns sessionName */
@@ -1454,7 +1489,7 @@ export class SyncManager {
           const idxPath = path.join(full, '_index.json');
 
           if (!fs.existsSync(idxPath)) continue;
-          const index = IndexIdentitySchema.parse(JSON.parse(fs.readFileSync(idxPath, 'utf-8')));
+          const index = IndexIdentitySchema.parse(JSON.parse(readRegularFileSync(idxPath, 'utf-8')));
 
           if (index.repoIdentity) identities.push(index.repoIdentity);
         } catch {
@@ -1502,6 +1537,8 @@ export class SyncManager {
 
     if (fs.existsSync(paths.meta)) fs.unlinkSync(paths.meta);
 
+    if (fs.existsSync(paths.evidence)) fs.unlinkSync(paths.evidence);
+
     this.removeIndexEntry(repoIdentity, sessionName, resolvedAuthor);
   }
 
@@ -1538,7 +1575,7 @@ export class SyncManager {
           const meta = readSyncMeta(metaPath);
 
           const msgCount = fs.existsSync(jsonlPath)
-            ? fs.readFileSync(jsonlPath, 'utf-8').split('\n').filter((l) => l.trim()).length
+            ? readRegularFileSync(jsonlPath, 'utf-8').split('\n').filter((l) => l.trim()).length
             : 0;
 
           entries.push({
@@ -1573,7 +1610,7 @@ export class SyncManager {
     let known: KnownSessions = [];
 
     try {
-      const sessions = KnownSessionsSchema.parse(JSON.parse(fs.readFileSync(path.join(dir, '_index.json'), 'utf-8'))).sessions;
+      const sessions = KnownSessionsSchema.parse(JSON.parse(readRegularFileSync(path.join(dir, '_index.json'), 'utf-8'))).sessions;
 
       if (sessions !== undefined) known = sessions;
     } catch {
@@ -1600,7 +1637,7 @@ export class SyncManager {
     // an index rebuild, not a session change, so retain the committed bytes
     // when its session projection is already identical.
     try {
-      const current = parseJson(fs.readFileSync(indexPath, 'utf-8'));
+      const current = parseJson(readRegularFileSync(indexPath, 'utf-8'));
 
       if (isJsonObject(current) && JSON.stringify({ ...current, updatedAt: undefined }) === JSON.stringify({ ...rebuilt, updatedAt: undefined })) {
         return entries.length;
@@ -1694,7 +1731,7 @@ export class SyncManager {
       const idxPath = path.join(dir, '_index.json');
 
       if (!fs.existsSync(idxPath)) return null;
-      const index = IndexIdentitySchema.parse(JSON.parse(fs.readFileSync(idxPath, 'utf-8')));
+      const index = IndexIdentitySchema.parse(JSON.parse(readRegularFileSync(idxPath, 'utf-8')));
 
       return index.repoIdentity ?? null;
     } catch {
@@ -1791,13 +1828,22 @@ export class SyncManager {
       return false;
     }
 
-    try {
-      this.runGit(['merge-base', '--is-ancestor', 'FETCH_HEAD', 'HEAD']);
+    const holds = gitAnswer(this.askGit(['merge-base', '--is-ancestor', 'FETCH_HEAD', 'HEAD']));
 
-      return false;
-    } catch {
-      return true;
-    }
+    // A git that did not answer is not known to be behind, so the push's own error stands.
+    return holds.said === 'no';
+  }
+
+  /** git's exit to `args`, as `git()` returns it, with a git that did not start told apart: for a question its exit code answers. */
+  private askGit(args: string[]): GitResult {
+    const ran = spawnSync('git', args, { cwd: this.repoRoot, encoding: 'utf-8', timeout: 30_000, env: { ...process.env, LANGUAGE: 'en' } });
+
+    // A git with no pid never started; one stopped at its timeout has one, and a signal for its exit.
+    if (ran.error && !ran.pid) return unstartedGit({ cwd: this.repoRoot, error: ran.error, isCwdThere: fs.statSync(this.repoRoot, { throwIfNoEntry: false })?.isDirectory() === true });
+
+    if (ran.signal) return stoppedGit(`it got ${ran.signal}`, ran.stderr);
+
+    return { code: ran.status ?? 1, stdout: ran.stdout, stderr: ran.stderr };
   }
 
   /**

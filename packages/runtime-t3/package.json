@@ -1,0 +1,12 @@
+{
+  "name": "@teamai/runtime-t3",
+  "private": true,
+  "type": "module",
+  "description": "teamai-runtime-t3: the step runtime that runs each workflow prompt step as a T3 Code thread, over runtime protocol 1 on stdio; bundled as its own executable in teamai-cli, never imported by it.",
+  "exports": {
+    "./host-commands": "./src/host-commands.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2"
+  }
+}

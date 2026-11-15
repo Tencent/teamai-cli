@@ -6,7 +6,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const TMP = fs.realpathSync.native(os.tmpdir());
+// The setup makes the sandbox HOME and its bin in the worker's temporary
+// directory, and gives this file a temporary directory of its own beside them.
+const TMP = fs.realpathSync.native(path.dirname(os.tmpdir()));
 
 // Fixture `git` runs the hooks teamai installs, and they call
 // `PATH="$HOME/.teamai/bin:$PATH" teamai hook-dispatch ...`. Before the e2e
@@ -15,6 +17,7 @@ const TMP = fs.realpathSync.native(os.tmpdir());
 describe('e2e environment', () => {
   it('runs with a sandboxed HOME and without the system git config', () => {
     expect(process.env.HOME?.startsWith(TMP)).toBe(true);
+    expect(process.env.HOME).not.toBe(os.userInfo().homedir);
     expect(os.homedir()).toBe(process.env.HOME);
     expect(process.env.GIT_CONFIG_NOSYSTEM).toBe('1');
     expect(process.env.XDG_CONFIG_HOME).toBeUndefined();

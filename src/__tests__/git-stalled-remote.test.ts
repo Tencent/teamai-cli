@@ -12,19 +12,14 @@ import { simpleGit } from 'simple-git';
 
 import { createGitWithBlockTimeout, GitStalledError, pullRepo } from '../utils/git.js';
 import { fetchTrackingRef } from '../utils/branch-worktree.js';
+import { signalPid } from '@teamai/shared/process-group';
 
 let tmp: string;
 let pidFile: string;
 let stallFlag: string;
 
 function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-
-    return true;
-  } catch {
-    return false;
-  }
+  return signalPid(pid, 0) === 'sent';
 }
 
 /** The stand-in ssh and the git that started it, once the stand-in ran. */
@@ -127,6 +122,33 @@ describe.skipIf(process.platform === 'win32')('team repo git calls against a sta
 
     await expect(fetchTrackingRef(createGitWithBlockTimeout(clone), 'main'))
       .rejects.toThrow(/^git fetch --progress origin \+refs\/heads\/main:refs\/remotes\/origin\/main stalled/);
+    await expectTreeEnded();
+  }, 10_000);
+
+  it('ends the whole tree when the abort lands 100 ms after the timeout, while the timeout\'s stop still lists it', async () => {
+    const { clone } = await sshClone();
+    fs.writeFileSync(stallFlag, '');
+    vi.stubEnv('TEAMAI_INIT_PUSH_TIMEOUT_MS', '1000');
+    // Only the timers simple-git's timeout and the abort below run on: ps lists the tree in real time.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    try {
+      const abort = new AbortController();
+      setTimeout(() => { abort.abort(); }, 1_100);
+      const fetched = fetchTrackingRef(createGitWithBlockTimeout(clone, abort.signal), 'main');
+      fetched.catch(() => undefined);
+      await new Promise<void>((resolve) => {
+        const started = setInterval(() => { if (standInTree().length === 2) { clearInterval(started); resolve(); } }, 20);
+      });
+
+      vi.advanceTimersByTime(1_000);
+      vi.advanceTimersByTime(100);
+
+      await expect(fetched).rejects.toThrow();
+    } finally {
+      vi.useRealTimers();
+    }
+
     await expectTreeEnded();
   }, 10_000);
 });

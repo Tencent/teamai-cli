@@ -47,7 +47,7 @@ const { pull } = await import('../pull.js');
 const { resolveProjectDataHome, saveLocalConfigForScope } = await import('../config.js');
 const { pullRepo } = await import('../utils/git.js');
 const { reportUsage } = await import('../team-push.js');
-const { log } = await import('../utils/logger.js');
+const { log } = await import('@teamai/shared/log');
 
 let tmp: string;
 let originalHome: string | undefined;

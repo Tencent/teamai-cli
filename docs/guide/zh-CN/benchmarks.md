@@ -393,7 +393,9 @@ check:
 
 ### 基线
 
-对带 `check` 的任务，不论有没有 `successCriteria`，teamai 在它的第一个 trial 之前，在起始提交的全新克隆上运行 setup，写入任务的 `check.add` 文件，并运行一次 check。只有 `successCriteria` 的任务没有基线。
+对带 `check` 的任务，不论有没有 `successCriteria`，teamai 在它的第一个 trial 之前，在起始提交的全新克隆上写入任务的 `check.add` 文件，运行 setup，并运行一次 check。只有 `successCriteria` 的任务没有基线。
+
+check 在 trial 运行的地方运行，例如沙箱中，所以 `check.run` 调用的东西必须在那里；teamai 不必在。check 运行之前，teamai 在你机器上的克隆中写入 `check.add`，对 trial 还恢复 `protect`；运行之后，teamai 读取它的退出码。基线的 setup 在写入 `check.add` 之后运行，因为在沙箱中 setup 在沙箱里运行：删除未跟踪文件的 setup（例如 `git clean -fdx`）也会删除它们。
 
 | check 在起始提交上 | 任务 |
 | --- | --- |
@@ -406,9 +408,16 @@ check:
 | 以 127 退出 | `not_found` |
 | 以 126 退出 | `not_executable` |
 | 在 Windows 以外以 129 到 192 退出 | `signal`：shell 把被信号杀死的命令报告为 128 加上信号编号。不要把它们用作 check 自己的失败退出码。 |
-| 运行超过超时时间 | `timeout` |
 
-prompt 之后无法运行的 check 让 trial 得到 `error`，而不是 `failed`。
+运行超过步骤超时时间的 check，或 teamai 无法放好其 `check.add` 或 `protect` 的 check，会让它的步骤失败：基线无法运行，trial 为 `error`。prompt 之后无法运行的 check 让 trial 得到 `error`，而不是 `failed`。
+
+无法运行的 check 什么也没有衡量，所以运行不会因此通过。结果会列出每个这样的基线和 trial 及其原因，并提示你让 trial 运行的地方具备 `check.run` 调用的东西，或修复列出的原因。随后 `checks` 步骤失败，`benchmark run` 以 1 退出：
+
+```text
+These checks could not run, so the run measured nothing for them:
+  Baseline expired-token: not_found
+A check runs where the trials run, such as in a sandbox: give that place what check.run calls, or fix the cause named, then run teamai benchmark run fix-auth again.
+```
 
 ### trial 限制
 
@@ -707,7 +716,7 @@ $ teamai benchmark run fix-auth --sandbox
 ℹ Suite fix-auth: 54 trials (3 arms × 6 tasks × 3 repetitions), 36 judge calls, 4 calibration judge calls.
 ℹ Estimated 49.4–68.7 USD, incomplete (agents 41.4–56.7, judges 8–12), from run r1c0d9e2f4a7b3c51.
   claude 0.82 · codex unknown (no cost stated) · strong 1.95 USD per trial
-ℹ Run r38302f8e6a18c377 started. If it stops before it ends, continue it with: teamai workflow resume r38302f8e6a18c377
+ℹ Run r38302f8e6a18c377 started. If it stops before it ends, continue it here with: teamai workflow resume r38302f8e6a18c377, or hand it to another machine with: teamai workflow publish r38302f8e6a18c377
 ```
 
 `benchmark run` 先规划套件，所以无法运行的套件不会留下运行。然后它用套件的 `timeout` 启动工作流 `teamai-benchmark`，在 `--driver` 指定的驱动上运行；未指定则用 [`workflows.driver`](reference.md#成员设置) 指定的驱动，都未指定则由本地驱动在本机驱动它。
@@ -733,10 +742,19 @@ $ teamai benchmark run fix-auth --sandbox
 
 | `benchmark run` 退出码 | 何时 |
 | --- | --- |
-| 0 | 运行成功并写出了报告，无论 trial 的结果如何。 |
-| 1 | 套件或启动被拒绝、运行超时或被取消，或者某个 `finally` 步骤失败或被取消：报告，或者 `--fail-on-regression` 发现下降时的 `regression` 关卡。 |
+| 0 | 运行成功，写出了报告，且下面没有关卡失败。 |
+| 1 | 套件或启动被拒绝、运行超时或被取消，或者某个 `finally` 步骤失败或被取消：报告、check 无法运行时的 `checks` 关卡、没有 trial 得出结果且有 trial 以错误结束时的 `results` 关卡，或者 `--fail-on-regression` 发现下降时的 `regression` 关卡。 |
 
 仍在等待发布的记录从不改变退出码。
+
+当没有 trial 得出结果且有 trial 以错误结束时，例如没有 trial 能打开它的沙箱，运行什么也没有衡量。结果会列出每个以错误结束的 trial 及其原因。被取消或被运行超时停下的 trial 并非因自身错误而结束，不会被列出：被取消或超时的运行本身已经以 1 退出。随后 `results` 步骤失败，`benchmark run` 以 1 退出：
+
+```text
+No trial produced a result, so the run measured nothing. These trials ended with an error:
+  Trial 1/2 expired-token claude: runtime_failed: Step runtime "sandbox" could not open attempt a8089166b (sandbox_failed): <why the sandbox did not open>
+  Trial 2/2 expired-token codex: runtime_failed: Step runtime "sandbox" could not open attempt a51c0e2d7 (sandbox_failed): <why the sandbox did not open>
+Fix the cause named, then run teamai benchmark run fix-auth again.
+```
 
 | trial 得到 | |
 | --- | --- |
@@ -754,7 +772,7 @@ $ teamai benchmark run fix-auth --sandbox
 - **卡住的 trial**: 没有 [`trial.timeout`](#trial-限制) 时，一个永不返回的工具会一直运行到套件超时，它之后的每个 trial 结算为 `not_run`。
 - **评判**: 带 `successCriteria` 的任务和套件的评分器由运行自己的 `score` 步骤评判，它在 trial 之后、`report` 之前运行，每个评分器[对所有 arm 用同一个评判](#对所有-arm-用同一个评判)。机器上没有安装某个评分器的评判工具，或该工具不能以评分器要求的隔离级别运行它的模型时，需要评判的套件在启动时被拒绝。
 - **控制命令**: trial 的步骤要等运行的 `plan` 步骤报告后才存在。在此之前，对 trial 步骤执行 `teamai workflow cancel <run> <step>` 会返回 `step_not_found`。benchmark 运行是[隔离的](workflow-advanced.md#隔离运行)：`workflow retry`、`publish` 和 `--claim` 拒绝它，`publish` 和 `--claim` 返回 `isolated_run`，retry 会给出 `teamai benchmark run <suite>`。
-- **停下**: 用 `teamai workflow resume <run>` 继续，沿用启动时的 `--sandbox`。升级前的 teamai 启动的运行，如果计划的版本不同，就不能继续：`workflow resume` 会拒绝它，并指出 `teamai benchmark run <suite>`。
+- **停下**: 用 `teamai workflow resume <run>` 继续，沿用启动时的 `--sandbox`。升级前的 teamai 启动的运行，如果计划的版本不同，就不能继续：`workflow resume` 和每个驱动的 `next` 都会以 `benchmark_plan_outdated` 拒绝它，并指出 `teamai benchmark run <suite>`，它剩下的步骤，包括 `finally` 步骤，都不会再运行。它仍会在超时时结束，`teamai workflow cancel <run>` 会立即结束它。
 
 无法运行的启动会被拒绝，消息说明该怎么做，并且不会创建运行。你的 user 范围 teamai 安装也能到达该团队，或团队通过 HTTP 提供时，运行无法固定 trial 得到的团队，会以 `team_ref_blocked` 拒绝，并说明要改什么。
 
@@ -836,7 +854,21 @@ finally:
   - id: report
     command: teamai benchmark report
     env: { COMPARE: "{{ inputs.fail_on_regression }}" }
-    output: { text: string, table: json, regression: dropped | held | no_comparable | off }
+    output: { text: string, table: json, regression: dropped | held | no_comparable | off, unchecked: string, unmeasured: string }
+  # Fails when a baseline's or a trial's check could not run, naming each as report's text does: the run measured
+  # nothing for them. Drop it to report them without failing.
+  - id: checks
+    needs: [report]
+    if: steps.report.outputs.unchecked != ''
+    command: node -e "process.stderr.write(process.env.UNCHECKED + '\n'); process.exit(1)"
+    env: { UNCHECKED: "{{ steps.report.outputs.unchecked }}" }
+  # Fails when no trial produced a result and a trial ended in an error, naming each such trial as report's text does:
+  # the run measured nothing. Drop it to report such a run without failing.
+  - id: results
+    needs: [report]
+    if: steps.report.outputs.unmeasured != ''
+    command: node -e "process.stderr.write(process.env.UNMEASURED + '\n'); process.exit(1)"
+    env: { UNMEASURED: "{{ steps.report.outputs.unmeasured }}" }
   - id: regression
     needs: [report]
     if: steps.report.outputs.regression == 'dropped'
@@ -847,7 +879,7 @@ outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 | 命令 | 作为 | 作用 |
 | --- | --- | --- |
 | `teamai benchmark plan <suite>` | `plan` 步骤 | 冻结你 pull 到的团队修订，获取 trial 读取的每个提交，并把 trial 打印成一个工作流，每个基线和 trial 一个克隆。 |
-| `teamai benchmark check --baseline\|--trial` | 每个克隆中的一个步骤 | 写入 `check.add`，对 trial 恢复 `protect`，运行任务的 check，并打印 `{ result, cause, label }`。trial 的 check 还会保存该 trial 的正确性标签，见[谁判定一个 trial](#谁判定一个-trial)。 |
+| 任务的 `check.run` | 每个克隆中的一个步骤，在 trial 运行的地方 | 运行任务的 check。运行之前，teamai 写入 `check.add`，对 trial 恢复 `protect`；运行之后，teamai 把它的退出码变成步骤的输出 `{ result, cause, label }`。trial 的 check 还会保存该 trial 的正确性标签，见[谁判定一个 trial](#谁判定一个-trial)。 |
 | `teamai score subjects --run <run> --step trials` | `subjects` 步骤 | 列出 trial 在本机结算的、需要评分的执行轮次。 |
 | [`teamai-score`](scorers.md#teamai-score-工作流) | `score` 步骤，每个 subject 一次 | 用运行开始时的评分器评判 trial。 |
 | `teamai score subjects --calibration --run <run> --step trials` | `calibration-subjects` 步骤 | 列出用来[校准评判](#校准评判)的 trial，每个带它的正确性评分器。 |
@@ -876,7 +908,7 @@ steps:
     requires: { isolation: sandbox, strict: true }
   # 没有 subjects、score、calibration-subjects 和 calibrate 步骤
 finally:
-  # report 和 regression，同 teamai 的
+  # report、checks、results 和 regression，同 teamai 的
 ```
 
 ## 结果
@@ -960,7 +992,7 @@ These results hold for these tasks, this run and this machine.
 | 以非 0 退出 | 分数最低的标签 | `failed` |
 | 无法运行 | 无 | `error`，`failure: { cause }` |
 
-`cause` 是 `not_found`、`not_executable`、`signal`、`timeout`、`spawn_failed`、`prepare_failed`（恢复 `protect` 或写入 `check.add` 失败）之一。
+`cause` 是 `not_found`、`not_executable`、`signal`、`timeout`（check 运行超过其步骤或运行的超时时间）、`prepare_failed`（恢复 `protect` 或写入 `check.add` 失败）之一。旧版 teamai 写下的记录还可能带有 `spawn_failed`。
 
 每个记录下来的 trial 都带着它的结论：
 
@@ -1222,7 +1254,7 @@ No arm has a comparable pair against run rA, so --fail-on-regression has nothing
 ```yaml
 # workflows/teamai-benchmark.yaml：下降只在 CI 日志中警告，任务仍然通过
 finally:
-  # report，与 teamai 的相同
+  # report、checks 和 results，与 teamai 的相同
   - id: regression
     needs: [report]
     if: steps.report.outputs.regression == 'dropped'
@@ -1290,14 +1322,14 @@ benchmark 运行是一次普通的工作流运行，所以任何驱动都通过 
 ```text
 teamai workflow start teamai-benchmark --inputs '{"suite":"fix-auth","aliases":"team","tasks":[],"arms":[],"fail_on_regression":false}' --timeout 45m
 teamai workflow next <run> --prepare --json '{"driver":{..., "can":{"workspace":["read-only","new","continue","clone"],"isolation":"sandbox","env":true,"setup":true,"tools":["claude"],"unattended":true,"end_turn":true}}}'
-  -> a command lease (plan, check, report): run lease.command in lease.cwd, or in your checkout without one, with TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>
+  -> a command lease (plan, check, report): run lease.command in lease.cwd, or in your checkout without one, with TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>, and report its exitCode
   -> a prompt lease: launch lease.tool in lease.cwd on lease.prompt, with lease.model, in its unattended mode for lease.permissions, held to lease.limits
 teamai workflow report <run> --json '{..., "tool":"claude", "durationMs":84000, "cost":{"amount":0.31,"unit":"USD"}}'
 ```
 
 - **`driver.can`**: 每次 `next` 都带：`workspace` 中的 `clone`、`isolation: "sandbox"`、`env: true`、`setup: true`、`tools` 中列出各 arm 的工具、`unattended: true`，以及在租约的限制处结束一轮时带 `end_turn: true`。驱动缺少其中任何一项时，trial 会被扣住，`wait.held[].missing` 会指明缺的是哪项。
 - **`--prepare`**: teamai 在本机创建每个克隆、安装其团队资源并运行 setup，然后返回带 `cwd` 的租约。
-- **每个进程**: 运行时不带 `lease.envScope.withhold` 中的名字，带 `lease.env` 和 `TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>`，所以从中调用的 `teamai` 不会改变任何运行。命令步骤把它的输出以 JSON 打印到 stdout；把它们作为 `outputs` 报告。
+- **每个进程**: 运行时不带 `lease.envScope.withhold` 中的名字，带 `lease.env` 和 `TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>`，所以从中调用的 `teamai` 不会改变任何运行。命令步骤在 stdout 上打印 JSON 时，把它作为 `outputs` 报告；始终把它的退出状态作为 `exitCode` 报告。check 步骤运行任务自己的 check，不需要 `teamai`：teamai 根据 `exitCode` 判定它的输出，没有 `exitCode` 的 check 报告以 `invalid_report` 失败。
 - **`report`**: 对 prompt：`tool`、只围绕工具启动测得的 `durationMs`，以及仅在工具给出时才带的 `cost`。
 - **限制**: 让工具遵守 `lease.limits`。某个限制停止了工具时，报告 `outcome: "success"` 并带 `limit`：`timeout`、`budget` 或 `max_turns`；无法让工具遵守的 `budget` 或 `max_turns` 列在 `unenforced` 中。
 - **超时**: `benchmark run` 把套件的 `timeout` 作为 `--timeout` 传入；直接执行 `workflow start teamai-benchmark` 时也必须传入它，否则 `plan` 会失败。

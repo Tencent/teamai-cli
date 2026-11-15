@@ -12,11 +12,12 @@ import {
     ensureCacheRoot,
 } from './utils/repo-cache.js';
 import { touchCacheEntry } from './utils/cache-index.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { hasFrontmatter, stripFrontmatter } from './utils/frontmatter.js';
 import { resolveTeamwiki } from './utils/teamwiki-root.js';
 import { SourceManifestSchema } from './wiki-engine/code-knowledge/code-collector.js';
-import { JsonObjectSchema } from './types.js';
+import { JsonObjectSchema } from '@teamai/shared/json';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 // ─── Cross-Repo Edge Detection ─────────────────────────
 
@@ -254,7 +255,7 @@ export interface RepoFetchOptions {
 /** The head commit of `evidenceDest`'s published source-manifest.json, when it names one. */
 async function publishedHead(evidenceDest: string | undefined): Promise<string | undefined> {
     return evidenceDest
-        ? SourceManifestSchema.safeParse(await fs.readJson(path.join(evidenceDest, 'source-manifest.json')).catch(() => null)).data?.headSha
+        ? (await readRegularFile(path.join(evidenceDest, 'source-manifest.json'), 'utf8').then((text) => SourceManifestSchema.safeParse(JSON.parse(text)).data).catch(() => undefined))?.headSha
         : undefined;
 }
 
@@ -383,7 +384,7 @@ export async function recordRepoSync(source: RepoSource, sha: string): Promise<v
  */
 export async function writeRepoNarrative(evidenceDest: string, slug: string, answer: string): Promise<void> {
     const overviewPath = path.join(evidenceDest, 'overview.md');
-    const existing = await fs.readFile(overviewPath, 'utf8').catch(() => '');
+    const existing = await readRegularFile(overviewPath, 'utf8').catch(() => '');
     const aiNarrative = narrativeBody(answer);
     const marker = '## AI Architecture Narrative';
     const oldMarker = '## AI 架构叙事';
@@ -421,7 +422,7 @@ export async function writeExplicitDomain(evidenceDest: string, domain: string):
 
     if (await fs.pathExists(domainsJsonPath)) {
         try {
-            const existing = JsonObjectSchema.parse(JSON.parse(await fs.readFile(domainsJsonPath, 'utf8')));
+            const existing = JsonObjectSchema.parse(JSON.parse(await readRegularFile(domainsJsonPath, 'utf8')));
             await fs.writeFile(domainsJsonPath, JSON.stringify({ ...existing, domain }, null, 2), 'utf8');
         } catch { /* an unreadable file keeps the domain it has */ }
     } else {

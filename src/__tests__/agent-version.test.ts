@@ -166,8 +166,7 @@ describe('_readPlistVersion', () => {
 
 describe('version regex extraction', () => {
   it('extracts leading semver from hermes-style output', async () => {
-    // Simulate what detectHermesVersion / detectOpenclawVersion do:
-    // execVersion returns raw stdout, then regex extracts leading digits+dots.
+    // The hermes and openclaw detectors read the probe's stdout this way: leading digits and dots.
     const raw = '1.23.4 (build abc123)';
     const match = raw.match(/^\(?(\d+(?:\.\d+)*)\)?/);
     expect(match?.[1]).toBe('1.23.4');

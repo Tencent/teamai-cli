@@ -1,0 +1,6 @@
+schemaVersion: v1alpha1
+name: teamai-paseo
+description: Run each prompt step as an agent of the Paseo daemon on this machine, in a worktree teamai prepares, and every other step on this machine.
+runtimes:
+  - use: paseo
+    options: { max_parallel: 4 }

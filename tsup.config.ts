@@ -51,7 +51,13 @@ export default defineConfig({
   // One entry per line, so each shipped runtime adds its own line.
   entry: {
     index: 'src/bin.ts',
-    cli: 'src/index.ts',
+    // The CLI, and the guardian mode of a fleet step's guardian (src/cli.ts).
+    cli: 'src/cli.ts',
+    // The sandbox step runtime's own executable.
+    'runtime-sandbox': 'packages/runtime-sandbox/src/main.ts',
+    // The T3 Code step runtime's own executable.
+    'runtime-t3': 'packages/runtime-t3/src/main.ts',
+    'runtime-paseo': 'packages/runtime-paseo/src/main.ts',
   },
   format: ['esm'],
   target: 'node20',

@@ -11,6 +11,8 @@ inputs:
   dir: string
   by_type: boolean
   all: boolean
+defaults:
+  requires: { host: true }
 steps:
   - id: classify
     for_each: { items: inputs.candidates, max_parallel: 3 }

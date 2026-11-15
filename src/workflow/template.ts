@@ -6,14 +6,13 @@
  * Ansible loop stay as written.
  */
 import { z } from 'zod';
-import type { JsonValue } from '../types.js';
+import { type JsonValue, isJsonObject } from '@teamai/shared/json';
 import {
   evaluateExpression, expressionPaths, parseExpression, parseFields, resolvePath, schemaAt,
   readsLikeExpression, type Expression, type ExpressionContext, type ExpressionPath, type PathField,
 } from './expression.js';
 import type { StepState } from './step-state.js';
 import type { OutputSchema, WorkflowFailure, WorkflowStep } from './types.js';
-import { isJsonObject } from '../types.js';
 
 /** A `{{ with.<name>… }}` read: a value the step's own `with` names. Only templates read it; an `if` cannot. */
 export interface WithPath {
@@ -375,6 +374,26 @@ export function stepExpressions(step: Pick<WorkflowStep, 'if' | 'loop' | 'break'
     ...(step.loop?.while !== undefined ? [{ what: 'loop.while' as const, source: step.loop.while }] : []),
     ...(step.break !== undefined ? [{ what: 'break' as const, source: step.break }] : []),
     ...(step.forEach !== undefined ? [{ what: 'for_each' as const, source: step.forEach.items }] : []),
+  ];
+}
+
+/**
+ * The paths step `step` reads in its expressions and templates, its own workflow's steps, the inputs, the item and the
+ * run alike. `bindsItem` is whether its templates read `item`, as pull decided. An expression or template that does
+ * not parse reads nothing here; settling its workflow reports it.
+ */
+export function stepPaths(step: WorkflowStep, bindsItem: boolean): ExpressionPath[] {
+  return [
+    ...stepExpressions(step).flatMap(({ source }) => {
+      const parsed = parseExpression(source);
+
+      return parsed.ok ? expressionPaths(parsed.expression) : [];
+    }),
+    ...templatedTexts(step).flatMap(({ text }) => {
+      const template = parseTemplate(text, bindsItem);
+
+      return template.ok ? templatePaths(template.template) : [];
+    }),
   ];
 }
 

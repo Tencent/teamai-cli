@@ -260,7 +260,7 @@ function assistantTurns(message: z.infer<typeof AssistantMessage>): Message[] {
   return turns;
 }
 
-function sessionFromExport(stdout: string, platform: string): Session {
+function sessionFromExport(stdout: string): Session {
   const exported = ExportedSession.parse(JSON.parse(stdout));
   const messages: Message[] = [];
 
@@ -279,7 +279,7 @@ function sessionFromExport(stdout: string, platform: string): Session {
     sessionId: info.id,
     title: info.title,
     cwd: info.location.directory,
-    platform,
+    platform: 'opencode',
     createdAt: iso(info.time.created),
     updatedAt: iso(info.time.updated),
     messages,
@@ -446,16 +446,13 @@ function blockText(block: ContentBlock): string {
 export class OpencodeAdapter extends AgentAdapter {
   static readonly platform = 'opencode';
 
-  /**
-   * @param storageRoot OpenCode's data directory (`sessionStoreDir`): `$XDG_DATA_HOME/opencode`, `~/.local/share/opencode` by default.
-   * @param platform The session platform this store is: 'opencode', or an instance's own name.
-   */
-  constructor(private readonly storageRoot: string, private readonly host: SessionHost, private readonly sessionPlatform = 'opencode') {
+  /** @param storageRoot OpenCode's data directory (`sessionStoreDir`): `$XDG_DATA_HOME/opencode`, `~/.local/share/opencode` by default. */
+  constructor(private readonly storageRoot: string, private readonly host: SessionHost) {
     super();
   }
 
   get platform(): string {
-    return this.sessionPlatform;
+    return 'opencode';
   }
 
   isReady(): boolean {
@@ -536,7 +533,7 @@ export class OpencodeAdapter extends AgentAdapter {
 
     if (result.code !== 0) throw new Error(result.stderr.trim() || `opencode session export exited ${result.code}`);
 
-    return sessionFromExport(result.stdout, this.platform);
+    return sessionFromExport(result.stdout);
   }
 
   /**

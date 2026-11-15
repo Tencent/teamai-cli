@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { z } from 'zod';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { RELAY_TO_USER_PREFIX, relayWhenHidden } from './utils/hook-output.js';
 import { readJson, writeJson, writeJsonAtomic, ensureDir } from './utils/fs.js';
 import { readEvents, aggregateSessionMetrics, scanTranscriptStop, hookScopeDir } from './dashboard-collector.js';
@@ -13,7 +13,7 @@ import { redactWithEnv } from '@teamai/shared/redact';
 import type { ContributeState, DashboardEvent, LocalConfig, SessionShareOffered, SessionFriction } from './types.js';
 import { CONTRIBUTE_FASTPATH_TTL_MS, CONTRIBUTE_GIT_COMMIT_DOWNWEIGHT, SessionShareOfferedSchema } from './types.js';
 import { DefaultFolders, type DefaultFolder, type DefaultFolderParams, type TextLanguage } from './default-folders.js';
-import { getUserHome } from './utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 import { HookStdinSchema, stdinString, type HookStdin } from './hook-dispatch.js';
 
 // ─── Contribute check data flow (Stop hook) ────────────────
@@ -856,7 +856,7 @@ export async function takePendingHint(sessionId: string): Promise<string | null>
 export async function contributeCheck(toolArg?: string): Promise<void> {
   // Same stdout-exclusive contract as hook-dispatch-cli — log lines mixed
   // into stdout break Claude Code's JSON parse and silently drop the hint.
-  const { setStderrOnly } = await import('./utils/logger.js');
+  const { setStderrOnly } = await import('@teamai/shared/log');
   setStderrOnly(true);
 
   const stdinData = await readStdinAndDeriveSession();

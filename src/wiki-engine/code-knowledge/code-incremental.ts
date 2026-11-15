@@ -1,9 +1,10 @@
-import { readFile, writeFile, stat, mkdir } from "node:fs/promises";
+import { writeFile, stat, mkdir } from "node:fs/promises";
 import path from "node:path";
 
 import { CODE_COLLECTION_VERSION, collectCode, gitCommit, gitDiffNameStatus, isWorkingTreeClean, SourceManifestSchema } from "./code-collector.js";
 import type { CodeFact } from "./code-extractors.js";
 import type { InterfaceInventory } from "../interface-scanner.js";
+import { readRegularFile } from "@teamai/shared/regular-file";
 
 export interface CodeIncrementalChange {
   added: string[];
@@ -20,7 +21,7 @@ export async function detectCodeIncrementalChanges(
   sourceSubdir?: string,
 ): Promise<CodeIncrementalChange> {
   const previous = (await exists(manifestPath))
-    ? SourceManifestSchema.parse(JSON.parse(await readFile(manifestPath, "utf8")))
+    ? SourceManifestSchema.parse(JSON.parse(await readRegularFile(manifestPath, "utf8")))
     : { files: [] };
 
   const oldSha = previous.headSha;
@@ -127,7 +128,7 @@ export async function loadFactsCache(indicesDir: string): Promise<CodeFact[]> {
   const cachePath = path.join(indicesDir, FACTS_CACHE_FILENAME);
 
   try {
-    const raw = await readFile(cachePath, 'utf-8');
+    const raw = await readRegularFile(cachePath, 'utf-8');
     // SAFETY: saveFactsCache is the only writer of this cache file, and it writes a CodeFact[]; a file that is not an
     // array is treated as no cache below.
     const parsed = JSON.parse(raw) as CodeFact[];
@@ -147,7 +148,7 @@ export async function loadInterfacesCache(indicesDir: string): Promise<Interface
   const cachePath = path.join(indicesDir, INTERFACES_CACHE_FILENAME);
 
   try {
-    const raw = await readFile(cachePath, 'utf-8');
+    const raw = await readRegularFile(cachePath, 'utf-8');
     // SAFETY: saveInterfacesCache is the only writer of this cache file, and it writes an InterfaceInventory; a file
     // without entries is treated as no cache below.
     const parsed = JSON.parse(raw) as InterfaceInventory;

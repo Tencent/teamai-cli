@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 import { AGENT_SESSION_ENV } from '../../utils/session-id.js';
+import { signalGroup } from '@teamai/shared/process-group';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const CLI = path.join(ROOT, 'dist', 'index.js');
@@ -190,7 +191,7 @@ describe('a coding session claims a run another member published', () => {
     });
     expect(await waitFor(`${hold}.held`, 30_000), 'alice reached build').toBe(true);
     // Ctrl-C in a terminal: the foreground group, the driver and the command it runs, gets SIGINT.
-    process.kill(-pid, 'SIGINT');
+    expect(signalGroup(pid, 'SIGINT')).toBe('sent');
     const stopped = await started;
     expect(stopped.signal, said(stopped)).toBe('SIGINT');
     fs.rmSync(hold);

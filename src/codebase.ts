@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { createGit } from './utils/git.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
 
 /** 文件扫描截断上限（字符数）。 */
 const FILE_TREE_MAX_CHARS = 5000;
@@ -74,7 +75,7 @@ export async function gatherRepoContext(repoPath: string): Promise<string> {
 
   if (fs.existsSync(pkgPath)) {
     try {
-      const raw = fs.readFileSync(pkgPath, 'utf-8');
+      const raw = readRegularFileSync(pkgPath, 'utf-8');
       const excerpt = raw.length > META_MAX_CHARS ? raw.slice(0, META_MAX_CHARS) + '\n…' : raw;
       parts.push(`## package.json\n\`\`\`json\n${excerpt}\n\`\`\``);
     } catch (err) {
@@ -88,7 +89,7 @@ export async function gatherRepoContext(repoPath: string): Promise<string> {
 
     if (fs.existsSync(entryPath)) {
       try {
-        const raw = fs.readFileSync(entryPath, 'utf-8');
+        const raw = readRegularFileSync(entryPath, 'utf-8');
         const excerpt = raw.length > META_MAX_CHARS ? raw.slice(0, META_MAX_CHARS) + '\n…' : raw;
         parts.push(`## 入口文件：${candidate}\n\`\`\`typescript\n${excerpt}\n\`\`\``);
         break;
@@ -104,7 +105,7 @@ export async function gatherRepoContext(repoPath: string): Promise<string> {
 
     if (fs.existsSync(typesPath)) {
       try {
-        const raw = fs.readFileSync(typesPath, 'utf-8');
+        const raw = readRegularFileSync(typesPath, 'utf-8');
         const excerpt = raw.length > META_MAX_CHARS ? raw.slice(0, META_MAX_CHARS) + '\n…' : raw;
         parts.push(`## 类型定义：${candidate}\n\`\`\`typescript\n${excerpt}\n\`\`\``);
         break;
@@ -145,7 +146,7 @@ export async function gatherRepoContext(repoPath: string): Promise<string> {
     if (!fs.existsSync(docPath)) continue;
 
     try {
-      const raw = fs.readFileSync(docPath, 'utf-8');
+      const raw = readRegularFileSync(docPath, 'utf-8');
 
       const excerpt =
         raw.length > DOC_MAX_CHARS ? raw.slice(0, DOC_MAX_CHARS) + '\n…（已截断）' : raw;

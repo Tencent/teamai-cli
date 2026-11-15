@@ -52,6 +52,7 @@ Most code changes do not need a documentation change. Agents can read the code.
 The most common defect is a change that works on the path you tested and is missing everywhere else. Before you call work done, walk this list and say in the PR which entries applied:
 
 - **Tools**: every supported tool gets a decision, even "not supported here".
+- **Where a step runs**: every driver and runtime gets a decision, even "not supported here"; `npm run -s verify -- help drivers` lists each one's entry point and end state.
 - **Scopes**: user and workspace.
 - **Team repo modes**: `git`, `http`, and self mode.
 - **Checkouts**: a linked worktree, a submodule, a workspace with workspace children, a bare repo. The repo anchor, main checkout, and workspace root can differ between them.

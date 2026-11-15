@@ -21,6 +21,7 @@ import { getDataHome, SYNC_LOCK_FILENAME, type LocalConfig } from './types.js';
 import { acquireLock, releaseLock } from './update.js';
 import { canonicalJson } from './utils/canonical-json.js';
 import { evaluateExpression, isTruthy, parseExpression } from './workflow/expression.js';
+import { gitAnswer, git as gitAt, saidYes } from './workflow/worktree.js';
 import type { WorkflowDefinition } from './workflow/types.js';
 
 const run = promisify(execFile);
@@ -143,7 +144,7 @@ const TASK_FILE = /(^|\/)benchmarks\/.+\/tasks\/[^/]+\.yaml$/;
  * the task since. Both are refs of the team checkout `cwd`.
  */
 async function holdsProposal(cwd: string, { base, head }: { base: string; head: string }): Promise<boolean> {
-  if (await git(cwd, ['merge-base', '--is-ancestor', head, base]).then(() => true, () => false)) return true;
+  if (saidYes(gitAnswer(await gitAt(cwd, ['merge-base', '--is-ancestor', head, base])), `whether ${base} holds ${head}`)) return true;
   const added = (await git(cwd, ['diff', '--relative', '--no-renames', '--name-only', '--diff-filter=A', `${base}...${head}`])).split('\n').filter((file) => TASK_FILE.test(file));
 
   if (added.length === 0) return false;

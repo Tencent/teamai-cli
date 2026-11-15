@@ -5,6 +5,8 @@ invoke: ask
 private: true
 inputs: { learning: string, category: string }
 ends: { unconfigured-tool: failed }
+defaults:
+  requires: { host: true }
 steps:
   - id: learning
     command: teamai recall maintenance promote-candidate --learning "$ID"

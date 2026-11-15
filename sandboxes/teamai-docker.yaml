@@ -1,0 +1,5 @@
+# A Docker container per attempt, from an image that holds the tools. Copy this file to sandboxes/<name>.yaml in the
+# team repo and set image: used as it is, it fails naming image.
+provider: docker
+# image: ghcr.io/acme/agent:1
+# warm: { containerfile: ./Containerfile, cache: [package-lock.json] }   # in a profile folder, a file of the folder

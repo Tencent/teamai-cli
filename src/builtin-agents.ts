@@ -1,8 +1,9 @@
 import fs from 'node:fs';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureDir, fileHash, pathExists, writeFile, remove, listFiles } from './utils/fs.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { warnOnce } from './utils/warn-once.js';
 import type { TeamaiConfig, LocalConfig, Scope } from './types.js';
 import {
@@ -160,7 +161,7 @@ export function shippedAgentRender(stem: string, tool: AgentToolId, scope: Scope
   let source: string;
 
   try {
-    source = fs.readFileSync(src, 'utf8');
+    source = readRegularFileSync(src, 'utf8');
   } catch {
     return undefined; // a dev checkout without the bundled agents
   }

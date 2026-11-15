@@ -4,8 +4,6 @@ import JSON5 from 'json5';
 import { z } from 'zod';
 import { isJsonObject, JsonValueSchema, parseJson, type JsonObject, type JsonSyntax, type JsonValue } from '@teamai/shared/json';
 
-export * from '@teamai/shared/json';
-
 /** Whether `text` is blank or plain JSON, which teamai writes back as JSON.stringify writes it: no comment to keep. */
 export function isPlainJson(text: string): boolean {
   if (text.trim() === '') return true;

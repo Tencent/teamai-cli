@@ -12,6 +12,7 @@ inputs:
   scorers: [string]
 steps:
   - id: sessions
+    requires: { host: true }
     # A session idle for the idle of params.yaml counts as finished. Only a run a person started may pass inputs other than policy and [].
     command: teamai session list --finished --publish "$PUBLISH" --scorers "$SCORERS" --json
     env: { PUBLISH: "{{ inputs.publish }}", SCORERS: "{{ inputs.scorers }}" }
@@ -28,6 +29,7 @@ steps:
     # After share, whatever it did: a mark share opened is then closed, or held by this run, so no subject is judged twice.
     needs: [sessions, share]
     if: steps.sessions.outcome != 'cancelled' && steps.share.outcome != 'cancelled'
+    requires: { host: true }
     command: teamai score subjects --lapsed
     # passes and sessions whose teamai-score run ended without a label or a settle, and passes no run scored,
     # each with the scorers to start it for: those its marks hold, named or not, and none its policy would add now

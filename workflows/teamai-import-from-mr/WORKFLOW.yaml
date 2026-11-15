@@ -18,6 +18,7 @@ inputs:
   language: en | zh
 # A caller that publishes nothing has no directory to give.
 defaults:
+  requires: { host: true }
   inputs: { dir: "" }
 steps:
   - id: extract

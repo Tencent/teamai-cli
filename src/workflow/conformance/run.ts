@@ -2,7 +2,7 @@ import {
   PARALLEL_ROOTS, bothSkillProfiles, controlsYaml, type ConformanceOperation, type ConformanceScenario,
 } from '../conformance-interpreter.js';
 import { AGENT_SESSION_ENV } from '../../utils/session-id.js';
-import { ATTEMPT_ENV } from '../../launch-context.js';
+import { ATTEMPT_ENV, RUN_MODE_ENV } from '../../launch-context.js';
 import { limitsConformanceScenarios } from '../limits-conformance.js';
 import { confinedConformanceScenarios } from './confined.js';
 import { primitiveConformanceScenarios } from './primitives.js';
@@ -947,8 +947,8 @@ workflowConformanceScenarios.push({
     { kind: 'start', driver: 'skill', env: AGENT_SESSION, expect: { error: { code: 'invoke_denied' } } },
     { kind: 'start', driver: 'local', env: { ...AGENT_SESSION, CI: '1' }, expect: { error: { code: 'invoke_denied' } } },
     { kind: 'start', workflow: 'gated', env: AGENT_SESSION, expect: { error: { code: 'confirm_needed' } } },
-    { kind: 'start', workflow: 'gated', env: { ...AGENT_SESSION, TEAMAI_MODE: 'unattended' }, confirmed: true, expect: { error: { code: 'unattended_denied' } } },
-    { kind: 'start', workflow: 'gated', env: { ...AGENT_SESSION, TEAMAI_MODE: 'attended' }, confirmed: true, expect: { data: {} } },
+    { kind: 'start', workflow: 'gated', env: { ...AGENT_SESSION, [RUN_MODE_ENV]: 'unattended' }, confirmed: true, expect: { error: { code: 'unattended_denied' } } },
+    { kind: 'start', workflow: 'gated', env: { ...AGENT_SESSION, [RUN_MODE_ENV]: 'attended' }, confirmed: true, expect: { data: {} } },
     { kind: 'start', workflow: 'gated', expect: { data: {} } },
     { kind: 'start', expect: { data: {} } },
   ],

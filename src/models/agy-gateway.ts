@@ -7,10 +7,10 @@
  * shell, so they read the same values back with `agyGatewayEnv`.
  */
 
-import fs from 'node:fs';
 import path from 'node:path';
-import { getUserHome } from '../utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 import { shellQuoteValue } from '../utils/shell-profile.js';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
 
 export function agyKeyFilePath(): string {
   return path.join(getUserHome(), '.teamai', 'models', 'agy-env.sh');
@@ -57,7 +57,7 @@ export function agyGatewayEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   let content: string;
 
   try {
-    content = fs.readFileSync(agyKeyFilePath(), 'utf8');
+    content = readRegularFileSync(agyKeyFilePath(), 'utf8');
   } catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return {};
     throw error;

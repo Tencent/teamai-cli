@@ -42,7 +42,7 @@ function config() {
 
 const { recall } = await import('../recall.js');
 const { loadTeamConfig } = await import('../config.js');
-const { log } = await import('../utils/logger.js');
+const { log } = await import('@teamai/shared/log');
 
 /**
  * A recall that has to rebuild the index must see the same learnings a pull

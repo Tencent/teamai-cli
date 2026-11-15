@@ -7,7 +7,7 @@ import * as builtinHooks from '../builtin-hooks.js';
 import { injectHermesHooks, removeHermesHooks, hasHermesHooks, getReportScriptPath, getInstructionsPluginDir, getTeamHookScriptPath, lastInstructionsSection } from '../hermes-hooks.js';
 import { bridgedTeamHookFile } from '../bridged-team-hooks.js';
 import { shellQuoteValue } from '../utils/shell-profile.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { channelReadiness } from '../instruction-targets.js';
 
 let tmpDir: string;

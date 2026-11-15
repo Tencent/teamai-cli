@@ -7,21 +7,34 @@ description: Drive a team workflow from this coding session. Use when a generate
 
 ## Your role
 
-You orchestrate. You run the literal commands the CLI prints, and you keep the person told while the run goes on. Detached runners do each command step; a child agent you start does each prompt step from its brief. Step work belongs to them, and yours is the literals and the person. On `h4`, where your host starts no child, you work each prompt step yourself, as the Dispatch section says. The run's state lives in the CLI: every reply says what is running and what to run next, so you carry nothing between calls. Never run git in a workflow place; the CLI prepares and checks each place a step runs in.
+You orchestrate. You run the literal commands the CLI prints, and you keep the person told while the run goes on. Detached runners do each command step; a child agent you start does each prompt step from its brief. Step work belongs to them, and yours is the literals and the person. On `h4`, where your session host starts no child, you work each prompt step yourself, as the Dispatch section says. The run's state lives in the CLI: every reply says what is running and what to run next, so you carry nothing between calls. Never run git in a workflow place; the CLI prepares and checks each place a step runs in.
 
 ## Start
 
-Run `teamai workflow start --describe <name> --driver skill` with the workflow name from the skill that sent you. Where this machine runs teamai through `npx teamai-cli`, use that in its place; every literal the CLI prints after this already does.
+When this session started with `teamai workflow resume --next --pool <pool>`, or the person asks you to take fleet work, follow `references/fleet.md` instead.
+
+Run `teamai workflow start --describe <name> --driver skill` with the workflow name from the skill that sent you. When the person names no workflow, or one no generated skill names, run `teamai list workflows`, pick the one they mean, and describe it. Where this machine runs teamai through `npx teamai-cli`, use that in its place; every literal the CLI prints after this already does.
 
 Act on `data.describe.ask.kind`:
 
 - `start`: tell the person `ask.say` when the reply has it, then run `ask.start`. In an unattended run (CI, a cloud agent) describe never asks the person; when `ask.inputs` is listed, fill `{inputs}` in `ask.start` with their values from your task, as one JSON object. The slot sits inside single quotes, so write each `'` in that JSON as `'\''`.
-- `ask`: the question is the person's to answer, once, so the run goes on without them after. In one message, give them `ask.question.text` as it is, each entry of `ask.question.inputs`, and the `label` of each option as their choices. An entry with a `value` is a proposal: show it with its `why`, and say they may keep, change or empty it. An entry without one is theirs to fill in. Wait for their pick, also when an option is marked recommended. In the `start` of the option they pick, replace `{inputs}` with their answers as one JSON object, each `'` in it written as `'\''`, and run it. Those options are the whole choice: when the person wants a start none of them offers, show them the options again.
-- `local`: tell the person `ask.reason` and give them `ask.start` for their own terminal. It is theirs to run.
+- `ask`: the question is the person's to answer, once, so the run goes on without them after. In one message, give them `ask.question.text` as it is, each entry of `ask.question.inputs`, and the `label` of each option as their choices. An entry with a `value` is a proposal: show it with its `why`, and say they may keep, change or empty it. An entry without one is theirs to fill in. Wait for their pick, also when an option is marked recommended. In the `start` of the option they pick, replace `{inputs}` with their answers as one JSON object, each `'` in it written as `'\''`, and run it. Those options are the whole choice: when the person wants a start none of them offers, show them the options again. When the reply has `ask.background`, run that start as In the background says.
+- `background`: tell the person `ask.say` when the reply has it, then run `ask.start` as In the background says.
+- `local`: tell the person `ask.reason` and give them `ask.start` for the terminal it names. It is theirs to run.
 - `denied`: tell the person `ask.reason`. Nothing is left to run here.
 - `tool`: this session names no tool, and the run needs one. In `ask.describe`, replace `{tool}` with the entry of `ask.tools` for the tool you work in, run it, and act on its reply instead. When none of them is the tool you work in, tell the person `ask.reason`.
 
-Done when a reply carries `data.turn` with a `run` id, or the person has `ask.reason`.
+Done when a reply carries `data.turn` with a `run` id, a start in the background ended, or the person has `ask.reason`.
+
+## In the background
+
+The start runs the workflow on the driver it names: the driver of the app this session runs in, which shows its steps there, or teamai's `host` driver, which runs a workflow whose steps need no AI tool on this machine. Run it in the background, tell the person `ask.background`, and wait for it to end. You interpret no turns.
+
+When it ends, act on its last line:
+
+- `data.done`: tell the person the run's `outcome`.
+- `data.hitl_waiting`: the run waits at a gate. Ask the person `message` with your question tool, offering `options`. When `required` is false, replace `<option>` in `respond` with their answer and run it. When it is true, only they may answer: give them `respond` with their answer for their own terminal, and wait until they say it is done. Then run `resume` in the background, and act on how it ends the same way.
+- `error`: tell the person `message`.
 
 ## The loop
 
@@ -30,7 +43,7 @@ A turn lists the `actions` that wait for you, the `running` attempts, the `event
 1. Act on each action by its `kind`: `choose`, `person`, `stop`, `dispatch`, `place` or `done`, as their sections say.
 2. Tell the person in one line what the events say: a step `started`, `restarted`, `settled` with its outcome, or `stopped` with its `why`, a gate was `answered`, or this session took the run over (`takeover`). Tell them `waiting.reason` when it changes. For `judging`, `judged` and `judging-off`, follow `references/judging.md`.
 3. Run `then.run` of the newest turn you have:
-   - `poll`: in the background when your host can, so you stay free to talk with the person; otherwise in the foreground. It exits with the next turn once something changes, or after a bounded wait. Keep one poll of the run going at a time.
+   - `poll`: in the background when your session host can, so you stay free to talk with the person; otherwise in the foreground. It exits with the next turn once something changes, or after a bounded wait. Keep one poll of the run going at a time.
    - `wake`: in the foreground. Work waits for you, and the turn it returns carries it.
 4. Repeat with that turn.
 
@@ -49,7 +62,7 @@ A `report` you run answers with `data.runner`, not a turn. After one, go on with
 
 A `choose` action asks for one answer, and `about` says what it is for:
 
-- `host`: comes once per run that has prompt steps, or that you judge. Follow `reference`: it says which option fits your host and how to run it.
+- `host`, the session host question: comes once per run that has prompt steps, or that you judge. Follow `reference`: it says which option fits your session host and how to run it.
 - `gate`: an optional approval or choice at `step`. `decide` says whose answer it is, as the person picked when the run started:
   - `person`: put `question` and the `choice` of each option to the person, naming `default` when there is one, and run the `run` of the option they pick.
   - `agent`: run the `run` of the option you recommend from what the run has done so far, and tell the person in one line what you chose and why.
@@ -81,7 +94,7 @@ Done when you reported `message`.
 
 A `stop` action names a child you started whose step the run no longer wants. `why` says why: `cancelled` or `timeout`. For each one:
 
-1. When the child named `title` still runs, tell it to stop its work and end.
+1. When the child named `title` still runs, tell it to stop its work and end. A stop of a step that went on in an earlier step's child names that child: tell it to stop this step's work, and do not end it, since a later step may go on in its conversation.
 2. Run `report`. The action stays in every turn until you do.
 
 Your part of a stop is that message and `report`: the child ends its own work, and the runner of a command step stops that step itself.
@@ -95,11 +108,13 @@ A `dispatch` action is one prompt step for one child agent. For each one:
 1. Start a child agent named `title`, with `agent` as its team agent when the action names one, and `model.name` as its model (at `model.effort`) when `model` has a name. Give it this prompt, filled from the action: "Read `<brief>` and do what it says. Work only in `<dir>`." Start it in the background when `needs.parallel` is true.
 2. Run `ack`. The action stays in every turn until you do.
 
-When your host cannot run `model.name`, run `unavailable` in place of both steps.
+When your session host cannot run `model.name`, run `unavailable` in place of both steps.
+
+A dispatch that carries `continue` goes on in the conversation of an earlier child: the child of the step it continues (`session.from`), or of this step's earlier pass (`session: continue`). Send the brief's prompt to the child named `continue.title` (Claude Code `SendMessage`, T3 `t3_thread_send`) in place of starting one in step 1. When your session host cannot reach that child, start a new one as step 1 says, and tell the person that the step starts a new session, since that child could not be reached. Then run `ack`.
 
 A dispatch whose `needs.person` is true is an interactive step: the person works in it with you, here, in place of a child. Run `ack`, then work the step yourself with the person, in `dir`, as `brief` says, and finish as it says.
 
-On `h4` you are the child, so no child starts for a dispatch you are given, and none runs it in the background. Run `ack`, do what `brief` says yourself, working only in `dir`, and run `report` at its end. The next dispatch comes after this one is reported. A `model.name` that is not your own model is one your host cannot run.
+On `h4` you are the child, so no child starts for a dispatch you are given, and none runs it in the background. Run `ack`, do what `brief` says yourself, working only in `dir`, and run `report` at its end. The next dispatch comes after this one is reported. A `model.name` that is not your own model is one your session host cannot run.
 
 A dispatch whose `needs.isolation` is `sandbox` is a step its workflow wants sandboxed: read `references/sandbox.md` before step 1.
 
@@ -113,7 +128,7 @@ Done when every `dispatch` in the turn is acked.
 
 ## Place
 
-A `place` action comes when your host makes the worktrees children work in (`h3`): it asks your host for the place of one step, before its dispatch. Follow `reference`. Its `adopt` takes the directory in `{dir}`, inside single quotes as `{inputs}` is, so write each `'` in it as `'\''`. The action stays in every turn until a place is adopted.
+A `place` action comes when your session host makes the worktrees children work in (`h3`): it asks your session host for the place of one step, before its dispatch. Follow `reference`. Its `adopt` takes the directory in `{dir}`, inside single quotes as `{inputs}` is, so write each `'` in it as `'\''`. The action stays in every turn until a place is adopted.
 
 Done when the turn carries a `dispatch` for its `attempt`.
 
@@ -123,13 +138,15 @@ The `done` action carries the `outcome`, the pull requests the run opened in `pr
 
 ## Errors
 
-A reply with `error` carries `code`, `message` and `next`. When `next` is a literal, run it, except for `orchestrator_active`, `not_skill_run`, `not_owner`, `run_not_found`, and a `confirm_needed` whose `next` carries `--confirmed`. When `next` holds `{tool}`, replace it with the id of the tool you work in before you run it, as for `ask.kind: tool`. When it is null, tell the person `message`: only they can act on it.
+A reply with `error` carries `code`, `message` and `next`. When `next` is a literal, run it, except for `orchestrator_active`, `not_skill_run`, `not_owner`, `run_not_found`, and an `owner_active` or a `confirm_needed` whose `next` carries `--confirmed`. When `next` holds `{tool}`, replace it with the id of the tool you work in before you run it, as for `ask.kind: tool`. When it is null, tell the person `message`: only they can act on it.
 
 `agent_in_path` means an answer only the person can give came from your session. Hand the person the command `message` names, for their own terminal.
 
 `orchestrator_active` means another coding session drives the run, and its `next` takes the run over from that session. Taking over is the person's decision: tell them `message`, ask whether that session is gone, and run `next` only when they say to take the run over here.
 
 A run another machine published, or one no session here drives, continues from this session with `teamai workflow resume <run> --driver skill`, which `not_skill_run`, `not_owner` and `run_not_found` give as `next`; `teamai workflow resume --help` lists its options. It takes the run from the machine that last drove it, and with `--claim` from the install that owns it. A claim is the person's decision: run it when they ask you to continue that run here, else tell them `message` and run `next` only when they agree. Its reply is a turn: go on with the loop.
+
+`owner_active` means the install that owns the run wrote it within the last hour, so its driver may still be running a step, and taking the run over now would run that step twice. Tell the person `message`, which names how the owner stops and hands it over, and run `next` only when they say the owner has stopped.
 
 A resume or a takeover follows the workflow's `invoke` as a start does. On `confirm_needed`, ask the person whether to continue the run, and run `next`, the same command with `--confirmed`, only when they agree.
 

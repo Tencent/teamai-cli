@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import path from 'node:path';
 
 /** One file of a resource folder: its `/`-separated path from the folder root, its executable bit and its bytes. */
@@ -47,7 +48,7 @@ async function read(dir: string): Promise<FolderFilesRead> {
       else if (stat.isSymbolicLink()) problems.push({ path: child, problem: 'symlink' });
       else if (stat.isDirectory()) await visit(child);
       else if (stat.isFile()) {
-        const bytes = await fs.readFile(childFull).catch(() => null);
+        const bytes = await readRegularFile(childFull).catch(() => null);
 
         if (bytes === null) problems.push({ path: child, problem: 'unreadable' });
         else files.push({ path: child, executable: (stat.mode & 0o100) !== 0, bytes });

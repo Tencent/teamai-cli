@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { z } from 'zod';
-import { ATTEMPT_ENV, RUN_DIR_ENV } from './launch-context.js';
+import { RUN_DIR_ENV } from '@teamai/runtime-protocol';
+import { attemptMarker } from './launch-context.js';
 import type { SearchIndex } from './types.js';
 import { appendJsonl, readJsonl } from './utils/jsonl-store.js';
 
@@ -30,7 +31,7 @@ function traceFile(dir: string, attempt: string): string {
 
 /** One line per query; never records query text, index entries or paths. */
 export async function recordRecallIndexes(env: NodeJS.ProcessEnv, indexes: readonly SearchIndex[]): Promise<void> {
-  const attempt = env[ATTEMPT_ENV]?.match(/^[\w-]+\/([\w-]+)$/)?.[1];
+  const [, attempt] = attemptMarker(env)?.match(/^r(?:[0-9a-f]{8}|[0-9a-f]{16})\/(a[0-9a-f]{8})$/) ?? [];
   const dir = env[RUN_DIR_ENV];
 
   if (env[RECALL_TRACE_ENV] !== '1' || !dir || !attempt) return;

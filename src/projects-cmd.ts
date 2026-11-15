@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { parseYaml } from './utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { autoDetectInit } from './config.js';
 import { saveScopeSelection } from './scope-selection.js';
 import {
@@ -16,7 +16,7 @@ import type { ProjectsManifest, TeamProject } from './projects.js';
 import { runManifestEdit, pushManifestChange } from './manifest-edit.js';
 import { readFileSafe, listFiles } from './utils/fs.js';
 import { pullRepo } from './utils/git.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { MemberConfigSchema, type LocalConfig } from './types.js';
 import { deliveredLearningsNamespaces } from './workspace-children.js';
 import { memberReadRoots } from './members.js';

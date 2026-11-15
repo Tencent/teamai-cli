@@ -22,7 +22,7 @@ import {
   OMP_HOOK_FILE,
 } from '../omp-hooks.js';
 import { reconcileHooksToAllTools } from '../hooks.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { loadOmpExtension, type ExtensionDispatch } from './helpers/pi-extensions.js';
 import { hookAdapterDir } from '../locate.js';
 import { bridgedTeamHookFile } from '../bridged-team-hooks.js';

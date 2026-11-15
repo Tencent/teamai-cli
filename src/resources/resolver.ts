@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import path from 'node:path';
 import { FOLDER_MARKERS, holdsMarker } from '../folder-markers.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
@@ -135,6 +136,11 @@ export const RESOURCE_LAYOUTS = {
     fileName: (file: string) => (file.endsWith('.md') && file !== FOLDER_MARKERS.skills.marker && !/^readme\.md$/i.test(file) && !file.startsWith('.') && !isDraft(file) ? file.slice(0, -'.md'.length) : null),
     nameRule: { pattern: /^(?!.*\.md$)/, description: "a skill folder's name does not end in .md, which names a skill kept as one file" },
   },
+  // A team folder of these never inherits a teamai default's files: what it runs or builds is accepted or recorded whole.
+  drivers: { dir: 'drivers', marker: FOLDER_MARKERS.drivers.marker, fileName: (file: string) => (file.endsWith('.yaml') ? file.slice(0, -'.yaml'.length) : null) },
+  runtimes: { dir: 'runtimes', marker: FOLDER_MARKERS.runtimes.marker, fileName: (file: string) => (file.endsWith('.yaml') ? file.slice(0, -'.yaml'.length) : null) },
+  sandboxes: { dir: 'sandboxes', marker: FOLDER_MARKERS.sandboxes.marker, fileName: (file: string) => (file.endsWith('.yaml') ? file.slice(0, -'.yaml'.length) : null) },
+  tools: { dir: 'tools', marker: FOLDER_MARKERS.tools.marker, fileName: (file: string) => (file.endsWith('.yaml') ? file.slice(0, -'.yaml'.length) : null) },
 } as const satisfies Readonly<Record<string, ResourceLayout<unknown>>>;
 
 /**
@@ -254,7 +260,7 @@ async function entryItems<TEntry>(entryList: NonNullable<ResourceLayout<TEntry>[
   let content: string;
 
   try {
-    content = await fs.readFile(full, 'utf8');
+    content = await readRegularFile(full, 'utf8');
   } catch (error) {
     return { items: [], plain: [], diagnostics: [{ kind: 'invalid', path: relative, message: `${relative} cannot be read: ${error instanceof Error ? error.message : String(error)}` }] };
   }
@@ -411,7 +417,7 @@ function readShipped<TEntry>(layout: ResourceLayout<TEntry>, root: string): Prom
       // teamai ships every default as a file or a folder of its own.
       if (source.kind === 'entry') continue;
       const relativePath = path.relative(root, definition).split(path.sep).join('/');
-      const file: ShippedFile = { relativePath, content: await fs.readFile(definition, 'utf8') };
+      const file: ShippedFile = { relativePath, content: await readRegularFile(definition, 'utf8') };
       found.push({ name, source, file: source.kind === 'folder' ? { ...file, folder: await FolderFiles.read(source.full) } : file });
     }
 
@@ -494,7 +500,7 @@ async function layer<TEntry>(layout: ResourceLayout<TEntry>, at: { readonly root
 }
 
 /** Whether `file` is a symbolic link itself; false when it is missing. */
-async function isSymlink(file: string): Promise<boolean> {
+export async function isSymlink(file: string): Promise<boolean> {
   try {
     return (await fs.lstat(file)).isSymbolicLink();
   } catch {
