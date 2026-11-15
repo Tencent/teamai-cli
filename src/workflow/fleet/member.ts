@@ -58,7 +58,7 @@ import { AgentSession } from '../../session-flow/agent-session.js';
 import { JsonValueSchema, type JsonValue, isJsonObject } from '@teamai/shared/json';
 import { git, gitAnswer, hostGitEnv, keptOriginUrl, pushTargets, readMemberConfig, remoteGit, untrustedGit, type MemberConfig } from '../worktree.js';
 import { readRegularFile, writeRegularFile } from '@teamai/shared/regular-file';
-import { endLeftFences, fenceStep, type StepFence } from './fence.js';
+import { endLeftFence, fenceStep, type StepFence } from './fence.js';
 import { FLEET_STOP_BUDGET_MS, fleetBeats } from './beats.js';
 
 /** How often a member reads its claim's record for a cancel, when its beats come less often than that. */
@@ -360,7 +360,7 @@ async function finishLeftClaims(config: LocalConfig, records: FleetRecord[], { r
       const isEnded = !isHeld(record) && record.state !== 'cancelling';
       const left = await stopLeftOfClaim(config, { claim: record, root, isEnded });
 
-      await endLeftFences(attemptDir(config, record.run, record.attempt));
+      await endLeftFence(attemptDir(config, record.run, record.attempt));
 
       if (left.kind === 'left') return { error: { code: 'runtime_lost', message: left.message } };
       const { nestedRun, isLeftRunning } = left;
@@ -759,6 +759,9 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
     const since = Date.parse(latest.progressAt);
     const fencedCommand = command.group !== undefined ? { kind: 'group' as const, id: command.group } : command.tree === undefined ? undefined : { kind: 'tree' as const, pid: command.tree };
     const fenced = await fenceStep({ dir, ...(fencedCommand && { command: fencedCommand }), at: Number.isNaN(since) ? Date.now() : since + cutOffMs, claim: { root, run, attempt, pool: claim.pool, step: lease.step } });
+    // What the guardian stops at the cut-off point, live member or not: the command here, or the exec or prompt on the
+    // member's step runtime.
+    const isGuardianStopped = fencedCommand !== undefined || (ready.kind === 'command' ? place.command : ready.kind === 'prompt' ? place.prompt : undefined)?.kind === 'runtime';
 
     if (!fenced.ok) {
       await stopCommand();
@@ -840,9 +843,9 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
       return { error: { code: 'fleet_member_gone', message: `${why} The step did not stop within ${FLEET_STOP_BUDGET_MS / 1_000} s of when this member began to stop it, so it may still run where it ran, and ${left}` } };
     }
 
-    // A command that ended past the cut-off point was stopped by its guardian, or ended as the member stopped it: either
-    // way the member gives the attempt up, as its own cut-off does.
-    if (cutOff === undefined && gone === undefined && cancelling === undefined && fencedCommand !== undefined && cutOffIn() <= 0) cutOff = cutOffWhy(cutOffIn());
+    // A step that ended past the cut-off point was stopped by its guardian, or ended as the member stopped it: either way
+    // the member gives the attempt up, as its own cut-off does.
+    if (cutOff === undefined && gone === undefined && cancelling === undefined && isGuardianStopped && cutOffIn() <= 0) cutOff = cutOffWhy(cutOffIn());
 
     if (cutOff !== undefined) {
       const saved = await save(`[teamai] ${lease.step} so far (run ${run}, attempt ${attempt})`);

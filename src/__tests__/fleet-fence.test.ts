@@ -3,15 +3,54 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { signalPid } from '@teamai/shared/process-group';
-import { fenceStep } from '../workflow/fleet/fence.js';
-import { startGroupedCommand } from '../workflow/shell-command.js';
+import { fenceStep, type FencedCommand } from '../workflow/fleet/fence.js';
+import { startGroupedCommand, type GroupedCommand } from '../workflow/shell-command.js';
 import { AttemptIdSchema, RunIdSchema } from '../workflow/store.js';
+
+const SLEEP = `"${process.execPath}" -e "setInterval(() => {}, 1000)"`;
 
 function alive(pid: number): boolean {
   return signalPid(pid, 0) === 'sent';
 }
 
+function claimIn(dir: string) {
+  return { root: dir, run: RunIdSchema.parse('r0123abcd'), attempt: AttemptIdSchema.parse('a0123abcd'), pool: 'gpu', step: 'build' };
+}
+
+/** A command as a member starts one here: detached, leading a group, except on Windows, where it leads a process tree. */
+function sleeper(dir: string): { command: GroupedCommand; fenced: FencedCommand; pid: number } {
+  const command = startGroupedCommand({ command: SLEEP, cwd: dir, env: process.env, detached: process.platform !== 'win32', group: dir });
+  const pid = command.group ?? command.tree;
+
+  if (pid === undefined) throw new Error('The command did not start.');
+
+  return { command, pid, fenced: command.group === undefined ? { kind: 'tree', pid } : { kind: 'group', id: pid } };
+}
+
 describe('the fence of a fleet member step', () => {
+  it('retires the guardian of the attempt\'s earlier fence once its restarted member fences it again: only the new fence stops anything', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-fleet-fence-'));
+    const left = sleeper(dir);
+    const again = sleeper(dir);
+
+    try {
+      const first = await fenceStep({ dir, command: left.fenced, at: Date.now() + 1_500, claim: claimIn(dir) });
+      const second = await fenceStep({ dir, command: again.fenced, at: Date.now() + 60_000, claim: claimIn(dir) });
+
+      if (!first.ok || !second.ok) throw new Error('A guardian did not start.');
+      // The first fence's point passes; its guardian, retired by the second fence, stops nothing.
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      expect(alive(left.pid)).toBe(true);
+      expect(await first.fence.end()).toBe('exited');
+      expect(await second.fence.end()).toBe('exited');
+      expect(alive(again.pid)).toBe(true);
+    } finally {
+      await Promise.all([left.command.stop(), again.command.stop()]);
+      await Promise.all([left.command.exit.catch(() => undefined), again.command.exit.catch(() => undefined)]);
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    }
+  }, 30_000);
+
   // A member on Windows runs its command attached, so the command leads no process group its guardian could signal.
   it.runIf(process.platform === 'win32')('stops the process tree of a command that leads no process group once the cut-off point passes', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-fleet-fence-'));
@@ -33,11 +72,12 @@ setInterval(() => {}, 1000);`);
       const running = [tree, ...fs.readFileSync(pids, 'utf8').trim().split(' ').map(Number)];
       expect(running.filter(alive)).toEqual(running);
 
-      const claim = { root: dir, run: RunIdSchema.parse('r0123abcd'), attempt: AttemptIdSchema.parse('a0123abcd'), pool: 'gpu', step: 'build' };
-      const fenced = await fenceStep({ dir, command: { kind: 'tree', pid: tree }, at: Date.now() + 500, claim });
-      expect(fenced.ok).toBe(true);
+      const fenced = await fenceStep({ dir, command: { kind: 'tree', pid: tree }, at: Date.now() + 500, claim: claimIn(dir) });
+      if (!fenced.ok) throw new Error(fenced.reason);
 
       await vi.waitFor(() => expect(running.filter(alive)).toEqual([]), { timeout: 15_000, interval: 100 });
+      // Its guardian is gone before the folder is removed, as a step's own cleanup waits for it.
+      expect(await fenced.fence.end()).toBe('exited');
     } finally {
       await command.stop();
       await command.exit.catch(() => undefined);

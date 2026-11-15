@@ -127,6 +127,9 @@ const ENTRIES = [
       'owner.ts': ['src/workflow/runtimes/sources.ts'],
       'member.ts': ['src/workflow-commands.ts'],
       'record.ts': ['src/workflow/handoff.ts', 'src/workflow-commands.ts', 'src/workflow/leftovers.ts'],
+      // The CLI bundle's entry runs a step's guardian in its guardian mode.
+      'guardian-mode.ts': ['src/cli.ts'],
+      'guardian-stop.ts': ['src/cli.ts'],
     },
     // A member's gate questions are tested on their own: their race needs reads no fleet test can order. So is a step's
     // fence on Windows, whose command leads no process group: no fleet test there can kill a member mid-step.

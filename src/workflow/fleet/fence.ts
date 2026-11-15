@@ -1,63 +1,78 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { memberHome } from '@teamai/shared/home';
+import { parseJson } from '@teamai/shared/json';
 import { STOP_GRACE_MS, TREE_KILL_FLAGS } from '@teamai/shared/process-group';
+import { readRegularFile } from '@teamai/shared/regular-file';
+import { z } from 'zod';
 import { errnoCode, writeJsonAtomic } from '../../utils/fs.js';
-import type { GuardianStop } from './guardian-stop.js';
+import { FLEET_GUARDIAN_ENV } from './guardian-mode.js';
+import type { GuardianInput, GuardianStop } from './guardian-stop.js';
 
 // ─── The fence a member's step carries ────────────────
 //
 //  A member stops its step itself once none of its progress landed for its cut-off (beats.ts fleetBeats), a full
 //  progress interval and a whole stop budget before its owner may give the claim up and offer the step again. A member
-//  killed mid-step stops nothing: a command's process group, an exec on its step runtime, a prompt's tool or a whole
-//  workflow's nested run goes on until the member restarts, and one that never restarts leaves it running beside the
-//  step the owner offered again. So beside each step it runs, the member starts a guardian: a Node process in a group
-//  of its own, which reads the fence, the member's cut-off point, that the member rewrites each time it learns a
-//  progress write landed. Once the fence passes, the guardian stops what the step runs, whether or not the member still
-//  lives: a command here as the member's cut-off does, SIGTERM and, STOP_GRACE_MS later, SIGKILL to its group until
-//  none of it is left (on Windows, where it has no group, `taskkill` of its process tree); then what the claim left,
-//  through teamai's own built module (`guardian-stop.ts`), as a restarted member's recovery does, once the member no
-//  longer holds the run's lock: a live member stops its step itself. The guardian ends once the step's command is gone
-//  with nothing else to stop, once the member removed the fence, as it does when the step ended and a restarted member
-//  does once its recovery stopped what the claim left (`endLeftFences`), or once it stopped that itself; it never
-//  signals a group or pid below 2.
+//  killed or frozen mid-step stops nothing: a command's process group, an exec on its step runtime, a prompt's tool or a
+//  whole workflow's nested run goes on, beside the step the owner offered again. So beside each step it runs, the member
+//  starts a guardian: a Node process in a group of its own, working in the member's home, which outlives every folder
+//  teamai removes. It reads the fence, the attempt folder's FENCE_FILE: the member's cut-off point, which the member
+//  rewrites each time it learns a progress write landed, and the owner token of the guardian it started. Once the fence
+//  passes, the guardian stops what the step runs, whether or not the member still lives: a command here as the member's
+//  cut-off does, SIGTERM and, STOP_GRACE_MS later, SIGKILL to its group until none of it is left (on Windows, where it
+//  has no group, `taskkill` of its process tree). Then it loads teamai's CLI bundle in its guardian mode
+//  (FLEET_GUARDIAN_ENV, `guardian-stop.ts`), which stops what the claim left as a restarted member's recovery does. The
+//  guardian ends once the step's command is gone with nothing else to stop; once its token is no longer in the fence,
+//  because the member removed it when the step ended, a restarted member's recovery did once it stopped what the claim
+//  left (`endLeftFence`), or a restarted member fenced the attempt again; or once it stopped what the claim left. It
+//  never signals a group or pid below 2.
 //
 
 /** The fence of one step: the cut-off point the member moves, and its end once the step ended. */
 export interface StepFence {
   /** Writes the cut-off point `at` (ms since the epoch), one write after another, so the last one called is the one kept. */
   move(at: number): void;
-  /** Removes the fence, after the writes still under way: its guardian then ends within a second. */
-  end(): Promise<void>;
+  /**
+   * Removes the fence, after the writes still under way, unless a restarted member fenced the attempt since, and waits
+   * for its guardian to exit, FENCE_END_WAIT_MS at most: `running` when it is still busy stopping what the claim left.
+   */
+  end(): Promise<'exited' | 'running'>;
 }
 
 /** The command of a step that runs on this machine, which the guardian stops itself: its process group, or on Windows its process tree. */
 export type FencedCommand = { kind: 'group'; id: number } | { kind: 'tree'; pid: number };
 
-/** The module teamai builds beside its own bundle for the guardian to import (`guardian-stop.ts`). */
-const GUARDIAN_MODULE = 'fleet-guardian.js';
+/** The fence of an attempt's step, in the attempt's folder: one at a time, that of the member run that fenced it last. */
+const FENCE_FILE = 'fence.json';
 
-/** The fence files of the steps a member runs in its attempt's folder: `fence-step.json`, or `fence-<group or pid>.json`. */
-const FENCE_FILE = /^fence-[a-z0-9]+\.json$/;
+/** A fence as the member writes it: its cut-off point, and the token of the guardian it started. */
+const FenceSchema = z.object({ at: z.number(), owner: z.string() });
+
+/** How long a guardian goes without reading its fence: it exits at most that long after its token left it. */
+const READ_MS = 1_000;
+
+/** How long a step's end waits for its guardian to exit, before the member removes the attempt's folder. */
+const FENCE_END_WAIT_MS = 3 * READ_MS;
 
 /**
- * The guardian, as `node -e` runs it with the fence file, the step's command (`group:<id>`, `tree:<pid>` or `none`), the
- * first cut-off point, and, when it also stops what the claim left, the built module and the claim (`GuardianStop` as JSON):
- * what teamai ships, with no file of its own to find, so a member run from source starts the same program. It reads
- * the fence at most a second apart, and at its cut-off point; a fence it cannot read keeps the cut-off it read before.
+ * The guardian, as `node -e` runs it with the fence file, its owner token, the step's command (`group:<id>`, `tree:<pid>`
+ * or `none`), the first cut-off point, and, when it also stops what the claim left, teamai's CLI bundle and what to stop
+ * (`GuardianInput` as JSON): what teamai ships, with no file of its own to find, so a member run from source starts the
+ * same program. It reads the fence at most READ_MS apart, and at its cut-off point; a fence it cannot read keeps the
+ * cut-off it read before.
  */
 const GUARDIAN = String.raw`'use strict';
 const fs = require('node:fs');
 const { execFile } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
-const [file, commandArg, firstAt, moduleFile, claimArg] = process.argv.slice(1);
+const [file, owner, commandArg, firstAt, cliFile, input] = process.argv.slice(1);
 const [kind, idArg] = String(commandArg).split(':');
 const id = Number(idArg);
 const command = (kind === 'group' || kind === 'tree') && Number.isSafeInteger(id) && id >= 2 ? { kind, id } : undefined;
-const stop = moduleFile ? { moduleFile, claim: claimArg } : undefined;
-const READ_MS = 1000;
+const READ_MS = ${String(READ_MS)};
 const GRACE_MS = ${String(STOP_GRACE_MS)};
 const KILL_FOR_MS = ${String(STOP_GRACE_MS)};
 const TREE_KILL_FLAGS = ${JSON.stringify(TREE_KILL_FLAGS)};
@@ -71,10 +86,12 @@ const signal = (name) => {
   }
 };
 const isGone = () => command === undefined || signal(0) === 'gone';
+// The cut-off point: undefined once this guardian's token left the fence, null while the fence cannot be read.
 const fenceAt = () => {
   try {
-    const at = JSON.parse(fs.readFileSync(file, 'utf8')).at;
-    return typeof at === 'number' ? at : null;
+    const fence = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!fence || fence.owner !== owner) return undefined;
+    return typeof fence.at === 'number' ? fence.at : null;
   } catch (error) {
     return error && error.code === 'ENOENT' ? undefined : null;
   }
@@ -92,66 +109,83 @@ const stopCommand = async () => {
   for (const until = Date.now() + KILL_FOR_MS; signal('SIGKILL') !== 'gone' && Date.now() < until;) await sleep(100);
 };
 (async () => {
-  if (command === undefined && stop === undefined) return;
+  if (command === undefined && cliFile === undefined) return;
   let at = Number(firstAt);
   for (;;) {
     const read = fenceAt();
-    if (read === undefined || (stop === undefined && isGone())) return;
+    if (read === undefined || (cliFile === undefined && isGone())) return;
     if (read !== null) at = read;
     const left = at - Date.now();
     if (!(left > 0)) break;
     await sleep(Math.min(left, READ_MS));
   }
   await stopCommand();
-  if (stop === undefined) return;
-  const { stopLeftForGuardian } = await import(pathToFileURL(stop.moduleFile).href);
-  // A live member holds the run's lock and stops its own step: what it left is stopped once it is gone.
-  while (fenceAt() !== undefined) {
-    if (await stopLeftForGuardian(stop.claim) !== 'busy') return;
-    await sleep(READ_MS);
-  }
+  if (cliFile === undefined || fenceAt() === undefined) return;
+  // The bundle's guardian mode stops what the claim left, and ends once that is done or the fence is no longer ours.
+  process.env.${FLEET_GUARDIAN_ENV} = input;
+  await import(pathToFileURL(cliFile).href);
 })().catch(() => {});
 `;
 
 /**
- * Where the guardian's module is: beside the bundle this code runs from in teamai's build, which ships it, so `missing`
- * there is a broken install. A member run from source has none: its guardian stops only a command here.
+ * The CLI bundle this code runs from in teamai's build (dist/cli.js), whose guardian mode stops what a claim left. A
+ * member run from source has none: its guardian stops only a command here.
  */
-function guardianModule(): { kind: 'built'; file: string } | { kind: 'missing'; file: string } | { kind: 'source' } {
+function cliBundle(): string | undefined {
   const here = fileURLToPath(import.meta.url);
 
-  if (!here.endsWith('.js')) return { kind: 'source' };
-  const file = path.join(path.dirname(here), GUARDIAN_MODULE);
+  return here.endsWith('.js') ? here : undefined;
+}
 
-  return existsSync(file) ? { kind: 'built', file } : { kind: 'missing', file };
+/** Whether fence `file` still holds token `owner`: not once it was removed, or a restarted member fenced the attempt again. */
+export async function isFenceHeld(file: string, owner: string): Promise<boolean> {
+  let text: string;
+
+  try {
+    text = await readRegularFile(file, 'utf8');
+  } catch (error) {
+    // A fence that cannot be read for another reason keeps its guardian on, as the guardian's own read does.
+    return errnoCode(error) !== 'ENOENT';
+  }
+
+  let fence: ReturnType<typeof FenceSchema.safeParse>;
+
+  try {
+    fence = FenceSchema.safeParse(parseJson(text));
+  } catch {
+    return true;
+  }
+
+  return !fence.success || fence.data.owner === owner;
 }
 
 /**
- * Starts the guardian of the step of claim `claim` a member runs in `dir`, with the cut-off point `at`: it stops
- * `command`, the step's command on this machine if it has one, and what the claim left (`guardian-stop.ts`). The
- * guardian works in `dir`; one that stops what the claim left gets the member's own environment, which a restarted member
- * would have, and one that only stops a command gets none. Answers why it could not start: the member then runs nothing
- * of the step.
+ * Starts the guardian of the step of claim `claim` a member runs in attempt folder `dir`, with the cut-off point `at`:
+ * it stops `command`, the step's command on this machine if it has one, and what the claim left (`guardian-stop.ts`).
+ * Its token in the fence retires the guardian an earlier run of the member started for the attempt. One that stops what
+ * the claim left gets the member's own environment, which a restarted member would have, and one that only stops a
+ * command gets none. Answers why it could not start: the member then runs nothing of the step.
  */
 export async function fenceStep({ dir, command, at, claim }: { dir: string; command?: FencedCommand; at: number; claim: GuardianStop }): Promise<{ ok: true; fence: StepFence } | { ok: false; reason: string }> {
-  const built = guardianModule();
+  const cli = cliBundle();
 
-  if (built.kind === 'missing') return { ok: false, reason: `its guardian's module ${built.file}, which teamai's build ships, is missing; reinstall teamai` };
-  const stop = built.kind === 'built' ? { file: built.file, claim } : undefined;
-
-  // A run from source has no module, and a step with no command here then has nothing the guardian could stop.
-  if (command === undefined && stop === undefined) return { ok: true, fence: { move: () => {}, end: async () => {} } };
-  const file = path.join(dir, command === undefined ? 'fence-step.json' : `fence-${command.kind === 'group' ? command.id : command.pid}.json`);
+  // A run from source has no bundle, and a step with no command here then has nothing the guardian could stop.
+  if (command === undefined && cli === undefined) return { ok: true, fence: { move: () => {}, end: async () => 'exited' } };
+  const file = path.join(dir, FENCE_FILE);
+  const owner = randomUUID();
 
   try {
-    await writeJsonAtomic(file, { at }, { compact: true });
+    await writeJsonAtomic(file, { at, owner }, { compact: true });
   } catch (error) {
     return { ok: false, reason: `its fence ${file} cannot be written (${error instanceof Error ? error.message : String(error)})` };
   }
 
   const commandArg = command === undefined ? 'none' : command.kind === 'group' ? `group:${command.id}` : `tree:${command.pid}`;
-  const args = ['-e', GUARDIAN, file, commandArg, String(at), ...(stop ? [stop.file, JSON.stringify(stop.claim)] : [])];
-  const guardian = spawn(process.execPath, args, { cwd: dir, detached: true, stdio: 'ignore', env: stop ? process.env : {}, windowsHide: true });
+  const input = { ...claim, fence: file, owner } satisfies GuardianInput;
+  const args = ['-e', GUARDIAN, file, owner, commandArg, String(at), ...(cli === undefined ? [] : [cli, JSON.stringify(input)])];
+  // Not in `dir`: on Windows the folder a process works in cannot be removed while it lives.
+  const guardian = spawn(process.execPath, args, { cwd: memberHome(), detached: true, stdio: 'ignore', env: cli === undefined ? {} : process.env, windowsHide: true });
+  const exited = new Promise<'exited'>((resolve) => { guardian.once('exit', () => resolve('exited')); });
 
   const started = await new Promise<{ ok: true } | { ok: false; reason: string }>((resolve) => {
     guardian.once('spawn', () => resolve({ ok: true }));
@@ -176,31 +210,29 @@ export async function fenceStep({ dir, command, at, claim }: { dir: string; comm
         if (isEnded || next === written) return;
         written = next;
         // A write that fails leaves the cut-off it replaced, which is earlier: the guardian stops the step no later.
-        writing = writing.then(() => writeJsonAtomic(file, { at: next }, { compact: true })).catch(() => undefined);
+        writing = writing.then(() => writeJsonAtomic(file, { at: next, owner }, { compact: true })).catch(() => undefined);
       },
       end: async () => {
         isEnded = true;
         await writing;
-        await fs.rm(file, { force: true });
+
+        // A restarted member's fence of the attempt stays: it retired this one's guardian.
+        if (await isFenceHeld(file, owner)) await fs.rm(file, { force: true });
+        let timer: NodeJS.Timeout | undefined;
+        const waited = await Promise.race([exited, new Promise<'running'>((resolve) => { timer = setTimeout(() => resolve('running'), FENCE_END_WAIT_MS); })]);
+        clearTimeout(timer);
+
+        return waited;
       },
     },
   };
 }
 
 /**
- * Removes the fences a killed run of the member left in attempt folder `dir`, once its restarted run's recovery stopped
- * what the claim left under the run's lock, or could not: the recovery owns that stop from then on, and their guardians
- * end within a second.
+ * Removes the fence a killed run of the member left in attempt folder `dir`, once its restarted run's recovery stopped
+ * what the claim left under the run's lock, or could not: the recovery owns that stop from then on, and the guardian
+ * ends within READ_MS.
  */
-export async function endLeftFences(dir: string): Promise<void> {
-  let names: string[];
-
-  try {
-    names = await fs.readdir(dir);
-  } catch (error) {
-    if (errnoCode(error) === 'ENOENT') return;
-    throw error;
-  }
-
-  await Promise.all(names.filter((name) => FENCE_FILE.test(name)).map((name) => fs.rm(path.join(dir, name), { force: true })));
+export async function endLeftFence(dir: string): Promise<void> {
+  await fs.rm(path.join(dir, FENCE_FILE), { force: true });
 }

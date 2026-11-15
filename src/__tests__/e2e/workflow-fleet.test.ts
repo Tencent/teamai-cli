@@ -613,7 +613,8 @@ describe('the fleet', () => {
     expect(runStateOf('alice', run).steps[0]?.failure?.code).toBe('fleet_member_gone');
   }, 180_000);
 
-  it('stops a killed member\'s exec on its step runtime before stale_after passes, though the member never comes back', async () => {
+  /** A member taken down mid-step as `signal` does while its step runs on its toy step runtime: its exec stops before the owner can give the claim up. */
+  async function stopsExecOnRuntime(signal: 'SIGKILL' | 'SIGSTOP'): Promise<void> {
     const config = path.join(dataHomeOf('bob'), 'config.yaml');
     const kept = fs.readFileSync(config, 'utf8');
     const toy = path.join(homeOf('bob'), '.teamai', 'runtimes', 'toy');
@@ -623,6 +624,7 @@ describe('the fleet', () => {
     const pidFile = path.join(homeOf('bob'), 'fenced.pid');
     fs.rmSync(pidFile, { force: true });
     let command = 0;
+    let bobPid = 0;
 
     try {
       let alicePid = 0;
@@ -632,12 +634,11 @@ describe('the fleet', () => {
       await waitOn(() => fresh() !== undefined, 60_000, () => alicePid, started);
       const run = fresh() ?? '';
 
-      let bobPid = 0;
       const taking = teamai('bob', ['workflow', 'resume', '--next', '--pool', 'build', '--driver', 'toy-member'], (pid) => { bobPid = pid; });
       await waitOn(() => fs.existsSync(pidFile) && records(run).some((record) => record.state === 'claimed'), 60_000, () => bobPid, taking);
       command = Number(fs.readFileSync(pidFile, 'utf8'));
-      expect(signalPid(bobPid, 'SIGKILL')).toBe('sent');
-      await taking;
+      expect(signalPid(bobPid, signal)).toBe('sent');
+      if (signal === 'SIGKILL') await taking;
       // The owner may give the claim up once stale_after passed since the member began its last write that landed.
       const [claimed] = records(run);
       const givenUpFrom = Date.parse(claimed?.progressAt ?? '') + 26_000;
@@ -646,13 +647,29 @@ describe('the fleet', () => {
       expect(await until(() => !isAlive(command), givenUpFrom - Date.now())).toBe(true);
       expect(Date.now()).toBeLessThan(givenUpFrom);
 
+      if (signal === 'SIGSTOP') {
+        // The frozen member still holds the run's lock: only the guardian stopped the exec.
+        expect(isAlive(bobPid)).toBe(true);
+        signalPid(bobPid, 'SIGKILL');
+        await taking;
+      }
+
       const failed = await started;
       expect(failed.envelope(), said(failed)).toMatchObject({ data: { done: { outcome: 'failed' } } });
       expect(runStateOf('alice', run).steps[0]?.failure?.code).toBe('fleet_member_gone');
     } finally {
       if (command > 0 && isAlive(command)) signalPid(command, 'SIGKILL');
+      if (bobPid > 0 && isAlive(bobPid)) signalPid(bobPid, 'SIGKILL');
       fs.writeFileSync(config, kept);
     }
+  }
+
+  it('stops a killed member\'s exec on its step runtime before stale_after passes, though the member never comes back', async () => {
+    await stopsExecOnRuntime('SIGKILL');
+  }, 180_000);
+
+  it('stops a frozen member\'s exec on its step runtime before stale_after passes, while the member still holds the run\'s lock', async () => {
+    await stopsExecOnRuntime('SIGSTOP');
   }, 180_000);
 
   it('gives an attempt to one of two members that try at once, and the other takes none', async () => {

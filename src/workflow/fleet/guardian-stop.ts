@@ -1,13 +1,11 @@
 import { z } from 'zod';
 import { autoDetectInit } from '../../config.js';
+import { stopLeftOperationOnRuntime } from '../runtimes/cancelled.js';
 import { AttemptIdSchema, RunIdSchema, takeRunLock } from '../store.js';
+import { isFenceHeld } from './fence.js';
 import { stopLeftOfClaim } from './member.js';
 
-/**
- * What a claim's guardian stops through teamai once its fence passed: the claim, and the checkout its member ran in,
- * whose config the member loaded. The member writes it (`fence.ts` fenceStep); this module, which teamai builds as
- * `fleet-guardian.js`, reads it.
- */
+/** The claim a step's guardian stops what was left of: the checkout its member ran in, whose config the member loaded. */
 export const GuardianStopSchema = z.object({
   root: z.string().min(1),
   run: RunIdSchema,
@@ -18,30 +16,44 @@ export const GuardianStopSchema = z.object({
 
 export type GuardianStop = z.infer<typeof GuardianStopSchema>;
 
+/** What teamai's CLI bundle in its guardian mode (FLEET_GUARDIAN_ENV) stops: the claim, and the fence and token of the guardian that loaded it (`fence.ts` fenceStep). */
+export const GuardianInputSchema = GuardianStopSchema.extend({ fence: z.string().min(1), owner: z.string().min(1) }).strict();
+
+export type GuardianInput = z.infer<typeof GuardianInputSchema>;
+
+/** How long the guardian waits between two tries of the run's lock, which a live member holds for the whole step. */
+const LOCK_RETRY_MS = 1_000;
+
 /**
- * Stops what the claim `claim` names left (the JSON of a `GuardianStop`, as the guardian got it on its command line), as
- * a restarted member does before it finishes it (`stopLeftOfClaim`), once the member that holds the run's lock is gone:
- * `busy` while a live process still holds it, as a live member stops its own step. A stop that is not confirmed keeps
- * the attempt's place recorded, so the member's next recovery stops it again.
+ * Stops what a claim left once its fence passed, as the guardian of its step asks (`input`, the JSON of a
+ * `GuardianInput`). First its exec or prompt on the member's step runtime, without the run's lock: a live member may
+ * be stopping it too, and a runtime's stop of what already stopped answers so. Then the rest, as a restarted member does
+ * before it finishes the claim (`stopLeftOfClaim`), under the run's lock, once the member that holds it is gone. It stops
+ * trying once its fence is no longer the guardian's. A stop that is not confirmed keeps the attempt's place recorded,
+ * so the member's next recovery stops it again.
  */
-export async function stopLeftForGuardian(claim: string): Promise<'stopped' | 'left' | 'busy' | 'unreadable'> {
+export async function runFleetGuardian(input: string): Promise<void> {
   let json: unknown;
 
   try {
-    json = JSON.parse(claim);
+    json = JSON.parse(input);
   } catch {
-    return 'unreadable';
+    return;
   }
 
-  const parsed = GuardianStopSchema.safeParse(json);
+  const parsed = GuardianInputSchema.safeParse(json);
 
-  if (!parsed.success) return 'unreadable';
-  const { root, run, attempt, pool, step } = parsed.data;
+  if (!parsed.success) return;
+  const { root, run, attempt, pool, step, fence, owner } = parsed.data;
   // The config the member's `workflow resume --next` loaded in this checkout, read only, as its restart would.
   const { localConfig: config } = await autoDetectInit(root, { dryRun: true, selfHeal: false, suppressMigrationNotice: true });
-  const taken = await takeRunLock(config, run, async () => stopLeftOfClaim(config, { claim: { run, attempt, pool, lease: { step } }, root, isEnded: false }), { waitMs: 0 });
 
-  if (taken.kind === 'busy') return 'busy';
+  await stopLeftOperationOnRuntime(config, { run, attempt, checkout: root });
 
-  return taken.value.kind;
+  while (await isFenceHeld(fence, owner)) {
+    const taken = await takeRunLock(config, run, async () => stopLeftOfClaim(config, { claim: { run, attempt, pool, lease: { step } }, root, isEnded: false }), { waitMs: 0 });
+
+    if (taken.kind !== 'busy') return;
+    await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_MS));
+  }
 }

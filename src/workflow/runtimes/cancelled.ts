@@ -8,9 +8,9 @@ import { existingCheckout } from '../run-location.js';
 import { errnoCode } from '../../utils/fs.js';
 import { attemptDir, AttemptIdSchema, attemptsDir, attemptsDirIn, readRun, RunIdSchema, type AttemptId, type RunId, type RunLock } from '../store.js';
 import { knownSecrets } from '../../env-resolution.js';
-import { attemptRun, attemptRuntimeFile, attemptRuntimePath, attemptToolHome, HeldPlace, isPlaceLeftOpen, maskAttemptResults, readAttemptPlacement, readAttemptPlacementAt, releaseAttemptRuntime, type AttemptPlacement, type AttemptRuntimeRecord } from './attempt.js';
+import { attemptRun, attemptRuntimeFile, attemptRuntimePath, attemptToolHome, HeldPlace, isPlaceLeftOpen, maskAttemptResults, readAttemptPlacement, readAttemptPlacementAt, releaseAttemptRuntime, type AttemptPlacement, type AttemptRun, type AttemptRuntimeRecord } from './attempt.js';
 import { endLogin, LOGIN_TOOLS, loginHolder, type LoginTool } from './login.js';
-import { disposeDriver, openDriver } from './sources.js';
+import { disposeDriver, openDriver, type OpenedDriver } from './sources.js';
 import { RuntimeEntryIdentity } from './entry-identity.js';
 import { retryCommand } from './retry-command.js';
 import { CANCEL_FAILED } from '@teamai/runtime-protocol';
@@ -360,13 +360,10 @@ async function stopAttempt(config: LocalConfig, run: RunId, attempt: AttemptId, 
   if (!opened.ok) return cannot(opened.failure.message);
 
   try {
-    // Only the entry that ran the attempt reaches its place: another of the same name would find nothing to stop.
-    const found = RuntimeEntryIdentity.find(record, opened.opened.runtimes.filter((one) => one.kind === 'external'), record.driver);
+    const entry = placeEntry(config, { run, attempt, record, opened: opened.opened });
 
-    if (!found.ok) return cannot(`${found.why} Once you checked that nothing of it still runs there, teamai workflow cancel ${run} --release ${attempt} lets it go.`);
-    const { found: entry } = found;
-    const masked = entry.masks;
-    const placed = attemptRun({ config, run, attempt, runtime: entry.runtime, entry: entry.entry, driver: record.driver });
+    if (!entry.ok) return cannot(`${entry.why} Once you checked that nothing of it still runs there, teamai workflow cancel ${run} --release ${attempt} lets it go.`);
+    const { placed, masked } = entry;
 
     const notStopped = await placed.stopLeftOperation();
 
@@ -395,6 +392,48 @@ async function stopAttempt(config: LocalConfig, run: RunId, attempt: AttemptId, 
     return isReleased ? { ended: await releaseAttempt(config, run, attempt, notClosed.message, record), masked } : cannot(`${notClosed.message} Once you checked that nothing of it still runs there, run teamai workflow cancel ${run} --release ${attempt}.`);
   } catch (error) {
     return cannot(error instanceof Error ? error.message : String(error));
+  } finally {
+    await disposeDriver(opened.opened);
+  }
+}
+
+/**
+ * The attempt as the entry of driver `opened` that ran it at `record`'s place reaches it, or why none does: only that
+ * entry reaches the place, and another of the same name would find nothing to stop.
+ */
+function placeEntry(config: LocalConfig, { run, attempt, record, opened }: { run: RunId; attempt: AttemptId; record: AttemptRuntimeRecord; opened: OpenedDriver }): { ok: true; placed: AttemptRun; masked: Record<string, string> | undefined } | { ok: false; why: string } {
+  const found = RuntimeEntryIdentity.find(record, opened.runtimes.filter((one) => one.kind === 'external'), record.driver);
+
+  if (!found.ok) return { ok: false, why: found.why };
+  const { found: entry } = found;
+
+  return { ok: true, placed: attemptRun({ config, run, attempt, runtime: entry.runtime, entry: entry.entry, driver: record.driver }), masked: entry.masks };
+}
+
+/**
+ * Stops the exec or prompt attempt `attempt` of run `run` left on the step runtime its record names, from `checkout`,
+ * and nothing more: its place stays open and recorded, for `stopLeftAttempt` to close. It reads the place and writes
+ * nothing, and a runtime's stop of what already stopped answers so, so it may race another stop of the attempt, such as
+ * its member's own. Undefined once nothing of it runs there, or it holds no place; else why it may still run.
+ */
+export async function stopLeftOperationOnRuntime(config: LocalConfig, { run, attempt, checkout }: { run: RunId; attempt: AttemptId; checkout: string }): Promise<string | undefined> {
+  const placement = await readAttemptPlacement(config, run, attempt);
+
+  if (placement.kind !== 'external' || placement.record.phase === 'closed') return undefined;
+  const { record } = placement;
+  const opened = await openDriver(config, record.driver, { personal: true, mode: resolveRunMode(process.env), canAsk: false, purpose: 'stop', checkout });
+
+  if (!opened.ok) return opened.failure.message;
+
+  try {
+    const entry = placeEntry(config, { run, attempt, record, opened: opened.opened });
+
+    if (!entry.ok) return entry.why;
+    const notStopped = await entry.placed.stopLeftOperation();
+
+    return notStopped && `${notStopped.message} (${notStopped.code})`;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
   } finally {
     await disposeDriver(opened.opened);
   }
