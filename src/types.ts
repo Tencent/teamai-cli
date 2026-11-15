@@ -115,6 +115,19 @@ export const SharingConfigSchema = z.object({
   skills: z.object({
     roleRequiredNamespaces: z.array(NamespaceSegmentSchema).optional(),
   }).default({}),
+  /**
+   * How role namespaces and project namespaces combine into the active set.
+   * `union` (default, the original semantics): both dimensions contribute
+   * additively; a member sees everything either axis selects.
+   * `intersect`: the role namespaces bound what the member may see (the
+   * reviewed ceiling), and the active projects scope what this directory
+   * actually delivers. When either side of an axis is empty, that axis falls
+   * back to the other side, so a member with no role keeps the project axis
+   * (as today) and a team without active projects keeps the role axis.
+   * Optional (not .default) so existing TeamaiConfig literals stay valid;
+   * readers treat a missing value as `union`.
+   */
+  namespaceMerge: z.enum(['union', 'intersect']).optional(),
   rules: z.object({
     enforced: z.array(z.string()).default([]),
   }).prefault({}),

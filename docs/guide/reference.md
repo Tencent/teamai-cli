@@ -33,6 +33,7 @@ packages:
 sharing:
   rules:
     enforced: [code-review-guide]
+  # namespaceMerge: intersect   # role = ceiling, project = directory scope; default union
   recall:
     enabled: false
   docs:

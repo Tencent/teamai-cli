@@ -1,5 +1,6 @@
 import path from 'node:path';
-import type { LocalConfig } from './types.js';
+import { z } from 'zod';
+import { SharingConfigSchema, type LocalConfig } from './types.js';
 import {
   findRole,
   listRoleIds,
@@ -11,12 +12,13 @@ import {
   type ResourceNamespaces,
   type RolesManifest,
 } from './roles.js';
-import { loadProjectsManifest, resolveProjectResourceNamespaces, mergeNamespaces, projectNamespaceEntries, type AllProjectResourceType } from './projects.js';
+import { loadProjectsManifest, resolveProjectResourceNamespaces, mergeNamespaces, projectNamespaceEntries, type AllProjectResourceType, type NamespaceMergeMode } from './projects.js';
 import { isNestedPlaceableType, NAMESPACE_AXIS, type PlaceableType } from './push-namespaces.js';
 import { assertNoCaseAliasedNamespaces } from './manifest-schema.js';
-import { listDirs } from './utils/fs.js';
+import { listDirs, readFileSafe } from './utils/fs.js';
 import { warnOnce } from './utils/warn-once.js';
 import { deliveredMembers } from './workspace-children.js';
+import { parseYaml } from '@teamai/shared/yaml';
 
 type ResolvedResourceNamespaces = NonNullable<Awaited<ReturnType<typeof resolveOwnResourceNamespaces>>>;
 
@@ -153,6 +155,32 @@ export async function resolveResourceNamespaces(localConfig: LocalConfig): Promi
   };
 }
 
+/**
+ * Read `sharing.namespaceMerge` straight from teamai.yaml. This must NOT go
+ * through `loadTeamConfig`: that loads tool instances, whose namespaces resolve
+ * back through this module (`memberNamespaces` → `workflowNamespacesOf` →
+ * `resolveResourceNamespaces`), so calling it here would recurse. A raw read of
+ * the one field is cheap and cycle-free; anything unreadable or not exactly
+ * `intersect` keeps the default `union`.
+ */
+const NamespaceMergeDocSchema = z.object({
+  sharing: z.object({ namespaceMerge: SharingConfigSchema.shape.namespaceMerge }).optional(),
+});
+
+async function readNamespaceMergeMode(repoPath: string): Promise<NamespaceMergeMode> {
+  try {
+    const content = await readFileSafe(path.join(repoPath, 'teamai.yaml'));
+
+    if (!content) return 'union';
+
+    const doc = NamespaceMergeDocSchema.safeParse(parseYaml(content));
+
+    return doc.data?.sharing?.namespaceMerge === 'intersect' ? 'intersect' : 'union';
+  } catch {
+    return 'union';
+  }
+}
+
 async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
   const activeProjects = localConfig.projects ?? [];
   const primaryRole = localConfig.primaryRole;
@@ -280,7 +308,14 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
     warnOnce('Active projects configured but no projects manifest found. Skipping project-based filtering.');
   }
 
-  const activeNamespaces = mergeNamespaces(roleNamespaces, projectNamespaces);
+  // `sharing.namespaceMerge: intersect` turns the role namespaces into the
+  // reviewed ceiling and the active projects into the directory's scope; an
+  // axis where either side is empty keeps the other, so the mode only narrows
+  // members who have both. The default (`union`, and any unreadable config)
+  // keeps the original additive semantics.
+  const namespaceMerge = await readNamespaceMergeMode(localConfig.repo.localPath);
+
+  const activeNamespaces = mergeNamespaces(roleNamespaces, projectNamespaces, namespaceMerge);
 
   // Skill activation set spans BOTH dimensions: a skill is inactive only if it
   // lives in a namespace that neither an active role nor an active project selects.
