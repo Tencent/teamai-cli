@@ -2768,7 +2768,7 @@ export async function buildDocsCheck(ctx: DoctorContext): Promise<Check[]> {
         : []),
       ...memberLines,
       ...(canPropose
-        ? ['Plain `teamai push` does not scan this mirror. To propose a kept edit to a delivered file, use `teamai push --file "<mirror-file>" --path "docs/<relative-path>"` with the mirror file and its team path shown above.']
+        ? ['Plain `teamai push` offers an edited delivered doc. To propose just one, use `teamai push --file "<mirror-file>" --path "docs/<relative-path>"` with the mirror file and its team path shown above.']
         : []),
     ].join(' '),
   }];

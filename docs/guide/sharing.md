@@ -780,7 +780,7 @@ sessions:
 
 ## Docs
 
-Put files in the team repo's `docs/`. Members receive them on `pull`. To limit a directory, declare it under `resources.docs`:
+Put files in the team repo's `docs/`. Members receive them on `pull` in their docs mirror (`sharing.docs.localDir`). An edit to a doc the team has, made in that mirror, is what `teamai status` and `teamai push` offer, at its team path `docs/<rel>`; a file that is a version of one the team already has, current or older, is a copy, not an edit, and is left out, so a stale copy never proposes to overwrite the team's newer file. The user-scope mirror is machine-wide, so a file for a doc the team does not have is left alone: add a new doc in the team repo. An edit in the team clone's checkout is offered too, and wins for the same path. To limit a directory, declare it under `resources.docs`:
 
 ```yaml
 # manifest/projects.yaml
