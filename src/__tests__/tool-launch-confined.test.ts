@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { confinedOffers, installedConfinedTools, runConfined } from '../workflow/confined-launch.js';
 import { saveToolHomes } from '../tool-home.js';
 import { getUserHome } from '@teamai/shared/home';
+import { installFakeOpencode } from '@teamai/tool-opencode/testing';
 
 let root = '';
 
@@ -400,4 +401,19 @@ it('fails a tool that exits 0 without a result record as a reply that is not JSO
   const cursor = await fakeTool('cursor', '2026.10.1', "console.log('done');");
 
   expect(await runConfined({ tool: 'cursor', dir, prompt: 'Say whether the fix landed.', level: 'best-effort', timeoutMs: 60_000, attempt: ATTEMPT }, { resolveTool: machineWith({ 'cursor-agent': cursor }) })).toMatchObject({ ok: false, code: 'confined_reply_invalid', raw: 'done\n\n' });
+});
+
+it("probes a judge tool's version without leaving its data, cache and state folders in the member's home", async () => {
+  const home = path.join(root, 'member-home');
+  await fs.mkdir(home);
+  vi.stubEnv('HOME', home);
+  for (const variable of ['XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME']) vi.stubEnv(variable, '');
+  const fake = installFakeOpencode({ version: 'opencode v2.1.2', makesDataFolders: true });
+  onTestFinished(() => fs.rm(fake, { recursive: true, force: true }));
+
+  expect(await confinedOffers({ resolveTool: machineWith({ opencode: path.join(fake, 'opencode') }) })).toEqual([
+    { level: 'verified', access: 'read', tools: ['opencode'] },
+    { level: 'best-effort', access: 'read', tools: ['opencode'] },
+  ]);
+  expect(await fs.readdir(home)).toEqual([]);
 });
