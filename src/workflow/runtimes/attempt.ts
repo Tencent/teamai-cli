@@ -1126,8 +1126,9 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
 
       if (!recorded.held) return { ok: false, failure: runtimeFailure(runtime.name, `could not open attempt ${attempt}: ${lock} stays taken, as an uninstall of this scope holds it while it removes the runs. Run the step again once the uninstall ends.`) };
 
-      // A place opened again keeps the handle it recorded until it is ready: one made in steps (a runtime through
-      // another) is accepted first with part of its handle, which must not replace the whole one if the rest fails.
+      // A place opened again keeps the most its recorded handle and the accepted one say of it (`keptHandle`): one made
+      // in steps (a runtime through another) is accepted first with part of its handle, which must not replace the whole
+      // one if the rest fails, while a whole one accepted now completes a part recorded before.
       const opened = await sends.open({ op, run, attempt, credentials, ...(tool !== undefined && { tool }), ...(deadline !== undefined && { deadline }), ...(view && { view }), ...(unset && { unset }) }, async (handle) => {
         const now = await current();
 
@@ -1143,7 +1144,9 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
           return;
         }
 
-        await save({ ...now, open: { op, handle: before?.open.handle ?? handle }, phase: now.phase === 'opening' ? 'ready' : now.phase });
+        const recordedHandle = before?.open.handle;
+        const kept = recordedHandle === undefined ? handle : runtime.keptHandle?.(recordedHandle, handle) ?? recordedHandle;
+        await save({ ...now, open: { op, handle: kept }, phase: now.phase === 'opening' ? 'ready' : now.phase });
       });
 
       // Stopped once the record named the open, before it was sent: the record is put back as it was.

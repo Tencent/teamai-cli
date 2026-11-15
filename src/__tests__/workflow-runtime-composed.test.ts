@@ -340,6 +340,48 @@ describe('an attempt on a runtime through another', () => {
     expect(JSON.parse(fs.readFileSync(attemptRuntimePath(config(), run, attempt), 'utf8'))).not.toMatchObject({ phase: 'closed' });
     expect([...elsewhere.closed, ...innerJournal.closed]).toEqual([]);
   });
+
+  it('records the whole handle an inner accepts once a restarted teamai opens a place again whose record names only the outer\'s, even when the inner then fails', async () => {
+    const [outerJournal, innerJournal] = [journal(), journal()];
+    // The first teamai is killed once the outer is ready, while the inner opens: its record names only the outer's place.
+    const stalled = composedStepRuntime({ outer: part('sandboxtoy', outerJournal), inner: part('apptoy', innerJournal, async () => new Promise(() => {})), innerCredentials: {} });
+    void attemptRun({ config: config(), run, attempt, runtime: stalled, entry: soleEntry(stalled), driver: 'box' }).open(view, { tool: 'claude' });
+    await expect.poll(() => (fs.existsSync(attemptRuntimePath(config(), run, attempt)) ? JSON.parse(fs.readFileSync(attemptRuntimePath(config(), run, attempt), 'utf8')).open.handle : undefined)).toBe(JSON.stringify({ outer: 'sandboxtoy-1', innerOpening: true }));
+
+    // The inner the restarted teamai opens again accepts its place, then fails before it is ready.
+    const failing = part('apptoy', innerJournal, async (_request, onAccepted) => {
+      innerJournal.places.add('apptoy-1');
+      await onAccepted('apptoy-1');
+
+      return { kind: 'failed', failure: { code: 'app_failed', message: 'The project could not start.' } };
+    });
+
+    const resumed = composedStepRuntime({ outer: part('sandboxtoy', outerJournal), inner: failing, innerCredentials: {} });
+    const again = attemptRun({ config: config(), run, attempt, runtime: resumed, entry: soleEntry(resumed), driver: 'box' });
+
+    expect(await again.open(view, { tool: 'claude' })).toMatchObject({ ok: false });
+    expect(JSON.parse(fs.readFileSync(attemptRuntimePath(config(), run, attempt), 'utf8'))).toMatchObject({ open: { handle: JSON.stringify({ outer: 'sandboxtoy-1', inner: 'apptoy-1' }) } });
+    // So the cancel's close reaches the inner's place, then the outer's.
+    expect(await again.close()).toBeUndefined();
+    expect([innerJournal.closed, outerJournal.closed]).toEqual([['apptoy-1'], ['sandboxtoy-1']]);
+  });
+
+  it('keeps saying the inner may hold a place once a restarted teamai\'s inner answers that it made none, since the inner asked before may have made one', async () => {
+    const [outerJournal, innerJournal] = [journal(), journal()];
+    const partial = JSON.stringify({ outer: 'sandboxtoy-1', innerOpening: true });
+    const stalled = composedStepRuntime({ outer: part('sandboxtoy', outerJournal), inner: part('apptoy', innerJournal, async () => new Promise(() => {})), innerCredentials: {} });
+    void attemptRun({ config: config(), run, attempt, runtime: stalled, entry: soleEntry(stalled), driver: 'box' }).open(view, { tool: 'claude' });
+    await expect.poll(() => (fs.existsSync(attemptRuntimePath(config(), run, attempt)) ? JSON.parse(fs.readFileSync(attemptRuntimePath(config(), run, attempt), 'utf8')).open.handle : undefined)).toBe(partial);
+
+    const refusing = part('apptoy', innerJournal, async () => ({ kind: 'failed', failure: { code: 'app_failed', message: 'The project could not start.' } }));
+    const resumed = composedStepRuntime({ outer: part('sandboxtoy', outerJournal), inner: refusing, innerCredentials: {} });
+    const again = attemptRun({ config: config(), run, attempt, runtime: resumed, entry: soleEntry(resumed), driver: 'box' });
+
+    expect(await again.open(view, { tool: 'claude' })).toMatchObject({ ok: false });
+    expect(JSON.parse(fs.readFileSync(attemptRuntimePath(config(), run, attempt), 'utf8'))).toMatchObject({ open: { handle: partial } });
+    expect(await again.close()).toMatchObject({ message: expect.stringContaining('never recorded') });
+    expect(outerJournal.closed).toEqual([]);
+  });
 });
 
 describe('the options of a runtime through another', () => {

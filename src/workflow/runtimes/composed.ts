@@ -197,6 +197,20 @@ export function composedStepRuntime({ outer, inner, innerCredentials }: { outer:
       return { kind: 'ready', handle: JSON.stringify({ outer: outerOpened.handle, inner: innerOpened.handle } satisfies ComposedHandle), ...(display && { display }) };
     },
 
+    keptHandle(recorded, accepted) {
+      const [was, now] = [handleOf(recorded), handleOf(accepted)];
+
+      // A handle of another outer place, or one it never made, leaves the recorded one until the place is ready.
+      if (!was || !now || was.outer !== now.outer) return recorded;
+      // The inner's handle, once either names it, stays: only the inner's own close ends that place.
+      const innerHandle = innerOf(now) ?? innerOf(was);
+
+      if (innerHandle !== undefined) return JSON.stringify({ outer: now.outer, inner: innerHandle } satisfies ComposedHandle);
+
+      // An inner asked before may hold a place it never named, whatever it answers now: the handle keeps saying so.
+      return 'innerOpening' in was ? recorded : accepted;
+    },
+
     async exec(request, events, kind) {
       const handle = handleOf(request.handle);
 

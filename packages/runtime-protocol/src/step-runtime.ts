@@ -158,6 +158,12 @@ export interface StepRuntime<TCan = Can> {
    * rejects with its error. A place made in steps (a runtime through another) is accepted at each, with the handle so far.
    */
   open(request: OpenRequest, onAccepted: (handle: string) => Promise<void>): Promise<Opened>;
+  /**
+   * The handle teamai records once a place it opens again, whose record names `recorded`, is accepted as `accepted`. For
+   * a place made in steps, the most both say of it: a handle accepted whole completes one an earlier teamai recorded in
+   * part, and one accepted in part never replaces a whole one. Absent: `recorded`, until the place is ready.
+   */
+  keptHandle?(recorded: string, accepted: string): string;
   exec(request: ExecRequest, events: ExecEvents, kind: ExecKind): Promise<ExecEnd>;
   /** Runs a prompt step on a runtime that launches agents its own way; any other answers it failed. */
   prompt(request: PromptRequest, events: Pick<ExecEvents, 'onAccepted' | 'onDisplay'>): Promise<PromptEnd>;
