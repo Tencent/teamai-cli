@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { signalPid } from '@teamai/shared/process-group';
-import { fenceStep, type FencedCommand } from '../workflow/fleet/fence.js';
+import { fenceStep, sayGuardianReady, type FencedCommand, type GuardianFs } from '../workflow/fleet/fence.js';
 import { startGroupedCommand, type GroupedCommand } from '../workflow/shell-command.js';
 import { AttemptIdSchema, RunIdSchema } from '../workflow/store.js';
 
@@ -50,6 +50,25 @@ describe('the fence of a fleet member step', () => {
       fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     }
   }, 30_000);
+
+  it('writes no ready over a fence a restarted member wrote between the guardian\'s read and its write, and retires the guardian', () => {
+    const first = JSON.stringify({ at: 1, owner: 'killed-run' });
+    const again = JSON.stringify({ at: 2, owner: 'restarted-run' });
+    // The fence the killed run wrote, then, once the guardian has read it, the one its restarted run wrote.
+    const reads = [first, again];
+    const renamed: string[] = [];
+    const removed: string[] = [];
+    const files: GuardianFs = {
+      readFileSync: () => reads.shift() ?? again,
+      writeFileSync: () => {},
+      renameSync: (from) => { renamed.push(String(from)); },
+      rmSync: (at) => { removed.push(String(at)); },
+    };
+
+    expect(sayGuardianReady(files, { file: 'fence.json', owner: 'killed-run', temp: 'fence.json.1.ready' })).toBe('retired');
+    expect(renamed).toEqual([]);
+    expect(removed).toEqual(['fence.json.1.ready']);
+  });
 
   // A member on Windows runs its command attached, so the command leads no process group its guardian could signal.
   it.runIf(process.platform === 'win32')('stops the process tree of a command that leads no process group once the cut-off point passes', async () => {

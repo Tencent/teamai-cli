@@ -66,6 +66,61 @@ const READY_READ_MS = 50;
 /** How long a step's end waits for its guardian to exit, before the member removes the attempt's folder. */
 const FENCE_END_WAIT_MS = 3 * READ_MS;
 
+/** The node:fs calls the guardian's ready write makes, so a test can stand in for each. */
+export type GuardianFs = {
+  readFileSync(file: string, encoding: 'utf8'): string;
+  writeFileSync(file: string, data: string): void;
+  renameSync(from: string, to: string): void;
+  rmSync(file: string, options: { force: true }): void;
+};
+
+/**
+ * Says in fence `file` that the guardian with token `owner` read it (`ready`): it writes `temp`, reads the fence again,
+ * and renames `temp` over it only when the fence is still the one it read, so a fence a restarted member wrote meanwhile
+ * is not replaced. `retired` once the fence no longer holds that token, and `unwritten` when a write failed or the fence
+ * changed under the same token, to try again at its next read. A write that lands between that second read and the
+ * rename is still replaced: a rename replaces whatever is there. The guardian runs its source (`GUARDIAN`), so it uses
+ * nothing but its arguments.
+ */
+export function sayGuardianReady(files: GuardianFs, { file, owner, temp }: { file: string; owner: string; temp: string }): 'ready' | 'retired' | 'unwritten' {
+  // The cut-off point of fence text `text` while it holds the guardian's token, else undefined.
+  const heldAt = (text: string): { at: unknown } | undefined => {
+    const fence: unknown = JSON.parse(text);
+
+    // oxlint-disable-next-line teamai/no-runtime-typeof -- the fence's parse itself: the guardian runs this function's source alone (`GUARDIAN`), where no schema loads
+    return fence !== null && typeof fence === 'object' && 'owner' in fence && fence.owner === owner && 'at' in fence ? { at: fence.at } : undefined;
+  };
+
+  try {
+    const read = files.readFileSync(file, 'utf8');
+    const held = heldAt(read);
+
+    if (held === undefined) return 'retired';
+    files.writeFileSync(temp, JSON.stringify({ at: held.at, owner, ready: true }));
+
+    const now = files.readFileSync(file, 'utf8');
+
+    // The fence changed since it was read: put nothing over it, and try again at the next read if it still holds the token.
+    if (now !== read) {
+      files.rmSync(temp, { force: true });
+
+      return heldAt(now) === undefined ? 'retired' : 'unwritten';
+    }
+
+    files.renameSync(temp, file);
+
+    return 'ready';
+  } catch (error) {
+    try {
+      files.rmSync(temp, { force: true });
+    } catch {
+      // Left for the attempt folder's removal.
+    }
+
+    return error instanceof Error && 'code' in error && error.code === 'ENOENT' ? 'retired' : 'unwritten';
+  }
+}
+
 /**
  * The guardian, as `node -e` runs it with the fence file, its owner token, the step's command (`group:<id>`, `tree:<pid>`
  * or `none`), the first cut-off point, and, when it also stops what the claim left, teamai's CLI bundle and what to stop
@@ -105,18 +160,7 @@ const fenceAt = () => {
     return error && error.code === 'ENOENT' ? undefined : null;
   }
 };
-// Says the guardian is ready, in the fence that holds its token: false when the write failed, to try again at the next read.
-const sayReady = (fenceAt) => {
-  const ready = file + '.' + String(process.pid) + '.ready';
-  try {
-    fs.writeFileSync(ready, JSON.stringify({ at: fenceAt, owner, ready: true }));
-    fs.renameSync(ready, file);
-    return true;
-  } catch {
-    try { fs.rmSync(ready, { force: true }); } catch {}
-    return false;
-  }
-};
+const sayGuardianReady = ${sayGuardianReady.toString()};
 const stopCommand = async () => {
   if (isGone()) return;
   if (command.kind === 'tree' && process.platform === 'win32') {
@@ -138,8 +182,11 @@ const stopCommand = async () => {
     if (read === undefined) return;
     if (read !== null) {
       at = read;
-      // Until it says so the member writes no fence, so this write replaces none of the member's.
-      if (!isReady) isReady = sayReady(read);
+      if (!isReady) {
+        const said = sayGuardianReady(fs, { file, owner, temp: file + '.' + String(process.pid) + '.ready' });
+        if (said === 'retired') return;
+        isReady = said === 'ready';
+      }
     }
     if (cliFile === undefined && isGone()) return;
     const left = at - Date.now();
