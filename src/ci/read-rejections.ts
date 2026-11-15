@@ -8,7 +8,8 @@
  */
 
 import { z } from 'zod';
-import { githubApiUrl, parseMrUrl } from './mr-comment.js';
+import { parseMrUrl } from './mr-comment.js';
+import { githubApiUrl } from '../providers/github/api-url.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
 import { getGitLabToken } from '../providers/gitlab/gitlab-api.js';
 import { getGitHubToken } from '../providers/github/gh-cli.js';

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { log } from '@teamai/shared/log';
 import type { OrgRepoInfo } from '../types.js';
 import { ghExec, isGhInstalled, getGitHubToken } from './gh-cli.js';
+import { githubApiUrl } from './api-url.js';
 
 // ─── GitHub API types ────────────────────────────────────
 
@@ -235,7 +236,7 @@ export async function ghListOrgRepos(
       );
     }
 
-    const BASE = opts?.apiBaseUrl ?? 'https://api.github.com';
+    const BASE = opts?.apiBaseUrl ?? githubApiUrl();
 
     const tryUrl = async (urlPrefix: string, allowFallback = false): Promise<boolean> => {
       let page = 1;

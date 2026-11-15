@@ -1,5 +1,6 @@
-import type { OutgoingHttpHeaders } from 'node:http';
+import http, { type ClientRequest, type IncomingMessage, type OutgoingHttpHeaders } from 'node:http';
 import https from 'node:https';
+import { urlToHttpOptions } from 'node:url';
 
 import { z } from 'zod';
 
@@ -8,6 +9,7 @@ import type { JsonValue } from '@teamai/shared/json';
 import { log } from '@teamai/shared/log';
 import { pruneThreads } from '../mr-threads.js';
 import { getGitHubToken, ghExec } from './gh-cli.js';
+import { githubApiUrl } from './api-url.js';
 
 /** GitHub PR URL 解析结果 */
 interface ParsedGitHubPR {
@@ -57,6 +59,13 @@ const GitHubApiCommitSchema = z.object({
   commit: z.object({ message: z.string() }),
 });
 
+/** Requests a path under the GitHub REST API root, keeping a GitHub Enterprise root's `/api/v3` prefix. */
+function githubApiRequest(path: string, headers: OutgoingHttpHeaders, callback: (res: IncomingMessage) => void): ClientRequest {
+  const options = { ...urlToHttpOptions(new URL(githubApiUrl() + path)), headers };
+
+  return options.protocol === 'http:' ? http.request(options, callback) : https.request(options, callback);
+}
+
 /**
  * 通过 Node.js 内置 https 模块调用 GitHub REST API。
  *
@@ -73,8 +82,9 @@ async function githubApiGet(path: string): Promise<JsonValue> {
 
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
-    const req = https.request(
-      { hostname: 'api.github.com', path, headers },
+    const req = githubApiRequest(
+      path,
+      headers,
       (res) => {
         res.on('error', reject);
         const chunks: Buffer[] = [];
@@ -240,8 +250,9 @@ async function fetchGitHubPRViaApi(owner: string, repo: string, number: string):
 
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
-    const req = https.request(
-      { hostname: 'api.github.com', path: `/repos/${owner}/${repo}/pulls/${number}`, headers },
+    const req = githubApiRequest(
+      `/repos/${owner}/${repo}/pulls/${number}`,
+      headers,
       (res) => {
         res.on('error', reject);
         const chunks: Buffer[] = [];

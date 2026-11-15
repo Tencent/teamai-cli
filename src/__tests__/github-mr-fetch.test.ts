@@ -43,7 +43,7 @@ function mockResponses(
 ): string[] {
   const seen: string[] = [];
   const request = (options: https.RequestOptions, callback: (res: IncomingMessage) => void) => {
-    const url = String(options.path);
+    const url = String(options.path).replace(/^\/api\/v3(?=\/)/, '');
     seen.push(url);
     const diff = options.headers && (options.headers as Record<string, string>).Accept.includes('.diff');
     const key = diff ? `${url}.diff` : url;
@@ -140,6 +140,17 @@ describe('GitHub PR REST fallback', () => {
     for (const [options] of vi.mocked(https.request).mock.calls) {
       const headers = (options as https.RequestOptions).headers as Record<string, string>;
       expect(headers.Authorization).toBe(authorization);
+    }
+  });
+
+  it('requests every REST path from the API GITHUB_API_URL names', async () => {
+    vi.stubEnv('GITHUB_API_URL', 'https://ghe.example.com/api/v3');
+    mockResponses();
+    await expect(fetchGitHubPR('https://github.com/team/repo/pull/42')).resolves.toMatchObject({ title: 'Fix retries' });
+    const requested = vi.mocked(https.request).mock.calls.map(([options]) => options);
+    expect(requested).toHaveLength(6);
+    for (const options of requested) {
+      expect(options).toMatchObject({ hostname: 'ghe.example.com', path: expect.stringMatching(/^\/api\/v3\/repos\/team\/repo\//) });
     }
   });
 

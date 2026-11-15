@@ -51,6 +51,7 @@ describe('gh-org fetch 分支（使用 GITHUB_TOKEN）', () => {
     });
 
     it('包含私有仓的响应 → 私有仓出现在结果中（不被过滤）', async () => {
+        vi.stubEnv('GITHUB_API_URL', 'https://ghe.example.com/api/v3');
         const items = [
             makeGhRepoItem({ full_name: 'org/public-repo', name: 'public-repo', clone_url: 'https://github.com/org/public-repo.git' }),
             makeGhRepoItem({ full_name: 'org/private-repo', name: 'private-repo', clone_url: 'https://github.com/org/private-repo.git' }),
@@ -86,8 +87,10 @@ describe('gh-org fetch 分支（使用 GITHUB_TOKEN）', () => {
         const names = result.map((r: { name: string }) => r.name);
         expect(names).toContain('public-repo');
         expect(names).toContain('private-repo');
+        expect(mockFetch.mock.calls[0][0]).toBe('https://ghe.example.com/api/v3/orgs/org/repos?per_page=100&page=1');
 
         vi.unstubAllGlobals();
+        vi.unstubAllEnvs();
     });
 
     it('/orgs/<x> 第一页返回 [] → fallback 到 /users/<x> 并拿到非空结果', async () => {
