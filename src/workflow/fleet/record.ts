@@ -191,8 +191,9 @@ const OfferedSchema = z.object({
  * A member's claim: `progressAt`, when it last wrote that it still runs the attempt, and `pushed`, the last commit it
  * pushed to the attempt's ref, from which a retry starts once the claim went stale. `killBounded`: the step's guardian
  * holds the whole process group of the step (on Windows its process tree) and ends it by kill, needing no lock, so it
- * ends by the cut-off point whatever the member does: only a command the member runs here. A step on a step runtime,
- * a prompt on the member's tools and a whole workflow's nested run are not, nor is a claim whose record does not say.
+ * ends by the cut-off point whatever the member does: only a command the member runs here, and only in a write the
+ * member made once that guardian held the group (`runClaim` in `member.ts`), so a claim says false. A step on a step
+ * runtime, a prompt on the member's tools and a whole workflow's nested run are not, nor is a record that does not say.
  * `stopConfirmed`: once the claim's cut-off point passed, past which no run of the member starts the step again, the
  * member, the step's guardian or the member's recovery confirmed that nothing of the step still runs on its machine.
  * Once the claim is given up, or its cancel is not answered, the step runs again only when one of the two holds
@@ -533,15 +534,13 @@ export async function offerAttempt(config: LocalConfig, input: {
 }
 
 /**
- * Replaces offer `offered` with this install's claim, which runs the step here (`runsHere`) or elsewhere, such as on a
- * step runtime; another member's claim first answers `state_moved`. The claim is noted in this
- * install's data home before it is written, so a restarted member finishes only claims it wrote.
+ * Replaces offer `offered` with this install's claim; another member's claim first answers `state_moved`. The claim is
+ * noted in this install's data home before it is written, so a restarted member finishes only claims it wrote. No
+ * guardian holds the step yet, so the claim is not bounded by kill.
  */
-export async function claimAttempt(config: LocalConfig, offered: Offered, member: HandoffOwner, { runsHere }: { runsHere: boolean }): Promise<Written<Claimed>> {
+export async function claimAttempt(config: LocalConfig, offered: Offered, member: HandoffOwner): Promise<Written<Claimed>> {
   const now = new Date().toISOString();
-  // Only a command here runs in the one process group its guardian ends by kill (`fence.ts`).
-  const killBounded = offered.lease.kind === 'command' && runsHere;
-  const claim: Claimed = { ...offered, write: randomUUID(), state: 'claimed', member, claimedAt: now, progressAt: now, pushed: offered.start, killBounded };
+  const claim: Claimed = { ...offered, write: randomUUID(), state: 'claimed', member, claimedAt: now, progressAt: now, pushed: offered.start, killBounded: false };
   const marker = claimedMarker(config, offered.run, offered.attempt);
   await fs.mkdir(path.dirname(marker), { recursive: true });
   await writeRegularFile(marker, `${JSON.stringify({ write: claim.write })}\n`);
@@ -595,9 +594,15 @@ export async function recordProgress(config: LocalConfig, held: HeldAttempt, pus
 
 /**
  * Gives up claim `claimed`, whose member wrote no progress for longer than the pool allows, or did not answer the cancel
- * of it in that time.
+ * of it in that time: only once `staleAfterMs` passed on this machine's clock since its owner last saw the record change,
+ * at `lastSeenAt`, so the kill of a step its guardian ends by kill was due (`fleetBeats`), which the owner then reads as
+ * stopped (`givenUpOutcome` in `owner.ts`). Before then it answers `fleet_expire_too_early` and writes nothing.
  */
-export async function expireClaim(config: LocalConfig, claimed: HeldAttempt | Cancelling): Promise<Written<Extract<FleetRecord, { state: 'expired' }>>> {
+export async function expireClaim(config: LocalConfig, claimed: HeldAttempt | Cancelling, { lastSeenAt }: { lastSeenAt: number }): Promise<Written<Extract<FleetRecord, { state: 'expired' }>> | { ok: false; error: { code: 'fleet_expire_too_early'; message: string } }> {
+  if (Date.now() - lastSeenAt <= claimed.staleAfterMs) {
+    return { ok: false, error: { code: 'fleet_expire_too_early', message: `Attempt ${claimed.attempt} of run ${claimed.run} was last seen to change ${Date.now() - lastSeenAt} ms ago, within its stale_after of ${claimed.staleAfterMs} ms, so its claim is not given up.` } };
+  }
+
   const expired: Extract<FleetRecord, { state: 'expired' }> = { ...(claimed.state === 'cancelling' ? claimed : claimOf(claimed)), write: randomUUID(), state: 'expired', expiredAt: new Date().toISOString() };
   const written = await writeRecord(config, expired, { replaces: claimed.write, message: `[teamai] Expire attempt ${claimed.attempt} of run ${claimed.run}` });
 

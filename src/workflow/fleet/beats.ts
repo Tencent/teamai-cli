@@ -25,8 +25,7 @@ export const MIN_STALE_AFTER_MS = 3 * MIN_BEAT_MS + FLEET_STOP_BUDGET_MS;
  * So the member begins to stop the step a full progress interval and a whole stop budget before its owner may give the
  * claim up and offer the step again, and it gives up a stop that has not ended within the budget. The next write,
  * begun one interval after `progressAt`, has a full interval to land before the cut-off. A pool refuses a `stale_after`
- * below `MIN_STALE_AFTER_MS`; a record that names one, offered by an older teamai, gets beats a second apart and the
- * cut-off two of them, so the slack before the owner's give-up shrinks.
+ * below `MIN_STALE_AFTER_MS`.
  */
 export function fleetBeats(staleAfterMs: number) {
   const beatMs = Math.max(MIN_BEAT_MS, Math.floor((staleAfterMs - FLEET_STOP_BUDGET_MS) / 3));

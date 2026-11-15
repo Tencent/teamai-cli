@@ -69,7 +69,7 @@ describe('fleet attempts on teamai-reports', () => {
     const offered = await offer(alice);
     if (!offered.ok) throw new Error(offered.error.message);
 
-    const [first, second] = [await claimAttempt(bob.config, offered.value, await installOwner(bob.config), { runsHere: false }), await claimAttempt(carol.config, offered.value, await installOwner(carol.config), { runsHere: false })];
+    const [first, second] = [await claimAttempt(bob.config, offered.value, await installOwner(bob.config)), await claimAttempt(carol.config, offered.value, await installOwner(carol.config))];
 
     expect(first).toMatchObject({ ok: true, value: { state: 'claimed', member: { user: 'bob' } } });
     expect(second).toMatchObject({ ok: false, error: { code: 'state_moved' } });
@@ -160,7 +160,7 @@ describe('fleet attempts on teamai-reports', () => {
 
     const [taken] = offersAmong(await listRecords(bob.config), { pool: 'default', repository: 'github.com/acme/business' });
     if (taken === undefined) throw new Error('bob read no offer');
-    const claimed = await claimAttempt(bob.config, taken, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, taken, await installOwner(bob.config));
 
     expect(claimed).toMatchObject({ ok: true });
     const published: unknown = JSON.parse(fs.readFileSync(path.join(await readableReportsWorktree(alice.config), rel), 'utf8'));
@@ -252,15 +252,27 @@ describe('fleet attempts on teamai-reports', () => {
     expect(offersAmong(await listRecords(bob.config), { pool: 'default', repository: 'github.com/acme/other' })).toEqual([]);
   });
 
+  it('refuses to give a claim up before stale_after passed since its owner last saw the record change', async () => {
+    const acme = team();
+    const [alice, bob] = [await acme.member('alice'), await acme.member('bob')];
+    const offered = await offer(alice);
+    if (!offered.ok) throw new Error(offered.error.message);
+    const claimed = await claimAttempt(bob.config, offered.value, await installOwner(bob.config));
+    if (!claimed.ok) throw new Error(claimed.error.message);
+
+    expect(await expireClaim(alice.config, claimed.value, { lastSeenAt: Date.now() - claimed.value.staleAfterMs + 5_000 })).toMatchObject({ ok: false, error: { code: 'fleet_expire_too_early' } });
+    expect(await readAttemptRecord(alice.config, RUN, ATTEMPT)).toMatchObject({ ok: true, value: { state: 'claimed', write: claimed.value.write } });
+  });
+
   it('keeps a member that went quiet from writing once the owner gave its claim up', async () => {
     const acme = team();
     const [alice, bob] = [await acme.member('alice'), await acme.member('bob')];
     const offered = await offer(alice);
     if (!offered.ok) throw new Error(offered.error.message);
-    const claimed = await claimAttempt(bob.config, offered.value, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, offered.value, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
 
-    expect(await expireClaim(alice.config, claimed.value)).toMatchObject({ ok: true, value: { state: 'expired' } });
+    expect(await expireClaim(alice.config, claimed.value, SEEN_LONG_AGO)).toMatchObject({ ok: true, value: { state: 'expired' } });
     expect(await recordProgress(bob.config, claimed.value, 'e'.repeat(40))).toMatchObject({ ok: false, error: { code: 'state_moved' } });
     expect(await readAttemptRecord(alice.config, RUN, ATTEMPT)).toMatchObject({ ok: true, value: { state: 'expired', pushed: 'f'.repeat(40) } });
   });
@@ -270,7 +282,7 @@ describe('fleet attempts on teamai-reports', () => {
     const [alice, bob] = [await acme.member('alice'), await acme.member('bob')];
     const offered = await offer(alice);
     if (!offered.ok) throw new Error(offered.error.message);
-    const claimed = await claimAttempt(bob.config, offered.value, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, offered.value, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
 
     await finishAttempt(bob.config, claimed.value, { exitCode: 0, stderr: 'warning: cache at /home/bob/.cache/build is stale', to: 'e'.repeat(40), outputs: { built: true } }, {});
@@ -285,7 +297,7 @@ describe('fleet attempts on teamai-reports', () => {
     const [alice, bob] = [await acme.member('alice'), await acme.member('bob')];
     const offered = await offer(alice);
     if (!offered.ok) throw new Error(offered.error.message);
-    const claimed = await claimAttempt(bob.config, offered.value, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, offered.value, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
 
     await finishAttempt(bob.config, claimed.value, { exitCode: 1, stderr: '', tool: 'claude', tokens: { input: 10, output: 2 }, failure: { code: 'tool_failed', message: 'claude could not read /home/bob/.claude/settings.json' } }, {});
@@ -300,7 +312,7 @@ describe('fleet attempts on teamai-reports', () => {
     const [alice, bob] = [await acme.member('alice'), await acme.member('bob')];
     const offered = await offer(alice);
     if (!offered.ok) throw new Error(offered.error.message);
-    const claimed = await claimAttempt(bob.config, offered.value, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, offered.value, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
     await readableReportsWorktree(alice.config);
 
@@ -981,6 +993,9 @@ async function recordOf(member: Member, run: ReturnType<typeof RunIdSchema.parse
   return read.ok && read.value !== 'absent' ? read.value : undefined;
 }
 
+/** When the owner last saw a record change, long before stale_after, for a give-up whose timing the test does not check. */
+const SEEN_LONG_AGO = { lastSeenAt: 0 };
+
 async function eventually<T>(read: () => Promise<T | undefined>, ms = 30_000): Promise<T> {
   const deadline = Date.now() + ms;
 
@@ -1014,6 +1029,8 @@ describe('cancelling an attempt through its record', () => {
 
       return record?.state === 'claimed' && record.pushed !== startCommit ? record : undefined;
     });
+    // Its guardian held the command's process group by then, so the beat says the guardian ends it by kill.
+    expect(running.killBounded).toBe(true);
 
     expect(await cancelAttempt(alice.config, running)).toMatchObject({ ok: true, value: { state: 'cancelling' } });
 
@@ -1204,7 +1221,7 @@ describe('cancelling an attempt through its record', () => {
 
   it('writes no question of a gate that holds a secret value to teamai-reports', async () => {
     const { bob, offered } = await offerSlow(60_000);
-    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
     const question = { step: 'keep', kind: 'approve' as const, message: 'Ship with token ghp_0123456789abcdefghijklmnopqrstuvwxyzAB?', options: ['yes', 'no'], required: false };
 
@@ -1214,7 +1231,7 @@ describe('cancelling an attempt through its record', () => {
 
   it('writes no answer to a gate whose note holds a secret value to teamai-reports, as publishing the run would not', async () => {
     const { alice, bob, offered } = await offerSlow(60_000);
-    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
     const question = { step: 'keep', kind: 'approve' as const, message: 'Ship it?', options: ['yes', 'no'], required: false };
     const asking = await recordProgress(bob.config, claimed.value, 'e'.repeat(40), { question, secrets: {} });
@@ -1226,7 +1243,7 @@ describe('cancelling an attempt through its record', () => {
 
   it('writes an answer with a plain note though the member\'s question names a value the owner holds as a secret', async () => {
     const { alice, bob, offered } = await offerSlow(60_000);
-    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
     const question = { step: 'keep', kind: 'approve' as const, message: 'Ship to stage-eu-west-71b9?', options: ['yes', 'no'], required: false };
     const asking = await recordProgress(bob.config, claimed.value, 'e'.repeat(40), { question, secrets: {} });
@@ -1237,7 +1254,7 @@ describe('cancelling an attempt through its record', () => {
 
   it('goes on from the work a member pushed before a cancel it never answered', async () => {
     const { alice, bob, run, offered } = await offerSlow(60_000);
-    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
     const progressed = await recordProgress(bob.config, claimed.value, 'e'.repeat(40));
     if (!progressed.ok) throw new Error(progressed.error.message);
@@ -1251,7 +1268,7 @@ describe('cancelling an attempt through its record', () => {
 describe('a restarted member', () => {
   it('finishes with the work its killed run pushed when the step adds nothing to it', async () => {
     const { alice, bob, run, offered } = await offerSlow(60_000, { definition: AGAIN.replace('test -f left.txt && echo again > again.txt', 'test -f left.txt'), command: 'test -f left.txt' });
-    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
     const ref = `refs/heads/teamai/attempts/${run}/${ATTEMPT}`;
     git(bob.checkout, 'fetch', '-q', 'origin', ref);
@@ -1272,7 +1289,7 @@ describe('a restarted member', () => {
 
   it('writes back and frees the Codex login the judge of its killed run refreshed, before it finishes the claim', async () => {
     const { alice, bob, run, offered } = await offerSlow(60_000, { definition: AGAIN.replace('test -f left.txt && echo again > again.txt', 'echo again > again.txt'), command: 'echo again > again.txt' });
-    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
     const daily = path.join(path.dirname(bob.checkout), 'bob-codex');
     // Codex rotates its refresh token on a refresh and refuses the old one after (refresh_token_reused).
@@ -1292,7 +1309,7 @@ describe('a restarted member', () => {
 
   it('stops the command it left running, and finishes the claim it held from the work it pushed', async () => {
     const { alice, bob, run, offered } = await offerSlow(60_000, { definition: AGAIN, command: 'test -f left.txt && echo again > again.txt' });
-    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
     // What a member killed mid-step left: its work so far on the attempt's ref, and the step's command still running.
     const ref = `refs/heads/teamai/attempts/${run}/${ATTEMPT}`;
@@ -1328,7 +1345,7 @@ describe('a restarted member', () => {
 
   it('ends the nested run its killed run left with finally steps no driver runs, rather than leave it running', async () => {
     const { bob, run, offered } = await offerSlow(60_000, { definition: AGAIN.replace('test -f left.txt && echo again > again.txt', 'echo again > again.txt'), command: 'echo again > again.txt' });
-    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
     const parsed = parseWorkflow('workflows/pair.yaml', 'schemaVersion: v1alpha1\nname: pair\ndescription: Pairs.\nsteps:\n  - id: work\n    command: sleep 60\nfinally:\n  - id: tidy\n    command: echo tidy\n');
     if (!parsed.ok) throw new Error(JSON.stringify(parsed.diagnostics));
@@ -1401,7 +1418,7 @@ describe('a restarted member', () => {
 
   it('keeps the claim and runs nothing of the step again when it cannot confirm the command its killed run left ended', async () => {
     const { alice, bob, run, offered } = await offerSlow(60_000, { definition: AGAIN.replace('test -f left.txt && echo again > again.txt', 'echo again > again.txt'), command: 'echo again > again.txt' });
-    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
     // A group another pid namespace started, as a member in a container restarted over the same data home leaves: no stop
     // here can reach it or tell it ended.
@@ -1419,7 +1436,7 @@ describe('a restarted member', () => {
 
   it('runs the step again on its step runtime, once the place its killed run left there is closed', async () => {
     const { alice, bob, run, offered } = await offerSlow(60_000, { definition: AGAIN, command: 'test -f left.txt && echo again > again.txt' });
-    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
     const ref = `refs/heads/teamai/attempts/${run}/${ATTEMPT}`;
     git(bob.checkout, 'fetch', '-q', 'origin', ref);
@@ -1570,7 +1587,7 @@ describe('a member\'s claim among writes it did not see land', () => {
     // A claim naming Bob of an attempt whose ref origin does not hold, which Bob never wrote.
     const other = await offerAttempt(alice.config, { ...offered, attempt: OTHER, secrets: {} });
     if (!other.ok) throw new Error(other.error.message);
-    expect(await claimAttempt(alice.config, other.value, await installOwner(bob.config), { runsHere: false })).toMatchObject({ ok: true });
+    expect(await claimAttempt(alice.config, other.value, await installOwner(bob.config))).toMatchObject({ ok: true });
     await readableReportsWorktree(bob.config);
 
     expect(await takeFleetAttempt(bob.config, { pool: 'default', repository: 'github.com/acme/business', root: bob.checkout, member: await installOwner(bob.config), secrets: {}, place: HERE }))
@@ -1584,11 +1601,11 @@ describe('the gone work a retry goes on from', () => {
     // A record of an attempt Alice never offered, naming her as its owner.
     const forged = await offerAttempt(bob.config, { ...offered, attempt: OTHER, secrets: {} });
     if (!forged.ok) throw new Error(forged.error.message);
-    const claimed = await claimAttempt(bob.config, forged.value, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, forged.value, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
     const progressed = await recordProgress(bob.config, claimed.value, 'e'.repeat(40));
     if (!progressed.ok) throw new Error(progressed.error.message);
-    expect(await expireClaim(bob.config, progressed.value)).toMatchObject({ ok: true });
+    expect(await expireClaim(bob.config, progressed.value, SEEN_LONG_AGO)).toMatchObject({ ok: true });
     await readableReportsWorktree(alice.config);
 
     expect(await lastGoneWork(alice.config, { run, step: 'work' })).toBeUndefined();
@@ -1599,7 +1616,7 @@ describe('the gone work a retry goes on from', () => {
   it('is the last one the owner gave up by its own clock, whatever time a member wrote', async () => {
     const { alice, bob, run, offered } = await offerSlow(60_000);
     const member = await installOwner(bob.config);
-    const claimed = await claimAttempt(bob.config, offered, member, { runsHere: false });
+    const claimed = await claimAttempt(bob.config, offered, member);
     if (!claimed.ok) throw new Error(claimed.error.message);
     const cancelling = await cancelAttempt(alice.config, (await recordProgress(bob.config, claimed.value, 'd'.repeat(40))).ok ? (await recordOf(alice, run)) as typeof claimed.value : claimed.value);
     if (!cancelling.ok || cancelling.value.state !== 'cancelling') throw new Error('not cancelling');
@@ -1612,11 +1629,11 @@ describe('the gone work a retry goes on from', () => {
     }
     const later = await offerAttempt(alice.config, { ...offered, attempt: OTHER, secrets: {} });
     if (!later.ok) throw new Error(later.error.message);
-    const reclaimed = await claimAttempt(bob.config, later.value, member, { runsHere: false });
+    const reclaimed = await claimAttempt(bob.config, later.value, member);
     if (!reclaimed.ok) throw new Error(reclaimed.error.message);
     const moved = await recordProgress(bob.config, reclaimed.value, 'e'.repeat(40));
     if (!moved.ok) throw new Error(moved.error.message);
-    expect(await expireClaim(alice.config, moved.value)).toMatchObject({ ok: true });
+    expect(await expireClaim(alice.config, moved.value, SEEN_LONG_AGO)).toMatchObject({ ok: true });
     await markOffered(alice.config, run, OTHER, 'default');
     await readableReportsWorktree(alice.config);
 
@@ -1849,7 +1866,7 @@ describe('a cancel the owner cannot write into the attempt\'s record at once', (
     const ended = exec(op);
     const offered = await recordIn(bob, run, attempt, 'offered');
     if (offered.state !== 'offered') throw new Error(`no offer: ${offered.state}`);
-    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
     const beating = new AbortController();
 
@@ -1948,7 +1965,7 @@ describe('a cancel the owner cannot write into the attempt\'s record at once', (
     const ended = exec(op);
     const offered = await recordIn(bob, run, attempt, 'offered');
     if (offered.state !== 'offered') throw new Error(`no offer: ${offered.state}`);
-    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
     await recordIn(bob, run, attempt, 'claimed');
     goneAfterCancel(origin);
@@ -1969,7 +1986,7 @@ describe('a cancel the owner cannot write into the attempt\'s record at once', (
     const ended = exec(op);
     const offered = await recordIn(bob, run, attempt, 'offered');
     if (offered.state !== 'offered') throw new Error(`no offer: ${offered.state}`);
-    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
     await recordIn(bob, run, attempt, 'claimed');
     // Once the cancel landed, teamai-reports loses the branch, so every read after it finds no record.
@@ -2010,7 +2027,7 @@ describe('a cancel the owner cannot write into the attempt\'s record at once', (
     const ended = exec(op);
     const offered = await recordIn(bob, run, attempt, 'offered');
     if (offered.state !== 'offered') throw new Error(`no offer: ${offered.state}`);
-    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config), { runsHere: false });
+    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
     await recordIn(alice, run, attempt, 'claimed');
     await holdReportsLock(alice);
@@ -2362,10 +2379,11 @@ describe('a retry of a step whose fleet member was given up or asked to stop', (
 
   /**
    * Alice's driver offers step `work` of workflow `definition`, a command or a prompt (`kind`), on its fleet entry, and
-   * is gone; Bob claims it, running it here (`runsHere`) or on a step runtime of his, and Alice gives the claim up, or,
-   * with `isCancelled`, asks Bob to stop it, which he never answers.
+   * is gone; Bob claims it, and with `isKillBounded` writes the progress a member writes once the guardian of a command
+   * it runs here holds its process group. Then Alice gives the claim up, or, with `isCancelled`, asks Bob to stop it,
+   * which he never answers.
    */
-  async function givenUp({ definition, kind, runsHere, isCancelled = false }: { definition: string; kind: 'command' | 'prompt'; runsHere: boolean; isCancelled?: boolean }) {
+  async function givenUp({ definition, kind, isKillBounded, isCancelled = false }: { definition: string; kind: 'command' | 'prompt'; isKillBounded: boolean; isCancelled?: boolean }) {
     const acme = team({ slow: definition }, { 'drivers/gpu-fleet.yaml': FLEET_DRIVER });
     const [alice, bob] = [await acme.member('alice'), await acme.member('bob')];
     const run = RunIdSchema.parse(await startIn(alice, 'slow'));
@@ -2391,15 +2409,17 @@ describe('a retry of a step whose fleet member was given up or asked to stop', (
     });
     await disposeDriver(opened.opened);
     await ended;
-    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config), { runsHere });
+    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config));
     if (!claimed.ok) throw new Error(claimed.error.message);
-    expect(await (isCancelled ? cancelAttempt(alice.config, claimed.value) : expireClaim(alice.config, claimed.value))).toMatchObject({ ok: true });
+    const held = isKillBounded ? await recordProgress(bob.config, { ...claimed.value, killBounded: true }, claimed.value.pushed) : claimed;
+    if (!held.ok) throw new Error(held.error.message);
+    expect(await (isCancelled ? cancelAttempt(alice.config, held.value) : expireClaim(alice.config, held.value, SEEN_LONG_AGO))).toMatchObject({ ok: true });
 
     return { alice, bob, run, attempt, retry: async () => retryStep(alice.config, run, await knownSecrets(alice.config), 'work') };
   }
 
   it('refuses to run a prompt step again whose member ran it on its own tools, until that member confirms it stopped', async () => {
-    const { run, attempt, retry } = await givenUp({ definition: ASKED, kind: 'prompt', runsHere: true });
+    const { run, attempt, retry } = await givenUp({ definition: ASKED, kind: 'prompt', isKillBounded: false });
 
     const retried = await retry();
 
@@ -2408,20 +2428,27 @@ describe('a retry of a step whose fleet member was given up or asked to stop', (
   }, 60_000);
 
   it('refuses to run a command step again whose member ran it on a step runtime, until that member confirms it stopped', async () => {
-    const { retry } = await givenUp({ definition: SLOW, kind: 'command', runsHere: false });
+    const { retry } = await givenUp({ definition: SLOW, kind: 'command', isKillBounded: false });
 
     expect(await retry()).toMatchObject({ error: { code: 'not_retryable', message: expect.stringContaining('The fleet member bob that took step "work" was given up before it confirmed that the step stopped') } });
   }, 60_000);
 
   it('runs the step again once its member confirmed that the step stopped', async () => {
-    const { bob, run, attempt, retry } = await givenUp({ definition: SLOW, kind: 'command', runsHere: false });
+    const { bob, run, attempt, retry } = await givenUp({ definition: SLOW, kind: 'command', isKillBounded: false });
 
     expect(await confirmStop(bob.config, { run, attempt, member: await installOwner(bob.config) })).toEqual({ ok: true, value: undefined });
     expect(await retry()).toMatchObject({ data: { retried: { step: 'work' } } });
   }, 60_000);
 
+  it('refuses to run a command step again that its member claimed to run here and was given up before its guardian held it', async () => {
+    // The claim, which is all a member killed between starting the command and its guardian wrote.
+    const { retry } = await givenUp({ definition: SLOW, kind: 'command', isKillBounded: false });
+
+    expect(await retry()).toMatchObject({ error: { code: 'not_retryable', message: expect.stringContaining('The fleet member bob that took step "work" was given up before it confirmed that the step stopped') } });
+  }, 60_000);
+
   it('refuses to run a command step again whose given-up claim does not say that its guardian ends it by kill', async () => {
-    const { alice, run, attempt, retry } = await givenUp({ definition: SLOW, kind: 'command', runsHere: true });
+    const { alice, run, attempt, retry } = await givenUp({ definition: SLOW, kind: 'command', isKillBounded: true });
     const read = await readAttemptRecord(alice.config, run, attempt);
     if (!read.ok || read.value === 'absent') throw new Error('no record');
     const { killBounded: _, ...unsaid } = read.value as FleetRecord & { killBounded?: boolean };
@@ -2458,7 +2485,7 @@ describe('a retry of a step whose fleet member was given up or asked to stop', (
       return read.ok && read.value !== 'absent' && read.value.state === 'offered' ? read.value : undefined;
     });
     // Bob claims the prompt to run it on his own tools, then freezes: he writes nothing more.
-    expect(await claimAttempt(bob.config, offered, await installOwner(bob.config), { runsHere: true })).toMatchObject({ ok: true });
+    expect(await claimAttempt(bob.config, offered, await installOwner(bob.config))).toMatchObject({ ok: true });
 
     // Alice's driver, still waiting on the attempt, gives the claim up once stale_after passed on its clock.
     vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
@@ -2480,7 +2507,7 @@ describe('a retry of a step whose fleet member was given up or asked to stop', (
   }, 90_000);
 
   it('refuses to run a command step again whose member ran it on a step runtime and has not answered its cancel', async () => {
-    const { run, attempt, retry } = await givenUp({ definition: SLOW, kind: 'command', runsHere: false, isCancelled: true });
+    const { run, attempt, retry } = await givenUp({ definition: SLOW, kind: 'command', isKillBounded: false, isCancelled: true });
 
     const retried = await retry();
 
@@ -2489,7 +2516,7 @@ describe('a retry of a step whose fleet member was given up or asked to stop', (
   }, 60_000);
 
   it('runs a command step again that its member runs here and has not answered its cancel only once its guardian\'s kill was due', async () => {
-    const { alice, run, attempt, retry } = await givenUp({ definition: SLOW, kind: 'command', runsHere: true, isCancelled: true });
+    const { alice, run, attempt, retry } = await givenUp({ definition: SLOW, kind: 'command', isKillBounded: true, isCancelled: true });
     const read = await readAttemptRecord(alice.config, run, attempt);
     if (!read.ok || read.value === 'absent' || read.value.state !== 'cancelling') throw new Error(`not cancelling: ${JSON.stringify(read)}`);
 

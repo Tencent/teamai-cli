@@ -21,6 +21,8 @@ export const FAILURE_CODES = [
   'confined_invalid', 'confined_tool_unavailable', 'confined_failed', 'confined_reply_invalid', 'confined_report_mismatch', 'confined_unoffered',
   'runtime_failed', 'runtime_interrupted', 'runtime_lost', 'runner_crashed', 'requirement_unmet', 'login_missing', 'login_held', 'login_not_written_back',
   'fleet_member_gone', 'fleet_unpublishable', 'fleet_record_unreadable', 'fleet_record_newer', 'fetch_failed',
+  // A give-up of a fleet claim before stale_after passed since its owner last saw the record change, which writes nothing.
+  'fleet_expire_too_early',
   // Refusals of a driver's call or a member's command about a run.
   'invalid_json', 'driver_running', 'invalid_run', 'repeated_response', 'agent_in_path', 'stale_response', 'retried', 'end_reached', 'repeated_report', 'wrong_attempt', 'invalid_report', 'lease_cancelled', 'interrupted', 'run_unreadable', 'driver_stuck', 'ambiguous_run', 'busy', 'workflow_recursion', 'workflow_not_found',
   // Refusals of a run handover, answered to the command or driver that asked for it.

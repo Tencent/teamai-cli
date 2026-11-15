@@ -857,12 +857,12 @@ async function waitOnOffer(input: WaitInput, { cancel, leave }: { cancel: AbortS
     }
 
     if ((record !== undefined && (isHeld(record) || record.state === 'cancelling')) && lastSeen !== undefined && Date.now() - lastSeen.at > staleAfterMs) {
-      const expired = await expireClaim(config, record);
+      const expired = await expireClaim(config, record, { lastSeenAt: lastSeen.at });
 
       // The member wrote meanwhile: it is still there.
       if (expired.ok) return failed(await givenUp(expired.value));
 
-      if (expired.error.code !== 'state_moved') return failed(fleetFailure(expired.error));
+      if (expired.error.code !== 'state_moved' && expired.error.code !== 'fleet_expire_too_early') return failed(fleetFailure(expired.error));
       continue;
     }
 

@@ -3571,7 +3571,7 @@ done`);
     const left = first.exec(op);
     const offered = await owner.record();
     if (offered.state !== 'offered') throw new Error(`not offered: ${offered.state}`);
-    expect(await claimAttempt(owner.bob.config, offered, await installOwner(owner.bob.config), { runsHere: false })).toMatchObject({ ok: true });
+    expect(await claimAttempt(owner.bob.config, offered, await installOwner(owner.bob.config))).toMatchObject({ ok: true });
     await first.runtime.dispose();
     await left;
 

@@ -321,7 +321,7 @@ export async function takeFleetAttempt(config: LocalConfig, input: { pool: strin
   for (const offer of offers) {
     // The run's lock comes first: a claim this machine could not run at once would wait for nobody until stale_after.
     const held = await takeRunLock(config, offer.run, async (lock): Promise<WorkflowEnvelope | 'moved'> => {
-      const claimed = await claimAttempt(config, offer, member, { runsHere: place[offer.lease.kind]?.kind === 'here' });
+      const claimed = await claimAttempt(config, offer, member);
 
       if (claimed.ok) return runClaim(config, { lock, claim: claimed.value, root, secrets, member, place });
 
@@ -630,6 +630,9 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
   // The fence of the step (`fence.ts`): at the cut-off point its guardian stops the step's command on this machine, and
   // what the claim left once the member is gone. The point moves each time `latest` does.
   let fence: StepFence | undefined;
+  // Whether the step's guardian holds the process group of the step's command here (its process tree on Windows), and
+  // ends it by kill whatever the member does: the record says `killBounded` only in a write made once it does.
+  let isKillBounded = false;
 
   const moveFence = (): void => {
     const since = Date.parse(latest.progressAt);
@@ -686,7 +689,7 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
   const progress = async (pushed: string, again = true): Promise<void> => {
     const question = gates.asking;
     const held = latest;
-    const progressed = await recordProgress(config, latest, pushed, question && { question, secrets });
+    const progressed = await recordProgress(config, { ...latest, killBounded: isKillBounded }, pushed, question && { question, secrets });
 
     unlanded = !progressed.ok && (progressed.error.code === 'reports_failed' || progressed.error.code === 'reports_unreachable');
 
@@ -757,9 +760,10 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
     return { error: { code: 'fleet_member_gone', message: `${cutOffWhy(lateBy)} It ran nothing of it again.` } };
   }
 
-  // A restarted member may run the step elsewhere than the claim says, as on another driver: a claim that says its
-  // guardian ends it by kill says otherwise before any of it starts, or the member runs nothing of it.
-  if (latest.killBounded && !(ready.kind === 'command' && place.command?.kind === 'here')) {
+  // A restarted member's claim may say that the guardian of its killed run ended the step by kill: it says otherwise
+  // before any of the step starts again, since no guardian holds what this run starts until its fence is up, or the
+  // member runs nothing of it.
+  if (latest.killBounded) {
     const said = await recordProgress(config, { ...latest, killBounded: false }, latest.pushed);
 
     if (!said.ok) return { error: fleetFailure(said.error) };
@@ -805,6 +809,8 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
     }
 
     fence = fenced.fence;
+    // From the next progress on, the record says that the guardian ends the step by kill.
+    isKillBounded = fencedCommand !== undefined;
 
     let watch: NodeJS.Timeout | undefined;
 
