@@ -1,4 +1,5 @@
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import path from 'node:path';
 import { z } from 'zod';
 import {
@@ -133,7 +134,7 @@ const SavedGraphStampSchema = z.object({ generatedAt: z.string() });
  * run that finds nothing new leaves the file, and a team repo gets no commit.
  */
 async function graphUnchanged(wikiRoot: string, graph: GraphIndex): Promise<boolean> {
-  const raw = await readFile(path.join(wikiRoot, '.indices', 'graph-index.json'), 'utf8').catch(() => null);
+  const raw = await readRegularFile(path.join(wikiRoot, '.indices', 'graph-index.json'), 'utf8').catch(() => null);
 
   if (raw === null) return false;
   const saved = SavedGraphStampSchema.safeParse(JSON.parse(raw));
@@ -230,7 +231,7 @@ async function readPages(dirPath: string): Promise<PageRecord[]> {
     if (entry.isDirectory()) {
       pages.push(...await readPages(full));
     } else if (entry.isFile() && entry.name.endsWith('.md')) {
-      const text = await readFile(full, 'utf8');
+      const text = await readRegularFile(full, 'utf8');
       const headingMatch = text.match(/^#\s+(.+)/m);
       const title = headingMatch ? headingMatch[1].trim() : entry.name.replace(/\.md$/, '');
       const updatedMatch = text.match(/updated[:\s]+(\d{4}-\d{2}-\d{2})/i);

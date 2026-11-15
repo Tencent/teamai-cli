@@ -14,7 +14,7 @@ The person opts out of judging before the run starts, by picking a `without judg
 
 ## Judging by this session
 
-When this machine has no verified judge of your tool, you judge the run's scored steps yourself at `best-effort` isolation: the judge step of each pass's `teamai-score` run comes to you as a confined `dispatch` (below). A run started or resumed with `--no-judge` drives no `teamai-score` run, which stays for `teamai workflow resume <run>`. On a host you answered `h4` you start no subagent: TeamAI judges in the background on your tool at `best-effort` when that tool is on PATH here, else a `judging-off` event says another driver judges the run.
+When this machine has no verified judge of your tool, you judge the run's scored steps yourself at `best-effort` isolation: the judge step of each pass's `teamai-score` run comes to you as a confined `dispatch` (below). A run started or resumed with `--no-judge` drives no `teamai-score` run, which stays for `teamai workflow resume <run>`. On a session host you answered `h4` you start no subagent: TeamAI judges in the background on your tool at `best-effort` when that tool is on PATH here, else a `judging-off` event says another driver judges the run.
 
 Judge only what comes to you as a dispatch. A judge step a scorer requires `verified` for never does: teamai's confined judge or another driver judges it, and judging it here would downgrade verified judging to best-effort.
 

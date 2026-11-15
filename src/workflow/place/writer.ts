@@ -5,15 +5,19 @@ import { z } from 'zod';
 import type { WorkflowFailure } from '../types.js';
 import type { StepChanges } from '../workspace.js';
 import { commitPathsOf, mergeStagedPathsOf } from './worktree-snapshot.js';
-import { commitWork, git, mergeBranch, offBranch, pushIfOrigin, worktreeContentKey } from '../worktree.js';
+import { commitWork, hostGitEnv, mergeBranch, offBranch, pushIfOrigin, untrustedGit, worktreeContentKey, type Git, type MemberConfig } from '../worktree.js';
 import { restoreOverlay, unrestoredConfig } from './overlay.js';
+import { readRegularFile, writeRegularFile } from '@teamai/shared/regular-file';
+import { retryCommand } from '../runtimes/retry-command.js';
 
 /**
  * Merges each of `merge` into the copy `dir` of a writer. A conflict stops the merging: a command fails
  * `merge_conflict`, and a prompt gets `note`, which names the conflict and the branches left to merge for it to resolve.
+ * `git` is the git it runs in the copy.
  */
-export async function mergeBranches({ dir, run, step, executor, merge }: {
+export async function mergeBranches({ dir, run, step, executor, merge, git }: {
   dir: string;
+  git: Git;
   run: string;
   step: string;
   executor: 'command' | 'prompt';
@@ -28,10 +32,10 @@ export async function mergeBranches({ dir, run, step, executor, merge }: {
       continue;
     }
 
-    const result = await mergeBranch(dir, item.commit);
+    const result = await mergeBranch(dir, item.commit, git);
 
     if (result.state === 'failed') {
-      return { kind: 'failed', failure: { code: 'workspace_base', message: `Step "${step}" could not merge branch ${item.branch} at ${item.commit} into workspace ${dir}. Git stopped without a conflict to resolve, so the step did not run. Git said: ${result.error.replace(/\.$/, '')}. Fix what git reported in ${dir}, then retry this step with teamai workflow retry ${run} ${step}.` } };
+      return { kind: 'failed', failure: { code: 'workspace_base', message: `Step "${step}" could not merge branch ${item.branch} at ${item.commit} into workspace ${dir}. Git stopped without a conflict to resolve, so the step did not run. Git said: ${result.error.replace(/\.$/, '')}. Fix what git reported in ${dir}, then retry this step with ${retryCommand({ run, step })}.` } };
     }
 
     if (result.state === 'conflict') conflict = { branch: item.branch, files: result.files };
@@ -51,8 +55,8 @@ export async function mergeBranches({ dir, run, step, executor, merge }: {
   return { kind: 'merged', note: `\n\nMerge conflict with ${conflict.branch} (${files}).${left} Resolve the conflict in the workspace.` };
 }
 
-async function conflictsPath(dir: string): Promise<string> {
-  const printed = (await git(dir, ['rev-parse', '--git-path', 'teamai-conflicts.json'])).stdout.trim();
+async function conflictsPath(dir: string, run: Git): Promise<string> {
+  const printed = (await run(dir, ['rev-parse', '--git-path', 'teamai-conflicts.json'])).stdout.trim();
 
   return path.resolve(dir, printed);
 }
@@ -64,15 +68,15 @@ function hashText(text: string): string {
 /**
  * Keeps the paths that were conflicted when the merge started until a resolution is validated: a prompt commit can
  * clear MERGE_HEAD before that. Each, with the hash of its content as the step gets it. A file left unchanged is not a
- * resolution.
+ * resolution. `run` is the git it runs in the copy.
  */
-export async function rememberConflicts(dir: string): Promise<Record<string, string>> {
-  const current = await conflictContents(dir);
-  const file = await conflictsPath(dir);
+export async function rememberConflicts(dir: string, run: Git): Promise<Record<string, string>> {
+  const current = await conflictContents(dir, run);
+  const file = await conflictsPath(dir, run);
   let saved = new Map<string, string>();
 
   try {
-    const parsed = z.record(z.string(), z.unknown()).safeParse(JSON.parse(await fs.readFile(file, 'utf8')));
+    const parsed = z.record(z.string(), z.unknown()).safeParse(JSON.parse(await readRegularFile(file, 'utf8')));
 
     if (parsed.success) {
       saved = new Map(Object.entries(parsed.data).flatMap<[string, string]>(([relative, note]) => {
@@ -89,27 +93,27 @@ export async function rememberConflicts(dir: string): Promise<Record<string, str
 
   for (const [relative, text] of current) merged.set(relative, text);
 
-  if (merged.size > 0) await fs.writeFile(file, JSON.stringify(Object.fromEntries(merged)));
+  if (merged.size > 0) await writeRegularFile(file, JSON.stringify(Object.fromEntries(merged)));
 
   return Object.fromEntries([...merged].map(([relative, text]) => [relative, hashText(text)]));
 }
 
-async function clearRememberedConflicts(dir: string): Promise<void> {
-  await fs.rm(await conflictsPath(dir), { force: true });
+async function clearRememberedConflicts(dir: string, run: Git): Promise<void> {
+  await fs.rm(await conflictsPath(dir, run), { force: true });
 }
 
-async function unmergedPaths(dir: string): Promise<string[]> {
-  const unmerged = await git(dir, ['diff', '-z', '--name-only', '--diff-filter=U']);
+async function unmergedPaths(dir: string, run: Git): Promise<string[]> {
+  const unmerged = await run(dir, ['diff', '-z', '--name-only', '--diff-filter=U']);
 
   return unmerged.stdout.split('\0').filter((file) => file !== '');
 }
 
-async function conflictContents(dir: string): Promise<Map<string, string>> {
+async function conflictContents(dir: string, run: Git): Promise<Map<string, string>> {
   const contents = new Map<string, string>();
 
-  for (const file of await unmergedPaths(dir)) {
+  for (const file of await unmergedPaths(dir, run)) {
     try {
-      contents.set(file, await fs.readFile(path.join(dir, file), 'utf8'));
+      contents.set(file, await readRegularFile(path.join(dir, file), 'utf8'));
     } catch {
       contents.set(file, '');
     }
@@ -118,23 +122,23 @@ async function conflictContents(dir: string): Promise<Map<string, string>> {
   return contents;
 }
 
-async function unresolvedConflicts(dir: string, before: Record<string, string>): Promise<string[]> {
+async function unresolvedConflicts(dir: string, before: Record<string, string>, run: Git): Promise<string[]> {
   const textOf = async (file: string): Promise<string> => {
     try {
-      return await fs.readFile(path.join(dir, file), 'utf8');
+      return await readRegularFile(path.join(dir, file), 'utf8');
     } catch {
       return '';
     }
   };
 
-  for (const file of await unmergedPaths(dir)) {
+  for (const file of await unmergedPaths(dir, run)) {
     const text = await textOf(file);
 
     if (text.includes('<<<<<<<') || before[file] === hashText(text)) continue;
-    await git(dir, ['add', '--', file]);
+    await run(dir, ['add', '--', file]);
   }
 
-  const open = new Set(await unmergedPaths(dir));
+  const open = new Set(await unmergedPaths(dir, run));
 
   // `git add` removes a path from the unmerged list even when conflict markers are still in the file.
   for (const file of Object.keys(before)) {
@@ -146,10 +150,13 @@ async function unresolvedConflicts(dir: string, before: Record<string, string>):
 
 /**
  * Commits a writer's copy `dir` and pushes it, whether or not the step failed, so the commits it reports are on origin.
+ * Its git runs with `untrustedGit`: no hook, fsmonitor, replacement or other program the step planted in the copy's config runs.
  * A failed push fails a step that succeeded with `push_failed`. A step that already `failed` keeps its own failure and
  * gets `unpushed`, the sentence its message adds.
  */
 export async function finishWriter(input: {
+  /** The member's own programs the copy's config names, which still run (`untrustedGit`). */
+  memberConfig: MemberConfig;
   dir: string;
   step: string;
   workspace: { branch: string; base: { commit: string }; configCommit: string };
@@ -168,25 +175,26 @@ export async function finishWriter(input: {
    */
   already?: WorkflowFailure;
 }): Promise<{ changes?: StepChanges; failure?: WorkflowFailure; unpushed?: string }> {
-  const { dir, step, workspace, rangeFrom, conflicts, saved, failed, reported, already } = input;
-  const unrestored = await restoreOverlay({ dir, configCommit: workspace.configCommit, saved });
+  const { memberConfig, dir, step, workspace, rangeFrom, conflicts, saved, failed, reported, already } = input;
+  const hookSafe = untrustedGit(hostGitEnv(), undefined, memberConfig);
+  const unrestored = await restoreOverlay({ dir, configCommit: workspace.configCommit, saved, run: hookSafe });
 
   if (unrestored) return { failure: { code: 'workspace_base', message: `Step "${step}" ran, but nothing was committed or pushed. ${unrestoredConfig(unrestored, dir)}` } };
   // A commit on whatever HEAD the step left would be reported and pushed as the leased branch, which would lack it.
-  const on = await offBranch(dir, workspace.branch);
+  const on = await offBranch(dir, workspace.branch, hookSafe);
 
   if (on) return { failure: { code: 'workspace_base', message: `Step "${step}" left workspace ${dir} ${on}, not on branch ${workspace.branch}, so nothing was committed or pushed. Check out ${workspace.branch} in ${dir} with the changes to keep, then retry the step.` } };
-  const open = await unresolvedConflicts(dir, conflicts);
+  const open = await unresolvedConflicts(dir, conflicts, hookSafe);
 
   if (open.length > 0) return { failure: { code: 'merge_conflict', message: `Unresolved merge conflict: ${open.join(', ')}` } };
 
   let paths: readonly string[] | undefined;
 
   if (reported) {
-    const listed = await commitPathsOf(dir);
+    const listed = await commitPathsOf(dir, hookSafe);
 
     if ('error' in listed) return { failure: { code: 'workspace_base', message: `Step "${step}" could not list changes in ${dir}, so nothing was committed or pushed. Git said: ${listed.error}.` } };
-    const prepared = await unchangedMergePreparation(dir, listed.paths);
+    const prepared = await unchangedMergePreparation(dir, listed.paths, hookSafe);
 
     if ('error' in prepared) return { failure: { code: 'workspace_base', message: `Step "${step}" could not read the merge recorded for ${dir}, so nothing was committed or pushed. ${prepared.error}` } };
     const missing = listed.paths.filter((relative) => !reported.includes(relative) && !prepared.paths.has(relative)).sort((left, right) => left.localeCompare(right));
@@ -200,11 +208,11 @@ export async function finishWriter(input: {
     paths = listed.paths;
   }
 
-  const committed = await commitWork(dir, `teamai: ${step}`, rangeFrom, git, paths);
+  const committed = await commitWork(dir, `teamai: ${step}`, rangeFrom, hookSafe, paths);
 
   if ('error' in committed) return { failure: { code: 'push_failed', message: committed.error } };
-  await clearRememberedConflicts(dir);
-  const pushed = await pushIfOrigin(dir, workspace.branch, committed.commits);
+  await clearRememberedConflicts(dir, hookSafe);
+  const pushed = await pushIfOrigin(dir, workspace.branch, committed.commits, hookSafe, { kept: memberConfig, env: hostGitEnv() });
   const changes = { branch: workspace.branch, base: workspace.base.commit, from: committed.from, to: committed.to, commits: committed.commits };
 
   if (!(pushed instanceof Object)) return { changes };
@@ -213,9 +221,9 @@ export async function finishWriter(input: {
   return failed ? { changes, unpushed } : { changes, failure: { code: 'push_failed', message: unpushed } };
 }
 
-/** Where an adopted place records the merge prepare staged, so finish can tell it from a host file. */
-async function mergePreparedPath(dir: string): Promise<string> {
-  const printed = (await git(dir, ['rev-parse', '--git-path', 'teamai-merge.json'])).stdout.trim();
+/** Where an adopted place records the merge prepare staged, so finish can tell it from a file of the session host's. */
+async function mergePreparedPath(dir: string, run: Git): Promise<string> {
+  const printed = (await run(dir, ['rev-parse', '--git-path', 'teamai-merge.json'])).stdout.trim();
 
   return path.resolve(dir, printed);
 }
@@ -224,22 +232,22 @@ async function mergePreparedPath(dir: string): Promise<string> {
  * Records the paths prepare's merge left staged, with a worktree that still matches the index. A path that still has
  * this content at finish is the merge. An unstaged edit of a tracked file is not recorded.
  */
-export async function recordMergePreparation(dir: string): Promise<string | undefined> {
-  const listed = await mergeStagedPathsOf(dir);
+export async function recordMergePreparation(dir: string, git: Git): Promise<string | undefined> {
+  const listed = await mergeStagedPathsOf(dir, git);
 
   if ('error' in listed) return listed.error;
   const record: Record<string, string> = {};
 
-  for (const relative of listed.paths) record[relative] = await worktreeContentKey(dir, relative);
-  await fs.writeFile(await mergePreparedPath(dir), JSON.stringify(record));
+  for (const relative of listed.paths) record[relative] = await worktreeContentKey(dir, relative, git);
+  await writeRegularFile(await mergePreparedPath(dir, git), JSON.stringify(record));
 
   return undefined;
 }
 
 /** Paths among `dirty` that still match the merge `recordMergePreparation` stored. A missing record matches nothing. */
-async function unchangedMergePreparation(dir: string, dirty: readonly string[]): Promise<{ paths: ReadonlySet<string> } | { error: string }> {
-  const file = await mergePreparedPath(dir);
-  const text = await fs.readFile(file, 'utf8').catch(() => undefined);
+async function unchangedMergePreparation(dir: string, dirty: readonly string[], run: Git): Promise<{ paths: ReadonlySet<string> } | { error: string }> {
+  const file = await mergePreparedPath(dir, run);
+  const text = await readRegularFile(file, 'utf8').catch(() => undefined);
 
   if (text === undefined) return { paths: new Set() };
 
@@ -259,7 +267,7 @@ async function unchangedMergePreparation(dir: string, dirty: readonly string[]):
   const paths = new Set<string>();
 
   for (const relative of dirty) {
-    if (parsed.data[relative] !== undefined && await worktreeContentKey(dir, relative) === parsed.data[relative]) paths.add(relative);
+    if (parsed.data[relative] !== undefined && await worktreeContentKey(dir, relative, run) === parsed.data[relative]) paths.add(relative);
   }
 
   return { paths };
@@ -275,11 +283,11 @@ function stoppedBeforeTheStep(code: string): boolean {
     || code === 'unreported_changes';
 }
 
-const HOST_SETUP_ADVICE = 'If your host\'s setup wrote it, make setup write only files git ignores, or wait for it to finish before adopt. Otherwise remove it, then retry the step.';
+const SESSION_HOST_SETUP_ADVICE = 'If your session host\'s setup wrote it, make setup write only files git ignores, or wait for it to finish before adopt. Otherwise remove it, then retry the step.';
 
 /** The failure an adopted place shows when `paths` were not part of the step's reported work. `because` is the clause after the path list. */
 export function unreportedChangesMessage(step: string, dir: string, paths: readonly string[], because: string): string {
-  return `Step "${step}" left ${paths.join(', ')} in ${dir}, ${because} ${HOST_SETUP_ADVICE}`;
+  return `Step "${step}" left ${paths.join(', ')} in ${dir}, ${because} ${SESSION_HOST_SETUP_ADVICE}`;
 }
 
 /** `message` with the sentence a failed step's message adds when its commits could not be pushed. */

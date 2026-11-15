@@ -8,6 +8,7 @@ import { syncScorersThenWorkflows } from '../../scorers/team-sync.js';
 import { startRun } from '../../workflow/engine.js';
 import { pendingRecords, type WorkflowRunRecord } from '../../workflow/records.js';
 import { knownSecrets } from '../../env-resolution.js';
+import { signalPid } from '@teamai/shared/process-group';
 
 /** A step command that appends a learning to its attempt's outcome file, in the data home beside the checkout it runs in. */
 export const APPEND_LEARNING = `node -e "const [r,a]=process.env.TEAMAI_WORKFLOW_ATTEMPT.split('/');const p=require('path');const d=p.join('..','data','workflows','runs',r,'outcomes');require('fs').mkdirSync(d,{recursive:true});require('fs').appendFileSync(p.join(d,a+'.jsonl'),JSON.stringify({kind:'learning',id:'retry-backoff'})+'\\n')"`;
@@ -121,12 +122,7 @@ export async function parallelFixture(yaml: string, maxParallel: number): Promis
 }
 
 export function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+  return signalPid(pid, 0) === 'sent';
 }
 
 export async function exitsWithin(pid: number, ms: number): Promise<boolean> {

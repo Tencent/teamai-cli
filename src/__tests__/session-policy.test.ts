@@ -20,7 +20,7 @@ async function scope({ teamYaml = '', memberYaml = '', kind = 'git' }: { teamYam
   fs.writeFileSync(path.join(root, 'teamai.yaml'), `team: t\nrepo: https://example.com/t.git\n${teamYaml}`);
   const member: unknown = YAML.parse(`repo: { localPath: ${JSON.stringify(root)}, remote: origin, kind: ${kind} }\nusername: tester\n${memberYaml}`);
   const config: LocalConfig = LocalConfigSchema.parse(member);
-  return { config, team: await loadTeamConfig(root) };
+  return { config, team: await loadTeamConfig(root, null) };
 }
 
 describe('SessionPolicy.publish', () => {

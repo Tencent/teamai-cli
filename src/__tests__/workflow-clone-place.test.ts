@@ -13,9 +13,11 @@ import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
+import { type StepLauncher } from '@teamai/runtime-tools';
+import { toolPaths } from './helpers/workflow-local-driver-fixture.js';
 import { startRun } from '../workflow/engine.js';
 import { claimRun } from '../workflow/handoff.js';
-import { inProcessClient } from '../workflow/protocol.js';
+import { inProcessClient, managedReport } from '../workflow/protocol.js';
 import { buildEndRecord } from '../workflow/records.js';
 import { retryStep } from '../workflow/run-controls.js';
 import { scoreEvidenceDir } from './helpers/score-run.js';
@@ -353,6 +355,68 @@ describe('a clone place', () => {
     expect(fs.readdirSync(again.cwd).sort()).toEqual(['.git', 'first.txt']);
   });
 
+  it('keeps the clone a step made when its tool stopped on a usage limit, and runs the step again there with what it left', async () => {
+    const { config, workspace, runId } = await fixture((commit) => PROMPTED(commit));
+    config.workflows = { ...config.workflows, tools: { default: 'claude' } };
+    const resetsAt = Date.now() + 1500;
+    const found: string[][] = [];
+    const adapter: StepLauncher = {
+      runInteractive: vi.fn(),
+      run: vi.fn(async (_tool, input) => {
+        found.push(fs.readdirSync(input.cwd).filter((file) => file !== '.git').sort());
+
+        if (found.length > 1) return { started: true as const, exitCode: 0 };
+        fs.writeFileSync(path.join(input.cwd, 'half.txt'), 'H');
+
+        return { started: true as const, exitCode: 1, failure: { code: 'usage_limited', message: `claude hit its usage limit: Claude AI usage limit reached|${Math.ceil(resetsAt / 1000)}` } };
+      }),
+    };
+
+    const done = await runLocalDriver(config, runId, workspace, { adapter, toolPaths });
+
+    expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(found.slice(0, 2)).toEqual([['first.txt'], ['first.txt', 'half.txt']]);
+  }, 20_000);
+
+  it('keeps the work a step left in its team clone on a usage limit when its next attempt is cancelled before its tool starts', async () => {
+    const { config, workspace, runId } = await fixture(TEAM_PROMPT('{ team: { branch: teamai/notes/alpha } }', ''));
+    teamOrigin(config);
+    config.workflows = { ...config.workflows, tools: { default: 'claude' } };
+    const resetsAt = Date.now() + 1500;
+    // Whether each attempt's tool found the note the first one left.
+    const found: boolean[] = [];
+    const adapter: StepLauncher = {
+      runInteractive: vi.fn(),
+      run: vi.fn(async (_tool, input) => {
+        const note = path.join(input.cwd, 'rules', 'half.md');
+        found.push(fs.existsSync(note));
+
+        if (found.length > 1) return { started: true as const, exitCode: 0 };
+        fs.mkdirSync(path.dirname(note), { recursive: true });
+        fs.writeFileSync(note, '# Half\n');
+
+        return { started: true as const, exitCode: 1, failure: { code: 'usage_limited', message: `claude hit its usage limit: Claude AI usage limit reached|${Math.ceil(resetsAt / 1000)}` } };
+      }),
+    };
+    const secrets = await knownSecrets(config);
+    let prepares = 0;
+    // The step's second attempt is cancelled by a retry once its place is prepared, before its tool starts.
+    const retryOnSecond = async ({ step }: { step: string }, signal: AbortSignal): Promise<void> => {
+      prepares += 1;
+
+      if (step !== 'note' || prepares !== 2) return;
+      const stopped = new Promise((resolve) => { signal.addEventListener('abort', resolve, { once: true }); });
+      expect(await retryStep(config, runId, secrets, 'note')).not.toHaveProperty('error');
+      await stopped;
+    };
+
+    const done = await runLocalDriver(config, runId, workspace, { adapter, toolPaths, prepared: retryOnSecond });
+
+    expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(prepares).toBe(3);
+    expect(found).toEqual([false, true]);
+  }, 20_000);
+
   it('keeps the clone when a step that continues it is released, with the work committed there', async () => {
     const { config, runId } = await fixture((commit) => PROMPTED(commit));
     const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
@@ -366,6 +430,126 @@ describe('a clone place', () => {
 
     expect(again).toMatchObject({ step: 'trial.check', cwd: work.cwd });
     expect(fs.readFileSync(path.join(again.cwd, 'made.txt'), 'utf8')).toBe('M');
+  });
+
+  it.each([
+    ['team clone', '{ team: { branch: teamai/notes/alpha } }', ''],
+    ['data checkout', '{ team: { branch: teamai-reports } }', '    deliver: publish\n'],
+  ])('keeps the %s of a step released after its tool ran for its next attempts, also past one released before its tool starts', async (_kind, workspace, deliver) => {
+    const { config, runId } = await fixture(TEAM_PROMPT(workspace, deliver));
+    teamOrigin(config);
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+    const next = (): ReturnType<typeof client.next> => client.next(runId, { driver: { ...driver, can: teamCan }, running: [] }, { prepare: true });
+    const release = async (lease: ReturnType<typeof leaseOf>, launched: boolean): Promise<void> => {
+      const report = { attempt: lease.attempt, revision: lease.revision, outcome: 'released' as const, driver, ...(launched && { launched: true as const }) };
+      expect(await managedReport({ config, runId, report, secrets: {}, lock: undefined })).not.toHaveProperty('error');
+    };
+
+    const first = leaseOf(await next());
+    fs.writeFileSync(path.join(first.cwd, 'half.txt'), 'H');
+    await release(first, true);
+    const second = leaseOf(await next());
+    const secondFound = fs.readdirSync(second.cwd);
+    await release(second, false);
+    const third = leaseOf(await next());
+
+    expect(new Set([first.attempt, second.attempt, third.attempt]).size).toBe(3);
+    expect([second.cwd, third.cwd]).toEqual([first.cwd, first.cwd]);
+    expect(secondFound).toContain('half.txt');
+    expect(fs.readFileSync(path.join(third.cwd, 'half.txt'), 'utf8')).toBe('H');
+  });
+
+  it('removes the data checkout a step kept for its next attempt once its run ends without that attempt', async () => {
+    const { config, runId } = await fixture(TEAM_PROMPT('{ team: { branch: teamai-reports } }', '    deliver: publish\n'));
+    teamOrigin(config);
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+    const next = (): ReturnType<typeof client.next> => client.next(runId, { driver: { ...driver, can: teamCan }, running: [] }, { prepare: true });
+    const first = leaseOf(await next());
+    fs.writeFileSync(path.join(first.cwd, 'half.txt'), 'H');
+    expect(await managedReport({ config, runId, report: { attempt: first.attempt, revision: first.revision, outcome: 'released', driver, launched: true }, secrets: {}, lock: undefined })).not.toHaveProperty('error');
+
+    expect(await client.cancel(runId)).not.toHaveProperty('error');
+    await next();
+
+    expect(fs.existsSync(first.cwd)).toBe(false);
+  });
+
+  it('gives a fresh team clone to a step that goes on in a reopened run whose end removed the clone it kept', async () => {
+    const { config, runId } = await fixture(() => `schemaVersion: v1alpha1
+name: build
+description: Write a note in the team repo beside another step.
+steps:
+  - id: note
+    workspace: { team: { branch: teamai/notes/alpha } }
+    prompt: Write a note.
+  - id: other
+    needs: []
+    workspace: { team: { branch: teamai/notes/beta } }
+    prompt: Write another note.
+`);
+    teamOrigin(config);
+    const client = inProcessClient({ config: { ...config, workflows: { tools: {}, ...config.workflows, max_parallel: 2 } }, env: await resolveWorkflowEnv(config) });
+    const next = (running: string[] = []): ReturnType<typeof client.next> => client.next(runId, { driver: { ...driver, can: teamCan }, running }, { prepare: true });
+    const first = leaseOf(await next());
+    const other = leaseOf(await next([first.attempt]));
+    expect(await managedReport({ config, runId, report: { attempt: first.attempt, revision: first.revision, outcome: 'released', driver, launched: true }, secrets: {}, lock: undefined })).not.toHaveProperty('error');
+    const failure = { code: 'tool_failed', message: 'the tool exited with status 1' } as const;
+    expect(await client.report(runId, { attempt: other.attempt, revision: other.revision, outcome: 'failed', driver, message: failure.message, failure })).not.toHaveProperty('error');
+    expect(await client.cancel(runId)).not.toHaveProperty('error');
+    await next();
+    expect(fs.existsSync(first.cwd)).toBe(false);
+
+    expect(await client.retry(runId, other.step)).toMatchObject({ data: { reopened: true } });
+    const again = leaseOf(await next());
+
+    expect(again.step).toBe(first.step);
+    expect(fs.existsSync(again.cwd)).toBe(true);
+  });
+
+  it('gives a step a fresh team clone once another step on its branch replaced the clone it kept', async () => {
+    const { config, runId } = await fixture(() => `schemaVersion: v1alpha1
+name: build
+description: Write two notes on one team branch.
+steps:
+  - id: note
+    tool: claude
+    workspace: { team: { branch: teamai/notes/alpha } }
+    prompt: Write a note.
+  - id: other
+    needs: []
+    tool: codex
+    workspace: { team: { branch: teamai/notes/alpha } }
+    prompt: Write another note.
+`);
+    teamOrigin(config);
+    const client = inProcessClient({ config: { ...config, workflows: { tools: {}, ...config.workflows, max_parallel: 2 } }, env: await resolveWorkflowEnv(config) });
+    // A driver that has one tool at a time leases each step in turn.
+    const next = (tool: string): ReturnType<typeof client.next> => client.next(runId, { driver: { ...driver, can: { ...teamCan, tools: [tool] } }, running: [] }, { prepare: true });
+    const first = leaseOf(await next('claude'));
+    expect(await managedReport({ config, runId, report: { attempt: first.attempt, revision: first.revision, outcome: 'released', driver, launched: true }, secrets: {}, lock: undefined })).not.toHaveProperty('error');
+    const other = leaseOf(await next('codex'));
+    fs.writeFileSync(path.join(other.cwd, 'other.txt'), 'O');
+    await client.report(runId, { attempt: other.attempt, revision: other.revision, outcome: 'released', driver });
+
+    const again = leaseOf(await next('claude'));
+
+    expect(again.step).toBe(first.step);
+    expect(fs.existsSync(again.cwd)).toBe(true);
+    expect(fs.existsSync(path.join(again.cwd, 'other.txt'))).toBe(false);
+  });
+
+  it('gives a fresh team clone to the next attempt of a step released before its tool started', async () => {
+    const { config, runId } = await fixture(TEAM_PROMPT('{ team: { branch: teamai/notes/alpha } }', ''));
+    teamOrigin(config);
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+    const next = (): ReturnType<typeof client.next> => client.next(runId, { driver: { ...driver, can: teamCan }, running: [] }, { prepare: true });
+
+    const first = leaseOf(await next());
+    fs.writeFileSync(path.join(first.cwd, 'half.txt'), 'H');
+    await client.report(runId, { attempt: first.attempt, revision: first.revision, outcome: 'released', driver });
+    const second = leaseOf(await next());
+
+    expect(fs.existsSync(path.join(second.cwd, 'half.txt'))).toBe(false);
   });
 
   it('turns git hooks off in a fresh clone, pointing them at a directory that does not exist', async () => {
@@ -569,6 +753,29 @@ async function judgedAfterClone(yaml: (commit: string) => string, scored: string
 
 const driver: DriverIdentity = { kind: 'external', machine: 'ci', workspace: '/work' };
 
+/** Makes the team checkout of `config` a repo whose origin is a bare repo on `main`, as a team repo a step clones. */
+function teamOrigin(config: LocalConfig): void {
+  const knowledge = config.repo.localPath;
+  const bare = `${knowledge}.git`;
+  git(['init', '-q', '-b', 'main'], knowledge);
+  git(['add', '-A'], knowledge);
+  git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'team'], knowledge);
+  execFileSync('git', ['clone', '-q', '--bare', knowledge, bare]);
+  git(['remote', 'add', 'origin', bare], knowledge);
+  git(['fetch', '-q', 'origin'], knowledge);
+}
+
+/** One prompt step in `workspace`, with `deliver` when it publishes. */
+const TEAM_PROMPT = (workspace: string, deliver: string) => (): string => `schemaVersion: v1alpha1
+name: build
+description: Write a note in the team repo.
+steps:
+  - id: note
+    workspace: ${workspace}
+${deliver}    prompt: Write a note.
+`;
+
+
 /** `next --prepare` for `driver`, as an external driver that lets teamai prepare its places asks it. */
 function prepared(client: ReturnType<typeof inProcessClient>, runId: string): ReturnType<ReturnType<typeof inProcessClient>['next']> {
   return client.next(runId, { driver: { ...driver, can }, running: [] }, { prepare: true });
@@ -598,6 +805,7 @@ ${head}steps:
           prompt: Check the file.
 `;
 const can: DriverCan = { workspace: ['read-only', 'new', 'continue', 'clone'], isolation: 'sandbox', tools: [], setup: true };
+const teamCan: DriverCan = { ...can, workspace: [...can.workspace ?? [], 'team'] };
 
 /** A clone of `commit` that runs with the review role, installing the team at a revision, and a prompt continuing it. */
 const ROLE_CLONE = (commit: string): string => `schemaVersion: v1alpha1

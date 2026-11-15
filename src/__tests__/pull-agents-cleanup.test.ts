@@ -51,7 +51,7 @@ vi.mock('../update.js', () => ({
 
 import { pull } from '../pull.js';
 import { loadLocalConfigForScope, loadTeamConfig, detectProjectConfig } from '../config.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
 

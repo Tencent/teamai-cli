@@ -20,7 +20,8 @@
 
 import type { Command } from 'commander';
 import { z } from 'zod';
-import fs from 'node:fs';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
+import { setStderrOnly } from '@teamai/shared/log';
 import path from 'node:path';
 import { listAvailablePlatforms, listInstalledPlatforms } from './adapters/index.js';
 import { resumeCommand } from './adapters/platform-facts.js';
@@ -115,7 +116,7 @@ async function listPushSource(platform: string, cwd: string, all: boolean) {
   const roots = [...new Set([cwd, ...workspaces.filter((workspace) => workspace.scope === 'project').flatMap((workspace) => workspace.roots)])]
     .filter((root) => {
       try {
-        const settings = PiSessionDirSettingsSchema.safeParse(JSON.parse(fs.readFileSync(path.join(root, '.pi', 'settings.json'), 'utf8')));
+        const settings = PiSessionDirSettingsSchema.safeParse(JSON.parse(readRegularFileSync(path.join(root, '.pi', 'settings.json'), 'utf8')));
 
         return settings.success && settings.data.sessionDir.trim().length > 0;
       } catch {
@@ -259,6 +260,9 @@ function printFinished(list: readonly FinishedSession[]): void {
  * reads it, with the subagents it started and every secret this scope knows redacted.
  */
 async function showSession(sessionId: string, opts: { source?: string; teamSession?: string; author?: string; suite?: string; cwd?: string; json?: boolean }): Promise<void> {
+  // stdout carries the JSON alone: a warning, as of a folder of a session store teamai cannot read, goes to stderr.
+  if (opts.json) setStderrOnly(true);
+
   if (opts.teamSession === undefined && opts.author !== undefined) return refuseCommand({ code: 'invalid_arguments', message: '--author picks who pushed --team-session <name>. Pass it with --team-session.' }, opts.json);
 
   if (opts.teamSession === undefined && opts.suite !== undefined) return refuseCommand({ code: 'invalid_arguments', message: '--suite reads --team-session <name> as pushed for the suite\'s repository. Pass it with --team-session.' }, opts.json);
@@ -341,7 +345,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     const options = { dryRun: isDryRun() };
     const config = (await detectProjectConfig(action.opts<{ cwd?: string }>().cwd, undefined, options)) ?? (await loadLocalConfig(options));
 
-    if (config) await loadTeamConfig(config.repo.localPath);
+    if (config) await loadTeamConfig(config.repo.localPath, config);
   });
 
   // ── session platforms ──────────────────────────────────────
@@ -790,6 +794,9 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--sizes <spec>', 'With --suite: the largest S, M and L changes as lines,files, such as "S=40,3 M=200,10 L=800,30"; adds size, the smallest whose limits both fit the change, else XL')
     .option('--json', 'With --finished: print {"list":[{"session","source","publish","scorers","demand"}]}; with --all, {"list":[{"session","source","ended","prompt"}]}; with --suite, {"list":[{...,"start","solution","files","lines","size"}],"leftOut":[{"reason","sessions"}]}, a pushed session\'s entry naming its teamSession and author')
     .action(async (opts) => {
+      // stdout carries the JSON alone: a warning, as of a folder of a session store teamai cannot read, goes to stderr.
+      if (opts.json) setStderrOnly(true);
+
       if (opts.finished) {
         await listFinished(opts);
 

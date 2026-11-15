@@ -1,3 +1,4 @@
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,7 +7,7 @@ import { log } from '@teamai/shared/log';
 import { resolveOpenclawStateDir } from '../openclaw-home.js';
 import type { LocalConfig } from '../types.js';
 import { skillRoots } from '../usage-tracker.js';
-import { getUserHome } from '../utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 import { realHost, reloadToolHomesHistory, saveToolHomes, toolHome, toolHomesHistoryPath, toolHomesPath } from '../tool-home.js';
 import { recordToolHomes } from '../tool-home-record.js';
 import { useToolInstances as useInstances } from '../tool-registry.js';
@@ -181,6 +182,23 @@ describe('Hermes\'s active profile', () => {
     fs.writeFileSync(path.join(native, 'active_profile'), 'default\n');
 
     expect(toolHome('hermes')).toBe(native);
+  });
+
+  it.skipIf(process.platform === 'win32')('is no profile, at once, when a step left a FIFO there', () => {
+    const native = path.join(tmp, '.hermes');
+    fs.mkdirSync(path.join(native, 'profiles', 'work'), { recursive: true });
+    const pipe = path.join(native, 'active_profile');
+    execFileSync('mkfifo', [pipe]);
+    // A read that waits on the FIFO ends only once another process opens it, from three seconds on.
+    const releaser = spawn('sh', ['-c', 'sleep 3; while :; do exec 3<>"$1"; exec 3>&-; sleep 0.1; done', 'sh', pipe], { stdio: 'ignore' });
+    const start = Date.now();
+
+    try {
+      expect(toolHome('hermes')).toBe(native);
+      expect(Date.now() - start).toBeLessThan(1_000);
+    } finally {
+      releaser.kill();
+    }
   });
 });
 

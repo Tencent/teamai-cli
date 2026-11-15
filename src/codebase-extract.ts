@@ -8,7 +8,8 @@
 
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
-import { mkdir, writeFile, readFile, realpath, lstat } from 'node:fs/promises';
+import { mkdir, writeFile, realpath, lstat } from 'node:fs/promises';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import path from 'node:path';
 
 import chalk from 'chalk';
@@ -698,7 +699,7 @@ function sanitizeRepoUrl(url: string): string {
 
 async function readStoredSourceManifest(filePath: string): Promise<SourceManifest | null> {
   try {
-    return SourceManifestSchema.safeParse(JSON.parse(await readFile(filePath, 'utf8'))).data ?? null;
+    return SourceManifestSchema.safeParse(JSON.parse(await readRegularFile(filePath, 'utf8'))).data ?? null;
   } catch {
     return null;
   }
@@ -1072,7 +1073,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
     let reused = false;
 
     try {
-      const existing = await readFile(depPathsFile, 'utf-8');
+      const existing = await readRegularFile(depPathsFile, 'utf-8');
 
       if (existing.trim()) {
         reused = true;
@@ -1099,7 +1100,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
   // 增量模式下复用已有 dependency-paths.md
   if (changedFiles && !pages.has('dependency-paths.md')) {
     try {
-      const existing = await readFile(depPathsFile, 'utf-8');
+      const existing = await readRegularFile(depPathsFile, 'utf-8');
       pages.set('dependency-paths.md', existing);
     } catch { /* 无历史文件，跳过 */ }
   }
@@ -1239,7 +1240,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
   if (changedFiles !== undefined && changedFiles.length > 0) {
     // 有变更/新增文件：合并旧 manifest 中未变更的记录 + 新扫描的记录
     try {
-      const oldManifestRaw = await readFile(incrementalManifestPath, 'utf-8');
+      const oldManifestRaw = await readRegularFile(incrementalManifestPath, 'utf-8');
 
       const oldManifest = SourceManifestSchema.parse(JSON.parse(oldManifestRaw));
       const changedSet = new Set([...changedFiles, ...deletedFiles]);

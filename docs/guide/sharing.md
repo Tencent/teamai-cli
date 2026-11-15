@@ -807,6 +807,10 @@ A directory that holds its type's marker, at any depth, is a folder: one resourc
 | `benchmarks/` | `SUITE.yaml` | Reads it: [suites](benchmarks.md#write-a-suite) |
 | `scorers/` | `SCORER.md` | Reads it: [scorer folders](scorers.md#a-scorer-folder) |
 | `agents/` | `AGENT.md` | Reads it: [agent folders](#agents-as-folders) |
+| `drivers/` | `DRIVER.yaml` | Reads it: [where each part lives](workflow-advanced.md#where-each-part-lives) |
+| `runtimes/` | `RUNTIME.yaml` | Reads it: [where each part lives](workflow-advanced.md#where-each-part-lives) |
+| `sandboxes/` | `SANDBOX.yaml` | Reads it: [where each part lives](workflow-advanced.md#where-each-part-lives) |
+| `tools/` | `TOOL.yaml` | Reads it: [where each part lives](workflow-advanced.md#where-each-part-lives) |
 
 A folder is one resource, whatever else it holds:
 

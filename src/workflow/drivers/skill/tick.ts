@@ -8,20 +8,21 @@ import { canonicalJson } from '../../../utils/canonical-json.js';
 import type { PersonHandoff, ResumeClaim, RunReadied } from '../../protocol.js';
 import { AttemptResult } from '../../attempt-result.js';
 import { attemptResultPath, type AttemptId, type RunId, type RunLock } from '../../store.js';
+import { UsageLimits } from '../../usage-limits.js';
 import type { WorkflowFailure } from '../../types.js';
 import { readChildResult } from './child-brief.js';
 import { engineReply, reportReply, respondReply, startedOf } from './engine-replies.js';
-import { canFor, confinedCan, HOST_PROFILES, sessionJudgeTool, sessionOffers, sessionToolJudge, type ConfinedJudge, type HostChoice } from './host-profiles.js';
+import { canFor, confinedCan, SESSION_HOST_PROFILES, sessionJudgeTool, sessionOffers, sessionToolJudge, type ConfinedJudge, type SessionHostChoice } from './session-host-profiles.js';
 import { writeJob } from './job.js';
 import {
-  ackLiteral, adoptLiteral, chooseHostLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral, skillResumeLiteral, skillResumeNextLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
+  ackLiteral, adoptLiteral, chooseSessionHostLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral, skillResumeLiteral, skillResumeNextLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
   type Literal,
 } from './literals.js';
 import { attendedReason, ceilingOf, localPromptTool, localReason, needsTool } from './preflight.js';
 import { drivesRun, newSkillState, readSkillState, removeSkillState, scoringSkillState, writeSkillState, type AttemptState, type SkillState, type TurnEvent } from './skill-state.js';
 import {
   ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, giveUpRow, graceRow, hasSlot, heldProbeRow, invokeRow, lockBusyRow, offeredRow, pollRow, queuedAttempts, readiedRow, reopenedRow, replyRow,
-  deadlineRow, reportCallRow, reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoredRow, scoringTickRow, startedRow, tickRow, turnRow, unattendedRow, unqueueRow, unseenEvents, type Answer,
+  deadlineRow, reportCallRow, reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoredRow, scoringTickRow, startedRow, tickRow, turnRow, unattendedRow, unqueueRow, unreadBeforeClaimRow, unseenEvents, type Answer,
   type Effect, type MovedWithEffects, type ResumeAnswers, type RowId, type StartRun, type TickTurn, type TurnAnswer,
 } from './transitions.js';
 import { errorOf, scoringWaits, turnOf, type SkillAnswer, type SkillError, type Turn, type Waiting } from './turn.js';
@@ -85,6 +86,20 @@ export async function applyEffects(context: SkillContext, lock: RunLock, start: 
         break;
       }
 
+      case 'usage-hit': {
+        const book = UsageLimits.open({ kept: applied.state.usage });
+        book.hit({ tool: effect.tool, message: effect.said, now: context.now().getTime() });
+        applied.state = { ...applied.state, usage: book.kept() };
+        break;
+      }
+
+      case 'usage-ran': {
+        const book = UsageLimits.open({ kept: applied.state.usage });
+        book.ran(effect.tool, effect.spawnedAt);
+        applied.state = { ...applied.state, usage: book.kept() };
+        break;
+      }
+
       default: {
         const unhandled: never = effect;
 
@@ -108,8 +123,9 @@ async function spawnRunner(context: SkillContext, state: SkillState, attempt: At
 async function sendReport(context: SkillContext, lock: RunLock, state: SkillState, { attempt, body, changed }: Extract<Effect, { kind: 'send' }>, unqueued: readonly AttemptId[]): Promise<{ state: SkillState; refused?: WorkflowFailure }> {
   await writeSkillState(context.config, lock, state, context.env.secrets);
   // The attempts still waiting for their place keep their whole timeout through this report too.
-  const sent = { ...body, queued: queuedAttempts(state, unqueued) };
-  const answer = await context.client.report(state.run, sent, changed === undefined ? { lock } : { lock, changed });
+  const { launched, ...payload } = body;
+  const sent = { ...payload, queued: queuedAttempts(state, unqueued) };
+  const answer = await context.client.report(state.run, sent, { lock, ...(changed !== undefined && { changed }), ...(launched && { launched }) });
   const taken = traced(context, reportedRow(state, { attempt, reply: reportReply(answer), at: context.now().toISOString() }));
 
   if (!taken) return { state };
@@ -174,9 +190,9 @@ async function scoringStates(context: SkillContext, state: SkillState): Promise<
 
 /**
  * The row an open attempt takes as a tick starts: its stored report is sent again (P11), it leaves a queue whose holder
- * closed (D9), or its runner is gone (C10, C11).
+ * closed (D9), or its runner is gone (C10, C11, C14).
  */
-async function attemptCheckRow(context: SkillContext, state: SkillState, open: AttemptState): Promise<MovedWithEffects<'P11' | 'D9' | 'C10' | 'C11'> | undefined> {
+async function attemptCheckRow(context: SkillContext, state: SkillState, open: AttemptState): Promise<MovedWithEffects<'P11' | 'D9' | 'C10' | 'C11' | 'C14'> | undefined> {
   switch (open.phase) {
     case 'reporting':
       return resendRow(state, open.attempt);
@@ -206,7 +222,7 @@ async function attemptCheckRow(context: SkillContext, state: SkillState, open: A
 export function plannedState(context: SkillContext, run: RunId, planned: StartRun): SkillState {
   return newSkillState({
     run, driver: driverIdentity('skill', context.cwd), invocation: context.invocation, options: { parallel: planned.parallel, hitl: planned.hitl, mode: context.mode },
-    host: planned.host, session: context.session, tool: context.tool, at: context.now().toISOString(), judge: planned.judge,
+    sessionHost: planned.sessionHost, session: context.session, tool: context.tool, at: context.now().toISOString(), judge: planned.judge,
   });
 }
 
@@ -274,7 +290,12 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     };
 
     const handoff = unoffered ?? request.handoff;
-    const options = handoff === undefined ? undefined : { handoff };
+    // The tools a usage limit holds now, so the engine holds the steps on them rather than lease one to fail again.
+    const limits = UsageLimits.open({ kept: state.usage });
+    const now = context.now();
+    const limitedTools = limits.held(now.getTime());
+    const childTool = state.orchestrator.tool ?? context.tool;
+    const options = { ...(handoff !== undefined && { handoff }), ...(Object.keys(limitedTools).length > 0 && { limitedTools, toolFor: () => childTool }) };
     const answer = await context.client.next(state.run, body, options);
     const at = context.now().toISOString();
     const { reply, cancelled, deadlines } = engineReply(state.run, answer);
@@ -291,7 +312,9 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     // A step given up lets the run go on, so the engine is asked again; one it refused waits as D14 says.
     if (givingUp && (await apply(givingUp.effects)).refused === undefined) continue;
     const ended = reply.kind === 'done' && !state.done ? await context.client.runVersion(state.run) : undefined;
-    const replied = traced(context, replyRow(state, { reply, at, version: ended }));
+    const limitedBy = reply.kind === 'wait' ? [...new Set(reply.held.flatMap(({ limitedTool }) => (limitedTool === undefined ? [] : [limitedTool])))] : [];
+    const idle = limitedBy.length > 0 ? limits.whenIdle(now.getTime(), limitedBy, { attended: state.options.mode === 'attended' }) : undefined;
+    const replied = traced(context, replyRow(state, { reply, at, version: ended, idle }));
 
     if (!replied) return { state, spawned };
 
@@ -302,8 +325,10 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     state = replied.state;
     await apply(replied.effects);
 
-    if (replied.row === 'D30') {
-      const offered = traced(context, offeredRow({ steps: replied.offer, offered: await context.client.offer(state.run, state.driver.workspace) }));
+    if (replied.row === 'D30' || replied.row === 'D37') {
+      const offered = traced(context, offeredRow({ steps: replied.offer, offered: await context.client.offer(state.run, state.driver.workspace), limit: replied.row === 'D37' ? replied.idle.reason : undefined }));
+
+      if (offered.row === 'D38') return { state, spawned, waiting: offered.waiting, turn: offered.turn };
 
       if (offered.row === 'D32') {
         unoffered = offered.handoff;
@@ -374,11 +399,16 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
       published: input.resume !== undefined, claim: input.resume !== undefined && input.resume.claim !== 'lacking', ceiling: ceilingOf(context.config), can: canFor(undefined),
     });
 
-    const local = carried ? localReason(carried.description) : undefined;
-    const attended = carried ? attendedNow(carried) : undefined;
+    // A run it cannot read may need either, so it is refused too, rather than claimed for nobody to drive.
+    if (carried.kind === 'failed') {
+      return { answer: { error: errorOf(traced(context, unreadBeforeClaimRow(run, carried.failure)).answer, { invocation: context.invocation, same, localTool }) } };
+    }
 
-    if (carried && (local !== undefined || attended !== undefined)) {
-      const readied: RunReadied = { kind: 'ready', installed: false, ...carried, judging: { kind: 'none' } };
+    const local = carried.kind === 'carried' ? localReason(carried.description) : undefined;
+    const attended = carried.kind === 'carried' ? attendedNow(carried) : undefined;
+
+    if (carried.kind === 'carried' && (local !== undefined || attended !== undefined)) {
+      const readied: RunReadied = { kind: 'ready', installed: false, description: carried.description, status: carried.status, judging: { kind: 'none' } };
       const refused = traced(context, readiedRow({ run, readied, kept: false, mode: context.mode, local, attended, needsTool: false, answers, confirmed }));
 
       if (refused && 'answer' in refused) return { answer: { error: errorOf(refused.answer, { invocation: context.invocation, same, localTool }) } };
@@ -387,7 +417,7 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
 
   if (input.resume !== undefined || (input.takeover && !state)) {
     const readied = await context.client.resume(run, {
-      lock, claim: input.resume === undefined ? 'none' : input.resume.claim, checkout: context.cwd, ceiling: ceilingOf(context.config), can: { ...canFor(undefined), confined: await sessionOffers(context.tool) }, tool: context.tool,
+      lock, claim: input.resume === undefined ? 'none' : input.resume.claim, takeover: { mode: context.mode, confirmed }, checkout: context.cwd, ceiling: ceilingOf(context.config), can: { ...canFor(undefined), confined: await sessionOffers(context.tool) }, tool: context.tool,
     });
 
     const local = readied.kind === 'ready' ? localReason(readied.description) : undefined;
@@ -397,6 +427,19 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
       run, readied, kept: state !== undefined, mode: context.mode, local, attended, answers, confirmed,
       needsTool: readied.kind === 'ready' && needsTool(readied.description, { tool: context.tool, judged: answers.judge !== false }),
     }));
+
+    // A --confirmed that answered the takeover answered no invoke: ask of the run (R22), asked now that the run is this
+    // install's, so the same call with --confirmed answers it.
+    const asked = readied.kind === 'ready' && readied.tookOverActive && confirmed
+      ? traced(context, invokeRow(await context.client.resumeRefusal(run, { caller: { evidence: context.evidence, confirmed: false, mode: context.mode }, published: false }), context.mode))
+      : undefined;
+
+    if (asked) {
+      // The takeover installed the published run over a skill.json kept here, which made it stale, as for R28.
+      if (state !== undefined) await removeSkillState(context.config, lock);
+
+      return { answer: { error: errorOf(asked.answer, { invocation: context.invocation, same, localTool, tool: input.resume?.tool }) } };
+    }
 
     if (taken && 'answer' in taken) {
       // R28 with a skill.json kept here comes after the resume installed the published run over it, which made it stale: the
@@ -464,14 +507,14 @@ async function finish(context: SkillContext, lock: RunLock, state: SkillState, t
 interface Resume { claim: ResumeClaim; confirmed: boolean; answers: ResumeAnswers; tool?: string }
 
 /**
- * A call that answers with a turn at once: `next`, a takeover, a resume, an answer to the host question, an ack, a place
- * the host made, or an answer to a gate.
+ * A call that answers with a turn at once: `next`, a takeover, a resume, an answer to the session host question, an ack, a place
+ * the session host made, or an answer to a gate.
  */
 export type ForegroundCall =
   | { kind: 'next' }
   | { kind: 'takeover'; confirmed: boolean }
   | ({ kind: 'resume' } & Resume)
-  | { kind: 'choose'; choice: HostChoice }
+  | { kind: 'choose'; choice: SessionHostChoice }
   | { kind: 'ack'; attempt: AttemptId }
   | { kind: 'adopt'; attempt: AttemptId; dir: string }
   | { kind: 'respond'; step: string; pass: number; choice: string };
@@ -501,7 +544,7 @@ function literalOf(invocation: Invocation, run: RunId, call: ForegroundCall): Li
     }
 
     case 'choose':
-      return chooseHostLiteral(invocation, run, call.choice);
+      return chooseSessionHostLiteral(invocation, run, call.choice);
     case 'ack':
       return ackLiteral(invocation, run, call.attempt);
     case 'adopt':
@@ -524,7 +567,7 @@ async function callRowOf(context: SkillContext, state: SkillState, call: Foregro
     case 'resume':
       return undefined;
     case 'choose':
-      return chooseRow(state, { choice: call.choice, profile: HOST_PROFILES[call.choice], judgeTool: sessionJudgeTool(state), judge: await sessionJudgeOn(state, call.choice) });
+      return chooseRow(state, { choice: call.choice, profile: SESSION_HOST_PROFILES[call.choice], judgeTool: sessionJudgeTool(state), judge: await sessionJudgeOn(state, call.choice) });
     case 'ack':
       return ackRow(state, call.attempt);
     case 'adopt':
@@ -543,11 +586,11 @@ async function callRowOf(context: SkillContext, state: SkillState, call: Foregro
   }
 }
 
-/** The confined judge of the session's tool, probed only when `choice` is a host that starts no child agent for a session judge. */
-async function sessionJudgeOn(state: SkillState, choice: HostChoice): Promise<ConfinedJudge | undefined> {
+/** The confined judge of the session's tool, probed only when `choice` is a session host that starts no child agent for a session judge. */
+async function sessionJudgeOn(state: SkillState, choice: SessionHostChoice): Promise<ConfinedJudge | undefined> {
   const tool = sessionJudgeTool(state);
 
-  return HOST_PROFILES[choice].startsChildAgent || tool === undefined ? undefined : sessionToolJudge(tool);
+  return SESSION_HOST_PROFILES[choice].startsChildAgent || tool === undefined ? undefined : sessionToolJudge(tool);
 }
 
 /**
@@ -578,7 +621,7 @@ async function invokeRefused(context: SkillContext, run: RunId, call: Extract<Fo
 
   if (drivesRun(read.kind === 'found' ? read.state : undefined, context.session)) return undefined;
   const caller = { evidence: context.evidence, confirmed: call.confirmed, mode: context.mode };
-  const refused = traced(context, invokeRow(await context.client.resumeRefusal(run, { caller, published: call.kind === 'resume' })));
+  const refused = traced(context, invokeRow(await context.client.resumeRefusal(run, { caller, published: call.kind === 'resume', claim: call.kind === 'resume' && call.claim === 'any' }), context.mode));
 
   if (!refused) return undefined;
   const confirmed = literalOf(context.invocation, run, { ...call, confirmed: true });
@@ -681,7 +724,7 @@ export async function agentReport(context: SkillContext, run: RunId, call: { att
     const { state } = read;
     const result = await readChildResult({ config: context.config, run, attempt });
     await AttemptResult.mask(attemptResultPath(context.config, run, attempt), context.env.secrets);
-    const taken = traced(context, reportRow(state, { attempt, modelUnavailable: call.modelUnavailable, result }));
+    const taken = traced(context, reportRow(state, { attempt, modelUnavailable: call.modelUnavailable, result, session: context.session, tool: context.tool }));
 
     if (!taken) return { data: { runner: { attempt, status: 'gone' } } };
 

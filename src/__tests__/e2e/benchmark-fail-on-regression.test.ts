@@ -27,9 +27,16 @@ async function fixtureOfThree(): Promise<BenchmarkFixture> {
   return fixture;
 }
 
-/** From now on the fake claude changes nothing, so every trial's check fails. */
+/**
+ * From now on the fake claude changes nothing, so every trial's check fails. It still ends its turn as before, so each
+ * trial is failed, not an error.
+ */
 function stopFixing(fixture: BenchmarkFixture): void {
-  fs.writeFileSync(path.join(fixture.bin, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const file = path.join(fixture.bin, 'claude');
+  const fixing = "fs.writeFileSync('answer.js', 'module.exports = 42;\\n');";
+  const script = fs.readFileSync(file, 'utf8');
+  if (!script.includes(fixing)) throw new Error(`the fake claude at ${file} does not fix the answer as expected`);
+  fs.writeFileSync(file, script.replace(fixing, ''), { mode: 0o755 });
 }
 
 const DoneSchema = z.object({ run: z.string(), outcome: z.string(), finally: z.array(z.object({ id: z.string() }).passthrough()).optional() }).passthrough();
@@ -101,7 +108,7 @@ describe('benchmark run --fail-on-regression', () => {
     const waited = await fixture.teamai(['workflow', 'next', run, '--driver', 'skill', '--wait']);
     const resumed = await fixture.teamai(['workflow', 'resume', run, '--driver', 'local', '--sandbox']);
 
-    expect(envelope(waited).data?.turn).toMatchObject({ waiting: { held: [{ step: 'trials.baselines.fix', missing: ['workspace.clone'] }] } });
+    expect(envelope(waited).data?.turn).toMatchObject({ waiting: { held: [{ step: 'trials.baselines.fix', missing: ['workspace.clone', 'isolation', 'prepare', 'env'] }] } });
     expect(doneOf(resumed)).toMatchObject({ run, outcome: 'succeeded', finally: [{ id: 'regression', outcome: 'failed' }] });
     expect(gateOf(fixture, run)).toEqual({ regression: 'failed', report: 'dropped' });
   }, 240_000);

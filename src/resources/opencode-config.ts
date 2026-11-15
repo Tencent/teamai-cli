@@ -1,10 +1,10 @@
 import path from 'node:path';
 import { z } from 'zod';
-import { isJsonObject, type JsonObject, type JsonValue } from '../types.js';
 import { mcpSyntaxOf } from '../tool-registry.js';
 import { readFileSafe, writeJsonAtomic, writeJsonKeepingComments, pathExists, remove, symlinkTarget } from '../utils/fs.js';
-import { isPlainJson, parseJsonAs, type JsonSyntax } from '../utils/json.js';
-import { log } from '../utils/logger.js';
+import { type JsonSyntax, isJsonObject, type JsonObject, type JsonValue } from '@teamai/shared/json';
+import { isPlainJson, parseJsonAs } from '../utils/json.js';
+import { log } from '@teamai/shared/log';
 
 // ─── OpenCode config activation ──────────────────────────────
 //

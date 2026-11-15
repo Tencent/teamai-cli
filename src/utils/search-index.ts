@@ -1,12 +1,13 @@
 import path from 'node:path';
-import { readFile, readdir, rm, stat } from 'node:fs/promises';
+import { readdir, rm, stat } from 'node:fs/promises';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import matter from 'gray-matter';
 import { z } from 'zod';
-import { errnoCode, expandHome, readFileSafe, readJson, writeJsonAtomic, listFiles, pathExists, isDraft, isIgnored } from './fs.js';
+import { errnoCode, readFileSafe, readJson, writeJsonAtomic, listFiles, pathExists, isDraft, isIgnored } from './fs.js';
 import { tokenize, wordSegments, MAX_TOKENIZE_CHARS } from './tokenizer.js';
-import { log } from './logger.js';
+import { log } from '@teamai/shared/log';
 import { teamRuleBody, teamRuleData } from '../resources/team-rule.js';
 import {
   SEARCH_INDEX_VERSION,
@@ -22,14 +23,14 @@ import {
   UserVotesSchema,
   UserVotesV2Schema,
 } from '../types.js';
-import { getUserHome } from './home.js';
+import { getUserHome, expandHome } from '@teamai/shared/home';
 import { walkLearningsTree } from './learnings-roots.js';
 import { parseRelatedBlock, relationsFromLinks } from '../resource-relations.js';
 import type { StoredRelation } from '../resource-relations.js';
 import { localLinkTargets } from './markdown-links.js';
 import type { FrontmatterValue } from './frontmatter.js';
 import type { ConfidenceFactors } from '../maintenance/confidence.js';
-import { parseYaml } from './yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { TeamSkillSource } from '../resources/team-skill-source.js';
 import { RESOURCE_LAYOUTS } from '../resources/resolver.js';
 
@@ -586,7 +587,7 @@ async function entryFromMdFile(
   let content: string;
 
   try {
-    content = await readFile(expandHome(absPath), 'utf-8');
+    content = await readRegularFile(expandHome(absPath), 'utf-8');
   } catch (e) {
     reads.unreadable.push({ path: absPath, reason: failureReason(e) });
 

@@ -17,7 +17,7 @@ import { getDataHome, LEARNINGS_LOCK_FILENAME, SYNC_LOCK_FILENAME, type LocalCon
 import { learningsBranch } from '../utils/learnings-branch.js';
 import { listPendingLearnings, savePendingLearning } from '../utils/pending-learnings.js';
 import { publishLearningsMaintenance, publishQueuedLearnings } from '../utils/learnings-publish.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { writeInstallConfig } from './helpers/install-config.js';
 
 let tmp: string;
@@ -710,10 +710,10 @@ describe('publishing what maintenance changed (#823)', () => {
     // A read that fails, as on a permission or I/O error, says nothing about the record itself.
     const unreadable = path.join(records, '0-unreadable.json');
     fs.writeFileSync(unreadable, JSON.stringify({ message: '[teamai] Prune', files: [] }));
-    const readFile = fs.promises.readFile;
-    vi.spyOn(fs.promises, 'readFile').mockImplementation(async (file, options) => {
-      if (file === unreadable) throw Object.assign(new Error(`EACCES: permission denied, open '${unreadable}'`), { code: 'EACCES' });
-      return readFile(file, options);
+    const open = fs.promises.open;
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+      if (args[0] === unreadable) throw Object.assign(new Error(`EACCES: permission denied, open '${unreadable}'`), { code: 'EACCES' });
+      return open(...args);
     });
     const warned = watchWarnings();
 

@@ -95,7 +95,7 @@ vi.mock('../builtin-skills.js', async (importOriginal) => {
 import { pull, checkoutKey, compileRecallRulesBlock, cleanupInactiveNamespaceSkills } from '../pull.js';
 import { loadLocalConfigForScope, loadTeamConfig, detectProjectConfig, loadStateForScope, saveStateForScope } from '../config.js';
 import { getHeadRev, createGit, pullRepo } from '../utils/git.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { acquireLock } from '../update.js';
 import {
   TeamaiConfigSchema,

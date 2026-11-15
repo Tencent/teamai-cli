@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { PROCESS_READ_CHANNEL } from '@teamai/shared/process-group';
 
-import { type AgentWaitBudget, compareAgentWait, fileSystemCalls, otherProcesses } from './agent-wait-budget.js';
+import { type AgentWaitBudget, compareAgentWait, fileSystemCalls, otherProcesses, readLines } from './agent-wait-budget.js';
 
 type Row = AgentWaitBudget['rows'][number];
 
@@ -135,15 +135,18 @@ describe('otherProcesses', () => {
   });
 });
 
-describe('fileSystemCalls', () => {
-  it('adds each process\'s calls to the side it ran on, and a process with no start record to the waited side', () => {
-    expect(fileSystemCalls([
-      { ev: 'start', pid: 1, argv: ['node', 'teamai'], side: 'waited' },
-      { ev: 'start', pid: 2, argv: ['node', 'teamai'], side: 'after' },
-      { ev: 'fs', pid: 1, calls: 120 },
-      { ev: 'fs', pid: 2, calls: 30 },
-      { ev: 'fs', pid: 3, calls: 5 },
-    ])).toEqual({ waited: 125, after: 30 });
+describe('readLines', () => {
+  it('leaves out a last line a writer still appends to, and keeps every finished one', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-wait-lines-'));
+    const file = path.join(dir, 'trace2.json');
+
+    try {
+      fs.writeFileSync(file, '{"event":"start","sid":"a"}\n{"event":"exit","sid":"a"}\n{"event":"region_enter","sid":"b","time":"2026-11-12T03:20:12.024204Z"');
+
+      expect(readLines(file)).toEqual(['{"event":"start","sid":"a"}', '{"event":"exit","sid":"a"}']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -175,5 +178,17 @@ describe('agent-wait-preload.cjs', () => {
 
   it('counts a read that ran ps once, by its spawn alone', () => {
     expect(recordsOf([{ ps: ['-o', 'lstart=', '-p', '42'], spawned: true }]).filter((record) => record.ev === 'spawn')).toEqual([]);
+  });
+});
+
+describe('fileSystemCalls', () => {
+  it('adds each process\'s calls to the side it ran on, and a process with no start record to the waited side', () => {
+    expect(fileSystemCalls([
+      { ev: 'start', pid: 1, argv: ['node', 'teamai'], side: 'waited' },
+      { ev: 'start', pid: 2, argv: ['node', 'teamai'], side: 'after' },
+      { ev: 'fs', pid: 1, calls: 120 },
+      { ev: 'fs', pid: 2, calls: 30 },
+      { ev: 'fs', pid: 3, calls: 5 },
+    ])).toEqual({ waited: 125, after: 30 });
   });
 });

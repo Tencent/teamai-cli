@@ -191,7 +191,7 @@ describe('index local votes (#1233)', () => {
     expect(await fs.readFile(path.join(config.repo.localPath, 'votes', 'alice.yaml'), 'utf8')).toBe(before);
   });
   it.each([false, true])('names a corrupt votes file, including with local deltas: %s', async (withLocal) => {
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     const error = vi.spyOn(log, 'error').mockImplementation(() => {});
     try {
       await confirmed(snapshot());

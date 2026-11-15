@@ -370,12 +370,12 @@ export class CodexAdapter extends AgentAdapter {
   }
 
   private scanJsonlFiles(): string[] {
-    return scanFiles(this.storageRoot, /\.jsonl$/);
+    return scanFiles(this.storageRoot, /\.jsonl$/, this.host.skippedFolder);
   }
 
   /** Every rollout, active then archived: Codex moves an archived thread's rollout to `archived_sessions/`. */
   private scanAllRollouts(): string[] {
-    return [...this.scanJsonlFiles(), ...scanFiles(path.join(path.dirname(this.storageRoot), 'archived_sessions'), /\.jsonl$/)];
+    return [...this.scanJsonlFiles(), ...scanFiles(path.join(path.dirname(this.storageRoot), 'archived_sessions'), /\.jsonl$/, this.host.skippedFolder)];
   }
 
   /** The rollout to read or delete, archived ones included, so it agrees with `existingSessionId`. */

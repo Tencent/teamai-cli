@@ -20,7 +20,7 @@ vi.mock('@teamai/shared/log', () => ({
 }));
 
 const { saveSession } = await import('../save-session.js');
-const { log } = await import('../utils/logger.js');
+const { log } = await import('@teamai/shared/log');
 
 let home: string;
 

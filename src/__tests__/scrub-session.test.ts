@@ -2,6 +2,7 @@
  * scrub.test.ts — 迁移脱敏（--scrub）。
  */
 import { describe, expect, it } from 'vitest';
+import { claudeProjectDirName } from '@teamai/tool-core/sessions/fs';
 import { scrubSession, titleSpellsLocalPath } from '../session-flow/scrub.js';
 import type { Session } from '@teamai/tool-core/sessions/ir';
 
@@ -279,6 +280,13 @@ describe('scrubSession with localPaths, for a session published to the team arch
     const { session } = scrubSession(said('edit /opt/api/src/retry.ts', '/opt/api'), { localPaths: roots });
 
     expect(textOf(session)).toEqual({ type: 'text', text: 'edit <repo>/packages/api/src/retry.ts' });
+  });
+
+  it('rewrites the Claude project directory of a repository whose name Claude Code cuts past 200 characters', () => {
+    const repo = `/Users/me/${'deep/'.repeat(45)}app`;
+    const project = claudeProjectDirName(repo);
+
+    expect(textOf(scrubSession(said(`see /private/tmp/claude-502/${project}/6e64/tasks/b.output`, repo), { localPaths: { ...machine, repo: [repo] } }).session)).toEqual({ type: 'text', text: 'see <tmp>/<project>/6e64/tasks/b.output' });
   });
 
   it('rewrites the directory of a session that ran outside any repository as <cwd>', () => {

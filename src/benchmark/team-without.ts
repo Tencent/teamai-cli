@@ -321,7 +321,7 @@ export function leavesOut(paths: readonly string[], file: string): boolean {
 
 /** What pull delivers from the team repo `at` names, whose files are `present`, by pull's resolvers. */
 async function deliveryAt(at: LocalConfig, present: readonly string[]) {
-  const team = await loadTeamConfig(at.repo.localPath);
+  const team = await loadTeamConfig(at.repo.localPath, at);
 
   if (team === null) throw new Error('its teamai.yaml cannot be read');
   const context = await buildRolePullContext(at);

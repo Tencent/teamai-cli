@@ -6,7 +6,7 @@ import {
   saveLocalConfigForScope,
   saveStateForScope,
 } from './config.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { GlobalOptions, LocalConfig } from './types.js';
 
 async function resolveExcludeScope(options: GlobalOptions = {}): Promise<LocalConfig> {

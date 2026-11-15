@@ -1,6 +1,6 @@
 /** Which judges this machine has for a set of scorers, at the isolation the team, each scorer and this machine ask for. */
 import { loadModelAliases } from '../models/aliases.js';
-import { confinedOffers } from '../tool-launch/confined.js';
+import { confinedOffers } from '../workflow/confined-launch.js';
 import type { LocalConfig } from '../types.js';
 import { pinScorers } from './cache.js';
 import { scoringUnavailable } from './home.js';

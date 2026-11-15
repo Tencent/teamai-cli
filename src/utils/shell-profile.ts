@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { pathExists, readFileSafe } from './fs.js';
-import { expandHome, getUserHome } from './home.js';
-import { isOnPath } from './lookpath.js';
+import { expandHome, getUserHome } from '@teamai/shared/home';
+import { isOnPath } from '@teamai/shared/lookpath';
 import { TEAMAI_ENV_START, TEAMAI_ENV_END } from '../types.js';
 
 /** Every profile file `detectShellProfile()` could ever have resolved to, across platforms and CLI versions. */
@@ -18,7 +18,7 @@ export const SHELL_PROFILE_CANDIDATE_NAMES = ['.zshenv', '.zshrc', '.bashrc', '.
  * `platform` is injectable because CI only runs ubuntu/macos: hardcoding
  * `process.platform` would leave the Windows branch permanently uncovered,
  * which is how #682 went unnoticed. Same pattern as `resolveCliPath` in
- * `utils/cli-path.ts`.
+ * `@teamai/shared/cli-path`.
  *
  * `SHELL` is checked before the platform branch, on every platform: a zsh
  * installed via MSYS2/Cygwin on Windows sets `SHELL` just like it does on

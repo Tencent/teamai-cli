@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile, stat } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdir, mkdtemp, readdir, readFile, readlink, rm, writeFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { acquireImportLock, isImportInProgress } from '../utils/import-lock.js';
@@ -103,6 +105,39 @@ describe('import-lock', () => {
 
     expect(await isImportInProgress(teamRepo)).toBe(false);
     expect(await fileExists(lockPath)).toBe(false);
+  });
+
+  it('takes the lock over from a process whose pid a later process was given', async () => {
+    const later = spawn('sleep', ['30'], { stdio: 'ignore' });
+    await once(later, 'spawn');
+    try {
+      // Written an hour ago, within the TTL, by a holder that exited since; its pid now names `later`, started after.
+      await writeFile(lockPath, JSON.stringify({ pid: later.pid, host: os.hostname(), startedAt: new Date(Date.now() - 3600 * 1000).toISOString(), teamRepo }), 'utf8');
+
+      const release = await acquireImportLock(teamRepo);
+
+      expect(JSON.parse(await readFile(lockPath, 'utf8'))).toMatchObject({ pid: process.pid });
+      await release();
+    } finally {
+      later.kill('SIGKILL');
+    }
+  });
+
+  it.runIf(process.platform === 'linux')('takes the lock over from a holder whose recorded start is not the start of the process with its pid now', async () => {
+    const later = spawn('sleep', ['30'], { stdio: 'ignore' });
+    await once(later, 'spawn');
+    try {
+      // This process's start ticks and namespace stand for a holder that exited; `later` was given its pid since.
+      const ownStat = await readFile('/proc/self/stat', 'utf8');
+      const startTicks = Number(ownStat.slice(ownStat.lastIndexOf(')') + 2).split(' ')[19]);
+      const pidNamespace = await readlink('/proc/self/ns/pid');
+      await writeFile(lockPath, JSON.stringify({ pid: later.pid, host: os.hostname(), startedAt: new Date().toISOString(), teamRepo, startTicks, pidNamespace }), 'utf8');
+
+      expect(await isImportInProgress(teamRepo)).toBe(false);
+      expect(await fileExists(lockPath)).toBe(false);
+    } finally {
+      later.kill('SIGKILL');
+    }
   });
 
   it('lock from a different host within TTL is treated as active', async () => {

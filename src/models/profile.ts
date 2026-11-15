@@ -2,7 +2,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import YAML from 'yaml';
-import { parseYaml } from '../utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
 import { getTeamaiHomeDir } from '../types.js';
@@ -17,6 +17,7 @@ import {
   type EntryReader,
   type ResolvedEntry,
 } from '../namespaced-entries.js';
+import { readRegularFile, readRegularFileSync } from '@teamai/shared/regular-file';
 
 export const ModelProtocolSchema = z.enum([
   'anthropic',
@@ -313,7 +314,7 @@ const TeamYamlFieldsSchema = z.object({
 /** The identity fields of `localPath`'s teamai.yaml, or undefined when it is absent, unreadable or not a mapping. */
 function teamYamlFields(localPath: string): z.infer<typeof TeamYamlFieldsSchema> | undefined {
   try {
-    return TeamYamlFieldsSchema.safeParse(parseYaml(fs.readFileSync(path.join(localPath, 'teamai.yaml'), 'utf8'))).data;
+    return TeamYamlFieldsSchema.safeParse(parseYaml(readRegularFileSync(path.join(localPath, 'teamai.yaml'), 'utf8'))).data;
   } catch {
     // teamai.yaml may be absent or unreadable.
     return undefined;
@@ -678,7 +679,7 @@ export async function loadModelInputs(filePath: string): Promise<StoredModelInpu
   let content: string;
 
   try {
-    content = await fs.promises.readFile(filePath, 'utf8');
+    content = await readRegularFile(filePath, 'utf8');
   } catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return {};
     throw new Error(`Cannot read local model inputs at ${filePath}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });

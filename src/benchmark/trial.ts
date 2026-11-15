@@ -1,7 +1,10 @@
 /**
- * The checks of a benchmark's tasks. `runCheckStep` is `teamai benchmark check`, the command of a baseline and a trial's
- * check, in the clone its step's place prepared: the files check.add writes, the protected paths as the starting commit
- * has them, and the check's verdict. `commitCheckFiles` commits the files a suite's checks write, before a plan is frozen.
+ * The checks of a benchmark's tasks. A baseline's or a trial's check step runs the task's own check, where its runtime
+ * runs it, such as in a sandbox with no teamai. teamai owns the rest of it, on this machine: `prepareCheckPlace` writes
+ * the files check.add names, and for a trial puts the protected paths back as the starting commit has them, in the
+ * clone it prepared for the step; `decideCheckReport` turns the step's exit code into its output, the check's verdict,
+ * and stores a trial's correctness label. `outdatedBenchmarkPlan` refuses every lease and resume of a run whose plan
+ * another schemaVersion froze. `commitCheckFiles` commits the files a suite's checks write, before a plan is frozen.
  */
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -11,21 +14,21 @@ import { loadLocalConfigForScope } from '../config.js';
 import { teamRefBlocker, type TeamRefBlock } from '../team-ref.js';
 import { isSelfMode, type LocalConfig } from '../types.js';
 import { sameEnvName } from '../resources/env-key.js';
-import { log } from '../utils/logger.js';
-import { leaseDeadline } from '../workflow/limits.js';
+import { log } from '@teamai/shared/log';
 import { checkLabel, checkVerdict, type Added, type CheckOutput } from '../scorers/check.js';
 import { restoreProtected, writeAdded, type CheckRun } from '../scorers/check-run.js';
 import { labelVersion, type RunSubject, type ScoreLabel } from '../scorers/label.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { keepsLabelsLocal } from '../scorers/score-labels.js';
 import { judgedFacts } from '../scorers/scoring-evidence.js';
+import { leaseDeadline } from '../workflow/limits.js';
 import { commitCacheOf } from '../workflow/place/place.js';
-import { findAttemptRun } from '../workflow/run-location.js';
 import { SANDBOX_WITHHELD_ENV } from '../workflow/requirements.js';
-import { runShellCommand } from '../workflow/shell-command.js';
-import type { RunState, WorkflowFailure } from '../workflow/types.js';
+import type { ReportInput } from '../workflow/engine.js';
+import type { LeasedStep } from '../workflow/step-state.js';
+import type { RunState, StepOutcome, WorkflowFailure } from '../workflow/types.js';
 import { untrustedGit } from '../workflow/worktree.js';
-import { BENCHMARK_PLAN_SCHEMA_VERSION, baselineStepOf, checkStepOf, correctnessScorerName, type BenchmarkPlan, type PlannedArm, type PlannedCheck, type PlannedTrial } from './plan.js';
+import { baselineStepOf, checkStepOf, correctnessScorerName, type BenchmarkPlan, type PlannedArm, type PlannedCheck, type PlannedTrial } from './plan.js';
 import { TaskJudge, type CheckFile, type Suite } from './suite.js';
 import { planOfRun } from './run-plan.js';
 
@@ -129,67 +132,121 @@ export function toolUnavailableNotice(arm: Pick<PlannedArm, 'name' | 'tool'>): s
   return `Arm "${arm.name}" uses ${arm.tool}, which the local driver cannot run, so its trials did not run.`;
 }
 
-/** Which check `teamai benchmark check` runs: a check task's baseline, or a trial's check. */
-export type CheckStepMode = 'baseline' | 'trial';
+/**
+ * Why no driver may lease a step of `run`, and `teamai workflow resume` refuses it: a benchmark run whose plan a teamai
+ * before an upgrade froze in another schemaVersion, which this one cannot measure. Undefined for any other run, and for
+ * a benchmark run before its plan step printed the plan.
+ */
+export function outdatedBenchmarkPlan(run: RunState): WorkflowFailure | undefined {
+  const planned = planOfRun(run);
+
+  return 'failure' in planned && planned.failure.code === 'benchmark_plan_outdated' ? planned.failure : undefined;
+}
 
 /**
- * `teamai benchmark check --baseline|--trial`: the check of the step whose attempt `env` marks, in `cwd`, the clone that
- * step's place prepared and set up. It reads what it checks from the run's plan, by the step's id: a trial's check first
- * puts the protected paths back as the starting commit has them; both then write the files check.add names, from the
- * run's checkout or the commit cache. Git and the check run with `env` without the names a strict sandbox withholds, which this
- * process may have set itself, until `signal` or the lease's deadline stops them, and the verdict is classified here, once.
- * A trial's check that ran writes the trial's correctness label, decided by the check, through the store `teamai score
- * write` writes to, but not one that passed a task with success criteria, whose judge then decides. Answers its output, `could_not_run` with `prepare_failed` when putting back the protected paths or
- * writing check.add failed, or why the step could not check at all, with one progress line either way.
+ * The check step `step` is in the benchmark plan of `run`: a task's baseline, or a trial's check, with the task's check
+ * and, for a trial's check, the trial as its lines name it. Undefined for any other step, and in a run with no plan this
+ * teamai reads, which never runs a check here: `outdatedBenchmarkPlan` refuses its leases and its resume.
  */
-export async function runCheckStep({ mode, env: given, cwd, signal }: { mode: CheckStepMode; env: NodeJS.ProcessEnv; cwd: string; signal?: AbortSignal }): Promise<{ output: CheckOutput } | { failure: WorkflowFailure }> {
-  const found = await findAttemptRun(given);
+function plannedCheckOf(run: RunState, step: string): (Checked & { plan: BenchmarkPlan; prefix: string }) | undefined {
+  const planned = planOfRun(run, step);
 
-  if ('error' in found) {
-    if (found.error.code !== 'run_unreadable') return { failure: found.error };
-
-    return { failure: { ...found.error, message: `${found.error.message}: its file, or the benchmark plan in it, is not in a form this teamai reads, whose plans are schemaVersion ${BENCHMARK_PLAN_SCHEMA_VERSION}. Run the benchmark with the teamai that started it, or start it again.` } };
-  }
-
-  const { config, run, step } = found;
-  const planned = planOfRun(run, step.id);
-
-  if ('failure' in planned) return planned;
+  if (!('found' in planned)) return undefined;
   const { plan, prefix } = planned.found;
-  const checked = step.id.startsWith(prefix) ? checkedBy(plan, mode, step.id.slice(prefix.length)) : undefined;
 
-  if (!checked) {
-    return { failure: { code: 'invalid_arguments', message: `Step "${step.id}" of run ${run.id} is not ${mode === 'baseline' ? 'the baseline of a check task' : 'the check of a trial'} of a benchmark run, so teamai benchmark check --${mode} has nothing to check there.` } };
-  }
+  if (!step.startsWith(prefix)) return undefined;
+  const checked = checkedBy(plan, step.slice(prefix.length));
 
-  const { task, judge, at } = checked;
-  const env = Object.fromEntries(Object.entries(given).filter(([key]) => sameEnvName(SANDBOX_WITHHELD_ENV, key) === undefined));
+  return checked && { ...checked, plan, prefix };
+}
+
+/** The env git gets on this machine for a check step: teamai's own, without the names a strict sandbox withholds. */
+function checkGitEnv(): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(process.env).filter(([key]) => sameEnvName(SANDBOX_WITHHELD_ENV, key) === undefined));
+}
+
+/** The leased step of `run` whose attempt is `attempt`. */
+function leasedStep(run: RunState, attempt: string): LeasedStep | undefined {
+  return run.steps.find((state): state is LeasedStep => state.status === 'leased' && state.attempt === attempt);
+}
+
+/**
+ * What teamai does on this machine in the place `dir` it prepared for attempt `attempt` of `run`, before the step's
+ * command, the task's own check, runs there on the step's runtime, when the step is a benchmark check step; nothing for
+ * any other step. A trial's check first gets the protected paths back as the starting commit has them, then both write
+ * the files check.add names, from the run's checkout or the commit cache, neither of which the step's runtime may see.
+ * Git starts nothing the clone configures, runs without the names a strict sandbox withholds, and stops at the lease's
+ * deadline. Repeating it repeats the same writes, so a prepare that runs again leaves the same place. Answers why it
+ * could not, as `trial_prepare_failed`, after the check's progress line.
+ */
+export async function prepareCheckPlace({ config, run, attempt, dir }: { config: LocalConfig; run: RunState; attempt: string; dir: string }): Promise<WorkflowFailure | undefined> {
+  const step = leasedStep(run, attempt);
+  const checked = step && plannedCheckOf(run, step.id);
+
+  if (!checked) return undefined;
+  const { task, judge, at, plan } = checked;
+  const env = checkGitEnv();
   const sources = [...(run.checkout !== undefined ? [run.checkout] : []), commitCacheOf(config, plan.suite.repo)];
   const expiresAt = leaseDeadline(run, step);
 
-  const prepared = (mode === 'trial' ? await restoreProtected({ clone: cwd, startingCommit: task.startingCommit, protect: judge.protect, sources, env, expiresAt }) : undefined)
-    ?? (judge.add ? await writeAdded({ clone: cwd, add: judge.add, sources, env, expiresAt }) : undefined);
+  const failure = (at ? await restoreProtected({ clone: dir, startingCommit: task.startingCommit, protect: judge.protect, sources, env, expiresAt }) : undefined)
+    ?? (judge.add ? await writeAdded({ clone: dir, add: judge.add, sources, env, expiresAt }) : undefined);
 
-  const ran: CheckRun = prepared
-    ? { kind: 'error', failure: prepared }
-    : { kind: 'check', verdict: checkVerdict((await runShellCommand({ command: judge.run, cwd, env, signal, expiresAt })).exit, process.platform) };
+  if (failure) progressOf(checked, { kind: 'error', failure });
 
-  if (at) progress(at, ran);
-  else baselineProgress(task.id, ran);
+  return failure;
+}
 
-  if (ran.kind === 'error') return { output: { result: 'could_not_run', cause: 'prepare_failed', label: '' } };
-  const { verdict } = ran;
+/** The report of an attempt that ran to an end, rather than one its driver handed back. */
+type EndedReport = ReportInput & { outcome: Exclude<StepOutcome, 'released'> };
+
+/** The report codes of a check command that ran to an exit: the command's own failure, or a step that exited 0. */
+const RAN_TO_EXIT: ReadonlySet<WorkflowFailure['code'] | undefined> = new Set([undefined, 'command_failed', 'input_rejected']);
+
+/**
+ * `report`, the report of the attempt of a step of `run`, with what teamai decides when the step is a benchmark check
+ * step whose command, the task's own check, ran to an exit: the step succeeds with output `{ result, cause, label }`,
+ * the check's verdict classified here, once, from the exit code alone, whatever the command printed. A trial's check
+ * that ran stores the trial's correctness label, decided by the check, through the store `teamai score write` writes to,
+ * but not one that passed a task with success criteria, whose judge then decides. A report of any other step, or one
+ * that failed for a cause of its own, such as a runtime lost, is answered as it came. A check reported with no exit code
+ * fails `invalid_report`, whatever outputs it carries; a check whose label could not
+ * be stored fails with why.
+ */
+export async function decideCheckReport({ config, run, report }: { config: LocalConfig; run: RunState; report: EndedReport }): Promise<EndedReport> {
+  if (report.outcome === 'failed' && !RAN_TO_EXIT.has(report.failure?.code)) return report;
+  const step = leasedStep(run, report.attempt);
+  const checked = step && plannedCheckOf(run, step.id);
+
+  if (!checked) return report;
+
+  if (report.exitCode === undefined) {
+    const { outputs, ...unreported } = report;
+    const failure: WorkflowFailure = { code: 'invalid_report', message: `Step "${step.id}" of run ${run.id} is a benchmark check step, whose output teamai decides from the check's exit status, and its report carries none. Have the driver report its exitCode.` };
+
+    return { ...unreported, outcome: 'failed', message: failure.message, failure };
+  }
+
+  // What the command printed and how the report named its exit are not the step's: its output is the verdict.
+  const { message, failure, outputs, ...ran } = report;
+  const verdict = checkVerdict({ kind: 'exited', code: report.exitCode }, process.platform);
+  progressOf(checked, { kind: 'check', verdict });
 
   switch (verdict.verdict) {
     case 'could_not_run':
-      return { output: { result: 'could_not_run', cause: verdict.cause, label: '' } };
+      return { ...ran, outcome: 'success', outputs: { result: 'could_not_run', cause: verdict.cause, label: '' } satisfies CheckOutput };
     case 'passed':
     case 'failed': {
-      // A check that passes a task with success criteria leaves its trial to the judge, so it writes no label.
-      if (!at || (verdict.verdict === 'passed' && task.judge.kind === 'both')) return { output: { result: verdict.verdict, cause: '', label: '' } };
-      const stored = await storeCheckLabel({ config, run, plan, subject: { runId: run.id, step: `${prefix}${at.step}`, pass: workPass(run, `${prefix}${at.step}`) }, task: task.id, result: verdict.verdict });
+      const { at, task, plan, prefix } = checked;
 
-      return 'failure' in stored ? stored : { output: { result: verdict.verdict, cause: '', label: stored.version } };
+      // A check that passes a task with success criteria leaves its trial to the judge, so it writes no label.
+      if (!at || (verdict.verdict === 'passed' && task.judge.kind === 'both')) return { ...ran, outcome: 'success', outputs: { result: verdict.verdict, cause: '', label: '' } satisfies CheckOutput };
+      const work = `${prefix}${at.step}`;
+      const stored = await storeCheckLabel({ config, run, plan, subject: { runId: run.id, step: work, pass: workPass(run, work) }, task: task.id, result: verdict.verdict });
+
+      if ('failure' in stored) return { ...ran, outcome: 'failed', message: stored.failure.message, failure: stored.failure };
+
+      return { ...ran, outcome: 'success', outputs: { result: verdict.verdict, cause: '', label: stored.version } satisfies CheckOutput };
     }
 
     default: {
@@ -229,14 +286,27 @@ async function storeCheckLabel({ config, run, plan, subject, task, result }: { c
   return { version: labelVersion(label) };
 }
 
-/** The check task `step` checks in `mode`, its check, and for a trial's check, the trial as its lines name it. */
-function checkedBy(plan: BenchmarkPlan, mode: CheckStepMode, step: string): { task: BenchmarkPlan['tasks'][number]; judge: PlannedCheck; at?: TrialAt & Pick<PlannedTrial, 'step'> } | undefined {
-  const trial = mode === 'trial' ? plan.trials.find((planned) => checkStepOf(planned) === step) : undefined;
-  const task = plan.tasks.find((planned) => (mode === 'trial' ? planned.id === trial?.task : baselineStepOf(planned.id) === step));
+/** A check step of a plan: its task and the task's check, and for a trial's check, the trial as its lines name it. */
+interface Checked {
+  task: BenchmarkPlan['tasks'][number];
+  judge: PlannedCheck;
+  at?: TrialAt & Pick<PlannedTrial, 'step'>;
+}
+
+/** The check `step`, a step path under the plan's workflow, runs: a trial's check, or a task's baseline. */
+function checkedBy(plan: BenchmarkPlan, step: string): Checked | undefined {
+  const trial = plan.trials.find((planned) => checkStepOf(planned) === step);
+  const task = plan.tasks.find((planned) => (trial ? planned.id === trial.task : baselineStepOf(planned.id) === step));
 
   if (task === undefined || task.judge.kind === 'criteria') return undefined;
 
   return { task, judge: task.judge.check, at: trial ? { ...trial, total: plan.trials.length } : undefined };
+}
+
+/** The progress line of check step `checked`: a trial's, or a baseline's. */
+function progressOf({ task, at }: Checked, event: CheckRun): void {
+  if (at) progress(at, event);
+  else baselineProgress(task.id, event);
 }
 
 /** A trial, as its progress lines name it: its place in the plan's trial list of `total`. */
@@ -272,7 +342,7 @@ function progress({ order, total, task, arm }: TrialAt, event: CheckRun): void {
       }
 
     case 'error':
-      log.info(`Trial ${order}/${total} ${task} ${arm}: check could not run (prepare_failed: ${event.failure.message})`);
+      log.info(`Trial ${order}/${total} ${task} ${arm}: check could not run (${event.failure.code}: ${event.failure.message})`);
 
       return;
     default: {

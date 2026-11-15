@@ -12,7 +12,7 @@ vi.mock('../status.js', () => ({ status, list }));
 vi.mock('../push.js', () => ({ push }));
 vi.mock('../migrate.js', () => ({ maybeMigrate: vi.fn(async () => undefined), queueKeptInCheckout: vi.fn() }));
 vi.mock('@teamai/shared/log', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../utils/logger.js')>();
+  const actual = await importOriginal<typeof import('@teamai/shared/log')>();
   return { ...actual, log: { ...actual.log, error: logError, debug: logDebug } };
 });
 

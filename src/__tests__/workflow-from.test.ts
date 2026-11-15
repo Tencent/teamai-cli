@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
 import { knownSecrets } from '../env-resolution.js';
-import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
+import { leaseNext, reportAttempt, startRun, type SoleDriver } from '../workflow/engine.js';
 import { retryStep } from '../workflow/run-controls.js';
 import { readRun } from '../workflow/store.js';
 import type { DriverCan } from '../workflow/requirements.js';
@@ -88,6 +88,14 @@ describe('workflow: { from }', () => {
     if (typeof run !== 'object') throw new Error(`run ${run}`);
     expect(run.admitted?.plan).toMatchObject({ output, field: 'definition', definition: { name: 'generated', steps: [{ id: 'hello', command: 'node hello.js' }] } });
     expect(run.admitted?.plan?.hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('leases the steps of the workflow a run admitted one at a time, never whole, to a driver that runs whole workflows', async () => {
+    const config = testConfig();
+    const runId = await startPlanned(config);
+    await settle(config, runId, 'plan', { definition: { definition: GENERATED }, plan: { trials: ['hello'] } });
+
+    expect(await leaseNext(config, runId, driver, { can: { workspace: ['read-only'], workflow: true } })).toMatchObject({ data: { lease: { step: 'trials.hello' } } });
   });
 
   it('admits a bundle whose producer reuses one object in two steps', async () => {
@@ -364,5 +372,66 @@ describe('a run with a from step', () => {
     await settle(config, runId, 'plan', { definition: { definition: GENERATED }, plan: {} });
 
     expect(await retryStep(config, runId, {}, 'plan')).toEqual({ error: { code: 'not_retryable', message: `Run ${runId} is isolated: it runs only on the machine that started it, and a step that ran again would change what it already admitted or measured. Start a new run: ${command}` } });
+  });
+});
+
+describe('workflow: { from } on a driver that launches no AI tool, as the built-in host', () => {
+  const HOST: SoleDriver = { driver: 'host', offers: [{ runtime: 'host', inProcess: true, can: { tools: [], prompt: false, answer: false } }] };
+  const SCORED = { ...GENERATED, steps: [{ id: 'tidy', workflow: { steps: [{ id: 'lint', command: 'node lint.js' }] }, scorers: ['quality'] }] };
+
+  it('fails the step that runs a produced workflow with a scored step, before any of its steps runs, as a start refuses one it knows', async () => {
+    const config = testConfig();
+    fs.mkdirSync(path.join(config.repo.localPath, 'scorers'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'quality.md'), '---\nlabels:\n  - { value: good, score: 1, description: Did the work }\n  - { value: bad, score: 0, description: Did not }\npassingScore: 1\nsamplingRate: 100\n---\nJudge the work.\n');
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'planned.yaml'), PLANNED);
+    await syncScorersThenWorkflows(config);
+    const started = await startRun(config, 'planned', {}, { secrets: await knownSecrets(config), alone: HOST });
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    const onHost = { can: HOST.offers[0].can, alone: HOST };
+    const { lease } = LeaseSchema.parse(await leaseNext(config, runId, driver, onHost)).data;
+    await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver, outputs: { definition: { definition: SCORED }, plan: {} } });
+
+    expect(await leaseNext(config, runId, driver, onHost)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, runId)).toMatchObject({
+      steps: expect.arrayContaining([
+        expect.objectContaining({ id: 'plan', status: 'succeeded' }),
+        expect.objectContaining({ id: 'trials', status: 'failed', failure: { code: 'requirement_unmet', message: 'Step "tidy" is scored, and its judge runs on an AI tool, which driver "host" does not launch: it runs only commands, gates and workflows whose steps need none. Run the workflow with --driver local.' } }),
+      ]),
+    });
+    // No step of the produced workflow ran: its inline workflow step is cancelled, and the command in it skipped unstarted.
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error(`run ${run}`);
+    expect(run.steps.filter((step) => step.id.startsWith('trials.')).map(({ id, status }) => ({ id, status }))).toEqual([{ id: 'trials.tidy', status: 'cancelled' }, { id: 'trials.tidy.lint', status: 'skipped' }]);
+  });
+});
+
+describe('workflow: { from } per item of a for_each, on a driver that launches no AI tool', () => {
+  const HOST: SoleDriver = { driver: 'host', offers: [{ runtime: 'host', inProcess: true, can: { tools: [], prompt: false, answer: false } }] };
+  const PROMPTED = { ...GENERATED, steps: [{ id: 'hello', command: 'node hello.js' }, { id: 'ask', needs: ['hello'], prompt: 'Review the greeting.' }] };
+  const EACH = PLANNED.replace('    workflow: { from: plan }\n', '    for_each: { items: steps.plan.outputs.plan, max_parallel: 1 }\n    workflow: { from: plan }\n');
+
+  it('leases no step of an item that starts once the item before it is refused, in the same next', async () => {
+    const config = testConfig();
+    fs.mkdirSync(path.join(config.repo.localPath, 'scorers'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'quality.md'), '---\nlabels:\n  - { value: good, score: 1, description: Did the work }\n  - { value: bad, score: 0, description: Did not }\npassingScore: 1\nsamplingRate: 100\n---\nJudge the work.\n');
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'planned.yaml'), EACH);
+    await syncScorersThenWorkflows(config);
+    const started = await startRun(config, 'planned', {}, { secrets: await knownSecrets(config), alone: HOST });
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    const onHost = { can: HOST.offers[0].can, alone: HOST };
+    const { lease } = LeaseSchema.parse(await leaseNext(config, runId, driver, onHost)).data;
+    await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver, outputs: { definition: { definition: PROMPTED }, plan: ['a', 'b'] } });
+
+    const next = await leaseNext(config, runId, driver, onHost);
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error(`run ${run}`);
+
+    const trials = run.steps.filter((step) => step.id.startsWith('trials')).map(({ id, status }) => ({ id, status }));
+    // The second item starts only once the first is refused, the case this pins.
+    expect(trials).toContainEqual({ id: 'trials[1]', status: 'failed' });
+    expect(trials).not.toContainEqual(expect.objectContaining({ status: 'leased' }));
+    expect(next).toMatchObject({ data: { done: { outcome: 'failed' } } });
   });
 });

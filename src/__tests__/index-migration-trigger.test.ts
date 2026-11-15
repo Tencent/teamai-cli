@@ -13,7 +13,7 @@ vi.mock('../import.js', () => ({ importCmd: vi.fn(async () => {}) }));
 vi.mock('../init.js', () => ({ init: vi.fn(async () => {}) }));
 vi.mock('../roles-cmd.js', () => ({ rolesInit: vi.fn(async () => {}) }));
 vi.mock('@teamai/shared/log', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../utils/logger.js')>()),
+  ...(await importOriginal<typeof import('@teamai/shared/log')>()),
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));
 
@@ -73,7 +73,7 @@ describe('init and the checkout queue (#808)', () => {
       exit.mockRestore();
     }
     const { init } = await import('../init.js');
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     expect(init).not.toHaveBeenCalled();
     expect(log.error).toHaveBeenCalledWith('kept in checkout');
   });

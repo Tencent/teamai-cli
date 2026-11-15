@@ -1,0 +1,5 @@
+# teamai's paseo runtime. A team replaces it with runtimes/paseo.yaml, or runtimes/paseo/RUNTIME.yaml with its code.
+protocol: 1
+entry: { bin: teamai-runtime-paseo }
+# It runs no command, so a run that needs no AI tool does not start it. Its init offers can.exec: false too.
+exec: false

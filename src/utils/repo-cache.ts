@@ -2,8 +2,9 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
-import { getUserHome } from './home.js';
+import { getUserHome } from '@teamai/shared/home';
 import { assertSafePath, assertWithinRoot } from './path-safety.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 // ─── Constants ──────────────────────────────────────────
 
@@ -95,7 +96,7 @@ export async function readLastSync(
         return null;
     }
 
-    const content = await fs.readFile(filePath, 'utf8');
+    const content = await readRegularFile(filePath, 'utf8');
     const lines = content.split('\n').filter((l) => l.trim());
 
     if (lines.length < 2) {

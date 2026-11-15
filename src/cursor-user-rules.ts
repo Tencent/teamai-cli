@@ -17,7 +17,7 @@ import { instructionHookTextFor } from './instruction-targets.js';
 import { teamRulesContext } from './resources/rules.js';
 import { installOf, locate, ownOf } from './locate.js';
 import { isAgentExcluded, type LocalConfig, type TeamaiConfig } from './types.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 async function canonicalPath(p: string): Promise<string> {
   const resolved = await fs.promises.realpath(p).catch(() => path.resolve(p));
@@ -65,7 +65,7 @@ export async function cursorUserRulesContext(workspace: string, config: LocalCon
   const userConfig = config.scope === 'user' ? config : await loadLocalConfig();
 
   if (!userConfig || isAgentExcluded(userConfig, 'cursor')) return null;
-  const teamConfig = await loadTeamConfig(userConfig.repo.localPath);
+  const teamConfig = await loadTeamConfig(userConfig.repo.localPath, userConfig);
 
   if (!teamConfig) return null;
   const rulesDir = await cursorUserRulesDir(teamConfig, userConfig);

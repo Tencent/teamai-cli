@@ -1,29 +1,6 @@
 import { type CodeCollectedFile } from "./code-collector.js";
+import { type CodeEvidenceType, type CodeFactKind } from "./code-fact-kind.js";
 import { extractForLanguage, type ExtractorContext } from "./extractors/index.js";
-
-export type CodeFactKind = "component" | "interface" | "config" | "error" | "data" | "style" | "relation";
-
-export type CodeEvidenceType = "definition" | "implementation" | "usage" | "schema" | "config";
-
-/**
- * Map a CodeFactKind to a WikiEvidenceType.
- */
-export function mapKindToEvidenceType(kind: CodeFactKind): CodeEvidenceType {
-  switch (kind) {
-    case "component":
-    case "interface":
-    case "error":
-      return "definition";
-    case "config":
-      return "config";
-    case "data":
-      return "schema";
-    case "relation":
-      return "usage";
-    case "style":
-      return "definition";
-  }
-}
 
 export interface CodeFact {
   kind: CodeFactKind;

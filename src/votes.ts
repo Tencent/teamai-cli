@@ -4,14 +4,15 @@ import path from 'node:path';
 
 import YAML from 'yaml';
 import { z } from 'zod';
-import { parseYaml } from './utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 
 import { UserVotesSchema, UserVotesV2Schema } from './types.js';
-import { isJsonObject, type JsonValue } from './types.js';
+import { isJsonObject, type JsonValue } from '@teamai/shared/json';
 import type { LocalConfig, PendingVoteSync, UpvoteLedger, UserVotes, UserVotesV2, VoteDelta, VoteEntryV2 } from './types.js';
 import type { CreditLine } from './recall-log.js';
-import { readFileSafe, writeFileAtomic, ensureDir, expandHome } from './utils/fs.js';
-import { log } from './utils/logger.js';
+import { readFileSafe, writeFileAtomic, ensureDir } from './utils/fs.js';
+import { expandHome } from '@teamai/shared/home';
+import { log } from '@teamai/shared/log';
 
 /**
  * Run `fn` while holding an exclusive per-file lock, so the read-modify-write in

@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { setSilent } from '../utils/logger.js';
+import { setSilent } from '@teamai/shared/log';
 import { _setLogFilePath } from '@teamai/shared/debug-log';
 import { savePendingLearning } from '../utils/pending-learnings.js';
 import { publishQueuedLearnings } from '../utils/learnings-publish.js';

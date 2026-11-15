@@ -3,7 +3,7 @@ import { dashboardWorkspaces, ownSessionEvents, workspaceEvents, type DashboardW
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { ensureDir } from './utils/fs.js';
 import { dataHomeKey, readEvents, readLocalRequestRecords, readSessionOutcomes, rebuildSessions, appendEvent, memberEvents, sessionRuns } from './dashboard-collector.js';
 import { isProcessAlive } from './pid-monitor.js';
@@ -12,12 +12,12 @@ import {
   DASHBOARD_PID_CHECK_INTERVAL_MS,
   type DashboardEvent,
   getDataHome,
-  type JsonValue,
   type LocalConfig,
   type RunModeSplit,
 } from './types.js';
+import type { JsonValue } from '@teamai/shared/json';
 import { getDashboardHtml } from './dashboard-html.js';
-import { getUserHome } from './utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 import type { VizSummary } from './viz.js';
 import { aggregateDailySessions, computeDailyStatsDelta, summarizeTrendWindow, summarizeSessionCosts } from './session-trends.js';
 import { HttpError, isLocalWrite, readJsonBody } from './dashboard/http.js';
@@ -683,7 +683,7 @@ export async function startDashboard(port?: number): Promise<void> {
         // What pull delivers to a workspace includes its children's selections (#913).
         // Read here, for this request only: session and workspace listing never walk them.
         const config = await readWorkspaceChildren(ownConfig);
-        const teamConfig = await loadTeamConfig(config.repo.localPath);
+        const teamConfig = await loadTeamConfig(config.repo.localPath, config);
 
         // A scope whose clone carries no teamai.yaml pulls no rules.
         const rules = teamConfig
@@ -716,7 +716,7 @@ export async function startDashboard(port?: number): Promise<void> {
 
         // What pull delivers to a workspace includes its children's selections (#913).
         const config = ownConfig ? await readWorkspaceChildren(ownConfig) : null;
-        const teamConfig = config ? await loadTeamConfig(config.repo.localPath) : null;
+        const teamConfig = config ? await loadTeamConfig(config.repo.localPath, config) : null;
 
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(config && teamConfig ? { configured: true, ...await collectLayeredResources(config, teamConfig) } : { configured: false }));
@@ -778,7 +778,7 @@ export async function startDashboard(port?: number): Promise<void> {
         ]);
 
         const config = await readWorkspaceChildren(ownConfig);
-        const teamConfig = await loadTeamConfig(config.repo.localPath);
+        const teamConfig = await loadTeamConfig(config.repo.localPath, config);
 
         const inventory = teamConfig
           ? await collectSkillsInventory(teamConfig, config, await buildRolePullContext(config))
@@ -817,7 +817,7 @@ export async function startDashboard(port?: number): Promise<void> {
         ]);
 
         const config = await readWorkspaceChildren(ownConfig);
-        const teamConfig = await loadTeamConfig(config.repo.localPath);
+        const teamConfig = await loadTeamConfig(config.repo.localPath, config);
 
         const skill = teamConfig
           ? await skillDetail(teamConfig, config, await buildRolePullContext(config), name, sourcePath)
@@ -873,7 +873,7 @@ export async function startDashboard(port?: number): Promise<void> {
         ]);
 
         const config = await readWorkspaceChildren(ownConfig);
-        const teamConfig = await loadTeamConfig(config.repo.localPath);
+        const teamConfig = await loadTeamConfig(config.repo.localPath, config);
 
         if (!teamConfig) {
           res.writeHead(400, { 'Content-Type': 'application/json' });

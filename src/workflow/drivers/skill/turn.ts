@@ -6,12 +6,12 @@ import { offeredToPerson } from '../../handoff.js';
 import type { Judging } from '../../protocol.js';
 import type { AttemptId, RunId } from '../../store.js';
 import type { OutputSchema, WorkflowFailure } from '../../types.js';
-import { HOST_CHOICES, HOST_PROFILES, HOST_QUESTION, type HostChoice } from './host-profiles.js';
+import { SESSION_HOST_CHOICES, SESSION_HOST_PROFILES, SESSION_HOST_QUESTION, type SessionHostChoice } from './session-host-profiles.js';
 import {
-  ackLiteral, adoptLiteral, chooseHostLiteral, localStartLiteral, nextLiteral, personRespondLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral,
+  ackLiteral, adoptLiteral, chooseSessionHostLiteral, localStartLiteral, nextLiteral, personRespondLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral,
   skillResumeLiteral, takeoverLiteral, unavailableLiteral, type Invocation, type Literal,
 } from './literals.js';
-import type { AttemptState, Dispatch, Gate, ModelPick, SkillState, StopReason, TurnEvent } from './skill-state.js';
+import { childTitle, type AttemptState, type Dispatch, type Gate, type ModelPick, type SkillState, type StopReason, type TurnEvent } from './skill-state.js';
 import { childCap, reportedByAgent, type Answer, type Refusal } from './transitions.js';
 
 /**
@@ -20,7 +20,7 @@ import { childCap, reportedByAgent, type Answer, type Refusal } from './transiti
  */
 export type DescribedInput = { name: string; type: OutputSchema; value?: unknown; why?: string };
 
-/** How describe says to start: as is, after one question to the person, or with the local driver. */
+/** How describe says to start: as is, after one question to the person, in the background, or with the local driver. */
 export type DescribeAsk =
   /**
    * `say`: the facts to tell the person before running `start`, a line each. `inputs`: in an unattended run, the inputs
@@ -35,7 +35,14 @@ export type DescribeAsk =
       inputs: DescribedInput[];
       options: Array<{ label: string; start: Literal }>;
     };
+    /** Each option starts on the driver of the app the session runs in: the agent runs the one picked as `background`. */
+    background?: string;
   }
+  /**
+   * Start on the driver of the app the session runs in: the agent runs `start` in the background and waits for it to
+   * end. `background`: where the run's steps appear. `say`: the facts to tell the person first, a line each.
+   */
+  | { kind: 'background'; say?: string; start: Literal; background: string }
   | { kind: 'local'; reason: string; start: Literal }
   /** The session names no tool the run needs: the agent fills `describe`'s `{tool}` slot with the one of `tools` it works in, and describes again. */
   | { kind: 'tool'; reason: string; describe: Literal; tools: string[] }
@@ -62,15 +69,17 @@ export interface DispatchAction {
   model: ModelPick;
   ack: Literal;
   report: Literal;
-  /** Present when the model names one: run it instead when the host cannot run that model. */
+  /** Present when the model names one: run it instead when the session host cannot run that model. */
   unavailable?: Literal;
   /** Present when an earlier session was shown this dispatch: what to do about the child it may have started. */
   reissued?: string;
+  /** The child of an earlier step whose conversation this step goes on in: send it the brief when your session host can reach it. */
+  continue?: { title: string };
 }
 
 /**
- * A step whose child works in a place the host makes: shown in every foreground turn until `adopt` runs. The host
- * makes a worktree of this repository named `name`, on `branch` from commit `start`, and `adopt`, with its directory
+ * A step whose child works in a place the session host makes: shown in every foreground turn until `adopt` runs. The
+ * session host makes a worktree of this repository named `name`, on `branch` from commit `start`, and `adopt`, with its directory
  * in the `{dir}` slot, hands it to TeamAI.
  */
 export interface PlaceAction {
@@ -83,7 +92,7 @@ export interface PlaceAction {
   adopt: Literal;
   /** Why the place adopted last was refused: what to fix in it, or make another. */
   refused?: string;
-  /** The skill-data reference on host places. */
+  /** The skill-data reference on session host places. */
   reference: string;
 }
 
@@ -152,8 +161,8 @@ export interface OfferedAction {
 }
 
 export type Action =
-  /** The agent's own answer, once per run with prompt steps: how its host runs a child. */
-  | { kind: 'choose'; about: 'host'; decide: 'agent'; question: string; options: Array<{ id: HostChoice; label: string; run: Literal }>; reference: string }
+  /** The agent's own answer, once per run with prompt steps: how its session host runs a child. `about: 'host'` names the session host; the turn JSON keeps that spelling. */
+  | { kind: 'choose'; about: 'host'; decide: 'agent'; question: string; options: Array<{ id: SessionHostChoice; label: string; run: Literal }>; reference: string }
   | StopAction
   | DispatchAction
   | PlaceAction
@@ -182,7 +191,8 @@ export interface RunningEntry {
 export interface Waiting {
   reason: string;
   delivering?: string[];
-  held?: Array<{ step: string; missing: string[] }>;
+  /** `limitedTool`: the tool whose usage limit holds the step, until it resets. */
+  held?: Array<{ step: string; missing: string[]; limitedTool?: string }>;
 }
 
 export interface Turn {
@@ -309,9 +319,9 @@ function refusalMessage(refusal: Refusal, local: { invocation: Invocation; tool?
     case 'orchestrator_active':
       return `Run ${refusal.run} is driven by another coding session, which last called ${refusal.idleSeconds} s ago. Ask the person whether that session is gone, and run the command in next only when they agree to take the run over here; otherwise the run goes on from that session.`;
     case 'choice_pending':
-      return `Run ${refusal.run} waits for the host question. Run the next literal, then the run of the option that fits your host.`;
+      return `Run ${refusal.run} waits for the session host question. Run the next literal, then the run of the option that fits your session host.`;
     case 'unknown_choice':
-      return `Run ${refusal.run} asks no host question now: its host is already chosen, or nothing in it needs a child agent. Run the next literal to see the run.`;
+      return `Run ${refusal.run} asks no session host question now: its session host is already chosen, or nothing in it needs a child agent. Run the next literal to see the run.`;
     case 'unknown_offer':
       return `Attempt ${refusal.attempt} of run ${refusal.run} has no dispatch to ack. Run the next literal to see the run.`;
     case 'unknown_attempt':
@@ -336,25 +346,19 @@ export type SkillAnswer =
   /**
    * What a runner answers once it is done with its attempt, and what an agent's report answers: `reported`; `repeated`
    * when the attempt was settled before; `offered` to the agent; `queued` behind the attempt that holds its place;
-   * `placing` when it waits for the agent to adopt a place its host made; `gone` when the attempt closed without its
+   * `placing` when it waits for the agent to adopt a place its session host made; `gone` when the attempt closed without its
    * report; or `held` when another live runner of the attempt holds its lock and this call did nothing.
    */
   | { data: { runner: { attempt: AttemptId; status: 'reported' | 'repeated' | 'offered' | 'queued' | 'placing' | 'gone' | 'held' } } }
   | { error: SkillError };
 
 /** The skill-data reference `name` of the workflow guide. */
-function reference(name: 'hosts.md' | 'places.md'): string {
+function reference(name: 'session-hosts.md' | 'places.md'): string {
   return path.join(packagedSkillRoots().dataRoot, 'workflow', 'references', name);
 }
 
-/**
- * The name a child runs under, valid as an agent or teammate name (`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`): `<step>-<attempt>`,
- * each other character of the step path mapped to `-`, the step cut so the whole fits 64 characters.
- */
 function titleOf(open: AttemptState): string {
-  const suffix = `-${open.attempt}`;
-
-  return `${open.step.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 64 - suffix.length)}${suffix}`;
+  return childTitle(open.step, open.attempt);
 }
 
 function dispatchOf(state: SkillState, open: Extract<AttemptState, { phase: 'offered' | 'dispatched' }>): DispatchAction {
@@ -373,6 +377,8 @@ function dispatchOf(state: SkillState, open: Extract<AttemptState, { phase: 'off
   };
 
   if (dispatch.agent !== undefined) action.agent = dispatch.agent;
+
+  if (dispatch.continues) action.continue = dispatch.continues;
 
   if (dispatch.model.by !== 'definition') action.unavailable = unavailableLiteral(invocation, run, attempt);
 
@@ -407,7 +413,7 @@ function gateAction(state: SkillState, gate: Gate): GateAction | PersonAction {
 
 function stopsOf(state: SkillState): StopAction[] {
   return state.attempts.flatMap((open): StopAction[] => (open.phase === 'stopping' && open.by === 'agent'
-    ? [{ kind: 'stop', attempt: open.attempt, step: open.step, title: titleOf(open), why: open.why, report: reportLiteral(state.invocation, state.run, open.attempt) }]
+    ? [{ kind: 'stop', attempt: open.attempt, step: open.step, title: open.child ?? titleOf(open), why: open.why, report: reportLiteral(state.invocation, state.run, open.attempt) }]
     : []));
 }
 
@@ -421,14 +427,14 @@ export function scoringWaits(scoring: readonly SkillState[]): boolean {
 }
 
 /**
- * What waits for the agent: the host question; else every child to stop, then every dispatch not acked yet, of this run
+ * What waits for the agent: the session host question; else every child to stop, then every dispatch not acked yet, of this run
  * and of each run in `scoring` (J8), then every place to adopt, then the gate; and the end once the run is done.
  */
 function actionsOf(state: SkillState, scoring: readonly SkillState[]): Action[] {
   if (state.host.kind === 'pending') {
-    const options = HOST_CHOICES.map((id) => ({ id, label: HOST_PROFILES[id].label, run: chooseHostLiteral(state.invocation, state.run, id) }));
+    const options = SESSION_HOST_CHOICES.map((id) => ({ id, label: SESSION_HOST_PROFILES[id].label, run: chooseSessionHostLiteral(state.invocation, state.run, id) }));
 
-    return [{ kind: 'choose', about: 'host', decide: 'agent', question: HOST_QUESTION, options, reference: reference('hosts.md') }];
+    return [{ kind: 'choose', about: 'host', decide: 'agent', question: SESSION_HOST_QUESTION, options, reference: reference('session-hosts.md') }];
   }
 
   const stops = stopsOf(state);

@@ -64,7 +64,7 @@ describe('claude-code tool_result images', () => {
     fs.mkdirSync(cwd, { recursive: true });
     writeFixture(cwd);
 
-    const session = await new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', undefined)).readSession({ sessionId: SID, projectPath: cwd });
+    const session = await new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', { kind: 'recorded', toolRoots: undefined })).readSession({ sessionId: SID, projectPath: cwd });
     expect(session.messages.map((m) => [m.role, m.content.map((b) => b.type)])).toEqual([
       ['user', ['text']],
       ['assistant', ['tool_call']],
@@ -94,7 +94,7 @@ describe('claude-code tool_result images', () => {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, `${SID}.jsonl`), records.map((r) => JSON.stringify(r)).join('\n') + '\n');
 
-    const session = await new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', undefined)).readSession({ sessionId: SID, projectPath: cwd });
+    const session = await new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', { kind: 'recorded', toolRoots: undefined })).readSession({ sessionId: SID, projectPath: cwd });
     expect(session.messages.map((m) => [m.role, m.content.map((b) => b.type)])).toEqual([
       ['user', ['text']],
       ['assistant', ['tool_call']],
@@ -111,7 +111,7 @@ describe('claude-code tool_result images', () => {
     fs.mkdirSync(cwd, { recursive: true });
     writeFixture(cwd);
 
-    const adapter = new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', undefined));
+    const adapter = new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', { kind: 'recorded', toolRoots: undefined }));
     const session = await adapter.readSession({ sessionId: SID, projectPath: cwd });
     const target = path.join(mocks.home, 'work2');
     const id = await adapter.writeSession(session, target);

@@ -24,7 +24,11 @@ _Avoid_: bare provider where a **repo provider** could be meant
 
 **Tool**:
 An AI coding tool teamai delivers to, such as Claude Code or Codex. [Tool support](../guide/tool-support.md) lists them.
-_Avoid_: agent, client, IDE
+_Avoid_: agent, "agent CLI", client, IDE
+
+**Tool instance**:
+A **tool** a team or member adds as another command or home of a shipped one, in `tools/<name>.yaml` or a **resource folder** with `TOOL.yaml`. It keeps the formats of the tool it extends. A team's runs once a member accepts its file's content.
+_Avoid_: custom tool, tool variant, bare instance
 
 **Capability**:
 What an **agent** can do thanks to one or more **resources** on a topic. An effect, not a file.
@@ -57,7 +61,7 @@ Loading a **resource** in stages. Its **context pointer** is always in context; 
 _Avoid_: lazy loading, on-demand context
 
 **Marker file**:
-The file whose presence makes a directory a **resource folder**: `SKILL.md`, `WORKFLOW.yaml`, `HOOK.yaml`, `RULE.md`, `MCP.yaml`, `SUITE.yaml`, `AGENT.md`, `SCORER.md`.
+The file whose presence makes a directory a **resource folder**: `SKILL.md`, `WORKFLOW.yaml`, `HOOK.yaml`, `RULE.md`, `MCP.yaml`, `SUITE.yaml`, `AGENT.md`, `SCORER.md`, `DRIVER.yaml`, `RUNTIME.yaml`, `SANDBOX.yaml`, `TOOL.yaml`.
 _Avoid_: manifest, index file
 
 **Resource folder**:
@@ -77,7 +81,7 @@ Where a definition comes from. Resolution order: `teamai` (**teamai default**), 
 _Avoid_: level, source, scope (that is a **scope**)
 
 **teamai default**:
-A **resource** teamai ships, named `teamai-<name>`. A team replaces it, or some of its files, with a folder of the same name at the **team root**. Short form: default, as in default workflow or default scorer.
+A **resource** teamai ships, named `teamai-<name>`. A team replaces it, or some of its files, with a folder of the same name at the **team root**. A **driver definition**, **step runtime** or **sandbox profile** looked up by name is taken by the exact name in every **layer** first, then as `teamai-<name>`, so a team's `t3` replaces `teamai-t3` whole. Short form: default, as in default workflow or default scorer.
 _Avoid_: built-in, shipped, preset
 
 **Default parameters**:
@@ -116,7 +120,7 @@ _Avoid_: project for the workspace scope (its older name, still the code's)
 
 **Workspace**:
 A directory set up with `teamai init` in workspace **scope**.
-_Avoid_: project (that is a **project**)
+_Avoid_: project (that is a **project**); bare workspace for a **step workspace**
 
 **Workspace child**:
 A repo or folder set up inside a **workspace**, up to three folder levels down. Pull in the workspace also delivers each child's selection; a child on another **team repo**, or in **self mode**, is left out and named.
@@ -144,6 +148,108 @@ _Avoid_: project root, cwd
 
 **Installation**:
 One copy of teamai this machine has run, as `~/.teamai/installations.json` records it. `teamai update` and `teamai doctor` list them. Machine-local: it never enters a team report.
+
+## Workflows
+
+**Driver**:
+What moves a run's steps forward: the local driver, the skill driver in a coding session, or a script of the team's that calls `teamai workflow next` and `report`. The local driver runs on a **driver definition**.
+_Avoid_: executor (a step's `command` or `prompt`), runner (an install that takes a published run)
+
+**Driver definition**:
+A YAML file `--driver <name>` selects, `drivers/<name>.yaml` or a **resource folder** with `DRIVER.yaml`: the **step runtimes** that run each step, in order, with their options, and optionally the **tool** prompt steps use. The ones teamai ships are **teamai defaults**, such as `teamai-local`, `teamai-t3` and `teamai-sandbox`. Short form: definition.
+_Avoid_: driver for the file, profile
+
+**Step runtime**:
+Where and how a step's work runs: the **host slot**, or what one entry of a **driver definition** names with `use`: the **`tools` runtime** and `fleet`, in teamai's process, or an external program that speaks the **runtime protocol**, such as `t3`, `paseo` or `sandbox`. An external one is a **resource** of the member, the team or teamai: `runtimes/<name>.yaml`, whose `entry` names an executable on PATH, or a **resource folder** whose `RUNTIME.yaml` names its code. Short form: runtime, where nothing else could be meant.
+_Avoid_: runtime for a tool's bundled runtime (the Node that WorkBuddy unpacks), backend
+
+**Runtime protocol**:
+The JSON lines teamai and an external **step runtime** exchange on stdio, protocol `1`. [Write a step runtime](../guide/runtime-protocol.md) describes it.
+_Avoid_: "driver protocol" (a driver speaks `workflow next` and `report`)
+
+**Runtime offer**:
+What a **step runtime** answers at `init`: what it can do for a step (`can`), the tools it cannot run now and why, and whether it launches agents its own way.
+_Avoid_: bare offer where an **offer** to other installs could be meant, capabilities (a **capability** is what an agent can do)
+
+**Host slot**:
+The **step runtime** in teamai's process that every **driver definition** keeps without listing it, recorded as `host`. It runs teamai's own command steps, a command step with `requires.host`, an `answer:` step, `deliver: publish`, and command steps when no runtime of the definition runs commands. It launches no prompt step's tool.
+_Avoid_: bare host where a **session host** or a **repo provider** could be meant
+
+**Host driver**:
+The built-in **driver definition** `--driver host` selects: the **host slot** alone, with no **step runtime** listed, so it runs commands, gates and workflows whose steps need no AI tool, and refuses a prompt, `interactive`, `answer:` or scored step. No file defines or replaces it.
+_Avoid_: bare host where the **host slot** could be meant
+
+**`tools` runtime**:
+The **step runtime** in teamai's process that launches this machine's **tools** for prompt steps and judges, in the member's own home: `use: tools`, whose old name is `use: local`. `local` names the default definition, `teamai-local`: `tools` plus the **host slot**.
+_Avoid_: local for this runtime, "local runtime"
+
+**Session host**:
+The coding session `--driver skill` adopts, such as a Claude Code or T3 Code session, which runs each step as a child agent; `sessionHost` in identifiers. Stored values such as `SkillState.host` and `places: 'host'` keep the older spelling.
+_Avoid_: bare host, parent session
+
+**Attempt**:
+One try of a step on a **step runtime**, with its own id and `attempts/<attempt>/` directory. A retry or a later pass is a new attempt.
+_Avoid_: job, execution
+
+**Lease**:
+What `teamai workflow next` grants a **driver**: one **attempt** of a step, until the driver reports it. A prompt sent to a runtime carries the step's lease too.
+_Avoid_: claim (that takes over a run), ticket
+
+**Step workspace**:
+The copy of the repository a step works in, as its `workspace` key picks: `new`, `continue`, `read-only`, `{ clone: … }` or `{ team: … }`. A step with `{ confined: … }` works in that directory instead, with no copy.
+_Avoid_: bare workspace where a **workspace** could be meant
+
+**Place**:
+Where an **attempt** works: its **step workspace**, or what a **step runtime** makes around it, such as a container. The runtime opens it with `open` and names it by a handle.
+_Avoid_: environment, box
+
+**Held place**:
+A **place** teamai keeps open after its step ends, because a later step continues the conversation there (`session: continue`) on a runtime that keeps conversations, such as T3 or Paseo. teamai closes it once no step continues it, at the end of the run, or on a **handoff**.
+_Avoid_: "kept place", "pinned place"
+
+**Composed runtime**:
+One runtime entry that runs a **step runtime** through another, such as `use: t3` with `through: sandbox`, named `t3 through sandbox` in messages. The outer one, after `through`, gives where the tool runs; the inner one gives how it is launched.
+_Avoid_: "nested runtime", "wrapper runtime"
+
+**Sandbox provider**:
+What runs the `sandbox` runtime's places, as a **sandbox profile**'s `provider` names it: `docker`, `podman`, `sbx`, `seatbelt`, `bwrap` or `vercel`.
+_Avoid_: bare provider where a **model provider** or a **repo provider** could be meant
+
+**Sandbox profile**:
+What a `sandbox` runtime entry builds its sandbox from: a **sandbox provider** and its options, kept as `sandboxes/<name>.yaml` or a **resource folder** with its `SANDBOX.yaml` and the files it builds from. The entry names it with `sandbox: <name>`, `default` when it names none.
+_Avoid_: sandbox config, sandbox options
+
+**Provider instance**:
+A tool as T3 Code or Paseo configures it, with its own command and home. A team's **tool instance** runs on one, which teamai adds when the app has none.
+_Avoid_: bare provider, bare instance
+
+**Fleet**:
+The installs of the same business repository that take the **attempts** a run **offers** in a **pool**, through a `use: fleet` entry. The install that started the run is the **fleet owner**; each install that takes an attempt is a **fleet member**.
+_Avoid_: cluster, workers
+
+**Fleet owner**:
+The install that offers a run's **attempts** to the **fleet** and takes their work back. Only it moves the workflow's branches. Short form: owner, where the fleet is the subject.
+_Avoid_: coordinator, leader
+
+**Fleet member**:
+An install that takes an offered **attempt** with `teamai workflow resume --next --pool`, runs it on its machine with its own tools and sign-in, and pushes its work back. Short form: member, where the fleet is the subject; elsewhere a member is a person.
+_Avoid_: worker, agent, runner (an install that takes a whole published run)
+
+**Pool**:
+A name the **fleet**'s **offers** go out under, `default` when none is set. A fleet entry offers in its own pool, and a **fleet member** takes from the pool it names.
+_Avoid_: queue, channel
+
+**Offer**:
+An **attempt** or a run put on `teamai-reports` for another install to take: an attempt in a **pool**, or a whole run that `teamai workflow publish` offers to `resume --next`.
+_Avoid_: job, listing
+
+**Wake**:
+The **fleet owner** asking a step runtime that reaches other machines, such as T3's linked environments, to start a **fleet member** for an **offer** nobody took. The member is sent one message: the command that takes one attempt.
+_Avoid_: spawn, ping
+
+**Handoff**:
+A run passing to another **driver** or install. `teamai workflow publish` offers it on `teamai-reports`, and `resume --claim` or `--next` takes it. The local driver hands off a run whose steps left only a person can take, and the skill driver hands the person a run whose steps left it cannot run.
+_Avoid_: transfer, migration
 
 ## Budgets
 

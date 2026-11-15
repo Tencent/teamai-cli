@@ -1,12 +1,14 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import { createHash } from 'node:crypto';
 import YAML from 'yaml';
-import { parseYaml } from './yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { z } from 'zod';
-import { getUserHome } from './home.js';
-import { readFileSafe, writeFileAtomic, expandHome, errnoCode } from './fs.js';
-import { managedMcpWorkspaceId, type JsonValue } from '../types.js';
+import { getUserHome, expandHome } from '@teamai/shared/home';
+import { readFileSafe, writeFileAtomic, errnoCode } from './fs.js';
+import { managedMcpWorkspaceId } from '../types.js';
+import type { JsonValue } from '@teamai/shared/json';
 import { completeWorktreeList, gitCommonDir, isLiveCheckout, isLiveProjectCheckout, resolveAnchors } from './git.js';
 
 /**
@@ -52,34 +54,105 @@ let caseInsensitiveCache = new Map<string, boolean>();
  * as-is, verified in the issue), so normalization must be an explicit lowercase
  * gated on this probe.
  *
- * Result is cached per probe directory. On any probe error we fall back to
- * case-sensitive (no lowercasing) — the conservative choice: it never merges two
- * distinct anchors, at worst it keeps two spellings of one anchor separate.
+ * The probe reads first: a name in the folder, looked up with one letter's case
+ * swapped, folds case when it reaches the same file (`dev` and `ino`). A folder
+ * whose names hold no cased letter (all CJK, say) asks the same of its own path,
+ * up to the edge of its volume. A sandbox that refuses writes to the folder
+ * (Codex's workspace-write or read-only) gets the answer a writable folder gets,
+ * so it resolves the partition `init` made. Only a folder that is missing, or
+ * where neither finds a letter, is probed by writing a file. Result is cached per probe directory. On any probe error we
+ * fall back to case-sensitive (no lowercasing) — the conservative choice: it
+ * never merges two distinct anchors, at worst it keeps two spellings of one
+ * anchor separate.
  */
 export function isCaseInsensitiveFs(probeDir?: string): boolean {
   const base = probeDir ?? path.join(getUserHome(), '.teamai');
   const cached = caseInsensitiveCache.get(base);
 
   if (cached !== undefined) return cached;
-  let insensitive = false;
-
-  try {
-    fs.mkdirSync(base, { recursive: true });
-    const token = `.teamai-case-probe-${process.pid}-${Date.now()}`;
-    const upper = path.join(base, token.toUpperCase());
-    const lower = path.join(base, token.toLowerCase());
-    fs.writeFileSync(upper, '');
-    // If the lowercased path resolves to the file we wrote under the uppercased
-    // name, the FS folds case → case-insensitive.
-    insensitive = fs.existsSync(lower);
-    fs.rmSync(upper, { force: true });
-  } catch {
-    insensitive = false;
-  }
-
+  const insensitive = foldsCaseOfAName(base) ?? foldsCaseOfAWrite(base);
   caseInsensitiveCache.set(base, insensitive);
 
   return insensitive;
+}
+
+/**
+ * Whether the first name with a cased letter in `dir`, or else in `dir`'s own path on its volume, looked up with that
+ * letter's case swapped, reaches the same file. Undefined when no such name can be read.
+ */
+function foldsCaseOfAName(dir: string): boolean | undefined {
+  let entries: fs.Dir;
+
+  try {
+    entries = fs.opendirSync(dir);
+  } catch {
+    return undefined;
+  }
+
+  try {
+    for (let entry = entries.readSync(); entry !== null; entry = entries.readSync()) {
+      const folds = foldsCaseOf(dir, entry.name);
+
+      if (folds !== undefined) return folds;
+    }
+
+    const volume = fs.statSync(dir).dev;
+
+    // A name is looked up on its parent's volume, so the walk stops at the first parent on another one.
+    for (let at = dir; path.dirname(at) !== at && fs.statSync(path.dirname(at)).dev === volume; at = path.dirname(at)) {
+      const folds = foldsCaseOf(path.dirname(at), path.basename(at));
+
+      if (folds !== undefined) return folds;
+    }
+  } catch {
+    // A name that vanished or cannot be read: the write probe decides.
+  } finally {
+    entries.closeSync();
+  }
+
+  return undefined;
+}
+
+/**
+ * Whether `name` in `dir`, with its first cased letter's case swapped, reaches the same file. Undefined when it has none.
+ * A letter whose swap is not one letter that swaps back (German sharp s, Turkish dotted I) is passed over: volumes fold
+ * those differently.
+ */
+function foldsCaseOf(dir: string, name: string): boolean | undefined {
+  const chars = Array.from(name);
+
+  for (const [at, char] of chars.entries()) {
+    const swapped = swapCase(char);
+
+    if (swapped === char || swapCase(swapped) !== char) continue;
+    const named = fs.lstatSync(path.join(dir, name), { bigint: true });
+    const other = fs.lstatSync(path.join(dir, [...chars.slice(0, at), swapped, ...chars.slice(at + 1)].join('')), { bigint: true, throwIfNoEntry: false });
+
+    return other !== undefined && named.dev === other.dev && named.ino === other.ino;
+  }
+
+  return undefined;
+}
+
+function swapCase(char: string): string {
+  return char === char.toLowerCase() ? char.toUpperCase() : char.toLowerCase();
+}
+
+/** Whether a file written in `dir` under an upper-case name exists under its lower-case one. False when it cannot write. */
+function foldsCaseOfAWrite(dir: string): boolean {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const token = `.teamai-case-probe-${process.pid}-${Date.now()}`;
+    const upper = path.join(dir, token.toUpperCase());
+    const lower = path.join(dir, token.toLowerCase());
+    fs.writeFileSync(upper, '');
+    const insensitive = fs.existsSync(lower);
+    fs.rmSync(upper, { force: true });
+
+    return insensitive;
+  } catch {
+    return false;
+  }
 }
 
 /** Test-only: reset the cached case-sensitivity probes. */
@@ -149,9 +222,11 @@ export function projectSlug(anchor: string): string {
   // Normalize once so BOTH the path prefix and the hash are derived from the
   // same canonical spelling — on a case-insensitive volume this makes the whole
   // slug string identical for any spelling of one directory.
-  const norm = normalizeAnchor(anchor);
+  return slugOf(normalizeAnchor(anchor));
+}
 
-  return `${safePathPrefix(norm)}-${anchorHash(norm)}`;
+function slugOf(spelling: string): string {
+  return `${safePathPrefix(spelling)}-${anchorHash(spelling)}`;
 }
 
 /**
@@ -165,11 +240,26 @@ export function projectSlug(anchor: string): string {
  * corrupt.
  */
 export function legacyProjectSlug(anchor: string): string {
-  const norm = normalizeAnchor(anchor);
-  const raw = path.basename(norm) || 'project';
+  return legacySlugOf(normalizeAnchor(anchor));
+}
+
+function legacySlugOf(spelling: string): string {
+  const raw = path.basename(spelling) || 'project';
   const cleaned = raw.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
 
-  return `${(cleaned || 'project').slice(0, 40)}-${anchorHash(norm)}`;
+  return `${(cleaned || 'project').slice(0, 40)}-${anchorHash(spelling)}`;
+}
+
+/**
+ * The names an earlier teamai gave `anchor`'s partition, which `resolvePartitionDir` adopts: the legacy one, and on a
+ * case-insensitive volume the ones with the anchor's case kept, which a teamai that could not write the anchor's parent
+ * gave it, reading the volume as case-sensitive.
+ */
+export function earlierProjectSlugs(anchor: string): string[] {
+  const norm = normalizeAnchor(anchor);
+  const kept = norm === anchor ? [] : [slugOf(anchor), legacySlugOf(anchor)];
+
+  return [...new Set([legacySlugOf(norm), ...kept])].filter((slug) => slug !== slugOf(norm));
 }
 
 /**
@@ -200,7 +290,7 @@ export function projectDataHome(anchor: string): string {
  * project's partition" (detection, init, migration) goes through here, so an
  * upgraded CLI converges on the new name on the first command that touches the
  * project. `status --all` deliberately does NOT rename (it must stay
- * read-only); it recognizes the legacy name via `legacyProjectSlug` instead.
+ * read-only); it recognizes the earlier names via `earlierProjectSlugs` instead.
  *
  * Edge cases:
  *  - canonical already exists with data → it is authoritative; a leftover
@@ -231,23 +321,30 @@ export function projectDataHome(anchor: string): string {
  */
 export async function resolvePartitionDir(anchor: string, options: { dryRun?: boolean } = {}): Promise<string> {
   const canonical = projectDataHome(anchor);
-  const legacyDir = path.join(projectsRootDir(), legacyProjectSlug(anchor));
-
-  if (legacyDir === canonical) return canonical; // whole-path prefix == basename (root-level anchor)
+  const earlierDirs = earlierProjectSlugs(anchor).map((slug) => path.join(projectsRootDir(), slug));
 
   if (options.dryRun) {
     // A preview adopts nothing: report the directory that holds the data now,
-    // the legacy one wherever adoption would move it.
+    // the earlier one wherever adoption would move it.
     const canonicalEntries = await fs.promises.readdir(canonical).catch(() => null);
 
-    return (await dirExists(legacyDir)) && !canonicalEntries?.length ? legacyDir : canonical;
+    if (canonicalEntries?.length) return canonical;
+
+    for (const earlier of earlierDirs) {
+      if (await dirExists(earlier)) return earlier;
+    }
+
+    return canonical;
   }
 
-  const dir = await adoptLegacyPartition(canonical, legacyDir);
+  for (const earlier of earlierDirs) {
+    const dir = await adoptLegacyPartition(canonical, earlier);
 
-  if (dir === canonical) await rebaseLocalPathAfterAdoption(canonical, legacyDir);
+    if (dir !== canonical) return dir;
+    await rebaseLocalPathAfterAdoption(canonical, earlier);
+  }
 
-  return dir;
+  return canonical;
 }
 
 /** Perform the rename-based adoption, returning the directory that holds the data. */
@@ -367,7 +464,7 @@ export async function writeAnchorFile(partitionDir: string, anchor: string): Pro
 /** Read a partition's `anchor` file (trimmed), or null when absent/unreadable. */
 export async function readAnchorFile(partitionDir: string): Promise<string | null> {
   try {
-    const raw = await fs.promises.readFile(path.join(partitionDir, 'anchor'), 'utf-8');
+    const raw = await readRegularFile(path.join(partitionDir, 'anchor'), 'utf-8');
     const trimmed = raw.trim();
 
     return trimmed || null;

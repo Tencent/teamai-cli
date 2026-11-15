@@ -7,7 +7,7 @@ vi.mock('../import-org.js', () => ({
 
 import { importCmd } from '../import.js';
 import { importFromOrg } from '../import-org.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 describe('importCmd --max-repos', () => {
     let exitSpy: ReturnType<typeof vi.spyOn>;

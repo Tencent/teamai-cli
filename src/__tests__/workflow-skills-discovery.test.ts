@@ -7,7 +7,7 @@ import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 import { deployWorkflowSkills, shadowedWorkflowSkills } from '../workflow/discovery/workflow-skills.js';
 import { readGenerated } from '../workflow/discovery/generated-marker.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { createDeliveryRecorder, type DeliveryRecorder } from '../git-exclude-delivered.js';
 import { isTeamaiSkillCopy } from '../resources/delivered-copies.js';
 import { skillOrigin } from '../resources/skills.js';

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { type MRData } from '../../types.js';
-import { log } from '../../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { getGitCodeToken, gitcodeApiBase } from './gitcode-api.js';
 import { GITCODE_HOST } from './repo-url.js';
 

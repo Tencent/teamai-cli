@@ -2,7 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { getUserHome } from '../utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 import { getTeamaiHome, getDataHome, getEnvBackupPath, resolveBaseDir, type LocalConfig } from '../types.js';
 
 const originalHome = process.env.HOME;

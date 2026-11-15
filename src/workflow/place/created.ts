@@ -1,6 +1,7 @@
 import type { WorkflowFailure } from '../types.js';
 import type { CopyContract } from '../workspace.js';
 import { ensureWorktree, fetchMissingCommits, markSetup, removeWorktree, setupUnfinished, unrestoredCopy, worktreePath } from '../worktree.js';
+import { retryCommand } from '../runtimes/retry-command.js';
 
 /** Each commit a lease starts from, merges, or restores agent files from, with the branch that holds it. */
 export function leaseCommits(workspace: CopyContract): Array<{ commit: string; branch?: string }> {
@@ -26,13 +27,13 @@ export async function openWorktree({ root, run, step, workspace, setup }: {
   const blocked = await unrestoredCopy(place);
 
   if (blocked?.state === 'unreadable') {
-    return { code: 'workspace_base', message: `Workspace ${blocked.dir} has a marker teamai cannot read: ${blocked.marker}. Put ${blocked.dir} back on ${workspace.branch} as the step found it, delete ${blocked.marker}, then retry this step with teamai workflow retry ${run} ${step}.` };
+    return { code: 'workspace_base', message: `Workspace ${blocked.dir} has a marker teamai cannot read: ${blocked.marker}. Put ${blocked.dir} back on ${workspace.branch} as the step found it, delete ${blocked.marker}, then retry this step with ${retryCommand({ run, step })}.` };
   }
 
   if (blocked) {
     const { branch, commit, step: reader, reason } = blocked.marker;
 
-    return { code: 'workspace_base', message: `Step "${reader}" read workspace ${blocked.dir} and it was not put back (${reason}). It is still not back: ${blocked.left}. Put ${blocked.dir} back on ${branch} at ${commit} as the step found it, then retry this step with teamai workflow retry ${run} ${step}.` };
+    return { code: 'workspace_base', message: `Step "${reader}" read workspace ${blocked.dir} and it was not put back (${reason}). It is still not back: ${blocked.left}. Put ${blocked.dir} back on ${branch} at ${commit} as the step found it, then retry this step with ${retryCommand({ run, step })}.` };
   }
 
   const needed = new Map(leaseCommits(workspace).map((item) => [item.commit, item]));
@@ -47,10 +48,16 @@ export async function openWorktree({ root, run, step, workspace, setup }: {
 
     const said = fetched.fetchError ? ` Git said: ${fetched.fetchError}.` : '';
 
-    return { code: 'workspace_base', message: `Step "${step}" needs ${named.join(', ')}, which this checkout does not have, even after fetching the run's branches from origin.${said} Push each branch to origin from the machine that has its commit, then retry this step with teamai workflow retry ${run} ${step}.` };
+    return { code: 'workspace_base', message: `Step "${step}" needs ${named.join(', ')}, which this checkout does not have, even after fetching the run's branches from origin.${said} Push each branch to origin from the machine that has its commit, then retry this step with ${retryCommand({ run, step })}.` };
   }
 
-  if (setup && await setupUnfinished(place)) await removeWorktree(root, place);
+  if (setup && await setupUnfinished(place)) {
+    const removed = await removeWorktree(root, place);
+
+    // Opened again, it would run the step in a place a setup cut short.
+    if (!removed.ok) return { code: 'workspace_base', message: `Worktree ${place}, whose setup was cut short, was not removed (${removed.reason}), so step "${step}" did not start in it. Fix that, then retry this step with ${retryCommand({ run, step })}.` };
+  }
+
   const opened = await ensureWorktree(root, workspace.branch, workspace.start.commit);
 
   if ('error' in opened) return { code: 'workspace_base', message: opened.error };

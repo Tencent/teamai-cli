@@ -27,7 +27,7 @@ import {
   saveStateForScope,
 } from '../config.js';
 import { excludeAdd, excludeRemove } from '../exclude.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { LocalConfig } from '../types.js';
 
 const userConfig: LocalConfig = {

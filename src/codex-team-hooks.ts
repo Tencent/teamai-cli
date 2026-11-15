@@ -23,10 +23,11 @@ import { getTeamHookDispatchCommand, getTeamHookDispatchCommandWindows } from '.
 import { runHookCommand } from './hook-command.js';
 import { stdinString, type HookStdin } from './hook-dispatch.js';
 import type { CodexGroupSlot, CodexTrustPolicy } from './hooks.js';
-import { CODEX_TOOL_ID, getTeamaiHomeDir, type JsonValue } from './types.js';
+import { CODEX_TOOL_ID, getTeamaiHomeDir } from './types.js';
+import type { JsonValue } from '@teamai/shared/json';
 import { checkoutForRepoAnchor } from './utils/git.js';
 import { readJson, readJsonObject, writeJsonAtomic } from './utils/fs.js';
-import { log, setStderrOnly } from './utils/logger.js';
+import { log, setStderrOnly } from '@teamai/shared/log';
 
 /** One team hook a project runs through the dispatcher, as pull resolved it. */
 export interface CodexTeamHook {

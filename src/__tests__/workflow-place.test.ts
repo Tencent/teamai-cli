@@ -8,14 +8,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
-import { DRIVERS_UNDER_TEST, inProcessConformanceClient, runConformanceScenario, type ConformanceClient } from '../workflow/conformance-interpreter.js';
+import { PROFILES_UNDER_TEST, profileLacks, inProcessConformanceClient, runConformanceScenario, type ConformanceClient } from '../workflow/conformance-interpreter.js';
 import { PLACE_CHECKOUT_FILES, workflowPlaceConformanceScenarios } from '../workflow/conformance/place.js';
-import { inProcessClient, refuseDirtyAdoptedCommand, type HostPlaceRequest } from '../workflow/protocol.js';
+import { inProcessClient, refuseDirtyAdoptedCommand, type SessionHostPlaceRequest } from '../workflow/protocol.js';
 import { pull } from '../pull.js';
 import { pendingRecords } from '../workflow/records.js';
 import { findRunConfig } from '../workflow/run-location.js';
 import { cancelRun } from '../workflow/run-controls.js';
 import { AttemptIdSchema, readRun, RunIdSchema, withRunLock } from '../workflow/store.js';
+import { finishPlace } from '../workflow/place/place.js';
+import { log } from '@teamai/shared/log';
 
 vi.mock('../pull.js', () => ({ pull: vi.fn() }));
 /** The git steps of a prepare to kill the process after, each once. */
@@ -34,11 +36,23 @@ vi.mock('../workflow/worktree.js', async (importOriginal) => {
     markReadCopy: killable('markReadCopy', real.markReadCopy),
     mergeBranch: killable('mergeBranch', real.mergeBranch),
     worktreeHooks: killable('worktreeHooks', real.worktreeHooks),
+    commitWork: killable('commitWork', real.commitWork),
+  };
+});
+vi.mock('../workflow/place/worktree-snapshot.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../workflow/place/worktree-snapshot.js')>();
+  return {
+    ...real,
+    snapshotWorktree: async (...args: Parameters<typeof real.snapshotWorktree>) => {
+      const snapshot = await real.snapshotWorktree(...args);
+      if (killAfter.delete('snapshotWorktree')) throw new Error('killed after snapshotWorktree');
+      return snapshot;
+    },
   };
 });
 // Setup's process runs on once the process that started it is killed, as it does when a runner is killed.
-vi.mock('../tool-launch/process-stop.js', async (importOriginal) => {
-  const real = await importOriginal<typeof import('../tool-launch/process-stop.js')>();
+vi.mock('@teamai/shared/process-group', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@teamai/shared/process-group')>();
   return {
     ...real,
     recordGroup: (...args: Parameters<typeof real.recordGroup>) => {
@@ -90,6 +104,13 @@ steps:
   if ('error' in started) throw new Error(started.error.message);
   return { config, env, client, work, remote, runId: String(started.data.run), driver: { kind: 'skill', machine: 'fixture', workspace: work } };
 }
+/** Puts a worktree with an uncommitted file inside `dir`, where a run started in it puts its own; answers its path. */
+function holdWorktree(dir: string): string {
+  const inner = path.join(dir, '.teamai', 'workflow-worktrees', 'teamai-rinner-step-p1-0123456789ab');
+  git(dir, 'worktree', 'add', '-q', '-b', 'teamai/rinner/step/p1', inner);
+  fs.writeFileSync(path.join(inner, 'unsaved.txt'), 'work no commit holds');
+  return inner;
+}
 async function next(f: Awaited<ReturnType<typeof fixture>>) {
   const answer = await f.client.next(f.runId, { driver: { ...f.driver, can: { hitl: true, setup: true, workspace: ['read-only', 'new', 'continue'] } } }, { prepare: true });
   if ('error' in answer || !answer.data.lease) throw new Error(JSON.stringify({ answer, run: await readRun(f.config, f.runId) }));
@@ -127,6 +148,50 @@ describe('prepared places through the workflow client', () => {
     expect(stored).not.toContain('Edit the project.'); expect(stored).not.toContain('Untrusted branch instructions.');
   });
 
+  it('keeps the place of a writer that holds another worktree after its success, and says so', async () => {
+    const f = await fixture();
+    const first = await next(f);
+    expect(await f.client.report(f.runId, { attempt: first.attempt, revision: first.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
+    const second = await next(f);
+    const inner = holdWorktree(second.cwd);
+    const warn = vi.spyOn(log, 'warn');
+
+    expect(await f.client.report(f.runId, { attempt: second.attempt, revision: second.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true, cleanup: true } });
+    expect(fs.readFileSync(path.join(inner, 'unsaved.txt'), 'utf8')).toBe('work no commit holds');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`Worktree ${second.cwd} of run ${f.runId} stays: it holds the worktree ${inner}`));
+  });
+
+  it.each([
+    { next: 'writer', yaml: undefined },
+    { next: 'reader', yaml: `schemaVersion: v1alpha1\nname: build\ndescription: Write, then read.\nalias: ship\nsteps:\n  - id: change\n    workspace: new\n    workflow:\n      steps:\n        - id: write\n          prompt: Write the code.\n        - id: polish\n          needs: [write]\n          workspace: read-only\n          prompt: Read the code.\n` },
+  ])('runs no fsmonitor a step planted in its reused copy while the next $next step is prepared and finished', async ({ yaml }) => {
+    const f = await fixture(yaml);
+    const first = await next(f);
+    const mark = path.join(path.dirname(f.work), 'fsmonitor-ran');
+    const monitor = path.join(path.dirname(f.work), 'fsmonitor.sh');
+    fs.writeFileSync(monitor, `#!/bin/sh\necho "$@" >> "${mark}"\nexit 1\n`, { mode: 0o755 });
+    fs.writeFileSync(path.join(first.cwd, 'code.txt'), 'first\n');
+    git(first.cwd, 'config', '--worktree', 'core.fsmonitor', monitor);
+    expect(await f.client.report(f.runId, { attempt: first.attempt, revision: first.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
+    const second = await next(f);
+    expect(second.cwd).toBe(first.cwd);
+    expect(await f.client.report(f.runId, { attempt: second.attempt, revision: second.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true, step: { status: 'succeeded' } } });
+    expect(fs.existsSync(mark) ? fs.readFileSync(mark, 'utf8') : '').toBe('');
+  });
+  it('runs no clean filter a step planted in its copy while it commits the step\'s work', async () => {
+    const f = await fixture();
+    vi.stubEnv('DEPLOY_TOKEN', 'host-deploy-secret');
+    const lease = await next(f);
+    const mark = path.join(path.dirname(f.work), 'filter-saw');
+    const filter = path.join(path.dirname(f.work), 'filter.sh');
+    fs.writeFileSync(filter, `#!/bin/sh\nif [ -n "$DEPLOY_TOKEN" ]; then echo set >> "${mark}"; else echo unset >> "${mark}"; fi\ncat\n`, { mode: 0o755 });
+    git(lease.cwd, 'config', '--worktree', 'filter.planted.clean', filter);
+    fs.writeFileSync(path.join(lease.cwd, '.gitattributes'), '*.txt filter=planted\n');
+    fs.writeFileSync(path.join(lease.cwd, 'code.txt'), 'work\n');
+    expect(await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
+    expect(git(f.remote, 'show', `${lease.workspace.branch}:code.txt`)).toBe('work');
+    expect(fs.existsSync(mark) ? fs.readFileSync(mark, 'utf8') : '').toBe('');
+  });
   it('commits every change in a place TeamAI made, even when the report lists none of them', async () => {
     const f = await fixture();
     const lease = await next(f);
@@ -172,6 +237,21 @@ steps:
       const lease = await next(f);
       expect(setupRan(lease.cwd)).toBe(true);
       expect(await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
+    });
+
+    it.each([
+      ['after a kill after markSetup', 'markSetup', 'killed after markSetup'],
+      ['while setup ran', 'recordGroup', 'killed while setup ran'],
+    ])('does not start over in a worktree whose setup was cut short %s while it holds another, which stays', async (_, kill, killed) => {
+      const f = await fixture(SETUP);
+      killAfter.add(kill);
+      await expect(next(f)).rejects.toThrow(killed);
+      const place = git(f.work, 'worktree', 'list', '--porcelain').split('\n').flatMap((line) => (line.startsWith('worktree ') ? [line.slice('worktree '.length)] : [])).find((dir) => dir !== f.work) ?? '';
+      const inner = holdWorktree(place);
+
+      expect(await f.client.next(f.runId, { driver: { ...f.driver, can: { hitl: true, setup: true, workspace: ['read-only', 'new', 'continue'] } } }, { prepare: true }))
+        .toMatchObject({ error: { code: 'workspace_base', message: expect.stringContaining(`it holds the worktree ${inner}`) } });
+      expect(fs.readFileSync(path.join(inner, 'unsaved.txt'), 'utf8')).toBe('work no commit holds');
     });
 
     it.each([
@@ -313,6 +393,50 @@ steps:
     });
   });
 
+  it('finishes the place of a step whose finish throws as failed, with why, never leaving it ready', async () => {
+    const f = await fixture(); const lease = await next(f); fs.writeFileSync(path.join(lease.cwd, 'code.txt'), 'work');
+    killAfter.add('commitWork');
+
+    const reported = await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver });
+
+    expect(reported).toMatchObject({ data: { accepted: true, step: { status: 'failed', failure: { code: 'workspace_base', message: `Step "${lease.step}" could not finish its place: killed after commitWork` } } } });
+    // Finished, so a second finish answers what the first recorded rather than finishing a place left ready.
+    expect(await withRunLock(f.config, RunIdSchema.parse(f.runId), (lock) => finishPlace({ config: f.config, lock, attempt: AttemptIdSchema.parse(lease.attempt), end: { outcome: 'success' }, secrets: {} }), { waitMs: 0 }))
+      .toMatchObject({ outcome: 'failed', failure: { code: 'workspace_base', message: `Step "${lease.step}" could not finish its place: killed after commitWork` } });
+  });
+
+  it('puts back the copy of a reader whose finish throws, as giving the place up does, so later steps there are not refused', async () => {
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A reader of the copy a writer made.
+alias: ship
+steps:
+  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: write
+          prompt: Write the code.
+        - id: check
+          needs: [write]
+          workspace: read-only
+          prompt: Check the code.
+`);
+    const write = await next(f);
+    fs.writeFileSync(path.join(write.cwd, 'code.txt'), 'written\n');
+    expect(await f.client.report(f.runId, { attempt: write.attempt, revision: write.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
+    const check = await next(f);
+    const mark = path.resolve(check.cwd, git(check.cwd, 'rev-parse', '--git-path', 'teamai-unrestored'));
+    killAfter.add('snapshotWorktree');
+
+    const reported = await f.client.report(f.runId, { attempt: check.attempt, revision: check.revision, outcome: 'success', driver: f.driver });
+
+    expect({ reported, marked: fs.existsSync(mark) }).toMatchObject({
+      reported: { data: { accepted: true, step: { status: 'failed', failure: { code: 'workspace_base', message: `Step "change.check" could not finish its place: killed after snapshotWorktree` } } } },
+      marked: false,
+    });
+  });
+
   it('does not commit or push a cancelled attempt', async () => {
     const f = await fixture(); const lease = await next(f); fs.writeFileSync(path.join(lease.cwd, 'code.txt'), 'preserve me');
     const before = git(f.work, 'rev-parse', lease.workspace.branch);
@@ -395,7 +519,7 @@ steps:
   });
 });
 
-describe('places the host made', () => {
+describe('places the session host made', () => {
   const SETUP = (command: string) => `schemaVersion: v1alpha1
 name: build
 description: Build in a set-up place the host makes.
@@ -455,7 +579,7 @@ steps:
     fs.writeFileSync(path.join(dir, 'code.txt'), 'step\n');
     fs.writeFileSync(path.join(dir, '.setup-out'), 'host\n');
     const answer = await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver }, { changed: ['code.txt'] });
-    const message = `Step "fix" left .setup-out in ${dir}, which the step did not report changing, so nothing was committed or pushed. If your host's setup wrote it, make setup write only files git ignores, or wait for it to finish before adopt. Otherwise remove it, then retry the step.`;
+    const message = `Step "fix" left .setup-out in ${dir}, which the step did not report changing, so nothing was committed or pushed. If your session host's setup wrote it, make setup write only files git ignores, or wait for it to finish before adopt. Otherwise remove it, then retry the step.`;
 
     expect(answer).toMatchObject({ data: { accepted: true, step: { status: 'failed', failure: { code: 'unreported_changes', message } } } });
     expect(git(dir, 'rev-parse', 'HEAD')).toBe(lease.workspace.start.commit);
@@ -524,7 +648,7 @@ steps:
     expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt, adopt: dir } })).toMatchObject({ data: { lease: { cwd: dir } } });
     fs.writeFileSync(path.join(dir, '.setup-out'), 'host\n');
     fs.writeFileSync(path.join(dir, 'extra.txt'), 'also\n');
-    const message = `Step "fix" left .setup-out, extra.txt in ${dir}, which the step did not report changing, so nothing was committed or pushed. If your host's setup wrote it, make setup write only files git ignores, or wait for it to finish before adopt. Otherwise remove it, then retry the step.`;
+    const message = `Step "fix" left .setup-out, extra.txt in ${dir}, which the step did not report changing, so nothing was committed or pushed. If your session host's setup wrote it, make setup write only files git ignores, or wait for it to finish before adopt. Otherwise remove it, then retry the step.`;
 
     expect(await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver }, { changed: [] }))
       .toMatchObject({ data: { accepted: true, step: { status: 'failed', failure: { code: 'unreported_changes', message } } } });
@@ -602,7 +726,7 @@ steps:
     const write = await lease();
     const dir = path.join(path.dirname(f.work), 'hosts', 'overlay');
     git(f.work, 'worktree', 'add', '-q', '--detach', dir, write.workspace.start.commit);
-    expect(await withRunLock(f.config, run, (lock) => f.client.prepareHostPlace(lock, write.raw, { kind: 'adopt', dir }), { waitMs: 0 })).toMatchObject({ kind: 'prepared', dir });
+    expect(await withRunLock(f.config, run, (lock) => f.client.prepareSessionHostPlace(lock, write.raw, { kind: 'adopt', dir }), { waitMs: 0 })).toMatchObject({ kind: 'prepared', dir });
     fs.writeFileSync(path.join(dir, 'AGENTS.md'), 'Branch instructions.\n');
     fs.writeFileSync(path.join(dir, 'CLAUDE.md'), 'Added on the branch.\n');
     expect(await f.client.report(f.runId, { attempt: write.attempt, revision: write.revision, outcome: 'success', driver: f.driver }, { changed: ['AGENTS.md', 'CLAUDE.md'] })).toMatchObject({ data: { accepted: true, step: { status: 'succeeded' } } });
@@ -661,7 +785,7 @@ steps:
     const dir = path.join(path.dirname(f.work), 'hosts', name);
     git(f.work, 'worktree', 'add', '-q', '--detach', dir, join.workspace.start.commit);
     const run = RunIdSchema.parse(f.runId);
-    expect(await withRunLock(f.config, run, (lock) => f.client.prepareHostPlace(lock, join.raw, { kind: 'adopt', dir }), { waitMs: 0 })).toMatchObject({ kind: 'prepared', dir });
+    expect(await withRunLock(f.config, run, (lock) => f.client.prepareSessionHostPlace(lock, join.raw, { kind: 'adopt', dir }), { waitMs: 0 })).toMatchObject({ kind: 'prepared', dir });
     expect(fs.readFileSync(path.join(dir, 'a.ts'), 'utf8')).toContain('<<<<<<<');
     expect(git(dir, 'status', '--porcelain')).toContain('b.ts');
     return { f, dir, join };
@@ -674,6 +798,19 @@ steps:
       .toMatchObject({ data: { accepted: true, step: { status: 'succeeded' } } });
     expect(git(f.remote, 'show', `${join.workspace.branch}:a.ts`)).toBe('resolved');
     expect(git(f.remote, 'show', `${join.workspace.branch}:b.ts`)).toBe('from right');
+  });
+
+  it('runs no fsmonitor the child planted in the place while it finishes a resolved merge', async () => {
+    const { f, dir, join } = await adoptedJoin('monitored');
+    const mark = path.join(path.dirname(f.work), 'fsmonitor-ran');
+    const monitor = path.join(path.dirname(f.work), 'fsmonitor.sh');
+    fs.writeFileSync(monitor, `#!/bin/sh\necho "$@" >> "${mark}"\nexit 1\n`, { mode: 0o755 });
+    git(dir, 'config', '--worktree', 'core.fsmonitor', monitor);
+    fs.writeFileSync(path.join(dir, 'a.ts'), 'resolved\n');
+    expect(await f.client.report(f.runId, { attempt: join.attempt, revision: join.revision, outcome: 'success', driver: f.driver }, { changed: ['a.ts'] }))
+      .toMatchObject({ data: { accepted: true, step: { status: 'succeeded' } } });
+    expect(fs.existsSync(mark)).toBe(false);
+    expect(git(f.remote, 'show', `${join.workspace.branch}:a.ts`)).toBe('resolved');
   });
 
   it('still rejects a preparation merge file the child changed and did not report', async () => {
@@ -695,7 +832,7 @@ steps:
       },
       answer: { error: { code: 'lease_cancelled' } },
     },
-  ])('leaves a place the host made with its own hooks when its step $end', async ({ report, answer }) => {
+  ])('leaves a place the session host made with its own hooks when its step $end', async ({ report, answer }) => {
     const f = await fixture();
     const lease = await leased(f);
     const dir = lease.host('ended', '--detach');
@@ -783,7 +920,7 @@ steps:
           prompt: Polish the change.
 `);
     const run = RunIdSchema.parse(f.runId);
-    const prepare = (lease: unknown, request: HostPlaceRequest) => withRunLock(f.config, run, (lock) => f.client.prepareHostPlace(lock, lease, request), { waitMs: 0 });
+    const prepare = (lease: unknown, request: SessionHostPlaceRequest) => withRunLock(f.config, run, (lock) => f.client.prepareSessionHostPlace(lock, lease, request), { waitMs: 0 });
     const lease = async (): Promise<{ raw: unknown } & z.infer<typeof LeaseSchema>> => {
       const answer = await f.client.next(f.runId, body(f));
       if (!('data' in answer) || !answer.data.lease) throw new Error(JSON.stringify(answer));
@@ -807,7 +944,7 @@ steps:
     expect(fs.readFileSync(path.resolve(dir, git(dir, 'rev-parse', '--git-path', 'setup-runs')), 'utf8')).toBe('ran\n');
   });
 
-  it('goes on in the place the host made for a later command and reader on its branch, and leaves it after the last with its own hooks', async () => {
+  it('goes on in the place the session host made for a later command and reader on its branch, and leaves it after the last with its own hooks', async () => {
     const f = await fixture(`schemaVersion: v1alpha1
 name: build
 description: Write a change, check it, then review it, in a place the host makes.
@@ -836,7 +973,7 @@ steps:
     const write = await lease();
     const dir = path.join(path.dirname(f.work), 'hosts', 'place');
     git(f.work, 'worktree', 'add', '-q', '--detach', dir, write.workspace.start.commit);
-    expect(await withRunLock(f.config, run, (lock) => f.client.prepareHostPlace(lock, write.raw, { kind: 'adopt', dir }), { waitMs: 0 })).toMatchObject({ kind: 'prepared', dir });
+    expect(await withRunLock(f.config, run, (lock) => f.client.prepareSessionHostPlace(lock, write.raw, { kind: 'adopt', dir }), { waitMs: 0 })).toMatchObject({ kind: 'prepared', dir });
     fs.writeFileSync(path.join(dir, 'change.txt'), 'written\n');
     expect(await f.client.report(f.runId, { attempt: write.attempt, revision: write.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
 
@@ -851,7 +988,7 @@ steps:
     expect(git(dir, 'config', '--worktree', '--default', '', '--get', 'core.hooksPath')).toBe('');
   });
 
-  it('says why the place the host made was passed over when the copy TeamAI then makes of its branch fails', async () => {
+  it('says why the place the session host made was passed over when the copy TeamAI then makes of its branch fails', async () => {
     const f = await fixture(`schemaVersion: v1alpha1
 name: build
 description: Write a change, then check it, in a place the host makes.
@@ -876,7 +1013,7 @@ steps:
     const write = await lease();
     const dir = path.join(path.dirname(f.work), 'hosts', 'place');
     git(f.work, 'worktree', 'add', '-q', '--detach', dir, write.workspace.start.commit);
-    expect(await withRunLock(f.config, run, (lock) => f.client.prepareHostPlace(lock, write.raw, { kind: 'adopt', dir }), { waitMs: 0 })).toMatchObject({ kind: 'prepared', dir });
+    expect(await withRunLock(f.config, run, (lock) => f.client.prepareSessionHostPlace(lock, write.raw, { kind: 'adopt', dir }), { waitMs: 0 })).toMatchObject({ kind: 'prepared', dir });
     fs.writeFileSync(path.join(dir, 'change.txt'), 'written\n');
     expect(await f.client.report(f.runId, { attempt: write.attempt, revision: write.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
     fs.writeFileSync(path.join(dir, 'stray.txt'), 'left by the host\n');
@@ -884,7 +1021,7 @@ steps:
     const check = await lease();
     expect(await withRunLock(f.config, run, (lock) => f.client.prepare(lock, check.raw), { waitMs: 0 })).toEqual({ kind: 'failed', failure: {
       code: 'workspace_base',
-      message: expect.stringMatching(new RegExp(`^TeamAI did not go on in ${dir}, the place the host made for branch ${write.workspace.branch}: ${dir} has changes the step would commit \\(\\?\\? stray\\.txt\\).* Making its own worktree of the branch failed too: .*(?:already used by worktree|already checked out at)`, 's')),
+      message: expect.stringMatching(new RegExp(`^TeamAI did not go on in ${dir}, the place the session host made for branch ${write.workspace.branch}: ${dir} has changes the step would commit \\(\\?\\? stray\\.txt\\).* Making its own worktree of the branch failed too: .*(?:already used by worktree|already checked out at)`, 's')),
     } });
   });
 
@@ -913,7 +1050,7 @@ steps:
     const ui = await raw([attempt]);
     const dir = path.join(path.dirname(f.work), 'hosts', 'shared');
     git(f.work, 'worktree', 'add', '-q', '--detach', dir, workspace.start.commit);
-    const prepare = (lease: unknown) => withRunLock(f.config, run, (lock) => f.client.prepareHostPlace(lock, lease, { kind: 'adopt', dir }), { waitMs: 0 });
+    const prepare = (lease: unknown) => withRunLock(f.config, run, (lock) => f.client.prepareSessionHostPlace(lock, lease, { kind: 'adopt', dir }), { waitMs: 0 });
 
     killAfter.add('worktreeHooks');
     await expect(prepare(api)).rejects.toThrow('killed after worktreeHooks');
@@ -984,8 +1121,15 @@ steps:
   });
 });
 
-describe.each(DRIVERS_UNDER_TEST)('workflow place conformance in process as %s', (profile) => {
+describe.each(PROFILES_UNDER_TEST)('workflow place conformance in process as %s', (profile) => {
   for (const scenario of workflowPlaceConformanceScenarios) {
+    const lacks = profileLacks(profile, scenario);
+
+    if (lacks !== undefined) {
+      it.skip(`${scenario.name} (${profile} lacks ${lacks})`, () => undefined);
+      continue;
+    }
+
     it(scenario.name, async () => {
       for (const [name, value] of Object.entries(scenario.env ?? {})) vi.stubEnv(name, value);
       const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-place-conformance-')));

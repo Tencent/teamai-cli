@@ -21,10 +21,12 @@ import { DIMENSIONS_OFFERED, FAILING_MAX, SCORER_WINDOWS, ScorerResults, type Re
 import { sessionArchiveRoot } from '../session-flow/session-cmd-shared.js';
 import { SyncManager } from '../session-flow/sync.js';
 import { getReportsDir, isSelfMode, usesBranchWorktree, type DashboardEvent, type LocalConfig } from '../types.js';
-import { execCommand } from '../utils/exec.js';
+import { execCommand } from '@teamai/shared/exec';
 import { buildEndRecord, RECORDS_DIR } from '../workflow/records.js';
+import { gitAnswer, git as gitAt, saidYes, unansweredGit } from '../workflow/worktree.js';
 import { isRunId, readRun, runsDir } from '../workflow/store.js';
 import { HttpError } from './http.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 /** What the page asks for: the view's query, with the team commit to split at as the member typed it. */
 export type ScorerQuery = Omit<ScorerResultsQuery, 'split'> & { commit?: string };
@@ -90,7 +92,7 @@ const sessionKey = (platform: string, sessionId: string) => `${platform}\0${sess
 
 async function publishedRecord(config: LocalConfig, runId: string): Promise<PublishedRecord | undefined> {
   try {
-    const parsed = RecordSchema.safeParse(JSON.parse(await fs.readFile(path.join(getReportsDir(config), RECORDS_DIR, `${runId}.json`), 'utf8')));
+    const parsed = RecordSchema.safeParse(JSON.parse(await readRegularFile(path.join(getReportsDir(config), RECORDS_DIR, `${runId}.json`), 'utf8')));
 
     return parsed.success ? parsed.data : undefined;
   } catch {
@@ -156,9 +158,10 @@ const teamReadsCache = new Map<string, { at: string; reads: Promise<TeamReads> }
 
 /** The commit checked out in `dir`, or undefined when it has none or is gone: then nothing read from it is kept. */
 async function headOf(dir: string): Promise<string | undefined> {
-  const head = await execCommand('git', ['rev-parse', '--verify', '--quiet', 'HEAD'], { cwd: dir, timeoutMs: 10_000 }).catch(() => undefined);
+  // No head, a git that failed, and one that did not answer all read nothing to keep.
+  const head = await gitAt(dir, ['rev-parse', '--verify', '--quiet', 'HEAD'], { timeoutMs: 10_000 }).then(gitAnswer);
 
-  return head?.code === 0 ? head.stdout.trim() : undefined;
+  return head.said === 'yes' ? head.result.stdout.trim() : undefined;
 }
 
 async function readTeam(config: LocalConfig): Promise<TeamReads> {
@@ -312,13 +315,15 @@ async function teamGit(config: LocalConfig, args: string[]) {
 
 /** The full commit `commit` names in this machine's team clone. Throws an HttpError the page shows when it has none. */
 async function resolveCommit(config: LocalConfig, commit: string): Promise<string> {
-  const resolved = await teamGit(config, ['rev-parse', '--verify', '--quiet', '--end-of-options', `${commit}^{commit}`]);
+  const resolved = gitAnswer(await gitAt(config.repo.localPath, ['rev-parse', '--verify', '--quiet', '--end-of-options', `${commit}^{commit}`], { timeoutMs: 10_000 }));
 
-  if (resolved.code !== 0) {
+  if (resolved.said === 'nothing') throw unansweredGit(`whether this machine's team clone has commit ${commit}`, resolved.result);
+
+  if (resolved.said === 'no') {
     throw new HttpError(400, `Commit ${commit} is not in this machine's team clone. Run teamai pull, or give a commit of the team repo.`);
   }
 
-  return resolved.stdout.trim();
+  return resolved.result.stdout.trim();
 }
 
 /** How many git processes a split starts at once, however many team revisions the labels name. */
@@ -331,10 +336,10 @@ export async function sidesOf(config: LocalConfig, commit: string, revisions: Re
 
   for (let start = 0; start < pending.length; start += SPLIT_GIT_BATCH) {
     await Promise.all(pending.slice(start, start + SPLIT_GIT_BATCH).map(async (revision) => {
-      const { code } = await teamGit(config, ['merge-base', '--is-ancestor', commit, revision]);
+      const contained = gitAnswer(await gitAt(config.repo.localPath, ['merge-base', '--is-ancestor', commit, revision], { timeoutMs: 10_000 }));
 
-      if (code === 0) sides.set(revision, 'after');
-      else if (code === 1) sides.set(revision, 'before');
+      if (saidYes(contained, `whether ${revision} holds ${commit}`)) sides.set(revision, 'after');
+      else if (contained.result.code === 1) sides.set(revision, 'before');
     }));
   }
 

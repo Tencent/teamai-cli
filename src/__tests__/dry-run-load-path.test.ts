@@ -61,7 +61,7 @@ import { tagsAdd, tagsList, tagsRemove, tagsSubscribe, tagsUnsubscribe } from '.
 import { uninstall } from '../uninstall.js';
 import { listWebhooks } from '../webhook.js';
 import { updateReports } from '../utils/reports-branch.js';
-import { log, setStderrOnly } from '../utils/logger.js';
+import { log, setStderrOnly } from '@teamai/shared/log';
 import { legacyProjectSlug } from '../utils/partition.js';
 
 const ROLES_YAML =

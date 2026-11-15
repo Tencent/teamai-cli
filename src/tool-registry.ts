@@ -16,16 +16,13 @@ import { type FolderReach, type HookFormat, type InstallGate, type RunTimeVia } 
 const REGISTRY = makeToolRegistry(TOOLS, () => instanceTable, hostsInstances);
 
 /**
- * Whether `instance`, of a tool whose sessions `platform` holds, keeps its own there: the format carries another platform
- * id, in a store its home moves. A store in an XDG data home (OpenCode) moves only with a home that moves `XDG_DATA_HOME`;
- * otherwise the instance writes the tool's own store, and its sessions are credited to the tool it extends.
+ * Whether an instance of a tool whose sessions `platform` holds keeps its own there: the format carries another platform
+ * id, in a tool home, which the instance's home moves.
  */
-function hostsInstances(platform: SessionPlatform, instance: DeclaredTool): boolean {
+function hostsInstances(platform: SessionPlatform): boolean {
   const facts: SessionPlatformFacts = SESSION_PLATFORM_FACTS[platform];
 
-  if (!facts.instanceSessions) return false;
-
-  return facts.store.in === 'tool-home' || instance.home?.env === 'XDG_DATA_HOME';
+  return facts.instanceSessions && facts.store.in === 'tool-home';
 }
 
 /** The instances of every team repo and member's directory loaded in this process, by name. */

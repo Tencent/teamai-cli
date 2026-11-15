@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import { TEAMAI_SOURCES_DIR } from '../types.js';
-import { getUserHome } from '../utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 
 // Guards helpers/isolate-home.ts (#924): a unit test that reaches the real home
 // shares ~/.teamai, and its sync lock, with every teamai session on the machine.

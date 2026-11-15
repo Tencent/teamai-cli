@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ClaudePluginAdapter } from '../pkg/adapters/claude-plugin.js';
 import { extractNpmLockEntries, NpmAdapter } from '../pkg/adapters/npm.js';
-import type { CommandExecutor } from '../utils/exec.js';
+import type { CommandExecutor } from '@teamai/shared/exec';
 
 describe('NpmAdapter', () => {
   let dir: string;

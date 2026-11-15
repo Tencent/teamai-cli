@@ -92,7 +92,7 @@ vi.mock('../mcp-reconcile.js', async (importOriginal) => ({
 import { detectProjectConfig, loadLocalConfigForScope, loadStateForScope, loadTeamConfig, saveStateForScope } from '../config.js';
 import { acquireLock } from '../update.js';
 import { buildChecks, resolveDoctorContext, type DoctorContext } from '../doctor.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { pull } from '../pull.js';
 import { reconcileMcpForConfig } from '../mcp-reconcile.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';

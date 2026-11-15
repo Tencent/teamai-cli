@@ -35,7 +35,7 @@ vi.mock('@teamai/shared/log', () => ({
 import { pull } from '../pull.js';
 import { autoDetectInit, detectProjectConfig, loadLocalConfigForScope, loadStateForScope, loadTeamConfig, saveStateForScope } from '../config.js';
 import { recallDisable } from '../recall-toggle.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { TeamaiConfigSchema, type LocalConfig, type State } from '../types.js';
 import { saveToolHomes } from '../tool-home.js';
 
@@ -85,7 +85,7 @@ describe('a pull and the agents of a moved home', () => {
 
     for (const file of recallAgents) expect(await fse.pathExists(file), file).toBe(true);
 
-    vi.mocked(autoDetectInit).mockResolvedValue({ localConfig: config, teamConfig: await loadTeamConfig(repo) } as never);
+    vi.mocked(autoDetectInit).mockResolvedValue({ localConfig: config, teamConfig: await loadTeamConfig(repo, null) } as never);
     await recallDisable({});
 
     for (const file of recallAgents) expect(await fse.pathExists(file), file).toBe(false);

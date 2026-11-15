@@ -21,14 +21,13 @@ import { LabelStore } from './scorers/label-store.js';
 import { reportUsage } from './team-push.js';
 import { isUsageReportEnabled, usesBranchWorktree, type LocalConfig } from './types.js';
 import { DataBranches } from './utils/data-branches.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { agentSessionIdFromEnv } from './utils/session-id.js';
 import { driveRun } from './workflow-drive.js';
 import { inProcessClient } from './workflow/protocol.js';
 import { pendingRecords, publishPendingRecords } from './workflow/records.js';
 import type { StepState } from './workflow/step-state.js';
 import { readRun } from './workflow/store.js';
-import type { DriverName } from './workflow/driver-name.js';
 import type { RunState, WorkflowEnvelope } from './workflow/types.js';
 
 /** A pass or a session the drain's run judged, by the scorers that got a label. */
@@ -71,8 +70,8 @@ export interface DrainResult {
   ciPending: { passes: number; sessions: number };
   /** The teamai-finished-sessions runs already working on a scope, which the drain left to their driver. */
   working: string[];
-  /** The teamai-finished-sessions runs the drain started awaiting the driver `workflows.driver` names, which this machine does not run. */
-  awaiting: Array<{ run: string; driver: DriverName }>;
+  /** What the drain says of each teamai-finished-sessions run it left awaiting the driver `workflows.driver` names, with how to drive it here. */
+  awaiting: string[];
   /** The teamai-finished-sessions runs the drain started for any driver, as `workflows.driver: none` says. */
   unassigned: string[];
   /** Why a teamai-finished-sessions run did not start, or ended failed, for each scope where it did. */
@@ -256,7 +255,7 @@ async function finishSessions(config: LocalConfig, mode: RunMode): Promise<Finis
 
   switch (decided.kind) {
     case 'awaits':
-      finished.awaiting.push({ run: started.run, driver: decided.driver });
+      finished.awaiting.push(await awaitsLine(config, started.run, decided.driver));
 
       return finished;
     case 'unassigned':
@@ -272,8 +271,8 @@ async function finishSessions(config: LocalConfig, mode: RunMode): Promise<Finis
     }
   }
 
-  const team = await loadTeamConfig(config.repo.localPath);
-  const driven = await driveRun(config, started.run, decided.driver, { cwd: started.cwd, options: { toolPaths: team?.toolPaths } });
+  const team = await loadTeamConfig(config.repo.localPath, config);
+  const driven = await driveRun(config, started.run, { kind: 'named', name: decided.driver }, { cwd: started.cwd, options: { toolPaths: team?.toolPaths } });
   const ran = await readRun(config, started.run);
 
   if (ran === 'missing' || ran === 'corrupt') finished.broke.push(`Run ${started.run} of ${FINISHED_WORKFLOW} could not be read after it was driven (${ran}).`);
@@ -293,7 +292,7 @@ async function startHere(config: LocalConfig, { mode, awaits }: { mode: RunMode;
       // A run no driver has taken is not working here: say what it waits for.
       switch (started.holder.kind) {
         case 'awaits':
-          finished.awaiting.push({ run: started.run, driver: started.holder.driver });
+          finished.awaiting.push(await awaitsLine(config, started.run, started.holder.driver));
           break;
         case 'unassigned':
           finished.unassigned.push(started.run);
@@ -378,7 +377,7 @@ async function run(configs: readonly LocalConfig[], { mode, clock = () => new Da
   const result: DrainResult = { ...nothing(), runRecordsPublished: 0, labelsPublished: 0, steps: [], dataPending: [], usage: [] };
 
   for (const config of configs) {
-    const team = await loadTeamConfig(config.repo.localPath);
+    const team = await loadTeamConfig(config.repo.localPath, config);
 
     if (mode === 'unattended') await finishUnattended(config, clock());
     const finished = await finishSessions(config, mode);
@@ -423,7 +422,7 @@ async function run(configs: readonly LocalConfig[], { mode, clock = () => new Da
  * unattended session scoring is not `off`. With both `off` it does nothing more than before #1385.
  */
 async function drainsUnattendedRun(config: LocalConfig): Promise<boolean> {
-  if (SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath)).policies.unattended.policy !== 'off') return true;
+  if (SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath, config)).policies.unattended.policy !== 'off') return true;
   const scoring = scoringUnavailable(config) ? undefined : await scopeScoring(config);
 
   if (scoring?.ok === false) log.warn(`[${config.scope}] Finished sessions are not judged here: ${scoring.reason}`);
@@ -535,7 +534,7 @@ function printLeft(result: DrainResult): void {
 
   for (const runId of result.working) log.info(`Left open: run ${runId} of ${FINISHED_WORKFLOW} is already working here. Run teamai score --drain again once it ends.`);
 
-  for (const { run: runId, driver } of result.awaiting) log.info(awaitsLine(runId, driver));
+  for (const awaiting of result.awaiting) log.info(awaiting);
 
   for (const runId of result.unassigned) log.info(leftOpenLine(runId, FINISHED_WORKFLOW));
 }

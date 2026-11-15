@@ -2,7 +2,7 @@ import { readMarkdown } from './doc-checks/read-markdown.js';
 import { parseDocument } from 'yaml';
 import { z } from 'zod';
 
-import { isJsonObject, type JsonValue } from '../src/types.js';
+import { isJsonObject, type JsonValue } from '@teamai/shared/json';
 
 const RecipeSchema = z.object({
   jobs: z.record(z.string(), z.object({

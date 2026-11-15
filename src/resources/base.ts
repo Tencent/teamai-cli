@@ -6,7 +6,7 @@ import type { ResourceType, ResourceItem, ResourceDiff, DeliveryTarget, TeamaiCo
 export type PlacementRecords = Pick<State, 'placedRules' | 'placedAgents'>;
 
 import { readFileSafe, writeFile, ensureDir, pathExists } from '../utils/fs.js';
-import { getUserHome } from '../utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 import type { DeliveryLedger } from './delivered-copies.js';
 
 const TOMBSTONE_FILE = '.removed';

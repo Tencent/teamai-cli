@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { installFakeCodex, readFakeCodexState } from '../helpers/fake-codex.js';
+import { installFakeCodex, readFakeCodexState } from '@teamai/tool-codex/testing';
 import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

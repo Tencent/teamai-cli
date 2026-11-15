@@ -22,9 +22,9 @@ import { z } from 'zod';
 import type { Session, Message, ContentBlock, MessageMetadata, ToolArguments } from '@teamai/tool-core/sessions/ir';
 import { collectEnvSecrets, redact, redactJson } from '@teamai/shared/redact';
 import { imagePlaceholderText, ToolArgumentsSchema } from '@teamai/tool-core/sessions/ir';
-import { JsonValueSchema } from '../types.js';
 import { maskCutSecret } from '@teamai/tool-core/sessions/title';
-import { mapStrings } from '../utils/json.js';
+import { claudeProjectDirName } from '@teamai/tool-core/sessions/fs';
+import { mapStrings, JsonValueSchema } from '@teamai/shared/json';
 
 export interface ScrubResult {
   session: Session;
@@ -72,9 +72,6 @@ const ASCII_NAME_CHAR = '[A-Za-z0-9_@%+~#$-]';
  */
 const SEGMENT_START = `(?:(?<!${ASCII_NAME_CHAR})|(?<=(?:^|(?!${ASCII_NAME_CHAR}).)__?))`;
 const SEGMENT_END = `(?:(?!${NAME_CHAR}|\\.${NAME_CHAR})|(?=__?(?!${NAME_CHAR}|\\.${NAME_CHAR})))`;
-
-/** The directory name Claude Code encodes a path as (`/Users/alice/app` → `-Users-alice-app`). */
-const encodedDir = (dir: string): string => dir.replace(/[^a-zA-Z0-9]/g, '-');
 
 /**
  * Each spelling `root` may appear in, and whether it is matched ignoring case. A POSIX root as written and as a file URL
@@ -132,7 +129,7 @@ function pathRewriter({ repo, home, tmp, workdir }: LocalPathRoots, cwd: string)
   const nameOf = (root: string): string | undefined => named.get(root) ?? named.get(root.toLowerCase());
 
   const encoded = (dirs: readonly string[]): string[] =>
-    [...new Set(dirs.flatMap((dir) => (isBelowFilesystemRoot(dir) && /^(?:\/|[A-Za-z]:[\\/])/.test(dir) ? [encodedDir(dir)] : [])))].sort(byLength);
+    [...new Set(dirs.flatMap((dir) => (isBelowFilesystemRoot(dir) && /^(?:\/|[A-Za-z]:[\\/])/.test(dir) ? [claudeProjectDirName(dir)] : [])))].sort(byLength);
 
   const slug = (dirs: string[], after: string): RegExp | undefined =>
     dirs.length > 0 ? new RegExp(`(?<=[\\\\/])(?:${dirs.map(escapeRegExp).join('|')})(?=${after})`, 'g') : undefined;
@@ -276,6 +273,26 @@ export function titleSpellsLocalPath(title: string, roots: LocalPathRoots, cwd: 
   return pathRewriter(roots, cwd).title(title) !== title;
 }
 
+/** The masks of a session's text: the team's `secrets` and the environment's, then, when given, this machine's paths. */
+function textScrubbing(cwd: string, opts: { secrets?: Record<string, string>; localPaths?: LocalPathRoots }) {
+  const envSecrets = { ...collectEnvSecrets(), ...opts.secrets };
+  const mask = (text: string): string => redact(text, { envSecrets });
+  const paths = opts.localPaths ? pathRewriter(opts.localPaths, cwd) : undefined;
+  const rewrite = paths?.text ?? ((text: string): string => text);
+
+  return { envSecrets, mask, paths, rewrite };
+}
+
+/**
+ * Scrubs text that travels with a session, such as the evidence its step left, as `scrubSession` scrubs the session's
+ * own text blocks: secrets masked, then this machine's paths rewritten as seen from `cwd`.
+ */
+export function textScrubber(cwd: string, opts: { secrets?: Record<string, string>; localPaths?: LocalPathRoots } = {}): (text: string) => string {
+  const { mask, rewrite } = textScrubbing(cwd, opts);
+
+  return (text) => rewrite(mask(text));
+}
+
 /**
  * Redact a session (pure function; the input is not mutated).
  *
@@ -299,10 +316,7 @@ export function scrubSession(
   opts: { dropImagePaths?: boolean; secrets?: Record<string, string>; localPaths?: LocalPathRoots } = {},
 ): ScrubResult {
   const dropImagePaths = opts.dropImagePaths !== false;
-  const envSecrets = { ...collectEnvSecrets(), ...opts.secrets };
-  const mask = (text: string): string => redact(text, { envSecrets });
-  const paths = opts.localPaths ? pathRewriter(opts.localPaths, session.cwd) : undefined;
-  const rewrite = paths?.text ?? ((text: string): string => text);
+  const { envSecrets, mask, paths, rewrite } = textScrubbing(session.cwd, opts);
   let redactedCount = 0;
 
   const messages: Message[] = session.messages.map((msg) => {

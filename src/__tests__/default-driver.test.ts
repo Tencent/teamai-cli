@@ -4,9 +4,10 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { refreshRoleAssignment } from '../config.js';
-import { driveByDefault } from '../default-driver.js';
-import { getUserConfigPath, LocalConfigSchema, type LocalConfig } from '../types.js';
-import { log } from '../utils/logger.js';
+import { awaitsLine, driveByDefault } from '../default-driver.js';
+import { getTeamaiHomeDir, getUserConfigPath, LocalConfigSchema, type LocalConfig } from '../types.js';
+import { DriverNameSchema } from '../workflow/driver-name.js';
+import { log } from '@teamai/shared/log';
 
 const dirs: string[] = [];
 const machineFile = getUserConfigPath;
@@ -53,6 +54,22 @@ describe('driveByDefault', () => {
     expect(await driveByDefault(config)).toEqual({ kind: 'drive', driver: 'local' });
   });
 
+  it('drives here on a team teamai-local this machine cannot open, so the drive says why rather than the run waiting for local', async () => {
+    const config = await workspace('');
+    fs.mkdirSync(path.join(config.repo.localPath, 'drivers'));
+    fs.writeFileSync(path.join(config.repo.localPath, 'drivers', 'teamai-local.yaml'), 'schemaVersion: v1alpha1\nname: teamai-local\nruntimes:\n  - use: acme-missing\n');
+
+    expect(await driveByDefault(config)).toEqual({ kind: 'drive', driver: 'local' });
+  });
+
+  it('drives here on a team driver whose runtimes are the built-in fleet and local, which no runtime resource defines', async () => {
+    const config = await workspace('', 'workflows: { driver: build-fleet }\n');
+    fs.mkdirSync(path.join(config.repo.localPath, 'drivers'));
+    fs.writeFileSync(path.join(config.repo.localPath, 'drivers', 'build-fleet.yaml'), 'schemaVersion: v1alpha1\nname: build-fleet\nruntimes:\n  - use: fleet\n    options: { pool: build }\n  - use: local\n');
+
+    expect(await driveByDefault(config)).toEqual({ kind: 'drive', driver: 'build-fleet' });
+  });
+
   it('awaits the driver the team sets, which this machine does not run', async () => {
     const config = await workspace('', 'workflows: { driver: acme-sandbox }\n');
 
@@ -68,6 +85,25 @@ describe('driveByDefault', () => {
     expect(await driveByDefault(own)).toEqual({ kind: 'awaits', driver: 'beta' });
   });
 
+  it('awaits a driver whose entry runs through a team runtime no one accepted here, as the team\'s sandbox in place of teamai\'s', async () => {
+    const config = await workspace('', 'workflows: { driver: boxed }\n');
+    const team = config.repo.localPath;
+    fs.mkdirSync(path.join(team, 'drivers'));
+    // The app is the member's own runtime, which needs no acceptance, so only the sandbox it runs through can leave the driver unaccepted.
+    const own = path.join(getTeamaiHomeDir(), 'runtimes', 'acme-app');
+    fs.mkdirSync(own, { recursive: true });
+    dirs.push(own);
+    fs.writeFileSync(path.join(own, 'runtime'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(own, 'RUNTIME.yaml'), 'protocol: 1\nentry: ./runtime\n');
+    fs.writeFileSync(path.join(team, 'drivers', 'boxed.yaml'), 'schemaVersion: v1alpha1\nname: boxed\nruntimes:\n  - use: acme-app\n    through: sandbox\n');
+    fs.mkdirSync(path.join(team, 'runtimes', 'sandbox'), { recursive: true });
+    fs.writeFileSync(path.join(team, 'runtimes', 'sandbox', 'runtime'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(team, 'runtimes', 'sandbox', 'RUNTIME.yaml'), 'protocol: 1\nentry: ./runtime\n');
+
+    expect(await driveByDefault(config)).toEqual({ kind: 'awaits', driver: 'boxed' });
+    expect(await awaitsLine(config, 'r0123abcd', DriverNameSchema.parse('boxed'))).toBe('r0123abcd waits for driver boxed, whose team runtime this machine has not accepted. To review it and drive the run here: teamai workflow resume r0123abcd --driver boxed');
+  });
+
   it('leaves the run to any driver with none', async () => {
     const config = await workspace('workflows: { driver: none }\n', 'workflows: { driver: acme }\n');
 
@@ -79,6 +115,7 @@ describe('driveByDefault', () => {
     ['a value that is no text', '[acme]', '["acme"] is not a driver name: letters, digits, dot, underscore and hyphen, starting with a letter or digit'],
     ['fleet', 'fleet', 'fleet is a driver name teamai reserves, and no driver of it exists yet'],
     ['skill', 'skill', 'the skill driver needs a coding session, so it drives only a run started with --driver skill'],
+    ['host', 'host', 'the host driver launches no AI tool, which the runs this setting starts use, so it drives only a run started with --driver host'],
   ])('skips %s with a warning naming its file, and the next level decides', async (_case, value, why) => {
     onMachine(`workflows: { driver: ${value} }\n`);
     const config = await workspace('', 'workflows: { driver: gamma }\n');
@@ -87,5 +124,13 @@ describe('driveByDefault', () => {
 
     expect(decided).toEqual({ kind: 'awaits', driver: 'gamma' });
     expect(warnings).toEqual([`Ignoring workflows.driver in ${machineFile()}: ${why}.`]);
+  });
+});
+
+describe('workflows.idle_timeout on this machine', () => {
+  it('reaches a workspace as written, for the prompt step that reads it to check', async () => {
+    onMachine('workflows:\n  idle_timeout: 2m\n');
+
+    expect((await workspace('')).workflows?.idle_timeout).toBe('2m');
   });
 });

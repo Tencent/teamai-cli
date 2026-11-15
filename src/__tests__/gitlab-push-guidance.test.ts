@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPrWithFallback } from '../push.js';
 import { getDefaultBranch } from '../utils/git.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 const { fail, succeed } = vi.hoisted(() => ({ fail: vi.fn(), succeed: vi.fn() }));
 

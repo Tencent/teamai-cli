@@ -4,8 +4,9 @@ import path from 'node:path';
 import { z } from 'zod';
 import { endedRequest, type PullRequestRecord, type PullRequestRef } from '../types.js';
 import { GITCODE_HOST } from './repo-url.js';
-import { getUserHome, legacyUserHome } from '../../utils/home.js';
+import { getUserHome, legacyUserHome } from '@teamai/shared/home';
 import { sanitizeGitUrl } from '@teamai/shared/redact';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
 
 /**
  * GitCode (gitcode.com) REST API client.
@@ -118,7 +119,7 @@ export function readNetrcToken(): string | null {
 
   for (const file of netrcReadPaths()) {
     try {
-      const match = fs.readFileSync(file, 'utf-8').match(pattern);
+      const match = readRegularFileSync(file, 'utf-8').match(pattern);
 
       if (match?.[1]) return match[1];
     } catch {
@@ -138,7 +139,7 @@ export function writeNetrcToken(token: string): void {
   let existing = '';
 
   try {
-    existing = fs.readFileSync(file, 'utf-8');
+    existing = readRegularFileSync(file, 'utf-8');
   } catch {
     // no existing file — start fresh
   }

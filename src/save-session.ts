@@ -24,7 +24,7 @@ import {
   pruneMonthlyLogs,
   monthKey,
 } from './session-collector.js';
-import { log, spinner } from './utils/logger.js';
+import { log, spinner } from '@teamai/shared/log';
 import { withTimeout } from './utils/async.js';
 import { agentSessionIdFromEnv } from './utils/session-id.js';
 import { getSessionLogsDir, parseInstallScope } from './types.js';

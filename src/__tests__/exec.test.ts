@@ -8,7 +8,7 @@ vi.mock('cross-spawn', () => ({
 }));
 
 import spawn from 'cross-spawn';
-import { captureTail, execCommand } from '../utils/exec.js';
+import { captureTail, execCommand } from '@teamai/shared/exec';
 
 interface Emitters {
   stdout: (chunk: Buffer) => void;

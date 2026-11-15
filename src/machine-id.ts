@@ -20,9 +20,9 @@
  */
 
 import crypto from 'node:crypto';
-import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
 
 let cachedMachineId: string | null = null;
 
@@ -91,7 +91,7 @@ function readWindowsMachineId(): string {
 function readLinuxMachineId(): string {
   for (const p of ['/etc/machine-id', '/var/lib/dbus/machine-id']) {
     try {
-      const content = fs.readFileSync(p, 'utf-8').trim();
+      const content = readRegularFileSync(p, 'utf-8').trim();
 
       if (content) return content;
     } catch {

@@ -4,7 +4,7 @@ Maintainer notes on the provider layer. The user-facing behavior of each provide
 
 ## CLI resolution and launching (cross-platform)
 
-The GitHub and CNB providers delegate their operations to the platform's own CLI, so they share one resolution and launch path ([`src/utils/cli-path.ts`](../../src/utils/cli-path.ts)):
+The GitHub and CNB providers delegate their operations to the platform's own CLI, so they share one resolution and launch path ([`packages/shared/src/cli-path.ts`](../../packages/shared/src/cli-path.ts)):
 
 - **Resolution**: `resolveCliPath(cmd)` uses the native `where` on Windows. On macOS / Linux it checks the caller's current PATH with `which`, then tries `bash -lc` and `zsh -lc` for tools configured by a login shell. It returns an absolute path that **exists and can be launched**, or `null`.
   - `which` cannot be used on Windows: it comes from Git Bash / WSL and returns MSYS-style paths (`/c/Program Files/GitHub CLI/gh`), which Node reads as `C:\c\...`, so `existsSync` is always false and `spawn` fails with ENOENT. The symptom was `isGhInstalled()` answering "installed" while every `ghExec()` failed silently with status 1 and an **empty stderr**.

@@ -775,7 +775,7 @@ describe('syncTeamUpdatesToLocal — skills', () => {
     expect(content).toBe(withSkillFrontmatter('v2 namespaced', 'my-skill'));
   });
 
-  it('syncs an unedited copy of a skill kept as one file, as pull delivered it, and keeps an edited one', async () => {
+  it('syncs an unedited copy of a skill kept as one file, as pull delivered it, replacing a linked copy without writing through it, and keeps an edited one', async () => {
     const v1 = (skill: string): string => `---\ndescription: ${skill}\n---\n# ${skill}\n\nv1\n`;
     await fse.outputFile(path.join(repoPath, 'skills', 'greet.md'), '---\ndescription: greet\n---\n# greet\n\nv2\n');
     await fse.outputFile(path.join(repoPath, 'skills', 'ns', 'wave.md'), '---\ndescription: wave\n---\n# wave\n\nv2\n');
@@ -783,13 +783,21 @@ describe('syncTeamUpdatesToLocal — skills', () => {
     const wave = path.join(homeDir, '.claude/skills', 'wave', 'SKILL.md');
     await fse.outputFile(greet, withSkillFrontmatter(v1('greet'), 'greet'));
     await fse.outputFile(wave, `${withSkillFrontmatter(v1('wave'), 'wave')}mine\n`);
+    await fse.outputFile(path.join(repoPath, 'skills', 'nod.md'), '---\ndescription: nod\n---\n# nod\n\nv2\n');
+    const nod = path.join(homeDir, '.claude/skills', 'nod', 'SKILL.md');
+    const dotfile = path.join(tmpDir, 'dotfiles', 'nod.md');
+    await fse.outputFile(dotfile, withSkillFrontmatter(v1('nod'), 'nod'));
+    await fse.ensureDir(path.dirname(nod));
+    await fse.symlink(dotfile, nod);
     mockGetFileContentAtRev.mockImplementation(async (_repo, _rev, file) => (
-      file === './skills/greet.md' ? Buffer.from(v1('greet')) : file === './skills/ns/wave.md' ? Buffer.from(v1('wave')) : null
+      file === './skills/greet.md' ? Buffer.from(v1('greet')) : file === './skills/ns/wave.md' ? Buffer.from(v1('wave')) : file === './skills/nod.md' ? Buffer.from(v1('nod')) : null
     ));
 
     await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
 
     expect(await fse.readFile(greet, 'utf-8')).toBe(withSkillFrontmatter('---\ndescription: greet\n---\n# greet\n\nv2\n', 'greet'));
+    expect(await fse.readFile(nod, 'utf-8')).toBe(withSkillFrontmatter('---\ndescription: nod\n---\n# nod\n\nv2\n', 'nod'));
+    expect(await fse.readFile(dotfile, 'utf-8')).toBe(withSkillFrontmatter(v1('nod'), 'nod'));
     expect(await fse.readFile(wave, 'utf-8')).toBe(`${withSkillFrontmatter(v1('wave'), 'wave')}mine\n`);
   });
 

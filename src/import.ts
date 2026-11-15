@@ -4,7 +4,7 @@ import fs from 'fs-extra';
 import { importFromRepoList } from './import-repo-list.js';
 import { importFromOrg } from './import-org.js';
 import type { GlobalOptions } from './types.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 /**
  * Extended options for the import command, merging global options with subcommand-specific options.
