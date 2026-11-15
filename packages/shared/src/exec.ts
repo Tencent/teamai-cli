@@ -4,6 +4,8 @@ import { Socket } from 'node:net';
 import type { Readable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { existsSync } from 'node:fs';
+import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { isBareCommandName, pickWindowsCommand } from './cli-path.js';
 import { WIN_EXEC_EXTENSIONS } from './lookpath.js';
@@ -109,6 +111,21 @@ export async function probeBinary(
     return (result.stdout || result.stderr).trim();
   } catch {
     return '';
+  }
+}
+
+/**
+ * What `binary --version` prints, as `probeBinary` reads it, with the XDG data, cache and state homes in a directory
+ * removed afterwards: OpenCode makes its folders there on every start, `--version` included.
+ */
+export async function probeVersion(binary: string, { cwd, env = process.env }: Pick<ExecOptions, 'cwd' | 'env'> = {}): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-version-'));
+  const homes = { XDG_DATA_HOME: path.join(dir, 'data'), XDG_CACHE_HOME: path.join(dir, 'cache'), XDG_STATE_HOME: path.join(dir, 'state') };
+
+  try {
+    return await probeBinary(binary, ['--version'], (command, args, options) => execCommand(command, args, { ...options, cwd, env: { ...env, ...homes } }));
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
   }
 }
 

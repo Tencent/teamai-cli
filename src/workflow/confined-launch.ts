@@ -15,7 +15,7 @@ import { toolHome } from '../tool-home.js';
 import { mcpSyntaxOf } from '../tool-registry.js';
 import { parseJsonAs } from '../utils/json.js';
 import { resolveCliPath } from '@teamai/shared/cli-path';
-import { execCommand, probeBinary } from '@teamai/shared/exec';
+import { probeVersion } from '@teamai/shared/exec';
 import { agyGatewayEnv } from '../models/agy-gateway.js';
 import type { JsonValue } from '@teamai/shared/json';
 import type { ConfinedAccess, ConfinedLaunch, ConfinedLevel } from '@teamai/tool-core/launch';
@@ -80,7 +80,7 @@ export async function confinedToolLevel(tool: ConfinedTool, { resolveTool = reso
   // Delivery skips a tool whose recorded home is gone, and so does what this machine offers.
   if (confined.kind === 'home_gone') return undefined;
   const tmp = await fs.realpath(os.tmpdir());
-  const version = await probeBinary(executable, ['--version'], (command, args, options) => execCommand(command, args, { ...options, env: confined.env, cwd: tmp }));
+  const version = await probeVersion(executable, { env: confined.env, cwd: tmp });
 
   return { tool, version, isolation: await confinedIsolation({ profile: profileOf(tool), family: familyOf(tool), version, dir: tmp }) };
 }

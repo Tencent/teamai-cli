@@ -309,6 +309,24 @@ it('refuses to run OpenCode where it would load an AGENTS.md above its copy of t
   });
 });
 
+it("probes a judge tool's version without leaving OpenCode's folders in the member's home", async () => {
+  const { dir } = await evidenceDir();
+  const home = path.join(root, 'home');
+  await fs.mkdir(home);
+  vi.stubEnv('HOME', home);
+  for (const name of ['XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME']) vi.stubEnv(name, undefined);
+  const opencode = path.join(root, 'opencode-fake');
+  await fs.writeFile(opencode, `#!${process.execPath}
+const fs=require('fs'); const path=require('path');
+for (const [name, fallback] of [['XDG_DATA_HOME', '.local/share'], ['XDG_CACHE_HOME', '.cache'], ['XDG_STATE_HOME', '.local/state']]) fs.mkdirSync(path.join(process.env[name] || path.join(process.env.HOME, fallback), 'opencode'), { recursive: true });
+if (process.argv.includes('--version')) { console.log('opencode v2.1.2'); process.exit(); }
+console.log(JSON.stringify({ type: 'text', part: { text: '{"verdict":"fixed"}' } }));\n`, { mode: 0o755 });
+
+  expect(await confinedOffers({ resolveTool: machineWith({ opencode }) })).not.toEqual([]);
+  expect(await runConfined({ tool: 'opencode', dir, prompt: 'Say whether the fix landed.', level: 'best-effort', timeoutMs: 60_000, attempt: ATTEMPT }, { resolveTool: machineWith({ opencode }) })).toMatchObject({ ok: true, reply: { verdict: 'fixed' } });
+  expect(await fs.readdir(home)).toEqual([]);
+});
+
 it.each([
   ['fails usage_limited on an OpenCode error whose type is a usage limit, whatever its message says', 'provider.rate-limit', 'Too many requests', 'usage_limited'],
   ['fails confined_failed on an OpenCode error whose type is no usage limit, though its message reads like one', 'provider.no-route', 'Rate limit reached for anthropic/claude-nonexistent-9 on no route', 'confined_failed'],

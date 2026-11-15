@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { stringify as stringifyToml, type TomlTable } from 'smol-toml';
-import { execCommand, probeBinary } from '@teamai/shared/exec';
+import { probeVersion } from '@teamai/shared/exec';
 import { JsonValueSchema, type JsonValue } from '@teamai/shared/json';
 import { copyRegularTree, readRegularFile, writeRegularFile } from '@teamai/shared/regular-file';
 import { ASSUMED_OPENCODE_MAJOR, type CallLaunch, type ConfinedLaunch, type ConfinedLevel } from '@teamai/tool-core/launch';
@@ -437,7 +437,7 @@ const REPLIES = {
 /** The level `context`'s tool reaches here, or why it does not reach `context.request.level`. */
 async function levelReached({ request, dir, cwd, env, tmp }: LaunchContext): Promise<{ ok: true; isolation: ConfinedLevel } | ConfinedFailure> {
   const { executable } = request;
-  const version = await probeBinary(executable, ['--version'], (command, args, options) => execCommand(command, args, { ...options, env, cwd: tmp }));
+  const version = await probeVersion(executable, { env, cwd: tmp });
   const checkout = request.family === 'opencode' && await insideCheckout(cwd);
   const isolation = version ? await confinedIsolation({ profile: request.adapter.confined, family: request.family, version, dir: cwd }) : 'best-effort';
 
