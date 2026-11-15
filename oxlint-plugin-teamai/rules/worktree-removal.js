@@ -9,7 +9,7 @@ import { isTestSupportPath, repositoryPath, scopedFiles, stringLiteralValue } fr
  */
 export const ALLOWED = [
   { file: 'src/workflow/worktree.ts', functions: ['removeWorktree', 'forgetGoneWorktrees'], reason: 'the owner' },
-  // Upstream's own calls, which remove worktrees nothing nests a worktree in.
+  // Calls that remove worktrees nothing nests a worktree in.
   { file: 'scripts/agent-wait-budget.ts', functions: ['measureAgentWait'], reason: 'removes the worktrees the measure made in its verify world' },
   { file: 'src/uninstall.ts', functions: ['unregisterWorktreesIn'], reason: 'the side-branch worktrees in ~/.teamai, which uninstall deletes whole' },
   { file: 'src/utils/branch-worktree.ts', functions: ['openWorktree', 'removeOldCheckouts', 'retireWhileLockedImpl'], reason: 'the data home\'s side-branch worktree, which git removes only when clean' },
@@ -22,7 +22,7 @@ scopedFiles(ALLOWED.map(({ file }) => file));
 
 const MESSAGE = 'Remove a worktree with removeWorktree, and forget the record of a gone one with forgetGoneWorktrees, from src/workflow/worktree.ts: '
   + 'git worktree remove --force deletes every worktree inside the one it removes, uncommitted work and all, and removeWorktree refuses that. '
-  + 'Upstream\'s own calls are listed in oxlint-plugin-teamai/rules/worktree-removal.js with why.';
+  + 'The other calls allowed are listed in oxlint-plugin-teamai/rules/worktree-removal.js with why.';
 
 /**
  * Whether `file`, from the repository root, is in the rule's scope: every file but tests and test support.
