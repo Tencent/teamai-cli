@@ -12,7 +12,7 @@ import type { LearningDraft, CodebaseSuggestion } from '../types.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
 import { getGitLabToken } from '../providers/gitlab/gitlab-api.js';
 import { getGitHubToken } from '../providers/github/gh-cli.js';
-import { githubApiUrl } from '../providers/github/api-url.js';
+import { githubApiUrlFor, parseGitHubPullUrl, type GitHubPull } from '../providers/github/api-url.js';
 import { parseGitLabMRUrl } from '../providers/gitlab/mr-fetch.js';
 import { TEAMAI_COMMENT_SIGNATURE } from '../providers/mr-threads.js';
 import { paginateGitLab } from './gitlab-paginate.js';
@@ -33,12 +33,12 @@ export interface CommentResult {
   url?: string;
 }
 
-interface ParsedMrUrl {
-  provider: 'github' | 'tgit' | 'gitlab';
+type ParsedMrUrl = ({ provider: 'github' } & GitHubPull) | {
+  provider: 'tgit' | 'gitlab';
   owner: string;
   repo: string;
   number: string;
-}
+};
 
 // ─── URL parsing ────────────────────────────────────────────
 
@@ -46,11 +46,10 @@ interface ParsedMrUrl {
  * Parses the provider, owner/repo and number from an MR/PR URL.
  */
 export function parseMrUrl(url: string): ParsedMrUrl {
-  // GitHub: https://github.com/{owner}/{repo}/pull/{number}
-  const ghMatch = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+  const pull = parseGitHubPullUrl(url);
 
-  if (ghMatch) {
-    return { provider: 'github', owner: ghMatch[1], repo: ghMatch[2], number: ghMatch[3] };
+  if (pull) {
+    return { provider: 'github', ...pull };
   }
 
   // TGit: https://git.woa.com/{group}/{project}/merge_requests/{iid}
@@ -130,12 +129,12 @@ export function formatComment(
 
 // ─── GitHub Comment API ─────────────────────────────────
 
-async function githubRequest(path: string, method: string, body?: { body: string }): Promise<Response> {
+async function githubRequest(host: string, path: string, method: string, body?: { body: string }): Promise<Response> {
   const token = getGitHubToken();
 
   if (!token) throw new Error('GITHUB_TOKEN or GH_TOKEN environment variable is not set');
 
-  const url = `${githubApiUrl()}${path}`;
+  const url = `${githubApiUrlFor(host)}${path}`;
 
   const headers = {
     Authorization: `Bearer ${token}`,
@@ -162,13 +161,11 @@ type GitHubComment = z.infer<typeof GitHubCommentSchema>;
 const GitHubPostedCommentSchema = z.object({ html_url: z.string().optional() });
 
 async function findGitHubComment(
-  owner: string,
-  repo: string,
-  prNumber: string,
+  { host, owner, repo, number }: GitHubPull,
   marker: string,
 ): Promise<GitHubComment | null> {
   const comments = await paginateGitLab(
-    (page) => githubRequest(`/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100&page=${page}`, 'GET'),
+    (page) => githubRequest(host, `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100&page=${page}`, 'GET'),
     20,
     'GitHub comment list',
     { item: GitHubCommentSchema, stopWhen: (item) => item.body.includes(marker), pagination: 'link' },
@@ -178,13 +175,12 @@ async function findGitHubComment(
 }
 
 async function postGitHubComment(
-  owner: string,
-  repo: string,
-  prNumber: string,
+  { host, owner, repo, number }: GitHubPull,
   body: string,
 ): Promise<CommentResult> {
   const resp = await githubRequest(
-    `/repos/${owner}/${repo}/issues/${prNumber}/comments`,
+    host,
+    `/repos/${owner}/${repo}/issues/${number}/comments`,
     'POST',
     { body },
   );
@@ -200,12 +196,12 @@ async function postGitHubComment(
 }
 
 async function updateGitHubComment(
-  owner: string,
-  repo: string,
+  { host, owner, repo }: GitHubPull,
   commentId: number,
   body: string,
 ): Promise<CommentResult> {
   const resp = await githubRequest(
+    host,
     `/repos/${owner}/${repo}/issues/comments/${commentId}`,
     'PATCH',
     { body },
@@ -445,20 +441,15 @@ export async function postOrUpdateMrComment(
   }
 
   if (parsed.provider === 'github') {
-    const existing = await findGitHubComment(
-      parsed.owner,
-      parsed.repo,
-      parsed.number,
-      effectiveMarker,
-    );
+    const existing = await findGitHubComment(parsed, effectiveMarker);
 
     if (existing) {
       log.debug(`Found existing comment #${existing.id}; updating in place...`);
 
-      return updateGitHubComment(parsed.owner, parsed.repo, existing.id, body);
+      return updateGitHubComment(parsed, existing.id, body);
     }
 
-    return postGitHubComment(parsed.owner, parsed.repo, parsed.number, body);
+    return postGitHubComment(parsed, body);
   }
 
   if (parsed.provider === 'gitlab') {
@@ -599,12 +590,12 @@ export async function postIndividualComments(
   if (parsed.provider === 'github') {
     for (const item of items) {
       const marker = `<!-- teamai:ci-extract:${item.markerId} -->`;
-      const existing = await findGitHubComment(parsed.owner, parsed.repo, parsed.number, marker);
+      const existing = await findGitHubComment(parsed, marker);
 
       if (existing) {
-        await updateGitHubComment(parsed.owner, parsed.repo, existing.id, item.body);
+        await updateGitHubComment(parsed, existing.id, item.body);
       } else {
-        await postGitHubComment(parsed.owner, parsed.repo, parsed.number, item.body);
+        await postGitHubComment(parsed, item.body);
       }
 
       posted++;
@@ -751,12 +742,12 @@ export async function postCodebaseGraphComment(
   }
 
   if (parsed.provider === 'github') {
-    const existing = await findGitHubComment(parsed.owner, parsed.repo, parsed.number, CODEBASE_GRAPH_MARKER);
+    const existing = await findGitHubComment(parsed, CODEBASE_GRAPH_MARKER);
 
     if (existing) {
-      await updateGitHubComment(parsed.owner, parsed.repo, existing.id, body);
+      await updateGitHubComment(parsed, existing.id, body);
     } else {
-      await postGitHubComment(parsed.owner, parsed.repo, parsed.number, body);
+      await postGitHubComment(parsed, body);
     }
   } else if (parsed.provider === 'gitlab') {
     const existing = await findGitLabComment(mrUrl, CODEBASE_GRAPH_MARKER);

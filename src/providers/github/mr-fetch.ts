@@ -9,29 +9,17 @@ import type { JsonValue } from '@teamai/shared/json';
 import { log } from '@teamai/shared/log';
 import { pruneThreads } from '../mr-threads.js';
 import { getGitHubToken, ghExec } from './gh-cli.js';
-import { githubApiUrl } from './api-url.js';
+import { githubApiUrlFor, parseGitHubPullUrl, type GitHubPull } from './api-url.js';
 
-/** GitHub PR URL 解析结果 */
-interface ParsedGitHubPR {
-  owner: string;
-  repo: string;
-  number: string;
-}
+/** {@link parseGitHubPullUrl}, throwing on a URL that is no GitHub pull request. */
+function parseGitHubPRUrl(url: string): GitHubPull {
+  const pull = parseGitHubPullUrl(url);
 
-/**
- * 从 GitHub PR URL 解析出 owner / repo / PR number。
- *
- * 支持格式：https://github.com/<owner>/<repo>/pull/<number>
- * 解析失败时抛出 Error。
- */
-function parseGitHubPRUrl(url: string): ParsedGitHubPR {
-  const match = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
-
-  if (!match) {
+  if (!pull) {
     throw new Error(`Invalid GitHub PR URL: ${url}`);
   }
 
-  return { owner: match[1], repo: match[2], number: match[3] };
+  return pull;
 }
 
 const GitHubUserSchema = z.object({ login: z.string() });
@@ -59,9 +47,9 @@ const GitHubApiCommitSchema = z.object({
   commit: z.object({ message: z.string() }),
 });
 
-/** Requests a path under the GitHub REST API root, keeping a GitHub Enterprise root's `/api/v3` prefix. */
-function githubApiRequest(path: string, headers: OutgoingHttpHeaders, callback: (res: IncomingMessage) => void): ClientRequest {
-  const options = { ...urlToHttpOptions(new URL(githubApiUrl() + path)), headers };
+/** Requests a path under a GitHub REST API root, keeping a GitHub Enterprise root's `/api/v3` prefix. */
+function githubApiRequest(api: string, path: string, headers: OutgoingHttpHeaders, callback: (res: IncomingMessage) => void): ClientRequest {
+  const options = { ...urlToHttpOptions(new URL(api + path)), headers };
 
   return options.protocol === 'http:' ? http.request(options, callback) : https.request(options, callback);
 }
@@ -71,7 +59,7 @@ function githubApiRequest(path: string, headers: OutgoingHttpHeaders, callback: 
  *
  * 支持公开仓库无需 token；如有 GITHUB_TOKEN 环境变量则自动携带以提高限流上限。
  */
-async function githubApiGet(path: string): Promise<JsonValue> {
+async function githubApiGet(api: string, path: string): Promise<JsonValue> {
   return new Promise((resolve, reject) => {
     const token = getGitHubToken();
 
@@ -83,6 +71,7 @@ async function githubApiGet(path: string): Promise<JsonValue> {
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
     const req = githubApiRequest(
+      api,
       path,
       headers,
       (res) => {
@@ -116,9 +105,9 @@ async function githubApiGet(path: string): Promise<JsonValue> {
 /** Reads one API path as JSON: through `gh api` or the REST client. */
 type ApiGet = (path: string) => Promise<JsonValue>;
 
-/** `gh api <path>`: the same paths as the REST client, with gh's credentials. */
-async function ghApiGet(path: string): Promise<JsonValue> {
-  const result = ghExec(['api', path.replace(/^\//, '')]);
+/** `gh api <path>` on `host`: the same paths as the REST client, with gh's credentials. */
+async function ghApiGet(host: string, path: string): Promise<JsonValue> {
+  const result = ghExec(['api', ...(host === 'github.com' ? [] : ['--hostname', host]), path.replace(/^\//, '')]);
 
   if (result.status !== 0) {
     throw new Error(`gh api error ${result.status}: ${result.stderr || result.stdout}`);
@@ -224,15 +213,17 @@ async function fetchGitHubThreads(
 /**
  * 通过 GitHub REST API 获取 PR 数据（gh CLI 不可用时的回退路径）。
  */
-async function fetchGitHubPRViaApi(owner: string, repo: string, number: string): Promise<MRData> {
-  const url = `https://github.com/${owner}/${repo}/pull/${number}`;
+async function fetchGitHubPRViaApi({ host, owner, repo, number }: GitHubPull): Promise<MRData> {
+  const url = `https://${host}/${owner}/${repo}/pull/${number}`;
+  const api = githubApiUrlFor(host);
+  const get: ApiGet = (path) => githubApiGet(api, path);
   log.debug(`fetchGitHubPR fallback: REST API ${owner}/${repo}#${number}`);
 
   // ── 1. PR 元信息 ──────────────────────────────────────────
-  const pr = GitHubApiPRSchema.parse(await githubApiGet(`/repos/${owner}/${repo}/pulls/${number}`));
+  const pr = GitHubApiPRSchema.parse(await get(`/repos/${owner}/${repo}/pulls/${number}`));
 
   // ── 2. 提交列表 ──────────────────────────────────────────
-  const commitsRaw = await readPages(githubApiGet, `/repos/${owner}/${repo}/pulls/${number}/commits`, GitHubApiCommitSchema);
+  const commitsRaw = await readPages(get, `/repos/${owner}/${repo}/pulls/${number}/commits`, GitHubApiCommitSchema);
 
   const commits = commitsRaw.map((c) => ({
     hash: c.sha,
@@ -251,6 +242,7 @@ async function fetchGitHubPRViaApi(owner: string, repo: string, number: string):
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
     const req = githubApiRequest(
+      api,
       `/repos/${owner}/${repo}/pulls/${number}`,
       headers,
       (res) => {
@@ -301,8 +293,10 @@ async function fetchGitHubPRViaApi(owner: string, repo: string, number: string):
  * @throws Error 当 URL 格式不合法或两种方式均失败时
  */
 export async function fetchGitHubPR(url: string, opts: MRFetchOptions = {}): Promise<MRData> {
-  const { owner, repo, number } = parseGitHubPRUrl(url);
-  const repoArg = `${owner}/${repo}`;
+  const pull = parseGitHubPRUrl(url);
+  const { host, owner, repo, number } = pull;
+  const repoArg = host === 'github.com' ? `${owner}/${repo}` : `${host}/${owner}/${repo}`;
+  const ghGet: ApiGet = (path) => ghApiGet(host, path);
 
   log.debug(`fetchGitHubPR: ${repoArg}#${number}`);
 
@@ -340,7 +334,7 @@ export async function fetchGitHubPR(url: string, opts: MRFetchOptions = {}): Pro
 
     // gh pr view requests commits(first: 100), so a full result may omit later commits.
     const commits = prView.commits?.length === 100
-      ? (await readPages(ghApiGet, `/repos/${owner}/${repo}/pulls/${number}/commits`, GitHubApiCommitSchema))
+      ? (await readPages(ghGet, `/repos/${owner}/${repo}/pulls/${number}/commits`, GitHubApiCommitSchema))
         .map((c) => ({ hash: c.sha, message: c.commit.message.split('\n')[0] }))
       : (prView.commits ?? []).map((c) => ({ hash: c.oid, message: c.messageHeadline }));
 
@@ -353,13 +347,13 @@ export async function fetchGitHubPR(url: string, opts: MRFetchOptions = {}): Pro
       diff: rawDiff.slice(0, 50000),
       url,
     };
-    get = ghApiGet;
+    get = ghGet;
   } catch {
     // gh CLI 不可用或失败，回退到 REST API
     log.debug('gh CLI unavailable, falling back to GitHub REST API');
     // ── 回退：GitHub REST API ────────────────────────────────
-    mr = await fetchGitHubPRViaApi(owner, repo, number);
-    get = githubApiGet;
+    mr = await fetchGitHubPRViaApi(pull);
+    get = (path) => githubApiGet(githubApiUrlFor(host), path);
   }
 
   // ── 评审 threads（失败非致命） ───────────────────────────

@@ -143,14 +143,19 @@ describe('GitHub PR REST fallback', () => {
     }
   });
 
-  it('requests every REST path from the API GITHUB_API_URL names', async () => {
+  it.each([
+    [undefined, 'https://github.com/team/repo/pull/42', 'ghe.example.com', '/api/v3'],
+    ['https://ghe.example.com', 'https://ghe.example.com/team/repo/pull/42', 'ghe.example.com', '/api/v3'],
+    ['https://ghe.example.com', 'https://github.com/team/repo/pull/42', 'api.github.com', ''],
+  ])('with GITHUB_SERVER_URL=%s, requests every REST path of %s from %s', async (server, url, hostname, prefix) => {
+    vi.stubEnv('GITHUB_SERVER_URL', server);
     vi.stubEnv('GITHUB_API_URL', 'https://ghe.example.com/api/v3');
     mockResponses();
-    await expect(fetchGitHubPR('https://github.com/team/repo/pull/42')).resolves.toMatchObject({ title: 'Fix retries' });
+    await expect(fetchGitHubPR(url)).resolves.toMatchObject({ title: 'Fix retries', url });
     const requested = vi.mocked(https.request).mock.calls.map(([options]) => options);
     expect(requested).toHaveLength(6);
     for (const options of requested) {
-      expect(options).toMatchObject({ hostname: 'ghe.example.com', path: expect.stringMatching(/^\/api\/v3\/repos\/team\/repo\//) });
+      expect(options).toMatchObject({ hostname, path: expect.stringMatching(new RegExp(`^${prefix}/repos/team/repo/`)) });
     }
   });
 
@@ -259,7 +264,11 @@ describe('GitHub PR gh CLI path', () => {
     expect(rest.filter((url) => url.includes('/commits?'))).toEqual([`${PR}/commits?per_page=100&page=1`, `${PR}/commits?per_page=100&page=2`]);
   });
 
-  it('calls ghExec with argument arrays and preserves pr view metadata and diff', async () => {
+  it.each([
+    ['https://github.com/team/repo/pull/42', 'team/repo'],
+    ['https://ghe.example.com/team/repo/pull/42', 'ghe.example.com/team/repo'],
+  ])('calls ghExec with argument arrays and preserves pr view metadata and diff of %s', async (url, repoArg) => {
+    vi.stubEnv('GITHUB_SERVER_URL', 'https://ghe.example.com');
     const mockGhExec = vi.mocked(ghExec);
     mockGhExec.mockImplementation((args) => {
       if (args[0] === 'pr' && args[1] === 'view') {
@@ -292,7 +301,7 @@ describe('GitHub PR gh CLI path', () => {
       return { status: 1, stdout: '', stderr: 'unknown command' };
     });
 
-    const mr = await fetchGitHubPR('https://github.com/team/repo/pull/42', { discussions: false });
+    const mr = await fetchGitHubPR(url, { discussions: false });
     expect(mr).toEqual({
       title: 'CLI PR Title',
       description: 'CLI PR Description',
@@ -300,14 +309,14 @@ describe('GitHub PR gh CLI path', () => {
       mergedAt: '2026-10-24T00:00:00Z',
       commits: [{ hash: 'commit123', message: 'Commit headline' }],
       diff: 'diff --git a/file b/file\n+change\n',
-      url: 'https://github.com/team/repo/pull/42',
+      url,
     });
 
     expect(mockGhExec).toHaveBeenCalledWith(
-      ['pr', 'view', '42', '--repo', 'team/repo', '--json', 'title,body,author,mergedAt,commits'],
+      ['pr', 'view', '42', '--repo', repoArg, '--json', 'title,body,author,mergedAt,commits'],
     );
     expect(mockGhExec).toHaveBeenCalledWith(
-      ['pr', 'diff', '42', '--repo', 'team/repo'],
+      ['pr', 'diff', '42', '--repo', repoArg],
       { maxBuffer: 50 * 1024 * 1024 },
     );
   });

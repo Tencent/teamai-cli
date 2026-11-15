@@ -435,8 +435,12 @@ describe('ghCreateRepo', () => {
     expect(calls.some(([url]) => url.endsWith('/user/repos'))).toBe(true);
   });
 
-  it('creates repo under org when owner differs from login, through the API GITHUB_API_URL names', async () => {
+  it.each([
+    [undefined, 'https://ghe.example.com/api/v3'],
+    ['https://ghe.example.com', 'https://api.github.com'],
+  ])('creates repo under org when owner differs from login, with GITHUB_SERVER_URL=%s through %s', async (server, api) => {
     process.env.GITHUB_API_URL = 'https://ghe.example.com/api/v3/';
+    if (server) process.env.GITHUB_SERVER_URL = server;
     global.fetch = vi.fn(async (url: string) => {
       if (url.endsWith('/user')) {
         return new Response(JSON.stringify({ login: 'alice' }), { status: 200 });
@@ -450,10 +454,7 @@ describe('ghCreateRepo', () => {
     await expect(ghCreateRepo('teamai', 'cli')).resolves.toBeUndefined();
 
     const calls = (global.fetch as Mock).mock.calls;
-    expect(calls.map(([url]) => url)).toEqual([
-      'https://ghe.example.com/api/v3/user',
-      'https://ghe.example.com/api/v3/orgs/teamai/repos',
-    ]);
+    expect(calls.map(([url]) => url)).toEqual([`${api}/user`, `${api}/orgs/teamai/repos`]);
   });
 
   it('throws on non-OK response', async () => {

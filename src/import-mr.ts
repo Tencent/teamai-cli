@@ -2,6 +2,7 @@ import matter from 'gray-matter';
 import { z } from 'zod';
 
 import { fetchGitHubPR } from './providers/github/mr-fetch.js';
+import { parseGitHubPullUrl } from './providers/github/api-url.js';
 import { fetchGitLabMR } from './providers/gitlab/mr-fetch.js';
 import { fetchTGitMR } from './providers/tgit/mr-fetch.js';
 import type { MRData, MRFetchOptions, MRThread } from './types.js';
@@ -16,7 +17,7 @@ import { log } from '@teamai/shared/log';
  * @throws      Error when the URL does not belong to a known provider
  */
 export async function fetchMR(url: string, opts: MRFetchOptions): Promise<MRData> {
-  if (url.includes('github.com')) {
+  if (parseGitHubPullUrl(url)) {
     return fetchGitHubPR(url, opts);
   }
 
@@ -154,10 +155,10 @@ export function parseLearningDraft(raw: string): ParsedLearningDraft {
  * @returns      Inferred repo .git URL
  */
 export function extractRepoUrlFromMrUrl(mrUrl: string): string {
-  // GitHub: https://github.com/owner/repo/pull/123 → https://github.com/owner/repo.git
-  const ghMatch = mrUrl.match(/^(https:\/\/github\.com\/[^/]+\/[^/]+)\/pull\//);
+  // GitHub: https://<host>/owner/repo/pull/123 → https://<host>/owner/repo.git
+  const pull = parseGitHubPullUrl(mrUrl);
 
-  if (ghMatch) return `${ghMatch[1]}.git`;
+  if (pull) return `https://${pull.host}/${pull.owner}/${pull.repo}.git`;
   // TGit: https://git.woa.com/group[/subgroup]/repo/merge_requests/123
   const tgitMatch = mrUrl.match(/^(https:\/\/git\.woa\.com\/.+\/[^/]+)\/merge_requests\//);
 
