@@ -9,3 +9,5 @@ export const held = sends.runtime;
 export const bareExec = held.exec;
 // @ts-expect-error an attempt cannot prompt its runtime but through AttemptSends, which reads how the step was stopped
 export const barePrompt = held.prompt;
+// @ts-expect-error an attempt cannot collect its place but through AttemptSends, whose stop bounds the collect's answer
+export const bareCollect = held.collect;

@@ -193,7 +193,7 @@ Step runtime "acme" could not close the place of attempt a1d0e9f42, so what ran 
 
 `open` 的 `view` 列出地点按与本机相同的绝对路径拿到的路径：可读写的工作树、只读的 git 路径（工作流写成文件夹时还有该文件夹，也是只读）、attempt 的结果目录和工具主目录，以及可读写的 `runDir`，即运行的临时目录，所以 `$TEAMAI_RUN_DIR` 在那里和在本机一样可用。
 
-`timeout` 会让步骤失败的步骤，或者所在的运行或外层步骤有 `timeout` 的步骤，会让它的 `open` 带上 `deadline`，即这些限制允许的最晚时间。步骤自己的超时会先停止它的工作；在 `deadline` 之后 15 秒仍在运行的该位置的 `exec` 或 `prompt`（包括重新连上的）会被 teamai 取消；到 `deadline` 时位置还没 `ready`，`open` 失败；`collect` 最多等到它之后 15 秒。不受任何时间限制的步骤，或者唯一的限制只结束 agent 这一轮的步骤（`on_limit: end_turn`），没有 `deadline`：
+`timeout` 会让步骤失败的步骤，或者所在的运行或外层步骤有 `timeout` 的步骤，会让它的 `open` 带上 `deadline`，即这些限制允许的最晚时间。步骤自己的超时会先停止它的工作；在 `deadline` 之后 15 秒仍在运行的该位置的 `exec` 或 `prompt`（包括重新连上的）会被 teamai 取消；到 `deadline` 时位置还没 `ready`，`open` 失败；`collect` 最多等到它之后 15 秒。步骤被取消或 teamai 停止时，无论有没有 `deadline`，`collect` 最多再等 15 秒，之后位置保持打开，因为你的运行时可能还在写它。不受任何时间限制的步骤，或者唯一的限制只结束 agent 这一轮的步骤（`on_limit: end_turn`），没有 `deadline`：
 
 ```text
 → {"type":"open","op":"op-5e0d11cb4777","run":"r…","attempt":"a…","deadline":"2026-11-06T15:10:00.000Z","view":{…},"credentials":{}}

@@ -626,8 +626,8 @@ export function attemptRun({ runtime, ...input }: { config: LocalConfig; run: Ru
   return attemptThrough({ ...input, sends: attemptSends(runtime) });
 }
 
-/** A step runtime with what sends an operation taken out: an attempt sends only through `AttemptSends`. */
-type RuntimeWithoutSends = Omit<StepRuntime<DriverCan>, 'open' | 'exec' | 'prompt'>;
+/** A step runtime with what sends an operation, or the collect of its place, taken out: an attempt sends only through `AttemptSends`. */
+type RuntimeWithoutSends = Omit<StepRuntime<DriverCan>, 'open' | 'exec' | 'prompt' | 'collect'>;
 
 /** How a send reads a stop that found nothing running: whether the operation may already run on the runtime. */
 interface SendAfterStop {
@@ -645,11 +645,12 @@ export type AttemptSends = ReturnType<typeof attemptSends>;
 /**
  * What an attempt has sent its runtime now, which says what a stop does (`attemptSends`): nothing, while it reads or
  * writes its record, between operations and after the last; an open, from its send until the place is ready or the
- * open failed, accepted or not; or an exec or prompt, until it ended.
+ * open failed, accepted or not; an exec or prompt, until it ended; or the collect of the place's work, until answered.
  */
 type Sent =
   | { kind: 'nothing' }
   | { kind: 'open'; op: OpId; isCancelSent: boolean; startAnswerBound: () => void }
+  | { kind: 'collect'; startAnswerBound: () => void }
   | { kind: 'operation'; op: OpId; leave?: () => void; cancelling?: Promise<void> };
 
 /**
@@ -667,7 +668,8 @@ function attemptSends(full: StepRuntime<DriverCan>) {
    * What a stop does in the phase the attempt is in. Nothing sent: nothing to pass on, and the next send reads
    * `stopped`. An open: the runtime is asked once to cancel it, and ANSWER_WITHIN_MS bounds its answer (`open`). An
    * exec or prompt: a cancel is passed on; a driver's stop leaves an exec its runtime goes on with, waits for a cancel
-   * already passed on, since leaving would drop it, and passes on a cancel otherwise.
+   * already passed on, since leaving would drop it, and passes on a cancel otherwise. A collect: no operation to cancel,
+   * so ANSWER_WITHIN_MS bounds its answer (`collect`).
    */
   const stopIn = async (how: 'stop' | 'cancel'): Promise<void> => {
     const now = sent;
@@ -680,6 +682,10 @@ function attemptSends(full: StepRuntime<DriverCan>) {
         now.isCancelSent = true;
         now.startAnswerBound();
         await full.cancel(now.op);
+
+        return;
+      case 'collect':
+        now.startAnswerBound();
 
         return;
       case 'operation':
@@ -764,6 +770,32 @@ function attemptSends(full: StepRuntime<DriverCan>) {
 
       try {
         return await Promise.race([full.open(request, onAccepted), unanswered]);
+      } finally {
+        clearTimeout(timer);
+        sent = { kind: 'nothing' };
+      }
+    },
+
+    /**
+     * Sends the collect of place `handle`, which brings its work back. A stop, before it or while it is out, has no
+     * operation to cancel: ANSWER_WITHIN_MS then bounds the answer, and a collect that gives none within it ends
+     * `unanswered`, as a runtime that does not answer at all, its place kept, since it may still write there.
+     */
+    collect: async (handle: string): Promise<{ kind: 'answered'; collected: Awaited<ReturnType<StepRuntime<DriverCan>['collect']>> } | { kind: 'unanswered'; failure: RuntimeFailure }> => {
+      let timer: NodeJS.Timeout | undefined;
+
+      const unanswered = new Promise<{ kind: 'unanswered'; failure: RuntimeFailure }>((resolve) => {
+        const startAnswerBound = (): void => {
+          timer ??= setTimeout(() => resolve({ kind: 'unanswered', failure: { code: 'runtime_lost', message: `Step runtime "${full.name}" did not answer the collect of ${handle} within ${ANSWER_WITHIN_MS / 1000} s of the step's stop, so it may still write the place, which is kept for a later close.` } }), ANSWER_WITHIN_MS);
+        };
+
+        sent = { kind: 'collect', startAnswerBound };
+
+        if (stopped) startAnswerBound();
+      });
+
+      try {
+        return await Promise.race([full.collect(handle).then((collected) => ({ kind: 'answered' as const, collected })), unanswered]);
       } finally {
         clearTimeout(timer);
         sent = { kind: 'nothing' };
@@ -1274,7 +1306,16 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
 
       // Nothing is brought back while what ran there may still write the place.
       if (mayRun) return runtimeFailure(runtime.name, `left the work of attempt ${attempt} in its place, since what ran there may still run (${mayRun.code}): ${masked(mayRun).message}`);
-      const collected = await runtime.collect(handle);
+      const answer = await sends.collect(handle);
+
+      // A stop the runtime did not answer the collect after: it may still write the place, which a close then keeps.
+      if (answer.kind === 'unanswered') {
+        mayRun = answer.failure;
+
+        return answer.failure;
+      }
+
+      const { collected } = answer;
 
       if (!collected.ok) return runtimeFailure(runtime.name, `could not bring the work of attempt ${attempt} back (${collected.failure.code}): ${collected.failure.message}. Nothing it changed in the place was committed.`);
       await save({ ...before, phase: 'collected' });

@@ -359,6 +359,53 @@ describe('an attempt\'s operations on a step runtime', () => {
     expect(cancelled).toEqual([record.open.op]);
   }, 30_000);
 
+  it.each(['cancel', 'stop'] as const)('ends a collect its runtime never answers on a %s, within the answer bound, as runtime_lost, keeping the place open', async (how) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-attempt-collect-'));
+    onTestFinished(() => fs.rmSync(root, { recursive: true, force: true }));
+    const config: LocalConfig = { repo: { localPath: root, remote: 'local', kind: 'self' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data') };
+    let isCollecting = false;
+    const closed: string[] = [];
+    const runtime: StepRuntime<DriverCan> = {
+      name: 'stalled',
+      init: async () => ({ ok: true, can: {}, launchesAgents: false }),
+      open: async (_request, onAccepted) => {
+        await onAccepted('h-1');
+
+        return { kind: 'ready', handle: 'h-1' };
+      },
+      exec: async () => ({ kind: 'exited', code: 0, stdout: '' }),
+      prompt: async () => ({ kind: 'cancelled' }),
+      cancel: async () => {},
+      // A place opened with no deadline, whose runtime never answers the collect of its work.
+      collect: async () => {
+        isCollecting = true;
+
+        return new Promise(() => {});
+      },
+      reattach: async () => ({ kind: 'gone' }),
+      close: async (handle) => {
+        closed.push(handle);
+
+        return { ok: true };
+      },
+      dispose: async () => {},
+    };
+    const [run, attempt] = [RunIdSchema.parse('r0123abcd'), AttemptIdSchema.parse('a00000001')];
+    const placed = attemptRun({ config, run, attempt, runtime, entry: soleEntry(runtime), driver: 'stalled' });
+    expect(await placed.open({ worktree: '/work', readonly: [], result: '/work/out', runDir: '/work/scratch', toolHome: {} })).toMatchObject({ ok: true });
+
+    const collected = placed.collect();
+    await vi.waitFor(() => { expect(isCollecting).toBe(true); });
+    const asked = Date.now();
+    await placed[how]();
+    const ended = await Promise.race([collected, new Promise<'still collecting'>((resolve) => { setTimeout(() => resolve('still collecting'), 20_000); })]);
+
+    expect(ended).toMatchObject({ code: 'runtime_lost' });
+    expect(Date.now() - asked).toBeLessThan(17_000);
+    expect(await placed.close()).toMatchObject({ message: expect.stringContaining(`kept the place of attempt ${attempt} open`) });
+    expect(closed).toEqual([]);
+  }, 30_000);
+
   it('sends no open once the step was cancelled while the attempt still read its record, and ends it cancelled', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-attempt-open-'));
     onTestFinished(() => fs.rmSync(root, { recursive: true, force: true }));
