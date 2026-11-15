@@ -587,12 +587,13 @@ function underToolHome(tool: string, relative: string, host: Host): string {
 /**
  * The roots a recorded root of `tool` moves: every root its configured paths
  * hang off, and its shipped default, which `applyToolRoots` adds for a team that
- * moved paths the default still names (#1886).
+ * moved paths the default still names (#1886). An instance inherits the roots of
+ * the tool it extends, since its reads are that tool's (#1886).
  */
 function rootsRecordedRootMoves(tool: string, toolPaths: ToolPaths | undefined): Set<string> {
   const resolved = toolOf(tool);
-  const shipped = resolved === undefined || resolved.instance?.kind === 'instance' ? undefined : DEFAULT_TOOL_PATHS[resolved.base];
-  const own = toolPaths ?? shipped;
+  const shipped = resolved === undefined ? undefined : DEFAULT_TOOL_PATHS[resolved.base];
+  const own = toolPaths ?? (resolved?.instance?.kind === 'instance' ? undefined : shipped);
 
   return new Set([...(own ? toolPathRoots(own) : []), ...(shipped ? toolPathRoots(shipped) : [])]);
 }
