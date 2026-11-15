@@ -16,7 +16,7 @@ import { disposeDriver, homeEnvOf, openDriver, type OpenedDriver, type OpenedRun
 import { CANCEL_WRITE_MS, cancelFleetAttempt, fleetStepRuntime, shadowedFleetEntries } from '../workflow/fleet/owner.js';
 import { RuntimeOptionsSchema, WAKE_COMMAND, type PlaceView } from '@teamai/runtime-protocol';
 import { hostStepRuntime } from '../workflow/runtimes/host.js';
-import { newOpId, type StepRuntime } from '@teamai/runtime-protocol/step-runtime';
+import { newOpId, type ExecEvents, type StepRuntime } from '@teamai/runtime-protocol/step-runtime';
 import type { DriverCan } from '../workflow/requirements.js';
 import { stdioStepRuntime } from '../workflow/runtimes/stdio.js';
 import { TOY_RUNTIME } from './helpers/toy-runtime.js';
@@ -1876,10 +1876,10 @@ async function ownerOffering(opened: StepRuntime<DriverCan>[], wake?: () => Prom
     opened.push(runtime);
     const ready = await runtime.init({ homeEnv: homeEnvOf([]), options: { stale_after: staleAfter, pool: 'gpu', ...(wake && { wake: { use: 'toy' } }) }, mode: 'unattended', checkout: alice.checkout });
     const place = ready.ok ? await runtime.open({ op: newOpId(), run, attempt, credentials: {} }, async () => undefined) : undefined;
-    const exec = (op: OpId) => {
+    const exec = (op: OpId, events: ExecEvents = {}) => {
       if (place?.kind !== 'ready') throw new Error('the fleet runtime opened no place');
 
-      return runtime.exec({ op, handle: place.handle, argv: ['sh', '-c', 'echo begun > begun.txt; sleep 60'], env: {}, unset: [], credentials: {}, cwd: alice.checkout }, {}, 'command');
+      return runtime.exec({ op, handle: place.handle, argv: ['sh', '-c', 'echo begun > begun.txt; sleep 60'], env: {}, unset: [], credentials: {}, cwd: alice.checkout }, events, 'command');
     };
 
     return { runtime, ready, exec };
@@ -1887,6 +1887,47 @@ async function ownerOffering(opened: StepRuntime<DriverCan>[], wake?: () => Prom
 
   return { alice, bob, run, attempt, open, origin: acme.origin };
 }
+
+describe('a gate a fleet member asks its owner', () => {
+  const opened: StepRuntime<DriverCan>[] = [];
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    await Promise.all(opened.splice(0).map(async (runtime) => runtime.dispose()));
+  });
+
+  it('closes the question it put to its person when it gives the member\'s claim up', async () => {
+    const { bob, run, attempt, open } = await ownerOffering(opened);
+    const { exec } = await open();
+    let isClosed = false;
+    let isPut = false;
+    const ended = exec(newOpId(), { ask: async (_question, closed) => new Promise((resolve) => {
+      isPut = true;
+      closed.addEventListener('abort', () => {
+        isClosed = true;
+        resolve({ refused: 'closed' });
+      });
+    }) });
+    const offered = await eventually(async () => {
+      await readableReportsWorktree(bob.config);
+      const read = await readAttemptRecord(bob.config, run, attempt);
+
+      return read.ok && read.value !== 'absent' && read.value.state === 'offered' ? read.value : undefined;
+    }, 60_000);
+    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config));
+    if (!claimed.ok) throw new Error(claimed.error.message);
+    const question = { step: 'keep', kind: 'approve' as const, message: 'Keep it?', options: ['yes', 'no'], required: false };
+    const asking = await recordProgress(bob.config, claimed.value, claimed.value.pushed, { question, secrets: {} });
+    if (!asking.ok) throw new Error(asking.error.message);
+    await eventually(async () => (isPut ? true : undefined), 60_000);
+    // Bob's progress stops: past stale_after on Alice's clock, she gives his claim up.
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    vi.setSystemTime(Date.now() + 61_000);
+
+    expect(await ended).toMatchObject({ kind: 'failed', failure: { code: 'cancel_failed' } });
+    expect(isClosed).toBe(true);
+  }, 90_000);
+});
 
 describe('a cancel the owner cannot write into the attempt\'s record at once', () => {
   const opened: StepRuntime<DriverCan>[] = [];

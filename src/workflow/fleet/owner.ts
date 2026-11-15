@@ -773,173 +773,97 @@ async function waitOnOffer(input: WaitInput, { cancel, leave }: { cancel: AbortS
     return outcome.kind === 'kept' ? outcome.failure : gone(expired, { config, run, root, dir, ref, staleAfterMs });
   };
 
-  for (;;) {
-    if (leave.aborted) return { kind: 'left' };
-    const read = await readAttemptRecord(config, run, attempt);
+  // Every way out of the wait closes the question it put to the person, so no stale ask reads a later gate's answer.
+  try {
+    for (;;) {
+      if (leave.aborted) return { kind: 'left' };
+      const read = await readAttemptRecord(config, run, attempt);
 
-    if (read.ok) await wake?.seen(read.value);
+      if (read.ok) await wake?.seen(read.value);
 
-    if (!read.ok && (read.error.code === 'fleet_record_unreadable' || read.error.code === 'fleet_record_newer')) return failed(fleetFailure(read.error));
-    const record = read.ok && read.value !== 'absent' ? read.value : undefined;
+      if (!read.ok && (read.error.code === 'fleet_record_unreadable' || read.error.code === 'fleet_record_newer')) return failed(fleetFailure(read.error));
+      const record = read.ok && read.value !== 'absent' ? read.value : undefined;
 
-    if (record?.state === 'finished') {
-      const outcome = givenUpOutcome(record, { now: Date.now() });
+      if (record?.state === 'finished') {
+        const outcome = givenUpOutcome(record, { now: Date.now() });
 
-      if (outcome.kind === 'kept') return failed(outcome.failure);
-      const { result } = record;
-      const taken = result.to === undefined ? undefined : await takeWork({ config, run, root, dir, ref, to: result.to, step });
+        if (outcome.kind === 'kept') return failed(outcome.failure);
+        const { result } = record;
+        const taken = result.to === undefined ? undefined : await takeWork({ config, run, root, dir, ref, to: result.to, step });
 
-      if (taken) return failed(taken);
+        if (taken) return failed(taken);
 
-      return { kind: 'finished', result };
-    }
+        return { kind: 'finished', result };
+      }
 
-    if (record?.state === 'expired') return failed(await givenUp(record));
+      if (record?.state === 'expired') return failed(await givenUp(record));
 
-    if (record?.state === 'withdrawn') return withdrawn;
+      if (record?.state === 'withdrawn') return withdrawn;
 
-    if (record?.state === 'cancelled') {
-      const outcome = givenUpOutcome(record, { now: Date.now() });
+      if (record?.state === 'cancelled') {
+        const outcome = givenUpOutcome(record, { now: Date.now() });
 
-      if (outcome.kind === 'kept') return failed(outcome.failure);
-      const taken = record.pushed === record.start ? undefined : await takeWork({ config, run, root, dir, ref, to: record.pushed, step });
+        if (outcome.kind === 'kept') return failed(outcome.failure);
+        const taken = record.pushed === record.start ? undefined : await takeWork({ config, run, root, dir, ref, to: record.pushed, step });
 
-      if (taken) return failed(taken);
+        if (taken) return failed(taken);
 
-      return { kind: 'cancelled', message: cancelledMessage(record), ...(record.tokens && { tokens: record.tokens }) };
-    }
+        return { kind: 'cancelled', message: cancelledMessage(record), ...(record.tokens && { tokens: record.tokens }) };
+      }
 
-    for (const { member, why } of record?.state === 'offered' ? record.left ?? [] : []) {
-      const key = `${member.id}\u0000${why}`;
+      for (const { member, why } of record?.state === 'offered' ? record.left ?? [] : []) {
+        const key = `${member.id}\u0000${why}`;
 
-      if (shownLeft.has(key)) continue;
-      shownLeft.add(key);
-      // Both come from another machine's write.
-      log.warn(`Fleet member ${safeText(member.user)} left step "${step}" of run ${run} for another member of pool ${pool}: ${safeText(why)}. The step waits for a member that can run it; to stop waiting, run teamai workflow cancel ${run}.`);
-    }
+        if (shownLeft.has(key)) continue;
+        shownLeft.add(key);
+        // Both come from another machine's write.
+        log.warn(`Fleet member ${safeText(member.user)} left step "${step}" of run ${run} for another member of pool ${pool}: ${safeText(why)}. The step waits for a member that can run it; to stop waiting, run teamai workflow cancel ${run}.`);
+      }
 
-    if (record !== undefined && record.write !== lastSeen?.write) {
-      lastSeen = { write: record.write, at: Date.now() };
-      pollMs = RECORD_POLL_MS;
-    }
+      if (record !== undefined && record.write !== lastSeen?.write) {
+        lastSeen = { write: record.write, at: Date.now() };
+        pollMs = RECORD_POLL_MS;
+      }
 
-    // A question closes once a read shows the record no longer asks it: the member read the answer, or the claim ended.
-    // A read that failed shows nothing, and the person's answer, given or on its way, is kept for the next.
-    if (asked !== undefined && read.ok && (record === undefined || (record.state !== 'asking' && record.state !== 'answered') || JSON.stringify(record.question) !== asked.question)) {
-      asked.closed.abort();
-      asked = undefined;
-    }
-
-    if (record?.state === 'asking' && asked === undefined) asked = askPerson(record.question, ask, { step, member: record.member.user });
-
-    // The answer goes over what the record holds now, which still asks it: the member's progress may have landed meanwhile.
-    if (record?.state === 'asking' && asked?.answer !== undefined) {
-      const written = await answerQuestion(config, record, asked.answer, secrets);
-
-      // Once written, the answer is spent: the member asking the same again, as when its run did not take the answer,
-      // asks the person again.
-      if (written.ok) {
+      // A question closes once a read shows the record no longer asks it: the member read the answer, or the claim ended.
+      // A read that failed shows nothing, and the person's answer, given or on its way, is kept for the next.
+      if (asked !== undefined && read.ok && (record === undefined || (record.state !== 'asking' && record.state !== 'answered') || JSON.stringify(record.question) !== asked.question)) {
+        asked.closed.abort();
         asked = undefined;
-        continue;
       }
 
-      const { error } = written;
+      if (record?.state === 'asking' && asked === undefined) asked = askPerson(record.question, ask, { step, member: record.member.user });
 
-      switch (error.code) {
-        // The member's progress landed first: the answer goes over the record read next.
-        case 'state_moved':
-          continue;
-        // teamai-reports was busy or out of reach: the answer is kept and written at the next poll, while the member waits.
-        case 'reports_failed':
-        case 'reports_unreachable':
-          break;
-        // The person's note holds a secret or a local path, which teamai-reports must not: the person answers again.
-        case 'fleet_unpublishable':
-          log.warn(`${error.message} Answer the question of step "${step}" again, with no secret or local path in the note.`);
-          asked.closed.abort();
-          asked = undefined;
-          continue;
-        case 'fleet_record_unreadable':
-        case 'fleet_record_newer':
-          return failed(fleetFailure(error));
-        default: {
-          const unhandled: never = error;
+      // The answer goes over what the record holds now, which still asks it: the member's progress may have landed meanwhile.
+      if (record?.state === 'asking' && asked?.answer !== undefined) {
+        const written = await answerQuestion(config, record, asked.answer, secrets);
 
-          return unhandled;
-        }
-      }
-    }
-
-    if ((record !== undefined && (isHeld(record) || record.state === 'cancelling')) && lastSeen !== undefined && Date.now() - lastSeen.at > staleAfterMs) {
-      const expired = await expireClaim(config, record, { lastSeenAt: lastSeen.at });
-
-      // The member wrote meanwhile: it is still there.
-      if (expired.ok) return failed(await givenUp(expired.value));
-
-      if (expired.error.code !== 'state_moved' && expired.error.code !== 'fleet_expire_too_early') return failed(fleetFailure(expired.error));
-      continue;
-    }
-
-    // A cancel that landed waits for its member's answer as long as for its progress: past stale_after with no read of
-    // the record, whether the member stopped is not known, so the wait ends and keeps the place for `workflow cancel`.
-    if (cancelling?.kind === 'landed' && record === undefined && lastSeen !== undefined && Date.now() - lastSeen.at > staleAfterMs) {
-      const stopAsked = `Step "${step}" was cancelled: its member ${safeText(cancelling.record.member.user)} was asked to stop it, and the record of attempt ${attempt}`;
-
-      return failed({
-        code: CANCEL_FAILED,
-        message: read.ok
-          ? `${stopAsked} is no longer on teamai-reports, so whether the member stopped is not known. The attempt's place and records are kept. Run teamai workflow cancel ${run} again once its member stopped.`
-          : `${stopAsked} on teamai-reports could not be read for ${staleAfterMs / 1_000} s since, so whether the member stopped is not known. ${cancelWriteCause(read.error)} The attempt's place and records are kept. Once origin can be read, run teamai workflow cancel ${run} again.`,
-      });
-    }
-
-    if (cancel.aborted && cancelling?.kind !== 'landed') {
-      const pending = cancelling ?? { kind: 'seen', at: Date.now() };
-      cancelling = pending;
-
-      // A read that failed shows nothing: the cancel is written once a read shows the record again, for as long as a
-      // member's answer is waited on, so the offer does not stay out for a member to take.
-      if (record === undefined) {
-        if (read.ok) return failed({ code: 'runtime_interrupted', message: `Step "${step}" was cancelled, and its attempt has no record on fleet pool ${pool}, so no member was asked to stop it.` });
-
-        // A cancel write already tried keeps its deadline, and only it, while origin cannot be read: the place stays kept.
-        if (pending.kind === 'trying') {
-          if (Date.now() >= pending.since + CANCEL_WRITE_MS) return failed(cancelNotWritten({ step, run, attempt, pool }, read.error));
-        } else if (Date.now() - pending.at > staleAfterMs) {
-          // A member may still take the offer, so the place stays kept for the next `workflow cancel`, as at the deadline.
-          return failed({ code: CANCEL_FAILED, message: `Step "${step}" was cancelled, and the record of its attempt on fleet pool ${pool} could not be read for ${staleAfterMs / 1_000} s, so no member was asked to stop it, and a member may still take its offer. ${cancelWriteCause(read.error)} The attempt's place and records are kept. Run teamai workflow cancel ${run} again.` });
-        }
-      } else if (record.state === 'offered' || isHeld(record)) {
-        const since = pending.kind === 'trying' ? pending.since : Date.now();
-        cancelling = { kind: 'trying', since };
-        const until = since + CANCEL_WRITE_MS;
-        // A publish of this install holding teamai-reports, as `workflow cancel` does, is waited for.
-        const written = await cancelAttempt(config, record, { until, signal: leave });
-
+        // Once written, the answer is spent: the member asking the same again, as when its run did not take the answer,
+        // asks the person again.
         if (written.ok) {
-          // A withdraw is final: no member takes an offer once it landed, so the cancel ends at the write.
-          if (written.value.state === 'withdrawn') return withdrawn;
-          cancelling = { kind: 'landed', record: written.value };
-          lastSeen = { write: written.value.write, at: Date.now() };
+          asked = undefined;
           continue;
         }
 
         const { error } = written;
 
         switch (error.code) {
-          // Another write landed first, such as the member's progress, or teamai-reports was held or out of reach: the
-          // cancel is written over what is read next, or at the next poll, so the offer does not stay out for a member
-          // to take, until the deadline. Past it, the member is not known to have been asked to stop.
+          // The member's progress landed first: the answer goes over the record read next.
           case 'state_moved':
+            continue;
+          // teamai-reports was busy or out of reach: the answer is kept and written at the next poll, while the member waits.
           case 'reports_failed':
           case 'reports_unreachable':
-            if (Date.now() >= until && !leave.aborted) return failed(cancelNotWritten({ step, run, attempt, pool }, error));
-
-            if (error.code === 'state_moved') continue;
             break;
+          // The person's note holds a secret or a local path, which teamai-reports must not: the person answers again.
           case 'fleet_unpublishable':
+            log.warn(`${error.message} Answer the question of step "${step}" again, with no secret or local path in the note.`);
+            asked.closed.abort();
+            asked = undefined;
+            continue;
           case 'fleet_record_unreadable':
-          case 'fleet_record_newer': return failed(fleetFailure(error));
+          case 'fleet_record_newer':
+            return failed(fleetFailure(error));
           default: {
             const unhandled: never = error;
 
@@ -947,15 +871,96 @@ async function waitOnOffer(input: WaitInput, { cancel, leave }: { cancel: AbortS
           }
         }
       }
+
+      if ((record !== undefined && (isHeld(record) || record.state === 'cancelling')) && lastSeen !== undefined && Date.now() - lastSeen.at > staleAfterMs) {
+        const expired = await expireClaim(config, record, { lastSeenAt: lastSeen.at });
+
+        // The member wrote meanwhile: it is still there.
+        if (expired.ok) return failed(await givenUp(expired.value));
+
+        if (expired.error.code !== 'state_moved' && expired.error.code !== 'fleet_expire_too_early') return failed(fleetFailure(expired.error));
+        continue;
+      }
+
+      // A cancel that landed waits for its member's answer as long as for its progress: past stale_after with no read of
+      // the record, whether the member stopped is not known, so the wait ends and keeps the place for `workflow cancel`.
+      if (cancelling?.kind === 'landed' && record === undefined && lastSeen !== undefined && Date.now() - lastSeen.at > staleAfterMs) {
+        const stopAsked = `Step "${step}" was cancelled: its member ${safeText(cancelling.record.member.user)} was asked to stop it, and the record of attempt ${attempt}`;
+
+        return failed({
+          code: CANCEL_FAILED,
+          message: read.ok
+            ? `${stopAsked} is no longer on teamai-reports, so whether the member stopped is not known. The attempt's place and records are kept. Run teamai workflow cancel ${run} again once its member stopped.`
+            : `${stopAsked} on teamai-reports could not be read for ${staleAfterMs / 1_000} s since, so whether the member stopped is not known. ${cancelWriteCause(read.error)} The attempt's place and records are kept. Once origin can be read, run teamai workflow cancel ${run} again.`,
+        });
+      }
+
+      if (cancel.aborted && cancelling?.kind !== 'landed') {
+        const pending = cancelling ?? { kind: 'seen', at: Date.now() };
+        cancelling = pending;
+
+        // A read that failed shows nothing: the cancel is written once a read shows the record again, for as long as a
+        // member's answer is waited on, so the offer does not stay out for a member to take.
+        if (record === undefined) {
+          if (read.ok) return failed({ code: 'runtime_interrupted', message: `Step "${step}" was cancelled, and its attempt has no record on fleet pool ${pool}, so no member was asked to stop it.` });
+
+          // A cancel write already tried keeps its deadline, and only it, while origin cannot be read: the place stays kept.
+          if (pending.kind === 'trying') {
+            if (Date.now() >= pending.since + CANCEL_WRITE_MS) return failed(cancelNotWritten({ step, run, attempt, pool }, read.error));
+          } else if (Date.now() - pending.at > staleAfterMs) {
+            // A member may still take the offer, so the place stays kept for the next `workflow cancel`, as at the deadline.
+            return failed({ code: CANCEL_FAILED, message: `Step "${step}" was cancelled, and the record of its attempt on fleet pool ${pool} could not be read for ${staleAfterMs / 1_000} s, so no member was asked to stop it, and a member may still take its offer. ${cancelWriteCause(read.error)} The attempt's place and records are kept. Run teamai workflow cancel ${run} again.` });
+          }
+        } else if (record.state === 'offered' || isHeld(record)) {
+          const since = pending.kind === 'trying' ? pending.since : Date.now();
+          cancelling = { kind: 'trying', since };
+          const until = since + CANCEL_WRITE_MS;
+          // A publish of this install holding teamai-reports, as `workflow cancel` does, is waited for.
+          const written = await cancelAttempt(config, record, { until, signal: leave });
+
+          if (written.ok) {
+            // A withdraw is final: no member takes an offer once it landed, so the cancel ends at the write.
+            if (written.value.state === 'withdrawn') return withdrawn;
+            cancelling = { kind: 'landed', record: written.value };
+            lastSeen = { write: written.value.write, at: Date.now() };
+            continue;
+          }
+
+          const { error } = written;
+
+          switch (error.code) {
+            // Another write landed first, such as the member's progress, or teamai-reports was held or out of reach: the
+            // cancel is written over what is read next, or at the next poll, so the offer does not stay out for a member
+            // to take, until the deadline. Past it, the member is not known to have been asked to stop.
+            case 'state_moved':
+            case 'reports_failed':
+            case 'reports_unreachable':
+              if (Date.now() >= until && !leave.aborted) return failed(cancelNotWritten({ step, run, attempt, pool }, error));
+
+              if (error.code === 'state_moved') continue;
+              break;
+            case 'fleet_unpublishable':
+            case 'fleet_record_unreadable':
+            case 'fleet_record_newer': return failed(fleetFailure(error));
+            default: {
+              const unhandled: never = error;
+
+              return unhandled;
+            }
+          }
+        }
+      }
+
+      // An answer kept from a failed write waits for the next poll, not for the person.
+      const woken = AbortSignal.any([cancel, leave, ...(asked !== undefined && asked.answer === undefined ? [asked.answered.signal] : [])]);
+
+      // A cancel write that is due is tried again at the shortest poll, so its deadline is kept.
+      if (cancelling?.kind === 'trying' && record?.state !== 'cancelling') pollMs = RECORD_POLL_MS;
+      await sleep(pollMs, undefined, cancel.aborted ? { signal: leave } : { signal: woken }).catch(() => undefined);
+      pollMs = Math.min(pollMs * 2, slowestPollMs);
     }
-
-    // An answer kept from a failed write waits for the next poll, not for the person.
-    const woken = AbortSignal.any([cancel, leave, ...(asked !== undefined && asked.answer === undefined ? [asked.answered.signal] : [])]);
-
-    // A cancel write that is due is tried again at the shortest poll, so its deadline is kept.
-    if (cancelling?.kind === 'trying' && record?.state !== 'cancelling') pollMs = RECORD_POLL_MS;
-    await sleep(pollMs, undefined, cancel.aborted ? { signal: leave } : { signal: woken }).catch(() => undefined);
-    pollMs = Math.min(pollMs * 2, slowestPollMs);
+  } finally {
+    asked?.closed.abort();
   }
 }
 
