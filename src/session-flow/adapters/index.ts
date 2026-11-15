@@ -56,6 +56,7 @@ export const ADAPTER_REGISTRY: AdapterRegistry = {
   muse: stored(BUILT_IN_TOOLS.muse.platforms.muse),
   hermes: stored(BUILT_IN_TOOLS.hermes.platforms.hermes),
   copilot: stored(BUILT_IN_TOOLS.copilot.platforms.copilot),
+  zcode: stored(BUILT_IN_TOOLS.zcode.platforms.zcode),
   // TeamAI variants (different path prefixes, identical format)
   'claude-internal': stored(BUILT_IN_TOOLS.claude.platforms['claude-internal']),
   tclaude: stored(BUILT_IN_TOOLS.claude.platforms.tclaude),

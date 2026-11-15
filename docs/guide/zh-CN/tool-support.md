@@ -28,7 +28,7 @@ teamai 为每个工具把每类 Agent 资源写到哪里，以及工具读取哪
 | Kiro | `~/.kiro` | written; reads ? | `~/.kiro/steering` d | copy | `~/.kiro/steering` d | `~/.kiro/agents` d | kiro-hooks d | `~/.kiro/settings/mcp.json` d | — |
 | Trae | `~/.trae` | written; reads ? | written; reads ? | copy | `~/.trae/user_rules` d | ? | ? | — | — |
 | Trae CN | `~/.trae-cn` | written; reads ? | written; reads ? | copy | `~/.trae-cn/user_rules` d | `~/.trae-cn/agents` d | ? | — | — |
-| ZCode | `~/.zcode` | written; reads ? | in the blocks file (ZCode AGENTS.md) | copy | `~/.zcode/AGENTS.md` s | `~/.zcode/agents` s | `~/.zcode/cli/config.json` s | `~/.zcode/cli/config.json` s | — |
+| ZCode | `~/.zcode` | written; reads ? | in the blocks file (ZCode AGENTS.md) | copy | `~/.zcode/AGENTS.md` s | `~/.zcode/agents` s | `~/.zcode/cli/config.json` s | `~/.zcode/cli/config.json` s | zcode |
 | Oh My Pi | `~/.omp/agent` `~/$PI_CONFIG_DIR/agent` `~/$PI_CONFIG_DIR/profiles/$OMP_PROFILE/agent` (or `$PI_PROFILE`) | `~/.omp/agent/skills` v | `~/.omp/agent/rules` v | copy | `~/.omp/agent/RULES.md` v | `~/.omp/agent/agents` v | omp-extension v | `~/.omp/agent/mcp.json` v | omp |
 | Pi Coding Agent | `~/.pi/agent` `$PI_CODING_AGENT_DIR` | `~/.pi/agent/skills` v | in the blocks file (Pi AGENTS.md) | copy | `~/.pi/agent/AGENTS.override.md` v<br>`~/.pi/agent/AGENTS.md` v | — | pi-extension v | `~/.pi/agent/mcp.json` v | pi |
 | CodeBuddy | `~/.codebuddy` `$CODEBUDDY_CONFIG_DIR` | `~/.codebuddy/skills` v | `~/.codebuddy/rules` v | copy | `~/.codebuddy/CODEBUDDY.md` s | `~/.codebuddy/agents` s | `~/.codebuddy/settings.json` s | first of `~/.codebuddy/.mcp.json`, `~/.codebuddy/mcp.json`, `~/.codebuddy.json` (in `$CODEBUDDY_CONFIG_DIR` when set) s | codebuddy |

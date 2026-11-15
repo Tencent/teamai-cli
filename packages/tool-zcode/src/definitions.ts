@@ -26,7 +26,7 @@ export const tools = {
       retired: { user: ['.agents/mcp.json'] },
     },
     hooks: { user: { channel: 'settings', format: 'zcode', reads: [{ base: 'home', path: '.zcode/cli/config.json', evidence: 'source' }] }, self: 'user', subagentStop: false, stopReply: true, shell: 'system', teamHooks: 'home', needsBundle: false },
-    sessions: 'none',
+    sessions: ['zcode'],
     launch: 'none',
     autoCompact: 'none',
     skillAllowedTools: false,
