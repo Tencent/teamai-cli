@@ -766,6 +766,7 @@ export function scoredRow(state: SkillState, input: { run: RunId; ticked: SkillS
 
     return { row: 'J9', state: unplanned.reduce((shown, scorer) => withEvent(shown, { kind: 'judged', step: scoring.step, scorer, label: '', code: 'not_planned' }), judged) };
   }
+
   const failure = done.failure ?? { code: 'scoring_run_ended', message: `Run ${input.run}, which scores step ${scoring.step}, ended ${done.outcome} before it labelled the pass.` };
 
   return { row: 'J9', state: withEvent(judged, { kind: 'judging-off', failure: { code: failure.code, message: failure.message } }) };
