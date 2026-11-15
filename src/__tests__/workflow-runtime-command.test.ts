@@ -317,6 +317,47 @@ describe('an attempt\'s operations on a step runtime', () => {
     return { run, config, execs: () => execs, done: () => fs.rmSync(root, { recursive: true, force: true }) };
   }
 
+  it('ends an open its runtime accepted and never reports ready once the step is cancelled, within the answer bound, keeping the place recorded', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-attempt-open-'));
+    onTestFinished(() => fs.rmSync(root, { recursive: true, force: true }));
+    const config: LocalConfig = { repo: { localPath: root, remote: 'local', kind: 'self' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data') };
+    const cancelled: OpId[] = [];
+    let isAccepted = false;
+    const runtime: StepRuntime<DriverCan> = {
+      name: 'stalled',
+      init: async () => ({ ok: true, can: {}, launchesAgents: false }),
+      // Accepts the place, then never reports it ready, nor answers a cancel.
+      open: async (_request, onAccepted) => {
+        await onAccepted('h-1');
+        isAccepted = true;
+
+        return new Promise(() => {});
+      },
+      exec: async () => ({ kind: 'exited', code: 0, stdout: '' }),
+      prompt: async () => ({ kind: 'cancelled' }),
+      cancel: async (op) => { cancelled.push(op); },
+      collect: async () => ({ ok: true }),
+      reattach: async () => ({ kind: 'gone' }),
+      close: async () => ({ ok: true }),
+      dispose: async () => {},
+    };
+    const [run, attempt] = [RunIdSchema.parse('r0123abcd'), AttemptIdSchema.parse('a00000001')];
+    const placed = attemptRun({ config, run, attempt, runtime, entry: soleEntry(runtime), driver: 'stalled' });
+
+    const opened = placed.open({ worktree: '/work', readonly: [], result: '/work/out', runDir: '/work/scratch', toolHome: {} });
+    await vi.waitFor(() => { expect(isAccepted).toBe(true); });
+    const asked = Date.now();
+    await placed.cancel();
+    const ended = await Promise.race([opened, new Promise<'still opening'>((resolve) => { setTimeout(() => resolve('still opening'), 20_000); })]);
+
+    expect(ended).toMatchObject({ ok: false, failure: { code: 'runtime_lost' } });
+    expect(Date.now() - asked).toBeLessThan(17_000);
+    const record = JSON.parse(fs.readFileSync(attemptRuntimePath(config, run, attempt), 'utf8')) as { open: { op: OpId; handle?: string }; phase: string };
+    expect(record).toMatchObject({ open: { handle: 'h-1' } });
+    expect(record.phase).not.toBe('closed');
+    expect(cancelled).toEqual([record.open.op]);
+  }, 30_000);
+
   it('records the place it opens only once an uninstall beside it lets go of the places lock', async () => {
     const { run, config, done } = counted();
     onTestFinished(done);
