@@ -14,11 +14,11 @@ import { MCP_SERVER_KEY } from './resources/mcp-format.js';
 import { SESSION_PLATFORM_FACTS, type SessionPlatform, type StoredSessionPlatform } from './session-flow/adapters/platform-facts.js';
 import { TOOLS, type ToolId } from './tools.js';
 import { type Activation, type BlocksFile, type BlocksHeader, type ChannelProbe, type FirstExistingRead, type HomeRead, type HookAdapter, type HookAdapterId, type HookFormat, type HookSettings, type McpProject, type McpUser, type ProjectRead, type ReadGateKind, type RunTime, type SkillReads, type RunTimeVia } from '@teamai/tool-core/definition';
-import { baseToolOf, channelsOf, installGateOf, isToolId, hasDefaultHomeLeftovers, mcpScopeFor, toolOf } from './tool-registry.js';
+import { baseToolOf, channelsOf, installGateOf, isToolId, hasDefaultHomeLeftovers, mcpScopeFor, toolOf, toolRootsKeyOf } from './tool-registry.js';
 import { instanceReadPath } from './tool-instances.js';
 import {
   CODEX_TOOL_ID, CURSOR_CONFIG_TOOL_ID, CURSOR_DATA_TOOL_ID,
-  DEFAULT_TOOL_PATHS, isAgentExcluded, isGitExcludeEnabled, isSelfMode, recordedToolHomeDir, resolveBaseDir, scopedToolPaths, toolGateRoot,
+  DEFAULT_TOOL_PATHS, isAgentExcluded, isGitExcludeEnabled, isSelfMode, recordedToolHomeDir, resolveBaseDir, scopedToolPaths, toolGateRoot, toolPathRoots,
   workbuddyLaunchedFrom,
   WORKBUDDY_AI_ROOT, WORKBUDDY_LIVE_ROOT_LEAVES, WORKBUDDY_TOOL_ID, WORKBUDDY_TOOL_ROOT,
   type HomePaths, type LocalConfig, type Scope, type TeamaiConfig,
@@ -583,6 +583,20 @@ function underToolHome(tool: string, relative: string, host: Host): string {
   return p.join(host.home, ...relative.split('/'));
 }
 
+
+/**
+ * The roots a recorded root of `tool` moves: every root its configured paths
+ * hang off, and its shipped default, which `applyToolRoots` adds for a team that
+ * moved paths the default still names (#1886).
+ */
+function rootsRecordedRootMoves(tool: string, toolPaths: ToolPaths | undefined): Set<string> {
+  const resolved = toolOf(tool);
+  const shipped = resolved === undefined || resolved.instance?.kind === 'instance' ? undefined : DEFAULT_TOOL_PATHS[resolved.base];
+  const own = toolPaths ?? shipped;
+
+  return new Set([...(own ? toolPathRoots(own) : []), ...(shipped ? toolPathRoots(shipped) : [])]);
+}
+
 /**
  * The agents directory teamai writes `tool`'s files to at `place`, as `locate` gives it: in a project the tool's agents
  * path, every tool's joined to the one project root, and for the member that path under the tool's home.
@@ -615,8 +629,20 @@ function rootsOf(tool: string, install: Install, host: Host): Roots {
   const home = toolHomeOf(tool, host);
   const underHome = (relative: string): string => underToolHome(tool, relative, host);
 
-  const relocated = (relative: string): string =>
-    scopedToolPaths({ toolPaths: { [tool]: { skills: relative } } }, { scope: 'user', toolRoots: install.toolRoots }, at)[tool]?.skills ?? relative;
+  // A declared read follows a recorded root only when it hangs off one of the
+  // tool's own roots — the ones `applyToolRoots` moves. Codex reads
+  // `~/.agents/skills` wherever its home is, so re-rooting that read under
+  // `toolRoots.codex` would hide the shared directory teamai writes (#1886).
+  const relocated = (relative: string): string => {
+    if (install.toolRoots?.[toolRootsKeyOf(tool)] === undefined) return relative;
+
+    const roots = rootsRecordedRootMoves(tool, install.toolPaths[tool]);
+    const moves = !relative.includes('/') || [...roots].some((root) => relative === root || relative.startsWith(`${root}/`));
+
+    if (!moves) return relative;
+
+    return scopedToolPaths({ toolPaths: { [tool]: { skills: relative } } }, { scope: 'user', toolRoots: install.toolRoots }, at)[tool]?.skills ?? relative;
+  };
 
   // WorkBuddy's live data root, resolved through `Host` rather than `fs`, so
   // `locate` answers about the machine it is inspecting. `scopedToolPaths`
