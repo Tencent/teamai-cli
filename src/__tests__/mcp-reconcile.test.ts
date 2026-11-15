@@ -57,7 +57,7 @@ vi.mock('../utils/fs.js', async (importOriginal) => {
 });
 
 import { _setExcludeLockRetryMs } from '../git-exclude.js';
-import { reconcileMcpForConfig, releaseCleanMcpGitExcludes, resolveMcpTargets, spliceCodexBlock, codexBlockIn, codexServerNames, writeCodexAtomic } from '../mcp-reconcile.js';
+import { reconcileMcpForConfig, releaseCleanMcpGitExcludes, resolveMcpTargets, saveMcpManifest, spliceCodexBlock, codexBlockIn, codexServerNames, writeCodexAtomic } from '../mcp-reconcile.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { log } from '@teamai/shared/log';
 import { resetWarnOnce } from '../utils/warn-once.js';
@@ -4042,6 +4042,33 @@ servers:
     }
     expect((await fse.readJson(files[3])).mcpServers.shared).toBeUndefined();
     expect((await fse.readJson(files[2])).projects?.[fs.realpathSync(projectRoot)]?.mcpServers?.shared).toBeUndefined();
+  });
+
+  it('keeps both local-scope records when two worktrees save concurrently', async () => {
+    const dataHome = path.join(tmpDir, 'concurrent-data');
+    const projects = ['a', 'b'].map((name) => path.join(tmpDir, `concurrent-${name}`));
+    const own = projects.map((project) => path.join(project, 'managed-mcp.json'));
+    let waiting = 0;
+    let release!: () => void;
+    const bothReady = new Promise<void>((resolve) => { release = resolve; });
+    beforeJsonWrite.run = async (file) => {
+      if (!own.includes(file)) return;
+      if (++waiting === 2) release();
+      await Promise.race([bothReady, new Promise((resolve) => setTimeout(resolve, 100))]);
+    };
+
+    try {
+      await Promise.all(projects.map((project, index) => saveMcpManifest(
+        { ...localConfig, scope: 'project', projectRoot: project, dataHome } as LocalConfig,
+        own[index],
+        { [`codebuddy:local:${index}`]: [{ name: String(index), hash: 'a'.repeat(64) }] },
+      )));
+    } finally {
+      beforeJsonWrite.run = null;
+    }
+
+    expect(Object.keys(await fse.readJson(path.join(dataHome, 'managed-local-mcp.json'))).sort())
+      .toEqual(['codebuddy:local:0', 'codebuddy:local:1']);
   });
 
   it('concurrent reconcile of two worktrees keeps BOTH ownership records (no lost update)', async () => {

@@ -104,6 +104,7 @@ import {
 } from './mcp-resolved-files.js';
 import { hasWorkspaceChildren } from './workspace-children.js';
 import { DeliveredFolders, type PlacedFolders } from './resources/delivered-folders.js';
+import { withFileLock } from './update.js';
 
 // ─── Reconcile engine ────────────────────────────────────────
 //
@@ -1779,31 +1780,36 @@ export async function saveMcpManifest(localConfig: LocalConfig, manifestPath: st
   }
 
   const file = localMcpManifestPath(localConfig);
-  const shared = await readManifest(file);
-  const before = JSON.stringify(shared);
 
-  for (const key of Object.keys(shared)) if (ours(key) || (local(key) && key in manifest)) delete shared[key];
+  const saved = await withFileLock(`${file}.lock`, { attempts: 50, delayMs: 100 }, async () => {
+    const shared = await readManifest(file);
+    const before = JSON.stringify(shared);
 
-  for (const [key, records] of Object.entries(manifest)) if (local(key) && records.length > 0) shared[key] = records;
+    for (const key of Object.keys(shared)) if (ours(key) || (local(key) && key in manifest)) delete shared[key];
 
-  const previous = await readFileIfExists(manifestPath);
-  await writeJsonAtomic(manifestPath, own);
+    for (const [key, records] of Object.entries(manifest)) if (local(key) && records.length > 0) shared[key] = records;
 
-  try {
-    if (JSON.stringify(shared) !== before) await writeJsonAtomic(file, shared);
-  } catch (error) {
+    const previous = await readFileIfExists(manifestPath);
+    await writeJsonAtomic(manifestPath, own);
+
     try {
-      await restoreMcpDoc(manifestPath, { raw: previous });
-    } catch (restoreError) {
-      throw new Error(
-        `MCP ownership write failed (${error instanceof Error ? error.message : String(error)}), and restoring ${manifestPath} failed `
-        + `(${restoreError instanceof Error ? restoreError.message : String(restoreError)}). Repair the ownership records before retrying.`,
-        { cause: restoreError },
-      );
-    }
+      if (JSON.stringify(shared) !== before) await writeJsonAtomic(file, shared);
+    } catch (error) {
+      try {
+        await restoreMcpDoc(manifestPath, { raw: previous });
+      } catch (restoreError) {
+        throw new Error(
+          `MCP ownership write failed (${error instanceof Error ? error.message : String(error)}), and restoring ${manifestPath} failed `
+          + `(${restoreError instanceof Error ? restoreError.message : String(restoreError)}). Repair the ownership records before retrying.`,
+          { cause: restoreError },
+        );
+      }
 
-    throw error;
-  }
+      throw error;
+    }
+  });
+
+  if (!saved.held) throw new Error(`Timed out waiting to update MCP ownership records in ${file}.`);
 
   // A data home outside the projects root reaches another scope's reader only through this entry.
   await noteManagedMcpHome(getDataHome(localConfig));
