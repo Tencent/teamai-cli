@@ -2160,13 +2160,15 @@ describe('a cancel whose member cannot confirm that the step stopped', () => {
       cancel: async () => new Promise<void>(() => {}),
     };
     onTestFinished(async () => { await Promise.all(ops.map(async (one) => local.cancel(one))); });
+    const repository = getRepoIdentity(bob.checkout) ?? '';
+    // A take lists the offers Bob's copy of teamai-reports holds, so the wait is for that copy, refreshed, to hold it:
+    // origin may take the offer after the refresh, and a take then finds nothing to run.
     await eventually(async () => {
       await readableReportsWorktree(bob.config);
-      const read = await readAttemptRecord(bob.config, run, attempt);
 
-      return read.ok && read.value !== 'absent' && read.value.state === 'offered' ? true : undefined;
+      return offersAmong(await listRecords(bob.config, run), { pool: 'gpu', repository }).some((offered) => offered.attempt === attempt) ? true : undefined;
     });
-    const taking = takeFleetAttempt(bob.config, { pool: 'gpu', repository: getRepoIdentity(bob.checkout) ?? '', root: bob.checkout, member: await installOwner(bob.config), secrets: {}, place: { command: { kind: 'runtime', driver: 'bobs', use: 'box', runtime: box, entry: soleEntry(box) } } });
+    const taking = takeFleetAttempt(bob.config, { pool: 'gpu', repository, root: bob.checkout, member: await installOwner(bob.config), secrets: {}, place: { command: { kind: 'runtime', driver: 'bobs', use: 'box', runtime: box, entry: soleEntry(box) } } });
     await eventually(async () => (ops.length > 0 ? true : undefined), 60_000);
     const cancelled = runtime.cancel(op);
 
