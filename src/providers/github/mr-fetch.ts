@@ -1,5 +1,6 @@
-import type { OutgoingHttpHeaders } from 'node:http';
+import http, { type IncomingMessage, type OutgoingHttpHeaders } from 'node:http';
 import https from 'node:https';
+import { urlToHttpOptions } from 'node:url';
 
 import { z } from 'zod';
 
@@ -7,6 +8,7 @@ import { type MRData, type MRFetchOptions, type MRThread } from '../../types.js'
 import type { JsonValue } from '@teamai/shared/json';
 import { log } from '@teamai/shared/log';
 import { pruneThreads } from '../mr-threads.js';
+import { githubApiUrl } from './api-url.js';
 import { getGitHubToken, ghExec } from './gh-cli.js';
 
 /** GitHub PR URL 解析结果 */
@@ -58,6 +60,18 @@ const GitHubApiCommitSchema = z.object({
 });
 
 /**
+ * Where one REST request goes: the root named by `GITHUB_API_URL`, else github.com's. The root's own path is kept, so a
+ * GitHub Enterprise root such as `https://ghe.example.com/api/v3` stays in front of `path`, and an `http:` root (a local
+ * API) goes through `node:http`.
+ */
+function githubRequest(path: string, headers: OutgoingHttpHeaders, onResponse: (res: IncomingMessage) => void) {
+  const target = new URL(githubApiUrl() + path);
+  const options = { ...urlToHttpOptions(target), headers };
+
+  return target.protocol === 'http:' ? http.request(options, onResponse) : https.request(options, onResponse);
+}
+
+/**
  * 通过 Node.js 内置 https 模块调用 GitHub REST API。
  *
  * 支持公开仓库无需 token；如有 GITHUB_TOKEN 环境变量则自动携带以提高限流上限。
@@ -73,8 +87,9 @@ async function githubApiGet(path: string): Promise<JsonValue> {
 
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
-    const req = https.request(
-      { hostname: 'api.github.com', path, headers },
+    const req = githubRequest(
+      path,
+      headers,
       (res) => {
         res.on('error', reject);
         const chunks: Buffer[] = [];
@@ -240,8 +255,9 @@ async function fetchGitHubPRViaApi(owner: string, repo: string, number: string):
 
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
-    const req = https.request(
-      { hostname: 'api.github.com', path: `/repos/${owner}/${repo}/pulls/${number}`, headers },
+    const req = githubRequest(
+      `/repos/${owner}/${repo}/pulls/${number}`,
+      headers,
       (res) => {
         res.on('error', reject);
         const chunks: Buffer[] = [];

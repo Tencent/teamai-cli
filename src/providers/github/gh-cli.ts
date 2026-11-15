@@ -5,12 +5,9 @@ import type { JsonValue } from '@teamai/shared/json';
 import { log } from '@teamai/shared/log';
 import { resolveCliPath } from '@teamai/shared/cli-path';
 import { isInteractive } from '../../utils/prompt.js';
+import { githubApiUrl } from './api-url.js';
 import { endedRequest, mergedAs, type CiStatus, type CommitRef, type PullRequestRecord, type PullRequestRef } from '../types.js';
 import { signalChild } from '@teamai/shared/process-group';
-
-// ─── Constants ───────────────────────────────────────────
-
-const GITHUB_API = 'https://api.github.com';
 
 // ─── gh CLI detection ────────────────────────────────────
 
@@ -210,7 +207,7 @@ export function ghIsAuthenticated(): boolean {
  */
 export async function ghFetchLogin(token: string): Promise<string | null> {
   try {
-    const resp = await fetch(`${GITHUB_API}/user`, {
+    const resp = await fetch(`${githubApiUrl()}/user`, {
       headers: {
         'Accept': 'application/vnd.github+json',
         'Authorization': `Bearer ${token}`,
@@ -515,8 +512,8 @@ export async function ghCreateRepo(owner: string, repo: string): Promise<void> {
   const isOwnerSelf = login && login.toLowerCase() === owner.toLowerCase();
 
   const endpoint = isOwnerSelf
-    ? `${GITHUB_API}/user/repos`
-    : `${GITHUB_API}/orgs/${encodeURIComponent(owner)}/repos`;
+    ? `${githubApiUrl()}/user/repos`
+    : `${githubApiUrl()}/orgs/${encodeURIComponent(owner)}/repos`;
 
   const body = {
     name: repo,
@@ -634,7 +631,7 @@ async function ghPrCreateViaApi(opts: GhPrCreateOptions): Promise<string> {
   };
 
   const resp = await fetch(
-    `${GITHUB_API}/repos/${opts.repo}/pulls`,
+    `${githubApiUrl()}/repos/${opts.repo}/pulls`,
     {
       method: 'POST',
       headers: authHeaders,
@@ -663,7 +660,7 @@ async function ghPrCreateViaApi(opts: GhPrCreateOptions): Promise<string> {
   if (opts.reviewers && opts.reviewers.length > 0 && pr.number) {
     try {
       await fetch(
-        `${GITHUB_API}/repos/${opts.repo}/pulls/${pr.number}/requested_reviewers`,
+        `${githubApiUrl()}/repos/${opts.repo}/pulls/${pr.number}/requested_reviewers`,
         {
           method: 'POST',
           headers: authHeaders,
@@ -809,7 +806,7 @@ async function ghApiGet(path: string, timeoutMs: number, lookup: GhLookup): Prom
 
   if (!token) throw new Error('GitHub credentials are unavailable: install gh and log in, or set GITHUB_TOKEN or GH_TOKEN.');
 
-  const response = await fetch(`${GITHUB_API}/${path}`, {
+  const response = await fetch(`${githubApiUrl()}/${path}`, {
     headers: { 'Accept': 'application/vnd.github+json', 'Authorization': `Bearer ${token}`, 'X-GitHub-Api-Version': '2022-11-28' },
     redirect: 'manual',
     signal: AbortSignal.timeout(timeoutMs),
