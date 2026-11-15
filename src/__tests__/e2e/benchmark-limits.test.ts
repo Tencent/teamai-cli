@@ -7,7 +7,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { benchmarkFixture, envelope, FIX_SUITE, said, type BenchmarkFixture, type FakeTool } from '../helpers/benchmark-fixture.js';
+import { benchmarkFixture, commandLeaseReport, envelope, FIX_SUITE, said, type BenchmarkFixture, type FakeTool } from '../helpers/benchmark-fixture.js';
+import { signalPid } from '@teamai/shared/process-group';
 
 const DoneSchema = z.object({ run: z.string(), outcome: z.string() }).passthrough();
 const TrialSchema = z.object({ order: z.number(), result: z.string(), limit: z.string().optional(), unenforced: z.array(z.string()).optional() }).passthrough();
@@ -18,12 +19,7 @@ const fixtures: BenchmarkFixture[] = [];
 
 /** Whether process `pid` still runs. */
 function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+  return signalPid(pid, 0) === 'sent';
 }
 
 afterEach(() => {
@@ -188,7 +184,7 @@ const NextSchema = z.object({ data: z.object({ lease: LeaseSchema.optional() }).
 
 /**
  * Drives run `run` of the benchmark workflow as an external driver: it runs each command it is leased in the place
- * `next --prepare` made, under the lease's attempt, and reports what it printed, until the first prompt lease, which
+ * `next --prepare` made, under the lease's attempt, and reports its exit code and what it printed, until the first prompt lease, which
  * it returns unreported.
  */
 async function leaseFirstPrompt(fixture: BenchmarkFixture, run: string): Promise<z.infer<typeof LeaseSchema>> {
@@ -198,8 +194,7 @@ async function leaseFirstPrompt(fixture: BenchmarkFixture, run: string): Promise
     if (lease === undefined) throw new Error(`no lease: ${said(next)}`);
     if (lease.command === undefined) return lease;
     const ran = spawnSync('/bin/sh', ['-c', lease.command], { cwd: lease.cwd, env: { ...fixture.env, ...lease.env, TEAMAI_WORKFLOW_ATTEMPT: `${run}/${lease.attempt}` }, encoding: 'utf8' });
-    const outputs: unknown = JSON.parse(ran.stdout);
-    const reported = await fixture.teamai(['workflow', 'report', run, '--json', JSON.stringify({ attempt: lease.attempt, revision: lease.revision, driver: EXTERNAL, outcome: ran.status === 0 ? 'success' : 'failed', outputs })]);
+    const reported = await fixture.teamai(['workflow', 'report', run, '--json', JSON.stringify({ attempt: lease.attempt, revision: lease.revision, driver: EXTERNAL, ...commandLeaseReport({ code: ran.status, stdout: ran.stdout }) })]);
     if (reported.code !== 0) throw new Error(`report of ${lease.step}: ${said(reported)}`);
   }
   throw new Error(`run ${run} leased no prompt`);

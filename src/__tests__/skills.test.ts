@@ -17,10 +17,11 @@ vi.mock('@teamai/shared/log', () => ({
 }));
 
 import { SkillsHandler } from '../resources/skills.js';
-import { skillsGuardBase } from '../builtin-skills.js';
-import { allowsSkillDirectory, mayDeleteSkillCopy, scanTeamRepoNamespaces, ensureSkillFrontmatter, createSkillPushItem } from '../resources/skills.js';
+import { skillsGuardBase } from '../skill-owned-files.js';
+import { mayDeleteSkillCopy, scanTeamRepoNamespaces, ensureSkillFrontmatter, createSkillPushItem } from '../resources/skills.js';
+import { allowsSkillDirectory } from '../skill-directory.js';
 import { contentHash } from '../resources/delivered-copies.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
 import { useToolInstances } from '../tool-registry.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';

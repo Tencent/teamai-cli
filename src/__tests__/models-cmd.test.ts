@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import { modelsAdd, modelsConfigure, modelsList, modelsRemove, modelsRestore, modelsSwitch } from '../models-cmd.js';
 import { getLocalValuesPath, loadLocalProfiles, loadModelInputs } from '../models/profile.js';
 import { askQuestion, askSecret, isInteractive } from '../utils/prompt.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },

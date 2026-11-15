@@ -28,6 +28,7 @@ steps:
         deep_complete: steps.done.outputs.deep_complete
       steps:
         - id: stage
+          requires: { host: true }
           command: teamai import stage --item "$ITEM" --settings "$SETTINGS" --wiki-root "$WIKI_ROOT"
           env: { ITEM: "{{ item }}", SETTINGS: "{{ inputs.settings }}", WIKI_ROOT: "{{ inputs.wiki_root }}" }
           output: { slug: string, stage: string, updated: boolean, enrich: boolean, narrate: boolean, context: string, head: string, finished: boolean }
@@ -54,6 +55,7 @@ steps:
         - id: publish
           needs: [stage, narrative, enrich]
           if: steps.stage.outputs.updated && steps.narrative.failure.code != 'tool_unconfigured' && steps.enrich.outcome != 'failed'
+          requires: { host: true }
           command: teamai import publish --item "$ITEM" --settings "$SETTINGS" --wiki-root "$WIKI_ROOT" --stage "$STAGE" --slug "$SLUG" --narrative "$TEXT" --narrative-failure "$WHY"
           env:
             ITEM: "{{ item }}"
@@ -76,6 +78,7 @@ steps:
           needs: [stage, publish, deep]
           # An unchanged repository was recorded and said done by stage.
           if: "!steps.stage.outputs.finished && steps.publish.outcome != 'failed'"
+          requires: { host: true }
           command: teamai import finish-item --item "$ITEM" --settings "$SETTINGS" --wiki-root "$WIKI_ROOT" --mode "$MODE" --slug "$SLUG" --head "$HEAD" --deep "$DEEP" --deep-failure "$DEEP_WHY"
           env:
             ITEM: "{{ item }}"
@@ -90,6 +93,7 @@ steps:
   - id: finish
     needs: [imports]
     if: steps.imports.outcome == 'success' || steps.imports.outcome == 'failed'
+    requires: { host: true }
     command: teamai import finish --mode "$MODE" --wiki-root "$WIKI_ROOT" --settings "$SETTINGS" --skipped "$SKIPPED" --results "$RESULTS"
     env:
       MODE: "{{ inputs.mode }}"

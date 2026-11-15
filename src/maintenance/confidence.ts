@@ -6,7 +6,7 @@ import { z } from 'zod';
 
 import { ensureDir, readFileSafe, writeFile, listFiles } from '../utils/fs.js';
 import { isInWriteRoot, listLearningFiles } from '../utils/learnings-roots.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { VoteEntryV2 } from '../types.js';
 
 /** A frontmatter confidence that counts only when it is a finite number. */

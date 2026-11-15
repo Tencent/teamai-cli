@@ -7,7 +7,7 @@ import type { ModelPick } from './skill-state.js';
 
 /**
  * The step's `model`, else the model the team agent's definition deployed for `tool` sets, else `defaults.model`,
- * aliases resolved for `tool`; a step's exact model as written. A step whose agent definition cannot be read skips `defaults.model`: the host runs
+ * aliases resolved for `tool`; a step's exact model as written. A step whose agent definition cannot be read skips `defaults.model`: the session host runs
  * that agent with whatever model its file sets.
  */
 export async function pickChildModel(input: {
@@ -15,7 +15,7 @@ export async function pickChildModel(input: {
   /** The team's `toolPaths`, which say where `teamai pull` deployed the agent for `tool`. */
   toolPaths: TeamaiConfig['toolPaths'] | undefined;
   step: string;
-  /** The session's tool, undefined when its host names none. */
+  /** The session's tool, undefined when its session host names none. */
   tool: string | undefined;
   model?: string | StepModel;
   defaultModel?: string;

@@ -275,7 +275,7 @@ $ teamai workflow report r3f9… --json '{"attempt":"…","revision":3,"outcome"
 
 ```console
 $ teamai score --run r5863… --scorer review-quality                                        # 唯一列出它的步骤，最近一次成功的执行
-ℹ Run rd4894… started. If it stops before it ends, continue it with: teamai workflow resume rd4894…
+ℹ Run rd4894… started. If it stops before it ends, continue it here with: teamai workflow resume rd4894…, or hand it to another machine with: teamai workflow publish rd4894…
 ℹ review-quality: good (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/d3ce….md
 $ teamai score --run r3f9… --step review --pass 2 --scorer review-quality --driver none   # 交给任意 driver 的 workflow next
 ```
@@ -298,6 +298,8 @@ $ teamai score --run r2907… --scorer review-quality --scorer style   # style �
 $ teamai score --run r3f9… --scorer delivered
 {"error":{"code":"evidence_missing","message":"Pass 1 of step change in run r3f9… cannot be scored: no longer on this machine: claude-code session 6f1c2a0e-… of change#1. Restore what is missing, or score another pass. No label was written."}}
 ```
+
+一次 pass 的会话从它的工具运行时所用的目录读取：步骤运行时的 `CLAUDE_CONFIG_DIR` 或 `CODEX_HOME`（即使在你的 home 目录之外），否则是 `teamai init` 记录的工具根目录。
 
 ## 为交付的工作评分
 
@@ -392,7 +394,7 @@ $ teamai score --run r3f9… --scorer delivered
 $ teamai score --session 7c1e… --scorer review-quality          # 在你自己的终端里
 ℹ Scoring claude-code session 7c1e… in /work/app
 ℹ First prompt: Add retries to the client
-ℹ Run r2b7… started. If it stops before it ends, continue it with: teamai workflow resume r2b7…
+ℹ Run r2b7… started. If it stops before it ends, continue it here with: teamai workflow resume r2b7…, or hand it to another machine with: teamai workflow publish r2b7…
 ℹ review-quality: bad (score 0, did not pass). Reasoning: ~/.teamai/scores/reasoning/9f2c….md
 ℹ To share what went wrong, ask your agent to read ~/.teamai/scores/reasoning/9f2c….md and share it with the team (teamai contribute --session-id 7c1e…).
 $ teamai score --session 7c1e… --source codex --scorer review-quality --push
@@ -416,7 +418,7 @@ agent 刚说重试循环已经修好，其实没有。在你自己的终端里�
 $ teamai score --session 7c1e… --scorer review-quality --label missed-bug --push
 ℹ Labelling claude-code session 7c1e… in /work/app
 ℹ First prompt: Fix the retry loop in sync.ts
-ℹ Run rfc5… started. If it stops before it ends, continue it with: teamai workflow resume rfc5…
+ℹ Run rfc5… started. If it stops before it ends, continue it here with: teamai workflow resume rfc5…, or hand it to another machine with: teamai workflow publish rfc5…
 ℹ review-quality: missed-bug (score 0, did not pass), by hand. No judge ran.
 ```
 
@@ -448,7 +450,7 @@ $ teamai score --session 7c1e… --scorer review-quality --label good       # �
 $ teamai score --run r24df… --step review --pass 1 --scorer review-quality --label missed-bug
 {"error":{"code":"invalid_arguments","message":"--label labels a session. To label pass 1 of step review of run r24df… by hand, run in your own terminal: teamai workflow start teamai-score --driver local --inputs '{\"subject\":\"run:r24df…:review:1\",\"scorers\":[\"review-quality\"],\"label\":\"missed-bug\",\"batch\":false,\"demand\":\"named\"}'"}}
 $ teamai workflow start teamai-score --driver local --inputs '{"subject":"run:r24df…:review:1","scorers":["review-quality"],"label":"missed-bug","batch":false,"demand":"named"}'
-ℹ Run re440… started. If it stops before it ends, continue it with: teamai workflow resume re440…
+ℹ Run re440… started. If it stops before it ends, continue it here with: teamai workflow resume re440…, or hand it to another machine with: teamai workflow publish re440…
 {"data":{"done":{"run":"re440…","outcome":"succeeded","outputs":{"labels":[{…,"outputs":{"labels":[{"scorer":"review-quality","label":"missed-bug","code":""}],"written":["9c41…"]}}]}},"cancelled":[]}}
 ```
 
@@ -493,7 +495,7 @@ $ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021
 $ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --author bob --scorer review-quality --label good
 ```
 
-`--team-session` 在 `teamai-reports` 上读取为当前目录所在项目推送的会话。在 git 团队上，只有 `teamai-reports` 中没有该名称的会话时，才读取 teamai 以前保存在默认分支上的会话；`--author` 只在找到该名称的位置推送过它的成员中选择。它不能与 `--session`、`--source` 或 `--json` 同时使用。评审者读取前会对会话脱敏，即使推送时没有使用 `--scrub`。它显示的目录是会话运行时相对于仓库的目录。它的标签从归档中取 `agent`（见[脱敏后的会话保留什么](dashboard.md#脱敏后的会话保留什么)），所以评分器页面按工具、模型和团队版本分组时，它与在运行机器上评分的会话归在一起。归档中没有 `agent` 的会话（例如 teamai 0.28 及更早版本推送的）在那里计为“未记录”。
+`--team-session` 在 `teamai-reports` 上读取为当前目录所在项目推送的会话。在 git 团队上，只有 `teamai-reports` 中没有该名称的会话时，才读取 teamai 以前保存在默认分支上的会话；`--author` 只在找到该名称的位置推送过它的成员中选择。它不能与 `--session`、`--source` 或 `--json` 同时使用。评审者读取前会对会话脱敏，即使推送时没有使用 `--scrub`。随步骤留下的文件一起归档的步骤会话会把这些文件交给评审者：文本文件放在证据目录的 `evidence/` 下，每个文件都列在 `evidence.json` 的 `evidence` 中，只列出的文件只有名称、类型、大小和 sha256。读不了的证据会让评判以 `evidence_unreadable` 失败。它显示的目录是会话运行时相对于仓库的目录。它的标签从归档中取 `agent`（见[脱敏后的会话保留什么](dashboard.md#脱敏后的会话保留什么)），所以评分器页面按工具、模型和团队版本分组时，它与在运行机器上评分的会话归在一起。归档中没有 `agent` 的会话（例如 teamai 0.28 及更早版本推送的）在那里计为“未记录”。
 
 ### 评分器变更时
 
@@ -771,7 +773,7 @@ $ teamai score --drain
 1. 在无人值守模式下，本数据目录记录为无人值守的每个已捕获会话都算已结束，包括调用它的会话。有人值守的会话仍按空闲规则，团队未修改时为六小时。
 2. 像会话启动那样在这里启动一次 [`teamai-finished-sessions`](#teamai-finished-sessions) 运行，并用 `workflows.driver` 指定的驱动（未指定则用本地驱动）驱动它。指定的驱动本机不运行时，运行会等待该驱动，drain 会说明如何在本机驱动它。该运行在会话所属模式的 `publish` 为 `auto` 时归档已结束的会话，并在 `daily_limit` 内评判策略允许的抽样会话。它为评审过期的每个 pass 和会话、运行未评分的每个 `start: workflow` pass，以及升级时从评审尝试带过来的未完成 pass 和会话重新启动 `teamai-score`，但运行最后一次变更已超过 14 天的 pass 除外。已在处理该数据目录的运行会被留给它，drain 会说明这一点：等它结束后再运行一次 drain。
 3. 像 `score --push` 一样发布每个待发布的标签，以及 [`deliver: publish`](workflow.md#发布到数据分支) 步骤留在数据分支上待发布的内容，并像 `teamai pull` 一样发布运行当时没能发布的工作流运行记录。
-4. 当前模式的 `publish` 为 `auto` 时，把在这里驱动的运行中尚未归档的步骤会话，脱敏后归档到 `teamai-reports`。无法从这里归档的步骤会话（teamai 读不到其工具的会话，或本机读不到这个会话）只列出一次已跳过及原因，之后不再重试。该运行的其他步骤会话照常归档。[基准测试](benchmarks.md)运行的 trial 会话留在运行它的机器上。
+4. 当前模式的 `publish` 为 `auto` 时，把在这里驱动的运行中尚未归档的步骤会话，脱敏后归档到 `teamai-reports`。无法从这里归档的步骤会话（teamai 读不到其工具的会话，或本机读不到这个会话）只列出一次已跳过及原因，之后不再重试。该运行的其他步骤会话照常归档。步骤在其尝试的 `out/` 目录里留下的文件（`result.json` 之外）随会话一起归档；提示词步骤的工具无需询问就能写到那里，所以在提示里让它把看到的东西存到那里。文本文件（`.txt`、`.log`、`.json`、`.jsonl`、`.md`、`.html`、`.xml`、`.csv`、`.yaml`、`.yml`）像会话一样脱敏，每个文件最多保留 1 MiB，一个步骤的全部文本最多 10 MiB；超出部分被截掉，并留一行说明。其他文件（例如截图或视频）只列出名称、类型、大小和 sha256：内容从不离开本机，因为无法对它脱敏。不是 UTF-8 或超过 64 MiB 的文本文件也一样只列出。按路径只保留前 100 个文件，其余只计数。循环再次运行同一会话时，随它归档的是最后一轮留下的文件；一轮没有留下文件时，会删掉之前一轮留下的。[基准测试](benchmarks.md)运行的 trial 会话留在运行它的机器上。
 5. 像 `teamai pull` 一样把用量上报到 `stats/<member>.yaml`，让临时 runner 的计数到达团队。
 6. 输出剩下的工作：它的运行中本机没有 driver 能领取的评审步骤（例如评分器固定的模型本机没有评审工具能运行），它们等待其他 driver 的 `workflow next`；以及 CI 尚未结束的每个 pass 或会话，下一次 drain 会为它们打标签。
 

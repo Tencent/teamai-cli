@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { entriesUnder } from '@teamai/shared/entries-under';
 
 import { ruleHarness } from '../test/harness.ts';
 import { isProductionSource, isScriptSource } from '../utils.js';
@@ -81,6 +82,9 @@ rule.valid('allows a comparison of a closed union of shipped ids: a resolved fie
 export const b = (format: AgentTool['format']) => format === 'claude';
 export const c = (target: { tool: 'claude' | 'codex' }) => { switch (target.tool) { case 'claude': return 1; case 'codex': return 2; default: { const unhandled: never = target.tool; return unhandled; } } };`, { filename: 'src/new-area/reader.ts' });
 
+rule.valid('allows a comparison of a Paseo tool, the shipped tool a Paseo provider runs', `import type { PaseoTool } from './providers.js';
+export const a = (tool: PaseoTool) => tool === 'codex';`, { filename: 'src/new-area/reader.ts' });
+
 rule.invalid('rejects a switch whose default holds another value as never', `export const a = (tool: string, other: never) => { switch (tool) { case 'codex': return 1; default: { const unhandled: never = other; return unhandled; } } };`, undefined, { filename: 'src/new-area/reader.ts' });
 
 rule.invalid('rejects a comparison of a field that holds a tool\'s own name', `export const a = (tool: { name: string }['name']) => tool === 'codex';`, undefined, { filename: 'src/new-area/reader.ts' });
@@ -116,7 +120,7 @@ describe('in this checkout', () => {
   it('scopes the production source the rule reads', () => {
     const scoped = ['src', ...fs.readdirSync(path.join(REPO, 'packages')).map((folder) => `packages/${folder}/src`)]
       .filter((dir) => fs.existsSync(path.join(REPO, dir)))
-      .flatMap((dir) => fs.readdirSync(path.join(REPO, dir), { recursive: true, encoding: 'utf8' }).map((file) => `${dir}/${file.split(path.sep).join('/')}`))
+      .flatMap((dir) => entriesUnder(path.join(REPO, dir)).map(({ relative }) => `${dir}/${relative.split(path.sep).join('/')}`))
       .filter((file) => /\.[cm]?tsx?$/.test(file) && isProductionSource(file));
 
     expect(scoped.length).toBeGreaterThan(500);

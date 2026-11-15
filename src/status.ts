@@ -1,18 +1,17 @@
 import path from 'node:path';
-import { lstat } from 'node:fs/promises';
-import { parseYaml } from './utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { autoDetectInit, loadStateForScope } from './config.js';
 import { listCachedWorkflows, resolveStart, startingAlias } from './workflow/cache.js';
 import { summarizeWorkspaceChildren } from './workspace-children.js';
 import { teamRefNotice } from './team-ref.js';
 import { getDefaultBranch, getHeadRev, getRepoStatus } from './utils/git.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { readTeamRules } from './resources/rules.js';
 import { getAllHandlers, getHandler } from './resources/index.js';
 import { listDirs, pathExists, readFileSafe } from './utils/fs.js';
 import { SkillsHandler } from './resources/skills.js';
-import { DocsHandler, isLinkedDocsRoot, membersDocs, resolveDocsDestination, resolveDocsForDirectory } from './resources/docs.js';
+import { DocsHandler } from './resources/docs.js';
 import { detectInstalledAgents, type ResolvedAgent } from './known-agents.js';
 import {
   buildClassifyContext,
@@ -22,7 +21,7 @@ import {
   type AgentSkillsView,
 } from './agent-skills.js';
 import { RESOURCE_TYPES, LocalConfigSchema, getDataHome, installScopeName, type GlobalOptions, type ResourceType } from './types.js';
-import { projectsRootDir, readAnchorFile, projectSlug, legacyProjectSlug } from './utils/partition.js';
+import { projectsRootDir, readAnchorFile, projectSlug, earlierProjectSlugs } from './utils/partition.js';
 import { checkoutForRepoAnchor } from './utils/git.js';
 import { TEAM_MCP_ENTRIES, teamMcpDef } from './resources/mcp.js';
 import { LayeredEntries } from './resources/layered-entries.js';
@@ -219,41 +218,6 @@ export async function status(options: GlobalOptions): Promise<void> {
     console.log(anyUnscanned ? '  (none in the types that could be scanned)' : '  (none)');
   }
 
-  try {
-    const mirror = resolveDocsDestination(teamConfig, localConfig);
-
-    if (!await isLinkedDocsRoot(mirror)) {
-      const desired = await resolveDocsForDirectory(localConfig);
-      const kept = new Set(await membersDocs(desired, mirror, repoPath));
-      const edits: string[] = [];
-
-      for (const file of desired.files) {
-        if (!kept.has(file)) continue;
-
-        // A directory or symlink can block delivery without being a file edit.
-        const [local, source] = await Promise.all([
-          lstat(path.join(mirror, file)).catch(() => null),
-          lstat(path.join(desired.sourceDir, file)).catch(() => null),
-        ]);
-
-        if (local?.isFile() && source?.isFile()) edits.push(file);
-      }
-
-      if (edits.length > 0) {
-        console.log('');
-        log.info('Kept docs mirror edits (not scanned by plain push):');
-
-        for (const file of edits.sort()) console.log(`  ${path.join(mirror, file)} (team path: docs/${file})`);
-
-        if (localConfig.repo.kind !== 'http') {
-          console.log('  To propose one edit, use `teamai push --file "<mirror-file>" --path "<team-path>"`.');
-        }
-      }
-    }
-  } catch (e) {
-    log.warn(`Could not inspect the docs mirror: ${e instanceof Error ? e.message : String(e)}`);
-  }
-
   console.log('');
 }
 
@@ -276,7 +240,7 @@ export async function status(options: GlobalOptions): Promise<void> {
  *               format — data is fine, the name just predates the widening;
  *               the next command that resolves the project adopts it
  *   - corrupt : the dir name matches neither slug(anchor) nor
- *               legacyProjectSlug(anchor) → tampered/half-written
+ *               earlierProjectSlugs(anchor) → tampered/half-written
  */
 async function statusAll(): Promise<void> {
   const root = projectsRootDir();
@@ -334,9 +298,9 @@ async function statusAll(): Promise<void> {
       orphanCount++;
     } else if (projectSlug(anchor) === slug) {
       state = 'active';
-    } else if (legacyProjectSlug(anchor) === slug) {
-      // Pre-#546 naming (`<basename>-<hash>`): the data is fine, the name is
-      // just the older format. status --all never renames anything, so report
+    } else if (earlierProjectSlugs(anchor).includes(slug)) {
+      // A name an earlier teamai gave (pre-#546 `<basename>-<hash>`, or the
+      // anchor's case kept): the data is fine, the name is just older. status --all never renames anything, so report
       // it as active with a hint — the next command that resolves this
       // project's partition adopts it under the current name automatically.
       state = 'active (legacy name; renamed automatically on next command)';

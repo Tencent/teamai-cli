@@ -33,22 +33,24 @@ vi.mock('../utils/fs.js', () => ({
 }));
 
 const mockExistsSync = vi.fn();
-const mockReadFileSync = vi.fn();
+const mockReadRegularFileSync = vi.fn();
 const mockRmSync = vi.fn();
 vi.mock('node:fs', () => ({
   default: {
     existsSync: (...args: unknown[]) => mockExistsSync(...args),
-    readFileSync: (...args: unknown[]) => mockReadFileSync(...args),
     rmSync: (...args: unknown[]) => mockRmSync(...args),
   },
+}));
+vi.mock('@teamai/shared/regular-file', () => ({
+  readRegularFileSync: (...args: unknown[]) => mockReadRegularFileSync(...args),
 }));
 
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { execSync } from 'node:child_process';
+import { gfGetOAuthToken } from '../providers/tgit/oauth-token.js';
 import {
-  gfGetOAuthToken,
   gfMrCreate,
   gfAuthWhoami,
   gfIsAuthenticated,
@@ -64,7 +66,7 @@ describe('gfGetOAuthToken', () => {
 
   it('should read token from ~/.netrc for git.woa.com', () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue(
+    mockReadRegularFileSync.mockReturnValue(
       'machine git.woa.com login jeffyxu password myOAuthToken123 refresh abc123 authTokenType accessToken',
     );
 
@@ -81,7 +83,7 @@ describe('gfGetOAuthToken', () => {
 
   it('should return null when ~/.netrc has no git.woa.com entry', () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue(
+    mockReadRegularFileSync.mockReturnValue(
       'machine github.com login user password ghp_xxx',
     );
 
@@ -91,7 +93,7 @@ describe('gfGetOAuthToken', () => {
 
   it('should return null when reading ~/.netrc throws', () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockImplementation(() => {
+    mockReadRegularFileSync.mockImplementation(() => {
       throw new Error('permission denied');
     });
 
@@ -101,7 +103,7 @@ describe('gfGetOAuthToken', () => {
 
   it('should handle multiline netrc format', () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue(
+    mockReadRegularFileSync.mockReturnValue(
       'machine github.com login user password ghp_xxx\nmachine git.woa.com login alice password AliceToken456 refresh r456',
     );
 
@@ -345,7 +347,7 @@ describe('ensureGfInstalled', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // header read (utf-8) → redirect headers; tarball read (buffer) → bytes
-    mockReadFileSync.mockImplementation((_p: string, enc?: string) =>
+    mockReadRegularFileSync.mockImplementation((_p: string, enc?: string) =>
       enc === 'utf-8' ? headersWithRedirect(REAL_SHA) : TARBALL,
     );
   });
@@ -384,7 +386,7 @@ describe('ensureGfInstalled', () => {
     let tarCalled = false;
     primeExecSync({ onTar: () => { tarCalled = true; } });
     // Direct serve: 200 with an explicit checksum header, no location line.
-    mockReadFileSync.mockImplementation((_p: string, enc?: string) =>
+    mockReadRegularFileSync.mockImplementation((_p: string, enc?: string) =>
       enc === 'utf-8' ? `HTTP/1.1 200 OK\r\nx-checksum-sha256: ${REAL_SHA}\r\n` : TARBALL,
     );
 
@@ -397,7 +399,7 @@ describe('ensureGfInstalled', () => {
     primeExecSync({ onTar: () => { tarCalled = true; } });
     // Redirect advertises a different digest than the downloaded bytes.
     const wrong = 'a'.repeat(64);
-    mockReadFileSync.mockImplementation((_p: string, enc?: string) =>
+    mockReadRegularFileSync.mockImplementation((_p: string, enc?: string) =>
       enc === 'utf-8' ? headersWithRedirect(wrong) : TARBALL,
     );
 
@@ -409,7 +411,7 @@ describe('ensureGfInstalled', () => {
     let tarCalled = false;
     primeExecSync({ onTar: () => { tarCalled = true; } });
     // Neither a redirect digest nor an x-checksum-sha256 header.
-    mockReadFileSync.mockImplementation((_p: string, enc?: string) =>
+    mockReadRegularFileSync.mockImplementation((_p: string, enc?: string) =>
       enc === 'utf-8' ? 'HTTP/1.1 200 OK\r\ncontent-type: application/x-gzip\r\n' : TARBALL,
     );
 

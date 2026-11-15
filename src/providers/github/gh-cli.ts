@@ -1,11 +1,12 @@
 import { spawnSync, type SpawnSyncOptions, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
-import crossSpawn from 'cross-spawn';
+import { spawnCommand, spawnCommandSync } from '@teamai/shared/exec';
 import { z } from 'zod';
-import type { JsonValue } from '../../types.js';
-import { log } from '../../utils/logger.js';
-import { resolveCliPath } from '../../utils/cli-path.js';
+import type { JsonValue } from '@teamai/shared/json';
+import { log } from '@teamai/shared/log';
+import { resolveCliPath } from '@teamai/shared/cli-path';
 import { isInteractive } from '../../utils/prompt.js';
 import { endedRequest, mergedAs, type CiStatus, type CommitRef, type PullRequestRecord, type PullRequestRef } from '../types.js';
+import { signalChild } from '@teamai/shared/process-group';
 
 // ─── Constants ───────────────────────────────────────────
 
@@ -59,7 +60,7 @@ export interface GhExecResult {
  * Execute a gh CLI command.
  * Returns { stdout, stderr, status }, plus `timedOut` when a deadline fired.
  *
- * Launches through cross-spawn rather than the native `spawnSync`, for the same
+ * Launches through spawnCommandSync rather than the native `spawnSync`, for the same
  * reason `runTool` does: a `gh` that npm installed is a `.cmd` shim, and Node
  * cannot execute `.cmd` directly (EINVAL). Resolving the path alone is not
  * enough — `pickWindowsCommand` accepts `.cmd`, so the launcher has to be able
@@ -93,7 +94,7 @@ export function ghExec(
     };
 
     if (options.timeoutMs) inherited.timeout = options.timeoutMs;
-    const result = crossSpawn.sync(ghPath, args, inherited);
+    const result = spawnCommandSync(ghPath, args, inherited);
     const ran: GhExecResult = { stdout: '', stderr: '', status: result.status ?? 1 };
 
     if (hitTimeout(result)) ran.timedOut = true;
@@ -109,7 +110,7 @@ export function ghExec(
   };
 
   if (options?.timeoutMs) captured.timeout = options.timeoutMs;
-  const result = crossSpawn.sync(ghPath, args, captured);
+  const result = spawnCommandSync(ghPath, args, captured);
 
   const ran: GhExecResult = {
     stdout: (result.stdout ?? '').toString().trim(),
@@ -357,7 +358,7 @@ function ghCredentialHelper(): string {
  * The helper to persist given the resolved `gh` path and whether an env token is
  * set. Split out so the decision rule can be asserted in a unit test: reaching
  * the gh branch would otherwise require spawning a real `gh` (ghExec goes
- * through cross-spawn).
+ * through spawnCommandSync).
  *
  * The gh branch uses the ABSOLUTE path rather than a bare `gh`, and that is not
  * cosmetic: `resolveCliPath` falls back to `bash -lc` / `zsh -lc`, a LOGIN shell
@@ -824,14 +825,14 @@ async function ghApiGet(path: string, timeoutMs: number, lookup: GhLookup): Prom
 }
 
 /**
- * Runs gh as `ghExec` does, through cross-spawn with the same arguments, environment and timeout, but without blocking
+ * Runs gh as `ghExec` does, through spawnCommand with the same arguments, environment and timeout, but without blocking
  * the process, which a workflow driver shares with the agents it runs, while gh waits on GitHub.
  */
 function ghSpawn(ghPath: string, args: string[], { env, timeoutMs }: { env: NodeJS.ProcessEnv; timeoutMs: number }): Promise<{ stdout: string; status: number }> {
   log.debug(`gh exec: ${ghPath} ${args.join(' ')}`);
 
   return new Promise((resolve) => {
-    const child = crossSpawn(ghPath, args, { env: { ...process.env, ...env } });
+    const child = spawnCommand(ghPath, args, { env: { ...process.env, ...env } });
     let stdout = '';
     let settled = false;
 
@@ -844,7 +845,7 @@ function ghSpawn(ghPath: string, args: string[], { env, timeoutMs }: { env: Node
 
     const deadline = setTimeout(() => {
       finish(1);
-      child.kill('SIGKILL');
+      signalChild(child, 'SIGKILL');
       child.stdin?.destroy();
       child.stdout?.destroy();
       child.stderr?.destroy();

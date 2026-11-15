@@ -4,7 +4,7 @@ import matter from 'gray-matter';
 import os from 'node:os';
 import path from 'node:path';
 import { AgentsHandler } from '../resources/agents.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { LocalConfigSchema, TeamaiConfigSchema, type LocalConfig, type TeamaiConfig } from '../types.js';
 
 vi.mock('@teamai/shared/log', () => ({

@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { push } from '../push.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 const mockAutoDetectInit = vi.fn();
 const mockPullRepo = vi.fn();

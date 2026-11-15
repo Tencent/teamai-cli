@@ -4,8 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { startGroupedCommand } from '../tool-launch/process-stop.js';
-import { runShellCommand } from '../workflow/shell-command.js';
+import { runShellCommand, startGroupedCommand } from '../workflow/shell-command.js';
 
 const dirs: string[] = [];
 const VALUE = 'quoted "words" & echo injected > marker | %PATH% $HOME `id`';

@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { StartDriver } from '../workflow/conformance-interpreter.js';
 import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
-import { createLocalToolAdapter, type ToolSpawn } from '../workflow/drivers/local/local-tool-adapter.js';
+import { type ToolSpawn } from '@teamai/runtime-tools';
+import { hostLauncher } from './helpers/host-launcher.js';
 import { startRun } from '../workflow/engine.js';
 import { BundleSchema, expectedOutput } from '../workflow/output.js';
 import { RunIdSchema } from '../workflow/store.js';
@@ -62,7 +63,7 @@ const handedToAgent: Record<StartDriver, () => Promise<string>> = {
       prompts.push(args[args.indexOf('-p') + 1] ?? '');
       return spawnProcess(process.execPath, ['-e', ''], options);
     };
-    await runLocalDriver(harness.config, String(started.data.run), harness.work, { adapter: createLocalToolAdapter(spawn, () => 'claude') });
+    await runLocalDriver(harness.config, String(started.data.run), harness.work, { adapter: hostLauncher(spawn, () => 'claude') });
     return prompts.join('\n');
   },
   skill: async () => {

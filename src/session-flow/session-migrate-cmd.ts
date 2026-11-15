@@ -14,7 +14,7 @@ import {
   withSessionPublicationLock,
 } from './sync.js';
 import { isInteractive } from '../utils/prompt.js';
-import { setStderrOnly } from '../utils/logger.js';
+import { setStderrOnly } from '@teamai/shared/log';
 import { knownSecrets } from '../env-resolution.js';
 import {
   REPORTS_ARCHIVE_BUSY,

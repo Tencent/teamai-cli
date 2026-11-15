@@ -6,9 +6,10 @@
  * order, a copy into a second workspace imports, and a repeat into the first is reused.
  *
  * Writing needs OpenCode 2 (`opencode session import`). The `opencode-ai` package the suite
- * installs is OpenCode 1 (OpenCode 2 is the separate `@opencode/cli`), so this runs against an
- * OpenCode 2 found on PATH. Without one it is skipped, saying why, except under CI, which
- * installs OpenCode 2 and fails here when it is missing.
+ * installs is OpenCode 1 (OpenCode 2 is the separate `@opencode/cli`), and every E2E file meets
+ * a stand-in `opencode` on PATH (helpers/isolate-e2e-env.ts), so this runs against the real
+ * OpenCode 2 that `TEAMAI_OPENCODE_V2_BIN` names. Without it it is skipped, saying why, except
+ * on GitHub Actions, where CI installs OpenCode 2, and it fails here when it is missing.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -21,26 +22,27 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const CLI = path.join(ROOT, 'dist', 'index.js');
 const OPENCODE = process.platform === 'win32' ? 'opencode.cmd' : 'opencode';
 
-/** The first directory on PATH whose `opencode` is OpenCode 2 or later. */
+/** The directory of the real OpenCode 2 `TEAMAI_OPENCODE_V2_BIN` names, which goes first on PATH for the CLI it runs. */
 function opencode2Dir(): string | undefined {
-  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-    const bin = path.join(dir, OPENCODE);
-    if (!dir || !fs.existsSync(bin)) continue;
-    const version = spawnSync(bin, ['--version'], { encoding: 'utf8', shell: process.platform === 'win32' }).stdout ?? '';
-    if (Number(/(\d+)\.\d+/.exec(version)?.[1] ?? 0) >= 2) return dir;
+  const bin = process.env.TEAMAI_OPENCODE_V2_BIN;
+  if (!bin) return undefined;
+  const version = spawnSync(bin, ['--version'], { encoding: 'utf8', shell: process.platform === 'win32' }).stdout ?? '';
+  if (Number(/(\d+)\.\d+/.exec(version)?.[1] ?? 0) < 2) {
+    throw new Error(`TEAMAI_OPENCODE_V2_BIN is ${bin}, which reports "${version.trim()}", not OpenCode 2 or later. Point it at an OpenCode 2 binary, or unset it to skip this file.`);
   }
-  return undefined;
+  return path.dirname(bin);
 }
 
 const OPENCODE_DIR = opencode2Dir();
-if (!OPENCODE_DIR && process.env.CI) {
+// GITHUB_ACTIONS, not CI, which clear-agent-session-env.ts removes before this file loads.
+if (!OPENCODE_DIR && process.env.GITHUB_ACTIONS === 'true') {
   throw new Error(
-    'OpenCode 2 is not on PATH: no `opencode` there reports version 2 or later, so the session migrate E2E cannot run. CI installs it in the "Install OpenCode 2" step of .github/workflows/ci.yml; check that the step ran and added its directory to PATH.',
+    'TEAMAI_OPENCODE_V2_BIN is not set, so the session migrate E2E has no OpenCode 2 to run. CI sets it in the "Install OpenCode 2" step of .github/workflows/ci.yml; check that the step ran.',
   );
 }
 const SOURCE_ID = '6f0c2a9e-3b1d-4e5f-8a7b-9c0d1e2f3a4b';
 
-describe.skipIf(!OPENCODE_DIR)('session migrate into OpenCode (needs OpenCode 2 on PATH)', () => {
+describe.skipIf(!OPENCODE_DIR)('session migrate into OpenCode (needs TEAMAI_OPENCODE_V2_BIN, a real OpenCode 2)', () => {
   let sandbox: string;
   let env: NodeJS.ProcessEnv;
   let sourceCwd: string;

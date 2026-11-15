@@ -14,7 +14,7 @@ vi.mock('@teamai/shared/log', () => ({
 
 const { listPendingForInstall, queueLockPath, savePendingLearning, setAsideQueueOnModeSwitch } = await import('../utils/pending-learnings.js');
 const { acquireLock, releaseLock } = await import('../update.js');
-const { log } = await import('../utils/logger.js');
+const { log } = await import('@teamai/shared/log');
 
 const noSave = async (): Promise<void> => {};
 function switched(result: Awaited<ReturnType<typeof setAsideQueueOnModeSwitch>>): { aside: string | null } {

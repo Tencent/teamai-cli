@@ -2,10 +2,10 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
-import type { JsonValue } from '../../types.js';
+import type { JsonValue } from '@teamai/shared/json';
 import { pathExists, readJson } from '../../utils/fs.js';
-import { formatCommand } from '../../utils/exec.js';
-import { log } from '../../utils/logger.js';
+import { formatCommand } from '@teamai/shared/exec';
+import { log } from '@teamai/shared/log';
 import type { NpmLockEntry, NpmSpec, PackageStatus } from '../types.js';
 import {
   PackageAdapter,

@@ -5,12 +5,12 @@ import { z } from 'zod';
 import type { DefaultFolderParams } from '../default-folders.js';
 
 import { DRAFT_SUFFIX, listDirs, listFiles, pathExists, readFileSafe, writeFile } from '../utils/fs.js';
-import { parseJson } from '../utils/json.js';
+import { parseJson } from '@teamai/shared/json';
 import { listLearningFiles } from '../utils/learnings-roots.js';
 import { parseFrontmatter } from '../utils/frontmatter.js';
 import { tokenize } from '../utils/tokenizer.js';
 import { readUserVotes } from '../votes.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 export interface StaleEntry {
   docId: string;

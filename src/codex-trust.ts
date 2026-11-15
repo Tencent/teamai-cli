@@ -1,8 +1,9 @@
+import type { ChildProcess } from 'node:child_process';
 import { realpathSync, statSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import crossSpawn from 'cross-spawn';
+import { spawnCommand } from '@teamai/shared/exec';
 import semver from 'semver';
 import { z } from 'zod';
 import { getCurrentVersion } from './package-info.js';
@@ -12,6 +13,7 @@ import { lenientList, type JsonValue, JsonValueSchema, JsonObjectSchema } from '
 import { log } from '@teamai/shared/log';
 import { findOnPath } from '@teamai/shared/lookpath';
 import { isBareCommandName } from '@teamai/shared/cli-path';
+import { signalChild, signalGroup, signalPid } from '@teamai/shared/process-group';
 
 /**
  * Trusting what teamai writes into Codex (#955).
@@ -101,7 +103,7 @@ function canonical(file: string): string {
 
 /** A Codex binary that exists, with the command that starts it and its stat identity. */
 interface CodexCandidate {
-  /** Bare `codex` for the PATH hit, so cross-spawn resolves the Windows `codex.cmd` shim. */
+  /** Bare `codex` for the PATH hit, so spawnCommand resolves the Windows `codex.cmd` shim. */
   command: string;
   path: string;
   identity: string;
@@ -110,7 +112,7 @@ interface CodexCandidate {
 /** `commands`, else `codex` on PATH first (it wins a version tie), then the desktop builds. Stat only, no spawn. */
 async function codexBuildCandidates(commands?: readonly string[]): Promise<CodexCandidate[]> {
   // The launch registry loads every family's launch profiles: here, where first used, not in every command that imports this module.
-  const { executablesOf } = await import('./tool-launch/tools.js');
+  const { executablesOf } = await import('./launch-registry.js');
 
   const found = (commands ?? executablesOf('codex')).flatMap((command) => {
     if (!isBareCommandName(command)) return [{ command, path: command }];
@@ -148,7 +150,7 @@ export async function codexBuildsIdentity(commands?: readonly string[]): Promise
 async function probeCodexVersion(command: string): Promise<string | null> {
   // `codex --version` first sets up its arg0 helpers under $CODEX_HOME/tmp; a throwaway home keeps the member's as it was.
   const codexHome = await mkdtemp(path.join(os.tmpdir(), 'teamai-codex-version-'));
-  const { toolCommandEnv } = await import('./tool-launch/tools.js');
+  const { toolCommandEnv } = await import('./launch-registry.js');
   const env = { ...process.env, ...toolCommandEnv(CODEX_TOOL_ID, { kind: 'at', dir: codexHome }) };
 
   try {
@@ -295,12 +297,15 @@ class AppServerError extends Error {
 }
 
 async function openAppServer(codexHome: string, command: string, tool: string): Promise<AppServer> {
-  const { toolCommandEnv } = await import('./tool-launch/tools.js');
+  // A group of its own on POSIX, so closing it also stops what it started, such as a plugin fetch still running.
+  const isGrouped = process.platform !== 'win32';
+  const { toolCommandEnv } = await import('./launch-registry.js');
 
-  const child = crossSpawn(command, ['app-server'], {
+  const child = spawnCommand(command, ['app-server'], {
     env: { ...process.env, ...toolCommandEnv(tool, { kind: 'at', dir: codexHome }) },
     stdio: ['pipe', 'pipe', 'ignore'],
     windowsHide: true,
+    detached: isGrouped,
   });
 
   const pending = new Map<number, { method: string; resolve: (v: JsonValue | undefined) => void; reject: (e: Error) => void }>();
@@ -382,7 +387,7 @@ async function openAppServer(codexHome: string, command: string, tool: string): 
     close() {
       fail(new AppServerError('closed'));
       child.stdin?.end();
-      child.kill();
+      stopAppServer(child, isGrouped);
     },
   };
 
@@ -395,6 +400,20 @@ async function openAppServer(codexHome: string, command: string, tool: string): 
     server.close();
     throw e;
   }
+}
+
+/**
+ * Stops the app-server `child` and, when `isGrouped`, every process of the group it leads. While any process of that
+ * group lives, POSIX gives no process its id; once the server is reaped, a process holding its pid is a later one, which
+ * may lead a later group of that id, so the group is left alone. On Windows only the process teamai started is signalled.
+ */
+function stopAppServer(child: ChildProcess, isGrouped: boolean): void {
+  const { pid } = child;
+  const isReaped = child.exitCode !== null || child.signalCode !== null;
+  const mayStopGroup = isGrouped && pid !== undefined && !(isReaped && signalPid(pid, 0) !== 'gone');
+
+  if (mayStopGroup && signalGroup(pid, 'SIGTERM') === 'sent') return;
+  signalChild(child);
 }
 
 type AppServerFailure = { kind: 'unavailable'; reason: string } | { kind: 'failed'; reason: string };

@@ -48,7 +48,7 @@ import {
   PI_HOOK_FILE,
 } from '../pi-hooks.js';
 import { reconcileHooksToAllTools } from '../hooks.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { HookDef } from '../types.js';
 import { loadPiExtension, type ExtensionDispatch } from './helpers/pi-extensions.js';
 import { hookAdapterDir } from '../locate.js';

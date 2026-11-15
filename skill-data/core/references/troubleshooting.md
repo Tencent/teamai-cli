@@ -288,7 +288,7 @@ copy the member changed stays, named in its own line.
 
 ## `tool_not_accepted`: a team tool's command did not run
 
-The step's tool is a team instance (`tools/<name>.yaml` in the team repo) that sets `command`, and no one accepted that file on this machine. An agent cannot accept it: tell the person to run the same `teamai workflow start …` once in their own terminal, read the file it names, and answer `y`. An edit to the file asks again.
+The step's tool is a team instance (`tools/<name>.yaml` or `tools/<name>/TOOL.yaml` in the team repo) that sets `command`, and no one accepted that file on this machine. An agent cannot accept it: tell the person to run the same `teamai workflow start …` once in their own terminal, read the file it names, and answer `y`. An edit to the file asks again.
 
 ## Permission / access denied
 

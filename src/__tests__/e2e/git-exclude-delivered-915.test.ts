@@ -1441,7 +1441,7 @@ describe('the docs mirror stays out of git (#915)', () => {
     expect(m.status().filter((line) => line.includes('docs'))).toEqual(['?? team-docs/mine.md']);
   });
 
-  it('reports kept docs mirror edits separately from plain push candidates (#1851)', () => {
+  it('lists a kept docs mirror edit with the other push candidates (#1851)', () => {
     const m = docsMachine('docs-status', { before: undefined });
     const guide = path.join(m.dir, '.teamai', 'docs', 'guide.md');
     const heading = 'Kept docs mirror edits (not scanned by plain push):';
@@ -1450,14 +1450,10 @@ describe('the docs mirror stays out of git (#915)', () => {
     fs.appendFileSync(guide, 'My note.\n');
     const edited = read(guide);
     const status = m.ok(['status']).output;
-    expect(status).toContain(heading);
-    const [pushable, mirror] = status.split(heading);
 
-    expect(pushable).toContain('Local resources not yet pushed:');
-    expect(pushable).not.toContain('guide.md');
-    expect(mirror).toContain(`${guide} (team path: docs/guide.md)`);
-    expect(mirror).toContain('teamai push --file "<mirror-file>" --path "<team-path>"');
-    expect(mirror).not.toMatch(/mine\.md|dir-doc\.md|deep\.md/);
+    expect(status).not.toContain(heading);
+    expect(status).toContain('Local resources not yet pushed:');
+    expect(status).toContain('[docs] 1 new');
     expect(read(guide)).toBe(edited);
   });
 

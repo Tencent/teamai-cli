@@ -31,7 +31,7 @@ import { writeJsonAtomic } from '../../../utils/fs.js';
 export async function keep(input: { resultPath: string }, output: string): Promise<void> {
   await writeJsonAtomic(input.resultPath, { output });
 }
-`, undefined, { filename: 'src/workflow/drivers/local/local-tool-adapter.ts' });
+`, undefined, { filename: 'src/workflow/steps/prompt.ts' });
 
   rule.valid('allows the write through AttemptResult.write', `
 import { AttemptResult } from '../../attempt-result.js';
@@ -61,5 +61,5 @@ import fs from 'node:fs';
 export function prewrite(resultPath: string): void {
   fs.writeFileSync(resultPath, '{}');
 }
-`, { filename: 'src/__tests__/workflow-local-tool-adapter.test.ts' });
+`, { filename: 'src/__tests__/workflow-tools-launcher.test.ts' });
 });

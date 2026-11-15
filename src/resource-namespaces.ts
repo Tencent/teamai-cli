@@ -102,6 +102,21 @@ async function everyDiscoveryNamespace(repoPath: string, manifest: RolesManifest
 }
 
 /**
+ * The workflow namespaces `config`'s roles and projects activate, as a team tree takes them (`TeamTree.namespaces`):
+ * `legacy` when nothing filters, so every namespace on disk is active, and none when a manifest cannot be read. Driver
+ * definitions, runtimes and tool instances follow them too.
+ */
+export async function workflowNamespacesOf(config: LocalConfig): Promise<readonly string[] | 'legacy'> {
+  try {
+    const resolved = await resolveResourceNamespaces(config);
+
+    return resolved === null ? 'legacy' : resolved.activeNamespaces.workflows ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Resolve the same role/project activation policy for resource pull and push.
  *
  * The fallback warnings are said once per run: a pull resolves this for every

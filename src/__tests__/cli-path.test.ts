@@ -11,7 +11,9 @@ vi.mock('node:child_process', () => ({
   spawnSync: vi.fn(),
 }));
 
-vi.mock('node:fs', () => ({
+// Partial: the launcher's module graph reads fs as it loads.
+vi.mock('node:fs', async (importOriginal) => ({
+  ...await importOriginal<typeof import('node:fs')>(),
   existsSync: vi.fn(),
 }));
 
@@ -37,7 +39,7 @@ vi.mock('@teamai/shared/log', () => ({
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import crossSpawn from 'cross-spawn';
-import { pickWindowsCommand, resolveCliPath, resolvePathCommand } from '../utils/cli-path.js';
+import { pickWindowsCommand, resolveCliPath, resolvePathCommand } from '@teamai/shared/cli-path';
 import { ghExec, isGhInstalled } from '../providers/github/gh-cli.js';
 import { cnbExec, isCnbInstalled } from '../providers/cnb/cnb-cli.js';
 

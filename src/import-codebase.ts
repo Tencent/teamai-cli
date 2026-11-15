@@ -5,13 +5,14 @@ import fs from 'fs-extra';
 import { z } from 'zod';
 
 import { extractCodebase, sourceRepositoryMetadata } from './codebase-extract.js';
-import { type JsonValue, JsonObjectSchema } from './types.js';
+import { type JsonValue, JsonObjectSchema } from '@teamai/shared/json';
 import { SourceManifestSchema } from './wiki-engine/code-knowledge/code-collector.js';
 import type { TeamaiInit } from './config.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { remotesMatch } from './utils/git.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import { shellQuoteValue } from './utils/shell-profile.js';
+import { copyRegularTree, moveRegularTree, readRegularFile } from '@teamai/shared/regular-file';
 
 /** The caches an incremental extraction reuses, kept with each codebase's evidence. */
 const INCREMENTAL_CACHES = ['facts-cache.json', 'interfaces-cache.json'] as const;
@@ -21,7 +22,7 @@ const INCREMENTAL_CACHES = ['facts-cache.json', 'interfaces-cache.json'] as cons
  *
  * `--from-repo-list` imports up to `--concurrency` repos in one process, and
  * every import publishes its staging manifest over the shared
- * `teamwiki/source-manifest.json`. `fs.copy(..., { overwrite: true })`
+ * `teamwiki/source-manifest.json`. `copyRegularTree(...)`
  * unlinks the destination before writing, so two repos reaching that line
  * together raced: one unlinked the file the other had just unlinked and the
  * import failed with ENOENT. The root manifest is a single-project baseline
@@ -41,7 +42,7 @@ async function publishRootManifest(stagingManifest: string, wikiRoot: string): P
     const tmp = `${target}.tmp-${process.pid}-${manifestPublishSeq++}`;
 
     try {
-      await fs.copyFile(stagingManifest, tmp);
+      await fs.writeFile(tmp, await readRegularFile(stagingManifest));
       await fs.rename(tmp, target);
     } catch (err) {
       await fs.remove(tmp).catch(() => {});
@@ -82,7 +83,7 @@ type EvidenceJson = z.infer<typeof EvidenceJsonSchema>;
 /** The evidence JSON object in `file`, or null when it is missing, unreadable, or not an object. */
 async function readJsonIfPresent(file: string): Promise<EvidenceJson | null> {
   try {
-    return EvidenceJsonSchema.safeParse(await fs.readJson(file)).data ?? null;
+    return EvidenceJsonSchema.safeParse(JSON.parse(await readRegularFile(file, 'utf8'))).data ?? null;
   } catch {
     return null;
   }
@@ -371,7 +372,7 @@ async function seedBaseline(wikiRoot: string, stagingWiki: string, slug: string)
   const ownIndices = path.join(evidenceDir, '.indices');
 
   const readManifest = async (file: string) =>
-    SourceManifestSchema.safeParse(await fs.readJson(file).catch(() => null)).data ?? null;
+    await readRegularFile(file, 'utf8').then((text) => SourceManifestSchema.safeParse(JSON.parse(text)).data ?? null).catch(() => null);
 
   let manifest: string | undefined;
   let indices: string | undefined;
@@ -393,13 +394,13 @@ async function seedBaseline(wikiRoot: string, stagingWiki: string, slug: string)
 
   const stagingEvidence = path.join(stagingWiki, 'evidence', 'code', slug);
   await fs.ensureDir(stagingEvidence);
-  await fs.copy(manifest, path.join(stagingWiki, 'source-manifest.json'));
-  await fs.copy(manifest, path.join(stagingEvidence, 'source-manifest.json'));
+  await copyRegularTree(manifest, path.join(stagingWiki, 'source-manifest.json'));
+  await copyRegularTree(manifest, path.join(stagingEvidence, 'source-manifest.json'));
 
   for (const cache of INCREMENTAL_CACHES) {
     const src = path.join(indices, cache);
 
-    if (await fs.pathExists(src)) await fs.copy(src, path.join(stagingWiki, '.indices', cache));
+    if (await fs.pathExists(src)) await copyRegularTree(src, path.join(stagingWiki, '.indices', cache));
   }
 
   // dependency-paths.md is not seeded: the extractor would keep it as is, and
@@ -476,7 +477,7 @@ export async function publishStaging(opts: StagedCodebase & { legacySlug?: strin
           log.warn(`teamwiki/evidence/code/${legacySlug}/ is an older copy of teamwiki/evidence/code/${slug}/. `
             + 'Move any curated docs you want to keep from it, then remove it.');
         } else {
-          await fs.move(legacyDest, evidenceDest);
+          await moveRegularTree(legacyDest, evidenceDest);
           log.info(`Moved teamwiki/evidence/code/${legacySlug}/ to teamwiki/evidence/code/${slug}/`);
         }
 
@@ -551,7 +552,7 @@ export async function publishStaging(opts: StagedCodebase & { legacySlug?: strin
       const published = path.join(evidenceDest, artifact);
 
       if (!(await fs.pathExists(published))) continue;
-      await fs.copy(published, path.join(stagingEvidence, artifact), { overwrite: false, errorOnExist: false });
+      await copyRegularTree(published, path.join(stagingEvidence, artifact), { existing: 'keep' });
     }
 
     const enrichedManifest = opts.skipEnrich ? keepEnrichedComponents({ published: publishedManifest, staged: stagedManifest }) : null;
@@ -620,7 +621,7 @@ export async function publishStaging(opts: StagedCodebase & { legacySlug?: strin
   }
 
   await fs.ensureDir(evidenceDest);
-  await fs.copy(stagingEvidence, evidenceDest, { overwrite: true });
+  await copyRegularTree(stagingEvidence, evidenceDest);
 
   const destIndices = path.join(evidenceDest, '.indices');
   await fs.ensureDir(destIndices);
@@ -628,7 +629,7 @@ export async function publishStaging(opts: StagedCodebase & { legacySlug?: strin
   for (const file of ['graph-index.json', ...INCREMENTAL_CACHES]) {
     const src = path.join(stagingWiki, '.indices', file);
 
-    if (await fs.pathExists(src)) await fs.copy(src, path.join(destIndices, file), { overwrite: true });
+    if (await fs.pathExists(src)) await copyRegularTree(src, path.join(destIndices, file));
   }
 
   const stagingManifest = path.join(stagingWiki, 'source-manifest.json');

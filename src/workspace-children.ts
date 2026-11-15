@@ -26,10 +26,11 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { findProject, loadProjectsManifest, resolveActiveLearningsNamespaces } from './projects.js';
-import type { JsonValue, LocalConfig, State } from './types.js';
+import type { LocalConfig, State } from './types.js';
+import type { JsonValue } from '@teamai/shared/json';
 import { readFileSafe, readJsonObject, writeJson } from './utils/fs.js';
 import { remotesMatch } from './utils/git.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { resolvePartitionDir } from './utils/partition.js';
 import { warnOnce } from './utils/warn-once.js';
 

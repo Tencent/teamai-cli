@@ -2,14 +2,15 @@
 // teamai-reports, the team repo's skills and the KB maintenance candidates.
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseYaml } from '../utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { z } from 'zod';
-import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
+import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from '../cli-skill-names.js';
 import { DefaultScorers } from '../default-scorers.js';
 import { adoptionRatio, aggregateConfidenceFactors } from '../maintenance/confidence.js';
 import { defaultScorerRubric } from '../scorers/cache.js';
 import { readTeamSkills } from '../resources/skills.js';
 import type { LocalConfig } from '../types.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 const WINDOW_DAYS = 30;
 const HISTORY_DAYS = 180;
@@ -115,7 +116,7 @@ async function readStats(statsDir: string): Promise<StatsFile[]> {
 
   for (const name of names.filter((n) => n.endsWith('.yaml'))) {
     try {
-      const parsed = StatsFileSchema.safeParse(parseYaml(await fs.promises.readFile(path.join(statsDir, name), 'utf-8')));
+      const parsed = StatsFileSchema.safeParse(parseYaml(await readRegularFile(path.join(statsDir, name), 'utf-8')));
 
       if (parsed.success) out.push(parsed.data);
     } catch { /* one unreadable member file does not hide the rest */ }

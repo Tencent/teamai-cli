@@ -17,7 +17,7 @@
  * responseOf. A name not listed here is `unknown` and never counts.
  */
 import { isAbsolutePath, isWithin, resolvePath, samePath, withoutReadSelector } from './agent-path.js';
-import { getUserHome } from './home.js';
+import { getUserHome } from '@teamai/shared/home';
 import { resolveHookCwd } from './hook-cwd.js';
 import { classifyShellCommand } from './shell-command.js';
 import { normalizeToolName } from './tool-names.js';

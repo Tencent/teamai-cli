@@ -20,15 +20,22 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {
     ...actual,
-    readFile: (...args: Parameters<typeof actual.readFile>) => {
-      if (String(args[0]) === fsFailurePaths.read) return Promise.reject(new Error('read denied'));
-      return actual.readFile(...args);
-    },
     stat: (...args: Parameters<typeof actual.stat>) => {
       if (String(args[0]) === fsFailurePaths.stat) {
         return Promise.reject(Object.assign(new Error('stat denied'), { code: 'EACCES' }));
       }
       return actual.stat(...args);
+    },
+  };
+});
+
+vi.mock('@teamai/shared/regular-file', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@teamai/shared/regular-file')>();
+  return {
+    ...actual,
+    readRegularFile: (file: string, encoding: BufferEncoding) => {
+      if (file === fsFailurePaths.read) return Promise.reject(new Error('read denied'));
+      return actual.readRegularFile(file, encoding);
     },
   };
 });

@@ -22,6 +22,7 @@ import {
 } from '../../workflow/conformance/delivery.js';
 import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 import { fakeGhHost, type FakeGh } from '../helpers/fake-gh.js';
+import { signalPid } from '@teamai/shared/process-group';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const CLI = path.join(ROOT, 'dist', 'index.js');
@@ -311,14 +312,21 @@ async function drive(profile: Profile, scenario: DeliveryConformanceScenario): P
     const pid = Number(fs.readFileSync(heldFile, 'utf8'));
     switch (scenario.hold.action) {
       case 'crash':
-        process.kill(pid, 'SIGKILL');
+        signalPid(pid, 'SIGKILL');
         release();
         break;
       case 'publish': {
+        if (profile === 'local') {
+          // The local driver delivers in its own process, so publish waits until that driver has stopped.
+          const refused = await teamai('alice', ['workflow', 'publish', run]);
+          expect(envelope(refused), said(refused)).toMatchObject({ error: { code: 'driver_running' } });
+          signalPid(pid, 'SIGKILL');
+          await driving.catch(() => undefined);
+        }
         const published = await teamai('alice', ['workflow', 'publish', run]);
         expect(envelope(published), said(published)).toMatchObject({ data: { publication: 'published' } });
         stopped = true;
-        process.kill(pid, 'SIGKILL');
+        if (profile !== 'local') signalPid(pid, 'SIGKILL');
         release();
         await driving.catch(() => undefined);
         member = 'bob';

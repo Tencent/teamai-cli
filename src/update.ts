@@ -5,13 +5,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fse from 'fs-extra';
+import { readRegularFile, readRegularFileSync, NotRegularFileError } from '@teamai/shared/regular-file';
+import { identityOf, isSameProcess, ProcessIdentitySchema, type ProcessIdentity } from '@teamai/shared/process-group';
 import { z } from 'zod';
 import { loadState, saveState, loadLocalConfig, loadTeamConfig, resolveConfigForDir } from './config.js';
 import { resolveEffectiveUpdatePolicy, VERSION_CHECK_TIMEOUT, INSTALL_TIMEOUT, HOOK_REFRESH_TIMEOUT } from './update-policy.js';
 import { resolveTeamaiEntryScript } from './builtin-hooks.js';
-import { log } from './utils/logger.js';
-import { errnoCode, expandHome, ensureDir } from './utils/fs.js';
-import { getTeamaiHomeDir, getUpdateLockPath, JsonValueSchema, type LocalConfig } from './types.js';
+import { log } from '@teamai/shared/log';
+import { errnoCode, ensureDir, refusedWrite, refusedWriteAdvice } from './utils/fs.js';
+import { expandHome } from '@teamai/shared/home';
+import { getTeamaiHomeDir, getUpdateLockPath, type LocalConfig } from './types.js';
+import { JsonValueSchema } from '@teamai/shared/json';
 import { askConfirmation, isInteractive } from './utils/prompt.js';
 
 // `getCurrentVersion` and `getCurrentPackageName` live in `./package-info.ts`
@@ -264,7 +268,7 @@ const ManifestWithBinMap = z.object({ bin: z.record(z.string(), z.string()) });
 /** Shims named in the restored manifest; `teamai` when it cannot be read. */
 function binNames(pkgDir: string): string[] {
   try {
-    const raw: unknown = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'));
+    const raw: unknown = JSON.parse(readRegularFileSync(path.join(pkgDir, 'package.json'), 'utf8'));
     const single = ManifestWithSingleBin.safeParse(raw);
 
     if (single.success) return [single.data.name];
@@ -373,30 +377,62 @@ const heldLockOwners = new Map<string, string>();
 /** The `version` of the package.json an update installed, as written. */
 const InstalledPackageSchema = z.object({ version: JsonValueSchema.optional() });
 
-interface LockPayload {
-  pid: number;
-  startedAt: string;
-  owner: string;
+/** A lock's holder as written: its identity (`identityOf`), the time it took the lock, and its owner token. */
+type LockPayload = Pick<ProcessIdentity, 'pid' | 'startTicks' | 'pidNamespace'> & { startedAt: string; owner: string };
+
+/** This process's identity, read once: it never changes. */
+let ownIdentity: Promise<ProcessIdentity> | undefined;
+
+/**
+ * This process as a lock's holder: its pid, the time, and on Linux when it started and its pid namespace, which
+ * `isHolderGone` reads back. Every lock that judges its holder by pid writes it.
+ */
+export async function lockHolder(): Promise<Omit<LockPayload, 'owner'>> {
+  const { startTicks, pidNamespace } = await (ownIdentity ??= identityOf(process.pid));
+
+  return {
+    pid: process.pid,
+    // By the process's own clock, which neither a faked Date nor a wall-clock step since it started moves, so it compares
+    // with when /proc or ps says the process started (isHolderGone).
+    startedAt: new Date(performance.timeOrigin + performance.now()).toISOString(),
+    ...(startTicks !== undefined && { startTicks }),
+    ...(pidNamespace !== undefined && { pidNamespace }),
+  };
 }
+
+/** What a lock, a reclaim sentinel or a claim holds: who wrote it, when, and on Linux when that process started, and where. */
+async function lockPayload(owner: string): Promise<string> {
+  const { pid, startedAt, ...identity } = await lockHolder();
+
+  return JSON.stringify({ pid, startedAt, owner, ...identity } satisfies LockPayload);
+}
+
+/**
+ * The identity fields of a lock's holder, each read as absent when mistyped, as an earlier teamai may have written it.
+ * The import lock reads its holder with them too.
+ */
+export const LockHolderFields = {
+  startedAt: ProcessIdentitySchema.shape.startedAt.catch(undefined),
+  startTicks: ProcessIdentitySchema.shape.startTicks.catch(undefined),
+  pidNamespace: ProcessIdentitySchema.shape.pidNamespace.catch(undefined),
+};
+
+/** A lock file's JSON payload: its holder's identity and owner token. */
+const LockPayloadSchema = z.object({ pid: ProcessIdentitySchema.shape.pid, owner: z.string().optional().catch(undefined), ...LockHolderFields });
+
+/** Who holds a lock: its process, and the owner token and time of a lock written in the JSON payload format. */
+export type LockHolder = z.infer<typeof LockPayloadSchema>;
+
+/** A lock file's JSON: the legacy bare integer PID, or the payload. */
+const LockContentSchema = z.union([ProcessIdentitySchema.shape.pid.transform((pid): LockHolder => ({ pid })), LockPayloadSchema]);
 
 /**
  * Parse a lock file's contents. Understands both the current JSON payload and
  * the legacy plain-integer PID format written by older teamai versions, so an
  * on-disk lock from a previous install is still evaluated for staleness rather
- * than treated as un-owned garbage.
+ * than treated as un-owned garbage. That bare pid reads as JSON, so both go
+ * through one schema; text that is not JSON names no owner.
  */
-/** Who holds a lock: its process, and the owner token of a lock written in the JSON payload format. */
-interface LockHolder {
-  pid: number;
-  owner?: string;
-}
-
-/** A lock file's JSON: the legacy bare integer PID, or the payload with a numeric pid. */
-const LockContentSchema = z.union([
-  z.number().refine(Number.isInteger).transform((pid): LockHolder => ({ pid })),
-  z.object({ pid: z.number(), owner: z.string().optional().catch(undefined) }).transform(({ pid, owner }): LockHolder => ({ pid, owner })),
-]);
-
 function parseLockContent(content: string): LockHolder | null {
   const trimmed = content.trim();
 
@@ -407,10 +443,7 @@ function parseLockContent(content: string): LockHolder | null {
 
     return parsed.success ? parsed.data : null;
   } catch {
-    // Legacy format: the file held only the bare PID as a string.
-    const pid = parseInt(trimmed, 10);
-
-    return isNaN(pid) ? null : { pid };
+    return null;
   }
 }
 
@@ -423,22 +456,24 @@ function parseLockContent(content: string): LockHolder | null {
  * cannot name a dead owner is held: a file denied by permissions (EACCES, e.g.
  * another user's 0600 lock), an empty or partly written one (its creator may
  * still be writing it: the O_EXCL fallback and older teamai open the file
- * before writing), and a pid that exists but belongs to another user (EPERM).
+ * before writing), and a pid that exists, of this user or another (EPERM),
+ * whose process is the one that wrote the lock. A live pid whose process is a
+ * later one given that pid (isHolderGone) is not its owner, so that lock is stale.
  * A lock that names no owner, or is permission-denied, stays until removed by hand
  * if a crash left it, so it is named in a warning.
  */
-export async function lockState(resolved: string): Promise<'live' | 'stale' | 'missing'> {
-  return (await inspectLock(resolved)).state;
+export async function lockState(resolved: string, { signal }: { signal?: AbortSignal } = {}): Promise<'live' | 'stale' | 'missing'> {
+  return (await inspectLock(resolved, signal)).state;
 }
 
 /** lockState's verdict, with the dead holder when the lock is stale. */
 type LockVerdict = { state: 'live' } | { state: 'missing' } | { state: 'stale'; holder: LockHolder };
 
-async function inspectLock(resolved: string): Promise<LockVerdict> {
+async function inspectLock(resolved: string, signal?: AbortSignal): Promise<LockVerdict> {
   let content: string;
 
   try {
-    content = await fse.readFile(resolved, 'utf-8');
+    content = await readRegularFile(resolved, 'utf-8');
   } catch (err) {
     const code = errnoCode(err);
 
@@ -458,22 +493,54 @@ async function inspectLock(resolved: string): Promise<LockVerdict> {
     return { state: 'live' };
   }
 
-  try {
-    process.kill(parsed.pid, 0);
-
-    return { state: 'live' }; // process alive → lock genuinely held
-  } catch (err) {
-    // EPERM: alive, owned by another user. ESRCH: the owning process is gone.
-    if (errnoCode(err) === 'EPERM') return { state: 'live' };
-  }
+  if (!(await isHolderGone(parsed, { writtenAt: writtenAtOf(resolved), ...(signal !== undefined && { signal }) }))) return { state: 'live' };
 
   // The owner may have released the lock and exited after the read, and
   // another process created a fresh one: only the dead owner's own file is stale.
   try {
-    return (await fse.readFile(resolved, 'utf-8')) === content ? { state: 'stale', holder: parsed } : { state: 'live' };
+    return (await readRegularFile(resolved, 'utf-8')) === content ? { state: 'stale', holder: parsed } : { state: 'live' };
   } catch (err) {
     if (errnoCode(err) === 'ENOENT') return { state: 'missing' };
     throw err;
+  }
+}
+
+/** How long a lock another pid namespace wrote holds: longer than any pull, push or migration runs. */
+const FOREIGN_HOLD_MS = 3_600_000;
+
+/**
+ * Whether the process `holder` names is gone: no process has its pid, or a later one does, as a container hands pids
+ * out again (`isSameProcess`). A live pid whose start nothing tells holds it. A lock another pid namespace wrote, as a
+ * container sharing this home does, is held until `FOREIGN_HOLD_MS` after it was written: its pid says nothing here,
+ * and a container that exited leaves it to a namespace no later process shares, so only its age frees it. Its own
+ * `startedAt`, else `writtenAt`, the lock file's time, tells that age; with neither, it is held. A holder whose start
+ * `signal` cut the read of short is not gone.
+ */
+export async function isHolderGone(
+  holder: LockHolder,
+  { writtenAt, signal }: { writtenAt?: () => Promise<number | undefined>; signal?: AbortSignal } = {},
+): Promise<boolean> {
+  // A lock this process holds names a live holder: asking when it started would run `ps` outside Linux for nothing.
+  if (holder.owner !== undefined && holder.pid === process.pid && [...heldLockOwners.values()].includes(holder.owner)) return false;
+  const verdict = await isSameProcess(holder, { ...(signal !== undefined && { signal }) });
+
+  switch (verdict) {
+    case 'other':
+      return true;
+    case 'same':
+    case 'unknown':
+      return false;
+    case 'foreign': {
+      const since = holder.startedAt !== undefined && !Number.isNaN(holder.startedAt) ? holder.startedAt : await writtenAt?.();
+
+      return since !== undefined && Date.now() - since > FOREIGN_HOLD_MS;
+    }
+
+    default: {
+      const unhandled: never = verdict;
+
+      return unhandled;
+    }
   }
 }
 
@@ -483,9 +550,9 @@ async function inspectLock(resolved: string): Promise<LockVerdict> {
  * lock a third process just made, and reporting busy would turn a free lock
  * away (#760).
  */
-async function createOrInspect(resolved: string, payload: string): Promise<'acquired' | 'live' | 'stale'> {
+async function createOrInspect(resolved: string, payload: string, signal?: AbortSignal): Promise<'acquired' | 'live' | 'stale'> {
   if (await exclusiveCreate(resolved, payload)) return 'acquired';
-  const state = await lockState(resolved);
+  const state = await lockState(resolved, { ...(signal !== undefined && { signal }) });
 
   if (state !== 'missing') return state;
 
@@ -540,7 +607,7 @@ async function exclusiveCreateInPlace(target: string, payload: string): Promise<
  */
 async function removeIfOwner(target: string, owner: string): Promise<void> {
   try {
-    const content = await fse.readFile(target, 'utf-8').catch(() => null);
+    const content = await readRegularFile(target, 'utf-8').catch(() => null);
 
     if (content !== null) {
       const parsed = parseLockContent(content);
@@ -566,11 +633,7 @@ async function removeIfOwner(target: string, owner: string): Promise<void> {
  * stale-lock recovery forever.
  */
 async function acquireReclaimSentinel(sentinel: string, owner: string): Promise<boolean> {
-  const payload = JSON.stringify({
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-    owner,
-  } satisfies LockPayload);
+  const payload = await lockPayload(owner);
 
   if (await exclusiveCreate(sentinel, payload)) return true;
 
@@ -601,11 +664,7 @@ async function removeDeadFile(target: string, owner: string): Promise<boolean> {
   const dead = verdict.holder.owner;
   const claim = `${target}.steal-${dead}`;
 
-  const payload = JSON.stringify({
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-    owner,
-  } satisfies LockPayload);
+  const payload = await lockPayload(owner);
 
   const claimed = (await exclusiveCreate(claim, payload))
     || ((await removeDeadFile(claim, owner)) && (await exclusiveCreate(claim, payload)));
@@ -616,7 +675,7 @@ async function removeDeadFile(target: string, owner: string): Promise<boolean> {
     let current: string;
 
     try {
-      current = await fse.readFile(target, 'utf-8');
+      current = await readRegularFile(target, 'utf-8');
     } catch (err) {
       if (errnoCode(err) === 'ENOENT') return false;
       throw err;
@@ -628,6 +687,20 @@ async function removeDeadFile(target: string, owner: string): Promise<boolean> {
     return true;
   } finally {
     await removeIfOwner(claim, owner);
+  }
+}
+
+/**
+ * The directory of lock `lock` is gone, and the caller asked `acquireLock` not to create it (`createParent: false`), as
+ * a lock inside a data home an uninstall removed asks: creating it again would leave an empty data home behind.
+ */
+export class LockDirectoryGoneError extends Error {
+  readonly lock: string;
+
+  constructor(lock: string) {
+    super(`Cannot acquire lock ${lock}: its directory ${path.dirname(lock)} is gone.`);
+    this.name = 'LockDirectoryGoneError';
+    this.lock = lock;
   }
 }
 
@@ -646,11 +719,19 @@ async function removeDeadFile(target: string, owner: string): Promise<boolean> {
  * behind a reclaim sentinel and completed with an atomic rename-into-place, so
  * concurrent reclaimers cannot each end up believing they hold the lock, even
  * when a reclaimer dies holding the sentinel (see removeDeadFile).
+ *
+ * `signal` bounds how long judging a live holder may take (its start is read through ps outside Linux): a holder the
+ * read was cut short for is held, so a caller with a budget gets false, never a lock it did not win.
+ *
+ * The lock's directory is created, as a first run needs, unless `createParent` is false: then a directory that is gone
+ * rejects with `LockDirectoryGoneError`, and nothing is created.
  */
 export async function acquireLock(
   lockPath?: string,
-  options: { dryRun?: boolean } = {},
+  options: { dryRun?: boolean; signal?: AbortSignal; createParent?: boolean } = {},
 ): Promise<boolean> {
+  const { signal, createParent = true } = options;
+
   const resolved = lockPath ?? expandHome(getUpdateLockPath());
 
   // A preview does not take the lock, because taking one is itself a write:
@@ -662,22 +743,18 @@ export async function acquireLock(
   // real run would have reported contention, anything else means it would have
   // won. No owner is recorded, so `releaseLock` has nothing to undo.
   try {
-    if (options.dryRun) return (await lockState(resolved)) !== 'live';
+    if (options.dryRun) return (await lockState(resolved, { ...(signal !== undefined && { signal }) })) !== 'live';
     const owner = randomUUID();
-
-    const payload = JSON.stringify({
-      pid: process.pid,
-      startedAt: new Date().toISOString(),
-      owner,
-    } satisfies LockPayload);
+    const payload = await lockPayload(owner);
 
     // From the first real lock on, a best-effort sweep at process exit removes
     // whatever this process still holds (#1027). Dry runs never register it.
     ensureExitSweep();
-    await ensureDir(path.dirname(resolved));
+
+    if (createParent) await ensureDir(path.dirname(resolved));
     // Fast path: no lock present. A live holder means busy; only a stale lock
     // may be reclaimed.
-    const first = await createOrInspect(resolved, payload);
+    const first = await createOrInspect(resolved, payload, signal);
 
     if (first === 'acquired') {
       heldLockOwners.set(resolved, owner);
@@ -694,7 +771,7 @@ export async function acquireLock(
 
     try {
       // Re-evaluate now that we are the sole reclaimer.
-      const second = await createOrInspect(resolved, payload);
+      const second = await createOrInspect(resolved, payload, signal);
 
       if (second === 'acquired') {
         heldLockOwners.set(resolved, owner);
@@ -716,7 +793,15 @@ export async function acquireLock(
       await removeIfOwner(sentinel, owner);
     }
   } catch (err) {
-    throw new Error(`Cannot acquire lock ${resolved}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+    if (err instanceof NotRegularFileError) {
+      throw new Error(`Cannot acquire lock ${resolved}: ${err.file} is ${err.kind}, not a lock file. Remove it, then run the command again.`, { cause: err });
+    }
+
+    if (!createParent && errnoCode(err) === 'ENOENT' && !(await fse.pathExists(path.dirname(resolved)))) throw new LockDirectoryGoneError(resolved);
+
+    const refused = refusedWrite(err);
+
+    throw new Error(`Cannot acquire lock ${resolved}: ${refused ? refusedWriteAdvice(refused) : err instanceof Error ? err.message : String(err)}`, { cause: err });
   }
 }
 
@@ -734,7 +819,7 @@ export async function releaseLock(lockPath?: string): Promise<void> {
   if (!ourOwner) return;
 
   try {
-    const content = await fse.readFile(resolved, 'utf-8').catch(() => null);
+    const content = await readRegularFile(resolved, 'utf-8').catch(() => null);
 
     if (content !== null) {
       const parsed = parseLockContent(content);
@@ -754,15 +839,26 @@ export async function releaseLock(lockPath?: string): Promise<void> {
 /**
  * Run `body` holding `lockPath`, trying up to `wait.attempts` times with
  * `wait.delayMs` between tries. `held: false` means the lock stayed busy and
- * `body` did not run.
+ * `body` did not run, or, with `createParent: false`, that the lock's directory
+ * is gone (`isDirectoryGone`), which it does not create.
  */
 export async function withFileLock<T>(
   lockPath: string,
   wait: { attempts: number; delayMs: number },
   body: () => Promise<T>,
-): Promise<{ held: true; value: T } | { held: false }> {
+  { createParent = true }: { createParent?: boolean } = {},
+): Promise<{ held: true; value: T } | { held: false; isDirectoryGone?: true }> {
   for (let attempt = 0; attempt < wait.attempts; attempt++) {
-    if (await acquireLock(lockPath)) {
+    let isAcquired: boolean;
+
+    try {
+      isAcquired = await acquireLock(lockPath, { createParent });
+    } catch (err) {
+      if (err instanceof LockDirectoryGoneError) return { held: false, isDirectoryGone: true };
+      throw err;
+    }
+
+    if (isAcquired) {
       try {
         return { held: true, value: await body() };
       } finally {
@@ -792,7 +888,7 @@ export async function withFileLock<T>(
 export function sweepHeldLocksOnExit(): void {
   for (const [resolved, owner] of heldLockOwners) {
     try {
-      const content = fs.readFileSync(resolved, 'utf-8');
+      const content = readRegularFileSync(resolved, 'utf-8');
       const parsed = parseLockContent(content);
 
       if (parsed?.owner && parsed.owner !== owner) continue; // someone else's now
@@ -860,20 +956,18 @@ async function walkLockCandidates(roots: string[]): Promise<string[]> {
   return found;
 }
 
-/** True when `content` is a lock payload whose owning process is provably gone. */
-function isDeadPidLock(content: string): boolean {
-  const parsed = parseLockContent(content);
+/** When the lock at `file` was last written, by its file's time: undefined once the file is gone. */
+function writtenAtOf(file: string): () => Promise<number | undefined> {
+  return async () => (await fse.lstat(file).catch(() => undefined))?.mtimeMs;
+}
+
+/** True when `file` holds a lock payload whose owning process is provably gone, judged as `acquireLock` judges it. */
+async function isDeadPidLock(file: string): Promise<boolean> {
+  const parsed = parseLockContent(await readRegularFile(file, 'utf-8'));
 
   if (!parsed) return false; // names no owner: never provably stale (#760)
 
-  try {
-    process.kill(parsed.pid, 0);
-
-    return false;
-  } catch (err) {
-    // EPERM: the pid exists, owned by another user. Anything else: gone.
-    return errnoCode(err) !== 'EPERM';
-  }
+  return isHolderGone(parsed, { writtenAt: writtenAtOf(file) });
 }
 
 /**
@@ -887,7 +981,7 @@ export async function listZombieLocks(roots: string[]): Promise<string[]> {
 
   for (const p of await walkLockCandidates(roots)) {
     try {
-      if (isDeadPidLock(await fse.readFile(p, 'utf-8'))) zombies.push(p);
+      if (await isDeadPidLock(p)) zombies.push(p);
     } catch {
       // unreadable: leave it alone
     }
@@ -1158,7 +1252,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
     // happened to be on for the copy that ran (#1753).
     // oxlint-disable-next-line teamai/config-load-options -- an automatic update reads the same member policy as a self-update
     const localConfig = await loadLocalConfig().catch(() => null) ?? runningScope;
-    const teamConfig = localConfig ? await loadTeamConfig(localConfig.repo.localPath) : null;
+    const teamConfig = localConfig ? await loadTeamConfig(localConfig.repo.localPath, localConfig) : null;
     const policy = resolveEffectiveUpdatePolicy(localConfig, teamConfig);
 
     if (policy !== 'auto' || localConfig?.updateOtherInstallations !== true) {
@@ -1196,7 +1290,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
   const localConfig = (await loadLocalConfig()) ?? runningScope;
 
   const teamConfig = localConfig
-    ? await loadTeamConfig(localConfig.repo.localPath)
+    ? await loadTeamConfig(localConfig.repo.localPath, localConfig)
     : null;
 
   const policy = resolveEffectiveUpdatePolicy(localConfig, teamConfig);
@@ -1338,7 +1432,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
     // here is exactly how self-update silently stops working.
     if (updatedEntry) {
       try {
-        const installed = InstalledPackageSchema.parse(JSON.parse(fs.readFileSync(
+        const installed = InstalledPackageSchema.parse(JSON.parse(readRegularFileSync(
           path.join(path.dirname(path.dirname(updatedEntry)), 'package.json'), 'utf-8',
         )));
 

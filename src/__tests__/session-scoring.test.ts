@@ -31,9 +31,9 @@ import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { tryScorer } from './helpers/score-run.js';
 import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
-import * as cliPaths from '../utils/cli-path.js';
+import * as cliPaths from '@teamai/shared/cli-path';
 import { whileLabelsLocked } from './helpers/label-lock.js';
-import { CONFINED_TOOLS } from '../tool-launch/tools.js';
+import { CONFINED_TOOLS } from '../launch-registry.js';
 
 const SCORER = `---
 labels:
@@ -273,6 +273,15 @@ describe('teamai score --session', () => {
       error: { code: 'source_required', message: expect.stringMatching(/^Pass --source with --session .*Found in: claude-code\.$/) },
     });
     expect(fs.existsSync(path.join(root, 'judged.md'))).toBe(false);
+  });
+
+  it('names --run for a session no installed tool holds, as one a workflow step ran on a runtime', async () => {
+    const config = await fixture();
+    fakeClaude('good');
+
+    expect(await tryScorer(config, { session: 'kept-in-a-tool-home', scorers: [quality()] })).toEqual({
+      error: { code: 'source_required', message: expect.stringMatching(/^No installed tool holds session kept-in-a-tool-home\. .*A workflow step's session on a step runtime is kept with its run: score it with teamai score --run <run>\.$/) },
+    });
   });
 
   it('takes the platform of --session from its captures when they name exactly one', async () => {

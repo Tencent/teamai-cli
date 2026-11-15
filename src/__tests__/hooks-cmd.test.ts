@@ -50,7 +50,7 @@ vi.mock('@teamai/shared/log', () => ({
 import { autoDetectInit } from '../config.js';
 import { getHookStatus, reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig, sweepLegacyProjectHooks, trustCodexForScope, resolveMainCheckoutHooks } from '../hooks.js';
 import { resolveTeamHookEntries } from '../resources/hooks.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { hooksInject, hooksRemove, hooksList } from '../hooks-cmd.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { TeamaiConfigSchema } from '../types.js';

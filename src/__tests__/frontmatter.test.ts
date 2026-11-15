@@ -6,7 +6,7 @@ import {
     hasFrontmatter,
     stringifyFrontmatter,
 } from '../utils/frontmatter.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 const BOM = '﻿';
 

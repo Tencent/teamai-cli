@@ -157,6 +157,20 @@ describe('LabelStore', () => {
     expect(fs.readdirSync(path.join(config.dataHome ?? '', 'scores', 'pending'))).toHaveLength(4);
   });
 
+  it('stages nothing while the team\'s teamai.yaml cannot be read, naming it, and stages as before when there is none', async () => {
+    const config = clone(origin(), 'broken-team');
+    await LabelStore.append(config, [{ label: modelLabel('2026-10-22T11:00:00.000Z'), reasoning: 'first look' }]);
+    const reports = path.join(tmp, 'broken-team-reports');
+    fs.mkdirSync(reports);
+    fs.writeFileSync(path.join(config.repo.localPath, 'teamai.yaml'), 'team: [acme\n');
+
+    await expect(LabelStore.stage(config, reports)).rejects.toThrow(`The team config at ${path.join(config.repo.localPath, 'teamai.yaml')} could not be read`);
+    expect(fs.readdirSync(reports)).toEqual([]);
+
+    fs.rmSync(path.join(config.repo.localPath, 'teamai.yaml'));
+    expect(await LabelStore.stage(config, reports)).toMatchObject({ labels: 1, files: ['scores/alice/2026-10.jsonl'] });
+  });
+
   it('publishes labels from two clones and keeps the newest per key on origin', async () => {
     const remote = origin();
     const first = clone(remote, 'first');

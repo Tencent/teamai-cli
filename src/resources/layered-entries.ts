@@ -15,9 +15,10 @@ import {
   type EntryFailure, type EntryNotice, type EntryResolution, type EntryScopeKeys,
 } from '../namespaced-entries.js';
 import { firstConflict, repeatedNames, type NamespaceCandidate } from '../namespace-resolver.js';
-import { isJsonObject, type JsonValue, type LocalConfig } from '../types.js';
+import { type LocalConfig } from '../types.js';
+import { isJsonObject, type JsonValue } from '@teamai/shared/json';
 import { listDirs } from '../utils/fs.js';
-import { parseYaml } from '../utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { deliveredMembers } from '../workspace-children.js';
 import { FolderFiles, type FolderFile } from './folder-files.js';
 import { Resources, type ResourceLayout, type TeamItem } from './resolver.js';

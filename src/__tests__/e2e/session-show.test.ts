@@ -15,6 +15,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const CLI = path.join(ROOT, 'dist', 'index.js');
 const CLAUDE_SESSION = '7c1e0000-0000-4000-8000-00000000a001';
 const HERMES_SESSION = '20261104_091523_a1b2c3d4';
+const CODEX_SESSION = '0a1b2c3d-0000-4000-8000-00000000c0de';
 const SECRET = 'sk-ant-api03-Zq8vN2pL7xR4tY9wK3mB6cF1hJ5dS0gA';
 
 let root = '';
@@ -86,6 +87,31 @@ describe('teamai session show', () => {
     expect(shown.code, shown.stderr).toBe(0);
     expect(shown.stdout).toContain('Fix the parser so it keeps comments');
     expect(shown.stdout).toContain('The parser now keeps comments.');
+  });
+
+  it.skipIf(process.platform === 'win32')('keeps stdout for the JSON with --json, and warns on stderr, when a folder of the store is one it cannot read', () => {
+    const sessions = path.join(String(env.HOME), '.codex', 'sessions');
+    const day = path.join(sessions, '2026', '11', '01');
+    const foreign = path.join(sessions, '0000');
+    fs.mkdirSync(day, { recursive: true });
+    fs.writeFileSync(path.join(day, `rollout-2026-11-01T10-00-00-${CODEX_SESSION}.jsonl`), [
+      { timestamp: '2026-11-01T10:00:00.000Z', type: 'session_meta', payload: { id: CODEX_SESSION, timestamp: '2026-11-01T10:00:00.000Z', cwd: app, originator: 'codex_exec', cli_version: '0.50.0' } },
+      { timestamp: '2026-11-01T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Rename the helper.' }] } },
+      { timestamp: '2026-11-01T10:00:02.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Renamed it.' }] } },
+    ].map((record) => `${JSON.stringify(record)}\n`).join(''));
+    // A folder a tool running as another user left in the store: this user can write to it, and cannot list it.
+    fs.mkdirSync(foreign);
+    fs.chmodSync(foreign, 0o300);
+
+    try {
+      const shown = teamai('session', 'show', CODEX_SESSION, '--source', 'codex', '--json');
+
+      expect(shown.code, shown.stderr).toBe(0);
+      expect(JSON.parse(shown.stdout)).toMatchObject({ session: CODEX_SESSION, source: 'codex', transcript: expect.stringContaining('Renamed it.') });
+      expect(shown.stderr).toContain(`teamai has no permission to read ${foreign}, so it lists none of the sessions in it.`);
+    } finally {
+      fs.chmodSync(foreign, 0o700);
+    }
   });
 
   it('fails with session_not_found for a session it cannot find, and with no_adapter for a source it does not know', () => {

@@ -6,7 +6,7 @@ import matter from 'gray-matter';
 import { readFileSafe, ensureDir, remove, copyFile } from '../utils/fs.js';
 import { FrontmatterDateSchema } from '../utils/frontmatter.js';
 import { isInWriteRoot, listLearningFiles } from '../utils/learnings-roots.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { computeAllConfidence } from './confidence.js';
 
 export interface PruneCandidate {

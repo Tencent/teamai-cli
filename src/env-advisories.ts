@@ -12,7 +12,7 @@ import { LayeredEntries } from './resources/layered-entries.js';
 import { declaredSecretKeys } from './resources/secrets.js';
 import { isReservedTeamEnvKey } from './env-reserved.js';
 import type { LocalConfig, TeamaiConfig } from './types.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 export type EnvAdvisory =
   /** A declared secret with no value; `servers` are the team MCP servers that use it. */

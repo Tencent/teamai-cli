@@ -16,7 +16,7 @@ import { roleDeclaration, type RoleDeclaration } from '../../roles.js';
 import { realHost, type Host } from '../../tool-home.js';
 import { getProjectSearchIndexPath, selfModeGitignorePath, type LocalConfig, type TeamaiConfig } from '../../types.js';
 import { getHeadCommit } from '../../utils/git.js';
-import { log } from '../../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { Executor } from '../requirements.js';
 import type { WorkflowFailure } from '../types.js';
 import { AGENT_PATHS } from '../worktree.js';
@@ -319,7 +319,7 @@ export async function setUpWorktreeRole(input: { dir: string; step: string; exec
   const { dir, step, role } = input;
   const install = await detectProjectConfig(dir);
   const project = install?.scope === 'project' ? install : undefined;
-  const team = project ? await loadTeamConfig(project.repo.localPath).catch(() => null) : null;
+  const team = project ? await loadTeamConfig(project.repo.localPath, project).catch(() => null) : null;
   const paths = [...AGENT_PATHS, ...project && team ? await copyKnowledgePaths({ team, install: project }) : []];
 
   if (role === undefined) {
@@ -366,6 +366,8 @@ export async function setUpWorktreeRole(input: { dir: string; step: string; exec
 export function launchedTools(input: { executor: Executor; tool: string | undefined; enabled: readonly string[] }): string[] {
   switch (input.executor) {
     case 'command':
+    // A whole workflow runs no step with a role (`notWhole`), so its copy gets no role's tools.
+    case 'workflow':
       return [];
     case 'prompt':
       return input.tool !== undefined ? [input.tool] : [...input.enabled];
@@ -418,7 +420,7 @@ export async function worktreeRoleProblem(input: { dir: string; step: string; ro
  */
 export async function cloneRoleProblem(input: { install: LocalConfig; step: string; role: string; tools: readonly string[] }): Promise<WorkflowFailure | undefined> {
   const { install, step, role, tools } = input;
-  const team = await loadTeamConfig(install.repo.localPath).catch(() => null);
+  const team = await loadTeamConfig(install.repo.localPath, install).catch(() => null);
 
   if (!team) {
     const revision = await getHeadCommit(install.repo.localPath) ?? 'HEAD';

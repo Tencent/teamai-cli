@@ -46,8 +46,10 @@ vi.mock('fs-extra', () => ({
   },
 }));
 
-vi.mock('node:fs', () => ({
+// The real constants stay: a module this one imports opens files with their flags.
+vi.mock('node:fs', async (importOriginal) => ({
   default: {
+    constants: (await importOriginal<typeof import('node:fs')>()).constants,
     existsSync: vi.fn(() => true),
     writeFileSync: vi.fn(),
   },
@@ -912,7 +914,7 @@ describe('pullRepo', () => {
     mockGit.raw.mockResolvedValue('2\n');
     const result = await pullRepo('/tmp/x');
     expect(result).toBe('reset to origin (diverged)');
-    const { log: testLog } = await import('../utils/logger.js');
+    const { log: testLog } = await import('@teamai/shared/log');
     expect(testLog.warn).toHaveBeenCalled();
   });
 });

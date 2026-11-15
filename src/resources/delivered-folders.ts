@@ -28,7 +28,7 @@ import { canonicalJson } from '../utils/canonical-json.js';
 import { createGit } from '../utils/git.js';
 import { gitFindsNoRepository } from '../utils/git-discovery.js';
 import { errnoCode, pathExists } from '../utils/fs.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 /** The folder types pull delivers. */
 export type DeliveredFolderType = 'hooks' | 'rules' | 'agents' | 'mcp';

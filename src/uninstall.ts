@@ -1,4 +1,5 @@
-import { lstat, readdir, realpath, rmdir } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { lstat, readdir, realpath, rename, rmdir } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { autoDetectInit, loadLocalConfig, loadStateForScope, readConfigFrom, resolveMemberToolRoots, saveLocalConfig, saveLocalConfigForScope, saveStateForScope, UnreadableProjectConfigError, detectProjectConfig } from './config.js';
@@ -11,7 +12,8 @@ import {
 } from './hooks.js';
 import { codexTeamHookIndexPath } from './codex-team-hooks.js';
 import { codebuddyTeamHookPayload } from './codebuddy-team-hooks.js';
-import { mapStrings, parseJsonAs } from './utils/json.js';
+import { mapStrings, type JsonValue } from '@teamai/shared/json';
+import { parseJsonAs } from './utils/json.js';
 import { isWithin } from './utils/agent-path.js';
 import { bridgedTeamHookDir, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
 import {
@@ -56,8 +58,8 @@ import {
   type LocalConfig,
   type Scope,
   type ManagedMcpManifest,
-  type JsonValue,
   installScopeName,
+  getTeamaiHomeDir,
   getTrustDir,
 } from './types.js';
 import { BUILTIN_RULE_NAMES, TEAMAI_CONTEXT_RULE_NAME } from './builtin-rules.js';
@@ -71,21 +73,16 @@ import { listTeamAgentDirs, listTeamAgentFolders, ownsAgentCopy, updateJoycodeAg
 import { RulesHandler, inlineRulesLabelOf, inlineRulesLocationOf, isLegacyLayoutCopy, ownsRuleCopy } from './resources/rules.js';
 import { deliveredHashes, projectCheckouts, syncDeliveredGitExclude } from './pull.js';
 import { BUILTIN_AGENT_NAMES } from './builtin-agents.js';
-import {
-  BUILTIN_SKILL_NAMES,
-  LEGACY_BUILTIN_SKILL_NAMES,
-  ownedSkillFiles,
-  isCliOwnedSkillName,
-  prunedWhole,
-  removeOwnedFiles,
-  skillsGuardBase,
-} from './builtin-skills.js';
+import { teamaiBin } from './default-drivers.js';
+import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES, isCliOwnedSkillName } from './cli-skill-names.js';
+import { ownedSkillFiles, prunedWhole, removeOwnedFiles, skillsGuardBase } from './skill-owned-files.js';
 import { cleanupOf, hookAdapterDirIn, hookSettingsFile, installOf, isInstalledFor, locate, openclawWorkspaceDir, ownOf, SHARED_AGENT_SKILLS_PATH, toolPathUnder, workspaceHooksOf, writesOf, type Location } from './locate.js';
 import { recordedHomes, realHost, reloadToolHomesHistory, toolHome, toolHomeOf, toolHomesAcrossProfiles } from './tool-home.js';
 import { baseDescriptorOf, channelsOf, folderReachOf, toolInstancesFor, hookSyntaxOf, toolOf } from './tool-registry.js';
 import { leftInstanceHookFiles } from './tool-instances.js';
 import { isCodexTool } from './utils/tool-names.js';
-import { allowsSkillDirectory, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, readsCodexSharedSkills, readTeamSkills, skillOrigin } from './resources/skills.js';
+import { describeOutsideSkillLink, readsCodexSharedSkills, readTeamSkills, skillOrigin } from './resources/skills.js';
+import { allowsSkillDirectory, describeSkillDirectoryBlock, findSkillDirectoryBlock } from './skill-directory.js';
 import { describeKeptDir, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir, teamaiSkillFiles } from './resources/delivered-copies.js';
 import { generatedSkillAt } from './workflow/discovery/generated-marker.js';
 import { mayBeGeneratedSkill } from './workflow/discovery/workflow-skills.js';
@@ -102,14 +99,18 @@ import {
   listDirs,
   listFiles,
   listFilesRecursive,
-  expandHome,
   pruneEmptyDirs,
+  stagingLeftIn,
+  errnoCode,
 } from './utils/fs.js';
 import { installationsPath } from './installations.js';
 import { listQueuesIn } from './utils/pending-learnings.js';
-import { log } from './utils/logger.js';
+import { execCommand } from '@teamai/shared/exec';
+import { log } from '@teamai/shared/log';
 import { askConfirmation } from './utils/prompt.js';
-import { getUserHome } from './utils/home.js';
+import { getUserHome, expandHome } from '@teamai/shared/home';
+import { runtimeStateRoot } from '@teamai/runtime-protocol/state-root';
+import type { RunWorktree } from './workflow/worktree.js';
 import { createGit, gitCommonDir, listWorktrees } from './utils/git.js';
 import {
   envLoaderProfiles,
@@ -172,8 +173,8 @@ interface RemovalPlan {
   ruleDirs: string[];
   /** Every tool's agents directories, read as `ruleDirs` are. */
   agentDirs: string[];
-  /** In self mode, the agents directories of the tools this removes, which init makes before anything is in them: each goes once empty. */
-  seededAgentDirs: string[];
+  /** In self mode, the rules and agents directories of the tools this removes, which init makes before anything is in them: each goes once empty. */
+  seededDirs: string[];
   /** The folders the tool instances this removes take teamai's resources in, from their resolved paths, up to the instance's home: each goes once empty. */
   instanceFolders: string[];
   /** The rules globs teamai owns in OpenCode's opencode.json `instructions`, per file (#946). */
@@ -214,12 +215,19 @@ interface RemovalPlan {
   checkouts: string[];
   /** teamai's git hook in the project repository: config sections and hook scripts holding its block. */
   gitHook: { repoDir: string; entries: string[]; checkouts?: string[] } | null;
+  /**
+   * The worktrees workflow runs kept in this project's checkouts, a failed, cancelled or waiting one's, each with a checkout of its
+   * repository: a removable one goes, its branch staying; a kept one is named with the command that removes it.
+   */
+  runWorktrees: Array<{ checkout: string; worktree: RunWorktree }>;
   /** What workflow worktrees set up in each checkout, once none of them is left (`removeWorktreeSetup`). */
   worktreeSetups: Array<{ checkout: string; entries: string[] }>;
   /** The .teamai home directory path. */
   teamaiHome: string;
   /** Whether teamaiHome exists on disk. */
   teamaiHomeExists: boolean;
+  /** The member's own drivers, runtimes, sandbox profiles and tool instances in teamaiHome, which teamai reads and never writes: removing teamaiHome keeps them. */
+  keptOwn: string[];
   /**
    * Queues of learnings not published yet that deleting teamaiHome takes with
    * it, each with how many it holds; empty when teamaiHome stays.
@@ -846,6 +854,12 @@ async function discoverToolResources(
             res.keptSkillDirs.push(describeMembersDirLeft(file, `skills/${dir}/${path.relative(skillDir, file).split(path.sep).join('/')}`, 'uninstall'));
           }
         }
+
+        const staging = await stagingLeftIn(skillsDir);
+
+        for (const dir of staging.left) res.skillDirs.push({ dir, baseDir: rootBase });
+
+        for (const dir of staging.inUse) res.keptSkillDirs.push(`Kept ${dir}: a teamai copy may still write into it, on this machine or another sharing this home. Delete it by hand once no teamai command runs there: a later uninstall no longer looks for it.`);
       }
     }
   }
@@ -947,7 +961,9 @@ async function keptForProjects(): Promise<KeptForProjects> {
     getUserManagedHooksPath(),
     codexTeamHookIndexPath(),
     bridgedTeamHookDir(),
-    // The member's answers to running a team tool's command, which every project's runs read.
+    // What the step runtimes keep for every project's runs, the journal of a place one still has open among it.
+    runtimeStateRoot(getUserHome()),
+    // The member's answers to running a team file's command, which every project's runs read.
     getTrustDir(),
     ...await secretsFor(readers),
     ...await sourceRecordsFor(readers),
@@ -1574,6 +1590,7 @@ async function buildRemovalPlan(
 
   // Read before anything is deleted: what the projects still set up need stays.
   const projectsKept = includeShared && globalAdapters ? await keptForProjects() : { projects: [], paths: [] };
+  const keptOwn = includeShared ? await ownFoldersIn(teamaiHome) : [];
 
   // The worktree's .teamai/delivered/ (#1787): the rule, agent and MCP folders of a project scope, and a self-mode scope's hook folders.
   const worktreeDelivered = DeliveredFolders.worktreeRoot(localConfig);
@@ -1606,7 +1623,7 @@ async function buildRemovalPlan(
     keptFiles: [],
     ruleDirs: [...new Set([...rulesDirsByTool.values()].flat())],
     agentDirs: [...new Set([...agentDirsByTool.values()].flat())],
-    seededAgentDirs: isSelfMode(localConfig) ? [...new Set(toolsToMerge.flatMap((tool) => agentDirsByTool.get(tool) ?? []))] : [],
+    seededDirs: isSelfMode(localConfig) ? [...new Set(toolsToMerge.flatMap((tool) => [...rulesDirsByTool.get(tool) ?? [], ...agentDirsByTool.get(tool) ?? []]))] : [],
     instanceFolders: instanceFoldersOf(toolsToMerge, toolPaths, baseDir),
     opencodeOwnedGlobs: [],
     agentFiles: [],
@@ -1625,9 +1642,11 @@ async function buildRemovalPlan(
     localAgentWorkspacesDropped: null,
     checkouts: [],
     gitHook: null,
+    runWorktrees: [],
     worktreeSetups: [],
     teamaiHome,
     teamaiHomeExists: includeShared && await pathExists(teamaiHome),
+    keptOwn,
     unpublishedQueues: includeShared
       ? (await listQueuesIn(teamaiHome)).filter(({ dir }) => !projectsKept.paths.some((keptPath) => dir.startsWith(keptPath + path.sep)))
       : [],
@@ -1935,10 +1954,25 @@ async function buildRemovalPlan(
       }
 
       if (!agentFilter) {
-        const { removeWorktreeSetup } = await import('./workflow/worktree.js');
+        const { removeWorktreeSetup, runWorktreesOf, worktreeCheckout } = await import('./workflow/worktree.js');
 
-        for (const checkout of plan.checkouts) {
-          const entries = await removeWorktreeSetup(checkout, { dryRun: true });
+        // The member's checkouts: a run worktree goes, and self mode's side-branch worktrees go with the data home.
+        const memberCheckouts = plan.checkouts.filter((dir) => worktreeCheckout(dir) === undefined && !isWithin(dir, plan.teamaiHome));
+        const found = await runWorktreesOf(memberCheckouts);
+        plan.runWorktrees.push(...found.worktrees);
+
+        for (const { checkout, error } of found.unread) {
+          log.warn(`Could not list the workflow run worktrees of ${checkout} (${error}), so uninstall leaves them and what teamai set up for them there.`);
+        }
+
+        const gone = plan.runWorktrees.flatMap(({ worktree }) => (worktree.kind === 'removable' ? [worktree.dir] : []));
+        // The exclude block and the git config are the repository's: each checkout of it names them, so they are listed once.
+        const listed = new Set<string>();
+
+        for (const checkout of memberCheckouts) {
+          const entries = (await removeWorktreeSetup(checkout, { dryRun: true, gone })).filter((entry) => !listed.has(entry));
+
+          for (const entry of entries) listed.add(entry);
 
           if (entries.length > 0) plan.worktreeSetups.push({ checkout, entries });
         }
@@ -2010,6 +2044,7 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
     plan.gitExcludeBlocks.length === 0 &&
     plan.gitHook === null &&
     plan.worktreeSetups.length === 0 &&
+    !plan.runWorktrees.some(({ worktree }) => worktree.kind === 'removable') &&
     !plan.teamaiHomeExists &&
     plan.syntheticManifestCleanup == null
   );
@@ -2212,6 +2247,15 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
     console.log('');
   }
 
+  const removableRunWorktrees = plan.runWorktrees.flatMap(({ worktree }) => (worktree.kind === 'removable' ? [worktree] : []));
+
+  if (removableRunWorktrees.length > 0) {
+    console.log(`   Worktrees teamai made for workflow runs (${removableRunWorktrees.length}), whose commits stay on their branches:`);
+
+    for (const { dir, branch } of removableRunWorktrees) console.log(`     ${dir}${branch === undefined ? '   (already gone: git\'s record of it)' : `   (branch ${branch} stays)`}`);
+    console.log('');
+  }
+
   for (const { checkout, entries } of plan.worktreeSetups) {
     console.log(`   Workflow worktree setup in ${checkout}, with no workflow worktree left:`);
 
@@ -2222,6 +2266,8 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
   if (plan.teamaiHomeExists) {
     console.log('   TeamAI home directory:');
     console.log(`     ${plan.teamaiHome}/`);
+
+    printOwnFolders(plan.keptOwn);
     console.log('');
   }
 
@@ -2807,15 +2853,24 @@ async function forgetUninstalledToolPaths(
   if (localConfig.scope === 'project') await syncDeliveredGitExclude(localConfig, createDeliveryRecorder());
 }
 
-/** The partition's sync lock, as pull and push take it; null when the scope has none (HTTP). */
+/**
+ * The partition's sync lock, as pull and push take it; null when the scope has none (HTTP), or no data home to hold
+ * it in, which taking the lock does not make.
+ */
 async function takeSyncLock(localConfig: LocalConfig): Promise<string | null | false> {
   if (localConfig.repo.kind === 'http') return null;
-  const { acquireLock } = await import('./update.js');
+  const { acquireLock, LockDirectoryGoneError } = await import('./update.js');
   const lock = path.join(getDataHome(localConfig), SYNC_LOCK_FILENAME);
 
   // A pull a git hook or session start left running finishes soon.
   for (let attempt = 0; attempt < 50; attempt++) {
-    if (await acquireLock(lock)) return lock;
+    try {
+      if (await acquireLock(lock, { createParent: false })) return lock;
+    } catch (error) {
+      if (error instanceof LockDirectoryGoneError) return null;
+      throw error;
+    }
+
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
 
@@ -3318,6 +3373,8 @@ async function executeRemoval(
     }
   }
 
+  await removeRunWorktrees(plan.runWorktrees);
+
   if (plan.worktreeSetups.length > 0) {
     const { removeWorktreeSetup } = await import('./workflow/worktree.js');
 
@@ -3364,12 +3421,11 @@ async function executeRemoval(
         ...docsInside ? [plan.docsDir!] : [],
         ...plan.keptForProjects.paths,
         ...await keptFolders(plan.teamaiHome),
+        ...plan.keptOwn,
       ];
 
       await unregisterWorktreesIn(plan.teamaiHome, plan.checkouts, plan.unpushedSideBranches);
-
-      if (kept.length > 0) await removeAllBut(plan.teamaiHome, kept);
-      else await remove(plan.teamaiHome);
+      await removeAllBut(plan.teamaiHome, [...kept, ...await runsRemovalLocksOf([plan.teamaiHome])]);
 
       if (plan.preserveSharedManifest && sharedManifest) {
         await ensureDir(path.dirname(plan.preserveSharedManifest));
@@ -3440,8 +3496,8 @@ const WRAPPER_MARKER = 'Auto-generated by teamai';
 
 /**
  * Remove what teamai created and left empty once its resources are gone (#1808):
- * the hook wrapper in its own bin directory, the installation inventory, an
- * empty dashboard file, and the directories that held only those. `debug.log` stays: an uninstall that failed
+ * the hook wrapper in its own bin directory, the installation inventory, what
+ * the step runtimes kept, an empty dashboard file, and the directories that held only those. `debug.log` stays: an uninstall that failed
  * is explained there, and that record is worth more than the file.
  */
 async function sweepCreatedLeftovers(plan: RemovalPlan, hooksLeft: ReadonlyArray<{ what: string; tool: string }>): Promise<void> {
@@ -3495,13 +3551,26 @@ async function sweepCreatedLeftovers(plan: RemovalPlan, hooksLeft: ReadonlyArray
     log.debug(`Could not remove ${inventory}: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  // The member's answers to running a team tool's command: no install is left to ask them for.
+  // Nothing of it runs any more: the uninstall refused while a place one keeps was open (`refusedForLiveRuns`).
+  const runtimeState = runtimeStateRoot(home);
+
+  try {
+    if (await pathExists(runtimeState)) {
+      await removeSandboxWarm(home);
+      await remove(runtimeState);
+      log.success(`Removed ${runtimeState}/: what teamai's step runtimes kept`);
+    }
+  } catch (e) {
+    log.warn(`Could not remove ${runtimeState}: ${e instanceof Error ? e.message : String(e)}. Delete it by hand.`);
+  }
+
+  // The member's answers to running a team file's command: no install is left to ask them for.
   const trust = getTrustDir();
 
   try {
     if (await pathExists(trust)) {
       await remove(trust);
-      log.success(`Removed ${trust}/: the team tools you accepted`);
+      log.success(`Removed ${trust}/: the team tools and runtimes you accepted`);
     }
   } catch (e) {
     log.warn(`Could not remove ${trust}: ${e instanceof Error ? e.message : String(e)}. Delete it by hand.`);
@@ -3553,7 +3622,7 @@ function instanceFoldersOf(tools: readonly string[], toolPaths: ReturnType<typeo
  * folder up to the tool's rules directory; never a directory outside one, so a tool's own root stays.
  */
 function emptiedDirs(plan: RemovalPlan): string[] {
-  const dirs = new Set([...plan.skillDirs.map(({ dir }) => path.dirname(dir)), ...plan.agentFiles.map((file) => path.dirname(file)), ...plan.seededAgentDirs, ...plan.instanceFolders]);
+  const dirs = new Set([...plan.skillDirs.map(({ dir }) => path.dirname(dir)), ...plan.agentFiles.map((file) => path.dirname(file)), ...plan.seededDirs, ...plan.instanceFolders]);
   const ownedRuleFiles = plan.claudeMdFiles.flatMap(({ path: file, owned }) => (owned ? [file] : []));
 
   for (const file of [...plan.ruleFiles, ...ownedRuleFiles]) {
@@ -3569,6 +3638,40 @@ function emptiedDirs(plan: RemovalPlan): string[] {
   }
 
   return [...dirs].sort((a, b) => b.length - a.length);
+}
+
+/**
+ * The line naming the run worktree `dir`, kept for `why`, with the command that removes it from `checkout`'s repository:
+ * git removes a locked one only when forced twice.
+ */
+function keptRunWorktreeLine({ checkout, dir, why, isLocked = false }: { checkout: string; dir: string; why: string; isLocked?: boolean }): string {
+  return `Kept the workflow run worktree ${dir}: ${why}. Save what you need, then remove it with \`git -C ${checkout} worktree remove --force ${isLocked ? '--force ' : ''}${dir}\`. `
+    + `While it is there, teamai's workflow worktree setup in ${checkout} stays with it: its block in the git exclude file and extensions.worktreeConfig.`;
+}
+
+function warnKeptRunWorktrees(runWorktrees: RemovalPlan['runWorktrees']): void {
+  for (const { checkout, worktree } of runWorktrees) {
+    if (worktree.kind === 'kept') log.warn(keptRunWorktreeLine({ checkout, ...worktree }));
+  }
+}
+
+/**
+ * Removes the run worktrees `runWorktrees` names removable, before the setup they needed goes, and names again the
+ * kept ones. Each branch stays: the run's commits are on it, the member's to keep.
+ */
+async function removeRunWorktrees(runWorktrees: RemovalPlan['runWorktrees']): Promise<void> {
+  const { removeRunWorktree } = await import('./workflow/worktree.js');
+
+  for (const { checkout, worktree } of runWorktrees) {
+    if (worktree.kind === 'kept') continue;
+    const removed = await removeRunWorktree(checkout, worktree);
+
+    if (!removed.ok) log.warn(keptRunWorktreeLine({ checkout, dir: worktree.dir, why: removed.reason }));
+    else if (worktree.branch === undefined) log.success(`Removed git's record of the workflow run worktree ${worktree.dir}, which was already gone`);
+    else log.success(`Removed the workflow run worktree ${worktree.dir}. Its branch ${worktree.branch} stays, with the run's commits: delete it with \`git branch -D ${worktree.branch}\` once you no longer need it.`);
+  }
+
+  warnKeptRunWorktrees(runWorktrees);
 }
 
 /** Self mode's side branches that hold a commit origin lacks; one git cannot read counts as holding one. */
@@ -3618,6 +3721,16 @@ async function removeIfEmpty(dir: string): Promise<void> {
   } catch (e) {
     log.debug(`Kept ${dir}: ${e instanceof Error ? e.message : String(e)}`);
   }
+}
+
+/**
+ * The removal locks of `dataHomes` (`runsRemovalLockIn`), which a removal of them keeps for `whileRunsLocked` to release
+ * once the rest is gone: a lock unlinked before then lets a driver take it while its run is still there.
+ */
+async function runsRemovalLocksOf(dataHomes: readonly string[]): Promise<string[]> {
+  const { runsRemovalLockIn } = await import('./workflow/store.js');
+
+  return dataHomes.map(runsRemovalLockIn);
 }
 
 /** Remove everything under `root` but each path in `keep` and the directories on the way to them. */
@@ -3699,6 +3812,7 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
     }
 
     for (const line of [...plan.keptSkillDirs, ...plan.keptFiles]) log.warn(line);
+    warnKeptRunWorktrees(plan.runWorktrees);
 
     const exclusionOnly = isPlanEmpty(plan) && agentKey && localConfig.scope === 'project'
       && (baseDescriptorOf(agentKey)?.projectFromHome === true || plan.sharedRetentionOnly);
@@ -3709,7 +3823,11 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
       return;
     }
 
+    if (plan.includeShared && await refusedForLiveRuns(async () => [getDataHome(localConfig)], { dryRun: opts.dryRun === true })) return;
+
     printSummary(plan, agentKey);
+
+    if (plan.includeShared) await printSandboxWarm(getUserHome());
 
     if (exclusionOnly) {
       log.info(plan.sharedRetentionOnly
@@ -3744,7 +3862,13 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
     }
 
     try {
-      await removeConfirmed(localConfig, teamConfig, plan, agentKey, !!exclusionOnly);
+      const removeAll = (): Promise<void> => removeConfirmed(localConfig, teamConfig, plan, agentKey, !!exclusionOnly);
+
+      // Again once confirmed: a run may have opened a place, or a driver started, while the person answered.
+      if (!plan.includeShared) await removeAll();
+      else await whileRunsLocked([getDataHome(localConfig)], async () => {
+        if (!await refusedForLiveRuns(async () => [getDataHome(localConfig)])) await removeAll();
+      });
     } finally {
       if (syncLock) {
         const { releaseLock } = await import('./update.js');
@@ -3754,6 +3878,228 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
   } else {
     await uninstallHomeOnly(opts);
   }
+}
+
+/** How a member finds and removes by hand the warm images and sbx templates the sandbox runtime saved. */
+const WARM_BY_HAND = 'List them with `docker image ls teamai-warm`, `podman image ls teamai-warm` and `sbx template ls`, and remove each teamai-warm one with `docker image rm`, `podman image rm` or `sbx template rm --force`.';
+
+/**
+ * Lists, for the preview, the warm images and sbx templates the sandbox runtime saved in `home`: outside ~/.teamai,
+ * they go with the last install on it.
+ */
+async function printSandboxWarm(home: string): Promise<void> {
+  const runtime = teamaiBin('teamai-runtime-sandbox');
+
+  if (runtime === undefined || !await pathExists(runtimeStateRoot(home))) return;
+  const heading = "   Warm images and sbx templates teamai's sandbox made, which the last install on this machine removes:";
+  let listed: Awaited<ReturnType<typeof execCommand>>;
+
+  try {
+    listed = await execCommand(process.execPath, [runtime, 'remove-warm', '--dry-run'], { env: { ...process.env, HOME: home }, timeoutMs: 60_000 });
+  } catch (e) {
+    console.log(`${heading} teamai could not list them (${e instanceof Error ? e.message : String(e)}).`);
+
+    return;
+  }
+
+  const saved = listed.stdout.split('\n').filter((line) => line.trim() !== '');
+
+  if (listed.code !== 0) {
+    console.log(`${heading} teamai could not list them (exit code ${listed.code}: ${listed.stderr.trim()}).`);
+  } else if (saved.length > 0) {
+    console.log(heading);
+
+    for (const line of saved) console.log(`     ${line}`);
+    console.log('');
+  }
+}
+
+/**
+ * Has the sandbox runtime remove, in `home`, the warm images and sbx templates it saved there, before the journal that
+ * records them goes: each line it prints on stdout names one it removed, each on stderr one that stays.
+ */
+async function removeSandboxWarm(home: string): Promise<void> {
+  const runtime = teamaiBin('teamai-runtime-sandbox');
+
+  if (runtime === undefined) {
+    log.warn(`teamai's sandbox runtime (teamai-runtime-sandbox) is missing from this install, so the warm images and sbx templates it saved stay. ${WARM_BY_HAND}`);
+
+    return;
+  }
+
+  let ran: Awaited<ReturnType<typeof execCommand>>;
+
+  try {
+    ran = await execCommand(process.execPath, [runtime, 'remove-warm'], { env: { ...process.env, HOME: home }, timeoutMs: 300_000 });
+  } catch (e) {
+    log.warn(`Could not run teamai's sandbox runtime to remove the warm images and sbx templates it saved (${e instanceof Error ? e.message : String(e)}), so they stay. ${WARM_BY_HAND}`);
+
+    return;
+  }
+
+  for (const line of ran.stdout.split('\n').filter((said) => said.trim() !== '')) log.success(line);
+
+  for (const line of ran.stderr.split('\n').filter((said) => said.trim() !== '')) log.warn(line);
+
+  if (ran.code !== 0) log.warn(`teamai's sandbox runtime stopped with exit code ${ran.code} while it removed the warm images and sbx templates it saved, so some may stay. ${WARM_BY_HAND}`);
+}
+
+/**
+ * Refuses an uninstall that removes the workflow runs of the data homes `dataHomes` lists while a step runtime may still hold a place of one,
+ * since those records, and what the runtime keeps of the place, are what `teamai workflow cancel` closes it with, or
+ * while a teamai of this machine drives one. Answers whether it refused. A dry run is never refused: it warns of what the uninstall would refuse for, and previews.
+ */
+async function refusedForLiveRuns(dataHomes: () => Promise<readonly string[]>, { dryRun = false }: { dryRun?: boolean } = {}): Promise<boolean> {
+  const { placesMaybeHeld } = await import('./workflow/runtimes/cancelled.js');
+  const { runsDirIn, runsDrivenIn } = await import('./workflow/store.js');
+  const held: Awaited<ReturnType<typeof placesMaybeHeld>> = [];
+  const driven: Awaited<ReturnType<typeof runsDrivenIn>> = [];
+  const refuse = (message: string): void => (dryRun ? log.warn(message) : log.error(message));
+
+  try {
+    for (const dataHome of await dataHomes()) {
+      held.push(...await placesMaybeHeld(runsDirIn(dataHome)));
+      driven.push(...await runsDrivenIn(runsDirIn(dataHome)));
+    }
+  } catch (e) {
+    refuse(`Cannot uninstall: teamai could not read this scope's workflow runs (${e instanceof Error ? e.message : String(e)}), so it cannot tell whether a step runtime still holds a place of one. Fix what keeps it from being read, then run \`teamai uninstall\` again.`);
+
+    if (dryRun) return false;
+    process.exitCode = 1;
+
+    return true;
+  }
+
+  for (const place of held) {
+    if (place.held === 'unreadable') {
+      refuse(`Cannot uninstall: the record of attempt ${place.attempt} of run ${place.run} cannot be read (${place.why}), so a step runtime may still hold its place. `
+        + `Run \`teamai workflow cancel ${place.run}\` to close what it can, or fix that record, then \`teamai uninstall\` again.`);
+      continue;
+    }
+
+    refuse(`Cannot uninstall while a step runtime holds a place of run ${place.run} (attempt ${place.attempt}): removing teamai's records would leave it with nothing to close it. `
+      + `Let the run end, or run \`teamai workflow cancel ${place.run}\` to stop it, then \`teamai uninstall\` again.`);
+  }
+
+  // A driver left running writes its run again into the data home removed under it.
+  for (const { run, pid } of driven) {
+    refuse(`Cannot uninstall while teamai drives run ${run} on this machine${pid === undefined ? '' : ` (process ${pid})`}: it would write the run again into what the uninstall removes. `
+      + `Stop that driver (Ctrl-C), then run \`teamai uninstall\` again.`);
+  }
+
+  if ((held.length === 0 && driven.length === 0) || dryRun) return false;
+  process.exitCode = 1;
+
+  return true;
+}
+
+/**
+ * Runs `body` holding the removal lock of each of `dataHomes` (`runsRemovalLockIn`), the one an attempt holds while it
+ * records the place it opens and a driver while it takes its run's lock, so neither starts between `body`'s check that
+ * nothing of the runs is live and its removal of them. Refuses when one stays taken.
+ */
+async function whileRunsLocked(dataHomes: readonly string[], body: () => Promise<void>): Promise<void> {
+  const { acquireLock, LockDirectoryGoneError, releaseLock } = await import('./update.js');
+  const { RUNS_REMOVAL_LOCK_WAIT, runsRemovalLockIn } = await import('./workflow/store.js');
+  const held: string[] = [];
+
+  try {
+    for (const dataHome of dataHomes) {
+      const lock = runsRemovalLockIn(dataHome);
+      let isHeld = false;
+      let isGone = false;
+
+      // A data home that is not there holds no run, and taking its lock does not make it.
+      for (let attempt = 0; attempt < RUNS_REMOVAL_LOCK_WAIT.attempts && !isHeld && !isGone; attempt++) {
+        try {
+          isHeld = await acquireLock(lock, { createParent: false });
+        } catch (error) {
+          if (!(error instanceof LockDirectoryGoneError)) throw error;
+          isGone = true;
+        }
+
+        if (!isHeld && !isGone) await new Promise((resolve) => setTimeout(resolve, RUNS_REMOVAL_LOCK_WAIT.delayMs));
+      }
+
+      if (isGone) continue;
+
+      if (!isHeld) {
+        log.error(`Cannot uninstall: a step runtime is opening a place of a run in ${dataHome}, or a driver is starting one, as ${lock} stays taken. Run \`teamai uninstall\` again once it has.`);
+        process.exitCode = 1;
+
+        return;
+      }
+
+      held.push(lock);
+    }
+
+    await body();
+  } finally {
+    const [outermost] = [...dataHomes].sort((a, b) => a.length - b.length);
+
+    for (const lock of [...held].sort((a, b) => b.length - a.length)) {
+      const away = await movedAwayIfOnly(lock);
+      await releaseLock(lock);
+
+      if (away !== undefined) await removeMovedAway(away);
+      await removeLeftEmpty(path.dirname(away === undefined ? lock : path.dirname(lock)), outermost);
+    }
+  }
+}
+
+/**
+ * Moves the directory of removal lock `lock` aside, still holding the lock, when the lock is all that is left in it, as
+ * after a removal that kept only the locks (`runsRemovalLocksOf`), and answers where. A driver that waits for the lock
+ * then finds its data home gone, rather than taking the lock in it once released and keeping it from being removed.
+ * Answers `undefined`, and moves nothing, when the directory holds anything else or cannot be moved.
+ */
+async function movedAwayIfOnly(lock: string): Promise<string | undefined> {
+  const dir = path.dirname(lock);
+  const left = await readdir(dir).catch(() => []);
+
+  if (left.length !== 1 || left[0] !== path.basename(lock)) return undefined;
+  const away = path.join(path.dirname(dir), `${path.basename(dir)}.removing-${randomUUID()}`);
+
+  try {
+    await rename(dir, away);
+
+    return away;
+  } catch (e) {
+    log.debug(`Kept ${dir} in place: ${e instanceof Error ? e.message : String(e)}`);
+
+    return undefined;
+  }
+}
+
+/** Removes `away`, a data home `movedAwayIfOnly` moved aside, which holds only its released lock. */
+async function removeMovedAway(away: string): Promise<void> {
+  try {
+    await remove(away);
+  } catch (e) {
+    log.warn(`Could not remove ${away}, the emptied data home this uninstall moved aside: ${e instanceof Error ? e.message : String(e)}. Remove it by hand.`);
+  }
+}
+
+/** Removes `dir`, and each directory above it up to `outermost`, while each is left empty. Removes nothing that holds anything else. */
+async function removeLeftEmpty(dir: string, outermost: string): Promise<void> {
+  for (let up = dir; isWithin(up, outermost); up = path.dirname(up)) {
+    if (!await rmdir(up).then(() => true, () => false)) break;
+  }
+}
+
+/** The data homes an uninstall with no configuration removes under `home`: the user scope's and each project's not kept. */
+async function removedDataHomes(home: string, kept: KeptForProjects): Promise<string[]> {
+  const { projectsRootDir } = await import('./utils/partition.js');
+  let partitions: string[];
+
+  try {
+    partitions = (await readdir(projectsRootDir())).map((name) => path.join(projectsRootDir(), name));
+  } catch (e) {
+    if (errnoCode(e) !== 'ENOENT') throw e;
+    partitions = [];
+  }
+
+  return [home, ...partitions.filter((dataHome) => !kept.paths.includes(dataHome))];
 }
 
 /** Uninstall what `plan` names, once the member confirmed it, under the partition's sync lock. */
@@ -4073,6 +4419,20 @@ async function stopCodexDispatch(teamConfig: TeamaiConfig, localConfig: LocalCon
   }
 }
 
+/** The member's own resource folders that exist in `teamaiHome`, which teamai reads and never writes, so an uninstall keeps them. */
+async function ownFoldersIn(teamaiHome: string): Promise<string[]> {
+  const { PERSONAL_DIRS } = await import('./workflow/runtimes/layers.js');
+  const dirs = Object.values(PERSONAL_DIRS).map((dir) => path.join(getTeamaiHomeDir(), dir));
+
+  return (await Promise.all(dirs.map(async (dir) => (dir.startsWith(teamaiHome + path.sep) && await pathExists(dir) ? [dir] : [])))).flat();
+}
+
+function printOwnFolders(dirs: readonly string[]): void {
+  if (dirs.length > 0) console.log('   but your own drivers, runtimes, sandbox profiles and tool instances in it, which teamai never writes:');
+
+  for (const dir of dirs) console.log(`     ${dir}`);
+}
+
 /** No valid configuration: remove ~/.teamai/ only. */
 async function uninstallHomeOnly(opts: UninstallOptions): Promise<void> {
   if (opts.agent) {
@@ -4094,12 +4454,17 @@ async function uninstallHomeOnly(opts: UninstallOptions): Promise<void> {
   console.log('⚠  Uninstalling user scope (no valid configuration detected — home directory only)');
   console.log('⚠  The following TeamAI home directory will be removed:');
   console.log(`     ${home}/`);
+  const keptOwn = await ownFoldersIn(home);
+  printOwnFolders(keptOwn);
   console.log('');
   // Read before anything is deleted, as for a user-scope uninstall (#1025).
   const kept = await keptForProjects();
   printKeptForProjects(kept);
 
+  if (!kept.paths.includes(runtimeStateRoot(getUserHome()))) await printSandboxWarm(getUserHome());
+
   if (opts.dryRun) {
+    await refusedForLiveRuns(() => removedDataHomes(home, kept), { dryRun: true });
     log.info('Dry run — no changes made');
 
     return;
@@ -4115,6 +4480,27 @@ async function uninstallHomeOnly(opts: UninstallOptions): Promise<void> {
     }
   }
 
+  let dataHomes: string[];
+
+  try {
+    dataHomes = await removedDataHomes(home, kept);
+  } catch (e) {
+    // The check says why it cannot tell whether a place is open, and refuses.
+    await refusedForLiveRuns(() => Promise.reject(e));
+
+    return;
+  }
+
+  await whileRunsLocked(dataHomes, async () => {
+    if (!await refusedForLiveRuns(async () => dataHomes)) await removeHome(home, dataHomes, kept, keptOwn);
+  });
+}
+
+/**
+ * Removes TeamAI's home `home` but what `kept` and `keptOwn` keep, once no step runtime holds a place of the runs of
+ * `dataHomes`, the data homes in it that go.
+ */
+async function removeHome(home: string, dataHomes: readonly string[], kept: KeptForProjects, keptOwn: string[]): Promise<void> {
   try {
     try {
       const { ALL_MODEL_AGENTS, restoreModelProfiles } = await import('./models/switch.js');
@@ -4159,9 +4545,16 @@ async function uninstallHomeOnly(opts: UninstallOptions): Promise<void> {
     if (kept.paths.length > 0) {
       const { forgetUserEnvScope } = await import('./resources/env-loader.js');
       await forgetUserEnvScope();
-      await removeAllBut(home, kept.paths);
-    } else await remove(home);
-    log.success(kept.paths.length > 0 ? `Removed ${home}/ but ${kept.paths.join(', ')}` : `Removed ${home}/`);
+    }
+
+    const keep = [...kept.paths, ...keptOwn];
+    const runtimeState = runtimeStateRoot(getUserHome());
+
+    // Before the journal that records them goes with the home, as the last install's sweep does.
+    if (!keep.includes(runtimeState) && await pathExists(runtimeState)) await removeSandboxWarm(getUserHome());
+
+    await removeAllBut(home, [...keep, ...await runsRemovalLocksOf(dataHomes)]);
+    log.success(keep.length > 0 ? `Removed ${home}/ but ${keep.join(', ')}` : `Removed ${home}/`);
     log.success('teamai uninstalled');
   } catch (e) {
     log.warn(`Failed to remove ${home}: ${e instanceof Error ? e.message : String(e)}`);

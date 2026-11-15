@@ -21,6 +21,7 @@ const store = (tool: string, at: Spot, rest: Omit<Partial<FilesRow>, 'tool' | 'w
 const ROWS: readonly (FilesRow | OtherRow)[] = [
   store('claude', '~/.claude/projects'),
   store('claude', '~/.claude-work/projects', { toolRoots: { claude: '~/.claude-work' }, source: 'CLAUDE_CONFIG_DIR recorded by teamai init (RELOCATABLE_TOOLS)' }),
+  store('claude', '/opt/claude-config/projects', { toolRoots: { claude: '/opt/claude-config' }, source: 'CLAUDE_CONFIG_DIR outside HOME, recorded by teamai init: Claude Code keeps its sessions in the projects directory of its config dir wherever that is' }),
   store('claude', '~/.claude-work/projects', { scope: 'project', userToolRoots: { claude: '~/.claude-work' }, source: 'a project config that records no toolRoots follows the user config (resolveMemberToolRoots)' }),
   store('claude-internal', '~/.claude-internal/projects'),
   store('claude-internal', '~/.claude-internal/projects', { toolRoots: { 'claude-internal': '~/.ci-work' }, source: IGNORED_ROOT }),
@@ -100,7 +101,7 @@ describe('a session store on Windows when HOME is not the profile home', () => {
     const located = await locate('cursor', 'sessions', at({}), host);
 
     expect(located.channel === 'files' && located.own?.path).toBe('C:\\Users\\member\\.cursor\\projects');
-    expect(sessionStoreDir('cursor', {}, host)).toBe('C:\\Users\\member\\.cursor\\projects');
+    expect(sessionStoreDir('cursor', { kind: 'recorded', toolRoots: {} }, host)).toBe('C:\\Users\\member\\.cursor\\projects');
   });
 
   it('keeps a recorded root, which teamai init accepted under HOME', async () => {

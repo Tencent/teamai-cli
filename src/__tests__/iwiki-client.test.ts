@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IWikiClient, type IWikiPage } from '../utils/iwiki-client.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import https from 'node:https';
 import type { IncomingMessage } from 'node:http';
 import { EventEmitter } from 'node:events';

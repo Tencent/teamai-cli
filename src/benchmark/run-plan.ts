@@ -26,15 +26,18 @@ export function trialsUnattended(run: RunState, producer: string): boolean {
   return runners.length > 0 && runners.every((requires) => requires.floor?.isolation === 'sandbox');
 }
 
-const VersionedSchema = z.object({ schemaVersion: z.unknown() }).passthrough();
-
-/** The suite a plan of any version names, so a refusal can say how to start it again. */
-const SuiteNamedSchema = z.object({ suite: z.object({ name: z.string().min(1) }) });
+/**
+ * A benchmark plan of any version, as every teamai froze one: its version and the suite it measures, which a refusal
+ * names to start it again.
+ */
+const VersionedSchema = z.object({ schemaVersion: z.number(), suite: z.object({ name: z.string().min(1) }) });
 
 /**
  * The plan of `run`, or of the `from` step `under` sits beneath. Refused when the run runs no benchmark plan there, runs
  * more than one and `under` names none, or the plan is of a schemaVersion this teamai does not read
- * (`benchmark_plan_outdated`: a run started before an upgrade, which cannot resume after it).
+ * (`benchmark_plan_outdated`: a run started before an upgrade, which cannot resume after it). A `plan` with no numeric
+ * schemaVersion or no suite is no benchmark plan of another version, such as the output of that name of a team's own
+ * workflow.
  */
 export function planOfRun(run: RunState, under?: string): { found: RunPlan } | { failure: WorkflowFailure } {
   const definitionOf = stepDefinitions(run);
@@ -59,13 +62,12 @@ export function planOfRun(run: RunState, under?: string): { found: RunPlan } | {
     return { failure: { code: 'invalid_arguments', message: `Run ${run.id} runs more than one benchmark plan, in steps ${planned.map(({ step }) => `"${step}"`).join(', ')}, so teamai benchmark report cannot tell which one to report. Run one benchmark plan per run.` } };
   }
 
-  const versioned = VersionedSchema.safeParse(only.plan);
-  const version = versioned.success ? versioned.data.schemaVersion : undefined;
+  const versioned = VersionedSchema.safeParse(only.plan).data;
 
-  if (version !== BENCHMARK_PLAN_SCHEMA_VERSION) {
-    const suite = SuiteNamedSchema.safeParse(only.plan).data?.suite.name ?? '<suite>';
+  if (versioned && versioned.schemaVersion !== BENCHMARK_PLAN_SCHEMA_VERSION) {
+    const { schemaVersion: version, suite: { name: suite } } = versioned;
 
-    return { failure: { code: 'benchmark_plan_outdated', message: `Run ${run.id} measures a benchmark plan of schemaVersion ${JSON.stringify(version) ?? 'none'}, which the teamai that started it froze, and this teamai reads only schemaVersion ${BENCHMARK_PLAN_SCHEMA_VERSION}, so the run cannot go on here. Run it with the teamai that started it, or start the suite again with teamai benchmark run ${suite}.` } };
+    return { failure: { code: 'benchmark_plan_outdated', message: `Run ${run.id} measures a benchmark plan of schemaVersion ${version}, which the teamai that started it froze, and this teamai reads only schemaVersion ${BENCHMARK_PLAN_SCHEMA_VERSION}, so the run cannot go on here. Run it with the teamai that started it, or start the suite again with teamai benchmark run ${suite}.` } };
   }
 
   const plan = BenchmarkPlanSchema.safeParse(only.plan);

@@ -3,7 +3,7 @@
  * engine only parses and this sync checks against the scorers it found valid.
  */
 import type { LocalConfig } from '../types.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { syncWorkflowDefinitions, type SyncWorkflowResult } from '../workflow/cache.js';
 import { stepWorkflow, type WorkflowDefinition, type WorkflowStep } from '../workflow/types.js';
 import { syncScorerDefinitions, type SyncScorerOptions, type SyncScorerResult } from './cache.js';

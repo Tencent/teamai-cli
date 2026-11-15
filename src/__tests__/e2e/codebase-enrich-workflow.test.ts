@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { claudeFake } from '@teamai/tool-claude/testing';
+import { fakeAgent } from '@teamai/tool-testing/fake-agent';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const CLI = path.join(ROOT, 'dist', 'index.js');
@@ -35,19 +37,17 @@ const fwd = (value: string): string => value.split(path.sep).join('/');
  * asks. It fails the labels in FAKE_FAIL.
  */
 function fakeClaude(bin: string, log: string): void {
-  fs.mkdirSync(bin, { recursive: true });
-  fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}
-const fs = require('fs');
-let stdin = ''; process.stdin.on('data', (d) => stdin += d); process.stdin.on('end', () => {
-  const named = /模块名: (\\S+)/.exec(stdin);
-  const label = named ? named[1] : stdin.includes('项目名') ? 'domain' : 'other';
+  fakeAgent(claudeFake, {
+    bin,
+    before: `
+  const named = /模块名: (\\S+)/.exec(prompt);
+  const label = named ? named[1] : prompt.includes('项目名') ? 'domain' : 'other';
   fs.appendFileSync(${JSON.stringify(log)}, 'start ' + label + '\\n');
   if ((process.env.FAKE_FAIL || '').split(',').includes(label)) { process.stderr.write('Authentication failed\\n'); process.exit(2); }
-  const reply = label === 'domain'
+  reply = JSON.stringify(label === 'domain'
     ? { domain: 'UI kit', description: 'renders widgets', keywords: ['widget'] }
-    : { domain: 'widgets', responsibilities: ['run ' + label], layer: label === 'lib' ? 'data' : 'service', summary: label + ' module' };
-  process.stdout.write(JSON.stringify({ type: 'result', is_error: false, result: JSON.stringify(reply), usage: { input_tokens: 10, output_tokens: 5 } }));
-});\n`, { mode: 0o755 });
+    : { domain: 'widgets', responsibilities: ['run ' + label], layer: label === 'lib' ? 'data' : 'service', summary: label + ' module' });`,
+  });
 }
 
 interface Sandbox {

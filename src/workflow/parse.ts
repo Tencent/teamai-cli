@@ -16,7 +16,8 @@ import {
   conditionDiagnostics, endDiagnostics, expressionSite, readDiagnostics, readScope, splitReads, type ConditionNode, type Ending, type ReadSite,
 } from './reads.js';
 import { parseHitl } from './parse-hitl.js';
-import { isDataBranch, JsonValueSchema, type JsonValue } from '../types.js';
+import { isDataBranch } from '../types.js';
+import { JsonValueSchema, type JsonValue } from '@teamai/shared/json';
 import { durationMs } from '../utils/duration.js';
 import { outputMismatch } from './output.js';
 import { roleDiagnostics } from './parse-roles.js';
@@ -66,8 +67,8 @@ const CONFINED_STEP_KEYS = new Set(['id', 'needs', 'if', 'prompt', 'prompt_file'
  */
 const ANSWER_STEP_KEYS = new Set(['id', 'needs', 'if', 'answer', 'answer_file', 'output', 'end', 'loop', 'break', 'for_each', 'timeout', 'continue_on_failure', 'workspace']);
 
-/** What a `finally` step may carry: it runs a command, read-only, in no workspace of its own. */
-const FINALLY_STEP_KEYS = new Set(['id', 'needs', 'if', 'command', 'env', 'output', 'timeout']);
+/** What a `finally` step may carry: it runs a command, read-only, in no workspace of its own, where its `requires` hold. */
+const FINALLY_STEP_KEYS = new Set(['id', 'needs', 'if', 'command', 'env', 'output', 'timeout', 'requires']);
 
 /** The actions as a sentence: `command, prompt, prompt_file, answer, answer_file, or workflow`. */
 const ACTION_LIST = `${ACTION_KEYS.slice(0, -1).join(', ')}, or ${ACTION_KEYS.at(-1)}`;
@@ -1519,7 +1520,12 @@ function parseForEach(node: Node | null | undefined, field: string, label: strin
   const items = scalarText(itemsNode);
   const parsed = items === undefined ? undefined : parseExpression(items);
 
-  if (!parsed) {
+  if (!parsed && isSeq(itemsNode)) {
+    // An expression has no list literal, so a list written in place goes in an input.
+    reject(itemsNode, map ? `${field}.items` : field, map
+      ? `${label} for_each.items is a YAML list, and it takes an expression that gives the list. Declare the list as an input, give it its value in defaults.inputs, and write items: inputs.<name>`
+      : `${label} for_each is a YAML list, and it takes an expression that gives the list, or a map of items and max_parallel. Declare the list as an input, give it its value in defaults.inputs, and write for_each: inputs.<name>`);
+  } else if (!parsed) {
     reject(itemsNode ?? node, map ? `${field}.items` : field,
       map ? `${label} for_each.items must be an expression` : `${label} for_each must be an expression, or a map of items and max_parallel`);
   } else if (!parsed.ok) {

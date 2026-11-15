@@ -11,9 +11,9 @@
  */
 import fs from 'node:fs/promises';
 import { errnoCode } from './utils/fs.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 
-type MarkedType = 'workflows' | 'hooks' | 'rules' | 'mcp' | 'benchmarks' | 'skills' | 'scorers' | 'agents';
+type MarkedType = 'workflows' | 'hooks' | 'rules' | 'mcp' | 'benchmarks' | 'skills' | 'scorers' | 'agents' | 'drivers' | 'runtimes' | 'sandboxes' | 'tools';
 
 /** Each type keeps its resources in the team repo directory of the same name. */
 export const FOLDER_MARKERS = {
@@ -25,6 +25,10 @@ export const FOLDER_MARKERS = {
   skills: { marker: 'SKILL.md' },
   scorers: { marker: 'SCORER.md' },
   agents: { marker: 'AGENT.md' },
+  drivers: { marker: 'DRIVER.yaml' },
+  runtimes: { marker: 'RUNTIME.yaml' },
+  sandboxes: { marker: 'SANDBOX.yaml' },
+  tools: { marker: 'TOOL.yaml' },
 } as const satisfies Readonly<Record<MarkedType, { readonly marker: string }>>;
 
 /**

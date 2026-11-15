@@ -3,7 +3,7 @@ import { type ToolId, type ShippedDescriptor } from '../src/tools.js';
 import { type CodebuddyConfigFile, type Evidence, type FirstExistingRead, type HomeMove, type HomeRead, type ProjectRead, type RunTime, type Support, type ToolFeatures } from '@teamai/tool-core/definition';
 import { isToolId, descriptorOf, INSTANCE_BASES } from '../src/tool-registry.js';
 import { DEFAULT_TOOL_PATHS } from '../src/types.js';
-import { deliveredHomeVariableOf } from '../src/tool-launch/tools.js';
+import { deliveredHomeVariableOf } from '../src/launch-registry.js';
 
 // ─── Generated support page ──────────────────────────────
 //

@@ -6,7 +6,7 @@
  */
 
 import type { Dirent } from 'node:fs';
-import { readFile, readdir } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 
 import matter from 'gray-matter';
@@ -15,6 +15,7 @@ import { z } from 'zod';
 import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
 import { tokenize, tokenCount, MAX_TOKENIZE_CHARS } from './utils/tokenizer.js';
 import { caseFoldKey } from './manifest-schema.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 export interface SourceAnchor {
   path: string;
@@ -363,7 +364,7 @@ async function loadWikiPages(
     const routerPath = path.join(wikiRoot, 'router.md');
 
     try {
-      const rawContent = await readFile(routerPath, 'utf-8');
+      const rawContent = await readRegularFile(routerPath, 'utf-8');
 
       const content = withheldCodebases.length > 0
         ? filterRouterContent(rawContent, withheldCodebases)
@@ -559,7 +560,7 @@ async function loadPagesRecursive(
       }
 
       try {
-        const content = await readFile(fullPath, 'utf-8');
+        const content = await readRegularFile(fullPath, 'utf-8');
         let title: string;
         let sources: string[] | undefined;
 

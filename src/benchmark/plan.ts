@@ -16,7 +16,7 @@ import { isRecordableLabel, isRecordableName } from '../agent-observation.js';
 import { RoleIdSchema } from '../roles.js';
 import type { ScorerLabel } from '../scorers/definition.js';
 import type { PinnedScorer } from '../scorers/pin.js';
-import type { JsonObject } from '../types.js';
+import type { JsonObject } from '@teamai/shared/json';
 import { definedFields } from '../utils/defined-fields.js';
 import { defaultsArmOf, type Suite, type Task, type TaskCheck, TaskJudge } from './suite.js';
 import type { CommittedSuite } from './trial.js';
@@ -60,8 +60,8 @@ const PlannedTaskSchema = z.object({
   startingCommit: CommitSchema,
   /**
    * How the task's trials are decided: by its check, by a judge on its success criteria, or by both, the judge only
-   * when the check passes. `check`, which `teamai benchmark check` reads: the command, the protected paths, and the
-   * files check.add writes, by commit and path, never their bytes.
+   * when the check passes. `check`, which a check step runs and teamai prepares and decides around it (trial.ts): the
+   * command, the protected paths, and the files check.add writes, by commit and path, never their bytes.
    */
   judge: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('check'), check: PlannedCheckSchema }).strict(),
@@ -156,8 +156,11 @@ export const PlannedJudgeSchema = z.object({ tool: z.string().min(1), model: z.s
 
 export type PlannedJudge = z.infer<typeof PlannedJudgeSchema>;
 
-/** The plan's `schemaVersion`. A plan of another version makes the run unreadable here, so no step reads it. */
-export const BENCHMARK_PLAN_SCHEMA_VERSION = 2;
+/**
+ * The plan's `schemaVersion`. A plan of another version makes the run unreadable here, so no step reads it. 3: the check
+ * steps run the task's own command, which a run of version 2 does not, so it cannot go on here.
+ */
+export const BENCHMARK_PLAN_SCHEMA_VERSION = 3;
 
 /**
  * What a run freezes at start. In PINNED (store.ts) so masking never rewrites it, parsed by `planOfRun` (run-plan.ts)
@@ -345,8 +348,8 @@ export interface CompiledBundle {
  * beneath it inherits that, and a team's own `teamai-benchmark` workflow may relax it; the run's own timeout bounds it.
  *
  *   baselines                     (tasks with a check only) outputs { <task>: its baseline's result }
- *     <task>                      needs the baseline `parallel` before it; command teamai benchmark check --baseline; workspace:
- *                                 a clone of the starting commit with team none; output { result }
+ *     <task>                      needs the baseline `parallel` before it; command: the task's check.run; workspace: a clone of
+ *                                 the starting commit with team none; output { result, cause, label }, which teamai decides
  *   r<rep>                        one per repetition; the first needs [baselines] and an `if` that reads it when there are
  *                                 baselines, else needs []; each later one needs the one before it
  *     <task>                      needs the task before it
@@ -356,7 +359,8 @@ export interface CompiledBundle {
  *                                 permissions: unattended when `unattended`
  *         | workflow              for an arm that runs one: its pinned copy, with { task }; workspace continue; the limits
  *                                 but max_turns as its allowance under on_limit: end_turn; scorers
- *         check                   needs [the one above]; command teamai benchmark check --trial; workspace continue (tasks with a check only)
+ *         check                   needs [the one above]; command: the task's check.run; workspace continue; output as a
+ *                                 baseline's (tasks with a check only)
  *   settled                       needs every scope above; an `if` that reads them; end: settled
  *
  * With `parallel` above 1, the repetitions sit in `lane<n>` scopes, one per lane a trial is in, each needing [baselines] as the first
@@ -364,6 +368,10 @@ export interface CompiledBundle {
  *
  * Step ids are those `stepOf` and `baselineStepOf` name, under the step that runs the workflow. `unattended`: the step
  * that runs it is a strict sandbox, so its prompts may run unattended; an arm's workflow copies say so of their own.
+ *
+ * A check step runs only the task's own command, where the step runtime runs it: it runs the agent's code, so it stays
+ * in the sandbox, which needs no teamai. teamai does the rest on this machine around it (trial.ts): it puts the protected
+ * paths back and writes check.add as it prepares the step's place, and decides the step's output from its exit code.
  */
 export function compileBundle(
   plan: BenchmarkPlan, { suite }: CommittedSuite, { armWorkflows = new Map(), unattended, correctnessRubric }: { armWorkflows?: ReadonlyMap<string, PinnedArmWorkflow>; unattended: boolean; correctnessRubric: string },
@@ -373,7 +381,7 @@ export function compileBundle(
   const checkOutput = { result: CHECK_RESULTS.join(' | '), cause: 'string', label: 'string' };
 
   const baselines = chained(suite.tasks.flatMap((task): FileStep[] => (task.judge.kind !== 'criteria'
-    ? [{ id: task.id, command: 'teamai benchmark check --baseline', workspace: { clone: { commit: task.startingCommit, repo: suite.repo, team: { treatment: 'none' } } }, output: checkOutput }]
+    ? [{ id: task.id, command: task.judge.check.run, workspace: { clone: { commit: task.startingCommit, repo: suite.repo, team: { treatment: 'none' } } }, output: checkOutput }]
     : [])), plan.parallel ?? 1);
 
   const tried = baselines.length > 0;
@@ -419,7 +427,7 @@ export function compileBundle(
 
     if (!task || !arm) return [];
     const work = workOf(arm, task);
-    const check = task.judge.kind !== 'criteria' ? [{ id: 'check', needs: [work.id], command: 'teamai benchmark check --trial', workspace: 'continue', output: checkOutput }] : [];
+    const check = task.judge.kind !== 'criteria' ? [{ id: 'check', needs: [work.id], command: task.judge.check.run, workspace: 'continue', output: checkOutput }] : [];
     const step: FileStep = { id: arm.name };
 
     if (task.judge.kind !== 'criteria') step.if = `steps.${BASELINES}.outputs.${task.id} == 'failed'`;

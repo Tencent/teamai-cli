@@ -10,9 +10,11 @@ import { agentFormatOf } from '../tool-registry.js';
 import type { LocalConfig } from '../types.js';
 import { errnoCode } from '../utils/fs.js';
 import type { ConfinedLease } from './lease-wire.js';
-import { ConfinedLevelSchema, type DriverCan, type Held } from './requirements.js';
+import { ConfinedLevelSchema } from '@teamai/runtime-protocol';
+import type { DriverCan, Held } from './requirements.js';
 import { chooseStepModel, type StepModel } from './step-model.js';
 import type { WorkflowFailure } from './types.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 export const CONFINED_FILE = 'confined.json';
 
@@ -30,7 +32,11 @@ export const ConfinedFileSchema = z.object({
 
 export type ConfinedFile = z.infer<typeof ConfinedFileSchema>;
 
-/** A checked confined directory: its real path, and its `confined.json` with `schema` made the real path of that file. */
+/**
+ * A checked confined directory: its path under the run's `$TEAMAI_RUN_DIR` as the run spells it, which is how the
+ * prompts rendered from that variable name it, below it no link; and its `confined.json` with `schema` made the path of
+ * that file.
+ */
 export type ConfinedDir = ConfinedFile & { dir: string };
 
 export type ConfinedDirCheck = { ok: true; place: ConfinedDir } | { ok: false; failure: WorkflowFailure };
@@ -69,7 +75,7 @@ async function jsonFile(file: string): Promise<{ ok: true; value: unknown } | { 
   if (!stat?.isFile()) return { ok: false, reason: stat ? 'is not a regular file' : 'does not exist' };
 
   try {
-    return { ok: true, value: JSON.parse(await fs.readFile(file, 'utf8')) };
+    return { ok: true, value: JSON.parse(await readRegularFile(file, 'utf8')) };
   } catch (error) {
     return { ok: false, reason: `is not JSON: ${error instanceof Error ? error.message : String(error)}` };
   }
@@ -86,8 +92,11 @@ async function schemaFile(step: string, dir: string, schema: string): Promise<{ 
   return { ok: false, check: invalid(`Step "${step}" names reply schema ${schema} in ${path.join(dir, CONFINED_FILE)}, which ${why}. Write the schema as a JSON object in a file of the directory, and name its path relative to it.`) };
 }
 
-/** The real path of `target`, a directory that is no link, under the real `runDir`; or why it is not one, after "which". */
-async function realDir(target: string, runDir: string): Promise<{ ok: true; real: string } | { ok: false; why: string }> {
+/**
+ * `target`, a directory that is no link whose real path is under the real `runDir`, spelled as `runDir` followed by its
+ * real path below it; or why it is not one, after "which".
+ */
+async function dirUnderRun(target: string, runDir: string): Promise<{ ok: true; placed: string } | { ok: false; why: string }> {
   const stat = await lstatOf(target);
 
   if (!stat) return { ok: false, why: `does not exist. ${HOW}.` };
@@ -97,7 +106,7 @@ async function realDir(target: string, runDir: string): Promise<{ ok: true; real
   if (!stat.isDirectory()) return { ok: false, why: `is not a directory. ${HOW}.` };
   const [real, root] = await Promise.all([fs.realpath(target), fs.realpath(runDir)]);
 
-  return isInside(root, real) ? { ok: true, real } : { ok: false, why: `is not under the run's $TEAMAI_RUN_DIR, ${root}. ${HOW}.` };
+  return isInside(root, real) ? { ok: true, placed: path.join(runDir, path.relative(root, real)) } : { ok: false, why: `is not under the run's $TEAMAI_RUN_DIR, ${root}. ${HOW}.` };
 }
 
 /** Why `file`, a `confined.json` that holds JSON, is not one teamai reads: each of `issues`, at its key. */
@@ -110,16 +119,17 @@ function unreadConfinedFile(input: { step: string; file: string; issues: z.core.
 /**
  * Checks `dir`, the directory step `step` was rendered to, a relative one under `runDir`, the run's `$TEAMAI_RUN_DIR`:
  * it is a directory, not a link, whose real path is under the real `runDir`, and it holds a `confined.json` teamai reads.
+ * The place it answers keeps `runDir`'s spelling, so the step's prompt and a runtime's `confined.dir` name it alike.
  * Every refusal is `confined_invalid`, which fails the step: the next lease would find the same directory.
  */
 export async function checkConfinedDir({ step, runDir, dir }: { step: string; runDir: string; dir: string }): Promise<ConfinedDirCheck> {
   const target = path.resolve(runDir, dir);
-  const found = await realDir(target, runDir);
+  const found = await dirUnderRun(target, runDir);
   const at = `Step "${step}" runs confined to ${target}`;
 
   if (!found.ok) return invalid(`${at}, which ${found.why}`);
-  const { real } = found;
-  const file = path.join(real, CONFINED_FILE);
+  const { placed } = found;
+  const file = path.join(placed, CONFINED_FILE);
   const read = await jsonFile(file);
 
   if (!read.ok) return invalid(`${at}, whose ${CONFINED_FILE} ${read.reason}. Write ${CONFINED_FILE} there with the level the step runs at, such as {"level":"verified"}.`);
@@ -128,10 +138,10 @@ export async function checkConfinedDir({ step, runDir, dir }: { step: string; ru
   if (!parsed.success) return unreadConfinedFile({ step, file, issues: parsed.error.issues });
   const { schema, ...rest } = parsed.data;
 
-  if (schema === undefined) return { ok: true, place: { ...rest, dir: real } };
-  const named = await schemaFile(step, real, schema);
+  if (schema === undefined) return { ok: true, place: { ...rest, dir: placed } };
+  const named = await schemaFile(step, placed, schema);
 
-  return named.ok ? { ok: true, place: { ...rest, schema: named.file, dir: real } } : named.check;
+  return named.ok ? { ok: true, place: { ...rest, schema: named.file, dir: placed } } : named.check;
 }
 
 /**

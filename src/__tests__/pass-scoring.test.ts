@@ -231,6 +231,31 @@ describe('PassScoring.said', () => {
     expect(PassScoring.said('run:r1:review:1', run, done([{ item: {}, outcome: 'failed' }])).line).toContain('no scorer sampled it');
   });
 
+  it('says each scorer of a group whose steps failed before it labelled failed a score step, rather than that teamai is too old', () => {
+    // teamai-score answers a group that failed before write, as when its evidence step found no session, with null labels.
+    const broke = [{ item: { subject: 'run:r1:review:1', scorers: 'quality,depth' }, outcome: 'failed', outputs: { labels: null, written: null } }];
+
+    expect(PassScoring.said('run:r1:review:1', run, done(broke))).toEqual({
+      kind: 'scored', line: `run:r1:review:1: quality score_step_failed, depth score_step_failed (teamai-score run ${run}).`,
+    });
+  });
+
+  it('says it cannot read a group that failed before it labelled when it does not name its scorers, rather than that no scorer sampled it', () => {
+    const unnamed = [{ item: { subject: 'run:r1:review:1' }, outcome: 'failed', outputs: { labels: null, written: null } }];
+
+    expect(PassScoring.said('run:r1:review:1', run, done(unnamed))).toEqual({
+      kind: 'pending', line: `run:r1:review:1 is not labelled: teamai-score run ${run} answered outputs this teamai cannot read (outputs.labels.0.item.scorers: a group that labelled nothing names no scorers). Update teamai.`,
+    });
+  });
+
+  it('says each scorer of a group whose judge was cancelled was cancelled, not that a score step failed', () => {
+    const cancelled = [{ item: { scorers: 'quality,depth' }, outcome: 'cancelled', outputs: { labels: null, written: null, judged: 'cancelled' } }];
+
+    expect(PassScoring.said('run:r1:review:1', run, done(cancelled))).toEqual({
+      kind: 'scored', line: `run:r1:review:1: quality cancelled, depth cancelled (teamai-score run ${run}).`,
+    });
+  });
+
   it('says it cannot read a done whose labels are not the shape teamai-score gives, rather than that no scorer sampled it', () => {
     const renamed = [{ item: {}, outcome: 'success', outputs: { labels: [{ scorer: 'quality', verdict: 'good' }] } }];
 

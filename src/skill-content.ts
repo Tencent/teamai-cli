@@ -1,10 +1,11 @@
 import fs from 'node:fs';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import path from 'node:path';
 import chalk from 'chalk';
 import { packageRoot } from './package-info.js';
 import { listFilesRecursive, pathExists } from './utils/fs.js';
 import { readSkillDescription } from './agent-skills.js';
-import { log, setStderrOnly } from './utils/logger.js';
+import { log, setStderrOnly } from '@teamai/shared/log';
 import type { TeamaiInit } from './config.js';
 
 // ─── CLI-served skill content ────────────────────────────
@@ -423,7 +424,7 @@ async function collectSupplementaryFiles(skillDir: string): Promise<Array<{ rela
     for (const relativePath of relativePaths) {
       files.push({
         relativePath,
-        content: await fs.promises.readFile(path.join(skillDir, relativePath), 'utf8'),
+        content: await readRegularFile(path.join(skillDir, relativePath), 'utf8'),
       });
     }
   }
@@ -443,7 +444,7 @@ function withTrailingNewline(text: string): string {
 export async function renderSkill(skill: PackagedSkill, options: { full?: boolean } = {}): Promise<string> {
   const resolve = (text: string): string => text.split(SKILL_DIR_PLACEHOLDER).join(skill.dir);
 
-  let out = withTrailingNewline(resolve(await fs.promises.readFile(path.join(skill.dir, SKILL_MD), 'utf8')));
+  let out = withTrailingNewline(resolve(await readRegularFile(path.join(skill.dir, SKILL_MD), 'utf8')));
 
   if (options.full) {
     for (const file of await collectSupplementaryFiles(skill.dir)) {

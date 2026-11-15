@@ -4,9 +4,9 @@ import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
 import { startMockServer, type MockServerHandle } from './helpers/mock-server.js';
-import { installFakeCodex, readFakeCodexState } from './helpers/fake-codex.js';
+import { installFakeCodex, readFakeCodexState } from '@teamai/tool-codex/testing';
 import * as gitHook from '../git-hook.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 let tmpDir: string;
 let originalHome: string;
@@ -73,7 +73,7 @@ describe('teamai init --http (read-only onboarding)', () => {
       const { loadLocalConfigForScope, loadTeamConfig } = await import('../config.js');
       const config = await loadLocalConfigForScope('project', project);
       if (!config) throw new Error('HTTP init did not write its project config');
-      const teamConfig = await loadTeamConfig(config.repo.localPath);
+      const teamConfig = await loadTeamConfig(config.repo.localPath, null);
       if (!teamConfig) throw new Error('HTTP init did not write its team config');
       const { readCodexHookTrustForScope } = await import('../hooks.js');
       expect(await readCodexHookTrustForScope(teamConfig, config)).toMatchObject({ kind: 'listed', notTrusted: [] });

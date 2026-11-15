@@ -22,11 +22,11 @@ import { SessionCaptures } from './session-flow/captures.js';
 import { getDataHome, type DashboardEvent, type LocalConfig, type UserOutcomeStats } from './types.js';
 import { pathExists, readJson, writeJson } from './utils/fs.js';
 import { checkoutForRepoAnchor, getCurrentBranch, getDefaultBranch, getHeadCommit } from './utils/git.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { CommitIdSchema } from './workflow/delivery-schema.js';
 import { findDelivered } from './workflow/pr-delivery.js';
 import { PrUrlSchema } from './workflow/pr-url.js';
-import { git } from './workflow/worktree.js';
+import { git, gitAnswer } from './workflow/worktree.js';
 
 const GIT_TIMEOUT_MS = 10_000;
 
@@ -248,9 +248,10 @@ async function lookUpPr({ cwd, branch, commits }: { cwd: string; branch: string;
   if (branch === target) return undefined;
 
   const pushed = await Promise.all(commits.map(async (sha) =>
-    (await git(cwd, ['merge-base', '--is-ancestor', sha, `refs/remotes/origin/${branch}`], { timeoutMs: GIT_TIMEOUT_MS })).code === 0));
+    gitAnswer(await git(cwd, ['merge-base', '--is-ancestor', sha, `refs/remotes/origin/${branch}`], { timeoutMs: GIT_TIMEOUT_MS })).said));
 
-  if (!pushed.includes(true)) return undefined;
+  // A git that did not start gave no answer, so nothing is cached.
+  if (!pushed.includes('yes') || pushed.includes('nothing')) return undefined;
   const found = await findDelivered(cwd, { branch, target });
 
   switch (found.kind) {

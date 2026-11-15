@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { reconcileHooks } from '../hooks.js';
-import { parseJsonAs, type JsonSyntax } from '../utils/json.js';
+import { type JsonSyntax } from '@teamai/shared/json';
+import { parseJsonAs } from '../utils/json.js';
 
 /**
  * A tool that reads its hook file with comments keeps working when the member

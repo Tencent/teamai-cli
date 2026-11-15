@@ -30,6 +30,7 @@ import type { DashboardEvent } from '../types.js';
 import { useToolInstances } from '../tool-registry.js';
 import * as pidMonitor from '../pid-monitor.js';
 import { _resetState as resetLogger, _setLogFilePath } from '@teamai/shared/debug-log';
+import { signalPid } from '@teamai/shared/process-group';
 
 // ─── Transcript fixtures for intervention scanning ──────
 const INTERRUPT_LINE = JSON.stringify({
@@ -2563,7 +2564,7 @@ describe('events file lock (#804)', () => {
     await ensureEventsDir();
     await fs.promises.writeFile(
       `${eventsPath()}.lock`,
-      JSON.stringify({ pid, startedAt: '2026-01-01T00:00:00Z', owner: 'other' }),
+      JSON.stringify({ pid, startedAt: new Date().toISOString(), owner: 'other' }),
       'utf-8',
     );
   };
@@ -2617,14 +2618,20 @@ describe('events file lock (#804)', () => {
     // lock-free pre-check read runs before it, and the realpath'd target it
     // reads under the lock differs from eventsPath() on macOS (/private
     // prefix), so both are matched by file name.
-    const realReadFile = fs.promises.readFile;
+    const realOpen = fs.promises.open;
     let reads = 0;
-    const spy = vi.spyOn(fs.promises, 'readFile').mockImplementation(async (file, options) => {
-      const content = await realReadFile(file, options);
-      if (path.basename(String(file)) === 'events.jsonl' && fs.existsSync(`${eventsPath()}.lock`) && ++reads === 2) {
-        await appendEvent(event('live-b', { monitorPid: process.pid }));
-      }
-      return content;
+    const spy = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+      const handle = await realOpen(...args);
+      if (path.basename(String(args[0])) !== 'events.jsonl') return handle;
+      const realRead = handle.readFile.bind(handle);
+      vi.spyOn(handle, 'readFile').mockImplementation(async (options) => {
+        const content = await realRead(options);
+        if (fs.existsSync(`${eventsPath()}.lock`) && ++reads === 2) {
+          await appendEvent(event('live-b', { monitorPid: process.pid }));
+        }
+        return content;
+      });
+      return handle;
     });
     try {
       await compactEvents(eventsPath());
@@ -3164,10 +3171,13 @@ describe('dashboard-report records the git state a session started on', () => {
     const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf-8' }).stdout.trim();
     const wrapperDir = path.join(tmpDir, 'git-wrapper');
     fs.mkdirSync(wrapperDir);
-    // Hangs on the two reads a Stop makes, and leaves a child that holds the pipe once it is killed.
+    const holders = path.join(wrapperDir, 'holders');
+    // Hangs on the two reads a Stop makes, ending on the interrupt that stops git as git does, and leaves a child that
+    // holds the pipe once it is killed: a background child of a script ignores the interrupt. It notes that child, which
+    // only the test can stop.
     fs.writeFileSync(path.join(wrapperDir, 'git'), [
       '#!/bin/sh',
-      'case "$*" in *"rev-parse --verify"*|*"symbolic-ref --quiet"*) (sleep 12) & sleep 12 ;; esac',
+      `case "$*" in *"rev-parse --verify"*|*"symbolic-ref --quiet"*) sleep 12 & echo $! >> '${holders}'; exec sleep 12 ;; esac`,
       `exec ${realGit} "$@"`,
       '',
     ].join('\n'), { mode: 0o755 });
@@ -3178,6 +3188,10 @@ describe('dashboard-report records the git state a session started on', () => {
       await runHook({ hook_event_name: 'Stop', session_id: 'git-hangs', cwd: repo });
     } finally {
       process.env.PATH = originalPath;
+
+      for (const pid of fs.existsSync(holders) ? fs.readFileSync(holders, 'utf8').split('\n').filter(Boolean) : []) {
+        signalPid(Number(pid), 'SIGKILL');
+      }
     }
 
     // The Stop handler is stopped after 4.5 seconds, its event unwritten.

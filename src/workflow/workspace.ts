@@ -4,7 +4,7 @@
  */
 import { z } from 'zod';
 import { sameDriver } from '../driver-identity.js';
-import type { JsonValue } from '../types.js';
+import type { JsonValue } from '@teamai/shared/json';
 import { jsonType } from './expression.js';
 import { itemsAfter, itemsOf } from './fan-out.js';
 import { isUnder, passesWithin, runPasses, type RunPass } from './loop.js';
@@ -13,7 +13,8 @@ import { parseStepPath } from './step-path.js';
 import { renderLeaseText, renderValue, stepRoleSpec, type StepRoleSpec } from './template.js';
 import { passOf, type Delivery, type StepState } from './step-state.js';
 import { ClonePlaceSchema, type ClonePlace } from './clone.js';
-import { isWorkflowFile, stepWorkflow, workflowRunBy, type DriverIdentity, type InlineWorkflow, type RunState, type TeamPlace, type WorkflowDefinition, type WorkflowFailure, type WorkflowStep, type WORKSPACE_MODES } from './types.js';
+import { isWorkflowFile, stepWorkflow, workflowRunBy, type DriverIdentity, type InlineWorkflow, type RunState, type TeamPlace, type WorkflowDefinition, type WorkflowFailure, type WorkflowStep } from './types.js';
+import type { WORKSPACE_MODES } from '@teamai/runtime-protocol';
 
 export type WorkspaceMode = typeof WORKSPACE_MODES[number];
 
@@ -387,6 +388,20 @@ function splitLevels(levels: PathLevel[], path: string): { own?: PathLevel; ance
 /** The nearest level around `path` that opens the copy the steps inside it work in, the run's own included. */
 function copyOwner(run: StepTree, path: string): PathLevel | undefined {
   return splitLevels(levelsTo(run, path), path).ancestors.toReversed().find((ancestor) => opensCopy(ancestor.step));
+}
+
+/**
+ * The workspace step `path` shares with the steps beside it, so one conversation may go on from one of them to the next:
+ * the branch of the copy a step around it opens, when the step works in that copy (no workspace of its own, or
+ * `workspace: continue`). Undefined for a step that gets a place of its own, such as a top-level step.
+ */
+export function sharedWorkspace(run: RunState, path: string): string | undefined {
+  const { own, ancestors } = splitLevels(levelsTo(run, path), path);
+
+  if (!own || confinedOf(own.step) !== undefined || resolveMode(own.step, ancestors.map((ancestor) => ancestor.step)) !== 'continue') return undefined;
+  const owner = ancestors.toReversed().find((ancestor) => opensCopy(ancestor.step));
+
+  return owner?.kind === 'step' ? ownerBranch(run.id, owner) : undefined;
 }
 
 /** The branch of the copy `owner` opens: the run's own copy, or the branch of the step instance and its pass. */
@@ -783,6 +798,25 @@ function latestContinuation(run: RunState, session: SessionRef | undefined): Lea
 }
 
 /**
+ * The step `session.from: name` of a step in `scope` resumes: the step of that name in the scope, else, inside a nested
+ * scope, the one beside its enclosing step. Undefined when there is none.
+ */
+export function sessionSource(run: RunState, scope: Scope, name: string): { state: StepState; definition: WorkflowStep } | undefined {
+  const local = statesIn(run, scope).find((item) => localId(scope, item) === name);
+  const localDefinition = scope.definition.steps.find((item) => item.id === name);
+
+  if (local && localDefinition) return { state: local, definition: localDefinition };
+
+  if (local || !scope.prefix) return undefined;
+  const parent = scope.prefix.slice(0, -1);
+  const grand = parent.includes('.') ? parent.slice(0, parent.lastIndexOf('.') + 1) : '';
+  const outer = run.steps.find((item) => item.id === `${grand}${name}`);
+  const outerDefinition = outer ? stepDefinitions(run)(outer.id) : undefined;
+
+  return outer && outerDefinition ? { state: outer, definition: outerDefinition } : undefined;
+}
+
+/**
  * The session a step resumes: its own latest with `session: continue`, or the latest of the step `session.from` names,
  * as later steps that continued it left it.
  */
@@ -814,16 +848,9 @@ export function sessionOf(run: RunState, scope: Scope, state: StepState, definit
   }
 
   const name = definition.session.from;
-  const states = statesIn(run, scope);
-  let target = states.find((item) => localId(scope, item) === name);
-  let targetDefinition = scope.definition.steps.find((item) => item.id === name);
-
-  if (!target && scope.prefix) {
-    const parent = scope.prefix.slice(0, -1);
-    const grand = parent.includes('.') ? parent.slice(0, parent.lastIndexOf('.') + 1) : '';
-    target = run.steps.find((item) => item.id === `${grand}${name}`);
-    targetDefinition = target ? stepDefinitions(run)(target.id) : undefined;
-  }
+  const source = sessionSource(run, scope, name);
+  const target = source?.state;
+  const targetDefinition = source?.definition;
 
   if (!target || !targetDefinition) {
     return { code: 'bad_session', message: `step "${state.id}" resumes "${name}", which is not a step it can read` };

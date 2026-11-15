@@ -5,7 +5,7 @@ import { fetchGitHubPR } from './providers/github/mr-fetch.js';
 import { fetchGitLabMR } from './providers/gitlab/mr-fetch.js';
 import { fetchTGitMR } from './providers/tgit/mr-fetch.js';
 import type { MRData, MRFetchOptions, MRThread } from './types.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 /**
  * Auto-detects the provider from the URL and fetches MR data.

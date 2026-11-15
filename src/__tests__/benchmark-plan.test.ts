@@ -6,12 +6,14 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
-import * as cliPaths from '../utils/cli-path.js';
-import { trialsOf } from '../benchmark/plan.js';
+import * as cliPaths from '@teamai/shared/cli-path';
+import { compileBundle, trialsOf, type BenchmarkPlan } from '../benchmark/plan.js';
+import type { PinnedArmWorkflow } from '../benchmark/arm-workflow.js';
+import { decideCheckReport } from '../benchmark/trial.js';
 import { planBenchmark } from '../benchmark/start.js';
 import { ScoreVerbs } from '../score-verbs.js';
 import { attemptEnv } from '../workflow/attempt-marker.js';
-import { benchmarkRecord, type BenchmarkRecord } from '../benchmark/result.js';
+import { benchmarkRecord, uncheckedChecks, unmeasuredTrials, type BenchmarkRecord } from '../benchmark/result.js';
 import { planOfRun } from '../benchmark/run-plan.js';
 import { TrialVerdicts } from '../benchmark/verdicts.js';
 import { LabelStore } from '../scorers/label-store.js';
@@ -27,7 +29,7 @@ import { resolveWorkflowEnv } from '../env-resolution.js';
 import { benchmarkTable, formatBenchmarkTable } from '../benchmark/table.js';
 import { comparePair, type PairSide } from '../benchmark/pairing.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
-import { benchmarkRunConfig, PLANNED_BENCHMARK, RUN_START, RUN_TEAM, settleBaselines, startBenchmarkRun, trialCheckOutput } from './helpers/benchmark-fixture.js';
+import { benchmarkRunConfig, frozenBenchmark, PLANNED_BENCHMARK, RUN_START, RUN_TEAM, settleBaselines, startBenchmarkRun, trialCheckOutput } from './helpers/benchmark-fixture.js';
 
 const driver: DriverIdentity = { kind: 'external', machine: 'ci', workspace: '/work' };
 const can: DriverCan = { workspace: ['read-only', 'new', 'continue', 'clone'], isolation: 'sandbox', env: true, tools: ['claude'], end_turn: true };
@@ -65,6 +67,28 @@ async function startFix(shape?: Parameters<typeof suiteOf>[0]): Promise<{ config
   const started = await startBenchmarkRun(config, suiteOf(shape));
   if ('error' in started) throw new Error(started.error.message);
   return { config, runId: String(started.data.run) };
+}
+
+/** A run of suite `fix`, of `body` when given, whose plan step printed the plan as a teamai of plan schemaVersion 2 froze it. */
+async function outdatedRun(body?: string): Promise<{ config: LocalConfig; runId: string }> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-plan-'));
+  dirs.push(root);
+  const config = benchmarkRunConfig(root);
+  const started = await startBenchmarkRun(config, suiteOf(), { ...(body !== undefined && { body }), outputsOf: (bundle, plan) => ({ definition: { ...bundle, workflows: {} }, plan: { ...plan, schemaVersion: 2 } }) });
+  if ('error' in started) throw new Error(started.error.message);
+  return { config, runId: String(started.data.run) };
+}
+
+/** The checks of `run` the run's report names as having not run. */
+function uncheckedOf(run: RunState): string[] {
+  const planned = planOfRun(run);
+  if ('failure' in planned) throw new Error(planned.failure.message);
+  return uncheckedChecks(run, planned.found);
+}
+
+/** The trials of `run` the run's report names as having ended in an error when no trial produced a result. */
+function unmeasuredOf(run: RunState): string[] {
+  return unmeasuredTrials(run, recordOf(run).trials);
 }
 
 /** The benchmark record the run's report would write, from the plan its plan step printed and no verdict. */
@@ -114,9 +138,41 @@ describe('benchmark plan run', () => {
     const next = await leaseNext(config, runId, driver, { can, prepare: true });
 
     expect(next).toMatchObject({ data: { lease: {
-      step: 'trials.baselines.t01', command: 'teamai benchmark check --baseline',
+      step: 'trials.baselines.t01', command: 'node test.js',
       workspace: { mode: 'new', base: { commit: RUN_START }, clone: { commit: RUN_START, team: { treatment: 'none' } } },
     } } });
+  });
+
+  it('refuses a driver every step of a run whose plan a teamai before an upgrade froze, as resume refuses it, and leases none', async () => {
+    const { config, runId } = await outdatedRun();
+
+    const next = await leaseNext(config, runId, driver, { can, prepare: true });
+
+    expect(next).toEqual({ error: {
+      code: 'benchmark_plan_outdated',
+      message: `Run ${runId} measures a benchmark plan of schemaVersion 2, which the teamai that started it froze, and this teamai reads only schemaVersion 3, so the run cannot go on here. Run it with the teamai that started it, or start the suite again with teamai benchmark run fix.`,
+    } });
+    const run = await readRun(config, runId);
+    expect(typeof run === 'object' && run.steps.filter((step) => step.status === 'leased').map((step) => step.id)).toEqual([]);
+  });
+
+  it('ends a run whose plan a teamai before an upgrade froze at its timeout, on the next of any driver', async () => {
+    const { config, runId } = await outdatedRun();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + 11 * 60_000);
+
+    const next = await leaseNext(config, runId, driver, { can, prepare: true });
+
+    expect(next).toMatchObject({ data: { done: { outcome: 'failed', failure: { code: 'timeout' } } } });
+  });
+
+  it('ends a run whose plan a teamai before an upgrade froze at one cancel, running none of its finally steps', async () => {
+    const { config, runId } = await outdatedRun(`${PLANNED_BENCHMARK}finally:\n  - id: report\n    command: teamai benchmark report\n`);
+
+    await cancelRun(config, runId, {});
+
+    const run = await readRun(config, runId);
+    expect(typeof run === 'object' && { status: run.status, report: run.steps.find((step) => step.id === 'report') }).toEqual({ status: 'cancelled', report: undefined });
   });
 
   it('leases a trial prompt in a clone of the starting commit with the arm\'s team once its task baseline fails there', async () => {
@@ -308,10 +364,10 @@ describe('benchmark plan run', () => {
   });
 
   it.each([
-    ['passed', { result: 'passed', verdicts: [{ scorer: 'teamai:correctness:t01', outcome: { kind: 'labelled', label: 'correct', score: 1, passed: true }, decider: { by: 'check', task: 'TASK' } }] }],
-    ['failed', { result: 'failed', verdicts: [{ scorer: 'teamai:correctness:t01', outcome: { kind: 'labelled', label: 'incorrect', score: 0, passed: false }, decider: { by: 'check', task: 'TASK' } }] }],
-    ['could_not_run', { result: 'error', failure: { cause: 'not_found' }, verdicts: [{ scorer: 'teamai:correctness:t01', outcome: { kind: 'unscored', because: 'check_could_not_run' } }] }],
-  ] as const)('records a trial whose check outputs %s by the correctness label that check stored, launching no judge', async (output, recorded) => {
+    ['passed', { result: 'passed', verdicts: [{ scorer: 'teamai:correctness:t01', outcome: { kind: 'labelled', label: 'correct', score: 1, passed: true }, decider: { by: 'check', task: 'TASK' } }] }, []],
+    ['failed', { result: 'failed', verdicts: [{ scorer: 'teamai:correctness:t01', outcome: { kind: 'labelled', label: 'incorrect', score: 0, passed: false }, decider: { by: 'check', task: 'TASK' } }] }, []],
+    ['could_not_run', { result: 'error', failure: { cause: 'not_found' }, verdicts: [{ scorer: 'teamai:correctness:t01', outcome: { kind: 'unscored', because: 'check_could_not_run' } }] }, ['Trial 1/1 t01 a01: not_found']],
+  ] as const)('records a trial whose check outputs %s by the correctness label that check stored, launching no judge', async (output, recorded, unchecked) => {
     const { config, runId } = await startFix();
     const prompt = await leasePrompt(config, runId);
     await reportAttempt(config, runId, { ...prompt, outcome: 'success', driver });
@@ -327,17 +383,32 @@ describe('benchmark plan run', () => {
     if ('failure' in planned) throw new Error(planned.failure.message);
     const task = planned.found.plan.tasks[0]?.sourceHash;
     const record = await judgedRecordOf(config, run);
-    expect(check).toMatchObject({ step: 'trials.r1.t01.a01.check', command: 'teamai benchmark check --trial' });
+    expect(check).toMatchObject({ step: 'trials.r1.t01.a01.check', command: 'node test.js' });
     expect(next).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(record.trials).toEqual([expect.objectContaining(JSON.parse(JSON.stringify(recorded).replaceAll('TASK', task ?? '')))]);
     expect(record.scorers).toEqual([{ name: 'teamai:correctness:t01', rubric: { sourceHash: expect.any(String) }, labels: [{ value: 'correct', score: 1 }, { value: 'incorrect', score: 0 }], passingScore: 1 }]);
     expect(run.steps.map((step) => step.id).filter((id) => id.includes('score'))).toEqual([]);
+    expect(uncheckedOf(run)).toEqual(unchecked);
+  });
+
+  it('fails a check step reported without its exit code, whatever outputs the report carries', async () => {
+    const { config, runId } = await startFix();
+    const prompt = await leasePrompt(config, runId);
+    await reportAttempt(config, runId, { ...prompt, outcome: 'success', driver });
+    const check = LeaseSchema.parse(await leaseNext(config, runId, driver, { can, prepare: true })).data.lease;
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
+
+    const decided = await decideCheckReport({ config, run, report: { ...check, outcome: 'success', driver, outputs: { result: 'passed', cause: '', label: '' } } });
+
+    expect(decided).toMatchObject({ outcome: 'failed', failure: { code: 'invalid_report', message: expect.stringContaining('report its exitCode') } });
+    expect(decided).not.toHaveProperty('outputs');
   });
 
   it.each([
-    ['passed', 'invalid'],
-    ['could_not_run', 'could_not_run'],
-  ] as const)('runs no trial of a task whose baseline %s, and ends the run with its baseline in the record', async (baseline, recorded) => {
+    ['passed', 'invalid', []],
+    ['could_not_run', 'could_not_run', ['Baseline t01: not_found']],
+  ] as const)('runs no trial of a task whose baseline %s, and ends the run with its baseline in the record', async (baseline, recorded, unchecked) => {
     const { config, runId } = await startFix({ arms: 2, repetitions: 2 });
     await settleBaselines(config, runId, driver, can, { t01: baseline });
 
@@ -350,6 +421,7 @@ describe('benchmark plan run', () => {
       tasks: [{ id: 't01', baseline: recorded }],
       trials: Array(4).fill(expect.objectContaining({ result: 'not_run' })),
     });
+    expect(uncheckedOf(run)).toEqual(unchecked);
   });
 
   it('records that the check could not run for a baseline the run stopped while it ran', async () => {
@@ -374,6 +446,7 @@ describe('benchmark plan run', () => {
     if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
     expect(next).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(recordOf(run)).toMatchObject({ tasks: [{ id: 't01', baseline: 'could_not_run' }], trials: [{ result: 'not_run' }] });
+    expect(uncheckedOf(run)).toEqual(['Baseline t01: its step failed']);
   });
 
   it("ends the run failed at its timeout while a trial's check runs, and records the trial an error", async () => {
@@ -389,7 +462,7 @@ describe('benchmark plan run', () => {
     const run = await readRun(config, runId);
     if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
     expect(next).toMatchObject({ data: { done: { outcome: 'failed', failure: { code: 'timeout' } } } });
-    expect(recordOf(run)).toMatchObject({ tasks: [{ id: 't01', baseline: 'valid' }], trials: [{ step: 'trials.r1.t01.a01.prompt', result: 'error' }] });
+    expect(recordOf(run)).toMatchObject({ tasks: [{ id: 't01', baseline: 'valid' }], trials: [{ step: 'trials.r1.t01.a01.prompt', result: 'error', failure: { cause: 'timeout' } }] });
   });
 
   it("runs a task's trials whatever another task's baseline did, and ends the run succeeded with both scopes failed", async () => {
@@ -410,10 +483,109 @@ describe('benchmark plan run', () => {
     });
   });
 
+  it('names each trial whose work ended in an error, with why, when no trial produced a result', async () => {
+    const { config, runId } = await startFix({ tasks: 2 });
+    await settleBaselines(config, runId, driver, can, { t01: 'passed' });
+    const lease = LeaseSchema.parse(await leaseNext(config, runId, driver, { can, prepare: true })).data.lease;
+    await reportAttempt(config, runId, { ...lease, outcome: 'failed', driver, failure: { code: 'sandbox_failed', message: 'The attempt socket is too long.' } });
+
+    const next = await leaseNext(config, runId, driver, { can, prepare: true });
+
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
+    expect(next).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(recordOf(run).trials).toEqual([expect.objectContaining({ task: 't01', result: 'not_run' }), expect.objectContaining({ task: 't02', result: 'error' })]);
+    expect(unmeasuredOf(run)).toEqual(['Trial 2/2 t02 a01: sandbox_failed: The attempt socket is too long.']);
+  });
+
+  it('names no errored trial once another trial produced a result', async () => {
+    const { config, runId } = await startFix({ arms: 2 });
+    const failed = await leasePrompt(config, runId);
+    await reportAttempt(config, runId, { ...failed, outcome: 'failed', driver, failure: { code: 'sandbox_failed', message: 'The attempt socket is too long.' } });
+    const prompt = LeaseSchema.parse(await leaseNext(config, runId, driver, { can, prepare: true })).data.lease;
+    await reportAttempt(config, runId, { ...prompt, outcome: 'success', driver });
+    const check = LeaseSchema.parse(await leaseNext(config, runId, driver, { can, prepare: true })).data.lease;
+    await reportAttempt(config, runId, { ...check, outcome: 'success', exitCode: 0, outputs: await trialCheckOutput(config, runId, { checkStep: check.step, result: 'failed' }), driver });
+
+    await leaseNext(config, runId, driver, { can, prepare: true });
+
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
+    expect(recordOf(run).trials.map(({ result }) => result)).toEqual(['error', 'unscored']);
+    expect(unmeasuredOf(run)).toEqual([]);
+  });
+
+  it('names a trial that broke, and none that the cancel of the run stopped', async () => {
+    const { config, runId } = await startFix({ arms: 2 });
+    const failed = await leasePrompt(config, runId);
+    await reportAttempt(config, runId, { ...failed, outcome: 'failed', driver, failure: { code: 'sandbox_failed', message: 'The attempt socket is too long.' } });
+    LeaseSchema.parse(await leaseNext(config, runId, driver, { can, prepare: true }));
+
+    await cancelRun(config, runId, {});
+
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
+    expect(recordOf(run).trials.map(({ result }) => result)).toEqual(['error', 'error']);
+    expect(unmeasuredOf(run)).toEqual(['Trial 1/2 t01 a01: sandbox_failed: The attempt socket is too long.']);
+  });
+
+  it('names the step of a workflow arm that failed, not a sibling cancelled beside it', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-plan-'));
+    dirs.push(root);
+    const config = benchmarkRunConfig(root);
+    const files = suiteOf({ armsYaml: '{ name: flow }' });
+    const frozen = await frozenBenchmark(config, files);
+    if (!('plan' in frozen)) throw new Error(JSON.stringify(frozen));
+    // fix runs after explore whatever explore did, as the plan chains its own steps, so cancelling explore leaves fix to run and fail.
+    const key = 'two-ways.0123456789ab';
+    const pinned: PinnedArmWorkflow = {
+      name: 'two-ways', sourceHash: 'c'.repeat(64), key,
+      files: { [key]: { schemaVersion: 'v1alpha1', name: key, description: 'Two ways.', inputs: { task: 'string' }, steps: [
+        { id: 'explore', prompt: 'Explore: {{ inputs.task }}', tool: 'claude' },
+        { id: 'fix', needs: ['explore'], if: 'steps.explore.outcome != null', prompt: 'Fix it.', tool: 'claude' },
+      ] } },
+    };
+    const arms = frozen.plan.arms.map((arm) => ({ ...arm, workflow: { name: pinned.name, sourceHash: pinned.sourceHash } }));
+    const plan: BenchmarkPlan = { ...frozen.plan, arms, trials: trialsOf(frozen.committed.suite.tasks, arms, 1) };
+    const { scorers: _generated, ...bundle } = compileBundle(plan, frozen.committed, { armWorkflows: new Map([['flow', pinned]]), unattended: false, correctnessRubric: frozen.correctnessRubric });
+    const started = await startBenchmarkRun(config, files, { outputsOf: () => ({ definition: bundle, plan }) });
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    await settleBaselines(config, runId, driver, can);
+    const explore = LeaseSchema.parse(await leaseNext(config, runId, driver, { can, prepare: true })).data.lease;
+    await cancelRun(config, runId, {}, explore.step);
+    const fix = LeaseSchema.parse(await leaseNext(config, runId, driver, { can, prepare: true })).data.lease;
+
+    await reportAttempt(config, runId, { ...fix, outcome: 'failed', driver, failure: { code: 'tool_failed', message: 'The tool exited 1.' } });
+
+    await leaseNext(config, runId, driver, { can, prepare: true });
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
+    expect([explore.step, fix.step]).toEqual(['trials.r1.t01.flow.workflow.explore', 'trials.r1.t01.flow.workflow.fix']);
+    expect(recordOf(run).trials).toEqual([expect.objectContaining({ result: 'error' })]);
+    expect(unmeasuredOf(run)).toEqual(['Trial 1/1 t01 flow: tool_failed: The tool exited 1.']);
+  });
+
+  it('leaves a trial whose work succeeded and whose check could not run to the unchecked checks, though no trial produced a result', async () => {
+    const { config, runId } = await startFix();
+    const prompt = await leasePrompt(config, runId);
+    await reportAttempt(config, runId, { ...prompt, outcome: 'success', driver });
+    const check = LeaseSchema.parse(await leaseNext(config, runId, driver, { can, prepare: true })).data.lease;
+    await reportAttempt(config, runId, { ...check, outcome: 'success', exitCode: 0, outputs: await trialCheckOutput(config, runId, { checkStep: check.step, result: 'could_not_run' }), driver });
+
+    await leaseNext(config, runId, driver, { can, prepare: true });
+
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
+    expect(recordOf(run).trials).toEqual([expect.objectContaining({ result: 'error' })]);
+    expect(uncheckedOf(run)).toEqual(['Trial 1/1 t01 a01: not_found']);
+    expect(unmeasuredOf(run)).toEqual([]);
+  });
+
   it('holds every baseline and trial from its only driver when that driver is not a sandbox, rather than settling them', async () => {
     const { config, runId } = await startFix({ tasks: 2, parallel: 2 });
 
-    const next = await leaseNext(config, runId, driver, { can: { ...can, isolation: 'none' }, prepare: true, alone: true });
+    const next = await leaseNext(config, runId, driver, { can: { ...can, isolation: 'none' }, prepare: true, alone: { driver: 'local', offers: [{ runtime: 'local', can: { ...can, isolation: 'none' } }] } });
 
     expect(next).toMatchObject({ data: { wait: { held: [{ step: 'trials.baselines.t01', missing: ['isolation'] }, { step: 'trials.baselines.t02', missing: ['isolation'] }] } } });
     expect(await readRun(config, runId)).toMatchObject({ status: 'running', steps: expect.arrayContaining([expect.objectContaining({ id: 'trials.baselines', status: 'running' })]) });
@@ -432,7 +604,7 @@ describe('benchmark plan run', () => {
     const { config, runId } = await startFix({ arms: 2, tools: ['codex'] });
     await settleBaselines(config, runId, driver, can);
 
-    const next = await leaseNext(config, runId, driver, { can, prepare: true, alone: true });
+    const next = await leaseNext(config, runId, driver, { can, prepare: true, alone: { driver: 'local', offers: [{ runtime: 'local', can }] } });
 
     const run = await readRun(config, runId);
     expect(next).toMatchObject({ data: { lease: { step: 'trials.r1.t01.a02.prompt' } } });

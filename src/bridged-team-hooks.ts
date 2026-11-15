@@ -18,9 +18,10 @@ import { runHookCommand, type HookRun } from './hook-command.js';
 import { HookStdinSchema, stdinString, type HookStdin } from './hook-dispatch.js';
 import { type HookAdapterId } from '@teamai/tool-core/definition';
 import { channelsOf } from './tool-registry.js';
-import { areTeamHooksDisabled, getTeamaiHomeDir, JsonValueSchema, TEAMAI_AGENT_HOOK_PREFIX } from './types.js';
+import { areTeamHooksDisabled, getTeamaiHomeDir, TEAMAI_AGENT_HOOK_PREFIX } from './types.js';
+import { JsonValueSchema } from '@teamai/shared/json';
 import { readJsonObject } from './utils/fs.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 /** How a host reads a bridge's answer. */
 type ReplyFormat =
