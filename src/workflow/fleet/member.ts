@@ -821,7 +821,7 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
       await stopCommand();
       await command.exit.catch(() => undefined);
 
-      return finish({ exitCode: 1, stderr: `The member ran nothing of step "${lease.step}": ${fenced.reason}, and without it a member killed mid-step would leave the step running beside the one its owner offers again.` });
+      return await finish({ exitCode: 1, stderr: `The member ran nothing of step "${lease.step}": ${fenced.reason}, and without it a member killed mid-step would leave the step running beside the one its owner offers again.` });
     }
 
     fence = fenced.fence;
@@ -921,19 +921,22 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
 
     const saved = await save(`[teamai] ${lease.step} (run ${run}, attempt ${attempt})`);
 
-    if (cancelling) return answered(config, cancelling, { pushed: 'to' in saved ? saved.to : latest.pushed, ...(ran.tokens && { tokens: ran.tokens }), isStopped: await isStepStopped() });
+    if (cancelling) return await answered(config, cancelling, { pushed: 'to' in saved ? saved.to : latest.pushed, ...(ran.tokens && { tokens: ran.tokens }), isStopped: await isStepStopped() });
 
     // A prompt's owner reads its end from `failure`, not the exit code.
-    if ('error' in saved) return finish({ ...ran, exitCode: ran.exitCode === 0 ? 1 : ran.exitCode, stderr: saved.error, failure: { code: 'push_failed', message: saved.error } });
+    if ('error' in saved) return await finish({ ...ran, exitCode: ran.exitCode === 0 ? 1 : ran.exitCode, stderr: saved.error, failure: { code: 'push_failed', message: saved.error } });
 
     // A restarted member goes on from work its killed run pushed, which is the step's work even when this run adds none.
-    return finish(saved.to === claim.start ? ran : { ...ran, to: saved.to });
+    return await finish(saved.to === claim.start ? ran : { ...ran, to: saved.to });
   } finally {
     // The guardian stays while something of the step may still run here, and confirms its stop once it can.
     if (isStopped !== false) await fence?.end();
     // However the step ended, a run its command's process started and drove ends with it.
     await endRunsPartOf(config, { run, attempt });
-    await Promise.all([fs.rm(work, { recursive: true, force: true }), fs.rm(runDir, { recursive: true, force: true })]);
+
+    // What may still run here keeps the folders it works in: the member's recovery removes them with the attempt, once
+    // it confirmed the stop and `workflows.retention` passed.
+    if (isStopped !== false) await Promise.all([fs.rm(work, { recursive: true, force: true }), fs.rm(runDir, { recursive: true, force: true })]);
   }
 }
 

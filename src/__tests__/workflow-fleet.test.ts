@@ -1230,6 +1230,8 @@ describe('cancelling an attempt through its record', () => {
     await taking;
 
     expect(await recordOf(alice, run)).toMatchObject({ state: 'finished', stopped: false, critical: expect.arrayContaining(['stopped']) });
+    // What may still run there keeps the folders it works in.
+    expect(fs.readdirSync(attemptDir(bob.config, run, ATTEMPT))).toEqual(expect.arrayContaining(['run', 'work']));
   }, 60_000);
 
   it('goes on with its step when teamai-reports cannot be read for a moment after another write landed over its own', async () => {
