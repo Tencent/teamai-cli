@@ -312,7 +312,8 @@ describe.skipIf(process.platform === 'win32')('tool instances through the CLI', 
       fs.rmSync(own);
     }
     const { run } = (envelope(started.stdout) as { data: { done: { run: string } } }).data.done;
-    const [record] = execFileSync('find', [home, '-path', `*workflows/runs/${run}.json`], { encoding: 'utf8' }).trim().split('\n');
+    // The run's own record, not the copy the reports worktree holds to publish, which keeps no session.
+    const [record] = execFileSync('find', [home, '-path', `*workflows/runs/${run}.json`, '-not', '-path', '*/side-branches/*'], { encoding: 'utf8' }).trim().split('\n');
     const stored = JSON.parse(fs.readFileSync(record, 'utf8')) as { steps: Array<{ tool?: string; session?: string }> };
     const sessionFiles = execFileSync('find', [home, '-name', `${SESSION}.jsonl`], { encoding: 'utf8' }).trim().split('\n');
 
