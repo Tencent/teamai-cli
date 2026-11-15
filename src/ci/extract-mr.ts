@@ -15,11 +15,10 @@ import { getDefaultBranch, pushRepoDirectly } from '../utils/git.js';
 import { log } from '@teamai/shared/log';
 import type { LearningDraft } from '../types.js';
 import { postOrUpdateMrComment, postIndividualComments, postCodebaseGraphComment, parseMrUrl } from './mr-comment.js';
-import { githubApiUrlFor, parseGitHubPullUrl } from '../providers/github/api-url.js';
+import { githubApiUrlFor, githubTokenFor, parseGitHubPullUrl } from '../providers/github/api-url.js';
 import { readRejections, shouldWrite } from './read-rejections.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
 import { readRegularFile } from '@teamai/shared/regular-file';
-import { getGitHubToken } from '../providers/github/gh-cli.js';
 
 const WORKFLOW = 'teamai-ci-extract-mr';
 
@@ -74,7 +73,7 @@ async function configureGitUser(repoPath: string, provider: 'github' | 'tgit' | 
 
   try {
     if (provider === 'github') {
-      const token = getGitHubToken();
+      const token = githubTokenFor(githubHost);
 
       if (token) {
         const resp = await fetch(`${githubApiUrlFor(githubHost)}/user`, {

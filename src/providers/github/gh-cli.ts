@@ -7,7 +7,7 @@ import { resolveCliPath } from '@teamai/shared/cli-path';
 import { isInteractive } from '../../utils/prompt.js';
 import { endedRequest, mergedAs, type CiStatus, type CommitRef, type PullRequestRecord, type PullRequestRef } from '../types.js';
 import { signalChild } from '@teamai/shared/process-group';
-import { githubApiUrlFor } from './api-url.js';
+import { githubApiUrlFor, githubEnvToken, githubTokenFor } from './api-url.js';
 
 // ─── gh CLI detection ────────────────────────────────────
 
@@ -155,7 +155,7 @@ export async function ensureGhAvailable(): Promise<void> {
  * Returns null if neither is set.
  */
 export function getGitHubToken(): string | null {
-  return process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? null;
+  return githubEnvToken();
 }
 
 /**
@@ -241,7 +241,7 @@ export async function ghAuthWhoami(): Promise<string | null> {
     }
   }
 
-  const token = getGitHubToken();
+  const token = githubTokenFor('github.com');
 
   if (token) {
     return ghFetchLogin(token);
@@ -568,7 +568,7 @@ export async function ghPrCreate(opts: GhPrCreateOptions): Promise<string> {
     return ghPrCreateViaCli(opts);
   }
 
-  if (getGitHubToken()) {
+  if (githubTokenFor('github.com')) {
     return ghPrCreateViaApi(opts);
   }
 
@@ -617,7 +617,7 @@ function ghPrCreateViaCli(opts: GhPrCreateOptions): string {
 }
 
 async function ghPrCreateViaApi(opts: GhPrCreateOptions): Promise<string> {
-  const token = getGitHubToken();
+  const token = githubTokenFor('github.com');
 
   if (!token) {
     throw new Error('GITHUB_TOKEN is not set.');
@@ -802,7 +802,7 @@ async function ghApiGet(path: string, timeoutMs: number, lookup: GhLookup): Prom
     }
   }
 
-  const token = getGitHubToken();
+  const token = githubTokenFor('github.com');
 
   if (!token) throw new Error('GitHub credentials are unavailable: install gh and log in, or set GITHUB_TOKEN or GH_TOKEN.');
 

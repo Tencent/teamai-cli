@@ -13,12 +13,18 @@ function githubServerHost(): string {
   return server && URL.canParse(server) ? new URL(server).host.toLowerCase() : 'github.com';
 }
 
-/**
- * The REST API root for a repository on `host`: `GITHUB_API_URL` for the server `GITHUB_SERVER_URL` names, github.com's
- * for github.com, so a token meant for an Enterprise server never goes to the other.
- */
+/** The REST API root for a repository on `host`: `GITHUB_API_URL` for the server `GITHUB_SERVER_URL` names, else github.com's. */
 export function githubApiUrlFor(host: string): string {
   return host.toLowerCase() === githubServerHost() ? githubApiUrl() : 'https://api.github.com';
+}
+
+export function githubEnvToken(): string | null {
+  return process.env['GITHUB_TOKEN'] ?? process.env['GH_TOKEN'] ?? null;
+}
+
+/** The token for a repository on `host`: `GITHUB_TOKEN` or `GH_TOKEN` on the server `GITHUB_SERVER_URL` names, else none. */
+export function githubTokenFor(host: string): string | null {
+  return host.toLowerCase() === githubServerHost() ? githubEnvToken() : null;
 }
 
 /** A pull request on github.com or on the server `GITHUB_SERVER_URL` names. */

@@ -14,13 +14,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../providers/github/gh-cli.js', () => ({
     isGhInstalled: vi.fn().mockReturnValue(false),
-    getGitHubToken: vi.fn().mockReturnValue('fake-token-xyz'),
 }));
 
 // ─── Imports (after mocks) ───────────────────────────────
 
 import { ghListOrgRepos } from '../providers/github/gh-org.js';
-import { isGhInstalled, getGitHubToken } from '../providers/github/gh-cli.js';
+import { isGhInstalled } from '../providers/github/gh-cli.js';
 
 // ─── Helpers ────────────────────────────────────────────
 
@@ -43,11 +42,10 @@ function makeGhRepoItem(overrides: Record<string, unknown> = {}): Record<string,
 describe('gh-org fetch 分支（使用 GITHUB_TOKEN）', () => {
     beforeEach(() => {
         vi.mocked(isGhInstalled).mockReturnValue(false);
-        vi.mocked(getGitHubToken).mockReturnValue('fake-token-xyz');
         vi.restoreAllMocks();
         // 每次重新 mock
         vi.mocked(isGhInstalled).mockReturnValue(false);
-        vi.mocked(getGitHubToken).mockReturnValue('fake-token-xyz');
+        vi.stubEnv('GITHUB_TOKEN', 'fake-token-xyz');
     });
 
     it('包含私有仓的响应 → 私有仓出现在结果中（不被过滤）', async () => {

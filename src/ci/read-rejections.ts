@@ -9,10 +9,9 @@
 
 import { z } from 'zod';
 import { parseMrUrl } from './mr-comment.js';
-import { githubApiUrlFor, type GitHubPull } from '../providers/github/api-url.js';
+import { githubApiUrlFor, githubTokenFor, type GitHubPull } from '../providers/github/api-url.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
 import { getGitLabToken } from '../providers/gitlab/gitlab-api.js';
-import { getGitHubToken } from '../providers/github/gh-cli.js';
 import { parseGitLabMRUrl } from '../providers/gitlab/mr-fetch.js';
 import { paginateGitLab } from './gitlab-paginate.js';
 import { log } from '@teamai/shared/log';
@@ -66,7 +65,7 @@ const GitHubReactionSchema = z.object({
 });
 
 async function githubRequest(host: string, path: string): Promise<Response> {
-  const token = getGitHubToken();
+  const token = githubTokenFor(host);
 
   if (!token) throw new Error('GITHUB_TOKEN or GH_TOKEN is not set');
 

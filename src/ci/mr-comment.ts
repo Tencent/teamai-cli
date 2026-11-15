@@ -11,8 +11,7 @@ import { z } from 'zod';
 import type { LearningDraft, CodebaseSuggestion } from '../types.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
 import { getGitLabToken } from '../providers/gitlab/gitlab-api.js';
-import { getGitHubToken } from '../providers/github/gh-cli.js';
-import { githubApiUrlFor, parseGitHubPullUrl, type GitHubPull } from '../providers/github/api-url.js';
+import { githubApiUrlFor, githubTokenFor, parseGitHubPullUrl, type GitHubPull } from '../providers/github/api-url.js';
 import { parseGitLabMRUrl } from '../providers/gitlab/mr-fetch.js';
 import { TEAMAI_COMMENT_SIGNATURE } from '../providers/mr-threads.js';
 import { paginateGitLab } from './gitlab-paginate.js';
@@ -130,7 +129,7 @@ export function formatComment(
 // ─── GitHub Comment API ─────────────────────────────────
 
 async function githubRequest(host: string, path: string, method: string, body?: { body: string }): Promise<Response> {
-  const token = getGitHubToken();
+  const token = githubTokenFor(host);
 
   if (!token) throw new Error('GITHUB_TOKEN or GH_TOKEN environment variable is not set');
 

@@ -8,8 +8,8 @@ import { type MRData, type MRFetchOptions, type MRThread } from '../../types.js'
 import type { JsonValue } from '@teamai/shared/json';
 import { log } from '@teamai/shared/log';
 import { pruneThreads } from '../mr-threads.js';
-import { getGitHubToken, ghExec } from './gh-cli.js';
-import { githubApiUrlFor, parseGitHubPullUrl, type GitHubPull } from './api-url.js';
+import { ghExec } from './gh-cli.js';
+import { githubApiUrlFor, githubTokenFor, parseGitHubPullUrl, type GitHubPull } from './api-url.js';
 
 /** {@link parseGitHubPullUrl}, throwing on a URL that is no GitHub pull request. */
 function parseGitHubPRUrl(url: string): GitHubPull {
@@ -59,9 +59,9 @@ function githubApiRequest(api: string, path: string, headers: OutgoingHttpHeader
  *
  * 支持公开仓库无需 token；如有 GITHUB_TOKEN 环境变量则自动携带以提高限流上限。
  */
-async function githubApiGet(api: string, path: string): Promise<JsonValue> {
+async function githubApiGet(host: string, path: string): Promise<JsonValue> {
   return new Promise((resolve, reject) => {
-    const token = getGitHubToken();
+    const token = githubTokenFor(host);
 
     const headers: OutgoingHttpHeaders = {
       'User-Agent': 'teamai-cli',
@@ -71,7 +71,7 @@ async function githubApiGet(api: string, path: string): Promise<JsonValue> {
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
     const req = githubApiRequest(
-      api,
+      githubApiUrlFor(host),
       path,
       headers,
       (res) => {
@@ -215,8 +215,7 @@ async function fetchGitHubThreads(
  */
 async function fetchGitHubPRViaApi({ host, owner, repo, number }: GitHubPull): Promise<MRData> {
   const url = `https://${host}/${owner}/${repo}/pull/${number}`;
-  const api = githubApiUrlFor(host);
-  const get: ApiGet = (path) => githubApiGet(api, path);
+  const get: ApiGet = (path) => githubApiGet(host, path);
   log.debug(`fetchGitHubPR fallback: REST API ${owner}/${repo}#${number}`);
 
   // ── 1. PR 元信息 ──────────────────────────────────────────
@@ -232,7 +231,7 @@ async function fetchGitHubPRViaApi({ host, owner, repo, number }: GitHubPull): P
 
   // ── 3. diff（Accept: application/vnd.github.v3.diff） ────
   const diff = await new Promise<string>((resolve, reject) => {
-    const token = getGitHubToken();
+    const token = githubTokenFor(host);
 
     const headers: OutgoingHttpHeaders = {
       'User-Agent': 'teamai-cli',
@@ -242,7 +241,7 @@ async function fetchGitHubPRViaApi({ host, owner, repo, number }: GitHubPull): P
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
     const req = githubApiRequest(
-      api,
+      githubApiUrlFor(host),
       `/repos/${owner}/${repo}/pulls/${number}`,
       headers,
       (res) => {
@@ -353,7 +352,7 @@ export async function fetchGitHubPR(url: string, opts: MRFetchOptions = {}): Pro
     log.debug('gh CLI unavailable, falling back to GitHub REST API');
     // ── 回退：GitHub REST API ────────────────────────────────
     mr = await fetchGitHubPRViaApi(pull);
-    get = (path) => githubApiGet(githubApiUrlFor(host), path);
+    get = (path) => githubApiGet(host, path);
   }
 
   // ── 评审 threads（失败非致命） ───────────────────────────

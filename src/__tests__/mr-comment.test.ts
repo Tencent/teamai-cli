@@ -88,21 +88,32 @@ describe('postOrUpdateMrComment API failures', () => {
     vi.unstubAllGlobals();
   });
 
-  it.each([
-    ['https://ghe.example.com/acme/app/pull/7', 'https://ghe.example.com/api/v3'],
-    ['https://github.com/acme/app/pull/7', 'https://api.github.com'],
-  ])('fails without creating a duplicate GitHub comment on %s when listing comments at %s fails', async (url, api) => {
+  it('fails without creating a duplicate GitHub comment when listing comments on the GITHUB_SERVER_URL server fails', async () => {
     vi.stubEnv('GITHUB_TOKEN', 'test-token');
     vi.stubEnv('GITHUB_SERVER_URL', 'https://ghe.example.com');
     vi.stubEnv('GITHUB_API_URL', 'https://ghe.example.com/api/v3');
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 503 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(postOrUpdateMrComment(url, undefined, undefined)).rejects.toThrow('GitHub comment list request failed (503)');
+    await expect(postOrUpdateMrComment('https://ghe.example.com/acme/app/pull/7', undefined, undefined))
+      .rejects.toThrow('GitHub comment list request failed (503)');
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toBe(`${api}/repos/acme/app/issues/7/comments?per_page=100&page=1`);
+    expect(fetchMock.mock.calls[0][0]).toBe('https://ghe.example.com/api/v3/repos/acme/app/issues/7/comments?per_page=100&page=1');
     expect(fetchMock.mock.calls[0][1]?.method).toBe('GET');
+  });
+
+  it('sends no request for a github.com PR when the token belongs to the GITHUB_SERVER_URL server', async () => {
+    vi.stubEnv('GITHUB_TOKEN', 'enterprise-token');
+    vi.stubEnv('GITHUB_SERVER_URL', 'https://ghe.example.com');
+    vi.stubEnv('GITHUB_API_URL', 'https://ghe.example.com/api/v3');
+    const fetchMock = vi.fn(async () => new Response('[]', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(postOrUpdateMrComment('https://github.com/acme/app/pull/7', undefined, undefined))
+      .rejects.toThrow('GITHUB_TOKEN or GH_TOKEN environment variable is not set');
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('throws when neither GITHUB_TOKEN nor GH_TOKEN is set', async () => {
