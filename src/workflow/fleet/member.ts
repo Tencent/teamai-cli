@@ -25,7 +25,7 @@ import { WorkflowFolder } from '../folder.js';
 import { loadTeamConfig } from '../../config.js';
 import { resolveRetention, retentionEnds, type Retention } from '../retention.js';
 import { retryCommand } from '../runtimes/retry-command.js';
-import { answerCancel, attemptRef, claimAttempt, confirmStop, finishAttempt, fleetFailure, leaveOffer, leaseEnv, leaseInputs, leasePrompt, listRecords, memberRecordsAmong, noteHeldFolders, offersAmong, readAttemptRecord, recordProgress, isHeld, type Cancelling, type FleetRecord, type HeldAttempt, type Offered, type FleetError, type FleetLease, type FleetResult } from './record.js';
+import { answerCancel, attemptRef, claimAttempt, confirmStop, finishAttempt, fleetFailure, isUnstoppedEnd, leaveOffer, leaseEnv, leaseInputs, leasePrompt, listRecords, memberRecordsAmong, noteHeldFolders, offersAmong, readAttemptRecord, recordProgress, isHeld, type Cancelling, type FleetRecord, type HeldAttempt, type Offered, type FleetError, type FleetLease, type FleetResult } from './record.js';
 import type { ExecAnswer, ExecQuestion } from '@teamai/runtime-protocol/step-runtime';
 import { definitionsOf, type Definitions } from '../handoff.js';
 import { createRun } from '../engine.js';
@@ -365,8 +365,9 @@ async function finishLeftClaims(config: LocalConfig, records: FleetRecord[], { r
       if (left.kind === 'left') return { error: { code: 'runtime_lost', message: left.message } };
       const { nestedRun, isLeftRunning } = left;
 
-      // A claim its owner gave up waits for this member to say that nothing of its step still runs here.
-      if (record.state === 'expired' && !isLeftRunning) await sayStopped(config, { run: record.run, attempt: record.attempt, member });
+      // A claim its owner gave up, or an end this member published as not stopped, waits for this member to say that
+      // nothing of its step still runs here.
+      if ((record.state === 'expired' || isUnstoppedEnd(record)) && !isLeftRunning) await sayStopped(config, { run: record.run, attempt: record.attempt, member });
 
       // What the member kept of an ended attempt, such as the log a failure named, goes with its claim marker once nothing
       // it left may still run and `workflows.retention` passed since it ended, as what a run leaves does.
@@ -537,16 +538,22 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
   // answer comes.
   const gates = gateQuestions();
 
-  // Whether nothing of the step still runs on this machine once it ended, as the record's `stopConfirmed` and a cancel's
-  // answer both say it: a place its step runtime kept, or a process not confirmed ended, may still run it.
-  const isStepStopped = async (): Promise<boolean> => {
-    const left = await stopLeftOfClaim(config, { claim, root, isEnded: true });
+  // Whether nothing of the step still runs on this machine once it ended, decided once and said by every end the member
+  // writes: its finish, its answer to a cancel and its `stopConfirmed`. A place its step runtime kept, or a process not
+  // confirmed ended, may still run it: the end then says `stopped: false`, its owner keeps the attempt, and the step's
+  // guardian stays to confirm the stop later.
+  let isStopped: boolean | undefined;
 
-    return left.kind === 'stopped' && !left.isLeftRunning;
+  const isStepStopped = async (): Promise<boolean> => {
+    if (isStopped !== undefined) return isStopped;
+    const left = await stopLeftOfClaim(config, { claim, root, isEnded: true });
+    isStopped = left.kind === 'stopped' && !left.isLeftRunning;
+
+    return isStopped;
   };
 
   const finish = async (result: FleetResult): Promise<WorkflowEnvelope> => {
-    const written = await finishAttempt(config, latest, result, secrets);
+    const written = await finishAttempt(config, latest, result, secrets, await isStepStopped() ? {} : { stopped: false });
 
     // The owner cancelled the claim as the step ended: the member answers the cancel with the work it pushed.
     if (!written.ok && written.error.code === 'state_moved') {
@@ -883,6 +890,8 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
     // offer it again: the member writes nothing of its work. A cancel is answered that the step did not stop, so the
     // owner keeps the attempt (a write refused over another lands nothing); otherwise its owner gives the claim up.
     if (ran === 'unstopped') {
+      isStopped = false;
+
       if (cancelling !== undefined) await answerCancel(config, cancelling, { pushed: latest.pushed, stopped: false });
 
       const why = cutOff ?? (cancelling !== undefined ? `The owner of run ${run} cancelled attempt ${attempt} of step "${lease.step}".` : `The owner of run ${run} gave up attempt ${attempt} of step "${lease.step}" while this member ran it. ${gone ?? ''}`);
@@ -920,7 +929,8 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
     // A restarted member goes on from work its killed run pushed, which is the step's work even when this run adds none.
     return finish(saved.to === claim.start ? ran : { ...ran, to: saved.to });
   } finally {
-    await fence?.end();
+    // The guardian stays while something of the step may still run here, and confirms its stop once it can.
+    if (isStopped !== false) await fence?.end();
     // However the step ended, a run its command's process started and drove ends with it.
     await endRunsPartOf(config, { run, attempt });
     await Promise.all([fs.rm(work, { recursive: true, force: true }), fs.rm(runDir, { recursive: true, force: true })]);

@@ -204,7 +204,12 @@ const ClaimedSchema = OfferedSchema.extend({
   killBounded: z.boolean().default(false), stopConfirmed: z.literal(true).optional(),
 });
 
-const FinishedSchema = ClaimedSchema.extend({ state: z.literal('finished'), finishedAt: z.string(), result: FleetResultSchema });
+/**
+ * A claim whose step ended with `result`. `stopped: false`: the member could not confirm that nothing of the step still
+ * runs on its machine, as when its step runtime was lost while the command it started may still run there, so the owner
+ * keeps the attempt until `stopConfirmed`. A writer of it names it in `critical`, as a cancel's answer does.
+ */
+const FinishedSchema = ClaimedSchema.extend({ state: z.literal('finished'), finishedAt: z.string(), result: FleetResultSchema, stopped: z.literal(false).optional() });
 
 /**
  * A claim the owner gave up once no progress came for `stale_after`, or no answer to its cancel (`cancelAt`): nothing the
@@ -242,8 +247,9 @@ const CancellingSchema = ClaimedSchema.extend({ state: z.literal('cancelling'), 
  * A cancelled claim: the member stopped its step and pushed its work up to `pushed`, which a retry goes on from, and
  * `tokens`, what its step spent before it stopped, which the budgets around the step count. `stopped: false`: the
  * member could not confirm within its stop budget that the step stopped, so it may still run on the member's machine,
- * and the owner keeps the attempt. A record without it is a stop the member confirmed. A writer of it names it in
- * `critical`, so a teamai that does not know it refuses the record rather than read a stop that did not happen.
+ * and the owner keeps the attempt until `stopConfirmed`. A record without it is a stop the member confirmed. A writer of
+ * it names it in `critical`, so a teamai that does not know it refuses the record rather than read a stop that did not
+ * happen.
  */
 const CancelledSchema = CancellingSchema.extend({ state: z.literal('cancelled'), cancelledAt: z.string(), tokens: TokenUsageSchema.optional(), stopped: z.literal(false).optional() });
 
@@ -610,10 +616,19 @@ export async function expireClaim(config: LocalConfig, claimed: HeldAttempt | Ca
 }
 
 /**
+ * Whether `record` is an end its member published as not stopped (`stopped: false`): its owner keeps the attempt until
+ * the member's machine confirms the stop (`confirmStop`).
+ */
+export function isUnstoppedEnd(record: FleetRecord): record is Extract<FleetRecord, { state: 'finished' | 'cancelled' }> & { stopped: false } {
+  return (record.state === 'finished' || record.state === 'cancelled') && record.stopped === false;
+}
+
+/**
  * Writes on the record of attempt `attempt` of run `run`, as origin holds it now, that nothing of its step still runs on
  * the machine of `member`, which claimed it: once the claim's cut-off point passed, so no run of the member starts the
- * step again. Only over a claim of `member` that did not end, or that its owner gave up; one bounded by kill, or already
- * confirmed, is left as it is. Another write that lands first answers `state_moved`: the caller reads nothing into it.
+ * step again. Only over a claim of `member` that did not end, that its owner gave up, or whose end its member published
+ * as not stopped (`stopped: false`); one bounded by kill, or already confirmed, is left as it is. Another write that
+ * lands first answers `state_moved`: the caller reads nothing into it.
  */
 export async function confirmStop(config: LocalConfig, { run, attempt, member }: { run: RunId; attempt: AttemptId; member: HandoffOwner }): Promise<Written<void>> {
   const read = await readAttemptRecord(config, run, attempt);
@@ -621,9 +636,11 @@ export async function confirmStop(config: LocalConfig, { run, attempt, member }:
   if (!read.ok) return read;
   const record = read.value;
 
-  if (record === 'absent' || (!isHeld(record) && record.state !== 'cancelling' && record.state !== 'expired')) return { ok: true, value: undefined };
+  if (record === 'absent' || (!isHeld(record) && record.state !== 'cancelling' && record.state !== 'expired' && !isUnstoppedEnd(record))) return { ok: true, value: undefined };
 
-  if (record.member.id !== member.id || record.killBounded || record.stopConfirmed === true) return { ok: true, value: undefined };
+  // A kill bounds the stop of a claim still out, which its owner reads from the time; an end published as not stopped
+  // waits on this write whatever bounds it.
+  if (record.member.id !== member.id || (record.killBounded && !isUnstoppedEnd(record)) || record.stopConfirmed === true) return { ok: true, value: undefined };
 
   return writeRecord(config, { ...record, write: randomUUID(), stopConfirmed: true }, { replaces: record.write, message: `[teamai] Stop confirmed for attempt ${attempt} of run ${run}` });
 }
@@ -672,10 +689,14 @@ export async function answerCancel(config: LocalConfig, cancelling: Cancelling, 
 /**
  * Writes how claim `claimed` ended. A stderr snippet that may not leave this machine, such as a tool's warning that
  * names its cwd, is left out and the result stands; any other field that may not fails the attempt instead, naming the
- * field, so the owner does not wait on it.
+ * field, so the owner does not wait on it. `stopped: false`: the member could not confirm that nothing of the step still
+ * runs on its machine, which the owner then waits on (`stopConfirmed`).
  */
-export async function finishAttempt(config: LocalConfig, claimed: HeldAttempt, result: FleetResult, secrets: Record<string, string>): Promise<Written<FleetRecord>> {
-  const finished: FleetRecord = { ...claimOf(claimed), write: randomUUID(), state: 'finished', finishedAt: new Date().toISOString(), result };
+export async function finishAttempt(config: LocalConfig, claimed: HeldAttempt, result: FleetResult, secrets: Record<string, string>, { stopped }: { stopped?: false } = {}): Promise<Written<FleetRecord>> {
+  const finished: FleetRecord = {
+    ...claimOf(claimed), write: randomUUID(), state: 'finished', finishedAt: new Date().toISOString(), result,
+    ...(stopped === false && { stopped, critical: [...new Set([...(claimed.critical ?? []), 'stopped'])] }),
+  };
 
   // A tool's failure message is as free as stderr, so it goes too, keeping its code.
   const quiet: FleetRecord = {

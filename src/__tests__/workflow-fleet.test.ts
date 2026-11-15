@@ -780,7 +780,23 @@ steps:
 
   it('ends the claim with the step, the cause and the retry command when the step runtime fails the command instead of answering', async () => {
     const local = scratchHostRuntime();
-    const runtime: StepRuntime<DriverCan> = { ...local, exec: () => Promise.reject(new Error('the box went away')) };
+    const [opened, closed]: [string[], string[]] = [[], []];
+    const runtime: StepRuntime<DriverCan> = {
+      ...local,
+      open: async (request, onAccepted) => {
+        const place = await local.open(request, onAccepted);
+
+        if (place.kind === 'ready') opened.push(place.handle);
+
+        return place;
+      },
+      exec: () => Promise.reject(new Error('the box went away')),
+      close: async (handle, how) => {
+        closed.push(handle);
+
+        return local.close(handle, how);
+      },
+    };
 
     let forgedRun: RunId | undefined;
     const { taken, record, bob } = await takeForged((_forged, run) => { forgedRun = run; }, undefined, MARK, { command: { kind: 'runtime', driver: 'bobs', use: 'box', runtime, entry: soleEntry(runtime) } });
@@ -791,9 +807,12 @@ steps:
     expect(stderr).toContain('step "write"');
     expect(stderr).toContain('the box went away');
     expect(stderr).toMatch(/teamai workflow retry r[0-9a-f]+ write/);
-    // The place the command opened closes too, so the retry is the only one open.
+    // The place the command opened closes too, and its record goes with it once the member found nothing of the step
+    // left there, so the retry is the only one open.
+    expect(opened).toHaveLength(1);
+    expect(closed).toContain(opened[0]);
     expect(forgedRun).toBeDefined();
-    expect(JSON.parse(fs.readFileSync(attemptRuntimePath(bob.config, forgedRun ?? RunIdSchema.parse('r0'), ATTEMPT), 'utf8'))).toMatchObject({ phase: 'closed' });
+    expect(fs.existsSync(attemptRuntimePath(bob.config, forgedRun ?? RunIdSchema.parse('r0'), ATTEMPT))).toBe(false);
   });
 
   it('refuses an offer whose command is not the one the team\'s workflow defines for the step, and runs nothing', async () => {
@@ -1196,6 +1215,21 @@ describe('cancelling an attempt through its record', () => {
     await taking;
 
     expect(await recordOf(alice, run)).toMatchObject({ state: 'cancelled', stopped: false });
+  }, 60_000);
+
+  it('finishes a step whose step runtime was lost while its command may still run there as not stopped, so its owner keeps the attempt', async () => {
+    const { alice, bob, run } = await offerSlow(24_000);
+    const local = scratchHostRuntime();
+    let endExec: ((end: Awaited<ReturnType<StepRuntime<DriverCan>['exec']>>) => void) | undefined;
+    const runtime: StepRuntime<DriverCan> = { ...local, exec: async () => new Promise((resolve) => { endExec = resolve; }) };
+    const taking = takeFleetAttempt(bob.config, { pool: 'default', repository: 'github.com/acme/business', root: bob.checkout, member: await installOwner(bob.config), secrets: {}, place: { command: { kind: 'runtime', driver: 'bobs', use: 'box', runtime, entry: soleEntry(runtime) } } });
+    await eventually(async () => ((await recordOf(alice, run))?.state === 'claimed' && endExec !== undefined) || undefined);
+
+    // The runtime exits on its own: nothing confirms that the command it started ended.
+    endExec?.({ kind: 'lost', failure: { code: 'runtime_lost', message: 'Step runtime "box" exited while exec ran, so what it started may still run.' } });
+    await taking;
+
+    expect(await recordOf(alice, run)).toMatchObject({ state: 'finished', stopped: false, critical: expect.arrayContaining(['stopped']) });
   }, 60_000);
 
   it('goes on with its step when teamai-reports cannot be read for a moment after another write landed over its own', async () => {

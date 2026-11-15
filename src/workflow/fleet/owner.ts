@@ -173,9 +173,9 @@ function placeOf(handle: string): FleetPlace | undefined {
  */
 function hasWorkToTake(record: FleetRecord): boolean {
   switch (record.state) {
-    case 'finished': return record.result.to !== undefined;
     // A stop the member could not confirm, or did not confirm before its owner gave the claim up, keeps the attempt: its
     // work is not taken.
+    case 'finished': return givenUpOutcome(record, { now: Date.now() }).kind === 'stopped' && record.result.to !== undefined;
     case 'cancelled':
     case 'expired': return givenUpOutcome(record, { now: Date.now() }).kind === 'stopped' && record.pushed !== record.start;
     case 'offered':
@@ -208,8 +208,11 @@ function recordState(op: OpId, record: FleetRecord | 'absent', { isTaking }: { i
     // An offer no member claimed: nothing of the step ran.
     case 'withdrawn':
       return { op, state: 'cancelled' };
-    case 'finished':
-      return finishedState(op, record);
+    case 'finished': {
+      const outcome = givenUpOutcome(record, { now: Date.now() });
+
+      return outcome.kind === 'kept' ? { op, state: 'failed', failure: outcome.failure } : finishedState(op, record);
+    }
 
     case 'cancelling':
     case 'cancelled':
@@ -258,17 +261,20 @@ async function cancelAnswered(config: LocalConfig, { run, attempt }: FleetPlace)
   }
 }
 
-/** A claim its owner gave up (`expired`), asked its member to stop (`cancelling`), or whose member answered that cancel. */
-type LeftClaim = Extract<FleetRecord, { state: 'expired' | 'cancelling' | 'cancelled' }>;
+/**
+ * A claim its owner gave up (`expired`), asked its member to stop (`cancelling`), whose member answered that cancel, or
+ * whose step ended (`finished`).
+ */
+type LeftClaim = Extract<FleetRecord, { state: 'expired' | 'cancelling' | 'cancelled' | 'finished' }>;
 
 /**
  * Whether the step of claim `left` stopped on its member's machine, as its owner reads it at `now` on this machine's
- * clock: the one place that decides it, so that a given-up claim reads `fleet_member_gone`, and a cancelled one
- * `cancelled`, only when the step stopped. It did once its member confirmed it (an answered cancel that does not say
- * `stopped: false`, or `stopConfirmed`), or once the kill of a step its guardian ends by kill (`killBounded`) was due:
- * for a given-up claim at once, since an owner gives a claim up only once that kill was due (`fleetBeats`), and for an
- * unanswered cancel once `killBoundedCancelEnd` passed. Any other is `kept`: `cancel_failed`, the step may still run
- * there, so the attempt's place and work stay as they are and a retry refuses it.
+ * clock: the one place that decides it, so that a given-up claim reads `fleet_member_gone`, a cancelled one `cancelled`,
+ * and a finished one its result, only when the step stopped. It did once its member confirmed it (a finish or an
+ * answered cancel that does not say `stopped: false`, or `stopConfirmed`), or once the kill of a step its guardian ends
+ * by kill (`killBounded`) was due: for a given-up claim at once, since an owner gives a claim up only once that kill was
+ * due (`fleetBeats`), and for an unanswered cancel once `killBoundedCancelEnd` passed. Any other is `kept`:
+ * `cancel_failed`, the step may still run there, so the attempt's place and work stay as they are and a retry refuses it.
  */
 function givenUpOutcome(left: LeftClaim, { now }: { now: number }): { kind: 'stopped' } | { kind: 'kept'; failure: WorkflowFailure } {
   switch (left.state) {
@@ -279,7 +285,8 @@ function givenUpOutcome(left: LeftClaim, { now }: { now: number }): { kind: 'sto
         ? { kind: 'stopped' }
         : { kind: 'kept', failure: unansweredFailure(left) };
     case 'cancelled':
-      return left.stopped === false ? { kind: 'kept', failure: unstoppedFailure(left) } : { kind: 'stopped' };
+    case 'finished':
+      return left.stopped === false && left.stopConfirmed !== true ? { kind: 'kept', failure: unstoppedFailure(left) } : { kind: 'stopped' };
     default: {
       const unhandled: never = left;
 
@@ -289,11 +296,15 @@ function givenUpOutcome(left: LeftClaim, { now }: { now: number }): { kind: 'sto
 }
 
 /**
- * Why the cancel of an attempt whose member could not confirm that its step stopped keeps the attempt: `cancel_failed`,
- * a stop not confirmed, which leaves the place for the person to check.
+ * Why an end whose member could not confirm that its step stopped, a cancel's answer or a finish, keeps the attempt:
+ * `cancel_failed`, a stop not confirmed, which leaves the place for the person to check.
  */
-function unstoppedFailure(record: Extract<FleetRecord, { state: 'cancelled' }>): WorkflowFailure {
-  return { code: CANCEL_FAILED, message: `Step "${record.lease.step}" was cancelled, and the fleet member ${record.member.user} that ran it could not confirm within ${FLEET_STOP_BUDGET_MS / 1_000} s that it stopped, so it may still run on that member's machine. The attempt's place and records are kept. Once you checked that nothing of it still runs there, teamai workflow cancel ${record.run} --release ${record.attempt} lets it go.` };
+function unstoppedFailure(record: Extract<FleetRecord, { state: 'cancelled' | 'finished' }>): WorkflowFailure {
+  const ended = record.state === 'cancelled'
+    ? `Step "${record.lease.step}" was cancelled, and the fleet member ${record.member.user} that ran it could not confirm within ${FLEET_STOP_BUDGET_MS / 1_000} s that it stopped`
+    : `Step "${record.lease.step}" ended on the fleet member ${record.member.user}, which could not confirm that nothing of it still runs there, as when its step runtime was lost while the command it started may still run`;
+
+  return { code: CANCEL_FAILED, message: `${ended}, so it may still run on that member's machine. The attempt's place and records are kept. teamai on that machine confirms the stop: the step's guardian, or the member's recovery at its next teamai workflow resume --next. Otherwise, once you checked that nothing of it still runs there, teamai workflow cancel ${record.run} --release ${record.attempt} lets it go.` };
 }
 
 /**
@@ -772,6 +783,9 @@ async function waitOnOffer(input: WaitInput, { cancel, leave }: { cancel: AbortS
     const record = read.ok && read.value !== 'absent' ? read.value : undefined;
 
     if (record?.state === 'finished') {
+      const outcome = givenUpOutcome(record, { now: Date.now() });
+
+      if (outcome.kind === 'kept') return failed(outcome.failure);
       const { result } = record;
       const taken = result.to === undefined ? undefined : await takeWork({ config, run, root, dir, ref, to: result.to, step });
 
