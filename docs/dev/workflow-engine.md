@@ -311,7 +311,7 @@ When describe's judging is by the session (`Judging` `session`: no verified judg
 |---|---|---|---|---|---|---|
 | J7 | drive, done | a `next` or report answer that lists `started` | judging is on, or the session judges | add to `scoring` each run it lists that `scoring` lacks | unchanged | event `judging` per run added |
 | J8 | drive, done | a call's tick | `scoring` lists a run | tick each run `scoring` lists under its own lock, as a call ticks it, a busy lock skipping it this tick; its first tick writes its skill.json from this one: identity, invocation, options, session host, session and judging, with `scores` naming this run, so its turns lead back here | unchanged | the dispatches and stops of those runs join this run's turn, and a poll wakes for them |
-| J9 | drive, done | J8: the tick of a run `scoring` lists | that run is done, and no attempt of it is open | drop it from `scoring` | unchanged | event `judged` per scorer its `done` outputs list, with the label or the code; event `judging-off` with its failure when it did not succeed |
+| J9 | drive, done | J8: the tick of a run `scoring` lists | that run is done, and no attempt of it is open | drop it from `scoring` | unchanged | event `judged` per scorer its `done` outputs list, with the label or the code, and, when it succeeded, `not_planned` for each scorer of the pass they do not list; event `judging-off` with its failure when it did not succeed |
 | J10 | drive, done | J8: the tick of a run `scoring` lists | that tick answered an error, or a done whose outputs the scoring module cannot read (`scoredLabels`) | drop it from `scoring` | unchanged | event `judging-off` with the error |
 
 ### Done

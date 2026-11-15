@@ -5,7 +5,7 @@ A run whose steps list scorers is judged on this machine when describe found the
 | Event | What happened | Tell the person |
 |---|---|---|
 | `judging` | A `teamai-score` run, or a judge, started on the pass of `step` that `scorers` judge. | `step` is being scored. |
-| `judged` | `scorer` labelled the pass of `step` with `label`. | the step, the scorer and the label |
+| `judged` | `scorer` labelled the pass of `step` with `label`, or, with `label` empty, gave none for `code`: `not_planned` when `teamai-score` judged nothing of it, as when the scorer did not sample the pass, had judged it already, or was past `daily_limit`. | the step, the scorer and the label, or that the scorer did not judge the step and why |
 | `judging-off` | Judging of this run stopped for `failure`, and nothing more of it is judged here. | `failure.message` |
 
 A `done` action that carries `judging` has a `teamai-score` run still open. Keep running `then` until a turn has none: each `judged` event comes in one of those turns.

@@ -141,7 +141,7 @@ export const TRANSITIONS = [
   { id: 'H5', state: 'drive', input: 'reply, before its row', guard: 'a gate is journalled, and the reply is done, a wait that holds nothing, or another gate: the person answered it in their terminal or the dashboard', effects: 'clear the gate', next: 'drive', action: '' },
   { id: 'J7', state: 'drive, done', input: 'a `next` or report answer that lists `started`', guard: 'judging is on, or the session judges', effects: 'add to `scoring` each run it lists that `scoring` lacks', next: 'unchanged', action: 'event `judging` per run added' },
   { id: 'J8', state: 'drive, done', input: 'a call\'s tick', guard: '`scoring` lists a run', effects: 'tick each run `scoring` lists under its own lock, as a call ticks it, a busy lock skipping it this tick; its first tick writes its skill.json from this one: identity, invocation, options, session host, session and judging, with `scores` naming this run, so its turns lead back here', next: 'unchanged', action: 'the dispatches and stops of those runs join this run\'s turn, and a poll wakes for them' },
-  { id: 'J9', state: 'drive, done', input: 'J8: the tick of a run `scoring` lists', guard: 'that run is done, and no attempt of it is open', effects: 'drop it from `scoring`', next: 'unchanged', action: 'event `judged` per scorer its `done` outputs list, with the label or the code; event `judging-off` with its failure when it did not succeed' },
+  { id: 'J9', state: 'drive, done', input: 'J8: the tick of a run `scoring` lists', guard: 'that run is done, and no attempt of it is open', effects: 'drop it from `scoring`', next: 'unchanged', action: 'event `judged` per scorer its `done` outputs list, with the label or the code, and, when it succeeded, `not_planned` for each scorer of the pass they do not list; event `judging-off` with its failure when it did not succeed' },
   { id: 'J10', state: 'drive, done', input: 'J8: the tick of a run `scoring` lists', guard: 'that tick answered an error, or a done whose outputs the scoring module cannot read (`scoredLabels`)', effects: 'drop it from `scoring`', next: 'unchanged', action: 'event `judging-off` with the error' },
   { id: 'X1', state: 'done', input: 'next', guard: 'no attempt is open, and `scoring` lists a run', effects: 'none', next: 'done', action: '`done` with `judging`; `then: poll`' },
   { id: 'X2', state: 'done', input: 'next', guard: 'no attempt or judge is open, and `scoring` lists no run', effects: 'none', next: 'done', action: '`done`, no `then`' },
@@ -757,9 +757,15 @@ export function scoredRow(state: SkillState, input: { run: RunId; ticked: SkillS
     return { row: 'J10', state: withEvent(left, { kind: 'judging-off', failure: { code: 'run_unreadable', message } }) };
   }
 
-  const judged = input.labels.labels.reduce((shown, { scorer, label, code }) => withEvent(shown, label ? { kind: 'judged', step: scoring.step, scorer, label } : { kind: 'judged', step: scoring.step, scorer, label: '', code }), left);
+  const { labels } = input.labels;
+  const judged = labels.reduce((shown, { scorer, label, code }) => withEvent(shown, label ? { kind: 'judged', step: scoring.step, scorer, label } : { kind: 'judged', step: scoring.step, scorer, label: '', code }), left);
 
-  if (done.outcome === 'succeeded') return { row: 'J9', state: judged };
+  if (done.outcome === 'succeeded') {
+    // A scorer the run's plan took into no group, unsampled, already judged or past daily_limit, still ends its judging.
+    const unplanned = scoring.scorers.filter((scorer) => !labels.some((given) => given.scorer === scorer));
+
+    return { row: 'J9', state: unplanned.reduce((shown, scorer) => withEvent(shown, { kind: 'judged', step: scoring.step, scorer, label: '', code: 'not_planned' }), judged) };
+  }
   const failure = done.failure ?? { code: 'scoring_run_ended', message: `Run ${input.run}, which scores step ${scoring.step}, ended ${done.outcome} before it labelled the pass.` };
 
   return { row: 'J9', state: withEvent(judged, { kind: 'judging-off', failure: { code: failure.code, message: failure.message } }) };
