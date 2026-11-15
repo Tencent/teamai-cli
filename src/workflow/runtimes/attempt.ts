@@ -22,7 +22,7 @@ import { AttemptResult } from '../attempt-result.js';
 import { loginFileOf } from './login.js';
 import { RuntimeEntryIdentity, SameNameSchema } from './entry-identity.js';
 import { CANCEL_FAILED, CanSchema, OpIdSchema, RuntimeDisplaySchema, RuntimeFailureSchema, type OpId, type OpState, type PlaceView, type RuntimeDisplay, type RuntimeFailure } from '@teamai/runtime-protocol';
-import { isUnansweredFailure, newOpId, type Accepted, type ExecEnd, type ExecEvents, type ExecKind, type ExecRequest, type Lost, type Opened, type OpenRequest, type PromptEnd, type PromptRequest, type StepRuntime } from '@teamai/runtime-protocol/step-runtime';
+import { isUnansweredFailure, newOpId, type Accepted, type ExecEnd, type ExecEvents, type ExecKind, type ExecRequest, type Lost, type Opened, type OpenRequest, type PromptEnd, type PromptRequest, type Reattached, type StepRuntime } from '@teamai/runtime-protocol/step-runtime';
 import { ANSWER_WITHIN_MS } from './stdio.js';
 import type { DriverCan } from '../requirements.js';
 import { copyRegularTree, readRegularFile } from '@teamai/shared/regular-file';
@@ -853,7 +853,7 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
    */
   const unknownToChangedEntry = async (recorded: AttemptRuntimeRecord, handle: string): Promise<RuntimeFailure | undefined> => {
     if (isPlaceKnown || !RuntimeEntryIdentity.isChangedSince(recorded, entry)) return undefined;
-    const seen = await runtime.reattach(handle);
+    const seen = await reattached(recorded, handle);
 
     if (seen.kind === 'failed') return seen.failure;
 
@@ -863,12 +863,31 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
     return undefined;
   };
 
-  const changedEntryFailure = (recorded: AttemptRuntimeRecord): RuntimeFailure => ({
+  /**
+   * Why the place of attempt `recorded` names is not taken as gone under an entry that changed since it ran. `part`:
+   * the part of a runtime made of parts that no longer knows its share of the place, while the other part still knows
+   * its own; that part may now start elsewhere too, so its answer proves nothing of what it ran.
+   */
+  const changedEntryFailure = (recorded: AttemptRuntimeRecord, part?: string): RuntimeFailure => ({
     code: 'runtime_gone',
     message: recorded.entry === entry.digest
-      ? `the definition of step runtime "${runtime.name}" that driver "${driver}" ran it on, or the program it launches, changed since, and the runtime it launches now does not know the place of attempt ${attempt}, so teamai cannot tell that what ran there stopped. Put the runtime's definition, or the PATH that found its program, back as it was to stop what ran, or drop the place with teamai workflow cancel ${run} --release ${attempt}.`
-      : `the entry of driver "${driver}" that ran it changed since, and the runtime that entry starts now does not know the place of attempt ${attempt}, so teamai cannot tell that what ran there stopped. Put the entry back as it was to stop what ran, or drop the place with teamai workflow cancel ${run} --release ${attempt}.`,
+      ? `the definition of step runtime "${runtime.name}" that driver "${driver}" ran it on, or the program it launches, changed since, and ${part === undefined ? 'the runtime it launches' : `step runtime "${part}", a part of the runtime it launches,`} now does not know ${part === undefined ? 'the place' : 'its share of the place'} of attempt ${attempt}, so teamai cannot tell that what ran there stopped. Put the runtime's definition, or the PATH that found its program, back as it was to stop what ran, or drop the place with teamai workflow cancel ${run} --release ${attempt}.`
+      : `the entry of driver "${driver}" that ran it changed since, and ${part === undefined ? 'the runtime that entry starts' : `step runtime "${part}", a part of the runtime that entry starts,`} now does not know ${part === undefined ? 'the place' : 'its share of the place'} of attempt ${attempt}, so teamai cannot tell that what ran there stopped. Put the entry back as it was to stop what ran, or drop the place with teamai workflow cancel ${run} --release ${attempt}.`,
   });
+
+  /**
+   * Reattaches the place of attempt `recorded` names, on `handle`, for every reader of a reattach in this attempt. A part
+   * of a runtime made of parts answers only for what it ran: under an entry that changed since the attempt ran, one part
+   * that no longer knows its share proves nothing of it, as a whole runtime's gone proves nothing there, so the answer
+   * is that the runtime could not tell. Under the entry as it ran, that part's operations ended.
+   */
+  const reattached = async (recorded: AttemptRuntimeRecord, handle: string): Promise<Reattached> => {
+    const seen = await runtime.reattach(handle);
+
+    if (seen.kind !== 'alive' || seen.partGone === undefined || !RuntimeEntryIdentity.isChangedSince(recorded, entry)) return seen;
+
+    return { kind: 'failed', failure: changedEntryFailure(recorded, seen.partGone) };
+  };
 
   const save = async (next: AttemptRuntimeRecord): Promise<void> => {
     record = next;
@@ -928,14 +947,14 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
    * Answers why the stop is not confirmed, or undefined once it is: the runtime could not be asked, it reports the
    * operation `cancel_failed` (its failure says what to do), or it still reports it running after the wait.
    */
-  const stopLeftRunning = async (handle: string, op: OpId): Promise<RuntimeFailure | undefined> => {
+  const stopLeftRunning = async (recorded: AttemptRuntimeRecord, handle: string, op: OpId): Promise<RuntimeFailure | undefined> => {
     await runtime.cancel(op);
     const waitUntil = Date.now() + STOP_WAIT_MS;
 
     for (let left = STOP_WAIT_MS; left > 0; left = waitUntil - Date.now()) {
       // A reattach sent just before the wait ends does not extend it.
       let timer: NodeJS.Timeout | undefined;
-      const seen = await Promise.race([runtime.reattach(handle), new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), left); })]);
+      const seen = await Promise.race([reattached(recorded, handle), new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), left); })]);
       clearTimeout(timer);
 
       if (seen === undefined) break;
@@ -1012,7 +1031,7 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
 
     // Stopped before its place was prepared again (`stopLeftSetup`); stopped here too for a caller that did not, late as that is.
     if (before.setup) {
-      const notStopped = await stopLeftRunning(handle, before.setup.op);
+      const notStopped = await stopLeftRunning(before, handle, before.setup.op);
 
       if (notStopped) return leftSetupNotStopped(notStopped);
     }
@@ -1171,7 +1190,7 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
       // A runtime whose execs go on without teamai is sent the same id again, which reconnects to the exec.
       if (before.exec && !runtime.isExecReconnected) {
         const sent = before.exec;
-        const found = await runtime.reattach(handle);
+        const found = await reattached(before, handle);
 
         // The exec may still run: the runtime that could tell is not answering.
         if (found.kind === 'failed') return lostFor(found.failure);
@@ -1184,7 +1203,7 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
         if (state !== undefined) events.onAccepted?.({});
 
         if (isUnstopped(state)) {
-          const notStopped = await stopLeftRunning(handle, sent.op);
+          const notStopped = await stopLeftRunning(before, handle, sent.op);
 
           if (!notStopped) return { kind: 'interrupted' };
 
@@ -1231,7 +1250,7 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
       if (!before || handle === undefined) return { kind: 'failed', failure: { code: 'runtime_protocol', message: `Attempt ${attempt} has no open place to prompt in.` } };
 
       if (before.prompt) {
-        const found = await runtime.reattach(handle);
+        const found = await reattached(before, handle);
 
         // The prompt may still run: the runtime that could tell is not answering.
         if (found.kind === 'failed') return lostFor(found.failure);
@@ -1246,7 +1265,7 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
 
         // A stop that a cancel before the restart could not confirm is tried again: it is not how the prompt ended.
         if (state?.state === 'failed' && isUnstopped(state)) {
-          const notStopped = await stopLeftRunning(handle, sent.op);
+          const notStopped = await stopLeftRunning(before, handle, sent.op);
 
           if (!notStopped) return { kind: 'cancelled' };
 
@@ -1374,7 +1393,7 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
 
       // One left on another runtime was stopped through the driver recorded for it before this attempt reached here.
       if (!before?.setup || !isSetupLeftRunning(before) || !isHere(before) || handle === undefined) return undefined;
-      const notStopped = await stopLeftRunning(handle, before.setup.op);
+      const notStopped = await stopLeftRunning(before, handle, before.setup.op);
 
       return notStopped && leftSetupNotStopped(notStopped);
     },
@@ -1409,7 +1428,7 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
       const left = before?.exec ?? before?.prompt ?? before?.setup;
 
       if (!before || !left || handle === undefined) return undefined;
-      const seen = await runtime.reattach(handle);
+      const seen = await reattached(before, handle);
 
       if (seen.kind === 'failed') return seen.failure;
 
@@ -1419,7 +1438,7 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
       // An operation that ended before this cancel needs no stop; closing its place confirms nothing of it still runs.
       if (seen.kind === 'gone' || !isUnstopped(seen.ops.find((retained) => retained.op === left.op))) return undefined;
 
-      return stopLeftRunning(handle, left.op);
+      return stopLeftRunning(before, handle, left.op);
     },
   };
 }

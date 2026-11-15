@@ -271,7 +271,11 @@ export function composedStepRuntime({ outer, inner, innerCredentials }: { outer:
       for (const one of seen) for (const state of one?.ops ?? []) if (one) ranBy.set(state.op, one.runtime);
       const display = (innerSeen.kind === 'alive' ? innerSeen.display : undefined) ?? (outerSeen.kind === 'alive' ? outerSeen.display : undefined);
 
-      return { kind: 'alive', ops: seen.flatMap((one) => one?.ops ?? []), ...(display && { display }) };
+      // Each part answers only for its own operations: one the handle names that no longer knows its share of the place
+      // is named, so the caller decides what that part's answer proves rather than reading the other part's for it.
+      const partGone = outerSeen.kind === 'gone' ? outer.name : innerHandle !== undefined && innerSeen.kind === 'gone' ? inner.name : undefined;
+
+      return { kind: 'alive', ops: seen.flatMap((one) => one?.ops ?? []), ...(display && { display }), ...(partGone !== undefined && { partGone }) };
     },
 
     async close(handle, how) {

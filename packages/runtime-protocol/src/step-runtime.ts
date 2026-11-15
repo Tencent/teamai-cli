@@ -81,8 +81,12 @@ export type PromptEnd =
  */
 export type WakeEnd = { kind: 'woken'; where: string; display?: RuntimeDisplay } | { kind: 'failed'; failure: RuntimeFailure } | Lost;
 
-/** A reattach: the handle is gone, alive with what the runtime retains, or the runtime could not be asked. */
-export type Reattached = { kind: 'gone' } | { kind: 'alive'; ops: OpState[]; display?: RuntimeDisplay } | { kind: 'failed'; failure: RuntimeFailure };
+/**
+ * A reattach: the handle is gone, alive with what the runtime retains, or the runtime could not be asked. A runtime made
+ * of parts (one through another) is alive while one part knows its share of the place; `partGone` then names the part
+ * that answered it no longer knows its share. `ops` holds none that part ran, and only that part could say they ended.
+ */
+export type Reattached = { kind: 'gone' } | { kind: 'alive'; ops: OpState[]; display?: RuntimeDisplay; partGone?: string } | { kind: 'failed'; failure: RuntimeFailure };
 
 /** What a runtime showed with an operation's acceptance: a display, or none. */
 export interface Accepted {

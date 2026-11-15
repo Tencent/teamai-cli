@@ -9,6 +9,11 @@ import { newOpId, type Initialized, type OpenRequest, type PromptRequest, type S
 import type { DriverCan } from '../workflow/requirements.js';
 import { TOY_RUNTIME } from './helpers/toy-runtime.js';
 import { homeEnvOf } from '../workflow/runtimes/sources.js';
+import { attemptRun, attemptRuntimePath } from '../workflow/runtimes/attempt.js';
+import { AttemptIdSchema, RunIdSchema } from '../workflow/store.js';
+import type { OpId, OpState } from '@teamai/runtime-protocol';
+import type { LocalConfig } from '../types.js';
+import { soleEntry } from './helpers/runtime-entry.js';
 
 type Offer = Extract<Initialized<DriverCan>, { ok: true }>;
 
@@ -262,6 +267,78 @@ describe('a toy through a toy, over stdio', () => {
     await runtime.open(openRequest(), async (handle) => { recorded = handle; });
     expect(await runtime.close(recorded)).toMatchObject({ ok: false, failure: { code: 'runtime_lost', message: expect.stringContaining('apptoy may hold a place for this attempt that teamai never recorded') } });
     expect(asked().map(({ toy: which, type }) => `${which} ${type}`)).toEqual(['outer open', 'inner open']);
+  });
+});
+
+describe('an attempt on a runtime through another', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-composed-attempt-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const config = (): LocalConfig => ({ repo: { localPath: dir, remote: 'local', kind: 'self' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: dir, dataHome: path.join(dir, 'data') });
+  const [run, attempt] = [RunIdSchema.parse('r0123abcd'), AttemptIdSchema.parse('a0123abcd')];
+  const view = { worktree: '/work', readonly: [], result: '/work/out', runDir: '/work/scratch', toolHome: {} };
+
+  /** The places and operations one runtime's journal keeps, and what it was asked to cancel and close. */
+  type Journal = { places: Set<string>; ops: Map<OpId, OpState>; cancelled: OpId[]; closed: string[] };
+  const journal = (): Journal => ({ places: new Set(), ops: new Map(), cancelled: [], closed: [] });
+
+  /**
+   * A runtime over journal `kept`: it opens place `<name>-1` (or as `open` says), runs every exec until it is
+   * cancelled, and answers a reattach from its journal.
+   */
+  const part = (name: string, kept: Journal, open?: StepRuntime<DriverCan>['open']): StepRuntime<DriverCan> => ({
+    name,
+    init: async () => ({ ok: true, can: {}, launchesAgents: name === 'apptoy' }),
+    open: open ?? (async (_request, onAccepted) => {
+      kept.places.add(`${name}-1`);
+      await onAccepted(`${name}-1`);
+
+      return { kind: 'ready', handle: `${name}-1` };
+    }),
+    exec: async (request) => {
+      kept.ops.set(request.op, { op: request.op, state: 'running' });
+
+      return new Promise(() => {});
+    },
+    prompt: async () => ({ kind: 'cancelled' }),
+    cancel: async (op) => { kept.cancelled.push(op); },
+    collect: async () => ({ ok: true }),
+    reattach: async (handle) => (kept.places.has(handle) ? { kind: 'alive', ops: [...kept.ops.values()] } : { kind: 'gone' }),
+    close: async (handle) => {
+      kept.closed.push(handle);
+      kept.places.delete(handle);
+
+      return { ok: true };
+    },
+    dispose: async () => {},
+  });
+
+  it('keeps the place of a setup the outer ran once only the outer changed, to a journal that does not know the place, though the inner still does', async () => {
+    const [outerJournal, innerJournal] = [journal(), journal()];
+    const ran = composedStepRuntime({ outer: part('sandboxtoy', outerJournal), inner: part('apptoy', innerJournal), innerCredentials: {} });
+    const placed = attemptRun({ config: config(), run, attempt, runtime: ran, entry: soleEntry(ran), driver: 'box' });
+    expect(await placed.open(view, { tool: 'claude' })).toMatchObject({ ok: true });
+    // The driver is killed while the outer runs the workflow's setup.
+    void placed.setup({ argv: ['make', 'deps'], env: {}, unset: [], credentials: {}, cwd: '/work' }, {});
+    await expect.poll(() => outerJournal.ops.size).toBe(1);
+
+    // The member changed only the outer's options, so it keeps its places in another journal; the inner is as it ran.
+    const elsewhere = journal();
+    const changed = composedStepRuntime({ outer: part('sandboxtoy', elsewhere), inner: part('apptoy', innerJournal), innerCredentials: {} });
+    const cancelling = attemptRun({ config: config(), run, attempt, runtime: changed, entry: { ...soleEntry(changed), digest: 'the outer changed' }, driver: 'box' });
+
+    // `workflow cancel` stops what the attempt left, then closes its place.
+    expect(await cancelling.stopLeftOperation()).toMatchObject({ code: 'runtime_gone' });
+    expect(await cancelling.close()).toMatchObject({ code: 'runtime_failed', message: expect.stringContaining('kept the place') });
+    expect(JSON.parse(fs.readFileSync(attemptRuntimePath(config(), run, attempt), 'utf8'))).not.toMatchObject({ phase: 'closed' });
+    expect([...elsewhere.closed, ...innerJournal.closed]).toEqual([]);
   });
 });
 
