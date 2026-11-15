@@ -36,6 +36,8 @@
     ],
     "typescript/no-floating-promises": "warn",
     "typescript/no-misused-promises": "warn",
+    // A promise returned from inside try settles after its catch and finally ran: return await it there.
+    "typescript/return-await": ["warn", "error-handling-correctness-only"],
     // Prefer includes() when checking for a collection member.
     "unicorn/prefer-includes": "warn",
     // Prefer a predicate search when only the existence of a match matters.
@@ -61,7 +63,7 @@
     "typescript/restrict-template-expressions": "off",
     "typescript/unbound-method": "off",
     // The suspicious/perf categories also reach these type-aware rules; only
-    // no-floating-promises and no-misused-promises (#863) are on.
+    // no-floating-promises, no-misused-promises (#863) and return-await are on.
     "typescript/no-unsafe-type-assertion": "off",
     "typescript/no-unnecessary-type-assertion": "off",
     "typescript/no-unnecessary-type-conversion": "off",

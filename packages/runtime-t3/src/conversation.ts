@@ -1100,7 +1100,7 @@ export function conversations({ serving, adder }: { serving: Serving; adder: Ins
         // A lookup that answers late still journals the thread it found, unless a close removed the place meanwhile.
         const resolving = await within(resolveLaunch(s, known, op, launch), left());
 
-        if (!resolving.answered) return answer(unconfirmed(op, `${lookUp}, and T3 Code did not say within ${STOP_WAIT_MS / 1_000} s whether it launched it when teamai looked. Run teamai workflow cancel ${run} again once T3 Code answers.`), false);
+        if (!resolving.answered) return await answer(unconfirmed(op, `${lookUp}, and T3 Code did not say within ${STOP_WAIT_MS / 1_000} s whether it launched it when teamai looked. Run teamai workflow cancel ${run} again once T3 Code answers.`), false);
         resolved = resolving.value;
       } catch (error) {
         return answer(unconfirmed(op, `${lookUp}, and T3 Code did not say whether it launched it when teamai looked: ${(error instanceof Error ? error.message : String(error)).replace(/\.$/, '')}. Run teamai workflow cancel ${run} again once T3 Code answers.`), false);

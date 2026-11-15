@@ -362,7 +362,7 @@ async function stopAttempt(config: LocalConfig, run: RunId, attempt: AttemptId, 
   try {
     const entry = placeEntry(config, { run, attempt, record, opened: opened.opened });
 
-    if (!entry.ok) return cannot(`${entry.why} Once you checked that nothing of it still runs there, teamai workflow cancel ${run} --release ${attempt} lets it go.`);
+    if (!entry.ok) return await cannot(`${entry.why} Once you checked that nothing of it still runs there, teamai workflow cancel ${run} --release ${attempt} lets it go.`);
     const { placed, masked } = entry;
 
     const notStopped = await placed.stopLeftOperation();
@@ -371,7 +371,7 @@ async function stopAttempt(config: LocalConfig, run: RunId, attempt: AttemptId, 
     // checked that nothing of it runs, so the runtime is still told to forget the place before teamai lets it go.
     if (notStopped && isReleased) await placed.close(RELEASE);
 
-    if (notStopped) return cannot(`its exec or prompt may still run, since the runtime did not confirm it stopped (${notStopped.code}): ${notStopped.message}`);
+    if (notStopped) return await cannot(`its exec or prompt may still run, since the runtime did not confirm it stopped (${notStopped.code}): ${notStopped.message}`);
     // A place whose work already came back is not brought back again.
     const notCollected = record.phase === 'collected' ? undefined : await placed.collect();
 
@@ -389,9 +389,9 @@ async function stopAttempt(config: LocalConfig, run: RunId, attempt: AttemptId, 
       return { ended: 'closed', masked };
     }
 
-    return isReleased ? { ended: await releaseAttempt(config, run, attempt, notClosed.message, record), masked } : cannot(`${notClosed.message} Once you checked that nothing of it still runs there, run teamai workflow cancel ${run} --release ${attempt}.`);
+    return isReleased ? { ended: await releaseAttempt(config, run, attempt, notClosed.message, record), masked } : await cannot(`${notClosed.message} Once you checked that nothing of it still runs there, run teamai workflow cancel ${run} --release ${attempt}.`);
   } catch (error) {
-    return cannot(error instanceof Error ? error.message : String(error));
+    return await cannot(error instanceof Error ? error.message : String(error));
   } finally {
     await disposeDriver(opened.opened);
   }

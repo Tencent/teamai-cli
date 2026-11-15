@@ -1710,7 +1710,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
           const answer = line.trim().toLowerCase();
 
           if (answer === 'offer' || answer === 'o') {
-            return offerOnLimit({
+            return await offerOnLimit({
               tool: idle.tool,
               offeredSaid: (resume) => `Run ${runId} is offered on teamai-reports, as you chose: another machine continues it with ${resume}. To continue it here once the limit resets: teamai workflow resume ${runId}`,
               unofferedSaid: (reason) => `Run ${runId} could not be offered on teamai-reports: ${reason}. Once the limit resets, continue it ${resumeOrPublish(runId)}`,
@@ -1736,7 +1736,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
         if (idle?.kind === 'past_cap') {
           const quoted = heldBy(idle.tool).map((step) => `"${step}"`);
 
-          return offerOnLimit({
+          return await offerOnLimit({
             tool: idle.tool,
             offeredSaid: (resume) => `${quoted.length > 1 ? `Steps ${quoted.join(', ')} wait` : `Step ${quoted.join(', ')} waits`}: ${idle.reason}. So run ${runId} is offered on teamai-reports: another machine continues it with ${resume}. To continue it here once the limit resets: teamai workflow resume ${runId}`,
             unofferedSaid: (reason) => `Run ${runId} waits: ${idle.reason}, and it could not be offered on teamai-reports: ${reason}. Once the limit resets, continue it ${resumeOrPublish(runId)}`,
