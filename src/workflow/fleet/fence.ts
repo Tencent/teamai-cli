@@ -296,10 +296,13 @@ export async function fenceStep({ dir, command, at, claim }: { dir: string; comm
   for (const until = Date.now() + GUARDIAN_READY_MS; !isReady && !ended.isExited && Date.now() < until; isReady = await isGuardianReady(file, owner)) await sleep(READY_READ_MS);
 
   if (!isReady) {
+    // Why it is not ready, read before the kill, whose exit would otherwise read as the guardian's own.
+    const hadExited = ended.isExited;
+
     signalChild(guardian, 'SIGKILL');
     await removeFenceOf(file, owner);
 
-    return { ok: false, reason: ended.isExited ? 'its guardian exited before it said it was ready' : `its guardian did not say it was ready within ${GUARDIAN_READY_MS / 1_000} s` };
+    return { ok: false, reason: hadExited ? 'its guardian exited before it said it was ready' : `its guardian did not say it was ready within ${GUARDIAN_READY_MS / 1_000} s` };
   }
 
   let writing: Promise<void> = Promise.resolve();
