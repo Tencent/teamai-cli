@@ -8,7 +8,9 @@ vi.mock('cross-spawn', () => ({
 }));
 
 import spawn from 'cross-spawn';
-import { captureTail, execCommand } from '@teamai/shared/exec';
+import fs from 'node:fs';
+import path from 'node:path';
+import { captureTail, execCommand, probeVersion } from '@teamai/shared/exec';
 
 interface Emitters {
   stdout: (chunk: Buffer) => void;
@@ -222,5 +224,19 @@ describe('captureTail', () => {
     const second = readTail();
     expect(first).toBe(text);
     expect(second).toBe(text);
+  });
+});
+
+describe('probeVersion', () => {
+  it('removes its directory and answers empty when the binary fails', async () => {
+    let scratch = '';
+    const version = await probeVersion('opencode', {}, async (_command, _args, options) => {
+      scratch = path.dirname(options?.env?.XDG_DATA_HOME ?? '');
+      throw new Error('spawn opencode ENOENT');
+    });
+
+    expect(version).toBe('');
+    expect(scratch).not.toBe('');
+    expect(fs.existsSync(scratch)).toBe(false);
   });
 });

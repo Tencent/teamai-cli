@@ -4,6 +4,8 @@ import { Socket } from 'node:net';
 import type { Readable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { existsSync } from 'node:fs';
+import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { isBareCommandName, pickWindowsCommand } from './cli-path.js';
 import { WIN_EXEC_EXTENSIONS } from './lookpath.js';
@@ -109,6 +111,38 @@ export async function probeBinary(
     return (result.stdout || result.stderr).trim();
   } catch {
     return '';
+  }
+}
+
+/**
+ * `<binary> --version`, as `probeBinary` reads it, with the XDG data, cache and state folders in a temporary directory:
+ * OpenCode makes those folders on every start, `--version` included.
+ */
+export async function probeVersion(
+  binary: string,
+  { env = process.env, cwd }: { env?: NodeJS.ProcessEnv; cwd?: string } = {},
+  executor: CommandExecutor = execCommand,
+): Promise<string> {
+  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-version-')).catch(() => null);
+
+  if (scratch === null) return '';
+
+  const probeOptions: ExecOptions = {
+    env: {
+      ...env,
+      XDG_DATA_HOME: path.join(scratch, 'data'),
+      XDG_CACHE_HOME: path.join(scratch, 'cache'),
+      XDG_STATE_HOME: path.join(scratch, 'state'),
+    },
+  };
+
+  if (cwd) probeOptions.cwd = cwd;
+
+  try {
+    return await probeBinary(binary, ['--version'], (command, args, options) => executor(command, args, { ...options, ...probeOptions }));
+  } finally {
+    // A child the timeout killed can still hold a file there on Windows; a leftover temp folder must not fail the probe.
+    await fs.rm(scratch, { recursive: true, force: true, maxRetries: 3 }).catch(() => undefined);
   }
 }
 
@@ -275,8 +309,9 @@ export interface Processes {
   readonly spawn: typeof spawnCommand;
   readonly spawnSync: typeof spawnCommandSync;
   readonly probe: typeof probeBinary;
+  readonly probeVersion: typeof probeVersion;
   readonly signalChild: typeof signalChild;
 }
 
 /** This process's own: what the host gives a module that runs through `Processes`. */
-export const HOST_PROCESSES: Processes = { exec: execCommand, spawn: spawnCommand, spawnSync: spawnCommandSync, probe: probeBinary, signalChild };
+export const HOST_PROCESSES: Processes = { exec: execCommand, spawn: spawnCommand, spawnSync: spawnCommandSync, probe: probeBinary, probeVersion, signalChild };

@@ -19,8 +19,7 @@ import { readRegularFileSync } from '@teamai/shared/regular-file';
  * Like the real CLI under an isolated data home, any session command without
  * `--standalone` fails: it would try to start the managed background service.
  * It prints the version `installFakeOpencode` was given, `opencode v2.0.29` by
- * default; `$XDG_DATA_HOME/fake-opencode/version` overrides it, and
- * `$XDG_DATA_HOME/fake-opencode/export-error` makes `session export` fail with that message.
+ * default, and `$XDG_DATA_HOME/fake-opencode/export-error` makes `session export` fail with that message.
  */
 const CLI = String.raw`
 const fs = require('node:fs');
@@ -31,10 +30,14 @@ const args = process.argv.slice(2);
 const fail = (message) => { process.stderr.write(message + '\n'); process.exit(1); };
 const real = (p) => { try { return fs.realpathSync.native(p); } catch { return path.resolve(p); } };
 const repoOf = (d) => fs.existsSync(path.join(d, '.git')) ? d : path.dirname(d) === d ? undefined : repoOf(path.dirname(d));
+if (MAKES_DATA_FOLDERS) {
+  const home = require('node:os').homedir();
+  for (const [variable, fallback] of [['XDG_DATA_HOME', ['.local', 'share']], ['XDG_CACHE_HOME', ['.cache']], ['XDG_STATE_HOME', ['.local', 'state']]]) {
+    fs.mkdirSync(path.join(process.env[variable] || path.join(home, ...fallback), 'opencode'), { recursive: true });
+  }
+}
 if (args[0] === '--version') {
-  let version = VERSION;
-  try { version = fs.readFileSync(path.join(root, 'version'), 'utf8').trim(); } catch {}
-  process.stdout.write(version + '\n');
+  process.stdout.write(VERSION + '\n');
   process.exit(0);
 }
 if (args[0] === 'serve') {
@@ -116,12 +119,18 @@ if (sub === 'list') {
 /**
  * Write the fake `opencode` into a new directory and return it (put it on PATH).
  * `version` is what `opencode --version` prints, as the real one does: `opencode v2.0.29`
- * (V2) by default, `1.18.35` for a test that pins OpenCode V1.
+ * (V2) by default, `1.18.35` for a test that pins OpenCode V1. With `makesDataFolders` it makes its data, cache and
+ * state folders on every start, `--version` included, as the real one does: under the XDG variables, or
+ * `~/.local/share`, `~/.cache` and `~/.local/state` when they are unset.
  */
-export function installFakeOpencode(options: { version?: string } = {}): string {
+export function installFakeOpencode(options: { version?: string; makesDataFolders?: boolean } = {}): string {
   const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-fake-opencode-')));
   const script = path.join(dir, 'fake-opencode.cjs');
-  fs.writeFileSync(script, `const VERSION = ${JSON.stringify(options.version ?? 'opencode v2.0.29')};\n${CLI}`);
+  fs.writeFileSync(script, [
+    `const VERSION = ${JSON.stringify(options.version ?? 'opencode v2.0.29')};`,
+    `const MAKES_DATA_FOLDERS = ${options.makesDataFolders === true};`,
+    CLI,
+  ].join('\n'));
 
   const node = JSON.stringify(process.execPath);
   fs.writeFileSync(path.join(dir, 'opencode'), `#!/bin/sh\nexec ${node} ${JSON.stringify(script)} "$@"\n`);
@@ -162,10 +171,4 @@ export function plantOpencodeSession(dataHome: string, session: OpencodeExport, 
 export function setFakeOpencodeExportError(dataHome: string, message: string): void {
   fs.mkdirSync(path.join(dataHome, 'fake-opencode'), { recursive: true });
   fs.writeFileSync(path.join(dataHome, 'fake-opencode', 'export-error'), message);
-}
-
-/** Make the fake print `version` for `opencode --version`. */
-export function setFakeOpencodeVersion(dataHome: string, version: string): void {
-  fs.mkdirSync(path.join(dataHome, 'fake-opencode'), { recursive: true });
-  fs.writeFileSync(path.join(dataHome, 'fake-opencode', 'version'), version);
 }
