@@ -44,7 +44,7 @@ type SameName = z.infer<typeof SameNameSchema>;
  * What an attempt's runtime record says of where its place is: the runtime's name, and, once recorded, the entry's digest
  * and where it stood among the entries of that name.
  */
-interface RecordedEntry {
+export interface RecordedEntry {
   runtime: string;
   entry?: string | undefined;
   resource?: string | undefined;
@@ -133,5 +133,16 @@ function find<TCandidate extends { entry: RuntimeEntryIdentity }>(record: Record
   return { ok: false, why: `driver "${driver}" lists runtime "${record.runtime}" more than once, and the attempt's record, which an earlier teamai wrote, does not say which entry ran it.` };
 }
 
+/**
+ * The one entry of `driver`'s definition that holds the place `record` names, or why none does, as `find` tells them
+ * apart, before any of them opens: an entry's digest and where it stands among those of its name are what `find`
+ * reads, and neither depends on what its runtimes resolve to.
+ */
+function entryOf(driver: ResolvedDriver, record: RecordedEntry): { ok: true; entry: DefinitionEntry } | { ok: false; why: string } {
+  const found = find(record, driver.definition.runtimes.map((definition) => ({ definition, entry: of(driver, definition, []) })), driver.name);
+
+  return found.ok ? { ok: true, entry: found.found.definition } : found;
+}
+
 /** Which entry of a driver definition each attempt's place is on, and the one test of whether a runtime holds it. */
-export const RuntimeEntryIdentity = { of, holds, isChangedSince, find } as const;
+export const RuntimeEntryIdentity = { of, holds, isChangedSince, find, entryOf } as const;

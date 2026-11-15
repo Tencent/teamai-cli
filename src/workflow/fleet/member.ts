@@ -25,7 +25,7 @@ import { WorkflowFolder } from '../folder.js';
 import { loadTeamConfig } from '../../config.js';
 import { resolveRetention, retentionEnds, type Retention } from '../retention.js';
 import { retryCommand } from '../runtimes/retry-command.js';
-import { answerCancel, attemptRef, claimAttempt, finishAttempt, fleetFailure, leaveOffer, leaseEnv, leaseInputs, leasePrompt, listRecords, memberRecordsAmong, noteHeldFolders, offersAmong, readAttemptRecord, recordProgress, isHeld, type Cancelling, type FleetRecord, type HeldAttempt, type Offered, type FleetError, type FleetLease, type FleetResult } from './record.js';
+import { answerCancel, attemptRef, claimAttempt, confirmStop, finishAttempt, fleetFailure, leaveOffer, leaseEnv, leaseInputs, leasePrompt, listRecords, memberRecordsAmong, noteHeldFolders, offersAmong, readAttemptRecord, recordProgress, isHeld, type Cancelling, type FleetRecord, type HeldAttempt, type Offered, type FleetError, type FleetLease, type FleetResult } from './record.js';
 import type { ExecAnswer, ExecQuestion } from '@teamai/runtime-protocol/step-runtime';
 import { definitionsOf, type Definitions } from '../handoff.js';
 import { createRun } from '../engine.js';
@@ -321,7 +321,7 @@ export async function takeFleetAttempt(config: LocalConfig, input: { pool: strin
   for (const offer of offers) {
     // The run's lock comes first: a claim this machine could not run at once would wait for nobody until stale_after.
     const held = await takeRunLock(config, offer.run, async (lock): Promise<WorkflowEnvelope | 'moved'> => {
-      const claimed = await claimAttempt(config, offer, member);
+      const claimed = await claimAttempt(config, offer, member, { runsHere: place[offer.lease.kind]?.kind === 'here' });
 
       if (claimed.ok) return runClaim(config, { lock, claim: claimed.value, root, secrets, member, place });
 
@@ -364,6 +364,9 @@ async function finishLeftClaims(config: LocalConfig, records: FleetRecord[], { r
 
       if (left.kind === 'left') return { error: { code: 'runtime_lost', message: left.message } };
       const { nestedRun, isLeftRunning } = left;
+
+      // A claim its owner gave up waits for this member to say that nothing of its step still runs here.
+      if (record.state === 'expired' && !isLeftRunning) await sayStopped(config, { run: record.run, attempt: record.attempt, member });
 
       // What the member kept of an ended attempt, such as the log a failure named, goes with its claim marker once nothing
       // it left may still run and `workflows.retention` passed since it ended, as what a run leaves does.
@@ -442,6 +445,16 @@ export async function stopLeftOfClaim(config: LocalConfig, { claim, root, isEnde
   await fs.rm(attemptRuntimePath(config, run, attempt), { force: true });
 
   return { kind: 'stopped', nestedRun, isLeftRunning };
+}
+
+/**
+ * Says on the record of attempt `attempt` that nothing of its step still runs on this machine (`confirmStop`), once the
+ * claim's cut-off point passed: a write that does not land is only logged, and the member's next take says it again.
+ */
+async function sayStopped(config: LocalConfig, { run, attempt, member }: { run: RunId; attempt: AttemptId; member: HandoffOwner }): Promise<void> {
+  const said = await confirmStop(config, { run, attempt, member });
+
+  if (!said.ok && said.error.code !== 'state_moved') log.warn(`Attempt ${attempt} of run ${run} does not say yet that its step stopped on this machine, so its owner does not run the step again: ${said.error.message} The next teamai workflow resume --next of this member says it again.`);
 }
 
 /** When the record of an attempt that ended says it ended. */
@@ -737,11 +750,32 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
 
   if (lateBy <= 0) {
     await fs.rm(work, { recursive: true, force: true });
+    // Only a restarted member, which stopped what its killed run left before it came here (`finishLeftClaims`), or one
+    // whose claim took that long to land, which ran nothing of it, gets here: nothing of the step runs on this machine.
+    await sayStopped(config, { run, attempt, member });
 
     return { error: { code: 'fleet_member_gone', message: `${cutOffWhy(lateBy)} It ran nothing of it again.` } };
   }
 
+  // A restarted member may run the step elsewhere than the claim says, as on another driver: a claim that says its
+  // guardian ends it by kill says otherwise before any of it starts, or the member runs nothing of it.
+  if (latest.killBounded === true && !(ready.kind === 'command' && place.command?.kind === 'here')) {
+    const said = await recordProgress(config, { ...latest, killBounded: false }, latest.pushed);
+
+    if (!said.ok) return { error: fleetFailure(said.error) };
+    latest = said.value;
+  }
+
   if (ready.kind === 'command') await fs.mkdir(runDir, { recursive: true });
+
+  // Once the owner gave the claim up or the member cut its step off, past the claim's cut-off point: whether nothing of
+  // a step its guardian does not end by kill still runs here, which the record then says (`sayStopped`).
+  const sayStepStopped = async (): Promise<void> => {
+    if (latest.killBounded === true) return;
+    const left = await stopLeftOfClaim(config, { claim, root, isEnded: true });
+
+    if (left.kind === 'stopped' && !left.isLeftRunning) await sayStopped(config, { run, attempt, member });
+  };
 
   try {
     const command = ready.kind === 'workflow'
@@ -758,7 +792,7 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
     // step runtime, a prompt's tool or a whole workflow's nested run.
     const since = Date.parse(latest.progressAt);
     const fencedCommand = command.group !== undefined ? { kind: 'group' as const, id: command.group } : command.tree === undefined ? undefined : { kind: 'tree' as const, pid: command.tree };
-    const fenced = await fenceStep({ dir, ...(fencedCommand && { command: fencedCommand }), at: Number.isNaN(since) ? Date.now() : since + cutOffMs, claim: { root, run, attempt, pool: claim.pool, step: lease.step } });
+    const fenced = await fenceStep({ dir, ...(fencedCommand && { command: fencedCommand }), at: Number.isNaN(since) ? Date.now() : since + cutOffMs, claim: { root, run, attempt, pool: claim.pool, step: lease.step, kind: lease.kind } });
     // What the guardian stops at the cut-off point, live member or not: the command here, or the exec or prompt on the
     // member's step runtime.
     const isGuardianStopped = fencedCommand !== undefined || (ready.kind === 'command' ? place.command : ready.kind === 'prompt' ? place.prompt : undefined)?.kind === 'runtime';
@@ -850,11 +884,17 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
     if (cutOff !== undefined) {
       const saved = await save(`[teamai] ${lease.step} so far (run ${run}, attempt ${attempt})`);
       const kept = 'to' in saved ? `Its work so far is on ${ref}.` : `Its work since its last push is not on ${ref}: ${saved.error}`;
+      await sayStepStopped();
 
       return { error: { code: 'fleet_member_gone', message: `${cutOff} ${kept}` } };
     }
 
-    if (gone !== undefined) return { error: { code: 'state_moved', message: `The owner of run ${run} gave up attempt ${attempt} of step "${lease.step}" while this member ran it, so its result was not written. ${gone}` } };
+    if (gone !== undefined) {
+      await sayStepStopped();
+
+      return { error: { code: 'state_moved', message: `The owner of run ${run} gave up attempt ${attempt} of step "${lease.step}" while this member ran it, so its result was not written. ${gone}` } };
+    }
+
     const saved = await save(`[teamai] ${lease.step} (run ${run}, attempt ${attempt})`);
 
     if (cancelling) return answered(config, cancelling, 'to' in saved ? saved.to : latest.pushed, ran.tokens);

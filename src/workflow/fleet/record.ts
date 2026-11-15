@@ -189,9 +189,18 @@ const OfferedSchema = z.object({
 
 /**
  * A member's claim: `progressAt`, when it last wrote that it still runs the attempt, and `pushed`, the last commit it
- * pushed to the attempt's ref, from which a retry starts once the claim went stale.
+ * pushed to the attempt's ref, from which a retry starts once the claim went stale. `killBounded`: the step's guardian
+ * holds the whole process group of the step (on Windows its process tree) and ends it by kill, needing no lock, so it
+ * ends by the cut-off point whatever the member does: only a command the member runs here. A step on a step runtime,
+ * a prompt on the member's tools and a whole workflow's nested run are not. `stopConfirmed`: once the claim's cut-off
+ * point passed, past which no run of the member starts the step again, the member, the step's guardian or the member's
+ * recovery confirmed that nothing of the step still runs on its machine. Once the claim is given up, the step runs again
+ * only when one of the two holds (`isStopUnconfirmed`).
  */
-const ClaimedSchema = OfferedSchema.extend({ state: z.literal('claimed'), member: OwnerSchema, claimedAt: z.string(), progressAt: z.string(), pushed: CommitSchema });
+const ClaimedSchema = OfferedSchema.extend({
+  state: z.literal('claimed'), member: OwnerSchema, claimedAt: z.string(), progressAt: z.string(), pushed: CommitSchema,
+  killBounded: z.boolean().optional(), stopConfirmed: z.literal(true).optional(),
+});
 
 const FinishedSchema = ClaimedSchema.extend({ state: z.literal('finished'), finishedAt: z.string(), result: FleetResultSchema });
 
@@ -254,6 +263,15 @@ export type Asking = Extract<FleetRecord, { state: 'asking' }>;
 /** Whether `record` is a claim its member holds. */
 export function isHeld(record: FleetRecord): record is HeldAttempt {
   return record.state === 'claimed' || record.state === 'asking' || record.state === 'answered';
+}
+
+/**
+ * Whether the step of given-up claim `expired` may still run on its member's machine, so it does not run again: its
+ * guardian does not end it by kill, and no stop of it was confirmed. A claim an older teamai wrote, which says neither,
+ * is bounded by kill only when it leased a command, which such a member always fenced by kill when it ran it here.
+ */
+export function isStopUnconfirmed(expired: Extract<FleetRecord, { state: 'expired' }>): boolean {
+  return !(expired.killBounded ?? expired.lease.kind === 'command') && expired.stopConfirmed !== true;
 }
 
 /** Claim `held` as a plain claim, without a question or an answer. */
@@ -523,12 +541,15 @@ export async function offerAttempt(config: LocalConfig, input: {
 }
 
 /**
- * Replaces offer `offered` with this install's claim; another member's claim first answers `state_moved`. The claim is
- * noted in this install's data home before it is written, so a restarted member finishes only claims it wrote.
+ * Replaces offer `offered` with this install's claim, which runs the step here (`runsHere`) or, unless it says so,
+ * elsewhere, such as on a step runtime; another member's claim first answers `state_moved`. The claim is noted in this
+ * install's data home before it is written, so a restarted member finishes only claims it wrote.
  */
-export async function claimAttempt(config: LocalConfig, offered: Offered, member: HandoffOwner): Promise<Written<Claimed>> {
+export async function claimAttempt(config: LocalConfig, offered: Offered, member: HandoffOwner, { runsHere = false }: { runsHere?: boolean } = {}): Promise<Written<Claimed>> {
   const now = new Date().toISOString();
-  const claim: Claimed = { ...offered, write: randomUUID(), state: 'claimed', member, claimedAt: now, progressAt: now, pushed: offered.start };
+  // Only a command here runs in the one process group its guardian ends by kill (`fence.ts`).
+  const killBounded = offered.lease.kind === 'command' && runsHere;
+  const claim: Claimed = { ...offered, write: randomUUID(), state: 'claimed', member, claimedAt: now, progressAt: now, pushed: offered.start, killBounded };
   const marker = claimedMarker(config, offered.run, offered.attempt);
   await fs.mkdir(path.dirname(marker), { recursive: true });
   await writeRegularFile(marker, `${JSON.stringify({ write: claim.write })}\n`);
@@ -589,6 +610,25 @@ export async function expireClaim(config: LocalConfig, claimed: HeldAttempt | Ca
   const written = await writeRecord(config, expired, { replaces: claimed.write, message: `[teamai] Expire attempt ${claimed.attempt} of run ${claimed.run}` });
 
   return written.ok ? { ok: true, value: expired } : written;
+}
+
+/**
+ * Writes on the record of attempt `attempt` of run `run`, as origin holds it now, that nothing of its step still runs on
+ * the machine of `member`, which claimed it: once the claim's cut-off point passed, so no run of the member starts the
+ * step again. Only over a claim of `member` that did not end, or that its owner gave up; one bounded by kill, or already
+ * confirmed, is left as it is. Another write that lands first answers `state_moved`: the caller reads nothing into it.
+ */
+export async function confirmStop(config: LocalConfig, { run, attempt, member }: { run: RunId; attempt: AttemptId; member: HandoffOwner }): Promise<Written<void>> {
+  const read = await readAttemptRecord(config, run, attempt);
+
+  if (!read.ok) return read;
+  const record = read.value;
+
+  if (record === 'absent' || (!isHeld(record) && record.state !== 'cancelling' && record.state !== 'expired')) return { ok: true, value: undefined };
+
+  if (record.member.id !== member.id || record.killBounded === true || record.stopConfirmed === true) return { ok: true, value: undefined };
+
+  return writeRecord(config, { ...record, write: randomUUID(), stopConfirmed: true }, { replaces: record.write, message: `[teamai] Stop confirmed for attempt ${attempt} of run ${run}` });
 }
 
 /**

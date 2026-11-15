@@ -20,7 +20,7 @@ import { log } from '@teamai/shared/log';
 import { durationMs } from '../../utils/duration.js';
 import { budgetLeft } from '../limits.js';
 import { leaseContext } from '../scope.js';
-import { answerQuestion, attemptRef, cancelAttempt, expireClaim, isHeld, fleetFailure, lastGoneWork, leaseEnv, leaseInputs, leasePrompt, leaseValues, markOffered, noteWake, offerAttempt, readAttemptRecord, readOfferedMarker, DEFAULT_FLEET_POOL, type Claimed, type FleetError, type FleetLease, type FleetRecord, type FleetResult, type WakeNote } from './record.js';
+import { answerQuestion, attemptRef, cancelAttempt, expireClaim, isHeld, isStopUnconfirmed, fleetFailure, lastGoneWork, leaseEnv, leaseInputs, leasePrompt, leaseValues, markOffered, noteWake, offerAttempt, readAttemptRecord, readOfferedMarker, DEFAULT_FLEET_POOL, type Claimed, type FleetError, type FleetLease, type FleetRecord, type FleetResult, type WakeNote } from './record.js';
 import { runDefinition } from '../snapshot.js';
 import { AttemptIdSchema, installOwner, readRun, RunIdSchema, type AttemptId, type RunId } from '../store.js';
 import { workflowRunBy, type WorkflowFailure } from '../types.js';
@@ -174,9 +174,10 @@ function placeOf(handle: string): FleetPlace | undefined {
 function hasWorkToTake(record: FleetRecord): boolean {
   switch (record.state) {
     case 'finished': return record.result.to !== undefined;
-    // A stop the member could not confirm keeps the attempt: its work is not taken.
+    // A stop the member could not confirm, or did not confirm before its owner gave the claim up, keeps the attempt: its
+    // work is not taken.
     case 'cancelled': return record.stopped !== false && record.pushed !== record.start;
-    case 'expired': return record.pushed !== record.start;
+    case 'expired': return !isStopUnconfirmed(record) && record.pushed !== record.start;
     case 'offered':
     case 'claimed':
     case 'asking':
@@ -217,6 +218,8 @@ function recordState(op: OpId, record: FleetRecord | 'absent', { isTaking }: { i
       return finishedState(op, record);
 
     case 'expired':
+      if (isStopUnconfirmed(record)) return { op, state: 'failed', failure: unconfirmedFailure(record) };
+
       return { op, state: 'failed', failure: { code: 'fleet_member_gone', message: `The fleet member ${record.member.user} that took step "${record.lease.step}" stopped writing progress, so the attempt was given up.` } };
     default: {
       const unhandled: never = record;
@@ -232,6 +235,15 @@ function recordState(op: OpId, record: FleetRecord | 'absent', { isTaking }: { i
  */
 function unstoppedFailure(record: Extract<FleetRecord, { state: 'cancelled' }>): WorkflowFailure {
   return { code: CANCEL_FAILED, message: `Step "${record.lease.step}" was cancelled, and the fleet member ${record.member.user} that ran it could not confirm within ${FLEET_STOP_BUDGET_MS / 1_000} s that it stopped, so it may still run on that member's machine. The attempt's place and records are kept. Once you checked that nothing of it still runs there, teamai workflow cancel ${record.run} --release ${record.attempt} lets it go.` };
+}
+
+/**
+ * Why a claim given up whose step its guardian does not end by kill keeps the attempt until its member confirms that
+ * the step stopped: `cancel_failed`, a stop not confirmed, which leaves the place for the person to check, as a cancel
+ * the member could not confirm does.
+ */
+function unconfirmedFailure(record: Extract<FleetRecord, { state: 'expired' }>): WorkflowFailure {
+  return { code: CANCEL_FAILED, message: `The fleet member ${record.member.user} that took step "${record.lease.step}" was given up before it confirmed that the step stopped, and only that member's machine stops what the step runs there, such as a step runtime's exec, a prompt's tool or a nested run, so it may still run. teamai on that machine confirms the stop: the step's guardian, or the member's recovery at its next teamai workflow resume --next. Otherwise, once you checked that nothing of it still runs there, teamai workflow cancel ${record.run} --release ${record.attempt} lets it go.` };
 }
 
 /** What a cancelled record says the member did, for the person. */
@@ -686,7 +698,8 @@ async function waitOnOffer(input: WaitInput, { cancel, leave }: { cancel: AbortS
       return { kind: 'finished', result };
     }
 
-    if (record?.state === 'expired') return failed(await gone(record, { config, run, root, dir, ref, staleAfterMs }));
+    // A step that may still run where its member ran it brings none of its work back, and keeps the attempt.
+    if (record?.state === 'expired') return failed(isStopUnconfirmed(record) ? unconfirmedFailure(record) : await gone(record, { config, run, root, dir, ref, staleAfterMs }));
 
     if (record?.state === 'withdrawn') return withdrawn;
 

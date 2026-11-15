@@ -6,13 +6,13 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createRun, leaseNext, startRun } from '../workflow/engine.js';
 import { parseWorkflow } from '../workflow/parse.js';
 import { driverIdentity } from '../driver-identity.js';
-import { answerCancel, answerQuestion, cancelAttempt, claimAttempt, expireClaim, finishAttempt, lastGoneWork, leaveOffer, leaseEnv, leaseValues, listOpenAttempts, listRecords, markOffered, offerAttempt, offersAmong, readAttemptRecord, readOfferedMarker, recordProgress, woken, type FleetRecord, type HeldAttempt } from '../workflow/fleet/record.js';
+import { answerCancel, answerQuestion, cancelAttempt, claimAttempt, expireClaim, finishAttempt, lastGoneWork, leaveOffer, leaseEnv, leaseValues, listOpenAttempts, listRecords, markOffered, confirmStop, offerAttempt, offersAmong, readAttemptRecord, readOfferedMarker, recordProgress, woken, type FleetRecord, type HeldAttempt } from '../workflow/fleet/record.js';
 import { startGroupedCommand } from '../workflow/shell-command.js';
 import { publishRun } from '../workflow/handoff.js';
 import { definitionHash } from '../workflow/snapshot.js';
 import { attemptDir, AttemptIdSchema, installOwner, readRun, RunIdSchema, runFilePath, runScratchDir, takeRunLock, type AttemptId, type RunId } from '../workflow/store.js';
 import { memberPlace, takeFleetAttempt, type MemberPlace } from '../workflow/fleet/member.js';
-import { homeEnvOf, type OpenedDriver, type OpenedRuntime } from '../workflow/runtimes/sources.js';
+import { disposeDriver, homeEnvOf, openDriver, type OpenedDriver, type OpenedRuntime } from '../workflow/runtimes/sources.js';
 import { CANCEL_WRITE_MS, cancelFleetAttempt, fleetStepRuntime, shadowedFleetEntries } from '../workflow/fleet/owner.js';
 import { RuntimeOptionsSchema, WAKE_COMMAND, type PlaceView } from '@teamai/runtime-protocol';
 import { hostStepRuntime } from '../workflow/runtimes/host.js';
@@ -21,7 +21,9 @@ import type { DriverCan } from '../workflow/requirements.js';
 import { stdioStepRuntime } from '../workflow/runtimes/stdio.js';
 import { TOY_RUNTIME } from './helpers/toy-runtime.js';
 import type { OpId } from '@teamai/runtime-protocol';
-import { attemptRuntimePath, attemptToolHome } from '../workflow/runtimes/attempt.js';
+import { attemptRun, attemptRuntimePath, attemptToolHome } from '../workflow/runtimes/attempt.js';
+import { retryStep } from '../workflow/run-controls.js';
+import { knownSecrets } from '../env-resolution.js';
 import { holdLoginFrom, loginHolder } from '../workflow/runtimes/login.js';
 import { readableReportsWorktree, reportsBranch, updateReports } from '../utils/reports-branch.js';
 import { acquireLock, releaseLock } from '../update.js';
@@ -2346,4 +2348,68 @@ describe('waking a fleet member for an offer no member claimed', () => {
     expect(await runtime.init({ homeEnv: homeEnvOf([]), options: { pool: 'gpu', wake: { use: 'toy' } }, mode: 'recover', checkout: alice.checkout })).toMatchObject({ ok: true });
     expect(asked).toBe(0);
   });
+});
+
+describe('a retry of a step whose fleet member was given up', () => {
+  const FLEET_DRIVER = 'schemaVersion: v1alpha1\nname: gpu-fleet\nruntimes:\n  - use: fleet\n    options: { pool: gpu, stale_after: 60s }\n';
+  const ASKED = 'schemaVersion: v1alpha1\nname: slow\ndescription: Asks a tool for the change.\nsteps:\n  - id: work\n    workspace: new\n    prompt: Write the change.\n';
+
+  /**
+   * Alice's driver offers step `work` of workflow `definition`, a command or a prompt (`kind`), on its fleet entry, and
+   * is gone; Bob claims it, running it here (`runsHere`) or on a step runtime of his, and Alice gives the claim up.
+   */
+  async function givenUp({ definition, kind, runsHere }: { definition: string; kind: 'command' | 'prompt'; runsHere: boolean }) {
+    const acme = team({ slow: definition }, { 'drivers/gpu-fleet.yaml': FLEET_DRIVER });
+    const [alice, bob] = [await acme.member('alice'), await acme.member('bob')];
+    const run = RunIdSchema.parse(await startIn(alice, 'slow'));
+    const next = await leaseNext(alice.config, run, alice.driver, { can: { workspace: [...WORKSPACES], tools: ['claude'] } });
+    if (!('data' in next) || !next.data.lease) throw new Error(`no lease: ${JSON.stringify(next)}`);
+    const attempt = AttemptIdSchema.parse((next.data.lease as { attempt: string }).attempt);
+    const opened = await openDriver(alice.config, 'gpu-fleet', { personal: true, mode: 'unattended', canAsk: false, purpose: 'run', checkout: alice.checkout });
+    if (!opened.ok) throw new Error(opened.failure.message);
+    const fleet = opened.opened.runtimes.find((entry) => entry.kind === 'external');
+    if (fleet?.kind !== 'external') throw new Error('gpu-fleet opened no fleet runtime');
+    const placed = attemptRun({ config: alice.config, run, attempt, runtime: fleet.runtime, entry: fleet.entry, driver: 'gpu-fleet' });
+    const out = path.join(alice.checkout, 'out');
+    expect(await placed.open({ worktree: alice.checkout, readonly: [], result: out, runDir: path.join(alice.checkout, 'scratch'), toolHome: {} })).toMatchObject({ ok: true });
+    const sent = { env: {}, unset: [], credentials: {}, cwd: alice.checkout };
+    const ended = kind === 'command'
+      ? placed.exec({ ...sent, argv: ['sh', '-c', 'true'] }, {}, 'command')
+      : placed.prompt({ ...sent, lease: { step: 'work', tool: 'claude', prompt: 'Write the change.', result: path.join(out, 'result.json'), permissions: 'unattended', interactive: false } }, {});
+    const offered = await eventually(async () => {
+      await readableReportsWorktree(bob.config);
+      const read = await readAttemptRecord(bob.config, run, attempt);
+
+      return read.ok && read.value !== 'absent' && read.value.state === 'offered' ? read.value : undefined;
+    });
+    await disposeDriver(opened.opened);
+    await ended;
+    const claimed = await claimAttempt(bob.config, offered, await installOwner(bob.config), { runsHere });
+    if (!claimed.ok) throw new Error(claimed.error.message);
+    expect(await expireClaim(alice.config, claimed.value)).toMatchObject({ ok: true });
+
+    return { alice, bob, run, attempt, retry: async () => retryStep(alice.config, run, await knownSecrets(alice.config), 'work') };
+  }
+
+  it('refuses to run a prompt step again whose member ran it on its own tools, until that member confirms it stopped', async () => {
+    const { run, attempt, retry } = await givenUp({ definition: ASKED, kind: 'prompt', runsHere: true });
+
+    const retried = await retry();
+
+    expect(retried).toMatchObject({ error: { code: 'not_retryable', message: expect.stringContaining('The fleet member bob that took step "work" was given up before it confirmed that the step stopped') } });
+    expect(retried).toMatchObject({ error: { message: expect.stringContaining(`teamai workflow cancel ${run} --release ${attempt}`) } });
+  }, 60_000);
+
+  it('refuses to run a command step again whose member ran it on a step runtime, until that member confirms it stopped', async () => {
+    const { retry } = await givenUp({ definition: SLOW, kind: 'command', runsHere: false });
+
+    expect(await retry()).toMatchObject({ error: { code: 'not_retryable', message: expect.stringContaining('The fleet member bob that took step "work" was given up before it confirmed that the step stopped') } });
+  }, 60_000);
+
+  it('runs the step again once its member confirmed that the step stopped', async () => {
+    const { bob, run, attempt, retry } = await givenUp({ definition: SLOW, kind: 'command', runsHere: false });
+
+    expect(await confirmStop(bob.config, { run, attempt, member: await installOwner(bob.config) })).toEqual({ ok: true, value: undefined });
+    expect(await retry()).toMatchObject({ data: { retried: { step: 'work' } } });
+  }, 60_000);
 });

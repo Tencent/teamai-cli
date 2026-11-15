@@ -18,7 +18,7 @@ import { instanceHomeDir } from '../../tool-home.js';
 import { baseToolOf, toolInstancesFor } from '../../tool-registry.js';
 import { type StepRuntime } from '@teamai/runtime-protocol/step-runtime';
 import { composedOffer, composedStepRuntime, nestedOptions } from './composed.js';
-import { composedName, RuntimeEntryIdentity, type RuntimeResourcePart } from './entry-identity.js';
+import { composedName, RuntimeEntryIdentity, type RecordedEntry, type RuntimeResourcePart } from './entry-identity.js';
 import { credentialSecrets, isExecRuntimeTool, type ExecRuntimeTool, type RuntimeOrigin } from './attempt.js';
 import { LOGIN_TOOLS, type LoginTool } from './login.js';
 import type { SignInVariables } from '@teamai/tool-core/launch';
@@ -602,16 +602,21 @@ async function isSkippedWithoutAi(driver: ResolvedDriver, entry: DriverDefinitio
  * then opens each of its runtimes in order, so a bad option of any fails before a step runs. Each starts in `checkout`,
  * the run's, which its `init` names too. A drive of a run that `needsAiTool: false` says needs none leaves out the
  * runtimes whose manifest declares they run no command, such as t3, which it would only sign in to and ask what it runs.
+ * `place`, an attempt's place: only the entry that holds it opens (`RuntimeEntryIdentity.entryOf`), or none, saying why.
  */
 export async function openDriver(
   config: LocalConfig,
   name: string,
-  { personal, mode, canAsk, purpose, checkout, needsAiTool = true }: { personal: boolean; mode: RunMode; canAsk: boolean; purpose: DriverPurpose; checkout: string; needsAiTool?: boolean },
+  { personal, mode, canAsk, purpose, checkout, needsAiTool = true, place }: { personal: boolean; mode: RunMode; canAsk: boolean; purpose: DriverPurpose; checkout: string; needsAiTool?: boolean; place?: RecordedEntry },
 ): Promise<{ ok: true; opened: OpenedDriver } | { ok: false; failure: WorkflowFailure }> {
   const resolved = await resolveDriver(config, name, { personal });
 
   if (!resolved.ok) return resolved;
   const { driver } = resolved;
+  const holding = place === undefined ? undefined : RuntimeEntryIdentity.entryOf(driver, place);
+
+  if (holding && !holding.ok) return { ok: false, failure: { code: 'runtime_lost', message: holding.why } };
+  const entries = holding ? [holding.entry] : driver.definition.runtimes;
   const opened: OpenedRuntime[] = [];
   const how = { mode, canAsk, purpose, checkout };
 
@@ -628,7 +633,7 @@ export async function openDriver(
     log.info(`Driver local runs ${driver.location}, ${driver.source === 'personal' ? 'your own' : 'the team\'s'} teamai-local, in place of teamai's.`);
   }
 
-  for (const entry of driver.definition.runtimes) {
+  for (const entry of entries) {
     if (purpose === 'run' && !needsAiTool && await isSkippedWithoutAi(driver, entry)) continue;
 
     const one = entry.through === undefined

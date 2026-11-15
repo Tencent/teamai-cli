@@ -412,28 +412,32 @@ function placeEntry(config: LocalConfig, { run, attempt, record, opened }: { run
 
 /**
  * Stops the exec or prompt attempt `attempt` of run `run` left on the step runtime its record names, from `checkout`,
- * and nothing more: its place stays open and recorded, for `stopLeftAttempt` to close. It reads the place and writes
- * nothing, and a runtime's stop of what already stopped answers so, so it may race another stop of the attempt, such as
- * its member's own. Undefined once nothing of it runs there, or it holds no place; else why it may still run.
+ * opening only the entry of its driver that holds the place, and nothing more: its place stays open and recorded, for
+ * `stopLeftAttempt` to close. It reads the place and writes nothing, and a runtime's stop of what already stopped
+ * answers so, so it may race another stop of the attempt, such as its member's own. Answers `stopped` once the runtime
+ * no longer runs the exec or prompt the record names; `none` when the attempt holds no place, or names no exec or
+ * prompt sent there yet; else `running`, with why it may still run.
  */
-export async function stopLeftOperationOnRuntime(config: LocalConfig, { run, attempt, checkout }: { run: RunId; attempt: AttemptId; checkout: string }): Promise<string | undefined> {
+export async function stopLeftOperationOnRuntime(config: LocalConfig, { run, attempt, checkout }: { run: RunId; attempt: AttemptId; checkout: string }): Promise<{ kind: 'stopped' | 'none' } | { kind: 'running'; why: string }> {
   const placement = await readAttemptPlacement(config, run, attempt);
 
-  if (placement.kind !== 'external' || placement.record.phase === 'closed') return undefined;
+  if (placement.kind !== 'external' || placement.record.phase === 'closed') return { kind: 'none' };
   const { record } = placement;
-  const opened = await openDriver(config, record.driver, { personal: true, mode: resolveRunMode(process.env), canAsk: false, purpose: 'stop', checkout });
+  const opened = await openDriver(config, record.driver, { personal: true, mode: resolveRunMode(process.env), canAsk: false, purpose: 'stop', checkout, place: record });
 
-  if (!opened.ok) return opened.failure.message;
+  if (!opened.ok) return { kind: 'running', why: opened.failure.message };
 
   try {
     const entry = placeEntry(config, { run, attempt, record, opened: opened.opened });
 
-    if (!entry.ok) return entry.why;
+    if (!entry.ok) return { kind: 'running', why: entry.why };
     const notStopped = await entry.placed.stopLeftOperation();
 
-    return notStopped && `${notStopped.message} (${notStopped.code})`;
+    if (notStopped) return { kind: 'running', why: `${notStopped.message} (${notStopped.code})` };
+
+    return record.exec === undefined && record.prompt === undefined ? { kind: 'none' } : { kind: 'stopped' };
   } catch (error) {
-    return error instanceof Error ? error.message : String(error);
+    return { kind: 'running', why: error instanceof Error ? error.message : String(error) };
   } finally {
     await disposeDriver(opened.opened);
   }

@@ -14,7 +14,7 @@ function alive(pid: number): boolean {
 }
 
 function claimIn(dir: string) {
-  return { root: dir, run: RunIdSchema.parse('r0123abcd'), attempt: AttemptIdSchema.parse('a0123abcd'), pool: 'gpu', step: 'build' };
+  return { root: dir, run: RunIdSchema.parse('r0123abcd'), attempt: AttemptIdSchema.parse('a0123abcd'), pool: 'gpu', step: 'build', kind: 'command' as const };
 }
 
 /** A command as a member starts one here: detached, leading a group, except on Windows, where it leads a process tree. */
