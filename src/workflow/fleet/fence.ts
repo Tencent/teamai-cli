@@ -2,10 +2,11 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { memberHome } from '@teamai/shared/home';
 import { parseJson } from '@teamai/shared/json';
-import { STOP_GRACE_MS, TREE_KILL_FLAGS } from '@teamai/shared/process-group';
+import { signalChild, STOP_GRACE_MS, TREE_KILL_FLAGS } from '@teamai/shared/process-group';
 import { readRegularFile } from '@teamai/shared/regular-file';
 import { z } from 'zod';
 import { errnoCode, writeJsonAtomic } from '../../utils/fs.js';
@@ -20,7 +21,9 @@ import type { GuardianInput, GuardianStop } from './guardian-stop.js';
 //  whole workflow's nested run goes on, beside the step the owner offered again. So beside each step it runs, the member
 //  starts a guardian: a Node process in a group of its own, working in the member's home, which outlives every folder
 //  teamai removes. It reads the fence, the attempt folder's FENCE_FILE: the member's cut-off point, which the member
-//  rewrites each time it learns a progress write landed, and the owner token of the guardian it started. Once the fence
+//  rewrites each time it learns a progress write landed, and the owner token of the guardian it started. Once it read
+//  the fence holding its token, the guardian says it is ready there; a member whose guardian does not within
+//  GUARDIAN_READY_MS stops the step's command and runs nothing more of the step, as when the guardian cannot start. Once the fence
 //  passes, the guardian stops what the step runs, whether or not the member still lives: a command here as the member's
 //  cut-off does, SIGTERM and, STOP_GRACE_MS later, SIGKILL to its group until none of it is left (on Windows, where it
 //  has no group, `taskkill` of its process tree). Then it loads teamai's CLI bundle in its guardian mode
@@ -48,11 +51,17 @@ export type FencedCommand = { kind: 'group'; id: number } | { kind: 'tree'; pid:
 /** The fence of an attempt's step, in the attempt's folder: one at a time, that of the member run that fenced it last. */
 const FENCE_FILE = 'fence.json';
 
-/** A fence as the member writes it: its cut-off point, and the token of the guardian it started. */
-const FenceSchema = z.object({ at: z.number(), owner: z.string() });
+/** A fence: its cut-off point, the token of the guardian the member started, and `ready` once that guardian read it. */
+const FenceSchema = z.object({ at: z.number(), owner: z.string(), ready: z.literal(true).optional() });
 
 /** How long a guardian goes without reading its fence: it exits at most that long after its token left it. */
 const READ_MS = 1_000;
+
+/** How long a member waits for its step's guardian to say it is ready, before it stops the step's command. */
+const GUARDIAN_READY_MS = 10_000;
+
+/** How often a member reads the fence while it waits for its guardian to say it is ready. */
+const READY_READ_MS = 50;
 
 /** How long a step's end waits for its guardian to exit, before the member removes the attempt's folder. */
 const FENCE_END_WAIT_MS = 3 * READ_MS;
@@ -96,6 +105,18 @@ const fenceAt = () => {
     return error && error.code === 'ENOENT' ? undefined : null;
   }
 };
+// Says the guardian is ready, in the fence that holds its token: false when the write failed, to try again at the next read.
+const sayReady = (fenceAt) => {
+  const ready = file + '.' + String(process.pid) + '.ready';
+  try {
+    fs.writeFileSync(ready, JSON.stringify({ at: fenceAt, owner, ready: true }));
+    fs.renameSync(ready, file);
+    return true;
+  } catch {
+    try { fs.rmSync(ready, { force: true }); } catch {}
+    return false;
+  }
+};
 const stopCommand = async () => {
   if (isGone()) return;
   if (command.kind === 'tree' && process.platform === 'win32') {
@@ -111,10 +132,16 @@ const stopCommand = async () => {
 (async () => {
   if (command === undefined && cliFile === undefined) return;
   let at = Number(firstAt);
+  let isReady = false;
   for (;;) {
     const read = fenceAt();
-    if (read === undefined || (cliFile === undefined && isGone())) return;
-    if (read !== null) at = read;
+    if (read === undefined) return;
+    if (read !== null) {
+      at = read;
+      // Until it says so the member writes no fence, so this write replaces none of the member's.
+      if (!isReady) isReady = sayReady(read);
+    }
+    if (cliFile === undefined && isGone()) return;
     const left = at - Date.now();
     if (!(left > 0)) break;
     await sleep(Math.min(left, READ_MS));
@@ -159,12 +186,24 @@ export async function isFenceHeld(file: string, owner: string): Promise<boolean>
   return !fence.success || fence.data.owner === owner;
 }
 
+/** Whether fence `file` says that the guardian with token `owner` read it: not while it cannot be read. */
+async function isGuardianReady(file: string, owner: string): Promise<boolean> {
+  try {
+    const fence = FenceSchema.safeParse(parseJson(await readRegularFile(file, 'utf8')));
+
+    return fence.success && fence.data.owner === owner && fence.data.ready === true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Starts the guardian of the step of claim `claim` a member runs in attempt folder `dir`, with the cut-off point `at`:
  * it stops `command`, the step's command on this machine if it has one, and what the claim left (`guardian-stop.ts`).
  * Its token in the fence retires the guardian an earlier run of the member started for the attempt. One that stops what
  * the claim left gets the member's own environment, which a restarted member would have, and one that only stops a
- * command gets none. Answers why it could not start: the member then runs nothing of the step.
+ * command gets none. Answers once the guardian said it is ready, or why it could not start or did not say so within
+ * GUARDIAN_READY_MS, which ends it: the member then runs nothing more of the step.
  */
 export async function fenceStep({ dir, command, at, claim }: { dir: string; command?: FencedCommand; at: number; claim: GuardianStop }): Promise<{ ok: true; fence: StepFence } | { ok: false; reason: string }> {
   const cli = cliBundle();
@@ -199,6 +238,20 @@ export async function fenceStep({ dir, command, at, claim }: { dir: string; comm
   }
 
   guardian.unref();
+  const ended = { isExited: false };
+  void exited.then(() => { ended.isExited = true; });
+  let isReady = await isGuardianReady(file, owner);
+
+  for (const until = Date.now() + GUARDIAN_READY_MS; !isReady && !ended.isExited && Date.now() < until; isReady = await isGuardianReady(file, owner)) await sleep(READY_READ_MS);
+
+  if (!isReady) {
+    signalChild(guardian, 'SIGKILL');
+
+    if (await isFenceHeld(file, owner)) await fs.rm(file, { force: true });
+
+    return { ok: false, reason: ended.isExited ? 'its guardian exited before it said it was ready' : `its guardian did not say it was ready within ${GUARDIAN_READY_MS / 1_000} s` };
+  }
+
   let writing: Promise<void> = Promise.resolve();
   let written = at;
   let isEnded = false;
@@ -210,7 +263,7 @@ export async function fenceStep({ dir, command, at, claim }: { dir: string; comm
         if (isEnded || next === written) return;
         written = next;
         // A write that fails leaves the cut-off it replaced, which is earlier: the guardian stops the step no later.
-        writing = writing.then(() => writeJsonAtomic(file, { at: next, owner }, { compact: true })).catch(() => undefined);
+        writing = writing.then(() => writeJsonAtomic(file, { at: next, owner, ready: true }, { compact: true })).catch(() => undefined);
       },
       end: async () => {
         isEnded = true;

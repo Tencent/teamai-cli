@@ -43,6 +43,23 @@ import { entriesUnder } from '@teamai/shared/entries-under';
 import { scratchHostRuntime } from './helpers/host-runtime.js';
 import { soleEntry } from './helpers/runtime-entry.js';
 
+/** The stand-in a test starts for a step's guardian: one that starts, and never reads its fence nor says it is ready. */
+const frozenGuardian = vi.hoisted(() => ({ isAsked: false, started: undefined as import('node:child_process').ChildProcess | undefined }));
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+
+  // The guardian runs as `node -e GUARDIAN <fence file> ...`; every other process starts as it would.
+  const spawn = (command: string, args: readonly string[] = [], options: import('node:child_process').SpawnOptions = {}) => {
+    if (!frozenGuardian.isAsked || args[0] !== '-e' || !String(args[2]).endsWith('fence.json')) return actual.spawn(command, args, options);
+    frozenGuardian.started = actual.spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], options);
+
+    return frozenGuardian.started;
+  };
+
+  return { ...actual, spawn };
+});
+
 /** A member that runs every step here, as `--driver local` does. */
 const HERE: MemberPlace = { command: { kind: 'here' }, prompt: { kind: 'here' } };
 
@@ -1009,6 +1026,26 @@ async function eventually<T>(read: () => Promise<T | undefined>, ms = 30_000): P
   }
 }
 
+describe('the guardian of a member\'s command step', () => {
+  it('stops the step and ends it failed, never saying its guardian ends it by kill, when the guardian never says it is ready', async () => {
+    const { alice, bob, run } = await offerSlow(MEMBER_STALE_MS);
+    frozenGuardian.isAsked = true;
+
+    try {
+      const taking = takeFleetAttempt(bob.config, { pool: 'default', repository: 'github.com/acme/business', root: bob.checkout, member: await installOwner(bob.config), secrets: {}, place: HERE });
+      // Well before the step's own `sleep 60` ends.
+      const answer = await Promise.race([taking, sleep(25_000).then(() => 'still running' as const)]);
+
+      expect(answer).toMatchObject({ data: { ran: { step: 'work', exit_code: 1 } } });
+      const record = await recordOf(alice, run);
+      expect(record).toMatchObject({ state: 'finished', killBounded: false, result: { exitCode: 1, stderr: expect.stringContaining('its guardian did not say it was ready') } });
+    } finally {
+      frozenGuardian.isAsked = false;
+      frozenGuardian.started?.kill('SIGKILL');
+    }
+  }, 60_000);
+});
+
 describe('cancelling an attempt through its record', () => {
   it('withdraws an offer no member claimed, which no member then takes', async () => {
     const { bob, run, offered, alice } = await offerSlow(60_000);
@@ -1135,6 +1172,31 @@ describe('cancelling an attempt through its record', () => {
     expect(answer).toMatchObject({ error: { code: 'fleet_member_gone', message: expect.stringContaining('did not stop within 20 s') } });
     expect(await recordOf(alice, run)).toMatchObject({ state: 'cancelled', stopped: false });
   }, 90_000);
+
+  it('answers the cancel that the step did not stop when its step runtime ends the cancelled exec lost, keeping the place', async () => {
+    const { alice, bob, run } = await offerSlow(24_000);
+    const local = scratchHostRuntime();
+    let endExec: ((end: Awaited<ReturnType<StepRuntime<DriverCan>['exec']>>) => void) | undefined;
+    const runtime: StepRuntime<DriverCan> = {
+      ...local,
+      exec: async () => new Promise((resolve) => { endExec = resolve; }),
+      // As a stdio runtime ends an exec whose cancel its runtime does not confirm within 15 s.
+      cancel: async () => {
+        endExec?.({ kind: 'lost', failure: { code: 'runtime_unanswered', message: 'Step runtime "box" did not confirm the cancel of exec within 15 s, so what it started may still run.' } });
+      },
+    };
+    const taking = takeFleetAttempt(bob.config, { pool: 'default', repository: 'github.com/acme/business', root: bob.checkout, member: await installOwner(bob.config), secrets: {}, place: { command: { kind: 'runtime', driver: 'bobs', use: 'box', runtime, entry: soleEntry(runtime) } } });
+    const claimed = await eventually(async () => {
+      const record = await recordOf(alice, run);
+
+      return record?.state === 'claimed' && endExec !== undefined ? record : undefined;
+    });
+
+    expect(await cancelAttempt(alice.config, claimed)).toMatchObject({ ok: true, value: { state: 'cancelling' } });
+    await taking;
+
+    expect(await recordOf(alice, run)).toMatchObject({ state: 'cancelled', stopped: false });
+  }, 60_000);
 
   it('goes on with its step when teamai-reports cannot be read for a moment after another write landed over its own', async () => {
     // A stale_after whose cut-off, 8 s, past which a member stops a step none of whose progress landed, the moment

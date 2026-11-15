@@ -388,7 +388,8 @@ async function finishLeftClaims(config: LocalConfig, records: FleetRecord[], { r
 
       if (savedHere?.said !== 'yes') return { error: { code: 'fetch_failed', message: `The member could not fetch ${ref}, where the claim it holds keeps its work: ${(savedHere?.result ?? fetched).stderr.trim() || 'origin does not hold it'}` } };
 
-      if (record.state === 'cancelling') return answered(config, record, saved, nestedRun.spent);
+      // `left` says that nothing of the step still runs here: a claim still held keeps what may.
+      if (record.state === 'cancelling') return answered(config, record, { pushed: saved, ...(nestedRun.spent && { tokens: nestedRun.spent }), isStopped: !isLeftRunning });
       log.info(`Finishing attempt ${record.attempt} of run ${record.run}, which this member claimed and left: step "${record.lease.step}" runs again from the work it pushed.`);
 
       return runClaim(config, { lock, claim: record, root, secrets, member, place, from: saved, ...(nestedRun.spent && { spent: nestedRun.spent }) });
@@ -508,9 +509,12 @@ async function removeEndedAttempt(config: LocalConfig, run: RunId, attempt: Atte
   }
 }
 
-/** Answers the cancel of claim `cancelling` with the work up to `pushed`: the step stopped. */
-async function answered(config: LocalConfig, cancelling: Cancelling, pushed: string, tokens?: TokenUsage): Promise<WorkflowEnvelope> {
-  const written = await answerCancel(config, cancelling, { pushed, ...(tokens && { tokens }) });
+/**
+ * Answers the cancel of claim `cancelling` with the work up to `pushed`, and, unless `isStopped`, that the step may
+ * still run: only a stop `stopLeftOfClaim` confirmed, as `stopConfirmed` takes it, lets its owner run the step again.
+ */
+async function answered(config: LocalConfig, cancelling: Cancelling, { pushed, tokens, isStopped }: { pushed: string; tokens?: TokenUsage; isStopped: boolean }): Promise<WorkflowEnvelope> {
+  const written = await answerCancel(config, cancelling, { pushed, ...(tokens && { tokens }), ...(!isStopped && { stopped: false as const }) });
   const { run, attempt, lease } = cancelling;
 
   if (!written.ok) return { error: fleetFailure(written.error) };
@@ -533,6 +537,14 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
   // answer comes.
   const gates = gateQuestions();
 
+  // Whether nothing of the step still runs on this machine once it ended, as the record's `stopConfirmed` and a cancel's
+  // answer both say it: a place its step runtime kept, or a process not confirmed ended, may still run it.
+  const isStepStopped = async (): Promise<boolean> => {
+    const left = await stopLeftOfClaim(config, { claim, root, isEnded: true });
+
+    return left.kind === 'stopped' && !left.isLeftRunning;
+  };
+
   const finish = async (result: FleetResult): Promise<WorkflowEnvelope> => {
     const written = await finishAttempt(config, latest, result, secrets);
 
@@ -540,7 +552,7 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
     if (!written.ok && written.error.code === 'state_moved') {
       const now = await readAttemptRecord(config, run, attempt);
 
-      if (now.ok && now.value !== 'absent' && now.value.state === 'cancelling' && now.value.member.id === member.id) return answered(config, now.value, result.to ?? latest.pushed, result.tokens);
+      if (now.ok && now.value !== 'absent' && now.value.state === 'cancelling' && now.value.member.id === member.id) return answered(config, now.value, { pushed: result.to ?? latest.pushed, ...(result.tokens && { tokens: result.tokens }), isStopped: await isStepStopped() });
     }
 
     if (!written.ok) return { error: fleetFailure(written.error) };
@@ -775,10 +787,7 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
   // Once the owner gave the claim up or the member cut its step off, past the claim's cut-off point: whether nothing of
   // a step its guardian does not end by kill still runs here, which the record then says (`sayStopped`).
   const sayStepStopped = async (): Promise<void> => {
-    if (latest.killBounded) return;
-    const left = await stopLeftOfClaim(config, { claim, root, isEnded: true });
-
-    if (left.kind === 'stopped' && !left.isLeftRunning) await sayStopped(config, { run, attempt, member });
+    if (!latest.killBounded && await isStepStopped()) await sayStopped(config, { run, attempt, member });
   };
 
   try {
@@ -903,7 +912,7 @@ async function runClaim(config: LocalConfig, { lock, claim, root, secrets, membe
 
     const saved = await save(`[teamai] ${lease.step} (run ${run}, attempt ${attempt})`);
 
-    if (cancelling) return answered(config, cancelling, 'to' in saved ? saved.to : latest.pushed, ran.tokens);
+    if (cancelling) return answered(config, cancelling, { pushed: 'to' in saved ? saved.to : latest.pushed, ...(ran.tokens && { tokens: ran.tokens }), isStopped: await isStepStopped() });
 
     // A prompt's owner reads its end from `failure`, not the exit code.
     if ('error' in saved) return finish({ ...ran, exitCode: ran.exitCode === 0 ? 1 : ran.exitCode, stderr: saved.error, failure: { code: 'push_failed', message: saved.error } });
